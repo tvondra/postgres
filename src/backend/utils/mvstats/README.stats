@@ -18,6 +18,8 @@ Currently we only have two kinds of multivariate statistics
 
     (b) MCV lists (README.mcv)
 
+    (c) multivariate histograms (README.histogram)
+
 
 Compatible clause types
 -----------------------

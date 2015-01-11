@@ -4105,6 +4105,17 @@ _copyAlterPolicyStmt(const AlterPolicyStmt *from)
 	return newnode;
 }
 
+static StatisticsDef *
+_copyStatisticsDef(const StatisticsDef *from)
+{
+	StatisticsDef  *newnode = makeNode(StatisticsDef);
+
+	COPY_NODE_FIELD(keys);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
 /* ****************************************************************
  *					pg_list.h copy functions
  * ****************************************************************
@@ -4951,6 +4962,9 @@ copyObject(const void *from)
 			break;
 		case T_CommonTableExpr:
 			retval = _copyCommonTableExpr(from);
+			break;
+		case T_StatisticsDef:
+			retval = _copyStatisticsDef(from);
 			break;
 		case T_FuncWithArgs:
 			retval = _copyFuncWithArgs(from);

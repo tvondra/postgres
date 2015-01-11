@@ -375,6 +375,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
 %type <node>	grouping_sets_clause
 
+%type <list>	OptStatsOptions
+%type <str>		stats_options_name
+%type <node>	stats_options_arg
+%type <defelt>	stats_options_elem
+%type <list>	stats_options_list
+
 %type <list>	opt_fdw_options fdw_options
 %type <defelt>	fdw_option
 
@@ -501,7 +507,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <keyword> unreserved_keyword type_func_name_keyword
 %type <keyword> col_name_keyword reserved_keyword
 
-%type <node>	TableConstraint TableLikeClause
+%type <node>	TableConstraint TableLikeClause TableStatistics
 %type <ival>	TableLikeOptionList TableLikeOption
 %type <list>	ColQualList
 %type <node>	ColConstraint ColConstraintElem ConstraintAttr
@@ -2353,6 +2359,29 @@ alter_table_cmd:
 					n->subtype = AT_DisableRowSecurity;
 					$$ = (Node *)n;
 				}
+			/* ALTER TABLE <name> ADD STATISTICS (options) ON (columns) */
+			| ADD_P TableStatistics
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_AddStatistics;
+					n->def = $2;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> DROP STATISTICS (options) ON (columns) */
+			| DROP TableStatistics
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DropStatistics;
+					n->def = $2;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> DROP STATISTICS ALL */
+			| DROP STATISTICS ALL
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DropStatistics;
+					$$ = (Node *)n;
+				}
 			| alter_generic_options
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
@@ -3425,6 +3454,56 @@ OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 		;
 
 ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				ALTER TABLE relname ADD STATISTICS (columns) WITH (options)
+ *
+ *****************************************************************************/
+
+TableStatistics:
+			STATISTICS OptStatsOptions ON '(' columnList ')'
+				{
+					StatisticsDef *n = makeNode(StatisticsDef);
+					n->keys  = $5;
+					n->options  = $2;
+					$$ = (Node *) n;
+				}
+		;
+
+OptStatsOptions:
+			'(' stats_options_list ')'		{ $$ = $2; }
+			| /*EMPTY*/						{ $$ = NIL; }
+		;
+
+stats_options_list:
+			stats_options_elem
+				{
+					$$ = list_make1($1);
+				}
+			| stats_options_list ',' stats_options_elem
+				{
+					$$ = lappend($1, $3);
+				}
+		;
+
+stats_options_elem:
+			stats_options_name stats_options_arg
+				{
+					$$ = makeDefElem($1, $2);
+				}
+		;
+
+stats_options_name:
+			NonReservedWord			{ $$ = $1; }
+		;
+
+stats_options_arg:
+			opt_boolean_or_string	{ $$ = (Node *) makeString($1); }
+			| NumericOnly			{ $$ = (Node *) $1; }
+			| /* EMPTY */			{ $$ = NULL; }
 		;
 
 
@@ -13842,7 +13921,6 @@ unreserved_keyword:
 			| STANDALONE_P
 			| START
 			| STATEMENT
-			| STATISTICS
 			| STDIN
 			| STDOUT
 			| STORAGE
@@ -14059,6 +14137,7 @@ reserved_keyword:
 			| SELECT
 			| SESSION_USER
 			| SOME
+			| STATISTICS
 			| SYMMETRIC
 			| TABLE
 			| THEN

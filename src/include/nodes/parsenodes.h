@@ -594,6 +594,14 @@ typedef struct ColumnDef
 	int			location;		/* parse location, or -1 if none/unknown */
 } ColumnDef;
 
+typedef struct StatisticsDef
+{
+	NodeTag		type;
+	List	   *keys;			/* String nodes naming referenced column(s) */
+	List	   *options;		/* list of DefElem nodes */
+} StatisticsDef;
+
+
 /*
  * TableLikeClause - CREATE TABLE ( ... LIKE ... ) clause
  */
@@ -1513,7 +1521,9 @@ typedef enum AlterTableType
 	AT_ReplicaIdentity,			/* REPLICA IDENTITY */
 	AT_EnableRowSecurity,		/* ENABLE ROW SECURITY */
 	AT_DisableRowSecurity,		/* DISABLE ROW SECURITY */
-	AT_GenericOptions			/* OPTIONS (...) */
+	AT_GenericOptions,			/* OPTIONS (...) */
+	AT_AddStatistics,			/* ADD STATISTICS */
+	AT_DropStatistics			/* DROP STATISTICS */
 } AlterTableType;
 
 typedef struct ReplicaIdentityStmt

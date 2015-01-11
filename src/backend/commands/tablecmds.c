@@ -35,6 +35,7 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_inherits_fn.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_tablespace.h"
@@ -92,7 +93,7 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 #include "utils/typcache.h"
-
+#include "utils/mvstats.h"
 
 /*
  * ON COMMIT action list
@@ -140,8 +141,9 @@ static List *on_commits = NIL;
 #define AT_PASS_ADD_COL			5		/* ADD COLUMN */
 #define AT_PASS_ADD_INDEX		6		/* ADD indexes */
 #define AT_PASS_ADD_CONSTR		7		/* ADD constraints, defaults */
-#define AT_PASS_MISC			8		/* other stuff */
-#define AT_NUM_PASSES			9
+#define AT_PASS_ADD_STATS		8		/* ADD statistics */
+#define AT_PASS_MISC			9		/* other stuff */
+#define AT_NUM_PASSES			10
 
 typedef struct AlteredTableInfo
 {
@@ -419,6 +421,10 @@ static void ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKM
 static void ATExecGenericOptions(Relation rel, List *options);
 static void ATExecEnableRowSecurity(Relation rel);
 static void ATExecDisableRowSecurity(Relation rel);
+static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
+								StatisticsDef *def, LOCKMODE lockmode);
+static void ATExecDropStatistics(AlteredTableInfo *tab, Relation rel,
+								StatisticsDef *def, LOCKMODE lockmode);
 
 static void copy_relation_data(SMgrRelation rel, SMgrRelation dst,
 				   ForkNumber forkNum, char relpersistence);
@@ -3016,6 +3022,8 @@ AlterTableGetLockLevel(List *cmds)
 				 * updates.
 				 */
 			case AT_SetStatistics:		/* Uses MVCC in getTableAttrs() */
+			case AT_AddStatistics:		/* XXX not sure if the right level */
+			case AT_DropStatistics:		/* XXX not sure if the right level */
 			case AT_ClusterOn:	/* Uses MVCC in getIndexes() */
 			case AT_DropCluster:		/* Uses MVCC in getIndexes() */
 			case AT_SetOptions:	/* Uses MVCC in getTableAttrs() */
@@ -3168,6 +3176,8 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			pass = AT_PASS_ADD_CONSTR;
 			break;
 		case AT_SetStatistics:	/* ALTER COLUMN SET STATISTICS */
+		case AT_AddStatistics:	/* XXX maybe not the right place */
+		case AT_DropStatistics:	/* XXX maybe not the right place */
 			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
 			/* Performs own permission checks */
 			ATPrepSetStatistics(rel, cmd->name, cmd->def, lockmode);
@@ -3469,6 +3479,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			break;
 		case AT_SetStatistics:	/* ALTER COLUMN SET STATISTICS */
 			address = ATExecSetStatistics(rel, cmd->name, cmd->def, lockmode);
+			break;
+		case AT_AddStatistics:		/* ADD STATISTICS */
+			ATExecAddStatistics(tab, rel, (StatisticsDef *) cmd->def, lockmode);
+			break;
+		case AT_DropStatistics:		/* DROP STATISTICS */
+			ATExecDropStatistics(tab, rel, (StatisticsDef *) cmd->def, lockmode);
 			break;
 		case AT_SetOptions:		/* ALTER COLUMN SET ( options ) */
 			address = ATExecSetOptions(rel, cmd->name, cmd->def, false, lockmode);
@@ -11959,4 +11975,324 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 						rv->relname)));
 
 	ReleaseSysCache(tuple);
+}
+
+/* used for sorting the attnums in ATExecAddStatistics */
+static int compare_int16(const void *a, const void *b)
+{
+	return memcmp(a, b, sizeof(int16));
+}
+
+/*
+ * Implements the ALTER TABLE ... ADD STATISTICS (options) ON (columns).
+ *
+ * TODO Check that the types support sort, although maybe we can live
+ *      without it (and only build MCV list / association rules).
+ *
+ * TODO This should probably check for duplicate stats (i.e. same
+ *      keys, same options). Although maybe it's useful to have
+ *      multiple stats on the same columns with different options
+ *      (say, a detailed MCV-only stats for some queries, histogram
+ *      for others, etc.)
+ */
+static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
+						StatisticsDef *def, LOCKMODE lockmode)
+{
+	int			i, j;
+	ListCell   *l;
+	int16		attnums[INDEX_MAX_KEYS];
+	int			numcols = 0;
+
+	HeapTuple	htup;
+	Datum		values[Natts_pg_mv_statistic];
+	bool		nulls[Natts_pg_mv_statistic];
+	int2vector *stakeys;
+	Relation	mvstatrel;
+
+	/* by default build nothing */
+	bool 	build_dependencies = false;
+
+	Assert(IsA(def, StatisticsDef));
+
+	/* transform the column names to attnum values */
+
+	foreach(l, def->keys)
+	{
+		char	   *attname = strVal(lfirst(l));
+		HeapTuple	atttuple;
+
+		atttuple = SearchSysCacheAttName(RelationGetRelid(rel), attname);
+
+		if (!HeapTupleIsValid(atttuple))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column \"%s\" referenced in statistics does not exist",
+							attname)));
+
+		/* more than MVHIST_MAX_DIMENSIONS columns not allowed */
+		if (numcols >= MVSTATS_MAX_DIMENSIONS)
+			ereport(ERROR,
+					(errcode(ERRCODE_TOO_MANY_COLUMNS),
+					 errmsg("cannot have more than %d keys in a statistics",
+							MVSTATS_MAX_DIMENSIONS)));
+
+		attnums[numcols] = ((Form_pg_attribute) GETSTRUCT(atttuple))->attnum;
+		ReleaseSysCache(atttuple);
+		numcols++;
+	}
+
+	/*
+	 * Check the lower bound (at least 2 columns), the upper bound was
+	 * already checked in the loop.
+	 */
+	if (numcols < 2)
+			ereport(ERROR,
+					(errcode(ERRCODE_TOO_MANY_COLUMNS),
+					 errmsg("multivariate stats require 2 or more columns")));
+
+	/* look for duplicities */
+	for (i = 0; i < numcols; i++)
+		for (j = 0; j < numcols; j++)
+			if ((i != j) && (attnums[i] == attnums[j]))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("duplicate column name in statistics definition")));
+
+	/* parse the statistics options */
+	foreach (l, def->options)
+	{
+		DefElem *opt = (DefElem*)lfirst(l);
+
+		if (strcmp(opt->defname, "dependencies") == 0)
+			build_dependencies = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+
+	/* sort the attnums and build int2vector */
+	qsort(attnums, numcols, sizeof(int16), compare_int16);
+	stakeys = buildint2vector(attnums, numcols);
+
+	/*
+	 * Okay, let's create the pg_mv_statistic entry.
+	 */
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+
+	/* no stats collected yet, so just the keys */
+	values[Anum_pg_mv_statistic_starelid-1] = ObjectIdGetDatum(RelationGetRelid(rel));
+
+	values[Anum_pg_mv_statistic_stakeys -1] = PointerGetDatum(stakeys);
+	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
+
+	nulls[Anum_pg_mv_statistic_stadeps -1] = true;
+
+	/* insert the tuple into pg_mv_statistic */
+	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);
+
+	htup = heap_form_tuple(mvstatrel->rd_att, values, nulls);
+
+	simple_heap_insert(mvstatrel, htup);
+
+	CatalogUpdateIndexes(mvstatrel, htup);
+
+	heap_freetuple(htup);
+
+	heap_close(mvstatrel, RowExclusiveLock);
+
+	/*
+	 * Invalidate relcache so that others see the new statistics.
+	 */
+	CacheInvalidateRelcache(rel);
+
+	return;
+}
+
+/*
+ * Implements the ALTER TABLE ... DROP STATISTICS in two forms:
+ *
+ *     ALTER TABLE ... DROP STATISTICS (options) ON (columns)
+ *     ALTER TABLE ... DROP STATISTICS ALL;
+ *
+ * The first one requires an exact match, the second one just drops
+ * all the statistics on a table.
+ */
+static void ATExecDropStatistics(AlteredTableInfo *tab, Relation rel,
+						StatisticsDef *def, LOCKMODE lockmode)
+{
+	Relation	statrel;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+
+	ListCell   *l;
+
+	int16	attnums[INDEX_MAX_KEYS];
+	int		numcols = 0;
+
+	/* checking whether the statistics matches / should be dropped */
+	bool	build_dependencies = false;
+	bool	check_dependencies = false;
+
+	if (def != NULL)
+	{
+		Assert(IsA(def, StatisticsDef));
+
+		/* collect attribute numbers */
+		foreach(l, def->keys)
+		{
+			char	   *attname = strVal(lfirst(l));
+			HeapTuple	atttuple;
+
+			atttuple = SearchSysCacheAttName(RelationGetRelid(rel), attname);
+
+			if (!HeapTupleIsValid(atttuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("column \"%s\" referenced in statistics does not exist",
+								attname)));
+
+			/* more than MVHIST_MAX_DIMENSIONS columns not allowed */
+			if (numcols >= MVSTATS_MAX_DIMENSIONS)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_COLUMNS),
+						 errmsg("cannot have more than %d keys in a statistics",
+								MVSTATS_MAX_DIMENSIONS)));
+
+			attnums[numcols] = ((Form_pg_attribute) GETSTRUCT(atttuple))->attnum;
+			ReleaseSysCache(atttuple);
+			numcols++;
+		}
+
+		/* parse the statistics options */
+		foreach (l, def->options)
+		{
+			DefElem *opt = (DefElem*)lfirst(l);
+
+			if (strcmp(opt->defname, "dependencies") == 0)
+			{
+				check_dependencies = true;
+				build_dependencies = defGetBoolean(opt);
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("unrecognized STATISTICS option \"%s\"",
+								opt->defname)));
+		}
+
+	}
+
+	statrel = heap_open(MvStatisticRelationId, RowExclusiveLock);
+
+	ScanKeyInit(&key,
+				Anum_pg_mv_statistic_starelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(rel)));
+
+	scan = systable_beginscan(statrel,
+							  MvStatisticRelidIndexId,
+							  true, NULL, 1, &key);
+
+	/* we must loop even when attnum != 0, in case of inherited stats */
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		/* by default we delete everything */
+		bool delete = true;
+
+		/* check that the options match (dependencies, mcv, histogram) */
+		if (delete && check_dependencies)
+		{
+			bool isnull;
+			Datum adatum = heap_getattr(tuple,
+								  Anum_pg_mv_statistic_deps_enabled,
+								  RelationGetDescr(statrel),
+								  &isnull);
+
+			delete = (! isnull) &&
+					 (DatumGetBool(adatum) == build_dependencies);
+		}
+
+		/* check that the columns match the statistics definition */
+		if (delete && (numcols > 0))
+		{
+			int i, j;
+			ArrayType *arr;
+			bool isnull;
+
+			int16  *stakeys;
+			int		nstakeys;
+
+			Datum adatum = SysCacheGetAttr(MVSTATOID, tuple,
+									 Anum_pg_mv_statistic_stakeys, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+
+			nstakeys = ARR_DIMS(arr)[0];
+			stakeys = (int16 *) ARR_DATA_PTR(arr);
+
+			/* assume match */
+			delete = true;
+
+			/* check that for each column we find a match in stakeys */
+			for (i = 0; i < numcols; i++)
+			{
+				bool found = false;
+				for (j = 0; j < nstakeys; j++)
+				{
+					if (attnums[i] == stakeys[j])
+					{
+						found = true;
+						break;
+					}
+				}
+
+				if (! found)
+				{
+					delete = false;
+					break;
+				}
+			}
+
+			/* check that for each stakeys we find a match in columns */
+			for (j = 0; j < nstakeys; j++)
+			{
+				bool found = false;
+
+				for (i = 0; i < numcols; i++)
+				{
+					if (attnums[i] == stakeys[j])
+					{
+						found = true;
+						break;
+					}
+				}
+
+				if (! found)
+				{
+					delete = false;
+					break;
+				}
+			}
+		}
+
+		/* don't delete, if we've found mismatches */
+		if (delete)
+			simple_heap_delete(statrel, &tuple->t_self);
+	}
+
+	systable_endscan(scan);
+
+	heap_close(statrel, RowExclusiveLock);
+
+	/*
+	 * Invalidate relcache so that others forget the dropped statistics.
+	 */
+	CacheInvalidateRelcache(rel);
+
+	return;
 }

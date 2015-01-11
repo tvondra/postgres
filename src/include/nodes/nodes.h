@@ -249,6 +249,7 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
+	T_MVStatisticInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
@@ -427,6 +428,7 @@ typedef enum NodeTag
 	T_OnConflictClause,
 	T_CommonTableExpr,
 	T_RoleSpec,
+	T_StatisticsDef,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)

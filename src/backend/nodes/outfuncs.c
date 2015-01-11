@@ -2172,6 +2172,21 @@ _outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
 }
 
 static void
+_outMVStatisticInfo(StringInfo str, const MVStatisticInfo *node)
+{
+	WRITE_NODE_TYPE("MVSTATISTICINFO");
+
+	/* NB: this isn't a complete set of fields */
+	WRITE_OID_FIELD(mvoid);
+
+	/* enabled statistics */
+	WRITE_BOOL_FIELD(deps_enabled);
+
+	/* built/available statistics */
+	WRITE_BOOL_FIELD(deps_built);
+}
+
+static void
 _outEquivalenceClass(StringInfo str, const EquivalenceClass *node)
 {
 	/*
@@ -3704,6 +3719,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_PlannerParamItem:
 				_outPlannerParamItem(str, obj);
+				break;
+			case T_MVStatisticInfo:
+				_outMVStatisticInfo(str, obj);
 				break;
 
 			case T_ExtensibleNode:

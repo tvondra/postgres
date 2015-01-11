@@ -518,6 +518,7 @@ typedef struct RelOptInfo
 	List	   *lateral_vars;	/* LATERAL Vars and PHVs referenced by rel */
 	Relids		lateral_referencers;	/* rels that reference me laterally */
 	List	   *indexlist;		/* list of IndexOptInfo */
+	List	   *mvstatlist;		/* list of MVStatisticInfo */
 	BlockNumber pages;			/* size estimates derived from pg_class */
 	double		tuples;
 	double		allvisfrac;
@@ -654,6 +655,32 @@ typedef struct ForeignKeyOptInfo
 	List	   *rinfos[INDEX_MAX_KEYS];
 } ForeignKeyOptInfo;
 
+/*
+ * MVStatisticInfo
+ *		Information about multivariate stats for planning/optimization
+ *
+ * This contains information about which columns are covered by the
+ * statistics (stakeys), which options were requested while adding the
+ * statistics (*_enabled), and which kinds of statistics were actually
+ * built and are available for the optimizer (*_built).
+ */
+typedef struct MVStatisticInfo
+{
+	NodeTag		type;
+
+	Oid			mvoid;			/* OID of the statistics row */
+	RelOptInfo *rel;			/* back-link to index's table */
+
+	/* enabled statistics */
+	bool		deps_enabled;	/* functional dependencies enabled */
+
+	/* built/available statistics */
+	bool		deps_built;		/* functional dependencies built */
+
+	/* columns in the statistics (attnums) */
+	int2vector *stakeys;		/* attnums of the columns covered */
+
+} MVStatisticInfo;
 
 /*
  * EquivalenceClasses

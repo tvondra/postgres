@@ -28,6 +28,7 @@
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_mv_statistic.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -40,7 +41,9 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -98,6 +101,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	Relation	relation;
 	bool		hasindex;
 	List	   *indexinfos = NIL;
+	List	   *stainfos = NIL;
 
 	/*
 	 * We need not lock the relation since it was already locked, either by
@@ -394,6 +398,61 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	}
 
 	rel->indexlist = indexinfos;
+
+	if (true)
+	{
+		List	   *mvstatoidlist;
+		ListCell   *l;
+
+		mvstatoidlist = RelationGetMVStatList(relation);
+
+		foreach(l, mvstatoidlist)
+		{
+			ArrayType  *arr;
+			Datum		adatum;
+			bool		isnull;
+			Oid			mvoid = lfirst_oid(l);
+			Form_pg_mv_statistic mvstat;
+			MVStatisticInfo *info;
+
+			HeapTuple	htup = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(mvoid));
+
+			mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
+
+			/* unavailable stats are not interesting for the planner */
+			if (mvstat->deps_built)
+			{
+				info = makeNode(MVStatisticInfo);
+
+				info->mvoid = mvoid;
+				info->rel = rel;
+
+				/* enabled statistics */
+				info->deps_enabled = mvstat->deps_enabled;
+
+				/* built/available statistics */
+				info->deps_built = mvstat->deps_built;
+
+				/* stakeys */
+				adatum = SysCacheGetAttr(MVSTATOID, htup,
+									  Anum_pg_mv_statistic_stakeys, &isnull);
+				Assert(!isnull);
+
+				arr = DatumGetArrayTypeP(adatum);
+
+				info->stakeys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+												ARR_DIMS(arr)[0]);
+
+				stainfos = lcons(info, stainfos);
+			}
+
+			ReleaseSysCache(htup);
+		}
+
+		list_free(mvstatoidlist);
+	}
+
+	rel->mvstatlist = stainfos;
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)

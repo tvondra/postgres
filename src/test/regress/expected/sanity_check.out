@@ -114,6 +114,7 @@ pg_init_privs|t
 pg_language|t
 pg_largeobject|t
 pg_largeobject_metadata|t
+pg_mv_statistic|t
 pg_namespace|t
 pg_opclass|t
 pg_operator|t

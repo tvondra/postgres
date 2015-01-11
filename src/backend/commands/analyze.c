@@ -17,6 +17,7 @@
 #include <math.h>
 
 #include "access/multixact.h"
+#include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
@@ -27,6 +28,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_inherits_fn.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "commands/dbcommands.h"
 #include "commands/tablecmds.h"
@@ -45,10 +47,13 @@
 #include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/attoptcache.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mvstats.h"
 #include "utils/pg_rusage.h"
 #include "utils/sampling.h"
 #include "utils/sortsupport.h"
@@ -558,6 +563,9 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 			update_attstats(RelationGetRelid(Irel[ind]), false,
 							thisdata->attr_cnt, thisdata->vacattrstats);
 		}
+
+		/* Build multivariate stats (if there are any). */
+		build_mv_stats(onerel, numrows, rows, attr_cnt, vacattrstats);
 	}
 
 	/*

@@ -1520,6 +1520,10 @@ ProcessUtilitySlow(Node *parsetree,
 				address = ExecSecLabelStmt((SecLabelStmt *) parsetree);
 				break;
 
+			case T_CreateStatsStmt:	/* CREATE STATISTICS */
+				address = CreateStatistics((CreateStatsStmt *) parsetree);
+				break;
+
 			default:
 				elog(ERROR, "unrecognized node type: %d",
 					 (int) nodeTag(parsetree));
@@ -2160,6 +2164,9 @@ CreateCommandTag(Node *parsetree)
 				case OBJECT_TRANSFORM:
 					tag = "DROP TRANSFORM";
 					break;
+				case OBJECT_STATISTICS:
+					tag = "DROP STATISTICS";
+					break;
 				default:
 					tag = "???";
 			}
@@ -2525,6 +2532,10 @@ CreateCommandTag(Node *parsetree)
 
 		case T_ExecuteStmt:
 			tag = "EXECUTE";
+			break;
+
+		case T_CreateStatsStmt:
+			tag = "CREATE STATISTICS";
 			break;
 
 		case T_DeallocateStmt:

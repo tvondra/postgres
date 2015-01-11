@@ -76,6 +76,7 @@ Complete list of usable sgml source files in this directory.
 <!ENTITY createSchema       SYSTEM "create_schema.sgml">
 <!ENTITY createSequence     SYSTEM "create_sequence.sgml">
 <!ENTITY createServer       SYSTEM "create_server.sgml">
+<!ENTITY createStatistics   SYSTEM "create_statistics.sgml">
 <!ENTITY createTable        SYSTEM "create_table.sgml">
 <!ENTITY createTableAs      SYSTEM "create_table_as.sgml">
 <!ENTITY createTableSpace   SYSTEM "create_tablespace.sgml">
@@ -119,6 +120,7 @@ Complete list of usable sgml source files in this directory.
 <!ENTITY dropSchema         SYSTEM "drop_schema.sgml">
 <!ENTITY dropSequence       SYSTEM "drop_sequence.sgml">
 <!ENTITY dropServer         SYSTEM "drop_server.sgml">
+<!ENTITY dropStatistics     SYSTEM "drop_statistics.sgml">
 <!ENTITY dropTable          SYSTEM "drop_table.sgml">
 <!ENTITY dropTableSpace     SYSTEM "drop_tablespace.sgml">
 <!ENTITY dropTransform      SYSTEM "drop_transform.sgml">

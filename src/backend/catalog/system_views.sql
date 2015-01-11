@@ -158,6 +158,17 @@ CREATE VIEW pg_indexes AS
          LEFT JOIN pg_tablespace T ON (T.oid = I.reltablespace)
     WHERE C.relkind IN ('r', 'm') AND I.relkind = 'i';
 
+CREATE VIEW pg_mv_stats AS
+    SELECT
+        N.nspname AS schemaname,
+        C.relname AS tablename,
+        S.staname AS staname,
+        S.stakeys AS attnums,
+        length(S.stadeps) as depsbytes,
+        pg_mv_stats_dependencies_info(S.stadeps) as depsinfo
+    FROM (pg_mv_statistic S JOIN pg_class C ON (C.oid = S.starelid))
+        LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace);
+
 CREATE VIEW pg_stats WITH (security_barrier) AS
     SELECT
         nspname AS schemaname,

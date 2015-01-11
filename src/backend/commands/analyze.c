@@ -17,6 +17,7 @@
 #include <math.h>
 
 #include "access/multixact.h"
+#include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
@@ -27,6 +28,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_inherits_fn.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "commands/dbcommands.h"
 #include "commands/tablecmds.h"
@@ -45,10 +47,13 @@
 #include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/attoptcache.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mvstats.h"
 #include "utils/pg_rusage.h"
 #include "utils/sampling.h"
 #include "utils/sortsupport.h"
@@ -460,6 +465,19 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 	 * all analyzable columns.  We use a lower bound of 100 rows to avoid
 	 * possible overflow in Vitter's algorithm.  (Note: that will also be the
 	 * target in the corner case where there are no analyzable columns.)
+	 *
+	 * FIXME This sample sizing is mostly OK when computing stats for
+	 *       individual columns, but when computing multi-variate stats
+	 *       for multivariate stats (histograms, mcv, ...) it's rather
+	 *       insufficient. For stats on multiple columns / complex stats
+	 *       we need larger sample sizes, because we need to build more
+	 *       detailed stats (more MCV items / histogram buckets) to get
+	 *       good accuracy. Maybe it'd be appropriate to use samples
+	 *       proportional to the table (say, 0.5% - 1%) instead of a
+	 *       fixed size might be more appropriate. Also, this should be
+	 *       bound to the requested statistics size - e.g. number of MCV
+	 *       items or histogram buckets should require several sample
+	 *       rows per item/bucket (so the sample should be k*size).
 	 */
 	targrows = 100;
 	for (i = 0; i < attr_cnt; i++)
@@ -562,6 +580,9 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 			update_attstats(RelationGetRelid(Irel[ind]), false,
 							thisdata->attr_cnt, thisdata->vacattrstats);
 		}
+
+		/* Build multivariate stats (if there are any). */
+		build_mv_stats(onerel, numrows, rows, attr_cnt, vacattrstats);
 	}
 
 	/*

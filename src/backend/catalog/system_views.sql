@@ -168,7 +168,9 @@ CREATE VIEW pg_mv_stats AS
         pg_mv_stats_dependencies_info(S.stadeps) as depsinfo,
         standcoeff AS ndcoeff,
         length(S.stamcv) AS mcvbytes,
-        pg_mv_stats_mcvlist_info(S.stamcv) AS mcvinfo
+        pg_mv_stats_mcvlist_info(S.stamcv) AS mcvinfo,
+        length(S.stahist) AS histbytes,
+        pg_mv_stats_histogram_info(S.stahist) AS histinfo
     FROM (pg_mv_statistic S JOIN pg_class C ON (C.oid = S.starelid))
         LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace);
 

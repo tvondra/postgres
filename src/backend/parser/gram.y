@@ -241,7 +241,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
-		CreateSchemaStmt CreateSeqStmt CreateStmt CreateTableSpaceStmt
+		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
@@ -361,7 +361,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				set_clause_list set_clause multiple_set_clause
 				ctext_expr_list ctext_row def_list operator_def_list indirection opt_indirection
 				reloption_list group_clause TriggerFuncArgs select_limit
-				opt_select_limit opclass_item_list opclass_drop_list
+				opt_select_limit opclass_item_list opclass_drop_list opt_any_name
 				opclass_purpose opt_opfamily transaction_mode_list_or_empty
 				OptTableFuncElementList TableFuncElementList opt_type_modifiers
 				prep_type_clause
@@ -809,6 +809,7 @@ stmt :
 			| CreateSchemaStmt
 			| CreateSeqStmt
 			| CreateStmt
+			| CreateStatsStmt
 			| CreateTableSpaceStmt
 			| CreateTransformStmt
 			| CreateTrigStmt
@@ -3436,6 +3437,29 @@ OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 		;
 
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
+ *
+ *****************************************************************************/
+
+
+CreateStatsStmt:	CREATE STATISTICS opt_any_name ON qualified_name '(' columnList ')' opt_reloptions
+					{
+						CreateStatsStmt *n = makeNode(CreateStatsStmt);
+						n->defnames = $3;
+						n->relation = $5;
+						n->keys = $7;
+						n->options = $9;
+						$$ = (Node *)n;
+					}
+			;
+
+opt_any_name:
+			any_name						{ $$ = $1; }
+			| /*EMPTY*/						{ $$ = NULL; }
+		;
 
 /*****************************************************************************
  *
@@ -5621,6 +5645,7 @@ drop_type:	TABLE									{ $$ = OBJECT_TABLE; }
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| STATISTICS							{ $$ = OBJECT_STATISTICS; }
 		;
 
 any_name_list:

@@ -133,6 +133,24 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
    </varlistentry>
 
    <varlistentry>
+    <term><literal>histogram</> (<type>boolean</>)</term>
+    <listitem>
+     <para>
+      Enables histogram for the statistics.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>max_buckets</> (<type>integer</>)</term>
+    <listitem>
+     <para>
+      Maximum number of histogram buckets.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><literal>max_mcv_items</> (<type>integer</>)</term>
     <listitem>
      <para>

@@ -13,10 +13,10 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
+#include "utils/array.h"
 
 #include "common.h"
-
-#include "utils/array.h"
 
 static VacAttrStats ** lookup_var_attr_stats(int2vector *attrs,
 											 int natts,
@@ -52,7 +52,8 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		MVStatisticInfo *stat = (MVStatisticInfo *)lfirst(lc);
 		MVDependencies	deps  = NULL;
 		MCVList		mcvlist   = NULL;
-		int numrows_filtered  = 0;
+		MVHistogram	histogram = NULL;
+		int numrows_filtered  = numrows;
 
 		VacAttrStats  **stats  = NULL;
 		int				numatts   = 0;
@@ -95,8 +96,12 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		if (stat->mcv_enabled)
 			mcvlist = build_mv_mcvlist(numrows, rows, attrs, stats, &numrows_filtered);
 
+		/* build a multivariate histogram on the columns */
+		if ((numrows_filtered > 0) && (stat->hist_enabled))
+			histogram = build_mv_histogram(numrows_filtered, rows, attrs, stats, numrows);
+
 		/* store the histogram / MCV list in the catalog */
-		update_mv_stats(stat->mvoid, deps, mcvlist, attrs, stats);
+		update_mv_stats(stat->mvoid, deps, mcvlist, histogram, attrs, stats);
 	}
 }
 
@@ -176,6 +181,8 @@ list_mv_stats(Oid relid)
 		info->deps_built = stats->deps_built;
 		info->mcv_enabled = stats->mcv_enabled;
 		info->mcv_built = stats->mcv_built;
+		info->hist_enabled = stats->hist_enabled;
+		info->hist_built = stats->hist_built;
 
 		result = lappend(result, info);
 	}
@@ -189,7 +196,6 @@ list_mv_stats(Oid relid)
 
 	return result;
 }
-
 
 /*
  * Find attnims of MV stats using the mvoid.
@@ -236,9 +242,16 @@ find_mv_attnums(Oid mvoid, Oid *relid)
 }
 
 
+/*
+ * FIXME This adds statistics, but we need to drop statistics when the
+ *       table is dropped. Not sure what to do when a column is dropped.
+ *       Either we can (a) remove all stats on that column, (b) remove
+ *       the column from defined stats and force rebuild, (c) remove the
+ *       column on next ANALYZE. Or maybe something else?
+ */
 void
 update_mv_stats(Oid mvoid,
-				MVDependencies dependencies, MCVList mcvlist,
+				MVDependencies dependencies, MCVList mcvlist, MVHistogram histogram,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -271,22 +284,34 @@ update_mv_stats(Oid mvoid,
 		values[Anum_pg_mv_statistic_stamcv  - 1] = PointerGetDatum(data);
 	}
 
+	if (histogram != NULL)
+	{
+		bytea * data = serialize_mv_histogram(histogram, attrs, stats);
+		nulls[Anum_pg_mv_statistic_stahist-1]    = (data == NULL);
+		values[Anum_pg_mv_statistic_stahist - 1]
+			= PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_mv_statistic_stadeps -1] = true;
 	replaces[Anum_pg_mv_statistic_stamcv -1] = true;
+	replaces[Anum_pg_mv_statistic_stahist-1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_mv_statistic_deps_built -1] = false;
 	nulls[Anum_pg_mv_statistic_mcv_built -1] = false;
+	nulls[Anum_pg_mv_statistic_hist_built-1] = false;
 	nulls[Anum_pg_mv_statistic_stakeys-1]     = false;
 
 	/* use the new attnums, in case we removed some dropped ones */
 	replaces[Anum_pg_mv_statistic_deps_built-1] = true;
 	replaces[Anum_pg_mv_statistic_mcv_built  -1] = true;
+	replaces[Anum_pg_mv_statistic_hist_built -1] = true;
 	replaces[Anum_pg_mv_statistic_stakeys -1]    = true;
 
 	values[Anum_pg_mv_statistic_deps_built-1] = BoolGetDatum(dependencies != NULL);
 	values[Anum_pg_mv_statistic_mcv_built  -1] = BoolGetDatum(mcvlist != NULL);
+	values[Anum_pg_mv_statistic_hist_built -1] = BoolGetDatum(histogram != NULL);
 	values[Anum_pg_mv_statistic_stakeys -1]    = PointerGetDatum(attrs);
 
 	/* Is there already a pg_mv_statistic tuple for this attribute? */

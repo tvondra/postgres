@@ -72,12 +72,15 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/* by default build nothing */
 	bool 	build_dependencies = false,
-			build_mcv = false;
+			build_mcv = false,
+			build_histogram = false;
 
-	int32 	max_mcv_items = -1;
+	int32 	max_buckets = -1,
+			max_mcv_items = -1;
 
 	/* options required because of other options */
-	bool	require_mcv = false;
+	bool	require_mcv = false,
+			require_histogram = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -177,6 +180,29 @@ CreateStatistics(CreateStatsStmt *stmt)
 								MVSTAT_MCVLIST_MAX_ITEMS)));
 
 		}
+		else if (strcmp(opt->defname, "histogram") == 0)
+			build_histogram = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "max_buckets") == 0)
+		{
+			max_buckets = defGetInt32(opt);
+
+			/* this option requires 'histogram' to be enabled */
+			require_histogram = true;
+
+			/* sanity check */
+			if (max_buckets < MVSTAT_HIST_MIN_BUCKETS)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("minimum number of buckets is %d",
+								MVSTAT_HIST_MIN_BUCKETS)));
+
+			else if (max_buckets > MVSTAT_HIST_MAX_BUCKETS)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("maximum number of buckets is %d",
+								MVSTAT_HIST_MAX_BUCKETS)));
+
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -185,16 +211,21 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* check that at least some statistics were requested */
-	if (! (build_dependencies || build_mcv))
+	if (! (build_dependencies || build_mcv || build_histogram))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (dependencies, mcv) was requested")));
+				 errmsg("no statistics type (dependencies, mcv, histogram) was requested")));
 
 	/* now do some checking of the options */
 	if (require_mcv && (! build_mcv))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("option 'mcv' is required by other options(s)")));
+
+	if (require_histogram && (! build_histogram))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("option 'histogram' is required by other options(s)")));
 
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
@@ -216,11 +247,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
 	values[Anum_pg_mv_statistic_mcv_enabled  -1] = BoolGetDatum(build_mcv);
+	values[Anum_pg_mv_statistic_hist_enabled -1] = BoolGetDatum(build_histogram);
 
 	values[Anum_pg_mv_statistic_mcv_max_items    -1] = Int32GetDatum(max_mcv_items);
+	values[Anum_pg_mv_statistic_hist_max_buckets -1] = Int32GetDatum(max_buckets);
 
 	nulls[Anum_pg_mv_statistic_stadeps  -1] = true;
 	nulls[Anum_pg_mv_statistic_stamcv   -1] = true;
+	nulls[Anum_pg_mv_statistic_stahist  -1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

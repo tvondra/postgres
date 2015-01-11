@@ -153,10 +153,11 @@ typedef enum ObjectClass
 	OCLASS_EXTENSION,			/* pg_extension */
 	OCLASS_EVENT_TRIGGER,		/* pg_event_trigger */
 	OCLASS_POLICY,				/* pg_policy */
-	OCLASS_TRANSFORM			/* pg_transform */
+	OCLASS_TRANSFORM,			/* pg_transform */
+	OCLASS_STATISTICS			/* pg_mv_statistics */
 } ObjectClass;
 
-#define LAST_OCLASS		OCLASS_TRANSFORM
+#define LAST_OCLASS		OCLASS_STATISTICS
 
 
 /* in dependency.c */

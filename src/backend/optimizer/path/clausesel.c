@@ -49,6 +49,7 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 
 #define		MV_CLAUSE_TYPE_FDEP		0x01
 #define		MV_CLAUSE_TYPE_MCV		0x02
+#define		MV_CLAUSE_TYPE_HIST		0x04
 
 static bool clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums,
 						int type);
@@ -75,11 +76,20 @@ static Selectivity clauselist_mv_selectivity_mcvlist(PlannerInfo *root,
 								  List *clauses, MVStatisticInfo *mvstats,
 								  bool *fullmatch, Selectivity *lowsel);
 
+static Selectivity clauselist_mv_selectivity_histogram(PlannerInfo *root,
+								  List *clauses, MVStatisticInfo *mvstats);
+
 static int update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 							int2vector *stakeys, MCVList mcvlist,
 							int nmatches, char *matches,
 							Selectivity *lowsel, bool *fullmatch,
 							bool is_or);
+
+static int update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
+									int2vector *stakeys,
+									MVSerializedHistogram mvhist,
+									int nmatches, char * matches,
+									bool is_or);
 
 static bool has_stats(List *stats, int type);
 
@@ -90,6 +100,7 @@ static bool stats_type_matches(MVStatisticInfo *stat, int type);
 
 #define UPDATE_RESULT(m,r,isor) \
 	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
+
 
 /****************************************************************************
  *		ROUTINES TO COMPUTE SELECTIVITIES
@@ -119,7 +130,7 @@ static bool stats_type_matches(MVStatisticInfo *stat, int type);
  *
  * First we try to reduce the list of clauses by applying (soft) functional
  * dependencies, and then we try to estimate the selectivity of the reduced
- * list of clauses using the multivariate MCV list.
+ * list of clauses using the multivariate MCV list and histograms.
  *
  * Finally we remove the portion of clauses estimated using multivariate stats,
  * and process the rest of the clauses using the regular per-column stats.
@@ -213,11 +224,13 @@ clauselist_selectivity(PlannerInfo *root,
 	 * with the multivariate code and simply skip to estimation using the
 	 * regular per-column stats.
 	 */
-	if (has_stats(stats, MV_CLAUSE_TYPE_MCV) &&
-		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_MCV) >= 2))
+	if (has_stats(stats, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) &&
+		(count_mv_attnums(clauses, relid,
+						  MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2))
 	{
 		/* collect attributes from the compatible conditions */
-		Bitmapset  *mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_MCV);
+		Bitmapset  *mvattnums = collect_mv_attnums(clauses, relid,
+									MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
 
 		/* and search for the statistic covering the most attributes */
 		MVStatisticInfo *mvstat = choose_mv_statistics(stats, mvattnums);
@@ -229,7 +242,7 @@ clauselist_selectivity(PlannerInfo *root,
 
 			/* split the clauselist into regular and mv-clauses */
 			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-										  mvstat, MV_CLAUSE_TYPE_MCV);
+										  mvstat, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
 
 			/* we've chosen the histogram to match the clauses */
 			Assert(mvclauses != NIL);
@@ -940,6 +953,8 @@ static Selectivity
 clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvstats)
 {
 	bool		fullmatch = false;
+	Selectivity	s1 = 0.0,
+				s2 = 0.0;
 
 	/*
 	 * Lowest frequency in the MCV list (may be used as an upper bound for
@@ -953,9 +968,24 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	 * order by selectivity (to optimize the MCV/histogram evaluation).
 	 */
 
-	/* Evaluate the MCV selectivity */
-	return clauselist_mv_selectivity_mcvlist(root, clauses, mvstats,
-											 &fullmatch, &mcv_low);
+	/* Evaluate the MCV first. */
+	s1 = clauselist_mv_selectivity_mcvlist(root, clauses, mvstats,
+										   &fullmatch, &mcv_low);
+
+	/*
+	 * If we got a full equality match on the MCV list, we're done (and
+	 * the estimate is pretty good).
+	 */
+	if (fullmatch && (s1 > 0.0))
+		return s1;
+
+	/* TODO if (fullmatch) without matching MCV item, use the mcv_low
+	 *      selectivity as upper bound */
+
+	s2 = clauselist_mv_selectivity_histogram(root, clauses, mvstats);
+
+	/* TODO clamp to <= 1.0 (or more strictly, when possible) */
+	return s1 + s2;
 }
 
 /*
@@ -1126,7 +1156,7 @@ choose_mv_statistics(List *stats, Bitmapset *attnums)
 		int			numattrs = attrs->dim1;
 
 		/* skip dependencies-only stats */
-		if (!info->mcv_built)
+		if (!(info->mcv_built || info->hist_built))
 			continue;
 
 		/* count columns covered by the histogram */
@@ -1357,7 +1387,7 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
 			case F_SCALARGTSEL:
 
 				/* not compatible with functional dependencies */
-				if (!(context->types & MV_CLAUSE_TYPE_MCV))
+				if (!(context->types & (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)))
 					return true;	/* terminate */
 
 				break;
@@ -1585,6 +1615,9 @@ stats_type_matches(MVStatisticInfo *stat, int type)
 	if ((type & MV_CLAUSE_TYPE_MCV) && stat->mcv_built)
 		return true;
 
+	if ((type & MV_CLAUSE_TYPE_HIST) && stat->hist_built)
+		return true;
+
 	return false;
 }
 
@@ -1602,6 +1635,9 @@ has_stats(List *stats, int type)
 
 		/* terminate if we've found at least one matching statistics */
 		if (stats_type_matches(stat, type))
+			return true;
+
+		if ((type & MV_CLAUSE_TYPE_HIST) && stat->hist_built)
 			return true;
 	}
 
@@ -2017,6 +2053,527 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 	/* free the allocated pieces */
 	if (eqmatches)
 		pfree(eqmatches);
+
+	return nmatches;
+}
+
+/*
+ * Estimate selectivity of clauses using a histogram.
+ *
+ * If there's no histogram for the stats, the function returns 0.0.
+ *
+ * The general idea of this method is similar to how MCV lists are
+ * processed, except that this introduces the concept of a partial
+ * match (MCV only works with full match / mismatch).
+ *
+ * The algorithm works like this:
+ *
+ *   1) mark all buckets as 'full match'
+ *   2) walk through all the clauses
+ *   3) for a particular clause, walk through all the buckets
+ *   4) skip buckets that are already 'no match'
+ *   5) check clause for buckets that still match (at least partially)
+ *   6) sum frequencies for buckets to get selectivity
+ *
+ * Unlike MCV lists, histograms have a concept of a partial match. In
+ * that case we use 1/2 the bucket, to minimize the average error. The
+ * MV histograms are usually less detailed than the per-column ones,
+ * meaning the sum is often quite high (thanks to combining a lot of
+ * "partially hit" buckets).
+ *
+ * Maybe we could use per-bucket information with number of distinct
+ * values it contains (for each dimension), and then use that to correct
+ * the estimate (so with 10 distinct values, we'd use 1/10 of the bucket
+ * frequency). We might also scale the value depending on the actual
+ * ndistinct estimate (not just the values observed in the sample).
+ *
+ * Another option would be to multiply the selectivities, i.e. if we get
+ * 'partial match' for a bucket for multiple conditions, we might use
+ * 0.5^k (where k is the number of conditions), instead of 0.5. This
+ * probably does not minimize the average error, though.
+ *
+ * TODO This might use a similar shortcut to MCV lists - count buckets
+ *      marked as partial/full match, and terminate once this drop to 0.
+ *      Not sure if it's really worth it - for MCV lists a situation like
+ *      this is not uncommon, but for histograms it's not that clear.
+ */
+static Selectivity
+clauselist_mv_selectivity_histogram(PlannerInfo *root, List *clauses,
+									MVStatisticInfo *mvstats)
+{
+	int i;
+	Selectivity s = 0.0;
+	Selectivity u = 0.0;
+
+	int		nmatches = 0;
+	char   *matches = NULL;
+
+	MVSerializedHistogram mvhist = NULL;
+
+	/* there's no histogram */
+	if (! mvstats->hist_built)
+		return 0.0;
+
+	/* There may be no histogram in the stats (check hist_built flag) */
+	mvhist = load_mv_histogram(mvstats->mvoid);
+
+	Assert (mvhist != NULL);
+	Assert (clauses != NIL);
+	Assert (list_length(clauses) >= 2);
+
+	/*
+	 * Bitmap of bucket matches (mismatch, partial, full). by default
+	 * all buckets fully match (and we'll eliminate them).
+	 */
+	matches = palloc0(sizeof(char) * mvhist->nbuckets);
+	memset(matches,  MVSTATS_MATCH_FULL, sizeof(char)*mvhist->nbuckets);
+
+	nmatches = mvhist->nbuckets;
+
+	/* build the match bitmap */
+	update_match_bitmap_histogram(root, clauses,
+								  mvstats->stakeys, mvhist,
+								  nmatches, matches, false);
+
+	/* now, walk through the buckets and sum the selectivities */
+	for (i = 0; i < mvhist->nbuckets; i++)
+	{
+		/*
+		 * Find out what part of the data is covered by the histogram,
+		 * so that we can 'scale' the selectivity properly (e.g. when
+		 * only 50% of the sample got into the histogram, and the rest
+		 * is in a MCV list).
+		 *
+		 * TODO This might be handled by keeping a global "frequency"
+		 *      for the whole histogram, which might save us some time
+		 *      spent accessing the not-matching part of the histogram.
+		 *      Although it's likely in a cache, so it's very fast.
+		 */
+		u += mvhist->buckets[i]->ntuples;
+
+		if (matches[i] == MVSTATS_MATCH_FULL)
+			s += mvhist->buckets[i]->ntuples;
+		else if (matches[i] == MVSTATS_MATCH_PARTIAL)
+			s += 0.5 * mvhist->buckets[i]->ntuples;
+	}
+
+#ifdef DEBUG_MVHIST
+	debug_histogram_matches(mvhist, matches);
+#endif
+
+	/* release the allocated bitmap and deserialized histogram */
+	pfree(matches);
+	pfree(mvhist);
+
+	return s * u;
+}
+
+/* cached result of bucket boundary comparison for a single dimension */
+
+#define HIST_CACHE_NOT_FOUND		0x00
+#define HIST_CACHE_FALSE			0x01
+#define HIST_CACHE_TRUE				0x03
+#define HIST_CACHE_MASK				0x02
+
+static char
+bucket_contains_value(FmgrInfo ltproc, Datum constvalue,
+					  Datum min_value,   Datum max_value,
+					  int   min_index,   int   max_index,
+					  bool  min_include, bool  max_include,
+					  char * callcache)
+{
+	bool a, b;
+
+	char min_cached = callcache[min_index];
+	char max_cached = callcache[max_index];
+
+	/*
+	 * First some quick checks on equality - if any of the boundaries equals,
+	 * we have a partial match (so no need to call the comparator).
+	 */
+	if (((min_value == constvalue) && (min_include)) ||
+		((max_value == constvalue) && (max_include)))
+		return MVSTATS_MATCH_PARTIAL;
+
+	/* Keep the values 0/1 because of the XOR at the end. */
+	a = ((min_cached & HIST_CACHE_MASK) >> 1);
+	b = ((max_cached & HIST_CACHE_MASK) >> 1);
+
+	/*
+	 * If result for the bucket lower bound not in cache, evaluate the function
+	 * and store the result in the cache.
+	 */
+	if (! min_cached)
+	{
+		a = DatumGetBool(FunctionCall2Coll(&ltproc,
+										   DEFAULT_COLLATION_OID,
+										   constvalue, min_value));
+		/* remember the result */
+		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	/* And do the same for the upper bound. */
+	if (! max_cached)
+	{
+		b = DatumGetBool(FunctionCall2Coll(&ltproc,
+										   DEFAULT_COLLATION_OID,
+										   constvalue, max_value));
+		/* remember the result */
+		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	return (a ^ b) ? MVSTATS_MATCH_PARTIAL : MVSTATS_MATCH_NONE;
+}
+
+static char
+bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
+					  Datum min_value,   Datum max_value,
+					  int   min_index,   int   max_index,
+					  bool  min_include, bool  max_include,
+					  char * callcache, bool isgt)
+{
+	char min_cached = callcache[min_index];
+	char max_cached = callcache[max_index];
+
+	/* Keep the values 0/1 because of the XOR at the end. */
+	bool a = ((min_cached & HIST_CACHE_MASK) >> 1);
+	bool b = ((max_cached & HIST_CACHE_MASK) >> 1);
+
+	if (! min_cached)
+	{
+		a = DatumGetBool(FunctionCall2Coll(&opproc,
+										   DEFAULT_COLLATION_OID,
+										   min_value,
+										   constvalue));
+		/* remember the result */
+		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	if (! max_cached)
+	{
+		b = DatumGetBool(FunctionCall2Coll(&opproc,
+										   DEFAULT_COLLATION_OID,
+										   max_value,
+										   constvalue));
+		/* remember the result */
+		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	/*
+	 * Now, we need to combine both results into the final answer, and we need
+	 * to be careful about the 'isgt' variable which kinda inverts the meaning.
+	 *
+	 * First, we handle the case when each boundary returns different results.
+	 * In that case the outcome can only be 'partial' match.
+	 */
+	 if (a != b)
+		return MVSTATS_MATCH_PARTIAL;
+
+	/*
+	 * When the results are the same, then it depends on the 'isgt' value. There
+	 * are four options:
+	 *
+	 * isgt=false a=b=true  => full match
+	 * isgt=false a=b=false => empty
+	 * isgt=true  a=b=true  => empty
+	 * isgt=true  a=b=false => full match
+	 *
+	 * We'll cheat a bit, because we know that (a=b) so we'll use just one of them.
+	 */
+	if (isgt)
+		return (!a) ? MVSTATS_MATCH_FULL : MVSTATS_MATCH_NONE;
+	else
+		return ( a) ? MVSTATS_MATCH_FULL : MVSTATS_MATCH_NONE;
+}
+
+/*
+ * Evaluate clauses using the histogram, and update the match bitmap.
+ *
+ * The bitmap may be already partially set, so this is really a way to
+ * combine results of several clause lists - either when computing
+ * conditional probability P(A|B) or a combination of AND/OR clauses.
+ *
+ * Note: This is not a simple bitmap in the sense that there are more
+ *       than two possible values for each item - no match, partial
+ *       match and full match. So we need 2 bits per item.
+ *
+ * TODO This works with 'bitmap' where each item is represented as a
+ *      char, which is slightly wasteful. Instead, we could use a bitmap
+ *      with 2 bits per item, reducing the size to ~1/4. By using values
+ *      0, 1 and 3 (instead of 0, 1 and 2), the operations (merging etc.)
+ *      might be performed just like for simple bitmap by using & and |,
+ *      which might be faster than min/max.
+ */
+static int
+update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
+							  int2vector *stakeys,
+							  MVSerializedHistogram mvhist,
+							  int nmatches, char * matches,
+							  bool is_or)
+{
+	int i;
+	ListCell * l;
+
+	/*
+	 * Used for caching function calls, only once per deduplicated value.
+	 *
+	 * We know may have up to (2 * nbuckets) values per dimension. It's
+	 * probably overkill, but let's allocate that once for all clauses,
+	 * to minimize overhead.
+	 *
+	 * Also, we only need two bits per value, but this allocates byte
+	 * per value. Might be worth optimizing.
+	 *
+	 * 0x00 - not yet called
+	 * 0x01 - called, result is 'false'
+	 * 0x03 - called, result is 'true'
+	 */
+	char *callcache = palloc(mvhist->nbuckets);
+
+	Assert(mvhist != NULL);
+	Assert(mvhist->nbuckets > 0);
+	Assert(nmatches >= 0);
+	Assert(nmatches <= mvhist->nbuckets);
+
+	Assert(clauses != NIL);
+	Assert(list_length(clauses) >= 1);
+
+	/* loop through the clauses and do the estimation */
+	foreach (l, clauses)
+	{
+		Node * clause = (Node*)lfirst(l);
+
+		/* if it's a RestrictInfo, then extract the clause */
+		if (IsA(clause, RestrictInfo))
+			clause = (Node*)((RestrictInfo*)clause)->clause;
+
+		/* it's either OpClause, or NullTest */
+		if (is_opclause(clause))
+		{
+			OpExpr * expr = (OpExpr*)clause;
+			bool		varonleft = true;
+			bool		ok;
+
+			FmgrInfo	opproc;			/* operator */
+			fmgr_info(get_opcode(expr->opno), &opproc);
+
+			/* reset the cache (per clause) */
+			memset(callcache, 0, mvhist->nbuckets);
+
+			ok = (NumRelids(clause) == 1) &&
+				 (is_pseudo_constant_clause(lsecond(expr->args)) ||
+				 (varonleft = false,
+				  is_pseudo_constant_clause(linitial(expr->args))));
+
+			if (ok)
+			{
+				FmgrInfo		ltproc;
+				RegProcedure	oprrest = get_oprrest(expr->opno);
+
+				Var * var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+				Const * cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
+				bool isgt = (! varonleft);
+
+				TypeCacheEntry *typecache
+								= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
+
+				/* lookup dimension for the attribute */
+				int idx = mv_get_index(var->varattno, stakeys);
+
+				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
+
+				/*
+				 * Check this for all buckets that still have "true" in the bitmap
+				 *
+				 * We already know the clauses use suitable operators (because that's
+				 * how we filtered them).
+				 */
+				for (i = 0; i < mvhist->nbuckets; i++)
+				{
+					char res = MVSTATS_MATCH_NONE;
+
+					MVSerializedBucket bucket = mvhist->buckets[i];
+
+					/* histogram boundaries */
+					Datum minval, maxval;
+					bool mininclude, maxinclude;
+					int minidx, maxidx;
+
+					/*
+					 * For AND-lists, we can also mark NULL buckets as 'no match'
+					 * (and then skip them). For OR-lists this is not possible.
+					 */
+					if ((! is_or) && bucket->nullsonly[idx])
+						matches[i] = MVSTATS_MATCH_NONE;
+
+					/*
+					 * Skip buckets that were already eliminated - this is impotant
+					 * considering how we update the info (we only lower the match).
+					 * We can't really do anything about the MATCH_PARTIAL buckets.
+					 */
+					if ((! is_or) && (matches[i] == MVSTATS_MATCH_NONE))
+						continue;
+					else if (is_or && (matches[i] == MVSTATS_MATCH_FULL))
+						continue;
+
+					/* lookup the values and cache of function calls */
+					minidx = bucket->min[idx];
+					maxidx = bucket->max[idx];
+
+					minval = mvhist->values[idx][bucket->min[idx]];
+					maxval = mvhist->values[idx][bucket->max[idx]];
+
+					mininclude = bucket->min_inclusive[idx];
+					maxinclude = bucket->max_inclusive[idx];
+
+					/*
+					 * TODO Maybe it's possible to add here a similar optimization
+					 *      as for the MCV lists:
+					 *
+					 *      (nmatches == 0) && AND-list => all eliminated (FALSE)
+					 *      (nmatches == N) && OR-list  => all eliminated (TRUE)
+					 *
+					 *      But it's more complex because of the partial matches.
+					 */
+
+					/*
+					* If it's not a "<" or ">" or "=" operator, just ignore the
+					* clause. Otherwise note the relid and attnum for the variable.
+					*
+					* TODO I'm really unsure the handling of 'isgt' flag (that is, clauses
+					*      with reverse order of variable/constant) is correct. I wouldn't
+					*      be surprised if there was some mixup. Using the lt/gt operators
+					*      instead of messing with the opproc could make it simpler.
+					*      It would however be using a different operator than the query,
+					*      although it's not any shadier than using the selectivity function
+					*      as is done currently.
+					*/
+					switch (oprrest)
+					{
+						case F_SCALARLTSEL:	/* Var < Const */
+						case F_SCALARGTSEL:	/* Var > Const */
+
+							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
+															   minval, maxval,
+															   minidx, maxidx,
+															   mininclude, maxinclude,
+															   callcache, isgt);
+							break;
+
+						case F_EQSEL:
+
+							/*
+							 * We only check whether the value is within the bucket, using the
+							 * lt operator, and we also check for equality with the boundaries.
+							 */
+
+							res = bucket_contains_value(ltproc, cst->constvalue,
+														minval, maxval,
+														minidx, maxidx,
+														mininclude, maxinclude,
+														callcache);
+							break;
+					}
+
+					UPDATE_RESULT(matches[i], res, is_or);
+
+				}
+			}
+		}
+		else if (IsA(clause, NullTest))
+		{
+			NullTest * expr = (NullTest*)clause;
+			Var * var = (Var*)(expr->arg);
+
+			/* FIXME proper matching attribute to dimension */
+			int idx = mv_get_index(var->varattno, stakeys);
+
+			/*
+			 * Walk through the buckets and evaluate the current clause. We can
+			 * skip items that were already ruled out, and terminate if there are
+			 * no remaining buckets that might possibly match.
+			 */
+			for (i = 0; i < mvhist->nbuckets; i++)
+			{
+				MVSerializedBucket bucket = mvhist->buckets[i];
+
+				/*
+				 * Skip buckets that were already eliminated - this is impotant
+				 * considering how we update the info (we only lower the match)
+				 */
+				if ((! is_or) && (matches[i] == MVSTATS_MATCH_NONE))
+					continue;
+				else if (is_or && (matches[i] == MVSTATS_MATCH_FULL))
+					continue;
+
+				/* if the clause mismatches the bucket, set it as MATCH_NONE */
+				if ((expr->nulltesttype == IS_NULL)
+					&& (! bucket->nullsonly[idx]))
+					UPDATE_RESULT(matches[i], MVSTATS_MATCH_NONE, is_or);
+
+				else if ((expr->nulltesttype == IS_NOT_NULL) &&
+						 (bucket->nullsonly[idx]))
+					UPDATE_RESULT(matches[i], MVSTATS_MATCH_NONE, is_or);
+			}
+		}
+		else if (or_clause(clause) || and_clause(clause))
+		{
+			/* AND/OR clause, with all clauses compatible with the selected MV stat */
+
+			int			i;
+			BoolExpr   *orclause  = ((BoolExpr*)clause);
+			List	   *orclauses = orclause->args;
+
+			/* match/mismatch bitmap for each bucket */
+			int	or_nmatches = 0;
+			char * or_matches = NULL;
+
+			Assert(orclauses != NIL);
+			Assert(list_length(orclauses) >= 2);
+
+			/* number of matching buckets */
+			or_nmatches = mvhist->nbuckets;
+
+			/* by default none of the buckets matches the clauses */
+			or_matches = palloc0(sizeof(char) * or_nmatches);
+
+			if (or_clause(clause))
+			{
+				/* OR clauses assume nothing matches, initially */
+				memset(or_matches, MVSTATS_MATCH_NONE, sizeof(char)*or_nmatches);
+				or_nmatches = 0;
+			}
+			else
+			{
+				/* AND clauses assume nothing matches, initially */
+				memset(or_matches, MVSTATS_MATCH_FULL, sizeof(char)*or_nmatches);
+			}
+
+			/* build the match bitmap for the OR-clauses */
+			or_nmatches = update_match_bitmap_histogram(root, orclauses,
+										stakeys, mvhist,
+										or_nmatches, or_matches, or_clause(clause));
+
+			/* merge the bitmap into the existing one*/
+			for (i = 0; i < mvhist->nbuckets; i++)
+			{
+				/*
+				 * Merge the result into the bitmap (Min for AND, Max for OR).
+				 *
+				 * FIXME this does not decrease the number of matches
+				 */
+				UPDATE_RESULT(matches[i], or_matches[i], is_or);
+			}
+
+			pfree(or_matches);
+
+		}
+		else
+			elog(ERROR, "unknown clause type: %d", clause->type);
+	}
+
+	/* free the call cache */
+	pfree(callcache);
 
 	return nmatches;
 }

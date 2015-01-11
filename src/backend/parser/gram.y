@@ -241,7 +241,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
-		CreateSchemaStmt CreateSeqStmt CreateStmt CreateTableSpaceStmt
+		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
@@ -809,6 +809,7 @@ stmt :
 			| CreateSchemaStmt
 			| CreateSeqStmt
 			| CreateStmt
+			| CreateStatsStmt
 			| CreateTableSpaceStmt
 			| CreateTransformStmt
 			| CreateTrigStmt
@@ -3436,6 +3437,36 @@ OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 		;
 
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
+ *
+ *****************************************************************************/
+
+
+CreateStatsStmt:	CREATE STATISTICS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $3;
+							n->relation = $5;
+							n->keys = $7;
+							n->options = $9;
+							n->if_not_exists = false;
+							$$ = (Node *)n;
+						}
+					| CREATE STATISTICS IF_P NOT EXISTS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $6;
+							n->relation = $8;
+							n->keys = $10;
+							n->options = $12;
+							n->if_not_exists = true;
+							$$ = (Node *)n;
+						}
+			;
+
 
 /*****************************************************************************
  *
@@ -5621,6 +5652,7 @@ drop_type:	TABLE									{ $$ = OBJECT_TABLE; }
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| STATISTICS							{ $$ = OBJECT_STATISTICS; }
 		;
 
 any_name_list:

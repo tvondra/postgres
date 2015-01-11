@@ -37,13 +37,16 @@ CATALOG(pg_mv_statistic,3381)
 	/* statistics requested to build */
 	bool		deps_enabled;		/* analyze dependencies? */
 	bool		mcv_enabled;		/* build MCV list? */
+	bool		hist_enabled;		/* build histogram? */
 
-	/* MCV size */
+	/* histogram / MCV size */
 	int32		mcv_max_items;		/* max MCV items */
+	int32		hist_max_buckets;	/* max histogram buckets */
 
 	/* statistics that are available (if requested) */
 	bool		deps_built;			/* dependencies were built */
 	bool		mcv_built;			/* MCV list was built */
+	bool		hist_built;			/* histogram was built */
 
 	/* variable-length fields start here, but we allow direct access to stakeys */
 	int2vector	stakeys;			/* array of column keys */
@@ -51,6 +54,7 @@ CATALOG(pg_mv_statistic,3381)
 #ifdef CATALOG_VARLEN
 	bytea		stadeps;			/* dependencies (serialized) */
 	bytea		stamcv;				/* MCV list (serialized) */
+	bytea		stahist;			/* MV histogram (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;
@@ -66,17 +70,20 @@ typedef FormData_pg_mv_statistic *Form_pg_mv_statistic;
  *		compiler constants for pg_attrdef
  * ----------------
  */
-
-#define Natts_pg_mv_statistic					10
+#define Natts_pg_mv_statistic					14
 #define Anum_pg_mv_statistic_starelid			1
 #define Anum_pg_mv_statistic_staname			2
 #define Anum_pg_mv_statistic_deps_enabled		3
 #define Anum_pg_mv_statistic_mcv_enabled		4
-#define Anum_pg_mv_statistic_mcv_max_items		5
-#define Anum_pg_mv_statistic_deps_built			6
-#define Anum_pg_mv_statistic_mcv_built			7
-#define Anum_pg_mv_statistic_stakeys			8
-#define Anum_pg_mv_statistic_stadeps			9
-#define Anum_pg_mv_statistic_stamcv				10
+#define Anum_pg_mv_statistic_hist_enabled		5
+#define Anum_pg_mv_statistic_mcv_max_items		6
+#define Anum_pg_mv_statistic_hist_max_buckets	7
+#define Anum_pg_mv_statistic_deps_built			8
+#define Anum_pg_mv_statistic_mcv_built			9
+#define Anum_pg_mv_statistic_hist_built			10
+#define Anum_pg_mv_statistic_stakeys			11
+#define Anum_pg_mv_statistic_stadeps			12
+#define Anum_pg_mv_statistic_stamcv				13
+#define Anum_pg_mv_statistic_stahist			14
 
 #endif   /* PG_MV_STATISTIC_H */

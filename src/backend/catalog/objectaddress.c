@@ -37,6 +37,7 @@
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
 #include "catalog/pg_largeobject_metadata.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
@@ -436,8 +437,21 @@ static const ObjectPropertyType ObjectProperty[] =
 		Anum_pg_type_typacl,
 		ACL_KIND_TYPE,
 		true
+	},
+	{
+		MvStatisticRelationId,
+		MvStatisticOidIndexId,
+		MVSTATOID,
+		MVSTATNAME,
+		Anum_pg_mv_statistic_staname,
+		InvalidAttrNumber,		/* FIXME probably should have namespace */
+		InvalidAttrNumber,		/* XXX same owner as relation */
+		InvalidAttrNumber,		/* no ACL (same as relation) */
+		-1,						/* no ACL */
+		true
 	}
 };
+
 
 /*
  * This struct maps the string object types as returned by
@@ -910,6 +924,11 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 			case OBJECT_DEFACL:
 				address = get_object_address_defacl(objname, objargs,
 													missing_ok);
+				break;
+			case OBJECT_STATISTICS:
+				address.classId = MvStatisticRelationId;
+				address.objectId = get_statistics_oid(objname, missing_ok);
+				address.objectSubId = 0;
 				break;
 			default:
 				elog(ERROR, "unrecognized objtype: %d", (int) objtype);
@@ -2182,6 +2201,9 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						 errmsg("must be superuser")));
+			break;
+		case OBJECT_STATISTICS:
+			/* FIXME do the right owner checks here */
 			break;
 		default:
 			elog(ERROR, "unrecognized object type: %d",

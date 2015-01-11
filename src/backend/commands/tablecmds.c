@@ -35,6 +35,7 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_inherits_fn.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_tablespace.h"
@@ -93,7 +94,7 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 #include "utils/typcache.h"
-
+#include "utils/mvstats.h"
 
 /*
  * ON COMMIT action list
@@ -141,8 +142,9 @@ static List *on_commits = NIL;
 #define AT_PASS_ADD_COL			5		/* ADD COLUMN */
 #define AT_PASS_ADD_INDEX		6		/* ADD indexes */
 #define AT_PASS_ADD_CONSTR		7		/* ADD constraints, defaults */
-#define AT_PASS_MISC			8		/* other stuff */
-#define AT_NUM_PASSES			9
+#define AT_PASS_ADD_STATS		8		/* ADD statistics */
+#define AT_PASS_MISC			9		/* other stuff */
+#define AT_NUM_PASSES			10
 
 typedef struct AlteredTableInfo
 {

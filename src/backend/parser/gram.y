@@ -241,7 +241,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
-		CreateSchemaStmt CreateSeqStmt CreateStmt CreateTableSpaceStmt
+		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
@@ -374,6 +374,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
 %type <node>	grouping_sets_clause
+
+%type <list>	OptStatsOptions
+%type <str>		opt_stats_name stats_name stats_options_name
+%type <node>	stats_options_arg
+%type <defelt>	stats_options_elem
+%type <list>	stats_options_list
 
 %type <list>	opt_fdw_options fdw_options
 %type <defelt>	fdw_option
@@ -809,6 +815,7 @@ stmt :
 			| CreateSchemaStmt
 			| CreateSeqStmt
 			| CreateStmt
+			| CreateStatsStmt
 			| CreateTableSpaceStmt
 			| CreateTransformStmt
 			| CreateTrigStmt
@@ -3436,6 +3443,65 @@ OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 		;
 
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
+ *
+ *****************************************************************************/
+
+
+CreateStatsStmt:	CREATE STATISTICS opt_stats_name ON qualified_name '(' columnList ')' OptStatsOptions
+					{
+						CreateStatsStmt *n = makeNode(CreateStatsStmt);
+						n->statsname = $3;
+						n->relation = $5;
+						n->keys = $7;
+						n->options = $9;
+						$$ = (Node *)n;
+					}
+			;
+
+opt_stats_name:
+			stats_name						{ $$ = $1; }
+			| /*EMPTY*/						{ $$ = NULL; }
+		;
+
+stats_name: ColId							{ $$ = $1; };
+
+OptStatsOptions:
+			WITH '(' stats_options_list ')'	{ $$ = $3; }
+			| /*EMPTY*/						{ $$ = NIL; }
+		;
+
+stats_options_list:
+			stats_options_elem
+				{
+					$$ = list_make1($1);
+				}
+			| stats_options_list ',' stats_options_elem
+				{
+					$$ = lappend($1, $3);
+				}
+		;
+
+stats_options_elem:
+			stats_options_name stats_options_arg
+				{
+					$$ = makeDefElem($1, $2);
+				}
+		;
+
+stats_options_name:
+			NonReservedWord			{ $$ = $1; }
+		;
+
+stats_options_arg:
+			opt_boolean_or_string	{ $$ = (Node *) makeString($1); }
+			| NumericOnly			{ $$ = (Node *) $1; }
+			| /* EMPTY */			{ $$ = NULL; }
+		;
+
 
 /*****************************************************************************
  *
@@ -5621,6 +5687,7 @@ drop_type:	TABLE									{ $$ = OBJECT_TABLE; }
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| STATISTICS							{ $$ = OBJECT_STATISTICS; }
 		;
 
 any_name_list:
@@ -13860,7 +13927,6 @@ unreserved_keyword:
 			| STANDALONE_P
 			| START
 			| STATEMENT
-			| STATISTICS
 			| STDIN
 			| STDOUT
 			| STORAGE
@@ -14077,6 +14143,7 @@ reserved_keyword:
 			| SELECT
 			| SESSION_USER
 			| SOME
+			| STATISTICS
 			| SYMMETRIC
 			| TABLE
 			| THEN

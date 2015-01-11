@@ -292,6 +292,10 @@ does_not_exist_skipping(ObjectType objtype, List *objname, List *objargs)
 			msg = gettext_noop("schema \"%s\" does not exist, skipping");
 			name = NameListToString(objname);
 			break;
+		case OBJECT_STATISTICS:
+			msg = gettext_noop("statistics \"%s\" does not exist, skipping");
+			name = NameListToString(objname);
+			break;
 		case OBJECT_TSPARSER:
 			if (!schema_does_not_exist_skipping(objname, &msg, &name))
 			{

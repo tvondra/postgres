@@ -1524,6 +1524,10 @@ ProcessUtilitySlow(Node *parsetree,
 				address = CreateAccessMethod((CreateAmStmt *) parsetree);
 				break;
 
+			case T_CreateStatsStmt:	/* CREATE STATISTICS */
+				address = CreateStatistics((CreateStatsStmt *) parsetree);
+				break;
+
 			default:
 				elog(ERROR, "unrecognized node type: %d",
 					 (int) nodeTag(parsetree));
@@ -1882,6 +1886,9 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_MATVIEW:
 			tag = "ALTER MATERIALIZED VIEW";
 			break;
+		case OBJECT_STATISTICS:
+			tag = "ALTER STATISTICS";
+			break;
 		default:
 			tag = "???";
 			break;
@@ -2166,6 +2173,9 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_ACCESS_METHOD:
 					tag = "DROP ACCESS METHOD";
+					break;
+				case OBJECT_STATISTICS:
+					tag = "DROP STATISTICS";
 					break;
 				default:
 					tag = "???";
@@ -2539,6 +2549,10 @@ CreateCommandTag(Node *parsetree)
 
 		case T_ExecuteStmt:
 			tag = "EXECUTE";
+			break;
+
+		case T_CreateStatsStmt:
+			tag = "CREATE STATISTICS";
 			break;
 
 		case T_DeallocateStmt:

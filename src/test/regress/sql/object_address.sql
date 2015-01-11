@@ -39,6 +39,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE regtest_addr_user REVOKE DELETE ON TABLES FROM
 CREATE TRANSFORM FOR int LANGUAGE SQL (
 	FROM SQL WITH FUNCTION varchar_transform(internal),
 	TO SQL WITH FUNCTION int4recv(internal));
+CREATE STATISTICS addr_nsp.gentable_stat ON addr_nsp.gentable(a,b) WITH (dependencies);
 
 -- test some error cases
 SELECT pg_get_object_address('stone', '{}', '{}');
@@ -169,7 +170,8 @@ WITH objects (type, name, args) AS (VALUES
 				-- event trigger
 				('policy', '{addr_nsp, gentable, genpol}', '{}'),
 				('transform', '{int}', '{sql}'),
-				('access method', '{btree}', '{}')
+				('access method', '{btree}', '{}'),
+				('statistics', '{addr_nsp, gentable_stat}', '{}')
         )
 SELECT (pg_identify_object(addr1.classid, addr1.objid, addr1.subobjid)).*,
 	-- test roundtrip through pg_identify_object_as_address

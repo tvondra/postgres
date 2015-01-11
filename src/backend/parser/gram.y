@@ -242,7 +242,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
-		CreateSchemaStmt CreateSeqStmt CreateStmt CreateTableSpaceStmt
+		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
@@ -811,6 +811,7 @@ stmt :
 			| CreateSchemaStmt
 			| CreateSeqStmt
 			| CreateStmt
+			| CreateStatsStmt
 			| CreateTableSpaceStmt
 			| CreateTransformStmt
 			| CreateTrigStmt
@@ -3438,6 +3439,36 @@ OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 		;
 
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
+ *
+ *****************************************************************************/
+
+
+CreateStatsStmt:	CREATE STATISTICS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $3;
+							n->relation = $5;
+							n->keys = $7;
+							n->options = $9;
+							n->if_not_exists = false;
+							$$ = (Node *)n;
+						}
+					| CREATE STATISTICS IF_P NOT EXISTS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $6;
+							n->relation = $8;
+							n->keys = $10;
+							n->options = $12;
+							n->if_not_exists = true;
+							$$ = (Node *)n;
+						}
+			;
+
 
 /*****************************************************************************
  *
@@ -5641,6 +5672,7 @@ drop_type:	TABLE									{ $$ = OBJECT_TABLE; }
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| STATISTICS							{ $$ = OBJECT_STATISTICS; }
 		;
 
 any_name_list:
@@ -8015,6 +8047,15 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
+			| ALTER STATISTICS any_name RENAME TO name
+				{
+					RenameStmt *n = makeNode(RenameStmt);
+					n->renameType = OBJECT_STATISTICS;
+					n->object = $3;
+					n->newname = $6;
+					n->missing_ok = false;
+					$$ = (Node *)n;
+				}
 		;
 
 opt_column: COLUMN									{ $$ = COLUMN; }
@@ -8251,6 +8292,15 @@ AlterObjectSchemaStmt:
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
+			| ALTER STATISTICS any_name SET SCHEMA name
+				{
+					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
+					n->objectType = OBJECT_STATISTICS;
+					n->object = $3;
+					n->newschema = $6;
+					n->missing_ok = false;
+					$$ = (Node *)n;
+				}
 		;
 
 /*****************************************************************************
@@ -8439,6 +8489,14 @@ AlterOwnerStmt: ALTER AGGREGATE func_name aggr_args OWNER TO RoleSpec
 					n->objectType = OBJECT_EVENT_TRIGGER;
 					n->object = list_make1(makeString($4));
 					n->newowner = $7;
+					$$ = (Node *)n;
+				}
+			| ALTER STATISTICS name OWNER TO RoleSpec
+				{
+					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
+					n->objectType = OBJECT_STATISTICS;
+					n->object = list_make1(makeString($3));
+					n->newowner = $6;
 					$$ = (Node *)n;
 				}
 		;

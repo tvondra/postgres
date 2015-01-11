@@ -2109,9 +2109,9 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf,
 						   "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-						   "  deps_enabled, mcv_enabled,\n"
-						   "  deps_built, mcv_built,\n"
-						   "  mcv_max_items,\n"
+						   "  deps_enabled, mcv_enabled, hist_enabled,\n"
+						   "  deps_built, mcv_built, hist_built,\n"
+						   "  mcv_max_items, hist_max_buckets,\n"
 						   "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 						   "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
@@ -2154,8 +2154,17 @@ describeOneTableDetails(const char *schemaname,
 						first = false;
 					}
 
+					if (!strcmp(PQgetvalue(result, i, 6), "t"))
+					{
+						if (! first)
+							appendPQExpBuffer(&buf, ", histogram");
+						else
+							appendPQExpBuffer(&buf, "(histogram");
+						first = false;
+					}
+
 					appendPQExpBuffer(&buf, ") ON (%s)",
-							PQgetvalue(result, i, 9));
+							PQgetvalue(result, i, 12));
 
 					printTableAddFooter(&cont, buf.data);
 				}

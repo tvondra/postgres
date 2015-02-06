@@ -192,11 +192,13 @@ extern Selectivity clauselist_selectivity(PlannerInfo *root,
 					   List *clauses,
 					   int varRelid,
 					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo);
+					   SpecialJoinInfo *sjinfo,
+					   List *conditions);
 extern Selectivity clause_selectivity(PlannerInfo *root,
 				   Node *clause,
 				   int varRelid,
 				   JoinType jointype,
-				   SpecialJoinInfo *sjinfo);
+				   SpecialJoinInfo *sjinfo,
+				   List *conditions);
 
 #endif   /* COST_H */

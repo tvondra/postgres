@@ -75,6 +75,7 @@
 #include "utils/bytea.h"
 #include "utils/guc_tables.h"
 #include "utils/memutils.h"
+#include "utils/mvstats.h"
 #include "utils/pg_locale.h"
 #include "utils/plancache.h"
 #include "utils/portal.h"
@@ -389,6 +390,15 @@ static const struct config_enum_entry force_parallel_mode_options[] = {
 	{"no", FORCE_PARALLEL_OFF, true},
 	{"1", FORCE_PARALLEL_ON, true},
 	{"0", FORCE_PARALLEL_OFF, true},
+	{NULL, 0, false}
+};
+
+/*
+ * Search algorithm for multivariate stats.
+ */
+static const struct config_enum_entry mvstat_search_options[] = {
+	{"greedy", MVSTAT_SEARCH_GREEDY, false},
+	{"exhaustive", MVSTAT_SEARCH_EXHAUSTIVE, false},
 	{NULL, 0, false}
 };
 
@@ -3740,6 +3750,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&force_parallel_mode,
 		FORCE_PARALLEL_OFF, force_parallel_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"mvstat_search", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the algorithm used for combining multivariate stats."),
+			NULL
+		},
+		&mvstat_search_type,
+		MVSTAT_SEARCH_GREEDY, mvstat_search_options,
 		NULL, NULL, NULL
 	},
 

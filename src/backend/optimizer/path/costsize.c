@@ -3520,7 +3520,8 @@ compute_semi_anti_join_factors(PlannerInfo *root,
 									joinquals,
 									0,
 									jointype,
-									sjinfo);
+									sjinfo,
+									NIL);
 
 	/*
 	 * Also get the normal inner-join selectivity of the join clauses.
@@ -3543,7 +3544,8 @@ compute_semi_anti_join_factors(PlannerInfo *root,
 									joinquals,
 									0,
 									JOIN_INNER,
-									&norm_sjinfo);
+									&norm_sjinfo,
+									NIL);
 
 	/* Avoid leaking a lot of ListCells */
 	if (jointype == JOIN_ANTI)
@@ -3710,7 +3712,7 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals)
 		Node	   *qual = (Node *) lfirst(l);
 
 		/* Note that clause_selectivity will be able to cache its result */
-		selec *= clause_selectivity(root, qual, 0, JOIN_INNER, &sjinfo);
+		selec *= clause_selectivity(root, qual, 0, JOIN_INNER, &sjinfo, NIL);
 	}
 
 	/* Apply it to the input relation sizes */
@@ -3746,7 +3748,8 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 							   rel->baserestrictinfo,
 							   0,
 							   JOIN_INNER,
-							   NULL);
+							   NULL,
+							   NIL);
 
 	rel->rows = clamp_row_est(nrows);
 
@@ -3783,7 +3786,8 @@ get_parameterized_baserel_size(PlannerInfo *root, RelOptInfo *rel,
 							   allclauses,
 							   rel->relid,		/* do not use 0! */
 							   JOIN_INNER,
-							   NULL);
+							   NULL,
+							   NIL);
 	nrows = clamp_row_est(nrows);
 	/* For safety, make sure result is not more than the base estimate */
 	if (nrows > rel->rows)
@@ -3921,12 +3925,14 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 										joinquals,
 										0,
 										jointype,
-										sjinfo);
+										sjinfo,
+										NIL);
 		pselec = clauselist_selectivity(root,
 										pushedquals,
 										0,
 										jointype,
-										sjinfo);
+										sjinfo,
+										NIL);
 
 		/* Avoid leaking a lot of ListCells */
 		list_free(joinquals);
@@ -3938,7 +3944,8 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 										restrictlist,
 										0,
 										jointype,
-										sjinfo);
+										sjinfo,
+										NIL);
 		pselec = 0.0;			/* not used, keep compiler quiet */
 	}
 

@@ -29,6 +29,8 @@
 #include "utils/selfuncs.h"
 #include "utils/typcache.h"
 
+#include "miscadmin.h"
+
 
 /*
  * Data structure for accumulating info about possible range-query
@@ -43,6 +45,13 @@ typedef struct RangeQueryClause
 	Selectivity lobound;		/* Selectivity of a var > something clause */
 	Selectivity hibound;		/* Selectivity of a var < something clause */
 } RangeQueryClause;
+
+static Selectivity clauselist_selectivity_or(PlannerInfo *root,
+											 List *clauses,
+											 int varRelid,
+											 JoinType jointype,
+											 SpecialJoinInfo *sjinfo,
+											 List *conditions);
 
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
@@ -60,23 +69,25 @@ static int count_mv_attnums(List *clauses, Index relid, int type);
 
 static int count_varnos(List *clauses, Index *relid);
 
+static List *clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
+						   Index relid, int types, bool remove);
+
 static List *clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 									Index relid, List *stats);
 
-static MVStatisticInfo *choose_mv_statistics(List *mvstats, Bitmapset *attnums);
-
-static List *clauselist_mv_split(PlannerInfo *root, Index relid,
-								 List *clauses, List **mvclauses,
-								 MVStatisticInfo *mvstats, int types);
-
 static Selectivity clauselist_mv_selectivity(PlannerInfo *root,
-									List *clauses, MVStatisticInfo *mvstats);
+									MVStatisticInfo *mvstats, List *clauses,
+									List *conditions, bool is_or);
 
 static Selectivity clauselist_mv_selectivity_mcvlist(PlannerInfo *root,
-									List *clauses, MVStatisticInfo *mvstats,
-									bool *fullmatch, Selectivity *lowsel);
+									MVStatisticInfo *mvstats,
+									List *clauses, List *conditions,
+									bool is_or, bool *fullmatch,
+									Selectivity *lowsel);
 static Selectivity clauselist_mv_selectivity_histogram(PlannerInfo *root,
-									List *clauses, MVStatisticInfo *mvstats);
+									MVStatisticInfo *mvstats,
+									List *clauses, List *conditions,
+									bool is_or);
 
 static int update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 									int2vector *stakeys, MCVList mcvlist,
@@ -90,12 +101,33 @@ static int update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 									int nmatches, char * matches,
 									bool is_or);
 
+/*
+ * Describes a combination of multiple statistics to cover attributes
+ * referenced by the clauses. The array 'stats' (with nstats elements)
+ * lists attributes (in the order as they are applied), and number of
+ * clause attributes covered by this solution.
+ *
+ * choose_mv_statistics_exhaustive() uses this to track both the current
+ * and the best solutions, while walking through the state of possible
+ * combination.
+ */
+typedef struct mv_solution_t {
+	int		nclauses;		/* number of clauses covered */
+	int		nconditions;	/* number of conditions covered */
+	int		nstats;			/* number of stats applied */
+	int	   *stats;			/* stats (in the apply order) */
+} mv_solution_t;
+
+static List *choose_mv_statistics(PlannerInfo *root, Index relid,
+							List *mvstats, List *clauses, List *conditions);
+
 static bool has_stats(List *stats, int type);
 
 static List * find_stats(PlannerInfo *root, Index relid);
 
 static bool stats_type_matches(MVStatisticInfo *stat, int type);
 
+int mvstat_search_type = MVSTAT_SEARCH_GREEDY;
 
 /* used for merging bitmaps - AND (min), OR (max) */
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -170,14 +202,15 @@ clauselist_selectivity(PlannerInfo *root,
 					   List *clauses,
 					   int varRelid,
 					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo)
+					   SpecialJoinInfo *sjinfo,
+					   List *conditions)
 {
 	Selectivity s1 = 1.0;
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 
 	/* processing mv stats */
-	Oid			relid = InvalidOid;
+	Index		relid = InvalidOid;
 
 	/* list of multivariate stats on the relation */
 	List	   *stats = NIL;
@@ -193,12 +226,13 @@ clauselist_selectivity(PlannerInfo *root,
 		stats = find_stats(root, relid);
 
 	/*
-	 * If there's exactly one clause, then no use in trying to match up pairs,
-	 * so just go directly to clause_selectivity().
+	 * If there's exactly one clause, then no use in trying to match up
+	 * pairs, or matching multivariate statistics, so just go directly
+	 * to clause_selectivity().
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
-								  varRelid, jointype, sjinfo);
+								  varRelid, jointype, sjinfo, conditions);
 
 	/*
 	 * Apply functional dependencies, but first check that there are some stats
@@ -230,29 +264,98 @@ clauselist_selectivity(PlannerInfo *root,
 		(count_mv_attnums(clauses, relid,
 						  MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2))
 	{
-		/* collect attributes from the compatible conditions */
-		Bitmapset *mvattnums = collect_mv_attnums(clauses, relid,
-											MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
+		ListCell *s;
 
-		/* and search for the statistic covering the most attributes */
-		MVStatisticInfo *mvstat = choose_mv_statistics(stats, mvattnums);
+		/*
+		 * Copy the conditions we got from the upper part of the expression tree
+		 * so that we can add local conditions to it (we need to keep the
+		 * original list intact, for sibling expressions - other expressions
+		 * at the same level).
+		 */
+		List *conditions_local = list_copy(conditions);
 
-		if (mvstat != NULL)	/* we have a matching stats */
+		/* find the best combination of statistics */
+		List *solution = choose_mv_statistics(root, relid, stats,
+											  clauses, conditions);
+
+		/* FIXME we must not scribble over the original list */
+		if (solution)
+			clauses = list_copy(clauses);
+
+		/*
+		 * We have a good solution, which is merely a list of statistics that
+		 * we need to apply. We'll apply the statistics one by one (in the order
+		 * as they appear in the list), and for each statistic we'll
+		 *
+		 * (1) find clauses compatible with the statistic (and remove them
+		 *     from the list)
+		 *
+		 * (2) find local conditions compatible with the statistic
+		 *
+		 * (3) do the estimation P(clauses | conditions)
+		 *
+		 * (4) append the estimated clauses to local conditions
+		 *
+		 * continuously modify
+		 */
+		foreach (s, solution)
 		{
-			/* clauses compatible with multi-variate stats */
-			List	*mvclauses = NIL;
+			MVStatisticInfo *mvstat = (MVStatisticInfo *)lfirst(s);
 
-			/* split the clauselist into regular and mv-clauses */
-			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-										  mvstat, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
+			/* clauses compatible with the statistic we're applying right now */
+			List	*stat_clauses = NIL;
+			List	*stat_conditions = NIL;
 
-			/* we've chosen the histogram to match the clauses */
-			Assert(mvclauses != NIL);
+			/*
+			 * Find clauses and conditions matching the statistic - the clauses
+			 * need to be removed from the list, while conditions should remain
+			 * there (so that we can apply them repeatedly).
+			 */
+			stat_clauses
+				= clauses_matching_statistic(&clauses, mvstat, relid,
+											 MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST,
+											 true);
+
+			stat_conditions
+				= clauses_matching_statistic(&conditions_local, mvstat, relid,
+											 MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST,
+											 false);
+
+			/*
+			 * If we got no clauses to estimate, we've done something wrong,
+			 * either during the optimization, detecting compatible clause, or
+			 * somewhere else.
+			 *
+			 * Also, we need at least two attributes in clauses and conditions.
+			 */
+			Assert(stat_clauses != NIL);
+			Assert(count_mv_attnums(list_union(stat_clauses, stat_conditions),
+								relid, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2);
 
 			/* compute the multivariate stats */
-			s1 *= clauselist_mv_selectivity(root, mvclauses, mvstat);
+			s1 *= clauselist_mv_selectivity(root, mvstat,
+											stat_clauses, stat_conditions,
+											false); /* AND */
+
+			/*
+			 * Add the new clauses to the local conditions, so that we can use
+			 * them for the subsequent statistics. We only add the clauses,
+			 * because the conditions are already there (or should be).
+			 */
+			conditions_local = list_concat(conditions_local, stat_clauses);
 		}
+
+		/* from now on, work only with the 'local' list of conditions */
+		conditions = conditions_local;
 	}
+
+	/*
+	 * If there's exactly one clause, then no use in trying to match up
+	 * pairs, so just go directly to clause_selectivity().
+	 */
+	if (list_length(clauses) == 1)
+		return s1 * clause_selectivity(root, (Node *) linitial(clauses),
+									   varRelid, jointype, sjinfo, conditions);
 
 	/*
 	 * Initial scan over clauses.  Anything that doesn't look like a potential
@@ -266,7 +369,8 @@ clauselist_selectivity(PlannerInfo *root,
 		Selectivity s2;
 
 		/* Always compute the selectivity using clause_selectivity */
-		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+								conditions);
 
 		/*
 		 * Check for being passed a RestrictInfo.
@@ -422,6 +526,55 @@ clauselist_selectivity(PlannerInfo *root,
 	}
 
 	return s1;
+}
+
+/*
+ * Similar to clauselist_selectivity(), but for OR-clauses. We can't simply use
+ * the same multi-statistic estimation logic for AND-clauses, at least not
+ * directly, because there are a few key differences:
+ *
+ *   - functional dependencies don't really apply to OR-clauses
+ *
+ *   - clauselist_selectivity() is based on decomposing the selectivity into
+ *     a sequence of conditional probabilities (selectivities), but that can
+ *     be done only for AND-clauses
+ *
+ * We might invent a similar infrastructure for optimizing OR-clauses, doing
+ * something similar to what clause_selectivity does for AND-clauses, but
+ * luckily we know that each disjunctive normal form (aka OR-clause)
+ *
+ *     (a OR b OR c)
+ *
+ * may be rewritten as an equivalent conjunctive normal form (aka AND-clause)
+ * by using negation:
+ *
+ *     NOT ((NOT a) AND (NOT b) AND (NOT c))
+ *
+ * And that's something we can pass to clauselist_selectivity and let it do
+ * all the heavy lifting.
+ */
+static Selectivity
+clauselist_selectivity_or(PlannerInfo *root,
+					   List *clauses,
+					   int varRelid,
+					   JoinType jointype,
+					   SpecialJoinInfo *sjinfo,
+					   List *conditions)
+{
+	List	   *args = NIL;
+	ListCell   *l;
+	Expr	   *expr;
+
+	/* build arguments for the AND-clause by negating args of the OR-clause */
+	foreach (l, clauses)
+		args = lappend(args, makeBoolExpr(NOT_EXPR, list_make1(lfirst(l)), -1));
+
+	/* and then the actual OR-clause on the negated args */
+	expr = makeBoolExpr(AND_EXPR, args, -1);
+
+	/* instead of constructing NOT expression, just do (1.0 - s) */
+	return 1.0 - clauselist_selectivity(root, list_make1(expr), varRelid,
+										jointype, sjinfo, conditions);
 }
 
 /*
@@ -631,7 +784,8 @@ clause_selectivity(PlannerInfo *root,
 				   Node *clause,
 				   int varRelid,
 				   JoinType jointype,
-				   SpecialJoinInfo *sjinfo)
+				   SpecialJoinInfo *sjinfo,
+				   List *conditions)
 {
 	Selectivity s1 = 0.5;		/* default for any unhandled clause type */
 	RestrictInfo *rinfo = NULL;
@@ -751,7 +905,8 @@ clause_selectivity(PlannerInfo *root,
 								  (Node *) get_notclausearg((Expr *) clause),
 									  varRelid,
 									  jointype,
-									  sjinfo);
+									  sjinfo,
+									  conditions);
 	}
 	else if (and_clause(clause))
 	{
@@ -760,29 +915,18 @@ clause_selectivity(PlannerInfo *root,
 									((BoolExpr *) clause)->args,
 									varRelid,
 									jointype,
-									sjinfo);
+									sjinfo,
+									conditions);
 	}
 	else if (or_clause(clause))
 	{
-		/*
-		 * Selectivities for an OR clause are computed as s1+s2 - s1*s2 to
-		 * account for the probable overlap of selected tuple sets.
-		 *
-		 * XXX is this too conservative?
-		 */
-		ListCell   *arg;
-
-		s1 = 0.0;
-		foreach(arg, ((BoolExpr *) clause)->args)
-		{
-			Selectivity s2 = clause_selectivity(root,
-												(Node *) lfirst(arg),
-												varRelid,
-												jointype,
-												sjinfo);
-
-			s1 = s1 + s2 - s1 * s2;
-		}
+		/* just call to clauselist_selectivity_or() */
+		s1 = clauselist_selectivity_or(root,
+									((BoolExpr *) clause)->args,
+									varRelid,
+									jointype,
+									sjinfo,
+									conditions);
 	}
 	else if (is_opclause(clause) || IsA(clause, DistinctExpr))
 	{
@@ -872,7 +1016,8 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((RelabelType *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								conditions);
 	}
 	else if (IsA(clause, CoerceToDomain))
 	{
@@ -881,7 +1026,8 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((CoerceToDomain *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								conditions);
 	}
 	else
 	{
@@ -945,15 +1091,16 @@ clause_selectivity(PlannerInfo *root,
  *          in the MCV list, then the selectivity is below the lowest frequency
  *          found in the MCV list,
  *
- * TODO When applying the clauses to the histogram/MCV list, we can do
- *      that from the most selective clauses first, because that'll
- *      eliminate the buckets/items sooner (so we'll be able to skip
- *      them without inspection, which is more expensive). But this
- *      requires really knowing the per-clause selectivities in advance,
- *      and that's not what we do now.
+ * TODO When applying the clauses to the histogram/MCV list, we can do that from
+ *      the most selective clauses first, because that'll eliminate the
+ *      buckets/items sooner (so we'll be able to skip them without inspection,
+ *      which is more expensive). But this requires really knowing the
+ *      per-clause selectivities in advance, and that's not what we do now.
+ *
  */
 static Selectivity
-clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvstats)
+clauselist_mv_selectivity(PlannerInfo *root, MVStatisticInfo *mvstats,
+						  List *clauses, List *conditions, bool is_or)
 {
 	bool fullmatch = false;
 	Selectivity s1 = 0.0, s2 = 0.0;
@@ -971,7 +1118,8 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	 */
 
 	/* Evaluate the MCV first. */
-	s1 = clauselist_mv_selectivity_mcvlist(root, clauses, mvstats,
+	s1 = clauselist_mv_selectivity_mcvlist(root, mvstats,
+										   clauses, conditions, is_or,
 										   &fullmatch, &mcv_low);
 
 	/*
@@ -984,10 +1132,44 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	/* TODO if (fullmatch) without matching MCV item, use the mcv_low
 	 *      selectivity as upper bound */
 
-	s2 = clauselist_mv_selectivity_histogram(root, clauses, mvstats);
+	s2 = clauselist_mv_selectivity_histogram(root, mvstats,
+											 clauses, conditions, is_or);
 
 	/* TODO clamp to <= 1.0 (or more strictly, when possible) */
 	return s1 + s2;
+}
+
+/*
+ * Pull varattnos from the clauses, similarly to pull_varattnos() but:
+ *
+ * (a) only get attributes for a particular relation (relid)
+ * (b) ignore system attributes (we can't build stats on them anyway)
+ *
+ * This makes it possible to directly compare the result with attnum
+ * values from pg_attribute etc.
+ */
+static Bitmapset *
+get_varattnos(Node * node, Index relid)
+{
+	int			k;
+	Bitmapset  *varattnos = NULL;
+	Bitmapset  *result = NULL;
+
+	/* get the varattnos */
+	pull_varattnos(node, relid, &varattnos);
+
+	k = -1;
+	while ((k = bms_next_member(varattnos, k)) >= 0)
+	{
+		if (k + FirstLowInvalidHeapAttributeNumber > 0)
+			result
+				= bms_add_member(result,
+								 k + FirstLowInvalidHeapAttributeNumber);
+	}
+
+	bms_free(varattnos);
+
+	return result;
 }
 
 /*
@@ -1000,13 +1182,13 @@ collect_mv_attnums(List *clauses, Index relid, int types)
 	ListCell   *l;
 
 	/*
-	 * Walk through the clauses and identify the ones we can estimate using
-	 * multivariate stats, and remember the relid/columns. We'll then
-	 * cross-check if we have suitable stats, and only if needed we'll split
-	 * the clauses into multivariate and regular lists.
+	 * Walk through the clauses and identify the ones we can estimate
+	 * using multivariate stats, and remember the relid/columns. We'll
+	 * then cross-check if we have suitable stats, and only if needed
+	 * we'll split the clauses into multivariate and regular lists.
 	 *
-	 * For now we're only interested in RestrictInfo nodes with nested OpExpr,
-	 * using either a range or equality.
+	 * For now we're only interested in RestrictInfo nodes with nested
+	 * OpExpr, using either a range or equality.
 	 */
 	foreach (l, clauses)
 	{
@@ -1022,8 +1204,7 @@ collect_mv_attnums(List *clauses, Index relid, int types)
 	 */
 	if (bms_num_members(attnums) <= 1)
 	{
-		if (attnums != NULL)
-			pfree(attnums);
+		bms_free(attnums);
 		attnums = NULL;
 	}
 
@@ -1068,177 +1249,1237 @@ count_varnos(List *clauses, Index *relid)
 	return cnt;
 }
 
-/*
- * We're looking for statistics matching at least 2 attributes, referenced in
- * clauses compatible with multivariate statistics. The current selection
- * criteria is very simple - we choose the statistics referencing the most
- * attributes.
- *
- * If there are multiple statistics referencing the same number of columns
- * (from the clauses), the one with less source columns (as listed in the
- * ADD STATISTICS when creating the statistics) wins. Else the first one wins.
- *
- * This is a very simple criteria, and has several weaknesses:
- *
- * (a) does not consider the accuracy of the statistics
- *
- *     If there are two histograms built on the same set of columns, but one
- *     has 100 buckets and the other one has 1000 buckets (thus likely
- *     providing better estimates), this is not currently considered.
- *
- * (b) does not consider the type of statistics
- *
- *     If there are three statistics - one containing just a MCV list, another
- *     one with just a histogram and a third one with both, we treat them equally.
- *
- * (c) does not consider the number of clauses
- *
- *     As explained, only the number of referenced attributes counts, so if
- *     there are multiple clauses on a single attribute, this still counts as
- *     a single attribute.
- *
- * (d) does not consider type of condition
- *
- *     Some clauses may work better with some statistics - for example equality
- *     clauses probably work better with MCV lists than with histograms. But
- *     IS [NOT] NULL conditions may often work better with histograms (thanks
- *     to NULL-buckets).
- *
- * So for example with five WHERE conditions
- *
- *     WHERE (a = 1) AND (b = 1) AND (c = 1) AND (d = 1) AND (e = 1)
- *
- * and statistics on (a,b), (a,b,e) and (a,b,c,d), the last one will be selected
- * as it references the most columns.
- *
- * Once we have selected the multivariate statistics, we split the list of
- * clauses into two parts - conditions that are compatible with the selected
- * stats, and conditions are estimated using simple statistics.
- *
- * From the example above, conditions
- *
- *     (a = 1) AND (b = 1) AND (c = 1) AND (d = 1)
- *
- * will be estimated using the multivariate statistics (a,b,c,d) while the last
- * condition (e = 1) will get estimated using the regular ones.
- *
- * There are various alternative selection criteria (e.g. counting conditions
- * instead of just referenced attributes), but eventually the best option should
- * be to combine multiple statistics. But that's much harder to do correctly.
- *
- * TODO Select multiple statistics and combine them when computing the estimate.
- *
- * TODO This will probably have to consider compatibility of clauses, because
- *      'dependencies' will probably work only with equality clauses.
- */
-static MVStatisticInfo *
-choose_mv_statistics(List *stats, Bitmapset *attnums)
+static List *
+clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
+						   Index relid, int types, bool remove)
 {
 	int i;
+	Bitmapset  *stat_attnums = NULL;
+	List	   *matching_clauses = NIL;
 	ListCell   *lc;
 
-	MVStatisticInfo *choice = NULL;
-
-	int current_matches = 1;						/* goal #1: maximize */
-	int current_dims = (MVSTATS_MAX_DIMENSIONS+1);	/* goal #2: minimize */
+	/* build attnum bitmapset for this statistics */
+	for (i = 0; i < statistic->stakeys->dim1; i++)
+		stat_attnums = bms_add_member(stat_attnums,
+									  statistic->stakeys->values[i]);
 
 	/*
-	 * Walk through the statistics (simple array with nmvstats elements) and for
-	 * each one count the referenced attributes (encoded in the 'attnums' bitmap).
+	 * We can't use foreach here, because we may need to remove some of the
+	 * clauses if (remove=true).
 	 */
-	foreach (lc, stats)
+	lc = list_head(*clauses);
+	while (lc)
 	{
-		MVStatisticInfo *info = (MVStatisticInfo *)lfirst(lc);
+		Node *clause = (Node*)lfirst(lc);
+		Bitmapset *attnums = NULL;
 
-		/* columns matching this statistics */
-		int matches = 0;
-
-		int2vector * attrs = info->stakeys;
-		int	numattrs = attrs->dim1;
-
-		/* skip dependencies-only stats */
-		if (! (info->mcv_built || info->hist_built))
-			continue;
-
-		/* count columns covered by the histogram */
-		for (i = 0; i < numattrs; i++)
-			if (bms_is_member(attrs->values[i], attnums))
-				matches++;
+		/* must advance lc before list_delete possibly pfree's it */
+		lc = lnext(lc);
 
 		/*
-		 * Use this statistics when it improves the number of matches or
-		 * when it matches the same number of attributes but is smaller.
+		 * skip clauses that are not compatible with stats (just leave them
+		 * in the original list)
+		 *
+		 * XXX Perhaps this should check what stats are actually available in
+		 *     the statistics (not a big deal now, because MCV and histograms
+		 *     handle the same types of conditions).
 		 */
-		if ((matches > current_matches) ||
-			((matches == current_matches) && (current_dims > numattrs)))
+		if (! clause_is_mv_compatible(clause, relid, &attnums, types))
 		{
-			choice = info;
-			current_matches = matches;
-			current_dims = numattrs;
+			bms_free(attnums);
+			continue;
+		}
+
+		/* if the clause is covered by the statistic, add it to the list */
+		if (bms_is_subset(attnums, stat_attnums))
+		{
+			matching_clauses = lappend(matching_clauses, clause);
+
+			/* if remove=true, remove the matching item from the main list */
+			if (remove)
+				*clauses = list_delete_ptr(*clauses, clause);
+		}
+
+		bms_free(attnums);
+	}
+
+	bms_free(stat_attnums);
+
+	return matching_clauses;
+}
+
+/*
+ * Selects the best combination of multivariate statistics, in an exhaustive
+ * way, where 'best' means:
+ *
+ * (a) covering the most attributes (referenced by clauses)
+ * (b) using the least number of multivariate stats
+ * (c) using the most conditions to exploit dependency
+ *
+ * Don't call this directly but through choose_mv_statistics(), which does some
+ * additional tricks to minimize the runtime.
+ *
+ *
+ * Algorithm
+ * ---------
+ * The algorithm is a recursive implementation of backtracking, with maximum
+ * depth equal to the number of multi-variate statistics available on the table.
+ * It actually explores all valid combinations of stats.
+ *
+ * Whenever it considers adding the next statistics, the clauses it matches are
+ * divided into 'conditions' (clauses already matched by at least one previous
+ * statistics) and clauses that are estimated.
+ *
+ * Then several checks are performed:
+ *
+ *  (a) The statistics covers at least 2 columns, referenced in the estimated
+ *      clauses (otherwise multi-variate stats are useless).
+ *
+ *  (b) The statistics covers at least 1 new column, i.e. column not refefenced
+ *      by the already used stats (and the new column has to be referenced by
+ *      the clauses, of couse). Otherwise the statistics would not add any new
+ *      information.
+ *
+ * There are some other sanity checks (e.g. stats must not be used twice etc.).
+ *
+ *
+ * Weaknesses
+ * ----------
+ * The current implemetation uses a rather simple optimality criteria, so it may
+ * not do the best choice when
+ *
+ * (a) There may be multiple solutions with the same number of covered
+ *     attributes and number of statistics (e.g. the same solution but with
+ *     statistics in a different order). It's unclear which solution in the best
+ *     one - in a sense all of them are equal.
+ *
+ * TODO It might be possible to compute estimate for each of those solutions,
+ *      and then combine them to get the final estimate (e.g. by using average
+ *      or median).
+ *
+ * (b) Does not consider that some types of stats are a better match for some
+ *     types of clauses (e.g. MCV list is generally a better match for equality
+ *     conditions than a histogram).
+ *
+ *     But maybe this is pointless - generally, each column is either a label
+ *     (it's not important whether because of the data type or how it's used),
+ *     or a value with ordering that makes sense. So either a MCV list is more
+ *     appropriate (labels) or a histogram (values with orderings).
+ *
+ *     Now sure what to do with statistics on columns mixing both types of data
+ *     (some columns would work best with MCVs, some with histograms). Maybe we
+ *     could invent a new type of statistics combining MCV list and histogram
+ *     (keeping a small histogram for each MCV item, and a separate histogram
+ *     for values not on the MCV list).
+ *
+ * TODO The algorithm should probably count number of Vars (not just attnums)
+ *      when computing the 'score' of each solution. Computing the ratio of
+ *      (num of all vars) / (num of condition vars) as a measure of how well
+ *      the solution uses conditions might be useful.
+ */
+static void
+choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
+					int nmvstats, MVStatisticInfo *mvstats, Bitmapset ** stats_attnums,
+					int nclauses, Node ** clauses, Bitmapset ** clauses_attnums,
+					int nconditions, Node ** conditions, Bitmapset ** conditions_attnums,
+					bool *cover_map, bool *condition_map, int *ruled_out,
+					mv_solution_t *current, mv_solution_t **best)
+{
+	int i, j;
+
+	Assert(best != NULL);
+	Assert((step == 0 && current == NULL) || (step > 0 && current != NULL));
+
+	/* this may run for a long sime, so let's make it interruptible */
+	CHECK_FOR_INTERRUPTS();
+
+	if (current == NULL)
+	{
+		current = (mv_solution_t*)palloc0(sizeof(mv_solution_t));
+		current->stats = (int*)palloc0(sizeof(int)*nmvstats);
+		current->nstats = 0;
+		current->nclauses = 0;
+		current->nconditions = 0;
+	}
+
+	/*
+	 * Now try to apply each statistics, matching at least two attributes,
+	 * unless it's already used in one of the previous steps.
+	 */
+	for (i = 0; i < nmvstats; i++)
+	{
+		int c;
+
+		int ncovered_clauses = 0;		/* number of covered clauses */
+		int ncovered_conditions = 0;	/* number of covered conditions */
+		int nattnums = 0;		/* number of covered attributes */
+
+		Bitmapset  *all_attnums = NULL;
+
+		/* skip statistics that were already used or eliminated */
+		if (ruled_out[i] != -1)
+			continue;
+
+		/*
+		 * See if we have clauses covered by this statistics, but not
+		 * yet covered by any of the preceding onces.
+		 */
+		for (c = 0; c < nclauses; c++)
+		{
+			bool covered = false;
+			Bitmapset *clause_attnums = clauses_attnums[c];
+			Bitmapset *tmp = NULL;
+
+			/*
+			 * If this clause is not covered by this stats, we can't
+			 * use the stats to estimate that at all.
+			 */
+			if (! cover_map[i * nclauses + c])
+				continue;
+
+			/*
+			 * Now we know we'll use this clause - either as a condition
+			 * or as a new clause (the estimated one). So let's add the
+			 * attributes to the attnums from all the clauses usable with
+			 * this statistics.
+			 */
+			tmp = bms_union(all_attnums, clause_attnums);
+
+			/* free the old bitmap */
+			bms_free(all_attnums);
+			all_attnums = tmp;
+
+			/* let's see if it's covered by any of the previous stats */
+			for (j = 0; j < step; j++)
+			{
+				/* already covered by the previous stats */
+				if (cover_map[current->stats[j] * nclauses + c])
+					covered = true;
+
+				if (covered)
+					break;
+			}
+
+			/* if already covered, continue with the next clause */
+			if (covered)
+			{
+				ncovered_conditions += 1;
+				continue;
+			}
+
+			/*
+			 * OK, this clause is covered by this statistics (and not by
+			 * any of the previous ones)
+			 */
+			ncovered_clauses += 1;
+		}
+
+		/* can't have more new clauses than original clauses */
+		Assert(nclauses >= ncovered_clauses);
+		Assert(ncovered_clauses >= 0);	/* mostly paranoia */
+
+		nattnums = bms_num_members(all_attnums);
+
+		/* free all the bitmapsets - we don't need them anymore */
+		bms_free(all_attnums);
+
+		all_attnums = NULL;
+
+		/*
+		 * See if we have clauses covered by this statistics, but not
+		 * yet covered by any of the preceding onces.
+		 */
+		for (c = 0; c < nconditions; c++)
+		{
+			Bitmapset *clause_attnums = conditions_attnums[c];
+			Bitmapset *tmp = NULL;
+
+			/*
+			 * If this clause is not covered by this stats, we can't
+			 * use the stats to estimate that at all.
+			 */
+			if (! condition_map[i * nconditions + c])
+				continue;
+
+			/* count this as a condition */
+			ncovered_conditions += 1;
+
+			/*
+			 * Now we know we'll use this clause - either as a condition
+			 * or as a new clause (the estimated one). So let's add the
+			 * attributes to the attnums from all the clauses usable with
+			 * this statistics.
+			 */
+			tmp = bms_union(all_attnums, clause_attnums);
+
+			/* free the old bitmap */
+			bms_free(all_attnums);
+			all_attnums = tmp;
+		}
+
+		/*
+		 * Let's mark the statistics as 'ruled out' - either we'll use
+		 * it (and proceed to the next step), or it's incompatible.
+		 */
+		ruled_out[i] = step;
+
+		/*
+		 * There are no clauses usable with this statistics (not already
+		 * covered by aome of the previous stats).
+		 *
+		 * Similarly, if the clauses only use a single attribute, we
+		 * can't really use that.
+		 */
+		if ((ncovered_clauses == 0) || (nattnums < 2))
+			continue;
+
+		/*
+		 * TODO Not sure if it's possible to add a clause referencing
+		 *      only attributes already covered by previous stats?
+		 *      Introducing only some new dependency, not a new
+		 *      attribute. Couldn't come up with an example, though.
+		 *      Might be worth adding some assert.
+		 */
+
+		/*
+		 * got a suitable statistics - let's update the current solution,
+		 * maybe use it as the best solution
+		 */
+		current->nclauses += ncovered_clauses;
+		current->nconditions += ncovered_conditions;
+		current->nstats += 1;
+		current->stats[step] = i;
+
+		/*
+		 * We can never cover more clauses, or use more stats that we
+		 * actually have at the beginning.
+		 */
+		Assert(nclauses >= current->nclauses);
+		Assert(nmvstats >= current->nstats);
+		Assert(step < nmvstats);
+
+		if (*best == NULL)
+		{
+			*best = (mv_solution_t*)palloc0(sizeof(mv_solution_t));
+			(*best)->stats = (int*)palloc0(sizeof(int)*nmvstats);
+			(*best)->nstats = 0;
+			(*best)->nclauses = 0;
+			(*best)->nconditions = 0;
+		}
+
+		/* see if it's better than the current 'best' solution */
+		if ((current->nclauses > (*best)->nclauses) ||
+			((current->nclauses == (*best)->nclauses) &&
+			((current->nstats > (*best)->nstats))))
+		{
+			(*best)->nstats = current->nstats;
+			(*best)->nclauses = current->nclauses;
+			(*best)->nconditions = current->nconditions;
+			memcpy((*best)->stats, current->stats, nmvstats * sizeof(int));
+		}
+
+		/*
+		 * The recursion only makes sense if we haven't covered all the
+		 * attributes (then adding stats is not really possible).
+		 */
+		if ((step + 1) < nmvstats)
+			choose_mv_statistics_exhaustive(root, step+1,
+									nmvstats, mvstats, stats_attnums,
+									nclauses, clauses, clauses_attnums,
+									nconditions, conditions, conditions_attnums,
+									cover_map, condition_map, ruled_out,
+									current, best);
+
+		/* reset the last step */
+		current->nclauses -= ncovered_clauses;
+		current->nconditions -= ncovered_conditions;
+		current->nstats -= 1;
+		current->stats[step] = 0;
+
+		/* mark the statistics as usable again */
+		ruled_out[i] = -1;
+
+		Assert(current->nclauses >= 0);
+		Assert(current->nstats >= 0);
+	}
+
+	/* reset all statistics as 'incompatible' in this step */
+	for (i = 0; i < nmvstats; i++)
+		if (ruled_out[i] == step)
+			ruled_out[i] = -1;
+
+}
+
+/*
+ * Greedy search for a multivariate solution - a sequence of statistics covering
+ * the clauses. This chooses the "best" statistics at each step, so the
+ * resulting solution may not be the best solution globally, but this produces
+ * the solution in only N steps (where N is the number of statistics), while
+ * the exhaustive approach may have to walk through ~N! combinations (although
+ * some of those are terminated early).
+ *
+ * See the comments at choose_mv_statistics_exhaustive() as this does the same
+ * thing (but in a different way).
+ *
+ * Don't call this directly, but through choose_mv_statistics().
+ *
+ * TODO There are probably other metrics we might use - e.g. using number of
+ *      columns (num_cond_columns / num_cov_columns), which might work better
+ *      with a mix of simple and complex clauses.
+ *
+ * TODO Also the choice at the very first step should be handled in a special
+ *      way, because there will be 0 conditions at that moment, so there needs
+ *      to be some other criteria - e.g. using the simplest (or most complex?)
+ *      clause might be a good idea.
+ *
+ * TODO We might also select multiple stats using different criteria, and branch
+ *      the search. This is however tricky, because if we choose k statistics at
+ *      each step, we get k^N branches to walk through (with N steps). That's
+ *      not really good with large number of stats (yet better than exhaustive
+ *      search).
+ */
+static void
+choose_mv_statistics_greedy(PlannerInfo *root, int step,
+					int nmvstats, MVStatisticInfo *mvstats, Bitmapset ** stats_attnums,
+					int nclauses, Node ** clauses, Bitmapset ** clauses_attnums,
+					int nconditions, Node ** conditions, Bitmapset ** conditions_attnums,
+					bool *cover_map, bool *condition_map, int *ruled_out,
+					mv_solution_t *current, mv_solution_t **best)
+{
+	int i, j;
+	int best_stat = -1;
+	double gain, max_gain = -1.0;
+
+	/*
+	 * Bitmap tracking which clauses are already covered (by the previous
+	 * statistics) and may thus serve only as a condition in this step.
+	 */
+	bool *covered_clauses = (bool*)palloc0(nclauses);
+
+	/*
+	 * Number of clauses and columns covered by each statistics - this
+	 * includes both conditions and clauses covered by the statistics for
+	 * the first time. The number of columns may count some columns
+	 * repeatedly - if a column is shared by multiple clauses, it will
+	 * be counted once for each clause (covered by the statistics).
+	 * So with two clauses [(a=1 OR b=2),(a<2 OR c>1)] the column "a"
+	 * will be counted twice (if both clauses are covered).
+	 *
+	 * The values for reduded statistics (that can't be applied) are
+	 * not computed, because that'd be pointless.
+	 */
+	int	*num_cov_clauses	= (int*)palloc0(sizeof(int) * nmvstats);
+	int	*num_cov_columns	= (int*)palloc0(sizeof(int) * nmvstats);
+
+	/*
+	 * Same as above, but this only includes clauses that are already
+	 * covered by the previous stats (and the current one).
+	 */
+	int	*num_cond_clauses	= (int*)palloc0(sizeof(int) * nmvstats);
+	int	*num_cond_columns	= (int*)palloc0(sizeof(int) * nmvstats);
+
+	/*
+	 * Number of attributes for each clause.
+	 *
+	 * TODO Might be computed in choose_mv_statistics() and then passed
+	 *      here, but then the function would not have the same signature
+	 *      as _exhaustive().
+	 */
+	int *attnum_counts = (int*)palloc0(sizeof(int) * nclauses);
+	int *attnum_cond_counts = (int*)palloc0(sizeof(int) * nconditions);
+
+	CHECK_FOR_INTERRUPTS();
+
+	Assert(best != NULL);
+	Assert((step == 0 && current == NULL) || (step > 0 && current != NULL));
+
+	/* compute attributes (columns) for each clause */
+	for (i = 0; i < nclauses; i++)
+		attnum_counts[i] = bms_num_members(clauses_attnums[i]);
+
+	/* compute attributes (columns) for each condition */
+	for (i = 0; i < nconditions; i++)
+		attnum_cond_counts[i] = bms_num_members(conditions_attnums[i]);
+
+	/* see which clauses are already covered at this point (by previous stats) */
+	for (i = 0; i < step; i++)
+		for (j = 0; j < nclauses; j++)
+			covered_clauses[j] |= (cover_map[current->stats[i] * nclauses + j]);
+
+	/* which remaining statistics covers most clauses / uses most conditions? */
+	for (i = 0; i < nmvstats; i++)
+	{
+		Bitmapset *attnums_covered = NULL;
+		Bitmapset *attnums_conditions = NULL;
+
+		/* skip stats that are already ruled out (either used or inapplicable) */
+		if (ruled_out[i] != -1)
+			continue;
+
+		/* count covered clauses and conditions (for the statistics) */
+		for (j = 0; j < nclauses; j++)
+		{
+			if (cover_map[i * nclauses + j])
+			{
+				Bitmapset *attnums_new
+					= bms_union(attnums_covered, clauses_attnums[j]);
+
+				/* get rid of the old bitmap and keep the unified result */
+				bms_free(attnums_covered);
+				attnums_covered = attnums_new;
+
+				num_cov_clauses[i] += 1;
+				num_cov_columns[i] += attnum_counts[j];
+
+				/* is the clause already covered (i.e. a condition)? */
+				if (covered_clauses[j])
+				{
+					num_cond_clauses[i] += 1;
+					num_cond_columns[i] += attnum_counts[j];
+					attnums_new = bms_union(attnums_conditions,
+											clauses_attnums[j]);
+
+					bms_free(attnums_conditions);
+					attnums_conditions = attnums_new;
+				}
+			}
+		}
+
+		/* if all covered clauses are covered by prev stats (thus conditions) */
+		if (num_cov_clauses[i] == num_cond_clauses[i])
+			ruled_out[i] = step;
+
+		/* same if there are no new attributes */
+		else if (bms_num_members(attnums_conditions) == bms_num_members(attnums_covered))
+			ruled_out[i] = step;
+
+		bms_free(attnums_covered);
+		bms_free(attnums_conditions);
+
+		/* if the statistics is inapplicable, try the next one */
+		if (ruled_out[i] != -1)
+			continue;
+
+		/* now let's walk through conditions and count the covered */
+		for (j = 0; j < nconditions; j++)
+		{
+			if (condition_map[i * nconditions + j])
+			{
+				num_cond_clauses[i] += 1;
+				num_cond_columns[i] += attnum_cond_counts[j];
+			}
+		}
+
+		/* otherwise see if this improves the interesting metrics */
+		gain = num_cond_columns[i] / (double)num_cov_columns[i];
+
+		if (gain > max_gain)
+		{
+			max_gain = gain;
+			best_stat = i;
 		}
 	}
 
-	return choice;
+	/*
+	 * Have we found a suitable statistics? Add it to the solution and
+	 * try next step.
+	 */
+	if (best_stat != -1)
+	{
+		/* mark the statistics, so that we skip it in next steps */
+		ruled_out[best_stat] = step;
+
+		/* allocate current solution if necessary */
+		if (current == NULL)
+		{
+			current = (mv_solution_t*)palloc0(sizeof(mv_solution_t));
+			current->stats = (int*)palloc0(sizeof(int)*nmvstats);
+			current->nstats = 0;
+			current->nclauses = 0;
+			current->nconditions = 0;
+		}
+
+		current->nclauses += num_cov_clauses[best_stat];
+		current->nconditions += num_cond_clauses[best_stat];
+		current->stats[step] = best_stat;
+		current->nstats++;
+
+		if (*best == NULL)
+		{
+			(*best) = (mv_solution_t*)palloc0(sizeof(mv_solution_t));
+			(*best)->nstats = current->nstats;
+			(*best)->nclauses = current->nclauses;
+			(*best)->nconditions = current->nconditions;
+
+			(*best)->stats = (int*)palloc0(sizeof(int)*nmvstats);
+			memcpy((*best)->stats, current->stats, nmvstats * sizeof(int));
+		}
+		else
+		{
+			/* see if this is a better solution */
+			double current_gain = (double)current->nconditions / current->nclauses;
+			double best_gain    = (double)(*best)->nconditions / (*best)->nclauses;
+
+			if ((current_gain > best_gain) ||
+				((current_gain == best_gain) && (current->nstats < (*best)->nstats)))
+			{
+				(*best)->nstats = current->nstats;
+				(*best)->nclauses = current->nclauses;
+				(*best)->nconditions = current->nconditions;
+				memcpy((*best)->stats, current->stats, nmvstats * sizeof(int));
+			}
+		}
+
+		/*
+		 * The recursion only makes sense if we haven't covered all the
+		 * attributes (then adding stats is not really possible).
+		*/
+		if ((step + 1) < nmvstats)
+			choose_mv_statistics_greedy(root, step+1,
+									nmvstats, mvstats, stats_attnums,
+									nclauses, clauses, clauses_attnums,
+									nconditions, conditions, conditions_attnums,
+									cover_map, condition_map, ruled_out,
+									current, best);
+
+		/* reset the last step */
+		current->nclauses -= num_cov_clauses[best_stat];
+		current->nconditions -= num_cond_clauses[best_stat];
+		current->nstats -= 1;
+		current->stats[step] = 0;
+
+		/* mark the statistics as usable again */
+		ruled_out[best_stat] = -1;
+	}
+
+	/* reset all statistics eliminated in this step */
+	for (i = 0; i < nmvstats; i++)
+		if (ruled_out[i] == step)
+			ruled_out[i] = -1;
+
+	/* free everything allocated in this step */
+	pfree(covered_clauses);
+	pfree(attnum_counts);
+	pfree(num_cov_clauses);
+	pfree(num_cov_columns);
+	pfree(num_cond_clauses);
+	pfree(num_cond_columns);
+}
+
+/*
+ * Remove clauses not covered by any of the available statistics
+ *
+ * This helps us to reduce the amount of work done in choose_mv_statistics()
+ * by not having to deal with clauses that can't possibly be useful.
+ */
+static List *
+filter_clauses(PlannerInfo *root, Index relid, int type,
+			   List *stats, List *clauses, Bitmapset **attnums)
+{
+	ListCell   *c;
+	ListCell   *s;
+
+	/* results (list of compatible clauses, attnums) */
+	List	   *rclauses = NIL;
+
+	foreach (c, clauses)
+	{
+		Node *clause = (Node*)lfirst(c);
+		Bitmapset *clause_attnums = NULL;
+
+		/*
+		 * We do assume that thanks to previous checks, we should not run into
+		 * clauses that are incompatible with multivariate stats here. We also
+		 * need to collect the attnums for the clause.
+		 *
+		 * XXX Maybe turn this into an assert?
+		 */
+		if (! clause_is_mv_compatible(clause, relid, &clause_attnums, type))
+				elog(ERROR, "should not get non-mv-compatible cluase");
+
+		/* Is there a multivariate statistics covering the clause? */
+		foreach (s, stats)
+		{
+			int k, matches = 0;
+			MVStatisticInfo	*stat = (MVStatisticInfo *)lfirst(s);
+
+			/* skip statistics not matching the required type */
+			if (! stats_type_matches(stat, type))
+				continue;
+
+			/*
+			 * see if all clause attributes are covered by the statistic
+			 *
+			 * We'll do that in the opposite direction, i.e. we'll see how many
+			 * attributes of the statistic are referenced in the clause, and then
+			 * compare the counts.
+			 */
+			for (k = 0; k < stat->stakeys->dim1; k++)
+				if (bms_is_member(stat->stakeys->values[k], clause_attnums))
+					matches += 1;
+
+			/*
+			 * If the number of matches is equal to attributes referenced by the
+			 * clause, then the clause is covered by the statistic.
+			 */
+			if (bms_num_members(clause_attnums) == matches)
+			{
+				*attnums = bms_union(*attnums, clause_attnums);
+				rclauses = lappend(rclauses, clause);
+				break;
+			}
+		}
+
+		bms_free(clause_attnums);
+	}
+
+	/* we can't have more compatible conditions than source conditions */
+	Assert(list_length(clauses) >= list_length(rclauses));
+
+	return rclauses;
+}
+
+/*
+ * Remove statistics not covering any new clauses
+ *
+ * Statistics not covering any new clauses (conditions don't count) are not
+ * really useful, so let's ignore them. Also, we need the statistics to
+ * reference at least two different attributes (both in conditions and clauses
+ * combined), and at least one of them in the clauses alone.
+ *
+ * This check might be made more strict by checking against individual clauses,
+ * because by using the bitmapsets of all attnums we may actually use attnums
+ * from clauses that are not covered by the statistics. For example, we may
+ * have a condition
+ *
+ *    (a=1 AND b=2)
+ *
+ * and a new clause
+ *
+ *    (c=1 AND d=1)
+ *
+ * With only bitmapsets, statistics on [b,c] will pass through this (assuming
+ * there are some statistics covering both clases).
+ *
+ * Parameters:
+ *
+ *     stats       - list of statistics to filter
+ *     new_attnums - attnums referenced in new clauses
+ *     all_attnums - attnums referenced by contidions and new clauses combined
+ *
+ * Returns filtered list of statistics.
+ *
+ * TODO Do the more strict check, i.e. walk through individual clauses and
+ *      conditions and only use those covered by the statistics.
+ */
+static List *
+filter_stats(List *stats, Bitmapset *new_attnums, Bitmapset *all_attnums)
+{
+	ListCell   *s;
+	List	   *stats_filtered = NIL;
+
+	foreach (s, stats)
+	{
+		int k;
+		int matches_new = 0,
+			matches_all = 0;
+
+		MVStatisticInfo	*stat = (MVStatisticInfo *)lfirst(s);
+
+		/* see how many attributes the statistics covers */
+		for (k = 0; k < stat->stakeys->dim1; k++)
+		{
+			/* attributes from new clauses */
+			if (bms_is_member(stat->stakeys->values[k], new_attnums))
+				matches_new += 1;
+
+			/* attributes from onditions */
+			if (bms_is_member(stat->stakeys->values[k], all_attnums))
+				matches_all += 1;
+		}
+
+		/* check we have enough attributes for this statistics */
+		if ((matches_new >= 1) && (matches_all >= 2))
+			stats_filtered = lappend(stats_filtered, stat);
+	}
+
+	/* we can't have more useful stats than we had originally */
+	Assert(list_length(stats) >= list_length(stats_filtered));
+
+	return stats_filtered;
+}
+
+static MVStatisticInfo *
+make_stats_array(List *stats, int *nmvstats)
+{
+	int i;
+	ListCell   *l;
+
+	MVStatisticInfo *mvstats = NULL;
+	*nmvstats = list_length(stats);
+
+	mvstats
+		= (MVStatisticInfo*)palloc0((*nmvstats) * sizeof(MVStatisticInfo));
+
+	i = 0;
+	foreach (l, stats)
+	{
+		MVStatisticInfo	*stat = (MVStatisticInfo *)lfirst(l);
+		memcpy(&mvstats[i++], stat, sizeof(MVStatisticInfo));
+	}
+
+	return mvstats;
+}
+
+static Bitmapset **
+make_stats_attnums(MVStatisticInfo *mvstats, int nmvstats)
+{
+	int			i, j;
+	Bitmapset **stats_attnums = NULL;
+
+	Assert(nmvstats > 0);
+
+	/* build bitmaps of attnums for the stats (easier to compare) */
+	stats_attnums = (Bitmapset **)palloc0(nmvstats * sizeof(Bitmapset*));
+
+	for (i = 0; i < nmvstats; i++)
+		for (j = 0; j < mvstats[i].stakeys->dim1; j++)
+			stats_attnums[i]
+				= bms_add_member(stats_attnums[i],
+								 mvstats[i].stakeys->values[j]);
+
+	return stats_attnums;
 }
 
 
 /*
- * This splits the clauses list into two parts - one containing clauses that
- * will be evaluated using the chosen statistics, and the remaining clauses
- * (either non-mvcompatible, or not related to the histogram).
+ * Remove redundant statistics
+ *
+ * If there are multiple statistics covering the same set of columns (counting
+ * only those referenced by clauses and conditions), we can apply one of those
+ * anyway and further reduce the size of the optimization problem.
+ *
+ * Thus when redundant stats are detected, we keep the smaller one (the one with
+ * fewer columns), based on the assumption that it's more accurate and also
+ * faster to process. That may be untrue for two reasons - first, the accuracy
+ * really depends on number of buckets/MCV items, not the number of columns.
+ * Second, some types of statistics may work better for certain types of clauses
+ * (e.g. MCV lists for equality conditions) etc.
  */
-static List *
-clauselist_mv_split(PlannerInfo *root, Index relid,
-					List *clauses, List **mvclauses,
-					MVStatisticInfo *mvstats, int types)
+static List*
+filter_redundant_stats(List *stats, List *clauses, List *conditions)
+{
+	int i, j, nmvstats;
+
+	MVStatisticInfo	   *mvstats;
+	bool			   *redundant;
+	Bitmapset		  **stats_attnums;
+	Bitmapset		   *varattnos;
+	Index				relid;
+
+	Assert(list_length(stats) > 0);
+	Assert(list_length(clauses) > 0);
+
+	/*
+	 * We'll convert the list of statistics into an array now, because
+	 * the reduction of redundant statistics is easier to do that way
+	 * (we can mark previous stats as redundant, etc.).
+	 */
+	mvstats = make_stats_array(stats, &nmvstats);
+	stats_attnums = make_stats_attnums(mvstats, nmvstats);
+
+	/* by default, none of the stats is redundant (so palloc0) */
+	redundant = palloc0(nmvstats * sizeof(bool));
+
+	/*
+	 * We only expect a single relid here, and also we should get the
+	 * same relid from clauses and conditions (but we get it from
+	 * clauses, because those are certainly non-empty).
+	 */
+	relid = bms_singleton_member(pull_varnos((Node*)clauses));
+
+	/*
+	 * Get the varattnos from both conditions and clauses.
+	 *
+	 * This skips system attributes, although that should be impossible
+	 * thanks to previous filtering out of incompatible clauses.
+	 *
+	 * XXX Is that really true?
+	 */
+	varattnos = bms_union(get_varattnos((Node*)clauses, relid),
+						  get_varattnos((Node*)conditions, relid));
+
+	for (i = 1; i < nmvstats; i++)
+	{
+		/* intersect with current statistics */
+		Bitmapset *curr = bms_intersect(stats_attnums[i], varattnos);
+
+		/* walk through 'previous' stats and check redundancy */
+		for (j = 0; j < i; j++)
+		{
+			/* intersect with current statistics */
+			Bitmapset *prev;
+
+			/* skip stats already identified as redundant */
+			if (redundant[j])
+				continue;
+
+			prev = bms_intersect(stats_attnums[j], varattnos);
+
+			switch (bms_subset_compare(curr, prev))
+			{
+				case BMS_EQUAL:
+					/*
+					 * Use the smaller one (hopefully more accurate).
+					 * If both have the same size, use the first one.
+					 */
+					if (mvstats[i].stakeys->dim1 >= mvstats[j].stakeys->dim1)
+						redundant[i] = TRUE;
+					else
+						redundant[j] = TRUE;
+
+					break;
+
+				case BMS_SUBSET1: /* curr is subset of prev */
+					redundant[i] = TRUE;
+					break;
+
+				case BMS_SUBSET2: /* prev is subset of curr */
+					redundant[j] = TRUE;
+					break;
+
+				case BMS_DIFFERENT:
+					/* do nothing - keep both stats */
+					break;
+			}
+
+			bms_free(prev);
+		}
+
+		bms_free(curr);
+	}
+
+	/* can't reduce all statistics (at least one has to remain) */
+	Assert(nmvstats > 0);
+
+	/* now, let's remove the reduced statistics from the arrays */
+	list_free(stats);
+	stats = NIL;
+
+	for (i = 0; i < nmvstats; i++)
+	{
+		MVStatisticInfo *info;
+
+		pfree(stats_attnums[i]);
+
+		if (redundant[i])
+			continue;
+
+		info = makeNode(MVStatisticInfo);
+		memcpy(info, &mvstats[i], sizeof(MVStatisticInfo));
+
+		stats = lappend(stats, info);
+	}
+
+	pfree(mvstats);
+	pfree(stats_attnums);
+	pfree(redundant);
+
+	return stats;
+}
+
+static Node**
+make_clauses_array(List *clauses, int *nclauses)
 {
 	int i;
 	ListCell *l;
-	List	 *non_mvclauses = NIL;
 
-	/* FIXME is there a better way to get info on int2vector? */
-	int2vector * attrs = mvstats->stakeys;
-	int	numattrs = mvstats->stakeys->dim1;
+	Node** clauses_array;
 
-	Bitmapset *mvattnums = NULL;
+	*nclauses = list_length(clauses);
+	clauses_array = (Node **)palloc0((*nclauses) * sizeof(Node *));
 
-	/* build bitmap of attributes, so we can do bms_is_subset later */
-	for (i = 0; i < numattrs; i++)
-		mvattnums = bms_add_member(mvattnums, attrs->values[i]);
-
-	/* erase the list of mv-compatible clauses */
-	*mvclauses = NIL;
-
+	i = 0;
 	foreach (l, clauses)
+		clauses_array[i++] = (Node *)lfirst(l);
+
+	*nclauses = i;
+
+	return clauses_array;
+}
+
+static Bitmapset **
+make_clauses_attnums(PlannerInfo *root, Index relid,
+					 int type, Node **clauses, int nclauses)
+{
+	int			i;
+	Bitmapset **clauses_attnums
+		= (Bitmapset **)palloc0(nclauses * sizeof(Bitmapset *));
+
+	for (i = 0; i < nclauses; i++)
 	{
-		bool		match = false;	/* by default not mv-compatible */
-		Bitmapset	*attnums = NULL;
-		Node	   *clause = (Node *) lfirst(l);
+		Bitmapset * attnums = NULL;
 
-		if (clause_is_mv_compatible(clause, relid, &attnums, types))
-		{
-			/* are all the attributes part of the selected stats? */
-			if (bms_is_subset(attnums, mvattnums))
-				match = true;
-		}
+		if (! clause_is_mv_compatible(clauses[i], relid, &attnums, type))
+			elog(ERROR, "should not get non-mv-compatible clause");
 
-		/*
-		 * The clause matches the selected stats, so put it to the list of
-		 * mv-compatible clauses. Otherwise, keep it in the list of 'regular'
-		 * clauses (that may be selected later).
-		 */
-		if (match)
-			*mvclauses = lappend(*mvclauses, clause);
-		else
-			non_mvclauses = lappend(non_mvclauses, clause);
+		clauses_attnums[i] = attnums;
 	}
 
-	/*
-	 * Perform regular estimation using the clauses incompatible with the chosen
-	 * histogram (or MV stats in general).
-	 */
-	return non_mvclauses;
+	return clauses_attnums;
+}
 
+static bool*
+make_cover_map(Bitmapset **stats_attnums, int nmvstats,
+			   Bitmapset **clauses_attnums, int nclauses)
+{
+	int		i, j;
+	bool   *cover_map	= (bool*)palloc0(nclauses * nmvstats);
+
+	for (i = 0; i < nmvstats; i++)
+		for (j = 0; j < nclauses; j++)
+			cover_map[i * nclauses + j]
+				= bms_is_subset(clauses_attnums[j], stats_attnums[i]);
+
+	return cover_map;
+}
+
+/*
+ * Chooses the combination of statistics, optimal for estimation of a particular
+ * clause list.
+ *
+ * This only handles a 'preparation' shared by the exhaustive and greedy
+ * implementations (see the previous methods), mostly trying to reduce the size
+ * of the problem (eliminate clauses/statistics that can't be really used in
+ * the solution).
+ *
+ * It also precomputes bitmaps for attributes covered by clauses and statistics,
+ * so that we don't need to do that over and over in the actual optimizations
+ * (as it's both CPU and memory intensive).
+ *
+ *
+ * TODO Another way to make the optimization problems smaller might be splitting
+ *      the statistics into several disjoint subsets, i.e. if we can split the
+ *      graph of statistics (after the elimination) into multiple components
+ *      (so that stats in different components share no attributes), we can do
+ *      the optimization for each component separately.
+ *
+ * TODO If we could compute what is a "perfect solution" maybe we could
+ *      terminate the search after reaching ~90% of it? Say, if we knew that we
+ *      can cover 10 clauses and reuse 8 dependencies, maybe covering 9 clauses
+ *      and 7 dependencies would be OK?
+ */
+static List*
+choose_mv_statistics(PlannerInfo *root, Index relid, List *stats,
+					 List *clauses, List *conditions)
+{
+	int i;
+	mv_solution_t *best = NULL;
+	List *result = NIL;
+
+	int nmvstats;
+	MVStatisticInfo *mvstats;
+
+	/* we only work with MCV lists and histograms here */
+	int type = (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
+
+	bool   *clause_cover_map = NULL,
+		   *condition_cover_map = NULL;
+	int	   *ruled_out = NULL;
+
+	/* build bitmapsets for all stats and clauses */
+	Bitmapset **stats_attnums;
+	Bitmapset **clauses_attnums;
+	Bitmapset **conditions_attnums;
+
+	int nclauses, nconditions;
+	Node ** clauses_array;
+	Node ** conditions_array;
+
+	/* copy lists, so that we can free them during elimination easily */
+	clauses = list_copy(clauses);
+	conditions = list_copy(conditions);
+	stats = list_copy(stats);
+
+	/*
+	 * Reduce the optimization problem size as much as possible.
+	 *
+	 * Eliminate clauses and conditions not covered by any statistics,
+	 * or statistics not matching at least two attributes (one of them
+	 * has to be in a regular clause).
+	 *
+	 * It's possible that removing a statistics in one iteration
+	 * eliminates clause in the next one, so we'll repeat this until we
+	 * eliminate no clauses/stats in that iteration.
+	 *
+	 * This can only happen after eliminating a statistics - clauses are
+	 * eliminated first, so statistics always reflect that.
+	 */
+	while (true)
+	{
+		List	   *tmp;
+
+		Bitmapset *compatible_attnums = NULL;
+		Bitmapset *condition_attnums  = NULL;
+		Bitmapset *all_attnums = NULL;
+
+		/*
+		 * Clauses
+		 *
+		 * Walk through clauses and keep only those covered by at least
+		 * one of the statistics we still have. We'll also keep info
+		 * about attnums in clauses (without conditions) so that we can
+		 * ignore stats covering just conditions (which is pointless).
+		 */
+		tmp = filter_clauses(root, relid, type,
+							 stats, clauses, &compatible_attnums);
+
+		/* discard the original list */
+		list_free(clauses);
+		clauses = tmp;
+
+		/*
+		 * Conditions
+		 *
+		 * Walk through clauses and keep only those covered by at least
+		 * one of the statistics we still have. Also, collect bitmap of
+		 * attributes so that we can make sure we add at least one new
+		 * attribute (by comparing with clauses).
+		 */
+		if (conditions != NIL)
+		{
+			tmp = filter_clauses(root, relid, type,
+								 stats, conditions, &condition_attnums);
+
+			/* discard the original list */
+			list_free(conditions);
+			conditions = tmp;
+		}
+
+		/* get a union of attnums (from conditions and new clauses) */
+		all_attnums = bms_union(compatible_attnums, condition_attnums);
+
+		/*
+		 * Statisitics
+		 *
+		 * Walk through statistics and only keep those covering at least
+		 * one new attribute (excluding conditions) and at two attributes
+		 * in both clauses and conditions.
+		 */
+		tmp = filter_stats(stats, compatible_attnums, all_attnums);
+
+		/* if we've not eliminated anything, terminate */
+		if (list_length(stats) == list_length(tmp))
+			break;
+
+		/* work only with filtered statistics from now */
+		list_free(stats);
+		stats = tmp;
+	}
+
+	/* only do the optimization if we have clauses/statistics */
+	if ((list_length(stats) == 0) || (list_length(clauses) == 0))
+		return NULL;
+
+	/* remove redundant stats (stats covered by another stats) */
+	stats = filter_redundant_stats(stats, clauses, conditions);
+
+	/*
+	 * TODO We should sort the stats to make the order deterministic,
+	 *      otherwise we may get different estimates on different
+	 *      executions - if there are multiple "equally good" solutions,
+	 *      we'll keep the first solution we see.
+	 *
+	 *      Sorting by OID probably is not the right solution though,
+	 *      because we'd like it to be somehow reproducible,
+	 *      irrespectedly of the order of ADD STATISTICS commands.
+	 *      So maybe statkeys?
+	 */
+	mvstats = make_stats_array(stats, &nmvstats);
+	stats_attnums = make_stats_attnums(mvstats, nmvstats);
+
+	/* collect clauses an bitmap of attnums */
+	clauses_array = make_clauses_array(clauses, &nclauses);
+	clauses_attnums = make_clauses_attnums(root, relid, type,
+										   clauses_array, nclauses);
+
+	/* collect conditions and bitmap of attnums */
+	conditions_array = make_clauses_array(conditions, &nconditions);
+	conditions_attnums = make_clauses_attnums(root, relid, type,
+											  conditions_array, nconditions);
+
+	/*
+	 * Build bitmaps with info about which clauses/conditions are
+	 * covered by each statistics (so that we don't need to call the
+	 * bms_is_subset over and over again).
+	 */
+	clause_cover_map = make_cover_map(stats_attnums, nmvstats,
+									  clauses_attnums, nclauses);
+
+	condition_cover_map	= make_cover_map(stats_attnums, nmvstats,
+										 conditions_attnums, nconditions);
+
+	ruled_out =  (int*)palloc0(nmvstats * sizeof(int));
+
+	/* no stats are ruled out by default */
+	for (i = 0; i < nmvstats; i++)
+		ruled_out[i] = -1;
+
+	/* do the optimization itself */
+	if (mvstat_search_type == MVSTAT_SEARCH_EXHAUSTIVE)
+		choose_mv_statistics_exhaustive(root, 0,
+									   nmvstats, mvstats, stats_attnums,
+									   nclauses, clauses_array, clauses_attnums,
+									   nconditions, conditions_array, conditions_attnums,
+									   clause_cover_map, condition_cover_map,
+									   ruled_out, NULL, &best);
+	else
+		choose_mv_statistics_greedy(root, 0,
+									   nmvstats, mvstats, stats_attnums,
+									   nclauses, clauses_array, clauses_attnums,
+									   nconditions, conditions_array, conditions_attnums,
+									   clause_cover_map, condition_cover_map,
+									   ruled_out, NULL, &best);
+
+	/* create a list of statistics from the array */
+	if (best != NULL)
+	{
+		for (i = 0; i < best->nstats; i++)
+		{
+			MVStatisticInfo *info = makeNode(MVStatisticInfo);
+			memcpy(info, &mvstats[best->stats[i]], sizeof(MVStatisticInfo));
+			result = lappend(result, info);
+		}
+
+		pfree(best);
+	}
+
+	/* cleanup (maybe leave it up to the memory context?) */
+	for (i = 0; i < nmvstats; i++)
+		bms_free(stats_attnums[i]);
+
+	for (i = 0; i < nclauses; i++)
+		bms_free(clauses_attnums[i]);
+
+	for (i = 0; i < nconditions; i++)
+		bms_free(conditions_attnums[i]);
+
+	pfree(stats_attnums);
+	pfree(clauses_attnums);
+	pfree(conditions_attnums);
+
+	pfree(clauses_array);
+	pfree(conditions_array);
+	pfree(clause_cover_map);
+	pfree(condition_cover_map);
+	pfree(ruled_out);
+	pfree(mvstats);
+
+	list_free(clauses);
+	list_free(conditions);
+	list_free(stats);
+
+	return result;
 }
 
 typedef struct
@@ -1637,9 +2878,6 @@ has_stats(List *stats, int type)
 		/* terminate if we've found at least one matching statistics */
 		if (stats_type_matches(stat, type))
 			return true;
-
-		if ((type & MV_CLAUSE_TYPE_HIST) && stat->hist_built)
-			return true;
 	}
 
 	return false;
@@ -1689,22 +2927,26 @@ find_stats(PlannerInfo *root, Index relid)
  *      as the clauses are processed (and skip items that are 'match').
  */
 static Selectivity
-clauselist_mv_selectivity_mcvlist(PlannerInfo *root, List *clauses,
-								  MVStatisticInfo *mvstats, bool *fullmatch,
-								  Selectivity *lowsel)
+clauselist_mv_selectivity_mcvlist(PlannerInfo *root, MVStatisticInfo *mvstats,
+								  List *clauses, List *conditions, bool is_or,
+								  bool *fullmatch, Selectivity *lowsel)
 {
 	int i;
 	Selectivity s = 0.0;
+	Selectivity t = 0.0;
 	Selectivity u = 0.0;
 
 	MCVList mcvlist = NULL;
+
 	int	nmatches = 0;
+	int	nconditions = 0;
 
 	/* match/mismatch bitmap for each MCV item */
 	char * matches = NULL;
+	char * condition_matches = NULL;
 
 	Assert(clauses != NIL);
-	Assert(list_length(clauses) >= 2);
+	Assert(list_length(clauses) >= 1);
 
 	/* there's no MCV list built yet */
 	if (! mvstats->mcv_built)
@@ -1715,32 +2957,85 @@ clauselist_mv_selectivity_mcvlist(PlannerInfo *root, List *clauses,
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
 
-	/* by default all the MCV items match the clauses fully */
-	matches = palloc0(sizeof(char) * mcvlist->nitems);
-	memset(matches, MVSTATS_MATCH_FULL, sizeof(char)*mcvlist->nitems);
-
 	/* number of matching MCV items */
 	nmatches = mcvlist->nitems;
+	nconditions = mcvlist->nitems;
 
+	/*
+	 * Bitmap of bucket matches (mismatch, partial, full).
+	 *
+	 * For AND clauses all buckets match (and we'll eliminate them).
+	 * For OR  clauses no  buckets match (and we'll add them).
+	 *
+	 * We only need to do the memset for AND clauses (for OR clauses
+	 * it's already set correctly by the palloc0).
+	 */
+	matches = palloc0(sizeof(char) * nmatches);
+
+	if (! is_or) /* AND-clause */
+		memset(matches, MVSTATS_MATCH_FULL, sizeof(char)*nmatches);
+
+	/* Conditions are treated as AND clause, so match by default. */
+	condition_matches = palloc0(sizeof(char) * nconditions);
+	memset(condition_matches, MVSTATS_MATCH_FULL, sizeof(char)*nconditions);
+
+	/*
+	 * build the match bitmap for the conditions (conditions are always
+	 * connected by AND)
+	 */
+	if (conditions != NIL)
+		nconditions = update_match_bitmap_mcvlist(root, conditions,
+									   mvstats->stakeys, mcvlist,
+									   nconditions, condition_matches,
+									   lowsel, fullmatch, false);
+
+	/*
+	 * build the match bitmap for the estimated clauses
+	 *
+	 * TODO This evaluates the clauses for all MCV items, even those
+	 *      ruled out by the conditions. The final result should be the
+	 *      same, but it might be faster.
+	 */
 	nmatches = update_match_bitmap_mcvlist(root, clauses,
 										   mvstats->stakeys, mcvlist,
-										   nmatches, matches,
-										   lowsel, fullmatch, false);
+										   ((is_or) ? 0 : nmatches), matches,
+										   lowsel, fullmatch, is_or);
 
 	/* sum frequencies for all the matching MCV items */
 	for (i = 0; i < mcvlist->nitems; i++)
 	{
-		/* used to 'scale' for MCV lists not covering all tuples */
+		/*
+		 * Find out what part of the data is covered by the MCV list,
+		 * so that we can 'scale' the selectivity properly (e.g. when
+		 * only 50% of the sample items got into the MCV, and the rest
+		 * is either in a histogram, or not covered by stats).
+		 *
+		 * TODO This might be handled by keeping a global "frequency"
+		 *      for the whole list, which might save us a bit of time
+		 *      spent on accessing the not-matching part of the MCV list.
+		 *      Although it's likely in a cache, so it's very fast.
+		 */
 		u += mcvlist->items[i]->frequency;
+
+		/* skit MCV items not matching the conditions */
+		if (condition_matches[i] == MVSTATS_MATCH_NONE)
+			continue;
 
 		if (matches[i] != MVSTATS_MATCH_NONE)
 			s += mcvlist->items[i]->frequency;
+
+		t += mcvlist->items[i]->frequency;
 	}
 
 	pfree(matches);
+	pfree(condition_matches);
 	pfree(mcvlist);
 
-	return s*u;
+	/* no condition matches */
+	if (t == 0.0)
+		return (Selectivity)0.0;
+
+	return (s / t) * u;
 }
 
 /*
@@ -1971,64 +3266,57 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 				}
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) || and_clause(clause) || not_clause(clause))
 		{
 			/* AND/OR clause, with all clauses compatible with the selected MV stat */
 
 			int			i;
-			BoolExpr   *orclause  = ((BoolExpr*)clause);
-			List	   *orclauses = orclause->args;
+			List	   *tmp_clauses = ((BoolExpr*)clause)->args;
 
 			/* match/mismatch bitmap for each MCV item */
-			int	or_nmatches = 0;
-			char * or_matches = NULL;
+			int	tmp_nmatches = 0;
+			char * tmp_matches = NULL;
 
-			Assert(orclauses != NIL);
-			Assert(list_length(orclauses) >= 2);
+			Assert(tmp_clauses != NIL);
+			Assert((list_length(tmp_clauses) >= 2) || (not_clause(clause) && (list_length(tmp_clauses)==1)));
 
 			/* number of matching MCV items */
-			or_nmatches = mcvlist->nitems;
+			tmp_nmatches = (or_clause(clause)) ? 0 : mcvlist->nitems;
 
 			/* by default none of the MCV items matches the clauses */
-			or_matches = palloc0(sizeof(char) * or_nmatches);
+			tmp_matches = palloc0(sizeof(char) * mcvlist->nitems);
 
-			if (or_clause(clause))
-			{
-				/* OR clauses assume nothing matches, initially */
-				memset(or_matches, MVSTATS_MATCH_NONE, sizeof(char)*or_nmatches);
-				or_nmatches = 0;
-			}
-			else
-			{
-				/* AND clauses assume nothing matches, initially */
-				memset(or_matches, MVSTATS_MATCH_FULL, sizeof(char)*or_nmatches);
-			}
+			/* AND (and NOT) clauses assume everything matches, initially */
+			if (! or_clause(clause))
+				memset(tmp_matches, MVSTATS_MATCH_FULL, sizeof(char)*mcvlist->nitems);
 
 			/* build the match bitmap for the OR-clauses */
-			or_nmatches = update_match_bitmap_mcvlist(root, orclauses,
+			tmp_nmatches = update_match_bitmap_mcvlist(root, tmp_clauses,
 									   stakeys, mcvlist,
-									   or_nmatches, or_matches,
+									   tmp_nmatches, tmp_matches,
 									   lowsel, fullmatch, or_clause(clause));
 
 			/* merge the bitmap into the existing one*/
 			for (i = 0; i < mcvlist->nitems; i++)
 			{
+				/* if this is a NOT clause, we need to invert the results first */
+				if (not_clause(clause))
+					tmp_matches[i] = (MVSTATS_MATCH_FULL - tmp_matches[i]);
+
 				/*
 				 * To AND-merge the bitmaps, a MIN() semantics is used.
 				 * For OR-merge, use MAX().
 				 *
 				 * FIXME this does not decrease the number of matches
 				 */
-				UPDATE_RESULT(matches[i], or_matches[i], is_or);
+				UPDATE_RESULT(matches[i], tmp_matches[i], is_or);
 			}
 
-			pfree(or_matches);
+			pfree(tmp_matches);
 
 		}
 		else
-		{
 			elog(ERROR, "unknown clause type: %d", clause->type);
-		}
 	}
 
 	/*
@@ -2086,15 +3374,18 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
  *      this is not uncommon, but for histograms it's not that clear.
  */
 static Selectivity
-clauselist_mv_selectivity_histogram(PlannerInfo *root, List *clauses,
-									MVStatisticInfo *mvstats)
+clauselist_mv_selectivity_histogram(PlannerInfo *root, MVStatisticInfo *mvstats,
+									List *clauses, List *conditions, bool is_or)
 {
 	int i;
 	Selectivity s = 0.0;
+	Selectivity t = 0.0;
 	Selectivity u = 0.0;
 
 	int		nmatches = 0;
+	int		nconditions = 0;
 	char   *matches = NULL;
+	char   *condition_matches = NULL;
 
 	MVSerializedHistogram mvhist = NULL;
 
@@ -2107,25 +3398,55 @@ clauselist_mv_selectivity_histogram(PlannerInfo *root, List *clauses,
 
 	Assert (mvhist != NULL);
 	Assert (clauses != NIL);
-	Assert (list_length(clauses) >= 2);
-
-	/*
-	 * Bitmap of bucket matches (mismatch, partial, full). by default
-	 * all buckets fully match (and we'll eliminate them).
-	 */
-	matches = palloc0(sizeof(char) * mvhist->nbuckets);
-	memset(matches,  MVSTATS_MATCH_FULL, sizeof(char)*mvhist->nbuckets);
+	Assert (list_length(clauses) >= 1);
 
 	nmatches = mvhist->nbuckets;
+	nconditions = mvhist->nbuckets;
 
-	/* build the match bitmap */
+	/*
+	 * Bitmap of bucket matches (mismatch, partial, full).
+	 *
+	 * For AND clauses all buckets match (and we'll eliminate them).
+	 * For OR  clauses no  buckets match (and we'll add them).
+	 *
+	 * We only need to do the memset for AND clauses (for OR clauses
+	 * it's already set correctly by the palloc0).
+	 */
+	matches = palloc0(sizeof(char) * nmatches);
+
+	if (! is_or) /* AND-clause */
+		memset(matches, MVSTATS_MATCH_FULL, sizeof(char)*nmatches);
+
+	/* Conditions are treated as AND clause, so match by default. */
+	condition_matches = palloc0(sizeof(char)*nconditions);
+	memset(condition_matches, MVSTATS_MATCH_FULL, sizeof(char)*nconditions);
+
+	/*
+	 * build the match bitmap for the conditions (conditions are always
+	 * connected by AND)
+	 */
+	if (conditions != NIL)
+		update_match_bitmap_histogram(root, conditions,
+								  mvstats->stakeys, mvhist,
+								  nconditions, condition_matches, false);
+
+	/*
+	 * build the match bitmap for the estimated clauses
+	 *
+	 * TODO This evaluates the clauses for all buckets, even those
+	 *      ruled out by the conditions. The final result should be
+	 *      the same, but it might be faster.
+	 */
 	update_match_bitmap_histogram(root, clauses,
 								  mvstats->stakeys, mvhist,
-								  nmatches, matches, false);
+								  ((is_or) ? 0 : nmatches), matches,
+								  is_or);
 
 	/* now, walk through the buckets and sum the selectivities */
 	for (i = 0; i < mvhist->nbuckets; i++)
 	{
+		float coeff = 1.0;
+
 		/*
 		 * Find out what part of the data is covered by the histogram,
 		 * so that we can 'scale' the selectivity properly (e.g. when
@@ -2139,10 +3460,23 @@ clauselist_mv_selectivity_histogram(PlannerInfo *root, List *clauses,
 		 */
 		u += mvhist->buckets[i]->ntuples;
 
+		/* skip buckets not matching the conditions */
+		if (condition_matches[i] == MVSTATS_MATCH_NONE)
+			continue;
+		else if (condition_matches[i] == MVSTATS_MATCH_PARTIAL)
+			coeff = 0.5;
+
+		t += coeff * mvhist->buckets[i]->ntuples;
+
 		if (matches[i] == MVSTATS_MATCH_FULL)
-			s += mvhist->buckets[i]->ntuples;
+			s += coeff * mvhist->buckets[i]->ntuples;
 		else if (matches[i] == MVSTATS_MATCH_PARTIAL)
-			s += 0.5 * mvhist->buckets[i]->ntuples;
+			/*
+			 * TODO If both conditions and clauses match partially, this
+			 *      will use 0.25 match - not sure if that's the right
+			 *      thing solution, but seems about right.
+			 */
+			s += coeff * 0.5 * mvhist->buckets[i]->ntuples;
 	}
 
 #ifdef DEBUG_MVHIST
@@ -2151,9 +3485,14 @@ clauselist_mv_selectivity_histogram(PlannerInfo *root, List *clauses,
 
 	/* release the allocated bitmap and deserialized histogram */
 	pfree(matches);
+	pfree(condition_matches);
 	pfree(mvhist);
 
-	return s * u;
+	/* no condition matches */
+	if (t == 0.0)
+		return (Selectivity)0.0;
+
+	return (s / t) * u;
 }
 
 /* cached result of bucket boundary comparison for a single dimension */
@@ -2504,64 +3843,57 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 					UPDATE_RESULT(matches[i], MVSTATS_MATCH_NONE, is_or);
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) || and_clause(clause) || not_clause(clause))
 		{
 			/* AND/OR clause, with all clauses compatible with the selected MV stat */
 
 			int			i;
-			BoolExpr   *orclause  = ((BoolExpr*)clause);
-			List	   *orclauses = orclause->args;
+			List	   *tmp_clauses = ((BoolExpr*)clause)->args;
 
 			/* match/mismatch bitmap for each bucket */
-			int	or_nmatches = 0;
-			char * or_matches = NULL;
+			int	tmp_nmatches = 0;
+			char * tmp_matches = NULL;
 
-			Assert(orclauses != NIL);
-			Assert(list_length(orclauses) >= 2);
+			Assert(tmp_clauses != NIL);
+			Assert((list_length(tmp_clauses) >= 2) || (not_clause(clause) && (list_length(tmp_clauses)==1)));
 
 			/* number of matching buckets */
-			or_nmatches = mvhist->nbuckets;
+			tmp_nmatches = (or_clause(clause)) ? 0 : mvhist->nbuckets;
 
-			/* by default none of the buckets matches the clauses */
-			or_matches = palloc0(sizeof(char) * or_nmatches);
+			/* by default none of the buckets matches the clauses (OR clause) */
+			tmp_matches = palloc0(sizeof(char) * mvhist->nbuckets);
 
-			if (or_clause(clause))
-			{
-				/* OR clauses assume nothing matches, initially */
-				memset(or_matches, MVSTATS_MATCH_NONE, sizeof(char)*or_nmatches);
-				or_nmatches = 0;
-			}
-			else
-			{
-				/* AND clauses assume nothing matches, initially */
-				memset(or_matches, MVSTATS_MATCH_FULL, sizeof(char)*or_nmatches);
-			}
+			/* but AND (and NOT) clauses assume everything matches, initially */
+			if (! or_clause(clause))
+				memset(tmp_matches, MVSTATS_MATCH_FULL, sizeof(char)*mvhist->nbuckets);
 
 			/* build the match bitmap for the OR-clauses */
-			or_nmatches = update_match_bitmap_histogram(root, orclauses,
+			tmp_nmatches = update_match_bitmap_histogram(root, tmp_clauses,
 										stakeys, mvhist,
-										or_nmatches, or_matches, or_clause(clause));
+										tmp_nmatches, tmp_matches, or_clause(clause));
 
 			/* merge the bitmap into the existing one*/
 			for (i = 0; i < mvhist->nbuckets; i++)
 			{
+				/* if this is a NOT clause, we need to invert the results first */
+				if (not_clause(clause))
+					tmp_matches[i] = (MVSTATS_MATCH_FULL - tmp_matches[i]);
+
 				/*
 				 * To AND-merge the bitmaps, a MIN() semantics is used.
 				 * For OR-merge, use MAX().
 				 *
 				 * FIXME this does not decrease the number of matches
 				 */
-				UPDATE_RESULT(matches[i], or_matches[i], is_or);
+				UPDATE_RESULT(matches[i], tmp_matches[i], is_or);
 			}
 
-			pfree(or_matches);
-
+			pfree(tmp_matches);
 		}
 		else
 			elog(ERROR, "unknown clause type: %d", clause->type);
 	}
 
-	/* free the call cache */
 	pfree(callcache);
 
 	return nmatches;

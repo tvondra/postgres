@@ -90,6 +90,137 @@ even attempting to do the more expensive estimation.
 Whenever we find there are no suitable stats, we skip the expensive steps.
 
 
+Combining multiple statistics
+-----------------------------
+
+When estimating selectivity of a list of clauses, there may exist no statistics
+covering all of them. If there are multiple statistics, each covering some
+subset of the attributes, the optimizer needs to figure out which of those
+statistics to apply.
+
+When the statistics do not overlap, the solution is trivial - we can simply
+split the groups of conditions by the matching statistics, and then multiply the
+selectivities. For example assume multivariate statistics on (b,c) and (d,e),
+and a condition like this:
+
+    (a=1) AND (b=2) AND (c=3) AND (d=4) AND (e=5)
+
+Then (a=1) is not covered by any of the statistics, so will be estimated using
+the regular per-column statistics. The two conditions ((b=2) AND (c=3)) will be
+estimated using the (b,c) statistics, and ((d=4) AND (e=5)) will be estimated
+using (d,e) statistics. And the resulting selectivities will be estimated.
+
+Now, what if the statistics overlap? For example assume the same condition as
+above, but let's say we have statistics on (a,b,c) and (a,c,d,e). What then?
+
+As selectivity is just a probability that the condition holds for a random row,
+we can write the selectivity like this:
+
+    P(a=1 & b=2 & c=3 & d=4 & e=5)
+
+and we can rewrite it using conditional probability like this
+
+    P(a=1 & b=2 & c=3) * P(d=4 & e=5 | a=1 & b=2 & c=3)
+
+Notice that the first part already matches to (a,b,c) statistics. If we assume
+that columns that are not referenced by the same statistics are independent, we
+may rewrite the second half like this
+
+    P(d=4 & e=5 | a=1 & b=2 & c=3) = P(d=4 & e=5 | a=1 & c=3)
+
+which corresponds to the statistics on (a,c,d,e).
+
+If there are multiple statistics defined on a table, it's not difficult to come
+up with examples when there are multiple ways to combine them to cover a list of
+clauses. We need a way to find the best combination of statistics.
+
+This is the purpose of choose_mv_statistics(). It searches through the possible
+combinations of statistics, and searches such combination that
+
+    (a) covers the most clauses of the list
+
+    (b) reuses the maximum number of clauses as conditions
+        (in conditional probabilities)
+
+While (a) criteria seems natural, the (b) may seem a bit awkward at first. The
+idea is that conditions in a way of transfering information about dependencies
+between statistics.
+
+There are two alternative implementations of choose_mv_statistics() - greedy
+and exhaustive. Exhaustive actually searches through all possible combinations
+of statistics, and for larger numbers of statistics may get quite expensive
+(as it, unsurprisingly, has exponential cost). Greedy terminates in less than
+K steps (when K is the number of clauses), and in each step chooses the best
+next statistics. I've been unable to come up with an example where those two
+approaches would produce different combinations.
+
+It's possible to choose the optimization using mvstat_search_type, with either
+'greedy' or 'exhaustive' values (default is 'greedy').
+
+    SET mvstat_search_type = 'exhaustive';
+
+Note: This is meant mostly for experimentation. I do expect we'll choose one of
+the algorithms and remove the GUC before commit.
+
+
+Limitations of combining statistics
+-----------------------------------
+
+As described in the section 'Combining multiple statistics', the current appoach
+is based on transfering information between statistics by means of conditional
+probabilities. This is a relatively cheap and efficient approach, but it is
+based on two assumptions:
+
+    (1) The overlap between the statistics needs to be sufficiently large, i.e.
+        there needs to be enough columns shared by the statistics to transfer
+        information about dependencies between the remaining columns.
+
+    (2) The query needs to include sufficient clauses on the shared columns.
+
+How a violation of those assumptions may be a problem can be illustrated by
+a simple example. Assume a table with three columns (a,b,c) containing exactly
+the same values, and statistics on (a,b) and (b,c):
+
+    CREATE TABLE test AS SELECT i, i, i
+                           FROM generate_series(1,1000);
+
+    CREATE STATISTICS s1 ON test (a,b) WITH (mcv);
+    CREATE STATISTICS s2 ON test (b,c) WITH (mcv);
+
+    ANALYZE test;
+
+First, let's estimate this query:
+
+    SELECT * FROM test WHERE (a < 10) AND (c < 10);
+
+Clearly, there are no conditions on 'b' (which is the only column shared by the
+two statistics), so we'll end up with an estimate based on assumption of
+independence:
+
+    P(a < 10) * P(c < 10) = 0.01 * 0.01 = 0.0001
+
+Which is a significant under-estimate, as the proper selectivity is 0.01.
+
+But let's estimate another query:
+
+    SELECT * FROM test WHERE (a < 10) AND (b < 500) AND (c < 10);
+
+In this case, the estimate may be computed for example like this:
+
+    P[(a < 10) & (b < 500) & (c < 10)]
+      = P[(a < 10) & (b < 500)] * P[(c < 10) | (a < 10) & (b < 500)]
+      = P[(a < 10) & (b < 500)] * P[(c < 10) | (b < 500)]
+
+The trouble is the probability P(c < 10 | b < 500) evaluates to 0.02, because
+we have assumed (a) and (c) are independent because there is no statistic
+containing both these columns, and the condition on (b) does not transfer
+sufficient amount of information between the two statistics.
+
+Currently, the only solution is to build statistics on all three columns, but
+see the 'combining statistics using convolution' section for ideas on how to
+improve this.
+
+
 Further (possibly crazy) ideas
 ------------------------------
 
@@ -132,3 +263,38 @@ This however merits further discussion, because collecting the sample is quite
 expensive and increasing it further would make ANALYZE even more painful.
 Judging by the experiments with the current implementation, the fixed size
 seems to work reasonably well for now, so we leave this as a future work.
+
+
+Combining stats using convolution
+---------------------------------
+
+While the current approach for combining statistics is based on conditional
+probabilities, and thus only works when the query includes conditions on the
+overlapping parts of the statistics. But there may be other ways to combine
+statistics, relaxing this requirement.
+
+Let's assume two histograms H1 and H2 - then combining them might work about
+like this:
+
+
+    for (buckets of H1, satisfying local conditions)
+    {
+        for (buckets of H2, overlapping with H1 bucket)
+        {
+            mark H2 bucket as 'valid'
+        }
+    }
+
+    s1 = s2 = 0.0
+    for (buckets of H2 marked as valid)
+    {
+        s1 += frequency
+
+        if (bucket satistifes local conditions)
+             s2 += frequency
+    }
+
+    s = (s2 / s1) /* final selectivity estimate */
+
+However this may quickly get non-trivial, e.g. when combining two statistics
+of different types (histogram vs. MCV).

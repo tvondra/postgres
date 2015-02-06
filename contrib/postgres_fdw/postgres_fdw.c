@@ -498,7 +498,8 @@ postgresGetForeignRelSize(PlannerInfo *root,
 													 fpinfo->local_conds,
 													 baserel->relid,
 													 JOIN_INNER,
-													 NULL);
+													 NULL,
+													 NIL);
 
 	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
 
@@ -2149,7 +2150,8 @@ estimate_path_cost_size(PlannerInfo *root,
 										   local_param_join_conds,
 										   foreignrel->relid,
 										   JOIN_INNER,
-										   NULL);
+										   NULL,
+										   NIL);
 		local_sel *= fpinfo->local_conds_sel;
 
 		rows = clamp_row_est(rows * local_sel);
@@ -3618,7 +3620,8 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 													 fpinfo->local_conds,
 													 0,
 													 JOIN_INNER,
-													 NULL);
+													 NULL,
+													 NIL);
 	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
 
 	/*
@@ -3637,7 +3640,7 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 		 */
 		fpinfo->joinclause_sel = clauselist_selectivity(root, fpinfo->joinclauses,
 														0, fpinfo->jointype,
-														extra->sjinfo);
+														extra->sjinfo, NIL);
 
 	}
 	fpinfo->server = GetForeignServer(joinrel->serverid);

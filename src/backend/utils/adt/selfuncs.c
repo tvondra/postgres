@@ -1625,13 +1625,15 @@ booltestsel(PlannerInfo *root, BoolTestType booltesttype, Node *arg,
 			case IS_NOT_FALSE:
 				selec = (double) clause_selectivity(root, arg,
 													varRelid,
-													jointype, sjinfo);
+													jointype, sjinfo,
+													NIL);
 				break;
 			case IS_FALSE:
 			case IS_NOT_TRUE:
 				selec = 1.0 - (double) clause_selectivity(root, arg,
 														  varRelid,
-														  jointype, sjinfo);
+														  jointype, sjinfo,
+														  NIL);
 				break;
 			default:
 				elog(ERROR, "unrecognized booltesttype: %d",
@@ -6257,7 +6259,8 @@ genericcostestimate(PlannerInfo *root,
 	indexSelectivity = clauselist_selectivity(root, selectivityQuals,
 											  index->rel->relid,
 											  JOIN_INNER,
-											  NULL);
+											  NULL,
+											  NIL);
 
 	/*
 	 * If caller didn't give us an estimate, estimate the number of index
@@ -6582,7 +6585,8 @@ btcostestimate(PG_FUNCTION_ARGS)
 		btreeSelectivity = clauselist_selectivity(root, selectivityQuals,
 												  index->rel->relid,
 												  JOIN_INNER,
-												  NULL);
+												  NULL,
+												  NIL);
 		numIndexTuples = btreeSelectivity * index->rel->tuples;
 
 		/*
@@ -7343,7 +7347,8 @@ gincostestimate(PG_FUNCTION_ARGS)
 	*indexSelectivity = clauselist_selectivity(root, selectivityQuals,
 											   index->rel->relid,
 											   JOIN_INNER,
-											   NULL);
+											   NULL,
+											   NIL);
 
 	/* fetch estimated page cost for tablespace containing index */
 	get_tablespace_page_costs(index->reltablespace,
@@ -7575,7 +7580,7 @@ brincostestimate(PG_FUNCTION_ARGS)
 	*indexSelectivity =
 		clauselist_selectivity(root, indexQuals,
 							   path->indexinfo->rel->relid,
-							   JOIN_INNER, NULL);
+							   JOIN_INNER, NULL, NIL);
 	*indexCorrelation = 1;
 
 	/*

@@ -89,6 +89,7 @@ record_in(PG_FUNCTION_ARGS)
 	Datum	   *values;
 	bool	   *nulls;
 	StringInfoData buf;
+	Form_pg_attribute *attrs;
 
 	/*
 	 * Use the passed type unless it's RECORD; we can't support input of
@@ -138,6 +139,8 @@ record_in(PG_FUNCTION_ARGS)
 		my_extra->ncolumns = ncolumns;
 	}
 
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
+
 	values = (Datum *) palloc(ncolumns * sizeof(Datum));
 	nulls = (bool *) palloc(ncolumns * sizeof(bool));
 
@@ -159,15 +162,17 @@ record_in(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < ncolumns; i++)
 	{
-		ColumnIOData *column_info = &my_extra->columns[i];
-		Oid			column_type = tupdesc->attrs[i]->atttypid;
+		Form_pg_attribute	attr = attrs[i];
+		int16		attnum = attr->attnum - 1;
+		ColumnIOData *column_info = &my_extra->columns[attnum];
+		Oid			column_type = attr->atttypid;
 		char	   *column_data;
 
 		/* Ignore dropped columns in datatype, but fill with nulls */
-		if (tupdesc->attrs[i]->attisdropped)
+		if (attr->attisdropped)
 		{
-			values[i] = (Datum) 0;
-			nulls[i] = true;
+			values[attnum] = (Datum) 0;
+			nulls[attnum] = true;
 			continue;
 		}
 
@@ -188,7 +193,7 @@ record_in(PG_FUNCTION_ARGS)
 		if (*ptr == ',' || *ptr == ')')
 		{
 			column_data = NULL;
-			nulls[i] = true;
+			nulls[attnum] = true;
 		}
 		else
 		{
@@ -233,7 +238,7 @@ record_in(PG_FUNCTION_ARGS)
 			}
 
 			column_data = buf.data;
-			nulls[i] = false;
+			nulls[attnum] = false;
 		}
 
 		/*
@@ -249,10 +254,10 @@ record_in(PG_FUNCTION_ARGS)
 			column_info->column_type = column_type;
 		}
 
-		values[i] = InputFunctionCall(&column_info->proc,
-									  column_data,
-									  column_info->typioparam,
-									  tupdesc->attrs[i]->atttypmod);
+		values[attnum] = InputFunctionCall(&column_info->proc,
+										   column_data,
+										   column_info->typioparam,
+										   attr->atttypmod);
 
 		/*
 		 * Prep for next column
@@ -311,6 +316,7 @@ record_out(PG_FUNCTION_ARGS)
 	Datum	   *values;
 	bool	   *nulls;
 	StringInfoData buf;
+	Form_pg_attribute	*attrs;
 
 	/* Extract type info from the tuple itself */
 	tupType = HeapTupleHeaderGetTypeId(rec);
@@ -352,6 +358,8 @@ record_out(PG_FUNCTION_ARGS)
 		my_extra->ncolumns = ncolumns;
 	}
 
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
+
 	values = (Datum *) palloc(ncolumns * sizeof(Datum));
 	nulls = (bool *) palloc(ncolumns * sizeof(bool));
 
@@ -365,22 +373,24 @@ record_out(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < ncolumns; i++)
 	{
-		ColumnIOData *column_info = &my_extra->columns[i];
-		Oid			column_type = tupdesc->attrs[i]->atttypid;
+		Form_pg_attribute attrib = attrs[i];
+		int16		attnum = attrib->attnum - 1;
+		ColumnIOData *column_info = &my_extra->columns[attnum];
+		Oid			column_type = attrib->atttypid;
 		Datum		attr;
 		char	   *value;
 		char	   *tmp;
 		bool		nq;
 
 		/* Ignore dropped columns in datatype */
-		if (tupdesc->attrs[i]->attisdropped)
+		if (attrib->attisdropped)
 			continue;
 
 		if (needComma)
 			appendStringInfoChar(&buf, ',');
 		needComma = true;
 
-		if (nulls[i])
+		if (nulls[attnum])
 		{
 			/* emit nothing... */
 			continue;
@@ -399,7 +409,7 @@ record_out(PG_FUNCTION_ARGS)
 			column_info->column_type = column_type;
 		}
 
-		attr = values[i];
+		attr = values[attnum];
 		value = OutputFunctionCall(&column_info->proc, attr);
 
 		/* Detect whether we need double quotes for this value */
@@ -464,6 +474,7 @@ record_recv(PG_FUNCTION_ARGS)
 	int			i;
 	Datum	   *values;
 	bool	   *nulls;
+	Form_pg_attribute *attrs;
 
 	/*
 	 * Use the passed type unless it's RECORD; we can't support input of
@@ -507,6 +518,7 @@ record_recv(PG_FUNCTION_ARGS)
 		my_extra->ncolumns = ncolumns;
 	}
 
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
 	values = (Datum *) palloc(ncolumns * sizeof(Datum));
 	nulls = (bool *) palloc(ncolumns * sizeof(bool));
 
@@ -529,8 +541,10 @@ record_recv(PG_FUNCTION_ARGS)
 	/* Process each column */
 	for (i = 0; i < ncolumns; i++)
 	{
-		ColumnIOData *column_info = &my_extra->columns[i];
-		Oid			column_type = tupdesc->attrs[i]->atttypid;
+		Form_pg_attribute   attr = attrs[i];
+		int16       attnum = attr->attnum - 1;
+		ColumnIOData *column_info = &my_extra->columns[attnum];
+		Oid			column_type = attr->atttypid;
 		Oid			coltypoid;
 		int			itemlen;
 		StringInfoData item_buf;
@@ -538,10 +552,10 @@ record_recv(PG_FUNCTION_ARGS)
 		char		csave;
 
 		/* Ignore dropped columns in datatype, but fill with nulls */
-		if (tupdesc->attrs[i]->attisdropped)
+		if (attr->attisdropped)
 		{
-			values[i] = (Datum) 0;
-			nulls[i] = true;
+			values[attnum] = (Datum) 0;
+			nulls[attnum] = true;
 			continue;
 		}
 
@@ -564,7 +578,7 @@ record_recv(PG_FUNCTION_ARGS)
 		{
 			/* -1 length means NULL */
 			bufptr = NULL;
-			nulls[i] = true;
+			nulls[attnum] = true;
 			csave = 0;			/* keep compiler quiet */
 		}
 		else
@@ -586,7 +600,7 @@ record_recv(PG_FUNCTION_ARGS)
 			buf->data[buf->cursor] = '\0';
 
 			bufptr = &item_buf;
-			nulls[i] = false;
+			nulls[attnum] = false;
 		}
 
 		/* Now call the column's receiveproc */
@@ -600,10 +614,10 @@ record_recv(PG_FUNCTION_ARGS)
 			column_info->column_type = column_type;
 		}
 
-		values[i] = ReceiveFunctionCall(&column_info->proc,
-										bufptr,
-										column_info->typioparam,
-										tupdesc->attrs[i]->atttypmod);
+		values[attnum] = ReceiveFunctionCall(&column_info->proc,
+											 bufptr,
+											 column_info->typioparam,
+											 attr->atttypmod);
 
 		if (bufptr)
 		{
@@ -654,6 +668,7 @@ record_send(PG_FUNCTION_ARGS)
 	Datum	   *values;
 	bool	   *nulls;
 	StringInfoData buf;
+	Form_pg_attribute	*attrs;
 
 	/* Extract type info from the tuple itself */
 	tupType = HeapTupleHeaderGetTypeId(rec);
@@ -695,6 +710,8 @@ record_send(PG_FUNCTION_ARGS)
 		my_extra->ncolumns = ncolumns;
 	}
 
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
+
 	values = (Datum *) palloc(ncolumns * sizeof(Datum));
 	nulls = (bool *) palloc(ncolumns * sizeof(bool));
 
@@ -715,13 +732,15 @@ record_send(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < ncolumns; i++)
 	{
-		ColumnIOData *column_info = &my_extra->columns[i];
-		Oid			column_type = tupdesc->attrs[i]->atttypid;
+		Form_pg_attribute attrib = attrs[i];
+		int16		attnum = attrib->attnum - 1;
+		ColumnIOData *column_info = &my_extra->columns[attnum];
+		Oid			column_type = tupdesc->attrs[attnum]->atttypid;
 		Datum		attr;
 		bytea	   *outputbytes;
 
 		/* Ignore dropped columns in datatype */
-		if (tupdesc->attrs[i]->attisdropped)
+		if (attrib->attisdropped)
 			continue;
 
 		pq_sendint(&buf, column_type, sizeof(Oid));
@@ -746,7 +765,7 @@ record_send(PG_FUNCTION_ARGS)
 			column_info->column_type = column_type;
 		}
 
-		attr = values[i];
+		attr = values[attnum];
 		outputbytes = SendFunctionCall(&column_info->proc, attr);
 		pq_sendint(&buf, VARSIZE(outputbytes) - VARHDRSZ, 4);
 		pq_sendbytes(&buf, VARDATA(outputbytes),

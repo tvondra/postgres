@@ -17,6 +17,8 @@
 
 /*
  * check to see if the ATT'th bit of an array of 8-bit bytes is set.
+ *
+ * Note that the index into the nulls array is attnum-1.
  */
 #define att_isnull(ATT, BITS) (!((BITS)[(ATT) >> 3] & (1 << ((ATT) & 0x07))))
 

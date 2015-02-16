@@ -120,6 +120,7 @@ MakeTupleTableSlot(void)
 	slot->tts_mcxt = CurrentMemoryContext;
 	slot->tts_buffer = InvalidBuffer;
 	slot->tts_nvalid = 0;
+	slot->tts_nphysvalid = 0;
 	slot->tts_values = NULL;
 	slot->tts_isnull = NULL;
 	slot->tts_mintuple = NULL;
@@ -353,6 +354,7 @@ ExecStoreTuple(HeapTuple tuple,
 
 	/* Mark extracted state invalid */
 	slot->tts_nvalid = 0;
+	slot->tts_nphysvalid = 0;
 
 	/*
 	 * If tuple is on a disk page, keep the page pinned as long as we hold a
@@ -426,6 +428,7 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 
 	/* Mark extracted state invalid */
 	slot->tts_nvalid = 0;
+	slot->tts_nphysvalid = 0;
 
 	return slot;
 }
@@ -472,6 +475,7 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	 */
 	slot->tts_isempty = true;
 	slot->tts_nvalid = 0;
+	slot->tts_nphysvalid = 0;
 
 	return slot;
 }
@@ -499,6 +503,7 @@ ExecStoreVirtualTuple(TupleTableSlot *slot)
 
 	slot->tts_isempty = false;
 	slot->tts_nvalid = slot->tts_tupleDescriptor->natts;
+	slot->tts_nphysvalid = slot->tts_tupleDescriptor->natts;
 
 	return slot;
 }
@@ -595,11 +600,12 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 		return minimal_tuple_from_heap_tuple(slot->tts_tuple);
 
 	/*
-	 * Otherwise we need to build a tuple from the Datum array.
+	 * Otherwise we need to build a tuple from the Datum array.  The
+	 * arrays in the slot are in physical order, so we need to re-sort
+	 * them in attnum order to pass them to heap_form_minimal_tuple.
 	 */
 	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
-								   slot->tts_values,
-								   slot->tts_isnull);
+								   slot->tts_values, slot->tts_isnull);
 }
 
 /* --------------------------------
@@ -771,6 +777,7 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 	 * that we have not pfree'd tts_mintuple, if there is one.)
 	 */
 	slot->tts_nvalid = 0;
+	slot->tts_nphysvalid = 0;
 
 	/*
 	 * On the same principle of not depending on previous remote storage,
@@ -925,6 +932,7 @@ ExecTypeFromTLInternal(List *targetList, bool hasoid, bool skipjunk)
 
 		if (skipjunk && tle->resjunk)
 			continue;
+
 		TupleDescInitEntry(typeInfo,
 						   cur_resno,
 						   tle->resname,
@@ -934,6 +942,19 @@ ExecTypeFromTLInternal(List *targetList, bool hasoid, bool skipjunk)
 		TupleDescInitEntryCollation(typeInfo,
 									cur_resno,
 									exprCollation((Node *) tle->expr));
+		if (IsA(tle->expr, Var))
+		{
+			Var	   *var = (Var *) tle->expr;
+
+			elog(WARNING, "%s: initializing entry %d from %s",
+				 PG_FUNCNAME_MACRO, cur_resno,
+				 nodeToString(var));
+
+			TupleDescInitEntryPhysicalPosition(typeInfo,
+											   cur_resno,
+											   var->varphysno == 0 ?
+											   var->varattno : var->varphysno);
+		}
 		cur_resno++;
 	}
 
@@ -959,6 +980,9 @@ ExecTypeFromExprList(List *exprList)
 	{
 		Node	   *e = lfirst(lc);
 
+		elog(WARNING, "%s: initializing entry %d from %s",
+			 PG_FUNCNAME_MACRO, cur_resno,
+			 nodeToString(e));
 		TupleDescInitEntry(typeInfo,
 						   cur_resno,
 						   NULL,

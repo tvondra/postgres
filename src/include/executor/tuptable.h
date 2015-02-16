@@ -89,10 +89,21 @@
  * buffer page.)
  *
  * tts_nvalid indicates the number of valid columns in the tts_values/isnull
+ * arrays.  When the slot is holding a "virtual" tuple this must be equal to the
+ * descriptor's natts.  When the slot is holding a physical tuple this is equal
+ * to the latest column to which we have fully extracted, that is, there are no
+ * "holes" at the left of this column.  Since the disposition of attributes in
+ * the physical storage might not match the ordering of the attributes in the
+ * tuple descriptor, we keep a separate tts_nphysvalid counter which determines
+ * the point up to which we have physically extracted the values.
+ *
+ * tts_nvalid indicates the number of valid columns in the tts_values/isnull
  * arrays.  When the slot is holding a "virtual" tuple this must be equal
  * to the descriptor's natts.  When the slot is holding a physical tuple
  * this is equal to the number of columns we have extracted (we always
- * extract columns from left to right, so there are no holes).
+ * extract columns from left to right, so there are no holes).  Note that since
+ * the tts_values/tts_isnull arrays follow physical ordering, tts_nvalid
+ * is an attphysnum.
  *
  * tts_values/tts_isnull are allocated when a descriptor is assigned to the
  * slot; they are of length equal to the descriptor's natts.
@@ -122,6 +133,7 @@ typedef struct TupleTableSlot
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
 	Buffer		tts_buffer;		/* tuple's buffer, or InvalidBuffer */
 	int			tts_nvalid;		/* # of valid values in tts_values */
+	int			tts_nphysvalid;	/* # of values actually decoded */
 	Datum	   *tts_values;		/* current per-attribute values */
 	bool	   *tts_isnull;		/* current per-attribute isnull flags */
 	MinimalTuple tts_mintuple;	/* minimal tuple, or NULL if none */
@@ -165,9 +177,11 @@ extern TupleTableSlot *ExecCopySlot(TupleTableSlot *dstslot,
 			 TupleTableSlot *srcslot);
 
 /* in access/common/heaptuple.c */
-extern Datum slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull);
+extern Datum slot_getattr(TupleTableSlot *slot, AttrNumber attnum, bool *isnull);
 extern void slot_getallattrs(TupleTableSlot *slot);
 extern void slot_getsomeattrs(TupleTableSlot *slot, int attnum);
 extern bool slot_attisnull(TupleTableSlot *slot, int attnum);
+extern void slot_sort_datumarrays(TupleTableSlot *slot, Datum **values,
+					  bool **isnull);
 
 #endif   /* TUPTABLE_H */

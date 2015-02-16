@@ -1484,7 +1484,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 		TupleDesc	tupleDesc;
 		TupleConstr *constr;
 		AttrNumber *newattno;
-		AttrNumber	parent_attno;
+		AttrNumber	parent_colctr;
+		Form_pg_attribute *parent_attrs;
 
 		/*
 		 * A self-exclusive lock is needed here.  If two backends attempt to
@@ -1541,6 +1542,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 			parentsWithOids++;
 
 		tupleDesc = RelationGetDescr(relation);
+		parent_attrs = TupleDescGetLogSortedAttrs(tupleDesc);
 		constr = tupleDesc->constr;
 
 		/*
@@ -1551,10 +1553,17 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 		newattno = (AttrNumber *)
 			palloc0(tupleDesc->natts * sizeof(AttrNumber));
 
-		for (parent_attno = 1; parent_attno <= tupleDesc->natts;
-			 parent_attno++)
+		/*
+		 * parent_colctr is the index into the logical-ordered array of parent
+		 * columns; parent_attno is the attnum of each column.  The newattno
+		 * map entries must use the latter for numbering; the former is a loop
+		 * counter only.
+		 */
+		for (parent_colctr = 1; parent_colctr <= tupleDesc->natts;
+			 parent_colctr++)
 		{
-			Form_pg_attribute attribute = tupleDesc->attrs[parent_attno - 1];
+			Form_pg_attribute attribute = parent_attrs[parent_colctr - 1];
+			AttrNumber	parent_attno = attribute->attnum;
 			char	   *attributeName = NameStr(attribute->attname);
 			int			exist_attno;
 			ColumnDef  *def;
@@ -4726,6 +4735,8 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	attribute.attcacheoff = -1;
 	attribute.atttypmod = typmod;
 	attribute.attnum = newattnum;
+	attribute.attlognum = newattnum;
+	attribute.attphysnum = newattnum;
 	attribute.attbyval = tform->typbyval;
 	attribute.attndims = list_length(colDef->typeName->arrayBounds);
 	attribute.attstorage = tform->typstorage;

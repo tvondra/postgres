@@ -35,9 +35,9 @@ CREATE TABLE onek (
 );
 
 CREATE TABLE tenk1 (
-	unique1		int4,
-	unique2		int4,
 	two			int4,
+	unique2		int4,
+	unique1		int4,
 	four		int4,
 	ten			int4,
 	twenty		int4,
@@ -52,6 +52,9 @@ CREATE TABLE tenk1 (
 	stringu2	name,
 	string4		name
 ) WITH OIDS;
+
+UPDATE pg_attribute SET attlognum = 1 where attrelid = 'tenk1'::regclass and attname = 'unique1';
+UPDATE pg_attribute SET attlognum = 3 where attrelid = 'tenk1'::regclass and attname = 'two';
 
 CREATE TABLE tenk2 (
 	unique1 	int4,

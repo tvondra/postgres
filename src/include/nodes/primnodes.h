@@ -146,8 +146,9 @@ typedef struct Var
 	Expr		xpr;
 	Index		varno;			/* index of this var's relation in the range
 								 * table, or INNER_VAR/OUTER_VAR/INDEX_VAR */
-	AttrNumber	varattno;		/* attribute number of this var, or zero for
-								 * all */
+	AttrNumber	varattno;		/* identity attribute number (attnum) of this
+								 * var, or zero for all */
+	AttrNumber	varphysno;		/* physical position of column in table */
 	Oid			vartype;		/* pg_type OID for the type of this var */
 	int32		vartypmod;		/* pg_attribute typmod value */
 	Oid			varcollid;		/* OID of collation, or InvalidOid if none */
@@ -1212,6 +1213,7 @@ typedef struct TargetEntry
 								 * clause */
 	Oid			resorigtbl;		/* OID of column's source table */
 	AttrNumber	resorigcol;		/* column's number in source table */
+	AttrNumber	resorigphyscol;	/* column's physical position in source table */
 	bool		resjunk;		/* set to true to eliminate the attribute from
 								 * final target list */
 } TargetEntry;

@@ -740,14 +740,15 @@ extern HeapTuple heap_copytuple(HeapTuple tuple);
 extern void heap_copytuple_with_tuple(HeapTuple src, HeapTuple dest);
 extern Datum heap_copy_tuple_as_datum(HeapTuple tuple, TupleDesc tupleDesc);
 extern HeapTuple heap_form_tuple(TupleDesc tupleDescriptor,
-				Datum *values, bool *isnull);
+						 Datum *values, bool *isnull);
 extern HeapTuple heap_modify_tuple(HeapTuple tuple,
 				  TupleDesc tupleDesc,
 				  Datum *replValues,
 				  bool *replIsnull,
 				  bool *doReplace);
 extern void heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
-				  Datum *values, bool *isnull);
+						   Datum *values, bool *isnull);
+
 
 /* these three are deprecated versions of the three above: */
 extern HeapTuple heap_formtuple(TupleDesc tupleDescriptor,

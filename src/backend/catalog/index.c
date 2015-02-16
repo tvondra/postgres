@@ -348,6 +348,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 			 * attr
 			 */
 			to->attnum = i + 1;
+			to->attlognum = i + 1;
+			to->attphysnum = i + 1;
 
 			to->attstattarget = -1;
 			to->attcacheoff = -1;
@@ -382,6 +384,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 			 * Assign some of the attributes values. Leave the rest as 0.
 			 */
 			to->attnum = i + 1;
+			to->attlognum = i + 1;
+			to->attphysnum = i + 1;
 			to->atttypid = keyType;
 			to->attlen = typeTup->typlen;
 			to->attbyval = typeTup->typbyval;

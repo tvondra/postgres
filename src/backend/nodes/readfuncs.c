@@ -429,6 +429,7 @@ _readVar(void)
 
 	READ_UINT_FIELD(varno);
 	READ_INT_FIELD(varattno);
+	READ_INT_FIELD(varphysno);
 	READ_OID_FIELD(vartype);
 	READ_INT_FIELD(vartypmod);
 	READ_OID_FIELD(varcollid);
@@ -1143,6 +1144,7 @@ _readTargetEntry(void)
 	READ_UINT_FIELD(ressortgroupref);
 	READ_OID_FIELD(resorigtbl);
 	READ_INT_FIELD(resorigcol);
+	READ_INT_FIELD(resorigphyscol);
 	READ_BOOL_FIELD(resjunk);
 
 	READ_DONE();
@@ -1218,6 +1220,7 @@ _readRangeTblEntry(void)
 		case RTE_RELATION:
 			READ_OID_FIELD(relid);
 			READ_CHAR_FIELD(relkind);
+			READ_NODE_FIELD(lognums);
 			break;
 		case RTE_SUBQUERY:
 			READ_NODE_FIELD(subquery);

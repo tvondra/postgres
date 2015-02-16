@@ -60,6 +60,14 @@ typedef struct tupleConstr
  * row type, or a value >= 0 to allow the rowtype to be looked up in the
  * typcache.c type cache.
  *
+ * For descriptors coming out of catalogued relations, it is possible to obtain
+ * an array of attributes sorted by attlognum and attphysnum.  The attlognum
+ * one helps *-expansion, among other things; the attphysnum one is useful for
+ * encoding and decoding tuples to and from the on-disk representation.  The
+ * arrays are initially set to NULL, and are only populated on first access;
+ * those wanting to access it should always do it through
+ * TupleDescGetLogSortedAttrs / TupleDescGetPhysSortedAttrs.
+ *
  * Tuple descriptors that live in caches (relcache or typcache, at present)
  * are reference-counted: they can be deleted when their reference count goes
  * to zero.  Tuple descriptors created by the executor need no reference
@@ -73,6 +81,8 @@ typedef struct tupleDesc
 	int			natts;			/* number of attributes in the tuple */
 	Form_pg_attribute *attrs;
 	/* attrs[N] is a pointer to the description of Attribute Number N+1 */
+	Form_pg_attribute *logattrs;	/* array of attributes sorted by attlognum */
+	Form_pg_attribute *physattrs;	/* array of attributes sorted by attphysnum */
 	TupleConstr *constr;		/* constraints, or NULL if none */
 	Oid			tdtypeid;		/* composite type ID for tuple type */
 	int32		tdtypmod;		/* typmod for tuple type */
@@ -123,8 +133,16 @@ extern void TupleDescInitEntryCollation(TupleDesc desc,
 							AttrNumber attributeNumber,
 							Oid collationid);
 
+extern void TupleDescInitEntryPhysicalPosition(TupleDesc desc,
+								   AttrNumber attributeNumber,
+								   AttrNumber attphysnum);
+
 extern TupleDesc BuildDescForRelation(List *schema);
 
 extern TupleDesc BuildDescFromLists(List *names, List *types, List *typmods, List *collations);
+
+extern Form_pg_attribute *TupleDescGetLogSortedAttrs(TupleDesc desc);
+
+extern Form_pg_attribute *TupleDescGetPhysSortedAttrs(TupleDesc desc);
 
 #endif   /* TUPDESC_H */

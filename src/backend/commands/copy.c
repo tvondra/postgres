@@ -158,7 +158,7 @@ typedef struct CopyStateData
 	bool		file_has_oids;
 	FmgrInfo	oid_in_function;
 	Oid			oid_typioparam;
-	FmgrInfo   *in_functions;	/* array of input functions for each attrs */
+	FmgrInfo   *in_functions;	/* array of input functions for each attr */
 	Oid		   *typioparams;	/* array of element types for in_functions */
 	int		   *defmap;			/* array of default att numbers */
 	ExprState **defexprs;		/* array of default att expressions */
@@ -4319,7 +4319,7 @@ CopyGetAttnums(TupleDesc tupDesc, Relation rel, List *attnamelist)
 	if (attnamelist == NIL)
 	{
 		/* Generate default column list */
-		Form_pg_attribute *attr = tupDesc->attrs;
+		Form_pg_attribute *attr = TupleDescGetLogSortedAttrs(tupDesc);
 		int			attr_count = tupDesc->natts;
 		int			i;
 
@@ -4327,7 +4327,7 @@ CopyGetAttnums(TupleDesc tupDesc, Relation rel, List *attnamelist)
 		{
 			if (attr[i]->attisdropped)
 				continue;
-			attnums = lappend_int(attnums, i + 1);
+			attnums = lappend_int(attnums, attr[i]->attnum);
 		}
 	}
 	else

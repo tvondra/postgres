@@ -78,8 +78,9 @@ typedef struct
 	(((con)->consttype == REGCLASSOID || (con)->consttype == OIDOID) && \
 	 !(con)->constisnull)
 
-#define fix_scan_list(root, lst, rtoffset) \
+/* #define fix_scan_list(root, lst, rtoffset) \
 	((List *) fix_scan_expr(root, (Node *) (lst), rtoffset))
+	*/
 
 static void add_rtes_to_flat_rtable(PlannerInfo *root, bool recursing);
 static void flatten_unplanned_rtes(PlannerGlobal *glob, RangeTblEntry *rte);
@@ -156,13 +157,16 @@ static bool extract_query_dependencies_walker(Node *node,
  * 3. We adjust Vars in upper plan nodes to refer to the outputs of their
  * subplans.
  *
- * 4. PARAM_MULTIEXPR Params are replaced by regular PARAM_EXEC Params,
+ * 4. We correct attphysnum annotations in scan tuple descriptors to match
+ * the real values.
+ *
+ * 5. PARAM_MULTIEXPR Params are replaced by regular PARAM_EXEC Params,
  * now that we have finished planning all MULTIEXPR subplans.
  *
- * 5. We compute regproc OIDs for operators (ie, we look up the function
+ * 6. We compute regproc OIDs for operators (ie, we look up the function
  * that implements each op).
  *
- * 6. We create lists of specific objects that the plan depends on.
+ * 7. We create lists of specific objects that the plan depends on.
  * This will be used by plancache.c to drive invalidation of cached plans.
  * Relation dependencies are represented by OIDs, and everything else by
  * PlanInvalItems (this distinction is motivated by the shared-inval APIs).
@@ -418,6 +422,61 @@ add_rte_to_flat_rtable(PlannerGlobal *glob, RangeTblEntry *rte)
 		glob->relationOids = lappend_oid(glob->relationOids, newrte->relid);
 }
 
+
+static Node *fix_physno_mutator(Node *node, void *context);
+
+static List *
+fix_scan_list(PlannerInfo *root, List *targetlist, int rtoffset)
+{
+	Node  *node;
+
+	node = fix_physno_mutator((Node *) targetlist, root);
+	return (List *) fix_scan_expr(root, node, rtoffset);
+}
+
+#include "parser/parsetree.h"
+#include "utils/rel.h"
+#include "access/heapam.h"
+static Node *
+fix_physno_mutator(Node *node, void *context)
+{
+	PlannerInfo *root = (PlannerInfo *) context;
+
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, Var))
+	{
+		/* do the transformation here */
+		/*
+		 * FIXME --- there must be a way to do this properly .. perhaps save the
+		 * attphysnum array in the RTE struct?
+		 */
+		Var		*var = (Var *) node;
+		RangeTblEntry *rte;
+		Relation	rel;
+
+		if (var->varattno > 0 && !IS_SPECIAL_VARNO(var->varno))
+		{
+			rte = rt_fetch(var->varno, root->parse->rtable);
+			if (rte->rtekind == RTE_RELATION)
+			{
+				rel = relation_open(rte->relid, NoLock);
+
+				var->varphysno = rel->rd_att->attrs[var->varattno - 1]->attphysnum;
+				elog(WARNING, "setting varphysno %d to varattno %d",
+					 var->varphysno, var->varattno);
+
+				relation_close(rel, NoLock);
+			}
+		}
+	}
+
+	return expression_tree_mutator(node, fix_physno_mutator, (void *) context);
+}
+
+
+
 /*
  * set_plan_refs: recurse through the Plan nodes of a single subquery level
  */
@@ -612,6 +671,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			 * mention ease of debugging --- wrong varnos are very confusing).
 			 */
 			set_dummy_tlist_references(plan, rtoffset);
+
 
 			/*
 			 * Since these plan types don't check quals either, we should not
@@ -1066,6 +1126,7 @@ copyVar(Var *var)
 	return newvar;
 }
 
+
 /*
  * fix_expr_common
  *		Do generic set_plan_references processing on an expression node
@@ -1172,6 +1233,7 @@ fix_param_node(PlannerInfo *root, Param *p)
  *		Do set_plan_references processing on a scan-level expression
  *
  * This consists of incrementing all Vars' varnos by rtoffset,
+ * setting all Vars' varphysnum to their correct values,
  * replacing PARAM_MULTIEXPR Params, expanding PlaceHolderVars,
  * looking up operator opcode info for OpExpr and related nodes,
  * and adding OIDs from regclass Const nodes into root->glob->relationOids.
@@ -1206,6 +1268,7 @@ fix_scan_expr(PlannerInfo *root, Node *node, int rtoffset)
 	}
 }
 
+
 static Node *
 fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context)
 {
@@ -1214,7 +1277,7 @@ fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context)
 	if (IsA(node, Var))
 	{
 		Var		   *var = copyVar((Var *) node);
-
+	
 		Assert(var->varlevelsup == 0);
 
 		/*
@@ -1227,6 +1290,7 @@ fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context)
 			var->varno += context->rtoffset;
 		if (var->varnoold > 0)
 			var->varnoold += context->rtoffset;
+
 		return (Node *) var;
 	}
 	if (IsA(node, Param))

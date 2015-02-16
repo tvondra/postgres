@@ -1084,6 +1084,7 @@ _copyVar(const Var *from)
 
 	COPY_SCALAR_FIELD(varno);
 	COPY_SCALAR_FIELD(varattno);
+	COPY_SCALAR_FIELD(varphysno);
 	COPY_SCALAR_FIELD(vartype);
 	COPY_SCALAR_FIELD(vartypmod);
 	COPY_SCALAR_FIELD(varcollid);
@@ -1792,6 +1793,7 @@ _copyTargetEntry(const TargetEntry *from)
 	COPY_SCALAR_FIELD(ressortgroupref);
 	COPY_SCALAR_FIELD(resorigtbl);
 	COPY_SCALAR_FIELD(resorigcol);
+	COPY_SCALAR_FIELD(resorigphyscol);
 	COPY_SCALAR_FIELD(resjunk);
 
 	return newnode;
@@ -2009,6 +2011,7 @@ _copyRangeTblEntry(const RangeTblEntry *from)
 	COPY_SCALAR_FIELD(rtekind);
 	COPY_SCALAR_FIELD(relid);
 	COPY_SCALAR_FIELD(relkind);
+	COPY_NODE_FIELD(lognums);
 	COPY_NODE_FIELD(subquery);
 	COPY_SCALAR_FIELD(security_barrier);
 	COPY_SCALAR_FIELD(jointype);

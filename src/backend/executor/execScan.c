@@ -271,11 +271,12 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 	int			attrno;
 	bool		hasoid;
 	ListCell   *tlist_item = list_head(tlist);
+	Form_pg_attribute *attrs = TupleDescGetLogSortedAttrs(tupdesc);
 
 	/* Check the tlist attributes */
 	for (attrno = 1; attrno <= numattrs; attrno++)
 	{
-		Form_pg_attribute att_tup = tupdesc->attrs[attrno - 1];
+		Form_pg_attribute att_tup = attrs[attrno - 1];
 		Var		   *var;
 
 		if (tlist_item == NULL)
@@ -286,7 +287,7 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 		/* if these Asserts fail, planner messed up */
 		Assert(var->varno == varno);
 		Assert(var->varlevelsup == 0);
-		if (var->varattno != attrno)
+		if (var->varattno != att_tup->attnum)
 			return false;		/* out of order */
 		if (att_tup->attisdropped)
 			return false;		/* table contains dropped columns */

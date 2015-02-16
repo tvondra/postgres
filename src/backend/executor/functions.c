@@ -1657,6 +1657,7 @@ check_sql_fn_retval(Oid func_id, Oid rettype, List *queryTreeList,
 	{
 		/* Returns a rowtype */
 		TupleDesc	tupdesc;
+		Form_pg_attribute *attrs;
 		int			tupnatts;	/* physical number of columns in tuple */
 		int			tuplogcols; /* # of nondeleted columns in tuple */
 		int			colindex;	/* physical column index */
@@ -1716,11 +1717,13 @@ check_sql_fn_retval(Oid func_id, Oid rettype, List *queryTreeList,
 
 		/*
 		 * Verify that the targetlist matches the return tuple type. We scan
-		 * the non-deleted attributes to ensure that they match the datatypes
+		 * the non-deleted attributes, in logical ordering, to ensure that
+		 * they match the datatypes
 		 * of the non-resjunk columns.  For deleted attributes, insert NULL
 		 * result columns if the caller asked for that.
 		 */
 		tupnatts = tupdesc->natts;
+		attrs = TupleDescGetLogSortedAttrs(tupdesc);
 		tuplogcols = 0;			/* we'll count nondeleted cols as we go */
 		colindex = 0;
 		newtlist = NIL;			/* these are only used if modifyTargetList */
@@ -1749,7 +1752,7 @@ check_sql_fn_retval(Oid func_id, Oid rettype, List *queryTreeList,
 							 errmsg("return type mismatch in function declared to return %s",
 									format_type_be(rettype)),
 					errdetail("Final statement returns too many columns.")));
-				attr = tupdesc->attrs[colindex - 1];
+				attr = attrs[colindex - 1];
 				if (attr->attisdropped && modifyTargetList)
 				{
 					Expr	   *null_expr;
@@ -1806,7 +1809,7 @@ check_sql_fn_retval(Oid func_id, Oid rettype, List *queryTreeList,
 		/* remaining columns in tupdesc had better all be dropped */
 		for (colindex++; colindex <= tupnatts; colindex++)
 		{
-			if (!tupdesc->attrs[colindex - 1]->attisdropped)
+			if (!attrs[colindex - 1]->attisdropped)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 						 errmsg("return type mismatch in function declared to return %s",

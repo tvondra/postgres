@@ -830,6 +830,7 @@ ExecEvalWholeRowVar(WholeRowVarExprState *wrvstate, ExprContext *econtext,
 									  slot_tupdesc->natts,
 									  var_tupdesc->natts)));
 
+		/* FIXME -- this should probably consider attributes in logical order */
 		for (i = 0; i < var_tupdesc->natts; i++)
 		{
 			Form_pg_attribute vattr = var_tupdesc->attrs[i];
@@ -1029,6 +1030,7 @@ ExecEvalWholeRowSlow(WholeRowVarExprState *wrvstate, ExprContext *econtext,
 	/* Check to see if any dropped attributes are non-null */
 	for (i = 0; i < var_tupdesc->natts; i++)
 	{
+		/* XXX should probably consider attributes in logical order */
 		Form_pg_attribute vattr = var_tupdesc->attrs[i];
 		Form_pg_attribute sattr = tupleDesc->attrs[i];
 
@@ -1182,6 +1184,9 @@ ExecEvalParamExtern(ExprState *exprstate, ExprContext *econtext,
  *		to use these.  Ex: overpaid(EMP) might call GetAttributeByNum().
  *		Note: these are actually rather slow because they do a typcache
  *		lookup on each call.
+ *
+ *	FIXME -- probably these functions should consider attrno a logical column
+ *	number
  */
 Datum
 GetAttributeByNum(HeapTupleHeader tuple,
@@ -1618,6 +1623,7 @@ tupledesc_match(TupleDesc dst_tupdesc, TupleDesc src_tupdesc)
 
 	for (i = 0; i < dst_tupdesc->natts; i++)
 	{
+		/* XXX should consider attributes in logical order? */
 		Form_pg_attribute dattr = dst_tupdesc->attrs[i];
 		Form_pg_attribute sattr = src_tupdesc->attrs[i];
 
@@ -3258,6 +3264,7 @@ ExecEvalRow(RowExprState *rstate,
 	int			natts;
 	ListCell   *arg;
 	int			i;
+	Form_pg_attribute *attrs;
 
 	/* Set default values for result flags: non-null, not a set result */
 	*isNull = false;
@@ -3272,13 +3279,18 @@ ExecEvalRow(RowExprState *rstate,
 	/* preset to nulls in case rowtype has some later-added columns */
 	memset(isnull, true, natts * sizeof(bool));
 
-	/* Evaluate field values */
+	/*
+	 * Evaluate field values.  Note the incoming expr array is sorted in
+	 * logical order.
+	 */
+	attrs = TupleDescGetLogSortedAttrs(rstate->tupdesc);
 	i = 0;
 	foreach(arg, rstate->args)
 	{
 		ExprState  *e = (ExprState *) lfirst(arg);
+		int			attnum = attrs[i]->attnum - 1;
 
-		values[i] = ExecEvalExpr(e, econtext, &isnull[i], NULL);
+		values[attnum] = ExecEvalExpr(e, econtext, &isnull[attnum], NULL);
 		i++;
 	}
 
@@ -4028,6 +4040,7 @@ ExecEvalFieldSelect(FieldSelectState *fstate,
 	TupleDesc	tupDesc;
 	Form_pg_attribute attr;
 	HeapTupleData tmptup;
+	Form_pg_attribute *attrs;
 
 	tupDatum = ExecEvalExpr(fstate->arg, econtext, isNull, isDone);
 
@@ -4055,7 +4068,9 @@ ExecEvalFieldSelect(FieldSelectState *fstate,
 	if (fieldnum > tupDesc->natts)		/* should never happen */
 		elog(ERROR, "attribute number %d exceeds number of columns %d",
 			 fieldnum, tupDesc->natts);
-	attr = tupDesc->attrs[fieldnum - 1];
+//	attrs = TupleDescGetLogSortedAttrs(tupDesc);
+	attrs = tupDesc->attrs;
+	attr = attrs[fieldnum - 1];
 
 	/* Check for dropped column, and force a NULL result if so */
 	if (attr->attisdropped)
@@ -4078,7 +4093,7 @@ ExecEvalFieldSelect(FieldSelectState *fstate,
 	tmptup.t_data = tuple;
 
 	result = heap_getattr(&tmptup,
-						  fieldnum,
+						  attr->attnum,
 						  tupDesc,
 						  isNull);
 	return result;
@@ -4104,6 +4119,7 @@ ExecEvalFieldStore(FieldStoreState *fstate,
 	bool	   *isnull;
 	Datum		save_datum;
 	bool		save_isNull;
+	Form_pg_attribute *attrs;
 	ListCell   *l1,
 			   *l2;
 
@@ -4115,6 +4131,8 @@ ExecEvalFieldStore(FieldStoreState *fstate,
 	/* Lookup tupdesc if first time through or after rescan */
 	tupDesc = get_cached_rowtype(fstore->resulttype, -1,
 								 &fstate->argdesc, econtext);
+//	attrs = TupleDescGetLogSortedAttrs(tupDesc);
+	attrs = tupDesc->attrs;
 
 	/* Allocate workspace */
 	values = (Datum *) palloc(tupDesc->natts * sizeof(Datum));
@@ -4153,8 +4171,10 @@ ExecEvalFieldStore(FieldStoreState *fstate,
 	{
 		ExprState  *newval = (ExprState *) lfirst(l1);
 		AttrNumber	fieldnum = lfirst_int(l2);
+		AttrNumber	attnum = attrs[fieldnum - 1]->attnum;
 
-		Assert(fieldnum > 0 && fieldnum <= tupDesc->natts);
+
+		Assert(attnum > 0 && attnum <= tupDesc->natts);
 
 		/*
 		 * Use the CaseTestExpr mechanism to pass down the old value of the
@@ -4165,13 +4185,13 @@ ExecEvalFieldStore(FieldStoreState *fstate,
 		 * assignment can't be within a CASE either.  (So saving and restoring
 		 * the caseValue is just paranoia, but let's do it anyway.)
 		 */
-		econtext->caseValue_datum = values[fieldnum - 1];
-		econtext->caseValue_isNull = isnull[fieldnum - 1];
+		econtext->caseValue_datum = values[attnum - 1];
+		econtext->caseValue_isNull = isnull[attnum - 1];
 
-		values[fieldnum - 1] = ExecEvalExpr(newval,
-											econtext,
-											&isnull[fieldnum - 1],
-											NULL);
+		values[attnum - 1] = ExecEvalExpr(newval,
+										  econtext,
+										  &isnull[attnum - 1],
+										  NULL);
 	}
 
 	econtext->caseValue_datum = save_datum;
@@ -4818,12 +4838,13 @@ ExecInitExpr(Expr *node, PlanState *parent)
 					rstate->tupdesc = lookup_rowtype_tupdesc_copy(rowexpr->row_typeid, -1);
 				}
 				/* In either case, adopt RowExpr's column aliases */
+				/* XXX this is problematic ... names should be assigned in logical order */
 				ExecTypeSetColNames(rstate->tupdesc, rowexpr->colnames);
 				/* Bless the tupdesc in case it's now of type RECORD */
 				BlessTupleDesc(rstate->tupdesc);
 				/* Set up evaluation, skipping any deleted columns */
 				Assert(list_length(rowexpr->args) <= rstate->tupdesc->natts);
-				attrs = rstate->tupdesc->attrs;
+				attrs = TupleDescGetLogSortedAttrs(rstate->tupdesc);
 				i = 0;
 				foreach(l, rowexpr->args)
 				{

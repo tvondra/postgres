@@ -754,10 +754,11 @@ typedef struct RangeTblEntry
 	 */
 
 	/*
-	 * Fields valid for a plain relation RTE (else zero):
+	 * Fields valid for a plain relation RTE (else zero/NIL):
 	 */
 	Oid			relid;			/* OID of the relation */
 	char		relkind;		/* relation kind (see pg_class.relkind) */
+	List	   *lognums;		/* int list of logical column numbers */
 
 	/*
 	 * Fields valid for a subquery RTE (else NULL):

@@ -896,7 +896,7 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
 		/*
 		 * Generate default column list for INSERT.
 		 */
-		Form_pg_attribute *attr = pstate->p_target_relation->rd_att->attrs;
+		Form_pg_attribute *attr = TupleDescGetLogSortedAttrs(pstate->p_target_relation->rd_att);
 		int			numcol = pstate->p_target_relation->rd_rel->relnatts;
 		int			i;
 
@@ -913,7 +913,7 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
 			col->val = NULL;
 			col->location = -1;
 			cols = lappend(cols, col);
-			*attrnos = lappend_int(*attrnos, i + 1);
+			*attrnos = lappend_int(*attrnos, attr[i]->attnum);
 		}
 	}
 	else
@@ -931,7 +931,7 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
 			char	   *name = col->name;
 			int			attrno;
 
-			/* Lookup column name, ereport on failure */
+			/* Lookup column number, ereport on failure */
 			attrno = attnameAttNum(pstate->p_target_relation, name, false);
 			if (attrno == InvalidAttrNumber)
 				ereport(ERROR,
@@ -1184,6 +1184,7 @@ ExpandAllTables(ParseState *pstate, int location)
 											RTERangeTablePosn(pstate, rte,
 															  NULL),
 											0,
+											true,
 											location));
 	}
 
@@ -1252,14 +1253,14 @@ ExpandSingleTable(ParseState *pstate, RangeTblEntry *rte,
 	{
 		/* expandRelAttrs handles permissions marking */
 		return expandRelAttrs(pstate, rte, rtindex, sublevels_up,
-							  location);
+							  true, location);
 	}
 	else
 	{
 		List	   *vars;
 		ListCell   *l;
 
-		expandRTE(rte, rtindex, sublevels_up, location, false,
+		expandRTE(rte, rtindex, sublevels_up, location, false, true,
 				  NULL, &vars);
 
 		/*
@@ -1296,6 +1297,7 @@ ExpandRowReference(ParseState *pstate, Node *expr,
 	TupleDesc	tupleDesc;
 	int			numAttrs;
 	int			i;
+	Form_pg_attribute *attr;
 
 	/*
 	 * If the rowtype expression is a whole-row Var, we can expand the fields
@@ -1342,9 +1344,10 @@ ExpandRowReference(ParseState *pstate, Node *expr,
 
 	/* Generate a list of references to the individual fields */
 	numAttrs = tupleDesc->natts;
+	attr = TupleDescGetLogSortedAttrs(tupleDesc);
 	for (i = 0; i < numAttrs; i++)
 	{
-		Form_pg_attribute att = tupleDesc->attrs[i];
+		Form_pg_attribute att = attr[i];
 		FieldSelect *fselect;
 
 		if (att->attisdropped)
@@ -1352,7 +1355,7 @@ ExpandRowReference(ParseState *pstate, Node *expr,
 
 		fselect = makeNode(FieldSelect);
 		fselect->arg = (Expr *) copyObject(expr);
-		fselect->fieldnum = i + 1;
+		fselect->fieldnum = att->attnum;
 		fselect->resulttype = att->atttypid;
 		fselect->resulttypmod = att->atttypmod;
 		/* save attribute's collation for parse_collate.c */
@@ -1413,7 +1416,7 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 				   *lvar;
 		int			i;
 
-		expandRTE(rte, var->varno, 0, var->location, false,
+		expandRTE(rte, var->varno, 0, var->location, false, false,
 				  &names, &vars);
 
 		tupleDesc = CreateTemplateTupleDesc(list_length(vars), false);

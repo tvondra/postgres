@@ -146,6 +146,7 @@ ExecGroup(GroupState *node)
 			 * Compare with first tuple and see if this tuple is of the same
 			 * group.  If so, ignore it and keep scanning.
 			 */
+			/* FIXME -- here, the grpColIdx seems to cause trouble */
 			if (!execTuplesMatch(firsttupleslot, outerslot,
 								 numCols, grpColIdx,
 								 node->eqfunctions,

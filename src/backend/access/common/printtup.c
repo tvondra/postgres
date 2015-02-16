@@ -199,6 +199,10 @@ SendRowDescriptionMessage(TupleDesc typeinfo, List *targetlist, int16 *formats)
 	pq_beginmessage(&buf, 'T'); /* tuple descriptor message type */
 	pq_sendint(&buf, natts, 2); /* # of attrs in tuples */
 
+	/*
+	 * The attributes in the slot's descriptor are already in logical order;
+	 * we don't editorialize on the ordering here.
+	 */
 	for (i = 0; i < natts; ++i)
 	{
 		Oid			atttypid = attrs[i]->atttypid;
@@ -248,6 +252,8 @@ SendRowDescriptionMessage(TupleDesc typeinfo, List *targetlist, int16 *formats)
 
 /*
  * Get the lookup info that printtup() needs
+ *
+ * The resulting array is indexed by attnum.
  */
 static void
 printtup_prepare_info(DR_printtup *myState, TupleDesc typeinfo, int numAttrs)
@@ -327,7 +333,8 @@ printtup(TupleTableSlot *slot, DestReceiver *self)
 	pq_sendint(&buf, natts, 2);
 
 	/*
-	 * send the attributes of this tuple
+	 * Send the attributes of this tuple.  Note the attributes of the slot's
+	 * descriptor are already in the correct output order. (XXX which is ...)
 	 */
 	for (i = 0; i < natts; ++i)
 	{
@@ -430,7 +437,8 @@ printtup_20(TupleTableSlot *slot, DestReceiver *self)
 		pq_sendint(&buf, j, 1);
 
 	/*
-	 * send the attributes of this tuple
+	 * Send the attributes of this tuple.  Note the attributes of the slot's
+	 * descriptor are already in logical order.
 	 */
 	for (i = 0; i < natts; ++i)
 	{
@@ -517,7 +525,8 @@ debugStartup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	int			i;
 
 	/*
-	 * show the return type of the tuples
+	 * Show the return type of the tuples.  Note the attributes of the slot's
+	 * descriptor are already in logical order.
 	 */
 	for (i = 0; i < natts; ++i)
 		printatt((unsigned) i + 1, attinfo[i], NULL);
@@ -533,6 +542,7 @@ debugtup(TupleTableSlot *slot, DestReceiver *self)
 {
 	TupleDesc	typeinfo = slot->tts_tupleDescriptor;
 	int			natts = typeinfo->natts;
+	Form_pg_attribute attrib;
 	int			i;
 	Datum		attr;
 	char	   *value;
@@ -540,17 +550,21 @@ debugtup(TupleTableSlot *slot, DestReceiver *self)
 	Oid			typoutput;
 	bool		typisvarlena;
 
+	/*
+	 * Send the attributes of this tuple.  Note the attributes of the slot's
+	 * descriptor are already in logical order.
+	 */
 	for (i = 0; i < natts; ++i)
 	{
+		attrib = typeinfo->attrs[i];
 		attr = slot_getattr(slot, i + 1, &isnull);
 		if (isnull)
 			continue;
-		getTypeOutputInfo(typeinfo->attrs[i]->atttypid,
-						  &typoutput, &typisvarlena);
+		getTypeOutputInfo(attrib->atttypid, &typoutput, &typisvarlena);
 
 		value = OidOutputFunctionCall(typoutput, attr);
 
-		printatt((unsigned) i + 1, typeinfo->attrs[i], value);
+		printatt((unsigned) i + 1, attrib, value);
 	}
 	printf("\t----\n");
 }
@@ -612,7 +626,8 @@ printtup_internal_20(TupleTableSlot *slot, DestReceiver *self)
 		pq_sendint(&buf, j, 1);
 
 	/*
-	 * send the attributes of this tuple
+	 * Send the attributes of this tuple.  Note the attributes of the slot's
+	 * descriptor are already in logical order.
 	 */
 	for (i = 0; i < natts; ++i)
 	{

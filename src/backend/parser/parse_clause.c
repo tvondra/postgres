@@ -723,7 +723,7 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
  *
  * *top_rti: receives the rangetable index of top_rte.  (Ditto.)
  *
- * *namespace: receives a List of ParseNamespaceItems for the RTEs exposed
+ * *namespace: receives a List of ParseNamespaceItem for the RTEs exposed
  * as table/column names by this item.  (The lateral_only flags in these items
  * are indeterminate and should be explicitly set by the caller before use.)
  */
@@ -880,9 +880,9 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 *
 		 * Note: expandRTE returns new lists, safe for me to modify
 		 */
-		expandRTE(l_rte, l_rtindex, 0, -1, false,
+		expandRTE(l_rte, l_rtindex, 0, -1, false, true,
 				  &l_colnames, &l_colvars);
-		expandRTE(r_rte, r_rtindex, 0, -1, false,
+		expandRTE(r_rte, r_rtindex, 0, -1, false, true,
 				  &r_colnames, &r_colvars);
 
 		/*

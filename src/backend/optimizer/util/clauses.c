@@ -2216,6 +2216,8 @@ CommuteRowCompareExpr(RowCompareExpr *clause)
  * is still what it was when the expression was parsed.  This is needed to
  * guard against improper simplification after ALTER COLUMN TYPE.  (XXX we
  * may well need to make similar checks elsewhere?)
+ *
+ * FIXME do we need to do something about the fieldnum here?
  */
 static bool
 rowtype_field_matches(Oid rowtypeid, int fieldnum,
@@ -3253,6 +3255,7 @@ eval_const_expressions_mutator(Node *node,
 							return fld;
 					}
 				}
+				/* FIXME  does this need change? */
 				newfselect = makeNode(FieldSelect);
 				newfselect->arg = (Expr *) arg;
 				newfselect->fieldnum = fselect->fieldnum;

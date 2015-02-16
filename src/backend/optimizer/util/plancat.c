@@ -858,17 +858,19 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 	int			attrno,
 				numattrs;
 	List	   *colvars;
+	Form_pg_attribute *attrs;
 
 	switch (rte->rtekind)
 	{
 		case RTE_RELATION:
 			/* Assume we already have adequate lock */
 			relation = heap_open(rte->relid, NoLock);
+			attrs = TupleDescGetLogSortedAttrs(RelationGetDescr(relation));
 
 			numattrs = RelationGetNumberOfAttributes(relation);
 			for (attrno = 1; attrno <= numattrs; attrno++)
 			{
-				Form_pg_attribute att_tup = relation->rd_att->attrs[attrno - 1];
+				Form_pg_attribute att_tup = attrs[attrno - 1];
 
 				if (att_tup->attisdropped)
 				{
@@ -918,7 +920,7 @@ build_physical_tlist(PlannerInfo *root, RelOptInfo *rel)
 		case RTE_VALUES:
 		case RTE_CTE:
 			/* Not all of these can have dropped cols, but share code anyway */
-			expandRTE(rte, varno, 0, -1, true /* include dropped */ ,
+			expandRTE(rte, varno, 0, -1, true /* include dropped */ , false,
 					  NULL, &colvars);
 			foreach(l, colvars)
 			{

@@ -90,6 +90,8 @@ makeVar(Index varno,
 
 	/* Likewise, we just set location to "unknown" here */
 	var->location = -1;
+	/* Likewise, we just set physical position to invalid */
+	var->varphysno = InvalidAttrNumber;
 
 	return var;
 }
@@ -250,6 +252,7 @@ makeTargetEntry(Expr *expr,
 	tle->ressortgroupref = 0;
 	tle->resorigtbl = InvalidOid;
 	tle->resorigcol = 0;
+	tle->resorigphyscol = 0;
 
 	tle->resjunk = resjunk;
 

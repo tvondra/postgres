@@ -141,6 +141,7 @@ _equalVar(const Var *a, const Var *b)
 {
 	COMPARE_SCALAR_FIELD(varno);
 	COMPARE_SCALAR_FIELD(varattno);
+//	COMPARE_SCALAR_FIELD(varphysno);
 	COMPARE_SCALAR_FIELD(vartype);
 	COMPARE_SCALAR_FIELD(vartypmod);
 	COMPARE_SCALAR_FIELD(varcollid);
@@ -691,6 +692,7 @@ _equalTargetEntry(const TargetEntry *a, const TargetEntry *b)
 	COMPARE_SCALAR_FIELD(ressortgroupref);
 	COMPARE_SCALAR_FIELD(resorigtbl);
 	COMPARE_SCALAR_FIELD(resorigcol);
+//	COMPARE_SCALAR_FIELD(resorigphyscol);
 	COMPARE_SCALAR_FIELD(resjunk);
 
 	return true;

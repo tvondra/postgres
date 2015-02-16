@@ -43,12 +43,12 @@ static void markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 					 int rtindex, AttrNumber col);
 static void expandRelation(Oid relid, Alias *eref,
 			   int rtindex, int sublevels_up,
-			   int location, bool include_dropped,
+			   int location, bool include_dropped, bool logical_sort,
 			   List **colnames, List **colvars);
 static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 				int count, int offset,
 				int rtindex, int sublevels_up,
-				int location, bool include_dropped,
+				int location, bool include_dropped, bool logical_sort,
 				List **colnames, List **colvars);
 static int	specialAttNum(const char *attname);
 static bool isQueryUsingTempRelation_walker(Node *node, void *context);
@@ -519,6 +519,12 @@ GetCTEForRTE(ParseState *pstate, RangeTblEntry *rte, int rtelevelsup)
 	return NULL;				/* keep compiler quiet */
 }
 
+static int16
+get_attnum_by_lognum(RangeTblEntry *rte, int16 attlognum)
+{
+	return list_nth_int(rte->lognums, attlognum - 1);
+}
+
 /*
  * scanRTEForColumn
  *	  Search the column names of a single RTE for the given name.
@@ -527,6 +533,11 @@ GetCTEForRTE(ParseState *pstate, RangeTblEntry *rte, int rtelevelsup)
  *
  * Side effect: if we find a match, mark the RTE as requiring read access
  * for the column.
+ *
+ * XXX the coding of this routine seems to make it impossible to have
+ * attlognums using a different numbering scheme from attnums, which would be a
+ * handy tool to detect incorrect usage of either array.  Can we fix that,
+ * and are there other places that suffer from the same problem?
  */
 Node *
 scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte, char *colname,
@@ -561,6 +572,13 @@ scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte, char *colname,
 						 errmsg("column reference \"%s\" is ambiguous",
 								colname),
 						 parser_errposition(pstate, location)));
+			/*
+			 * If the RTE has lognums, the eref->colnames array is sorted in
+			 * logical order; in that case we need to map the attnum we have
+			 * (which is a logical attnum) to the identity one.
+			 */
+			if (rte->lognums)
+				attnum = get_attnum_by_lognum(rte, attnum);
 			var = make_var(pstate, rte, attnum, location);
 			/* Require read access to the column */
 			markVarForSelectPriv(pstate, var, rte);
@@ -830,14 +848,19 @@ markVarForSelectPriv(ParseState *pstate, Var *var, RangeTblEntry *rte)
  * empty strings for any dropped columns, so that it will be one-to-one with
  * physical column numbers.
  *
+ * If lognums is not NULL, it will be filled with a map from logical column
+ * numbers to attnum; that way, the nth element of eref->colnames corresponds
+ * to the attnum found in the nth element of lognums.
+ *
  * It is an error for there to be more aliases present than required.
  */
 static void
-buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref)
+buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref, List **lognums)
 {
 	int			maxattrs = tupdesc->natts;
 	ListCell   *aliaslc;
 	int			numaliases;
+	Form_pg_attribute *attrs;
 	int			varattno;
 	int			numdropped = 0;
 
@@ -856,9 +879,11 @@ buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref)
 		numaliases = 0;
 	}
 
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
+
 	for (varattno = 0; varattno < maxattrs; varattno++)
 	{
-		Form_pg_attribute attr = tupdesc->attrs[varattno];
+		Form_pg_attribute attr = attrs[varattno];
 		Value	   *attrname;
 
 		if (attr->attisdropped)
@@ -883,6 +908,9 @@ buildRelationAliases(TupleDesc tupdesc, Alias *alias, Alias *eref)
 		}
 
 		eref->colnames = lappend(eref->colnames, attrname);
+
+		if (lognums)
+			*lognums = lappend_int(*lognums, attr->attnum);
 	}
 
 	/* Too many user-supplied aliases? */
@@ -1030,7 +1058,7 @@ addRangeTableEntry(ParseState *pstate,
 	 * and/or actual column names.
 	 */
 	rte->eref = makeAlias(refname, NIL);
-	buildRelationAliases(rel->rd_att, alias, rte->eref);
+	buildRelationAliases(rel->rd_att, alias, rte->eref, &rte->lognums);
 
 	/*
 	 * Drop the rel refcount, but keep the access lock till end of transaction
@@ -1090,7 +1118,7 @@ addRangeTableEntryForRelation(ParseState *pstate,
 	 * and/or actual column names.
 	 */
 	rte->eref = makeAlias(refname, NIL);
-	buildRelationAliases(rel->rd_att, alias, rte->eref);
+	buildRelationAliases(rel->rd_att, alias, rte->eref, &rte->lognums);
 
 	/*
 	 * Set flags and access permissions.
@@ -1422,7 +1450,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 	}
 
 	/* Use the tupdesc while assigning column aliases for the RTE */
-	buildRelationAliases(tupdesc, alias, eref);
+	buildRelationAliases(tupdesc, alias, eref, NULL);
 
 	/*
 	 * Set flags and access permissions.
@@ -1787,13 +1815,16 @@ addRTEtoQuery(ParseState *pstate, RangeTblEntry *rte,
  * values to use in the created Vars.  Ordinarily rtindex should match the
  * actual position of the RTE in its rangetable.
  *
+ * If logical_sort is true, then the resulting lists are sorted by logical
+ * column number (attlognum); otherwise use regular attnum.
+ *
  * The output lists go into *colnames and *colvars.
  * If only one of the two kinds of output list is needed, pass NULL for the
  * output pointer for the unwanted one.
  */
 void
 expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
-		  int location, bool include_dropped,
+		  int location, bool include_dropped, bool logical_sort,
 		  List **colnames, List **colvars)
 {
 	int			varattno;
@@ -1808,8 +1839,8 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 		case RTE_RELATION:
 			/* Ordinary relation RTE */
 			expandRelation(rte->relid, rte->eref,
-						   rtindex, sublevels_up, location,
-						   include_dropped, colnames, colvars);
+						   rtindex, sublevels_up, location, include_dropped,
+						   logical_sort, colnames, colvars);
 			break;
 		case RTE_SUBQUERY:
 			{
@@ -1875,7 +1906,8 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 						expandTupleDesc(tupdesc, rte->eref,
 										rtfunc->funccolcount, atts_done,
 										rtindex, sublevels_up, location,
-										include_dropped, colnames, colvars);
+										include_dropped, logical_sort,
+										colnames, colvars);
 					}
 					else if (functypclass == TYPEFUNC_SCALAR)
 					{
@@ -2127,7 +2159,7 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
  */
 static void
 expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
-			   int location, bool include_dropped,
+			   int location, bool include_dropped, bool logical_sort,
 			   List **colnames, List **colvars)
 {
 	Relation	rel;
@@ -2136,7 +2168,7 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 	rel = relation_open(relid, AccessShareLock);
 	expandTupleDesc(rel->rd_att, eref, rel->rd_att->natts, 0,
 					rtindex, sublevels_up,
-					location, include_dropped,
+					location, include_dropped, logical_sort,
 					colnames, colvars);
 	relation_close(rel, AccessShareLock);
 }
@@ -2153,11 +2185,15 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 static void
 expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 				int rtindex, int sublevels_up,
-				int location, bool include_dropped,
+				int location, bool include_dropped, bool logical_sort,
 				List **colnames, List **colvars)
 {
 	ListCell   *aliascell = list_head(eref->colnames);
-	int			varattno;
+	int			attnum;
+	Form_pg_attribute *attrs;
+
+	attrs = (logical_sort ? TupleDescGetLogSortedAttrs(tupdesc) :
+			 tupdesc->attrs);
 
 	if (colnames)
 	{
@@ -2171,9 +2207,10 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 	}
 
 	Assert(count <= tupdesc->natts);
-	for (varattno = 0; varattno < count; varattno++)
+	for (attnum = 0; attnum < count; attnum++)
 	{
-		Form_pg_attribute attr = tupdesc->attrs[varattno];
+		Form_pg_attribute attr = attrs[attnum];
+		int		varattno = attr->attnum - 1;
 
 		if (attr->attisdropped)
 		{
@@ -2221,6 +2258,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 							  attr->atttypid, attr->atttypmod,
 							  attr->attcollation,
 							  sublevels_up);
+			varnode->varphysno = 0;
 			varnode->location = location;
 
 			*colvars = lappend(*colvars, varnode);
@@ -2240,7 +2278,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
  */
 List *
 expandRelAttrs(ParseState *pstate, RangeTblEntry *rte,
-			   int rtindex, int sublevels_up, int location)
+			   int rtindex, int sublevels_up, bool logical_sort, int location)
 {
 	List	   *names,
 			   *vars;
@@ -2248,7 +2286,7 @@ expandRelAttrs(ParseState *pstate, RangeTblEntry *rte,
 			   *var;
 	List	   *te_list = NIL;
 
-	expandRTE(rte, rtindex, sublevels_up, location, false,
+	expandRTE(rte, rtindex, sublevels_up, location, false, logical_sort,
 			  &names, &vars);
 
 	/*
@@ -2301,7 +2339,10 @@ get_rte_attribute_name(RangeTblEntry *rte, AttrNumber attnum)
 	 */
 	if (rte->alias &&
 		attnum > 0 && attnum <= list_length(rte->alias->colnames))
+	{
+		/* FIXME change attnum to lognum! */
 		return strVal(list_nth(rte->alias->colnames, attnum - 1));
+	}
 
 	/*
 	 * If the RTE is a relation, go to the system catalogs not the
@@ -2408,6 +2449,7 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 
 							Assert(tupdesc);
 							Assert(attnum <= tupdesc->natts);
+							/* FIXME map using lognums?? */
 							att_tup = tupdesc->attrs[attnum - 1];
 
 							/*
@@ -2604,6 +2646,7 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 
 							Assert(tupdesc);
 							Assert(attnum - atts_done <= tupdesc->natts);
+							/* FIXME -- map using lognums? */
 							att_tup = tupdesc->attrs[attnum - atts_done - 1];
 							return att_tup->attisdropped;
 						}
@@ -2696,7 +2739,7 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
 		Form_pg_attribute att = rd->rd_att->attrs[i];
 
 		if (namestrcmp(&(att->attname), attname) == 0 && !att->attisdropped)
-			return i + 1;
+			return att->attnum;
 	}
 
 	if (sysColOK)

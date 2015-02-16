@@ -49,6 +49,7 @@ test: regex
 test: oidjoins
 test: type_sanity
 test: opr_sanity
+test: col_order
 test: insert
 test: create_function_1
 test: create_type

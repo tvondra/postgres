@@ -79,6 +79,8 @@
 /*
  * heap_compute_data_size
  *		Determine size of the data area of a tuple to be constructed
+ *
+ * Note: input arrays must be in attnum order.
  */
 Size
 heap_compute_data_size(TupleDesc tupleDesc,
@@ -88,16 +90,23 @@ heap_compute_data_size(TupleDesc tupleDesc,
 	Size		data_length = 0;
 	int			i;
 	int			numberOfAttributes = tupleDesc->natts;
-	Form_pg_attribute *att = tupleDesc->attrs;
+	Form_pg_attribute *att = TupleDescGetPhysSortedAttrs(tupleDesc);
 
+	/*
+	 * We need to consider the attributes in physical order for storage, yet
+	 * our input arrays are in attnum order.  In this loop, "i" is an index
+	 * into the attphysnum-sorted attribute array, and idx is an index into the
+	 * input arrays.
+	 */
 	for (i = 0; i < numberOfAttributes; i++)
 	{
 		Datum		val;
+		int			idx = att[i]->attnum - 1;
 
-		if (isnull[i])
+		if (isnull[idx])
 			continue;
 
-		val = values[i];
+		val = values[idx];
 
 		if (ATT_IS_PACKABLE(att[i]) &&
 			VARATT_CAN_MAKE_SHORT(DatumGetPointer(val)))
@@ -127,6 +136,8 @@ heap_compute_data_size(TupleDesc tupleDesc,
  * We also fill the null bitmap (if any) and set the infomask bits
  * that reflect the tuple's data contents.
  *
+ * NB - the input arrays must be in attnum order.
+ *
  * NOTE: it is now REQUIRED that the caller have pre-zeroed the data area.
  */
 void
@@ -139,7 +150,7 @@ heap_fill_tuple(TupleDesc tupleDesc,
 	int			bitmask;
 	int			i;
 	int			numberOfAttributes = tupleDesc->natts;
-	Form_pg_attribute *att = tupleDesc->attrs;
+	Form_pg_attribute *att = TupleDescGetPhysSortedAttrs(tupleDesc);
 
 #ifdef USE_ASSERT_CHECKING
 	char	   *start = data;
@@ -159,9 +170,17 @@ heap_fill_tuple(TupleDesc tupleDesc,
 
 	*infomask &= ~(HEAP_HASNULL | HEAP_HASVARWIDTH | HEAP_HASEXTERNAL);
 
+	/*
+	 * We need to consider the attributes in physical order for storage, yet
+	 * our input arrays are in attnum order.  In this loop, "i" is an index
+	 * into the attphysnum-sorted attribute array, and idx is an index into the
+	 * input arrays.
+	 */
 	for (i = 0; i < numberOfAttributes; i++)
 	{
 		Size		data_length;
+		Datum		value;
+		int			idx = att[i]->attnum - 1;
 
 		if (bit != NULL)
 		{
@@ -174,7 +193,7 @@ heap_fill_tuple(TupleDesc tupleDesc,
 				bitmask = 1;
 			}
 
-			if (isnull[i])
+			if (isnull[idx])
 			{
 				*infomask |= HEAP_HASNULL;
 				continue;
@@ -182,6 +201,8 @@ heap_fill_tuple(TupleDesc tupleDesc,
 
 			*bitP |= bitmask;
 		}
+
+		value = values[idx];
 
 		/*
 		 * XXX we use the att_align macros on the pointer value itself, not on
@@ -192,13 +213,13 @@ heap_fill_tuple(TupleDesc tupleDesc,
 		{
 			/* pass-by-value */
 			data = (char *) att_align_nominal(data, att[i]->attalign);
-			store_att_byval(data, values[i], att[i]->attlen);
+			store_att_byval(data, value, att[i]->attlen);
 			data_length = att[i]->attlen;
 		}
 		else if (att[i]->attlen == -1)
 		{
 			/* varlena */
-			Pointer		val = DatumGetPointer(values[i]);
+			Pointer		val = DatumGetPointer(value);
 
 			*infomask |= HEAP_HASVARWIDTH;
 			if (VARATT_IS_EXTERNAL(val))
@@ -236,8 +257,8 @@ heap_fill_tuple(TupleDesc tupleDesc,
 			/* cstring ... never needs alignment */
 			*infomask |= HEAP_HASVARWIDTH;
 			Assert(att[i]->attalign == 'c');
-			data_length = strlen(DatumGetCString(values[i])) + 1;
-			memcpy(data, DatumGetPointer(values[i]), data_length);
+			data_length = strlen(DatumGetCString(value)) + 1;
+			memcpy(data, DatumGetPointer(value), data_length);
 		}
 		else
 		{
@@ -245,7 +266,7 @@ heap_fill_tuple(TupleDesc tupleDesc,
 			data = (char *) att_align_nominal(data, att[i]->attalign);
 			Assert(att[i]->attlen > 0);
 			data_length = att[i]->attlen;
-			memcpy(data, DatumGetPointer(values[i]), data_length);
+			memcpy(data, DatumGetPointer(value), data_length);
 		}
 
 		data += data_length;
@@ -326,10 +347,12 @@ nocachegetattr(HeapTuple tuple,
 {
 	HeapTupleHeader tup = tuple->t_data;
 	Form_pg_attribute *att = tupleDesc->attrs;
+	Form_pg_attribute *physatt = TupleDescGetPhysSortedAttrs(tupleDesc);
 	char	   *tp;				/* ptr to data part of tuple */
 	bits8	   *bp = tup->t_bits;		/* ptr to null bitmap in tuple */
 	bool		slow = false;	/* do we have to walk attrs? */
 	int			off;			/* current offset within data */
+	int			attphysnum;
 
 	/* ----------------
 	 *	 Three cases:
@@ -340,7 +363,9 @@ nocachegetattr(HeapTuple tuple,
 	 * ----------------
 	 */
 
+	/* determine the indexes into the physical and regular attribute arrays */
 	attnum--;
+	attphysnum = att[attnum]->attphysnum - 1;
 
 	if (!HeapTupleNoNulls(tuple))
 	{
@@ -394,9 +419,9 @@ nocachegetattr(HeapTuple tuple,
 		{
 			int			j;
 
-			for (j = 0; j <= attnum; j++)
+			for (j = 0; j <= attphysnum; j++)
 			{
-				if (att[j]->attlen <= 0)
+				if (physatt[j]->attlen <= 1)
 				{
 					slow = true;
 					break;
@@ -419,24 +444,24 @@ nocachegetattr(HeapTuple tuple,
 		 * fixed-width columns, in hope of avoiding future visits to this
 		 * routine.
 		 */
-		att[0]->attcacheoff = 0;
+		physatt[0]->attcacheoff = 0;
 
 		/* we might have set some offsets in the slow path previously */
-		while (j < natts && att[j]->attcacheoff > 0)
+		while (j < natts && physatt[j]->attcacheoff > 0)
 			j++;
 
-		off = att[j - 1]->attcacheoff + att[j - 1]->attlen;
+		off = physatt[j - 1]->attcacheoff + physatt[j - 1]->attlen;
 
 		for (; j < natts; j++)
 		{
-			if (att[j]->attlen <= 0)
+			if (physatt[j]->attlen <= 0)
 				break;
 
-			off = att_align_nominal(off, att[j]->attalign);
+			off = att_align_nominal(off, physatt[j]->attalign);
 
-			att[j]->attcacheoff = off;
+			physatt[j]->attcacheoff = off;
 
-			off += att[j]->attlen;
+			off += physatt[j]->attlen;
 		}
 
 		Assert(j > attnum);
@@ -457,20 +482,21 @@ nocachegetattr(HeapTuple tuple,
 		 * then advance over the attr based on its length.  Nulls have no
 		 * storage and no alignment padding either.  We can use/set
 		 * attcacheoff until we reach either a null or a var-width attribute.
+		 * "i" is an index into the attphysnum-ordered array here.
 		 */
 		off = 0;
 		for (i = 0;; i++)		/* loop exit is at "break" */
 		{
-			if (HeapTupleHasNulls(tuple) && att_isnull(i, bp))
+			if (HeapTupleHasNulls(tuple) && att_isnull(physatt[i]->attnum - 1, bp))
 			{
 				usecache = false;
 				continue;		/* this cannot be the target att */
 			}
 
 			/* If we know the next offset, we can skip the rest */
-			if (usecache && att[i]->attcacheoff >= 0)
-				off = att[i]->attcacheoff;
-			else if (att[i]->attlen == -1)
+			if (usecache && physatt[i]->attcacheoff >= 0)
+				off = physatt[i]->attcacheoff;
+			else if (physatt[i]->attlen == -1)
 			{
 				/*
 				 * We can only cache the offset for a varlena attribute if the
@@ -479,11 +505,11 @@ nocachegetattr(HeapTuple tuple,
 				 * either an aligned or unaligned value.
 				 */
 				if (usecache &&
-					off == att_align_nominal(off, att[i]->attalign))
-					att[i]->attcacheoff = off;
+					off == att_align_nominal(off, physatt[i]->attalign))
+					physatt[i]->attcacheoff = off;
 				else
 				{
-					off = att_align_pointer(off, att[i]->attalign, -1,
+					off = att_align_pointer(off, physatt[i]->attalign, -1,
 											tp + off);
 					usecache = false;
 				}
@@ -491,18 +517,19 @@ nocachegetattr(HeapTuple tuple,
 			else
 			{
 				/* not varlena, so safe to use att_align_nominal */
-				off = att_align_nominal(off, att[i]->attalign);
+				off = att_align_nominal(off, physatt[i]->attalign);
 
 				if (usecache)
-					att[i]->attcacheoff = off;
+					physatt[i]->attcacheoff = off;
 			}
 
-			if (i == attnum)
+			/* if this this is our attribute, we're done */
+			if (physatt[i]->attnum - 1 == attnum)
 				break;
 
-			off = att_addlength_pointer(off, att[i]->attlen, tp + off);
+			off = att_addlength_pointer(off, physatt[i]->attlen, tp + off);
 
-			if (usecache && att[i]->attlen <= 0)
+			if (usecache && physatt[i]->attlen <= 0)
 				usecache = false;
 		}
 	}
@@ -656,6 +683,8 @@ heap_copy_tuple_as_datum(HeapTuple tuple, TupleDesc tupleDesc)
  * heap_form_tuple
  *		construct a tuple from the given values[] and isnull[] arrays,
  *		which are of the length indicated by tupleDescriptor->natts
+ *
+ *		The input arrays must always be in attnum order.
  *
  * The result is allocated in the current memory context.
  */
@@ -889,7 +918,8 @@ heap_modifytuple(HeapTuple tuple,
 /*
  * heap_deform_tuple
  *		Given a tuple, extract data into values/isnull arrays; this is
- *		the inverse of heap_form_tuple.
+ *		the inverse of heap_form_tuple.  Like that routine, the output
+ *		arrays are sorted in attnum order.
  *
  *		Storage for the values/isnull arrays is provided by the caller;
  *		it should be sized according to tupleDesc->natts not
@@ -909,10 +939,10 @@ heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 {
 	HeapTupleHeader tup = tuple->t_data;
 	bool		hasnulls = HeapTupleHasNulls(tuple);
-	Form_pg_attribute *att = tupleDesc->attrs;
+	Form_pg_attribute *att = TupleDescGetPhysSortedAttrs(tupleDesc);
 	int			tdesc_natts = tupleDesc->natts;
 	int			natts;			/* number of atts to extract */
-	int			attnum;
+	int			i;
 	char	   *tp;				/* ptr to tuple data */
 	long		off;			/* offset in tuple data */
 	bits8	   *bp = tup->t_bits;		/* ptr to null bitmap in tuple */
@@ -931,9 +961,10 @@ heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 
 	off = 0;
 
-	for (attnum = 0; attnum < natts; attnum++)
+	for (i = 0; i < natts; i++)
 	{
-		Form_pg_attribute thisatt = att[attnum];
+		Form_pg_attribute thisatt = att[i];
+		int		attnum = thisatt->attnum - 1;
 
 		if (hasnulls && att_isnull(attnum, bp))
 		{
@@ -983,13 +1014,14 @@ heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 	}
 
 	/*
-	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
-	 * rest as null
+	 * Read remaining attributes as nulls
+	 *
+	 * XXX think this through ...
 	 */
-	for (; attnum < tdesc_natts; attnum++)
+	for (; i < tdesc_natts; i++)
 	{
-		values[attnum] = (Datum) 0;
-		isnull[attnum] = true;
+		values[i] = (Datum) 0;
+		isnull[i] = true;
 	}
 }
 
@@ -1042,10 +1074,9 @@ heap_deformtuple(HeapTuple tuple,
  *		This is essentially an incremental version of heap_deform_tuple:
  *		on each call we extract attributes up to the one needed, without
  *		re-computing information about previously extracted attributes.
- *		slot->tts_nvalid is the number of attributes already extracted.
  */
 static void
-slot_deform_tuple(TupleTableSlot *slot, int natts)
+slot_deform_tuple(TupleTableSlot *slot, AttrNumber natts)
 {
 	HeapTuple	tuple = slot->tts_tuple;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
@@ -1054,6 +1085,8 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	HeapTupleHeader tup = tuple->t_data;
 	bool		hasnulls = HeapTupleHasNulls(tuple);
 	Form_pg_attribute *att = tupleDesc->attrs;
+	Form_pg_attribute *physatt = TupleDescGetPhysSortedAttrs(tupleDesc);
+	int			maxphysnum;
 	int			attnum;
 	char	   *tp;				/* ptr to tuple data */
 	long		off;			/* offset in tuple data */
@@ -1064,15 +1097,16 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	 * Check whether the first call for this tuple, and initialize or restore
 	 * loop state.
 	 */
-	attnum = slot->tts_nvalid;
-	if (attnum == 0)
+	if (slot->tts_nphysvalid == 0)
 	{
+		Assert(slot->tts_nvalid == 0);
 		/* Start from the first attribute */
 		off = 0;
 		slow = false;
 	}
 	else
 	{
+		Assert(slot->tts_nvalid != 0);
 		/* Restore state from previous execution */
 		off = slot->tts_off;
 		slow = slot->tts_slow;
@@ -1080,19 +1114,37 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 
 	tp = (char *) tup + tup->t_hoff;
 
-	for (; attnum < natts; attnum++)
+	/*
+	 * Scan the attribute array to determine the maximum physical position that
+	 * we need to extract.  Start from the position next to the one that was
+	 * last extracted.
+	 */
+	maxphysnum = 0;
+	for (attnum = slot->tts_nvalid + 1; attnum <= natts; attnum++)
 	{
-		Form_pg_attribute thisatt = att[attnum];
+		if (att[attnum - 1]->attphysnum > maxphysnum)
+			maxphysnum = tupleDesc->attrs[attnum - 1]->attphysnum;
+	}
 
-		if (hasnulls && att_isnull(attnum, bp))
+	/*
+	 * Now walk the physical-order attribute array to decode up the point so
+	 * determined, starting from the element one past the one we already
+	 * extracted.
+	 */
+	for (attnum = slot->tts_nphysvalid + 1; attnum <= maxphysnum; attnum++)
+	{
+		Form_pg_attribute thisatt = physatt[attnum - 1];
+		int			thisattnum = thisatt->attnum - 1;
+
+		if (hasnulls && att_isnull(thisattnum, bp))
 		{
-			values[attnum] = (Datum) 0;
-			isnull[attnum] = true;
+			values[thisattnum] = (Datum) 0;
+			isnull[thisattnum] = true;
 			slow = true;		/* can't use attcacheoff anymore */
 			continue;
 		}
 
-		isnull[attnum] = false;
+		isnull[thisattnum] = false;
 
 		if (!slow && thisatt->attcacheoff >= 0)
 			off = thisatt->attcacheoff;
@@ -1123,7 +1175,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 				thisatt->attcacheoff = off;
 		}
 
-		values[attnum] = fetchatt(thisatt, tp + off);
+		values[thisattnum] = fetchatt(thisatt, tp + off);
 
 		off = att_addlength_pointer(off, thisatt->attlen, tp + off);
 
@@ -1132,9 +1184,17 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	}
 
 	/*
+	 * XXX could we scan further and move tts_nvalid a bit higher, without
+	 * decoding further?  Scanning in physical order might have extracted more
+	 * attributes than what was requested.
+	 */
+
+
+	/*
 	 * Save state for next execution
 	 */
-	slot->tts_nvalid = attnum;
+	slot->tts_nphysvalid = maxphysnum;
+	slot->tts_nvalid = natts;
 	slot->tts_off = off;
 	slot->tts_slow = slow;
 }
@@ -1152,7 +1212,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
  *		when the physical tuple is longer than the tupdesc.
  */
 Datum
-slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
+slot_getattr(TupleTableSlot *slot, AttrNumber attnum, bool *isnull)
 {
 	HeapTuple	tuple = slot->tts_tuple;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
@@ -1250,7 +1310,8 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 void
 slot_getallattrs(TupleTableSlot *slot)
 {
-	int			tdesc_natts = slot->tts_tupleDescriptor->natts;
+	TupleDesc	tupdesc = slot->tts_tupleDescriptor;
+	int			tdesc_natts = tupdesc->natts;
 	int			attnum;
 	HeapTuple	tuple;
 
@@ -1277,6 +1338,8 @@ slot_getallattrs(TupleTableSlot *slot)
 	/*
 	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
 	 * rest as null
+	 *
+	 * FIXME -- needs actual thought
 	 */
 	for (; attnum < tdesc_natts; attnum++)
 	{
@@ -1314,16 +1377,21 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 		elog(ERROR, "cannot extract attribute from empty tuple slot");
 
 	/*
-	 * load up any slots available from physical tuple
+	 * make sure we don't try to fetch anything past the end of the physical tuple
 	 */
 	attno = HeapTupleHeaderGetNatts(tuple->t_data);
 	attno = Min(attno, attnum);
 
+	/*
+	 * load up any slots available from physical tuple
+	 */
 	slot_deform_tuple(slot, attno);
 
 	/*
 	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
 	 * rest as null
+	 *
+	 * FIXME -- this needs some actual thought
 	 */
 	for (; attno < attnum; attno++)
 	{
@@ -1392,7 +1460,8 @@ heap_freetuple(HeapTuple htup)
 /*
  * heap_form_minimal_tuple
  *		construct a MinimalTuple from the given values[] and isnull[] arrays,
- *		which are of the length indicated by tupleDescriptor->natts
+ *		which are of the length indicated by tupleDescriptor->natts.  The input
+ *		arrays must always be sorted in attnum order.
  *
  * This is exactly like heap_form_tuple() except that the result is a
  * "minimal" tuple lacking a HeapTupleData header as well as room for system

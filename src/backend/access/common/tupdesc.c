@@ -25,6 +25,7 @@
 #include "parser/parse_type.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/memutils.h"
 #include "utils/resowner_private.h"
 #include "utils/syscache.h"
 
@@ -87,6 +88,8 @@ CreateTemplateTupleDesc(int natts, bool hasoid)
 	 * Initialize other fields of the tupdesc.
 	 */
 	desc->natts = natts;
+	desc->logattrs = NULL;
+	desc->physattrs = NULL;
 	desc->constr = NULL;
 	desc->tdtypeid = RECORDOID;
 	desc->tdtypmod = -1;
@@ -120,6 +123,8 @@ CreateTupleDesc(int natts, bool hasoid, Form_pg_attribute *attrs)
 	desc = (TupleDesc) palloc(sizeof(struct tupleDesc));
 	desc->attrs = attrs;
 	desc->natts = natts;
+	desc->logattrs = NULL;
+	desc->physattrs = NULL;
 	desc->constr = NULL;
 	desc->tdtypeid = RECORDOID;
 	desc->tdtypmod = -1;
@@ -153,6 +158,9 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
+
+	Assert(desc->logattrs == NULL);
+	Assert(desc->physattrs == NULL);
 
 	return desc;
 }
@@ -251,11 +259,16 @@ TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
 	 * bit to avoid a useless O(N^2) penalty.
 	 */
 	dst->attrs[dstAttno - 1]->attnum = dstAttno;
+	dst->attrs[dstAttno - 1]->attlognum = dstAttno;
 	dst->attrs[dstAttno - 1]->attcacheoff = -1;
 
 	/* since we're not copying constraints or defaults, clear these */
 	dst->attrs[dstAttno - 1]->attnotnull = false;
 	dst->attrs[dstAttno - 1]->atthasdef = false;
+
+	/* Reset the new entry physical and logical position too */
+	dst->attrs[dstAttno - 1]->attphysnum = dstAttno;
+	dst->attrs[dstAttno - 1]->attlognum = dstAttno;
 }
 
 /*
@@ -301,6 +314,11 @@ FreeTupleDesc(TupleDesc tupdesc)
 		pfree(tupdesc->constr);
 	}
 
+	if (tupdesc->logattrs)
+		pfree(tupdesc->logattrs);
+	if (tupdesc->physattrs)
+		pfree(tupdesc->physattrs);
+
 	pfree(tupdesc);
 }
 
@@ -345,7 +363,7 @@ DecrTupleDescRefCount(TupleDesc tupdesc)
  * Note: we deliberately do not check the attrelid and tdtypmod fields.
  * This allows typcache.c to use this routine to see if a cached record type
  * matches a requested type, and is harmless for relcache.c's uses.
- * We don't compare tdrefcount, either.
+ * We don't compare tdrefcount nor logattrs, either.
  */
 bool
 equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
@@ -386,6 +404,12 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 			return false;
 		if (attr1->attlen != attr2->attlen)
 			return false;
+#if 0
+		if (attr1->attphysnum != attr2->attphysnum)
+			return false;
+		if (attr1->attlognum != attr2->attlognum)
+			return false;
+#endif
 		if (attr1->attndims != attr2->attndims)
 			return false;
 		if (attr1->atttypmod != attr2->atttypmod)
@@ -529,6 +553,8 @@ TupleDescInitEntry(TupleDesc desc,
 	att->atttypmod = typmod;
 
 	att->attnum = attributeNumber;
+	att->attphysnum = attributeNumber;
+	att->attlognum = attributeNumber;
 	att->attndims = attdim;
 
 	att->attnotnull = false;
@@ -574,6 +600,24 @@ TupleDescInitEntryCollation(TupleDesc desc,
 	desc->attrs[attributeNumber - 1]->attcollation = collationid;
 }
 
+/*
+ * Assign a nondefault attphysnum to a previously initialized tuple descriptor
+ * entry.
+ */
+void
+TupleDescInitEntryPhysicalPosition(TupleDesc desc,
+								   AttrNumber attributeNumber,
+								   AttrNumber attphysnum)
+{
+	/*
+	 * sanity checks
+	 */
+	AssertArg(PointerIsValid(desc));
+	AssertArg(attributeNumber >= 1);
+	AssertArg(attributeNumber <= desc->natts);
+
+	desc->attrs[attributeNumber - 1]->attphysnum = attphysnum;
+}
 
 /*
  * BuildDescForRelation
@@ -666,6 +710,9 @@ BuildDescForRelation(List *schema)
 		desc->constr = NULL;
 	}
 
+	Assert(desc->logattrs == NULL);
+	Assert(desc->physattrs == NULL);
+
 	return desc;
 }
 
@@ -726,5 +773,78 @@ BuildDescFromLists(List *names, List *types, List *typmods, List *collations)
 		TupleDescInitEntryCollation(desc, attnum, attcollation);
 	}
 
+	Assert(desc->logattrs == NULL);
+	Assert(desc->physattrs == NULL);
 	return desc;
+}
+
+/*
+ * qsort callback for TupleDescGetSortedAttrs
+ */
+static int
+cmplognum(const void *attr1, const void *attr2)
+{
+	Form_pg_attribute	att1 = *(Form_pg_attribute *) attr1;
+	Form_pg_attribute	att2 = *(Form_pg_attribute *) attr2;
+
+	if (att1->attlognum < att2->attlognum)
+		return -1;
+	if (att1->attlognum > att2->attlognum)
+		return 1;
+	return 0;
+}
+
+static int
+cmpphysnum(const void *attr1, const void *attr2)
+{
+	Form_pg_attribute	att1 = *(Form_pg_attribute *) attr1;
+	Form_pg_attribute	att2 = *(Form_pg_attribute *) attr2;
+
+	if (att1->attphysnum < att2->attphysnum)
+		return -1;
+	if (att1->attphysnum > att2->attphysnum)
+		return 1;
+	return 0;
+}
+
+static inline Form_pg_attribute *
+tupdescSortAttrs(TupleDesc desc,
+				 int (*cmpfn)(const void *, const void *))
+{
+	Form_pg_attribute *attrs;
+	Size	size = sizeof(Form_pg_attribute) * desc->natts;
+
+	/*
+	 * The attribute arrays must be allocated in the same memcxt as the tupdesc
+	 * they belong to, so that they aren't reset ahead of time.
+	 */
+	attrs = MemoryContextAlloc(GetMemoryChunkContext(desc), size);
+	memcpy(attrs, desc->attrs, size);
+	qsort(attrs, desc->natts, sizeof(Form_pg_attribute), cmpfn);
+
+	return attrs;
+}
+
+/*
+ * Return the array of attrs sorted by logical position
+ */
+Form_pg_attribute *
+TupleDescGetLogSortedAttrs(TupleDesc desc)
+{
+	if (desc->logattrs == NULL)
+		desc->logattrs = tupdescSortAttrs(desc, cmplognum);
+
+	return desc->logattrs;
+}
+
+/*
+ * Return the array of attrs sorted by physical position
+ */
+Form_pg_attribute *
+TupleDescGetPhysSortedAttrs(TupleDesc desc)
+{
+	if (desc->physattrs == NULL)
+		desc->physattrs = tupdescSortAttrs(desc, cmpphysnum);
+
+	return desc->physattrs;
 }

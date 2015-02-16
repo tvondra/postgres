@@ -682,7 +682,7 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 		/*
 		 * Generate list of Vars referencing the RTE
 		 */
-		expandRTE(rte, rtr->rtindex, 0, -1, false, NULL, &exprList);
+		expandRTE(rte, rtr->rtindex, 0, -1, false, false, NULL, &exprList);
 	}
 	else
 	{
@@ -1209,7 +1209,7 @@ transformValuesClause(ParseState *pstate, SelectStmt *stmt)
 	 * Generate a targetlist as though expanding "*"
 	 */
 	Assert(pstate->p_next_resno == 1);
-	qry->targetList = expandRelAttrs(pstate, rte, rtindex, 0, -1);
+	qry->targetList = expandRelAttrs(pstate, rte, rtindex, 0, false, -1);
 
 	/*
 	 * The grammar allows attaching ORDER BY, LIMIT, and FOR UPDATE to a

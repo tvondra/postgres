@@ -216,6 +216,7 @@ expand_targetlist(List *tlist, int command_type,
 	 */
 	rel = heap_open(getrelid(result_relation, range_table), NoLock);
 
+	/* FIXME --- do we need a different order of attributes here? */
 	numattrs = RelationGetNumberOfAttributes(rel);
 
 	for (attrno = 1; attrno <= numattrs; attrno++)

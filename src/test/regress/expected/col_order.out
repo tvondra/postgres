@@ -1,0 +1,286 @@
+drop table if exists foo, bar, baz cascade;
+NOTICE:  table "foo" does not exist, skipping
+NOTICE:  table "bar" does not exist, skipping
+NOTICE:  table "baz" does not exist, skipping
+create table foo (
+	a int default 42,
+	b timestamp default '1975-02-15 12:00',
+	c text);
+insert into foo values (142857, '1888-04-29', 'hello world');
+begin;
+update pg_attribute set attlognum = 1 where attname = 'c' and attrelid = 'foo'::regclass;
+update pg_attribute set attlognum = 2 where attname = 'a' and attrelid = 'foo'::regclass;
+update pg_attribute set attlognum = 3 where attname = 'b' and attrelid = 'foo'::regclass;
+commit;
+insert into foo values ('column c', 123, '2010-03-03 10:10:10');
+insert into foo (c, a, b) values ('c again', 456, '2010-03-03 11:12:13');
+insert into foo values ('and c', 789);	-- defaults column b
+insert into foo (c, b) values ('the c', '1975-01-10 08:00');	-- defaults column a
+select * from foo;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+select foo from foo;
+                        foo                        
+---------------------------------------------------
+ ("hello world",142857,"Sun Apr 29 00:00:00 1888")
+ ("column c",123,"Wed Mar 03 10:10:10 2010")
+ ("c again",456,"Wed Mar 03 11:12:13 2010")
+ ("and c",789,"Sat Feb 15 12:00:00 1975")
+ ("the c",42,"Fri Jan 10 08:00:00 1975")
+(5 rows)
+
+select foo.* from foo;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+select a,c,b from foo;
+   a    |      c      |            b             
+--------+-------------+--------------------------
+ 142857 | hello world | Sun Apr 29 00:00:00 1888
+    123 | column c    | Wed Mar 03 10:10:10 2010
+    456 | c again     | Wed Mar 03 11:12:13 2010
+    789 | and c       | Sat Feb 15 12:00:00 1975
+     42 | the c       | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+select c,b,a from foo;
+      c      |            b             |   a    
+-------------+--------------------------+--------
+ hello world | Sun Apr 29 00:00:00 1888 | 142857
+ column c    | Wed Mar 03 10:10:10 2010 |    123
+ c again     | Wed Mar 03 11:12:13 2010 |    456
+ and c       | Sat Feb 15 12:00:00 1975 |    789
+ the c       | Fri Jan 10 08:00:00 1975 |     42
+(5 rows)
+
+select a from foo;
+   a    
+--------
+ 142857
+    123
+    456
+    789
+     42
+(5 rows)
+
+select b from foo;
+            b             
+--------------------------
+ Sun Apr 29 00:00:00 1888
+ Wed Mar 03 10:10:10 2010
+ Wed Mar 03 11:12:13 2010
+ Sat Feb 15 12:00:00 1975
+ Fri Jan 10 08:00:00 1975
+(5 rows)
+
+select c from foo;
+      c      
+-------------
+ hello world
+ column c
+ c again
+ and c
+ the c
+(5 rows)
+
+select (foo).* from foo;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+select ROW((foo).*) from foo;
+                        row                        
+---------------------------------------------------
+ ("hello world",142857,"Sun Apr 29 00:00:00 1888")
+ ("column c",123,"Wed Mar 03 10:10:10 2010")
+ ("c again",456,"Wed Mar 03 11:12:13 2010")
+ ("and c",789,"Sat Feb 15 12:00:00 1975")
+ ("the c",42,"Fri Jan 10 08:00:00 1975")
+(5 rows)
+
+select ROW((foo).*)::foo from foo;
+                        row                        
+---------------------------------------------------
+ ("hello world",142857,"Sun Apr 29 00:00:00 1888")
+ ("column c",123,"Wed Mar 03 10:10:10 2010")
+ ("c again",456,"Wed Mar 03 11:12:13 2010")
+ ("and c",789,"Sat Feb 15 12:00:00 1975")
+ ("the c",42,"Fri Jan 10 08:00:00 1975")
+(5 rows)
+
+select (ROW((foo).*)::foo).* from foo;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+create function f() returns setof foo language sql as $$
+select * from foo;
+$$;
+select * from f();
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+(5 rows)
+
+insert into foo
+	select (row('ah', 1126, '2012-10-15')::foo).*
+	returning *;
+ c  |  a   |            b             
+----+------+--------------------------
+ ah | 1126 | Mon Oct 15 00:00:00 2012
+(1 row)
+
+insert into foo
+	select (row('eh', 1125, '2012-10-16')::foo).*
+	returning foo.*;
+ c  |  a   |            b             
+----+------+--------------------------
+ eh | 1125 | Tue Oct 16 00:00:00 2012
+(1 row)
+
+insert into foo values
+	('values one', 1, '2008-10-20'),
+	('values two', 2, '2004-08-15');
+copy foo from stdin;
+select * from foo order by 2;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ values one  |      1 | Mon Oct 20 00:00:00 2008
+ values two  |      2 | Sun Aug 15 00:00:00 2004
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ copy one    |   1001 | Thu Dec 10 23:54:00 1998
+ copy two    |   1002 | Thu Aug 01 09:22:00 1996
+ eh          |   1125 | Tue Oct 16 00:00:00 2012
+ ah          |   1126 | Mon Oct 15 00:00:00 2012
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+(11 rows)
+
+-- Test some joins
+create table bar (x text, y int default 142857, z timestamp );
+insert into bar values ('oh no', default, '1937-04-28');
+insert into bar values ('oh yes', 42, '1492-12-31');
+begin;
+update pg_attribute set attlognum = 3 where attname = 'x' and attrelid = 'bar'::regclass;
+update pg_attribute set attlognum = 1 where attname = 'z' and attrelid = 'bar'::regclass;
+commit;
+select foo.* from bar, foo where bar.y = foo.a;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+(2 rows)
+
+select bar.* from bar, foo where bar.y = foo.a;
+            z             |   y    |   x    
+--------------------------+--------+--------
+ Sat Dec 31 00:00:00 1492 |     42 | oh yes
+ Wed Apr 28 00:00:00 1937 | 142857 | oh no
+(2 rows)
+
+select * from bar, foo where bar.y = foo.a;
+            z             |   y    |   x    |      c      |   a    |            b             
+--------------------------+--------+--------+-------------+--------+--------------------------
+ Sat Dec 31 00:00:00 1492 |     42 | oh yes | the c       |     42 | Fri Jan 10 08:00:00 1975
+ Wed Apr 28 00:00:00 1937 | 142857 | oh no  | hello world | 142857 | Sun Apr 29 00:00:00 1888
+(2 rows)
+
+select * from foo join bar on (foo.a = bar.y);
+      c      |   a    |            b             |            z             |   y    |   x    
+-------------+--------+--------------------------+--------------------------+--------+--------
+ the c       |     42 | Fri Jan 10 08:00:00 1975 | Sat Dec 31 00:00:00 1492 |     42 | oh yes
+ hello world | 142857 | Sun Apr 29 00:00:00 1888 | Wed Apr 28 00:00:00 1937 | 142857 | oh no
+(2 rows)
+
+alter table bar rename y to a;
+select * from foo natural join bar;
+   a    |      c      |            b             |            z             |   x    
+--------+-------------+--------------------------+--------------------------+--------
+     42 | the c       | Fri Jan 10 08:00:00 1975 | Sat Dec 31 00:00:00 1492 | oh yes
+ 142857 | hello world | Sun Apr 29 00:00:00 1888 | Wed Apr 28 00:00:00 1937 | oh no
+(2 rows)
+
+select * from foo join bar using (a);
+   a    |      c      |            b             |            z             |   x    
+--------+-------------+--------------------------+--------------------------+--------
+     42 | the c       | Fri Jan 10 08:00:00 1975 | Sat Dec 31 00:00:00 1492 | oh yes
+ 142857 | hello world | Sun Apr 29 00:00:00 1888 | Wed Apr 28 00:00:00 1937 | oh no
+(2 rows)
+
+create table baz (e point) inherits (foo, bar); -- fail to merge defaults
+NOTICE:  merging multiple inherited definitions of column "a"
+ERROR:  column "a" inherits conflicting default values
+HINT:  To resolve the conflict, specify a default explicitly.
+create table baz (e point, a int default 23) inherits (foo, bar);
+NOTICE:  merging multiple inherited definitions of column "a"
+NOTICE:  merging column "a" with inherited definition
+insert into baz (e) values ('(1,1)');
+select * from foo;
+      c      |   a    |            b             
+-------------+--------+--------------------------
+ hello world | 142857 | Sun Apr 29 00:00:00 1888
+ column c    |    123 | Wed Mar 03 10:10:10 2010
+ c again     |    456 | Wed Mar 03 11:12:13 2010
+ and c       |    789 | Sat Feb 15 12:00:00 1975
+ the c       |     42 | Fri Jan 10 08:00:00 1975
+ ah          |   1126 | Mon Oct 15 00:00:00 2012
+ eh          |   1125 | Tue Oct 16 00:00:00 2012
+ values one  |      1 | Mon Oct 20 00:00:00 2008
+ values two  |      2 | Sun Aug 15 00:00:00 2004
+ copy one    |   1001 | Thu Dec 10 23:54:00 1998
+ copy two    |   1002 | Thu Aug 01 09:22:00 1996
+             |     23 | Sat Feb 15 12:00:00 1975
+(12 rows)
+
+select * from bar;
+            z             |   a    |   x    
+--------------------------+--------+--------
+ Wed Apr 28 00:00:00 1937 | 142857 | oh no
+ Sat Dec 31 00:00:00 1492 |     42 | oh yes
+                          |     23 | 
+(3 rows)
+
+select * from baz;
+ c | a  |            b             | z | x |   e   
+---+----+--------------------------+---+---+-------
+   | 23 | Sat Feb 15 12:00:00 1975 |   |   | (1,1)
+(1 row)
+
+create table quux (a int, b int[], c int);
+begin;
+update pg_attribute set attlognum = 1 where attnum = 2 and attrelid = 'quux'::regclass;
+update pg_attribute set attlognum = 2 where attnum = 1 and attrelid = 'quux'::regclass;
+commit;
+select * from quux where (a,c) in ( select a,c from quux );
+ERROR:  failed to find unique expression in subplan tlist
+drop table foo, bar, baz, quux cascade;
+NOTICE:  drop cascades to function f()

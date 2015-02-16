@@ -24,6 +24,7 @@
 #include <ctype.h>
 
 #include "lib/stringinfo.h"
+#include "nodes/execnodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
 #include "utils/datum.h"
@@ -917,6 +918,7 @@ _outVar(StringInfo str, const Var *node)
 
 	WRITE_UINT_FIELD(varno);
 	WRITE_INT_FIELD(varattno);
+	WRITE_INT_FIELD(varphysno);
 	WRITE_OID_FIELD(vartype);
 	WRITE_INT_FIELD(vartypmod);
 	WRITE_OID_FIELD(varcollid);
@@ -1439,7 +1441,24 @@ _outTargetEntry(StringInfo str, const TargetEntry *node)
 	WRITE_UINT_FIELD(ressortgroupref);
 	WRITE_OID_FIELD(resorigtbl);
 	WRITE_INT_FIELD(resorigcol);
+	WRITE_INT_FIELD(resorigphyscol);
 	WRITE_BOOL_FIELD(resjunk);
+}
+
+static void
+_outGenericExprState(StringInfo str, const GenericExprState *node)
+{
+	WRITE_NODE_TYPE("GENERICEXPRSTATE");
+
+	WRITE_NODE_FIELD(arg);
+}
+
+static void
+_outExprState(StringInfo str, const ExprState *node)
+{
+	WRITE_NODE_TYPE("EXPRSTATE");
+
+	WRITE_NODE_FIELD(expr);
 }
 
 static void
@@ -2425,6 +2444,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 		case RTE_RELATION:
 			WRITE_OID_FIELD(relid);
 			WRITE_CHAR_FIELD(relkind);
+			WRITE_NODE_FIELD(lognums);
 			break;
 		case RTE_SUBQUERY:
 			WRITE_NODE_FIELD(subquery);
@@ -3105,6 +3125,12 @@ _outNode(StringInfo str, const void *obj)
 				break;
 			case T_FromExpr:
 				_outFromExpr(str, obj);
+				break;
+			case T_GenericExprState:
+				_outGenericExprState(str, obj);
+				break;
+			case T_ExprState:
+				_outExprState(str, obj);
 				break;
 
 			case T_Path:

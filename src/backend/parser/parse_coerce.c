@@ -906,6 +906,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 	int			i;
 	int			ucolno;
 	ListCell   *arg;
+	Form_pg_attribute	*attrs;
 
 	if (node && IsA(node, RowExpr))
 	{
@@ -924,7 +925,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 		RangeTblEntry *rte;
 
 		rte = GetRTEByRangeTablePosn(pstate, rtindex, sublevels_up);
-		expandRTE(rte, rtindex, sublevels_up, vlocation, false,
+		expandRTE(rte, rtindex, sublevels_up, vlocation, false, false,
 				  NULL, &args);
 	}
 	else
@@ -939,6 +940,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 	newargs = NIL;
 	ucolno = 1;
 	arg = list_head(args);
+	attrs = TupleDescGetLogSortedAttrs(tupdesc);
 	for (i = 0; i < tupdesc->natts; i++)
 	{
 		Node	   *expr;
@@ -946,7 +948,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 		Oid			exprtype;
 
 		/* Fill in NULLs for dropped columns in rowtype */
-		if (tupdesc->attrs[i]->attisdropped)
+		if (attrs[i]->attisdropped)
 		{
 			/*
 			 * can't use atttypid here, but it doesn't really matter what type
@@ -970,8 +972,8 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 
 		cexpr = coerce_to_target_type(pstate,
 									  expr, exprtype,
-									  tupdesc->attrs[i]->atttypid,
-									  tupdesc->attrs[i]->atttypmod,
+									  attrs[i]->atttypid,
+									  attrs[i]->atttypmod,
 									  ccontext,
 									  COERCE_IMPLICIT_CAST,
 									  -1);
@@ -983,7 +985,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 							format_type_be(targetTypeId)),
 					 errdetail("Cannot cast type %s to %s in column %d.",
 							   format_type_be(exprtype),
-							   format_type_be(tupdesc->attrs[i]->atttypid),
+							   format_type_be(attrs[i]->atttypid),
 							   ucolno),
 					 parser_coercion_errposition(pstate, location, expr)));
 		newargs = lappend(newargs, cexpr);

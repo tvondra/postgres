@@ -1119,7 +1119,7 @@ slot_deform_tuple(TupleTableSlot *slot, AttrNumber natts)
 	 * we need to extract.  Start from the position next to the one that was
 	 * last extracted.
 	 */
-	maxphysnum = 0;
+	maxphysnum = slot->tts_nphysvalid;
 	for (attnum = slot->tts_nvalid + 1; attnum <= natts; attnum++)
 	{
 		if (att[attnum - 1]->attphysnum > maxphysnum)
@@ -1133,8 +1133,45 @@ slot_deform_tuple(TupleTableSlot *slot, AttrNumber natts)
 	 */
 	for (attnum = slot->tts_nphysvalid + 1; attnum <= maxphysnum; attnum++)
 	{
-		Form_pg_attribute thisatt = physatt[attnum - 1];
-		int			thisattnum = thisatt->attnum - 1;
+		int	i;
+		Form_pg_attribute thisatt;
+		int			thisattnum = -1;
+
+		/*
+		 * We need to find all physical attributes between the one we fetched
+		 * previously (tts_nphysvalid) and the one we need now (maxphysnum).
+		 * There might be 'holes' when requesting virtual tuples (e.g. a single
+		 * attribute with attphysnum = 100) so we'll walk through physatt to
+		 * find the proper attribute. If we don't find it we skip to the next
+		 * physattnum.
+		 *
+		 * FIXME This is a bit ugly, because TupleDescGetPhysSortedAttrs does
+		 *       not expect holes, so the whole idea of direct indexing into
+		 *       physatt is not working here. The current solution is rather
+		 *       straight-forward and probably not very efficient - simply
+		 *       skip those physnum values not present in the tuple descriptor.
+		 *
+		 *       There are a few ways to fix this: e.g. building the physatt
+		 *       in an 'expanded' form, including missing attributes, which
+		 *       would allow direct indexing (but what will happen at the
+		 *       places that don't expect this?).
+		 */
+
+		for (i = 0; i < tupleDesc->natts; i++)
+		{
+			if (physatt[i]->attphysnum == attnum)
+			{
+				thisatt = physatt[i];
+				thisattnum = thisatt->attnum - 1;
+				break;
+			}
+		}
+
+		/* skip attphysnum not present in the virtual tuple */
+		if (thisattnum == -1)
+			continue;
+
+		Assert(thisatt->attphysnum == attnum);
 
 		if (hasnulls && att_isnull(thisattnum, bp))
 		{
@@ -1188,7 +1225,6 @@ slot_deform_tuple(TupleTableSlot *slot, AttrNumber natts)
 	 * decoding further?  Scanning in physical order might have extracted more
 	 * attributes than what was requested.
 	 */
-
 
 	/*
 	 * Save state for next execution

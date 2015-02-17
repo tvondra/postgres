@@ -946,13 +946,9 @@ ExecTypeFromTLInternal(List *targetList, bool hasoid, bool skipjunk)
 		{
 			Var	   *var = (Var *) tle->expr;
 
-			elog(WARNING, "%s: initializing entry %d from %s",
-				 PG_FUNCNAME_MACRO, cur_resno,
-				 nodeToString(var));
-
 			TupleDescInitEntryPhysicalPosition(typeInfo,
 											   cur_resno,
-											   var->varphysno == 0 ?
+											   (var->varphysno == InvalidAttrNumber) ?
 											   var->varattno : var->varphysno);
 		}
 		cur_resno++;
@@ -980,9 +976,6 @@ ExecTypeFromExprList(List *exprList)
 	{
 		Node	   *e = lfirst(lc);
 
-		elog(WARNING, "%s: initializing entry %d from %s",
-			 PG_FUNCNAME_MACRO, cur_resno,
-			 nodeToString(e));
 		TupleDescInitEntry(typeInfo,
 						   cur_resno,
 						   NULL,

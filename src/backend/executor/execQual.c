@@ -624,6 +624,9 @@ ExecEvalScalarVar(ExprState *exprstate, ExprContext *econtext,
 
 		attr = slot_tupdesc->attrs[attnum - 1];
 
+		/* The attnums must match (Var vs. the attribute). */
+		Assert(attr->attnum == attnum);
+
 		/* can't check type if dropped, since atttypid is probably 0 */
 		if (!attr->attisdropped)
 		{

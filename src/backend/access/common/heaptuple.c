@@ -1266,6 +1266,9 @@ slot_getattr(TupleTableSlot *slot, AttrNumber attnum, bool *isnull)
 		return heap_getsysattr(tuple, attnum, tupleDesc, isnull);
 	}
 
+	/* This only gets attributes by attnum, never by physnum or lognum. */
+	Assert(tupleDesc->attrs[attnum - 1]->attnum == attnum);
+
 	/*
 	 * fast path if desired attribute already cached
 	 */

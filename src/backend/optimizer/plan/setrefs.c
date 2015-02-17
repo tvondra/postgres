@@ -456,16 +456,44 @@ fix_physno_mutator(Node *node, void *context)
 		RangeTblEntry *rte;
 		Relation	rel;
 
+		/* varphysno is equal to varattno by default */
+		var->varphysno = var->varattno;
+
 		if (var->varattno > 0 && !IS_SPECIAL_VARNO(var->varno))
 		{
 			rte = rt_fetch(var->varno, root->parse->rtable);
+
+			/* if it's an actual relation, use find the proper attphysnum */
 			if (rte->rtekind == RTE_RELATION)
 			{
 				rel = relation_open(rte->relid, NoLock);
 
-				var->varphysno = rel->rd_att->attrs[var->varattno - 1]->attphysnum;
-				elog(WARNING, "setting varphysno %d to varattno %d",
-					 var->varphysno, var->varattno);
+				/*
+				 * First Var in this relation, cache the attphysnums.
+				 *
+				 * FIXME This caches all the physnums at once, as it's simpler
+				 */
+				if (rte->physnums == NULL)
+				{
+					AttrNumber attnum;
+
+					/* will be initialized to InvalidAttrNumber (0), which is OK */
+					rte->physnums = (AttrNumber*)palloc0(rel->rd_att->natts * sizeof(AttrNumber));
+
+					for (attnum = 1; attnum <= rel->rd_att->natts; attnum++)
+					{
+						/* must not be already set (duplicate attphysnum) */
+						Assert(rte->physnums[rel->rd_att->attrs[attnum-1]->attnum-1] == 0);
+						rte->physnums[rel->rd_att->attrs[attnum-1]->attnum-1]
+										= rel->rd_att->attrs[attnum-1]->attphysnum;
+					}
+				}
+
+				/* lookup the varphysno in the cache */
+				var->varphysno = rte->physnums[var->varattno-1];
+
+				/* make sure we actually found it */
+				Assert(var->varphysno != InvalidAttrNumber);
 
 				relation_close(rel, NoLock);
 			}

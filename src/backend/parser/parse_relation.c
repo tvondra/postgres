@@ -2258,7 +2258,8 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 							  attr->atttypid, attr->atttypmod,
 							  attr->attcollation,
 							  sublevels_up);
-			varnode->varphysno = 0;
+
+			varnode->varphysno = InvalidAttrNumber;
 			varnode->location = location;
 
 			*colvars = lappend(*colvars, varnode);

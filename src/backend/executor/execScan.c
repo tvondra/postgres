@@ -271,7 +271,7 @@ tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc
 	int			attrno;
 	bool		hasoid;
 	ListCell   *tlist_item = list_head(tlist);
-	Form_pg_attribute *attrs = TupleDescGetLogSortedAttrs(tupdesc);
+	Form_pg_attribute *attrs = TupleDescGetPhysSortedAttrs(tupdesc);
 
 	/* Check the tlist attributes */
 	for (attrno = 1; attrno <= numattrs; attrno++)

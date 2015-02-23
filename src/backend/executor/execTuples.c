@@ -942,19 +942,6 @@ ExecTypeFromTLInternal(List *targetList, bool hasoid, bool skipjunk)
 		TupleDescInitEntryCollation(typeInfo,
 									cur_resno,
 									exprCollation((Node *) tle->expr));
-// 		if (IsA(tle->expr, Var))
-// 		{
-// 			Var	   *var = (Var *) tle->expr;
-// 
-// 			elog(WARNING, "%s => attnum=%d attphysnum=%d", tle->resname, cur_resno, var->varphysno);
-// 		
-// 			TupleDescInitEntryPhysicalPosition(typeInfo,
-// 											   cur_resno,
-// 											   (var->varphysno == InvalidAttrNumber) ?
-// 											   var->varattno : var->varphysno);
-// 		}
-
-// 		elog(WARNING, "%s => attnum=%d attphysnum=%d", tle->resname, typeInfo->attrs[cur_resno-1]->attnum, typeInfo->attrs[cur_resno-1]->attphysnum);
 		cur_resno++;
 	}
 

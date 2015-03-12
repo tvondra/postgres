@@ -1545,6 +1545,24 @@ typedef struct CustomScanState
 	const CustomExecMethods *methods;
 } CustomScanState;
 
+
+typedef struct BatchState
+{
+	PlanState	ps;
+
+	/* per-batch memory context */
+	MemoryContext	mcontext_batch;
+
+	int				batch_limit;	/* maximum tuples per batch */
+	int				batch_size;		/* size of current batch */
+	int				batch_current;	/* current tuple in batch */
+	bool			finished;		/* all batches completed */
+
+	TupleTableSlot	**slots;		/* batch_limit slots (mcontext_batch) */
+
+} BatchState;
+
+
 /* ----------------------------------------------------------------
  *				 Join State Information
  * ----------------------------------------------------------------

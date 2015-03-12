@@ -516,6 +516,12 @@ typedef struct CustomScan
 	const CustomScanMethods *methods;
 } CustomScan;
 
+/* FIXME the "scan" is misleading, as this does not include Scan struct */
+typedef struct Batch
+{
+	Plan		plan;
+} Batch;
+
 /*
  * ==========
  * Join nodes

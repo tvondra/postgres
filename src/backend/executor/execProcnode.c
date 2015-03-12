@@ -80,6 +80,7 @@
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "executor/nodeAppend.h"
+#include "executor/nodeBatch.h"
 #include "executor/nodeBitmapAnd.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
@@ -250,6 +251,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													  estate, eflags);
 			break;
 
+		case T_Batch:
+			result = (PlanState *) ExecInitBatch((Batch *) node,
+												  estate, eflags);
+			break;
+
 			/*
 			 * join nodes
 			 */
@@ -322,7 +328,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 			break;
 
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
+			elog(ERROR, "unrecognized node type: %d X", (int) nodeTag(node));
 			result = NULL;		/* keep compiler quiet */
 			break;
 	}
@@ -452,6 +458,10 @@ ExecProcNode(PlanState *node)
 			result = ExecCustomScan((CustomScanState *) node);
 			break;
 
+		case T_BatchState:
+			result = ExecBatch((BatchState *) node);
+			break;
+
 			/*
 			 * join nodes
 			 */
@@ -511,7 +521,7 @@ ExecProcNode(PlanState *node)
 			break;
 
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
+			elog(ERROR, "unrecognized node type: %d XX", (int) nodeTag(node));
 			result = NULL;
 			break;
 	}
@@ -569,7 +579,7 @@ MultiExecProcNode(PlanState *node)
 			break;
 
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
+			elog(ERROR, "unrecognized node type: %d XXX", (int) nodeTag(node));
 			result = NULL;
 			break;
 	}
@@ -692,6 +702,10 @@ ExecEndNode(PlanState *node)
 			ExecEndCustomScan((CustomScanState *) node);
 			break;
 
+		case T_BatchState:
+			ExecEndBatch((BatchState *) node);
+			break;
+
 			/*
 			 * join nodes
 			 */
@@ -751,7 +765,7 @@ ExecEndNode(PlanState *node)
 			break;
 
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
+			elog(ERROR, "unrecognized node type: %d ZZZ", (int) nodeTag(node));
 			break;
 	}
 }

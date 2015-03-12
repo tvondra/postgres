@@ -16,6 +16,7 @@
 #include "executor/execdebug.h"
 #include "executor/nodeAgg.h"
 #include "executor/nodeAppend.h"
+#include "executor/nodeBatch.h"
 #include "executor/nodeBitmapAnd.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
@@ -201,6 +202,10 @@ ExecReScan(PlanState *node)
 
 		case T_CustomScanState:
 			ExecReScanCustomScan((CustomScanState *) node);
+			break;
+
+		case T_BatchState:
+			ExecReScanBatch((BatchState *) node);
 			break;
 
 		case T_NestLoopState:
@@ -479,6 +484,10 @@ ExecSupportsBackwardScan(Plan *node)
 					return true;
 			}
 			return false;
+
+		case T_Batch:
+			/* FIXME not sure this is a good idea */
+			return ExecSupportsBackwardScan(outerPlan(node));
 
 		case T_Material:
 		case T_Sort:

@@ -579,6 +579,14 @@ _outCustomScan(StringInfo str, const CustomScan *node)
 }
 
 static void
+_outBatch(StringInfo str, const Batch *node)
+{
+	WRITE_NODE_TYPE("BATCH");
+
+	_outPlanInfo(str, (const Plan *) node);
+}
+
+static void
 _outJoin(StringInfo str, const Join *node)
 {
 	WRITE_NODE_TYPE("JOIN");
@@ -2919,6 +2927,9 @@ _outNode(StringInfo str, const void *obj)
 				break;
 			case T_CustomScan:
 				_outCustomScan(str, obj);
+				break;
+			case T_Batch:
+				_outBatch(str, obj);
 				break;
 			case T_Join:
 				_outJoin(str, obj);

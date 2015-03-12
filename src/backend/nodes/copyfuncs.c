@@ -629,6 +629,22 @@ _copyCustomScan(const CustomScan *from)
 }
 
 /*
+ * _copyBatch
+ */
+static Batch *
+_copyBatch(const Batch *from)
+{
+	Batch *newnode = makeNode(Batch);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((const Plan *) from, (Plan *) newnode);
+
+	return newnode;
+}
+
+/*
  * CopyJoinFields
  *
  *		This function copies the fields of the Join node.  It is used by
@@ -4078,6 +4094,9 @@ copyObject(const void *from)
 			break;
 		case T_CustomScan:
 			retval = _copyCustomScan(from);
+			break;
+		case T_Batch:
+			retval = _copyBatch(from);
 			break;
 		case T_Join:
 			retval = _copyJoin(from);

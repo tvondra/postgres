@@ -957,6 +957,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			else
 				pname = sname;
 			break;
+		case T_Batch:
+			pname = sname = "Batch";
+			break;
 		case T_Material:
 			pname = sname = "Materialize";
 			break;

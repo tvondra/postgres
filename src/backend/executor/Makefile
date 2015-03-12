@@ -15,7 +15,7 @@ include $(top_builddir)/src/Makefile.global
 OBJS = execAmi.o execCurrent.o execGrouping.o execJunk.o execMain.o \
        execProcnode.o execQual.o execScan.o execTuples.o \
        execUtils.o functions.o instrument.o nodeAppend.o nodeAgg.o \
-       nodeBitmapAnd.o nodeBitmapOr.o \
+       nodeBatch.o nodeBitmapAnd.o nodeBitmapOr.o \
        nodeBitmapHeapscan.o nodeBitmapIndexscan.o nodeCustom.o nodeHash.o \
        nodeHashjoin.o nodeIndexscan.o nodeIndexonlyscan.o \
        nodeLimit.o nodeLockRows.o \

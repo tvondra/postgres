@@ -181,4 +181,5 @@ ExecReScanBatch(BatchState *node)
 
 	/* reset the counters (just mark it as 'full') */
 	node->batch_current = node->batch_size;
+	node->finished = false;
 }

@@ -174,7 +174,8 @@ char	   *index_tablespace = NULL;
  */
 #define SCALE_32BIT_THRESHOLD 20000
 
-bool		use_log;			/* log transaction latencies to a file */
+bool		use_trans_log;		/* log transaction latencies to a file */
+bool		use_agg_log;		/* log aggregated info to a file */
 bool		use_quiet;			/* quiet logging onto stderr */
 int			agg_interval;		/* log aggregates instead of individual
 								 * transactions */
@@ -364,8 +365,8 @@ static char *select_only = {
 static void setalarm(int seconds);
 static void *threadRun(void *arg);
 
-static void doLog(TState *thread, CState *st, FILE *logfile, instr_time *now,
-	  AggVals *agg, bool skipped);
+static void doLog(TState *thread, CState *st, FILE *tlogfile, FILE *alogfile,
+				  instr_time *now, AggVals *agg, bool skipped);
 
 static void
 usage(void)
@@ -1121,7 +1122,8 @@ agg_vals_init(AggVals *aggs, instr_time start)
 
 /* return false iff client should be disconnected */
 static bool
-doCustom(TState *thread, CState *st, instr_time *conn_time, FILE *logfile, AggVals *agg)
+doCustom(TState *thread, CState *st, instr_time *conn_time, FILE *tlogfile,
+		 FILE *alogfile, AggVals *agg)
 {
 	PGresult   *res;
 	Command   **commands;
@@ -1176,8 +1178,8 @@ top:
 			{
 				thread->throttle_latency_skipped++;
 
-				if (logfile)
-					doLog(thread, st, logfile, &now, agg, true);
+				if (tlogfile || alogfile)
+					doLog(thread, st, tlogfile, alogfile, &now, agg, true);
 
 				wait = getPoissonRand(thread, throttle_delay);
 				thread->throttle_trigger += wait;
@@ -1278,8 +1280,8 @@ top:
 			}
 
 			/* record the time it took in the log */
-			if (logfile)
-				doLog(thread, st, logfile, &now, agg, false);
+			if (tlogfile || alogfile)
+				doLog(thread, st, tlogfile, alogfile, &now, agg, false);
 		}
 
 		if (commands[st->state]->type == SQL_COMMAND)
@@ -1365,7 +1367,7 @@ top:
 	}
 
 	/* Record transaction start time under logging, progress or throttling */
-	if ((logfile || progress || throttle_delay || latency_limit) && st->state == 0)
+	if ((tlogfile || alogfile || progress || throttle_delay || latency_limit) && st->state == 0)
 	{
 		INSTR_TIME_SET_CURRENT(st->txn_begin);
 
@@ -1695,19 +1697,11 @@ top:
  * print log entry after completing one transaction.
  */
 static void
-doLog(TState *thread, CState *st, FILE *logfile, instr_time *now, AggVals *agg,
-	  bool skipped)
+doLog(TState *thread, CState *st, FILE *tlogfile, FILE *alogfile, instr_time *now,
+	  AggVals *agg, bool skipped)
 {
 	double		lag;
 	double		latency;
-
-	/*
-	 * Skip the log entry if sampling is enabled and this row doesn't belong
-	 * to the random sample.
-	 */
-	if (sample_rate != 0.0 &&
-		pg_erand48(thread->random_state) > sample_rate)
-		return;
 
 	if (INSTR_TIME_IS_ZERO(*now))
 		INSTR_TIME_SET_CURRENT(*now);
@@ -1719,7 +1713,7 @@ doLog(TState *thread, CState *st, FILE *logfile, instr_time *now, AggVals *agg,
 		lag = (double) (INSTR_TIME_GET_MICROSEC(st->txn_begin) - st->txn_scheduled);
 
 	/* should we aggregate the results or not? */
-	if (agg_interval > 0)
+	if (alogfile)
 	{
 		/*
 		 * Are we still in the same interval? If yes, accumulate the values
@@ -1771,7 +1765,7 @@ doLog(TState *thread, CState *st, FILE *logfile, instr_time *now, AggVals *agg,
 				 * ifdef in usage), so we don't need to handle
 				 * this in a special way (see below).
 				 */
-				fprintf(logfile, "%ld %d %.0f %.0f %.0f %.0f",
+				fprintf(alogfile, "%ld %d %.0f %.0f %.0f %.0f",
 						agg->start_time,
 						agg->cnt,
 						agg->sum_latency,
@@ -1780,15 +1774,15 @@ doLog(TState *thread, CState *st, FILE *logfile, instr_time *now, AggVals *agg,
 						agg->max_latency);
 				if (throttle_delay)
 				{
-					fprintf(logfile, " %.0f %.0f %.0f %.0f",
+					fprintf(alogfile, " %.0f %.0f %.0f %.0f",
 							agg->sum_lag,
 							agg->sum2_lag,
 							agg->min_lag,
 							agg->max_lag);
 					if (latency_limit)
-						fprintf(logfile, " %d", agg->skipped);
+						fprintf(alogfile, " %d", agg->skipped);
 				}
-				fputc('\n', logfile);
+				fputc('\n', alogfile);
 
 				/* move to the next inteval */
 				agg->start_time = agg->start_time + agg_interval;
@@ -1819,33 +1813,42 @@ doLog(TState *thread, CState *st, FILE *logfile, instr_time *now, AggVals *agg,
 			agg->sum2_lag = lag * lag;
 		}
 	}
-	else
+
+	/*
+	 * Skip the log entry if sampling is enabled and this row doesn't belong
+	 * to the random sample.
+	 */
+	if (sample_rate != 0.0 &&
+		pg_erand48(thread->random_state) > sample_rate)
+		return;
+
+	if (tlogfile)
 	{
 		/* no, print raw transactions */
 #ifndef WIN32
 
 		/* This is more than we really ought to know about instr_time */
 		if (skipped)
-			fprintf(logfile, "%d %d skipped %d %ld %ld",
+			fprintf(tlogfile, "%d %d skipped %d %ld %ld",
 					st->id, st->cnt, st->use_file,
 					(long) now->tv_sec, (long) now->tv_usec);
 		else
-			fprintf(logfile, "%d %d %.0f %d %ld %ld",
+			fprintf(tlogfile, "%d %d %.0f %d %ld %ld",
 					st->id, st->cnt, latency, st->use_file,
 					(long) now->tv_sec, (long) now->tv_usec);
 #else
 
 		/* On Windows, instr_time doesn't provide a timestamp anyway */
 		if (skipped)
-			fprintf(logfile, "%d %d skipped %d 0 0",
+			fprintf(tlogfile, "%d %d skipped %d 0 0",
 					st->id, st->cnt, st->use_file);
 		else
-			fprintf(logfile, "%d %d %.0f %d 0 0",
+			fprintf(tlogfile, "%d %d %.0f %d 0 0",
 					st->id, st->cnt, latency, st->use_file);
 #endif
 		if (throttle_delay)
-			fprintf(logfile, " %.0f", lag);
-		fputc('\n', logfile);
+			fprintf(tlogfile, " %.0f", lag);
+		fputc('\n', tlogfile);
 	}
 }
 
@@ -2923,7 +2926,7 @@ main(int argc, char **argv)
 				break;
 			case 'l':
 				benchmarking_option_set = true;
-				use_log = true;
+				use_trans_log = true;
 				break;
 			case 'q':
 				initialization_option_set = true;
@@ -3046,6 +3049,7 @@ main(int argc, char **argv)
 #else
 				benchmarking_option_set = true;
 				agg_interval = atoi(optarg);
+				use_agg_log = true;
 				if (agg_interval <= 0)
 				{
 					fprintf(stderr, "invalid number of seconds for aggregation: %d\n", agg_interval);
@@ -3106,22 +3110,9 @@ main(int argc, char **argv)
 	}
 
 	/* --sampling-rate may be used only with -l */
-	if (sample_rate > 0.0 && !use_log)
+	if (sample_rate > 0.0 && !use_trans_log)
 	{
 		fprintf(stderr, "log sampling rate is allowed only when logging transactions (-l) \n");
-		exit(1);
-	}
-
-	/* --sampling-rate may must not be used with --aggregate-interval */
-	if (sample_rate > 0.0 && agg_interval > 0)
-	{
-		fprintf(stderr, "log sampling (--sampling-rate) and aggregation (--aggregate-interval) can't be used at the same time\n");
-		exit(1);
-	}
-
-	if (agg_interval > 0 && (!use_log))
-	{
-		fprintf(stderr, "log aggregation is allowed only when actually logging transactions\n");
 		exit(1);
 	}
 
@@ -3427,7 +3418,8 @@ threadRun(void *arg)
 	TState	   *thread = (TState *) arg;
 	CState	   *state = thread->state;
 	TResult    *result;
-	FILE	   *logfile = NULL; /* per-thread log file */
+	FILE	   *tlogfile = NULL; /* per-thread transaction log file */
+	FILE	   *alogfile = NULL; /* per-thread aggregated log file */
 	instr_time	start,
 				end;
 	int			nstate = thread->nstate;
@@ -3461,8 +3453,8 @@ threadRun(void *arg)
 
 	INSTR_TIME_SET_ZERO(result->conn_time);
 
-	/* open log file if requested */
-	if (use_log)
+	/* open transaction log file if requested */
+	if (use_trans_log)
 	{
 		char		logpath[64];
 
@@ -3470,11 +3462,29 @@ threadRun(void *arg)
 			snprintf(logpath, sizeof(logpath), "pgbench_log.%d", main_pid);
 		else
 			snprintf(logpath, sizeof(logpath), "pgbench_log.%d.%d", main_pid, thread->tid);
-		logfile = fopen(logpath, "w");
+		tlogfile = fopen(logpath, "w");
 
-		if (logfile == NULL)
+		if (tlogfile == NULL)
 		{
-			fprintf(stderr, "Couldn't open logfile \"%s\": %s", logpath, strerror(errno));
+			fprintf(stderr, "Couldn't open transaction logfile \"%s\": %s", logpath, strerror(errno));
+			goto done;
+		}
+	}
+
+	/* open aggregated log file if requested */
+	if (use_agg_log)
+	{
+		char		logpath[64];
+
+		if (thread->tid == 0)
+			snprintf(logpath, sizeof(logpath), "pgbench_agg_log.%d", main_pid);
+		else
+			snprintf(logpath, sizeof(logpath), "pgbench_agg_log.%d.%d", main_pid, thread->tid);
+		alogfile = fopen(logpath, "w");
+
+		if (alogfile == NULL)
+		{
+			fprintf(stderr, "Couldn't open transaction logfile \"%s\": %s", logpath, strerror(errno));
 			goto done;
 		}
 	}
@@ -3503,7 +3513,7 @@ threadRun(void *arg)
 		int			prev_ecnt = st->ecnt;
 
 		st->use_file = getrand(thread, 0, num_files - 1);
-		if (!doCustom(thread, st, &result->conn_time, logfile, &aggs))
+		if (!doCustom(thread, st, &result->conn_time, tlogfile, alogfile, &aggs))
 			remains--;			/* I've aborted */
 
 		if (st->ecnt > prev_ecnt && commands[st->state]->type == META_COMMAND)
@@ -3618,7 +3628,7 @@ threadRun(void *arg)
 			if (st->con && (FD_ISSET(PQsocket(st->con), &input_mask)
 							|| commands[st->state]->type == META_COMMAND))
 			{
-				if (!doCustom(thread, st, &result->conn_time, logfile, &aggs))
+				if (!doCustom(thread, st, &result->conn_time, tlogfile, alogfile, &aggs))
 					remains--;	/* I've aborted */
 			}
 
@@ -3778,8 +3788,10 @@ done:
 
 	INSTR_TIME_SET_CURRENT(end);
 	INSTR_TIME_ACCUM_DIFF(result->conn_time, end, start);
-	if (logfile)
-		fclose(logfile);
+	if (tlogfile)
+		fclose(tlogfile);
+	if (alogfile)
+		fclose(alogfile);
 	return result;
 }
 

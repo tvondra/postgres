@@ -26,6 +26,7 @@
 #include "executor/nodeBatch.h"
 #include "utils/rel.h"
 #include "utils/memutils.h"
+#include "nodes/makefuncs.h"
 
 /* ----------------------------------------------------------------
  *		ExecBatch(node)
@@ -92,8 +93,10 @@ ExecBatch(BatchState *state)
 BatchState *
 ExecInitBatch(Batch *node, EState *estate, int eflags)
 {
+	ListCell   *cell;
 	Plan	   *outerNode;
 	BatchState *scanstate;
+	List	   *tlist;
 
 	/*
 	 * Batch always has outer relation and no inner relation.
@@ -122,8 +125,33 @@ ExecInitBatch(Batch *node, EState *estate, int eflags)
 	/*
 	 * initialize child expressions
 	 */
-	scanstate->ps.targetlist = outerPlanState(scanstate)->targetlist;
-	// scanstate->ps.qual = outerPlanState(scanstate)->qual;
+
+	/*
+	 * FIXME This should probably be in the planner, but as we're injecting
+	 *       the node from elsewhere (but moving it to the planner_hook where
+	 *       we inject it seems like a good idea)
+	 */
+	scanstate->ps.plan->targetlist = NIL;
+	tlist = outerPlanState(scanstate)->plan->targetlist;
+
+	/* transform the target list */
+	foreach(cell, tlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(cell);
+
+		Var * var = makeVarFromTargetEntry(OUTER_VAR, tle);
+
+		scanstate->ps.plan->targetlist
+								= lappend(scanstate->ps.plan->targetlist,
+										makeTargetEntry((Expr*)var,
+														tle->resno,
+														NULL,
+														tle->resjunk));
+	}
+
+	scanstate->ps.targetlist = (List *)
+		ExecInitExpr((Expr *) scanstate->ps.plan->targetlist,
+					 (PlanState *) scanstate);
 
 	/*
 	 * just reference the result tuple slot in the child

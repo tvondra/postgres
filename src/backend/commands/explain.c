@@ -1334,6 +1334,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			break;
+		case T_Batch:
+
+			if (es->analyze)
+				ExplainPropertyLong("Batch Size",
+				   ((BatchState *) planstate)->batch_limit, es);
+
+			break;
 		case T_FunctionScan:
 			if (es->verbose)
 			{

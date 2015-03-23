@@ -97,6 +97,8 @@ pg_class|t
 pg_collation|t
 pg_constraint|t
 pg_conversion|t
+pg_cstore|t
+pg_cstore_am|t
 pg_database|t
 pg_db_role_setting|t
 pg_default_acl|t

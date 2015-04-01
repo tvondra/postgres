@@ -16,6 +16,7 @@
 
 #include <math.h>
 
+#include "access/hash.h"
 #include "access/multixact.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
@@ -110,6 +111,9 @@ static void update_attstats(Oid relid, bool inh,
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
+static double adaptive_estimator(int total_rows, int sample_rows,
+								int *f, int f_max);
+static int hash_comparator(const void *a, const void *b);
 
 /*
  *	analyze_rel() -- analyze one relation
@@ -1908,6 +1912,7 @@ static void compute_scalar_stats(VacAttrStatsP stats,
 					 int samplerows,
 					 double totalrows);
 static int	compare_scalars(const void *a, const void *b, void *arg);
+static int	compare_scalars_simple(const void *a, const void *b, void *arg);
 static int	compare_mcvs(const void *a, const void *b);
 
 
@@ -2026,6 +2031,23 @@ compute_minimal_stats(VacAttrStatsP stats,
 	StdAnalyzeData *mystats = (StdAnalyzeData *) stats->extra_data;
 
 	/*
+	 * The adaptive ndistinct estimator requires counts for all the
+	 * repetition counts - we can't do the sort-based count directly
+	 * (because this handles data types with just = operator), and the
+	 * MCV-based counting seems insufficient. We'll instead compute
+	 * hash values, and sort those. We're using just 32-bit hashes,
+	 * which may result in a few collisions - for 30k rows (sampled
+	 * rows for default_statistics_target=100) there's 1:10 chance of
+	 * a hash collision (assuming all values are distinct). But this
+	 * seems like a small error compared to the other factors involved
+	 * (sampling, ...) or compared to the MCV-based counting.
+	 */
+	uint32	   *hashes = (uint32*)palloc0(samplerows * sizeof(uint32));
+
+	/* number of computed hashes (technically equal to nonnull_cnt) */
+	int			nhashes = 0;
+
+	/*
 	 * We track up to 2*n values for an n-element MCV list; but at least 10
 	 */
 	track_max = 2 * num_mcv;
@@ -2086,6 +2108,36 @@ compute_minimal_stats(VacAttrStatsP stats,
 			total_width += strlen(DatumGetCString(value)) + 1;
 		}
 
+		/* compute the hash value, depending on the data type kind */
+		if (stats->attrtype->typbyval)
+		{
+			/* simple pass-by-value data type, with 'typlen' bytes */
+			hashes[nhashes++]
+				= DatumGetUInt32(hash_any((unsigned char *) &value,
+										  stats->attrtype->typlen));
+		}
+		else if (is_varlena)
+		{
+			/* regular varlena data type */
+			hashes[nhashes++]
+				= DatumGetUInt32(hash_any((unsigned char *) VARDATA_ANY(value),
+										  VARSIZE_ANY_EXHDR(DatumGetPointer(value))));
+		}
+		else if (is_varwidth)
+		{
+			/* pass-by-reference with a variable length (e.g. cstring) */
+			hashes[nhashes++]
+				= DatumGetUInt32(hash_any((unsigned char *) DatumGetCString(value),
+										  strlen(DatumGetCString(value))));
+		}
+		else
+		{
+			/* pass-by-reference with fixed length (e.g. name) */
+			hashes[nhashes++]
+				= DatumGetUInt32(hash_any((unsigned char *) DatumGetCString(value),
+										  stats->attrtype->typlen));
+		}
+
 		/*
 		 * See if the value matches anything we're already tracking.
 		 */
@@ -2140,6 +2192,43 @@ compute_minimal_stats(VacAttrStatsP stats,
 	{
 		int			nmultiple,
 					summultiple;
+
+		/* values needed by the adaptive ndistinct estimator */
+		int			f_max = 0;
+		int		   *f_count = (int*)palloc0(sizeof(int) * (nhashes + 1));
+		int			prev_index;
+
+		/* sort the hashes and then count the repetitions */
+		qsort(hashes, nhashes, sizeof(uint32), hash_comparator);
+
+		/*
+		 * Counting repetitions - walk through the sorted array, compare
+		 * the value to the previous one, and whenever it changes the
+		 * we can compute the repetitions using the array indexes.
+		 */
+		prev_index = 0;
+		for (i = 1; i < nhashes; i++)
+		{
+			/* the hashes are different - store the repetition count */
+			if (hashes[i] != hashes[i-1])
+			{
+				f_count[i - prev_index] += 1;
+
+				if (f_max < (i - prev_index))
+					f_max = (i - prev_index);
+
+				prev_index = i;
+			}
+		}
+
+		/* the last element is not updated in the loop */
+		f_count[nhashes - prev_index] += 1;
+
+		if (f_max < (nhashes - prev_index))
+			f_max = (nhashes - prev_index);
+
+		/* wide values are assumed to be distinct */
+		f_count[1] += toowide_cnt;
 
 		stats->stats_valid = true;
 		/* Do the simple null-frac and width stats */
@@ -2198,6 +2287,7 @@ compute_minimal_stats(VacAttrStatsP stats,
 			double		numer,
 						denom,
 						stadistinct;
+			double		adaptdistinct;
 
 			numer = (double) samplerows *(double) d;
 
@@ -2211,6 +2301,30 @@ compute_minimal_stats(VacAttrStatsP stats,
 			if (stadistinct > totalrows)
 				stadistinct = totalrows;
 			stats->stadistinct = floor(stadistinct + 0.5);
+
+			/*
+			 * When computing the adaptive estimate, we're only considering
+			 * non-null values, so we need to perform correction of the
+			 * total rows / sample rows to reflect this. Otherwise the
+			 * coefficients (f_count / f_max) are out of sync. We could
+			 * probably do the inverse thing (including NULL values into
+			 * f_count) with the same effect.
+			 */
+			adaptdistinct
+				= adaptive_estimator(totalrows * (nonnull_cnt / (double)samplerows),
+									nonnull_cnt, f_count, f_max);
+
+			elog(WARNING, "ndistinct estimate current=%.2f adaptive=%.2f",
+						  stadistinct, adaptdistinct);
+
+			/* if we've seen 'almost' all rows, use the estimate instead */
+			if (samplerows >= 0.95 * totalrows)
+			{
+				adaptdistinct = (d + d/0.95)/2;
+				elog(WARNING, "corrected ndistinct estimate current=%.2f adaptive=%.2f",
+					 stadistinct, adaptdistinct);
+			}
+
 		}
 
 		/*
@@ -2434,6 +2548,12 @@ compute_scalar_stats(VacAttrStatsP stats,
 		int			slot_idx = 0;
 		CompareScalarsContext cxt;
 
+		/* f values for the estimator - messy and we likely need much
+		 * less memory, but who cares */
+		int			f_max = 0; /* max number of duplicates */
+		int		   *f_count = (int*)palloc0(sizeof(int)*(values_cnt+1));
+		int			first_index = 0;	/* first index of a group */
+
 		/* Sort the collected values */
 		cxt.ssup = &ssup;
 		cxt.tupnoLink = tupnoLink;
@@ -2504,6 +2624,35 @@ compute_scalar_stats(VacAttrStatsP stats,
 			}
 		}
 
+		/*
+		 * Counting repetitions - walk through the sorted array, compare
+		 * the value to the previous one, and whenever it changes the
+		 * we can compute the repetitions using the array indexes.
+		 */
+		for (i = 1; i < values_cnt; i++)
+		{
+			/* the hashes are different - store the repetition count */
+			if (compare_scalars_simple(&values[i], &values[first_index], &cxt) != 0)
+			{
+				/* found first element of the following group, so (i-first) is the count */
+				f_count[i - first_index] += 1;
+
+				if (f_max < (i - first_index))
+					f_max = (i - first_index);
+
+				first_index = i;
+			}
+		}
+
+		/* the last element is not updated in the loop */
+		f_count[values_cnt - first_index] += 1;
+
+		if (f_max < (values_cnt - first_index))
+			f_max = (values_cnt - first_index);
+
+		/* compensate for wide values (assumed to be distinct) */
+		f_count[1] += toowide_cnt;
+
 		stats->stats_valid = true;
 		/* Do the simple null-frac and width stats */
 		stats->stanullfrac = (double) null_cnt / (double) samplerows;
@@ -2546,6 +2695,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 			double		numer,
 						denom,
 						stadistinct;
+			double		adaptdistinct;	/* adaptive estimate */
 
 			numer = (double) samplerows *(double) d;
 
@@ -2559,6 +2709,29 @@ compute_scalar_stats(VacAttrStatsP stats,
 			if (stadistinct > totalrows)
 				stadistinct = totalrows;
 			stats->stadistinct = floor(stadistinct + 0.5);
+
+			/*
+			 * When computing the adaptive estimate, we're only considering
+			 * non-null values, so we need to perform correction of the
+			 * total rows / sample rows to reflect this. Otherwise the
+			 * coefficients (f_count / f_max) are out of sync. We could
+			 * probably do the inverse thing (including NULL values into
+			 * f_count) with the same effect.
+			 */
+			adaptdistinct
+				= adaptive_estimator(totalrows * (nonnull_cnt / (double)samplerows),
+									nonnull_cnt, f_count, f_max);
+
+			elog(WARNING, "ndistinct estimate current=%.2f adaptive=%.2f",
+						  stadistinct, adaptdistinct);
+
+			/* if we've seen 'almost' all rows, use the estimate instead */
+			if (samplerows >= 0.95 * totalrows)
+			{
+				adaptdistinct = (d + d/0.95)/2;
+				elog(WARNING, "corrected ndistinct estimate current=%.2f adaptive=%.2f",
+					 stadistinct, adaptdistinct);
+			}
 		}
 
 		/*
@@ -2874,6 +3047,21 @@ compare_scalars(const void *a, const void *b, void *arg)
 }
 
 /*
+ * qsort_arg comparator for sorting ScalarItems
+ *
+ */
+static int
+compare_scalars_simple(const void *a, const void *b, void *arg)
+{
+	Datum		da = ((const ScalarItem *) a)->value;
+	Datum		db = ((const ScalarItem *) b)->value;
+
+	CompareScalarsContext *cxt = (CompareScalarsContext *) arg;
+
+	return ApplySortComparator(da, false, db, false, cxt->ssup);
+}
+
+/*
  * qsort comparator for sorting ScalarMCVItems by position
  */
 static int
@@ -2883,4 +3071,131 @@ compare_mcvs(const void *a, const void *b)
 	int			db = ((const ScalarMCVItem *) b)->first;
 
 	return da - db;
+}
+
+/*
+ * Implements AEE ndistinct estimator, desctibed in the paper "Towards
+ * Estimation Error Guarantees for Distinct Values, ACM 2000" paper, with
+ * a minor tweak for highly skewed distributions, where the AEE is quite
+ * unstable. In those cases (when either f1 or f2 are 0) we simply use
+ * the GEE estimator, which seems to work better in those cases.
+ *
+ * The AEE estimator is based on solving this equality (for "m")
+ *
+ *     m - f1 - f2 = f1 * (A + A(m)) / (B + B(m))
+ *
+ * where A, B are effectively constants (not depending on m), and A(m)
+ * and B(m) are functions. This is equal to solving
+ *
+ *     0 = f1 * (A + A(m)) / (B + B(m)) - (m - f1 - f2)
+ *
+ * Instead of looking for the exact solution to this equation (which
+ * might be fractional), we'll look for a natural number minimizing
+ * the absolute difference. Number of (distinct) elements is a natural
+ * number, and we don't mind if the number is slightly wrong. It's
+ * just an estimate, after all. The error from sampling will be much
+ * worse in most cases.
+ *
+ * We know the acceptable values of 'm' are [d,N] where 'd' is the number
+ * of distinct elements in the sample, and N is the number of rows in
+ * the table (not just the sample). For large tables (billions of rows)
+ * that'd be quite time-consuming to compute, so we'll approximate the
+ * solution by gradually increasing the step to ~1% of the current value
+ * of 'm'. This will make it much faster and yet very accurate.
+ *
+ * All this of course assumes the function behaves reasonably (not
+ * oscillating etc.), but that's a safe assumption as the estimator
+ * would perform terribly otherwise (and we're falling back to GEE for
+ * cases where this behavior could happen).
+ */
+static double
+adaptive_estimator(int total_rows, int sample_rows, int *f, int f_max)
+{
+	int		i, m;
+	double	A = 0.0, B = 0.0;
+	int		opt_m = 0;
+	double	opt_diff = total_rows;
+	int		step = 1;
+	int		ndistinct;
+	int		d = f[1] + f[2];
+
+	double k = (f[1] + 2*f[2]);
+
+	/* for highly-skewed distributions, the GEE works better */
+	if (f[1] == 0 || f[2] == 0)
+	{
+		d = f[1];
+		ndistinct = sqrt(total_rows / (double)sample_rows) * f[1];
+
+		for (i = 2; i <= f_max; i++)
+		{
+			ndistinct += f[i];
+			d += f[i];
+		}
+
+		/* sanity checks that the estimate is within [d,total_rows] */
+		if (ndistinct < d)
+			ndistinct = d;
+		else if (ndistinct > total_rows / sample_rows * d)
+			ndistinct = total_rows / sample_rows * d;
+
+		return ndistinct;
+	}
+
+	/* compute the 'constant' parts of the equality (A, B) */
+	for (i = 3; i <= f_max; i++)
+	{
+		double p = i / (double)sample_rows;
+		A +=     powl((1.0 - p), sample_rows  ) * f[i];
+		B += i * powl((1.0 - p), sample_rows-1) * f[i];
+		d += f[i];
+	}
+
+	/* find the 'm' value minimizing the difference */
+	for (m = 1; m <= total_rows; m += step)
+	{
+		double q = k / (sample_rows * m);
+
+		double A_m = A + m * powl((1 - q), sample_rows  );
+		double B_m = B + k * powl((1 - q), sample_rows-1);
+
+		double diff = fabsl(f[1] * (A_m / B_m) - (m - f[1] - f[2]));
+
+		/*
+		 * The function should have a single minimum - stop if we've passed
+		 * it, but not on the first element.
+		 */
+		if ((m > 1) && (opt_diff < diff))
+			break;
+
+		opt_diff = diff;
+		opt_m = m;
+
+		/* tweak the step to 1% to make it faster */
+		step = ((int)(0.01 * m) > step) ? (int)(0.01 * m) : step;
+	}
+
+	/* compute the final estimate */
+	ndistinct = d + opt_m - f[1] - f[2];
+
+	/* sanity checks that the estimate is within [d,total_rows] */
+	if (ndistinct < d)
+		ndistinct = d;
+	else if (ndistinct > total_rows / sample_rows * d)
+		ndistinct = total_rows / sample_rows * d;
+
+	return ndistinct;
+}
+
+static int
+hash_comparator(const void *a, const void *b)
+{
+	uint32 ai = *(uint32*)a;
+	uint32 bi = *(uint32*)b;
+	if (ai < bi)
+		return -1;
+	else if (ai > bi)
+		return 1;
+	else
+		return 0;
 }

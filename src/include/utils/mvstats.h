@@ -17,7 +17,6 @@
 #include "fmgr.h"
 #include "commands/vacuum.h"
 
-
 #define MVSTATS_MAX_DIMENSIONS	8		/* max number of attributes */
 
 /*

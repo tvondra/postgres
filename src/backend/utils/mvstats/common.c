@@ -171,6 +171,7 @@ list_mv_stats(Oid relid)
 
 		info->mvoid = HeapTupleGetOid(htup);
 		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
+		info->deps_enabled = stats->deps_enabled;
 		info->deps_built = stats->deps_built;
 		info->ndist_enabled = stats->ndist_enabled;
 		info->ndist_built = stats->ndist_built;
@@ -303,6 +304,7 @@ compare_scalars_partition(const void *a, const void *b, void *arg)
 
 	return ApplySortComparator(da, false, db, false, ssup);
 }
+
 
 /* initialize multi-dimensional sort */
 MultiSortSupport

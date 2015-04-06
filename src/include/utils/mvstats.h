@@ -17,12 +17,20 @@
 #include "fmgr.h"
 #include "commands/vacuum.h"
 
+/*
+ * Degree of how much MCV item / histogram bucket matches a clause.
+ * This is then considered when computing the selectivity.
+ */
+#define MVSTATS_MATCH_NONE		0		/* no match at all */
+#define MVSTATS_MATCH_PARTIAL	1		/* partial match */
+#define MVSTATS_MATCH_FULL		2		/* full match */
 
 #define MVSTATS_MAX_DIMENSIONS	8		/* max number of attributes */
 
-/* An associative rule, tracking [a => b] dependency.
- *
- * TODO Make this work with multiple columns on both sides.
+
+/*
+ * Functional dependencies, tracking column-level relationships (values
+ * in one column determine values in another one).
  */
 typedef struct MVDependencyData {
 	int16	a;
@@ -47,6 +55,8 @@ typedef MVDependenciesData* MVDependencies;
  *      Consider adding a single `fetch_stats` method, fetching all
  *      stats specified using flags (or something like that).
  */
+
+MVDependencies load_mv_dependencies(Oid mvoid);
 
 bytea * serialize_mv_dependencies(MVDependencies dependencies);
 

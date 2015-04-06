@@ -15,12 +15,12 @@
  */
 
 #include "common.h"
+#include "utils/array.h"
 
 static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 
 static List *list_mv_stats(Oid relid);
-
 
 /*
  * Compute requested multivariate stats, using the rows sampled for the
@@ -51,6 +51,8 @@ build_mv_stats(Relation onerel, double totalrows,
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
 		MVDependencies deps = NULL;
 		double		ndist = -1;
+		MCVList		mcvlist = NULL;
+		int			numrows_filtered = 0;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -92,8 +94,12 @@ build_mv_stats(Relation onerel, double totalrows,
 		if (stat->ndist_enabled)
 			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
 
+		/* build the MCV list */
+		if (stat->mcv_enabled)
+			mcvlist = build_mv_mcvlist(numrows, rows, attrs, stats, &numrows_filtered);
+
 		/* store the histogram / MCV list in the catalog */
-		update_mv_stats(stat->mvoid, deps, ndist, attrs, stats);
+		update_mv_stats(stat->mvoid, deps, ndist, mcvlist, attrs, stats);
 	}
 }
 
@@ -175,6 +181,8 @@ list_mv_stats(Oid relid)
 		info->deps_built = stats->deps_built;
 		info->ndist_enabled = stats->ndist_enabled;
 		info->ndist_built = stats->ndist_built;
+		info->mcv_enabled = stats->mcv_enabled;
+		info->mcv_built = stats->mcv_built;
 
 		result = lappend(result, info);
 	}
@@ -191,10 +199,57 @@ list_mv_stats(Oid relid)
 	return result;
 }
 
+
+/*
+ * Find attnims of MV stats using the mvoid.
+ */
+int2vector *
+find_mv_attnums(Oid mvoid, Oid *relid)
+{
+	ArrayType  *arr;
+	Datum		adatum;
+	bool		isnull;
+	HeapTuple	htup;
+	int2vector *keys;
+
+	/* Prepare to scan pg_mv_statistic for entries having indrelid = this rel. */
+	htup = SearchSysCache1(MVSTATOID,
+						   ObjectIdGetDatum(mvoid));
+
+	/* XXX syscache contains OIDs of deleted stats (not invalidated) */
+	if (!HeapTupleIsValid(htup))
+		return NULL;
+
+	/* starelid */
+	adatum = SysCacheGetAttr(MVSTATOID, htup,
+							 Anum_pg_mv_statistic_starelid, &isnull);
+	Assert(!isnull);
+
+	*relid = DatumGetObjectId(adatum);
+
+	/* stakeys */
+	adatum = SysCacheGetAttr(MVSTATOID, htup,
+							 Anum_pg_mv_statistic_stakeys, &isnull);
+	Assert(!isnull);
+
+	arr = DatumGetArrayTypeP(adatum);
+
+	keys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+						   ARR_DIMS(arr)[0]);
+	ReleaseSysCache(htup);
+
+	/*
+	 * TODO maybe save the list into relcache, as in RelationGetIndexList
+	 * (which was used as an inspiration of this one)?.
+	 */
+
+	return keys;
+}
+
 void
 update_mv_stats(Oid mvoid,
-		 MVDependencies dependencies, double ndistcoeff, int2vector *attrs,
-		 VacAttrStats **stats)
+		 MVDependencies dependencies, double ndistcoeff, MCVList mcvlist,
+		 int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -219,8 +274,17 @@ update_mv_stats(Oid mvoid,
 			= PointerGetDatum(serialize_mv_dependencies(dependencies));
 	}
 
+	if (mcvlist != NULL)
+	{
+		bytea	   *data = serialize_mv_mcvlist(mcvlist, attrs, stats);
+
+		nulls[Anum_pg_mv_statistic_stamcv - 1] = (data == NULL);
+		values[Anum_pg_mv_statistic_stamcv - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_mv_statistic_stadeps - 1] = true;
+	replaces[Anum_pg_mv_statistic_stamcv - 1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_mv_statistic_deps_built - 1] = false;
@@ -238,15 +302,21 @@ update_mv_stats(Oid mvoid,
 	/* always change the availability flags */
 	nulls[Anum_pg_mv_statistic_deps_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_ndist_built - 1] = false;
+	nulls[Anum_pg_mv_statistic_mcv_built - 1] = false;
+
 	nulls[Anum_pg_mv_statistic_stakeys - 1] = false;
 
 	/* use the new attnums, in case we removed some dropped ones */
 	replaces[Anum_pg_mv_statistic_deps_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_ndist_built - 1] = true;
+	replaces[Anum_pg_mv_statistic_mcv_built - 1] = true;
+
 	replaces[Anum_pg_mv_statistic_stakeys - 1] = true;
 
 	values[Anum_pg_mv_statistic_deps_built - 1] = BoolGetDatum(dependencies != NULL);
 	values[Anum_pg_mv_statistic_ndist_built - 1] = BoolGetDatum(ndistcoeff > 1.0);
+	values[Anum_pg_mv_statistic_mcv_built - 1] = BoolGetDatum(mcvlist != NULL);
+
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(attrs);
 
 	/* Is there already a pg_mv_statistic tuple for this attribute? */
@@ -275,6 +345,23 @@ update_mv_stats(Oid mvoid,
 	heap_close(sd, RowExclusiveLock);
 }
 
+
+int
+mv_get_index(AttrNumber varattno, int2vector *stakeys)
+{
+	int			i,
+				idx = 0;
+
+	for (i = 0; i < stakeys->dim1; i++)
+	{
+		if (stakeys->values[i] < varattno)
+			idx += 1;
+		else
+			break;
+	}
+	return idx;
+}
+
 /* multi-variate stats comparator */
 
 /*
@@ -285,11 +372,15 @@ update_mv_stats(Oid mvoid,
 int
 compare_scalars_simple(const void *a, const void *b, void *arg)
 {
-	Datum		da = *(Datum *) a;
-	Datum		db = *(Datum *) b;
-	SortSupport ssup = (SortSupport) arg;
+	return compare_datums_simple(*(Datum *) a,
+								 *(Datum *) b,
+								 (SortSupport) arg);
+}
 
-	return ApplySortComparator(da, false, db, false, ssup);
+int
+compare_datums_simple(Datum a, Datum b, SortSupport ssup)
+{
+	return ApplySortComparator(a, false, b, false, ssup);
 }
 
 /*
@@ -405,4 +496,35 @@ multi_sort_compare_dims(int start, int end,
 	}
 
 	return 0;
+}
+
+/* simple counterpart to qsort_arg */
+void *
+bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
+			int (*compar) (const void *, const void *, void *),
+			void *arg)
+{
+	size_t		l,
+				u,
+				idx;
+	const void *p;
+	int			comparison;
+
+	l = 0;
+	u = nmemb;
+	while (l < u)
+	{
+		idx = (l + u) / 2;
+		p = (void *) (((const char *) base) + (idx * size));
+		comparison = (*compar) (key, p, arg);
+
+		if (comparison < 0)
+			u = idx;
+		else if (comparison > 0)
+			l = idx + 1;
+		else
+			return (void *) p;
+	}
+
+	return NULL;
 }

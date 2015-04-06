@@ -420,7 +420,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
 
 			/* unavailable stats are not interesting for the planner */
-			if (mvstat->deps_built || mvstat->ndist_built)
+			if (mvstat->deps_built || mvstat->ndist_built || mvstat->mcv_built)
 			{
 				info = makeNode(MVStatisticInfo);
 
@@ -429,14 +429,13 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 				/* enabled statistics */
 				info->deps_enabled = mvstat->deps_enabled;
-
-				/* built/available statistics */
-				info->deps_built = mvstat->deps_built;
 				info->ndist_enabled = mvstat->ndist_enabled;
+				info->mcv_enabled = mvstat->mcv_enabled;
 
 				/* built/available statistics */
 				info->deps_built = mvstat->deps_built;
 				info->ndist_built = mvstat->ndist_built;
+				info->mcv_built = mvstat->mcv_built;
 
 				/* stakeys */
 				adatum = SysCacheGetAttr(MVSTATOID, htup,

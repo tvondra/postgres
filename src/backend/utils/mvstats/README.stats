@@ -1,0 +1,36 @@
+Multivariate statististics
+==========================
+
+When estimating various quantities (e.g. condition selectivities) the default
+approach relies on the assumption of independence. In practice that's often
+not true, resulting in estimation errors.
+
+Multivariate stats track different types of dependencies between the columns,
+hopefully improving the estimates.
+
+Currently we only have one kind of multivariate statistics - soft functional
+dependencies, and we use it to improve estimates of equality clauses. See
+README.dependencies for details.
+
+
+Selectivity estimation
+----------------------
+
+When estimating selectivity, we aim to achieve several things:
+
+    (a) maximize the estimate accuracy
+
+    (b) minimize the overhead, especially when no suitable multivariate stats
+        exist (so if you are not using multivariate stats, there's no overhead)
+
+This clauselist_selectivity() performs several inexpensive checks first, before
+even attempting to do the more expensive estimation.
+
+    (1) check if there are multivariate stats on the relation
+
+    (2) check there are at least two attributes referenced by clauses compatible
+        with multivariate statistics (equality clauses for func. dependencies)
+
+    (3) perform reduction of equality clauses using func. dependencies
+
+    (4) estimate the reduced list of clauses using regular statistics

@@ -2109,8 +2109,9 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf,
 						   "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-						   "  deps_enabled,\n"
-						   "  deps_built,\n"
+						   "  deps_enabled, mcv_enabled,\n"
+						   "  deps_built, mcv_built,\n"
+						   "  mcv_max_items,\n"
 						   "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 						   "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
@@ -2128,6 +2129,8 @@ describeOneTableDetails(const char *schemaname,
 				printTableAddFooter(&cont, _("Statistics:"));
 				for (i = 0; i < tuples; i++)
 				{
+					bool first = true;
+
 					printfPQExpBuffer(&buf, "    ");
 
 					/* statistics name (qualified with namespace) */
@@ -2137,10 +2140,22 @@ describeOneTableDetails(const char *schemaname,
 
 					/*  options */
 					if (!strcmp(PQgetvalue(result, i, 4), "t"))
-						appendPQExpBuffer(&buf, "(dependencies)");
+					{
+						appendPQExpBuffer(&buf, "(dependencies");
+						first = false;
+					}
 
-					appendPQExpBuffer(&buf, " ON (%s)",
-							PQgetvalue(result, i, 6));
+					if (!strcmp(PQgetvalue(result, i, 5), "t"))
+					{
+						if (! first)
+							appendPQExpBuffer(&buf, ", mcv");
+						else
+							appendPQExpBuffer(&buf, "(mcv");
+						first = false;
+					}
+
+					appendPQExpBuffer(&buf, ") ON (%s)",
+							PQgetvalue(result, i, 9));
 
 					printTableAddFooter(&cont, buf.data);
 				}

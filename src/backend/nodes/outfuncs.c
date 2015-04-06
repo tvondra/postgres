@@ -2146,9 +2146,11 @@ _outMVStatisticInfo(StringInfo str, const MVStatisticInfo *node)
 
 	/* enabled statistics */
 	WRITE_BOOL_FIELD(deps_enabled);
+	WRITE_BOOL_FIELD(mcv_enabled);
 
 	/* built/available statistics */
 	WRITE_BOOL_FIELD(deps_built);
+	WRITE_BOOL_FIELD(mcv_built);
 }
 
 static void

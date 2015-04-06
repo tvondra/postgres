@@ -162,3 +162,4 @@ test: xml
 test: event_trigger
 test: stats
 test: mv_dependencies
+test: mv_mcv

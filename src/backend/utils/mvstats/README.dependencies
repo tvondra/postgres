@@ -156,37 +156,24 @@ estimates - especially compared to histograms, that are quite bad in estimating
 equality clauses.
 
 
-Limitations
------------
+Multi-column dependencies
+-------------------------
 
-Let's see the main liminations of functional dependencies, especially those
-related to the current implementation.
+The implementation supports dependencies with multiple columns on the left side
+(i.e. condition of the dependency). The detection starts from dependencies with
+a single condition, and then proceeds to higher condition counts.
 
-The current implementation supports only dependencies between two columns, but
-this is merely a simplification of the initial implementation. It's certainly
-useful to mine for dependencies involving multiple columns on the 'left' side,
-i.e. a condition for the dependency. That is dependencies like (a,b -> c).
+It also detects dependencies that are implied by already identified ones, and
+ignores them. For example if we know that (a->b) then we won't add (a,c->b) as
+this dependency is a trivial consequence of (a->b).
 
-The implementation may/should be smart enough not to mine redundant conditions,
-e.g. (a->b) and (a,c -> b), because the latter is a trivial consequence of the
-former one (if values of 'a' determine 'b', adding another column won't change
-that relationship). The ANALYZE should first analyze 1:1 dependencies, then 2:1
-dependencies (and skip the already identified ones), etc.
-
-For example the dependency
+For a more practical example, consider these two dependencies
 
     (city name -> zip code)
-
-is much stronger, i.e. whenever it hold, then
-
     (city name, state name -> zip code)
 
-holds too. But in case there are cities with the same name in different states,
-then only the latter dependency will be valid.
-
-Of course, there probably are cities with the same name within a single state,
-but hopefully this is relatively rare occurence (and thus we'll still detect
-the 'soft' dependency).
+We could say that the former dependency is stronger because if it's valid, then
+the second dependency is valid too.
 
 Handling multiple columns on the right side of the dependency, is not necessary,
 as those dependencies may be simply decomposed into a set of dependencies with

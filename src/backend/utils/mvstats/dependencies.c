@@ -692,3 +692,27 @@ pg_mv_stats_dependencies_show(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
 }
+
+MVDependencies
+load_mv_dependencies(Oid mvoid)
+{
+	bool		isnull = false;
+	Datum		deps;
+
+	/* Prepare to scan pg_mv_statistic for entries having indrelid = this rel. */
+	HeapTuple	htup = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(mvoid));
+
+#ifdef USE_ASSERT_CHECKING
+	Form_pg_mv_statistic mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
+	Assert(mvstat->deps_enabled && mvstat->deps_built);
+#endif
+
+	deps = SysCacheGetAttr(MVSTATOID, htup,
+						   Anum_pg_mv_statistic_stadeps, &isnull);
+
+	Assert(!isnull);
+
+	ReleaseSysCache(htup);
+
+	return deserialize_mv_dependencies(DatumGetByteaP(deps));
+}

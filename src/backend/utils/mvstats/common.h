@@ -47,6 +47,14 @@ typedef struct
 	int			tupno;			/* position index for tuple it came from */
 } ScalarItem;
 
+/* (de)serialization info */
+typedef struct DimensionInfo {
+	int		nvalues;	/* number of deduplicated values */
+	int		nbytes;		/* number of bytes (serialized) */
+	int		typlen;		/* pg_type.typlen */
+	bool	typbyval;	/* pg_type.typbyval */
+} DimensionInfo;
+
 /* multi-sort */
 typedef struct MultiSortSupportData
 {
@@ -60,6 +68,7 @@ typedef struct SortItem
 {
 	Datum	   *values;
 	bool	   *isnull;
+	int			count;
 } SortItem;
 
 MultiSortSupport multi_sort_init(int ndims);
@@ -76,5 +85,11 @@ int multi_sort_compare_dims(int start, int end, const SortItem *a,
 						const SortItem *b, MultiSortSupport mss);
 
 /* comparators, used when constructing multivariate stats */
+int compare_datums_simple(Datum a, Datum b, SortSupport ssup);
 int compare_scalars_simple(const void *a, const void *b, void *arg);
 int compare_scalars_partition(const void *a, const void *b, void *arg);
+
+void * bsearch_arg(const void *key, const void *base,
+				   size_t nmemb, size_t size,
+				   int (*compar) (const void *, const void *, void *),
+				   void *arg);

@@ -17,7 +17,6 @@
 #include "fmgr.h"
 #include "commands/vacuum.h"
 
-
 #define MVSTATS_MAX_DIMENSIONS	8		/* max number of attributes */
 
 /*
@@ -48,6 +47,8 @@ typedef MVDependenciesData* MVDependencies;
  *      Consider adding a single `fetch_stats` method, fetching all
  *      stats specified using flags (or something like that).
  */
+
+MVDependencies load_mv_dependencies(Oid mvoid);
 
 bytea * serialize_mv_dependencies(MVDependencies dependencies);
 

@@ -2103,7 +2103,6 @@ describeOneTableDetails(const char *schemaname,
 						   "SELECT oid, stakeys,\n"
 						   "  deps_enabled,\n"
 						   "  deps_built,\n"
-						   "  mcv_max_items, hist_max_buckets,\n"
 						   "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 						   "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"

@@ -12072,6 +12072,12 @@ static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 							opt->defname)));
 	}
 
+	/* check that at least some statistics were requested */
+	if (! build_dependencies)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("no statistics type (dependencies) was requested")));
+
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
 	stakeys = buildint2vector(attnums, numcols);

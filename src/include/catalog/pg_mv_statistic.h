@@ -35,15 +35,21 @@ CATALOG(pg_mv_statistic,3381)
 
 	/* statistics requested to build */
 	bool		deps_enabled;		/* analyze dependencies? */
+	bool		mcv_enabled;		/* build MCV list? */
+
+	/* MCV size */
+	int32		mcv_max_items;		/* max MCV items */
 
 	/* statistics that are available (if requested) */
 	bool		deps_built;			/* dependencies were built */
+	bool		mcv_built;			/* MCV list was built */
 
 	/* variable-length fields start here, but we allow direct access to stakeys */
 	int2vector	stakeys;			/* array of column keys */
 
 #ifdef CATALOG_VARLEN
 	bytea		stadeps;			/* dependencies (serialized) */
+	bytea		stamcv;				/* MCV list (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;
@@ -59,11 +65,15 @@ typedef FormData_pg_mv_statistic *Form_pg_mv_statistic;
  *		compiler constants for pg_attrdef
  * ----------------
  */
-#define Natts_pg_mv_statistic					5
+#define Natts_pg_mv_statistic					9
 #define Anum_pg_mv_statistic_starelid			1
 #define Anum_pg_mv_statistic_deps_enabled		2
-#define Anum_pg_mv_statistic_deps_built			3
-#define Anum_pg_mv_statistic_stakeys			4
-#define Anum_pg_mv_statistic_stadeps			5
+#define Anum_pg_mv_statistic_mcv_enabled		3
+#define Anum_pg_mv_statistic_mcv_max_items		4
+#define Anum_pg_mv_statistic_deps_built			5
+#define Anum_pg_mv_statistic_mcv_built			6
+#define Anum_pg_mv_statistic_stakeys			7
+#define Anum_pg_mv_statistic_stadeps			8
+#define Anum_pg_mv_statistic_stamcv				9
 
 #endif   /* PG_MV_STATISTIC_H */

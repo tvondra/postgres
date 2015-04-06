@@ -12010,7 +12010,13 @@ static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 	Relation	mvstatrel;
 
 	/* by default build nothing */
-	bool 	build_dependencies = false;
+	bool 	build_dependencies = false,
+			build_mcv = false;
+
+	int32 	max_mcv_items = -1;
+
+	/* options required because of other options */
+	bool	require_mcv = false;
 
 	Assert(IsA(def, StatisticsDef));
 
@@ -12065,6 +12071,29 @@ static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 
 		if (strcmp(opt->defname, "dependencies") == 0)
 			build_dependencies = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "mcv") == 0)
+			build_mcv = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "max_mcv_items") == 0)
+		{
+			max_mcv_items = defGetInt32(opt);
+
+			/* this option requires 'mcv' to be enabled */
+			require_mcv = true;
+
+			/* sanity check */
+			if (max_mcv_items < MVSTAT_MCVLIST_MIN_ITEMS)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("max number of MCV items must be at least %d",
+								MVSTAT_MCVLIST_MIN_ITEMS)));
+
+			else if (max_mcv_items > MVSTAT_MCVLIST_MAX_ITEMS)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("max number of MCV items is %d",
+								MVSTAT_MCVLIST_MAX_ITEMS)));
+
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -12073,10 +12102,16 @@ static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 	}
 
 	/* check that at least some statistics were requested */
-	if (! build_dependencies)
+	if (! (build_dependencies || build_mcv))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (dependencies) was requested")));
+				 errmsg("no statistics type (dependencies, mcv) was requested")));
+
+	/* now do some checking of the options */
+	if (require_mcv && (! build_mcv))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("option 'mcv' is required by other options(s)")));
 
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
@@ -12092,9 +12127,13 @@ static void ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 	values[Anum_pg_mv_statistic_starelid-1] = ObjectIdGetDatum(RelationGetRelid(rel));
 
 	values[Anum_pg_mv_statistic_stakeys -1] = PointerGetDatum(stakeys);
-	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
 
-	nulls[Anum_pg_mv_statistic_stadeps -1] = true;
+	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
+	values[Anum_pg_mv_statistic_mcv_enabled   -1] = BoolGetDatum(build_mcv);
+	values[Anum_pg_mv_statistic_mcv_max_items    -1] = Int32GetDatum(max_mcv_items);
+
+	nulls[Anum_pg_mv_statistic_stadeps -1]  = true;
+	nulls[Anum_pg_mv_statistic_stamcv   -1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);
@@ -12141,7 +12180,13 @@ static void ATExecDropStatistics(AlteredTableInfo *tab, Relation rel,
 
 	/* checking whether the statistics matches / should be dropped */
 	bool	build_dependencies = false;
+	bool	build_mcv = false;
+
+	bool	max_mcv_items = 0;
+
 	bool	check_dependencies = false;
+	bool	check_mcv = false;
+	bool	check_mcv_items = false;
 
 	if (def != NULL)
 	{
@@ -12183,6 +12228,18 @@ static void ATExecDropStatistics(AlteredTableInfo *tab, Relation rel,
 				check_dependencies = true;
 				build_dependencies = defGetBoolean(opt);
 			}
+			else if (strcmp(opt->defname, "mcv") == 0)
+			{
+				check_mcv = true;
+				build_mcv = defGetBoolean(opt);
+			}
+			else if (strcmp(opt->defname, "max_mcv_items") == 0)
+			{
+				check_mcv       = true;
+				check_mcv_items = true;
+				build_mcv       = true;
+				max_mcv_items   = defGetInt32(opt);
+			}
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
@@ -12220,6 +12277,30 @@ static void ATExecDropStatistics(AlteredTableInfo *tab, Relation rel,
 
 			delete = (! isnull) &&
 					 (DatumGetBool(adatum) == build_dependencies);
+		}
+
+		if (delete && check_mcv)
+		{
+			bool isnull;
+			Datum adatum = heap_getattr(tuple,
+								  Anum_pg_mv_statistic_mcv_enabled,
+								  RelationGetDescr(statrel),
+								  &isnull);
+
+			delete = (! isnull) &&
+					 (DatumGetBool(adatum) == build_mcv);
+		}
+
+		if (delete && check_mcv_items)
+		{
+			bool isnull;
+			Datum adatum = heap_getattr(tuple,
+								  Anum_pg_mv_statistic_mcv_max_items,
+								  RelationGetDescr(statrel),
+								  &isnull);
+
+			delete = (! isnull) &&
+					 (DatumGetInt32(adatum) == max_mcv_items);
 		}
 
 		/* check that the columns match the statistics definition */

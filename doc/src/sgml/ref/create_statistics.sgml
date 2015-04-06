@@ -132,6 +132,24 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
     </listitem>
    </varlistentry>
 
+   <varlistentry>
+    <term><literal>max_mcv_items</> (<type>integer</>)</term>
+    <listitem>
+     <para>
+      Maximum number of MCV list items.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>mcv</> (<type>boolean</>)</term>
+    <listitem>
+     <para>
+      Enables MCV list for the statistics.
+     </para>
+    </listitem>
+   </varlistentry>
+
    </variablelist>
 
   </refsect2>

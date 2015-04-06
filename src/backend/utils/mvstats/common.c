@@ -84,7 +84,8 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		/*
 		 * Analyze functional dependencies of columns.
 		 */
-		deps = build_mv_dependencies(numrows, rows, attrs, stats);
+		if (stat->deps_enabled)
+			deps = build_mv_dependencies(numrows, rows, attrs, stats);
 
 		/* store the histogram / MCV list in the catalog */
 		update_mv_stats(stat->mvoid, deps, attrs);
@@ -165,6 +166,7 @@ list_mv_stats(Oid relid)
 
 		info->mvoid = HeapTupleGetOid(htup);
 		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
+		info->deps_enabled = stats->deps_enabled;
 		info->deps_built = stats->deps_built;
 
 		result = lappend(result, info);
@@ -277,6 +279,7 @@ compare_scalars_partition(const void *a, const void *b, void *arg)
 
 	return ApplySortComparator(da, false, db, false, ssup);
 }
+
 
 /* initialize multi-dimensional sort */
 MultiSortSupport

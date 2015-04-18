@@ -35,7 +35,7 @@
 #include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
-#include "common/pg_lzcompress.h"
+#include "common/compression.h"
 #include "miscadmin.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
@@ -1273,11 +1273,11 @@ toast_compress_datum(Datum value)
 		valsize > PGLZ_strategy_default->max_input_size)
 		return PointerGetDatum(NULL);
 
-	tmp = (struct varlena *) palloc(PGLZ_MAX_OUTPUT(valsize) +
+	tmp = (struct varlena *) palloc(COMPRESSION_MAX_OUTPUT(valsize) +
 									TOAST_COMPRESS_HDRSZ);
 
 	/*
-	 * We recheck the actual size even if pglz_compress() reports success,
+	 * We recheck the actual size even if pg_compress() reports success,
 	 * because it might be satisfied with having saved as little as one byte
 	 * in the compressed data --- which could turn into a net loss once you
 	 * consider header and alignment padding.  Worst case, the compressed
@@ -1286,7 +1286,7 @@ toast_compress_datum(Datum value)
 	 * only one header byte and no padding if the value is short enough.  So
 	 * we insist on a savings of more than 2 bytes to ensure we have a gain.
 	 */
-	len = pglz_compress(VARDATA_ANY(DatumGetPointer(value)),
+	len = pg_compress(VARDATA_ANY(DatumGetPointer(value)),
 						valsize,
 						TOAST_COMPRESS_RAWDATA(tmp),
 						PGLZ_strategy_default);
@@ -2158,7 +2158,7 @@ toast_decompress_datum(struct varlena * attr)
 		palloc(TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ);
 	SET_VARSIZE(result, TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ);
 
-	if (pglz_decompress(TOAST_COMPRESS_RAWDATA(attr),
+	if (pg_decompress(TOAST_COMPRESS_RAWDATA(attr),
 						VARSIZE(attr) - TOAST_COMPRESS_HDRSZ,
 						VARDATA(result),
 						TOAST_COMPRESS_RAWSIZE(attr)) < 0)

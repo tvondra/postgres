@@ -38,6 +38,7 @@
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
+#include "common/compression.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
@@ -70,6 +71,7 @@
 #include "pg_trace.h"
 
 extern uint32 bootstrap_data_checksum_version;
+extern uint32 bootstrap_compression_algorithm;
 
 /* File path names (all relative to $PGDATA) */
 #define RECOVERY_COMMAND_FILE	"recovery.conf"
@@ -4368,6 +4370,9 @@ ReadControlFile(void)
 	/* Make the initdb settings visible as GUC variables, too */
 	SetConfigOption("data_checksums", DataChecksumsEnabled() ? "yes" : "no",
 					PGC_INTERNAL, PGC_S_OVERRIDE);
+
+	SetConfigOption("compression_algorithm", CompressionAlgorithmSelected(),
+					PGC_INTERNAL, PGC_S_OVERRIDE);
 }
 
 void
@@ -4430,6 +4435,37 @@ DataChecksumsEnabled(void)
 {
 	Assert(ControlFile != NULL);
 	return (ControlFile->data_checksum_version > 0);
+}
+
+/*
+ * What compression algorithm was selected for this cluster?
+ */
+char *
+CompressionAlgorithmSelected(void)
+{
+	Assert(ControlFile != NULL);
+
+	switch (ControlFile->compression_algorithm)
+	{
+		case COMPRESSION_PGLZ:
+			return "pglz";
+		case COMPRESSION_LZ4:
+			return "lz4";
+		case COMPRESSION_LZ4HC:
+			return "lz4hc";
+		case COMPRESSION_LZO:
+			return "lzo";
+		case COMPRESSION_SNAPPY:
+			return "snappy";
+		case COMPRESSION_NONE:
+			return "none";
+		default:
+			elog(WARNING, "unknown compression algorithm (%d)",
+						  ControlFile->compression_algorithm);
+	}
+
+	/* default */
+	return "pglz";
 }
 
 /*
@@ -4821,6 +4857,7 @@ BootStrapXLOG(void)
 	ControlFile->wal_log_hints = wal_log_hints;
 	ControlFile->track_commit_timestamp = track_commit_timestamp;
 	ControlFile->data_checksum_version = bootstrap_data_checksum_version;
+	ControlFile->compression_algorithm = bootstrap_compression_algorithm;
 
 	/* some additional ControlFile fields are set in WriteControlFile() */
 

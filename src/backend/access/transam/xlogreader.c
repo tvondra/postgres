@@ -20,7 +20,7 @@
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_control.h"
-#include "common/pg_lzcompress.h"
+#include "common/compression.h"
 
 static bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 
@@ -1302,7 +1302,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 	if (bkpb->bimg_info & BKPIMAGE_IS_COMPRESSED)
 	{
 		/* If a backup block image is compressed, decompress it */
-		if (pglz_decompress(ptr, bkpb->bimg_len, tmp,
+		if (pg_decompress(ptr, bkpb->bimg_len, tmp,
 							BLCKSZ - bkpb->hole_length) < 0)
 		{
 			report_invalid_record(record, "invalid compressed image at %X/%X, block %d",

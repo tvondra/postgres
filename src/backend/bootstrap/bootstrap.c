@@ -22,6 +22,7 @@
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "common/compression.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -44,7 +45,7 @@
 #include "utils/tqual.h"
 
 uint32		bootstrap_data_checksum_version = 0;		/* No checksum */
-
+uint32		bootstrap_compression_algorithm = COMPRESSION_LZ4;		/* PGLZ */
 
 #define ALLOC(t, c)		((t *) calloc((unsigned)(c), sizeof(t)))
 
@@ -214,7 +215,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	/* If no -x argument, we are a CheckerProcess */
 	MyAuxProcType = CheckerProcess;
 
-	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:-:")) != -1)
+	while ((flag = getopt(argc, argv, "B:c:C:d:D:Fkr:x:-:")) != -1)
 	{
 		switch (flag)
 		{
@@ -242,6 +243,9 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				break;
 			case 'k':
 				bootstrap_data_checksum_version = PG_DATA_CHECKSUM_VERSION;
+				break;
+			case 'C':
+				bootstrap_compression_algorithm = atoi(optarg);
 				break;
 			case 'r':
 				strlcpy(OutputFileName, optarg, MAXPGPATH);

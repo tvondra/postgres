@@ -804,6 +804,27 @@ PGAC_ARG_BOOL(with, zlib, yes,
 AC_SUBST(with_zlib)
 
 #
+# LZ4
+#
+PGAC_ARG_BOOL(with, lz4, no,
+              [support lz4 compression])
+AC_SUBST(with_lz4)
+
+#
+# LZO
+#
+PGAC_ARG_BOOL(with, lzo, no,
+              [support lzo compression])
+AC_SUBST(with_lzo)
+
+#
+# Snappy
+#
+PGAC_ARG_BOOL(with, snappy, no,
+              [support snappy compression])
+AC_SUBST(with_snappy)
+
+#
 # Elf
 #
 
@@ -956,6 +977,27 @@ if test "$with_zlib" = yes; then
 If you have zlib already installed, see config.log for details on the
 failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support.])])
+fi
+
+if test "$with_lz4" = yes; then
+  AC_CHECK_LIB(lz4, LZ4_compress, [],
+               [AC_MSG_ERROR([lz4 library not found
+If you have lz4 already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory.])])
+fi
+
+if test "$with_lzo" = yes; then
+  AC_CHECK_LIB(lzo2, lzo1x_1_compress, [],
+               [AC_MSG_ERROR([lzo library not found
+If you have lzo already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory.])])
+fi
+
+if test "$with_snappy" = yes; then
+  AC_CHECK_LIB(snappy, snappy_compress, [],
+               [AC_MSG_ERROR([snappy library not found
+If you have snappy already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory.])])
 fi
 
 if test "$enable_spinlocks" = yes; then

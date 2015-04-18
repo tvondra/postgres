@@ -703,6 +703,9 @@ LDFLAGS_EX
 ELF_SYS
 EGREP
 GREP
+with_snappy
+with_lzo
+with_lz4
 with_zlib
 with_system_tzdata
 with_libxslt
@@ -839,6 +842,9 @@ with_libxml
 with_libxslt
 with_system_tzdata
 with_zlib
+with_lz4
+with_lzo
+with_snappy
 with_gnu_ld
 enable_largefile
 enable_float4_byval
@@ -1529,6 +1535,9 @@ Optional Packages:
   --with-system-tzdata=DIR
                           use system time zone data in DIR
   --without-zlib          do not use Zlib
+  --with-lz4              support lz4 compression
+  --with-lzo              support lzo compression
+  --with-snappy           support snappy compression
   --with-gnu-ld           assume the C compiler uses GNU ld [default=no]
 
 Some influential environment variables:
@@ -5990,6 +5999,93 @@ fi
 
 
 #
+# LZ4
+#
+
+
+
+# Check whether --with-lz4 was given.
+if test "${with_lz4+set}" = set; then :
+  withval=$with_lz4;
+  case $withval in
+    yes)
+      :
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-lz4 option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_lz4=no
+
+fi
+
+
+
+
+#
+# LZO
+#
+
+
+
+# Check whether --with-lzo was given.
+if test "${with_lzo+set}" = set; then :
+  withval=$with_lzo;
+  case $withval in
+    yes)
+      :
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-lzo option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_lzo=no
+
+fi
+
+
+
+
+#
+# Snappy
+#
+
+
+
+# Check whether --with-snappy was given.
+if test "${with_snappy+set}" = set; then :
+  withval=$with_snappy;
+  case $withval in
+    yes)
+      :
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-snappy option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_snappy=no
+
+fi
+
+
+
+
+#
 # Elf
 #
 
@@ -8447,6 +8543,162 @@ else
 If you have zlib already installed, see config.log for details on the
 failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support." "$LINENO" 5
+fi
+
+fi
+
+if test "$with_lz4" = yes; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for LZ4_compress in -llz4" >&5
+$as_echo_n "checking for LZ4_compress in -llz4... " >&6; }
+if ${ac_cv_lib_lz4_LZ4_compress+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-llz4  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char LZ4_compress ();
+int
+main ()
+{
+return LZ4_compress ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_lz4_LZ4_compress=yes
+else
+  ac_cv_lib_lz4_LZ4_compress=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_lz4_LZ4_compress" >&5
+$as_echo "$ac_cv_lib_lz4_LZ4_compress" >&6; }
+if test "x$ac_cv_lib_lz4_LZ4_compress" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_LIBLZ4 1
+_ACEOF
+
+  LIBS="-llz4 $LIBS"
+
+else
+  as_fn_error $? "lz4 library not found
+If you have lz4 already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory." "$LINENO" 5
+fi
+
+fi
+
+if test "$with_lzo" = yes; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for lzo1x_1_compress in -llzo2" >&5
+$as_echo_n "checking for lzo1x_1_compress in -llzo2... " >&6; }
+if ${ac_cv_lib_lzo2_lzo1x_1_compress+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-llzo2  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char lzo1x_1_compress ();
+int
+main ()
+{
+return lzo1x_1_compress ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_lzo2_lzo1x_1_compress=yes
+else
+  ac_cv_lib_lzo2_lzo1x_1_compress=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_lzo2_lzo1x_1_compress" >&5
+$as_echo "$ac_cv_lib_lzo2_lzo1x_1_compress" >&6; }
+if test "x$ac_cv_lib_lzo2_lzo1x_1_compress" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_LIBLZO2 1
+_ACEOF
+
+  LIBS="-llzo2 $LIBS"
+
+else
+  as_fn_error $? "lzo library not found
+If you have lzo already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory." "$LINENO" 5
+fi
+
+fi
+
+if test "$with_snappy" = yes; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for snappy_compress in -lsnappy" >&5
+$as_echo_n "checking for snappy_compress in -lsnappy... " >&6; }
+if ${ac_cv_lib_snappy_snappy_compress+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-lsnappy  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char snappy_compress ();
+int
+main ()
+{
+return snappy_compress ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_snappy_snappy_compress=yes
+else
+  ac_cv_lib_snappy_snappy_compress=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_snappy_snappy_compress" >&5
+$as_echo "$ac_cv_lib_snappy_snappy_compress" >&6; }
+if test "x$ac_cv_lib_snappy_snappy_compress" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_LIBSNAPPY 1
+_ACEOF
+
+  LIBS="-lsnappy $LIBS"
+
+else
+  as_fn_error $? "snappy library not found
+If you have snappy already installed, see config.log for details on the
+failure.  It is possible the compiler isn't looking in the proper directory." "$LINENO" 5
 fi
 
 fi

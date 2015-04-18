@@ -63,6 +63,7 @@
 #include "catalog/catalog.h"
 #include "common/restricted_token.h"
 #include "common/username.h"
+#include "common/compression.h"
 #include "mb/pg_wchar.h"
 #include "getaddrinfo.h"
 #include "getopt_long.h"
@@ -124,6 +125,7 @@ static bool do_sync = true;
 static bool sync_only = false;
 static bool show_setting = false;
 static bool data_checksums = false;
+static char *compression = "";
 static char *xlog_dir = "";
 
 
@@ -264,6 +266,7 @@ void		setup_data_file_paths(void);
 void		setup_locale_encoding(void);
 void		setup_signals(void);
 void		setup_text_search(void);
+void		setup_compression(void);
 void		create_data_directory(void);
 void		create_xlog_symlink(void);
 void		warn_on_mount_point(int error);
@@ -1552,9 +1555,10 @@ bootstrap_template1(void)
 	unsetenv("PGCLIENTENCODING");
 
 	snprintf(cmd, sizeof(cmd),
-			 "\"%s\" --boot -x1 %s %s %s",
+			 "\"%s\" --boot -x1 %s %s %d %s %s",
 			 backend_exec,
 			 data_checksums ? "-k" : "",
+			 "-C", compression_algorithm,
 			 boot_options, talkargs);
 
 	PG_CMD_OPEN;
@@ -3101,6 +3105,41 @@ setup_text_search(void)
 
 
 void
+setup_compression(void)
+{
+	compression_algorithm = COMPRESSION_PGLZ;
+	if (strlen(compression) != 0)
+	{
+		if (strcmp(compression, "pglz") == 0)
+			compression_algorithm = COMPRESSION_PGLZ;
+		else if (strcmp(compression, "none") == 0)
+			compression_algorithm = COMPRESSION_NONE;
+#if HAVE_LIBLZ4
+		else if (strcmp(compression, "lz4") == 0)
+			compression_algorithm = COMPRESSION_LZ4;
+		else if (strcmp(compression, "lz4hc") == 0)
+			compression_algorithm = COMPRESSION_LZ4HC;
+#endif
+#if HAVE_LIBLZO2
+		else if (strcmp(compression, "lzo") == 0)
+			compression_algorithm = COMPRESSION_LZO;
+#endif
+#if HAVE_LIBSNAPPY
+		else if (strcmp(compression, "snappy") == 0)
+			compression_algorithm = COMPRESSION_SNAPPY;
+#endif
+		else
+			printf(_("%s: warning: unknown compression algorithm \"%s\"\n"),
+				   progname, compression);
+	}
+
+	printf(_("The cluster will use compression algorithm \"%s\".\n"),
+		   compression);
+
+}
+
+
+void
 setup_signals(void)
 {
 	/* some of these are not valid on Windows */
@@ -3413,6 +3452,7 @@ main(int argc, char *argv[])
 		{"sync-only", no_argument, NULL, 'S'},
 		{"xlogdir", required_argument, NULL, 'X'},
 		{"data-checksums", no_argument, NULL, 'k'},
+		{"compression", required_argument, NULL, 'c'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3453,7 +3493,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:C:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3544,6 +3584,9 @@ main(int argc, char *argv[])
 			case 'X':
 				xlog_dir = pg_strdup(optarg);
 				break;
+			case 'C':
+				compression = pg_strdup(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -3616,6 +3659,8 @@ main(int argc, char *argv[])
 	setup_locale_encoding();
 
 	setup_text_search();
+
+	setup_compression();
 
 	printf("\n");
 

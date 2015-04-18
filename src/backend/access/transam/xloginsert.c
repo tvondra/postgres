@@ -24,7 +24,7 @@
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_control.h"
-#include "common/pg_lzcompress.h"
+#include "common/compression.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
@@ -32,7 +32,7 @@
 #include "pg_trace.h"
 
 /* Buffer size required to store a compressed version of backup block image */
-#define PGLZ_MAX_BLCKSZ	PGLZ_MAX_OUTPUT(BLCKSZ)
+#define PGLZ_MAX_BLCKSZ	COMPRESSION_MAX_OUTPUT(BLCKSZ)
 
 /*
  * For each block reference registered with XLogRegisterBuffer, we fill in
@@ -765,12 +765,12 @@ XLogCompressBackupBlock(char * page, uint16 hole_offset, uint16 hole_length,
 		source = page;
 
 	/*
-	 * We recheck the actual size even if pglz_compress() reports success
+	 * We recheck the actual size even if pg_compress() reports success
 	 * and see if the number of bytes saved by compression is larger than
 	 * the length of extra data needed for the compressed version of block
 	 * image.
 	 */
-	len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);
+	len = pg_compress(source, orig_len, dest, PGLZ_strategy_default);
 	if (len >= 0 &&
 		len + extra_bytes < orig_len)
 	{

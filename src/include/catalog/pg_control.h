@@ -223,6 +223,9 @@ typedef struct ControlFileData
 	/* Are data pages protected by checksums? Zero if no checksum version */
 	uint32		data_checksum_version;
 
+	/* What compression algorithm was selected? */
+	uint32		compression_algorithm;
+
 	/* CRC of all above ... MUST BE LAST! */
 	pg_crc32c	crc;
 } ControlFileData;

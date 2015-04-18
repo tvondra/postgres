@@ -37,6 +37,7 @@
 #include "commands/vacuum.h"
 #include "commands/variable.h"
 #include "commands/trigger.h"
+#include "common/compression.h"
 #include "funcapi.h"
 #include "libpq/auth.h"
 #include "libpq/be-fsstubs.h"
@@ -389,6 +390,18 @@ static const struct config_enum_entry row_security_options[] = {
 	{"no", ROW_SECURITY_OFF, true},
 	{"1", ROW_SECURITY_ON, true},
 	{"0", ROW_SECURITY_OFF, true},
+	{NULL, 0, false}
+};
+
+/*
+ */
+static const struct config_enum_entry compression_options[] = {
+	{"pglz", COMPRESSION_PGLZ, false},
+	{"lz4", COMPRESSION_LZ4, false},
+	{"lz4hc", COMPRESSION_LZ4HC, false},
+	{"lzo", COMPRESSION_LZO, false},
+	{"snappy", COMPRESSION_SNAPPY, false},
+	{"none", COMPRESSION_NONE, false},
 	{NULL, 0, false}
 };
 
@@ -3645,6 +3658,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&row_security,
 		ROW_SECURITY_ON, row_security_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"compression_algorithm", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Compression algorithm."),
+			gettext_noop("Determines algorithm used for compression.")
+		},
+		&compression_algorithm,
+		COMPRESSION_PGLZ, compression_options,
 		NULL, NULL, NULL
 	},
 

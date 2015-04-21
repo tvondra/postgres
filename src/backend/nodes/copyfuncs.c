@@ -2404,6 +2404,20 @@ _copyCollateClause(const CollateClause *from)
 	return newnode;
 }
 
+static ColumnStoreClause *
+_copyColumnStoreClause(const ColumnStoreClause *from)
+{
+	ColumnStoreClause *newnode = makeNode(ColumnStoreClause);
+
+	COPY_STRING_FIELD(name);
+	COPY_STRING_FIELD(storetype);
+	COPY_NODE_FIELD(columns);
+	COPY_NODE_FIELD(options);
+	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
 static IndexElem *
 _copyIndexElem(const IndexElem *from)
 {
@@ -2436,6 +2450,7 @@ _copyColumnDef(const ColumnDef *from)
 	COPY_NODE_FIELD(cooked_default);
 	COPY_NODE_FIELD(collClause);
 	COPY_SCALAR_FIELD(collOid);
+	COPY_NODE_FIELD(cstoreClause);
 	COPY_NODE_FIELD(constraints);
 	COPY_NODE_FIELD(fdwoptions);
 	COPY_LOCATION_FIELD(location);
@@ -4700,6 +4715,9 @@ copyObject(const void *from)
 			break;
 		case T_CollateClause:
 			retval = _copyCollateClause(from);
+			break;
+		case T_ColumnStoreClause:
+			retval = _copyColumnStoreClause(from);
 			break;
 		case T_SortBy:
 			retval = _copySortBy(from);

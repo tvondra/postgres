@@ -390,6 +390,7 @@ typedef enum NodeTag
 	T_MultiAssignRef,
 	T_TypeCast,
 	T_CollateClause,
+	T_ColumnStoreClause,
 	T_SortBy,
 	T_WindowDef,
 	T_RangeSubselect,

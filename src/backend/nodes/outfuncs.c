@@ -2234,6 +2234,7 @@ _outColumnDef(StringInfo str, const ColumnDef *node)
 	WRITE_NODE_FIELD(collClause);
 	WRITE_OID_FIELD(collOid);
 	WRITE_NODE_FIELD(constraints);
+	WRITE_NODE_FIELD(cstoreClause);
 	WRITE_NODE_FIELD(fdwoptions);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -2270,6 +2271,18 @@ _outCollateClause(StringInfo str, const CollateClause *node)
 
 	WRITE_NODE_FIELD(arg);
 	WRITE_NODE_FIELD(collname);
+	WRITE_LOCATION_FIELD(location);
+}
+
+static void
+_outColumnStoreClause(StringInfo str, const ColumnStoreClause *node)
+{
+	WRITE_NODE_TYPE("COLUMNSTORECLAUSE");
+
+	WRITE_STRING_FIELD(name);
+	WRITE_STRING_FIELD(storetype);
+	WRITE_NODE_FIELD(columns);
+	WRITE_NODE_FIELD(options);
 	WRITE_LOCATION_FIELD(location);
 }
 
@@ -3273,6 +3286,9 @@ _outNode(StringInfo str, const void *obj)
 				break;
 			case T_CollateClause:
 				_outCollateClause(str, obj);
+				break;
+			case T_ColumnStoreClause:
+				_outColumnStoreClause(str, obj);
 				break;
 			case T_IndexElem:
 				_outIndexElem(str, obj);

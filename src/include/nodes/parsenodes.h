@@ -558,6 +558,24 @@ typedef struct RangeTableSample
 } RangeTableSample;
 
 /*
+ * ColumnStoreClause - a COLUMN STORE declaration
+ *
+ * When this appears as a column constraint, the store includes only that
+ * column, and the column list is NIL.  When it appears as a table constraint,
+ * the column list contains one or more column names.
+ */
+typedef struct ColumnStoreClause
+{
+	NodeTag	type;
+	char   *name;			/* column store name */
+	char   *storetype;		/* column store type */
+	List   *columns;		/* list of String column names, or NIL */
+	List   *options;		/* list of DefElem options */
+	char   *tablespacename; /* table space to use, or NULL */
+	int		location;
+} ColumnStoreClause;
+
+/*
  * ColumnDef - column definition (used in various creates)
  *
  * If the column has a default value, we may have the value expression
@@ -569,6 +587,10 @@ typedef struct RangeTableSample
  * Similarly, we may have a COLLATE specification in either raw form
  * (represented as a CollateClause with arg==NULL) or cooked form
  * (the collation's OID).
+ *
+ * Similarly, a COLUMN STORE specification may come in raw form (a
+ * ColumnStoreClause) or cooked (the OID of the corresponding store in the
+ * parent relation.  Note we only reuse its name, not the store itself.)
  *
  * The constraints list may contain a CONSTR_DEFAULT item in a raw
  * parsetree produced by gram.y, but transformCreateStmt will remove
@@ -589,6 +611,7 @@ typedef struct ColumnDef
 	Node	   *cooked_default; /* default value (transformed expr tree) */
 	CollateClause *collClause;	/* untransformed COLLATE spec, if any */
 	Oid			collOid;		/* collation OID (InvalidOid if not set) */
+	ColumnStoreClause *cstoreClause; /* untransformed COL STORE, if any */
 	List	   *constraints;	/* other constraints on column */
 	List	   *fdwoptions;		/* per-column FDW options */
 	int			location;		/* parse location, or -1 if none/unknown */
@@ -1723,11 +1746,13 @@ typedef struct VariableShowStmt
 /* ----------------------
  *		Create Table Statement
  *
- * NOTE: in the raw gram.y output, ColumnDef and Constraint nodes are
- * intermixed in tableElts, and constraints is NIL.  After parse analysis,
- * tableElts contains just ColumnDefs, and constraints contains just
- * Constraint nodes (in fact, only CONSTR_CHECK nodes, in the present
- * implementation).
+ * NOTE: in the raw gram.y output, ColumnDef, ColumnStoreClause and Constraint
+ * nodes are intermixed in tableElts, and constraints and colstores are NIL.
+ * After parse analysis, tableElts contains just ColumnDefs, constraints
+ * contains just Constraint nodes (in fact, only CONSTR_CHECK nodes, in the
+ * present implementation), and colstores contains only ColumnStoreClause
+ * nodes (further note that ColumnDef nodes might have ColumnStoreClause nodes
+ * within.  Those are left alone during parse analysis.)
  * ----------------------
  */
 
@@ -1740,6 +1765,7 @@ typedef struct CreateStmt
 								 * inhRelation) */
 	TypeName   *ofTypename;		/* OF typename */
 	List	   *constraints;	/* constraints (list of Constraint nodes) */
+	List	   *colstores;		/* list of ColumnStoreClause nodes */
 	List	   *options;		/* options from WITH clause */
 	OnCommitAction oncommit;	/* what do we do at COMMIT? */
 	char	   *tablespacename; /* table space to use, or NULL */

@@ -2241,6 +2241,19 @@ _equalCollateClause(const CollateClause *a, const CollateClause *b)
 }
 
 static bool
+_equalColumnStoreClause(const ColumnStoreClause *a, const ColumnStoreClause *b)
+{
+	COMPARE_STRING_FIELD(name);
+	COMPARE_STRING_FIELD(storetype);
+	COMPARE_NODE_FIELD(columns);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_LOCATION_FIELD(location);
+	COMPARE_STRING_FIELD(tablespacename);
+
+	return true;
+}
+
+static bool
 _equalSortBy(const SortBy *a, const SortBy *b)
 {
 	COMPARE_NODE_FIELD(node);
@@ -2330,6 +2343,7 @@ _equalColumnDef(const ColumnDef *a, const ColumnDef *b)
 	COMPARE_NODE_FIELD(cooked_default);
 	COMPARE_NODE_FIELD(collClause);
 	COMPARE_SCALAR_FIELD(collOid);
+	COMPARE_NODE_FIELD(cstoreClause);
 	COMPARE_NODE_FIELD(constraints);
 	COMPARE_NODE_FIELD(fdwoptions);
 	COMPARE_LOCATION_FIELD(location);
@@ -3239,6 +3253,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_CollateClause:
 			retval = _equalCollateClause(a, b);
+			break;
+		case T_ColumnStoreClause:
+			retval = _equalColumnStoreClause(a, b);
 			break;
 		case T_SortBy:
 			retval = _equalSortBy(a, b);

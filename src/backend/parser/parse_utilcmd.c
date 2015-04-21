@@ -262,6 +262,10 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 				transformTableLikeClause(&cxt, (TableLikeClause *) element);
 				break;
 
+			case T_ColumnStoreClause:
+				stmt->colstores = lappend(stmt->colstores, element);
+				break;
+
 			default:
 				elog(ERROR, "unrecognized node type: %d",
 					 (int) nodeTag(element));

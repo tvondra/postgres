@@ -574,6 +574,25 @@ TupleDescInitEntryCollation(TupleDesc desc,
 	desc->attrs[attributeNumber - 1]->attcollation = collationid;
 }
 
+/*
+ * TupleDescInitEntryColStore
+ *
+ * Assign a column store to a previously initialized tuple descriptor entry.
+ */
+void
+TupleDescInitEntryColStore(TupleDesc desc,
+						   AttrNumber attributeNumber,
+						   Oid colstore)
+{
+	/*
+	 * sanity checks
+	 */
+	AssertArg(PointerIsValid(desc));
+	AssertArg(attributeNumber >= 1);
+	AssertArg(attributeNumber <= desc->natts);
+
+	desc->attrs[attributeNumber - 1]->attcstore = colstore;
+}
 
 /*
  * BuildDescForRelation

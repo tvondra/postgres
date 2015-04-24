@@ -23,6 +23,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/colstore.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -578,6 +579,12 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * default values or CHECK constraints; we handle those below.
 	 */
 	descriptor = BuildDescForRelation(schema);
+
+	/*
+	 * Create any column stores we need.  The descriptor is modified in place
+	 * with the column store info.
+	 */
+	generateColumnStores(stmt->colstores, schema, descriptor);
 
 	/*
 	 * Notice that we allow OIDs here only for plain tables, even though some
@@ -1631,6 +1638,10 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 									   storage_name(def->storage),
 									   storage_name(attribute->attstorage))));
 
+				/* cope with inherited having different cstores */
+				if (OidIsValid(def->cstoreOid) && OidIsValid(attribute->attcstore))
+					elog(ERROR, "whoops, a mess"); /* XXX */
+
 				def->inhcount++;
 				/* Merge of NOT NULL constraints = OR 'em together */
 				def->is_not_null |= attribute->attnotnull;
@@ -1656,6 +1667,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->collClause = NULL;
 				def->collOid = attribute->attcollation;
 				def->constraints = NIL;
+				def->cstoreClause = NULL;
+				def->cstoreOid = attribute->attcstore;
 				def->location = -1;
 				inhSchema = lappend(inhSchema, def);
 				newattno[parent_attno - 1] = ++child_attno;
@@ -1850,6 +1863,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 							 errdetail("%s versus %s",
 									   storage_name(def->storage),
 									   storage_name(newdef->storage))));
+
+				/* FIXME see about merging cstore decl here */
 
 				/* Mark the column as locally defined */
 				def->is_local = true;

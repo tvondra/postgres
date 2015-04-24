@@ -23,6 +23,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/colstore.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -269,7 +270,8 @@ struct DropRelationCallbackState
 
 static void truncate_check_rel(Relation rel);
 static List *MergeAttributes(List *schema, List *supers, char relpersistence,
-				List **supOids, List **supconstr, int *supOidCount);
+				List **supOids, List **supconstr, int *supOidCount,
+				List **colstores);
 static bool MergeCheckConstraint(List *constraints, char *name, Node *expr);
 static void MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel);
 static void MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel);
@@ -458,6 +460,9 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	Oid			tablespaceId;
 	Relation	rel;
 	TupleDesc	descriptor;
+	List	   *decl_cstores = NIL,
+			   *inh_cstores = NIL,
+			   *colstores;
 	List	   *inheritOids;
 	List	   *old_constraints;
 	bool		localHasOids;
@@ -567,19 +572,43 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		ofTypeId = InvalidOid;
 
 	/*
+	 * Initialize the list of column stores with the ones provided in
+	 * table constraint form.
+	 */
+	foreach(listptr, stmt->colstores)
+	{
+		ColumnStoreClause *clause = (ColumnStoreClause *) lfirst(listptr);
+		ColumnStoreClauseInfo *store = palloc(sizeof(ColumnStoreClauseInfo));
+
+		store->cstoreClause = clause;
+		store->attnum = InvalidAttrNumber;
+		store->attnums = NIL;
+		store->cstoreOid = InvalidOid;
+
+		decl_cstores = lappend(decl_cstores, store);
+	}
+
+	/*
 	 * Look up inheritance ancestors and generate relation schema, including
-	 * inherited attributes.
+	 * inherited attributes.  Add column stores coming from parent rels.
 	 */
 	schema = MergeAttributes(schema, stmt->inhRelations,
 							 stmt->relation->relpersistence,
-							 &inheritOids, &old_constraints, &parentOidCount);
+							 &inheritOids, &old_constraints, &parentOidCount,
+							 &inh_cstores);
 
 	/*
 	 * Create a tuple descriptor from the relation schema.  Note that this
 	 * deals with column names, types, and NOT NULL constraints, but not
 	 * default values or CHECK constraints; we handle those below.
 	 */
-	descriptor = BuildDescForRelation(schema);
+	descriptor = BuildDescForRelation(schema, &decl_cstores);
+
+	/*
+	 * Determine the column stores we need.
+	 */
+	colstores = DetermineColumnStores(descriptor, decl_cstores, inh_cstores,
+									  tablespaceId);
 
 	/*
 	 * Notice that we allow OIDs here only for plain tables, even though some
@@ -661,6 +690,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  descriptor,
 										  list_concat(cookedDefaults,
 													  old_constraints),
+										  colstores,
 										  relkind,
 										  stmt->relation->relpersistence,
 										  false,
@@ -1359,6 +1389,7 @@ storage_name(char c)
  * 'supconstr' receives a list of constraints belonging to the parents,
  *		updated as necessary to be valid for the child.
  * 'supOidCount' is set to the number of parents that have OID columns.
+ * 'colstores' is appended ColumnStoreClauseInfo structs from parent rels.
  *
  * Return value:
  * Completed schema list.
@@ -1404,7 +1435,8 @@ storage_name(char c)
  */
 static List *
 MergeAttributes(List *schema, List *supers, char relpersistence,
-				List **supOids, List **supconstr, int *supOidCount)
+				List **supOids, List **supconstr, int *supOidCount,
+				List **colstores)
 {
 	ListCell   *entry;
 	List	   *inhSchema = NIL;
@@ -1502,6 +1534,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 		TupleConstr *constr;
 		AttrNumber *newattno;
 		AttrNumber	parent_attno;
+		List	   *pstores;
+		ListCell   *cell;
 
 		/*
 		 * A self-exclusive lock is needed here.  If two backends attempt to
@@ -1658,6 +1692,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->collClause = NULL;
 				def->collOid = attribute->attcollation;
 				def->constraints = NIL;
+				def->cstoreClause = NULL;
 				def->location = -1;
 				inhSchema = lappend(inhSchema, def);
 				newattno[parent_attno - 1] = ++child_attno;
@@ -1766,6 +1801,38 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 			}
 		}
 
+		/*
+		 * Process column stores in the parent, using the completed
+		 * newattno map.
+		 */
+		pstores = RelationGetColStoreList(relation);
+		foreach(cell, pstores)
+		{
+			Oid			cstoreid = lfirst_oid(cell);
+			Relation	storerel;
+			Form_pg_cstore cst;
+			ColumnStoreClauseInfo *cstinfo;
+			int			i;
+
+			/* AccessShare should be sufficient, since we hold lock on rel */
+			storerel = relation_open(cstoreid, AccessShareLock);
+			cst = storerel->rd_cstore;
+
+			cstinfo = palloc(sizeof(ColumnStoreClauseInfo));
+			cstinfo->attnum = InvalidAttrNumber;
+			cstinfo->cstoreClause = NULL;
+			cstinfo->cstoreOid = RelationGetRelid(storerel);
+			cstinfo->attnums = NIL;
+			for (i = 0; i < cst->cstnatts; i++)
+				cstinfo->attnums = lappend_int(cstinfo->attnums,
+											   newattno[cst->cstatts.values[i]-1]);
+
+			relation_close(storerel, AccessShareLock);
+
+			*colstores = lappend(*colstores, cstinfo);
+		}
+		list_free(pstores);
+
 		pfree(newattno);
 
 		/*
@@ -1852,6 +1919,8 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 							 errdetail("%s versus %s",
 									   storage_name(def->storage),
 									   storage_name(newdef->storage))));
+
+				/* FIXME see about merging cstore decl here */
 
 				/* Mark the column as locally defined */
 				def->is_local = true;

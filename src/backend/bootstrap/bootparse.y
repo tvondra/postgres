@@ -240,6 +240,7 @@ Boot_CreateStmt:
 													  BOOTSTRAP_SUPERUSERID,
 													  tupdesc,
 													  NIL,
+													  NIL,
 													  RELKIND_RELATION,
 													  RELPERSISTENCE_PERMANENT,
 													  shared_relation,

@@ -123,7 +123,11 @@ extern void TupleDescInitEntryCollation(TupleDesc desc,
 							AttrNumber attributeNumber,
 							Oid collationid);
 
-extern TupleDesc BuildDescForRelation(List *schema);
+extern void TupleDescInitEntryColStore(TupleDesc desc,
+						   AttrNumber attributeNumber,
+						   Oid colstore);
+
+extern TupleDesc BuildDescForRelation(List *schema, List **colstores);
 
 extern TupleDesc BuildDescFromLists(List *names, List *types, List *typmods, List *collations);
 

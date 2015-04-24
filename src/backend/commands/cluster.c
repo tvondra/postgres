@@ -25,6 +25,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/colstore.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -667,6 +668,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 										  OldHeap->rd_rel->relowner,
 										  OldHeapDesc,
 										  NIL,
+										  CloneColumnStores(OldHeap),
 										  RELKIND_RELATION,
 										  relpersistence,
 										  false,

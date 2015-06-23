@@ -621,6 +621,33 @@ typedef struct Material
 } Material;
 
 /* ----------------
+ *		column store late materialization node
+ * ----------------
+ *
+ * Reads tuples from the plan, and fills-in values from columns in the
+ * column store with colstoreid Oid. This is a bit like a special kind
+ * of join, except that we're not joining the relations using regular
+ * columns but using logical or physical ROWIDs.
+ *
+ * We'll want some join planning features (e.g. if there are multiple
+ * colstores, then decide in what order they should be materialized),
+ * but a regular join would require heap-ification of the column store,
+ * and that's not something we want to happen.
+ *
+ * As we foresee the option to place a column into multiple colstores,
+ * we also need to specify what attributes to materialize at this point
+ * (and what to leave for the next materializations). That's what
+ * matColIdx is for.
+ */
+typedef struct LateMaterial
+{
+	Plan		plan;
+	Index		rti;			/* range table index of column store */
+	Oid			colstoreid;		/* OID of column store to materialize */
+	AttrNumber *matColIdx;		/* which attributes to materialize */
+} LateMaterial;
+
+/* ----------------
  *		sort node
  * ----------------
  */

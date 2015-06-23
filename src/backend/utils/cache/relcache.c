@@ -273,6 +273,7 @@ static void IndexSupportInitialize(oidvector *indclass,
 					   AttrNumber maxAttributeNumber);
 static OpClassCacheEnt *LookupOpclassInfo(Oid operatorClassOid,
 				  StrategyNumber numSupport);
+static void RelationInitColumnStoreInfo(Relation rel);
 static void RelationCacheInitFileRemoveInDir(const char *tblspcpath);
 static void unlink_initfile(const char *initfilename);
 
@@ -432,6 +433,7 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 		case RELKIND_INDEX:
 		case RELKIND_VIEW:
 		case RELKIND_MATVIEW:
+		case RELKIND_COLUMN_STORE:
 			break;
 		default:
 			return;
@@ -1055,6 +1057,12 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		OidIsValid(relation->rd_rel->relam))
 		RelationInitIndexAccessInfo(relation);
 
+	/*
+	 * if it's a column store, initialize pg_cstore data
+	 */
+	if (relation->rd_rel->relkind == RELKIND_COLUMN_STORE)
+		RelationInitColumnStoreInfo(relation);
+
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
 
@@ -1528,6 +1536,27 @@ LookupOpclassInfo(Oid operatorClassOid,
 	return opcentry;
 }
 
+/*
+ * For a column store relation, initialize rd_cstore
+ */
+static void
+RelationInitColumnStoreInfo(Relation rel)
+{
+	HeapTuple	tuple;
+	MemoryContext oldcontext;
+
+	tuple = SearchSysCache1(CSTOREOID,
+							ObjectIdGetDatum(RelationGetRelid(rel)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for column store %u",
+			 RelationGetRelid(rel));
+	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+	rel->rd_cstoretuple = heap_copytuple(tuple);
+	rel->rd_cstore = (Form_pg_cstore) GETSTRUCT(rel->rd_cstoretuple);
+	MemoryContextSwitchTo(oldcontext);
+
+	ReleaseSysCache(tuple);
+}
 
 /*
  *		formrdesc
@@ -3897,6 +3926,100 @@ RelationGetIndexList(Relation relation)
 }
 
 /*
+ * RelationGetColStoreList -- get a list of OIDs of colstores on this relation
+ *
+ * XXX Copy'n'paste of RelationGetIndexList(), simplified for colstores.
+ *
+ * The colstore list is created only if someone requests it.  We scan pg_cstore
+ * to find relevant colstores, and add the list to the relcache entry so that
+ * we won't have to compute it again.  Note that shared cache inval of a
+ * relcache entry will delete the old list and set rd_cstvalid to 0,
+ * so that we must recompute the colstore list on next request.  This handles
+ * creation or deletion of a colstore.
+ *
+ * XXX At the moment we don't need the invalidation, because all the colstores
+ *     are defined at table creation time, but if we ever decide to implement
+ *     ALTER TABLE ... [ADD|DROP] COLUMN STORE, this will be handy. Also, this
+ *     is just copy'n'paste programming using RelationGetIndexList().
+ *
+ * XXX Currently there are no 'islive' or 'isvalid' flags for colstores.
+ *
+ * The returned list is guaranteed to be sorted in order by OID.  This is
+ * needed by the executor, since for colstore types that we obtain exclusive
+ * locks on when updating the colstore, all backends must lock the colstores
+ * in the same order or we will get deadlocks (see ExecOpenColstores()).  Any
+ * consistent ordering would do, but ordering by OID is easy.
+ *
+ * Since shared cache inval causes the relcache's copy of the list to go away,
+ * we return a copy of the list palloc'd in the caller's context.  The caller
+ * may list_free() the returned list after scanning it. This is necessary
+ * since the caller will typically be doing syscache lookups on the relevant
+ * colstores, and syscache lookup could cause SI messages to be processed!
+ */
+List *
+RelationGetColStoreList(Relation relation)
+{
+	Relation	cstrel;
+	SysScanDesc cstscan;
+	ScanKeyData skey;
+	HeapTuple	htup;
+	List	   *result;
+	List	   *oldlist;
+	MemoryContext oldcxt;
+
+	/* Quick exit if we already computed the list. */
+	if (relation->rd_cstvalid != 0)
+		return list_copy(relation->rd_cstlist);
+
+	/*
+	 * We build the list we intend to return (in the caller's context) while
+	 * doing the scan.  After successfully completing the scan, we copy that
+	 * list into the relcache entry.  This avoids cache-context memory leakage
+	 * if we get some sort of error partway through.
+	 */
+	result = NIL;
+
+	/* Prepare to scan pg_cstore for entries having cstrelid = this rel. */
+	ScanKeyInit(&skey,
+				Anum_pg_cstore_cstrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(relation)));
+
+	cstrel = heap_open(CStoreRelationId, AccessShareLock);
+	cstscan = systable_beginscan(cstrel, CStoreCstRelidCstnameIndexId, true,
+								 NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(cstscan)))
+	{
+		Form_pg_cstore cstore = (Form_pg_cstore) GETSTRUCT(htup);
+
+		/*
+		 * TODO Ignore column stores that are being dropped (ALTER TABLE
+		 *      drop COLUMN STORE) here.
+		 */
+
+		/* Add index's OID to result list in the proper order */
+		result = insert_ordered_oid(result, cstore->cststoreid);
+	}
+
+	systable_endscan(cstscan);
+
+	heap_close(cstrel, AccessShareLock);
+
+	/* Now save a copy of the completed list in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	oldlist = relation->rd_cstlist;
+	relation->rd_cstlist = list_copy(result);
+	relation->rd_cstvalid = 1;
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Don't leak the old list, if there is one */
+	list_free(oldlist);
+
+	return result;
+}
+
+/*
  * insert_ordered_oid
  *		Insert a new Oid into a sorted list of Oids, preserving ordering
  *
@@ -4868,6 +4991,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_createSubid = InvalidSubTransactionId;
 		rel->rd_newRelfilenodeSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;
+		rel->rd_cstvalid = 0;
+		rel->rd_cstlist = NIL;
 		MemSet(&rel->pgstat_info, 0, sizeof(rel->pgstat_info));
 
 		/*

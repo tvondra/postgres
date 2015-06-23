@@ -453,6 +453,7 @@ typedef struct RelOptInfo
 	Relids		lateral_relids; /* minimum parameterization of rel */
 	Relids		lateral_referencers;	/* rels that reference me laterally */
 	List	   *indexlist;		/* list of IndexOptInfo */
+	List	   *cstlist;		/* list of ColumnStoreOptInfo */
 	BlockNumber pages;			/* size estimates derived from pg_class */
 	double		tuples;
 	double		allvisfrac;
@@ -545,6 +546,35 @@ typedef struct IndexOptInfo
 	bool		amhasgetbitmap; /* does AM have amgetbitmap interface? */
 } IndexOptInfo;
 
+/*
+ * ColumnStoreOptInfo
+ *		Per-colstore information for planning/optimization
+ *
+ *		cstkeys[] has ncolumns entries, we don't allow expression in colstores
+ *
+ * TODO maybe should have a bunch of capability flags like IndexOptInfo
+ */
+typedef struct ColumnStoreOptInfo
+{
+	NodeTag		type;
+
+	Oid			colstoreoid;	/* OID of the column store relation */
+	Oid			reltablespace;	/* tablespace of colstore (not table) */
+	RelOptInfo *rel;			/* back-link to colstore's table */
+
+	/* colstore-size statistics (from pg_class and elsewhere) */
+	BlockNumber pages;			/* number of disk pages in colstore */
+	double		tuples;			/* number of index tuples in colstore */
+
+	/* colstore descriptor information (from pg_cstore) */
+	int			ncolumns;		/* number of columns in index */
+	int		   *cstkeys;		/* column numbers of colstore's keys */
+	Oid			cstam;			/* OID of the access method (in pg_cstore_type) */
+
+	RegProcedure cstcostestimate;	/* OID of the colstore method's cost fcn */
+
+	List	   *csttlist;		/* targetlist representing colstore's columns */
+} ColumnStoreOptInfo;
 
 /*
  * EquivalenceClasses

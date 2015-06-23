@@ -17,6 +17,7 @@
 #include "access/tupdesc.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_cstore.h"
 #include "catalog/pg_index.h"
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
@@ -80,6 +81,7 @@ typedef struct RelationData
 	bool		rd_isvalid;		/* relcache entry is valid */
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
+	bool		rd_cstvalid;	/* rd_cstlist is valid */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -117,6 +119,9 @@ typedef struct RelationData
 	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
+
+	/* data managed by RelationGetColStoreList: */
+	List	   *rd_cstlist;	/* list of OIDs of colstores on relation */
 
 	/*
 	 * rd_options is set whenever rd_rel is loaded into the relcache entry.
@@ -171,6 +176,10 @@ typedef struct RelationData
 
 	/* use "struct" here to avoid needing to include fdwapi.h: */
 	struct FdwRoutine *rd_fdwroutine;	/* cached function pointers, or NULL */
+
+	/* These are non-NULL only for an column store relation: */
+	Form_pg_cstore rd_cstore;		/* pg_cstore tuple describing this colstore */
+
 
 	/*
 	 * Hack for CLUSTER, rewriting ALTER TABLE, etc: when writing a new

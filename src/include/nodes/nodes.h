@@ -243,6 +243,7 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
+	T_ColumnStoreOptInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)

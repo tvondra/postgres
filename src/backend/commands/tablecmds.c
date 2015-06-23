@@ -1639,8 +1639,9 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 									   storage_name(attribute->attstorage))));
 
 				/* cope with inherited having different cstores */
-				if (OidIsValid(def->cstoreOid) && OidIsValid(attribute->attcstore))
-					elog(ERROR, "whoops, a mess"); /* XXX */
+				// FIXME
+				// if (OidIsValid(def->cstoreOid) && OidIsValid(attribute->attcstore))
+				//	elog(ERROR, "whoops, a mess"); /* XXX */
 
 				def->inhcount++;
 				/* Merge of NOT NULL constraints = OR 'em together */
@@ -1668,7 +1669,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->collOid = attribute->attcollation;
 				def->constraints = NIL;
 				def->cstoreClause = NULL;
-				def->cstoreOid = attribute->attcstore;
+				// def->cstoreOid = attribute->attcstore;
 				def->location = -1;
 				inhSchema = lappend(inhSchema, def);
 				newattno[parent_attno - 1] = ++child_attno;

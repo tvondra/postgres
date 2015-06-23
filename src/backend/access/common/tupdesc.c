@@ -591,7 +591,7 @@ TupleDescInitEntryColStore(TupleDesc desc,
 	AssertArg(attributeNumber >= 1);
 	AssertArg(attributeNumber <= desc->natts);
 
-	desc->attrs[attributeNumber - 1]->attcstore = colstore;
+	// desc->attrs[attributeNumber - 1]->attcstore = colstore;
 }
 
 /*

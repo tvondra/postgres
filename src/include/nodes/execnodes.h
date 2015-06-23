@@ -1785,6 +1785,30 @@ typedef struct MaterialState
 } MaterialState;
 
 /* ----------------
+ *	 ColumnStoreMaterialState information
+ *
+ *		materialize nodes are used to fill-in values from a column store
+ *		into an ordinary tuple
+ *
+ *		unlike the regular Materialize node it does not store the data
+ *		into a tuple store or so, it just fills-in the values and
+ *		streams the tuple out (it may perform some internal batching
+ *		to benefit from the columnar storage, but it's not required to
+ *		materialize the whole result set)
+ *
+ *		ss.ss_ScanTupleSlot refers to output of underlying plan.
+ * ----------------
+ */
+typedef struct ColumnStoreMaterialState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+
+	/* TODO This likely requires additional fields (info about the
+	 *      colstore (ColumnScanDesc?) etc. */
+
+} ColumnStoreMaterialState;
+
+/* ----------------
  *	 SortState information
  * ----------------
  */

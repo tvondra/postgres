@@ -82,6 +82,7 @@ typedef enum NodeTag
 	T_NestLoopParam,
 	T_PlanRowMark,
 	T_PlanInvalItem,
+	T_ColumnStoreMaterial,
 
 	/*
 	 * TAGS FOR PLAN STATE NODES (execnodes.h)
@@ -125,6 +126,7 @@ typedef enum NodeTag
 	T_SetOpState,
 	T_LockRowsState,
 	T_LimitState,
+	T_ColumnStoreMaterialState,
 
 	/*
 	 * TAGS FOR PRIMITIVE NODES (primnodes.h)

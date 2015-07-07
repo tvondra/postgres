@@ -569,7 +569,7 @@ typedef struct ColumnStoreOptInfo
 	/* colstore descriptor information (from pg_cstore) */
 	int			ncolumns;		/* number of columns in index */
 	int		   *cstkeys;		/* column numbers of colstore's keys */
-	Oid			cstam;			/* OID of the access method (in pg_cstore_type) */
+	Oid			cstam;			/* OID of the access method (in pg_cstore_am) */
 
 	RegProcedure cstcostestimate;	/* OID of the colstore method's cost fcn */
 

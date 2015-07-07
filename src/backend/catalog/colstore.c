@@ -468,6 +468,6 @@ CStoreTypeGetOid(char *cstypename)
 	if (strncmp(cstypename, "foo", NAMEDATALEN) != 0)
 		elog(ERROR, "column store type \"%s\" not recognized", cstypename);
 
-	/* FIXME look up pg_cstore_type */
+	/* FIXME look up pg_cstore_am */
 	return 1667;
 }

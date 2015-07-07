@@ -41,7 +41,7 @@ POSTGRES_BKI_SRCS = $(addprefix $(top_srcdir)/src/include/catalog/,\
 	pg_foreign_data_wrapper.h pg_foreign_server.h pg_user_mapping.h \
 	pg_foreign_table.h pg_policy.h pg_replication_origin.h \
 	pg_default_acl.h pg_seclabel.h pg_shseclabel.h pg_collation.h pg_range.h \
-	pg_transform.h pg_cstore_type.h pg_cstore.h \
+	pg_transform.h pg_cstore_am.h pg_cstore.h \
 	toasting.h indexing.h \
     )
 

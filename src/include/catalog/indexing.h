@@ -131,7 +131,7 @@ DECLARE_UNIQUE_INDEX(pg_conversion_oid_index, 2670, on pg_conversion using btree
 #define ConversionOidIndexId  2670
 
 DECLARE_UNIQUE_INDEX(pg_cstore_oid_index, 3288, on pg_cstore using btree(oid oid_ops));
-#define CStoreOidIndexId	32828
+#define CStoreOidIndexId	3288
 DECLARE_INDEX(pg_cstore_cststoreid_index, 3289, on pg_cstore using btree(cststoreid oid_ops));
 #define CStoreStoreOidIndexId  3289
 DECLARE_INDEX(pg_cstore_cstrelid_index, 3290, on pg_cstore using btree(cstrelid oid_ops));

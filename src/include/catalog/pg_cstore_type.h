@@ -35,11 +35,11 @@ CATALOG(pg_cstore_type,3287)
 	regproc		cstgetvalue;	/* get value of column in a row */
 	regproc		cstgetrows;		/* get rows from column store */
 	regproc		cstputvalue;	/* set value of column in a row */
-} FormData_pg_am;
+} FormData_pg_cstore_type;
 
 /* ----------------
- *		Form_pg_am corresponds to a pointer to a tuple with
- *		the format of pg_am relation.
+ *		Form_pg_cstore_type corresponds to a pointer to a tuple with
+ *		the format of pg_cstore_type relation.
  * ----------------
  */
 typedef FormData_pg_cstore_type *Form_pg_cstore_type;

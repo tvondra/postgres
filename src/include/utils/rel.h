@@ -177,9 +177,8 @@ typedef struct RelationData
 	/* use "struct" here to avoid needing to include fdwapi.h: */
 	struct FdwRoutine *rd_fdwroutine;	/* cached function pointers, or NULL */
 
-	/* These are non-NULL only for an column store relation: */
+	/* These are non-NULL only for a column store relation: */
 	Form_pg_cstore rd_cstore;		/* pg_cstore tuple describing this colstore */
-
 
 	/*
 	 * Hack for CLUSTER, rewriting ALTER TABLE, etc: when writing a new

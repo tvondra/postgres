@@ -219,6 +219,7 @@ CreateColumnStores(Relation rel, List *colstores)
 	Relation	pg_class;
 	Relation	pg_cstore;
 	ListCell   *cell;
+	int			storenum = 1;
 
 	if (colstores == NIL)
 		return;
@@ -232,6 +233,7 @@ CreateColumnStores(Relation rel, List *colstores)
 		Relation	store;
 		Oid			newStoreId;
 		TupleDesc	storedesc = ColumnStoreBuildDesc(elem, rel);
+		char	   *classname;
 
 		/*
 		 * Get the OID for the new column store.
@@ -239,13 +241,16 @@ CreateColumnStores(Relation rel, List *colstores)
 		newStoreId = GetNewRelFileNode(elem->tablespaceId, pg_class,
 									   rel->rd_rel->relpersistence);
 
+		classname = psprintf("pg_colstore_%u_%d",
+							 RelationGetRelid(rel), storenum++);
+
 		/*
 		 * Create the relcache entry for the store.  This also creates the
 		 * underlying storage; it's smgr's responsibility to remove the file if
 		 * we fail later on.
 		 */
 		store =
-			heap_create(elem->name,
+			heap_create(classname,
 						PG_COLSTORE_NAMESPACE,
 						elem->tablespaceId,
 						newStoreId,
@@ -339,6 +344,7 @@ AddNewColstoreTuple(Oid storeId, Relation pg_cstore, ColumnStoreElem *entry,
 	ListCell   *cell;
 	Datum		values[Natts_pg_cstore];
 	bool		nulls[Natts_pg_cstore];
+	NameData	cstname;
 	int			natts;
 	int16	   *attrarr;
 	int2vector *attrs;
@@ -353,6 +359,8 @@ AddNewColstoreTuple(Oid storeId, Relation pg_cstore, ColumnStoreElem *entry,
 	attrs = buildint2vector(attrarr, natts);
 
 	/* build the pg_cstore tuple */
+	namestrcpy(&cstname, entry->name);
+	values[Anum_pg_cstore_cstname - 1] = NameGetDatum(&cstname);
 	values[Anum_pg_cstore_cststoreid - 1] = ObjectIdGetDatum(entry->cst_am_oid);
 	values[Anum_pg_cstore_cstrelid - 1] = ObjectIdGetDatum(relid);
 	values[Anum_pg_cstore_cstnatts - 1] = Int32GetDatum(list_length(entry->columns));

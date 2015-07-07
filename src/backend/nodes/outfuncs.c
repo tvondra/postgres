@@ -2235,7 +2235,6 @@ _outColumnDef(StringInfo str, const ColumnDef *node)
 	WRITE_OID_FIELD(collOid);
 	WRITE_NODE_FIELD(constraints);
 	WRITE_NODE_FIELD(cstoreClause);
-	WRITE_OID_FIELD(cstoreOid);
 	WRITE_NODE_FIELD(fdwoptions);
 	WRITE_LOCATION_FIELD(location);
 }

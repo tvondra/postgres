@@ -2451,7 +2451,6 @@ _copyColumnDef(const ColumnDef *from)
 	COPY_NODE_FIELD(collClause);
 	COPY_SCALAR_FIELD(collOid);
 	COPY_NODE_FIELD(cstoreClause);
-	COPY_SCALAR_FIELD(cstoreOid);
 	COPY_NODE_FIELD(constraints);
 	COPY_NODE_FIELD(fdwoptions);
 	COPY_LOCATION_FIELD(location);

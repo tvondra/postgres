@@ -587,7 +587,6 @@ typedef struct ColumnDef
 	CollateClause *collClause;	/* untransformed COLLATE spec, if any */
 	Oid			collOid;		/* collation OID (InvalidOid if not set) */
 	ColumnStoreClause *cstoreClause; /* untransformed COL STORE, if any */
-	Oid			cstoreOid;		/* cstore OID (InvalidOid if not set) */
 	List	   *constraints;	/* other constraints on column */
 	List	   *fdwoptions;		/* per-column FDW options */
 	int			location;		/* parse location, or -1 if none/unknown */

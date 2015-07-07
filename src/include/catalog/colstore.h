@@ -33,5 +33,8 @@ extern List *DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 					  List *inh_cstores);
 extern void CreateColumnStores(Relation rel, List *colstores);
 extern List *CloneColumnStores(Relation rel);
+extern Oid get_relation_cstore_oid(Oid relid, const char *cstore_name,
+						bool missing_ok);
+extern void RemoveColstoreById(Oid cstoreOid);
 
 #endif		/* COLSTORE_H */

@@ -18,6 +18,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "catalog/catalog.h"
+#include "catalog/colstore.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_amop.h"
@@ -130,6 +131,18 @@ static const ObjectPropertyType ObjectProperty[] =
 		InvalidAttrNumber,
 		ACL_KIND_COLLATION,
 		true
+	},
+	{
+		CStoreRelationId,
+		CStoreOidIndexId,
+		CSTOREOID,
+		-1,
+		Anum_pg_cstore_cstname,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		-1,
+		false
 	},
 	{
 		ConstraintRelationId,
@@ -506,6 +519,8 @@ ObjectTypeMap[] =
 	{ "rule", OBJECT_RULE },
 	/* OCLASS_TRIGGER */
 	{ "trigger", OBJECT_TRIGGER },
+	/* OCLASS_COLSTORE */
+	{ "column store", OBJECT_COLSTORE },
 	/* OCLASS_SCHEMA */
 	{ "schema", OBJECT_SCHEMA },
 	/* OCLASS_TSPARSER */
@@ -662,6 +677,7 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 			case OBJECT_TRIGGER:
 			case OBJECT_TABCONSTRAINT:
 			case OBJECT_POLICY:
+			case OBJECT_COLSTORE:
 				address = get_object_address_relobject(objtype, objname,
 													   &relation, missing_ok);
 				break;
@@ -1172,6 +1188,13 @@ get_object_address_relobject(ObjectType objtype, List *objname,
 				address.classId = PolicyRelationId;
 				address.objectId = relation ?
 					get_relation_policy_oid(reloid, depname, missing_ok) :
+					InvalidOid;
+				address.objectSubId = 0;
+				break;
+			case OBJECT_COLSTORE:
+				address.classId = CStoreRelationId;
+				address.objectId = relation ?
+					get_relation_cstore_oid(reloid, depname, missing_ok) :
 					InvalidOid;
 				address.objectSubId = 0;
 				break;
@@ -1924,6 +1947,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_TRIGGER:
 		case OBJECT_POLICY:
 		case OBJECT_TABCONSTRAINT:
+		case OBJECT_COLSTORE:
 			if (!pg_class_ownercheck(RelationGetRelid(relation), roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_CLASS,
 							   RelationGetRelationName(relation));
@@ -2687,6 +2711,30 @@ getObjectDescription(const ObjectAddress *object)
 				break;
 			}
 
+		case OCLASS_COLSTORE:
+			{
+				Relation	cstDesc;
+				HeapTuple	tup;
+				Form_pg_cstore store;
+
+				cstDesc = heap_open(CStoreRelationId, AccessShareLock);
+
+				tup = get_catalog_object_by_oid(cstDesc, object->objectId);
+
+				if (!HeapTupleIsValid(tup))
+					elog(ERROR, "could not find tuple for column store %u",
+						 object->objectId);
+
+				store = (Form_pg_cstore) GETSTRUCT(tup);
+
+				appendStringInfo(&buffer, _("column store %s on "),
+								 NameStr(store->cstname));
+				getRelationDescription(&buffer, store->cstrelid);
+
+				heap_close(cstDesc, AccessShareLock);
+				break;
+			}
+
 		case OCLASS_TRANSFORM:
 			{
 				HeapTuple	trfTup;
@@ -3440,6 +3488,10 @@ getObjectTypeDescription(const ObjectAddress *object)
 			appendStringInfoString(&buffer, "trigger");
 			break;
 
+		case OCLASS_COLSTORE:
+			appendStringInfoString(&buffer, "column store");
+			break;
+
 		case OCLASS_SCHEMA:
 			appendStringInfoString(&buffer, "schema");
 			break;
@@ -4074,6 +4126,32 @@ getObjectIdentityParts(const ObjectAddress *object,
 					*objname = lappend(*objname, pstrdup(NameStr(trig->tgname)));
 
 				heap_close(trigDesc, AccessShareLock);
+				break;
+			}
+
+		case OCLASS_COLSTORE:
+			{
+				Relation	cstDesc;
+				HeapTuple	tup;
+				Form_pg_cstore store;
+
+				cstDesc = heap_open(CStoreRelationId, AccessShareLock);
+
+				tup = get_catalog_object_by_oid(cstDesc, object->objectId);
+
+				if (!HeapTupleIsValid(tup))
+					elog(ERROR, "could not find tuple for column store %u",
+						 object->objectId);
+
+				store = (Form_pg_cstore) GETSTRUCT(tup);
+
+				appendStringInfo(&buffer, "%s on ",
+								 quote_identifier(NameStr(store->cstname)));
+				getRelationIdentity(&buffer, store->cstrelid, objname);
+				if (objname)
+					*objname = lappend(*objname, pstrdup(NameStr(store->cstname)));
+
+				heap_close(cstDesc, AccessShareLock);
 				break;
 			}
 

@@ -134,8 +134,8 @@ DECLARE_UNIQUE_INDEX(pg_cstore_oid_index, 3288, on pg_cstore using btree(oid oid
 #define CStoreOidIndexId	3288
 DECLARE_INDEX(pg_cstore_cststoreid_index, 3289, on pg_cstore using btree(cststoreid oid_ops));
 #define CStoreStoreOidIndexId  3289
-DECLARE_INDEX(pg_cstore_cstrelid_index, 3290, on pg_cstore using btree(cstrelid oid_ops));
-#define CStoreCstrelidIndexId  3290
+DECLARE_UNIQUE_INDEX(pg_cstore_cstrelid_cstname_index, 3290, on pg_cstore using btree(cstrelid oid_ops, cstname name_ops));
+#define CStoreCstRelidCstnameIndexId  3290
 
 DECLARE_UNIQUE_INDEX(pg_cstore_type_oid_index, 3284, on pg_cstore_type using btree(oid oid_ops));
 #define CStoreTypeOidIndexId	3284

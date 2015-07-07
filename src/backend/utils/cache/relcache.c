@@ -3997,7 +3997,7 @@ RelationGetColStoreList(Relation relation)
 				ObjectIdGetDatum(RelationGetRelid(relation)));
 
 	cstrel = heap_open(CStoreRelationId, AccessShareLock);
-	cstscan = systable_beginscan(cstrel, CStoreCstrelidIndexId, true,
+	cstscan = systable_beginscan(cstrel, CStoreCstRelidCstnameIndexId, true,
 								 NULL, 1, &skey);
 
 	while (HeapTupleIsValid(htup = systable_getnext(cstscan)))

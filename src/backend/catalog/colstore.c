@@ -20,6 +20,7 @@
 #include "access/sysattr.h"
 #include "catalog/catalog.h"
 #include "catalog/colstore.h"
+#include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_cstore.h"
@@ -31,6 +32,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 
 typedef struct ColumnStoreElem
@@ -220,12 +222,16 @@ CreateColumnStores(Relation rel, List *colstores)
 	Relation	pg_cstore;
 	ListCell   *cell;
 	int			storenum = 1;
+	ObjectAddress parentrel;
 
 	if (colstores == NIL)
 		return;
 
 	pg_class = heap_open(RelationRelationId, RowExclusiveLock);
 	pg_cstore = heap_open(CStoreRelationId, RowExclusiveLock);
+
+	ObjectAddressSet(parentrel, RelationRelationId,
+					 RelationGetRelid(rel));
 
 	foreach(cell, colstores)
 	{
@@ -234,6 +240,7 @@ CreateColumnStores(Relation rel, List *colstores)
 		Oid			newStoreId;
 		TupleDesc	storedesc = ColumnStoreBuildDesc(elem, rel);
 		char	   *classname;
+		ObjectAddress	myself;
 
 		/*
 		 * Get the OID for the new column store.
@@ -282,9 +289,19 @@ CreateColumnStores(Relation rel, List *colstores)
 							(Datum) 0, /* relacl */
 							(Datum) 0 /* reloptions */);
 
-		/* And finally insert the pg_cstore tuple, and we're done */
+		/* And finally insert the pg_cstore tuple */
 		AddNewColstoreTuple(newStoreId, pg_cstore, elem,
 							RelationGetRelid(rel));
+
+		/*
+		 * This is a good place to record dependencies.  We choose to have all the
+		 * subsidiary entries (both pg_class and pg_cstore entries) depend on the
+		 * pg_class entry for the main relation.
+		 */
+		ObjectAddressSet(myself, CStoreRelationId, newStoreId);
+		recordDependencyOn(&myself, &parentrel, DEPENDENCY_INTERNAL);
+		ObjectAddressSet(myself, RelationRelationId, newStoreId);
+		recordDependencyOn(&myself, &parentrel, DEPENDENCY_INTERNAL);
 
 		heap_close(store, NoLock);
 	}
@@ -377,6 +394,72 @@ AddNewColstoreTuple(Oid storeId, Relation pg_cstore, ColumnStoreElem *entry,
 	CatalogUpdateIndexes(pg_cstore, newtup);
 
 	heap_freetuple(newtup);
+}
+
+Oid
+get_relation_cstore_oid(Oid relid, const char *cstore_name, bool missing_ok)
+{
+	Relation	pg_cstore_rel;
+	ScanKeyData	skey[2];
+	SysScanDesc	sscan;
+	HeapTuple	cstore_tuple;
+	Oid			cstore_oid;
+
+	pg_cstore_rel = heap_open(CStoreRelationId, AccessShareLock);
+
+	ScanKeyInit(&skey[0],
+				Anum_pg_cstore_cstrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+	ScanKeyInit(&skey[1],
+				Anum_pg_cstore_cstname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(cstore_name));
+
+	sscan = systable_beginscan(pg_cstore_rel,
+							   CStoreCstRelidCstnameIndexId, true, NULL, 2,
+							   skey);
+
+	cstore_tuple = systable_getnext(sscan);
+
+	if (!HeapTupleIsValid(cstore_tuple))
+	{
+		if (!missing_ok)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("column store \"%s\" for table  \"%s\" does not exist",
+							cstore_name, get_rel_name(relid))));
+
+		cstore_oid = InvalidOid;
+	}
+	else
+		cstore_oid = HeapTupleGetOid(cstore_tuple);
+
+	/* Clean up. */
+	systable_endscan(sscan);
+	heap_close(pg_cstore_rel, AccessShareLock);
+
+	return cstore_oid;
+}
+
+void
+RemoveColstoreById(Oid cstoreOid)
+{
+	Relation	pg_cstore;
+	HeapTuple	tuple;
+
+	pg_cstore = heap_open(CStoreRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCache1(CSTOREOID, ObjectIdGetDatum(cstoreOid));
+
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for column store %u", cstoreOid);
+
+	simple_heap_delete(pg_cstore, &tuple->t_self);
+
+	ReleaseSysCache(tuple);
+
+	heap_close(pg_cstore, RowExclusiveLock);
 }
 
 static Oid

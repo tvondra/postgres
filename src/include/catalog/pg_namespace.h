@@ -75,6 +75,9 @@ DESCR("reserved schema for TOAST tables");
 DATA(insert OID = 2200 ( "public" PGUID _null_ ));
 DESCR("standard public schema");
 #define PG_PUBLIC_NAMESPACE 2200
+DATA(insert OID = 9 ( "pg_colstore" PGUID _null_ ));
+DESCR("reserved schema for column stores");
+#define PG_COLSTORE_NAMESPACE 9
 
 
 /*

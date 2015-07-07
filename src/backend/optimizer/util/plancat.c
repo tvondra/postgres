@@ -395,7 +395,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		 * executor will need, and do not release it.  This saves a couple
 		 * of trips to the shared lock manager while not creating any real
 		 * loss of concurrency, because no schema changes could be
-		 * happening on the colsltore while we hold lock on the parent rel,
+		 * happening on the colstore while we hold lock on the parent rel,
 		 * and neither lock type blocks any other kind of colstore operation.
 		 */
 		if (rel->relid == root->parse->resultRelation)

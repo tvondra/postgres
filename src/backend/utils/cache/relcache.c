@@ -281,6 +281,7 @@ static void IndexSupportInitialize(oidvector *indclass,
 					   AttrNumber maxAttributeNumber);
 static OpClassCacheEnt *LookupOpclassInfo(Oid operatorClassOid,
 				  StrategyNumber numSupport);
+static void RelationInitColumnStoreInfo(Relation rel);
 static void RelationCacheInitFileRemoveInDir(const char *tblspcpath);
 static void unlink_initfile(const char *initfilename);
 
@@ -440,6 +441,7 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 		case RELKIND_INDEX:
 		case RELKIND_VIEW:
 		case RELKIND_MATVIEW:
+		case RELKIND_COLUMN_STORE:
 			break;
 		default:
 			return;
@@ -1062,6 +1064,12 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	if (OidIsValid(relation->rd_rel->relam))
 		RelationInitIndexAccessInfo(relation);
 
+	/*
+	 * if it's a column store, initialize pg_cstore data
+	 */
+	if (relation->rd_rel->relkind == RELKIND_COLUMN_STORE)
+		RelationInitColumnStoreInfo(relation);
+
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
 
@@ -1535,6 +1543,28 @@ LookupOpclassInfo(Oid operatorClassOid,
 	return opcentry;
 }
 
+/*
+ * For a column store relation, initialize rd_cstore
+ */
+static void
+RelationInitColumnStoreInfo(Relation rel)
+{
+	HeapTuple	tuple;
+	Form_pg_cstore cstform;
+	Size		size;
+
+	tuple = SearchSysCache1(CSTOREOID,
+							ObjectIdGetDatum(RelationGetRelid(rel)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for column store %u",
+			 RelationGetRelid(rel));
+	cstform = (Form_pg_cstore) GETSTRUCT(tuple);
+	size = sizeof(Form_pg_cstore) + cstform->cstnatts * sizeof(AttrNumber);
+	rel->rd_cstore = MemoryContextAlloc(CacheMemoryContext, size);
+	memcpy(rel->rd_cstore, cstform, size);
+
+	ReleaseSysCache(tuple);
+}
 
 /*
  *		formrdesc

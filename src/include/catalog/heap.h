@@ -60,6 +60,7 @@ extern Oid heap_create_with_catalog(const char *relname,
 						 Oid ownerid,
 						 TupleDesc tupdesc,
 						 List *cooked_constraints,
+						 List *colstores,
 						 char relkind,
 						 char relpersistence,
 						 bool shared_relation,
@@ -94,6 +95,22 @@ extern void InsertPgClassTuple(Relation pg_class_desc,
 				   Oid new_rel_oid,
 				   Datum relacl,
 				   Datum reloptions);
+
+extern void AddNewRelationTuple(Relation pg_class_desc,
+					Relation new_rel_desc,
+					Oid new_rel_oid,
+					Oid new_type_oid,
+					Oid reloftype,
+					Oid relowner,
+					char relkind,
+					Datum relacl,
+					Datum reloptions);
+
+extern void AddNewAttributeTuples(Oid new_rel_oid,
+					  TupleDesc tupdesc,
+					  char relkind,
+					  bool oidislocal,
+					  int oidinhcount);
 
 extern List *AddRelationNewConstraints(Relation rel,
 						  List *newColDefaults,

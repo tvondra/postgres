@@ -170,7 +170,7 @@ DefineVirtualRelation(RangeVar *relation, List *tlist, bool replace,
 		 * verify that the old column list is an initial prefix of the new
 		 * column list.
 		 */
-		descriptor = BuildDescForRelation(attrList);
+		descriptor = BuildDescForRelation(attrList, NULL);
 		checkViewTupleDesc(descriptor, rel->rd_att);
 
 		/*

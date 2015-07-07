@@ -20,6 +20,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "catalog/colstore.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "parser/parse_type.h"
@@ -574,37 +575,23 @@ TupleDescInitEntryCollation(TupleDesc desc,
 	desc->attrs[attributeNumber - 1]->attcollation = collationid;
 }
 
-/*
- * TupleDescInitEntryColStore
- *
- * Assign a column store to a previously initialized tuple descriptor entry.
- */
-void
-TupleDescInitEntryColStore(TupleDesc desc,
-						   AttrNumber attributeNumber,
-						   Oid colstore)
-{
-	/*
-	 * sanity checks
-	 */
-	AssertArg(PointerIsValid(desc));
-	AssertArg(attributeNumber >= 1);
-	AssertArg(attributeNumber <= desc->natts);
-
-	// desc->attrs[attributeNumber - 1]->attcstore = colstore;
-}
 
 /*
  * BuildDescForRelation
  *
  * Given a relation schema (list of ColumnDef nodes), build a TupleDesc.
  *
+ * Also append ColumnStoreInfo structs in *colstores, with one element for each
+ * attribute that contains a COLUMN STORE clause.  colstores may be NULL if the
+ * caller is certain that there are no colstore clauses (e.g. when defining a
+ * view.)
+ *
  * Note: the default assumption is no OIDs; caller may modify the returned
  * TupleDesc if it wants OIDs.  Also, tdtypeid will need to be filled in
  * later on.
  */
 TupleDesc
-BuildDescForRelation(List *schema)
+BuildDescForRelation(List *schema, List **colstores)
 {
 	int			natts;
 	AttrNumber	attnum;
@@ -667,6 +654,18 @@ BuildDescForRelation(List *schema)
 		has_not_null |= entry->is_not_null;
 		desc->attrs[attnum - 1]->attislocal = entry->is_local;
 		desc->attrs[attnum - 1]->attinhcount = entry->inhcount;
+
+		/* Fill in the column store info, if this column requires it */
+		if (entry->cstoreClause)
+		{
+			ColumnStoreInfo *store = palloc(sizeof(ColumnStoreInfo));
+
+			store->attnum = attnum;
+			store->cstoreClause = entry->cstoreClause;
+			store->attnums = NIL;
+			store->cstoreOid = InvalidOid;
+			*colstores = lappend(*colstores, store);
+		}
 	}
 
 	if (has_not_null)

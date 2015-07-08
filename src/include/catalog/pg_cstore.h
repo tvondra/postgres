@@ -31,8 +31,8 @@
 CATALOG(pg_cstore,3286)
 {
 	NameData	cstname;		/* name of the colstore */
-	Oid			cststoreid;		/* OID of the cstore type */
 	Oid			cstrelid;		/* relation containing this cstore */
+	Oid			cststoreid;		/* pg_class OID of the cstore itself */
 	int16		cstnatts;		/* number of attributes in the cstore */
 
 	/* variable-length fields start here, but we allow direct access to indkey */
@@ -53,8 +53,8 @@ typedef FormData_pg_cstore *Form_pg_cstore;
  */
 #define Natts_pg_cstore					5
 #define Anum_pg_cstore_cstname			1
-#define Anum_pg_cstore_cststoreid		2
-#define Anum_pg_cstore_cstrelid			3
+#define Anum_pg_cstore_cstrelid			2
+#define Anum_pg_cstore_cststoreid		3
 #define Anum_pg_cstore_cstnatts			4
 #define Anum_pg_cstore_cstatts			5
 

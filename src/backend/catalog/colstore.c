@@ -46,7 +46,7 @@ typedef struct ColumnStoreElem
 static TupleDesc ColumnStoreBuildDesc(ColumnStoreElem *elem, Relation parent);
 static void AddNewColstoreTuple(Relation pg_cstore, ColumnStoreElem *entry,
 					Oid storeId, Oid relid);
-static Oid CStoreTypeGetOid(char *cstypename);
+static Oid CStoreAMGetOid(char *cstypename);
 
 /*
  * Figure out the set of column stores to create.
@@ -107,7 +107,7 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores, List *inh_cstores)
 
 		newstore = (ColumnStoreElem *) palloc(sizeof(ColumnStoreElem));
 		newstore->name = clause->name;
-		newstore->cst_am_oid = CStoreTypeGetOid(clause->storetype);
+		newstore->cst_am_oid = CStoreAMGetOid(clause->storetype);
 		newstore->tablespaceId = DEFAULTTABLESPACE_OID;	/* FIXME */
 
 		/*
@@ -423,7 +423,7 @@ get_relation_cstore_oid(Oid relid, const char *cstore_name, bool missing_ok)
 		if (!missing_ok)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("column store \"%s\" for table  \"%s\" does not exist",
+					 errmsg("column store \"%s\" for table \"%s\" does not exist",
 							cstore_name, get_rel_name(relid))));
 
 		cstore_oid = InvalidOid;
@@ -459,11 +459,17 @@ RemoveColstoreById(Oid cstoreOid)
 }
 
 static Oid
-CStoreTypeGetOid(char *cstypename)
+CStoreAMGetOid(char *amname)
 {
-	if (strncmp(cstypename, "foo", NAMEDATALEN) != 0)
-		elog(ERROR, "column store type \"%s\" not recognized", cstypename);
+	Oid			oid;
 
-	/* FIXME look up pg_cstore_am */
-	return 1667;
+	oid = GetSysCacheOid1(CSTOREAMNAME,
+							CStringGetDatum(amname));
+	if (!OidIsValid(oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("column store access method \"%s\" does not exist",
+						amname)));
+
+	return oid;
 }

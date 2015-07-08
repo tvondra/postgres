@@ -3166,12 +3166,12 @@ TableConstraint:
 					$$ = (Node *) n;
 				}
 			| ConstraintElem						{ $$ = $1; }
-			| COLUMN STORE '(' columnList ')' ColId USING ColId opt_reloptions
+			| COLUMN STORE ColId USING ColId '(' columnList ')' opt_reloptions
 				{
 					ColumnStoreClause *n = makeNode(ColumnStoreClause);
-					n->name = $6;
-					n->storetype = $8;
-					n->columns = $4;
+					n->name = $3;
+					n->storetype = $5;
+					n->columns = $7;
 					n->options = $9;
 					$$ = (Node *) n;
 				}
@@ -13577,7 +13577,6 @@ unreserved_keyword:
 			| STDIN
 			| STDOUT
 			| STORAGE
-			| STORE
 			| STRICT_P
 			| STRIP_P
 			| SYSID
@@ -13789,6 +13788,7 @@ reserved_keyword:
 			| SELECT
 			| SESSION_USER
 			| SOME
+			| STORE
 			| SYMMETRIC
 			| TABLE
 			| THEN

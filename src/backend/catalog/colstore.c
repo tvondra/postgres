@@ -44,8 +44,8 @@ typedef struct ColumnStoreElem
 } ColumnStoreElem;
 
 static TupleDesc ColumnStoreBuildDesc(ColumnStoreElem *elem, Relation parent);
-static void AddNewColstoreTuple(Oid storeId, Relation pg_cstore,
-					ColumnStoreElem *entry, Oid relid);
+static void AddNewColstoreTuple(Relation pg_cstore, ColumnStoreElem *entry,
+					Oid storeId, Oid relid);
 static Oid CStoreTypeGetOid(char *cstypename);
 
 /*
@@ -280,19 +280,13 @@ CreateColumnStores(Relation rel, List *colstores)
 
 		/*
 		 * Insert the pg_class tuple
-		 * XXX can we use InsertPgClassTuple instead?
 		 */
-		AddNewRelationTuple(pg_class, store,
-							newStoreId,
-							InvalidOid,	/* new_type_oid */
-							InvalidOid,	/* reloftype */
-							InvalidOid,	/* owner */
-							RELKIND_COLUMN_STORE,
-							(Datum) 0, /* relacl */
-							(Datum) 0 /* reloptions */);
+		store->rd_rel->relam = elem->cst_am_oid;
+		InsertPgClassTuple(pg_class, store, newStoreId,
+						   (Datum) 0, (Datum) 0);
 
 		/* And finally insert the pg_cstore tuple */
-		AddNewColstoreTuple(newStoreId, pg_cstore, elem,
+		AddNewColstoreTuple(pg_cstore, elem, newStoreId,
 							RelationGetRelid(rel));
 
 		/*
@@ -356,8 +350,8 @@ CloneColumnStores(Relation rel)
  * Add a new pg_cstore tuple for a column store
  */
 static void
-AddNewColstoreTuple(Oid storeId, Relation pg_cstore, ColumnStoreElem *entry,
-					Oid relid)
+AddNewColstoreTuple(Relation pg_cstore, ColumnStoreElem *entry,
+					Oid storeId, Oid relid)
 {
 	HeapTuple	newtup;
 	ListCell   *cell;
@@ -380,8 +374,8 @@ AddNewColstoreTuple(Oid storeId, Relation pg_cstore, ColumnStoreElem *entry,
 	/* build the pg_cstore tuple */
 	namestrcpy(&cstname, entry->name);
 	values[Anum_pg_cstore_cstname - 1] = NameGetDatum(&cstname);
-	values[Anum_pg_cstore_cststoreid - 1] = ObjectIdGetDatum(entry->cst_am_oid);
 	values[Anum_pg_cstore_cstrelid - 1] = ObjectIdGetDatum(relid);
+	values[Anum_pg_cstore_cststoreid - 1] = ObjectIdGetDatum(storeId);
 	values[Anum_pg_cstore_cstnatts - 1] = Int32GetDatum(list_length(entry->columns));
 	values[Anum_pg_cstore_cstatts - 1] = PointerGetDatum(attrs);
 	memset(nulls, 0, sizeof(nulls));

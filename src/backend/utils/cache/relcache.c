@@ -1061,7 +1061,8 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	/*
 	 * if it's an index, initialize index-related information
 	 */
-	if (OidIsValid(relation->rd_rel->relam))
+	if (relation->rd_rel->relkind == RELKIND_INDEX &&
+		OidIsValid(relation->rd_rel->relam))
 		RelationInitIndexAccessInfo(relation);
 
 	/*

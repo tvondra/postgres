@@ -605,7 +605,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	/*
 	 * Determine the column stores we need.
 	 */
-	colstores = DetermineColumnStores(descriptor, decl_cstores, inh_cstores);
+	colstores = DetermineColumnStores(descriptor, decl_cstores, inh_cstores,
+									  tablespaceId);
 
 	/*
 	 * Notice that we allow OIDs here only for plain tables, even though some

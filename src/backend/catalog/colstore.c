@@ -25,7 +25,8 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_cstore.h"
 #include "catalog/pg_namespace.h"
-#include "catalog/pg_tablespace.h"	/* DEFAULTTABLESPACE_OID */
+#include "catalog/pg_tablespace.h"	/* GLOBALTABLESPACE_OID */
+#include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/parsenodes.h"
@@ -59,7 +60,8 @@ static Oid CStoreAMGetOid(char *cstypename);
  * Return value is a list of ColumnStoreInfo.
  */
 List *
-DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores, List *inh_cstores)
+DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
+					  List *inh_cstores, Oid tablespaceId)
 {
 	List	   *newstores = NIL;
 	Bitmapset  *used;
@@ -108,7 +110,40 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores, List *inh_cstores)
 		newstore = (ColumnStoreElem *) palloc(sizeof(ColumnStoreElem));
 		newstore->name = clause->name;
 		newstore->cst_am_oid = CStoreAMGetOid(clause->storetype);
-		newstore->tablespaceId = DEFAULTTABLESPACE_OID;	/* FIXME */
+		
+		/*
+		 * Select tablespace to use. If not specified, use the tablespace
+		 * of the parent relation.
+		 *
+		 * These are effectively the same checks as in DefineRelation.
+		 */
+		if (clause->tablespacename)
+		{
+			newstore->tablespaceId
+				= get_tablespace_oid(clause->tablespacename, false);
+		}
+		else
+			/* use tablespace of the relation */
+			newstore->tablespaceId = tablespaceId;
+
+		/* Check permissions except when using database's default */
+		if (OidIsValid(newstore->tablespaceId) &&
+			newstore->tablespaceId != MyDatabaseTableSpace)
+		{
+			AclResult	aclresult;
+
+			aclresult = pg_tablespace_aclcheck(newstore->tablespaceId,
+											   GetUserId(), ACL_CREATE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
+							   get_tablespace_name(newstore->tablespaceId));
+		}
+
+		/* In all cases disallow placing user relations in pg_global */
+		if (newstore->tablespaceId == GLOBALTABLESPACE_OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("only shared relations can be placed in pg_global tablespace")));
 
 		/*
 		 * Fill in the attnum list: if it's a column constraint, the only

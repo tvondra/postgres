@@ -119,6 +119,8 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores, List *inh_cstores)
 			newstore->columns = list_make1_int(info->attnum);
 		else
 		{
+			newstore->columns = NIL;
+
 			foreach(cell2, clause->columns)
 			{
 				char	   *colname = strVal(lfirst(cell2));

@@ -2284,6 +2284,7 @@ _outColumnStoreClause(StringInfo str, const ColumnStoreClause *node)
 	WRITE_NODE_FIELD(columns);
 	WRITE_NODE_FIELD(options);
 	WRITE_LOCATION_FIELD(location);
+	WRITE_STRING_FIELD(tablespacename);
 }
 
 static void

@@ -547,6 +547,7 @@ typedef struct ColumnStoreClause
 	char   *storetype;		/* column store type */
 	List   *columns;		/* list of String column names, or NIL */
 	List   *options;		/* list of DefElem options */
+	char   *tablespacename; /* table space to use, or NULL */
 	int		location;
 } ColumnStoreClause;
 

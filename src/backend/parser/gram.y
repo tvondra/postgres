@@ -2976,7 +2976,7 @@ ColConstraint:
 					n->location = @1;
 					$$ = (Node *) n;
 				}
-			| COLUMN STORE ColId USING ColId opt_reloptions
+			| COLUMN STORE ColId USING ColId opt_reloptions OptTableSpace
 				{
 					/*
 					 * Note: as with COLLATE, this is here only temporarily.
@@ -2986,6 +2986,7 @@ ColConstraint:
 					n->storetype = $5;
 					n->columns = NIL;
 					n->options = $6;
+					n->tablespacename = $7;
 					n->location = @1;
 					$$ = (Node *) n;
 				}
@@ -3166,13 +3167,14 @@ TableConstraint:
 					$$ = (Node *) n;
 				}
 			| ConstraintElem						{ $$ = $1; }
-			| COLUMN STORE ColId USING ColId '(' columnList ')' opt_reloptions
+			| COLUMN STORE ColId USING ColId '(' columnList ')' opt_reloptions OptTableSpace
 				{
 					ColumnStoreClause *n = makeNode(ColumnStoreClause);
 					n->name = $3;
 					n->storetype = $5;
 					n->columns = $7;
 					n->options = $9;
+					n->tablespacename = $10;
 					$$ = (Node *) n;
 				}
 		;

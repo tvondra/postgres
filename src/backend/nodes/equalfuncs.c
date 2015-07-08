@@ -2194,6 +2194,7 @@ _equalColumnStoreClause(const ColumnStoreClause *a, const ColumnStoreClause *b)
 	COMPARE_NODE_FIELD(columns);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_LOCATION_FIELD(location);
+	COMPARE_STRING_FIELD(tablespacename);
 
 	return true;
 }

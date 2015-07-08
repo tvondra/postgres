@@ -2414,6 +2414,7 @@ _copyColumnStoreClause(const ColumnStoreClause *from)
 	COPY_NODE_FIELD(columns);
 	COPY_NODE_FIELD(options);
 	COPY_LOCATION_FIELD(location);
+	COPY_STRING_FIELD(tablespacename);
 
 	return newnode;
 }

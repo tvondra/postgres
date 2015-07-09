@@ -489,7 +489,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <keyword> unreserved_keyword type_func_name_keyword
 %type <keyword> col_name_keyword reserved_keyword
 
-%type <node>	TableConstraint TableLikeClause
+%type <node>	TableConstraint TableLikeClause ColStoreClause
 %type <ival>	TableLikeOptionList TableLikeOption
 %type <list>	ColQualList
 %type <node>	ColConstraint ColConstraintElem ConstraintAttr
@@ -2897,11 +2897,13 @@ TableElement:
 			columnDef							{ $$ = $1; }
 			| TableLikeClause					{ $$ = $1; }
 			| TableConstraint					{ $$ = $1; }
+			| ColStoreClause					{ $$ = $1; }
 		;
 
 TypedTableElement:
 			columnOptions						{ $$ = $1; }
 			| TableConstraint					{ $$ = $1; }
+			| ColStoreClause					{ $$ = $1; }
 		;
 
 columnDef:	ColId Typename create_generic_options ColQualList
@@ -3167,7 +3169,10 @@ TableConstraint:
 					$$ = (Node *) n;
 				}
 			| ConstraintElem						{ $$ = $1; }
-			| COLUMN STORE ColId USING ColId '(' columnList ')' opt_reloptions OptTableSpace
+		;
+
+ColStoreClause:
+			COLUMN STORE ColId USING ColId '(' columnList ')' opt_reloptions OptTableSpace
 				{
 					ColumnStoreClause *n = makeNode(ColumnStoreClause);
 					n->name = $3;
@@ -13579,6 +13584,7 @@ unreserved_keyword:
 			| STDIN
 			| STDOUT
 			| STORAGE
+			| STORE
 			| STRICT_P
 			| STRIP_P
 			| SYSID
@@ -13790,7 +13796,6 @@ reserved_keyword:
 			| SELECT
 			| SESSION_USER
 			| SOME
-			| STORE
 			| SYMMETRIC
 			| TABLE
 			| THEN

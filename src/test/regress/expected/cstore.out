@@ -60,16 +60,14 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_single_ok')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_single_ok'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | b       |       23 |            -1
+(1 row)
 
 -- correct definition (two stores, same AM) 
 CREATE TABLE test_columnar_single_ok2 (
@@ -110,16 +108,15 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_single_ok2')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_single_ok2'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | b       |       23 |            -1
+ foo2    |      1 | c       |       23 |            -1
+(2 rows)
 
 -- correct definition (two stores, different AMs)
 CREATE TABLE test_columnar_single_ok3 (
@@ -160,16 +157,15 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_single_ok3')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_single_ok3'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | b       |       23 |            -1
+ foo2    |      1 | c       |       23 |            -1
+(2 rows)
 
 -- table-level column store definition
 -- unknown name of a column store AM
@@ -247,16 +243,15 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_multi_ok')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_multi_ok'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo     |      1 | a       |       23 |            -1
+ foo     |      2 | b       |       23 |            -1
+(2 rows)
 
 -- correct definition (two stores, same AM) 
 CREATE TABLE test_columnar_multi_ok2 (
@@ -299,16 +294,17 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_multi_ok2')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_multi_ok2'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | a       |       23 |            -1
+ foo1    |      2 | b       |       23 |            -1
+ foo2    |      1 | c       |       23 |            -1
+ foo2    |      2 | d       |       23 |            -1
+(4 rows)
 
 -- correct definition (two stores, different AMs)
 CREATE TABLE test_columnar_multi_ok3 (
@@ -351,16 +347,16 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_multi_ok3')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_multi_ok3'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | a       |       23 |            -1
+ foo1    |      2 | b       |       23 |            -1
+ foo2    |      1 | d       |       23 |            -1
+(3 rows)
 
 -- combination of column-level and table-level column stores
 -- conflicting column store name (same AM)
@@ -430,16 +426,16 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_combi_ok')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_combi_ok'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo     |      1 | b       |       23 |            -1
+ foo2    |      1 | c       |       23 |            -1
+ foo2    |      2 | d       |       23 |            -1
+(3 rows)
 
 -- correct definition (two stores, different AMs)
 CREATE TABLE test_columnar_combi_ok2 (
@@ -481,19 +477,19 @@ SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers,
 
  
 -- pg_attribute entries (for the cstore)
-SELECT attnum, attname, atttypid, attstattarget
-  FROM pg_attribute WHERE attrelid IN (
-    SELECT cststoreid
-      FROM pg_cstore
-     WHERE cstname = 'test_columnar_combi_ok2')
- ORDER BY attrelid, attnum;
- attnum | attname | atttypid | attstattarget 
---------+---------+----------+---------------
-FIXME: should have cstore attributes
-(0 rows)
+SELECT cstname, attnum, attname, atttypid, attstattarget
+  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
+ WHERE cstrelid = 'test_columnar_combi_ok2'::regclass
+ ORDER BY cstname, attnum;
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo     |      1 | b       |       23 |            -1
+ foo2    |      1 | d       |       23 |            -1
+(2 rows)
 
 -- test cleanup
 CREATE TABLE cstore_oids AS SELECT oid FROM pg_class WHERE relkind = 'C';
+CREATE TABLE cstore_oids2 AS SELECT cststoreid FROM pg_cstore;
 DROP TABLE test_columnar_single_ok;
 DROP TABLE test_columnar_single_ok2;
 DROP TABLE test_columnar_single_ok3;
@@ -515,12 +511,13 @@ SELECT COUNT(*) FROM pg_cstore WHERE cststoreid IN (SELECT oid FROM cstore_oids)
      0
 (1 row)
 
-SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT oid FROM cstore_oids);
+SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT cststoreid FROM cstore_oids2);
  count 
 -------
      0
 (1 row)
 
 DROP TABLE cstore_oids;
+DROP TABLE cstore_oids2;
 -- delete the fake cstore AM records
 DELETE FROM pg_cstore_am;

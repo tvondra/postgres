@@ -14474,7 +14474,7 @@ SplitColQualList(List *qualList,
 						 parser_errposition(c->location)));
 			*collClause = c;
 		}
-		if (IsA(n, ColumnStoreClause))
+		else if (IsA(n, ColumnStoreClause))
 		{
 			ColumnStoreClause *c = (ColumnStoreClause *) n;
 

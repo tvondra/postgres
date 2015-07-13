@@ -4011,7 +4011,7 @@ RelationGetColStoreList(Relation relation)
 		 */
 
 		/* Add index's OID to result list in the proper order */
-		result = insert_ordered_oid(result, cstore->cstrelid);
+		result = insert_ordered_oid(result, cstore->cststoreid);
 	}
 
 	systable_endscan(cstscan);

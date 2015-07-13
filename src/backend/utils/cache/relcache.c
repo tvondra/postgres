@@ -1551,18 +1551,17 @@ static void
 RelationInitColumnStoreInfo(Relation rel)
 {
 	HeapTuple	tuple;
-	Form_pg_cstore cstform;
-	Size		size;
+	MemoryContext oldcontext;
 
 	tuple = SearchSysCache1(CSTOREOID,
 							ObjectIdGetDatum(RelationGetRelid(rel)));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for column store %u",
 			 RelationGetRelid(rel));
-	cstform = (Form_pg_cstore) GETSTRUCT(tuple);
-	size = sizeof(Form_pg_cstore) + cstform->cstnatts * sizeof(AttrNumber);
-	rel->rd_cstore = MemoryContextAlloc(CacheMemoryContext, size);
-	memcpy(rel->rd_cstore, cstform, size);
+	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+	rel->rd_cstoretuple = heap_copytuple(tuple);
+	rel->rd_cstore = (Form_pg_cstore) GETSTRUCT(rel->rd_cstoretuple);
+	MemoryContextSwitchTo(oldcontext);
 
 	ReleaseSysCache(tuple);
 }

@@ -179,6 +179,8 @@ typedef struct RelationData
 
 	/* These are non-NULL only for a column store relation: */
 	Form_pg_cstore rd_cstore;		/* pg_cstore tuple describing this colstore */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_cstoretuple;	/* all of pg_cstore tuple */
 
 	/*
 	 * Hack for CLUSTER, rewriting ALTER TABLE, etc: when writing a new

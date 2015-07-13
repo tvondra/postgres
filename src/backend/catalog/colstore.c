@@ -230,7 +230,7 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 			ColumnStoreElem *newstore;
 			newstore = (ColumnStoreElem *) palloc(sizeof(ColumnStoreElem));
 
-			newstore->name = pstrdup(RelationGetRelationName(parentstore));
+			newstore->name = pstrdup(NameStr(parentstore->rd_cstore->cstname));
 			newstore->cst_am_oid = parentstore->rd_cstore->cststoreid;
 			newstore->tablespaceId = parentstore->rd_rel->reltablespace;
 			newstore->columns = attnums;
@@ -239,6 +239,34 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 		}
 
 		relation_close(parentstore, AccessShareLock);
+	}
+
+	/*
+	 * Check that the names of the column stores are unique, so that we can
+	 * print a nice error message instead of a confusing unique violation
+	 * later. This is O(N^2), but that should not be a problem.
+	 *
+	 * XXX We don't have relname here, so we can't put it to the message.
+	 */
+	foreach (cell, newstores)
+	{
+		ListCell * cell2;
+		ColumnStoreElem *elem1 = (ColumnStoreElem *) lfirst(cell);
+		
+		foreach (cell2, newstores)
+		{
+			ColumnStoreElem *elem2 = (ColumnStoreElem *) lfirst(cell2);
+
+			if (elem1 == elem2)	/* skip the same element */
+				continue;
+
+			/* same names */
+			if (strcmp(elem1->name, elem2->name) == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+				errmsg("column store \"%s\" already exists", elem1->name)));
+
+		}
 	}
 
 	/*

@@ -1823,7 +1823,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 			cstinfo->attnums = NIL;
 			for (i = 0; i < cst->cstnatts; i++)
 				cstinfo->attnums = lappend_int(cstinfo->attnums,
-											   newattno[cst->cstatts.values[i]]);
+											   newattno[cst->cstatts.values[i]-1]);
 
 			relation_close(storerel, AccessShareLock);
 

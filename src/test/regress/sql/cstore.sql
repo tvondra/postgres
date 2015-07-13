@@ -37,7 +37,8 @@ CREATE TABLE test_columnar_single_ok (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok'::regclass;
+ WHERE cstrelid = 'test_columnar_single_ok'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -66,7 +67,8 @@ CREATE TABLE test_columnar_single_ok2 (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok2'::regclass;
+ WHERE cstrelid = 'test_columnar_single_ok2'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -95,7 +97,8 @@ CREATE TABLE test_columnar_single_ok3 (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok3'::regclass;
+ WHERE cstrelid = 'test_columnar_single_ok3'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -166,7 +169,8 @@ CREATE TABLE test_columnar_multi_ok (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok'::regclass;
+ WHERE cstrelid = 'test_columnar_multi_ok'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -197,7 +201,8 @@ CREATE TABLE test_columnar_multi_ok2 (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok2'::regclass;
+ WHERE cstrelid = 'test_columnar_multi_ok2'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -228,7 +233,8 @@ CREATE TABLE test_columnar_multi_ok3 (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok3'::regclass;
+ WHERE cstrelid = 'test_columnar_multi_ok3'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -288,7 +294,8 @@ CREATE TABLE test_columnar_combi_ok (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_combi_ok'::regclass;
+ WHERE cstrelid = 'test_columnar_combi_ok'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -318,7 +325,8 @@ CREATE TABLE test_columnar_combi_ok2 (
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
- WHERE cstrelid = 'test_columnar_combi_ok2'::regclass;
+ WHERE cstrelid = 'test_columnar_combi_ok2'::regclass
+ ORDER BY cstname;
 
 -- basic pg_class attributes
 SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
@@ -337,8 +345,16 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
  ORDER BY cstname, attnum;
 
 -- test cleanup
-CREATE TABLE cstore_oids AS SELECT oid FROM pg_class WHERE relkind = 'C';
-CREATE TABLE cstore_oids2 AS SELECT cststoreid FROM pg_cstore;
+CREATE TABLE cstore_oids AS
+SELECT cststoreid
+  FROM pg_cstore JOIN pg_class ON (pg_cstore.cstrelid = pg_class.oid)
+ WHERE relname IN ('test_columnar_single_ok', 'test_columnar_single_ok2', 'test_columnar_single_ok3',
+                   'test_columnar_multi_ok', 'test_columnar_multi_ok2', 'test_columnar_multi_ok3',
+                   'test_columnar_combi_ok', 'test_columnar_combi_ok2');
+
+CREATE TABLE cstore_oids_2 AS
+SELECT pg_class.oid
+  FROM pg_class JOIN cstore_oids ON (pg_class.oid = cstore_oids.cststoreid);
 
 DROP TABLE test_columnar_single_ok;
 DROP TABLE test_columnar_single_ok2;
@@ -352,12 +368,16 @@ DROP TABLE test_columnar_combi_ok;
 DROP TABLE test_columnar_combi_ok2;
 
 -- should return 0
-SELECT COUNT(*) FROM pg_class WHERE OID IN (SELECT oid FROM cstore_oids);
+SELECT COUNT(*) FROM pg_class WHERE oid IN (SELECT cststoreid FROM cstore_oids);
+SELECT COUNT(*) FROM pg_class WHERE oid IN (SELECT oid FROM cstore_oids_2);
+
 SELECT COUNT(*) FROM pg_cstore WHERE cststoreid IN (SELECT oid FROM cstore_oids);
-SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT cststoreid FROM cstore_oids2);
+
+SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT cststoreid FROM cstore_oids);
+SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT oid FROM cstore_oids_2);
 
 DROP TABLE cstore_oids;
-DROP TABLE cstore_oids2;
+DROP TABLE cstore_oids_2;
 
 -- delete the fake cstore AM records
 DELETE FROM pg_cstore_am;

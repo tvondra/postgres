@@ -220,6 +220,33 @@ cost_seqscan(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_colmaterial
+ *	  Determines and returns the cost of materializing a column store.
+ *
+ * 'baserel' is the relation to be scanned
+ * 'param_info' is the ParamPathInfo if this is a parameterized path, else NULL
+ * 'info' is the column store being materialized
+ */
+void
+cost_colstore_material(ColumnStoreMaterialPath *path, PlannerInfo *root,
+			 RelOptInfo *baserel, ParamPathInfo *param_info,
+			 ColumnStoreOptInfo *info)
+{
+	/* Should only be applied to base relations */
+	Assert(baserel->relid > 0);
+	Assert(baserel->rtekind == RTE_RELATION);
+
+	/*
+	 * FIXME Very naive costing - just reuse cost from the subpath. Ultimately
+	 *       we want something that (at least) considers sizes of the column
+	 *       stores, and ideally some costing for the 'join'.
+	 */
+	path->path.startup_cost = path->subpath->startup_cost;
+	path->path.total_cost = path->subpath->total_cost;
+	path->path.rows = path->subpath->rows;
+}
+
+/*
  * cost_index
  *	  Determines and returns the cost of scanning a relation using an index.
  *

@@ -692,6 +692,7 @@ add_path_precheck(RelOptInfo *parent_rel,
 Path *
 create_seqscan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
 {
+	ListCell   *cell;
 	Path	   *pathnode = makeNode(Path);
 
 	pathnode->pathtype = T_SeqScan;
@@ -701,6 +702,35 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
 
 	cost_seqscan(pathnode, root, rel, pathnode->param_info);
+
+	/*
+	 * Add materialization node for each column store.
+	 *
+	 * FIXME At the moment we add materialization for each column store - this
+	 *       needs to only choose the required column stores.
+	 *
+	 * FIXME This probably needs to fix parametrization somehow, because the
+	 *       lower nodes may not contain the required columns.
+	 *
+	 * FIXME This also has to fix the tuple width, because right now we assume
+	 *       "full" width in all steps (which is nonsense). That's not a problem
+	 *       now, but once we start moving the materialization steps around
+	 *       (to get late materialization), this might be an issue.
+	 */
+	foreach (cell, rel->cstlist)
+	{
+		ColumnStoreOptInfo *info = (ColumnStoreOptInfo *)lfirst(cell);
+		ColumnStoreMaterialPath  *cstnode = makeNode(ColumnStoreMaterialPath);
+
+		cstnode->path.pathtype = T_ColumnStoreMaterial;
+		cstnode->path.parent = rel;
+		cstnode->colstore = info;
+		cstnode->subpath = pathnode;
+
+		cost_colstore_material(cstnode, root, rel, pathnode->param_info, info);
+
+		pathnode = (Path*)cstnode;
+	}
 
 	return pathnode;
 }

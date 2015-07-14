@@ -1705,7 +1705,7 @@ typedef struct MaterialState
 } MaterialState;
 
 /* ----------------
- *	 LateMaterialState information
+ *	 ColumnStoreMaterialState information
  *
  *		materialize nodes are used to fill-in values from a column store
  *		into an ordinary tuple
@@ -1719,14 +1719,14 @@ typedef struct MaterialState
  *		ss.ss_ScanTupleSlot refers to output of underlying plan.
  * ----------------
  */
-typedef struct LateMaterialState
+typedef struct ColumnStoreMaterialState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 
 	/* TODO This likely requires additional fields (info about the
 	 *      colstore (ColumnScanDesc?) etc. */
 
-} LateMaterialState;
+} ColumnStoreMaterialState;
 
 /* ----------------
  *	 SortState information

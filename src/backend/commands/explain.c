@@ -1045,6 +1045,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Hash:
 			pname = sname = "Hash";
 			break;
+		case T_ColumnStoreMaterial:
+			pname = sname = "Column Store Materialize";
+			break;
 		default:
 			pname = sname = "???";
 			break;

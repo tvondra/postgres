@@ -1035,6 +1035,17 @@ typedef struct MaterialPath
 } MaterialPath;
 
 /*
+ * ColumnStoreMaterialPath
+ * ... FIXME comments
+ */
+typedef struct ColumnStoreMaterialPath
+{
+	Path		path;		/* this path node */
+	Path	   *subpath;	/* child path node (seqscan ...) */
+	ColumnStoreOptInfo *colstore;	/* column store info */
+} ColumnStoreMaterialPath;
+
+/*
  * UniquePath represents elimination of distinct rows from the output of
  * its subpath.
  *

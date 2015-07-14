@@ -599,6 +599,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 
 		case T_Hash:
 		case T_Material:
+		case T_ColumnStoreMaterial:
 		case T_Sort:
 		case T_Unique:
 		case T_SetOp:

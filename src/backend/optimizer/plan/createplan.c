@@ -55,6 +55,8 @@ static Plan *create_append_plan(PlannerInfo *root, AppendPath *best_path);
 static Plan *create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path);
 static Result *create_result_plan(PlannerInfo *root, ResultPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path);
+static ColumnStoreMaterial *create_colstore_material_plan(PlannerInfo *root,
+											ColumnStoreMaterialPath *best_path);
 static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path);
 static SeqScan *create_seqscan_plan(PlannerInfo *root, Path *best_path,
 					List *tlist, List *scan_clauses);
@@ -176,6 +178,7 @@ static EquivalenceMember *find_ec_member_for_tle(EquivalenceClass *ec,
 					   TargetEntry *tle,
 					   Relids relids);
 static Material *make_material(Plan *lefttree);
+static ColumnStoreMaterial *make_colstore_material(Plan *lefttree);
 
 
 /*
@@ -268,6 +271,10 @@ create_plan_recurse(PlannerInfo *root, Path *best_path)
 		case T_Material:
 			plan = (Plan *) create_material_plan(root,
 												 (MaterialPath *) best_path);
+			break;
+		case T_ColumnStoreMaterial:
+			plan = (Plan *) create_colstore_material_plan(root,
+										(ColumnStoreMaterialPath *) best_path);
 			break;
 		case T_Unique:
 			plan = create_unique_plan(root,
@@ -897,6 +904,32 @@ create_material_plan(PlannerInfo *root, MaterialPath *best_path)
 
 	return plan;
 }
+
+/*
+ * create_colstore_material_plan
+ *	  Create a ColumnStoreMaterial plan for 'best_path' and (recursively) plans
+ *	  for its subpaths.
+ *
+ *	  Returns a Plan node.
+ */
+static ColumnStoreMaterial *
+create_colstore_material_plan(PlannerInfo *root, ColumnStoreMaterialPath *best_path)
+{
+	ColumnStoreMaterial   *plan;
+	Plan				  *subplan;
+
+	subplan = create_plan_recurse(root, best_path->subpath);
+
+	/* We don't want any excess columns in the materialized tuples */
+	disuse_physical_tlist(root, subplan, best_path->subpath);
+
+	plan = make_colstore_material(subplan);
+
+	copy_path_costsize(&plan->plan, (Path *) best_path);
+
+	return plan;
+}
+
 
 /*
  * create_unique_plan
@@ -4458,6 +4491,21 @@ static Material *
 make_material(Plan *lefttree)
 {
 	Material   *node = makeNode(Material);
+	Plan	   *plan = &node->plan;
+
+	/* cost should be inserted by caller */
+	plan->targetlist = lefttree->targetlist;
+	plan->qual = NIL;
+	plan->lefttree = lefttree;
+	plan->righttree = NULL;
+
+	return node;
+}
+
+static ColumnStoreMaterial *
+make_colstore_material(Plan *lefttree)
+{
+	ColumnStoreMaterial   *node = makeNode(ColumnStoreMaterial);
 	Plan	   *plan = &node->plan;
 
 	/* cost should be inserted by caller */

@@ -282,6 +282,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													estate, eflags);
 			break;
 
+		case T_ColumnStoreMaterial:	/* FIXME this is wrong (no exec implementation yet!!!) */
+			result = (PlanState *) ExecInitMaterial((Material *) node,
+													estate, eflags);
+			break;
+
 		case T_Sort:
 			result = (PlanState *) ExecInitSort((Sort *) node,
 												estate, eflags);

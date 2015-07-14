@@ -84,6 +84,7 @@
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeBitmapOr.h"
+#include "executor/nodeColumnStoreMaterial.h"
 #include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
@@ -276,8 +277,9 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													estate, eflags);
 			break;
 
-		case T_ColumnStoreMaterial:	/* FIXME this is wrong (no exec implementation yet!!!) */
-			result = (PlanState *) ExecInitMaterial((Material *) node,
+		case T_ColumnStoreMaterial:
+			result = (PlanState *) ExecInitColumnStoreMaterial(
+													(ColumnStoreMaterial *) node,
 													estate, eflags);
 			break;
 
@@ -477,6 +479,10 @@ ExecProcNode(PlanState *node)
 			 */
 		case T_MaterialState:
 			result = ExecMaterial((MaterialState *) node);
+			break;
+
+		case T_ColumnStoreMaterialState:
+			result = ExecColumnStoreMaterial((ColumnStoreMaterialState *) node);
 			break;
 
 		case T_SortState:
@@ -717,6 +723,10 @@ ExecEndNode(PlanState *node)
 			 */
 		case T_MaterialState:
 			ExecEndMaterial((MaterialState *) node);
+			break;
+
+		case T_ColumnStoreMaterialState:
+			ExecEndMaterial((ColumnStoreMaterialState *) node);
 			break;
 
 		case T_SortState:

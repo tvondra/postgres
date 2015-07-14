@@ -429,7 +429,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			info = makeNode(ColumnStoreOptInfo);
 
-			info->colstoreoid = colstore->cstrelid;
+			info->colstoreoid = colstore->cststoreid;
 			info->reltablespace =
 				RelationGetForm(colstoreRelation)->reltablespace;
 			info->rel = rel;

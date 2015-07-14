@@ -1802,6 +1802,7 @@ typedef struct MaterialState
 typedef struct ColumnStoreMaterialState
 {
 	ScanState	ss;				/* its first field is NodeTag */
+	int			eflags;			/* capability flags */
 
 	/* TODO This likely requires additional fields (info about the
 	 *      colstore (ColumnScanDesc?) etc. */

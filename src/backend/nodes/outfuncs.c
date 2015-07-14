@@ -750,6 +750,14 @@ _outMaterial(StringInfo str, const Material *node)
 }
 
 static void
+_outColumnStoreMaterial(StringInfo str, const ColumnStoreMaterial *node)
+{
+	WRITE_NODE_TYPE("COLUMNSTOREMATERIAL");
+
+	_outPlanInfo(str, (const Plan *) node);
+}
+
+static void
 _outSort(StringInfo str, const Sort *node)
 {
 	int			i;
@@ -1716,6 +1724,16 @@ static void
 _outMaterialPath(StringInfo str, const MaterialPath *node)
 {
 	WRITE_NODE_TYPE("MATERIALPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(subpath);
+}
+
+static void
+_outColumnStoreMaterialPath(StringInfo str, const ColumnStoreMaterialPath *node)
+{
+	WRITE_NODE_TYPE("COLUMNSTOREMATERIALPATH");
 
 	_outPathInfo(str, (const Path *) node);
 
@@ -3090,6 +3108,9 @@ _outNode(StringInfo str, const void *obj)
 			case T_Material:
 				_outMaterial(str, obj);
 				break;
+			case T_ColumnStoreMaterial:
+				_outColumnStoreMaterial(str, obj);
+				break;
 			case T_Sort:
 				_outSort(str, obj);
 				break;
@@ -3296,6 +3317,9 @@ _outNode(StringInfo str, const void *obj)
 				break;
 			case T_MaterialPath:
 				_outMaterialPath(str, obj);
+				break;
+			case T_ColumnStoreMaterialPath:
+				_outColumnStoreMaterialPath(str, obj);
 				break;
 			case T_UniquePath:
 				_outUniquePath(str, obj);

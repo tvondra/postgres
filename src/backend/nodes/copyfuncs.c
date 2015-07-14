@@ -785,6 +785,22 @@ _copyMaterial(const Material *from)
 	return newnode;
 }
 
+/*
+ * _copyColumnStoreMaterial
+ */
+static ColumnStoreMaterial *
+_copyColumnStoreMaterial(const ColumnStoreMaterial *from)
+{
+	ColumnStoreMaterial   *newnode = makeNode(ColumnStoreMaterial);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((const Plan *) from, (Plan *) newnode);
+
+	return newnode;
+}
+
 
 /*
  * _copySort
@@ -4303,6 +4319,9 @@ copyObject(const void *from)
 			break;
 		case T_Material:
 			retval = _copyMaterial(from);
+			break;
+		case T_ColumnStoreMaterial:
+			retval = _copyColumnStoreMaterial(from);
 			break;
 		case T_Sort:
 			retval = _copySort(from);

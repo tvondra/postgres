@@ -2559,6 +2559,7 @@ finalize_plan(PlannerInfo *root, Plan *plan, Bitmapset *valid_params,
 		case T_Hash:
 		case T_Agg:
 		case T_Material:
+		case T_ColumnStoreMaterial:
 		case T_Sort:
 		case T_Unique:
 		case T_SetOp:

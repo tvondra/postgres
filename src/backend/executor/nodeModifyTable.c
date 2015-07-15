@@ -283,6 +283,13 @@ ExecInsert(TupleTableSlot *slot,
 		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate);
+
+		/*
+		 * insert column store entries for tuple
+		 */
+		if (resultRelInfo->ri_NumColumnStores > 0)
+			recheckIndexes = ExecInsertColStoreTuples(slot, &(tuple->t_self),
+												   estate);
 	}
 
 	if (canSetTag)
@@ -791,15 +798,20 @@ lreplace:;
 		 */
 
 		/*
-		 * insert index entries for tuple
+		 * insert index and column store entries for tuple
 		 *
 		 * Note: heap_update returns the tid (location) of the new tuple in
 		 * the t_self field.
 		 *
-		 * If it's a HOT update, we mustn't insert new index entries.
+		 * If it's a HOT update, we mustn't insert new index and column store
+		 * entries.
 		 */
 		if (resultRelInfo->ri_NumIndices > 0 && !HeapTupleIsHeapOnly(tuple))
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+												   estate);
+
+		if (resultRelInfo->ri_NumColumnStores > 0 && !HeapTupleIsHeapOnly(tuple))
+			recheckIndexes = ExecInsertColStoreTuples(slot, &(tuple->t_self),
 												   estate);
 	}
 

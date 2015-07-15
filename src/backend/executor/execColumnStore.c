@@ -3,7 +3,7 @@
  * execColumnStore.c
  *	  routines for inserting tuples into column stores.
  *
- * ExecInsertColumnStoreTuples() is the main entry point.  It's called after
+ * ExecInsertColStoreTuples() is the main entry point.  It's called after
  * inserting a tuple to the heap, and it inserts corresponding values
  * into all column stores.
  *

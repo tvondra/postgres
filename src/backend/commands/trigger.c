@@ -3891,6 +3891,7 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 
 			/* Close indices and then the relation itself */
 			ExecCloseIndices(resultRelInfo);
+			ExecCloseColumnStores(resultRelInfo);
 			heap_close(resultRelInfo->ri_RelationDesc, NoLock);
 		}
 		FreeExecutorState(estate);

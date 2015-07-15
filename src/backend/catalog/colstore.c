@@ -30,6 +30,7 @@
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/parsenodes.h"
+#include "nodes/execnodes.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -535,4 +536,55 @@ CStoreAMGetOid(char *amname)
 						amname)));
 
 	return oid;
+}
+
+
+
+/* ----------------
+ *		BuildColumnStoreInfo
+ *			Construct an ColumnStoreInfo record for an open column store
+ *
+ * ColumnStoreInfo stores the information about the column store that's needed
+ * by FormColumnStoreDatum, which is used for insertion of individual column
+ * store tuples.  Normally we build a ColumnStoreInfo for a column store just
+ * once per command, and then use it for (potentially) many tuples.
+ * ----------------
+ */
+ColumnStoreInfo *
+BuildColumnStoreInfo(Relation cstore)
+{
+	ColumnStoreInfo  *csi = makeNode(ColumnStoreInfo);
+	Form_pg_cstore cstoreStruct = cstore->rd_cstore;
+	int			i;
+	int			numKeys;
+
+	/* check the number of keys, and copy attr numbers into the IndexInfo */
+	numKeys = cstoreStruct->cstnatts;
+	if (numKeys < 1 || numKeys > INDEX_MAX_KEYS)
+		elog(ERROR, "invalid cstnatts %d for column store %u",
+			 numKeys, RelationGetRelid(cstore));
+	csi->csi_NumColumnStoreAttrs = numKeys;
+	for (i = 0; i < numKeys; i++)
+		csi->csi_KeyAttrNumbers[i] = cstoreStruct->cstatts.values[i];
+
+	return csi;
+}
+
+/* ----------------
+ *		FormColumnStoreDatum
+ *			Construct values[] and isnull[] arrays for a new column store tuple.
+ *
+ *	columnStoreInfo	Info about the column store
+ *	slot			Heap tuple for which we must prepare a column store entry
+ *	values			Array of column store Datums (output area)
+ *	isnull			Array of is-null indicators (output area)
+ * ----------------
+ */
+void
+FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
+			   TupleTableSlot *slot,
+			   Datum *values,
+			   bool *isnull)
+{
+	elog(WARNING, "FormColumnStoreDatum: not yet implemented");
 }

@@ -1442,6 +1442,7 @@ ExecEndPlan(PlanState *planstate, EState *estate)
 	{
 		/* Close indices and then the relation itself */
 		ExecCloseIndices(resultRelInfo);
+		ExecCloseColumnStores(resultRelInfo);
 		heap_close(resultRelInfo->ri_RelationDesc, NoLock);
 		resultRelInfo++;
 	}
@@ -1454,6 +1455,7 @@ ExecEndPlan(PlanState *planstate, EState *estate)
 		resultRelInfo = (ResultRelInfo *) lfirst(l);
 		/* Close indices and then the relation itself */
 		ExecCloseIndices(resultRelInfo);
+		ExecCloseColumnStores(resultRelInfo);
 		heap_close(resultRelInfo->ri_RelationDesc, NoLock);
 	}
 
@@ -2751,6 +2753,7 @@ EvalPlanQualEnd(EPQState *epqstate)
 
 		/* Close indices and then the relation itself */
 		ExecCloseIndices(resultRelInfo);
+		ExecCloseColumnStores(resultRelInfo);
 		heap_close(resultRelInfo->ri_RelationDesc, NoLock);
 	}
 

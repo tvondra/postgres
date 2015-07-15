@@ -372,5 +372,12 @@ extern bool check_exclusion_constraint(Relation heap, Relation index,
 						   EState *estate,
 						   bool newIndex, bool errorOK);
 
+/*
+ * prototypes from functions in execColumnStore.c
+ */
+extern void ExecOpenColumnStores(ResultRelInfo *resultRelInfo);
+extern void ExecCloseColumnStores(ResultRelInfo *resultRelInfo);
+extern List *ExecInsertColStoreTuples(TupleTableSlot *slot,
+									  ItemPointer tupleid, EState *estate);
 
 #endif   /* EXECUTOR_H  */

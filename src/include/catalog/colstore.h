@@ -3,6 +3,7 @@
 
 #include "nodes/nodes.h"
 #include "nodes/parsenodes.h"
+#include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
 #include "utils/relcache.h"
 
@@ -36,5 +37,10 @@ extern List *CloneColumnStores(Relation rel);
 extern Oid get_relation_cstore_oid(Oid relid, const char *cstore_name,
 						bool missing_ok);
 extern void RemoveColstoreById(Oid cstoreOid);
+
+ColumnStoreInfo * BuildColumnStoreInfo(Relation cstore);
+void FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
+			   TupleTableSlot *slot,
+			   Datum *values, bool *isnull);
 
 #endif		/* COLSTORE_H */

@@ -57,22 +57,22 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
 -- child table with two separate column stores
 CREATE TABLE child_table_1 (
     f INT,
-    g INT COLUMN STORE foo1 USING bar11,
+    g INT COLUMN STORE foo1c USING bar11,
     h INT,
     i INT,
-    COLUMN STORE foo2 USING bar12(h,i)
+    COLUMN STORE foo2c USING bar12(h,i)
 ) INHERITS (parent_table);
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_1'::regclass
  ORDER BY cstname;
-       cstname       | cstnatts | cstatts 
----------------------+----------+---------
- foo1                |        1 | 7
- foo2                |        2 | 8 9
- pg_colstore_83875_1 |        2 | 4 5
- pg_colstore_83875_2 |        1 | 2
+ cstname | cstnatts | cstatts 
+---------+----------+---------
+ foo1    |        1 | 2
+ foo1c   |        1 | 7
+ foo2    |        2 | 4 5
+ foo2c   |        2 | 8 9
 (4 rows)
 
 -- basic pg_class attributes
@@ -105,34 +105,34 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
   FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
  WHERE cstrelid = 'child_table_1'::regclass
  ORDER BY cstname, attnum;
-       cstname       | attnum | attname | atttypid | attstattarget 
----------------------+--------+---------+----------+---------------
- foo1                |      1 | g       |       23 |            -1
- foo2                |      1 | h       |       23 |            -1
- foo2                |      2 | i       |       23 |            -1
- pg_colstore_83875_1 |      1 | d       |       23 |            -1
- pg_colstore_83875_1 |      2 | e       |       23 |            -1
- pg_colstore_83875_2 |      1 | b       |       23 |            -1
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1    |      1 | b       |       23 |            -1
+ foo1c   |      1 | g       |       23 |            -1
+ foo2    |      1 | d       |       23 |            -1
+ foo2    |      2 | e       |       23 |            -1
+ foo2c   |      1 | h       |       23 |            -1
+ foo2c   |      2 | i       |       23 |            -1
 (6 rows)
 
 -- child table with two column stores - one modifying, one redefining the parent
 CREATE TABLE child_table_2 (
     f INT,
-    g INT COLUMN STORE foo1 USING bar11, -- new column store
+    g INT COLUMN STORE foo1c USING bar11, -- new column store
     h INT,
     i INT,
-    COLUMN STORE foo2 USING bar12(b,h,i) -- redefines the parent colstore
+    COLUMN STORE foo2c USING bar12(b,h,i) -- redefines the parent colstore
 ) INHERITS (parent_table);
 -- check contents of the catalogs
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_2'::regclass
  ORDER BY cstname;
-       cstname       | cstnatts | cstatts 
----------------------+----------+---------
- foo1                |        1 | 7
- foo2                |        3 | 2 8 9
- pg_colstore_83875_1 |        2 | 4 5
+ cstname | cstnatts | cstatts 
+---------+----------+---------
+ foo1c   |        1 | 7
+ foo2    |        2 | 4 5
+ foo2c   |        3 | 2 8 9
 (3 rows)
 
 -- basic pg_class attributes
@@ -163,14 +163,14 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
   FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
  WHERE cstrelid = 'child_table_2'::regclass
  ORDER BY cstname, attnum;
-       cstname       | attnum | attname | atttypid | attstattarget 
----------------------+--------+---------+----------+---------------
- foo1                |      1 | g       |       23 |            -1
- foo2                |      1 | b       |       23 |            -1
- foo2                |      2 | h       |       23 |            -1
- foo2                |      3 | i       |       23 |            -1
- pg_colstore_83875_1 |      1 | d       |       23 |            -1
- pg_colstore_83875_1 |      2 | e       |       23 |            -1
+ cstname | attnum | attname | atttypid | attstattarget 
+---------+--------+---------+----------+---------------
+ foo1c   |      1 | g       |       23 |            -1
+ foo2    |      1 | d       |       23 |            -1
+ foo2    |      2 | e       |       23 |            -1
+ foo2c   |      1 | b       |       23 |            -1
+ foo2c   |      2 | h       |       23 |            -1
+ foo2c   |      3 | i       |       23 |            -1
 (6 rows)
 
 -- child table with a single column store of the whole table

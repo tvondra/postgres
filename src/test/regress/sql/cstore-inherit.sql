@@ -37,10 +37,10 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
 -- child table with two separate column stores
 CREATE TABLE child_table_1 (
     f INT,
-    g INT COLUMN STORE foo1 USING bar11,
+    g INT COLUMN STORE foo1c USING bar11,
     h INT,
     i INT,
-    COLUMN STORE foo2 USING bar12(h,i)
+    COLUMN STORE foo2c USING bar12(h,i)
 ) INHERITS (parent_table);
 
 -- check contents of the catalogs
@@ -68,10 +68,10 @@ SELECT cstname, attnum, attname, atttypid, attstattarget
 -- child table with two column stores - one modifying, one redefining the parent
 CREATE TABLE child_table_2 (
     f INT,
-    g INT COLUMN STORE foo1 USING bar11, -- new column store
+    g INT COLUMN STORE foo1c USING bar11, -- new column store
     h INT,
     i INT,
-    COLUMN STORE foo2 USING bar12(b,h,i) -- redefines the parent colstore
+    COLUMN STORE foo2c USING bar12(b,h,i) -- redefines the parent colstore
 ) INHERITS (parent_table);
 
 -- check contents of the catalogs

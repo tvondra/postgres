@@ -55,8 +55,9 @@ ExecOpenColumnStores(ResultRelInfo *resultRelInfo)
 
 	resultRelInfo->ri_NumColumnStores = 0;
 
-	/* FIXME fast path if no column stores (add relhasindex to pg_class, just
-	 *       like we have relhasindex) */
+	/* fast path if no column stores */
+	if (!RelationGetForm(resultRelation)->relhascstore)
+		return;
 
 	/*
 	 * Get cached list of colstore OIDs

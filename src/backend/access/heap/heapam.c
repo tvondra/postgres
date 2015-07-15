@@ -3244,6 +3244,15 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	}
 
 	/*
+	 * FIXME If there are any column stores on the table, we'll just disable
+	 *       HOT for now. This is effectively wrong and rather awful - we can
+	 *       do the HOT if no columns from column stores are updated, so we
+	 *       should fix this eventually.
+	 */
+	if (relation->rd_rel->relhascstore > 0)
+		satisfies_hot = false;
+
+	/*
 	 * Note: beyond this point, use oldtup not otid to refer to old tuple.
 	 * otid may very well point at newtup->t_self, which we will overwrite
 	 * with the new tuple's location, so there's great risk of confusion if we

@@ -726,7 +726,7 @@ ExecEndNode(PlanState *node)
 			break;
 
 		case T_ColumnStoreMaterialState:
-			ExecEndMaterial((ColumnStoreMaterialState *) node);
+			ExecEndColumnStoreMaterial((ColumnStoreMaterialState *) node);
 			break;
 
 		case T_SortState:

@@ -376,5 +376,11 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
 						   Datum *values, bool *isnull,
 						   EState *estate, bool newIndex);
 
+/*
+ * prototypes from functions in execColumnStore.c
+ */
+extern void ExecOpenColumnStores(ResultRelInfo *resultRelInfo);
+extern void ExecCloseColumnStores(ResultRelInfo *resultRelInfo);
+extern void ExecInsertColStoreTuples(HeapTuple tuple, EState *estate);
 
 #endif   /* EXECUTOR_H  */

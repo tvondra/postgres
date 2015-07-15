@@ -30,6 +30,7 @@
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/parsenodes.h"
+#include "nodes/execnodes.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -535,4 +536,120 @@ CStoreAMGetOid(char *amname)
 						amname)));
 
 	return oid;
+}
+
+
+
+/* ----------------
+ *		BuildColumnStoreInfo
+ *			Construct an ColumnStoreInfo record for an open column store
+ *
+ * ColumnStoreInfo stores the information about the column store that's needed
+ * by FormColumnStoreDatum, which is used for insertion of individual column
+ * store tuples.  Normally we build a ColumnStoreInfo for a column store just
+ * once per command, and then use it for (potentially) many tuples.
+ * ----------------
+ */
+ColumnStoreInfo *
+BuildColumnStoreInfo(Relation cstore)
+{
+	ColumnStoreInfo  *csi = makeNode(ColumnStoreInfo);
+	Form_pg_cstore cstoreStruct = cstore->rd_cstore;
+	int			i;
+	int			numKeys;
+
+	/* check the number of keys, and copy attr numbers into the IndexInfo */
+	numKeys = cstoreStruct->cstnatts;
+	if (numKeys < 1 || numKeys > INDEX_MAX_KEYS)
+		elog(ERROR, "invalid cstnatts %d for column store %u",
+			 numKeys, RelationGetRelid(cstore));
+	csi->csi_NumColumnStoreAttrs = numKeys;
+	for (i = 0; i < numKeys; i++)
+		csi->csi_KeyAttrNumbers[i] = cstoreStruct->cstatts.values[i];
+
+	return csi;
+}
+
+/* ----------------
+ *		FormColumnStoreDatum
+ *			Construct values[] and isnull[] arrays for a new column store tuple.
+ *
+ *	columnStoreInfo	Info about the column store
+ *	slot			Heap tuple for which we must prepare a column store entry
+ *	values			Array of column store Datums (output area)
+ *	isnull			Array of is-null indicators (output area)
+ * ----------------
+ */
+void
+FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
+			   HeapTuple tuple,
+			   Datum *values,
+			   bool *isnull)
+{
+	elog(WARNING, "FormColumnStoreDatum: not yet implemented");
+}
+
+/*
+ * Builds a descriptor for the heap part of the relation, and a tuple with only
+ * the relevant attributes.
+ */
+HeapTuple
+FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple, TupleDesc *heapdesc)
+{
+	int			i, j, attnum;
+	Bitmapset  *cstoreatts = NULL;	/* attributes mentioned in colstore */
+
+	TupleDesc	origdesc = resultRelInfo->ri_RelationDesc->rd_att;
+	HeapTuple	newtup;
+
+	/* used to build the new descriptor / tuple */
+	int		natts;
+	Datum  *values;
+	bool   *nulls;
+
+	/* should not be called with no column stores */
+	Assert(resultRelInfo->ri_NumColumnStores > 0);
+
+	for (i = 0; i < resultRelInfo->ri_NumColumnStores; i++)
+	{
+		ColumnStoreInfo *cstinfo = resultRelInfo->ri_ColumnStoreRelationInfo[i];
+
+		for (j = 0; j < cstinfo->csi_NumColumnStoreAttrs; j++)
+			cstoreatts
+				= bms_add_member(cstoreatts, cstinfo->csi_KeyAttrNumbers[j]);
+	}
+
+	/* we should get some columns from column stores */
+	Assert(bms_num_members(cstoreatts) > 0);
+
+	/* the new descriptor contains only the remaining attributes */
+	natts = origdesc->natts - bms_num_members(cstoreatts);
+
+	*heapdesc = CreateTemplateTupleDesc(natts, false);
+
+	values = (Datum*)palloc0(sizeof(Datum) * natts);
+	nulls  = (bool*)palloc0(sizeof(bool) * natts);
+
+	attnum = 1;
+	for (i = 0; i < origdesc->natts; i++)
+	{
+		/* if part of a column store, skip the attribute */
+		if (bms_is_member(origdesc->attrs[i]->attnum, cstoreatts))
+			continue;
+
+		values[attnum-1] = heap_getattr(tuple, i+1, origdesc, &nulls[attnum-1]);
+
+		TupleDescCopyEntry(*heapdesc, attnum++, origdesc, i+1);
+	}
+
+	newtup = heap_formtuple(*heapdesc, values, nulls);
+
+	/* copy important header fields */
+	newtup->t_self = tuple->t_self;
+	newtup->t_data->t_ctid = tuple->t_data->t_ctid;
+
+	pfree(values);
+	pfree(nulls);
+
+	return newtup;
 }

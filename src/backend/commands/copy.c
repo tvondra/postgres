@@ -2287,6 +2287,8 @@ CopyFrom(CopyState cstate)
 
 	ExecOpenIndices(resultRelInfo, false);
 
+	ExecOpenColumnStores(resultRelInfo);
+
 	estate->es_result_relations = resultRelInfo;
 	estate->es_num_result_relations = 1;
 	estate->es_result_relation_info = resultRelInfo;
@@ -2492,6 +2494,8 @@ CopyFrom(CopyState cstate)
 	ExecResetTupleTable(estate->es_tupleTable, false);
 
 	ExecCloseIndices(resultRelInfo);
+
+	ExecCloseColumnStores(resultRelInfo);
 
 	FreeExecutorState(estate);
 

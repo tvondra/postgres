@@ -39,6 +39,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "catalog/colstore.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyTable.h"
@@ -402,11 +403,48 @@ ExecInsert(ModifyTableState *mtstate,
 			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
 			HeapTupleHeaderSetSpeculativeToken(tuple->t_data, specToken);
 
-			/* insert the tuple, with the speculative token */
-			newId = heap_insert(resultRelationDesc, tuple,
-								estate->es_output_cid,
-								HEAP_INSERT_SPECULATIVE,
-								NULL);
+			/*
+			 * insert the tuple, with the speculative token
+			 *
+			 * Note: heap_insert returns the tid (location) of the new tuple in
+			 * the t_self field.
+			 *
+			 * We need to remove the columns that are stored in the column store
+			 * from the descriptor and heap tuple, so that we only store the heap
+			 * part using heap_insert. We'll create a new tuple descriptor with
+			 * only the heap attributes, and create a small 'heap tuple' matching
+			 * the descriptor.
+			 *
+			 * FIXME This is just temporary solution, a bit dirty. Needs to be
+			 *       done properly (moved to methods, possibly applied to other
+			 *       places, etc.).
+			 */
+			if (resultRelInfo->ri_NumColumnStores > 0)
+			{
+				HeapTuple heaptuple;
+				TupleDesc heapdesc;
+				TupleDesc fulldesc;
+
+				heaptuple = FilterHeapTuple(resultRelInfo, tuple, &heapdesc);
+
+				fulldesc = resultRelationDesc->rd_att;
+				resultRelationDesc->rd_att = heapdesc;
+
+				newId = heap_insert(resultRelationDesc, heaptuple,
+									estate->es_output_cid,
+									HEAP_INSERT_SPECULATIVE,
+									NULL);
+
+				resultRelationDesc->rd_att = fulldesc;
+
+				heap_freetuple(heaptuple);
+				FreeTupleDesc(heapdesc);
+			}
+			else
+				newId = heap_insert(resultRelationDesc, tuple,
+									estate->es_output_cid,
+									HEAP_INSERT_SPECULATIVE,
+									NULL);
 
 			/* insert index entries for tuple */
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
@@ -449,9 +487,32 @@ ExecInsert(ModifyTableState *mtstate,
 			 * Note: heap_insert returns the tid (location) of the new tuple
 			 * in the t_self field.
 			 */
-			newId = heap_insert(resultRelationDesc, tuple,
-								estate->es_output_cid,
-								0, NULL);
+			if (resultRelInfo->ri_NumColumnStores > 0)
+			{
+				HeapTuple heaptuple;
+				TupleDesc heapdesc;
+				TupleDesc fulldesc;
+
+				heaptuple = FilterHeapTuple(resultRelInfo, tuple, &heapdesc);
+
+				fulldesc = resultRelationDesc->rd_att;
+				resultRelationDesc->rd_att = heapdesc;
+
+				newId = heap_insert(resultRelationDesc, heaptuple,
+									estate->es_output_cid,
+									HEAP_INSERT_SPECULATIVE,
+									NULL);
+
+				resultRelationDesc->rd_att = fulldesc;
+
+				heap_freetuple(heaptuple);
+				FreeTupleDesc(heapdesc);
+			}
+			else
+				newId = heap_insert(resultRelationDesc, tuple,
+									estate->es_output_cid,
+									HEAP_INSERT_SPECULATIVE,
+									NULL);
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
@@ -459,6 +520,12 @@ ExecInsert(ModifyTableState *mtstate,
 													   estate, false, NULL,
 													   arbiterIndexes);
 		}
+
+		/*
+		 * insert column store entries for tuple
+		 */
+		if (resultRelInfo->ri_NumColumnStores > 0)
+			ExecInsertColStoreTuples(tuple, estate);
 	}
 
 	if (canSetTag)
@@ -880,12 +947,47 @@ lreplace:;
 		 * can't-serialize error if not. This is a special-case behavior
 		 * needed for referential integrity updates in transaction-snapshot
 		 * mode transactions.
+		 *
+		 * We need to remove the columns that are stored in the column store
+		 * from the descriptor and heap tuple, so that we only store the heap
+		 * part using heap_insert. We'll create a new tuple descriptor with
+		 * only the heap attributes, and create a small 'heap tuple' matching
+		 * the descriptor.
+		 *
+		 * FIXME This is just temporary solution, a bit dirty. Needs to be
+		 *       done properly (moved to methods, possibly applied to other
+		 *       places, etc.).
 		 */
-		result = heap_update(resultRelationDesc, tupleid, tuple,
-							 estate->es_output_cid,
-							 estate->es_crosscheck_snapshot,
-							 true /* wait for commit */ ,
-							 &hufd, &lockmode);
+		if (resultRelInfo->ri_NumColumnStores > 0)
+		{
+			HeapTuple heaptuple;
+			TupleDesc heapdesc;
+			TupleDesc fulldesc;
+
+			heaptuple = FilterHeapTuple(resultRelInfo, tuple, &heapdesc);
+
+			fulldesc = resultRelationDesc->rd_att;
+			resultRelationDesc->rd_att = heapdesc;
+
+			result = heap_update(resultRelationDesc, tupleid, heaptuple,
+								 estate->es_output_cid,
+								 estate->es_crosscheck_snapshot,
+								 true /* wait for commit */ ,
+								 &hufd, &lockmode);
+
+			resultRelationDesc->rd_att = fulldesc;
+
+			heap_freetuple(heaptuple);
+			FreeTupleDesc(heapdesc);
+		}
+		else
+			result = heap_update(resultRelationDesc, tupleid, tuple,
+								 estate->es_output_cid,
+								 estate->es_crosscheck_snapshot,
+								 true /* wait for commit */ ,
+								 &hufd, &lockmode);
+
+
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:
@@ -966,16 +1068,20 @@ lreplace:;
 		 */
 
 		/*
-		 * insert index entries for tuple
+		 * insert index and column store entries for tuple
 		 *
 		 * Note: heap_update returns the tid (location) of the new tuple in
 		 * the t_self field.
 		 *
-		 * If it's a HOT update, we mustn't insert new index entries.
+		 * If it's a HOT update, we mustn't insert new index and column store
+		 * entries.
 		 */
 		if (resultRelInfo->ri_NumIndices > 0 && !HeapTupleIsHeapOnly(tuple))
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate, false, NULL, NIL);
+
+		if (resultRelInfo->ri_NumColumnStores > 0 && !HeapTupleIsHeapOnly(tuple))
+			ExecInsertColStoreTuples(tuple, estate);
 	}
 
 	if (canSetTag)
@@ -1545,6 +1651,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			operation != CMD_DELETE &&
 			resultRelInfo->ri_IndexRelationDescs == NULL)
 			ExecOpenIndices(resultRelInfo, mtstate->mt_onconflict != ONCONFLICT_NONE);
+
+		/* TODO should use relhascolstore just like indexes*/
+		ExecOpenColumnStores(resultRelInfo);
 
 		/* Now init the plan for this result rel */
 		estate->es_result_relation_info = resultRelInfo;

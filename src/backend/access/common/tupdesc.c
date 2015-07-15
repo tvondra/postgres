@@ -581,9 +581,9 @@ TupleDescInitEntryCollation(TupleDesc desc,
  *
  * Given a relation schema (list of ColumnDef nodes), build a TupleDesc.
  *
- * Also append ColumnStoreInfo structs in *colstores, with one element for each
- * attribute that contains a COLUMN STORE clause.  colstores may be NULL if the
- * caller is certain that there are no colstore clauses (e.g. when defining a
+ * Also append ColumnStoreClauseInfo structs in *colstores, with one element for
+ * each attribute that contains a COLUMN STORE clause.  colstores may be NULL if
+ * the caller is certain that there are no colstore clauses (e.g. when defining a
  * view.)
  *
  * Note: the default assumption is no OIDs; caller may modify the returned
@@ -658,7 +658,7 @@ BuildDescForRelation(List *schema, List **colstores)
 		/* Fill in the column store info, if this column requires it */
 		if (entry->cstoreClause)
 		{
-			ColumnStoreInfo *store = palloc(sizeof(ColumnStoreInfo));
+			ColumnStoreClauseInfo *store = palloc(sizeof(ColumnStoreClauseInfo));
 
 			store->attnum = attnum;
 			store->cstoreClause = entry->cstoreClause;

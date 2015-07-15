@@ -576,7 +576,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	foreach(listptr, stmt->colstores)
 	{
 		ColumnStoreClause *clause = (ColumnStoreClause *) lfirst(listptr);
-		ColumnStoreInfo *store = palloc(sizeof(ColumnStoreInfo));
+		ColumnStoreClauseInfo *store = palloc(sizeof(ColumnStoreClauseInfo));
 
 		store->cstoreClause = clause;
 		store->attnum = InvalidAttrNumber;
@@ -1387,7 +1387,7 @@ storage_name(char c)
  * 'supconstr' receives a list of constraints belonging to the parents,
  *		updated as necessary to be valid for the child.
  * 'supOidCount' is set to the number of parents that have OID columns.
- * 'colstores' is appended ColumnStoreInfo structs from parent rels.
+ * 'colstores' is appended ColumnStoreClauseInfo structs from parent rels.
  *
  * Return value:
  * Completed schema list.
@@ -1809,14 +1809,14 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 			Oid			cstoreid = lfirst_oid(cell);
 			Relation	storerel;
 			Form_pg_cstore cst;
-			ColumnStoreInfo *cstinfo;
+			ColumnStoreClauseInfo *cstinfo;
 			int			i;
 
 			/* AccessShare should be sufficient, since we hold lock on rel */
 			storerel = relation_open(cstoreid, AccessShareLock);
 			cst = storerel->rd_cstore;
 
-			cstinfo = palloc(sizeof(ColumnStoreInfo));
+			cstinfo = palloc(sizeof(ColumnStoreClauseInfo));
 			cstinfo->attnum = InvalidAttrNumber;
 			cstinfo->cstoreClause = NULL;
 			cstinfo->cstoreOid = RelationGetRelid(storerel);

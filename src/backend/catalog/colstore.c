@@ -57,7 +57,7 @@ static Oid CStoreAMGetOid(char *cstypename);
  * We need this distinction because multiple uses of a column in declared ones
  * is an error, but we ignore duplicates for the inherited ones.
  *
- * Return value is a list of ColumnStoreInfo.
+ * Return value is a list of ColumnStoreClauseInfo.
  */
 List *
 DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
@@ -86,7 +86,7 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 	 */
 	foreach(cell, decl_cstores)
 	{
-		ColumnStoreInfo	   *info = (ColumnStoreInfo *) lfirst(cell);
+		ColumnStoreClauseInfo	   *info = (ColumnStoreClauseInfo *) lfirst(cell);
 		ColumnStoreClause  *clause = info->cstoreClause;
 		ColumnStoreElem	   *newstore;
 
@@ -199,7 +199,7 @@ DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 	 */
 	foreach (cell, inh_cstores)
 	{
-		ColumnStoreInfo *info = (ColumnStoreInfo *) lfirst(cell);
+		ColumnStoreClauseInfo *info = (ColumnStoreClauseInfo *) lfirst(cell);
 		Relation		parentstore;
 		List		   *attnums = NIL;
 

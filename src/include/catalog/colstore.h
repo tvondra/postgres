@@ -20,13 +20,13 @@
  * parent relation.  Note that the cstatts data from the parent's entry must be
  * ignored in favor of the attnum list given here.)
  */
-typedef struct ColumnStoreInfo
+typedef struct ColumnStoreClauseInfo
 {
 	AttrNumber	attnum;
 	ColumnStoreClause *cstoreClause;
 	List	   *attnums;
 	Oid			cstoreOid;
-} ColumnStoreInfo;
+} ColumnStoreClauseInfo;
 
 
 extern List *DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,

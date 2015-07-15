@@ -13,13 +13,17 @@ CREATE TABLE parent_table (
 );
 
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'parent_table';
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'parent_table'::regclass
  ORDER BY cstname;
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'parent_table'::regclass)
  ORDER BY oid;
 
@@ -44,13 +48,17 @@ CREATE TABLE child_table_1 (
 ) INHERITS (parent_table);
 
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_1';
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_1'::regclass
  ORDER BY cstname;
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_1'::regclass)
  ORDER BY oid;
 
@@ -75,13 +83,17 @@ CREATE TABLE child_table_2 (
 ) INHERITS (parent_table);
 
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_2';
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_2'::regclass
  ORDER BY cstname;
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_2'::regclass)
  ORDER BY oid;
 
@@ -106,13 +118,17 @@ CREATE TABLE child_table_3 (
 ) INHERITS (parent_table);
 
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_3';
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_3'::regclass
  ORDER BY cstname;
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_3'::regclass)
  ORDER BY oid;
 

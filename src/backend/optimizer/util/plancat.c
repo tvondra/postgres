@@ -92,7 +92,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	Relation	relation;
 	bool		hasindex;
 	List	   *indexinfos = NIL;
-	bool		hascolstore = true; /* FIXME read from the relation */
+	bool		hascstore = true;
 	List	   *colstoreinfos = NIL;
 
 	/*
@@ -137,6 +137,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		hasindex = false;
 	else
 		hasindex = relation->rd_rel->relhasindex;
+
+	hascstore = relation->rd_rel->relhascstore;
 
 	if (hasindex)
 	{
@@ -382,7 +384,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 	rel->indexlist = indexinfos;
 
-	if (hascolstore)
+	if (hascstore)
 	{
 		List	   *colstoreoidlist;
 		ListCell   *l;

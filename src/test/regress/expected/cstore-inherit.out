@@ -11,6 +11,14 @@ CREATE TABLE parent_table (
     COLUMN STORE foo2 USING bar12 (d,e)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'parent_table';
+   relname    | relhascstore | relkind 
+--------------+--------------+---------
+ parent_table | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'parent_table'::regclass
@@ -22,13 +30,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'parent_table'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags
@@ -63,6 +71,14 @@ CREATE TABLE child_table_1 (
     COLUMN STORE foo2c USING bar12(h,i)
 ) INHERITS (parent_table);
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_1';
+    relname    | relhascstore | relkind 
+---------------+--------------+---------
+ child_table_1 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_1'::regclass
@@ -76,15 +92,15 @@ SELECT cstname, cstnatts, cstatts
 (4 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_1'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (4 rows)
 
 -- pg_class flags
@@ -124,6 +140,14 @@ CREATE TABLE child_table_2 (
     COLUMN STORE foo2c USING bar12(b,h,i) -- redefines the parent colstore
 ) INHERITS (parent_table);
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_2';
+    relname    | relhascstore | relkind 
+---------------+--------------+---------
+ child_table_2 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_2'::regclass
@@ -136,14 +160,14 @@ SELECT cstname, cstnatts, cstatts
 (3 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_2'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        3
-            9 |       0 |             0 | f           | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f           | p              | C       |        2
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        3
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
 (3 rows)
 
 -- pg_class flags
@@ -182,6 +206,14 @@ CREATE TABLE child_table_3 (
     COLUMN STORE foo1 USING bar11(a,b,c,d,e,f,g,h,i)
 ) INHERITS (parent_table);
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'child_table_3';
+    relname    | relhascstore | relkind 
+---------------+--------------+---------
+ child_table_3 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'child_table_3'::regclass
@@ -192,12 +224,12 @@ SELECT cstname, cstnatts, cstatts
 (1 row)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'child_table_3'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        9
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        9
 (1 row)
 
 -- pg_class flags

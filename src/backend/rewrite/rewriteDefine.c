@@ -445,6 +445,12 @@ DefineQueryRewrite(char *rulename,
 						 errmsg("could not convert table \"%s\" to a view because it has indexes",
 								RelationGetRelationName(event_relation))));
 
+			if (event_relation->rd_rel->relhascstore)
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("could not convert table \"%s\" to a view because it has column stores",
+								RelationGetRelationName(event_relation))));
+
 			if (event_relation->rd_rel->relhassubclass)
 				ereport(ERROR,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -592,6 +598,7 @@ DefineQueryRewrite(char *rulename,
 		classForm->relallvisible = 0;
 		classForm->reltoastrelid = InvalidOid;
 		classForm->relhasindex = false;
+		classForm->relhascstore = false;
 		classForm->relkind = RELKIND_VIEW;
 		classForm->relhasoids = false;
 		classForm->relhaspkey = false;

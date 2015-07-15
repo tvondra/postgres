@@ -1347,6 +1347,7 @@ pg_matviews| SELECT n.nspname AS schemaname,
     pg_get_userbyid(c.relowner) AS matviewowner,
     t.spcname AS tablespace,
     c.relhasindex AS hasindexes,
+    c.relhascstore AS hascstores,
     c.relispopulated AS ispopulated,
     pg_get_viewdef(c.oid) AS definition
    FROM ((pg_class c
@@ -2054,6 +2055,7 @@ pg_tables| SELECT n.nspname AS schemaname,
     pg_get_userbyid(c.relowner) AS tableowner,
     t.spcname AS tablespace,
     c.relhasindex AS hasindexes,
+    c.relhascstore AS hascstores,
     c.relhasrules AS hasrules,
     c.relhastriggers AS hastriggers,
     c.relrowsecurity AS rowsecurity

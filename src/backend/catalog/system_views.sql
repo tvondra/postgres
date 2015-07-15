@@ -117,6 +117,7 @@ CREATE VIEW pg_tables AS
         pg_get_userbyid(C.relowner) AS tableowner,
         T.spcname AS tablespace,
         C.relhasindex AS hasindexes,
+        C.relhascstore AS hascstores,
         C.relhasrules AS hasrules,
         C.relhastriggers AS hastriggers,
         C.relrowsecurity AS rowsecurity
@@ -131,6 +132,7 @@ CREATE VIEW pg_matviews AS
         pg_get_userbyid(C.relowner) AS matviewowner,
         T.spcname AS tablespace,
         C.relhasindex AS hasindexes,
+        C.relhascstore AS hascstores,
         C.relispopulated AS ispopulated,
         pg_get_viewdef(C.oid) AS definition
     FROM pg_class C LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)

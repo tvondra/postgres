@@ -443,6 +443,46 @@ calculate_indexes_size(Relation rel)
 	return size;
 }
 
+/*
+ * Calculate total on-disk size of all column stores attached to the given table.
+ *
+ * Can be applied safely to a column store, but you'll just get zero.
+ */
+static int64
+calculate_column_stores_size(Relation rel)
+{
+	int64		size = 0;
+
+	/*
+	 * Aggregate all indexes on the given relation
+	 */
+	if (rel->rd_rel->relhascstore)
+	{
+		List	   *cstore_oids = RelationGetColStoreList(rel);
+		ListCell   *cell;
+
+		foreach(cell, cstore_oids)
+		{
+			Oid			cstoreOid = lfirst_oid(cell);
+			Relation	cstoreRel;
+			ForkNumber	forkNum;
+
+			cstoreRel = relation_open(cstoreOid, AccessShareLock);
+
+			for (forkNum = 0; forkNum <= MAX_FORKNUM; forkNum++)
+				size += calculate_relation_size(&(cstoreRel->rd_node),
+												cstoreRel->rd_backend,
+												forkNum);
+
+			relation_close(cstoreRel, AccessShareLock);
+		}
+
+		list_free(cstore_oids);
+	}
+
+	return size;
+}
+
 Datum
 pg_table_size(PG_FUNCTION_ARGS)
 {
@@ -481,6 +521,25 @@ pg_indexes_size(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(size);
 }
 
+Datum
+pg_column_stores_size(PG_FUNCTION_ARGS)
+{
+	Oid			relOid = PG_GETARG_OID(0);
+	Relation	rel;
+	int64		size;
+
+	rel = try_relation_open(relOid, AccessShareLock);
+
+	if (rel == NULL)
+		PG_RETURN_NULL();
+
+	size = calculate_column_stores_size(rel);
+
+	relation_close(rel, AccessShareLock);
+
+	PG_RETURN_INT64(size);
+}
+
 /*
  *	Compute the on-disk size of all files for the relation,
  *	including heap data, index data, toast data, FSM, VM.
@@ -500,6 +559,11 @@ calculate_total_relation_size(Relation rel)
 	 * Add size of all attached indexes as well
 	 */
 	size += calculate_indexes_size(rel);
+
+	/*
+	 * Add size of all attached column stores as well
+	 */
+	size += calculate_column_stores_size(rel);
 
 	return size;
 }

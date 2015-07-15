@@ -10,7 +10,7 @@ VACUUM;
 -- temporarily disable fancy output, so catalog changes create less diff noise
 \a\t
 
-SELECT relname, relhasindex
+SELECT relname, relhasindex, relhascstore
    FROM pg_class c LEFT JOIN pg_namespace n ON n.oid = relnamespace
    WHERE relkind = 'r' AND (nspname ~ '^pg_temp_') IS NOT TRUE
    ORDER BY relname;

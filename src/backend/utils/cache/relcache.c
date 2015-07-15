@@ -1720,7 +1720,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	 */
 	if (IsBootstrapProcessingMode())
 	{
-		/* In bootstrap mode, we have no indexes */
+		/* In bootstrap mode, we have no indexes or column stores */
 		relation->rd_rel->relhasindex = false;
 	}
 	else
@@ -1728,6 +1728,9 @@ formrdesc(const char *relationName, Oid relationReltype,
 		/* Otherwise, all the rels formrdesc is used for have indexes */
 		relation->rd_rel->relhasindex = true;
 	}
+
+	/* this is used for catalogs only, so no column stores */
+	relation->rd_rel->relhascstore = false;
 
 	/*
 	 * add new reldesc to relcache

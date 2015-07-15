@@ -32,6 +32,14 @@ CREATE TABLE test_columnar_single_ok (
     c INT
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_single_ok';
+         relname         | relhascstore | relkind 
+-------------------------+--------------+---------
+ test_columnar_single_ok | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_single_ok'::regclass
@@ -42,12 +50,12 @@ SELECT cstname, cstnatts, cstatts
 (1 row)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (1 row)
 
 -- pg_class flags
@@ -78,6 +86,14 @@ CREATE TABLE test_columnar_single_ok2 (
     d INT
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_single_ok2';
+         relname          | relhascstore | relkind 
+--------------------------+--------------+---------
+ test_columnar_single_ok2 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_single_ok2'::regclass
@@ -89,13 +105,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok2'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags
@@ -128,6 +144,14 @@ CREATE TABLE test_columnar_single_ok3 (
     d INT
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_single_ok3';
+         relname          | relhascstore | relkind 
+--------------------------+--------------+---------
+ test_columnar_single_ok3 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_single_ok3'::regclass
@@ -139,13 +163,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok3'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags
@@ -218,6 +242,14 @@ CREATE TABLE test_columnar_multi_ok (
     COLUMN STORE foo USING bar1 (a,b)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_multi_ok';
+        relname         | relhascstore | relkind 
+------------------------+--------------+---------
+ test_columnar_multi_ok | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_multi_ok'::regclass
@@ -228,12 +260,12 @@ SELECT cstname, cstnatts, cstatts
 (1 row)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
 (1 row)
 
 -- pg_class flags
@@ -267,6 +299,14 @@ CREATE TABLE test_columnar_multi_ok2 (
     COLUMN STORE foo2 USING bar1 (c,d)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_multi_ok2';
+         relname         | relhascstore | relkind 
+-------------------------+--------------+---------
+ test_columnar_multi_ok2 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_multi_ok2'::regclass
@@ -278,13 +318,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok2'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        2
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
 (2 rows)
 
 -- pg_class flags
@@ -321,6 +361,14 @@ CREATE TABLE test_columnar_multi_ok3 (
     COLUMN STORE foo2 USING bar2 (d)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_multi_ok3';
+         relname         | relhascstore | relkind 
+-------------------------+--------------+---------
+ test_columnar_multi_ok3 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_multi_ok3'::regclass
@@ -332,13 +380,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok3'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags
@@ -401,6 +449,14 @@ CREATE TABLE test_columnar_combi_ok (
     COLUMN STORE foo2 USING bar1 (c,d)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_combi_ok';
+        relname         | relhascstore | relkind 
+------------------------+--------------+---------
+ test_columnar_combi_ok | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_combi_ok'::regclass
@@ -412,13 +468,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags
@@ -453,6 +509,14 @@ CREATE TABLE test_columnar_combi_ok2 (
     COLUMN STORE foo2 USING bar2 (d)
 );
 -- check contents of the catalogs
+SELECT relname, relhascstore, relkind
+  FROM pg_class
+ WHERE relname = 'test_columnar_combi_ok2';
+         relname         | relhascstore | relkind 
+-------------------------+--------------+---------
+ test_columnar_combi_ok2 | t            | r
+(1 row)
+
 SELECT cstname, cstnatts, cstatts
   FROM pg_cstore
  WHERE cstrelid = 'test_columnar_combi_ok2'::regclass
@@ -464,13 +528,13 @@ SELECT cstname, cstnatts, cstatts
 (2 rows)
 
 -- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relisshared, relpersistence, relkind, relnatts
+SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
   FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok2'::regclass)
  ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f           | p              | C       |        1
+ relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
+--------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
+            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
 (2 rows)
 
 -- pg_class flags

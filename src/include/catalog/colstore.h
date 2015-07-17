@@ -43,4 +43,7 @@ void FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
 			   TupleTableSlot *slot,
 			   Datum *values, bool *isnull);
 
+HeapTuple FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple,
+						  TupleDesc *heapdesc);
+
 #endif		/* COLSTORE_H */

@@ -39,6 +39,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "catalog/colstore.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyTable.h"
@@ -273,9 +274,39 @@ ExecInsert(TupleTableSlot *slot,
 		 *
 		 * Note: heap_insert returns the tid (location) of the new tuple in
 		 * the t_self field.
+		 *
+		 * We need to remove the columns that are stored in the column store
+		 * from the descriptor and heap tuple, so that we only store the heap
+		 * part using heap_insert. We'll create a new tuple descriptor with
+		 * only the heap attributes, and create a small 'heap tuple' matching
+		 * the descriptor.
+		 *
+		 * FIXME This is just temporary solution, a bit dirty. Needs to be
+		 *       done properly (moved to methods, possibly applied to other
+		 *       places, etc.).
 		 */
-		newId = heap_insert(resultRelationDesc, tuple,
-							estate->es_output_cid, 0, NULL);
+		if (resultRelInfo->ri_NumColumnStores > 0)
+		{
+			HeapTuple heaptuple;
+			TupleDesc heapdesc;
+			TupleDesc fulldesc;
+
+			heaptuple = FilterHeapTuple(resultRelInfo, tuple, &heapdesc);
+
+			fulldesc = resultRelationDesc->rd_att;
+			resultRelationDesc->rd_att = heapdesc;
+
+			newId = heap_insert(resultRelationDesc, heaptuple,
+								estate->es_output_cid, 0, NULL);
+
+			resultRelationDesc->rd_att = fulldesc;
+
+			heap_freetuple(heaptuple);
+			FreeTupleDesc(heapdesc);
+		}
+		else
+			newId = heap_insert(resultRelationDesc, tuple,
+								estate->es_output_cid, 0, NULL);
 
 		/*
 		 * insert index entries for tuple
@@ -712,12 +743,47 @@ lreplace:;
 		 * can't-serialize error if not. This is a special-case behavior
 		 * needed for referential integrity updates in transaction-snapshot
 		 * mode transactions.
+		 *
+		 * We need to remove the columns that are stored in the column store
+		 * from the descriptor and heap tuple, so that we only store the heap
+		 * part using heap_insert. We'll create a new tuple descriptor with
+		 * only the heap attributes, and create a small 'heap tuple' matching
+		 * the descriptor.
+		 *
+		 * FIXME This is just temporary solution, a bit dirty. Needs to be
+		 *       done properly (moved to methods, possibly applied to other
+		 *       places, etc.).
 		 */
-		result = heap_update(resultRelationDesc, tupleid, tuple,
-							 estate->es_output_cid,
-							 estate->es_crosscheck_snapshot,
-							 true /* wait for commit */ ,
-							 &hufd, &lockmode);
+		if (resultRelInfo->ri_NumColumnStores > 0)
+		{
+			HeapTuple heaptuple;
+			TupleDesc heapdesc;
+			TupleDesc fulldesc;
+
+			heaptuple = FilterHeapTuple(resultRelInfo, tuple, &heapdesc);
+
+			fulldesc = resultRelationDesc->rd_att;
+			resultRelationDesc->rd_att = heapdesc;
+
+			result = heap_update(resultRelationDesc, tupleid, heaptuple,
+								 estate->es_output_cid,
+								 estate->es_crosscheck_snapshot,
+								 true /* wait for commit */ ,
+								 &hufd, &lockmode);
+
+			resultRelationDesc->rd_att = fulldesc;
+
+			heap_freetuple(heaptuple);
+			FreeTupleDesc(heapdesc);
+		}
+		else
+			result = heap_update(resultRelationDesc, tupleid, tuple,
+								 estate->es_output_cid,
+								 estate->es_crosscheck_snapshot,
+								 true /* wait for commit */ ,
+								 &hufd, &lockmode);
+
+
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:

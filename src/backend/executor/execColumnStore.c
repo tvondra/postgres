@@ -21,16 +21,11 @@
 
 #include "access/relscan.h"
 #include "catalog/colstore.h"
+#include "colstore/colstoreapi.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
 #include "utils/tqual.h"
-
-/* FIXME this should be defined elsewhere I guess ... */
-static void
-cstore_insert(Relation columnStoreRelation, Relation healRelation,
-			  Datum values[INDEX_MAX_KEYS], bool isnull[INDEX_MAX_KEYS],
-			  ItemPointer tupleid);
 
 /* ----------------------------------------------------------------
  *		ExecOpenColumnStores
@@ -181,6 +176,12 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 
 		cstoreInfo = columnStoreInfoArray[i];
 
+		if (cstoreInfo->csi_ColumnStoreRoutine == NULL)
+			elog(ERROR, "column store routine not available");
+
+		if (cstoreInfo->csi_ColumnStoreRoutine->ExecColumnStoreInsert == NULL)
+			elog(ERROR, "ExecColumnStoreInsert routine not available");
+
 		/*
 		 * FormColumnStoreDatum fills in its values and isnull parameters with
 		 * the appropriate values for the column(s) of the column store.
@@ -190,20 +191,16 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 					   values,
 					   isnull);
 
-		cstore_insert(cstoreRelation, /* column store relation */
-					 heapRelation,	/* heap relation */
-					 values,		/* array of column store Datums */
-					 isnull,		/* null flags */
-					 tupleid);		/* tid of heap tuple */
+		cstoreInfo->csi_ColumnStoreRoutine->ExecColumnStoreInsert(
+			heapRelation,	/* heap relation */
+			cstoreRelation, /* column store relation */
+			cstoreInfo,		/* column store info */
+			cstoreInfo->csi_NumColumnStoreAttrs,
+			values,			/* array of column store Datums */
+			isnull,			/* null flags */
+			tupleid);		/* tid of heap tuple */
+
 	}
 
 	return result;
-}
-
-static void
-cstore_insert(Relation columnStoreRelation, Relation healRelation,
-			  Datum values[INDEX_MAX_KEYS], bool isnull[INDEX_MAX_KEYS],
-			  ItemPointer tupleid)
-{
-	elog(WARNING, "cstore_insert: not yet implemented");
 }

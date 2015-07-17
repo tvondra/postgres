@@ -787,6 +787,6 @@ GetColumnStoreRoutineForRelation(Relation relation, bool makecopy)
 Oid
 GetColumnStoreAMByName(const char *cstamname, bool missing_ok)
 {
-	elog(WARNING, "GetColumnStoreAMByName: not implemented");
+	/* FIXME */
 	return InvalidOid;
 }

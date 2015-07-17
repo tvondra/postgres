@@ -1,6 +1,6 @@
 -- create two fake cstore AM instances (no implementation)
-INSERT INTO pg_cstore_am VALUES ('bar1', 1, 1, 1, 1);
-INSERT INTO pg_cstore_am VALUES ('bar2', 1, 1, 1, 1);
+CREATE COLUMN STORE ACCESS METHOD bar1 HANDLER cstore_dummy_handler;
+CREATE COLUMN STORE ACCESS METHOD bar2 HANDLER cstore_dummy_handler;
 -- column-level column store definition
 -- unknown name of a column store AM
 CREATE TABLE test_columnar_single_missing (

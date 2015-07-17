@@ -1,6 +1,6 @@
 -- create two fake cstore AM instances (no implementation)
-INSERT INTO pg_cstore_am VALUES ('bar11', 1, 1, 1, 1);
-INSERT INTO pg_cstore_am VALUES ('bar12', 1, 1, 1, 1);
+CREATE COLUMN STORE ACCESS METHOD bar11 HANDLER cstore_dummy_handler;
+CREATE COLUMN STORE ACCESS METHOD bar12 HANDLER cstore_dummy_handler;
 -- parent table with two column stores
 CREATE TABLE parent_table (
     a INT,

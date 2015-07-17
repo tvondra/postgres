@@ -3695,6 +3695,8 @@ DATA(insert OID = 3352 (  cstore_handler_in	PGNSP PGUID 12 1 0 0 0 f f f f f f i
 DESCR("I/O");
 DATA(insert OID = 3353 (  cstore_handler_out	PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 2275 "3351" _null_ _null_ _null_ _null_ _null_ cstore_handler_out _null_ _null_ _null_ ));
 DESCR("I/O");
+DATA(insert OID = 3354 (  cstore_dummy_handler	PGNSP PGUID 12 1 0 0 0 f f f f t f i 0 0 3351 "" _null_ _null_ _null_ _null_ _null_ cstore_dummy_handler _null_ _null_ _null_ ));
+DESCR("I/O");
 
 /* cryptographic */
 DATA(insert OID =  2311 (  md5	   PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 25 "25" _null_ _null_ _null_ _null_ _null_ md5_text _null_ _null_ _null_ ));

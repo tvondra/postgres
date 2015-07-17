@@ -565,6 +565,8 @@ extern Datum language_handler_in(PG_FUNCTION_ARGS);
 extern Datum language_handler_out(PG_FUNCTION_ARGS);
 extern Datum fdw_handler_in(PG_FUNCTION_ARGS);
 extern Datum fdw_handler_out(PG_FUNCTION_ARGS);
+extern Datum cstore_handler_in(PG_FUNCTION_ARGS);
+extern Datum cstore_handler_out(PG_FUNCTION_ARGS);
 extern Datum internal_in(PG_FUNCTION_ARGS);
 extern Datum internal_out(PG_FUNCTION_ARGS);
 extern Datum opaque_in(PG_FUNCTION_ARGS);

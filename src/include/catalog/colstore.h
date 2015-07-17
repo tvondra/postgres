@@ -46,4 +46,6 @@ void FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
 HeapTuple FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple,
 						  TupleDesc *heapdesc);
 
+extern Oid GetColumnStoreAMByName(const char *cstamname, bool missing_ok);
+
 #endif		/* COLSTORE_H */

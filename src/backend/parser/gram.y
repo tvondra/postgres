@@ -262,7 +262,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		DeallocateStmt PrepareStmt ExecuteStmt
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
-		CreateMatViewStmt RefreshMatViewStmt
+		CreateMatViewStmt RefreshMatViewStmt CreateColumnStoreAMStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -372,6 +372,9 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 %type <list>	opt_fdw_options fdw_options
 %type <defelt>	fdw_option
+
+%type <list>	opt_cstam_options cstam_options
+%type <defelt>	cstam_option
 
 %type <range>	OptTempTableName
 %type <into>	into_clause create_as_target create_mv_target
@@ -592,7 +595,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
 
-	MAPPING MATCH MATERIALIZED MAXVALUE MINUTE_P MINVALUE MODE MONTH_P MOVE
+	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEXT NO NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
@@ -775,6 +778,7 @@ stmt :
 			| CreateAsStmt
 			| CreateAssertStmt
 			| CreateCastStmt
+			| CreateColumnStoreAMStmt
 			| CreateConversionStmt
 			| CreateDomainStmt
 			| CreateExtensionStmt
@@ -4171,6 +4175,38 @@ fdw_options:
 
 opt_fdw_options:
 			fdw_options							{ $$ = $1; }
+			| /*EMPTY*/							{ $$ = NIL; }
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *             CREATE COLUMN STORE ACCESS METHOD name options
+ *
+ *****************************************************************************/
+
+CreateColumnStoreAMStmt: CREATE COLUMN STORE ACCESS METHOD name opt_cstam_options
+				{
+					CreateColumnStoreAMStmt *n = makeNode(CreateColumnStoreAMStmt);
+					n->cstamname = $6;
+					n->func_options = $7;
+					$$ = (Node *) n;
+				}
+		;
+
+cstam_option:
+			HANDLER handler_name				{ $$ = makeDefElem("handler", (Node *)$2); }
+			| NO HANDLER						{ $$ = makeDefElem("handler", NULL); }
+		;
+
+cstam_options:
+			cstam_option						{ $$ = list_make1($1); }
+			| cstam_options cstam_option		{ $$ = lappend($1, $2); }
+		;
+
+opt_cstam_options:
+			cstam_options						{ $$ = $1; }
 			| /*EMPTY*/							{ $$ = NIL; }
 		;
 
@@ -13494,6 +13530,7 @@ unreserved_keyword:
 			| MATCH
 			| MATERIALIZED
 			| MAXVALUE
+			| METHOD
 			| MINUTE_P
 			| MINVALUE
 			| MODE

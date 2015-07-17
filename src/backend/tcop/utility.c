@@ -208,6 +208,7 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateForeignTableStmt:
 		case T_ImportForeignSchemaStmt:
 		case T_SecLabelStmt:
+		case T_CreateColumnStoreAMStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -1402,6 +1403,10 @@ ProcessUtilitySlow(Node *parsetree,
 
 			case T_SecLabelStmt:
 				ExecSecLabelStmt((SecLabelStmt *) parsetree);
+				break;
+
+			case T_CreateColumnStoreAMStmt:
+				CreateColumnStoreAM((CreateColumnStoreAMStmt *) parsetree);
 				break;
 
 			default:

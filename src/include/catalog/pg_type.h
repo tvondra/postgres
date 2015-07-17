@@ -680,6 +680,8 @@ DATA(insert OID = 3500 ( anyenum		PGNSP PGUID  4 t p P f t \054 0 0 0 anyenum_in
 #define ANYENUMOID		3500
 DATA(insert OID = 3115 ( fdw_handler	PGNSP PGUID  4 t p P f t \054 0 0 0 fdw_handler_in fdw_handler_out - - - - - i p f 0 -1 0 0 _null_ _null_ _null_ ));
 #define FDW_HANDLEROID	3115
+DATA(insert OID = 3351 ( cstore_handler	PGNSP PGUID  4 t p P f t \054 0 0 0 cstore_handler_in cstore_handler_out - - - - - i p f 0 -1 0 0 _null_ _null_ _null_ ));
+#define CSTORE_HANDLEROID	3351
 DATA(insert OID = 3831 ( anyrange		PGNSP PGUID  -1 f p P f t \054 0 0 0 anyrange_in anyrange_out - - - - - d x f 0 -1 0 0 _null_ _null_ _null_ ));
 #define ANYRANGEOID		3831
 

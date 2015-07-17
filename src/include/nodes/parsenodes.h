@@ -1916,6 +1916,19 @@ typedef struct ImportForeignSchemaStmt
 	List	   *options;		/* list of options to pass to FDW */
 } ImportForeignSchemaStmt;
 
+
+/* ----------------------
+ *		Create COLUMN STORE ACCESS METHOD Statements
+ * ----------------------
+ */
+
+typedef struct CreateColumnStoreAMStmt
+{
+	NodeTag		type;
+	char	   *cstamname;		/* column store AM name */
+	List	   *func_options;	/* HANDLER option */
+} CreateColumnStoreAMStmt;
+
 /*----------------------
  *		Create POLICY Statement
  *----------------------

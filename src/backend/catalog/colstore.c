@@ -667,17 +667,17 @@ FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple, TupleDesc *heapde
  * to get its ColumnStoreRoutine struct.
  */
 ColumnStoreRoutine *
-GetColumnStoreRoutine(Oid csthandler)
+GetColumnStoreRoutine(Oid cstamhandler)
 {
 	Datum		datum;
 	ColumnStoreRoutine *routine;
 
-	datum = OidFunctionCall0(csthandler);
+	datum = OidFunctionCall0(cstamhandler);
 	routine = (ColumnStoreRoutine *) DatumGetPointer(datum);
 
 	if (routine == NULL || !IsA(routine, ColumnStoreRoutine))
 		elog(ERROR, "column store handler function %u did not return an ColumnStoreRoutine struct",
-			 csthandler);
+			 cstamhandler);
 
 	return routine;
 }
@@ -692,7 +692,7 @@ GetColumnStoreHandlerByRelId(Oid relid)
 {
 	HeapTuple	tp;
 	Form_pg_cstore_am cstform;
-	Oid	csthandler;
+	Oid	cstamhandler;
 
 	Relation	rel;
 	Oid			amoid;
@@ -710,18 +710,18 @@ GetColumnStoreHandlerByRelId(Oid relid)
 	if (!HeapTupleIsValid(tp))
 		elog(ERROR, "cache lookup failed for foreign table %u", amoid);
 	cstform = (Form_pg_cstore_am) GETSTRUCT(tp);
-	csthandler = cstform->csthandler;
+	cstamhandler = cstform->cstamhandler;
 
 	/* Complain if column store has been set to NO HANDLER. */
-	if (!OidIsValid(csthandler))
+	if (!OidIsValid(cstamhandler))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("column store \"%s\" has no handler",
-						NameStr(cstform->cstname))));
+						NameStr(cstform->cstamname))));
 
 	ReleaseSysCache(tp);
 
-	return csthandler;
+	return cstamhandler;
 }
 
 /*
@@ -731,9 +731,9 @@ GetColumnStoreHandlerByRelId(Oid relid)
 ColumnStoreRoutine *
 GetColumnStoreRoutineByRelId(Oid relid)
 {
-	Oid	csthandler = GetColumnStoreHandlerByRelId(relid);
+	Oid	cstamhandler = GetColumnStoreHandlerByRelId(relid);
 
-	return GetColumnStoreRoutine(csthandler);
+	return GetColumnStoreRoutine(cstamhandler);
 }
 
 /*

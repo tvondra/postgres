@@ -139,7 +139,7 @@ DECLARE_UNIQUE_INDEX(pg_cstore_cstrelid_cstname_index, 3290, on pg_cstore using 
 
 DECLARE_UNIQUE_INDEX(pg_cstore_am_oid_index, 3284, on pg_cstore_am using btree(oid oid_ops));
 #define CStoreAmOidIndexId	3284
-DECLARE_UNIQUE_INDEX(pg_cstore_am_name_index, 3285, on pg_cstore_am using btree(cstname name_ops));
+DECLARE_UNIQUE_INDEX(pg_cstore_am_name_index, 3285, on pg_cstore_am using btree(cstamname name_ops));
 #define CStoreAmNameIndexId  3285
 
 DECLARE_UNIQUE_INDEX(pg_database_datname_index, 2671, on pg_database using btree(datname name_ops));

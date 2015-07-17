@@ -30,8 +30,8 @@
 
 CATALOG(pg_cstore_am,3287)
 {
-	NameData	cstname;		/* column store am name */
-	Oid			csthandler;		/* handler function */
+	NameData	cstamname;		/* column store am name */
+	Oid			cstamhandler;	/* handler function */
 
 } FormData_pg_cstore_am;
 
@@ -47,7 +47,7 @@ typedef FormData_pg_cstore_am *Form_pg_cstore_am;
  * ----------------
  */
 #define Natts_pg_cstore_am					2
-#define Anum_pg_cstore_am_cstname			1
-#define Anum_pg_cstore_am_csthandler		2
+#define Anum_pg_cstore_am_cstamname			1
+#define Anum_pg_cstore_am_cstamhandler		2
 
 #endif   /* PG_CSTORE_AM_H */

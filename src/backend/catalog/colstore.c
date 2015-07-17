@@ -783,3 +783,10 @@ GetColumnStoreRoutineForRelation(Relation relation, bool makecopy)
 	/* Only a short-lived reference is needed, so just hand back cached copy */
 	return relation->rd_colstoreroutine;
 }
+
+Oid
+GetColumnStoreAMByName(const char *cstamname, bool missing_ok)
+{
+	/* FIXME */
+	return InvalidOid;
+}

@@ -1832,6 +1832,15 @@ _equalImportForeignSchemaStmt(const ImportForeignSchemaStmt *a, const ImportFore
 }
 
 static bool
+_equalCreateColumnStoreAMStmt(const CreateColumnStoreAMStmt *a, const CreateColumnStoreAMStmt *b)
+{
+	COMPARE_STRING_FIELD(cstamname);
+	COMPARE_NODE_FIELD(func_options);
+
+	return true;
+}
+
+static bool
 _equalCreateTransformStmt(const CreateTransformStmt *a, const CreateTransformStmt *b)
 {
 	COMPARE_SCALAR_FIELD(replace);
@@ -3139,6 +3148,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_ImportForeignSchemaStmt:
 			retval = _equalImportForeignSchemaStmt(a, b);
+			break;
+		case T_CreateColumnStoreAMStmt:
+			retval = _equalCreateColumnStoreAMStmt(a, b);
 			break;
 		case T_CreateTransformStmt:
 			retval = _equalCreateTransformStmt(a, b);

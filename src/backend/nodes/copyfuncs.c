@@ -3826,6 +3826,17 @@ _copyImportForeignSchemaStmt(const ImportForeignSchemaStmt *from)
 	return newnode;
 }
 
+static CreateColumnStoreAMStmt *
+_copyCreateColumnStoreAMStmt(const CreateColumnStoreAMStmt *from)
+{
+	CreateColumnStoreAMStmt *newnode = makeNode(CreateColumnStoreAMStmt);
+
+	COPY_STRING_FIELD(cstamname);
+	COPY_NODE_FIELD(func_options);
+
+	return newnode;
+}
+
 static CreateTransformStmt *
 _copyCreateTransformStmt(const CreateTransformStmt *from)
 {
@@ -4802,6 +4813,9 @@ copyObject(const void *from)
 			break;
 		case T_ImportForeignSchemaStmt:
 			retval = _copyImportForeignSchemaStmt(from);
+			break;
+		case T_CreateColumnStoreAMStmt:
+			retval = _copyCreateColumnStoreAMStmt(from);
 			break;
 		case T_CreateTransformStmt:
 			retval = _copyCreateTransformStmt(from);

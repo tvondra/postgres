@@ -31,10 +31,8 @@
 CATALOG(pg_cstore_am,3287)
 {
 	NameData	cstname;		/* column store am name */
-	regproc		cstopenstore;	/* open column store */
-	regproc		cstgetvalue;	/* get value of column in a row */
-	regproc		cstgetrows;		/* get rows from column store */
-	regproc		cstputvalue;	/* set value of column in a row */
+	Oid			csthandler;		/* handler function */
+
 } FormData_pg_cstore_am;
 
 /* ----------------
@@ -48,11 +46,8 @@ typedef FormData_pg_cstore_am *Form_pg_cstore_am;
  *		compiler constants for pg_cstore_am
  * ----------------
  */
-#define Natts_pg_cstore_am				5
+#define Natts_pg_cstore_am					2
 #define Anum_pg_cstore_am_cstname			1
-#define Anum_pg_cstore_am_cstopenstore		2
-#define Anum_pg_cstore_am_cstgetvalue		3
-#define Anum_pg_cstore_am_cstgetrows		4
-#define Anum_pg_cstore_am_cstputvalue		5
+#define Anum_pg_cstore_am_csthandler		2
 
 #endif   /* PG_CSTORE_AM_H */

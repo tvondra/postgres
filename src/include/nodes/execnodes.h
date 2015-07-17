@@ -76,6 +76,7 @@ typedef struct IndexInfo
  *
  *		NumIndexAttrs		number of columns in this column store
  *		KeyAttrNumbers		underlying-rel attribute numbers used as keys
+ *		ColumnStoreRoutine	ColumnStore callback functions
  * ----------------
  */
 typedef struct ColumnStoreInfo
@@ -83,6 +84,7 @@ typedef struct ColumnStoreInfo
 	NodeTag		type;
 	int			csi_NumColumnStoreAttrs;
 	AttrNumber	csi_KeyAttrNumbers[INDEX_MAX_KEYS];
+	struct ColumnStoreRoutine *csi_ColumnStoreRoutine;
 } ColumnStoreInfo;
 
 /* ----------------

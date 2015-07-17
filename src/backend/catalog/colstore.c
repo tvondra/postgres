@@ -24,8 +24,10 @@
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_cstore.h"
+#include "catalog/pg_cstore_am.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_tablespace.h"	/* GLOBALTABLESPACE_OID */
+#include "colstore/colstoreapi.h"
 #include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
@@ -34,6 +36,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/syscache.h"
 #include "utils/rel.h"
 
@@ -567,6 +570,9 @@ BuildColumnStoreInfo(Relation cstore)
 	for (i = 0; i < numKeys; i++)
 		csi->csi_KeyAttrNumbers[i] = cstoreStruct->cstatts.values[i];
 
+	csi->csi_ColumnStoreRoutine
+		= GetColumnStoreRoutineForRelation(cstore, true);
+
 	return csi;
 }
 
@@ -652,4 +658,128 @@ FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple, TupleDesc *heapde
 	pfree(nulls);
 
 	return newtup;
+}
+
+
+
+/*
+ * GetColumnStoreRoutine - call the specified column store handler routine
+ * to get its ColumnStoreRoutine struct.
+ */
+ColumnStoreRoutine *
+GetColumnStoreRoutine(Oid csthandler)
+{
+	Datum		datum;
+	ColumnStoreRoutine *routine;
+
+	datum = OidFunctionCall0(csthandler);
+	routine = (ColumnStoreRoutine *) DatumGetPointer(datum);
+
+	if (routine == NULL || !IsA(routine, ColumnStoreRoutine))
+		elog(ERROR, "column store handler function %u did not return an ColumnStoreRoutine struct",
+			 csthandler);
+
+	return routine;
+}
+
+
+/*
+ * GetColumnStoreHandlerByRelId - look up the handler of the column store handler
+ * for the given column store relation
+ */
+Oid
+GetColumnStoreHandlerByRelId(Oid relid)
+{
+	HeapTuple	tp;
+	Form_pg_cstore_am cstform;
+	Oid	csthandler;
+
+	Relation	rel;
+	Oid			amoid;
+
+	rel = relation_open(relid, AccessShareLock);
+	amoid = rel->rd_rel->relam;
+
+	Assert(amoid != InvalidOid);
+	Assert(rel->rd_rel->relkind == RELKIND_COLUMN_STORE);
+
+	relation_close(rel, AccessShareLock);
+
+	/* Get server OID for the foreign table. */
+	tp = SearchSysCache1(CSTOREAMOID, ObjectIdGetDatum(amoid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for foreign table %u", amoid);
+	cstform = (Form_pg_cstore_am) GETSTRUCT(tp);
+	csthandler = cstform->csthandler;
+
+	/* Complain if column store has been set to NO HANDLER. */
+	if (!OidIsValid(csthandler))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("column store \"%s\" has no handler",
+						NameStr(cstform->cstname))));
+
+	ReleaseSysCache(tp);
+
+	return csthandler;
+}
+
+/*
+ * GetColumnStoreRoutineByRelId - look up the handler of the column store, and
+ * retrieve its ColumnStoreRoutine struct.
+ */
+ColumnStoreRoutine *
+GetColumnStoreRoutineByRelId(Oid relid)
+{
+	Oid	csthandler = GetColumnStoreHandlerByRelId(relid);
+
+	return GetColumnStoreRoutine(csthandler);
+}
+
+/*
+ * GetColumnStoreRoutineForRelation - look up the handler of the given column
+ * store, and retrieve its ColumnStoreRoutine struct.
+ *
+ * This function is preferred over GetColumnStoreRoutineByRelId because it
+ * caches the data in the relcache entry, saving a number of catalog lookups.
+ *
+ * If makecopy is true then the returned data is freshly palloc'd in the
+ * caller's memory context.  Otherwise, it's a pointer to the relcache data,
+ * which will be lost in any relcache reset --- so don't rely on it long.
+ */
+ColumnStoreRoutine *
+GetColumnStoreRoutineForRelation(Relation relation, bool makecopy)
+{
+	ColumnStoreRoutine *cstroutine;
+	ColumnStoreRoutine *ccstroutine;
+
+	Assert(relation->rd_rel->relkind == RELKIND_COLUMN_STORE);
+	Assert(relation->rd_rel->relam != 0);
+
+	if (relation->rd_colstoreroutine == NULL)
+	{
+		/* Get the info by consulting the catalogs */
+		cstroutine = GetColumnStoreRoutineByRelId(RelationGetRelid(relation));
+
+		/* Save the data for later reuse in CacheMemoryContext */
+		ccstroutine
+			= (ColumnStoreRoutine *) MemoryContextAlloc(CacheMemoryContext,
+													sizeof(ColumnStoreRoutine));
+		memcpy(ccstroutine, cstroutine, sizeof(ColumnStoreRoutine));
+		relation->rd_colstoreroutine = ccstroutine;
+
+		/* Give back the locally palloc'd copy regardless of makecopy */
+		return cstroutine;
+	}
+
+	/* We have valid cached data --- does the caller want a copy? */
+	if (makecopy)
+	{
+		ccstroutine = (ColumnStoreRoutine *) palloc(sizeof(ColumnStoreRoutine));
+		memcpy(ccstroutine, relation->rd_colstoreroutine, sizeof(ColumnStoreRoutine));
+		return ccstroutine;
+	}
+
+	/* Only a short-lived reference is needed, so just hand back cached copy */
+	return relation->rd_colstoreroutine;
 }

@@ -181,6 +181,9 @@ typedef struct RelationData
 	/* use "struct" here to avoid needing to include htup.h: */
 	struct HeapTupleData *rd_cstoretuple;	/* all of pg_cstore tuple */
 
+	/* use "struct" here to avoid needing to include colstoreapi.h: */
+	struct ColumnStoreRoutine *rd_colstoreroutine;	/* cached function pointers, or NULL */
+
 	/*
 	 * Hack for CLUSTER, rewriting ALTER TABLE, etc: when writing a new
 	 * version of a table, we need to make any toast pointers inserted into it

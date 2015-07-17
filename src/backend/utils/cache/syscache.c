@@ -353,7 +353,18 @@ static const struct cachedesc cacheinfo[] = {
 		CStoreAmNameIndexId,
 		1,
 		{
-			Anum_pg_cstore_am_cstname,
+			Anum_pg_cstore_am_cstamname,
+			0,
+			0,
+			0
+		},
+		8
+	},
+	{CStoreAmRelationId,		/* CSTOREAMOID */
+		CStoreAmOidIndexId,
+		1,
+		{
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0

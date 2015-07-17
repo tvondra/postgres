@@ -132,7 +132,7 @@ CreateColumnStoreAM(CreateColumnStoreAMStmt *stmt)
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
 
-	values[Anum_pg_cstore_am_cstname - 1] =
+	values[Anum_pg_cstore_am_cstamname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(stmt->cstamname));
 
 	/* Lookup handler and validator functions, if given */
@@ -141,7 +141,7 @@ CreateColumnStoreAM(CreateColumnStoreAMStmt *stmt)
 	if (! handler_given)
 		elog(ERROR, "column store access method requires METHOD option");
 
-	values[Anum_pg_cstore_am_csthandler - 1] = ObjectIdGetDatum(csthandler);
+	values[Anum_pg_cstore_am_cstamhandler - 1] = ObjectIdGetDatum(csthandler);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 

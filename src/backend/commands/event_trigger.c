@@ -76,6 +76,7 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"CAST", true},
 	{"CONSTRAINT", true},
 	{"COLLATION", true},
+	{"COLUMN STORE ACCESS METHOD", true},
 	{"CONVERSION", true},
 	{"DATABASE", false},
 	{"DOMAIN", true},

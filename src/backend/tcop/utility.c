@@ -2542,6 +2542,10 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		case T_CreateColumnStoreAMStmt:
+			tag = "CREATE COLUMN STORE ACCESS METHOD";
+			break;
+
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));

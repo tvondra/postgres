@@ -1,0 +1,187 @@
+Column Store API
+================
+
+The goal of the column store implementations is to allow vertical partitioning
+of tables, with the benefits of
+
+* Increasing storage capacity thanks to better compression ratios, which is
+  possible because the vertical partitioning makes the data more homogenous.
+  This is true both for explicit compression (implemented in the column store)
+  or implicit (implemented at the filesystem level, thus transparent to the
+  database).
+
+* Lower I/O usage, thanks to only reading the 'vertical partitions' necessary
+  for the particular query, and also thanks to compression.
+
+* Improved CPU efficiency thanks to specialized encoding schemes.
+
+* Storage formats optimized for various kind of specialized devices (GPU, FPGA).
+
+The aim of the CS API is not to implement a column store with all those benefits
+(because some of those may be actually conflicting), but providing an API that
+makes it easier to implement a custom columnar storage.
+
+This endorses the extensibility principle, which is one of the core ideas in
+PostgreSQL project.
+
+We do envision the API to be eventually used both internally (for built-in
+column store implementations), and from extensions (with all the limitations
+inherent to code delivered as an extension).
+
+
+CREATE TABLE syntax
+-------------------
+
+A simple CREATE TABLE statement with column store(s) might look like this:
+
+    CREATE TABLE lineitem (
+        l_orderkey BIGINT,
+        l_partkey INTEGER,
+        l_suppkey INTEGER,
+        l_linenumber INTEGER,
+        l_quantity REAL,
+        l_extendedprice REAL,
+        l_discount REAL,
+        l_tax REAL,
+        l_returnflag CHAR(1),
+        l_linestatus CHAR(1),
+        l_shipdate DATE,
+        l_commitdate DATE,
+        l_receiptdate DATE,
+        l_shipinstruct CHAR(25) COLUMN STORE shipinstr USING cstam1 WITH (...),
+        l_shipmode CHAR(10)     COLUMN STORE shipmode  USING cstam2 WITH (...),
+        l_comment VARCHAR(44)   COLUMN STORE comment   USING cstam2 WITH (...),
+
+        COLUMN STORE prices
+               USING cstam1 (l_quantity, l_extendedprice, l_discount, l_tax),
+
+        COLUMN STORE dates
+               USING cstam1 (l_shipdate, l_commitdate, l_receiptdate)
+                WITH (compression lzo)
+
+);
+
+If you're familiar with TPC-H benchmark, this table should be familiar to you,
+this is the largest table in that data set. But take this example only as an
+illustration of the syntax, not as a recommendation of how to define the column
+stores in practice.
+
+The example defines a number of column stores - some at column level, some at
+table level. The column stores defined at a column level only contain a single
+column, the stores defined at table level may contain multiple columns. This is
+quite similar to CHECK constraints, for example.
+
+The COLUMN STORE syntax for stores defined at the column level is this:
+
+   COLUMN STORE <name> USING <am> WITH (<options>)
+
+and for stores defined at table level:
+
+   COLUMN STORE <name> USING <am> (<columns>) WITH (<options>)
+
+The <name> is a column store name, unique within a table - once again, this is
+similar to constraints (constraint names are unique in a table).
+
+The <am> stands for 'access method' and references a particular implementation
+of a column store API, listed in pg_cstore_am.
+
+Of course, <columns> is a list of columns in the column store.
+
+This syntax is consistent with indexes, which use the same syntax
+
+    <name> USING <am> (<columns>)
+
+Currently we only allow each column to be assigned to a single column store,
+although this may be changed in the future (allowing overlapping column stores).
+The columns that are not assigned to a column store remain in the heap.
+
+
+Inheritance
+-----------
+TODO
+
+
+Columns Store Handler
+---------------------
+
+To implement a column store, you need a implement an API defined in
+
+    colstore/colstoreapi.h
+
+The design mostly follows the technical ideas from foreign data wrapper API,
+so the API has a form of handler function, returning a pointer to a struct:
+
+    typedef struct ColumnStoreRoutine
+    {
+        NodeTag type;
+
+        /* insert a single row into the column store */
+        ExecColumnStoreInsert_function ExecColumnStoreInsert;
+
+        /* insert a batch of rows into the column store */
+        ExecColumnStoreBatchInsert_function ExecColumnStoreBatchInsert;
+
+        /* fetch values for a single row */
+        ExecColumnStoreFetch_function ExecColumnStoreFetch;
+
+        /* fetch a batch of values for a single row */
+        ExecColumnStoreBatchFetch_function ExecColumnStoreBatchFetch;
+
+        /* discard a batch of deleted rows from the column store */
+        ExecColumnStoreDiscard_function ExecColumnStoreDiscard;
+
+        /* prune the store - keep only the valid rows */
+        ExecColumnStorePrune_function ExecColumnStorePrune;
+
+    } ColumnStoreRoutine;
+
+that implement various tasks for querying, modification and maintenance.
+
+You also need to define a 'handler' which is a function that creates and
+populates the routine structure with pointers to your implementation. This
+function is very simple - takes no arguments and returns a pointer to the
+structure as cstore_handler.
+
+So if the function is called my_colstore_handler(), you may do this:
+
+    CREATE FUNCTION my_colstore_handler()
+    RETURNS cstore_handler
+    AS 'MODULE_PATHNAME'
+    LANGUAGE C STRICT;
+
+to define the handler.
+
+
+Column Store Access Methods
+---------------------------
+
+The column store access method binds a name to a handler (again, this is similar
+to how foreign data wrappers binds name and FDW handler). To define a new access
+method, use
+
+    CREATE COLUMN STORE ACCESS METHOD <name> METHOD <handler>
+
+so using the previously defined handler, you may do
+
+    CREATE COLUMN STORE ACCESS METHOD my_colstore METHOD my_colstore_handler
+
+and then use 'my_colstore' in CREATE TABLE statements.
+
+
+Catalogs
+--------
+- pg_cstore_am - access method (name + handler)
+- pg_cstore - column stores defined for a table (similar to pg_index)
+- pg_class - column stores defined for a table (relations)
+- pg_attribute - attributes for a column store
+
+
+Plan nodes
+----------
+TODO - explain what plan nodes are supported, etc.
+
+
+Limitations
+-----------
+- all column stores have to be defined at CREATE TABLE time
+- each column may belong to heap or to a single column store

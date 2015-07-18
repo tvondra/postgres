@@ -588,7 +588,7 @@ BuildColumnStoreInfo(Relation cstore)
  */
 void
 FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
-			   TupleTableSlot *slot,
+			   HeapTuple tuple,
 			   Datum *values,
 			   bool *isnull)
 {

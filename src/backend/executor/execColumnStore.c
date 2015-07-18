@@ -141,12 +141,9 @@ ExecCloseColumnStores(ResultRelInfo *resultRelInfo)
  *		Should we change the API to make it safer?
  * ----------------------------------------------------------------
  */
-List *
-ExecInsertColStoreTuples(TupleTableSlot *slot,
-					  ItemPointer tupleid,
-					  EState *estate)
+void
+ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 {
-	List	   *result = NIL;
 	ResultRelInfo *resultRelInfo;
 	int			i;
 	int			numColumnStores;
@@ -155,6 +152,7 @@ ExecInsertColStoreTuples(TupleTableSlot *slot,
 	ColumnStoreInfo **columnStoreInfoArray;
 	Datum		values[INDEX_MAX_KEYS];	/* FIXME INDEX_MAX_KEYS=32 seems a bit low */
 	bool		isnull[INDEX_MAX_KEYS];
+	ItemPointer	tupleid = &(tuple->t_self);
 
 	/*
 	 * Get information from the result relation info structure.
@@ -189,7 +187,7 @@ ExecInsertColStoreTuples(TupleTableSlot *slot,
 		 * the appropriate values for the column(s) of the column store.
 		 */
 		FormColumnStoreDatum(cstoreInfo,
-					   slot,
+					   tuple,
 					   values,
 					   isnull);
 

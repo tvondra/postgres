@@ -377,7 +377,6 @@ extern bool check_exclusion_constraint(Relation heap, Relation index,
  */
 extern void ExecOpenColumnStores(ResultRelInfo *resultRelInfo);
 extern void ExecCloseColumnStores(ResultRelInfo *resultRelInfo);
-extern List *ExecInsertColStoreTuples(TupleTableSlot *slot,
-									  ItemPointer tupleid, EState *estate);
+extern void ExecInsertColStoreTuples(HeapTuple tuple, EState *estate);
 
 #endif   /* EXECUTOR_H  */

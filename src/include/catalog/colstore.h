@@ -39,8 +39,9 @@ extern Oid get_relation_cstore_oid(Oid relid, const char *cstore_name,
 extern void RemoveColstoreById(Oid cstoreOid);
 
 ColumnStoreInfo * BuildColumnStoreInfo(Relation cstore);
+
 void FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
-			   TupleTableSlot *slot,
+			   HeapTuple tuple,
 			   Datum *values, bool *isnull);
 
 HeapTuple FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple,

@@ -319,8 +319,7 @@ ExecInsert(TupleTableSlot *slot,
 		 * insert column store entries for tuple
 		 */
 		if (resultRelInfo->ri_NumColumnStores > 0)
-			recheckIndexes = ExecInsertColStoreTuples(slot, &(tuple->t_self),
-												   estate);
+			ExecInsertColStoreTuples(tuple, estate);
 	}
 
 	if (canSetTag)
@@ -877,8 +876,7 @@ lreplace:;
 												   estate);
 
 		if (resultRelInfo->ri_NumColumnStores > 0 && !HeapTupleIsHeapOnly(tuple))
-			recheckIndexes = ExecInsertColStoreTuples(slot, &(tuple->t_self),
-												   estate);
+			ExecInsertColStoreTuples(tuple, estate);
 	}
 
 	if (canSetTag)

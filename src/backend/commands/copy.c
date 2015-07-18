@@ -25,6 +25,7 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/colstore.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
@@ -2436,6 +2437,12 @@ CopyFrom(CopyState cstate)
 			{
 				List	   *recheckIndexes = NIL;
 
+				/*
+				 * FIXME This needs to handle the column stores (it's not
+				 *       handled by the batching code because of the before
+				 *       row insert triggers or something).
+				 */
+
 				/* OK, store the tuple and create index entries for it */
 				heap_insert(cstate->rel, tuple, mycid, hi_options, bistate);
 
@@ -2533,15 +2540,62 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 	/*
 	 * heap_multi_insert leaks memory, so switch to short-lived memory context
 	 * before calling it.
+	 *
+	 * FIXME If there are column stores, we need to filter only the heap part of
+	 *       the tuples, similarly to ExecInsert/ExecUpdate.
 	 */
 	oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	heap_multi_insert(cstate->rel,
-					  bufferedTuples,
-					  nBufferedTuples,
-					  mycid,
-					  hi_options,
-					  bistate);
+
+	if (resultRelInfo->ri_NumColumnStores > 0)
+	{
+		TupleDesc heapdesc, fulldesc;
+		HeapTuple *filtered = (HeapTuple*)palloc0(sizeof(HeapTuple) * nBufferedTuples);
+
+		ResultRelInfo  *resultRelInfo = estate->es_result_relation_info;
+		Relation		resultRelationDesc = resultRelInfo->ri_RelationDesc;
+
+		/* build the filtered tuples with only the heap part */
+		for (i = 0; i < nBufferedTuples; i++)
+			filtered[i] = FilterHeapTuple(resultRelInfo,
+										  bufferedTuples[i], &heapdesc);
+
+		fulldesc = resultRelationDesc->rd_att;
+		resultRelationDesc->rd_att = heapdesc;
+
+		heap_multi_insert(cstate->rel,
+						  filtered,
+						  nBufferedTuples,
+						  mycid,
+						  hi_options,
+						  bistate);
+
+		resultRelationDesc->rd_att = fulldesc;
+
+		/* now we need to transfer the item pointers to the original tuples */
+		for (i = 0; i < nBufferedTuples; i++)
+			ItemPointerCopy(&(filtered[i]->t_self), &(bufferedTuples[i]->t_self));
+
+	}
+	else /* no column stores, so do the insert with original tuples */
+		heap_multi_insert(cstate->rel,
+						  bufferedTuples,
+						  nBufferedTuples,
+						  mycid,
+						  hi_options,
+						  bistate);
+
 	MemoryContextSwitchTo(oldcontext);
+
+	/*
+	 * If there are any column stores on the table, insert the data into them
+	 * now. This needs to happen before indexes, because we're running AFTER
+	 * ROW INSERT triggers in there, and those may do lookups from this table.
+	 *
+	 * If some of the indexes rechecks fail, that's not a big problem. We'll
+	 * eventually remove the values from the columns stores during VACUUM.
+	 */
+	if (resultRelInfo->ri_NumColumnStores > 0)
+		ExecBatchInsertColStoreTuples(nBufferedTuples, bufferedTuples, estate);
 
 	/*
 	 * If there are any indexes, update them for all the inserted tuples, and

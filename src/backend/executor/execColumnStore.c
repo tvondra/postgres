@@ -201,6 +201,124 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 			tupleid);		/* tid of heap tuple */
 
 	}
+}
 
-	return result;
+void
+ExecBatchInsertColStoreTuples(int ntuples, HeapTuple *tuples, EState *estate)
+{
+	ResultRelInfo *resultRelInfo;
+	int			i, j, natts;
+	int			numColumnStores;
+	RelationPtr relationDescs;
+	Relation	heapRelation;
+	ColumnStoreInfo **columnStoreInfoArray;
+	Datum		**values;
+	bool		**isnull;
+	ItemPointer	*tupleids;
+	TupleDesc	tupdesc;
+
+	/*
+	 * Get information from the result relation info structure.
+	 */
+	resultRelInfo = estate->es_result_relation_info;
+	numColumnStores = resultRelInfo->ri_NumColumnStores;
+	relationDescs = resultRelInfo->ri_ColumnStoreRelationDescs;
+	columnStoreInfoArray = resultRelInfo->ri_ColumnStoreRelationInfo;
+	heapRelation = resultRelInfo->ri_RelationDesc;
+
+	tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
+	natts = tupdesc->natts;
+
+	/* we'll build the Datum / isnull arrays once for all the column stores */
+	values = (Datum**)palloc0(sizeof(Datum*) * natts);
+	isnull = ( bool**)palloc0(sizeof(bool*) * natts);
+
+	/* allocate arrays only for attributes that are referenced in column stores */
+	for (i = 0; i < numColumnStores; i++)
+	{
+		ColumnStoreInfo *cstinfo = resultRelInfo->ri_ColumnStoreRelationInfo[i];
+
+		for (j = 0; j < cstinfo->csi_NumColumnStoreAttrs; j++)
+		{
+			AttrNumber attnum = cstinfo->csi_KeyAttrNumbers[j];
+			if (values[attnum-1] == NULL)
+			{
+				values[attnum-1] = (Datum*)palloc0(sizeof(Datum) * ntuples);
+				isnull[attnum-1] = ( bool*)palloc0(sizeof(bool)  * ntuples);
+			}
+		}
+	}
+
+	/* we also need an array for tuple IDs */
+	tupleids = (ItemPointer*)palloc0(sizeof(ItemPointer) * ntuples);
+
+	/* populate the arrays */
+	for (i = 0; i < ntuples; i++)
+	{
+		tupleids[i] = &(tuples[i]->t_self);
+
+		for (j = 0; j < natts; j++)
+		{
+			if (values[j] != NULL)
+				values[j][i] = heap_getattr(tuples[i], j, tupdesc, &isnull[j][i]);
+		}
+	}
+
+	/*
+	 * for each column store, form and insert the tuple
+	 */
+	for (i = 0; i < numColumnStores; i++)
+	{
+		Relation	cstoreRelation = relationDescs[i];
+		ColumnStoreInfo  *cstoreInfo;
+
+		/* local subset of values */
+		Datum	  **lvalues;
+		bool	  **lisnull;
+
+		if (cstoreRelation == NULL)	/* XXX seems a bit strange ... */
+			continue;
+
+		cstoreInfo = columnStoreInfoArray[i];
+
+		if (cstoreInfo->csi_ColumnStoreRoutine == NULL)
+			elog(ERROR, "column store routine not available");
+
+		if (cstoreInfo->csi_ColumnStoreRoutine->ExecColumnStoreBatchInsert == NULL)
+			elog(ERROR, "ExecColumnStoreBatchInsert routine not available");
+
+		lvalues = (Datum**)palloc0(sizeof(Datum*) * cstoreInfo->csi_NumColumnStoreAttrs);
+		lisnull = ( bool**)palloc0(sizeof(bool*)  * cstoreInfo->csi_NumColumnStoreAttrs);
+
+		for (j = 0; j < cstoreInfo->csi_NumColumnStoreAttrs; j++)
+		{
+			AttrNumber attnum = cstoreInfo->csi_KeyAttrNumbers[j];
+			lvalues[j] = values[attnum-1];
+			lisnull[j] = isnull[attnum-1];
+		}
+
+		cstoreInfo->csi_ColumnStoreRoutine->ExecColumnStoreBatchInsert(
+			heapRelation,	/* heap relation */
+			cstoreRelation, /* column store relation */
+			cstoreInfo,		/* column store info */
+			ntuples,		/* number of rows in the batch */
+			cstoreInfo->csi_NumColumnStoreAttrs,
+			lvalues,		/* arrays of column store Datums */
+			lisnull,		/* arrays of null flags */
+			tupleids);		/* array of tid of heap tuples */
+
+		pfree(lvalues);
+		pfree(lisnull);
+
+	}
+
+	for (j = 0; j < natts; j++)
+	{
+		if (values[j] != NULL)
+		{
+			pfree(values[j]);
+			pfree(isnull[j]);
+		}
+	}
+
 }

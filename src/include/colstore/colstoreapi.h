@@ -15,26 +15,28 @@
 #include "nodes/execnodes.h"
 #include "nodes/relation.h"
 
-typedef void *(*ExecColumnStoreInsert_function) (Relation rel,
+typedef void (*ExecColumnStoreInsert_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info,
-				int natts, Datum *values, bool *nulls);
+				int natts, Datum *values, bool *nulls,
+				ItemPointer tupleid);
 
-typedef void *(*ExecColumnStoreBatchInsert_function) (Relation rel,
+typedef void (*ExecColumnStoreBatchInsert_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info,
-				int nrows, int natts, Datum **values, bool **nulls);
+				int nrows, int natts, Datum **values, bool **nulls,
+				ItemPointer *tupleids);
 
-typedef void *(*ExecColumnStoreFetch_function) (Relation rel,
+typedef void (*ExecColumnStoreFetch_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info, ItemPointer tid);
 
-typedef void *(*ExecColumnStoreBatchFetch_function) (Relation rel,
+typedef void (*ExecColumnStoreBatchFetch_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info,
 				int ntids, ItemPointer *tids);
 
-typedef void *(*ExecColumnStoreDiscard_function) (Relation rel,
+typedef void (*ExecColumnStoreDiscard_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info,
 				int ntids, ItemPointer *tids);
 
-typedef void *(*ExecColumnStorePrune_function) (Relation rel,
+typedef void (*ExecColumnStorePrune_function) (Relation rel,
 				Relation colstorerel, ColumnStoreInfo *info,
 				int ntids, ItemPointer *tids);
 

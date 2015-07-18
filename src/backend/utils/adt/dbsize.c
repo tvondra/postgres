@@ -456,7 +456,7 @@ calculate_column_stores_size(Relation rel)
 	/*
 	 * Aggregate all indexes on the given relation
 	 */
-	if (rel->rd_rel->relhasindex)
+	if (rel->rd_rel->relhascstore)
 	{
 		List	   *cstore_oids = RelationGetColStoreList(rel);
 		ListCell   *cell;

@@ -17,6 +17,7 @@
 #include "access/xlogdefs.h"
 #include "storage/block.h"
 #include "storage/item.h"
+#include "storage/itemptr.h"
 #include "storage/off.h"
 
 /*
@@ -60,10 +61,17 @@
  *
  * The 'column data' combine all the data for a column, i.e. the actual
  * values and NULL bitmap. The data may be partially compressed, etc.
+ *
+ * Some of the page fields may seem too big (e.g. 32 bits for nitems seems
+ * a bit over the top, but (a) 16 bits is just on the border for 64kB pages
+ * (and larger pages may get supported in the future), (b) we do expect
+ * efficient storage of some data types (e.g. bool type in 1 bit). That makes
+ * the 16bit data type inadequate. We could probably live with 16bit fields
+ * for checksum or flags, but in the bigger scheme of things the difference
+ * is quite negligible.
  */
 
 typedef Pointer ColumnarPage;
-
 
 typedef struct ColumnInfoData
 {
@@ -87,6 +95,8 @@ typedef struct ColumnarPageHeaderData
 	uint32		pd_nitems;		/* number of items on the page */
 	uint16		pd_ncolumns;	/* number of columns on the page */
 	uint16		pd_version;		/* version of the page */
+	ItemPointerData	pd_min_tid;	/* mininum TID placed on page */
+	ItemPointerData pd_max_tid;	/* maximum TID placed on page */
 	ColumnInfoData	pd_columns[FLEXIBLE_ARRAY_MEMBER]; /* column info array */
 } ColumnarPageHeaderData;
 

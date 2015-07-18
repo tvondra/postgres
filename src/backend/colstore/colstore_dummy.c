@@ -1,6 +1,7 @@
 
 #include "postgres.h"
 
+#include "colstore_dummy.h"
 #include "colstore/colstoreapi.h"
 
 PG_FUNCTION_INFO_V1(cstore_dummy_handler);

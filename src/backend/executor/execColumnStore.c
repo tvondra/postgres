@@ -153,6 +153,7 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 	Datum		values[INDEX_MAX_KEYS];	/* FIXME INDEX_MAX_KEYS=32 seems a bit low */
 	bool		isnull[INDEX_MAX_KEYS];
 	ItemPointer	tupleid = &(tuple->t_self);
+	TupleDesc	tupdesc;
 
 	/*
 	 * Get information from the result relation info structure.
@@ -162,6 +163,7 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 	relationDescs = resultRelInfo->ri_ColumnStoreRelationDescs;
 	columnStoreInfoArray = resultRelInfo->ri_ColumnStoreRelationInfo;
 	heapRelation = resultRelInfo->ri_RelationDesc;
+	tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
 
 	/*
 	 * for each column store, form and insert the tuple
@@ -186,10 +188,7 @@ ExecInsertColStoreTuples(HeapTuple tuple, EState *estate)
 		 * FormColumnStoreDatum fills in its values and isnull parameters with
 		 * the appropriate values for the column(s) of the column store.
 		 */
-		FormColumnStoreDatum(cstoreInfo,
-					   tuple,
-					   values,
-					   isnull);
+		FormColumnStoreDatum(cstoreInfo, tuple, tupdesc, values, isnull);
 
 		cstoreInfo->csi_ColumnStoreRoutine->ExecColumnStoreInsert(
 			heapRelation,	/* heap relation */

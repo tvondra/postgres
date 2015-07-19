@@ -41,7 +41,7 @@ extern void RemoveColstoreById(Oid cstoreOid);
 ColumnStoreInfo * BuildColumnStoreInfo(Relation cstore);
 
 void FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
-			   HeapTuple tuple,
+			   HeapTuple tuple, TupleDesc tupdesc,
 			   Datum *values, bool *isnull);
 
 HeapTuple FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple,

@@ -19,6 +19,7 @@
 #include "storage/item.h"
 #include "storage/itemptr.h"
 #include "storage/off.h"
+#include "utils/rel.h"
 
 /*
  * A columnar disk page is an abstraction layered on top of a postgres

@@ -589,10 +589,16 @@ BuildColumnStoreInfo(Relation cstore)
 void
 FormColumnStoreDatum(ColumnStoreInfo *columnStoreInfo,
 			   HeapTuple tuple,
+			   TupleDesc tupdesc,
 			   Datum *values,
 			   bool *isnull)
 {
-	elog(WARNING, "FormColumnStoreDatum: not yet implemented");
+	int i;
+	for (i = 0; i < columnStoreInfo->csi_NumColumnStoreAttrs; i++)
+		values[i] = heap_getattr(tuple,
+								 columnStoreInfo->csi_KeyAttrNumbers[i],
+								 tupdesc,
+								 &isnull[i]);
 }
 
 /*

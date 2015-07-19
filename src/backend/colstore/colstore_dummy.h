@@ -66,9 +66,10 @@
  * a bit over the top, but (a) 16 bits is just on the border for 64kB pages
  * (and larger pages may get supported in the future), (b) we do expect
  * efficient storage of some data types (e.g. bool type in 1 bit). That makes
- * the 16bit data type inadequate. We could probably live with 16bit fields
- * for checksum or flags, but in the bigger scheme of things the difference
- * is quite negligible.
+ * the 16bit data type inadequate.
+ *
+ * We must however keep the beginning of the header exactly the same as for
+ * regular pages, so that the checksum / validation stuff works.
  */
 
 typedef Pointer ColumnarPage;
@@ -78,7 +79,7 @@ typedef struct ColumnInfoData
 	AttrNumber		attnum;
 	int				attlen;
 	Oid				atttypid;
-	bool			attnulls;
+	bool			attnotnull;
 	LocationIndex	data_start;
 	LocationIndex	data_bytes;
 	LocationIndex	nulls_start;
@@ -90,11 +91,18 @@ typedef struct ColumnarPageHeaderData
 	/* XXX LSN is member of *any* block, not only page-organized ones */
 	PageXLogRecPtr	pd_lsn;		/* LSN: next byte after last byte of xlog
 								 * record for last change to this page */
-	uint32		pd_checksum;	/* checksum */
-	uint32		pd_flags;		/* flag bits, see below */
-	uint32		pd_nitems;		/* number of items on the page */
+	uint16		pd_checksum;	/* checksum */
+	uint16		pd_flags;		/* flag bits, see below */
+	LocationIndex pd_lower;		/* offset to start of free space */
+	LocationIndex pd_upper;		/* offset to end of free space */
+	LocationIndex pd_special;	/* offset to start of special space */
+	uint16		pd_pagesize_version;
+
+	/* our fields start here */
+	LocationIndex pd_tupleids;	/* offset of tuple IDs */
 	uint16		pd_ncolumns;	/* number of columns on the page */
-	uint16		pd_version;		/* version of the page */
+	uint32		pd_nitems;		/* number of items on the page */
+	uint32		pd_maxitems;	/* max number of items on the page */
 	ItemPointerData	pd_min_tid;	/* mininum TID placed on page */
 	ItemPointerData pd_max_tid;	/* maximum TID placed on page */
 	ColumnInfoData	pd_columns[FLEXIBLE_ARRAY_MEMBER]; /* column info array */

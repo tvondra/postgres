@@ -113,6 +113,49 @@ typedef ColumnarPageHeaderData *ColumnarPageHeader;
 
 #define BufferGetColumnarPage(buffer) ((ColumnarPage)BufferGetBlock(buffer))
 
+#define PageGetNumOfItems(page) \
+	(((ColumnarPageHeader)page)->pd_nitems)
+
+#define PageGetColumnInfo(page, column) \
+	(((ColumnarPageHeader)page)->pd_columns[column])
+
+#define PageGetColumnAttlen(page, column) \
+	(PageGetColumnInfo(page,column).attlen)
+
+#define PageGetColumnDataOffset(page, column) \
+	(PageGetColumnInfo(page,column).data_start)
+
+#define PageGetColumnDataBytes(page, column) \
+	(PageGetColumnInfo(page,column).data_bytes)
+
+#define PageGetColumnDataAddBytes(page, column, len) \
+	(PageGetColumnInfo(page,column).data_bytes += len)
+
+#define PageGetColumnDataOffsetNext(page, column) \
+	(PageGetColumnDataOffset(page, column) + \
+	 PageGetColumnDataBytes(page, column))
+
+#define PageGetColumnNullsOffset(page, column) \
+	(((ColumnarPageHeader)page)->pd_columns[column].null_start)
+
+#define PageGetColumnData(page,column) \
+	((char*)page + PageGetColumnDataOffset(page, column))
+
+#define PageGetColumnDataNext(page,column) \
+	((char*)page + PageGetColumnDataOffsetNext(page, column))
+
+#define PageGetColumnNulls(page,column) \
+	((char*)page + PageGetColumnNullsOffset(page, column))
+
+#define PageGetColumnNullsSetBytes(page,column, len) \
+	(PageGetColumnInfo(page,column).null_bytes = len)
+
+#define PageGetTupleIds(page) \
+	((char*)page + (((ColumnarPageHeader)page)->pd_tupleids))
+
+#define PageGetNextTupleId(page) \
+	((ItemPointer)PageGetTupleIds(page) + PageGetNumOfItems(page))
+
 extern void ColumnarPageInit(ColumnarPage page, Size pageSize, Relation rel);
 
 #endif   /* COLSTOREDUMMY_H */

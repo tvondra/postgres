@@ -49,7 +49,6 @@ cstore_dummy_insert(Relation rel,
 	Buffer 				buffer = get_colstore_buffer(rel, colstorerel);
 	ColumnarPage 		page = BufferGetColumnarPage(buffer);
 	ColumnarPageHeader	header = (ColumnarPageHeader)page;
-	char			   *ptr = (char*)page;
 
 	/* how many free item slots are on the current page? */
 	int				nitems = ColumnarPageGetFreeItems(page);
@@ -58,23 +57,22 @@ cstore_dummy_insert(Relation rel,
 
 	for (i = 0; i < header->pd_ncolumns; i++)
 	{
-		ColumnInfoData column = header->pd_columns[i];
-
 		int byteIdx = (header->pd_nitems) / 8;
 		int bitIdx  = (header->pd_nitems) % 8;
 
 		/* copy the data in place */
-		memcpy(ptr + column.data_start + column.data_bytes,
-			   &values[i], column.attlen);
-		column.data_bytes += column.attlen;
+		memcpy(PageGetColumnDataNext(page, i),
+			   &values[i], PageGetColumnAttlen(page, i));
+
+		PageGetColumnDataAddBytes(page, i, PageGetColumnAttlen(page,i));
 
 		/* set the NULL bitmap */
-		*(ptr + column.null_start + byteIdx) &= (0x01 << bitIdx);
-		column.null_bytes = byteIdx;
+		*(PageGetColumnNulls(page, i) + byteIdx) &= (0x01 << bitIdx);
+		PageGetColumnNullsSetBytes(page, i, (byteIdx+1));
 	}
 
 	/* now set tuple ID */
-	memcpy((ptr + header->pd_tupleids), &tupleid, sizeof(ItemPointerData));
+	memcpy(PageGetNextTupleId(page), tupleid, sizeof(ItemPointerData));
 
 	/* FIXME update min/max TID */
 
@@ -104,8 +102,6 @@ cstore_dummy_batch_insert(Relation rel,
 		ColumnarPage 	page = BufferGetColumnarPage(buffer);
 		ColumnarPageHeader header = (ColumnarPageHeader)page;
 
-		char		   *ptr = (char*)page;
-
 		/* how many free item slots are on the current page? */
 		int				nitems = ColumnarPageGetFreeItems(page);
 
@@ -115,28 +111,26 @@ cstore_dummy_batch_insert(Relation rel,
 
 		for (i = 0; i < header->pd_ncolumns; i++)
 		{
-			ColumnInfoData column = header->pd_columns[i];
-
 			for (j = 0; j < nitems; j++)
 			{
 				int byteIdx = (header->pd_nitems + j) / 8;
 				int bitIdx  = (header->pd_nitems + j) % 8;
 
 				/* copy the data in place */
-				memcpy(ptr + column.data_start + column.data_bytes,
-					   &values[i][first+j], column.attlen);
-				column.data_bytes += column.attlen;
+				memcpy(PageGetColumnDataNext(page, i),
+					   &values[i][first+j], PageGetColumnAttlen(page, i));
+
+				PageGetColumnDataAddBytes(page, i, PageGetColumnAttlen(page,i));
 
 				/* set the NULL bitmap */
-				*(ptr + column.null_start + byteIdx) &= (0x01 << bitIdx);
-				column.null_bytes = byteIdx;
+				*(PageGetColumnNulls(page, i) + byteIdx) &= (0x01 << bitIdx);
+				PageGetColumnNullsSetBytes(page, i, (byteIdx+1));
 			}
 		}
 
 		/* now set tuple IDs */
 		for (i = 0; i < nitems; i++)
-			memcpy((ptr + header->pd_tupleids
-						+ (header->pd_nitems + i) * sizeof(ItemPointerData)),
+			memcpy(PageGetNextTupleId(page) + i * sizeof(ItemPointerData),
 				   &tupleids[i], sizeof(ItemPointerData));
 
 		/* FIXME update min/max TID */

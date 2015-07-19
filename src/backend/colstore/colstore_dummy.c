@@ -69,8 +69,8 @@ cstore_dummy_insert(Relation rel,
 		column.data_bytes += column.attlen;
 
 		/* set the NULL bitmap */
-		*(ptr + column.nulls_start + byteIdx) &= (0x01 << bitIdx);
-		column.nulls_bytes = byteIdx;
+		*(ptr + column.null_start + byteIdx) &= (0x01 << bitIdx);
+		column.null_bytes = byteIdx;
 	}
 
 	/* now set tuple ID */
@@ -128,8 +128,8 @@ cstore_dummy_batch_insert(Relation rel,
 				column.data_bytes += column.attlen;
 
 				/* set the NULL bitmap */
-				*(ptr + column.nulls_start + byteIdx) &= (0x01 << bitIdx);
-				column.nulls_bytes = byteIdx;
+				*(ptr + column.null_start + byteIdx) &= (0x01 << bitIdx);
+				column.null_bytes = byteIdx;
 			}
 		}
 
@@ -230,7 +230,7 @@ ColumnarPageInit(ColumnarPage page, Size pageSize, Relation rel)
 			offset += maxtuples * tupdesc->attrs[i]->attlen;
 
 			offset = MAXALIGN(offset);
-			header->pd_columns[i].nulls_start = offset;
+			header->pd_columns[i].null_start = offset;
 
 			/* NULL bitmap size */
 			offset += (maxtuples + 7) / 8;

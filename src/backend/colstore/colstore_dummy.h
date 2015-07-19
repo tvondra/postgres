@@ -83,8 +83,8 @@ typedef struct ColumnInfoData
 	bool			attnotnull;
 	LocationIndex	data_start;
 	LocationIndex	data_bytes;
-	LocationIndex	nulls_start;
-	LocationIndex	nulls_bytes;
+	LocationIndex	null_start;
+	LocationIndex	null_bytes;
 } ColumnInfoData;
 
 typedef struct ColumnarPageHeaderData

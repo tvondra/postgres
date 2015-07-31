@@ -6746,6 +6746,39 @@ btcostestimate(PG_FUNCTION_ARGS)
 }
 
 Datum
+colcostestimate(PG_FUNCTION_ARGS)
+{
+	IndexPath  *path = (IndexPath *) PG_GETARG_POINTER(1);
+	double		loop_count = PG_GETARG_FLOAT8(2);
+	Cost	   *indexStartupCost = (Cost *) PG_GETARG_POINTER(3);
+	Cost	   *indexTotalCost = (Cost *) PG_GETARG_POINTER(4);
+	IndexOptInfo *index = path->indexinfo;
+	Cost		spc_seq_page_cost;
+	Cost		spc_random_page_cost;
+
+	/* fetch estimated page cost for tablespace containing index */
+	get_tablespace_page_costs(index->reltablespace,
+							  &spc_random_page_cost,
+							  &spc_seq_page_cost);
+
+	/*
+	 * read a single page for startup
+	 */
+	*indexStartupCost = spc_seq_page_cost;
+
+	/*
+	 * read the whole index sequentially
+	 */
+	*indexTotalCost = spc_seq_page_cost * index->pages * loop_count;
+
+	/*
+	 * TODO account for decompression costs etc.
+	 */
+
+	PG_RETURN_VOID();
+}
+
+Datum
 hashcostestimate(PG_FUNCTION_ARGS)
 {
 	PlannerInfo *root = (PlannerInfo *) PG_GETARG_POINTER(0);

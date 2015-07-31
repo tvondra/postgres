@@ -272,4 +272,20 @@ DATA(insert (	3580	pg_lsn_minmax_ops		PGNSP PGUID 4082  3220 t 3220 ));
 DATA(insert (	3580	box_inclusion_ops		PGNSP PGUID 4104   603 t 603 ));
 /* no brin opclass for the geometric types except box */
 
+
+/* columnar opclasses */
+
+DATA(insert (	3412	float4_ops				PGNSP PGUID 4200  700 t 0 ));
+DATA(insert (	3412	float8_ops				PGNSP PGUID 4200  701 t 0 ));
+
+DATA(insert (	3412	int2_ops				PGNSP PGUID 4201   21 t 0 ));
+DATA(insert (	3412	int4_ops				PGNSP PGUID 4201   23 t 0 ));
+DATA(insert ( 	3412	int8_ops				PGNSP PGUID 4201   20 t 0 ));
+
+DATA(insert (	3412	numeric_ops 			PGNSP PGUID 4202 1700 t 0 ));
+
+DATA(insert ( 	3412	date_ops        		PGNSP PGUID 4203 1082 t 0 ));
+DATA(insert ( 	3412	timestamptz_ops 		PGNSP PGUID 4203 1184 t 0 ));
+DATA(insert ( 	3412	timestamp_ops   		PGNSP PGUID 4203 1114 t 0 ));
+
 #endif   /* PG_OPCLASS_H */

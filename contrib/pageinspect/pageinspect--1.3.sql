@@ -99,6 +99,24 @@ AS 'MODULE_PATHNAME', 'bt_page_items'
 LANGUAGE C STRICT;
 
 --
+-- col_page_segments()
+--
+CREATE FUNCTION col_page_segments(IN relname text, IN blkno int4,
+    OUT segid       smallint,
+    OUT seglen      smallint,
+    OUT usedlen     smallint,
+    OUT complen     smallint,
+    OUT rawlen      int,
+    OUT nitems      int,
+    OUT flags       int,
+    OUT compalgo    text,
+    OUT compoff     bool,
+    OUT hasnulls    bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'col_page_segments'
+LANGUAGE C STRICT;
+
+--
 -- brin_page_type()
 --
 CREATE FUNCTION brin_page_type(IN page bytea)

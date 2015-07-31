@@ -1116,4 +1116,164 @@ DATA(insert (	4104	603  603 12 s	  2572	  3580 0 ));
 /* we could, but choose not to, supply entries for strategies 13 and 14 */
 DATA(insert (	4104	603  600  7 s	   433	  3580 0 ));
 
+
+/*
+ *	columnar float_ops
+ */
+
+/* default operators float4 */
+DATA(insert (	4200   700 700 1 s	622 3412 0 ));
+DATA(insert (	4200   700 700 2 s	624 3412 0 ));
+DATA(insert (	4200   700 700 3 s	620 3412 0 ));
+DATA(insert (	4200   700 700 4 s	625 3412 0 ));
+DATA(insert (	4200   700 700 5 s	623 3412 0 ));
+/* crosstype operators float48 */
+DATA(insert (	4200   700 701 1 s	1122 3412 0 ));
+DATA(insert (	4200   700 701 2 s	1124 3412 0 ));
+DATA(insert (	4200   700 701 3 s	1120 3412 0 ));
+DATA(insert (	4200   700 701 4 s	1125 3412 0 ));
+DATA(insert (	4200   700 701 5 s	1123 3412 0 ));
+/* default operators float8 */
+DATA(insert (	4200   701 701 1 s	672 3412 0 ));
+DATA(insert (	4200   701 701 2 s	673 3412 0 ));
+DATA(insert (	4200   701 701 3 s	670 3412 0 ));
+DATA(insert (	4200   701 701 4 s	675 3412 0 ));
+DATA(insert (	4200   701 701 5 s	674 3412 0 ));
+/* crosstype operators float84 */
+DATA(insert (	4200   701 700 1 s	1132 3412 0 ));
+DATA(insert (	4200   701 700 2 s	1134 3412 0 ));
+DATA(insert (	4200   701 700 3 s	1130 3412 0 ));
+DATA(insert (	4200   701 700 4 s	1135 3412 0 ));
+DATA(insert (	4200   701 700 5 s	1133 3412 0 ));
+
+
+/*
+ *	columnar integer_ops
+ */
+
+/* default operators int2 */
+DATA(insert (	4201   21 21 1 s	95	3412 0 ));
+DATA(insert (	4201   21 21 2 s	522 3412 0 ));
+DATA(insert (	4201   21 21 3 s	94	3412 0 ));
+DATA(insert (	4201   21 21 4 s	524 3412 0 ));
+DATA(insert (	4201   21 21 5 s	520 3412 0 ));
+/* crosstype operators int24 */
+DATA(insert (	4201   21 23 1 s	534 3412 0 ));
+DATA(insert (	4201   21 23 2 s	540 3412 0 ));
+DATA(insert (	4201   21 23 3 s	532 3412 0 ));
+DATA(insert (	4201   21 23 4 s	542 3412 0 ));
+DATA(insert (	4201   21 23 5 s	536 3412 0 ));
+/* crosstype operators int28 */
+DATA(insert (	4201   21 20 1 s	1864	3412 0 ));
+DATA(insert (	4201   21 20 2 s	1866	3412 0 ));
+DATA(insert (	4201   21 20 3 s	1862	3412 0 ));
+DATA(insert (	4201   21 20 4 s	1867	3412 0 ));
+DATA(insert (	4201   21 20 5 s	1865	3412 0 ));
+/* default operators int4 */
+DATA(insert (	4201   23 23 1 s	97	3412 0 ));
+DATA(insert (	4201   23 23 2 s	523 3412 0 ));
+DATA(insert (	4201   23 23 3 s	96	3412 0 ));
+DATA(insert (	4201   23 23 4 s	525 3412 0 ));
+DATA(insert (	4201   23 23 5 s	521 3412 0 ));
+/* crosstype operators int42 */
+DATA(insert (	4201   23 21 1 s	535 3412 0 ));
+DATA(insert (	4201   23 21 2 s	541 3412 0 ));
+DATA(insert (	4201   23 21 3 s	533 3412 0 ));
+DATA(insert (	4201   23 21 4 s	543 3412 0 ));
+DATA(insert (	4201   23 21 5 s	537 3412 0 ));
+/* crosstype operators int48 */
+DATA(insert (	4201   23 20 1 s	37	3412 0 ));
+DATA(insert (	4201   23 20 2 s	80	3412 0 ));
+DATA(insert (	4201   23 20 3 s	15	3412 0 ));
+DATA(insert (	4201   23 20 4 s	82	3412 0 ));
+DATA(insert (	4201   23 20 5 s	76	3412 0 ));
+/* default operators int8 */
+DATA(insert (	4201   20 20 1 s	412 3412 0 ));
+DATA(insert (	4201   20 20 2 s	414 3412 0 ));
+DATA(insert (	4201   20 20 3 s	410 3412 0 ));
+DATA(insert (	4201   20 20 4 s	415 3412 0 ));
+DATA(insert (	4201   20 20 5 s	413 3412 0 ));
+/* crosstype operators int82 */
+DATA(insert (	4201   20 21 1 s	1870	3412 0 ));
+DATA(insert (	4201   20 21 2 s	1872	3412 0 ));
+DATA(insert (	4201   20 21 3 s	1868	3412 0 ));
+DATA(insert (	4201   20 21 4 s	1873	3412 0 ));
+DATA(insert (	4201   20 21 5 s	1871	3412 0 ));
+/* crosstype operators int84 */
+DATA(insert (	4201   20 23 1 s	418 3412 0 ));
+DATA(insert (	4201   20 23 2 s	420 3412 0 ));
+DATA(insert (	4201   20 23 3 s	416 3412 0 ));
+DATA(insert (	4201   20 23 4 s	430 3412 0 ));
+DATA(insert (	4201   20 23 5 s	419 3412 0 ));
+
+
+/*
+ *	columnar numeric
+ */
+
+DATA(insert (	4202   1700 1700 1 s 1754 3412 0 ));
+DATA(insert (	4202   1700 1700 2 s 1755 3412 0 ));
+DATA(insert (	4202   1700 1700 3 s 1752 3412 0 ));
+DATA(insert (	4202   1700 1700 4 s 1757 3412 0 ));
+DATA(insert (	4202   1700 1700 5 s 1756 3412 0 ));
+
+/*
+ *	columnar datetime_ops
+ */
+
+/* default operators date */
+DATA(insert (	4203   1082 1082 1 s 1095	3412 0 ));
+DATA(insert (	4203   1082 1082 2 s 1096	3412 0 ));
+DATA(insert (	4203   1082 1082 3 s 1093	3412 0 ));
+DATA(insert (	4203   1082 1082 4 s 1098	3412 0 ));
+DATA(insert (	4203   1082 1082 5 s 1097	3412 0 ));
+/* crosstype operators vs timestamp */
+DATA(insert (	4203   1082 1114 1 s 2345	3412 0 ));
+DATA(insert (	4203   1082 1114 2 s 2346	3412 0 ));
+DATA(insert (	4203   1082 1114 3 s 2347	3412 0 ));
+DATA(insert (	4203   1082 1114 4 s 2348	3412 0 ));
+DATA(insert (	4203   1082 1114 5 s 2349	3412 0 ));
+/* crosstype operators vs timestamptz */
+DATA(insert (	4203   1082 1184 1 s 2358	3412 0 ));
+DATA(insert (	4203   1082 1184 2 s 2359	3412 0 ));
+DATA(insert (	4203   1082 1184 3 s 2360	3412 0 ));
+DATA(insert (	4203   1082 1184 4 s 2361	3412 0 ));
+DATA(insert (	4203   1082 1184 5 s 2362	3412 0 ));
+/* default operators timestamp */
+DATA(insert (	4203   1114 1114 1 s 2062	3412 0 ));
+DATA(insert (	4203   1114 1114 2 s 2063	3412 0 ));
+DATA(insert (	4203   1114 1114 3 s 2060	3412 0 ));
+DATA(insert (	4203   1114 1114 4 s 2065	3412 0 ));
+DATA(insert (	4203   1114 1114 5 s 2064	3412 0 ));
+/* crosstype operators vs date */
+DATA(insert (	4203   1114 1082 1 s 2371	3412 0 ));
+DATA(insert (	4203   1114 1082 2 s 2372	3412 0 ));
+DATA(insert (	4203   1114 1082 3 s 2373	3412 0 ));
+DATA(insert (	4203   1114 1082 4 s 2374	3412 0 ));
+DATA(insert (	4203   1114 1082 5 s 2375	3412 0 ));
+/* crosstype operators vs timestamptz */
+DATA(insert (	4203   1114 1184 1 s 2534	3412 0 ));
+DATA(insert (	4203   1114 1184 2 s 2535	3412 0 ));
+DATA(insert (	4203   1114 1184 3 s 2536	3412 0 ));
+DATA(insert (	4203   1114 1184 4 s 2537	3412 0 ));
+DATA(insert (	4203   1114 1184 5 s 2538	3412 0 ));
+/* default operators timestamptz */
+DATA(insert (	4203   1184 1184 1 s 1322	3412 0 ));
+DATA(insert (	4203   1184 1184 2 s 1323	3412 0 ));
+DATA(insert (	4203   1184 1184 3 s 1320	3412 0 ));
+DATA(insert (	4203   1184 1184 4 s 1325	3412 0 ));
+DATA(insert (	4203   1184 1184 5 s 1324	3412 0 ));
+/* crosstype operators vs date */
+DATA(insert (	4203   1184 1082 1 s 2384	3412 0 ));
+DATA(insert (	4203   1184 1082 2 s 2385	3412 0 ));
+DATA(insert (	4203   1184 1082 3 s 2386	3412 0 ));
+DATA(insert (	4203   1184 1082 4 s 2387	3412 0 ));
+DATA(insert (	4203   1184 1082 5 s 2388	3412 0 ));
+/* crosstype operators vs timestamp */
+DATA(insert (	4203   1184 1114 1 s 2540	3412 0 ));
+DATA(insert (	4203   1184 1114 2 s 2541	3412 0 ));
+DATA(insert (	4203   1184 1114 3 s 2542	3412 0 ));
+DATA(insert (	4203   1184 1114 4 s 2543	3412 0 ));
+DATA(insert (	4203   1184 1114 5 s 2544	3412 0 ));
+
 #endif   /* PG_AMOP_H */

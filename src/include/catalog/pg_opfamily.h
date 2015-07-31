@@ -183,4 +183,9 @@ DATA(insert OID = 4103 (	3580	range_inclusion_ops		PGNSP PGUID ));
 DATA(insert OID = 4082 (	3580	pg_lsn_minmax_ops		PGNSP PGUID ));
 DATA(insert OID = 4104 (	3580	box_inclusion_ops		PGNSP PGUID ));
 
+DATA(insert OID = 4200 (	3412	float_ops		PGNSP PGUID ));
+DATA(insert OID = 4201 (	3412	integer_ops		PGNSP PGUID ));
+DATA(insert OID = 4202 (	3412	numeric_ops		PGNSP PGUID ));
+DATA(insert OID = 4203 (	3412	datetime_ops	PGNSP PGUID ));
+
 #endif   /* PG_OPFAMILY_H */

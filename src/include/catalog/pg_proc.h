@@ -607,6 +607,37 @@ DESCR("brin(internal)");
 DATA(insert OID = 3952 (  brin_summarize_new_values PGNSP PGUID 12 1 0 0 0 f f f f f f v s 1 0 23 "2205" _null_ _null_ _null_ _null_ _null_ brin_summarize_new_values _null_ _null_ _null_ ));
 DESCR("brin: standalone scan new table pages");
 
+DATA(insert OID = 3394 (  colgettuple		PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_	colgettuple _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3395 (  colgetbitmap		PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 20 "2281 2281" _null_ _null_ _null_ _null_ _null_	colgetbitmap _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3396 (  colinsert			PGNSP PGUID 12 1 0 0 0 f f f f t f v 6 0 16 "2281 2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_	colinsert _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3397 (  colbeginscan		PGNSP PGUID 12 1 0 0 0 f f f f t f v 3 0 2281 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_	colbeginscan _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3398 (  colrescan			PGNSP PGUID 12 1 0 0 0 f f f f t f v 5 0 2278 "2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ colrescan _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3399 (  colendscan			PGNSP PGUID 12 1 0 0 0 f f f f t f v 1 0 2278 "2281" _null_ _null_ _null_ _null_ _null_ colendscan _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3400 (  colmarkpos			PGNSP PGUID 12 1 0 0 0 f f f f t f v 1 0 2278 "2281" _null_ _null_ _null_ _null_ _null_ colmarkpos _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3401 (  colrestrpos		PGNSP PGUID 12 1 0 0 0 f f f f t f v 1 0 2278 "2281" _null_ _null_ _null_ _null_ _null_ colrestrpos _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3405 (  colbuild			PGNSP PGUID 12 1 0 0 0 f f f f t f v 3 0 2281 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ colbuild _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3406 (  colbuildempty		PGNSP PGUID 12 1 0 0 0 f f f f t f v 1 0 2278 "2281" _null_ _null_ _null_ _null_ _null_ colbuildempty _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3407 (  colbulkdelete		PGNSP PGUID 12 1 0 0 0 f f f f t f v 4 0 2281 "2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ colbulkdelete _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3408 (  colvacuumcleanup	PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 2281 "2281 2281" _null_ _null_ _null_ _null_ _null_ colvacuumcleanup _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3409 (  colcanreturn		PGNSP PGUID 12 1 0 0 0 f f f f t f s 2 0 16 "2281 23" _null_ _null_ _null_ _null_ _null_ colcanreturn _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3410 (  colcostestimate 	PGNSP PGUID 12 1 0 0 0 f f f f t f v 7 0 2278 "2281 2281 2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ colcostestimate _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+DATA(insert OID = 3411 (  coloptions		PGNSP PGUID 12 1 0 0 0 f f f f t f s 2 0 17 "1009 16" _null_ _null_ _null_ _null_  _null_ coloptions _null_ _null_ _null_ ));
+DESCR("columnar(internal)");
+
 DATA(insert OID = 339 (  poly_same		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "604 604" _null_ _null_ _null_ _null_ _null_ poly_same _null_ _null_ _null_ ));
 DATA(insert OID = 340 (  poly_contain	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "604 604" _null_ _null_ _null_ _null_ _null_ poly_contain _null_ _null_ _null_ ));
 DATA(insert OID = 341 (  poly_left		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "604 604" _null_ _null_ _null_ _null_ _null_ poly_left _null_ _null_ _null_ ));
@@ -616,6 +647,7 @@ DATA(insert OID = 344 (  poly_right		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2
 DATA(insert OID = 345 (  poly_contained    PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "604 604" _null_ _null_ _null_ _null_ _null_ poly_contained _null_ _null_ _null_ ));
 DATA(insert OID = 346 (  poly_overlap	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "604 604" _null_ _null_ _null_ _null_ _null_ poly_overlap _null_ _null_ _null_ ));
 DATA(insert OID = 347 (  poly_in		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 604 "2275" _null_ _null_ _null_ _null_ _null_	poly_in _null_ _null_ _null_ ));
+
 DESCR("I/O");
 DATA(insert OID = 348 (  poly_out		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2275 "604" _null_ _null_ _null_ _null_ _null_	poly_out _null_ _null_ _null_ ));
 DESCR("I/O");

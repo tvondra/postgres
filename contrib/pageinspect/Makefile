@@ -2,7 +2,7 @@
 
 MODULE_big	= pageinspect
 OBJS		= rawpage.o heapfuncs.o btreefuncs.o fsmfuncs.o \
-		  brinfuncs.o ginfuncs.o $(WIN32RES)
+		  brinfuncs.o ginfuncs.o colfuncs.o $(WIN32RES)
 
 EXTENSION = pageinspect
 DATA = pageinspect--1.3.sql pageinspect--1.2--1.3.sql \

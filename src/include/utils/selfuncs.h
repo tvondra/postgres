@@ -193,6 +193,7 @@ extern Selectivity estimate_hash_bucketsize(PlannerInfo *root, Node *hashkey,
 
 extern Datum brincostestimate(PG_FUNCTION_ARGS);
 extern Datum btcostestimate(PG_FUNCTION_ARGS);
+extern Datum colcostestimate(PG_FUNCTION_ARGS);
 extern Datum hashcostestimate(PG_FUNCTION_ARGS);
 extern Datum gistcostestimate(PG_FUNCTION_ARGS);
 extern Datum spgcostestimate(PG_FUNCTION_ARGS);

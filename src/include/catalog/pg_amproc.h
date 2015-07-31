@@ -660,4 +660,46 @@ DATA(insert (	4104   603	 603  4  4108 ));
 DATA(insert (	4104   603	 603  11 4067 ));
 DATA(insert (	4104   603	 603  13  187 ));
 
+/* columnar */
+
+/* float_ops */
+DATA(insert (	4200   700 700 1 354 ));
+DATA(insert (	4200   700 700 2 3132 ));
+DATA(insert (	4200   700 701 1 2194 ));
+DATA(insert (	4200   701 701 1 355 ));
+DATA(insert (	4200   701 701 2 3133 ));
+DATA(insert (	4200   701 700 1 2195 ));
+
+/* integer_ops */
+DATA(insert (	4201   21 21 1 350 ));
+DATA(insert (	4201   21 21 2 3129 ));
+DATA(insert (	4201   21 23 1 2190 ));
+DATA(insert (	4201   21 20 1 2192 ));
+DATA(insert (	4201   23 23 1 351 ));
+DATA(insert (	4201   23 23 2 3130 ));
+DATA(insert (	4201   23 20 1 2188 ));
+DATA(insert (	4201   23 21 1 2191 ));
+DATA(insert (	4201   20 20 1 842 ));
+DATA(insert (	4201   20 20 2 3131 ));
+DATA(insert (	4201   20 23 1 2189 ));
+DATA(insert (	4201   20 21 1 2193 ));
+
+/* numeric_ops */
+DATA(insert (	4202   1700 1700 1 1769 ));
+DATA(insert (	4202   1700 1700 2 3283 ));
+
+/* datetime_ops */
+DATA(insert (	4203  1082 1082 1 1092 ));
+DATA(insert (	4203  1082 1082 2 3136 ));
+DATA(insert (	4203  1082 1114 1 2344 ));
+DATA(insert (	4203  1082 1184 1 2357 ));
+DATA(insert (	4203  1114 1114 1 2045 ));
+DATA(insert (	4203  1114 1114 2 3137 ));
+DATA(insert (	4203  1114 1082 1 2370 ));
+DATA(insert (	4203  1114 1184 1 2526 ));
+DATA(insert (	4203  1184 1184 1 1314 ));
+DATA(insert (	4203  1184 1184 2 3137 ));
+DATA(insert (	4203  1184 1082 1 2383 ));
+DATA(insert (	4203  1184 1114 1 2533 ));
+
 #endif   /* PG_AMPROC_H */

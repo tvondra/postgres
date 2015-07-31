@@ -135,5 +135,8 @@ DESCR("SP-GiST index access method");
 DATA(insert OID = 3580 (  brin	   0 15 f f f f t t f t t f f 0 brininsert brinbeginscan - bringetbitmap brinrescan brinendscan brinmarkpos brinrestrpos brinbuild brinbuildempty brinbulkdelete brinvacuumcleanup - brincostestimate brinoptions ));
 DESCR("block range index (BRIN) access method");
 #define BRIN_AM_OID 3580
+DATA(insert OID = 3412 (  columnar	   0 2 t f f f t t t t f f f 0 colinsert colbeginscan colgettuple colgetbitmap colrescan colendscan colmarkpos colrestrpos colbuild colbuildempty colbulkdelete colvacuumcleanup colcanreturn colcostestimate coloptions ));
+DESCR("columnar index access method");
+#define COLUMNAR_AM_OID 3412
 
 #endif   /* PG_AM_H */

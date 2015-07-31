@@ -26,9 +26,9 @@
  *		typedef struct FormData_pg_cstore
  * ----------------
  */
-#define CStoreRelationId	3286
+#define CStoreRelationId	3397
 
-CATALOG(pg_cstore,3286)
+CATALOG(pg_cstore,3397)
 {
 	NameData	cstname;		/* name of the colstore */
 	Oid			cstrelid;		/* relation containing this cstore */

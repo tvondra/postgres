@@ -26,9 +26,9 @@
  *		typedef struct FormData_pg_cstore_am
  * ----------------
  */
-#define CStoreAmRelationId	3287
+#define CStoreAmRelationId	3396
 
-CATALOG(pg_cstore_am,3287)
+CATALOG(pg_cstore_am,3396)
 {
 	NameData	cstamname;		/* column store am name */
 	Oid			cstamhandler;	/* handler function */

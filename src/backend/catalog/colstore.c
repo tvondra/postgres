@@ -654,7 +654,7 @@ FilterHeapTuple(ResultRelInfo *resultRelInfo, HeapTuple tuple, TupleDesc *heapde
 		TupleDescCopyEntry(*heapdesc, attnum++, origdesc, i+1);
 	}
 
-	newtup = heap_formtuple(*heapdesc, values, nulls);
+	newtup = heap_form_tuple(*heapdesc, values, nulls);
 
 	/* copy important header fields */
 	newtup->t_self = tuple->t_self;

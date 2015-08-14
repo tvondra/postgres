@@ -500,8 +500,7 @@ ExecInsert(ModifyTableState *mtstate,
 
 				newId = heap_insert(resultRelationDesc, heaptuple,
 									estate->es_output_cid,
-									HEAP_INSERT_SPECULATIVE,
-									NULL);
+									0, NULL);
 
 				resultRelationDesc->rd_att = fulldesc;
 
@@ -511,8 +510,7 @@ ExecInsert(ModifyTableState *mtstate,
 			else
 				newId = heap_insert(resultRelationDesc, tuple,
 									estate->es_output_cid,
-									HEAP_INSERT_SPECULATIVE,
-									NULL);
+									0, NULL);
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)

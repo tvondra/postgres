@@ -43,12 +43,13 @@ static Oid
 lookup_cstore_handler_func(DefElem *handler)
 {
 	Oid			handlerOid;
+	Oid			funcargtypes[1];
 
 	if (handler == NULL || handler->arg == NULL)
 		return InvalidOid;
 
 	/* handlers have no arguments */
-	handlerOid = LookupFuncName((List *) handler->arg, 0, NULL, false);
+	handlerOid = LookupFuncName((List *) handler->arg, 0, funcargtypes, false);
 
 	/* check that handler has correct return type */
 	if (get_func_rettype(handlerOid) != CSTORE_HANDLEROID)

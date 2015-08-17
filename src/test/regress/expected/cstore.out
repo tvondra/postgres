@@ -1,237 +1,150 @@
 -- create two fake cstore AM instances (no implementation)
-CREATE COLUMN STORE ACCESS METHOD bar1 HANDLER cstore_dummy_handler;
-CREATE COLUMN STORE ACCESS METHOD bar2 HANDLER cstore_dummy_handler;
+CREATE COLUMN STORE ACCESS METHOD store_am_one HANDLER cstore_dummy_handler;
+CREATE COLUMN STORE ACCESS METHOD store_am_two HANDLER cstore_dummy_handler;
 -- column-level column store definition
+-- missing USING clause
+CREATE TABLE test_columnar_single_missing (
+    a INT,
+    b INT COLUMN STORE foo,
+    c INT
+);
+ERROR:  syntax error at or near ","
+LINE 3:     b INT COLUMN STORE foo,
+                                  ^
+-- missing column store name
+CREATE TABLE test_columnar_single_missing (
+    a INT,
+    b INT COLUMN STORE USING store_am_one,
+    c INT
+);
+ERROR:  syntax error at or near "USING"
+LINE 3:     b INT COLUMN STORE USING store_am_one,
+                               ^
+-- missing USING and column store name
+CREATE TABLE test_columnar_single_missing (
+    a INT,
+    b INT COLUMN STORE,
+    c INT
+);
+ERROR:  syntax error at or near ","
+LINE 3:     b INT COLUMN STORE,
+                              ^
+-- missing column store name
+CREATE TABLE test_columnar_single_missing (
+    a INT,
+    b INT COLUMN STORE USING store_am_one,
+    c INT
+);
+ERROR:  syntax error at or near "USING"
+LINE 3:     b INT COLUMN STORE USING store_am_one,
+                               ^
 -- unknown name of a column store AM
 CREATE TABLE test_columnar_single_missing (
     a INT,
-    b INT COLUMN STORE foo USING bar,
+    b INT COLUMN STORE foo USING no_store_am,
     c INT
 );
-ERROR:  column store access method "bar" does not exist
--- conflicting column store name (same AM)
+ERROR:  column store access method "no_store_am" does not exist
+-- conflicting column store name
 CREATE TABLE test_columnar_single_conflict (
     a INT,
-    b INT COLUMN STORE foo USING bar1,
-    c INT COLUMN STORE foo USING bar1,
-    d INT
-);
-ERROR:  duplicate column store name "foo"
--- conflicting column store name (different AM)
-CREATE TABLE test_columnar_single_conflict2 (
-    a INT,
-    b INT COLUMN STORE foo USING bar1,
-    c INT COLUMN STORE foo USING bar2,
+    b INT COLUMN STORE foo USING store_am_one,
+    c INT COLUMN STORE foo USING store_am_one,
     d INT
 );
 ERROR:  duplicate column store name "foo"
 -- correct definition (single store) 
 CREATE TABLE test_columnar_single_ok (
     a INT,
-    b INT COLUMN STORE foo1 USING bar1,
+    b INT COLUMN STORE foo1 USING store_am_one,
     c INT
 );
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_single_ok';
-         relname         | relhascstore | relkind 
--------------------------+--------------+---------
- test_columnar_single_ok | t            | r
-(1 row)
+\d test_columnar_single_ok
+Table "public.test_columnar_single_ok"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+Column stores: foo1 USING store_am_one ({b})
 
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo1    |        1 | 2
-(1 row)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(1 row)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(1 row)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_single_ok'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo1    |      1 | b       |       23 |            -1
-(1 row)
-
--- correct definition (two stores, same AM) 
+-- correct definition (two stores)
 CREATE TABLE test_columnar_single_ok2 (
     a INT,
-    b INT COLUMN STORE foo1 USING bar1,
-    c INT COLUMN STORE foo2 USING bar1,
+    b INT COLUMN STORE foo1 USING store_am_one,
+    c INT COLUMN STORE foo2 USING store_am_two,
     d INT
 );
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_single_ok2';
-         relname          | relhascstore | relkind 
---------------------------+--------------+---------
- test_columnar_single_ok2 | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok2'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo1    |        1 | 2
- foo2    |        1 | 3
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok2'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok2'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_single_ok2'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo1    |      1 | b       |       23 |            -1
- foo2    |      1 | c       |       23 |            -1
-(2 rows)
-
--- correct definition (two stores, different AMs)
-CREATE TABLE test_columnar_single_ok3 (
-    a INT,
-    b INT COLUMN STORE foo1 USING bar1,
-    c INT COLUMN STORE foo2 USING bar1,
-    d INT
-);
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_single_ok3';
-         relname          | relhascstore | relkind 
---------------------------+--------------+---------
- test_columnar_single_ok3 | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_single_ok3'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo1    |        1 | 2
- foo2    |        1 | 3
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok3'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_single_ok3'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_single_ok3'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo1    |      1 | b       |       23 |            -1
- foo2    |      1 | c       |       23 |            -1
-(2 rows)
+\d test_columnar_single_ok2
+Table "public.test_columnar_single_ok2"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+Column stores: foo1 USING store_am_one ({b}),
+               foo2 USING store_am_two ({c})
 
 -- table-level column store definition
+-- no column list
+CREATE TABLE test_columnar_multi_missing (
+    a INT,
+    b INT,
+    c INT,
+    d INT,
+    COLUMN STORE foo USING store_am_one
+);
+ERROR:  syntax error at or near ")"
+LINE 7: );
+        ^
+-- empty column list
+CREATE TABLE test_columnar_multi_missing (
+    a INT,
+    b INT,
+    c INT,
+    d INT,
+    COLUMN STORE foo USING store_am_one ()
+);
+ERROR:  syntax error at or near ")"
+LINE 6:     COLUMN STORE foo USING store_am_one ()
+                                                 ^
+-- invalid column in store
+CREATE TABLE test_columnar_multi_missing (
+    a INT,
+    b INT,
+    c INT,
+    d INT,
+    COLUMN STORE foo USING store_am_one (z)
+);
+ERROR:  no column "z" in the table
 -- unknown name of a column store AM
 CREATE TABLE test_columnar_multi_missing (
     a INT,
     b INT,
     c INT,
     d INT,
-    COLUMN STORE foo USING bar (b,c)
+    COLUMN STORE foo USING no_store_am (b,c)
 );
-ERROR:  column store access method "bar" does not exist
--- conflicting column store name (same AM)
+ERROR:  column store access method "no_store_am" does not exist
+-- conflicting column store name
 CREATE TABLE test_columnar_multi_conflict (
     a INT,
     b INT,
     c INT,
     d INT,
-    COLUMN STORE foo USING bar1 (a,b),
-    COLUMN STORE foo USING bar1 (c,d)
+    COLUMN STORE foo USING store_am_one (a,b),
+    COLUMN STORE foo USING store_am_one (c,d)
 );
 ERROR:  duplicate column store name "foo"
--- conflicting column store name (different AM)
+-- overlapping list of columns
 CREATE TABLE test_columnar_multi_conflict2 (
     a INT,
     b INT,
     c INT,
     d INT,
-    COLUMN STORE foo USING bar1 (a,b),
-    COLUMN STORE foo USING bar2 (c,d)
-);
-ERROR:  duplicate column store name "foo"
--- overlapping list of columns
-CREATE TABLE test_columnar_multi_conflict3 (
-    a INT,
-    b INT,
-    c INT,
-    d INT,
-    COLUMN STORE foo1 USING bar1 (a,b),
-    COLUMN STORE foo2 USING bar2 (b,c,d)
+    COLUMN STORE foo1 USING store_am_one (a,b),
+    COLUMN STORE foo2 USING store_am_two (b,c,d)
 );
 ERROR:  column already in a store
 -- correct definition (single store) 
@@ -239,344 +152,92 @@ CREATE TABLE test_columnar_multi_ok (
     a INT,
     b INT,
     c INT,
-    COLUMN STORE foo USING bar1 (a,b)
+    COLUMN STORE foo USING store_am_one (a,b)
 );
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_multi_ok';
-        relname         | relhascstore | relkind 
-------------------------+--------------+---------
- test_columnar_multi_ok | t            | r
-(1 row)
+\d test_columnar_multi_ok
+Table "public.test_columnar_multi_ok"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+Column stores: foo USING store_am_one ({a,b})
 
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo     |        2 | 1 2
-(1 row)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
-(1 row)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        2 |         0 | f          | f          | f           | f              | f              | f              | t
-(1 row)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_multi_ok'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo     |      1 | a       |       23 |            -1
- foo     |      2 | b       |       23 |            -1
-(2 rows)
-
--- correct definition (two stores, same AM) 
+-- correct definition (two stores)
 CREATE TABLE test_columnar_multi_ok2 (
     a INT,
     b INT,
     c INT,
     d INT,
-    COLUMN STORE foo1 USING bar1 (a,b),
-    COLUMN STORE foo2 USING bar1 (c,d)
+    COLUMN STORE foo1 USING store_am_one (a,b),
+    COLUMN STORE foo2 USING store_am_one (c,d)
 );
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_multi_ok2';
-         relname         | relhascstore | relkind 
--------------------------+--------------+---------
- test_columnar_multi_ok2 | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok2'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo1    |        2 | 1 2
- foo2    |        2 | 3 4
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok2'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok2'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        2 |         0 | f          | f          | f           | f              | f              | f              | t
-        2 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_multi_ok2'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo1    |      1 | a       |       23 |            -1
- foo1    |      2 | b       |       23 |            -1
- foo2    |      1 | c       |       23 |            -1
- foo2    |      2 | d       |       23 |            -1
-(4 rows)
-
--- correct definition (two stores, different AMs)
-CREATE TABLE test_columnar_multi_ok3 (
-    a INT,
-    b INT,
-    c INT,
-    d INT,
-    COLUMN STORE foo1 USING bar1 (a,b),
-    COLUMN STORE foo2 USING bar2 (d)
-);
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_multi_ok3';
-         relname         | relhascstore | relkind 
--------------------------+--------------+---------
- test_columnar_multi_ok3 | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_multi_ok3'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo1    |        2 | 1 2
- foo2    |        1 | 4
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok3'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_multi_ok3'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        2 |         0 | f          | f          | f           | f              | f              | f              | t
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_multi_ok3'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo1    |      1 | a       |       23 |            -1
- foo1    |      2 | b       |       23 |            -1
- foo2    |      1 | d       |       23 |            -1
-(3 rows)
+\d test_columnar_multi_ok2
+Table "public.test_columnar_multi_ok2"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+Column stores: foo1 USING store_am_one ({a,b}),
+               foo2 USING store_am_one ({c,d})
 
 -- combination of column-level and table-level column stores
--- conflicting column store name (same AM)
+-- conflicting column store name
 CREATE TABLE test_columnar_multi_conflict (
     a INT,
-    b INT COLUMN STORE foo USING bar1,
+    b INT COLUMN STORE foo USING store_am_one,
     c INT,
     d INT,
-    COLUMN STORE foo USING bar1 (c,d)
-);
-ERROR:  duplicate column store name "foo"
--- conflicting column store name (different AM)
-CREATE TABLE test_columnar_combi_conflict2 (
-    a INT,
-    b INT COLUMN STORE foo USING bar1,
-    c INT,
-    d INT,
-    COLUMN STORE foo USING bar2 (c,d)
+    COLUMN STORE foo USING store_am_one (c,d)
 );
 ERROR:  duplicate column store name "foo"
 -- overlapping list of columns
-CREATE TABLE test_columnar_combi_conflict3 (
+CREATE TABLE test_columnar_combi_conflict2 (
     a INT,
-    b INT COLUMN STORE foo USING bar1,
+    b INT COLUMN STORE foo USING store_am_one,
     c INT,
     d INT,
-    COLUMN STORE foo2 USING bar2 (b,c,d)
+    COLUMN STORE foo2 USING store_am_two (b,c,d)
 );
 ERROR:  column already in a store
--- correct definition (two stores, same AM) 
+-- correct definition (two stores)
 CREATE TABLE test_columnar_combi_ok (
     a INT,
-    b INT COLUMN STORE foo USING bar1,
+    b INT COLUMN STORE foo USING store_am_one,
     c INT,
     d INT,
-    COLUMN STORE foo2 USING bar1 (c,d)
+    COLUMN STORE foo2 USING store_am_one (c,d)
 );
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_combi_ok';
-        relname         | relhascstore | relkind 
-------------------------+--------------+---------
- test_columnar_combi_ok | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_combi_ok'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo     |        1 | 2
- foo2    |        2 | 3 4
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        2
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        2 |         0 | f          | f          | f           | f              | f              | f              | t
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_combi_ok'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo     |      1 | b       |       23 |            -1
- foo2    |      1 | c       |       23 |            -1
- foo2    |      2 | d       |       23 |            -1
-(3 rows)
-
--- correct definition (two stores, different AMs)
-CREATE TABLE test_columnar_combi_ok2 (
-    a INT,
-    b INT COLUMN STORE foo USING bar1,
-    c INT,
-    d INT,
-    COLUMN STORE foo2 USING bar2 (d)
-);
--- check contents of the catalogs
-SELECT relname, relhascstore, relkind
-  FROM pg_class
- WHERE relname = 'test_columnar_combi_ok2';
-         relname         | relhascstore | relkind 
--------------------------+--------------+---------
- test_columnar_combi_ok2 | t            | r
-(1 row)
-
-SELECT cstname, cstnatts, cstatts
-  FROM pg_cstore
- WHERE cstrelid = 'test_columnar_combi_ok2'::regclass
- ORDER BY cstname;
- cstname | cstnatts | cstatts 
----------+----------+---------
- foo     |        1 | 2
- foo2    |        1 | 4
-(2 rows)
-
--- basic pg_class attributes
-SELECT relnamespace, reltype, reltablespace, relhasindex, relhascstore, relisshared, relpersistence, relkind, relnatts
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok2'::regclass)
- ORDER BY oid;
- relnamespace | reltype | reltablespace | relhasindex | relhascstore | relisshared | relpersistence | relkind | relnatts 
---------------+---------+---------------+-------------+--------------+-------------+----------------+---------+----------
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-            9 |       0 |             0 | f           | f            | f           | p              | C       |        1
-(2 rows)
-
--- pg_class flags
-SELECT relnatts, relchecks, relhasoids, relhaspkey, relhasrules, relhastriggers, relhassubclass, relrowsecurity, relispopulated
-  FROM pg_class WHERE oid IN (SELECT cststoreid FROM pg_cstore WHERE cstrelid = 'test_columnar_combi_ok2'::regclass)
- ORDER BY oid;
- relnatts | relchecks | relhasoids | relhaspkey | relhasrules | relhastriggers | relhassubclass | relrowsecurity | relispopulated 
-----------+-----------+------------+------------+-------------+----------------+----------------+----------------+----------------
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-        1 |         0 | f          | f          | f           | f              | f              | f              | t
-(2 rows)
-
- 
--- pg_attribute entries (for the cstore)
-SELECT cstname, attnum, attname, atttypid, attstattarget
-  FROM pg_attribute JOIN pg_cstore ON (attrelid = cststoreid)
- WHERE cstrelid = 'test_columnar_combi_ok2'::regclass
- ORDER BY cstname, attnum;
- cstname | attnum | attname | atttypid | attstattarget 
----------+--------+---------+----------+---------------
- foo     |      1 | b       |       23 |            -1
- foo2    |      1 | d       |       23 |            -1
-(2 rows)
+\d test_columnar_combi_ok
+Table "public.test_columnar_combi_ok"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+Column stores: foo USING store_am_one ({b}),
+               foo2 USING store_am_one ({c,d})
 
 -- test cleanup
 CREATE TABLE cstore_oids AS
 SELECT cststoreid
   FROM pg_cstore JOIN pg_class ON (pg_cstore.cstrelid = pg_class.oid)
- WHERE relname IN ('test_columnar_single_ok', 'test_columnar_single_ok2', 'test_columnar_single_ok3',
-                   'test_columnar_multi_ok', 'test_columnar_multi_ok2', 'test_columnar_multi_ok3',
-                   'test_columnar_combi_ok', 'test_columnar_combi_ok2');
+ WHERE relname IN ('test_columnar_single_ok',
+                   'test_columnar_single_ok2',
+                   'test_columnar_multi_ok',
+                   'test_columnar_multi_ok2',
+                   'test_columnar_combi_ok');
 CREATE TABLE cstore_oids_2 AS
 SELECT pg_class.oid
   FROM pg_class JOIN cstore_oids ON (pg_class.oid = cstore_oids.cststoreid);
 DROP TABLE test_columnar_single_ok;
 DROP TABLE test_columnar_single_ok2;
-DROP TABLE test_columnar_single_ok3;
 DROP TABLE test_columnar_multi_ok;
 DROP TABLE test_columnar_multi_ok2;
-DROP TABLE test_columnar_multi_ok3;
 DROP TABLE test_columnar_combi_ok;
-DROP TABLE test_columnar_combi_ok2;
 -- should return 0
 SELECT COUNT(*) FROM pg_class WHERE oid IN (SELECT cststoreid FROM cstore_oids);
  count 
@@ -610,5 +271,97 @@ SELECT COUNT(*) FROM pg_attribute WHERE attrelid IN (SELECT oid FROM cstore_oids
 
 DROP TABLE cstore_oids;
 DROP TABLE cstore_oids_2;
--- delete the fake cstore AM records
-DELETE FROM pg_cstore_am;
+-- INHERITANCE
+-- parent table with two column stores
+CREATE TABLE parent_table (
+    a INT,
+    b INT COLUMN STORE foo1 USING store_am_one,
+    c INT,
+    d INT,
+    e INT,
+    COLUMN STORE foo2 USING store_am_two (d,e)
+);
+-- child table with two separate column stores
+CREATE TABLE child_table_1 (
+    f INT,
+    g INT COLUMN STORE foo1c USING store_am_one,
+    h INT,
+    i INT,
+    COLUMN STORE foo2c USING store_am_two(h,i)
+) INHERITS (parent_table);
+-- FIXME BUG: should have cstores foo1 and foo2
+\d child_table_1
+ Table "public.child_table_1"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+ e      | integer | 
+ f      | integer | 
+ g      | integer | 
+ h      | integer | 
+ i      | integer | 
+Inherits: parent_table
+Column stores: foo1c USING store_am_one ({g}),
+               foo2c USING store_am_two ({h,i})
+
+-- child table with two column stores - one modifying, one redefining the parent
+CREATE TABLE child_table_2 (
+    f INT,
+    g INT COLUMN STORE foo1c USING store_am_one, -- new column store
+    h INT,
+    i INT,
+    COLUMN STORE foo2c USING store_am_two(b,h,i) -- redefines the parent colstore
+) INHERITS (parent_table);
+\d child_table_2
+ Table "public.child_table_2"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+ e      | integer | 
+ f      | integer | 
+ g      | integer | 
+ h      | integer | 
+ i      | integer | 
+Inherits: parent_table
+Column stores: foo2c USING store_am_two ({b,h,i}),
+               foo1c USING store_am_one ({g})
+
+-- child table with a single column store of the whole table
+CREATE TABLE child_table_3 (
+    f INT,
+    g INT,
+    h INT,
+    i INT,
+    COLUMN STORE foo1 USING store_am_one(a,b,c,d,e,f,g,h,i)
+) INHERITS (parent_table);
+\d child_table_3
+ Table "public.child_table_3"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
+ b      | integer | 
+ c      | integer | 
+ d      | integer | 
+ e      | integer | 
+ f      | integer | 
+ g      | integer | 
+ h      | integer | 
+ i      | integer | 
+Inherits: parent_table
+Column stores: foo1 USING store_am_one ({a,b,c,d,e,f,g,h,i})
+
+--- FIXME -- add tests with multiple inheritance
+DROP TABLE parent_table CASCADE;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table child_table_1
+drop cascades to table child_table_2
+drop cascades to table child_table_3
+--- delete the fake cstore AM records
+-- FIXME -- this should be a DROP command
+DELETE FROM pg_cstore_am WHERE cstamname IN ('store_am_one', 'store_am_two');

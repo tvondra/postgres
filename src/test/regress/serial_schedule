@@ -73,6 +73,7 @@ test: vacuum
 test: drop_if_exists
 test: updatable_views
 test: rolenames
+test: cstore
 test: sanity_check
 test: errors
 test: select
@@ -157,5 +158,3 @@ test: with
 test: xml
 test: event_trigger
 test: stats
-test: cstore
-test: cstore-inherit

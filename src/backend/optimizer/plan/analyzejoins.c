@@ -562,7 +562,6 @@ remove_rel_from_joinlist(List *joinlist, int relid, int *nremoved)
 	return result;
 }
 
-
 /*
  * query_supports_distinctness - could the query possibly be proven distinct
  *		on some set of output columns?

@@ -3732,6 +3732,614 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
 }
 
 /*
+ * clause_is_fk_compatible
+ *		Verify that the clause may be compatible with foreign keys (i.e. it's
+ * 		a simple operator clause with two Vars, referencing two different
+ * 		relations).
+ *
+ * This only checks form of the clause (and returns 'true' if it may match
+ * a foreign key), but does not cross-check the clause against existing foreign
+ * keys for example.
+ *
+ * It also extracts data from the clause - rangetable indexes and attnums for
+ * each Var (if the function returns 'false' then those values are undefined
+ * and may contain garbage).
+ */
+static bool
+clause_is_fk_compatible(RestrictInfo *rinfo,
+						Index *varnoa, AttrNumber *attnoa,
+						Index *varnob, AttrNumber *attnob,
+						Oid *opno)
+{
+	OpExpr *clause;
+	Var	   *var0, *var1;
+
+	/* We only expect restriction clauses here, with operator expression. */
+
+	if (! IsA(rinfo, RestrictInfo))
+		return false;
+
+	if (! IsA(rinfo->clause, OpExpr))
+		return false;
+
+	clause = (OpExpr*)rinfo->clause;
+
+	/* The clause has to use exactly two simple variables. */
+
+	if (list_length(clause->args) != 2)
+		return false;
+
+	var0 = list_nth(clause->args, 0);
+	var1 = list_nth(clause->args, 1);
+
+	if (! (IsA(var0, Var) && IsA(var1, Var)))
+		return false;
+
+	/* The variables has to reference two different rangetable entries. */
+
+	if (var0->varno == var1->varno)
+		return false;
+
+	/*
+	 * At this point we know the clause has the right structure, so extract
+	 * the interesting info we'll need outside. We don't really track which
+	 * relation is inner/outer, so we'll check both directions.
+	 */
+
+	*varnoa = var0->varno;
+	*attnoa = var0->varattno;
+
+	*varnob = var1->varno;
+	*attnob = var1->varattno;
+
+	*opno = clause->opno;
+
+	return true;
+}
+
+
+/*
+ * fkey_is_matched_by_clauses
+ * 		Check whether the foreign key is "fully" matched by the clauses.
+ *
+ * This checks whether the foreign key is fully matched by clauses, i.e. if
+ * there's a clause matching perfectly all the parts of the foreign key.
+ */
+static bool
+fkey_is_matched_by_clauses(PlannerInfo *root, ForeignKeyOptInfo *fkinfo,
+						   List *clauses, int relid, int frelid)
+{
+	int			i;
+	ListCell   *lc;
+	bool		r;
+	bool	   *matched;
+
+	/* we should only get multi-column foreign keys here */
+	Assert(fkinfo->nkeys > 1);
+
+	/* flags for each part of the foreign key */
+	matched = palloc0(fkinfo->nkeys);
+
+	foreach (lc, clauses)
+	{
+		RestrictInfo   *rinfo = (RestrictInfo*)lfirst(lc);
+
+		/* info extracted from the clause (opno, varnos and varattnos) */
+		Oid				opno;
+		Index			relida, relidb;
+		AttrNumber		attnoa, attnob;
+
+		/* we'll look this up in the simple_rte_array table */
+		Oid				oida, oidb;
+
+		/*
+		 * If the clause has structure incompatible with foreign keys (not an
+		 * operator clause with two Var nodes), just skip it.
+		 */
+		if (! clause_is_fk_compatible(rinfo, &relida, &attnoa,
+											 &relidb, &attnob, &opno))
+			continue;
+
+		/* lookup range table entries for the indexes */
+		oida = root->simple_rte_array[relida]->relid;
+		oidb = root->simple_rte_array[relidb]->relid;
+
+		/*
+		 * Check if the clause matches any part of the foreign key.
+		 */
+		for (i = 0; i < fkinfo->nkeys; i++)
+		{
+			/* if the operator does not match, try next key */
+			if (! fkinfo->conpfeqop[i] == opno)
+				continue;
+
+			/*
+			 * We don't know in what order the clause lists the Vars, so we'll check
+			 * the foreign key in both directions (it does not really matter).
+			 */
+			if ((oida == fkinfo->conrelid) && (oidb == fkinfo->confrelid))
+			{
+				if ((fkinfo->confkeys[i] == attnob) &&
+					(fkinfo->conkeys[i] == attnoa))
+					matched[i] = true;
+			}
+
+			if ((oida == fkinfo->confrelid) && (oidb == fkinfo->conrelid))
+			{
+				if ((fkinfo->confkeys[i] == attnoa) &&
+					(fkinfo->conkeys[i] == attnob))
+						matched[i] = true;
+			}
+		}
+	}
+
+	/* return 'true' if all the parts of the foreign key were matched */
+	r = true;
+	for (i = 0; i < fkinfo->nkeys; i++)
+		r &= matched[i];
+
+	pfree(matched);
+
+	return r;
+}
+
+/*
+ * find_satisfied_fkeys
+ * 		Searches for all foreign keys fully-satisfied by the join clauses.
+ *
+ * A join is fully-satisfied if all the parts are matched by at least one
+ * join condition (same operator and attnos).
+ *
+ * This returns a list of foreign keys of identified foreign keys (or NIL),
+ * and also selectivity for all the (matched) foreign keys.
+ */
+static List *
+find_satisfied_fkeys(PlannerInfo *root, SpecialJoinInfo *sjinfo, List *joinquals,
+					 Selectivity *sel)
+{
+	int	inner, outer;
+	List *fkeys = NIL;
+
+	/*
+	 * We'll take all combinations of inner/outer relations, and check if
+	 * there are foreign keys between them. If we found a foreign key for
+	 * the pair of base relations, we'll try matching it to clauses.
+	 *
+	 * We don't know in which direction the foreign keys are created, so
+	 * we'll check both directions (it's allways between inner and outer
+	 * side of the join).
+	 */
+
+	inner = -1;
+	while ((inner = bms_next_member(sjinfo->min_righthand, inner)) >= 0)
+	{
+		RelOptInfo *rel_inner = find_base_rel(root, inner);
+		RangeTblEntry *rt_inner = planner_rt_fetch(inner, root);
+
+		Assert(rel_inner->reloptkind == RELOPT_BASEREL);
+
+		outer = -1;
+		while ((outer = bms_next_member(sjinfo->min_lefthand, outer)) >= 0)
+		{
+			ListCell   *lc;
+			RelOptInfo *rel_outer = find_base_rel(root, outer);
+			RangeTblEntry *rt_outer = planner_rt_fetch(outer, root);
+
+			Assert(rel_outer->reloptkind == RELOPT_BASEREL);
+
+			/*
+			 * Walk through foreign keys defined on the inner side, referencing
+			 * relation on the outer side.
+			 */
+			foreach (lc, rel_inner->fkeylist)
+			{
+				ForeignKeyOptInfo  *fkinfo = (ForeignKeyOptInfo *)lfirst(lc);
+
+				/* We only care about keys referencing the current outer relation */
+				if (fkinfo->confrelid != rt_outer->relid)
+					continue;
+
+				/*
+				 * And we don't care about foreign keys with less than two columns
+				 * (those clauses will be handled by the regular estimation, unless
+				 * matched by some other key).
+				 *
+				 * XXX Maybe we should estimate even the single-column keys here,
+				 *     as it's really cheap. But it can't do any cross-table check
+				 *     of MCV lists or whatever clauselist_selectivity() does.
+				 */
+				if (fkinfo->nkeys < 2)
+					continue;
+
+				/*
+				 * Finally check if the foreign key is full matched by clauses,
+				 * and update the selectivity (simply use 1/cardinality of the
+				 * table referenced by the foreign key).
+				 *
+				 * XXX Notice we're using 'rel->tuples' here and not 'rows',
+				 *     because we need the cardinality (before applying clauses).
+				 */
+				if (fkey_is_matched_by_clauses(root, fkinfo, joinquals, inner, outer))
+				{
+					fkeys = lappend(fkeys, fkinfo);
+					*sel *= (1.0 / rel_outer->tuples);
+				}
+
+			}
+
+			/*
+			 * And now check foreign keys in the other direction (defined on
+			 * outer relation, referencing inner).
+			 *
+			 * XXX This does exactly the same thing as the previous loop, so no
+			 *     comments.
+			 *
+			 * TODO Merge those two blocks into a single utility function to
+			 *      reduce the code duplication.
+			 */
+			foreach (lc, rel_outer->fkeylist)
+			{
+				ForeignKeyOptInfo  *fkinfo = (ForeignKeyOptInfo *)lfirst(lc);
+
+				if (fkinfo->confrelid != rt_inner->relid)
+					continue;
+
+				if (fkinfo->nkeys < 2)
+					continue;
+
+				if (fkey_is_matched_by_clauses(root, fkinfo, joinquals, outer, inner))
+				{
+					fkeys = lappend(fkeys, fkinfo);
+					*sel *= (1.0 / rel_inner->tuples);
+				}
+
+			}
+
+		}
+	}
+
+	return fkeys;
+}
+
+/*
+ * filter_fk_join_clauses
+ *		Remove the clauses that were used to match foreign keys (and will be
+ * 		estimated using the selectivity from  keys).
+ *
+ * Once we identify the foreign keys matched by clauses, we need to remove the
+ * clauses so that we don't include them into the estimate twice. This method
+ * performs that - cross-checks the foreign keys and clauses and removes all
+ * clauses matching any of the foreign keys.
+ *
+ * If there are no foreign keys, this simply returns the original list of
+ * clauses. Otherwise it builds a new list (without modifying the source one).
+ */
+static List *
+filter_fk_join_clauses(PlannerInfo *root, SpecialJoinInfo *sjinfo, List *fkeys,
+					   List *joinquals)
+{
+	ListCell   *lc,
+			   *lc2;
+	List	   *clauses = NIL;
+
+	/* if there are no foreign keys, return the original list */
+	if (list_length(fkeys) == 0)
+		return joinquals;
+
+	foreach (lc, joinquals)
+	{
+		Oid				opno;
+		Index			relida, relidb;
+		AttrNumber		attnoa, attnob;
+		Oid				oida, oidb;
+
+		/* was the clause matched by at least one key? */
+		bool			matched = false;
+
+		RestrictInfo   *rinfo = (RestrictInfo*)lfirst(lc);
+
+		/* if the clause is not compatible with foreign keys, just add it */
+		if (! clause_is_fk_compatible(rinfo, &relida, &attnoa,
+											 &relidb, &attnob, &opno))
+		{
+			clauses = lappend(clauses, rinfo);
+			continue;
+		}
+
+		oida = root->simple_rte_array[relida]->relid;
+		oidb = root->simple_rte_array[relidb]->relid;
+
+		/*
+		 * Walk through the matched foreign keys, and try to match the clause
+		 * against each one. We don't know in what order are the Vars listed
+		 * in the clause, so try both ways.
+		 */
+		foreach (lc2, fkeys)
+		{
+			int i;
+			ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo*)lfirst(lc2);
+
+			/* now check the keys - we can stop after finding the first match */
+			for (i = 0; i < fkinfo->nkeys; i++)
+			{
+				/* check the operator first */
+				if (fkinfo->conpfeqop[i] != opno)
+					continue;
+
+				/* now check the attnums */
+				if ((fkinfo->conrelid == oida) && (fkinfo->confrelid == oidb))
+				{
+					if ((fkinfo->confkeys[i] == attnob) &&
+						(fkinfo->conkeys[i] == attnoa))
+					{
+						matched = true;
+						break;
+					}
+				}
+				else if ((fkinfo->conrelid == oidb) && (fkinfo->confrelid == oida))
+				{
+					if ((fkinfo->confkeys[i] == attnoa) &&
+						(fkinfo->conkeys[i] == attnob))
+					{
+						matched = true;
+						break;
+					}
+				}
+			}
+
+			/* no need to try more keys, single match is enough */
+			if (matched)
+				break;
+		}
+
+		/* if a clause was not matched by any foreign key, continue */
+		if (! matched)
+			clauses = lappend(clauses, rinfo);
+
+	}
+
+	return clauses;
+}
+
+
+
+/*
+ * Estimate selectivity of join clauses - either by using foreign key info or
+ * by using the regular clauselist_selectivity().
+ *
+ * If there are multiple join clauses, we check whether the clauses match
+ * a foreign key between the tables - in that case we can use this information
+ * to derive a better estimate (otherwise we'd multiply the selectivities for
+ * each clause, which often causes significant underestimates).
+ *
+ * We only need to care about multi-clause join conditions and simply defer
+ * simple clauses to clauselist_selectivity().
+ *
+ * Let's see a few examples of foreign-key joins, illustrating the estimation
+ * ideas here.
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     a3 INT,
+ *     a4 INT,
+ *     PRIMARY KEY (a1, a2, a3)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     b3 INT,
+ *     b4 INT,
+ *     FOREIGN KEY (b1, b2, b3) REFERENCES (a1, a2, a3)
+ * );
+ *
+ * clauses exactly match a foreign key
+ * -----------------------------------
+ *
+ *   SELECT * FROM a JOIN b ON (a1=b1 AND a2=b2 AND a3=b3);
+ *
+ * - trivial, just use 1/card(a)
+ *
+ * clauses match a foreign key, with additional conditions exist
+ * -------------------------------------------------------------
+ *
+ *   SELECT * FROM a JOIN b ON (a1=b1 AND a2=b2 AND a3=b3 AND a4=b4);
+ *
+ * - trivial, just use 1/card(a) * selectivity(remaining_clauses)
+ *
+ * incomplete foreign key match
+ * ----------------------------
+ *
+ *   SELECT * FROM a JOIN b ON (a1=b1 AND a2=b2);
+ *
+ * - not sure, we'd need to compensate for the "missing part" somehow (we know
+ *   the row exists, but we don't know much many rows - it's likely more than
+ *   unique)
+ *
+ * - one way would be to assume each clause is responsible for (1/card(a))^(1/n)
+ *   where 'n' is number of clauses - this way 'multiplying the FK clauses' would
+ *   gets us the 1/card(a) selectivity if we had all the clauses
+ *
+ * - another thing is we might use 1/card(a) as a lower boundary - we can't
+ *   possibly get lower selectivity, we know the rows exist (also this is not
+ *   based on assumptions like the previous idea)
+ *
+ * multiple distinct foreign keys matching
+ * ---------------------------------------
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     a3 INT,
+ *     a4 INT,
+ *     PRIMARY KEY (a1, a2),
+ *     UNIQUE (a3, a4)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     b3 INT,
+ *     b4 INT,
+ *     FOREIGN KEY (b1, b2) REFERENCES (a1, a2),
+ *     FOREIGN KEY (b3, b4) REFERENCES (a3, a4)
+ * );
+ *
+ * - simply just use 1/card(a) for each foreign key (assumes independence of the
+ *   foreign keys, but well - we're assuming attribute independence so this is
+ *   an improvement)
+ *
+ * multiple overlapping foreign keys matching
+ * ------------------------------------------
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     a3 INT,
+ *     PRIMARY KEY (a1, a2),
+ *     UNIQUE (a2, a3)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     b3 INT,
+ *     b4 INT,
+ *     FOREIGN KEY (b1, b2) REFERENCES (a1, a2),
+ *     FOREIGN KEY (b3, b4) REFERENCES (a2, a3)
+ * );
+ *
+ * - probably just use 1/card(a) for each foreign key, as in the previous
+ *   example (assumes independence of the foreign keys, but well - we're
+ *   assuming attribute independence so this is an improvement)
+ *
+ * There are strange cases with multiple foreign keys, where one FK implies
+ * the other FK. For example consider this:
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     a3 INT,
+ *     UNIQUE (a1, a2, a3),
+ *     UNIQUE (a1, a2)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     b3 INT,
+ *     FOREIGN KEY (b1, b2, b3) REFERENCES a (a1, a2, a3),
+ *     FOREIGN KEY (b1, b2) REFERENCES a (a1, a2)
+ * );
+ *
+ * Clearly the (b1,b2) is implied by (b1,b2,b3) - if the latter exists, then
+ * the former exists too. Not sure how to handle this (or if it's actually
+ * needed).
+ *
+ * Another slightly strange case is FK constraints in both directions (these
+ * statements don't work - the foreign keys need to be established using
+ * ALTER, but for illustration it's sufficient).
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     UNIQUE (a1, a2),
+ *     FOREIGN KEY (a1, a2) REFERENCES a (b1, b2)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     UNIQUE (b1, b2),
+ *     FOREIGN KEY (b1, b2) REFERENCES a (a1, a2)
+ * );
+ *
+ * which effectively establishes 1:1 relationship, or with distinct groups of
+ * columns for each direction
+ *
+ * CREATE TABLE a (
+ *     a1 INT,
+ *     a2 INT,
+ *     a3 INT,
+ *     a4 INT,
+ *     UNIQUE (a1, a2),
+ *     FOREIGN KEY (a3, a4) REFERENCES a (b1, b2)
+ * );
+ *
+ * CREATE TABLE b (
+ *     b1 INT,
+ *     b2 INT,
+ *     b3 INT,
+ *     b4 INT,
+ *     UNIQUE (b1, b2),
+ *     FOREIGN KEY (b3, b4) REFERENCES a (a1, a2)
+ * );
+ *
+ * which creates a cycle of foreign keys.
+ *
+ * In the first case the foreign keys should be counted only once into the
+ * selectivity, because it's effectively a 1:1 relationship - each row has
+ * to have one matching row in the other table (not matched by other) rows.
+ *
+ * In the other case, it's probably right to factor in both foreign keys.
+ */
+static Selectivity
+clauselist_join_selectivity(PlannerInfo *root, List *joinquals, int varno,
+							JoinType jointype, SpecialJoinInfo *sjinfo)
+{
+	Selectivity sel = 1.0;
+
+	List	   *fkeys;		/* list of satisfied foreign keys */
+	List	   *unmatched;	/* clauses remaining after removing FK clauses */
+
+	Assert(list_length(joinquals) >= 0);
+
+	/*
+	 * If we only have a single clause, we don't need to mess with the foreign
+	 * keys - that's only useful with multi-column clauses anyway. Just use the
+	 * simple clauselist_selectivity.
+	 */
+	if (list_length(joinquals) <= 1)
+		return clauselist_selectivity(root,
+									  joinquals,
+									  0,
+									  jointype,
+									  sjinfo);
+
+	/*
+	 * First we'll identify foreign keys that are fully matched by the join
+	 * clauses, and we'll update the selectivity accordingly while doing so.
+	 */
+	fkeys = find_satisfied_fkeys(root, sjinfo, joinquals, &sel);
+
+	/*
+	 * Now that we have the foreign keys, we can get rid of the clauses
+	 * matching any of them, and only keep the remaining clauses, so that
+	 * we can estimate them using the regular selectivity estimation.
+	 */
+	unmatched = filter_fk_join_clauses(root, sjinfo, fkeys, joinquals);
+
+	/*
+	 * Estimate the remaining clauses (not matching any FK), if still have any.
+	 */
+	if (list_length(unmatched) > 0)
+	{
+		sel *= clauselist_selectivity(root,
+									  unmatched,
+									  0,
+									  jointype,
+									  sjinfo);
+
+		/* Only free the list if we actually found any foreign keys. */
+		if (list_length(fkeys) > 0)
+			list_free(unmatched);
+	}
+
+	return sel;
+}
+
+/*
  * calc_joinrel_size_estimate
  *		Workhorse for set_joinrel_size_estimates and
  *		get_parameterized_joinrel_size.
@@ -3777,11 +4385,12 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 		}
 
 		/* Get the separate selectivities */
-		jselec = clauselist_selectivity(root,
-										joinquals,
-										0,
-										jointype,
-										sjinfo);
+		jselec = clauselist_join_selectivity(root,
+											 joinquals,
+											 0,
+											 jointype,
+											 sjinfo);
+
 		pselec = clauselist_selectivity(root,
 										pushedquals,
 										0,
@@ -3794,11 +4403,11 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 	}
 	else
 	{
-		jselec = clauselist_selectivity(root,
-										restrictlist,
-										0,
-										jointype,
-										sjinfo);
+		jselec = clauselist_join_selectivity(root,
+											 restrictlist,
+											 0,
+											 jointype,
+											 sjinfo);
 		pselec = 0.0;			/* not used, keep compiler quiet */
 	}
 

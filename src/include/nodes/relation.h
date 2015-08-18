@@ -468,6 +468,7 @@ typedef struct RelOptInfo
 	Relids		lateral_relids; /* minimum parameterization of rel */
 	Relids		lateral_referencers;	/* rels that reference me laterally */
 	List	   *indexlist;		/* list of IndexOptInfo */
+	List	   *fkeylist;			/* list of ForeignKeyOptInfo */
 	BlockNumber pages;			/* size estimates derived from pg_class */
 	double		tuples;
 	double		allvisfrac;
@@ -562,6 +563,20 @@ typedef struct IndexOptInfo
 	bool		amhasgetbitmap; /* does AM have amgetbitmap interface? */
 } IndexOptInfo;
 
+/* TODO add info*/
+typedef struct ForeignKeyOptInfo
+{
+	NodeTag		type;
+
+	Oid			conrelid;
+	Oid			confrelid;
+
+	int			nkeys;
+	int		   *conkeys;
+	int		   *confkeys;
+	Oid		   *conpfeqop;
+
+} ForeignKeyOptInfo;
 
 /*
  * EquivalenceClasses

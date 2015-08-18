@@ -27,6 +27,7 @@
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
+#include "catalog/pg_constraint.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -40,6 +41,7 @@
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -93,6 +95,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	Relation	relation;
 	bool		hasindex;
 	List	   *indexinfos = NIL;
+	List	   *fkinfos = NIL;
 
 	/*
 	 * We need not lock the relation since it was already locked, either by
@@ -380,6 +383,88 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	}
 
 	rel->indexlist = indexinfos;
+ 
+	/*
+	 * TODO Can we do something like (hasindex) here? Is it necessary? The
+	 *      trouble with that is that we don't have a good place to reset that
+	 *      flag (relhasindex is reset by vacuum, but is has nothing to do with
+	 *      foreign keys at this point).
+	 */
+	if (true)
+	{
+		List	   *fkoidlist;
+		ListCell   *l;
+
+		fkoidlist = RelationGetFKeyList(relation);
+
+		foreach(l, fkoidlist)
+		{
+			int			i;
+			ArrayType  *arr;
+			Datum		adatum;
+			bool		isnull;
+			int			numkeys;
+			Oid			fkoid = lfirst_oid(l);
+
+			HeapTuple	htup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(fkoid));
+			Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(htup);
+
+			ForeignKeyOptInfo *info;
+
+			Assert(constraint->contype == CONSTRAINT_FOREIGN);
+
+			info = makeNode(ForeignKeyOptInfo);
+
+			info->conrelid = constraint->conrelid;
+			info->confrelid = constraint->confrelid;
+
+			/* conkey */
+			adatum = SysCacheGetAttr(CONSTROID, htup,
+									 Anum_pg_constraint_conkey, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+			numkeys = ARR_DIMS(arr)[0];
+			info->conkeys = (int*)palloc0(numkeys * sizeof(int));
+
+			for (i = 0; i < numkeys; i++)
+				info->conkeys[i] = ((int16 *) ARR_DATA_PTR(arr))[i];
+
+			/* confkey */
+			adatum = SysCacheGetAttr(CONSTROID, htup,
+									 Anum_pg_constraint_confkey, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+			numkeys = ARR_DIMS(arr)[0];
+			info->confkeys = (int*)palloc0(numkeys * sizeof(int));
+
+			for (i = 0; i < numkeys; i++)
+				info->confkeys[i] = ((int16 *) ARR_DATA_PTR(arr))[i];
+
+			/* conpfeqop */
+			adatum = SysCacheGetAttr(CONSTROID, htup,
+									 Anum_pg_constraint_conpfeqop, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+			numkeys = ARR_DIMS(arr)[0];
+			info->conpfeqop = (Oid*)palloc0(numkeys * sizeof(Oid));
+
+			for (i = 0; i < numkeys; i++)
+				info->conpfeqop[i] = ((Oid *) ARR_DATA_PTR(arr))[i];
+
+			info->nkeys = numkeys;
+
+			ReleaseSysCache(htup);
+
+			fkinfos = lcons(info, fkinfos);
+		}
+
+		list_free(fkoidlist);
+	}
+
+	rel->fkeylist = fkinfos;
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)

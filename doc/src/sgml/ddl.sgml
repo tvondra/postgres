@@ -3310,6 +3310,84 @@ ANALYZE measurement;
   </sect2>
  </sect1>
 
+ <sect1 id="ddl-column-store">
+  <title>Column Store</title>
+
+   <indexterm>
+    <primary>column store</primary>
+   </indexterm>
+   <indexterm>
+    <primary>columnar storage</primary>
+   </indexterm>
+   <indexterm>
+    <primary>vertical partitioning</primary>
+   </indexterm>
+
+   <para>
+    By default, <productname>PostgreSQL</productname> places all columns
+    of a table together within a single main data structure, referred
+    to internally as the heap.
+   </para>
+
+   <para>
+    Optionally, <productname>PostgreSQL</productname> allows you to
+    specify that columns can be held in secondary data structures,
+    known as column stores. Each column store has a unique name and
+    contains data only for its master table. If a column definition
+    specifies a column store then values of that column for all rows
+    of a table are stored only in the column store - and not within
+    the main heap. This is completely different from TOAST, which is
+    designed to handle oversized attributes by breaking them up into
+    chunks and storing them in a single common subtable for all columns.
+    It is possible to store multiple columns within the same column store.
+   </para>
+
+   <para>
+    With this feature <productname>PostgreSQL</productname> can be described
+    as a hybrid row/column store. <productname>PostgreSQL</productname>
+    implements column stores by providing a flexible column store API,
+    allowing different types of storage to be designed for different datatypes
+    or for different use cases.
+    Column stores are also sometimes referred to as columnar storage or
+    vertical paritioning. This section describes why and how to implement column
+    stores or vertical partitioning as part of your database design.
+   </para>
+
+   <para>
+    Storing all values for a column together in a single store gives the
+    following advantages
+   <itemizedlist>
+    <listitem>
+     <para>
+      By reducing the size of the main heap, scans will be faster.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      By separating data into multiple subtables, it will be possible to
+      store tables that are much larger than the maximum table size for a single
+      heap (32TB).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      By grouping related columns together, data not required for the current
+      query or action will be completely avoided, significantly reducing query
+      time.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      By grouping related columns together it is possible to take advantage of
+      high compression rates, reducing data storage requirements and reducing
+      query times for very large databases.
+     </para>
+    </listitem>
+   </itemizedlist>
+   </para>
+
+ </sect1>
+
  <sect1 id="ddl-foreign-data">
   <title>Foreign Data</title>
 

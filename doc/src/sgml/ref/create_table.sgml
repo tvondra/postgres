@@ -22,8 +22,9 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXISTS ] <replaceable class="PARAMETER">table_name</replaceable> ( [
-  { <replaceable class="PARAMETER">column_name</replaceable> <replaceable class="PARAMETER">data_type</replaceable> [ COLLATE <replaceable>collation</replaceable> ] [ <replaceable class="PARAMETER">column_constraint</replaceable> [ ... ] ]
+  { <replaceable class="PARAMETER">column_name</replaceable> <replaceable class="PARAMETER">data_type</replaceable> [ COLLATE <replaceable>collation</replaceable> ] [ <replaceable class="PARAMETER">column_constraint</replaceable> [ ... ] ] [ column_storage ]
     | <replaceable>table_constraint</replaceable>
+    | <replaceable>table_level_column_storage</replaceable>
     | LIKE <replaceable>source_table</replaceable> [ <replaceable>like_option</replaceable> ... ] }
     [, ... ]
 ] )
@@ -55,6 +56,14 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
     [ ON DELETE <replaceable class="parameter">action</replaceable> ] [ ON UPDATE <replaceable class="parameter">action</replaceable> ] }
 [ DEFERRABLE | NOT DEFERRABLE ] [ INITIALLY DEFERRED | INITIALLY IMMEDIATE ]
 
+<phrase>and <replaceable class="PARAMETER">column_store</replaceable> is:</phrase>
+
+[ COLUMN STORE <replaceable class="PARAMETER">column_store_name</replaceable>
+  USING <replaceable class="PARAMETER">column_store_access_method</replaceable>
+  [ WITH ( <replaceable class="PARAMETER">storage_parameter</replaceable>
+            [= <replaceable class="PARAMETER">value</replaceable>] [, ... ] ) ]
+  [ TABLESPACE <replaceable class="PARAMETER">tablespace_name</replaceable> ] ]
+
 <phrase>and <replaceable class="PARAMETER">table_constraint</replaceable> is:</phrase>
 
 [ CONSTRAINT <replaceable class="PARAMETER">constraint_name</replaceable> ]
@@ -65,6 +74,15 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
   FOREIGN KEY ( <replaceable class="PARAMETER">column_name</replaceable> [, ... ] ) REFERENCES <replaceable class="PARAMETER">reftable</replaceable> [ ( <replaceable class="PARAMETER">refcolumn</replaceable> [, ... ] ) ]
     [ MATCH FULL | MATCH PARTIAL | MATCH SIMPLE ] [ ON DELETE <replaceable class="parameter">action</replaceable> ] [ ON UPDATE <replaceable class="parameter">action</replaceable> ] }
 [ DEFERRABLE | NOT DEFERRABLE ] [ INITIALLY DEFERRED | INITIALLY IMMEDIATE ]
+
+<phrase>and <replaceable class="PARAMETER">table_level_column_store</replaceable> is:</phrase>
+
+[ COLUMN STORE <replaceable class="PARAMETER">column_store_name</replaceable>
+  USING <replaceable class="PARAMETER">column_store_access_method</replaceable>
+  (<replaceable class="PARAMETER">column_name</replaceable> [, ...] )
+  [ WITH ( <replaceable class="PARAMETER">storage_parameter</replaceable>
+            [= <replaceable class="PARAMETER">value</replaceable>] [, ... ] ) ]
+  [ TABLESPACE <replaceable class="PARAMETER">tablespace_name</replaceable> ] ]
 
 <phrase>and <replaceable class="PARAMETER">like_option</replaceable> is:</phrase>
 
@@ -262,6 +280,28 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
    </varlistentry>
 
    <varlistentry>
+    <term><literal>COLUMN STORE <replaceable>column store name</replaceable></literal></term>
+    <listitem>
+     <para>
+      The <literal>COLUMN STORE</> clause assigns a column to a named
+      column store with a column store access method defined by the
+      compulsory <literal>USING</> clause. Optional parameters may be set
+      in the <literal>WITH</> clause. A tablespace can be defined for each
+      column store by using the <literal>TABLESPACE</> clause, otherwise
+      the column store will use the same tablespace as the main table.
+     </para>
+     <para>
+      Column stores may contain multiple columns. Multi-column column stores
+      must be defined as table-level clauses.
+     </para>
+     <para>
+      Columns may be assigned to only one column store, otherwise they will
+      be stored as part of the main table.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><literal>INHERITS ( <replaceable>parent_table</replaceable> [, ... ] )</literal></term>
     <listitem>
      <para>
@@ -307,7 +347,8 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
      </para>
 
      <para>
-      Column <literal>STORAGE</> settings are also copied from parent tables.
+      Column <literal>STORAGE</> settings are also copied from parent tables,
+      but not column storage definitions.
      </para>
 
     </listitem>
@@ -320,6 +361,7 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
       The <literal>LIKE</literal> clause specifies a table from which
       the new table automatically copies all column names, their data types,
       and their not-null constraints.
+      Column storage parameters are not copied by the LIKE clause.
      </para>
      <para>
       Unlike <literal>INHERITS</literal>, the new table and original table

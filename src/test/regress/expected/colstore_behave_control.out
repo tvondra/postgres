@@ -1,0 +1,253 @@
+DROP TABLE IF EXISTS colstore_behave_test;
+NOTICE:  table "colstore_behave_test" does not exist, skipping
+CREATE TABLE colstore_behave_test
+(col1	bigint
+,col2	text
+,col3	bigint
+,col4	integer
+,col5	smallint
+,col6	text
+,col7	char(10) not null
+,col8	text
+);
+\i sql/colstore_behave.sql
+-- Required behavior for all column stores
+INSERT INTO colstore_behave_test
+VALUES (1, 'a', 12, 52, 42, 'col6a', 'col7z', 'col8_1234567');
+INSERT INTO colstore_behave_test
+VALUES (2, 'b', 22, 62, 82, 'col6b', 'col7y', 'col8_89101112');
+INSERT INTO colstore_behave_test
+VALUES (3, 'c', 32, 72, 92, 'col6c', 'col7x', 'col8_13141516888');
+SELECT col1 FROM colstore_behave_test;
+ col1 
+------
+    1
+    2
+    3
+(3 rows)
+
+SELECT col2 FROM colstore_behave_test;
+ col2 
+------
+ a
+ b
+ c
+(3 rows)
+
+SELECT col3 FROM colstore_behave_test;
+ col3 
+------
+   12
+   22
+   32
+(3 rows)
+
+SELECT col4 FROM colstore_behave_test;
+ col4 
+------
+   52
+   62
+   72
+(3 rows)
+
+SELECT col5 FROM colstore_behave_test;
+ col5 
+------
+   42
+   82
+   92
+(3 rows)
+
+SELECT col6 FROM colstore_behave_test;
+ col6  
+-------
+ col6a
+ col6b
+ col6c
+(3 rows)
+
+SELECT col7 FROM colstore_behave_test;
+    col7    
+------------
+ col7z     
+ col7y     
+ col7x     
+(3 rows)
+
+SELECT col8 FROM colstore_behave_test;
+       col8       
+------------------
+ col8_1234567
+ col8_89101112
+ col8_13141516888
+(3 rows)
+
+SELECT col1, col3, col6 FROM colstore_behave_test;
+ col1 | col3 | col6  
+------+------+-------
+    1 |   12 | col6a
+    2 |   22 | col6b
+    3 |   32 | col6c
+(3 rows)
+
+SELECT col6, col1, col3 FROM colstore_behave_test;
+ col6  | col1 | col3 
+-------+------+------
+ col6a |    1 |   12
+ col6b |    2 |   22
+ col6c |    3 |   32
+(3 rows)
+
+SELECT 1 FROM colstore_behave_test WHERE col1 >= 2;
+ ?column? 
+----------
+        1
+        1
+(2 rows)
+
+SELECT 2 FROM colstore_behave_test WHERE col1 IN (1,3);
+ ?column? 
+----------
+        2
+        2
+(2 rows)
+
+SELECT 3 FROM colstore_behave_test WHERE col2 = 'c';
+ ?column? 
+----------
+        3
+(1 row)
+
+SELECT 4 FROM colstore_behave_test WHERE col3 =12 OR col4 =62;
+ ?column? 
+----------
+        4
+        4
+(2 rows)
+
+SELECT 5 FROM colstore_behave_test WHERE col6 LIKE 'col6%';
+ ?column? 
+----------
+        5
+        5
+        5
+(3 rows)
+
+SELECT 6 FROM colstore_behave_test WHERE col7 LIKE '%7%';
+ ?column? 
+----------
+        6
+        6
+        6
+(3 rows)
+
+SELECT 7 FROM colstore_behave_test WHERE col8 LIKE 'col8%';
+ ?column? 
+----------
+        7
+        7
+        7
+(3 rows)
+
+SELECT col1 FROM colstore_behave_test WHERE col1 >= 2;
+ col1 
+------
+    2
+    3
+(2 rows)
+
+SELECT col1 FROM colstore_behave_test WHERE col1 IN (1,3);
+ col1 
+------
+    1
+    3
+(2 rows)
+
+SELECT col2 FROM colstore_behave_test WHERE col2 = 'c';
+ col2 
+------
+ c
+(1 row)
+
+SELECT col3, col4 FROM colstore_behave_test WHERE col3 =12 OR col4 =62;
+ col3 | col4 
+------+------
+   12 |   52
+   22 |   62
+(2 rows)
+
+SELECT col6 FROM colstore_behave_test WHERE col6 LIKE 'col6%';
+ col6  
+-------
+ col6a
+ col6b
+ col6c
+(3 rows)
+
+SELECT col7 FROM colstore_behave_test WHERE col7 LIKE '%7%';
+    col7    
+------------
+ col7z     
+ col7y     
+ col7x     
+(3 rows)
+
+SELECT col8 FROM colstore_behave_test WHERE col8 LIKE 'col8%';
+       col8       
+------------------
+ col8_1234567
+ col8_89101112
+ col8_13141516888
+(3 rows)
+
+SELECT * FROM colstore_behave_test WHERE col1 >= 2;
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    2 | b    |   22 |   62 |   82 | col6b | col7y      | col8_89101112
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(2 rows)
+
+SELECT * FROM colstore_behave_test WHERE col1 IN (1,3);
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    1 | a    |   12 |   52 |   42 | col6a | col7z      | col8_1234567
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(2 rows)
+
+SELECT * FROM colstore_behave_test WHERE col2 = 'c';
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(1 row)
+
+SELECT * FROM colstore_behave_test WHERE col3 =12 OR col4 =62;
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |     col8      
+------+------+------+------+------+-------+------------+---------------
+    1 | a    |   12 |   52 |   42 | col6a | col7z      | col8_1234567
+    2 | b    |   22 |   62 |   82 | col6b | col7y      | col8_89101112
+(2 rows)
+
+SELECT * FROM colstore_behave_test WHERE col6 LIKE 'col6%';
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    1 | a    |   12 |   52 |   42 | col6a | col7z      | col8_1234567
+    2 | b    |   22 |   62 |   82 | col6b | col7y      | col8_89101112
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(3 rows)
+
+SELECT * FROM colstore_behave_test WHERE col7 LIKE '%7%';
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    1 | a    |   12 |   52 |   42 | col6a | col7z      | col8_1234567
+    2 | b    |   22 |   62 |   82 | col6b | col7y      | col8_89101112
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(3 rows)
+
+SELECT * FROM colstore_behave_test WHERE col8 LIKE 'col8%';
+ col1 | col2 | col3 | col4 | col5 | col6  |    col7    |       col8       
+------+------+------+------+------+-------+------------+------------------
+    1 | a    |   12 |   52 |   42 | col6a | col7z      | col8_1234567
+    2 | b    |   22 |   62 |   82 | col6b | col7y      | col8_89101112
+    3 | c    |   32 |   72 |   92 | col6c | col7x      | col8_13141516888
+(3 rows)
+

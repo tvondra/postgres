@@ -56,6 +56,7 @@ OBJS = \
 	jsonpath.o \
 	jsonpath_exec.o \
 	jsonpath_gram.o \
+	jsonb_typanalyze.o \
 	like.o \
 	like_support.o \
 	lockfuncs.o \

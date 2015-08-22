@@ -412,4 +412,10 @@ extern Datum jsonb_set_element(Jsonb *jb, Datum *path, int path_len,
 							   JsonbValue *newval);
 extern Datum jsonb_get_element(Jsonb *jb, Datum *path, int npath,
 							   bool *isnull, bool as_text);
-#endif							/* __JSONB_H__ */
+
+/*
+ * prototypes for functions defined in jsonb_typanalyze.c
+ */
+extern Datum jsonb_typanalyze(PG_FUNCTION_ARGS);
+
+#endif   /* __JSONB_H__ */

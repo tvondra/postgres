@@ -1,4 +1,3 @@
-\o /dev/null
 DROP TABLE IF EXISTS colstore_behave_test;
 CREATE TABLE colstore_behave_test
 (col1	bigint COLUMN STORE col1 USING test
@@ -11,6 +10,5 @@ CREATE TABLE colstore_behave_test
 ,col8	text
 ,COLUMN STORE int USING test (col3, col4, col5)
 );
-\o
 
 \i sql/colstore_behave.sql

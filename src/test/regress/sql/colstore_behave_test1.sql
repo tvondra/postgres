@@ -1,4 +1,3 @@
-\o /dev/null
 CREATE COLUMN STORE ACCESS METHOD test HANDLER cstore_dummy_handler;
 DROP TABLE IF EXISTS colstore_behave_test;
 CREATE TABLE colstore_behave_test
@@ -11,6 +10,5 @@ CREATE TABLE colstore_behave_test
 ,col7	char(10) not null
 ,col8	text
 );
-\o
 
 \i sql/colstore_behave.sql

@@ -1,5 +1,4 @@
 DROP TABLE IF EXISTS colstore_behave_test;
-NOTICE:  table "colstore_behave_test" does not exist, skipping
 CREATE TABLE colstore_behave_test
 (col1	bigint
 ,col2	text

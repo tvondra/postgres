@@ -206,4 +206,8 @@ extern Selectivity scalararraysel_containment(PlannerInfo *root,
 extern Datum arraycontsel(PG_FUNCTION_ARGS);
 extern Datum arraycontjoinsel(PG_FUNCTION_ARGS);
 
+/* Functions in jsonb_selfuncs.c */
+
+extern Datum jsonbcontsel(PG_FUNCTION_ARGS);
+
 #endif   /* SELFUNCS_H */

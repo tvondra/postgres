@@ -944,8 +944,6 @@ DATA(insert OID = 3218 ( width_bucket	   PGNSP PGUID 12 1 0 0 0 f f f f t f i 2 
 DESCR("bucket number of operand given a sorted array of bucket lower bounds");
 DATA(insert OID = 3816 (  array_typanalyze PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281" _null_ _null_ _null_ _null_ _null_ array_typanalyze _null_ _null_ _null_ ));
 DESCR("array typanalyze");
-DATA(insert OID = 3300 (  jsonb_typanalyze PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281" _null_ _null_ _null_ _null_ _null_ jsonb_typanalyze _null_ _null_ _null_ ));
-DESCR("jsonb typanalyze");
 DATA(insert OID = 3817 (  arraycontsel	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 4 0 701 "2281 26 2281 23" _null_ _null_ _null_ _null_ _null_ arraycontsel _null_ _null_ _null_ ));
 DESCR("restriction selectivity for array-containment operators");
 DATA(insert OID = 3818 (  arraycontjoinsel PGNSP PGUID 12 1 0 0 0 f f f f t f s 5 0 701 "2281 26 2281 21 2281" _null_ _null_ _null_ _null_ _null_ arraycontjoinsel _null_ _null_ _null_ ));
@@ -4889,6 +4887,12 @@ DATA(insert OID = 3305 (  jsonb_set    PGNSP PGUID 12 1 0 0 0 f f f f t f i 4 0 
 DESCR("Set part of a jsonb");
 DATA(insert OID = 3306 (  jsonb_pretty	   PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 25 "3802" _null_ _null_ _null_ _null_ _null_ jsonb_pretty _null_ _null_ _null_ ));
 DESCR("Indented text from jsonb");
+
+DATA(insert OID = 3330 (  jsonb_typanalyze PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281" _null_ _null_ _null_ _null_ _null_ jsonb_typanalyze _null_ _null_ _null_ ));
+DESCR("jsonb typanalyze");
+DATA(insert OID = 3331 (  jsonbcontsel	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 4 0 701 "2281 26 2281 23" _null_ _null_ _null_ _null_ _null_ jsonbcontsel _null_ _null_ _null_ ));
+DESCR("restriction selectivity for jsonb-containment operators");
+
 /* txid */
 DATA(insert OID = 2939 (  txid_snapshot_in			PGNSP PGUID 12 1  0 0 0 f f f f t f i 1 0 2970 "2275" _null_ _null_ _null_ _null_ _null_ txid_snapshot_in _null_ _null_ _null_ ));
 DESCR("I/O");

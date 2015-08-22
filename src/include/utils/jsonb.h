@@ -433,5 +433,9 @@ extern char *JsonbToCString(StringInfo out, JsonbContainer *in,
 extern char *JsonbToCStringIndent(StringInfo out, JsonbContainer *in,
 					 int estimated_len);
 
+/*
+ * prototypes for functions defined in jsonb_typanalyze.c
+ */
+extern Datum jsonb_typanalyze(PG_FUNCTION_ARGS);
 
 #endif   /* __JSONB_H__ */

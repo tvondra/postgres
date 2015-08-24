@@ -411,6 +411,7 @@ sub emit_pgattr_row
 		atthasdef     => 'f',
 		attisdropped  => 'f',
 		attislocal    => 't',
+		attinheap     => 't',
 		attinhcount   => '0',
 		attacl        => '_null_',
 		attoptions    => '_null_',

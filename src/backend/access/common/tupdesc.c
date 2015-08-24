@@ -407,6 +407,8 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 			return false;
 		if (attr1->attinhcount != attr2->attinhcount)
 			return false;
+		if (attr1->attinheap != attr2->attinheap)
+			return false;
 		if (attr1->attcollation != attr2->attcollation)
 			return false;
 		/* attacl, attoptions and attfdwoptions are not even present... */
@@ -536,6 +538,7 @@ TupleDescInitEntry(TupleDesc desc,
 	att->atthasdef = false;
 	att->attisdropped = false;
 	att->attislocal = true;
+	att->attinheap = true;
 	att->attinhcount = 0;
 	/* attacl, attoptions and attfdwoptions are not present in tupledescs */
 
@@ -589,6 +592,9 @@ TupleDescInitEntryCollation(TupleDesc desc,
  * Note: the default assumption is no OIDs; caller may modify the returned
  * TupleDesc if it wants OIDs.  Also, tdtypeid will need to be filled in
  * later on.
+ *
+ * Note: Default assumption for attinheap is TRUE.  Caller must turn it off as
+ * appropriate.
  */
 TupleDesc
 BuildDescForRelation(List *schema, List **colstores)

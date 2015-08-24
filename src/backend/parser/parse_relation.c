@@ -2401,6 +2401,10 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 							  sublevels_up);
 			varnode->location = location;
 
+			/* remember whether the attribute lives in the heap */
+			if (!attr->attinheap)
+				varnode->varinheap = false;
+
 			*colvars = lappend(*colvars, varnode);
 		}
 	}

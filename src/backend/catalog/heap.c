@@ -1271,6 +1271,9 @@ heap_create_with_catalog(const char *relname,
 	 */
 	CreateColumnStores(new_rel_desc, colstores);
 
+	/* Reset the attinheap attribute of columns that are in stores */
+	ResetAttrInHeap(new_rel_desc->rd_att, colstores);
+
 	/*
 	 * now add tuples to pg_attribute for the attributes in our new relation.
 	 */

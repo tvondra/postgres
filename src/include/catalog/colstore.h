@@ -33,6 +33,8 @@ typedef struct ColumnStoreClauseInfo
 extern List *DetermineColumnStores(TupleDesc tupdesc, List *decl_cstores,
 					  List *inh_cstores, Oid tablespaceId);
 extern void CreateColumnStores(Relation rel, List *colstores);
+extern void ResetAttrInHeap(TupleDesc tupdesc, List *colstores);
+
 extern List *CloneColumnStores(Relation rel);
 extern Oid get_relation_cstore_oid(Oid relid, const char *cstore_name,
 						bool missing_ok);

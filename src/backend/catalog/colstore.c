@@ -374,6 +374,30 @@ CreateColumnStores(Relation rel, List *colstores)
 }
 
 /*
+ * Reset attinheap for each attribute that appears in a column store declaration
+ */
+void
+ResetAttrInHeap(TupleDesc tupdesc, List *colstores)
+{
+	ListCell	   *cell1;
+
+	foreach (cell1, colstores)
+	{
+		ListCell   *cell2;
+
+		ColumnStoreElem *elem = (ColumnStoreElem *) lfirst(cell1);
+
+		foreach (cell2, elem->columns)
+		{
+			AttrNumber		attnum = lfirst_oid(cell2);
+
+			tupdesc->attrs[attnum - 1]->attinheap = false;
+		}
+	}
+}
+
+
+/*
  * Build a tuple descriptor for a not-yet-catalogued column store.
  */
 static TupleDesc

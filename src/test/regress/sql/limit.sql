@@ -1,62 +1,41 @@
-CREATE OR REPLACE FUNCTION ct_limits(numcols integer, colstoreflag boolean)
-RETURNS boolean
-LANGUAGE plpgsql
-AS
-$$
-DECLARE
- sql TEXT;
- i	INTEGER;
-BEGIN
- 	sql := 'CREATE TABLE colstore_limit (';
-	<< col >>
-	FOR i IN 1..numcols LOOP
-		IF i > 1 THEN
-			sql = sql || ',';
-		END IF;
-		sql := sql || 'col' || i::text || ' smallint';
-		IF colstoreflag THEN
-		  sql := sql || ' COLUMN STORE foo' || i::text || ' USING store_am_one';
-		END IF;
-	END LOOP col;
-	sql := sql || ')';
+--
+-- LIMIT
+-- Check the LIMIT/OFFSET feature of SELECT
+--
 
-	BEGIN
-		EXECUTE sql;
-	EXCEPTION
-		WHEN OTHERS THEN
-			RETURN false;
-	END;
-	RETURN true;
-END;
-$$;
+SELECT ''::text AS two, unique1, unique2, stringu1
+		FROM onek WHERE unique1 > 50
+		ORDER BY unique1 LIMIT 2;
+SELECT ''::text AS five, unique1, unique2, stringu1
+		FROM onek WHERE unique1 > 60
+		ORDER BY unique1 LIMIT 5;
+SELECT ''::text AS two, unique1, unique2, stringu1
+		FROM onek WHERE unique1 > 60 AND unique1 < 63
+		ORDER BY unique1 LIMIT 5;
+SELECT ''::text AS three, unique1, unique2, stringu1
+		FROM onek WHERE unique1 > 100
+		ORDER BY unique1 LIMIT 3 OFFSET 20;
+SELECT ''::text AS zero, unique1, unique2, stringu1
+		FROM onek WHERE unique1 < 50
+		ORDER BY unique1 DESC LIMIT 8 OFFSET 99;
+SELECT ''::text AS eleven, unique1, unique2, stringu1
+		FROM onek WHERE unique1 < 50
+		ORDER BY unique1 DESC LIMIT 20 OFFSET 39;
+SELECT ''::text AS ten, unique1, unique2, stringu1
+		FROM onek
+		ORDER BY unique1 OFFSET 990;
+SELECT ''::text AS five, unique1, unique2, stringu1
+		FROM onek
+		ORDER BY unique1 OFFSET 990 LIMIT 5;
+SELECT ''::text AS five, unique1, unique2, stringu1
+		FROM onek
+		ORDER BY unique1 LIMIT 5 OFFSET 900;
 
-CREATE OR REPLACE FUNCTION check_limits(colstoreflag boolean)
-RETURNS VOID
-LANGUAGE plpgsql
-AS
-$$
-DECLARE
- i INTEGER := 2;
- flag TEXT := 'false';
-BEGIN
- IF colstoreflag THEN
- 	flag := 'true';
- END IF;
- << main >>
- LOOP
-	BEGIN
-		EXECUTE 'DROP TABLE IF EXISTS colstore_limit';
-		EXECUTE 'SELECT ct_limits(' || i::text || ',' || flag || ')';
-		EXECUTE 'INSERT INTO colstore_limit DEFAULT VALUES';
-		RAISE NOTICE '%',i;
-	EXCEPTION
-		WHEN OTHERS THEN
-			RAISE NOTICE 'Failed at %', i;
-			RETURN;
-	END;
-	i := i + 2;
- END LOOP main;
-END;
-$$;
-SELECT check_limits(false);
-SELECT check_limits(true);
+-- Stress test for variable LIMIT in conjunction with bounded-heap sorting
+
+SELECT
+  (SELECT n
+     FROM (VALUES (1)) AS x,
+          (SELECT n FROM generate_series(1,10) AS n
+             ORDER BY n LIMIT 1 OFFSET s-1) AS y) AS z
+  FROM generate_series(1,10) AS s;

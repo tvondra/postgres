@@ -1523,6 +1523,10 @@ describeOneTableDetails(const char *schemaname,
 			printfPQExpBuffer(&title, _("Composite type \"%s.%s\""),
 							  schemaname, relationname);
 			break;
+		case 'C':
+			printfPQExpBuffer(&title, _("Column store \"%s.%s\""),
+							  schemaname, relationname);
+			break;
 		case 'f':
 			printfPQExpBuffer(&title, _("Foreign table \"%s.%s\""),
 							  schemaname, relationname);

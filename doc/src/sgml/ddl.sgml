@@ -3354,21 +3354,8 @@ ANALYZE measurement;
    </para>
 
    <para>
-    Storing all values for a column together in a single store gives the
-    following advantages
+    Column stores provide the following advantages
    <itemizedlist>
-    <listitem>
-     <para>
-      By reducing the size of the main heap, scans will be faster.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      By separating data into multiple subtables, it will be possible to
-      store tables that are much larger than the maximum table size for a single
-      heap (32TB).
-     </para>
-    </listitem>
     <listitem>
      <para>
       By grouping related columns together, data not required for the current
@@ -3381,6 +3368,32 @@ ANALYZE measurement;
       By grouping related columns together it is possible to take advantage of
       high compression rates, reducing data storage requirements and reducing
       query times for very large databases.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      By separating data into multiple column stores, datatype-specific
+      storage optimizations will become possible, further extending
+      <productname>PostgreSQL</productname>'s support for custom datatypes.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      By separating data into multiple subtables, it will be possible to
+      store tables that are much larger than the maximum table size for a single
+      heap (32TB).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Reusing storage technology from other projects and/or using technology
+      with different licencing restrictions (GPL licence etc).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Provides an architecture that may eventually allow us to have tables
+      with more than 1600 columns.
      </para>
     </listitem>
    </itemizedlist>

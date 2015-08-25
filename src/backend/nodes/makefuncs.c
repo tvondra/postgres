@@ -88,6 +88,9 @@ makeVar(Index varno,
 	var->varnoold = varno;
 	var->varoattno = varattno;
 
+	/* likewise, we just set varinheap to TRUE here */
+	var->varinheap = true;
+
 	/* Likewise, we just set location to "unknown" here */
 	var->location = -1;
 

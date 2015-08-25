@@ -447,6 +447,7 @@ _readVar(void)
 
 	READ_UINT_FIELD(varno);
 	READ_INT_FIELD(varattno);
+	READ_BOOL_FIELD(varinheap);
 	READ_OID_FIELD(vartype);
 	READ_INT_FIELD(vartypmod);
 	READ_OID_FIELD(varcollid);

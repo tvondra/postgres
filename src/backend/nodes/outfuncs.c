@@ -953,6 +953,7 @@ _outVar(StringInfo str, const Var *node)
 
 	WRITE_UINT_FIELD(varno);
 	WRITE_INT_FIELD(varattno);
+	WRITE_BOOL_FIELD(varinheap);
 	WRITE_OID_FIELD(vartype);
 	WRITE_INT_FIELD(vartypmod);
 	WRITE_OID_FIELD(varcollid);

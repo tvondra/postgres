@@ -1138,6 +1138,7 @@ _copyVar(const Var *from)
 
 	COPY_SCALAR_FIELD(varno);
 	COPY_SCALAR_FIELD(varattno);
+	COPY_SCALAR_FIELD(varinheap);
 	COPY_SCALAR_FIELD(vartype);
 	COPY_SCALAR_FIELD(vartypmod);
 	COPY_SCALAR_FIELD(varcollid);

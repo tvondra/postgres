@@ -1,0 +1,267 @@
+src/backend/access/columnar/README
+
+Columnar Indexes
+================
+
+This directory contains an experimental implementation of columnar indexes,
+an index type inspired by ideas from columnar storage.
+
+
+Motivation
+----------
+
+PostgreSQL uses the indexes a secondary data structure for accelerating queries.
+There are two basic ways of using an index - when performing "index scan" it's
+necessary to access the table because the index does not contain all the data
+needed by the query. This need to access heap makes Index Scans efficient only
+for small portions of the data, as it's a source of random I/O. It also means
+both the index and heap needs to be read (so it's easier to just read the heap).
+
+Since PostgreSQL 9.2, it's possible to perform "Index Only Scans" if the index
+contains all the required columns. Indexes don't contain visibility information,
+but the visibility map can be used for this purpose very efficiently (otherwise
+the heap has to be accessed, eliminating the main benefit of Index Only Scan).
+
+This makes it possible to design indexes so that queries use index-only-scans
+as much as possible, minimizing the amount of I/O significantly, especially for
+queries accessing only a few columns of a wide table. The indexes may also
+produce sorted output, allowing plans are more efficient in using CPU caches
+(GroupAggregate is more efficient than HashAggregate, MergeJoin is more
+efficient than HashAggregate etc.)
+
+Index-only-scans make it possible to design narrow indexes for each query (with
+only the required columns), minimizing the amount of data that needs to be read
+from disk.
+
+The main issue with this approach however is disk space. Currently the only
+index type supporting index-only-scan is btree [1], and while it requires
+slightly less overhead per tuple (no visibility info), it's not wildly different
+from the heap. For example a table with 10 INT columns and 1M rows has ~65MB,
+and index with all the columns needs ~56MB.
+
+[1] Since d04c8ed9 GiST also supports IOS, but this index type is not as widely
+    applicable as btree or GIN.
+
+It's not uncommon to see schemas with indexes occupying significantly more space
+than the primary table, even without designing the indexes for index-only-scans
+(which is likely to require more indexes).
+
+This is the primary motivation of the new index type - lowering the disk space
+requirements, making the index-only-scan approach more practical. This is
+achieved by compressing the data in a way inspired by columnar storage.
+
+The index also implements (or allows the implementation) other interesting
+features, like operating directly on compressed data, etc.
+
+The term "columnar" is used in many different ways, and it's meaning may not be
+entirely clear. In the context of this index AM, "columnar" might be replaced
+with "compressed" in a way that exploits redundancy within a data for each
+column (and is used in some column stores).
+
+
+Why not primary columnar storage
+--------------------------------
+
+Primary columnar storage (i.e. ability to create tables storing data in columnar
+format) is a very attractive goal, but it's also very challenging and requires
+extensive changes in the code base. The implementation is likely to take quite
+a bit of time.
+
+Columnar indexes are "contained" within the index API, an existing feature. While
+they can't provide all the benefits of columnar storage, they can provide at
+least some of them, and in much shorter time frame.
+
+Also, parts of the code may be later used for the primary columnar storage.
+
+
+Columnar indexes are indexes, but ...
+-------------------------------------
+
+As columnar indexes implement the index AM API, they are regular indexes and
+should be able to handle all the tasks - looking up TIDs for a condition,
+building a bitmap, etc. That however does not mean they are as efficient as
+other indexes (e.g. btree) when handling those requests.
+
+Columnar indexes are aimed at queries that scan large portion of the table, and
+the storage is optimized primarily for this purpose.
+
+For example, lookup of a single tuple from the index is quite expensive as it
+requires reading the whole index. This may change after introducing the range
+pages (built-in BRIN index, discussed later).
+
+
+Index AM limitations
+--------------------
+
+As columnar indexes implement the index AM API, they are naturally subject to
+limitations imposed by the API and how it's currently used (often implicitly).
+Three of the limitations seem worth mentioning here.
+
+Firstly, the Index Only Scan can only use a single index - it's not possible
+to combine multiple indexes. Indexes are traditionally designed for quick lookup
+of TID given the column value, while the combination would require the other
+direction (given a TID, quickly lookup the values).
+
+Secondly, the tuples have to be materialized from the compressed form when
+returned by the index AM. This may require some amount of CPU time.
+
+Finally, the indexes are currently limited to 32 columns. Therefore if a query
+needs more than 32 columns from a query, it can't use index only scan.
+
+
+On-disk format
+--------------
+
+Columnar indexes use the usual storage format with a single relfilenode split
+into 8kB pages, just like all the other database objects.
+
+Some column stores benefit from different storage formats - with pages of
+different size (larger size may mean better compression ratio) or even without
+using fixed-size pages (and instead use ORC-like format with variable-sized
+segments).
+
+Using the same basic format like the other objects however makes it trivial to
+integrate the new index type with existing buffer management, WAL etc.
+
+The overall page structure is the same as for other pages - every page has
+a generic header and an opaque area (specific to columnar indexes).
+
+The internal page structure is however very different from heap pages or pages
+of btree indexes. Instead of storing the individual items (rows), the
+tuples data are decomposed into per-column arrays and those arrays are stored
+on the page (possibly in a compressed form).
+
+The pages are split into per-column segments (and also one segment tracking TIDs
+for the rows).
+
+   ------------------------------------------------------------------
+   | PageHeaderData |                segment #1 (TID)               |
+   ------------------------------------------------------------------
+   |                    segment #2 (column 1) ...                   |
+   ------------------------------------------------------------------
+   |       ... |    segment #3 (column 2)                           |
+   ------------------------------------------------------------------
+   |                ... |    segment #4 (column 3)                  |
+   ------------------------------------------------------------------
+   |                                                                |
+   |                               ...                              |
+   |                                                                |
+   ------------------------------------------------------------------
+   |                                           ... |                |
+   ------------------------------------------------------------------
+   | segment #N (column N-1)   ... |     ColumnarPageOpaqueData     |
+   ------------------------------------------------------------------
+
+The segments follow a generic structure, starting with a header tracking details
+about the data (item size, number of items, ...).
+
+   ------------------------------------------------------------------
+   | header | compressed | plain -> |    empty     | <- null bitmap |
+   ------------------------------------------------------------------
+
+After the header, the segment stores the column data. This section is split into
+compressed and uncompressed part, to allow efficient incremental recompression.
+
+And finally, the segment may store NULL bitmap (unless the column is marked as
+NOT NULL). The bitmap grows from the end of the buffer.
+
+
+Page recompression and reorganizing
+-----------------------------------
+
+The initial layout of segments on an empty page is mostly a guesswork - it's
+determined based on size of uncompressed data. When the first segment gets
+full (so the page can't immediately accept any additional data), an attempt
+to reorganize the page is made. This includes two steps
+
+  (a) recompression
+
+      All the segments on the page are compressed, assuming the data is
+      compressible and this actually saves space (otherwise the segment is
+      marked as incompressible and no further compression attempts are made).
+
+  (b) reorganization
+
+      Recompression of course changes the amount of space needed for each
+      segment (some segments may be more compressible than others), and thus
+      the second step is reorganization of the page - the segments are shuffled
+      around, trading space between segments.
+
+If the page can't accept new items even after recompression and reorganizing,
+it's marked as full and no additional data are inserted on it.
+
+
+Compression
+-----------
+
+Data compression is a crucial feature for columnar indexes - without it, the
+amount of saved disk space (and consequently I/O) would be much smaller.
+
+Column stores usually don't use general-purpose compression algorithms, and
+instead use light-weight compression algorithms like RLE-encoding or dictionary
+compression. While these methods usually achieve lower compression ratios, they
+allow evaluating conditions directly on the compressed data.
+
+Columnar indexes implement two simple compression methods - RLE and DICT,
+but the evaluation of conditions on compressed data is not implemented yet.
+
+GIN indexes allow compression, but do not allow index-only-scan as it's not
+possible to quickly reconstructing of the tuples from the multi-column index.
+
+The TID segment used a slightly different kind of compression, combining DELTA
+and RLE compression. This works good for this particular type of data.
+
+XXX Currently the best sort algorithm is detected automatically from the data.
+    We simply check how efficient the RLE and DICT compression methods would
+    be, and then either choose one of them or fall-back to pglz.
+
+
+Sorting
+-------
+
+When building the data on an existing table, the data are sorted first. This
+improves efficiency of the compression as it increases the homogenity of data
+on each page (and thus improves the compression ratio). Of course this works
+best for the leading columns.
+
+A side effect of it is that when reading data from the index, it's actually
+returned in the same (sorted) order.
+
+Currently, the sorting gets broken once additional tuples are inserted into
+the table, as those are always added to the last page of the index. This needs
+to be addressed as a maintenance task (e.g. by autovacuum), if the sorting
+is a desirable feature of the index.
+
+XXX The idea is that the index is effectively split into a sorted part, and a
+    much smaller part of the recently inserted tuples. And then unsorted part
+    is sorted during a maintenance (e.g. within vacuum), and either merged
+    into the sorted part or kept as additional sorted segment (and then the
+    data is merged while reading the index).
+
+
+Maintenance
+-----------
+
+- does not really exist at the moment, but the basic VACUUM is not difficult
+
+- A nice feature of DICT, RLE and TID is that all those methods can handle
+  deletions without the risk of increasing size of the compressed data (so
+  it can't happen that after VACUUM we can't fit the data onto page). With
+  pglz this can happen because it may break a pattern.
+
+
+TODO
+----
+
+* allow pass-by-ref data too (only works with pass-by-val data)
+
+* optimize cases with no NULL values (don't store NULL bitmap)
+
+* handle VACUUM/maintenance support
+
+* add range pages (built-in BRIN indexes)
+
+* support both sorted and unsorted indexes (sorting makes maintenance more
+  expensive, but makes some plans possible)
+
+* evaluate conditions on the compressed data

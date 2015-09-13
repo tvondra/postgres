@@ -188,6 +188,13 @@ int mvstat_search_type = MVSTAT_SEARCH_GREEDY;
 #define UPDATE_RESULT(m,r,isor)	\
 	(m) = (isor) ? (MAX(m,r)) : (MIN(m,r))
 
+#define DEBUG_MVHIST
+
+#ifdef DEBUG_MVHIST
+static void debug_histogram_matches(MVSerializedHistogram mvhist, char *matches);
+#endif
+
+
 /****************************************************************************
  *		ROUTINES TO COMPUTE SELECTIVITIES
  ****************************************************************************/
@@ -334,7 +341,7 @@ clauselist_selectivity(PlannerInfo *root,
 	/* attributes in mv-compatible clauses */
 	Bitmapset  *mvattnums = NULL;
 	List	   *stats = NIL;
-
+elog(WARNING, "clauselist_selectivity");
 	/* use clauses (not conditions), because those are always non-empty */
 	stats = find_stats(root, clauses, varRelid, &relid);
 
@@ -812,7 +819,7 @@ clauselist_selectivity_or(PlannerInfo *root,
 	/* attributes in mv-compatible clauses */
 	Bitmapset  *mvattnums = NULL;
 	List	   *stats = NIL;
-
+elog(WARNING, "clauselist_selectivity_or");
 	/* use clauses (not conditions), because those are always non-empty */
 	stats = find_stats(root, clauses, varRelid, &relid);
 
@@ -4688,8 +4695,60 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 			elog(ERROR, "unknown clause type: %d", clause->type);
 	}
 
+#ifdef DEBUG_MVHIST
+	debug_histogram_matches(mvhist, matches);
+#endif
+
 	return nmatches;
 }
+
+#ifdef DEBUG_MVHIST
+/*
+ * prints debugging info about matched histogram buckets (full/partial)
+ *
+ * XXX Currently works only for INT data type.
+ */
+static void
+debug_histogram_matches(MVSerializedHistogram mvhist, char *matches)
+{
+	int i, j;
+
+	float ffull = 0, fpartial = 0;
+	int nfull = 0, npartial = 0;
+
+	for (i = 0; i < mvhist->nbuckets; i++)
+	{
+		MVSerializedBucket bucket = mvhist->buckets[i];
+
+		char ranges[1024];
+
+		if (! matches[i])
+			continue;
+
+		/* increment the counters */
+		nfull += (matches[i] == MVSTATS_MATCH_FULL) ? 1 : 0;
+		npartial += (matches[i] == MVSTATS_MATCH_PARTIAL) ? 1 : 0;
+
+		/* and also update the frequencies */
+		ffull += (matches[i] == MVSTATS_MATCH_FULL) ? bucket->ntuples : 0;
+		fpartial += (matches[i] == MVSTATS_MATCH_PARTIAL) ? bucket->ntuples : 0;
+
+		memset(ranges, 0, sizeof(ranges));
+
+		/* build ranges for all the dimentions */
+		for (j = 0; j < mvhist->ndimensions; j++)
+		{
+			sprintf(ranges, "%s [%d %d]", ranges,
+										  DatumGetInt32(mvhist->values[j][bucket->min[j]]),
+										  DatumGetInt32(mvhist->values[j][bucket->max[j]]));
+		}
+
+		elog(WARNING, "bucket %d %s => %d [%f]", i, ranges, matches[i], bucket->ntuples);
+	}
+
+	elog(WARNING, "full=%f partial=%f (%f)", ffull, fpartial, (ffull + 0.5 * fpartial));
+}
+#endif
 
 /*
  * Walk through clauses and keep only those covered by at least

@@ -1196,6 +1196,82 @@ create_initial_mv_bucket(int numrows, HeapTuple *rows, int2vector *attrs,
  *      For example use the "bucket volume" (product of dimension
  *      lengths) to select the bucket.
  *
+ *      We need buckets containing about the same number of tuples (so
+ *      about the same frequency), as that limits the error when we
+ *      match the bucket partially (in that case use 1/2 the bucket).
+ *
+ *      We also need buckets with "regular" size, i.e. not "narrow" in
+ *      some dimensions and "wide" in the others, because that makes
+ *      partial matches more likely and increases the estimation error,
+ *      especially when the clauses match many buckets partially. This
+ *      is especially serious for OR-clauses, because in that case any
+ *      of them may add the bucket as a (partial) match. With AND-clauses
+ *      all the clauses have to match the bucket, which makes this issue
+ *      somewhat less pressing.
+ *
+ *      For example this table:
+ *
+ *          CREATE TABLE t AS SELECT i AS a, i AS b
+ *                              FROM generate_series(1,1000000) s(i);
+ *          ALTER TABLE t ADD STATISTICS (histogram) ON (a,b);
+ *          ANALYZE t;
+ *
+ *      It's a very specific (and perhaps artificial) example, because
+ *      every bucket always has exactly the same number of distinct
+ *      values in all dimensions, which makes the partitioning tricky.
+ *
+ *      Then:
+ *
+ *          SELECT * FROM t WHERE a < 10 AND b < 10;
+ *
+ *      is estimated to return ~120 rows, while in reality it returns 9.
+ *
+ *                                     QUERY PLAN
+ *      ----------------------------------------------------------------
+ *       Seq Scan on t  (cost=0.00..19425.00 rows=117 width=8)
+ *                      (actual time=0.185..270.774 rows=9 loops=1)
+ *         Filter: ((a < 10) AND (b < 10))
+ *         Rows Removed by Filter: 999991
+ *
+ *      while the query using OR clauses is estimated like this:
+ *
+ *                                     QUERY PLAN
+ *      ----------------------------------------------------------------
+ *       Seq Scan on t  (cost=0.00..19425.00 rows=8100 width=8)
+ *                      (actual time=0.118..189.919 rows=9 loops=1)
+ *         Filter: ((a < 10) OR (b < 10))
+ *         Rows Removed by Filter: 999991
+ *
+ *      which is clearly much worse. This happens because the histogram
+ *      contains buckets like this:
+ *
+ *          bucket 592  [3 30310] [30134 30593] => [0.000233]
+ *
+ *      i.e. the length of "a" dimension is (30310-3)=30307, while the
+ *      length of "b" is (30593-30134)=459. So the "b" dimension is much
+ *      narrower than "a". Of course, there are buckets where "b" is the
+ *      wider dimension.
+ *
+ *      This is partially mitigated by selecting the "longest" dimension
+ *      in partition_bucket() but that only happens after we already
+ *      selected the bucket. So if we never select the bucket, we can't
+ *      really fix it there.
+ *
+ *      The other reason why this particular example behaves so poorly
+ *      is due to the way we split the partition in partition_bucket().
+ *      Currently we attempt to divide the bucket into two parts with
+ *      the same number of sampled tuples (frequency), but that does not
+ *      work well when all the tuples are squashed on one end of the
+ *      bucket (e.g. exactly at the diagonal, as a=b). In that case we
+ *      split the bucket into a tiny bucket on the diagonal, and a huge
+ *      remaining part of the bucket, which is still going to be narrow
+ *      and we're unlikely to fix that.
+ *
+ *      So perhaps we need two partitioning strategies - one aiming to
+ *      split buckets with high frequency (number of sampled rows), the
+ *      other aiming to split "large" buckets. And alternating between
+ *      them, somehow.
+ *
  * TODO Allowing the bucket to degenerate to a single combination of
  *      values makes it rather strange MCV list. Maybe we should use
  *      higher lower boundary, or maybe make the selection criteria

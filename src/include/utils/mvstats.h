@@ -264,4 +264,9 @@ void update_mv_stats(Oid relid, MVDependencies dependencies,
 					 MCVList mcvlist, MVHistogram histogram,
 					 int2vector *attrs, VacAttrStats **stats);
 
+#ifdef DEBUG_MVHIST
+extern void debug_histogram_matches(MVSerializedHistogram mvhist, char *matches);
+#endif
+
+
 #endif

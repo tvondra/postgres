@@ -123,6 +123,7 @@ static Bitmapset * get_varattnos(Node * node, Index relid);
 #define UPDATE_RESULT(m,r,isor)	\
 	(m) = (isor) ? (MAX(m,r)) : (MIN(m,r))
 
+
 /****************************************************************************
  *		ROUTINES TO COMPUTE SELECTIVITIES
  ****************************************************************************/
@@ -3304,6 +3305,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 
 	/* free the call cache */
 	pfree(callcache);
+
+#ifdef DEBUG_MVHIST
+	debug_histogram_matches(mvhist, matches);
+#endif
 
 	return nmatches;
 }

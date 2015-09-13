@@ -2262,3 +2262,51 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 		SRF_RETURN_DONE(funcctx);
 	}
 }
+
+#ifdef DEBUG_MVHIST
+/*
+ * prints debugging info about matched histogram buckets (full/partial)
+ *
+ * XXX Currently works only for INT data type.
+ */
+void
+debug_histogram_matches(MVSerializedHistogram mvhist, char *matches)
+{
+	int i, j;
+
+	float ffull = 0, fpartial = 0;
+	int nfull = 0, npartial = 0;
+
+	for (i = 0; i < mvhist->nbuckets; i++)
+	{
+		MVSerializedBucket bucket = mvhist->buckets[i];
+
+		char ranges[1024];
+
+		if (! matches[i])
+			continue;
+
+		/* increment the counters */
+		nfull += (matches[i] == MVSTATS_MATCH_FULL) ? 1 : 0;
+		npartial += (matches[i] == MVSTATS_MATCH_PARTIAL) ? 1 : 0;
+
+		/* and also update the frequencies */
+		ffull += (matches[i] == MVSTATS_MATCH_FULL) ? bucket->ntuples : 0;
+		fpartial += (matches[i] == MVSTATS_MATCH_PARTIAL) ? bucket->ntuples : 0;
+
+		memset(ranges, 0, sizeof(ranges));
+
+		/* build ranges for all the dimentions */
+		for (j = 0; j < mvhist->ndimensions; j++)
+		{
+			sprintf(ranges, "%s [%d %d]", ranges,
+										  DatumGetInt32(mvhist->values[j][bucket->min[j]]),
+										  DatumGetInt32(mvhist->values[j][bucket->max[j]]));
+		}
+
+		elog(WARNING, "bucket %d %s => %d [%f]", i, ranges, matches[i], bucket->ntuples);
+	}
+
+	elog(WARNING, "full=%f partial=%f (%f)", ffull, fpartial, (ffull + 0.5 * fpartial));
+}
+#endif

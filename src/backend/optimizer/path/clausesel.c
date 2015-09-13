@@ -752,49 +752,29 @@ clauselist_selectivity(PlannerInfo *root,
 }
 
 /*
- * Similar to clauselist_selectivity(), but for clauses connected by OR.
+ * Similar to clauselist_selectivity(), but for OR-clauses. We can't
+ * simply apply exactly the same logic as to AND-clauses, because there
+ * are a few key differences:
  *
- * That means a few differences:
+ *   - functional dependencies don't really apply to OR-clauses
  *
- *   - functional dependencies don't apply to OR-clauses
+ *   - clauselist_selectivity() works by decomposing the selectivity
+ *     into conditional selectivities (probabilities), but that can be
+ *     done only for AND-clauses. That means problems with applying
+ *     multiple statistics (and reusing clauses as conditions, etc.).
  *
- *   - we can't add the previous clauses to conditions
+ * We might invent a completely new set of functions here, resembling
+ * clauselist_selectivity but adapting the ideas to OR-clauses.
  *
- *   - combined selectivities are combined using (s1+s2 - s1*s2)
- *     and not as a multiplication (s1*s2)
- *
- * Another way to evaluate this might be turning
+ * But luckily we know that each OR-clause
  *
  *     (a OR b OR c)
  *
- * into
+ * may be rewritten as an equivalent AND-clause using negation:
  *
  *     NOT ((NOT a) AND (NOT b) AND (NOT c))
  *
- * and computing selectivity of that using clauselist_selectivity().
- * That would allow (a) using the clauselist_selectivity directly and
- * (b) using the previous clauses as conditions. Not sure if it's
- * worth the additional complexity, though.
- *
- * FIXME I'm not entirely sure, but ISTM to me that the clauses might
- *       be processed repeatedly - once for each statistics in the
- *       solution. E.g. with (a=1 OR b=1 OR c=1) and statistics on
- *       [a,b] and [b,c], we can't use [b=1] with both stats, because
- *       we can't combine those using conditional probabilities as with
- *       AND clauses (no conditions with OR clauses).
- *
- * FIXME Maybe we'll need an alternative choose_mv_statistics for OR
- *       clauses, because we can't do so complicated stuff anyway
- *       (conditions, etc.). We generally need to split the clauses
- *       into multiple disjunct subsets, each estimated separately.
- *       So just search for the smallest number of stats, covering the
- *       clauses.
- *
- *       Or maybe just get rid of all this and use the simple formula
- *
- *           s1 + s2 * (s1*s2) formula, which seems to be working
- *
- *       quite reasonably.
+ * And that's something we can pass to clauselist_selectivity.
  */
 static Selectivity
 clauselist_selectivity_or(PlannerInfo *root,
@@ -804,218 +784,20 @@ clauselist_selectivity_or(PlannerInfo *root,
 					   SpecialJoinInfo *sjinfo,
 					   List *conditions)
 {
-	Selectivity s1 = 0.0;
+	List	   *args = NIL;
 	ListCell   *l;
+	Expr	   *expr;
 
-	/* processing mv stats */
-	Index		relid = InvalidOid;
+	/* (NOT ...) */
+	foreach (l, clauses)
+		args = lappend(args, makeBoolExpr(NOT_EXPR, list_make1(lfirst(l)), -1));
 
-	/* attributes in mv-compatible clauses */
-	Bitmapset  *mvattnums = NULL;
-	List	   *stats = NIL;
+	/* ((NOT ...) AND (NOT ...)) */
+	expr = makeBoolExpr(AND_EXPR, args, -1);
 
-	/* use clauses (not conditions), because those are always non-empty */
-	stats = find_stats(root, clauses, varRelid, &relid);
-
-	/* OR-clauses do not work with functional dependencies */
-	if (has_stats(stats, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST))
-	{
-		/*
-		 * Recollect attributes from mv-compatible clauses (maybe we've
-		 * removed so many clauses we have a single mv-compatible attnum).
-		 * From now on we're only interested in MCV-compatible clauses.
-		 */
-		mvattnums = collect_mv_attnums(root, clauses, varRelid, &relid, sjinfo,
-									   (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-
-		/*
-		 * If there still are at least two columns, we'll try to select
-		 * a suitable multivariate stats.
-		 */
-		if (bms_num_members(mvattnums) >= 2)
-		{
-			int k;
-			ListCell *s;
-
-			List *solution
-				= choose_mv_statistics(root, stats,
-									   clauses, conditions,
-									   varRelid, sjinfo);
-
-			/* we have a good solution stats */
-			foreach (s, solution)
-			{
-				Selectivity s2;
-				MVStatisticInfo *mvstat = (MVStatisticInfo *)lfirst(s);
-
-				/* clauses compatible with multi-variate stats */
-				List	*mvclauses = NIL;
-				List	*mvclauses_new = NIL;
-				List	*mvclauses_conditions = NIL;
-				Bitmapset	*stat_attnums = NULL;
-
-				/* build attnum bitmapset for this statistics */
-				for (k = 0; k < mvstat->stakeys->dim1; k++)
-					stat_attnums = bms_add_member(stat_attnums,
-												  mvstat->stakeys->values[k]);
-
-				/*
-				 * Append the compatible conditions (passed from above)
-				 * to mvclauses_conditions.
-				 */
-				foreach (l, conditions)
-				{
-					Node *c = (Node*)lfirst(l);
-					Bitmapset *tmp = clause_mv_get_attnums(root, c);
-
-					if (bms_is_subset(tmp, stat_attnums))
-						mvclauses_conditions
-							= lappend(mvclauses_conditions, c);
-
-					bms_free(tmp);
-				}
-
-				/* split the clauselist into regular and mv-clauses
-				 *
-				 * We keep the list of clauses (we don't remove the
-				 * clauses yet, because we want to use the clauses
-				 * as conditions of other clauses).
-				 *
-				 * FIXME Do this only once, i.e. filter the clauses
-				 *       once (selecting clauses covered by at least
-				 *       one statistics) and then convert them into
-				 *       smaller per-statistics lists of conditions
-				 *       and estimated clauses.
-				 */
-				clauselist_mv_split(root, sjinfo, clauses,
-										varRelid, &mvclauses, mvstat,
-										(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-
-				/*
-				 * We've chosen the statistics to match the clauses, so
-				 * each statistics from the solution should have at least
-				 * one new clause (not covered by the previous stats).
-				 */
-				Assert(mvclauses != NIL);
-
-				/*
-				 * Mvclauses now contains only clauses compatible
-				 * with the currently selected stats, but we have to
-				 * split that into conditions (already matched by
-				 * the previous stats), and the new clauses we need
-				 * to estimate using this stats.
-				 *
-				 * XXX We'll only use the new clauses, but maybe we
-				 *     should use the conditions too, somehow. We can't
-				 *     use that directly in conditional probability, but
-				 *     maybe we might use them in a different way?
-				 *
-				 *     If we have a clause (a OR b OR c), then knowing
-				 *     that 'a' is TRUE means (b OR c) can't make the
-				 *     whole clause FALSE.
-				 *
-				 *     This is pretty much what
-				 *
-				 *         (a OR b) == NOT ((NOT a) AND (NOT b))
-				 *
-				 *     implies.
-				 */
-				foreach (l, mvclauses)
-				{
-					ListCell *p;
-					bool covered = false;
-					Node  *clause = (Node *) lfirst(l);
-					Bitmapset *clause_attnums = clause_mv_get_attnums(root, clause);
-
-					/*
-					 * If already covered by previous stats, add it to
-					 * conditions.
-					 *
-					 * TODO Maybe this could be relaxed a bit? Because
-					 *      with complex and/or clauses, this might
-					 *      mean no statistics actually covers such
-					 *      complex clause.
-					 */
-					foreach (p, solution)
-					{
-						int k;
-						Bitmapset  *stat_attnums = NULL;
-
-						MVStatisticInfo *prev_stat
-							= (MVStatisticInfo *)lfirst(p);
-
-						/* break if we've ran into current statistic */
-						if (prev_stat == mvstat)
-							break;
-
-						for (k = 0; k < prev_stat->stakeys->dim1; k++)
-							stat_attnums = bms_add_member(stat_attnums,
-														  prev_stat->stakeys->values[k]);
-
-						covered = bms_is_subset(clause_attnums, stat_attnums);
-
-						bms_free(stat_attnums);
-
-						if (covered)
-							break;
-					}
-
-					if (! covered)
-						mvclauses_new = lappend(mvclauses_new, clause);
-				}
-
-				/*
-				 * We need at least one new clause (not just conditions).
-				 */
-				Assert(mvclauses_new != NIL);
-
-				/* compute the multivariate stats */
-				s2 = clauselist_mv_selectivity(root, mvstat,
-												mvclauses_new,
-												mvclauses_conditions,
-												true); /* OR */
-
-				s1 = s1 + s2 - s1 * s2;
-			}
-
-			/*
-			 * And now finally remove all the mv-compatible clauses.
-			 *
-			 * This only repeats the same split as above, but this
-			 * time we actually use the result list (and feed it to
-			 * the next call).
-			 */
-			foreach (s, solution)
-			{
-				/* clauses compatible with multi-variate stats */
-				List	*mvclauses = NIL;
-
-				MVStatisticInfo *mvstat = (MVStatisticInfo *)lfirst(s);
-
-				/* split the list into regular and mv-clauses */
-				clauses = clauselist_mv_split(root, sjinfo, clauses,
-										varRelid, &mvclauses, mvstat,
-										(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-			}
-		}
-	}
-
-	/*
-	 * Handle the remaining clauses (either using regular statistics,
-	 * or by multivariate stats at the next level).
-	 */
-	foreach(l, clauses)
-	{
-		Selectivity s2 = clause_selectivity(root,
-											(Node *) lfirst(l),
-											varRelid,
-											jointype,
-											sjinfo,
-											conditions);
-		s1 = s1 + s2 - s1 * s2;
-	}
-
-	return s1;
+	/* NOT (... AND ...) */
+	return 1.0 - clauselist_selectivity(root, list_make1(expr), varRelid,
+										jointype, sjinfo, conditions);
 }
 
 /*
@@ -2834,10 +2616,10 @@ clause_is_mv_compatible(PlannerInfo *root, Node *clause, Oid varRelid,
 
 		return true;
 	}
-	else if (or_clause(clause) || and_clause(clause))
+	else if (or_clause(clause) || and_clause(clause) || not_clause(clause))
 	{
 		/*
-		 * AND/OR-clauses are supported if all sub-clauses are supported
+		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
 		 *
 		 * TODO We might support mixed case, where some of the clauses
 		 *      are supported and some are not, and treat all supported
@@ -2847,7 +2629,10 @@ clause_is_mv_compatible(PlannerInfo *root, Node *clause, Oid varRelid,
 		 *
 		 * TODO For RestrictInfo above an OR-clause, we might use the
 		 *      orclause with nested RestrictInfo - we won't have to
-		 *      call pull_varnos() for each clause, saving time. 
+		 *      call pull_varnos() for each clause, saving time.
+		 *
+		 * TODO Perhaps this needs a bit more thought for functional
+		 *      dependencies? Those don't quite work for NOT cases.
 		 */
 		Bitmapset *tmp = NULL;
 		ListCell *l;
@@ -2899,7 +2684,7 @@ clause_mv_get_attnums(PlannerInfo *root, Node *clause)
 		attnums = bms_add_member(attnums,
 							((Var*)((NullTest*)clause)->arg)->varattno);
 	}
-	else if (or_clause(clause) || and_clause(clause))
+	else if (or_clause(clause) || and_clause(clause) || or_clause(clause))
 	{
 		ListCell *l;
 		foreach (l, ((BoolExpr*)clause)->args)
@@ -3964,7 +3749,7 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 				}
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) || and_clause(clause) || not_clause(clause))
 		{
 			/* AND/OR clause, with all clauses compatible with the selected MV stat */
 
@@ -3976,7 +3761,7 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 			char * tmp_matches = NULL;
 
 			Assert(tmp_clauses != NIL);
-			Assert(list_length(tmp_clauses) >= 2);
+			Assert((list_length(tmp_clauses) >= 2) || (not_clause(clause) && (list_length(tmp_clauses)==1)));
 
 			/* number of matching MCV items */
 			tmp_nmatches = (or_clause(clause)) ? 0 : mcvlist->nitems;
@@ -3984,7 +3769,7 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 			/* by default none of the MCV items matches the clauses */
 			tmp_matches = palloc0(sizeof(char) * mcvlist->nitems);
 
-			/* AND clauses assume everything matches, initially */
+			/* AND (and NOT) clauses assume everything matches, initially */
 			if (! or_clause(clause))
 				memset(tmp_matches, MVSTATS_MATCH_FULL, sizeof(char)*mcvlist->nitems);
 
@@ -3997,6 +3782,10 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 			/* merge the bitmap into the existing one*/
 			for (i = 0; i < mcvlist->nitems; i++)
 			{
+				/* if this is a NOT clause, we need to invert the results first */
+				if (not_clause(clause))
+					tmp_matches[i] = (MVSTATS_MATCH_FULL - tmp_matches[i]);
+
 				/*
 				 * To AND-merge the bitmaps, a MIN() semantics is used.
 				 * For OR-merge, use MAX().
@@ -4642,7 +4431,7 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 					UPDATE_RESULT(matches[i], MVSTATS_MATCH_NONE, is_or);
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) || and_clause(clause) || not_clause(clause))
 		{
 			/* AND/OR clause, with all clauses compatible with the selected MV stat */
 
@@ -4654,7 +4443,7 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 			char * tmp_matches = NULL;
 
 			Assert(tmp_clauses != NIL);
-			Assert(list_length(tmp_clauses) >= 2);
+			Assert((list_length(tmp_clauses) >= 2) || (not_clause(clause) && (list_length(tmp_clauses)==1)));
 
 			/* number of matching buckets */
 			tmp_nmatches = (or_clause(clause)) ? 0 : mvhist->nbuckets;
@@ -4662,8 +4451,8 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 			/* by default none of the buckets matches the clauses (OR clause) */
 			tmp_matches = palloc0(sizeof(char) * mvhist->nbuckets);
 
-			/* but AND clauses assume everything matches, initially */
-			if (and_clause(clause))
+			/* but AND (and NOT) clauses assume everything matches, initially */
+			if (! or_clause(clause))
 				memset(tmp_matches, MVSTATS_MATCH_FULL, sizeof(char)*mvhist->nbuckets);
 
 			/* build the match bitmap for the OR-clauses */
@@ -4674,6 +4463,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 			/* merge the bitmap into the existing one*/
 			for (i = 0; i < mvhist->nbuckets; i++)
 			{
+				/* if this is a NOT clause, we need to invert the results first */
+				if (not_clause(clause))
+					tmp_matches[i] = (MVSTATS_MATCH_FULL - tmp_matches[i]);
+
 				/*
 				 * To AND-merge the bitmaps, a MIN() semantics is used.
 				 * For OR-merge, use MAX().

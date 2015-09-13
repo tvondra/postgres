@@ -335,7 +335,7 @@ clauselist_selectivity(PlannerInfo *root,
 	/* attributes in mv-compatible clauses */
 	Bitmapset  *mvattnums = NULL;
 	List	   *stats = NIL;
-elog(WARNING, "clauselist_selectivity");
+
 	/* use clauses (not conditions), because those are always non-empty */
 	stats = find_stats(root, clauses, varRelid, &relid);
 
@@ -813,7 +813,7 @@ clauselist_selectivity_or(PlannerInfo *root,
 	/* attributes in mv-compatible clauses */
 	Bitmapset  *mvattnums = NULL;
 	List	   *stats = NIL;
-elog(WARNING, "clauselist_selectivity_or");
+
 	/* use clauses (not conditions), because those are always non-empty */
 	stats = find_stats(root, clauses, varRelid, &relid);
 

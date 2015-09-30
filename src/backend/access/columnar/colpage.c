@@ -2268,6 +2268,10 @@ recompress_tids(PageSegment seg, ColumnarPageOpaque opaque)
 	 * if there already are compressed data, we have to compute the
 	 * last TID (so that we can use it to compute deltas for the
 	 * uncompressed part).
+	 *
+	 * FIXME This is quite expensive, significantly slowing down the
+	 *       whole recompression - determining the last ID needs to
+	 *       be faster (e.g. tracking it somehow separately).
 	 */
 	if (seg->seg_comp_len > 0)
 		last = compute_last_tid(seg->data, seg->seg_comp_len);

@@ -47,9 +47,33 @@ _col_doinsert(Relation rel, ItemPointer tid, Datum *values, bool * isnull,
 			  Relation heapRel)
 {
 	Buffer		buf;
-	buf = _col_get_insert_page(rel);
+	int			i;
+	int		   *need;
+	TupleDesc	tupdesc = RelationGetDescr(rel);
 
-	_col_add_to_page(rel, buf, tid, values, isnull);
+	need = (int*)palloc0(tupdesc->natts * sizeof(int));
+
+	/* find how much space we need in each segment */
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		/*
+		 * FIXME handle byref types with fixed length (e.g. name, tid, ...)
+		 *
+		 * FIXME handle NULL values for varlena/cstring types (now we crash)
+		 */
+		if (tupdesc->attrs[i]->attbyval)			/* by value */
+			need[i] = tupdesc->attrs[i]->attlen;
+		else if (tupdesc->attrs[i]->attlen == -1)	/* varlena */
+			need[i] = VARSIZE_ANY(values[i]);
+		else if (tupdesc->attrs[i]->attlen == -2)	/* cstring */
+			need[i] = strlen(DatumGetCString(values[i])) + 1;
+		else
+			elog(ERROR, "unknown attribute len/ref combination");
+	}
+
+	buf = _col_get_insert_page(rel, need);
+
+	_col_add_to_page(rel, buf, tid, values, isnull, need);
 
 	_col_relbuf(rel, buf);
 

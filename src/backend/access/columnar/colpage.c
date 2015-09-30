@@ -112,7 +112,7 @@ static void _col_page_recompress(Relation index, Buffer buf);
 
 
 static Size page_segment_size(int nitems, int typlen, bool notnull);
-static bool page_segment_has_space(PageSegment buff);
+static bool page_segment_has_space(PageSegment buff, int need);
 
 static void page_segment_add_value(PageSegment buff, Datum value, bool isnull);
 
@@ -121,6 +121,7 @@ static void page_segment_add_value(PageSegment buff, Datum value, bool isnull);
 #define		COMPRESS_RLE		1
 #define		COMPRESS_DICT		2
 #define		COMPRESS_PGLZ		3
+
 
 static int choose_compression_method(char *data, int itemlen, int nitems);
 
@@ -259,9 +260,9 @@ _col_initdatapage(Relation index, Page page)
 
 /*
  * Insert page is always the last page in the relation - this checks the
- * page has space for at least one more entry (simple check as we know
- * the size of attbyval columns - will be a bit more complicated for
- * varlena attributes etc.).
+ * page has space for at least one more entry, with sizes specified
+ * by 'needed' array (which must have one element for each index
+ * column).
  *
  * If the page does not have enough space, we try to recompress all the
  * segments, and reorganize them (shuffle them around, as the compression
@@ -272,7 +273,7 @@ _col_initdatapage(Relation index, Page page)
  * guaranteed to fit the data onto the page).
  */
 Buffer
-_col_get_insert_page(Relation rel)
+_col_get_insert_page(Relation rel, int *needed)
 {
 	/* data page for insert */
 	Buffer		buf;
@@ -304,7 +305,7 @@ _col_get_insert_page(Relation rel)
 		/* if it's not marked as full, see if there's enough free space */
 		if (! (opaque->colpo_flags & COLP_FULL))
 		{
-			if (! _col_page_has_space(rel, buf))
+			if (! _col_page_has_space(rel, buf, needed))
 			{
 				/* try to (re)compress the page */
 				_col_page_recompress(rel, buf);
@@ -319,7 +320,7 @@ _col_get_insert_page(Relation rel)
 
 				/* still not enough space, so mark it as full and then allocate
 				 * a completely new page */
-				if (! _col_page_has_space(rel, buf))
+				if (! _col_page_has_space(rel, buf, needed))
 				{
 					_col_page_mark_full(rel, buf);
 					blocknum = InvalidBlockNumber;
@@ -349,6 +350,9 @@ _col_get_insert_page(Relation rel)
 
 	/* unlock the relation (we still have lock on the buffer) */
 	UnlockRelationForExtension(rel, ExclusiveLock);
+
+	/* at this point we should have a page with enough space */
+	Assert(_col_page_has_space(rel, buf, needed));
 
 	/*
 	 * By here, we have a pin and read lock on the root page, and no lock set
@@ -816,7 +820,7 @@ _col_page_reorganize(Relation index, Buffer buf)
  */
 void
 _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid,
-				 Datum *values, bool * isnull)
+				 Datum *values, bool * isnull, int *need)
 {
 	int			i;
 	Page		page = BufferGetPage(buf);
@@ -830,7 +834,7 @@ _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid,
 	PageSegment		seg = (PageSegment)ptr;
 
 	/* first add the TID to the TID buffer */
-	Assert(page_segment_has_space(seg));
+	Assert(page_segment_has_space(seg, sizeof(int64)));
 	page_segment_add_value(seg, Int64GetDatum(TupleIdInt64(tid)), false);
 
 	/* go to next segment */
@@ -843,11 +847,8 @@ _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid,
 	{
 		seg = (PageSegment)ptr;
 
-		/* only pass-by-val types at the moment */
-		Assert(tupdesc->attrs[i]->attbyval);
-
 		/* we should not get full pages here */
-		Assert(page_segment_has_space(seg));
+		Assert(page_segment_has_space(seg, need[i]));
 
 		page_segment_add_value(seg, values[i], isnull[i]);
 
@@ -868,7 +869,7 @@ _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid,
  * each segment)
  */
 bool
-_col_page_has_space(Relation index, Buffer buf)
+_col_page_has_space(Relation index, Buffer buf, int *needed)
 {
 	int			i;
 	Page		page = BufferGetPage(buf);
@@ -877,8 +878,8 @@ _col_page_has_space(Relation index, Buffer buf)
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			natts = tupdesc->natts;
 
-	/* TIDs segment */
-	if (! page_segment_has_space(seg))
+	/* TIDs segment (check space for int64 value) */
+	if (! page_segment_has_space(seg, sizeof(int64)))
 		return false;
 
 	/* data segments */
@@ -889,7 +890,8 @@ _col_page_has_space(Relation index, Buffer buf)
 
 		seg = (PageSegment)ptr;
 
-		if (! page_segment_has_space(seg))
+		/* check space for the new value */
+		if (! page_segment_has_space(seg, needed[i]))
 			return false;
 	}
 
@@ -1318,17 +1320,20 @@ _col_page_get_nulls(Relation index, Page page, ColumnarPageOpaque opaque)
 static Size
 page_segment_size(int nitems, int typlen, bool notnull)
 {
+	/* for cstring/varlena, assume Datum */
+	Size	typlen_fixed = (typlen > 0) ? typlen : sizeof(void*);
+
 	Size	header_bytes = offsetof(PageSegmentData, data);	/* header */
-	Size	data_bytes   = (nitems * typlen);				/* data */
+	Size	data_bytes   = (nitems * typlen_fixed);				/* data */
 	Size	nulls_bytes  = notnull ? 0 : ((nitems + 7) / 8);	/* NULL bitmap */
 
 	return MAXALIGN(header_bytes + nulls_bytes + data_bytes);
 }
 
 static bool
-page_segment_has_space(PageSegment seg)
+page_segment_has_space(PageSegment seg, int len)
 {
-	return ((int)SEGMENT_FREE_SPACE(seg) >= (int)seg->seg_typ_len);
+	return ((int)SEGMENT_FREE_SPACE(seg) >= len);
 }
 
 /*
@@ -1344,18 +1349,45 @@ page_segment_has_space(PageSegment seg)
 static void
 page_segment_add_value(PageSegment seg, Datum value, bool isnull)
 {
-	/* copy the value in-place and move the watermark */
-	if (! isnull)
-		memcpy(seg->data + seg->seg_used_len, &value, seg->seg_typ_len);
-
 	/*
+	 * copy the value in-place and move the watermark
+	 *
 	 * We always move the watermark, even for NULL values, so that
 	 * we can access the element just by indexing array.
 	 *
-	 * FIXME won't work with varlena types (typlen < 0)
+	 * FIXME does not work with some by-ref types that have (typlen > 0),
+	 *       as for example 'name' or 'tid'
 	 */
-	seg->seg_used_len += seg->seg_typ_len;
-	seg->seg_raw_len += seg->seg_typ_len;
+	if (seg->seg_typ_len > 0)			/* typbyval */
+	{
+		if (! isnull)
+			memcpy(seg->data + seg->seg_used_len, &value, seg->seg_typ_len);
+
+		seg->seg_used_len += seg->seg_typ_len;
+		seg->seg_raw_len += seg->seg_typ_len;
+	}
+	else if (seg->seg_typ_len == -1)	/* varlena */
+	{
+		char   *ptr = DatumGetPointer(value);
+		Size	len = VARSIZE_ANY(ptr);
+
+		if (! isnull)
+			memcpy(seg->data + seg->seg_used_len, ptr, len);
+
+		seg->seg_used_len += len;
+		seg->seg_raw_len += len;
+	}
+	else if (seg->seg_typ_len == -2)	/* cstring */
+	{
+		char *ptr = DatumGetPointer(value);
+		Size len = (strlen(ptr) + 1);
+
+		if (! isnull)
+			memcpy(seg->data + seg->seg_used_len, ptr, len);
+
+		seg->seg_used_len += len;
+		seg->seg_raw_len += len;
+	}
 
 	/*
 	 * If the NULLS are not disabled, we have to update the NULL bitmap
@@ -1386,7 +1418,7 @@ page_segment_add_value(PageSegment seg, Datum value, bool isnull)
 	seg->seg_nitems += 1;
 
 	/* we expect raw length to be multiple of typlen */
-	Assert(seg->seg_typ_len * seg->seg_nitems == seg->seg_raw_len);
+	// Assert(seg->seg_typ_len * seg->seg_nitems == seg->seg_raw_len);
 }
 
 /* used for sorting data when computing number of distinct values */
@@ -1415,7 +1447,13 @@ choose_compression_method(char *data, int itemlen, int nitems)
 			size_dict,
 			threshold;
 
-	char   *tmp = palloc(nitems * itemlen);
+	char   *tmp;
+
+	/* for varlena, we only support PGLZ at the moment */
+	if (itemlen < 0)
+		return COMPRESS_PGLZ;
+
+	tmp = palloc(nitems * itemlen);
 
 	/* count distinct values (we don't care about NULLS, stored as 0) */
 	memcpy(tmp, data, nitems * itemlen);
@@ -1502,7 +1540,7 @@ recompress_pglz(PageSegment seg, ColumnarPageOpaque opaque)
 	int		csize;				/* compressed data */
 
 	Assert(opaque->colpo_nitems == seg->seg_nitems);
-	Assert(seg->seg_typ_len * seg->seg_nitems == seg->seg_raw_len);
+	// Assert(seg->seg_typ_len * seg->seg_nitems == seg->seg_raw_len);
 
 	dbuffer = (char*)palloc0(seg->seg_raw_len);
 
@@ -1593,7 +1631,7 @@ decompress_pglz(PageSegment seg, char *dest, int destlen)
 	Assert(seg->seg_flags & SEG_COMPRESS_PGLZ);
 
 	Assert(seg->seg_used_len >= seg->seg_comp_len);
-	Assert((seg->seg_used_len - seg->seg_comp_len) % seg->seg_typ_len == 0);
+	// Assert((seg->seg_used_len - seg->seg_comp_len) % seg->seg_typ_len == 0);
 
 	/*
 	 * If there are already compressed data, decompress them first.

@@ -264,15 +264,15 @@ void _col_initdatapage(Relation index, Page page);
 bool _col_doinsert(Relation rel, ItemPointer tid, Datum *values, bool * isnull,
 				   Relation heapRel);
 
-Buffer _col_get_insert_page(Relation rel);
+Buffer _col_get_insert_page(Relation rel, int *need);
 
 /* colpage.c */
 void _col_relbuf(Relation rel, Buffer buf);
 Buffer _col_getbuf(Relation rel, BlockNumber blkno, int access);
 void _col_checkpage(Relation rel, Buffer buf);
 void _col_page_mark_full(Relation rel, Buffer buf);
-void _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid, Datum *values, bool * isnull);
-bool _col_page_has_space(Relation index, Buffer buf);
+void _col_add_to_page(Relation rel, Buffer buf, ItemPointer tid, Datum *values, bool * isnull, int *need);
+bool _col_page_has_space(Relation index, Buffer buf, int *need);
 
 char ** _col_page_get_data(Relation index, Page page, ColumnarPageOpaque opaque);
 char ** _col_page_get_nulls(Relation index, Page page, ColumnarPageOpaque opaque);

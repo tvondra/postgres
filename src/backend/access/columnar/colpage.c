@@ -645,6 +645,11 @@ _col_page_recompress(Relation index, Buffer buf)
  * i.e. if there's not free space for at least one additional row  or if
  * the redistribution would move less than 128B, we bail out immediately.
  * We don't mark the page as full though - that's not our responsibility.
+ *
+ * XXX It seems pointless and wasteful doing this over and over - perhaps
+ *     it'd be enough to do this once and simply sticking to the segment
+ *     sizes (i.e. assuming the average size and compression ratio per item
+ *     does not change).
  */
 static void
 _col_page_reorganize(Relation index, Buffer buf)

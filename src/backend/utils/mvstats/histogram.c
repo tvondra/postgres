@@ -1843,6 +1843,10 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 	 */
 	for (i = 0; i < data->numrows; i++)
 	{
+		/*
+		 * FIXME We don't need to start from the first attribute
+		 *       here - we can start from the last known dimension.
+		 */
 		for (j = 0; j < histogram->ndimensions; j++)
 		{
 			/* Is this a NULL-only dimension? If yes, skip. */

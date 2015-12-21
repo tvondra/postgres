@@ -594,12 +594,14 @@ typedef struct ColumnDef
 	int			location;		/* parse location, or -1 if none/unknown */
 } ColumnDef;
 
-typedef struct StatisticsDef
+typedef struct CreateStatsStmt
 {
 	NodeTag		type;
+	char	   *statsname;		/* name of new statistics, or NULL for default */
+	RangeVar   *relation;		/* relation to build statistics on */
 	List	   *keys;			/* String nodes naming referenced column(s) */
 	List	   *options;		/* list of DefElem nodes */
-} StatisticsDef;
+} CreateStatsStmt;
 
 
 /*
@@ -1410,6 +1412,7 @@ typedef enum ObjectType
 	OBJECT_RULE,
 	OBJECT_SCHEMA,
 	OBJECT_SEQUENCE,
+	OBJECT_STATISTICS,
 	OBJECT_TABCONSTRAINT,
 	OBJECT_TABLE,
 	OBJECT_TABLESPACE,

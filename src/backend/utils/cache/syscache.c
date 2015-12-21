@@ -502,6 +502,17 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		4
 	},
+	{MvStatisticRelationId,		/* MVSTATNAME */
+		MvStatisticNameIndexId,
+		1,
+		{
+			Anum_pg_mv_statistic_staname,
+			0,
+			0,
+			0
+		},
+		4
+	},
 	{MvStatisticRelationId,		/* MVSTATOID */
 		MvStatisticOidIndexId,
 		1,
@@ -511,7 +522,7 @@ static const struct cachedesc cacheinfo[] = {
 			0,
 			0
 		},
-		128
+		4
 	},
 	{NamespaceRelationId,		/* NAMESPACENAME */
 		NamespaceNameIndexId,

@@ -4105,11 +4105,13 @@ _copyAlterPolicyStmt(const AlterPolicyStmt *from)
 	return newnode;
 }
 
-static StatisticsDef *
-_copyStatisticsDef(const StatisticsDef *from)
+static CreateStatsStmt *
+_copyCreateStatsStmt(const CreateStatsStmt *from)
 {
-	StatisticsDef  *newnode = makeNode(StatisticsDef);
+	CreateStatsStmt  *newnode = makeNode(CreateStatsStmt);
 
+	COPY_STRING_FIELD(statsname);
+	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(keys);
 	COPY_NODE_FIELD(options);
 
@@ -4963,8 +4965,8 @@ copyObject(const void *from)
 		case T_CommonTableExpr:
 			retval = _copyCommonTableExpr(from);
 			break;
-		case T_StatisticsDef:
-			retval = _copyStatisticsDef(from);
+		case T_CreateStatsStmt:
+			retval = _copyCreateStatsStmt(from);
 			break;
 		case T_FuncWithArgs:
 			retval = _copyFuncWithArgs(from);

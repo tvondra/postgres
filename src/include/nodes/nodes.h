@@ -380,6 +380,7 @@ typedef enum NodeTag
 	T_CreatePolicyStmt,
 	T_AlterPolicyStmt,
 	T_CreateTransformStmt,
+	T_CreateStatsStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)
@@ -428,7 +429,6 @@ typedef enum NodeTag
 	T_OnConflictClause,
 	T_CommonTableExpr,
 	T_RoleSpec,
-	T_StatisticsDef,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)

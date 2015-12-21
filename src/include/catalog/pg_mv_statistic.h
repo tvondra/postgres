@@ -31,7 +31,8 @@
 CATALOG(pg_mv_statistic,3381)
 {
 	/* These fields form the unique key for the entry: */
-	Oid			starelid;		/* relation containing attributes */
+	Oid			starelid;			/* relation containing attributes */
+	NameData	staname;			/* statistics name */
 
 	/* statistics requested to build */
 	bool		deps_enabled;		/* analyze dependencies? */
@@ -69,19 +70,20 @@ typedef FormData_pg_mv_statistic *Form_pg_mv_statistic;
  *		compiler constants for pg_attrdef
  * ----------------
  */
-#define Natts_pg_mv_statistic					13
+#define Natts_pg_mv_statistic					14
 #define Anum_pg_mv_statistic_starelid			1
-#define Anum_pg_mv_statistic_deps_enabled		2
-#define Anum_pg_mv_statistic_mcv_enabled		3
-#define Anum_pg_mv_statistic_hist_enabled		4
-#define Anum_pg_mv_statistic_mcv_max_items		5
-#define Anum_pg_mv_statistic_hist_max_buckets	6
-#define Anum_pg_mv_statistic_deps_built			7
-#define Anum_pg_mv_statistic_mcv_built			8
-#define Anum_pg_mv_statistic_hist_built			9
-#define Anum_pg_mv_statistic_stakeys			10
-#define Anum_pg_mv_statistic_stadeps			11
-#define Anum_pg_mv_statistic_stamcv				12
-#define Anum_pg_mv_statistic_stahist			13
+#define Anum_pg_mv_statistic_staname			2
+#define Anum_pg_mv_statistic_deps_enabled		3
+#define Anum_pg_mv_statistic_mcv_enabled		4
+#define Anum_pg_mv_statistic_hist_enabled		5
+#define Anum_pg_mv_statistic_mcv_max_items		6
+#define Anum_pg_mv_statistic_hist_max_buckets	7
+#define Anum_pg_mv_statistic_deps_built			8
+#define Anum_pg_mv_statistic_mcv_built			9
+#define Anum_pg_mv_statistic_hist_built			10
+#define Anum_pg_mv_statistic_stakeys			11
+#define Anum_pg_mv_statistic_stadeps			12
+#define Anum_pg_mv_statistic_stamcv				13
+#define Anum_pg_mv_statistic_stahist			14
 
 #endif   /* PG_MV_STATISTIC_H */

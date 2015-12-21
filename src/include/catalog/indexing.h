@@ -175,6 +175,8 @@ DECLARE_UNIQUE_INDEX(pg_largeobject_metadata_oid_index, 2996, on pg_largeobject_
 
 DECLARE_UNIQUE_INDEX(pg_mv_statistic_oid_index, 3380, on pg_mv_statistic using btree(oid oid_ops));
 #define MvStatisticOidIndexId  3380
+DECLARE_UNIQUE_INDEX(pg_mv_statistic_name_index, 3997, on pg_mv_statistic using btree(staname name_ops));
+#define MvStatisticNameIndexId  3997
 DECLARE_INDEX(pg_mv_statistic_relid_index, 3379, on pg_mv_statistic using btree(starelid oid_ops));
 #define MvStatisticRelidIndexId	3379
 

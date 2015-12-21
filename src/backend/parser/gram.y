@@ -241,7 +241,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
-		CreateSchemaStmt CreateSeqStmt CreateStmt CreateTableSpaceStmt
+		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
@@ -376,7 +376,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	grouping_sets_clause
 
 %type <list>	OptStatsOptions
-%type <str>		stats_options_name
+%type <str>		opt_stats_name stats_name stats_options_name
 %type <node>	stats_options_arg
 %type <defelt>	stats_options_elem
 %type <list>	stats_options_list
@@ -507,7 +507,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <keyword> unreserved_keyword type_func_name_keyword
 %type <keyword> col_name_keyword reserved_keyword
 
-%type <node>	TableConstraint TableLikeClause TableStatistics
+%type <node>	TableConstraint TableLikeClause
 %type <ival>	TableLikeOptionList TableLikeOption
 %type <list>	ColQualList
 %type <node>	ColConstraint ColConstraintElem ConstraintAttr
@@ -815,6 +815,7 @@ stmt :
 			| CreateSchemaStmt
 			| CreateSeqStmt
 			| CreateStmt
+			| CreateStatsStmt
 			| CreateTableSpaceStmt
 			| CreateTransformStmt
 			| CreateTrigStmt
@@ -2359,29 +2360,6 @@ alter_table_cmd:
 					n->subtype = AT_DisableRowSecurity;
 					$$ = (Node *)n;
 				}
-			/* ALTER TABLE <name> ADD STATISTICS (options) ON (columns) */
-			| ADD_P TableStatistics
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_AddStatistics;
-					n->def = $2;
-					$$ = (Node *)n;
-				}
-			/* ALTER TABLE <name> DROP STATISTICS (options) ON (columns) */
-			| DROP TableStatistics
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_DropStatistics;
-					n->def = $2;
-					$$ = (Node *)n;
-				}
-			/* ALTER TABLE <name> DROP STATISTICS ALL */
-			| DROP STATISTICS ALL
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_DropStatistics;
-					$$ = (Node *)n;
-				}
 			| alter_generic_options
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
@@ -3459,22 +3437,31 @@ ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 /*****************************************************************************
  *
  *		QUERY :
- *				ALTER TABLE relname ADD STATISTICS (columns) WITH (options)
+ *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
  *
  *****************************************************************************/
 
-TableStatistics:
-			STATISTICS OptStatsOptions ON '(' columnList ')'
-				{
-					StatisticsDef *n = makeNode(StatisticsDef);
-					n->keys  = $5;
-					n->options  = $2;
-					$$ = (Node *) n;
-				}
+
+CreateStatsStmt:	CREATE STATISTICS opt_stats_name ON qualified_name '(' columnList ')' OptStatsOptions
+					{
+						CreateStatsStmt *n = makeNode(CreateStatsStmt);
+						n->statsname = $3;
+						n->relation = $5;
+						n->keys = $7;
+						n->options = $9;
+						$$ = (Node *)n;
+					}
+			;
+
+opt_stats_name:
+			stats_name						{ $$ = $1; }
+			| /*EMPTY*/						{ $$ = NULL; }
 		;
 
+stats_name: ColId							{ $$ = $1; };
+
 OptStatsOptions:
-			'(' stats_options_list ')'		{ $$ = $2; }
+			WITH '(' stats_options_list ')'	{ $$ = $3; }
 			| /*EMPTY*/						{ $$ = NIL; }
 		;
 
@@ -5687,6 +5674,7 @@ drop_type:	TABLE									{ $$ = OBJECT_TABLE; }
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| STATISTICS							{ $$ = OBJECT_STATISTICS; }
 		;
 
 any_name_list:

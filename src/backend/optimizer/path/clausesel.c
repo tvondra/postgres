@@ -3983,6 +3983,22 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 {
 	int i;
 	ListCell * l;
+ 
+	/*
+	 * Used for caching function calls, only once per deduplicated value.
+	 *
+	 * We know may have up to (2 * nbuckets) values per dimension. It's
+	 * probably overkill, but let's allocate that once for all clauses,
+	 * to minimize overhead.
+	 *
+	 * Also, we only need two bits per value, but this allocates byte
+	 * per value. Might be worth optimizing.
+	 *
+	 * 0x00 - not yet called
+	 * 0x01 - called, result is 'false'
+	 * 0x03 - called, result is 'true'
+	 */
+	char *callcache = palloc(mvhist->nbuckets);
 
 	Assert(mvhist != NULL);
 	Assert(mvhist->nbuckets > 0);
@@ -4010,6 +4026,9 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 
 			FmgrInfo	opproc;			/* operator */
 			fmgr_info(get_opcode(expr->opno), &opproc);
+ 
+			/* reset the cache (per clause) */
+			memset(callcache, 0, mvhist->nbuckets);
 
 			ok = (NumRelids(clause) == 1) &&
 				 (is_pseudo_constant_clause(lsecond(expr->args)) ||
@@ -4059,6 +4078,9 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 
 					/* histogram boundaries */
 					Datum minval, maxval;
+ 
+					/* values from the call cache */
+					char mincached, maxcached;
 
 					/*
 					 * For AND-lists, we can also mark NULL buckets as 'no match'
@@ -4080,6 +4102,9 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 					/* lookup the values and cache of function calls */
 					minval = mvhist->values[idx][bucket->min[idx]];
 					maxval = mvhist->values[idx][bucket->max[idx]];
+
+					mincached = callcache[bucket->min[idx]];
+					maxcached = callcache[bucket->max[idx]];
 
 					/*
 					 * TODO Maybe it's possible to add here a similar optimization
@@ -4118,10 +4143,21 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * First check whether the constant is below the lower boundary (in that
 								 * case we can skip the bucket, because there's no overlap).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 cst->constvalue,
-																	 minval));
+								if (! mincached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 cst->constvalue,
+																		 minval));
+
+									/*
+									 * Update the cache, but with the inverse value, as we keep the
+									 * cache for calls with (minval, constvalue).
+									 */
+									callcache[bucket->min[idx]] = (tmp) ? 0x01 : 0x03;
+								}
+								else
+									tmp = !(mincached & 0x02);	/* get call result from the cache (inverse) */
 
 								if (tmp)
 								{
@@ -4134,14 +4170,25 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * Now check whether constant is below the upper boundary (in that
 								 * case it's a partial match).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 cst->constvalue,
-																	 maxval));
+								if (! maxcached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 cst->constvalue,
+																		 maxval));
+
+									/*
+									 * Update the cache, but with the inverse value, as we keep the
+									 * cache for calls with (minval, constvalue).
+									 */
+									callcache[bucket->max[idx]] = (tmp) ? 0x01 : 0x03;
+								}
+								else
+									tmp = !(maxcached & 0x02);	/* extract the result (reverse) */
 
 								if (tmp)
 								{
-										/* partial match */
+									/* partial match */
 									UPDATE_RESULT(matches[i], MVSTATS_MATCH_PARTIAL, is_or);
 									continue;
 								}
@@ -4150,6 +4197,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								/*
 								 * And finally check whether the whether the constant is above the the upper
 								 * boundary (in that case it's a full match match).
+								 *
+								 * XXX We need to do this because of the OR clauses (which start with no
+								 *     matches and we incrementally add more and more matches), but maybe
+								 *     we don't need to do the check and can just do UPDATE_RESULT?
 								 */
 								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
 																	 DEFAULT_COLLATION_OID,
@@ -4162,7 +4213,6 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 									UPDATE_RESULT(matches[i], MVSTATS_MATCH_FULL, is_or);
 								}
 
-
 							}
 							else	/* (const < var) */
 							{
@@ -4170,10 +4220,18 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * First check whether the constant is above the upper boundary (in that
 								 * case we can skip the bucket, because there's no overlap).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 maxval,
-																	 cst->constvalue));
+								if (! maxcached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 maxval,
+																		 cst->constvalue));
+
+									/* Update the cache. */
+									callcache[bucket->max[idx]] = (tmp) ? 0x03 : 0x01;
+								}
+								else
+									tmp = (maxcached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4186,10 +4244,17 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * Now check whether the lower boundary is below the constant (in that
 								 * case it's a partial match).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 minval,
-																	 cst->constvalue));
+								if (! mincached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 minval,
+																		 cst->constvalue));
+									/* Update the cache. */
+									callcache[bucket->min[idx]] = (tmp) ? 0x03 : 0x01;
+ 								}
+								else
+									tmp = (mincached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4201,6 +4266,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								/*
 								 * Now check whether the lower boundary is below the constant (in that
 								 * case it's a partial match).
+								 *
+								 * XXX We need to do this because of the OR clauses (which start with no
+								 *     matches and we incrementally add more and more matches), but maybe
+								 *     we don't need to do the check and can just do UPDATE_RESULT?
 								 */
 								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
 																	 DEFAULT_COLLATION_OID,
@@ -4222,10 +4291,21 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * First check whether the constant is above the upper boundary (in that
 								 * case we can skip the bucket, because there's no overlap).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 cst->constvalue,
-																	 maxval));
+								if (! maxcached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 cst->constvalue,
+																		 maxval));
+
+									/*
+									 * Update the cache, but with the inverse value, as we keep the
+									 * cache for calls with (val, constvalue).
+									 */
+									callcache[bucket->max[idx]] = (tmp) ? 0x01 : 0x03;
+								}
+								else
+									tmp = !(maxcached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4238,10 +4318,21 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * Now check whether the lower boundary is below the constant (in that
 								 * case it's a partial match).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 cst->constvalue,
-																	 minval));
+								if (! mincached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 cst->constvalue,
+																		 minval));
+
+									/*
+									 * Update the cache, but with the inverse value, as we keep the
+									 * cache for calls with (val, constvalue).
+									 */
+									callcache[bucket->min[idx]] = (tmp) ? 0x01 : 0x03;
+								}
+								else
+									tmp = !(mincached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4253,6 +4344,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								/*
 								 * Now check whether the lower boundary is below the constant (in that
 								 * case it's a partial match).
+								 *
+								 * XXX We need to do this because of the OR clauses (which start with no
+								 *     matches and we incrementally add more and more matches), but maybe
+								 *     we don't need to do the check and can just do UPDATE_RESULT?
 								 */
 								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
 																	 DEFAULT_COLLATION_OID,
@@ -4270,10 +4365,18 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * First check whether the constant is below the lower boundary (in
 								 * that case we can skip the bucket, because there's no overlap).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 minval,
-																	 cst->constvalue));
+								if (! mincached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 minval,
+																		 cst->constvalue));
+
+									/* Update the cache. */
+									callcache[bucket->min[idx]] = (tmp) ? 0x03 : 0x01;
+								}
+								else
+									tmp = (mincached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4286,10 +4389,18 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								 * Now check whether the upper boundary is below the constant (in that
 								 * case it's a partial match).
 								 */
-								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
-																	 DEFAULT_COLLATION_OID,
-																	 maxval,
-																	 cst->constvalue));
+								if (! maxcached)
+								{
+									tmp = DatumGetBool(FunctionCall2Coll(&opproc,
+																		 DEFAULT_COLLATION_OID,
+																		 maxval,
+																		 cst->constvalue));
+
+									/* Update the cache. */
+									callcache[bucket->max[idx]] = (tmp) ? 0x03 : 0x01;
+								}
+								else
+									tmp = (maxcached & 0x02);	/* extract the result */
 
 								if (tmp)
 								{
@@ -4301,6 +4412,10 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								/*
 								 * Now check whether the upper boundary is below the constant (in that
 								 * case it's a partial match).
+								 *
+								 * XXX We need to do this because of the OR clauses (which start with no
+								 *     matches and we incrementally add more and more matches), but maybe
+								 *     we don't need to do the check and can just do UPDATE_RESULT?
 								 */
 								tmp = DatumGetBool(FunctionCall2Coll(&opproc,
 																	 DEFAULT_COLLATION_OID,
@@ -4343,10 +4458,18 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 							 *		it may not even degenerate into (min=max) bucket. For example the
 							 *		the current partitioning algorithm never does that.
 							 */
-							tmp = DatumGetBool(FunctionCall2Coll(&ltproc,
-																 DEFAULT_COLLATION_OID,
-																 cst->constvalue,
-																 minval));
+							if (! mincached)
+							{
+								tmp = DatumGetBool(FunctionCall2Coll(&ltproc,
+																	 DEFAULT_COLLATION_OID,
+																	 cst->constvalue,
+																	 minval));
+
+								/* Update the cache. */
+								callcache[bucket->min[idx]] = (tmp) ? 0x03 : 0x01;
+							}
+							else
+								tmp = (mincached & 0x02);	/* extract the result */
 
 							if (tmp)
 							{
@@ -4355,10 +4478,18 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 								continue;
 							}
 
-							tmp = DatumGetBool(FunctionCall2Coll(&ltproc,
-																 DEFAULT_COLLATION_OID,
-																 maxval,
-																 cst->constvalue));
+							if (! maxcached)
+							{
+								tmp = DatumGetBool(FunctionCall2Coll(&ltproc,
+																	 DEFAULT_COLLATION_OID,
+																	 maxval,
+																	 cst->constvalue));
+
+								/* Update the cache. */
+								callcache[bucket->max[idx]] = (tmp) ? 0x03 : 0x01;
+							}
+							else
+								tmp = (maxcached & 0x02);	/* extract the result */
 
 
 							if (tmp)
@@ -4375,7 +4506,6 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 					}
 				}
 			}
-
 		}
 		else if (IsA(clause, NullTest))
 		{
@@ -4463,6 +4593,8 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 		else
 			elog(ERROR, "unknown clause type: %d", clause->type);
 	}
+
+	pfree(callcache);
 
 #ifdef DEBUG_MVHIST
 	debug_histogram_matches(mvhist, matches);

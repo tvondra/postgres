@@ -73,7 +73,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/* by default build nothing */
 	bool 	build_dependencies = false,
 			build_mcv = false,
-			build_histogram = false;
+			build_histogram = false,
+			build_ndistinct = false;
 
 	int32 	max_buckets = -1,
 			max_mcv_items = -1;
@@ -157,6 +158,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 		if (strcmp(opt->defname, "dependencies") == 0)
 			build_dependencies = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "ndistinct") == 0)
+			build_ndistinct = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "mcv") == 0)
 			build_mcv = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "max_mcv_items") == 0)
@@ -211,10 +214,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* check that at least some statistics were requested */
-	if (! (build_dependencies || build_mcv || build_histogram))
+	if (! (build_dependencies || build_mcv || build_histogram || build_ndistinct))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (dependencies, mcv, histogram) was requested")));
+				 errmsg("no statistics type (dependencies, mcv, histogram, ndistinct) was requested")));
 
 	/* now do some checking of the options */
 	if (require_mcv && (! build_mcv))
@@ -248,6 +251,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
 	values[Anum_pg_mv_statistic_mcv_enabled  -1] = BoolGetDatum(build_mcv);
 	values[Anum_pg_mv_statistic_hist_enabled -1] = BoolGetDatum(build_histogram);
+	values[Anum_pg_mv_statistic_ndist_enabled-1] = BoolGetDatum(build_ndistinct);
 
 	values[Anum_pg_mv_statistic_mcv_max_items    -1] = Int32GetDatum(max_mcv_items);
 	values[Anum_pg_mv_statistic_hist_max_buckets -1] = Int32GetDatum(max_buckets);
@@ -255,6 +259,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	nulls[Anum_pg_mv_statistic_stadeps  -1] = true;
 	nulls[Anum_pg_mv_statistic_stamcv   -1] = true;
 	nulls[Anum_pg_mv_statistic_stahist  -1] = true;
+	nulls[Anum_pg_mv_statistic_standist -1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

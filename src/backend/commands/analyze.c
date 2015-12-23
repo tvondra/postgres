@@ -569,7 +569,7 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 		}
 
 		/* Build multivariate stats (if there are any). */
-		build_mv_stats(onerel, numrows, rows, attr_cnt, vacattrstats);
+		build_mv_stats(onerel, totalrows, numrows, rows, attr_cnt, vacattrstats);
 	}
 
 	/*

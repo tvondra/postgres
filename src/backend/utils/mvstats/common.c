@@ -31,7 +31,8 @@ static List *list_mv_stats(Oid relid);
  * and serializes them back into the catalog (as bytea values).
  */
 void
-build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
+build_mv_stats(Relation onerel, double totalrows,
+			   int numrows, HeapTuple *rows,
 			   int natts, VacAttrStats **vacattrstats)
 {
 	ListCell   *lc;
@@ -51,8 +52,9 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
 		MVDependencies deps = NULL;
 		MCVList		mcvlist = NULL;
-		MVHistogram histogram = NULL;
-		int			numrows_filtered = numrows;
+		MVHistogram	histogram = NULL;
+		double		ndist = -1;
+		int			numrows_filtered  = numrows;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -91,6 +93,9 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		if (stat->deps_enabled)
 			deps = build_mv_dependencies(numrows, rows, attrs, stats);
 
+		if (stat->ndist_enabled)
+			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
+
 		/* build the MCV list */
 		if (stat->mcv_enabled)
 			mcvlist = build_mv_mcvlist(numrows, rows, attrs, stats, &numrows_filtered);
@@ -100,7 +105,7 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 			histogram = build_mv_histogram(numrows_filtered, rows, attrs, stats, numrows);
 
 		/* store the histogram / MCV list in the catalog */
-		update_mv_stats(stat->mvoid, deps, mcvlist, histogram, attrs, stats);
+		update_mv_stats(stat->mvoid, deps, mcvlist, histogram, ndist, attrs, stats);
 	}
 }
 
@@ -184,6 +189,8 @@ list_mv_stats(Oid relid)
 		info->mcv_built = stats->mcv_built;
 		info->hist_enabled = stats->hist_enabled;
 		info->hist_built = stats->hist_built;
+		info->ndist_enabled = stats->ndist_enabled;
+		info->ndist_built = stats->ndist_built;
 
 		result = lappend(result, info);
 	}
@@ -257,7 +264,7 @@ find_mv_attnums(Oid mvoid, Oid *relid)
 void
 update_mv_stats(Oid mvoid,
 		 MVDependencies dependencies, MCVList mcvlist, MVHistogram histogram,
-				int2vector *attrs, VacAttrStats **stats)
+				double ndistcoeff, int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -299,26 +306,36 @@ update_mv_stats(Oid mvoid,
 			= PointerGetDatum(data);
 	}
 
+	if (ndistcoeff > 1.0)
+	{
+		nulls[Anum_pg_mv_statistic_standist -1] = false;
+		values[Anum_pg_mv_statistic_standist-1] = Float8GetDatum(ndistcoeff);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_mv_statistic_stadeps - 1] = true;
 	replaces[Anum_pg_mv_statistic_stamcv - 1] = true;
 	replaces[Anum_pg_mv_statistic_stahist - 1] = true;
+	replaces[Anum_pg_mv_statistic_standist - 1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_mv_statistic_deps_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_mcv_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_hist_built - 1] = false;
+	nulls[Anum_pg_mv_statistic_ndist_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_stakeys - 1] = false;
 
 	/* use the new attnums, in case we removed some dropped ones */
 	replaces[Anum_pg_mv_statistic_deps_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_mcv_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_hist_built - 1] = true;
+	replaces[Anum_pg_mv_statistic_ndist_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_stakeys - 1] = true;
 
 	values[Anum_pg_mv_statistic_deps_built - 1] = BoolGetDatum(dependencies != NULL);
 	values[Anum_pg_mv_statistic_mcv_built - 1] = BoolGetDatum(mcvlist != NULL);
 	values[Anum_pg_mv_statistic_hist_built - 1] = BoolGetDatum(histogram != NULL);
+	values[Anum_pg_mv_statistic_ndist_built - 1] = BoolGetDatum(ndistcoeff > 1.0);
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(attrs);
 
 	/* Is there already a pg_mv_statistic tuple for this attribute? */

@@ -59,6 +59,7 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 #define		MV_CLAUSE_TYPE_FDEP		0x01
 #define		MV_CLAUSE_TYPE_MCV		0x02
 #define		MV_CLAUSE_TYPE_HIST		0x04
+#define		MV_CLAUSE_TYPE_NDIST	0x08
 
 static bool clause_is_mv_compatible(Node *clause, Oid varRelid,
 							 Index *relid, Bitmapset **attnums, SpecialJoinInfo *sjinfo,
@@ -296,6 +297,9 @@ clauselist_selectivity(PlannerInfo *root,
 		(count_mv_attnums(clauses, varRelid, sjinfo, MV_CLAUSE_TYPE_FDEP) >= 2))
 			clauses = clauselist_apply_dependencies(root, clauses, varRelid,
 													stats, sjinfo);
+
+	if (has_stats(stats, MV_CLAUSE_TYPE_NDIST))
+		elog(WARNING, "has ndistinct coefficient stats");
 
 	/*
 	 * Check that there are statistics with MCV list or histogram, and also the
@@ -2550,6 +2554,9 @@ has_stats(List *stats, int type)
 			return true;
 
 		if ((type & MV_CLAUSE_TYPE_HIST) && stat->hist_built)
+			return true;
+
+		if ((type & MV_CLAUSE_TYPE_NDIST) && stat->ndist_built)
 			return true;
 	}
 

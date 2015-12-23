@@ -73,7 +73,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 				childobject;
 
 	/* by default build nothing */
-	bool		build_dependencies = false;
+	bool		build_dependencies = false,
+				build_ndistinct = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -150,6 +151,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 		if (strcmp(opt->defname, "dependencies") == 0)
 			build_dependencies = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "ndistinct") == 0)
+			build_ndistinct = defGetBoolean(opt);
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -158,10 +161,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* check that at least some statistics were requested */
-	if (!build_dependencies)
+	if (!(build_dependencies || build_ndistinct))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (dependencies) was requested")));
+				 errmsg("no statistics type (dependencies, ndistinct) was requested")));
 
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
@@ -182,8 +185,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(stakeys);
 
 	values[Anum_pg_mv_statistic_deps_enabled - 1] = BoolGetDatum(build_dependencies);
+	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(build_ndistinct);
 
 	nulls[Anum_pg_mv_statistic_stadeps - 1] = true;
+	nulls[Anum_pg_mv_statistic_standist - 1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

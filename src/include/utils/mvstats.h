@@ -51,6 +51,9 @@ typedef MVDependenciesData *MVDependencies;
  * specified using flags (or something like that).
  */
 
+MVDependencies load_mv_dependencies(Oid mvoid);
+double		   load_mv_ndistinct(Oid mvoid);
+
 bytea *serialize_mv_dependencies(MVDependencies dependencies);
 
 /* deserialization of stats (serialization is private to analyze) */
@@ -64,9 +67,15 @@ MVDependencies build_mv_dependencies(int numrows, HeapTuple *rows,
 					  int2vector *attrs,
 					  VacAttrStats **stats);
 
-void build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
+double build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
+						  int2vector *attrs, VacAttrStats **stats);
+
+void build_mv_stats(Relation onerel, double totalrows,
+			   int numrows, HeapTuple *rows,
 			   int natts, VacAttrStats **vacattrstats);
 
-void update_mv_stats(Oid relid, MVDependencies dependencies, int2vector *attrs);
+void update_mv_stats(Oid relid, MVDependencies dependencies,
+					 double ndistcoeff,
+					 int2vector *attrs, VacAttrStats **stats);
 
 #endif

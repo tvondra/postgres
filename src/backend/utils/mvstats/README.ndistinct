@@ -1,0 +1,83 @@
+ndistinct coefficients
+======================
+
+Estimating number of distinct groups in a combination of columns is tricky,
+and the estimation error is often significant. By ndistinct coefficient we
+mean a ratio
+
+    q = ndistinct(a) * ndistinct(b) / ndistinct(a,b)
+
+where 'a' and 'b' are columns, ndistinct(a) is (an estimate of) a number of
+distinct values in column 'a'. And ndistinct(a,b) is the same thing for the
+pair of columns.
+
+The meaning of the coefficient may be illustrated by answering the following
+question: Given a combination of columns (a,b), how many distinct values of 'b'
+matches a chosen value of 'a' on average?
+
+Let's assume we know ndistinct(a) and ndistinct(a,b). Then the answer to the
+question clearly is
+
+    ndistinct(a,b) / ndistinct(a)
+
+and by using 'q' we may rewrite this as
+
+    ndistinct(b) / q
+
+so 'q' may be considered as a correction factor of the ndistinct estimate given
+a condition on one of the columns.
+
+This may be generalized to a combination of 'n' columns
+
+    [ndistinct(c1) * ... * ndistinct(cn)] / ndistinct(c1, ..., cn)
+
+and the meaning is very similar, except that we need to use conditions on (n-1)
+of the columns.
+
+
+Selectivity estimation
+----------------------
+
+As explained in the previous paragraph, ndistinct coefficients may be used to
+estimate cardinality of a column, given some apriori knowledge. Let's assume
+we need to estimate selectivity of a condition
+
+    (a=1) AND (b=2)
+
+which we can expand like this
+
+    P(a=1 & b=2) = P(a=1) * P(b=2 | a=1)
+
+Let's also assume that the distribution of 'b' is uniform, i.e. that
+
+    P(a=1) = 1/ndistinct(a)
+    P(b=2) = 1/ndistinct(b)
+    P(a=1 & b=2) = 1/ndistinct(a,b)
+
+    P(b=2 | a=1) = ndistinct(a) / ndistinct(a,b)
+
+which may be rewritten like
+
+    P(b=2 | a=1)
+        = ndistinct(a,b) / ndistinct(a)
+        = (1/ndistinct(b)) * [(ndistinct(a) * ndistinct(b)) / ndistinct(a,b)]
+        = (1/ndistinct(b)) * q
+
+and therefore
+
+    P(a=1 & b=2) = (1/ndistinct(a)) * (1/ndistinct(b)) * q
+
+This also illustrates 'q' as a correction coefficient.
+
+It also explains why we store the coefficient and not simply ndistinct(a,b).
+This way we can simply estimate individual clauses and then simply correct
+the estimate by multiplying the result with 'q' - we don't have to mess with
+ndistinct estimates at all.
+
+Naturally, as the coefficient is derives from ndistinct(a,b), it may be also
+used to estimate GROUP BY clauses on the combination of columns, replacing the
+existing heuristics in estimate_num_groups().
+
+Note: Currently only the GROUP BY estimation is implemented. It's a bit unclear
+how to implement the clause estimation when there are other statistics (esp.
+MCV lists and/or functional dependencies) available.

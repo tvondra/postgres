@@ -132,6 +132,15 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
     </listitem>
    </varlistentry>
 
+   <varlistentry>
+    <term><literal>ndistinct</> (<type>boolean</>)</term>
+    <listitem>
+     <para>
+      Enables ndistinct coefficients for the statistics.
+     </para>
+    </listitem>
+   </varlistentry>
+
    </variablelist>
 
   </refsect2>

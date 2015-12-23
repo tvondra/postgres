@@ -675,9 +675,11 @@ typedef struct MVStatisticInfo
 
 	/* enabled statistics */
 	bool		deps_enabled;	/* functional dependencies enabled */
+	bool		ndist_enabled;	/* ndistinct coefficient enabled */
 
 	/* built/available statistics */
 	bool		deps_built;		/* functional dependencies built */
+	bool		ndist_built;	/* ndistinct coefficient built */
 
 	/* columns in the statistics (attnums) */
 	int2vector *stakeys;		/* attnums of the columns covered */

@@ -59,6 +59,7 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 #define		MV_CLAUSE_TYPE_FDEP		0x01
 #define		MV_CLAUSE_TYPE_MCV		0x02
 #define		MV_CLAUSE_TYPE_HIST		0x04
+#define		MV_CLAUSE_TYPE_NDIST	0x08
 
 static bool clause_is_mv_compatible(Node *clause, Oid varRelid,
 							 Index *relid, Bitmapset **attnums, SpecialJoinInfo *sjinfo,
@@ -2552,6 +2553,9 @@ has_stats(List *stats, int type)
 			return true;
 
 		if ((type & MV_CLAUSE_TYPE_HIST) && stat->hist_built)
+			return true;
+
+		if ((type & MV_CLAUSE_TYPE_NDIST) && stat->ndist_built)
 			return true;
 	}
 

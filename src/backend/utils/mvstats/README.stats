@@ -20,6 +20,8 @@ Currently we only have two kinds of multivariate statistics
 
     (c) multivariate histograms (README.histogram)
 
+    (d) ndistinct coefficients
+
 
 Compatible clause types
 -----------------------

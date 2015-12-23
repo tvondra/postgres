@@ -38,6 +38,7 @@ CATALOG(pg_mv_statistic,3381)
 	bool		deps_enabled;		/* analyze dependencies? */
 	bool		mcv_enabled;		/* build MCV list? */
 	bool		hist_enabled;		/* build histogram? */
+	bool		ndist_enabled;		/* build ndist coefficient? */
 
 	/* histogram / MCV size */
 	int32		mcv_max_items;		/* max MCV items */
@@ -47,6 +48,7 @@ CATALOG(pg_mv_statistic,3381)
 	bool		deps_built;			/* dependencies were built */
 	bool		mcv_built;			/* MCV list was built */
 	bool		hist_built;			/* histogram was built */
+	bool		ndist_built;		/* ndistinct coeff built */
 
 	/* variable-length fields start here, but we allow direct access to stakeys */
 	int2vector	stakeys;			/* array of column keys */
@@ -55,6 +57,7 @@ CATALOG(pg_mv_statistic,3381)
 	bytea		stadeps;			/* dependencies (serialized) */
 	bytea		stamcv;				/* MCV list (serialized) */
 	bytea		stahist;			/* MV histogram (serialized) */
+	float8		standcoeff;			/* ndistinct coeff (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;
@@ -70,20 +73,23 @@ typedef FormData_pg_mv_statistic *Form_pg_mv_statistic;
  *		compiler constants for pg_attrdef
  * ----------------
  */
-#define Natts_pg_mv_statistic					14
+#define Natts_pg_mv_statistic					17
 #define Anum_pg_mv_statistic_starelid			1
 #define Anum_pg_mv_statistic_staname			2
 #define Anum_pg_mv_statistic_deps_enabled		3
 #define Anum_pg_mv_statistic_mcv_enabled		4
 #define Anum_pg_mv_statistic_hist_enabled		5
-#define Anum_pg_mv_statistic_mcv_max_items		6
-#define Anum_pg_mv_statistic_hist_max_buckets	7
-#define Anum_pg_mv_statistic_deps_built			8
-#define Anum_pg_mv_statistic_mcv_built			9
-#define Anum_pg_mv_statistic_hist_built			10
-#define Anum_pg_mv_statistic_stakeys			11
-#define Anum_pg_mv_statistic_stadeps			12
-#define Anum_pg_mv_statistic_stamcv				13
-#define Anum_pg_mv_statistic_stahist			14
+#define Anum_pg_mv_statistic_ndist_enabled		6
+#define Anum_pg_mv_statistic_mcv_max_items		7
+#define Anum_pg_mv_statistic_hist_max_buckets	8
+#define Anum_pg_mv_statistic_deps_built			9
+#define Anum_pg_mv_statistic_mcv_built			10
+#define Anum_pg_mv_statistic_hist_built			11
+#define Anum_pg_mv_statistic_ndist_built		12
+#define Anum_pg_mv_statistic_stakeys			13
+#define Anum_pg_mv_statistic_stadeps			14
+#define Anum_pg_mv_statistic_stamcv				15
+#define Anum_pg_mv_statistic_stahist			16
+#define Anum_pg_mv_statistic_standist			17
 
 #endif   /* PG_MV_STATISTIC_H */

@@ -224,6 +224,7 @@ typedef MVSerializedHistogramData *MVSerializedHistogram;
 MVDependencies load_mv_dependencies(Oid mvoid);
 MCVList        load_mv_mcvlist(Oid mvoid);
 MVSerializedHistogram    load_mv_histogram(Oid mvoid);
+double		   load_mv_ndistinct(Oid mvoid);
 
 bytea * serialize_mv_dependencies(MVDependencies dependencies);
 bytea * serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
@@ -265,11 +266,16 @@ MVHistogram
 build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
 				   VacAttrStats **stats, int numrows_total);
 
+double
+build_mv_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
+				   VacAttrStats **stats);
+
 void build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 					int natts, VacAttrStats **vacattrstats);
 
 void update_mv_stats(Oid relid, MVDependencies dependencies,
 					 MCVList mcvlist, MVHistogram histogram,
+					 double ndistcoeff,
 					 int2vector *attrs, VacAttrStats **stats);
 
 #ifdef DEBUG_MVHIST

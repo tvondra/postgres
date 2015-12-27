@@ -48,7 +48,6 @@ static TupleTableSlot *ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
 						  TupleTableSlot *tupleSlot);
 static bool ExecHashJoinNewBatch(HashJoinState *hjstate);
 
-
 /* ----------------------------------------------------------------
  *		ExecHashJoin
  *
@@ -210,6 +209,7 @@ ExecHashJoin(HashJoinState *node)
 				outerTupleSlot = ExecHashJoinOuterGetTuple(outerNode,
 														   node,
 														   &hashvalue);
+
 				if (TupIsNull(outerTupleSlot))
 				{
 					/* end of batch, or maybe whole join */
@@ -222,6 +222,19 @@ ExecHashJoin(HashJoinState *node)
 					else
 						node->hj_JoinState = HJ_NEED_NEW_BATCH;
 					continue;
+				}
+
+				/* If still in the first batch, we check the bloom filter. */
+				if (hashtable->curbatch == 0)
+				{
+					node->hj_BloomLookups += 1;
+
+					if (! ExecHashBloomCheckValue(hashtable, hashvalue))
+					{
+						/* Loop around, staying in HJ_NEED_NEW_OUTER state */
+						node->hj_BloomEliminated += 1;
+						continue;
+					}
 				}
 
 				econtext->ecxt_outertuple = outerTupleSlot;
@@ -423,6 +436,9 @@ ExecHashJoin(HashJoinState *node)
 					 (int) node->hj_JoinState);
 		}
 	}
+
+	elog(WARNING, "bloom filter lookups=%lu eliminated=%lu",
+				  node->hj_BloomLookups, node->hj_BloomEliminated);
 }
 
 /* ----------------------------------------------------------------
@@ -591,6 +607,9 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
 
+	hjstate->hj_BloomLookups = 0;
+	hjstate->hj_BloomEliminated = 0;
+
 	return hjstate;
 }
 
@@ -629,6 +648,9 @@ ExecEndHashJoin(HashJoinState *node)
 	 */
 	ExecEndNode(outerPlanState(node));
 	ExecEndNode(innerPlanState(node));
+	
+	elog(WARNING, "bloom filter lookups=%lu eliminated=%lu",
+				  node->hj_BloomLookups, node->hj_BloomEliminated);
 }
 
 /*

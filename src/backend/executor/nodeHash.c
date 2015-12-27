@@ -36,6 +36,7 @@
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "utils/murmur3.h"
 
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
@@ -47,8 +48,15 @@ static void ExecHashSkewTableInsert(HashJoinTable hashtable,
 						uint32 hashvalue,
 						int bucketNumber);
 static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
+static void ExecHashBloomAddValue(HashJoinTable hashtable, uint32 hashvalue);
 
 static void *dense_alloc(HashJoinTable hashtable, Size size);
+
+static BloomFilter BloomFilterInit(double nrows, double error);
+
+/* let's shoot for 5% false positives error rate (arbitrary value) */
+#define BLOOM_ERROR_RATE 0.05
+
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -111,6 +119,8 @@ MultiExecHash(HashState *node)
 								 &hashvalue))
 		{
 			int			bucketNumber;
+
+			ExecHashBloomAddValue(hashtable, hashvalue);
 
 			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
 			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
@@ -306,6 +316,11 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 	hashtable->spaceAllowedSkew =
 		hashtable->spaceAllowed * SKEW_WORK_MEM_PERCENT / 100;
 	hashtable->chunks = NULL;
+	hashtable->bloomFilter = NULL;
+
+	/* do bloom filter only when batching */
+	if (nbatch > 1)
+		hashtable->bloomFilter = BloomFilterInit(outerNode->plan_rows, BLOOM_ERROR_RATE);
 
 	/*
 	 * Get info about the hash functions to be used for each hash key. Also
@@ -588,6 +603,7 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	long		ninmemory;
 	long		nfreed;
 	HashMemoryChunk oldchunks;
+	bool		build_bloom_filter = false;
 
 	/* do nothing if we've decided to shut off growth */
 	if (!hashtable->growEnabled)
@@ -648,6 +664,36 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	 */
 	ninmemory = nfreed = 0;
 
+	/* if we're switching to batched mode, we need to build the bloom filter */
+	if (oldnbatch == 1)
+	{
+		/*
+		 * We can't use outerNode->plan_rows here, firstly because we don't
+		 * have access to it, but most importantly because it's inaccurate
+		 * anyway (we've expected to do no batching based on the value). So
+		 * we'll just use double the number of entries in the hash table.
+		 *
+		 * We also need to make sure we added the hash values into the bloom
+		 * filter in this case (that's what build_bloom_filter is for).
+		 *
+		 * XXX Maybe we should be more pessimistic and use a higher values,
+		 *     in case we need to further increment the number of batches.
+		 *
+		 * XXX We also need to set some maximum number of tuples when the
+		 *     false positive rate gets too bad, and stop using the bloom
+		 *     filter if we reach it (we can't resize the filter).
+		 *
+		 * XXX There was a paper about adding a larger bloom filter once
+		 *     we fill the existing one, and using them at the same time.
+		 *     Might be worth implementing if the whole bloom filter idea
+		 *     works in general.
+		 */
+		hashtable->bloomFilter
+			= BloomFilterInit(2 * hashtable->totalTuples, BLOOM_ERROR_RATE);
+
+		build_bloom_filter = true;
+	}
+
 	/*
 	 * We will scan through the chunks directly, so that we can reset the
 	 * buckets now and not have to keep track which tuples in the buckets have
@@ -676,6 +722,9 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 			ninmemory++;
 			ExecHashGetBucketAndBatch(hashtable, hashTuple->hashvalue,
 									  &bucketno, &batchno);
+
+			if (build_bloom_filter)
+				ExecHashBloomAddValue(hashtable, hashTuple->hashvalue);
 
 			if (batchno == curbatch)
 			{
@@ -1676,4 +1725,79 @@ dense_alloc(HashJoinTable hashtable, Size size)
 
 	/* return pointer to the start of the tuple memory */
 	return ptr;
+}
+
+static void
+ExecHashBloomAddValue(HashJoinTable hashtable, uint32 hashvalue)
+{
+	int			i, byteIdx, bitIdx;
+	BloomFilter	filter = hashtable->bloomFilter;
+
+	if (! filter)
+		return;
+
+	if (hashtable->curbatch > 0)
+		return;
+
+	Assert(hashtable->nbatch > 1);	/* nbatch=1 implies bloomData=NULL */
+
+	for (i = 0; i < filter->nhashes; i++)
+	{
+		uint32_t seed = i;
+		uint32_t hash = 0;
+
+		MurmurHash3_x86_32(&hashvalue, sizeof(uint32), seed, &hash);
+
+		hash = hash % filter->nbits;
+
+		byteIdx = (hash / 8);
+		bitIdx = (hash % 8);
+
+		filter->data[byteIdx] |= (0x01 << bitIdx);
+	}
+}
+
+bool
+ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue)
+{
+	int			i, byteIdx, bitIdx;
+	BloomFilter	filter = hashtable->bloomFilter;
+
+	if (! filter)
+		return true;
+
+	for (i = 0; i < filter->nhashes; i++)
+	{
+		uint32_t seed = i;
+		uint32_t hash = 0;
+
+		MurmurHash3_x86_32(&hashvalue, sizeof(uint32), seed, &hash);
+
+		hash = hash % filter->nbits;
+
+		byteIdx = (hash / 8);
+		bitIdx = (hash % 8);
+
+		if (! (filter->data[byteIdx] & (0x01 << bitIdx)))
+			return false;
+	}
+
+	return true;
+}
+
+static BloomFilter
+BloomFilterInit(double nrows, double error)
+{
+	/* perhaps we should round nbits to multiples of 8 ? */
+	int nbits = ceil((nrows * log(error)) / log(1.0 / (pow(2.0, log(2.0)))));
+	int nhashes = round(log(2.0) * nbits / nrows);
+
+	BloomFilter filter = palloc0(offsetof(BloomFilterData, data) + ((nbits + 7) / 8));
+
+	filter->nbits = nbits;
+	filter->nhashes = nhashes;
+
+	elog(WARNING, "bloom filter: %d bits (%d bytes), %d hashes", nbits, (nbits + 7) / 8, nhashes);
+
+	return filter;
 }

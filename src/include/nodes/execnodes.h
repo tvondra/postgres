@@ -1764,6 +1764,10 @@ typedef struct HashJoinState
 	int			hj_JoinState;
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
+
+	/* debugging and profiling of bloom filters */
+	uint64		hj_BloomLookups;
+	uint64		hj_BloomEliminated;
 } HashJoinState;
 
 

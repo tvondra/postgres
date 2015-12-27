@@ -72,6 +72,15 @@ typedef struct HashJoinTupleData
 #define HJTUPLE_MINTUPLE(hjtup)  \
 	((MinimalTuple) ((char *) (hjtup) + HJTUPLE_OVERHEAD))
 
+typedef struct BloomFilterData
+{
+	int		nbits;			/* m */
+	int		nhashes;		/* k */
+	char	data[1];		/* bits */
+}	BloomFilterData;
+
+typedef BloomFilterData *BloomFilter;
+
 /*
  * If the outer relation's distribution is sufficiently nonuniform, we attempt
  * to optimize the join by treating the hash values corresponding to the outer
@@ -181,6 +190,11 @@ typedef struct HashJoinTableData
 
 	/* used for dense allocation of tuples (into linked chunks) */
 	HashMemoryChunk chunks;		/* one list for the whole batch */
+
+	/* used only when the hash join has multiple batches */
+	BloomFilter	bloomFilter;	/* bloom filter on the hash values */
 }	HashJoinTableData;
+
+bool ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue);
 
 #endif   /* HASHJOIN_H */

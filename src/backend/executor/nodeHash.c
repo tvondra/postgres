@@ -31,6 +31,7 @@
 #include "executor/hashjoin.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
+#include "lib/hyperloglog.h"
 #include "miscadmin.h"
 #include "utils/dynahash.h"
 #include "utils/memutils.h"
@@ -38,6 +39,7 @@
 #include "utils/syscache.h"
 #include "utils/murmur3.h"
 
+bool		enable_hashjoin_bloom = true;
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
 static void ExecHashBuildBuckets(HashJoinTable hashtable);
@@ -48,6 +50,7 @@ static void ExecHashSkewTableInsert(HashJoinTable hashtable,
 						uint32 hashvalue,
 						int bucketNumber);
 static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
+static void ExecHashHLLAddValue(HashJoinTable hashtable, uint32 hashvalue);
 static void ExecHashBloomAddValue(HashJoinTable hashtable, uint32 hashvalue);
 
 static void *dense_alloc(HashJoinTable hashtable, Size size);
@@ -120,7 +123,21 @@ MultiExecHash(HashState *node)
 		{
 			int			bucketNumber;
 
-			ExecHashBloomAddValue(hashtable, hashvalue);
+			/*
+			 * If we're interested in building the bloom filter, add the hash
+			 * value either to the hyperloglog counter or to the bloom filter,
+			 * depending on which phase we're in. If we're still not batching,
+			 * we only have the hyperloglog counter, otherwise we have the
+			 * bloom filter.
+			 *
+			 * XXX We may still not build any of the two things (HLL, bloom),
+			 *     e.g. if we decide not to based on estimates or at runtime.
+			 */
+			if (enable_hashjoin_bloom)
+			{
+				ExecHashHLLAddValue(hashtable, hashvalue);
+				ExecHashBloomAddValue(hashtable, hashvalue);
+			}
 
 			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
 			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
@@ -316,11 +333,35 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 	hashtable->spaceAllowedSkew =
 		hashtable->spaceAllowed * SKEW_WORK_MEM_PERCENT / 100;
 	hashtable->chunks = NULL;
-	hashtable->bloomFilter = NULL;
 
-	/* do bloom filter only when batching */
-	if (nbatch > 1)
-		hashtable->bloomFilter = BloomFilterInit(outerNode->plan_rows, BLOOM_ERROR_RATE);
+	/* only one of those is assumed to be non-NULL */
+	hashtable->bloomFilter = NULL;
+	hashtable->hll = NULL;
+
+	/*
+	 * We don't quite know how many distinct values to expect, so we'll use
+	 * the estimated number of rowsto be added to the hash table, and assume
+	 * they're all distinct.
+	 *
+	 * But if we already know there'll be multiple batches, we can't use hll
+	 * because we need to start building the bloom filter right away. In that
+	 * case we simply assume all the values are unique - we'll probably use
+	 * larger (and thus less efficient) bloom filter. It may not matter that
+	 * much because the possible savings (reduced I/O etc.) are much more
+	 * significant.
+	 *
+	 * XXX What we could do is always build the first batch in memory, thus
+	 *     get ndistinct estimate from hyperloglog and then immediately
+	 *     switch to the originally estimated number of batches.
+	 *
+	 * XXX Not really sure how to size the HLL, so the bwidth value may be
+	 *     too high (and the counter too big).
+	 */
+	if (enable_hashjoin_bloom)
+	{
+		hashtable->hll = palloc0(sizeof(hyperLogLogState));
+		initHyperLogLogError(hashtable->hll, 0.05);
+	}
 
 	/*
 	 * Get info about the hash functions to be used for each hash key. Also
@@ -664,32 +705,57 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	 */
 	ninmemory = nfreed = 0;
 
-	/* if we're switching to batched mode, we need to build the bloom filter */
-	if (oldnbatch == 1)
+	/*
+	 * If we're switching to batched mode (and the bloom filters are enabled),
+	 * we need to start build the bloom filter.
+	 *
+	 * To size the bloom filter, we'll use the hyperloglog counter to estimate
+	 * the number of distinct values in the first batch, multiplied by the
+	 * expected number of batches. This may not work when the estimate is wrong,
+	 * but we can't really do better.
+	 *
+	 * XXX The problem here is that if we started with nbatch=1 and we're
+	 *     starting to batch now, it means we've under-estimated the cardinality
+	 *     somehow. And we don't know how much, but it's quite likely it's not
+	 *     just by a factor of 2 (which is assumed in the next block). So maybe
+	 *     we should be more pessimistic and use a higher number of batches.
+	 *
+	 * XXX We also need to set some maximum number of tuples when the false
+	 *     positive rate gets too bad, and stop using the bloom filter if we
+	 *     reach it (we can't resize the filter).
+	 *
+	 * XXX We can't really resize the bloom filter if we reach the number of
+	 *     distinct values, but there was a paper about adding a larger bloom
+	 *     filter once we fill the existing one, and using them at the same
+	 *     time. Might be worth implementing if the whole bloom filter idea
+	 *     works in general.
+	 *
+	 * We also need to make sure we added the hash values into the bloom
+	 * filter in this case (that's what build_bloom_filter is for).
+	 */
+	if (enable_hashjoin_bloom && (oldnbatch == 1))
 	{
-		/*
-		 * We can't use outerNode->plan_rows here, firstly because we don't
-		 * have access to it, but most importantly because it's inaccurate
-		 * anyway (we've expected to do no batching based on the value). So
-		 * we'll just use double the number of entries in the hash table.
-		 *
-		 * We also need to make sure we added the hash values into the bloom
-		 * filter in this case (that's what build_bloom_filter is for).
-		 *
-		 * XXX Maybe we should be more pessimistic and use a higher values,
-		 *     in case we need to further increment the number of batches.
-		 *
-		 * XXX We also need to set some maximum number of tuples when the
-		 *     false positive rate gets too bad, and stop using the bloom
-		 *     filter if we reach it (we can't resize the filter).
-		 *
-		 * XXX There was a paper about adding a larger bloom filter once
-		 *     we fill the existing one, and using them at the same time.
-		 *     Might be worth implementing if the whole bloom filter idea
-		 *     works in general.
-		 */
-		hashtable->bloomFilter
-			= BloomFilterInit(2 * hashtable->totalTuples, BLOOM_ERROR_RATE);
+		double ndistinct;
+
+		/* must have the counter to size bloom filter properly */
+		Assert(hashtable->hll);
+
+		ndistinct = estimateHyperLogLog(hashtable->hll);
+
+		/* We don't really want tiny bloom filters. */
+		if (ndistinct < 1024)
+			ndistinct = 1024;
+
+		elog(WARNING, "ExecHashIncreaseNumBatches: ndistinct %ld",
+					  (int64)(nbatch * ndistinct));
+
+		hashtable->bloomFilter = BloomFilterInit(nbatch * ndistinct,
+												 BLOOM_ERROR_RATE);
+
+		/* Free the HLL state (entirely). */
+		freeHyperLogLog(hashtable->hll);
+		pfree(hashtable->hll);
+		hashtable->hll = NULL;
 
 		build_bloom_filter = true;
 	}
@@ -785,6 +851,7 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 static void
 ExecHashBuildBuckets(HashJoinTable hashtable)
 {
+	bool build_bloom_filter = false;
 	HashMemoryChunk chunk;
 
 #ifdef HJDEBUG
@@ -806,6 +873,33 @@ ExecHashBuildBuckets(HashJoinTable hashtable)
 		(HashJoinTuple *) MemoryContextAllocHuge(hashtable->batchCxt,
 								hashtable->nbuckets * sizeof(HashJoinTuple));
 
+	/*
+	 * If we're still in the 'count-ndistinct phase, we need to build the
+	 * bloom filter at this point.
+	 */
+	if (hashtable->hll != NULL)
+	{
+		double ndistinct;
+
+		ndistinct = estimateHyperLogLog(hashtable->hll);
+
+		if (ndistinct < 1024)
+			ndistinct = 1024;
+
+		elog(WARNING, "ExecHashBuildBuckets: building bloom filter (ndistinct %ld)",
+					  (int64)(2*ndistinct));
+
+		hashtable->bloomFilter = BloomFilterInit(2 * ndistinct,
+												 BLOOM_ERROR_RATE);
+
+		/* Free the HLL state. */
+		freeHyperLogLog(hashtable->hll);
+		pfree(hashtable->hll);
+		hashtable->hll = NULL;
+
+		build_bloom_filter = true;
+	}
+
 	/* scan through all tuples in all chunks to rebuild the hash table */
 	for (chunk = hashtable->chunks; chunk != NULL; chunk = chunk->next)
 	{
@@ -820,6 +914,9 @@ ExecHashBuildBuckets(HashJoinTable hashtable)
 
 			ExecHashGetBucketAndBatch(hashtable, hashTuple->hashvalue,
 									  &bucketno, &batchno);
+
+			if (build_bloom_filter)
+				ExecHashBloomAddValue(hashtable, hashTuple->hashvalue);
 
 			/* add the tuple to the proper bucket */
 			hashTuple->next = hashtable->buckets[bucketno];
@@ -1728,19 +1825,52 @@ dense_alloc(HashJoinTable hashtable, Size size)
 }
 
 static void
+ExecHashHLLAddValue(HashJoinTable hashtable, uint32 hashvalue)
+{
+	hyperLogLogState   *hll = hashtable->hll;
+
+	/*
+	 * If we don't have a HLL counter, then we're not supposed to build
+	 * it and we can just bail out.
+	 */
+	if (hll == NULL)
+		return;
+
+	/* We can't have both counter and filter at the same time. */
+	Assert(hashtable->bloomFilter == NULL);
+
+	addHyperLogLog(hashtable->hll, hashvalue);
+}
+
+static void
 ExecHashBloomAddValue(HashJoinTable hashtable, uint32 hashvalue)
 {
 	int			i, byteIdx, bitIdx;
 	BloomFilter	filter = hashtable->bloomFilter;
 
-	if (! filter)
+	/*
+	 * If we don't have a bloom filter, then we're not supposed to build
+	 * it and we can just bail out.
+	 */
+	if (filter == NULL)
 		return;
 
+	/* We can't have both counter and filter at the same time. */
+	Assert(hashtable->hll == NULL);
+
+	/*
+	 * We only build bloom filters while in the first batch (with all
+	 * tuples, so it makes no sense to re-add them over and over).
+	 */
 	if (hashtable->curbatch > 0)
 		return;
 
-	Assert(hashtable->nbatch > 1);	/* nbatch=1 implies bloomData=NULL */
-
+	/*
+	 * To get multiple independent hash functions, we simply use
+	 * different seeds for them. We use murmur3 with 32-bit values here,
+	 * but we might use anything sufficiently random and fast (e.g.
+	 * jenkinks hash or such).
+	 */
 	for (i = 0; i < filter->nhashes; i++)
 	{
 		uint32_t seed = i;
@@ -1766,6 +1896,8 @@ ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue)
 	if (! filter)
 		return true;
 
+	filter->nlookups++;
+
 	for (i = 0; i < filter->nhashes; i++)
 	{
 		uint32_t seed = i;
@@ -1781,6 +1913,9 @@ ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue)
 		if (! (filter->data[byteIdx] & (0x01 << bitIdx)))
 			return false;
 	}
+
+	/* if we got here, we know it's a match */
+	filter->nmatches++;
 
 	return true;
 }

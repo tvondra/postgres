@@ -225,16 +225,11 @@ ExecHashJoin(HashJoinState *node)
 				}
 
 				/* If still in the first batch, we check the bloom filter. */
-				if (hashtable->curbatch == 0)
+				if ((hashtable->curbatch == 0) &&
+					(! ExecHashBloomCheckValue(hashtable, hashvalue)))
 				{
-					node->hj_BloomLookups += 1;
-
-					if (! ExecHashBloomCheckValue(hashtable, hashvalue))
-					{
 						/* Loop around, staying in HJ_NEED_NEW_OUTER state */
-						node->hj_BloomEliminated += 1;
 						continue;
-					}
 				}
 
 				econtext->ecxt_outertuple = outerTupleSlot;
@@ -436,9 +431,6 @@ ExecHashJoin(HashJoinState *node)
 					 (int) node->hj_JoinState);
 		}
 	}
-
-	elog(WARNING, "bloom filter lookups=%lu eliminated=%lu",
-				  node->hj_BloomLookups, node->hj_BloomEliminated);
 }
 
 /* ----------------------------------------------------------------
@@ -607,9 +599,6 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
 
-	hjstate->hj_BloomLookups = 0;
-	hjstate->hj_BloomEliminated = 0;
-
 	return hjstate;
 }
 
@@ -627,6 +616,19 @@ ExecEndHashJoin(HashJoinState *node)
 	 */
 	if (node->hj_HashTable)
 	{
+		HashJoinTable hashtable = node->hj_HashTable;
+
+		/*
+		 * If there's a bloom filter, print some debug info before destroying the
+		 * hash table.
+		 */
+		if (hashtable->bloomFilter)
+		{
+			BloomFilter filter = hashtable->bloomFilter;
+			elog(WARNING, "bloom filter lookups=%lu matches=%lu eliminated=%lu%%",
+						  filter->nlookups, filter->nmatches, 100 - (100 * filter->nmatches) / Max(1,filter->nlookups));
+		}
+
 		ExecHashTableDestroy(node->hj_HashTable);
 		node->hj_HashTable = NULL;
 	}
@@ -648,9 +650,6 @@ ExecEndHashJoin(HashJoinState *node)
 	 */
 	ExecEndNode(outerPlanState(node));
 	ExecEndNode(innerPlanState(node));
-	
-	elog(WARNING, "bloom filter lookups=%lu eliminated=%lu",
-				  node->hj_BloomLookups, node->hj_BloomEliminated);
 }
 
 /*

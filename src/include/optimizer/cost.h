@@ -66,6 +66,7 @@ extern bool enable_nestloop;
 extern bool enable_material;
 extern bool enable_mergejoin;
 extern bool enable_hashjoin;
+extern bool enable_hashjoin_bloom;
 extern int	constraint_exclusion;
 
 extern double clamp_row_est(double nrows);

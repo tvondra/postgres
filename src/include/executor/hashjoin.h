@@ -16,6 +16,7 @@
 
 #include "nodes/execnodes.h"
 #include "storage/buffile.h"
+#include "lib/hyperloglog.h"
 
 /* ----------------------------------------------------------------
  *				hash-join hash table structures
@@ -74,6 +75,8 @@ typedef struct HashJoinTupleData
 
 typedef struct BloomFilterData
 {
+	uint64	nlookups;		/* number of lookups */
+	uint64	nmatches;		/* number of matches */
 	int		nbits;			/* m */
 	int		nhashes;		/* k */
 	char	data[1];		/* bits */
@@ -193,6 +196,7 @@ typedef struct HashJoinTableData
 
 	/* used only when the hash join has multiple batches */
 	BloomFilter	bloomFilter;	/* bloom filter on the hash values */
+	hyperLogLogState   *hll;	/* used to to size bloom filter */
 }	HashJoinTableData;
 
 bool ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue);

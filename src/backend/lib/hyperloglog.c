@@ -108,6 +108,35 @@ initHyperLogLog(hyperLogLogState *cState, uint8 bwidth)
 }
 
 /*
+ * Initialize HyperLogLog track state
+ */
+void
+initHyperLogLogError(hyperLogLogState *cState, double error)
+{
+	uint8 bwidth = 4;
+
+	while (bwidth < 16)
+	{
+		double m = (Size)1 << bwidth;
+		if (1.04 / sqrt(m) < error)
+			break;
+		bwidth++;
+	}
+
+	initHyperLogLog(cState, bwidth);
+}
+
+/*
+ * Free HyperLogLog track state
+ */
+void
+freeHyperLogLog(hyperLogLogState *cState)
+{
+	Assert(cState->hashesArr != NULL);
+	pfree(cState->hashesArr);
+}
+
+/*
  * Adds element to the estimator, from caller-supplied hash.
  *
  * It is critical that the hash value passed be an actual hash value, typically

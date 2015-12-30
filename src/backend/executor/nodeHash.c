@@ -290,7 +290,7 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 	hashtable->skewBucketLen = 0;
 	hashtable->nSkewBuckets = 0;
 	hashtable->skewBucketNums = NULL;
-	hashtable->nbatch = nbatch;
+	hashtable->nbatch = 1;
 	hashtable->curbatch = 0;
 	hashtable->nbatch_original = nbatch;
 	hashtable->nbatch_outstart = nbatch;
@@ -600,7 +600,15 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	if (oldnbatch > Min(INT_MAX / 2, MaxAllocSize / (sizeof(void *) * 2)))
 		return;
 
-	nbatch = oldnbatch * 2;
+	/*
+	 * If we're incrementing the number of batches for the first time,
+	 * let's see if we should start with nbatch_original.
+	 */
+	if ((oldnbatch == 1) && (hashtable->nbatch_original > 1))
+		nbatch = hashtable->nbatch_original;
+	else
+		nbatch = oldnbatch * 2;
+
 	Assert(nbatch > 1);
 
 #ifdef HJDEBUG

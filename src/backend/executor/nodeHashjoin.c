@@ -224,14 +224,6 @@ ExecHashJoin(HashJoinState *node)
 					continue;
 				}
 
-				/* If still in the first batch, we check the bloom filter. */
-				if ((hashtable->curbatch == 0) &&
-					(! ExecHashBloomCheckValue(hashtable, hashvalue)))
-				{
-						/* Loop around, staying in HJ_NEED_NEW_OUTER state */
-						continue;
-				}
-
 				econtext->ecxt_outertuple = outerTupleSlot;
 				node->hj_MatchedOuter = false;
 
@@ -245,6 +237,15 @@ ExecHashJoin(HashJoinState *node)
 				node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
 																 hashvalue);
 				node->hj_CurTuple = NULL;
+
+				/* If still in the first batch, we check the bloom filter. */
+				if ((hashtable->curbatch == 0) &&
+					(! ExecHashBloomCheckValue(hashtable, hashvalue)))
+				{
+						/* no matches; check for possible outer-join fill */
+						node->hj_JoinState = HJ_FILL_OUTER_TUPLE;
+						continue;
+				}
 
 				/*
 				 * The tuple might not belong to the current batch (where

@@ -873,6 +873,9 @@ ExecHashBuildBuckets(HashJoinTable hashtable)
 		(HashJoinTuple *) MemoryContextAllocHuge(hashtable->batchCxt,
 								hashtable->nbuckets * sizeof(HashJoinTuple));
 
+	/* Don't forget to zero the buckets (AllocHuge does not do that). */
+	memset(hashtable->buckets, 0, hashtable->nbuckets * sizeof(HashJoinTuple));
+
 	/*
 	 * If we're still in the 'count-ndistinct phase, we need to build the
 	 * bloom filter at this point.
@@ -1346,6 +1349,9 @@ ExecHashTableReset(HashJoinTable hashtable)
 	hashtable->buckets =
 		(HashJoinTuple *) MemoryContextAllocHuge(hashtable->batchCxt,
 								hashtable->nbuckets * sizeof(HashJoinTuple));
+
+	/* Don't forget to zero the buckets (AllocHuge does not do that). */
+	memset(hashtable->buckets, 0, hashtable->nbuckets * sizeof(HashJoinTuple));
 
 	hashtable->spaceUsed = 0;
 

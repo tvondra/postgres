@@ -466,22 +466,19 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 
 	/*
 	 * Set nbuckets to achieve an average bucket load of NTUP_PER_BUCKET when
-	 * memory is filled, assuming a single batch; but limit the value so that
-	 * the pointer arrays we'll try to allocate do not exceed work_mem nor
-	 * MaxAllocSize.
+	 * memory is filled, assuming a single batch.
 	 *
 	 * Note that both nbuckets and nbatch must be powers of 2 to make
 	 * ExecHashGetBucketAndBatch fast.
 	 */
 	max_pointers = (work_mem * 1024L) / sizeof(HashJoinTuple);
-	max_pointers = Min(max_pointers, MaxAllocSize / sizeof(HashJoinTuple));
+
 	/* If max_pointers isn't a power of 2, must round it down to one */
 	mppow2 = 1L << my_log2(max_pointers);
 	if (max_pointers != mppow2)
 		max_pointers = mppow2 / 2;
 
-	/* Also ensure we avoid integer overflow in nbatch and nbuckets */
-	/* (this step is redundant given the current value of MaxAllocSize) */
+	/* Ensure we avoid integer overflow in nbatch and nbuckets */
 	max_pointers = Min(max_pointers, INT_MAX / 2);
 
 	dbuckets = ceil(ntuples / NTUP_PER_BUCKET);
@@ -597,7 +594,7 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		return;
 
 	/* safety check to avoid overflow */
-	if (oldnbatch > Min(INT_MAX / 2, MaxAllocSize / (sizeof(void *) * 2)))
+	if (oldnbatch > (INT_MAX / 2))
 		return;
 
 	/*
@@ -757,7 +754,8 @@ ExecHashBuildBuckets(HashJoinTable hashtable)
 	 * chunks)
 	 */
 	hashtable->buckets =
-		(HashJoinTuple *) palloc0(hashtable->nbuckets * sizeof(HashJoinTuple));
+		(HashJoinTuple *) MemoryContextAllocHuge(hashtable->batchCxt,
+								hashtable->nbuckets * sizeof(HashJoinTuple));
 
 	/* scan through all tuples in all chunks to rebuild the hash table */
 	for (chunk = hashtable->chunks; chunk != NULL; chunk = chunk->next)
@@ -860,8 +858,7 @@ ExecHashTableInsert(HashJoinTable hashtable,
 			ntuples > (hashtable->nbuckets * NTUP_PER_BUCKET))
 		{
 			/* Guard against integer overflow and alloc size overflow */
-			if (hashtable->nbuckets <= INT_MAX / 2 &&
-				hashtable->nbuckets * 2 <= MaxAllocSize / sizeof(HashJoinTuple))
+			if (hashtable->nbuckets <= INT_MAX / 2)
 			{
 				hashtable->nbuckets *= 2;
 				hashtable->log2_nbuckets += 1;
@@ -1201,7 +1198,8 @@ ExecHashTableReset(HashJoinTable hashtable)
 
 	/* Reallocate and reinitialize the hash bucket headers. */
 	hashtable->buckets =
-		(HashJoinTuple *) palloc0(hashtable->nbuckets * sizeof(HashJoinTuple));
+		(HashJoinTuple *) MemoryContextAllocHuge(hashtable->batchCxt,
+								hashtable->nbuckets * sizeof(HashJoinTuple));
 
 	hashtable->spaceUsed = 0;
 

@@ -140,6 +140,25 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
+	/* resolve the pieces of the name (namespace etc.) */
+	namespaceId = QualifiedNameGetCreationNamespace(stmt->defnames, &namestr);
+	namestrcpy(&staname, namestr);
+
+	/*
+	 * If if_not_exists was given and the statistics already exists, bail out.
+	 */
+	if (stmt->if_not_exists &&
+		SearchSysCacheExists2(MVSTATNAMENSP,
+							  PointerGetDatum(&staname),
+							  ObjectIdGetDatum(namespaceId)))
+	{
+		ereport(NOTICE,
+				(errcode(ERRCODE_DUPLICATE_OBJECT),
+				 errmsg("statistics \"%s\" already exists, skipping",
+						namestr)));
+		return InvalidObjectAddress;
+	}
+
 	rel = heap_openrv(stmt->relation, AccessExclusiveLock);
 
 	/* transform the column names to attnum values */
@@ -209,10 +228,6 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
 	stakeys = buildint2vector(attnums, numcols);
-
-	/* resolve the pieces of the name (namespace etc.) */
-	namespaceId = QualifiedNameGetCreationNamespace(stmt->defnames, &namestr);
-	namestrcpy(&staname, namestr);
 
 	/*
 	 * Okay, let's create the pg_mv_statistic entry.

@@ -361,7 +361,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				set_clause_list set_clause multiple_set_clause
 				ctext_expr_list ctext_row def_list operator_def_list indirection opt_indirection
 				reloption_list group_clause TriggerFuncArgs select_limit
-				opt_select_limit opclass_item_list opclass_drop_list opt_any_name
+				opt_select_limit opclass_item_list opclass_drop_list
 				opclass_purpose opt_opfamily transaction_mode_list_or_empty
 				OptTableFuncElementList TableFuncElementList opt_type_modifiers
 				prep_type_clause
@@ -3445,21 +3445,28 @@ ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
  *****************************************************************************/
 
 
-CreateStatsStmt:	CREATE STATISTICS opt_any_name ON qualified_name '(' columnList ')' opt_reloptions
-					{
-						CreateStatsStmt *n = makeNode(CreateStatsStmt);
-						n->defnames = $3;
-						n->relation = $5;
-						n->keys = $7;
-						n->options = $9;
-						$$ = (Node *)n;
-					}
+CreateStatsStmt:	CREATE STATISTICS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $3;
+							n->relation = $5;
+							n->keys = $7;
+							n->options = $9;
+							n->if_not_exists = false;
+							$$ = (Node *)n;
+						}
+					| CREATE STATISTICS IF_P NOT EXISTS any_name ON qualified_name '(' columnList ')' opt_reloptions
+						{
+							CreateStatsStmt *n = makeNode(CreateStatsStmt);
+							n->defnames = $6;
+							n->relation = $8;
+							n->keys = $10;
+							n->options = $12;
+							n->if_not_exists = true;
+							$$ = (Node *)n;
+						}
 			;
 
-opt_any_name:
-			any_name						{ $$ = $1; }
-			| /*EMPTY*/						{ $$ = NULL; }
-		;
 
 /*****************************************************************************
  *

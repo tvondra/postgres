@@ -20,13 +20,13 @@ ERROR:  duplicate column name in statistics definition
 CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (unknown_option);
 ERROR:  unrecognized STATISTICS option "unknown_option"
 -- missing MCV statistics
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (dependencies, max_mcv_items 200);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (dependencies, max_mcv_items=200);
 ERROR:  option 'mcv' is required by other options(s)
 -- invalid mcv_max_items value / too low
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items 10);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10);
 ERROR:  max number of MCV items must be at least 128
 -- invalid mcv_max_items value / too high
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items 10000);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10000);
 ERROR:  max number of MCV items is 8192
 -- correct command
 CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv);

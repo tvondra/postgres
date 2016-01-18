@@ -21,13 +21,13 @@ CREATE STATISTICS s1 ON mcv_list (a, a, b) WITH (mcv);
 CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (unknown_option);
 
 -- missing MCV statistics
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (dependencies, max_mcv_items 200);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (dependencies, max_mcv_items=200);
 
 -- invalid mcv_max_items value / too low
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items 10);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10);
 
 -- invalid mcv_max_items value / too high
-CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items 10000);
+CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10000);
 
 -- correct command
 CREATE STATISTICS s1 ON mcv_list (a, b, c) WITH (mcv);

@@ -21,13 +21,13 @@ CREATE STATISTICS s1 ON mv_histogram (a, a, b) WITH (histogram);
 CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (unknown_option);
 
 -- missing histogram statistics
-CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (dependencies, max_buckets 200);
+CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (dependencies, max_buckets=200);
 
 -- invalid max_buckets value / too low
-CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (mcv, max_buckets 10);
+CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=10);
 
 -- invalid max_buckets value / too high
-CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (mcv, max_buckets 100000);
+CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=100000);
 
 -- correct command
 CREATE STATISTICS s1 ON mv_histogram (a, b, c) WITH (histogram);

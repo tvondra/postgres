@@ -3466,7 +3466,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			/*
 			 * Multiply by restriction selectivity.
 			 */
-			reldistinct *= rel->rows / rel->tuples;
+			reldistinct = reldistinct * (1 - powl((reldistinct - 1) / reldistinct,rel->rows));
 
 			/*
 			 * Update estimate of total distinct groups.

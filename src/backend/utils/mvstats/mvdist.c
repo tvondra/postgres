@@ -22,7 +22,9 @@
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 
 /*
- * 
+ * Compute ndistinct coefficient for the combination of attributes. This
+ * computes the ndistinct estimate using the same estimator used in analyze.c
+ * and then computes the coefficient.
  */
 double
 build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
@@ -108,6 +110,10 @@ build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
 	/*
 	 * now count distinct values for each attribute and incrementally
 	 * compute ndistinct(a,b) / (ndistinct(a) * ndistinct(b))
+	 *
+	 * FIXME Probably need to handle cases when one of the ndistinct
+	 *       estimates is negative, and also check that the combined
+	 *       ndistinct is greater than any of those partial values.
 	 */
 	for (i = 0; i < numattrs; i++)
 		ndistcoeff *= stats[i]->stadistinct;

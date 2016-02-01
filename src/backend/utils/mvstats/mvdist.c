@@ -19,6 +19,8 @@
 #include "common.h"
 #include "utils/lsyscache.h"
 
+static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
+
 /*
  * 
  */
@@ -31,8 +33,7 @@ build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
 	int nmultiple, summultiple;
 	int numattrs = attrs->dim1;
 	MultiSortSupport mss = multi_sort_init(numattrs);
-	float ndistinct;
-	double result;
+	double ndistcoeff;
 
 	/*
 	 * It's possible to sort the sample rows directly, but this seemed
@@ -102,37 +103,16 @@ build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
 		summultiple += cnt;
 	}
 
-	{
-		double	numer,
-				denom;
-
-		numer = (double) numrows *(double) d;
-
-		denom = (double) (numrows - f1) +
-							(double) f1 *(double) numrows / totalrows;
-
-		ndistinct = numer / denom;
-
-		/* Clamp to sane range in case of roundoff error */
-		if (ndistinct < (double) d)
-			ndistinct = (double) d;
-
-		if (ndistinct > totalrows)
-			ndistinct = totalrows;
-
-		ndistinct = floor(ndistinct + 0.5);
-	}
-
-	result = 1 / (double)ndistinct;
+	ndistcoeff = 1 / estimate_ndistinct(totalrows, numrows, d, f1);
 
 	/*
 	 * now count distinct values for each attribute and incrementally
 	 * compute ndistinct(a,b) / (ndistinct(a) * ndistinct(b))
 	 */
 	for (i = 0; i < numattrs; i++)
-		result *= stats[i]->stadistinct;
+		ndistcoeff *= stats[i]->stadistinct;
 
-	return result;
+	return ndistcoeff;
 }
 
 double
@@ -157,4 +137,29 @@ load_mv_ndistinct(Oid mvoid)
 	ReleaseSysCache(htup);
 
 	return DatumGetFloat8(deps);
+}
+
+/* The Duj1 estimator (already used in analyze.c). */
+static double
+estimate_ndistinct(double totalrows, int numrows, int d, int f1)
+{
+	double	numer,
+			denom,
+			ndistinct;
+
+	numer = (double) numrows *(double) d;
+
+	denom = (double) (numrows - f1) +
+			(double) f1 * (double) numrows / totalrows;
+
+	ndistinct = numer / denom;
+
+	/* Clamp to sane range in case of roundoff error */
+	if (ndistinct < (double) d)
+		ndistinct = (double) d;
+
+	if (ndistinct > totalrows)
+		ndistinct = totalrows;
+
+	return floor(ndistinct + 0.5);
 }

@@ -3451,11 +3451,15 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 				}
 			}
 
+			/*
+			 * Factor-in the ndistinct coefficient from multivar stats (we must do this
+			 * with the initial reldistinct estimate (simple product of per-attribute
+			 * ndistinct values) before clamping it in any way.
+			 */
+			reldistinct /= coeff;
+
 			if (reldistinct > clamp)
 				reldistinct = clamp;
-
-			/* factor-in the ndistinct coefficient from multivar stats */
-			reldistinct /= coeff;
 
 			/*
 			 * Multiply by restriction selectivity.

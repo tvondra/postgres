@@ -14,6 +14,8 @@
  *-------------------------------------------------------------------------
  */
 
+#include <math.h>
+
 #include "common.h"
 #include "utils/lsyscache.h"
 
@@ -21,13 +23,15 @@
  * 
  */
 double
-build_mv_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
-				   VacAttrStats **stats)
+build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
+				   int2vector *attrs, VacAttrStats **stats)
 {
 	int i, j;
+	int f1, cnt, d;
+	int nmultiple, summultiple;
 	int numattrs = attrs->dim1;
 	MultiSortSupport mss = multi_sort_init(numattrs);
-	int ndistinct;
+	float ndistinct;
 	double result;
 
 	/*
@@ -68,11 +72,55 @@ build_mv_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
 
 	/* count number of distinct combinations */
 
-	ndistinct = 1;
+	f1 = 0;
+	cnt = 1;
+	d = 1;
 	for (i = 1; i < numrows; i++)
 	{
 		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
-			ndistinct++;
+		{
+			if (cnt == 1)
+				f1 += 1;
+			else
+			{
+				nmultiple += 1;
+				summultiple += cnt;
+			}
+
+			d++;
+			cnt = 0;
+		}
+
+		cnt += 1;
+	}
+
+	if (cnt == 1)
+		f1 += 1;
+	else
+	{
+		nmultiple += 1;
+		summultiple += cnt;
+	}
+
+	{
+		double	numer,
+				denom;
+
+		numer = (double) numrows *(double) d;
+
+		denom = (double) (numrows - f1) +
+							(double) f1 *(double) numrows / totalrows;
+
+		ndistinct = numer / denom;
+
+		/* Clamp to sane range in case of roundoff error */
+		if (ndistinct < (double) d)
+			ndistinct = (double) d;
+
+		if (ndistinct > totalrows)
+			ndistinct = totalrows;
+
+		ndistinct = floor(ndistinct + 0.5);
 	}
 
 	result = 1 / (double)ndistinct;
@@ -82,42 +130,7 @@ build_mv_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
 	 * compute ndistinct(a,b) / (ndistinct(a) * ndistinct(b))
 	 */
 	for (i = 0; i < numattrs; i++)
-	{
-		SortSupportData ssup;
-		StdAnalyzeData *tmp = (StdAnalyzeData *)stats[i]->extra_data;
-
-		/* initialize sort support, etc. */
-		memset(&ssup, 0, sizeof(ssup));
-		ssup.ssup_cxt = CurrentMemoryContext;
-
-		/* We always use the default collation for statistics */
-		ssup.ssup_collation = DEFAULT_COLLATION_OID;
-		ssup.ssup_nulls_first = false;
-
-		PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup);
-
-		memset(values, 0, sizeof(Datum) * numrows);
-
-		/* accumulate all the data into the array and sort it */
-		for (j = 0; j < numrows; j++)
-		{
-			bool isnull;
-			values[j] = heap_getattr(rows[j], attrs->values[i],
-									 stats[i]->tupDesc, &isnull);
-		}
-
-		qsort_arg((void *)values, numrows, sizeof(Datum),
-				  compare_scalars_simple, &ssup);
-
-		ndistinct = 1;
-		for (j = 1; j < numrows; j++)
-		{
-			if (compare_scalars_simple(&values[j], &values[j-1], &ssup) != 0)
-				ndistinct++;
-		}
-
-		result *= ndistinct;
-	}
+		result *= stats[i]->stadistinct;
 
 	return result;
 }

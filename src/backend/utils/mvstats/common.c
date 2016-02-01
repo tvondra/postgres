@@ -32,7 +32,8 @@ static List* list_mv_stats(Oid relid);
  * and serializes them back into the catalog (as bytea values).
  */
 void
-build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
+build_mv_stats(Relation onerel, double totalrows,
+			   int numrows, HeapTuple *rows,
 			   int natts, VacAttrStats **vacattrstats)
 {
 	ListCell *lc;
@@ -94,7 +95,7 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 			deps = build_mv_dependencies(numrows, rows, attrs, stats);
 
 		if (stat->ndist_enabled)
-			ndist = build_mv_ndistinct(numrows, rows, attrs, stats);
+			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
 
 		/* build the MCV list */
 		if (stat->mcv_enabled)

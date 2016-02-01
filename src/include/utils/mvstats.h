@@ -268,10 +268,11 @@ build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
 				   VacAttrStats **stats, int numrows_total);
 
 double
-build_mv_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
-				   VacAttrStats **stats);
+build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
+				   int2vector *attrs, VacAttrStats **stats);
 
-void build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
+void build_mv_stats(Relation onerel, double totalrows,
+					int numrows, HeapTuple *rows,
 					int natts, VacAttrStats **vacattrstats);
 
 void update_mv_stats(Oid relid, MVDependencies dependencies,

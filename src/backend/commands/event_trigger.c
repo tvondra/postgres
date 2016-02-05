@@ -89,6 +89,8 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"ACCESS METHOD", true},
 	{"AGGREGATE", true},
 	{"CAST", true},
+	{"CUBE", true},
+	{"CHANGESET", true},
 	{"CONSTRAINT", true},
 	{"COLLATION", true},
 	{"CONVERSION", true},

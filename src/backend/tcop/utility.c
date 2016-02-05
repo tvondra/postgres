@@ -26,6 +26,7 @@
 #include "catalog/toasting.h"
 #include "commands/alter.h"
 #include "commands/async.h"
+#include "commands/cubes.h"
 #include "commands/cluster.h"
 #include "commands/comment.h"
 #include "commands/collationcmds.h"
@@ -1305,11 +1306,11 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_ChangeSetStmt:
-				address = InvalidObjectAddress;
+				address = CreateChangeSet((ChangeSetStmt *) parsetree);
 				break;
 
 			case T_CubeStmt:
-				address = InvalidObjectAddress;
+				address = CreateCube((CubeStmt *) parsetree);
 				break;
 
 			case T_CreateExtensionStmt:

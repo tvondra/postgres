@@ -3168,6 +3168,36 @@ _copyIndexStmt(const IndexStmt *from)
 	return newnode;
 }
 
+static ChangeSetStmt *
+_copyChangeSetStmt(const ChangeSetStmt *from)
+{
+	ChangeSetStmt  *newnode = makeNode(ChangeSetStmt);
+
+	COPY_STRING_FIELD(chsetname);
+	COPY_NODE_FIELD(relation);
+	COPY_STRING_FIELD(tableSpace);
+	COPY_NODE_FIELD(chsetColumns);
+	COPY_NODE_FIELD(options);
+	COPY_SCALAR_FIELD(if_not_exists);
+
+	return newnode;
+}
+
+static CubeStmt *
+_copyCubeStmt(const CubeStmt *from)
+{
+	CubeStmt  *newnode = makeNode(CubeStmt);
+
+	COPY_STRING_FIELD(cubename);
+	COPY_NODE_FIELD(relation);
+	COPY_STRING_FIELD(tableSpace);
+	COPY_NODE_FIELD(cubeExprs);
+	COPY_NODE_FIELD(options);
+	COPY_SCALAR_FIELD(if_not_exists);
+
+	return newnode;
+}
+
 static CreateFunctionStmt *
 _copyCreateFunctionStmt(const CreateFunctionStmt *from)
 {
@@ -4734,6 +4764,12 @@ copyObject(const void *from)
 			break;
 		case T_IndexStmt:
 			retval = _copyIndexStmt(from);
+			break;
+		case T_ChangeSetStmt:
+			retval = _copyChangeSetStmt(from);
+			break;
+		case T_CubeStmt:
+			retval = _copyCubeStmt(from);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _copyCreateFunctionStmt(from);

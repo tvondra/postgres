@@ -2459,6 +2459,32 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 }
 
 static void
+_outChangeSetStmt(StringInfo str, const ChangeSetStmt *node)
+{
+	WRITE_NODE_TYPE("CHANGESETSTMT");
+
+	WRITE_STRING_FIELD(chsetname);
+	WRITE_NODE_FIELD(relation);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(chsetColumns);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
+_outCubeStmt(StringInfo str, const CubeStmt *node)
+{
+	WRITE_NODE_TYPE("CUBESTMT");
+
+	WRITE_STRING_FIELD(cubename);
+	WRITE_NODE_FIELD(relation);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(cubeExprs);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
 _outNotifyStmt(StringInfo str, const NotifyStmt *node)
 {
 	WRITE_NODE_TYPE("NOTIFY");
@@ -3735,6 +3761,12 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
+				break;
+			case T_ChangeSetStmt:
+				_outChangeSetStmt(str, obj);
+				break;
+			case T_CubeStmt:
+				_outCubeStmt(str, obj);
 				break;
 			case T_NotifyStmt:
 				_outNotifyStmt(str, obj);

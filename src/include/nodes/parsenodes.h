@@ -2483,6 +2483,40 @@ typedef struct IndexStmt
 } IndexStmt;
 
 /* ----------------------
+ *		Create ChangeSet Statement
+ *
+ * This represents creation of an changeset.
+ * ----------------------
+ */
+typedef struct ChangeSetStmt
+{
+	NodeTag		type;
+	char	   *chsetname;		/* name of new changeset, or NULL for default */
+	RangeVar   *relation;		/* relation to build changeset on */
+	char	   *tableSpace;		/* tablespace, or NULL for default */
+	List	   *chsetColumns;	/* columns to include: a list of IndexElem */
+	List	   *options;		/* WITH clause options: a list of DefElem */
+	bool		if_not_exists;	/* just do nothing if changeset already exists? */
+} ChangeSetStmt;
+
+/* ----------------------
+ *		Create Cube Statement
+ *
+ * This represents creation of an cube.
+ * ----------------------
+ */
+typedef struct CubeStmt
+{
+	NodeTag		type;
+	char	   *cubename;		/* name of new cube, or NULL for default */
+	RangeVar   *relation;		/* relation to build cube on */
+	char	   *tableSpace;		/* tablespace, or NULL for default */
+	List	   *cubeExprs;		/* columns to include: a list of IndexElem */
+	List	   *options;		/* WITH clause options: a list of DefElem */
+	bool		if_not_exists;	/* just do nothing if changeset already exists? */
+} CubeStmt;
+
+/* ----------------------
  *		Create Function Statement
  * ----------------------
  */

@@ -78,6 +78,26 @@ typedef struct IndexInfo
 } IndexInfo;
 
 /* ----------------
+ *	  ChangeSetInfo information
+ *
+ *		this struct holds the information needed to construct new changeset
+ *		entries for a particular changeset.
+ *
+ *		NumChangeSetAttrs	number of columns in this changeset
+ *		KeyAttrNumbers		underlying-rel attribute numbers used as keys
+ *							(zeroes indicate expressions)
+ *		Expressions			expr trees for expression entries, or NIL if none
+ *		ExpressionsState	exec state for expressions, or NIL if none
+ * ----------------
+ */
+typedef struct ChangeSetInfo
+{
+	NodeTag		type;
+	int			csi_NumChangeSetAttrs;
+	AttrNumber *csi_KeyAttrNumbers;
+} ChangeSetInfo;
+
+/* ----------------
  *	  ExprContext_CB
  *
  *		List of callbacks to be called at ExprContext shutdown.

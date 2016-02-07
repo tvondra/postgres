@@ -14,6 +14,8 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_cube.h"
+#include "catalog/pg_changeset.h"
 #include "commands/cubes.h"
 
 /*

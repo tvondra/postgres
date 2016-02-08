@@ -326,6 +326,9 @@ typedef struct JunkFilter
  *		NumIndices				# of indices existing on result relation
  *		IndexRelationDescs		array of relation descriptors for indices
  *		IndexRelationInfo		array of key/attr info for indices
+ *		NumChangeSets			# of changesets existing on result relation
+ *		ChangeSetRelationDescs	array of relation descriptors for changesets
+ *		ChangeSetRelationInfo	array of key/attr info for changesets
  *		TrigDesc				triggers to be fired, if any
  *		TrigFunctions			cached lookup info for trigger functions
  *		TrigWhenExprs			array of trigger WHEN expr states
@@ -350,6 +353,9 @@ typedef struct ResultRelInfo
 	int			ri_NumIndices;
 	RelationPtr ri_IndexRelationDescs;
 	IndexInfo **ri_IndexRelationInfo;
+	int			ri_NumChangeSets;
+	RelationPtr ri_ChangeSetRelationDescs;
+	ChangeSetInfo **ri_ChangeSetRelationInfo;
 	TriggerDesc *ri_TrigDesc;
 	FmgrInfo   *ri_TrigFunctions;
 	List	  **ri_TrigWhenExprs;

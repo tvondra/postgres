@@ -375,6 +375,11 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
 						   ItemPointer tupleid,
 						   Datum *values, bool *isnull,
 						   EState *estate, bool newIndex);
-
+/*
+ * prototypes from functions in execChangeSet.c
+ */
+extern void ExecInsertChangeSetTuples(TupleTableSlot *slot, EState *estate);
+extern void ExecOpenChangeSets(ResultRelInfo *resultRelInfo);
+extern void ExecCloseChangeSets(ResultRelInfo *resultRelInfo);
 
 #endif   /* EXECUTOR_H  */

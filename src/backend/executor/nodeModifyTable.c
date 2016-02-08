@@ -496,6 +496,10 @@ ExecInsert(ModifyTableState *mtstate,
 				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 													   estate, false, NULL,
 													   arbiterIndexes);
+
+			/* insert changeset entries for tuple */
+			if (resultRelInfo->ri_NumChangeSets > 0)
+				ExecInsertChangeSetTuples(slot, estate);
 		}
 	}
 

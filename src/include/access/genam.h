@@ -190,4 +190,11 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 						 ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
+/*
+ * generalized changeset_ interface routines (in heapam.c)
+ */
+
+extern Relation changeset_open(Oid relationId, LOCKMODE lockmode);
+extern void changeset_close(Relation relation, LOCKMODE lockmode);
+
 #endif   /* GENAM_H */

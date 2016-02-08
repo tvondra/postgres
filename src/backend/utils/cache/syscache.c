@@ -260,6 +260,18 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		256
 	},
+	{
+		ChangeSetRelationId,	/* CHANGESETRELID */
+		ChangeSetOidIndexId,
+		1,
+		{
+			Anum_pg_changeset_chsetid,
+			0,
+			0,
+			0
+		},
+		64
+	},
 	{OperatorClassRelationId,	/* CLAAMNAMENSP */
 		OpclassAmNameNspIndexId,
 		3,

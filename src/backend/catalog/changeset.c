@@ -432,3 +432,35 @@ UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 	heap_close(pg_changeset, RowExclusiveLock);
 	heap_freetuple(tuple);
 }
+
+
+
+/* ----------------
+ *		BuildChangeSetInfo
+ *			Construct an ChangeSetInfo record for an open changeset
+ *
+ * ChangeSetInfo stores the information about the changeset that's needed by
+ * FormChangeSetDatum, which is used for insertion of tuples. Normally we
+ * build an ChangeSetInfo for a changeset just once per command, and then
+ * use it for (potentially) many tuples.
+ * ----------------
+ */
+ChangeSetInfo *
+BuildChangeSetInfo(Relation changeset)
+{
+	ChangeSetInfo  *csi = makeNode(ChangeSetInfo);
+	Form_pg_changeset chsetStruct = changeset->rd_changeset;
+	int			i;
+	int			numKeys;
+
+	/* check the number of keys, and copy attr numbers into the ChangeSetInfo */
+	numKeys = chsetStruct->chsetnatts;
+	if (numKeys < 1)
+		elog(ERROR, "invalid chsetnatts %d for changeset %u",
+			 numKeys, RelationGetRelid(changeset));
+	csi->csi_NumChangeSetAttrs = numKeys;
+	for (i = 0; i < numKeys; i++)
+		csi->csi_KeyAttrNumbers[i] = chsetStruct->chsetkey.values[i];
+
+	return csi;
+}

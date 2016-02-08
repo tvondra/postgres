@@ -25,4 +25,6 @@ extern Oid changeset_create(Relation heapRelation,
 			 Datum reloptions,
 			 bool if_not_exists);
 
+ChangeSetInfo * BuildChangeSetInfo(Relation changeset);
+
 #endif   /* CHANGESET_H */

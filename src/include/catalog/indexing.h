@@ -102,6 +102,11 @@ DECLARE_UNIQUE_INDEX(pg_cast_oid_index, 2660, on pg_cast using btree(oid oid_ops
 DECLARE_UNIQUE_INDEX(pg_cast_source_target_index, 2661, on pg_cast using btree(castsource oid_ops, casttarget oid_ops));
 #define CastSourceTargetIndexId  2661
 
+DECLARE_INDEX(pg_changeset_chsetrelid_index, 4003, on pg_changeset using btree(chsetrelid oid_ops));
+#define ChangeSetRelidIndexId  4003
+DECLARE_UNIQUE_INDEX(pg_changeset_chsetid_index, 4004, on pg_changeset using btree(chsetid oid_ops));
+#define ChangeSetOidIndexId  4004
+
 DECLARE_UNIQUE_INDEX(pg_class_oid_index, 2662, on pg_class using btree(oid oid_ops));
 #define ClassOidIndexId  2662
 DECLARE_UNIQUE_INDEX(pg_class_relname_nsp_index, 2663, on pg_class using btree(relname name_ops, relnamespace oid_ops));

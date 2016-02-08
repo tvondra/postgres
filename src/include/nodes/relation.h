@@ -656,6 +656,31 @@ typedef struct ForeignKeyOptInfo
 	List	   *rinfos[INDEX_MAX_KEYS];
 } ForeignKeyOptInfo;
 
+/*
+ * ChangeSetOptInfo
+ *		Per-changeset information for planning/optimization
+ *
+ *		chsetkeys[] has ncolumns entries.
+ *
+ *		chsettlist is a TargetEntry list representing the changeset columns.
+ *		It provides an equivalent base-relation Var for each column.
+ */
+typedef struct ChangeSetOptInfo
+{
+	NodeTag		type;
+
+	Oid			chsetoid;		/* OID of the changeset relation */
+	Oid			reltablespace;	/* tablespace of changeset (not table) */
+	RelOptInfo *rel;			/* back-link to changeset's table */
+
+	/* index descriptor information */
+	int			ncolumns;		/* number of columns in changeset */
+	int		   *chsetkeys;		/* column numbers of changeset's keys */
+
+	List	   *chsettlist;		/* targetlist representing changeset columns */
+
+} ChangeSetOptInfo;
+
 
 /*
  * EquivalenceClasses

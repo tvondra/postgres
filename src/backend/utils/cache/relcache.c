@@ -45,6 +45,7 @@
 #include "catalog/pg_attrdef.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_auth_members.h"
+#include "catalog/pg_changeset.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_namespace.h"
@@ -1056,6 +1057,10 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	if (OidIsValid(relation->rd_rel->relam))
 		RelationInitIndexAccessInfo(relation);
 
+	/* if it's a changeset, initialize changeset-related information */
+	if (relation->rd_rel->relkind == RELKIND_CHANGESET)
+		RelationInitChangeSetInfo(relation);
+
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
 
@@ -1340,6 +1345,32 @@ RelationInitIndexAccessInfo(Relation relation)
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
 	relation->rd_amcache = NULL;
+}
+
+/*
+ * Initialize changeset support data for a changeset relation
+ */
+void
+RelationInitChangeSetInfo(Relation relation)
+{
+	MemoryContext	oldcontext;
+	HeapTuple		tuple;
+
+	/*
+	 * Make a copy of the pg_changeset entry for the changeset. Since pg_changeset
+	 * contains variable-length and possibly-null fields, we have to do this
+	 * honestly rather than just treating it as a Form_pg_changeset struct.
+	 */
+	tuple = SearchSysCache1(CHANGESETRELID,
+							ObjectIdGetDatum(RelationGetRelid(relation)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for changeset %u",
+			 RelationGetRelid(relation));
+	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+	relation->rd_changesettuple = heap_copytuple(tuple);
+	relation->rd_changeset = (Form_pg_changeset) GETSTRUCT(relation->rd_changesettuple);
+	MemoryContextSwitchTo(oldcontext);
+	ReleaseSysCache(tuple);
 }
 
 /*
@@ -2044,6 +2075,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_rsdesc->rscxt);
 	if (relation->rd_fdwroutine)
 		pfree(relation->rd_fdwroutine);
+	if (relation->rd_changesettuple)
+		pfree(relation->rd_changesettuple);
 	pfree(relation);
 }
 
@@ -4095,6 +4128,84 @@ RelationGetIndexList(Relation relation)
 }
 
 /*
+ * RelationGetChangeSetList -- get a list of OIDs of changesets on this relation
+ *
+ * The changeset list is created only if someone requests it.  We scan
+ * pg_changeset to find relevant changesets, and add the list to the
+ * relcache entry so that we won't have to compute it again.  Note that
+ * shared cache inval of a relcache entry will delete the old list and set
+ * rd_changesetvalid to 0, so that we must recompute the changeset list on
+ * next request.  This handles creation or deletion of a changeset.
+ *
+ * The returned list is guaranteed to be sorted in order by OID.  This may
+ * not be actually needed as we don't need to lock the changesets exclusively,
+ * but let's do that anyway (index list does that).
+ *
+ * Since shared cache inval causes the relcache's copy of the list to go away,
+ * we return a copy of the list palloc'd in the caller's context.  The caller
+ * may list_free() the returned list after scanning it. This is necessary
+ * since the caller will typically be doing syscache lookups on the relevant
+ * changesets, and syscache lookup could cause SI messages to be processed!
+ */
+List *
+RelationGetChangeSetList(Relation relation)
+{
+	Relation	chsetrel;
+	SysScanDesc chsetscan;
+	ScanKeyData skey;
+	HeapTuple	htup;
+	List	   *result;
+	List	   *oldlist;
+	MemoryContext oldcxt;
+
+	/* Quick exit if we already computed the list. */
+	if (relation->rd_chsetvalid != 0)
+		return list_copy(relation->rd_chsetlist);
+
+	/*
+	 * We build the list we intend to return (in the caller's context) while
+	 * doing the scan.  After successfully completing the scan, we copy that
+	 * list into the relcache entry.  This avoids cache-context memory leakage
+	 * if we get some sort of error partway through.
+	 */
+	result = NIL;
+
+	/* Prepare to scan pg_changeset for entries having chsetrelid = this rel. */
+	ScanKeyInit(&skey,
+				Anum_pg_changeset_chsetrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(relation)));
+
+	chsetrel = heap_open(ChangeSetRelationId, AccessShareLock);
+	chsetscan = systable_beginscan(chsetrel, ChangeSetRelidIndexId, true,
+								 NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(chsetscan)))
+	{
+		Form_pg_changeset chset = (Form_pg_changeset) GETSTRUCT(htup);
+
+		/* Add changeset's OID to result list in the proper order */
+		result = insert_ordered_oid(result, chset->chsetid);
+	}
+
+	systable_endscan(chsetscan);
+
+	heap_close(chsetrel, AccessShareLock);
+
+	/* Now save a copy of the completed list in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	oldlist = relation->rd_chsetlist;
+	relation->rd_chsetlist = list_copy(result);
+	relation->rd_chsetvalid = 1;
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Don't leak the old list, if there is one */
+	list_free(oldlist);
+
+	return result;
+}
+
+/*
  * insert_ordered_oid
  *		Insert a new Oid into a sorted list of Oids, preserving ordering
  *
@@ -5023,6 +5134,27 @@ load_relcache_init_file(bool shared)
 			Assert(rel->rd_indcollation == NULL);
 		}
 
+		/* If it's a changeset, there's more to do */
+		if (rel->rd_rel->relkind == RELKIND_CHANGESET)
+		{
+			/* read the pg_changeset tuple */
+			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+				goto read_failed;
+
+			rel->rd_changesettuple = (HeapTuple) palloc(len);
+			if (fread(rel->rd_changesettuple, 1, len, fp) != len)
+				goto read_failed;
+
+			/* Fix up internal pointers in the tuple -- see heap_copytuple */
+			rel->rd_changesettuple->t_data = (HeapTupleHeader) ((char *) rel->rd_changesettuple + HEAPTUPLESIZE);
+			rel->rd_changeset = (Form_pg_changeset) GETSTRUCT(rel->rd_changesettuple);
+		}
+		else
+		{
+			Assert(rel->rd_changeset == NULL);
+			Assert(rel->rd_changesettuple == NULL);
+		}
+
 		/*
 		 * Rules and triggers are not saved (mainly because the internal
 		 * format is complex and subject to change).  They must be rebuilt if
@@ -5054,6 +5186,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_fkeylist = NIL;
 		rel->rd_fkeyvalid = false;
 		rel->rd_indexlist = NIL;
+		rel->rd_chsetvalid = 0;
+		rel->rd_chsetlist = NIL;
 		rel->rd_oidindex = InvalidOid;
 		rel->rd_replidindex = InvalidOid;
 		rel->rd_indexattr = NULL;

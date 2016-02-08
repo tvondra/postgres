@@ -2140,6 +2140,7 @@ _outIndexOptInfo(StringInfo str, const IndexOptInfo *node)
 }
 
 static void
+<<<<<<< a4717343db79be6959ac9f918af74728960b93ea
 _outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
 {
 	int			i;
@@ -2168,6 +2169,15 @@ _outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
 	appendStringInfoString(str, " :rinfos");
 	for (i = 0; i < node->nkeys; i++)
 		appendStringInfo(str, " %d", list_length(node->rinfos[i]));
+}
+
+static void
+_outChangeSetOptInfo(StringInfo str, const ChangeSetOptInfo *node)
+{
+	WRITE_NODE_TYPE("CHANGESETOPTINFO");
+
+	/* this isn't a complete set of fields */
+	WRITE_OID_FIELD(chsetoid);
 }
 
 static void
@@ -3744,6 +3754,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_PlannerParamItem:
 				_outPlannerParamItem(str, obj);
+				break;
+			case T_ChangeSetOptInfo:
+				_outChangeSetOptInfo(str, obj);
 				break;
 
 			case T_ExtensibleNode:

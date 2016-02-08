@@ -47,6 +47,7 @@
 #include "catalog/pg_auth_members.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_constraint.h"
+#include "catalog/pg_cube.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
@@ -4206,6 +4207,84 @@ RelationGetChangeSetList(Relation relation)
 }
 
 /*
+ * RelationGetCubeList -- get a list of OIDs of cubes on this relation
+ *
+ * The cube list is created only if someone requests it.  We scan pg_cube
+ * to find relevant cubes, and add the list to the relcache entry so that
+ * we won't have to compute it again.  Note that shared cache inval of
+ * a relcache entry will delete the old list and set rd_cubevalid to 0,
+ * so that we must recompute the cube list on next request.  This handles
+ * creation or deletion of a cube.
+ *
+ * The returned list is guaranteed to be sorted in order by OID.  This may
+ * not be actually needed as we don't need to lock the cubes exclusively,
+ * but let's do that anyway (index list does that).
+ *
+ * Since shared cache inval causes the relcache's copy of the list to go away,
+ * we return a copy of the list palloc'd in the caller's context.  The caller
+ * may list_free() the returned list after scanning it. This is necessary
+ * since the caller will typically be doing syscache lookups on the relevant
+ * changesets, and syscache lookup could cause SI messages to be processed!
+ */
+List *
+RelationGetCubeList(Relation relation)
+{
+	Relation	cuberel;
+	SysScanDesc cubescan;
+	ScanKeyData skey;
+	HeapTuple	htup;
+	List	   *result;
+	List	   *oldlist;
+	MemoryContext oldcxt;
+
+	/* Quick exit if we already computed the list. */
+	if (relation->rd_cubevalid != 0)
+		return list_copy(relation->rd_cubelist);
+
+	/*
+	 * We build the list we intend to return (in the caller's context) while
+	 * doing the scan.  After successfully completing the scan, we copy that
+	 * list into the relcache entry.  This avoids cache-context memory leakage
+	 * if we get some sort of error partway through.
+	 */
+	result = NIL;
+
+	/* Prepare to scan pg_cube for entries having cuberelid = this rel. */
+	ScanKeyInit(&skey,
+				Anum_pg_cube_cuberelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(relation)));
+
+	cuberel = heap_open(CubeRelationId, AccessShareLock);
+	cubescan = systable_beginscan(cuberel, CubeRelidIndexId, true,
+								 NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(cubescan)))
+	{
+		Form_pg_cube cube = (Form_pg_cube) GETSTRUCT(htup);
+
+		/* Add changeset's OID to result list in the proper order */
+		result = insert_ordered_oid(result, cube->cubeid);
+	}
+
+	systable_endscan(cubescan);
+
+	heap_close(cuberel, AccessShareLock);
+
+	/* Now save a copy of the completed list in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	oldlist = relation->rd_cubelist;
+	relation->rd_cubelist = list_copy(result);
+	relation->rd_cubevalid = 1;
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Don't leak the old list, if there is one */
+	list_free(oldlist);
+
+	return result;
+}
+
+/*
  * insert_ordered_oid
  *		Insert a new Oid into a sorted list of Oids, preserving ordering
  *
@@ -4384,6 +4463,70 @@ RelationGetIndexExpressions(Relation relation)
 	/* Now save a copy of the completed tree in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(relation->rd_indexcxt);
 	relation->rd_indexprs = (List *) copyObject(result);
+	MemoryContextSwitchTo(oldcxt);
+
+	return result;
+}
+
+/*
+ * RelationGetCubeExpressions -- get the cube expressions for a cube
+ *
+ * We cache the result of transforming pg_cube.cubeexprs into a node tree.
+ * If the rel is not a cube or has no expressional columns, we return NIL.
+ * Otherwise, the returned tree is copied into the caller's memory context.
+ * (We don't want to return a pointer to the relcache copy, since it could
+ * disappear due to relcache invalidation.)
+ */
+List *
+RelationGetCubeExpressions(Relation relation)
+{
+	List	   *result;
+	Datum		exprsDatum;
+	bool		isnull;
+	char	   *exprsString;
+	MemoryContext oldcxt;
+	Relation	cuberel;
+
+	/* Quick exit if we already computed the result. */
+	if (relation->rd_cubeexprs)
+		return (List *) copyObject(relation->rd_cubeexprs);
+
+	/* Quick exit if there is nothing to do. */
+	if (relation->rd_cubetuple == NULL ||
+		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs))
+		return NIL;
+
+	/* FIXME no locking needed (structure can't change) */
+	cuberel = relation_open(CubeRelationId, NoLock);
+
+	/*
+	 * We build the tree we intend to return in the caller's context. After
+	 * successfully completing the work, we copy it into the relcache entry.
+	 * This avoids problems if we get some sort of error partway through.
+	 */
+	exprsDatum = heap_getattr(relation->rd_cubetuple,
+							  Anum_pg_cube_cubeexprs,
+							  RelationGetDescr(cuberel),
+							  &isnull);
+	Assert(!isnull);
+	exprsString = TextDatumGetCString(exprsDatum);
+	result = (List *) stringToNode(exprsString);
+	pfree(exprsString);
+
+	/*
+	 * Run the expressions through eval_const_expressions. This is not just an
+	 * optimization, but is necessary, because the planner will be comparing
+	 * them to similarly-processed qual clauses, and may fail to detect valid
+	 * matches without this.  We don't bother with canonicalize_qual, however.
+	 */
+	result = (List *) eval_const_expressions(NULL, (Node *) result);
+
+	/* May as well fix opfuncids too */
+	fix_opfuncids((Node *) result);
+
+	/* Now save a copy of the completed tree in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(relation->rd_cubecxt);
+	relation->rd_cubeexprs = (List *) copyObject(result);
 	MemoryContextSwitchTo(oldcxt);
 
 	return result;
@@ -5155,6 +5298,27 @@ load_relcache_init_file(bool shared)
 			Assert(rel->rd_changesettuple == NULL);
 		}
 
+		/* If it's a cube, there's more to do */
+		if (rel->rd_rel->relkind == RELKIND_CUBE)
+		{
+			/* read the pg_cube tuple */
+			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+				goto read_failed;
+
+			rel->rd_cubetuple = (HeapTuple) palloc(len);
+			if (fread(rel->rd_cubetuple, 1, len, fp) != len)
+				goto read_failed;
+
+			/* Fix up internal pointers in the tuple -- see heap_copytuple */
+			rel->rd_cubetuple->t_data = (HeapTupleHeader) ((char *) rel->rd_cubetuple + HEAPTUPLESIZE);
+			rel->rd_cube = (Form_pg_cube) GETSTRUCT(rel->rd_cubetuple);
+		}
+		else
+		{
+			Assert(rel->rd_cube == NULL);
+			Assert(rel->rd_cubetuple == NULL);
+		}
+
 		/*
 		 * Rules and triggers are not saved (mainly because the internal
 		 * format is complex and subject to change).  They must be rebuilt if
@@ -5173,6 +5337,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_exclprocs = NULL;
 		rel->rd_exclstrats = NULL;
 		rel->rd_fdwroutine = NULL;
+		rel->rd_cubeexprs = NIL;
 
 		/*
 		 * Reset transient-state fields in the relcache entry
@@ -5188,6 +5353,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_indexlist = NIL;
 		rel->rd_chsetvalid = 0;
 		rel->rd_chsetlist = NIL;
+		rel->rd_cubevalid = 0;
+		rel->rd_cubelist = NIL;
 		rel->rd_oidindex = InvalidOid;
 		rel->rd_replidindex = InvalidOid;
 		rel->rd_indexattr = NULL;
@@ -5424,6 +5591,26 @@ write_relcache_init_file(bool shared)
 			/* finally, write the vector of indoption values */
 			write_item(rel->rd_indoption,
 					   relform->relnatts * sizeof(int16),
+					   fp);
+		}
+
+		/* If it's an changeset, there's more to do */
+		if (rel->rd_rel->relkind == RELKIND_CHANGESET)
+		{
+			/* write the pg_changeset tuple */
+			/* we assume this was created by heap_copytuple! */
+			write_item(rel->rd_changesettuple,
+					   HEAPTUPLESIZE + rel->rd_changesettuple->t_len,
+					   fp);
+		}
+
+		/* If it's a cube, there's more to do */
+		if (rel->rd_rel->relkind == RELKIND_CUBE)
+		{
+			/* write the pg_cube tuple */
+			/* we assume this was created by heap_copytuple! */
+			write_item(rel->rd_cubetuple,
+					   HEAPTUPLESIZE + rel->rd_cubetuple->t_len,
 					   fp);
 		}
 	}

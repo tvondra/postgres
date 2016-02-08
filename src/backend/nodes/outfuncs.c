@@ -2181,6 +2181,15 @@ _outChangeSetOptInfo(StringInfo str, const ChangeSetOptInfo *node)
 }
 
 static void
+_outCubeOptInfo(StringInfo str, const CubeOptInfo *node)
+{
+	WRITE_NODE_TYPE("CUBEOPTINFO");
+
+	/* this isn't a complete set of fields */
+	WRITE_OID_FIELD(cubeoid);
+}
+
+static void
 _outEquivalenceClass(StringInfo str, const EquivalenceClass *node)
 {
 	/*
@@ -3757,6 +3766,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_ChangeSetOptInfo:
 				_outChangeSetOptInfo(str, obj);
+				break;
+			case T_CubeOptInfo:
+				_outCubeOptInfo(str, obj);
 				break;
 
 			case T_ExtensibleNode:

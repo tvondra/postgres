@@ -44,6 +44,8 @@ extern Oid	RelationGetReplicaIndex(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
 extern List *RelationGetChangeSetList(Relation relation);
+extern List *RelationGetCubeList(Relation relation);
+extern List *RelationGetCubeExpressions(Relation relation);
 
 typedef enum IndexAttrBitmapKind
 {

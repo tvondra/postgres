@@ -107,6 +107,11 @@ DECLARE_INDEX(pg_changeset_chsetrelid_index, 4003, on pg_changeset using btree(c
 DECLARE_UNIQUE_INDEX(pg_changeset_chsetid_index, 4004, on pg_changeset using btree(chsetid oid_ops));
 #define ChangeSetOidIndexId  4004
 
+DECLARE_INDEX(pg_cube_cuberelid_index, 4005, on pg_cube using btree(cuberelid oid_ops));
+#define CubeRelidIndexId  4005
+DECLARE_UNIQUE_INDEX(pg_cube_cubeid_index, 4006, on pg_cube using btree(cubeid oid_ops));
+#define CubeOidIndexId  4006
+
 DECLARE_UNIQUE_INDEX(pg_class_oid_index, 2662, on pg_class using btree(oid oid_ops));
 #define ClassOidIndexId  2662
 DECLARE_UNIQUE_INDEX(pg_class_relname_nsp_index, 2663, on pg_class using btree(relname name_ops, relnamespace oid_ops));

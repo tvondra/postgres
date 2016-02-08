@@ -62,6 +62,8 @@ static List *get_relation_constraints(PlannerInfo *root,
 						 bool include_notnull);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 				  Relation heapRelation);
+static List *build_cube_tlist(PlannerInfo *root, CubeOptInfo *index,
+				  Relation heapRelation);
 
 
 /*
@@ -98,6 +100,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	Relation	relation;
 	bool		hasindex;
 	List	   *indexinfos = NIL;
+	bool		hascube = true;
+	List	   *cubeinfos = NIL;
 
 	/*
 	 * We need not lock the relation since it was already locked, either by
@@ -394,6 +398,83 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	}
 
 	rel->indexlist = indexinfos;
+
+	/* hascube is always true */
+	if (hascube)
+	{
+		List	   *cubeoidlist;
+		ListCell   *l;
+		LOCKMODE	lmode;
+
+		cubeoidlist = RelationGetCubeList(relation);
+
+		/*
+		 * For each cube, we get the same type of lock that the executor will
+		 * need, and do not release it.  This saves a couple of trips to the
+		 * shared lock manager while not creating any real loss of
+		 * concurrency, because no schema changes could be happening on the
+		 * index while we hold lock on the parent rel, and neither lock type
+		 * blocks any other kind of index operation.
+		 *
+		 * FIXME Do we really need two different lock modes here?
+		 */
+		if (rel->relid == root->parse->resultRelation)
+			lmode = RowExclusiveLock;
+		else
+			lmode = AccessShareLock;
+
+		foreach(l, cubeoidlist)
+		{
+			Oid			cubeoid = lfirst_oid(l);
+			Relation	cubeRelation;
+			Form_pg_cube cube;
+			CubeOptInfo *info;
+			int			ncolumns;
+			int			i;
+
+			/*
+			 * Extract info from the relation descriptor for the cube.
+			 */
+			cubeRelation = cube_open(cubeoid, lmode);
+			cube = cubeRelation->rd_cube;
+
+			info = makeNode(CubeOptInfo);
+
+			info->cubeoid = cube->cubeid;
+			info->reltablespace =
+				RelationGetForm(cubeRelation)->reltablespace;
+			info->rel = rel;
+			info->ncolumns = ncolumns = cube->cubenatts;
+			info->cubekeys = (int *) palloc(sizeof(int) * ncolumns);
+
+			for (i = 0; i < ncolumns; i++)
+				info->cubekeys[i] = cube->cubekey.values[i];
+
+			/*
+			 * Fetch the cube expressions, if any.  We must modify the copies
+			 * we obtain from the relcache to have the correct varno for the
+			 * parent relation, so that they match up correctly against qual
+			 * clauses.
+			 */
+			info->cubeexprs = RelationGetCubeExpressions(cubeRelation);
+			if (info->cubeexprs && varno != 1)
+				ChangeVarNodes((Node *) info->cubeexprs, 1, varno, 0);
+
+			/* Build targetlist using the completed cubeexprs data */
+			info->cubetlist = build_cube_tlist(root, info, relation);
+
+			info->pages = RelationGetNumberOfBlocks(cubeRelation);
+			info->tuples = rel->tuples;
+
+			cube_close(cubeRelation, NoLock);
+
+			cubeinfos = lcons(info, cubeinfos);
+		}
+
+		list_free(cubeoidlist);
+	}
+
+	rel->cubelist = cubeinfos;
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
@@ -1529,6 +1610,71 @@ build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 	}
 	if (indexpr_item != NULL)
 		elog(ERROR, "wrong number of index expressions");
+
+	return tlist;
+}
+
+/*
+ * build_cube_tlist
+ *
+ * Build a targetlist representing the columns of the specified cube.
+ * Each column is represented by a Var for the corresponding base-relation
+ * column, or an expression in base-relation Vars, as appropriate.
+ *
+ * There are never any dropped columns in cubes, so unlike
+ * build_physical_tlist, we need no failure case.
+ *
+ * FIXME Perhaps we could allow dropped columns in cubes? Should be simple.
+ */
+static List *
+build_cube_tlist(PlannerInfo *root, CubeOptInfo *cube,
+				  Relation heapRelation)
+{
+	List	   *tlist = NIL;
+	Index		varno = cube->rel->relid;
+	ListCell   *cubeexpr_item;
+	int			i;
+
+	cubeexpr_item = list_head(cube->cubeexprs);
+	for (i = 0; i < cube->ncolumns; i++)
+	{
+		int			cubekey = cube->cubekeys[i];
+		Expr	   *cubevar;
+
+		if (cubekey != 0)
+		{
+			/* simple column */
+			Form_pg_attribute att_tup;
+
+			if (cubekey < 0)
+				elog(ERROR, "system attributes not allowed in cubes");
+			else
+				att_tup = heapRelation->rd_att->attrs[cubekey - 1];
+
+			cubevar = (Expr *) makeVar(varno,
+									   cubekey,
+									   att_tup->atttypid,
+									   att_tup->atttypmod,
+									   att_tup->attcollation,
+									   0);
+		}
+		else
+		{
+			/* expression column */
+			if (cubeexpr_item == NULL)
+				elog(ERROR, "wrong number of cube expressions");
+			cubevar = (Expr *) lfirst(cubeexpr_item);
+			cubeexpr_item = lnext(cubeexpr_item);
+		}
+
+		tlist = lappend(tlist,
+						makeTargetEntry(cubevar,
+										i + 1,
+										NULL,
+										false));
+	}
+	if (cubeexpr_item != NULL)
+		elog(ERROR, "wrong number of cube expressions");
 
 	return tlist;
 }

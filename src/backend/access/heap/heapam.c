@@ -9184,3 +9184,56 @@ changeset_close(Relation relation, LOCKMODE lockmode)
 	if (lockmode != NoLock)
 		UnlockRelationId(&relid, lockmode);
 }
+
+/* ----------------
+ *		cube_open - open a cube relation by relation OID
+ *
+ *		If lockmode is not "NoLock", the specified kind of lock is
+ *		obtained on the index.  (Generally, NoLock should only be
+ *		used if the caller knows it has some appropriate lock on the
+ *		index already.)
+ *
+ *		An error is raised if the cube does not exist.
+ *
+ *		This is a convenience routine, some callers may prefer to use
+ * 		relation_open directly.
+ * ----------------
+ */
+Relation
+cube_open(Oid relationId, LOCKMODE lockmode)
+{
+	Relation	r;
+
+	r = relation_open(relationId, lockmode);
+
+	if (r->rd_rel->relkind != RELKIND_CUBE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a cube",
+						RelationGetRelationName(r))));
+
+	return r;
+}
+
+/* ----------------
+ *		cube_close - close a cube relation
+ *
+ *		If lockmode is not "NoLock", we then release the specified lock.
+ *
+ *		Note that it may be sensible to hold a lock beyond changeset_close;
+ *		in that case, the lock is released automatically at xact end.
+ * ----------------
+ */
+void
+cube_close(Relation relation, LOCKMODE lockmode)
+{
+	LockRelId	relid = relation->rd_lockInfo.lockRelId;
+
+	Assert(lockmode >= NoLock && lockmode < MAX_LOCKMODES);
+
+	/* The relcache does the real work... */
+	RelationClose(relation);
+
+	if (lockmode != NoLock)
+		UnlockRelationId(&relid, lockmode);
+}

@@ -360,6 +360,28 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
+	{CubeRelationId,			/* CUBEOID */
+		CubeOidIndexId,
+		1,
+		{
+			Anum_pg_cube_cubeid,
+			0,
+			0,
+			0
+		},
+		8
+	},
+	{CubeRelationId,			/* CUBERELID */
+		CubeRelidIndexId,
+		1,
+		{
+			Anum_pg_cube_cuberelid,
+			0,
+			0,
+			0
+		},
+		8
+	},
 	{DatabaseRelationId,		/* DATABASEOID */
 		DatabaseOidIndexId,
 		1,

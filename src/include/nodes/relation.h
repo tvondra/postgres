@@ -520,6 +520,7 @@ typedef struct RelOptInfo
 	List	   *lateral_vars;	/* LATERAL Vars and PHVs referenced by rel */
 	Relids		lateral_referencers;	/* rels that reference me laterally */
 	List	   *indexlist;		/* list of IndexOptInfo */
+	List	   *cubelist;		/* list of CubeOptInfo */
 	BlockNumber pages;			/* size estimates derived from pg_class */
 	double		tuples;
 	double		allvisfrac;
@@ -673,13 +674,49 @@ typedef struct ChangeSetOptInfo
 	Oid			reltablespace;	/* tablespace of changeset (not table) */
 	RelOptInfo *rel;			/* back-link to changeset's table */
 
-	/* index descriptor information */
+	/* changeset-size statistics (from pg_class and elsewhere) */
+	BlockNumber pages;			/* number of disk pages in changeset */
+	double		tuples;			/* number of index tuples in changeset */
+
+	/* changeset descriptor information */
 	int			ncolumns;		/* number of columns in changeset */
 	int		   *chsetkeys;		/* column numbers of changeset's keys */
 
 	List	   *chsettlist;		/* targetlist representing changeset columns */
 
 } ChangeSetOptInfo;
+
+/*
+ * CubeOptInfo
+ *		Per-cube information for planning/optimization
+ *
+ *		cubekeys[] has ncolumns entries.
+ *
+ *		cubetlist is a TargetEntry list representing the cube columns.
+ *		It provides an equivalent base-relation Var for each column.
+ */
+typedef struct CubeOptInfo
+{
+	NodeTag		type;
+
+	Oid			cubeoid;		/* OID of the cube relation */
+	Oid			chsetoid;		/* OID of the changeset relation */
+	Oid			reltablespace;	/* tablespace of changeset (not table) */
+	RelOptInfo *rel;			/* back-link to changeset's table */
+
+	/* cube-size statistics (from pg_class and elsewhere) */
+	BlockNumber pages;			/* number of disk pages in cube */
+	double		tuples;			/* number of index tuples in cube */
+
+	/* cube descriptor information */
+	int			ncolumns;		/* number of columns in cube */
+	int		   *cubekeys;		/* column numbers of changeset's keys */
+
+	List	   *cubetlist;		/* targetlist representing cube columns */
+
+	List	   *cubeexprs;		/* expressions for non-simple cube columns */
+
+} CubeOptInfo;
 
 
 /*

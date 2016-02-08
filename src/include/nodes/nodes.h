@@ -271,6 +271,7 @@ typedef enum NodeTag
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
 	T_ChangeSetOptInfo,
+	T_CubeOptInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)

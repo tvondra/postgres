@@ -18,6 +18,7 @@
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_cube.h"
 #include "catalog/pg_index.h"
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
@@ -65,6 +66,8 @@ typedef struct RelationData
 								 * valid, 2 = temporarily forced */
 	bool		rd_chsetvalid;	/* state of rd_chsetlist: false = not valid,
 								 * true = valid */
+	bool		rd_cubevalid;	/* state of rd_cubelist: false = not valid,
+								 * true = valid */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -109,6 +112,9 @@ typedef struct RelationData
 
 	/* data managed by RelationGetChangeSetList: */
 	List	   *rd_chsetlist;	/* list of OIDs of changesets on relation */
+
+	/* data managed by RelationGetCubeList: */
+	List	   *rd_cubelist;	/* list of OIDs of cubes on relation */
 
 	/*
 	 * rd_options is set whenever rd_rel is loaded into the relcache entry.
@@ -158,6 +164,14 @@ typedef struct RelationData
 	Form_pg_changeset rd_changeset;	/* pg_changeset tuple describing this changeset */
 	/* use "struct" here to avoid needing to include htup.h: */
 	struct HeapTupleData *rd_changesettuple;	/* all of pg_changeset tuple */
+
+	/* These are non-NULL only for an cube relation: */
+	Form_pg_cube rd_cube;	/* pg_cube tuple describing this changeset */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_cubetuple;	/* all of pg_cube tuple */
+
+	MemoryContext rd_cubecxt;	/* private memory cxt for this stuff */
+	List	   *rd_cubeexprs;	/* cube expression trees, if any */
 
 	/*
 	 * foreign-table support

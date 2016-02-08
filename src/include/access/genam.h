@@ -197,4 +197,7 @@ extern void systable_endscan_ordered(SysScanDesc sysscan);
 extern Relation changeset_open(Oid relationId, LOCKMODE lockmode);
 extern void changeset_close(Relation relation, LOCKMODE lockmode);
 
+extern Relation cube_open(Oid relationId, LOCKMODE lockmode);
+extern void cube_close(Relation relation, LOCKMODE lockmode);
+
 #endif   /* GENAM_H */

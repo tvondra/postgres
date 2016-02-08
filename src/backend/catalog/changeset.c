@@ -148,7 +148,7 @@ changeset_create(Relation heapRelation,
 				GetNewRelFileNode(tableSpaceId, pg_class, relpersistence);
 		}
 	}
-elog(WARNING, "QQQ");
+
 	/*
 	 * create the changeset relation's relcache entry and physical disk file. (If
 	 * we fail further down, it's the smgr's responsibility to remove the disk
@@ -165,7 +165,7 @@ elog(WARNING, "QQQ");
 								false,	/* shared */
 								false,	/* mapped */
 								false); /* allow system mods */
-elog(WARNING, "ZZZ");
+
 	Assert(chsetRelationId == RelationGetRelid(chsetRelation));
 
 	/*
@@ -191,7 +191,7 @@ elog(WARNING, "ZZZ");
 					   RelationGetRelid(chsetRelation),
 					   (Datum) 0,
 					   reloptions);
-elog(WARNING, "TTTT");
+
 	/* done with pg_class */
 	heap_close(pg_class, RowExclusiveLock);
 

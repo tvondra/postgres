@@ -154,6 +154,7 @@ CreateChangeSet(ChangeSetStmt *stmt)
 	 */
 	changeSetInfo = makeNode(ChangeSetInfo);
 	changeSetInfo->csi_NumChangeSetAttrs = numberOfAttributes;
+	changeSetInfo->csi_KeyAttrNumbers = palloc0(numberOfAttributes * sizeof(AttrNumber));
 
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 
@@ -201,6 +202,15 @@ ComputeChangeSetAttrs(ChangeSetInfo *chsetInfo,
 					  Oid relId)
 {
 	// FIXME
+	int i = 0;
+	ListCell *lc;
+
+	foreach (lc, attList)
+	{
+		chsetInfo->csi_KeyAttrNumbers[i] = (i+1);
+		i++;
+	}
+
 	return;
 }
 

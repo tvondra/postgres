@@ -33,6 +33,7 @@
 #include "commands/cubes.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
@@ -145,7 +146,7 @@ changeset_create(Relation heapRelation,
 				GetNewRelFileNode(tableSpaceId, pg_class, relpersistence);
 		}
 	}
-
+elog(WARNING, "QQQ");
 	/*
 	 * create the changeset relation's relcache entry and physical disk file. (If
 	 * we fail further down, it's the smgr's responsibility to remove the disk
@@ -162,7 +163,7 @@ changeset_create(Relation heapRelation,
 								false,	/* shared */
 								false,	/* mapped */
 								false); /* allow system mods */
-
+elog(WARNING, "ZZZ");
 	Assert(chsetRelationId == RelationGetRelid(chsetRelation));
 
 	/*
@@ -188,7 +189,7 @@ changeset_create(Relation heapRelation,
 					   RelationGetRelid(chsetRelation),
 					   (Datum) 0,
 					   reloptions);
-
+elog(WARNING, "TTTT");
 	/* done with pg_class */
 	heap_close(pg_class, RowExclusiveLock);
 
@@ -273,8 +274,80 @@ ConstructTupleDescriptor(Relation heapRelation,
 						 ChangeSetInfo *chsetInfo,
 						 List *chsetColNames)
 {
-	// FIXME
-	return NULL;
+	int			numatts = chsetInfo->csi_NumChangeSetAttrs;
+	ListCell   *colnames_item = list_head(chsetColNames);
+	TupleDesc	heapTupDesc;
+	TupleDesc	chsetTupDesc;
+	int			natts; 			/* #atts in heap rel */
+	int			i;
+
+	/* we need access to the table's tuple descriptor */
+	heapTupDesc = RelationGetDescr(heapRelation);
+	natts = RelationGetForm(heapRelation)->relnatts;
+
+	/*
+	 * allocate the new tuple descriptor
+	 */
+	chsetTupDesc = CreateTemplateTupleDesc(numatts, false);
+
+	/*
+	 * Changesets can only contain simple columns, so we copy the pg_attribute
+	 * row from the parent relation and modify it as necessary.
+	 */
+	for (i = 0; i < numatts; i++)
+	{
+		AttrNumber	atnum = chsetInfo->csi_KeyAttrNumbers[i];
+		Form_pg_attribute to = chsetTupDesc->attrs[i];
+
+		/* Simple index column */
+		Form_pg_attribute from;
+
+		/*
+		 * make sure only regular attributes make it into the descriptor
+		 */
+		if ((atnum < 0) || (atnum > natts))		/* safety check */
+			elog(ERROR, "invalid column number %d", atnum);
+
+		from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+
+		/*
+		 * now that we've determined the "from", let's copy the tuple desc
+		 * data...
+		 */
+		memcpy(to, from, ATTRIBUTE_FIXED_PART_SIZE);
+
+		/*
+		 * Fix the stuff that should not be the same as the underlying
+		 * attr
+		 */
+		to->attnum = i + 1;
+
+		to->attstattarget = -1;
+		to->attcacheoff = -1;
+		to->attnotnull = false;
+		to->atthasdef = false;
+		to->attislocal = true;
+		to->attinhcount = 0;
+		to->attcollation = 0;
+
+		/*
+		 * We do not yet have the correct relation OID for the index, so just
+		 * set it invalid for now.  InitializeAttributeOids() will fix it
+		 * later.
+		 */
+		to->attrelid = InvalidOid;
+
+		/*
+		 * Set the attribute name as specified by caller.
+		 */
+		if (colnames_item == NULL)		/* shouldn't happen */
+			elog(ERROR, "too few entries in colnames list");
+		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
+		colnames_item = lnext(colnames_item);
+	}
+
+	return chsetTupDesc;
+
 }
 
 static void
@@ -288,8 +361,34 @@ InitializeAttributeOids(Relation chsetRelation,
 static void
 AppendAttributeTuples(Relation chsetRelation, int numatts)
 {
-	// FIXME
-	return;
+	Relation	pg_attribute;
+	CatalogIndexState indstate;
+	TupleDesc	chsetTupDesc;
+	int			i;
+
+	/*
+	 * open the attribute relation and its indexes
+	 */
+	pg_attribute = heap_open(AttributeRelationId, RowExclusiveLock);
+
+	indstate = CatalogOpenIndexes(pg_attribute);
+
+	/*
+	 * insert data from new changeset's tupdesc into pg_attribute
+	 */
+	chsetTupDesc = RelationGetDescr(chsetRelation);
+
+	for (i = 0; i < numatts; i++)
+	{
+		Assert(chsetTupDesc->attrs[i]->attnum == i + 1);
+		Assert(chsetTupDesc->attrs[i]->attcacheoff == -1);
+
+		InsertPgAttributeTuple(pg_attribute, chsetTupDesc->attrs[i], indstate);
+	}
+
+	CatalogCloseIndexes(indstate);
+
+	heap_close(pg_attribute, RowExclusiveLock);
 }
 
 static void

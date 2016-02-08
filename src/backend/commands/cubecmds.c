@@ -192,12 +192,15 @@ ObjectAddress
 CreateCube(CubeStmt *stmt)
 {
 	Oid			relationId;
+	Oid			changesetId;
 	char	   *cubeRelationName;
 	Oid			cubeRelationId;
 	Oid			namespaceId;
 	Oid			tablespaceId;
 	Oid		   *typeObjectId;
 	Relation	rel;
+	Relation	chsetrel;
+	
 	CubeInfo   *cubeInfo;
 	Datum		reloptions;
 	int			numberOfAttributes;
@@ -216,6 +219,10 @@ CreateCube(CubeStmt *stmt)
 	/* No special locking needed, AccessShereLock is enough. */
 	relationId = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
  	rel = heap_open(relationId, NoLock);
+
+	/* FIXME lookup changeset if needed (not supplied in command) */
+	changesetId = RangeVarGetRelid(stmt->changeset, AccessShareLock, false);
+	chsetrel = changeset_open(changesetId, NoLock);
 
 	/* possibly not needed, copy-paste from indexcmds.c */
 	relationId = RelationGetRelid(rel);
@@ -308,7 +315,7 @@ CreateCube(CubeStmt *stmt)
 					 typeObjectId, stmt->cubeExprs, relationId);
 
 	/* Make the catalog entries for the cube. */
-	cubeRelationId =  cube_create(rel, cubeRelationName,
+	cubeRelationId =  cube_create(rel, chsetrel, cubeRelationName,
 								  cubeInfo, stmt->cubeExprs,
 								  tablespaceId, reloptions,
 								  stmt->if_not_exists);
@@ -321,8 +328,10 @@ CreateCube(CubeStmt *stmt)
 		return address;
 	}
 
-	/* Close the heap and we're done */
+	/* Close the heap and changeset and we're done */
 	heap_close(rel, NoLock);
+	changeset_close(chsetrel, NoLock);
+
 	return address;
 }
 

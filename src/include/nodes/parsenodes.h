@@ -2510,6 +2510,7 @@ typedef struct CubeStmt
 	NodeTag		type;
 	char	   *cubename;		/* name of new cube, or NULL for default */
 	RangeVar   *relation;		/* relation to build cube on */
+	RangeVar   *changeset;		/* changeset to use for the cube */
 	char	   *tableSpace;		/* tablespace, or NULL for default */
 	List	   *cubeExprs;		/* columns to include: a list of IndexElem */
 	List	   *options;		/* WITH clause options: a list of DefElem */

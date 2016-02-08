@@ -324,6 +324,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				index_name opt_index_name cluster_index_specification
 
 %type <str>		cube_name opt_cube_name changeset_name opt_changeset_name
+%type <range>	opt_changeset
 
 %type <list>	changeset_cols cube_elems
 
@@ -6898,27 +6899,29 @@ changeset_cols:
 
 CubeStmt:	CREATE CUBE opt_cube_name
 			ON qualified_name '(' cube_elems ')'
-			opt_reloptions OptTableSpace
+			opt_changeset opt_reloptions OptTableSpace
 				{
 					CubeStmt *n = makeNode(CubeStmt);
 					n->cubename = $3;
 					n->relation = $5;
 					n->cubeExprs = $7;
-					n->options = $9;
-					n->tableSpace = $10;
+					n->changeset = $9;
+					n->options = $10;
+					n->tableSpace = $11;
 					n->if_not_exists = false;
 					$$ = (Node *)n;
 				}
 			| CREATE CUBE IF_P NOT EXISTS cube_name
 			ON qualified_name '(' cube_elems ')'
-			opt_reloptions OptTableSpace
+			opt_changeset opt_reloptions OptTableSpace
 				{
 					CubeStmt *n = makeNode(CubeStmt);
 					n->cubename = $6;
 					n->relation = $8;
 					n->cubeExprs = $10;
-					n->options = $12;
-					n->tableSpace = $13;
+					n->changeset = $12;
+					n->options = $13;
+					n->tableSpace = $14;
 					n->if_not_exists = true;
 					$$ = (Node *)n;
 				}
@@ -6934,6 +6937,11 @@ opt_cube_name:
 cube_elems:
 			a_expr									{ $$ = list_make1($1); }
 			| cube_elems ',' a_expr					{ $$ = lappend($1, $3); }
+		;
+
+opt_changeset:
+			CHANGESET qualified_name				{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
 

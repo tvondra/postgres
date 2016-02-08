@@ -2606,6 +2606,7 @@ CopyFrom(CopyState cstate)
 	ExecResetTupleTable(estate->es_tupleTable, false);
 
 	ExecCloseIndices(resultRelInfo);
+	ExecCloseChangeSets(resultRelInfo);
 
 	FreeExecutorState(estate);
 

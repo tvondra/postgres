@@ -458,7 +458,10 @@ BuildChangeSetInfo(Relation changeset)
 	if (numKeys < 1)
 		elog(ERROR, "invalid chsetnatts %d for changeset %u",
 			 numKeys, RelationGetRelid(changeset));
+
 	csi->csi_NumChangeSetAttrs = numKeys;
+	csi->csi_KeyAttrNumbers = palloc0(sizeof(AttrNumber) * numKeys);
+
 	for (i = 0; i < numKeys; i++)
 		csi->csi_KeyAttrNumbers[i] = chsetStruct->chsetkey.values[i];
 

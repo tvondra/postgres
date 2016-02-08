@@ -1635,6 +1635,16 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			resultRelInfo->ri_IndexRelationDescs == NULL)
 			ExecOpenIndices(resultRelInfo, mtstate->mt_onconflict != ONCONFLICT_NONE);
 
+		/*
+		 * If there are changesets on the result relation, open them and save
+		 * descriptors in the result relation info, so that we can add new
+		 * changeset entries for the tuples we add/update/delete.
+		 *
+		 * FIXME do we need relhaschsets (similar to relhasindex)?
+		 */
+		if (resultRelInfo->ri_ChangeSetRelationDescs == NULL)
+			ExecOpenChangeSets(resultRelInfo);
+
 		/* Now init the plan for this result rel */
 		estate->es_result_relation_info = resultRelInfo;
 		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);

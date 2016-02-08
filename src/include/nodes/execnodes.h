@@ -98,6 +98,26 @@ typedef struct ChangeSetInfo
 } ChangeSetInfo;
 
 /* ----------------
+ *	  CubeInfo information
+ *
+ *		this struct holds the information needed to construct new cube
+ *		entries for a particular changeset.
+ *
+ *		NumCubeAttrs		number of columns in this cube
+ *		KeyAttrNumbers		underlying-rel attribute numbers used as keys
+ *							(zeroes indicate expressions)
+ *		Expressions			expr trees for expression entries, or NIL if none
+ *		ExpressionsState	exec state for expressions, or NIL if none
+ * ----------------
+ */
+typedef struct CubeInfo
+{
+	NodeTag		type;
+	int			ci_NumCubeAttrs;
+	AttrNumber *ci_KeyAttrNumbers;
+} CubeInfo;
+
+/* ----------------
  *	  ExprContext_CB
  *
  *		List of callbacks to be called at ExprContext shutdown.

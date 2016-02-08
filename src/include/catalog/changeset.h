@@ -27,4 +27,15 @@ extern Oid changeset_create(Relation heapRelation,
 
 ChangeSetInfo * BuildChangeSetInfo(Relation changeset);
 
+extern Oid cube_create(Relation heapRelation,
+			Relation changesetRelation,
+			const char *cubeRelationName,
+			CubeInfo *cubeInfo,
+			List *cubeColNames,
+			Oid tableSpaceId,
+			Datum reloptions,
+			bool if_not_exists);
+
+CubeInfo * BuildCubeInfo(Relation cube);
+
 #endif   /* CHANGESET_H */

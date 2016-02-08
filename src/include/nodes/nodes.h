@@ -38,6 +38,7 @@ typedef enum NodeTag
 	T_EState,
 	T_TupleTableSlot,
 	T_ChangeSetInfo,
+	T_CubeInfo,
 
 	/*
 	 * TAGS FOR PLAN NODES (plannodes.h)

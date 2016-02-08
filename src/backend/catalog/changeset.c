@@ -22,6 +22,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/relscan.h"
 #include "access/xact.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/binary_upgrade.h"
@@ -30,6 +31,7 @@
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_changeset.h"
 #include "commands/cubes.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
@@ -395,6 +397,38 @@ static void
 UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 						ChangeSetInfo *chsetInfo)
 {
-	// FIXME
-	return;
+	int2vector *chsetkey;
+	Datum		values[Natts_pg_changeset];
+	bool		nulls[Natts_pg_changeset];
+	Relation	pg_changeset;
+	HeapTuple	tuple;
+	int			i;
+
+	/* copy the changeset key info into arrays */
+	chsetkey = buildint2vector(NULL, chsetInfo->csi_NumChangeSetAttrs);
+	for (i = 0; i < chsetInfo->csi_NumChangeSetAttrs; i++)
+		chsetkey->values[i] = chsetInfo->csi_KeyAttrNumbers[i];
+
+	/* open the system catalog changeset relation */
+	pg_changeset = heap_open(ChangeSetRelationId, RowExclusiveLock);
+
+	/* build a pg_changeset tuple */
+	MemSet(nulls, false, sizeof(nulls));
+
+	values[Anum_pg_changeset_chsetid    - 1] = ObjectIdGetDatum(chsetoid);
+	values[Anum_pg_changeset_chsetrelid - 1] = ObjectIdGetDatum(heapoid);
+	values[Anum_pg_changeset_chsetnatts - 1] = Int16GetDatum(chsetInfo->csi_NumChangeSetAttrs);
+	values[Anum_pg_changeset_chsetkey   - 1] = PointerGetDatum(chsetkey);
+
+	tuple = heap_form_tuple(RelationGetDescr(pg_changeset), values, nulls);
+
+	/* insert the tuple into the pg_changeset catalog */
+	simple_heap_insert(pg_changeset, tuple);
+
+	/* update the indexes on pg_changeset */
+	CatalogUpdateIndexes(pg_changeset, tuple);
+
+	/* close the relation and free the tuple */
+	heap_close(pg_changeset, RowExclusiveLock);
+	heap_freetuple(tuple);
 }

@@ -51,7 +51,7 @@ typedef FormData_pg_changeset *Form_pg_changeset;
  *		compiler constants for pg_changeset
  * ----------------
  */
-#define Natts_pg_chageset					4
+#define Natts_pg_changeset					4
 #define Anum_pg_changeset_chsetid			1
 #define Anum_pg_changeset_chsetrelid		2
 #define Anum_pg_changeset_chsetnatts		3

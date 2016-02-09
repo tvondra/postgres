@@ -733,6 +733,10 @@ ldelete:;
 	if (canSetTag)
 		(estate->es_processed)++;
 
+	/* insert changeset entries for the deleted tuple */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
+
 	/* AFTER ROW DELETE Triggers */
 	ExecARDeleteTriggers(estate, resultRelInfo, tupleid, oldtuple);
 
@@ -1038,6 +1042,13 @@ lreplace:;
 
 	if (canSetTag)
 		(estate->es_processed)++;
+
+	/* insert changeset entries for the updated tuple */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+	{
+		ExecInsertChangeSetTuples2(CHANGESET_INSERT,    NULL,    tuple, estate);
+		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
+	}
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple, tuple,

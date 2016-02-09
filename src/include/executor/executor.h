@@ -380,6 +380,9 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
  */
 extern void ExecInsertChangeSetTuples(char changeType,
 								TupleTableSlot *slot, EState *estate);
+extern void ExecInsertChangeSetTuples2(char changeType,
+								ItemPointer tupleid, HeapTuple tup,
+								EState *estate);
 extern void ExecOpenChangeSets(ResultRelInfo *resultRelInfo);
 extern void ExecCloseChangeSets(ResultRelInfo *resultRelInfo);
 

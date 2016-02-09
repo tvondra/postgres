@@ -36,6 +36,13 @@ void FormChangeSetDatum(ChangeSetInfo *chsetInfo,
 				   Datum *values,
 				   bool *isnull);
 
+void FormChangeSetDatum2(ChangeSetInfo *chsetInfo,
+				   char changeType,
+				   TupleDesc desc,
+				   HeapTuple tup,
+				   Datum *values,
+				   bool *isnull);				   
+
 extern Oid cube_create(Relation heapRelation,
 			Relation changesetRelation,
 			const char *cubeRelationName,

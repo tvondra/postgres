@@ -2561,6 +2561,10 @@ CopyFrom(CopyState cstate)
 										 recheckIndexes);
 
 					list_free(recheckIndexes);
+
+					/* and now also insert the tuple into all changesets */
+					if (resultRelInfo->ri_NumChangeSets > 0)
+						ExecInsertChangeSetTuples(slot, estate);
 				}
 			}
 
@@ -2675,6 +2679,21 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 								 bufferedTuples[i],
 								 recheckIndexes);
 			list_free(recheckIndexes);
+		}
+	}
+
+	/*
+	 * Also, if there are any changesets, insert the tuples into them.
+	 *
+	 * FIXME This should probably do a batch insert too (now its each row).
+	 */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+	{
+		for (i = 0; i < nBufferedTuples; i++)
+		{
+			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ExecInsertChangeSetTuples(myslot, estate);
 		}
 	}
 

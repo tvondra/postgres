@@ -28,12 +28,12 @@
 #include "parser/parse_func.h"
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 static char *ChooseChangeSetName(const char *tabname, Oid namespaceId);
 static char *ChooseCubeName(const char *tabname, Oid namespaceId);
 
 static void ComputeChangeSetAttrs(ChangeSetInfo *chsetInfo,
-				  Oid *typeOidP,
 				  List *attList,
 				  Oid relId);
 
@@ -57,7 +57,6 @@ CreateChangeSet(ChangeSetStmt *stmt)
 	Oid			chsetRelationId;
 	Oid			namespaceId;
 	Oid			tablespaceId;
-	Oid		   *typeObjectId;
 	Relation	rel;
 	ChangeSetInfo  *changeSetInfo;
 	Datum		reloptions;
@@ -162,17 +161,12 @@ CreateChangeSet(ChangeSetStmt *stmt)
 	 * Prepare arguments for changeset_create, primarily an ChangeSetInfo structure.
 	 */
 	changeSetInfo = makeNode(ChangeSetInfo);
-	changeSetInfo->csi_NumChangeSetAttrs = numberOfAttributes;
-	changeSetInfo->csi_KeyAttrNumbers = palloc0(numberOfAttributes * sizeof(AttrNumber));
 
-	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
-
-	ComputeChangeSetAttrs(changeSetInfo,
-						  typeObjectId, stmt->chsetColumns, relationId);
+	ComputeChangeSetAttrs(changeSetInfo, stmt->chsetColumns, relationId);
 
 	/* Make the catalog entries for the changeset. */
-	chsetRelationId =  changeset_create(rel, chsetRelationName,
-										changeSetInfo, stmt->chsetColumns,
+	chsetRelationId =  changeset_create(rel,
+										chsetRelationName, changeSetInfo,
 										tablespaceId, reloptions,
 										stmt->if_not_exists);
 
@@ -352,21 +346,52 @@ ChooseCubeName(const char *tabname, Oid namespaceId)
 
 static void
 ComputeChangeSetAttrs(ChangeSetInfo *chsetInfo,
-					  Oid *typeOidP,
 					  List *attList,
 					  Oid relId)
 {
-	// FIXME
-	int i = 0;
-	ListCell *lc;
+	ListCell   *lc;
+	int			k;
+	int			natts;
+	int			attn = 0;
+	Bitmapset  *attnums = NULL;
 
 	foreach (lc, attList)
 	{
-		chsetInfo->csi_KeyAttrNumbers[i] = (i+1);
-		i++;
+		char	   *attname;
+		HeapTuple	atttuple;
+		Form_pg_attribute attform;
+
+		attname = strVal(lfirst(lc));
+		atttuple = SearchSysCacheAttName(relId, attname);
+
+		if (!HeapTupleIsValid(atttuple))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column \"%s\" does not exist",
+							attname)));
+
+		attform = (Form_pg_attribute) GETSTRUCT(atttuple);
+
+		attnums = bms_add_member(attnums, attform->attnum);
+
+		ReleaseSysCache(atttuple);
 	}
 
-	return;
+	/*
+	 * By using bitmapset to collect the attnums, we ignore duplicates
+	 * and also sort the attnums. This is intentional, and the order
+	 * does not really matter (unlike from indexes, where it determines
+	 * shape of the tree, ordering and so on).
+	 */
+	natts = bms_num_members(attnums);
+
+	chsetInfo->csi_NumChangeSetAttrs = natts;
+	chsetInfo->csi_KeyAttrNumbers = palloc0(natts * sizeof(AttrNumber));
+
+	k = -1;
+	while ((k = bms_next_member(attnums, k)) >= 0)
+		chsetInfo->csi_KeyAttrNumbers[attn++] = k;
+
 }
 
 static void

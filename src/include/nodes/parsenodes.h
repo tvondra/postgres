@@ -2494,7 +2494,7 @@ typedef struct ChangeSetStmt
 	char	   *chsetname;		/* name of new changeset, or NULL for default */
 	RangeVar   *relation;		/* relation to build changeset on */
 	char	   *tableSpace;		/* tablespace, or NULL for default */
-	List	   *chsetColumns;	/* columns to include: a list of IndexElem */
+	List	   *chsetColumns;	/* columns to include: a list of column names */
 	List	   *options;		/* WITH clause options: a list of DefElem */
 	bool		if_not_exists;	/* just do nothing if changeset already exists? */
 } ChangeSetStmt;

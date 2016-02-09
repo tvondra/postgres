@@ -32,6 +32,7 @@
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_type.h"
 #include "commands/cubes.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
@@ -39,8 +40,7 @@
 #include "utils/lsyscache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
-						 ChangeSetInfo *chsetInfo,
-						 List *chsetColNames);
+						 ChangeSetInfo *chsetInfo);
 static void UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 					ChangeSetInfo *chsetInfo);
 
@@ -50,7 +50,6 @@ static void UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
  * heapRelation: table to build changeset on (suitably locked by caller)
  * chsetRelationName: name of the changeset relation
  * chsetInfo: same info executor uses to insert into the changeset
- * chsetColNames: column names to use for changeset (List of char *)
  * tableSpaceId: OID of tablespace to use
  * reloptions: same as for heap
  * if_not_exists: if true, do not throw an error if a relation with
@@ -62,7 +61,6 @@ Oid
 changeset_create(Relation heapRelation,
 			 const char *chsetRelationName,
 			 ChangeSetInfo *chsetInfo,
-			 List *chsetColNames,
 			 Oid tableSpaceId,
 			 Datum reloptions,
 			 bool if_not_exists)
@@ -119,8 +117,7 @@ changeset_create(Relation heapRelation,
 	 * construct tuple descriptor for changeset tuples
 	 */
 	chsetTupDesc = ConstructTupleDescriptor(heapRelation,
-											chsetInfo,
-											chsetColNames);
+											chsetInfo);
 
 	/*
 	 * create the changeset relation's relcache entry and physical disk file. (If
@@ -211,11 +208,10 @@ changeset_create(Relation heapRelation,
 
 static TupleDesc
 ConstructTupleDescriptor(Relation heapRelation,
-						 ChangeSetInfo *chsetInfo,
-						 List *chsetColNames)
+						 ChangeSetInfo *chsetInfo)
 {
 	int			numatts = chsetInfo->csi_NumChangeSetAttrs;
-	ListCell   *colnames_item = list_head(chsetColNames);
+	int			idx = 0;
 	TupleDesc	heapTupDesc;
 	TupleDesc	chsetTupDesc;
 	int			natts; 			/* #atts in heap rel */
@@ -225,10 +221,25 @@ ConstructTupleDescriptor(Relation heapRelation,
 	heapTupDesc = RelationGetDescr(heapRelation);
 	natts = RelationGetForm(heapRelation)->relnatts;
 
+	/* walk through column names, match them to attributes */
+
 	/*
 	 * allocate the new tuple descriptor
+	 *
+	 * include extra attribute for change type info (insert/delete)
 	 */
-	chsetTupDesc = CreateTemplateTupleDesc(numatts, false);
+	chsetTupDesc = CreateTemplateTupleDesc(numatts + 1, false);
+
+	/*
+	 * initialize the extra attribute (always the first one)
+	 *
+	 * FIXME The attribute has a hard-coded name, so it might conflict
+	 *       with existing attributes. Not sure how to fix this, but
+	 *       maybe we can make it customizable in reloptions (we can
+	 *       rely on the position) or make it a system attribute (but
+	 *       that seems annoying).
+	 */
+	TupleDescInitEntry(chsetTupDesc, 1, "change_type", CHAROID, 0, 0);
 
 	/*
 	 * Changesets can only contain simple columns, so we copy the pg_attribute
@@ -240,7 +251,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	for (i = 0; i < numatts; i++)
 	{
 		AttrNumber	atnum = chsetInfo->csi_KeyAttrNumbers[i];
-		Form_pg_attribute to = chsetTupDesc->attrs[i];
+		Form_pg_attribute to = chsetTupDesc->attrs[++idx];
 
 		/* Simple index column */
 		Form_pg_attribute from;
@@ -263,7 +274,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		 * Fix the stuff that should not be the same as the underlying
 		 * attr
 		 */
-		to->attnum = i + 1;
+		to->attnum = idx + 1;
 
 		to->attstattarget = -1;
 		to->attcacheoff = -1;
@@ -281,12 +292,9 @@ ConstructTupleDescriptor(Relation heapRelation,
 		to->attrelid = InvalidOid;
 
 		/*
-		 * Set the attribute name as specified by caller.
+		 * Set the attribute name same as in the heap relation.
 		 */
-		if (colnames_item == NULL)		/* shouldn't happen */
-			elog(ERROR, "too few entries in colnames list");
-		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
-		colnames_item = lnext(colnames_item);
+		namecpy(&to->attname, &from->attname);
 	}
 
 	return chsetTupDesc;

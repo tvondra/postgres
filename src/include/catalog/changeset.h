@@ -24,7 +24,6 @@
 extern Oid changeset_create(Relation heapRelation,
 			 const char *chsetRelationName,
 			 ChangeSetInfo *chsetInfo,
-			 List *chsetColNames,
 			 Oid tableSpaceId,
 			 Datum reloptions,
 			 bool if_not_exists);

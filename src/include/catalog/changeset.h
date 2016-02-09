@@ -17,6 +17,10 @@
 #include "catalog/objectaddress.h"
 #include "nodes/execnodes.h"
 
+/* changeset operation type */
+#define CHANGESET_INSERT		'I'
+#define CHANGESET_DELETE		'D'
+
 extern Oid changeset_create(Relation heapRelation,
 			 const char *chsetRelationName,
 			 ChangeSetInfo *chsetInfo,

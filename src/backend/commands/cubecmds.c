@@ -151,7 +151,11 @@ CreateChangeSet(ChangeSetStmt *stmt)
 	reloptions = transformRelOptions((Datum) 0, stmt->options,
 									 NULL, NULL, false, false);
 
-	/* ChangeSets are simple heap relations, so allow the same options. */
+	/*
+	 * ChangeSets are simple heap relations, so allow the same options.
+	 *
+	 * FIXME Prevent 'WITH OIDS' in the reloptions.
+	 */
 	(void) heap_reloptions(RELKIND_RELATION, reloptions, true);
 
 	/*

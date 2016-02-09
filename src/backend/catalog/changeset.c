@@ -41,9 +41,6 @@
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 ChangeSetInfo *chsetInfo,
 						 List *chsetColNames);
-static void InitializeAttributeOids(Relation chsetRelation,
-						int numatts, Oid chsetoid);
-static void AppendAttributeTuples(Relation chsetRelation, int numatts);
 static void UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 					ChangeSetInfo *chsetInfo);
 
@@ -73,7 +70,6 @@ changeset_create(Relation heapRelation,
 	Oid			chsetRelationId = InvalidOid;
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
-	Relation	chsetRelation;
 	TupleDesc	chsetTupDesc;
 	Oid			namespaceId;
 	int			i;
@@ -127,86 +123,38 @@ changeset_create(Relation heapRelation,
 											chsetColNames);
 
 	/*
-	 * Allocate an OID for the changeset.
-	 */
-	if (!OidIsValid(chsetRelationId))
-	{
-		/* Use binary-upgrade override for pg_class.oid/relfilenode? */
-		if (IsBinaryUpgrade)
-		{
-			if (!OidIsValid(binary_upgrade_next_index_pg_class_oid))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("pg_class index OID value not set when in binary upgrade mode")));
-
-			chsetRelationId = binary_upgrade_next_index_pg_class_oid;
-			binary_upgrade_next_index_pg_class_oid = InvalidOid;
-		}
-		else
-		{
-			chsetRelationId =
-				GetNewRelFileNode(tableSpaceId, pg_class, relpersistence);
-		}
-	}
-
-	/*
 	 * create the changeset relation's relcache entry and physical disk file. (If
 	 * we fail further down, it's the smgr's responsibility to remove the disk
 	 * file again.)
 	 */
-	chsetRelation = heap_create(chsetRelationName,
-								namespaceId,
-								tableSpaceId,
-								chsetRelationId,
-								InvalidOid,	/* relfilenode */
-								chsetTupDesc,
-								RELKIND_CHANGESET,
-								relpersistence,
-								false,	/* shared */
-								false,	/* mapped */
-								false); /* allow system mods */
+	chsetRelationId
+		= heap_create_with_catalog(chsetRelationName,
+								   namespaceId,
+								   tableSpaceId,
+								   InvalidOid, /* relid */
+								   InvalidOid, /* reltypeid */
+								   InvalidOid, /* reloftypeid */
+								   heapRelation->rd_rel->relowner,
+								   chsetTupDesc,
+								   NIL,
+								   RELKIND_CHANGESET,
+								   relpersistence,
+								   false, /* not shared */
+								   false, /* not mapped */
+								   false, /* oidislocal */
+								   0,     /* attinhcount */
+								   ONCOMMIT_NOOP,
+								   reloptions,
+								   false, /* no ACLs */
+								   false, /* not a system catalog */
+								   false, /* not internal */
+								   NULL); /* no object address */
 
-	Assert(chsetRelationId == RelationGetRelid(chsetRelation));
+	Assert(OidIsValid(chsetRelationId));
 
-	/*
-	 * Obtain exclusive lock on it.  Although no other backends can see it
-	 * until we commit, this prevents deadlock-risk complaints from lock
-	 * manager in cases such as CLUSTER.
-	 */
-	LockRelation(chsetRelation, AccessExclusiveLock);
-
-	/*
-	 * Fill in fields of the changesets's pg_class entry that are not set
-	 * correctly by heap_create.
-	 *
-	 * XXX should have a cleaner way to create cataloged changesets
-	 */
-	chsetRelation->rd_rel->relowner = heapRelation->rd_rel->relowner;
-	chsetRelation->rd_rel->relhasoids = false;
-
-	/*
-	 * store changeset's pg_class entry
-	 */
-	InsertPgClassTuple(pg_class, chsetRelation,
-					   RelationGetRelid(chsetRelation),
-					   (Datum) 0,
-					   reloptions);
 
 	/* done with pg_class */
 	heap_close(pg_class, RowExclusiveLock);
-
-	/*
-	 * now update the object id's of all the attribute tuple forms in the
-	 * changeset relation's tuple descriptor
-	 */
-	InitializeAttributeOids(chsetRelation,
-							chsetInfo->csi_NumChangeSetAttrs,
-							chsetRelationId);
-
-	/*
-	 * append ATTRIBUTE tuples for the changeset
-	 */
-	AppendAttributeTuples(chsetRelation, chsetInfo->csi_NumChangeSetAttrs);
 
 	/* ----------------
 	 *	  update pg_changeset
@@ -216,7 +164,7 @@ changeset_create(Relation heapRelation,
 	UpdateChangeSetRelation(chsetRelationId, heapRelationId, chsetInfo);
 
 	/*
-	 * Register dependencies for the changeset.
+	 * Register additional dependencies for the changeset.
 	 *
 	 * We don't need a dependency on the namespace, because there'll be an
 	 * indirect dependency via our parent table.
@@ -251,21 +199,11 @@ changeset_create(Relation heapRelation,
 				(errcode(ERRCODE_DUPLICATE_TABLE),
 				 errmsg("changesets not supported during bootstap")));
 
-	/* Post creation hook for new changeset */
-	InvokeObjectPostCreateHookArg(RelationRelationId,
-								  chsetRelationId, 0, false);
-
 	/*
 	 * Advance the command counter so that we can see the newly-entered
 	 * catalog tuples for the changeset.
 	 */
 	CommandCounterIncrement();
-
-	/*
-	 * Close the changeset; but we keep the lock that we acquired above until
-	 * end of transaction.  Closing the heap is caller's responsibility.
-	 */
-	relation_close(chsetRelation, NoLock);
 
 	return chsetRelationId;
 
@@ -295,6 +233,9 @@ ConstructTupleDescriptor(Relation heapRelation,
 	/*
 	 * Changesets can only contain simple columns, so we copy the pg_attribute
 	 * row from the parent relation and modify it as necessary.
+	 *
+	 * While indexes only include regular attributes, we need all attributes
+	 * including the system ones, as we need to track visibility and so on.
 	 */
 	for (i = 0; i < numatts; i++)
 	{
@@ -350,47 +291,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 
 	return chsetTupDesc;
 
-}
-
-static void
-InitializeAttributeOids(Relation chsetRelation,
-						int numatts, Oid chsetoid)
-{
-	// FIXME
-	return;
-}
-
-static void
-AppendAttributeTuples(Relation chsetRelation, int numatts)
-{
-	Relation	pg_attribute;
-	CatalogIndexState indstate;
-	TupleDesc	chsetTupDesc;
-	int			i;
-
-	/*
-	 * open the attribute relation and its indexes
-	 */
-	pg_attribute = heap_open(AttributeRelationId, RowExclusiveLock);
-
-	indstate = CatalogOpenIndexes(pg_attribute);
-
-	/*
-	 * insert data from new changeset's tupdesc into pg_attribute
-	 */
-	chsetTupDesc = RelationGetDescr(chsetRelation);
-
-	for (i = 0; i < numatts; i++)
-	{
-		Assert(chsetTupDesc->attrs[i]->attnum == i + 1);
-		Assert(chsetTupDesc->attrs[i]->attcacheoff == -1);
-
-		InsertPgAttributeTuple(pg_attribute, chsetTupDesc->attrs[i], indstate);
-	}
-
-	CatalogCloseIndexes(indstate);
-
-	heap_close(pg_attribute, RowExclusiveLock);
 }
 
 static void

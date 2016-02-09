@@ -41,9 +41,6 @@
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
 						 List *cubeColNames);
-static void InitializeAttributeOids(Relation cubeRelation,
-						int numatts, Oid chsetoid);
-static void AppendAttributeTuples(Relation cubeRelation, int numatts);
 static void UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 						CubeInfo *cubeInfo);
 
@@ -75,7 +72,6 @@ cube_create(Relation heapRelation,
 	Oid			chsetRelationId = RelationGetRelid(changesetRelation);
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
-	Relation	cubeRelation;
 	TupleDesc	cubeTupDesc;
 	Oid			namespaceId;
 	int			i;
@@ -133,86 +129,37 @@ cube_create(Relation heapRelation,
 										   cubeColNames);
 
 	/*
-	 * Allocate an OID for the cube.
-	 */
-	if (!OidIsValid(chsetRelationId))
-	{
-		/* Use binary-upgrade override for pg_class.oid/relfilenode? */
-		if (IsBinaryUpgrade)
-		{
-			if (!OidIsValid(binary_upgrade_next_index_pg_class_oid))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("pg_class index OID value not set when in binary upgrade mode")));
-
-			cubeRelationId = binary_upgrade_next_index_pg_class_oid;
-			binary_upgrade_next_index_pg_class_oid = InvalidOid;
-		}
-		else
-		{
-			cubeRelationId =
-				GetNewRelFileNode(tableSpaceId, pg_class, relpersistence);
-		}
-	}
-
-	/*
 	 * create the cube relation's relcache entry and physical disk file. (If
 	 * we fail further down, it's the smgr's responsibility to remove the disk
 	 * file again.)
 	 */
-	cubeRelation = heap_create(cubeRelationName,
-							   namespaceId,
-							   tableSpaceId,
-							   cubeRelationId,
-							   InvalidOid,	/* relfilenode */
-							   cubeTupDesc,
-							   RELKIND_CUBE,
-							   relpersistence,
-							   false,	/* shared */
-							   false,	/* mapped */
-							   false);  /* allow system mods */
+	cubeRelationId
+		= heap_create_with_catalog(cubeRelationName,
+								   namespaceId,
+								   tableSpaceId,
+								   InvalidOid, /* relid */
+								   InvalidOid, /* reltypeid */
+								   InvalidOid, /* reloftypeid */
+								   heapRelation->rd_rel->relowner,
+								   cubeTupDesc,
+								   NIL,
+								   RELKIND_CUBE,
+								   relpersistence,
+								   false, /* not shared */
+								   false, /* not mapped */
+								   false, /* oidislocal */
+								   0,     /* attinhcount */
+								   ONCOMMIT_NOOP,
+								   reloptions,
+								   false, /* no ACLs */
+								   false, /* not a system catalog */
+								   false, /* not internal */
+								   NULL); /* no object address */
 
-	Assert(cubeRelationId == RelationGetRelid(cubeRelation));
-
-	/*
-	 * Obtain exclusive lock on it.  Although no other backends can see it
-	 * until we commit, this prevents deadlock-risk complaints from lock
-	 * manager in cases such as CLUSTER.
-	 */
-	LockRelation(cubeRelation, AccessExclusiveLock);
-
-	/*
-	 * Fill in fields of the cubes's pg_class entry that are not set
-	 * correctly by heap_create.
-	 *
-	 * XXX should have a cleaner way to create cataloged changesets
-	 */
-	cubeRelation->rd_rel->relowner = heapRelation->rd_rel->relowner;
-	cubeRelation->rd_rel->relhasoids = false;
-
-	/*
-	 * store cubes's pg_class entry
-	 */
-	InsertPgClassTuple(pg_class, cubeRelation,
-					   RelationGetRelid(cubeRelation),
-					   (Datum) 0,
-					   reloptions);
+	Assert(OidIsValid(cubeRelationId));
 
 	/* done with pg_class */
 	heap_close(pg_class, RowExclusiveLock);
-
-	/*
-	 * now update the object id's of all the attribute tuple forms in the
-	 * changeset relation's tuple descriptor
-	 */
-	InitializeAttributeOids(cubeRelation,
-							cubeInfo->ci_NumCubeAttrs,
-							cubeRelationId);
-
-	/*
-	 * append ATTRIBUTE tuples for the changeset
-	 */
-	AppendAttributeTuples(cubeRelation, cubeInfo->ci_NumCubeAttrs);
 
 	/* ----------------
 	 *	  update pg_cube
@@ -223,7 +170,7 @@ cube_create(Relation heapRelation,
 					   cubeInfo);
 
 	/*
-	 * Register dependencies for the cube.
+	 * Register additional dependencies for the cube.
 	 *
 	 * We don't need a dependency on the namespace, because there'll be an
 	 * indirect dependency via our parent table.
@@ -261,21 +208,11 @@ cube_create(Relation heapRelation,
 				(errcode(ERRCODE_DUPLICATE_TABLE),
 				 errmsg("cubes not supported during bootstap")));
 
-	/* Post creation hook for new cube */
-	InvokeObjectPostCreateHookArg(RelationRelationId,
-								  cubeRelationId, 0, false);
-
 	/*
 	 * Advance the command counter so that we can see the newly-entered
 	 * catalog tuples for the cube.
 	 */
 	CommandCounterIncrement();
-
-	/*
-	 * Close the cube; but we keep the lock that we acquired above until
-	 * end of transaction.  Closing the heap is caller's responsibility.
-	 */
-	relation_close(cubeRelation, NoLock);
 
 	return cubeRelationId;
 
@@ -363,47 +300,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 
 	return cubeTupDesc;
 
-}
-
-static void
-InitializeAttributeOids(Relation cubeRelation,
-						int numatts, Oid cubeoid)
-{
-	// FIXME
-	return;
-}
-
-static void
-AppendAttributeTuples(Relation cubeRelation, int numatts)
-{
-	Relation	pg_attribute;
-	CatalogIndexState indstate;
-	TupleDesc	cubeTupDesc;
-	int			i;
-
-	/*
-	 * open the attribute relation and its indexes
-	 */
-	pg_attribute = heap_open(AttributeRelationId, RowExclusiveLock);
-
-	indstate = CatalogOpenIndexes(pg_attribute);
-
-	/*
-	 * insert data from new cube's tupdesc into pg_attribute
-	 */
-	cubeTupDesc = RelationGetDescr(cubeRelation);
-
-	for (i = 0; i < numatts; i++)
-	{
-		Assert(cubeTupDesc->attrs[i]->attnum == i + 1);
-		Assert(cubeTupDesc->attrs[i]->attcacheoff == -1);
-
-		InsertPgAttributeTuple(pg_attribute, cubeTupDesc->attrs[i], indstate);
-	}
-
-	CatalogCloseIndexes(indstate);
-
-	heap_close(pg_attribute, RowExclusiveLock);
 }
 
 static void

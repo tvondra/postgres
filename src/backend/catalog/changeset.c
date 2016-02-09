@@ -375,3 +375,48 @@ BuildChangeSetInfo(Relation changeset)
 
 	return csi;
 }
+
+/* ----------------
+ *	FormChangeSetDatum
+ *		Construct values[] and isnull[] arrays for a new changeset tuple.
+ *
+ *	chsetInfo		Info about the changeset
+ *	slot			Heap tuple for which we must prepare an changeset entry
+ *	values			Array of changeset Datums (output area)
+ *	isnull			Array of is-null indicators (output area)
+ *
+ * Notice we don't actually call heap_form_tuple() here; we just prepare
+ * its input arrays values[] and isnull[].  This is because that's how
+ * indexes do that, so we follow the same structure.
+ * ----------------
+ */
+void
+FormChangeSetDatum(ChangeSetInfo *chsetInfo,
+				   char changeType,
+				   TupleTableSlot *slot,
+				   Datum *values,
+				   bool *isnull)
+{
+	int			i;
+
+	Assert((changeType == CHANGESET_INSERT)	||
+		   (changeType == CHANGESET_DELETE));
+
+	/* first value is always the type of operation (insert/delete) */
+	values[0] = changeType;
+	isnull[0] = false;
+
+	for (i = 0; i < chsetInfo->csi_NumChangeSetAttrs; i++)
+	{
+		int			keycol = chsetInfo->csi_KeyAttrNumbers[i];
+		Datum		iDatum;
+		bool		isNull;
+
+		Assert(keycol > 0);
+
+		iDatum = slot_getattr(slot, keycol, &isNull);
+
+		values[i+1] = iDatum;
+		isnull[i+1] = isNull;
+	}
+}

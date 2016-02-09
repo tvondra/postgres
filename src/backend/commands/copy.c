@@ -25,6 +25,7 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/changeset.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "commands/defrem.h"
@@ -2564,7 +2565,7 @@ CopyFrom(CopyState cstate)
 
 					/* and now also insert the tuple into all changesets */
 					if (resultRelInfo->ri_NumChangeSets > 0)
-						ExecInsertChangeSetTuples(slot, estate);
+						ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 				}
 			}
 
@@ -2709,7 +2710,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
 			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
-			ExecInsertChangeSetTuples(myslot, estate);
+			ExecInsertChangeSetTuples(CHANGESET_INSERT, myslot, estate);
 		}
 	}
 

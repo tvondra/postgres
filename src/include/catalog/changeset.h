@@ -30,6 +30,12 @@ extern Oid changeset_create(Relation heapRelation,
 
 ChangeSetInfo * BuildChangeSetInfo(Relation changeset);
 
+void FormChangeSetDatum(ChangeSetInfo *chsetInfo,
+				   char changeType,
+				   TupleTableSlot *slot,
+				   Datum *values,
+				   bool *isnull);
+
 extern Oid cube_create(Relation heapRelation,
 			Relation changesetRelation,
 			const char *cubeRelationName,

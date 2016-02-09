@@ -21,8 +21,10 @@
 #include "postgres.h"
 
 #include "access/relscan.h"
+#include "access/xact.h"
 #include "catalog/changeset.h"
 #include "executor/executor.h"
+#include "utils/rel.h"
 
 
 /* ----------------------------------------------------------------
@@ -133,8 +135,68 @@ ExecCloseChangeSets(ResultRelInfo *resultRelInfo)
  * ----------------------------------------------------------------
  */
 void
-ExecInsertChangeSetTuples(TupleTableSlot *slot, EState *estate)
+ExecInsertChangeSetTuples(char changeType, TupleTableSlot *slot, EState *estate)
 {
-	elog(WARNING, "inserting tuple into changeset");
-	return;
+	ResultRelInfo *resultRelInfo;
+	int			i;
+	int			numChangeSets;
+	RelationPtr relationDescs;
+	ChangeSetInfo **chsetInfoArray;
+
+	/*
+	 * Get information from the result relation info structure.
+	 */
+	resultRelInfo = estate->es_result_relation_info;
+	numChangeSets = resultRelInfo->ri_NumChangeSets;
+	relationDescs = resultRelInfo->ri_ChangeSetRelationDescs;
+	chsetInfoArray = resultRelInfo->ri_ChangeSetRelationInfo;
+
+	/*
+	 * for each changeset, form and insert the heap tuple
+	 */
+	for (i = 0; i < numChangeSets; i++)
+	{
+		Relation	chsetRelation = relationDescs[i];
+		ChangeSetInfo  *chsetInfo;
+		TupleDesc	tdesc;
+		HeapTuple	htup;
+		Datum	   *values;
+		bool	   *isnull;
+		int			natts;
+
+		/* FIXME why do we need this (see ExecInsertIndexTuples)? */
+		if (chsetRelation == NULL)
+			continue;
+
+		chsetInfo = chsetInfoArray[i];
+		tdesc = RelationGetDescr(chsetRelation);
+
+		/*
+		 * allocate arrays for the tuple values
+		 *
+		 * FIXME allocate the arrays only once for all changesets, using the
+		 *       largest number of attributes necessary.
+		 */
+		natts = tdesc->natts;
+		values = palloc0(natts * sizeof(Datum));
+		isnull = palloc0(natts * sizeof(bool));
+
+		/*
+		 * FormChangeSetDatum fills in its values and isnull parameters with
+		 * the appropriate values for the column(s) of the changeset.
+		 */
+		FormChangeSetDatum(chsetInfo,
+						   changeType,
+						   slot,
+						   values,
+						   isnull);
+
+		htup = heap_form_tuple(tdesc, values, isnull);
+
+		/* do the actual insert */
+		heap_insert(chsetRelation, htup, GetCurrentCommandId(true), 0, NULL);
+
+		pfree(values);
+		pfree(isnull);
+	}
 }

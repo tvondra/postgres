@@ -39,6 +39,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "catalog/changeset.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyTable.h"
@@ -499,7 +500,7 @@ ExecInsert(ModifyTableState *mtstate,
 
 			/* insert changeset entries for tuple */
 			if (resultRelInfo->ri_NumChangeSets > 0)
-				ExecInsertChangeSetTuples(slot, estate);
+				ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 		}
 	}
 

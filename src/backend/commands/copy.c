@@ -2683,21 +2683,6 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 	}
 
 	/*
-	 * Also, if there are any changesets, insert the tuples into them.
-	 *
-	 * FIXME This should probably do a batch insert too (now its each row).
-	 */
-	if (resultRelInfo->ri_NumChangeSets > 0)
-	{
-		for (i = 0; i < nBufferedTuples; i++)
-		{
-			cstate->cur_lineno = firstBufferedLineNo + i;
-			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
-			ExecInsertChangeSetTuples(myslot, estate);
-		}
-	}
-
-	/*
 	 * There's no indexes, but see if we need to run AFTER ROW INSERT triggers
 	 * anyway.
 	 */
@@ -2710,6 +2695,21 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			ExecARInsertTriggers(estate, resultRelInfo,
 								 bufferedTuples[i],
 								 NIL);
+		}
+	}
+
+	/*
+	 * If there are any changesets, insert the tuples into them.
+	 *
+	 * FIXME This should probably do a batch insert too (now its each row).
+	 */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+	{
+		for (i = 0; i < nBufferedTuples; i++)
+		{
+			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ExecInsertChangeSetTuples(myslot, estate);
 		}
 	}
 

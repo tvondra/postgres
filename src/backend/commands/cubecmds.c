@@ -339,7 +339,7 @@ CreateCube(CubeStmt *stmt)
 
 	/* Make the catalog entries for the cube. */
 	cubeRelationId =  cube_create(rel, chsetrel, cubeRelationName,
-								  cubeInfo, cubeColNames,
+								  cubeInfo, typeObjectId, cubeColNames,
 								  tablespaceId, reloptions,
 								  stmt->if_not_exists);
 
@@ -533,6 +533,8 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 								 errmsg("moving-aggregates with 'internal' state not supported in cubes")));
 
+					/* remember the transition type for pg_attribute */
+					atttype = mtranstype;
 				}
 
 				/*

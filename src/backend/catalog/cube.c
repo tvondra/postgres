@@ -43,6 +43,7 @@
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
+						 Oid *typeObjectId,
 						 List *cubeColNames);
 static void UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 						CubeInfo *cubeInfo);
@@ -66,6 +67,7 @@ cube_create(Relation heapRelation,
 			Relation changesetRelation,
 			const char *cubeRelationName,
 			CubeInfo *cubeInfo,
+			Oid *typeObjectId,
 			List *cubeColNames,
 			Oid tableSpaceId,
 			Datum reloptions,
@@ -129,6 +131,7 @@ cube_create(Relation heapRelation,
 	 */
 	cubeTupDesc = ConstructTupleDescriptor(heapRelation,
 										   cubeInfo,
+										   typeObjectId,
 										   cubeColNames);
 
 	/*
@@ -224,6 +227,7 @@ cube_create(Relation heapRelation,
 static TupleDesc
 ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
+						 Oid *typeObjectId,
 						 List *cubeColNames)
 {
 	int			numatts = cubeInfo->ci_NumCubeAttrs;
@@ -307,7 +311,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			/*
 			 * Lookup the expression type in pg_type for the type length etc.
 			 */
-			keyType = exprType(cubekey);
+			keyType = typeObjectId[i];
 			tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(keyType));
 			if (!HeapTupleIsValid(tuple))
 				elog(ERROR, "cache lookup failed for type %u", keyType);

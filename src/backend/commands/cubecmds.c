@@ -21,6 +21,7 @@
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_cube.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_type.h"
 #include "catalog/changeset.h"
 #include "commands/cubes.h"
 #include "commands/tablespace.h"
@@ -525,6 +526,13 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 								 errmsg("only moving-aggregates supported in cubes")));
+
+					/* check we know how to serialize the moving-aggregate state */
+					if (mtranstype == INTERNALOID)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+								 errmsg("moving-aggregates with 'internal' state not supported in cubes")));
+
 				}
 
 				/*

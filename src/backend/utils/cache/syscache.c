@@ -261,12 +261,24 @@ static const struct cachedesc cacheinfo[] = {
 		256
 	},
 	{
-		ChangeSetRelationId,	/* CHANGESETRELID */
+		ChangeSetRelationId,	/* CHANGESETOID */
 		ChangeSetOidIndexId,
 		1,
 		{
 			Anum_pg_changeset_chsetid,
 			0,
+			0,
+			0
+		},
+		64
+	},
+	{
+		ChangeSetRelationId,	/* CHANGESETRELID */
+		ChangeSetRelidIndexId,
+		2,
+		{
+			Anum_pg_changeset_chsetrelid,
+			Anum_pg_changeset_chsetid,
 			0,
 			0
 		},

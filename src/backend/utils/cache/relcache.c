@@ -1062,6 +1062,10 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	if (relation->rd_rel->relkind == RELKIND_CHANGESET)
 		RelationInitChangeSetInfo(relation);
 
+	/* if it's a cube, initialize cube-related information */
+	if (relation->rd_rel->relkind == RELKIND_CUBE)
+		RelationInitCubeInfo(relation);
+
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
 
@@ -1362,7 +1366,7 @@ RelationInitChangeSetInfo(Relation relation)
 	 * contains variable-length and possibly-null fields, we have to do this
 	 * honestly rather than just treating it as a Form_pg_changeset struct.
 	 */
-	tuple = SearchSysCache1(CHANGESETRELID,
+	tuple = SearchSysCache1(CHANGESETOID,
 							ObjectIdGetDatum(RelationGetRelid(relation)));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for changeset %u",
@@ -1372,6 +1376,46 @@ RelationInitChangeSetInfo(Relation relation)
 	relation->rd_changeset = (Form_pg_changeset) GETSTRUCT(relation->rd_changesettuple);
 	MemoryContextSwitchTo(oldcontext);
 	ReleaseSysCache(tuple);
+}
+
+/*
+ * Initialize cube support data for a cube relation
+ */
+void
+RelationInitCubeInfo(Relation relation)
+{
+	MemoryContext	oldcontext;
+	MemoryContext	cubecxt;
+	HeapTuple		tuple;
+
+	/*
+	 * Make a copy of the pg_cube entry for the cube. Since pg_cube
+	 * contains variable-length and possibly-null fields, we have to do
+	 * this honestly rather than just treating it as a Form_pg_cube struct.
+	 */
+	tuple = SearchSysCache1(CUBEOID,
+							ObjectIdGetDatum(RelationGetRelid(relation)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for cube %u",
+			 RelationGetRelid(relation));
+	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+	relation->rd_cubetuple = heap_copytuple(tuple);
+	relation->rd_cube = (Form_pg_cube) GETSTRUCT(relation->rd_cubetuple);
+	MemoryContextSwitchTo(oldcontext);
+	ReleaseSysCache(tuple);
+
+	/*
+	 * Make the private context to hold cube info (same idea as for index AM).
+	 *
+	 * Context parameters are set on the assumption that it'll probably not
+	 * contain much data.
+	 */
+	cubecxt = AllocSetContextCreate(CacheMemoryContext,
+									 RelationGetRelationName(relation),
+									 ALLOCSET_SMALL_MINSIZE,
+									 ALLOCSET_SMALL_INITSIZE,
+									 ALLOCSET_SMALL_MAXSIZE);
+	relation->rd_cubecxt = cubecxt;
 }
 
 /*
@@ -4448,6 +4492,8 @@ RelationGetIndexExpressions(Relation relation)
 	exprsString = TextDatumGetCString(exprsDatum);
 	result = (List *) stringToNode(exprsString);
 	pfree(exprsString);
+
+	relation_close(cuberel, NoLock);
 
 	/*
 	 * Run the expressions through eval_const_expressions. This is not just an

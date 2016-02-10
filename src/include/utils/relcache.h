@@ -67,6 +67,7 @@ extern void RelationSetIndexList(Relation relation,
 
 extern void RelationInitIndexAccessInfo(Relation relation);
 extern void RelationInitChangeSetInfo(Relation relation);
+extern void RelationInitCubeInfo(Relation relation);
 
 /*
  * Routines to support ereport() reports of relation-related errors

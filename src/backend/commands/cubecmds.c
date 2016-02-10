@@ -32,6 +32,7 @@
 #include "optimizer/planner.h"
 #include "parser/parse_func.h"
 #include "storage/lmgr.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
@@ -187,6 +188,9 @@ CreateChangeSet(ChangeSetStmt *stmt)
 		heap_close(rel, NoLock);
 		return address;
 	}
+
+	/* Force backends to reload the list of changesets on the table. */
+	CacheInvalidateRelcache(rel);
 
 	/* Close the heap and we're done */
 	heap_close(rel, NoLock);
@@ -350,6 +354,9 @@ CreateCube(CubeStmt *stmt)
 		heap_close(rel, NoLock);
 		return address;
 	}
+
+	/* Force backends to reload the list of cubes on the table. */
+	CacheInvalidateRelcache(rel);
 
 	/* Close the heap and changeset and we're done */
 	heap_close(rel, NoLock);

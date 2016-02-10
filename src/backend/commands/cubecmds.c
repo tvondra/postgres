@@ -18,6 +18,7 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "catalog/catalog.h"
+#include "catalog/pg_aggregate.h"
 #include "catalog/pg_cube.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/changeset.h"
@@ -459,7 +460,10 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 		}
 		else
 		{
-			/* Cube expression */
+			/*
+			 * Cube expression - either it's a Var (i.e. a column in parens),
+			 * or an aggregate call, or a generic expression.
+			 */
 			Node	   *expr = attribute->expr;
 
 			Assert(expr != NULL);
@@ -484,6 +488,44 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 				 * aggregates, and window functions, based on the EXPR_KIND_
 				 * for an index expression.
 				 */
+
+				/*
+				 * Aggregate function - we'll store the moving-aggregate in
+				 * the cube, so so we need to check the aggregate function
+				 * actually has a moving-aggregate methods, and that we know
+				 * how to store the type (must not be internal).
+				 */
+				if (IsA(expr, Aggref))
+				{
+					HeapTuple	tup;
+					Form_pg_aggregate classForm;
+					Oid			mtransfn, minvtransfn, mtranstype;
+
+					Aggref *aggref = (Aggref*)expr;
+
+					tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggref->aggfnoid));
+					if (!HeapTupleIsValid(tup))		/* should not happen */
+						elog(ERROR, "cache lookup failed for aggregate %u", aggref->aggfnoid);
+
+					classForm = (Form_pg_aggregate) GETSTRUCT(tup);
+
+					mtransfn = classForm->aggmtransfn;
+					minvtransfn = classForm->aggminvtransfn;
+					mtranstype = classForm->aggmtranstype;
+
+					ReleaseSysCache(tup);
+
+					/*
+					 * FIXME Probably need to check additional things, e.g. that it's
+					 * 		 not a window function, ordered set aggregate etc.
+					 */
+					if (! (OidIsValid(mtransfn) &&
+						   OidIsValid(minvtransfn) &&
+						   OidIsValid(mtranstype)))
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+								 errmsg("only moving-aggregates supported in cubes")));
+				}
 
 				/*
 				 * An expression using mutable functions is probably wrong,

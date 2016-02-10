@@ -654,3 +654,12 @@ ChooseCubeColumnNames(List *cubeExprs)
 	}
 	return result;
 }
+
+PG_FUNCTION_INFO_V1(flush_changeset);
+
+Datum
+flush_changeset(PG_FUNCTION_ARGS)
+{
+	/* FIXME not implemented */
+	PG_RETURN_VOID();
+}

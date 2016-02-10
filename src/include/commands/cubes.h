@@ -20,4 +20,6 @@
 extern ObjectAddress CreateChangeSet(ChangeSetStmt *stmt);
 extern ObjectAddress CreateCube(CubeStmt *stmt);
 
+extern Datum flush_changeset(PG_FUNCTION_ARGS);
+
 #endif   /* CUBE_H */

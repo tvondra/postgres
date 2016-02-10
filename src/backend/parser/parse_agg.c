@@ -399,6 +399,9 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 		case EXPR_KIND_HAVING:
 			/* okay */
 			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			/* okay */
+			break;
 		case EXPR_KIND_FILTER:
 			errkind = true;
 			break;
@@ -845,6 +848,9 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 			break;
 		case EXPR_KIND_INDEX_EXPRESSION:
 			err = _("window functions are not allowed in index expressions");
+			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			err = _("window functions are not allowed in cube expressions");
 			break;
 		case EXPR_KIND_INDEX_PREDICATE:
 			err = _("window functions are not allowed in index predicates");

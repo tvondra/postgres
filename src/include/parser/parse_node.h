@@ -60,6 +60,7 @@ typedef enum ParseExprKind
 	EXPR_KIND_COLUMN_DEFAULT,	/* default value for a table column */
 	EXPR_KIND_FUNCTION_DEFAULT, /* default parameter value for function */
 	EXPR_KIND_INDEX_EXPRESSION, /* index expression */
+	EXPR_KIND_CUBE_EXPRESSION,	/* cube expression */
 	EXPR_KIND_INDEX_PREDICATE,	/* index predicate */
 	EXPR_KIND_ALTER_COL_TRANSFORM,		/* transform expr in ALTER COLUMN TYPE */
 	EXPR_KIND_EXECUTE_PARAMETER,	/* parameter value in EXECUTE */

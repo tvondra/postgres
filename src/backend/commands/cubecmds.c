@@ -23,7 +23,10 @@
 #include "catalog/changeset.h"
 #include "commands/cubes.h"
 #include "commands/tablespace.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/planner.h"
 #include "parser/parse_func.h"
 #include "storage/lmgr.h"
@@ -41,6 +44,11 @@ static void ComputeCubeAttrs(CubeInfo *cubeInfo,
 				  Oid *typeOidP,
 				  List *attList,
 				  Oid relId);
+
+static bool CheckMutability(Expr *expr);
+
+static List *ChooseCubeColumnNames(List *cubeElems);
+
 /*
  * CreateChangeSet
  *		Creates a new changeset
@@ -198,12 +206,13 @@ CreateCube(CubeStmt *stmt)
 	Oid		   *typeObjectId;
 	Relation	rel;
 	Relation	chsetrel;
-	
+
 	CubeInfo   *cubeInfo;
 	Datum		reloptions;
 	int			numberOfAttributes;
 	ObjectAddress address;
 	bool		check_rights = true;
+	List	   *cubeColNames;
 
 	/* count attributes in cube */
 	numberOfAttributes = list_length(stmt->cubeExprs);
@@ -219,8 +228,17 @@ CreateCube(CubeStmt *stmt)
  	rel = heap_open(relationId, NoLock);
 
 	/* FIXME lookup changeset if needed (not supplied in command) */
-	changesetId = RangeVarGetRelid(stmt->changeset, AccessShareLock, false);
-	chsetrel = changeset_open(changesetId, NoLock);
+	if (stmt->changeset != NULL)
+	{
+		changesetId = RangeVarGetRelid(stmt->changeset, AccessShareLock, false);
+		chsetrel = changeset_open(changesetId, NoLock);
+	}
+	else
+	{
+		elog(WARNING, "lookup suitable changeset");
+		chsetrel = NULL;
+		changesetId = InvalidOid;
+	}
 
 	/* possibly not needed, copy-paste from indexcmds.c */
 	relationId = RelationGetRelid(rel);
@@ -284,6 +302,11 @@ CreateCube(CubeStmt *stmt)
 	}
 
 	/*
+	 * Choose the cube column names.
+	 */
+	cubeColNames = ChooseCubeColumnNames(stmt->cubeExprs);
+
+	/*
 	 * Select name for cube if caller didn't specify
 	 */
 	cubeRelationName = stmt->cubename;
@@ -314,7 +337,7 @@ CreateCube(CubeStmt *stmt)
 
 	/* Make the catalog entries for the cube. */
 	cubeRelationId =  cube_create(rel, chsetrel, cubeRelationName,
-								  cubeInfo, stmt->cubeExprs,
+								  cubeInfo, cubeColNames,
 								  tablespaceId, reloptions,
 								  stmt->if_not_exists);
 
@@ -400,15 +423,175 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 				 List *attList,
 				 Oid relId)
 {
-	// FIXME
-	int i = 0;
-	ListCell *lc;
+	int			attn;
+	ListCell   *lc;
 
+	attn = 0;
 	foreach (lc, attList)
 	{
-		cubeInfo->ci_KeyAttrNumbers[i] = (i+1);
-		i++;
+		CubeElem   *attribute = (CubeElem *) lfirst(lc);
+		Oid			atttype;
+
+		/*
+		 * Process the column-or-expression to be referenced by the cube.
+		 */
+		if (attribute->name != NULL)
+		{
+			/* Simple cube attribute */
+			HeapTuple	atttuple;
+			Form_pg_attribute attform;
+
+			Assert(attribute->expr == NULL);
+			atttuple = SearchSysCacheAttName(relId, attribute->name);
+
+			if (!HeapTupleIsValid(atttuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("column \"%s\" does not exist",
+								attribute->name)));
+
+			attform = (Form_pg_attribute) GETSTRUCT(atttuple);
+			atttype = attform->atttypid;
+
+			cubeInfo->ci_KeyAttrNumbers[attn] = attform->attnum;
+
+			ReleaseSysCache(atttuple);
+		}
+		else
+		{
+			/* Cube expression */
+			Node	   *expr = attribute->expr;
+
+			Assert(expr != NULL);
+			atttype = exprType(expr);
+
+			if (IsA(expr, Var) &&
+				((Var *) expr)->varattno != InvalidAttrNumber)
+			{
+				/*
+				 * User wrote "(column)", so treat it like a simple attribute.
+				 */
+				cubeInfo->ci_KeyAttrNumbers[attn] = ((Var *) expr)->varattno;
+			}
+			else
+			{
+				cubeInfo->ci_KeyAttrNumbers[attn] = 0; /* marks expression */
+				cubeInfo->ci_Expressions = lappend(cubeInfo->ci_Expressions,
+													expr);
+
+				/*
+				 * transformExpr() should have already rejected subqueries,
+				 * aggregates, and window functions, based on the EXPR_KIND_
+				 * for an index expression.
+				 */
+
+				/*
+				 * An expression using mutable functions is probably wrong,
+				 * since if you aren't going to get the same result for the
+				 * same data every time, it's not clear what the index entries
+				 * mean at all.
+				 */
+				if (CheckMutability((Expr *) expr))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+							 errmsg("functions in cube expression must be marked IMMUTABLE")));
+			}
+		}
+
+		typeOidP[attn] = atttype;
+
+		attn++;
 	}
 
 	return;
+}
+
+
+/*
+ * CheckMutability
+ *		Test whether given expression is mutable
+ *
+ * FIXME copy-paste from indexcmds.c
+ */
+static bool
+CheckMutability(Expr *expr)
+{
+	/*
+	 * First run the expression through the planner.  This has a couple of
+	 * important consequences.  First, function default arguments will get
+	 * inserted, which may affect volatility (consider "default now()").
+	 * Second, inline-able functions will get inlined, which may allow us to
+	 * conclude that the function is really less volatile than it's marked. As
+	 * an example, polymorphic functions must be marked with the most volatile
+	 * behavior that they have for any input type, but once we inline the
+	 * function we may be able to conclude that it's not so volatile for the
+	 * particular input type we're dealing with.
+	 *
+	 * We assume here that expression_planner() won't scribble on its input.
+	 */
+	expr = expression_planner(expr);
+
+	/* Now we can search for non-immutable functions */
+	return contain_mutable_functions((Node *) expr);
+}
+
+/*
+ * Select the actual names to be used for the columns of a cube, given the
+ * list of CubeElems for the columns.  This is mostly about ensuring the
+ * names are unique so we don't get a conflicting-attribute-names error.
+ *
+ * Returns a List of plain strings (char *, not String nodes).
+ */
+static List *
+ChooseCubeColumnNames(List *cubeExprs)
+{
+	List	   *result = NIL;
+	ListCell   *lc;
+
+	foreach(lc, cubeExprs)
+	{
+		CubeElem   *celem = (CubeElem *) lfirst(lc);
+		const char *origname;
+		const char *curname;
+		int			i;
+		char		buf[NAMEDATALEN];
+
+		/* Get the preliminary name from the CubeElem */
+		if (celem->cubecolname)
+			origname = celem->cubecolname;	/* caller-specified name */
+		else if (celem->name)
+			origname = celem->name;			/* simple column reference */
+		else
+			origname = "expr";	/* default name for expression */
+
+		/* If it conflicts with any previous column, tweak it */
+		curname = origname;
+		for (i = 1;; i++)
+		{
+			ListCell   *lc2;
+			char		nbuf[32];
+			int			nlen;
+
+			foreach(lc2, result)
+			{
+				if (strcmp(curname, (char *) lfirst(lc2)) == 0)
+					break;
+			}
+			if (lc2 == NULL)
+				break;			/* found nonconflicting name */
+
+			sprintf(nbuf, "%d", i);
+
+			/* Ensure generated names are shorter than NAMEDATALEN */
+			nlen = pg_mbcliplen(origname, strlen(origname),
+								NAMEDATALEN - 1 - strlen(nbuf));
+			memcpy(buf, origname, nlen);
+			strcpy(buf + nlen, nbuf);
+			curname = buf;
+		}
+
+		/* And attach to the result list */
+		result = lappend(result, pstrdup(curname));
+	}
+	return result;
 }

@@ -216,6 +216,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	WindowDef			*windef;
 	JoinExpr			*jexpr;
 	IndexElem			*ielem;
+	CubeElem			*celem;
 	Alias				*alias;
 	RangeVar			*range;
 	IntoClause			*into;
@@ -466,6 +467,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	func_alias_clause
 %type <sortby>	sortby
 %type <ielem>	index_elem
+%type <celem>	cube_elem
 %type <node>	table_ref
 %type <jexpr>	joined_table
 %type <range>	relation_expr
@@ -6934,9 +6936,40 @@ opt_cube_name:
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+
+/*
+ * Cube attributes can be either simple column references, or arbitrary
+ * expressions in parens.  We allow an expression that's just a function
+ * call to be written without parens (same as for indexes).
+ *
+ * FIXME Do we need to allow specifying operator classes and collations?
+ */
+cube_elem:	ColId
+				{
+					$$ = makeNode(CubeElem);
+					$$->name = $1;
+					$$->expr = NULL;
+					$$->cubecolname = NULL;
+				}
+			| func_expr_windowless
+				{
+					$$ = makeNode(CubeElem);
+					$$->name = NULL;
+					$$->expr = $1;
+					$$->cubecolname = NULL;
+				}
+			| '(' a_expr ')'
+				{
+					$$ = makeNode(CubeElem);
+					$$->name = NULL;
+					$$->expr = $2;
+					$$->cubecolname = NULL;
+				}
+		;
+
 cube_elems:
-			a_expr									{ $$ = list_make1($1); }
-			| cube_elems ',' a_expr					{ $$ = lappend($1, $3); }
+			cube_elem								{ $$ = list_make1($1); }
+			| cube_elems ',' cube_elem				{ $$ = lappend($1, $3); }
 		;
 
 opt_changeset:

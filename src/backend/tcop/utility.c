@@ -1310,7 +1310,21 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_CubeStmt:
-				address = CreateCube((CubeStmt *) parsetree);
+				{
+					CubeStmt   *stmt = (CubeStmt *) parsetree;
+					Oid			relid;
+
+					/* Run parse analysis ... */
+					relid =
+						RangeVarGetRelidExtended(stmt->relation, ShareLock,
+												 false, false,
+												 RangeVarCallbackOwnsRelation,
+												 NULL);
+
+					stmt = transformCubeStmt(relid, stmt, queryString);
+
+					address = CreateCube(stmt);
+				}
 				break;
 
 			case T_CreateExtensionStmt:

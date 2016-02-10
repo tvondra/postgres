@@ -32,11 +32,14 @@
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_type.h"
 #include "commands/cubes.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
@@ -225,6 +228,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 {
 	int			numatts = cubeInfo->ci_NumCubeAttrs;
 	ListCell   *colnames_item = list_head(cubeColNames);
+	ListCell   *cubeexpr_item = list_head(cubeInfo->ci_Expressions);
 	TupleDesc	heapTupDesc;
 	TupleDesc	cubeTupDesc;
 	int			natts; 			/* #atts in heap rel */
@@ -240,47 +244,104 @@ ConstructTupleDescriptor(Relation heapRelation,
 	cubeTupDesc = CreateTemplateTupleDesc(numatts, false);
 
 	/*
-	 * Cubes can only contain simple columns, so we copy the pg_attribute
-	 * row from the parent relation and modify it as necessary.
+	 * Cubes can contain both simple columns and expressions (either regular
+	 * expressions or aggregate references).
 	 *
-	 * FIXME This is nonsense - we need to handle expressions here
-	 *       (particularly because of the aggregates).
+	 * For simple cube columns, we copy the pg_attribute row from the parent
+	 * relation and modify it as necessary.
+	 *
+	 * For expressions we have to construct a pg_attribute row the hard way.
 	 */
 	for (i = 0; i < numatts; i++)
 	{
 		AttrNumber	atnum = cubeInfo->ci_KeyAttrNumbers[i];
+		Oid			keyType;
+		HeapTuple	tuple;
+		Form_pg_type typeTup;
 		Form_pg_attribute to = cubeTupDesc->attrs[i];
 
-		/* Simple cube column */
-		Form_pg_attribute from;
+		/* simple column (no system attributes) */
+		if ((atnum > 0) && (atnum <= natts))
+		{
+			/* Simple index column */
+			Form_pg_attribute from;
 
-		/*
-		 * make sure only regular attributes make it into the descriptor
-		 */
-		if ((atnum < 0) || (atnum > natts))		/* safety check */
-			elog(ERROR, "invalid column number %d", atnum);
+			/* normal attribute (1...n)	*/
+			if (atnum > natts)		/* safety check */
+				elog(ERROR, "invalid column number %d", atnum);
 
-		from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+			from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
 
-		/*
-		 * now that we've determined the "from", let's copy the tuple desc
-		 * data...
-		 */
-		memcpy(to, from, ATTRIBUTE_FIXED_PART_SIZE);
+			/*
+			 * now that we've determined the "from", let's copy the tuple desc
+			 * data...
+			 */
+			memcpy(to, from, ATTRIBUTE_FIXED_PART_SIZE);
 
-		/*
-		 * Fix the stuff that should not be the same as the underlying
-		 * attr
-		 */
-		to->attnum = i + 1;
+			/*
+			 * Fix the stuff that should not be the same as the underlying
+			 * attr
+			 */
+			to->attnum = i + 1;
 
-		to->attstattarget = -1;
-		to->attcacheoff = -1;
-		to->attnotnull = false;
-		to->atthasdef = false;
-		to->attislocal = true;
-		to->attinhcount = 0;
-		to->attcollation = 0;
+			to->attstattarget = -1;
+			to->attcacheoff = -1;
+			to->attnotnull = false;
+			to->atthasdef = false;
+			to->attislocal = true;
+			to->attinhcount = 0;
+			to->attcollation = 0;
+		}
+		else if (atnum == 0) /* expression as a cube column */
+		{
+			Node   *cubekey;
+
+			MemSet(to, 0, ATTRIBUTE_FIXED_PART_SIZE);
+
+			if (cubeexpr_item == NULL)	/* shouldn't happen */
+				elog(ERROR, "too few entries in cubeexprs list");
+
+			cubekey = (Node *) lfirst(cubeexpr_item);
+			cubeexpr_item = lnext(cubeexpr_item);
+
+			/*
+			 * Lookup the expression type in pg_type for the type length etc.
+			 */
+			keyType = exprType(cubekey);
+			tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(keyType));
+			if (!HeapTupleIsValid(tuple))
+				elog(ERROR, "cache lookup failed for type %u", keyType);
+			typeTup = (Form_pg_type) GETSTRUCT(tuple);
+
+			/*
+			 * Assign some of the attributes values. Leave the rest as 0.
+			 */
+			to->attnum = i + 1;
+			to->atttypid = keyType;
+			to->attlen = typeTup->typlen;
+			to->attbyval = typeTup->typbyval;
+			to->attstorage = typeTup->typstorage;
+			to->attalign = typeTup->typalign;
+			to->attstattarget = -1;
+			to->attcacheoff = -1;
+			to->atttypmod = exprTypmod(cubekey);
+			to->attislocal = true;
+			to->attcollation = InvalidOid;	/* FIXME maybe collation? */
+
+			ReleaseSysCache(tuple);
+
+			/*
+			 * Make sure the expression yields a type that's safe to store in
+			 * a cube.
+			 *
+			 * FIXME Do we need this?
+			 */
+			CheckAttributeType(NameStr(to->attname),
+							   to->atttypid, to->attcollation,
+							   NIL, false);
+		}
+		else
+			elog(ERROR, "invalid attribute number %d", atnum);
 
 		/*
 		 * We do not yet have the correct relation OID for the index, so just
@@ -311,12 +372,27 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	bool		nulls[Natts_pg_cube];
 	Relation	pg_cube;
 	HeapTuple	tuple;
+	Datum		exprsDatum;
 	int			i;
 
 	/* copy the cube key info into arrays */
 	cubekey = buildint2vector(NULL, cubeInfo->ci_NumCubeAttrs);
 	for (i = 0; i < cubeInfo->ci_NumCubeAttrs; i++)
 		cubekey->values[i] = cubeInfo->ci_KeyAttrNumbers[i];
+
+	/*
+	 * Convert the cube expressions (if any) to a text datum
+	 */
+	if (cubeInfo->ci_Expressions != NIL)
+	{
+		char	   *exprsString;
+
+		exprsString = nodeToString(cubeInfo->ci_Expressions);
+		exprsDatum = CStringGetTextDatum(exprsString);
+		pfree(exprsString);
+	}
+	else
+		exprsDatum = (Datum) 0;
 
 	/* open the system catalog cube relation */
 	pg_cube = heap_open(CubeRelationId, RowExclusiveLock);
@@ -329,10 +405,9 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	values[Anum_pg_cube_cubechsetid - 1] = ObjectIdGetDatum(chsetoid);
 	values[Anum_pg_cube_cubenatts   - 1] = Int16GetDatum(cubeInfo->ci_NumCubeAttrs);
 	values[Anum_pg_cube_cubekey     - 1] = PointerGetDatum(cubekey);
-
-	/* FIXME store the expressions properly */
-	nulls[Anum_pg_cube_cubeexprs    - 1] = true;
-	values[Anum_pg_cube_cubeexprs   - 1] = 0;
+	values[Anum_pg_cube_cubeexprs   - 1] = exprsDatum;
+	if (exprsDatum == (Datum) 0)
+		nulls[Anum_pg_cube_cubeexprs - 1] = true;
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 
@@ -376,6 +451,10 @@ BuildCubeInfo(Relation cube)
 
 	for (i = 0; i < numKeys; i++)
 		ci->ci_KeyAttrNumbers[i] = cubeStruct->cubekey.values[i];
+
+	/* fetch any expressions needed for expressional indexes */
+	ci->ci_Expressions = RelationGetCubeExpressions(cube);
+	ci->ci_ExpressionsState = NIL;
 
 	return ci;
 }

@@ -460,6 +460,7 @@ typedef enum NodeTag
 	T_CommonTableExpr,
 	T_RoleSpec,
 	T_TriggerTransition,
+	T_CubeElem,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)

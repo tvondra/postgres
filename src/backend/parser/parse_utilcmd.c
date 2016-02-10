@@ -2134,6 +2134,99 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 	return stmt;
 }
 
+/*
+ * transformCubeStmt - parse analysis for CREATE CUBE
+ *
+ * Contrary to indexes, cubes require at least one expression with an
+ * aggregate function.
+ *
+ * To avoid race conditions, it's important that this function rely only on
+ * the passed-in relid (and not on stmt->relation) to determine the target
+ * relation.
+ */
+CubeStmt *
+transformCubeStmt(Oid relid, CubeStmt *stmt, const char *queryString)
+{
+	ParseState *pstate;
+	RangeTblEntry *rte;
+	ListCell   *l;
+	Relation	rel;
+
+	/* Nothing to do if statement already transformed. */
+	if (stmt->transformed)
+		return stmt;
+
+	/*
+	 * We must not scribble on the passed-in CubeStmt, so copy it.  (This is
+	 * overkill, but easy.)
+	 */
+	stmt = (CubeStmt *) copyObject(stmt);
+
+	/* Set up pstate */
+	pstate = make_parsestate(NULL);
+	pstate->p_sourcetext = queryString;
+
+	/*
+	 * Put the parent table into the rtable so that the expressions can refer
+	 * to its fields without qualification.  Caller is responsible for locking
+	 * relation, but we still need to open it.
+	 */
+	rel = relation_open(relid, NoLock);
+	rte = addRangeTableEntryForRelation(pstate, rel, NULL, false, true);
+
+	/* no to join list, yes to namespaces */
+	addRTEtoQuery(pstate, rte, false, true, true);
+
+	/* take care of any index expressions */
+	foreach(l, stmt->cubeExprs)
+	{
+		CubeElem  *celem = (CubeElem *) lfirst(l);
+
+		if (celem->expr)
+		{
+			/* Extract preliminary cube col name before transforming expr */
+			if (celem->cubecolname == NULL)
+				celem->cubecolname = FigureCubeColname(celem->expr);
+
+			/* Now do parse transformation of the expression */
+			celem->expr = transformExpr(pstate, celem->expr,
+										EXPR_KIND_CUBE_EXPRESSION);
+
+			/*
+			 * transformExpr() should have already rejected subqueries
+			 * and window functions, based on the EXPR_KIND_ for a cube.
+			 *
+			 * Also reject expressions returning sets; this is for consistency
+			 * with what transformWhereClause() checks for the predicate.
+			 * DefineIndex() will make more checks.
+			 */
+			if (expression_returns_set(celem->expr))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("cube expression cannot return a set")));
+		}
+	}
+
+	/*
+	 * Check that only the base rel is mentioned.  (This should be dead code
+	 * now that add_missing_from is history.)
+	 */
+	if (list_length(pstate->p_rtable) != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("cube expressions and predicates can refer only to the table being referenced")));
+
+	free_parsestate(pstate);
+
+	/* Close relation */
+	heap_close(rel, NoLock);
+
+	/* Mark statement as successfully transformed */
+	stmt->transformed = true;
+
+	return stmt;
+}
+
 
 /*
  * transformRuleStmt -

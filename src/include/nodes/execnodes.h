@@ -115,6 +115,8 @@ typedef struct CubeInfo
 	NodeTag		type;
 	int			ci_NumCubeAttrs;
 	AttrNumber *ci_KeyAttrNumbers;
+	List	   *ci_Expressions; 		/* list of Expr */
+	List	   *ci_ExpressionsState;	/* list of ExprState */
 } CubeInfo;
 
 /* ----------------

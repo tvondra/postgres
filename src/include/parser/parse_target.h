@@ -41,5 +41,6 @@ extern TupleDesc expandRecordVariable(ParseState *pstate, Var *var,
 					 int levelsup);
 extern char *FigureColname(Node *node);
 extern char *FigureIndexColname(Node *node);
+extern char *FigureCubeColname(Node *node);
 
 #endif   /* PARSE_TARGET_H */

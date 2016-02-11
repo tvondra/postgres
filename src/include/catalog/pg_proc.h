@@ -5343,7 +5343,7 @@ DESCR("pg_controldata init state information as a function");
 
 /* commands/cubes.h */
 DATA(insert OID = 4007 ( flush_changeset		PGNSP PGUID 12 1 0 0 0 f f f f t f v s 1 0 2278 "2205" _null_ _null_ _null_ _null_ _null_ flush_changeset _null_ _null_ _null_ ));
-DESCR("disk space usage for the main fork of the specified table or index");
+DESCR("flushes all changes from a changeset into the cubes");
 
 
 /*

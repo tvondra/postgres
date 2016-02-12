@@ -111,6 +111,8 @@ DECLARE_UNIQUE_INDEX(pg_cube_cuberelid_cubeid_index, 4005, on pg_cube using btre
 #define CubeRelidIndexId  4005
 DECLARE_UNIQUE_INDEX(pg_cube_cubeid_index, 4006, on pg_cube using btree(cubeid oid_ops));
 #define CubeOidIndexId  4006
+DECLARE_UNIQUE_INDEX(pg_cube_cubechsetid_cubeid_index, 4008, on pg_cube using btree(cubechsetid oid_ops, cubeid oid_ops));
+#define CubeChsetIndexId  4008
 
 DECLARE_UNIQUE_INDEX(pg_class_oid_index, 2662, on pg_class using btree(oid oid_ops));
 #define ClassOidIndexId  2662

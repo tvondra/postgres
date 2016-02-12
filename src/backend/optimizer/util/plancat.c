@@ -62,7 +62,7 @@ static List *get_relation_constraints(PlannerInfo *root,
 						 bool include_notnull);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 				  Relation heapRelation);
-static List *build_cube_tlist(PlannerInfo *root, CubeOptInfo *index,
+static List *build_cube_tlist(PlannerInfo *root, CubeOptInfo *cube,
 				  Relation heapRelation);
 
 

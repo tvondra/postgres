@@ -17,10 +17,13 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/sysattr.h"
 #include "catalog/catalog.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_cube.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_collation.h"
+#include "catalog/pg_cube.h"
 #include "catalog/pg_type.h"
 #include "catalog/changeset.h"
 #include "commands/cubes.h"
@@ -30,10 +33,15 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/planner.h"
+#include "optimizer/var.h"
 #include "parser/parse_func.h"
+#include "parser/parse_oper.h"
+#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 static char *ChooseChangeSetName(const char *tabname, Oid namespaceId);
@@ -51,7 +59,25 @@ static void ComputeCubeAttrs(CubeInfo *cubeInfo,
 static bool CheckMutability(Expr *expr);
 
 static List *ChooseCubeColumnNames(List *cubeElems);
+static List *build_cube_opt_infos(List *cubeoids);
 
+/* FIXME probably should live in relcache.c next to RelationGetCubeList */
+static List * ChangeSetGetCubeList(Relation changeset);
+
+static TupleDesc build_tupdesc_for_cube(CubeOptInfo *cube,
+					   ChangeSetInfo *chsetInfo,
+					   TupleDesc chsetDesc, int *nkeys,
+					   AttrNumber **attnums, Node ***expressions);
+
+static Tuplesortstate *build_tss_for_cube(TupleDesc tdesc, int nkeys);
+
+static void fix_changeset_vars(Node *node, ChangeSetInfo *changeset);
+
+static Bitmapset *collect_simple_dim_attnums(CubeOptInfo *cube);
+static Bitmapset *analyze_cube_expressions(CubeOptInfo *cube, int *numexprs);
+
+static AttrNumber lookup_attnum_in_changeset(ChangeSetInfo *chsetInfo,
+											 AttrNumber attnum);
 /*
  * CreateChangeSet
  *		Creates a new changeset
@@ -660,6 +686,475 @@ PG_FUNCTION_INFO_V1(flush_changeset);
 Datum
 flush_changeset(PG_FUNCTION_ARGS)
 {
-	/* FIXME not implemented */
+	/* function is strict, no need to check NULL */
+	Oid				chsetoid = PG_GETARG_OID(0);
+	Relation		chsetrel;
+	HeapScanDesc	chsetscan;
+	HeapTuple		htup;
+	int				ncubes;
+	List		   *cubeinfos;
+	TupleDesc		chsetdesc;
+	ChangeSetInfo  *chsetinfo;
+
+	Tuplesortstate **tss;
+	TupleDesc	   *tdescs;
+
+	/*
+	 * Make sure the relation is a changelog, and prevent concurrent
+	 * flushes by using ShareUpdateExclusiveLock.
+	 */
+	chsetrel = changeset_open(chsetoid, ShareUpdateExclusiveLock);
+
+	chsetdesc = RelationGetDescr(chsetrel);
+	chsetinfo = BuildChangeSetInfo(chsetrel);
+
+	/* fetch list of cubes on this changeset */
+	cubeinfos = build_cube_opt_infos(ChangeSetGetCubeList(chsetrel));
+
+	/*
+	 * If there are cubes, build tuplestores for all the cubes, so we can
+	 * fill them all at once (single scan through the changeset).
+	 */
+	ncubes = list_length(cubeinfos);
+	if (ncubes > 0)
+	{
+		int i = 0;
+		ListCell *lc;
+
+		tdescs = (TupleDesc*)palloc0(ncubes * sizeof(Tuplesortstate*));
+		tss = (Tuplesortstate**)palloc0(ncubes * sizeof(Tuplesortstate*));
+
+
+		foreach (lc, cubeinfos)
+		{
+			int nkeys;
+			CubeOptInfo *cube = (CubeOptInfo*)lfirst(lc);
+
+			tdescs[i] = build_tupdesc_for_cube(cube,
+											   chsetinfo, chsetdesc,
+											   &nkeys, NULL, NULL);
+
+			tss[i] = build_tss_for_cube(tdescs[i], nkeys);
+
+			i++;
+		}
+	}
+
+	/* scan the visible part of the changeset */
+	chsetscan = heap_beginscan(chsetrel, GetActiveSnapshot(), 0, NULL);
+
+	/*
+	 * Read all the tuples from the changeset, pass them to tuplestores
+	 * for all the cubes connected to this changeset, and delete them
+	 * from the changeset.
+	 */
+	while ((htup = heap_getnext(chsetscan, ForwardScanDirection)) != NULL)
+	{
+		/* extern void tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup); */
+
+		/* just delete the tuple */
+		simple_heap_delete(chsetrel, &htup->t_self);
+	}
+
+	/* close the scan */
+	heap_endscan(chsetscan);
+
+	/* extern void tuplesort_performsort(Tuplesortstate *state); */
+
+	/* extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward,
+					   bool *should_free); */
+
+	/* extern void tuplesort_end(Tuplesortstate *state); */
+
+	/* close the changelog relation */
+	changeset_close(chsetrel, ShareUpdateExclusiveLock);
+
+	/* FIXME maybe return the number of tuples processed? */
 	PG_RETURN_VOID();
+}
+
+/*
+ * ChangeSetGetCubeList -- get a list of OIDs of cubes on this changeset
+ *
+ * similar to RelationGetCubeList() from relcache.c
+ */
+static List *
+ChangeSetGetCubeList(Relation changeset)
+{
+	Relation	cuberel;
+	SysScanDesc cubescan;
+	ScanKeyData skey;
+	HeapTuple	htup;
+	List	   *result;
+
+	result = NIL;
+
+	/* Prepare to scan pg_cube for entries having cubechsetid */
+	ScanKeyInit(&skey,
+				Anum_pg_cube_cubechsetid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(changeset)));
+
+	cuberel = heap_open(CubeRelationId, AccessShareLock);
+	cubescan = systable_beginscan(cuberel, CubeChsetIndexId, true,
+								 NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(cubescan)))
+	{
+		Form_pg_cube cube = (Form_pg_cube) GETSTRUCT(htup);
+
+		/* Add changeset's OID to result list in the proper order */
+		result = lappend_oid(result, cube->cubeid);
+	}
+
+	systable_endscan(cubescan);
+
+	heap_close(cuberel, AccessShareLock);
+
+	return result;
+}
+
+/*
+ * build_tss_for_cube
+ * 		build a tuple descriptor for a cube
+ *
+ *
+ * The tuple descriptor is built like this
+ *
+ *     (a) the change_type attribute
+ *     (b) simple cube dimensions (direct references to table columns)
+ *     (c) expression cube dimensions (referencing table columns)
+ *     (d) attributes needed by the aggregate expressions, not in (b)
+ *
+ * When build like this, we know the (a), (b) and (c) columns are the
+ * ones to sort and group by.
+ *
+ * We're not collecting attnums from dimension expressions, because we
+ * need to evaluate the expressions before sorting and grouping the data,
+ * so that e.g. when cube uses EXTRACT(MONTH FROM d) as one of the dims,
+ * we do the grouping properly.
+ *
+ * This means we evaluate the expression using the tuple we get from the
+ * changeset, but the aggregates using the data from tuplesort. That
+ * means we need to mutate the expressions differently.
+ *
+ * XXX We could also extract the expressions from the aggregates and
+ *     only put the results into the tuplesort.
+ */
+static TupleDesc
+build_tupdesc_for_cube(CubeOptInfo *cube, ChangeSetInfo *chsetInfo,
+					   TupleDesc chsetDesc, int *nkeys,
+					   AttrNumber **attnums, Node ***expressions)
+{
+	int			i;
+	ListCell   *lc;
+	AttrNumber	attnum;
+	TupleDesc	tdesc;
+
+	int			numatts;	/* total number of attributes in descriptor */
+	int			numexprs;	/* how many dimensions come from expressions */
+
+	Bitmapset  *dimattnums;	/* attrs referenced by simple dimensions */
+	Bitmapset  *aggattnums;	/* attrs referenced by aggregates */
+	Bitmapset  *allattnums;	/* attrs union of the two (may overlap) */
+
+	AttrNumber *aggmap;		/* mapping aggregates onto the tuplesort tuples */
+
+	/* first collect attnums from simple dimensions (but skip expressions) */
+	dimattnums = collect_simple_dim_attnums(cube);
+
+	/*
+	 * collect attnums needed by aggregate expressions, and also count
+	 * dimension expressions at the same time
+	 */
+	aggattnums = analyze_cube_expressions(cube, &numexprs);
+
+	/* combine the two sets of attributes (there may be an overlap) */
+	allattnums = bms_union(dimattnums, aggattnums);
+
+	/*
+	 * The tuple descriptor needs to include the change type, all simple
+	 * dimensions, expression dimensions and  and all attributes from
+	 * aggregate expressions (not already included in simple dimensions).
+	 */
+	*nkeys  = 1 + numexprs + bms_num_members(dimattnums);
+	numatts = 1 + numexprs + bms_num_members(allattnums);
+
+	/* build mappping of attributes and simple expressions */
+	*attnums = (AttrNumber*)palloc0(numatts * sizeof(AttrNumber));
+	*expressions = (Node**)palloc0(numatts * sizeof(Node*));
+
+	Assert(*nkeys <= numatts);
+
+	tdesc = CreateTemplateTupleDesc(numatts, false);
+
+	/*
+	 * First attribute is always the change_type, so we can simply copy
+	 * the attribute definition from the changeset.
+	 */
+	attnum = 1;
+	TupleDescCopyEntry(tdesc, attnum, chsetDesc, attnum);
+	attnum++;
+
+	/* now add attributes for simple dimensions (again, skip expressions) */
+	for (i = 0; i < cube->ncolumns; i++)
+	{
+		int k;
+
+		/* skip cube expression (both dimensions and aggregates) */
+		if (cube->cubekeys[i] == 0)
+			continue;
+
+		/* lookup the matching attribute from changeset, copy it */
+		k = lookup_attnum_in_changeset(chsetInfo, cube->cubekeys[i]);
+
+		Assert(k != InvalidAttrNumber);
+
+		TupleDescCopyEntry(tdesc, attnum, chsetDesc, k);
+		(*attnums)[attnum] = k;
+		attnum++;
+	}
+
+	/* now the attributes for dimension expressions (which we'll compute) */
+	foreach (lc, cube->cubeexprs)
+	{
+		Node *expr = (Node*)lfirst(lc);
+		if (IsA(expr, Aggref))	/* skip aggregates */
+			continue;
+
+		TupleDescInitEntry(tdesc, attnum, "dim_expression", exprType(expr), 0, 0);
+		expr = copyObject(expr);
+
+		fix_changeset_vars(expr, chsetInfo);
+
+		(*expressions)[attnum] = expr;
+	}
+
+	Assert(attnum == (*nkeys + 1));
+
+	/* and finally the additional attributes referenced in aggregates */
+	i = -1;
+	while ((i = bms_next_member(allattnums, i)) >= 0)
+	{
+		int k;
+
+		if (bms_is_member(i, dimattnums))
+			continue;
+
+		k = lookup_attnum_in_changeset(chsetInfo, cube->cubekeys[i]);
+
+		Assert(k != InvalidAttrNumber);
+
+		TupleDescCopyEntry(tdesc, attnum, chsetDesc, k);
+		(*attnums)[attnum] = k;
+		attnum++;
+
+		aggmap[i] = attnum;
+	}
+
+	/* make sure we've added exactly the expected number of atttibutes */
+	Assert(attnum = (numatts+1));
+
+	bms_free(allattnums);
+	bms_free(dimattnums);
+	bms_free(aggattnums);
+
+	return tdesc;
+}
+
+/*
+ * default sort operators and
+ * collations, with the exception of change_type where we use the
+ * 'greater than' operator so that we get inserts first.
+ */
+static Tuplesortstate *
+build_tss_for_cube(TupleDesc tdesc, int nkeys)
+{
+	int			i;
+
+	AttrNumber *keys;
+	Oid		   *sortops;
+	Oid		   *collations;
+	bool	   *nullsfirst;
+
+	keys = (AttrNumber*)palloc0(nkeys * sizeof(AttrNumber));
+	sortops = (Oid*)palloc0(nkeys * sizeof(Oid));
+	collations = (Oid*)palloc0(nkeys * sizeof(Oid));
+	nullsfirst = (bool*)palloc0(nkeys * sizeof(bool));
+
+	for (i = 0; i < nkeys; i++)
+	{
+		keys[i] = i+1;	/* first nkeys are keys */
+		get_sort_group_operators(tdesc->attrs[i]->atttypid,
+								 true, false, false,
+								 &sortops[i], NULL, NULL, NULL);
+		collations[i] = DEFAULT_COLLATION_OID;
+	}
+
+	return tuplesort_begin_heap(tdesc,
+					 nkeys, keys,
+					 sortops, collations,
+					 nullsfirst, work_mem, false);
+}
+
+static CubeOptInfo *
+build_cube_opt_info(Oid cubeoid)
+{
+	Relation	cubeRelation;
+	Form_pg_cube cube;
+	CubeOptInfo *info;
+	int			ncolumns;
+	int			i;
+
+	/*
+	 * Extract info from the relation descriptor for the cube.
+	 */
+	cubeRelation = cube_open(cubeoid, AccessShareLock);
+	cube = cubeRelation->rd_cube;
+
+	info = makeNode(CubeOptInfo);
+
+	info->cubeoid = cube->cubeid;
+	info->reltablespace =
+		RelationGetForm(cubeRelation)->reltablespace;
+	/* FIXME info->rel = rel; */
+	info->ncolumns = ncolumns = cube->cubenatts;
+	info->cubekeys = (int *) palloc(sizeof(int) * ncolumns);
+
+	for (i = 0; i < ncolumns; i++)
+		info->cubekeys[i] = cube->cubekey.values[i];
+
+	/*
+	 * Fetch the cube expressions, if any.  We must modify the copies
+	 * we obtain from the relcache to have the correct varno for the
+	 * parent relation, so that they match up correctly against qual
+	 * clauses.
+	 */
+	info->cubeexprs = RelationGetCubeExpressions(cubeRelation);
+
+	/*
+	 * FIXME we need to do this, just like in get_relation_info()
+	 */
+	/* if (info->cubeexprs && varno != 1)
+		ChangeVarNodes((Node *) info->cubeexprs, 1, varno, 0); */
+
+	/* Build targetlist using the completed cubeexprs data */
+	// info->cubetlist = build_cube_tlist(root, info, relation);
+
+	info->pages = RelationGetNumberOfBlocks(cubeRelation);
+	// info->tuples = rel->tuples;
+
+	cube_close(cubeRelation, AccessShareLock);
+
+	return info;
+}
+
+static List *
+build_cube_opt_infos(List *cubeoids)
+{
+	ListCell *l;
+	List *result = NIL;
+
+	foreach(l, cubeoids)
+		result = lcons(build_cube_opt_info(lfirst_oid(l)), result);
+
+	return result;
+}
+
+static bool
+fix_changeset_walker(Node *node, ChangeSetInfo *changeset)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Aggref))	/* do not process aggregate references */
+		return false;
+
+	if (IsA(node, Var))
+	{
+		int i;
+		bool	found = false;
+		Var	   *var = (Var*)node;
+
+		/* search for the attnum in the changeset */
+		for (i = 0; i < changeset->csi_NumChangeSetAttrs; i++)
+		{
+			if (changeset->csi_KeyAttrNumbers[i] == var->varattno)
+			{
+				/* skip change type and 1-indexed */
+				var->varattno = (i+2);
+				break;
+			}
+		}
+
+		/* make sure we found it */
+		Assert(found);
+
+		return false; /* we're done with this expression */
+	}
+
+	return expression_tree_walker(node, fix_changeset_walker,
+								  (void *) changeset);
+}
+
+static void
+fix_changeset_vars(Node *node, ChangeSetInfo *changeset)
+{
+	(void) fix_changeset_walker(node, changeset);
+}
+
+static Bitmapset *
+collect_simple_dim_attnums(CubeOptInfo *cube)
+{
+	int i;
+	Bitmapset *attnums = NULL;
+
+	for (i = 0; i < cube->ncolumns; i++)
+		if (cube->cubekeys[i] != 0)
+			attnums = bms_add_member(attnums, cube->cubekeys[i]);
+
+	return attnums;
+}
+
+static Bitmapset *
+analyze_cube_expressions(CubeOptInfo *cube, int *numexprs)
+{
+	ListCell *lc;
+	int k;
+	Bitmapset *aggattnums = NULL;
+	Bitmapset *result = NULL;
+
+	*numexprs = 0;
+
+	foreach (lc, cube->cubeexprs)
+	{
+		Node *expr = (Node*)lfirst(lc);
+		if (IsA(expr, Aggref))
+			pull_varattnos(expr, 1, &aggattnums);
+		else
+			/* otherwise just count the expression dimensions */
+			*numexprs += 1;
+	}
+
+	/* fix the attnums (pull_varattnos offsets them because of system attrs */
+	k = -1;
+	while ((k = bms_next_member(aggattnums, k)) >= 0)
+		result = bms_add_member(result,
+								k + FirstLowInvalidHeapAttributeNumber);
+
+	return result;
+}
+
+static AttrNumber
+lookup_attnum_in_changeset(ChangeSetInfo *chsetInfo, AttrNumber attnum)
+{
+	int k;
+
+	for (k = 0; k < chsetInfo->csi_NumChangeSetAttrs; k++)
+	{
+		if (attnum == chsetInfo->csi_KeyAttrNumbers[k])
+			return (k+2);
+	}
+
+	return InvalidAttrNumber;
 }

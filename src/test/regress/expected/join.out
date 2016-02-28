@@ -3951,17 +3951,17 @@ select d.* from d left join (select * from b group by b.id, b.c_id) s
   on d.a = s.id;
               QUERY PLAN               
 ---------------------------------------
- Merge Left Join
-   Merge Cond: (d.a = s.id)
-   ->  Sort
-         Sort Key: d.a
-         ->  Seq Scan on d
+ Merge Right Join
+   Merge Cond: (s.id = d.a)
    ->  Sort
          Sort Key: s.id
          ->  Subquery Scan on s
                ->  HashAggregate
                      Group Key: b.id
                      ->  Seq Scan on b
+   ->  Sort
+         Sort Key: d.a
+         ->  Seq Scan on d
 (11 rows)
 
 -- similarly, but keying off a DISTINCT clause
@@ -3970,17 +3970,17 @@ select d.* from d left join (select distinct * from b) s
   on d.a = s.id;
                  QUERY PLAN                  
 ---------------------------------------------
- Merge Left Join
-   Merge Cond: (d.a = s.id)
-   ->  Sort
-         Sort Key: d.a
-         ->  Seq Scan on d
+ Merge Right Join
+   Merge Cond: (s.id = d.a)
    ->  Sort
          Sort Key: s.id
          ->  Subquery Scan on s
                ->  HashAggregate
                      Group Key: b.id, b.c_id
                      ->  Seq Scan on b
+   ->  Sort
+         Sort Key: d.a
+         ->  Seq Scan on d
 (11 rows)
 
 -- check join removal works when uniqueness of the join condition is enforced

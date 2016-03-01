@@ -24,16 +24,19 @@ typedef struct
 	GlobalTransactionId	gtm_recent_global_xmin;
 } ClusterMonitorCtlData;
 
+extern void ClusterMonitorShmemInit(void);
 extern Size ClusterMonitorShmemSize(void);
 
 /* Status inquiry functions */
 extern bool IsClusterMonitorProcess(void);
 
 /* Functions to start cluster monitor process, called from postmaster */
+int ClusterMonitorInit(void);
 extern int	StartClusterMonitor(void);
 GlobalTransactionId ClusterMonitorGetGlobalXmin(void);
 void ClusterMonitorSetGlobalXmin(GlobalTransactionId xmin);
 GlobalTransactionId ClusterMonitorGetReportingXmin(void);
+GlobalTransactionId ClusterMonitorGetReportingGlobalXmin(void);
 
 #ifdef EXEC_BACKEND
 extern void ClusterMonitorIAm(void);

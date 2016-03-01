@@ -31,6 +31,7 @@
 #include "pgstat.h"
 #ifdef PGXC
 #include "pgxc/nodemgr.h"
+#include "postmaster/clustermon.h"
 #endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"

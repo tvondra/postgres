@@ -26,6 +26,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "access/gtm.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "gtm/gtm_c.h"
@@ -37,6 +38,7 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"

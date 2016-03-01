@@ -1022,7 +1022,7 @@ GTM_HandleGlobalXmin(GTM_PGXCNodeType type, char *node_name,
 	{
 		GTM_PGXCNodeInfo *nodeinfo = all_nodes[ii];
 
-		elog(DEBUG1, "nodeinfo %p, type: %d, exclude %c, xmin %d, time %lld",
+		elog(DEBUG1, "nodeinfo %p, type: %d, exclude %c, xmin %d, time %ld",
 				nodeinfo, nodeinfo->type, nodeinfo->excluded ? 'T' : 'F',
 				nodeinfo->reported_xmin, nodeinfo->reported_xmin_time);
 

@@ -80,7 +80,7 @@ static int node_register_worker(GTM_Conn *conn, GTM_PGXCNodeType type, const cha
 								char *node_name, char *datafolder,
 								GTM_PGXCNodeStatus status, bool is_backup);
 static int node_unregister_worker(GTM_Conn *conn, GTM_PGXCNodeType type, const char * node_name, bool is_backup);
-static int report_barrier_internal(GTM_Conn *conn, char *barrier_id, bool is_backup);
+static int report_barrier_internal(GTM_Conn *conn, const char *barrier_id, bool is_backup);
 /*
  * Make an empty result if old one is null.
  */
@@ -421,7 +421,7 @@ send_failed:
 int
 bkup_begin_transaction(GTM_Conn *conn, GTM_IsolationLevel isolevel,
 					   bool read_only,
-					   char *global_sessionid,
+					   const char *global_sessionid,
 					   uint32 client_id, GTM_Timestamp timestamp)
 {
 	uint32 global_sessionid_len = global_sessionid ?
@@ -458,7 +458,7 @@ send_failed:
 int
 bkup_begin_transaction_gxid(GTM_Conn *conn, GlobalTransactionId gxid,
 							GTM_IsolationLevel isolevel, bool read_only,
-							char *global_sessionid,
+							const char *global_sessionid,
 							uint32 client_id, GTM_Timestamp timestamp)
 {
 	uint32 global_sessionid_len = global_sessionid ?
@@ -494,7 +494,7 @@ send_failed:
 
 GlobalTransactionId
 begin_transaction(GTM_Conn *conn, GTM_IsolationLevel isolevel,
-		char *global_sessionid,
+		const char *global_sessionid,
 		GTM_Timestamp *timestamp)
 {
 	bool txn_read_only = false;
@@ -2243,7 +2243,7 @@ send_failed:
  */
 
 int
-report_barrier(GTM_Conn *conn, char *barrier_id)
+report_barrier(GTM_Conn *conn, const char *barrier_id)
 {
 	return(report_barrier_internal(conn, barrier_id, false));
 }
@@ -2256,7 +2256,7 @@ bkup_report_barrier(GTM_Conn *conn, char *barrier_id)
 }
 
 static int
-report_barrier_internal(GTM_Conn *conn, char *barrier_id, bool is_backup)
+report_barrier_internal(GTM_Conn *conn, const char *barrier_id, bool is_backup)
 {
 	GTM_Result *res = NULL;
 	time_t finish_time;

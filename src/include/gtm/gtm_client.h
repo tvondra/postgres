@@ -185,14 +185,14 @@ size_t get_sequence_list(GTM_Conn *, GTM_SeqInfo **);
  * Transaction Management API
  */
 GlobalTransactionId begin_transaction(GTM_Conn *conn, GTM_IsolationLevel isolevel,
-						  char *global_sessionid,
+						  const char *global_sessionid,
 						  GTM_Timestamp *timestamp);
 int bkup_begin_transaction(GTM_Conn *conn, GTM_IsolationLevel isolevel,
-						   bool read_only, char *global_sessionid,
+						   bool read_only, const char *global_sessionid,
 						   uint32 client_id, GTM_Timestamp timestamp);
 int bkup_begin_transaction_gxid(GTM_Conn *conn, GlobalTransactionId gxid,
 								GTM_IsolationLevel isolevel, bool read_only,
-								char *global_sessionid,
+								const char *global_sessionid,
 								uint32 client_id, GTM_Timestamp timestamp);
 
 GlobalTransactionId begin_transaction_autovacuum(GTM_Conn *conn, GTM_IsolationLevel isolevel);
@@ -321,7 +321,7 @@ int bkup_reset_sequence(GTM_Conn *conn, GTM_SequenceKey key);
 /*
  * Barrier
  */
-int report_barrier(GTM_Conn *conn, char *barier_id);
+int report_barrier(GTM_Conn *conn, const char *barier_id);
 int bkup_report_barrier(GTM_Conn *conn, char *barrier_id);
 
 /*

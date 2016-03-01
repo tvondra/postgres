@@ -1574,7 +1574,7 @@ ProcessBeginTransactionGetGXIDCommandMulti(Port *myport, StringInfo message)
 	GTM_IsolationLevel txn_isolation_level[GTM_MAX_GLOBAL_TRANSACTIONS];
 	bool txn_read_only[GTM_MAX_GLOBAL_TRANSACTIONS];
 	uint32 txn_global_sessionid_len;
-	char *txn_global_sessionid[GTM_MAX_GLOBAL_TRANSACTIONS];
+	const char *txn_global_sessionid[GTM_MAX_GLOBAL_TRANSACTIONS];
 	int txn_count, new_txn_count;
 	StringInfoData buf;
 	GTM_TransactionHandle txn[GTM_MAX_GLOBAL_TRANSACTIONS];
@@ -1691,7 +1691,7 @@ ProcessBkupBeginTransactionGetGXIDCommandMulti(Port *myport, StringInfo message)
 	GTM_IsolationLevel txn_isolation_level[GTM_MAX_GLOBAL_TRANSACTIONS];
 	bool txn_read_only[GTM_MAX_GLOBAL_TRANSACTIONS];
 	uint32 txn_global_sessionid_len;
-	char *txn_global_sessionid[GTM_MAX_GLOBAL_TRANSACTIONS];
+	const char *txn_global_sessionid[GTM_MAX_GLOBAL_TRANSACTIONS];
 	GTMProxy_ConnID txn_connid[GTM_MAX_GLOBAL_TRANSACTIONS];
 	uint32 txn_client_id[GTM_MAX_GLOBAL_TRANSACTIONS];
 	int ii;

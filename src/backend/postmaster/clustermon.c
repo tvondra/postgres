@@ -59,7 +59,6 @@ static ClusterMonitorCtlData *ClusterMonitorCtl = NULL;
 static void cm_sighup_handler(SIGNAL_ARGS);
 static void cm_sigterm_handler(SIGNAL_ARGS);
 static void ClusterMonitorSetReportedGlobalXmin(GlobalTransactionId xmin);
-static GlobalTransactionId ClusterMonitorGetReportedGlobalXmin(void);
 static void ClusterMonitorSetReportingGlobalXmin(GlobalTransactionId xmin);
 
 /* PID of clustser monitoring process */
@@ -394,18 +393,6 @@ ClusterMonitorSetReportedGlobalXmin(GlobalTransactionId xmin)
 	SpinLockAcquire(&ClusterMonitorCtl->mutex);
 	ClusterMonitorCtl->reported_recent_global_xmin = xmin;
 	SpinLockRelease(&ClusterMonitorCtl->mutex);
-}
-
-static GlobalTransactionId
-ClusterMonitorGetReportedGlobalXmin(void)
-{
-	GlobalTransactionId reported_xmin;
-
-	SpinLockAcquire(&ClusterMonitorCtl->mutex);
-	reported_xmin = ClusterMonitorCtl->reported_recent_global_xmin;
-	SpinLockRelease(&ClusterMonitorCtl->mutex);
-
-	return reported_xmin;
 }
 
 static void

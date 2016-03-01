@@ -2166,7 +2166,6 @@ ProcessSnapshotCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 		case MSG_SNAPSHOT_GET_MULTI:
 			{
 				{
-					int txn_count = pq_getmsgint(message, sizeof (int));
 					const char *data = pq_getmsgbytes(message,
 							sizeof (GlobalTransactionId));
 					if (data == NULL)

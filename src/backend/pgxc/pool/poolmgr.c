@@ -2067,7 +2067,6 @@ PoolerLoop(void)
 	time_t			last_maintenance = (time_t) 0;
 	int				maintenance_timeout;
 	struct pollfd	*pool_fd;
-	int i;
 
 #ifdef HAVE_UNIX_SOCKETS
 	if (Unix_socket_directories)

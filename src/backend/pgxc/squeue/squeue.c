@@ -1206,7 +1206,6 @@ SharedQueueUnBind(SharedQueue squeue)
 	int			wait_result = 0;
 	int         i                = 0;
 	int         consumer_running = 0;
-	char        *pcursor 		 = NULL;
 
 
 CHECK:
@@ -1320,7 +1319,6 @@ SharedQueueRelease(const char *sqname)
 		volatile SQueueSync    *sqsync = sq->sq_sync;
 		int 					myid;  /* Node Id of the parent data node */
 		int						i;
-		char					ntype = PGXC_NODE_DATANODE;
 
 		Assert(sqsync && sqsync->queue == sq);
 

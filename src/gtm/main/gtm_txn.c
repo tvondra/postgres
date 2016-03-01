@@ -882,12 +882,9 @@ GTM_BkupBeginTransactionMulti(GTM_IsolationLevel *isolevel,
 							  int	txn_count)
 {
 	GTM_TransactionHandle txn[GTM_MAX_GLOBAL_TRANSACTIONS];;
-	GTM_TransactionInfo *gtm_txninfo;
 	MemoryContext oldContext;
 	int kk;
 	int count;
-
-	gtm_txninfo = NULL;
 
 	oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
 
@@ -2026,7 +2023,6 @@ ProcessGetGIDDataTransactionCommand(Port *myport, StringInfo message)
 
 	if (GetMyThreadInfo->thr_conn->standby)
 	{
-		int _rc;
 		GTM_Conn *oldconn = GetMyThreadInfo->thr_conn->standby;
 		int count = 0;
 		GTM_Timestamp timestamp;
@@ -2046,7 +2042,7 @@ retry:
 		 * instead of writing a routine specific to MSG_TXN_GET_GID_DATA
 		 * message
 		 */ 
-		_rc = bkup_begin_transaction_gxid(GetMyThreadInfo->thr_conn->standby,
+		bkup_begin_transaction_gxid(GetMyThreadInfo->thr_conn->standby,
 				   gxid,
 				   txn_isolation_level,
 				   false,

@@ -60,11 +60,11 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 #define		MV_CLAUSE_TYPE_MCV		0x02
 #define		MV_CLAUSE_TYPE_HIST		0x04
 
-static bool clause_is_mv_compatible(PlannerInfo *root, Node *clause, Oid varRelid,
+static bool clause_is_mv_compatible(Node *clause, Oid varRelid,
 							 Index *relid, Bitmapset **attnums, SpecialJoinInfo *sjinfo,
 							 int type);
 
-static Bitmapset  *collect_mv_attnums(PlannerInfo *root, List *clauses,
+static Bitmapset  *collect_mv_attnums(List *clauses,
 									  Oid varRelid, Index *relid, SpecialJoinInfo *sjinfo,
 									  int type);
 
@@ -292,7 +292,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * Collect attributes referenced by mv-compatible clauses (looking
 		 * for clauses compatible with functional dependencies for now).
 		 */
-		mvattnums = collect_mv_attnums(root, clauses, varRelid, &relid, sjinfo,
+		mvattnums = collect_mv_attnums(clauses, varRelid, &relid, sjinfo,
 									   MV_CLAUSE_TYPE_FDEP);
 
 		/*
@@ -320,7 +320,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * removed so many clauses we have a single mv-compatible attnum).
 		 * From now on we're only interested in MCV-compatible clauses.
 		 */
-		mvattnums = collect_mv_attnums(root, clauses, varRelid, &relid, sjinfo,
+		mvattnums = collect_mv_attnums(clauses, varRelid, &relid, sjinfo,
 									   (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
 		/*
@@ -1355,7 +1355,7 @@ clauselist_mv_selectivity(PlannerInfo *root, MVStatisticInfo *mvstats,
  * Collect attributes from mv-compatible clauses.
  */
 static Bitmapset *
-collect_mv_attnums(PlannerInfo *root, List *clauses, Oid varRelid,
+collect_mv_attnums(List *clauses, Oid varRelid,
 				   Index *relid, SpecialJoinInfo *sjinfo, int types)
 {
 	Bitmapset  *attnums = NULL;
@@ -1375,7 +1375,7 @@ collect_mv_attnums(PlannerInfo *root, List *clauses, Oid varRelid,
 		Node	   *clause = (Node *) lfirst(l);
 
 		/* ignore the result here - we only need the attnums */
-		clause_is_mv_compatible(root, clause, varRelid, relid, &attnums,
+		clause_is_mv_compatible(clause, varRelid, relid, &attnums,
 								sjinfo, types);
 	}
 
@@ -2277,7 +2277,7 @@ clauselist_mv_split(PlannerInfo *root, SpecialJoinInfo *sjinfo,
 		Bitmapset	*attnums = NULL;
 		Node	   *clause = (Node *) lfirst(l);
 
-		if (clause_is_mv_compatible(root, clause, varRelid, NULL,
+		if (clause_is_mv_compatible(clause, varRelid, NULL,
 									&attnums, sjinfo, types))
 		{
 			/* are all the attributes part of the selected stats? */
@@ -2322,7 +2322,7 @@ clauselist_mv_split(PlannerInfo *root, SpecialJoinInfo *sjinfo,
  *      evaluate them using multivariate stats.
  */
 static bool
-clause_is_mv_compatible(PlannerInfo *root, Node *clause, Oid varRelid,
+clause_is_mv_compatible(Node *clause, Oid varRelid,
 						Index *relid, Bitmapset **attnums, SpecialJoinInfo *sjinfo,
 						int types)
 {
@@ -2498,7 +2498,7 @@ clause_is_mv_compatible(PlannerInfo *root, Node *clause, Oid varRelid,
 		ListCell *l;
 		foreach (l, ((BoolExpr*)clause)->args)
 		{
-			if (! clause_is_mv_compatible(root, (Node*)lfirst(l),
+			if (! clause_is_mv_compatible((Node*)lfirst(l),
 						varRelid, relid, &tmp, sjinfo, types))
 				return false;
 		}
@@ -3081,7 +3081,7 @@ fdeps_filter_clauses(PlannerInfo *root,
 		Bitmapset *attnums = NULL;
 		Node	   *clause = (Node *) lfirst(lc);
 
-		if (! clause_is_mv_compatible(root, clause, varRelid, relid, &attnums,
+		if (! clause_is_mv_compatible(clause, varRelid, relid, &attnums,
 									  sjinfo, MV_CLAUSE_TYPE_FDEP))
 
 			/* clause incompatible with functional dependencies */
@@ -4270,7 +4270,7 @@ filter_clauses(PlannerInfo *root, Oid varRelid, SpecialJoinInfo *sjinfo,
 		/*
 		 * The clause has to be mv-compatible (suitable operators etc.).
 		 */
-		if (! clause_is_mv_compatible(root, clause, varRelid,
+		if (! clause_is_mv_compatible(clause, varRelid,
 							 &relid, &clause_attnums, sjinfo, type))
 				elog(ERROR, "should not get non-mv-compatible cluase");
 
@@ -4582,7 +4582,7 @@ make_clauses_attnums(PlannerInfo *root, Oid varRelid, SpecialJoinInfo *sjinfo,
 	{
 		Bitmapset * attnums = NULL;
 
-		if (! clause_is_mv_compatible(root, clauses[i], varRelid,
+		if (! clause_is_mv_compatible(clauses[i], varRelid,
 									  &relid, &attnums, sjinfo, type))
 			elog(ERROR, "should not get non-mv-compatible cluase");
 

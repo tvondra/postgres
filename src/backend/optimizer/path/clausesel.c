@@ -71,15 +71,13 @@ static Bitmapset  *collect_mv_attnums(List *clauses,
 static int count_mv_attnums(List *clauses, Oid varRelid,
 							SpecialJoinInfo *sjinfo, int types);
 
-static Bitmapset *clause_mv_get_attnums(PlannerInfo *root, Node *clause);
+static List *clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
+						   int varRelid, SpecialJoinInfo *sjinfo, int types,
+						   bool remove);
 
 static List *clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 								Oid varRelid, List *stats,
 								SpecialJoinInfo *sjinfo);
-
-static List *clauselist_mv_split(PlannerInfo *root, SpecialJoinInfo *sjinfo,
-								 List *clauses, Oid varRelid,
-								 List **mvclauses, MVStatisticInfo *mvstats, int types);
 
 static Selectivity clauselist_mv_selectivity(PlannerInfo *root,
 						MVStatisticInfo *mvstats, List *clauses,
@@ -311,13 +309,13 @@ clauselist_selectivity(PlannerInfo *root,
 		(count_mv_attnums(clauses, varRelid, sjinfo,
 						  MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2))
 	{
-		int k;
 		ListCell *s;
 
 		/*
-		 * Copy the list of conditions, so that we can build a list
-		 * of local conditions (and keep the original intact, for
-		 * the other clauses at the same level).
+		 * Copy the conditions we got from the upper part of the expression tree
+		 * so that we can add local conditions to it (we need to keep the
+		 * original list intact, for sibling expressions - other expressions
+		 * at the same level).
 		 */
 		List *conditions_local = list_copy(conditions);
 
@@ -326,160 +324,74 @@ clauselist_selectivity(PlannerInfo *root,
 											  clauses, conditions,
 											  varRelid, sjinfo);
 
-		/* we have a good solution (list of stats) */
-		foreach (s, solution)
-		{
-			MVStatisticInfo *mvstat = (MVStatisticInfo *)lfirst(s);
-
-			/* clauses compatible with multi-variate stats */
-			List	*mvclauses = NIL;
-			List	*mvclauses_new = NIL;
-			List	*mvclauses_conditions = NIL;
-			Bitmapset	*stat_attnums = NULL;
-
-			/* build attnum bitmapset for this statistics */
-			for (k = 0; k < mvstat->stakeys->dim1; k++)
-				stat_attnums = bms_add_member(stat_attnums,
-											  mvstat->stakeys->values[k]);
-
-			/*
-			 * Append the compatible conditions (passed from above)
-			 * to mvclauses_conditions.
-			 */
-			foreach (l, conditions)
-			{
-				Node *c = (Node*)lfirst(l);
-				Bitmapset *tmp = clause_mv_get_attnums(root, c);
-
-				if (bms_is_subset(tmp, stat_attnums))
-					mvclauses_conditions
-						= lappend(mvclauses_conditions, c);
-
-				bms_free(tmp);
-			}
-
-			/* split the clauselist into regular and mv-clauses
-			 *
-			 * We keep the list of clauses (we don't remove the
-			 * clauses yet, because we want to use the clauses
-			 * as conditions of other clauses).
-			 *
-			 * FIXME Do this only once, i.e. filter the clauses
-			 *       once (selecting clauses covered by at least
-			 *       one statistics) and then convert them into
-			 *       smaller per-statistics lists of conditions
-			 *       and estimated clauses.
-			 */
-			clauselist_mv_split(root, sjinfo, clauses,
-									varRelid, &mvclauses, mvstat,
-									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-
-			/*
-			 * We've chosen the statistics to match the clauses, so
-			 * each statistics from the solution should have at least
-			 * one new clause (not covered by the previous stats).
-			 */
-			Assert(mvclauses != NIL);
-
-			/*
-			 * Mvclauses now contains only clauses compatible
-			 * with the currently selected stats, but we have to
-			 * split that into conditions (already matched by
-			 * the previous stats), and the new clauses we need
-			 * to estimate using this stats.
-			 */
-			foreach (l, mvclauses)
-			{
-				ListCell *p;
-				bool covered = false;
-				Node  *clause = (Node *) lfirst(l);
-				Bitmapset *clause_attnums = clause_mv_get_attnums(root, clause);
-
-				/*
-				 * If already covered by previous stats, add it to
-				 * conditions.
-				 *
-				 * TODO Maybe this could be relaxed a bit? Because
-				 *      with complex and/or clauses, this might
-				 *      mean no statistics actually covers such
-				 *      complex clause.
-				 */
-				foreach (p, solution)
-				{
-					int k;
-					Bitmapset  *stat_attnums = NULL;
-
-					MVStatisticInfo *prev_stat
-						= (MVStatisticInfo *)lfirst(p);
-
-					/* break if we've ran into current statistic */
-					if (prev_stat == mvstat)
-						break;
-
-					for (k = 0; k < prev_stat->stakeys->dim1; k++)
-						stat_attnums = bms_add_member(stat_attnums,
-													  prev_stat->stakeys->values[k]);
-
-					covered = bms_is_subset(clause_attnums, stat_attnums);
-
-					bms_free(stat_attnums);
-
-					if (covered)
-						break;
-				}
-
-				if (covered)
-					mvclauses_conditions
-						= lappend(mvclauses_conditions, clause);
-				else
-					mvclauses_new
-						= lappend(mvclauses_new, clause);
-			}
-
-			/*
-			 * We need at least one new clause (not just conditions).
-			 */
-			Assert(mvclauses_new != NIL);
-
-			/* compute the multivariate stats */
-			s1 *= clauselist_mv_selectivity(root, mvstat,
-											mvclauses_new,
-											mvclauses_conditions,
-											false); /* AND */
-		}
-
 		/*
-		 * And now finally remove all the mv-compatible clauses.
+		 * We have a good solution, which is merely a list of statistics that
+		 * we need to apply. We'll apply the statistics one by one (in the order
+		 * as they appear in the list), and for each statistic we'll
 		 *
-		 * This only repeats the same split as above, but this
-		 * time we actually use the result list (and feed it to
-		 * the next call).
+		 * (1) find clauses compatible with the statistic (and remove them
+		 *     from the list)
+		 *
+		 * (2) find local conditions compatible with the statistic
+		 *
+		 * (3) do the estimation P(clauses | conditions)
+		 *
+		 * (4) append the estimated clauses to local conditions
+		 *
+		 * continuously modify 
 		 */
 		foreach (s, solution)
 		{
-			/* clauses compatible with multi-variate stats */
-			List	*mvclauses = NIL;
-
 			MVStatisticInfo *mvstat = (MVStatisticInfo *)lfirst(s);
 
-			/* split the list into regular and mv-clauses */
-			clauses = clauselist_mv_split(root, sjinfo, clauses,
-									varRelid, &mvclauses, mvstat,
-									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
+			/* clauses compatible with the statistic we're applying right now */
+			List	*stat_clauses = NIL;
+			List	*stat_conditions = NIL;
 
 			/*
-			 * Add the clauses to the conditions (to be passed
-			 * to regular clauses), irrespectedly whether it
-			 * will be used as a condition or a clause here.
+			 * Find clauses and conditions matching the statistic - the clauses
+			 * need to be removed from the list, while conditions should remain
+			 * there (so that we can apply them repeatedly).
 			 *
-			 * We only keep the remaining conditions in the
-			 * clauses (we keep what clauselist_mv_split returns)
-			 * so we add each MV condition exactly once.
+			 * FIXME Perhaps this should also check compatibility with the type
+			 *       of stats (i.e. MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST).
 			 */
-			conditions_local = list_concat(conditions_local, mvclauses);
+			stat_clauses
+				= clauses_matching_statistic(&clauses, mvstat, varRelid, sjinfo,
+											 MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST,
+											 true);
+
+			stat_conditions
+				= clauses_matching_statistic(&conditions_local, mvstat, varRelid, sjinfo,
+											 MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST,
+											 false);
+
+			/*
+			 * If we got no clauses to estimate, we've done something wrong,
+			 * either during the optimization, detecting compatible clause, or
+			 * somewhere else.
+			 *
+			 * Also, we need at least two attributes in clauses and conditions.
+			 */
+			Assert(stat_clauses != NIL);
+			Assert(count_mv_attnums(list_union(stat_clauses, stat_conditions),
+								varRelid, sjinfo,
+								MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2);
+
+			/* compute the multivariate stats */
+			s1 *= clauselist_mv_selectivity(root, mvstat,
+											stat_clauses, stat_conditions,
+											false); /* AND */
+
+			/*
+			 * Add the new clauses to the local conditions, so that we can use
+			 * them for the subsequent statistics. We only add the clauses,
+			 * because the conditions are already there (or should be).
+			 */
+			conditions_local = list_concat(conditions_local, stat_clauses);
 		}
 
-		/* from now on, work with the 'local' list of conditions */
+		/* from now on, work only with the 'local' list of conditions */
 		conditions = conditions_local;
 	}
 
@@ -1389,6 +1301,67 @@ count_mv_attnums(List *clauses, Oid varRelid, SpecialJoinInfo *sjinfo, int types
 	return c;
 }
 
+static List *
+clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
+						   int varRelid, SpecialJoinInfo *sjinfo, int types,
+						   bool remove)
+{
+	int i;
+	Bitmapset  *stat_attnums = NULL;
+	List	   *matching_clauses = NIL;
+	ListCell   *lc;
+
+	/* build attnum bitmapset for this statistics */
+	for (i = 0; i < statistic->stakeys->dim1; i++)
+		stat_attnums = bms_add_member(stat_attnums,
+									  statistic->stakeys->values[i]);
+
+	/*
+	 * We can't use foreach here, because we may need to remove some of the
+	 * clauses if (remove=true).
+	 */
+	lc = list_head(*clauses);
+	while (lc)
+	{
+		Node *clause = (Node*)lfirst(lc);
+		Bitmapset *attnums = NULL;
+
+		/* must advance lc before list_delete possibly pfree's it */
+		lc = lnext(lc);
+
+		/*
+		 * skip clauses that are not compatible with stats (just leave them
+		 * in the original list)
+		 *
+		 * FIXME Perhaps this should check what stats are actually available in
+		 *       the statistics (not a big deal now, because MCV and histograms
+		 *       handle the same types of conditions).
+		 */
+		if (! clause_is_mv_compatible(clause, varRelid, NULL, &attnums, sjinfo,
+									  types))
+		{
+			bms_free(attnums);
+			continue;
+		}
+
+		/* if the clause is covered by the statistic, add it to the list */
+		if (bms_is_subset(attnums, stat_attnums))
+		{
+			matching_clauses = lappend(matching_clauses, clause);
+
+			/* if remove=true, remove the matching item from the main list */
+			if (remove)
+				*clauses = list_delete_ptr(*clauses, clause);
+		}
+
+		bms_free(attnums);
+	}
+
+	bms_free(stat_attnums);
+
+	return matching_clauses;
+}
+
 /*
  * Selects the best combination of multivariate statistics, in an
  * exhaustive way, where 'best' means:
@@ -2238,68 +2211,6 @@ choose_mv_statistics(PlannerInfo *root, List *stats,
 	return result;
 }
 
-
-/*
- * This splits the clauses list into two parts - one containing clauses
- * that will be evaluated using the chosen statistics, and the remaining
- * clauses (either non-mvcompatible, or not related to the histogram).
- */
-static List *
-clauselist_mv_split(PlannerInfo *root, SpecialJoinInfo *sjinfo,
-					List *clauses, Oid varRelid, List **mvclauses,
-					MVStatisticInfo *mvstats, int types)
-{
-	int i;
-	ListCell *l;
-	List	 *non_mvclauses = NIL;
-
-	/* FIXME is there a better way to get info on int2vector? */
-	int2vector * attrs = mvstats->stakeys;
-	int	numattrs = mvstats->stakeys->dim1;
-
-	Bitmapset *mvattnums = NULL;
-
-	/* build bitmap of attributes covered by the stats, so we can
-	 * do bms_is_subset later */
-	for (i = 0; i < numattrs; i++)
-		mvattnums = bms_add_member(mvattnums, attrs->values[i]);
-
-	/* erase the list of mv-compatible clauses */
-	*mvclauses = NIL;
-
-	foreach (l, clauses)
-	{
-		bool		match = false;	/* by default not mv-compatible */
-		Bitmapset	*attnums = NULL;
-		Node	   *clause = (Node *) lfirst(l);
-
-		if (clause_is_mv_compatible(clause, varRelid, NULL,
-									&attnums, sjinfo, types))
-		{
-			/* are all the attributes part of the selected stats? */
-			if (bms_is_subset(attnums, mvattnums))
-				match = true;
-		}
-
-		/*
-		 * The clause matches the selected stats, so put it to the list
-		 * of mv-compatible clauses. Otherwise, keep it in the list of
-		 * 'regular' clauses (that may be selected later).
-		 */
-		if (match)
-			*mvclauses = lappend(*mvclauses, clause);
-		else
-			non_mvclauses = lappend(non_mvclauses, clause);
-	}
-
-	/*
-	 * Perform regular estimation using the clauses incompatible
-	 * with the chosen histogram (or MV stats in general).
-	 */
-	return non_mvclauses;
-
-}
-
 /*
  * Determines whether the clause is compatible with multivariate stats,
  * and if it is, returns some additional information - varno (index
@@ -2508,50 +2419,6 @@ clause_is_mv_compatible(Node *clause, Oid varRelid,
 	return false;
 }
 
-
-static Bitmapset *
-clause_mv_get_attnums(PlannerInfo *root, Node *clause)
-{
-	Bitmapset * attnums = NULL;
-
-	/* Extract clause from restrict info, if needed. */
-	if (IsA(clause, RestrictInfo))
-		clause = (Node*)((RestrictInfo*)clause)->clause;
-
-	/*
-	 * Only simple opclauses and IS NULL tests are compatible with
-	 * multivariate stats at this point.
-	 */
-	if ((is_opclause(clause))
-		&& (list_length(((OpExpr *) clause)->args) == 2))
-	{
-		OpExpr	   *expr = (OpExpr *) clause;
-
-		if (IsA(linitial(expr->args), Var))
-			attnums = bms_add_member(attnums,
-							((Var*)linitial(expr->args))->varattno);
-		else
-			attnums = bms_add_member(attnums,
-							((Var*)lsecond(expr->args))->varattno);
-	}
-	else if (IsA(clause, NullTest)
-			 && IsA(((NullTest*)clause)->arg, Var))
-	{
-		attnums = bms_add_member(attnums,
-							((Var*)((NullTest*)clause)->arg)->varattno);
-	}
-	else if (or_clause(clause) || and_clause(clause) || or_clause(clause))
-	{
-		ListCell *l;
-		foreach (l, ((BoolExpr*)clause)->args)
-		{
-			attnums = bms_join(attnums,
-						clause_mv_get_attnums(root, (Node*)lfirst(l)));
-		}
-	}
-
-	return attnums;
-}
 
 /*
  * reduce list of equality clauses using soft functional dependencies

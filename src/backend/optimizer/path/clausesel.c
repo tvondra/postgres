@@ -298,9 +298,6 @@ clauselist_selectivity(PlannerInfo *root,
 			clauses = clauselist_apply_dependencies(root, clauses, varRelid,
 													stats, sjinfo);
 
-	if (has_stats(stats, MV_CLAUSE_TYPE_NDIST))
-		elog(WARNING, "has ndistinct coefficient stats");
-
 	/*
 	 * Check that there are statistics with MCV list or histogram, and also the
 	 * number of attributes covered by these types of statistics.

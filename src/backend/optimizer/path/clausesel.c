@@ -1363,110 +1363,73 @@ clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
 }
 
 /*
- * Selects the best combination of multivariate statistics, in an
- * exhaustive way, where 'best' means:
+ * Selects the best combination of multivariate statistics, in an exhaustive
+ * way, where 'best' means:
  *
  * (a) covering the most attributes (referenced by clauses)
  * (b) using the least number of multivariate stats
  * (c) using the most conditions to exploit dependency
  *
- * There may be other optimality criteria, not considered in the initial
- * implementation (more on that 'weaknesses' section).
- *
- * This pretty much splits the probability of clauses (aka selectivity)
- * into a sequence of conditional probabilities, like this
- *
- *    P(A,B,C,D) = P(A,B) * P(C|A,B) * P(D|A,B,C)
- *
- * and removing the attributes not referenced by the existing stats,
- * under the assumption that there's no dependency (otherwise the DBA
- * would create the stats).
- *
- * The last criteria means that when we have the choice to compute like
- * this
- *
- *      P(A,B,C,D) = P(A,B,C) * P(D|B,C)
- *
- * or like this
- *
- *      P(A,B,C,D) = P(A,B,C) * P(D|C)
- *
- * we should use the first option, as that exploits more dependencies.
- *
- * The order of statistics in the solution implicitly determines the
- * order of estimation of clauses, because as we apply a statistics,
- * we always use it to estimate all the clauses covered by it (and
- * then we use those clauses as conditions for the next statistics).
- *
- * Don't call this directly but through choose_mv_statistics().
+ * Don't call this directly but through choose_mv_statistics(), which does some
+ * additional tricks to minimize the runtime.
  *
  *
  * Algorithm
  * ---------
- * The algorithm is a recursive implementation of backtracking, with
- * maximum 'depth' equal to the number of multi-variate statistics
- * available on the table.
- *
- * It explores all the possible permutations of the stats.
+ * The algorithm is a recursive implementation of backtracking, with maximum
+ * depth equal to the number of multi-variate statistics available on the table.
+ * It actually explores all valid combinations of stats.
  * 
- * Whenever it considers adding the next statistics, the clauses it
- * matches are divided into 'conditions' (clauses already matched by at
- * least one previous statistics) and clauses that are estimated.
+ * Whenever it considers adding the next statistics, the clauses it matches are
+ * divided into 'conditions' (clauses already matched by at least one previous
+ * statistics) and clauses that are estimated.
  *
  * Then several checks are performed:
  *
- *  (a) The statistics covers at least 2 columns, referenced in the
- *      estimated clauses (otherwise multi-variate stats are useless).
+ *  (a) The statistics covers at least 2 columns, referenced in the estimated
+ *      clauses (otherwise multi-variate stats are useless).
  *
- *  (b) The statistics covers at least 1 new column, i.e. column not
- *      refefenced by the already used stats (and the new column has
- *      to be referenced by the clauses, of couse). Otherwise the
- *      statistics would not add any new information.
+ *  (b) The statistics covers at least 1 new column, i.e. column not refefenced
+ *      by the already used stats (and the new column has to be referenced by
+ *      the clauses, of couse). Otherwise the statistics would not add any new
+ *      information.
  *
- * There are some other sanity checks (e.g. that the stats must not be
- * used twice etc.).
- *
- * Finally the new solution is compared to the currently best one, and
- * if it's considered better, it's used instead.
+ * There are some other sanity checks (e.g. stats must not be used twice etc.).
  *
  *
  * Weaknesses
  * ----------
- * The current implemetation uses a somewhat simple optimality criteria,
- * suffering by the following weaknesses.
+ * The current implemetation uses a rather simple optimality criteria, so it may
+ * not do the best choice when
  *
  * (a) There may be multiple solutions with the same number of covered
- *     attributes and number of statistics (e.g. the same solution but
- *     with statistics in a different order). It's unclear which solution
- *     is the best one - in a sense all of them are equal.
+ *     attributes and number of statistics (e.g. the same solution but with
+ *     statistics in a different order). It's unclear which solution in the best
+ *     one - in a sense all of them are equal.
  *
- * TODO It might be possible to compute estimate for each of those
- *      solutions, and then combine them to get the final estimate
- *      (e.g. by using average or median).
+ * TODO It might be possible to compute estimate for each of those solutions,
+ *      and then combine them to get the final estimate (e.g. by using average
+ *      or median).
  *
- * (b) Does not consider that some types of stats are a better match for
- *     some types of clauses (e.g. MCV list is a good match for equality
- *     than a histogram).
+ * (b) Does not consider that some types of stats are a better match for some
+ *     types of clauses (e.g. MCV list is generally a better match for equality
+ *     conditions than a histogram).
  *
- *     XXX Maybe MCV is almost always better / more accurate?
+ *     But maybe this is pointless - generally, each column is either a label
+ *     (it's not important whether because of the data type or how it's used),
+ *     or a value with ordering that makes sense. So either a MCV list is more
+ *     appropriate (labels) or a histogram (values with orderings).
  *
- *     But maybe this is pointless - generally, each column is either
- *     a label (it's not important whether because of the data type or
- *     how it's used), or a value with ordering that makes sense. So
- *     either a MCV list is more appropriate (labels) or a histogram
- *     (values with orderings).
+ *     Now sure what to do with statistics on columns mixing both types of data
+ *     (some columns would work best with MCVs, some with histograms). Maybe we
+ *     could invent a new type of statistics combining MCV list and histogram
+ *     (keeping a small histogram for each MCV item, and a separate histogram
+ *     for values not on the MCV list).
  *
- *     Now sure what to do with statistics on columns mixing columns of
- *     both types - maybe it'd be beeter to invent a new type of stats
- *     combining MCV list and histogram (keeping a small histogram for
- *     each MCV item, and a separate histogram for values not on the
- *     MCV list). But that's not implemented at this moment.
- *
- * TODO The algorithm should probably count number of Vars (not just
- *      attnums) when computing the 'score' of each solution. Computing
- *      the ratio of (num of all vars) / (num of condition vars) as a
- *      measure of how well the solution uses conditions might be
- *      useful.
+ * TODO The algorithm should probably count number of Vars (not just attnums)
+ *      when computing the 'score' of each solution. Computing the ratio of
+ *      (num of all vars) / (num of condition vars) as a measure of how well
+ *      the solution uses conditions might be useful.
  */
 static void
 choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
@@ -1481,6 +1444,7 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 	Assert(best != NULL);
 	Assert((step == 0 && current == NULL) || (step > 0 && current != NULL));
 
+	/* this may run for a long sime, so let's make it interruptible */
 	CHECK_FOR_INTERRUPTS();
 
 	if (current == NULL)
@@ -1714,32 +1678,32 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 }
 
 /*
- * Greedy search for a multivariate solution - a sequence of statistics
- * covering the clauses. This chooses the "best" statistics at each step,
- * so the resulting solution may not be the best solution globally, but
- * this produces the solution in only N steps (where N is the number of
- * statistics), while the exhaustive approach may have to walk through
- * ~N! combinations (although some of those are terminated early).
+ * Greedy search for a multivariate solution - a sequence of statistics covering
+ * the clauses. This chooses the "best" statistics at each step, so the
+ * resulting solution may not be the best solution globally, but this produces
+ * the solution in only N steps (where N is the number of statistics), while
+ * the exhaustive approach may have to walk through ~N! combinations (although
+ * some of those are terminated early).
  *
- * See the comments at choose_mv_statistics_exhaustive() as this does
- * the same thing (but in a different way).
+ * See the comments at choose_mv_statistics_exhaustive() as this does the same
+ * thing (but in a different way).
  *
  * Don't call this directly, but through choose_mv_statistics().
  *
- * TODO There are probably other metrics we might use - e.g. using
- *      number of columns (num_cond_columns / num_cov_columns), which
- *      might work better with a mix of simple and complex clauses.
+ * TODO There are probably other metrics we might use - e.g. using number of
+ *      columns (num_cond_columns / num_cov_columns), which might work better
+ *      with a mix of simple and complex clauses.
  *
- * TODO Also the choice at the very first step should be handled
- *      in a special way, because there will be 0 conditions at that
- *      moment, so there needs to be some other criteria - e.g. using
- *      the simplest (or most complex?) clause might be a good idea.
+ * TODO Also the choice at the very first step should be handled in a special
+ *      way, because there will be 0 conditions at that moment, so there needs
+ *      to be some other criteria - e.g. using the simplest (or most complex?)
+ *      clause might be a good idea.
  *
- * TODO We might also select multiple stats using different criteria,
- *      and branch the search. This is however tricky, because if we
- *      choose k statistics at each step, we get k^N branches to
- *      walk through (with N steps). That's not really good with
- *      large number of stats (yet better than exhaustive search).
+ * TODO We might also select multiple stats using different criteria, and branch
+ *      the search. This is however tricky, because if we choose k statistics at
+ *      each step, we get k^N branches to walk through (with N steps). That's
+ *      not really good with large number of stats (yet better than exhaustive
+ *      search).
  */
 static void
 choose_mv_statistics_greedy(PlannerInfo *root, int step,
@@ -1970,33 +1934,31 @@ choose_mv_statistics_greedy(PlannerInfo *root, int step,
 }
 
 /*
- * Chooses the combination of statistics, optimal for estimation of
- * a particular clause list.
+ * Chooses the combination of statistics, optimal for estimation of a particular
+ * clause list.
  *
  * This only handles a 'preparation' shared by the exhaustive and greedy
- * implementations (see the previous methods), mostly trying to reduce
- * the size of the problem (eliminate clauses/statistics that can't be
- * really used in the solution).
+ * implementations (see the previous methods), mostly trying to reduce the size
+ * of the problem (eliminate clauses/statistics that can't be really used in
+ * the solution).
  *
- * It also precomputes bitmaps for attributes covered by clauses and
- * statistics, so that we don't need to do that over and over in the
- * actual optimizations (as it's both CPU and memory intensive).
+ * It also precomputes bitmaps for attributes covered by clauses and statistics,
+ * so that we don't need to do that over and over in the actual optimizations
+ * (as it's both CPU and memory intensive).
  *
- * TODO This will probably have to consider compatibility of clauses,
- *      because 'dependencies' will probably work only with equality
- *      clauses.
+ * TODO This will probably have to consider compatibility of clauses, because
+ *      'dependencies' will probably work only with equality clauses.
  *
- * TODO Another way to make the optimization problems smaller might
- *      be splitting the statistics into several disjoint subsets, i.e.
- *      if we can split the graph of statistics (after the elimination)
- *      into multiple components (so that stats in different components
- *      share no attributes), we can do the optimization for each
- *      component separately.
+ * TODO Another way to make the optimization problems smaller might be splitting
+ *      the statistics into several disjoint subsets, i.e. if we can split the
+ *      graph of statistics (after the elimination) into multiple components
+ *      (so that stats in different components share no attributes), we can do
+ *      the optimization for each component separately.
  *
  * TODO If we could compute what is a "perfect solution" maybe we could
- *      terminate the search after reaching ~90% of it? Say, if we knew
- *      that we can cover 10 clauses and reuse 8 dependencies, maybe
- *      covering 9 clauses and 7 dependencies would be OK?
+ *      terminate the search after reaching ~90% of it? Say, if we knew that we
+ *      can cover 10 clauses and reuse 8 dependencies, maybe covering 9 clauses
+ *      and 7 dependencies would be OK?
  */
 static List*
 choose_mv_statistics(PlannerInfo *root, List *stats,
@@ -4447,7 +4409,7 @@ make_clauses_attnums(PlannerInfo *root, Oid varRelid, SpecialJoinInfo *sjinfo,
 
 		if (! clause_is_mv_compatible(clauses[i], varRelid,
 									  &relid, &attnums, sjinfo, type))
-			elog(ERROR, "should not get non-mv-compatible cluase");
+			elog(ERROR, "should not get non-mv-compatible clause");
 
 		clauses_attnums[i] = attnums;
 	}

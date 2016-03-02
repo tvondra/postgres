@@ -575,29 +575,29 @@ clauselist_selectivity(PlannerInfo *root,
 }
 
 /*
- * Similar to clauselist_selectivity(), but for OR-clauses. We can't
- * simply apply exactly the same logic as to AND-clauses, because there
- * are a few key differences:
+ * Similar to clauselist_selectivity(), but for OR-clauses. We can't simply use
+ * the same multi-statistic estimation logic for AND-clauses, at least not
+ * directly, because there are a few key differences:
  *
  *   - functional dependencies don't really apply to OR-clauses
  *
- *   - clauselist_selectivity() works by decomposing the selectivity
- *     into conditional selectivities (probabilities), but that can be
- *     done only for AND-clauses. That means problems with applying
- *     multiple statistics (and reusing clauses as conditions, etc.).
+ *   - clauselist_selectivity() is based on decomposing the selectivity into
+ *     a sequence of conditional probabilities (selectivities), but that can
+ *     be done only for AND-clauses
  *
- * We might invent a completely new set of functions here, resembling
- * clauselist_selectivity but adapting the ideas to OR-clauses.
- *
- * But luckily we know that each OR-clause
+ * We might invent a similar infrastructure for optimizing OR-clauses, doing
+ * something similar to what clause_selectivity does for AND-clauses, but
+ * luckily we know that each disjunctive normal form (aka OR-clause)
  *
  *     (a OR b OR c)
  *
- * may be rewritten as an equivalent AND-clause using negation:
+ * may be rewritten as an equivalent conjunctive normal form (aka AND-clause)
+ * by using negation:
  *
  *     NOT ((NOT a) AND (NOT b) AND (NOT c))
  *
- * And that's something we can pass to clauselist_selectivity.
+ * And that's something we can pass to clauselist_selectivity and let it do
+ * all the heavy lifting.
  */
 static Selectivity
 clauselist_selectivity_or(PlannerInfo *root,
@@ -611,14 +611,14 @@ clauselist_selectivity_or(PlannerInfo *root,
 	ListCell   *l;
 	Expr	   *expr;
 
-	/* (NOT ...) */
+	/* build arguments for the AND-clause by negating args of the OR-clause */
 	foreach (l, clauses)
 		args = lappend(args, makeBoolExpr(NOT_EXPR, list_make1(lfirst(l)), -1));
 
-	/* ((NOT ...) AND (NOT ...)) */
+	/* and then the actual OR-clause on the negated args */
 	expr = makeBoolExpr(AND_EXPR, args, -1);
 
-	/* NOT (... AND ...) */
+	/* instead of constructing NOT expression, just do (1.0 - s) */
 	return 1.0 - clauselist_selectivity(root, list_make1(expr), varRelid,
 										jointype, sjinfo, conditions);
 }
@@ -1137,69 +1137,12 @@ clause_selectivity(PlannerInfo *root,
  *          in the MCV list, then the selectivity is below the lowest frequency
  *          found in the MCV list,
  *
- * TODO When applying the clauses to the histogram/MCV list, we can do
- *      that from the most selective clauses first, because that'll
- *      eliminate the buckets/items sooner (so we'll be able to skip
- *      them without inspection, which is more expensive). But this
- *      requires really knowing the per-clause selectivities in advance,
- *      and that's not what we do now.
+ * TODO When applying the clauses to the histogram/MCV list, we can do that from
+ *      the most selective clauses first, because that'll eliminate the
+ *      buckets/items sooner (so we'll be able to skip them without inspection,
+ *      which is more expensive). But this requires really knowing the
+ *      per-clause selectivities in advance, and that's not what we do now.
  *
- * TODO All this is based on the assumption that the statistics represent
- *      the necessary dependencies, i.e. that if two colunms are not in
- *      the same statistics, there's no dependency. If that's not the
- *      case, we may get misestimates, just like before. For example
- *      assume we have a table with three columns [a,b,c] with exactly
- *      the same values, and statistics on [a,b] and [b,c]. So somthing
- *      like this:
- *
- *          CREATE TABLE test AS SELECT i, i, i
-                                  FROM generate_series(1,1000);
- *
- *          ALTER TABLE test ADD STATISTICS (mcv) ON (a,b);
- *          ALTER TABLE test ADD STATISTICS (mcv) ON (b,c);
- *
- *          ANALYZE test;
- *
- *          EXPLAIN ANALYZE SELECT * FROM test
- *                    WHERE (a < 10) AND (b < 20) AND (c < 10);
- *
- *      The problem here is that the only shared column between the two
- *      statistics is 'b' so the probability will be computed like this
- *
- *          P[(a < 10) & (b < 20) & (c < 10)]
- *             = P[(a < 10) & (b < 20)] * P[(c < 10) | (a < 10) & (b < 20)]
- *             = P[(a < 10) & (b < 20)] * P[(c < 10) | (b < 20)]
- *
- *      or like this
- *
- *          P[(a < 10) & (b < 20) & (c < 10)]
- *             = P[(b < 20) & (c < 10)] * P[(a < 10) | (b < 20) & (c < 10)]
- *             = P[(b < 20) & (c < 10)] * P[(a < 10) | (b < 20)]
- *
- *      In both cases the conditional probabilities will be evaluated as
- *      0.5, because they lack the other column (which would make it 1.0).
- *
- *      Theoretically it might be possible to transfer the dependency,
- *      e.g. by building bitmap for [a,b] and then combine it with [b,c]
- *      by doing something like this:
- *
- *          1) build bitmap on [a,b] using [(a<10) & (b < 20)]
- *          2) for each element in [b,c] check the bitmap
- *
- *      But that's certainly nontrivial - for example the statistics may
- *      be different (MCV list vs. histogram) and/or the items may not
- *      match (e.g. MCV items or histogram buckets will be built
- *      differently). Also, for one value of 'b' there might be multiple
- *      MCV items (because of the other column values) with different
- *      bitmap values (some will match, some won't) - so it's not exactly
- *      bitmap but a partial match.
- *
- *      Maybe a hash table with number of matches and mismatches (or
- *      maybe sums of frequencies) would work? The step (2) would then
- *      lookup the values and use that to weight the item somehow.
- * 
- *      Currently the only solution is to build statistics on all three
- *      columns.
  */
 static Selectivity
 clauselist_mv_selectivity(PlannerInfo *root, MVStatisticInfo *mvstats,

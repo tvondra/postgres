@@ -163,6 +163,64 @@ Note: This is meant mostly for experimentation. I do expect we'll choose one of
 the algorithms and remove the GUC before commit.
 
 
+Limitations of combining statistics
+-----------------------------------
+
+As described in the section 'Combining multiple statistics', the current appoach
+is based on transfering information between statistics by means of conditional
+probabilities. This is a relatively cheap and efficient approach, but it is
+based on two assumptions:
+
+    (1) The overlap between the statistics needs to be sufficiently large, i.e.
+        there needs to be enough columns shared by the statistics to transfer
+        information about dependencies between the remaining columns.
+
+    (2) The query needs to include sufficient clauses on the shared columns.
+
+How a violation of those assumptions may be a problem can be illustrated by
+a simple example. Assume a table with three columns (a,b,c) containing exactly
+the same values, and statistics on (a,b) and (b,c):
+
+    CREATE TABLE test AS SELECT i, i, i
+                           FROM generate_series(1,1000);
+
+    CREATE STATISTICS s1 ON test (a,b) WITH (mcv);
+    CREATE STATISTICS s2 ON test (b,c) WITH (mcv);
+
+    ANALYZE test;
+
+First, let's estimate this query:
+
+    SELECT * FROM test WHERE (a < 10) AND (c < 10);
+
+Clearly, there are no conditions on 'b' (which is the only column shared by the
+two statistics), so we'll end up with an estimate based on assumption of
+independence:
+
+    P(a < 10) * P(c < 10) = 0.01 * 0.01 = 0.0001
+
+Which is a significant under-estimate, as the proper selectivity is 0.01.
+
+But let's estimate another query:
+
+    SELECT * FROM test WHERE (a < 10) AND (b < 500) AND (c < 10);
+
+In this case, the estimate may be computed for example like this:
+
+    P[(a < 10) & (b < 500) & (c < 10)]
+      = P[(a < 10) & (b < 500)] * P[(c < 10) | (a < 10) & (b < 500)]
+      = P[(a < 10) & (b < 500)] * P[(c < 10) | (b < 500)]
+
+The trouble is the probability P(c < 10 | b < 500) evaluates to 0.02, because
+we have assumed (a) and (c) are independent because there is no statistic
+containing both these columns, and the condition on (b) does not transfer
+sufficient amount of information between the two statistics.
+
+Currently, the only solution is to build statistics on all three columns, but
+see the 'combining statistics using convolution' section for ideas on how to
+improve this.
+
+
 Further (possibly crazy) ideas
 ------------------------------
 
@@ -184,3 +242,38 @@ But of course, this may result in expensive estimation (CPU-wise).
 
 So we might add a GUC to choose between a simple (single statistics) and thus
 multi-statistic estimation, possibly table-level parameter (ALTER TABLE ...).
+
+
+Combining stats using convolution
+---------------------------------
+
+While the current approach for combining statistics is based on conditional
+probabilities, and thus only works when the query includes conditions on the
+overlapping parts of the statistics. But there may be other ways to combine
+statistics, relaxing this requirement.
+
+Let's assume two histograms H1 and H2 - then combining them might work about
+like this:
+
+
+    for (buckets of H1, satisfying local conditions)
+    {
+        for (buckets of H2, overlapping with H1 bucket)
+        {
+            mark H2 bucket as 'valid'
+        }
+    }
+
+    s1 = s2 = 0.0
+    for (buckets of H2 marked as valid)
+    {
+        s1 += frequency
+
+        if (bucket satistifes local conditions)
+             s2 += frequency
+    }
+
+    s = (s2 / s1) /* final selectivity estimate */
+
+However this may quickly get non-trivial, e.g. when combining two statistics
+of different types (histogram vs. MCV).

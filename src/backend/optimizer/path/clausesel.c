@@ -68,6 +68,9 @@ static Bitmapset  *collect_mv_attnums(List *clauses,
 									  Oid varRelid, Index *relid, SpecialJoinInfo *sjinfo,
 									  int type);
 
+static int count_mv_attnums(List *clauses, Oid varRelid,
+							SpecialJoinInfo *sjinfo, int types);
+
 static Bitmapset *clause_mv_get_attnums(PlannerInfo *root, Node *clause);
 
 static List *clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
@@ -281,33 +284,21 @@ clauselist_selectivity(PlannerInfo *root,
 								  varRelid, jointype, sjinfo, conditions);
 
 	/*
-	 * Check that there are some stats with functional dependencies
-	 * built (by walking the stats list). We're going to find that
-	 * anyway when trying to apply the functional dependencies, but
-	 * this is probably a tad faster.
+	 * Apply functional dependencies, but first check that there are some stats
+	 * with functional dependencies built (by simply walking the stats list),
+	 * and that there are at two or more attributes referenced by clauses that
+	 * may be reduced using functional dependencies.
+	 *
+	 * We would find that anyway when trying to actually apply the functional
+	 * dependencies, but let's do the cheap checks first.
+	 *
+	 * After applying the functional dependencies we get the remainig clauses
+	 * that need to be estimated by other types of stats (MCV, histograms etc).
 	 */
-	if (has_stats(stats, MV_CLAUSE_TYPE_FDEP))
-	{
-		/*
-		 * Collect attributes referenced by mv-compatible clauses (looking
-		 * for clauses compatible with functional dependencies for now).
-		 */
-		mvattnums = collect_mv_attnums(clauses, varRelid, &relid, sjinfo,
-									   MV_CLAUSE_TYPE_FDEP);
-
-		/*
-		 * If there are mv-compatible clauses, referencing at least two
-		 * different columns (otherwise it makes no sense to use mv stats),
-		 * try to reduce the clauses using functional dependencies, and
-		 * recollect the attributes from the reduced list.
-		 *
-		 * We don't need to select a single statistics for this - we can
-		 * apply all the functional dependencies we have.
-		 */
-		if (bms_num_members(mvattnums) >= 2)
+	if (has_stats(stats, MV_CLAUSE_TYPE_FDEP) &&
+		(count_mv_attnums(clauses, varRelid, sjinfo, MV_CLAUSE_TYPE_FDEP) >= 2))
 			clauses = clauselist_apply_dependencies(root, clauses, varRelid,
 													stats, sjinfo);
-	}
 
 	/*
 	 * Check that there are statistics with MCV list or histogram.
@@ -1391,6 +1382,23 @@ collect_mv_attnums(List *clauses, Oid varRelid,
 	}
 
 	return attnums;
+}
+
+/*
+ * Count the number of attributes in clauses compatible with multivariate stats.
+ */
+static int
+count_mv_attnums(List *clauses, Oid varRelid, SpecialJoinInfo *sjinfo, int types)
+{
+	int c;
+	Bitmapset *attnums = collect_mv_attnums(clauses, varRelid,
+											NULL, sjinfo, types);
+
+	c = bms_num_members(attnums);
+
+	bms_free(attnums);
+
+	return c;
 }
 
 /*

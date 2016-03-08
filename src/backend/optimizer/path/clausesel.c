@@ -306,9 +306,6 @@ clauselist_selectivity(PlannerInfo *root,
 			 * Find clauses and conditions matching the statistic - the clauses
 			 * need to be removed from the list, while conditions should remain
 			 * there (so that we can apply them repeatedly).
-			 *
-			 * FIXME Perhaps this should also check compatibility with the type
-			 *       of stats (i.e. MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST).
 			 */
 			stat_clauses
 				= clauses_matching_statistic(&clauses, mvstat, relid,

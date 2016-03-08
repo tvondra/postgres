@@ -979,8 +979,8 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	if (fullmatch && (s1 > 0.0))
 		return s1;
 
-	/* FIXME if (fullmatch) without matching MCV item, use the mcv_low
-	 *       selectivity as upper bound */
+	/* TODO if (fullmatch) without matching MCV item, use the mcv_low
+	 *      selectivity as upper bound */
 
 	s2 = clauselist_mv_selectivity_histogram(root, clauses, mvstats);
 

@@ -2258,33 +2258,26 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 					else if (is_or && (matches[i] == MVSTATS_MATCH_FULL))
 						continue;
 
-					/* TODO consider bsearch here (list is sorted by values)
-					 * TODO handle other operators too (LT, GT)
-					 * TODO identify "full match" when the clauses fully
-					 *      match the whole MCV list (so that checking the
-					 *      histogram is not needed)
-					 */
-					if (oprrest == F_EQSEL)
+					switch (oprrest)
 					{
-						/*
-						 * We don't care about isgt in equality, because it does not
-						 * matter whether it's (var = const) or (const = var).
-						 */
-						bool match = DatumGetBool(FunctionCall2Coll(&opproc,
-															 DEFAULT_COLLATION_OID,
-															 cst->constvalue,
-															 item->values[idx]));
+						case F_EQSEL:
+							/*
+							 * We don't care about isgt in equality, because it does not
+							 * matter whether it's (var = const) or (const = var).
+							 */
+							mismatch = ! DatumGetBool(FunctionCall2Coll(&opproc,
+																 DEFAULT_COLLATION_OID,
+																 cst->constvalue,
+																 item->values[idx]));
 
-						if (match)
-							eqmatches = bms_add_member(eqmatches, idx);
+							if (! mismatch)
+								eqmatches = bms_add_member(eqmatches, idx);
 
-						mismatch = (! match);
-					}
-					else if (oprrest == F_SCALARLTSEL)	/* column < constant */
-					{
+							break;
 
-						if (! isgt)	/* (var < const) */
-						{
+						case F_SCALARLTSEL:	/* column < constant */
+						case F_SCALARGTSEL: /* column > constant */
+
 							/*
 							 * First check whether the constant is below the lower boundary (in that
 							 * case we can skip the bucket, because there's no overlap).
@@ -2294,46 +2287,10 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 																 cst->constvalue,
 																 item->values[idx]));
 
-						} /* (get_oprrest(expr->opno) == F_SCALARLTSEL) */
-						else	/* (const < var) */
-						{
-							/*
-							 * First check whether the constant is above the upper boundary (in that
-							 * case we can skip the bucket, because there's no overlap).
-							 */
-							mismatch = DatumGetBool(FunctionCall2Coll(&opproc,
-																 DEFAULT_COLLATION_OID,
-																 item->values[idx],
-																 cst->constvalue));
-						}
+							/* invert the result if isgt=true */
+							mismatch = (isgt) ? (! mismatch) : mismatch;
+							break;
 					}
-					else if (oprrest == F_SCALARGTSEL)	/* column > constant */
-					{
-
-						if (! isgt)	/* (var > const) */
-						{
-							/*
-							 * First check whether the constant is above the upper boundary (in that
-							 * case we can skip the bucket, because there's no overlap).
-							 */
-							mismatch = DatumGetBool(FunctionCall2Coll(&opproc,
-																 DEFAULT_COLLATION_OID,
-																 cst->constvalue,
-																 item->values[idx]));
-						}
-						else /* (const > var) */
-						{
-							/*
-							 * First check whether the constant is below the lower boundary (in
-							 * that case we can skip the bucket, because there's no overlap).
-							 */
-							mismatch = DatumGetBool(FunctionCall2Coll(&opproc,
-																 DEFAULT_COLLATION_OID,
-																 item->values[idx],
-																 cst->constvalue));
-						}
-
-					} /* (get_oprrest(expr->opno) == F_SCALARGTSEL) */
 
 					/* XXX The conditions on matches[i] are not needed, as we
 					 *     skip MCV items that can't become true/false, depending

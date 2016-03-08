@@ -2753,28 +2753,15 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 
 			if (ok)
 			{
-				FmgrInfo	ltproc;
+				FmgrInfo		ltproc;
 				RegProcedure	oprrest = get_oprrest(expr->opno);
 
 				Var * var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 				Const * cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
 				bool isgt = (! varonleft);
 
-				/*
-				 * TODO Fetch only when really needed (probably for equality only)
-				 *
-				 * TODO Technically either lt/gt is sufficient.
-				 *
-				 * FIXME The code in analyze.c creates histograms only for types
-				 *       with enough ordering (by calling get_sort_group_operators).
-				 *       Is this the same assumption, i.e. are we certain that we
-				 *       get the ltproc/gtproc every time we ask? Or are there types
-				 *       where get_sort_group_operators returns ltopr and here we
-				 *       get nothing?
-				 */
 				TypeCacheEntry *typecache
-					= lookup_type_cache(var->vartype, TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR
-																	   | TYPECACHE_GT_OPR);
+								= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
 
 				/* lookup dimension for the attribute */
 				int idx = mv_get_index(var->varattno, stakeys);

@@ -1276,9 +1276,9 @@ clauses_matching_statistic(List **clauses, MVStatisticInfo *statistic,
 		 * skip clauses that are not compatible with stats (just leave them
 		 * in the original list)
 		 *
-		 * FIXME Perhaps this should check what stats are actually available in
-		 *       the statistics (not a big deal now, because MCV and histograms
-		 *       handle the same types of conditions).
+		 * XXX Perhaps this should check what stats are actually available in
+		 *     the statistics (not a big deal now, because MCV and histograms
+		 *     handle the same types of conditions).
 		 */
 		if (! clause_is_mv_compatible(clause, relid, &attnums, types))
 		{

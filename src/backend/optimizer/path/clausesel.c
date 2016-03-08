@@ -1560,13 +1560,6 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 		Assert(nmvstats >= current->nstats);
 		Assert(step < nmvstats);
 
-		/* we can't get more conditions that clauses and conditions combined
-		 *
-		 * FIXME This assert does not work because we count the conditions
-		 *       repeatedly (once for each statistics covering it).
-		 */
-		/* Assert((nconditions + nclauses) >= current->nconditions); */
-
 		if (*best == NULL)
 		{
 			*best = (mv_solution_t*)palloc0(sizeof(mv_solution_t));

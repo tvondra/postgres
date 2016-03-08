@@ -2850,21 +2850,13 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 					switch (oprrest)
 					{
 						case F_SCALARLTSEL:	/* Var < Const */
+						case F_SCALARGTSEL:	/* Var > Const */
 
 							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
 															   minval, maxval,
 															   minidx, maxidx,
 															   mininclude, maxinclude,
 															   callcache, isgt);
-							break;
-
-						case F_SCALARGTSEL:	/* Const < Var */
-
-							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
-															  minval, maxval,
-															  minidx, maxidx,
-															  mininclude, maxinclude,
-															  callcache, isgt);
 							break;
 
 						case F_EQSEL:
@@ -2913,7 +2905,7 @@ update_match_bitmap_histogram(PlannerInfo *root, List *clauses,
 				else if (is_or && (matches[i] == MVSTATS_MATCH_FULL))
 					continue;
 
-				/* if the clause mismatches the MCV item, set it as MATCH_NONE */
+				/* if the clause mismatches the bucket, set it as MATCH_NONE */
 				if ((expr->nulltesttype == IS_NULL)
 					&& (! bucket->nullsonly[idx]))
 					UPDATE_RESULT(matches[i], MVSTATS_MATCH_NONE, is_or);

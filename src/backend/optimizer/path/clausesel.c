@@ -2147,16 +2147,26 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 		((nmatches == mcvlist->nitems) && is_or))
 		return nmatches;
 
-	/* frequency of the lowest MCV item */
+	/*
+	 * find the lowest frequency in the MCV list
+	 *
+	 * We need to do that here, because we do various tricks in the following
+	 * code - skipping items already ruled out, etc.
+	 *
+	 * XXX A loop is necessary because the MCV list is not sorted by frequency.
+	 */
 	*lowsel = 1.0;
+	for (i = 0; i < mcvlist->nitems; i++)
+	{
+		MCVItem item = mcvlist->items[i];
+
+		if (item->frequency < *lowsel)
+			*lowsel = item->frequency;
+	}
 
 	/*
 	 * Loop through the list of clauses, and for each of them evaluate
 	 * all the MCV items not yet eliminated by the preceding clauses.
-	 *
-	 * FIXME This would probably deserve a refactoring, I guess. Unify
-	 *       the two loops and put the checks inside, or something like
-	 *       that.
 	 */
 	foreach (l, clauses)
 	{
@@ -2174,12 +2184,10 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 		/* it's either OpClause, or NullTest */
 		if (is_opclause(clause))
 		{
-			OpExpr * expr = (OpExpr*)clause;
+			OpExpr	   *expr = (OpExpr*)clause;
 			bool		varonleft = true;
 			bool		ok;
-
-			/* operator */
-			FmgrInfo		opproc;
+			FmgrInfo	opproc;
 
 			/* get procedure computing operator selectivity */
 			RegProcedure	oprrest = get_oprrest(expr->opno);
@@ -2194,30 +2202,17 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 			if (ok)
 			{
 
-				FmgrInfo	ltproc, gtproc;
+				FmgrInfo	gtproc;
 				Var * var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 				Const * cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
 				bool isgt = (! varonleft);
 
-				/*
-				 * TODO Fetch only when really needed (probably for equality only)
-				 * TODO Technically either lt/gt is sufficient.
-				 *
-				 * FIXME The code in analyze.c creates histograms only for types
-				 *       with enough ordering (by calling get_sort_group_operators).
-				 *       Is this the same assumption, i.e. are we certain that we
-				 *       get the ltproc/gtproc every time we ask? Or are there types
-				 *       where get_sort_group_operators returns ltopr and here we
-				 *       get nothing?
-				 */
 				TypeCacheEntry *typecache
-					= lookup_type_cache(var->vartype,
-										TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
+								= lookup_type_cache(var->vartype, TYPECACHE_GT_OPR);
 
 				/* FIXME proper matching attribute to dimension */
 				int idx = mv_get_index(var->varattno, stakeys);
 
-				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
 				fmgr_info(get_opcode(typecache->gt_opr), &gtproc);
 
 				/*
@@ -2229,13 +2224,6 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 				{
 					bool mismatch = false;
 					MCVItem item = mcvlist->items[i];
-
-					/*
-					 * find the lowest selectivity in the MCV
-					 * FIXME Maybe not the best place do do this (in for all clauses).
-					 */
-					if (item->frequency < *lowsel)
-						*lowsel = item->frequency;
 
 					/*
 					 * If there are no more matches (AND) or no remaining unmatched
@@ -2333,13 +2321,6 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 			{
 				MCVItem item = mcvlist->items[i];
 
-				/*
-				 * find the lowest selectivity in the MCV
-				 * FIXME Maybe not the best place do do this (in for all clauses).
-				 */
-				if (item->frequency < *lowsel)
-					*lowsel = item->frequency;
-
 				/* if there are no more matches, we can stop processing this clause */
 				if (nmatches == 0)
 					break;
@@ -2349,8 +2330,8 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 					continue;
 
 				/* if the clause mismatches the MCV item, set it as MATCH_NONE */
-				if (((expr->nulltesttype == IS_NULL) && (! mcvlist->items[i]->isnull[idx])) ||
-					((expr->nulltesttype == IS_NOT_NULL) && (mcvlist->items[i]->isnull[idx])))
+				if (((expr->nulltesttype == IS_NULL) && (! item->isnull[idx])) ||
+					((expr->nulltesttype == IS_NOT_NULL) && (item->isnull[idx])))
 				{
 						matches[i] = MVSTATS_MATCH_NONE;
 						--nmatches;

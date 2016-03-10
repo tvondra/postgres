@@ -168,6 +168,7 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
   <title>See Also</title>
 
   <simplelist type="inline">
+   <member><xref linkend="sql-alterstatistics"></member>
    <member><xref linkend="sql-dropstatistics"></member>
   </simplelist>
  </refsect1>

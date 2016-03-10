@@ -325,7 +325,10 @@ void
 RemoveStatisticsById(Oid statsOid)
 {
 	Relation	relation;
+	Oid			relid;
+	Relation	rel;
 	HeapTuple	tup;
+	Form_pg_mv_statistic	mvstat;
 
 	/*
 	 * Delete the pg_proc tuple.
@@ -336,9 +339,17 @@ RemoveStatisticsById(Oid statsOid)
 	if (!HeapTupleIsValid(tup)) /* should not happen */
 		elog(ERROR, "cache lookup failed for statistics %u", statsOid);
 
+	mvstat = (Form_pg_mv_statistic) GETSTRUCT(tup);
+	relid = mvstat->starelid;
+
+	rel = heap_open(relid, AccessExclusiveLock);
+
 	simple_heap_delete(relation, &tup->t_self);
+
+	CacheInvalidateRelcache(rel);
 
 	ReleaseSysCache(tup);
 
 	heap_close(relation, RowExclusiveLock);
+	heap_close(rel, NoLock);
 }

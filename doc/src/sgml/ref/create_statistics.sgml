@@ -151,7 +151,30 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
   <title>Examples</title>
 
   <para>
-   ...
+   Create table <structname>t1</> with two functionally dependent columns, i.e.
+   knowledge of a value in the first column is sufficient for detemining the
+   value in the other column. Then functional dependencies are built on those
+   columns:
+
+<programlisting>
+CREATE TABLE t1 (
+    a   int,
+    b   int
+);
+
+INSERT INTO t1 SELECT i/100, i/500
+                 FROM generate_series(1,1000000) s(i);
+
+CREATE STATISTICS s1 ON t1 (a, b) WITH (dependencies);
+
+ANALYZE t1;
+
+-- valid combination of values
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE (a = 1) AND (b = 1);
+
+-- invalid combination of values
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE (a = 1) AND (b = 2);
+</programlisting>
   </para>
 
  </refsect1>

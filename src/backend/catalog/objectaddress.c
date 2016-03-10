@@ -447,7 +447,7 @@ static const ObjectPropertyType ObjectProperty[] =
 		MVSTATNAMENSP,
 		Anum_pg_mv_statistic_staname,
 		Anum_pg_mv_statistic_stanamespace,
-		InvalidAttrNumber,		/* XXX same owner as relation */
+		Anum_pg_mv_statistic_staowner,
 		InvalidAttrNumber,		/* no ACL (same as relation) */
 		-1,						/* no ACL */
 		true

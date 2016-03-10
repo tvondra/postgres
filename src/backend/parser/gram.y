@@ -8027,6 +8027,15 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
+			| ALTER STATISTICS any_name RENAME TO name
+				{
+					RenameStmt *n = makeNode(RenameStmt);
+					n->renameType = OBJECT_STATISTICS;
+					n->object = $3;
+					n->newname = $6;
+					n->missing_ok = false;
+					$$ = (Node *)n;
+				}
 		;
 
 opt_column: COLUMN									{ $$ = COLUMN; }
@@ -8263,6 +8272,15 @@ AlterObjectSchemaStmt:
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
+			| ALTER STATISTICS any_name SET SCHEMA name
+				{
+					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
+					n->objectType = OBJECT_STATISTICS;
+					n->object = $3;
+					n->newschema = $6;
+					n->missing_ok = false;
+					$$ = (Node *)n;
+				}
 		;
 
 /*****************************************************************************
@@ -8451,6 +8469,14 @@ AlterOwnerStmt: ALTER AGGREGATE func_name aggr_args OWNER TO RoleSpec
 					n->objectType = OBJECT_EVENT_TRIGGER;
 					n->object = list_make1(makeString($4));
 					n->newowner = $7;
+					$$ = (Node *)n;
+				}
+			| ALTER STATISTICS name OWNER TO RoleSpec
+				{
+					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
+					n->objectType = OBJECT_STATISTICS;
+					n->object = list_make1(makeString($3));
+					n->newowner = $6;
 					$$ = (Node *)n;
 				}
 		;

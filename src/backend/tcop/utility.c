@@ -1882,6 +1882,9 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_MATVIEW:
 			tag = "ALTER MATERIALIZED VIEW";
 			break;
+		case OBJECT_STATISTICS:
+			tag = "ALTER STATISTICS";
+			break;
 		default:
 			tag = "???";
 			break;

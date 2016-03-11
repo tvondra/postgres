@@ -26,128 +26,103 @@
 /*
  * Each serialized item needs to store (in this order):
  *
- * - indexes              (ndim * sizeof(int32))
+ * - indexes              (ndim * sizeof(uint16))
  * - null flags           (ndim * sizeof(bool))
  * - frequency            (sizeof(double))
  *
  * So in total:
  *
- *   ndim * (sizeof(int32) + sizeof(bool)) + sizeof(double)
+ *   ndim * (sizeof(uint16) + sizeof(bool)) + sizeof(double)
  */
 #define ITEM_SIZE(ndims)	\
 	(ndims * (sizeof(uint16) + sizeof(bool)) + sizeof(double))
 
-/* pointers into a flat serialized item of ITEM_SIZE(n) bytes */
+/* Macros for convenient access to parts of the serialized MCV item */
 #define ITEM_INDEXES(item)			((uint16*)item)
 #define ITEM_NULLS(item,ndims)		((bool*)(ITEM_INDEXES(item) + ndims))
 #define ITEM_FREQUENCY(item,ndims)	((double*)(ITEM_NULLS(item,ndims) + ndims))
 
+static MultiSortSupport build_mss(VacAttrStats **stats, int2vector *attrs);
+
+static SortItem *build_sorted_items(int numrows, HeapTuple *rows,
+									TupleDesc tdesc, MultiSortSupport mss,
+									int2vector *attrs);
+
+static SortItem *build_distinct_groups(int numrows, SortItem *items,
+									   MultiSortSupport mss, int *ndistinct);
+
+static int count_distinct_groups(int numrows, SortItem *items,
+								 MultiSortSupport mss);
+
+static void * bsearch_arg(const void *key, const void *base,
+						  size_t nmemb, size_t size,
+						  int (*compar) (const void *, const void *, void *),
+						  void *arg);
+
 /*
- * Builds MCV list from sample rows, and removes rows represented by
- * the MCV list from the sample (the number of remaining sample rows is
- * returned by the numrows_filtered parameter).
+ * Builds MCV list from the set of sampled rows.
  *
- * The method is quite simple - in short it does about these steps:
+ * The algorithm is quite simple:
  *
- *       (1) sort the data (default collation, '<' for the data type)
+ *     (1) sort the data (default collation, '<' for the data type)
  *
- *       (2) count distinct groups, decide how many to keep
+ *     (2) count distinct groups, decide how many to keep
  *
- *       (3) build the MCV list using the threshold determined in (2)
+ *     (3) build the MCV list using the threshold determined in (2)
  *
- *       (4) remove rows represented by the MCV from the sample
+ *     (4) remove rows represented by the MCV from the sample
  *
- * For more details, see the comments in the code.
+ * The method also removes rows matching the MCV items from the input array,
+ * and passes the number of remaining rows (useful for building histograms)
+ * using the numrows_filtered parameter.
  *
  * FIXME Use max_mcv_items from ALTER TABLE ADD STATISTICS command.
  *
- * FIXME Single-dimensional MCV is sorted by frequency (descending). We
- *       should do that too, because when walking through the list we
- *       want to check the most frequent items first.
+ * FIXME Single-dimensional MCV is sorted by frequency (descending). We should
+ *       do that too, because when walking through the list we want to check
+ *       the most frequent items first.
  *
- * TODO We're using Datum (8B), even for data types (e.g. int4 or
- *      float4). Maybe we could save some space here, but the bytea
- *      compression should handle it just fine.
+ * TODO We're using Datum (8B), even for data types (e.g. int4 or float4).
+ *      Maybe we could save some space here, but the bytea compression should
+ *      handle it just fine.
  *
- * TODO This probably should not use the ndistinct directly (as computed
- *      from the table, but rather estimate the number of distinct
- *      values in the table), no?
+ * TODO This probably should not use the ndistinct directly (as computed from
+ *      the table, but rather estimate the number of distinct values in the
+ *      table), no?
  */
 MCVList
 build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 					  VacAttrStats **stats, int *numrows_filtered)
 {
-	int i, j;
+	int i;
 	int numattrs = attrs->dim1;
 	int ndistinct = 0;
 	int mcv_threshold = 0;
-	int count = 0;
 	int nitems = 0;
 
 	MCVList	mcvlist = NULL;
 
-	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(numattrs);
+	/* comparator for all the columns */
+	MultiSortSupport mss = build_mss(stats, attrs);
+
+	/* sort the rows */
+	SortItem   *items  = build_sorted_items(numrows, rows, stats[0]->tupDesc,
+											mss, attrs);
+
+	/* transform the sorted rows into groups (sorted by frequency) */
+	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
 
 	/*
-	 * Preallocate space for all the items as a single chunk, and point
-	 * the items to the appropriate parts of the array.
-	 */
-	SortItem   *items  = (SortItem*)palloc0(numrows * sizeof(SortItem));
-	Datum	   *values = (Datum*)palloc0(sizeof(Datum) * numrows * numattrs);
-	bool	   *isnull = (bool*)palloc0(sizeof(bool) * numrows * numattrs);
-
-	/* keep all the rows by default (as if there was no MCV list) */
-	*numrows_filtered = numrows;
-
-	for (i = 0; i < numrows; i++)
-	{
-		items[i].values = &values[i * numattrs];
-		items[i].isnull = &isnull[i * numattrs];
-	}
-
-	/* load the values/null flags from sample rows */
-	for (j = 0; j < numrows; j++)
-		for (i = 0; i < numattrs; i++)
-			items[j].values[i] = heap_getattr(rows[j], attrs->values[i],
-								stats[i]->tupDesc, &items[j].isnull[i]);
-
-	/* prepare the sort functions for all the attributes */
-	for (i = 0; i < numattrs; i++)
-		multi_sort_add_dimension(mss, i, i, stats);
-
-	/* do the sort, using the multi-sort */
-	qsort_arg((void *) items, numrows, sizeof(SortItem),
-				multi_sort_compare, mss);
-
-	/*
-	 * Count the number of distinct groups - just walk through the
-	 * sorted list and count the number of key changes. We use this to
-	 * determine the threshold (125% of the average frequency).
-	 */
-	ndistinct = 1;
-	for (i = 1; i < numrows; i++)
-		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
-			ndistinct += 1;
-
-	/*
-	 * Determine how many groups actually exceed the threshold, and then
-	 * walk the array again and collect them into an array. We'll always
-	 * require at least 4 rows per group.
+	 * Determine the minimum size of a group to be eligible for MCV list, and
+	 * check how many groups actually pass that threshold. We use 1.25x the
+	 * avarage group size, just like for regular statistics.
 	 *
-	 * But if we can fit all the distinct values in the MCV list (i.e.
-	 * if there are less distinct groups than MVSTAT_MCVLIST_MAX_ITEMS),
-	 * we'll require only 2 rows per group.
+	 * But if we can fit all the distinct values in the MCV list (i.e. if there
+	 * are less distinct groups than MVSTAT_MCVLIST_MAX_ITEMS), we'll require
+	 * only 2 rows per group.
 	 *
-	 * TODO For now the threshold is the same as in the single-column
-	 *      case (average + 25%), but maybe that's worth revisiting
-	 *      for the multivariate case.
-	 *
-	 * TODO We can do this only if we believe we got all the distinct
-	 *      values of the table.
-	 *
-	 * FIXME This should really reference mcv_max_items (from catalog)
-	 *       instead of the constant MVSTAT_MCVLIST_MAX_ITEMS.
+	 * FIXME This should really reference mcv_max_items (from catalog) instead
+	 * 		 of the constant MVSTAT_MCVLIST_MAX_ITEMS.
 	 */
 	mcv_threshold = 1.25 * numrows / ndistinct;
 	mcv_threshold = (mcv_threshold < 4) ? 4  : mcv_threshold;
@@ -155,24 +130,14 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 	if (ndistinct <= MVSTAT_MCVLIST_MAX_ITEMS)
 		mcv_threshold = 2;
 
-	/*
-	 * Walk through the sorted data again, and see how many groups
-	 * reach the mcv_threshold (and become an item in the MCV list).
-	 */
-	count = 1;
-	for (i = 1; i <= numrows; i++)
+	/* Walk through the groups and stop once we fall below the threshold. */
+	nitems = 0;
+	for (i = 0; i < ndistinct; i++)
 	{
-		/* last row or new group, so check if we exceed  mcv_threshold */
-		if ((i == numrows) || (multi_sort_compare(&items[i], &items[i-1], mss) != 0))
-		{
-			/* group hits the threshold, count the group as MCV item */
-			if (count >= mcv_threshold)
-				nitems += 1;
+		if (groups[i].count < mcv_threshold)
+			break;
 
-			count = 1;
-		}
-		else	/* within group, so increase the number of items */
-			count += 1;
+		nitems++;
 	}
 
 	/* we know the number of MCV list items, so let's build the list */
@@ -187,17 +152,10 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 		mcvlist->nitems = nitems;
 
 		/*
-		 * Preallocate Datum/isnull arrays (not as a single chunk, as
-		 * we'll pass this outside this method and thus it needs to be
-		 * easy to pfree() the data (and we wouldn't know where the
-		 * arrays start).
+		 * Preallocate Datum/isnull arrays (not as a single chunk, as we will
+		 * pass the result outside and thus it needs to be easy to pfree().
 		 *
-		 * TODO Maybe the reasoning that we can't allocate a single
-		 *      piece because we're passing it out is bogus? Who'd
-		 *      free a single item of the MCV list, anyway?
-		 *
-		 * TODO Maybe with a proper encoding (stuffing all the values
-		 *      into a list-level array, this will be untrue)?
+		 * XXX Although we're the only ones dealing with this.
 		 */
 		mcvlist->items = (MCVItem*)palloc0(sizeof(MCVItem)*nitems);
 
@@ -208,145 +166,245 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 			mcvlist->items[i]->isnull = (bool*)palloc0(sizeof(bool)*numattrs);
 		}
 
-		/*
-		 * Repeat the same loop as above, but this time copy the data
-		 * into the MCV list (for items exceeding the threshold).
-		 *
-		 * TODO Maybe we could simply remember indexes of the last item
-		 *      in each group (from the previous loop)?
-		 */
-		count = 1;
-		nitems = 0;
-		for (i = 1; i <= numrows; i++)
+		/* Copy the first chunk of groups into the result. */
+		for (i = 0; i < nitems; i++)
 		{
-			/* last row or a new group */
-			if ((i == numrows) || (multi_sort_compare(&items[i], &items[i-1], mss) != 0))
-			{
-				/* count the MCV item if exceeding the threshold (and copy into the array) */
-				if (count >= mcv_threshold)
-				{
-					/* just pointer to the proper place in the list */
-					MCVItem item = mcvlist->items[nitems];
+			/* just pointer to the proper place in the list */
+			MCVItem item = mcvlist->items[i];
 
-					/* copy values from the _previous_ group (last item of) */
-					memcpy(item->values, items[(i-1)].values, sizeof(Datum) * numattrs);
-					memcpy(item->isnull, items[(i-1)].isnull, sizeof(bool)  * numattrs);
+			/* copy values from the _previous_ group (last item of) */
+			memcpy(item->values, groups[i].values, sizeof(Datum) * numattrs);
+			memcpy(item->isnull, groups[i].isnull, sizeof(bool)  * numattrs);
 
-
-					/* and finally the group frequency */
-					item->frequency = (double)count / numrows;
-
-					/* next item */
-					nitems += 1;
-				}
-
-				count = 1;
-			}
-			else	/* same group, just increase the number of items */
-				count += 1;
+			/* and finally the group frequency */
+			item->frequency = (double)groups[i].count / numrows;
 		}
 
 		/* make sure the loops are consistent */
 		Assert(nitems == mcvlist->nitems);
 
 		/*
-		 * Remove the rows matching the MCV list (i.e. keep only rows
-		 * that are not represented by the MCV list).
-		 *
-		 * FIXME This implementation is rather naive, effectively O(N^2).
-		 *       As the MCV list grows, the check will take longer and
-		 *       longer. And as the number of sampled rows increases (by
-		 *       increasing statistics target), it will take longer and
-		 *       longer. One option is to sort the MCV items first and
-		 *       then perform a binary search.
-		 *
-		 *       A better option would be keeping the ID of the row in
-		 *       the sort item, and then just walk through the items and
-		 *       mark rows to remove (in a bitmap of the same size).
-		 *       There's not space for that in SortItem at this moment,
-		 *       but it's trivial to add 'private' pointer, or just
-		 *       using another structure with extra field (starting with
-		 *       SortItem, so that the comparators etc. still work).
-		 *
-		 *       Another option is to use the sorted array of items
-		 *       (because that's how we sorted the source data), and
-		 *       simply do a bsearch() into it. If we find a matching
-		 *       item, the row belongs to the MCV list.
+		 * Remove the rows matching the MCV list (i.e. keep only rows that are
+		 * not represented by the MCV list). We will first sort the groups
+		 * by the keys (not by count) and then use binary search.
 		 */
-		if (nitems == ndistinct) /* all rows are covered by MCV items */
-			*numrows_filtered = 0;
-		else /* (nitems < ndistinct) && (nitems > 0) */
+		if (nitems > ndistinct)
 		{
+			int i, j;
 			int nfiltered = 0;
-			HeapTuple *rows_filtered = (HeapTuple*)palloc0(sizeof(HeapTuple) * numrows);
 
 			/* used for the searches */
-			SortItem item, mcvitem;;
+			SortItem key;
 
-			item.values = (Datum*)palloc0(numattrs * sizeof(Datum));
-			item.isnull = (bool*)palloc0(numattrs * sizeof(bool));
+			/* wfill this with data from the rows */
+			key.values = (Datum*)palloc0(numattrs * sizeof(Datum));
+			key.isnull = (bool*)palloc0(numattrs * sizeof(bool));
 
 			/*
-			 * FIXME we don't need to allocate this, we can reference
-			 *       the MCV item directly ...
+			 * Sort the groups for bsearch_r (but only the items that actually
+			 * made it to the MCV list).
 			 */
-			mcvitem.values = (Datum*)palloc0(numattrs * sizeof(Datum));
-			mcvitem.isnull = (bool*)palloc0(numattrs * sizeof(bool));
+			qsort_arg((void *) groups, nitems, sizeof(SortItem),
+					  multi_sort_compare, mss);
 
 			/* walk through the tuples, compare the values to MCV items */
 			for (i = 0; i < numrows; i++)
 			{
-				bool	match = false;
-
 				/* collect the key values from the row */
 				for (j = 0; j < numattrs; j++)
-					item.values[j] = heap_getattr(rows[i], attrs->values[j],
-										stats[j]->tupDesc, &item.isnull[j]);
+					key.values[j]
+						= heap_getattr(rows[i], attrs->values[j],
+									   stats[j]->tupDesc, &key.isnull[j]);
 
-				/* scan through the MCV list for matches */
-				for (j = 0; j < mcvlist->nitems; j++)
-				{
-					/*
-					 * TODO Create a SortItem/MCVItem comparator so that
-					 *      we don't need to do memcpy() like crazy.
-					 */
-					memcpy(mcvitem.values, mcvlist->items[j]->values,
-							numattrs * sizeof(Datum));
-					memcpy(mcvitem.isnull, mcvlist->items[j]->isnull,
-							numattrs * sizeof(bool));
-
-					if (multi_sort_compare(&item, &mcvitem, mss) == 0)
-					{
-						match = true;
-						break;
-					}
-				}
-
-				/* if no match in the MCV list, copy the row into the filtered ones */
-				if (! match)
-					memcpy(&rows_filtered[nfiltered++], &rows[i], sizeof(HeapTuple));
+				/* if not included in the MCV list, keep it in the array */
+				if (bsearch_arg(&key, groups, nitems, sizeof(SortItem),
+								multi_sort_compare, mss) == NULL)
+					rows[nfiltered++] = rows[i];
 			}
 
-			/* replace the rows and remember how many rows we kept */
-			memcpy(rows, rows_filtered, sizeof(HeapTuple) * nfiltered);
+			/* remember how many rows we actually kept */
 			*numrows_filtered = nfiltered;
 
 			/* free all the data used here */
-			pfree(rows_filtered);
-			pfree(item.values);
-			pfree(item.isnull);
-			pfree(mcvitem.values);
-			pfree(mcvitem.isnull);
+			pfree(key.values);
+			pfree(key.isnull);
 		}
+		else
+			/* the MCV list convers all the rows */
+			*numrows_filtered = 0;
 	}
 
-	pfree(values);
 	pfree(items);
-	pfree(isnull);
+	pfree(groups);
 
 	return mcvlist;
 }
 
+/* build MultiSortSupport for the attributes passed in attrs */
+static MultiSortSupport
+build_mss(VacAttrStats **stats, int2vector *attrs)
+{
+	int	i;
+	int	numattrs = attrs->dim1;
+
+	/* Sort by multiple columns (using array of SortSupport) */
+	MultiSortSupport mss = multi_sort_init(numattrs);
+
+	/* prepare the sort functions for all the attributes */
+	for (i = 0; i < numattrs; i++)
+		multi_sort_add_dimension(mss, i, i, stats);
+
+	return mss;
+}
+
+/* build sorted array of SortItem with values from rows */
+static SortItem *
+build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
+				   MultiSortSupport mss, int2vector *attrs)
+{
+	int	i, j, len;
+	int	numattrs = attrs->dim1;
+	int	nvalues = numrows * numattrs;
+
+	/*
+	 * We won't allocate the arrays for each item independenly, but in one large
+	 * chunk and then just set the pointers.
+	 */
+	SortItem   *items;
+	Datum	   *values;
+	bool	   *isnull;
+	char	   *ptr;
+
+	/* Compute the total amount of memory we need (both items and values). */
+	len = numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
+
+	/* Allocate the memory and split it into the pieces. */
+	ptr = palloc0(len);
+
+	/* items to sort */
+	items = (SortItem*)ptr;
+	ptr += numrows * sizeof(SortItem);
+
+	/* values and null flags */
+	values = (Datum*)ptr;
+	ptr += nvalues * sizeof(Datum);
+
+	isnull = (bool*)ptr;
+	ptr += nvalues * sizeof(bool);
+
+	/* make sure we consumed the whole buffer exactly */
+	Assert((ptr - (char*)items) == len);
+
+	/* fix the pointers to Datum and bool arrays */
+	for (i = 0; i < numrows; i++)
+	{
+		items[i].values = &values[i * numattrs];
+		items[i].isnull = &isnull[i * numattrs];
+
+		/* load the values/null flags from sample rows */
+		for (j = 0; j < numattrs; j++)
+		{
+			items[i].values[j] = heap_getattr(rows[i],
+										  attrs->values[j], /* attnum */
+										  tdesc,
+										  &items[i].isnull[j]);	/* isnull */
+		}
+	}
+
+	/* do the sort, using the multi-sort */
+	qsort_arg((void *) items, numrows, sizeof(SortItem),
+			  multi_sort_compare, mss);
+
+	return items;
+}
+
+/* count distinct combinations of SortItems in the array */
+static int
+count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
+{
+	int i;
+	int ndistinct;
+
+	ndistinct = 1;
+	for (i = 1; i < numrows; i++)
+		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
+			ndistinct += 1;
+
+	return ndistinct;
+}
+
+/* compares frequencies of the SortItem entries (in descending order) */
+static int
+compare_sort_item_count(const void *a, const void *b)
+{
+	SortItem *ia = (SortItem *)a;
+	SortItem *ib = (SortItem *)b;
+
+	if (ia->count == ib->count)
+		return 0;
+	else if (ia->count > ib->count)
+		return -1;
+
+	return 1;
+}
+
+/* builds SortItems for distinct groups and counts the matching items */
+static SortItem *
+build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
+					  int *ndistinct)
+{
+	int	i, j;
+	int ngroups = count_distinct_groups(numrows, items, mss);
+
+	SortItem *groups = (SortItem*)palloc0(ngroups * sizeof(SortItem));
+
+	j = 0;
+	groups[0] = items[0];
+	groups[0].count = 1;
+
+	for (i = 1; i < numrows; i++)
+	{
+		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
+			groups[++j] = items[i];
+
+		groups[j].count++;
+	}
+
+	pg_qsort((void *) groups, ngroups, sizeof(SortItem),
+			 compare_sort_item_count);
+
+	*ndistinct = ngroups;
+	return groups;
+}
+
+/* simple counterpart to qsort_arg */
+static void *
+bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
+			int (*compar) (const void *, const void *, void *),
+			void *arg)
+{
+	size_t l, u, idx;
+	const void *p;
+	int comparison;
+
+	l = 0;
+	u = nmemb;
+	while (l < u)
+	{
+		idx = (l + u) / 2;
+		p = (void *) (((const char *) base) + (idx * size));
+		comparison = (*compar) (key, p, arg);
+
+		if (comparison < 0)
+			u = idx;
+		else if (comparison > 0)
+			l = idx + 1;
+		else
+			return (void *) p;
+	}
+
+	return NULL;
+}
 
 /* fetch the MCV list (as a bytea) from the pg_mv_statistic catalog */
 MCVList

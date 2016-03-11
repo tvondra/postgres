@@ -66,6 +66,7 @@ typedef MultiSortSupportData* MultiSortSupport;
 typedef struct SortItem {
 	Datum  *values;
 	bool   *isnull;
+	int		count;
 } SortItem;
 
 MultiSortSupport multi_sort_init(int ndims);

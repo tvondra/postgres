@@ -121,12 +121,22 @@ The algorithm of building a histogram in general is quite simple:
         (4) partition the bucket by the selected dimension
 
 The main complexity is hidden in steps (c.1) and (c.3), i.e. how we choose the
-bucket and dimension for the split.
+bucket and dimension for the split, as discussed in the next section.
+
+
+Partitioning criteria
+---------------------
 
 Similarly to one-dimensional histograms, we want to produce buckets with roughly
-the same frequency. We also need to produce "regular" buckets, because buckets
-with one "side" much longer than the others are very likely to match a lot of
-conditions (which increases error, even if the bucket frequency is very low).
+the same frequency.
+
+We also need to produce "regular" buckets, because buckets with one dimension
+much longer than the others are very likely to match a lot of conditions (which
+increases error, even if the bucket frequency is very low).
+
+This is especially important when handling OR-clauses, because in that case each
+clause may add buckets independently. With AND-clauses all the clauses have to
+match each bucket, which makes this issue somewhat less concenrning.
 
 To achieve this, we choose the largest bucket (containing the most sample rows),
 but we only choose buckets that can actually be split (have at least 3 different
@@ -135,7 +145,9 @@ combinations of values).
 Then we choose the "longest" dimension of the bucket, which is computed by using
 the distinct values in the sample as a measure.
 
-For details see functions select_bucket_to_partition() and partition_bucket().
+For details see functions select_bucket_to_partition() and partition_bucket(),
+which also includes further discussion.
+
 
 The current limit on number of buckets (16384) is mostly arbitrary, but chosen
 so that it guarantees we don't exceed the number of distinct values indexable by

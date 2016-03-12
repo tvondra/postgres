@@ -48,7 +48,8 @@ static void update_dimension_ndistinct(MVBucket bucket, int dimension,
 static void create_null_buckets(MVHistogram histogram, int bucket_idx,
 								int2vector *attrs, VacAttrStats ** stats);
 
-static int bsearch_comparator(const void * a, const void * b);
+static Datum * build_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
+							   VacAttrStats **stats, int i, int *nvals);
 
 /*
  * Each serialized bucket needs to store (in this order):
@@ -58,19 +59,18 @@ static int bsearch_comparator(const void * a, const void * b);
  * - min inclusive flags  (ndim * sizeof(bool))
  * - max inclusive flags  (ndim * sizeof(bool))
  * - null dimension flags (ndim * sizeof(bool))
- * - min boundary indexes (2 * ndim * sizeof(int32))
- * - max boundary indexes (2 * ndim * sizeof(int32))
+ * - min boundary indexes (2 * ndim * sizeof(uint16))
+ * - max boundary indexes (2 * ndim * sizeof(uint16))
  *
  * So in total:
  *
- *   ndim * (4 * sizeof(int32) + 3 * sizeof(bool)) +
- *   2 * sizeof(float)
+ *   ndim * (4 * sizeof(uint16) + 3 * sizeof(bool)) + (2 * sizeof(float))
  */
 #define BUCKET_SIZE(ndims)	\
 	(ndims * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
 
 /* pointers into a flat serialized bucket of BUCKET_SIZE(n) bytes */
-#define BUCKET_NTUPLES(b)		((float*)b)
+#define BUCKET_NTUPLES(b)		(*(float*)b)
 #define BUCKET_MIN_INCL(b,n)	((bool*)(b + sizeof(float)))
 #define BUCKET_MAX_INCL(b,n)	(BUCKET_MIN_INCL(b,n) + n)
 #define BUCKET_NULLS_ONLY(b,n)	(BUCKET_MAX_INCL(b,n) + n)
@@ -101,21 +101,21 @@ typedef struct HistogramBuildData {
 typedef HistogramBuildData	*HistogramBuild;
 
 /*
- * Building a multivariate algorithm. In short it first creates a single
- * bucket containing all the rows, and then repeatedly split is by first
- * searching for the bucket / dimension most in need of a split.
+ * builds a multivariate algorithm
  *
- * The current criteria is rather simple, chosen so that the algorithm
- * produces buckets with about equal frequency and regular size.
+ * The build algorithm is iterative - initially a single bucket containing all
+ * the sample rows is formed, and then repeatedly split into smaller buckets.
+ * In each step the largest bucket (in some sense) is chosen to be split next.
  *
- * See the discussion at select_bucket_to_partition and partition_bucket
- * for more details about the algorithm.
+ * The criteria for selecting the largest bucket (and the dimension for the
+ * split) needs to be elaborate enough to produce buckets of roughly the same
+ * size, and also regular shape (not very long in one dimension).
  *
  * The current algorithm works like this:
  *
  *     build NULL-buckets (create_null_buckets)
  *
- *     while [not reaching maximum number of buckets]
+ *     while [maximum number of buckets not reached]
  *
  *         choose bucket to partition (largest bucket)
  *             if no bucket to partition
@@ -123,6 +123,9 @@ typedef HistogramBuildData	*HistogramBuild;
  *
  *         choose bucket dimension to partition (largest dimension)
  *             split the bucket into two buckets
+ *
+ * See the discussion at select_bucket_to_partition and partition_bucket for
+ * more details about the algorithm.
  */
 MVHistogram
 build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
@@ -134,18 +137,22 @@ build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
 	int			   *ndistvalues;
 	Datum		  **distvalues;
 
-	MVHistogram histogram = (MVHistogram)palloc0(sizeof(MVHistogramData));
+	MVHistogram		histogram;
 
 	HeapTuple * rows_copy = (HeapTuple*)palloc0(numrows * sizeof(HeapTuple));
 	memcpy(rows_copy, rows, sizeof(HeapTuple) * numrows);
 
 	Assert((numattrs >= 2) && (numattrs <= MVSTATS_MAX_DIMENSIONS));
 
-	histogram->ndimensions = numattrs;
+	/* build histogram header */
+
+	histogram = (MVHistogram)palloc0(sizeof(MVHistogramData));
 
 	histogram->magic = MVSTAT_HIST_MAGIC;
 	histogram->type  = MVSTAT_HIST_TYPE_BASIC;
+
 	histogram->nbuckets = 1;
+	histogram->ndimensions = numattrs;
 
 	/* create max buckets (better than repalloc for short-lived objects) */
 	histogram->buckets
@@ -156,122 +163,142 @@ build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
 		= create_initial_mv_bucket(numrows, rows_copy, attrs, stats);
 
 	/*
-	 * Collect info on distinct values in each dimension (used later
-	 * to select dimension to partition).
+	 * Collect info on distinct values in each dimension (used later to select
+	 * dimension to partition).
 	 */
 	ndistvalues = (int*)palloc0(sizeof(int) * numattrs);
 	distvalues  = (Datum**)palloc0(sizeof(Datum*) * numattrs);
 
 	for (i = 0; i < numattrs; i++)
-	{
-		int				j;
-		int				nvals;
-		Datum		   *tmp;
-
-		SortSupportData	ssup;
-		StdAnalyzeData *mystats = (StdAnalyzeData *) stats[i]->extra_data;
-
-		/* initialize sort support, etc. */
-		memset(&ssup, 0, sizeof(ssup));
-		ssup.ssup_cxt = CurrentMemoryContext;
-
-		/* We always use the default collation for statistics */
-		ssup.ssup_collation = DEFAULT_COLLATION_OID;
-		ssup.ssup_nulls_first = false;
-
-		PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
-
-		nvals = 0;
-		tmp = (Datum*)palloc0(sizeof(Datum) * numrows);
-
-		for (j = 0; j < numrows; j++)
-		{
-			bool	isnull;
-
-			/* remember the index of the sample row, to make the partitioning simpler */
-			Datum	value = heap_getattr(rows[j], attrs->values[i],
-										 stats[i]->tupDesc, &isnull);
-
-			if (isnull)
-				continue;
-
-			tmp[nvals++] = value;
-		}
-
-		/* do the sort and stuff only if there are non-NULL values */
-		if (nvals > 0)
-		{
-			/* sort the array of values */
-			qsort_arg((void *) tmp, nvals, sizeof(Datum),
-					  compare_scalars_simple, (void *) &ssup);
-
-			/* count distinct values */
-			ndistvalues[i] = 1;
-			for (j = 1; j < nvals; j++)
-				if (compare_scalars_simple(&tmp[j], &tmp[j-1], &ssup) != 0)
-					ndistvalues[i] += 1;
-
-			/* FIXME allocate only needed space (count ndistinct first) */
-			distvalues[i] = (Datum*)palloc0(sizeof(Datum) * ndistvalues[i]);
-
-			/* now collect distinct values into the array */
-			distvalues[i][0] = tmp[0];
-			ndistvalues[i] = 1;
-
-			for (j = 1; j < nvals; j++)
-			{
-				if (compare_scalars_simple(&tmp[j], &tmp[j-1], &ssup) != 0)
-				{
-					distvalues[i][ndistvalues[i]] = tmp[j];
-					ndistvalues[i] += 1;
-				}
-			}
-		}
-
-		pfree(tmp);
-	}
+		distvalues[i] = build_ndistinct(numrows, rows, attrs, stats, i,
+										&ndistvalues[i]);
 
 	/*
-	 * The initial bucket may contain NULL values, so we have to create
-	 * buckets with NULL-only dimensions.
-	 *
-	 * FIXME We may need up to 2^ndims buckets - check that there are
-	 *       enough buckets (MVSTAT_HIST_MAX_BUCKETS >= 2^ndims).
+	 * Split the initial bucket into buckets that don't mix NULL and non-NULL
+	 * values in a single dimension.
 	 */
 	create_null_buckets(histogram, 0, attrs, stats);
 
+	/*
+	 * Do the actual histogram build - select a bucket and split it.
+	 *
+	 * FIXME This should use  the max_buckets specified in CREATE STATISTICS.
+	 */
 	while (histogram->nbuckets < MVSTAT_HIST_MAX_BUCKETS)
 	{
 		MVBucket bucket = select_bucket_to_partition(histogram->nbuckets,
 													 histogram->buckets);
 
-		/* no more buckets to partition */
+		/* no buckets eligible for partitioning */
 		if (bucket == NULL)
 			break;
 
-		histogram->buckets[histogram->nbuckets]
-			= partition_bucket(bucket, attrs, stats,
-							   ndistvalues, distvalues);
-
-		histogram->nbuckets += 1;
+		/* we modify the bucket in-place and add one new bucket */
+		histogram->buckets[histogram->nbuckets++]
+			= partition_bucket(bucket, attrs, stats, ndistvalues, distvalues);
 	}
 
-	/* finalize the frequencies etc. */
+	/* finalize the histogram build - compute the frequencies etc. */
 	for (i = 0; i < histogram->nbuckets; i++)
 	{
 		HistogramBuild build_data
 			= ((HistogramBuild)histogram->buckets[i]->build_data);
 
 		/*
-		 * The frequency has to be computed from the whole sample, in
-		 * case some of the rows were used for MCV (and thus are missing
-		 * from the histogram).
+		 * The frequency has to be computed from the whole sample, in case some
+		 * of the rows were used for MCV.
+		 *
+		 * XXX Perhaps this should simply compute frequency with respect to the
+		 *     local freuquency, and then factor-in the MCV later.
+		 *
+		 * FIXME The 'ntuples' sounds a bit inappropriate for frequency.
 		 */
 		histogram->buckets[i]->ntuples
 			= (build_data->numrows * 1.0) / numrows_total;
 	}
 
 	return histogram;
+}
+
+/* build array of distinct values for a single attribute */
+static Datum *
+build_ndistinct(int numrows, HeapTuple *rows, int2vector *attrs,
+				VacAttrStats **stats, int i, int *nvals)
+{
+	int				j;
+	int				nvalues,
+					ndistinct;
+	Datum		   *values,
+				   *distvalues;
+
+	SortSupportData	ssup;
+	StdAnalyzeData *mystats = (StdAnalyzeData *) stats[i]->extra_data;
+
+	/* initialize sort support, etc. */
+	memset(&ssup, 0, sizeof(ssup));
+	ssup.ssup_cxt = CurrentMemoryContext;
+
+	/* We always use the default collation for statistics */
+	ssup.ssup_collation = DEFAULT_COLLATION_OID;
+	ssup.ssup_nulls_first = false;
+
+	PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
+
+	nvalues = 0;
+	values = (Datum*)palloc0(sizeof(Datum) * numrows);
+
+	/* collect values from the sample rows, ignore NULLs */
+	for (j = 0; j < numrows; j++)
+	{
+		Datum	value;
+		bool	isnull;
+
+		/* remember the index of the sample row, to make the partitioning simpler */
+		value = heap_getattr(rows[j], attrs->values[i],
+							 stats[i]->tupDesc, &isnull);
+
+		if (isnull)
+			continue;
+
+		values[nvalues++] = value;
+	}
+
+	/* if no non-NULL values were found, free the memory and terminate */
+	if (nvalues == 0)
+	{
+		pfree(values);
+		return NULL;
+	}
+
+	/* sort the array of values using the SortSupport */
+	qsort_arg((void *) values, nvalues, sizeof(Datum),
+			  compare_scalars_simple, (void *) &ssup);
+
+	/* count the distinct values first, and allocate just enough memory */
+	ndistinct = 1;
+	for (j = 1; j < nvalues; j++)
+		if (compare_scalars_simple(&values[j], &values[j-1], &ssup) != 0)
+			ndistinct += 1;
+
+	distvalues = (Datum*)palloc0(sizeof(Datum) * ndistinct);
+
+	/* now collect distinct values into the array */
+	distvalues[0] = values[0];
+	ndistinct = 1;
+
+	for (j = 1; j < nvalues; j++)
+	{
+		if (compare_scalars_simple(&values[j], &values[j-1], &ssup) != 0)
+		{
+			distvalues[ndistinct] = values[j];
+			ndistinct += 1;
+		}
+	}
+
+	pfree(values);
+
+	*nvals = ndistinct;
+	return distvalues;
 }
 
 /* fetch the histogram (as a bytea) from the pg_mv_statistic catalog */
@@ -321,10 +348,6 @@ pg_mv_stats_histogram_info(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
 
-
-/* used to pass context into bsearch() */
-static SortSupport ssup_private = NULL;
-
 /*
  * Serialize the MV histogram into a bytea value. The basic algorithm is quite
  * simple, and mostly mimincs the MCV serialization:
@@ -362,6 +385,9 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 	bytea  *output = NULL;
 	char   *data = NULL;
 
+	DimensionInfo  *info;
+	SortSupport		ssup;
+
 	int		nbuckets = histogram->nbuckets;
 	int		ndims    = histogram->ndimensions;
 
@@ -374,11 +400,10 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 	int	   *counts = (int*)palloc0(sizeof(int) * ndims);
 
 	/* info about dimensions (for deserialize) */
-	DimensionInfo * info
-				= (DimensionInfo *)palloc0(sizeof(DimensionInfo)*ndims);
+	info = (DimensionInfo *)palloc0(sizeof(DimensionInfo)*ndims);
 
 	/* sort support data */
-	SortSupport	ssup = (SortSupport)palloc0(sizeof(SortSupportData)*ndims);
+	ssup = (SortSupport)palloc0(sizeof(SortSupportData)*ndims);
 
 	/* collect and deduplicate values for each dimension separately */
 	for (i = 0; i < ndims; i++)
@@ -391,9 +416,9 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 		info[i].typbyval = stats[i]->attrtype->typbyval;
 
 		/*
-		 * Allocate space for all min/max values, including NULLs
-		 * (we won't use them, but we don't know how many are there),
-		 * and then collect all non-NULL values.
+		 * Allocate space for all min/max values, including NULLs (we won't use
+		 * them, but we don't know how many are there), and then collect all
+		 * non-NULL values.
 		 */
 		values[i] = (Datum*)palloc0(sizeof(Datum) * nbuckets * 2);
 
@@ -489,9 +514,9 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 		total_length += info[i].nbytes;
 
 	/* enforce arbitrary limit of 1MB */
-	if (total_length > (10 * 1024 * 1024))
-		elog(ERROR, "serialized histogram exceeds 10MB (%ld > %d)",
-					total_length, (10 * 1024 * 1024));
+	if (total_length > (1024 * 1024))
+		elog(ERROR, "serialized histogram exceeds 1MB (%ld > %d)",
+					total_length, (1024 * 1024));
 
 	/* allocate space for the serialized histogram list, set header */
 	output = (bytea*)palloc0(total_length);
@@ -506,7 +531,7 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 	memcpy(data, info, sizeof(DimensionInfo) * ndims);
 	data += sizeof(DimensionInfo) * ndims;
 
-	/* value array for each dimension */
+	/* serialize the deduplicated values for all attributes */
 	for (i = 0; i < ndims; i++)
 	{
 #ifdef USE_ASSERT_CHECKING
@@ -514,31 +539,35 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 #endif
 		for (j = 0; j < info[i].nvalues; j++)
 		{
-			if (info[i].typlen > 0)
+			Datum v = values[i][j];
+
+			if (info[i].typbyval)			/* passed by value */
 			{
-				/* pased by value or reference, but fixed length */
-				memcpy(data, &values[i][j], info[i].typlen);
+				memcpy(data, &v, info[i].typlen);
 				data += info[i].typlen;
 			}
-			else if (info[i].typlen == -1)
+			else if (info[i].typlen > 0)	/* pased by reference */
 			{
-				/* varlena */
-				memcpy(data, DatumGetPointer(values[i][j]),
-							VARSIZE_ANY(values[i][j]));
+				memcpy(data, DatumGetPointer(v), info[i].typlen);
+				data += info[i].typlen;
+			}
+			else if (info[i].typlen == -1)	/* varlena */
+			{
+				memcpy(data, DatumGetPointer(v), VARSIZE_ANY(v));
 				data += VARSIZE_ANY(values[i][j]);
 			}
-			else if (info[i].typlen == -2)
+			else if (info[i].typlen == -2)	/* cstring */
 			{
-				/* cstring (don't forget the \0 terminator!) */
-				memcpy(data, DatumGetPointer(values[i][j]),
-							strlen(DatumGetPointer(values[i][j])) + 1);
-				data += strlen(DatumGetPointer(values[i][j])) + 1;
+				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v))+1);
+				data += strlen(DatumGetPointer(v)) + 1;
 			}
 		}
+
+		/* make sure we got exactly the amount of data we expected */
 		Assert((data - tmp) == info[i].nbytes);
 	}
 
-	/* and finally, the histogram buckets */
+	/* finally serialize the items, with uint16 indexes instead of the values */
 	for (i = 0; i < nbuckets; i++)
 	{
 		/* don't write beyond the allocated space */
@@ -547,7 +576,7 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 		/* reset the values for each item */
 		memset(bucket, 0, bucketsize);
 
-		*BUCKET_NTUPLES(bucket)   = histogram->buckets[i]->ntuples;
+		BUCKET_NTUPLES(bucket) = histogram->buckets[i]->ntuples;
 
 		for (j = 0; j < ndims; j++)
 		{
@@ -556,15 +585,13 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 			{
 				uint16 idx;
 				Datum * v = NULL;
-				ssup_private = &ssup[j];
 
 				/* min boundary */
-				v = (Datum*)bsearch(&histogram->buckets[i]->min[j],
+				v = (Datum*)bsearch_arg(&histogram->buckets[i]->min[j],
 								values[j], info[j].nvalues, sizeof(Datum),
-								bsearch_comparator);
+								compare_scalars_simple, &ssup[j]);
 
-				if (v == NULL)
-					elog(ERROR, "value for dim %d not found in array", j);
+				Assert(v != NULL);	/* serialization or deduplication error */
 
 				/* compute index within the array */
 				idx = (v - values[j]);
@@ -574,12 +601,11 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 				BUCKET_MIN_INDEXES(bucket, ndims)[j] = idx;
 
 				/* max boundary */
-				v = (Datum*)bsearch(&histogram->buckets[i]->max[j],
+				v = (Datum*)bsearch_arg(&histogram->buckets[i]->max[j],
 								values[j], info[j].nvalues, sizeof(Datum),
-								bsearch_comparator);
+								compare_scalars_simple, &ssup[j]);
 
-				if (v == NULL)
-					elog(ERROR, "value for dim %d not found in array", j);
+				Assert(v != NULL);	/* serialization or deduplication error */
 
 				/* compute index within the array */
 				idx = (v - values[j]);
@@ -609,15 +635,23 @@ serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 	/* at this point we expect to match the total_length exactly */
 	Assert((data - (char*)output) == total_length);
 
-	/* FIXME free the values/counts arrays here */
+	/* free the values/counts arrays here */
+	pfree(counts);
+	pfree(info);
+	pfree(ssup);
+
+	for (i = 0; i < ndims; i++)
+		pfree(values[i]);
+
+	pfree(values);
 
 	return output;
 }
 
 /*
- * Returns histogram in a partially-serialized form (keeps the boundary
- * values deduplicated, so that it's possible to optimize the estimation
- * part by caching function call results between buckets etc.).
+ * Returns histogram in a partially-serialized form (keeps the boundary values
+ * deduplicated, so that it's possible to optimize the estimation part by
+ * caching function call results between buckets etc.).
  */
 MVSerializedHistogram
 deserialize_mv_histogram(bytea * data)
@@ -673,9 +707,8 @@ deserialize_mv_histogram(bytea * data)
 	Assert((ndims >= 2) && (ndims <= MVSTATS_MAX_DIMENSIONS));
 
 	/*
-	 * What size do we expect with those parameters (it's incomplete,
-	 * as we yet have to count the array sizes (from DimensionInfo
-	 * records).
+	 * What size do we expect with those parameters (it's incomplete, as we yet
+	 * have to count the array sizes (from DimensionInfo records).
 	 */
 	expected_size = offsetof(MVSerializedHistogramData,buckets) +
 					ndims * sizeof(DimensionInfo) +
@@ -699,20 +732,18 @@ deserialize_mv_histogram(bytea * data)
 
 	/* looks OK - not corrupted or something */
 
-	/* now let's allocate a single buffer for all the values and counts */
-
+	/* a single buffer for all the values and counts */
 	bufflen = (sizeof(int)  + sizeof(Datum*)) * ndims;
+
 	for (i = 0; i < ndims; i++)
-	{
 		/* don't allocate space for byval types, matching Datum */
 		if (! (info[i].typbyval && (info[i].typlen == sizeof(Datum))))
 			bufflen += (sizeof(Datum) * info[i].nvalues);
-	}
 
 	/* also, include space for the result, tracking the buckets */
 	bufflen += nbuckets * (
-				sizeof(MVSerializedBucket) +		/* bucket pointer */
-				sizeof(MVSerializedBucketData));	/* bucket data */
+			   sizeof(MVSerializedBucket) +		/* bucket pointer */
+			   sizeof(MVSerializedBucketData));	/* bucket data */
 
 	buff = palloc0(bufflen);
 	ptr  = buff;
@@ -741,21 +772,19 @@ deserialize_mv_histogram(bytea * data)
 	{
 		histogram->nvalues[i] = info[i].nvalues;
 
-		if (info[i].typbyval && info[i].typlen == sizeof(Datum))
+		if (info[i].typbyval)
 		{
 			/* passed by value / Datum - simply reuse the array */
-			histogram->values[i] = (Datum*)tmp;
-			tmp += info[i].nbytes;
-		}
-		else
-		{
-			/* all the varlena data need a chunk from the buffer */
-			histogram->values[i] = (Datum*)ptr;
-			ptr += (sizeof(Datum) * info[i].nvalues);
-
-			if (info[i].typbyval)
+			if (info[i].typlen == sizeof(Datum))
 			{
-				/* pased by value, but smaller than Datum */
+				histogram->values[i] = (Datum*)tmp;
+				tmp += info[i].nbytes;
+			}
+			else
+			{
+				histogram->values[i] = (Datum*)ptr;
+				ptr += (sizeof(Datum) * info[i].nvalues);
+
 				for (j = 0; j < info[i].nvalues; j++)
 				{
 					/* just point into the array */
@@ -763,7 +792,14 @@ deserialize_mv_histogram(bytea * data)
 					tmp += info[i].typlen;
 				}
 			}
-			else if (info[i].typlen > 0)
+		}
+		else
+		{
+			/* all the other types need a chunk of the buffer */
+			histogram->values[i] = (Datum*)ptr;
+			ptr += (sizeof(Datum) * info[i].nvalues);
+
+			if (info[i].typlen > 0)
 			{
 				/* pased by reference, but fixed length (name, tid, ...) */
 				for (j = 0; j < info[i].nvalues; j++)
@@ -804,7 +840,7 @@ deserialize_mv_histogram(bytea * data)
 		MVSerializedBucket bucket = (MVSerializedBucket)ptr;
 		ptr += sizeof(MVSerializedBucketData);
 
-		bucket->ntuples			= *BUCKET_NTUPLES(tmp);
+		bucket->ntuples			= BUCKET_NTUPLES(tmp);
 		bucket->nullsonly		= BUCKET_NULLS_ONLY(tmp, ndims);
 		bucket->min_inclusive	= BUCKET_MIN_INCL(tmp, ndims);
 		bucket->max_inclusive	= BUCKET_MAX_INCL(tmp, ndims);
@@ -872,10 +908,9 @@ create_initial_mv_bucket(int numrows, HeapTuple *rows, int2vector *attrs,
 	bucket->build_data = data;
 
 	/*
-	 * Update the number of ndistinct combinations in the bucket (which
-	 * we use when selecting bucket to partition), and then number of
-	 * distinct values for each partition (which we use when choosing
-	 * which dimension to split).
+	 * Update the number of ndistinct combinations in the bucket (which we use
+	 * when selecting bucket to partition), and then number of distinct values
+	 * for each partition (which we use when choosing which dimension to split).
 	 */
 	update_bucket_ndistinct(bucket, attrs, stats);
 
@@ -889,21 +924,20 @@ create_initial_mv_bucket(int numrows, HeapTuple *rows, int2vector *attrs,
 /*
  * Choose the bucket to partition next.
  *
- * The current criteria is rather simple, chosen so that the algorithm
- * produces buckets with about equal frequency and regular size. We
- * select the bucket with the highest number of distinct values, and
- * then split it by the longest dimension.
+ * The current criteria is rather simple, chosen so that the algorithm produces
+ * buckets with about equal frequency and regular size. We select the bucket
+ * with the highest number of distinct values, and then split it by the longest
+ * dimension.
  *
- * The distinct values are uniformly mapped to [0,1] interval, and this
- * is used to compute length of the value range.
+ * The distinct values are uniformly mapped to [0,1] interval, and this is used
+ * to compute length of the value range.
  *
- * NOTE: This is not the same array used for deduplication, as this
- *       contains values for all the tuples from the sample, not just
- *       the boundary values.
+ * NOTE: This is not the same array used for deduplication, as this contains
+ *       values for all the tuples from the sample, not just the boundary values.
  *
- * Returns either pointer to the bucket selected to be partitioned,
- * or NULL if there are no buckets that may be split (i.e. all buckets
- * contain a single distinct value).
+ * Returns either pointer to the bucket selected to be partitioned, or NULL if
+ * there are no buckets that may be split (i.e. all buckets contain a single
+ * distinct value).
  *
  * TODO Consider other partitioning criteria (v-optimal, maxdiff etc.).
  *      For example use the "bucket volume" (product of dimension
@@ -1008,6 +1042,7 @@ select_bucket_to_partition(int nbuckets, MVBucket * buckets)
 	for (i = 0; i < nbuckets; i++)
 	{
 		HistogramBuild data = (HistogramBuild)buckets[i]->build_data;
+
 		/* if the number of rows is higher, use this bucket */
 		if ((data->ndistinct > 2) &&
 			(data->numrows > numrows) &&
@@ -1022,35 +1057,34 @@ select_bucket_to_partition(int nbuckets, MVBucket * buckets)
 }
 
 /*
- * A simple bucket partitioning implementation - we choose the longest
- * bucket dimension, measured using the array of distinct values built
- * at the very beginning of the build.
+ * A simple bucket partitioning implementation - we choose the longest bucket
+ * dimension, measured using the array of distinct values built at the very
+ * beginning of the build.
  *
- * We map all the distinct values to a [0,1] interval, uniformly
- * distributed, and then use this to measure length. It's essentially
- * a number of distinct values within the range, normalized to [0,1].
+ * We map all the distinct values to a [0,1] interval, uniformly distributed,
+ * and then use this to measure length. It's essentially a number of distinct
+ * values within the range, normalized to [0,1].
  *
- * Then we choose a 'middle' value splitting the bucket into two parts
- * with roughly the same frequency.
+ * Then we choose a 'middle' value splitting the bucket into two parts with
+ * roughly the same frequency.
  *
- * This splits the bucket by tweaking the existing one, and returning
- * the new bucket (essentially shrinking the existing one in-place and
- * returning the other "half" as a new bucket). The caller is responsible
- * for adding the new bucket into the list of buckets.
+ * This splits the bucket by tweaking the existing one, and returning the new
+ * bucket (essentially shrinking the existing one in-place and returning the
+ * other "half" as a new bucket). The caller is responsible for adding the new
+ * bucket into the list of buckets.
  *
  * There are multiple histogram options, centered around the partitioning
- * criteria, specifying both how to choose a bucket and the dimension
- * most in need of a split. For a nice summary and general overview, see
- * "rK-Hist : an R-Tree based histogram for multi-dimensional selectivity
- * estimation" thesis by J. A. Lopez, Concordia University, p.34-37 (and
- * possibly p. 32-34 for explanation of the terms).
+ * criteria, specifying both how to choose a bucket and the dimension most in
+ * need of a split. For a nice summary and general overview, see "rK-Hist : an
+ * R-Tree based histogram for multi-dimensional selectivity estimation" thesis
+ * by J. A. Lopez, Concordia University, p.34-37 (and possibly p. 32-34 for
+ * explanation of the terms).
  *
- * TODO It requires care to prevent splitting only one dimension and not
- *      splitting another one at all (which might happen easily in case
- *      of strongly dependent columns - e.g. y=x). The current algorithm
- *      minimizes this, but may still happen for perfectly dependent
- *      examples (when all the dimensions have equal length, the first
- *      one will be selected).
+ * It requires care to prevent splitting only one dimension and not splitting
+ * another one at all (which might happen easily in case of strongly dependent
+ * columns - e.g. y=x). The current algorithm minimizes this, but may still
+ * happen for perfectly dependent examples (when all the dimensions have equal
+ * length, the first one will be selected).
  *
  * TODO Should probably consider statistics target for the columns (e.g.
  *      to split dimensions with higher statistics target more frequently).
@@ -1076,8 +1110,6 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 	ScalarItem * values = (ScalarItem*)palloc0(data->numrows * sizeof(ScalarItem));
 	SortSupportData ssup;
 
-	/* looking for the split value */
-	// int ndistinct = 1;	/* number of distinct values below current value */
 	int nrows = 1;		/* number of rows below current value */
 	double delta;
 
@@ -1094,9 +1126,7 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 	Assert(data->numrows > 1);
 	Assert((numattrs >= 2) && (numattrs <= MVSTATS_MAX_DIMENSIONS));
 
-	/*
-	 * Look for the next dimension to split.
-	 */
+	/* Look for the next dimension to split. */
 	delta = 0.0;
 	dimension = -1;
 
@@ -1124,17 +1154,14 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 		if (data->ndistincts[i] <= 1)
 			continue;
 
-		/* sort support for the bsearch_comparator */
-		ssup_private = &ssup;
-
 		/* search for min boundary in the distinct list */
-		a = (Datum*)bsearch(&bucket->min[i],
+		a = (Datum*)bsearch_arg(&bucket->min[i],
 							distvalues[i], ndistvalues[i],
-							sizeof(Datum), bsearch_comparator);
+							sizeof(Datum), compare_scalars_simple, &ssup);
 
-		b = (Datum*)bsearch(&bucket->max[i],
+		b = (Datum*)bsearch_arg(&bucket->max[i],
 							distvalues[i], ndistvalues[i],
-							sizeof(Datum), bsearch_comparator);
+							sizeof(Datum), compare_scalars_simple, &ssup);
 
 		/* if this dimension is 'larger' then partition by it */
 		if (((b-a)*1.0 / ndistvalues[i]) > delta)
@@ -1151,8 +1178,8 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 	Assert(dimension != -1);
 
 	/*
-	 * Walk through the selected dimension, collect and sort the values
-	 * and then choose the value to use as the new boundary.
+	 * Walk through the selected dimension, collect and sort the values and
+	 * then choose the value to use as the new boundary.
 	 */
 	mystats = (StdAnalyzeData *) stats[dimension]->extra_data;
 
@@ -1173,7 +1200,7 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 											 stats[dimension]->tupDesc, &isNull);
 		values[nvalues].tupno = i;
 
-		/* no NULL values allowed here (we don't do splits by null-only dimensions) */
+		/* no NULL values allowed here (we never split null-only dimension) */
 		Assert(!isNull);
 
 		nvalues++;
@@ -1184,23 +1211,20 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 			  compare_scalars_partition, (void *) &ssup);
 
 	/*
-	 * We know there are bucket->ndistincts[dimension] distinct values
-	 * in this dimension, and we want to split this into half, so walk
-	 * through the array and stop once we see (ndistinct/2) values.
+	 * We know there are bucket->ndistincts[dimension] distinct values in this
+	 * dimension, and we want to split this into half, so walk through the
+	 * array and stop once we see (ndistinct/2) values.
 	 *
-	 * We always choose the "next" value, i.e. (n/2+1)-th distinct value,
-	 * and use it as an exclusive upper boundary (and inclusive lower
-	 * boundary).
+	 * We always choose the "next" value, i.e. (n/2+1)-th distinct value, and
+	 * use it as an exclusive upper boundary (and inclusive lower boundary).
 	 *
-	 * TODO Maybe we should use "average" of the two middle distinct
-	 *      values (at least for even distinct counts), but that would
-	 *      require being able to do an average (which does not work
-	 *      for non-arithmetic types).
+	 * TODO Maybe we should use "average" of the two middle distinct values
+	 *      (at least for even distinct counts), but that would require being
+	 *      able to do an average (which does not work for non-numeric types).
 	 *
-	 * TODO Another option is to look for a split that'd give about
-	 *      50% tuples (not distinct values) in each partition. That
-	 *      might work better when there are a few very frequent
-	 *      values, and many rare ones.
+	 * TODO Another option is to look for a split that'd give about 50% tuples
+	 *      (not distinct values) in each partition. That might work better
+	 *      when there are a few very frequent values, and many rare ones.
 	 */
 	delta = fabs(data->numrows);
 	split_value = values[0].value;
@@ -1238,9 +1262,9 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 	new_bucket->max_inclusive[dimension]	= true;
 
 	/*
-	 * Redistribute the sample tuples using the 'ScalarItem->tupno'
-	 * index. We know 'nrows' rows should remain in the original
-	 * bucket and the rest goes to the new one.
+	 * Redistribute the sample tuples using the 'ScalarItem->tupno' index. We
+	 * know 'nrows' rows should remain in the original bucket and the rest goes
+	 * to the new one.
 	 */
 
 	data->rows     = (HeapTuple*)palloc0(nrows * sizeof(HeapTuple));
@@ -1250,9 +1274,9 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 	new_data->numrows = (oldnrows - nrows);
 
 	/*
-	 * The first nrows should go to the first bucket, the rest should
-	 * go to the new one. Use the tupno field to get the actual HeapTuple
-	 * row from the original array of sample rows.
+	 * The first nrows should go to the first bucket, the rest should go to the
+	 * new one. Use the tupno field to get the actual HeapTuple row from the
+	 * original array of sample rows.
 	 */
 	for (i = 0; i < nrows; i++)
 		memcpy(&data->rows[i], &oldrows[values[i].tupno], sizeof(HeapTuple));
@@ -1281,8 +1305,8 @@ partition_bucket(MVBucket bucket, int2vector *attrs,
 }
 
 /*
- * Copy a histogram bucket. The copy does not include the build-time
- * data, i.e. sampled rows etc.
+ * Copy a histogram bucket. The copy does not include the build-time data, i.e.
+ * sampled rows etc.
  */
 static MVBucket
 copy_mv_bucket(MVBucket bucket, uint32 ndimensions)
@@ -1323,36 +1347,10 @@ copy_mv_bucket(MVBucket bucket, uint32 ndimensions)
 }
 
 /*
- * Counts the number of distinct values in the bucket. This just copies
- * the Datum values into a simple array, and sorts them using memcmp-based
- * comparator. That means it only works for pass-by-value data types
- * (assuming they don't use collations etc.)
- *
- * TODO This might evaluate and store the distinct counts for all
- *      possible attribute combinations. The assumption is this might be
- *      useful for estimating things like GROUP BY cardinalities (e.g.
- *      in cases when some buckets contain a lot of low-frequency
- *      combinations, and other buckets contain few high-frequency ones).
- *
- *      But it's unclear whether it's worth the price. Computing this
- *      is actually quite cheap, because it may be evaluated at the very
- *      end, when the buckets are rather small (so sorting it in 2^N ways
- *      is not a big deal). Assuming the partitioning algorithm does not
- *      use these values to do the decisions, of course (the current
- *      algorithm does not).
- *
- *      The overhead with storing, fetching and parsing the data is more
- *      concerning - adding 2^N values per bucket (even if it's just
- *      a 1B or 2B value) would significantly bloat the histogram, and
- *      thus the impact on optimizer. Which is not really desirable.
- *
- * TODO This only updates the ndistinct for the sample (or bucket), but
- *      we eventually need an estimate of the total number of distinct
- *      values in the dataset. It's possible to either use the current
- *      1D approach (i.e., if it's more than 10% of the sample, assume
- *      it's proportional to the number of rows). Or it's possible to
- *      implement the estimator suggested in the article, supposedly
- *      giving 'optimal' estimates (w.r.t. probability of error).
+ * Counts the number of distinct values in the bucket. This just copies the
+ * Datum values into a simple array, and sorts them using memcmp-based
+ * comparator. That means it only works for pass-by-value data types (assuming
+ * they don't use collations etc.)
  */
 static void
 update_bucket_ndistinct(MVBucket bucket, int2vector *attrs, VacAttrStats ** stats)
@@ -1366,8 +1364,8 @@ update_bucket_ndistinct(MVBucket bucket, int2vector *attrs, VacAttrStats ** stat
 	MultiSortSupport mss = multi_sort_init(numattrs);
 
 	/*
-	 * We could collect this while walking through all the attributes
-	 * above (this way we have to call heap_getattr twice).
+	 * We could collect this while walking through all the attributes above
+	 * (this way we have to call heap_getattr twice).
 	 */
 	SortItem   *items  = (SortItem*)palloc0(numrows * sizeof(SortItem));
 	Datum	   *values = (Datum*)palloc0(numrows * sizeof(Datum) * numattrs);
@@ -1491,42 +1489,41 @@ update_dimension_ndistinct(MVBucket bucket, int dimension, int2vector *attrs,
 }
 
 /*
- * A properly built histogram must not contain buckets mixing NULL and
- * non-NULL values in a single dimension. Each dimension may either be
- * marked as 'nulls only', and thus containing only NULL values, or
- * it must not contain any NULL values.
+ * A properly built histogram must not contain buckets mixing NULL and non-NULL
+ * values in a single dimension. Each dimension may either be marked as 'nulls
+ * only', and thus containing only NULL values, or it must not contain any NULL
+ * values.
  *
- * Therefore, if the sample contains NULL values in any of the columns,
- * it's necessary to build those NULL-buckets. This is done in an
- * iterative way using this algorithm, operating on a single bucket:
+ * Therefore, if the sample contains NULL values in any of the columns, it's
+ * necessary to build those NULL-buckets. This is done in an iterative way
+ * using this algorithm, operating on a single bucket:
  *
- *     (1) Check that all dimensions are well-formed (not mixing NULL
- *         and non-NULL values).
+ *     (1) Check that all dimensions are well-formed (not mixing NULL and
+ *         non-NULL values).
  *
  *     (2) If all dimensions are well-formed, terminate.
  *
- *     (3) If the dimension contains only NULL values, but is not
- *         marked as NULL-only, mark it as NULL-only and run the
- *         algorithm again (on this bucket).
+ *     (3) If the dimension contains only NULL values, but is not marked as
+ *         NULL-only, mark it as NULL-only and run the algorithm again (on
+ *         this bucket).
  *
- *     (4) If the dimension mixes NULL and non-NULL values, split the
- *         bucket into two parts - one with NULL values, one with
- *         non-NULL values (replacing the current one). Then run
- *         the algorithm on both buckets.
+ *     (4) If the dimension mixes NULL and non-NULL values, split the bucket
+ *         into two parts - one with NULL values, one with non-NULL values
+ *         (replacing the current one). Then run the algorithm on both buckets.
  *
- * This is executed in a recursive manner, but the number of executions
- * should be quite low - limited by the number of NULL-buckets. Also,
- * in each branch the number of nested calls is limited by the number
- * of dimensions (attributes) of the histogram.
+ * This is executed in a recursive manner, but the number of executions should
+ * be quite low - limited by the number of NULL-buckets. Also, in each branch
+ * the number of nested calls is limited by the number of dimensions
+ * (attributes) of the histogram.
  *
- * At the end, there should be buckets with no mixed dimensions. The
- * number of buckets produced by this algorithm is rather limited - with
- * N dimensions, there may be only 2^N such buckets (each dimension may
- * be either NULL or non-NULL). So with 8 dimensions (current value of
- * MVSTATS_MAX_DIMENSIONS) there may be only 256 such buckets.
+ * At the end, there should be buckets with no mixed dimensions. The number of
+ * buckets produced by this algorithm is rather limited - with N dimensions,
+ * there may be only 2^N such buckets (each dimension may be either NULL or
+ * non-NULL). So with 8 dimensions (current value of MVSTATS_MAX_DIMENSIONS)
+ * there may be only 256 such buckets.
  *
- * After this, a 'regular' bucket-split algorithm shall run, further
- * optimizing the histogram.
+ * After this, a 'regular' bucket-split algorithm shall run, further optimizing
+ * the histogram.
  */
 static void
 create_null_buckets(MVHistogram histogram, int bucket_idx,
@@ -1554,14 +1551,14 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 	oldrows = data->rows;
 
 	/*
-	 * Walk through all rows / dimensions, and stop once we find NULL
-	 * in a dimension not yet marked as NULL-only.
+	 * Walk through all rows / dimensions, and stop once we find NULL in a
+	 * dimension not yet marked as NULL-only.
 	 */
 	for (i = 0; i < data->numrows; i++)
 	{
 		/*
-		 * FIXME We don't need to start from the first attribute
-		 *       here - we can start from the last known dimension.
+		 * FIXME We don't need to start from the first attribute here - we can
+		 *       start from the last known dimension.
 		 */
 		for (j = 0; j < histogram->ndimensions; j++)
 		{
@@ -1597,9 +1594,9 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 	Assert(null_count <= data->numrows);
 
 	/*
-	 * If (null_count == numrows) the dimension already is NULL-only,
-	 * but is not yet marked like that. It's enough to mark it and
-	 * repeat the process recursively (until we run out of dimensions).
+	 * If (null_count == numrows) the dimension already is NULL-only, but is
+	 * not yet marked like that. It's enough to mark it and repeat the process
+	 * recursively (until we run out of dimensions).
 	 */
 	if (null_count == data->numrows)
 	{
@@ -1609,10 +1606,9 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 	}
 
 	/*
-	 * We have to split the bucket into two - one with NULL values in
-	 * the dimension, one with non-NULL values. We don't need to sort
-	 * the data or anything, but otherwise it's similar to what's done
-	 * in partition_bucket().
+	 * We have to split the bucket into two - one with NULL values in the
+	 * dimension, one with non-NULL values. We don't need to sort the data or
+	 * anything, but otherwise it's similar to what partition_bucket() does.
 	 */
 
 	/* create bucket with NULL-only dimension 'dim' */
@@ -1656,9 +1652,9 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 
 	/*
 	 * TODO We don't need to do this for the dimension we used for split,
-	 *      because we know how many distinct values went to each
-	 *      bucket (NULL is not a value, so 0, and the other bucket got
-	 *      all the ndistinct values).
+	 *      because we know how many distinct values went to each bucket (NULL
+	 *      is not a value, so NULL buckets get 0, and the other bucket got all
+	 *      the distinct values).
 	 */
 	for (i = 0; i < histogram->ndimensions; i++)
 	{
@@ -1678,18 +1674,6 @@ create_null_buckets(MVHistogram histogram, int bucket_idx,
 	 */
 	create_null_buckets(histogram, (histogram->nbuckets-1), attrs, stats);
 	create_null_buckets(histogram, bucket_idx, attrs, stats);
-
-}
-
-/*
- * We need to pass the SortSupport to the comparator, but bsearch()
- * has no 'context' parameter, so we use a global variable (ugly).
- */
-static int
-bsearch_comparator(const void * a, const void * b)
-{
-	Assert(ssup_private != NULL);
-	return compare_scalars_simple(a, b, (void*)ssup_private);
 }
 
 /*
@@ -1703,9 +1687,8 @@ bsearch_comparator(const void * a, const void * b)
  * - max inclusive flags (boolean array)
  * - frequency (double precision)
  *
- * The input is the OID of the statistics, and there are no rows
- * returned if the statistics contains no histogram (or if there's no
- * statistics for the OID).
+ * The input is the OID of the statistics, and there are no rows returned if the
+ * statistics contains no histogram (or if there's no statistics for the OID).
  *
  * The second parameter (type) determines what values will be returned
  * in the (minvals,maxvals). There are three possible values:
@@ -1728,12 +1711,16 @@ bsearch_comparator(const void * a, const void * b)
  *    - similar to 1, but shows how 'long' the bucket range is
  *    - handy for plotting the histogram
  *
- * When plotting the histogram, be careful as the (1) and (2) options
- * skew the lengths by distributing the distinct values uniformly. For
- * data types without a clear meaning of 'distance' (e.g. strings) that
- * is not a big deal, but for numbers it may be confusing.
+ * When plotting the histogram, be careful as the (1) and (2) options skew the
+ * lengths by distributing the distinct values uniformly. For data types
+ * without a clear meaning of 'distance' (e.g. strings) that is not a big deal,
+ * but for numbers it may be confusing.
  */
 PG_FUNCTION_INFO_V1(pg_mv_histogram_buckets);
+
+#define OUTPUT_FORMAT_RAW		0
+#define OUTPUT_FORMAT_INDEXES	1
+#define	OUTPUT_FORMAT_DISTINCT	2
 
 Datum
 pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
@@ -1802,11 +1789,10 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 		Datum		result;
 		int2vector *stakeys;
 		Oid			relid;
-		double		bucket_size = 1.0;
+		double		bucket_volume = 1.0;
+		StringInfo	bufs;
 
-		char *buff = palloc0(1024);
-		char *format;
-
+		char	   *format;
 		int			i;
 
 		Oid		   *outfuncs;
@@ -1824,20 +1810,20 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 		stakeys = find_mv_attnums(mvoid, &relid);
 
 		/*
-		 * Prepare a values array for building the returned tuple.
-		 * This should be an array of C strings which will
-		 * be processed later by the type input functions.
+		 * The scalar values will be formatted directly, using snprintf.
+		 *
+		 * The 'array' values will be formatted through StringInfo.
 		 */
-		values = (char **) palloc(9 * sizeof(char *));
+		values = (char **) palloc0(9 * sizeof(char *));
+		bufs   = (StringInfo) palloc0(9 * sizeof(StringInfoData));
 
 		values[0] = (char *) palloc(64 * sizeof(char));
 
-		/* arrays */
-		values[1] = (char *) palloc0(1024 * sizeof(char));
-		values[2] = (char *) palloc0(1024 * sizeof(char));
-		values[3] = (char *) palloc0(1024 * sizeof(char));
-		values[4] = (char *) palloc0(1024 * sizeof(char));
-		values[5] = (char *) palloc0(1024 * sizeof(char));
+		initStringInfo(&bufs[1]);	/* lower boundaries */
+		initStringInfo(&bufs[2]);	/* upper boundaries */
+		initStringInfo(&bufs[3]);	/* nulls-only */
+		initStringInfo(&bufs[4]);	/* lower inclusive */
+		initStringInfo(&bufs[5]);	/* upper inclusive */
 
 		values[6] = (char *) palloc(64 * sizeof(char));
 		values[7] = (char *) palloc(64 * sizeof(char));
@@ -1847,6 +1833,11 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 		outfuncs = (Oid*)palloc0(sizeof(Oid) * histogram->ndimensions);
 		fmgrinfo = (FmgrInfo*)palloc0(sizeof(FmgrInfo) * histogram->ndimensions);
 
+		/*
+		 * lookup output functions for all histogram dimensions
+		 *
+		 * XXX This might be one in the first call and stored in user_fctx.
+		 */
 		for (i = 0; i < histogram->ndimensions; i++)
 		{
 			bool isvarlena;
@@ -1859,104 +1850,115 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 
 		snprintf(values[0], 64, "%d", call_cntr);	/* bucket ID */
 
-		/*
-		 * currently we only print array of indexes, but the deduplicated
-		 * values should be sorted, so this is actually quite useful
-		 *
-		 * TODO print the actual min/max values, using the output
-		 *      function of the attribute type
-		 */
-
+		/* for the arrays of lower/upper boundaries, formated according to otype */
 		for (i = 0; i < histogram->ndimensions; i++)
 		{
-			bucket_size *= (bucket->max[i] - bucket->min[i]) * 1.0
-											/ (histogram->nvalues[i]-1);
+			Datum  *vals   = histogram->values[i];
 
-			/* print the actual values, i.e. use output function etc. */
-			if (otype == 0)
-			{
-				Datum minval, maxval;
-				Datum minout, maxout;
+			uint16	minidx = bucket->min[i];
+			uint16	maxidx = bucket->max[i];
 
-				format = "%s, %s";
-				if (i == 0)
-					format = "{%s%s";
-				else if (i == histogram->ndimensions-1)
-					format = "%s, %s}";
+			/* compute bucket volume, using distinct values as a measure
+			 *
+			 * XXX Not really sure what to do for NULL dimensions here, so let's
+			 *     simply count them as '1'.
+			 */
+			bucket_volume
+				*= (double)(maxidx - minidx + 1) / (histogram->nvalues[i]-1);
 
-				minval = histogram->values[i][bucket->min[i]];
-				minout = FunctionCall1(&fmgrinfo[i], minval);
-
-				maxval = histogram->values[i][bucket->max[i]];
-				maxout = FunctionCall1(&fmgrinfo[i], maxval);
-
-				// snprintf(buff, 1024, format, values[1], bucket->min[i]);
-				snprintf(buff, 1024, format, values[1], DatumGetPointer(minout));
-				strncpy(values[1], buff, 1023);
-				buff[0] = '\0';
-
-				// snprintf(buff, 1024, format, values[2], bucket->max[i]);
-				snprintf(buff, 1024, format, values[2], DatumGetPointer(maxout));
-				strncpy(values[2], buff, 1023);
-				buff[0] = '\0';
-			}
-			else if (otype == 1)
-			{
-				format = "%s, %d";
-				if (i == 0)
-					format = "{%s%d";
-				else if (i == histogram->ndimensions-1)
-					format = "%s, %d}";
-
-				snprintf(buff, 1024, format, values[1], bucket->min[i]);
-				strncpy(values[1], buff, 1023);
-				buff[0] = '\0';
-
-				snprintf(buff, 1024, format, values[2], bucket->max[i]);
-				strncpy(values[2], buff, 1023);
-				buff[0] = '\0';
-			}
-			else
-			{
-				format = "%s, %f";
-				if (i == 0)
-					format = "{%s%f";
-				else if (i == histogram->ndimensions-1)
-					format = "%s, %f}";
-
-				snprintf(buff, 1024, format, values[1],
-						 bucket->min[i] * 1.0 / (histogram->nvalues[i]-1));
-				strncpy(values[1], buff, 1023);
-				buff[0] = '\0';
-
-				snprintf(buff, 1024, format, values[2],
-						bucket->max[i] * 1.0 / (histogram->nvalues[i]-1));
-				strncpy(values[2], buff, 1023);
-				buff[0] = '\0';
-			}
-
-			format = "%s, %s";
 			if (i == 0)
-				format = "{%s%s";
-			else if (i == histogram->ndimensions-1)
-				format = "%s, %s}";
+				format = "{%s";		/* fist dimension */
+			else if (i < (histogram->ndimensions - 1))
+				format = ", %s";	/* medium dimensions */
+			else
+				format = ", %s}";	/* last dimension */
 
-			snprintf(buff, 1024, format, values[3], bucket->nullsonly[i] ? "t" : "f");
-			strncpy(values[3], buff, 1023);
-			buff[0] = '\0';
+			appendStringInfo(&bufs[3], format, bucket->nullsonly[i] ? "t" : "f");
+			appendStringInfo(&bufs[4], format, bucket->min_inclusive[i] ? "t" : "f");
+			appendStringInfo(&bufs[5], format, bucket->max_inclusive[i] ? "t" : "f");
 
-			snprintf(buff, 1024, format, values[4], bucket->min_inclusive[i] ? "t" : "f");
-			strncpy(values[4], buff, 1023);
-			buff[0] = '\0';
+			/* for NULL-only  dimension, simply put there the NULL and continue */
+			if (bucket->nullsonly[i])
+			{
+				if (i == 0)
+					format = "{%s";
+				else if (i < (histogram->ndimensions - 1))
+					format = ", %s";
+				else
+					format = ", %s}";
 
-			snprintf(buff, 1024, format, values[5], bucket->max_inclusive[i] ? "t" : "f");
-			strncpy(values[5], buff, 1023);
-			buff[0] = '\0';
+				appendStringInfo(&bufs[1], format, "NULL");
+				appendStringInfo(&bufs[2], format, "NULL");
+
+				continue;
+			}
+
+			/* otherwise we really need to format the value */
+			switch (otype)
+			{
+				case OUTPUT_FORMAT_RAW:		/* actual boundary values */
+
+					if (i == 0)
+						format = "{%s";
+					else if (i < (histogram->ndimensions - 1))
+						format = ", %s";
+					else
+						format = ", %s}";
+
+					appendStringInfo(&bufs[1], format,
+									 FunctionCall1(&fmgrinfo[i], vals[minidx]));
+
+					appendStringInfo(&bufs[2], format,
+									 FunctionCall1(&fmgrinfo[i], vals[maxidx]));
+
+					break;
+
+				case OUTPUT_FORMAT_INDEXES:	/* indexes into deduplicated arrays */
+
+					if (i == 0)
+						format = "{%d";
+					else if (i < (histogram->ndimensions - 1))
+						format = ", %d";
+					else
+						format = ", %d}";
+
+					appendStringInfo(&bufs[1], format, minidx);
+
+					appendStringInfo(&bufs[2], format, maxidx);
+
+					break;
+
+				case OUTPUT_FORMAT_DISTINCT:	/* distinct arrays as measure */
+
+					if (i == 0)
+						format = "{%f";
+					else if (i < (histogram->ndimensions - 1))
+						format = ", %f";
+					else
+						format = ", %f}";
+
+					appendStringInfo(&bufs[1], format,
+									 (minidx * 1.0 / (histogram->nvalues[i]-1)));
+
+					appendStringInfo(&bufs[2], format,
+									 (maxidx * 1.0 / (histogram->nvalues[i]-1)));
+
+					break;
+
+				default:
+					elog(ERROR, "unknown output type: %d", otype);
+			}
 		}
 
+		values[1] = bufs[1].data;
+		values[2] = bufs[2].data;
+		values[3] = bufs[3].data;
+		values[4] = bufs[4].data;
+		values[5] = bufs[5].data;
+
 		snprintf(values[6], 64, "%f", bucket->ntuples);	/* frequency */
-		snprintf(values[7], 64, "%f", bucket->ntuples / bucket_size);	/* density */
-		snprintf(values[8], 64, "%f", bucket_size);	/* bucket_size */
+		snprintf(values[7], 64, "%f", bucket->ntuples / bucket_volume);	/* density */
+		snprintf(values[8], 64, "%f", bucket_volume);	/* volume (as a fraction) */
 
 		/* build a tuple */
 		tuple = BuildTupleFromCStrings(attinmeta, values);
@@ -1966,13 +1968,17 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 
 		/* clean up (this is not really necessary) */
 		pfree(values[0]);
-		pfree(values[1]);
-		pfree(values[2]);
-		pfree(values[3]);
-		pfree(values[4]);
-		pfree(values[5]);
 		pfree(values[6]);
+		pfree(values[7]);
+		pfree(values[8]);
 
+		resetStringInfo(&bufs[1]);
+		resetStringInfo(&bufs[2]);
+		resetStringInfo(&bufs[3]);
+		resetStringInfo(&bufs[4]);
+		resetStringInfo(&bufs[5]);
+
+		pfree(bufs);
 		pfree(values);
 
 		SRF_RETURN_NEXT(funcctx, result);
@@ -1997,11 +2003,13 @@ debug_histogram_matches(MVSerializedHistogram mvhist, char *matches)
 	float ffull = 0, fpartial = 0;
 	int nfull = 0, npartial = 0;
 
+	StringInfoData	buf;
+
+	initStringInfo(&buf);
+
 	for (i = 0; i < mvhist->nbuckets; i++)
 	{
 		MVSerializedBucket bucket = mvhist->buckets[i];
-
-		char ranges[1024];
 
 		if (! matches[i])
 			continue;
@@ -2014,17 +2022,17 @@ debug_histogram_matches(MVSerializedHistogram mvhist, char *matches)
 		ffull += (matches[i] == MVSTATS_MATCH_FULL) ? bucket->ntuples : 0;
 		fpartial += (matches[i] == MVSTATS_MATCH_PARTIAL) ? bucket->ntuples : 0;
 
-		memset(ranges, 0, sizeof(ranges));
+		resetStringInfo(&buf);
 
 		/* build ranges for all the dimentions */
 		for (j = 0; j < mvhist->ndimensions; j++)
 		{
-			sprintf(ranges, "%s [%d %d]", ranges,
-										  DatumGetInt32(mvhist->values[j][bucket->min[j]]),
-										  DatumGetInt32(mvhist->values[j][bucket->max[j]]));
+			appendStringInfo(&buf, '[%d %d]',
+							 DatumGetInt32(mvhist->values[j][bucket->min[j]]),
+							 DatumGetInt32(mvhist->values[j][bucket->max[j]]));
 		}
 
-		elog(WARNING, "bucket %d %s => %d [%f]", i, ranges, matches[i], bucket->ntuples);
+		elog(WARNING, "bucket %d %s => %d [%f]", i, buf.data, matches[i], bucket->ntuples);
 	}
 
 	elog(WARNING, "full=%f partial=%f (%f)", ffull, fpartial, (ffull + 0.5 * fpartial));

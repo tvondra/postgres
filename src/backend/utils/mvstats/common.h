@@ -79,6 +79,9 @@ int multi_sort_compare(const void *a, const void *b, void *arg);
 int multi_sort_compare_dim(int dim, const SortItem *a,
 						   const SortItem *b, MultiSortSupport mss);
 
+int multi_sort_compare_dims(int start, int end, const SortItem *a,
+							const SortItem *b, MultiSortSupport mss);
+
 /* comparators, used when constructing multivariate stats */
 int compare_datums_simple(Datum a, Datum b, SortSupport ssup);
 int compare_scalars_simple(const void *a, const void *b, void *arg);

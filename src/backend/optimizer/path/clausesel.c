@@ -2683,341 +2683,88 @@ clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums, int type
 
 
 /*
- * collect attnums from functional dependencies
- *
- * Walk through all statistics on the relation, and collect attnums covered
- * by those with functional dependencies. We only look at columns specified
- * when creating the statistics, not at columns actually referenced by the
- * dependencies (which may only be a subset of the attributes).
- */
-static Bitmapset*
-fdeps_collect_attnums(List *stats)
-{
-	ListCell *lc;
-	Bitmapset *attnums = NULL;
-
-	foreach (lc, stats)
-	{
-		int j;
-		MVStatisticInfo *info = (MVStatisticInfo *)lfirst(lc);
-
-		int2vector *stakeys = info->stakeys;
-
-		/* skip stats without functional dependencies built */
-		if (! info->deps_built)
-			continue;
-
-		for (j = 0; j < stakeys->dim1; j++)
-			attnums = bms_add_member(attnums, stakeys->values[j]);
-	}
-
-	return attnums;
-}
-
-/* transforms bitmapset into an array (index => value) */
-static int*
-make_idx_to_attnum_mapping(Bitmapset *attnums)
-{
-	int		attidx = 0;
-	int		attnum;
-
-	int	   *mapping = (int*)palloc0(bms_num_members(attnums) * sizeof(int));
-
-	attnum = -1;
-	while ((attnum = bms_next_member(attnums, attnum)) >= 0)
-		mapping[attidx++] = attnum;
-
-	Assert(attidx == bms_num_members(attnums));
-
-	return mapping;
-}
-
-/* transforms bitmapset into an array (value => index) */
-static int*
-make_attnum_to_idx_mapping(Bitmapset *attnums)
-{
-	int		attidx = 0;
-	int		attnum;
-	int		maxattnum = -1;
-	int	   *mapping;
-
-	attnum = -1;
-	while ((attnum = bms_next_member(attnums, attnum)) >= 0)
-		maxattnum = attnum;
-
-	mapping = (int*)palloc0((maxattnum+1) * sizeof(int));
-
-	attnum = -1;
-	while ((attnum = bms_next_member(attnums, attnum)) >= 0)
-		mapping[attnum] = attidx++;
-
-	Assert(attidx == bms_num_members(attnums));
-
-	return mapping;
-}
-
-/* build adjacency matrix for the dependencies */
-static bool*
-build_adjacency_matrix(List *stats, Bitmapset *attnums,
-					   int *idx_to_attnum, int *attnum_to_idx)
-{
-	ListCell *lc;
-	int		natts  = bms_num_members(attnums);
-	bool   *matrix = (bool*)palloc0(natts * natts * sizeof(bool));
-
-	foreach (lc, stats)
-	{
-		int j;
-		MVStatisticInfo *stat = (MVStatisticInfo *)lfirst(lc);
-		MVDependencies dependencies = NULL;
-
-		/* skip stats without functional dependencies built */
-		if (! stat->deps_built)
-			continue;
-
-		/* fetch and deserialize dependencies */
-		dependencies = load_mv_dependencies(stat->mvoid);
-		if (dependencies == NULL)
-		{
-			elog(WARNING, "failed to deserialize func deps %d", stat->mvoid);
-			continue;
-		}
-
-		/* set matrix[a,b] to 'true' if 'a=>b' */
-		for (j = 0; j < dependencies->ndeps; j++)
-		{
-			int aidx = attnum_to_idx[dependencies->deps[j]->a];
-			int bidx = attnum_to_idx[dependencies->deps[j]->b];
-
-			/* a=> b */
-			matrix[aidx * natts + bidx] = true;
-		}
-	}
-
-	return matrix;
-}
-
-/*
- * multiply the adjacency matrix
- *
- * By multiplying the adjacency matrix, we derive dependencies implied by those
- * stored in the catalog (but possibly in several separate rows). We need to
- * repeat the multiplication until no new dependencies are discovered. The
- * maximum number of multiplications is equal to the number of attributes.
- *
- * This is based on modeling the functional dependencies as edges in a directed
- * graph with attributes as vertices.
- */
-static void
-multiply_adjacency_matrix(bool *matrix, int natts)
-{
-	int i;
-
-	/* repeat the multiplication up to natts-times */
-	for (i = 0; i < natts; i++)
-	{
-		bool changed = false;	/* no changes in this round */
-		int k, l, m;
-
-		/* k => l */
-		for (k = 0; k < natts; k++)
-		{
-			for (l = 0; l < natts; l++)
-			{
-				/* skip already known dependencies */
-				if (matrix[k * natts + l])
-					continue;
-
-				/*
-				 * compute (k,l) in the multiplied matrix
-				 *
-				 * We don't really care about the exact value, just true/false,
-				 * so terminate the loop once we get a hit. Also, this makes it
-				 * safe to modify the matrix in-place.
-				 */
-				for (m = 0; m < natts; m++)
-				{
-					if (matrix[k * natts + m] * matrix[m * natts + l])
-					{
-						matrix[k * natts + l] = true;
-						changed = true;
-						break;
-					}
-				}
-			}
-		}
-
-		/* no transitive dependency added in this round, so terminate */
-		if (! changed)
-			break;
-	}
-}
-
-/*
  * Reduce clauses using functional dependencies
- *
- * Walk through clauses and eliminate the redundant ones (implied by other
- * clauses). This is done by first deriving a transitive closure of all the
- * functional dependencies (by multiplying the adjacency matrix).
  */
 static List*
-fdeps_reduce_clauses(List *clauses, Bitmapset *attnums, bool *matrix,
-					int *idx_to_attnum, int *attnum_to_idx, Index relid)
+fdeps_reduce_clauses(List *clauses, Index relid, Bitmapset *reduced_attnums)
 {
-	int i;
 	ListCell *lc;
-	List   *reduced_clauses = NIL;
+	List	 *reduced_clauses = NIL;
 
-	int			nmvclauses;	/* size of the arrays */
-	bool	   *reduced;
-	AttrNumber *mvattnums;
-	Node	  **mvclauses;
-
-	int			natts = bms_num_members(attnums);
-
-	/*
-	 * Preallocate space for all clauses (the list only containst
-	 * compatible clauses at this point). This makes it somewhat easier
-	 * to access the stats / attnums randomly.
-	 *
-	 * XXX This assumes each clause references exactly one Var, so the
-	 *     arrays are sized accordingly - for functional dependencies
-	 *     this is safe, because it only works with Var=Const.
-	 */
-	mvclauses = (Node**)palloc0(list_length(clauses) * sizeof(Node*));
-	mvattnums = (AttrNumber*)palloc0(list_length(clauses) * sizeof(AttrNumber));
-	reduced = (bool*)palloc0(list_length(clauses) * sizeof(bool));
-
-	/* fill the arrays */
-	nmvclauses = 0;
 	foreach (lc, clauses)
 	{
+		Bitmapset *attnums = NULL;
 		Node * clause = (Node*)lfirst(lc);
-		Bitmapset * attnums = get_varattnos(clause, relid);
 
-		mvclauses[nmvclauses] = clause;
-		mvattnums[nmvclauses] = bms_singleton_member(attnums);
-		nmvclauses++;
+		/* ignore clauses that are not compatible with functional dependencies */
+		if (! clause_is_mv_compatible(clause, relid, &attnums, MV_CLAUSE_TYPE_FDEP))
+			reduced_clauses = lappend(reduced_clauses, clause);
+
+		/* for equality clauses, only keep those not on reduced attributes */
+		if (! bms_is_subset(attnums, reduced_attnums))
+			reduced_clauses = lappend(reduced_clauses, clause);
 	}
-
-	Assert(nmvclauses == list_length(clauses));
-
-	/* now try to reduce the clauses (using the dependencies) */
-	for (i = 0; i < nmvclauses; i++)
-	{
-		int j;
-
-		/* not covered by dependencies */
-		if (! bms_is_member(mvattnums[i], attnums))
-			continue;
-
-		/* this clause was already reduced, so let's skip it */
-		if (reduced[i])
-			continue;
-
-		/* walk the potentially 'implied' clauses */
-		for (j = 0; j < nmvclauses; j++)
-		{
-			int aidx, bidx;
-
-			/* not covered by dependencies */
-			if (! bms_is_member(mvattnums[j], attnums))
-				continue;
-
-			aidx = attnum_to_idx[mvattnums[i]];
-			bidx = attnum_to_idx[mvattnums[j]];
-
-			/* can't reduce the clause by itself, or if already reduced */
-			if ((i == j) || reduced[j])
-				continue;
-
-			/* mark the clause as reduced (if aidx => bidx) */
-			reduced[j] = matrix[aidx * natts + bidx];
-		}
-	}
-
-	/* now walk through the clauses, and keep only those not reduced */
-	for (i = 0; i < nmvclauses; i++)
-		if (! reduced[i])
-			reduced_clauses = lappend(reduced_clauses, mvclauses[i]);
-
-	pfree(reduced);
-	pfree(mvclauses);
-	pfree(mvattnums);
 
 	return reduced_clauses;
 }
 
 /*
- * filter clauses that are interesting for the reduction step
+ * decide which attributes are redundant (for equality clauses)
  *
- * Functional dependencies can only work with equality clauses with attributes
- * covered by at least one of the statistics, so we walk through the clauses
- * and copy the uninteresting ones directly to the result (reduced) clauses.
+ * We try to apply all functional dependencies available, and for each one we
+ * check if it matches attnums from equality clauses, but only those not yet
+ * reduced.
  *
- * That includes clauses that:
- *     (a) are not mv-compatible
- *     (b) reference more than a single attnum
- *     (c) use attnum not covered by functional depencencies
+ * XXX Not sure if the order in which we apply the dependencies matters.
  *
- * The clauses interesting for the reduction step are copied to deps_clauses.
- *
- * root            - planner root
- * clauses         - list of clauses (input)
- * deps_attnums    - attributes covered by dependencies
- * reduced_clauses - resulting clauses (not subject to reduction step)
- * deps_clauses    - clauses to be processed by reduction
- * relid           - relid of the baserel
- *
- * The return value is a bitmap of attnums referenced by deps_clauses.
+ * XXX We do not combine functional dependencies from separate stats. That is
+ *     if we have dependencies on [a,b] and [b,c], then we don't deduce
+ *     a->c from a->b and b->c. Computing such transitive closure is a possible
+ *     future improvement.
  */
 static Bitmapset *
-fdeps_filter_clauses(PlannerInfo *root,
-					 List *clauses, Bitmapset *deps_attnums,
-					 List **reduced_clauses, List **deps_clauses,
-					 Index relid)
+fdeps_reduce_attnums(List *stats, Bitmapset *attnums)
 {
-	ListCell *lc;
-	Bitmapset *clause_attnums = NULL;
+	ListCell  *lc;
+	Bitmapset *reduced = NULL;
 
-	foreach (lc, clauses)
+	foreach (lc, stats)
 	{
-		Bitmapset *attnums = NULL;
-		Node	   *clause = (Node *) lfirst(lc);
+		int i;
+		MVDependencies dependencies = NULL;
+		MVStatisticInfo *info = (MVStatisticInfo *)lfirst(lc);
 
-		if (! clause_is_mv_compatible(clause, relid, &attnums,
-									  MV_CLAUSE_TYPE_FDEP))
+		/* skip statistics without dependencies */
+		if (! stats_type_matches(info, MV_CLAUSE_TYPE_FDEP))
+			continue;
 
-			/* clause incompatible with functional dependencies */
-			*reduced_clauses = lappend(*reduced_clauses, clause);
+		/* fetch and deserialize dependencies */
+		dependencies = load_mv_dependencies(info->mvoid);
 
-		else if (bms_num_members(attnums) > 1)
-
-			/*
-			 * clause referencing multiple attributes (strange, should
-			 * this be handled by clause_is_mv_compatible directly)
-			 */
-			*reduced_clauses = lappend(*reduced_clauses, clause);
-
-		else if (! bms_is_member(bms_singleton_member(attnums), deps_attnums))
-
-			/* clause not covered by the dependencies */
-			*reduced_clauses = lappend(*reduced_clauses, clause);
-
-		else
+		for (i = 0; i < dependencies->ndeps; i++)
 		{
-			/* ok, clause compatible with existing dependencies */
-			Assert(bms_num_members(attnums) == 1);
+			int j;
+			bool matched = true;
+			MVDependency dep = dependencies->deps[i];
 
-			*deps_clauses   = lappend(*deps_clauses, clause);
-			clause_attnums = bms_add_member(clause_attnums,
-										bms_singleton_member(attnums));
+			/* we don't bother to break the loop early (only few attributes) */
+			for (j = 0; j < dep->nattributes; j++)
+			{
+				if (! bms_is_member(dep->attributes[j], attnums))
+					matched = false;
+
+				if (bms_is_member(dep->attributes[j], reduced))
+					matched = false;
+			}
+
+			/* if dependency applies, mark the last attribute as reduced */
+			if (matched)
+				reduced = bms_add_member(reduced,
+										 dep->attributes[dep->nattributes-1]);
 		}
-
-		bms_free(attnums);
 	}
 
-	return clause_attnums;
+	return reduced;
 }
 
 /*
@@ -3065,165 +2812,34 @@ static List *
 clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 							  Index relid, List *stats)
 {
-	List	   *reduced_clauses = NIL;
-
-	/*
-	 * matrix of (natts x natts), 1 means x=>y
-	 *
-	 * This serves two purposes - first, it merges dependencies from all
-	 * the statistics, second it makes generating all the transitive
-	 * dependencies easier.
-	 *
-	 * We need to build this only for attributes from the dependencies,
-	 * not for all attributes in the table.
-	 *
-	 * We can't do that only for attributes from the clauses, because we
-	 * want to build transitive dependencies (including those going
-	 * through attributes not listed in the stats).
-	 *
-	 * This only works for A=>B dependencies, not sure how to do that
-	 * for complex dependencies.
-	 */
-	bool       *deps_matrix;
-	int			deps_natts;	/* size of the matric */
-
-	/* mapping attnum <=> matrix index */
-	int		   *deps_idx_to_attnum;
-	int		   *deps_attnum_to_idx;
-
-	/* attnums in dependencies and clauses (and intersection) */
-	List	   *deps_clauses   = NIL;
-	Bitmapset  *deps_attnums   = NULL;
 	Bitmapset  *clause_attnums = NULL;
-	Bitmapset  *intersect_attnums = NULL;
+	Bitmapset  *reduced_attnums = NULL;
 
 	/*
 	 * Is there at least one statistics with functional dependencies?
 	 * If not, return the original clauses right away.
 	 *
-	 * XXX Isn't this pointless, thanks to exactly the same check in
+	 * XXX Isn't this a bit pointless, thanks to exactly the same check in
 	 *     clauselist_selectivity()? Can we trigger the condition here?
 	 */
 	if (! has_stats(stats, MV_CLAUSE_TYPE_FDEP))
 		return clauses;
 
-	/*
-	 * Build the dependency matrix, i.e. attribute adjacency matrix,
-	 * where 1 means (a=>b). Once we have the adjacency matrix, we'll
-	 * multiply it by itself, to get transitive dependencies.
-	 *
-	 * Note: This is pretty much transitive closure from graph theory.
-	 *
-	 * First, let's see what attributes are covered by functional
-	 * dependencies (sides of the adjacency matrix), and also a maximum
-	 * attribute (size of mapping to simple integer indexes);
-	 */
-	deps_attnums = fdeps_collect_attnums(stats);
+	/* collect attnums from clauses compatible with dependencies (equality) */
+	clause_attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEP);
+
+	/* decide which attnums may be eliminated */
+	reduced_attnums = fdeps_reduce_attnums(stats, clause_attnums);
 
 	/*
-	 * Walk through the clauses - clauses that are (one of)
-	 *
-	 * (a) not mv-compatible
-	 * (b) are using more than a single attnum
-	 * (c) using attnum not covered by functional depencencies
-	 *
-	 * may be copied directly to the result. The interesting clauses are
-	 * kept in 'deps_clauses' and will be processed later.
+	 * Walk through the clauses, and see which other clauses we may reduce.
 	 */
-	clause_attnums = fdeps_filter_clauses(root, clauses, deps_attnums,
-										&reduced_clauses, &deps_clauses, relid);
+	clauses = fdeps_reduce_clauses(clauses, relid, reduced_attnums);
 
-	/*
-	 * we need at least two clauses referencing two different attributes
-	 * referencing to do the reduction
-	 */
-	if ((list_length(deps_clauses) < 2) || (bms_num_members(clause_attnums) < 2))
-	{
-		bms_free(clause_attnums);
-		list_free(reduced_clauses);
-		list_free(deps_clauses);
-
-		return clauses;
-	}
-
-
-	/*
-	 * We need at least two matching attributes in the clauses and
-	 * dependencies, otherwise we can't really reduce anything.
-	 */
-	intersect_attnums = bms_intersect(clause_attnums, deps_attnums);
-	if (bms_num_members(intersect_attnums) < 2)
-	{
-		bms_free(clause_attnums);
-		bms_free(deps_attnums);
-		bms_free(intersect_attnums);
-
-		list_free(deps_clauses);
-		list_free(reduced_clauses);
-
-		return clauses;
-	}
-
-	/*
-	 * Build mapping between matrix indexes and attnums, and then the
-	 * adjacency matrix itself.
-	 */
-	deps_idx_to_attnum = make_idx_to_attnum_mapping(deps_attnums);
-	deps_attnum_to_idx = make_attnum_to_idx_mapping(deps_attnums);
-
-	/* build the adjacency matrix */
-	deps_matrix = build_adjacency_matrix(stats, deps_attnums,
-										 deps_idx_to_attnum,
-										 deps_attnum_to_idx);
-
-	deps_natts = bms_num_members(deps_attnums);
-
-	/*
-	 * Multiply the matrix N-times (N = size of the matrix), so that we
-	 * get all the transitive dependencies. That makes the next step
-	 * much easier and faster.
-	 *
-	 * This is essentially an adjacency matrix from graph theory, and
-	 * by multiplying it we get transitive edges. We don't really care
-	 * about the exact number (number of paths between vertices) though,
-	 * so we can do the multiplication in-place (we don't care whether
-	 * we found the dependency in this round or in the previous one).
-	 *
-	 * Track how many new dependencies were added, and stop when 0, but
-	 * we can't multiply more than N-times (longest path in the graph).
-	 */
-	multiply_adjacency_matrix(deps_matrix, deps_natts);
-
-	/*
-	 * Walk through the clauses, and see which other clauses we may
-	 * reduce. The matrix contains all transitive dependencies, which
-	 * makes this very fast.
-	 *
-	 * We have to be careful not to reduce the clause using itself, or
-	 * reducing all clauses forming a cycle (so we have to skip already
-	 * eliminated clauses).
-	 *
-	 * I'm not sure whether this guarantees finding the best solution,
-	 * i.e. reducing the most clauses, but it probably does (thanks to
-	 * having all the transitive dependencies).
-	 */
-	deps_clauses = fdeps_reduce_clauses(deps_clauses,
-										deps_attnums, deps_matrix,
-										deps_idx_to_attnum,
-										deps_attnum_to_idx, relid);
-
-	/* join the two lists of clauses */
-	reduced_clauses = list_union(reduced_clauses, deps_clauses);
-
-	pfree(deps_matrix);
-	pfree(deps_idx_to_attnum);
-	pfree(deps_attnum_to_idx);
-
-	bms_free(deps_attnums);
 	bms_free(clause_attnums);
-	bms_free(intersect_attnums);
+	bms_free(reduced_attnums);
 
-	return reduced_clauses;
+	return clauses;
 }
 
 /*

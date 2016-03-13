@@ -41,14 +41,15 @@ extern int mvstat_search_type;
  * in one column determine values in another one).
  */
 typedef struct MVDependencyData {
-	int16	a;
-	int16	b;
+	int 	nattributes;	/* number of attributes */
+	int16	attributes[1];	/* attribute numbers */
 } MVDependencyData;
 
 typedef MVDependencyData* MVDependency;
 
 typedef struct MVDependenciesData {
 	uint32			magic;		/* magic constant marker */
+	uint32			type;		/* type of MV Dependencies (BASIC) */
 	int32			ndeps;		/* number of dependencies */
 	MVDependency	deps[1];	/* XXX why not a pointer? */
 } MVDependenciesData;

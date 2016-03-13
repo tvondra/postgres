@@ -488,6 +488,26 @@ multi_sort_compare_dim(int dim, const SortItem *a, const SortItem *b,
 							   &mss->ssup[dim]);
 }
 
+int
+multi_sort_compare_dims(int start, int end,
+						const SortItem *a, const SortItem *b,
+						MultiSortSupport mss)
+{
+	int dim;
+
+	for (dim = start; dim <= end; dim++)
+	{
+		int r = ApplySortComparator(a->values[dim], a->isnull[dim],
+									b->values[dim], b->isnull[dim],
+									&mss->ssup[dim]);
+
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
 /* simple counterpart to qsort_arg */
 void *
 bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,

@@ -1411,7 +1411,6 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 		int nattnums = 0;		/* number of covered attributes */
 
 		Bitmapset  *all_attnums = NULL;
-		Bitmapset  *new_attnums = NULL;
 
 		/* skip statistics that were already used or eliminated */
 		if (ruled_out[i] != -1)
@@ -1469,9 +1468,6 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 			 * any of the previous ones)
 			 */
 			ncovered_clauses += 1;
-
-			/* add the attnums into attnums from 'new clauses' */
-			// new_attnums = bms_union(new_attnums, clause_attnums);
 		}
 
 		/* can't have more new clauses than original clauses */
@@ -1482,10 +1478,8 @@ choose_mv_statistics_exhaustive(PlannerInfo *root, int step,
 
 		/* free all the bitmapsets - we don't need them anymore */
 		bms_free(all_attnums);
-		bms_free(new_attnums);
 
 		all_attnums = NULL;
-		new_attnums = NULL;
 
 		/*
 		 * See if we have clauses covered by this statistics, but not

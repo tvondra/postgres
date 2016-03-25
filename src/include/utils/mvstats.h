@@ -19,11 +19,11 @@
 
 typedef enum MVStatSearchType
 {
-	MVSTAT_SEARCH_EXHAUSTIVE,		/* exhaustive search */
-	MVSTAT_SEARCH_GREEDY			/* greedy search */
-}	MVStatSearchType;
+	MVSTAT_SEARCH_EXHAUSTIVE,	/* exhaustive search */
+	MVSTAT_SEARCH_GREEDY		/* greedy search */
+} MVStatSearchType;
 
-extern int mvstat_search_type;
+extern int	mvstat_search_type;
 
 /*
  * Degree of how much MCV item / histogram bucket matches a clause.

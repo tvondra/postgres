@@ -49,8 +49,8 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		int			j;
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
 		MVDependencies deps = NULL;
-		MCVList			mcvlist   = NULL;
-		int numrows_filtered  = 0;
+		MCVList		mcvlist = NULL;
+		int			numrows_filtered = 0;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -196,7 +196,7 @@ list_mv_stats(Oid relid)
 /*
  * Find attnims of MV stats using the mvoid.
  */
-int2vector*
+int2vector *
 find_mv_attnums(Oid mvoid, Oid *relid)
 {
 	ArrayType  *arr;
@@ -207,10 +207,10 @@ find_mv_attnums(Oid mvoid, Oid *relid)
 
 	/* Prepare to scan pg_mv_statistic for entries having indrelid = this rel. */
 	htup = SearchSysCache1(MVSTATOID,
-							 ObjectIdGetDatum(mvoid));
+						   ObjectIdGetDatum(mvoid));
 
 	/* XXX syscache contains OIDs of deleted stats (not invalidated) */
-	if (! HeapTupleIsValid(htup))
+	if (!HeapTupleIsValid(htup))
 		return NULL;
 
 	/* starelid */
@@ -228,11 +228,13 @@ find_mv_attnums(Oid mvoid, Oid *relid)
 	arr = DatumGetArrayTypeP(adatum);
 
 	keys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
-							ARR_DIMS(arr)[0]);
+						   ARR_DIMS(arr)[0]);
 	ReleaseSysCache(htup);
 
-	/* TODO maybe save the list into relcache, as in RelationGetIndexList
-	 *      (which was used as an inspiration of this one)?. */
+	/*
+	 * TODO maybe save the list into relcache, as in RelationGetIndexList
+	 * (which was used as an inspiration of this one)?.
+	 */
 
 	return keys;
 }
@@ -268,9 +270,10 @@ update_mv_stats(Oid mvoid,
 
 	if (mcvlist != NULL)
 	{
-		bytea * data = serialize_mv_mcvlist(mcvlist, attrs, stats);
-		nulls[Anum_pg_mv_statistic_stamcv -1]    = (data == NULL);
-		values[Anum_pg_mv_statistic_stamcv  - 1] = PointerGetDatum(data);
+		bytea	   *data = serialize_mv_mcvlist(mcvlist, attrs, stats);
+
+		nulls[Anum_pg_mv_statistic_stamcv - 1] = (data == NULL);
+		values[Anum_pg_mv_statistic_stamcv - 1] = PointerGetDatum(data);
 	}
 
 	/* always replace the value (either by bytea or NULL) */
@@ -319,9 +322,11 @@ update_mv_stats(Oid mvoid,
 
 
 int
-mv_get_index(AttrNumber varattno, int2vector * stakeys)
+mv_get_index(AttrNumber varattno, int2vector *stakeys)
 {
-	int i, idx = 0;
+	int			i,
+				idx = 0;
+
 	for (i = 0; i < stakeys->dim1; i++)
 	{
 		if (stakeys->values[i] < varattno)
@@ -344,7 +349,7 @@ compare_scalars_simple(const void *a, const void *b, void *arg)
 {
 	return compare_datums_simple(*(Datum *) a,
 								 *(Datum *) b,
-								 (SortSupport)arg);
+								 (SortSupport) arg);
 }
 
 int
@@ -474,9 +479,11 @@ bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
 			int (*compar) (const void *, const void *, void *),
 			void *arg)
 {
-	size_t l, u, idx;
+	size_t		l,
+				u,
+				idx;
 	const void *p;
-	int comparison;
+	int			comparison;
 
 	l = 0;
 	u = nmemb;

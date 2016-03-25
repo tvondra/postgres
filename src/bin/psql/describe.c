@@ -2129,7 +2129,7 @@ describeOneTableDetails(const char *schemaname,
 				printTableAddFooter(&cont, _("Statistics:"));
 				for (i = 0; i < tuples; i++)
 				{
-					bool first = true;
+					bool		first = true;
 
 					printfPQExpBuffer(&buf, "    ");
 
@@ -2147,7 +2147,7 @@ describeOneTableDetails(const char *schemaname,
 
 					if (!strcmp(PQgetvalue(result, i, 5), "t"))
 					{
-						if (! first)
+						if (!first)
 							appendPQExpBuffer(&buf, ", mcv");
 						else
 							appendPQExpBuffer(&buf, "(mcv");

@@ -187,13 +187,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* check that at least some statistics were requested */
-	if (! (build_dependencies || build_mcv))
+	if (!(build_dependencies || build_mcv))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (dependencies, mcv) was requested")));
+			errmsg("no statistics type (dependencies, mcv) was requested")));
 
 	/* now do some checking of the options */
-	if (require_mcv && (! build_mcv))
+	if (require_mcv && (!build_mcv))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("option 'mcv' is required by other options(s)")));

@@ -26,13 +26,13 @@
 /*
  * Each serialized item needs to store (in this order):
  *
- * - indexes              (ndim * sizeof(uint16))
- * - null flags           (ndim * sizeof(bool))
- * - frequency            (sizeof(double))
+ * - indexes			  (ndim * sizeof(uint16))
+ * - null flags			  (ndim * sizeof(bool))
+ * - frequency			  (sizeof(double))
  *
  * So in total:
  *
- *   ndim * (sizeof(uint16) + sizeof(bool)) + sizeof(double)
+ *	 ndim * (sizeof(uint16) + sizeof(bool)) + sizeof(double)
  */
 #define ITEM_SIZE(ndims)	\
 	(ndims * (sizeof(uint16) + sizeof(bool)) + sizeof(double))
@@ -45,64 +45,64 @@
 static MultiSortSupport build_mss(VacAttrStats **stats, int2vector *attrs);
 
 static SortItem *build_sorted_items(int numrows, HeapTuple *rows,
-									TupleDesc tdesc, MultiSortSupport mss,
-									int2vector *attrs);
+				   TupleDesc tdesc, MultiSortSupport mss,
+				   int2vector *attrs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
-									   MultiSortSupport mss, int *ndistinct);
+					  MultiSortSupport mss, int *ndistinct);
 
 static int count_distinct_groups(int numrows, SortItem *items,
-								 MultiSortSupport mss);
+					  MultiSortSupport mss);
 
 /*
  * Builds MCV list from the set of sampled rows.
  *
  * The algorithm is quite simple:
  *
- *     (1) sort the data (default collation, '<' for the data type)
+ *	   (1) sort the data (default collation, '<' for the data type)
  *
- *     (2) count distinct groups, decide how many to keep
+ *	   (2) count distinct groups, decide how many to keep
  *
- *     (3) build the MCV list using the threshold determined in (2)
+ *	   (3) build the MCV list using the threshold determined in (2)
  *
- *     (4) remove rows represented by the MCV from the sample
+ *	   (4) remove rows represented by the MCV from the sample
  *
  * The method also removes rows matching the MCV items from the input array,
  * and passes the number of remaining rows (useful for building histograms)
  * using the numrows_filtered parameter.
  *
- * FIXME Use max_mcv_items from ALTER TABLE ADD STATISTICS command.
+ * FIXME: Use max_mcv_items from ALTER TABLE ADD STATISTICS command.
  *
- * FIXME Single-dimensional MCV is sorted by frequency (descending). We should
- *       do that too, because when walking through the list we want to check
- *       the most frequent items first.
+ * FIXME: Single-dimensional MCV is sorted by frequency (descending). We should
+ * do that too, because when walking through the list we want to check
+ * the most frequent items first.
  *
- * TODO We're using Datum (8B), even for data types (e.g. int4 or float4).
- *      Maybe we could save some space here, but the bytea compression should
- *      handle it just fine.
+ * TODO: We're using Datum (8B), even for data types (e.g. int4 or float4).
+ * Maybe we could save some space here, but the bytea compression should
+ * handle it just fine.
  *
- * TODO This probably should not use the ndistinct directly (as computed from
- *      the table, but rather estimate the number of distinct values in the
- *      table), no?
+ * TODO: This probably should not use the ndistinct directly (as computed from
+ * the table, but rather estimate the number of distinct values in the
+ * table), no?
  */
 MCVList
 build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
-					  VacAttrStats **stats, int *numrows_filtered)
+				 VacAttrStats **stats, int *numrows_filtered)
 {
-	int i;
-	int numattrs = attrs->dim1;
-	int ndistinct = 0;
-	int mcv_threshold = 0;
-	int nitems = 0;
+	int			i;
+	int			numattrs = attrs->dim1;
+	int			ndistinct = 0;
+	int			mcv_threshold = 0;
+	int			nitems = 0;
 
-	MCVList	mcvlist = NULL;
+	MCVList		mcvlist = NULL;
 
 	/* comparator for all the columns */
 	MultiSortSupport mss = build_mss(stats, attrs);
 
 	/* sort the rows */
-	SortItem   *items  = build_sorted_items(numrows, rows, stats[0]->tupDesc,
-											mss, attrs);
+	SortItem   *items = build_sorted_items(numrows, rows, stats[0]->tupDesc,
+										   mss, attrs);
 
 	/* transform the sorted rows into groups (sorted by frequency) */
 	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
@@ -112,15 +112,15 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 	 * check how many groups actually pass that threshold. We use 1.25x the
 	 * avarage group size, just like for regular statistics.
 	 *
-	 * But if we can fit all the distinct values in the MCV list (i.e. if there
-	 * are less distinct groups than MVSTAT_MCVLIST_MAX_ITEMS), we'll require
-	 * only 2 rows per group.
+	 * But if we can fit all the distinct values in the MCV list (i.e. if
+	 * there are less distinct groups than MVSTAT_MCVLIST_MAX_ITEMS), we'll
+	 * require only 2 rows per group.
 	 *
-	 * FIXME This should really reference mcv_max_items (from catalog) instead
-	 * 		 of the constant MVSTAT_MCVLIST_MAX_ITEMS.
+	 * FIXME: This should really reference mcv_max_items (from catalog)
+	 * instead of the constant MVSTAT_MCVLIST_MAX_ITEMS.
 	 */
 	mcv_threshold = 1.25 * numrows / ndistinct;
-	mcv_threshold = (mcv_threshold < 4) ? 4  : mcv_threshold;
+	mcv_threshold = (mcv_threshold < 4) ? 4 : mcv_threshold;
 
 	if (ndistinct <= MVSTAT_MCVLIST_MAX_ITEMS)
 		mcv_threshold = 2;
@@ -139,7 +139,7 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 	if (nitems > 0)
 	{
 		/* allocate the MCV list structure, set parameters we know */
-		mcvlist = (MCVList)palloc0(sizeof(MCVListData));
+		mcvlist = (MCVList) palloc0(sizeof(MCVListData));
 
 		mcvlist->magic = MVSTAT_MCV_MAGIC;
 		mcvlist->type = MVSTAT_MCV_TYPE_BASIC;
@@ -152,27 +152,27 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 		 *
 		 * XXX Although we're the only ones dealing with this.
 		 */
-		mcvlist->items = (MCVItem*)palloc0(sizeof(MCVItem)*nitems);
+		mcvlist->items = (MCVItem *) palloc0(sizeof(MCVItem) * nitems);
 
 		for (i = 0; i < nitems; i++)
 		{
-			mcvlist->items[i] = (MCVItem)palloc0(sizeof(MCVItemData));
-			mcvlist->items[i]->values = (Datum*)palloc0(sizeof(Datum)*numattrs);
-			mcvlist->items[i]->isnull = (bool*)palloc0(sizeof(bool)*numattrs);
+			mcvlist->items[i] = (MCVItem) palloc0(sizeof(MCVItemData));
+			mcvlist->items[i]->values = (Datum *) palloc0(sizeof(Datum) * numattrs);
+			mcvlist->items[i]->isnull = (bool *) palloc0(sizeof(bool) * numattrs);
 		}
 
 		/* Copy the first chunk of groups into the result. */
 		for (i = 0; i < nitems; i++)
 		{
 			/* just pointer to the proper place in the list */
-			MCVItem item = mcvlist->items[i];
+			MCVItem		item = mcvlist->items[i];
 
 			/* copy values from the _previous_ group (last item of) */
 			memcpy(item->values, groups[i].values, sizeof(Datum) * numattrs);
-			memcpy(item->isnull, groups[i].isnull, sizeof(bool)  * numattrs);
+			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * numattrs);
 
 			/* and finally the group frequency */
-			item->frequency = (double)groups[i].count / numrows;
+			item->frequency = (double) groups[i].count / numrows;
 		}
 
 		/* make sure the loops are consistent */
@@ -180,20 +180,21 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 
 		/*
 		 * Remove the rows matching the MCV list (i.e. keep only rows that are
-		 * not represented by the MCV list). We will first sort the groups
-		 * by the keys (not by count) and then use binary search.
+		 * not represented by the MCV list). We will first sort the groups by
+		 * the keys (not by count) and then use binary search.
 		 */
 		if (nitems > ndistinct)
 		{
-			int i, j;
-			int nfiltered = 0;
+			int			i,
+						j;
+			int			nfiltered = 0;
 
 			/* used for the searches */
-			SortItem key;
+			SortItem	key;
 
 			/* wfill this with data from the rows */
-			key.values = (Datum*)palloc0(numattrs * sizeof(Datum));
-			key.isnull = (bool*)palloc0(numattrs * sizeof(bool));
+			key.values = (Datum *) palloc0(numattrs * sizeof(Datum));
+			key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
 
 			/*
 			 * Sort the groups for bsearch_r (but only the items that actually
@@ -239,8 +240,8 @@ build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 static MultiSortSupport
 build_mss(VacAttrStats **stats, int2vector *attrs)
 {
-	int	i;
-	int	numattrs = attrs->dim1;
+	int			i;
+	int			numattrs = attrs->dim1;
 
 	/* Sort by multiple columns (using array of SortSupport) */
 	MultiSortSupport mss = multi_sort_init(numattrs);
@@ -257,13 +258,15 @@ static SortItem *
 build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
 				   MultiSortSupport mss, int2vector *attrs)
 {
-	int	i, j, len;
-	int	numattrs = attrs->dim1;
-	int	nvalues = numrows * numattrs;
+	int			i,
+				j,
+				len;
+	int			numattrs = attrs->dim1;
+	int			nvalues = numrows * numattrs;
 
 	/*
-	 * We won't allocate the arrays for each item independenly, but in one large
-	 * chunk and then just set the pointers.
+	 * We won't allocate the arrays for each item independenly, but in one
+	 * large chunk and then just set the pointers.
 	 */
 	SortItem   *items;
 	Datum	   *values;
@@ -277,18 +280,18 @@ build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
 	ptr = palloc0(len);
 
 	/* items to sort */
-	items = (SortItem*)ptr;
+	items = (SortItem *) ptr;
 	ptr += numrows * sizeof(SortItem);
 
 	/* values and null flags */
-	values = (Datum*)ptr;
+	values = (Datum *) ptr;
 	ptr += nvalues * sizeof(Datum);
 
-	isnull = (bool*)ptr;
+	isnull = (bool *) ptr;
 	ptr += nvalues * sizeof(bool);
 
 	/* make sure we consumed the whole buffer exactly */
-	Assert((ptr - (char*)items) == len);
+	Assert((ptr - (char *) items) == len);
 
 	/* fix the pointers to Datum and bool arrays */
 	for (i = 0; i < numrows; i++)
@@ -300,9 +303,9 @@ build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
 		for (j = 0; j < numattrs; j++)
 		{
 			items[i].values[j] = heap_getattr(rows[i],
-										  attrs->values[j], /* attnum */
-										  tdesc,
-										  &items[i].isnull[j]);	/* isnull */
+											  attrs->values[j], /* attnum */
+											  tdesc,
+											  &items[i].isnull[j]);		/* isnull */
 		}
 	}
 
@@ -317,12 +320,12 @@ build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
 static int
 count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
 {
-	int i;
-	int ndistinct;
+	int			i;
+	int			ndistinct;
 
 	ndistinct = 1;
 	for (i = 1; i < numrows; i++)
-		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
+		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 			ndistinct += 1;
 
 	return ndistinct;
@@ -332,8 +335,8 @@ count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
 static int
 compare_sort_item_count(const void *a, const void *b)
 {
-	SortItem *ia = (SortItem *)a;
-	SortItem *ib = (SortItem *)b;
+	SortItem   *ia = (SortItem *) a;
+	SortItem   *ib = (SortItem *) b;
 
 	if (ia->count == ib->count)
 		return 0;
@@ -348,10 +351,11 @@ static SortItem *
 build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 					  int *ndistinct)
 {
-	int	i, j;
-	int ngroups = count_distinct_groups(numrows, items, mss);
+	int			i,
+				j;
+	int			ngroups = count_distinct_groups(numrows, items, mss);
 
-	SortItem *groups = (SortItem*)palloc0(ngroups * sizeof(SortItem));
+	SortItem   *groups = (SortItem *) palloc0(ngroups * sizeof(SortItem));
 
 	j = 0;
 	groups[0] = items[0];
@@ -359,7 +363,7 @@ build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 
 	for (i = 1; i < numrows; i++)
 	{
-		if (multi_sort_compare(&items[i], &items[i-1], mss) != 0)
+		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 			groups[++j] = items[i];
 
 		groups[j].count++;
@@ -381,13 +385,13 @@ load_mv_mcvlist(Oid mvoid)
 	Datum		mcvlist;
 
 #ifdef USE_ASSERT_CHECKING
-	Form_pg_mv_statistic	mvstat;
+	Form_pg_mv_statistic mvstat;
 #endif
 
 	/* Prepare to scan pg_mv_statistic for entries having indrelid = this rel. */
 	HeapTuple	htup = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(mvoid));
 
-	if (! HeapTupleIsValid(htup))
+	if (!HeapTupleIsValid(htup))
 		return NULL;
 
 #ifdef USE_ASSERT_CHECKING
@@ -396,7 +400,7 @@ load_mv_mcvlist(Oid mvoid)
 #endif
 
 	mcvlist = SysCacheGetAttr(MVSTATOID, htup,
-						   Anum_pg_mv_statistic_stamcv, &isnull);
+							  Anum_pg_mv_statistic_stamcv, &isnull);
 
 	Assert(!isnull);
 
@@ -407,7 +411,7 @@ load_mv_mcvlist(Oid mvoid)
 
 /* print some basic info about the MCV list
  *
- * TODO Add info about what part of the table this covers.
+ * TODO: Add info about what part of the table this covers.
  */
 Datum
 pg_mv_stats_mcvlist_info(PG_FUNCTION_ARGS)
@@ -415,7 +419,7 @@ pg_mv_stats_mcvlist_info(PG_FUNCTION_ARGS)
 	bytea	   *data = PG_GETARG_BYTEA_P(0);
 	char	   *result;
 
-	MCVList	mcvlist = deserialize_mv_mcvlist(data);
+	MCVList		mcvlist = deserialize_mv_mcvlist(data);
 
 	result = palloc0(128);
 	snprintf(result, 128, "nitems=%d", mcvlist->nitems);
@@ -432,14 +436,14 @@ pg_mv_stats_mcvlist_info(PG_FUNCTION_ARGS)
  * The basic algorithm is simple:
  *
  * (1) perform deduplication (for each attribute separately)
- *     (a) collect all (non-NULL) attribute values from all MCV items
- *     (b) sort the data (using 'lt' from VacAttrStats)
- *     (c) remove duplicate values from the array
+ *	   (a) collect all (non-NULL) attribute values from all MCV items
+ *	   (b) sort the data (using 'lt' from VacAttrStats)
+ *	   (c) remove duplicate values from the array
  *
  * (2) serialize the arrays into a bytea value
  *
  * (3) process all MCV list items
- *     (a) replace values with indexes into the arrays
+ *	   (a) replace values with indexes into the arrays
  *
  * Each attribute has to be processed separately, because we may be mixing
  * different datatypes, with different sort operators, etc.
@@ -452,55 +456,56 @@ pg_mv_stats_mcvlist_info(PG_FUNCTION_ARGS)
  * histograms, because we are not doing any bucket splits (which is the source
  * of high redundancy in histograms).
  *
- * TODO Consider packing boolean flags (NULL) for each item into a single char
- *      (or a longer type) instead of using an array of bool items.
+ * TODO: Consider packing boolean flags (NULL) for each item into a single char
+ * (or a longer type) instead of using an array of bool items.
  */
 bytea *
 serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 					 VacAttrStats **stats)
 {
-	int	i, j;
-	int	ndims = mcvlist->ndimensions;
-	int	itemsize = ITEM_SIZE(ndims);
+	int			i,
+				j;
+	int			ndims = mcvlist->ndimensions;
+	int			itemsize = ITEM_SIZE(ndims);
 
-	SortSupport		ssup;
-	DimensionInfo  *info;
+	SortSupport ssup;
+	DimensionInfo *info;
 
-	Size	total_length;
+	Size		total_length;
 
 	/* allocate just once */
-	char   *item = palloc0(itemsize);
+	char	   *item = palloc0(itemsize);
 
 	/* serialized items (indexes into arrays, etc.) */
-	bytea  *output;
-	char   *data = NULL;
+	bytea	   *output;
+	char	   *data = NULL;
 
 	/* values per dimension (and number of non-NULL values) */
-	Datum **values = (Datum**)palloc0(sizeof(Datum*) * ndims);
-	int	   *counts = (int*)palloc0(sizeof(int) * ndims);
+	Datum	  **values = (Datum **) palloc0(sizeof(Datum *) * ndims);
+	int		   *counts = (int *) palloc0(sizeof(int) * ndims);
 
 	/*
 	 * We'll include some rudimentary information about the attributes (type
-	 * length, etc.), so that we don't have to look them up while deserializing
-	 * the MCV list.
+	 * length, etc.), so that we don't have to look them up while
+	 * deserializing the MCV list.
 	 */
-	info = (DimensionInfo *)palloc0(sizeof(DimensionInfo)*ndims);
+	info = (DimensionInfo *) palloc0(sizeof(DimensionInfo) * ndims);
 
 	/* sort support data for all attributes included in the MCV list */
-	ssup = (SortSupport)palloc0(sizeof(SortSupportData)*ndims);
+	ssup = (SortSupport) palloc0(sizeof(SortSupportData) * ndims);
 
 	/* collect and deduplicate values for all attributes */
 	for (i = 0; i < ndims; i++)
 	{
-		int ndistinct;
-		StdAnalyzeData *tmp = (StdAnalyzeData *)stats[i]->extra_data;
+		int			ndistinct;
+		StdAnalyzeData *tmp = (StdAnalyzeData *) stats[i]->extra_data;
 
 		/* copy important info about the data type (length, by-value) */
-		info[i].typlen   = stats[i]->attrtype->typlen;
+		info[i].typlen = stats[i]->attrtype->typlen;
 		info[i].typbyval = stats[i]->attrtype->typbyval;
 
 		/* allocate space for values in the attribute and collect them */
-		values[i] = (Datum*)palloc0(sizeof(Datum) * mcvlist->nitems);
+		values[i] = (Datum *) palloc0(sizeof(Datum) * mcvlist->nitems);
 
 		for (j = 0; j < mcvlist->nitems; j++)
 		{
@@ -528,14 +533,15 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 
 		/*
 		 * Walk through the array and eliminate duplicate values, but keep the
-		 * ordering (so that we can do bsearch later). We know there's at least
-		 * one item as (counts[i] != 0), so we can skip the first element.
+		 * ordering (so that we can do bsearch later). We know there's at
+		 * least one item as (counts[i] != 0), so we can skip the first
+		 * element.
 		 */
-		ndistinct = 1;	/* number of distinct values */
+		ndistinct = 1;			/* number of distinct values */
 		for (j = 1; j < counts[i]; j++)
 		{
 			/* if the value is the same as the previous one, we can skip it */
-			if (! compare_datums_simple(values[i][j-1], values[i][j], &ssup[i]))
+			if (!compare_datums_simple(values[i][j - 1], values[i][j], &ssup[i]))
 				continue;
 
 			values[i][ndistinct] = values[i][j];
@@ -553,15 +559,15 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 		 */
 		info[i].nvalues = ndistinct;
 
-		if (info[i].typlen > 0)					/* fixed-length data types */
+		if (info[i].typlen > 0) /* fixed-length data types */
 			info[i].nbytes = info[i].nvalues * info[i].typlen;
-		else if (info[i].typlen == -1)			/* varlena */
+		else if (info[i].typlen == -1)	/* varlena */
 		{
 			info[i].nbytes = 0;
 			for (j = 0; j < info[i].nvalues; j++)
 				info[i].nbytes += VARSIZE_ANY(values[i][j]);
 		}
-		else if (info[i].typlen == -2)			/* cstring */
+		else if (info[i].typlen == -2)	/* cstring */
 		{
 			info[i].nbytes = 0;
 			for (j = 0; j < info[i].nvalues; j++)
@@ -576,20 +582,15 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 	 * Now we can finally compute how much space we'll actually need for the
 	 * serialized MCV list, as it contains these fields:
 	 *
-	 * - length (4B) for varlena
-	 * - magic (4B)
-	 * - type (4B)
-	 * - ndimensions (4B)
-	 * - nitems (4B)
-	 * - info (ndim * sizeof(DimensionInfo)
-	 * - arrays of values for each dimension
-	 * - serialized items (nitems * itemsize)
+	 * - length (4B) for varlena - magic (4B) - type (4B) - ndimensions (4B) -
+	 * nitems (4B) - info (ndim * sizeof(DimensionInfo) - arrays of values for
+	 * each dimension - serialized items (nitems * itemsize)
 	 *
 	 * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then we
 	 * will place all the data (values + indexes).
 	 */
 	total_length = (sizeof(int32) + offsetof(MCVListData, items)
-					+ ndims * sizeof(DimensionInfo)
+					+ndims * sizeof(DimensionInfo)
 					+ mcvlist->nitems * itemsize);
 
 	for (i = 0; i < ndims; i++)
@@ -600,7 +601,7 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 		elog(ERROR, "serialized MCV list exceeds 1MB (%ld)", total_length);
 
 	/* allocate space for the serialized MCV list, set header fields */
-	output = (bytea*)palloc0(total_length);
+	output = (bytea *) palloc0(total_length);
 	SET_VARSIZE(output, total_length);
 
 	/* 'data' points to the current position in the output buffer */
@@ -618,31 +619,31 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 	for (i = 0; i < ndims; i++)
 	{
 #ifdef USE_ASSERT_CHECKING
-		char *tmp = data;	/* remember the starting point */
+		char	   *tmp = data; /* remember the starting point */
 #endif
 		for (j = 0; j < info[i].nvalues; j++)
 		{
-			Datum v = values[i][j];
+			Datum		v = values[i][j];
 
-			if (info[i].typbyval)			/* passed by value */
+			if (info[i].typbyval)		/* passed by value */
 			{
 				memcpy(data, &v, info[i].typlen);
 				data += info[i].typlen;
 			}
-			else if (info[i].typlen > 0)	/* pased by reference */
+			else if (info[i].typlen > 0)		/* pased by reference */
 			{
 				memcpy(data, DatumGetPointer(v), info[i].typlen);
 				data += info[i].typlen;
 			}
-			else if (info[i].typlen == -1)	/* varlena */
+			else if (info[i].typlen == -1)		/* varlena */
 			{
 				memcpy(data, DatumGetPointer(v), VARSIZE_ANY(v));
 				data += VARSIZE_ANY(v);
 			}
-			else if (info[i].typlen == -2)	/* cstring */
+			else if (info[i].typlen == -2)		/* cstring */
 			{
-				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v))+1);
-				data += strlen(DatumGetPointer(v)) + 1;	/* terminator */
+				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v)) + 1);
+				data += strlen(DatumGetPointer(v)) + 1; /* terminator */
 			}
 		}
 
@@ -653,25 +654,25 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 	/* finally serialize the items, with uint16 indexes instead of the values */
 	for (i = 0; i < mcvlist->nitems; i++)
 	{
-		MCVItem	mcvitem = mcvlist->items[i];
+		MCVItem		mcvitem = mcvlist->items[i];
 
 		/* don't write beyond the allocated space */
-		Assert(data <= (char*)output + total_length - itemsize);
+		Assert(data <= (char *) output + total_length - itemsize);
 
 		/* reset the item (we only allocate it once and reuse it) */
 		memset(item, 0, itemsize);
 
 		for (j = 0; j < ndims; j++)
 		{
-			Datum  *v = NULL;
+			Datum	   *v = NULL;
 
 			/* do the lookup only for non-NULL values */
 			if (mcvlist->items[i]->isnull[j])
 				continue;
 
-			v = (Datum*)bsearch_arg(&mcvitem->values[j], values[j],
-									info[j].nvalues, sizeof(Datum),
-									compare_scalars_simple, &ssup[j]);
+			v = (Datum *) bsearch_arg(&mcvitem->values[j], values[j],
+									  info[j].nvalues, sizeof(Datum),
+									  compare_scalars_simple, &ssup[j]);
 
 			Assert(v != NULL);	/* serialization or deduplication error */
 
@@ -694,7 +695,7 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
 	}
 
 	/* at this point we expect to match the total_length exactly */
-	Assert((data - (char*)output) == total_length);
+	Assert((data - (char *) output) == total_length);
 
 	return output;
 }
@@ -707,48 +708,52 @@ serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
  * of duplicate values. But perhaps we should keep the MCV in serialized form
  * just like histograms.
  */
-MCVList deserialize_mv_mcvlist(bytea * data)
+MCVList
+deserialize_mv_mcvlist(bytea *data)
 {
-	int		i, j;
-	Size	expected_size;
-	MCVList mcvlist;
-	char   *tmp;
+	int			i,
+				j;
+	Size		expected_size;
+	MCVList		mcvlist;
+	char	   *tmp;
 
-	int		ndims, nitems, itemsize;
+	int			ndims,
+				nitems,
+				itemsize;
 	DimensionInfo *info = NULL;
 
-	uint16 *indexes = NULL;
-	Datum **values  = NULL;
+	uint16	   *indexes = NULL;
+	Datum	  **values = NULL;
 
 	/* local allocation buffer (used only for deserialization) */
-	int		bufflen;
-	char   *buff;
-	char   *ptr;
+	int			bufflen;
+	char	   *buff;
+	char	   *ptr;
 
 	/* buffer used for the result */
-	int		rbufflen;
-	char   *rbuff;
-	char   *rptr;
+	int			rbufflen;
+	char	   *rbuff;
+	char	   *rptr;
 
 	if (data == NULL)
 		return NULL;
 
 	/* we can't deserialize the MCV if there's not even a complete header */
-	expected_size = offsetof(MCVListData,items);
+	expected_size = offsetof(MCVListData, items);
 
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid MCV Size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), offsetof(MCVListData,items));
+			 VARSIZE_ANY_EXHDR(data), offsetof(MCVListData, items));
 
 	/* read the MCV list header */
-	mcvlist = (MCVList)palloc0(sizeof(MCVListData));
+	mcvlist = (MCVList) palloc0(sizeof(MCVListData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
 	tmp = VARDATA(data);
 
 	/* get the header and perform further sanity checks */
-	memcpy(mcvlist, tmp, offsetof(MCVListData,items));
-	tmp += offsetof(MCVListData,items);
+	memcpy(mcvlist, tmp, offsetof(MCVListData, items));
+	tmp += offsetof(MCVListData, items);
 
 	if (mcvlist->magic != MVSTAT_MCV_MAGIC)
 		elog(ERROR, "invalid MCV magic %d (expected %dd)",
@@ -762,7 +767,7 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 	ndims = mcvlist->ndimensions;
 	itemsize = ITEM_SIZE(ndims);
 
-	Assert((nitems > 0) && (nitems  <= MVSTAT_MCVLIST_MAX_ITEMS));
+	Assert((nitems > 0) && (nitems <= MVSTAT_MCVLIST_MAX_ITEMS));
 	Assert((ndims >= 2) && (ndims <= MVSTATS_MAX_DIMENSIONS));
 
 	/*
@@ -771,14 +776,14 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 	 * through the dimension information and add it to the sum.
 	 */
 	expected_size += ndims * sizeof(DimensionInfo) +
-					 (nitems * itemsize);
+		(nitems * itemsize);
 
 	/* check that we have at least the DimensionInfo records */
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid MCV size %ld (expected %ld)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
-	info = (DimensionInfo*)(tmp);
+	info = (DimensionInfo *) (tmp);
 	tmp += ndims * sizeof(DimensionInfo);
 
 	/* account for the value arrays */
@@ -804,29 +809,28 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 	 * Let's see how much space we'll actually need, and also include space
 	 * for the array with pointers.
 	 */
-	bufflen = sizeof(Datum*) * ndims;		/* space for pointers */
+	bufflen = sizeof(Datum *) * ndims;	/* space for pointers */
 
 	for (i = 0; i < ndims; i++)
 		/* for full-size byval types, we reuse the serialized value */
-		if (! (info[i].typbyval && info[i].typlen == sizeof(Datum)))
+		if (!(info[i].typbyval && info[i].typlen == sizeof(Datum)))
 			bufflen += (sizeof(Datum) * info[i].nvalues);
 
 	buff = palloc0(bufflen);
-	ptr  = buff;
+	ptr = buff;
 
-	values = (Datum**)buff;
-	ptr += (sizeof(Datum*) * ndims);
+	values = (Datum **) buff;
+	ptr += (sizeof(Datum *) * ndims);
 
 	/*
 	 * XXX This uses pointers to the original data array (the types not passed
-	 *     by value), so when someone frees the memory, e.g. by doing something
-	 *     like this:
+	 * by value), so when someone frees the memory, e.g. by doing something
+	 * like this:
 	 *
-	 *         bytea * data = ... fetch the data from catalog ...
-	 *         MCVList mcvlist = deserialize_mcv_list(data);
-	 *         pfree(data);
+	 * bytea * data = ... fetch the data from catalog ... MCVList mcvlist =
+	 * deserialize_mcv_list(data); pfree(data);
 	 *
-	 *     then 'mcvlist' references the freed memory. Should copy the pieces.
+	 * then 'mcvlist' references the freed memory. Should copy the pieces.
 	 */
 	for (i = 0; i < ndims; i++)
 	{
@@ -835,12 +839,12 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 			/* passed by value / Datum - simply reuse the array */
 			if (info[i].typlen == sizeof(Datum))
 			{
-				values[i] = (Datum*)tmp;
+				values[i] = (Datum *) tmp;
 				tmp += info[i].nbytes;
 			}
 			else
 			{
-				values[i] = (Datum*)ptr;
+				values[i] = (Datum *) ptr;
 				ptr += (sizeof(Datum) * info[i].nvalues);
 
 				for (j = 0; j < info[i].nvalues; j++)
@@ -854,7 +858,7 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 		else
 		{
 			/* all the other types need a chunk of the buffer */
-			values[i] = (Datum*)ptr;
+			values[i] = (Datum *) ptr;
 			ptr += (sizeof(Datum) * info[i].nvalues);
 
 			/* pased by reference, but fixed length (name, tid, ...) */
@@ -884,7 +888,7 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 				{
 					/* just point into the array */
 					values[i][j] = PointerGetDatum(tmp);
-					tmp += (strlen(tmp) + 1); /* don't forget the \0 */
+					tmp += (strlen(tmp) + 1);	/* don't forget the \0 */
 				}
 			}
 		}
@@ -895,24 +899,25 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 
 	/* allocate space for all the MCV items in a single piece */
 	rbufflen = (sizeof(MCVItem) + sizeof(MCVItemData) +
-				sizeof(Datum)*ndims + sizeof(bool)*ndims) * nitems;
+				sizeof(Datum) * ndims + sizeof(bool) * ndims) * nitems;
 
 	rbuff = palloc0(rbufflen);
-	rptr  = rbuff;
+	rptr = rbuff;
 
-	mcvlist->items = (MCVItem*)rbuff;
+	mcvlist->items = (MCVItem *) rbuff;
 	rptr += (sizeof(MCVItem) * nitems);
 
 	for (i = 0; i < nitems; i++)
 	{
-		MCVItem item = (MCVItem)rptr;
+		MCVItem		item = (MCVItem) rptr;
+
 		rptr += (sizeof(MCVItemData));
 
-		item->values = (Datum*)rptr;
-		rptr += (sizeof(Datum)*ndims);
+		item->values = (Datum *) rptr;
+		rptr += (sizeof(Datum) * ndims);
 
-		item->isnull = (bool*)rptr;
-		rptr += (sizeof(bool) *ndims);
+		item->isnull = (bool *) rptr;
+		rptr += (sizeof(bool) * ndims);
 
 		/* just point to the right place */
 		indexes = ITEM_INDEXES(tmp);
@@ -927,18 +932,18 @@ MCVList deserialize_mv_mcvlist(bytea * data)
 
 		/* translate the values */
 		for (j = 0; j < ndims; j++)
-			if (! item->isnull[j])
+			if (!item->isnull[j])
 				item->values[j] = values[j][indexes[j]];
 
 		mcvlist->items[i] = item;
 
 		tmp += ITEM_SIZE(ndims);
 
-		Assert(tmp <= (char*)data + VARSIZE_ANY(data));
+		Assert(tmp <= (char *) data + VARSIZE_ANY(data));
 	}
 
 	/* check that we processed all the data */
-	Assert(tmp == (char*)data + VARSIZE_ANY(data));
+	Assert(tmp == (char *) data + VARSIZE_ANY(data));
 
 	/* release the temporary buffer */
 	pfree(buff);
@@ -962,17 +967,17 @@ PG_FUNCTION_INFO_V1(pg_mv_mcv_items);
 Datum
 pg_mv_mcv_items(PG_FUNCTION_ARGS)
 {
-	FuncCallContext	   *funcctx;
-	int					call_cntr;
-	int					max_calls;
-	TupleDesc			tupdesc;
-	AttInMetadata	   *attinmeta;
+	FuncCallContext *funcctx;
+	int			call_cntr;
+	int			max_calls;
+	TupleDesc	tupdesc;
+	AttInMetadata *attinmeta;
 
 	/* stuff done only on the first call of the function */
 	if (SRF_IS_FIRSTCALL())
 	{
-		MemoryContext	oldcontext;
-		MCVList			mcvlist;
+		MemoryContext oldcontext;
+		MCVList		mcvlist;
 
 		/* create a function context for cross-call persistence */
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -1010,7 +1015,7 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 	max_calls = funcctx->max_calls;
 	attinmeta = funcctx->attinmeta;
 
-	if (call_cntr < max_calls)    /* do when there is more left to send */
+	if (call_cntr < max_calls)	/* do when there is more left to send */
 	{
 		char	  **values;
 		HeapTuple	tuple;
@@ -1018,8 +1023,8 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 		int2vector *stakeys;
 		Oid			relid;
 
-		char *buff = palloc0(1024);
-		char *format;
+		char	   *buff = palloc0(1024);
+		char	   *format;
 
 		int			i;
 
@@ -1029,7 +1034,7 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 		MCVList		mcvlist;
 		MCVItem		item;
 
-		mcvlist = (MCVList)funcctx->user_fctx;
+		mcvlist = (MCVList) funcctx->user_fctx;
 
 		Assert(call_cntr < mcvlist->nitems);
 
@@ -1053,12 +1058,12 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 		/* frequency */
 		values[3] = (char *) palloc(64 * sizeof(char));
 
-		outfuncs = (Oid*)palloc0(sizeof(Oid) * mcvlist->ndimensions);
-		fmgrinfo = (FmgrInfo*)palloc0(sizeof(FmgrInfo) * mcvlist->ndimensions);
+		outfuncs = (Oid *) palloc0(sizeof(Oid) * mcvlist->ndimensions);
+		fmgrinfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo) * mcvlist->ndimensions);
 
 		for (i = 0; i < mcvlist->ndimensions; i++)
 		{
-			bool isvarlena;
+			bool		isvarlena;
 
 			getTypeOutputInfo(get_atttype(relid, stakeys->values[i]),
 							  &outfuncs[i], &isvarlena);
@@ -1066,16 +1071,17 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 			fmgr_info(outfuncs[i], &fmgrinfo[i]);
 		}
 
-		snprintf(values[0], 64, "%d", call_cntr);	/* item ID */
+		snprintf(values[0], 64, "%d", call_cntr);		/* item ID */
 
 		for (i = 0; i < mcvlist->ndimensions; i++)
 		{
-			Datum val, valout;
+			Datum		val,
+						valout;
 
 			format = "%s, %s";
 			if (i == 0)
 				format = "{%s%s";
-			else if (i == mcvlist->ndimensions-1)
+			else if (i == mcvlist->ndimensions - 1)
 				format = "%s, %s}";
 
 			if (item->isnull[i])
@@ -1095,7 +1101,7 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 			buff[0] = '\0';
 		}
 
-		snprintf(values[3], 64, "%f", item->frequency);	/* frequency */
+		snprintf(values[3], 64, "%f", item->frequency); /* frequency */
 
 		/* build a tuple */
 		tuple = BuildTupleFromCStrings(attinmeta, values);
@@ -1113,7 +1119,7 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 
 		SRF_RETURN_NEXT(funcctx, result);
 	}
-	else    /* do when there is no more left */
+	else	/* do when there is no more left */
 	{
 		SRF_RETURN_DONE(funcctx);
 	}

@@ -703,7 +703,7 @@ load_mv_dependencies(Oid mvoid)
 	HeapTuple	htup = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(mvoid));
 
 #ifdef USE_ASSERT_CHECKING
-	Form_pg_mv_statistic	mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
+	Form_pg_mv_statistic mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
 	Assert(mvstat->deps_enabled && mvstat->deps_built);
 #endif
 

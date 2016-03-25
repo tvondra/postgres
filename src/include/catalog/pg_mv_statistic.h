@@ -42,8 +42,8 @@ CATALOG(pg_mv_statistic,3381)
 	bool		hist_enabled;	/* build histogram? */
 
 	/* MCV / histogram size */
-	int32		mcv_max_items;		/* max MCV items */
-	int32		hist_max_buckets;	/* max histogram buckets */
+	int32		mcv_max_items;	/* max MCV items */
+	int32		hist_max_buckets;		/* max histogram buckets */
 
 	/* statistics that are available (if requested) */
 	bool		deps_built;		/* dependencies were built */

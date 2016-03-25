@@ -224,10 +224,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("option 'mcv' is required by other options(s)")));
 
-	if (require_histogram && (! build_histogram))
+	if (require_histogram && (!build_histogram))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("option 'histogram' is required by other options(s)")));
+			  errmsg("option 'histogram' is required by other options(s)")));
 
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);

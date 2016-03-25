@@ -98,37 +98,39 @@ typedef MCVListData *MCVList;
 /*
  * Multivariate histograms
  */
-typedef struct MVBucketData {
+typedef struct MVBucketData
+{
 
 	/* Frequencies of this bucket. */
-	float	ntuples;	/* frequency of tuples tuples */
+	float		ntuples;		/* frequency of tuples tuples */
 
 	/*
 	 * Information about dimensions being NULL-only. Not yet used.
 	 */
-	bool   *nullsonly;
+	bool	   *nullsonly;
 
 	/* lower boundaries - values and information about the inequalities */
-	Datum  *min;
-	bool   *min_inclusive;
+	Datum	   *min;
+	bool	   *min_inclusive;
 
 	/* upper boundaries - values and information about the inequalities */
-	Datum  *max;
-	bool   *max_inclusive;
+	Datum	   *max;
+	bool	   *max_inclusive;
 
 	/* used when building the histogram (not serialized/deserialized) */
-	void   *build_data;
+	void	   *build_data;
 
 } MVBucketData;
 
-typedef MVBucketData	*MVBucket;
+typedef MVBucketData *MVBucket;
 
 
-typedef struct MVHistogramData {
+typedef struct MVHistogramData
+{
 
 	uint32		magic;			/* magic constant marker */
 	uint32		type;			/* type of histogram (BASIC) */
-	uint32 		nbuckets;		/* number of buckets (buckets array) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
 	uint32		ndimensions;	/* number of dimensions */
 
 	MVBucket   *buckets;		/* array of buckets */
@@ -144,48 +146,52 @@ typedef MVHistogramData *MVHistogram;
  * TODO add more detailed description here
  */
 
-typedef struct MVSerializedBucketData {
+typedef struct MVSerializedBucketData
+{
 
 	/* Frequencies of this bucket. */
-	float	ntuples;	/* frequency of tuples tuples */
+	float		ntuples;		/* frequency of tuples tuples */
 
 	/*
 	 * Information about dimensions being NULL-only. Not yet used.
 	 */
-	bool   *nullsonly;
+	bool	   *nullsonly;
 
 	/* lower boundaries - values and information about the inequalities */
-	uint16 *min;
-	bool   *min_inclusive;
+	uint16	   *min;
+	bool	   *min_inclusive;
 
-	/* indexes of upper boundaries - values and information about the
-	 * inequalities (exclusive vs. inclusive) */
-	uint16 *max;
-	bool   *max_inclusive;
+	/*
+	 * indexes of upper boundaries - values and information about the
+	 * inequalities (exclusive vs. inclusive)
+	 */
+	uint16	   *max;
+	bool	   *max_inclusive;
 
 } MVSerializedBucketData;
 
-typedef MVSerializedBucketData	*MVSerializedBucket;
+typedef MVSerializedBucketData *MVSerializedBucket;
 
-typedef struct MVSerializedHistogramData {
+typedef struct MVSerializedHistogramData
+{
 
 	uint32		magic;			/* magic constant marker */
 	uint32		type;			/* type of histogram (BASIC) */
-	uint32 		nbuckets;		/* number of buckets (buckets array) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
 	uint32		ndimensions;	/* number of dimensions */
 
 	/*
-	 * keep this the same with MVHistogramData, because of
-	 * deserialization (same offset)
+	 * keep this the same with MVHistogramData, because of deserialization
+	 * (same offset)
 	 */
-	MVSerializedBucket   *buckets;		/* array of buckets */
+	MVSerializedBucket *buckets;	/* array of buckets */
 
 	/*
-	 * serialized boundary values, one array per dimension, deduplicated
-	 * (the min/max indexes point into these arrays)
+	 * serialized boundary values, one array per dimension, deduplicated (the
+	 * min/max indexes point into these arrays)
 	 */
-	int	   *nvalues;
-	Datum **values;
+	int		   *nvalues;
+	Datum	  **values;
 
 } MVSerializedHistogramData;
 
@@ -193,8 +199,8 @@ typedef MVSerializedHistogramData *MVSerializedHistogram;
 
 
 /* used to flag stats serialized to bytea */
-#define MVSTAT_HIST_MAGIC		0x7F8C5670	/* marks serialized bytea */
-#define MVSTAT_HIST_TYPE_BASIC	1			/* basic histogram type */
+#define MVSTAT_HIST_MAGIC		0x7F8C5670		/* marks serialized bytea */
+#define MVSTAT_HIST_TYPE_BASIC	1		/* basic histogram type */
 
 /*
  * Limits used for max_buckets option, i.e. we're always guaranteed
@@ -205,12 +211,12 @@ typedef MVSerializedHistogramData *MVSerializedHistogram;
  * histogram may use less buckets than MVSTAT_HIST_MAX_BUCKETS.
  *
  * TODO The MVSTAT_HIST_MIN_BUCKETS should be related to the number of
- *      attributes (MVSTATS_MAX_DIMENSIONS) because of NULL-buckets.
- *      There should be at least 2^N buckets, otherwise we may be unable
- *      to build the NULL buckets.
+ *		attributes (MVSTATS_MAX_DIMENSIONS) because of NULL-buckets.
+ *		There should be at least 2^N buckets, otherwise we may be unable
+ *		to build the NULL buckets.
  */
-#define MVSTAT_HIST_MIN_BUCKETS	128			/* min number of buckets */
-#define MVSTAT_HIST_MAX_BUCKETS	16384		/* max number of buckets */
+#define MVSTAT_HIST_MIN_BUCKETS 128		/* min number of buckets */
+#define MVSTAT_HIST_MAX_BUCKETS 16384	/* max number of buckets */
 
 /*
  * TODO: Maybe fetching the histogram/MCV list separately is inefficient?
@@ -257,13 +263,13 @@ MCVList build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 				 VacAttrStats **stats, int *numrows_filtered);
 
 MVHistogram build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
-				 VacAttrStats **stats, int numrows_total);
+				   VacAttrStats **stats, int numrows_total);
 
 void build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
-				 int natts, VacAttrStats **vacattrstats);
+			   int natts, VacAttrStats **vacattrstats);
 
 void update_mv_stats(Oid relid, MVDependencies dependencies, MCVList mcvlist,
-				MVHistogram histogram, int2vector *attrs, VacAttrStats **stats);
+			 MVHistogram histogram, int2vector *attrs, VacAttrStats **stats);
 
 #ifdef DEBUG_MVHIST
 extern void debug_histogram_matches(MVSerializedHistogram mvhist, char *matches);

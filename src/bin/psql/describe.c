@@ -2156,7 +2156,7 @@ describeOneTableDetails(const char *schemaname,
 
 					if (!strcmp(PQgetvalue(result, i, 6), "t"))
 					{
-						if (! first)
+						if (!first)
 							appendPQExpBuffer(&buf, ", histogram");
 						else
 							appendPQExpBuffer(&buf, "(histogram");

@@ -51,7 +51,7 @@ build_mv_stats(Relation onerel, int numrows, HeapTuple *rows,
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
 		MVDependencies deps = NULL;
 		MCVList		mcvlist = NULL;
-		MVHistogram		histogram = NULL;
+		MVHistogram histogram = NULL;
 		int			numrows_filtered = numrows;
 
 		VacAttrStats **stats = NULL;
@@ -249,14 +249,14 @@ find_mv_attnums(Oid mvoid, Oid *relid)
 
 /*
  * FIXME This adds statistics, but we need to drop statistics when the
- *       table is dropped. Not sure what to do when a column is dropped.
- *       Either we can (a) remove all stats on that column, (b) remove
- *       the column from defined stats and force rebuild, (c) remove the
- *       column on next ANALYZE. Or maybe something else?
+ *		 table is dropped. Not sure what to do when a column is dropped.
+ *		 Either we can (a) remove all stats on that column, (b) remove
+ *		 the column from defined stats and force rebuild, (c) remove the
+ *		 column on next ANALYZE. Or maybe something else?
  */
 void
 update_mv_stats(Oid mvoid,
-				MVDependencies dependencies, MCVList mcvlist, MVHistogram histogram,
+		 MVDependencies dependencies, MCVList mcvlist, MVHistogram histogram,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -292,8 +292,9 @@ update_mv_stats(Oid mvoid,
 
 	if (histogram != NULL)
 	{
-		bytea * data = serialize_mv_histogram(histogram, attrs, stats);
-		nulls[Anum_pg_mv_statistic_stahist-1]    = (data == NULL);
+		bytea	   *data = serialize_mv_histogram(histogram, attrs, stats);
+
+		nulls[Anum_pg_mv_statistic_stahist - 1] = (data == NULL);
 		values[Anum_pg_mv_statistic_stahist - 1]
 			= PointerGetDatum(data);
 	}

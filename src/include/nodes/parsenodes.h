@@ -608,7 +608,7 @@ typedef struct CreateStatsStmt
 	RangeVar   *relation;		/* relation to build statistics on */
 	List	   *keys;			/* String nodes naming referenced column(s) */
 	List	   *options;		/* list of DefElem nodes */
-	bool		if_not_exists;	/* just do nothing if statistics already exists? */
+	bool		if_not_exists;	/* do nothing if statistics already exists */
 } CreateStatsStmt;
 
 

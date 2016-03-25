@@ -4237,8 +4237,8 @@ get_statistics_oid(List *names, bool missing_ok)
 			if (namespaceId == myTempNamespace)
 				continue;		/* do not look in temp namespace */
 			stats_oid = GetSysCacheOid2(MVSTATNAMENSP,
-									  PointerGetDatum(stats_name),
-									  ObjectIdGetDatum(namespaceId));
+										PointerGetDatum(stats_name),
+										ObjectIdGetDatum(namespaceId));
 			if (OidIsValid(stats_oid))
 				break;
 		}

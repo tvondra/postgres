@@ -31,7 +31,8 @@
 
 
 /* used for sorting the attnums in ExecCreateStatistics */
-static int compare_int16(const void *a, const void *b)
+static int
+compare_int16(const void *a, const void *b)
 {
 	return memcmp(a, b, sizeof(int16));
 }
@@ -39,23 +40,23 @@ static int compare_int16(const void *a, const void *b)
 /*
  * Implements the CREATE STATISTICS name ON table (columns) WITH (options)
  *
- * TODO Check that the types support sort, although maybe we can live
- *      without it (and only build MCV list / association rules).
+ * TODO: Check that the types support sort, although maybe we can live
+ * without it (and only build MCV list / association rules).
  *
- * TODO This should probably check for duplicate stats (i.e. same
- *      keys, same options). Although maybe it's useful to have
- *      multiple stats on the same columns with different options
- *      (say, a detailed MCV-only stats for some queries, histogram
- *      for others, etc.)
+ * TODO: This should probably check for duplicate stats (i.e. same keys
+ * keys, same options). Although maybe it's useful to have multiple stats
+ * on the same columns with different options (say, a detailed MCV-only
+ * stats for some queries, histogram for others, etc.)
  */
 ObjectAddress
 CreateStatistics(CreateStatsStmt *stmt)
 {
-	int			i, j;
+	int			i,
+				j;
 	ListCell   *l;
 	int16		attnums[INDEX_MAX_KEYS];
 	int			numcols = 0;
-	ObjectAddress	address = InvalidObjectAddress;
+	ObjectAddress address = InvalidObjectAddress;
 	char	   *namestr;
 	NameData	staname;
 	Oid			statoid;
@@ -68,10 +69,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Relation	mvstatrel;
 	Relation	rel;
 	Oid			relid;
-	ObjectAddress parentobject, childobject;
+	ObjectAddress parentobject,
+				childobject;
 
 	/* by default build nothing */
-	bool 	build_dependencies = false;
+	bool		build_dependencies = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -95,7 +97,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	rel = heap_openrv(stmt->relation, AccessExclusiveLock);
-	relid  = RelationGetRelid(rel);
+	relid = RelationGetRelid(rel);
 
 	/* transform the column names to attnum values */
 
@@ -109,8 +111,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 		if (!HeapTupleIsValid(atttuple))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
-					 errmsg("column \"%s\" referenced in statistics does not exist",
-							attname)));
+			  errmsg("column \"%s\" referenced in statistics does not exist",
+					 attname)));
 
 		/* more than MVHIST_MAX_DIMENSIONS columns not allowed */
 		if (numcols >= MVSTATS_MAX_DIMENSIONS)
@@ -125,13 +127,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/*
-	 * Check the lower bound (at least 2 columns), the upper bound was
-	 * already checked in the loop.
+	 * Check the lower bound (at least 2 columns), the upper bound was already
+	 * checked in the loop.
 	 */
 	if (numcols < 2)
-			ereport(ERROR,
-					(errcode(ERRCODE_TOO_MANY_COLUMNS),
-					 errmsg("multivariate stats require 2 or more columns")));
+		ereport(ERROR,
+				(errcode(ERRCODE_TOO_MANY_COLUMNS),
+				 errmsg("multivariate stats require 2 or more columns")));
 
 	/* look for duplicities */
 	for (i = 0; i < numcols; i++)
@@ -139,12 +141,12 @@ CreateStatistics(CreateStatsStmt *stmt)
 			if ((i != j) && (attnums[i] == attnums[j]))
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_COLUMN),
-						 errmsg("duplicate column name in statistics definition")));
+				  errmsg("duplicate column name in statistics definition")));
 
 	/* parse the statistics options */
-	foreach (l, stmt->options)
+	foreach(l, stmt->options)
 	{
-		DefElem *opt = (DefElem*)lfirst(l);
+		DefElem    *opt = (DefElem *) lfirst(l);
 
 		if (strcmp(opt->defname, "dependencies") == 0)
 			build_dependencies = defGetBoolean(opt);
@@ -156,7 +158,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* check that at least some statistics were requested */
-	if (! build_dependencies)
+	if (!build_dependencies)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("no statistics type (dependencies) was requested")));
@@ -172,16 +174,16 @@ CreateStatistics(CreateStatsStmt *stmt)
 	memset(nulls, false, sizeof(nulls));
 
 	/* no stats collected yet, so just the keys */
-	values[Anum_pg_mv_statistic_starelid-1] = ObjectIdGetDatum(relid);
-	values[Anum_pg_mv_statistic_staname -1] = NameGetDatum(&staname);
-	values[Anum_pg_mv_statistic_stanamespace -1] = ObjectIdGetDatum(namespaceId);
-	values[Anum_pg_mv_statistic_staowner-1] = ObjectIdGetDatum(GetUserId());
+	values[Anum_pg_mv_statistic_starelid - 1] = ObjectIdGetDatum(relid);
+	values[Anum_pg_mv_statistic_staname - 1] = NameGetDatum(&staname);
+	values[Anum_pg_mv_statistic_stanamespace - 1] = ObjectIdGetDatum(namespaceId);
+	values[Anum_pg_mv_statistic_staowner - 1] = ObjectIdGetDatum(GetUserId());
 
-	values[Anum_pg_mv_statistic_stakeys -1] = PointerGetDatum(stakeys);
+	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(stakeys);
 
-	values[Anum_pg_mv_statistic_deps_enabled -1] = BoolGetDatum(build_dependencies);
+	values[Anum_pg_mv_statistic_deps_enabled - 1] = BoolGetDatum(build_dependencies);
 
-	nulls[Anum_pg_mv_statistic_stadeps  -1] = true;
+	nulls[Anum_pg_mv_statistic_stadeps - 1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);
@@ -229,7 +231,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 /*
  * Implements the DROP STATISTICS
  *
- *     DROP STATISTICS stats_name ON table_name
+ *	   DROP STATISTICS stats_name ON table_name
  *
  * The first one requires an exact match, the second one just drops
  * all the statistics on a table.
@@ -241,7 +243,7 @@ RemoveStatisticsById(Oid statsOid)
 	Oid			relid;
 	Relation	rel;
 	HeapTuple	tup;
-	Form_pg_mv_statistic	mvstat;
+	Form_pg_mv_statistic mvstat;
 
 	/*
 	 * Delete the pg_proc tuple.

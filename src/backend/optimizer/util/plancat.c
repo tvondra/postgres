@@ -427,7 +427,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 				/* stakeys */
 				adatum = SysCacheGetAttr(MVSTATOID, htup,
-										 Anum_pg_mv_statistic_stakeys, &isnull);
+									  Anum_pg_mv_statistic_stakeys, &isnull);
 				Assert(!isnull);
 
 				arr = DatumGetArrayTypeP(adatum);
@@ -776,7 +776,7 @@ infer_collation_opclass_match(InferenceElem *elem, Relation idxRel,
 	AttrNumber	natt;
 	Oid			inferopfamily = InvalidOid;		/* OID of opclass opfamily */
 	Oid			inferopcinputtype = InvalidOid; /* OID of opclass input type */
-	int			nplain = 0;						/* # plain attrs observed */
+	int			nplain = 0;		/* # plain attrs observed */
 
 	/*
 	 * If inference specification element lacks collation/opclass, then no

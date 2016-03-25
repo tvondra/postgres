@@ -61,7 +61,7 @@ typedef struct RelationData
 	bool		rd_isvalid;		/* relcache entry is valid */
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
-	bool		rd_mvstatvalid;	/* state of rd_mvstatlist: true/false */
+	bool		rd_mvstatvalid; /* state of rd_mvstatlist: true/false */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has

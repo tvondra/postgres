@@ -4142,7 +4142,7 @@ _copyAlterPolicyStmt(const AlterPolicyStmt *from)
 static CreateStatsStmt *
 _copyCreateStatsStmt(const CreateStatsStmt *from)
 {
-	CreateStatsStmt  *newnode = makeNode(CreateStatsStmt);
+	CreateStatsStmt *newnode = makeNode(CreateStatsStmt);
 
 	COPY_NODE_FIELD(defnames);
 	COPY_NODE_FIELD(relation);
@@ -4202,7 +4202,7 @@ _copyList(const List *from)
 static ExtensibleNode *
 _copyExtensibleNode(const ExtensibleNode *from)
 {
-	ExtensibleNode	   *newnode;
+	ExtensibleNode *newnode;
 	const ExtensibleNodeMethods *methods;
 
 	methods = GetExtensibleNodeMethods(from->extnodename, false);

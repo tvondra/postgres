@@ -31,22 +31,25 @@
 CATALOG(pg_mv_statistic,3381)
 {
 	/* These fields form the unique key for the entry: */
-	Oid			starelid;			/* relation containing attributes */
-	NameData	staname;			/* statistics name */
-	Oid			stanamespace;		/* OID of namespace containing this statistics */
-	Oid			staowner;			/* statistics owner */
+	Oid			starelid;		/* relation containing attributes */
+	NameData	staname;		/* statistics name */
+	Oid			stanamespace;	/* OID of namespace containing this statistics */
+	Oid			staowner;		/* statistics owner */
 
 	/* statistics requested to build */
-	bool		deps_enabled;		/* analyze dependencies? */
+	bool		deps_enabled;	/* analyze dependencies? */
 
 	/* statistics that are available (if requested) */
-	bool		deps_built;			/* dependencies were built */
+	bool		deps_built;		/* dependencies were built */
 
-	/* variable-length fields start here, but we allow direct access to stakeys */
-	int2vector	stakeys;			/* array of column keys */
+	/*
+	 * variable-length fields start here, but we allow direct access to
+	 * stakeys
+	 */
+	int2vector	stakeys;		/* array of column keys */
 
 #ifdef CATALOG_VARLEN
-	bytea		stadeps;			/* dependencies (serialized) */
+	bytea		stadeps;		/* dependencies (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;

@@ -2108,13 +2108,13 @@ describeOneTableDetails(const char *schemaname,
 		if (pset.sversion >= 90600)
 		{
 			printfPQExpBuffer(&buf,
-						   "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-						   "  deps_enabled,\n"
-						   "  deps_built,\n"
-						   "  (SELECT string_agg(attname::text,', ')\n"
+							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
+							  "  deps_enabled,\n"
+							  "  deps_built,\n"
+							  "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
-						   "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
-						   "FROM pg_mv_statistic stat WHERE starelid  = '%s' ORDER BY 1;",
+							  "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
+			  "FROM pg_mv_statistic stat WHERE starelid  = '%s' ORDER BY 1;",
 							  oid);
 
 			result = PSQLexec(buf.data);
@@ -2135,12 +2135,12 @@ describeOneTableDetails(const char *schemaname,
 									  PQgetvalue(result, i, 1),
 									  PQgetvalue(result, i, 2));
 
-					/*  options */
+					/* options */
 					if (!strcmp(PQgetvalue(result, i, 4), "t"))
 						appendPQExpBuffer(&buf, "(dependencies)");
 
 					appendPQExpBuffer(&buf, " ON (%s)",
-							PQgetvalue(result, i, 6));
+									  PQgetvalue(result, i, 6));
 
 					printTableAddFooter(&cont, buf.data);
 				}

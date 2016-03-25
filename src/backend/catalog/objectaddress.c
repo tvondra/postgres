@@ -4671,10 +4671,10 @@ getObjectIdentityParts(const ObjectAddress *object,
 				schema = get_namespace_name_or_temp(formStatistic->stanamespace);
 				appendStringInfoString(&buffer,
 									   quote_qualified_identifier(schema,
-											   NameStr(formStatistic->staname)));
+										   NameStr(formStatistic->staname)));
 				if (objname)
 					*objname = list_make2(schema,
-									   pstrdup(NameStr(formStatistic->staname)));
+								   pstrdup(NameStr(formStatistic->staname)));
 				ReleaseSysCache(tup);
 			}
 			break;

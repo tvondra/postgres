@@ -2347,7 +2347,7 @@ _outPlannerParamItem(StringInfo str, const PlannerParamItem *node)
 static void
 _outExtensibleNode(StringInfo str, const ExtensibleNode *node)
 {
-	const ExtensibleNodeMethods  *methods;
+	const ExtensibleNodeMethods *methods;
 
 	methods = GetExtensibleNodeMethods(node->extnodename, false);
 

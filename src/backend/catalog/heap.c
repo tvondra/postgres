@@ -2716,16 +2716,15 @@ RemoveMVStatistics(Oid relid, AttrNumber attnum)
 	HeapTuple	tuple;
 
 	/*
-	 * When dropping a column, we'll drop statistics with a single
-	 * remaining (undropped column). To do that, we need the tuple
-	 * descriptor.
+	 * When dropping a column, we'll drop statistics with a single remaining
+	 * (undropped column). To do that, we need the tuple descriptor.
 	 *
-	 * We already have the relation locked (as we're running ALTER
-	 * TABLE ... DROP COLUMN), so we'll just get the descriptor here.
+	 * We already have the relation locked (as we're running ALTER TABLE ...
+	 * DROP COLUMN), so we'll just get the descriptor here.
 	 */
 	if (attnum != 0)
 	{
-		Relation rel = relation_open(relid, NoLock);
+		Relation	rel = relation_open(relid, NoLock);
 
 		/* multivariate stats are supported on tables and matviews */
 		if (rel->rd_rel->relkind == RELKIND_RELATION ||
@@ -2752,7 +2751,7 @@ RemoveMVStatistics(Oid relid, AttrNumber attnum)
 	/* we must loop even when attnum != 0, in case of inherited stats */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool delete = true;
+		bool		delete = true;
 
 		if (attnum != 0)
 		{
@@ -2769,12 +2768,12 @@ RemoveMVStatistics(Oid relid, AttrNumber attnum)
 			Assert(!isnull);
 
 			arr = DatumGetArrayTypeP(adatum);
-			attnums = (int16*)ARR_DATA_PTR(arr);
+			attnums = (int16 *) ARR_DATA_PTR(arr);
 
 			for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 			{
 				/* count the column unless it's has been / is being dropped */
-				if ((! tupdesc->attrs[attnums[i]-1]->attisdropped) &&
+				if ((!tupdesc->attrs[attnums[i] - 1]->attisdropped) &&
 					(attnums[i] != attnum))
 					ncolumns += 1;
 			}

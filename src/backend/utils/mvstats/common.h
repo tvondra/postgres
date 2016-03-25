@@ -48,30 +48,32 @@ typedef struct
 } ScalarItem;
 
 /* multi-sort */
-typedef struct MultiSortSupportData {
-	int				ndims;		/* number of dimensions supported by the */
-	SortSupportData	ssup[1];	/* sort support data for each dimension */
+typedef struct MultiSortSupportData
+{
+	int			ndims;			/* number of dimensions supported by the */
+	SortSupportData ssup[1];	/* sort support data for each dimension */
 } MultiSortSupportData;
 
-typedef MultiSortSupportData* MultiSortSupport;
+typedef MultiSortSupportData *MultiSortSupport;
 
-typedef struct SortItem {
-	Datum  *values;
-	bool   *isnull;
+typedef struct SortItem
+{
+	Datum	   *values;
+	bool	   *isnull;
 } SortItem;
 
 MultiSortSupport multi_sort_init(int ndims);
 
 void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
-							  int dim, VacAttrStats **vacattrstats);
+						 int dim, VacAttrStats **vacattrstats);
 
 int multi_sort_compare(const void *a, const void *b, void *arg);
 
 int multi_sort_compare_dim(int dim, const SortItem *a,
-						   const SortItem *b, MultiSortSupport mss);
+					   const SortItem *b, MultiSortSupport mss);
 
 int multi_sort_compare_dims(int start, int end, const SortItem *a,
-							const SortItem *b, MultiSortSupport mss);
+						const SortItem *b, MultiSortSupport mss);
 
 /* comparators, used when constructing multivariate stats */
 int compare_scalars_simple(const void *a, const void *b, void *arg);

@@ -1524,7 +1524,7 @@ ProcessUtilitySlow(Node *parsetree,
 				address = CreateAccessMethod((CreateAmStmt *) parsetree);
 				break;
 
-			case T_CreateStatsStmt:	/* CREATE STATISTICS */
+			case T_CreateStatsStmt:		/* CREATE STATISTICS */
 				address = CreateStatistics((CreateStatsStmt *) parsetree);
 				break;
 

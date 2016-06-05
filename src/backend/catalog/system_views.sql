@@ -794,6 +794,8 @@ CREATE VIEW pg_stat_bgwriter AS
         pg_stat_get_buf_written_backend() AS buffers_backend,
         pg_stat_get_buf_fsync_backend() AS buffers_backend_fsync,
         pg_stat_get_buf_alloc() AS buffers_alloc,
+        pg_stat_get_fpw_count() AS fpw_count,
+        pg_stat_get_fpw_bytes() AS fpw_bytes,
         pg_stat_get_bgwriter_stat_reset_time() AS stats_reset;
 
 CREATE VIEW pg_stat_progress_vacuum AS

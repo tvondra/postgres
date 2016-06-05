@@ -128,6 +128,9 @@ typedef struct
 	uint32		num_backend_writes;		/* counts user backend buffer writes */
 	uint32		num_backend_fsync;		/* counts user backend fsync calls */
 
+	uint32		num_fpw_pages;			/* counts number of full page writes */
+	uint64		num_fpw_bytes;			/* counts size of full page writes */
+
 	int			num_requests;	/* current # of requests */
 	int			max_requests;	/* allocated array size */
 	CheckpointerRequest requests[FLEXIBLE_ARRAY_MEMBER];
@@ -1300,9 +1303,13 @@ AbsorbFsyncRequests(void)
 	/* Transfer stats counts into pending pgstats message */
 	BgWriterStats.m_buf_written_backend += CheckpointerShmem->num_backend_writes;
 	BgWriterStats.m_buf_fsync_backend += CheckpointerShmem->num_backend_fsync;
+	BgWriterStats.m_full_pages += CheckpointerShmem->num_fpw_pages;
+	BgWriterStats.m_full_pages_bytes += CheckpointerShmem->num_fpw_bytes;
 
 	CheckpointerShmem->num_backend_writes = 0;
 	CheckpointerShmem->num_backend_fsync = 0;
+	CheckpointerShmem->num_fpw_pages = 0;
+	CheckpointerShmem->num_fpw_bytes = 0;
 
 	/*
 	 * We try to avoid holding the lock for a long time by copying the request
@@ -1375,4 +1382,13 @@ FirstCallSinceLastCheckpoint(void)
 	ckpt_done = new_done;
 
 	return FirstCall;
+}
+
+void
+ReportFullPageWrites(uint32 npages, uint64 nbytes)
+{
+	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
+	CheckpointerShmem->num_fpw_pages += npages;
+	CheckpointerShmem->num_fpw_bytes += nbytes;
+	LWLockRelease(CheckpointerCommLock);
 }

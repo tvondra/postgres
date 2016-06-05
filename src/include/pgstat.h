@@ -419,6 +419,8 @@ typedef struct PgStat_MsgBgWriter
 	PgStat_Counter m_buf_alloc;
 	PgStat_Counter m_checkpoint_write_time;		/* times in milliseconds */
 	PgStat_Counter m_checkpoint_sync_time;
+	PgStat_Counter m_full_pages;			/* pages written in full */
+	PgStat_Counter m_full_pages_bytes;		/* bytes written in full pages */
 } PgStat_MsgBgWriter;
 
 /* ----------
@@ -690,6 +692,8 @@ typedef struct PgStat_GlobalStats
 	PgStat_Counter buf_written_backend;
 	PgStat_Counter buf_fsync_backend;
 	PgStat_Counter buf_alloc;
+	PgStat_Counter fpw_pages;
+	PgStat_Counter fpw_bytes;
 	TimestampTz stat_reset_timestamp;
 } PgStat_GlobalStats;
 

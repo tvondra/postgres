@@ -2840,6 +2840,10 @@ DATA(insert OID = 3063 ( pg_stat_get_buf_fsync_backend PGNSP PGUID 12 1 0 0 0 f 
 DESCR("statistics: number of backend buffer writes that did their own fsync");
 DATA(insert OID = 2859 ( pg_stat_get_buf_alloc			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 0 0 20 "" _null_ _null_ _null_ _null_ _null_ pg_stat_get_buf_alloc _null_ _null_ _null_ ));
 DESCR("statistics: number of buffer allocations");
+DATA(insert OID = 3343 ( pg_stat_get_fpw_count			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 0 0 20 "" _null_ _null_ _null_ _null_ _null_ pg_stat_get_fpw_count _null_ _null_ _null_ ));
+DESCR("statistics: number of full page writes");
+DATA(insert OID = 3344 ( pg_stat_get_fpw_bytes			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 0 0 20 "" _null_ _null_ _null_ _null_ _null_ pg_stat_get_fpw_bytes _null_ _null_ _null_ ));
+DESCR("statistics: size of full page writes");
 
 DATA(insert OID = 2978 (  pg_stat_get_function_calls		PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_function_calls _null_ _null_ _null_ ));
 DESCR("statistics: number of function calls");

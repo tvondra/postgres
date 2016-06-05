@@ -484,6 +484,10 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	XLogRecord *rechdr;
 	char	   *scratch = hdr_scratch;
 
+	/* number of full pages, size (possibly compressed) */
+	uint32		fpw_pages = 0;
+	uint64		fpw_bytes = 0;
+
 	/*
 	 * Note: this function can be called multiple times for the same record.
 	 * All the modifications we do to the rdata chains below must handle that.
@@ -561,6 +565,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			Page		page = regbuf->page;
 			uint16		compressed_len;
 
+			/* count the FPW for statistics */
+			fpw_pages += 1;
+
 			/*
 			 * The page needs to be backed up, so calculate its hole length
 			 * and offset.
@@ -625,6 +632,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 				rdt_datas_last->data = regbuf->compressed_page;
 				rdt_datas_last->len = compressed_len;
+
+				fpw_bytes += compressed_len;
 			}
 			else
 			{
@@ -649,6 +658,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					rdt_datas_last->len =
 						BLCKSZ - (bimg.hole_offset + cbimg.hole_length);
 				}
+
+				fpw_bytes += bimg.length;
 			}
 
 			total_len += bimg.length;
@@ -699,6 +710,15 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		memcpy(scratch, &regbuf->block, sizeof(BlockNumber));
 		scratch += sizeof(BlockNumber);
 	}
+
+	/*
+	 * Update the counters with number and size of full page writes.
+	 *
+	 * XXX The counters are stored in CheckpointerShmem, which means this needs
+	 *     to lock/unlock the LWLock protecting the segment. That may not be
+	 *     a good idea to do in XLOG.
+	 */
+	ReportFullPageWrites(fpw_pages, fpw_bytes);
 
 	/* followed by the record's origin, if any */
 	if (include_origin && replorigin_session_origin != InvalidRepOriginId)

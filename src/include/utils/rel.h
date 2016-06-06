@@ -96,7 +96,7 @@ typedef struct RelationData
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
 
 	/* data managed by RelationGetFKList: */
-	List	   *rd_fkeylist;		/* OIDs of foreign keys */
+	List	   *rd_fkeylist;	/* list of ForeignKeyOptInfo entries */
 
 	/* data managed by RelationGetIndexAttrBitmap: */
 	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */

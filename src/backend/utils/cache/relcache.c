@@ -4006,12 +4006,67 @@ RelationGetFKeyList(Relation relation)
 	{
 		Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(htup);
 
+		ForeignKeyOptInfo *info;
+		Datum		adatum;
+		bool		isnull;
+		ArrayType  *arr;
+		int			numkeys;
+		int			i;
+
 		/* return only foreign keys */
 		if (constraint->contype != CONSTRAINT_FOREIGN)
 			continue;
 
-		/* Add FK's OID to result list in the proper order */
-		result = insert_ordered_oid(result, HeapTupleGetOid(htup));
+		/* lookup number of keys first, and allocate all the pieces at once */
+		adatum = SysCacheGetAttr(CONSTROID, htup,
+									Anum_pg_constraint_conkey, &isnull);
+		Assert(!isnull);
+
+		arr = DatumGetArrayTypeP(adatum);
+		numkeys = ARR_DIMS(arr)[0];
+
+		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+
+		info = makeNode(ForeignKeyOptInfo);
+
+		info->nkeys = numkeys;
+		info->conrelid = constraint->conrelid;
+		info->confrelid = constraint->confrelid;
+
+		info->conkeys = (int*)palloc(numkeys * sizeof(int));
+		info->confkeys = (int*)palloc(numkeys * sizeof(int));
+		info->conpfeqop = (Oid*)palloc(numkeys * sizeof(Oid));
+
+		MemoryContextSwitchTo(oldcxt);
+
+		/* conkey */
+		for (i = 0; i < numkeys; i++)
+			info->conkeys[i] = ((int16 *) ARR_DATA_PTR(arr))[i];
+
+		/* confkey */
+		adatum = SysCacheGetAttr(CONSTROID, htup,
+									Anum_pg_constraint_confkey, &isnull);
+		Assert(!isnull);
+
+		arr = DatumGetArrayTypeP(adatum);
+		Assert(numkeys == ARR_DIMS(arr)[0]);
+
+		for (i = 0; i < numkeys; i++)
+			info->confkeys[i] = ((int16 *) ARR_DATA_PTR(arr))[i];
+
+		/* conpfeqop */
+		adatum = SysCacheGetAttr(CONSTROID, htup,
+									Anum_pg_constraint_conpfeqop, &isnull);
+		Assert(!isnull);
+
+		arr = DatumGetArrayTypeP(adatum);
+		Assert(numkeys == ARR_DIMS(arr)[0]);
+
+		for (i = 0; i < numkeys; i++)
+			info->conpfeqop[i] = ((Oid *) ARR_DATA_PTR(arr))[i];
+
+		/* Add FK's node to the result list */
+		result = lappend(result, info);
 	}
 
 	systable_endscan(conscan);
@@ -4024,7 +4079,12 @@ RelationGetFKeyList(Relation relation)
 	relation->rd_fkeylist = list_copy(result);
 	MemoryContextSwitchTo(oldcxt);
 
-	/* Don't leak the old list, if there is one */
+	/*
+	 * Don't leak the old list, if there is one
+	 *
+	 * FIXME This is insufficient, as it only frees the list, not the contents
+	 * (so we end up with old ForeignKeyOptInto entries).
+	 */
 	list_free(oldlist);
 
 	return result;

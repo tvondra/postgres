@@ -89,81 +89,85 @@ setup_simple_rel_arrays(PlannerInfo *root)
  * through relations - first we collect OIDs of regular tables (baserels with
  * RTE_RELATION), then we actually filter foreign keys matching the query.
  *
- * Note: Per the design proposal, the foreign keys would be using relids
- * instead of OIDs. I'm not sure what would be the benefit, and it'd duplicate
- * the entries if one table is referenced multiple times. So the current code
- * keeps the OIDs and makes sure that we only add each foreign key once.
+ * FIXME Perhaps this should further optimize the case with a single base
+ * relation (when there are no joins).
  */
 void
 collect_foreign_keys(PlannerInfo *root)
 {
-	Index		rti;
-	List	   *oids = NIL;
-	List	   *fkeys = NIL;
+	Index		rti1, rti2;
 
-	/* if there's just a single base relation, we simply bail out */
-	if (bms_membership(root->all_baserels) == BMS_SINGLETON)
-		return;
-
-	/* first walk over all base relations, and collect their oids */
-	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	/* identify foreign keys referencing pairs of base relations in query */
+	for (rti1 = 1; rti1 < root->simple_rel_array_size; rti1++)
 	{
-		RelOptInfo	   *rel = root->simple_rel_array[rti];
-		RangeTblEntry  *rte = root->simple_rte_array[rti];
+		RelOptInfo	   *rel1 = root->simple_rel_array[rti1];
+		RangeTblEntry  *rte1 = root->simple_rte_array[rti1];
 
 		/* there may be empty slots corresponding to non-baserel RTEs */
-		if (rel == NULL)
+		if (rel1 == NULL)
 			continue;
 
-		Assert(rel->relid == rti);		/* sanity check on array */
+		/* sanity check on array */
+		Assert(rel1->relid == rti1);
 
-		/* ignore rels not regular tables (as those can't have foreign keys) */
-		if ((rel->reloptkind != RELOPT_BASEREL) ||
-			(rel->rtekind != RTE_RELATION))
+		/* ignore rel types that can't have foreign keys */
+		if ((rel1->reloptkind != RELOPT_BASEREL) ||
+			(rel1->rtekind != RTE_RELATION))
 			continue;
 
-		Assert(rte != NULL);
+		/* sanity check */
+		Assert(rte1 != NULL);
 
-		oids = list_append_unique_oid(oids, rte->relid);
-	}
-
-	/*
-	 * Now walk over them again, and copy foreing keys associated with
-	 * relations present in the query.
-	 */
-	for (rti = 1; rti < root->simple_rel_array_size; rti++)
-	{
-		ListCell	   *lc;
-		RelOptInfo	   *rel = root->simple_rel_array[rti];
-
-		/* there may be empty slots corresponding to non-baserel RTEs */
-		if (rel == NULL)
-			continue;
-
-		Assert(rel->relid == rti);		/* sanity check on array */
-
-		/* ignore rels not regular tables (as those can't have foreign keys) */
-		if ((rel->reloptkind != RELOPT_BASEREL) ||
-			(rel->rtekind != RTE_RELATION))
-			continue;
-
-		foreach(lc, rel->fkeylist)
+		for (rti2 = 1; rti2 < root->simple_rel_array_size; rti2++)
 		{
-			ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+			ListCell	   *lc;
+			RelOptInfo	   *rel2 = root->simple_rel_array[rti2];
+			RangeTblEntry  *rte2 = root->simple_rte_array[rti2];
 
-			/*
-			 * We only need to check confrelid, as conrelid is the current
-			 * relation, so it's implicitly satisfied.
-			 */
-			if (! list_member_oid(oids, fkinfo->confrelid))
+			/* we never join a RTE to itself */
+			if (rti1 == rti2)
 				continue;
 
-			/* make sure we only include each foreign key once */
-			if (list_member_oid(fkeys, fkinfo->conid))
+			/* there may be empty slots corresponding to non-baserel RTEs */
+			if (rel2 == NULL)
 				continue;
 
-			root->foreign_keys = lappend(root->foreign_keys, fkinfo);
-			fkeys = list_append_unique_oid(fkeys, fkinfo->conid);
+			/* sanity check on array */
+			Assert(rel2->relid == rti2);
+
+			/* ignore rel types that can't have foreign keys */
+			if ((rel2->reloptkind != RELOPT_BASEREL) ||
+				(rel2->rtekind != RTE_RELATION))
+				continue;
+
+			/* sanity check */
+			Assert(rte2 != NULL);
+
+			/* we only check check one direction */
+			foreach(lc, rel1->fkeylist)
+			{
+				ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+
+				/*
+				 * We only need to check confrelid, as conrelid is the current
+				 * relation, so it's implicitly satisfied.
+				 */
+				if (fkinfo->confrelid == rte2->relid)
+				{
+					/* build a struct with relids instead of OIDs */
+					FKInfo *info = makeNode(FKInfo);
+
+					info->src_relid = rti1;
+					info->dst_relid = rti2;
+
+					info->nkeys = fkinfo->nkeys;
+					info->conkeys = fkinfo->conkeys;
+					info->confkeys = fkinfo->confkeys;
+					info->conpfeqop = fkinfo->conpfeqop;
+
+					root->foreign_keys = lappend(root->foreign_keys, info);
+				}
+			}
 		}
 	}
 }

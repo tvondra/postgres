@@ -628,29 +628,6 @@ typedef struct IndexOptInfo
 } IndexOptInfo;
 
 /*
- * ForeignKeyOptInfo
- *		Per-foreign-key information for planning/optimization
- *
- * Only includes columns from pg_constraint related to foreign keys.
- *
- * conkeys[], confkeys[] and conpfeqop[] each have nkeys entries.
- */
-typedef struct ForeignKeyOptInfo
-{
-	NodeTag		type;
-
-	Oid			conid;		/* OID of the foreign key */
-	Oid			conrelid;	/* relation constrained by the foreign key */
-	Oid			confrelid;	/* relation referenced by the foreign key */
-
-	int			nkeys;		/* number of columns in the foreign key */
-	int		   *conkeys;	/* attnums of columns in the constrained table */
-	int		   *confkeys;	/* attnums of columns in the referenced table */
-	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
-
-} ForeignKeyOptInfo;
-
-/*
  * EquivalenceClasses
  *
  * Whenever we can determine that a mergejoinable equality clause A = B is
@@ -749,6 +726,45 @@ typedef struct EquivalenceMember
 	bool		em_is_child;	/* derived version for a child relation? */
 	Oid			em_datatype;	/* the "nominal type" used by the opfamily */
 } EquivalenceMember;
+
+/*
+ * ForeignKeyOptInfo
+ *		Per-foreign-key information for planning/optimization
+ *
+ * Only includes columns from pg_constraint related to foreign keys.
+ *
+ * conkeys[], confkeys[] and conpfeqop[] each have nkeys entries.
+ */
+typedef struct ForeignKeyOptInfo
+{
+	NodeTag		type;
+
+	Oid			conrelid;	/* relation constrained by the foreign key */
+	Oid			confrelid;	/* relation referenced by the foreign key */
+
+	int			nkeys;		/* number of columns in the foreign key */
+	int		   *conkeys;	/* attnums of columns in the constrained table */
+	int		   *confkeys;	/* attnums of columns in the referenced table */
+	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
+
+} ForeignKeyOptInfo;
+
+/* only used in planner when detecting useful foreign keys */
+typedef struct FKInfo
+{
+	NodeTag		type;
+
+	Index		src_relid;	/* relid of the source relation (conrelid) */
+	Index		dst_relid;	/* relid of the target relation (confrelid) */
+
+	int			nkeys;		/* number of columns in the foreign key */
+	int		   *conkeys;	/* attnums of columns in the constrained table */
+	int		   *confkeys;	/* attnums of columns in the referenced table */
+	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
+	EquivalenceClass	**eclass[];	/* pointer to equivalence class matching the condition */
+
+} FKInfo;
+
 
 /*
  * PathKeys

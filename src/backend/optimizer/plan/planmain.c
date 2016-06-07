@@ -176,6 +176,11 @@ query_planner(PlannerInfo *root, List *tlist,
 	collect_foreign_keys(root);
 
 	/*
+	 * Match foreign keys to equivalence classes (mark satisfied conditions).
+	 */
+	match_foreign_keys_to_eclasses(root);
+
+	/*
 	 * We have completed merging equivalence sets, so it's now possible to
 	 * generate pathkeys in canonical form; so compute query_pathkeys and
 	 * other pathkeys fields in PlannerInfo.

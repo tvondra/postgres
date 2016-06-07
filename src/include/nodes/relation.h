@@ -639,6 +639,7 @@ typedef struct ForeignKeyOptInfo
 {
 	NodeTag		type;
 
+	Oid			conid;		/* OID of the foreign key */
 	Oid			conrelid;	/* relation constrained by the foreign key */
 	Oid			confrelid;	/* relation referenced by the foreign key */
 

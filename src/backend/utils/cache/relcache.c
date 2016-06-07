@@ -4030,6 +4030,7 @@ RelationGetFKeyList(Relation relation)
 		info = makeNode(ForeignKeyOptInfo);
 
 		info->nkeys = numkeys;
+		info->conid = HeapTupleGetOid(htup);
 		info->conrelid = constraint->conrelid;
 		info->confrelid = constraint->confrelid;
 

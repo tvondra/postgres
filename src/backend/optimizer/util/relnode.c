@@ -88,12 +88,18 @@ setup_simple_rel_arrays(PlannerInfo *root)
  * keys with both tables present in the query. We do that in two passes
  * through relations - first we collect OIDs of regular tables (baserels with
  * RTE_RELATION), then we actually filter foreign keys matching the query.
+ *
+ * Note: Per the design proposal, the foreign keys would be using relids
+ * instead of OIDs. I'm not sure what would be the benefit, and it'd duplicate
+ * the entries if one table is referenced multiple times. So the current code
+ * keeps the OIDs and makes sure that we only add each foreign key once.
  */
 void
 collect_foreign_keys(PlannerInfo *root)
 {
 	Index		rti;
 	List	   *oids = NIL;
+	List	   *fkeys = NIL;
 
 	/* if there's just a single base relation, we simply bail out */
 	if (bms_membership(root->all_baserels) == BMS_SINGLETON)
@@ -149,8 +155,15 @@ collect_foreign_keys(PlannerInfo *root)
 			 * We only need to check confrelid, as conrelid is the current
 			 * relation, so it's implicitly satisfied.
 			 */
-			if (list_member_oid(oids, fkinfo->confrelid))
-				root->foreign_keys = lappend(root->foreign_keys, fkinfo);
+			if (! list_member_oid(oids, fkinfo->confrelid))
+				continue;
+
+			/* make sure we only include each foreign key once */
+			if (list_member_oid(fkeys, fkinfo->conid))
+				continue;
+
+			root->foreign_keys = lappend(root->foreign_keys, fkinfo);
+			fkeys = list_append_unique_oid(fkeys, fkinfo->conid);
 		}
 	}
 }

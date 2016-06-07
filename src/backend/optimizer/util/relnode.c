@@ -81,6 +81,81 @@ setup_simple_rel_arrays(PlannerInfo *root)
 }
 
 /*
+ * collect_foreign_keys
+ *	  fetch info about foreign keys applicable to join estimation
+ *
+ * When compiling the list of applicable foreign keys, we only keep foreign
+ * keys with both tables present in the query. We do that in two passes
+ * through relations - first we collect OIDs of regular tables (baserels with
+ * RTE_RELATION), then we actually filter foreign keys matching the query.
+ */
+void
+collect_foreign_keys(PlannerInfo *root)
+{
+	Index		rti;
+	List	   *oids = NIL;
+
+	/* if there's just a single base relation, we simply bail out */
+	if (bms_membership(root->all_baserels) == BMS_SINGLETON)
+		return;
+
+	/* first walk over all base relations, and collect their oids */
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		RelOptInfo	   *rel = root->simple_rel_array[rti];
+		RangeTblEntry  *rte = root->simple_rte_array[rti];
+
+		/* there may be empty slots corresponding to non-baserel RTEs */
+		if (rel == NULL)
+			continue;
+
+		Assert(rel->relid == rti);		/* sanity check on array */
+
+		/* ignore rels not regular tables (as those can't have foreign keys) */
+		if ((rel->reloptkind != RELOPT_BASEREL) ||
+			(rel->rtekind != RTE_RELATION))
+			continue;
+
+		Assert(rte != NULL);
+
+		oids = list_append_unique_oid(oids, rte->relid);
+	}
+
+	/*
+	 * Now walk over them again, and copy foreing keys associated with
+	 * relations present in the query.
+	 */
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		ListCell	   *lc;
+		RelOptInfo	   *rel = root->simple_rel_array[rti];
+
+		/* there may be empty slots corresponding to non-baserel RTEs */
+		if (rel == NULL)
+			continue;
+
+		Assert(rel->relid == rti);		/* sanity check on array */
+
+		/* ignore rels not regular tables (as those can't have foreign keys) */
+		if ((rel->reloptkind != RELOPT_BASEREL) ||
+			(rel->rtekind != RTE_RELATION))
+			continue;
+
+		foreach(lc, rel->fkeylist)
+		{
+			ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+
+			/*
+			 * We only need to check confrelid, as conrelid is the current
+			 * relation, so it's implicitly satisfied.
+			 */
+			if (list_member_oid(oids, fkinfo->confrelid))
+				root->foreign_keys = lappend(root->foreign_keys, fkinfo);
+		}
+	}
+}
+
+/*
  * build_simple_rel
  *	  Construct a new RelOptInfo for a base relation or 'other' relation.
  */

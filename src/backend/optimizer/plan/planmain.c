@@ -170,6 +170,12 @@ query_planner(PlannerInfo *root, List *tlist,
 	generate_base_implied_equalities(root);
 
 	/*
+	 * Fetch information about foreign keys potentially useful for cardinality
+	 * estimation (i.e. only those with both sides referenced in the query).
+	 */
+	collect_foreign_keys(root);
+
+	/*
 	 * We have completed merging equivalence sets, so it's now possible to
 	 * generate pathkeys in canonical form; so compute query_pathkeys and
 	 * other pathkeys fields in PlannerInfo.

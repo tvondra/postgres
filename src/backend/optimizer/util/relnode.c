@@ -148,6 +148,8 @@ collect_foreign_keys(PlannerInfo *root)
 			{
 				ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 
+				/* XXX Maybe skip foreign keys on a single column here? */
+
 				/*
 				 * We only need to check confrelid, as conrelid is the current
 				 * relation, so it's implicitly satisfied.
@@ -161,11 +163,76 @@ collect_foreign_keys(PlannerInfo *root)
 					info->dst_relid = rti2;
 
 					info->nkeys = fkinfo->nkeys;
+
+					/* XXX Are pointers back to relcache OK, or do we need a copy? */
 					info->conkeys = fkinfo->conkeys;
 					info->confkeys = fkinfo->confkeys;
 					info->conpfeqop = fkinfo->conpfeqop;
+					info->eclass = (EquivalenceClass **)palloc0(info->nkeys * sizeof(EquivalenceClass*));
 
 					root->foreign_keys = lappend(root->foreign_keys, info);
+				}
+			}
+		}
+	}
+}
+
+void
+match_foreign_keys_to_eclasses(PlannerInfo *root)
+{
+	ListCell *lc;
+
+	/* if there are no eclasses or foreign keys, just bail out immediately */
+	if ((root->foreign_keys == NIL) || (root->eq_classes == NIL))
+		return;
+
+	/* XXX maybe another order of loops would be better here */
+	foreach(lc, root->foreign_keys)
+	{
+		int		i;
+		FKInfo *info = (FKInfo *) lfirst(lc);
+
+		/* try to match FK condition to an equivalence class */
+		for (i = 0; i < info->nkeys; i++)
+		{
+			ListCell   *lc2;
+
+			foreach(lc2, root->eq_classes)
+			{
+				ListCell *lc3;
+				EquivalenceClass   *ec = (EquivalenceClass *) lfirst(lc2);
+				int foundvarmask = 0;
+
+				/* ignore keys that were already matched by another eclass */
+				if (info->eclass[i] != NULL)
+					continue;
+
+				foreach(lc3, ec->ec_members)
+				{
+					EquivalenceMember *em = (EquivalenceMember *) lfirst(lc3);
+					Var *var = (Var *) em->em_expr;
+
+					if (!IsA(var, Var))	/* XXX is this necessary? */
+						continue;
+
+					if (info->src_relid == var->varno &&
+						info->conkeys[i] == var->varattno)
+						foundvarmask |= 1;
+
+					else if (info->dst_relid == var->varno &&
+						info->confkeys[i] == var->varattno)
+						foundvarmask |= 2;
+
+					/*
+					 * Check if we've found both matches in the same equivalence
+					 * class, we can mark it accordingly.
+					 */
+					if (foundvarmask == 3)
+					{
+						elog(WARNING, "key %d matched", i);
+						info->eclass[i] = ec;
+						break;
+					}
 				}
 			}
 		}

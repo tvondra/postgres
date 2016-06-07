@@ -761,7 +761,7 @@ typedef struct FKInfo
 	int		   *conkeys;	/* attnums of columns in the constrained table */
 	int		   *confkeys;	/* attnums of columns in the referenced table */
 	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
-	EquivalenceClass	**eclass[];	/* pointer to equivalence class matching the condition */
+	EquivalenceClass	**eclass;	/* pointer to equivalence class matching the condition */
 
 } FKInfo;
 

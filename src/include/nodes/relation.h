@@ -303,6 +303,10 @@ typedef struct PlannerInfo
 
 	/* optional private data for join_search_hook, e.g., GEQO */
 	void	   *join_search_private;
+
+	/* list of foreign keys potentially useful for join estimation */
+	List	   *foreign_keys;
+
 } PlannerInfo;
 
 

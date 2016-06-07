@@ -2142,6 +2142,7 @@ _outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
 {
 	WRITE_NODE_TYPE("FOREIGNKEYOPTINFO");
 
+	WRITE_OID_FIELD(conid);
 	WRITE_OID_FIELD(conrelid);
 	WRITE_OID_FIELD(confrelid);
 	WRITE_INT_FIELD(nkeys);

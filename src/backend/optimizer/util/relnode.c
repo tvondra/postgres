@@ -161,7 +161,7 @@ collect_foreign_keys(PlannerInfo *root)
 				 * for join cardinality estimation (which is about improving
 				 * estimates for multi-column keys).
 				 */
-				if (fkinfo->nkeys)
+				if (fkinfo->nkeys == 1)
 					continue;
 
 				/*

@@ -249,7 +249,6 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 					 */
 					if (foundvarmask == 3)
 					{
-						elog(WARNING, "key %d matched", i);
 						info->eclass[i] = ec;
 						break;
 					}

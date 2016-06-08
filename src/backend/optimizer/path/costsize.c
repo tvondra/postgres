@@ -3889,8 +3889,8 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
 }
 
 /*
- * find_best_foreign_key_quals
- * 		Finds the foreign key best matching the joinquals.
+ * find_matching_foreign_keys
+ * 		identifies foreign keys matched by joinquals (or eclasses)
  *
  * Analyzes joinquals to determine if any quals match foreign keys defined on
  * the relations being joined.  When multiple foreign keys match, we choose the
@@ -3907,24 +3907,16 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
  *
  * Foreign keys matched only partially are currently ignored.
  */
-static int
-find_best_foreign_key_quals(PlannerInfo *root, List *joinquals,
-							JoinType jointype, SpecialJoinInfo *sjinfo,
-							Bitmapset **joinqualsbitmap)
+static List *
+find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
+							JoinType jointype, SpecialJoinInfo *sjinfo)
 {
 	ListCell	   *lc;
-	Bitmapset	   *qualbestmatch;
-	int				bestmatchnkeys;
+	List		   *keys = NIL;
 
 	/* fast path out when use of foreign keys for estimation is disabled */
 	if (! enable_fkey_estimates)
-	{
-		*joinqualsbitmap = NULL;
-		return 0;
-	}
-
-	qualbestmatch = NULL;
-	bestmatchnkeys = 0;
+		return NIL;
 
 	foreach(lc, root->foreign_keys)
 	{
@@ -3940,21 +3932,34 @@ find_best_foreign_key_quals(PlannerInfo *root, List *joinquals,
 			 bms_is_member(info->src_relid, sjinfo->min_righthand)))
 		{
 			int		i;
-			bool	matched = true;
-			Bitmapset *quals = NULL;
+			bool	matched = true;	/* FK key is matched by default */
 
-			elog(WARNING, "foreign key matches join, checking keys");
+			/* no quals matching yet */
+			info->quals = NULL;
 
 			for (i = 0; i < info->nkeys; i++)
 			{
 				int			qualidx;
 				ListCell   *lc2;
 
-				/* foreign key condition implied by eclass, we're done */
+				/*
+				 * foreign key condition is implied by eclass, we're done
+				 *
+				 * If there's a matching join qual, it should have been merged
+				 * into the eclass (so it's a bug in eclass code).
+				 */
 				if (info->eclass[i] != NULL)
 					continue;
 
-				/* otherwise we need to walk the joinquals and check them */
+				/*
+				 * otherwise we need to walk the joinquals and check them
+				 *
+				 * We won't terminate eagerly (e.g. once we find a matching
+				 * qual), assuming there might be multiple quals and we need
+				 * to match them all.
+				 *
+				 * XXX Is this really true? Can there be duplicate quals?
+				 */
 				qualidx = -1;
 				matched = false; /* assume no match for this FK condition */
 				foreach (lc2, joinquals)
@@ -3975,7 +3980,7 @@ find_best_foreign_key_quals(PlannerInfo *root, List *joinquals,
 						continue;
 
 					/*
-					 * If the operator does not match then there's little point
+					 * If the operator does not match the FK, there's no point
 					 * in checking the operands.
 					 */
 					if (clause->opno != info->conpfeqop[i])
@@ -4000,7 +4005,7 @@ find_best_foreign_key_quals(PlannerInfo *root, List *joinquals,
 						(info->conkeys[i] == rightvar->varattno))
 					{
 						matched = true;
-						quals = bms_add_member(quals, qualidx);
+						info->quals = bms_add_member(info->quals, qualidx);
 					}
 					else if ((info->src_relid == rightvar->varno) &&
 							 (info->dst_relid == leftvar->varno) &&
@@ -4008,26 +4013,22 @@ find_best_foreign_key_quals(PlannerInfo *root, List *joinquals,
 							 (info->conkeys[i] == leftvar->varattno))
 					{
 						matched = true;
-						quals = bms_add_member(quals, qualidx);
+						info->quals = bms_add_member(info->quals, qualidx);
 					}
 				}
 
-				/* we not matched by at least one qual, terminate this FK */
+				/* we found a key not by any eclass/joinqual, so we can stop */
 				if (! matched)
 					break;
 			}
 
-			/* decide if this is the best match */
-			if (matched && (info->nkeys > bestmatchnkeys))
-			{
-				bestmatchnkeys = info->nkeys;
-				*joinqualsbitmap = quals;
-			}
+			/* if the whole foreign key is matched, we add it to the result */
+			if (matched)
+				keys = lappend(keys, info);
 		}
 	}
 
-	*joinqualsbitmap = qualbestmatch;
-	return bestmatchnkeys;
+	return keys;
 }
 
 /*
@@ -4050,36 +4051,27 @@ static Selectivity
 clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 							JoinType jointype, SpecialJoinInfo *sjinfo)
 {
+	ListCell	   *lc;
 	Selectivity		sel = 1.0;
-	int				nmatches;
-	Bitmapset	   *matches;
+	List		   *matches;
+	Bitmapset	   *fkquals = NULL;
 
-	nmatches = find_best_foreign_key_quals(root, joinquals, jointype, sjinfo,
-										   &matches);
+	/* find all foreign keys matched by join quals (or eclasses) */
+	matches = find_matching_foreign_keys(root, joinquals, jointype, sjinfo);
 
 	/* did we find any matches at all */
-	if (nmatches != 0)
+	foreach(lc, matches)
 	{
-		double ntuples;
+		FKInfo *info = (FKInfo *) lfirst(lc);
 
-		/*
-		 * FIXME We need to decide which rowcount to use here for 1/N, but
-		 * we don't know the inner/outer relation here anymore. For now I'm
-		 * using 1000 hardcoded, but that's obviously wrong.
-		 */
-		ntuples = Max(1000.0, 1.0);
-
-		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
-			sel *= Min((1.0 / 1000.0), 1.0);
-		else
-			sel *= 1.0 / ntuples;
+		fkquals = bms_add_members(fkquals, info->quals);
 	}
 
 	/*
 	 * If any non matched quals exist then we build a list of the non-matches
 	 * and use clauselist_selectivity() to estimate the selectivity of these.
 	 */
-	if (bms_num_members(matches) < list_length(joinquals))
+	if (bms_num_members(fkquals) < list_length(joinquals))
 	{
 		ListCell *lc;
 		int lstidx = 0;
@@ -4087,7 +4079,7 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 
 		foreach (lc, joinquals)
 		{
-			if (!bms_is_member(lstidx, matches))
+			if (!bms_is_member(lstidx, fkquals))
 				nonfkeyclauses = lappend(nonfkeyclauses, lfirst(lc));
 			lstidx++;
 		}

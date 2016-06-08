@@ -84,13 +84,20 @@ setup_simple_rel_arrays(PlannerInfo *root)
  * collect_foreign_keys
  *	  fetch info about foreign keys applicable to join estimation
  *
- * When compiling the list of applicable foreign keys, we only keep foreign
- * keys with both tables present in the query. We do that in two passes
- * through relations - first we collect OIDs of regular tables (baserels with
- * RTE_RELATION), then we actually filter foreign keys matching the query.
+ * Builds a list of foreign keys potentially usable for join cardinality
+ * estimation. We only keep foreign keys where both tables are are present
+ * in the query.
+ *
+ * When building the list, we also replace the OIDs with relids, so that
+ * we can match the keys to eclasses/quals later (which use relids). This
+ * also means that if a relation has multiple RTEs (e.g. in a self-join),
+ * we will create multiple copies of the foreign key, one for each RTE.
  *
  * FIXME Perhaps this should further optimize the case with a single base
- * relation (when there are no joins).
+ * relation (when there are no joins). Sadly we can't use all_baserels here
+ * because that's computed in make_one_rel() and that's too late. So we'd
+ * have to walk through the rels just like now, and count the baserels on
+ * our own. Which we kinda do anyway already.
  */
 void
 collect_foreign_keys(PlannerInfo *root)
@@ -118,6 +125,7 @@ collect_foreign_keys(PlannerInfo *root)
 		/* sanity check */
 		Assert(rte1 != NULL);
 
+		/* XXX We need to build both (rti1<rti2) and (rti2<rti1) here. */
 		for (rti2 = 1; rti2 < root->simple_rel_array_size; rti2++)
 		{
 			ListCell	   *lc;
@@ -148,7 +156,13 @@ collect_foreign_keys(PlannerInfo *root)
 			{
 				ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 
-				/* XXX Maybe skip foreign keys on a single column here? */
+				/*
+				 * Skip foreign keys on a single column, as those are not useful
+				 * for join cardinality estimation (which is about improving
+				 * estimates for multi-column keys).
+				 */
+				if (fkinfo->nkeys)
+					continue;
 
 				/*
 				 * We only need to check confrelid, as conrelid is the current
@@ -177,12 +191,20 @@ collect_foreign_keys(PlannerInfo *root)
 	}
 }
 
+/*
+ * match_foreign_keys_to_eclasses
+ *	  identify conditions of the foreign keys satisfied by equivalence classes
+ *
+ * For each foreign key we walk through all equivalence classes and try to
+ * match them to the foreign key conditions. Later when matching quals to
+ * keys we can count those conditions as matched.
+ */
 void
 match_foreign_keys_to_eclasses(PlannerInfo *root)
 {
 	ListCell *lc;
 
-	/* if there are no eclasses or foreign keys, just bail out immediately */
+	/* if there are no eclasses or foreign keys, bail out immediately */
 	if ((root->foreign_keys == NIL) || (root->eq_classes == NIL))
 		return;
 
@@ -192,7 +214,7 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 		int		i;
 		FKInfo *info = (FKInfo *) lfirst(lc);
 
-		/* try to match FK condition to an equivalence class */
+		/* try to match FK conditions to an equivalence class */
 		for (i = 0; i < info->nkeys; i++)
 		{
 			ListCell   *lc2;
@@ -208,9 +230,11 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 					EquivalenceMember *em = (EquivalenceMember *) lfirst(lc3);
 					Var *var = (Var *) em->em_expr;
 
-					if (!IsA(var, Var))	/* XXX is this necessary? */
+					/* we can only use simple (Var = Var) eclasses for FKs */
+					if (!IsA(var, Var))
 						continue;
 
+					/* check which side of the foreign key is satisfied */
 					if (info->src_relid == var->varno &&
 						info->conkeys[i] == var->varattno)
 						foundvarmask |= 1;
@@ -231,10 +255,12 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 					}
 				}
 
-				/* stop checking other eclasses if we've just matched the key */
+				/*
+				 * If we have just matched this part of the FK, we're done (no
+				 * need to try the other eclasses)
+				 */
 				if (info->eclass[i] != NULL)
 					break;
-
 			}
 		}
 	}

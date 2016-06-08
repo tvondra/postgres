@@ -4046,6 +4046,14 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
  * Note this ignores whether the FK is invalid or currently deferred; we don't
  * rely on this assumption for correctness of the query, so it is a reasonable
  * and safe assumption for planning purposes.
+ *
+ * XXX Currently this applies all fully-matched foreign keys, but maybe
+ * that's not the right thing to do - e.g. when there's a duplicate foreign
+ * key, we'll apply it twice (clearly wrong). Also, overlapping foreign keys
+ * are likely correlated, but multiplication assumes independence.
+ *
+ * FIXME Consired NULL values properly (although that'll be tricky due to
+ * correlated columns, which is likely for multi-column keys).
  */
 static Selectivity
 clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
@@ -4064,6 +4072,16 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 	{
 		FKInfo *info = (FKInfo *) lfirst(lc);
 
+		RelOptInfo *rel  = find_base_rel(root, info->src_relid);
+		RelOptInfo *frel = find_base_rel(root, info->dst_relid);
+
+		/* XXX this needs more thought */
+		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
+			sel *= Min(Max(frel->tuples, 1.0) / Max(rel->tuples, 1.0), 1.0);
+		else
+			sel *= 1.0 / rel->tuples;
+
+		/* build the union of joinquals matched by any foreign key */
 		fkquals = bms_add_members(fkquals, info->quals);
 	}
 

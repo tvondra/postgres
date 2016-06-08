@@ -763,6 +763,9 @@ typedef struct FKInfo
 	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
 	EquivalenceClass	**eclass;	/* pointer to equivalence class matching the condition */
 
+	/* used in costsize.c */
+	Bitmapset  *quals;		/* indexes of join quals matching the FK */
+
 } FKInfo;
 
 

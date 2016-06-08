@@ -203,10 +203,6 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 				EquivalenceClass   *ec = (EquivalenceClass *) lfirst(lc2);
 				int foundvarmask = 0;
 
-				/* ignore keys that were already matched by another eclass */
-				if (info->eclass[i] != NULL)
-					continue;
-
 				foreach(lc3, ec->ec_members)
 				{
 					EquivalenceMember *em = (EquivalenceMember *) lfirst(lc3);
@@ -234,6 +230,11 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 						break;
 					}
 				}
+
+				/* stop checking other eclasses if we've just matched the key */
+				if (info->eclass[i] != NULL)
+					break;
+
 			}
 		}
 	}

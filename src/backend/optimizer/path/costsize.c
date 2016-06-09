@@ -3945,16 +3945,7 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 				ListCell   *lc2;
 
 				/*
-				 * foreign key condition is implied by eclass, we're done
-				 *
-				 * If there's a matching join qual, it should have been merged
-				 * into the eclass (so it's a bug in eclass code).
-				 */
-				if (info->eclass[i] != NULL)
-					continue;
-
-				/*
-				 * otherwise we need to walk the joinquals and check them
+				 * we need to check which joinquals match the foreign key
 				 *
 				 * We won't terminate eagerly (e.g. once we find a matching
 				 * qual), assuming there might be multiple quals and we need
@@ -4019,6 +4010,16 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 					}
 				}
 
+				/*
+				 * The condition may be satistifed thanks to an eclass.
+				 *
+				 * XXX Is it possible to have an eclass match without a regular
+				 * join qual? If not, this check is not necessary because the
+				 * condition will be matched by the preceding block.
+				 */
+				if (info->eclass[i] != NULL)
+					matched = true;
+
 				/* we found a key not by any eclass/joinqual, so we can stop */
 				if (! matched)
 					break;
@@ -4072,16 +4073,35 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 	/* did we find any matches at all */
 	foreach(lc, matches)
 	{
+		RelOptInfo *inner_rel, *outer_rel;
 		FKInfo *info = (FKInfo *) lfirst(lc);
+		double	ntuples;
 
-		RelOptInfo *rel  = find_base_rel(root, info->src_relid);
-		RelOptInfo *frel = find_base_rel(root, info->dst_relid);
-
-		/* XXX this needs more thought */
-		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
-			sel *= Min(Max(frel->tuples, 1.0) / Max(rel->tuples, 1.0), 1.0);
+		/*
+		 * We know the foreign key connects the relations on the inner and
+		 * outer side of the join, but we don't know which is which, so we
+		 * have to decide using min_righthand (in) and min_lefthand (out).
+		 *
+		 * XXX This feature is enforced in find_matching_foreign_keys().
+		 */
+		if (bms_is_member(info->src_relid, sjinfo->min_righthand))
+		{
+			inner_rel = find_base_rel(root, info->src_relid);
+			outer_rel = find_base_rel(root, info->dst_relid);
+			ntuples = outer_rel->tuples;
+		}
 		else
-			sel *= 1.0 / rel->tuples;
+		{
+			inner_rel = find_base_rel(root, info->dst_relid);
+			outer_rel = find_base_rel(root, info->src_relid);
+			ntuples = inner_rel->tuples;
+		}
+
+		/* XXX this needs more thought I guess */
+		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
+			sel *= Min(outer_rel->tuples / inner_rel->tuples, 1.0);
+		else
+			sel *= 1.0 / Max(ntuples, 1.0);
 
 		/* build the union of joinquals matched by any foreign key */
 		fkquals = bms_add_members(fkquals, info->quals);

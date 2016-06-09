@@ -3994,16 +3994,16 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 					 */
 					if ((info->src_relid == leftvar->varno) &&
 						(info->dst_relid == rightvar->varno) &&
-						(info->confkeys[i] == leftvar->varattno) &&
-						(info->conkeys[i] == rightvar->varattno))
+						(info->conkeys[i] == leftvar->varattno) &&
+						(info->confkeys[i] == rightvar->varattno))
 					{
 						matched = true;
 						info->quals = bms_add_member(info->quals, qualidx);
 					}
 					else if ((info->src_relid == rightvar->varno) &&
 							 (info->dst_relid == leftvar->varno) &&
-							 (info->confkeys[i] == rightvar->varattno) &&
-							 (info->conkeys[i] == leftvar->varattno))
+							 (info->conkeys[i] == rightvar->varattno) &&
+							 (info->confkeys[i] == leftvar->varattno))
 					{
 						matched = true;
 						info->quals = bms_add_member(info->quals, qualidx);

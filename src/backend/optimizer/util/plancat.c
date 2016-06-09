@@ -146,6 +146,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	if (hasindex)
 	{
 		List	   *indexoidlist;
+		ListCell   *l;
 		LOCKMODE	lmode;
 
 		indexoidlist = RelationGetIndexList(relation);

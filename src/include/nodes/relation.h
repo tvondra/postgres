@@ -627,6 +627,7 @@ typedef struct IndexOptInfo
 	void		(*amcostestimate) ();	/* AM's cost estimator */
 } IndexOptInfo;
 
+
 /*
  * EquivalenceClasses
  *

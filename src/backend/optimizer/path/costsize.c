@@ -3923,8 +3923,10 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 		FKInfo *info = (FKInfo *)lfirst(lc);
 
 		/*
+		 * We can only use foreign keys connecting the two sides of the join.
+		 *
 		 * XXX In Tom's design proposal, this works with inner_rel/outer_rel,
-		 * but we don't have that here. So we use sjinfo instead.
+		 * but we don't have that here. So we use relids from sjinfo instead.
 		 */
 		if ((bms_is_member(info->src_relid, sjinfo->min_lefthand) &&
 			 bms_is_member(info->dst_relid, sjinfo->min_righthand)) ||

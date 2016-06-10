@@ -85,8 +85,8 @@ setup_simple_rel_arrays(PlannerInfo *root)
  *	  fetch info about foreign keys applicable to join estimation
  *
  * Builds a list of foreign keys potentially usable for join cardinality
- * estimation. We only keep foreign keys where both tables are are present
- * in the query. We only care about foreign keys with multiple columns, so
+ * estimation. We only keep foreign keys where both tables are present in
+ * the query. We only care about foreign keys with multiple columns, so
  * keys with a single column are simply skipped.
  *
  * When building the list, we also replace the OIDs with relids, so that
@@ -160,7 +160,7 @@ collect_foreign_keys(PlannerInfo *root)
 		/* sanity check */
 		Assert(rte1 != NULL);
 
-		/* we only check check one direction here */
+		/* we only check one direction here */
 		foreach(lc, rel1->fkeylist)
 		{
 			ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);

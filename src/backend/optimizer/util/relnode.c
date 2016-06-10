@@ -86,12 +86,15 @@ setup_simple_rel_arrays(PlannerInfo *root)
  *
  * Builds a list of foreign keys potentially usable for join cardinality
  * estimation. We only keep foreign keys where both tables are are present
- * in the query.
+ * in the query. We only care about foreign keys with multiple columns, so
+ * keys with a single column are simply skipped.
  *
  * When building the list, we also replace the OIDs with relids, so that
  * we can match the keys to eclasses/quals later (which use relids). This
  * also means that if a relation has multiple RTEs (e.g. in a self-join),
  * we will create multiple copies of the foreign key, one for each RTE.
+ *
+ * 
  *
  * FIXME Perhaps this should further optimize the case with a single base
  * relation (when there are no joins). Sadly we can't use all_baserels here
@@ -102,11 +105,43 @@ setup_simple_rel_arrays(PlannerInfo *root)
 void
 collect_foreign_keys(PlannerInfo *root)
 {
-	Index		rti1, rti2;
+	List	   *reloids;
+	Index		rti, rti1, rti2;
 
-	/* identify foreign keys referencing pairs of base relations in query */
+	/*
+	 * Let's compile a list of OIDs of tables, so that we can optimize the
+	 * case with many foreign keys a bit.
+	 */
+	reloids = NIL;
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		RelOptInfo	   *rel = root->simple_rel_array[rti];
+		RangeTblEntry  *rte = root->simple_rte_array[rti];
+
+		if (rel == NULL)	/* empty slot for non-baserel RTEs */
+			continue;
+
+		Assert(rel->relid == rti);		/* sanity check on array */
+
+		/* ignore RTEs that are "other rels" or not relations */
+		if ((rel->reloptkind != RELOPT_BASEREL) ||
+			(rel->rtekind != RTE_RELATION))
+			continue;
+
+		reloids = list_append_unique_oid(reloids, rte->relid);
+	}
+
+	/*
+	 * Identify foreign keys referencing pairs of base relations in query.
+	 *
+	 * The code is optimized for possibly large number of foreign keys, so
+	 * it only walks through each fkeylist once. It skips foreign keys on
+	 * a single column and foreign keys where the other relation is not in
+	 * the query (detected using the OID list compiled above).
+	 */
 	for (rti1 = 1; rti1 < root->simple_rel_array_size; rti1++)
 	{
+		ListCell	   *lc;
 		RelOptInfo	   *rel1 = root->simple_rel_array[rti1];
 		RangeTblEntry  *rte1 = root->simple_rte_array[rti1];
 
@@ -125,44 +160,47 @@ collect_foreign_keys(PlannerInfo *root)
 		/* sanity check */
 		Assert(rte1 != NULL);
 
-		/* XXX We need to build both (rti1<rti2) and (rti2<rti1) here. */
-		for (rti2 = 1; rti2 < root->simple_rel_array_size; rti2++)
+		/* we only check check one direction here */
+		foreach(lc, rel1->fkeylist)
 		{
-			ListCell	   *lc;
-			RelOptInfo	   *rel2 = root->simple_rel_array[rti2];
-			RangeTblEntry  *rte2 = root->simple_rte_array[rti2];
+			ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 
-			/* we never join a RTE to itself */
-			if (rti1 == rti2)
+			/*
+			 * Skip foreign keys on a single column, as those are not useful
+			 * for join cardinality estimation (which is about improving
+			 * estimates for multi-column keys).
+			 */
+			if (fkinfo->nkeys == 1)
 				continue;
 
-			/* there may be empty slots corresponding to non-baserel RTEs */
-			if (rel2 == NULL)
+			/* Check if the other side of the foreign key is in the query. */
+			if (! list_member_oid(reloids, fkinfo->confrelid))
 				continue;
 
-			/* sanity check on array */
-			Assert(rel2->relid == rti2);
-
-			/* ignore rel types that can't have foreign keys */
-			if ((rel2->reloptkind != RELOPT_BASEREL) ||
-				(rel2->rtekind != RTE_RELATION))
-				continue;
-
-			/* sanity check */
-			Assert(rte2 != NULL);
-
-			/* we only check check one direction */
-			foreach(lc, rel1->fkeylist)
+			/* We need to build both (rti1 < rti2) and (rti2 < rti1) here. */
+			for (rti2 = 1; rti2 < root->simple_rel_array_size; rti2++)
 			{
-				ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+				RelOptInfo	   *rel2 = root->simple_rel_array[rti2];
+				RangeTblEntry  *rte2 = root->simple_rte_array[rti2];
 
-				/*
-				 * Skip foreign keys on a single column, as those are not useful
-				 * for join cardinality estimation (which is about improving
-				 * estimates for multi-column keys).
-				 */
-				if (fkinfo->nkeys == 1)
+				/* we never join a RTE to itself */
+				if (rti1 == rti2)
 					continue;
+
+				/* there may be empty slots corresponding to non-baserel RTEs */
+				if (rel2 == NULL)
+					continue;
+
+				/* sanity check on array */
+				Assert(rel2->relid == rti2);
+
+				/* ignore rel types that can't have foreign keys */
+				if ((rel2->reloptkind != RELOPT_BASEREL) ||
+					(rel2->rtekind != RTE_RELATION))
+					continue;
+
+				/* sanity check */
+				Assert(rte2 != NULL);
 
 				/*
 				 * We only need to check confrelid, as conrelid is the current

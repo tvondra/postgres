@@ -94,8 +94,6 @@ setup_simple_rel_arrays(PlannerInfo *root)
  * also means that if a relation has multiple RTEs (e.g. in a self-join),
  * we will create multiple copies of the foreign key, one for each RTE.
  *
- * 
- *
  * FIXME Perhaps this should further optimize the case with a single base
  * relation (when there are no joins). Sadly we can't use all_baserels here
  * because that's computed in make_one_rel() and that's too late. So we'd

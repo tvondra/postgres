@@ -244,7 +244,7 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 	if ((root->foreign_keys == NIL) || (root->eq_classes == NIL))
 		return;
 
-	/* XXX maybe another order of loops would be better here */
+	/* walk through the foreign keys once, and check them against eclasses */
 	foreach(lc, root->foreign_keys)
 	{
 		int		i;

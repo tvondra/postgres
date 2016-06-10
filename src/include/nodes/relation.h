@@ -750,7 +750,7 @@ typedef struct ForeignKeyOptInfo
 
 } ForeignKeyOptInfo;
 
-/* only used in planner when detecting useful foreign keys */
+/* only used in planner when matching foreign keys to conditions/eclasses */
 typedef struct FKInfo
 {
 	NodeTag		type;
@@ -762,10 +762,10 @@ typedef struct FKInfo
 	int		   *conkeys;	/* attnums of columns in the constrained table */
 	int		   *confkeys;	/* attnums of columns in the referenced table */
 	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */
-	EquivalenceClass	**eclass;	/* pointer to equivalence class matching the condition */
 
 	/* used in costsize.c */
-	Bitmapset  *quals;		/* indexes of join quals matching the FK */
+	EquivalenceClass **eclass;	/* pointer to eclass matching the condition */
+	Bitmapset		  *quals;	/* indexes of join quals matching the FK */
 
 } FKInfo;
 

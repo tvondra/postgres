@@ -218,7 +218,9 @@ collect_foreign_keys(PlannerInfo *root)
 					info->conkeys = fkinfo->conkeys;
 					info->confkeys = fkinfo->confkeys;
 					info->conpfeqop = fkinfo->conpfeqop;
+
 					info->eclass = (EquivalenceClass **)palloc0(info->nkeys * sizeof(EquivalenceClass*));
+					info->rinfos = (List **)palloc0(info->nkeys * sizeof(List *));
 
 					root->foreign_keys = lappend(root->foreign_keys, info);
 				}
@@ -228,7 +230,7 @@ collect_foreign_keys(PlannerInfo *root)
 }
 
 /*
- * match_foreign_keys_to_eclasses
+ * match_foreign_keys_to_quals
  *	  identify conditions of the foreign keys satisfied by equivalence classes
  *
  * For each foreign key we walk through all equivalence classes and try to
@@ -236,7 +238,7 @@ collect_foreign_keys(PlannerInfo *root)
  * keys we can count those conditions as matched.
  */
 void
-match_foreign_keys_to_eclasses(PlannerInfo *root)
+match_foreign_keys_to_quals(PlannerInfo *root)
 {
 	ListCell *lc;
 
@@ -299,7 +301,98 @@ match_foreign_keys_to_eclasses(PlannerInfo *root)
 			}
 		}
 	}
+
+	/* now also match the fkeys to regular join conditions */
+	foreach(lc, root->foreign_keys)
+	{
+		ListCell *lc2;
+		FKInfo *info = (FKInfo *) lfirst(lc);
+
+		RelOptInfo	*rel = root->simple_rel_array[info->src_relid];
+
+		foreach (lc2, rel->joininfo)
+		{
+			RestrictInfo   *rinfo;
+			OpExpr		   *clause;
+			Var			   *leftvar;
+			Var			   *rightvar;
+
+			rinfo = (RestrictInfo *) lfirst(lc2);
+
+			Assert(IsA(rinfo, RestrictInfo));
+
+			clause = (OpExpr *) rinfo->clause;
+
+			/* only OpExprs are useful for consideration */
+			if (!IsA(clause, OpExpr))
+				continue;
+
+			leftvar = (Var *) get_leftop((Expr *) clause);
+			rightvar = (Var *) get_rightop((Expr *) clause);
+
+			/* Foreign keys only support Vars, so ignore anything more complex */
+			if (!IsA(leftvar, Var) || !IsA(rightvar, Var))
+				continue;
+
+			/* now try to match the vars to the current foreign key */
+			if ((info->src_relid == leftvar->varno) &&
+				(info->dst_relid == rightvar->varno))
+			{
+				int i;
+				for (i = 0; i < info->nkeys; i++)
+				{
+					/*
+					 * If the operator does not match the FK, there's no point
+					 * in checking the operands.
+					 */
+					if (clause->opno != info->conpfeqop[i])
+						continue;
+
+					if ((info->conkeys[i] == leftvar->varattno) &&
+						(info->confkeys[i] == rightvar->varattno))
+						info->rinfos[i] = lappend(info->rinfos[i], rinfo);
+				}
+			}
+			else if ((info->src_relid == rightvar->varno) &&
+					 (info->dst_relid == leftvar->varno))
+			{
+				int i;
+				for (i = 0; i < info->nkeys; i++)
+				{
+					/*
+					 * If the operator does not match the FK, there's no point
+					 * in checking the operands.
+					 */
+					if (clause->opno != info->conpfeqop[i])
+						continue;
+
+					if ((info->conkeys[i] == rightvar->varattno) &&
+						(info->confkeys[i] == leftvar->varattno))
+						info->rinfos[i] = lappend(info->rinfos[i], rinfo);
+				}
+			}
+		}
+	}
+
+	/* walk through keys and check which of them are fully matched */
+	foreach(lc, root->foreign_keys)
+	{
+		int		i;
+		bool	match = true;
+		FKInfo *info = (FKInfo *) lfirst(lc);
+
+		for (i = 0; i < info->nkeys; i++)
+			if ((info->eclass[i] == NULL) && (info->rinfos[i] == NULL))
+			{
+				match = false;
+				break;
+			}
+
+		elog(WARNING, "match=%d", match);
+	}
+
 }
+
 
 /*
  * build_simple_rel

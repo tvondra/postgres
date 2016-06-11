@@ -176,9 +176,9 @@ query_planner(PlannerInfo *root, List *tlist,
 	collect_foreign_keys(root);
 
 	/*
-	 * Match foreign keys to equivalence classes (mark satisfied conditions).
+	 * Match foreign keys to eclasses and quals (mark satisfied conditions).
 	 */
-	match_foreign_keys_to_eclasses(root);
+	match_foreign_keys_to_quals(root);
 
 	/*
 	 * We have completed merging equivalence sets, so it's now possible to

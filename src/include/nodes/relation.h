@@ -765,6 +765,7 @@ typedef struct FKInfo
 
 	/* used in costsize.c */
 	EquivalenceClass **eclass;	/* pointer to eclass matching the condition */
+	List			 **rinfos;	/* list of non-EC clauses matched to key */
 	Bitmapset		  *quals;	/* indexes of join quals matching the FK */
 
 } FKInfo;

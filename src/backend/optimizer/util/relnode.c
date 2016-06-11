@@ -231,11 +231,15 @@ collect_foreign_keys(PlannerInfo *root)
 
 /*
  * match_foreign_keys_to_quals
- *	  identify conditions of the foreign keys satisfied by equivalence classes
+ *	  identify foreign key conditions satisfied by eclasses or regular quals
  *
  * For each foreign key we walk through all equivalence classes and try to
  * match them to the foreign key conditions. Later when matching quals to
  * keys we can count those conditions as matched.
+ *
+ * Then we try to do the same with foreign keys and regular join conditions
+ * (in RTE->joininfo). Currently this is a separate loop over foreign_keys,
+ * but it might as well be merged into the eclass one.
  */
 void
 match_foreign_keys_to_quals(PlannerInfo *root)

@@ -3936,93 +3936,13 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 			int		i;
 			bool	matched = true;	/* FK key is matched by default */
 
-			/* no quals matching yet */
-			info->quals = NULL;
-
 			for (i = 0; i < info->nkeys; i++)
 			{
-				int			qualidx;
-				ListCell   *lc2;
-
-				/*
-				 * we need to check which joinquals match the foreign key
-				 *
-				 * We won't terminate eagerly (e.g. once we find a matching
-				 * qual), assuming there might be multiple quals and we need
-				 * to match them all.
-				 *
-				 * XXX Is this really true? Can there be duplicate quals?
-				 */
-				qualidx = -1;
-				matched = false; /* assume no match for this FK condition */
-				foreach (lc2, joinquals)
+				if ((info->eclass[i] == NULL) && (info->rinfos[i] == NULL))
 				{
-					RestrictInfo   *rinfo;
-					OpExpr		   *clause;
-					Var			   *leftvar;
-					Var			   *rightvar;
-
-					/* qual index for the bitmap */
-					qualidx++;
-
-					rinfo = (RestrictInfo *) lfirst(lc2);
-					clause = (OpExpr *) rinfo->clause;
-
-					/* only OpExprs are useful for consideration */
-					if (!IsA(clause, OpExpr))
-						continue;
-
-					/*
-					 * If the operator does not match the FK, there's no point
-					 * in checking the operands.
-					 */
-					if (clause->opno != info->conpfeqop[i])
-						continue;
-
-					leftvar = (Var *) get_leftop((Expr *) clause);
-					rightvar = (Var *) get_rightop((Expr *) clause);
-
-					/* Foreign keys only support Vars, so ignore anything more complex */
-					if (!IsA(leftvar, Var) || !IsA(rightvar, Var))
-						continue;
-
-					/*
-					 * In this non eclass RestrictInfo case we'll check if the left
-					 * and right Vars match to this part of the foreign key.
-					 * Remember that this could be written with the Vars in either
-					 * order, so we test both permutations of the expression.
-					 */
-					if ((info->src_relid == leftvar->varno) &&
-						(info->dst_relid == rightvar->varno) &&
-						(info->conkeys[i] == leftvar->varattno) &&
-						(info->confkeys[i] == rightvar->varattno))
-					{
-						matched = true;
-						info->quals = bms_add_member(info->quals, qualidx);
-					}
-					else if ((info->src_relid == rightvar->varno) &&
-							 (info->dst_relid == leftvar->varno) &&
-							 (info->conkeys[i] == rightvar->varattno) &&
-							 (info->confkeys[i] == leftvar->varattno))
-					{
-						matched = true;
-						info->quals = bms_add_member(info->quals, qualidx);
-					}
-				}
-
-				/*
-				 * The condition may be satistifed thanks to an eclass.
-				 *
-				 * XXX Is it possible to have an eclass match without a regular
-				 * join qual? If not, this check is not necessary because the
-				 * condition will be matched by the preceding block.
-				 */
-				if (info->eclass[i] != NULL)
-					matched = true;
-
-				/* we found a key not by any eclass/joinqual, so we can stop */
-				if (! matched)
+					matched = false;
 					break;
+				}
 			}
 
 			/* if the whole foreign key is matched, we add it to the result */
@@ -4062,10 +3982,9 @@ static Selectivity
 clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 							JoinType jointype, SpecialJoinInfo *sjinfo)
 {
-	ListCell	   *lc;
+	ListCell	   *lc, *lc2;
 	Selectivity		sel = 1.0;
 	List		   *matches;
-	Bitmapset	   *fkquals = NULL;
 
 	/* find all foreign keys matched by join quals (or eclasses) */
 	matches = find_matching_foreign_keys(root, joinquals, jointype, sjinfo);
@@ -4073,9 +3992,11 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 	/* did we find any matches at all */
 	foreach(lc, matches)
 	{
+		int i;
 		RelOptInfo *inner_rel, *outer_rel;
 		FKInfo *info = (FKInfo *) lfirst(lc);
 		double	ntuples;
+		List   *nonfkquals = NIL;
 
 		/*
 		 * We know the foreign key connects the relations on the inner and
@@ -4103,31 +4024,50 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 		else
 			sel *= 1.0 / Max(ntuples, 1.0);
 
-		/* build the union of joinquals matched by any foreign key */
-		fkquals = bms_add_members(fkquals, info->quals);
-	}
-
-	/*
-	 * If any non matched quals exist then we build a list of the non-matches
-	 * and use clauselist_selectivity() to estimate the selectivity of these.
-	 */
-	if (bms_num_members(fkquals) < list_length(joinquals))
-	{
-		ListCell *lc;
-		int lstidx = 0;
-		List *nonfkeyclauses = NIL;
-
-		foreach (lc, joinquals)
+		/* remove the quals that match the foreign key */
+		nonfkquals = list_copy(joinquals);
+		for (i = 0; i < info->nkeys; i++)
 		{
-			if (!bms_is_member(lstidx, fkquals))
-				nonfkeyclauses = lappend(nonfkeyclauses, lfirst(lc));
-			lstidx++;
+			ListCell *lc2;
+
+			/* skip keys matched by equivalence classes */
+			if (!info->rinfos[i])
+				continue;
+
+			foreach (lc2, info->rinfos[i])
+				nonfkquals = list_delete_ptr(nonfkquals, lfirst(lc2));
 		}
 
-		sel *= clauselist_selectivity(root, nonfkeyclauses, 0, jointype, sjinfo);
+		/* we must also eliminate quals implied by EC */
+		joinquals = NIL;
+		foreach(lc2, nonfkquals)
+		{
+			bool matched;
+			RestrictInfo *rinfo = (RestrictInfo *)lfirst(lc2);
+
+			/* if not implied by EC, simply add it to the list */
+			if (! rinfo->parent_ec)
+			{
+				joinquals = lappend(joinquals, rinfo);
+				continue;
+			}
+
+			/* otherwise see if it's one of the implied ones */
+			matched = false;
+			for (i = 0; i < info->nkeys; i++)
+				if (info->eclass[i] == rinfo->parent_ec)
+				{
+					matched = true;
+					break;
+				}
+
+			/* FIXME Rhis should probably recheck the eclass condition. */
+			if (! matched)
+				joinquals = lappend(joinquals, rinfo);
+		}
 	}
 
-	return sel;
+	return sel * clauselist_selectivity(root, joinquals, 0, jointype, sjinfo);
 }
 
 /*

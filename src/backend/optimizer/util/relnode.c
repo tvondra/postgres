@@ -319,7 +319,12 @@ match_foreign_keys_to_quals(PlannerInfo *root)
 
 			rinfo = (RestrictInfo *) lfirst(lc2);
 
-			Assert(IsA(rinfo, RestrictInfo));
+			Assert(IsA(rinfo, RestrictInfo));		/* sanity check */
+
+			/*
+			 * XXX should we skip rinfo with parent_ec here (EC clauses are
+			 * already matched in the preceding loop)?
+			 */
 
 			clause = (OpExpr *) rinfo->clause;
 
@@ -373,24 +378,6 @@ match_foreign_keys_to_quals(PlannerInfo *root)
 			}
 		}
 	}
-
-	/* walk through keys and check which of them are fully matched */
-	foreach(lc, root->foreign_keys)
-	{
-		int		i;
-		bool	match = true;
-		FKInfo *info = (FKInfo *) lfirst(lc);
-
-		for (i = 0; i < info->nkeys; i++)
-			if ((info->eclass[i] == NULL) && (info->rinfos[i] == NULL))
-			{
-				match = false;
-				break;
-			}
-
-		elog(WARNING, "match=%d", match);
-	}
-
 }
 
 

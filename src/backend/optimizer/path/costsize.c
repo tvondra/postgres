@@ -3892,20 +3892,14 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
  * find_matching_foreign_keys
  * 		identifies foreign keys matched by joinquals (or eclasses)
  *
- * Analyzes joinquals to determine if any quals match foreign keys defined on
- * the relations being joined.  When multiple foreign keys match, we choose the
- * one with the most keys as the best one because of the way estimation occurs
- * in clauselist_join_selectivity().  We could choose the FK matching the most
- * quals, however we assume the quals may be duplicated. Or we could match
- * multiple foreign keys, but that seems a bit too complicated.
+ * Searches foreign keys connecting the left and right side of the join, and
+ * returns those with all conditions matches by an eclass or a regular qual.
  *
- * We also track which joinquals match the current foreign key, so that we can
- * easily skip then when computing the selectivity.
- *
- * When no matching foreign key is found we return 0, otherwise we return the
- * number of keys in the foreign key.
- *
- * Foreign keys matched only partially are currently ignored.
+ * XXX This probably does not handle case with multiple overlapping keys
+ * correctly (e.g. with foreign keys in opposite directions, enforcing 1:1).
+ * Right now one condition may match multiple foreign keys at once, but
+ * perhaps we should remove the conditions from the joinquals list before
+ * trying to match the next key.
  */
 static List *
 find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
@@ -3974,6 +3968,10 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
  * that's not the right thing to do - e.g. when there's a duplicate foreign
  * key, we'll apply it twice (clearly wrong). Also, overlapping foreign keys
  * are likely correlated, but multiplication assumes independence.
+ *
+ * XXX We might also apply even foreign keys that are matched only partially,
+ * by estimating the selectivity as (1/N)^(nmatch/nkeys) where nmatch is number
+ * of matched conditions and nkeys is the total number of conditions.
  *
  * FIXME Consired NULL values properly (although that'll be tricky due to
  * correlated columns, which is likely for multi-column keys).
@@ -4061,7 +4059,22 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 					break;
 				}
 
-			/* FIXME Rhis should probably recheck the eclass condition. */
+			/*
+			 * FIXME This needs to recheck the condition - it's not enough that
+			 * the condition belongs to the same eclass. For example with these
+			 * tables
+			 *
+			 *    A (id1, id2, PRIMARY KEY (id1, id2))
+			 *    B (id1, id2, FOREIGN KEY (id1, id2) REFERENCES A (id1, id2))
+			 *
+			 * a join with WHERE clause
+			 *
+			 *   WHERE (a.id1 = b.id1) AND (a.id2 = b.id2) AND (a.id1 = b.id2)
+			 *
+			 * places all the variables into the same eclass, but the last one
+			 * (a.id1 = b.id2) clearly does not match the FK. Yet the current
+			 * code says it does.
+			 */
 			if (! matched)
 				joinquals = lappend(joinquals, rinfo);
 		}

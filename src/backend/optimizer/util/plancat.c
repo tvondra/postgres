@@ -95,7 +95,6 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	Relation	relation;
 	bool		hasindex;
 	List	   *indexinfos = NIL;
-	ListCell   *l;
 
 	/*
 	 * We need not lock the relation since it was already locked, either by

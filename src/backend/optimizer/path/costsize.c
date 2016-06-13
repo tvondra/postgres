@@ -3903,47 +3903,127 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
  */
 static List *
 find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
-							JoinType jointype, SpecialJoinInfo *sjinfo)
+							JoinType jointype, SpecialJoinInfo *sjinfo,
+							List **remaining_joinquals)
 {
+	int				j;
 	ListCell	   *lc;
 	List		   *keys = NIL;
+
+	/* make a local copy of joinquals so that we can remove items from it */
+	joinquals = list_copy(joinquals);
 
 	/* fast path out when use of foreign keys for estimation is disabled */
 	if (! enable_fkey_estimates)
 		return NIL;
 
-	foreach(lc, root->foreign_keys)
+	while (true)
 	{
-		FKInfo *info = (FKInfo *)lfirst(lc);
+		FKInfo *best = NULL;
+		List   *remove = NIL;
 
-		/*
-		 * We can only use foreign keys connecting the two sides of the join.
-		 *
-		 * XXX In Tom's design proposal, this works with inner_rel/outer_rel,
-		 * but we don't have that here. So we use relids from sjinfo instead.
-		 */
-		if ((bms_is_member(info->src_relid, sjinfo->min_lefthand) &&
-			 bms_is_member(info->dst_relid, sjinfo->min_righthand)) ||
-			(bms_is_member(info->dst_relid, sjinfo->min_lefthand) &&
-			 bms_is_member(info->src_relid, sjinfo->min_righthand)))
+		foreach(lc, root->foreign_keys)
 		{
-			int		i;
-			bool	matched = true;	/* FK key is matched by default */
+			FKInfo *info = (FKInfo *)lfirst(lc);
 
-			for (i = 0; i < info->nkeys; i++)
+			/* if we've already added this key, skip it */
+			if (list_member_ptr(keys, info))
+				continue;
+
+			/*
+			 * We can only use foreign keys connecting the two sides of the join.
+			 *
+			 * XXX In Tom's design proposal, this works with inner_rel/outer_rel,
+			 * but we don't have that here. So we use relids from sjinfo instead.
+			 */
+			if ((bms_is_member(info->src_relid, sjinfo->min_lefthand) &&
+				 bms_is_member(info->dst_relid, sjinfo->min_righthand)) ||
+				(bms_is_member(info->dst_relid, sjinfo->min_lefthand) &&
+				 bms_is_member(info->src_relid, sjinfo->min_righthand)))
 			{
-				if ((info->eclass[i] == NULL) && (info->rinfos[i] == NULL))
-				{
-					matched = false;
-					break;
-				}
+				int		i;
+
+				/* count the number of matched keys */
+				info->nmatched = 0;
+				for (i = 0; i < info->nkeys; i++)
+					if ((info->eclass[i] != NULL) || (info->rinfos[i] != NULL))
+						info->nmatched += 1;
+
+				/* see if this key has more matches */
+				if ((info->nmatched > 1) && ((best == NULL) || (info->nmatched > best->nmatched)))
+					best = info;
+			}
+		}
+
+		/* if we found no best key, terminate the search */
+		if (!best)
+			break;
+
+		keys = lappend(keys, best);
+
+		/* now remove the regular quals from joinquals */
+		for (j = 0; j < best->nkeys; j++)
+			if (best->rinfos[j] != NULL)
+			{
+				ListCell *lc2;
+				foreach(lc2, best->rinfos[j])
+					joinquals = list_delete_ptr(joinquals, best->rinfos[j]);
 			}
 
-			/* if the whole foreign key is matched, we add it to the result */
-			if (matched)
-				keys = lappend(keys, info);
+		/* and now also remove clauses implied by an eclass */
+		foreach(lc, joinquals)
+		{
+			int				i;
+			RestrictInfo   *rinfo = (RestrictInfo *)lfirst(lc);
+			EquivalenceClass   *ec;
+
+			Assert(IsA(rinfo, RestrictInfo));	/* sanity check */
+
+			/* if not generated from eclass, ignore it */
+			if (! rinfo->parent_ec)
+				continue;
+
+			ec = rinfo->parent_ec;
+
+			for (i = 0; i < best->nkeys; i++)
+			{
+				ListCell *lc3;
+				int foundvarmask = 0;
+
+				/* if not matched by the same eclass, skip */
+				if (best->eclass[i] != rinfo->parent_ec)
+					continue;
+
+				foreach(lc3, ec->ec_members)
+				{
+					EquivalenceMember *em = (EquivalenceMember *) lfirst(lc3);
+					Var *var = (Var *) em->em_expr;
+
+					/* we can only use simple (Var = Var) eclasses for FKs */
+					if (!IsA(var, Var))
+						continue;
+
+					/* check which side of the foreign key is satisfied */
+					if (best->src_relid == var->varno &&
+						best->conkeys[i] == var->varattno)
+						foundvarmask |= 1;
+
+					else if (best->dst_relid == var->varno &&
+						best->confkeys[i] == var->varattno)
+						foundvarmask |= 2;
+
+					if (foundvarmask == 3)
+						remove = lappend(remove, rinfo);
+				}
+			}
 		}
+
+		/* actually delete the EC-quals */
+		foreach(lc, remove)
+			joinquals = list_delete_ptr(joinquals, lfirst(lc));
 	}
+
+	*remaining_joinquals = joinquals;
 
 	return keys;
 }
@@ -3980,21 +4060,20 @@ static Selectivity
 clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 							JoinType jointype, SpecialJoinInfo *sjinfo)
 {
-	ListCell	   *lc, *lc2;
+	ListCell	   *lc;
 	Selectivity		sel = 1.0;
 	List		   *matches;
+	List		   *remaining = NIL;
 
 	/* find all foreign keys matched by join quals (or eclasses) */
-	matches = find_matching_foreign_keys(root, joinquals, jointype, sjinfo);
+	matches = find_matching_foreign_keys(root, joinquals, jointype, sjinfo, &remaining);
 
 	/* did we find any matches at all */
 	foreach(lc, matches)
 	{
-		int i;
 		RelOptInfo *inner_rel, *outer_rel;
 		FKInfo *info = (FKInfo *) lfirst(lc);
 		double	ntuples;
-		List   *nonfkquals = NIL;
 
 		/*
 		 * We know the foreign key connects the relations on the inner and
@@ -4021,66 +4100,9 @@ clauselist_join_selectivity(PlannerInfo *root, List *joinquals,
 			sel *= Min(outer_rel->tuples / inner_rel->tuples, 1.0);
 		else
 			sel *= 1.0 / Max(ntuples, 1.0);
-
-		/* remove the quals that match the foreign key */
-		nonfkquals = list_copy(joinquals);
-		for (i = 0; i < info->nkeys; i++)
-		{
-			ListCell *lc2;
-
-			/* skip keys matched by equivalence classes */
-			if (!info->rinfos[i])
-				continue;
-
-			foreach (lc2, info->rinfos[i])
-				nonfkquals = list_delete_ptr(nonfkquals, lfirst(lc2));
-		}
-
-		/* we must also eliminate quals implied by EC */
-		joinquals = NIL;
-		foreach(lc2, nonfkquals)
-		{
-			bool matched;
-			RestrictInfo *rinfo = (RestrictInfo *)lfirst(lc2);
-
-			/* if not implied by EC, simply add it to the list */
-			if (! rinfo->parent_ec)
-			{
-				joinquals = lappend(joinquals, rinfo);
-				continue;
-			}
-
-			/* otherwise see if it's one of the implied ones */
-			matched = false;
-			for (i = 0; i < info->nkeys; i++)
-				if (info->eclass[i] == rinfo->parent_ec)
-				{
-					matched = true;
-					break;
-				}
-
-			/*
-			 * FIXME This needs to recheck the condition - it's not enough that
-			 * the condition belongs to the same eclass. For example with these
-			 * tables
-			 *
-			 *    A (id1, id2, PRIMARY KEY (id1, id2))
-			 *    B (id1, id2, FOREIGN KEY (id1, id2) REFERENCES A (id1, id2))
-			 *
-			 * a join with WHERE clause
-			 *
-			 *   WHERE (a.id1 = b.id1) AND (a.id2 = b.id2) AND (a.id1 = b.id2)
-			 *
-			 * places all the variables into the same eclass, but the last one
-			 * (a.id1 = b.id2) clearly does not match the FK. Yet the current
-			 * code says it does.
-			 */
-			if (! matched)
-				joinquals = lappend(joinquals, rinfo);
-		}
 	}
 
-	return sel * clauselist_selectivity(root, joinquals, 0, jointype, sjinfo);
+	return sel * clauselist_selectivity(root, remaining, 0, jointype, sjinfo);
 }
 
 /*

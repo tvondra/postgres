@@ -759,6 +759,7 @@ typedef struct FKInfo
 	Index		dst_relid;	/* relid of the target relation (confrelid) */
 
 	int			nkeys;		/* number of columns in the foreign key */
+	int			nmatched;	/* number of conditions matched */
 	int		   *conkeys;	/* attnums of columns in the constrained table */
 	int		   *confkeys;	/* attnums of columns in the referenced table */
 	Oid		   *conpfeqop;	/* OIDs of equality operators used by the FK */

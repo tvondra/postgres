@@ -2,7 +2,6 @@ SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%';
          name          | setting 
 -----------------------+---------
  enable_bitmapscan     | on
- enable_fkey_estimates | on
  enable_hashagg        | on
  enable_hashjoin       | on
  enable_indexonlyscan  | on

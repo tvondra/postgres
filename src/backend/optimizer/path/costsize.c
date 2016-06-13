@@ -126,7 +126,6 @@ bool		enable_nestloop = true;
 bool		enable_material = true;
 bool		enable_mergejoin = true;
 bool		enable_hashjoin = true;
-bool		enable_fkey_estimates = true;
 
 typedef struct
 {

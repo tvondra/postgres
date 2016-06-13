@@ -3895,11 +3895,7 @@ get_parameterized_joinrel_size(PlannerInfo *root, RelOptInfo *rel,
  * Searches foreign keys connecting the left and right side of the join, and
  * returns those with all conditions matches by an eclass or a regular qual.
  *
- * XXX This probably does not handle case with multiple overlapping keys
- * correctly (e.g. with foreign keys in opposite directions, enforcing 1:1).
- * Right now one condition may match multiple foreign keys at once, but
- * perhaps we should remove the conditions from the joinquals list before
- * trying to match the next key.
+ * The function may return multiple foreign keys for a single pair of tables
  */
 static List *
 find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
@@ -3911,7 +3907,7 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 	List		   *keys = NIL;
 
 	/* make a local copy of joinquals so that we can remove items from it */
-	joinquals = list_copy(joinquals);
+	*remaining_joinquals = list_copy(joinquals);
 
 	/* fast path out when use of foreign keys for estimation is disabled */
 	if (! enable_fkey_estimates)
@@ -3943,47 +3939,51 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 			{
 				int		i;
 
-				/* count the number of matched keys */
+				/* FIXME this needs to consider the remaining quals. */
 				info->nmatched = 0;
 				for (i = 0; i < info->nkeys; i++)
 					if ((info->eclass[i] != NULL) || (info->rinfos[i] != NULL))
 						info->nmatched += 1;
 
-				/* see if this key has more matches */
-				if ((info->nmatched > 1) && ((best == NULL) || (info->nmatched > best->nmatched)))
+				/* compare the current key to the best key so far */
+				if ((info->nmatched == info->nkeys) &&
+					((best == NULL) || (info->nmatched > best->nmatched)))
 					best = info;
 			}
 		}
 
-		/* if we found no best key, terminate the search */
+		/* if we found no foreign key, terminate the search */
 		if (!best)
 			break;
 
 		keys = lappend(keys, best);
 
-		/* now remove the regular quals from joinquals */
+		/* now remove the quals used to match the new key from joinquals */
 		for (j = 0; j < best->nkeys; j++)
 			if (best->rinfos[j] != NULL)
 			{
 				ListCell *lc2;
 				foreach(lc2, best->rinfos[j])
-					joinquals = list_delete_ptr(joinquals, best->rinfos[j]);
+					*remaining_joinquals
+						= list_delete_ptr(*remaining_joinquals, best->rinfos[j]);
 			}
 
-		/* and now also remove clauses implied by an eclass */
-		foreach(lc, joinquals)
+		/*
+		 * we also need to remove clauses implied by an eclass
+		 *
+		 * We can't simplye remove clauses using parent_ec, we need to
+		 * actually check the clause matches the foreign key.
+		 */
+		foreach(lc, *remaining_joinquals)
 		{
 			int				i;
 			RestrictInfo   *rinfo = (RestrictInfo *)lfirst(lc);
-			EquivalenceClass   *ec;
 
 			Assert(IsA(rinfo, RestrictInfo));	/* sanity check */
 
-			/* if not generated from eclass, ignore it */
+			/* we can ignore clauses not generated from an eclass */
 			if (! rinfo->parent_ec)
 				continue;
-
-			ec = rinfo->parent_ec;
 
 			for (i = 0; i < best->nkeys; i++)
 			{
@@ -3994,7 +3994,7 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 				if (best->eclass[i] != rinfo->parent_ec)
 					continue;
 
-				foreach(lc3, ec->ec_members)
+				foreach(lc3, rinfo->parent_ec->ec_members)
 				{
 					EquivalenceMember *em = (EquivalenceMember *) lfirst(lc3);
 					Var *var = (Var *) em->em_expr;
@@ -4020,10 +4020,9 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 
 		/* actually delete the EC-quals */
 		foreach(lc, remove)
-			joinquals = list_delete_ptr(joinquals, lfirst(lc));
+			*remaining_joinquals
+				= list_delete_ptr(*remaining_joinquals, lfirst(lc));
 	}
-
-	*remaining_joinquals = joinquals;
 
 	return keys;
 }

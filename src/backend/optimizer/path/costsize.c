@@ -3909,10 +3909,7 @@ find_matching_foreign_keys(PlannerInfo *root, List *joinquals,
 	/* make a local copy of joinquals so that we can remove items from it */
 	*remaining_joinquals = list_copy(joinquals);
 
-	/* fast path out when use of foreign keys for estimation is disabled */
-	if (! enable_fkey_estimates)
-		return NIL;
-
+	/* find a combination of foreign keys */
 	while (true)
 	{
 		FKInfo *best = NULL;

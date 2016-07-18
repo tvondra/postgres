@@ -135,6 +135,14 @@ extern MemoryContext AllocSetContextCreate(MemoryContext parent,
 					  Size initBlockSize,
 					  Size maxBlockSize);
 
+/* slab.c */
+extern MemoryContext SlabContextCreate(MemoryContext parent,
+					  const char *name,
+					  Size blockSize,
+					  Size chunkSize);
+
+extern void SlabAutodestruct(MemoryContext context);
+
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts
  * that might hold quite a lot of data.
@@ -170,5 +178,8 @@ extern MemoryContext AllocSetContextCreate(MemoryContext parent,
  * to know it.
  */
 #define ALLOCSET_SEPARATE_THRESHOLD  8192
+
+#define SLAB_DEFAULT_BLOCK_SIZE		8192
+#define SLAB_LARGE_BLOCK_SIZE		(8 * 1024 * 1024)
 
 #endif   /* MEMUTILS_H */

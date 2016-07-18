@@ -331,6 +331,19 @@ struct ReorderBuffer
 	MemoryContext context;
 
 	/*
+	 * slab contexts for change and TXN objects.
+	 */
+	MemoryContext change_context;
+	MemoryContext txn_context;
+	MemoryContext tup_context_slab;
+	MemoryContext tup_context_oversized;
+
+	/* counters for current generation of tuples */
+	int		tuples_count;
+	Size	tuples_size;
+	Size	current_size;
+
+	/*
 	 * Data structure slab cache.
 	 *
 	 * We allocate/deallocate some structures very frequently, to avoid bigger

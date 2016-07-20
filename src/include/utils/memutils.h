@@ -142,6 +142,15 @@ extern MemoryContext SlabContextCreate(MemoryContext parent,
 					  Size chunkSize);
 
 extern void SlabAutodestruct(MemoryContext context);
+extern Size SlabMinBlockSize(Size chunkSize, int chunkCount, Size minBlockSize);
+
+/* genslab.c */
+extern MemoryContext GenSlabContextCreate(MemoryContext parent,
+					  const char *name,
+					  Size minBlockSize,
+					  Size minChunkCount,
+					  Size initChunkSize,
+					  int maxAllocations);
 
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts

@@ -348,7 +348,7 @@ SlabContextCreate(MemoryContext parent,
 	fullChunkSize = MAXALIGN(sizeof(SlabChunkData) + MAXALIGN(chunkSize));
 
 	/* make sure the block can store at least one chunk (plus a bitmap) */
-	if (blockSize - sizeof(SlabChunkData) < fullChunkSize + 1)
+	if (blockSize - sizeof(SlabBlockData) < fullChunkSize + 1)
 		elog(ERROR, "block size %ld for slab is too small for chunks %ld",
 					blockSize, chunkSize);
 
@@ -861,6 +861,29 @@ SlabAutodestruct(MemoryContext context)
 	Assert(IsA(set, SlabContext));
 
 	set->autodestruct = true;
+}
+
+Size
+SlabMinBlockSize(Size chunkSize, int chunkCount, Size minBlockSize)
+{
+	Size blockSize;
+
+	/* chunk with a header */
+	Size fullChunkSize = MAXALIGN(sizeof(SlabChunkData) + MAXALIGN(chunkSize));
+
+	/* each block has a header */
+	Size minSpace = sizeof(SlabBlockData) +			/* block header */
+					(chunkCount * fullChunkSize) +	/* space for chunks */
+					((chunkCount + 7) / 8);			/* free bitmap */
+
+	Assert((chunkSize  >= 1) && (chunkCount >= 1));
+
+	/* find the smallest block size for chunks  */
+	blockSize = minBlockSize;
+	while (blockSize < minSpace)
+		blockSize *= 2;
+
+	return blockSize;
 }
 
 #ifdef MEMORY_CONTEXT_CHECKING

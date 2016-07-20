@@ -251,17 +251,12 @@ ReorderBufferAllocate(void)
 									SLAB_DEFAULT_BLOCK_SIZE,
 									sizeof(ReorderBufferTXN));
 
-	buffer->tup_context_slab = SlabContextCreate(new_ctx,
+	buffer->tup_context = GenSlabContextCreate(new_ctx,
 									"TuplesSlab",
 									SLAB_LARGE_BLOCK_SIZE,
 									sizeof(ReorderBufferTupleBuf) +
-									MAXIMUM_ALIGNOF + MaxHeapTupleSize);
-
-	buffer->tup_context_oversized = AllocSetContextCreate(new_ctx,
-									"TuplesOversized",
-									ALLOCSET_DEFAULT_MINSIZE,
-									ALLOCSET_DEFAULT_INITSIZE,
-									ALLOCSET_DEFAULT_MAXSIZE);
+									MAXIMUM_ALIGNOF + MaxHeapTupleSize,
+									TUPLES_PER_GENERATION);
 
 	hash_ctl.keysize = sizeof(TransactionId);
 	hash_ctl.entrysize = sizeof(ReorderBufferTXNByIdEnt);
@@ -282,16 +277,10 @@ ReorderBufferAllocate(void)
 
 	buffer->current_restart_decoding_lsn = InvalidXLogRecPtr;
 
-	buffer->tuples_count = 0;
-	buffer->tuples_size = 0;
-
 	dlist_init(&buffer->toplevel_by_lsn);
 	dlist_init(&buffer->cached_transactions);
 	dlist_init(&buffer->cached_changes);
 	slist_init(&buffer->cached_tuplebufs);
-
-	buffer->current_size = sizeof(ReorderBufferTupleBuf) +
-						   MAXIMUM_ALIGNOF + MaxHeapTupleSize;
 
 	return buffer;
 }
@@ -444,54 +433,12 @@ ReorderBufferGetTupleBuf(ReorderBuffer *rb, Size tuple_len)
 
 	alloc_len = tuple_len + SizeofHeapTupleHeader;
 
-	/* see if we need to allocate a new context generation */
-	if (rb->tuples_count == TUPLES_PER_GENERATION)
-	{
-		Size	new_size;
-		Size	avg_length = (rb->tuples_size / rb->tuples_count);
-
-		/* mark the current SLAB context for automatic destruction */
-		SlabAutodestruct(rb->tup_context_slab);
-
-		/* assume +50% is enough slack to fit most tuples into the slab context */
-		new_size = MAXALIGN(avg_length * 1.5);
-
-		rb->current_size = new_size;
-		rb->tup_context_slab = SlabContextCreate(rb->context,
-									"TuplesSlab",
-									SLAB_LARGE_BLOCK_SIZE,
-									sizeof(ReorderBufferTupleBuf) +
-									MAXIMUM_ALIGNOF + rb->current_size);
-
-		/* we could also recreate the aset context, with block sizes set so
-		 * that the palloc always does malloc(), but not sure about that */
-
-		rb->tuples_count = 0;
-		rb->tuples_size = 0;
-	}
-
-	rb->tuples_count += 1;
-	rb->tuples_size  += alloc_len;
-
-	/* if small enough, check the slab cache */
-	if (alloc_len <= rb->current_size)
-	{
-		tuple = (ReorderBufferTupleBuf *)
-			MemoryContextAlloc(rb->tup_context_slab,
-							   sizeof(ReorderBufferTupleBuf) +
-							   MAXIMUM_ALIGNOF + rb->current_size);
-		tuple->alloc_tuple_size = rb->current_size;
-		tuple->tuple.t_data = ReorderBufferTupleBufData(tuple);
-	}
-	else
-	{
-		tuple = (ReorderBufferTupleBuf *)
-			MemoryContextAlloc(rb->tup_context_oversized,
-							   sizeof(ReorderBufferTupleBuf) +
-							   MAXIMUM_ALIGNOF + alloc_len);
-		tuple->alloc_tuple_size = alloc_len;
-		tuple->tuple.t_data = ReorderBufferTupleBufData(tuple);
-	}
+	tuple = (ReorderBufferTupleBuf *)
+		MemoryContextAlloc(rb->tup_context,
+						   sizeof(ReorderBufferTupleBuf) +
+						   MAXIMUM_ALIGNOF + alloc_len);
+	tuple->alloc_tuple_size = alloc_len;
+	tuple->tuple.t_data = ReorderBufferTupleBufData(tuple);
 
 	return tuple;
 }

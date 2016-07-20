@@ -143,6 +143,13 @@ extern MemoryContext SlabContextCreate(MemoryContext parent,
 
 extern void SlabAutodestruct(MemoryContext context);
 
+/* genslab.c */
+extern MemoryContext GenSlabContextCreate(MemoryContext parent,
+					  const char *name,
+					  Size blockSize,
+					  Size chunkSize,
+					  int maxAllocations);
+
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts
  * that might hold quite a lot of data.

@@ -900,6 +900,11 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a <= 49 AND b > 49;
 
    </para>
 
+   <para>
+    For additional information about multivariate MCV lists, see
+    <filename>src/backend/utils/mvstats/README.mcv</>.
+   </para>
+
   </sect2>
 
  </sect1>

@@ -523,8 +523,6 @@ SlabAlloc(MemoryContext context, Size size)
 		if (block == NULL)
 			return NULL;
 
-		memset(block, 0, set->blockSize);
-
 		block->slab = set;
 		block->nfree = set->chunksPerBlock;
 		block->prev = NULL;
@@ -534,6 +532,9 @@ SlabAlloc(MemoryContext context, Size size)
 		/* the free bitmap is placed at the end */
 		block->bitmapptr
 			= ((char *) block) + set->blockSize - ((set->chunksPerBlock + 7) / 8);
+
+		/* we need to reset the free bitmap */
+		memset(block->bitmapptr, 0, ((set->chunksPerBlock + 7) / 8));
 
 		/*
 		 * And add it to the last freelist with all chunks empty (we know

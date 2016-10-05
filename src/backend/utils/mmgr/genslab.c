@@ -229,17 +229,24 @@ GenSlabAlloc(MemoryContext context, Size size)
 		 */
 
 		/* compute the new chunk size */
-		Size chunkSize = (1.5 * set->nbytes) / set->nallocations;
+		set->chunkSize = (1.5 * set->nbytes) / set->nallocations;
 
-		/* mark for autodestruction */
+		/*
+		 * We don't allow chunk size to exceed ALLOCSET_SEPARATE_THRESHOLD
+		 * (8kB), as in that case AllocSet uses a separately, with constant
+		 * allocation overhead.
+		 */
+		set->chunkSize = Min(set->chunkSize, ALLOCSET_SEPARATE_THRESHOLD);
+
+		/* mark the old Slab context for autodestruction (and replace it) */
 		SlabAutodestruct(set->slab);
 
 		set->slab = SlabContextCreate((MemoryContext)set,
 									  "slab",
 									  set->blockSize,
-									  chunkSize);
+									  set->chunkSize);
 
-		set->chunkSize = chunkSize;
+		/* reset the counters */
 		set->nallocations = 0;
 		set->nbytes = 0;
 	}

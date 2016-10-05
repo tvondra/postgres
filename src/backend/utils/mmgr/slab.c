@@ -41,6 +41,11 @@
  *	a significant number of lookups in many common usage patters. In the worst
  *	case this performs as if the pointer was not maintained.
  *
+ *	We cache indexes of the first empty chunk on each block (firstFreeChunk),
+ *	and freelist index for blocks with least free chunks (minFreeChunks), so
+ *	that we don't have to search the freelist and block on every SlabAlloc()
+ *	call, which is quite expensive.
+ *
  *
  *	About CLOBBER_FREED_MEMORY:
  *
@@ -126,7 +131,7 @@ typedef struct SlabContext
 	Size		fullChunkSize;	/* chunk size including header and alignment */
 	Size		blockSize;		/* block size */
 	int			chunksPerBlock;	/* number of chunks per block */
-	int			minFreeCount;	/* min number of free chunks in any block */
+	int			minFreeChunks;	/* min number of free chunks in any block */
 	int			nblocks;		/* number of blocks allocated */
 	bool		autodestruct;	/* destruct after freeing the last block */
 	/* Info about storage allocated in this context: */
@@ -342,7 +347,7 @@ SlabContextCreate(MemoryContext parent,
 	/* chunk, including SLAB header (both addresses nicely aligned) */
 	fullChunkSize = MAXALIGN(sizeof(SlabChunkData) + MAXALIGN(chunkSize));
 
-	/* make sure the block can store at least one chunk (with 1B for a bitmap)? */
+	/* make sure the block can store at least one chunk (plus a bitmap) */
 	if (blockSize - sizeof(SlabChunkData) < fullChunkSize + 1)
 		elog(ERROR, "block size %ld for slab is too small for chunks %ld",
 					blockSize, chunkSize);
@@ -370,7 +375,7 @@ SlabContextCreate(MemoryContext parent,
 	set->fullChunkSize = fullChunkSize;
 	set->chunksPerBlock = chunksPerBlock;
 	set->nblocks = 0;
-	set->minFreeCount = 0;
+	set->minFreeChunks = 0;
 	set->autodestruct = false;
 
 	return (MemoryContext) set;
@@ -431,7 +436,7 @@ SlabReset(MemoryContext context)
 		}
 	}
 
-	set->minFreeCount = 0;
+	set->minFreeChunks = 0;
 	set->autodestruct = false;
 
 	Assert(set->nblocks == 0);
@@ -502,10 +507,11 @@ SlabAlloc(MemoryContext context, Size size)
 	SlabBlock	block;
 	SlabChunk	chunk;
 	int			idx;
+	int			nfree_old;
 
 	AssertArg(SlabIsValid(set));
 
-	Assert((set->minFreeCount >= 0) && (set->minFreeCount < set->chunksPerBlock));
+	Assert((set->minFreeChunks >= 0) && (set->minFreeChunks < set->chunksPerBlock));
 
 	/* make sure we only allow correct request size */
 	if (size != set->chunkSize)
@@ -515,8 +521,11 @@ SlabAlloc(MemoryContext context, Size size)
 	/*
 	 * If there are no free chunks in any existing block, create a new block
 	 * and put it to the last freelist bucket.
+	 *
+	 * (set->minFreeChunks == 0) means there are no blocks with free chunks,
+	 * thanks to how minFreeChunks is updated at the end of SlabAlloc().
 	 */
-	if (set->minFreeCount == 0)
+	if (set->minFreeChunks == 0)
 	{
 		block = (SlabBlock)malloc(set->blockSize);
 
@@ -542,22 +551,22 @@ SlabAlloc(MemoryContext context, Size size)
 		 * a new block.
 		 */
 		set->freelist[set->chunksPerBlock] = block;
-		set->minFreeCount = set->chunksPerBlock;
+		set->minFreeChunks = set->chunksPerBlock;
 		set->nblocks += 1;
 	}
 
 	/* grab the block from the freelist (even the new block is there) */
-	block = set->freelist[set->minFreeCount];
+	block = set->freelist[set->minFreeChunks];
 
 	/* make sure we actually got a valid block, with matching nfree */
 	Assert(block != NULL);
-	Assert(set->minFreeCount == block->nfree);
+	Assert(set->minFreeChunks == block->nfree);
 	Assert(block->nfree > 0);
 
 	Assert((char*)block < block->bitmapptr);
 	Assert((char*)block + set->blockSize > block->bitmapptr);
 
-	/* we know the first free chunk */
+	/* we know index of the first free chunk in the block */
 	idx = block->firstFreeChunk;
 
 	/* make sure the chunk index is valid, and that it's marked as empty */
@@ -572,14 +581,21 @@ SlabAlloc(MemoryContext context, Size size)
 									  + (idx * set->fullChunkSize));
 
 	/*
-	 * update the block nfree count, and also the minFreeCount as we've
-	 * decreased nfree for a block with the minimum count
+	 * Update the block nfree count, and also the minFreeChunks as we've
+	 * decreased nfree for a block with the minimum number of free chunks
+	 * (because that's how we chose the block).
 	 */
+	nfree_old = block->nfree;
 	block->nfree--;
-	set->minFreeCount = block->nfree;
+	set->minFreeChunks = block->nfree;
 
-	/* but we need to find the next one, for the next alloc call (unless the
-	 * block just got full, in that case simply set it to -1 */
+	/*
+	 * We need to update index of the next free chunk on the block. If we
+	 * used the last free chunk on this block, set it to chunksPerBlock
+	 * (which is not a valid chunk index). Otherwise look for the next
+	 * chunk - we know that it has to be above the current firstFreeChunk
+	 * value, thanks to how we maintain firstFreeChunk here and in SlabFree().
+	 */
 	if (block->nfree == 0)
 		block->firstFreeChunk = set->chunksPerBlock;
 	else
@@ -599,20 +615,25 @@ SlabAlloc(MemoryContext context, Size size)
 		Assert(block->firstFreeChunk != set->chunksPerBlock);
 	}
 
-	/* move the block to the right place in the freelist */
-	move_in_freelist(set, block, (block->nfree + 1));
+	/* move the whole block to the right place in the freelist */
+	move_in_freelist(set, block, nfree_old);
 
-	/* but if the minimum is 0, we need to look for a new one */
-	if (set->minFreeCount == 0)
+	/*
+	 * And finally update minFreeChunks, i.e. the index to the block with the
+	 * lowest number of free chunks. We only need to do that when the block
+	 * got full (otherwise we know the current block is the right one).
+	 * We'll simply walk the freelist until we find a non-empty entry.
+	 */
+	if (set->minFreeChunks == 0)
 		for (idx = 1; idx <= set->chunksPerBlock; idx++)
 			if (set->freelist[idx])
 			{
-				set->minFreeCount = idx;
+				set->minFreeChunks = idx;
 				break;
 			}
 
-	if (set->minFreeCount == set->chunksPerBlock)
-		set->minFreeCount = 0;
+	if (set->minFreeChunks == set->chunksPerBlock)
+		set->minFreeChunks = 0;
 
 	/* Prepare to initialize the chunk header. */
 	VALGRIND_MAKE_MEM_UNDEFINED(chunk, SLAB_CHUNK_USED);
@@ -687,21 +708,21 @@ SlabFree(MemoryContext context, void *pointer)
 	/* now decide what to do with the block */
 
 	/*
-	 * See if we need to update the minFreeCount field for the set - we only
+	 * See if we need to update the minFreeChunks field for the set - we only
 	 * need to do that if the block had that number of free chunks before we
 	 * freed one. In that case, we check if there still are blocks with that
 	 * number of free chunks - we can simply check if the chunk has siblings.
 	 * Otherwise we simply increment the value by one, as the new block is
 	 * still the one with minimum free chunks (even without the one chunk).
 	 */
-	if (set->minFreeCount == (block->nfree-1))
+	if (set->minFreeChunks == (block->nfree-1))
 		if ((block->prev == NULL) && (block->next == NULL)) /* no other blocks */
 		{
 			/* but if we made the block entirely free, we'll free it */
 			if (block->nfree == set->chunksPerBlock)
-				set->minFreeCount = 0;
+				set->minFreeChunks = 0;
 			else
-				set->minFreeCount++;
+				set->minFreeChunks++;
 		}
 
 	/* remove the block from a freelist */

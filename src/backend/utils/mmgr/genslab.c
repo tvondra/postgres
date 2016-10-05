@@ -244,6 +244,10 @@ GenSlabAlloc(MemoryContext context, Size size)
 		set->nbytes = 0;
 	}
 
+	/* increment the auto-tuning counters */
+	set->nallocations += 1;
+	set->nbytes += size;
+
 	if (size <= set->chunkSize)
 		return MemoryContextAlloc(set->slab, set->chunkSize);
 	else

@@ -254,6 +254,7 @@ ReorderBufferAllocate(void)
 	buffer->tup_context = GenSlabContextCreate(new_ctx,
 									"TuplesSlab",
 									SLAB_LARGE_BLOCK_SIZE,
+									1024,
 									sizeof(ReorderBufferTupleBuf) +
 									MAXIMUM_ALIGNOF + MaxHeapTupleSize,
 									TUPLES_PER_GENERATION);

@@ -58,8 +58,9 @@ typedef struct GenSlabContext
 	MemoryContext	aset;
 
 	/* SLAB parameters */
-	Size		blockSize;		/* block size */
-	Size		chunkSize;		/* chunk size */
+	Size		chunkSize;		/* current chunk size */
+	Size		minBlockSize;	/* minimum Slab block size */
+	Size		minChunkCount;	/* minimum chunks per block */
 
 	/* counters used for tuning chunk size */
 
@@ -120,8 +121,9 @@ static MemoryContextMethods GenSlabMethods = {
 MemoryContext
 GenSlabContextCreate(MemoryContext parent,
 					  const char *name,
-					  Size blockSize,
-					  Size chunkSize,
+					  Size minBlockSize,
+					  Size minChunkCount,
+					  Size initChunkSize,
 					  int maxAllocations)
 {
 	GenSlab	set;
@@ -133,11 +135,19 @@ GenSlabContextCreate(MemoryContext parent,
 										parent,
 										name);
 
+	set->chunkSize = initChunkSize;
+	set->minBlockSize = minBlockSize;
+	set->minChunkCount = minChunkCount;
+
+	set->nbytes = 0;
+	set->nallocations = 0;
+	set->maxallocations = maxAllocations;
+
 	/* the default context */
 	set->slab = SlabContextCreate((MemoryContext)set,
-								  "slab",
-								  blockSize,
-								  chunkSize);
+					"slab",
+					SlabMinBlockSize(initChunkSize, minChunkCount, minBlockSize),
+					initChunkSize);
 
 	/*
 	 * TODO Maybe we could set the parameters so that all requests exceeding
@@ -152,11 +162,6 @@ GenSlabContextCreate(MemoryContext parent,
 									 ALLOCSET_DEFAULT_MINSIZE,
 									 ALLOCSET_DEFAULT_INITSIZE,
 									 ALLOCSET_DEFAULT_MAXSIZE);
-
-	set->blockSize = blockSize;
-	set->nbytes = 0;
-	set->nallocations = 0;
-	set->maxallocations = maxAllocations;
 
 	return (MemoryContext) set;
 }
@@ -222,6 +227,8 @@ GenSlabAlloc(MemoryContext context, Size size)
 	/* do we need to auto-tune the SLAB chunk size */
 	if (set->nallocations > set->maxallocations)
 	{
+		Size blockSize;
+
 		/*
 		 * TODO we could also assume the requests follow normal distribution,
 		 * computing stddev and then computing a chosen percentile (e.g. 0.95).
@@ -238,12 +245,16 @@ GenSlabAlloc(MemoryContext context, Size size)
 		 */
 		set->chunkSize = Min(set->chunkSize, ALLOCSET_SEPARATE_THRESHOLD);
 
+		blockSize = SlabMinBlockSize(set->chunkSize,
+									 set->minChunkCount,
+									 set->minBlockSize);
+
 		/* mark the old Slab context for autodestruction (and replace it) */
 		SlabAutodestruct(set->slab);
 
 		set->slab = SlabContextCreate((MemoryContext)set,
 									  "slab",
-									  set->blockSize,
+									  blockSize,
 									  set->chunkSize);
 
 		/* reset the counters */

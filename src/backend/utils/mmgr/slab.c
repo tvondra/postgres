@@ -3,8 +3,8 @@
  * slab.c
  *	  SLAB allocator definitions.
  *
- * SLAB is a custom memory context MemoryContext implementation designed for
- * cases of equally-sized objects.
+ * SLAB is a custom MemoryContext implementation designed for cases of
+ * equally-sized objects.
  *
  *
  * Portions Copyright (c) 2016, PostgreSQL Global Development Group
@@ -16,7 +16,7 @@
  *	The constant allocation size allows significant simplification and various
  *	optimizations that are not possible in AllocSet. Firstly, we can get rid
  *	of the doubling and carve the blocks into chunks of exactly the right size
- *	(plus alignment), now wasting memory.
+ *	(plus alignment), not wasting memory.
  *
  *	The information about free chunks is maintained both at the block level and
  *	global (context) level. This is possible as the chunk size (and thus also
@@ -662,7 +662,7 @@ SlabFree(MemoryContext context, void *pointer)
 				 set->header.name, chunk);
 #endif
 
-	/* compute index wrt to block start */
+	/* compute index of the chunk with respect to block start */
 	idx = ((char*)chunk - ((char*)block + sizeof(SlabBlockData))) / set->fullChunkSize;
 
 	Assert((block->bitmapptr[idx/8] & (0x01 << (idx % 8))));

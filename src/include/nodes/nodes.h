@@ -277,6 +277,7 @@ typedef enum NodeTag
 	T_AllocSetContext,
 	T_SlabContext,
 	T_GenSlabContext,
+	T_GenContext,
 
 	/*
 	 * TAGS FOR VALUE NODES (value.h)

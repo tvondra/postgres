@@ -251,13 +251,9 @@ ReorderBufferAllocate(void)
 									SLAB_DEFAULT_BLOCK_SIZE,
 									sizeof(ReorderBufferTXN));
 
-	buffer->tup_context = GenSlabContextCreate(new_ctx,
-									"TuplesSlab",
-									SLAB_LARGE_BLOCK_SIZE,
-									1024,
-									sizeof(ReorderBufferTupleBuf) +
-									MAXIMUM_ALIGNOF + MaxHeapTupleSize,
-									TUPLES_PER_GENERATION);
+	buffer->tup_context = GenContextCreate(new_ctx,
+									"Tuples",
+									SLAB_LARGE_BLOCK_SIZE);
 
 	hash_ctl.keysize = sizeof(TransactionId);
 	hash_ctl.entrysize = sizeof(ReorderBufferTXNByIdEnt);

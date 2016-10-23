@@ -29,6 +29,7 @@
 #include "catalog/heap.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_mv_statistic.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -41,7 +42,9 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -63,7 +66,7 @@ static List *get_relation_constraints(PlannerInfo *root,
 						 bool include_notnull);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 				  Relation heapRelation);
-
+static List *get_relation_statistics(RelOptInfo *rel, Relation relation);
 
 /*
  * get_relation_info -
@@ -396,6 +399,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	}
 
 	rel->indexlist = indexinfos;
+
+	rel->mvstatlist = get_relation_statistics(rel, relation);
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
@@ -1250,6 +1255,71 @@ get_relation_constraints(PlannerInfo *root,
 	return result;
 }
 
+/*
+ * get_relation_statistics
+ *
+ * Retrieve multivariate statistics defined on the table.
+ *
+ * Returns a List (possibly empty) of MVStatisticInfo objects describing
+ * the statistics.  Only attributes needed for selecting statistics are
+ * retrieved (columns covered by the statistics, etc.).
+ */
+static List *
+get_relation_statistics(RelOptInfo *rel, Relation relation)
+{
+	List	   *mvstatoidlist;
+	ListCell   *l;
+	List	   *stainfos = NIL;
+
+	mvstatoidlist = RelationGetMVStatList(relation);
+
+	foreach(l, mvstatoidlist)
+	{
+		ArrayType  *arr;
+		Datum		adatum;
+		bool		isnull;
+		Oid			mvoid = lfirst_oid(l);
+		Form_pg_mv_statistic mvstat;
+		MVStatisticInfo *info;
+
+		HeapTuple	htup = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(mvoid));
+
+		mvstat = (Form_pg_mv_statistic) GETSTRUCT(htup);
+
+		/* unavailable stats are not interesting for the planner */
+		if (mvstat->ndist_built)
+		{
+			info = makeNode(MVStatisticInfo);
+
+			info->mvoid = mvoid;
+			info->rel = rel;
+
+			/* enabled statistics */
+			info->ndist_enabled = mvstat->ndist_enabled;
+
+			/* built/available statistics */
+			info->ndist_built = mvstat->ndist_built;
+
+			/* stakeys */
+			adatum = SysCacheGetAttr(MVSTATOID, htup,
+								  Anum_pg_mv_statistic_stakeys, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+
+			info->stakeys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+											ARR_DIMS(arr)[0]);
+
+			stainfos = lcons(info, stainfos);
+		}
+
+		ReleaseSysCache(htup);
+	}
+
+	list_free(mvstatoidlist);
+
+	return stainfos;
+}
 
 /*
  * relation_excluded_by_constraints

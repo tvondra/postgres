@@ -40,6 +40,7 @@
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
 #include "catalog/pg_largeobject_metadata.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -5126,6 +5127,32 @@ pg_subscription_ownercheck(Oid sub_oid, Oid roleid)
 				 errmsg("subscription with OID %u does not exist", sub_oid)));
 
 	ownerId = ((Form_pg_subscription) GETSTRUCT(tuple))->subowner;
+
+	ReleaseSysCache(tuple);
+
+	return has_privs_of_role(roleid, ownerId);
+}
+
+/*
+ * Ownership check for a multivariate statistics (specified by OID).
+ */
+bool
+pg_statistics_ownercheck(Oid stat_oid, Oid roleid)
+{
+	HeapTuple	tuple;
+	Oid			ownerId;
+
+	/* Superusers bypass all permission checking. */
+	if (superuser_arg(roleid))
+		return true;
+
+	tuple = SearchSysCache1(MVSTATOID, ObjectIdGetDatum(stat_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("statistics with OID %u do not exist", stat_oid)));
+
+	ownerId = ((Form_pg_mv_statistic) GETSTRUCT(tuple))->staowner;
 
 	ReleaseSysCache(tuple);
 

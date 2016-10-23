@@ -112,6 +112,7 @@ static event_trigger_support_data event_trigger_support[] = {
 	{"SCHEMA", true},
 	{"SEQUENCE", true},
 	{"SERVER", true},
+	{"STATISTICS", true},
 	{"SUBSCRIPTION", true},
 	{"TABLE", true},
 	{"TABLESPACE", false},
@@ -1111,6 +1112,7 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_SCHEMA:
 		case OBJECT_SEQUENCE:
 		case OBJECT_SUBSCRIPTION:
+		case OBJECT_STATISTICS:
 		case OBJECT_TABCONSTRAINT:
 		case OBJECT_TABLE:
 		case OBJECT_TRANSFORM:
@@ -1176,6 +1178,7 @@ EventTriggerSupportsObjectClass(ObjectClass objclass)
 		case OCLASS_PUBLICATION:
 		case OCLASS_PUBLICATION_REL:
 		case OCLASS_SUBSCRIPTION:
+		case OCLASS_STATISTICS:
 			return true;
 	}
 

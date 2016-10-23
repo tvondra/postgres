@@ -116,3 +116,6 @@ test: event_trigger
 
 # run stats by itself because its delay may be insufficient under heavy load
 test: stats
+
+# run tests of multivariate stats
+test: mv_ndistinct

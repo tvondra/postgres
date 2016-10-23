@@ -272,6 +272,7 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
+	T_MVStatisticInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
@@ -416,6 +417,7 @@ typedef enum NodeTag
 	T_CreateSubscriptionStmt,
 	T_AlterSubscriptionStmt,
 	T_DropSubscriptionStmt,
+	T_CreateStatsStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)

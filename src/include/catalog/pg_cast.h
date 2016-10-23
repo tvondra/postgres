@@ -260,6 +260,10 @@ DATA(insert (  3343	 17    0 i b ));
 /* pg_dependencies can be coerced to, but not from, bytea */
 DATA(insert (  3353	 17    0 i b ));
 
+/* pg_mcv_list can be coerced to, but not from, text */
+DATA(insert (  441	 25    0 i b ));
+
+
 /*
  * Datetime category
  */

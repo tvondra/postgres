@@ -19,6 +19,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 
+#include "utils/bytea.h"
 #include "utils/lsyscache.h"
 
 #include "common.h"
@@ -1123,4 +1124,66 @@ pg_mv_mcv_items(PG_FUNCTION_ARGS)
 	{
 		SRF_RETURN_DONE(funcctx);
 	}
+}
+
+/*
+ * pg_mcv_list_in		- input routine for type PG_MCV_LIST.
+ *
+ * pg_mcv_list is real enough to be a table column, but it has no operations
+ * of its own, and disallows input too
+ *
+ * XXX This is inspired by what pg_node_tree does.
+ */
+Datum
+pg_mcv_list_in(PG_FUNCTION_ARGS)
+{
+	/*
+	 * pg_node_list stores the data in binary form and parsing text input is
+	 * not needed, so disallow this.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_mcv_list")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+
+/*
+ * pg_mcv_list_out		- output routine for type PG_MCV_LIST.
+ *
+ * MCV lists are serialized into a bytea value, so we simply call byteaout()
+ * to serialize the value into text. But it'd be nice to serialize that into
+ * a meaningful representation (e.g. for inspection by people).
+ *
+ * FIXME not implemented yet, returning dummy value
+ */
+Datum
+pg_mcv_list_out(PG_FUNCTION_ARGS)
+{
+	return byteaout(fcinfo);
+}
+
+/*
+ * pg_mcv_list_recv		- binary input routine for type PG_MCV_LIST.
+ */
+Datum
+pg_mcv_list_recv(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_mcv_list")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_mcv_list_send		- binary output routine for type PG_MCV_LIST.
+ *
+ * XXX MCV lists are serialized into a bytea value, so let's just send that.
+ */
+Datum
+pg_mcv_list_send(PG_FUNCTION_ARGS)
+{
+	return byteasend(fcinfo);
 }

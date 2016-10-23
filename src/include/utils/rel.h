@@ -62,6 +62,7 @@ typedef struct RelationData
 	bool		rd_isvalid;		/* relcache entry is valid */
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
+	bool		rd_mvstatvalid; /* state of rd_mvstatlist: true/false */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -98,6 +99,9 @@ typedef struct RelationData
 	List	   *rd_indexlist;	/* list of OIDs of indexes on relation */
 	Oid			rd_oidindex;	/* OID of unique index on OID, if any */
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
+
+	/* data managed by RelationGetMVStatList: */
+	List	   *rd_mvstatlist;	/* list of OIDs of multivariate stats */
 
 	/* data managed by RelationGetIndexAttrBitmap: */
 	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */

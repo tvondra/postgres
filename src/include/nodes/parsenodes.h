@@ -603,6 +603,16 @@ typedef struct ColumnDef
 	int			location;		/* parse location, or -1 if none/unknown */
 } ColumnDef;
 
+typedef struct CreateStatsStmt
+{
+	NodeTag		type;
+	List	   *defnames;		/* qualified name (list of Value strings) */
+	RangeVar   *relation;		/* relation to build statistics on */
+	List	   *keys;			/* String nodes naming referenced column(s) */
+	bool		if_not_exists;	/* do nothing if statistics already exists */
+} CreateStatsStmt;
+
+
 /*
  * TableLikeClause - CREATE TABLE ( ... LIKE ... ) clause
  */
@@ -1414,6 +1424,7 @@ typedef enum ObjectType
 	OBJECT_RULE,
 	OBJECT_SCHEMA,
 	OBJECT_SEQUENCE,
+	OBJECT_STATISTICS,
 	OBJECT_TABCONSTRAINT,
 	OBJECT_TABLE,
 	OBJECT_TABLESPACE,

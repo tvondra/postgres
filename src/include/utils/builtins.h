@@ -613,6 +613,10 @@ extern Datum pg_ddl_command_in(PG_FUNCTION_ARGS);
 extern Datum pg_ddl_command_out(PG_FUNCTION_ARGS);
 extern Datum pg_ddl_command_recv(PG_FUNCTION_ARGS);
 extern Datum pg_ddl_command_send(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_in(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_out(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_recv(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_send(PG_FUNCTION_ARGS);
 
 /* regexp.c */
 extern Datum nameregexeq(PG_FUNCTION_ARGS);

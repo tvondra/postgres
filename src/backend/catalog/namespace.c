@@ -4246,3 +4246,54 @@ pg_is_other_temp_schema(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(isOtherTempNamespace(oid));
 }
+
+Oid
+get_statistics_oid(List *names, bool missing_ok)
+{
+	char	   *schemaname;
+	char	   *stats_name;
+	Oid			namespaceId;
+	Oid			stats_oid = InvalidOid;
+	ListCell   *l;
+
+	/* deconstruct the name list */
+	DeconstructQualifiedName(names, &schemaname, &stats_name);
+
+	if (schemaname)
+	{
+		/* use exact schema given */
+		namespaceId = LookupExplicitNamespace(schemaname, missing_ok);
+		if (missing_ok && !OidIsValid(namespaceId))
+			stats_oid = InvalidOid;
+		else
+			stats_oid = GetSysCacheOid2(MVSTATNAMENSP,
+										PointerGetDatum(stats_name),
+										ObjectIdGetDatum(namespaceId));
+	}
+	else
+	{
+		/* search for it in search path */
+		recomputeNamespacePath();
+
+		foreach(l, activeSearchPath)
+		{
+			namespaceId = lfirst_oid(l);
+
+			if (namespaceId == myTempNamespace)
+				continue;		/* do not look in temp namespace */
+			stats_oid = GetSysCacheOid2(MVSTATNAMENSP,
+										PointerGetDatum(stats_name),
+										ObjectIdGetDatum(namespaceId));
+			if (OidIsValid(stats_oid))
+				break;
+		}
+	}
+
+	if (!OidIsValid(stats_oid) && !missing_ok)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("statistics \"%s\" does not exist",
+						NameListToString(names))));
+
+	return stats_oid;
+}

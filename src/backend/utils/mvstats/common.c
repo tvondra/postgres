@@ -82,6 +82,7 @@ build_mv_stats(Relation onerel, double totalrows,
 		/* check allowed number of dimensions */
 		Assert((attrs->dim1 >= 2) && (attrs->dim1 <= MVSTATS_MAX_DIMENSIONS));
 
+		/* compute ndistinct coefficients */
 		if (stat->ndist_enabled)
 			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
 

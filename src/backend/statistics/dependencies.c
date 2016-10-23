@@ -309,6 +309,10 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
  *	   (c) -> b				  (c,a) -> b
  *	   (c) -> a				  (c,b) -> a
  *	   (b) -> a				  (b,c) -> a
+ *
+ * XXX Currently this builds redundant dependencies, becuse (a,b => c) and
+ * (b,a => c) is exactly the same thing, but both versions are generated
+ * and stored in the statistics.
  */
 MVDependencies
 build_ext_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
@@ -519,6 +523,70 @@ deserialize_ext_dependencies(bytea *data)
 	Assert(tmp == ((char *) data + VARSIZE_ANY(data)));
 
 	return dependencies;
+}
+
+/*
+ * dependency_is_fully_matched
+ *		checks that a functional dependency is fully matched given clauses on
+ * 		attributes (assuming the clauses are suitable equality clauses)
+ */
+bool
+dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
+							int16 *attmap)
+{
+	int j;
+
+	/*
+	 * Check that the dependency actually is fully covered by clauses. We
+	 * have to translate all attribute numbers, as those are referenced
+	 */
+	for (j = 0; j < dependency->nattributes; j++)
+	{
+		int attnum = attmap[dependency->attributes[j]];
+
+		if (! bms_is_member(attnum, attnums))
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * dependency_implies_attribute
+ *		check that the attnum matches is implied by the functional dependency
+ */
+bool
+dependency_implies_attribute(MVDependency dependency, AttrNumber attnum,
+							 int16 *attmap)
+{
+	if (attnum == attmap[dependency->attributes[dependency->nattributes-1]])
+		return true;
+
+	return false;
+}
+
+MVDependencies
+load_ext_dependencies(Oid mvoid)
+{
+	bool		isnull = false;
+	Datum		deps;
+
+	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
+	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+
+#ifdef USE_ASSERT_CHECKING
+	// Form_pg_statistic_ext mvstat = (Form_pg_statistic_ext) GETSTRUCT(htup);
+	// Assert(mvstat->deps_enabled && mvstat->deps_built);
+#endif
+
+	deps = SysCacheGetAttr(STATEXTOID, htup,
+						   Anum_pg_statistic_ext_stadependencies, &isnull);
+
+	Assert(!isnull);
+
+	ReleaseSysCache(htup);
+
+	return deserialize_ext_dependencies(DatumGetByteaP(deps));
 }
 
 /*

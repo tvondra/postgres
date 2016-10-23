@@ -66,9 +66,13 @@ typedef struct MVDependenciesData
 
 typedef MVDependenciesData *MVDependencies;
 
-
+bool dependency_implies_attribute(MVDependency dependency, AttrNumber attnum,
+								  int16 *attmap);
+bool dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
+								 int16 *attmap);
 
 MVNDistinct		load_ext_ndistinct(Oid mvoid);
+MVDependencies	load_ext_dependencies(Oid mvoid);
 
 bytea *serialize_ext_ndistinct(MVNDistinct ndistinct);
 bytea *serialize_ext_dependencies(MVDependencies dependencies);
@@ -78,11 +82,11 @@ MVNDistinct deserialize_ext_ndistinct(bytea *data);
 MVDependencies deserialize_ext_dependencies(bytea *data);
 
 MVNDistinct build_ext_ndistinct(double totalrows, int numrows, HeapTuple *rows,
-							   int2vector *attrs, VacAttrStats **stats);
+								int2vector *attrs, VacAttrStats **stats);
 
 MVDependencies build_ext_dependencies(int numrows, HeapTuple *rows,
-					  int2vector *attrs,
-					  VacAttrStats **stats);
+									  int2vector *attrs,
+									  VacAttrStats **stats);
 
 void build_ext_stats(Relation onerel, double totalrows,
 			   int numrows, HeapTuple *rows,

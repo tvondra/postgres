@@ -53,12 +53,19 @@ SELECT staenabled, stadependencies
 TRUNCATE functional_dependencies;
 
 -- a => b, a => c, b => c
+-- check explain (expect bitmap index scan, not plain index scan)
 INSERT INTO functional_dependencies
-     SELECT i/10000, i/20000, i/40000 FROM generate_series(1,1000000) s(i);
+     SELECT mod(i,400), mod(i,200), mod(i,100) FROM generate_series(1,30000) s(i);
+
+CREATE INDEX fdeps_idx ON functional_dependencies (a, b);
+
 ANALYZE functional_dependencies;
 
 SELECT staenabled, stadependencies
   FROM pg_statistic_ext WHERE starelid = 'functional_dependencies'::regclass;
+
+EXPLAIN (COSTS off)
+ SELECT * FROM functional_dependencies WHERE a = 10 AND b = 5;
 
 DROP TABLE functional_dependencies;
 
@@ -96,6 +103,7 @@ TRUNCATE functional_dependencies;
 -- a => b, a => c
 INSERT INTO functional_dependencies
      SELECT i/10, i/150, i/200 FROM generate_series(1,10000) s(i);
+
 ANALYZE functional_dependencies;
 
 SELECT staenabled, stadependencies
@@ -104,12 +112,19 @@ SELECT staenabled, stadependencies
 TRUNCATE functional_dependencies;
 
 -- a => b, a => c, b => c
+-- check explain (expect bitmap index scan, not plain index scan)
 INSERT INTO functional_dependencies
-     SELECT i/10000, i/20000, i/40000 FROM generate_series(1,1000000) s(i);
+     SELECT mod(i,400), mod(i,200), mod(i,100) FROM generate_series(1,30000) s(i);
+
+CREATE INDEX fdeps_idx ON functional_dependencies (a, b);
+
 ANALYZE functional_dependencies;
 
 SELECT staenabled, stadependencies
   FROM pg_statistic_ext WHERE starelid = 'functional_dependencies'::regclass;
+
+EXPLAIN (COSTS off)
+ SELECT * FROM functional_dependencies WHERE a = '10' AND b = '5';
 
 DROP TABLE functional_dependencies;
 

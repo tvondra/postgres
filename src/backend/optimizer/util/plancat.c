@@ -1293,6 +1293,10 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->mvoid = mvoid;
 			info->rel = rel;
 
+			/* FIXME assume everything is enabled */
+			info->ndist_enabled = true;
+			info->deps_enabled = true;
+
 			/* built/available statistics */
 			info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
 			info->deps_built = stats_are_built(htup, STATS_EXT_DEPENDENCIES);

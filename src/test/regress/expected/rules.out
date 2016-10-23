@@ -1380,6 +1380,8 @@ pg_mv_stats| SELECT n.nspname AS schemaname,
     c.relname AS tablename,
     s.staname,
     s.stakeys AS attnums,
+    length(s.stadeps) AS depsbytes,
+    pg_mv_stats_dependencies_info(s.stadeps) AS depsinfo,
     s.standcoeff AS ndcoeff
    FROM ((pg_mv_statistic s
      JOIN pg_class c ON ((c.oid = s.starelid)))

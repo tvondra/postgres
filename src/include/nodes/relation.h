@@ -674,9 +674,11 @@ typedef struct MVStatisticInfo
 	RelOptInfo *rel;			/* back-link to index's table */
 
 	/* enabled statistics */
+	bool		deps_enabled;	/* functional dependencies enabled */
 	bool		ndist_enabled;	/* ndistinct coefficient enabled */
 
 	/* built/available statistics */
+	bool		deps_built;		/* functional dependencies built */
 	bool		ndist_built;	/* ndistinct coefficient built */
 
 	/* columns in the statistics (attnums) */

@@ -124,6 +124,15 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
    <variablelist>
 
    <varlistentry>
+    <term><literal>dependencies</> (<type>boolean</>)</term>
+    <listitem>
+     <para>
+      Enables functional dependencies for the statistics.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><literal>ndistinct</> (<type>boolean</>)</term>
     <listitem>
      <para>

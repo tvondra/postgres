@@ -49,6 +49,7 @@ build_mv_stats(Relation onerel, double totalrows,
 	{
 		int			j;
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
+		MVDependencies deps = NULL;
 		double		ndist = -1;
 
 		VacAttrStats **stats = NULL;
@@ -82,11 +83,14 @@ build_mv_stats(Relation onerel, double totalrows,
 		/* check allowed number of dimensions */
 		Assert((attrs->dim1 >= 2) && (attrs->dim1 <= MVSTATS_MAX_DIMENSIONS));
 
+		/* analyze functional dependencies between the columns */
+		deps = build_mv_dependencies(numrows, rows, attrs, stats);
+
 		if (stat->ndist_enabled)
 			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
 
 		/* store the statistics in the catalog */
-		update_mv_stats(stat->mvoid, ndist, attrs, stats);
+		update_mv_stats(stat->mvoid, deps, ndist, attrs, stats);
 	}
 }
 
@@ -166,6 +170,8 @@ list_mv_stats(Oid relid)
 		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
 		info->ndist_enabled = stats->ndist_enabled;
 		info->ndist_built = stats->ndist_built;
+		info->deps_enabled = stats->deps_enabled;
+		info->deps_built = stats->deps_built;
 
 		result = lappend(result, info);
 	}
@@ -183,7 +189,7 @@ list_mv_stats(Oid relid)
 }
 
 void
-update_mv_stats(Oid mvoid, double ndistcoeff,
+update_mv_stats(Oid mvoid, MVDependencies dependencies, double ndistcoeff,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -198,17 +204,32 @@ update_mv_stats(Oid mvoid, double ndistcoeff,
 	memset(replaces, 0, Natts_pg_mv_statistic * sizeof(bool));
 	memset(values, 0, Natts_pg_mv_statistic * sizeof(Datum));
 
+	/*
+	 * Construct a new pg_mv_statistic tuple - replace only the histogram and
+	 * MCV list, depending whether it actually was computed.
+	 */
+	if (dependencies != NULL)
+	{
+		nulls[Anum_pg_mv_statistic_stadeps - 1] = false;
+		values[Anum_pg_mv_statistic_stadeps - 1]
+			= PointerGetDatum(serialize_mv_dependencies(dependencies));
+	}
+
 	/* always replace the value (either by bytea or NULL) */
+	replaces[Anum_pg_mv_statistic_stadeps - 1] = true;
 	replaces[Anum_pg_mv_statistic_standist - 1] = true;
 
 	/* always change the availability flags */
+	nulls[Anum_pg_mv_statistic_deps_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_ndist_built - 1] = false;
 	nulls[Anum_pg_mv_statistic_stakeys - 1] = false;
 
 	/* use the new attnums, in case we removed some dropped ones */
+	replaces[Anum_pg_mv_statistic_deps_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_ndist_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_stakeys - 1] = true;
 
+	values[Anum_pg_mv_statistic_deps_built - 1] = BoolGetDatum(dependencies != NULL);
 	values[Anum_pg_mv_statistic_ndist_built - 1] = BoolGetDatum(ndistcoeff > 1.0);
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(attrs);
 

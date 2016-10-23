@@ -4307,6 +4307,17 @@
      </row>
 
      <row>
+      <entry><structfield>hist_enabled</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, histogram will be computed for the combination of columns,
+       covered by the statistics. This does not mean the histogram is already
+       computed, though.
+      </entry>
+     </row>
+
+     <row>
       <entry><structfield>ndist_built</structfield></entry>
       <entry><type>bool</type></entry>
       <entry></entry>
@@ -4332,6 +4343,16 @@
       <entry></entry>
       <entry>
        If true, MCV list is already computed and available for use during query
+       estimation.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>hist_built</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, histogram is already computed and available for use during query
        estimation.
       </entry>
      </row>
@@ -4371,6 +4392,15 @@
       <entry></entry>
       <entry>
        MCV list, serialized as <structname>pg_mcv_list</> type.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>stahist</structfield></entry>
+      <entry><type>pg_histogram</type></entry>
+      <entry></entry>
+      <entry>
+       Histogram, serialized as <structname>pg_histogram</> type.
       </entry>
      </row>
 

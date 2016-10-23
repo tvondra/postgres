@@ -118,4 +118,4 @@ test: event_trigger
 test: stats
 
 # run tests of multivariate stats
-test: mv_ndistinct mv_dependencies mv_mcv
+test: mv_ndistinct mv_dependencies mv_mcv mv_histogram

@@ -71,7 +71,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/* by default build nothing */
 	bool		build_ndistinct = false,
 				build_dependencies = false,
-				build_mcv = false;
+				build_mcv = false,
+				build_histogram = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -172,6 +173,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 			build_dependencies = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "mcv") == 0)
 			build_mcv = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "histogram") == 0)
+			build_histogram = defGetBoolean(opt);
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -180,10 +183,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* Make sure there's at least one statistics type specified. */
-	if (!(build_ndistinct || build_dependencies || build_mcv))
+	if (!(build_ndistinct || build_dependencies || build_mcv || build_histogram))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (ndistinct, dependencies, mcv) requested")));
+				 errmsg("no statistics type (ndistinct, dependencies, mcv, histogram) requested")));
 
 	stakeys = buildint2vector(attnums, numcols);
 
@@ -207,10 +210,12 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(build_ndistinct);
 	values[Anum_pg_mv_statistic_deps_enabled - 1] = BoolGetDatum(build_dependencies);
 	values[Anum_pg_mv_statistic_mcv_enabled - 1] = BoolGetDatum(build_mcv);
+	values[Anum_pg_mv_statistic_hist_enabled - 1] = BoolGetDatum(build_histogram);
 
 	nulls[Anum_pg_mv_statistic_standist - 1] = true;
 	nulls[Anum_pg_mv_statistic_stadeps - 1] = true;
 	nulls[Anum_pg_mv_statistic_stamcv - 1] = true;
+	nulls[Anum_pg_mv_statistic_stahist - 1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

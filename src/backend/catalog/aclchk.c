@@ -48,6 +48,7 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
@@ -5098,6 +5099,32 @@ pg_subscription_ownercheck(Oid sub_oid, Oid roleid)
 				 errmsg("subscription with OID %u does not exist", sub_oid)));
 
 	ownerId = ((Form_pg_subscription) GETSTRUCT(tuple))->subowner;
+
+	ReleaseSysCache(tuple);
+
+	return has_privs_of_role(roleid, ownerId);
+}
+
+/*
+ * Ownership check for a extended statistics (specified by OID).
+ */
+bool
+pg_statistics_ownercheck(Oid stat_oid, Oid roleid)
+{
+	HeapTuple	tuple;
+	Oid			ownerId;
+
+	/* Superusers bypass all permission checking. */
+	if (superuser_arg(roleid))
+		return true;
+
+	tuple = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(stat_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("statistics with OID %u do not exist", stat_oid)));
+
+	ownerId = ((Form_pg_statistic_ext) GETSTRUCT(tuple))->staowner;
 
 	ReleaseSysCache(tuple);
 

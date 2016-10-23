@@ -52,6 +52,7 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_partitioned_table.h"
 #include "catalog/pg_statistic.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_type_fn.h"
@@ -1608,7 +1609,10 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	heap_close(attr_rel, RowExclusiveLock);
 
 	if (attnum > 0)
+	{
 		RemoveStatistics(relid, attnum);
+		RemoveStatisticsExt(relid, attnum);
+	}
 
 	relation_close(rel, NoLock);
 }
@@ -1854,6 +1858,11 @@ heap_drop_with_catalog(Oid relid)
 	 * delete statistics
 	 */
 	RemoveStatistics(relid, 0);
+
+	/*
+	 * delete multi-variate statistics
+	 */
+	RemoveStatisticsExt(relid, 0);
 
 	/*
 	 * delete attribute tuples
@@ -2762,6 +2771,98 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
 	systable_endscan(scan);
 
 	heap_close(pgstatistic, RowExclusiveLock);
+}
+
+
+/*
+ * RemoveStatisticsExt --- remove entries in pg_statistic_ext for a rel
+ *
+ * If attnum is zero, remove all entries for rel; else remove only the one(s)
+ * for that column.
+ */
+void
+RemoveStatisticsExt(Oid relid, AttrNumber attnum)
+{
+	Relation	pgstatisticext;
+	TupleDesc	tupdesc = NULL;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+
+	/*
+	 * When dropping a column, we'll drop statistics with a single remaining
+	 * (undropped column). To do that, we need the tuple descriptor.
+	 *
+	 * We already have the relation locked (as we're running ALTER TABLE ...
+	 * DROP COLUMN), so we'll just get the descriptor here.
+	 */
+	if (attnum != 0)
+	{
+		Relation	rel = relation_open(relid, NoLock);
+
+		/* extended stats are supported on tables and matviews */
+		if (rel->rd_rel->relkind == RELKIND_RELATION ||
+			rel->rd_rel->relkind == RELKIND_MATVIEW)
+			tupdesc = RelationGetDescr(rel);
+
+		relation_close(rel, NoLock);
+	}
+
+	if (tupdesc == NULL)
+		return;
+
+	pgstatisticext = heap_open(StatisticExtRelationId, RowExclusiveLock);
+
+	ScanKeyInit(&key,
+				Anum_pg_statistic_ext_starelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+
+	scan = systable_beginscan(pgstatisticext,
+							  StatisticExtRelidIndexId,
+							  true, NULL, 1, &key);
+
+	/* we must loop even when attnum != 0, in case of inherited stats */
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		delete = true;
+
+		if (attnum != 0)
+		{
+			Datum		adatum;
+			bool		isnull;
+			int			i;
+			int			ncolumns = 0;
+			ArrayType  *arr;
+			int16	   *attnums;
+
+			/* get the columns */
+			adatum = SysCacheGetAttr(STATEXTOID, tuple,
+									 Anum_pg_statistic_ext_stakeys, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+			attnums = (int16 *) ARR_DATA_PTR(arr);
+
+			for (i = 0; i < ARR_DIMS(arr)[0]; i++)
+			{
+				/* count the column unless it's has been / is being dropped */
+				if ((!tupdesc->attrs[attnums[i] - 1]->attisdropped) &&
+					(attnums[i] != attnum))
+					ncolumns += 1;
+			}
+
+			/* delete if there are less than two attributes */
+			delete = (ncolumns < 2);
+		}
+
+		if (delete)
+			simple_heap_delete(pgstatisticext, &tuple->t_self);
+	}
+
+	systable_endscan(scan);
+
+	heap_close(pgstatisticext, RowExclusiveLock);
 }
 
 

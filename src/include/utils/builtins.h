@@ -69,6 +69,12 @@ extern oidvector *buildoidvector(const Oid *oids, int n);
 extern Oid	oidparse(Node *node);
 extern int	oid_cmp(const void *p1, const void *p2);
 
+/* mvdist.c */
+extern Datum pg_ndistinct_in(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_out(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_recv(PG_FUNCTION_ARGS);
+extern Datum pg_ndistinct_send(PG_FUNCTION_ARGS);
+
 /* regexp.c */
 extern char *regexp_fixed_prefix(text *text_re, bool case_insensitive,
 					Oid collation, bool *exact);

@@ -29,6 +29,7 @@
 #include "catalog/heap.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_statistic_ext.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -41,7 +42,10 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/stats.h"
+#include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -63,7 +67,7 @@ static List *get_relation_constraints(PlannerInfo *root,
 						 bool include_notnull);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 				  Relation heapRelation);
-
+static List *get_relation_statistics(RelOptInfo *rel, Relation relation);
 
 /*
  * get_relation_info -
@@ -397,6 +401,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	}
 
 	rel->indexlist = indexinfos;
+
+	rel->statlist = get_relation_statistics(rel, relation);
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
@@ -1251,6 +1257,64 @@ get_relation_constraints(PlannerInfo *root,
 	return result;
 }
 
+/*
+ * get_relation_statistics
+ *
+ * Retrieve extended statistics defined on the table.
+ *
+ * Returns a List (possibly empty) of StatisticExtInfo objects describing
+ * the statistics.  Only attributes needed for selecting statistics are
+ * retrieved (columns covered by the statistics, etc.).
+ */
+static List *
+get_relation_statistics(RelOptInfo *rel, Relation relation)
+{
+	List	   *statoidlist;
+	ListCell   *l;
+	List	   *stainfos = NIL;
+
+	statoidlist = RelationGetStatExtList(relation);
+
+	foreach(l, statoidlist)
+	{
+		ArrayType  *arr;
+		Datum		adatum;
+		bool		isnull;
+		Oid			mvoid = lfirst_oid(l);
+
+		HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+
+		/* unavailable stats are not interesting for the planner */
+		if (stats_are_built(htup, STATS_EXT_NDISTINCT))
+		{
+			StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+			info->mvoid = mvoid;
+			info->rel = rel;
+
+			/* built/available statistics */
+			info->ndist_built = true;
+
+			/* decode the stakeys array */
+			adatum = SysCacheGetAttr(STATEXTOID, htup,
+									 Anum_pg_statistic_ext_stakeys, &isnull);
+			Assert(!isnull);
+
+			arr = DatumGetArrayTypeP(adatum);
+
+			info->stakeys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+											ARR_DIMS(arr)[0]);
+
+			stainfos = lcons(info, stainfos);
+		}
+
+		ReleaseSysCache(htup);
+	}
+
+	list_free(statoidlist);
+
+	return stainfos;
+}
 
 /*
  * relation_excluded_by_constraints

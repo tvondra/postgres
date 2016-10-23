@@ -2726,6 +2726,11 @@ DESCR("current user privilege on any column by rel name");
 DATA(insert OID = 3029 (  has_any_column_privilege	   PGNSP PGUID 12 10 0 0 0 f f f f t f s s 2 0 16 "26 25" _null_ _null_ _null_ _null_ _null_ has_any_column_privilege_id _null_ _null_ _null_ ));
 DESCR("current user privilege on any column by rel oid");
 
+DATA(insert OID = 3376 (  pg_mv_stats_mcvlist_info	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "441" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_mcvlist_info _null_ _null_ _null_ ));
+DESCR("multi-variate statistics: MCV list info");
+DATA(insert OID = 3373 (  pg_mv_mcv_items PGNSP PGUID 12 1 1000 0 0 f f f f t t i s 1 0 2249 "26" "{26,23,1009,1000,701}" "{i,o,o,o,o}" "{oid,index,values,nulls,frequency}" _null_ _null_ pg_mv_mcv_items _null_ _null_ _null_ ));
+DESCR("details about MCV list items");
+
 DATA(insert OID = 3354 (  pg_ndistinct_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3353 "2275" _null_ _null_ _null_ _null_ _null_ pg_ndistinct_in _null_ _null_ _null_ ));
 DESCR("I/O");
 DATA(insert OID = 3355 (  pg_ndistinct_out	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2275 "3353" _null_ _null_ _null_ _null_ _null_ pg_ndistinct_out _null_ _null_ _null_ ));
@@ -2742,6 +2747,15 @@ DESCR("I/O");
 DATA(insert OID = 3361 (  pg_dependencies_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 3358 "2281" _null_ _null_ _null_ _null_ _null_ pg_dependencies_recv _null_ _null_ _null_ ));
 DESCR("I/O");
 DATA(insert OID = 3362 (  pg_dependencies_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "3358" _null_ _null_ _null_ _null_ _null_	pg_dependencies_send _null_ _null_ _null_ ));
+DESCR("I/O");
+
+DATA(insert OID = 442 (  pg_mcv_list_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 441 "2275" _null_ _null_ _null_ _null_ _null_ pg_mcv_list_in _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 443 (  pg_mcv_list_out	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2275 "441" _null_ _null_ _null_ _null_ _null_ pg_mcv_list_out _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 444 (  pg_mcv_list_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 441 "2281" _null_ _null_ _null_ _null_ _null_ pg_mcv_list_recv _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 445 (  pg_mcv_list_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "441" _null_ _null_ _null_ _null_ _null_	pg_mcv_list_send _null_ _null_ _null_ ));
 DESCR("I/O");
 
 DATA(insert OID = 1928 (  pg_stat_get_numscans			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_numscans _null_ _null_ _null_ ));

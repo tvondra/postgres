@@ -188,7 +188,9 @@ CREATE VIEW pg_mv_stats AS
         S.staname AS staname,
         S.stakeys AS attnums,
         length(s.standist::bytea) AS ndistbytes,
-        length(S.stadeps::bytea) AS depsbytes
+        length(S.stadeps::bytea) AS depsbytes,
+        length(S.stamcv::bytea) AS mcvbytes,
+        pg_mv_stats_mcvlist_info(S.stamcv) AS mcvinfo
     FROM (pg_mv_statistic S JOIN pg_class C ON (C.oid = S.starelid))
         LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace);
 

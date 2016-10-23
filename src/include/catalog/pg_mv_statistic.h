@@ -39,10 +39,12 @@ CATALOG(pg_mv_statistic,3381)
 	/* statistics requested to build */
 	bool		ndist_enabled;	/* build ndist coefficient? */
 	bool		deps_enabled;	/* analyze dependencies? */
+	bool		mcv_enabled;	/* build MCV list? */
 
 	/* statistics that are available (if requested) */
 	bool		ndist_built;	/* ndistinct coeff built */
 	bool		deps_built;		/* dependencies were built */
+	bool		mcv_built;		/* MCV list was built */
 
 	/*
 	 * variable-length fields start here, but we allow direct access to
@@ -53,6 +55,7 @@ CATALOG(pg_mv_statistic,3381)
 #ifdef CATALOG_VARLEN
 	pg_ndistinct		standist;		/* ndistinct coeff (serialized) */
 	pg_dependencies		stadeps;		/* dependencies (serialized) */
+	pg_mcv_list			stamcv;			/* MCV list (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;
@@ -68,17 +71,20 @@ typedef FormData_pg_mv_statistic *Form_pg_mv_statistic;
  *		compiler constants for pg_mv_statistic
  * ----------------
  */
-#define Natts_pg_mv_statistic					11
+#define Natts_pg_mv_statistic					14
 #define Anum_pg_mv_statistic_starelid			1
 #define Anum_pg_mv_statistic_staname			2
 #define Anum_pg_mv_statistic_stanamespace		3
 #define Anum_pg_mv_statistic_staowner			4
 #define Anum_pg_mv_statistic_ndist_enabled		5
 #define Anum_pg_mv_statistic_deps_enabled		6
-#define Anum_pg_mv_statistic_ndist_built		7
-#define Anum_pg_mv_statistic_deps_built			8
-#define Anum_pg_mv_statistic_stakeys			9
-#define Anum_pg_mv_statistic_standist			10
-#define Anum_pg_mv_statistic_stadeps			11
+#define Anum_pg_mv_statistic_mcv_enabled		7
+#define Anum_pg_mv_statistic_ndist_built		8
+#define Anum_pg_mv_statistic_deps_built			9
+#define Anum_pg_mv_statistic_mcv_built			10
+#define Anum_pg_mv_statistic_stakeys			11
+#define Anum_pg_mv_statistic_standist			12
+#define Anum_pg_mv_statistic_stadeps			13
+#define Anum_pg_mv_statistic_stamcv				14
 
 #endif   /* PG_MV_STATISTIC_H */

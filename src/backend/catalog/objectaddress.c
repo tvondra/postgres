@@ -39,6 +39,7 @@
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
 #include "catalog/pg_largeobject_metadata.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
@@ -478,6 +479,18 @@ static const ObjectPropertyType ObjectProperty[] =
 		InvalidAttrNumber,
 		-1,
 		true
+	},
+	{
+		MvStatisticRelationId,
+		MvStatisticOidIndexId,
+		MVSTATOID,
+		MVSTATNAMENSP,
+		Anum_pg_mv_statistic_staname,
+		Anum_pg_mv_statistic_stanamespace,
+		Anum_pg_mv_statistic_staowner,
+		InvalidAttrNumber,		/* no ACL (same as relation) */
+		-1,						/* no ACL */
+		true
 	}
 };
 
@@ -696,6 +709,10 @@ static const struct object_type_map
 	/* OCLASS_TRANSFORM */
 	{
 		"transform", OBJECT_TRANSFORM
+	},
+	/* OBJECT_STATISTICS */
+	{
+		"statistics", OBJECT_STATISTICS
 	}
 };
 
@@ -979,6 +996,11 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 			case OBJECT_DEFACL:
 				address = get_object_address_defacl(objname, objargs,
 													missing_ok);
+				break;
+			case OBJECT_STATISTICS:
+				address.classId = MvStatisticRelationId;
+				address.objectId = get_statistics_oid(objname, missing_ok);
+				address.objectSubId = 0;
 				break;
 			default:
 				elog(ERROR, "unrecognized objtype: %d", (int) objtype);
@@ -2336,6 +2358,10 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						 errmsg("must be superuser")));
+			break;
+		case OBJECT_STATISTICS:
+			if (!pg_statistics_ownercheck(address.objectId, roleid))
+				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
 			break;
 		default:
 			elog(ERROR, "unrecognized object type: %d",
@@ -3824,6 +3850,10 @@ getObjectTypeDescription(const ObjectAddress *object)
 			appendStringInfoString(&buffer, "subscription");
 			break;
 
+		case OCLASS_STATISTICS:
+			appendStringInfoString(&buffer, "statistics");
+			break;
+
 		default:
 			appendStringInfo(&buffer, "unrecognized %u", object->classId);
 			break;
@@ -4846,6 +4876,29 @@ getObjectIdentityParts(const ObjectAddress *object,
 					*objname = list_make1(subname);
 				break;
 			}
+
+		case OCLASS_STATISTICS:
+			{
+				HeapTuple	tup;
+				Form_pg_mv_statistic formStatistic;
+				char	   *schema;
+
+				tup = SearchSysCache1(MVSTATOID,
+									  ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(tup))
+					elog(ERROR, "cache lookup failed for statistics %u",
+						 object->objectId);
+				formStatistic = (Form_pg_mv_statistic) GETSTRUCT(tup);
+				schema = get_namespace_name_or_temp(formStatistic->stanamespace);
+				appendStringInfoString(&buffer,
+									   quote_qualified_identifier(schema,
+										   NameStr(formStatistic->staname)));
+				if (objname)
+					*objname = list_make2(schema,
+								   pstrdup(NameStr(formStatistic->staname)));
+				ReleaseSysCache(tup);
+			}
+			break;
 
 		default:
 			appendStringInfo(&buffer, "unrecognized object %u %u %d",

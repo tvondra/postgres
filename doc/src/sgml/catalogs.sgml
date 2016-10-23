@@ -201,6 +201,11 @@
      </row>
 
      <row>
+      <entry><link linkend="catalog-pg-mv-statistic"><structname>pg_mv_statistic</structname></link></entry>
+      <entry>multivariate statistics</entry>
+     </row>
+
+     <row>
       <entry><link linkend="catalog-pg-namespace"><structname>pg_namespace</structname></link></entry>
       <entry>schemas</entry>
      </row>
@@ -4203,6 +4208,109 @@
        <xref linkend="sql-grant"> and
        <xref linkend="sql-revoke">
        for details
+      </entry>
+     </row>
+
+    </tbody>
+   </tgroup>
+  </table>
+ </sect1>
+
+ <sect1 id="catalog-pg-mv-statistic">
+  <title><structname>pg_mv_statistic</structname></title>
+
+  <indexterm zone="catalog-pg-mv-statistic">
+   <primary>pg_mv_statistic</primary>
+  </indexterm>
+
+  <para>
+   The catalog <structname>pg_mv_statistic</structname>
+   holds multivariate statistics about combinations of columns.
+  </para>
+
+  <table>
+   <title><structname>pg_mv_statistic</> Columns</title>
+
+   <tgroup cols="4">
+    <thead>
+     <row>
+      <entry>Name</entry>
+      <entry>Type</entry>
+      <entry>References</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+
+     <row>
+      <entry><structfield>starelid</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal><link linkend="catalog-pg-class"><structname>pg_class</structname></link>.oid</literal></entry>
+      <entry>The table that the described columns belongs to</entry>
+     </row>
+
+     <row>
+      <entry><structfield>staname</structfield></entry>
+      <entry><type>name</type></entry>
+      <entry></entry>
+      <entry>Name of the statistic.</entry>
+     </row>
+
+     <row>
+      <entry><structfield>stanamespace</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal><link linkend="catalog-pg-namespace"><structname>pg_namespace</structname></link>.oid</literal></entry>
+      <entry>
+       The OID of the namespace that contains this statistic
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>staowner</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal><link linkend="catalog-pg-authid"><structname>pg_authid</structname></link>.oid</literal></entry>
+      <entry>Owner of the statistic</entry>
+     </row>
+
+     <row>
+      <entry><structfield>ndist_enabled</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, ndistinct coefficients will be computed for the combination of
+       columns, covered by the statistics. This does not mean the coefficients
+       are already computed, though.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>ndist_built</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, ndistinct coefficients are already computed and available for
+       use during query estimation.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>stakeys</structfield></entry>
+      <entry><type>int2vector</type></entry>
+      <entry><literal><link linkend="catalog-pg-attribute"><structname>pg_attribute</structname></link>.attnum</literal></entry>
+      <entry>
+       This is an array of values that indicate which table columns this
+       statistic covers. For example a value of <literal>1 3</literal> would
+       mean that the first and the third table columns make up the statistic key.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>standist</structfield></entry>
+      <entry><type>pg_ndistinct</type></entry>
+      <entry></entry>
+      <entry>
+       Ndistict coefficients, serialized as <structname>pg_ndistinct</> type.
       </entry>
      </row>
 

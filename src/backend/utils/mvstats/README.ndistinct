@@ -1,0 +1,22 @@
+ndistinct coefficients
+======================
+
+Estimating number of groups in a combination of columns (e.g. for GROUP BY)
+is tricky, and the estimation error is often significant.
+
+The ndistinct coefficients address this by storing ndistinct estimates not
+only for individual columns, but also for (all) combinations of columns.
+So for example given three columns (a,b,c) the statistics will estimate
+ndistinct for (a,b), (a,c), (b,c) and (a,b,c). The per-column estimates
+are already available in pg_statistic.
+
+
+GROUP BY estimation (estimate_num_groups)
+-----------------------------------------
+
+Although ndistinct coefficient might be used for selectivity estimation
+(of equality conditions in WHERE clause), that is not implemented at this
+point.
+
+Instead, ndistinct coefficients are only used in estimate_num_groups() to
+estimate grouped queries.

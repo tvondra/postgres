@@ -6,31 +6,31 @@ CREATE TABLE mv_histogram (
 );
 
 -- unknown column
-CREATE STATISTICS s7 ON mv_histogram (unknown_column) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (unknown_column) FROM mv_histogram;
 
 -- single column
-CREATE STATISTICS s7 ON mv_histogram (a) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a) FROM mv_histogram;
 
 -- single column, duplicated
-CREATE STATISTICS s7 ON mv_histogram (a, a) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, a) FROM mv_histogram;
 
 -- two columns, one duplicated
-CREATE STATISTICS s7 ON mv_histogram (a, a, b) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, a, b) FROM mv_histogram;
 
 -- unknown option
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (unknown_option);
+CREATE STATISTICS s7 WITH (unknown_option) ON (a, b, c) FROM mv_histogram;
 
 -- missing histogram statistics
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (dependencies, max_buckets=200);
+CREATE STATISTICS s7 WITH (dependencies, max_buckets=200) ON (a, b, c) FROM mv_histogram;
 
 -- invalid max_buckets value / too low
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=10);
+CREATE STATISTICS s7 WITH (mcv, max_buckets=10) ON (a, b, c) FROM mv_histogram;
 
 -- invalid max_buckets value / too high
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=100000);
+CREATE STATISTICS s7 WITH (mcv, max_buckets=100000) ON (a, b, c) FROM mv_histogram;
 
 -- correct command
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, b, c) FROM mv_histogram;
 
 -- random data (no functional dependencies)
 INSERT INTO mv_histogram
@@ -85,7 +85,7 @@ CREATE TABLE mv_histogram (
     c TEXT
 );
 
-CREATE STATISTICS s8 ON mv_histogram (a, b, c) WITH (histogram);
+CREATE STATISTICS s8 WITH (histogram) ON (a, b, c) FROM mv_histogram;
 
 -- random data (no functional dependencies)
 INSERT INTO mv_histogram
@@ -158,7 +158,7 @@ CREATE TABLE mv_histogram (
     d TEXT
 );
 
-CREATE STATISTICS s9 ON mv_histogram (a, b, c, d) WITH (histogram);
+CREATE STATISTICS s9 WITH (histogram) ON (a, b, c, d) FROM mv_histogram;
 
 INSERT INTO mv_histogram
      SELECT

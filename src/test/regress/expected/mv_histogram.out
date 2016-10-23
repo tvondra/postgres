@@ -5,31 +5,31 @@ CREATE TABLE mv_histogram (
     c INT
 );
 -- unknown column
-CREATE STATISTICS s7 ON mv_histogram (unknown_column) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (unknown_column) FROM mv_histogram;
 ERROR:  column "unknown_column" referenced in statistics does not exist
 -- single column
-CREATE STATISTICS s7 ON mv_histogram (a) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a) FROM mv_histogram;
 ERROR:  multivariate stats require 2 or more columns
 -- single column, duplicated
-CREATE STATISTICS s7 ON mv_histogram (a, a) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, a) FROM mv_histogram;
 ERROR:  duplicate column name in statistics definition
 -- two columns, one duplicated
-CREATE STATISTICS s7 ON mv_histogram (a, a, b) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, a, b) FROM mv_histogram;
 ERROR:  duplicate column name in statistics definition
 -- unknown option
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (unknown_option);
+CREATE STATISTICS s7 WITH (unknown_option) ON (a, b, c) FROM mv_histogram;
 ERROR:  unrecognized STATISTICS option "unknown_option"
 -- missing histogram statistics
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (dependencies, max_buckets=200);
+CREATE STATISTICS s7 WITH (dependencies, max_buckets=200) ON (a, b, c) FROM mv_histogram;
 ERROR:  option 'histogram' is required by other options(s)
 -- invalid max_buckets value / too low
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=10);
+CREATE STATISTICS s7 WITH (mcv, max_buckets=10) ON (a, b, c) FROM mv_histogram;
 ERROR:  minimum number of buckets is 128
 -- invalid max_buckets value / too high
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (mcv, max_buckets=100000);
+CREATE STATISTICS s7 WITH (mcv, max_buckets=100000) ON (a, b, c) FROM mv_histogram;
 ERROR:  maximum number of buckets is 16384
 -- correct command
-CREATE STATISTICS s7 ON mv_histogram (a, b, c) WITH (histogram);
+CREATE STATISTICS s7 WITH (histogram) ON (a, b, c) FROM mv_histogram;
 -- random data (no functional dependencies)
 INSERT INTO mv_histogram
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -95,7 +95,7 @@ CREATE TABLE mv_histogram (
     b TEXT,
     c TEXT
 );
-CREATE STATISTICS s8 ON mv_histogram (a, b, c) WITH (histogram);
+CREATE STATISTICS s8 WITH (histogram) ON (a, b, c) FROM mv_histogram;
 -- random data (no functional dependencies)
 INSERT INTO mv_histogram
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -188,7 +188,7 @@ CREATE TABLE mv_histogram (
     c INT,
     d TEXT
 );
-CREATE STATISTICS s9 ON mv_histogram (a, b, c, d) WITH (histogram);
+CREATE STATISTICS s9 WITH (histogram) ON (a, b, c, d) FROM mv_histogram;
 INSERT INTO mv_histogram
      SELECT
          mod(i, 100),

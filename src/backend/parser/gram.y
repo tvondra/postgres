@@ -3756,21 +3756,23 @@ ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
  *****************************************************************************/
 
 
-CreateStatsStmt:	CREATE STATISTICS any_name ON '(' columnList ')' FROM qualified_name
+CreateStatsStmt:	CREATE STATISTICS any_name opt_reloptions ON '(' columnList ')' FROM qualified_name
 						{
 							CreateStatsStmt *n = makeNode(CreateStatsStmt);
 							n->defnames = $3;
-							n->relation = $9;
-							n->keys = $6;
+							n->relation = $10;
+							n->keys = $7;
+							n->options = $4;
 							n->if_not_exists = false;
 							$$ = (Node *)n;
 						}
-					| CREATE STATISTICS IF_P NOT EXISTS any_name ON '(' columnList ')' FROM qualified_name
+					| CREATE STATISTICS IF_P NOT EXISTS any_name opt_reloptions ON '(' columnList ')' FROM qualified_name
 						{
 							CreateStatsStmt *n = makeNode(CreateStatsStmt);
 							n->defnames = $6;
-							n->relation = $12;
-							n->keys = $9;
+							n->relation = $13;
+							n->keys = $10;
+							n->options = $7;
 							n->if_not_exists = true;
 							$$ = (Node *)n;
 						}

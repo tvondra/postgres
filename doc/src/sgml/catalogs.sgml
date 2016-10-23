@@ -4296,6 +4296,17 @@
      </row>
 
      <row>
+      <entry><structfield>mcv_enabled</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, MVC list will be computed for the combination of columns,
+       covered by the statistics. This does not mean the MCV list is already
+       computed, though.
+      </entry>
+     </row>
+
+     <row>
       <entry><structfield>ndist_built</structfield></entry>
       <entry><type>bool</type></entry>
       <entry></entry>
@@ -4312,6 +4323,16 @@
       <entry>
        If true, functional depenedencies are already computed and available for
        use during query estimation.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>mcv_built</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, MCV list is already computed and available for use during query
+       estimation.
       </entry>
      </row>
 
@@ -4341,6 +4362,15 @@
       <entry></entry>
       <entry>
        Functional dependencies, serialized as <structname>pg_dependencies</> type.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>stamcv</structfield></entry>
+      <entry><type>pg_mcv_list</type></entry>
+      <entry></entry>
+      <entry>
+       MCV list, serialized as <structname>pg_mcv_list</> type.
       </entry>
      </row>
 

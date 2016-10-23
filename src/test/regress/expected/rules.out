@@ -1391,7 +1391,9 @@ pg_mv_stats| SELECT n.nspname AS schemaname,
     s.staname,
     s.stakeys AS attnums,
     length((s.standist)::bytea) AS ndistbytes,
-    length((s.stadeps)::bytea) AS depsbytes
+    length((s.stadeps)::bytea) AS depsbytes,
+    length((s.stamcv)::bytea) AS mcvbytes,
+    pg_mv_stats_mcvlist_info(s.stamcv) AS mcvinfo
    FROM ((pg_mv_statistic s
      JOIN pg_class c ON ((c.oid = s.starelid)))
      LEFT JOIN pg_namespace n ON ((n.oid = c.relnamespace)));

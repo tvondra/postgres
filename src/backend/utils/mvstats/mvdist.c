@@ -17,6 +17,7 @@
 #include <math.h>
 
 #include "common.h"
+#include "utils/bytea.h"
 #include "utils/lsyscache.h"
 
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
@@ -168,4 +169,66 @@ estimate_ndistinct(double totalrows, int numrows, int d, int f1)
 		ndistinct = totalrows;
 
 	return floor(ndistinct + 0.5);
+}
+
+
+/*
+ * pg_ndistinct_in		- input routine for type pg_ndistinct.
+ *
+ * pg_ndistinct is real enough to be a table column, but it has no operations
+ * of its own, and disallows input too
+ *
+ * XXX This is inspired by what pg_node_tree does.
+ */
+Datum
+pg_ndistinct_in(PG_FUNCTION_ARGS)
+{
+	/*
+	 * pg_node_list stores the data in binary form and parsing text input is
+	 * not needed, so disallow this.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_ndistinct")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_ndistinct		- output routine for type pg_ndistinct.
+ *
+ * histograms are serialized into a bytea value, so we simply call byteaout()
+ * to serialize the value into text. But it'd be nice to serialize that into
+ * a meaningful representation (e.g. for inspection by people).
+ *
+ * FIXME not implemented yet, returning dummy value
+ */
+Datum
+pg_ndistinct_out(PG_FUNCTION_ARGS)
+{
+	return byteaout(fcinfo);
+}
+
+/*
+ * pg_ndistinct_recv		- binary input routine for type pg_ndistinct.
+ */
+Datum
+pg_ndistinct_recv(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_ndistinct")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_ndistinct_send		- binary output routine for type pg_ndistinct.
+ *
+ * XXX Histograms are serialized into a bytea value, so let's just send that.
+ */
+Datum
+pg_ndistinct_send(PG_FUNCTION_ARGS)
+{
+	return byteasend(fcinfo);
 }

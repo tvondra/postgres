@@ -263,6 +263,9 @@ DATA(insert (  3353	 17    0 i b ));
 /* pg_mcv_list can be coerced to, but not from, bytea */
 DATA(insert (  441	 17    0 i b ));
 
+/* pg_histogram can be coerced to, but not from, text */
+DATA(insert (  774	 25    0 i b ));
+
 
 /*
  * Datetime category

@@ -2758,6 +2758,15 @@ DESCR("I/O");
 DATA(insert OID = 445 (  pg_mcv_list_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "441" _null_ _null_ _null_ _null_ _null_	pg_mcv_list_send _null_ _null_ _null_ ));
 DESCR("I/O");
 
+DATA(insert OID = 775 (  pg_histogram_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 774 "2275" _null_ _null_ _null_ _null_ _null_ pg_histogram_in _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 776 (  pg_histogram_out	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2275 "774" _null_ _null_ _null_ _null_ _null_ pg_histogram_out _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 777 (  pg_histogram_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 774 "2281" _null_ _null_ _null_ _null_ _null_ pg_histogram_recv _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 778 (  pg_histogram_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "774" _null_ _null_ _null_ _null_ _null_	pg_histogram_send _null_ _null_ _null_ ));
+DESCR("I/O");
+
 DATA(insert OID = 1928 (  pg_stat_get_numscans			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_numscans _null_ _null_ _null_ ));
 DESCR("statistics: number of scans done for table/index");
 DATA(insert OID = 1929 (  pg_stat_get_tuples_returned	PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_tuples_returned _null_ _null_ _null_ ));

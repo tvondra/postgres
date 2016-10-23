@@ -62,7 +62,7 @@ CATALOG(pg_mv_statistic,3381)
 	pg_ndistinct		standist;		/* ndistinct coeff (serialized) */
 	pg_dependencies		stadeps;		/* dependencies (serialized) */
 	pg_mcv_list			stamcv;			/* MCV list (serialized) */
-	bytea				stahist;		/* MV histogram (serialized) */
+	pg_histogram		stahist;		/* MV histogram (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;

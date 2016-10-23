@@ -19,6 +19,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 
+#include "utils/bytea.h"
 #include "utils/lsyscache.h"
 
 #include "common.h"
@@ -2007,6 +2008,67 @@ pg_mv_histogram_buckets(PG_FUNCTION_ARGS)
 	{
 		SRF_RETURN_DONE(funcctx);
 	}
+}
+
+/*
+ * pg_histogram_in		- input routine for type pg_histogram.
+ *
+ * pg_histogram is real enough to be a table column, but it has no operations
+ * of its own, and disallows input too
+ *
+ * XXX This is inspired by what pg_node_tree does.
+ */
+Datum
+pg_histogram_in(PG_FUNCTION_ARGS)
+{
+	/*
+	 * pg_node_list stores the data in binary form and parsing text input is
+	 * not needed, so disallow this.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_histogram")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_histogram		- output routine for type PG_HISTOGRAM.
+ *
+ * histograms are serialized into a bytea value, so we simply call byteaout()
+ * to serialize the value into text. But it'd be nice to serialize that into
+ * a meaningful representation (e.g. for inspection by people).
+ *
+ * FIXME not implemented yet, returning dummy value
+ */
+Datum
+pg_histogram_out(PG_FUNCTION_ARGS)
+{
+	return byteaout(fcinfo);
+}
+
+/*
+ * pg_histogram_recv		- binary input routine for type pg_histogram.
+ */
+Datum
+pg_histogram_recv(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_histogram")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_histogram_send		- binary output routine for type pg_histogram.
+ *
+ * XXX Histograms are serialized into a bytea value, so let's just send that.
+ */
+Datum
+pg_histogram_send(PG_FUNCTION_ARGS)
+{
+	return byteasend(fcinfo);
 }
 
 #ifdef DEBUG_MVHIST

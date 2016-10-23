@@ -574,10 +574,8 @@ load_ext_dependencies(Oid mvoid)
 	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
 	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 
-#ifdef USE_ASSERT_CHECKING
-	// Form_pg_statistic_ext mvstat = (Form_pg_statistic_ext) GETSTRUCT(htup);
-	// Assert(mvstat->deps_enabled && mvstat->deps_built);
-#endif
+	Assert(stats_are_enabled(htup, STATS_EXT_DEPENDENCIES));
+	Assert(stats_are_built(htup, STATS_EXT_DEPENDENCIES));
 
 	deps = SysCacheGetAttr(STATEXTOID, htup,
 						   Anum_pg_statistic_ext_stadependencies, &isnull);

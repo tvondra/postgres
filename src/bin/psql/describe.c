@@ -2299,7 +2299,11 @@ describeOneTableDetails(const char *schemaname,
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
 							  "  (staenabled::char[] @> '{d}'::char[]) AS ndist_enabled,\n"
+							  "  (staenabled::char[] @> '{D}'::char[]) AS deps_enabled,\n"
+							  "  (staenabled::char[] @> '{m}'::char[]) AS mcv_enabled,\n"
 							  "  (standistinct IS NOT NULL) AS ndist_built,\n"
+							  "  (stadependencies IS NOT NULL) AS deps_built,\n"
+							  "  (stamcv IS NOT NULL) AS mcv_built,\n"
 							  "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 							  "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
@@ -2317,6 +2321,8 @@ describeOneTableDetails(const char *schemaname,
 				printTableAddFooter(&cont, _("Statistics:"));
 				for (i = 0; i < tuples; i++)
 				{
+					bool		first = true;
+
 					printfPQExpBuffer(&buf, "    ");
 
 					/* statistics name (qualified with namespace) */
@@ -2326,10 +2332,22 @@ describeOneTableDetails(const char *schemaname,
 
 					/* options */
 					if (!strcmp(PQgetvalue(result, i, 4), "t"))
-						appendPQExpBuffer(&buf, "(dependencies)");
+					{
+						appendPQExpBuffer(&buf, "(dependencies");
+						first = false;
+					}
 
-					appendPQExpBuffer(&buf, " ON (%s)",
-									  PQgetvalue(result, i, 6));
+					if (!strcmp(PQgetvalue(result, i, 5), "t"))
+					{
+						if (!first)
+							appendPQExpBuffer(&buf, ", mcv");
+						else
+							appendPQExpBuffer(&buf, "(mcv");
+						first = false;
+					}
+
+					appendPQExpBuffer(&buf, ") ON (%s)",
+									  PQgetvalue(result, i, 9));
 
 					printTableAddFooter(&cont, buf.data);
 				}

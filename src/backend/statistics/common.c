@@ -15,6 +15,7 @@
  */
 
 #include "common.h"
+#include "utils/array.h"
 
 static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
@@ -23,8 +24,8 @@ static List *list_ext_stats(Oid relid);
 
 static void update_ext_stats(Oid relid,
 					  MVNDistinct ndistinct, MVDependencies dependencies,
+					  MCVList mcvlist,
 					  int2vector *attrs, VacAttrStats **stats);
-
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -52,6 +53,8 @@ build_ext_stats(Relation onerel, double totalrows,
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(lc);
 		MVNDistinct	ndistinct = NULL;
 		MVDependencies deps = NULL;
+		MCVList		mcvlist = NULL;
+		int			numrows_filtered = 0;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -92,8 +95,12 @@ build_ext_stats(Relation onerel, double totalrows,
 		if (stat->deps_enabled)
 			deps = build_ext_dependencies(numrows, rows, attrs, stats);
 
+		/* build the MCV list */
+		if (stat->mcv_enabled)
+			mcvlist = build_ext_mcvlist(numrows, rows, attrs, stats, &numrows_filtered);
+
 		/* store the statistics in the catalog */
-		update_ext_stats(stat->mvoid, ndistinct, deps, attrs, stats);
+		update_ext_stats(stat->mvoid, ndistinct, deps, mcvlist, attrs, stats);
 	}
 }
 
@@ -174,9 +181,11 @@ list_ext_stats(Oid relid)
 
 		info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
 		info->deps_enabled = stats_are_enabled(htup, STATS_EXT_DEPENDENCIES);
+		info->mcv_enabled = stats_are_enabled(htup, STATS_EXT_MCV);
 
 		info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
 		info->deps_built = stats_are_built(htup, STATS_EXT_DEPENDENCIES);
+		info->mcv_built = stats_are_built(htup, STATS_EXT_MCV);
 
 		result = lappend(result, info);
 	}
@@ -194,11 +203,58 @@ list_ext_stats(Oid relid)
 }
 
 /*
+ * Find attnums of MV stats using the mvoid.
+ */
+int2vector *
+find_ext_attnums(Oid mvoid, Oid *relid)
+{
+	ArrayType  *arr;
+	Datum		adatum;
+	bool		isnull;
+	HeapTuple	htup;
+	int2vector *keys;
+
+	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
+	htup = SearchSysCache1(STATEXTOID,
+						   ObjectIdGetDatum(mvoid));
+
+	/* XXX syscache contains OIDs of deleted stats (not invalidated) */
+	if (!HeapTupleIsValid(htup))
+		return NULL;
+
+	/* starelid */
+	adatum = SysCacheGetAttr(STATEXTOID, htup,
+							 Anum_pg_statistic_ext_starelid, &isnull);
+	Assert(!isnull);
+
+	*relid = DatumGetObjectId(adatum);
+
+	/* stakeys */
+	adatum = SysCacheGetAttr(STATEXTOID, htup,
+							 Anum_pg_statistic_ext_stakeys, &isnull);
+	Assert(!isnull);
+
+	arr = DatumGetArrayTypeP(adatum);
+
+	keys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+						   ARR_DIMS(arr)[0]);
+	ReleaseSysCache(htup);
+
+	/*
+	 * TODO maybe save the list into relcache, as in RelationGetIndexList
+	 * (which was used as an inspiration of this one)?.
+	 */
+
+	return keys;
+}
+
+/*
  * update_ext_stats
  *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
  */
 static void
-update_ext_stats(Oid mvoid, MVNDistinct ndistinct, MVDependencies dependencies,
+update_ext_stats(Oid mvoid,
+				MVNDistinct ndistinct, MVDependencies dependencies, MCVList mcvlist,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -232,9 +288,18 @@ update_ext_stats(Oid mvoid, MVNDistinct ndistinct, MVDependencies dependencies,
 			= PointerGetDatum(serialize_ext_dependencies(dependencies));
 	}
 
+	if (mcvlist != NULL)
+	{
+		bytea	   *data = serialize_ext_mcvlist(mcvlist, attrs, stats);
+
+		nulls[Anum_pg_statistic_ext_stamcv - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_stamcv - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_standistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stadependencies - 1] = true;
+	replaces[Anum_pg_statistic_ext_stamcv - 1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_statistic_ext_stakeys - 1] = false;
@@ -267,6 +332,23 @@ update_ext_stats(Oid mvoid, MVNDistinct ndistinct, MVDependencies dependencies,
 	heap_close(sd, RowExclusiveLock);
 }
 
+
+int
+mv_get_index(AttrNumber varattno, int2vector *stakeys)
+{
+	int			i,
+				idx = 0;
+
+	for (i = 0; i < stakeys->dim1; i++)
+	{
+		if (stakeys->values[i] < varattno)
+			idx += 1;
+		else
+			break;
+	}
+	return idx;
+}
+
 /* multi-variate stats comparator */
 
 /*
@@ -277,11 +359,15 @@ update_ext_stats(Oid mvoid, MVNDistinct ndistinct, MVDependencies dependencies,
 int
 compare_scalars_simple(const void *a, const void *b, void *arg)
 {
-	Datum		da = *(Datum *) a;
-	Datum		db = *(Datum *) b;
-	SortSupport ssup = (SortSupport) arg;
+	return compare_datums_simple(*(Datum *) a,
+								 *(Datum *) b,
+								 (SortSupport) arg);
+}
 
-	return ApplySortComparator(da, false, db, false, ssup);
+int
+compare_datums_simple(Datum a, Datum b, SortSupport ssup)
+{
+	return ApplySortComparator(a, false, b, false, ssup);
 }
 
 /*
@@ -400,6 +486,37 @@ multi_sort_compare_dims(int start, int end,
 	return 0;
 }
 
+/* simple counterpart to qsort_arg */
+void *
+bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
+			int (*compar) (const void *, const void *, void *),
+			void *arg)
+{
+	size_t		l,
+				u,
+				idx;
+	const void *p;
+	int			comparison;
+
+	l = 0;
+	u = nmemb;
+	while (l < u)
+	{
+		idx = (l + u) / 2;
+		p = (void *) (((const char *) base) + (idx * size));
+		comparison = (*compar) (key, p, arg);
+
+		if (comparison < 0)
+			u = idx;
+		else if (comparison > 0)
+			l = idx + 1;
+		else
+			return (void *) p;
+	}
+
+	return NULL;
+}
+
 bool
 stats_are_enabled(HeapTuple htup, char type)
 {
@@ -464,6 +581,11 @@ stats_are_built(HeapTuple htup, char type)
 		case STATS_EXT_DEPENDENCIES:
 			SysCacheGetAttr(STATEXTOID, htup,
 							Anum_pg_statistic_ext_stadependencies, &isnull);
+			break;
+
+		case STATS_EXT_MCV:
+			SysCacheGetAttr(STATEXTOID, htup,
+							Anum_pg_statistic_ext_stamcv, &isnull);
 			break;
 
 		default:

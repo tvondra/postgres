@@ -69,13 +69,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 				childobject;
 
 	/* costruction of array of enabled statistic */
-	Datum		types[2];	/* ndistinct and dependencies */
+	Datum		types[3];	/* ndistinct, dependencies and MCV */
 	int			ntypes = 0;
 	ArrayType  *staenabled;
 
 	/* by default build nothing */
 	bool		build_ndistinct = false,
-				build_dependencies = false;
+				build_dependencies = false,
+				build_mcv = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -180,6 +181,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 			build_dependencies = defGetBoolean(opt);
 			types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 		}
+		else if (strcmp(opt->defname, "mcv") == 0)
+		{
+			build_mcv = defGetBoolean(opt);
+			types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -188,10 +194,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* Make sure there's at least one statistics type specified. */
-	if (! (build_ndistinct || build_dependencies))
+	if (!(build_ndistinct || build_dependencies || build_mcv))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (ndistinct, dependencies) requested")));
+				 errmsg("no statistics type (ndistinct, dependencies, mcv) requested")));
 
 	stakeys = buildint2vector(attnums, numcols);
 
@@ -220,6 +226,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/* no statistics build yet */
 	nulls[Anum_pg_statistic_ext_standistinct - 1] = true;
 	nulls[Anum_pg_statistic_ext_stadependencies - 1] = true;
+	nulls[Anum_pg_statistic_ext_stamcv - 1] = true;
 
 	/* insert the tuple into pg_statistic_ext */
 	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);

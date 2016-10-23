@@ -18,6 +18,8 @@ Currently we only have two kinds of extended statistics
 
     (b) soft functional dependencies (README.dependencies)
 
+    (c) MCV lists (README.mcv)
+
 
 Compatible clause types
 -----------------------
@@ -25,6 +27,8 @@ Compatible clause types
 Each type of statistics may be used to estimate some subset of clause types.
 
     (a) functional dependencies - equality clauses (AND), possibly IS NULL
+
+    (b) MCV list - equality and inequality clauses, IS [NOT] NULL, AND/OR
 
 Currently only simple operator clauses (Var op Const) are supported, but it's
 possible to support more complex clause types, e.g. (Var op Var).
@@ -62,19 +66,51 @@ When estimating selectivity, we aim to achieve several things:
     (b) minimize the overhead, especially when no suitable extended statistics
         exist (so if you are not using extended stats, there's no overhead)
 
-This clauselist_selectivity() performs several inexpensive checks first, before
+Thus clauselist_selectivity() performs several inexpensive checks first, before
 even attempting to do the more expensive estimation.
 
     (1) check if there are extended stats on the relation
 
-    (2) check there are at least two attributes referenced by clauses compatible
-        with extended statistics (equality clauses for func. dependencies)
+    (2) check that there are functional dependencies on the table, and that
+        there are at least two attributes referenced by compatible clauses
+        (equality clauses for func. dependencies)
 
     (3) perform reduction of equality clauses using func. dependencies
 
-    (4) estimate the reduced list of clauses using regular statistics
+    (4) check that there are extended MCV lists on the table, and that
+        there are at least two attributes referenced by compatible clauses
+        (equalities, inequalities, etc.)
+
+    (5) find the best extended statistics (matching the most conditions)
+        and use it to compute the estimate
+
+    (6) estimate the remaining clauses (not estimated using extended stats)
+        using the regular per-column statistics
 
 Whenever we find there are no suitable stats, we skip the expensive steps.
+
+
+Further (possibly crazy) ideas
+------------------------------
+
+Currently the clauses are only estimated using a single statistics, even if
+there are multiple candidate statistics - for example assume we have statistics
+on (a,b,c) and (b,c,d), and estimate conditions
+
+    (b = 1) AND (c = 2)
+
+Then both statistics may be used, but we only use one of them. Maybe we could
+use compute estimates using all candidate stats, and somehow aggregate them
+into the final estimate by using average or median.
+
+Some stats may give better estimates than others, but it's very difficult to say
+in advance which stats are the best (it depends on the number of buckets, number
+of additional columns not referenced in the clauses, type of condition etc.).
+
+But of course, this may result in expensive estimation (CPU-wise).
+
+So we might add a GUC to choose between a simple (single statistics) and thus
+multi-statistic estimation, possibly table-level parameter (ALTER TABLE ...).
 
 
 Size of sample in ANALYZE

@@ -46,6 +46,7 @@ CATALOG(pg_statistic_ext,3381)
 	char				staenabled[1];	/* statistics requested to build */
 	pg_ndistinct		standistinct;	/* ndistinct coefficients (serialized) */
 	pg_dependencies		stadependencies;	/* dependencies (serialized) */
+	pg_mcv_list			stamcv;			/* MCV list (serialized) */
 #endif
 
 } FormData_pg_statistic_ext;
@@ -61,7 +62,7 @@ typedef FormData_pg_statistic_ext *Form_pg_statistic_ext;
  *		compiler constants for pg_statistic_ext
  * ----------------
  */
-#define Natts_pg_statistic_ext					8
+#define Natts_pg_statistic_ext					9
 #define Anum_pg_statistic_ext_starelid			1
 #define Anum_pg_statistic_ext_staname			2
 #define Anum_pg_statistic_ext_stanamespace		3
@@ -70,8 +71,10 @@ typedef FormData_pg_statistic_ext *Form_pg_statistic_ext;
 #define Anum_pg_statistic_ext_staenabled		6
 #define Anum_pg_statistic_ext_standistinct		7
 #define Anum_pg_statistic_ext_stadependencies	8
+#define Anum_pg_statistic_ext_stamcv			9
 
 #define STATS_EXT_NDISTINCT			'd'
 #define STATS_EXT_DEPENDENCIES		'f'
+#define STATS_EXT_MCV				'm'
 
 #endif   /* PG_STATISTIC_EXT_H */

@@ -621,6 +621,10 @@ extern Datum pg_dependencies_in(PG_FUNCTION_ARGS);
 extern Datum pg_dependencies_out(PG_FUNCTION_ARGS);
 extern Datum pg_dependencies_recv(PG_FUNCTION_ARGS);
 extern Datum pg_dependencies_send(PG_FUNCTION_ARGS);
+extern Datum pg_mcv_list_in(PG_FUNCTION_ARGS);
+extern Datum pg_mcv_list_out(PG_FUNCTION_ARGS);
+extern Datum pg_mcv_list_recv(PG_FUNCTION_ARGS);
+extern Datum pg_mcv_list_send(PG_FUNCTION_ARGS);
 
 /* regexp.c */
 extern Datum nameregexeq(PG_FUNCTION_ARGS);

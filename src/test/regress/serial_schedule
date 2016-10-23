@@ -174,3 +174,4 @@ test: stats
 test: mv_ndistinct
 test: mv_dependencies
 test: mv_mcv
+test: mv_histogram

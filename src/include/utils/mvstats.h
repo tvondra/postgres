@@ -18,7 +18,7 @@
 #include "commands/vacuum.h"
 
 /*
- * Degree of how much MCV item matches a clause.
+ * Degree of how much MCV item / histogram bucket matches a clause.
  * This is then considered when computing the selectivity.
  */
 #define MVSTATS_MATCH_NONE		0		/* no match at all */
@@ -114,19 +114,133 @@ bool dependency_implies_attribute(MVDependency dependency, AttrNumber attnum,
 bool dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
 								 int16 *attmap);
 
+/* used to flag stats serialized to bytea */
+#define MVSTAT_HIST_MAGIC		0x7F8C5670		/* marks serialized bytea */
+#define MVSTAT_HIST_TYPE_BASIC	1				/* basic histogram type */
+
+/* max buckets in a histogram (mostly arbitrary number */
+#define MVSTAT_HIST_MAX_BUCKETS 16384
+
+/*
+ * Multivariate histograms
+ */
+typedef struct MVBucketData
+{
+
+	/* Frequencies of this bucket. */
+	float		ntuples;		/* frequency of tuples tuples */
+
+	/*
+	 * Information about dimensions being NULL-only. Not yet used.
+	 */
+	bool	   *nullsonly;
+
+	/* lower boundaries - values and information about the inequalities */
+	Datum	   *min;
+	bool	   *min_inclusive;
+
+	/* upper boundaries - values and information about the inequalities */
+	Datum	   *max;
+	bool	   *max_inclusive;
+
+	/* used when building the histogram (not serialized/deserialized) */
+	void	   *build_data;
+
+} MVBucketData;
+
+typedef MVBucketData *MVBucket;
+
+
+typedef struct MVHistogramData
+{
+
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of histogram (BASIC) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
+	uint32		ndimensions;	/* number of dimensions */
+
+	MVBucket   *buckets;		/* array of buckets */
+
+} MVHistogramData;
+
+typedef MVHistogramData *MVHistogram;
+
+/*
+ * Histogram in a partially serialized form, with deduplicated boundary
+ * values etc.
+ *
+ * TODO add more detailed description here
+ */
+
+typedef struct MVSerializedBucketData
+{
+
+	/* Frequencies of this bucket. */
+	float		ntuples;		/* frequency of tuples tuples */
+
+	/*
+	 * Information about dimensions being NULL-only. Not yet used.
+	 */
+	bool	   *nullsonly;
+
+	/* lower boundaries - values and information about the inequalities */
+	uint16	   *min;
+	bool	   *min_inclusive;
+
+	/*
+	 * indexes of upper boundaries - values and information about the
+	 * inequalities (exclusive vs. inclusive)
+	 */
+	uint16	   *max;
+	bool	   *max_inclusive;
+
+} MVSerializedBucketData;
+
+typedef MVSerializedBucketData *MVSerializedBucket;
+
+typedef struct MVSerializedHistogramData
+{
+
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of histogram (BASIC) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
+	uint32		ndimensions;	/* number of dimensions */
+
+	/*
+	 * keep this the same with MVHistogramData, because of deserialization
+	 * (same offset)
+	 */
+	MVSerializedBucket *buckets;	/* array of buckets */
+
+	/*
+	 * serialized boundary values, one array per dimension, deduplicated (the
+	 * min/max indexes point into these arrays)
+	 */
+	int		   *nvalues;
+	Datum	  **values;
+
+} MVSerializedHistogramData;
+
+typedef MVSerializedHistogramData *MVSerializedHistogram;
+
+
 MVNDistinct		load_mv_ndistinct(Oid mvoid);
 MVDependencies	load_mv_dependencies(Oid mvoid);
 MCVList			load_mv_mcvlist(Oid mvoid);
+MVSerializedHistogram load_mv_histogram(Oid mvoid);
 
 bytea *serialize_mv_ndistinct(MVNDistinct ndistinct);
 bytea *serialize_mv_dependencies(MVDependencies dependencies);
 bytea *serialize_mv_mcvlist(MCVList mcvlist, int2vector *attrs,
+							VacAttrStats **stats);
+bytea *serialize_mv_histogram(MVHistogram histogram, int2vector *attrs,
 							VacAttrStats **stats);
 
 /* deserialization of stats (serialization is private to analyze) */
 MVNDistinct deserialize_mv_ndistinct(bytea *data);
 MVDependencies deserialize_mv_dependencies(bytea *data);
 MCVList deserialize_mv_mcvlist(bytea *data);
+MVSerializedHistogram deserialize_mv_histogram(bytea * data);
 
 /*
  * Returns index of the attribute number within the vector (i.e. a
@@ -139,6 +253,8 @@ int2vector *find_mv_attnums(Oid mvoid, Oid *relid);
 /* functions for inspecting the statistics */
 extern Datum pg_mv_stats_mcvlist_info(PG_FUNCTION_ARGS);
 extern Datum pg_mv_mcvlist_items(PG_FUNCTION_ARGS);
+extern Datum pg_mv_stats_histogram_info(PG_FUNCTION_ARGS);
+extern Datum pg_mv_histogram_buckets(PG_FUNCTION_ARGS);
 
 
 MVNDistinct build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
@@ -151,8 +267,15 @@ MVDependencies build_mv_dependencies(int numrows, HeapTuple *rows,
 MCVList build_mv_mcvlist(int numrows, HeapTuple *rows, int2vector *attrs,
 				 VacAttrStats **stats, int *numrows_filtered);
 
+MVHistogram build_mv_histogram(int numrows, HeapTuple *rows, int2vector *attrs,
+				   VacAttrStats **stats, int numrows_total);
+
 void build_mv_stats(Relation onerel, double totalrows,
 			   int numrows, HeapTuple *rows,
 			   int natts, VacAttrStats **vacattrstats);
+
+#ifdef DEBUG_MVHIST
+extern void debug_histogram_matches(MVSerializedHistogram mvhist, char *matches);
+#endif
 
 #endif

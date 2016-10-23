@@ -684,11 +684,13 @@ typedef struct MVStatisticInfo
 	bool		ndist_enabled;	/* ndistinct coefficient enabled */
 	bool		deps_enabled;	/* functional dependencies enabled */
 	bool		mcv_enabled;	/* MCV list enabled */
+	bool		hist_enabled;	/* histogram enabled */
 
 	/* built/available statistics */
 	bool		ndist_built;	/* ndistinct coefficient built */
 	bool		deps_built;		/* functional dependencies built */
 	bool		mcv_built;		/* MCV list built */
+	bool		hist_built;		/* histogram built */
 
 	/* columns in the statistics (attnums) */
 	int2vector *stakeys;		/* attnums of the columns covered */

@@ -2722,7 +2722,7 @@ DATA(insert OID = 3998 (  pg_mv_stats_dependencies_info     PGNSP PGUID 12 1 0 0
 DESCR("multivariate stats: functional dependencies info");
 DATA(insert OID = 3999 (  pg_mv_stats_dependencies_show     PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "3353" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_dependencies_show _null_ _null_ _null_ ));
 DESCR("multivariate stats: functional dependencies show");
-DATA(insert OID = 3376 (  pg_mv_stats_mcvlist_info	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "17" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_mcvlist_info _null_ _null_ _null_ ));
+DATA(insert OID = 3376 (  pg_mv_stats_mcvlist_info	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "441" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_mcvlist_info _null_ _null_ _null_ ));
 DESCR("multi-variate statistics: MCV list info");
 DATA(insert OID = 3373 (  pg_mv_mcv_items PGNSP PGUID 12 1 1000 0 0 f f f f t t i s 1 0 2249 "26" "{26,23,1009,1000,701}" "{i,o,o,o,o}" "{oid,index,values,nulls,frequency}" _null_ _null_ pg_mv_mcv_items _null_ _null_ _null_ ));
 DESCR("details about MCV list items");

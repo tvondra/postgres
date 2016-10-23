@@ -196,6 +196,13 @@ pull_varnos_walker(Node *node, pull_varnos_context *context)
 		context->sublevels_up--;
 		return result;
 	}
+	if (IsA(node, RestrictInfo))
+	{
+		RestrictInfo *rinfo = (RestrictInfo*)node;
+		context->varnos = bms_add_members(context->varnos,
+										  rinfo->clause_relids);
+		return false;
+	}
 	return expression_tree_walker(node, pull_varnos_walker,
 								  (void *) context);
 }
@@ -242,6 +249,15 @@ pull_varattnos_walker(Node *node, pull_varattnos_context *context)
 				bms_add_member(context->varattnos,
 						 var->varattno - FirstLowInvalidHeapAttributeNumber);
 		return false;
+	}
+
+	if (IsA(node, RestrictInfo))
+	{
+		RestrictInfo *rinfo = (RestrictInfo *)node;
+
+		return expression_tree_walker((Node*)rinfo->clause,
+									  pull_varattnos_walker,
+									  (void*) context);
 	}
 
 	/* Should not find an unplanned subquery */

@@ -2213,8 +2213,8 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-							  "  deps_enabled,\n"
-							  "  deps_built,\n"
+							  "  ndist_enabled,\n"
+							  "  ndist_built,\n"
 							  "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 							  "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"

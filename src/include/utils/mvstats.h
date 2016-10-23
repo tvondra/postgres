@@ -39,22 +39,62 @@ typedef struct MVNDistinctData {
 typedef MVNDistinctData *MVNDistinct;
 
 
+/*
+ * Functional dependencies, tracking column-level relationships (values
+ * in one column determine values in another one).
+ */
+typedef struct MVDependencyData
+{
+	int			nattributes;	/* number of attributes */
+	int16		attributes[1];	/* attribute numbers */
+} MVDependencyData;
+
+typedef MVDependencyData *MVDependency;
+
+typedef struct MVDependenciesData
+{
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of MV Dependencies (BASIC) */
+	int32		ndeps;			/* number of dependencies */
+	MVDependency deps[1];		/* XXX why not a pointer? */
+} MVDependenciesData;
+
+typedef MVDependenciesData *MVDependencies;
+
+#define MVSTAT_DEPS_MAGIC		0xB4549A2C		/* marks serialized bytea */
+#define MVSTAT_DEPS_TYPE_BASIC	1		/* basic dependencies type */
+
+/*
+ * TODO: Maybe fetching the histogram/MCV list separately is inefficient?
+ * Consider adding a single `fetch_stats` method, fetching all stats
+ * specified using flags (or something like that).
+ */
+
 MVNDistinct		load_mv_ndistinct(Oid mvoid);
 
 bytea *serialize_mv_ndistinct(MVNDistinct ndistinct);
+bytea *serialize_mv_dependencies(MVDependencies dependencies);
 
 /* deserialization of stats (serialization is private to analyze) */
 MVNDistinct deserialize_mv_ndistinct(bytea *data);
+MVDependencies deserialize_mv_dependencies(bytea *data);
 
+/* FIXME this probably belongs somewhere else (not to operations stats) */
+extern Datum pg_mv_stats_dependencies_info(PG_FUNCTION_ARGS);
+extern Datum pg_mv_stats_dependencies_show(PG_FUNCTION_ARGS);
 
 MVNDistinct build_mv_ndistinct(double totalrows, int numrows, HeapTuple *rows,
-				 int2vector *attrs, VacAttrStats **stats);
+							   int2vector *attrs, VacAttrStats **stats);
+
+MVDependencies build_mv_dependencies(int numrows, HeapTuple *rows,
+					  int2vector *attrs,
+					  VacAttrStats **stats);
 
 void build_mv_stats(Relation onerel, double totalrows,
 			   int numrows, HeapTuple *rows,
 			   int natts, VacAttrStats **vacattrstats);
 
-void update_mv_stats(Oid relid, MVNDistinct ndistinct,
+void update_mv_stats(Oid relid, MVNDistinct ndistinct, MVDependencies dependencies,
 					 int2vector *attrs, VacAttrStats **stats);
 
 #endif

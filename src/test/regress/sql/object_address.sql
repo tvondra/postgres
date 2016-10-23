@@ -39,7 +39,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE regress_addr_user REVOKE DELETE ON TABLES FROM
 CREATE TRANSFORM FOR int LANGUAGE SQL (
 	FROM SQL WITH FUNCTION varchar_transform(internal),
 	TO SQL WITH FUNCTION int4recv(internal));
-CREATE STATISTICS addr_nsp.gentable_stat ON (a,b) FROM addr_nsp.gentable;
+CREATE STATISTICS addr_nsp.gentable_stat WITH (ndistinct) ON (a,b) FROM addr_nsp.gentable;
 
 -- test some error cases
 SELECT pg_get_object_address('stone', '{}', '{}');

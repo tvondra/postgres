@@ -72,6 +72,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	ObjectAddress parentobject,
 				childobject;
 
+	/* by default build nothing */
+	bool		build_ndistinct = false,
+				build_dependencies = false;
+
 	Assert(IsA(stmt, CreateStatsStmt));
 
 	/* resolve the pieces of the name (namespace etc.) */
@@ -140,6 +144,28 @@ CreateStatistics(CreateStatsStmt *stmt)
 						(errcode(ERRCODE_UNDEFINED_COLUMN),
 				  errmsg("duplicate column name in statistics definition")));
 
+	/* parse the statistics options */
+	foreach(l, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(l);
+
+		if (strcmp(opt->defname, "ndistinct") == 0)
+			build_ndistinct = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "dependencies") == 0)
+			build_dependencies = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+
+	/* check that at least some statistics were requested */
+	if (!(build_ndistinct || build_dependencies))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("no statistics type (ndistinct, dependencies) was requested")));
+
 	/* sort the attnums and build int2vector */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
 	stakeys = buildint2vector(attnums, numcols);
@@ -158,9 +184,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(stakeys);
 
-	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(true);
+	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(build_ndistinct);
+	values[Anum_pg_mv_statistic_deps_enabled - 1] = BoolGetDatum(build_dependencies);
 
 	nulls[Anum_pg_mv_statistic_standist - 1] = true;
+	nulls[Anum_pg_mv_statistic_stadeps - 1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

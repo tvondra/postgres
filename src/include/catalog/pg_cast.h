@@ -257,6 +257,9 @@ DATA(insert (  194	 25    0 i b ));
 /* pg_ndistinct can be coerced to, but not from, bytea */
 DATA(insert (  3343	 17    0 i b ));
 
+/* pg_dependencies can be coerced to, but not from, bytea */
+DATA(insert (  3353	 17    0 i b ));
+
 /*
  * Datetime category
  */

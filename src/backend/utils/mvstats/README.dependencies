@@ -1,0 +1,220 @@
+Soft functional dependencies
+============================
+
+A type of multivariate statistics used to capture cases when one column (or
+possibly a combination of columns) determines values in another column. We may
+also say that one column implies the other one.
+
+A simple artificial example may be a table with two columns, created like this
+
+    CREATE TABLE t (a INT, b INT)
+        AS SELECT i, i/10 FROM generate_series(1,100000) s(i);
+
+Clearly, once we know the value for column 'a' the value for 'b' is trivially
+determined, as it's simply (a/10). A more practical example may be addresses,
+where (ZIP code -> city name), i.e. once we know the ZIP, we probably know the
+city it belongs to, as ZIP codes are usually assigned to one city. Larger cities
+may have multiple ZIP codes, so the dependency can't be reversed.
+
+Functional dependencies are a concept well described in relational theory,
+particularly in definition of normalization and "normal forms". Wikipedia has a
+nice definition of a functional dependency [1]:
+
+    In a given table, an attribute Y is said to have a functional dependency on
+    a set of attributes X (written X -> Y) if and only if each X value is
+    associated with precisely one Y value. For example, in an "Employee" table
+    that includes the attributes "Employee ID" and "Employee Date of Birth", the
+    functional dependency {Employee ID} -> {Employee Date of Birth} would hold.
+    It follows from the previous two sentences that each {Employee ID} is
+    associated with precisely one {Employee Date of Birth}.
+
+    [1] http://en.wikipedia.org/wiki/Database_normalization
+
+Many datasets might be normalized not to contain such dependencies, but often
+it's not practical for various reasons. In some cases it's actually a conscious
+design choice to model the dataset in denormalized way, either because of
+performance or to make querying easier.
+
+The functional dependencies are called 'soft' because the implementation is
+meant to allow small number of rows contradicting the dependency. Many actual
+data sets contain some sort of errors, either because of data entry mistakes
+(user mistyping the ZIP code) or issues in generating the data (e.g. a ZIP code
+mistakenly assigned to two cities in different states). A strict implementation
+would ignore dependencies on such noisy data, rendering the approach unusable on
+such data sets.
+
+
+Mining dependencies (ANALYZE)
+-----------------------------
+
+The current build algorithm is rather simple - for each pair (a,b) of columns,
+the data are sorted lexicographically (first by 'a', then by 'b'). Then for each
+group (rows with the same 'a' value) we decide whether the group is neutral,
+supporting or contradicting the dependency (a->b).
+
+A group is considered neutral when it's too small - e.g. when there's a single
+row in the group, there can't possibly be multiple values in 'b'. For this
+reason we ignore groups smaller than a threshold (currently 3 rows).
+
+For sufficiently large groups (3 rows or more), we count the number of distinct
+values in 'b'. When there's a single 'b' value, the group is considered to
+support the dependency (a->b), otherwise it's condidered as contradicting it.
+
+At the end, we compare the number of rows in supporting and contradicting groups,
+and if there are at least 10x as many supporting rows, we consider the
+functional dependency to be valid.
+
+
+This approach has the negative property that the algorithm is that it's a bit
+fragile with respect to the sample - there may be data sets producing quite
+different results for each ANALYZE execution (as even a single row may change
+the outcome of the final 10x test).
+
+It was proposed to make the dependencies "fuzzy" - e.g. track some coefficient
+between [0,1] determining how much the dependency holds. That would however mean
+we have to keep all the dependencies, as eliminating them based on the value of
+the coefficient (e.g. throw away dependencies <= 0.5) would result in exactly
+the same fragility issues. This would also make it more complicated to combine
+dependencies. So this does not seem like a practical approach.
+
+A better approach might be to replace the constants (min_group_size=3 and 10x)
+with values somehow related to the particular data set.
+
+
+Clause reduction (planner/optimizer)
+------------------------------------
+
+Apllying the functional dependencies is quite simple - given a list of equality
+clauses, check which clauses are redundant (i.e. implied by some other clause).
+For example given clause list
+
+    (a = 2) AND (b = 2) AND (c = 3)
+
+and dependencies (a->b) and (a->d), the list of clauses may be simplified to
+
+    (a = 1) AND (c = 3)
+
+Functional dependencies may only be applied to equality clauses, all other types
+of clauses are ignored. See clauselist_apply_dependencies() for more details.
+
+
+Compatibility of clauses
+------------------------
+
+The reduction assumes the clauses really are redundant, and the value in the
+reduced clause (b=2) is the value determined by (a=1). If that's not the case
+and the values are "incompatible" the result will be over-estimation.
+
+This may happen for example when using conditions on ZIP and city name with
+mismatching values (ZIP for a different city), etc. In such case the result
+set will be empty, but we'll estimate the selectivity using the ZIP condition.
+
+In this case the default estimation based on AVIA principle happens to work
+better, but mostly by chance.
+
+
+Dependencies vs. MCV/histogram
+------------------------------
+
+In some cases the "compatibility" of the conditions might be verified using the
+other types of multivariate stats - MCV lists and histograms.
+
+For MCV lists the verification might be very simple - peek into the list if
+there are any items matching the clause on the 'a' column (e.g. ZIP code), and
+if such item is found, check that the 'b' column matches the other clause. If it
+does not, the clauses are contradictory. We can't really say if such item was
+not found, except maybe restricting the selectivity using the MCV data (e.g.
+using min/max selectivity, or something).
+
+With histograms, it might work similarly - we can't check the values directly
+(because histograms use buckets, unlike MCV lists, storing the actual values).
+So we can only observe the buckets matching the clauses - if those buckets have
+very low frequency, it probably means the two clauses are incompatible.
+
+It's unclear what 'low frequency' is, but if one of the clauses is implied
+(automatically true because of the other clause), then
+
+    selectivity[clause(A)] = selectivity[clause(A) & clause(B)]
+
+So we might compute selectivity of the first clause - for example using regular
+statistics. And then check if the selectivity computed from the histogram is
+about the same (or significantly lower).
+
+The problem is that histograms work well only when the data ordering matches the
+natural meaning. For values that serve as labels - like city names or ZIP codes,
+or even generated IDs, histograms really don't work all that well. For example
+sorting cities by name won't match the sorting of ZIP codes, rendering the
+histogram unusable.
+
+So MCVs are probably going to work much better, because they don't really assume
+any sort of ordering. And it's probably more appropriate for the label-like data.
+
+A good question however is why even use functional dependencies in such cases
+and not simply use the MCV/histogram instead. One reason is that the functional
+dependencies allow fallback to regular stats, and often produce more accurate
+estimates - especially compared to histograms, that are quite bad in estimating
+equality clauses.
+
+
+Limitations
+-----------
+
+Let's see the main liminations of functional dependencies, especially those
+related to the current implementation.
+
+The current implementation supports only dependencies between two columns, but
+this is merely a simplification of the initial implementation. It's certainly
+useful to mine for dependencies involving multiple columns on the 'left' side,
+i.e. a condition for the dependency. That is dependencies like (a,b -> c).
+
+The implementation may/should be smart enough not to mine redundant conditions,
+e.g. (a->b) and (a,c -> b), because the latter is a trivial consequence of the
+former one (if values of 'a' determine 'b', adding another column won't change
+that relationship). The ANALYZE should first analyze 1:1 dependencies, then 2:1
+dependencies (and skip the already identified ones), etc.
+
+For example the dependency
+
+    (city name -> zip code)
+
+is much stronger, i.e. whenever it hold, then
+
+    (city name, state name -> zip code)
+
+holds too. But in case there are cities with the same name in different states,
+then only the latter dependency will be valid.
+
+Of course, there probably are cities with the same name within a single state,
+but hopefully this is relatively rare occurence (and thus we'll still detect
+the 'soft' dependency).
+
+Handling multiple columns on the right side of the dependency, is not necessary,
+as those dependencies may be simply decomposed into a set of dependencies with
+the same meaning, one for each column on the right side. For example
+
+    (a -> b,c)
+
+is exactly the same as
+
+    (a -> b) & (a -> c)
+
+Of course, storing the first form may be more efficient thant storing multiple
+'simple' dependencies separately. This is left as a future work.
+
+
+Future work
+-----------
+
+* Investigate using histogram and MCV list to verify the dependencies.
+
+* Investigate statistical testing of the distribution (to decide whether it
+  makes sense to build the histogram/MCV list).
+
+* Consider eliminating the implied columns from the histogram and MCV lists
+  (but maybe that's not a good idea, because that'd make it impossible to use
+  these stats for non-equality clauses and also it wouldn't be possible to
+  use the stats for verification of the dependencies).
+
+* The reduction probably might be extended to also handle IS NULL clauses,
+  assuming we fix the ANALYZE to properly handle NULL values. We however
+  won't be able to reduce IS NOT NULL (unless I'm missing something).

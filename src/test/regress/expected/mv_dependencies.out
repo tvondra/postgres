@@ -55,8 +55,10 @@ SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
 
 TRUNCATE functional_dependencies;
 -- a => b, a => c, b => c
+-- check explain (expect bitmap index scan, not plain index scan)
 INSERT INTO functional_dependencies
      SELECT i/10000, i/20000, i/40000 FROM generate_series(1,1000000) s(i);
+CREATE INDEX fdeps_idx ON functional_dependencies (a, b);
 ANALYZE functional_dependencies;
 SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
   FROM pg_mv_statistic WHERE starelid = 'functional_dependencies'::regclass;
@@ -64,6 +66,16 @@ SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
 --------------+------------+-------------------------------
  t            | t          | (1) => 2, (1) => 3, (2) => 3
 (1 row)
+
+EXPLAIN (COSTS off)
+ SELECT * FROM functional_dependencies WHERE a = 10 AND b = 5;
+                 QUERY PLAN                  
+---------------------------------------------
+ Bitmap Heap Scan on functional_dependencies
+   Recheck Cond: ((a = 10) AND (b = 5))
+   ->  Bitmap Index Scan on fdeps_idx
+         Index Cond: ((a = 10) AND (b = 5))
+(4 rows)
 
 DROP TABLE functional_dependencies;
 -- varlena type (text)
@@ -110,8 +122,10 @@ SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
 
 TRUNCATE functional_dependencies;
 -- a => b, a => c, b => c
+-- check explain (expect bitmap index scan, not plain index scan)
 INSERT INTO functional_dependencies
      SELECT i/10000, i/20000, i/40000 FROM generate_series(1,1000000) s(i);
+CREATE INDEX fdeps_idx ON functional_dependencies (a, b);
 ANALYZE functional_dependencies;
 SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
   FROM pg_mv_statistic WHERE starelid = 'functional_dependencies'::regclass;
@@ -119,6 +133,16 @@ SELECT deps_enabled, deps_built, pg_mv_stats_dependencies_show(stadeps)
 --------------+------------+-------------------------------
  t            | t          | (1) => 2, (1) => 3, (2) => 3
 (1 row)
+
+EXPLAIN (COSTS off)
+ SELECT * FROM functional_dependencies WHERE a = '10' AND b = '5';
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Bitmap Heap Scan on functional_dependencies
+   Recheck Cond: ((a = '10'::text) AND (b = '5'::text))
+   ->  Bitmap Index Scan on fdeps_idx
+         Index Cond: ((a = '10'::text) AND (b = '5'::text))
+(4 rows)
 
 DROP TABLE functional_dependencies;
 -- NULL values (mix of int and text columns)

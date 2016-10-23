@@ -72,6 +72,7 @@ typedef MVDependenciesData *MVDependencies;
  */
 
 MVNDistinct		load_mv_ndistinct(Oid mvoid);
+MVDependencies	load_mv_dependencies(Oid mvoid);
 
 bytea *serialize_mv_ndistinct(MVNDistinct ndistinct);
 bytea *serialize_mv_dependencies(MVDependencies dependencies);

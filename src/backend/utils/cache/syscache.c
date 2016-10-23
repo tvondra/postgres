@@ -44,6 +44,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_language.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -493,6 +494,28 @@ static const struct cachedesc cacheinfo[] = {
 	},
 	{LanguageRelationId,		/* LANGOID */
 		LanguageOidIndexId,
+		1,
+		{
+			ObjectIdAttributeNumber,
+			0,
+			0,
+			0
+		},
+		4
+	},
+	{MvStatisticRelationId,		/* MVSTATNAMENSP */
+		MvStatisticNameIndexId,
+		2,
+		{
+			Anum_pg_mv_statistic_staname,
+			Anum_pg_mv_statistic_stanamespace,
+			0,
+			0
+		},
+		4
+	},
+	{MvStatisticRelationId,		/* MVSTATOID */
+		MvStatisticOidIndexId,
 		1,
 		{
 			ObjectIdAttributeNumber,

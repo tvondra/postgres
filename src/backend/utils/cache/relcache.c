@@ -47,6 +47,7 @@
 #include "catalog/pg_auth_members.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_database.h"
+#include "catalog/pg_mv_statistic.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_proc.h"
@@ -4094,6 +4095,62 @@ RelationGetIndexList(Relation relation)
 	return result;
 }
 
+
+List *
+RelationGetMVStatList(Relation relation)
+{
+	Relation	indrel;
+	SysScanDesc indscan;
+	ScanKeyData skey;
+	HeapTuple	htup;
+	List	   *result;
+	List	   *oldlist;
+	MemoryContext oldcxt;
+
+	/* Quick exit if we already computed the list. */
+	if (relation->rd_mvstatvalid != 0)
+		return list_copy(relation->rd_mvstatlist);
+
+	/*
+	 * We build the list we intend to return (in the caller's context) while
+	 * doing the scan.  After successfully completing the scan, we copy that
+	 * list into the relcache entry.  This avoids cache-context memory leakage
+	 * if we get some sort of error partway through.
+	 */
+	result = NIL;
+
+	/* Prepare to scan pg_index for entries having indrelid = this rel. */
+	ScanKeyInit(&skey,
+				Anum_pg_mv_statistic_starelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(relation)));
+
+	indrel = heap_open(MvStatisticRelationId, AccessShareLock);
+	indscan = systable_beginscan(indrel, MvStatisticRelidIndexId, true,
+								 NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(indscan)))
+		/* TODO maybe include only already built statistics? */
+		result = insert_ordered_oid(result, HeapTupleGetOid(htup));
+
+	systable_endscan(indscan);
+
+	heap_close(indrel, AccessShareLock);
+
+	/* Now save a copy of the completed list in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	oldlist = relation->rd_mvstatlist;
+	relation->rd_mvstatlist = list_copy(result);
+
+	relation->rd_mvstatvalid = true;
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Don't leak the old list, if there is one */
+	list_free(oldlist);
+
+	return result;
+}
+
 /*
  * insert_ordered_oid
  *		Insert a new Oid into a sorted list of Oids, preserving ordering
@@ -5059,6 +5116,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_indexattr = NULL;
 		rel->rd_keyattr = NULL;
 		rel->rd_idattr = NULL;
+		rel->rd_mvstatvalid = false;
+		rel->rd_mvstatlist = NIL;
 		rel->rd_createSubid = InvalidSubTransactionId;
 		rel->rd_newRelfilenodeSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;

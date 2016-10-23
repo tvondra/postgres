@@ -5,31 +5,31 @@ CREATE TABLE mcv_list (
     c INT
 );
 -- unknown column
-CREATE STATISTICS s4 ON mcv_list (unknown_column) WITH (mcv);
+CREATE STATISTICS s4 WITH (mcv) ON (unknown_column) FROM mcv_list;
 ERROR:  column "unknown_column" referenced in statistics does not exist
 -- single column
-CREATE STATISTICS s4 ON mcv_list (a) WITH (mcv);
+CREATE STATISTICS s4 WITH (mcv) ON (a) FROM mcv_list;
 ERROR:  multivariate stats require 2 or more columns
 -- single column, duplicated
-CREATE STATISTICS s4 ON mcv_list (a, a) WITH (mcv);
+CREATE STATISTICS s4 WITH (mcv) ON (a, a) FROM mcv_list;
 ERROR:  duplicate column name in statistics definition
 -- two columns, one duplicated
-CREATE STATISTICS s4 ON mcv_list (a, a, b) WITH (mcv);
+CREATE STATISTICS s4 WITH (mcv) ON (a, a, b) FROM mcv_list;
 ERROR:  duplicate column name in statistics definition
 -- unknown option
-CREATE STATISTICS s4 ON mcv_list (a, b, c) WITH (unknown_option);
+CREATE STATISTICS s4 WITH (unknown_option) ON (a, b, c) FROM mcv_list;
 ERROR:  unrecognized STATISTICS option "unknown_option"
 -- missing MCV statistics
-CREATE STATISTICS s4 ON mcv_list (a, b, c) WITH (dependencies, max_mcv_items=200);
+CREATE STATISTICS s4 WITH (dependencies, max_mcv_items=200) ON (a, b, c) FROM mcv_list;
 ERROR:  option 'mcv' is required by other options(s)
 -- invalid mcv_max_items value / too low
-CREATE STATISTICS s4 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10);
+CREATE STATISTICS s4 WITH (mcv, max_mcv_items=10) ON (a, b, c) FROM mcv_list;
 ERROR:  max number of MCV items must be at least 128
 -- invalid mcv_max_items value / too high
-CREATE STATISTICS s4 ON mcv_list (a, b, c) WITH (mcv, max_mcv_items=10000);
+CREATE STATISTICS s4 WITH (mcv, max_mcv_items=10000) ON (a, b, c) FROM mcv_list;
 ERROR:  max number of MCV items is 8192
 -- correct command
-CREATE STATISTICS s4 ON mcv_list (a, b, c) WITH (mcv);
+CREATE STATISTICS s4 WITH (mcv) ON (a, b, c) FROM mcv_list;
 -- random data
 INSERT INTO mcv_list
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -95,7 +95,7 @@ CREATE TABLE mcv_list (
     b TEXT,
     c TEXT
 );
-CREATE STATISTICS s5 ON mcv_list (a, b, c) WITH (mcv);
+CREATE STATISTICS s5 WITH (mcv) ON (a, b, c) FROM mcv_list;
 -- random data
 INSERT INTO mcv_list
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -188,7 +188,7 @@ CREATE TABLE mcv_list (
     c INT,
     d TEXT
 );
-CREATE STATISTICS s6 ON mcv_list (a, b, c, d) WITH (mcv);
+CREATE STATISTICS s6 WITH (mcv) ON (a, b, c, d) FROM mcv_list;
 INSERT INTO mcv_list
      SELECT
          mod(i, 100),

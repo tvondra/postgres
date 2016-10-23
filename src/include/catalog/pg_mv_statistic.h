@@ -52,7 +52,7 @@ CATALOG(pg_mv_statistic,3381)
 
 #ifdef CATALOG_VARLEN
 	pg_ndistinct		standist;		/* ndistinct coeff (serialized) */
-	bytea				stadeps;		/* dependencies (serialized) */
+	pg_dependencies		stadeps;		/* dependencies (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;

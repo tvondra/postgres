@@ -15,6 +15,8 @@
  */
 
 #include "common.h"
+
+#include "utils/bytea.h"
 #include "utils/lsyscache.h"
 
 /* internal state for generator of variations (k-permutations of n elements) */
@@ -691,4 +693,66 @@ pg_mv_stats_dependencies_show(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
+}
+
+
+/*
+ * pg_dependencies_in		- input routine for type pg_dependencies.
+ *
+ * pg_dependencies is real enough to be a table column, but it has no operations
+ * of its own, and disallows input too
+ *
+ * XXX This is inspired by what pg_node_tree does.
+ */
+Datum
+pg_dependencies_in(PG_FUNCTION_ARGS)
+{
+	/*
+	 * pg_node_list stores the data in binary form and parsing text input is
+	 * not needed, so disallow this.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_dependencies")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_dependencies		- output routine for type pg_dependencies.
+ *
+ * histograms are serialized into a bytea value, so we simply call byteaout()
+ * to serialize the value into text. But it'd be nice to serialize that into
+ * a meaningful representation (e.g. for inspection by people).
+ *
+ * FIXME not implemented yet, returning dummy value
+ */
+Datum
+pg_dependencies_out(PG_FUNCTION_ARGS)
+{
+	return byteaout(fcinfo);
+}
+
+/*
+ * pg_dependencies_recv		- binary input routine for type pg_dependencies.
+ */
+Datum
+pg_dependencies_recv(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot accept a value of type %s", "pg_dependencies")));
+
+	PG_RETURN_VOID();			/* keep compiler quiet */
+}
+
+/*
+ * pg_dependencies_send		- binary output routine for type pg_dependencies.
+ *
+ * XXX Histograms are serialized into a bytea value, so let's just send that.
+ */
+Datum
+pg_dependencies_send(PG_FUNCTION_ARGS)
+{
+	return byteasend(fcinfo);
 }

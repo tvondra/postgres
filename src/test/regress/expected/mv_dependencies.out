@@ -5,22 +5,19 @@ CREATE TABLE functional_dependencies (
     c INT
 );
 -- unknown column
-CREATE STATISTICS s1 ON functional_dependencies (unknown_column) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (unknown_column) FROM functional_dependencies;
 ERROR:  column "unknown_column" referenced in statistics does not exist
 -- single column
-CREATE STATISTICS s1 ON functional_dependencies (a) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a) FROM functional_dependencies;
 ERROR:  multivariate stats require 2 or more columns
 -- single column, duplicated
-CREATE STATISTICS s1 ON functional_dependencies (a,a) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a,a) FROM functional_dependencies;
 ERROR:  duplicate column name in statistics definition
 -- two columns, one duplicated
-CREATE STATISTICS s1 ON functional_dependencies (a, a, b) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a, a, b) FROM functional_dependencies;
 ERROR:  duplicate column name in statistics definition
--- unknown option
-CREATE STATISTICS s1 ON functional_dependencies (a, b, c) WITH (unknown_option);
-ERROR:  unrecognized STATISTICS option "unknown_option"
 -- correct command
-CREATE STATISTICS s1 ON functional_dependencies (a, b, c) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 -- random data (no functional dependencies)
 INSERT INTO functional_dependencies
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -75,7 +72,7 @@ CREATE TABLE functional_dependencies (
     b TEXT,
     c TEXT
 );
-CREATE STATISTICS s2 ON functional_dependencies (a, b, c) WITH (dependencies);
+CREATE STATISTICS s2 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 -- random data (no functional dependencies)
 INSERT INTO functional_dependencies
      SELECT mod(i, 111), mod(i, 123), mod(i, 23) FROM generate_series(1,10000) s(i);
@@ -131,7 +128,7 @@ CREATE TABLE functional_dependencies (
     c INT,
     d TEXT
 );
-CREATE STATISTICS s3 ON functional_dependencies (a, b, c, d) WITH (dependencies);
+CREATE STATISTICS s3 WITH (dependencies) ON (a, b, c, d) FROM functional_dependencies;
 INSERT INTO functional_dependencies
      SELECT
          mod(i, 100),

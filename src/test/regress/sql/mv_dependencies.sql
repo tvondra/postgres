@@ -6,22 +6,19 @@ CREATE TABLE functional_dependencies (
 );
 
 -- unknown column
-CREATE STATISTICS s1 ON functional_dependencies (unknown_column) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (unknown_column) FROM functional_dependencies;
 
 -- single column
-CREATE STATISTICS s1 ON functional_dependencies (a) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a) FROM functional_dependencies;
 
 -- single column, duplicated
-CREATE STATISTICS s1 ON functional_dependencies (a,a) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a,a) FROM functional_dependencies;
 
 -- two columns, one duplicated
-CREATE STATISTICS s1 ON functional_dependencies (a, a, b) WITH (dependencies);
-
--- unknown option
-CREATE STATISTICS s1 ON functional_dependencies (a, b, c) WITH (unknown_option);
+CREATE STATISTICS s1 WITH (dependencies) ON (a, a, b) FROM functional_dependencies;
 
 -- correct command
-CREATE STATISTICS s1 ON functional_dependencies (a, b, c) WITH (dependencies);
+CREATE STATISTICS s1 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 
 -- random data (no functional dependencies)
 INSERT INTO functional_dependencies
@@ -72,7 +69,7 @@ CREATE TABLE functional_dependencies (
     c TEXT
 );
 
-CREATE STATISTICS s2 ON functional_dependencies (a, b, c) WITH (dependencies);
+CREATE STATISTICS s2 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 
 -- random data (no functional dependencies)
 INSERT INTO functional_dependencies
@@ -124,7 +121,7 @@ CREATE TABLE functional_dependencies (
     d TEXT
 );
 
-CREATE STATISTICS s3 ON functional_dependencies (a, b, c, d) WITH (dependencies);
+CREATE STATISTICS s3 WITH (dependencies) ON (a, b, c, d) FROM functional_dependencies;
 
 INSERT INTO functional_dependencies
      SELECT

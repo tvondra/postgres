@@ -38,7 +38,9 @@ compare_int16(const void *a, const void *b)
 }
 
 /*
- * Implements the CREATE STATISTICS name ON (columns) FROM table
+ * Implements the CREATE STATISTICS command with syntax:
+ *
+ *    CREATE STATISTICS name WITH (options) ON (columns) FROM table
  *
  * We do require that the types support sorting (ltopr), although some
  * statistics might work with  equality only.
@@ -65,6 +67,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				childobject;
+
+	/* by default build nothing */
+	bool		build_ndistinct = false,
+				build_dependencies = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -151,6 +157,31 @@ CreateStatistics(CreateStatsStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 			  errmsg("duplicate column name in statistics definition")));
 
+	/*
+	 * Parse the statistics options - currently only statistics types are
+	 * recognized (ndistinct, dependencies).
+	 */
+	foreach(l, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(l);
+
+		if (strcmp(opt->defname, "ndistinct") == 0)
+			build_ndistinct = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "dependencies") == 0)
+			build_dependencies = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+
+	/* Make sure there's at least one statistics type specified. */
+	if (! (build_ndistinct || build_dependencies))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("no statistics type (ndistinct, dependencies) requested")));
+
 	stakeys = buildint2vector(attnums, numcols);
 
 	/*
@@ -170,9 +201,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(stakeys);
 
 	/* enabled statistics */
-	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(true);
+	values[Anum_pg_mv_statistic_ndist_enabled - 1] = BoolGetDatum(build_ndistinct);
+	values[Anum_pg_mv_statistic_deps_enabled - 1] = BoolGetDatum(build_dependencies);
 
 	nulls[Anum_pg_mv_statistic_standist - 1] = true;
+	nulls[Anum_pg_mv_statistic_stadeps - 1] = true;
 
 	/* insert the tuple into pg_mv_statistic */
 	mvstatrel = heap_open(MvStatisticRelationId, RowExclusiveLock);

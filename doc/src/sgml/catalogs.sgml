@@ -4285,11 +4285,32 @@
      </row>
 
      <row>
+      <entry><structfield>deps_enabled</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, functional dependencies will be computed for the combination of
+       columns, covered by the statistics. This does not mean the dependencies
+       are already computed, though.
+      </entry>
+     </row>
+
+     <row>
       <entry><structfield>ndist_built</structfield></entry>
       <entry><type>bool</type></entry>
       <entry></entry>
       <entry>
        If true, ndistinct coefficients are already computed and available for
+       use during query estimation.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>deps_built</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       If true, functional depenedencies are already computed and available for
        use during query estimation.
       </entry>
      </row>
@@ -4311,6 +4332,15 @@
       <entry></entry>
       <entry>
        Ndistict coefficients, serialized as <structname>pg_ndistinct</> type.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>stadeps</structfield></entry>
+      <entry><type>pg_dependencies</type></entry>
+      <entry></entry>
+      <entry>
+       Functional dependencies, serialized as <structname>pg_dependencies</> type.
       </entry>
      </row>
 

@@ -2301,9 +2301,11 @@ describeOneTableDetails(const char *schemaname,
 							  "  (staenabled::char[] @> '{d}'::char[]) AS ndist_enabled,\n"
 							  "  (staenabled::char[] @> '{D}'::char[]) AS deps_enabled,\n"
 							  "  (staenabled::char[] @> '{m}'::char[]) AS mcv_enabled,\n"
+							  "  (staenabled::char[] @> '{h}'::char[]) AS hist_enabled,\n"
 							  "  (standistinct IS NOT NULL) AS ndist_built,\n"
 							  "  (stadependencies IS NOT NULL) AS deps_built,\n"
 							  "  (stamcv IS NOT NULL) AS mcv_built,\n"
+							  "  (stahistogram IS NOT NULL) AS hist_built,\n"
 							  "  (SELECT string_agg(attname::text,', ')\n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 							  "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
@@ -2346,8 +2348,17 @@ describeOneTableDetails(const char *schemaname,
 						first = false;
 					}
 
+					if (!strcmp(PQgetvalue(result, i, 6), "t"))
+					{
+						if (!first)
+							appendPQExpBuffer(&buf, ", histogram");
+						else
+							appendPQExpBuffer(&buf, "(histogram");
+						first = false;
+					}
+
 					appendPQExpBuffer(&buf, ") ON (%s)",
-									  PQgetvalue(result, i, 9));
+									  PQgetvalue(result, i, 12));
 
 					printTableAddFooter(&cont, buf.data);
 				}

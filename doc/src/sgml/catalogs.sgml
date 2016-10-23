@@ -4321,6 +4321,15 @@
       </entry>
      </row>
 
+     <row>
+      <entry><structfield>stahist</structfield></entry>
+      <entry><type>pg_histogram</type></entry>
+      <entry></entry>
+      <entry>
+       Histogram, serialized as <structname>pg_histogram</> type.
+      </entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>

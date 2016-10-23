@@ -20,6 +20,8 @@ Currently we only have two kinds of extended statistics
 
     (c) MCV lists (README.mcv)
 
+    (c) multivariate histograms (README.histogram)
+
 
 Compatible clause types
 -----------------------

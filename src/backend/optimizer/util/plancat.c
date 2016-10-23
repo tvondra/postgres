@@ -1287,7 +1287,8 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		/* unavailable stats are not interesting for the planner */
 		if (stats_are_built(htup, STATS_EXT_NDISTINCT) ||
 			stats_are_built(htup, STATS_EXT_DEPENDENCIES) ||
-			stats_are_built(htup, STATS_EXT_MCV))
+			stats_are_built(htup, STATS_EXT_MCV) ||
+			stats_are_built(htup, STATS_EXT_HISTOGRAM))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 
@@ -1298,11 +1299,13 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
 			info->deps_enabled = stats_are_enabled(htup,  STATS_EXT_DEPENDENCIES);
 			info->mcv_enabled = stats_are_built(htup,     STATS_EXT_MCV);
+			info->hist_enabled = stats_are_built(htup,    STATS_EXT_HISTOGRAM);
 
 			/* built/available statistics */
 			info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
 			info->deps_built = stats_are_built(htup,  STATS_EXT_DEPENDENCIES);
 			info->mcv_built = stats_are_built(htup,   STATS_EXT_MCV);
+			info->hist_built = stats_are_built(htup,  STATS_EXT_HISTOGRAM);
 
 			/* decode the stakeys array */
 			adatum = SysCacheGetAttr(STATEXTOID, htup,

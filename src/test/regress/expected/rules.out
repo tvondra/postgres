@@ -2166,7 +2166,10 @@ pg_stats_ext| SELECT n.nspname AS schemaname,
     s.stakeys AS attnums,
     length((s.standistinct)::bytea) AS ndistbytes,
     length((s.stadependencies)::bytea) AS depsbytes,
-    length((s.stamcv)::bytea) AS mcvbytes
+    length((s.stamcv)::bytea) AS mcvbytes,
+    pg_mcv_list_info(s.stamcv) AS mcvinfo,
+    length((s.stahistogram)::bytea) AS histbytes,
+    pg_histogram_info(s.stahistogram) AS histinfo
    FROM ((pg_statistic_ext s
      JOIN pg_class c ON ((c.oid = s.starelid)))
      LEFT JOIN pg_namespace n ON ((n.oid = c.relnamespace)));

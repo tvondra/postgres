@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
 
 #include "common.h"
 #include "utils/array.h"
@@ -24,7 +25,7 @@ static List *list_ext_stats(Oid relid);
 
 static void update_ext_stats(Oid relid,
 					  MVNDistinct ndistinct, MVDependencies dependencies,
-					  MCVList mcvlist,
+					  MCVList mcvlist, MVHistogram histogram,
 					  int2vector *attrs, VacAttrStats **stats);
 
 /*
@@ -54,7 +55,8 @@ build_ext_stats(Relation onerel, double totalrows,
 		MVNDistinct	ndistinct = NULL;
 		MVDependencies deps = NULL;
 		MCVList		mcvlist = NULL;
-		int			numrows_filtered = 0;
+		MVHistogram histogram = NULL;
+		int			numrows_filtered = numrows;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -99,8 +101,12 @@ build_ext_stats(Relation onerel, double totalrows,
 		if (stat->mcv_enabled)
 			mcvlist = build_ext_mcvlist(numrows, rows, attrs, stats, &numrows_filtered);
 
-		/* store the statistics in the catalog */
-		update_ext_stats(stat->mvoid, ndistinct, deps, mcvlist, attrs, stats);
+		/* build a multivariate histogram on the columns */
+		if ((numrows_filtered > 0) && (stat->hist_enabled))
+			histogram = build_ext_histogram(numrows_filtered, rows, attrs, stats, numrows);
+
+		/* store the histogram / MCV list in the catalog */
+		update_ext_stats(stat->mvoid, ndistinct, deps, mcvlist, histogram, attrs, stats);
 	}
 }
 
@@ -182,10 +188,12 @@ list_ext_stats(Oid relid)
 		info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
 		info->deps_enabled = stats_are_enabled(htup, STATS_EXT_DEPENDENCIES);
 		info->mcv_enabled = stats_are_enabled(htup, STATS_EXT_MCV);
+		info->hist_enabled = stats_are_enabled(htup, STATS_EXT_HISTOGRAM);
 
 		info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
 		info->deps_built = stats_are_built(htup, STATS_EXT_DEPENDENCIES);
 		info->mcv_built = stats_are_built(htup, STATS_EXT_MCV);
+		info->hist_built = stats_are_built(htup, STATS_EXT_HISTOGRAM);
 
 		result = lappend(result, info);
 	}
@@ -254,7 +262,8 @@ find_ext_attnums(Oid mvoid, Oid *relid)
  */
 static void
 update_ext_stats(Oid mvoid,
-				MVNDistinct ndistinct, MVDependencies dependencies, MCVList mcvlist,
+				MVNDistinct ndistinct, MVDependencies dependencies,
+				MCVList mcvlist, MVHistogram histogram,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -296,10 +305,20 @@ update_ext_stats(Oid mvoid,
 		values[Anum_pg_statistic_ext_stamcv - 1] = PointerGetDatum(data);
 	}
 
+	if (histogram != NULL)
+	{
+		bytea	   *data = serialize_ext_histogram(histogram, attrs, stats);
+
+		nulls[Anum_pg_statistic_ext_stahistogram - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_stahistogram - 1]
+			= PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_standistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stadependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_stamcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stahistogram - 1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_statistic_ext_stakeys - 1] = false;
@@ -586,6 +605,11 @@ stats_are_built(HeapTuple htup, char type)
 		case STATS_EXT_MCV:
 			SysCacheGetAttr(STATEXTOID, htup,
 							Anum_pg_statistic_ext_stamcv, &isnull);
+			break;
+
+		case STATS_EXT_HISTOGRAM:
+			SysCacheGetAttr(STATEXTOID, htup,
+							Anum_pg_statistic_ext_stahistogram, &isnull);
 			break;
 
 		default:

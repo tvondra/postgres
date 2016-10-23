@@ -2718,9 +2718,9 @@ DESCR("current user privilege on any column by rel name");
 DATA(insert OID = 3029 (  has_any_column_privilege	   PGNSP PGUID 12 10 0 0 0 f f f f t f s s 2 0 16 "26 25" _null_ _null_ _null_ _null_ _null_ has_any_column_privilege_id _null_ _null_ _null_ ));
 DESCR("current user privilege on any column by rel oid");
 
-DATA(insert OID = 3998 (  pg_mv_stats_dependencies_info     PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "17" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_dependencies_info _null_ _null_ _null_ ));
+DATA(insert OID = 3998 (  pg_mv_stats_dependencies_info     PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "3353" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_dependencies_info _null_ _null_ _null_ ));
 DESCR("multivariate stats: functional dependencies info");
-DATA(insert OID = 3999 (  pg_mv_stats_dependencies_show     PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "17" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_dependencies_show _null_ _null_ _null_ ));
+DATA(insert OID = 3999 (  pg_mv_stats_dependencies_show     PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "3353" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_dependencies_show _null_ _null_ _null_ ));
 DESCR("multivariate stats: functional dependencies show");
 
 DATA(insert OID = 3344 (  pg_ndistinct_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3343 "2275" _null_ _null_ _null_ _null_ _null_ pg_ndistinct_in _null_ _null_ _null_ ));

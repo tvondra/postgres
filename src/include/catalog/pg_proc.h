@@ -2726,6 +2726,10 @@ DATA(insert OID = 3376 (  pg_mv_stats_mcvlist_info	PGNSP PGUID 12 1 0 0 0 f f f 
 DESCR("multi-variate statistics: MCV list info");
 DATA(insert OID = 3373 (  pg_mv_mcv_items PGNSP PGUID 12 1 1000 0 0 f f f f t t i s 1 0 2249 "26" "{26,23,1009,1000,701}" "{i,o,o,o,o}" "{oid,index,values,nulls,frequency}" _null_ _null_ pg_mv_mcv_items _null_ _null_ _null_ ));
 DESCR("details about MCV list items");
+DATA(insert OID = 3375 (  pg_mv_stats_histogram_info	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 25 "774" _null_ _null_ _null_ _null_ _null_ pg_mv_stats_histogram_info _null_ _null_ _null_ ));
+DESCR("multi-variate statistics: histogram info");
+DATA(insert OID = 3374 (  pg_mv_histogram_buckets PGNSP PGUID 12 1 1000 0 0 f f f f t t i s 2 0 2249 "26 23" "{26,23,23,1009,1009,1000,1000,1000,701,701,701}" "{i,i,o,o,o,o,o,o,o,o,o}" "{oid,otype,index,minvals,maxvals,nullsonly,mininclusive,maxinclusive,frequency,density,bucket_volume}" _null_ _null_ pg_mv_histogram_buckets _null_ _null_ _null_ ));
+DESCR("details about histogram buckets");
 
 DATA(insert OID = 3344 (  pg_ndistinct_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3343 "2275" _null_ _null_ _null_ _null_ _null_ pg_ndistinct_in _null_ _null_ _null_ ));
 DESCR("I/O");
@@ -2752,6 +2756,15 @@ DESCR("I/O");
 DATA(insert OID = 444 (  pg_mcv_list_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 441 "2281" _null_ _null_ _null_ _null_ _null_ pg_mcv_list_recv _null_ _null_ _null_ ));
 DESCR("I/O");
 DATA(insert OID = 445 (  pg_mcv_list_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "441" _null_ _null_ _null_ _null_ _null_	pg_mcv_list_send _null_ _null_ _null_ ));
+DESCR("I/O");
+
+DATA(insert OID = 775 (  pg_histogram_in	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 774 "2275" _null_ _null_ _null_ _null_ _null_ pg_histogram_in _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 776 (  pg_histogram_out	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2275 "774" _null_ _null_ _null_ _null_ _null_ pg_histogram_out _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 777 (  pg_histogram_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 774 "2281" _null_ _null_ _null_ _null_ _null_ pg_histogram_recv _null_ _null_ _null_ ));
+DESCR("I/O");
+DATA(insert OID = 778 (  pg_histogram_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "774" _null_ _null_ _null_ _null_ _null_	pg_histogram_send _null_ _null_ _null_ ));
 DESCR("I/O");
 
 DATA(insert OID = 1928 (  pg_stat_get_numscans			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_numscans _null_ _null_ _null_ ));

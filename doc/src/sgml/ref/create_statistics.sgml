@@ -21,9 +21,9 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_name</replaceable> ON <replaceable class="PARAMETER">table_name</replaceable> ( [
-  { <replaceable class="PARAMETER">column_name</replaceable> } ] [, ...])
-[ WITH ( <replaceable class="PARAMETER">statistics_parameter</replaceable> [= <replaceable class="PARAMETER">value</replaceable>] [, ... ] )
+CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_name</replaceable> ON (
+  <replaceable class="PARAMETER">column_name</replaceable>, <replaceable class="PARAMETER">column_name</replaceable> [, ...])
+  FROM <replaceable class="PARAMETER">table_name</replaceable>
 </synopsis>
 
  </refsynopsisdiv>
@@ -98,43 +98,8 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
     </listitem>
    </varlistentry>
 
-   <varlistentry>
-    <term><literal>WITH ( <replaceable class="PARAMETER">statistics_parameter</replaceable> [= <replaceable class="PARAMETER">value</replaceable>] [, ... ] )</literal></term>
-    <listitem>
-     <para>
-      ...
-     </para>
-    </listitem>
-   </varlistentry>
-
   </variablelist>
 
-  <refsect2 id="SQL-CREATESTATISTICS-parameters">
-   <title id="SQL-CREATESTATISTICS-parameters-title">Statistics Parameters</title>
-
- <indexterm zone="sql-createstatistics-parameters">
-  <primary>statistics parameters</primary>
- </indexterm>
-
-   <para>
-    The <literal>WITH</> clause can specify <firstterm>statistics parameters</>
-    for statistics. The currently available parameters are listed below.
-   </para>
-
-   <variablelist>
-
-   <varlistentry>
-    <term><literal>ndistinct</> (<type>boolean</>)</term>
-    <listitem>
-     <para>
-      Enables ndistinct coefficients for the statistics.
-     </para>
-    </listitem>
-   </varlistentry>
-
-   </variablelist>
-
-  </refsect2>
  </refsect1>
 
  <refsect1 id="SQL-CREATESTATISTICS-notes">
@@ -165,7 +130,7 @@ CREATE TABLE t1 (
 INSERT INTO t1 SELECT i/100, i/500
                  FROM generate_series(1,1000000) s(i);
 
-CREATE STATISTICS s1 ON t1 (a, b) WITH (dependencies);
+CREATE STATISTICS s1 ON (a, b) FROM t1;
 
 ANALYZE t1;
 

@@ -2208,6 +2208,50 @@ describeOneTableDetails(const char *schemaname,
 			PQclear(result);
 		}
 
+		/* print any multivariate statistics */
+		if (pset.sversion >= 90600)
+		{
+			printfPQExpBuffer(&buf,
+							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
+							  "  deps_enabled,\n"
+							  "  deps_built,\n"
+							  "  (SELECT string_agg(attname::text,', ')\n"
+						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
+							  "         JOIN pg_attribute a ON (starelid = a.attrelid and a.attnum = s.attnum))) AS attnums\n"
+			  "FROM pg_mv_statistic stat WHERE starelid  = '%s' ORDER BY 1;",
+							  oid);
+
+			result = PSQLexec(buf.data);
+			if (!result)
+				goto error_return;
+			else
+				tuples = PQntuples(result);
+
+			if (tuples > 0)
+			{
+				printTableAddFooter(&cont, _("Statistics:"));
+				for (i = 0; i < tuples; i++)
+				{
+					printfPQExpBuffer(&buf, "    ");
+
+					/* statistics name (qualified with namespace) */
+					appendPQExpBuffer(&buf, "\"%s.%s\" ",
+									  PQgetvalue(result, i, 1),
+									  PQgetvalue(result, i, 2));
+
+					/* options */
+					if (!strcmp(PQgetvalue(result, i, 4), "t"))
+						appendPQExpBuffer(&buf, "(dependencies)");
+
+					appendPQExpBuffer(&buf, " ON (%s)",
+									  PQgetvalue(result, i, 6));
+
+					printTableAddFooter(&cont, buf.data);
+				}
+			}
+			PQclear(result);
+		}
+
 		/* print rules */
 		if (tableinfo.hasrules && tableinfo.relkind != 'm')
 		{

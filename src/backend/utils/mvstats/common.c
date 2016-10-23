@@ -83,13 +83,13 @@ build_mv_stats(Relation onerel, double totalrows,
 		/* check allowed number of dimensions */
 		Assert((attrs->dim1 >= 2) && (attrs->dim1 <= MVSTATS_MAX_DIMENSIONS));
 
-		/* analyze functional dependencies between the columns */
-		if (stat->deps_enabled)
-			deps = build_mv_dependencies(numrows, rows, attrs, stats);
-
 		/* compute ndistinct coefficients */
 		if (stat->ndist_enabled)
 			ndistinct = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
+
+		/* analyze functional dependencies between the columns */
+		if (stat->deps_enabled)
+			deps = build_mv_dependencies(numrows, rows, attrs, stats);
 
 		/* store the statistics in the catalog */
 		update_mv_stats(stat->mvoid, ndistinct, deps, attrs, stats);

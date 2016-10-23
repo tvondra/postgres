@@ -65,9 +65,13 @@ typedef struct MVDependenciesData
 
 typedef MVDependenciesData *MVDependencies;
 
-
+bool dependency_implies_attribute(MVDependency dependency, AttrNumber attnum,
+								  int16 *attmap);
+bool dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
+								 int16 *attmap);
 
 MVNDistinct		load_mv_ndistinct(Oid mvoid);
+MVDependencies	load_mv_dependencies(Oid mvoid);
 
 bytea *serialize_mv_ndistinct(MVNDistinct ndistinct);
 bytea *serialize_mv_dependencies(MVDependencies dependencies);

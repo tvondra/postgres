@@ -305,6 +305,7 @@ compare_scalars_partition(const void *a, const void *b, void *arg)
 	return ApplySortComparator(da, false, db, false, ssup);
 }
 
+
 /* initialize multi-dimensional sort */
 MultiSortSupport
 multi_sort_init(int ndims)

@@ -207,7 +207,8 @@ static Const *string_to_const(const char *str, Oid datatype);
 static Const *string_to_bytea_const(const char *str, size_t str_len);
 static List *add_predicate_to_quals(IndexOptInfo *index, List *indexQuals);
 
-static Oid find_ndistinct_coeff(PlannerInfo *root, RelOptInfo *rel, List *varinfos);
+static double find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos,
+							 bool *found);
 
 /*
  *		eqsel			- Selectivity of "=" for any data types.
@@ -3436,11 +3437,11 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 
 			if (relvarcount > 1)
 			{
-				Oid oid = find_ndistinct_coeff(root, rel, varinfos);
+				bool found;
+				double ndist = find_ndistinct(root, rel, varinfos, &found);
 
-				if (oid != InvalidOid)
-					// coeff = load_mv_ndistinct(oid);
-					elog(ERROR, "FIXME: estimate_num_groups");
+				if (found)
+					reldistinct = ndist;
 				else
 					clamp *= 0.1;
 
@@ -7617,12 +7618,19 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  * Currently we only look for a perfect match, i.e. a single ndistinct
  * estimate exactly matching all the columns of the statistics.
  */
-static Oid
-find_ndistinct_coeff(PlannerInfo *root, RelOptInfo *rel, List *varinfos)
+static double
+find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 {
 	ListCell *lc;
 	Bitmapset *attnums = NULL;
 	VariableStatData vardata;
+
+	/* assume we haven't found any suitable ndistinct statistics */
+	*found = false;
+
+	/* bail out immediately if the table has no multivariate statistics */
+	if (!rel->mvstatlist)
+		return 0.0;
 
 	foreach(lc, varinfos)
 	{
@@ -7656,24 +7664,93 @@ find_ndistinct_coeff(PlannerInfo *root, RelOptInfo *rel, List *varinfos)
 	/* look for a matching ndistinct statistics */
 	foreach (lc, rel->mvstatlist)
 	{
-		int i;
+		int i, k;
+		bool matches;
 		MVStatisticInfo *info = (MVStatisticInfo *)lfirst(lc);
 
 		/* skip statistics without ndistinct coefficient built */
 		if (!info->ndist_built)
 			continue;
 
-		/* only exact matches for now (same set of columns) */
-		if (bms_num_members(attnums) != info->stakeys->dim1)
+		/*
+		 * Only ndistinct stats covering all Vars are acceptable, which can't
+		 * happen if the statistics has fewer attributes than we have Vars.
+		 */
+		if (bms_num_members(attnums) > info->stakeys->dim1)
 			continue;
 
-		/* check that the columns match */
-		for (i = 0; i < info->stakeys->dim1; i++)
-			if (bms_is_member(info->stakeys->values[i], attnums))
-				continue;
+		/* check that all Vars are covered by the statistic */
+		matches = true; /* assume match until we find unmatched attribute */
+		k = -1;
+		while ((k = bms_next_member(attnums, k)) >= 0)
+		{
+			bool attr_found = false;
+			for (i = 0; i < info->stakeys->dim1; i++)
+			{
+				if (info->stakeys->values[i] == k)
+				{
+					attr_found = true;
+					break;
+				}
+			}
 
-		return info->mvoid;
+			/* found attribute not covered by this ndistinct stats, skip */
+			if (!attr_found)
+			{
+				matches = false;
+				break;
+			}
+		}
+
+		if (! matches)
+			continue;
+
+		/* hey, this statistics matches! great, let's extract the value */
+		*found = true;
+
+		{
+			int j;
+			MVNDistinct stat = load_mv_ndistinct(info->mvoid);
+
+			for (j = 0; j < stat->nitems; j++)
+			{
+				bool item_matches = true;
+				MVNDistinctItem * item = &stat->items[j];
+
+				/* not the right item (different number of attributes) */
+				if (item->nattrs != bms_num_members(attnums))
+					continue;
+
+				/* check the attribute numbers */
+				k = -1;
+				while ((k = bms_next_member(attnums, k)) >= 0)
+				{
+					bool attr_found = false;
+					for (i = 0; i < item->nattrs; i++)
+					{
+						if (info->stakeys->values[item->attrs[i]] == k)
+						{
+							attr_found = true;
+							break;
+						}
+					}
+
+					if (! attr_found)
+					{
+						item_matches = false;
+						break;
+					}
+				}
+
+				if (! item_matches)
+					continue;
+
+				return item->ndistinct;
+			}
+		}
 	}
 
-	return InvalidOid;
+	Assert(!(*found));
+
+	return 0.0;
 }

@@ -446,6 +446,9 @@ serialize_mv_ndistinct(MVNDistinct ndistinct)
 
 	tmp = VARDATA(output);
 
+	ndistinct->magic = MVSTAT_NDISTINCT_MAGIC;
+	ndistinct->type = MVSTAT_NDISTINCT_TYPE_BASIC;
+
 	/* first, store the number of items */
 	memcpy(tmp, ndistinct, offsetof(MVNDistinctData, items));
 	tmp += offsetof(MVNDistinctData, items);

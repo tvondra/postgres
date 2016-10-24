@@ -49,7 +49,7 @@ CATALOG(pg_mv_statistic,3381)
 	int2vector	stakeys;		/* array of column keys */
 
 #ifdef CATALOG_VARLEN
-	float8		standcoeff;		/* ndistinct coeff (serialized) */
+	pg_ndistinct		standist;		/* ndistinct coeff (serialized) */
 #endif
 
 } FormData_pg_mv_statistic;

@@ -1380,7 +1380,7 @@ pg_mv_stats| SELECT n.nspname AS schemaname,
     c.relname AS tablename,
     s.staname,
     s.stakeys AS attnums,
-    s.standcoeff AS ndcoeff
+    length(s.standist) AS ndistbytes
    FROM ((pg_mv_statistic s
      JOIN pg_class c ON ((c.oid = s.starelid)))
      LEFT JOIN pg_namespace n ON ((n.oid = c.relnamespace)));

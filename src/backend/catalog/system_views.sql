@@ -164,7 +164,7 @@ CREATE VIEW pg_mv_stats AS
         C.relname AS tablename,
         S.staname AS staname,
         S.stakeys AS attnums,
-        standcoeff AS ndcoeff
+        length(s.standist) AS ndistbytes
     FROM (pg_mv_statistic S JOIN pg_class C ON (C.oid = S.starelid))
         LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace);
 

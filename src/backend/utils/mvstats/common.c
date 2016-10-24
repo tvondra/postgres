@@ -49,7 +49,7 @@ build_mv_stats(Relation onerel, double totalrows,
 	{
 		int			j;
 		MVStatisticInfo *stat = (MVStatisticInfo *) lfirst(lc);
-		double		ndist = -1;
+		MVNDistinct	ndistinct = NULL;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -84,10 +84,10 @@ build_mv_stats(Relation onerel, double totalrows,
 
 		/* compute ndistinct coefficients */
 		if (stat->ndist_enabled)
-			ndist = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
+			ndistinct = build_mv_ndistinct(totalrows, numrows, rows, attrs, stats);
 
 		/* store the statistics in the catalog */
-		update_mv_stats(stat->mvoid, ndist, attrs, stats);
+		update_mv_stats(stat->mvoid, ndistinct, attrs, stats);
 	}
 }
 
@@ -184,7 +184,7 @@ list_mv_stats(Oid relid)
 }
 
 void
-update_mv_stats(Oid mvoid, double ndistcoeff,
+update_mv_stats(Oid mvoid, MVNDistinct ndistinct,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -199,6 +199,18 @@ update_mv_stats(Oid mvoid, double ndistcoeff,
 	memset(replaces, 0, Natts_pg_mv_statistic * sizeof(bool));
 	memset(values, 0, Natts_pg_mv_statistic * sizeof(Datum));
 
+	/*
+	 * Construct a new pg_mv_statistic tuple - replace only the histogram and
+	 * MCV list, depending whether it actually was computed.
+	 */
+	if (ndistinct != NULL)
+	{
+		bytea	   *data = serialize_mv_ndistinct(ndistinct);
+
+		nulls[Anum_pg_mv_statistic_standist -1] = (data == NULL);
+		values[Anum_pg_mv_statistic_standist-1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_mv_statistic_standist - 1] = true;
 
@@ -210,7 +222,8 @@ update_mv_stats(Oid mvoid, double ndistcoeff,
 	replaces[Anum_pg_mv_statistic_ndist_built - 1] = true;
 	replaces[Anum_pg_mv_statistic_stakeys - 1] = true;
 
-	values[Anum_pg_mv_statistic_ndist_built - 1] = BoolGetDatum(ndistcoeff > 1.0);
+	values[Anum_pg_mv_statistic_ndist_built - 1] = BoolGetDatum(ndistinct != NULL);
+
 	values[Anum_pg_mv_statistic_stakeys - 1] = PointerGetDatum(attrs);
 
 	/* Is there already a pg_mv_statistic tuple for this attribute? */

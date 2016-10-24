@@ -3439,7 +3439,8 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 				Oid oid = find_ndistinct_coeff(root, rel, varinfos);
 
 				if (oid != InvalidOid)
-					coeff = load_mv_ndistinct(oid);
+					// coeff = load_mv_ndistinct(oid);
+					elog(ERROR, "FIXME: estimate_num_groups");
 				else
 					clamp *= 0.1;
 

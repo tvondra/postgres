@@ -575,8 +575,8 @@ deserialize_mv_dependencies(bytea *data)
 	tmp += offsetof(MVDependenciesData, deps);
 
 	if (dependencies->magic != MVSTAT_DEPS_MAGIC)
-		elog(ERROR, "invalid dependency type %d (expected %dd)",
-			 dependencies->type, MVSTAT_DEPS_MAGIC);
+		elog(ERROR, "invalid dependency magic %d (expected %dd)",
+			 dependencies->magic, MVSTAT_DEPS_MAGIC);
 
 	if (dependencies->type != MVSTAT_DEPS_TYPE_BASIC)
 		elog(ERROR, "invalid dependency type %d (expected %dd)",

@@ -492,7 +492,7 @@ deserialize_mv_ndistinct(bytea *data)
 	ndistinct = (MVNDistinct) palloc0(sizeof(MVNDistinctData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
-	tmp = VARDATA(data);
+	tmp = VARDATA_ANY(data);
 
 	/* get the header and perform basic sanity checks */
 	memcpy(ndistinct, tmp, offsetof(MVNDistinctData, items));

@@ -568,7 +568,7 @@ deserialize_mv_dependencies(bytea *data)
 	dependencies = (MVDependencies) palloc0(sizeof(MVDependenciesData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
-	tmp = VARDATA(data);
+	tmp = VARDATA_ANY(data);
 
 	/* get the header and perform basic sanity checks */
 	memcpy(dependencies, tmp, offsetof(MVDependenciesData, deps));

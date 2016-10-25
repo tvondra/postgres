@@ -690,7 +690,7 @@ deserialize_mv_histogram(bytea *data)
 		= (MVSerializedHistogram) palloc(sizeof(MVSerializedHistogramData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
-	tmp = VARDATA(data);
+	tmp = VARDATA_ANY(data);
 
 	/* get the header and perform basic sanity checks */
 	memcpy(histogram, tmp, offsetof(MVSerializedHistogramData, buckets));

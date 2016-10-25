@@ -724,13 +724,49 @@ pg_dependencies_in(PG_FUNCTION_ARGS)
  * histograms are serialized into a bytea value, so we simply call byteaout()
  * to serialize the value into text. But it'd be nice to serialize that into
  * a meaningful representation (e.g. for inspection by people).
- *
- * FIXME not implemented yet, returning dummy value
  */
 Datum
 pg_dependencies_out(PG_FUNCTION_ARGS)
 {
-	return byteaout(fcinfo);
+	int i, j;
+	char		   *ret;
+	StringInfoData	str;
+
+	bytea	   *data = PG_GETARG_BYTEA_PP(0);
+
+	MVDependencies dependencies = deserialize_mv_dependencies(data);
+
+	initStringInfo(&str);
+	appendStringInfoString(&str, "[");
+
+	for (i = 0; i < dependencies->ndeps; i++)
+	{
+		MVDependency dependency = dependencies->deps[i];
+
+		if (i > 0)
+			appendStringInfoString(&str, ", ");
+
+		appendStringInfoString(&str, "{");
+
+		for (j = 0; j < dependency->nattributes; j++)
+		{
+			if (j == dependency->nattributes-1)
+				appendStringInfoString(&str, " => ");
+			else if (j > 0)
+				appendStringInfoString(&str, ", ");
+
+			appendStringInfo(&str, "%d", dependency->attributes[j]);
+		}
+
+		appendStringInfoString(&str, "}");
+	}
+
+	appendStringInfoString(&str, "]");
+
+	ret = pstrdup(str.data);
+	pfree(str.data);
+
+	PG_RETURN_CSTRING(ret);
 }
 
 /*

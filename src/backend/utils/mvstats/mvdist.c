@@ -259,13 +259,49 @@ pg_ndistinct_in(PG_FUNCTION_ARGS)
  * histograms are serialized into a bytea value, so we simply call byteaout()
  * to serialize the value into text. But it'd be nice to serialize that into
  * a meaningful representation (e.g. for inspection by people).
- *
- * FIXME not implemented yet, returning dummy value
  */
 Datum
 pg_ndistinct_out(PG_FUNCTION_ARGS)
 {
-	return byteaout(fcinfo);
+	int i, j;
+	char		   *ret;
+	StringInfoData	str;
+
+	bytea	   *data = PG_GETARG_BYTEA_PP(0);
+
+	MVNDistinct ndist = deserialize_mv_ndistinct(data);
+
+	initStringInfo(&str);
+	appendStringInfoString(&str, "[");
+
+	for (i = 0; i < ndist->nitems; i++)
+	{
+		MVNDistinctItem item = ndist->items[i];
+
+		if (i > 0)
+			appendStringInfoString(&str, ", ");
+
+		appendStringInfoString(&str, "{");
+
+		for (j = 0; j < item.nattrs; j++)
+		{
+			if (j > 0)
+				appendStringInfoString(&str, ", ");
+
+			appendStringInfo(&str, "%d", item.attrs[j]);
+		}
+
+		appendStringInfo(&str, ", %f", item.ndistinct);
+
+		appendStringInfoString(&str, "}");
+	}
+
+	appendStringInfoString(&str, "]");
+
+	ret = pstrdup(str.data);
+	pfree(str.data);
+
+	PG_RETURN_CSTRING(ret);
 }
 
 /*

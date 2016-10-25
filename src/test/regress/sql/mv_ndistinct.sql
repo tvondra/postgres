@@ -7,19 +7,19 @@ CREATE TABLE ndistinct (
 );
 
 -- unknown column
-CREATE STATISTICS s10 ON (unknown_column) FROM ndistinct;
+CREATE STATISTICS s10 WITH (ndistinct) ON (unknown_column) FROM ndistinct;
 
 -- single column
-CREATE STATISTICS s10 ON (a) FROM ndistinct;
+CREATE STATISTICS s10 WITH (ndistinct) ON (a) FROM ndistinct;
 
 -- single column, duplicated
-CREATE STATISTICS s10 ON (a,a) FROM ndistinct;
+CREATE STATISTICS s10 WITH (ndistinct) ON (a,a) FROM ndistinct;
 
 -- two columns, one duplicated
-CREATE STATISTICS s10 ON (a, a, b) FROM ndistinct;
+CREATE STATISTICS s10 WITH (ndistinct) ON (a, a, b) FROM ndistinct;
 
 -- correct command
-CREATE STATISTICS s10 ON (a, b, c) FROM ndistinct;
+CREATE STATISTICS s10 WITH (ndistinct) ON (a, b, c) FROM ndistinct;
 
 -- perfectly correlated groups
 INSERT INTO ndistinct

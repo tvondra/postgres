@@ -75,7 +75,7 @@ WHERE p1.typtype not in ('c','d','p') AND p1.typname NOT LIKE E'\\_%'
   441 | pg_mcv_list
   210 | smgr
   705 | unknown
-(5 rows)
+(6 rows)
 
 -- Make sure typarray points to a varlena array type of our own base
 SELECT p1.oid, p1.typname as basetype, p2.typname as arraytype,

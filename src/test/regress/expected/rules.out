@@ -1385,7 +1385,7 @@ pg_mv_stats| SELECT n.nspname AS schemaname,
     pg_mv_stats_dependencies_info(s.stadeps) AS depsinfo,
     length((s.stamcv)::bytea) AS mcvbytes,
     pg_mv_stats_mcvlist_info(s.stamcv) AS mcvinfo,
-    length((s.stahist)::text) AS histbytes,
+    length((s.stahist)::bytea) AS histbytes,
     pg_mv_stats_histogram_info(s.stahist) AS histinfo
    FROM ((pg_mv_statistic s
      JOIN pg_class c ON ((c.oid = s.starelid)))

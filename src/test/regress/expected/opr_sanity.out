@@ -820,7 +820,7 @@ WHERE c.castmethod = 'b' AND
  pg_ndistinct      | bytea             |        0 | i
  pg_dependencies   | bytea             |        0 | i
  pg_mcv_list       | bytea             |        0 | i
- pg_histogram      | text              |        0 | i
+ pg_histogram      | bytea             |        0 | i
  cidr              | inet              |        0 | i
  xml               | text              |        0 | a
  xml               | character varying |        0 | a

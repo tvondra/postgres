@@ -1,0 +1,117 @@
+-- data type passed by value
+CREATE TABLE ndistinct (
+    a INT,
+    b INT,
+    c INT,
+    d INT
+);
+-- unknown column
+CREATE STATISTICS s10 WITH (ndistinct) ON (unknown_column) FROM ndistinct;
+ERROR:  column "unknown_column" referenced in statistics does not exist
+-- single column
+CREATE STATISTICS s10 WITH (ndistinct) ON (a) FROM ndistinct;
+ERROR:  multivariate stats require 2 or more columns
+-- single column, duplicated
+CREATE STATISTICS s10 WITH (ndistinct) ON (a,a) FROM ndistinct;
+ERROR:  duplicate column name in statistics definition
+-- two columns, one duplicated
+CREATE STATISTICS s10 WITH (ndistinct) ON (a, a, b) FROM ndistinct;
+ERROR:  duplicate column name in statistics definition
+-- correct command
+CREATE STATISTICS s10 WITH (ndistinct) ON (a, b, c) FROM ndistinct;
+-- perfectly correlated groups
+INSERT INTO ndistinct
+     SELECT i/100, i/100, i/100 FROM generate_series(1,10000) s(i);
+ANALYZE ndistinct;
+SELECT ndist_enabled, ndist_built, length(standist)
+  FROM pg_mv_statistic WHERE starelid = 'ndistinct'::regclass;
+ ndist_enabled | ndist_built | length 
+---------------+-------------+--------
+ t             | t           |      5
+(1 row)
+
+EXPLAIN (COSTS off)
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b;
+         QUERY PLAN          
+-----------------------------
+ HashAggregate
+   Group Key: a, b
+   ->  Seq Scan on ndistinct
+(3 rows)
+
+EXPLAIN (COSTS off)
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c;
+         QUERY PLAN          
+-----------------------------
+ HashAggregate
+   Group Key: a, b, c
+   ->  Seq Scan on ndistinct
+(3 rows)
+
+EXPLAIN (COSTS off)
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d;
+         QUERY PLAN          
+-----------------------------
+ HashAggregate
+   Group Key: a, b, c, d
+   ->  Seq Scan on ndistinct
+(3 rows)
+
+TRUNCATE TABLE ndistinct;
+-- partially correlated groups
+INSERT INTO ndistinct
+     SELECT i/50, i/100, i/200 FROM generate_series(1,10000) s(i);
+ANALYZE ndistinct;
+SELECT ndist_enabled, ndist_built, length(standist)
+  FROM pg_mv_statistic WHERE starelid = 'ndistinct'::regclass;
+ ndist_enabled | ndist_built | length 
+---------------+-------------+--------
+ t             | t           |      5
+(1 row)
+
+EXPLAIN
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ HashAggregate  (cost=230.00..232.01 rows=201 width=16)
+   Group Key: a, b
+   ->  Seq Scan on ndistinct  (cost=0.00..155.00 rows=10000 width=8)
+(3 rows)
+
+EXPLAIN
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ HashAggregate  (cost=255.00..257.01 rows=201 width=20)
+   Group Key: a, b, c
+   ->  Seq Scan on ndistinct  (cost=0.00..155.00 rows=10000 width=12)
+(3 rows)
+
+EXPLAIN
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ HashAggregate  (cost=280.00..290.00 rows=1000 width=24)
+   Group Key: a, b, c, d
+   ->  Seq Scan on ndistinct  (cost=0.00..155.00 rows=10000 width=16)
+(3 rows)
+
+EXPLAIN
+ SELECT COUNT(*) FROM ndistinct GROUP BY b, c, d;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ HashAggregate  (cost=255.00..265.00 rows=1000 width=20)
+   Group Key: b, c, d
+   ->  Seq Scan on ndistinct  (cost=0.00..155.00 rows=10000 width=12)
+(3 rows)
+
+EXPLAIN
+ SELECT COUNT(*) FROM ndistinct GROUP BY a, d;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ HashAggregate  (cost=230.00..240.00 rows=1000 width=16)
+   Group Key: a, d
+   ->  Seq Scan on ndistinct  (cost=0.00..155.00 rows=10000 width=8)
+(3 rows)
+
+DROP TABLE ndistinct;

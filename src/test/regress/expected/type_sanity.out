@@ -71,6 +71,7 @@ WHERE p1.typtype not in ('c','d','p') AND p1.typname NOT LIKE E'\\_%'
 ------+--------------
   194 | pg_node_tree
  3343 | pg_ndistinct
+ 3353 | pg_dependencies
   210 | smgr
   705 | unknown
 (4 rows)

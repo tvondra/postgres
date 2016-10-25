@@ -750,7 +750,7 @@ deserialize_mv_mcvlist(bytea *data)
 	mcvlist = (MCVList) palloc0(sizeof(MCVListData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
-	tmp = VARDATA(data);
+	tmp = VARDATA_ANY(data);
 
 	/* get the header and perform further sanity checks */
 	memcpy(mcvlist, tmp, offsetof(MCVListData, items));

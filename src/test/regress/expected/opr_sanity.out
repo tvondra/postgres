@@ -817,6 +817,7 @@ WHERE c.castmethod = 'b' AND
  text              | character         |        0 | i
  character varying | character         |        0 | i
  pg_node_tree      | text              |        0 | i
+ pg_ndistinct      | text              |        0 | i
  cidr              | inet              |        0 | i
  xml               | text              |        0 | a
  xml               | character varying |        0 | a

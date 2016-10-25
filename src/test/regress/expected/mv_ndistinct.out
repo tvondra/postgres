@@ -6,19 +6,19 @@ CREATE TABLE ndistinct (
     d INT
 );
 -- unknown column
-CREATE STATISTICS s10 WITH (ndistinct) ON (unknown_column) FROM ndistinct;
+CREATE STATISTICS s10 ON (unknown_column) FROM ndistinct;
 ERROR:  column "unknown_column" referenced in statistics does not exist
 -- single column
-CREATE STATISTICS s10 WITH (ndistinct) ON (a) FROM ndistinct;
+CREATE STATISTICS s10 ON (a) FROM ndistinct;
 ERROR:  multivariate stats require 2 or more columns
 -- single column, duplicated
-CREATE STATISTICS s10 WITH (ndistinct) ON (a,a) FROM ndistinct;
+CREATE STATISTICS s10 ON (a,a) FROM ndistinct;
 ERROR:  duplicate column name in statistics definition
 -- two columns, one duplicated
-CREATE STATISTICS s10 WITH (ndistinct) ON (a, a, b) FROM ndistinct;
+CREATE STATISTICS s10 ON (a, a, b) FROM ndistinct;
 ERROR:  duplicate column name in statistics definition
 -- correct command
-CREATE STATISTICS s10 WITH (ndistinct) ON (a, b, c) FROM ndistinct;
+CREATE STATISTICS s10 ON (a, b, c) FROM ndistinct;
 -- perfectly correlated groups
 INSERT INTO ndistinct
      SELECT i/100, i/100, i/100 FROM generate_series(1,10000) s(i);

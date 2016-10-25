@@ -149,100 +149,6 @@ generator_next(VariationGenerator state, int2vector *attrs)
 	return &state->variations[state->k * state->current++];
 }
 
-/*
- * check if the dependency is implied by existing dependencies
- *
- * A dependency is considered implied, if there exists a dependency with the
- * same column on the left, and a subset of columns on the right side. So for
- * example if we have a dependency
- *
- *	   (a,b,c) -> d
- *
- * then we are looking for these six dependencies
- *
- *	   (a) -> d
- *	   (b) -> d
- *	   (c) -> d
- *	   (a,b) -> d
- *	   (a,c) -> d
- *	   (b,c) -> d
- *
- * This does not detect transitive dependencies. For example if we have
- *
- *	   (a) -> b
- *	   (b) -> c
- *
- * then obviously
- *
- *	   (a) -> c
- *
- * but this is not detected. Extending the method to handle transitive cases
- * is future work.
- */
-static bool
-dependency_is_implied(MVDependencies dependencies, int k, int *dependency,
-					  int2vector *attrs)
-{
-	bool		implied = false;
-	int			i,
-				j,
-				l;
-	int		   *tmp;
-
-	if (dependencies == NULL)
-		return false;
-
-	tmp = (int *) palloc0(sizeof(int) * k);
-
-	/* translate the indexes to actual attribute numbers */
-	for (i = 0; i < k; i++)
-		tmp[i] = attrs->values[dependency[i]];
-
-	/* search for a smaller */
-	for (i = 0; i < dependencies->ndeps; i++)
-	{
-		bool		contained = true;
-		MVDependency dep = dependencies->deps[i];
-
-		/* does the last attribute match? */
-		if (tmp[k - 1] != dep->attributes[dep->nattributes - 1])
-			continue;			/* nope, no need to check this dependency
-								 * further */
-
-		/* are the conditions superset of the existing dependency? */
-		for (j = 0; j < (dep->nattributes - 1); j++)
-		{
-			bool		found = false;
-
-			for (l = 0; l < (k - 1); l++)
-			{
-				if (tmp[l] == dep->attributes[j])
-				{
-					found = true;
-					break;
-				}
-			}
-
-			/* we've found an attribute not included in the new dependency */
-			if (!found)
-			{
-				contained = false;
-				break;
-			}
-		}
-
-		/* we've found an existing dependency, trivially proving the new one */
-		if (contained)
-		{
-			implied = true;
-			break;
-		}
-	}
-
-	pfree(tmp);
-
-	return implied;
-}
 
 /*
  * validates functional dependency on the data
@@ -251,9 +157,9 @@ dependency_is_implied(MVDependencies dependencies, int k, int *dependency,
  * of k attributes, it checks that the first (k-1) are sufficient to determine
  * the last one.
  */
-static bool
-dependency_is_valid(int numrows, HeapTuple *rows, int k, int *dependency,
-					VacAttrStats **stats, int2vector *attrs)
+static double
+dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
+				  VacAttrStats **stats, int2vector *attrs)
 {
 	int			i,
 				j;
@@ -387,11 +293,12 @@ dependency_is_valid(int numrows, HeapTuple *rows, int k, int *dependency,
 	pfree(isnull);
 	pfree(mss);
 
-	/*
-	 * See if the number of rows supporting the association is at least 10x
-	 * the number of rows violating the hypothetical dependency.
-	 */
-	return (n_supporting_rows > (n_contradicting_rows * 10));
+	/* Without supporting rows return 0.0 (also covers both counters being 0). */
+	if (n_supporting_rows == 0)
+		return 0.0;
+
+	/* Compute the 'degree of validity' as (supporting/total). */
+	return (n_supporting_rows * 1.0 / (n_contradicting_rows + n_supporting_rows));
 }
 
 /*
@@ -409,24 +316,6 @@ dependency_is_valid(int numrows, HeapTuple *rows, int k, int *dependency,
  *	   (c) -> b				  (c,a) -> b
  *	   (c) -> a				  (c,b) -> a
  *	   (b) -> a				  (b,c) -> a
- *
- * Clearly some of the variations are redundant, as the order of columns on the
- * left side does not matter. This is detected in dependency_is_implied, and
- * those dependencies are ignored.
- *
- * We however do not detect that dependencies are transitively implied. For
- * example given dependencies
- *
- *	   (a) -> b
- *	   (b) -> c
- *
- * then
- *
- *	   (a) -> c
- *
- * is trivially implied. However we don't detect that and all three dependencies
- * will get included in the resulting set. Eliminating such transitively implied
- * dependencies is future work.
  */
 MVDependencies
 build_mv_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
@@ -457,20 +346,21 @@ build_mv_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
 		/* generate all possible variations of k values (out of n) */
 		while ((dependency = generator_next(generator, attrs)))
 		{
-			MVDependency d;
+			double			degree;
+			MVDependency	d;
 
-			/* skip dependencies that are already trivially implied */
-			if (dependency_is_implied(dependencies, k, dependency, attrs))
-				continue;
+			/* compute how valid the dependency seems */
+			degree = dependency_degree(numrows, rows, k, dependency, stats, attrs);
 
-			/* also skip dependencies that don't seem to be valid */
-			if (!dependency_is_valid(numrows, rows, k, dependency, stats, attrs))
+			/* if the dependency seems entirely invalid, don't bother storing it */
+			if (degree == 0.0)
 				continue;
 
 			d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes)
 									   +k * sizeof(int));
 
 			/* copy the dependency, but translate it to actuall attnums */
+			d->degree = degree;
 			d->nattributes = k;
 			for (i = 0; i < k; i++)
 				d->attributes[i] = attrs->values[dependency[i]];
@@ -511,12 +401,13 @@ serialize_mv_dependencies(MVDependencies dependencies)
 	int			i;
 	bytea	   *output;
 	char	   *tmp;
+	Size		len;
 
 	/* we need to store ndeps, with a number of attributes for each one */
-	Size		len = VARHDRSZ + offsetof(MVDependenciesData, deps)
-	+sizeof(int) * dependencies->ndeps;
+	len = VARHDRSZ + offsetof(MVDependenciesData, deps) +
+		  dependencies->ndeps * offsetof(MVDependencyData, attributes);
 
-	/* and also include space for the actual attribute numbers */
+	/* and also include space for the actual attribute numbers and degrees */
 	for (i = 0; i < dependencies->ndeps; i++)
 		len += (sizeof(int16) * dependencies->deps[i]->nattributes);
 
@@ -534,8 +425,8 @@ serialize_mv_dependencies(MVDependencies dependencies)
 	{
 		MVDependency d = dependencies->deps[i];
 
-		memcpy(tmp, &(d->nattributes), sizeof(int));
-		tmp += sizeof(int);
+		memcpy(tmp, d, offsetof(MVDependencyData, attributes));
+		tmp += offsetof(MVDependencyData, attributes);
 
 		memcpy(tmp, d->attributes, sizeof(int16) * d->nattributes);
 		tmp += sizeof(int16) * d->nattributes;
@@ -586,7 +477,8 @@ deserialize_mv_dependencies(bytea *data)
 
 	/* what minimum bytea size do we expect for those parameters */
 	expected_size = offsetof(MVDependenciesData, deps) +
-		dependencies->ndeps * (sizeof(int) + sizeof(int16) * 2);
+		dependencies->ndeps * (offsetof(MVDependencyData, attributes) +
+							   sizeof(int16) * 2);
 
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid dependencies size %ld (expected at least %ld)",
@@ -598,8 +490,13 @@ deserialize_mv_dependencies(bytea *data)
 
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
+		double		degree;
 		int			k;
 		MVDependency d;
+
+		/* degree of validity */
+		memcpy(&degree, tmp, sizeof(double));
+		tmp += sizeof(double);
 
 		/* number of attributes */
 		memcpy(&k, tmp, sizeof(int));
@@ -609,9 +506,10 @@ deserialize_mv_dependencies(bytea *data)
 		Assert((k >= 2) && (k <= MVSTATS_MAX_DIMENSIONS));
 
 		/* now that we know the number of attributes, allocate the dependency */
-		d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes)
-								   +k * sizeof(int));
+		d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes) +
+								   (k * sizeof(int)));
 
+		d->degree = degree;
 		d->nattributes = k;
 
 		/* copy attribute numbers */
@@ -757,6 +655,8 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 
 			appendStringInfo(&str, "%d", dependency->attributes[j]);
 		}
+
+		appendStringInfo(&str, " : %f", dependency->degree);
 
 		appendStringInfoString(&str, "}");
 	}

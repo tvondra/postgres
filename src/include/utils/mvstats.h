@@ -45,6 +45,7 @@ typedef MVNDistinctData *MVNDistinct;
  */
 typedef struct MVDependencyData
 {
+	double		degree;			/* degree of validity (0-1) */
 	int			nattributes;	/* number of attributes */
 	int16		attributes[1];	/* attribute numbers */
 } MVDependencyData;

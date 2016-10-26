@@ -1016,6 +1016,76 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	return s1 + s2;
 }
 
+static MVDependency
+find_strongest_dependency(MVDependencies dependencies, Bitmapset *attnums,
+						  int16 *attmap)
+{
+	int i;
+	MVDependency strongest = NULL;
+
+	/* number of attnums in clauses */
+	int nattnums = bms_num_members(attnums);
+
+	/*
+	 * Iterate over the MVDependency items and find the strongest one from
+	 * the fully-matched dependencies.
+	 */
+	for (i = 0; i < dependencies->ndeps; i++)
+	{
+		int				j;
+		bool			full_match = true;
+		MVDependency	dependency = dependencies->deps[i];
+
+		/*
+		 * Skip dependencies referencing more attributes than available clauses,
+		 * as those can't be fully matched.
+		 */
+		if (dependency->nattributes > nattnums)
+			continue;
+
+		/* We can skip dependencies on fewer attributes than the best one. */
+		if (strongest && (strongest->nattributes > dependency->nattributes))
+			continue;
+
+		/* And also weaker dependencies on the same number of attributes. */
+		if (strongest &&
+			(strongest->nattributes == dependency->nattributes) &&
+			(strongest->degree > dependency->degree))
+			continue;
+
+		/*
+		 * Check that the dependency actually is fully covered by clauses. We
+		 * have to translate all attribute numbers, as those are referenced
+		 */
+		for (j = 0; j < dependency->nattributes; j++)
+		{
+			int attnum = attmap[dependency->attributes[j]];
+
+			if (! bms_is_member(attnum, attnums))
+			{
+				full_match = false;
+				break;
+			}
+		}
+
+		/*
+		 * If the dependency is not fully matched by clauses, we can't use
+		 * it for the estimation.
+		 */
+		if (! full_match)
+			continue;
+
+		/*
+		 * We have a fully-matched dependency, and we already know it has to
+		 * be stronger than the current one (otherwise we'd skip it before
+		 * inspecting it at the very beginning.
+		 */
+		strongest = dependency;
+	}
+
+	return strongest;
+}
+
 
 static Selectivity
 clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
@@ -1023,116 +1093,105 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 							   Index varRelid, JoinType jointype,
 							   SpecialJoinInfo *sjinfo)
 {
-	ListCell *l;
-	int i;
-	Selectivity s1 = 1.0;
-	Bitmapset *attnums;
-	MVDependencies deps;
-	MVDependency selected;
+	ListCell	   *lc;
+	Selectivity		s1 = 1.0;
+	MVDependencies	dependencies;
 
-	/* load the functional dependencies */
-	deps = load_mv_dependencies(mvstats->mvoid);
+	/* load the dependency items stored in the statistics */
+	dependencies = load_mv_dependencies(mvstats->mvoid);
 
-	attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
-
-	Assert(bms_num_members(attnums) >= 2);
-
-	/* now pick the largest fully-matched dependency, with the highest degree */
-	selected = NULL;
-	for (i = 0; i < deps->ndeps; i++)
+	/* */
+	while (true)
 	{
-		int j;
-		bool covered = true;
-		MVDependency dependency = deps->deps[i];
+		MVDependency	dependency;
+		Bitmapset	   *attnums;
+		Selectivity		s2 = 1.0;
+		List		   *clauses_filtered = NIL;
 
-		/* more attributes than in clauses, can't be covered */
-		if (dependency->nattributes > bms_num_members(attnums))
-			continue;
+		attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
 
-		/* is the dependency fully covered? */
-		for (j = 0; j < dependency->nattributes; j++)
+		/* no point in looking for dependencies with fewer than 2 attributes */
+		if (bms_num_members(attnums) < 2)
+			break;
+
+		/* pick the strongest dependency, fully matched by the clauses */
+		dependency = find_strongest_dependency(dependencies, attnums,
+											   mvstats->stakeys->values);
+
+		/* if we've found no suitable dependency, we're done */
+		if (! dependency)
+			break;
+
+		/*
+		 * We have an applicable dependency, so now we need to find all clauses
+		 * on the implied attribute, so e.g. with (a,b => c) on attribute c.
+		 * Compute selectivity of the clause (if there are multiple clauses
+		 * then assume independence and multiply), and remove them from the
+		 * list of clauses (which we'll use in the next step).
+		 */
+		foreach(lc, clauses)
 		{
-			int attnum = mvstats->stakeys->values[dependency->attributes[j]];
+			int			attnum;
+			Bitmapset  *attnums_clause = NULL;
+			Node	   *clause = (Node *) lfirst(lc);
 
-			if (! bms_is_member(attnum, attnums))
+			/*
+			 * XXX We need the attnum referenced by the clause, and this is the
+			 * easiest way to get it (but maybe not the best one). At this point
+			 * we should only see equality clauses compatible with functional
+			 * dependencies, so just error out if we stumble upon something else.
+			 */
+			if (! clause_is_mv_compatible(clause, relid, &attnums_clause,
+										  MV_CLAUSE_TYPE_FDEPS))
+				elog(ERROR, "clause not compatible with functional dependencies");
+
+			/* we also expect only simple equality clauses */
+			Assert(bms_num_members(attnums_clause) == 1);
+
+			/* translate attnum of the "implied" attribute */
+			attnum = mvstats->stakeys->values[dependency->attributes[dependency->nattributes-1]];
+
+			/*
+			 * If the clause is not on the implied attribute, add it to the list
+			 * of filtered clauses (for the next round) and continue with the
+			 * next one.
+			 */
+			if (bms_singleton_member(attnums_clause) != attnum)
 			{
-				covered = false;
-				break;
+				clauses_filtered = lappend(clauses_filtered, clause);
+				continue;
 			}
+
+			/*
+			 * Otherwise compute selectivity of the clause, and multiply it with
+			 * other clauses on the same attribute.
+			 *
+			 * XXX Not sure if we need to worry about multiple clauses, though.
+			 * Those are all equality clauses, and if they reference different
+			 * constants, that's not going to work.
+			 */
+			s2 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo);
 		}
 
-		if (!covered)
-			continue;
+		/*
+		 * Now factor in the selectivity into the final one, using this formula:
+		 *
+		 *     P(a,b) = P(a) * (f + (1-f) * P(b))
+		 *
+		 * where 'f' is the degree of validity of the dependency.
+		*/
+		s1 *= (dependency->degree + (1 - dependency->degree) * s2);
 
-		if (! selected)
-			selected = dependency;
-		else if ((dependency->nattributes > selected->nattributes) ||
-				 ((dependency->nattributes == selected->nattributes) && 
-				  (dependency->degree > selected->degree)))
-			selected = dependency;
+		/* And make sure we only use filtered clauses in the next round */
+		clauses = clauses_filtered;
 	}
 
-	/*
-	 * XXX It's possible to get a failure here, when there's no dependency
-	 * between the columns in conditions, as in that case there's no item
-	 * matching them. So for example this will fail:
-	 *
-	 * CREATE TABLE t (a INT, b INT);
-	 * INSERT INTO t SELECT 10*random(), 10*random() FROM generate_series(1,100000) s(i);
-	 * CREATE STATISTICS s WITH (dependencies) ON (a, b) FROM t;
-	 * ANALYZE t;
-	 * EXPLAIN SELECT * FROM t WHERE a = 1 AND b = 1;
-	 */
-	Assert(selected != NULL);
-
-	/*
-	 * Walk through the clauses and compute the selectivity using the
-	 *
-	 *    P(a,b) = P(a) * (f + (1-f) * P(b))
-	 *
-	 * formula, where 'f' is the degree of the given dependency.
-	 */
-	foreach(l, clauses)
+	/* And now simply multiply with selectivities of the remaining clauses. */
+	foreach (lc, clauses)
 	{
-		Node	   *clause = (Node *) lfirst(l);
-		Bitmapset  *attnums_clause = NULL;
-		Selectivity s2;
-		bool		matched;
+		Node	   *clause = (Node *) lfirst(lc);
 
-		/* selectivity using clause_selectivity */
-		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
-
-		/* we should only get simple equality clauses here, and we need  */
-		if (! clause_is_mv_compatible(clause, relid, &attnums_clause,
-									  MV_CLAUSE_TYPE_FDEPS))
-			elog(ERROR, "clause not compatible with functional dependencies");
-
-		/* we expect only simple equality clauses here */
-		Assert(bms_num_members(attnums_clause) == 1);
-
-		/* see if the */
-		matched = false;
-		for (i = 0; i < selected->nattributes; i++)
-		{
-			int attnum = mvstats->stakeys->values[selected->attributes[i]];
-
-			/* */
-			if (bms_singleton_member(attnums_clause) != attnum)
-				continue;
-
-			matched = true;
-
-			/* P(a,b) = P(a) * (f + (1-f) * P(b)) */
-
-			if (i < (selected->nattributes-1))
-				s1 *= s2;
-			else
-				s1 *= (selected->degree + (1 - selected->degree) * s2);
-
-			break;
-		}
-
-		Assert(matched);
+		s1 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo);
 	}
 
 	return s1;

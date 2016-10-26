@@ -332,6 +332,10 @@ dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
  *	   (c) -> b				  (c,a) -> b
  *	   (c) -> a				  (c,b) -> a
  *	   (b) -> a				  (b,c) -> a
+ *
+ * XXX Currently this builds redundant dependencies, becuse (a,b => c) and
+ * (b,a => c) is exactly the same thing, but both versions are generated
+ * and stored in the statistics.
  */
 MVDependencies
 build_mv_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,

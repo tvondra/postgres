@@ -1045,8 +1045,6 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 		bool covered = true;
 		MVDependency dependency = deps->deps[i];
 
-		elog(WARNING, "checking dependency %d", i);
-
 		/* more attributes than in clauses, can't be covered */
 		if (dependency->nattributes > bms_num_members(attnums))
 			continue;
@@ -1054,10 +1052,10 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 		/* is the dependency fully covered? */
 		for (j = 0; j < dependency->nattributes; j++)
 		{
-			elog(WARNING, "checking attribute %d => %d => %d", j, dependency->attributes[j], mvstats->stakeys->values[dependency->attributes[j]]);
-			if (! bms_is_member(mvstats->stakeys->values[dependency->attributes[j]], attnums))
+			int attnum = mvstats->stakeys->values[dependency->attributes[j]];
+
+			if (! bms_is_member(attnum, attnums))
 			{
-				elog(WARNING, "attribute %d not covered", mvstats->stakeys->values[dependency->attributes[j]]);
 				covered = false;
 				break;
 			}
@@ -1074,11 +1072,26 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 			selected = dependency;
 	}
 
-	/* if we have not found any dependency at all, something went wrong */
+	/*
+	 * XXX It's possible to get a failure here, when there's no dependency
+	 * between the columns in conditions, as in that case there's no item
+	 * matching them. So for example this will fail:
+	 *
+	 * CREATE TABLE t (a INT, b INT);
+	 * INSERT INTO t SELECT 10*random(), 10*random() FROM generate_series(1,100000) s(i);
+	 * CREATE STATISTICS s WITH (dependencies) ON (a, b) FROM t;
+	 * ANALYZE t;
+	 * EXPLAIN SELECT * FROM t WHERE a = 1 AND b = 1;
+	 */
 	Assert(selected != NULL);
 
-	elog(WARNING, "selected dependency %p", selected);
-
+	/*
+	 * Walk through the clauses and compute the selectivity using the
+	 *
+	 *    P(a,b) = P(a) * (f + (1-f) * P(b))
+	 *
+	 * formula, where 'f' is the degree of the given dependency.
+	 */
 	foreach(l, clauses)
 	{
 		Node	   *clause = (Node *) lfirst(l);
@@ -1089,21 +1102,22 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 		/* selectivity using clause_selectivity */
 		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
 
-		elog(WARNING, "s2 = %f", s2);
-
 		/* we should only get simple equality clauses here, and we need  */
 		if (! clause_is_mv_compatible(clause, relid, &attnums_clause,
-								MV_CLAUSE_TYPE_FDEPS))
-			elog(ERROR, "invalid clause (not compatible with dependencies)");
+									  MV_CLAUSE_TYPE_FDEPS))
+			elog(ERROR, "clause not compatible with functional dependencies");
 
-		elog(WARNING, "clause %p attnums %d", clause, bms_num_members(attnums_clause));
-
+		/* we expect only simple equality clauses here */
 		Assert(bms_num_members(attnums_clause) == 1);
 
+		/* see if the */
 		matched = false;
 		for (i = 0; i < selected->nattributes; i++)
 		{
-			if (bms_singleton_member(attnums_clause) != mvstats->stakeys->values[selected->attributes[i]])
+			int attnum = mvstats->stakeys->values[selected->attributes[i]];
+
+			/* */
+			if (bms_singleton_member(attnums_clause) != attnum)
 				continue;
 
 			matched = true;

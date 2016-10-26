@@ -47,9 +47,12 @@ typedef struct RangeQueryClause
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
 
-#define		MV_CLAUSE_TYPE_FDEP		0x01
+#define		MV_CLAUSE_TYPE_FDEPS	0x01
 #define		MV_CLAUSE_TYPE_MCV		0x02
 #define		MV_CLAUSE_TYPE_HIST		0x04
+
+#define		MV_CLAUSE_TYPE_ANY \
+			(MV_CLAUSE_TYPE_FDEPS | MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)
 
 static bool clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums,
 						int type);
@@ -60,10 +63,8 @@ static int	count_mv_attnums(List *clauses, Index relid, int type);
 
 static int	count_varnos(List *clauses, Index *relid);
 
-static List *clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
-							  Index relid, List *stats);
-
-static MVStatisticInfo *choose_mv_statistics(List *mvstats, Bitmapset *attnums);
+static MVStatisticInfo *choose_mv_statistics(List *mvstats, Bitmapset *attnums,
+											 int types);
 
 static List *clauselist_mv_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
@@ -71,6 +72,10 @@ static List *clauselist_mv_split(PlannerInfo *root, Index relid,
 
 static Selectivity clauselist_mv_selectivity(PlannerInfo *root,
 						  List *clauses, MVStatisticInfo *mvstats);
+
+static Selectivity clauselist_mv_selectivity_deps(PlannerInfo *root,
+						Index relid, List *clauses, MVStatisticInfo *mvstats,
+						Index varRelid, JoinType jointype, SpecialJoinInfo *sjinfo);
 
 static Selectivity clauselist_mv_selectivity_mcvlist(PlannerInfo *root,
 								  List *clauses, MVStatisticInfo *mvstats,
@@ -181,59 +186,50 @@ clauselist_selectivity(PlannerInfo *root,
 
 	/*
 	 * To fetch the statistics, we first need to determine the rel. Currently
-	 * point we only support estimates of simple restrictions with all Vars
-	 * referencing a single baserel. However set_baserel_size_estimates() sets
+	 * we only support estimates of simple restrictions referencing a single
+	 * baserel (no join statistics). However set_baserel_size_estimates() sets
 	 * varRelid=0 so we have to actually inspect the clauses by pull_varnos
 	 * and see if there's just a single varno referenced.
+	 *
+	 * XXX Maybe there's a better way?
 	 */
 	if ((count_varnos(clauses, &relid) == 1) && ((varRelid == 0) || (varRelid == relid)))
 		stats = find_stats(root, relid);
 
 	/*
-	 * If there's exactly one clause, then no use in trying to match up pairs,
-	 * so just go directly to clause_selectivity().
+	 * If there's exactly one clause, then multivariate statistics is futile
+	 * at this level (we might be able to apply them later if it's AND/OR
+	 * clause). So just go directly to clause_selectivity().
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
 								  varRelid, jointype, sjinfo);
 
 	/*
-	 * Apply functional dependencies, but first check that there are some
-	 * stats with functional dependencies built (by simply walking the stats
-	 * list), and that there are at two or more attributes referenced by
-	 * clauses that may be reduced using functional dependencies.
-	 *
-	 * We would find that anyway when trying to actually apply the functional
-	 * dependencies, but let's do the cheap checks first.
-	 *
-	 * After applying the functional dependencies we get the remainig clauses
-	 * that need to be estimated by other types of stats (MCV, histograms
-	 * etc).
-	 */
-	if (has_stats(stats, MV_CLAUSE_TYPE_FDEP) &&
-		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEP) >= 2))
-	{
-		clauses = clauselist_apply_dependencies(root, clauses, relid, stats);
-	}
-
-	/*
-	 * Check that there are statistics with MCV list or histogram, and also
-	 * the number of attributes covered by these types of statistics.
+	 * Check that there are statistics that we can use for selectivity
+	 * estimation, i.e. anything except ndistinct coefficients (for now).
+	 * Also check the number of attributes covered by the stats.
 	 *
 	 * If there are no such stats or not enough attributes, don't waste time
-	 * with the multivariate code and simply skip to estimation using the
-	 * regular per-column stats.
+	 * simply skip to estimation using the plain per-column stats.
+	 *
+	 * First look for the more elaborate statistics (with data about actual
+	 * values), i.e. MCV lists and and histograms. After that we'll look at
+	 * functional dependencies, not referencing particular values.
 	 */
-	if (has_stats(stats, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) &&
+	if (has_stats(stats, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) &&
 		(count_mv_attnums(clauses, relid,
-						  MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST) >= 2))
+						  (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) >= 2))
 	{
+		MVStatisticInfo *mvstat;
+
 		/* collect attributes from the compatible conditions */
 		Bitmapset  *mvattnums = collect_mv_attnums(clauses, relid,
-								   MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
+									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
 		/* and search for the statistic covering the most attributes */
-		MVStatisticInfo *mvstat = choose_mv_statistics(stats, mvattnums);
+		mvstat = choose_mv_statistics(stats, mvattnums,
+									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
 		if (mvstat != NULL)		/* we have a matching stats */
 		{
@@ -242,13 +238,43 @@ clauselist_selectivity(PlannerInfo *root,
 
 			/* split the clauselist into regular and mv-clauses */
 			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-						   mvstat, MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST);
+							mvstat, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
 			/* we've chosen the histogram to match the clauses */
 			Assert(mvclauses != NIL);
 
 			/* compute the multivariate stats */
 			s1 *= clauselist_mv_selectivity(root, mvclauses, mvstat);
+		}
+	}
+
+	if (has_stats(stats, MV_CLAUSE_TYPE_FDEPS) &&
+		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS) >= 2))
+	{
+		MVStatisticInfo *mvstat;
+		Bitmapset  *mvattnums;
+
+		/* collect attributes from the compatible conditions */
+		mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
+
+		/* and search for the statistic covering the most attributes */
+		mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_FDEPS);
+
+		if (mvstat != NULL)		/* we have a matching stats */
+		{
+			/* clauses compatible with multi-variate stats */
+			List	   *mvclauses = NIL;
+
+			/* split the clauselist into regular and mv-clauses */
+			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
+										  mvstat, MV_CLAUSE_TYPE_FDEPS);
+
+			/* we've chosen the histogram to match the clauses */
+			Assert(mvclauses != NIL);
+
+			/* compute the multivariate stats (dependencies) */
+			s1 *= clauselist_mv_selectivity_deps(root, relid, mvclauses, mvstat,
+												 varRelid, jointype, sjinfo);
 		}
 	}
 
@@ -990,6 +1016,114 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	return s1 + s2;
 }
 
+
+static Selectivity
+clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
+							   List *clauses, MVStatisticInfo *mvstats,
+							   Index varRelid, JoinType jointype,
+							   SpecialJoinInfo *sjinfo)
+{
+	ListCell *l;
+	int i;
+	Selectivity s1 = 1.0;
+	Bitmapset *attnums;
+	MVDependencies deps;
+	MVDependency selected;
+
+	/* load the functional dependencies */
+	deps = load_mv_dependencies(mvstats->mvoid);
+
+	attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
+
+	Assert(bms_num_members(attnums) >= 2);
+
+	/* now pick the largest fully-matched dependency, with the highest degree */
+	selected = NULL;
+	for (i = 0; i < deps->ndeps; i++)
+	{
+		int j;
+		bool covered = true;
+		MVDependency dependency = deps->deps[i];
+
+		elog(WARNING, "checking dependency %d", i);
+
+		/* more attributes than in clauses, can't be covered */
+		if (dependency->nattributes > bms_num_members(attnums))
+			continue;
+
+		/* is the dependency fully covered? */
+		for (j = 0; j < dependency->nattributes; j++)
+		{
+			elog(WARNING, "checking attribute %d => %d => %d", j, dependency->attributes[j], mvstats->stakeys->values[dependency->attributes[j]]);
+			if (! bms_is_member(mvstats->stakeys->values[dependency->attributes[j]], attnums))
+			{
+				elog(WARNING, "attribute %d not covered", mvstats->stakeys->values[dependency->attributes[j]]);
+				covered = false;
+				break;
+			}
+		}
+
+		if (!covered)
+			continue;
+
+		if (! selected)
+			selected = dependency;
+		else if ((dependency->nattributes > selected->nattributes) ||
+				 ((dependency->nattributes == selected->nattributes) && 
+				  (dependency->degree > selected->degree)))
+			selected = dependency;
+	}
+
+	/* if we have not found any dependency at all, something went wrong */
+	Assert(selected != NULL);
+
+	elog(WARNING, "selected dependency %p", selected);
+
+	foreach(l, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(l);
+		Bitmapset  *attnums_clause = NULL;
+		Selectivity s2;
+		bool		matched;
+
+		/* selectivity using clause_selectivity */
+		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+
+		elog(WARNING, "s2 = %f", s2);
+
+		/* we should only get simple equality clauses here, and we need  */
+		if (! clause_is_mv_compatible(clause, relid, &attnums_clause,
+								MV_CLAUSE_TYPE_FDEPS))
+			elog(ERROR, "invalid clause (not compatible with dependencies)");
+
+		elog(WARNING, "clause %p attnums %d", clause, bms_num_members(attnums_clause));
+
+		Assert(bms_num_members(attnums_clause) == 1);
+
+		matched = false;
+		for (i = 0; i < selected->nattributes; i++)
+		{
+			if (bms_singleton_member(attnums_clause) != mvstats->stakeys->values[selected->attributes[i]])
+				continue;
+
+			matched = true;
+
+			/* P(a,b) = P(a) * (f + (1-f) * P(b)) */
+
+			if (i < (selected->nattributes-1))
+				s1 *= s2;
+			else
+				s1 *= (selected->degree + (1 - selected->degree) * s2);
+
+			break;
+		}
+
+		Assert(matched);
+	}
+
+	return s1;
+}
+
 /*
  * Collect attributes from mv-compatible clauses.
  */
@@ -1132,7 +1266,7 @@ count_varnos(List *clauses, Index *relid)
  * 'dependencies' will probably work only with equality clauses.
  */
 static MVStatisticInfo *
-choose_mv_statistics(List *stats, Bitmapset *attnums)
+choose_mv_statistics(List *stats, Bitmapset *attnums, int types)
 {
 	int			i;
 	ListCell   *lc;
@@ -1157,11 +1291,13 @@ choose_mv_statistics(List *stats, Bitmapset *attnums)
 		int2vector *attrs = info->stakeys;
 		int			numattrs = attrs->dim1;
 
-		/* skip dependencies-only stats */
-		if (!(info->mcv_built || info->hist_built))
+		/* skip statistics not matching any of the requested types */
+		if (! ((info->deps_built && (MV_CLAUSE_TYPE_FDEPS & types)) ||
+			   (info->mcv_built && (MV_CLAUSE_TYPE_FDEPS & types)) ||
+			   (info->hist_built && (MV_CLAUSE_TYPE_FDEPS & types))))
 			continue;
 
-		/* count columns covered by the histogram */
+		/* count columns covered by the statistics */
 		for (i = 0; i < numattrs; i++)
 			if (bms_is_member(attrs->values[i], attnums))
 				matches++;
@@ -1444,174 +1580,13 @@ clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums, int type
 	return true;
 }
 
-
-/*
- * Reduce clauses using functional dependencies
- */
-static List *
-fdeps_reduce_clauses(List *clauses, Index relid, Bitmapset *reduced_attnums)
-{
-	ListCell   *lc;
-	List	   *reduced_clauses = NIL;
-
-	foreach(lc, clauses)
-	{
-		Bitmapset  *attnums = NULL;
-		Node	   *clause = (Node *) lfirst(lc);
-
-		/* ignore clauses that are not compatible with functional dependencies */
-		if (!clause_is_mv_compatible(clause, relid, &attnums, MV_CLAUSE_TYPE_FDEP))
-			reduced_clauses = lappend(reduced_clauses, clause);
-
-		/* for equality clauses, only keep those not on reduced attributes */
-		if (!bms_is_subset(attnums, reduced_attnums))
-			reduced_clauses = lappend(reduced_clauses, clause);
-	}
-
-	return reduced_clauses;
-}
-
-/*
- * decide which attributes are redundant (for equality clauses)
- *
- * We try to apply all functional dependencies available, and for each one we
- * check if it matches attnums from equality clauses, but only those not yet
- * reduced.
- *
- * XXX Not sure if the order in which we apply the dependencies matters.
- *
- * XXX We do not combine functional dependencies from separate stats. That is
- * if we have dependencies on [a,b] and [b,c], then we don't deduce a->c from
- * a->b and b->c. Computing such transitive closure is a possible future
- * improvement.
- */
-static Bitmapset *
-fdeps_reduce_attnums(List *stats, Bitmapset *attnums)
-{
-	ListCell   *lc;
-	Bitmapset  *reduced = NULL;
-
-	foreach(lc, stats)
-	{
-		int			i;
-		MVDependencies dependencies = NULL;
-		MVStatisticInfo *info = (MVStatisticInfo *) lfirst(lc);
-
-		/* skip statistics without dependencies */
-		if (!stats_type_matches(info, MV_CLAUSE_TYPE_FDEP))
-			continue;
-
-		/* fetch and deserialize dependencies */
-		dependencies = load_mv_dependencies(info->mvoid);
-
-		for (i = 0; i < dependencies->ndeps; i++)
-		{
-			int			j;
-			bool		matched = true;
-			MVDependency dep = dependencies->deps[i];
-
-			/* we don't bother to break the loop early (only few attributes) */
-			for (j = 0; j < dep->nattributes; j++)
-			{
-				if (!bms_is_member(dep->attributes[j], attnums))
-					matched = false;
-
-				if (bms_is_member(dep->attributes[j], reduced))
-					matched = false;
-			}
-
-			/* if dependency applies, mark the last attribute as reduced */
-			if (matched)
-				reduced = bms_add_member(reduced,
-									  dep->attributes[dep->nattributes - 1]);
-		}
-	}
-
-	return reduced;
-}
-
-/*
- * reduce list of equality clauses using soft functional dependencies
- *
- * We simply walk through list of functional dependencies, and for each one we
- * check whether the dependency 'matches' the clauses, i.e. if there's a clause
- * matching the condition. If yes, we attempt to remove all clauses matching
- * the implied part of the dependency from the list.
- *
- * This only reduces equality clauses, and ignores all the other types. We might
- * extend it to handle IS NULL clause, in the future.
- *
- * We also assume the equality clauses are 'compatible'. For example we can't
- * identify when the clauses use a mismatching zip code and city name. In such
- * case the usual approach (product of selectivities) would produce a better
- * estimate, although mostly by chance.
- *
- * The implementation needs to be careful about cyclic dependencies, e.g. when
- *
- * (a -> b) and (b -> a)
- *
- * at the same time, which means there's 1:1 relationship between te columns.
- * In this case we must not reduce clauses on both attributes at the same time.
- *
- * TODO: Currently we only apply functional dependencies at the same level, but
- * maybe we could transfer the clauses from upper levels to the subtrees?
- * For example let's say we have (a->b) dependency, and condition
- *
- * (a=1) AND (b=2 OR c=3)
- *
- * Currently, we won't be able to perform any reduction, because we'll
- * consider (a=1) and (b=2 OR c=3) independently. But maybe we could pass
- * (a=1) into the other expression, and only check it against conditions
- * of the functional dependencies?
- *
- * In this case we'd end up with
- *
- * (a=1)
- *
- * as we'd consider (b=2) implied thanks to the rule, rendering the whole
- * OR clause valid.
- */
-static List *
-clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
-							  Index relid, List *stats)
-{
-	Bitmapset  *clause_attnums = NULL;
-	Bitmapset  *reduced_attnums = NULL;
-
-	/*
-	 * Is there at least one statistics with functional dependencies? If not,
-	 * return the original clauses right away.
-	 *
-	 * XXX Isn't this a bit pointless, thanks to exactly the same check in
-	 * clauselist_selectivity()? Can we trigger the condition here?
-	 */
-	if (!has_stats(stats, MV_CLAUSE_TYPE_FDEP))
-		return clauses;
-
-	/* collect attnums from clauses compatible with dependencies (equality) */
-	clause_attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEP);
-
-	/* decide which attnums may be eliminated */
-	reduced_attnums = fdeps_reduce_attnums(stats, clause_attnums);
-
-	/*
-	 * Walk through the clauses, and see which other clauses we may reduce.
-	 */
-	clauses = fdeps_reduce_clauses(clauses, relid, reduced_attnums);
-
-	bms_free(clause_attnums);
-	bms_free(reduced_attnums);
-
-	return clauses;
-}
-
 /*
  * Check that there are stats with at least one of the requested types.
  */
 static bool
 stats_type_matches(MVStatisticInfo *stat, int type)
 {
-	if ((type & MV_CLAUSE_TYPE_FDEP) && stat->deps_built)
+	if ((type & MV_CLAUSE_TYPE_FDEPS) && stat->deps_built)
 		return true;
 
 	if ((type & MV_CLAUSE_TYPE_MCV) && stat->mcv_built)

@@ -313,12 +313,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
 	pfree(isnull);
 	pfree(mss);
 
-	/* Without supporting rows return 0.0 (also covers both counters being 0). */
-	if (n_supporting_rows == 0)
-		return 0.0;
-
 	/* Compute the 'degree of validity' as (supporting/total). */
-	return (n_supporting_rows * 1.0 / (n_contradicting_rows + n_supporting_rows));
+	return (n_supporting_rows * 1.0 / numrows);
 }
 
 /*
@@ -379,11 +375,11 @@ build_mv_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
 			d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes)
 									   +k * sizeof(int));
 
-			/* copy the dependency, but translate it to actuall attnums */
+			/* copy the dependency (and keep the indexes into stakeys) */
 			d->degree = degree;
 			d->nattributes = k;
 			for (i = 0; i < k; i++)
-				d->attributes[i] = attrs->values[dependency[i]];
+				d->attributes[i] = dependency[i];
 
 			/* initialize the list of dependencies */
 			if (dependencies == NULL)

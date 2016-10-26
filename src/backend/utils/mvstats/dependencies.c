@@ -75,11 +75,31 @@ generate_variations(VariationGenerator state,
 		/* and check if we do have a complete variation of k elements */
 		if (level == maxlevel)
 		{
-			/* yep, store the variation */
+			bool ascending;
+
+			/*
+			 * Yep, store the variation, but only if the first (k-1) elements
+			 * are in ascending order (to eliminate dependencies that only
+			 * differ by order of conditions).
+			 */
 			Assert(state->current < state->nvariations);
-			memcpy(&state->variations[(state->k * state->current)], current,
-				   sizeof(int) * (maxlevel + 1));
-			state->current++;
+
+			ascending = true;
+			for (j = 1; j < maxlevel; j++)
+			{
+				if (current[j-1] > current[j])
+				{
+					ascending = false;
+					break;
+				}
+			}
+
+			if (ascending)
+			{
+				memcpy(&state->variations[(state->k * state->current)], current,
+					   sizeof(int) * (maxlevel + 1));
+				state->current++;
+			}
 		}
 		else
 			/* nope, look for additional elements */
@@ -122,8 +142,8 @@ generator_init(int2vector *attrs, int k)
 	/* now actually pre-generate all the variations */
 	generate_variations(state, n, (k - 1), 0, NULL);
 
-	/* we expect to generate exactly the right number of variations */
-	Assert(state->nvariations == state->current);
+	/* remember the number of variations generated */
+	state->nvariations = state->current;
 
 	/* reset the index */
 	state->current = 0;

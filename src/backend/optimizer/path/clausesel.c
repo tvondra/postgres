@@ -47,12 +47,11 @@ typedef struct RangeQueryClause
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
 
-#define		MV_CLAUSE_TYPE_FDEPS	0x01
-#define		MV_CLAUSE_TYPE_MCV		0x02
-#define		MV_CLAUSE_TYPE_HIST		0x04
+#define		MV_CLAUSE_TYPE_NDIST	0x01
+#define		MV_CLAUSE_TYPE_FDEPS	0x02
+#define		MV_CLAUSE_TYPE_MCV		0x04
+#define		MV_CLAUSE_TYPE_HIST		0x08
 
-#define		MV_CLAUSE_TYPE_ANY \
-			(MV_CLAUSE_TYPE_FDEPS | MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)
 
 static bool clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums,
 						int type);
@@ -72,6 +71,10 @@ static List *clauselist_mv_split(PlannerInfo *root, Index relid,
 
 static Selectivity clauselist_mv_selectivity(PlannerInfo *root,
 						  List *clauses, MVStatisticInfo *mvstats);
+
+static Selectivity clauselist_mv_selectivity_ndist(PlannerInfo *root,
+						Index relid, List *clauses, MVStatisticInfo *mvstats,
+						Index varRelid, JoinType jointype, SpecialJoinInfo *sjinfo);
 
 static Selectivity clauselist_mv_selectivity_deps(PlannerInfo *root,
 						Index relid, List *clauses, MVStatisticInfo *mvstats,
@@ -275,6 +278,36 @@ clauselist_selectivity(PlannerInfo *root,
 			/* compute the multivariate stats (dependencies) */
 			s1 *= clauselist_mv_selectivity_deps(root, relid, mvclauses, mvstat,
 												 varRelid, jointype, sjinfo);
+		}
+	}
+
+	if (has_stats(stats, MV_CLAUSE_TYPE_NDIST) &&
+		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST) >= 2))
+	{
+		MVStatisticInfo *mvstat;
+		Bitmapset  *mvattnums;
+
+		/* collect attributes from the compatible conditions */
+		mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
+
+		/* and search for the statistic covering the most attributes */
+		mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_NDIST);
+
+		if (mvstat != NULL)		/* we have a matching stats */
+		{
+			/* clauses compatible with multi-variate stats */
+			List	   *mvclauses = NIL;
+
+			/* split the clauselist into regular and mv-clauses */
+			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
+										  mvstat, MV_CLAUSE_TYPE_NDIST);
+
+			/* we've chosen the histogram to match the clauses */
+			Assert(mvclauses != NIL);
+
+			/* compute the multivariate stats (dependencies) */
+			s1 *= clauselist_mv_selectivity_ndist(root, relid, mvclauses, mvstat,
+												  varRelid, jointype, sjinfo);
 		}
 	}
 
@@ -1016,6 +1049,180 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 	return s1 + s2;
 }
 
+static MVNDistinctItem *
+find_widest_ndistinct_item(MVNDistinct ndistinct, Bitmapset *attnums,
+						   int16 *attmap)
+{
+	int i;
+	MVNDistinctItem *widest = NULL;
+
+	/* number of attnums in clauses */
+	int nattnums = bms_num_members(attnums);
+
+	/* with less than two attributes, we can bail out right away */
+	if (nattnums < 2)
+		return NULL;
+
+	/*
+	 * Iterate over the MVNDistinctItem items and find the widest one from
+	 * those fully-matched by clasuse.
+	 */
+	for (i = 0; i < ndistinct->nitems; i++)
+	{
+		int				j;
+		bool			full_match = true;
+		MVNDistinctItem *item = &ndistinct->items[i];
+
+		/*
+		 * Skip items referencing more attributes than available clauses,
+		 * as those can't be fully matched.
+		 */
+		if (item->nattrs > nattnums)
+			continue;
+
+		/* We can skip items with fewer attributes than the best one. */
+		if (widest && (widest->nattrs >= item->nattrs))
+			continue;
+
+		/*
+		 * Check that the item actually is fully covered by clauses. We
+		 * have to translate all attribute numbers.
+		 */
+		for (j = 0; j < item->nattrs; j++)
+		{
+			int attnum = attmap[item->attrs[j]];
+
+			if (! bms_is_member(attnum, attnums))
+			{
+				full_match = false;
+				break;
+			}
+		}
+
+		/*
+		 * If the item is not fully matched by clauses, we can't use
+		 * it for the estimation.
+		 */
+		if (! full_match)
+			continue;
+
+		/*
+		 * We have a fully-matched item, and we already know it has to
+		 * be wider than the current one (otherwise we'd skip it before
+		 * inspecting it at the very beginning).
+		 */
+		widest = item;
+	}
+
+	return widest;
+}
+
+static bool
+attnum_in_ndistinct_item(MVNDistinctItem *item, int attnum, int16 *attmap)
+{
+	int j;
+
+	for (j = 0; j < item->nattrs; j++)
+	{
+		if (attnum == attmap[item->attrs[j]])
+			return true;
+	}
+
+	return false;
+}
+
+static Selectivity
+clauselist_mv_selectivity_ndist(PlannerInfo *root, Index relid,
+								List *clauses, MVStatisticInfo *mvstats,
+								Index varRelid, JoinType jointype,
+								SpecialJoinInfo *sjinfo)
+{
+	ListCell	   *lc;
+	Selectivity		s1 = 1.0;
+	MVNDistinct		ndistinct;
+	MVNDistinctItem *item;
+	Bitmapset	   *attnums;
+	List		   *clauses_filtered = NIL;
+
+	/* we should only get here if the statistics includes ndistinct */
+	Assert(mvstats->ndist_enabled && mvstats->ndist_built);
+
+	/* load the ndistinct items stored in the statistics */
+	ndistinct = load_mv_ndistinct(mvstats->mvoid);
+
+	/* collect attnums in the clauses */
+	attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
+
+	Assert(bms_num_members(attnums) >= 2);
+
+	/*
+	 * Search for the widest ndistinct item (covering the most clauses), and
+	 * then use it to estimate the number of entries.
+	 */
+	item = find_widest_ndistinct_item(ndistinct, attnums,
+									  mvstats->stakeys->values);
+
+	if (item)
+	{
+		/*
+		 * We have an applicable item, so identify all covered clauses, and
+		 * remove them from the list of clauses.
+		 */
+		foreach(lc, clauses)
+		{
+			Bitmapset  *attnums_clause = NULL;
+			Node	   *clause = (Node *) lfirst(lc);
+
+			/*
+			 * XXX We need the attnum referenced by the clause, and this is the
+			 * easiest way to get it (but maybe not the best one). At this point
+			 * we should only see equality clauses, so just error out if we
+			 * stumble upon something else.
+			 */
+			if (! clause_is_mv_compatible(clause, relid, &attnums_clause,
+										  MV_CLAUSE_TYPE_NDIST))
+				elog(ERROR, "clause not compatible with ndistinct stats");
+
+			/*
+			 * We also expect only simple equality clauses, with a single Var.
+			 *
+			 * XXX This checks the number of attnums, not the number of Vars,
+			 * but clause_is_mv_compatible only accepts (Var=Const) clauses.
+			 */
+			Assert(bms_num_members(attnums_clause) == 1);
+
+			/*
+			 * If the clause matches the selected ndistinct item, add it to
+			 * the list of ndistinct clauses.
+			 */
+			if (!attnum_in_ndistinct_item(item,
+										  bms_singleton_member(attnums_clause),
+										  mvstats->stakeys->values))
+				clauses_filtered = lappend(clauses_filtered, clause);
+		}
+
+		/* Compute selectivity using the ndistinct item. */
+		s1 *= (1.0 / item->ndistinct);
+
+		/*
+		 * Throw away the clauses matched by the ndistinct, so that we don't
+		 * estimate them twice.
+		 */
+		clauses = clauses_filtered;
+	}
+
+	/* And now simply multiply with selectivities of the remaining clauses. */
+	foreach (lc, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(lc);
+
+		s1 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+	}
+
+	return s1;
+}
+
+
 static MVDependency
 find_strongest_dependency(MVDependencies dependencies, Bitmapset *attnums,
 						  int16 *attmap)
@@ -1369,7 +1576,8 @@ choose_mv_statistics(List *stats, Bitmapset *attnums, int types)
 		int			numattrs = attrs->dim1;
 
 		/* skip statistics not matching any of the requested types */
-		if (! ((info->deps_built && (MV_CLAUSE_TYPE_FDEPS & types)) ||
+		if (! ((info->ndist_built && (MV_CLAUSE_TYPE_NDIST & types)) ||
+			   (info->deps_built && (MV_CLAUSE_TYPE_FDEPS & types)) ||
 			   (info->mcv_built && (MV_CLAUSE_TYPE_MCV & types)) ||
 			   (info->hist_built && (MV_CLAUSE_TYPE_HIST & types))))
 			continue;
@@ -1663,6 +1871,9 @@ clause_is_mv_compatible(Node *clause, Index relid, Bitmapset **attnums, int type
 static bool
 stats_type_matches(MVStatisticInfo *stat, int type)
 {
+	if ((type & MV_CLAUSE_TYPE_NDIST) && stat->ndist_built)
+		return true;
+
 	if ((type & MV_CLAUSE_TYPE_FDEPS) && stat->deps_built)
 		return true;
 

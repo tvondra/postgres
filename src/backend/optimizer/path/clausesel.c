@@ -1097,8 +1097,12 @@ clauselist_mv_selectivity_deps(PlannerInfo *root, Index relid,
 	Selectivity		s1 = 1.0;
 	MVDependencies	dependencies;
 
+	Assert(mvstats->deps_enabled && mvstats->deps_built);
+
 	/* load the dependency items stored in the statistics */
 	dependencies = load_mv_dependencies(mvstats->mvoid);
+
+	Assert(dependencies);
 
 	/* */
 	while (true)

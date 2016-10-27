@@ -1873,13 +1873,17 @@ update_match_bitmap_mcvlist(PlannerInfo *root, List *clauses,
 							 * lower boundary (in that case we can skip the
 							 * bucket, because there's no overlap).
 							 */
-							mismatch = DatumGetBool(FunctionCall2Coll(&opproc,
-													   DEFAULT_COLLATION_OID,
+							if (isgt)
+								mismatch = !DatumGetBool(FunctionCall2Coll(&opproc,
+														   DEFAULT_COLLATION_OID,
 															 cst->constvalue,
-														 item->values[idx]));
+															item->values[idx]));
+							else
+								mismatch = !DatumGetBool(FunctionCall2Coll(&opproc,
+														   DEFAULT_COLLATION_OID,
+															 item->values[idx],
+															  cst->constvalue));
 
-							/* invert the result if isgt=true */
-							mismatch = (isgt) ? (!mismatch) : mismatch;
 							break;
 					}
 

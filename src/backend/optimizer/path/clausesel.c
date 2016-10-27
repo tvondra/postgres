@@ -1371,7 +1371,7 @@ choose_mv_statistics(List *stats, Bitmapset *attnums, int types)
 		/* skip statistics not matching any of the requested types */
 		if (! ((info->deps_built && (MV_CLAUSE_TYPE_FDEPS & types)) ||
 			   (info->mcv_built && (MV_CLAUSE_TYPE_MCV & types)) ||
-			   (info->hist_built && (MV_CLAUSE_TYPE_FDEPS & types))))
+			   (info->hist_built && (MV_CLAUSE_TYPE_HIST & types))))
 			continue;
 
 		/* count columns covered by the statistics */

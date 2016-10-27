@@ -208,107 +208,146 @@ clauselist_selectivity(PlannerInfo *root,
 		return clause_selectivity(root, (Node *) linitial(clauses),
 								  varRelid, jointype, sjinfo);
 
-	/*
-	 * Check that there are statistics that we can use for selectivity
-	 * estimation, i.e. anything except ndistinct coefficients (for now).
-	 * Also check the number of attributes covered by the stats.
-	 *
-	 * If there are no such stats or not enough attributes, don't waste time
-	 * simply skip to estimation using the plain per-column stats.
-	 *
-	 * First look for the more elaborate statistics (with data about actual
-	 * values), i.e. MCV lists and and histograms. After that we'll look at
-	 * functional dependencies, not referencing particular values.
-	 */
-	if (has_stats(stats, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) &&
-		(count_mv_attnums(clauses, relid,
-						  (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) >= 2))
+	while (true)
 	{
-		MVStatisticInfo *mvstat;
+		bool modified = false;
 
-		/* collect attributes from the compatible conditions */
-		Bitmapset  *mvattnums = collect_mv_attnums(clauses, relid,
-									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-
-		/* and search for the statistic covering the most attributes */
-		mvstat = choose_mv_statistics(stats, mvattnums,
-									(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
-
-		if (mvstat != NULL)		/* we have a matching stats */
+		/*
+		 * Check that there are statistics that we can use for selectivity
+		 * estimation, i.e. anything except ndistinct coefficients (for now).
+		 * Also check the number of attributes covered by the stats.
+		 *
+		 * If there are no such stats or not enough attributes, don't waste time
+		 * simply skip to estimation using the plain per-column stats.
+		 *
+		 * First look for the more elaborate statistics (with data about actual
+		 * values), i.e. MCV lists and and histograms. After that we'll look at
+		 * functional dependencies, not referencing particular values.
+		 */
+		if (has_stats(stats, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) &&
+			(count_mv_attnums(clauses, relid,
+							  (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST)) >= 2))
 		{
-			/* clauses compatible with multi-variate stats */
-			List	   *mvclauses = NIL;
+			MVStatisticInfo *mvstat;
 
-			/* split the clauselist into regular and mv-clauses */
-			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-							mvstat, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
+			/* collect attributes from the compatible conditions */
+			Bitmapset  *mvattnums = collect_mv_attnums(clauses, relid,
+										(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
-			/* we've chosen the histogram to match the clauses */
-			Assert(mvclauses != NIL);
+			/* and search for the statistic covering the most attributes */
+			mvstat = choose_mv_statistics(stats, mvattnums,
+										(MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
 
-			/* compute the multivariate stats */
-			s1 *= clauselist_mv_selectivity(root, mvclauses, mvstat);
+			if (mvstat != NULL)		/* we have a matching stats */
+			{
+				/* clauses compatible with multi-variate stats */
+				List	   *mvclauses = NIL;
+
+				/* split the clauselist into regular and mv-clauses */
+				clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
+								mvstat, (MV_CLAUSE_TYPE_MCV | MV_CLAUSE_TYPE_HIST));
+
+				/* we've chosen the histogram to match the clauses */
+				Assert(mvclauses != NIL);
+
+				/* compute the multivariate stats */
+				s1 *= clauselist_mv_selectivity(root, mvclauses, mvstat);
+
+				modified = true;
+			}
 		}
-	}
 
-	if (has_stats(stats, MV_CLAUSE_TYPE_FDEPS) &&
-		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS) >= 2))
-	{
-		MVStatisticInfo *mvstat;
-		Bitmapset  *mvattnums;
+		/*
+		 * It's possible that we've removed so many clauses in the last loop
+		 * that we only have one clause left (or no clauses at all).
+		 */
+		if (list_length(clauses) < 2)
+			break;
 
-		/* collect attributes from the compatible conditions */
-		mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
-
-		/* and search for the statistic covering the most attributes */
-		mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_FDEPS);
-
-		if (mvstat != NULL)		/* we have a matching stats */
+		if (has_stats(stats, MV_CLAUSE_TYPE_FDEPS) &&
+			(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS) >= 2))
 		{
-			/* clauses compatible with multi-variate stats */
-			List	   *mvclauses = NIL;
+			MVStatisticInfo *mvstat;
+			Bitmapset  *mvattnums;
 
-			/* split the clauselist into regular and mv-clauses */
-			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-										  mvstat, MV_CLAUSE_TYPE_FDEPS);
+			/* collect attributes from the compatible conditions */
+			mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_FDEPS);
 
-			/* we've chosen the histogram to match the clauses */
-			Assert(mvclauses != NIL);
+			/* and search for the statistic covering the most attributes */
+			mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_FDEPS);
 
-			/* compute the multivariate stats (dependencies) */
-			s1 *= clauselist_mv_selectivity_deps(root, relid, mvclauses, mvstat,
-												 varRelid, jointype, sjinfo);
+			if (mvstat != NULL)		/* we have a matching stats */
+			{
+				/* clauses compatible with multi-variate stats */
+				List	   *mvclauses = NIL;
+
+				/* split the clauselist into regular and mv-clauses */
+				clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
+											  mvstat, MV_CLAUSE_TYPE_FDEPS);
+
+				/* we've chosen the histogram to match the clauses */
+				Assert(mvclauses != NIL);
+
+				/* compute the multivariate stats (dependencies) */
+				s1 *= clauselist_mv_selectivity_deps(root, relid, mvclauses, mvstat,
+													 varRelid, jointype, sjinfo);
+
+				modified = true;
+			}
 		}
-	}
 
-	if (has_stats(stats, MV_CLAUSE_TYPE_NDIST) &&
-		(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST) >= 2))
-	{
-		MVStatisticInfo *mvstat;
-		Bitmapset  *mvattnums;
+		/*
+		 * It's possible that we've removed so many clauses in the last loop
+		 * that we only have one clause left (or no clauses at all).
+		 */
+		if (list_length(clauses) < 2)
+			break;
 
-		/* collect attributes from the compatible conditions */
-		mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
-
-		/* and search for the statistic covering the most attributes */
-		mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_NDIST);
-
-		if (mvstat != NULL)		/* we have a matching stats */
+		if (has_stats(stats, MV_CLAUSE_TYPE_NDIST) &&
+			(count_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST) >= 2))
 		{
-			/* clauses compatible with multi-variate stats */
-			List	   *mvclauses = NIL;
+			MVStatisticInfo *mvstat;
+			Bitmapset  *mvattnums;
 
-			/* split the clauselist into regular and mv-clauses */
-			clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
-										  mvstat, MV_CLAUSE_TYPE_NDIST);
+			/* collect attributes from the compatible conditions */
+			mvattnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
 
-			/* we've chosen the histogram to match the clauses */
-			Assert(mvclauses != NIL);
+			/* and search for the statistic covering the most attributes */
+			mvstat = choose_mv_statistics(stats, mvattnums, MV_CLAUSE_TYPE_NDIST);
 
-			/* compute the multivariate stats (dependencies) */
-			s1 *= clauselist_mv_selectivity_ndist(root, relid, mvclauses, mvstat,
-												  varRelid, jointype, sjinfo);
+			if (mvstat != NULL)		/* we have a matching stats */
+			{
+				/* clauses compatible with multi-variate stats */
+				List	   *mvclauses = NIL;
+
+				/* split the clauselist into regular and mv-clauses */
+				clauses = clauselist_mv_split(root, relid, clauses, &mvclauses,
+											  mvstat, MV_CLAUSE_TYPE_NDIST);
+
+				/* we've chosen the histogram to match the clauses */
+				Assert(mvclauses != NIL);
+
+				/* compute the multivariate stats (dependencies) */
+				s1 *= clauselist_mv_selectivity_ndist(root, relid, mvclauses, mvstat,
+													  varRelid, jointype, sjinfo);
+
+				modified = true;
+			}
 		}
+
+		/*
+		 * It's possible that we've removed so many clauses in the last loop
+		 * that we only have one clause left (or no clauses at all).
+		 */
+		if (list_length(clauses) < 2)
+			break;
+
+		/*
+		 * Also stop if we haven't applied any statistics in this round, as
+		 * that's not going to change.
+		 */
+		if (! modified)
+			break;
 	}
 
 	/*

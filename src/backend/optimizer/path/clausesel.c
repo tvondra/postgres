@@ -1139,7 +1139,7 @@ choose_mv_statistics(List *stats, Bitmapset *attnums)
 
 	MVStatisticInfo *choice = NULL;
 
-	int			current_matches = 1;	/* goal #1: maximize */
+	int			current_matches = 2;	/* goal #1: maximize */
 	int			current_dims = (MVSTATS_MAX_DIMENSIONS + 1);	/* goal #2: minimize */
 
 	/*

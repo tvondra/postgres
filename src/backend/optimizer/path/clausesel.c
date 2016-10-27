@@ -1051,13 +1051,17 @@ clauselist_mv_selectivity(PlannerInfo *root, List *clauses, MVStatisticInfo *mvs
 
 static MVNDistinctItem *
 find_widest_ndistinct_item(MVNDistinct ndistinct, Bitmapset *attnums,
-						   int16 *attmap, int maxnatts)
+						   int16 *attmap)
 {
 	int i;
 	MVNDistinctItem *widest = NULL;
 
 	/* number of attnums in clauses */
 	int nattnums = bms_num_members(attnums);
+
+	/* with less than two attributes, we can bail out right away */
+	if (nattnums < 2)
+		return NULL;
 
 	/*
 	 * Iterate over the MVNDistinctItem items and find the widest one from
@@ -1071,10 +1075,9 @@ find_widest_ndistinct_item(MVNDistinct ndistinct, Bitmapset *attnums,
 
 		/*
 		 * Skip items referencing more attributes than available clauses,
-		 * as those can't be fully matched, or if the number of attributes
-		 * exceeds the maxnatts limit.
+		 * as those can't be fully matched.
 		 */
-		if ((item->nattrs > nattnums) || (item->nattrs > maxnatts))
+		if (item->nattrs > nattnums)
 			continue;
 
 		/* We can skip items with fewer attributes than the best one. */
@@ -1137,33 +1140,30 @@ clauselist_mv_selectivity_ndist(PlannerInfo *root, Index relid,
 	ListCell	   *lc;
 	Selectivity		s1 = 1.0;
 	MVNDistinct		ndistinct;
+	MVNDistinctItem *item;
+	Bitmapset	   *attnums;
+	List		   *clauses_filtered = NIL;
+
+	/* we should only get here if the statistics includes ndistinct */
+	Assert(mvstats->ndist_enabled && mvstats->ndist_built);
 
 	/* load the ndistinct items stored in the statistics */
 	ndistinct = load_mv_ndistinct(mvstats->mvoid);
 
-	/* search for the MVNDistinctItem covering the most clauses */
-	while (true)
+	/* collect attnums in the clauses */
+	attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
+
+	Assert(bms_num_members(attnums) >= 2);
+
+	/*
+	 * Search for the widest ndistinct item (covering the most clauses), and
+	 * then use it to estimate the number of entries.
+	 */
+	item = find_widest_ndistinct_item(ndistinct, attnums,
+									  mvstats->stakeys->values);
+
+	if (item)
 	{
-		MVNDistinctItem *item;
-		Bitmapset	   *attnums;
-		List		   *clauses_filtered = NIL;
-		List		   *clauses_ndistinct = NIL;
-
-		attnums = collect_mv_attnums(clauses, relid, MV_CLAUSE_TYPE_NDIST);
-
-		/* no point in looking for dependencies with fewer than 2 attributes */
-		if (bms_num_members(attnums) < 2)
-			break;
-
-		/* pick the largest ndistinct item, fully matched by the clauses */
-		item = find_widest_ndistinct_item(ndistinct, attnums,
-										  mvstats->stakeys->values,
-										  mvstats->stakeys->dim1); /* FIXME */
-
-		/* if we've found no suitable ndistinct entry, so we're done */
-		if (! item)
-			break;
-
 		/*
 		 * We have an applicable item, so identify all covered clauses, and
 		 * remove them from the list of clauses.
@@ -1195,24 +1195,19 @@ clauselist_mv_selectivity_ndist(PlannerInfo *root, Index relid,
 			 * If the clause matches the selected ndistinct item, add it to
 			 * the list of ndistinct clauses.
 			 */
-			if (attnum_in_ndistinct_item(item,
-										 bms_singleton_member(attnums_clause),
-										 mvstats->stakeys->values))
-				clauses_ndistinct = lappend(clauses_ndistinct, clause);
-			else
+			if (!attnum_in_ndistinct_item(item,
+										  bms_singleton_member(attnums_clause),
+										  mvstats->stakeys->values))
 				clauses_filtered = lappend(clauses_filtered, clause);
 		}
 
-		/*
-		 * Now factor in the selectivity into the final one, using this formula:
-		 *
-		 *     P(a,b) = P(a) * (f + (1-f) * P(b))
-		 *
-		 * where 'f' is the degree of validity of the dependency.
-		*/
+		/* Compute selectivity using the ndistinct item. */
 		s1 *= (1.0 / item->ndistinct);
 
-		/* And make sure we only use filtered clauses in the next round */
+		/*
+		 * Throw away the clauses matched by the ndistinct, so that we don't
+		 * estimate them twice.
+		 */
 		clauses = clauses_filtered;
 	}
 

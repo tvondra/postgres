@@ -228,15 +228,16 @@ clauselist_selectivity(PlannerInfo *root,
 		(count_ext_attnums(clauses, relid,
 						  STATS_TYPE_MCV | STATS_TYPE_HIST) >= 2))
 	{
+		Bitmapset  *mvattnums;
+		StatisticExtInfo *stat;
+
 		/* collect attributes from the compatible conditions */
-		Bitmapset  *mvattnums = collect_ext_attnums(clauses, relid,
-									  STATS_TYPE_MCV | STATS_TYPE_HIST);
+		mvattnums = collect_ext_attnums(clauses, relid,
+									   STATS_TYPE_MCV | STATS_TYPE_HIST);
 
 		/* and search for the statistic covering the most attributes */
-		StatisticExtInfo *stat = choose_ext_statistics(stats, mvattnums,
-									  STATS_TYPE_MCV | STATS_TYPE_HIST);
-
-		if (stat != NULL)		/* we have a matching stats */
+		while ((stat = choose_ext_statistics(stats, mvattnums,
+									  STATS_TYPE_MCV | STATS_TYPE_HIST)))
 		{
 			/* clauses compatible with multi-variate stats */
 			List	   *mvclauses = NIL;
@@ -250,6 +251,10 @@ clauselist_selectivity(PlannerInfo *root,
 
 			/* compute the multivariate stats */
 			s1 *= clauselist_ext_selectivity(root, mvclauses, stat);
+
+			/* update the bitmap if attnums using the remaining clauses) */
+			mvattnums = collect_ext_attnums(clauses, relid,
+								   STATS_TYPE_MCV | STATS_TYPE_HIST);
 		}
 	}
 
@@ -264,9 +269,7 @@ clauselist_selectivity(PlannerInfo *root,
 		mvattnums = collect_ext_attnums(clauses, relid, STATS_TYPE_FDEPS);
 
 		/* and search for the statistic covering the most attributes */
-		stat = choose_ext_statistics(stats, mvattnums, STATS_TYPE_FDEPS);
-
-		if (stat != NULL)		/* we have a matching stats */
+		while ((stat = choose_ext_statistics(stats, mvattnums, STATS_TYPE_FDEPS)))
 		{
 			/* clauses compatible with multi-variate stats */
 			List	   *mvclauses = NIL;
@@ -284,6 +287,9 @@ clauselist_selectivity(PlannerInfo *root,
 			/* compute the extended stats (dependencies) */
 			s1 *= clauselist_ext_selectivity_deps(root, relid, mvclauses, stat,
 												 varRelid, jointype, sjinfo);
+
+			/* update the bitmap if attnums using the remaining clauses) */
+			mvattnums = collect_ext_attnums(clauses, relid, STATS_TYPE_FDEPS);
 		}
 	}
 
@@ -298,9 +304,7 @@ clauselist_selectivity(PlannerInfo *root,
 		mvattnums = collect_ext_attnums(clauses, relid, STATS_TYPE_NDIST);
 
 		/* and search for the statistic covering the most attributes */
-		stat = choose_ext_statistics(stats, mvattnums, STATS_TYPE_NDIST);
-
-		if (stat != NULL)		/* we have a matching stats */
+		while ((stat = choose_ext_statistics(stats, mvattnums, STATS_TYPE_NDIST)))
 		{
 			/* clauses compatible with multi-variate stats */
 			List	   *mvclauses = NIL;
@@ -315,6 +319,9 @@ clauselist_selectivity(PlannerInfo *root,
 			/* compute the multivariate stats (dependencies) */
 			s1 *= clauselist_ext_selectivity_ndist(root, relid, mvclauses, stat,
 												  varRelid, jointype, sjinfo);
+
+			/* collect attributes from the compatible conditions */
+			mvattnums = collect_ext_attnums(clauses, relid, STATS_TYPE_NDIST);
 		}
 	}
 

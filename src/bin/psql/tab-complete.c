@@ -448,6 +448,21 @@ static const SchemaQuery Query_for_list_of_foreign_tables = {
 	NULL
 };
 
+static const SchemaQuery Query_for_list_of_statistics = {
+	/* catname */
+	"pg_catalog.pg_mv_statistic s",
+	/* selcondition */
+	NULL,
+	/* viscondition */
+	NULL,
+	/* namespace */
+	"s.stanamespace",
+	/* result */
+	"pg_catalog.quote_ident(s.staname)",
+	/* qualresult */
+	NULL
+};
+
 static const SchemaQuery Query_for_list_of_tables = {
 	/* catname */
 	"pg_catalog.pg_class c",
@@ -966,6 +981,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"SCHEMA", Query_for_list_of_schemas},
 	{"SEQUENCE", NULL, &Query_for_list_of_sequences},
 	{"SERVER", Query_for_list_of_servers},
+	{"STATISTICS", NULL, &Query_for_list_of_statistics},
 	{"SUBSCRIPTION", NULL, NULL},
 	{"TABLE", NULL, &Query_for_list_of_tables},
 	{"TABLESPACE", Query_for_list_of_tablespaces},
@@ -1410,8 +1426,8 @@ psql_completion(const char *text, int start, int end)
 			"EVENT TRIGGER", "EXTENSION", "FOREIGN DATA WRAPPER", "FOREIGN TABLE", "FUNCTION",
 			"GROUP", "INDEX", "LANGUAGE", "LARGE OBJECT", "MATERIALIZED VIEW", "OPERATOR",
 			"POLICY", "PUBLICATION", "ROLE", "RULE", "SCHEMA", "SERVER", "SEQUENCE",
-			"SUBSCRIPTION", "SYSTEM", "TABLE", "TABLESPACE", "TEXT SEARCH", "TRIGGER", "TYPE",
-		"USER", "USER MAPPING FOR", "VIEW", NULL};
+			"STATISTICS", "SUBSCRIPTION", "SYSTEM", "TABLE", "TABLESPACE", "TEXT SEARCH",
+		"TRIGGER", "TYPE", "USER", "USER MAPPING FOR", "VIEW", NULL};
 
 		COMPLETE_WITH_LIST(list_ALTER);
 	}
@@ -1712,6 +1728,10 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER RULE <name> ON <name> */
 	else if (Matches5("ALTER", "RULE", MatchAny, "ON", MatchAny))
 		COMPLETE_WITH_CONST("RENAME TO");
+
+	/* ALTER STATISTICS <name> */
+	else if (Matches3("ALTER", "STATISTICS", MatchAny))
+		COMPLETE_WITH_LIST3("OWNER TO", "RENAME TO", "SET SCHEMA");
 
 	/* ALTER TRIGGER <name>, add ON */
 	else if (Matches3("ALTER", "TRIGGER", MatchAny))
@@ -2291,6 +2311,12 @@ psql_completion(const char *text, int start, int end)
 /* CREATE SERVER <name> */
 	else if (Matches3("CREATE", "SERVER", MatchAny))
 		COMPLETE_WITH_LIST3("TYPE", "VERSION", "FOREIGN DATA WRAPPER");
+
+/* CREATE STATISTICS <name> */
+	else if (Matches3("CREATE", "STATISTICS", MatchAny))
+		COMPLETE_WITH_LIST2("WITH", "ON");
+	else if (Matches4("CREATE", "STATISTICS", MatchAny, "ON|WITH"))
+		COMPLETE_WITH_CONST("(");
 
 /* CREATE TABLE --- is allowed inside CREATE SCHEMA, so use TailMatches */
 	/* Complete "CREATE TEMP/TEMPORARY" with the possible temp objects */

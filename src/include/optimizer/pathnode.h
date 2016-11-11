@@ -180,6 +180,13 @@ extern GroupingSetsPath *create_groupingsets_path(PlannerInfo *root,
 						 List *rollup_groupclauses,
 						 const AggClauseCosts *agg_costs,
 						 double numGroups);
+extern CubePath *create_cube_path(PlannerInfo *root,
+						 RelOptInfo *rel,
+						 Path *cubepath,
+						 Path *chsetpath,
+						 PathTarget *target,
+						 const AggClauseCosts *agg_costs,
+						 double numGroups);
 extern MinMaxAggPath *create_minmaxagg_path(PlannerInfo *root,
 					  RelOptInfo *rel,
 					  PathTarget *target,

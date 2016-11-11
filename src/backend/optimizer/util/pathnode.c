@@ -2658,6 +2658,73 @@ create_groupingsets_path(PlannerInfo *root,
 }
 
 /*
+ * create_cube_path
+ *	  Creates a pathnode that represents partial aggregation from a cube
+ *
+ * CubePath represents partial aggregation combining data from a pre-aggregated
+ * cube and a change-set.
+ *
+ * 'rel' is the parent relation associated with the result
+ * 'cubepath' is the path representing the source of cube data
+ * 'chsetpath' is the path representing the source of changeset data
+ * 'target' is the PathTarget to be computed
+ * 'agg_costs' contains cost info about the aggregate functions to be computed
+ * 'numGroups' is the estimated number of groups
+ */
+CubePath *
+create_cube_path(PlannerInfo *root,
+						 RelOptInfo *rel,
+						 Path *cubepath,
+						 Path *chsetpath,
+						 PathTarget *target,
+						 const AggClauseCosts *agg_costs,
+						 double numGroups)
+{
+	CubePath *pathnode = makeNode(CubePath);
+	int			numGroupCols;
+
+	/* The topmost generated Plan node will be an Agg */
+	pathnode->path.pathtype = T_Cube;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = target;
+	pathnode->path.param_info = cubepath->param_info;
+	pathnode->path.parallel_aware = false;
+
+	/* FIXME allow parallelism in the future */
+	pathnode->path.parallel_safe = false;
+	pathnode->path.parallel_workers = 0;
+
+	pathnode->cubepath = cubepath;
+	pathnode->chsetpath = chsetpath;
+
+	/* Output will always be in sorted order by group_pathkeys. */
+	pathnode->path.pathkeys = root->group_pathkeys;
+
+	/*
+	 * Account for cost of the topmost Agg node
+	 * 
+	 * FIXME bogus numGroupCols
+	 */
+	numGroupCols = 5;
+
+	cost_agg(&pathnode->path, root,
+			 AGG_SORTED, /* sorted only, at this point */
+			 agg_costs,
+			 numGroupCols,
+			 numGroups,
+			 cubepath->startup_cost + chsetpath->startup_cost,
+			 cubepath->total_cost + chsetpath->total_cost,
+			 cubepath->rows);
+
+	/* add tlist eval cost for each output row */
+	pathnode->path.startup_cost += target->cost.startup;
+	pathnode->path.total_cost += target->cost.startup +
+		target->cost.per_tuple * pathnode->path.rows;
+
+	return pathnode;
+}
+
+/*
  * create_minmaxagg_path
  *	  Creates a pathnode that represents computation of MIN/MAX aggregates
  *

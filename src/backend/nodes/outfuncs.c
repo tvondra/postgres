@@ -1867,6 +1867,18 @@ _outGroupingSetsPath(StringInfo str, const GroupingSetsPath *node)
 }
 
 static void
+_outCubePath(StringInfo str, const CubePath *node)
+{
+	WRITE_NODE_TYPE("CUBEPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(cubepath);
+	WRITE_NODE_FIELD(chsetpath);
+	WRITE_FLOAT_FIELD(numGroups, "%.0f");
+}
+
+static void
 _outMinMaxAggPath(StringInfo str, const MinMaxAggPath *node)
 {
 	WRITE_NODE_TYPE("MINMAXAGGPATH");
@@ -3637,6 +3649,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_GroupingSetsPath:
 				_outGroupingSetsPath(str, obj);
+				break;
+			case T_CubePath:
+				_outCubePath(str, obj);
 				break;
 			case T_MinMaxAggPath:
 				_outMinMaxAggPath(str, obj);

@@ -37,6 +37,8 @@ typedef enum NodeTag
 	T_ResultRelInfo,
 	T_EState,
 	T_TupleTableSlot,
+	T_ChangeSetInfo,
+	T_CubeInfo,
 
 	/*
 	 * TAGS FOR PLAN NODES (plannodes.h)
@@ -271,6 +273,8 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
+	T_ChangeSetOptInfo,
+	T_CubeOptInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)

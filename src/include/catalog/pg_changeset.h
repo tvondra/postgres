@@ -28,7 +28,7 @@
  *		typedef struct FormData_pg_changeset.
  * ----------------
  */
-#define ChangesetRelationId  3349
+#define ChangeSetRelationId  3349
 
 CATALOG(pg_changeset,3349) BKI_WITHOUT_OIDS BKI_SCHEMA_MACRO
 {

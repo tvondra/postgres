@@ -18,6 +18,8 @@
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_changeset.h"
+#include "catalog/pg_cube.h"
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
 #include "rewrite/prs2lock.h"
@@ -62,6 +64,10 @@ typedef struct RelationData
 	bool		rd_isvalid;		/* relcache entry is valid */
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
+	bool		rd_chsetvalid;	/* state of rd_chsetlist: false = not valid,
+								 * true = valid */
+	bool		rd_cubevalid;	/* state of rd_cubelist: false = not valid,
+								 * true = valid */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -115,6 +121,19 @@ typedef struct RelationData
 	Form_pg_index rd_index;		/* pg_index tuple describing this index */
 	/* use "struct" here to avoid needing to include htup.h: */
 	struct HeapTupleData *rd_indextuple;		/* all of pg_index tuple */
+
+	/* These are non-NULL only for an changeset relation: */
+	Form_pg_changeset rd_changeset;		/* tuple describing the changeset */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_changesettuple;	/* all of pg_changeset tuple */
+
+	/* These are non-NULL only for an cube relation: */
+	Form_pg_cube rd_cube;	/* pg_cube tuple describing this changeset */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_cubetuple;	/* all of pg_cube tuple */
+
+	MemoryContext rd_cubecxt;	/* private memory cxt for this stuff */
+	List	   *rd_cubeexprs;	/* cube expression trees, if any */
 
 	/*
 	 * index access support info (used only for an index relation)

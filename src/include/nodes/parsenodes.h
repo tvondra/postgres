@@ -643,6 +643,21 @@ typedef struct IndexElem
 } IndexElem;
 
 /*
+ * CubeElem - cube parameters (used in CREATE CUBE)
+ *
+ * For a plain cube attribute, 'name' is the name of the table column to
+ * reference, and 'expr' is NULL.  For a cube expression, 'name' is NULL
+ * and 'expr' is the expression tree.
+ */
+typedef struct CubeElem
+{
+	NodeTag		type;
+	char	   *name;			/* name of attribute, or NULL */
+	Node	   *expr;			/* expression, or NULL */
+	char	   *cubecolname;	/* name for cube column; NULL = default */
+} CubeElem;
+
+/*
  * DefElem - a generic "name = value" option definition
  *
  * In some contexts the name can be qualified.  Also, certain SQL commands
@@ -2510,6 +2525,7 @@ typedef struct CreateCubeStmt
 	NodeTag		type;
 	char	   *cubename;		/* name of new cube, or NULL for default */
 	RangeVar   *relation;		/* relation to build cube on */
+	RangeVar   *changeset;		/* changeset feeding the cube */
 	char	   *tableSpace;		/* tablespace, or NULL for default */
 	List	   *cubeExprs;		/* columns to include: a list of IndexElem */
 	List	   *options;		/* WITH clause options: a list of DefElem */

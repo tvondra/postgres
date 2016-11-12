@@ -211,6 +211,8 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateForeignTableStmt:
 		case T_ImportForeignSchemaStmt:
 		case T_SecLabelStmt:
+		case T_CreateChangeSetStmt:
+		case T_CreateCubeStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -1302,6 +1304,14 @@ ProcessUtilitySlow(ParseState *pstate,
 				}
 				break;
 
+			case T_CreateChangeSetStmt:
+				address = InvalidObjectAddress;	/* FIXME the address */
+				break;
+
+			case T_CreateCubeStmt:
+				address = InvalidObjectAddress;	/* FIXME the address */
+				break;
+
 			case T_CreateExtensionStmt:
 				address = CreateExtension(pstate, (CreateExtensionStmt *) parsetree);
 				break;
@@ -2305,6 +2315,14 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		case T_CreateChangeSetStmt:
+			tag = "CREATE CHANGESET";
+			break;
+
+		case T_CreateCubeStmt:
+			tag = "CREATE CUBE";
+			break;
+
 		case T_CompositeTypeStmt:
 			tag = "CREATE TYPE";
 			break;
@@ -2922,6 +2940,14 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_IndexStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateChangeSetStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateCubeStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

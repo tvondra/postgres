@@ -161,6 +161,7 @@ test: jsonb
 test: json_encoding
 test: jsonpath
 test: jsonb_jsonpath
+test: jsonb_stats
 test: indirect_toast
 test: equivclass
 test: plancache

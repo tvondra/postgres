@@ -1283,7 +1283,7 @@ _equalIndexStmt(const IndexStmt *a, const IndexStmt *b)
 }
 
 static bool
-_equalChangeSetStmt(const ChangeSetStmt *a, const ChangeSetStmt *b)
+_equalCreateChangeSetStmt(const CreateChangeSetStmt *a, const CreateChangeSetStmt *b)
 {
 	COMPARE_STRING_FIELD(chsetname);
 	COMPARE_NODE_FIELD(relation);
@@ -1296,7 +1296,7 @@ _equalChangeSetStmt(const ChangeSetStmt *a, const ChangeSetStmt *b)
 }
 
 static bool
-_equalCubeStmt(const CubeStmt *a, const CubeStmt *b)
+_equalCreateCubeStmt(const CreateCubeStmt *a, const CreateCubeStmt *b)
 {
 	COMPARE_STRING_FIELD(cubename);
 	COMPARE_NODE_FIELD(relation);
@@ -3068,11 +3068,11 @@ equal(const void *a, const void *b)
 		case T_IndexStmt:
 			retval = _equalIndexStmt(a, b);
 			break;
-		case T_ChangeSetStmt:
-			retval = _equalChangeSetStmt(a, b);
+		case T_CreateChangeSetStmt:
+			retval = _equalCreateChangeSetStmt(a, b);
 			break;
-		case T_CubeStmt:
-			retval = _equalCubeStmt(a, b);
+		case T_CreateCubeStmt:
+			retval = _equalCreateCubeStmt(a, b);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _equalCreateFunctionStmt(a, b);

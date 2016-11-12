@@ -1867,6 +1867,18 @@ _outGroupingSetsPath(StringInfo str, const GroupingSetsPath *node)
 }
 
 static void
+_outCubePath(StringInfo str, const CubePath *node)
+{
+	WRITE_NODE_TYPE("CUBEPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(cubepath);
+	WRITE_NODE_FIELD(chsetpath);
+	WRITE_FLOAT_FIELD(numGroups, "%.0f");
+}
+
+static void
 _outMinMaxAggPath(StringInfo str, const MinMaxAggPath *node)
 {
 	WRITE_NODE_TYPE("MINMAXAGGPATH");
@@ -2477,9 +2489,9 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 }
 
 static void
-_outChangeSetStmt(StringInfo str, const ChangeSetStmt *node)
+_outCreateChangeSetStmt(StringInfo str, const CreateChangeSetStmt *node)
 {
-	WRITE_NODE_TYPE("CHANGESETSTMT");
+	WRITE_NODE_TYPE("CREATECHANGESETSTMT");
 
 	WRITE_STRING_FIELD(chsetname);
 	WRITE_NODE_FIELD(relation);
@@ -2490,9 +2502,9 @@ _outChangeSetStmt(StringInfo str, const ChangeSetStmt *node)
 }
 
 static void
-_outCubeStmt(StringInfo str, const CubeStmt *node)
+_outCreateCubeStmt(StringInfo str, const CreateCubeStmt *node)
 {
-	WRITE_NODE_TYPE("CUBESTMT");
+	WRITE_NODE_TYPE("CREATECUBESTMT");
 
 	WRITE_STRING_FIELD(cubename);
 	WRITE_NODE_FIELD(relation);
@@ -3692,6 +3704,9 @@ outNode(StringInfo str, const void *obj)
 			case T_GroupingSetsPath:
 				_outGroupingSetsPath(str, obj);
 				break;
+			case T_CubePath:
+				_outCubePath(str, obj);
+				break;
 			case T_MinMaxAggPath:
 				_outMinMaxAggPath(str, obj);
 				break;
@@ -3796,11 +3811,11 @@ outNode(StringInfo str, const void *obj)
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
 				break;
-			case T_ChangeSetStmt:
-				_outChangeSetStmt(str, obj);
+			case T_CreateChangeSetStmt:
+				_outCreateChangeSetStmt(str, obj);
 				break;
-			case T_CubeStmt:
-				_outCubeStmt(str, obj);
+			case T_CreateCubeStmt:
+				_outCreateCubeStmt(str, obj);
 				break;
 			case T_NotifyStmt:
 				_outNotifyStmt(str, obj);
@@ -3934,6 +3949,7 @@ outNode(StringInfo str, const void *obj)
 			case T_TriggerTransition:
 				_outTriggerTransition(str, obj);
 				break;
+			
 
 			default:
 

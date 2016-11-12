@@ -191,7 +191,7 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
 /*
- * generalized changeset_ interface routines (in heapam.c)
+ * generalized changeset/cube interface routines (in heapam.c)
  */
 
 extern Relation changeset_open(Oid relationId, LOCKMODE lockmode);

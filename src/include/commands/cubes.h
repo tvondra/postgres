@@ -17,8 +17,8 @@
 #include "catalog/objectaddress.h"
 #include "nodes/parsenodes.h"
 
-extern ObjectAddress CreateChangeSet(ChangeSetStmt *stmt);
-extern ObjectAddress CreateCube(CubeStmt *stmt);
+extern ObjectAddress CreateChangeSet(CreateChangeSetStmt *stmt);
+extern ObjectAddress CreateCube(CreateCubeStmt *stmt);
 
 extern Datum flush_changeset(PG_FUNCTION_ARGS);
 

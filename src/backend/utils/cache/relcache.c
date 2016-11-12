@@ -4559,6 +4559,8 @@ RelationGetCubeExpressions(Relation relation)
 	result = (List *) stringToNode(exprsString);
 	pfree(exprsString);
 
+	relation_close(cuberel, NoLock);
+
 	/*
 	 * Run the expressions through eval_const_expressions. This is not just an
 	 * optimization, but is necessary, because the planner will be comparing

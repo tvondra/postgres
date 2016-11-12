@@ -3012,6 +3012,10 @@ print_path(PlannerInfo *root, Path *path, int indent)
 			ptype = "GroupingSets";
 			subpath = ((GroupingSetsPath *) path)->subpath;
 			break;
+		case T_CubePath:
+			ptype = "CubePath";
+			subpath = ((CubePath *) path)->subpath;
+			break;
 		case T_MinMaxAggPath:
 			ptype = "MinMaxAgg";
 			break;

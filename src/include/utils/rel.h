@@ -20,6 +20,8 @@
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_cube.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_changeset.h"
+#include "catalog/pg_cube.h"
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
 #include "rewrite/prs2lock.h"

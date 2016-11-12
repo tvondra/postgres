@@ -97,6 +97,7 @@ typedef struct ChangeSetInfo
 	AttrNumber *csi_KeyAttrNumbers;
 } ChangeSetInfo;
 
+
 /* ----------------
  *	  CubeInfo information
  *

@@ -242,7 +242,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		AlterCompositeTypeStmt AlterUserStmt AlterUserMappingStmt AlterUserSetStmt
 		AlterRoleStmt AlterRoleSetStmt AlterPolicyStmt
 		AlterDefaultPrivilegesStmt DefACLAction
-		AnalyzeStmt ChangeSetStmt CubeStmt ClosePortalStmt ClusterStmt CommentStmt
+		AnalyzeStmt ClosePortalStmt ClusterStmt CommentStmt
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
@@ -269,6 +269,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
+		CreateChangeSetStmt CreateCubeStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -800,8 +801,6 @@ stmt :
 			| AlterUserStmt
 			| AnalyzeStmt
 			| CheckPointStmt
-			| ChangeSetStmt
-			| CubeStmt
 			| ClosePortalStmt
 			| ClusterStmt
 			| CommentStmt
@@ -811,7 +810,9 @@ stmt :
 			| CreateAsStmt
 			| CreateAssertStmt
 			| CreateCastStmt
+			| CreateChangeSetStmt
 			| CreateConversionStmt
+			| CreateCubeStmt
 			| CreateDomainStmt
 			| CreateExtensionStmt
 			| CreateFdwStmt
@@ -6852,11 +6853,11 @@ opt_nulls_order: NULLS_LA FIRST_P			{ $$ = SORTBY_NULLS_FIRST; }
  *
  *****************************************************************************/
 
-ChangeSetStmt:	CREATE CHANGESET opt_changeset_name
+CreateChangeSetStmt:	CREATE CHANGESET opt_changeset_name
 			ON qualified_name '(' changeset_cols ')'
 			opt_reloptions OptTableSpace
 				{
-					ChangeSetStmt *n = makeNode(ChangeSetStmt);
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
 					n->chsetname = $3;
 					n->relation = $5;
 					n->chsetColumns = $7;
@@ -6869,7 +6870,7 @@ ChangeSetStmt:	CREATE CHANGESET opt_changeset_name
 			ON qualified_name '(' changeset_cols ')'
 			opt_reloptions OptTableSpace
 				{
-					ChangeSetStmt *n = makeNode(ChangeSetStmt);
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
 					n->chsetname = $6;
 					n->relation = $8;
 					n->chsetColumns = $10;
@@ -6888,8 +6889,8 @@ opt_changeset_name:
 		;
 
 changeset_cols:
-			ColId									{ $$ = list_make1(makeString($1)); }
-			| changeset_cols ',' ColId				{ $$ = lappend($1, makeString($3)); }
+			ColId									{ $$ = list_make1($1); }
+			| changeset_cols ',' ColId				{ $$ = lappend($1, $3); }
 		;
 
 
@@ -6899,15 +6900,14 @@ changeset_cols:
  *
  *****************************************************************************/
 
-CubeStmt:	CREATE CUBE opt_cube_name
+CreateCubeStmt:	CREATE CUBE opt_cube_name
 			ON qualified_name '(' cube_elems ')'
 			opt_changeset opt_reloptions OptTableSpace
 				{
-					CubeStmt *n = makeNode(CubeStmt);
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
 					n->cubename = $3;
 					n->relation = $5;
 					n->cubeExprs = $7;
-					n->changeset = $9;
 					n->options = $10;
 					n->tableSpace = $11;
 					n->if_not_exists = false;
@@ -6917,7 +6917,7 @@ CubeStmt:	CREATE CUBE opt_cube_name
 			ON qualified_name '(' cube_elems ')'
 			opt_changeset opt_reloptions OptTableSpace
 				{
-					CubeStmt *n = makeNode(CubeStmt);
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
 					n->cubename = $6;
 					n->relation = $8;
 					n->cubeExprs = $10;
@@ -6935,7 +6935,6 @@ opt_cube_name:
 			cube_name								{ $$ = $1; }
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
-
 
 /*
  * Cube attributes can be either simple column references, or arbitrary

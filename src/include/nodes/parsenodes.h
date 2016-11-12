@@ -2503,7 +2503,7 @@ typedef struct IndexStmt
  * This represents creation of an changeset.
  * ----------------------
  */
-typedef struct ChangeSetStmt
+typedef struct CreateChangeSetStmt
 {
 	NodeTag		type;
 	char	   *chsetname;		/* name of new changeset, or NULL for default */
@@ -2512,7 +2512,7 @@ typedef struct ChangeSetStmt
 	List	   *chsetColumns;	/* columns to include: a list of column names */
 	List	   *options;		/* WITH clause options: a list of DefElem */
 	bool		if_not_exists;	/* just do nothing if changeset already exists? */
-} ChangeSetStmt;
+} CreateChangeSetStmt;
 
 /* ----------------------
  *		Create Cube Statement
@@ -2520,7 +2520,7 @@ typedef struct ChangeSetStmt
  * This represents creation of an cube.
  * ----------------------
  */
-typedef struct CubeStmt
+typedef struct CreateCubeStmt
 {
 	NodeTag		type;
 	char	   *cubename;		/* name of new cube, or NULL for default */
@@ -2531,7 +2531,7 @@ typedef struct CubeStmt
 	List	   *options;		/* WITH clause options: a list of DefElem */
 	bool		transformed;	/* true when transformCubeStmt is finished */
 	bool		if_not_exists;	/* just do nothing if changeset already exists? */
-} CubeStmt;
+} CreateCubeStmt;
 
 /* ----------------------
  *		Create Function Statement

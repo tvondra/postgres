@@ -74,6 +74,7 @@ typedef enum NodeTag
 	T_Sort,
 	T_Group,
 	T_Agg,
+	T_Cube,
 	T_WindowAgg,
 	T_Unique,
 	T_Gather,
@@ -252,6 +253,7 @@ typedef enum NodeTag
 	T_UpperUniquePath,
 	T_AggPath,
 	T_GroupingSetsPath,
+	T_CubePath,
 	T_MinMaxAggPath,
 	T_WindowAggPath,
 	T_SetOpPath,
@@ -410,8 +412,8 @@ typedef enum NodeTag
 	T_AlterPolicyStmt,
 	T_CreateTransformStmt,
 	T_CreateAmStmt,
-	T_ChangeSetStmt,
-	T_CubeStmt,
+	T_CreateChangeSetStmt,
+	T_CreateCubeStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)

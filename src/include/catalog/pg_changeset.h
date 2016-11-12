@@ -1,8 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * pg_changeset.h
- *	  definition of the system "changeset" relation (pg_changeset)
- *	  along with the relation's initial contents.
+ *	  definition of the system "changeset" relation (pg_changeset), tracking
+ *	  changes in a given table. The changes are in no particular order (the
+ *	  only sensible order is commit order, and that's unknown at the moment
+ *	  of adding data to changeset).
  *
  *
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group

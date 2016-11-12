@@ -2135,7 +2135,7 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 }
 
 /*
- * transformCubeStmt - parse analysis for CREATE CUBE
+ * transformCreateCubeStmt - parse analysis for CREATE CUBE
  *
  * Contrary to indexes, cubes require at least one expression with an
  * aggregate function.
@@ -2144,8 +2144,8 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
  * the passed-in relid (and not on stmt->relation) to determine the target
  * relation.
  */
-CubeStmt *
-transformCubeStmt(Oid relid, CubeStmt *stmt, const char *queryString)
+CreateCubeStmt *
+transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString)
 {
 	ParseState *pstate;
 	RangeTblEntry *rte;
@@ -2160,7 +2160,7 @@ transformCubeStmt(Oid relid, CubeStmt *stmt, const char *queryString)
 	 * We must not scribble on the passed-in CubeStmt, so copy it.  (This is
 	 * overkill, but easy.)
 	 */
-	stmt = (CubeStmt *) copyObject(stmt);
+	stmt = (CreateCubeStmt *) copyObject(stmt);
 
 	/* Set up pstate */
 	pstate = make_parsestate(NULL);

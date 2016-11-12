@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * cubes.c
+ * cubecmds.c
  *	  Commands to manipulate changesets and cubes
  *
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
@@ -8,7 +8,7 @@
  *
  *
  * IDENTIFICATION
- *	  src/backend/commands/cubes.c
+ *	  src/backend/commands/cubecmds.c
  *
  *-------------------------------------------------------------------------
  */
@@ -78,6 +78,7 @@ static Bitmapset *analyze_cube_expressions(CubeOptInfo *cube, int *numexprs);
 
 static AttrNumber lookup_attnum_in_changeset(ChangeSetInfo *chsetInfo,
 											 AttrNumber attnum);
+
 /*
  * CreateChangeSet
  *		Creates a new changeset
@@ -87,7 +88,7 @@ static AttrNumber lookup_attnum_in_changeset(ChangeSetInfo *chsetInfo,
  * Returns the object address of the created changeset.
  */
 ObjectAddress
-CreateChangeSet(ChangeSetStmt *stmt)
+CreateChangeSet(CreateChangeSetStmt *stmt)
 {
 	Oid			relationId;
 	char	   *chsetRelationName;
@@ -227,7 +228,7 @@ CreateChangeSet(ChangeSetStmt *stmt)
  * CREATE CUBE
  */
 ObjectAddress
-CreateCube(CubeStmt *stmt)
+CreateCube(CreateCubeStmt *stmt)
 {
 	Oid			relationId;
 	Oid			changesetId;
@@ -796,7 +797,7 @@ ChangeSetGetCubeList(Relation changeset)
 				ObjectIdGetDatum(RelationGetRelid(changeset)));
 
 	cuberel = heap_open(CubeRelationId, AccessShareLock);
-	cubescan = systable_beginscan(cuberel, CubeChsetIndexId, true,
+	cubescan = systable_beginscan(cuberel, CubeChangeSetIdIndexId, true,
 								 NULL, 1, &skey);
 
 	while (HeapTupleIsValid(htup = systable_getnext(cubescan)))

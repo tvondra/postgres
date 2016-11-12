@@ -212,8 +212,8 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateForeignTableStmt:
 		case T_ImportForeignSchemaStmt:
 		case T_SecLabelStmt:
-		case T_ChangeSetStmt:
-		case T_CubeStmt:
+		case T_CreateChangeSetStmt:
+		case T_CreateCubeStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -1305,13 +1305,13 @@ ProcessUtilitySlow(ParseState *pstate,
 				}
 				break;
 
-			case T_ChangeSetStmt:
-				address = CreateChangeSet((ChangeSetStmt *) parsetree);
+			case T_CreateChangeSetStmt:
+				address = CreateChangeSet((CreateChangeSetStmt *) parsetree);
 				break;
 
-			case T_CubeStmt:
+			case T_CreateCubeStmt:
 				{
-					CubeStmt   *stmt = (CubeStmt *) parsetree;
+					CreateCubeStmt   *stmt = (CreateCubeStmt *) parsetree;
 					Oid			relid;
 
 					/* Run parse analysis ... */
@@ -1321,7 +1321,7 @@ ProcessUtilitySlow(ParseState *pstate,
 												 RangeVarCallbackOwnsRelation,
 												 NULL);
 
-					stmt = transformCubeStmt(relid, stmt, queryString);
+					stmt = transformCreateCubeStmt(relid, stmt, queryString);
 
 					address = CreateCube(stmt);
 				}
@@ -2330,6 +2330,14 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		case T_CreateChangeSetStmt:
+			tag = "CREATE CHANGESET";
+			break;
+
+		case T_CreateCubeStmt:
+			tag = "CREATE CUBE";
+			break;
+
 		case T_CompositeTypeStmt:
 			tag = "CREATE TYPE";
 			break;
@@ -2356,14 +2364,6 @@ CreateCommandTag(Node *parsetree)
 
 		case T_IndexStmt:
 			tag = "CREATE INDEX";
-			break;
-
-		case T_ChangeSetStmt:
-			tag = "CREATE CHANGESET";
-			break;
-
-		case T_CubeStmt:
-			tag = "CREATE CUBE";
 			break;
 
 		case T_RuleStmt:
@@ -2958,11 +2958,11 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_DDL;
 			break;
 
-		case T_ChangeSetStmt:
+		case T_CreateChangeSetStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
-		case T_CubeStmt:
+		case T_CreateCubeStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

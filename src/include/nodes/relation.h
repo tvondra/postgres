@@ -1434,6 +1434,21 @@ typedef struct GroupingSetsPath
 } GroupingSetsPath;
 
 /*
+ * CubePath represents partial aggregation using a cube.
+ *
+ * The path reads data from the pre-aggregated cube, updates it using new data
+ * from the associated changeset and outputs partially-aggregated data just
+ * like partial aggregate.
+ */
+typedef struct CubePath
+{
+	Path		path;
+	Path	   *cubepath;		/* scan from the cube */
+	Path	   *chsetpath;		/* change-set path (for cube update) */
+	double		numGroups;		/* estimated number of groups in input */
+} CubePath;
+
+/*
  * MinMaxAggPath represents computation of MIN/MAX aggregates from indexes
  */
 typedef struct MinMaxAggPath

@@ -328,7 +328,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>		cube_name opt_cube_name changeset_name opt_changeset_name
 %type <range>	opt_changeset
 
-%type <list>	changeset_cols cube_elems
+%type <list>	changeset_cols cube_params
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
@@ -468,7 +468,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	func_alias_clause
 %type <sortby>	sortby
 %type <ielem>	index_elem
-%type <celem>	cube_elem
 %type <node>	table_ref
 %type <jexpr>	joined_table
 %type <range>	relation_expr
@@ -6901,7 +6900,7 @@ changeset_cols:
  *****************************************************************************/
 
 CreateCubeStmt:	CREATE CUBE opt_cube_name
-			ON qualified_name '(' cube_elems ')'
+			ON qualified_name '(' cube_params ')'
 			opt_changeset opt_reloptions OptTableSpace
 				{
 					CreateCubeStmt *n = makeNode(CreateCubeStmt);
@@ -6914,7 +6913,7 @@ CreateCubeStmt:	CREATE CUBE opt_cube_name
 					$$ = (Node *)n;
 				}
 			| CREATE CUBE IF_P NOT EXISTS cube_name
-			ON qualified_name '(' cube_elems ')'
+			ON qualified_name '(' cube_params ')'
 			opt_changeset opt_reloptions OptTableSpace
 				{
 					CreateCubeStmt *n = makeNode(CreateCubeStmt);
@@ -6937,38 +6936,9 @@ opt_cube_name:
 		;
 
 /*
- * Cube attributes can be either simple column references, or arbitrary
- * expressions in parens.  We allow an expression that's just a function
- * call to be written without parens (same as for indexes).
- *
- * FIXME Do we need to allow specifying operator classes and collations?
+ * For now, we treat cube elements just like index elements.
  */
-cube_elem:	ColId
-				{
-					$$ = makeNode(CubeElem);
-					$$->name = $1;
-					$$->expr = NULL;
-					$$->cubecolname = NULL;
-				}
-			| func_expr_windowless
-				{
-					$$ = makeNode(CubeElem);
-					$$->name = NULL;
-					$$->expr = $1;
-					$$->cubecolname = NULL;
-				}
-			| '(' a_expr ')'
-				{
-					$$ = makeNode(CubeElem);
-					$$->name = NULL;
-					$$->expr = $2;
-					$$->cubecolname = NULL;
-				}
-		;
-
-cube_elems:
-			cube_elem								{ $$ = list_make1($1); }
-			| cube_elems ',' cube_elem				{ $$ = lappend($1, $3); }
+cube_params: index_params
 		;
 
 opt_changeset:

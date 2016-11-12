@@ -1,14 +1,14 @@
 /*-------------------------------------------------------------------------
  *
- * changeset.c
- *	  code to create and destroy POSTGRES changeset relations
+ * cube.c
+ *	  code to create and destroy POSTGRES cube relations
  *
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
  * IDENTIFICATION
- *	  src/backend/catalog/changeset.c
+ *	  src/backend/catalog/cube.c
  *
  *
  * INTERFACE ROUTINES

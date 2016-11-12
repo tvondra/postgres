@@ -5345,7 +5345,6 @@ DESCR("pg_controldata init state information as a function");
 DATA(insert OID = 4007 ( flush_changeset		PGNSP PGUID 12 1 0 0 0 f f f f t f v s 1 0 2278 "2205" _null_ _null_ _null_ _null_ _null_ flush_changeset _null_ _null_ _null_ ));
 DESCR("flushes all changes from a changeset into the cubes");
 
-
 /*
  * Symbolic values for provolatile column: these indicate whether the result
  * of a function is dependent *only* on the values of its explicit arguments,

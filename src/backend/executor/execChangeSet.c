@@ -213,7 +213,7 @@ ExecInsertChangeSetTuples(char changeType, TupleTableSlot *slot, EState *estate)
  *		ExecInsertChangeSetTuples2
  *
  *		This routine takes care of inserting tuples into all the changesets
- *		when a heap tuple is inserted into the result relation.
+ *		when a heap tuple is deleted/updated in the result relation.
  * ----------------------------------------------------------------
  */
 void

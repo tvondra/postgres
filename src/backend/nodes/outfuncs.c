@@ -3949,7 +3949,6 @@ outNode(StringInfo str, const void *obj)
 			case T_TriggerTransition:
 				_outTriggerTransition(str, obj);
 				break;
-			
 
 			default:
 

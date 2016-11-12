@@ -2471,6 +2471,32 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 }
 
 static void
+_outCreateChangeSetStmt(StringInfo str, const CreateChangeSetStmt *node)
+{
+	WRITE_NODE_TYPE("CREATECHANGESETSTMT");
+
+	WRITE_STRING_FIELD(chsetname);
+	WRITE_NODE_FIELD(relation);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(chsetColumns);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
+_outCreateCubeStmt(StringInfo str, const CreateCubeStmt *node)
+{
+	WRITE_NODE_TYPE("CREATECUBESTMT");
+
+	WRITE_STRING_FIELD(cubename);
+	WRITE_NODE_FIELD(relation);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(cubeExprs);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
 _outNotifyStmt(StringInfo str, const NotifyStmt *node)
 {
 	WRITE_NODE_TYPE("NOTIFY");
@@ -3751,6 +3777,12 @@ outNode(StringInfo str, const void *obj)
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
 				break;
+			case T_CreateChangeSetStmt:
+				_outCreateChangeSetStmt(str, obj);
+				break;
+			case T_CreateCubeStmt:
+				_outCreateCubeStmt(str, obj);
+				break;
 			case T_NotifyStmt:
 				_outNotifyStmt(str, obj);
 				break;
@@ -3880,6 +3912,7 @@ outNode(StringInfo str, const void *obj)
 			case T_TriggerTransition:
 				_outTriggerTransition(str, obj);
 				break;
+			
 
 			default:
 

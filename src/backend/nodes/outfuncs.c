@@ -2698,16 +2698,6 @@ _outIndexElem(StringInfo str, const IndexElem *node)
 }
 
 static void
-_outCubeElem(StringInfo str, const CubeElem *node)
-{
-	WRITE_NODE_TYPE("CUBEELEM");
-
-	WRITE_STRING_FIELD(name);
-	WRITE_NODE_FIELD(expr);
-	WRITE_STRING_FIELD(cubecolname);
-}
-
-static void
 _outQuery(StringInfo str, const Query *node)
 {
 	WRITE_NODE_TYPE("QUERY");
@@ -3840,9 +3830,6 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_IndexElem:
 				_outIndexElem(str, obj);
-				break;
-			case T_CubeElem:
-				_outCubeElem(str, obj);
 				break;
 			case T_Query:
 				_outQuery(str, obj);

@@ -216,7 +216,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	WindowDef			*windef;
 	JoinExpr			*jexpr;
 	IndexElem			*ielem;
-	CubeElem			*celem;
 	Alias				*alias;
 	RangeVar			*range;
 	IntoClause			*into;

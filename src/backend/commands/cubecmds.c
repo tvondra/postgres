@@ -465,7 +465,7 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 	attn = 0;
 	foreach (lc, attList)
 	{
-		CubeElem   *attribute = (CubeElem *) lfirst(lc);
+		IndexElem  *attribute = (IndexElem *) lfirst(lc);
 		Oid			atttype;
 
 		/*
@@ -623,7 +623,7 @@ CheckMutability(Expr *expr)
 
 /*
  * Select the actual names to be used for the columns of a cube, given the
- * list of CubeElems for the columns.  This is mostly about ensuring the
+ * list of IndexElems for the columns.  This is mostly about ensuring the
  * names are unique so we don't get a conflicting-attribute-names error.
  *
  * Returns a List of plain strings (char *, not String nodes).
@@ -636,15 +636,15 @@ ChooseCubeColumnNames(List *cubeExprs)
 
 	foreach(lc, cubeExprs)
 	{
-		CubeElem   *celem = (CubeElem *) lfirst(lc);
+		IndexElem  *celem = (IndexElem *) lfirst(lc);
 		const char *origname;
 		const char *curname;
 		int			i;
 		char		buf[NAMEDATALEN];
 
 		/* Get the preliminary name from the CubeElem */
-		if (celem->cubecolname)
-			origname = celem->cubecolname;	/* caller-specified name */
+		if (celem->indexcolname)
+			origname = celem->indexcolname;	/* caller-specified name */
 		else if (celem->name)
 			origname = celem->name;			/* simple column reference */
 		else

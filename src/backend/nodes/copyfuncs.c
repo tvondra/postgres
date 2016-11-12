@@ -2610,19 +2610,6 @@ _copyIndexElem(const IndexElem *from)
 	return newnode;
 }
 
-
-static CubeElem *
-_copyCubeElem(const CubeElem *from)
-{
-	CubeElem  *newnode = makeNode(CubeElem);
-
-	COPY_STRING_FIELD(name);
-	COPY_NODE_FIELD(expr);
-	COPY_STRING_FIELD(cubecolname);
-
-	return newnode;
-}
-
 static ColumnDef *
 _copyColumnDef(const ColumnDef *from)
 {
@@ -5083,9 +5070,6 @@ copyObject(const void *from)
 			break;
 		case T_IndexElem:
 			retval = _copyIndexElem(from);
-			break;
-		case T_CubeElem:
-			retval = _copyCubeElem(from);
 			break;
 		case T_ColumnDef:
 			retval = _copyColumnDef(from);

@@ -2180,13 +2180,13 @@ transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString
 	/* take care of any index expressions */
 	foreach(l, stmt->cubeExprs)
 	{
-		CubeElem  *celem = (CubeElem *) lfirst(l);
+		IndexElem  *celem = (IndexElem *) lfirst(l);
 
 		if (celem->expr)
 		{
 			/* Extract preliminary cube col name before transforming expr */
-			if (celem->cubecolname == NULL)
-				celem->cubecolname = FigureCubeColname(celem->expr);
+			if (celem->indexcolname == NULL)
+				celem->indexcolname = FigureCubeColname(celem->expr);
 
 			/* Now do parse transformation of the expression */
 			celem->expr = transformExpr(pstate, celem->expr,

@@ -2394,16 +2394,6 @@ _equalIndexElem(const IndexElem *a, const IndexElem *b)
 }
 
 static bool
-_equalCubeElem(const CubeElem *a, const CubeElem *b)
-{
-	COMPARE_STRING_FIELD(name);
-	COMPARE_NODE_FIELD(expr);
-	COMPARE_STRING_FIELD(cubecolname);
-
-	return true;
-}
-
-static bool
 _equalColumnDef(const ColumnDef *a, const ColumnDef *b)
 {
 	COMPARE_STRING_FIELD(colname);
@@ -3379,9 +3369,6 @@ equal(const void *a, const void *b)
 			break;
 		case T_IndexElem:
 			retval = _equalIndexElem(a, b);
-			break;
-		case T_CubeElem:
-			retval = _equalCubeElem(a, b);
 			break;
 		case T_ColumnDef:
 			retval = _equalColumnDef(a, b);

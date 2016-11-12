@@ -2122,6 +2122,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		pfree(relation->rd_fdwroutine);
 	if (relation->rd_changesettuple)
 		pfree(relation->rd_changesettuple);
+	if (relation->rd_cube)
+		pfree(relation->rd_cube);
 	pfree(relation);
 }
 
@@ -4492,8 +4494,6 @@ RelationGetIndexExpressions(Relation relation)
 	exprsString = TextDatumGetCString(exprsDatum);
 	result = (List *) stringToNode(exprsString);
 	pfree(exprsString);
-
-	relation_close(cuberel, NoLock);
 
 	/*
 	 * Run the expressions through eval_const_expressions. This is not just an

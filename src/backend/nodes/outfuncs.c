@@ -2140,7 +2140,6 @@ _outIndexOptInfo(StringInfo str, const IndexOptInfo *node)
 }
 
 static void
-<<<<<<< a4717343db79be6959ac9f918af74728960b93ea
 _outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
 {
 	int			i;

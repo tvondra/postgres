@@ -2166,6 +2166,9 @@ check_srf_call_placement(ParseState *pstate, int location)
 		case EXPR_KIND_TRIGGER_WHEN:
 			err = _("set-returning functions are not allowed in trigger WHEN conditions");
 			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			err = _("set-returning functions are not allowed in CUBE expressions");
+			break;
 
 			/*
 			 * There is intentionally no default: case here, so that the

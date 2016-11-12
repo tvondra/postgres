@@ -249,6 +249,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
 		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
+		CreateCubeStmt CreateChangeSetStmt
 		CreatedbStmt DeclareCursorStmt DefineStmt DeleteStmt DiscardStmt DoStmt
 		DropGroupStmt DropOpClassStmt DropOpFamilyStmt DropPLangStmt DropStmt
 		DropAssertStmt DropTrigStmt DropRuleStmt DropCastStmt DropRoleStmt
@@ -322,6 +323,9 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				database_name access_method_clause access_method attr_name
 				name cursor_name file_name
 				index_name opt_index_name cluster_index_specification
+
+%type <list>	changeset_cols cube_elems
+%type <str>		cube_name opt_cube_name changeset_name opt_changeset_name
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
@@ -576,7 +580,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	BOOLEAN_P BOTH BY
 
 	CACHE CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
-	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
+	CHANGESET CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
 	CONSTRAINTS CONTENT_P CONTINUE_P CONVERSION_P COPY COST CREATE
@@ -802,7 +806,9 @@ stmt :
 			| CreateAsStmt
 			| CreateAssertStmt
 			| CreateCastStmt
+			| CreateChangeSetStmt
 			| CreateConversionStmt
+			| CreateCubeStmt
 			| CreateDomainStmt
 			| CreateExtensionStmt
 			| CreateFdwStmt
@@ -6835,6 +6841,102 @@ opt_nulls_order: NULLS_LA FIRST_P			{ $$ = SORTBY_NULLS_FIRST; }
 			| NULLS_LA LAST_P				{ $$ = SORTBY_NULLS_LAST; }
 			| /*EMPTY*/						{ $$ = SORTBY_NULLS_DEFAULT; }
 		;
+
+
+/*****************************************************************************
+ *
+ *
+ *		QUERY: CREATE CHANGESET
+ *
+ *****************************************************************************/
+
+CreateChangeSetStmt:	CREATE CHANGESET opt_changeset_name
+			ON qualified_name '(' changeset_cols ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
+					n->chsetname = $3;
+					n->relation = $5;
+					n->chsetColumns = $7;
+					n->options = $9;
+					n->tableSpace = $10;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE CHANGESET IF_P NOT EXISTS changeset_name
+			ON qualified_name '(' changeset_cols ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
+					n->chsetname = $6;
+					n->relation = $8;
+					n->chsetColumns = $10;
+					n->options = $12;
+					n->tableSpace = $13;
+					n->if_not_exists = true;
+					$$ = (Node *)n;
+				}
+		;
+
+changeset_name:	ColId								{ $$ = $1; }
+
+opt_changeset_name:
+			changeset_name							{ $$ = $1; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
+changeset_cols:
+			ColId									{ $$ = list_make1($1); }
+			| changeset_cols ',' ColId				{ $$ = lappend($1, $3); }
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY: CREATE CUBE
+ *
+ *****************************************************************************/
+
+CreateCubeStmt:	CREATE CUBE opt_cube_name
+			ON qualified_name '(' cube_elems ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
+					n->cubename = $3;
+					n->relation = $5;
+					n->cubeExprs = $7;
+					n->options = $9;
+					n->tableSpace = $10;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE CUBE IF_P NOT EXISTS cube_name
+			ON qualified_name '(' cube_elems ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
+					n->cubename = $6;
+					n->relation = $8;
+					n->cubeExprs = $10;
+					n->options = $12;
+					n->tableSpace = $13;
+					n->if_not_exists = true;
+					$$ = (Node *)n;
+				}
+		;
+
+cube_name: ColId									{ $$ = $1; };
+
+opt_cube_name:
+			cube_name								{ $$ = $1; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
+cube_elems:
+			a_expr									{ $$ = list_make1($1); }
+			| cube_elems ',' a_expr					{ $$ = lappend($1, $3); }
+		;
+
 
 
 /*****************************************************************************
@@ -13744,6 +13846,7 @@ unreserved_keyword:
 			| CASCADED
 			| CATALOG_P
 			| CHAIN
+			| CHANGESET
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS

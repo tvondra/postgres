@@ -6887,8 +6887,8 @@ opt_changeset_name:
 		;
 
 changeset_cols:
-			ColId									{ $$ = list_make1($1); }
-			| changeset_cols ',' ColId				{ $$ = lappend($1, $3); }
+			ColId									{ $$ = list_make1(makeString($1)); }
+			| changeset_cols ',' ColId				{ $$ = lappend($1, makeString($3)); }
 		;
 
 

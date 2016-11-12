@@ -231,6 +231,10 @@ extern void genericcostestimate(PlannerInfo *root, IndexPath *path,
 								double loop_count,
 								GenericCosts *costs);
 
+extern double scalarineqsel(PlannerInfo *root, Oid operator, bool isgt,
+			  bool iseq, VariableStatData *vardata, Datum constval,
+			  Oid consttype);
+
 /* Functions in array_selfuncs.c */
 
 extern Selectivity scalararraysel_containment(PlannerInfo *root,

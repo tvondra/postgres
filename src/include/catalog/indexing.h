@@ -107,13 +107,6 @@ DECLARE_UNIQUE_INDEX(pg_changeset_chsetrelid_chsetid_index, 4003, on pg_changese
 DECLARE_UNIQUE_INDEX(pg_changeset_chsetid_index, 4004, on pg_changeset using btree(chsetid oid_ops));
 #define ChangeSetOidIndexId  4004
 
-DECLARE_UNIQUE_INDEX(pg_cube_cuberelid_cubeid_index, 4005, on pg_cube using btree(cuberelid oid_ops, cubeid oid_ops));
-#define CubeRelidIndexId  4005
-DECLARE_UNIQUE_INDEX(pg_cube_cubeid_index, 4006, on pg_cube using btree(cubeid oid_ops));
-#define CubeOidIndexId  4006
-DECLARE_UNIQUE_INDEX(pg_cube_cubechsetid_cubeid_index, 4008, on pg_cube using btree(cubechsetid oid_ops, cubeid oid_ops));
-#define CubeChsetIndexId  4008
-
 DECLARE_UNIQUE_INDEX(pg_class_oid_index, 2662, on pg_class using btree(oid oid_ops));
 #define ClassOidIndexId  2662
 DECLARE_UNIQUE_INDEX(pg_class_relname_nsp_index, 2663, on pg_class using btree(relname name_ops, relnamespace oid_ops));
@@ -142,12 +135,12 @@ DECLARE_UNIQUE_INDEX(pg_conversion_name_nsp_index, 2669, on pg_conversion using 
 DECLARE_UNIQUE_INDEX(pg_conversion_oid_index, 2670, on pg_conversion using btree(oid oid_ops));
 #define ConversionOidIndexId  2670
 
-DECLARE_INDEX(pg_cube_cuberelid_index, 3351, on pg_cube using btree(cuberelid oid_ops));
-#define CubeCubeRelidIndexId  3351
 DECLARE_UNIQUE_INDEX(pg_cube_cubeid_index, 3352, on pg_cube using btree(cubeid oid_ops));
-#define CubeCubeidIndexId  3352
-DECLARE_INDEX(pg_cube_cubechsetid_index, 3353, on pg_cube using btree(cubechsetid oid_ops));
+#define CubeIdIndexId  3352
+DECLARE_UNIQUE_INDEX(pg_cube_cubechsetid_index, 3353, on pg_cube using btree(cubechsetid oid_ops, cubeid oid_ops));
 #define CubeChangeSetIdIndexId  3353
+DECLARE_UNIQUE_INDEX(pg_cube_cuberelid_cubeid_index, 4005, on pg_cube using btree(cuberelid oid_ops, cubeid oid_ops));
+#define CubeRelidIndexId  4005
 
 DECLARE_UNIQUE_INDEX(pg_database_datname_index, 2671, on pg_database using btree(datname name_ops));
 #define DatabaseNameIndexId  2671

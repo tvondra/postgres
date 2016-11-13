@@ -1296,6 +1296,13 @@ _equalCreateChangeSetStmt(const CreateChangeSetStmt *a, const CreateChangeSetStm
 }
 
 static bool
+_equalFlushChangeSetStmt(const FlushChangeSetStmt *a, const FlushChangeSetStmt *b)
+{
+	COMPARE_NODE_FIELD(relation);
+	return true;
+}
+
+static bool
 _equalCreateCubeStmt(const CreateCubeStmt *a, const CreateCubeStmt *b)
 {
 	COMPARE_STRING_FIELD(cubename);
@@ -3060,6 +3067,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_CreateChangeSetStmt:
 			retval = _equalCreateChangeSetStmt(a, b);
+			break;
+		case T_FlushChangeSetStmt:
+			retval = _equalFlushChangeSetStmt(a, b);
 			break;
 		case T_CreateCubeStmt:
 			retval = _equalCreateCubeStmt(a, b);

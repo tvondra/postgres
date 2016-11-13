@@ -268,7 +268,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
-		CreateChangeSetStmt CreateCubeStmt
+		CreateChangeSetStmt CreateCubeStmt FlushChangeSetStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -598,7 +598,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
-	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
+	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FLUSH FOLLOWING FOR
 	FORCE FOREIGN FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
 	GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING
@@ -863,6 +863,7 @@ stmt :
 			| ExecuteStmt
 			| ExplainStmt
 			| FetchStmt
+			| FlushChangeSetStmt
 			| GrantStmt
 			| GrantRoleStmt
 			| ImportForeignSchemaStmt
@@ -6889,6 +6890,23 @@ opt_changeset_name:
 changeset_cols:
 			ColId									{ $$ = list_make1(makeString($1)); }
 			| changeset_cols ',' ColId				{ $$ = lappend($1, makeString($3)); }
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				FLUSH CHANGESET qualified_name
+ *
+ *****************************************************************************/
+
+FlushChangeSetStmt:
+			FLUSH CHANGESET qualified_name
+				{
+					FlushChangeSetStmt *n = makeNode(FlushChangeSetStmt);
+					n->relation = $3;
+					$$ = (Node *) n;
+				}
 		;
 
 
@@ -13913,6 +13931,7 @@ unreserved_keyword:
 			| FAMILY
 			| FILTER
 			| FIRST_P
+			| FLUSH
 			| FOLLOWING
 			| FORCE
 			| FORWARD

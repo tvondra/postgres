@@ -414,6 +414,7 @@ typedef enum NodeTag
 	T_CreateAmStmt,
 	T_CreateChangeSetStmt,
 	T_CreateCubeStmt,
+	T_FlushChangeSetStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)

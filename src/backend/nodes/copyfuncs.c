@@ -3183,6 +3183,16 @@ _copyCreateChangeSetStmt(const CreateChangeSetStmt *from)
 	return newnode;
 }
 
+static FlushChangeSetStmt *
+_copyFlushChangeSetStmt(const FlushChangeSetStmt *from)
+{
+	FlushChangeSetStmt  *newnode = makeNode(FlushChangeSetStmt);
+
+	COPY_NODE_FIELD(relation);
+
+	return newnode;
+}
+
 static CreateCubeStmt *
 _copyCreateCubeStmt(const CreateCubeStmt *from)
 {
@@ -5136,6 +5146,9 @@ copyObject(const void *from)
 			break;
 		case T_CreateChangeSetStmt:
 			retval = _copyCreateChangeSetStmt(from);
+			break;
+		case T_FlushChangeSetStmt:
+			retval = _copyFlushChangeSetStmt(from);
 			break;
 		case T_CreateCubeStmt:
 			retval = _copyCreateCubeStmt(from);

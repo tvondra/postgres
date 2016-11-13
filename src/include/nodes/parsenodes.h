@@ -2949,6 +2949,16 @@ typedef struct RefreshMatViewStmt
 } RefreshMatViewStmt;
 
 /* ----------------------
+ *		FLUSH CHANGESET Statement
+ * ----------------------
+ */
+typedef struct FlushChangeSetStmt
+{
+	NodeTag		type;
+	RangeVar   *relation;		/* relation to insert into */
+} FlushChangeSetStmt;
+
+/* ----------------------
  * Checkpoint Statement
  * ----------------------
  */

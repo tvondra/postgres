@@ -59,7 +59,7 @@ static void ComputeCubeAttrs(CubeInfo *cubeInfo,
 static bool CheckMutability(Expr *expr);
 
 static List *ChooseCubeColumnNames(List *cubeElems);
-static List *build_cube_opt_infos(List *cubeoids);
+static CubeOptInfo * build_cube_opt_info(Oid cubeoid);
 
 /* FIXME probably should live in relcache.c next to RelationGetCubeList */
 static List * ChangeSetGetCubeList(Relation changeset);
@@ -78,6 +78,11 @@ static Bitmapset *analyze_cube_expressions(CubeOptInfo *cube, int *numexprs);
 
 static AttrNumber lookup_attnum_in_changeset(ChangeSetInfo *chsetInfo,
 											 AttrNumber attnum);
+
+static void update_cube(Relation chsetRel, ChangeSetInfo *chsetInfo,
+					   TupleDesc chsetDesc, Oid cubeOid);
+
+static void changeset_cleanup(Relation chsetRel);
 
 /*
  * CreateChangeSet
@@ -682,97 +687,146 @@ ChooseCubeColumnNames(List *cubeExprs)
 	return result;
 }
 
-PG_FUNCTION_INFO_V1(flush_changeset);
-
-Datum
-flush_changeset(PG_FUNCTION_ARGS)
+/*
+ * FlushChangeSet -- execute a FLUSH CHANGESET command
+ *
+ * This updates all cubes attached to a particular change set, and removes the
+ * data from the set. This operation is MVCC-compliant and allows concurrent
+ * writes to the changeset.
+ *
+ * To prevent multiple FLUSH CHANGESET operations running concurrently on
+ * a given changeset, the operation acquires SHARE UPDATE EXCLUSIVE lock.
+ */
+ObjectAddress
+ExecFlushChangeSet(FlushChangeSetStmt *stmt)
 {
-	/* function is strict, no need to check NULL */
-	Oid				chsetoid = PG_GETARG_OID(0);
-	Relation		chsetrel;
-	HeapScanDesc	chsetscan;
-	HeapTuple		htup;
-	int				ncubes;
-	List		   *cubeinfos;
-	TupleDesc		chsetdesc;
-	ChangeSetInfo  *chsetinfo;
+	ObjectAddress	address;
+	Oid				chsetOid;
+	Relation		chsetRel;
 
-	Tuplesortstate **tss;
-	TupleDesc	   *tdescs;
+	/* changeset metadata */
+	TupleDesc		chsetDesc;
+	ChangeSetInfo  *chsetInfo;
+
+	/* cubes attached to this changeset (OIDs) */
+	ListCell	   *lc;
+	List		   *cubes;
 
 	/*
-	 * Make sure the relation is a changelog, and prevent concurrent
-	 * flushes by using ShareUpdateExclusiveLock.
+	 * Get a lock until end of transaction.
 	 */
-	chsetrel = changeset_open(chsetoid, ShareUpdateExclusiveLock);
+	chsetOid = RangeVarGetRelid(stmt->relation, ShareUpdateExclusiveLock, false);
+	chsetRel = changeset_open(chsetOid, NoLock);
 
-	chsetdesc = RelationGetDescr(chsetrel);
-	chsetinfo = BuildChangeSetInfo(chsetrel);
+	/* fetch tuple descriptor for the changeset and construct ChangeSetInfo */
+	chsetDesc = RelationGetDescr(chsetRel);
+	chsetInfo = BuildChangeSetInfo(chsetRel);
+
+	/* We don't allow an oid column for a changeset. */
+	Assert(!chsetRel->rd_rel->relhasoids);
+
+	/*
+	 * FIXME Do we need to switch to the relation owner, similarly to REFRESH
+	 * MATERIALIZED VIEW? See SetUserIdAndSecContext() in RefreshMatViewStmt.
+	 */
 
 	/* fetch list of cubes on this changeset */
-	cubeinfos = build_cube_opt_infos(ChangeSetGetCubeList(chsetrel));
+	cubes = ChangeSetGetCubeList(chsetRel);
 
 	/*
-	 * If there are cubes, build tuplestores for all the cubes, so we can
-	 * fill them all at once (single scan through the changeset).
+	 * We'll do one changeset scan for each cube. Perhaps that could be
+	 * optimized in the future, but for now this is good enough. We're not
+	 * going to lock the cubes against concurrent updates or so, as they are
+	 * only receive modifications through the changeset, and we have already
+	 * locked that.
 	 */
-	ncubes = list_length(cubeinfos);
-	if (ncubes > 0)
-	{
-		int i = 0;
-		ListCell *lc;
+	foreach (lc, cubes)
+		update_cube(chsetRel, chsetInfo, chsetDesc, lfirst_oid(lc));
 
-		tdescs = (TupleDesc*)palloc0(ncubes * sizeof(Tuplesortstate*));
-		tss = (Tuplesortstate**)palloc0(ncubes * sizeof(Tuplesortstate*));
+	/* remove the data from the changeset */
+	changeset_cleanup(chsetRel);
 
+	/* close the changelog (keep ShareUpdateExclusiveLock until commit) */
+	changeset_close(chsetRel, NoLock);
 
-		foreach (lc, cubeinfos)
-		{
-			int nkeys;
-			CubeOptInfo *cube = (CubeOptInfo*)lfirst(lc);
+	ObjectAddressSet(address, RelationRelationId, chsetOid);
 
-			tdescs[i] = build_tupdesc_for_cube(cube,
-											   chsetinfo, chsetdesc,
-											   &nkeys, NULL, NULL);
+	return address;
+}
 
-			tss[i] = build_tss_for_cube(tdescs[i], nkeys);
+static void
+update_cube(Relation chsetRel, ChangeSetInfo *chsetInfo, TupleDesc chsetDesc,
+		   Oid cubeOid)
+{
+	CubeOptInfo *cube;
 
-			i++;
-		}
-	}
+	TupleDesc cubeDesc;
+	Tuplesortstate *tss;
+	int nkeys;
+	HeapTuple	htup;
+
+	HeapScanDesc chsetScan;
+
+	cube = build_cube_opt_info(cubeOid);
+
+	cubeDesc = build_tupdesc_for_cube(cube, chsetInfo, chsetDesc,
+									  &nkeys, NULL, NULL);
+
+	tss = build_tss_for_cube(cubeDesc, nkeys);
 
 	/* scan the visible part of the changeset */
-	chsetscan = heap_beginscan(chsetrel, GetActiveSnapshot(), 0, NULL);
+	chsetScan = heap_beginscan(chsetRel, GetActiveSnapshot(), 0, NULL);
+
+	/*
+	 * Read all the tuples from the changeset, pass them to the tuplestore.
+	 */
+	while ((htup = heap_getnext(chsetScan, ForwardScanDirection)) != NULL)
+	{
+		tuplesort_putheaptuple(tss, htup);
+	}
+
+	/* Perform the sort, and then walk the sorted data and update the cube. */
+	tuplesort_performsort(tss);
+
+	/* get tuples from the sort, apply them to cube
+	 *
+	 * XXX We should probably require a single unique index on the cube,
+	 * with exactly the cube dimensions (non-aggregate keys).
+	 *
+	extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward,
+					   bool *should_free); */
+
+	/* we're done with the sort */
+	tuplesort_end(tss);
+
+	/* close the scan */
+	heap_endscan(chsetScan);
+}
+
+static void
+changeset_cleanup(Relation rel)
+{
+	HeapScanDesc	chsetScan;
+	HeapTuple		htup;
+
+	/* scan the visible part of the changeset */
+	chsetScan = heap_beginscan(rel, GetActiveSnapshot(), 0, NULL);
 
 	/*
 	 * Read all the tuples from the changeset, pass them to tuplestores
 	 * for all the cubes connected to this changeset, and delete them
 	 * from the changeset.
 	 */
-	while ((htup = heap_getnext(chsetscan, ForwardScanDirection)) != NULL)
+	while ((htup = heap_getnext(chsetScan, ForwardScanDirection)) != NULL)
 	{
-		/* extern void tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup); */
-
 		/* just delete the tuple */
-		simple_heap_delete(chsetrel, &htup->t_self);
+		simple_heap_delete(rel, &htup->t_self);
 	}
 
 	/* close the scan */
-	heap_endscan(chsetscan);
-
-	/* extern void tuplesort_performsort(Tuplesortstate *state); */
-
-	/* extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward,
-					   bool *should_free); */
-
-	/* extern void tuplesort_end(Tuplesortstate *state); */
-
-	/* close the changelog relation */
-	changeset_close(chsetrel, ShareUpdateExclusiveLock);
-
-	/* FIXME maybe return the number of tuples processed? */
-	PG_RETURN_VOID();
+	heap_endscan(chsetScan);
 }
+
 
 /*
  * ChangeSetGetCubeList -- get a list of OIDs of cubes on this changeset
@@ -1048,18 +1102,6 @@ build_cube_opt_info(Oid cubeoid)
 	cube_close(cubeRelation, AccessShareLock);
 
 	return info;
-}
-
-static List *
-build_cube_opt_infos(List *cubeoids)
-{
-	ListCell *l;
-	List *result = NIL;
-
-	foreach(l, cubeoids)
-		result = lcons(build_cube_opt_info(lfirst_oid(l)), result);
-
-	return result;
 }
 
 static bool

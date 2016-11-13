@@ -214,6 +214,7 @@ check_xact_readonly(Node *parsetree)
 		case T_SecLabelStmt:
 		case T_CreateChangeSetStmt:
 		case T_CreateCubeStmt:
+		case T_FlushChangeSetStmt:
 			PreventCommandIfReadOnly(CreateCommandTag(parsetree));
 			PreventCommandIfParallelMode(CreateCommandTag(parsetree));
 			break;
@@ -1307,6 +1308,10 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_CreateChangeSetStmt:
 				address = CreateChangeSet((CreateChangeSetStmt *) parsetree);
+				break;
+
+			case T_FlushChangeSetStmt:
+				address = ExecFlushChangeSet((FlushChangeSetStmt *) parsetree);
 				break;
 
 			case T_CreateCubeStmt:

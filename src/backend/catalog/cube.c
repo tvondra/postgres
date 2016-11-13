@@ -401,7 +401,7 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	/* open the system catalog cube relation */
 	pg_cube = heap_open(CubeRelationId, RowExclusiveLock);
 
-	/* build a pg_changeset tuple */
+	/* build a pg_cube tuple */
 	MemSet(nulls, false, sizeof(nulls));
 
 	values[Anum_pg_cube_cubeid      - 1] = ObjectIdGetDatum(cubeoid);

@@ -1416,6 +1416,11 @@ RelationInitCubeInfo(Relation relation)
 									 ALLOCSET_SMALL_INITSIZE,
 									 ALLOCSET_SMALL_MAXSIZE);
 	relation->rd_cubecxt = cubecxt;
+
+	/*
+	 * expressions will be filled later
+	 */
+	relation->rd_cubeexprs = NIL;
 }
 
 /*
@@ -2108,6 +2113,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_indexattr);
 	bms_free(relation->rd_keyattr);
 	bms_free(relation->rd_idattr);
+
 	if (relation->rd_options)
 		pfree(relation->rd_options);
 	if (relation->rd_indextuple)
@@ -2122,8 +2128,10 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		pfree(relation->rd_fdwroutine);
 	if (relation->rd_changesettuple)
 		pfree(relation->rd_changesettuple);
-	if (relation->rd_cube)
-		pfree(relation->rd_cube);
+	if (relation->rd_cubetuple)
+		pfree(relation->rd_cubetuple);
+	if (relation->rd_cubecxt)
+		MemoryContextDelete(relation->rd_cubecxt);
 	pfree(relation);
 }
 

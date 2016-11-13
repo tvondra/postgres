@@ -367,6 +367,7 @@ CreateCube(CreateCubeStmt *stmt)
 	cubeInfo = makeNode(CubeInfo);
 	cubeInfo->ci_NumCubeAttrs = numberOfAttributes;
 	cubeInfo->ci_KeyAttrNumbers = palloc0(numberOfAttributes * sizeof(AttrNumber));
+	cubeInfo->ci_Expressions = NIL;
 
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 

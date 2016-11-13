@@ -409,13 +409,14 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	values[Anum_pg_cube_cubechsetid - 1] = ObjectIdGetDatum(chsetoid);
 	values[Anum_pg_cube_cubenatts   - 1] = Int16GetDatum(cubeInfo->ci_NumCubeAttrs);
 	values[Anum_pg_cube_cubekey     - 1] = PointerGetDatum(cubekey);
-	values[Anum_pg_cube_cubeexprs   - 1] = exprsDatum;
-	if (exprsDatum == (Datum) 0)
-		nulls[Anum_pg_cube_cubeexprs - 1] = true;
 
 	/* FIXME set collation/opclass properly */
 	nulls[Anum_pg_cube_cubecollation - 1] = true;
 	nulls[Anum_pg_cube_cubeclass - 1] = true;
+
+	values[Anum_pg_cube_cubeexprs   - 1] = exprsDatum;
+	if (exprsDatum == (Datum) 0)
+		nulls[Anum_pg_cube_cubeexprs - 1] = true;
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 

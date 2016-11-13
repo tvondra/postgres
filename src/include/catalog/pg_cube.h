@@ -70,8 +70,8 @@ typedef FormData_pg_cube *Form_pg_cube;
 #define Anum_pg_cube_cubechsetid		3
 #define Anum_pg_cube_cubenatts			4
 #define Anum_pg_cube_cubekey			5
-#define Anum_pg_cube_cubeexprs			6
-#define Anum_pg_cube_cubecollation		7
-#define Anum_pg_cube_cubeclass			8
+#define Anum_pg_cube_cubecollation		6
+#define Anum_pg_cube_cubeclass			7
+#define Anum_pg_cube_cubeexprs			8
 
 #endif   /* PG_CUBE_H */

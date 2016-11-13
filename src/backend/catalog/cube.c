@@ -44,9 +44,11 @@
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
 						 Oid *typeObjectId,
-						 List *cubeColNames);
+						 List *cubeColNames,
+						 Oid *collationObjectId,
+						 Oid *classObjectId);
 static void UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
-						CubeInfo *cubeInfo);
+						CubeInfo *cubeInfo, Oid *collationOids, Oid *classOids);
 
 /*
  * cube_create
@@ -68,6 +70,8 @@ cube_create(Relation heapRelation,
 			const char *cubeRelationName,
 			CubeInfo *cubeInfo,
 			Oid *typeObjectId,
+			Oid *collationObjectId,
+			Oid *classObjectId,
 			List *cubeColNames,
 			Oid tableSpaceId,
 			Datum reloptions,
@@ -132,7 +136,9 @@ cube_create(Relation heapRelation,
 	cubeTupDesc = ConstructTupleDescriptor(heapRelation,
 										   cubeInfo,
 										   typeObjectId,
-										   cubeColNames);
+										   cubeColNames,
+										   collationObjectId,
+										   classObjectId);
 
 	/*
 	 * create the cube relation's relcache entry and physical disk file. (If
@@ -173,7 +179,7 @@ cube_create(Relation heapRelation,
 	 * ----------------
 	 */
 	UpdateCubeRelation(cubeRelationId, chsetRelationId, heapRelationId,
-					   cubeInfo);
+					   cubeInfo, collationObjectId, classObjectId);
 
 	/*
 	 * Register additional dependencies for the cube.
@@ -228,7 +234,9 @@ static TupleDesc
 ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
 						 Oid *typeObjectId,
-						 List *cubeColNames)
+						 List *cubeColNames,
+						 Oid *collationObjectId,
+						 Oid *classObjectId)
 {
 	int			numatts = cubeInfo->ci_NumCubeAttrs;
 	ListCell   *colnames_item = list_head(cubeColNames);
@@ -369,9 +377,11 @@ ConstructTupleDescriptor(Relation heapRelation,
 
 static void
 UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
-				   CubeInfo *cubeInfo)
+				   CubeInfo *cubeInfo, Oid *collationOids, Oid *classOids)
 {
 	int2vector *cubekey;
+	oidvector  *cubecollation;
+	oidvector  *cubeclass;
 	Datum		values[Natts_pg_cube];
 	bool		nulls[Natts_pg_cube];
 	Relation	pg_cube;
@@ -383,6 +393,9 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	cubekey = buildint2vector(NULL, cubeInfo->ci_NumCubeAttrs);
 	for (i = 0; i < cubeInfo->ci_NumCubeAttrs; i++)
 		cubekey->values[i] = cubeInfo->ci_KeyAttrNumbers[i];
+
+	cubecollation = buildoidvector(collationOids, cubeInfo->ci_NumCubeAttrs);
+	cubeclass = buildoidvector(classOids, cubeInfo->ci_NumCubeAttrs);
 
 	/*
 	 * Convert the cube expressions (if any) to a text datum
@@ -410,9 +423,8 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	values[Anum_pg_cube_cubenatts   - 1] = Int16GetDatum(cubeInfo->ci_NumCubeAttrs);
 	values[Anum_pg_cube_cubekey     - 1] = PointerGetDatum(cubekey);
 
-	/* FIXME set collation/opclass properly */
-	nulls[Anum_pg_cube_cubecollation - 1] = true;
-	nulls[Anum_pg_cube_cubeclass - 1] = true;
+	values[Anum_pg_cube_cubecollation - 1] = PointerGetDatum(cubecollation);
+	values[Anum_pg_cube_cubeclass     - 1] = PointerGetDatum(cubeclass);
 
 	values[Anum_pg_cube_cubeexprs   - 1] = exprsDatum;
 	if (exprsDatum == (Datum) 0)

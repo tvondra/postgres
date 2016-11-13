@@ -21,12 +21,14 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_cube.h"
 #include "catalog/pg_type.h"
 #include "catalog/changeset.h"
 #include "commands/cubes.h"
+#include "commands/defrem.h"
 #include "commands/tablespace.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
@@ -38,6 +40,7 @@
 #include "parser/parse_oper.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -53,6 +56,8 @@ static void ComputeChangeSetAttrs(ChangeSetInfo *chsetInfo,
 
 static void ComputeCubeAttrs(CubeInfo *cubeInfo,
 				  Oid *typeOidP,
+				  Oid *collationObjectId,
+				  Oid *classObjectId,
 				  List *attList,
 				  Oid relId);
 
@@ -241,7 +246,9 @@ CreateCube(CreateCubeStmt *stmt)
 	Oid			cubeRelationId;
 	Oid			namespaceId;
 	Oid			tablespaceId;
-	Oid		   *typeObjectId;
+	Oid		   *typeObjectId,
+			   *collationObjectId,
+			   *classObjectId;
 	Relation	rel;
 	Relation	chsetrel;
 
@@ -370,13 +377,16 @@ CreateCube(CreateCubeStmt *stmt)
 	cubeInfo->ci_Expressions = NIL;
 
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
+	collationObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
+	classObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 
-	ComputeCubeAttrs(cubeInfo,
-					 typeObjectId, stmt->cubeExprs, relationId);
+	ComputeCubeAttrs(cubeInfo, typeObjectId, collationObjectId, classObjectId,
+					 stmt->cubeExprs, relationId);
 
 	/* Make the catalog entries for the cube. */
 	cubeRelationId =  cube_create(rel, chsetrel, cubeRelationName,
-								  cubeInfo, typeObjectId, cubeColNames,
+								  cubeInfo, typeObjectId, collationObjectId,
+								  classObjectId, cubeColNames,
 								  tablespaceId, reloptions,
 								  stmt->if_not_exists);
 
@@ -462,6 +472,8 @@ ComputeChangeSetAttrs(ChangeSetInfo *chsetInfo,
 static void
 ComputeCubeAttrs(CubeInfo *cubeInfo,
 				 Oid *typeOidP,
+				 Oid *collationOidP,
+				 Oid *classOidP,
 				 List *attList,
 				 Oid relId)
 {
@@ -473,6 +485,7 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 	{
 		IndexElem  *attribute = (IndexElem *) lfirst(lc);
 		Oid			atttype;
+		Oid			attcollation;
 
 		/*
 		 * Process the column-or-expression to be referenced by the cube.
@@ -494,6 +507,7 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 
 			attform = (Form_pg_attribute) GETSTRUCT(atttuple);
 			atttype = attform->atttypid;
+			attcollation = attform->attcollation;
 
 			cubeInfo->ci_KeyAttrNumbers[attn] = attform->attnum;
 
@@ -504,11 +518,24 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 			/*
 			 * Cube expression - either it's a Var (i.e. a column in parens),
 			 * or an aggregate call, or a generic expression.
+			 *
+			 * 
+			 * FIXME this should differentiate between regular expressions (for
+			 * cube dimensions) and aggregates - we only need collation/opclass
+			 * for the former.
 			 */
 			Node	   *expr = attribute->expr;
 
 			Assert(expr != NULL);
 			atttype = exprType(expr);
+			attcollation = exprCollation(expr);
+
+			/*
+			 * Strip any top-level COLLATE clause.  This ensures that we treat
+			 * "x COLLATE y" and "(x COLLATE y)" alike.
+			 */
+			while (IsA(expr, CollateExpr))
+				expr = (Node *) ((CollateExpr *) expr)->arg;
 
 			if (IsA(expr, Var) &&
 				((Var *) expr)->varattno != InvalidAttrNumber)
@@ -591,6 +618,50 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 		}
 
 		typeOidP[attn] = atttype;
+
+		/*
+		 * Check we have a collation iff it's a collatable type.  The only
+		 * expected failures here are (1) COLLATE applied to a noncollatable
+		 * type, or (2) index expression had an unresolved collation.  But we
+		 * might as well code this to be a complete consistency check.
+		 */
+		if (type_is_collatable(atttype))
+		{
+			if (!OidIsValid(attcollation))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDETERMINATE_COLLATION),
+						 errmsg("could not determine which collation to use for cube expression"),
+						 errhint("Use the COLLATE clause to set the collation explicitly.")));
+		}
+		else
+		{
+			if (OidIsValid(attcollation))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("collations are not supported by type %s",
+								format_type_be(atttype))));
+		}
+
+		/*
+		 * Apply collation override if any
+		 */
+		if (attribute->collation)
+			attcollation = get_collation_oid(attribute->collation, false);
+
+		collationOidP[attn] = attcollation;
+
+		/*
+		 * Identify the opclass to use.
+		 *
+		 * XXX This uses default BTREE opclass.
+		 */
+		classOidP[attn] = GetDefaultOpClass(atttype, BTREE_AM_OID);
+
+		if (!OidIsValid(classOidP[attn]))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("data type %s has no default btree operator class for access method",
+							format_type_be(atttype))));
 
 		attn++;
 	}

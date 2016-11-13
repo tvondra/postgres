@@ -6924,6 +6924,7 @@ CreateCubeStmt:	CREATE CUBE opt_cube_name
 					n->cubename = $3;
 					n->relation = $5;
 					n->cubeExprs = $7;
+					n->changeset = $9;
 					n->options = $10;
 					n->tableSpace = $11;
 					n->if_not_exists = false;

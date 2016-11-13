@@ -3200,9 +3200,11 @@ _copyCreateCubeStmt(const CreateCubeStmt *from)
 
 	COPY_STRING_FIELD(cubename);
 	COPY_NODE_FIELD(relation);
+	COPY_NODE_FIELD(changeset);
 	COPY_STRING_FIELD(tableSpace);
 	COPY_NODE_FIELD(cubeExprs);
 	COPY_NODE_FIELD(options);
+	COPY_SCALAR_FIELD(transformed);
 	COPY_SCALAR_FIELD(if_not_exists);
 
 	return newnode;

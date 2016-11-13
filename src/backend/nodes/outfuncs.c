@@ -2508,9 +2508,11 @@ _outCreateCubeStmt(StringInfo str, const CreateCubeStmt *node)
 
 	WRITE_STRING_FIELD(cubename);
 	WRITE_NODE_FIELD(relation);
+	WRITE_NODE_FIELD(changeset);
 	WRITE_STRING_FIELD(tableSpace);
 	WRITE_NODE_FIELD(cubeExprs);
 	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(transformed);
 	WRITE_BOOL_FIELD(if_not_exists);
 }
 

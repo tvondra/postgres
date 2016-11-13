@@ -413,17 +413,20 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	if (exprsDatum == (Datum) 0)
 		nulls[Anum_pg_cube_cubeexprs - 1] = true;
 
+	/* FIXME set collation/opclass properly */
+	nulls[Anum_pg_cube_cubecollation - 1] = true;
+	nulls[Anum_pg_cube_cubeclass - 1] = true;
+
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 
 	/* insert the tuple into the pg_cube catalog */
 	simple_heap_insert(pg_cube, tuple);
 
-	/* update the indexes on pg_cube */
 	CatalogUpdateIndexes(pg_cube, tuple);
 
-	/* close the relation and free the tuple */
-	heap_close(pg_cube, RowExclusiveLock);
+	/* free the tuple and close the relation */
 	heap_freetuple(tuple);
+	heap_close(pg_cube, RowExclusiveLock);
 }
 
 /* ----------------

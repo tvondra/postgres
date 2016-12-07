@@ -69,6 +69,7 @@
 #include "utils/json.h"
 #include "utils/jsonb.h"
 #include "utils/json_selfuncs.h"
+#include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
@@ -157,6 +158,7 @@ typedef struct JsonPathAnlStats
 	char			   *pathstr;
 	double				freq;
 	int					depth;
+	JsonPathCollectStatus	collected;
 
 	JsonPathEntry	  **entries;
 	int					nentries;
@@ -171,6 +173,7 @@ typedef struct JsonAnalyzeContext
 	HTAB				   *pathshash;
 	JsonPathAnlStats	   *root;
 	JsonPathAnlStats	  **paths;
+	const char			  **collectedPaths;
 	int						npaths;
 	double					totalrows;
 	double					total_width;
@@ -228,6 +231,175 @@ JsonPathHash(const void *key, Size keysize)
 					hash_any((const unsigned char *) path->entry, path->len));
 
 	return hash;
+}
+
+static inline void
+jsonAnalyzeReportInvalidPath(const char *path)
+{
+	elog(ERROR, "invalid json path '%s'", path);
+}
+
+static inline const char *
+jsonAnalyzeNormalizePathEntry(StringInfo str, const char *c)
+{
+	if (*c == '$' || *c == '.')
+		return NULL;
+
+	if (*c == '*' || *c == '%' || *c == '#')
+	{
+		appendStringInfoCharMacro(str, *c);
+		return *c != '#' && c[1] ? NULL : c + 1;
+	}
+
+	appendStringInfoCharMacro(str, '"');
+
+	if (*c == '"')
+	{
+		for (c++; *c && *c != '"'; c++)
+		{
+			if (*c == '\\')
+			{
+				appendStringInfoCharMacro(str, '\\');
+				if (!*c++)
+					return NULL;
+			}
+			appendStringInfoCharMacro(str, *c);
+		}
+
+		if (*c++ != '"')
+			return NULL;
+	}
+	else
+	{
+		for (; *c && *c != '.'; c++)
+			if (isalnum(*c) || *c == '_')
+				appendStringInfoCharMacro(str, *c);
+			else
+				return NULL;
+	}
+
+	appendStringInfoCharMacro(str, '"');
+
+	return c;
+}
+
+static char *
+jsonAnalyzeNormalizePath(const char *path)
+{
+	StringInfoData	str;
+	const char	   *c;
+
+	str.maxlen = strlen(path) + 10;
+	str.data = (char *) palloc(str.maxlen);
+
+	resetStringInfo(&str);
+
+	c = path;
+
+	if (*c == '$')
+	{
+		c++;
+		if (*c && *c++ != '.')
+			jsonAnalyzeReportInvalidPath(path);
+	}
+
+	appendStringInfoCharMacro(&str, '$');
+
+	while (*c)
+	{
+		appendStringInfoCharMacro(&str, '.');
+
+		if (!(c = jsonAnalyzeNormalizePathEntry(&str, c)))
+			jsonAnalyzeReportInvalidPath(path);
+
+		if (*c)
+		{
+			if (c[0] != '.' || !c[1])
+				jsonAnalyzeReportInvalidPath(path);
+			c++;
+		}
+	}
+
+	return str.data;
+}
+
+typedef enum
+{
+	JSPM_NOT_MATCHED,
+	JSPM_MATCHED,
+	JSPM_SUPERPATH,
+} JsonPathMatchResult;
+
+static JsonPathMatchResult
+jsonAnalyzeComparePath(const char *pattern, const char *path, int pathlen)
+{
+	const char	   *c1;
+	const char	   *c2;
+	const char	   *c2end = path + pathlen;
+	bool			entry = false;
+
+	for (c1 = pattern, c2 = path; *c1 && c2 < c2end && *c1 == *c2; c1++, c2++)
+	{
+		if (*c1 == '"')
+			entry ^= true;
+		else if (entry && *c1 == '\\' && *++c1 != *++c2)
+			break;
+	}
+
+	if (entry)
+		return JSPM_NOT_MATCHED;
+
+	if (!*c1)
+		return c2 < c2end ? JSPM_NOT_MATCHED : JSPM_MATCHED;
+
+	if (*c1 == '*')
+		return JSPM_MATCHED;
+
+	if (c1[0] == '.' && c1[1] == '*' && c2 >= c2end)
+		return JSPM_MATCHED;
+
+	if (*c1 == '%')
+	{
+		if (*c2++ != '"')
+			return JSPM_NOT_MATCHED;
+
+		while (c2 < c2end && *c2 != '"')
+		{
+			if (*c2 == '\\')
+				c2++;
+			c2++;
+		}
+
+		return *c2 == '"' && c2 == c2end ? JSPM_MATCHED : JSPM_NOT_MATCHED;
+	}
+
+	if (*c1 == '.' && c2 == c2end)
+		return JSPM_SUPERPATH;
+
+	return JSPM_NOT_MATCHED;
+}
+
+JsonPathCollectStatus
+jsonAnalyzePathIsCollected(const char **paths, const char *path, int pathlen)
+{
+	const char			  **ppath;
+	JsonPathCollectStatus	result = JSPCS_NOT_COLLECTED;
+
+	for (ppath = paths; *ppath; ppath++)
+	{
+		switch (jsonAnalyzeComparePath(*ppath, path, pathlen))
+		{
+			case JSPM_NOT_MATCHED:
+				break;
+			case JSPM_MATCHED:
+				return JSPCS_COLLECTED;
+			case JSPM_SUPERPATH:
+				result = JSPCS_COLLECTED_SUPERPATH;
+				break;
+		}
+	}
+
+	return result;
 }
 
 /*
@@ -296,6 +468,10 @@ jsonAnalyzeAddPath(JsonAnalyzeContext *ctx, JsonPath path)
 		/* XXX Seems strange. Should we even add the path in this case? */
 		if (stats->depth > ctx->maxdepth)
 			ctx->maxdepth = stats->depth;
+
+		stats->collected = jsonAnalyzePathIsCollected(ctx->collectedPaths,
+													  stats->pathstr,
+													  strlen(stats->pathstr));
 	}
 
 	return stats;
@@ -337,13 +513,17 @@ JsonValuesAppend(JsonValues *values, Datum value, int initialSize)
  *		Process a value extracted from the document (for a given path).
  */
 static inline void
-jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonValueStats *vstats,
+jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonPathAnlStats *stats,
 					 JsonbValue *jv)
 {
+	JsonValueStats	   *vstats = &stats->vstats;
 	JsonScalarStats	   *sstats;
 	JsonbValue		   *jbv;
 	JsonbValue			jbvtmp;
 	Datum				value;
+
+	if (stats->collected == JSPCS_NOT_COLLECTED)
+		return;
 
 	/* ??? */
 	if (ctx->scalarsOnly && jv->type == jbvBinary)
@@ -360,9 +540,12 @@ jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonValueStats *vstats,
 		jbv = jv;
 
 	/* always add it to the "global" JSON stats, shared by all types */
-	JsonValuesAppend(&vstats->jsons.values,
-					 JsonbPGetDatum(JsonbValueToJsonb(jbv)),
-					 ctx->target);
+	if (stats->collected == JSPCS_COLLECTED)
+		JsonValuesAppend(&vstats->jsons.values,
+						JsonbPGetDatum(JsonbValueToJsonb(jbv)),
+						ctx->target);
+	else
+		vstats->jsons.values.count++;
 
 	/*
 	 * Maybe also update the type-specific counters.
@@ -389,6 +572,7 @@ jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonValueStats *vstats,
 												 jv->val.string.len));
 			break;
 #else
+			vstats->strings.values.count++;
 			return;
 #endif
 
@@ -398,6 +582,7 @@ jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonValueStats *vstats,
 			value = PointerGetDatum(jv->val.numeric);
 			break;
 #else
+			vstats->numerics.values.count++;
 			return;
 #endif
 
@@ -426,7 +611,8 @@ jsonAnalyzeJsonValue(JsonAnalyzeContext *ctx, JsonValueStats *vstats,
 			break;
 	}
 
-	JsonValuesAppend(&sstats->values, value, ctx->target);
+	if (stats->collected == JSPCS_COLLECTED)
+		JsonValuesAppend(&sstats->values, value, ctx->target);
 }
 
 /*
@@ -451,7 +637,7 @@ jsonAnalyzeJson(JsonAnalyzeContext *ctx, Jsonb *jb, void *param)
 
 	if ((!target || target == stats) &&
 		!JB_ROOT_IS_SCALAR(jb))
-		jsonAnalyzeJsonValue(ctx, &stats->vstats, JsonValueInitBinary(&jv, jb));
+		jsonAnalyzeJsonValue(ctx, stats, JsonValueInitBinary(&jv, jb));
 
 	it = JsonbIteratorInit(&jb->root);
 
@@ -496,10 +682,11 @@ jsonAnalyzeJson(JsonAnalyzeContext *ctx, Jsonb *jb, void *param)
 			case WJB_VALUE:
 			case WJB_ELEM:
 				if (!target || target == stats)
-					jsonAnalyzeJsonValue(ctx, &stats->vstats, &jv);
+					jsonAnalyzeJsonValue(ctx, stats, &jv);
 
 				/* XXX not sure why we're doing this? */
-				if (jv.type == jbvBinary)
+				if (stats->collected != JSPCS_NOT_COLLECTED &&
+					jv.type == jbvBinary)
 				{
 					/* recurse into container */
 					JsonbIterator *it2 = JsonbIteratorInit(jv.val.binary.data);
@@ -575,7 +762,7 @@ jsonAnalyzeJsonSubpath(JsonAnalyzeContext *ctx, JsonPathAnlStats *pstats,
 		JsonbExtractScalar(jbv->val.binary.data, &scalar))
 		jbv = &scalar;
 
-	jsonAnalyzeJsonValue(ctx, &pstats->vstats, jbv);
+	jsonAnalyzeJsonValue(ctx, pstats, jbv);
 
 	if (i > n)
 		pfree(jbv);
@@ -845,17 +1032,30 @@ jsonAnalyzeBuildPathStats(JsonPathAnlStats *pstats)
 							   (float4) vstats->jsons.values.count /
 										parent->vstats.narrays);
 
-		jsonAnalyzeMakeScalarStats(&ps, "array_length",
-									&parent->vstats.arrlens.stats);
+		if (parent->vstats.arrlens.values.count)
+			jsonAnalyzeMakeScalarStats(&ps, "array_length",
+									   &parent->vstats.arrlens.stats);
 	}
 
 	if (full)
 	{
+		if (pstats->collected == JSPCS_COLLECTED)
+		{
 #ifdef JSON_ANALYZE_SCALARS
-		jsonAnalyzeMakeScalarStats(&ps, "string", &vstats->strings.stats);
-		jsonAnalyzeMakeScalarStats(&ps, "numeric", &vstats->numerics.stats);
+			jsonAnalyzeMakeScalarStats(&ps, "string", &vstats->strings.stats);
+			jsonAnalyzeMakeScalarStats(&ps, "numeric", &vstats->numerics.stats);
 #endif
-		jsonAnalyzeMakeScalarStats(&ps, "json", &vstats->jsons.stats);
+			jsonAnalyzeMakeScalarStats(&ps, "json", &vstats->jsons.stats);
+		}
+		else
+		{
+			pushJsonbKey(&ps, &val, "json");
+			pushJsonbValue(&ps, WJB_BEGIN_OBJECT, NULL);
+			pushJsonbKeyValueFloat(&ps, &val, "nullfrac", 1.0 - pstats->freq);
+			pushJsonbKeyValueFloat(&ps, &val, "distinct", 0.0);
+			pushJsonbKeyValueInteger(&ps, &val, "width", 0.0);
+			pushJsonbValue(&ps, WJB_END_OBJECT, NULL);
+		}
 	}
 
 	jbv = pushJsonbValue(&ps, WJB_END_OBJECT, NULL);
@@ -902,30 +1102,28 @@ static void
 jsonAnalyzePath(JsonAnalyzeContext *ctx, JsonPathAnlStats *pstats)
 {
 	MemoryContext		oldcxt;
-	JsonValueStats	   *vstats = &pstats->vstats;
 
 	jsonAnalyzeCalcPathFreq(ctx, pstats);
 
-	/* values combining all object types */
-	jsonAnalyzePathValues(ctx, &vstats->jsons, JSONBOID, pstats->freq);
+	if (pstats->collected == JSPCS_NOT_COLLECTED)
+		return;
 
-	/*
-	 * lengths and array lengths
-	 *
-	 * XXX Not sure why we divide it by the number of json values?
-	 */
-	jsonAnalyzePathValues(ctx, &vstats->lens, INT4OID,
-						  pstats->freq * vstats->lens.values.count /
-										 vstats->jsons.values.count);
-	jsonAnalyzePathValues(ctx, &vstats->arrlens, INT4OID,
-						  pstats->freq * vstats->arrlens.values.count /
-										 vstats->jsons.values.count);
+	if (pstats->collected == JSPCS_COLLECTED)
+	{
+		JsonValueStats	   *vstats = &pstats->vstats;
 
+		jsonAnalyzePathValues(ctx, &vstats->jsons, JSONBOID, pstats->freq);
+		jsonAnalyzePathValues(ctx, &vstats->lens, INT4OID,
+							  pstats->freq * vstats->lens.values.count /
+											 vstats->jsons.values.count);
+		jsonAnalyzePathValues(ctx, &vstats->arrlens, INT4OID,
+							  pstats->freq * vstats->arrlens.values.count /
+											 vstats->jsons.values.count);
 #ifdef JSON_ANALYZE_SCALARS
-	/* stats for values of string/numeric types only */
-	jsonAnalyzePathValues(ctx, &vstats->strings, TEXTOID, pstats->freq);
-	jsonAnalyzePathValues(ctx, &vstats->numerics, NUMERICOID, pstats->freq);
+		jsonAnalyzePathValues(ctx, &vstats->strings, TEXTOID, pstats->freq);
+		jsonAnalyzePathValues(ctx, &vstats->numerics, NUMERICOID, pstats->freq);
 #endif
+	}
 
 	oldcxt = MemoryContextSwitchTo(ctx->stats->anl_context);
 	pstats->stats = jsonAnalyzeBuildPathStats(pstats);
@@ -957,18 +1155,21 @@ jsonAnalyzeSortPaths(JsonAnalyzeContext *ctx)
 {
 	HASH_SEQ_STATUS		hseq;
 	JsonPathAnlStats   *path;
-	int					i;
+	int					i = 0;
 
 	ctx->npaths = hash_get_num_entries(ctx->pathshash) + 1;
 	ctx->paths = MemoryContextAlloc(ctx->mcxt,
 									sizeof(*ctx->paths) * ctx->npaths);
 
-	ctx->paths[0] = ctx->root;
+	ctx->paths[i++] = ctx->root;
 
 	hash_seq_init(&hseq, ctx->pathshash);
 
-	for (i = 1; (path = hash_seq_search(&hseq)); i++)
-		ctx->paths[i] = path;
+	while ((path = hash_seq_search(&hseq)))
+		if (path->collected != JSPCS_NOT_COLLECTED)
+			ctx->paths[i++] = path;
+
+	ctx->npaths = i;
 
 	pg_qsort(ctx->paths, ctx->npaths, sizeof(*ctx->paths),
 			 JsonPathStatsCompare);
@@ -995,28 +1196,54 @@ jsonAnalyzePaths(JsonAnalyzeContext	*ctx)
 		jsonAnalyzePath(ctx, ctx->paths[i]);
 }
 
+static Datum
+jsonAnalyzeBuildPathStatsHeader(const char *prefix, int prefixlen,
+								const char **collectedPaths)
+{
+	JsonbParseState	   *ps = NULL;
+	JsonbValue		   *res;
+	JsonbValue			jbv;
+
+	pushJsonbValue(&ps, WJB_BEGIN_OBJECT, NULL);
+
+	pushJsonbKey(&ps, &jbv, "prefix");
+	JsonValueInitStringWithLen(&jbv,
+							   memcpy(palloc(prefixlen), prefix, prefixlen),
+							   prefixlen);
+	pushJsonbValue(&ps, WJB_VALUE, &jbv);
+
+	pushJsonbKey(&ps, &jbv, "paths");
+	pushJsonbValue(&ps, WJB_BEGIN_ARRAY, NULL);
+	while (*collectedPaths)
+		pushJsonbElemString(&ps, &jbv, *collectedPaths++);
+	pushJsonbValue(&ps, WJB_END_ARRAY, NULL);
+
+	res = pushJsonbValue(&ps, WJB_END_OBJECT, NULL);
+
+	return JsonbPGetDatum(JsonbValueToJsonb(res));
+}
+
 /*
  * jsonAnalyzeBuildPathStatsArray
  *		???
  */
 static Datum *
 jsonAnalyzeBuildPathStatsArray(JsonPathAnlStats **paths, int npaths, int *nvals,
-								const char *prefix, int prefixlen)
+								const char *prefix, int prefixlen,
+								const char **collectedPaths)
 {
 	Datum	   *values = palloc(sizeof(Datum) * (npaths + 1));
-	JsonbValue *jbvprefix = palloc(sizeof(JsonbValue));
 	int			i;
+	int			j = 0;
 
-	JsonValueInitStringWithLen(jbvprefix,
-							   memcpy(palloc(prefixlen), prefix, prefixlen),
-							   prefixlen);
-
-	values[0] = JsonbPGetDatum(JsonbValueToJsonb(jbvprefix));
+	values[j++] = jsonAnalyzeBuildPathStatsHeader(prefix, prefixlen,
+												  collectedPaths);
 
 	for (i = 0; i < npaths; i++)
-		values[i + 1] = JsonbPGetDatum(paths[i]->stats);
+		if (paths[i]->collected != JSPCS_NOT_COLLECTED)
+			values[j++] = JsonbPGetDatum(paths[i]->stats);
 
-	*nvals = npaths + 1;
+	*nvals = j;
 
 	return values;
 }
@@ -1032,7 +1259,8 @@ jsonAnalyzeMakeStats(JsonAnalyzeContext *ctx, int *numvalues)
 	MemoryContext	oldcxt = MemoryContextSwitchTo(ctx->stats->anl_context);
 
 	values = jsonAnalyzeBuildPathStatsArray(ctx->paths, ctx->npaths,
-											numvalues, "$", 1);
+											numvalues, "$", 1,
+											ctx->collectedPaths);
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -1047,7 +1275,8 @@ bool
 jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
 							 const char	*path, int pathlen,
 							 bool includeSubpaths, float4 nullfrac,
-							 Datum *pvals, Datum *pnums)
+							 Datum *pvals, Datum *pnums,
+							 const char **collectedPaths)
 {
 	JsonPathAnlStats  **pvalues = palloc(sizeof(*pvalues) * npaths);
 	Datum			   *values;
@@ -1074,6 +1303,7 @@ jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
 
 		pvalues[nsubpaths] = palloc(sizeof(**pvalues));
 		pvalues[nsubpaths]->stats = jb;
+		pvalues[nsubpaths]->collected = JSPCS_COLLECTED;
 
 		nsubpaths++;
 
@@ -1088,7 +1318,7 @@ jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
 	}
 
 	values = jsonAnalyzeBuildPathStatsArray(pvalues, nsubpaths, &nvalues,
-											path, pathlen);
+											path, pathlen, collectedPaths);
 	*pvals = PointerGetDatum(construct_array(values, nvalues, JSONBOID, -1,
 											 false, 'i'));
 
@@ -1107,11 +1337,73 @@ jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
  *		Initialize the analyze context so that we can start adding paths.
  */
 static void
+jsonInitCollectedPaths(JsonAnalyzeContext *ctx, VacAttrStats *stats)
+{
+	const char	  **collectedPaths = NULL;
+	List		   *newPaths;
+	HeapTuple		tuple = SearchSysCache3(STATRELATTINH,
+										ObjectIdGetDatum(stats->attr->attrelid),
+										Int16GetDatum(stats->attr->attnum),
+										BoolGetDatum(false));
+
+	if (HeapTupleIsValid(tuple))
+	{
+		VariableStatData	vardata;
+		JsonStatData		jsdata;
+
+		vardata.statsTuple = tuple;
+		vardata.rel = NULL;
+
+		if (jsonStatsInit(&jsdata, &vardata))
+			collectedPaths = jsdata.collectedPaths;
+
+		ReleaseSysCache(tuple);
+	}
+
+	newPaths = stats->options ? stats->options :
+				collectedPaths ? NULL : list_make1("$");
+
+	if (newPaths)
+	{
+		ListCell	   *lc;
+		const char	  **p = collectedPaths;
+		int				i = 0;
+		Size			size;
+
+		if (collectedPaths)
+			while (*p++)
+				i++;
+
+		size = sizeof(char *) * (list_length(newPaths) + i + 1);
+
+		collectedPaths = collectedPaths ? repalloc(collectedPaths, size)
+										: palloc(size);
+
+		foreach(lc, newPaths)
+		{
+			const char	   *path = jsonAnalyzeNormalizePath(lfirst(lc));
+			int				j;
+
+			for (j = 0; j < i; j++)
+				if (!strcmp(collectedPaths[j], path))
+					break;
+
+			if (j >= i)
+				collectedPaths[i++] = path;
+		}
+
+		collectedPaths[i] = NULL;
+	}
+
+	ctx->collectedPaths = collectedPaths;
+}
+
+static void
 jsonAnalyzeInit(JsonAnalyzeContext *ctx, VacAttrStats *stats,
 				AnalyzeAttrFetchFunc fetchfunc,
 				int samplerows, double totalrows)
 {
-	HASHCTL	hash_ctl;
+	HASHCTL			hash_ctl;
 
 	memset(ctx, 0, sizeof(*ctx));
 
@@ -1135,6 +1427,12 @@ jsonAnalyzeInit(JsonAnalyzeContext *ctx, VacAttrStats *stats,
 
 	ctx->root = MemoryContextAllocZero(ctx->mcxt, sizeof(JsonPathAnlStats));
 	ctx->root->pathstr = "$";
+
+	jsonInitCollectedPaths(ctx, stats);
+
+	ctx->root->collected = jsonAnalyzePathIsCollected(ctx->collectedPaths,
+													  ctx->root->pathstr,
+													  strlen(ctx->root->pathstr));
 }
 
 /*
@@ -1264,7 +1562,10 @@ compute_json_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		{
 			JsonPathAnlStats *path = ctx.paths[i];
 
-			elog(WARNING, "analyzing json path (%d/%d) %s",
+			if (path->collected == JSPCS_NOT_COLLECTED)
+				continue;
+
+			elog(DEBUG1, "analyzing json path (%d/%d) %s",
 				 i + 1, ctx.npaths, path->pathstr);
 
 			jsonAnalyzePass(&ctx, jsonAnalyzeJsonPath, path);

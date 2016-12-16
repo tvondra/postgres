@@ -602,6 +602,13 @@ pushJsonbValue(JsonbParseState **pstate, JsonbIteratorToken seq,
 		return pushJsonbValueScalar(pstate, seq, jbval);
 	}
 
+	/* push value from scalar container without its enclosing array */
+	if (*pstate && JsonbExtractScalar(jbval->val.binary.data, &v))
+	{
+		Assert(IsAJsonbScalar(&v));
+		return pushJsonbValueScalar(pstate, seq, &v);
+	}
+
 	/* unpack the binary and add each piece to the pstate */
 	it = JsonbIteratorInit(jbval->val.binary.data);
 

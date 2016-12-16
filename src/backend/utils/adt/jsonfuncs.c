@@ -4107,6 +4107,22 @@ populate_recordset_object_field_end(void *state, char *fname, bool isnull)
 }
 
 /*
+ * findJsonbValueFromContainer() wrapper that sets up JsonbValue key string.
+ */
+JsonbValue *
+findJsonbValueFromContainerLen(JsonbContainer *container, uint32 flags,
+							   const char *key, uint32 keylen)
+{
+	JsonbValue	k;
+
+	k.type = jbvString;
+	k.val.string.val = key;
+	k.val.string.len = keylen;
+
+	return findJsonbValueFromContainer(container, flags, &k);
+}
+
+/*
  * Semantic actions for json_strip_nulls.
  *
  * Simply repeat the input on the output unless we encounter
@@ -5371,7 +5387,8 @@ iterate_jsonb_values(Jsonb *jb, uint32 flags, void *state,
 		if (type == WJB_KEY)
 		{
 			if (flags & jtiKey)
-				action(state, v.val.string.val, v.val.string.len);
+				action(state, unconstify(char *, v.val.string.val),
+					   v.val.string.len);
 
 			continue;
 		}
@@ -5386,7 +5403,8 @@ iterate_jsonb_values(Jsonb *jb, uint32 flags, void *state,
 		{
 			case jbvString:
 				if (flags & jtiString)
-					action(state, v.val.string.val, v.val.string.len);
+					action(state, unconstify(char *, v.val.string.val),
+						   v.val.string.len);
 				break;
 			case jbvNumeric:
 				if (flags & jtiNumeric)
@@ -5508,7 +5526,9 @@ transform_jsonb_string_values(Jsonb *jsonb, void *action_state,
 	{
 		if ((type == WJB_VALUE || type == WJB_ELEM) && v.type == jbvString)
 		{
-			out = transform_action(action_state, v.val.string.val, v.val.string.len);
+			out = transform_action(action_state,
+								   unconstify(char *, v.val.string.val),
+								   v.val.string.len);
 			v.val.string.val = VARDATA_ANY(out);
 			v.val.string.len = VARSIZE_ANY_EXHDR(out);
 			res = pushJsonbValue(&st, type, type < WJB_BEGIN_ARRAY ? &v : NULL);

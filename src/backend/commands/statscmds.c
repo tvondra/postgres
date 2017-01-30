@@ -137,7 +137,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/*
 	 * Sort the attnums, which makes detecting duplicies somewhat
 	 * easier, and it does not hurt (it does not affect the efficiency,
-	 * onlike for indexes, for example).
+	 * unlike for indexes, for example).
 	 */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
 

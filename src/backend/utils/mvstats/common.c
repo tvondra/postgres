@@ -204,7 +204,7 @@ list_mv_stats(Oid relid)
 }
 
 /*
- * Find attnims of MV stats using the mvoid.
+ * Find attnums of MV stats using the mvoid.
  */
 int2vector *
 find_mv_attnums(Oid mvoid, Oid *relid)

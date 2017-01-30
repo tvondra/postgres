@@ -110,7 +110,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 		if (!HeapTupleIsValid(atttuple))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
-			  errmsg("column \"%s\" referenced in statistics do not exist",
+			  errmsg("column \"%s\" referenced in statistics does not exist",
 					 attname)));
 
 		/* more than MVSTATS_MAX_DIMENSIONS columns not allowed */

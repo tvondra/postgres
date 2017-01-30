@@ -75,16 +75,22 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/*
 	 * If if_not_exists was given and the statistics already exists, bail out.
 	 */
-	if (stmt->if_not_exists &&
-		SearchSysCacheExists2(MVSTATNAMENSP,
+	if (SearchSysCacheExists2(MVSTATNAMENSP,
 							  PointerGetDatum(&staname),
 							  ObjectIdGetDatum(namespaceId)))
 	{
-		ereport(NOTICE,
+		if (stmt->if_not_exists)
+		{
+			ereport(NOTICE,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					errmsg("statistics \"%s\" already exist, skipping",
+							namestr)));
+			return InvalidObjectAddress;
+		}
+
+		ereport(ERROR,
 				(errcode(ERRCODE_DUPLICATE_OBJECT),
-				 errmsg("statistics \"%s\" already exist, skipping",
-						namestr)));
-		return InvalidObjectAddress;
+				errmsg("statistics \"%s\" already exist", namestr)));
 	}
 
 	rel = heap_openrv(stmt->relation, AccessExclusiveLock);

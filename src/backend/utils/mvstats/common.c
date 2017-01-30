@@ -389,6 +389,7 @@ multi_sort_compare_dim(int dim, const SortItem *a, const SortItem *b,
 							   &mss->ssup[dim]);
 }
 
+/* compare all the dimensions in a given range (inclusive) */
 int
 multi_sort_compare_dims(int start, int end,
 						const SortItem *a, const SortItem *b,

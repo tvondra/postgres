@@ -172,6 +172,10 @@ dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
 	int			i,
 				j;
 	int			nvalues = numrows * k;
+	MultiSortSupport mss;
+	SortItem   *items;
+	Datum	   *values;
+	bool	   *isnull;
 
 	/*
 	 * XXX Maybe the threshold should be somehow related to the number of
@@ -181,24 +185,23 @@ dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
 	 */
 	int			min_group_size = 3;
 
-	/* number of groups supporting / contradicting the dependency */
-	int			n_supporting = 0;
-	int			n_contradicting = 0;
-
 	/* counters valid within a group */
 	int			group_size = 0;
 	int			n_violations = 0;
 
+	/* total number of rows supporting (consistent with) the dependency */
 	int			n_supporting_rows = 0;
-	int			n_contradicting_rows = 0;
+
+	/* Make sure we have at least two input attributes. */
+	Assert(k >= 2);
 
 	/* sort info for all attributes columns */
-	MultiSortSupport mss = multi_sort_init(k);
+	mss = multi_sort_init(k);
 
 	/* data for the sort */
-	SortItem   *items = (SortItem *) palloc0(numrows * sizeof(SortItem));
-	Datum	   *values = (Datum *) palloc0(sizeof(Datum) * nvalues);
-	bool	   *isnull = (bool *) palloc0(sizeof(bool) * nvalues);
+	items = (SortItem *) palloc0(numrows * sizeof(SortItem));
+	values = (Datum *) palloc0(sizeof(Datum) * nvalues);
+	isnull = (bool *) palloc0(sizeof(bool) * nvalues);
 
 	/* fix the pointers to values/isnull */
 	for (i = 0; i < numrows; i++)
@@ -253,47 +256,34 @@ dependency_degree(int numrows, HeapTuple *rows, int k, int *dependency,
 	/* start with the first row forming a group */
 	group_size = 1;
 
-	for (i = 1; i < numrows; i++)
+	for (i = 1; i <= numrows; i++)
 	{
-		/* end of the preceding group */
-		if (multi_sort_compare_dims(0, (k - 2), &items[i - 1], &items[i], mss) != 0)
+		/*
+		 * Check if the group ended, which may be either because we processed
+		 * all the items (i==numrows), or because the i-th item is not equal
+		 * to the preceding one.
+		 */
+		if ((i == numrows) ||
+			(multi_sort_compare_dims(0, (k - 2), &items[i - 1], &items[i], mss) != 0))
 		{
 			/*
-			 * If there is a single are no contradicting rows, count the group
-			 * as supporting, otherwise contradicting.
+			 * Do accounting for the preceding group, and reset counters.
+			 *
+			 * If there were no contradicting rows in the group, count the
+			 * rows as supporting.
 			 */
 			if ((n_violations == 0) && (group_size >= min_group_size))
-			{
-				n_supporting += 1;
 				n_supporting_rows += group_size;
-			}
-			else if (n_violations > 0)
-			{
-				n_contradicting += 1;
-				n_contradicting_rows += group_size;
-			}
 
 			/* current values start a new group */
 			n_violations = 0;
 			group_size = 0;
 		}
 		/* first colums match, but the last one does not (so contradicting) */
-		else if (multi_sort_compare_dims((k - 1), (k - 1), &items[i - 1], &items[i], mss) != 0)
+		else if (multi_sort_compare_dim((k - 1), &items[i - 1], &items[i], mss) != 0)
 			n_violations += 1;
 
 		group_size += 1;
-	}
-
-	/* handle the last group (just like above) */
-	if ((n_violations == 0) && (group_size >= min_group_size))
-	{
-		n_supporting += 1;
-		n_supporting_rows += group_size;
-	}
-	else if (n_violations)
-	{
-		n_contradicting += 1;
-		n_contradicting_rows += group_size;
 	}
 
 	pfree(items);
@@ -336,7 +326,7 @@ build_mv_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
 
 	/*
 	 * We'll try build functional dependencies starting from the smallest ones
-	 * covering jut 2 columns, to the largest ones, covering all columns
+	 * covering just 2 columns, to the largest ones, covering all columns
 	 * included int the statistics. We start from the smallest ones because we
 	 * want to be able to skip already implied ones.
 	 */

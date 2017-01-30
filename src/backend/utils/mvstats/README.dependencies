@@ -100,7 +100,7 @@ Consistecy of clauses
 
 Functional dependencies only express general dependencies between columns,
 without referencing particular values. This assumes that the equality clauses
-are in fact consistent with the functinal dependency, i.e. that given the a
+are in fact consistent with the functinal dependency, i.e. that given a
 dependency (a=>b), the value in (b=?) clause is the value determined by (a=?).
 If that's not the case, the clauses are "inconsistent" with the functional
 dependency and the result will be over-estimation.

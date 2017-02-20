@@ -141,6 +141,11 @@ extern MemoryContext SlabContextCreate(MemoryContext parent,
 				  Size blockSize,
 				  Size chunkSize);
 
+/* gen.c */
+extern MemoryContext GenerationContextCreate(MemoryContext parent,
+				 const char *name,
+				 Size blockSize);
+
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts
  * that might hold quite a lot of data.

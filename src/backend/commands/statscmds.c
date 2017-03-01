@@ -38,7 +38,9 @@ compare_int16(const void *a, const void *b)
 }
 
 /*
- * Implements the CREATE STATISTICS name ON (columns) FROM table
+ * Implements the CREATE STATISTICS command with syntax:
+ *
+ *    CREATE STATISTICS name WITH (options) ON (columns) FROM table
  *
  * We do require that the types support sorting (ltopr), although some
  * statistics might work with  equality only.
@@ -67,9 +69,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 				childobject;
 
 	/* costruction of array of enabled statistic */
-	Datum		types[1];	/* only ndistinct defined now */
-	int			ntypes;
+	Datum		types[2];	/* ndistinct and dependencies */
+	int			ntypes = 0;
 	ArrayType  *staenabled;
+
+	/* by default build nothing */
+	bool		build_ndistinct = false,
+				build_dependencies = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -100,10 +106,6 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	rel = heap_openrv(stmt->relation, AccessExclusiveLock);
 	relid = RelationGetRelid(rel);
-
-	/* ndistinct coefficients is the only known type of extended statistics */
-	ntypes=1;
-	types[0] = CharGetDatum(STATS_EXT_NDISTINCT);
 
 	/*
 	 * Transform column names to array of attnums. While doing that, we
@@ -160,6 +162,37 @@ CreateStatistics(CreateStatsStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 			  errmsg("duplicate column name in statistics definition")));
 
+	/*
+	 * Parse the statistics options - currently only statistics types are
+	 * recognized (ndistinct, dependencies).
+	 */
+	foreach(l, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(l);
+
+		if (strcmp(opt->defname, "ndistinct") == 0)
+		{
+			build_ndistinct = defGetBoolean(opt);
+			types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
+		}
+		else if (strcmp(opt->defname, "dependencies") == 0)
+		{
+			build_dependencies = defGetBoolean(opt);
+			types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+
+	/* Make sure there's at least one statistics type specified. */
+	if (! (build_ndistinct || build_dependencies))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("no statistics type (ndistinct, dependencies) requested")));
+
 	stakeys = buildint2vector(attnums, numcols);
 
 	/* construct the char array of enabled statistic types */
@@ -186,6 +219,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/* no statistics build yet */
 	nulls[Anum_pg_statistic_ext_standistinct - 1] = true;
+	nulls[Anum_pg_statistic_ext_stadependencies - 1] = true;
 
 	/* insert the tuple into pg_statistic_ext */
 	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);

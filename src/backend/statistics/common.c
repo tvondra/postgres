@@ -21,7 +21,8 @@ static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 
 static List *list_ext_stats(Oid relid);
 
-static void update_ext_stats(Oid relid, MVNDistinct ndistinct,
+static void update_ext_stats(Oid relid,
+					  MVNDistinct ndistinct, MVDependencies dependencies,
 					  int2vector *attrs, VacAttrStats **stats);
 
 
@@ -50,6 +51,7 @@ build_ext_stats(Relation onerel, double totalrows,
 		int			j;
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(lc);
 		MVNDistinct	ndistinct = NULL;
+		MVDependencies deps = NULL;
 
 		VacAttrStats **stats = NULL;
 		int			numatts = 0;
@@ -86,8 +88,12 @@ build_ext_stats(Relation onerel, double totalrows,
 		if (stat->ndist_enabled)
 			ndistinct = build_ext_ndistinct(totalrows, numrows, rows, attrs, stats);
 
+		/* analyze functional dependencies between the columns */
+		if (stat->deps_enabled)
+			deps = build_ext_dependencies(numrows, rows, attrs, stats);
+
 		/* store the statistics in the catalog */
-		update_ext_stats(stat->mvoid, ndistinct, attrs, stats);
+		update_ext_stats(stat->mvoid, ndistinct, deps, attrs, stats);
 	}
 }
 
@@ -167,7 +173,10 @@ list_ext_stats(Oid relid)
 		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
 
 		info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
+		info->deps_enabled = stats_are_enabled(htup, STATS_EXT_DEPENDENCIES);
+
 		info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
+		info->deps_built = stats_are_built(htup, STATS_EXT_DEPENDENCIES);
 
 		result = lappend(result, info);
 	}
@@ -189,7 +198,7 @@ list_ext_stats(Oid relid)
  *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
  */
 static void
-update_ext_stats(Oid mvoid, MVNDistinct ndistinct,
+update_ext_stats(Oid mvoid, MVNDistinct ndistinct, MVDependencies dependencies,
 				int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -216,8 +225,16 @@ update_ext_stats(Oid mvoid, MVNDistinct ndistinct,
 		values[Anum_pg_statistic_ext_standistinct-1] = PointerGetDatum(data);
 	}
 
+	if (dependencies != NULL)
+	{
+		nulls[Anum_pg_statistic_ext_stadependencies - 1] = false;
+		values[Anum_pg_statistic_ext_stadependencies - 1]
+			= PointerGetDatum(serialize_ext_dependencies(dependencies));
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_standistinct - 1] = true;
+	replaces[Anum_pg_statistic_ext_stadependencies - 1] = true;
 
 	/* always change the availability flags */
 	nulls[Anum_pg_statistic_ext_stakeys - 1] = false;
@@ -361,6 +378,7 @@ multi_sort_compare_dim(int dim, const SortItem *a, const SortItem *b,
 							   &mss->ssup[dim]);
 }
 
+/* compare all the dimensions in a given range (inclusive) */
 int
 multi_sort_compare_dims(int start, int end,
 						const SortItem *a, const SortItem *b,
@@ -442,8 +460,13 @@ stats_are_built(HeapTuple htup, char type)
 							Anum_pg_statistic_ext_standistinct, &isnull);
 			break;
 
+		case STATS_EXT_DEPENDENCIES:
+			SysCacheGetAttr(STATEXTOID, htup,
+							Anum_pg_statistic_ext_stadependencies, &isnull);
+			break;
+
 		default:
-			elog(ERROR, "unexcpected statistics type requested: %d", type);
+			elog(ERROR, "unexcpected statistics type requested: %c", type);
 	}
 
 	return (! isnull);

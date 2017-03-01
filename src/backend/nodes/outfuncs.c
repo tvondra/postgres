@@ -2201,8 +2201,13 @@ _outStatisticExtInfo(StringInfo str, const StatisticExtInfo *node)
 	/* NB: this isn't a complete set of fields */
 	WRITE_OID_FIELD(mvoid);
 
+	/* enabled statistics */
+	WRITE_BOOL_FIELD(ndist_enabled);
+	WRITE_BOOL_FIELD(deps_enabled);
+
 	/* built/available statistics */
 	WRITE_BOOL_FIELD(ndist_built);
+	WRITE_BOOL_FIELD(deps_built);
 }
 
 static void

@@ -173,3 +173,4 @@ test: xml
 test: event_trigger
 test: stats
 test: mv_ndistinct
+test: mv_dependencies

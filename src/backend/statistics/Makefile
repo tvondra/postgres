@@ -12,6 +12,6 @@ subdir = src/backend/statistics
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = common.o mvdist.o
+OBJS = common.o dependencies.o mvdist.o
 
 include $(top_srcdir)/src/backend/common.mk

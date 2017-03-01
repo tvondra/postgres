@@ -118,4 +118,4 @@ test: event_trigger
 test: stats
 
 # run tests of extended statistics
-test: mv_ndistinct
+test: mv_ndistinct mv_dependencies

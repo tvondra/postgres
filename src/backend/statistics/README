@@ -8,9 +8,15 @@ not true, resulting in estimation errors.
 Extended statistics track different types of dependencies between the columns,
 hopefully improving the estimates and producing better plans.
 
-Currently we only have one type of extended statistics - ndistinct
-coefficients, and we use it to improve estimates of grouping queries. See
-README.ndistinct for details.
+
+Types of statistics
+-------------------
+
+Currently we only have two kinds of extended statistics
+
+    (a) ndistinct coefficients
+
+    (b) soft functional dependencies (README.dependencies)
 
 
 Size of sample in ANALYZE

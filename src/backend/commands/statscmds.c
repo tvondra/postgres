@@ -64,12 +64,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				myself;
-	Datum		types[3];		/* one for each possible type of statistic */
+	Datum		types[4];		/* one for each possible type of statistic */
 	int			ntypes;
 	ArrayType  *stxkind;
 	bool		build_ndistinct;
 	bool		build_dependencies;
 	bool		build_mcv;
+	bool		build_histogram;
 	bool		requested_type = false;
 	int			i;
 	ListCell   *cell;
@@ -248,6 +249,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	build_ndistinct = false;
 	build_dependencies = false;
 	build_mcv = false;
+	build_histogram = false;
 	foreach(cell, stmt->stat_types)
 	{
 		char	   *type = strVal((Value *) lfirst(cell));
@@ -267,6 +269,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 			build_mcv = true;
 			requested_type = true;
 		}
+		else if (strcmp(type, "histogram") == 0)
+		{
+			build_histogram = true;
+			requested_type = true;
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -279,6 +286,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 		build_ndistinct = true;
 		build_dependencies = true;
 		build_mcv = true;
+		build_histogram = true;
 	}
 
 	/* construct the char array of enabled statistic types */
@@ -289,6 +297,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 		types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 	if (build_mcv)
 		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
+	if (build_histogram)
+		types[ntypes++] = CharGetDatum(STATS_EXT_HISTOGRAM);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
 	stxkind = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
@@ -308,6 +318,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	nulls[Anum_pg_statistic_ext_stxndistinct - 1] = true;
 	nulls[Anum_pg_statistic_ext_stxdependencies - 1] = true;
 	nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	nulls[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	/* insert it into pg_statistic_ext */
 	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);
@@ -407,8 +418,9 @@ RemoveStatisticsById(Oid statsOid)
  * values, this assumption could fail.  But that seems like a corner case
  * that doesn't justify zapping the stats in common cases.)
  *
- * For MCV lists that's not the case, as those statistics store the datums
- * internally. In this case we simply reset the statistics value to NULL.
+ * For MCV lists and histograms that's not the case, as those statistics
+ * store the datums internally. In those cases we simply reset those
+ * statistics to NULL.
  */
 void
 UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
@@ -445,9 +457,10 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 
 	/*
 	 * We can also leave the record as it is if there are no statistics
-	 * including the datum values, like for example MCV lists.
+	 * including the datum values, like for example MCV and histograms.
 	 */
-	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
+	if (statext_is_kind_built(oldtup, STATS_EXT_MCV) ||
+		statext_is_kind_built(oldtup, STATS_EXT_HISTOGRAM))
 		reset_stats = true;
 
 	/*
@@ -468,11 +481,11 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	memset(replaces, 0, Natts_pg_statistic_ext * sizeof(bool));
 	memset(values, 0, Natts_pg_statistic_ext * sizeof(Datum));
 
-	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
-	{
-		replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
-		nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
-	}
+	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
+
+	nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	nulls[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	rel = heap_open(StatisticExtRelationId, RowExclusiveLock);
 

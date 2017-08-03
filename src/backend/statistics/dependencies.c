@@ -904,7 +904,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	int			listidx;
 
 	/* check if there's any stats that might be useful for us. */
-	if (!has_stats_of_kind(rel->statlist, STATS_EXT_DEPENDENCIES))
+	if (!has_stats_of_kind(rel->statlist, STATS_EXT_INFO_DEPENDENCIES))
 		return 1.0;
 
 	list_attnums = (AttrNumber *) palloc(sizeof(AttrNumber) *

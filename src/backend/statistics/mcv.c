@@ -65,9 +65,6 @@ static SortItem *build_distinct_groups(int numrows, SortItem *items,
 static int count_distinct_groups(int numrows, SortItem *items,
 					  MultiSortSupport mss);
 
-static bool mcv_is_compatible_clause(Node *clause, Index relid,
-					  Bitmapset **attnums);
-
 /*
  * Builds MCV list from the set of sampled rows.
  *
@@ -95,12 +92,14 @@ static bool mcv_is_compatible_clause(Node *clause, Index relid,
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-				 VacAttrStats **stats)
+				 VacAttrStats **stats, HeapTuple **rows_filtered,
+				 int *numrows_filtered)
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);
 	int			ndistinct = 0;
 	int			mcv_threshold = 0;
+	int			numrows_mcv;	/* rows covered by the MCV items */
 	int			nitems = 0;
 
 	int		   *attnums = build_attnums(attrs);
@@ -116,6 +115,9 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* transform the sorted rows into groups (sorted by frequency) */
 	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
+
+	/* Either we have both pointers or none of them. */
+	Assert((rows_filtered && numrows_filtered) || (!rows_filtered && !numrows_filtered));
 
 	/*
 	 * Determine the minimum size of a group to be eligible for MCV list, and
@@ -142,13 +144,18 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* Walk through the groups and stop once we fall below the threshold. */
 	nitems = 0;
+	numrows_mcv = 0;
 	for (i = 0; i < ndistinct; i++)
 	{
 		if (groups[i].count < mcv_threshold)
 			break;
 
+		numrows_mcv += groups[i].count;
 		nitems++;
 	}
+
+	/* The MCV can't possibly cover more rows than we sampled. */
+	Assert(numrows_mcv <= numrows);
 
 	/*
 	 * At this point we know the number of items for the MCV list. There might
@@ -207,6 +214,87 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 		/* make sure the loops are consistent */
 		Assert(nitems == mcvlist->nitems);
+	}
+
+	/* Assume we're not returning any filtered rows by default. */
+	if (numrows_filtered)
+		*numrows_filtered = 0;
+
+	if (rows_filtered)
+		*rows_filtered = NULL;
+
+	/*
+	 * Produce an array with only tuples not covered by the MCV list. This
+	 * is needed when building MCV+histogram pair, where MCV covers the most
+	 * common combinations and histogram covers the remaining part.
+	 *
+	 * We will first sort the groups by the keys (not by count) and then use
+	 * binary search in the group array to check which rows are covered by
+	 * the MCV items.
+	 *
+	 * Do not modify the array in place, as there may be additional stats on
+	 * the table and we need to keep the original array for them.
+	 *
+	 * We only do this when requested by passing non-NULL rows_filtered,
+	 * and when there are rows not covered by the MCV list (that is, when
+	 * numrows_mcv < numrows), or also (nitems < ndistinct).
+	 */
+	if (rows_filtered && numrows_filtered && (nitems < ndistinct))
+	{
+		int		i,
+				j;
+
+		/* used to build the filtered array of tuples */
+		HeapTuple  *filtered;
+		int			nfiltered;
+
+		/* used for the searches */
+		SortItem        key;
+
+		/* We do know how many rows we expect (total - MCV rows). */
+		nfiltered = (numrows - numrows_mcv);
+		filtered = (HeapTuple *) palloc(nfiltered * sizeof(HeapTuple));
+
+		/* wfill this with data from the rows */
+		key.values = (Datum *) palloc0(numattrs * sizeof(Datum));
+		key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
+
+		/*
+		 * Sort the groups for bsearch_r (but only the items that actually
+		 * made it to the MCV list).
+		 */
+		qsort_arg((void *) groups, nitems, sizeof(SortItem),
+				  multi_sort_compare, mss);
+
+		/* walk through the tuples, compare the values to MCV items */
+		nfiltered = 0;
+		for (i = 0; i < numrows; i++)
+		{
+			/* collect the key values from the row */
+			for (j = 0; j < numattrs; j++)
+				key.values[j]
+					= heap_getattr(rows[i], attnums[j],
+								   stats[j]->tupDesc, &key.isnull[j]);
+
+			/* if not included in the MCV list, keep it in the array */
+			if (bsearch_arg(&key, groups, nitems, sizeof(SortItem),
+							multi_sort_compare, mss) == NULL)
+				filtered[nfiltered++] = rows[i];
+
+			/* do not overflow the array */
+			Assert(nfiltered <= (numrows - numrows_mcv));
+		}
+
+		/* expect to get the right number of remaining rows exactly */
+		Assert(nfiltered + numrows_mcv == numrows);
+
+		/* pass the filtered tuples up */
+		*numrows_filtered = nfiltered;
+		*rows_filtered = filtered;
+
+		/* free all the data used here */
+		pfree(key.values);
+		pfree(key.isnull);
 	}
 
 	pfree(items);
@@ -1211,168 +1299,6 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * mcv_is_compatible_clause_internal
- *	Does the heavy lifting of actually inspecting the clauses for
- * mcv_is_compatible_clause.
- */
-static bool
-mcv_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **attnums)
-{
-	/* We only support plain Vars for now */
-	if (IsA(clause, Var))
-	{
-		Var *var = (Var *) clause;
-
-		/* Ensure var is from the correct relation */
-		if (var->varno != relid)
-			return false;
-
-		/* we also better ensure the Var is from the current level */
-		if (var->varlevelsup > 0)
-			return false;
-
-		/* Also skip system attributes (we don't allow stats on those). */
-		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
-			return false;
-
-		*attnums = bms_add_member(*attnums, var->varattno);
-
-		return true;
-	}
-
-	/* Var = Const */
-	if (is_opclause(clause))
-	{
-		OpExpr	   *expr = (OpExpr *) clause;
-		Var		   *var;
-		bool		varonleft = true;
-		bool		ok;
-
-		/* Only expressions with two arguments are considered compatible. */
-		if (list_length(expr->args) != 2)
-			return false;
-
-		/* see if it actually has the right */
-		ok = (NumRelids((Node *) expr) == 1) &&
-			(is_pseudo_constant_clause(lsecond(expr->args)) ||
-			 (varonleft = false,
-			  is_pseudo_constant_clause(linitial(expr->args))));
-
-		/* unsupported structure (two variables or so) */
-		if (!ok)
-			return false;
-
-		/*
-		 * If it's not one of the supported operators ("=", "<", ">", etc.),
-		 * just ignore the clause, as it's not compatible with MCV lists.
-		 *
-		 * This uses the function for estimating selectivity, not the operator
-		 * directly (a bit awkward, but well ...).
-		 */
-		if ((get_oprrest(expr->opno) != F_EQSEL) &&
-			(get_oprrest(expr->opno) != F_SCALARLTSEL) &&
-			(get_oprrest(expr->opno) != F_SCALARGTSEL))
-			return false;
-
-		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
-
-		return mcv_is_compatible_clause_internal((Node *)var, relid, attnums);
-	}
-
-	/* NOT clause, clause AND/OR clause */
-	if (or_clause(clause) ||
-		and_clause(clause) ||
-		not_clause(clause))
-	{
-		/*
-		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
-		 *
-		 * TODO: We might support mixed case, where some of the clauses are
-		 * supported and some are not, and treat all supported subclauses as a
-		 * single clause, compute it's selectivity using mv stats, and compute
-		 * the total selectivity using the current algorithm.
-		 *
-		 * TODO: For RestrictInfo above an OR-clause, we might use the
-		 * orclause with nested RestrictInfo - we won't have to call
-		 * pull_varnos() for each clause, saving time.
-		 */
-		BoolExpr   *expr = (BoolExpr *) clause;
-		ListCell   *lc;
-		Bitmapset  *clause_attnums = NULL;
-
-		foreach(lc, expr->args)
-		{
-			/*
-			 * Had we found incompatible clause in the arguments, treat the
-			 * whole clause as incompatible.
-			 */
-			if (!mcv_is_compatible_clause_internal((Node *) lfirst(lc),
-												   relid, &clause_attnums))
-				return false;
-		}
-
-		/*
-		 * Otherwise the clause is compatible, and we need to merge the
-		 * attnums into the main bitmapset.
-		 */
-		*attnums = bms_join(*attnums, clause_attnums);
-
-		return true;
-	}
-
-	/* Var IS NULL */
-	if (IsA(clause, NullTest))
-	{
-		NullTest   *nt = (NullTest *) clause;
-
-		/*
-		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
-		 * could use examine_variable to fix this?
-		 */
-		if (!IsA(nt->arg, Var))
-			return false;
-
-		return mcv_is_compatible_clause_internal((Node *) (nt->arg), relid, attnums);
-	}
-
-	return false;
-}
-
-/*
- * mcv_is_compatible_clause
- *		Determines if the clause is compatible with MCV lists
- *
- * Only OpExprs with two arguments using an equality operator are supported.
- * When returning True attnum is set to the attribute number of the Var within
- * the supported clause.
- *
- * Currently we only support Var = Const, or Const = Var. It may be possible
- * to expand on this later.
- */
-static bool
-mcv_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
-{
-	RestrictInfo *rinfo = (RestrictInfo *) clause;
-
-	if (!IsA(rinfo, RestrictInfo))
-		return false;
-
-	/* Pseudoconstants are not really interesting here. */
-	if (rinfo->pseudoconstant)
-		return false;
-
-	/* clauses referencing multiple varnos are incompatible */
-	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
-		return false;
-
-	return mcv_is_compatible_clause_internal((Node *)rinfo->clause,
-											 relid, attnums);
-}
-
-#define UPDATE_RESULT(m,r,isor) \
-	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
-
-/*
  * mcv_update_match_bitmap
  *	Evaluate clauses using the MCV list, and update the match bitmap.
  *
@@ -1694,97 +1620,28 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	return nmatches;
 }
 
-
+/*
+ * mcv_clauselist_selectivity
+ *		Return the estimated selectivity of the given clauses using MCV list
+ *		statistics, or 1.0 if no useful MCV list statistic exists.
+ */
 Selectivity
-mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
+mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
+						   List *clauses, int varRelid,
 						   JoinType jointype, SpecialJoinInfo *sjinfo,
-						   RelOptInfo *rel, Bitmapset **estimatedclauses)
+						   RelOptInfo *rel,
+						   bool *fullmatch, Selectivity *lowsel)
 {
 	int			i;
-	ListCell   *l;
-	Bitmapset  *clauses_attnums = NULL;
-	Bitmapset **list_attnums;
-	int			listidx;
-	StatisticExtInfo *stat;
 	MCVList	   *mcv;
-	List	   *mcv_clauses;
+	Selectivity	s;
 
 	/* match/mismatch bitmap for each MCV item */
 	char	   *matches = NULL;
-	bool		fullmatch;
-	Selectivity lowsel;
 	int			nmatches = 0;
-	Selectivity	s;
-
-	/* check if there's any stats that might be useful for us. */
-	if (!has_stats_of_kind(rel->statlist, STATS_EXT_MCV))
-		return 1.0;
-
-	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
-										 list_length(clauses));
-
-	/*
-	 * Pre-process the clauses list to extract the attnums seen in each item.
-	 * We need to determine if there's any clauses which will be useful for
-	 * dependency selectivity estimations. Along the way we'll record all of
-	 * the attnums for each clause in a list which we'll reference later so we
-	 * don't need to repeat the same work again. We'll also keep track of all
-	 * attnums seen.
-	 *
-	 * FIXME Should skip already estimated clauses (using the estimatedclauses
-	 * bitmap).
-	 */
-	listidx = 0;
-	foreach(l, clauses)
-	{
-		Node	   *clause = (Node *) lfirst(l);
-		Bitmapset  *attnums = NULL;
-
-		if (mcv_is_compatible_clause(clause, rel->relid, &attnums))
-		{
-			list_attnums[listidx] = attnums;
-			clauses_attnums = bms_add_members(clauses_attnums, attnums);
-		}
-		else
-			list_attnums[listidx] = NULL;
-
-		listidx++;
-	}
-
-	/* We need at least two attributes for MCV lists. */
-	if (bms_num_members(clauses_attnums) < 2)
-		return 1.0;
-
-	/* find the best suited statistics object for these attnums */
-	stat = choose_best_statistics(rel->statlist, clauses_attnums,
-								  STATS_EXT_MCV);
-
-	/* if no matching stats could be found then we've nothing to do */
-	if (!stat)
-		return 1.0;
 
 	/* load the MCV list stored in the statistics object */
 	mcv = statext_mcv_load(stat->statOid);
-
-	/* now filter the clauses to be estimated using the selected MCV */
-	mcv_clauses = NIL;
-
-	listidx = 0;
-	foreach (l, clauses)
-	{
-		/*
-		 * If the clause is compatible with the selected MCV statistics,
-		 * mark it as estimated and add it to the MCV list.
-		 */
-		if ((list_attnums[listidx] != NULL) &&
-			(bms_is_subset(list_attnums[listidx], stat->keys)))
-		{
-			mcv_clauses = lappend(mcv_clauses, (Node *)lfirst(l));
-			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
-		}
-
-		listidx++;
-	}
 
 	/* by default all the MCV items match the clauses fully */
 	matches = palloc0(sizeof(char) * mcv->nitems);
@@ -1796,7 +1653,7 @@ mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	nmatches = mcv_update_match_bitmap(root, clauses,
 									   stat->keys, mcv,
 									   nmatches, matches,
-									   &lowsel, &fullmatch, false);
+									   lowsel, fullmatch, false);
 
 	/* sum frequencies for all the matching MCV items */
 	for (i = 0; i < mcv->nitems; i++)

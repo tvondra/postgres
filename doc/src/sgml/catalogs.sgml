@@ -6470,6 +6470,16 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</>:<replaceable>&lt;salt&gt;<
       </entry>
      </row>
 
+     <row>
+      <entry><structfield>stxmcv</structfield></entry>
+      <entry><type>pg_mcv_list</type></entry>
+      <entry></entry>
+      <entry>
+       MCV (most-common values) list statistics, serialized as
+       <structname>pg_mcv_list</> type.
+      </entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>

@@ -125,6 +125,16 @@ clauselist_selectivity(PlannerInfo *root,
 	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
 	{
 		/*
+		 * Perform selectivity estimations on any clauses applicable by
+		 * mcv_clauselist_selectivity.  'estimatedclauses' will be filled with
+		 * the 0-based list positions of clauses used that way, so that we can
+		 * ignore them below.
+		 */
+		s1 *= mcv_clauselist_selectivity(root, clauses, varRelid,
+										 jointype, sjinfo, rel,
+										 &estimatedclauses);
+
+		/*
 		 * Perform selectivity estimations on any clauses found applicable by
 		 * dependencies_clauselist_selectivity.  'estimatedclauses' will be
 		 * filled with the 0-based list positions of clauses used that way, so

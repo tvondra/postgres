@@ -585,6 +585,164 @@ EXPLAIN (ANALYZE, TIMING OFF) SELECT COUNT(*) FROM t GROUP BY a, b;
    </para>
 
   </sect2>
+
+  <sect2 id="mcv-lists">
+   <title>MCV lists</title>
+
+   <para>
+    As explained in the previous section, functional dependencies are very
+    cheap and efficient type of statistics, but it has limitations due to the
+    global nature (only tracking column-level dependencies, not between values
+    stored in the columns).
+   </para>
+
+   <para>
+    This section introduces multivariate most-common values (<acronym>MCV</>)
+    lists, a direct generalization of the statistics introduced in
+    <xref linkend="row-estimation-examples">, that is not subject to this
+    limitation. It is however more expensive, both in terms of storage and
+    planning time.
+   </para>
+
+   <para>
+    Let's look at the example query from the previous section again, creating
+    a multivariate <acronym>MCV</> list on the columns (after dropping the
+    functional dependencies, to make sure the planner uses the newly created
+    <acronym>MCV</> list when computing the estimates).
+
+<programlisting>
+DROP STATISTICS s1;
+CREATE STATISTICS s2 ON t (a,b) WITH (mcv);
+ANALYZE t;
+EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
+                                           QUERY PLAN
+-------------------------------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=100 width=8) (actual time=0.036..3.011 rows=100 loops=1)
+   Filter: ((a = 1) AND (b = 1))
+   Rows Removed by Filter: 9900
+ Planning time: 0.188 ms
+ Execution time: 3.229 ms
+(5 rows)
+</programlisting>
+
+    The estimate is as accurate as with the functional dependencies, mostly
+    thanks to the table being a fairly small and having a simple distribution
+    with low number of distinct values. Before looking at the second query,
+    which was not handled by functional dependencies this well, let's inspect
+    the <acronym>MCV</> list a bit.
+   </para>
+
+   <para>
+    First, let's list statistics defined on a table using <command>\d</>
+    in <application>psql</>:
+
+<programlisting>
+\d t
+       Table "public.t"
+ Column |  Type   | Modifiers
+--------+---------+-----------
+ a      | integer |
+ b      | integer |
+Statistics:
+    "public.s2" (mcv) ON (a, b)
+</programlisting>
+
+   </para>
+
+   <para>
+    To inspect details of the <acronym>MCV</> statistics, we can look into the
+    <structname>pg_stats_ext</structname> view
+
+<programlisting>
+SELECT tablename, staname, attnums, mcvbytes, mcvinfo
+  FROM pg_stats_ext WHERE staname = 's2';
+ tablename | staname | attnums | mcvbytes |  mcvinfo
+-----------+---------+---------+----------+------------
+ t         | s2      | 1 2     |     2048 | nitems=100
+(1 row)
+</programlisting>
+
+    According to this, the statistics has 2kB when serialized into
+    a <literal>bytea</> value, and <command>ANALYZE</> found 100 distinct
+    combinations of values in the two columns.
+   </para>
+
+   <para>
+    Inspecting the contents of the MCV list is possible using
+    <function>pg_mcv_list_items</> function.
+
+<programlisting>
+SELECT * FROM pg_mcv_list_items((SELECT oid FROM pg_statistic_ext WHERE staname = 's2'));
+ index | values  | nulls | frequency
+-------+---------+-------+-----------
+     0 | {0,0}   | {f,f} |      0.01
+     1 | {1,1}   | {f,f} |      0.01
+     2 | {2,2}   | {f,f} |      0.01
+...
+    49 | {49,49} | {f,f} |      0.01
+    50 | {50,0}  | {f,f} |      0.01
+...
+    97 | {97,47} | {f,f} |      0.01
+    98 | {98,48} | {f,f} |      0.01
+    99 | {99,49} | {f,f} |      0.01
+(100 rows)
+</programlisting>
+
+    Which confirms there are 100 distinct combinations of values in the two
+    columns, and all of them are equally likely (1% frequency for each).
+    Had there been any null values in either of the columns, this would be
+    identified in the <structfield>nulls</> column.
+   </para>
+
+   <para>
+    When estimating the selectivity, the planner applies all the conditions
+    on items in the <acronym>MCV</> list, and them sums the frequencies
+    of the matching ones. See <function>clauselist_mv_selectivity_mcvlist</>
+    in <filename>clausesel.c</> for details.
+   </para>
+
+   <para>
+    Compared to functional dependencies, <acronym>MCV</> lists have two major
+    advantages. Firstly, the list stores actual values, making it possible to
+    detect "incompatible" combinations.
+
+<programlisting>
+EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 10;
+                                         QUERY PLAN
+---------------------------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=1 width=8) (actual time=2.823..2.823 rows=0 loops=1)
+   Filter: ((a = 1) AND (b = 10))
+   Rows Removed by Filter: 10000
+ Planning time: 0.268 ms
+ Execution time: 2.866 ms
+(5 rows)
+</programlisting>
+
+    Secondly, <acronym>MCV</> also handle a wide range of clause types, not
+    just equality clauses like functional dependencies. See for example the
+    example range query, presented earlier:
+
+<programlisting>
+EXPLAIN ANALYZE SELECT * FROM t WHERE a <= 49 AND b > 49;
+                                         QUERY PLAN
+---------------------------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=1 width=8) (actual time=3.349..3.349 rows=0 loops=1)
+   Filter: ((a <= 49) AND (b > 49))
+   Rows Removed by Filter: 10000
+ Planning time: 0.163 ms
+ Execution time: 3.389 ms
+(5 rows)
+</programlisting>
+
+   </para>
+
+   <para>
+    For additional information about multivariate MCV lists, see
+    <filename>src/backend/statistics/README.mcv</>.
+   </para>
+
+  </sect2>
+
  </sect1>
 
  <sect1 id="planner-stats-security">

@@ -53,7 +53,7 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcvlist, VacAttrStats **stats);
+			  MCVList *mcvlist, MVHistogram *histogram, VacAttrStats **stats);
 
 
 /*
@@ -86,6 +86,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
+		MVHistogram *histogram = NULL;
 		MCVList	   *mcv = NULL;
 		VacAttrStats **stats;
 		ListCell   *lc2;
@@ -125,10 +126,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 														  stat->columns, stats);
 			else if (t == STATS_EXT_MCV)
 				mcv = statext_mcv_build(numrows, rows, stat->columns, stats);
+			else if (t == STATS_EXT_HISTOGRAM)
+				histogram = statext_histogram_build(numrows, rows, stat->columns,
+										stats, numrows);
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv,
+					  histogram, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -346,7 +351,7 @@ find_ext_attnums(Oid mvoid, Oid *relid)
 static void
 statext_store(Relation pg_stext, Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, VacAttrStats **stats)
+			  MCVList *mcv, MVHistogram *histogram, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -385,10 +390,19 @@ statext_store(Relation pg_stext, Oid statOid,
 		values[Anum_pg_statistic_ext_stxmcv - 1] = PointerGetDatum(data);
 	}
 
+	if (histogram != NULL)
+	{
+		bytea	   *data = statext_histogram_serialize(mcv, stats);
+
+		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_stxndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxdependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	/* there should already be a pg_statistic_ext tuple */
 	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
@@ -501,6 +515,19 @@ compare_scalars_simple(const void *a, const void *b, void *arg)
 	return compare_datums_simple(*(Datum *) a,
 								 *(Datum *) b,
 								 (SortSupport) arg);
+}
+
+/*
+ * qsort_arg comparator for sorting data when partitioning a MV bucket
+ */
+int
+compare_scalars_partition(const void *a, const void *b, void *arg)
+{
+	Datum		da = ((ScalarItem *) a)->value;
+	Datum		db = ((ScalarItem *) b)->value;
+	SortSupport ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da, false, db, false, ssup);
 }
 
 int

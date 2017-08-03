@@ -1333,6 +1333,18 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			stainfos = lcons(info, stainfos);
 		}
 
+		if (statext_is_kind_built(htup, STATS_EXT_HISTOGRAM))
+		{
+			StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+			info->statOid = statOid;
+			info->rel = rel;
+			info->kind = STATS_EXT_HISTOGRAM;
+			info->keys = bms_copy(keys);
+
+			stainfos = lcons(info, stainfos);
+		}
+
 		ReleaseSysCache(htup);
 		bms_free(keys);
 	}

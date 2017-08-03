@@ -72,6 +72,13 @@ extern MCVList *statext_mcv_build(int numrows, HeapTuple *rows,
 extern bytea *statext_mcv_serialize(MCVList *mcv, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 
+extern MVHistogram *statext_histogram_build(int numrows, HeapTuple *rows,
+					Bitmapset *attrs, VacAttrStats **stats,
+					int numrows_total);
+extern bytea *statext_histogram_serialize(MVHistogram *histogram,
+					VacAttrStats **stats);
+extern MVSerializedHistogram *statext_histogram_deserialize(bytea *data);
+
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
 						 Oid oper);
@@ -82,6 +89,7 @@ extern int multi_sort_compare_dims(int start, int end, const SortItem *a,
 						const SortItem *b, MultiSortSupport mss);
 extern int compare_scalars_simple(const void *a, const void *b, void *arg);
 extern int compare_datums_simple(Datum a, Datum b, SortSupport ssup);
+extern int compare_scalars_partition(const void *a, const void *b, void *arg);
 
 extern void *bsearch_arg(const void *key, const void *base,
 			size_t nmemb, size_t size,

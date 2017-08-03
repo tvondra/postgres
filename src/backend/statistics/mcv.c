@@ -274,6 +274,7 @@ build_mss(VacAttrStats **stats, Bitmapset *attrs)
 				 colstat->attrtypid);
 
 		multi_sort_add_dimension(mss, i, type->lt_opr);
+		i++;
 	}
 
 	return mss;
@@ -1745,7 +1746,7 @@ mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 		if (mcv_is_compatible_clause(clause, rel->relid, &attnums))
 		{
 			list_attnums[listidx] = attnums;
-			clauses_attnums = bms_join(clauses_attnums, attnums);
+			clauses_attnums = bms_add_members(clauses_attnums, attnums);
 		}
 		else
 			list_attnums[listidx] = NULL;
@@ -1778,7 +1779,7 @@ mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 		 * If the clause is compatible with the selected MCV statistics,
 		 * mark it as estimated and add it to the MCV list.
 		 */
-		if ((list_attnums[listidx] == NULL) &&
+		if ((list_attnums[listidx] != NULL) &&
 			(bms_is_subset(list_attnums[listidx], stat->keys)))
 		{
 			mcv_clauses = lappend(mcv_clauses, (Node *)lfirst(l));
@@ -1787,8 +1788,6 @@ mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 
 		listidx++;
 	}
-
-	/**/
 
 	/* by default all the MCV items match the clauses fully */
 	matches = palloc0(sizeof(char) * mcv->nitems);

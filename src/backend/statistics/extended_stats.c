@@ -53,7 +53,7 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  VacAttrStats **stats);
+			  MCVList *mcvlist, VacAttrStats **stats);
 
 
 /*
@@ -86,6 +86,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
+		MCVList	   *mcv = NULL;
 		VacAttrStats **stats;
 		ListCell   *lc2;
 
@@ -122,10 +123,12 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
 														  stat->columns, stats);
+			else if (t == STATS_EXT_MCV)
+				mcv = statext_mcv_build(numrows, rows, stat->columns, stats);
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -151,6 +154,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 
 		case STATS_EXT_DEPENDENCIES:
 			attnum = Anum_pg_statistic_ext_stxdependencies;
+			break;
+
+		case STATS_EXT_MCV:
+			attnum = Anum_pg_statistic_ext_stxmcv;
 			break;
 
 		default:
@@ -217,7 +224,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
-				   (enabled[i] == STATS_EXT_DEPENDENCIES));
+				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
+				   (enabled[i] == STATS_EXT_MCV));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -286,13 +294,59 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 }
 
 /*
+ * Find attnums of MV stats using the mvoid.
+ */
+int2vector *
+find_ext_attnums(Oid mvoid, Oid *relid)
+{
+	ArrayType  *arr;
+	Datum       adatum;
+	bool        isnull;
+	HeapTuple   htup;
+	int2vector *keys;
+
+	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
+	htup = SearchSysCache1(STATEXTOID,
+						   ObjectIdGetDatum(mvoid));
+
+	/* XXX syscache contains OIDs of deleted stats (not invalidated) */
+	if (!HeapTupleIsValid(htup))
+		return NULL;
+
+	/* starelid */
+	adatum = SysCacheGetAttr(STATEXTOID, htup,
+							 Anum_pg_statistic_ext_stxrelid, &isnull);
+	Assert(!isnull);
+
+	*relid = DatumGetObjectId(adatum);
+
+	/* stakeys */
+	adatum = SysCacheGetAttr(STATEXTOID, htup,
+							 Anum_pg_statistic_ext_stxkeys, &isnull);
+	Assert(!isnull);
+
+	arr = DatumGetArrayTypeP(adatum);
+
+	keys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+						   ARR_DIMS(arr)[0]);
+	ReleaseSysCache(htup);
+
+	/*
+	 * TODO maybe save the list into relcache, as in RelationGetIndexList
+	 * (which was used as an inspiration of this one)?.
+	 */
+
+	return keys;
+}
+
+/*
  * statext_store
  *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
  */
 static void
 statext_store(Relation pg_stext, Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  VacAttrStats **stats)
+			  MCVList *mcv, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -323,9 +377,18 @@ statext_store(Relation pg_stext, Oid statOid,
 		values[Anum_pg_statistic_ext_stxdependencies - 1] = PointerGetDatum(data);
 	}
 
+	if (mcv != NULL)
+	{
+		bytea	   *data = statext_mcv_serialize(mcv, stats);
+
+		nulls[Anum_pg_statistic_ext_stxmcv - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_stxmcv - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_stxndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxdependencies - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
 
 	/* there should already be a pg_statistic_ext tuple */
 	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
@@ -432,6 +495,137 @@ multi_sort_compare_dims(int start, int end,
 	return 0;
 }
 
+int
+compare_scalars_simple(const void *a, const void *b, void *arg)
+{
+	return compare_datums_simple(*(Datum *) a,
+								 *(Datum *) b,
+								 (SortSupport) arg);
+}
+
+int
+compare_datums_simple(Datum a, Datum b, SortSupport ssup)
+{
+	return ApplySortComparator(a, false, b, false, ssup);
+}
+
+/* simple counterpart to qsort_arg */
+void *
+bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
+			int (*compar) (const void *, const void *, void *),
+			void *arg)
+{
+	size_t		l,
+				u,
+				idx;
+	const void *p;
+	int			comparison;
+
+	l = 0;
+	u = nmemb;
+	while (l < u)
+	{
+		idx = (l + u) / 2;
+		p = (void *) (((const char *) base) + (idx * size));
+		comparison = (*compar) (key, p, arg);
+
+		if (comparison < 0)
+			u = idx;
+		else if (comparison > 0)
+			l = idx + 1;
+		else
+			return (void *) p;
+	}
+
+	return NULL;
+}
+
+int *
+build_attnums(Bitmapset *attrs)
+{
+	int		i,
+			j;
+	int		numattrs = bms_num_members(attrs);
+	int	   *attnums;
+
+	/* build attnums from the bitmapset */
+	attnums = (int*)palloc(sizeof(int) * numattrs);
+	i = 0;
+	j = -1;
+	while ((j = bms_next_member(attrs, j)) >= 0)
+		attnums[i++] = j;
+
+	return attnums;
+}
+
+/* build_sorted_items
+ * 	build sorted array of SortItem with values from rows
+ *
+ * XXX All the memory is allocated in a single chunk, so that the caller
+ * can simply pfree the return value to release all of it.
+ */
+SortItem *
+build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
+				   MultiSortSupport mss, int numattrs, int *attnums)
+{
+	int			i,
+				j,
+				len;
+	int			nvalues = numrows * numattrs;
+
+	/*
+	 * We won't allocate the arrays for each item independenly, but in one
+	 * large chunk and then just set the pointers. This allows the caller
+	 * to simply pfree the return value to release all the memory.
+	 */
+	SortItem   *items;
+	Datum	   *values;
+	bool	   *isnull;
+	char	   *ptr;
+
+	/* Compute the total amount of memory we need (both items and values). */
+	len = numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
+
+	/* Allocate the memory and split it into the pieces. */
+	ptr = palloc0(len);
+
+	/* items to sort */
+	items = (SortItem *) ptr;
+	ptr += numrows * sizeof(SortItem);
+
+	/* values and null flags */
+	values = (Datum *) ptr;
+	ptr += nvalues * sizeof(Datum);
+
+	isnull = (bool *) ptr;
+	ptr += nvalues * sizeof(bool);
+
+	/* make sure we consumed the whole buffer exactly */
+	Assert((ptr - (char *) items) == len);
+
+	/* fix the pointers to Datum and bool arrays */
+	for (i = 0; i < numrows; i++)
+	{
+		items[i].values = &values[i * numattrs];
+		items[i].isnull = &isnull[i * numattrs];
+
+		/* load the values/null flags from sample rows */
+		for (j = 0; j < numattrs; j++)
+		{
+			items[i].values[j] = heap_getattr(rows[i],
+											  attnums[j], /* attnum */
+											  tdesc,
+											  &items[i].isnull[j]);		/* isnull */
+		}
+	}
+
+	/* do the sort, using the multi-sort */
+	qsort_arg((void *) items, numrows, sizeof(SortItem),
+			  multi_sort_compare, mss);
+
+	return items;
+}
+
 /*
  * has_stats_of_kind
  *		Check whether the list contains statistic of a given kind
@@ -511,4 +705,17 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 	}
 
 	return best_match;
+}
+
+int
+bms_member_index(Bitmapset *keys, AttrNumber varattno)
+{
+	int	i, j;
+
+	i = -1;
+	j = 0;
+	while (((i = bms_next_member(keys, i)) >= 0) && (i < varattno))
+		j += 1;
+
+	return j;
 }

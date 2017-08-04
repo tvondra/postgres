@@ -58,7 +58,7 @@ ALTER TABLE ab1 DROP COLUMN a;
  b      | integer |           |          | 
  c      | integer |           |          | 
 Statistics objects:
-    "public"."ab1_b_c_stats" (ndistinct, dependencies, mcv) ON b, c FROM ab1
+    "public"."ab1_b_c_stats" (ndistinct, dependencies, mcv, histogram) ON b, c FROM ab1
 
 -- Ensure statistics are dropped when table is
 SELECT stxname FROM pg_statistic_ext WHERE stxname LIKE 'ab1%';
@@ -204,9 +204,9 @@ CREATE STATISTICS s10 ON a, b, c FROM ndistinct;
 ANALYZE ndistinct;
 SELECT stxkind, stxndistinct
   FROM pg_statistic_ext WHERE stxrelid = 'ndistinct'::regclass;
- stxkind |                      stxndistinct                       
----------+---------------------------------------------------------
- {d,f,m} | {"3, 4": 301, "3, 6": 301, "4, 6": 301, "3, 4, 6": 301}
+  stxkind  |                      stxndistinct                       
+-----------+---------------------------------------------------------
+ {d,f,m,h} | {"3, 4": 301, "3, 6": 301, "4, 6": 301, "3, 4, 6": 301}
 (1 row)
 
 -- Hash Aggregate, thanks to estimates improved by the statistic
@@ -270,9 +270,9 @@ INSERT INTO ndistinct (a, b, c, filler1)
 ANALYZE ndistinct;
 SELECT stxkind, stxndistinct
   FROM pg_statistic_ext WHERE stxrelid = 'ndistinct'::regclass;
- stxkind |                        stxndistinct                         
----------+-------------------------------------------------------------
- {d,f,m} | {"3, 4": 2550, "3, 6": 800, "4, 6": 1632, "3, 4, 6": 10000}
+  stxkind  |                        stxndistinct                         
+-----------+-------------------------------------------------------------
+ {d,f,m,h} | {"3, 4": 2550, "3, 6": 800, "4, 6": 1632, "3, 4, 6": 10000}
 (1 row)
 
 -- plans using Group Aggregate, thanks to using correct esimates

@@ -2420,6 +2420,7 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 6), "t") == 0)
 					{
 						appendPQExpBuffer(&buf, "%sdependencies", gotone ? ", " : "");
+						gotone = true;
 					}
 
 					if (strcmp(PQgetvalue(result, i, 7), "t") == 0)

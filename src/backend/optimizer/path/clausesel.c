@@ -126,10 +126,14 @@ clauselist_selectivity(PlannerInfo *root,
 	{
 		/*
 		 * Perform selectivity estimations on any clauses applicable by
-		 * mcv_clauselist_selectivity.  'estimatedclauses' will be filled with
-		 * the 0-based list positions of clauses used that way, so that we can
-		 * ignore them below.
+		 * histograms and MCV list, and finally by functional dependencies.
+		 * 'estimatedclauses' will be filled with the 0-based list positions
+		 * of clauses used that way, so that we can ignore them below.
 		 */
+		s1 *= histogram_clauselist_selectivity(root, clauses, varRelid,
+											   jointype, sjinfo, rel,
+											   &estimatedclauses);
+
 		s1 *= mcv_clauselist_selectivity(root, clauses, varRelid,
 										 jointype, sjinfo, rel,
 										 &estimatedclauses);

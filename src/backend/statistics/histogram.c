@@ -19,10 +19,12 @@
 #include "catalog/pg_statistic_ext.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "optimizer/clauses.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -2163,4 +2165,753 @@ build_attnums(Bitmapset *attrs)
 	Assert(idx == bms_num_members(attrs));
 
 	return attnums;
+}
+
+
+/*
+ * selectivity estimation
+ */
+
+/* cached result of bucket boundary comparison for a single dimension */
+
+#define HIST_CACHE_NOT_FOUND		0x00
+#define HIST_CACHE_FALSE			0x01
+#define HIST_CACHE_TRUE				0x03
+#define HIST_CACHE_MASK				0x02
+
+static char
+bucket_contains_value(FmgrInfo ltproc, Datum constvalue,
+					  Datum min_value, Datum max_value,
+					  int min_index, int max_index,
+					  bool min_include, bool max_include,
+					  char *callcache)
+{
+	bool		a,
+				b;
+
+	char		min_cached = callcache[min_index];
+	char		max_cached = callcache[max_index];
+
+	/*
+	 * First some quick checks on equality - if any of the boundaries equals,
+	 * we have a partial match (so no need to call the comparator).
+	 */
+	if (((min_value == constvalue) && (min_include)) ||
+		((max_value == constvalue) && (max_include)))
+		return STATS_MATCH_PARTIAL;
+
+	/* Keep the values 0/1 because of the XOR at the end. */
+	a = ((min_cached & HIST_CACHE_MASK) >> 1);
+	b = ((max_cached & HIST_CACHE_MASK) >> 1);
+
+	/*
+	 * If result for the bucket lower bound not in cache, evaluate the
+	 * function and store the result in the cache.
+	 */
+	if (!min_cached)
+	{
+		a = DatumGetBool(FunctionCall2Coll(&ltproc,
+										   DEFAULT_COLLATION_OID,
+										   constvalue, min_value));
+		/* remember the result */
+		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	/* And do the same for the upper bound. */
+	if (!max_cached)
+	{
+		b = DatumGetBool(FunctionCall2Coll(&ltproc,
+										   DEFAULT_COLLATION_OID,
+										   constvalue, max_value));
+		/* remember the result */
+		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	return (a ^ b) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
+}
+
+static char
+bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
+							 Datum min_value, Datum max_value,
+							 int min_index, int max_index,
+							 bool min_include, bool max_include,
+							 char *callcache, bool isgt)
+{
+	char		min_cached = callcache[min_index];
+	char		max_cached = callcache[max_index];
+
+	/* Keep the values 0/1 because of the XOR at the end. */
+	bool		a = ((min_cached & HIST_CACHE_MASK) >> 1);
+	bool		b = ((max_cached & HIST_CACHE_MASK) >> 1);
+
+	if (!min_cached)
+	{
+		a = DatumGetBool(FunctionCall2Coll(&opproc,
+										   DEFAULT_COLLATION_OID,
+										   min_value,
+										   constvalue));
+		/* remember the result */
+		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	if (!max_cached)
+	{
+		b = DatumGetBool(FunctionCall2Coll(&opproc,
+										   DEFAULT_COLLATION_OID,
+										   max_value,
+										   constvalue));
+		/* remember the result */
+		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	}
+
+	/*
+	 * Now, we need to combine both results into the final answer, and we need
+	 * to be careful about the 'isgt' variable which kinda inverts the
+	 * meaning.
+	 *
+	 * First, we handle the case when each boundary returns different results.
+	 * In that case the outcome can only be 'partial' match.
+	 */
+	if (a != b)
+		return STATS_MATCH_PARTIAL;
+
+	/*
+	 * When the results are the same, then it depends on the 'isgt' value.
+	 * There are four options:
+	 *
+	 * isgt=false a=b=true	=> full match isgt=false a=b=false => empty
+	 * isgt=true  a=b=true	=> empty isgt=true	a=b=false => full match
+	 *
+	 * We'll cheat a bit, because we know that (a=b) so we'll use just one of
+	 * them.
+	 */
+	if (isgt)
+		return (!a) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
+	else
+		return (a) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
+}
+
+/*
+ * histogram_is_compatible_clause
+ *		Determines if the clause is compatible with a histogram
+ *
+ * Only OpExprs with two arguments using an equality operator are supported.
+ * When returning True attnum is set to the attribute number of the Var within
+ * the supported clause.
+ *
+ * Currently we only support Var = Const, or Const = Var. It may be possible
+ * to expand on this later.
+ */
+static bool
+histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
+{
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
+
+	if (!IsA(rinfo, RestrictInfo))
+		return false;
+
+	/* Pseudoconstants are not really interesting here. */
+	if (rinfo->pseudoconstant)
+		return false;
+
+	/* clauses referencing multiple varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return false;
+
+	if (or_clause((Node *)rinfo->clause) ||
+		and_clause((Node *)rinfo->clause) ||
+		not_clause((Node *)rinfo->clause))
+	{
+		/*
+		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
+		 *
+		 * TODO: We might support mixed case, where some of the clauses are
+		 * supported and some are not, and treat all supported subclauses as a
+		 * single clause, compute it's selectivity using mv stats, and compute
+		 * the total selectivity using the current algorithm.
+		 *
+		 * TODO: For RestrictInfo above an OR-clause, we might use the
+		 * orclause with nested RestrictInfo - we won't have to call
+		 * pull_varnos() for each clause, saving time.
+		 */
+		BoolExpr   *expr = (BoolExpr *) rinfo->clause;
+		ListCell   *lc;
+		Bitmapset  *clause_attnums = NULL;
+
+		foreach(lc, expr->args)
+		{
+			/*
+			 * Had we found incompatible clause in the arguments, treat the
+			 * whole clause as incompatible.
+			 */
+			if (!histogram_is_compatible_clause((Node *) lfirst(lc), relid,
+												&clause_attnums))
+				return false;
+		}
+
+		/*
+		 * Otherwise the clause is compatible, and we need to merge the
+		 * attnums into the main bitmapset.
+		 */
+		*attnums = bms_join(*attnums, clause_attnums);
+
+		return true;
+	}
+
+	if (IsA((Node *)rinfo->clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) rinfo->clause;
+
+		/*
+		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
+		 * could use examine_variable to fix this?
+		 */
+		if (!IsA(nt->arg, Var))
+			return false;
+
+		return histogram_is_compatible_clause((Node *) (nt->arg), relid, attnums);
+	}
+
+	if (is_opclause((Node *)rinfo->clause))
+	{
+		OpExpr	   *expr = (OpExpr *) rinfo->clause;
+		Var		   *var;
+		bool		varonleft = true;
+		bool		ok;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return false;
+
+		/* see if it actually has the right */
+		ok = (NumRelids((Node *) expr) == 1) &&
+			(is_pseudo_constant_clause(lsecond(expr->args)) ||
+			 (varonleft = false,
+			  is_pseudo_constant_clause(linitial(expr->args))));
+
+		/* unsupported structure (two variables or so) */
+		if (!ok)
+			return false;
+
+		/*
+		 * If it's not one of the supported operators ("=", "<", ">", etc.),
+		 * just ignore the clause, as it's not compatible with MCV lists.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		if ((get_oprrest(expr->opno) != F_EQSEL) &&
+			(get_oprrest(expr->opno) != F_SCALARLTSEL) &&
+			(get_oprrest(expr->opno) != F_SCALARGTSEL))
+			return false;
+
+		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+		/* We only support plain Vars for now */
+		if (!IsA(var, Var))
+			return false;
+
+		/* Ensure var is from the correct relation */
+		if (var->varno != relid)
+			return false;
+
+		/* we also better ensure the Var is from the current level */
+		if (var->varlevelsup > 0)
+			return false;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return false;
+
+		*attnums = bms_add_member(*attnums, var->varattno);
+
+		return true;
+	}
+
+	return false;
+}
+
+static int
+mv_get_index(AttrNumber varattno, Bitmapset *keys)
+{
+	int	i, j;
+
+	i = -1;
+	j = 0;
+	while (((i = bms_next_member(keys, i)) >= 0) && (i < varattno))
+		j += 1;
+
+	return j;
+}
+
+#define UPDATE_RESULT(m,r,isor) \
+	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
+
+/*
+ * Evaluate clauses using the histogram, and update the match bitmap.
+ *
+ * The bitmap may be already partially set, so this is really a way to
+ * combine results of several clause lists - either when computing
+ * conditional probability P(A|B) or a combination of AND/OR clauses.
+ *
+ * Note: This is not a simple bitmap in the sense that there are more
+ * than two possible values for each item - no match, partial
+ * match and full match. So we need 2 bits per item.
+ *
+ * TODO: This works with 'bitmap' where each item is represented as a
+ * char, which is slightly wasteful. Instead, we could use a bitmap
+ * with 2 bits per item, reducing the size to ~1/4. By using values
+ * 0, 1 and 3 (instead of 0, 1 and 2), the operations (merging etc.)
+ * might be performed just like for simple bitmap by using & and |,
+ * which might be faster than min/max.
+ */
+static int
+histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
+							  Bitmapset *stakeys,
+							  MVSerializedHistogram *histogram,
+							  int nmatches, char *matches,
+							  bool is_or)
+{
+	int			i;
+	ListCell   *l;
+
+	/*
+	 * Used for caching function calls, only once per deduplicated value.
+	 *
+	 * We know may have up to (2 * nbuckets) values per dimension. It's
+	 * probably overkill, but let's allocate that once for all clauses, to
+	 * minimize overhead.
+	 *
+	 * Also, we only need two bits per value, but this allocates byte per
+	 * value. Might be worth optimizing.
+	 *
+	 * 0x00 - not yet called 0x01 - called, result is 'false' 0x03 - called,
+	 * result is 'true'
+	 */
+	char	   *callcache = palloc(histogram->nbuckets);
+
+	Assert(histogram != NULL);
+	Assert(histogram->nbuckets > 0);
+	Assert(nmatches >= 0);
+	Assert(nmatches <= histogram->nbuckets);
+
+	Assert(clauses != NIL);
+	Assert(list_length(clauses) >= 1);
+
+	/* loop through the clauses and do the estimation */
+	foreach(l, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(l);
+
+		/* if it's a RestrictInfo, then extract the clause */
+		if (IsA(clause, RestrictInfo))
+			clause = (Node *) ((RestrictInfo *) clause)->clause;
+
+		/* it's either OpClause, or NullTest */
+		if (is_opclause(clause))
+		{
+			OpExpr	   *expr = (OpExpr *) clause;
+			bool		varonleft = true;
+			bool		ok;
+
+			FmgrInfo	opproc; /* operator */
+
+			fmgr_info(get_opcode(expr->opno), &opproc);
+
+			/* reset the cache (per clause) */
+			memset(callcache, 0, histogram->nbuckets);
+
+			ok = (NumRelids(clause) == 1) &&
+				(is_pseudo_constant_clause(lsecond(expr->args)) ||
+				 (varonleft = false,
+				  is_pseudo_constant_clause(linitial(expr->args))));
+
+			if (ok)
+			{
+				FmgrInfo	ltproc;
+				RegProcedure oprrest = get_oprrest(expr->opno);
+
+				Var		   *var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+				Const	   *cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
+				bool		isgt = (!varonleft);
+
+				TypeCacheEntry *typecache
+				= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
+
+				/* lookup dimension for the attribute */
+				int			idx = mv_get_index(var->varattno, stakeys);
+
+				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
+
+				/*
+				 * Check this for all buckets that still have "true" in the
+				 * bitmap
+				 *
+				 * We already know the clauses use suitable operators (because
+				 * that's how we filtered them).
+				 */
+				for (i = 0; i < histogram->nbuckets; i++)
+				{
+					char		res = STATS_MATCH_NONE;
+
+					MVSerializedBucket *bucket = histogram->buckets[i];
+
+					/* histogram boundaries */
+					Datum		minval,
+								maxval;
+					bool		mininclude,
+								maxinclude;
+					int			minidx,
+								maxidx;
+
+					/*
+					 * For AND-lists, we can also mark NULL buckets as 'no
+					 * match' (and then skip them). For OR-lists this is not
+					 * possible.
+					 */
+					if ((!is_or) && bucket->nullsonly[idx])
+						matches[i] = STATS_MATCH_NONE;
+
+					/*
+					 * Skip buckets that were already eliminated - this is
+					 * impotant considering how we update the info (we only
+					 * lower the match). We can't really do anything about the
+					 * MATCH_PARTIAL buckets.
+					 */
+					if ((!is_or) && (matches[i] == STATS_MATCH_NONE))
+						continue;
+					else if (is_or && (matches[i] == STATS_MATCH_FULL))
+						continue;
+
+					/* lookup the values and cache of function calls */
+					minidx = bucket->min[idx];
+					maxidx = bucket->max[idx];
+
+					minval = histogram->values[idx][bucket->min[idx]];
+					maxval = histogram->values[idx][bucket->max[idx]];
+
+					mininclude = bucket->min_inclusive[idx];
+					maxinclude = bucket->max_inclusive[idx];
+
+					/*
+					 * TODO Maybe it's possible to add here a similar
+					 * optimization as for the MCV lists:
+					 *
+					 * (nmatches == 0) && AND-list => all eliminated (FALSE)
+					 * (nmatches == N) && OR-list  => all eliminated (TRUE)
+					 *
+					 * But it's more complex because of the partial matches.
+					 */
+
+					/*
+					 * If it's not a "<" or ">" or "=" operator, just ignore
+					 * the clause. Otherwise note the relid and attnum for the
+					 * variable.
+					 *
+					 * TODO I'm really unsure the handling of 'isgt' flag
+					 * (that is, clauses with reverse order of
+					 * variable/constant) is correct. I wouldn't be surprised
+					 * if there was some mixup. Using the lt/gt operators
+					 * instead of messing with the opproc could make it
+					 * simpler. It would however be using a different operator
+					 * than the query, although it's not any shadier than
+					 * using the selectivity function as is done currently.
+					 */
+					switch (oprrest)
+					{
+						case F_SCALARLTSEL:		/* Var < Const */
+						case F_SCALARGTSEL:		/* Var > Const */
+
+							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
+															   minval, maxval,
+															   minidx, maxidx,
+													  mininclude, maxinclude,
+															callcache, isgt);
+							break;
+
+						case F_EQSEL:
+
+							/*
+							 * We only check whether the value is within the
+							 * bucket, using the lt operator, and we also
+							 * check for equality with the boundaries.
+							 */
+
+							res = bucket_contains_value(ltproc, cst->constvalue,
+														minval, maxval,
+														minidx, maxidx,
+													  mininclude, maxinclude,
+														callcache);
+							break;
+					}
+
+					UPDATE_RESULT(matches[i], res, is_or);
+
+				}
+			}
+		}
+		else if (IsA(clause, NullTest))
+		{
+			NullTest   *expr = (NullTest *) clause;
+			Var		   *var = (Var *) (expr->arg);
+
+			/* FIXME proper matching attribute to dimension */
+			int			idx = mv_get_index(var->varattno, stakeys);
+
+			/*
+			 * Walk through the buckets and evaluate the current clause. We
+			 * can skip items that were already ruled out, and terminate if
+			 * there are no remaining buckets that might possibly match.
+			 */
+			for (i = 0; i < histogram->nbuckets; i++)
+			{
+				MVSerializedBucket *bucket = histogram->buckets[i];
+
+				/*
+				 * Skip buckets that were already eliminated - this is
+				 * impotant considering how we update the info (we only lower
+				 * the match)
+				 */
+				if ((!is_or) && (matches[i] == STATS_MATCH_NONE))
+					continue;
+				else if (is_or && (matches[i] == STATS_MATCH_FULL))
+					continue;
+
+				/* if the clause mismatches the bucket, set it as MATCH_NONE */
+				if ((expr->nulltesttype == IS_NULL)
+					&& (!bucket->nullsonly[idx]))
+					UPDATE_RESULT(matches[i], STATS_MATCH_NONE, is_or);
+
+				else if ((expr->nulltesttype == IS_NOT_NULL) &&
+						 (bucket->nullsonly[idx]))
+					UPDATE_RESULT(matches[i], STATS_MATCH_NONE, is_or);
+			}
+		}
+		else if (or_clause(clause) || and_clause(clause))
+		{
+			/*
+			 * AND/OR clause, with all clauses compatible with the selected MV
+			 * stat
+			 */
+
+			int			i;
+			BoolExpr   *orclause = ((BoolExpr *) clause);
+			List	   *orclauses = orclause->args;
+
+			/* match/mismatch bitmap for each bucket */
+			int			or_nmatches = 0;
+			char	   *or_matches = NULL;
+
+			Assert(orclauses != NIL);
+			Assert(list_length(orclauses) >= 2);
+
+			/* number of matching buckets */
+			or_nmatches = histogram->nbuckets;
+
+			/* by default none of the buckets matches the clauses */
+			or_matches = palloc0(sizeof(char) * or_nmatches);
+
+			if (or_clause(clause))
+			{
+				/* OR clauses assume nothing matches, initially */
+				memset(or_matches, STATS_MATCH_NONE, sizeof(char) * or_nmatches);
+				or_nmatches = 0;
+			}
+			else
+			{
+				/* AND clauses assume nothing matches, initially */
+				memset(or_matches, STATS_MATCH_FULL, sizeof(char) * or_nmatches);
+			}
+
+			/* build the match bitmap for the OR-clauses */
+			or_nmatches = histogram_update_match_bitmap(root, orclauses,
+														stakeys, histogram,
+								 or_nmatches, or_matches, or_clause(clause));
+
+			/* merge the bitmap into the existing one */
+			for (i = 0; i < histogram->nbuckets; i++)
+			{
+				/*
+				 * Merge the result into the bitmap (Min for AND, Max for OR).
+				 *
+				 * FIXME this does not decrease the number of matches
+				 */
+				UPDATE_RESULT(matches[i], or_matches[i], is_or);
+			}
+
+			pfree(or_matches);
+
+		}
+		else
+			elog(ERROR, "unknown clause type: %d", clause->type);
+	}
+
+	/* free the call cache */
+	pfree(callcache);
+
+	return nmatches;
+}
+
+/*
+ * Estimate selectivity of clauses using a histogram.
+ *
+ * If there's no histogram for the stats, the function returns 0.0.
+ *
+ * The general idea of this method is similar to how MCV lists are
+ * processed, except that this introduces the concept of a partial
+ * match (MCV only works with full match / mismatch).
+ *
+ * The algorithm works like this:
+ *
+ *	 1) mark all buckets as 'full match'
+ *	 2) walk through all the clauses
+ *	 3) for a particular clause, walk through all the buckets
+ *	 4) skip buckets that are already 'no match'
+ *	 5) check clause for buckets that still match (at least partially)
+ *	 6) sum frequencies for buckets to get selectivity
+ *
+ * Unlike MCV lists, histograms have a concept of a partial match. In
+ * that case we use 1/2 the bucket, to minimize the average error. The
+ * MV histograms are usually less detailed than the per-column ones,
+ * meaning the sum is often quite high (thanks to combining a lot of
+ * "partially hit" buckets).
+ *
+ * Maybe we could use per-bucket information with number of distinct
+ * values it contains (for each dimension), and then use that to correct
+ * the estimate (so with 10 distinct values, we'd use 1/10 of the bucket
+ * frequency). We might also scale the value depending on the actual
+ * ndistinct estimate (not just the values observed in the sample).
+ *
+ * Another option would be to multiply the selectivities, i.e. if we get
+ * 'partial match' for a bucket for multiple conditions, we might use
+ * 0.5^k (where k is the number of conditions), instead of 0.5. This
+ * probably does not minimize the average error, though.
+ *
+ * TODO: This might use a similar shortcut to MCV lists - count buckets
+ * marked as partial/full match, and terminate once this drop to 0.
+ * Not sure if it's really worth it - for MCV lists a situation like
+ * this is not uncommon, but for histograms it's not that clear.
+ */
+Selectivity
+histogram_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
+								 JoinType jointype, SpecialJoinInfo *sjinfo,
+								 RelOptInfo *rel, Bitmapset **estimatedclauses)
+{
+	int			i;
+	ListCell   *l;
+	Bitmapset  *clauses_attnums = NULL;
+	Bitmapset **list_attnums;
+	int			listidx;
+	StatisticExtInfo *stat;
+	MVSerializedHistogram	   *histogram;
+	List	   *histogram_clauses;
+
+	/* match/mismatch bitmap for each MCV item */
+	char	   *matches = NULL;
+	int			nmatches = 0;
+	Selectivity s, u;
+
+	/* check if there's any stats that might be useful for us. */
+	if (!has_stats_of_kind(rel->statlist, STATS_EXT_HISTOGRAM))
+		return 1.0;
+
+	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
+										 list_length(clauses));
+
+	/*
+	 * Pre-process the clauses list to extract the attnums seen in each item.
+	 * We need to determine if there's any clauses which will be useful for
+	 * dependency selectivity estimations. Along the way we'll record all of
+	 * the attnums for each clause in a list which we'll reference later so we
+	 * don't need to repeat the same work again. We'll also keep track of all
+	 * attnums seen.
+	 *
+	 * FIXME Should skip already estimated clauses (using the estimatedclauses
+	 * bitmap).
+	 */
+	listidx = 0;
+	foreach(l, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(l);
+		Bitmapset  *attnums = NULL;
+
+		if (histogram_is_compatible_clause(clause, rel->relid, &attnums))
+		{
+			list_attnums[listidx] = attnums;
+			clauses_attnums = bms_add_members(clauses_attnums, attnums);
+		}
+		else
+			list_attnums[listidx] = NULL;
+
+		listidx++;
+	}
+
+	/* We need at least two attributes for histograms. */
+	if (bms_num_members(clauses_attnums) < 2)
+		return 1.0;
+
+	/* find the best suited statistics object for these attnums */
+	stat = choose_best_statistics(rel->statlist, clauses_attnums,
+								  STATS_EXT_HISTOGRAM);
+
+	/* if no matching stats could be found then we've nothing to do */
+	if (!stat)
+		return 1.0;
+
+	/* load the histogram stored in the statistics object */
+	histogram = statext_histogram_load(stat->statOid);
+
+	/* now filter the clauses to be estimated using the selected histogram */
+	histogram_clauses = NIL;
+
+	listidx = 0;
+	foreach (l, clauses)
+	{
+		/*
+		 * If the clause is compatible with the selected histogram, mark
+		 * it as estimated and add it to the histogram list.
+		 */
+		if ((list_attnums[listidx] != NULL) &&
+			(bms_is_subset(list_attnums[listidx], stat->keys)))
+		{
+			histogram_clauses = lappend(histogram_clauses, (Node *)lfirst(l));
+			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+		}
+
+		listidx++;
+	}
+
+	/* by default all the histogram buckets match the clauses fully */
+	matches = palloc0(sizeof(char) * histogram->nbuckets);
+	memset(matches, STATS_MATCH_FULL, sizeof(char) * histogram->nbuckets);
+
+	/* number of matching histogram buckets */
+	nmatches = histogram->nbuckets;
+
+	nmatches = histogram_update_match_bitmap(root, clauses, stat->keys,
+											 histogram, nmatches, matches,
+											 false);
+
+	/* now, walk through the buckets and sum the selectivities */
+	for (i = 0; i < histogram->nbuckets; i++)
+	{
+		/*
+		 * Find out what part of the data is covered by the histogram, so that
+		 * we can 'scale' the selectivity properly (e.g. when only 50% of the
+		 * sample got into the histogram, and the rest is in a histogram).
+		 *
+		 * TODO This might be handled by keeping a global "frequency" for the
+		 * whole histogram, which might save us some time spent accessing the
+		 * not-matching part of the histogram. Although it's likely in a
+		 * cache, so it's very fast.
+		 */
+		u += histogram->buckets[i]->ntuples;
+
+		if (matches[i] == STATS_MATCH_FULL)
+			s += histogram->buckets[i]->ntuples;
+		else if (matches[i] == STATS_MATCH_PARTIAL)
+			s += 0.5 * histogram->buckets[i]->ntuples;
+	}
+
+	return s * u;
 }

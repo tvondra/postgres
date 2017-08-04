@@ -230,6 +230,13 @@ extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
 									SpecialJoinInfo *sjinfo,
 									RelOptInfo *rel,
 									Bitmapset **estimatedclauses);
+extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
+									List *clauses,
+									int varRelid,
+									JoinType jointype,
+									SpecialJoinInfo *sjinfo,
+									RelOptInfo *rel,
+									Bitmapset **estimatedclauses);
 extern bool has_stats_of_kind(List *stats, char requiredkind);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
 					   Bitmapset *attnums, char requiredkind);

@@ -2427,6 +2427,7 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 7), "t") == 0)
 					{
 						appendPQExpBuffer(&buf, "%smcv", gotone ? ", " : "");
+						gotone = true;
 					}
 
 					if (strcmp(PQgetvalue(result, i, 8), "t") == 0)

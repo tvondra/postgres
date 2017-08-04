@@ -1545,7 +1545,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 		}
 
 		if (histogram_enabled)
-			appendStringInfo(&buf, "%shostogram", gotone ? ", " : "");
+			appendStringInfo(&buf, "%shistogram", gotone ? ", " : "");
 
 		appendStringInfoChar(&buf, ')');
 	}

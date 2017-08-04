@@ -418,8 +418,9 @@ RemoveStatisticsById(Oid statsOid)
  * values, this assumption could fail.  But that seems like a corner case
  * that doesn't justify zapping the stats in common cases.)
  *
- * For MCV lists that's not the case, as those statistics store the datums
- * internally. In this case we simply reset the statistics value to NULL.
+ * For MCV lists and histograms that's not the case, as those statistics
+ * store the datums internally. In those cases we simply reset those
+ * statistics to NULL.
  */
 void
 UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
@@ -456,9 +457,10 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 
 	/*
 	 * We can also leave the record as it is if there are no statistics
-	 * including the datum values, like for example MCV lists.
+	 * including the datum values, like for example MCV and histograms.
 	 */
-	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
+	if (statext_is_kind_built(oldtup, STATS_EXT_MCV) ||
+		statext_is_kind_built(oldtup, STATS_EXT_HISTOGRAM))
 		reset_stats = true;
 
 	/*
@@ -483,6 +485,12 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	{
 		replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
 		nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	}
+
+	if (statext_is_kind_built(oldtup, STATS_EXT_HISTOGRAM))
+	{
+		replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
+		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 	}
 
 	rel = heap_open(StatisticExtRelationId, RowExclusiveLock);

@@ -938,6 +938,9 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 * the attnums for each clause in a list which we'll reference later so we
 	 * don't need to repeat the same work again. We'll also keep track of all
 	 * attnums seen.
+	 *
+	 * We also skip clauses that we already estimated using different types of
+	 * statistics (we treat them as incompatible).
 	 */
 	listidx = 0;
 	foreach(l, clauses)
@@ -945,7 +948,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		Node	   *clause = (Node *) lfirst(l);
 		AttrNumber	attnum;
 
-		if (dependency_is_compatible_clause(clause, rel->relid, &attnum))
+		if ((dependency_is_compatible_clause(clause, rel->relid, &attnum)) &&
+			(!bms_is_member(listidx, *estimatedclauses)))
 		{
 			list_attnums[listidx] = attnum;
 			clauses_attnums = bms_add_member(clauses_attnums, attnum);
@@ -1015,8 +1019,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 			/*
 			 * Skip incompatible clauses, and ones we've already estimated on.
 			 */
-			if (list_attnums[listidx] == InvalidAttrNumber ||
-				bms_is_member(listidx, *estimatedclauses))
+			if (list_attnums[listidx] == InvalidAttrNumber)
 				continue;
 
 			/*

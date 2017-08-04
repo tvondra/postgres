@@ -249,6 +249,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	build_ndistinct = false;
 	build_dependencies = false;
 	build_mcv = false;
+	build_histogram = false;
 	foreach(cell, stmt->stat_types)
 	{
 		char	   *type = strVal((Value *) lfirst(cell));

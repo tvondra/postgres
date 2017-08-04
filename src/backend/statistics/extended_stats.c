@@ -165,6 +165,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_stxmcv;
 			break;
 
+		case STATS_EXT_HISTOGRAM:
+			attnum = Anum_pg_statistic_ext_stxhistogram;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -230,7 +234,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
-				   (enabled[i] == STATS_EXT_MCV));
+				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_HISTOGRAM));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -392,7 +397,7 @@ statext_store(Relation pg_stext, Oid statOid,
 
 	if (histogram != NULL)
 	{
-		bytea	   *data = statext_histogram_serialize(mcv, stats);
+		bytea	   *data = statext_histogram_serialize(histogram, stats);
 
 		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(data);

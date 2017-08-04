@@ -844,7 +844,7 @@ statext_histogram_deserialize(bytea *data)
 	{
 		MVSerializedBucket *bucket = (MVSerializedBucket *) ptr;
 
-		ptr += sizeof(MVSerializedBucket *);
+		ptr += sizeof(MVSerializedBucket);
 
 		bucket->ntuples = BUCKET_NTUPLES(tmp);
 		bucket->nullsonly = BUCKET_NULLS_ONLY(tmp, ndims);

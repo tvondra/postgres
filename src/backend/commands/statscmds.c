@@ -398,21 +398,95 @@ RemoveStatisticsById(Oid statsOid)
  * null until the next ANALYZE.  (Note that the type change hasn't actually
  * happened yet, so one option that's *not* on the table is to recompute
  * immediately.)
+ *
+ * For both ndistinct and functional-dependencies stats, the on-disk
+ * representation is independent of the source column data types, and it is
+ * plausible to assume that the old statistic values will still be good for
+ * the new column contents.  (Obviously, if the ALTER COLUMN TYPE has a USING
+ * expression that substantially alters the semantic meaning of the column
+ * values, this assumption could fail.  But that seems like a corner case
+ * that doesn't justify zapping the stats in common cases.)
+ *
+ * For MCV lists that's not the case, as those statistics store the datums
+ * internally. In this case we simply reset the statistics value to NULL.
  */
 void
 UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 							  Oid oldColumnType, Oid newColumnType)
 {
+	Form_pg_statistic_ext staForm;
+	HeapTuple	stup,
+				oldtup;
+	int			i;
+
+	/* Do we need to reset anything? */
+	bool		attribute_referenced;
+	bool		reset_stats = false;
+
+	Relation	rel;
+
+	Datum		values[Natts_pg_statistic_ext];
+	bool		nulls[Natts_pg_statistic_ext];
+	bool		replaces[Natts_pg_statistic_ext];
+
+	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statsOid));
+	if (!oldtup)
+		elog(ERROR, "cache lookup failed for statistics object %u", statsOid);
+	staForm = (Form_pg_statistic_ext) GETSTRUCT(oldtup);
+
 	/*
-	 * Currently, we don't actually need to do anything here.  For both
-	 * ndistinct and functional-dependencies stats, the on-disk representation
-	 * is independent of the source column data types, and it is plausible to
-	 * assume that the old statistic values will still be good for the new
-	 * column contents.  (Obviously, if the ALTER COLUMN TYPE has a USING
-	 * expression that substantially alters the semantic meaning of the column
-	 * values, this assumption could fail.  But that seems like a corner case
-	 * that doesn't justify zapping the stats in common cases.)
-	 *
-	 * Future types of extended stats will likely require us to work harder.
+	 * If the modified attribute is not referenced by this statistic, we
+	 * can simply leave the statistics alone.
 	 */
+	attribute_referenced = false;
+	for (i = 0; i < staForm->stxkeys.dim1; i++)
+		if (attnum == staForm->stxkeys.values[i])
+			attribute_referenced = true;
+
+	/*
+	 * We can also leave the record as it is if there are no statistics
+	 * including the datum values, like for example MCV lists.
+	 */
+	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
+		reset_stats = true;
+
+	/*
+	 * If we can leave the statistics as it is, just do minimal cleanup
+	 * and we're done.
+	 */
+	if (!attribute_referenced && reset_stats)
+	{
+		ReleaseSysCache(oldtup);
+		return;
+	}
+
+	/*
+	 * OK, we need to reset some statistics. So let's build the new tuple,
+	 * replacing the affected statistics types with NULL.
+	 */
+	memset(nulls, 1, Natts_pg_statistic_ext * sizeof(bool));
+	memset(replaces, 0, Natts_pg_statistic_ext * sizeof(bool));
+	memset(values, 0, Natts_pg_statistic_ext * sizeof(Datum));
+
+	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
+	{
+		replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+		nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	}
+
+	rel = heap_open(StatisticExtRelationId, RowExclusiveLock);
+
+	/* replace the old tuple */
+	stup = heap_modify_tuple(oldtup,
+							 RelationGetDescr(rel),
+							 values,
+							 nulls,
+							 replaces);
+
+	ReleaseSysCache(oldtup);
+	CatalogTupleUpdate(rel, &stup->t_self, stup);
+
+	heap_freetuple(stup);
+
+	heap_close(rel, RowExclusiveLock);
 }

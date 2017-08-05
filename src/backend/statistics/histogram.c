@@ -2292,89 +2292,39 @@ bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
 }
 
 /*
- * histogram_is_compatible_clause
- *		Determines if the clause is compatible with a histogram
- *
- * Only OpExprs with two arguments using an equality operator are supported.
- * When returning True attnum is set to the attribute number of the Var within
- * the supported clause.
- *
- * Currently we only support Var = Const, or Const = Var. It may be possible
- * to expand on this later.
+ * histogram_is_compatible_clause_internal
+ *	Does the heavy lifting of actually inspecting the clauses for
+ * histogram_is_compatible_clause.
  */
 static bool
-histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
+histogram_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **attnums)
 {
-	RestrictInfo *rinfo = (RestrictInfo *) clause;
-
-	if (!IsA(rinfo, RestrictInfo))
-		return false;
-
-	/* Pseudoconstants are not really interesting here. */
-	if (rinfo->pseudoconstant)
-		return false;
-
-	/* clauses referencing multiple varnos are incompatible */
-	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
-		return false;
-
-	if (or_clause((Node *)rinfo->clause) ||
-		and_clause((Node *)rinfo->clause) ||
-		not_clause((Node *)rinfo->clause))
+	/* We only support plain Vars for now */
+	if (IsA(clause, Var))
 	{
-		/*
-		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
-		 *
-		 * TODO: We might support mixed case, where some of the clauses are
-		 * supported and some are not, and treat all supported subclauses as a
-		 * single clause, compute it's selectivity using mv stats, and compute
-		 * the total selectivity using the current algorithm.
-		 *
-		 * TODO: For RestrictInfo above an OR-clause, we might use the
-		 * orclause with nested RestrictInfo - we won't have to call
-		 * pull_varnos() for each clause, saving time.
-		 */
-		BoolExpr   *expr = (BoolExpr *) rinfo->clause;
-		ListCell   *lc;
-		Bitmapset  *clause_attnums = NULL;
+		Var *var = (Var *) clause;
 
-		foreach(lc, expr->args)
-		{
-			/*
-			 * Had we found incompatible clause in the arguments, treat the
-			 * whole clause as incompatible.
-			 */
-			if (!histogram_is_compatible_clause((Node *) lfirst(lc), relid,
-												&clause_attnums))
-				return false;
-		}
+		/* Ensure var is from the correct relation */
+		if (var->varno != relid)
+			return false;
 
-		/*
-		 * Otherwise the clause is compatible, and we need to merge the
-		 * attnums into the main bitmapset.
-		 */
-		*attnums = bms_join(*attnums, clause_attnums);
+		/* we also better ensure the Var is from the current level */
+		if (var->varlevelsup > 0)
+			return false;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return false;
+
+		*attnums = bms_add_member(*attnums, var->varattno);
 
 		return true;
 	}
 
-	if (IsA((Node *)rinfo->clause, NullTest))
+	/* Var = Const */
+	if (is_opclause(clause))
 	{
-		NullTest   *nt = (NullTest *) rinfo->clause;
-
-		/*
-		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
-		 * could use examine_variable to fix this?
-		 */
-		if (!IsA(nt->arg, Var))
-			return false;
-
-		return histogram_is_compatible_clause((Node *) (nt->arg), relid, attnums);
-	}
-
-	if (is_opclause((Node *)rinfo->clause))
-	{
-		OpExpr	   *expr = (OpExpr *) rinfo->clause;
+		OpExpr	   *expr = (OpExpr *) clause;
 		Var		   *var;
 		bool		varonleft = true;
 		bool		ok;
@@ -2407,28 +2357,98 @@ histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 
 		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 
-		/* We only support plain Vars for now */
-		if (!IsA(var, Var))
-			return false;
+		return histogram_is_compatible_clause_internal((Node *)var, relid, attnums);
+	}
 
-		/* Ensure var is from the correct relation */
-		if (var->varno != relid)
-			return false;
+	/* NOT clause, clause AND/OR clause */
+	if (or_clause(clause) ||
+		and_clause(clause) ||
+		not_clause(clause))
+	{
+		/*
+		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
+		 *
+		 * TODO: We might support mixed case, where some of the clauses are
+		 * supported and some are not, and treat all supported subclauses as a
+		 * single clause, compute it's selectivity using mv stats, and compute
+		 * the total selectivity using the current algorithm.
+		 *
+		 * TODO: For RestrictInfo above an OR-clause, we might use the
+		 * orclause with nested RestrictInfo - we won't have to call
+		 * pull_varnos() for each clause, saving time.
+		 */
+		BoolExpr   *expr = (BoolExpr *) clause;
+		ListCell   *lc;
+		Bitmapset  *clause_attnums = NULL;
 
-		/* we also better ensure the Var is from the current level */
-		if (var->varlevelsup > 0)
-			return false;
+		foreach(lc, expr->args)
+		{
+			/*
+			 * Had we found incompatible clause in the arguments, treat the
+			 * whole clause as incompatible.
+			 */
+			if (!histogram_is_compatible_clause_internal((Node *) lfirst(lc),
+												   relid, &clause_attnums))
+				return false;
+		}
 
-		/* Also skip system attributes (we don't allow stats on those). */
-		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
-			return false;
-
-		*attnums = bms_add_member(*attnums, var->varattno);
+		/*
+		 * Otherwise the clause is compatible, and we need to merge the
+		 * attnums into the main bitmapset.
+		 */
+		*attnums = bms_join(*attnums, clause_attnums);
 
 		return true;
 	}
 
+	/* Var IS NULL */
+	if (IsA(clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) clause;
+
+		/*
+		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
+		 * could use examine_variable to fix this?
+		 */
+		if (!IsA(nt->arg, Var))
+			return false;
+
+		return histogram_is_compatible_clause_internal((Node *) (nt->arg), relid, attnums);
+	}
+
 	return false;
+}
+
+
+/*
+ * histogram_is_compatible_clause
+ *		Determines if the clause is compatible with a histogram
+ *
+ * Only OpExprs with two arguments using an equality operator are supported.
+ * When returning True attnum is set to the attribute number of the Var within
+ * the supported clause.
+ *
+ * Currently we only support Var = Const, or Const = Var. It may be possible
+ * to expand on this later.
+ */
+static bool
+histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
+{
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
+
+	if (!IsA(rinfo, RestrictInfo))
+		return false;
+
+	/* Pseudoconstants are not really interesting here. */
+	if (rinfo->pseudoconstant)
+		return false;
+
+	/* clauses referencing multiple varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return false;
+
+	return histogram_is_compatible_clause_internal((Node *)rinfo->clause,
+											 relid, attnums);
 }
 
 static int

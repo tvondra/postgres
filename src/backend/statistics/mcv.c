@@ -91,13 +91,15 @@ static bool mcv_is_compatible_clause(Node *clause, Index relid,
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-				 VacAttrStats **stats)
+				 VacAttrStats **stats, HeapTuple **rows_filtered,
+				 int *numrows_filtered)
 {
 	int			i;
 	int			j;
 	int			numattrs = bms_num_members(attrs);
 	int			ndistinct = 0;
 	int			mcv_threshold = 0;
+	int			numrows_mcv;	/* rows covered by the MCV items */
 	int			nitems = 0;
 	int		   *attnums;
 
@@ -137,13 +139,17 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* Walk through the groups and stop once we fall below the threshold. */
 	nitems = 0;
+	numrows_mcv = 0;
 	for (i = 0; i < ndistinct; i++)
 	{
 		if (groups[i].count < mcv_threshold)
 			break;
 
+		numrows_mcv += groups[i].count;
 		nitems++;
 	}
+
+	Assert(numrows_mcv <= numrows);
 
 	/* we know the number of MCV list items, so let's build the list */
 	if (nitems > 0)
@@ -188,6 +194,75 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		/* make sure the loops are consistent */
 		Assert(nitems == mcvlist->nitems);
 	}
+
+	/*
+	 * Produce an array with only tuples not covered by the MCV list. This
+	 * is needed when building MCV+histogram pair, where MCV covers the most
+	 * common combinations and histogram covers the remaining part.
+	 *
+	 * We will first sort the groups by the keys (not by count) and then use
+	 * binary search in the group array to check which rows are covered by
+	 * the MCV items.
+	 *
+	 * Do not modify the array in place, as there may be additional stats on
+	 * the table and we need to keep the original array for them.
+	 *
+	 * We only do this when requested by passing non-NULL rows_filtered,
+	 * and when there are rows not covered by the MCV list (that is, when
+	 * numrows_mcv < numrows).
+	 */
+	if ((rows_filtered != NULL) && (nitems > ndistinct))
+	{
+		int                     i,
+								j;
+		int                     nfiltered = 0;
+
+		/* used for the searches */
+		SortItem        key;
+
+		Assert(numrows_filtered != NULL);
+
+		/* We do know how many rows we expect (total - MCV rows). */
+		*numrows_filtered = (numrows - numrows_mcv);
+		*rows_filtered = (HeapTuple *) palloc(*numrows_filtered * sizeof(HeapTuple));
+
+		/* wfill this with data from the rows */
+		key.values = (Datum *) palloc0(numattrs * sizeof(Datum));
+		key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
+
+		/*
+		* Sort the groups for bsearch_r (but only the items that actually
+		* made it to the MCV list).
+		*/
+		qsort_arg((void *) groups, nitems, sizeof(SortItem),
+				  multi_sort_compare, mss);
+
+		/* walk through the tuples, compare the values to MCV items */
+		for (i = 0; i < numrows; i++)
+		{
+			/* collect the key values from the row */
+			for (j = 0; j < numattrs; j++)
+				key.values[j]
+					= heap_getattr(rows[i], attnums[j],
+								   stats[j]->tupDesc, &key.isnull[j]);
+
+			/* if not included in the MCV list, keep it in the array */
+			if (bsearch_arg(&key, groups, nitems, sizeof(SortItem),
+							multi_sort_compare, mss) == NULL)
+				*rows_filtered[nfiltered++] = rows[i];
+
+			/* do not overflow the array */
+			Assert(nfiltered <= *numrows_filtered);
+		}
+
+		/* expect to get the right number of remaining rows exactly */
+		Assert(nfiltered + numrows_mcv == numrows);
+
+		/* free all the data used here */
+		pfree(key.values);
+		pfree(key.isnull);
+	} else if (numrows_filtered != NULL)
+		*numrows_filtered = 0;
 
 	pfree(items);
 	pfree(groups);

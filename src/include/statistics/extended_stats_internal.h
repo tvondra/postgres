@@ -68,7 +68,8 @@ extern bytea *statext_dependencies_serialize(MVDependencies *dependencies);
 extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MCVList *statext_mcv_build(int numrows, HeapTuple *rows,
-					Bitmapset *attrs, VacAttrStats **stats);
+					Bitmapset *attrs, VacAttrStats **stats,
+					HeapTuple **rows_filtered, int *numrows_filtered);
 extern bytea *statext_mcv_serialize(MCVList *mcv, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 

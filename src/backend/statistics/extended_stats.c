@@ -125,7 +125,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				dependencies = statext_dependencies_build(numrows, rows,
 														  stat->columns, stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, stat->columns, stats);
+				mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
+										NULL, NULL);
 			else if (t == STATS_EXT_HISTOGRAM)
 				histogram = statext_histogram_build(numrows, rows, stat->columns,
 										stats, numrows);

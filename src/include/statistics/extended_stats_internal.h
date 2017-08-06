@@ -91,4 +91,6 @@ extern void *bsearch_arg(const void *key, const void *base,
 
 extern int2vector *find_ext_attnums(Oid mvoid, Oid *relid);
 
+extern int bms_member_index(Bitmapset *keys, AttrNumber varattno);
+
 #endif							/* EXTENDED_STATS_INTERNAL_H */

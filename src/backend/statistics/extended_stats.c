@@ -622,3 +622,16 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 
 	return best_match;
 }
+
+int
+bms_member_index(Bitmapset *keys, AttrNumber varattno)
+{
+	int	i, j;
+
+	i = -1;
+	j = 0;
+	while (((i = bms_next_member(keys, i)) >= 0) && (i < varattno))
+		j += 1;
+
+	return j;
+}

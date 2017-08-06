@@ -87,7 +87,6 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList	   *mcv = NULL;
-		int			numrows_filtered = 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
 
@@ -125,8 +124,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				dependencies = statext_dependencies_build(numrows, rows,
 														  stat->columns, stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
-										&numrows_filtered);
+				mcv = statext_mcv_build(numrows, rows, stat->columns, stats);
 		}
 
 		/* store the statistics in the catalog */

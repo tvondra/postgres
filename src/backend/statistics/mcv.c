@@ -77,13 +77,9 @@ static bool mcv_is_compatible_clause(Node *clause, Index relid,
  *
  *	   (4) remove rows represented by the MCV from the sample
  *
- * The method also removes rows matching the MCV items from the input array,
- * and passes the number of remaining rows (useful for building histograms)
- * using the numrows_filtered parameter.
- *
- * FIXME: Single-dimensional MCV is sorted by frequency (descending). We should
- * do that too, because when walking through the list we want to check
- * the most frequent items first.
+ * FIXME: Single-dimensional MCV is sorted by frequency (descending). We
+ * should do that too, because when walking through the list we want to
+ * check the most frequent items first.
  *
  * TODO: We're using Datum (8B), even for data types (e.g. int4 or float4).
  * Maybe we could save some space here, but the bytea compression should
@@ -95,7 +91,7 @@ static bool mcv_is_compatible_clause(Node *clause, Index relid,
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-				 VacAttrStats **stats, int *numrows_filtered)
+				 VacAttrStats **stats)
 {
 	int			i;
 	int			j;
@@ -191,57 +187,6 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 		/* make sure the loops are consistent */
 		Assert(nitems == mcvlist->nitems);
-
-		/*
-		 * Remove the rows matching the MCV list (i.e. keep only rows that are
-		 * not represented by the MCV list). We will first sort the groups by
-		 * the keys (not by count) and then use binary search.
-		 */
-		if (nitems > ndistinct)
-		{
-			int			i,
-						j;
-			int			nfiltered = 0;
-
-			/* used for the searches */
-			SortItem	key;
-
-			/* wfill this with data from the rows */
-			key.values = (Datum *) palloc0(numattrs * sizeof(Datum));
-			key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
-
-			/*
-			 * Sort the groups for bsearch_r (but only the items that actually
-			 * made it to the MCV list).
-			 */
-			qsort_arg((void *) groups, nitems, sizeof(SortItem),
-					  multi_sort_compare, mss);
-
-			/* walk through the tuples, compare the values to MCV items */
-			for (i = 0; i < numrows; i++)
-			{
-				/* collect the key values from the row */
-				for (j = 0; j < numattrs; j++)
-					key.values[j]
-						= heap_getattr(rows[i], attnums[j],
-									   stats[j]->tupDesc, &key.isnull[j]);
-
-				/* if not included in the MCV list, keep it in the array */
-				if (bsearch_arg(&key, groups, nitems, sizeof(SortItem),
-								multi_sort_compare, mss) == NULL)
-					rows[nfiltered++] = rows[i];
-			}
-
-			/* remember how many rows we actually kept */
-			*numrows_filtered = nfiltered;
-
-			/* free all the data used here */
-			pfree(key.values);
-			pfree(key.isnull);
-		}
-		else
-			/* the MCV list convers all the rows */
-			*numrows_filtered = 0;
 	}
 
 	pfree(items);

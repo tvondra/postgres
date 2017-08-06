@@ -2451,18 +2451,6 @@ histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 											 relid, attnums);
 }
 
-static int
-mv_get_index(AttrNumber varattno, Bitmapset *keys)
-{
-	int	i, j;
-
-	i = -1;
-	j = 0;
-	while (((i = bms_next_member(keys, i)) >= 0) && (i < varattno))
-		j += 1;
-
-	return j;
-}
 
 #define UPDATE_RESULT(m,r,isor) \
 	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
@@ -2559,7 +2547,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
 
 				/* lookup dimension for the attribute */
-				int			idx = mv_get_index(var->varattno, stakeys);
+				int			idx = bms_member_index(stakeys, var->varattno);
 
 				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
 
@@ -2676,7 +2664,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			Var		   *var = (Var *) (expr->arg);
 
 			/* FIXME proper matching attribute to dimension */
-			int			idx = mv_get_index(var->varattno, stakeys);
+			int			idx = bms_member_index(stakeys, var->varattno);
 
 			/*
 			 * Walk through the buckets and evaluate the current clause. We

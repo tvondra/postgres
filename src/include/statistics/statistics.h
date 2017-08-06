@@ -223,22 +223,15 @@ extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
 									SpecialJoinInfo *sjinfo,
 									RelOptInfo *rel,
 									Bitmapset **estimatedclauses);
-extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
+extern Selectivity statext_clauselist_selectivity(PlannerInfo *root,
 									List *clauses,
 									int varRelid,
 									JoinType jointype,
 									SpecialJoinInfo *sjinfo,
 									RelOptInfo *rel,
 									Bitmapset **estimatedclauses);
-extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
-									List *clauses,
-									int varRelid,
-									JoinType jointype,
-									SpecialJoinInfo *sjinfo,
-									RelOptInfo *rel,
-									Bitmapset **estimatedclauses);
-extern bool has_stats_of_kind(List *stats, char requiredkind);
+extern bool has_stats_of_kind(List *stats, int requiredkinds);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
-					   Bitmapset *attnums, char requiredkind);
+					   Bitmapset *attnums, int requiredkinds);
 
 #endif							/* STATISTICS_H */

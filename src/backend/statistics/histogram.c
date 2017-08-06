@@ -2292,170 +2292,6 @@ bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
 }
 
 /*
- * histogram_is_compatible_clause_internal
- *	Does the heavy lifting of actually inspecting the clauses for
- * histogram_is_compatible_clause.
- */
-static bool
-histogram_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **attnums)
-{
-	/* We only support plain Vars for now */
-	if (IsA(clause, Var))
-	{
-		Var *var = (Var *) clause;
-
-		/* Ensure var is from the correct relation */
-		if (var->varno != relid)
-			return false;
-
-		/* we also better ensure the Var is from the current level */
-		if (var->varlevelsup > 0)
-			return false;
-
-		/* Also skip system attributes (we don't allow stats on those). */
-		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
-			return false;
-
-		*attnums = bms_add_member(*attnums, var->varattno);
-
-		return true;
-	}
-
-	/* Var = Const */
-	if (is_opclause(clause))
-	{
-		OpExpr	   *expr = (OpExpr *) clause;
-		Var		   *var;
-		bool		varonleft = true;
-		bool		ok;
-
-		/* Only expressions with two arguments are considered compatible. */
-		if (list_length(expr->args) != 2)
-			return false;
-
-		/* see if it actually has the right */
-		ok = (NumRelids((Node *) expr) == 1) &&
-			(is_pseudo_constant_clause(lsecond(expr->args)) ||
-			 (varonleft = false,
-			  is_pseudo_constant_clause(linitial(expr->args))));
-
-		/* unsupported structure (two variables or so) */
-		if (!ok)
-			return false;
-
-		/*
-		 * If it's not one of the supported operators ("=", "<", ">", etc.),
-		 * just ignore the clause, as it's not compatible with MCV lists.
-		 *
-		 * This uses the function for estimating selectivity, not the operator
-		 * directly (a bit awkward, but well ...).
-		 */
-		if ((get_oprrest(expr->opno) != F_EQSEL) &&
-			(get_oprrest(expr->opno) != F_SCALARLTSEL) &&
-			(get_oprrest(expr->opno) != F_SCALARGTSEL))
-			return false;
-
-		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
-
-		return histogram_is_compatible_clause_internal((Node *)var, relid, attnums);
-	}
-
-	/* NOT clause, clause AND/OR clause */
-	if (or_clause(clause) ||
-		and_clause(clause) ||
-		not_clause(clause))
-	{
-		/*
-		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
-		 *
-		 * TODO: We might support mixed case, where some of the clauses are
-		 * supported and some are not, and treat all supported subclauses as a
-		 * single clause, compute it's selectivity using mv stats, and compute
-		 * the total selectivity using the current algorithm.
-		 *
-		 * TODO: For RestrictInfo above an OR-clause, we might use the
-		 * orclause with nested RestrictInfo - we won't have to call
-		 * pull_varnos() for each clause, saving time.
-		 */
-		BoolExpr   *expr = (BoolExpr *) clause;
-		ListCell   *lc;
-		Bitmapset  *clause_attnums = NULL;
-
-		foreach(lc, expr->args)
-		{
-			/*
-			 * Had we found incompatible clause in the arguments, treat the
-			 * whole clause as incompatible.
-			 */
-			if (!histogram_is_compatible_clause_internal((Node *) lfirst(lc),
-												   relid, &clause_attnums))
-				return false;
-		}
-
-		/*
-		 * Otherwise the clause is compatible, and we need to merge the
-		 * attnums into the main bitmapset.
-		 */
-		*attnums = bms_join(*attnums, clause_attnums);
-
-		return true;
-	}
-
-	/* Var IS NULL */
-	if (IsA(clause, NullTest))
-	{
-		NullTest   *nt = (NullTest *) clause;
-
-		/*
-		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
-		 * could use examine_variable to fix this?
-		 */
-		if (!IsA(nt->arg, Var))
-			return false;
-
-		return histogram_is_compatible_clause_internal((Node *) (nt->arg), relid, attnums);
-	}
-
-	return false;
-}
-
-
-/*
- * histogram_is_compatible_clause
- *		Determines if the clause is compatible with a histogram
- *
- * Only OpExprs with two arguments using an equality operator are supported.
- * When returning True attnum is set to the attribute number of the Var within
- * the supported clause.
- *
- * Currently we only support Var = Const, or Const = Var. It may be possible
- * to expand on this later.
- */
-static bool
-histogram_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
-{
-	RestrictInfo *rinfo = (RestrictInfo *) clause;
-
-	if (!IsA(rinfo, RestrictInfo))
-		return false;
-
-	/* Pseudoconstants are not really interesting here. */
-	if (rinfo->pseudoconstant)
-		return false;
-
-	/* clauses referencing multiple varnos are incompatible */
-	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
-		return false;
-
-	return histogram_is_compatible_clause_internal((Node *)rinfo->clause,
-											 relid, attnums);
-}
-
-
-#define UPDATE_RESULT(m,r,isor) \
-	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
-
-/*
  * Evaluate clauses using the histogram, and update the match bitmap.
  *
  * The bitmap may be already partially set, so this is really a way to
@@ -2801,93 +2637,21 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
  * this is not uncommon, but for histograms it's not that clear.
  */
 Selectivity
-histogram_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
+histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
+								 List *clauses, int varRelid,
 								 JoinType jointype, SpecialJoinInfo *sjinfo,
 								 RelOptInfo *rel, Bitmapset **estimatedclauses)
 {
 	int			i;
-	ListCell   *l;
-	Bitmapset  *clauses_attnums = NULL;
-	Bitmapset **list_attnums;
-	int			listidx;
-	StatisticExtInfo *stat;
 	MVSerializedHistogram	   *histogram;
-	List	   *histogram_clauses;
+	Selectivity s, u;
 
 	/* match/mismatch bitmap for each MCV item */
 	char	   *matches = NULL;
 	int			nmatches = 0;
-	Selectivity s, u;
-
-	/* check if there's any stats that might be useful for us. */
-	if (!has_stats_of_kind(rel->statlist, STATS_EXT_HISTOGRAM))
-		return 1.0;
-
-	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
-										 list_length(clauses));
-
-	/*
-	 * Pre-process the clauses list to extract the attnums seen in each item.
-	 * We need to determine if there's any clauses which will be useful for
-	 * dependency selectivity estimations. Along the way we'll record all of
-	 * the attnums for each clause in a list which we'll reference later so we
-	 * don't need to repeat the same work again. We'll also keep track of all
-	 * attnums seen.
-	 *
-	 * FIXME Should skip already estimated clauses (using the estimatedclauses
-	 * bitmap).
-	 */
-	listidx = 0;
-	foreach(l, clauses)
-	{
-		Node	   *clause = (Node *) lfirst(l);
-		Bitmapset  *attnums = NULL;
-
-		if (histogram_is_compatible_clause(clause, rel->relid, &attnums))
-		{
-			list_attnums[listidx] = attnums;
-			clauses_attnums = bms_add_members(clauses_attnums, attnums);
-		}
-		else
-			list_attnums[listidx] = NULL;
-
-		listidx++;
-	}
-
-	/* We need at least two attributes for histograms. */
-	if (bms_num_members(clauses_attnums) < 2)
-		return 1.0;
-
-	/* find the best suited statistics object for these attnums */
-	stat = choose_best_statistics(rel->statlist, clauses_attnums,
-								  STATS_EXT_HISTOGRAM);
-
-	/* if no matching stats could be found then we've nothing to do */
-	if (!stat)
-		return 1.0;
 
 	/* load the histogram stored in the statistics object */
 	histogram = statext_histogram_load(stat->statOid);
-
-	/* now filter the clauses to be estimated using the selected histogram */
-	histogram_clauses = NIL;
-
-	listidx = 0;
-	foreach (l, clauses)
-	{
-		/*
-		 * If the clause is compatible with the selected histogram, mark
-		 * it as estimated and add it to the histogram list.
-		 */
-		if ((list_attnums[listidx] != NULL) &&
-			(bms_is_subset(list_attnums[listidx], stat->keys)))
-		{
-			histogram_clauses = lappend(histogram_clauses, (Node *)lfirst(l));
-			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
-		}
-
-		listidx++;
-	}
 
 	/* by default all the histogram buckets match the clauses fully */
 	matches = palloc0(sizeof(char) * histogram->nbuckets);

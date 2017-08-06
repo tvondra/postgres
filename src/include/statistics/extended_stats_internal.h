@@ -101,4 +101,26 @@ extern int2vector *find_ext_attnums(Oid mvoid, Oid *relid);
 
 extern int bms_member_index(Bitmapset *keys, AttrNumber varattno);
 
+extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
+									StatisticExtInfo *stat,
+									List *clauses,
+									int varRelid,
+									JoinType jointype,
+									SpecialJoinInfo *sjinfo,
+									RelOptInfo *rel,
+									Bitmapset **estimatedclauses,
+									bool *fulmatch,
+									Selectivity *lowsel);
+extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
+									StatisticExtInfo *stat,
+									List *clauses,
+									int varRelid,
+									JoinType jointype,
+									SpecialJoinInfo *sjinfo,
+									RelOptInfo *rel,
+									Bitmapset **estimatedclauses);
+
+#define UPDATE_RESULT(m,r,isor) \
+	(m) = (isor) ? (Max(m,r)) : (Min(m,r))
+
 #endif							/* EXTENDED_STATS_INTERNAL_H */

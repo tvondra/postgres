@@ -481,17 +481,11 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	memset(replaces, 0, Natts_pg_statistic_ext * sizeof(bool));
 	memset(values, 0, Natts_pg_statistic_ext * sizeof(Datum));
 
-	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
-	{
-		replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
-		nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
-	}
+	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
-	if (statext_is_kind_built(oldtup, STATS_EXT_HISTOGRAM))
-	{
-		replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
-		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = true;
-	}
+	nulls[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	nulls[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	rel = heap_open(StatisticExtRelationId, RowExclusiveLock);
 

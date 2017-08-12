@@ -54,8 +54,6 @@ static void create_null_buckets(MVHistogram *histogram, int bucket_idx,
 static Datum *build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 				VacAttrStats **stats, int i, int *nvals);
 
-static int *build_attnums(Bitmapset *attrs);
-
 /*
  * Each serialized bucket needs to store (in this order):
  *
@@ -1364,8 +1362,7 @@ copy_ext_bucket(MVBucket *bucket, uint32 ndimensions)
 static void
 update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats)
 {
-	int			i,
-				j;
+	int			i;
 	int			numattrs = bms_num_members(attrs);
 
 	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
@@ -1373,29 +1370,14 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
 
 	MultiSortSupport mss = multi_sort_init(numattrs);
 	int		   *attnums;
-
-	/*
-	 * We could collect this while walking through all the attributes above
-	 * (this way we have to call heap_getattr twice).
-	 */
-	SortItem   *items = (SortItem *) palloc0(numrows * sizeof(SortItem));
-	Datum	   *values = (Datum *) palloc0(numrows * sizeof(Datum) * numattrs);
-	bool	   *isnull = (bool *) palloc0(numrows * sizeof(bool) * numattrs);
+	SortItem   *items;
 
 	attnums = build_attnums(attrs);
 
-	for (i = 0; i < numrows; i++)
-	{
-		items[i].values = &values[i * numattrs];
-		items[i].isnull = &isnull[i * numattrs];
-	}
-
 	/* prepare the sort function for the first dimension */
-	i = 0;
-	j = -1;
-	while ((j = bms_next_member(attrs, j)) >= 0)
+	for (i = 0; i < numattrs; i++)
 	{
-		VacAttrStats *colstat = stats[i];	/* FIXME maybe this should be "j" ? */
+		VacAttrStats *colstat = stats[i];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
@@ -1404,18 +1386,16 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
 				 colstat->attrtypid);
 
 		multi_sort_add_dimension(mss, i, type->lt_opr);
-		i++;
 	}
 
-	/* collect the values */
-	for (i = 0; i < numrows; i++)
-		for (j = 0; j < numattrs; j++)
-			items[i].values[j]
-				= heap_getattr(data->rows[i], attnums[j],
-							   stats[j]->tupDesc, &items[i].isnull[j]);
-
-	qsort_arg((void *) items, numrows, sizeof(SortItem),
-			  multi_sort_compare, mss);
+	/*
+	 * build an array of SortItem(s) sorted using the multi-sort support
+	 *
+	 * XXX This relies on all stats entries pointing to the same tuple
+	 * descriptor. Not sure if that might not be the case.
+	 */
+	items = build_sorted_items(numrows, data->rows, stats[0]->tupDesc, mss,
+							   numattrs, attnums);
 
 	data->ndistinct = 1;
 
@@ -1424,8 +1404,6 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
 			data->ndistinct += 1;
 
 	pfree(items);
-	pfree(values);
-	pfree(isnull);
 }
 
 /*
@@ -2150,23 +2128,6 @@ debug_histogram_matches(MVSerializedHistogram *mvhist, char *matches)
 	elog(WARNING, "full=%f partial=%f (%f)", ffull, fpartial, (ffull + 0.5 * fpartial));
 }
 #endif
-
-static int *
-build_attnums(Bitmapset *attrs)
-{
-	int idx, i;
-	int *attnums = (int *)palloc(sizeof(int) * bms_num_members(attrs));
-
-	idx = 0;
-	i = -1;
-	while ((i = bms_next_member(attrs, i)) >= 0)
-		attnums[idx++] = i;
-
-	Assert(idx == bms_num_members(attrs));
-
-	return attnums;
-}
-
 
 /*
  * selectivity estimation

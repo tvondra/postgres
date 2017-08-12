@@ -597,6 +597,92 @@ bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
 	return NULL;
 }
 
+int *
+build_attnums(Bitmapset *attrs)
+{
+	int		i,
+			j;
+	int		numattrs = bms_num_members(attrs);
+	int	   *attnums;
+
+	/* build attnums from the bitmapset */
+	attnums = (int*)palloc(sizeof(int) * numattrs);
+	i = 0;
+	j = -1;
+	while ((j = bms_next_member(attrs, j)) >= 0)
+		attnums[i++] = j;
+
+	return attnums;
+}
+
+/* build_sorted_items
+ * 	build sorted array of SortItem with values from rows
+ *
+ * XXX All the memory is allocated in a single chunk, so that the caller
+ * can simply pfree the return value to release all of it.
+ */
+SortItem *
+build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
+				   MultiSortSupport mss, int numattrs, int *attnums)
+{
+	int			i,
+				j,
+				len;
+	int			nvalues = numrows * numattrs;
+
+	/*
+	 * We won't allocate the arrays for each item independenly, but in one
+	 * large chunk and then just set the pointers. This allows the caller
+	 * to simply pfree the return value to release all the memory.
+	 */
+	SortItem   *items;
+	Datum	   *values;
+	bool	   *isnull;
+	char	   *ptr;
+
+	/* Compute the total amount of memory we need (both items and values). */
+	len = numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
+
+	/* Allocate the memory and split it into the pieces. */
+	ptr = palloc0(len);
+
+	/* items to sort */
+	items = (SortItem *) ptr;
+	ptr += numrows * sizeof(SortItem);
+
+	/* values and null flags */
+	values = (Datum *) ptr;
+	ptr += nvalues * sizeof(Datum);
+
+	isnull = (bool *) ptr;
+	ptr += nvalues * sizeof(bool);
+
+	/* make sure we consumed the whole buffer exactly */
+	Assert((ptr - (char *) items) == len);
+
+	/* fix the pointers to Datum and bool arrays */
+	for (i = 0; i < numrows; i++)
+	{
+		items[i].values = &values[i * numattrs];
+		items[i].isnull = &isnull[i * numattrs];
+
+		/* load the values/null flags from sample rows */
+		for (j = 0; j < numattrs; j++)
+		{
+			items[i].values[j] = heap_getattr(rows[i],
+											  attnums[j], /* attnum */
+											  tdesc,
+											  &items[i].isnull[j]);		/* isnull */
+		}
+	}
+
+	/* do the sort, using the multi-sort */
+	qsort_arg((void *) items, numrows, sizeof(SortItem),
+			  multi_sort_compare, mss);
+
+	return items;
+}
+
 /*
  * has_stats_of_kind
  *		Check whether the list contains statistic of a given kind (at least

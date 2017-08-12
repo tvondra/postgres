@@ -49,11 +49,8 @@
 #define ITEM_NULLS(item,ndims)		((bool*)(ITEM_INDEXES(item) + ndims))
 #define ITEM_FREQUENCY(item,ndims)	((double*)(ITEM_NULLS(item,ndims) + ndims))
 
-static MultiSortSupport build_mss(VacAttrStats **stats, Bitmapset *attrs);
 
-static SortItem *build_sorted_items(int numrows, HeapTuple *rows,
-				   TupleDesc tdesc, MultiSortSupport mss,
-				   Bitmapset *attrs);
+static MultiSortSupport build_mss(VacAttrStats **stats, Bitmapset *attrs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
 					  MultiSortSupport mss, int *ndistinct);
@@ -92,13 +89,13 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 				 int *numrows_filtered)
 {
 	int			i;
-	int			j;
 	int			numattrs = bms_num_members(attrs);
 	int			ndistinct = 0;
 	int			mcv_threshold = 0;
 	int			numrows_mcv;	/* rows covered by the MCV items */
 	int			nitems = 0;
-	int		   *attnums;
+
+	int		   *attnums = build_attnums(attrs);
 
 	MCVList	   *mcvlist = NULL;
 
@@ -107,7 +104,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* sort the rows */
 	SortItem   *items = build_sorted_items(numrows, rows, stats[0]->tupDesc,
-										   mss, attrs);
+										   mss, numattrs, attnums);
 
 	/* transform the sorted rows into groups (sorted by frequency) */
 	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
@@ -126,13 +123,6 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	if (ndistinct <= STATS_MCVLIST_MAX_ITEMS)
 		mcv_threshold = 2;
-
-	/* build array of attnums from the bitmapset */
-	attnums = (int*)palloc(sizeof(int) * numattrs);
-	i = 0;
-	j = -1;
-	while ((j = bms_next_member(attrs, j)) >= 0)
-		attnums[i++] = j;
 
 	/* Walk through the groups and stop once we fall below the threshold. */
 	nitems = 0;
@@ -295,77 +285,6 @@ build_mss(VacAttrStats **stats, Bitmapset *attrs)
 	}
 
 	return mss;
-}
-
-/* build sorted array of SortItem with values from rows */
-static SortItem *
-build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
-				   MultiSortSupport mss, Bitmapset *attrs)
-{
-	int			i,
-				j,
-				len;
-	int			numattrs = bms_num_members(attrs);
-	int			nvalues = numrows * numattrs;
-	int		   *attnums;
-
-	/*
-	 * We won't allocate the arrays for each item independenly, but in one
-	 * large chunk and then just set the pointers.
-	 */
-	SortItem   *items;
-	Datum	   *values;
-	bool	   *isnull;
-	char	   *ptr;
-
-	/* build attnums from the bitmapset */
-	attnums = (int*)palloc(sizeof(int) * numattrs);
-	i = 0;
-	j = -1;
-	while ((j = bms_next_member(attrs, j)) >= 0)
-		attnums[i++] = j;
-
-	/* Compute the total amount of memory we need (both items and values). */
-	len = numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
-
-	/* Allocate the memory and split it into the pieces. */
-	ptr = palloc0(len);
-
-	/* items to sort */
-	items = (SortItem *) ptr;
-	ptr += numrows * sizeof(SortItem);
-
-	/* values and null flags */
-	values = (Datum *) ptr;
-	ptr += nvalues * sizeof(Datum);
-
-	isnull = (bool *) ptr;
-	ptr += nvalues * sizeof(bool);
-
-	/* make sure we consumed the whole buffer exactly */
-	Assert((ptr - (char *) items) == len);
-
-	/* fix the pointers to Datum and bool arrays */
-	for (i = 0; i < numrows; i++)
-	{
-		items[i].values = &values[i * numattrs];
-		items[i].isnull = &isnull[i * numattrs];
-
-		/* load the values/null flags from sample rows */
-		for (j = 0; j < numattrs; j++)
-		{
-			items[i].values[j] = heap_getattr(rows[i],
-											  attnums[j], /* attnum */
-											  tdesc,
-											  &items[i].isnull[j]);		/* isnull */
-		}
-	}
-
-	/* do the sort, using the multi-sort */
-	qsort_arg((void *) items, numrows, sizeof(SortItem),
-			  multi_sort_compare, mss);
-
-	return items;
 }
 
 /* count distinct combinations of SortItems in the array */

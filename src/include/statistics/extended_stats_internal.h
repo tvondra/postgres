@@ -97,6 +97,12 @@ extern void *bsearch_arg(const void *key, const void *base,
 			int (*compar) (const void *, const void *, void *),
 			void *arg);
 
+extern int *build_attnums(Bitmapset *attrs);
+
+extern SortItem * build_sorted_items(int numrows, HeapTuple *rows,
+				   TupleDesc tdesc, MultiSortSupport mss,
+				   int numattrs, int *attnums);
+
 extern int2vector *find_ext_attnums(Oid mvoid, Oid *relid);
 
 extern int bms_member_index(Bitmapset *keys, AttrNumber varattno);

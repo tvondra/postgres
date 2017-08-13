@@ -1029,8 +1029,7 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	{
 		/* Evaluate the MCV first. */
 		s1 = mcv_clauselist_selectivity(root, stat, clauses, varRelid,
-										jointype, sjinfo,
-										rel, estimatedclauses,
+										jointype, sjinfo, rel,
 										&fullmatch, &lowsel);
 	}
 
@@ -1048,8 +1047,7 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	if (stat->kinds & STATS_EXT_INFO_HISTOGRAM)
 	{
 		s2 = histogram_clauselist_selectivity(root, stat, clauses, varRelid,
-											  jointype, sjinfo,
-											  rel, estimatedclauses);
+											  jointype, sjinfo, rel);
 	}
 
 	/* TODO clamp to <= 1.0 (or more strictly, when possible) */

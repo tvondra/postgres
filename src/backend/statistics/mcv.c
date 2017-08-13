@@ -1609,12 +1609,16 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	return nmatches;
 }
 
-
+/*
+ * mcv_clauselist_selectivity
+ *		Return the estimated selectivity of the given clauses using MCV list
+ *		statistics, or 1.0 if no useful MCV list statistic exists.
+ */
 Selectivity
 mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 						   List *clauses, int varRelid,
 						   JoinType jointype, SpecialJoinInfo *sjinfo,
-						   RelOptInfo *rel, Bitmapset **estimatedclauses,
+						   RelOptInfo *rel,
 						   bool *fullmatch, Selectivity *lowsel)
 {
 	int			i;

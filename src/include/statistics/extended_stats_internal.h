@@ -114,7 +114,6 @@ extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
 									JoinType jointype,
 									SpecialJoinInfo *sjinfo,
 									RelOptInfo *rel,
-									Bitmapset **estimatedclauses,
 									bool *fulmatch,
 									Selectivity *lowsel);
 extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
@@ -123,8 +122,7 @@ extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
 									int varRelid,
 									JoinType jointype,
 									SpecialJoinInfo *sjinfo,
-									RelOptInfo *rel,
-									Bitmapset **estimatedclauses);
+									RelOptInfo *rel);
 
 #define UPDATE_RESULT(m,r,isor) \
 	(m) = (isor) ? (Max(m,r)) : (Min(m,r))

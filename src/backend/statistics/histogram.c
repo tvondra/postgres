@@ -2601,7 +2601,7 @@ Selectivity
 histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 								 List *clauses, int varRelid,
 								 JoinType jointype, SpecialJoinInfo *sjinfo,
-								 RelOptInfo *rel, Bitmapset **estimatedclauses)
+								 RelOptInfo *rel)
 {
 	int			i;
 	MVSerializedHistogram	   *histogram;

@@ -77,6 +77,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	int			itemcnt;
 	int			numattrs = bms_num_members(attrs);
 	int			numcombs = num_combinations(numattrs);
+	int		   *attnums;
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -84,11 +85,15 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	result->type = STATS_NDISTINCT_TYPE_BASIC;
 	result->nitems = numcombs;
 
+	attnums = build_attnums(attrs);
+
 	itemcnt = 0;
 	for (k = 2; k <= numattrs; k++)
 	{
 		int		   *combination;
 		CombinationGenerator *generator;
+		int		   *attnums_comb = (int *) palloc(k * sizeof(int));
+		VacAttrStats **stats_comb = (VacAttrStats **) palloc(k * sizeof(VacAttrStats *));
 
 		/* generate combinations of K out of N elements */
 		generator = generator_init(numattrs, k);
@@ -100,21 +105,31 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->attrs = NULL;
 			for (j = 0; j < k; j++)
+			{
 				item->attrs = bms_add_member(item->attrs,
-											 stats[combination[j]]->attr->attnum);
+											 attnums[combination[j]]);
+				attnums_comb[j] = attnums[combination[j]];
+				stats_comb[j] = stats[combination[j]];
+			}
+
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
-										  stats, k, combination);
+										  stats_comb, k, attnums_comb);
 
 			itemcnt++;
 			Assert(itemcnt <= result->nitems);
 		}
 
 		generator_free(generator);
+
+		pfree(attnums_comb);
+		pfree(stats_comb);
 	}
 
 	/* must consume exactly the whole output array */
 	Assert(itemcnt == result->nitems);
+
+	pfree(attnums);
 
 	return result;
 }
@@ -420,33 +435,14 @@ static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 						  VacAttrStats **stats, int k, int *combination)
 {
-	int			i,
-				j;
+	int			i;
 	int			f1,
 				cnt,
 				d;
-	bool	   *isnull;
-	Datum	   *values;
 	SortItem   *items;
 	MultiSortSupport mss;
 
 	mss = multi_sort_init(k);
-
-	/*
-	 * In order to determine the number of distinct elements, create separate
-	 * values[]/isnull[] arrays with all the data we have, then sort them
-	 * using the specified column combination as dimensions.  We could try to
-	 * sort in place, but it'd probably be more complex and bug-prone.
-	 */
-	items = (SortItem *) palloc(numrows * sizeof(SortItem));
-	values = (Datum *) palloc0(sizeof(Datum) * numrows * k);
-	isnull = (bool *) palloc0(sizeof(bool) * numrows * k);
-
-	for (i = 0; i < numrows; i++)
-	{
-		items[i].values = &values[i * k];
-		items[i].isnull = &isnull[i * k];
-	}
 
 	/*
 	 * For each dimension, set up sort-support and fill in the values from the
@@ -454,7 +450,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats *colstat = stats[combination[i]];
+		VacAttrStats *colstat = stats[i];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
@@ -464,21 +460,15 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 
 		/* prepare the sort function for this dimension */
 		multi_sort_add_dimension(mss, i, type->lt_opr);
-
-		/* accumulate all the data for this dimension into the arrays */
-		for (j = 0; j < numrows; j++)
-		{
-			items[j].values[i] =
-				heap_getattr(rows[j],
-							 colstat->attr->attnum,
-							 colstat->tupDesc,
-							 &items[j].isnull[i]);
-		}
 	}
 
-	/* We can sort the array now ... */
-	qsort_arg((void *) items, numrows, sizeof(SortItem),
-			  multi_sort_compare, mss);
+	/*
+	 * In order to determine the number of distinct elements, sort the rows
+	 * using the specified column combination as dimensions.  We could try to
+	 * sort in place, but it'd probably be more complex and bug-prone.
+	 */
+	items = build_sorted_items(numrows, rows, stats[0]->tupDesc,
+							   mss, k, combination);
 
 	/* ... and count the number of distinct combinations */
 
@@ -501,6 +491,8 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 
 	if (cnt == 1)
 		f1 += 1;
+
+	pfree(items);
 
 	return estimate_ndistinct(totalrows, numrows, d, f1);
 }

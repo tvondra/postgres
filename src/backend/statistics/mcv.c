@@ -31,20 +31,27 @@
 #include "utils/typcache.h"
 
 /*
- * Each serialized item needs to store (in this order):
+ * Computes size of a serialized MCV item, depending on the number of
+ * dimentions (columns) the statistic is defined on. The datum values are
+ * stored in a separate array (deduplicated, to minimize the size), and
+ * so the serialized items only store uint16 indexes into that array.
  *
- * - indexes			  (ndim * sizeof(uint16))
+ * Each serialized item store (in this order):
+ *
+ * - indexes to values	  (ndim * sizeof(uint16))
  * - null flags			  (ndim * sizeof(bool))
  * - frequency			  (sizeof(double))
  *
- * So in total:
+ * So in total each MCV item requires this many bytes:
  *
  *	 ndim * (sizeof(uint16) + sizeof(bool)) + sizeof(double)
  */
 #define ITEM_SIZE(ndims)	\
 	(ndims * (sizeof(uint16) + sizeof(bool)) + sizeof(double))
 
-/* Macros for convenient access to parts of the serialized MCV item */
+/*
+ * Macros for convenient access to parts of a serialized MCV item.
+ */
 #define ITEM_INDEXES(item)			((uint16*)item)
 #define ITEM_NULLS(item,ndims)		((bool*)(ITEM_INDEXES(item) + ndims))
 #define ITEM_FREQUENCY(item,ndims)	((double*)(ITEM_NULLS(item,ndims) + ndims))
@@ -109,14 +116,25 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	/* transform the sorted rows into groups (sorted by frequency) */
 	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
 
+	/* Either we have both pointers or none of them. */
+	Assert((rows_filtered && numrows_filtered) || (!rows_filtered && !numrows_filtered));
+
 	/*
 	 * Determine the minimum size of a group to be eligible for MCV list, and
 	 * check how many groups actually pass that threshold. We use 1.25x the
-	 * avarage group size, just like for regular statistics.
+	 * avarage group size, just like for regular per-column statistics.
+	 *
+	 * XXX We also use a minimum number of 4 rows for mcv_threshold, not sure
+	 * if that's what per-column statistics do too?
 	 *
 	 * But if we can fit all the distinct values in the MCV list (i.e. if
 	 * there are less distinct groups than STATS_MCVLIST_MAX_ITEMS), we'll
 	 * require only 2 rows per group.
+	 *
+	 * XXX Maybe this part (requiring 2 rows per group) is not very reliable?
+	 * Perhaps we should instead estimate the number of groups the way we
+	 * estimate ndistinct (after all, that's what MCV items are), and base our
+	 * decision on that?
 	 */
 	mcv_threshold = 1.25 * numrows / ndistinct;
 	mcv_threshold = (mcv_threshold < 4) ? 4 : mcv_threshold;
@@ -138,10 +156,16 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	Assert(numrows_mcv <= numrows);
 
-	/* we know the number of MCV list items, so let's build the list */
+	/*
+	 * At this point we know the number of items for the MCV list. There might
+	 * be none (for uniform distribution with many groups), and in that case
+	 * there will be no MCV list. Otherwise construct the MCV list.
+	 */
 	if (nitems > 0)
 	{
-		/* allocate the MCV list structure, set parameters we know */
+		/*
+		 * Allocate the MCV list structure, set the global parameters.
+		 */
 		mcvlist = (MCVList *) palloc0(sizeof(MCVList));
 
 		mcvlist->magic = STATS_MCV_MAGIC;
@@ -153,15 +177,17 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		 * Preallocate Datum/isnull arrays (not as a single chunk, as we will
 		 * pass the result outside and thus it needs to be easy to pfree().
 		 *
-		 * XXX Although we're the only ones dealing with this.
+		 * XXX On second thought, we're the only ones dealing with MCV lists,
+		 * so we might allocate everything as a single chunk without any risk.
+		 * Not sure it's worth it, though.
 		 */
 		mcvlist->items = (MCVItem **) palloc0(sizeof(MCVItem *) * nitems);
 
 		for (i = 0; i < nitems; i++)
 		{
-			mcvlist->items[i] = (MCVItem *) palloc0(sizeof(MCVItem));
-			mcvlist->items[i]->values = (Datum *) palloc0(sizeof(Datum) * numattrs);
-			mcvlist->items[i]->isnull = (bool *) palloc0(sizeof(bool) * numattrs);
+			mcvlist->items[i] = (MCVItem *) palloc(sizeof(MCVItem));
+			mcvlist->items[i]->values = (Datum *) palloc(sizeof(Datum) * numattrs);
+			mcvlist->items[i]->isnull = (bool *) palloc(sizeof(bool) * numattrs);
 		}
 
 		/* Copy the first chunk of groups into the result. */
@@ -174,6 +200,13 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			memcpy(item->values, groups[i].values, sizeof(Datum) * numattrs);
 			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * numattrs);
 
+			/* make sure basic assumptions on group size are correct */
+			Assert(groups[i].count >= mcv_threshold);
+			Assert(groups[i].count <= numrows);
+
+			/* groups should be sorted by frequency in descending order */
+			Assert((i == 0) || (groups[i-1].count >= groups[i].count));
+
 			/* and finally the group frequency */
 			item->frequency = (double) groups[i].count / numrows;
 		}
@@ -181,6 +214,13 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		/* make sure the loops are consistent */
 		Assert(nitems == mcvlist->nitems);
 	}
+
+	/* Assume we're not returning any filtered rows by default. */
+	if (numrows_filtered)
+		*numrows_filtered = 0;
+
+	if (rows_filtered)
+		*rows_filtered = NULL;
 
 	/*
 	 * Produce an array with only tuples not covered by the MCV list. This
@@ -218,9 +258,9 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
 
 		/*
-		* Sort the groups for bsearch_r (but only the items that actually
-		* made it to the MCV list).
-		*/
+		 * Sort the groups for bsearch_r (but only the items that actually
+		 * made it to the MCV list).
+		 */
 		qsort_arg((void *) groups, nitems, sizeof(SortItem),
 				  multi_sort_compare, mss);
 
@@ -248,8 +288,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		/* free all the data used here */
 		pfree(key.values);
 		pfree(key.isnull);
-	} else if (numrows_filtered != NULL)
-		*numrows_filtered = 0;
+	}
 
 	pfree(items);
 	pfree(groups);
@@ -257,7 +296,10 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	return mcvlist;
 }
 
-/* build MultiSortSupport for the attributes passed in attrs */
+/*
+ * build_mss
+ *	build MultiSortSupport for the attributes passed in attrs
+ */
 static MultiSortSupport
 build_mss(VacAttrStats **stats, Bitmapset *attrs)
 {
@@ -272,7 +314,7 @@ build_mss(VacAttrStats **stats, Bitmapset *attrs)
 	j = -1;
 	while ((j = bms_next_member(attrs, j)) >= 0)
 	{
-		VacAttrStats *colstat = stats[i];	/* FIXME maybe this should be "j" ? */
+		VacAttrStats *colstat = stats[i];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
@@ -287,7 +329,12 @@ build_mss(VacAttrStats **stats, Bitmapset *attrs)
 	return mss;
 }
 
-/* count distinct combinations of SortItems in the array */
+/*
+ * count_distinct_groups
+ *	count distinct combinations of SortItems in the array
+ *
+ * The array is assumed to be sorted according to the MultiSortSupport.
+ */
 static int
 count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
 {
@@ -302,7 +349,10 @@ count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
 	return ndistinct;
 }
 
-/* compares frequencies of the SortItem entries (in descending order) */
+/*
+ * compare_sort_item_count
+ *	comparator for sorting items by count (frequencies) in descending order
+ */
 static int
 compare_sort_item_count(const void *a, const void *b)
 {
@@ -317,7 +367,12 @@ compare_sort_item_count(const void *a, const void *b)
 	return 1;
 }
 
-/* builds SortItems for distinct groups and counts the matching items */
+/*
+ * build_distinct_groups
+ *	build array of SortItems for distinct groups and counts matching items
+ *
+ * The input array is assumed to be sorted
+ */
 static SortItem *
 build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 					  int *ndistinct)
@@ -334,12 +389,17 @@ build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 
 	for (i = 1; i < numrows; i++)
 	{
+		/* Assume sorted in ascending order. */
+		Assert(multi_sort_compare(&items[i], &items[i - 1], mss) >= 0);
+
+		/* New distinct group detected. */
 		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 			groups[++j] = items[i];
 
 		groups[j].count++;
 	}
 
+	/* Sort the distinct groups by frequency (in descending order). */
 	pg_qsort((void *) groups, ngroups, sizeof(SortItem),
 			 compare_sort_item_count);
 
@@ -348,27 +408,19 @@ build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 }
 
 
-/* fetch the MCV list (as a bytea) from the pg_statistic_ext catalog */
+/*
+ * statext_mcv_load
+ *		Load the MCV list for the indicated pg_statistic_ext tuple
+ */
 MCVList *
 statext_mcv_load(Oid mvoid)
 {
 	bool		isnull = false;
 	Datum		mcvlist;
-
-#ifdef USE_ASSERT_CHECKING
-	// Form_pg_statistic_ext STATS;
-#endif
-
-	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
 	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 
 	if (!HeapTupleIsValid(htup))
-		return NULL;
-
-#ifdef USE_ASSERT_CHECKING
-	// STATS = (Form_pg_statistic_ext) GETSTRUCT(htup);
-	// Assert(STATS->mcv_enabled && STATS->mcv_built);
-#endif
+		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
 	mcvlist = SysCacheGetAttr(STATEXTOID, htup,
 							  Anum_pg_statistic_ext_stxmcv, &isnull);
@@ -380,29 +432,9 @@ statext_mcv_load(Oid mvoid)
 	return statext_mcv_deserialize(DatumGetByteaP(mcvlist));
 }
 
-/* print some basic info about the MCV list
- *
- * TODO: Add info about what part of the table this covers.
- */
-Datum
-pg_stats_ext_mcvlist_info(PG_FUNCTION_ARGS)
-{
-	bytea	   *data = PG_GETARG_BYTEA_P(0);
-	char	   *result;
-
-	MCVList	   *mcvlist = statext_mcv_deserialize(data);
-
-	result = palloc0(128);
-	snprintf(result, 128, "nitems=%d", mcvlist->nitems);
-
-	pfree(mcvlist);
-
-	PG_RETURN_TEXT_P(cstring_to_text(result));
-}
 
 /*
- * serialize MCV list into a bytea value
- *
+ * Serialize MCV list into a bytea value.
  *
  * The basic algorithm is simple:
  *
@@ -416,15 +448,17 @@ pg_stats_ext_mcvlist_info(PG_FUNCTION_ARGS)
  * (3) process all MCV list items
  *	   (a) replace values with indexes into the arrays
  *
- * Each attribute has to be processed separately, because we may be mixing
- * different datatypes, with different sort operators, etc.
+ * Each attribute has to be processed separately, as we may be mixing different
+ * datatypes, with different sort operators, etc.
  *
- * We'll use uint16 values for the indexes in step (3), as we don't allow more
- * than 8k MCV items, although that's mostly arbitrary limit. We might increase
- * this to 65k and still fit into uint16.
+ * We use uint16 values for the indexes in step (3), as we currently don't allow
+ * more than 8k MCV items anyway, although that's mostly arbitrary limit. We might
+ * increase this to 65k and still fit into uint16. Furthermore, this limit is on
+ * the number of distinct values per column, and we usually have few of those
+ * (and various combinations of them for the those MCV list). So uint16 seems fine.
  *
  * We don't really expect the serialization to save as much space as for
- * histograms, because we are not doing any bucket splits (which is the source
+ * histograms, as we are not doing any bucket splits (which is the source
  * of high redundancy in histograms).
  *
  * TODO: Consider packing boolean flags (NULL) for each item into a single char
@@ -433,8 +467,8 @@ pg_stats_ext_mcvlist_info(PG_FUNCTION_ARGS)
 bytea *
 statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 {
-	int			i,
-				j;
+	int			i;
+	int			dim;
 	int			ndims = mcvlist->ndimensions;
 	int			itemsize = ITEM_SIZE(ndims);
 
@@ -443,7 +477,7 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 
 	Size		total_length;
 
-	/* allocate just once */
+	/* allocate the item just once */
 	char	   *item = palloc0(itemsize);
 
 	/* serialized items (indexes into arrays, etc.) */
@@ -458,63 +492,70 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 	 * We'll include some rudimentary information about the attributes (type
 	 * length, etc.), so that we don't have to look them up while
 	 * deserializing the MCV list.
+	 *
+	 * XXX Maybe this is not a great idea? Or maybe we should actually copy
+	 * more fields, e.g. typeid, which would allow us to display the MCV list
+	 * using only the serialized representation (currently we have to fetch
+	 * this info from the relation).
 	 */
 	info = (DimensionInfo *) palloc0(sizeof(DimensionInfo) * ndims);
 
 	/* sort support data for all attributes included in the MCV list */
 	ssup = (SortSupport) palloc0(sizeof(SortSupportData) * ndims);
 
-	/* collect and deduplicate values for all attributes */
-	for (i = 0; i < ndims; i++)
+	/* collect and deduplicate values for each dimension (attribute) */
+	for (dim = 0; dim < ndims; dim++)
 	{
 		int			ndistinct;
-		StdAnalyzeData *tmp = (StdAnalyzeData *) stats[i]->extra_data;
+		StdAnalyzeData *tmp = (StdAnalyzeData *) stats[dim]->extra_data;
 
 		/* copy important info about the data type (length, by-value) */
-		info[i].typlen = stats[i]->attrtype->typlen;
-		info[i].typbyval = stats[i]->attrtype->typbyval;
+		info[dim].typlen = stats[dim]->attrtype->typlen;
+		info[dim].typbyval = stats[dim]->attrtype->typbyval;
 
 		/* allocate space for values in the attribute and collect them */
-		values[i] = (Datum *) palloc0(sizeof(Datum) * mcvlist->nitems);
+		values[dim] = (Datum *) palloc0(sizeof(Datum) * mcvlist->nitems);
 
-		for (j = 0; j < mcvlist->nitems; j++)
+		for (i = 0; i < mcvlist->nitems; i++)
 		{
-			/* skip NULL values - we don't need to serialize them */
-			if (mcvlist->items[j]->isnull[i])
+			/* skip NULL values - we don't need to deduplicate those */
+			if (mcvlist->items[i]->isnull[dim])
 				continue;
 
-			values[i][counts[i]] = mcvlist->items[j]->values[i];
-			counts[i] += 1;
+			values[dim][counts[dim]] = mcvlist->items[i]->values[dim];
+			counts[dim] += 1;
 		}
 
-		/* there are just NULL values in this dimension, we're done */
-		if (counts[i] == 0)
+		/* if there are just NULL values in this dimension, we're done */
+		if (counts[dim] == 0)
 			continue;
 
 		/* sort and deduplicate the data */
-		ssup[i].ssup_cxt = CurrentMemoryContext;
-		ssup[i].ssup_collation = DEFAULT_COLLATION_OID;
-		ssup[i].ssup_nulls_first = false;
+		ssup[dim].ssup_cxt = CurrentMemoryContext;
+		ssup[dim].ssup_collation = DEFAULT_COLLATION_OID;
+		ssup[dim].ssup_nulls_first = false;
 
-		PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup[i]);
+		PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup[dim]);
 
-		qsort_arg(values[i], counts[i], sizeof(Datum),
-				  compare_scalars_simple, &ssup[i]);
+		qsort_arg(values[dim], counts[dim], sizeof(Datum),
+				  compare_scalars_simple, &ssup[dim]);
 
 		/*
 		 * Walk through the array and eliminate duplicate values, but keep the
-		 * ordering (so that we can do bsearch later). We know there's at
-		 * least one item as (counts[i] != 0), so we can skip the first
-		 * element.
+		 * ordering (so that we can do bsearch later). We know there's at least
+		 * one item as (counts[dim] != 0), so we can skip the first element.
 		 */
 		ndistinct = 1;			/* number of distinct values */
-		for (j = 1; j < counts[i]; j++)
+		for (i = 1; i < counts[dim]; i++)
 		{
+			/* expect sorted array */
+			Assert(compare_datums_simple(values[dim][i - 1], values[dim][i], &ssup[dim]) <= 0);
+
 			/* if the value is the same as the previous one, we can skip it */
-			if (!compare_datums_simple(values[i][j - 1], values[i][j], &ssup[i]))
+			if (!compare_datums_simple(values[dim][i - 1], values[dim][i], &ssup[dim]))
 				continue;
 
-			values[i][ndistinct] = values[i][j];
+			values[dim][ndistinct] = values[dim][i];
 			ndistinct += 1;
 		}
 
@@ -527,46 +568,62 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 		 * types this is trivial to compute, for varwidth types we need to
 		 * actually walk the array and sum the sizes.
 		 */
-		info[i].nvalues = ndistinct;
+		info[dim].nvalues = ndistinct;
 
-		if (info[i].typlen > 0) /* fixed-length data types */
-			info[i].nbytes = info[i].nvalues * info[i].typlen;
-		else if (info[i].typlen == -1)	/* varlena */
+		if (info[dim].typlen > 0) /* fixed-length data types */
+			info[dim].nbytes = info[dim].nvalues * info[dim].typlen;
+		else if (info[dim].typlen == -1)	/* varlena */
 		{
-			info[i].nbytes = 0;
-			for (j = 0; j < info[i].nvalues; j++)
-				info[i].nbytes += VARSIZE_ANY(values[i][j]);
+			info[dim].nbytes = 0;
+			for (i = 0; i < info[dim].nvalues; i++)
+				info[dim].nbytes += VARSIZE_ANY(values[dim][i]);
 		}
-		else if (info[i].typlen == -2)	/* cstring */
+		else if (info[dim].typlen == -2)	/* cstring */
 		{
-			info[i].nbytes = 0;
-			for (j = 0; j < info[i].nvalues; j++)
-				info[i].nbytes += strlen(DatumGetPointer(values[i][j]));
+			info[dim].nbytes = 0;
+			for (i = 0; i < info[dim].nvalues; i++)
+				info[dim].nbytes += strlen(DatumGetPointer(values[dim][i]));
 		}
 
 		/* we know (count>0) so there must be some data */
-		Assert(info[i].nbytes > 0);
+		Assert(info[dim].nbytes > 0);
 	}
 
 	/*
 	 * Now we can finally compute how much space we'll actually need for the
-	 * serialized MCV list, as it contains these fields:
+	 * whole serialized MCV list, as it contains these fields:
 	 *
-	 * - length (4B) for varlena - magic (4B) - type (4B) - ndimensions (4B) -
-	 * nitems (4B) - info (ndim * sizeof(DimensionInfo) - arrays of values for
-	 * each dimension - serialized items (nitems * itemsize)
+	 * - length (4B) for varlena
+	 * - magic (4B)
+	 * - type (4B)
+	 * - ndimensions (4B)
+	 * - nitems (4B)
+	 * - info (ndim * sizeof(DimensionInfo)
+	 * - arrays of values for each dimension
+	 * - serialized items (nitems * itemsize)
 	 *
 	 * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then we
-	 * will place all the data (values + indexes).
+	 * will place all the data (values + indexes). We'll however use offsetof
+	 * and sizeof to compute sizes of the structs.
 	 */
 	total_length = (sizeof(int32) + offsetof(MCVList, items)
-					+ndims * sizeof(DimensionInfo)
+					+ (ndims * sizeof(DimensionInfo))
 					+ mcvlist->nitems * itemsize);
 
+	/* add space for the arrays of deduplicated values */
 	for (i = 0; i < ndims; i++)
 		total_length += info[i].nbytes;
 
-	/* enforce arbitrary limit of 1MB */
+	/*
+	 * Enforce arbitrary limit of 1MB on the size of the serialized MCV list.
+	 * This is meant as a protection against someone building MCV list on long
+	 * values (e.g. text documents).
+	 *
+	 * XXX Should we enforce arbitrary limits like this one? Maybe it's not
+	 * even necessary, as long values are usually unique and so won't make it
+	 * into the MCV list in the first place. In the end, we have a 1GB limit
+	 * on bytea values.
+	 */
 	if (total_length > (1024 * 1024))
 		elog(ERROR, "serialized MCV list exceeds 1MB (%ld)", total_length);
 
@@ -585,40 +642,41 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 	memcpy(data, info, sizeof(DimensionInfo) * ndims);
 	data += sizeof(DimensionInfo) * ndims;
 
-	/* now serialize the deduplicated values for all attributes */
-	for (i = 0; i < ndims; i++)
+	/* Copy the deduplicated values for all attributes to the output. */
+	for (dim = 0; dim < ndims; dim++)
 	{
 #ifdef USE_ASSERT_CHECKING
-		char	   *tmp = data; /* remember the starting point */
+		/* remember the starting point for Asserts later */
+		char	   *tmp = data;
 #endif
-		for (j = 0; j < info[i].nvalues; j++)
+		for (i = 0; i < info[dim].nvalues; i++)
 		{
-			Datum		v = values[i][j];
+			Datum		v = values[dim][i];
 
-			if (info[i].typbyval)		/* passed by value */
+			if (info[dim].typbyval)		/* passed by value */
 			{
-				memcpy(data, &v, info[i].typlen);
-				data += info[i].typlen;
+				memcpy(data, &v, info[dim].typlen);
+				data += info[dim].typlen;
 			}
-			else if (info[i].typlen > 0)		/* pased by reference */
+			else if (info[dim].typlen > 0)		/* pased by reference */
 			{
-				memcpy(data, DatumGetPointer(v), info[i].typlen);
-				data += info[i].typlen;
+				memcpy(data, DatumGetPointer(v), info[dim].typlen);
+				data += info[dim].typlen;
 			}
-			else if (info[i].typlen == -1)		/* varlena */
+			else if (info[dim].typlen == -1)		/* varlena */
 			{
 				memcpy(data, DatumGetPointer(v), VARSIZE_ANY(v));
 				data += VARSIZE_ANY(v);
 			}
-			else if (info[i].typlen == -2)		/* cstring */
+			else if (info[dim].typlen == -2)		/* cstring */
 			{
 				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v)) + 1);
 				data += strlen(DatumGetPointer(v)) + 1; /* terminator */
 			}
 		}
 
-		/* make sure we got exactly the amount of data we expected */
-		Assert((data - tmp) == info[i].nbytes);
+		/* check we got exactly the amount of data we expected for this dimension */
+		Assert((data - tmp) == info[dim].nbytes);
 	}
 
 	/* finally serialize the items, with uint16 indexes instead of the values */
@@ -632,26 +690,26 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 		/* reset the item (we only allocate it once and reuse it) */
 		memset(item, 0, itemsize);
 
-		for (j = 0; j < ndims; j++)
+		for (dim = 0; dim < ndims; dim++)
 		{
 			Datum	   *v = NULL;
 
 			/* do the lookup only for non-NULL values */
-			if (mcvlist->items[i]->isnull[j])
+			if (mcvlist->items[i]->isnull[dim])
 				continue;
 
-			v = (Datum *) bsearch_arg(&mcvitem->values[j], values[j],
-									  info[j].nvalues, sizeof(Datum),
-									  compare_scalars_simple, &ssup[j]);
+			v = (Datum *) bsearch_arg(&mcvitem->values[dim], values[dim],
+									  info[dim].nvalues, sizeof(Datum),
+									  compare_scalars_simple, &ssup[dim]);
 
 			Assert(v != NULL);	/* serialization or deduplication error */
 
 			/* compute index within the array */
-			ITEM_INDEXES(item)[j] = (v - values[j]);
+			ITEM_INDEXES(item)[dim] = (v - values[dim]);
 
 			/* check the index is within expected bounds */
-			Assert(ITEM_INDEXES(item)[j] >= 0);
-			Assert(ITEM_INDEXES(item)[j] < info[j].nvalues);
+			Assert(ITEM_INDEXES(item)[dim] >= 0);
+			Assert(ITEM_INDEXES(item)[dim] < info[dim].nvalues);
 		}
 
 		/* copy NULL and frequency flags into the item */
@@ -667,22 +725,29 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 	/* at this point we expect to match the total_length exactly */
 	Assert((data - (char *) output) == total_length);
 
+	pfree(item);
+	pfree(values);
+	pfree(counts);
+
 	return output;
 }
 
 /*
- * deserialize MCV list from the varlena value
+ * Reads serialized MCV list into MCVList structure.
  *
+ * Unlike with histograms, we deserialize the MCV list fully (i.e. we don't
+ * keep the deduplicated arrays and pointers into them), as we don't expect
+ * there bo be a lot of duplicate values. But perhaps that's not true and we
+ * should keep the MCV in serialized form too.
  *
- * We deserialize the MCV list fully, because we don't expect there bo be a lot
- * of duplicate values. But perhaps we should keep the MCV in serialized form
- * just like histograms.
+ * XXX See how much memory we could save by keeping the deduplicated version
+ * (both for typical and corner cases with few distinct values but many items).
  */
 MCVList *
 statext_mcv_deserialize(bytea *data)
 {
-	int			i,
-				j;
+	int			dim,
+				i;
 	Size		expected_size;
 	MCVList	   *mcvlist;
 	char	   *tmp;
@@ -691,8 +756,6 @@ statext_mcv_deserialize(bytea *data)
 				nitems,
 				itemsize;
 	DimensionInfo *info = NULL;
-
-	uint16	   *indexes = NULL;
 	Datum	  **values = NULL;
 
 	/* local allocation buffer (used only for deserialization) */
@@ -708,10 +771,11 @@ statext_mcv_deserialize(bytea *data)
 	if (data == NULL)
 		return NULL;
 
-	/* we can't deserialize the MCV if there's not even a complete header */
-	expected_size = offsetof(MCVList, items);
-
-	if (VARSIZE_ANY_EXHDR(data) < expected_size)
+	/*
+	 * We can't possibly deserialize a MCV list if there's not even a
+	 * complete header.
+	 */
+	if (VARSIZE_ANY_EXHDR(data) < offsetof(MCVList, items))
 		elog(ERROR, "invalid MCV Size %ld (expected at least %ld)",
 			 VARSIZE_ANY_EXHDR(data), offsetof(MCVList, items));
 
@@ -733,43 +797,73 @@ statext_mcv_deserialize(bytea *data)
 		elog(ERROR, "invalid MCV type %d (expected %dd)",
 			 mcvlist->type, STATS_MCV_TYPE_BASIC);
 
+	if (mcvlist->ndimensions == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid zero-length dimension array in MCVList")));
+	else if (mcvlist->ndimensions > STATS_MAX_DIMENSIONS)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid length (%d) dimension array in MCVList",
+						mcvlist->ndimensions)));
+
+	if (mcvlist->nitems == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid zero-length item array in MCVList")));
+	else if (mcvlist->nitems > STATS_MCVLIST_MAX_ITEMS)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid length (%d) item array in MCVList",
+						mcvlist->nitems)));
+
 	nitems = mcvlist->nitems;
 	ndims = mcvlist->ndimensions;
 	itemsize = ITEM_SIZE(ndims);
-
-	Assert((nitems > 0) && (nitems <= STATS_MCVLIST_MAX_ITEMS));
-	Assert((ndims >= 2) && (ndims <= STATS_MAX_DIMENSIONS));
 
 	/*
 	 * Check amount of data including DimensionInfo for all dimensions and
 	 * also the serialized items (including uint16 indexes). Also, walk
 	 * through the dimension information and add it to the sum.
 	 */
-	expected_size += ndims * sizeof(DimensionInfo) +
+	expected_size = offsetof(MCVList, items) +
+		ndims * sizeof(DimensionInfo) +
 		(nitems * itemsize);
 
-	/* check that we have at least the DimensionInfo records */
+	/*
+	 * Check that we have at least the dimension and info records, along
+	 * with the items. We don't know the size of the serialized values yet.
+	 * We need to do this check first, before accessing the dimension info.
+	 */
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid MCV size %ld (expected %ld)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
+	/* Now it's safe to access the dimention info. */
 	info = (DimensionInfo *) (tmp);
 	tmp += ndims * sizeof(DimensionInfo);
 
 	/* account for the value arrays */
-	for (i = 0; i < ndims; i++)
+	for (dim = 0; dim < ndims; dim++)
 	{
-		Assert(info[i].nvalues >= 0);
-		Assert(info[i].nbytes >= 0);
+		/*
+		 * XXX I wonder if we can/should rely on asserts here. Maybe those
+		 * checks should be done every time?
+		 */
+		Assert(info[dim].nvalues >= 0);
+		Assert(info[dim].nbytes >= 0);
 
-		expected_size += info[i].nbytes;
+		expected_size += info[dim].nbytes;
 	}
 
+	/*
+	 * Nowe we know the total expected MCV size, including all the pieces
+	 * (header, dimension info. items and deduplicated data). So do the
+	 * final check on size.
+	 */
 	if (VARSIZE_ANY_EXHDR(data) != expected_size)
 		elog(ERROR, "invalid MCV size %ld (expected %ld)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
-
-	/* looks OK - not corrupted or something */
 
 	/*
 	 * Allocate one large chunk of memory for the intermediate data, needed
@@ -778,13 +872,22 @@ statext_mcv_deserialize(bytea *data)
 	 *
 	 * Let's see how much space we'll actually need, and also include space
 	 * for the array with pointers.
+	 *
+	 * We need an array of Datum pointers values for each dimension, so that
+	 * we can easily translate the uint16 indexes. We also need a top-level
+	 * array of pointers to those per-dimension arrays.
+	 *
+	 * For byval types with size matching sizeof(Datum) we can reuse the
+	 * serialized array directly.
 	 */
-	bufflen = sizeof(Datum *) * ndims;	/* space for pointers */
+	bufflen = sizeof(Datum **) * ndims;	/* space for top-level pointers */
 
-	for (i = 0; i < ndims; i++)
+	for (dim = 0; dim < ndims; dim++)
+	{
 		/* for full-size byval types, we reuse the serialized value */
-		if (!(info[i].typbyval && info[i].typlen == sizeof(Datum)))
-			bufflen += (sizeof(Datum) * info[i].nvalues);
+		if (!(info[dim].typbyval && info[dim].typlen == sizeof(Datum)))
+			bufflen += (sizeof(Datum) * info[dim].nvalues);
+	}
 
 	buff = palloc0(bufflen);
 	ptr = buff;
@@ -802,66 +905,85 @@ statext_mcv_deserialize(bytea *data)
 	 *
 	 * then 'mcvlist' references the freed memory. Should copy the pieces.
 	 */
-	for (i = 0; i < ndims; i++)
+	for (dim = 0; dim < ndims; dim++)
 	{
-		if (info[i].typbyval)
+#ifdef USE_ASSERT_CHECKING
+		/* remember where data for this dimension starts */
+		char *start = tmp;
+#endif
+		if (info[dim].typbyval)
 		{
-			/* passed by value / Datum - simply reuse the array */
-			if (info[i].typlen == sizeof(Datum))
+			/* passed by value / size matches Datum - just reuse the array */
+			if (info[dim].typlen == sizeof(Datum))
 			{
-				values[i] = (Datum *) tmp;
-				tmp += info[i].nbytes;
+				values[dim] = (Datum *) tmp;
+				tmp += info[dim].nbytes;
 			}
 			else
 			{
-				values[i] = (Datum *) ptr;
-				ptr += (sizeof(Datum) * info[i].nvalues);
+				values[dim] = (Datum *) ptr;
+				ptr += (sizeof(Datum) * info[dim].nvalues);
 
-				for (j = 0; j < info[i].nvalues; j++)
+				for (i = 0; i < info[dim].nvalues; i++)
 				{
 					/* just point into the array */
-					memcpy(&values[i][j], tmp, info[i].typlen);
-					tmp += info[i].typlen;
+					memcpy(&values[dim][i], tmp, info[dim].typlen);
+					tmp += info[dim].typlen;
+
+					/* no overflow of input array */
+					Assert(tmp <= start + info[dim].nbytes);
 				}
 			}
 		}
 		else
 		{
 			/* all the other types need a chunk of the buffer */
-			values[i] = (Datum *) ptr;
-			ptr += (sizeof(Datum) * info[i].nvalues);
+			values[dim] = (Datum *) ptr;
+			ptr += (sizeof(Datum) * info[dim].nvalues);
 
 			/* pased by reference, but fixed length (name, tid, ...) */
-			if (info[i].typlen > 0)
+			if (info[dim].typlen > 0)
 			{
-				for (j = 0; j < info[i].nvalues; j++)
+				for (i = 0; i < info[dim].nvalues; i++)
 				{
 					/* just point into the array */
-					values[i][j] = PointerGetDatum(tmp);
-					tmp += info[i].typlen;
+					values[dim][i] = PointerGetDatum(tmp);
+					tmp += info[dim].typlen;
+
+					/* no overflow of input array */
+					Assert(tmp <= start + info[dim].nbytes);
 				}
 			}
-			else if (info[i].typlen == -1)
+			else if (info[dim].typlen == -1)
 			{
 				/* varlena */
-				for (j = 0; j < info[i].nvalues; j++)
+				for (i = 0; i < info[dim].nvalues; i++)
 				{
 					/* just point into the array */
-					values[i][j] = PointerGetDatum(tmp);
+					values[dim][i] = PointerGetDatum(tmp);
 					tmp += VARSIZE_ANY(tmp);
+
+					/* no overflow of input array */
+					Assert(tmp <= start + info[dim].nbytes);
 				}
 			}
-			else if (info[i].typlen == -2)
+			else if (info[dim].typlen == -2)
 			{
 				/* cstring */
-				for (j = 0; j < info[i].nvalues; j++)
+				for (i = 0; i < info[dim].nvalues; i++)
 				{
 					/* just point into the array */
-					values[i][j] = PointerGetDatum(tmp);
+					values[dim][i] = PointerGetDatum(tmp);
 					tmp += (strlen(tmp) + 1);	/* don't forget the \0 */
+
+					/* no overflow of input array */
+					Assert(tmp <= start + info[dim].nbytes);
 				}
 			}
 		}
+
+		/* check we consumed the serialized data for this dimension exactly */
+		Assert((tmp - start) == info[dim].nbytes);
 	}
 
 	/* we should have exhausted the buffer exactly */
@@ -877,8 +999,10 @@ statext_mcv_deserialize(bytea *data)
 	mcvlist->items = (MCVItem **) rbuff;
 	rptr += (sizeof(MCVItem *) * nitems);
 
+	/* deserialize the MCV items and translate the indexes to Datums */
 	for (i = 0; i < nitems; i++)
 	{
+		uint16	   *indexes = NULL;
 		MCVItem	   *item = (MCVItem *) rptr;
 
 		rptr += (sizeof(MCVItem));
@@ -896,19 +1020,24 @@ statext_mcv_deserialize(bytea *data)
 		memcpy(&item->frequency, ITEM_FREQUENCY(tmp, ndims), sizeof(double));
 
 #ifdef ASSERT_CHECKING
-		for (j = 0; j < ndims; j++)
-			Assert(indexes[j] <= UINT16_MAX);
+		/*
+		 * XXX This seems rather useless, considering the 'indexes' array is
+		 * defined as (uint16*).
+		 */
+		for (dim = 0; dim < ndims; dim++)
+			Assert(indexes[dim] <= UINT16_MAX);
 #endif
 
 		/* translate the values */
-		for (j = 0; j < ndims; j++)
-			if (!item->isnull[j])
-				item->values[j] = values[j][indexes[j]];
+		for (dim = 0; dim < ndims; dim++)
+			if (!item->isnull[dim])
+				item->values[dim] = values[dim][indexes[dim]];
 
 		mcvlist->items[i] = item;
 
 		tmp += ITEM_SIZE(ndims);
 
+		/* check we're not overflowing the input */
 		Assert(tmp <= (char *) data + VARSIZE_ANY(data));
 	}
 
@@ -1096,12 +1225,10 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_mcv_list_in		- input routine for type PG_MCV_LIST.
+ * pg_mcv_list_in		- input routine for type pg_mcv_list.
  *
  * pg_mcv_list is real enough to be a table column, but it has no operations
  * of its own, and disallows input too
- *
- * XXX This is inspired by what pg_node_tree does.
  */
 Datum
 pg_mcv_list_in(PG_FUNCTION_ARGS)
@@ -1125,7 +1252,9 @@ pg_mcv_list_in(PG_FUNCTION_ARGS)
  * to serialize the value into text. But it'd be nice to serialize that into
  * a meaningful representation (e.g. for inspection by people).
  *
- * FIXME not implemented yet, returning dummy value
+ * XXX This should probably return something meaningful, similar to what
+ * pg_dependencies_out does. Not sure how to deal with the deduplicated
+ * values, though - do we want to expand that or not?
  */
 Datum
 pg_mcv_list_out(PG_FUNCTION_ARGS)
@@ -1134,7 +1263,7 @@ pg_mcv_list_out(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_mcv_list_recv		- binary input routine for type PG_MCV_LIST.
+ * pg_mcv_list_recv		- binary input routine for type pg_mcv_list.
  */
 Datum
 pg_mcv_list_recv(PG_FUNCTION_ARGS)
@@ -1147,9 +1276,10 @@ pg_mcv_list_recv(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_mcv_list_send		- binary output routine for type PG_MCV_LIST.
+ * pg_mcv_list_send		- binary output routine for type pg_mcv_list.
  *
- * XXX MCV lists are serialized into a bytea value, so let's just send that.
+ * MCV lists are serialized in a bytea value (although the type is named
+ * differently), so let's just send that.
  */
 Datum
 pg_mcv_list_send(PG_FUNCTION_ARGS)
@@ -1158,16 +1288,24 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * Evaluate clauses using the MCV list, and update the match bitmap.
+ * mcv_update_match_bitmap
+ *	Evaluate clauses using the MCV list, and update the match bitmap.
  *
- * The bitmap may be already partially set, so this is really a way to
- * combine results of several clause lists - either when computing
- * conditional probability P(A|B) or a combination of AND/OR clauses.
+ * A match bitmap keeps match/mismatch status for each MCV item, and we
+ * update it based on additional clauses. We also use it to skip items
+ * that can't possibly match (e.g. item marked as "mismatch" can't change
+ * to "match" when evaluating AND clause list).
  *
- * TODO: This works with 'bitmap' where each bit is represented as a char,
- * which is slightly wasteful. Instead, we could use a regular
- * bitmap, reducing the size to ~1/8. Another thing is merging the
- * bitmaps using & and |, which might be faster than min/max.
+ * The function returns the number of items currently marked as 'match', and
+ * it also returns two additional pieces of information - a flag indicating
+ * whether there was an equality condition for all attributes, and the
+ * minimum frequency in the MCV list.
+ *
+ * XXX Currently the match bitmap uses a char for each MCV item, which is
+ * somewhat wasteful as we could do with just a single bit, thus reducing
+ * the size to ~1/8. It would also allow us to combine bitmaps simply using
+ * & and |, which should be faster than min/max. The bitmaps are fairly
+ * small, though (as we cap the MCV list size to 8k items).
  */
 static int
 mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
@@ -1189,28 +1327,21 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
 
-	/* No possible matches (only works for AND-ded clauses) */
-	if (((nmatches == 0) && (!is_or)) ||
-		((nmatches == mcvlist->nitems) && is_or))
+	/*
+	 * Handle cases where either all MCV items are marked as mismatch (AND),
+	 * or match (OR). In those cases additional clauses can't possibly change
+	 * match status of any items, so don't waste time by trying.
+	 */
+	if (((nmatches == 0) && (!is_or)) ||			/* AND-ed clauses */
+		((nmatches == mcvlist->nitems) && is_or))	/* OR-ed clauses */
 		return nmatches;
 
 	/*
-	 * find the lowest frequency in the MCV list
-	 *
-	 * We need to do that here, because we do various tricks in the following
-	 * code - skipping items already ruled out, etc.
-	 *
-	 * XXX A loop is necessary because the MCV list is not sorted by
-	 * frequency.
+	 * Find the lowest frequency in the MCV list. The MCV list is sorted by
+	 * frequency in descending order, so simply get frequency of the the last
+	 * MCV item.
 	 */
-	*lowsel = 1.0;
-	for (i = 0; i < mcvlist->nitems; i++)
-	{
-		MCVItem	   *item = mcvlist->items[i];
-
-		if (item->frequency < *lowsel)
-			*lowsel = item->frequency;
-	}
+	*lowsel = mcvlist->items[mcvlist->nitems-1]->frequency;
 
 	/*
 	 * Loop through the list of clauses, and for each of them evaluate all the
@@ -1224,12 +1355,15 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 		if (IsA(clause, RestrictInfo))
 			clause = (Node *) ((RestrictInfo *) clause)->clause;
 
-		/* if there are no remaining matches possible, we can stop */
+		/*
+		 * Check it still makes sense to continue evaluating the clauses on the
+		 * MCV list, just like we did at the very beginning.
+		 */
 		if (((nmatches == 0) && (!is_or)) ||
 			((nmatches == mcvlist->nitems) && is_or))
 			break;
 
-		/* it's either OpClause, or NullTest */
+		/* Handle the various types of clauses - OpClause, NullTest and AND/OR/NOT */
 		if (is_opclause(clause))
 		{
 			OpExpr	   *expr = (OpExpr *) clause;

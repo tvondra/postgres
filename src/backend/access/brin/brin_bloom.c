@@ -39,15 +39,27 @@
  */
 #define		PROCNUM_BASE			11
 
+
+#define		BLOOM_PHASE_SORTED		1
+#define		BLOOM_PHASE_HASH		2
+
+/* how many hashes to accumulate before hashing */
+#define		BLOOM_MAX_UNSORTED		64
+
 typedef struct BloomFilter
 {
 	/* varlena header (do not touch directly!) */
 	int32	vl_len_;
 
-	int		nhashes;	/* number of hash functions */
-	int		nbits;		/* number of bits in the bloom filter */
-	int		nvalues;	/* number of values added */
-	int		nsets;		/* number of bits set */
+	/* global bloom filter parameters */
+	uint32	phase;		/* phase (initially SORTED, then HASH) */
+	uint32	nhashes;	/* number of hash functions */
+	uint32	nbits;		/* number of bits in the bitmap */
+	uint32	nbits_set;	/* number of bits set to 1 */
+
+	/* fields used only in the EXACT phase */
+	uint32	nvalues;	/* number of hashes stored (sorted + extra) */
+	uint32	nsorted;	/* number of uint32 hashes in sorted part */
 
 	/* bitmap of the bloom filter */
 	char 	bitmap[FLEXIBLE_ARRAY_MEMBER];
@@ -79,6 +91,7 @@ bloom_init(int ndistinct, double false_positives)
 	len = offsetof(BloomFilter, bitmap) + (m/8);
 	filter = (BloomFilter *) palloc0(len);
 
+	filter->phase = BLOOM_PHASE_SORTED;
 	filter->nhashes = k;
 	filter->nbits = m;
 
@@ -86,6 +99,64 @@ bloom_init(int ndistinct, double false_positives)
 
 	return filter;
 }
+
+static int
+cmp_uint32(const void *a, const void *b)
+{
+	uint32 *ia = (uint32 *) a;
+	uint32 *ib = (uint32 *) b;
+
+	if (*ia == *ib)
+		return 0;
+	else if (*ia < *ib)
+		return -1;
+	else
+		return 1;
+}
+
+
+static void
+bloom_compact(BloomFilter *filter)
+{
+	int i,
+	nvalues;
+
+	uint32 *values;
+
+	/* no chance to compact anything */
+	if (filter->nvalues == filter->nsorted)
+		return;
+
+	values = (uint32 *) palloc(filter->nvalues * sizeof(uint32));
+
+	/* copy the data, then reset the bitmap */
+	memcpy(values, filter->bitmap, filter->nvalues * sizeof(uint32));
+	memset(filter->bitmap, 0, filter->nbits / 8);
+
+	/* FIXME optimization: sort only the unsorted part, then merge */
+	pg_qsort(values, filter->nvalues, sizeof(uint32), cmp_uint32);
+
+	nvalues = 1;
+	for (i = 1; i < filter->nvalues; i++)
+	{
+		/* if a new value, keep it */
+		if (values[i] != values[i-1])
+		{
+			values[nvalues] = values[i];
+			nvalues++;
+		}
+	}
+
+	filter->nvalues = nvalues;
+	filter->nsorted = nvalues;
+
+	memcpy(filter->bitmap, values, nvalues * sizeof(uint32));
+
+	pfree(values);
+}
+
+static void
+bloom_switch_to_hashing(BloomFilter *filter);
 
 static bool
 bloom_add_value(BloomFilter *filter, uint32 value)
@@ -95,6 +166,47 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 
 	Assert(filter);
 
+	/* if we're in the sorted phase, we store the hashes directly */
+	if (filter->phase == BLOOM_PHASE_SORTED)
+	{
+		int maxvalues = filter->nbits / (8 * sizeof(uint32));
+
+		/*
+		 * In this branch we always update the filter - we either add the
+		 * hash to the unsorted part, or switch the filter to hashing.
+		 */
+		updated = true;
+
+		/*
+		 * If the array is full, or if we reached the limit on unsorted
+		 * items, try to compact the filter first, before attempting to
+		 * add the new value.
+		 */
+		if ((filter->nvalues == maxvalues) ||
+			(filter->nvalues - filter->nsorted == BLOOM_MAX_UNSORTED))
+				bloom_compact(filter);
+
+		/* can we squeeze one more uint32 hash into the bitmap? */
+		if (filter->nvalues < maxvalues)
+		{
+			/* copy the data into the bitmap */
+			memcpy(&filter->bitmap[filter->nvalues * sizeof(uint32)],
+				   &value, sizeof(uint32));
+
+			filter->nvalues++;
+
+			/* we're done */
+			return updated;
+		}
+
+		/* can't add any more exact hashes, so switch to hashing */
+		bloom_switch_to_hashing(filter);
+	}
+
+	/* we better be in the regular hashing phase */
+	Assert(filter->phase == BLOOM_PHASE_HASH);
+
+	/* we're in the ah */
 	for (i = 0; i < filter->nhashes; i++)
 	{
 		uint32 h = (value + i * 937) % filter->nbits;
@@ -106,23 +218,64 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 		if (! (filter->bitmap[byte] & (0x01 << bit)))
 		{
 			filter->bitmap[byte] |= (0x01 << bit);
-			filter->nsets++;
+			filter->nbits_set++;
 			updated = true;
 		}
 	}
 
-	filter->nvalues++;
-
 	return updated;
 }
+
+static void
+bloom_switch_to_hashing(BloomFilter *filter)
+{
+	int		i;
+	uint32 *values;
+
+	filter->phase = BLOOM_PHASE_HASH;
+
+	elog(WARNING, "switching %p to hashing", filter);
+
+	values = (uint32 *) palloc(filter->nvalues * sizeof(uint32));
+	memcpy(values, filter->bitmap, filter->nvalues * sizeof(uint32));
+	memset(filter->bitmap, 0, filter->nvalues * sizeof(uint32));
+
+	for (i = 0; i < filter->nvalues; i++)
+		bloom_add_value(filter, values[i]);
+
+	filter->nvalues = 0;
+	filter->nsorted = 0;
+}
+
 
 static bool
 bloom_contains_value(BloomFilter *filter, uint32 value)
 {
 	int		i;
-	bool	contains = true;
 
 	Assert(filter);
+
+	if (filter->phase == BLOOM_PHASE_SORTED)
+	{
+		int i;
+		uint32 *values = (uint32 *)filter->bitmap;
+
+		/* first search through the sorted part */
+		if ((filter->nsorted > 0) &&
+			(bsearch(&value, values, filter->nsorted, sizeof(uint32), cmp_uint32) != NULL))
+			return true;
+
+		/* now search through the unsorted part - linear search */
+		for (i = filter->nsorted; i < filter->nvalues; i++)
+			if (value == values[i])
+				return true;
+
+		/* nothing found */
+		return false;
+	}
+
+	/* now the regular hashing mode */
+	Assert(filter->phase == BLOOM_PHASE_HASH);
 
 	for (i = 0; i < filter->nhashes; i++)
 	{
@@ -133,21 +286,17 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 
 		/* if the bit is not set, the value is not there */
 		if (! (filter->bitmap[byte] & (0x01 << bit)))
-		{
-			contains = false;
-			break;
-		}
+			return false;
 	}
 
-	filter->nvalues++;
-
-	return contains;
+	/* all hashes found in bloom filter */
+	return true;
 }
 
 static int
 bloom_filter_count(BloomFilter *filter)
 {
-	return ceil(- filter->nbits * 1.0 / filter->nhashes * log(1 - filter->nsets * 1.0 / filter->nbits));
+	return ceil(- (filter->nbits * 1.0 / filter->nhashes * log(1 - filter->nbits_set * 1.0 / filter->nbits)));
 }
 
 typedef struct BloomOpaque
@@ -237,8 +386,8 @@ brin_bloom_add_value(PG_FUNCTION_ARGS)
 	else
 		filter = (BloomFilter *) DatumGetPointer(column->bv_values[0]);
 
-	elog(WARNING, "brin_bloom_add_value: filter=%p bits=%d hashes=%d values=%d set=%d count=%d",
-				  filter, filter->nbits, filter->nhashes, filter->nvalues, filter->nsets,
+	elog(DEBUG1, "brin_bloom_add_value: filter=%p bits=%d hashes=%d values=%d set=%d estimate=%d",
+				  filter, filter->nbits, filter->nhashes, filter->nvalues, filter->nbits_set,
 				  bloom_filter_count(filter));
 
 	/*

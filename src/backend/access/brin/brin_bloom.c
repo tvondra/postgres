@@ -24,6 +24,8 @@
 
 #include <math.h>
 
+#define BloomEqualStrategyNumber	1
+
 /*
  * Additional SQL level support functions
  *
@@ -461,7 +463,7 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 	value = key->sk_argument;
 	switch (key->sk_strategy)
 	{
-		case BTEqualStrategyNumber:
+		case BloomEqualStrategyNumber:
 
 			/*
 			 * In the equality case (WHERE col = someval), we want to return

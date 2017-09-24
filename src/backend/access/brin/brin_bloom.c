@@ -87,7 +87,7 @@ bloom_init(int ndistinct, double false_positives)
 
 	k = round(log(2.0) * m / ndistinct);
 
-	elog(WARNING, "create bloom filter m=%d k=%d", m, k);
+	elog(DEBUG1, "create bloom filter m=%d k=%d", m, k);
 
 	/* allocate the bloom filter */
 	len = offsetof(BloomFilter, bitmap) + (m/8);
@@ -236,7 +236,7 @@ bloom_switch_to_hashing(BloomFilter *filter)
 
 	filter->phase = BLOOM_PHASE_HASH;
 
-	elog(WARNING, "switching %p to hashing", filter);
+	elog(DEBUG1, "switching %p to hashing", filter);
 
 	values = (uint32 *) palloc(filter->nvalues * sizeof(uint32));
 	memcpy(values, filter->bitmap, filter->nvalues * sizeof(uint32));
@@ -531,7 +531,7 @@ brin_bloom_union(PG_FUNCTION_ARGS)
 	}
 
 	/* FIXME merge the two bloom filters */
-	elog(WARNING, "FIXME: merge bloom filters");
+	elog(DEBUG1, "FIXME: merge bloom filters");
 
 	PG_RETURN_VOID();
 }

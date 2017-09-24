@@ -83,11 +83,6 @@
  * XXX Perhaps we could save a few bytes by using different data types, but
  * considering the size of the bitmap, the difference is negligible.
  *
- * XXX We allocate all the memory (including the full bitmap) from the very
- * beginning, so that we don't have to repalloc it later. But maybe that's
- * silly and only results in larger indexes (assuming the pglz compression
- * either does not kick in, or does not compress the zeroes at the end).
- *
  * XXX We could also implement "sparse" bloom filters, keeping only the
  * bytes that are not entirely 0. That might make the "sorted" phase
  * mostly unnecessary.

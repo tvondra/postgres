@@ -47,7 +47,8 @@
 #define		BLOOM_PHASE_HASH		2
 
 /* how many hashes to accumulate before hashing */
-#define		BLOOM_MAX_UNSORTED		64
+#define		BLOOM_MAX_UNSORTED		32
+#define		BLOOM_GROW_BYTES		32
 
 /*
  * Bloom Filter
@@ -103,7 +104,7 @@ typedef struct BloomFilter
 	/* global bloom filter parameters */
 	uint32	phase;		/* phase (initially SORTED, then HASH) */
 	uint32	nhashes;	/* number of hash functions */
-	uint32	nbits;		/* number of bits in the bitmap */
+	uint32	nbits;		/* number of bits in the bitmap (optimal) */
 	uint32	nbits_set;	/* number of bits set to 1 */
 
 	/* fields used only in the EXACT phase */
@@ -145,8 +146,12 @@ bloom_init(int ndistinct, double false_positive_rate)
 
 	elog(DEBUG1, "create bloom filter m=%d k=%d", m, k);
 
-	/* allocate the bloom filter */
-	len = offsetof(BloomFilter, bitmap) + (m/8);
+	/*
+	 * Allocate the bloom filter with a minimum size 64B (about 40B in the
+	 * bitmap part). We require space at least for the header.
+	 */
+	len = Max(offsetof(BloomFilter, bitmap), 64);
+
 	filter = (BloomFilter *) palloc0(len);
 
 	filter->phase = BLOOM_PHASE_SORTED;
@@ -181,6 +186,15 @@ cmp_uint32(const void *a, const void *b)
  * Firstly, to keep most of the data sorted for bsearch lookups. Secondly,
  * we try to save space by removing the duplicates, allowing us to stay
  * in the sorted phase a bit longer.
+ *
+ * We currently don't repalloc the bitmap, i.e. we don't free the memory
+ * here - in the worst case we waste space for up to 32 unsorted hashes
+ * (if all of them are already in the sorted part), so about 128B. We can
+ * either reduce the number of unsorted items (e.g. to 8 hashes, which
+ * would mean 32B), or start doing the repalloc.
+ *
+ * XXX Actually, we don't need to do repalloc - we just need to set the
+ * varlena header length!
  */
 static void
 bloom_compact(BloomFilter *filter)
@@ -200,7 +214,7 @@ bloom_compact(BloomFilter *filter)
 
 	/* copy the data, then reset the bitmap */
 	memcpy(values, filter->bitmap, filter->nvalues * sizeof(uint32));
-	memset(filter->bitmap, 0, filter->nbits / 8);
+	memset(filter->bitmap, 0, filter->nvalues * sizeof(uint32));
 
 	/* FIXME optimization: sort only the unsorted part, then merge */
 	pg_qsort(values, filter->nvalues, sizeof(uint32), cmp_uint32);
@@ -224,18 +238,21 @@ bloom_compact(BloomFilter *filter)
 	pfree(values);
 }
 
-static void
+static BloomFilter *
 bloom_switch_to_hashing(BloomFilter *filter);
 
 /*
  * bloom_add_value
  * 		Add value to the bloom filter.
  */
-static bool
-bloom_add_value(BloomFilter *filter, uint32 value)
+static BloomFilter *
+bloom_add_value(BloomFilter *filter, uint32 value, bool *updated)
 {
 	int		i;
-	bool	updated = false;
+
+	/* assume 'not updated' by default */
+	if (updated)
+		*updated = false;
 
 	Assert(filter);
 
@@ -253,7 +270,8 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 		 * In this branch we always update the filter - we either add the
 		 * hash to the unsorted part, or switch the filter to hashing.
 		 */
-		updated = true;
+		if (updated)
+			*updated = true;
 
 		/*
 		 * If the array is full, or if we reached the limit on unsorted
@@ -264,9 +282,29 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 			(filter->nvalues - filter->nsorted == BLOOM_MAX_UNSORTED))
 				bloom_compact(filter);
 
-		/* can we squeeze one more uint32 hash into the bitmap? */
+		/*
+		 * Can we squeeze one more uint32 hash into the bitmap? Also make
+		 * sure there's enough space in the bytea value first.
+		 */
 		if (filter->nvalues < maxvalues)
 		{
+			Size len = VARSIZE_ANY(filter);
+			Size need = offsetof(BloomFilter,bitmap) + (filter->nvalues+1) * sizeof(uint32);
+
+			if (len < need)
+			{
+				/*
+				 * We don't double the size here, as in the first place we care about
+				 * reducing storage requirements, and the doubling happens automatically
+				 * in memory contexts anyway.
+				 *
+				 * XXX Zero the newly allocated part. Maybe not really needed?
+				 */
+				filter = (BloomFilter *) repalloc(filter, len + BLOOM_GROW_BYTES);
+				memset((char *)filter + len, 0, BLOOM_GROW_BYTES);
+				SET_VARSIZE(filter, len + BLOOM_GROW_BYTES);
+			}
+
 			/* copy the data into the bitmap */
 			memcpy(&filter->bitmap[filter->nvalues * sizeof(uint32)],
 				   &value, sizeof(uint32));
@@ -274,11 +312,11 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 			filter->nvalues++;
 
 			/* we're done */
-			return updated;
+			return filter;
 		}
 
 		/* can't add any more exact hashes, so switch to hashing */
-		bloom_switch_to_hashing(filter);
+		filter = bloom_switch_to_hashing(filter);
 	}
 
 	/* we better be in the regular hashing phase */
@@ -301,36 +339,52 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 		{
 			filter->bitmap[byte] |= (0x01 << bit);
 			filter->nbits_set++;
-			updated = true;
+			if (updated)
+				*updated = true;
 		}
 	}
 
-	return updated;
+	return filter;
 }
 
 /*
  * bloom_switch_to_hashing
  * 		Switch the bloom filter from sorted to hashing mode.
  */
-static void
+static BloomFilter *
 bloom_switch_to_hashing(BloomFilter *filter)
 {
 	int		i;
 	uint32 *values;
+	Size			len;
+	BloomFilter	   *newfilter;
 
-	filter->phase = BLOOM_PHASE_HASH;
+	elog(WARNING, "switching %p to hashing (sorted %d, total %d)", filter, filter->nsorted, filter->nvalues);
 
-	elog(DEBUG1, "switching %p to hashing", filter);
+	/*
+	 * The new filter is allocated with all the memory, directly into
+	 * the HASH phase.
+	 */
+	len = offsetof(BloomFilter, bitmap) + (filter->nbits / 8);
 
-	values = (uint32 *) palloc(filter->nvalues * sizeof(uint32));
-	memcpy(values, filter->bitmap, filter->nvalues * sizeof(uint32));
-	memset(filter->bitmap, 0, filter->nvalues * sizeof(uint32));
+	newfilter = (BloomFilter *) palloc0(len);
+
+	newfilter->nhashes = filter->nhashes;
+	newfilter->nbits = filter->nbits;
+	newfilter->phase = BLOOM_PHASE_HASH;
+
+	SET_VARSIZE(newfilter, len);
+
+	values = (uint32 *) filter->bitmap;
 
 	for (i = 0; i < filter->nvalues; i++)
-		bloom_add_value(filter, values[i]);
+		/* ignore the return value here, re don't repalloc in hashing mode */
+		bloom_add_value(newfilter, values[i], NULL);
 
-	filter->nvalues = 0;
-	filter->nsorted = 0;
+	/* free the original filter, return the newly allocated one */
+	pfree(filter);
+
+	return newfilter;
 }
 
 /*
@@ -496,8 +550,7 @@ brin_bloom_add_value(PG_FUNCTION_ARGS)
 
 	hashValue = DatumGetUInt32(FunctionCall1Coll(hashFn, colloid, newval));
 
-	if (bloom_add_value(filter, hashValue))
-		updated = true;
+	column->bv_values[0] = PointerGetDatum(bloom_add_value(filter, hashValue, &updated));
 
 	PG_RETURN_BOOL(updated);
 }

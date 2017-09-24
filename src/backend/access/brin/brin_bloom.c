@@ -13,6 +13,7 @@
 #include "access/genam.h"
 #include "access/brin_internal.h"
 #include "access/brin_tuple.h"
+#include "access/hash.h"
 #include "access/stratnum.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_amop.h"
@@ -48,6 +49,48 @@
 /* how many hashes to accumulate before hashing */
 #define		BLOOM_MAX_UNSORTED		64
 
+/*
+ * Bloom Filter
+ *
+ * Represents a bloom filter, built on hashes of the indexed values. That is,
+ * we compute a uint32 hash of the value, and then store this hash into the
+ * bloom filter (and compute additional hashes on it).
+ *
+ * We use an optimisation that initially we store the uint32 values directly,
+ * without the extra hashing step. And only later filling the bitmap space,
+ * we switch to the regular bloom filter mode.
+ *
+ * PHASE_SORTED
+ *
+ * Initially we copy the uint32 hash into the bitmap, regularly sorting the
+ * hash values for fast lookup (we keep at most BLOOM_MAX_UNSORTED unsorted
+ * values).
+ *
+ * The idea is that if we only see very few distinct values, we can store
+ * them in less space compared to the (sparse) bloom filter bitmap. It also
+ * stores them exactly, although that's not a big advantage as almost-empty
+ * bloom filter has false positive rate close to zero anyway.
+ *
+ * PHASE_HASH
+ *
+ * Once we fill the bitmap space in the sorted phase, we switch to the hash
+ * phase, where we actually use the bloom filter. We treat the uint32 hashes
+ * as input values, and hash them again with different seeds (to get the k
+ * hash functions needed for bloom filter).
+ *
+ *
+ * XXX Perhaps we could save a few bytes by using different data types, but
+ * considering the size of the bitmap, the difference is negligible.
+ *
+ * XXX We allocate all the memory (including the full bitmap) from the very
+ * beginning, so that we don't have to repalloc it later. But maybe that's
+ * silly and only results in larger indexes (assuming the pglz compression
+ * either does not kick in, or does not compress the zeroes at the end).
+ *
+ * XXX We could also implement "sparse" bloom filters, keeping only the
+ * bytes that are not entirely 0. That might make the "sorted" phase
+ * mostly unnecessary.
+ */
 typedef struct BloomFilter
 {
 	/* varlena header (do not touch directly!) */
@@ -68,8 +111,16 @@ typedef struct BloomFilter
 
 } BloomFilter;
 
+/*
+ * bloom_init
+ * 		Initialize the Bloom Filter, allocate all the memory.
+ *
+ * The filter is initialized with optimal size for ndistinct expected
+ * values, and requested false positive rate. The filter is stored as
+ * varlena.
+ */
 static BloomFilter *
-bloom_init(int ndistinct, double false_positives)
+bloom_init(int ndistinct, double false_positive_rate)
 {
 	Size			len;
 	BloomFilter	   *filter;
@@ -78,9 +129,10 @@ bloom_init(int ndistinct, double false_positives)
 	int m;	/* number of bits */
 	int k;	/* number of hash functions */
 
-	Assert((false_positives > 0) && (false_positives < 1.0));
+	Assert((ndistinct > 0) && (ndistinct < 10000));	/* 10k is mostly arbitrary limit */
+	Assert((false_positive_rate > 0) && (false_positive_rate < 1.0));
 
-	m = ceil((ndistinct * log(false_positives)) / log(1.0 / (pow(2.0, log(2.0)))));
+	m = ceil((ndistinct * log(false_positive_rate)) / log(1.0 / (pow(2.0, log(2.0)))));
 
 	/* round m to whole bytes */
 	m = ((m + 7) / 8) * 8;
@@ -102,6 +154,7 @@ bloom_init(int ndistinct, double false_positives)
 	return filter;
 }
 
+/* simple uint32 comparator, for pg_qsort and bsearch */
 static int
 cmp_uint32(const void *a, const void *b)
 {
@@ -116,14 +169,24 @@ cmp_uint32(const void *a, const void *b)
 		return 1;
 }
 
-
+/*
+ * bloom_compact
+ *		Compact the filter during the 'sorted' phase.
+ *
+ * We sort the uint32 hashes and remove duplicates, for two main reasons.
+ * Firstly, to keep most of the data sorted for bsearch lookups. Secondly,
+ * we try to save space by removing the duplicates, allowing us to stay
+ * in the sorted phase a bit longer.
+ */
 static void
 bloom_compact(BloomFilter *filter)
 {
-	int i,
-	nvalues;
-
+	int		i,
+			nvalues;
 	uint32 *values;
+
+	/* never call compact on filters in HASH phase */
+	Assert(filter->phase == BLOOM_PHASE_SORTED);
 
 	/* no chance to compact anything */
 	if (filter->nvalues == filter->nsorted)
@@ -160,6 +223,10 @@ bloom_compact(BloomFilter *filter)
 static void
 bloom_switch_to_hashing(BloomFilter *filter);
 
+/*
+ * bloom_add_value
+ * 		Add value to the bloom filter.
+ */
 static bool
 bloom_add_value(BloomFilter *filter, uint32 value)
 {
@@ -171,7 +238,12 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 	/* if we're in the sorted phase, we store the hashes directly */
 	if (filter->phase == BLOOM_PHASE_SORTED)
 	{
+		/* how many uint32 hashes can we fit into the bitmap */
 		int maxvalues = filter->nbits / (8 * sizeof(uint32));
+
+		/* do not overflow the bitmap space or number of unsorted items */
+		Assert(filter->nvalues <= maxvalues);
+		Assert(filter->nvalues - filter->nsorted <= BLOOM_MAX_UNSORTED);
 
 		/*
 		 * In this branch we always update the filter - we either add the
@@ -211,7 +283,11 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 	/* we're in the ah */
 	for (i = 0; i < filter->nhashes; i++)
 	{
-		uint32 h = (value + i * 937) % filter->nbits;
+		/*
+		 * Our "hash functions" are effectively hashes of the original
+		 * hash, with different seeds.
+		 */
+		uint32 h = ((uint32)DatumGetInt64(hash_uint32_extended(value, i))) % filter->nbits;
 
 		int byte = (h / 8);
 		int bit  = (h % 8);
@@ -228,6 +304,10 @@ bloom_add_value(BloomFilter *filter, uint32 value)
 	return updated;
 }
 
+/*
+ * bloom_switch_to_hashing
+ * 		Switch the bloom filter from sorted to hashing mode.
+ */
 static void
 bloom_switch_to_hashing(BloomFilter *filter)
 {
@@ -249,7 +329,10 @@ bloom_switch_to_hashing(BloomFilter *filter)
 	filter->nsorted = 0;
 }
 
-
+/*
+ * bloom_contains_value
+ * 		Check if the bloom filter contains a particular value.
+ */
 static bool
 bloom_contains_value(BloomFilter *filter, uint32 value)
 {
@@ -257,6 +340,7 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 
 	Assert(filter);
 
+	/* in sorted mode we simply search the two arrays (sorted, unsorted) */
 	if (filter->phase == BLOOM_PHASE_SORTED)
 	{
 		int i;
@@ -281,7 +365,8 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 
 	for (i = 0; i < filter->nhashes; i++)
 	{
-		uint32 h = (value + i * 937) % filter->nbits;
+		/* compute the hashes with a seed, used for the bloom filter */
+		uint32 h = ((uint32)DatumGetInt64(hash_uint32_extended(value, i))) % filter->nbits;
 
 		int byte = (h / 8);
 		int bit  = (h % 8);
@@ -295,19 +380,25 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 	return true;
 }
 
+/*
+ * bloom_filter_count
+ * 		Estimate the number of distinct values stored in the bloom filter.
+ */
 static int
 bloom_filter_count(BloomFilter *filter)
 {
-	return ceil(- (filter->nbits * 1.0 / filter->nhashes * log(1 - filter->nbits_set * 1.0 / filter->nbits)));
+	if (filter->phase == BLOOM_PHASE_SORTED)
+		return (filter->nvalues + filter->nsorted);
+	else
+		return ceil(- (filter->nbits * 1.0 / filter->nhashes * log(1 - filter->nbits_set * 1.0 / filter->nbits)));
 }
 
 typedef struct BloomOpaque
 {
 	/*
-	 * XXX At this point we only need a single proc, but let's keep the
-	 * array just like inclusion and minman opclasses, for consistency.
-	 * Also, we may need additional procs in the future, e.g. to merge
-	 * the bloom filters.
+	 * XXX At this point we only need a single proc (to compute the hash),
+	 * but let's keep the array just like inclusion and minman opclasses,
+	 * for consistency. We may need additional procs in the future.
 	 */
 	FmgrInfo	extra_procinfos[BLOOM_MAX_PROCNUMS];
 	bool		extra_proc_missing[BLOOM_MAX_PROCNUMS];
@@ -315,6 +406,7 @@ typedef struct BloomOpaque
 
 static FmgrInfo *bloom_get_procinfo(BrinDesc *bdesc, uint16 attno,
 					   uint16 procnum);
+
 
 Datum
 brin_bloom_opcinfo(PG_FUNCTION_ARGS)
@@ -531,7 +623,7 @@ brin_bloom_union(PG_FUNCTION_ARGS)
 	}
 
 	/* FIXME merge the two bloom filters */
-	elog(DEBUG1, "FIXME: merge bloom filters");
+	elog(WARNING, "FIXME: merge bloom filters");
 
 	PG_RETURN_VOID();
 }

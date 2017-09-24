@@ -49,6 +49,8 @@
 /* how many hashes to accumulate before hashing */
 #define		BLOOM_MAX_UNSORTED		32
 #define		BLOOM_GROW_BYTES		32
+#define		BLOOM_NDISTINCT			1000	/* number of distinct values */
+#define		BLOOM_ERROR_RATE		0.05	/* 2% false positive rate */
 
 /*
  * Bloom Filter
@@ -525,7 +527,7 @@ brin_bloom_add_value(PG_FUNCTION_ARGS)
 	 */
 	if (column->bv_allnulls)
 	{
-		filter = bloom_init(1000, 0.05);
+		filter = bloom_init(BLOOM_NDISTINCT, BLOOM_ERROR_RATE);
 		column->bv_values[0] = PointerGetDatum(filter);
 		column->bv_allnulls = false;
 		updated = true;

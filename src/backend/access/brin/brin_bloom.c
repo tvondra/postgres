@@ -90,6 +90,10 @@
  * XXX We could also implement "sparse" bloom filters, keeping only the
  * bytes that are not entirely 0. That might make the "sorted" phase
  * mostly unnecessary.
+ *
+ * XXX We can also watch the number of bits set in the bloom filter, and
+ * then stop using it (and not store the bitmap, to save space) when the
+ * false positive rate gets too high.
  */
 typedef struct BloomFilter
 {

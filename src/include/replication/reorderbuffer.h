@@ -57,6 +57,7 @@ enum ReorderBufferChangeType
 	REORDER_BUFFER_CHANGE_UPDATE,
 	REORDER_BUFFER_CHANGE_DELETE,
 	REORDER_BUFFER_CHANGE_MESSAGE,
+	REORDER_BUFFER_CHANGE_INVALIDATION,
 	REORDER_BUFFER_CHANGE_INTERNAL_SNAPSHOT,
 	REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID,
 	REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID,
@@ -136,6 +137,16 @@ typedef struct ReorderBufferChange
 			CommandId	cmax;
 			CommandId	combocid;
 		}			tuplecid;
+
+		/* Invalidation. */
+		struct
+		{
+			Oid			dbId;	/* MyDatabaseId */
+			Oid			tsId;	/* MyDatabaseTableSpace */
+			bool		relcacheInitFileInval;	/* invalidate relcache init
+												 * file */
+			SharedInvalidationMessage msg;	/* invalidation message */
+		}			inval;
 	}			data;
 
 	/*
@@ -399,6 +410,9 @@ void ReorderBufferAddNewCommandId(ReorderBuffer *, TransactionId, XLogRecPtr lsn
 void ReorderBufferAddNewTupleCids(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
 							 RelFileNode node, ItemPointerData pt,
 							 CommandId cmin, CommandId cmax, CommandId combocid);
+void ReorderBufferAddInvalidation(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
+							 Oid dbId, Oid tsId, bool relcacheInitFileInval,
+							 SharedInvalidationMessage msg);
 void ReorderBufferAddInvalidations(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
 							  Size nmsgs, SharedInvalidationMessage *msgs);
 void ReorderBufferImmediateInvalidation(ReorderBuffer *, uint32 ninvalidations,

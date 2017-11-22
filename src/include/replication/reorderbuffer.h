@@ -325,6 +325,44 @@ typedef void (*ReorderBufferMessageCB) (
 										const char *prefix, Size sz,
 										const char *message);
 
+/* stream change callback signature */
+typedef void (*ReorderBufferStreamChangeCB) (
+											 ReorderBuffer *rb,
+											 ReorderBufferTXN *txn,
+											 Relation relation,
+											 ReorderBufferChange *change);
+
+/* stream message callback signature */
+typedef void (*ReorderBufferStreamMessageCB) (
+											  ReorderBuffer *rb,
+											  ReorderBufferTXN *txn,
+											  XLogRecPtr message_lsn,
+											  bool transactional,
+											  const char *prefix, Size sz,
+											  const char *message);
+
+/* discard streamed transaction callback signature */
+typedef void (*ReorderBufferStreamAbortCB) (
+											ReorderBuffer *rb,
+											ReorderBufferTXN *txn,
+											XLogRecPtr abort_lsn);
+
+/* commit streamed transaction callback signature */
+typedef void (*ReorderBufferStreamCommitCB) (
+											 ReorderBuffer *rb,
+											 ReorderBufferTXN *txn,
+											 XLogRecPtr commit_lsn);
+
+/* start streaming transaction callback signature */
+typedef void (*ReorderBufferStreamStartCB) (
+											ReorderBuffer *rb,
+											ReorderBufferTXN *txn);
+
+/* stop streaming transaction callback signature */
+typedef void (*ReorderBufferStreamStopCB) (
+										   ReorderBuffer *rb,
+										   ReorderBufferTXN *txn);
+
 struct ReorderBuffer
 {
 	/*
@@ -352,6 +390,16 @@ struct ReorderBuffer
 	ReorderBufferApplyChangeCB apply_change;
 	ReorderBufferCommitCB commit;
 	ReorderBufferMessageCB message;
+
+	/*
+	 * Callbacks to be called when streaming a transaction.
+	 */
+	ReorderBufferStreamStartCB stream_start;
+	ReorderBufferStreamStopCB stream_stop;
+	ReorderBufferStreamChangeCB stream_change;
+	ReorderBufferStreamMessageCB stream_message;
+	ReorderBufferStreamAbortCB stream_abort;
+	ReorderBufferStreamCommitCB stream_commit;
 
 	/*
 	 * Pointer that will be passed untouched to the callbacks.

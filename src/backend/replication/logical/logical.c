@@ -995,7 +995,7 @@ stream_start_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn)
 	/* Push callback + info on the error context stack */
 	state.ctx = ctx;
 	state.callback_name = "stream_start";
-	/* state.report_location = apply_lsn; */
+	state.report_location = InvalidXLogRecPtr;
 	errcallback.callback = output_plugin_error_callback;
 	errcallback.arg = (void *) &state;
 	errcallback.previous = error_context_stack;
@@ -1032,7 +1032,7 @@ stream_stop_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn)
 	/* Push callback + info on the error context stack */
 	state.ctx = ctx;
 	state.callback_name = "stream_stop";
-	/* state.report_location = apply_lsn; */
+	state.report_location = InvalidXLogRecPtr;
 	errcallback.callback = output_plugin_error_callback;
 	errcallback.arg = (void *) &state;
 	errcallback.previous = error_context_stack;

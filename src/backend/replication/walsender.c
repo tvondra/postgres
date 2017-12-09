@@ -922,6 +922,12 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 										WalSndUpdateProgress);
 
 		/*
+		 * Make sure streaming is disabled here - we may have the methods,
+		 * but we don't have anywhere to send the data yet.
+		 */
+		ctx->streaming = false;
+
+		/*
 		 * Signal that we don't need the timeout mechanism. We're just
 		 * creating the replication slot and don't yet accept feedback
 		 * messages or send keepalives. As we possibly need to wait for

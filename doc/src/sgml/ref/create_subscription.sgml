@@ -213,7 +213,19 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
          <para>
           Limits the amount of memory used to decode changes on the
           publisher.  If not specified, the publisher will use the default
-          specified by <variable>logical_work_mem</variable>.
+          specified by <varname>logical_work_mem</varname>.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal>streaming</literal> (<type>boolean</type>)</term>
+        <listitem>
+         <para>
+          Specifies whether streaming of in-progress transactions should
+          be enabled for this subscription.  By default, all transactions
+          are fully decoded on the publisher, and only then sent to the
+          subscriber as a whole.
          </para>
         </listitem>
        </varlistentry>

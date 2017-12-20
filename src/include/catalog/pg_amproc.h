@@ -415,6 +415,55 @@ DATA(insert (	4054	23	  21  2  3384 ));
 DATA(insert (	4054	23	  21  3  3385 ));
 DATA(insert (	4054	23	  21  4  3386 ));
 
+/* minmax multi integer: int2, int4, int8 */
+DATA(insert (	4126	20	  20  1  4001 ));
+DATA(insert (	4126	20	  20  2  4002 ));
+DATA(insert (	4126	20	  20  3  4003 ));
+DATA(insert (	4126	20	  20  4  4004 ));
+DATA(insert (	4126	20	  20  11 4013 ));
+DATA(insert (	4126	20	  21  1  4001 ));
+DATA(insert (	4126	20	  21  2  4002 ));
+DATA(insert (	4126	20	  21  3  4003 ));
+DATA(insert (	4126	20	  21  4  4004 ));
+DATA(insert (	4126	20	  21  11 4013 ));
+DATA(insert (	4126	20	  23  1  4001 ));
+DATA(insert (	4126	20	  23  2  4002 ));
+DATA(insert (	4126	20	  23  3  4003 ));
+DATA(insert (	4126	20	  23  4  4004 ));
+DATA(insert (	4126	20	  23  11 4013 ));
+
+DATA(insert (	4126	21	  21  1  4001 ));
+DATA(insert (	4126	21	  21  2  4002 ));
+DATA(insert (	4126	21	  21  3  4003 ));
+DATA(insert (	4126	21	  21  4  4004 ));
+DATA(insert (	4126	21	  21  11 4011 ));
+DATA(insert (	4126	21	  20  1  4001 ));
+DATA(insert (	4126	21	  20  2  4002 ));
+DATA(insert (	4126	21	  20  3  4003 ));
+DATA(insert (	4126	21	  20  4  4004 ));
+DATA(insert (	4126	21	  20  11 4011 ));
+DATA(insert (	4126	21	  23  1  4001 ));
+DATA(insert (	4126	21	  23  2  4002 ));
+DATA(insert (	4126	21	  23  3  4003 ));
+DATA(insert (	4126	21	  23  4  4004 ));
+DATA(insert (	4126	21	  23  11 4011 ));
+
+DATA(insert (	4126	23	  23  1  4001 ));
+DATA(insert (	4126	23	  23  2  4002 ));
+DATA(insert (	4126	23	  23  3  4003 ));
+DATA(insert (	4126	23	  23  4  4004 ));
+DATA(insert (	4126	23	  23  11 4012 ));
+DATA(insert (	4126	23	  20  1  4001 ));
+DATA(insert (	4126	23	  20  2  4002 ));
+DATA(insert (	4126	23	  20  3  4003 ));
+DATA(insert (	4126	23	  20  4  4004 ));
+DATA(insert (	4126	23	  20  11 4012 ));
+DATA(insert (	4126	23	  21  1  4001 ));
+DATA(insert (	4126	23	  21  2  4002 ));
+DATA(insert (	4126	23	  21  3  4003 ));
+DATA(insert (	4126	23	  21  4  4004 ));
+DATA(insert (	4126	23	  21  11 4012 ));
+
 /* bloom integer: int2, int4, int8 */
 DATA(insert (	5024	20	  20  1  5017 ));
 DATA(insert (	5024	20	  20  2  5018 ));
@@ -450,6 +499,12 @@ DATA(insert (	4068	26	  26  1  3383 ));
 DATA(insert (	4068	26	  26  2  3384 ));
 DATA(insert (	4068	26	  26  3  3385 ));
 DATA(insert (	4068	26	  26  4  3386 ));
+/* minmax multi oid */
+DATA(insert (	4127	26	  26  1  4001 ));
+DATA(insert (	4127	26	  26  2  4002 ));
+DATA(insert (	4127	26	  26  3  4003 ));
+DATA(insert (	4127	26	  26  4  4004 ));
+DATA(insert (	4127	26	  26 11  4012 ));
 /* bloom oid */
 DATA(insert (	5029	26	  26  1  5017 ));
 DATA(insert (	5029	26	  26  2  5018 ));
@@ -461,6 +516,12 @@ DATA(insert (	4069	27	  27  1  3383 ));
 DATA(insert (	4069	27	  27  2  3384 ));
 DATA(insert (	4069	27	  27  3  3385 ));
 DATA(insert (	4069	27	  27  4  3386 ));
+/* minmax multi tid */
+DATA(insert (	4128	27	  27  1  4001 ));
+DATA(insert (	4128	27	  27  2  4002 ));
+DATA(insert (	4128	27	  27  3  4003 ));
+DATA(insert (	4128	27	  27  4  4004 ));
+DATA(insert (	4128	27	  27  11 4129 ));
 /* minmax float */
 DATA(insert (	4070   700	 700  1  3383 ));
 DATA(insert (	4070   700	 700  2  3384 ));
@@ -481,6 +542,31 @@ DATA(insert (	4070   701	 700  1  3383 ));
 DATA(insert (	4070   701	 700  2  3384 ));
 DATA(insert (	4070   701	 700  3  3385 ));
 DATA(insert (	4070   701	 700  4  3386 ));
+
+/* minmax multi float */
+DATA(insert (	4005   700	 700  1  4001 ));
+DATA(insert (	4005   700	 700  2  4002 ));
+DATA(insert (	4005   700	 700  3  4003 ));
+DATA(insert (	4005   700	 700  4  4004 ));
+DATA(insert (	4005   700	 700  11 4010 ));
+
+DATA(insert (	4005   700	 701  1  4001 ));
+DATA(insert (	4005   700	 701  2  4002 ));
+DATA(insert (	4005   700	 701  3  4003 ));
+DATA(insert (	4005   700	 701  4  4004 ));
+DATA(insert (	4005   700	 701  11 4010 ));
+
+DATA(insert (	4005   701	 701  1  4001 ));
+DATA(insert (	4005   701	 701  2  4002 ));
+DATA(insert (	4005   701	 701  3  4003 ));
+DATA(insert (	4005   701	 701  4  4004 ));
+DATA(insert (	4005   701	 701  11 4007 ));
+
+DATA(insert (	4005   701	 700  1  4001 ));
+DATA(insert (	4005   701	 700  2  4002 ));
+DATA(insert (	4005   701	 700  3  4003 ));
+DATA(insert (	4005   701	 700  4  4004 ));
+DATA(insert (	4005   701	 700  11 4007 ));
 
 /* bloom float */
 DATA(insert (	5030   700	 700  1  5017 ));
@@ -620,6 +706,55 @@ DATA(insert (	4059  1082	1184  2  3384 ));
 DATA(insert (	4059  1082	1184  3  3385 ));
 DATA(insert (	4059  1082	1184  4  3386 ));
 
+/* minmax multi (date, timestamp, timestamptz) */
+DATA(insert (	4006  1114	1114  1  4001 ));
+DATA(insert (	4006  1114	1114  2  4002 ));
+DATA(insert (	4006  1114	1114  3  4003 ));
+DATA(insert (	4006  1114	1114  4  4004 ));
+DATA(insert (	4006  1114	1114  11 4007 ));
+DATA(insert (	4006  1114	1184  1  4001 ));
+DATA(insert (	4006  1114	1184  2  4002 ));
+DATA(insert (	4006  1114	1184  3  4003 ));
+DATA(insert (	4006  1114	1184  4  4004 ));
+DATA(insert (	4006  1114	1184  11 4007 ));
+DATA(insert (	4006  1114	1082  1  4001 ));
+DATA(insert (	4006  1114	1082  2  4002 ));
+DATA(insert (	4006  1114	1082  3  4003 ));
+DATA(insert (	4006  1114	1082  4  4004 ));
+DATA(insert (	4006  1114	1082  11 4007 ));
+
+DATA(insert (	4006  1184	1184  1  4001 ));
+DATA(insert (	4006  1184	1184  2  4002 ));
+DATA(insert (	4006  1184	1184  3  4003 ));
+DATA(insert (	4006  1184	1184  4  4004 ));
+DATA(insert (	4006  1184	1184  11 4007 ));
+DATA(insert (	4006  1184	1114  1  4001 ));
+DATA(insert (	4006  1184	1114  2  4002 ));
+DATA(insert (	4006  1184	1114  3  4003 ));
+DATA(insert (	4006  1184	1114  4  4004 ));
+DATA(insert (	4006  1184	1114  11 4007 ));
+DATA(insert (	4006  1184	1082  1  4001 ));
+DATA(insert (	4006  1184	1082  2  4002 ));
+DATA(insert (	4006  1184	1082  3  4003 ));
+DATA(insert (	4006  1184	1082  4  4004 ));
+DATA(insert (	4006  1184	1082  11 4007 ));
+
+DATA(insert (	4006  1082	1082  1  4001 ));
+DATA(insert (	4006  1082	1082  2  4002 ));
+DATA(insert (	4006  1082	1082  3  4003 ));
+DATA(insert (	4006  1082	1082  4  4004 ));
+DATA(insert (	4006  1082	1082  11 4007 ));
+DATA(insert (	4006  1082	1114  1  4001 ));
+DATA(insert (	4006  1082	1114  2  4002 ));
+DATA(insert (	4006  1082	1114  3  4003 ));
+DATA(insert (	4006  1082	1114  4  4004 ));
+DATA(insert (	4006  1082	1114  11 4007 ));
+DATA(insert (	4006  1082	1184  1  4001 ));
+DATA(insert (	4006  1082	1184  2  4002 ));
+DATA(insert (	4006  1082	1184  3  4003 ));
+DATA(insert (	4006  1082	1184  4  4004 ));
+DATA(insert (	4006  1082	1184  11 4007 ));
+
 /* bloom datetime (date, timestamp, timestamptz) */
 DATA(insert (	5038  1114	1114  1  5017 ));
 DATA(insert (	5038  1114	1114  2  5018 ));
@@ -676,6 +811,12 @@ DATA(insert (	4055  1700	1700  1  3383 ));
 DATA(insert (	4055  1700	1700  2  3384 ));
 DATA(insert (	4055  1700	1700  3  3385 ));
 DATA(insert (	4055  1700	1700  4  3386 ));
+/* minmax multi numeric */
+DATA(insert (	4008  1700	1700  1  4001 ));
+DATA(insert (	4008  1700	1700  2  4002 ));
+DATA(insert (	4008  1700	1700  3  4003 ));
+DATA(insert (	4008  1700	1700  4  4004 ));
+DATA(insert (	4008  1700	1700 11  4009 ));
 /* bloom numeric */
 DATA(insert (	5045  1700	1700  1  5017 ));
 DATA(insert (	5045  1700	1700  2  5018 ));
@@ -687,6 +828,12 @@ DATA(insert (	4081  2950	2950  1  3383 ));
 DATA(insert (	4081  2950	2950  2  3384 ));
 DATA(insert (	4081  2950	2950  3  3385 ));
 DATA(insert (	4081  2950	2950  4  3386 ));
+/* minmax multi uuid */
+DATA(insert (	4131  2950	2950  1  4001 ));
+DATA(insert (	4131  2950	2950  2  4002 ));
+DATA(insert (	4131  2950	2950  3  4003 ));
+DATA(insert (	4131  2950	2950  4  4004 ));
+DATA(insert (	4131  2950	2950  11 4130 ));
 /* bloom uuid */
 DATA(insert (	5046  2950	2950  1  5017 ));
 DATA(insert (	5046  2950	2950  2  5018 ));

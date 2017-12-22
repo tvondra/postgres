@@ -3419,9 +3419,6 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	rb->streamTxns += (txn->streamed) ? 1 : 0;
 	rb->streamBytes += txn->size;
 
-	elog(WARNING, "updating stream stats %p %ld %ld %ld",
-		 rb, rb->streamCount, rb->streamTxns, txn->size);
-
 	/*
 	 * Discard the changes that we just streamed, and mark the transactions
 	 * as streamed (if they contained changes).

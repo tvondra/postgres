@@ -3605,9 +3605,5 @@ UpdateSpillStats(LogicalDecodingContext *ctx)
 	MyWalSnd->streamCount = rb->streamCount;
 	MyWalSnd->streamBytes = rb->streamBytes;
 
-	elog(WARNING, "UpdateSpillStats: updating stats %p %ld %ld %ld %ld %ld %ld",
-		 rb, rb->spillTxns, rb->spillCount, rb->spillBytes,
-			 rb->streamTxns, rb->streamCount, rb->streamBytes);
-
 	SpinLockRelease(&MyWalSnd->mutex);
 }

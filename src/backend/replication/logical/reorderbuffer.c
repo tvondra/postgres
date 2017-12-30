@@ -802,6 +802,8 @@ ReorderBufferAssignChild(ReorderBuffer *rb, TransactionId xid,
 
 	if (new_sub)
 	{
+		subtxn->is_known_as_subxact = true;
+
 		/*
 		 * we assign subtransactions to top level transaction even if we don't
 		 * have data for it yet, assignment records frequently reference xids

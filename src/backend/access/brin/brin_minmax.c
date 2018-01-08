@@ -147,86 +147,130 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 {
 	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
 	BrinValues *column = (BrinValues *) PG_GETARG_POINTER(1);
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(2);
+	ScanKey	   *keys = (ScanKey *) PG_GETARG_POINTER(2);
+	int			nkeys = PG_GETARG_INT32(3);
 	Oid			colloid = PG_GET_COLLATION(),
 				subtype;
 	AttrNumber	attno;
 	Datum		value;
 	Datum		matches;
 	FmgrInfo   *finfo;
+	int			keyno;
+	bool		regular_keys = false;
 
-	Assert(key->sk_attno == column->bv_attno);
-
-	/* handle IS NULL/IS NOT NULL tests */
-	if (key->sk_flags & SK_ISNULL)
+	/*
+	 * First check if there are any IS NULL scan keys, and if we're
+	 * violating them. In that case we can terminate early, without
+	 * inspecting the ranges.
+	 */
+	for (keyno = 0; keyno < nkeys; keyno++)
 	{
-		if (key->sk_flags & SK_SEARCHNULL)
+		ScanKey	key = keys[keyno];
+
+		Assert(key->sk_attno == column->bv_attno);
+
+		/* handle IS NULL/IS NOT NULL tests */
+		if (key->sk_flags & SK_ISNULL)
 		{
-			if (column->bv_allnulls || column->bv_hasnulls)
-				PG_RETURN_BOOL(true);
-			PG_RETURN_BOOL(false);
-		}
+			if (key->sk_flags & SK_SEARCHNULL)
+			{
+				if (column->bv_allnulls || column->bv_hasnulls)
+					continue;	/* this key is fine, continue */
 
-		/*
-		 * For IS NOT NULL, we can only skip ranges that are known to have
-		 * only nulls.
-		 */
-		if (key->sk_flags & SK_SEARCHNOTNULL)
-			PG_RETURN_BOOL(!column->bv_allnulls);
-
-		/*
-		 * Neither IS NULL nor IS NOT NULL was used; assume all indexable
-		 * operators are strict and return false.
-		 */
-		PG_RETURN_BOOL(false);
-	}
-
-	/* if the range is all empty, it cannot possibly be consistent */
-	if (column->bv_allnulls)
-		PG_RETURN_BOOL(false);
-
-	attno = key->sk_attno;
-	subtype = key->sk_subtype;
-	value = key->sk_argument;
-	switch (key->sk_strategy)
-	{
-		case BTLessStrategyNumber:
-		case BTLessEqualStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			break;
-		case BTEqualStrategyNumber:
+				PG_RETURN_BOOL(false);
+			}
 
 			/*
-			 * In the equality case (WHERE col = someval), we want to return
-			 * the current page range if the minimum value in the range <=
-			 * scan key, and the maximum value >= scan key.
+			 * For IS NOT NULL, we can only skip ranges that are known to have
+			 * only nulls.
 			 */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTLessEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			if (!DatumGetBool(matches))
+			if (key->sk_flags & SK_SEARCHNOTNULL)
+			{
+				if (column->bv_allnulls)
+					PG_RETURN_BOOL(false);
+
+				continue;
+			}
+
+			/*
+			 * Neither IS NULL nor IS NOT NULL was used; assume all indexable
+			 * operators are strict and return false.
+			 */
+			PG_RETURN_BOOL(false);
+		}
+		else
+			/* note we have regular (non-NULL) scan keys */
+			regular_keys = true;
+	}
+
+	/*
+	 * If the page range is all nulls, it cannot possibly be consistent if
+	 * there are some regular scan keys.
+	 */
+	if (column->bv_allnulls && regular_keys)
+		PG_RETURN_BOOL(false);
+
+	/* If there are no regular keys, the page range is considered consistent. */
+	if (!regular_keys)
+		PG_RETURN_BOOL(true);
+
+	matches = true;
+
+	for (keyno = 0; keyno < nkeys; keyno++)
+	{
+		ScanKey	key = keys[keyno];
+
+		/* ignore IS NULL/IS NOT NULL tests handled above */
+		if (key->sk_flags & SK_ISNULL)
+			continue;
+
+		attno = key->sk_attno;
+		subtype = key->sk_subtype;
+		value = key->sk_argument;
+		switch (key->sk_strategy)
+		{
+			case BTLessStrategyNumber:
+			case BTLessEqualStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
 				break;
-			/* max() >= scankey */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTGreaterEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		case BTGreaterEqualStrategyNumber:
-		case BTGreaterStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		default:
-			/* shouldn't happen */
-			elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-			matches = 0;
+			case BTEqualStrategyNumber:
+
+				/*
+				* In the equality case (WHERE col = someval), we want to return
+				* the current page range if the minimum value in the range <=
+				* scan key, and the maximum value >= scan key.
+				*/
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													BTLessEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
+				if (!DatumGetBool(matches))
+					break;
+				/* max() >= scankey */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													BTGreaterEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			case BTGreaterEqualStrategyNumber:
+			case BTGreaterStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			default:
+				/* shouldn't happen */
+				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+				matches = 0;
+				break;
+		}
+
+		/* found non-matching key */
+		if (!matches)
 			break;
 	}
 

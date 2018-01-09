@@ -4374,6 +4374,16 @@ DESCR("BRIN inclusion support");
 DATA(insert OID = 4108 ( brin_inclusion_union	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_inclusion_union _null_ _null_ _null_ ));
 DESCR("BRIN inclusion support");
 
+/* BRIN bloom */
+DATA(insert OID = 5017 ( brin_bloom_opcinfo		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "2281" _null_ _null_ _null_ _null_ _null_ brin_bloom_opcinfo _null_ _null_ _null_ ));
+DESCR("BRIN bloom support");
+DATA(insert OID = 5018 ( brin_bloom_add_value	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 4 0 16 "2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_bloom_add_value _null_ _null_ _null_ ));
+DESCR("BRIN bloom support");
+DATA(insert OID = 5019 ( brin_bloom_consistent	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_bloom_consistent _null_ _null_ _null_ ));
+DESCR("BRIN bloom support");
+DATA(insert OID = 5020 ( brin_bloom_union		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_bloom_union _null_ _null_ _null_ ));
+DESCR("BRIN bloom support");
+
 /* userlock replacements */
 DATA(insert OID = 2880 (  pg_advisory_lock				PGNSP PGUID 12 1 0 0 0 f f f f t f v u 1 0 2278 "20" _null_ _null_ _null_ _null_ _null_ pg_advisory_lock_int8 _null_ _null_ _null_ ));
 DESCR("obtain exclusive advisory lock");

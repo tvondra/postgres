@@ -71,6 +71,7 @@ typedef struct BrinDesc
 #define BRIN_MANDATORY_NPROCS		4
 /* procedure numbers up to 10 are reserved for BRIN future expansion */
 #define BRIN_FIRST_OPTIONAL_PROCNUM 11
+#define BRIN_PROCNUM_FINALIZE		12
 #define BRIN_LAST_OPTIONAL_PROCNUM	15
 
 #undef BRIN_DEBUG

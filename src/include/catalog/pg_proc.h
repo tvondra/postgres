@@ -4357,7 +4357,7 @@ DATA(insert OID = 2749 (  arraycontained	   PGNSP PGUID 12 1 0 0 0 f f f f t f i
 /* BRIN minmax */
 DATA(insert OID = 3383 ( brin_minmax_opcinfo	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_opcinfo _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
-DATA(insert OID = 3384 ( brin_minmax_add_value	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 4 0 16 "2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_add_value _null_ _null_ _null_ ));
+DATA(insert OID = 3384 ( brin_minmax_add_value	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 5 0 16 "2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_add_value _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
 DATA(insert OID = 3385 ( brin_minmax_consistent PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_consistent _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
@@ -4367,11 +4367,13 @@ DESCR("BRIN minmax support");
 /* BRIN minmax multi */
 DATA(insert OID = 4001 ( brin_minmax_multi_opcinfo	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_opcinfo _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
-DATA(insert OID = 4002 ( brin_minmax_multi_add_value	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 4 0 16 "2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_add_value _null_ _null_ _null_ ));
+DATA(insert OID = 4002 ( brin_minmax_multi_add_value	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 5 0 16 "2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_add_value _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
 DATA(insert OID = 4003 ( brin_minmax_multi_consistent PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_consistent _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
 DATA(insert OID = 4004 ( brin_minmax_multi_union		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 16 "2281 2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_union _null_ _null_ _null_ ));
+DESCR("BRIN minmax support");
+DATA(insert OID = 4099 ( brin_minmax_multi_finalize		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_finalize _null_ _null_ _null_ ));
 DESCR("BRIN minmax support");
 DATA(insert OID = 4011 ( brin_minmax_multi_distance_int2		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_distance_int2 _null_ _null_ _null_ ));
 DESCR("BRIN minmax compute distance between int2 values");

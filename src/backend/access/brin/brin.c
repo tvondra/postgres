@@ -236,12 +236,13 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 			bval = &dtup->bt_columns[keyno];
 			addValue = index_getprocinfo(idxRel, keyno + 1,
 										 BRIN_PROCNUM_ADDVALUE);
-			result = FunctionCall4Coll(addValue,
+			result = FunctionCall5Coll(addValue,
 									   idxRel->rd_indcollation[keyno],
 									   PointerGetDatum(bdesc),
 									   PointerGetDatum(bval),
 									   values[keyno],
-									   nulls[keyno]);
+									   nulls[keyno],
+									   BoolGetDatum(false));
 			/* if that returned true, we need to insert the updated tuple */
 			need_insert |= DatumGetBool(result);
 		}
@@ -769,11 +770,12 @@ brinbuildCallback(Relation index,
 		/*
 		 * Update dtuple state, if and as necessary.
 		 */
-		FunctionCall4Coll(addValue,
+		FunctionCall5Coll(addValue,
 						  attr->attcollation,
 						  PointerGetDatum(state->bs_bdesc),
 						  PointerGetDatum(col),
-						  values[i], isnull[i]);
+						  values[i], isnull[i],
+						  BoolGetDatum(true));
 	}
 }
 
@@ -1503,6 +1505,43 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 	}
 }
 
+
+static void
+brin_finalize(BrinBuildState *state)
+{
+	int	keyno;
+	Relation idxRel = state->bs_irel;
+	BrinDesc *brdesc = state->bs_bdesc;
+	BrinMemTuple *dtup = state->bs_dtuple;
+
+	for (keyno = 0; keyno < brdesc->bd_tupdesc->natts; keyno++)
+	{
+		BrinValues *bval;
+		FmgrInfo   *finalize;
+		RegProcedure	procId;
+
+		/* ignore all-null summaries */
+		if (dtup->bt_columns[keyno].bv_allnulls)
+			continue;
+
+		procId = index_getprocid(idxRel, keyno + 1,
+								 BRIN_PROCNUM_FINALIZE);
+
+		if (!RegProcedureIsValid(procId))
+			continue;
+
+		finalize = index_getprocinfo(idxRel, keyno + 1,
+									 BRIN_PROCNUM_FINALIZE);
+
+		bval = &dtup->bt_columns[keyno];
+
+		FunctionCall2Coll(finalize,
+						  idxRel->rd_indcollation[keyno],
+						  PointerGetDatum(brdesc),
+						  PointerGetDatum(bval));
+	}
+}
+
 /*
  * Given a deformed tuple in the build state, convert it into the on-disk
  * format and insert it into the index, making the revmap point to it.
@@ -1512,6 +1551,8 @@ form_and_insert_tuple(BrinBuildState *state)
 {
 	BrinTuple  *tup;
 	Size		size;
+
+	brin_finalize(state);
 
 	tup = brin_form_tuple(state->bs_bdesc, state->bs_currRangeStart,
 						  state->bs_dtuple, &size);

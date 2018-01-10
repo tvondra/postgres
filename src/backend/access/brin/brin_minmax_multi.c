@@ -80,6 +80,7 @@
  */
 #define		MINMAX_MAX_PROCNUMS		1	/* maximum support procs we need */
 #define		PROCNUM_DISTANCE		11	/* required, distance between values*/
+#define		PROCNUM_FINALIZE		11	/* finalize the range summary */
 
 /*
  * Subtract this from procnum to obtain index in MinmaxMultiOpaque arrays
@@ -130,6 +131,7 @@ typedef struct Ranges
 	/* (2*nranges + nvalues) <= MINMAX_MAX_VALUES */
 	int		nranges;	/* number of ranges in the array (stored) */
 	int		nvalues;	/* number of values in the data array (all) */
+	int		maxvalues;
 
 	/* values stored for this range - either raw values, or ranges */
 	Datum	values[FLEXIBLE_ARRAY_MEMBER];
@@ -179,14 +181,19 @@ static FmgrInfo *minmax_multi_get_strategy_procinfo(BrinDesc *bdesc,
  * to have to do repallocs as the ranges grow).
  */
 static Ranges *
-minmax_multi_init(void)
+minmax_multi_init(int maxvalues)
 {
-	Size				len;
+	Ranges *ranges;
+	Size	len;
 
 	len = offsetof(Ranges, values);	/* fixed header */
-	len += MINMAX_MAX_VALUES * sizeof(Datum); /* Datum values */
+	len += maxvalues * sizeof(Datum); /* Datum values */
 
-	return (Ranges *) palloc0(len);
+	ranges = (Ranges *) palloc0(len);
+
+	ranges->maxvalues = maxvalues;
+
+	return ranges;
 }
 
 /*
@@ -213,7 +220,7 @@ range_serialize(Ranges *range, AttrNumber attno, Form_pg_attribute attr)
 	/* see how many Datum values we actually have */
 	nvalues = 2*range->nranges + range->nvalues;
 
-	Assert(2*range->nranges + range->nvalues <= MINMAX_MAX_VALUES);
+	// Assert(2*range->nranges + range->nvalues <= MINMAX_MAX_VALUES);
 
 	/* header is always needed */
 	len = offsetof(SerializedRanges,data);
@@ -274,17 +281,20 @@ range_serialize(Ranges *range, AttrNumber attno, Form_pg_attribute attr)
 		{
 			memcpy(ptr, DatumGetPointer(range->values[i]), attr->attlen);
 			ptr += attr->attlen;
+			pfree(DatumGetPointer(range->values[i]));
 		}
 		else if (attr->attlen == -1)	/* varlena */
 		{
 			int tmp = VARSIZE_ANY(DatumGetPointer(range->values[i]));
 			memcpy(ptr, DatumGetPointer(range->values[i]), tmp);
+			pfree(DatumGetPointer(range->values[i]));
 			ptr += tmp;
 		}
 		else if (attr->attlen == -2)	/* cstring */
 		{
 			int tmp = strlen(DatumGetPointer(range->values[i])) + 1;
 			memcpy(ptr, DatumGetPointer(range->values[i]), tmp);
+			pfree(DatumGetPointer(range->values[i]));
 			ptr += tmp;
 		}
 
@@ -312,16 +322,22 @@ range_deserialize(SerializedRanges *serialized,
 	int		i,
 			nvalues;
 	char   *ptr;
+	int		maxvalues;
 
-	Ranges *range = minmax_multi_init();
+	Ranges *range;
 
 	Assert(serialized->nranges >= 0);
 	Assert(serialized->nvalues >= 0);
 
 	nvalues = 2*serialized->nranges + serialized->nvalues;
 
-	Assert(nvalues <= MINMAX_MAX_VALUES);
+	maxvalues = MINMAX_MAX_VALUES;
+	while (maxvalues < nvalues)
+		maxvalues *= 2;
 
+	// Assert(nvalues <= MINMAX_MAX_VALUES);
+	range = minmax_multi_init(maxvalues);
+ 
 	/* copy the header info */
 	range->nranges = serialized->nranges;
 	range->nvalues = serialized->nvalues;
@@ -426,6 +442,29 @@ compare_combine_ranges(const void *a, const void *b, void *arg)
 		return -1;
 
 	r = FunctionCall2Coll(cxt->cmpFn, cxt->colloid, rb->maxval, ra->maxval);
+
+	if (DatumGetBool(r))
+		return 1;
+
+	return 0;
+}
+
+static int
+compare_values(const void *a, const void *b, void *arg)
+{
+	Datum  *da = (Datum *)a;
+	Datum  *db = (Datum *)b;
+	Datum r;
+
+	compare_context *cxt = (compare_context *)arg;
+
+	/* first compare minvals */
+	r = FunctionCall2Coll(cxt->cmpFn, cxt->colloid, *da, *db);
+
+	if (DatumGetBool(r))
+		return -1;
+
+	r = FunctionCall2Coll(cxt->cmpFn, cxt->colloid, *db, *da);
 
 	if (DatumGetBool(r))
 		return 1;
@@ -783,6 +822,47 @@ sort_combine_ranges(FmgrInfo *cmp, Oid colloid,
 
 	qsort_arg(cranges, ncranges, sizeof(CombineRange),
 			  compare_combine_ranges, (void *) &cxt);
+}
+
+static void
+sort_and_deduplicate_values(BrinDesc *bdesc, BrinValues *column,
+							Oid colloid, Ranges *ranges)
+{
+	int	i;
+	int	nvalues;
+	AttrNumber attno;
+	Form_pg_attribute attr;
+	FmgrInfo	   *cmp;
+	compare_context	ctx;
+
+	attno = column->bv_attno;
+	attr = TupleDescAttr(bdesc->bd_tupdesc, attno - 1);
+
+
+	ctx.colloid = colloid;
+	ctx.cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno,
+										 attr->atttypid,
+										 BTLessStrategyNumber);
+
+	qsort_arg(ranges->values, ranges->nvalues, sizeof(Datum),
+			  compare_values, &ctx);
+
+	cmp = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
+											 BTEqualStrategyNumber);
+
+	nvalues = 1;
+	for (i = 1; i < ranges->nvalues; i++)
+	{
+		Datum r = FunctionCall2Coll(cmp, colloid,
+									ranges->values[i],
+									ranges->values[nvalues-1]);
+
+		/* not equal, found a new unique value */
+		if (!DatumGetBool(r))
+			ranges->values[nvalues++] = ranges->values[i];
+	}
+
+	ranges->nvalues = nvalues;
 }
 
 /*
@@ -1273,6 +1353,34 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 }
 
 
+
+/*
+ * range_append_value
+ *		batch mode
+ */
+static Ranges *
+range_append_value(BrinDesc *bdesc, Oid colloid,
+				AttrNumber attno, Form_pg_attribute attr,
+				Ranges *ranges, Datum newval)
+{
+	/* no free space - repalloc to double size */
+	if (ranges->nvalues == ranges->maxvalues)
+	{
+		Size len;
+
+		ranges->maxvalues *= 2;
+
+		len = offsetof(Ranges, values);	/* fixed header */
+		len += ranges->maxvalues * sizeof(Datum); /* Datum values */
+
+		ranges = (Ranges *) repalloc(ranges, len);
+	}
+
+	ranges->values[ranges->nvalues++] = newval;
+
+	return ranges;
+}
+
 Datum
 brin_minmax_multi_opcinfo(PG_FUNCTION_ARGS)
 {
@@ -1485,6 +1593,7 @@ brin_minmax_multi_add_value(PG_FUNCTION_ARGS)
 	BrinValues *column = (BrinValues *) PG_GETARG_POINTER(1);
 	Datum		newval = PG_GETARG_DATUM(2);
 	bool		isnull = PG_GETARG_DATUM(3);
+	bool		batch = PG_GETARG_BOOL(4);
 	Oid			colloid = PG_GET_COLLATION();
 	bool		modified = false;
 	Form_pg_attribute attr;
@@ -1508,42 +1617,68 @@ brin_minmax_multi_add_value(PG_FUNCTION_ARGS)
 	attno = column->bv_attno;
 	attr = TupleDescAttr(bdesc->bd_tupdesc, attno - 1);
 
+	newval = datumCopy(newval, attr->attbyval, attr->attlen);
+
 	/*
 	 * If this is the first non-null value, we need to initialize the range
 	 * list. Otherwise just extract the existing range list from BrinValues.
 	 */
 	if (column->bv_allnulls)
 	{
-		ranges = minmax_multi_init();
+		ranges = minmax_multi_init(MINMAX_MAX_VALUES);
 		column->bv_allnulls = false;
 		modified = true;
 	}
 	else
 	{
-		serialized = (SerializedRanges *) PG_DETOAST_DATUM(column->bv_values[0]);
-		ranges = range_deserialize(serialized, attno, attr);
+		if (batch)
+		{
+			serialized = NULL;
+			ranges = (Ranges *) PG_DETOAST_DATUM(column->bv_values[0]);
+		}
+		else
+		{
+			serialized = (SerializedRanges *) PG_DETOAST_DATUM(column->bv_values[0]);
+			ranges = range_deserialize(serialized, attno, attr);
+		}
 	}
 
-	/*
-	 * Try to add the new value to the range. We need to update the modified
-	 * flag, so that we serialize the correct value.
-	 */
-	modified |= range_add_value(bdesc, colloid, attno, attr, ranges, newval);
+	if (batch)
+	{
+		modified = true;
+		ranges = range_append_value(bdesc, colloid, attno, attr, ranges, newval);
+	}
+	else
+	{
+		/*
+		 * Try to add the new value to the range. We need to update the modified
+		 * flag, so that we serialize the correct value.
+		 */
+		modified |= range_add_value(bdesc, colloid, attno, attr, ranges, newval);
+	}
 
 	if (modified)
 	{
-		SerializedRanges *s = range_serialize(ranges, attno, attr);
-		column->bv_values[0] = PointerGetDatum(s);
+		if (batch)
+		{
+			column->bv_values[0] = PointerGetDatum(ranges);
+		}
+		else
+		{
+			SerializedRanges *s = range_serialize(ranges, attno, attr);
+			column->bv_values[0] = PointerGetDatum(s);
 
-		/*
-		 * XXX pfree must happen after range_serialize, because the Ranges value
-		 * may reference the original serialized value.
-		 */
-		if (serialized)
-			pfree(serialized);
+			/*
+			 * XXX pfree must happen after range_serialize, because the Ranges value
+			 * may reference the original serialized value.
+			 */
+			if (serialized)
+				pfree(serialized);
+		}
 	}
 
-	pfree(ranges);
+	if (!batch)
+		pfree(ranges);
 
 	PG_RETURN_BOOL(modified);
 }
@@ -1960,4 +2095,87 @@ minmax_multi_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno, Oid subtype,
 	}
 
 	return &opaque->strategy_procinfos[strategynum - 1];
+}
+
+Datum
+brin_minmax_multi_finalize(PG_FUNCTION_ARGS)
+{
+	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
+	BrinValues *column = (BrinValues *) PG_GETARG_POINTER(1);
+	Oid			colloid = PG_GET_COLLATION();
+	FmgrInfo   *cmp, *distanceFn;
+	Ranges	   *ranges;
+	Form_pg_attribute attr;
+	AttrNumber	attno;
+	MemoryContext ctx, oldctx;
+	CombineRange *cranges;
+	int				ncranges;
+	DistanceValue  *distances;
+
+	ranges = (Ranges *) PG_DETOAST_DATUM(column->bv_values[0]);
+
+	attno = column->bv_attno;
+	attr = TupleDescAttr(bdesc->bd_tupdesc, attno - 1);
+
+	/* deduplicate and sort the Datum values */
+	sort_and_deduplicate_values(bdesc, column, colloid, ranges);
+
+	/*
+	 * The distanceFn calls (which may internally call e.g. numeric_le) may
+	 * allocate quite a bit of memory, and we must not leak it. Otherwise
+	 * we'd have problems e.g. when building indexes. So we create a local
+	 * memory context and make sure we free the memory before leaving this
+	 * function (not after every call).
+	 */
+	ctx = AllocSetContextCreate(CurrentMemoryContext,
+								"minmax-multi context",
+								ALLOCSET_DEFAULT_SIZES);
+
+	oldctx = MemoryContextSwitchTo(ctx);
+
+	/* allocate and fill */
+	ncranges = ranges->nvalues;
+	cranges = (CombineRange *)palloc0(ncranges * sizeof(CombineRange));
+
+	/* fill the combine ranges with entries for the first range */
+	fill_combine_ranges(cranges, ranges->nvalues, ranges);
+
+	cmp = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
+											 BTLessStrategyNumber);
+
+	/* sort the combine ranges */
+	sort_combine_ranges(cmp, colloid, cranges, ncranges);
+
+	/*
+	 * We've merged two different lists of ranges, so some of them may be
+	 * overlapping. So walk through them and merge them.
+	 */
+	ncranges = merge_combine_ranges(cmp, colloid, cranges, ncranges);
+
+	/* check that the combine ranges are correct (no overlaps, ordering) */
+	AssertValidCombineRanges(bdesc, colloid, attno, attr, cranges, ncranges);
+
+	/* build array of gap distances and sort them in ascending order */
+	distanceFn = minmax_multi_get_procinfo(bdesc, attno, PROCNUM_DISTANCE);
+	distances = build_distances(distanceFn, colloid, cranges, ncranges);
+
+	/*
+	 * See how many values would be needed to store the current ranges, and if
+	 * needed combine as many off them to get below the MINMAX_MAX_VALUES
+	 * threshold. The collapsed ranges will be stored as a single value.
+	 */
+	ncranges = reduce_combine_ranges(cranges, ncranges, distances);
+
+	/* update the first range summary */
+	store_combine_ranges(ranges, cranges, ncranges);
+
+	MemoryContextSwitchTo(oldctx);
+	MemoryContextDelete(ctx);
+
+	/* cleanup and update the serialized value */
+	column->bv_values[0] = PointerGetDatum(range_serialize(ranges, attno, attr));
+
+	pfree(ranges);
+
+	PG_RETURN_VOID();
 }

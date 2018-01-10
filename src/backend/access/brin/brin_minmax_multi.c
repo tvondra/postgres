@@ -386,6 +386,8 @@ typedef struct CombineRange
 	Datum	minval;		/* lower boundary */
 	Datum	maxval;		/* upper boundary */
 	bool	collapsed;	/* true if minval==maxval */
+	bool	reduced;	/* true if the range was reduced */
+	int		start;		/* index of starting range */
 } CombineRange;
 
 /*
@@ -744,6 +746,7 @@ fill_combine_ranges(CombineRange *cranges, int ncranges, Ranges *ranges)
 		cranges[idx].minval = ranges->values[2*i];
 		cranges[idx].maxval = ranges->values[2*i+1];
 		cranges[idx].collapsed = false;
+		cranges[idx].start = -1;
 		idx++;
 
 		Assert(idx <= ncranges);
@@ -754,6 +757,7 @@ fill_combine_ranges(CombineRange *cranges, int ncranges, Ranges *ranges)
 		cranges[idx].minval = ranges->values[2*ranges->nranges + i];
 		cranges[idx].maxval = ranges->values[2*ranges->nranges + i];
 		cranges[idx].collapsed = true;
+		cranges[idx].start = -1;
 		idx++;
 
 		Assert(idx <= ncranges);
@@ -980,6 +984,10 @@ count_values(CombineRange *cranges, int ncranges)
 	count = 0;
 	for (i = 0; i < ncranges; i++)
 	{
+		/* ignore reduced ranges */
+		if (cranges[i].reduced)
+			continue;
+
 		if (cranges[i].collapsed)
 			count += 1;
 		else
@@ -1019,6 +1027,7 @@ reduce_combine_ranges(CombineRange *cranges, int ncranges,
 {
 	int i;
 	int	ndistances = (ncranges - 1);
+	int	cnt = count_values(cranges, ncranges);
 
 	/*
 	 * We have one fewer 'gaps' than the ranges. We'll be decrementing
@@ -1027,43 +1036,56 @@ reduce_combine_ranges(CombineRange *cranges, int ncranges,
 	 */
 	for (i = 0; i < ndistances; i++)
 	{
-		int j;
-		int shortest;
+		int	start,
+			end;
 
-		if (count_values(cranges, ncranges) <= MINMAX_MAX_VALUES * 0.75)
+		if (cnt <= MINMAX_MAX_VALUES * 0.75)
 			break;
 
-		shortest = distances[i].index;
+		start = distances[i].index;
+		end = start + 1;
 
 		/*
 		 * The index must be still valid with respect to the current size
 		 * of cranges array (and it always points to the first range, so
 		 * never to the last one - hence the -1 in the condition).
 		 */
-		Assert(shortest < (ncranges - 1));
+		Assert(start < (ncranges - 1));
+
+		/* Walk the list of ranges to get the actual start range. */
+		while (cranges[start].reduced)
+		{
+			Assert(cranges[start].start < start);
+			start = cranges[start].start;
+		}
+
+		/* start must be a valid index into combine ranges */
+		Assert((start >= 0) && (start < ncranges));
+
+		/*
+		 * See how many values we've saved. If neither range is collapsed,
+		 * then we've saved two. If one of the ranges is collapsed, we've
+		 * saved one. If neither range is collapsed, we've saved none.
+		 * So just count collapsed ranges and ve're done.
+		 */
+		cnt -= (cranges[start].collapsed) ? 0 : 1;
+		cnt -= (cranges[end].collapsed) ? 0 : 1;
 
 		/*
 		 * Move the values to join the two selected ranges. The new range is
 		 * definiely not collapsed but a regular range.
 		 */
-		cranges[shortest].maxval = cranges[shortest+1].maxval;
-		cranges[shortest].collapsed = false;
+		cranges[start].maxval = cranges[end].maxval;
+		cranges[start].collapsed = false;
 
-		/* shuffle the subsequent combine ranges */
-		memmove(&cranges[shortest+1], &cranges[shortest+2],
-				(ncranges - shortest - 2) * sizeof(CombineRange));
-
-		/* also, shuffle all higher indexes (we've just moved the ranges) */
-		for (j = i; j < ndistances; j++)
-		{
-			if (distances[j].index > shortest)
-				distances[j].index--;
-		}
-
-		ncranges--;
-
-		Assert(ncranges > 0);
+		/* mark the second range as reduced, and set the index of the
+		 * starting range */
+		cranges[end].reduced = true;
+		cranges[end].start = start;
 	}
+
+	/* make sure we've updated the number of boundary values correctly */
+	Assert(cnt == count_values(cranges, ncranges));
 
 	return ncranges;
 }
@@ -1082,6 +1104,9 @@ store_combine_ranges(Ranges *ranges, CombineRange *cranges, int ncranges)
 	ranges->nranges = 0;
 	for (i = 0; i < ncranges; i++)
 	{
+		if (cranges[i].reduced)
+			continue;
+
 		if (!cranges[i].collapsed)
 		{
 			ranges->values[idx++] = cranges[i].minval;
@@ -1094,6 +1119,9 @@ store_combine_ranges(Ranges *ranges, CombineRange *cranges, int ncranges)
 	ranges->nvalues = 0;
 	for (i = 0; i < ncranges; i++)
 	{
+		if (cranges[i].reduced)
+			continue;
+
 		if (cranges[i].collapsed)
 		{
 			ranges->values[idx++] = cranges[i].minval;

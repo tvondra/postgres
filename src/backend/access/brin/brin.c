@@ -49,6 +49,7 @@ typedef struct BrinBuildState
 	BrinRevmap *bs_rmAccess;
 	BrinDesc   *bs_bdesc;
 	BrinMemTuple *bs_dtuple;
+	MemoryContext	bs_range_ctx;
 } BrinBuildState;
 
 /*
@@ -729,6 +730,7 @@ brinbuildCallback(Relation index,
 	BrinBuildState *state = (BrinBuildState *) brstate;
 	BlockNumber thisblock;
 	int			i;
+	MemoryContext oldctx;
 
 	thisblock = ItemPointerGetBlockNumber(&htup->t_self);
 
@@ -752,9 +754,14 @@ brinbuildCallback(Relation index,
 		/* set state to correspond to the next range */
 		state->bs_currRangeStart += state->bs_pagesPerRange;
 
+		/* reset the memory context */
+		MemoryContextReset(state->bs_range_ctx);
+
 		/* re-initialize state for it */
 		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
 	}
+
+	oldctx = MemoryContextSwitchTo(state->bs_range_ctx);
 
 	/* Accumulate the current tuple into the running state */
 	for (i = 0; i < state->bs_bdesc->bd_tupdesc->natts; i++)
@@ -777,6 +784,8 @@ brinbuildCallback(Relation index,
 						  values[i], isnull[i],
 						  BoolGetDatum(true));
 	}
+
+	MemoryContextSwitchTo(oldctx);
 }
 
 /*
@@ -1239,6 +1248,10 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	state->bs_bdesc = brin_build_desc(idxRel);
 	state->bs_dtuple = brin_new_memtuple(state->bs_bdesc);
 
+	state->bs_range_ctx = AllocSetContextCreate(CurrentMemoryContext,
+								"brin build state",
+								ALLOCSET_DEFAULT_SIZES);
+
 	brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
 
 	return state;
@@ -1264,6 +1277,9 @@ terminate_brin_buildstate(BrinBuildState *state)
 
 	brin_free_desc(state->bs_bdesc);
 	pfree(state->bs_dtuple);
+
+	MemoryContextDelete(state->bs_range_ctx);
+
 	pfree(state);
 }
 
@@ -1513,6 +1529,9 @@ brin_finalize(BrinBuildState *state)
 	Relation idxRel = state->bs_irel;
 	BrinDesc *brdesc = state->bs_bdesc;
 	BrinMemTuple *dtup = state->bs_dtuple;
+	MemoryContext	oldctx;
+
+	oldctx = MemoryContextSwitchTo(state->bs_range_ctx);
 
 	for (keyno = 0; keyno < brdesc->bd_tupdesc->natts; keyno++)
 	{
@@ -1540,6 +1559,8 @@ brin_finalize(BrinBuildState *state)
 						  PointerGetDatum(brdesc),
 						  PointerGetDatum(bval));
 	}
+
+	MemoryContextSwitchTo(oldctx);
 }
 
 /*

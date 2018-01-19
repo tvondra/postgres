@@ -17,6 +17,8 @@
 #include "utils/snapshot.h"
 #include "utils/timestamp.h"
 
+extern int	logical_work_mem;
+
 /* an individual tuple, stored in one chunk of memory */
 typedef struct ReorderBufferTupleBuf
 {
@@ -62,6 +64,9 @@ enum ReorderBufferChangeType
 	REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM
 };
 
+/* forward declaration */
+struct ReorderBufferTXN;
+
 /*
  * a single 'change', can be an insert (with one tuple), an update (old, new),
  * or a delete (old).
@@ -75,6 +80,9 @@ typedef struct ReorderBufferChange
 
 	/* The type of change. */
 	enum ReorderBufferChangeType action;
+
+	/* Transaction this change belongs to. */
+	struct ReorderBufferTXN *txn;
 
 	RepOriginId origin_id;
 
@@ -271,6 +279,11 @@ typedef struct ReorderBufferTXN
 	 */
 	dlist_node	node;
 
+	/*
+	 * Size of this transaction (changes currently in memory, in bytes).
+	 */
+	Size		size;
+
 } ReorderBufferTXN;
 
 /* so we can define the callbacks used inside struct ReorderBuffer itself */
@@ -353,6 +366,9 @@ struct ReorderBuffer
 	/* buffer for disk<->memory conversions */
 	char	   *outbuf;
 	Size		outbufsize;
+
+	/* memory accounting */
+	Size		size;
 };
 
 

@@ -19,6 +19,7 @@
 #include "replication/origin.h"
 #include "replication/pgoutput.h"
 
+#include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/int8.h"
 #include "utils/lsyscache.h"
@@ -85,11 +86,12 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 
 static void
 parse_output_parameters(List *options, uint32 *protocol_version,
-						List **publication_names)
+						List **publication_names, int *logical_work_mem)
 {
 	ListCell   *lc;
 	bool		protocol_version_given = false;
 	bool		publication_names_given = false;
+	bool		work_mem_given = false;
 
 	foreach(lc, options)
 	{
@@ -135,6 +137,29 @@ parse_output_parameters(List *options, uint32 *protocol_version,
 						(errcode(ERRCODE_INVALID_NAME),
 						 errmsg("invalid publication_names syntax")));
 		}
+		else if (strcmp(defel->defname, "work_mem") == 0)
+		{
+			int64	parsed;
+
+			if (work_mem_given)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			work_mem_given = true;
+
+			if (!scanint8(strVal(defel->arg), true, &parsed))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid work_mem")));
+
+			if (parsed > PG_INT32_MAX || parsed < 64)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("work_mem \"%s\" out of range",
+								strVal(defel->arg))));
+
+			*logical_work_mem = (int)parsed;
+		}
 		else
 			elog(ERROR, "unrecognized pgoutput option: %s", defel->defname);
 	}
@@ -169,7 +194,8 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		/* Parse the params and ERROR if we see any we don't recognize */
 		parse_output_parameters(ctx->output_plugin_options,
 								&data->protocol_version,
-								&data->publication_names);
+								&data->publication_names,
+								&logical_work_mem);
 
 		/* Check if we support requested protocol */
 		if (data->protocol_version > LOGICALREP_PROTO_VERSION_NUM)

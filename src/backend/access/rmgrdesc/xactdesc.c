@@ -21,6 +21,11 @@
 #include "storage/standbydefs.h"
 #include "utils/timestamp.h"
 
+static void xact_desc_invalidations(StringInfo buf,
+						int nmsgs, SharedInvalidationMessage *msgs,
+						Oid dbId, Oid tsId,
+						bool relcacheInitFileInval);
+
 /*
  * Parse the WAL format of an xact commit and abort records into an easier to
  * understand format.
@@ -274,6 +279,14 @@ xact_desc(StringInfo buf, XLogReaderState *record)
 
 		xact_desc_abort(buf, XLogRecGetInfo(record), xlrec);
 	}
+	else if (info == XLOG_XACT_INVALIDATIONS)
+	{
+		xl_xact_invalidations *xlrec = (xl_xact_invalidations *) rec;
+
+		xact_desc_invalidations(buf, xlrec->nmsgs, xlrec->msgs,
+								xlrec->dbId, xlrec->tsId,
+								xlrec->relcacheInitFileInval);
+	}
 }
 
 const char *
@@ -298,7 +311,46 @@ xact_identify(uint8 info)
 		case XLOG_XACT_ABORT_PREPARED:
 			id = "ABORT_PREPARED";
 			break;
+		case XLOG_XACT_INVALIDATIONS:
+			id = "INVALIDATION";
+			break;
 	}
 
 	return id;
+}
+
+static void
+xact_desc_invalidations(StringInfo buf,
+						int nmsgs, SharedInvalidationMessage *msgs,
+						Oid dbId, Oid tsId,
+						bool relcacheInitFileInval)
+{
+	int			i;
+
+	if (relcacheInitFileInval)
+		appendStringInfo(buf, "; relcache init file inval dbid %u tsid %u",
+						 dbId, tsId);
+
+	appendStringInfoString(buf, "; inval msgs:");
+	for (i = 0; i < nmsgs; i++)
+	{
+		SharedInvalidationMessage *msg = &msgs[i];
+
+		if (msg->id >= 0)
+			appendStringInfo(buf, " catcache %d", msg->id);
+		else if (msg->id == SHAREDINVALCATALOG_ID)
+			appendStringInfo(buf, " catalog %u", msg->cat.catId);
+		else if (msg->id == SHAREDINVALRELCACHE_ID)
+			appendStringInfo(buf, " relcache %u", msg->rc.relId);
+		/* not expected, but print something anyway */
+		else if (msg->id == SHAREDINVALSMGR_ID)
+			appendStringInfoString(buf, " smgr");
+		/* not expected, but print something anyway */
+		else if (msg->id == SHAREDINVALRELMAP_ID)
+			appendStringInfo(buf, " relmap db %u", msg->rm.dbId);
+		else if (msg->id == SHAREDINVALSNAPSHOT_ID)
+			appendStringInfo(buf, " snapshot %u", msg->sn.relId);
+		else
+			appendStringInfo(buf, " unrecognized id %d", msg->id);
+	}
 }

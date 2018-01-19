@@ -135,7 +135,7 @@ typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 #define XLOG_XACT_ABORT				0x20
 #define XLOG_XACT_COMMIT_PREPARED	0x30
 #define XLOG_XACT_ABORT_PREPARED	0x40
-/* free opcode 0x50 */
+#define XLOG_XACT_INVALIDATIONS		0x50
 /* free opcode 0x60 */
 /* free opcode 0x70 */
 
@@ -176,6 +176,22 @@ typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 	((xinfo & XACT_COMPLETION_UPDATE_RELCACHE_FILE) != 0)
 #define XactCompletionForceSyncCommit(xinfo) \
 	((xinfo & XACT_COMPLETION_FORCE_SYNC_COMMIT) != 0)
+
+/*
+ * Invalidations logged with wal_level=logical.
+ *
+ * XXX Currently nmsgs=1 but that might change in the future.
+ */
+typedef struct xl_xact_invalidations
+{
+	Oid			dbId;			/* MyDatabaseId */
+	Oid			tsId;			/* MyDatabaseTableSpace */
+	bool		relcacheInitFileInval;	/* invalidate relcache init file */
+	int			nmsgs;			/* number of shared inval msgs */
+	SharedInvalidationMessage msgs[FLEXIBLE_ARRAY_MEMBER];
+}			xl_xact_invalidations;
+
+#define MinSizeOfXactInvalidations offsetof(xl_xact_invalidations, msgs)
 
 /*
  * Commit and abort records can contain a lot of information. But a large

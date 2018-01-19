@@ -71,6 +71,7 @@ GetSubscription(Oid subid, bool missing_ok)
 	sub->owner = subform->subowner;
 	sub->enabled = subform->subenabled;
 	sub->workmem = subform->subworkmem;
+	sub->stream = subform->substream;
 
 	/* Get conninfo */
 	datum = SysCacheGetAttr(SUBSCRIPTIONOID,

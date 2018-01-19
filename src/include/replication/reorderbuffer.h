@@ -446,6 +446,22 @@ struct ReorderBuffer
 
 	/* memory accounting */
 	Size		size;
+
+	/*
+	 * Statistics about transactions streamed or spilled to disk.
+	 *
+	 * A single transaction may be streamed/spilled repeatedly, which is
+	 * why we keep two different counters. For spilling, the transaction
+	 * counter includes both toplevel transactions and subtransactions.
+	 * For streaming, it only includes toplevel transactions (we never
+	 * stream individual subtransactions).
+	 */
+	int64	spillCount;		/* spill-to-disk invocation counter */
+	int64	spillTxns;		/* number of transactions spilled to disk  */
+	int64	spillBytes;		/* amount of data spilled to disk */
+	int64	streamCount;	/* streaming invocation counter */
+	int64	streamTxns;		/* number of transactions spilled to disk */
+	int64	streamBytes;	/* amount of data streamed to subscriber */
 };
 
 

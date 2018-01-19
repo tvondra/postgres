@@ -95,11 +95,27 @@ static void DecodeXLogTuple(char *data, Size len, ReorderBufferTupleBuf *tup);
 void
 LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *record)
 {
-	XLogRecordBuffer buf;
+	XLogRecordBuffer	buf;
+	TransactionId		txid;
 
 	buf.origptr = ctx->reader->ReadRecPtr;
 	buf.endptr = ctx->reader->EndRecPtr;
 	buf.record = record;
+
+	txid = XLogRecGetTopXid(record);
+
+	/*
+	 * If the toplevel_xid is valid, we need to assign the subxact to the
+	 * toplevel transaction. We need to do this for all records, hence we
+	 * do it before the switch.
+	 */
+	if (TransactionIdIsValid(txid))
+	{
+		ReorderBufferAssignChild(ctx->reorder,
+								 record->toplevel_xid,
+								 record->decoded_record->xl_xid,
+								 buf.origptr);
+	}
 
 	/* cast so we get a warning when new rmgrs are added */
 	switch ((RmgrIds) XLogRecGetRmid(record))
@@ -260,23 +276,6 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					xid = parsed.twophase_xid;
 
 				DecodeAbort(ctx, buf, &parsed, xid);
-				break;
-			}
-		case XLOG_XACT_ASSIGNMENT:
-			{
-				xl_xact_assignment *xlrec;
-				int			i;
-				TransactionId *sub_xid;
-
-				xlrec = (xl_xact_assignment *) XLogRecGetData(r);
-
-				sub_xid = &xlrec->xsub[0];
-
-				for (i = 0; i < xlrec->nsubxacts; i++)
-				{
-					ReorderBufferAssignChild(reorder, xlrec->xtop,
-											 *(sub_xid++), buf->origptr);
-				}
 				break;
 			}
 		case XLOG_XACT_PREPARE:

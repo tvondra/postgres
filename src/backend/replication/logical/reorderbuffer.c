@@ -1400,6 +1400,10 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 		subtxn = dlist_container(ReorderBufferTXN, node, iter.cur);
 
+		/* make sure subtxn has final_lsn */
+		if (subtxn->final_lsn == InvalidXLogRecPtr)
+			subtxn->final_lsn = txn->final_lsn;
+
 		/*
 		 * Subtransactions are always associated to the toplevel TXN, even if
 		 * they originally were happening inside another subtxn, so we won't

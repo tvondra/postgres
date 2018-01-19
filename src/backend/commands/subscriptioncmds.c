@@ -66,7 +66,8 @@ parse_subscription_options(List *options, bool *connect, bool *enabled_given,
 						   bool *slot_name_given, char **slot_name,
 						   bool *copy_data, char **synchronous_commit,
 						   bool *refresh, int *logical_wm,
-						   bool *logical_wm_given)
+						   bool *logical_wm_given, bool *streaming,
+						   bool *streaming_given)
 {
 	ListCell   *lc;
 	bool		connect_given = false;
@@ -97,8 +98,10 @@ parse_subscription_options(List *options, bool *connect, bool *enabled_given,
 		*synchronous_commit = NULL;
 	if (refresh)
 		*refresh = true;
-	if (logical_work_mem)
+	if (logical_wm)
 		*logical_wm_given = false;
+	if (streaming)
+		*streaming_given = false;
 
 	/* Parse options */
 	foreach(lc, options)
@@ -193,6 +196,26 @@ parse_subscription_options(List *options, bool *connect, bool *enabled_given,
 
 			*logical_wm_given = true;
 			*logical_wm = defGetInt32(defel);
+
+			/*
+			 * Check that the value is not smaller than 64kB (which is
+			 * the minimum value for logical_work_mem).
+			 */
+			if (*logical_wm < 64)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("%d is outside the valid range for parameter \"work_mem\" (64 .. 2147483647)",
+								*logical_wm)));
+		}
+		else if (strcmp(defel->defname, "streaming") == 0 && streaming)
+		{
+			if (*streaming_given)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+
+			*streaming_given = true;
+			*streaming = defGetBoolean(defel);
 		}
 		else
 			ereport(ERROR,
@@ -329,6 +352,8 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	bool		copy_data;
 	int			logical_wm;
 	bool		logical_wm_given;
+	bool		streaming;
+	bool		streaming_given;
 	char	   *synchronous_commit;
 	char	   *conninfo;
 	char	   *slotname;
@@ -345,7 +370,8 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	parse_subscription_options(stmt->options, &connect, &enabled_given,
 							   &enabled, &create_slot, &slotname_given,
 							   &slotname, &copy_data, &synchronous_commit,
-							   NULL, &logical_wm, &logical_wm_given);
+							   NULL, &logical_wm, &logical_wm_given,
+							   &streaming, &streaming_given);
 
 	/*
 	 * Since creating a replication slot is not transactional, rolling back
@@ -415,7 +441,15 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 		values[Anum_pg_subscription_subworkmem - 1] =
 			Int32GetDatum(logical_wm);
 	else
-		nulls[Anum_pg_subscription_subworkmem - 1] = true;
+		values[Anum_pg_subscription_subworkmem - 1] =
+			Int32GetDatum(-1);
+
+	if (streaming_given)
+		values[Anum_pg_subscription_substream - 1] =
+			BoolGetDatum(streaming);
+	else
+		values[Anum_pg_subscription_substream - 1] =
+			BoolGetDatum(false);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
@@ -679,11 +713,14 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 				char	   *synchronous_commit;
 				int			logical_wm;
 				bool		logical_wm_given;
+				bool		streaming;
+				bool		streaming_given;
 
 				parse_subscription_options(stmt->options, NULL, NULL, NULL,
 										   NULL, &slotname_given, &slotname,
 										   NULL, &synchronous_commit, NULL,
-										   &logical_wm, &logical_wm_given);
+										   &logical_wm, &logical_wm_given,
+										   &streaming, &streaming_given);
 
 				if (slotname_given)
 				{
@@ -714,6 +751,13 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 					replaces[Anum_pg_subscription_subworkmem - 1] = true;
 				}
 
+				if (streaming_given)
+				{
+					values[Anum_pg_subscription_substream - 1] =
+						BoolGetDatum(streaming);
+					replaces[Anum_pg_subscription_substream - 1] = true;
+				}
+
 				update_tuple = true;
 				break;
 			}
@@ -726,7 +770,7 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 				parse_subscription_options(stmt->options, NULL,
 										   &enabled_given, &enabled, NULL,
 										   NULL, NULL, NULL, NULL, NULL,
-										   NULL, NULL);
+										   NULL, NULL, NULL, NULL);
 				Assert(enabled_given);
 
 				if (!sub->slotname && enabled)
@@ -764,7 +808,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 
 				parse_subscription_options(stmt->options, NULL, NULL, NULL,
 										   NULL, NULL, NULL, &copy_data,
-										   NULL, &refresh, NULL, NULL);
+										   NULL, &refresh, NULL, NULL,
+										   NULL, NULL);
 
 				values[Anum_pg_subscription_subpublications - 1] =
 					publicationListToArray(stmt->publication);
@@ -801,7 +846,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 
 				parse_subscription_options(stmt->options, NULL, NULL, NULL,
 										   NULL, NULL, NULL, &copy_data,
-										   NULL, NULL, NULL, NULL);
+										   NULL, NULL, NULL, NULL, NULL,
+										   NULL);
 
 				AlterSubscription_refresh(sub, copy_data);
 

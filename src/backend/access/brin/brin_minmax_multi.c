@@ -63,6 +63,7 @@
 #include "utils/inet.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/nabstime.h"
 #include "utils/numeric.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
@@ -1660,6 +1661,48 @@ brin_minmax_multi_distance_inet(PG_FUNCTION_ARGS)
 	}
 
 	Assert((delta >= 0) && (delta <= 1));
+
+	PG_RETURN_FLOAT8(delta);
+}
+
+
+/*
+ * Compute distance between two abstime values.
+ *
+ * abstime values are int32 values, so just subtract them
+ */
+Datum
+brin_minmax_multi_distance_abstime(PG_FUNCTION_ARGS)
+{
+	double	delta;
+
+	AbsoluteTime a = PG_GETARG_ABSOLUTETIME(0);
+	AbsoluteTime b = PG_GETARG_ABSOLUTETIME(1);
+
+	delta = ((double)b - (double)a);
+
+	Assert(delta >= 0);
+
+	PG_RETURN_FLOAT8(delta);
+}
+
+
+/*
+ * Compute distance between two reltime values.
+ *
+ * reltime values are int32 values, so just subtract them
+ */
+Datum
+brin_minmax_multi_distance_reltime(PG_FUNCTION_ARGS)
+{
+	double	delta;
+
+	RelativeTime a = PG_GETARG_ABSOLUTETIME(0);
+	RelativeTime b = PG_GETARG_ABSOLUTETIME(1);
+
+	delta = ((double)b - (double)a);
+
+	Assert(delta >= 0);
 
 	PG_RETURN_FLOAT8(delta);
 }

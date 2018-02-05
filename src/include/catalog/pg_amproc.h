@@ -586,6 +586,12 @@ DATA(insert (	4072   702	 702  1  3383 ));
 DATA(insert (	4072   702	 702  2  3384 ));
 DATA(insert (	4072   702	 702  3  3385 ));
 DATA(insert (	4072   702	 702  4  3386 ));
+/* multi minmax abstime */
+DATA(insert (	4146   702	 702  1  4001 ));
+DATA(insert (	4146   702	 702  2  4002 ));
+DATA(insert (	4146   702	 702  3  4003 ));
+DATA(insert (	4146   702	 702  4  4004 ));
+DATA(insert (	4146   702	 702 11  4148 ));
 /* bloom abstime */
 DATA(insert (	5031   702	 702  1  5017 ));
 DATA(insert (	5031   702	 702  2  5018 ));
@@ -597,6 +603,12 @@ DATA(insert (	4073   703	 703  1  3383 ));
 DATA(insert (	4073   703	 703  2  3384 ));
 DATA(insert (	4073   703	 703  3  3385 ));
 DATA(insert (	4073   703	 703  4  3386 ));
+/* multi minmax reltime */
+DATA(insert (	4147   703	 703  1  4001 ));
+DATA(insert (	4147   703	 703  2  4002 ));
+DATA(insert (	4147   703	 703  3  4003 ));
+DATA(insert (	4147   703	 703  4  4004 ));
+DATA(insert (	4147   703	 703 11  4149 ));
 /* bloom reltime */
 DATA(insert (	5032   703	 703  1  5017 ));
 DATA(insert (	5032   703	 703  2  5018 ));

@@ -4403,6 +4403,10 @@ DATA(insert OID = 4141 ( brin_minmax_multi_distance_macaddr8	PGNSP PGUID 12 1 0 
 DESCR("BRIN minmax compute distance between macaddr8 values");
 DATA(insert OID = 4142 ( brin_minmax_multi_distance_inet	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_distance_inet _null_ _null_ _null_ ));
 DESCR("BRIN minmax compute distance between inet values");
+DATA(insert OID = 4148 ( brin_minmax_multi_distance_abstime	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_distance_abstime _null_ _null_ _null_ ));
+DESCR("BRIN minmax compute distance between abstime values");
+DATA(insert OID = 4149 ( brin_minmax_multi_distance_reltime	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ _null_ brin_minmax_multi_distance_reltime _null_ _null_ _null_ ));
+DESCR("BRIN minmax compute distance between reltime values");
 
 /* BRIN inclusion */
 DATA(insert OID = 4105 ( brin_inclusion_opcinfo PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "2281" _null_ _null_ _null_ _null_ _null_ brin_inclusion_opcinfo _null_ _null_ _null_ ));

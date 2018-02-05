@@ -1,10 +1,7 @@
-CREATE TABLE brintest_multi (byteacol bytea,
-	charcol "char",
-	namecol name,
+CREATE TABLE brintest_multi (
 	int8col bigint,
 	int2col smallint,
 	int4col integer,
-	textcol text,
 	oidcol oid,
 	tidcol tid,
 	float4col real,
@@ -12,28 +9,20 @@ CREATE TABLE brintest_multi (byteacol bytea,
 	macaddrcol macaddr,
 	inetcol inet,
 	cidrcol cidr,
-	bpcharcol character,
 	datecol date,
 	timecol time without time zone,
 	timestampcol timestamp without time zone,
 	timestamptzcol timestamp with time zone,
 	intervalcol interval,
 	timetzcol time with time zone,
-	bitcol bit(10),
-	varbitcol bit varying(16),
 	numericcol numeric,
 	uuidcol uuid,
-	int4rangecol int4range,
-	lsncol pg_lsn,
-	boxcol box
+	lsncol pg_lsn
 ) WITH (fillfactor=10);
 INSERT INTO brintest_multi SELECT
-	repeat(stringu1, 8)::bytea,
-	substr(stringu1, 1, 1)::"char",
-	stringu1::name, 142857 * tenthous,
+	142857 * tenthous,
 	thousand,
 	twothousand,
-	repeat(stringu1, 8),
 	unique1::oid,
 	format('(%s,%s)', tenthous, twenty)::tid,
 	(four + 1.0)/(hundred+1),
@@ -41,26 +30,20 @@ INSERT INTO brintest_multi SELECT
 	format('%s:00:%s:00:%s:00', to_hex(odd), to_hex(even), to_hex(hundred))::macaddr,
 	inet '10.2.3.4/24' + tenthous,
 	cidr '10.2.3/24' + tenthous,
-	substr(stringu1, 1, 1)::bpchar,
 	date '1995-08-15' + tenthous,
 	time '01:20:30' + thousand * interval '18.5 second',
 	timestamp '1942-07-23 03:05:09' + tenthous * interval '36.38 hours',
 	timestamptz '1972-10-10 03:00' + thousand * interval '1 hour',
 	justify_days(justify_hours(tenthous * interval '12 minutes')),
 	timetz '01:30:20+02' + hundred * interval '15 seconds',
-	thousand::bit(10),
-	tenthous::bit(16)::varbit,
 	tenthous::numeric(36,30) * fivethous * even / (hundred + 1),
 	format('%s%s-%s-%s-%s-%s%s%s', to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'))::uuid,
-	int4range(thousand, twothousand),
-	format('%s/%s%s', odd, even, tenthous)::pg_lsn,
-	box(point(odd, even), point(thousand, twothousand))
+	format('%s/%s%s', odd, even, tenthous)::pg_lsn
 FROM tenk1 ORDER BY unique2 LIMIT 100;
 -- throw in some NULL's and different values
-INSERT INTO brintest_multi (inetcol, cidrcol, int4rangecol) SELECT
+INSERT INTO brintest_multi (inetcol, cidrcol) SELECT
 	inet 'fe80::6e40:8ff:fea9:8c46' + tenthous,
-	cidr 'fe80::6e40:8ff:fea9:8c46' + tenthous,
-	'empty'::int4range
+	cidr 'fe80::6e40:8ff:fea9:8c46' + tenthous
 FROM tenk1 ORDER BY thousand, tenthous LIMIT 25;
 CREATE INDEX brinidx_multi ON brintest_multi USING brin (
 	int8col int8_minmax_multi_ops,
@@ -70,6 +53,9 @@ CREATE INDEX brinidx_multi ON brintest_multi USING brin (
 	tidcol tid_minmax_multi_ops,
 	float4col float4_minmax_multi_ops,
 	float8col float8_minmax_multi_ops,
+	macaddrcol macaddr_minmax_multi_ops,
+	inetcol inet_minmax_multi_ops,
+	cidrcol inet_minmax_multi_ops,
 	datecol date_minmax_multi_ops,
 	timecol time_minmax_multi_ops,
 	timestampcol timestamp_minmax_multi_ops,
@@ -145,6 +131,26 @@ INSERT INTO brinopers_multi VALUES
 	 '{>, >=, =, <=, <}',
 	 '{0, 0, 0, 1.98, 1.98}',
 	 '{99, 100, 1, 100, 100}'),
+	('macaddrcol', 'macaddr',
+	 '{>, >=, =, <=, <}',
+	 '{00:00:01:00:00:00, 00:00:01:00:00:00, 2c:00:2d:00:16:00, ff:fe:00:00:00:00, ff:fe:00:00:00:00}',
+	 '{99, 100, 2, 100, 100}'),
+	('inetcol', 'inet',
+	 '{=, <, <=, >, >=}',
+	 '{10.2.14.231/24, 255.255.255.255, 255.255.255.255, 0.0.0.0, 0.0.0.0}',
+	 '{1, 100, 100, 125, 125}'),
+	('inetcol', 'cidr',
+	 '{<, <=, >, >=}',
+	 '{255.255.255.255, 255.255.255.255, 0.0.0.0, 0.0.0.0}',
+	 '{100, 100, 125, 125}'),
+	('cidrcol', 'inet',
+	 '{=, <, <=, >, >=}',
+	 '{10.2.14/24, 255.255.255.255, 255.255.255.255, 0.0.0.0, 0.0.0.0}',
+	 '{2, 100, 100, 125, 125}'),
+	('cidrcol', 'cidr',
+	 '{=, <, <=, >, >=}',
+	 '{10.2.14/24, 255.255.255.255, 255.255.255.255, 0.0.0.0, 0.0.0.0}',
+	 '{2, 100, 100, 125, 125}'),
 	('datecol', 'date',
 	 '{>, >=, =, <=, <}',
 	 '{1995-08-15, 1995-08-15, 2009-12-01, 2022-12-30, 2022-12-30}',
@@ -268,12 +274,9 @@ $x$;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 INSERT INTO brintest_multi SELECT
-	repeat(stringu1, 42)::bytea,
-	substr(stringu1, 1, 1)::"char",
-	stringu1::name, 142857 * tenthous,
+	142857 * tenthous,
 	thousand,
 	twothousand,
-	repeat(stringu1, 42),
 	unique1::oid,
 	format('(%s,%s)', tenthous, twenty)::tid,
 	(four + 1.0)/(hundred+1),
@@ -281,20 +284,15 @@ INSERT INTO brintest_multi SELECT
 	format('%s:00:%s:00:%s:00', to_hex(odd), to_hex(even), to_hex(hundred))::macaddr,
 	inet '10.2.3.4' + tenthous,
 	cidr '10.2.3/24' + tenthous,
-	substr(stringu1, 1, 1)::bpchar,
 	date '1995-08-15' + tenthous,
 	time '01:20:30' + thousand * interval '18.5 second',
 	timestamp '1942-07-23 03:05:09' + tenthous * interval '36.38 hours',
 	timestamptz '1972-10-10 03:00' + thousand * interval '1 hour',
 	justify_days(justify_hours(tenthous * interval '12 minutes')),
 	timetz '01:30:20' + hundred * interval '15 seconds',
-	thousand::bit(10),
-	tenthous::bit(16)::varbit,
 	tenthous::numeric(36,30) * fivethous * even / (hundred + 1),
 	format('%s%s-%s-%s-%s-%s%s%s', to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'), to_char(tenthous, 'FM0000'))::uuid,
-	int4range(thousand, twothousand),
-	format('%s/%s%s', odd, even, tenthous)::pg_lsn,
-	box(point(odd, even), point(thousand, twothousand))
+	format('%s/%s%s', odd, even, tenthous)::pg_lsn
 FROM tenk1 ORDER BY unique2 LIMIT 5 OFFSET 5;
 SELECT brin_desummarize_range('brinidx_multi', 0);
  brin_desummarize_range 
@@ -304,7 +302,6 @@ SELECT brin_desummarize_range('brinidx_multi', 0);
 
 VACUUM brintest_multi;  -- force a summarization cycle in brinidx
 UPDATE brintest_multi SET int8col = int8col * int4col;
-UPDATE brintest_multi SET textcol = '' WHERE textcol IS NOT NULL;
 -- Tests for brin_summarize_new_values
 SELECT brin_summarize_new_values('brintest_multi'); -- error, not an index
 ERROR:  "brintest_multi" is not an index

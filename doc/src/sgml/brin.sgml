@@ -324,6 +324,17 @@
      </entry>
     </row>
     <row>
+     <entry><literal>inet_minmax_multi_ops</literal></entry>
+     <entry><type>inet</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
      <entry><literal>network_inclusion_ops</literal></entry>
      <entry><type>inet</type></entry>
      <entry>
@@ -372,6 +383,17 @@
      </entry>
     </row>
     <row>
+     <entry><literal>interval_minmax_multi_ops</literal></entry>
+     <entry><type>interval</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
      <entry><literal>macaddr_bloom_ops</literal></entry>
      <entry><type>macaddr</type></entry>
      <entry>
@@ -390,6 +412,17 @@
      </entry>
     </row>
     <row>
+     <entry><literal>macaddr_minmax_multi_ops</literal></entry>
+     <entry><type>macaddr</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
      <entry><literal>macaddr8_bloom_ops</literal></entry>
      <entry><type>macaddr8</type></entry>
      <entry>
@@ -398,6 +431,17 @@
     </row>
     <row>
      <entry><literal>macaddr8_minmax_ops</literal></entry>
+     <entry><type>macaddr8</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
+     <entry><literal>macaddr8_minmax_multi_ops</literal></entry>
      <entry><type>macaddr8</type></entry>
      <entry>
       <literal>&lt;</literal>
@@ -452,6 +496,17 @@
     </row>
     <row>
      <entry><literal>pg_lsn_minmax_ops</literal></entry>
+     <entry><type>pg_lsn</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
+     <entry><literal>pg_lsn_minmax_multi_ops</literal></entry>
      <entry><type>pg_lsn</type></entry>
      <entry>
       <literal>&lt;</literal>
@@ -659,6 +714,17 @@
      </entry>
     </row>
     <row>
+     <entry><literal>time_minmax_multi_ops</literal></entry>
+     <entry><type>time without time zone</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
      <entry><literal>timetz_bloom_ops</literal></entry>
      <entry><type>time with time zone</type></entry>
      <entry>
@@ -667,6 +733,17 @@
     </row>
     <row>
      <entry><literal>timetz_minmax_ops</literal></entry>
+     <entry><type>time with time zone</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
+     <entry><literal>timetz_minmax_multi_ops</literal></entry>
      <entry><type>time with time zone</type></entry>
      <entry>
       <literal>&lt;</literal>

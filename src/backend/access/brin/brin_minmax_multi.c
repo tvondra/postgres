@@ -60,6 +60,7 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datum.h"
+#include "utils/inet.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
@@ -1526,6 +1527,139 @@ brin_minmax_multi_distance_pg_lsn(PG_FUNCTION_ARGS)
 	delta = (lsnb - lsna);
 
 	Assert(delta >= 0);
+
+	PG_RETURN_FLOAT8(delta);
+}
+
+/*
+ * Compute distance between two macaddr values.
+ *
+ * mac addresses are treated as 6 unsigned chars, so do the same thing we
+ * already do for UUID values.
+ */
+Datum
+brin_minmax_multi_distance_macaddr(PG_FUNCTION_ARGS)
+{
+	double	delta;
+
+	macaddr    *a = PG_GETARG_MACADDR_P(0);
+	macaddr    *b = PG_GETARG_MACADDR_P(1);
+
+	delta = ((double)b->f - (double)a->f);
+	delta /= 256;
+
+	delta += ((double)b->e - (double)a->e);
+	delta /= 256;
+
+	delta += ((double)b->d - (double)a->d);
+	delta /= 256;
+
+	delta += ((double)b->c - (double)a->c);
+	delta /= 256;
+
+	delta += ((double)b->b - (double)a->b);
+	delta /= 256;
+
+	delta += ((double)b->a - (double)a->a);
+	delta /= 256;
+
+	Assert(delta >= 0);
+
+	PG_RETURN_FLOAT8(delta);
+}
+
+
+/*
+ * Compute distance between two macaddr8 values.
+ *
+ * macaddr8 addresses are 8 unsigned chars, so do the same thing we
+ * already do for UUID values.
+ */
+Datum
+brin_minmax_multi_distance_macaddr8(PG_FUNCTION_ARGS)
+{
+	double	delta;
+
+	macaddr8   *a = PG_GETARG_MACADDR8_P(0);
+	macaddr8   *b = PG_GETARG_MACADDR8_P(1);
+
+	delta = ((double)b->h - (double)a->h);
+	delta /= 256;
+
+	delta += ((double)b->g - (double)a->g);
+	delta /= 256;
+
+	delta += ((double)b->f - (double)a->f);
+	delta /= 256;
+
+	delta += ((double)b->e - (double)a->e);
+	delta /= 256;
+
+	delta += ((double)b->d - (double)a->d);
+	delta /= 256;
+
+	delta += ((double)b->c - (double)a->c);
+	delta /= 256;
+
+	delta += ((double)b->b - (double)a->b);
+	delta /= 256;
+
+	delta += ((double)b->a - (double)a->a);
+	delta /= 256;
+
+	Assert(delta >= 0);
+
+	PG_RETURN_FLOAT8(delta);
+}
+
+
+/*
+ * Compute distance between two inet values.
+ *
+ * The distance is defined as difference between 32-bit/128-bit values,
+ * depending on the IP version. The distance is computed by subtracting
+ * the bytes and normalizing it to [0,1] range for each IP family.
+ * Addresses from difference families are consider to be in maximum
+ * distance, which is 1.0.
+ *
+ * XXX Does this need to consider the mask (bits)? For now it's ignored.
+ */
+Datum
+brin_minmax_multi_distance_inet(PG_FUNCTION_ARGS)
+{
+	double			delta;
+	int				i;
+	int				len;
+	unsigned char  *addra,
+				   *addrb;
+
+	inet	   *ipa = PG_GETARG_INET_PP(0);
+	inet	   *ipb = PG_GETARG_INET_PP(1);
+
+	/*
+	 * If the addresses are from different families, consider them to be
+	 * in maximal possible distance (which is 1.0).
+	 */
+	if (ip_family(ipa) != ip_family(ipb))
+		return 1.0;
+
+	/* ipv4 or ipv6 */
+	if (ip_family(ipa) == PGSQL_AF_INET)
+		len = 4;
+	else
+		len = 16; /* NS_IN6ADDRSZ */
+
+	addra = ip_addr(ipa);
+	addrb = ip_addr(ipb);
+
+	delta = 0;
+	for (i = len-1; i >= 0; i--)
+	{
+		delta += (double)addrb[i] - (double)addra[i];
+		delta /= 256;
+	}
+
+	Assert((delta >= 0) && (delta <= 1));
 
 	PG_RETURN_FLOAT8(delta);
 }

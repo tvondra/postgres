@@ -1135,6 +1135,12 @@ DATA(insert (	4074	829  829 2 s	  1223	  3580 0 ));
 DATA(insert (	4074	829  829 3 s	  1220	  3580 0 ));
 DATA(insert (	4074	829  829 4 s	  1225	  3580 0 ));
 DATA(insert (	4074	829  829 5 s	  1224	  3580 0 ));
+/* multi minmax macaddr */
+DATA(insert (	4143	829  829 1 s	  1222	  3580 0 ));
+DATA(insert (	4143	829  829 2 s	  1223	  3580 0 ));
+DATA(insert (	4143	829  829 3 s	  1220	  3580 0 ));
+DATA(insert (	4143	829  829 4 s	  1225	  3580 0 ));
+DATA(insert (	4143	829  829 5 s	  1224	  3580 0 ));
 /* bloom macaddr */
 DATA(insert (	5033	829  829 1 s	  1220	  3580 0 ));
 /* minmax macaddr8 */
@@ -1143,6 +1149,12 @@ DATA(insert (	4109	774  774 2 s	  3365	  3580 0 ));
 DATA(insert (	4109	774  774 3 s	  3362	  3580 0 ));
 DATA(insert (	4109	774  774 4 s	  3367	  3580 0 ));
 DATA(insert (	4109	774  774 5 s	  3366	  3580 0 ));
+/* multi minmax macaddr8 */
+DATA(insert (	4144	774  774 1 s	  3364	  3580 0 ));
+DATA(insert (	4144	774  774 2 s	  3365	  3580 0 ));
+DATA(insert (	4144	774  774 3 s	  3362	  3580 0 ));
+DATA(insert (	4144	774  774 4 s	  3367	  3580 0 ));
+DATA(insert (	4144	774  774 5 s	  3366	  3580 0 ));
 /* bloom macaddr8 */
 DATA(insert (	5034	774  774 1 s	  3362	  3580 0 ));
 /* minmax inet */
@@ -1151,6 +1163,12 @@ DATA(insert (	4075	869  869 2 s	  1204	  3580 0 ));
 DATA(insert (	4075	869  869 3 s	  1201	  3580 0 ));
 DATA(insert (	4075	869  869 4 s	  1206	  3580 0 ));
 DATA(insert (	4075	869  869 5 s	  1205	  3580 0 ));
+/* multi minmax inet */
+DATA(insert (	4145	869  869 1 s	  1203	  3580 0 ));
+DATA(insert (	4145	869  869 2 s	  1204	  3580 0 ));
+DATA(insert (	4145	869  869 3 s	  1201	  3580 0 ));
+DATA(insert (	4145	869  869 4 s	  1206	  3580 0 ));
+DATA(insert (	4145	869  869 5 s	  1205	  3580 0 ));
 /* inclusion inet */
 DATA(insert (	4102	869  869 3 s	  3552	  3580 0 ));
 DATA(insert (	4102	869  869 7 s	   934	  3580 0 ));

@@ -14,6 +14,7 @@
 #ifndef HASHJOIN_H
 #define HASHJOIN_H
 
+#include "lib/hyperloglog.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -79,6 +80,17 @@ typedef struct HashJoinTupleData
 #define HJTUPLE_OVERHEAD  MAXALIGN(sizeof(HashJoinTupleData))
 #define HJTUPLE_MINTUPLE(hjtup)  \
 	((MinimalTuple) ((char *) (hjtup) + HJTUPLE_OVERHEAD))
+
+typedef struct BloomFilterData
+{
+	uint64	nlookups;		/* number of lookups */
+	uint64	nmatches;		/* number of matches */
+	int		nbits;			/* m */
+	int		nhashes;		/* k */
+	char	data[1];		/* bits */
+}	BloomFilterData;
+
+typedef BloomFilterData *BloomFilter;
 
 /*
  * If the outer relation's distribution is sufficiently nonuniform, we attempt
@@ -349,6 +361,10 @@ typedef struct HashJoinTableData
 
 	/* used for dense allocation of tuples (into linked chunks) */
 	HashMemoryChunk chunks;		/* one list for the whole batch */
+
+	/* bloom filter on Hash (used with batched hash joins) */
+	BloomFilter	bloomFilter;	/* bloom filter on the hash values */
+	hyperLogLogState   *hll;	/* used to to size bloom filter */
 
 	/* Shared and private state for Parallel Hash. */
 	HashMemoryChunk current_chunk;	/* this backend's current chunk */

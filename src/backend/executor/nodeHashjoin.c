@@ -780,8 +780,8 @@ ExecEndHashJoin(HashJoinState *node)
 		if (hashtable->bloomFilter)
 		{
 			BloomFilter filter = hashtable->bloomFilter;
-			elog(WARNING, "bloom filter lookups=%lu matches=%lu eliminated=%lu%%",
-						  filter->nlookups, filter->nmatches, 100 - (100 * filter->nmatches) / Max(1,filter->nlookups));
+			elog(LOG, "bloom filter lookups=%lu matches=%lu eliminated=%lu%%",
+					  filter->nlookups, filter->nmatches, 100 - (100 * filter->nmatches) / Max(1,filter->nlookups));
 		}
 
 		ExecHashTableDestroy(node->hj_HashTable);

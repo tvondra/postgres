@@ -392,35 +392,6 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
 
-	/* only one of those is assumed to be non-NULL */
-	hashstate->hashtable->bloomFilter = NULL;
-	hashstate->hashtable->hll = NULL;
-
-	/*
-	 * We don't quite know how many distinct values to expect, so we'll use
-	 * the estimated number of rowsto be added to the hash table, and assume
-	 * they're all distinct.
-	 *
-	 * But if we already know there'll be multiple batches, we can't use hll
-	 * because we need to start building the bloom filter right away. In that
-	 * case we simply assume all the values are unique - we'll probably use
-	 * larger (and thus less efficient) bloom filter. It may not matter that
-	 * much because the possible savings (reduced I/O etc.) are much more
-	 * significant.
-	 *
-	 * XXX What we could do is always build the first batch in memory, thus
-	 *     get ndistinct estimate from hyperloglog and then immediately
-	 *     switch to the originally estimated number of batches.
-	 *
-	 * XXX Not really sure how to size the HLL, so the bwidth value may be
-	 *     too high (and the counter too big).
-	 */
-	if (enable_hashjoin_bloom)
-	{
-		hashstate->hashtable->hll = palloc0(sizeof(hyperLogLogState));
-		initHyperLogLogError(hashstate->hashtable->hll, 0.05);
-	}
-
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -563,6 +534,35 @@ ExecHashTableCreate(HashState *state, List *hashOperators, bool keepNulls)
 	hashtable->parallel_state = state->parallel_state;
 	hashtable->area = state->ps.state->es_query_dsa;
 	hashtable->batches = NULL;
+
+	/* only one of those is assumed to be non-NULL */
+	hashtable->bloomFilter = NULL;
+	hashtable->hll = NULL;
+
+	/*
+	 * We don't quite know how many distinct values to expect, so we'll use
+	 * the estimated number of rowsto be added to the hash table, and assume
+	 * they're all distinct.
+	 *
+	 * But if we already know there'll be multiple batches, we can't use hll
+	 * because we need to start building the bloom filter right away. In that
+	 * case we simply assume all the values are unique - we'll probably use
+	 * larger (and thus less efficient) bloom filter. It may not matter that
+	 * much because the possible savings (reduced I/O etc.) are much more
+	 * significant.
+	 *
+	 * XXX What we could do is always build the first batch in memory, thus
+	 *     get ndistinct estimate from hyperloglog and then immediately
+	 *     switch to the originally estimated number of batches.
+	 *
+	 * XXX Not really sure how to size the HLL, so the bwidth value may be
+	 *     too high (and the counter too big).
+	 */
+	if (enable_hashjoin_bloom)
+	{
+		hashtable->hll = palloc0(sizeof(hyperLogLogState));
+		initHyperLogLogError(hashtable->hll, 0.05);
+	}
 
 #ifdef HJDEBUG
 	printf("Hashjoin %p: initial nbatch = %d, nbuckets = %d\n",
@@ -1050,8 +1050,8 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		if (ndistinct < 1024)
 			ndistinct = 1024;
 
-		elog(WARNING, "ExecHashIncreaseNumBatches: ndistinct %ld",
-					  (int64)(nbatch * ndistinct));
+		elog(LOG, "ExecHashIncreaseNumBatches: ndistinct %ld",
+				  (int64)(nbatch * ndistinct));
 
 		hashtable->bloomFilter = BloomFilterInit(nbatch * ndistinct,
 												 BLOOM_ERROR_RATE);
@@ -1584,8 +1584,8 @@ ExecHashIncreaseNumBuckets(HashJoinTable hashtable)
 		if (ndistinct < 1024)
 			ndistinct = 1024;
 
-		elog(WARNING, "ExecHashBuildBuckets: building bloom filter (ndistinct %ld)",
-					  (int64)(2*ndistinct));
+		elog(LOG, "ExecHashBuildBuckets: building bloom filter (ndistinct %ld)",
+				  (int64)(2*ndistinct));
 
 		hashtable->bloomFilter = BloomFilterInit(2 * ndistinct,
 												 BLOOM_ERROR_RATE);
@@ -3560,7 +3560,7 @@ BloomFilterInit(double nrows, double error)
 	filter->nbits = nbits;
 	filter->nhashes = nhashes;
 
-	elog(WARNING, "bloom filter: %d bits (%d bytes), %d hashes", nbits, (nbits + 7) / 8, nhashes);
+	elog(LOG, "bloom filter: %d bits (%d bytes), %d hashes", nbits, (nbits + 7) / 8, nhashes);
 
 	return filter;
 }

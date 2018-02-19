@@ -393,8 +393,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
 
 	/* only one of those is assumed to be non-NULL */
-	hashtable->bloomFilter = NULL;
-	hashtable->hll = NULL;
+	hashstate->hashtable->bloomFilter = NULL;
+	hashstate->hashtable->hll = NULL;
 
 	/*
 	 * We don't quite know how many distinct values to expect, so we'll use
@@ -417,8 +417,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	 */
 	if (enable_hashjoin_bloom)
 	{
-		hashtable->hll = palloc0(sizeof(hyperLogLogState));
-		initHyperLogLogError(hashtable->hll, 0.05);
+		hashstate->hashtable->hll = palloc0(sizeof(hyperLogLogState));
+		initHyperLogLogError(hashstate->hashtable->hll, 0.05);
 	}
 
 	/*

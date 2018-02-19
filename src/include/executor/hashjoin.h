@@ -374,4 +374,6 @@ typedef struct HashJoinTableData
 	dsa_pointer current_chunk_shared;
 }			HashJoinTableData;
 
+bool ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue);
+
 #endif							/* HASHJOIN_H */

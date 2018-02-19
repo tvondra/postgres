@@ -364,7 +364,7 @@ typedef struct HashJoinTableData
 
 	/* bloom filter on Hash (used with batched hash joins) */
 	BloomFilter	bloomFilter;	/* bloom filter on the hash values */
-	hyperLogLogState   *hll;	/* used to to size bloom filter */
+	hyperLogLogState   *hll;	/* used to size the bloom filter */
 
 	/* Shared and private state for Parallel Hash. */
 	HashMemoryChunk current_chunk;	/* this backend's current chunk */

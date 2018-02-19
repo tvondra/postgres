@@ -39,9 +39,9 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "utils/dynahash.h"
+#include "utils/hashutils.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/murmur3.h"
 #include "utils/syscache.h"
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
@@ -3501,10 +3501,7 @@ ExecHashBloomAddValue(HashJoinTable hashtable, uint32 hashvalue)
 	 */
 	for (i = 0; i < filter->nhashes; i++)
 	{
-		uint32_t seed = i;
-		uint32_t hash = 0;
-
-		MurmurHash3_x86_32(&hashvalue, sizeof(uint32), seed, &hash);
+		uint32_t hash = murmurhash32_seed(i, hashvalue);
 
 		hash = hash % filter->nbits;
 
@@ -3528,10 +3525,7 @@ ExecHashBloomCheckValue(HashJoinTable hashtable, uint32 hashvalue)
 
 	for (i = 0; i < filter->nhashes; i++)
 	{
-		uint32_t seed = i;
-		uint32_t hash = 0;
-
-		MurmurHash3_x86_32(&hashvalue, sizeof(uint32), seed, &hash);
+		uint32_t hash = murmurhash32_seed(i, hashvalue);
 
 		hash = hash % filter->nbits;
 

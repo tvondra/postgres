@@ -147,6 +147,7 @@ static bool ExecHashJoinNewBatch(HashJoinState *hjstate);
 static bool ExecParallelHashJoinNewBatch(HashJoinState *hjstate);
 static void ExecParallelHashJoinPartitionOuter(HashJoinState *node);
 
+
 /* ----------------------------------------------------------------
  *		ExecHashJoinImpl
  *

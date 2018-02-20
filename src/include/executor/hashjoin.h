@@ -14,7 +14,6 @@
 #ifndef HASHJOIN_H
 #define HASHJOIN_H
 
-#include "lib/hyperloglog.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -364,7 +363,6 @@ typedef struct HashJoinTableData
 
 	/* bloom filter on Hash (used with batched hash joins) */
 	BloomFilter	bloomFilter;	/* bloom filter on the hash values */
-	hyperLogLogState   *hll;	/* used to size the bloom filter */
 
 	/* Shared and private state for Parallel Hash. */
 	HashMemoryChunk current_chunk;	/* this backend's current chunk */

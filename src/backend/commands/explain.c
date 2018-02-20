@@ -2459,6 +2459,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 				ExplainPropertyLong("Bloom Filter Hashes", hinstrument.bloom_nhashes, es);
 				ExplainPropertyLong("Bloom Filter Lookups", hinstrument.bloom_nlookups, es);
 				ExplainPropertyLong("Bloom Filter Matches", hinstrument.bloom_nmatches, es);
+				ExplainPropertyFloat("Bloom Filter Bits Set", hinstrument.bloom_nbits * 100.0 / (hinstrument.bloom_nbytes * 8), 2, es);
 			}
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
@@ -2486,11 +2487,12 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 		{
 			appendStringInfoSpaces(es->str, es->indent * 2);
 			appendStringInfo(es->str,
-							 "Bloom Filter Size: %ldkB  Hashes: %d  Lookups: %d  Matches: %d\n",
+							 "Bloom Filter Size: %ldkB  Hashes: %d  Lookups: %d  Matches: %d  Bits Set: %.2f%%\n",
 							 hinstrument.bloom_nbytes/1024,
 							 hinstrument.bloom_nhashes,
 							 hinstrument.bloom_nlookups,
-							 hinstrument.bloom_nmatches);
+							 hinstrument.bloom_nmatches,
+							 hinstrument.bloom_nbits * 100.0 / (hinstrument.bloom_nbytes * 8));
 		}
 	}
 }

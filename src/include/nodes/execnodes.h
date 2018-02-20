@@ -2041,6 +2041,7 @@ typedef struct HashInstrumentation
 	size_t		bloom_nbytes;		/* number of bytes */
 	int			bloom_nlookups;		/* number of lookups */
 	int			bloom_nmatches;		/* number of matches */
+	int			bloom_nbits;		/* number of bits set */
 } HashInstrumentation;
 
 /* ----------------

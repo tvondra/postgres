@@ -2775,10 +2775,22 @@ ExecHashGetInstrumentation(HashInstrumentation *instrument,
 
 	if (hashtable->bloomFilter)
 	{
+		int i, j;
+
 		instrument->bloom_nhashes = hashtable->bloomFilter->nhashes;
 		instrument->bloom_nbytes = hashtable->bloomFilter->nbits/8;
 		instrument->bloom_nlookups = hashtable->bloomFilter->nlookups;
 		instrument->bloom_nmatches = hashtable->bloomFilter->nmatches;
+		instrument->bloom_nbits = 0;
+
+		for (i = 0; i < hashtable->bloomFilter->nbits/8; i++)
+		{
+			for (j = 0; j < 8; j++)
+			{
+				if (hashtable->bloomFilter->data[i] & (0x01 << j))
+					instrument->bloom_nbits++;
+			}
+		}
 	}
 }
 

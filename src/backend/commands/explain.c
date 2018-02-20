@@ -2452,15 +2452,6 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyLong("Original Hash Batches",
 								hinstrument.nbatch_original, es);
 			ExplainPropertyLong("Peak Memory Usage", spacePeakKb, es);
-
-			if (hinstrument.bloom_nbytes > 0)
-			{
-				ExplainPropertyLong("Bloom Filter Bytes", hinstrument.bloom_nbytes, es);
-				ExplainPropertyLong("Bloom Filter Hashes", hinstrument.bloom_nhashes, es);
-				ExplainPropertyLong("Bloom Filter Lookups", hinstrument.bloom_nlookups, es);
-				ExplainPropertyLong("Bloom Filter Matches", hinstrument.bloom_nmatches, es);
-				ExplainPropertyFloat("Bloom Filter Bits Set", hinstrument.bloom_nbits * 100.0 / (hinstrument.bloom_nbytes * 8), 2, es);
-			}
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
@@ -2482,8 +2473,20 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 hinstrument.nbuckets, hinstrument.nbatch,
 							 spacePeakKb);
 		}
+	}
 
-		if ((hinstrument.bloom_nbytes > 0) && (es->format == EXPLAIN_FORMAT_TEXT))
+	if (hinstrument.bloom_nbytes > 0)
+	{
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainPropertyLong("Bloom Filter Bytes", hinstrument.bloom_nbytes, es);
+			ExplainPropertyLong("Bloom Filter Hashes", hinstrument.bloom_nhashes, es);
+			ExplainPropertyLong("Bloom Filter Lookups", hinstrument.bloom_nlookups, es);
+			ExplainPropertyLong("Bloom Filter Matches", hinstrument.bloom_nmatches, es);
+			ExplainPropertyFloat("Bloom Filter Bits Set",
+				hinstrument.bloom_nbits * 100.0 / (hinstrument.bloom_nbytes * 8), 2, es);
+		}
+		else
 		{
 			appendStringInfoSpaces(es->str, es->indent * 2);
 			appendStringInfo(es->str,

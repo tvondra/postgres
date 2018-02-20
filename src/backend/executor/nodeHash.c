@@ -2772,6 +2772,14 @@ ExecHashGetInstrumentation(HashInstrumentation *instrument,
 	instrument->nbatch = hashtable->nbatch;
 	instrument->nbatch_original = hashtable->nbatch_original;
 	instrument->space_peak = hashtable->spacePeak;
+
+	if (hashtable->bloomFilter)
+	{
+		instrument->bloom_nhashes = hashtable->bloomFilter->nhashes;
+		instrument->bloom_nbytes = hashtable->bloomFilter->nbits/8;
+		instrument->bloom_nlookups = hashtable->bloomFilter->nlookups;
+		instrument->bloom_nmatches = hashtable->bloomFilter->nmatches;
+	}
 }
 
 /*

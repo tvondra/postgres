@@ -2452,6 +2452,14 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyLong("Original Hash Batches",
 								hinstrument.nbatch_original, es);
 			ExplainPropertyLong("Peak Memory Usage", spacePeakKb, es);
+
+			if (hinstrument.bloom_nbytes > 0)
+			{
+				ExplainPropertyLong("Bloom Filter Bytes", hinstrument.bloom_nbytes, es);
+				ExplainPropertyLong("Bloom Filter Hashes", hinstrument.bloom_nhashes, es);
+				ExplainPropertyLong("Bloom Filter Lookups", hinstrument.bloom_nlookups, es);
+				ExplainPropertyLong("Bloom Filter Matches", hinstrument.bloom_nmatches, es);
+			}
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
@@ -2472,6 +2480,17 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 "Buckets: %d  Batches: %d  Memory Usage: %ldkB\n",
 							 hinstrument.nbuckets, hinstrument.nbatch,
 							 spacePeakKb);
+		}
+
+		if ((hinstrument.bloom_nbytes > 0) && (es->format == EXPLAIN_FORMAT_TEXT))
+		{
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfo(es->str,
+							 "Bloom Filter Size: %ldkB  Hashes: %d  Lookups: %d  Matches: %d\n",
+							 hinstrument.bloom_nbytes/1024,
+							 hinstrument.bloom_nhashes,
+							 hinstrument.bloom_nlookups,
+							 hinstrument.bloom_nmatches);
 		}
 	}
 }

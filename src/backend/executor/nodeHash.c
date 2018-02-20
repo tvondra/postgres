@@ -607,7 +607,7 @@ ExecHashTableCreate(HashState *state, List *hashOperators, bool keepNulls)
 	 * XXX There are cases where we know the hash table contains all
 	 * rows, e.g. FK-PK join with no restrictions on the PK side.
 	 */
-	if (enable_hashjoin_bloom && (nbatch > 1))
+	if (enable_hashjoin_bloom && (nbatch > 1) && (!node->plan.parallel_aware))
 	{
 		/* batching, so build bloom filter */
 		hashtable->bloomFilter

@@ -260,17 +260,6 @@ xact_desc_abort(StringInfo buf, uint8 info, xl_xact_abort *xlrec)
 	}
 }
 
-static void
-xact_desc_assignment(StringInfo buf, xl_xact_assignment *xlrec)
-{
-	int			i;
-
-	appendStringInfoString(buf, "subxacts:");
-
-	for (i = 0; i < xlrec->nsubxacts; i++)
-		appendStringInfo(buf, " %u", xlrec->xsub[i]);
-}
-
 void
 xact_desc(StringInfo buf, XLogReaderState *record)
 {
@@ -289,18 +278,6 @@ xact_desc(StringInfo buf, XLogReaderState *record)
 		xl_xact_abort *xlrec = (xl_xact_abort *) rec;
 
 		xact_desc_abort(buf, XLogRecGetInfo(record), xlrec);
-	}
-	else if (info == XLOG_XACT_ASSIGNMENT)
-	{
-		xl_xact_assignment *xlrec = (xl_xact_assignment *) rec;
-
-		/*
-		 * Note that we ignore the WAL record's xid, since we're more
-		 * interested in the top-level xid that issued the record and which
-		 * xids are being reported here.
-		 */
-		appendStringInfo(buf, "xtop %u: ", xlrec->xtop);
-		xact_desc_assignment(buf, xlrec);
 	}
 	else if (info == XLOG_XACT_INVALIDATIONS)
 	{
@@ -333,9 +310,6 @@ xact_identify(uint8 info)
 			break;
 		case XLOG_XACT_ABORT_PREPARED:
 			id = "ABORT_PREPARED";
-			break;
-		case XLOG_XACT_ASSIGNMENT:
-			id = "ASSIGNMENT";
 			break;
 		case XLOG_XACT_INVALIDATIONS:
 			id = "INVALIDATION";

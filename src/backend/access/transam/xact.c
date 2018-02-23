@@ -188,6 +188,7 @@ typedef struct TransactionStateData
 	bool		prevXactReadOnly;	/* entry-time xact r/o state */
 	bool		startedInRecovery;	/* did we start in recovery? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
+	bool		assigned;		/* assigned to toplevel XID */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -218,15 +219,9 @@ static TransactionStateData TopTransactionStateData = {
 	false,						/* entry-time xact r/o state */
 	false,						/* startedInRecovery */
 	0,							/* parallelModeLevel */
+	false,						/* assigned */
 	NULL						/* link to parent state block */
 };
-
-/*
- * unreportedXids holds XIDs of all subtransactions that have not yet been
- * reported in an XLOG_XACT_ASSIGNMENT record.
- */
-static int	nUnreportedXids;
-static TransactionId unreportedXids[PGPROC_MAX_CACHED_SUBXIDS];
 
 static TransactionState CurrentTransactionState = &TopTransactionStateData;
 
@@ -477,7 +472,6 @@ AssignTransactionId(TransactionState s)
 {
 	bool		isSubXact = (s->parent != NULL);
 	ResourceOwner currentOwner;
-	bool		log_assignment = false;
 
 	/* Assert that caller didn't screw up */
 	Assert(!TransactionIdIsValid(s->transactionId));
@@ -520,19 +514,6 @@ AssignTransactionId(TransactionState s)
 	}
 
 	/*
-	 * When wal_level=logical, we issue the XLOG_XACT_ASSIGNMENT records
-	 * immediately, so that we can decode the top-level transaction without
-	 * waiting for the commit.
-	 *
-	 * This also guarantees that a subtransaction's xid can only be seen in
-	 * the WAL stream if its toplevel xid has been logged before. That can
-	 * happen when an xid is included somewhere inside a wal record, but not
-	 * in XLogRecord->xl_xid, like in xl_standby_locks.
-	 */
-	if (isSubXact && XLogLogicalInfoActive())
-		log_assignment = true;
-
-	/*
 	 * Generate a new Xid and record it in PG_PROC and pg_subtrans.
 	 *
 	 * NB: we must make the subtrans entry BEFORE the Xid appears anywhere in
@@ -565,57 +546,6 @@ AssignTransactionId(TransactionState s)
 	XactLockTableInsert(s->transactionId);
 
 	CurrentResourceOwner = currentOwner;
-
-	/*
-	 * Every PGPROC_MAX_CACHED_SUBXIDS assigned transaction ids within each
-	 * top-level transaction we issue a WAL record for the assignment. We
-	 * include the top-level xid and all the subxids that have not yet been
-	 * reported using XLOG_XACT_ASSIGNMENT records.
-	 *
-	 * This is required to limit the amount of shared memory required in a hot
-	 * standby server to keep track of in-progress XIDs. See notes for
-	 * RecordKnownAssignedTransactionIds().
-	 *
-	 * We don't keep track of the immediate parent of each subxid, only the
-	 * top-level transaction that each subxact belongs to. This is correct in
-	 * recovery only because aborted subtransactions are separately WAL
-	 * logged.
-	 *
-	 * This is correct even for the case where several levels above us didn't
-	 * have an xid assigned as we recursed up to them beforehand.
-	 */
-	if (isSubXact && XLogStandbyInfoActive())
-	{
-		unreportedXids[nUnreportedXids] = s->transactionId;
-		nUnreportedXids++;
-
-		/*
-		 * ensure this test matches similar one in
-		 * RecoverPreparedTransactions()
-		 */
-		if (nUnreportedXids >= PGPROC_MAX_CACHED_SUBXIDS ||
-			log_assignment)
-		{
-			xl_xact_assignment xlrec;
-
-			/*
-			 * xtop is always set by now because we recurse up transaction
-			 * stack to the highest unassigned xid and then come back down
-			 */
-			xlrec.xtop = GetTopTransactionId();
-			Assert(TransactionIdIsValid(xlrec.xtop));
-			xlrec.nsubxacts = nUnreportedXids;
-
-			XLogBeginInsert();
-			XLogRegisterData((char *) &xlrec, MinSizeOfXactAssignment);
-			XLogRegisterData((char *) unreportedXids,
-							 nUnreportedXids * sizeof(TransactionId));
-
-			(void) XLogInsert(RM_XACT_ID, XLOG_XACT_ASSIGNMENT);
-
-			nUnreportedXids = 0;
-		}
-	}
 }
 
 /*
@@ -1687,13 +1617,6 @@ AtSubAbort_childXids(void)
 	s->childXids = NULL;
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
-
-	/*
-	 * We could prune the unreportedXids array here. But we don't bother. That
-	 * would potentially reduce number of XLOG_XACT_ASSIGNMENT records but it
-	 * would likely introduce more CPU time into the more common paths, so we
-	 * choose not to do that.
-	 */
 }
 
 /* ----------------------------------------------------------------
@@ -1833,11 +1756,6 @@ StartTransaction(void)
 	currentSubTransactionId = TopSubTransactionId;
 	currentCommandId = FirstCommandId;
 	currentCommandIdUsed = false;
-
-	/*
-	 * initialize reported xid accounting
-	 */
-	nUnreportedXids = 0;
 
 	/*
 	 * must initialize resource-management stuff first
@@ -4890,6 +4808,7 @@ PushTransaction(void)
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
 	s->prevXactReadOnly = XactReadOnly;
 	s->parallelModeLevel = 0;
+	s->assigned = false;
 
 	CurrentTransactionState = s;
 
@@ -5788,14 +5707,6 @@ xact_redo(XLogReaderState *record)
 					   record->EndRecPtr);
 		LWLockRelease(TwoPhaseStateLock);
 	}
-	else if (info == XLOG_XACT_ASSIGNMENT)
-	{
-		xl_xact_assignment *xlrec = (xl_xact_assignment *) XLogRecGetData(record);
-
-		if (standbyState >= STANDBY_INITIALIZED)
-			ProcArrayApplyXidAssignment(xlrec->xtop,
-										xlrec->nsubxacts, xlrec->xsub);
-	}
 	else if (info == XLOG_XACT_INVALIDATIONS)
 	{
 		/*
@@ -5805,4 +5716,40 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+/*
+ *	IsSubTransactionAssignmentPending
+ *
+ *	This returns true if we are inside a valid substransaction, for which
+ *	the assignment was not yet written to any WAL record.
+ */
+bool
+IsSubTransactionAssignmentPending(void)
+{
+	/* we need to be in a transaction state */
+	if (!IsTransactionState())
+		return false;
+
+	/* it has to be a subtransaction */
+	if (!IsSubTransaction())
+		return false;
+
+	/* and it needs to have 'assigned' */
+	return !CurrentTransactionState->assigned;
+
+}
+
+/*
+ *	MarkSubTransactionAssigned
+ *
+ *	Mark the subtransaction assignment as completed.
+ */
+void
+MarkSubTransactionAssigned(void)
+{
+	Assert(IsSubTransactionAssignmentPending());
+
+	CurrentTransactionState->assigned = true;
+
 }

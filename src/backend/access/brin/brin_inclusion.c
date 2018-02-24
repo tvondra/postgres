@@ -259,63 +259,6 @@ brin_inclusion_consistent(PG_FUNCTION_ARGS)
 	Datum		result;
 	int			keyno;
 	bool		matches;
-	bool		regular_keys = false;
-
-	/*
-	 * First check if there are any IS NULL scan keys, and if we're
-	 * violating them. In that case we can terminate early, without
-	 * inspecting the ranges.
-	 */
-	for (keyno = 0; keyno < nkeys; keyno++)
-	{
-		ScanKey	key = keys[keyno];
-
-		Assert(key->sk_attno == column->bv_attno);
-
-		/* handle IS NULL/IS NOT NULL tests */
-		if (key->sk_flags & SK_ISNULL)
-		{
-			if (key->sk_flags & SK_SEARCHNULL)
-			{
-				if (column->bv_allnulls || column->bv_hasnulls)
-					continue;	/* this key is fine, continue */
-
-				PG_RETURN_BOOL(false);
-			}
-
-			/*
-			 * For IS NOT NULL, we can only skip ranges that are known to have
-			 * only nulls.
-			 */
-			if (key->sk_flags & SK_SEARCHNOTNULL)
-			{
-				if (column->bv_allnulls)
-					PG_RETURN_BOOL(false);
-
-				continue;
-			}
-
-			/*
-			 * Neither IS NULL nor IS NOT NULL was used; assume all indexable
-			 * operators are strict and return false.
-			 */
-			PG_RETURN_BOOL(false);
-		}
-		else
-			/* note we have regular (non-NULL) scan keys */
-			regular_keys = true;
-	}
-
-	/*
-	 * If the page range is all nulls, it cannot possibly be consistent if
-	 * there are some regular scan keys.
-	 */
-	if (column->bv_allnulls && regular_keys)
-		PG_RETURN_BOOL(false);
-
-	/* If there are no regular keys, the page range is considered consistent. */
-	if (!regular_keys)
-		PG_RETURN_BOOL(true);
 
 	/* It has to be checked, if it contains elements that are not mergeable. */
 	if (DatumGetBool(column->bv_values[INCLUSION_UNMERGEABLE]))
@@ -327,9 +270,8 @@ brin_inclusion_consistent(PG_FUNCTION_ARGS)
 	{
 		ScanKey	key = keys[keyno];
 
-		/* ignore IS NULL/IS NOT NULL tests handled above */
-		if (key->sk_flags & SK_ISNULL)
-			continue;
+		/* NULL keys are handled and filtered-out in bringetbitmap */
+		Assert(!(key->sk_flags & SK_ISNULL));
 
 		attno = key->sk_attno;
 		subtype = key->sk_subtype;

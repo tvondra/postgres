@@ -29,6 +29,7 @@
 #include "replication/origin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "pg_trace.h"
 
@@ -89,12 +90,13 @@ static char *hdr_scratch = NULL;
 
 #define SizeOfXlogOrigin	(sizeof(RepOriginId) + sizeof(char))
 #define SizeOfTransactionId	(sizeof(TransactionId) + sizeof(char))
+#define SizeOfInvalidations	(sizeof(SharedInvalidationMessage) * 64 + sizeof(int) + sizeof(char))
 
 #define HEADER_SCRATCH_SIZE \
 	(SizeOfXLogRecord + \
 	 MaxSizeOfXLogRecordBlockHeader * (XLR_MAX_BLOCK_ID + 1) + \
 	 SizeOfXLogRecordDataHeaderLong + SizeOfXlogOrigin + \
-	 SizeOfTransactionId)
+	 SizeOfTransactionId + SizeOfInvalidations)
 
 /*
  * An array of XLogRecData structs, to hold registered data.
@@ -758,6 +760,27 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		/* and remember we already sent assignment for this subxact */
 		MarkSubTransactionAssigned();
+	}
+
+	/* followed by invalidation messages, if any */
+	if (AreInvalidationMessagesPending())
+	{
+		int nmsgs;
+		SharedInvalidationMessage *msgs;
+
+		msgs = GetPendingInvalidationMessages(&nmsgs);
+
+		/* update the flag (later used by XLogInsertRecord) */
+		curinsert_flags |= XLOG_INCLUDE_INVALS;
+		*(scratch++) = (char) XLR_BLOCK_ID_INVALIDATIONS;
+
+		/* number of invalidation messages */
+		memcpy(scratch, &nmsgs, sizeof(int));
+		scratch += sizeof(int);
+
+		/* invalidation messages */
+		memcpy(scratch, msgs, sizeof(SharedInvalidationMessage) * nmsgs);
+		scratch += sizeof(TransactionId);
 	}
 
 	/* followed by main data, if any */

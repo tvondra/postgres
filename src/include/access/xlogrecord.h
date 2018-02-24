@@ -225,5 +225,6 @@ typedef struct XLogRecordDataHeaderLong
 #define XLR_BLOCK_ID_DATA_LONG		254
 #define XLR_BLOCK_ID_ORIGIN			253
 #define XLR_BLOCK_ID_TOPLEVEL_XID	252
+#define XLR_BLOCK_ID_INVALIDATIONS	251
 
 #endif							/* XLOGRECORD_H */

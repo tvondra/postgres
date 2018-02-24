@@ -16,6 +16,7 @@
 
 #include "access/htup.h"
 #include "storage/relfilenode.h"
+#include "storage/sinval.h"
 #include "utils/relcache.h"
 
 
@@ -63,4 +64,9 @@ extern void CacheRegisterRelcacheCallback(RelcacheCallbackFunction func,
 extern void CallSyscacheCallbacks(int cacheid, uint32 hashvalue);
 
 extern void InvalidateSystemCaches(void);
+
+extern bool AreInvalidationMessagesPending(void);
+
+extern SharedInvalidationMessage *GetPendingInvalidationMessages(int *nmsgs);
+
 #endif							/* INVAL_H */

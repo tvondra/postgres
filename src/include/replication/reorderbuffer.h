@@ -497,8 +497,10 @@ void ReorderBufferAddNewTupleCids(ReorderBuffer *, TransactionId, XLogRecPtr lsn
 void ReorderBufferAddInvalidation(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
 							 Oid dbId, Oid tsId, bool relcacheInitFileInval,
 							 SharedInvalidationMessage msg);
-void ReorderBufferAddInvalidations(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
-							  Size nmsgs, SharedInvalidationMessage *msgs);
+void ReorderBufferAddInvalidations(ReorderBuffer *rb, TransactionId xid,
+							  XLogRecPtr lsn, Oid dbId, Oid tsId,
+							  bool relcacheInitFileInval,
+							  int nmsgs, SharedInvalidationMessage *msgs);
 void ReorderBufferImmediateInvalidation(ReorderBuffer *, uint32 ninvalidations,
 								   SharedInvalidationMessage *invalidations);
 void		ReorderBufferProcessXid(ReorderBuffer *, TransactionId xid, XLogRecPtr lsn);

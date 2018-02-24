@@ -24,6 +24,7 @@
 #include "catalog/pg_control.h"
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
+#include "storage/sinval.h"
 
 static bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 
@@ -1037,6 +1038,11 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 	state->record_origin = InvalidRepOriginId;
 	state->toplevel_xid = InvalidTransactionId;
 
+	/* reset invalidations */
+	state->invals.dbId = InvalidOid;
+	state->invals.tsId = InvalidOid;
+	state->invals.nmsgs = 0;
+
 	ptr = (char *) record;
 	ptr += SizeOfXLogRecord;
 	remaining = record->xl_tot_len - SizeOfXLogRecord;
@@ -1077,6 +1083,26 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 		else if (block_id == XLR_BLOCK_ID_TOPLEVEL_XID)
 		{
 			COPY_HEADER_FIELD(&state->toplevel_xid, sizeof(TransactionId));
+		}
+		else if (block_id == XLR_BLOCK_ID_INVALIDATIONS)
+		{
+			Size len;
+
+			COPY_HEADER_FIELD(&state->invals.dbId, sizeof(Oid));
+			COPY_HEADER_FIELD(&state->invals.tsId, sizeof(Oid));
+			COPY_HEADER_FIELD(&state->invals.relcacheInitFileInval, sizeof(bool));
+			COPY_HEADER_FIELD(&state->invals.nmsgs, sizeof(int));
+
+			/* free the old array of invalidations */
+			if (state->invals.msgs)
+				pfree(state->invals.msgs);
+
+			len = state->invals.nmsgs * sizeof(SharedInvalidationMessage);
+
+			state->invals.msgs
+				= (SharedInvalidationMessage *) palloc(len);
+
+			COPY_HEADER_FIELD(state->invals.msgs, len);
 		}
 		else if (block_id <= XLR_MAX_BLOCK_ID)
 		{

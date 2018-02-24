@@ -117,6 +117,24 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 								 buf.origptr);
 	}
 
+	/*
+	 * Process invalidations, logged in this xlog record, if any.
+	 */
+	if (XLogRecHasInvalidations(record))
+	{
+		TransactionId xid = XLogRecGetXid(record);
+
+		ReorderBufferAddInvalidations(ctx->reorder, xid,
+									  buf.origptr,
+									  record->invals.dbId,
+									  record->invals.tsId,
+									  record->invals.relcacheInitFileInval,
+									  record->invals.nmsgs,
+									  record->invals.msgs);
+
+		ReorderBufferXidSetCatalogChanges(ctx->reorder, xid, buf.origptr);
+	}
+
 	/* cast so we get a warning when new rmgrs are added */
 	switch ((RmgrIds) XLogRecGetRmid(record))
 	{
@@ -278,7 +296,7 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 				DecodeAbort(ctx, buf, &parsed, xid);
 				break;
 			}
-		case XLOG_XACT_INVALIDATIONS:
+			case XLOG_XACT_INVALIDATIONS:
 			{
 				TransactionId xid;
 				xl_xact_invalidations *invals;
@@ -286,13 +304,10 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 				xid = XLogRecGetXid(r);
 				invals = (xl_xact_invalidations *) XLogRecGetData(r);
 
-				/* XXX for now we're issuing invalidations one by one */
-				Assert(invals->nmsgs == 1);
-
-				ReorderBufferAddInvalidation(reorder, xid, buf->origptr,
-											 invals->dbId, invals->tsId,
-											 invals->relcacheInitFileInval,
-											 invals->msgs[0]);
+				ReorderBufferAddInvalidations(reorder, xid, buf->origptr,
+											  invals->dbId, invals->tsId,
+											  invals->relcacheInitFileInval,
+											  invals->nmsgs, invals->msgs);
 			}
 			break;
 		case XLOG_XACT_PREPARE:
@@ -579,19 +594,6 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	{
 		origin_lsn = parsed->origin_lsn;
 		commit_time = parsed->origin_timestamp;
-	}
-
-	/*
-	 * Process invalidation messages, even if we're not interested in the
-	 * transaction's contents, since the various caches need to always be
-	 * consistent.
-	 */
-	if (parsed->nmsgs > 0)
-	{
-		if (!ctx->fast_forward)
-			ReorderBufferAddInvalidations(ctx->reorder, xid, buf->origptr,
-										  parsed->nmsgs, parsed->msgs);
-		ReorderBufferXidSetCatalogChanges(ctx->reorder, xid, buf->origptr);
 	}
 
 	SnapBuildCommitTxn(ctx->snapshot_builder, buf->origptr, xid,

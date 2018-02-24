@@ -2466,29 +2466,18 @@ ReorderBufferAddInvalidation(ReorderBuffer *rb, TransactionId xid,
 
 /*
  * Setup the invalidation of the toplevel transaction.
- *
- * This needs to be done before ReorderBufferCommit is called!
  */
 void
 ReorderBufferAddInvalidations(ReorderBuffer *rb, TransactionId xid,
-							  XLogRecPtr lsn, Size nmsgs,
-							  SharedInvalidationMessage *msgs)
+							  XLogRecPtr lsn,
+							  Oid dbId, Oid tsId, bool relcacheInitFileInval,
+							  int nmsgs, SharedInvalidationMessage *msgs)
 {
-	ReorderBufferTXN *txn;
+	int i;
 
-	txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
-
-	if (txn->ninvalidations != 0)
-		elog(ERROR, "only ever add one set of invalidations");
-
-	Assert(nmsgs > 0);
-
-	txn->ninvalidations = nmsgs;
-	txn->invalidations = (SharedInvalidationMessage *)
-		MemoryContextAlloc(rb->context,
-						   sizeof(SharedInvalidationMessage) * nmsgs);
-	memcpy(txn->invalidations, msgs,
-		   sizeof(SharedInvalidationMessage) * nmsgs);
+	for (i = 0; i < nmsgs; i++)
+		ReorderBufferAddInvalidation(rb, xid, lsn, dbId, tsId,
+									 relcacheInitFileInval, msgs[i]);
 }
 
 /*

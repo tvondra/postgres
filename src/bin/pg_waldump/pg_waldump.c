@@ -59,6 +59,8 @@ typedef struct Stats
 	uint64		count;
 	uint64		rec_len;
 	uint64		fpi_len;
+	uint64		ninvalidations;
+	uint64		nassignments;
 } Stats;
 
 #define MAX_XLINFO_TYPES 16
@@ -484,6 +486,132 @@ XLogDumpRecordLen(XLogReaderState *record, uint32 *rec_len, uint32 *fpi_len)
 }
 
 /*
+ * Calculate the number of invalidations.
+ */
+static void
+XLogDumpInvalidations(XLogReaderState *record, uint32 *ninvalidations)
+{
+#define COPY_HEADER_FIELD(_dst, _size)			\
+	do {										\
+		if (remaining < _size)					\
+			goto shortdata_err;					\
+		memcpy(_dst, ptr, _size);				\
+		ptr += _size;							\
+		remaining -= _size;						\
+	} while(0)
+
+	char	   *ptr;
+	uint32		remaining;
+	uint32		datatotal;
+	uint8		block_id;
+	XLogRecord *rec;
+
+	*ninvalidations = 0;
+
+	rec = record->decoded_record;
+	remaining = rec->xl_tot_len - SizeOfXLogRecord;
+
+	// FIXME extract info about invalidations
+	ptr = (char *) rec;
+	ptr += SizeOfXLogRecord;
+
+	datatotal = 0;
+	while (remaining > datatotal)
+	{
+		COPY_HEADER_FIELD(&block_id, sizeof(uint8));
+
+		if (block_id == XLR_BLOCK_ID_DATA_SHORT)
+		{
+			/* XLogRecordDataHeaderShort */
+			uint8		main_data_len;
+
+			COPY_HEADER_FIELD(&main_data_len, sizeof(uint8));
+
+			datatotal += main_data_len;
+			break;				/* by convention, the main data fragment is
+								 * always last */
+		}
+		else if (block_id == XLR_BLOCK_ID_DATA_LONG)
+		{
+			/* XLogRecordDataHeaderLong */
+			uint32		main_data_len;
+
+			COPY_HEADER_FIELD(&main_data_len, sizeof(uint32));
+			datatotal += main_data_len;
+			break;				/* by convention, the main data fragment is
+								 * always last */
+		}
+		else if (block_id == XLR_BLOCK_ID_ORIGIN)
+		{
+			RepOriginId	record_origin;
+			COPY_HEADER_FIELD(&record_origin, sizeof(RepOriginId));
+		}
+		else if (block_id == XLR_BLOCK_ID_TOPLEVEL_XID)
+		{
+			TransactionId	toplevel_xid;
+			COPY_HEADER_FIELD(&toplevel_xid, sizeof(TransactionId));
+		}
+		else if (block_id == XLR_BLOCK_ID_INVALIDATIONS)
+		{
+			Size len;
+			SharedInvalidationMessage	msgs[32];	/* XXX max cached */
+
+			COPY_HEADER_FIELD(ninvalidations, sizeof(int));
+
+			len = (*ninvalidations) * sizeof(SharedInvalidationMessage);
+
+			COPY_HEADER_FIELD(&msgs, len);
+		}
+		else if (block_id <= XLR_MAX_BLOCK_ID)
+		{
+			/* XLogRecordBlockHeader */
+			uint8		fork_flags;
+			uint16		data_len;
+			bool		has_image;
+			BlockNumber	blkno;
+
+			COPY_HEADER_FIELD(&fork_flags, sizeof(uint8));
+			COPY_HEADER_FIELD(&data_len, sizeof(uint16));
+
+			has_image = ((fork_flags & BKPBLOCK_HAS_IMAGE) != 0);
+
+			if (has_image)
+			{
+				uint16	bimg_len;
+				uint16	hole_offset, hole_length;
+				uint8	bimg_info;
+
+				COPY_HEADER_FIELD(&bimg_len, sizeof(uint16));
+				COPY_HEADER_FIELD(&hole_offset, sizeof(uint16));
+				COPY_HEADER_FIELD(&bimg_info, sizeof(uint8));
+
+				if (bimg_info & BKPIMAGE_IS_COMPRESSED)
+				{
+					if (bimg_info & BKPIMAGE_HAS_HOLE)
+						COPY_HEADER_FIELD(&hole_length, sizeof(uint16));
+					else
+						hole_length = 0;
+				}
+				else
+					hole_length = BLCKSZ - bimg_len;
+				datatotal += bimg_len;
+			}
+			if (!(fork_flags & BKPBLOCK_SAME_REL))
+			{
+				RelFileNode	rnode;
+				COPY_HEADER_FIELD(&rnode, sizeof(RelFileNode));
+			}
+			COPY_HEADER_FIELD(&blkno, sizeof(BlockNumber));
+		}
+	}
+
+	return;
+
+shortdata_err:
+	printf("ERROR\n");
+}
+
+/*
  * Store per-rmgr and per-record statistics for a given record.
  */
 static void
@@ -494,6 +622,8 @@ XLogDumpCountRecord(XLogDumpConfig *config, XLogDumpStats *stats,
 	uint8		recid;
 	uint32		rec_len;
 	uint32		fpi_len;
+	uint32		ninvalidations;
+	uint32		nassignments;
 
 	stats->count++;
 
@@ -501,11 +631,19 @@ XLogDumpCountRecord(XLogDumpConfig *config, XLogDumpStats *stats,
 
 	XLogDumpRecordLen(record, &rec_len, &fpi_len);
 
+	/* is this subxact assignment */
+	if (TransactionIdIsValid(XLogRecGetTopXid(record)))
+		nassignments = 1;
+
+	XLogDumpInvalidations(record, &ninvalidations);
+
 	/* Update per-rmgr statistics */
 
 	stats->rmgr_stats[rmid].count++;
 	stats->rmgr_stats[rmid].rec_len += rec_len;
 	stats->rmgr_stats[rmid].fpi_len += fpi_len;
+	stats->rmgr_stats[rmid].ninvalidations += ninvalidations;
+	stats->rmgr_stats[rmid].nassignments += nassignments;
 
 	/*
 	 * Update per-record statistics, where the record is identified by a
@@ -519,6 +657,8 @@ XLogDumpCountRecord(XLogDumpConfig *config, XLogDumpStats *stats,
 	stats->record_stats[rmid][recid].count++;
 	stats->record_stats[rmid][recid].rec_len += rec_len;
 	stats->record_stats[rmid][recid].fpi_len += fpi_len;
+	stats->record_stats[rmid][recid].nassignments += nassignments;
+	stats->record_stats[rmid][recid].ninvalidations += ninvalidations;
 }
 
 /*
@@ -640,9 +780,13 @@ XLogDumpStatsRow(const char *name,
 				 uint64 n, uint64 total_count,
 				 uint64 rec_len, uint64 total_rec_len,
 				 uint64 fpi_len, uint64 total_fpi_len,
-				 uint64 tot_len, uint64 total_len)
+				 uint64 tot_len, uint64 total_len,
+				 uint64 ninvals, uint64 total_ninvals,
+				 uint64 nassigns, uint64 total_nassigns)
 {
 	double		n_pct,
+				ninvals_pct,
+				nassigns_pct,
 				rec_len_pct,
 				fpi_len_pct,
 				tot_len_pct;
@@ -650,6 +794,14 @@ XLogDumpStatsRow(const char *name,
 	n_pct = 0;
 	if (total_count != 0)
 		n_pct = 100 * (double) n / total_count;
+
+	ninvals_pct = 0;
+	if (total_ninvals != 0)
+		ninvals_pct = 100 * (double) ninvals / total_ninvals;
+
+	nassigns_pct = 0;
+	if (total_nassigns != 0)
+		nassigns_pct = 100 * (double) nassigns / total_nassigns;
 
 	rec_len_pct = 0;
 	if (total_rec_len != 0)
@@ -667,8 +819,12 @@ XLogDumpStatsRow(const char *name,
 		   "%20" INT64_MODIFIER "u (%6.02f) "
 		   "%20" INT64_MODIFIER "u (%6.02f) "
 		   "%20" INT64_MODIFIER "u (%6.02f) "
+		   "%20" INT64_MODIFIER "u (%6.02f) "
+		   "%20" INT64_MODIFIER "u (%6.02f) "
 		   "%20" INT64_MODIFIER "u (%6.02f)\n",
-		   name, n, n_pct, rec_len, rec_len_pct, fpi_len, fpi_len_pct,
+		   name, n, n_pct,
+		   ninvals, ninvals_pct, nassigns, nassigns_pct,
+		   rec_len, rec_len_pct, fpi_len, fpi_len_pct,
 		   tot_len, tot_len_pct);
 }
 
@@ -685,6 +841,8 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 	uint64		total_rec_len = 0;
 	uint64		total_fpi_len = 0;
 	uint64		total_len = 0;
+	uint64		total_ninvals = 0;
+	uint64		total_nassigns = 0;
 	double		rec_len_pct,
 				fpi_len_pct;
 
@@ -703,6 +861,8 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 		total_count += stats->rmgr_stats[ri].count;
 		total_rec_len += stats->rmgr_stats[ri].rec_len;
 		total_fpi_len += stats->rmgr_stats[ri].fpi_len;
+		total_ninvals += stats->rmgr_stats[ri].ninvalidations;
+		total_nassigns += stats->rmgr_stats[ri].nassignments;
 	}
 	total_len = total_rec_len + total_fpi_len;
 
@@ -711,17 +871,21 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 	 * strlen("(100.00%)")
 	 */
 
-	printf("%-27s %20s %8s %20s %8s %20s %8s %20s %8s\n"
-		   "%-27s %20s %8s %20s %8s %20s %8s %20s %8s\n",
-		   "Type", "N", "(%)", "Record size", "(%)", "FPI size", "(%)", "Combined size", "(%)",
-		   "----", "-", "---", "-----------", "---", "--------", "---", "-------------", "---");
+	printf("%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s\n"
+		   "%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s\n",
+		   "Type", "N", "(%)", "Invals", "(%)", "Assign", "(%)",
+		   "Record size", "(%)", "FPI size", "(%)", "Combined size", "(%)",
+		   "----", "-", "---", "------", "---", "------", "---",
+		   "-----------", "---", "--------", "---", "-------------", "---");
 
 	for (ri = 0; ri < RM_NEXT_ID; ri++)
 	{
 		uint64		count,
 					rec_len,
 					fpi_len,
-					tot_len;
+					tot_len,
+					nassigns,
+					ninvals;
 		const RmgrDescData *desc = &RmgrDescTable[ri];
 
 		if (!config->stats_per_record)
@@ -729,11 +893,14 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 			count = stats->rmgr_stats[ri].count;
 			rec_len = stats->rmgr_stats[ri].rec_len;
 			fpi_len = stats->rmgr_stats[ri].fpi_len;
+			ninvals = stats->rmgr_stats[ri].ninvalidations;
+			nassigns = stats->rmgr_stats[ri].nassignments;
 			tot_len = rec_len + fpi_len;
 
 			XLogDumpStatsRow(desc->rm_name,
 							 count, total_count, rec_len, total_rec_len,
-							 fpi_len, total_fpi_len, tot_len, total_len);
+							 fpi_len, total_fpi_len, tot_len, total_len,
+							 ninvals, total_ninvals, nassigns, total_nassigns);
 		}
 		else
 		{
@@ -744,6 +911,8 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 				count = stats->record_stats[ri][rj].count;
 				rec_len = stats->record_stats[ri][rj].rec_len;
 				fpi_len = stats->record_stats[ri][rj].fpi_len;
+				ninvals = stats->record_stats[ri][rj].ninvalidations;
+				nassigns = stats->record_stats[ri][rj].nassignments;
 				tot_len = rec_len + fpi_len;
 
 				/* Skip undefined combinations and ones that didn't occur */
@@ -757,13 +926,14 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 
 				XLogDumpStatsRow(psprintf("%s/%s", desc->rm_name, id),
 								 count, total_count, rec_len, total_rec_len,
-								 fpi_len, total_fpi_len, tot_len, total_len);
+								 fpi_len, total_fpi_len, tot_len, total_len,
+								 ninvals, total_ninvals, nassigns, total_nassigns);
 			}
 		}
 	}
 
-	printf("%-27s %20s %8s %20s %8s %20s %8s %20s\n",
-		   "", "--------", "", "--------", "", "--------", "", "--------");
+	printf("%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s\n",
+		   "", "--------", "", "--------", "", "--------", "", "--------", "", "--------", "", "--------");
 
 	/*
 	 * The percentages in earlier rows were calculated against the column
@@ -784,8 +954,11 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 		   "%20" INT64_MODIFIER "u %-9s"
 		   "%20" INT64_MODIFIER "u %-9s"
 		   "%20" INT64_MODIFIER "u %-9s"
+		   "%20" INT64_MODIFIER "u %-9s"
+		   "%20" INT64_MODIFIER "u %-9s"
 		   "%20" INT64_MODIFIER "u %-6s\n",
 		   "Total", stats->count, "",
+		   total_ninvals, "", total_nassigns, "",
 		   total_rec_len, psprintf("[%.02f%%]", rec_len_pct),
 		   total_fpi_len, psprintf("[%.02f%%]", fpi_len_pct),
 		   total_len, "[100%]");

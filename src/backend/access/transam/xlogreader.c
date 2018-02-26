@@ -317,6 +317,7 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 		if (!ValidXLogRecordHeader(state, RecPtr, state->ReadRecPtr, record,
 								   randAccess))
 			goto err;
+
 		gotheader = true;
 	}
 	else
@@ -428,7 +429,9 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 				record = (XLogRecord *) state->readRecordBuf;
 				if (!ValidXLogRecordHeader(state, RecPtr, state->ReadRecPtr,
 										   record, randAccess))
+
 					goto err;
+
 				gotheader = true;
 			}
 		} while (gotlen < total_len);
@@ -1088,10 +1091,11 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 		{
 			Size len;
 
-			COPY_HEADER_FIELD(&state->invals.dbId, sizeof(Oid));
-			COPY_HEADER_FIELD(&state->invals.tsId, sizeof(Oid));
-			COPY_HEADER_FIELD(&state->invals.relcacheInitFileInval, sizeof(bool));
 			COPY_HEADER_FIELD(&state->invals.nmsgs, sizeof(int));
+
+			// COPY_HEADER_FIELD(&state->invals.dbId, sizeof(Oid));
+			// COPY_HEADER_FIELD(&state->invals.tsId, sizeof(Oid));
+			// COPY_HEADER_FIELD(&state->invals.relcacheInitFileInval, sizeof(bool));
 
 			/* free the old array of invalidations */
 			if (state->invals.msgs)

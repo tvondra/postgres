@@ -5168,7 +5168,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 	xl_xact_dbinfo xl_dbinfo;
 	xl_xact_subxacts xl_subxacts;
 	xl_xact_relfilenodes xl_relfilenodes;
-	xl_xact_invals xl_invals;
 	xl_xact_twophase xl_twophase;
 	xl_xact_origin xl_origin;
 
@@ -5225,12 +5224,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 		xl_relfilenodes.nrels = nrels;
 	}
 
-	if (nmsgs > 0)
-	{
-		xl_xinfo.xinfo |= XACT_XINFO_HAS_INVALS;
-		xl_invals.nmsgs = nmsgs;
-	}
-
 	if (TransactionIdIsValid(twophase_xid))
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_TWOPHASE;
@@ -5275,13 +5268,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 						 MinSizeOfXactRelfilenodes);
 		XLogRegisterData((char *) rels,
 						 nrels * sizeof(RelFileNode));
-	}
-
-	if (xl_xinfo.xinfo & XACT_XINFO_HAS_INVALS)
-	{
-		XLogRegisterData((char *) (&xl_invals), MinSizeOfXactInvals);
-		XLogRegisterData((char *) msgs,
-						 nmsgs * sizeof(SharedInvalidationMessage));
 	}
 
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_TWOPHASE)
@@ -5476,7 +5462,7 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 * occurs in CommitTransaction().
 		 */
 		ProcessCommittedInvalidationMessages(
-											 parsed->msgs, parsed->nmsgs,
+											 NULL, 0, // FIXME accumulate invalidation messages
 											 XactCompletionRelcacheInitFileInval(parsed->xinfo),
 											 parsed->dbId, parsed->tsId);
 

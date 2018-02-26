@@ -89,17 +89,6 @@ ParseCommitRecord(uint8 info, xl_xact_commit *xlrec, xl_xact_parsed_commit *pars
 		data += xl_relfilenodes->nrels * sizeof(RelFileNode);
 	}
 
-	if (parsed->xinfo & XACT_XINFO_HAS_INVALS)
-	{
-		xl_xact_invals *xl_invals = (xl_xact_invals *) data;
-
-		parsed->nmsgs = xl_invals->nmsgs;
-		parsed->msgs = xl_invals->msgs;
-
-		data += MinSizeOfXactInvals;
-		data += xl_invals->nmsgs * sizeof(SharedInvalidationMessage);
-	}
-
 	if (parsed->xinfo & XACT_XINFO_HAS_TWOPHASE)
 	{
 		xl_xact_twophase *xl_twophase = (xl_xact_twophase *) data;

@@ -151,10 +151,9 @@ typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 #define XACT_XINFO_HAS_DBINFO			(1U << 0)
 #define XACT_XINFO_HAS_SUBXACTS			(1U << 1)
 #define XACT_XINFO_HAS_RELFILENODES		(1U << 2)
-#define XACT_XINFO_HAS_INVALS			(1U << 3)
-#define XACT_XINFO_HAS_TWOPHASE			(1U << 4)
-#define XACT_XINFO_HAS_ORIGIN			(1U << 5)
-#define XACT_XINFO_HAS_AE_LOCKS			(1U << 6)
+#define XACT_XINFO_HAS_TWOPHASE			(1U << 3)
+#define XACT_XINFO_HAS_ORIGIN			(1U << 4)
+#define XACT_XINFO_HAS_AE_LOCKS			(1U << 5)
 
 /*
  * Also stored in xinfo, these indicating a variety of additional actions that
@@ -239,13 +238,6 @@ typedef struct xl_xact_relfilenodes
 } xl_xact_relfilenodes;
 #define MinSizeOfXactRelfilenodes offsetof(xl_xact_relfilenodes, xnodes)
 
-typedef struct xl_xact_invals
-{
-	int			nmsgs;			/* number of shared inval msgs */
-	SharedInvalidationMessage msgs[FLEXIBLE_ARRAY_MEMBER];
-} xl_xact_invals;
-#define MinSizeOfXactInvals offsetof(xl_xact_invals, msgs)
-
 typedef struct xl_xact_twophase
 {
 	TransactionId xid;
@@ -265,7 +257,6 @@ typedef struct xl_xact_commit
 	/* xl_xact_dbinfo follows if XINFO_HAS_DBINFO */
 	/* xl_xact_subxacts follows if XINFO_HAS_SUBXACT */
 	/* xl_xact_relfilenodes follows if XINFO_HAS_RELFILENODES */
-	/* xl_xact_invals follows if XINFO_HAS_INVALS */
 	/* xl_xact_twophase follows if XINFO_HAS_TWOPHASE */
 	/* xl_xact_origin follows if XINFO_HAS_ORIGIN, stored unaligned! */
 } xl_xact_commit;
@@ -303,9 +294,6 @@ typedef struct xl_xact_parsed_commit
 
 	int			nrels;
 	RelFileNode *xnodes;
-
-	int			nmsgs;
-	SharedInvalidationMessage *msgs;
 
 	TransactionId twophase_xid; /* only for 2PC */
 

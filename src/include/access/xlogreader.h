@@ -239,6 +239,7 @@ extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,
 #define XLogRecGetOrigin(decoder) ((decoder)->record_origin)
 #define XLogRecGetTopXid(decoder) ((decoder)->toplevel_xid)
 #define XLogRecHasInvalidations(decoder) ((decoder)->invals.nmsgs > 0)
+#define XLogRecGetNumOfInvalidations(decoder) ((decoder)->invals.nmsgs)
 #define XLogRecGetData(decoder) ((decoder)->main_data)
 #define XLogRecGetDataLen(decoder) ((decoder)->main_data_len)
 #define XLogRecHasAnyBlockRefs(decoder) ((decoder)->max_block_id >= 0)

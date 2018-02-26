@@ -752,9 +752,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	{
 		TransactionId	xid = GetTopTransactionIdIfAny();
 
-		/* update the flag (later used by XLogInsertRecord) */
-		curinsert_flags |= XLOG_INCLUDE_XID;
 		*(scratch++) = (char) XLR_BLOCK_ID_TOPLEVEL_XID;
+
 		memcpy(scratch, &xid, sizeof(TransactionId));
 		scratch += sizeof(TransactionId);
 
@@ -770,8 +769,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		msgs = GetPendingInvalidationMessages(&nmsgs);
 
-		/* update the flag (later used by XLogInsertRecord) */
-		curinsert_flags |= XLOG_INCLUDE_INVALS;
 		*(scratch++) = (char) XLR_BLOCK_ID_INVALIDATIONS;
 
 		/* number of invalidation messages */
@@ -780,7 +777,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		/* invalidation messages */
 		memcpy(scratch, msgs, sizeof(SharedInvalidationMessage) * nmsgs);
-		scratch += sizeof(TransactionId);
+		scratch += sizeof(SharedInvalidationMessage) * nmsgs;
 	}
 
 	/* followed by main data, if any */

@@ -873,9 +873,9 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 
 	printf("%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s\n"
 		   "%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s\n",
-		   "Type", "N", "(%)", "Invals", "(%)", "Assign", "(%)",
+		   "Type", "N", "(%)", "Invalidations", "(%)", "Assignments", "(%)",
 		   "Record size", "(%)", "FPI size", "(%)", "Combined size", "(%)",
-		   "----", "-", "---", "------", "---", "------", "---",
+		   "----", "-", "---", "-------------", "---", "-----------", "---",
 		   "-----------", "---", "--------", "---", "-------------", "---");
 
 	for (ri = 0; ri < RM_NEXT_ID; ri++)
@@ -933,7 +933,7 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 	}
 
 	printf("%-27s %20s %8s %20s %8s %20s %8s %20s %8s %20s %8s %20s\n",
-		   "", "--------", "", "--------", "", "--------", "", "--------", "", "--------", "", "--------");
+		   "", "--------", "", "-------------", "", "-----------", "", "--------", "", "--------", "", "--------");
 
 	/*
 	 * The percentages in earlier rows were calculated against the column

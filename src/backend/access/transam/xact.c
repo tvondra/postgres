@@ -5714,6 +5714,10 @@ IsSubTransactionAssignmentPending(void)
 	if (!IsSubTransaction())
 		return false;
 
+	/* the subtransaction has to have a XID assigned */
+	if (!TransactionIdIsValid(GetCurrentSubTransactionId()))
+		return false;
+
 	/* and it needs to have 'assigned' */
 	return !CurrentTransactionState->assigned;
 

@@ -144,7 +144,6 @@ struct XLogReaderState
 	struct {
 		Oid			dbId;					/* MyDatabaseId */
 		Oid			tsId;					/* MyDatabaseTableSpace */
-		bool		relcacheInitFileInval;	/* invalidate relcache init file */
 		int			nmsgs;					/* number of shared inval msgs */
 		SharedInvalidationMessage *msgs;	/* pointer to array of messages */
 	} invals;

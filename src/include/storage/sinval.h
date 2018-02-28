@@ -151,4 +151,6 @@ extern void ProcessCommittedInvalidationMessages(SharedInvalidationMessage *msgs
 
 extern void LocalExecuteInvalidationMessage(SharedInvalidationMessage *msg);
 
+#define SINVAL_MAX_CACHED	64
+
 #endif							/* SINVAL_H */

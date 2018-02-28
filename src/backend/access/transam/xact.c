@@ -1079,6 +1079,8 @@ RecordTransactionCommit(void)
 		 * don't want to use that in case a commit record is emitted, so they
 		 * happen synchronously with commits (besides not wanting to emit more
 		 * WAL records).
+		 *
+		 * XXX Perhaps we don't need to log the invalidation messages again?
 		 */
 		if (nmsgs != 0)
 		{
@@ -1129,6 +1131,9 @@ RecordTransactionCommit(void)
 		 * holding the ProcArrayLock, since we're the only one modifying it.
 		 * This makes checkpoint's determination of which xacts are delayChkpt
 		 * a bit fuzzy, but it doesn't matter.
+		 *
+		 * We do not log any invalidation messages here - all those messages
+		 * should have been WAL-logged already (see XLogRecordAssemble).
 		 */
 		START_CRIT_SECTION();
 		MyPgXact->delayChkpt = true;
@@ -1137,7 +1142,6 @@ RecordTransactionCommit(void)
 
 		XactLogCommitRecord(xactStopTimestamp,
 							nchildren, children, nrels, rels,
-							nmsgs, invalMessages,
 							RelcacheInitFileInval, forceSyncCommit,
 							MyXactFlags,
 							InvalidTransactionId /* plain commit */ );
@@ -5159,7 +5163,6 @@ XLogRecPtr
 XactLogCommitRecord(TimestampTz commit_time,
 					int nsubxacts, TransactionId *subxacts,
 					int nrels, RelFileNode *rels,
-					int nmsgs, SharedInvalidationMessage *msgs,
 					bool relcacheInval, bool forceSync,
 					int xactflags, TransactionId twophase_xid)
 {
@@ -5202,10 +5205,9 @@ XactLogCommitRecord(TimestampTz commit_time,
 		xl_xinfo.xinfo |= XACT_COMPLETION_APPLY_FEEDBACK;
 
 	/*
-	 * Relcache invalidations requires information about the current database
-	 * and so does logical decoding.
+	 * Logical decoding requires information about the current database.
 	 */
-	if (nmsgs > 0 || XLogLogicalInfoActive())
+	if (XLogLogicalInfoActive())
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_DBINFO;
 		xl_dbinfo.dbId = MyDatabaseId;

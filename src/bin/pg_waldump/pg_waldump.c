@@ -554,7 +554,12 @@ XLogDumpInvalidations(XLogReaderState *record, uint32 *ninvalidations)
 		else if (block_id == XLR_BLOCK_ID_INVALIDATIONS)
 		{
 			Size len;
-			SharedInvalidationMessage	msgs[32];	/* XXX max cached */
+			Oid		dbId, tsId;
+
+			SharedInvalidationMessage	msgs[SINVAL_MAX_CACHED];
+
+			COPY_HEADER_FIELD(&dbId, sizeof(Oid));
+			COPY_HEADER_FIELD(&tsId, sizeof(Oid));
 
 			COPY_HEADER_FIELD(ninvalidations, sizeof(int));
 

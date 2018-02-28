@@ -1091,11 +1091,12 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 		{
 			Size len;
 
-			COPY_HEADER_FIELD(&state->invals.nmsgs, sizeof(int));
+			/* db info */
+			COPY_HEADER_FIELD(&state->invals.dbId, sizeof(Oid));
+			COPY_HEADER_FIELD(&state->invals.tsId, sizeof(Oid));
 
-			// COPY_HEADER_FIELD(&state->invals.dbId, sizeof(Oid));
-			// COPY_HEADER_FIELD(&state->invals.tsId, sizeof(Oid));
-			// COPY_HEADER_FIELD(&state->invals.relcacheInitFileInval, sizeof(bool));
+			/* number of messages */
+			COPY_HEADER_FIELD(&state->invals.nmsgs, sizeof(int));
 
 			/* free the old array of invalidations */
 			if (state->invals.msgs)

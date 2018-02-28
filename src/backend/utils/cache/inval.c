@@ -209,9 +209,8 @@ static struct RELCACHECALLBACK
 
 static int	relcache_callback_count = 0;
 
-#define		MAX_CACHED		64
 static int		ncached = 0;
-static SharedInvalidationMessage	cached[MAX_CACHED];
+static SharedInvalidationMessage	cached[SINVAL_MAX_CACHED];
 
 static void LogInvalidationMessage(SharedInvalidationMessage msg,
 								   bool relcacheInitFileInval);
@@ -1516,7 +1515,7 @@ LogInvalidationMessage(SharedInvalidationMessage msg,
 					   bool relcacheInitFileInval)
 {
 	/* if the cache is full, write invalidations message */
-	if (ncached == MAX_CACHED)
+	if (ncached == SINVAL_MAX_CACHED)
 	{
 		xl_xact_invalidations xlrec;
 

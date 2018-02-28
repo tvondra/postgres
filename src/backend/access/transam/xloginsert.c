@@ -90,7 +90,8 @@ static char *hdr_scratch = NULL;
 
 #define SizeOfXlogOrigin	(sizeof(RepOriginId) + sizeof(char))
 #define SizeOfTransactionId	(sizeof(TransactionId) + sizeof(char))
-#define SizeOfInvalidations	(sizeof(SharedInvalidationMessage) * 64 + sizeof(int) + sizeof(char))
+#define SizeOfInvalidations	(sizeof(SharedInvalidationMessage) * 64 + \
+						 + 2 * sizeof(Oid) + sizeof(int) + sizeof(char))
 
 #define HEADER_SCRATCH_SIZE \
 	(SizeOfXLogRecord + \
@@ -762,7 +763,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	}
 
 	/* followed by invalidation messages, if any */
-	if (AreInvalidationMessagesPending())
+	if (XLogStandbyInfoActive() && AreInvalidationMessagesPending())
 	{
 		int nmsgs;
 		SharedInvalidationMessage *msgs;
@@ -770,6 +771,13 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		msgs = GetPendingInvalidationMessages(&nmsgs);
 
 		*(scratch++) = (char) XLR_BLOCK_ID_INVALIDATIONS;
+
+		/* info about the current database (db + ts) */
+		memcpy(scratch, &MyDatabaseId, sizeof(Oid));
+		scratch += sizeof(Oid);
+
+		memcpy(scratch, &MyDatabaseTableSpace, sizeof(Oid));
+		scratch += sizeof(Oid);
 
 		/* number of invalidation messages */
 		memcpy(scratch, &nmsgs, sizeof(int));

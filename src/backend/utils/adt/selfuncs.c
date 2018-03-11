@@ -2442,8 +2442,8 @@ eqjoinsel_inner(Oid operator,
 
 			for (j = 0; j < ncounters1; j++)
 			{
-				int val1 = DatumGetInt32(sslot1ams.values[2 + i * ncounters1 + j]);
-				int val2 = DatumGetInt32(sslot2ams.values[2 + i * ncounters2 + j]);
+				int val1 = DatumGetInt32(sslot1ams.values[3 + i * ncounters1 + j]);
+				int val2 = DatumGetInt32(sslot2ams.values[3 + i * ncounters2 + j]);
 
 				estimates[i] += val1 * val2;
 			}

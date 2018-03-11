@@ -1705,6 +1705,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"enable_ams", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables usage of AMS sketches for join estimates."),
+			NULL
+		},
+		&enable_ams,
+		true,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

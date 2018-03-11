@@ -70,6 +70,7 @@ extern PGDLLIMPORT bool enable_gathermerge;
 extern PGDLLIMPORT bool enable_partitionwise_join;
 extern PGDLLIMPORT bool enable_parallel_append;
 extern PGDLLIMPORT bool enable_parallel_hash;
+extern PGDLLIMPORT bool enable_ams;
 extern PGDLLIMPORT int	constraint_exclusion;
 
 extern double clamp_row_est(double nrows);

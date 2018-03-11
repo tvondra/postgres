@@ -218,6 +218,7 @@ static Const *string_to_const(const char *str, Oid datatype);
 static Const *string_to_bytea_const(const char *str, size_t str_len);
 static List *add_predicate_to_quals(IndexOptInfo *index, List *indexQuals);
 
+bool	enable_ams;
 
 /*
  *		eqsel			- Selectivity of "=" for any data types.
@@ -2332,6 +2333,21 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((float8) selec);
 }
 
+static int
+double_cmp(const void *a, const void *b)
+{
+	double *ad = (double *)a;
+	double *bd = (double *)b;
+
+	if (*ad < *bd)
+		return -1;
+
+	if (*ad > *bd)
+		return 1;
+
+	return 0;
+}
+
 /*
  * eqjoinsel_inner --- eqjoinsel for normal inner join
  *
@@ -2352,8 +2368,12 @@ eqjoinsel_inner(Oid operator,
 	Form_pg_statistic stats2 = NULL;
 	bool		have_mcvs1 = false;
 	bool		have_mcvs2 = false;
+	bool		have_ams1 = false;
+	bool		have_ams2 = false;
 	AttStatsSlot sslot1;
+	AttStatsSlot sslot1ams;
 	AttStatsSlot sslot2;
+	AttStatsSlot sslot2ams;
 
 	nd1 = get_variable_numdistinct(vardata1, &isdefault1);
 	nd2 = get_variable_numdistinct(vardata2, &isdefault2);
@@ -2368,9 +2388,15 @@ eqjoinsel_inner(Oid operator,
 		/* note we allow use of nullfrac regardless of security check */
 		stats1 = (Form_pg_statistic) GETSTRUCT(vardata1->statsTuple);
 		if (statistic_proc_security_check(vardata1, opfuncoid))
+		{
 			have_mcvs1 = get_attstatsslot(&sslot1, vardata1->statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+
+			have_ams1 = get_attstatsslot(&sslot1ams, vardata1->statsTuple,
+										  STATISTIC_KIND_AMS, InvalidOid,
+										  ATTSTATSSLOT_VALUES);
+		}
 	}
 
 	if (HeapTupleIsValid(vardata2->statsTuple))
@@ -2378,11 +2404,59 @@ eqjoinsel_inner(Oid operator,
 		/* note we allow use of nullfrac regardless of security check */
 		stats2 = (Form_pg_statistic) GETSTRUCT(vardata2->statsTuple);
 		if (statistic_proc_security_check(vardata2, opfuncoid))
+		{
 			have_mcvs2 = get_attstatsslot(&sslot2, vardata2->statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+
+			have_ams2 = get_attstatsslot(&sslot2ams, vardata2->statsTuple,
+										  STATISTIC_KIND_AMS, InvalidOid,
+										  ATTSTATSSLOT_VALUES);
+		}
 	}
 
+	if (have_ams1 && have_ams2 && enable_ams)
+	{
+		int i, j;
+		double	estimates[10];
+		double	prod;
+
+		int	count1 = sslot1ams.values[0];
+		int	count2 = sslot2ams.values[0];
+
+		int	nrows1 = sslot1ams.values[1];
+		int	nrows2 = sslot2ams.values[1];
+
+		int	ncounters1 = sslot1ams.values[2];
+		int	ncounters2 = sslot2ams.values[2];
+
+		Assert(nrows1 == nrows2);
+		Assert(ncounters1 == ncounters2);
+
+		/* cartesian product (of the twow samples) */
+		prod = (double)count1 * (double)count2;
+
+		for (i = 0; i < nrows1; i++)
+		{
+			estimates[i] = 0;
+
+			for (j = 0; j < ncounters1; j++)
+			{
+				int val1 = DatumGetInt32(sslot1ams.values[2 + i * ncounters1 + j]);
+				int val2 = DatumGetInt32(sslot2ams.values[2 + i * ncounters2 + j]);
+
+				estimates[i] += val1 * val2;
+			}
+
+			estimates[i] /= prod;
+		}
+
+		pg_qsort(estimates, nrows1, sizeof(double), double_cmp);
+
+		/* median (with 10 elements we use average of the two midddle elements) */
+		return (estimates[nrows1/2] + estimates[nrows1/2 + 1])/2;
+	}
+	else
 	if (have_mcvs1 && have_mcvs2)
 	{
 		/*

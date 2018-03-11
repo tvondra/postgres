@@ -90,12 +90,14 @@ CATALOG(pg_statistic,2619) BKI_WITHOUT_OIDS
 	int16		stakind3;
 	int16		stakind4;
 	int16		stakind5;
+	int16		stakind6;
 
 	Oid			staop1;
 	Oid			staop2;
 	Oid			staop3;
 	Oid			staop4;
 	Oid			staop5;
+	Oid			staop6;
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	float4		stanumbers1[1];
@@ -103,6 +105,7 @@ CATALOG(pg_statistic,2619) BKI_WITHOUT_OIDS
 	float4		stanumbers3[1];
 	float4		stanumbers4[1];
 	float4		stanumbers5[1];
+	float4		stanumbers6[1];
 
 	/*
 	 * Values in these arrays are values of the column's data type, or of some
@@ -115,10 +118,11 @@ CATALOG(pg_statistic,2619) BKI_WITHOUT_OIDS
 	anyarray	stavalues3;
 	anyarray	stavalues4;
 	anyarray	stavalues5;
+	anyarray	stavalues6;
 #endif
 } FormData_pg_statistic;
 
-#define STATISTIC_NUM_SLOTS  5
+#define STATISTIC_NUM_SLOTS  6
 
 
 /* ----------------
@@ -132,7 +136,7 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  *		compiler constants for pg_statistic
  * ----------------
  */
-#define Natts_pg_statistic				26
+#define Natts_pg_statistic				30
 #define Anum_pg_statistic_starelid		1
 #define Anum_pg_statistic_staattnum		2
 #define Anum_pg_statistic_stainherit	3
@@ -144,21 +148,25 @@ typedef FormData_pg_statistic *Form_pg_statistic;
 #define Anum_pg_statistic_stakind3		9
 #define Anum_pg_statistic_stakind4		10
 #define Anum_pg_statistic_stakind5		11
-#define Anum_pg_statistic_staop1		12
-#define Anum_pg_statistic_staop2		13
-#define Anum_pg_statistic_staop3		14
-#define Anum_pg_statistic_staop4		15
-#define Anum_pg_statistic_staop5		16
-#define Anum_pg_statistic_stanumbers1	17
-#define Anum_pg_statistic_stanumbers2	18
-#define Anum_pg_statistic_stanumbers3	19
-#define Anum_pg_statistic_stanumbers4	20
-#define Anum_pg_statistic_stanumbers5	21
-#define Anum_pg_statistic_stavalues1	22
-#define Anum_pg_statistic_stavalues2	23
-#define Anum_pg_statistic_stavalues3	24
-#define Anum_pg_statistic_stavalues4	25
-#define Anum_pg_statistic_stavalues5	26
+#define Anum_pg_statistic_stakind6		12
+#define Anum_pg_statistic_staop1		13
+#define Anum_pg_statistic_staop2		14
+#define Anum_pg_statistic_staop3		15
+#define Anum_pg_statistic_staop4		16
+#define Anum_pg_statistic_staop5		17
+#define Anum_pg_statistic_staop6		18
+#define Anum_pg_statistic_stanumbers1	19
+#define Anum_pg_statistic_stanumbers2	20
+#define Anum_pg_statistic_stanumbers3	21
+#define Anum_pg_statistic_stanumbers4	22
+#define Anum_pg_statistic_stanumbers5	23
+#define Anum_pg_statistic_stanumbers6	24
+#define Anum_pg_statistic_stavalues1	25
+#define Anum_pg_statistic_stavalues2	26
+#define Anum_pg_statistic_stavalues3	27
+#define Anum_pg_statistic_stavalues4	28
+#define Anum_pg_statistic_stavalues5	29
+#define Anum_pg_statistic_stavalues6	30
 
 /*
  * Several statistical slot "kinds" are defined by core PostgreSQL, as
@@ -288,5 +296,8 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  * bounds.  Only non-NULL, non-empty ranges are included.
  */
 #define STATISTIC_KIND_BOUNDS_HISTOGRAM  7
+
+
+#define STATISTIC_KIND_AMS	8
 
 #endif							/* PG_STATISTIC_H */

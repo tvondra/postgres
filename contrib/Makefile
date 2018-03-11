@@ -40,6 +40,7 @@ SUBDIRS = \
 		pgstattuple	\
 		pg_visibility	\
 		postgres_fdw	\
+		scrub	\
 		seg		\
 		spi		\
 		tablefunc	\

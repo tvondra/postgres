@@ -2454,7 +2454,7 @@ eqjoinsel_inner(Oid operator,
 		pg_qsort(estimates, nrows1, sizeof(double), double_cmp);
 
 		/* median (with 10 elements we use average of the two midddle elements) */
-		return (estimates[nrows1/2] + estimates[nrows1/2 + 1])/2;
+		return (estimates[3] + 2 * estimates[4] + 2 * estimates[5] + estimates[6]) / 6;
 	}
 	else
 	if (have_mcvs1 && have_mcvs2)

@@ -64,6 +64,29 @@ AMSSketchAddValue(AMSSketch *sketch, const void *val, int len)
 	sketch->count += 1;
 }
 
+void
+AMSSketchAddValueCount(AMSSketch *sketch, const void *val, int len, int count)
+{
+	int i;
+
+	for (i = 0; i < sketch->nrows; i++)
+	{
+		/* for each row, compute the column index */
+		int j = murmur3_32(val, len, i) % sketch->ncounters;
+
+		/* also compute the {-1,1} function, but use different seeds */
+		int d = murmur3_32(val, len, sketch->nrows + i) % 2;
+
+		if (d == 0)
+			d = -1;
+
+		/* add +1/-1 to the c-th counter in each row */
+		sketch->counters[i * sketch->ncounters + j] += d * count;
+	}
+
+	sketch->count += count;
+}
+
 static uint32
 murmur3_32(const uint8 * key, int len, uint32 seed)
 {

@@ -2321,14 +2321,9 @@ compute_scalar_stats(VacAttrStatsP stats,
 	int			num_bins = stats->attr->attstattarget;
 	StdAnalyzeData *mystats = (StdAnalyzeData *) stats->extra_data;
 
-	/* XXX the parameters seem rather arbitrary, needs more research */
-	AMSSketch  *sketch;
-
 	values = (ScalarItem *) palloc(samplerows * sizeof(ScalarItem));
 	tupnoLink = (int *) palloc(samplerows * sizeof(int));
 	track = (ScalarMCVItem *) palloc(num_mcv * sizeof(ScalarMCVItem));
-
-	sketch = AMSSketchInit(AMS_DEFAULT_ROWS, AMS_DEFAULT_COLS);
 
 	memset(&ssup, 0, sizeof(ssup));
 	ssup.ssup_cxt = CurrentMemoryContext;
@@ -2373,10 +2368,6 @@ compute_scalar_stats(VacAttrStatsP stats,
 		{
 			total_width += VARSIZE_ANY(DatumGetPointer(value));
 
-			AMSSketchAddValue(sketch,
-							  DatumGetPointer(value),
-							  VARSIZE_ANY(DatumGetPointer(value)));
-
 			/*
 			 * If the value is toasted, we want to detoast it just once to
 			 * avoid repeated detoastings and resultant excess memory usage
@@ -2395,13 +2386,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 		{
 			/* must be cstring */
 			total_width += strlen(DatumGetCString(value)) + 1;
-
-			AMSSketchAddValue(sketch,
-							  DatumGetPointer(value),
-							  strlen(DatumGetCString(value)));
 		}
-		else
-			AMSSketchAddValue(sketch, &value, stats->attrtype->typlen);
 
 		/* Add it to the list to be sorted */
 		values[values_cnt].value = value;
@@ -2778,6 +2763,75 @@ compute_scalar_stats(VacAttrStatsP stats,
 			 * been set before we were called (see vacuum.h)
 			 */
 			slot_idx++;
+
+			/*
+			 * Also build the AMS sketch on values not included in the MCV
+			 * list (we can add them later, if needed).
+			 */
+
+			/* Generate AMS Sketch on the remaining rows */
+			{
+				int			i, idx;
+				MemoryContext old_context;
+				Datum	   *ams_values;
+				int			num_values;
+				TypeCacheEntry *type;
+
+				/* XXX the parameters seem rather arbitrary, needs more research */
+				AMSSketch  *sketch;
+
+				sketch = AMSSketchInit(AMS_DEFAULT_ROWS, AMS_DEFAULT_COLS);
+
+				for (i = 0; i < nvals; i++)
+				{
+					Datum value = values[i].value;
+
+					if (is_varlena)
+						AMSSketchAddValue(sketch,
+										  PG_DETOAST_DATUM(value),
+										  VARSIZE_ANY(DatumGetPointer(value)));
+					else if (is_varwidth)
+						AMSSketchAddValue(sketch,
+										  DatumGetPointer(value),
+										  strlen(DatumGetCString(value)));
+					else
+						AMSSketchAddValue(sketch, &value, stats->attrtype->typlen);
+				}
+
+				type = lookup_type_cache(INT4OID, TYPECACHE_EQ_OPR);
+
+				/* sample size, count, rows, counters + array of (nrows * ncounters) */
+				num_values = 4 + sketch->nrows * sketch->ncounters;
+
+				old_context = MemoryContextSwitchTo(stats->anl_context);
+				ams_values = (Datum *) palloc(num_values * sizeof(Datum));
+
+				idx = 0;
+				ams_values[idx++] = Int32GetDatum(samplerows);
+				ams_values[idx++] = Int32GetDatum(sketch->count);
+				ams_values[idx++] = Int32GetDatum(sketch->nrows);
+				ams_values[idx++] = Int32GetDatum(sketch->ncounters);
+
+				for (i = 0; i < sketch->nrows * sketch->ncounters; i++)
+					ams_values[idx++] = Int32GetDatum(sketch->counters[i]);
+
+				MemoryContextSwitchTo(old_context);
+
+				stats->stakind[slot_idx] = STATISTIC_KIND_AMS;
+				stats->stavalues[slot_idx] = ams_values;
+				stats->numvalues[slot_idx] = num_values;
+
+				stats->statypid[slot_idx] = INT4OID;
+				stats->statyplen[slot_idx] = type->typlen;
+				stats->statypbyval[slot_idx] = type->typbyval;
+				stats->statypalign[slot_idx] = type->typalign;
+
+				/*
+				 * Accept the defaults for stats->statypid and others. They have
+				 * been set before we were called (see vacuum.h)
+				 */
+				slot_idx++;
+			}
 		}
 
 		/* Generate a correlation entry if there are multiple values */
@@ -2815,49 +2869,6 @@ compute_scalar_stats(VacAttrStatsP stats,
 			stats->staop[slot_idx] = mystats->ltopr;
 			stats->stanumbers[slot_idx] = corrs;
 			stats->numnumbers[slot_idx] = 1;
-			slot_idx++;
-		}
-
-		/* Generate AMS Sketch */
-		if (sketch)
-		{
-			int			i, idx;
-			MemoryContext old_context;
-			Datum	   *ams_values;
-			int			num_values;
-			TypeCacheEntry *type;
-
-			type = lookup_type_cache(INT4OID, TYPECACHE_EQ_OPR);
-
-			/* count, rows, counters + array of (nrows * ncounters) */
-			num_values = 3 + sketch->nrows * sketch->ncounters;
-
-			old_context = MemoryContextSwitchTo(stats->anl_context);
-			ams_values = (Datum *) palloc(num_values * sizeof(Datum));
-
-			idx = 0;
-			ams_values[idx++] = Int32GetDatum(sketch->count);
-			ams_values[idx++] = Int32GetDatum(sketch->nrows);
-			ams_values[idx++] = Int32GetDatum(sketch->ncounters);
-
-			for (i = 0; i < sketch->nrows * sketch->ncounters; i++)
-				ams_values[idx++] = Int32GetDatum(sketch->counters[i]);
-
-			MemoryContextSwitchTo(old_context);
-
-			stats->stakind[slot_idx] = STATISTIC_KIND_AMS;
-			stats->stavalues[slot_idx] = ams_values;
-			stats->numvalues[slot_idx] = num_values;
-
-			stats->statypid[slot_idx] = INT4OID;
-			stats->statyplen[slot_idx] = type->typlen;
-			stats->statypbyval[slot_idx] = type->typbyval;
-			stats->statypalign[slot_idx] = type->typalign;
-
-			/*
-			 * Accept the defaults for stats->statypid and others. They have
-			 * been set before we were called (see vacuum.h)
-			 */
 			slot_idx++;
 		}
 	}

@@ -131,6 +131,7 @@
 #include "parser/parsetree.h"
 #include "statistics/statistics.h"
 #include "utils/acl.h"
+#include "utils/ams.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/date.h"
@@ -2375,6 +2376,9 @@ eqjoinsel_inner(Oid operator,
 	AttStatsSlot sslot2;
 	AttStatsSlot sslot2ams;
 
+	AMSSketch	*sketch1;
+	AMSSketch	*sketch2;
+
 	nd1 = get_variable_numdistinct(vardata1, &isdefault1);
 	nd2 = get_variable_numdistinct(vardata2, &isdefault2);
 
@@ -2415,49 +2419,178 @@ eqjoinsel_inner(Oid operator,
 		}
 	}
 
-	if (have_ams1 && have_ams2 && enable_ams)
+	/* disable AMS, if requested */
+	if (!enable_ams)
 	{
-		int i, j;
-		double	estimates[10];
-		double	prod;
+		have_ams1 = false;
+		have_ams2 = false;
+	}
 
-		int	count1 = sslot1ams.values[0];
-		int	count2 = sslot2ams.values[0];
+	/* */
+	if ((have_ams1 || have_ams2) && (have_mcvs1 || have_mcvs2))
+	{
+		bool	   *hasmatch1;
+		bool	   *hasmatch2;
 
-		int	nrows1 = sslot1ams.values[1];
-		int	nrows2 = sslot2ams.values[1];
+		hasmatch1 = (bool *) palloc0(sslot1.nvalues * sizeof(bool));
+		hasmatch2 = (bool *) palloc0(sslot2.nvalues * sizeof(bool));
 
-		int	ncounters1 = sslot1ams.values[2];
-		int	ncounters2 = sslot2ams.values[2];
-
-		Assert(nrows1 == nrows2);
-		Assert(ncounters1 == ncounters2);
-
-		/* cartesian product (of the twow samples) */
-		prod = (double)count1 * (double)count2;
-
-		for (i = 0; i < nrows1; i++)
+		if (have_mcvs1 && have_mcvs2)
 		{
-			estimates[i] = 0;
+			/*
+			 * We have most-common-value lists for both relations.  Run through
+			 * the lists to see which MCVs actually join to each other with the
+			 * given operator.  This allows us to determine the exact join
+			 * selectivity for the portion of the relations represented by the MCV
+			 * lists.  We still have to estimate for the remaining population, but
+			 * in a skewed distribution this gives us a big leg up in accuracy.
+			 * For motivation see the analysis in Y. Ioannidis and S.
+			 * Christodoulakis, "On the propagation of errors in the size of join
+			 * results", Technical Report 1018, Computer Science Dept., University
+			 * of Wisconsin, Madison, March 1991 (available from ftp.cs.wisc.edu).
+			 */
+			FmgrInfo	eqproc;
+			double		matchprodfreq;
+			int			i,
+						nmatches;
 
-			for (j = 0; j < ncounters1; j++)
+			fmgr_info(opfuncoid, &eqproc);
+
+			/*
+			 * Note we assume that each MCV will match at most one member of the
+			 * other MCV list.  If the operator isn't really equality, there could
+			 * be multiple matches --- but we don't look for them, both for speed
+			 * and because the math wouldn't add up...
+			 */
+			matchprodfreq = 0.0;
+			nmatches = 0;
+			for (i = 0; i < sslot1.nvalues; i++)
 			{
-				int val1 = DatumGetInt32(sslot1ams.values[3 + i * ncounters1 + j]);
-				int val2 = DatumGetInt32(sslot2ams.values[3 + i * ncounters2 + j]);
+				int			j;
 
-				estimates[i] += val1 * val2;
+				for (j = 0; j < sslot2.nvalues; j++)
+				{
+					if (hasmatch2[j])
+						continue;
+					if (DatumGetBool(FunctionCall2Coll(&eqproc,
+													   DEFAULT_COLLATION_OID,
+													   sslot1.values[i],
+													   sslot2.values[j])))
+					{
+						hasmatch1[i] = hasmatch2[j] = true;
+						matchprodfreq += sslot1.numbers[i] * sslot2.numbers[j];
+						nmatches++;
+						break;
+					}
+				}
 			}
 
-			estimates[i] /= prod;
+			CLAMP_PROBABILITY(matchprodfreq);
+
+			selec = matchprodfreq;
 		}
 
-		pg_qsort(estimates, nrows1, sizeof(double), double_cmp);
+		sketch1 = AMSSketchInit(10, 20);
+		sketch2 = AMSSketchInit(10, 20);
 
-		/* median (with 10 elements we use average of the two midddle elements) */
-		return (estimates[3] + 2 * estimates[4] + 2 * estimates[5] + estimates[6]) / 6;
+		if (have_ams1)
+		{
+			int i, j;
+			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
+			{
+				for (j = 0; j < AMS_DEFAULT_COLS; j++)
+				{
+					int idx = i*AMS_DEFAULT_COLS + j;
+					sketch1->counters[idx] = sslot1ams.values[4+idx];
+				}
+			}
+
+			sketch1->count = sslot1ams.values[1];
+		}
+
+		if (have_ams2)
+		{
+			int i, j;
+			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
+			{
+				for (j = 0; j < AMS_DEFAULT_COLS; j++)
+				{
+					int idx = i*AMS_DEFAULT_COLS + j;
+					sketch2->counters[idx] = sslot2ams.values[4+idx];
+				}
+			}
+
+			sketch2->count = sslot2ams.values[1];
+		}
+
+		if (have_mcvs1)
+		{
+			int i;
+			int	samplerows = sslot1ams.values[0];
+
+			for (i = 0; i < sslot1.nvalues; i++)
+			{
+				if (!hasmatch1[i])
+				{
+					Datum value = sslot1.values[i];
+					double freq = sslot1.numbers[i];
+
+					/* FIXME properly handle data type of the values */
+					AMSSketchAddValueCount(sketch1, &value, 4, round(samplerows * freq));
+				}
+			}
+		}
+
+		if (have_mcvs2)
+		{
+			int i;
+			int	samplerows = sslot2ams.values[0];
+
+			for (i = 0; i < sslot2.nvalues; i++)
+			{
+				if (!hasmatch2[i])
+				{
+					Datum value = sslot2.values[i];
+					double freq = sslot2.numbers[i];
+
+					/* FIXME properly handle data type of the values */
+					AMSSketchAddValueCount(sketch2, &value, 4, round(samplerows * freq));
+				}
+			}
+		}
+
+		{
+			int i, j;
+			double	estimates[10];
+			double	prod;
+
+			/* cartesian product (of the twow samples) */
+			prod = (double) sketch1->count * (double) sketch2->count;
+
+			elog(WARNING, "count %d %d", sketch1->count, sketch2->count);
+
+			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
+			{
+				estimates[i] = 0;
+
+				for (j = 0; j < AMS_DEFAULT_COLS; j++)
+				{
+					int val1 = DatumGetInt32(sketch1->counters[i * AMS_DEFAULT_COLS + j]);
+					int val2 = DatumGetInt32(sketch2->counters[i * AMS_DEFAULT_COLS + j]);
+
+					estimates[i] += val1 * val2;
+				}
+
+				estimates[i] /= prod;
+			}
+
+			pg_qsort(estimates, AMS_DEFAULT_ROWS, sizeof(double), double_cmp);
+
+			/* median (with 10 elements we use average of the two midddle elements) */
+			selec += (estimates[4] + estimates[5]) / 2;
+		}
 	}
-	else
-	if (have_mcvs1 && have_mcvs2)
+	else if (have_mcvs1 && have_mcvs2)
 	{
 		/*
 		 * We have most-common-value lists for both relations.  Run through

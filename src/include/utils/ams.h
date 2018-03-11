@@ -28,5 +28,6 @@ typedef struct
 
 AMSSketch *AMSSketchInit(int nrows, int ncounters);
 void AMSSketchAddValue(AMSSketch *sketch, const void *val, int len);
+void AMSSketchAddValueCount(AMSSketch *sketch, const void *val, int len, int count);
 
 #endif							/* AMS_H */

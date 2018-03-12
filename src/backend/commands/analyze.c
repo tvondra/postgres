@@ -2815,6 +2815,8 @@ compute_scalar_stats(VacAttrStatsP stats,
 				for (i = 0; i < sketch->nrows * sketch->ncounters; i++)
 					ams_values[idx++] = Int32GetDatum(sketch->counters[i]);
 
+				Assert(idx == num_values);
+
 				MemoryContextSwitchTo(old_context);
 
 				stats->stakind[slot_idx] = STATISTIC_KIND_AMS;

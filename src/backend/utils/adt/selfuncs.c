@@ -2349,6 +2349,85 @@ double_cmp(const void *a, const void *b)
 	return 0;
 }
 
+static int
+deserialize_ams(AMSSketch *sketch, AttStatsSlot slot)
+{
+	int i;
+	int samplerows = slot.values[0];
+
+	sketch->count = slot.values[1];
+	sketch->nrows = slot.values[2];
+	sketch->ncounters = slot.values[3];
+
+	Assert(samplerows > 0);
+	Assert(sketch->count > 0);
+	Assert(sketch->nrows == AMS_DEFAULT_ROWS);
+	Assert(sketch->ncounters == AMS_DEFAULT_COLS);
+
+	Assert(slot.nvalues == 4 + sketch->nrows * sketch->ncounters);
+
+	for (i = 0; i < AMS_DEFAULT_ROWS * AMS_DEFAULT_COLS; i++)
+		sketch->counters[i] = slot.values[4+i];
+
+	return samplerows;
+}
+
+static void
+update_ams_from_mcv(AMSSketch *sketch, AttStatsSlot slot, bool *matches,
+					int samplerows)
+{
+	int i;
+
+	for (i = 0; i < slot.nvalues; i++)
+	{
+		Datum value = DatumGetInt32(slot.values[i]);
+		double freq = slot.numbers[i];
+
+		if (matches[i])
+			continue;
+
+		/* FIXME properly handle data type of the values */
+		AMSSketchAddValueCount(sketch, &value, 4, round(samplerows * freq));
+	}
+}
+
+static Selectivity
+estimate_ams_inner_join(AMSSketch *sketch1, AMSSketch *sketch2)
+{
+	int		i;
+	double	prod;
+	double	estimates[AMS_DEFAULT_ROWS];
+
+	/* size of cartesian product (of the two samples) */
+	prod = (double) sketch1->count * (double) sketch2->count;
+
+	/* compute estimates for each row of the AMS sketch */
+	for (i = 0; i < AMS_DEFAULT_ROWS; i++)
+	{
+		int	j;
+
+		estimates[i] = 0;
+
+		for (j = 0; j < AMS_DEFAULT_COLS; j++)
+		{
+			int val1 = sketch1->counters[i * AMS_DEFAULT_COLS + j];
+			int val2 = sketch2->counters[i * AMS_DEFAULT_COLS + j];
+
+			estimates[i] += (val1 * val2) / prod;
+		}
+	}
+
+	/* sort all the estimates */
+	pg_qsort(estimates, AMS_DEFAULT_ROWS, sizeof(double), double_cmp);
+
+	/*
+	 * median (with 10 elements we use average of the two midddle elements)
+	 *
+	 * XXX should work with arbitrary sketch size
+	 */
+	return (estimates[4] + estimates[5]) / 2;
+}
+
 /*
  * eqjoinsel_inner --- eqjoinsel for normal inner join
  *
@@ -2432,6 +2511,9 @@ eqjoinsel_inner(Oid operator,
 		bool	   *hasmatch1;
 		bool	   *hasmatch2;
 
+		int			samplerows1;
+		int			samplerows2;
+
 		hasmatch1 = (bool *) palloc0(sslot1.nvalues * sizeof(bool));
 		hasmatch2 = (bool *) palloc0(sslot2.nvalues * sizeof(bool));
 
@@ -2490,105 +2572,30 @@ eqjoinsel_inner(Oid operator,
 			selec = matchprodfreq;
 		}
 
-		sketch1 = AMSSketchInit(10, 20);
-		sketch2 = AMSSketchInit(10, 20);
+		sketch1 = AMSSketchInit(AMS_DEFAULT_ROWS, AMS_DEFAULT_COLS);
+		sketch2 = AMSSketchInit(AMS_DEFAULT_ROWS, AMS_DEFAULT_COLS);
+
+		/* deserialize sketches from the statistics slot (if available) */
 
 		if (have_ams1)
-		{
-			int i, j;
-			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
-			{
-				for (j = 0; j < AMS_DEFAULT_COLS; j++)
-				{
-					int idx = i*AMS_DEFAULT_COLS + j;
-					sketch1->counters[idx] = sslot1ams.values[4+idx];
-				}
-			}
-
-			sketch1->count = sslot1ams.values[1];
-		}
+			samplerows1 = deserialize_ams(sketch1, sslot1ams);
+		else
+			samplerows1 = 30000; /* default sample size */
 
 		if (have_ams2)
-		{
-			int i, j;
-			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
-			{
-				for (j = 0; j < AMS_DEFAULT_COLS; j++)
-				{
-					int idx = i*AMS_DEFAULT_COLS + j;
-					sketch2->counters[idx] = sslot2ams.values[4+idx];
-				}
-			}
+			samplerows2 = deserialize_ams(sketch2, sslot2ams);
+		else
+			samplerows2 = 30000;
 
-			sketch2->count = sslot2ams.values[1];
-		}
+		/* update the sketches with not-matched MCV items */
 
 		if (have_mcvs1)
-		{
-			int i;
-			int	samplerows = sslot1ams.values[0];
-
-			for (i = 0; i < sslot1.nvalues; i++)
-			{
-				if (!hasmatch1[i])
-				{
-					Datum value = sslot1.values[i];
-					double freq = sslot1.numbers[i];
-
-					/* FIXME properly handle data type of the values */
-					AMSSketchAddValueCount(sketch1, &value, 4, round(samplerows * freq));
-				}
-			}
-		}
+			update_ams_from_mcv(sketch1, sslot1, hasmatch1, samplerows1);
 
 		if (have_mcvs2)
-		{
-			int i;
-			int	samplerows = sslot2ams.values[0];
+			update_ams_from_mcv(sketch2, sslot2, hasmatch2, samplerows2);
 
-			for (i = 0; i < sslot2.nvalues; i++)
-			{
-				if (!hasmatch2[i])
-				{
-					Datum value = sslot2.values[i];
-					double freq = sslot2.numbers[i];
-
-					/* FIXME properly handle data type of the values */
-					AMSSketchAddValueCount(sketch2, &value, 4, round(samplerows * freq));
-				}
-			}
-		}
-
-		{
-			int i, j;
-			double	estimates[10];
-			double	prod;
-
-			/* cartesian product (of the twow samples) */
-			prod = (double) sketch1->count * (double) sketch2->count;
-
-			elog(WARNING, "count %d %d", sketch1->count, sketch2->count);
-
-			for (i = 0; i < AMS_DEFAULT_ROWS; i++)
-			{
-				estimates[i] = 0;
-
-				for (j = 0; j < AMS_DEFAULT_COLS; j++)
-				{
-					int val1 = DatumGetInt32(sketch1->counters[i * AMS_DEFAULT_COLS + j]);
-					int val2 = DatumGetInt32(sketch2->counters[i * AMS_DEFAULT_COLS + j]);
-
-					estimates[i] += val1 * val2;
-				}
-
-				estimates[i] /= prod;
-			}
-
-			pg_qsort(estimates, AMS_DEFAULT_ROWS, sizeof(double), double_cmp);
-
-			/* median (with 10 elements we use average of the two midddle elements) */
-			selec += (estimates[4] + estimates[5]) / 2;
-		}
+		selec += estimate_ams_inner_join(sketch1, sketch2);
 	}
 	else if (have_mcvs1 && have_mcvs2)
 	{

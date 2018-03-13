@@ -2505,8 +2505,7 @@ eqjoinsel_inner(Oid operator,
 		have_ams2 = false;
 	}
 
-	/* */
-	if ((have_ams1 || have_ams2) && (have_mcvs1 || have_mcvs2))
+	if ((have_mcvs1 || have_ams1) || (have_mcvs2 || have_ams2))
 	{
 		bool	   *hasmatch1;
 		bool	   *hasmatch2;
@@ -2596,8 +2595,12 @@ eqjoinsel_inner(Oid operator,
 			update_ams_from_mcv(sketch2, sslot2, hasmatch2, samplerows2);
 
 		selec += estimate_ams_inner_join(sketch1, sketch2);
+
+		if ((sketch1->count > 0) && (sketch2->count > 0))
+			goto done;
 	}
-	else if (have_mcvs1 && have_mcvs2)
+
+	if (have_mcvs1 && have_mcvs2)
 	{
 		/*
 		 * We have most-common-value lists for both relations.  Run through
@@ -2756,6 +2759,7 @@ eqjoinsel_inner(Oid operator,
 			selec /= nd2;
 	}
 
+done:
 	free_attstatsslot(&sslot1);
 	free_attstatsslot(&sslot2);
 

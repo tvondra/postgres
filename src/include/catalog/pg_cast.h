@@ -266,6 +266,9 @@ DATA(insert (  3402  25    0 i i ));
 DATA(insert (  4001	 17    0 i b ));
 DATA(insert (  4001	 25    0 i i ));
 
+/* pg_histogram can be coerced to, but not from, bytea */
+DATA(insert (  3425	 17    0 i b ));
+
 
 /*
  * Datetime category

@@ -68,9 +68,15 @@ extern bytea *statext_dependencies_serialize(MVDependencies *dependencies);
 extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MCVList * statext_mcv_build(int numrows, HeapTuple *rows,
-								   Bitmapset *attrs, VacAttrStats **stats);
+								   Bitmapset *attrs, VacAttrStats **stats,
+								   HeapTuple **rows_filtered, int *numrows_filtered);
 extern bytea *statext_mcv_serialize(MCVList * mcv, VacAttrStats **stats);
 extern MCVList * statext_mcv_deserialize(bytea *data);
+
+extern MVHistogram * statext_histogram_build(int numrows, HeapTuple *rows,
+											 Bitmapset *attrs, VacAttrStats **stats,
+											 int numrows_total);
+extern MVHistogram * statext_histogram_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
@@ -82,6 +88,7 @@ extern int multi_sort_compare_dims(int start, int end, const SortItem *a,
 						const SortItem *b, MultiSortSupport mss);
 extern int	compare_scalars_simple(const void *a, const void *b, void *arg);
 extern int	compare_datums_simple(Datum a, Datum b, SortSupport ssup);
+extern int	compare_scalars_partition(const void *a, const void *b, void *arg);
 
 extern void *bsearch_arg(const void *key, const void *base,
 			size_t nmemb, size_t size,
@@ -107,5 +114,13 @@ extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
 						   Selectivity *lowsel,
 						   Selectivity *totalsel,
 						   int *mcv_count);
+
+extern Selectivity histogram_clauselist_selectivity(PlannerInfo *root,
+								 StatisticExtInfo *stat,
+								 List *clauses,
+								 int varRelid,
+								 JoinType jointype,
+								 SpecialJoinInfo *sjinfo,
+								 RelOptInfo *rel);
 
 #endif							/* EXTENDED_STATS_INTERNAL_H */

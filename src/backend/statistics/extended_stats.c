@@ -35,7 +35,6 @@
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
 
-
 /*
  * Used internally to refer to an individual statistics object, i.e.,
  * a pg_statistic_ext entry.
@@ -55,7 +54,7 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcvlist, VacAttrStats **stats);
+			  MCVList * mcvlist, MVHistogram * histogram, VacAttrStats **stats);
 
 
 /*
@@ -88,9 +87,13 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
+		MVHistogram *histogram = NULL;
 		MCVList    *mcv = NULL;
 		VacAttrStats **stats;
 		ListCell   *lc2;
+
+		bool		build_mcv = false;
+		bool		build_histogram = false;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -127,11 +130,48 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				dependencies = statext_dependencies_build(numrows, rows,
 														  stat->columns, stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, stat->columns, stats);
+				build_mcv = true;
+			else if (t == STATS_EXT_HISTOGRAM)
+				build_histogram = true;
 		}
 
+		/*
+		 * If asked to build both MCV and histogram, first build the MCV part
+		 * and then histogram on the remaining rows.
+		 */
+		if (build_mcv && build_histogram)
+		{
+			HeapTuple  *rows_filtered = NULL;
+			int			numrows_filtered;
+
+			mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
+									&rows_filtered, &numrows_filtered);
+
+			/*
+			 * Only build the histogram when there are rows not covered by
+			 * MCV.
+			 */
+			if (rows_filtered)
+			{
+				Assert(numrows_filtered > 0);
+
+				histogram = statext_histogram_build(numrows_filtered, rows_filtered,
+													stat->columns, stats, numrows);
+
+				/* free this immediately, as we may be building many stats */
+				pfree(rows_filtered);
+			}
+		}
+		else if (build_mcv)
+			mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
+									NULL, NULL);
+		else if (build_histogram)
+			histogram = statext_histogram_build(numrows, rows, stat->columns,
+												stats, numrows);
+
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv,
+					  histogram, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -161,6 +201,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 
 		case STATS_EXT_MCV:
 			attnum = Anum_pg_statistic_ext_stxmcv;
+			break;
+
+		case STATS_EXT_HISTOGRAM:
+			attnum = Anum_pg_statistic_ext_stxhistogram;
 			break;
 
 		default:
@@ -228,7 +272,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
-				   (enabled[i] == STATS_EXT_MCV));
+				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_HISTOGRAM));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -303,7 +348,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 static void
 statext_store(Relation pg_stext, Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcv, VacAttrStats **stats)
+			  MCVList * mcv, MVHistogram * histogram, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -342,10 +387,18 @@ statext_store(Relation pg_stext, Oid statOid,
 		values[Anum_pg_statistic_ext_stxmcv - 1] = PointerGetDatum(data);
 	}
 
+	if (histogram != NULL)
+	{
+		/* histogram already is a bytea value, not need to serialize */
+		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = (histogram == NULL);
+		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(histogram);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_stxndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxdependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	/* there should already be a pg_statistic_ext tuple */
 	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
@@ -458,6 +511,19 @@ compare_scalars_simple(const void *a, const void *b, void *arg)
 	return compare_datums_simple(*(Datum *) a,
 								 *(Datum *) b,
 								 (SortSupport) arg);
+}
+
+/*
+ * qsort_arg comparator for sorting data when partitioning a MV bucket
+ */
+int
+compare_scalars_partition(const void *a, const void *b, void *arg)
+{
+	Datum		da = ((ScalarItem *) a)->value;
+	Datum		db = ((ScalarItem *) b)->value;
+	SortSupport ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da, false, db, false, ssup);
 }
 
 int
@@ -585,10 +651,11 @@ build_sorted_items(int numrows, HeapTuple *rows, TupleDesc tdesc,
 
 /*
  * has_stats_of_kind
- *		Check whether the list contains statistic of a given kind
+ *		Check whether the list contains statistic of a given kind (at least
+ * one of those specified statistics types).
  */
 bool
-has_stats_of_kind(List *stats, char requiredkind)
+has_stats_of_kind(List *stats, int requiredkinds)
 {
 	ListCell   *l;
 
@@ -596,7 +663,7 @@ has_stats_of_kind(List *stats, char requiredkind)
 	{
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(l);
 
-		if (stat->kind == requiredkind)
+		if (stat->kinds & requiredkinds)
 			return true;
 	}
 
@@ -618,7 +685,7 @@ has_stats_of_kind(List *stats, char requiredkind)
  * further tiebreakers are needed.
  */
 StatisticExtInfo *
-choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
+choose_best_statistics(List *stats, Bitmapset *attnums, int requiredkinds)
 {
 	ListCell   *lc;
 	StatisticExtInfo *best_match = NULL;
@@ -632,8 +699,8 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 		int			numkeys;
 		Bitmapset  *matched;
 
-		/* skip statistics that are not of the correct type */
-		if (info->kind != requiredkind)
+		/* skip statistics that do not match any of the requested types */
+		if ((info->kinds & requiredkinds) == 0)
 			continue;
 
 		/* determine how many attributes of these stats can be matched to */
@@ -813,7 +880,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 
 /*
  * statext_is_compatible_clause
- *		Determines if the clause is compatible with MCV lists.
+ *		Determines if the clause is compatible with MCV lists and histograms
  *
  * Only OpExprs with two arguments using an equality operator are supported.
  * When returning True attnum is set to the attribute number of the Var within
@@ -929,11 +996,12 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	double		ndistinct;
 	int			mcv_count;
 
-	/* selectivity for MCV */
-	Selectivity s1 = 0.0;
+	/* selectivities for MCV and histogram part */
+	Selectivity s1 = 0.0,
+				s2 = 0.0;
 
-	/* we're interested in MCV lists */
-	int			types = STATS_EXT_MCV;
+	/* we're interested in MCV lists and/or histograms */
+	int			types = (STATS_EXT_INFO_MCV | STATS_EXT_INFO_HISTOGRAM);
 
 	/* additional information for MCV matching */
 	bool		fullmatch = false;
@@ -991,8 +1059,8 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	if (!stat)
 		return (Selectivity) 1.0;
 
-	/* We only understand MCV lists for now. */
-	Assert(stat->kind == STATS_EXT_MCV);
+	/* We only understand MCV lists and histograms for now. */
+	Assert(stat->kinds & (STATS_EXT_INFO_MCV | STATS_EXT_INFO_HISTOGRAM));
 
 	/* now filter the clauses to be estimated using the selected MCV */
 	stat_clauses = NIL;
@@ -1024,10 +1092,11 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * Evaluate the MCV selectivity. See if we got a full match and the
 	 * minimal selectivity.
 	 */
-	s1 = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
-									jointype, sjinfo, rel,
-									&fullmatch, &mcv_lowsel,
-									&mcv_totalsel, &mcv_count);
+	if (stat->kinds & STATS_EXT_INFO_MCV)
+		s1 = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
+										jointype, sjinfo, rel,
+										&fullmatch, &mcv_lowsel,
+										&mcv_totalsel, &mcv_count);
 
 	/*
 	 * If we got a full equality match on the MCV list, we're done (and the
@@ -1044,10 +1113,27 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	ndistinct = Max(1.0, (ndistinct - mcv_count));
 
 	/*
+	 * If it's a full match without a matching MCV item, or if it's not a full
+	 * match (i.e. there are other types of conditions - range etc.), there
+	 * may be matches in the histogram, if there's one.
+	 */
+	if (stat->kinds & STATS_EXT_INFO_HISTOGRAM)
+		s2 = histogram_clauselist_selectivity(root, stat, clauses, varRelid,
+											  jointype, sjinfo, rel);
+	else
+		/* if there's no histogram, we can use the total non-MCV selectivity */
+		s2 = (1 - mcv_totalsel);
+
+	/*
 	 * If it's a full match (equalities on all columns) but we haven't found
 	 * it in the MCV, then we don't know what the selectivity is. But we do
 	 * have two upper boundaries - mcv_lowsel and (1 - mcv_totalsel), so we
 	 * simply return the lower of these two.
+	 *
+	 * We do want to apply this even when there is no histogram, because it
+	 * may further lower the upper boundary. Consider for example MCV list
+	 * with two items, with frequencies [0.5, 0.4]. Then mcv_lowsel=0.4
+	 * and mcv_totalsel=0.9. For full matches we can use 0.1.
 	 *
 	 * XXX This is likely an over-estimate, because there are probably many
 	 * items that did not make it into the MCV list. To get a more accurate
@@ -1055,11 +1141,11 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * and return (1 / ndistinct).
 	 */
 	if (nmatches == bms_num_members(stat->keys))
-		return Min(mcv_lowsel, (1 - mcv_totalsel)) / ndistinct;
+		s2 = Min(mcv_lowsel, s2) / ndistinct;
 
 	/*
 	 * If it's not a full match, there may be additional matches in the part
 	 * not covered by the MCV list.
 	 */
-	return s1 + (1 - mcv_totalsel) / ndistinct;
+	return s1 + s2;
 }

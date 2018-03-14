@@ -402,8 +402,6 @@ EXPLAIN (COSTS OFF)
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL AND c IS NULL;
 
-RESET random_page_cost;
-
 -- mcv with arrays
 CREATE TABLE mcv_lists_arrays (
     a TEXT[],
@@ -422,3 +420,134 @@ CREATE STATISTICS mcv_lists_arrays_stats (mcv) ON a, b, c
   FROM mcv_lists_arrays;
 
 ANALYZE mcv_lists_arrays;
+
+RESET random_page_cost;
+
+-- histograms
+CREATE TABLE histograms (
+    filler1 TEXT,
+    filler2 NUMERIC,
+    a INT,
+    b TEXT,
+    filler3 DATE,
+    c INT,
+    d TEXT
+);
+
+SET random_page_cost = 1.2;
+
+CREATE INDEX histograms_ab_idx ON mcv_lists (a, b);
+CREATE INDEX histograms_abc_idx ON histograms (a, b, c);
+
+-- random data (we still get histogram, but as the columns are not
+-- correlated, the estimates remain about the same)
+INSERT INTO histograms (a, b, c, filler1)
+     SELECT mod(i,37), mod(i,41), mod(i,43), mod(i,47) FROM generate_series(1,5000) s(i);
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 5 AND b < '5';
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 5 AND b < '5' AND c < 5;
+
+-- create statistics
+CREATE STATISTICS histograms_stats (histogram) ON a, b, c FROM histograms;
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 5 AND b < '5';
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 5 AND b < '5' AND c < 5;
+
+-- values correlated along the diagonal
+TRUNCATE histograms;
+DROP STATISTICS histograms_stats;
+
+INSERT INTO histograms (a, b, c, filler1)
+     SELECT mod(i,100), mod(i,100) + mod(i,7), mod(i,100) + mod(i,11), i FROM generate_series(1,5000) s(i);
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 3 AND c < 3;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 3 AND b > '2' AND c < 3;
+
+-- create statistics
+CREATE STATISTICS histograms_stats (histogram) ON a, b, c FROM histograms;
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 3 AND c < 3;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a < 3 AND b > '2' AND c < 3;
+
+-- almost 5000 unique combinations with NULL values
+TRUNCATE histograms;
+DROP STATISTICS histograms_stats;
+
+INSERT INTO histograms (a, b, c, filler1)
+     SELECT
+         (CASE WHEN mod(i,100) =  0 THEN NULL ELSE mod(i,100) END),
+         (CASE WHEN mod(i,100) <= 1 THEN NULL ELSE mod(i,100) + mod(i,7)  END),
+         (CASE WHEN mod(i,100) <= 2 THEN NULL ELSE mod(i,100) + mod(i,11) END),
+         i
+     FROM generate_series(1,5000) s(i);
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL AND c IS NULL;
+
+-- create statistics
+CREATE STATISTICS histograms_stats (histogram) ON a, b, c FROM histograms;
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL AND c IS NULL;
+
+-- check change of column type resets the histogram statistics
+ALTER TABLE histograms ALTER COLUMN c TYPE numeric;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL;
+
+ANALYZE histograms;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM histograms WHERE a IS NULL AND b IS NULL;
+
+-- histograms with arrays
+CREATE TABLE histograms_arrays (
+    a TEXT[],
+    b NUMERIC[],
+    c INT[]
+);
+
+INSERT INTO histograms_arrays (a, b, c)
+     SELECT
+         ARRAY[md5(i::text), md5((i-1)::text), md5((i+1)::text)],
+         ARRAY[(i-1)::numeric/1000, i::numeric/1000, (i+1)::numeric/1000],
+         ARRAY[(i-1), i, (i+1)]
+     FROM generate_series(1,5000) s(i);
+
+CREATE STATISTICS histogram_array_stats (histogram) ON a, b, c
+  FROM histograms_arrays;
+
+ANALYZE histograms_arrays;
+
+RESET random_page_cost;

@@ -125,6 +125,25 @@ clauselist_selectivity(PlannerInfo *root,
 	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
 	{
 		/*
+		 * Estimate selectivity on any clauses applicable by stats tracking
+		 * actual values first, then apply functional dependencies on the
+		 * remaining clauses.  The reasoning for this particular order is that
+		 * the more complex stats can track more complex correlations between
+		 * the attributes, and may be considered more reliable.
+		 *
+		 * For example MCV list can give us an exact selectivity for values in
+		 * two columns, while functional dependencies can only provide
+		 * information about overall strength of the dependency.
+		 *
+		 * 'estimatedclauses' is a bitmap of 0-based list positions of clauses
+		 * used that way, so that we can ignore them later (not to estimate
+		 * them twice).
+		 */
+		s1 *= statext_clauselist_selectivity(root, clauses, varRelid,
+											 jointype, sjinfo, rel,
+											 &estimatedclauses);
+
+		/*
 		 * Perform selectivity estimations on any clauses found applicable by
 		 * dependencies_clauselist_selectivity.  'estimatedclauses' will be
 		 * filled with the 0-based list positions of clauses used that way, so
@@ -133,11 +152,6 @@ clauselist_selectivity(PlannerInfo *root,
 		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
 												  jointype, sjinfo, rel,
 												  &estimatedclauses);
-
-		/*
-		 * This would be the place to apply any other types of extended
-		 * statistics selectivity estimations for remaining clauses.
-		 */
 	}
 
 	/*

@@ -418,6 +418,24 @@ static relopt_real realRelOpts[] =
 		},
 		-1, 0.0, 100.0
 	},
+	{
+		{
+			"n_distinct_per_range",
+			"Number of distinct values in each page range covered by a BRIN (bloom) index",
+			RELOPT_KIND_BRIN,
+			AccessExclusiveLock
+		},
+		-1.0, -0.1, 40000000
+	},
+	{
+		{
+			"false_positive_rate",
+			"False positive rate for each page range covered by a BRIN (bloom) index",
+			RELOPT_KIND_BRIN,
+			AccessExclusiveLock
+		},
+		0.01, 0.001, 1.0
+	},
 	/* list terminator */
 	{{NULL}}
 };

@@ -957,7 +957,9 @@ brinoptions(Datum reloptions, bool validate)
 	int			numoptions;
 	static const relopt_parse_elt tab[] = {
 		{"pages_per_range", RELOPT_TYPE_INT, offsetof(BrinOptions, pagesPerRange)},
-		{"autosummarize", RELOPT_TYPE_BOOL, offsetof(BrinOptions, autosummarize)}
+		{"autosummarize", RELOPT_TYPE_BOOL, offsetof(BrinOptions, autosummarize)},
+		{"n_distinct_per_range", RELOPT_TYPE_REAL, offsetof(BrinOptions, nDistinctPerRange)},
+		{"false_positive_rate", RELOPT_TYPE_REAL, offsetof(BrinOptions, falsePositiveRate)}
 	};
 
 	options = parseRelOptions(reloptions, validate, RELOPT_KIND_BRIN,

@@ -962,14 +962,17 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 
 	/*
 	 * If it's a full match (equalities on all columns) but we haven't found
-	 * it in the MCV, then we don't know what the selectivity is. We only
-	 * know that the mcv_lowsel is the upper boundary.
+	 * it in the MCV, then we don't know what the selectivity is. But we do
+	 * have two upper boundaries - mcv_lowsel and (1 - mcv_totalsel), so we
+	 * simply return the lower of these two.
 	 *
-	 * XXX This is then used for estimation from a histogram. We might also
-	 * use the 1/ndistinct trick.
+	 * XXX This is likely an over-estimate, because there are probably many
+	 * items that did not make it into the MCV list. To get a more accurate
+	 * estimate we might compute ndistinct estimate from equality clauses,
+	 * and return (1 / ndistinct).
 	 */
 	if (fullmatch)
-		return mcv_lowsel;	/* this is likely an over-estimate */
+		return Min(mcv_lowsel, (1 - mcv_totalsel));
 
 	/*
 	 * If it's not a full match, there may be additional matches in the part

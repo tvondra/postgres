@@ -1228,10 +1228,9 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
  * that can't possibly match (e.g. item marked as "mismatch" can't change
  * to "match" when evaluating AND clause list).
  *
- * The function returns the number of items currently marked as 'match', and
- * it also returns two additional pieces of information - a flag indicating
- * whether there was an equality condition for all attributes, and the
- * minimum frequency in the MCV list.
+ * The function also returns a flag indicating whether there was an
+ * equality condition for all attributes, the minimum frequency in the MCV
+ * list, and a total MCV frequency (sum of frequencies for all items).
  *
  * XXX Currently the match bitmap uses a char for each MCV item, which is
  * somewhat wasteful as we could do with just a single bit, thus reducing

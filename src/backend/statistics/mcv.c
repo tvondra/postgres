@@ -1242,7 +1242,7 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
 static void
 mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 						Bitmapset *keys, MCVList * mcvlist, char *matches,
-						Selectivity *lowsel, bool *fullmatch, bool is_or)
+						bool *fullmatch, bool is_or)
 {
 	int			i;
 	ListCell   *l;
@@ -1255,13 +1255,6 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
 	Assert(mcvlist->nitems <= STATS_MCVLIST_MAX_ITEMS);
-
-	/*
-	 * Find the lowest frequency in the MCV list. The MCV list is sorted by
-	 * frequency in descending order, so simply get frequency of the the last
-	 * MCV item.
-	 */
-	*lowsel = mcvlist->items[mcvlist->nitems - 1]->frequency;
 
 	/*
 	 * Loop through the list of clauses, and for each of them evaluate all the
@@ -1472,7 +1465,7 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			/* build the match bitmap for the OR-clauses */
 			mcv_update_match_bitmap(root, bool_clauses, keys,
 									mcvlist, bool_matches,
-									lowsel, fullmatch, or_clause(clause));
+									fullmatch, or_clause(clause));
 
 			/*
 			 * Merge the bitmap produced by mcv_update_match_bitmap into the
@@ -1511,15 +1504,19 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 /*
  * mcv_clauselist_selectivity
- *		Return the estimated selectivity of the given clauses using MCV list
- *		statistics, or 1.0 if no useful MCV list statistic exists.
+ *		Return the selectivity estimate of clauses using MCV list.
+ *
+ * It also produces two interesting selectivities - total selectivity of
+ * all the MCV items combined, and selectivity of the least frequent item
+ * in the list.
  */
 Selectivity
 mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 						   List *clauses, int varRelid,
 						   JoinType jointype, SpecialJoinInfo *sjinfo,
 						   RelOptInfo *rel,
-						   bool *fullmatch, Selectivity *lowsel)
+						   bool *fullmatch, Selectivity *lowsel,
+						   Selectivity *totalsel)
 {
 	int			i;
 	MCVList    *mcv;
@@ -1536,14 +1533,24 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	memset(matches, STATS_MATCH_FULL, sizeof(char) * mcv->nitems);
 
 	mcv_update_match_bitmap(root, clauses, stat->keys, mcv,
-							matches, lowsel, fullmatch, false);
+							matches, fullmatch, false);
 
 	/* sum frequencies for all the matching MCV items */
+	*totalsel = 0.0;
 	for (i = 0; i < mcv->nitems; i++)
 	{
+		*totalsel += mcv->items[i]->frequency;
+
 		if (matches[i] != STATS_MATCH_NONE)
 			s += mcv->items[i]->frequency;
 	}
+
+	/*
+	 * Find the lowest frequency in the MCV list. The MCV list is sorted by
+	 * frequency in descending order, so simply get frequency of the the last
+	 * MCV item.
+	 */
+	*lowsel = mcv->items[mcv->nitems - 1]->frequency;
 
 	return s;
 }

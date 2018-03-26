@@ -868,6 +868,7 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	/* additional information for MCV matching */
 	bool		fullmatch = false;
 	Selectivity mcv_lowsel = 1.0;
+	Selectivity mcv_totalsel = 1.0;
 
 	/* check if there's any stats that might be useful for us. */
 	if (!has_stats_of_kind(rel->statlist, types))
@@ -920,6 +921,9 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	if (!stat)
 		return (Selectivity) 1.0;
 
+	/* We only understand MCV lists for now. */
+	Assert(stat->kind == STATS_EXT_MCV);
+
 	/* now filter the clauses to be estimated using the selected MCV */
 	stat_clauses = NIL;
 
@@ -944,10 +948,10 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * Evaluate the MCV selectivity. See if we got a full match and the
 	 * minimal selectivity.
 	 */
-	if (stat->kind == STATS_EXT_MCV)
-		s1 = mcv_clauselist_selectivity(root, stat, clauses, varRelid,
-										jointype, sjinfo, rel,
-										&fullmatch, &mcv_lowsel);
+	s1 = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
+									jointype, sjinfo, rel,
+									&fullmatch, &mcv_lowsel,
+									&mcv_totalsel);
 
 	/*
 	 * If we got a full equality match on the MCV list, we're done (and the
@@ -958,11 +962,18 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 
 	/*
 	 * If it's a full match (equalities on all columns) but we haven't found
-	 * it in the MCV, then we limit the selectivity by frequency of the last
-	 * MCV item. Otherwise reset it to 1.0.
+	 * it in the MCV, then we don't know what the selectivity is. We only
+	 * know that the mcv_lowsel is the upper boundary.
+	 *
+	 * XXX This is then used for estimation from a histogram. We might also
+	 * use the 1/ndistinct trick.
 	 */
-	if (!fullmatch)
-		mcv_lowsel = 1.0;
+	if (fullmatch)
+		return mcv_lowsel;	/* this is likely an over-estimate */
 
-	return Min(s1, mcv_lowsel);
+	/*
+	 * If it's not a full match, there may be additional matches in the part
+	 * not covered by the MCV list.
+	 */
+	return s1 + (1 - mcv_totalsel);
 }

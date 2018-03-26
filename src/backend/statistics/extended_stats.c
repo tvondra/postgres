@@ -746,7 +746,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 		return statext_is_compatible_clause_internal((Node *) var, relid, attnums);
 	}
 
-	/* NOT clause, clause AND/OR clause */
+	/* NOT/AND/OR clause */
 	if (or_clause(clause) ||
 		and_clause(clause) ||
 		not_clause(clause))

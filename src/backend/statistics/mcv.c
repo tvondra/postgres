@@ -1430,7 +1430,9 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = Min(matches[i], match);
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) ||
+				 and_clause(clause) ||
+				 not_clause(clause))
 		{
 			/*
 			 * AND/OR clause, with all clauses compatible with the selected MV
@@ -1473,6 +1475,18 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			 */
 			for (i = 0; i < mcvlist->nitems; i++)
 			{
+				/*
+				 * When handling a NOT clause, invert the result before
+				 * merging it into the global result.
+				 */
+				if (not_clause(clause))
+				{
+					if (bool_matches[i] == STATS_MATCH_NONE)
+						bool_matches[i] = STATS_MATCH_FULL;
+					else
+						bool_matches[i] = STATS_MATCH_NONE;
+				}
+
 				/* Is this OR or AND clause? */
 				if (is_or)
 					matches[i] = Max(matches[i], bool_matches[i]);

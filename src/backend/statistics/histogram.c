@@ -2551,7 +2551,9 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = Min(matches[i], match);
 			}
 		}
-		else if (or_clause(clause) || and_clause(clause))
+		else if (or_clause(clause) ||
+				 and_clause(clause) ||
+				 not_clause(clause))
 		{
 			/*
 			 * AND/OR clause, with all clauses compatible with the selected MV
@@ -2598,17 +2600,24 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			 */
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
+				/*
+				 * When handling a NOT clause, invert the result before
+				 * merging it into the global result. We don't care about
+				 * partial matches here (those invert to partial).
+				 */
+				if (not_clause(clause))
+				{
+					if (bool_matches[i] == STATS_MATCH_NONE)
+						bool_matches[i] = STATS_MATCH_FULL;
+					else if (bool_matches[i] == STATS_MATCH_FULL)
+						bool_matches[i] = STATS_MATCH_NONE;
+				}
+
 				/* Is this OR or AND clause? */
 				if (is_or)
-				{
-					/* OR follows the Max() semantics */
 					matches[i] = Max(matches[i], bool_matches[i]);
-				}
 				else
-				{
-					/* AND follows Min() semantics */
 					matches[i] = Min(matches[i], bool_matches[i]);
-				}
 			}
 
 			pfree(bool_matches);

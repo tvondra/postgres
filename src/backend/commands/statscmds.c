@@ -491,7 +491,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	 * OK, we need to reset some statistics. So let's build the new tuple,
 	 * replacing the affected statistics types with NULL.
 	 */
-	memset(nulls, 1, Natts_pg_statistic_ext * sizeof(bool));
+	memset(nulls, 0, Natts_pg_statistic_ext * sizeof(bool));
 	memset(replaces, 0, Natts_pg_statistic_ext * sizeof(bool));
 	memset(values, 0, Natts_pg_statistic_ext * sizeof(Datum));
 

@@ -32,6 +32,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 
 
@@ -841,6 +842,69 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 												 relid, attnums);
 }
 
+
+static double
+number_of_groups(PlannerInfo *root, List *clauses, int *natts)
+{
+	double	ngroups;
+	List   *vars = NIL;
+	Bitmapset *atts = NULL;
+	ListCell *lc;
+
+	*natts = 0;
+	ngroups = 0;
+
+	foreach(lc, clauses)
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr	   *expr;
+		Var		   *var;
+		bool		ok;
+		bool		varonleft = true;
+
+		Assert(IsA(rinfo, RestrictInfo));
+
+		if (!IsA(rinfo->clause, OpExpr))
+			continue;
+
+		expr = (OpExpr *) rinfo->clause;
+
+		if (list_length(expr->args) != 2)
+			continue;
+
+		/* see if it actually has the right */
+		ok = (NumRelids((Node *) expr) == 1) &&
+			(is_pseudo_constant_clause(lsecond(expr->args)) ||
+			 (varonleft = false,
+			  is_pseudo_constant_clause(linitial(expr->args))));
+
+		/* unsupported structure (two variables or so) */
+		if (!ok)
+			continue;
+
+		if (get_oprrest(expr->opno) != F_EQSEL)
+			continue;
+
+		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+		vars = lappend(vars, var);
+		atts = bms_add_member(atts, var->varattno);
+	}
+
+	/* only care about enough matches for extended statistic */
+	if (bms_num_members(atts) >= 2)
+	{
+		*natts = bms_num_members(atts);
+		ngroups = estimate_num_groups_simple(root, vars);
+	}
+
+	if (atts)
+		bms_free(atts);
+
+	return ngroups;
+}
+
+
 /*
  * statext_clauselist_selectivity
  *		Estimate clauses using the best multi-column statistics.
@@ -861,6 +925,9 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	int			listidx;
 	StatisticExtInfo *stat;
 	List	   *stat_clauses;
+	int			nmatches;
+	double		ndistinct;
+	int			mcv_count;
 
 	/* selectivity for MCV */
 	Selectivity s1 = 0.0;
@@ -948,20 +1015,33 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	}
 
 	/*
+	 * Estimate total number of matches in the group, and count the number
+	 * of equality clauses (we need to know if this may be a full match).
+	 */
+	ndistinct = number_of_groups(root, stat_clauses, &nmatches);
+
+	/*
 	 * Evaluate the MCV selectivity. See if we got a full match and the
 	 * minimal selectivity.
 	 */
 	s1 = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
 									jointype, sjinfo, rel,
 									&fullmatch, &mcv_lowsel,
-									&mcv_totalsel);
+									&mcv_totalsel, &mcv_count);
 
 	/*
 	 * If we got a full equality match on the MCV list, we're done (and the
 	 * estimate is likely pretty good).
 	 */
-	if (fullmatch && (s1 > 0.0))
+	if ((nmatches == bms_num_members(stat->keys)) && (s1 > 0.0))
 		return s1;
+
+	/*
+	 * Subtract the distinct items represented by the MCV list, but make sure
+	 * to keep at least 1.0 (this may be unnecessary, but let's defend against
+	 * division by zero).
+	 */
+	ndistinct = Max(1.0, (ndistinct - mcv_count));
 
 	/*
 	 * If it's a full match (equalities on all columns) but we haven't found
@@ -974,12 +1054,12 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * estimate we might compute ndistinct estimate from equality clauses,
 	 * and return (1 / ndistinct).
 	 */
-	if (fullmatch)
-		return Min(mcv_lowsel, (1 - mcv_totalsel));
+	if (nmatches == bms_num_members(stat->keys))
+		return Min(mcv_lowsel, (1 - mcv_totalsel)) / ndistinct;
 
 	/*
 	 * If it's not a full match, there may be additional matches in the part
 	 * not covered by the MCV list.
 	 */
-	return s1 + (1 - mcv_totalsel);
+	return s1 + (1 - mcv_totalsel) / ndistinct;
 }

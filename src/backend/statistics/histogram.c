@@ -2463,7 +2463,9 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					switch (oprrest)
 					{
 						case F_SCALARLTSEL: /* Var < Const */
+						case F_SCALARLESEL: /* Var <= Const */
 						case F_SCALARGTSEL: /* Var > Const */
+						case F_SCALARGESEL: /* Var >= Const */
 
 							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
 															   minval, maxval,
@@ -2473,6 +2475,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 							break;
 
 						case F_EQSEL:
+						case F_NEQSEL:
 
 							/*
 							 * We only check whether the value is within the
@@ -2551,13 +2554,10 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = Min(matches[i], match);
 			}
 		}
-		else if (or_clause(clause) ||
-				 and_clause(clause) ||
-				 not_clause(clause))
+		else if (or_clause(clause) || and_clause(clause))
 		{
 			/*
-			 * AND/OR clause, with all clauses compatible with the selected MV
-			 * stat
+			 * AND/OR clause, with all sub-clauses compatible with the stats
 			 */
 
 			int			i;
@@ -2593,6 +2593,47 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			 * Merge the bitmap produced by histogram_update_match_bitmap into
 			 * the current one. We need to consider if we're evaluating AND or
 			 * OR condition when merging the results.
+			 */
+			for (i = 0; i < histogram->nbuckets; i++)
+			{
+				/* Is this OR or AND clause? */
+				if (is_or)
+					matches[i] = Max(matches[i], bool_matches[i]);
+				else
+					matches[i] = Min(matches[i], bool_matches[i]);
+			}
+
+			pfree(bool_matches);
+
+		}
+		else if (not_clause(clause))
+		{
+			/* NOT clause, with all subclauses compatible */
+
+			int			i;
+			BoolExpr   *not_clause = ((BoolExpr *) clause);
+			List	   *not_args = not_clause->args;
+
+			/* match/mismatch bitmap for each MCV item */
+			char	   *not_matches = NULL;
+
+			Assert(not_args != NIL);
+			Assert(list_length(not_args) == 1);
+
+			/* by default none of the MCV items matches the clauses */
+			not_matches = palloc0(sizeof(char) * histogram->nbuckets);
+
+			/* NOT clauses assume nothing matches, initially */
+			memset(not_matches, STATS_MATCH_FULL, sizeof(char) * histogram->nbuckets);
+
+			/* build the match bitmap for the OR-clauses */
+			histogram_update_match_bitmap(root, not_args,
+										  stakeys, histogram,
+										  not_matches, false);
+
+			/*
+			 * Merge the bitmap produced by histogram_update_match_bitmap into
+			 * the current one.
 			 *
 			 * This is similar to what mcv_update_match_bitmap does, but we
 			 * need to be a tad more careful here, as histograms have three
@@ -2605,23 +2646,65 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				 * merging it into the global result. We don't care about
 				 * partial matches here (those invert to partial).
 				 */
-				if (not_clause(clause))
-				{
-					if (bool_matches[i] == STATS_MATCH_NONE)
-						bool_matches[i] = STATS_MATCH_FULL;
-					else if (bool_matches[i] == STATS_MATCH_FULL)
-						bool_matches[i] = STATS_MATCH_NONE;
-				}
+				if (not_matches[i] == STATS_MATCH_NONE)
+					not_matches[i] = STATS_MATCH_FULL;
+				else if (not_matches[i] == STATS_MATCH_FULL)
+					not_matches[i] = STATS_MATCH_NONE;
 
 				/* Is this OR or AND clause? */
 				if (is_or)
-					matches[i] = Max(matches[i], bool_matches[i]);
+					matches[i] = Max(matches[i], not_matches[i]);
 				else
-					matches[i] = Min(matches[i], bool_matches[i]);
+					matches[i] = Min(matches[i], not_matches[i]);
 			}
 
-			pfree(bool_matches);
+			pfree(not_matches);
+		}
+		else if (IsA(clause, Var))
+		{
+			/* Var (has to be a boolean Var, possibly from below NOT) */
 
+			Var		   *var = (Var *) (clause);
+
+			/* match the attribute to a dimension of the statistic */
+			int			idx = bms_member_index(stakeys, var->varattno);
+
+			Assert(var->vartype == BOOLOID);
+
+			/*
+			 * Walk through the buckets and evaluate the current clause.
+			 */
+			for (i = 0; i < histogram->nbuckets; i++)
+			{
+				MVBucket   *bucket = histogram->buckets[i];
+				bool	match = STATS_MATCH_NONE;
+
+				/*
+				 * If the bucket is NULL, it's a mismatch. Otherwise check
+				 * if lower/upper boundaries match and choose partial/full
+				 * match accordingly.
+				 */
+				if (!bucket->nullsonly[idx])
+				{
+					int		minidx = bucket->min[idx];
+					int		maxidx = bucket->max[idx];
+
+					bool 	a = DatumGetBool(histogram->values[idx][minidx]);
+					bool	b = DatumGetBool(histogram->values[idx][maxidx]);
+
+					/* both match - FULL */
+					if (a && b)
+						match = STATS_MATCH_FULL;
+					else if (a || b)
+						match = STATS_MATCH_PARTIAL;
+				}
+
+				/* now, update the match bitmap, depending on OR/AND type */
+				if (is_or)
+					matches[i] = Max(matches[i], match);
+				else
+					matches[i] = Min(matches[i], match);
+			}
 		}
 		else
 			elog(ERROR, "unknown clause type: %d", clause->type);

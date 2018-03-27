@@ -737,8 +737,11 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 		 * directly (a bit awkward, but well ...).
 		 */
 		if ((get_oprrest(expr->opno) != F_EQSEL) &&
+			(get_oprrest(expr->opno) != F_NEQSEL) &&
 			(get_oprrest(expr->opno) != F_SCALARLTSEL) &&
-			(get_oprrest(expr->opno) != F_SCALARGTSEL))
+			(get_oprrest(expr->opno) != F_SCALARLESEL) &&
+			(get_oprrest(expr->opno) != F_SCALARGTSEL) &&
+			(get_oprrest(expr->opno) != F_SCALARGESEL))
 			return false;
 
 		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);

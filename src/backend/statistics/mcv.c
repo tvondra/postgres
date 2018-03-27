@@ -1348,8 +1348,25 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 							break;
 
+						case F_NEQSEL:
+
+							/*
+							 * We don't care about isgt in inequality, because
+							 * it does not matter whether it's (var != const)
+							 * or (const != var). Unlike for equalities, we do
+							 * not update eqmatches here.
+							 */
+							mismatch = !DatumGetBool(FunctionCall2Coll(&opproc,
+																	   DEFAULT_COLLATION_OID,
+																	   cst->constvalue,
+																	   item->values[idx]));
+
+							break;
+
 						case F_SCALARLTSEL: /* column < constant */
+						case F_SCALARLESEL: /* column <= constant */
 						case F_SCALARGTSEL: /* column > constant */
+						case F_SCALARGESEL: /* column >= constant */
 
 							/*
 							 * First check whether the constant is below the
@@ -1430,14 +1447,9 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = Min(matches[i], match);
 			}
 		}
-		else if (or_clause(clause) ||
-				 and_clause(clause) ||
-				 not_clause(clause))
+		else if (or_clause(clause) || and_clause(clause))
 		{
-			/*
-			 * AND/OR clause, with all clauses compatible with the selected MV
-			 * stat
-			 */
+			/* AND/OR clause, with all subclauses being compatible */
 
 			int			i;
 			BoolExpr   *bool_clause = ((BoolExpr *) clause);
@@ -1459,7 +1471,7 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			}
 			else
 			{
-				/* AND clauses assume nothing matches, initially */
+				/* AND clauses assume everything matches, initially */
 				memset(bool_matches, STATS_MATCH_FULL, sizeof(char) * mcvlist->nitems);
 			}
 
@@ -1475,18 +1487,6 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			 */
 			for (i = 0; i < mcvlist->nitems; i++)
 			{
-				/*
-				 * When handling a NOT clause, invert the result before
-				 * merging it into the global result.
-				 */
-				if (not_clause(clause))
-				{
-					if (bool_matches[i] == STATS_MATCH_NONE)
-						bool_matches[i] = STATS_MATCH_FULL;
-					else
-						bool_matches[i] = STATS_MATCH_NONE;
-				}
-
 				/* Is this OR or AND clause? */
 				if (is_or)
 					matches[i] = Max(matches[i], bool_matches[i]);
@@ -1495,6 +1495,87 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			}
 
 			pfree(bool_matches);
+		}
+		else if (not_clause(clause))
+		{
+			/* NOT clause, with all subclauses compatible */
+
+			int			i;
+			BoolExpr   *not_clause = ((BoolExpr *) clause);
+			List	   *not_args = not_clause->args;
+
+			/* match/mismatch bitmap for each MCV item */
+			char	   *not_matches = NULL;
+
+			Assert(not_args != NIL);
+			Assert(list_length(not_args) == 1);
+
+			/* by default none of the MCV items matches the clauses */
+			not_matches = palloc0(sizeof(char) * mcvlist->nitems);
+
+			/* NOT clauses assume nothing matches, initially */
+			memset(not_matches, STATS_MATCH_FULL, sizeof(char) * mcvlist->nitems);
+
+			/* build the match bitmap for the NOT-clause */
+			mcv_update_match_bitmap(root, not_args, keys,
+									mcvlist, not_matches,
+									fullmatch, false);
+
+			/*
+			 * Merge the bitmap produced by mcv_update_match_bitmap into the
+			 * current one.
+			 */
+			for (i = 0; i < mcvlist->nitems; i++)
+			{
+				/*
+				 * When handling a NOT clause, we need to invert the result
+				 * before merging it into the global result.
+				 */
+				if (not_matches[i] == STATS_MATCH_NONE)
+					not_matches[i] = STATS_MATCH_FULL;
+				else
+					not_matches[i] = STATS_MATCH_NONE;
+
+				/* Is this OR or AND clause? */
+				if (is_or)
+					matches[i] = Max(matches[i], not_matches[i]);
+				else
+					matches[i] = Min(matches[i], not_matches[i]);
+			}
+
+			pfree(not_matches);
+		}
+		else if (IsA(clause, Var))
+		{
+			/* Var (has to be a boolean Var, possibly from below NOT) */
+
+			Var		   *var = (Var *) (clause);
+
+			/* match the attribute to a dimension of the statistic */
+			int			idx = bms_member_index(keys, var->varattno);
+
+			Assert(var->vartype == BOOLOID);
+
+			/*
+			 * Walk through the MCV items and evaluate the current clause. We
+			 * can skip items that were already ruled out, and terminate if
+			 * there are no remaining MCV items that might possibly match.
+			 */
+			for (i = 0; i < mcvlist->nitems; i++)
+			{
+				MCVItem    *item = mcvlist->items[i];
+				bool		match = STATS_MATCH_NONE;
+
+				/* if the item is NULL, it's a mismatch */
+				if (!item->isnull[idx] && DatumGetBool(item->values[idx]))
+					match = STATS_MATCH_FULL;
+
+				/* now, update the match bitmap, depending on OR/AND type */
+				if (is_or)
+					matches[i] = Max(matches[i], match);
+				else
+					matches[i] = Min(matches[i], match);
+			}
 		}
 		else
 		{

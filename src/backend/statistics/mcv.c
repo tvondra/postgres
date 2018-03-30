@@ -1578,7 +1578,8 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 						   List *clauses, int varRelid,
 						   JoinType jointype, SpecialJoinInfo *sjinfo,
 						   RelOptInfo *rel,
-						   Selectivity *lowsel, Selectivity *totalsel)
+						   Selectivity *lowsel, Selectivity *totalsel,
+						   int *mcv_count)
 {
 	int			i;
 	MCVList    *mcv;
@@ -1610,9 +1611,10 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	/*
 	 * Find the lowest frequency in the MCV list. The MCV list is sorted by
 	 * frequency in descending order, so simply get frequency of the the last
-	 * MCV item.
+	 * MCV item. Also return the size of the MCV list (number of items).
 	 */
 	*lowsel = mcv->items[mcv->nitems - 1]->frequency;
+	*mcv_count = mcv->nitems;
 
 	return s;
 }

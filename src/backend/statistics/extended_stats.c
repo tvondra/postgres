@@ -24,6 +24,7 @@
 #include "catalog/pg_statistic_ext.h"
 #include "nodes/relation.h"
 #include "optimizer/clauses.h"
+#include "optimizer/cost.h"
 #include "postmaster/autovacuum.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
@@ -843,66 +844,102 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 												 relid, attnums);
 }
 
-
-static double
-number_of_groups(PlannerInfo *root, List *clauses, int *natts)
+/*
+ * examine_equality_clause
+ *		Extract variable from a simple top-level equality clause.
+ *
+ * For simple equality clause (Var = Const) or (Const = Var) extracts
+ * the Var. For other clauses returns NULL.
+ */
+static Var *
+examine_equality_clause(PlannerInfo *root, RestrictInfo *rinfo)
 {
-	double	ngroups;
+	OpExpr	   *expr;
+	Var		   *var;
+	bool		ok;
+	bool		varonleft = true;
+
+	if (!IsA(rinfo->clause, OpExpr))
+		return NULL;
+
+	expr = (OpExpr *) rinfo->clause;
+
+	if (list_length(expr->args) != 2)
+		return NULL;
+
+	/* see if it actually has the right */
+	ok = (NumRelids((Node *) expr) == 1) &&
+		(is_pseudo_constant_clause(lsecond(expr->args)) ||
+		 (varonleft = false,
+		  is_pseudo_constant_clause(linitial(expr->args))));
+
+	/* unsupported structure (two variables or so) */
+	if (!ok)
+		return NULL;
+
+	if (get_oprrest(expr->opno) != F_EQSEL)
+		return NULL;
+
+	var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+	return var;
+}
+
+/*
+ * estimate_equality_groups
+ *		Estimates number of groups for attributes in equality clauses.
+ *
+ * Extracts simple top-level equality clauses, and estimates ndistinct
+ * for that combination (using simplified estimate_num_groups). Then
+ * returns number of attributes with an equality clause, and a list
+ * of remaining non-equality clauses.
+ */
+static double
+estimate_equality_groups(PlannerInfo *root, List *clauses, int *natts,
+						 List **neqclauses)
+{
 	List   *vars = NIL;
 	Bitmapset *atts = NULL;
 	ListCell *lc;
 
 	*natts = 0;
-	ngroups = 0;
+	*neqclauses = NIL;
 
 	foreach(lc, clauses)
 	{
+		Var	   *var;
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-		OpExpr	   *expr;
-		Var		   *var;
-		bool		ok;
-		bool		varonleft = true;
 
 		Assert(IsA(rinfo, RestrictInfo));
 
-		if (!IsA(rinfo->clause, OpExpr))
+		var = examine_equality_clause(root, rinfo);
+
+		/* not a simple equality clause */
+		if (!var)
+		{
+			*neqclauses = lappend(*neqclauses, rinfo);
 			continue;
-
-		expr = (OpExpr *) rinfo->clause;
-
-		if (list_length(expr->args) != 2)
-			continue;
-
-		/* see if it actually has the right */
-		ok = (NumRelids((Node *) expr) == 1) &&
-			(is_pseudo_constant_clause(lsecond(expr->args)) ||
-			 (varonleft = false,
-			  is_pseudo_constant_clause(linitial(expr->args))));
-
-		/* unsupported structure (two variables or so) */
-		if (!ok)
-			continue;
-
-		if (get_oprrest(expr->opno) != F_EQSEL)
-			continue;
-
-		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+		}
 
 		vars = lappend(vars, var);
 		atts = bms_add_member(atts, var->varattno);
 	}
 
-	/* only care about enough matches for extended statistic */
-	if (bms_num_members(atts) >= 2)
-	{
-		*natts = bms_num_members(atts);
-		ngroups = estimate_num_groups_simple(root, vars);
-	}
+	*natts = bms_num_members(atts);
 
 	if (atts)
 		bms_free(atts);
 
-	return ngroups;
+	/* only care about enough matches for extended statistic */
+	if (*natts < 2)
+	{
+		pfree(*neqclauses);
+		*neqclauses = clauses;
+		*natts = 0;
+		return 1.0;
+	}
+
+	return estimate_num_groups_simple(root, vars);
 }
 
 
@@ -926,12 +963,15 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	int			listidx;
 	StatisticExtInfo *stat;
 	List	   *stat_clauses;
+	List	   *neqclauses;
 	int			nmatches;
 	double		ndistinct;
 	int			mcv_count;
+	bool		fullmatch;
 
 	/* selectivity for MCV */
-	Selectivity s1 = 0.0;
+	Selectivity s1 = 0.0,
+				s2 = 0.0;
 
 	/* we're interested in MCV lists */
 	int			types = STATS_EXT_MCV;
@@ -1015,12 +1055,6 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	}
 
 	/*
-	 * Estimate total number of matches in the group, and count the number
-	 * of equality clauses (we need to know if this may be a full match).
-	 */
-	ndistinct = number_of_groups(root, stat_clauses, &nmatches);
-
-	/*
 	 * Evaluate the MCV selectivity. See if we got a full match and the
 	 * minimal selectivity.
 	 */
@@ -1030,36 +1064,61 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 									&mcv_count);
 
 	/*
-	 * If we got a full equality match on the MCV list, we're done (and the
-	 * estimate is likely pretty good).
+	 * Estimate total number of matches in the group, and count the number
+	 * of equality clauses (we need to know if this may be a full match).
 	 */
-	if ((nmatches == bms_num_members(stat->keys)) && (s1 > 0.0))
-		return s1;
+	ndistinct = estimate_equality_groups(root, stat_clauses, &nmatches,
+										 &neqclauses);
+
+	/* Do all attributes have an equality clause? */
+	fullmatch = (nmatches == bms_num_members(stat->keys));
 
 	/*
 	 * Subtract the distinct items represented by the MCV list, but make sure
 	 * to keep at least 1.0 (this may be unnecessary, but let's defend against
 	 * division by zero).
+	 *
+	 * XXX If we have ndistinct coefficients then Max() may not be necessary,
+	 * but we may not have that statistic.
 	 */
 	ndistinct = Max(1.0, (ndistinct - mcv_count));
 
 	/*
-	 * If it's a full match (equalities on all columns) but we haven't found
-	 * it in the MCV, then we don't know what the selectivity is. But we do
-	 * have two upper boundaries - mcv_lowsel and (1 - mcv_totalsel), so we
-	 * simply return the lower of these two.
-	 *
-	 * XXX This is likely an over-estimate, because there are probably many
-	 * items that did not make it into the MCV list. To get a more accurate
-	 * estimate we might compute ndistinct estimate from equality clauses,
-	 * and return (1 / ndistinct).
+	 * If we got a full equality match on the MCV list, we're done - we know
+	 * there can be no matches in the non-MCV part. The estimate is likely
+	 * pretty good in this case.
 	 */
-	if (nmatches == bms_num_members(stat->keys))
-		return Min(mcv_lowsel, (1 - mcv_totalsel)) / ndistinct;
+	if (fullmatch && (s1 > 0.0))
+		return s1;
+
+	/*
+	 * Otherwise we know that the total non-MCV part is (1 - mcv_totalsel)
+	 * at most. And we have an ndistinct estimate, derived from the equality
+	 * clauses, so we know the average selectivity. This works even with
+	 * equality clauses on a subset of attributes, or without any equality
+	 * clauses at all (ndistinct=1.0 in that case).
+	 *
+	 * With a fullmatch we can do better - there can be just one matching
+	 * item, and we know the lowest selectivity in MCV is mcv_lowsel. The
+	 * matching item has to be less frequent than that, so we can use it
+	 * as an upper boundary.
+	 */
+	s2 = (1 - mcv_totalsel) / ndistinct;
+	if (fullmatch)
+		s2 = Min(mcv_lowsel, s2);
+
+	/*
+	 * Finally, we need to factor in any non-equality clauses, if there are
+	 * any. We simply use clauselist_selectivity() to compute regular
+	 * statistics (although it may use extended statistic internally).
+	 */
+	if (neqclauses)
+		s2 *= clauselist_selectivity(root, neqclauses, varRelid,
+									 jointype, sjinfo);
 
 	/*
 	 * If it's not a full match, there may be additional matches in the part
 	 * not covered by the MCV list.
 	 */
-	return s1 + (1 - mcv_totalsel) / ndistinct;
+	return s1 + s2;
 }

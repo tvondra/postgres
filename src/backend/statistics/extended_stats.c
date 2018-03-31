@@ -1111,8 +1111,11 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * Finally, we need to factor in any non-equality clauses, if there are
 	 * any. We simply use clauselist_selectivity() to compute regular
 	 * statistics (although it may use extended statistic internally).
+	 *
+	 * Only do the call when there were equality clauses, otherwise we could
+	 * easily end up in infinite loop.
 	 */
-	if (neqclauses)
+	if ((nmatches > 0) && neqclauses)
 		s2 *= clauselist_selectivity(root, neqclauses, varRelid,
 									 jointype, sjinfo);
 

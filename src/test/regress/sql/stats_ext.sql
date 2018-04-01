@@ -422,3 +422,32 @@ CREATE STATISTICS mcv_lists_arrays_stats (mcv) ON a, b, c
   FROM mcv_lists_arrays;
 
 ANALYZE mcv_lists_arrays;
+
+-- mcv with bool
+CREATE TABLE mcv_lists_bool (
+    a BOOL,
+    b BOOL,
+    c BOOL
+);
+
+INSERT INTO mcv_lists_bool (a, b, c)
+     SELECT
+         (mod(i,2) = 0), (mod(i,4) = 0), (mod(i,8) = 0)
+     FROM generate_series(1,10000) s(i);
+
+CREATE INDEX mcv_lists_bool_ab_idx ON mcv_lists_bool (a, b);
+
+CREATE INDEX mcv_lists_bool_abc_idx ON mcv_lists_bool (a, b, c);
+
+CREATE STATISTICS mcv_lists_bool_stats (mcv) ON a, b, c
+  FROM mcv_lists_bool;
+
+ANALYZE mcv_lists_bool;
+
+EXPLAIN (COSTS OFF) SELECT * FROM mcv_lists_bool WHERE a AND b AND c;
+
+EXPLAIN (COSTS OFF) SELECT * FROM mcv_lists_bool WHERE NOT a AND b AND c;
+
+EXPLAIN (COSTS OFF) SELECT * FROM mcv_lists_bool WHERE NOT a AND NOT b AND c;
+
+EXPLAIN (COSTS OFF) SELECT * FROM mcv_lists_bool WHERE NOT a AND b AND NOT c;

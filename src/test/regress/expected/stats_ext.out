@@ -588,6 +588,14 @@ EXPLAIN (COSTS OFF)
 (2 rows)
 
 EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
+                   QUERY PLAN                    
+-------------------------------------------------
+ Index Scan using mcv_lists_abc_idx on mcv_lists
+   Index Cond: ((a <= 0) AND (b <= '0'::text))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
                        QUERY PLAN                        
 ---------------------------------------------------------
@@ -601,6 +609,14 @@ EXPLAIN (COSTS OFF)
 ---------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
    Index Cond: ((a < 5) AND (b < '1'::text) AND (c < 5))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Index Scan using mcv_lists_abc_idx on mcv_lists
+   Index Cond: ((a <= 4) AND (b <= '0'::text) AND (c <= 4))
 (2 rows)
 
 -- create statistics
@@ -627,6 +643,16 @@ EXPLAIN (COSTS OFF)
 (4 rows)
 
 EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Bitmap Heap Scan on mcv_lists
+   Recheck Cond: ((a <= 0) AND (b <= '0'::text))
+   ->  Bitmap Index Scan on mcv_lists_abc_idx
+         Index Cond: ((a <= 0) AND (b <= '0'::text))
+(4 rows)
+
+EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
                     QUERY PLAN                     
 ---------------------------------------------------
@@ -646,6 +672,17 @@ EXPLAIN (COSTS OFF)
    Filter: (c < 5)
    ->  Bitmap Index Scan on mcv_lists_ab_idx
          Index Cond: ((a < 5) AND (b < '1'::text))
+(5 rows)
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Bitmap Heap Scan on mcv_lists
+   Recheck Cond: ((a <= 4) AND (b <= '0'::text))
+   Filter: (c <= 4)
+   ->  Bitmap Index Scan on mcv_lists_ab_idx
+         Index Cond: ((a <= 4) AND (b <= '0'::text))
 (5 rows)
 
 -- check change of column type resets the MCV statistics

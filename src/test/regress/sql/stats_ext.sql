@@ -338,10 +338,16 @@ EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 1 AND b < '1';
 
 EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
+
+EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 5 AND b < '1' AND c < 5;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
 
 -- create statistics
 CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
@@ -355,10 +361,16 @@ EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 1 AND b < '1';
 
 EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
+
+EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 5 AND b < '1' AND c < 5;
+
+EXPLAIN (COSTS OFF)
+ SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
 
 -- check change of column type resets the MCV statistics
 ALTER TABLE mcv_lists ALTER COLUMN c TYPE numeric;

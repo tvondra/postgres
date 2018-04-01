@@ -1108,16 +1108,39 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 		s2 = Min(mcv_lowsel, s2);
 
 	/*
-	 * Finally, we need to factor in any non-equality clauses, if there are
-	 * any. We simply use clauselist_selectivity() to compute regular
-	 * statistics (although it may use extended statistic internally).
+	 * Finally, we need to consider non-equality clauses, if there are any.
 	 *
-	 * Only do the call when there were equality clauses, otherwise we could
-	 * easily end up in infinite loop.
+	 * The easiest thing we can do is calling clauselist_selectivity() to
+	 * compute statistics for those clauses. The function may use extended
+	 * statistics again (if the clauses refer to multiple attributes it is
+	 * guaranteed), either the same or different one. It may also fall back
+	 * to regular per-column statistics.
+	 *
+	 * We can only do this when there are equality clauses, otherwise we
+	 * would risk an infinite loop.
+	 *
+	 * When there are no equality clauses, but we had a match in the MCV
+	 * list, we assume the same selectivity applies to the remaining part.
+	 * This may be inaccurate, but the MCV probably already represents a
+	 * significant part of the table anyway.
+	 *
+	 * And finally, when there are no equality matches nor matches in the
+	 * MCV, the only thing we can do is fallback to regular simple stats.
 	 */
-	if ((nmatches > 0) && neqclauses)
-		s2 *= clauselist_selectivity(root, neqclauses, varRelid,
-									 jointype, sjinfo);
+	if (neqclauses)
+	{
+		if (nmatches > 0)
+			/* try applying the stats again */
+			s2 *= clauselist_selectivity(root, neqclauses, varRelid,
+										 jointype, sjinfo);
+		else if (s1 > 0)
+			/* assume same selectivity on the non-MCV part */
+			s2 *= s1;
+		else
+			/* fallback to regular stats */
+			s2 *= clauselist_selectivity_simple(root, neqclauses, varRelid,
+												jointype, sjinfo, NULL);
+	}
 
 	/*
 	 * If it's not a full match, there may be additional matches in the part

@@ -319,6 +319,15 @@ static relopt_int intRelOpts[] =
 	},
 	{
 		{
+			"values_per_range",
+			"Number of valuesin each page range covered by a BRIN (multi-minmax) index",
+			RELOPT_KIND_BRIN,
+			AccessExclusiveLock
+		},
+		64, 16, 256
+	},
+	{
+		{
 			"gin_pending_list_limit",
 			"Maximum size of the pending list for this GIN index, in kilobytes.",
 			RELOPT_KIND_GIN,

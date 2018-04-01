@@ -1108,43 +1108,55 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 		s2 = Min(mcv_lowsel, s2);
 
 	/*
-	 * Finally, we need to consider non-equality clauses, if there are any.
+	 * If there are no non-equality clauses, we're done.
+	 */
+	if (!neqclauses)
+		return s1 + s2;
+
+	/*
+	 * The easiest thing we can do is re-computing statistics for the
+	 * inequality clauses by calling clauselist_selectivity.
 	 *
-	 * The easiest thing we can do is calling clauselist_selectivity() to
-	 * compute statistics for those clauses. The function may use extended
-	 * statistics again (if the clauses refer to multiple attributes it is
-	 * guaranteed), either the same or different one. It may also fall back
-	 * to regular per-column statistics.
+	 * This may use extended statistics again - if the inequalities
+	 * reference at least two attributes it is guaranteed, because at
+	 * least the current statistic matches. But the best statistic will
+	 * be picked from scratch, and if the inequalities reference only
+	 * a subset of attributes there may be a better fit.
 	 *
-	 * We can only do this when there are equality clauses, otherwise we
-	 * would risk an infinite loop.
+	 * By doing this we essentially treat the two lists as independent,
+	 * but we don't have much choice.
 	 *
-	 * When there are no equality clauses, but we had a match in the MCV
-	 * list, we assume the same selectivity applies to the remaining part.
-	 * This may be inaccurate, but the MCV probably already represents a
-	 * significant part of the table anyway.
+	 * XXX The reason why we only call this with equality clauses is that
+	 * we would end up in infinite loop otherwise, if the recursive call
+	 * picks the same extended statistic. This breaks the loop.
+	 */
+	if (nmatches > 0)
+		return s1 + s2 * clauselist_selectivity(root, neqclauses, varRelid,
+												jointype, sjinfo);
+
+	/*
+	 * If there are no equality clauses, but we got an estimate from the
+	 * current MCV, we extrapolate the estimate to the non-MCV part too,
+	 * which in this case is (1 - mcv_totalsel).  In a way this is the
+	 * same thing we would get from calling clauselist_selectivity, but
+	 * without the infinite loop.
 	 *
+	 * Of course, applying the MCV selectivity to the non-MCV part may be
+	 * inaccurate - it's possible none or all non-MCV rows match. But in
+	 * the absence of better estimates this seems like the best we can do.
+	 *
+	 * XXX The MCV usually represents a sizeable part of the table, so
+	 * with a match in the MCV part (s1) likely matches a large number of
+	 * rows already. This should limits the impact of both over-estimates
+	 * and under-estimates in the non-MCV part.
+	 */
+	if (s1 > 0)	/* nmatches == 0 */
+		return s1 + (s2 * s1);
+
+	/*
 	 * And finally, when there are no equality matches nor matches in the
 	 * MCV, the only thing we can do is fallback to regular simple stats.
 	 */
-	if (neqclauses)
-	{
-		if (nmatches > 0)
-			/* try applying the stats again */
-			s2 *= clauselist_selectivity(root, neqclauses, varRelid,
-										 jointype, sjinfo);
-		else if (s1 > 0)
-			/* assume same selectivity on the non-MCV part */
-			s2 *= s1;
-		else
-			/* fallback to regular stats */
-			s2 *= clauselist_selectivity_simple(root, neqclauses, varRelid,
-												jointype, sjinfo, NULL);
-	}
-
-	/*
-	 * If it's not a full match, there may be additional matches in the part
-	 * not covered by the MCV list.
-	 */
-	return s1 + s2;
+	return s1 + s2 * clauselist_selectivity_simple(root, neqclauses, varRelid,
+												   jointype, sjinfo, NULL);
 }

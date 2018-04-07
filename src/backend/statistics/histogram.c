@@ -129,6 +129,26 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
 	(ndims * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
 
 /*
+ * Computes the size of a serialized histogram, which contains these fields:
+ *
+ * - length      (4B) for varlena header
+ * - magic       (4B)
+ * - type        (4B)
+ * - ndimensions (4B)
+ * - nbuckets    (4B)
+ * - info        (ndim * sizeof(DimensionInfo)
+ * - arrays of deduplicated values for each dimension
+ * - serialized buckets (nbuckets * * bucketsize)
+ *
+ * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then
+ * we'll place the data (and buckets).
+ */
+#define HISTOGRAM_SIZE(ndims, nbuckets, bucketsize) \
+	(offsetof(MVHistogram, buckets) + \
+	 ndims * sizeof(DimensionInfo) + \
+	 nbuckets * bucketsize)
+
+/*
  * Macros for convenient access to parts of a serialized bucket.
  */
 #define BUCKET_FREQUENCY(b)		(*(float*)b)
@@ -137,6 +157,45 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
 #define BUCKET_NULLS_ONLY(b,n)	(BUCKET_MAX_INCL(b,n) + n)
 #define BUCKET_MIN_INDEXES(b,n) ((uint16*)(BUCKET_NULLS_ONLY(b,n) + n))
 #define BUCKET_MAX_INDEXES(b,n) ((BUCKET_MIN_INDEXES(b,n) + n))
+
+/* Access to serialied histogram buckets */
+#define BUCKET_MIN_INDEX(bucket,dim) bucket->min[dim]
+#define BUCKET_MAX_INDEX(bucket,dim) bucket->max[dim]
+
+#define BUCKET_MIN_VALUE(histogram,bucket, dim) \
+	histogram->values[dim][BUCKET_MIN_INDEX(bucket, dim)]
+
+#define BUCKET_MAX_VALUE(histogram,bucket, dim) \
+	histogram->values[dim][BUCKET_MAX_INDEX(bucket, dim)]
+
+#define BUCKET_MIN_INCLUSIVE(bucket,dim) \
+	(bucket)->min_inclusive[dim]
+
+#define BUCKET_MAX_INCLUSIVE(bucket,dim) \
+	(bucket)->max_inclusive[dim]
+
+/*
+ * Print bucket and info about matches.
+ *
+ * XXX Only works for int32 for now.
+ */
+#ifdef DEBUG_STATS
+#define DEBUG_MATCH(label, histogram, bucket, cst, idx, isgt, isstrict, res) \
+	{ \
+		elog(WARNING, "%s: %d %c%d, %d%c isgt=%d isstrict=%d %s", \
+			 label, \
+			 DatumGetInt32(cst->constvalue), \
+			 BUCKET_MIN_INCLUSIVE(bucket, idx) ? '[' : '(', \
+			 DatumGetInt32(BUCKET_MIN_VALUE(histogram, bucket, idx)), \
+			 DatumGetInt32(BUCKET_MAX_VALUE(histogram, bucket, idx)), \
+			 BUCKET_MAX_INCLUSIVE(bucket, idx) ? ']' : ')', \
+			 isgt, isstrict, \
+			 ((res == STATS_MATCH_FULL) ? "FULL" : \
+				(res == STATS_MATCH_PARTIAL) ? "PARTIAL" : "NONE")); \
+	}
+#else
+#define DEBUG_MATCH(label, histogram, bucket, cst, idx, isgt, isstrict, res)
+#endif
 
 /*
  * Minimal number of rows per bucket (can't split smaller buckets).
@@ -531,25 +590,8 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 				 info[dim].typbyval, info[dim].typlen);
 	}
 
-	/*
-	 * Now we finally know how much space we'll need for the serialized
-	 * histogram, as it contains these fields:
-	 *
-	 * - length (4B) for varlena
-	 * - magic (4B)
-	 * - type (4B)
-	 * - ndimensions (4B)
-	 * - nbuckets (4B)
-	 * - info (ndim * sizeof(DimensionInfo)
-	 * - arrays of values for each dimension
-	 * - serialized buckets (nbuckets * bucketsize)
-	 *
-	 * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then
-	 * we'll place the data (and buckets).
-	 */
-	total_length = (offsetof(MVHistogram, buckets)
-					+ ndims * sizeof(DimensionInfo)
-					+ nbuckets * bucketsize);
+	/* Now we know how much space is needed for the serialized histogram. */
+	total_length = HISTOGRAM_SIZE(ndims, nbuckets, bucketsize);
 
 	/* account for the deduplicated data */
 	for (dim = 0; dim < ndims; dim++)
@@ -702,7 +744,7 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	/* make sure the length is correct */
 	SET_VARSIZE(output, total_length);
 
-	return (MVHistogram *)output;
+	return (MVHistogram *) output;
 }
 
 /*
@@ -840,9 +882,8 @@ statext_histogram_deserialize(bytea *data)
 	 * by value), so when someone frees the memory, e.g. by doing something
 	 * like this:
 	 *
-	 *	bytea * data = ... fetch the data from catalog ...
-	 *	MVHistogramBuild histogram = deserialize_histogram(data);
-	 *	pfree(data);
+	 * bytea * data = ... fetch the data from catalog ... MVHistogramBuild
+	 * histogram = deserialize_histogram(data); pfree(data);
 	 *
 	 * then 'histogram' references the freed memory. Should copy the pieces.
 	 */
@@ -2173,11 +2214,22 @@ pg_histogram_send(PG_FUNCTION_ARGS)
 #define HIST_CACHE_TRUE				0x03
 #define HIST_CACHE_MASK				0x02
 
+#define CONST_IS_EQ_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
+#define CONST_IS_LT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
+#define CONST_IS_GT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_FALSE)
+
+/*
+ * update_call_cache
+ *		Ensure the call cache contains result for a given boundary value.
+ *
+ * If a result for a given boudary value is not stored in the call cache,
+ * the function evaluates the operator and stores the result in the cache.
+ */
 static void
 update_call_cache(char *cache, FmgrInfo proc,
 				  Datum constvalue, Datum value, int index)
 {
-	Datum r;
+	Datum		r;
 
 	/* if the result is already in the cache, we're done */
 	if (cache[index] != HIST_CACHE_EMPTY)
@@ -2191,10 +2243,6 @@ update_call_cache(char *cache, FmgrInfo proc,
 	cache[index] = (r) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
 }
 
-#define CONST_IS_EQ_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
-#define CONST_IS_LT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
-#define CONST_IS_GT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_FALSE)
-
 /*
  * bucket_contains_value
  *		Decide if the bucket (a range of values in a particular dimension) may
@@ -2207,31 +2255,42 @@ update_call_cache(char *cache, FmgrInfo proc,
  */
 static char
 bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
-					  Datum constvalue,
-					  Datum min_value, Datum max_value,
-					  int min_index, int max_index,
-					  bool min_include, bool max_include,
+					  MVHistogram *histogram, MVBucket *bucket,
+					  int dim, Datum constvalue,
 					  char *eq_cache, char *lt_cache)
 {
 	bool		lower_equals,
 				upper_equals;
 
 	/*
-	 * First we can do some quick equality checks on bucket boundaries.
-	 * If both boundaries match, we immediately know it's a full match,
+	 * First we can do some quick equality checks on bucket boundaries. If
+	 * both boundaries match, we immediately know it's a full match,
 	 * irrespectedly of the inclusiveness of the boundaries.
 	 *
 	 * We do need this information anyway, so let's just do it both for
 	 * equality and inequality operator now.
 	 */
-	update_call_cache(eq_cache, eqproc, constvalue, min_value, min_index);
-	update_call_cache(eq_cache, eqproc, constvalue, max_value, max_index);
-	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
-	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
+	update_call_cache(eq_cache, eqproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(eq_cache, eqproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
 
 	/* get the cached result */
-	lower_equals = CONST_IS_EQ_BOUNDARY(eq_cache, min_index);
-	upper_equals = CONST_IS_EQ_BOUNDARY(eq_cache, max_index);
+	lower_equals
+		= CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim));
+	upper_equals
+		= CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim));
 
 	/*
 	 * If both boundaries match, then the whole bucket matches, no matter
@@ -2241,29 +2300,29 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 		return STATS_MATCH_FULL;
 
 	/*
-	 * Otherwise it's a partial match (when the boundary is inclusive)
-	 * or mismatch (if it's exclusive).
+	 * Otherwise it's a partial match (when the boundary is inclusive) or
+	 * mismatch (if it's exclusive).
 	 */
 	if (lower_equals)
-		return (min_include) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
+		return (BUCKET_MIN_INCLUSIVE(bucket, dim)) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
 
 	if (upper_equals)
-		return (max_include) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
+		return (BUCKET_MAX_INCLUSIVE(bucket, dim)) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
 
 	/* From now on we know neither of the boundaries is equal. */
-	Assert(! (lower_equals | upper_equals));
+	Assert(!(lower_equals | upper_equals));
 
 	/*
-	 * When (constval < min_value) or (constval > max_value), then the
-	 * bucket contains no matches.
+	 * When (constval < min_value) or (constval > max_value), then the bucket
+	 * contains no matches.
 	 */
-	if (CONST_IS_LT_BOUNDARY(lt_cache, min_index) ||
-		CONST_IS_GT_BOUNDARY(lt_cache, max_index))
+	if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)) ||
+		CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 		return STATS_MATCH_NONE;
 
 	/*
-	 * Otherwise it's a partial match (we know it's not a full match, as
-	 * that case was handled above).
+	 * Otherwise it's a partial match (we know it's not a full match, as that
+	 * case was handled above).
 	 */
 	return STATS_MATCH_PARTIAL;
 }
@@ -2282,62 +2341,69 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
  */
 static char
 bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
-							 Datum constvalue,
-							 Datum min_value, Datum max_value,
-							 int min_index, int max_index,
-							 bool min_include, bool max_include,
+							 MVHistogram *histogram, MVBucket *bucket,
+							 int dim, Datum constvalue,
 							 char *eq_cache, char *lt_cache,
 							 bool isgt, bool isstrict)
 {
 	/*
-	 * First update the cache values. We update all of them at once,
-	 * because we'll probably need each of them anyway - either now
-	 * or for some other bucket, and ensuring we have all the values
-	 * simplifies the logic.
+	 * First update the cache values. We update all of them at once, because
+	 * we'll probably need each of them anyway - either now or for some other
+	 * bucket, and ensuring we have all the values simplifies the logic.
 	 */
-	update_call_cache(eq_cache, eqproc, constvalue, min_value, min_index);
-	update_call_cache(eq_cache, eqproc, constvalue, max_value, max_index);
-	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
-	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
+	update_call_cache(eq_cache, eqproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(eq_cache, eqproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
 
 	/*
-	 * Combine the results into the final answer. We need to be careful
-	 * about the 'isgt' flag, which inverts the meaning in some cases,
-	 * and also strictness (i.e. whether we're dealing with < or <=).
+	 * Combine the results into the final answer. We need to be careful about
+	 * the 'isgt' flag, which inverts the meaning in some cases, and also
+	 * strictness (i.e. whether we're dealing with < or <=).
 	 */
 
 	/*
 	 * We look at equalities with boundaries first. For each bundary that
-	 * equals to a boundary value, we check whether it's inclusive or not,
-	 * and then make decision based on isgt/isstrict flags.
+	 * equals to a boundary value, we check whether it's inclusive or not, and
+	 * then make decision based on isgt/isstrict flags.
 	 */
 
 	/*
 	 * This means the constant is equal to lower boundary.
 	 *
-	 * In the (isgt=false) case, this means const <= [min,max],
-	 * i.e. the whole bucket likely mismatches the condition. It may
-	 * be a partial match, however, when the boundary is inclusive
-	 * and the restriction is not strict.
+	 * In the (isgt=false) case, this means const <= [min,max], i.e. the whole
+	 * bucket likely mismatches the condition. It may be a partial match,
+	 * however, when the boundary is inclusive and the restriction is not
+	 * strict.
 	 *
 	 * In the (isgt=true) case we apply the inverse logic.
 	 */
-	if (CONST_IS_EQ_BOUNDARY(eq_cache, min_index))
+	if (CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim)))
 	{
-		char match;
-
+		char		match;
 		if (!isgt)
 		{
 			match = STATS_MATCH_NONE;
 
-			if (!isstrict && min_include)
+			if (!isstrict && BUCKET_MIN_INCLUSIVE(bucket, dim))
 				match = STATS_MATCH_PARTIAL;
 		}
 		else
 		{
 			match = STATS_MATCH_FULL;
 
-			if (isstrict && min_include)
+			if (isstrict && BUCKET_MIN_INCLUSIVE(bucket, dim))
 				match = STATS_MATCH_PARTIAL;
 		}
 
@@ -2347,27 +2413,26 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	/*
 	 * This means the constant is equal to upper boundary.
 	 *
-	 * In the (isgt=false) case, this means [min,max] <= const,
-	 * i.e. the whole bucket likely matches the condition. It may
-	 * be a partial match, however, when the boundary is inclusive
-	 * and the restriction is strict.
+	 * In the (isgt=false) case, this means [min,max] <= const, i.e. the whole
+	 * bucket likely matches the condition. It may be a partial match,
+	 * however, when the boundary is inclusive and the restriction is strict.
 	 */
-	if (CONST_IS_EQ_BOUNDARY(eq_cache, max_index))
+	if (CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim)))
 	{
-		char match;
+		char		match;
 
 		if (!isgt)
 		{
 			match = STATS_MATCH_PARTIAL;
 
-			if (isstrict && max_include)
+			if (!(isstrict && BUCKET_MAX_INCLUSIVE(bucket, dim)))
 				match = STATS_MATCH_FULL;
 		}
 		else
 		{
 			match = STATS_MATCH_PARTIAL;
 
-			if (isstrict && max_include)
+			if (!BUCKET_MAX_INCLUSIVE(bucket, dim) || isstrict)
 				match = STATS_MATCH_NONE;
 		}
 
@@ -2375,26 +2440,26 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	}
 
 	/*
-	 * And now the inequalities. We can assume neither boundary is equal
-	 * to the constant (those cases were already handled above), which
-	 * greatly simplifies the reasoning here.
+	 * And now the inequalities. We can assume neither boundary is equal to
+	 * the constant (those cases were already handled above), which greatly
+	 * simplifies the reasoning here.
 	 */
 	if (!isgt)
 	{
-		if (CONST_IS_LT_BOUNDARY(lt_cache, min_index))
+		if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
 			return STATS_MATCH_NONE;
 
-		if (CONST_IS_LT_BOUNDARY(lt_cache, max_index))
+		if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 			return STATS_MATCH_PARTIAL;
 
 		return STATS_MATCH_FULL;
 	}
 	else
 	{
-		if (CONST_IS_GT_BOUNDARY(lt_cache, max_index))
+		if (CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 			return STATS_MATCH_NONE;
 
-		if (CONST_IS_GT_BOUNDARY(lt_cache, min_index))
+		if (CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
 			return STATS_MATCH_PARTIAL;
 
 		return STATS_MATCH_FULL;
@@ -2477,9 +2542,11 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 			if (ok)
 			{
+				TypeCacheEntry *typecache;
 				FmgrInfo	eqproc;
 				FmgrInfo	ltproc;
-				FmgrInfo	gtproc;
+				bool		isstrict;
+				int			dim;
 
 				RegProcedure oprrest = get_oprrest(expr->opno);
 
@@ -2488,27 +2555,28 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				bool		isgt = (!varonleft);
 
 				/* Is the restriction a strict inequality? */
-				bool		isstrict = (oprrest == F_SCALARLTSEL) ||
-									   (oprrest == F_SCALARGTSEL);
+				isstrict = (oprrest == F_SCALARLTSEL) || (oprrest == F_SCALARGTSEL);
 
-				TypeCacheEntry *typecache
-					= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR |
-													  TYPECACHE_GT_OPR |
-													  TYPECACHE_EQ_OPR);
+				/*
+				 * We need equality and less-than operator (which is already
+				 * required by the ANALYZE part, so we can rely on having it).
+				 */
+				typecache = lookup_type_cache(var->vartype,
+											  TYPECACHE_LT_OPR | TYPECACHE_EQ_OPR);
 
 				/* lookup dimension for the attribute */
-				int			idx = bms_member_index(stakeys, var->varattno);
+				dim = bms_member_index(stakeys, var->varattno);
 
 				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
-				fmgr_info(get_opcode(typecache->gt_opr), &gtproc);
 				fmgr_info(get_opcode(typecache->eq_opr), &eqproc);
 
 				/*
-				 * Check this for all buckets that still have "true" in the
-				 * bitmap
+				 * Evaluate the clause for all buckets that still can yield
+				 * a positive match (i.e. those that have partial or full
+				 * match in the bitmap).
 				 *
-				 * We already know the clauses use suitable operators (because
-				 * that's how we filtered them).
+				 * We know the clauses use supported operators (that's how
+				 * we matched them to the statistics).
 				 */
 				for (i = 0; i < histogram->nbuckets; i++)
 				{
@@ -2516,20 +2584,12 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 					MVBucket   *bucket = histogram->buckets[i];
 
-					/* histogram boundaries */
-					Datum		minval,
-								maxval;
-					bool		mininclude,
-								maxinclude;
-					int			minidx,
-								maxidx;
-
 					/*
 					 * For AND-lists, we can also mark NULL buckets as 'no
 					 * match' (and then skip them). For OR-lists this is not
 					 * possible.
 					 */
-					if ((!is_or) && bucket->nullsonly[idx])
+					if ((!is_or) && bucket->nullsonly[dim])
 						matches[i] = STATS_MATCH_NONE;
 
 					/*
@@ -2543,18 +2603,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					else if (is_or && (matches[i] == STATS_MATCH_FULL))
 						continue;
 
-					/* lookup the values and cache of function calls */
-					minidx = bucket->min[idx];
-					maxidx = bucket->max[idx];
-
-					minval = histogram->values[idx][bucket->min[idx]];
-					maxval = histogram->values[idx][bucket->max[idx]];
-
-					mininclude = bucket->min_inclusive[idx];
-					maxinclude = bucket->max_inclusive[idx];
-
 					/*
-					 * Handle the usual comparison operators (<, <=, >, >=, =).
+					 * Handle common comparison operators (<, <=, >, >=, =).
 					 */
 					switch (oprrest)
 					{
@@ -2562,18 +2612,13 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 						case F_SCALARLTSEL: /* Var < Const */
 
 							res = bucket_is_smaller_than_value(eqproc, ltproc,
-															   cst->constvalue,
-															   minval, maxval,
-															   minidx, maxidx,
-															   mininclude, maxinclude,
+															   histogram, bucket,
+															   dim, cst->constvalue,
 															   eqcache, ltcache,
 															   isgt, isstrict);
 
-							elog(WARNING, "LT: %d [%d, %d] [%d, %d] isgt=%d isstrict=%d res=%d",
-										  DatumGetInt32(cst->constvalue),
-										  DatumGetInt32(minval), DatumGetInt32(maxval),
-										  mininclude, maxinclude,
-										  isgt, isstrict, res);
+							DEBUG_MATCH("LT", histogram, bucket, cst, dim,
+										isgt, isstrict, res);
 
 							break;
 
@@ -2581,18 +2626,13 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 						case F_SCALARGTSEL: /* Var > Const */
 
 							res = bucket_is_smaller_than_value(eqproc, ltproc,
-															   cst->constvalue,
-															   minval, maxval,
-															   minidx, maxidx,
-															   mininclude, maxinclude,
+															   histogram, bucket,
+															   dim, cst->constvalue,
 															   eqcache, ltcache,
 															   !isgt, isstrict);
 
-							elog(WARNING, "GT: %d [%d, %d] [%d, %d] isgt=%d isstrict=%d res=%d",
-										  DatumGetInt32(cst->constvalue),
-										  DatumGetInt32(minval), DatumGetInt32(maxval),
-										  mininclude, maxinclude,
-										  !isgt, isstrict, res);
+							DEBUG_MATCH("GT", histogram, bucket, cst, dim,
+										!isgt, isstrict, res);
 
 							break;
 
@@ -2605,19 +2645,13 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 							 */
 
 							res = bucket_contains_value(eqproc, ltproc,
-														cst->constvalue,
-														minval, maxval,
-														minidx, maxidx,
-														mininclude, maxinclude,
+														histogram, bucket,
+														dim, cst->constvalue,
 														eqcache, ltcache);
-/*
-							elog(WARNING, "%d [%d, %d] [%d,%d] %d",
-									DatumGetInt32(cst->constvalue),
-									DatumGetInt32(minval),
-									DatumGetInt32(maxval),
-									mininclude, maxinclude,
-									res);
-*/
+
+							DEBUG_MATCH("EQ", histogram, bucket, cst, dim,
+										!isgt, isstrict, res);
+
 							break;
 
 						case F_NEQSEL:
@@ -2629,10 +2663,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 							 */
 
 							res = bucket_contains_value(eqproc, ltproc,
-														cst->constvalue,
-														minval, maxval,
-														minidx, maxidx,
-														mininclude, maxinclude,
+														histogram, bucket,
+														dim, cst->constvalue,
 														eqcache, ltcache);
 
 							/* inequality, so invert the result */
@@ -2640,14 +2672,10 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 								res = STATS_MATCH_NONE;
 							else if (res == STATS_MATCH_NONE)
 								res = STATS_MATCH_FULL;
-/*
-							elog(WARNING, "%d [%d, %d] [%d,%d] %d",
-									DatumGetInt32(cst->constvalue),
-									DatumGetInt32(minval),
-									DatumGetInt32(maxval),
-									mininclude, maxinclude,
-									res);
-*/
+
+							DEBUG_MATCH("NEQ", histogram, bucket, cst, dim,
+										!isgt, isstrict, res);
+
 							break;
 
 						default:
@@ -2655,8 +2683,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					}
 
 					/*
-					 * Merge the result into the bitmap, depending on type
-					 * of the current clause (AND or OR).
+					 * Merge the result into the bitmap, depending on type of
+					 * the current clause (AND or OR).
 					 */
 					if (is_or)
 					{
@@ -2840,25 +2868,25 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
 				MVBucket   *bucket = histogram->buckets[i];
-				char	match = STATS_MATCH_NONE;
+				char		match = STATS_MATCH_NONE;
 
 				/*
-				 * If the bucket is NULL, it's a mismatch. Otherwise check
-				 * if lower/upper boundaries match and choose partial/full
-				 * match accordingly.
+				 * If the bucket is NULL, it's a mismatch. Otherwise check if
+				 * lower/upper boundaries match and choose partial/full match
+				 * accordingly.
 				 */
 				if (!bucket->nullsonly[idx])
 				{
-					int		minidx = bucket->min[idx];
-					int		maxidx = bucket->max[idx];
+					int			minidx = bucket->min[idx];
+					int			maxidx = bucket->max[idx];
 
-					bool 	minval = DatumGetBool(histogram->values[idx][minidx]);
-					bool	maxval = DatumGetBool(histogram->values[idx][maxidx]);
+					bool		minval = DatumGetBool(histogram->values[idx][minidx]);
+					bool		maxval = DatumGetBool(histogram->values[idx][maxidx]);
 
 					/*
-					 * When both values are the same, we don't care about
-					 * the inclusiveness - the whole bucket either matches
-					 * or mismatches. The mismatch is default.
+					 * When both values are the same, we don't care about the
+					 * inclusiveness - the whole bucket either matches or
+					 * mismatches. The mismatch is default.
 					 */
 					if (minval == maxval)
 						match = (minval) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
@@ -2876,8 +2904,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 						 * When both are inclusive, it's a partial match.
 						 *
 						 * XXX We can't get two excluded boundary values here.
-						 * Boolean only has two possible values, and the bucket
-						 * has to contain at least one of them.
+						 * Boolean only has two possible values, and the
+						 * bucket has to contain at least one of them.
 						 */
 						if (bucket->min_inclusive[idx] == bucket->max_inclusive[idx])
 							match = STATS_MATCH_PARTIAL;

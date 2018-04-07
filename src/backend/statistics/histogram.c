@@ -2542,7 +2542,16 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 			if (ok)
 			{
+				/*
+				 * XXX The explicit use of ltproc operator is wrong, because
+				 * the query may use an operator with the same semantics but
+				 * comparing the attribute to a different type, for example.
+				 * So we need to use the opproc instead, just like the scalar
+				 * selectivity finctions. This is clearly bogus.
+				 */
+
 				TypeCacheEntry *typecache;
+
 				FmgrInfo	eqproc;
 				FmgrInfo	ltproc;
 				bool		isstrict;

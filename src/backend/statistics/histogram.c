@@ -1124,7 +1124,7 @@ select_bucket_to_partition(int nbuckets, MVBucketBuild * *buckets)
 	for (i = 0; i < nbuckets; i++)
 	{
 		/* if the number of rows is higher, use this bucket */
-		if ((buckets[i]->ndistinct > 2) &&
+		if ((buckets[i]->ndistinct >= 2) &&
 			(buckets[i]->numrows > numrows) &&
 			(buckets[i]->numrows >= MIN_BUCKET_ROWS))
 		{
@@ -2168,9 +2168,31 @@ pg_histogram_send(PG_FUNCTION_ARGS)
  * was not executed for this value yet.
  */
 
+#define HIST_CACHE_EMPTY			0x00
 #define HIST_CACHE_FALSE			0x01
 #define HIST_CACHE_TRUE				0x03
 #define HIST_CACHE_MASK				0x02
+
+static void
+update_call_cache(char *cache, FmgrInfo proc,
+				  Datum constvalue, Datum value, int index)
+{
+	Datum r;
+
+	/* if the result is already in the cache, we're done */
+	if (cache[index] != HIST_CACHE_EMPTY)
+		return;
+
+	r = DatumGetBool(FunctionCall2Coll(&proc,
+									   DEFAULT_COLLATION_OID,
+									   constvalue,
+									   value));
+
+	cache[index] = (r) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+}
+
+#define CONST_IS_LT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
+#define CONST_IS_GT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_FALSE)
 
 /*
  * bucket_contains_value
@@ -2178,59 +2200,73 @@ pg_histogram_send(PG_FUNCTION_ARGS)
  *		contain the supplied value.
  *
  * The function does not simply return true/false, but a "match level" (none,
- * partial, full), just like other similar functions. In fact, thise function
+ * partial, full), just like other similar functions. In fact, those function
  * only returns "partial" or "none" levels, as a range can never match exactly
  * a value (we never generate histograms with "collapsed" dimensions).
  */
 static char
-bucket_contains_value(FmgrInfo ltproc, Datum constvalue,
+bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
+					  Datum constvalue,
 					  Datum min_value, Datum max_value,
 					  int min_index, int max_index,
 					  bool min_include, bool max_include,
-					  char *callcache)
+					  char *eq_cache, char *lt_cache)
 {
-	bool		a,
-				b;
-
-	char		min_cached = callcache[min_index];
-	char		max_cached = callcache[max_index];
+	bool		lower_equals,
+				upper_equals;
 
 	/*
-	 * First some quick checks on equality - if any of the boundaries equals,
-	 * we have a partial match (so no need to call the comparator).
+	 * First we can do some quick equality checks on bucket boundaries.
+	 * If both boundaries match, we immediately know it's a full match,
+	 * irrespectedly of the inclusiveness of the boundaries.
+	 *
+	 * We do need this information anyway, so let's just do it first.
+	 * Use the equality call cache to save possibly expensive calls.
 	 */
-	if (((min_value == constvalue) && (min_include)) ||
-		((max_value == constvalue) && (max_include)))
-		return STATS_MATCH_PARTIAL;
+	update_call_cache(eq_cache, eqproc, constvalue, min_value, min_index);
+	update_call_cache(eq_cache, eqproc, constvalue, max_value, max_index);
 
-	/* Keep the values 0/1 because of the XOR at the end. */
-	a = ((min_cached & HIST_CACHE_MASK) >> 1);
-	b = ((max_cached & HIST_CACHE_MASK) >> 1);
+	/* get the cached result */
+	lower_equals = (eq_cache[min_index] == HIST_CACHE_TRUE);
+	upper_equals = (eq_cache[max_index] == HIST_CACHE_TRUE);
 
 	/*
-	 * If result for the bucket lower bound not in cache, evaluate the
-	 * function and store the result in the cache.
+	 * If both boundaries match, then the whole bucket matches, no matter
+	 * which of the boundaries is inclusive (it should be one of them).
 	 */
-	if (!min_cached)
-	{
-		a = DatumGetBool(FunctionCall2Coll(&ltproc,
-										   DEFAULT_COLLATION_OID,
-										   constvalue, min_value));
-		/* remember the result */
-		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
-	}
+	if (lower_equals && upper_equals)
+		return STATS_MATCH_FULL;
 
-	/* And do the same for the upper bound. */
-	if (!max_cached)
-	{
-		b = DatumGetBool(FunctionCall2Coll(&ltproc,
-										   DEFAULT_COLLATION_OID,
-										   constvalue, max_value));
-		/* remember the result */
-		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
-	}
+	/*
+	 * Otherwise it's a partial match (when the boundary is inclusive)
+	 * or mismatch (if it's exclusive).
+	 */
+	if (lower_equals)
+		return (min_include) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
 
-	return (a ^ b) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
+	if (upper_equals)
+		return (max_include) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
+
+	/* From now on we know neither of the boundaries is equal. */
+	Assert(! (lower_equals | upper_equals));
+
+	/* Update the cache for the LT operator. */
+	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
+	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
+
+	/*
+	 * When (constval < min_value) or (constval > max_value), then the
+	 * bucket contains no matches.
+	 */
+	if (CONST_IS_LT_BOUNDARY(lt_cache, min_index) ||
+		CONST_IS_GT_BOUNDARY(lt_cache, max_index))
+		return STATS_MATCH_NONE;
+
+	/*
+	 * Otherwise it's  partial match (we know it's not a full match, as
+	 * that case was handled above).
+	 */
+	return STATS_MATCH_PARTIAL;
 }
 
 /*
@@ -2246,64 +2282,50 @@ bucket_contains_value(FmgrInfo ltproc, Datum constvalue,
  * (e.g. [10,20] < 5).
  */
 static char
-bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
+bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
+							 Datum constvalue,
 							 Datum min_value, Datum max_value,
 							 int min_index, int max_index,
 							 bool min_include, bool max_include,
-							 char *callcache, bool isgt)
+							 char *eq_cache, char *lt_cache,
+							 bool isgt)
 {
-	char		min_cached = callcache[min_index];
-	char		max_cached = callcache[max_index];
-
-	/* Keep the values 0/1 because of the XOR at the end. */
-	bool		a = ((min_cached & HIST_CACHE_MASK) >> 1);
-	bool		b = ((max_cached & HIST_CACHE_MASK) >> 1);
-
-	if (!min_cached)
-	{
-		a = DatumGetBool(FunctionCall2Coll(&opproc,
-										   DEFAULT_COLLATION_OID,
-										   min_value,
-										   constvalue));
-		/* remember the result */
-		callcache[min_index] = (a) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
-	}
-
-	if (!max_cached)
-	{
-		b = DatumGetBool(FunctionCall2Coll(&opproc,
-										   DEFAULT_COLLATION_OID,
-										   max_value,
-										   constvalue));
-		/* remember the result */
-		callcache[max_index] = (b) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
-	}
+	/*
+	 * First update the cache values. We update all of them at once,
+	 * because we'll probably need each of them anyway - either now
+	 * or for some other bucket, and ensuring we have all the values
+	 * simplifies the logic.
+	 */
+	update_call_cache(eq_cache, eqproc, constvalue, min_value, min_index);
+	update_call_cache(eq_cache, eqproc, constvalue, max_value, max_index);
+	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
+	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
 
 	/*
-	 * Now, we need to combine both results into the final answer, and we need
-	 * to be careful about the 'isgt' variable which kinda inverts the
-	 * meaning.
-	 *
-	 * First, we handle the case when each boundary returns different results.
-	 * In that case the outcome can only be 'partial' match.
+	 * Combine the results into the final answer. We need to be careful
+	 * about the 'isgt' flag, which inverts the meaning in some cases,
+	 * and also strictness (i.e. whethere we're dealing with < or <=).
 	 */
-	if (a != b)
-		return STATS_MATCH_PARTIAL;
+	if (!isgt)
+	{
+		if (CONST_IS_LT_BOUNDARY(lt_cache, min_index))
+			return STATS_MATCH_NONE;
 
-	/*
-	 * When the results are the same, then it depends on the 'isgt' value.
-	 * There are four options:
-	 *
-	 * isgt=false a=b=true	=> full match isgt=false a=b=false => empty
-	 * isgt=true  a=b=true	=> empty isgt=true	a=b=false => full match
-	 *
-	 * We'll cheat a bit, because we know that (a=b) so we'll use just one of
-	 * them.
-	 */
-	if (isgt)
-		return (!a) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
+		if (CONST_IS_LT_BOUNDARY(lt_cache, max_index))
+			return STATS_MATCH_PARTIAL;
+
+		return STATS_MATCH_FULL;
+	}
 	else
-		return (a) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
+	{
+		if (CONST_IS_GT_BOUNDARY(lt_cache, max_index))
+			return STATS_MATCH_NONE;
+
+		if (CONST_IS_GT_BOUNDARY(lt_cache, min_index))
+			return STATS_MATCH_PARTIAL;
+
+		return STATS_MATCH_FULL;
+	}
 }
 
 /*
@@ -2346,7 +2368,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 	 * 0x00 - not yet called 0x01 - called, result is 'false' 0x03 - called,
 	 * result is 'true'
 	 */
-	char	   *callcache = palloc(histogram->nbuckets);
+	char	   *eqcache = palloc(histogram->nbuckets);
+	char	   *ltcache = palloc(histogram->nbuckets);
 
 	Assert(histogram != NULL);
 	Assert(histogram->nbuckets > 0);
@@ -2370,12 +2393,9 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			bool		varonleft = true;
 			bool		ok;
 
-			FmgrInfo	opproc; /* operator */
-
-			fmgr_info(get_opcode(expr->opno), &opproc);
-
 			/* reset the cache (per clause) */
-			memset(callcache, 0, histogram->nbuckets);
+			memset(eqcache, HIST_CACHE_EMPTY, histogram->nbuckets);
+			memset(ltcache, HIST_CACHE_EMPTY, histogram->nbuckets);
 
 			ok = (NumRelids(clause) == 1) &&
 				(is_pseudo_constant_clause(lsecond(expr->args)) ||
@@ -2384,7 +2404,10 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 			if (ok)
 			{
+				FmgrInfo	eqproc;
 				FmgrInfo	ltproc;
+				FmgrInfo	gtproc;
+
 				RegProcedure oprrest = get_oprrest(expr->opno);
 
 				Var		   *var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
@@ -2392,12 +2415,16 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				bool		isgt = (!varonleft);
 
 				TypeCacheEntry *typecache
-				= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
+					= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR |
+													  TYPECACHE_GT_OPR |
+													  TYPECACHE_EQ_OPR);
 
 				/* lookup dimension for the attribute */
 				int			idx = bms_member_index(stakeys, var->varattno);
 
 				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);
+				fmgr_info(get_opcode(typecache->gt_opr), &gtproc);
+				fmgr_info(get_opcode(typecache->eq_opr), &eqproc);
 
 				/*
 				 * Check this for all buckets that still have "true" in the
@@ -2450,34 +2477,70 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					maxinclude = bucket->max_inclusive[idx];
 
 					/*
-					 * If it's not a "<" or ">" or "=" operator, just ignore
-					 * the clause. Otherwise note the relid and attnum for the
-					 * variable.
-					 *
-					 * TODO I'm really unsure the handling of 'isgt' flag
-					 * (that is, clauses with reverse order of
-					 * variable/constant) is correct. I wouldn't be surprised
-					 * if there was some mixup. Using the lt/gt operators
-					 * instead of messing with the opproc could make it
-					 * simpler. It would however be using a different operator
-					 * than the query, although it's not any shadier than
-					 * using the selectivity function as is done currently.
+					 * Handle the usual comparison operators (<, <=, >, >=, =).
 					 */
 					switch (oprrest)
 					{
-						case F_SCALARLTSEL: /* Var < Const */
 						case F_SCALARLESEL: /* Var <= Const */
-						case F_SCALARGTSEL: /* Var > Const */
-						case F_SCALARGESEL: /* Var >= Const */
+						case F_SCALARLTSEL: /* Var < Const */
 
-							res = bucket_is_smaller_than_value(opproc, cst->constvalue,
+							res = bucket_is_smaller_than_value(eqproc, ltproc,
+															   cst->constvalue,
 															   minval, maxval,
 															   minidx, maxidx,
 															   mininclude, maxinclude,
-															   callcache, isgt);
+															   eqcache, ltcache, isgt);
+/*
+							elog(WARNING, "LT: %d [%d, %d] isgt=%d res=%d",
+										  DatumGetInt32(cst->constvalue),
+										  DatumGetInt32(minval),
+										  DatumGetInt32(maxval),
+										  isgt, res);
+*/
+							break;
+
+						case F_SCALARGESEL: /* Var >= Const */
+						case F_SCALARGTSEL: /* Var > Const */
+
+							res = bucket_is_smaller_than_value(eqproc, ltproc,
+															   cst->constvalue,
+															   minval, maxval,
+															   minidx, maxidx,
+															   mininclude, maxinclude,
+															   eqcache, ltcache, !isgt);
+/*
+							elog(WARNING, "GT: %d [%d, %d] isgt=%d res=%d",
+										  DatumGetInt32(cst->constvalue),
+										  DatumGetInt32(minval),
+										  DatumGetInt32(maxval),
+										  !isgt, res);
+*/
 							break;
 
 						case F_EQSEL:
+
+							/*
+							 * We only check whether the value is within the
+							 * bucket, using the lt operator, and we also
+							 * check for equality with the boundaries.
+							 */
+
+							res = bucket_contains_value(eqproc, ltproc,
+														cst->constvalue,
+														minval, maxval,
+														minidx, maxidx,
+														mininclude, maxinclude,
+														eqcache, ltcache);
+/*
+							elog(WARNING, "%d [%d, %d] [%d,%d] %d",
+									DatumGetInt32(cst->constvalue),
+									DatumGetInt32(minval),
+									DatumGetInt32(maxval),
+									mininclude, maxinclude,
+									res);
+*/
+							break;
+
 						case F_NEQSEL:
 
 							/*
@@ -2486,12 +2549,30 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 							 * check for equality with the boundaries.
 							 */
 
-							res = bucket_contains_value(ltproc, cst->constvalue,
+							res = bucket_contains_value(eqproc, ltproc,
+														cst->constvalue,
 														minval, maxval,
 														minidx, maxidx,
 														mininclude, maxinclude,
-														callcache);
+														eqcache, ltcache);
+
+							/* inequality, so invert the result */
+							if (res == STATS_MATCH_FULL)
+								res = STATS_MATCH_NONE;
+							else if (res == STATS_MATCH_NONE)
+								res = STATS_MATCH_FULL;
+/*
+							elog(WARNING, "%d [%d, %d] [%d,%d] %d",
+									DatumGetInt32(cst->constvalue),
+									DatumGetInt32(minval),
+									DatumGetInt32(maxval),
+									mininclude, maxinclude,
+									res);
+*/
 							break;
+
+						default:
+							elog(ERROR, "unknown clause type: %d", clause->type);
 					}
 
 					/*
@@ -2680,7 +2761,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
 				MVBucket   *bucket = histogram->buckets[i];
-				bool	match = STATS_MATCH_NONE;
+				char	match = STATS_MATCH_NONE;
 
 				/*
 				 * If the bucket is NULL, it's a mismatch. Otherwise check
@@ -2692,14 +2773,36 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 					int		minidx = bucket->min[idx];
 					int		maxidx = bucket->max[idx];
 
-					bool 	a = DatumGetBool(histogram->values[idx][minidx]);
-					bool	b = DatumGetBool(histogram->values[idx][maxidx]);
+					bool 	minval = DatumGetBool(histogram->values[idx][minidx]);
+					bool	maxval = DatumGetBool(histogram->values[idx][maxidx]);
 
-					/* both match - FULL */
-					if (a && b)
-						match = STATS_MATCH_FULL;
-					else if (a || b)
-						match = STATS_MATCH_PARTIAL;
+					/*
+					 * When both values are the same, we don't care about
+					 * the inclusiveness - the whole bucket either matches
+					 * or mismatches. The mismatch is default.
+					 */
+					if (minval == maxval)
+						match = (minval) ? STATS_MATCH_FULL : STATS_MATCH_NONE;
+					else
+					{
+						/*
+						 * Exactly one of the values is true. To get a match,
+						 * we need the 'false' boundary to not be inclusive.
+						 */
+						if ((minval && !bucket->max_inclusive[idx]) ||
+							(maxval && !bucket->min_inclusive[idx]))
+							match = STATS_MATCH_FULL;
+
+						/*
+						 * When both are inclusive, it's a partial match.
+						 *
+						 * XXX We can't get two excluded boundary values here.
+						 * Boolean only has two possible values, and the bucket
+						 * has to contain at least one of them.
+						 */
+						if (bucket->min_inclusive[idx] == bucket->max_inclusive[idx])
+							match = STATS_MATCH_PARTIAL;
+					}
 				}
 
 				/* now, update the match bitmap, depending on OR/AND type */
@@ -2714,7 +2817,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 	}
 
 	/* free the call cache */
-	pfree(callcache);
+	pfree(eqcache);
+	pfree(ltcache);
 }
 
 /*

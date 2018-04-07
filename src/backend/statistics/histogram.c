@@ -2191,6 +2191,7 @@ update_call_cache(char *cache, FmgrInfo proc,
 	cache[index] = (r) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
 }
 
+#define CONST_IS_EQ_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
 #define CONST_IS_LT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
 #define CONST_IS_GT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_FALSE)
 
@@ -2220,15 +2221,17 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	 * If both boundaries match, we immediately know it's a full match,
 	 * irrespectedly of the inclusiveness of the boundaries.
 	 *
-	 * We do need this information anyway, so let's just do it first.
-	 * Use the equality call cache to save possibly expensive calls.
+	 * We do need this information anyway, so let's just do it both for
+	 * equality and inequality operator now.
 	 */
 	update_call_cache(eq_cache, eqproc, constvalue, min_value, min_index);
 	update_call_cache(eq_cache, eqproc, constvalue, max_value, max_index);
+	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
+	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
 
 	/* get the cached result */
-	lower_equals = (eq_cache[min_index] == HIST_CACHE_TRUE);
-	upper_equals = (eq_cache[max_index] == HIST_CACHE_TRUE);
+	lower_equals = CONST_IS_EQ_BOUNDARY(eq_cache, min_index);
+	upper_equals = CONST_IS_EQ_BOUNDARY(eq_cache, max_index);
 
 	/*
 	 * If both boundaries match, then the whole bucket matches, no matter
@@ -2250,10 +2253,6 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	/* From now on we know neither of the boundaries is equal. */
 	Assert(! (lower_equals | upper_equals));
 
-	/* Update the cache for the LT operator. */
-	update_call_cache(lt_cache, ltproc, constvalue, min_value, min_index);
-	update_call_cache(lt_cache, ltproc, constvalue, max_value, max_index);
-
 	/*
 	 * When (constval < min_value) or (constval > max_value), then the
 	 * bucket contains no matches.
@@ -2263,7 +2262,7 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 		return STATS_MATCH_NONE;
 
 	/*
-	 * Otherwise it's  partial match (we know it's not a full match, as
+	 * Otherwise it's a partial match (we know it's not a full match, as
 	 * that case was handled above).
 	 */
 	return STATS_MATCH_PARTIAL;
@@ -2288,7 +2287,7 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 							 int min_index, int max_index,
 							 bool min_include, bool max_include,
 							 char *eq_cache, char *lt_cache,
-							 bool isgt)
+							 bool isgt, bool isstrict)
 {
 	/*
 	 * First update the cache values. We update all of them at once,
@@ -2304,7 +2303,81 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	/*
 	 * Combine the results into the final answer. We need to be careful
 	 * about the 'isgt' flag, which inverts the meaning in some cases,
-	 * and also strictness (i.e. whethere we're dealing with < or <=).
+	 * and also strictness (i.e. whether we're dealing with < or <=).
+	 */
+
+	/*
+	 * We look at equalities with boundaries first. For each bundary that
+	 * equals to a boundary value, we check whether it's inclusive or not,
+	 * and then make decision based on isgt/isstrict flags.
+	 */
+
+	/*
+	 * This means the constant is equal to lower boundary.
+	 *
+	 * In the (isgt=false) case, this means const <= [min,max],
+	 * i.e. the whole bucket likely mismatches the condition. It may
+	 * be a partial match, however, when the boundary is inclusive
+	 * and the restriction is not strict.
+	 *
+	 * In the (isgt=true) case we apply the inverse logic.
+	 */
+	if (CONST_IS_EQ_BOUNDARY(eq_cache, min_index))
+	{
+		char match;
+
+		if (!isgt)
+		{
+			match = STATS_MATCH_NONE;
+
+			if (!isstrict && min_include)
+				match = STATS_MATCH_PARTIAL;
+		}
+		else
+		{
+			match = STATS_MATCH_FULL;
+
+			if (isstrict && min_include)
+				match = STATS_MATCH_PARTIAL;
+		}
+
+		return match;
+	}
+
+	/*
+	 * This means the constant is equal to upper boundary.
+	 *
+	 * In the (isgt=false) case, this means [min,max] <= const,
+	 * i.e. the whole bucket likely matches the condition. It may
+	 * be a partial match, however, when the boundary is inclusive
+	 * and the restriction is strict.
+	 */
+	if (CONST_IS_EQ_BOUNDARY(eq_cache, max_index))
+	{
+		char match;
+
+		if (!isgt)
+		{
+			match = STATS_MATCH_PARTIAL;
+
+			if (isstrict && max_include)
+				match = STATS_MATCH_FULL;
+		}
+		else
+		{
+			match = STATS_MATCH_PARTIAL;
+
+			if (isstrict && max_include)
+				match = STATS_MATCH_NONE;
+		}
+
+		return match;
+	}
+
+	/*
+	 * And now the inequalities. We can assume neither boundary is equal
+	 * to the constant (those cases were already handled above), which
+	 * greatly simplifies the reasoning here.
 	 */
 	if (!isgt)
 	{
@@ -2414,6 +2487,10 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				Const	   *cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
 				bool		isgt = (!varonleft);
 
+				/* Is the restriction a strict inequality? */
+				bool		isstrict = (oprrest == F_SCALARLTSEL) ||
+									   (oprrest == F_SCALARGTSEL);
+
 				TypeCacheEntry *typecache
 					= lookup_type_cache(var->vartype, TYPECACHE_LT_OPR |
 													  TYPECACHE_GT_OPR |
@@ -2489,14 +2566,15 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 															   minval, maxval,
 															   minidx, maxidx,
 															   mininclude, maxinclude,
-															   eqcache, ltcache, isgt);
-/*
-							elog(WARNING, "LT: %d [%d, %d] isgt=%d res=%d",
+															   eqcache, ltcache,
+															   isgt, isstrict);
+
+							elog(WARNING, "LT: %d [%d, %d] [%d, %d] isgt=%d isstrict=%d res=%d",
 										  DatumGetInt32(cst->constvalue),
-										  DatumGetInt32(minval),
-										  DatumGetInt32(maxval),
-										  isgt, res);
-*/
+										  DatumGetInt32(minval), DatumGetInt32(maxval),
+										  mininclude, maxinclude,
+										  isgt, isstrict, res);
+
 							break;
 
 						case F_SCALARGESEL: /* Var >= Const */
@@ -2507,14 +2585,15 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 															   minval, maxval,
 															   minidx, maxidx,
 															   mininclude, maxinclude,
-															   eqcache, ltcache, !isgt);
-/*
-							elog(WARNING, "GT: %d [%d, %d] isgt=%d res=%d",
+															   eqcache, ltcache,
+															   !isgt, isstrict);
+
+							elog(WARNING, "GT: %d [%d, %d] [%d, %d] isgt=%d isstrict=%d res=%d",
 										  DatumGetInt32(cst->constvalue),
-										  DatumGetInt32(minval),
-										  DatumGetInt32(maxval),
-										  !isgt, res);
-*/
+										  DatumGetInt32(minval), DatumGetInt32(maxval),
+										  mininclude, maxinclude,
+										  !isgt, isstrict, res);
+
 							break;
 
 						case F_EQSEL:

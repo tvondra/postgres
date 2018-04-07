@@ -6,6 +6,11 @@
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
+ *
+ * Multivariate histograms are collections of n-dimensional buckets, i.e.
+ * rectangles in n-dimensional space.
+ *
+ *
  * IDENTIFICATION
  *	  src/backend/statistics/histogram.c
  *-------------------------------------------------------------------------
@@ -31,16 +36,17 @@
 
 
 /*
- * Multivariate histograms
+ * A histogram bucket, with additional build infromation (distinct values
+ * in each dimension, associated part of the row sample, etc.). Otherwise
+ * it's almost the same thing as MVBucket, except that it's deserialized
+ * form (no deduplication of boundary values).
  */
 typedef struct MVBucketBuild
 {
 	/* Frequencies of this bucket. */
 	float		frequency;
 
-	/*
-	 * Information about dimensions being NULL-only. Not yet used.
-	 */
+	/* Iformation about dimensions being NULL-only. Not yet used. */
 	bool	   *nullsonly;
 
 	/* lower boundaries - values and information about the inequalities */
@@ -63,20 +69,21 @@ typedef struct MVBucketBuild
 
 }			MVBucketBuild;
 
+/*
+ * A histogram representation, used while building the histogram. Almost
+ * the same thing ans MVHistogram, except that we don't need the magic,
+ * type, and varlena header. The main difference is that it contains
+ * array of build buckets, not the serialized MVBucket.
+ */
 typedef struct MVHistogramBuild
 {
-	int32		vl_len_;		/* unused: ensure same alignment as
-								 * MVHistogram for serialization */
-	uint32		magic;			/* magic constant marker */
-	uint32		type;			/* type of histogram (BASIC) */
 	uint32		nbuckets;		/* number of buckets (buckets array) */
 	uint32		ndimensions;	/* number of dimensions */
-	Oid			types[STATS_MAX_DIMENSIONS];	/* OIDs of data types */
 	MVBucketBuild **buckets;	/* array of buckets */
 }			MVHistogramBuild;
 
-static MVBucketBuild * create_initial_ext_bucket(int numrows, HeapTuple *rows,
-												 Bitmapset *attrs, VacAttrStats **stats);
+static MVBucketBuild * create_initial_bucket(int numrows, HeapTuple *rows,
+											 Bitmapset *attrs, VacAttrStats **stats);
 
 static MVBucketBuild * select_bucket_to_partition(int nbuckets, MVBucketBuild * *buckets);
 
@@ -261,8 +268,6 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	histogram = (MVHistogramBuild *) palloc0(sizeof(MVHistogramBuild));
 
-	histogram->magic = STATS_HIST_MAGIC;
-	histogram->type = STATS_HIST_TYPE_BASIC;
 	histogram->ndimensions = numattrs;
 	histogram->nbuckets = 1;	/* initially just a single bucket */
 
@@ -275,7 +280,7 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* Create the initial bucket, covering all sampled rows */
 	histogram->buckets[0]
-		= create_initial_ext_bucket(numrows, rows_copy, attrs, stats);
+		= create_initial_bucket(numrows, rows_copy, attrs, stats);
 
 	/*
 	 * Collect info on distinct values in each dimension (used later to pick
@@ -491,6 +496,7 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	char	   *bucket = palloc0(bucketsize);
 
 	/* values per dimension (and number of non-NULL values) */
+	Oid		   *types = (Oid *) palloc0(sizeof(Oid) * ndims);
 	Datum	  **values = (Datum **) palloc0(sizeof(Datum *) * ndims);
 	int		   *counts = (int *) palloc0(sizeof(int) * ndims);
 
@@ -510,7 +516,7 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 		type = lookup_type_cache(stats[dim]->attrtypid, TYPECACHE_LT_OPR);
 
 		/* OID of the data types */
-		histogram->types[dim] = stats[dim]->attrtypid;
+		types[dim] = stats[dim]->attrtypid;
 
 		/* keep important info about the data type */
 		info[dim].typlen = stats[dim]->attrtype->typlen;
@@ -617,13 +623,24 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	/*
 	 * we'll use 'data' to keep track of the place to write data
 	 *
-	 * XXX No VARDATA() here, as MVHistogramBuild includes the length.
+	 * XXX No VARDATA() here, as MVHistogram includes the length.
 	 */
 	data = (char *) output;
 
-	memcpy(data, histogram, offsetof(MVHistogramBuild, buckets));
-	data += offsetof(MVHistogramBuild, buckets);
+	/* set the header fields (MVHistogramBuild only has some of them) */
+	((MVHistogram *) output)->magic = STATS_HIST_MAGIC;
+	((MVHistogram *) output)->type = STATS_HIST_TYPE_BASIC;
+	((MVHistogram *) output)->nbuckets = histogram->nbuckets;
+	((MVHistogram *) output)->ndimensions = histogram->ndimensions;
 
+	/* copy the array of type OIDs, which we built above */
+	memcpy(((MVHistogram *) output)->types, types,
+		   sizeof(Oid) * STATS_MAX_DIMENSIONS);
+
+	/* skip the space we used for header */
+	data += offsetof(MVHistogram, buckets);
+
+	/* copy the array with information about dimensions */
 	memcpy(data, info, sizeof(DimensionInfo) * ndims);
 	data += sizeof(DimensionInfo) * ndims;
 
@@ -1009,12 +1026,12 @@ statext_histogram_deserialize(bytea *data)
 }
 
 /*
- * create_initial_ext_bucket
+ * create_initial_bucket
  *		Create an initial bucket, covering all the sampled rows.
  */
 static MVBucketBuild *
-create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
-						  VacAttrStats **stats)
+create_initial_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
+					  VacAttrStats **stats)
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);

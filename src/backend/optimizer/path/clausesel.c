@@ -107,14 +107,6 @@ clauselist_selectivity(PlannerInfo *root,
 	Bitmapset  *estimatedclauses = NULL;
 
 	/*
-	 * If there's exactly one clause, just go directly to
-	 * clause_selectivity(). None of what we might do below is relevant.
-	 */
-	if (list_length(clauses) == 1)
-		return clause_selectivity(root, (Node *) linitial(clauses),
-								  varRelid, jointype, sjinfo);
-
-	/*
 	 * Determine if these clauses reference a single relation.  If so, and if
 	 * it has extended statistics, try to apply those.
 	 */
@@ -213,6 +205,20 @@ clauselist_selectivity_simple(PlannerInfo *root,
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
+
+	/*
+	 * If there's exactly one clause remaining, just go directly to
+	 * clause_selectivity(). None of what we might do below is relevant.
+	 *
+	 * XXX We can't do this check before processing extended statistics,
+	 * because that would skip the extended statistics for OR-clauses,
+	 * which are wrapped in a single top-level RestrictInfo. Consider for
+	 * example clauses like (a=1 OR b=1) or ((a=1 AND b=1) OR (c=1)).
+	 * Those clauses can benefit from extended statistics tremendously.
+	 */
+	if (list_length(clauses) - bms_num_members(estimatedclauses) == 1)
+		return clause_selectivity(root, (Node *) linitial(clauses),
+								  varRelid, jointype, sjinfo);
 
 	/*
 	 * Anything that doesn't look like a potential rangequery clause gets

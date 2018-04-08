@@ -964,16 +964,16 @@ static double
 estimate_equality_groups(PlannerInfo *root, List *clauses, int *natts,
 						 List **neqclauses)
 {
-	List   *vars = NIL;
-	Bitmapset *atts = NULL;
-	ListCell *lc;
+	List	   *vars = NIL;
+	Bitmapset  *atts = NULL;
+	ListCell   *lc;
 
 	*natts = 0;
 	*neqclauses = NIL;
 
 	foreach(lc, clauses)
 	{
-		Var	   *var;
+		Var		   *var;
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
 		Assert(IsA(rinfo, RestrictInfo));
@@ -1131,8 +1131,8 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 										&mcv_count);
 
 	/*
-	 * Estimate total number of matches in the group, and count the number
-	 * of equality clauses (we need to know if this may be a full match).
+	 * Estimate total number of matches in the group, and count the number of
+	 * equality clauses (we need to know if this may be a full match).
 	 */
 	ndistinct = estimate_equality_groups(root, stat_clauses, &nmatches,
 										 &neqclauses);
@@ -1168,8 +1168,8 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 
 		/*
 		 * We do not use any estimates of average frequencies etc. because
-		 * that is probably much better estimated using the histogram. But
-		 * we can leverage the mcv_lowsel upper limit (with fullmatch).
+		 * that is probably much better estimated using the histogram. But we
+		 * can leverage the mcv_lowsel upper limit (with fullmatch).
 		 */
 		if (fullmatch)
 			s2 = Min(mcv_lowsel, s2);
@@ -1178,16 +1178,16 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	}
 
 	/*
-	 * Otherwise we know that the total non-MCV part is (1 - mcv_totalsel)
-	 * at most. And we have an ndistinct estimate, derived from the equality
+	 * Otherwise we know that the total non-MCV part is (1 - mcv_totalsel) at
+	 * most. And we have an ndistinct estimate, derived from the equality
 	 * clauses, so we know the average selectivity. This works even with
 	 * equality clauses on a subset of attributes, or without any equality
 	 * clauses at all (ndistinct=1.0 in that case).
 	 *
 	 * With a fullmatch we can do better - there can be just one matching
 	 * item, and we know the lowest selectivity in MCV is mcv_lowsel. The
-	 * matching item has to be less frequent than that, so we can use it
-	 * as an upper boundary.
+	 * matching item has to be less frequent than that, so we can use it as an
+	 * upper boundary.
 	 */
 	s2 = (1 - mcv_totalsel) / ndistinct;
 	if (fullmatch)
@@ -1203,18 +1203,18 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * The easiest thing we can do is re-computing statistics for the
 	 * inequality clauses by calling clauselist_selectivity.
 	 *
-	 * This may use extended statistics again - if the inequalities
-	 * reference at least two attributes it is guaranteed, because at
-	 * least the current statistic matches. But the best statistic will
-	 * be picked from scratch, and if the inequalities reference only
-	 * a subset of attributes there may be a better fit.
+	 * This may use extended statistics again - if the inequalities reference
+	 * at least two attributes it is guaranteed, because at least the current
+	 * statistic matches. But the best statistic will be picked from scratch,
+	 * and if the inequalities reference only a subset of attributes there may
+	 * be a better fit.
 	 *
-	 * By doing this we essentially treat the two lists as independent,
-	 * but we don't have much choice.
+	 * By doing this we essentially treat the two lists as independent, but we
+	 * don't have much choice.
 	 *
-	 * XXX The reason why we only call this with equality clauses is that
-	 * we would end up in infinite loop otherwise, if the recursive call
-	 * picks the same extended statistic. This breaks the loop.
+	 * XXX The reason why we only call this with equality clauses is that we
+	 * would end up in infinite loop otherwise, if the recursive call picks
+	 * the same extended statistic. This breaks the loop.
 	 */
 	if (nmatches > 0)
 		return s1 + s2 * clauselist_selectivity(root, neqclauses, varRelid,
@@ -1222,26 +1222,26 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 
 	/*
 	 * If there are no equality clauses, but we got an estimate from the
-	 * current MCV, we extrapolate the estimate to the non-MCV part too,
-	 * which in this case is (1 - mcv_totalsel).  In a way this is the
-	 * same thing we would get from calling clauselist_selectivity, but
-	 * without the infinite loop.
+	 * current MCV, we extrapolate the estimate to the non-MCV part too, which
+	 * in this case is (1 - mcv_totalsel).  In a way this is the same thing we
+	 * would get from calling clauselist_selectivity, but without the infinite
+	 * loop.
 	 *
 	 * Of course, applying the MCV selectivity to the non-MCV part may be
-	 * inaccurate - it's possible none or all non-MCV rows match. But in
-	 * the absence of better estimates this seems like the best we can do.
+	 * inaccurate - it's possible none or all non-MCV rows match. But in the
+	 * absence of better estimates this seems like the best we can do.
 	 *
-	 * XXX The MCV usually represents a sizeable part of the table, so
-	 * with a match in the MCV part (s1) likely matches a large number of
-	 * rows already. This should limits the impact of both over-estimates
-	 * and under-estimates in the non-MCV part.
+	 * XXX The MCV usually represents a sizeable part of the table, so with a
+	 * match in the MCV part (s1) likely matches a large number of rows
+	 * already. This should limits the impact of both over-estimates and
+	 * under-estimates in the non-MCV part.
 	 */
-	if (s1 > 0)	/* nmatches == 0 */
+	if (s1 > 0)					/* nmatches == 0 */
 		return s1 + (s2 * s1);
 
 	/*
-	 * And finally, when there are no equality matches nor matches in the
-	 * MCV, the only thing we can do is fallback to regular simple stats.
+	 * And finally, when there are no equality matches nor matches in the MCV,
+	 * the only thing we can do is fallback to regular simple stats.
 	 */
 	return s1 + s2 * clauselist_selectivity_simple(root, neqclauses, varRelid,
 												   jointype, sjinfo, NULL);

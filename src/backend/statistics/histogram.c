@@ -276,7 +276,7 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
  */
 MVHistogram *
 statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-						VacAttrStats **stats, int numrows_total)
+						VacAttrStats **stats)
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);
@@ -357,12 +357,8 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		/*
 		 * The frequency has to be computed from the whole sample, in case
 		 * some of the rows were filtered out in the MCV build.
-		 *
-		 * FIXME This seems wrong, actually. We should compute it from the
-		 * local sample, and statext_clauselist_selectivity() will multiply it
-		 * by (1 - mcv_totalsel).
 		 */
-		bucket->frequency = (bucket->numrows * 1.0) / numrows_total;
+		bucket->frequency = (bucket->numrows * 1.0) / numrows;
 	}
 
 	return serialize_histogram(histogram, stats);

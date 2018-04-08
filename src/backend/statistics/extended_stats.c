@@ -158,7 +158,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				Assert(numrows_filtered > 0);
 
 				histogram = statext_histogram_build(numrows_filtered, rows_filtered,
-													stat->columns, stats, numrows);
+													stat->columns, stats);
 
 				/* free this immediately, as we may be building many stats */
 				pfree(rows_filtered);
@@ -168,8 +168,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
 									NULL, NULL);
 		else if (build_histogram)
-			histogram = statext_histogram_build(numrows, rows, stat->columns,
-												stats, numrows);
+			histogram = statext_histogram_build(numrows, rows, stat->columns, stats);
 
 		/* store the statistics in the catalog */
 		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv,

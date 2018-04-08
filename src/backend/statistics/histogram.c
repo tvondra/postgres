@@ -2218,30 +2218,29 @@ pg_histogram_send(PG_FUNCTION_ARGS)
  * was not executed for this value yet.
  */
 
-#define HIST_CACHE_EMPTY			0x00
-#define HIST_CACHE_FALSE			0x01
-#define HIST_CACHE_TRUE				0x03
-#define HIST_CACHE_MASK				0x02
+#define CACHE_UNKNOWN			0x00	/* not yet evaluated */
+#define CACHE_TRUE				0x01
+#define CACHE_FALSE				0x02
 
-#define CONST_IS_EQ_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
-#define CONST_IS_LT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_TRUE)
-#define CONST_IS_GT_BOUNDARY(cache,idx) (cache[idx] == HIST_CACHE_FALSE)
+#define CONST_EQ_BOUNDARY(cache,idx) (cache[idx] == CACHE_TRUE)
+#define CONST_LT_BOUNDARY(cache,idx) (cache[idx] == CACHE_TRUE)
+#define CONST_GT_BOUNDARY(cache,idx) (cache[idx] == CACHE_FALSE)
 
 /*
  * update_call_cache
  *		Ensure the call cache contains result for a given boundary value.
  *
- * If a result for a given boudary value is not stored in the call cache,
- * the function evaluates the operator and stores the result in the cache.
+ * If the operator was not evaluated for the given boundary value yet, we
+ * evaluate it and store the result in the cache (at the given index).
  */
 static void
 update_call_cache(char *cache, FmgrInfo proc,
 				  Datum constvalue, Datum value, int index)
 {
-	Datum		r;
+	bool		r;
 
 	/* if the result is already in the cache, we're done */
-	if (cache[index] != HIST_CACHE_EMPTY)
+	if (cache[index] != CACHE_UNKNOWN)
 		return;
 
 	r = DatumGetBool(FunctionCall2Coll(&proc,
@@ -2249,7 +2248,7 @@ update_call_cache(char *cache, FmgrInfo proc,
 									   constvalue,
 									   value));
 
-	cache[index] = (r) ? HIST_CACHE_TRUE : HIST_CACHE_FALSE;
+	cache[index] = (r) ? CACHE_TRUE : CACHE_FALSE;
 }
 
 /*
@@ -2258,9 +2257,10 @@ update_call_cache(char *cache, FmgrInfo proc,
  *		contain the supplied value.
  *
  * The function does not simply return true/false, but a "match level" (none,
- * partial, full), just like other similar functions. In fact, those function
- * only returns "partial" or "none" levels, as a range can never match exactly
- * a value (we never generate histograms with "collapsed" dimensions).
+ * partial, full), just like other similar functions. It might seem strange
+ * to return "full" match for a containment, but the bucket may be collapsed
+ * in the given dimension - it may be an interval like [5, 5) for example.
+ * In that case the whole bucket matches the equality.
  */
 static char
 bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
@@ -2272,12 +2272,9 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 				upper_equals;
 
 	/*
-	 * First we can do some quick equality checks on bucket boundaries. If
-	 * both boundaries match, we immediately know it's a full match,
-	 * irrespectedly of the inclusiveness of the boundaries.
-	 *
-	 * We do need this information anyway, so let's just do it both for
-	 * equality and inequality operator now.
+	 * Update cache for the equality conditions. We don't know how many
+	 * buckets were already eliminated by the other clauses, so we delay
+	 * updating the inequality cache until actually necessary.
 	 */
 	update_call_cache(eq_cache, eqproc, constvalue,
 					  BUCKET_MIN_VALUE(histogram, bucket, dim),
@@ -2287,19 +2284,15 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 					  BUCKET_MAX_VALUE(histogram, bucket, dim),
 					  BUCKET_MAX_INDEX(bucket, dim));
 
-	update_call_cache(lt_cache, ltproc, constvalue,
-					  BUCKET_MIN_VALUE(histogram, bucket, dim),
-					  BUCKET_MIN_INDEX(bucket, dim));
-
-	update_call_cache(lt_cache, ltproc, constvalue,
-					  BUCKET_MAX_VALUE(histogram, bucket, dim),
-					  BUCKET_MAX_INDEX(bucket, dim));
-
-	/* get the cached result */
+	/*
+	 * First we can do some quick equality checks on bucket boundaries. If
+	 * both boundaries match, we immediately know it's a full match, and we
+	 * don't even need to check which of the boundaries is inclusive.
+	 */
 	lower_equals
-		= CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim));
+		= CONST_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim));
 	upper_equals
-		= CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim));
+		= CONST_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim));
 
 	/*
 	 * If both boundaries match, then the whole bucket matches, no matter
@@ -2309,8 +2302,8 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 		return STATS_MATCH_FULL;
 
 	/*
-	 * Otherwise it's a partial match (when the boundary is inclusive) or
-	 * mismatch (if it's exclusive).
+	 * If exactly one of the boundaries matches, it's either mismatch or
+	 * partial match, depending on which boundary is inclusive.
 	 */
 	if (lower_equals)
 		return (BUCKET_MIN_INCLUSIVE(bucket, dim)) ? STATS_MATCH_PARTIAL : STATS_MATCH_NONE;
@@ -2322,11 +2315,23 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	Assert(!(lower_equals | upper_equals));
 
 	/*
-	 * When (constval < min_value) or (constval > max_value), then the bucket
-	 * contains no matches.
+	 * Update the cache for the inequality conditions.
 	 */
-	if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)) ||
-		CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
+
+	/*
+	 * When (constval < min_value) or (constval > max_value), then the bucket
+	 * contains no possible matches.
+	 */
+	if (CONST_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)) ||
+		CONST_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 		return STATS_MATCH_NONE;
 
 	/*
@@ -2347,6 +2352,12 @@ bucket_contains_value(FmgrInfo eqproc, FmgrInfo ltproc,
  * Unlike bucket_contains_value this may return all three match levels, i.e.
  * "full" (e.g. [10,20] < 30), "partial" (e.g. [10,20] < 15) and "none"
  * (e.g. [10,20] < 5).
+ *
+ * We need to be careful about the 'isgt' flag, which inverts the meaning in
+ * some cases, and also strictness (i.e. whether we're dealing with < or <=).
+ *
+ * XXX This should probably be renamed to bucket_matches_inequality() or so,
+ * as it also handles the greater-than case.
  */
 static char
 bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
@@ -2356,9 +2367,9 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 							 bool isgt, bool isstrict)
 {
 	/*
-	 * First update the cache values. We update all of them at once, because
-	 * we'll probably need each of them anyway - either now or for some other
-	 * bucket, and ensuring we have all the values simplifies the logic.
+	 * Update cache for the equality conditions. We don't know how many
+	 * buckets were already eliminated by the other clauses, so we delay
+	 * updating the inequality cache until actually necessary.
 	 */
 	update_call_cache(eq_cache, eqproc, constvalue,
 					  BUCKET_MIN_VALUE(histogram, bucket, dim),
@@ -2368,37 +2379,22 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 					  BUCKET_MAX_VALUE(histogram, bucket, dim),
 					  BUCKET_MAX_INDEX(bucket, dim));
 
-	update_call_cache(lt_cache, ltproc, constvalue,
-					  BUCKET_MIN_VALUE(histogram, bucket, dim),
-					  BUCKET_MIN_INDEX(bucket, dim));
-
-	update_call_cache(lt_cache, ltproc, constvalue,
-					  BUCKET_MAX_VALUE(histogram, bucket, dim),
-					  BUCKET_MAX_INDEX(bucket, dim));
-
 	/*
-	 * Combine the results into the final answer. We need to be careful about
-	 * the 'isgt' flag, which inverts the meaning in some cases, and also
-	 * strictness (i.e. whether we're dealing with < or <=).
+	 * We check equalities with boundaries first. When a value equals to a
+	 * boundary value, we check whether the boundary is inclusive or not, and
+	 * then make decision considering the isgt/isstrict flags.
 	 */
 
 	/*
-	 * We look at equalities with boundaries first. For each bundary that
-	 * equals to a boundary value, we check whether it's inclusive or not, and
-	 * then make decision based on isgt/isstrict flags.
-	 */
-
-	/*
-	 * This means the constant is equal to lower boundary.
+	 * The constant value is equal to lower boundary.
 	 *
 	 * In the (isgt=false) case, this means const <= [min,max], i.e. the whole
-	 * bucket likely mismatches the condition. It may be a partial match,
-	 * however, when the boundary is inclusive and the restriction is not
-	 * strict.
+	 * bucket likely mismatches the condition. It may be a partial match when
+	 * the boundary is inclusive and the restriction is not strict.
 	 *
-	 * In the (isgt=true) case we apply the inverse logic.
+	 * In the (isgt=true) case we simply apply the inverse logic.
 	 */
-	if (CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim)))
+	if (CONST_EQ_BOUNDARY(eq_cache, BUCKET_MIN_INDEX(bucket, dim)))
 	{
 		char		match;
 
@@ -2421,13 +2417,13 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	}
 
 	/*
-	 * This means the constant is equal to upper boundary.
+	 * The constant value is equal to upper boundary.
 	 *
 	 * In the (isgt=false) case, this means [min,max] <= const, i.e. the whole
-	 * bucket likely matches the condition. It may be a partial match,
-	 * however, when the boundary is inclusive and the restriction is strict.
+	 * bucket likely matches the condition. It may be a partial match when the
+	 * boundary is inclusive and the restriction is strict.
 	 */
-	if (CONST_IS_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim)))
+	if (CONST_EQ_BOUNDARY(eq_cache, BUCKET_MAX_INDEX(bucket, dim)))
 	{
 		char		match;
 
@@ -2450,26 +2446,38 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 	}
 
 	/*
+	 * Update the cache for the inequality conditions.
+	 */
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MIN_VALUE(histogram, bucket, dim),
+					  BUCKET_MIN_INDEX(bucket, dim));
+
+	update_call_cache(lt_cache, ltproc, constvalue,
+					  BUCKET_MAX_VALUE(histogram, bucket, dim),
+					  BUCKET_MAX_INDEX(bucket, dim));
+
+	/*
 	 * And now the inequalities. We can assume neither boundary is equal to
 	 * the constant (those cases were already handled above), which greatly
 	 * simplifies the reasoning here.
 	 */
 	if (!isgt)
 	{
-		if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
+		if (CONST_LT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
 			return STATS_MATCH_NONE;
 
-		if (CONST_IS_LT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
+		if (CONST_LT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 			return STATS_MATCH_PARTIAL;
 
 		return STATS_MATCH_FULL;
 	}
 	else
 	{
-		if (CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
+		if (CONST_GT_BOUNDARY(lt_cache, BUCKET_MAX_INDEX(bucket, dim)))
 			return STATS_MATCH_NONE;
 
-		if (CONST_IS_GT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
+		if (CONST_GT_BOUNDARY(lt_cache, BUCKET_MIN_INDEX(bucket, dim)))
 			return STATS_MATCH_PARTIAL;
 
 		return STATS_MATCH_FULL;
@@ -2477,22 +2485,24 @@ bucket_is_smaller_than_value(FmgrInfo eqproc, FmgrInfo ltproc,
 }
 
 /*
- * Evaluate clauses using the histogram, and update the match bitmap.
+ * histogram_update_match_bitmap
+ *		Evaluate clauses on histogram buckets, and update the match bitmap.
  *
- * The bitmap may be already partially set, so this is really a way to
- * combine results of several clause lists - either when computing
- * conditional probability P(A|B) or a combination of AND/OR clauses.
+ * The bitmap may already contain results of evaluation of preceding clauses, in
+ * which case we update it depending on whether we evaluate AND/OR list. We can
+ * also leverage the initial results to skip buckets. For example when evaluating
+ * AND list, buckets that are already matched as a mismatch, can't possibly match
+ * irrespectedly of additional clauses.
  *
- * Note: This is not a simple bitmap in the sense that there are three
- * possible values for each item - no match, partial match and full match.
- * So we need at least 2 bits per item.
+ * Note: This is not a simple bitmap in the sense that there are three possible
+ * values for each item - no match, partial match and full match. So we need at
+ * least 2 bits per item.
  *
- * TODO: This works with 'bitmap' where each item is represented as a
- * char, which is slightly wasteful. Instead, we could use a bitmap
- * with 2 bits per item, reducing the size to ~1/4. By using values
- * 0, 1 and 3 (instead of 0, 1 and 2), the operations (merging etc.)
- * might be performed just like for simple bitmap by using & and |,
- * which might be faster than min/max.
+ * TODO: This works with 'bitmap' where each item is represented as a char, which
+ * is slightly wasteful. Instead, we could use a bitmap with 2 bits per item,
+ * reducing the size to ~1/4. By using values 0, 1 and 3 (instead of 0, 1 and 2),
+ * the operations (merging etc.) might be performed just like for simple bitmap by
+ * using & and |, which might be faster than min/max.
  */
 static void
 histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
@@ -2542,8 +2552,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			bool		ok;
 
 			/* reset the cache (per clause) */
-			memset(eqcache, HIST_CACHE_EMPTY, histogram->nbuckets);
-			memset(ltcache, HIST_CACHE_EMPTY, histogram->nbuckets);
+			memset(eqcache, CACHE_UNKNOWN, histogram->nbuckets);
+			memset(ltcache, CACHE_UNKNOWN, histogram->nbuckets);
 
 			ok = (NumRelids(clause) == 1) &&
 				(is_pseudo_constant_clause(lsecond(expr->args)) ||
@@ -2962,42 +2972,54 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 /*
  * Estimate selectivity of clauses using a histogram.
  *
- * If there's no histogram for the stats, the function returns 0.0.
- *
- * The general idea of this method is similar to how MCV lists are
- * processed, except that this introduces the concept of a partial
- * match (MCV only works with full match / mismatch).
+ * The general idea of this method is similar to processing of MCV lists,
+ * except that we also need to consider partial matches (MCV only works
+ * with full match / mismatch).
  *
  * The algorithm works like this:
  *
  *	 1) mark all buckets as 'full match'
  *	 2) walk through all the clauses
- *	 3) for a particular clause, walk through all the buckets
+ *	 3) for each clause, walk through all the buckets
  *	 4) skip buckets that are already 'no match'
  *	 5) check clause for buckets that still match (at least partially)
  *	 6) sum frequencies for buckets to get selectivity
  *
- * Unlike MCV lists, histograms have a concept of a partial match. In
- * that case we use 1/2 the bucket, to minimize the average error. The
- * MV histograms are usually less detailed than the per-column ones,
- * meaning the sum is often quite high (thanks to combining a lot of
- * "partially hit" buckets).
+ * Alternatively we might do the evaluation in the opposite order, i.e.
+ * walk through buckets first and evaluate all clauses on each bucket.
+ * But evaluating a clause on all buckets allows us to cache results of
+ * the operator for boundary values - there are very few distinct values
+ * compared to the number of buckets, so this is a huge benefit (depending
+ * on how expensive the operator is).
  *
- * Maybe we could use per-bucket information with number of distinct
- * values it contains (for each dimension), and then use that to correct
- * the estimate (so with 10 distinct values, we'd use 1/10 of the bucket
- * frequency). We might also scale the value depending on the actual
- * ndistinct estimate (not just the values observed in the sample).
+ * Histograms have a concept of a partial match, in which case a part of
+ * the bucket matches (or may match), but we do not know how large the
+ * matching part is. It might be anything between 0% and 100%. For now
+ * we use 50% of the bucket, because it's simple and should minimize the
+ * avarage error (per bucket).
  *
- * Another option would be to multiply the selectivities, i.e. if we get
- * 'partial match' for a bucket for multiple conditions, we might use
- * 0.5^k (where k is the number of conditions), instead of 0.5. This
- * probably does not minimize the average error, though.
+ * The MV histograms are usually less detailed than the per-column ones,
+ * so a query may partially match multiple buckets, in which case the 1/2
+ * may quickly add up to fairly high estimates.
  *
- * TODO: This might use a similar shortcut to MCV lists - count buckets
- * marked as partial/full match, and terminate once this drop to 0.
- * Not sure if it's really worth it - for MCV lists a situation like
- * this is not uncommon, but for histograms it's not that clear.
+ * Perhaps we could use convert_to_scalar() to compute the distance from
+ * boundaries, similarly to ineq_histogram_selectivity(), and use that.
+ * But it's unclear how to combine the values for multiple dimensions. We
+ * could multiply the values, of course, but that pretty much means we are
+ * assuming independence at the bucket level. Which directly contradicts
+ * the very purpose of having extended statistics.
+ *
+ * Furthermore, the 1/2 coefficient (or whatever we end up using based on
+ * convert_to_scalar) may make sense for inequalities, but it probably
+ * does not make very much sense for equalities. In fact, the histograms
+ * may be rather useless in that case. (The single-column selectivity
+ * functions take (1 - mcv)/(ndistinct - mcv_count) in that case.)
+ *
+ * XXX Could we use per-bucket information with number of distinct values
+ * it contains (total and for each dimension), and then use that to improve
+ * the estimates, particularly for the equality case? ndistinct estimates
+ * are notoriously unreliable, though, particularly when based on the tiny
+ * number of sample rows backing a single bucket.
  */
 Selectivity
 histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
@@ -3029,15 +3051,7 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 			s += histogram->buckets[i]->frequency;
 		else if (matches[i] == STATS_MATCH_PARTIAL)
 		{
-			/*
-			 * Perhaps we could use convert_to_scalar() to compute the
-			 * coefficient similarly to ineq_histogram_selectivity(). That is,
-			 * we could compute a distance from the boundary values of a
-			 * bucket, but it's unclear how to combine those values - we could
-			 * multiply them, but that pretty much means we're assuming
-			 * independence at the bucket level. Which is somewhat
-			 * contradictory to the whole purpose.
-			 */
+			/* account for a partial match - we use 1/2 the bucket */
 			s += 0.5 * histogram->buckets[i]->frequency;
 		}
 	}

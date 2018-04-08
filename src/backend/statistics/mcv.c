@@ -147,6 +147,10 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		if (groups[i].count < mincount)
 			break;
 
+		/* also break if we reached the number of MCV items */
+		if (nitems == STATS_MCVLIST_MAX_ITEMS)
+			break;
+
 		numrows_mcv += groups[i].count;
 		nitems++;
 	}

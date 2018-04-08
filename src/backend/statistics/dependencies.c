@@ -18,11 +18,12 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
 #include "lib/stringinfo.h"
+#include "nodes/nodes.h"
+#include "nodes/relation.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/var.h"
-#include "nodes/nodes.h"
-#include "nodes/relation.h"
+#include "parser/parsetree.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
 #include "utils/bytea.h"
@@ -1061,6 +1062,45 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 * where 'f' is the degree of validity of the dependency.
 		 */
 		s1 *= (dependency->degree + (1 - dependency->degree) * s2);
+	}
+
+	/*
+	 * Store the info about used statistic for this relation, so that
+	 * EXPLAIN can display it if needed. For dependencies we want to
+	 * include all equality clauses related to the dependency, not just
+	 * the estimated ones etc.
+	 */
+	{
+		List	   *stat_clauses = NIL;
+		RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+		AppliedStatistic	*tmp;
+
+		listidx = -1;
+		foreach (l, clauses)
+		{
+			listidx++;
+
+			/*
+			 * Skip incompatible clauses, and ones we've already estimated on.
+			 */
+			if (list_attnums[listidx] == InvalidAttrNumber)
+				continue;
+
+			/*
+			 * Also skip clauses that are not related to the dependency.
+			 */
+			if (!bms_is_member(list_attnums[listidx], stat->keys))
+				continue;
+
+			stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
+		}
+
+		tmp = makeNode(AppliedStatistic);
+		tmp->stxoid = stat->statOid;
+		tmp->kinds = stat->kinds & (STATS_EXT_INFO_DEPENDENCIES);
+		tmp->clauses = stat_clauses;
+
+		rte->appliedStats = lappend(rte->appliedStats, tmp);
 	}
 
 	pfree(dependencies);

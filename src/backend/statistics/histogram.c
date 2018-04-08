@@ -90,7 +90,7 @@ static void partition_bucket(MVHistogramBuild * histogram, MVBucketBuild * bucke
 				 Bitmapset *attrs, VacAttrStats **stats,
 				 int *ndistvalues, Datum **distvalues);
 
-static MVBucketBuild * copy_bucket_info(MVHistogramBuild *histogram,
+static MVBucketBuild * copy_bucket_info(MVHistogramBuild * histogram,
 										MVBucketBuild * bucket);
 
 static void update_bucket_ndistinct(MVBucketBuild * bucket, Bitmapset *attrs,
@@ -1165,7 +1165,7 @@ create_initial_bucket(MVHistogramBuild * histogram,
  * histograms, i.e. 300 tuples per bucket.
  */
 static MVBucketBuild *
-select_bucket_to_partition(MVHistogramBuild *histogram)
+select_bucket_to_partition(MVHistogramBuild * histogram)
 {
 	int			i;
 	int			numrows = 0;
@@ -1177,7 +1177,7 @@ select_bucket_to_partition(MVHistogramBuild *histogram)
 
 	for (i = 0; i < histogram->nbuckets; i++)
 	{
-		MVBucketBuild	*bucket = histogram->buckets[i];
+		MVBucketBuild *bucket = histogram->buckets[i];
 
 		/* if the number of rows is higher, use this bucket */
 		if ((bucket->ndistinct > 1) &&
@@ -1222,7 +1222,7 @@ select_bucket_to_partition(MVHistogramBuild *histogram)
  * to split dimensions with higher statistics target more frequently).
  */
 static void
-partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
+partition_bucket(MVHistogramBuild * histogram, MVBucketBuild * bucket,
 				 Bitmapset *attrs, VacAttrStats **stats,
 				 int *ndistvalues, Datum **distvalues)
 {
@@ -1291,12 +1291,12 @@ partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
 
 		/* search for min boundary in the distinct list */
 		min = (Datum *) bsearch_arg(&bucket->min[i],
-								  distvalues[i], ndistvalues[i],
-								  sizeof(Datum), compare_scalars_simple, &ssup);
+									distvalues[i], ndistvalues[i],
+									sizeof(Datum), compare_scalars_simple, &ssup);
 
 		max = (Datum *) bsearch_arg(&bucket->max[i],
-								  distvalues[i], ndistvalues[i],
-								  sizeof(Datum), compare_scalars_simple, &ssup);
+									distvalues[i], ndistvalues[i],
+									sizeof(Datum), compare_scalars_simple, &ssup);
 
 		/* if this dimension is 'larger' then partition by it */
 		if (((max - min) * 1.0 / ndistvalues[i]) > delta)
@@ -1353,9 +1353,9 @@ partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
 	/*
 	 * We want to split the bucket in half (or as close to it as possible),
 	 * along the selected dimension. So we walk through the sorted array of
-	 * values from that dimension, and whenever the value changes we check
-	 * how far are we from the middle. If closer than the last split, then
-	 * we update the split value.
+	 * values from that dimension, and whenever the value changes we check how
+	 * far are we from the middle. If closer than the last split, then we
+	 * update the split value.
 	 */
 	delta = bucket->numrows;
 	split_value = values[0].value;
@@ -1374,8 +1374,8 @@ partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
 				delta = fabs(i - bucket->numrows / 2.0);
 
 				/*
-				 * i-th row will go to the new bucket, and it's 0-based,
-				 * so the old bucket will contain i rows.
+				 * i-th row will go to the new bucket, and it's 0-based, so
+				 * the old bucket will contain i rows.
 				 */
 				nrows = i;
 			}
@@ -1389,15 +1389,15 @@ partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
 	new_bucket = copy_bucket_info(histogram, bucket);
 
 	/*
-	 * Do the actual split, using the split value as the upper bound for
-	 * the existing bucket, and lower bound for the new one.
+	 * Do the actual split, using the split value as the upper bound for the
+	 * existing bucket, and lower bound for the new one.
 	 */
 	bucket->max[dimension] = split_value;
 	new_bucket->min[dimension] = split_value;
 
 	/*
-	 * Boundary values can only be inclusive in one of the buckets, where
-	 * it's used as lower boundary. And exclusive in the other one.
+	 * Boundary values can only be inclusive in one of the buckets, where it's
+	 * used as lower boundary. And exclusive in the other one.
 	 */
 	bucket->max_inclusive[dimension] = false;
 	new_bucket->min_inclusive[dimension] = true;
@@ -1447,11 +1447,11 @@ partition_bucket(MVHistogramBuild *histogram, MVBucketBuild * bucket,
  * the build-time data, like sampled rows etc.
  */
 static MVBucketBuild *
-copy_bucket_info(MVHistogramBuild *histogram, MVBucketBuild * bucket)
+copy_bucket_info(MVHistogramBuild * histogram, MVBucketBuild * bucket)
 {
 	/* TODO allocate as a single piece (including all the fields) */
 	MVBucketBuild *new_bucket;
-	int ndimensions = histogram->ndimensions;
+	int			ndimensions = histogram->ndimensions;
 
 	/* make sure the histogram did not reach the maximum size yet */
 	Assert(histogram->nbuckets < STATS_HIST_MAX_BUCKETS);
@@ -1752,8 +1752,8 @@ create_null_buckets(MVHistogramBuild * histogram, int bucket_idx,
 	}
 
 	/*
-	 * The bucket contains both NULL and non-NULL values in this dimension.
-	 * We have to split it into two. We don't need to sort the data, but
+	 * The bucket contains both NULL and non-NULL values in this dimension. We
+	 * have to split it into two. We don't need to sort the data, but
 	 * otherwise it's pretty similar to what partition_bucket() does.
 	 */
 
@@ -2555,8 +2555,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				/*
 				 * This does rely on using equality and less-than operators
 				 * instead of the operator referenced by the OpExpr. I'm not
-				 * sure that's correct, but we are relying on the equality
-				 * and less-than semantics anyway so I'm not sure it's wrong
+				 * sure that's correct, but we are relying on the equality and
+				 * less-than semantics anyway so I'm not sure it's wrong
 				 * either. I just can't think of an example demonstrating why
 				 * it's broken. After all, when the operator claims to use
 				 * F_SCALARLTSEL, it better use the same semantics, I guess.
@@ -2565,9 +2565,9 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				 * operators (e.g. int > numeric), in which case the operator
 				 * associated with the type would not work correctly (because
 				 * it expects the same type on both sides). But that's not an
-				 * issue, as such clauses are rejected as incompatible, as
-				 * the cast will generate FuncExpr for the implicit cast (and
-				 * the regular stats behave just like that).
+				 * issue, as such clauses are rejected as incompatible, as the
+				 * cast will generate FuncExpr for the implicit cast (and the
+				 * regular stats behave just like that).
 				 *
 				 * So I'm a bit puzzled ...
 				 */
@@ -3031,12 +3031,12 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 		{
 			/*
 			 * Perhaps we could use convert_to_scalar() to compute the
-			 * coefficient similarly to ineq_histogram_selectivity().
-			 * That is, we could compute a distance from the boundary
-			 * values of a bucket, but it's unclear how to combine those
-			 * values - we could multiply them, but that pretty much
-			 * means we're assuming independence at the bucket level.
-			 * Which is somewhat contradictory to the whole purpose.
+			 * coefficient similarly to ineq_histogram_selectivity(). That is,
+			 * we could compute a distance from the boundary values of a
+			 * bucket, but it's unclear how to combine those values - we could
+			 * multiply them, but that pretty much means we're assuming
+			 * independence at the bucket level. Which is somewhat
+			 * contradictory to the whole purpose.
 			 */
 			s += 0.5 * histogram->buckets[i]->frequency;
 		}

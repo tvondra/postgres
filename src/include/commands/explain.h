@@ -35,6 +35,7 @@ typedef struct ExplainState
 	bool		buffers;		/* print buffer usage */
 	bool		timing;			/* print detailed node timing */
 	bool		summary;		/* print total planning and execution timing */
+	bool		statistics;		/* print info about extended statistics */
 	ExplainFormat format;		/* output format */
 	/* state for output formatting --- not reset for each new plan tree */
 	int			indent;			/* current indentation level */

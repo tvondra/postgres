@@ -476,6 +476,7 @@ typedef enum NodeTag
 	T_PartitionCmd,
 	T_VacuumRelation,
 	T_MergeWhenClause,
+	T_AppliedStatistic,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)

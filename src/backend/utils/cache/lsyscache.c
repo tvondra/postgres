@@ -32,6 +32,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_range.h"
 #include "catalog/pg_statistic.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
@@ -3101,6 +3102,59 @@ get_range_subtype(Oid rangeOid)
 
 		result = rngtup->rngsubtype;
 		ReleaseSysCache(tp);
+		return result;
+	}
+	else
+		return InvalidOid;
+}
+
+/*
+ * get_stat_name
+ *		Returns the name of a given extended statistics.
+ *
+ * Returns a palloc'd copy of the string, or NULL if no such relation.
+ *
+ * NOTE: since statistic name is not unique, be wary of code that uses this
+ * for anything except preparing error messages.
+ */
+char *
+get_stat_name(Oid stxoid)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(stxoid));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_statistic_ext reltup = (Form_pg_statistic_ext) GETSTRUCT(tp);
+		char	   *result;
+
+		result = pstrdup(NameStr(reltup->stxname));
+		ReleaseSysCache(tp);
+		return result;
+	}
+	else
+		return NULL;
+}
+
+/*
+ * get_stat_namespace
+ *
+ *		Returns the pg_namespace OID associated with a given statistic.
+ */
+Oid
+get_stat_namespace(Oid stxoid)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(stxoid));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_statistic_ext reltup = (Form_pg_statistic_ext) GETSTRUCT(tp);
+		Oid			result;
+
+		result = reltup->stxnamespace;
+		ReleaseSysCache(tp);
+
 		return result;
 	}
 	else

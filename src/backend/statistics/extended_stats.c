@@ -25,6 +25,7 @@
 #include "nodes/relation.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "parser/parsetree.h"
 #include "postmaster/autovacuum.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
@@ -1118,6 +1119,20 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 		}
 
 		listidx++;
+	}
+
+	/*
+	 * Store the info about used statistic for this relation, so that
+	 * EXPLAIN can display it if needed.
+	 */
+	{
+		RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+		AppliedStatistic	*tmp = makeNode(AppliedStatistic);
+		tmp->stxoid = stat->statOid;
+		tmp->kinds = stat->kinds & (STATS_EXT_INFO_MCV | STATS_EXT_INFO_HISTOGRAM);
+		tmp->clauses = stat_clauses;
+
+		rte->appliedStats = lappend(rte->appliedStats, tmp);
 	}
 
 	/*

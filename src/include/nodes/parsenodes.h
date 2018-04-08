@@ -860,6 +860,18 @@ typedef struct PartitionCmd
 	PartitionBoundSpec *bound;	/* FOR VALUES, if attaching */
 } PartitionCmd;
 
+/*
+ * Information about applied extended statistic. Might belong somewhere
+ * else, not into parsenodes.h.
+ */
+typedef struct AppliedStatistic
+{
+	NodeTag		type;
+	Oid			stxoid;			/* OID of the extended statistic */
+	int			kinds;			/* used types (subsed of available) */
+	List	   *clauses;		/* list of estimated clauses */
+} AppliedStatistic;
+
 /****************************************************************************
  *	Nodes for a Query tree
  ****************************************************************************/
@@ -1074,6 +1086,7 @@ typedef struct RangeTblEntry
 	Bitmapset  *insertedCols;	/* columns needing INSERT permission */
 	Bitmapset  *updatedCols;	/* columns needing UPDATE permission */
 	List	   *securityQuals;	/* security barrier quals to apply, if any */
+	List	   *appliedStats;	/* applied statistics, if any */
 } RangeTblEntry;
 
 /*

@@ -81,6 +81,8 @@ static void show_upper_qual(List *qual, const char *qlabel,
 				ExplainState *es);
 static void show_sort_keys(SortState *sortstate, List *ancestors,
 			   ExplainState *es);
+static void show_extended_stats(Scan *plan, PlanState *planstate,
+			   List *ancestors, ExplainState *es);
 static void show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 					   ExplainState *es);
 static void show_agg_keys(AggState *astate, List *ancestors,
@@ -164,6 +166,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 			es->costs = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "buffers") == 0)
 			es->buffers = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "statistics") == 0)
+			es->statistics = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "timing") == 0)
 		{
 			timing_set = true;
@@ -1700,6 +1704,22 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 	}
 
+	/* Extended statistics */
+	switch (nodeTag(plan))
+	{
+		case T_SeqScan:
+		case T_SampleScan:
+		case T_BitmapHeapScan:
+		case T_TidScan:
+		case T_IndexScan:
+		case T_IndexOnlyScan:
+			show_extended_stats((Scan *) plan, planstate, ancestors, es);
+			break;
+
+		default:
+			break;
+	}
+
 	/* Show buffer usage */
 	if (es->buffers && planstate->instrument)
 		show_buffer_usage(es, &planstate->instrument->bufusage);
@@ -2010,6 +2030,75 @@ show_sort_keys(SortState *sortstate, List *ancestors, ExplainState *es)
 						 plan->sortOperators, plan->collations,
 						 plan->nullsFirst,
 						 ancestors, es);
+}
+
+/*
+ * Show information about extended statistic used by the scan node.
+ */
+static void
+show_extended_stats(Scan *plan, PlanState *planstate, List *ancestors,
+					ExplainState *es)
+{
+	RangeTblEntry *rte;
+	ListCell   *lc;
+	Index		rti = plan->scanrelid;
+	StringInfoData	str;
+
+	/* should we print extended statistic details? */
+	if (!es->statistics)
+		return;
+
+	rte = rt_fetch(rti, es->rtable);
+
+	initStringInfo(&str);
+
+	foreach(lc, rte->appliedStats)
+	{
+		ListCell   *lc2;
+		List	   *clauses;
+		Node	   *node;
+		List	   *context;
+		char	   *exprstr;
+		AppliedStatistic    *s = (AppliedStatistic *) lfirst(lc);
+
+		/*
+		 * Strip top-level RestrictInfo from the clauses.
+		 *
+		 * XXX This should probably happen when building AppliedStatistic
+		 * info. Also, it may not handle clause/orclause in RestrictInfo
+		 * entirely correctly. Not sure.
+		 */
+		clauses = NIL;
+		foreach (lc2, s->clauses)
+		{
+			Node *clause = (Node *) lfirst(lc2);
+
+			if (IsA(clause, RestrictInfo))
+				clause = (Node *) ((RestrictInfo *) clause)->clause;
+
+			clauses = lappend(clauses, clause);
+		}
+
+		/* Convert AND list to explicit AND */
+		node = (Node *) make_ands_explicit(clauses);
+
+		resetStringInfo(&str);
+
+		/* Set up deparsing context */
+		context = set_deparse_context_planstate(es->deparse_cxt,
+												(Node *) planstate,
+												ancestors);
+
+		/* Deparse the expression */
+		exprstr = deparse_expression(node, context, false, false);
+
+		appendStringInfo(&str, "%s.%s %s",
+						 get_namespace_name(get_stat_namespace(s->stxoid)),
+						 get_stat_name(s->stxoid), exprstr);
+
+		/* And add to es->str */
+		ExplainPropertyText("Extended Statistic", str.data, es);
+	}
 }
 
 /*

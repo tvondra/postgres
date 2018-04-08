@@ -2557,11 +2557,23 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			if (ok)
 			{
 				/*
-				 * XXX The explicit use of ltproc operator is wrong, because
-				 * the query may use an operator with the same semantics but
-				 * comparing the attribute to a different type, for example.
-				 * So we need to use the opproc instead, just like the scalar
-				 * selectivity finctions. This is clearly bogus.
+				 * This does rely on using equality and less-than operators
+				 * instead of the operator referenced by the OpExpr. I'm not
+				 * sure that's correct, but we are relying on the equality
+				 * and less-than semantics anyway so I'm not sure it's wrong
+				 * either. I just can't think of an example demonstrating why
+				 * it's broken. After all, when the operator claims to use
+				 * F_SCALARLTSEL, it better use the same semantics, I guess.
+				 *
+				 * For a while I thought it might be an issue with cross-type
+				 * operators (e.g. int > numeric), in which case the operator
+				 * associated with the type would not work correctly (because
+				 * it expects the same type on both sides). But that's not an
+				 * issue, as such clauses are rejected as incompatible, as
+				 * the cast will generate FuncExpr for the implicit cast (and
+				 * the regular stats behave just like that).
+				 *
+				 * So I'm a bit puzzled ...
 				 */
 
 				TypeCacheEntry *typecache;
@@ -3020,7 +3032,18 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 		if (matches[i] == STATS_MATCH_FULL)
 			s += histogram->buckets[i]->frequency;
 		else if (matches[i] == STATS_MATCH_PARTIAL)
+		{
+			/*
+			 * Perhaps we could use convert_to_scalar() to compute the
+			 * coefficient similarly to ineq_histogram_selectivity().
+			 * That is, we could compute a distance from the boundary
+			 * values of a bucket, but it's unclear how to combine those
+			 * values - we could multiply them, but that pretty much
+			 * means we're assuming independence at the bucket level.
+			 * Which is somewhat contradictory to the whole purpose.
+			 */
 			s += 0.5 * histogram->buckets[i]->frequency;
+		}
 	}
 
 	return s;

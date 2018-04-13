@@ -3844,50 +3844,50 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 			/* we're done with this relation */
 			varinfos = NIL;
 		}
-	}
 
-	/*
-	 * Sanity check --- don't divide by zero if empty relation.
-	 */
-	Assert(IS_SIMPLE_REL(rel));
-	if (rel->tuples > 0)
-	{
 		/*
-		 * Clamp to size of rel, or size of rel / 10 if multiple Vars. The
-		 * fudge factor is because the Vars are probably correlated but we
-		 * don't know by how much.  We should never clamp to less than the
-		 * largest ndistinct value for any of the Vars, though, since
-		 * there will surely be at least that many groups.
+		 * Sanity check --- don't divide by zero if empty relation.
 		 */
-		double		clamp = rel->tuples;
-
-		if (relvarcount > 1)
+		Assert(IS_SIMPLE_REL(rel));
+		if (rel->tuples > 0)
 		{
-			clamp *= 0.1;
-			if (clamp < relmaxndistinct)
+			/*
+			 * Clamp to size of rel, or size of rel / 10 if multiple Vars. The
+			 * fudge factor is because the Vars are probably correlated but we
+			 * don't know by how much.  We should never clamp to less than the
+			 * largest ndistinct value for any of the Vars, though, since
+			 * there will surely be at least that many groups.
+			 */
+			double		clamp = rel->tuples;
+
+			if (relvarcount > 1)
 			{
-				clamp = relmaxndistinct;
-				/* for sanity in case some ndistinct is too large: */
-				if (clamp > rel->tuples)
-					clamp = rel->tuples;
+				clamp *= 0.1;
+				if (clamp < relmaxndistinct)
+				{
+					clamp = relmaxndistinct;
+					/* for sanity in case some ndistinct is too large: */
+					if (clamp > rel->tuples)
+						clamp = rel->tuples;
+				}
 			}
+			if (reldistinct > clamp)
+				reldistinct = clamp;
+
+			/*
+			 * We're assuming we are returning all rows.
+			 */
+			reldistinct = clamp_row_est(reldistinct);
+
+			/*
+			 * Update estimate of total distinct groups.
+			 */
+			numdistinct *= reldistinct;
+
+			/* Guard against out-of-range answers */
+			if (numdistinct > rel->tuples)
+				numdistinct = rel->tuples;
 		}
-		if (reldistinct > clamp)
-			reldistinct = clamp;
-
-		/*
-		 * We're assuming we are returning all rows.
-		 */
-		reldistinct = clamp_row_est(reldistinct);
-
-		/*
-		 * Update estimate of total distinct groups.
-		 */
-		numdistinct *= reldistinct;
-
-		/* Guard against out-of-range answers */
-		if (numdistinct > rel->tuples)
-			numdistinct = rel->tuples;
 	}
 
 	if (numdistinct < 1.0)

@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: initdb-cs (PostgreSQL 9.3)\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@postgresql.org\n"
-"POT-Creation-Date: 2018-06-29 19:46+0000\n"
-"PO-Revision-Date: 2018-06-30 15:22+0200\n"
+"POT-Creation-Date: 2018-07-04 18:16+0000\n"
+"PO-Revision-Date: 2018-07-05 01:00+0200\n"
 "Last-Translator: Tomas Vondra <tv@fuzzy.cz>\n"
 "Language-Team: Czech <info@cspug.cx>\n"
 "Language: cs\n"
@@ -167,7 +167,7 @@ msgstr "uživatel neexistuje"
 #: ../../common/username.c:60
 #, c-format
 msgid "user name lookup failure: error code %lu"
-msgstr ""
+msgstr "vyhledání uživatelského jména selhalo: chybový kód %lu"
 
 #: ../../common/wait_error.c:45
 #, c-format
@@ -342,7 +342,7 @@ msgstr "vybírám implicitní nastavení shared_buffers ... "
 #: initdb.c:1050
 #, c-format
 msgid "selecting dynamic shared memory implementation ... "
-msgstr ""
+msgstr "vybírám implementaci dynamické sdílené paměti ... "
 
 #: initdb.c:1085
 msgid "creating configuration files ... "
@@ -356,7 +356,7 @@ msgstr "%s: nelze změnit práva pro \"%s\": %s\n"
 #: initdb.c:1385
 #, c-format
 msgid "running bootstrap script ... "
-msgstr ""
+msgstr "spouštím bootstrap script ... "
 
 #: initdb.c:1398
 #, c-format
@@ -409,7 +409,7 @@ msgstr "ok\n"
 #: initdb.c:2234
 #, c-format
 msgid "%s: setlocale() failed\n"
-msgstr ""
+msgstr "%s: setlocale() selhalo\n"
 
 #: initdb.c:2256
 #, c-format
@@ -426,6 +426,7 @@ msgstr "%s: neplatný název národního nastavení (locale) \"%s\"\n"
 msgid ""
 "%s: invalid locale settings; check LANG and LC_* environment variables\n"
 msgstr ""
+"%s: neplatné nastavení locale; zkontrolujte LANG a LC_* proměnné prostředí\n"
 
 #: initdb.c:2306
 #, c-format
@@ -518,6 +519,8 @@ msgstr ""
 msgid ""
 "  -g, --allow-group-access  allow group read/execute on data directory\n"
 msgstr ""
+"  -g, --allow-group-access  povolit čtení/spouštění pro skupinu na datovém "
+"adresáři\n"
 
 #: initdb.c:2390
 #, c-format
@@ -585,7 +588,7 @@ msgstr "  -X, --waldir=WALDIR     umístění adresáře s transakčním logem\n
 #: initdb.c:2402
 #, c-format
 msgid "      --wal-segsize=SIZE    size of WAL segments, in megabytes\n"
-msgstr ""
+msgstr "      --wal-segsize=SIZE    velikost WAL segmentů, v megabytech\n"
 
 #: initdb.c:2403
 #, c-format
@@ -934,7 +937,7 @@ msgstr "vytvářím adresáře ... "
 
 #: initdb.c:3021
 msgid "performing post-bootstrap initialization ... "
-msgstr ""
+msgstr "provádím post-bootstrap inicializaci ... "
 
 #: initdb.c:3180
 #, c-format
@@ -964,13 +967,13 @@ msgstr ""
 #: initdb.c:3316
 #, c-format
 msgid "%s: argument of --wal-segsize must be a number\n"
-msgstr ""
+msgstr "%s: argument pro --wal-segsize musí být číslo\n"
 
 #: initdb.c:3323
 #, c-format
 msgid ""
 "%s: argument of --wal-segsize must be a power of 2 between 1 and 1024\n"
-msgstr ""
+msgstr "%s: argument pro --wal-segsize musí být mocnina 2 mezi 1 a 1024\n"
 
 #: initdb.c:3341
 #, c-format
@@ -978,6 +981,8 @@ msgid ""
 "%s: superuser name \"%s\" is disallowed; role names cannot begin with \"pg_"
 "\"\n"
 msgstr ""
+"%s: superuživatelské jméno \"%s\" není povoleno; názvy rolí nemohou začínat "
+"\"pg_\"\n"
 
 #: initdb.c:3345
 #, c-format
@@ -1014,7 +1019,7 @@ msgstr ""
 #. translator: This is a placeholder in a shell command.
 #: initdb.c:3406
 msgid "logfile"
-msgstr ""
+msgstr "logfile"
 
 #: initdb.c:3408
 #, c-format

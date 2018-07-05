@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: pg_waldump (PostgreSQL) 11\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@postgresql.org\n"
 "POT-Creation-Date: 2018-07-04 18:15+0000\n"
-"PO-Revision-Date: 2018-07-05 12:36+0200\n"
+"PO-Revision-Date: 2018-07-05 20:04+0200\n"
 "Language: cs\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -278,7 +278,7 @@ msgstr[2] "první záznam po %X/%X, na %X/%X, přeskakuji %u bytů\n"
 #: pg_waldump.c:1183
 #, c-format
 msgid "error in WAL record at %X/%X: %s"
-msgstr ""
+msgstr "chyba ve WAL záznamu na %X/%X: %s"
 
 #: pg_waldump.c:1193
 #, c-format

@@ -529,7 +529,7 @@ msgid ""
 "                  [-o OPTIONS] [-p PATH] [-c]\n"
 msgstr ""
 "  %s start    [-D ADRESÁŘ] [-l SOUBOR] [-W] [-t SECS] [-s]\n"
-"                  [-o VOLBY] [-p CESTA] [-c]\n"
+"                  [-o VOLBY]   [-p CESTA] [-c]\n"
 
 #: pg_ctl.c:1918
 #, c-format
@@ -543,27 +543,27 @@ msgid ""
 "                  [-o OPTIONS] [-c]\n"
 msgstr ""
 "  %s restart  [-D ADRESÁŘ] [-m MÓD-UKONČENÍ] [-W] [-t SECS] [-s]\n"
-"                  [-o VOLBY] [-c]\n"
+"                  [-o VOLBY]   [-c]\n"
 
 #: pg_ctl.c:1921
 #, c-format
 msgid "  %s reload   [-D DATADIR] [-s]\n"
-msgstr "  %s reload  [-D ADRESÁŘ] [-s]\n"
+msgstr "  %s reload   [-D ADRESÁŘ] [-s]\n"
 
 #: pg_ctl.c:1922
 #, c-format
 msgid "  %s status   [-D DATADIR]\n"
-msgstr "  %s status  [-D ADRESÁŘ]\n"
+msgstr "  %s status   [-D ADRESÁŘ]\n"
 
 #: pg_ctl.c:1923
 #, c-format
 msgid "  %s promote  [-D DATADIR] [-W] [-t SECS] [-s]\n"
-msgstr "  %s promote [-D ADRESÁŘ] [-W] [-t SECS] [-s]\n"
+msgstr "  %s promote  [-D ADRESÁŘ] [-W] [-t SECS] [-s]\n"
 
 #: pg_ctl.c:1924
 #, c-format
 msgid "  %s kill     SIGNALNAME PID\n"
-msgstr "  %s kill    SIGNÁL  IDPROCESU\n"
+msgstr "  %s kill     SIGNÁL  IDPROCESU\n"
 
 #: pg_ctl.c:1926
 #, c-format
@@ -624,12 +624,12 @@ msgstr "  -V, --version          vypsat informace o verzi, potom skončit\n"
 #: pg_ctl.c:1939
 #, c-format
 msgid "  -w, --wait             wait until operation completes (default)\n"
-msgstr "  -w, --wait               čekat na dokončení operace (výchozí)\n"
+msgstr "  -w, --wait             čekat na dokončení operace (výchozí)\n"
 
 #: pg_ctl.c:1940
 #, c-format
 msgid "  -W, --no-wait          do not wait until operation completes\n"
-msgstr "  -W, --no-wait             nečekat na dokončení operace\n"
+msgstr "  -W, --no-wait          nečekat na dokončení operace\n"
 
 #: pg_ctl.c:1941
 #, c-format
@@ -666,7 +666,7 @@ msgstr "  -c, --core-files       nepoužitelné pro tuto platformu\n"
 #, c-format
 msgid "  -l, --log=FILENAME     write (or append) server log to FILENAME\n"
 msgstr ""
-"  -l, --log=SOUBOR        zapisuj (nebo připoj na konec) log serveru do "
+"  -l, --log=SOUBOR       zapisuj (nebo připoj na konec) log serveru do "
 "SOUBORU.\n"
 
 #: pg_ctl.c:1951
@@ -675,13 +675,13 @@ msgid ""
 "  -o, --options=OPTIONS  command line options to pass to postgres\n"
 "                         (PostgreSQL server executable) or initdb\n"
 msgstr ""
-"  -o, --options=PŘEPÍNAČE  přepínače, které budou předány postgresu\n"
-"                          (spustitelnému souboru PostgreSQL) či initdb\n"
+"  -o, --options=VOLBY    přepínače, které budou předány postgresu\n"
+"                         (spustitelnému souboru PostgreSQL) či initdb\n"
 
 #: pg_ctl.c:1953
 #, c-format
 msgid "  -p PATH-TO-POSTGRES    normally not necessary\n"
-msgstr "  -p CESTA-K-POSTGRESU  za normálních okolností není potřeba\n"
+msgstr "  -p CESTA-K-POSTGRESU   za normálních okolností není potřeba\n"
 
 #: pg_ctl.c:1954
 #, c-format
@@ -725,8 +725,8 @@ msgid ""
 "  immediate   quit without complete shutdown; will lead to recovery on "
 "restart\n"
 msgstr ""
-"  immediate   skonči bez kompletního zastavení; další start "
-"provede                           obnovu po pádu (crash recovery)\n"
+"  immediate   skonči bez kompletního zastavení; po restartu se "
+"provede\n              obnova po pádu (crash recovery)\n"
 
 #: pg_ctl.c:1962
 #, c-format

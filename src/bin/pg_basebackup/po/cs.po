@@ -184,7 +184,7 @@ msgstr "  -D, --pgdata=ADRESÁŘ   ulož base backup do adresáře\n"
 #: pg_basebackup.c:345
 #, c-format
 msgid "  -F, --format=p|t       output format (plain (default), tar)\n"
-msgstr "  -F, --format=p|t         výstupní formát (plain (výchozí), tar)\n"
+msgstr "  -F, --format=p|t       výstupní formát (plain (výchozí), tar)\n"
 
 #: pg_basebackup.c:346
 #, c-format
@@ -236,14 +236,14 @@ msgstr ""
 #: pg_basebackup.c:355
 #, c-format
 msgid "  -z, --gzip             compress tar output\n"
-msgstr "  -z, --gzip               komprimuj výstup taru\n"
+msgstr "  -z, --gzip             komprimuj výstup taru\n"
 
 #: pg_basebackup.c:356
 #, c-format
 msgid ""
 "  -Z, --compress=0-9     compress tar output with given compression level\n"
 msgstr ""
-"  -Z, --compress=0-9       komprimuj výstup taru zvolenou úrovní komprese\n"
+"  -Z, --compress=0-9     komprimuj výstup taru zvolenou úrovní komprese\n"
 
 #: pg_basebackup.c:357
 #, c-format
@@ -261,7 +261,7 @@ msgid ""
 "                         set fast or spread checkpointing\n"
 msgstr ""
 "  -c, --checkpoint=fast|spread\n"
-"                           nastavte fast nebo spread checkpointing\n"
+"                         nastav fast nebo spread checkpointing\n"
 
 #: pg_basebackup.c:360
 #, c-format
@@ -272,7 +272,7 @@ msgstr "  -C, --create-slot      vytvoř replikační slot\n"
 #: pg_basebackup.c:361
 #, c-format
 msgid "  -l, --label=LABEL      set backup label\n"
-msgstr "  -l, --label=NÁZEV        nastav jmenovku zálohy\n"
+msgstr "  -l, --label=NÁZEV      nastav jmenovku zálohy\n"
 
 #: pg_basebackup.c:362
 #, c-format
@@ -293,7 +293,7 @@ msgstr "  -N, --no-sync          nečekat na bezpečné zapsání změn na disk\
 #: pg_basebackup.c:364
 #, c-format
 msgid "  -P, --progress         show progress information\n"
-msgstr "  -P, --progress           zobrazuj informace o průběhu\n"
+msgstr "  -P, --progress         zobrazuj informace o průběhu\n"
 
 #: pg_basebackup.c:365 pg_receivewal.c:89
 #, c-format
@@ -304,12 +304,12 @@ msgstr "  -S, --slot=SLOTNAME    použít tento replikační slot\n"
 #: pg_basebackup.c:366 pg_receivewal.c:91 pg_recvlogical.c:99
 #, c-format
 msgid "  -v, --verbose          output verbose messages\n"
-msgstr "  -v, --verbose            zobrazuj podrobnější zprávy\n"
+msgstr "  -v, --verbose          zobrazuj podrobnější zprávy\n"
 
 #: pg_basebackup.c:367 pg_receivewal.c:92 pg_recvlogical.c:100
 #, c-format
 msgid "  -V, --version          output version information, then exit\n"
-msgstr "  -V, --version             vypiš informace o verzi, potom skonči\n"
+msgstr "  -V, --version          vypiš informace o verzi, potom skonči\n"
 
 #: pg_basebackup.c:368
 #, c-format
@@ -334,7 +334,7 @@ msgstr ""
 #: pg_basebackup.c:371 pg_receivewal.c:94 pg_recvlogical.c:101
 #, c-format
 msgid "  -?, --help             show this help, then exit\n"
-msgstr "  -?, --help                ukaž tuto nápovědu, potom skonči\n"
+msgstr "  -?, --help             ukaž tuto nápovědu, potom skonči\n"
 
 #: pg_basebackup.c:372 pg_receivewal.c:95 pg_recvlogical.c:102
 #, c-format
@@ -354,13 +354,13 @@ msgstr "  -d, --dbname=CONNSTR   connection string\n"
 #, c-format
 msgid "  -h, --host=HOSTNAME    database server host or socket directory\n"
 msgstr ""
-"  -h, --host=HOSTNAME      host databázového serveru nebo adresář se "
+"  -h, --host=HOSTNAME    host databázového serveru nebo adresář se "
 "sockety\n"
 
 #: pg_basebackup.c:375 pg_receivewal.c:98 pg_recvlogical.c:105
 #, c-format
 msgid "  -p, --port=PORT        database server port number\n"
-msgstr "  -p, --port=PORT          port databázového serveru\n"
+msgstr "  -p, --port=PORT        port databázového serveru\n"
 
 #: pg_basebackup.c:376
 #, c-format
@@ -377,12 +377,12 @@ msgstr ""
 #, c-format
 msgid "  -U, --username=NAME    connect as specified database user\n"
 msgstr ""
-"  -U, --username=JMÉNO      připoj se jako uvedený databázový uživatel\n"
+"  -U, --username=JMÉNO   připoj se jako uvedený databázový uživatel\n"
 
 #: pg_basebackup.c:379 pg_receivewal.c:100 pg_recvlogical.c:107
 #, c-format
 msgid "  -w, --no-password      never prompt for password\n"
-msgstr "  -w, --no-password        nikdy se neptej na heslo\n"
+msgstr "  -w, --no-password      nikdy se neptej na heslo\n"
 
 #: pg_basebackup.c:380 pg_receivewal.c:101 pg_recvlogical.c:108
 #, c-format
@@ -390,7 +390,7 @@ msgid ""
 "  -W, --password         force password prompt (should happen "
 "automatically)\n"
 msgstr ""
-"  -W, --password           vynuť dotaz na heslo (mělo by se dít "
+"  -W, --password         vynuť dotaz na heslo (mělo by se dít "
 "automaticky)\n"
 
 #: pg_basebackup.c:381 pg_receivewal.c:105 pg_recvlogical.c:109

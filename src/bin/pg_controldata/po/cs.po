@@ -63,7 +63,7 @@ msgid ""
 "%s displays control information of a PostgreSQL database cluster.\n"
 "\n"
 msgstr ""
-"%s ukáže kontrolní informace o PostgreSQL databázi.\n"
+"%s vypíše kontrolní informace o PostgreSQL databázi.\n"
 "\n"
 
 #: pg_controldata.c:35
@@ -74,7 +74,7 @@ msgstr "Použití:\n"
 #: pg_controldata.c:36
 #, c-format
 msgid "  %s [OPTION] [DATADIR]\n"
-msgstr "  %s [VOLBY] [DATOVÝADRESÁŘ]\n"
+msgstr "  %s [VOLBY] [DATOVÝ-ADRESÁŘ]\n"
 
 #: pg_controldata.c:37
 #, c-format
@@ -94,12 +94,12 @@ msgstr " [-D, --pgdata=]DATADIR  datový adresář\n"
 #: pg_controldata.c:39
 #, c-format
 msgid "  -V, --version          output version information, then exit\n"
-msgstr "  -V, --version             vypiš informace o verzi, potom skonči\n"
+msgstr "  -V, --version          vypiš informaci o verzi, potom skonči\n"
 
 #: pg_controldata.c:40
 #, c-format
 msgid "  -?, --help             show this help, then exit\n"
-msgstr "  -?, --help                ukaž tuto nápovědu, potom skonči\n"
+msgstr "  -?, --help             vypiš tuto nápovědu, potom skonči\n"
 
 #: pg_controldata.c:41
 #, c-format

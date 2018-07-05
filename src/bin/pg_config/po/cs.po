@@ -112,7 +112,7 @@ msgid ""
 "  --includedir          show location of C header files of the client\n"
 "                        interfaces\n"
 msgstr ""
-"  --includedir         ukáže umístění C hlavičkových souborů klientských\n"
+"  --includedir          ukáže umístění C hlavičkových souborů klientských\n"
 "                        rozhraní\n"
 
 #: pg_config.c:83

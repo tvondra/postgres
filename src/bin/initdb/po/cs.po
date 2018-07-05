@@ -583,7 +583,7 @@ msgstr ""
 #, c-format
 msgid ""
 "  -X, --waldir=WALDIR       location for the write-ahead log directory\n"
-msgstr "  -X, --waldir=WALDIR     umístění adresáře s transakčním logem\n"
+msgstr "  -X, --waldir=WALDIR       umístění adresáře s transakčním logem\n"
 
 #: initdb.c:2402
 #, c-format
@@ -617,7 +617,7 @@ msgstr "  -L DIRECTORY              kde se nalézají vstupní soubory\n"
 
 #: initdb.c:2407
 #, c-format
-msgid "  -n, --no-clean            do not clean up after errors\n"
+msgid "  -n, --no-clean           do not clean up after errors\n"
 msgstr "  -n, --no-clean             neuklízet po chybách\n"
 
 #: initdb.c:2408
@@ -626,7 +626,7 @@ msgid ""
 "  -N, --no-sync             do not wait for changes to be written safely to "
 "disk\n"
 msgstr ""
-"  -N, --no-sync              nečekat na bezpečné zapsání změn na disk\n"
+"  -N, --no-sync             nečekat na bezpečné zapsání změn na disk\n"
 
 #: initdb.c:2409
 #, c-format

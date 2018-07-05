@@ -156,7 +156,7 @@ msgstr ""
 #: pg_waldump.c:813
 #, c-format
 msgid "  -V, --version          output version information, then exit\n"
-msgstr "  -V, --version             vypiš informace o verzi, potom skonči\n"
+msgstr "  -V, --version          vypiš informace o verzi, potom skonči\n"
 
 #: pg_waldump.c:814
 #, c-format
@@ -175,7 +175,7 @@ msgstr ""
 #: pg_waldump.c:817
 #, c-format
 msgid "  -?, --help             show this help, then exit\n"
-msgstr "  -?, --help                ukaž tuto nápovědu, potom skonči\n"
+msgstr "  -?, --help             ukaž tuto nápovědu, potom skonči\n"
 
 #: pg_waldump.c:876
 #, c-format

@@ -610,19 +610,19 @@ msgstr " [-D, --pgdata=]ADRESÁŘ          datový adresář\n"
 #, c-format
 msgid "  -e, --epoch=XIDEPOCH           set next transaction ID epoch\n"
 msgstr ""
-"  -e, --epoch=XIDEPOCH      nastaví epochu následujícího ID transakce\n"
+"  -e, --epoch=XIDEPOCH           nastaví epochu následujícího ID transakce\n"
 
 #: pg_resetwal.c:1320
 #, c-format
 msgid "  -f, --force                    force update to be done\n"
-msgstr "  -f, --force              vynutí provedení update\n"
+msgstr "  -f, --force                    vynutí provedení update\n"
 
 #: pg_resetwal.c:1321
 #, c-format
 msgid ""
 "  -l, --next-wal-file=WALFILE    set minimum starting location for new WAL\n"
 msgstr ""
-"  -l, --next-wal-file=WALFILE      vynutí minimální počáteční WAL pozici pro "
+"  -l, --next-wal-file=WALFILE    vynutí minimální počáteční WAL pozici pro "
 "nový transakční log\n"
 
 #: pg_resetwal.c:1322
@@ -630,7 +630,7 @@ msgstr ""
 msgid ""
 "  -m, --multixact-ids=MXID,MXID  set next and oldest multitransaction ID\n"
 msgstr ""
-"  -m, --multixact-ids=MXID,MXID     nastav další a nejstarší ID "
+"  -m, --multixact-ids=MXID,MXID  nastav další a nejstarší ID "
 "multitransakce\n"
 
 #: pg_resetwal.c:1323
@@ -638,42 +638,42 @@ msgstr ""
 msgid ""
 "  -n, --dry-run                  no update, just show what would be done\n"
 msgstr ""
-"  -n, --dry-run              bez update, pouze ukáže co by bylo provedeno\n"
+"  -n, --dry-run                  bez update, pouze ukáže co by bylo provedeno\n"
 
 #: pg_resetwal.c:1324
 #, c-format
 msgid "  -o, --next-oid=OID             set next OID\n"
-msgstr "  -o, --next-oid=OID          nastaví následující OID\n"
+msgstr "  -o, --next-oid=OID             nastaví následující OID\n"
 
 #: pg_resetwal.c:1325
 #, c-format
 msgid "  -O, --multixact-offset=OFFSET  set next multitransaction offset\n"
 msgstr ""
-"  -O, --multixact-offset=OFFSET       nastaví offset následující "
+"  -O, --multixact-offset=OFFSET  nastaví offset následující "
 "multitransakce\n"
 
 #: pg_resetwal.c:1326
 #, c-format
 msgid ""
 "  -V, --version                  output version information, then exit\n"
-msgstr "  -V, --version    ukáže informace o verzi a skončí\n"
+msgstr "  -V, --version                  ukáže informace o verzi a skončí\n"
 
 #: pg_resetwal.c:1327
 #, c-format
 msgid "  -x, --next-transaction-id=XID  set next transaction ID\n"
 msgstr ""
-"  -x, --next-transaction-id=XID          nastaví ID následující transakce\n"
+"  -x, --next-transaction-id=XID  nastaví ID následující transakce\n"
 
 #: pg_resetwal.c:1328
 #, c-format
 msgid "      --wal-segsize=SIZE         size of WAL segments, in megabytes\n"
 msgstr ""
-"      --wal-segsize=VELIKOST         velikost WAL segmentů, v megabytech\n"
+"      --wal-segsize=VELIKOST     velikost WAL segmentů, v megabytech\n"
 
 #: pg_resetwal.c:1329
 #, c-format
 msgid "  -?, --help                     show this help, then exit\n"
-msgstr "  -?, --help       ukáže tuto nápovědu a skončí\n"
+msgstr "  -?, --help                     ukáže tuto nápovědu a skončí\n"
 
 #: pg_resetwal.c:1330
 #, c-format

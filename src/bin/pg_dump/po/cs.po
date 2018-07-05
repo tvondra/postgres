@@ -1501,7 +1501,7 @@ msgstr ""
 #: pg_dump.c:947
 #, c-format
 msgid "  -f, --file=FILENAME          output file or directory name\n"
-msgstr "  -f, --file=SOUBOR        výstupní soubor nebo adresář\n"
+msgstr "  -f, --file=SOUBOR            výstupní soubor nebo adresář\n"
 
 #: pg_dump.c:948
 #, c-format
@@ -1509,21 +1509,20 @@ msgid ""
 "  -F, --format=c|d|t|p         output file format (custom, directory, tar,\n"
 "                               plain text (default))\n"
 msgstr ""
-"  -F, --format=c|d|t|p        formát výstupního soubor (custom, directory, "
+"  -F, --format=c|d|t|p         formát výstupního soubor (custom, directory, "
 "tar,\n"
-"                              plain text (výchozí))\n"
+"                               plain text (výchozí))\n"
 
 #: pg_dump.c:950
 #, c-format
 msgid "  -j, --jobs=NUM               use this many parallel jobs to dump\n"
-msgstr ""
-"  -j, --jobs=NUM               použij tento počet paralelních jobů pro "
+msgstr "  -j, --jobs=NUM               použij tento počet paralelních jobů pro "
 "zálohu\n"
 
 #: pg_dump.c:951 pg_dumpall.c:593
 #, c-format
 msgid "  -v, --verbose                verbose mode\n"
-msgstr "  -v, --verbose            vypisovat více informací\n"
+msgstr "  -v, --verbose                vypisovat více informací\n"
 
 #: pg_dump.c:952 pg_dumpall.c:594
 #, c-format
@@ -1535,7 +1534,7 @@ msgstr "  -V, --version                zobraz informaci o verzi, poté skonči\n
 msgid ""
 "  -Z, --compress=0-9           compression level for compressed formats\n"
 msgstr ""
-"  -Z, --compress=0-9       úroveň komprese při použití komprimovaného "
+"  -Z, --compress=0-9           úroveň komprese při použití komprimovaného "
 "formátu\n"
 
 #: pg_dump.c:954 pg_dumpall.c:595
@@ -1543,7 +1542,7 @@ msgstr ""
 msgid ""
 "  --lock-wait-timeout=TIMEOUT  fail after waiting TIMEOUT for a table lock\n"
 msgstr ""
-"  --lock-wait-timeout=TIMEOUT selže po uplynutí TIMEOUT čekáním na zámek "
+"  --lock-wait-timeout=TIMEOUT  selže po uplynutí TIMEOUT čekáním na zámek "
 "tabulky\n"
 
 #: pg_dump.c:955 pg_dumpall.c:621
@@ -1572,18 +1571,17 @@ msgstr ""
 #: pg_dump.c:959 pg_dumpall.c:598
 #, c-format
 msgid "  -a, --data-only              dump only the data, not the schema\n"
-msgstr ""
-"  -a, --data-only          dump pouze dat bez definic databázových objektů\n"
+msgstr "  -a, --data-only              dump pouze dat bez definic databázových objektů\n"
 
 #: pg_dump.c:960
 #, c-format
 msgid "  -b, --blobs                  include large objects in dump\n"
-msgstr "  -b, --blobs              zahrnout \"large objects\" do dumpu\n"
+msgstr "  -b, --blobs                  zahrnout \"large objects\" do dumpu\n"
 
 #: pg_dump.c:961
 #, c-format
 msgid "  -B, --no-blobs               exclude large objects in dump\n"
-msgstr "  -B, --no-blobs              nezahrnovat \"large objects\" do dumpu\n"
+msgstr "  -B, --no-blobs               nezahrnovat \"large objects\" do dumpu\n"
 
 #: pg_dump.c:962 pg_restore.c:466
 #, c-format
@@ -1591,14 +1589,14 @@ msgid ""
 "  -c, --clean                  clean (drop) database objects before "
 "recreating\n"
 msgstr ""
-"  -c, --clean              odstranit (drop) databázi před jejím vytvořením\n"
+"  -c, --clean                  odstranit (drop) databázi před jejím vytvořením\n"
 
 #: pg_dump.c:963
 #, c-format
 msgid ""
 "  -C, --create                 include commands to create database in dump\n"
 msgstr ""
-"  -C, --create             zahrnout příkazy pro vytvoření databáze do dumpu\n"
+"  -C, --create                 zahrnout příkazy pro vytvoření databáze do dumpu\n"
 
 #: pg_dump.c:964 pg_dumpall.c:600
 #, c-format
@@ -1609,17 +1607,17 @@ msgstr "  -E, --encoding=KÓDOVÁNÍ      kódování znaků databáze\n"
 #, c-format
 msgid "  -n, --schema=SCHEMA          dump the named schema(s) only\n"
 msgstr ""
-"  -n, --schema=SCHEMA      vytvořit dump pouze specifikovaného schématu\n"
+"  -n, --schema=SCHEMA          vytvořit dump pouze specifikovaného schématu\n"
 
 #: pg_dump.c:966
 #, c-format
 msgid "  -N, --exclude-schema=SCHEMA  do NOT dump the named schema(s)\n"
-msgstr "  -N, --exclude-schema=SCHEMA nedumpuj uvedené schéma(ta)\n"
+msgstr "  -N, --exclude-schema=SCHEMA  nedumpuj uvedené schéma(ta)\n"
 
 #: pg_dump.c:967 pg_dumpall.c:602
 #, c-format
 msgid "  -o, --oids                   include OIDs in dump\n"
-msgstr "  -o, --oids               zahrnout OID do dumpu\n"
+msgstr "  -o, --oids                   zahrnout OID do dumpu\n"
 
 #: pg_dump.c:968
 #, c-format
@@ -1627,16 +1625,16 @@ msgid ""
 "  -O, --no-owner               skip restoration of object ownership in\n"
 "                               plain-text format\n"
 msgstr ""
-"  -O, --no-owner           nevypisovat příkazy pro nastavení vlastníka "
+"  -O, --no-owner               nevypisovat příkazy pro nastavení vlastníka "
 "objektu\n"
-"                           v čistě textovém formátu\n"
+"                               v čistě textovém formátu\n"
 
 #: pg_dump.c:970 pg_dumpall.c:605
 #, c-format
 msgid "  -s, --schema-only            dump only the schema, no data\n"
 msgstr ""
-"  -s, --schema-only        dump pouze definic databázových objektů\n"
-"                           (tabulek apod.) bez dat\n"
+"  -s, --schema-only            dump pouze definic databázových objektů\n"
+"                               (tabulek apod.) bez dat\n"
 
 #: pg_dump.c:971
 #, c-format
@@ -1644,30 +1642,30 @@ msgid ""
 "  -S, --superuser=NAME         superuser user name to use in plain-text "
 "format\n"
 msgstr ""
-"  -S, --superuser=JMÉNO    uživatelské jméno superuživatele použité při "
+"  -S, --superuser=JMÉNO        uživatelské jméno superuživatele použité při "
 "dumpu\n"
 
 #: pg_dump.c:972
 #, c-format
 msgid "  -t, --table=TABLE            dump the named table(s) only\n"
-msgstr "  -t, --table=TABULKA      provést dump pouze uvedené tabulky\n"
+msgstr "  -t, --table=TABULKA          provést dump pouze uvedené tabulky\n"
 
 #: pg_dump.c:973
 #, c-format
 msgid "  -T, --exclude-table=TABLE    do NOT dump the named table(s)\n"
-msgstr "  -T, --exclude-table=TABLE   neprováděj dump uvedených tabulek\n"
+msgstr "  -T, --exclude-table=TABLE    neprováděj dump uvedených tabulek\n"
 
 #: pg_dump.c:974 pg_dumpall.c:608
 #, c-format
 msgid "  -x, --no-privileges          do not dump privileges (grant/revoke)\n"
 msgstr ""
-"  -x, --no-privileges      neprovádět dump přístupových práv (grant/revoke)\n"
+"  -x, --no-privileges          neprovádět dump přístupových práv (grant/revoke)\n"
 
 #: pg_dump.c:975 pg_dumpall.c:609
 #, c-format
 msgid "  --binary-upgrade             for use by upgrade utilities only\n"
 msgstr ""
-"  --binary-upgrade            pouze pro použití upgradovacími nástroji\n"
+"  --binary-upgrade             pouze pro použití upgradovacími nástroji\n"
 
 #: pg_dump.c:976 pg_dumpall.c:610
 #, c-format
@@ -1675,7 +1673,7 @@ msgid ""
 "  --column-inserts             dump data as INSERT commands with column "
 "names\n"
 msgstr ""
-"  --column-inserts            použije pro dump dat příkaz INSERT se jmény "
+"  --column-inserts             použije pro dump dat příkaz INSERT se jmény "
 "sloupců\n"
 
 #: pg_dump.c:977 pg_dumpall.c:611
@@ -1684,16 +1682,16 @@ msgid ""
 "  --disable-dollar-quoting     disable dollar quoting, use SQL standard "
 "quoting\n"
 msgstr ""
-"  --disable-dollar-quoting    nepoužívat znak dolaru místo uvozovek, "
+"  --disable-dollar-quoting     nepoužívat znak dolaru místo uvozovek, "
 "používat\n"
-"                           standardní SQL uvozování\n"
+"                               standardní SQL uvozování\n"
 
 #: pg_dump.c:978 pg_dumpall.c:612 pg_restore.c:483
 #, c-format
 msgid ""
 "  --disable-triggers           disable triggers during data-only restore\n"
 msgstr ""
-"  --disable-triggers          zakázat volání triggerů během obnovy dat\n"
+"  --disable-triggers           zakázat volání triggerů během obnovy dat\n"
 
 #: pg_dump.c:979
 #, c-format
@@ -1710,7 +1708,7 @@ msgstr ""
 #, c-format
 msgid ""
 "  --exclude-table-data=TABLE   do NOT dump data for the named table(s)\n"
-msgstr "  --exclude-table-data=TABLE  NEdumpuj data pro vyjmenované tabulky\n"
+msgstr "  --exclude-table-data=TABLE   NEdumpuj data pro vyjmenované tabulky\n"
 
 #: pg_dump.c:982 pg_dumpall.c:613 pg_restore.c:485
 #, c-format
@@ -1723,7 +1721,7 @@ msgid ""
 "  --inserts                    dump data as INSERT commands, rather than "
 "COPY\n"
 msgstr ""
-"  --inserts                   použít pro dump dat příkazy INSERT místo COPY\n"
+"  --inserts                    použít pro dump dat příkazy INSERT místo COPY\n"
 
 #: pg_dump.c:984 pg_dumpall.c:615
 #, c-format
@@ -1747,7 +1745,7 @@ msgstr "  --no-publications            neprovádět dump publikací\n"
 #: pg_dump.c:987 pg_dumpall.c:619
 #, c-format
 msgid "  --no-security-labels         do not dump security label assignments\n"
-msgstr "  --no-security-labels        neprovádět dump bezpečnostních štítků\n"
+msgstr "  --no-security-labels         neprovádět dump bezpečnostních štítků\n"
 
 #: pg_dump.c:988 pg_dumpall.c:620
 #, c-format
@@ -1768,19 +1766,19 @@ msgstr ""
 #: pg_dump.c:990 pg_dumpall.c:622
 #, c-format
 msgid "  --no-tablespaces             do not dump tablespace assignments\n"
-msgstr "  --no-tablespaces            neprovádět dump přiřazení tablespaces\n"
+msgstr "  --no-tablespaces             neprovádět dump přiřazení tablespaces\n"
 
 #: pg_dump.c:991 pg_dumpall.c:623
 #, c-format
 msgid "  --no-unlogged-table-data     do not dump unlogged table data\n"
-msgstr "  --no-unlogged-table-data    nedumpuj data unlogged tabulek\n"
+msgstr "  --no-unlogged-table-data     nedumpuj data unlogged tabulek\n"
 
 #: pg_dump.c:992 pg_dumpall.c:624
 #, c-format
 msgid ""
 "  --quote-all-identifiers      quote all identifiers, even if not key words\n"
 msgstr ""
-"  --quote-all-identifiers     všechny identifikátory uveď v uvozovkách, i "
+"  --quote-all-identifiers      všechny identifikátory uveď v uvozovkách, i "
 "když se nejedná o klíčová slova\n"
 
 #: pg_dump.c:993
@@ -1789,7 +1787,7 @@ msgid ""
 "  --section=SECTION            dump named section (pre-data, data, or post-"
 "data)\n"
 msgstr ""
-"  --section=SECTION           dump pojmenované sekce (pre-data, data, nebo "
+"  --section=SECTION            dump pojmenované sekce (pre-data, data, nebo "
 "post-data)\n"
 
 #: pg_dump.c:994
@@ -1798,7 +1796,7 @@ msgid ""
 "  --serializable-deferrable    wait until the dump can run without "
 "anomalies\n"
 msgstr ""
-"  --serializable-deferrable   počkej než bude možné provést dump bez "
+"  --serializable-deferrable    počkej než bude možné provést dump bez "
 "anomálií\n"
 
 #: pg_dump.c:995
@@ -1826,9 +1824,9 @@ msgid ""
 "                               ALTER OWNER commands to set ownership\n"
 msgstr ""
 "  --use-set-session-authorization\n"
-"                           používat příkaz SET SESSION AUTHORIZATION "
+"                               používat příkaz SET SESSION AUTHORIZATION "
 "namísto\n"
-"                           příkazu ALTER OWNER pro nastavení vlastníka\n"
+"                               příkazu ALTER OWNER pro nastavení vlastníka\n"
 
 #: pg_dump.c:1002 pg_dumpall.c:629 pg_restore.c:500
 #, c-format
@@ -1842,7 +1840,7 @@ msgstr ""
 #: pg_dump.c:1003
 #, c-format
 msgid "  -d, --dbname=DBNAME      database to dump\n"
-msgstr "  -d, --dbname=JMÉNO        jméno zdrojové databáze\n"
+msgstr "  -d, --dbname=JMÉNO       jméno zdrojové databáze\n"
 
 #: pg_dump.c:1004 pg_dumpall.c:631 pg_restore.c:501
 #, c-format
@@ -1859,7 +1857,7 @@ msgstr "  -p, --port=PORT          port databázového serveru\n"
 #: pg_dump.c:1006 pg_dumpall.c:634 pg_restore.c:503
 #, c-format
 msgid "  -U, --username=NAME      connect as specified database user\n"
-msgstr "  -U, --username=JMÉNO      připoj se jako uvedený uživatel\n"
+msgstr "  -U, --username=JMÉNO     připoj se jako uvedený uživatel\n"
 
 #: pg_dump.c:1007 pg_dumpall.c:635 pg_restore.c:504
 #, c-format
@@ -1877,7 +1875,7 @@ msgstr ""
 #: pg_dump.c:1009 pg_dumpall.c:637
 #, c-format
 msgid "  --role=ROLENAME          do SET ROLE before dump\n"
-msgstr "  --role=ROLENAME             před dumpem proveď SET ROLE\n"
+msgstr "  --role=ROLENAME          před dumpem proveď SET ROLE\n"
 
 #: pg_dump.c:1011
 #, c-format

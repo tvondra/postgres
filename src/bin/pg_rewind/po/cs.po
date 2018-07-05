@@ -476,14 +476,14 @@ msgstr "Přepínače:\n"
 #, c-format
 msgid "  -D, --target-pgdata=DIRECTORY  existing data directory to modify\n"
 msgstr ""
-"  -D, --target-pgdata=ADRESÁŘ  existující datový adresář pro modifikaci\n"
+"  -D, --target-pgdata=ADRESÁŘ    existující datový adresář pro modifikaci\n"
 
 #: pg_rewind.c:70
 #, c-format
 msgid ""
 "      --source-pgdata=DIRECTORY  source data directory to synchronize with\n"
 msgstr ""
-"      --source-pgdata=ADRESÁŘ  zdrojový datový adresář proti kterému se "
+"      --source-pgdata=ADRESÁŘ    zdrojový datový adresář proti kterému se "
 "synchronizovat\n"
 
 #: pg_rewind.c:71

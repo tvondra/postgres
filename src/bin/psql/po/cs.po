@@ -2382,7 +2382,7 @@ msgstr ""
 #: help.c:114
 #, c-format
 msgid "  -H, --html               HTML table output mode\n"
-msgstr "  -H, --html               Mód HTML formátu tabulky\n"
+msgstr "  -H, --html               mód HTML formátu tabulky\n"
 
 #: help.c:115
 #, c-format
@@ -2390,8 +2390,8 @@ msgid ""
 "  -P, --pset=VAR[=ARG]     set printing option VAR to ARG (see \\pset "
 "command)\n"
 msgstr ""
-"  -P, --pset=VAR[=ARG]     nastaví zobrazovací parametr 'VAR' na hodnotu "
-"'ARG' (viz. příkaz \\pset)\n"
+"  -P, --pset=VAR[=ARG]     nastaví zobrazovací parametr VAR na hodnotu "
+"ARG (viz. příkaz \\pset)\n"
 
 #: help.c:116
 #, c-format
@@ -2407,7 +2407,7 @@ msgstr ""
 #: help.c:118
 #, c-format
 msgid "  -t, --tuples-only        print rows only\n"
-msgstr "  -t, --tuples-only        tiskne pouze řádky\n"
+msgstr "  -t, --tuples-only        tiskni pouze řádky\n"
 
 #: help.c:119
 #, c-format
@@ -2415,13 +2415,13 @@ msgid ""
 "  -T, --table-attr=TEXT    set HTML table tag attributes (e.g., width, "
 "border)\n"
 msgstr ""
-"  -T, --table-attr=TEXT    nastavení atributů HTML tabulky (např. width, "
+"  -T, --table-attr=TEXT    nastaví atributy HTML tabulky (např. width, "
 "border)\n"
 
 #: help.c:120
 #, c-format
 msgid "  -x, --expanded           turn on expanded table output\n"
-msgstr "  -x, --expanded           výstupu v rozšířené tabulce\n"
+msgstr "  -x, --expanded           zapne rozšířený tabulkový výstup\n"
 
 #: help.c:121
 #, c-format
@@ -2471,14 +2471,14 @@ msgstr "lokální soket"
 #, c-format
 msgid "  -p, --port=PORT          database server port (default: \"%s\")\n"
 msgstr ""
-"  -p, --port=PORT          specifikuje port databázového serveru "
+"  -p, --port=PORT          port databázového serveru "
 "(implicitně: \"%s\")\n"
 
 #: help.c:139
 #, c-format
 msgid "  -U, --username=USERNAME  database user name (default: \"%s\")\n"
 msgstr ""
-"  -U, --username=JMÉNO     specifikuje jméno databázového uživatele "
+"  -U, --username=JMÉNO     jméno databázového uživatele "
 "(implicitně: \"%s\")\n"
 
 #: help.c:140

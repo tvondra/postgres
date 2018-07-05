@@ -1018,12 +1018,12 @@ msgstr "  -k, --link                    vytváří odkazy namísto copírování
 #: option.c:288
 #, c-format
 msgid "  -o, --old-options=OPTIONS     old cluster options to pass to the server\n"
-msgstr "  -o, --old-options=VOLBY     volby pro starý cluster které se mají předat serveru\n"
+msgstr "  -o, --old-options=VOLBY       volby pro starý cluster které se mají předat serveru\n"
 
 #: option.c:289
 #, c-format
 msgid "  -O, --new-options=OPTIONS     new cluster options to pass to the server\n"
-msgstr "  -O, --new-options=VOLBY     volby pro nový cluster které se mají předat serveru\n"
+msgstr "  -O, --new-options=VOLBY       volby pro nový cluster které se mají předat serveru\n"
 
 #: option.c:290
 #, c-format
@@ -1043,7 +1043,7 @@ msgstr "  -r, --retain                  v případě úspěchu zachovat SQL a lo
 #: option.c:293
 #, c-format
 msgid "  -U, --username=NAME           cluster superuser (default \"%s\")\n"
-msgstr "  -U, --username=JMÉNO           superuživatel pro cluster (implicitně \"%s\")\n"
+msgstr "  -U, --username=JMÉNO          superuživatel pro cluster (implicitně \"%s\")\n"
 
 #: option.c:294
 #, c-format

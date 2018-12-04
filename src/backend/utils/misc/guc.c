@@ -519,6 +519,7 @@ static int	wal_block_size;
 static bool data_checksums;
 static bool integer_datetimes;
 static bool assert_enabled;
+static char *snapshot_timestamp_string;
 
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
@@ -3066,6 +3067,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"snapshot_timestamp_timeout", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("determines how long to wait for snapshot timestamp"),
+			NULL,
+			GUC_UNIT_S
+		},
+		&snapshot_timestamp_timeout,
+		0, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3890,6 +3902,16 @@ static struct config_string ConfigureNamesString[] =
 		&jit_provider,
 		"llvmjit",
 		NULL, NULL, NULL
+	},
+
+	{
+		{"snapshot_timestamp", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("snapshot timetamp to use (empty to use regular MVCC snapshot)"),
+			NULL
+		},
+		&snapshot_timestamp_string,
+		"",
+		check_snapshot_timestamp, assign_snapshot_timestamp, show_snapshot_timestamp
 	},
 
 	/* End-of-list marker */

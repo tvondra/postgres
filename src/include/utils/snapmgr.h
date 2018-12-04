@@ -78,6 +78,10 @@ extern void PopActiveSnapshot(void);
 extern Snapshot GetActiveSnapshot(void);
 extern bool ActiveSnapshotSet(void);
 
+extern void PushTimestampSnapshot(void);
+extern void PopTimestampSnapshot(void);
+extern void WaitForTimestampSnapshot(void);
+
 extern Snapshot RegisterSnapshot(Snapshot snapshot);
 extern void UnregisterSnapshot(Snapshot snapshot);
 extern Snapshot RegisterSnapshotOnOwner(Snapshot snapshot, ResourceOwner owner);
@@ -109,5 +113,13 @@ extern Size EstimateSnapshotSpace(Snapshot snapshot);
 extern void SerializeSnapshot(Snapshot snapshot, char *start_address);
 extern Snapshot RestoreSnapshot(char *start_address);
 extern void RestoreTransactionSnapshot(Snapshot snapshot, void *master_pgproc);
+
+/* Determine earliest possible snapshot timestamp */
+typedef TimestampTz (*GetSnapshotTimestamp_hook_type) (TimestampTz ts, bool update);
+extern PGDLLIMPORT GetSnapshotTimestamp_hook_type GetSnapshotTimestamp_hook;
+
+/* Wait for the snapshot timestamp */
+typedef void (*WaitSnapshotTimestamp_hook_type) (TimestampTz ts);
+extern PGDLLIMPORT WaitSnapshotTimestamp_hook_type WaitSnapshotTimestamp_hook;
 
 #endif							/* SNAPMGR_H */

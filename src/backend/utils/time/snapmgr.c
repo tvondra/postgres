@@ -54,6 +54,7 @@
 #include "catalog/catalog.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -227,6 +228,10 @@ static TimestampTz AlignTimestampToMinuteBoundary(TimestampTz ts);
 static Snapshot CopySnapshot(Snapshot snapshot);
 static void FreeSnapshot(Snapshot snapshot);
 static void SnapshotResetXmin(void);
+
+GetSnapshotTimestamp_hook_type GetSnapshotTimestamp_hook = NULL;
+WaitSnapshotTimestamp_hook_type WaitSnapshotTimestamp_hook = NULL;
+
 
 /*
  * Snapshot fields to be serialized.
@@ -769,6 +774,124 @@ void
 PushCopiedSnapshot(Snapshot snapshot)
 {
 	PushActiveSnapshot(CopySnapshot(snapshot));
+}
+
+/*
+ * PushTimestampSnapshot
+ *		Copy the current active snapshot and modify it to use timestamp.
+ *
+ * Similar to PushCopiedSnapshot, but before pushing it also sets the
+ * satisfy function to HeapTupleSatisfiesTimestamp. This only happens
+ * when the timestamp is set, though. Otherwise it's a noop.
+ */
+void
+PushTimestampSnapshot(void)
+{
+	Snapshot	snap;
+
+	Assert(ActiveSnapshot != NULL);
+
+	if (!snapshot_timestamp_use)
+		return;
+
+	snap = CopySnapshot(GetActiveSnapshot());
+	snap->satisfies = HeapTupleSatisfiesTimestamp;
+
+	PushActiveSnapshot(snap);
+}
+
+/*
+ * PopTimestampSnapshot
+ *		Removes the active timestamp snapshot (if any).
+ *
+ * Counterpart to PopTimestampSnapshot (noop when timestamp not set).
+ */
+void
+PopTimestampSnapshot(void)
+{
+	if (!snapshot_timestamp_use)
+		return;
+
+	PopActiveSnapshot();
+}
+
+/*
+ * WaitForTimestampSnapshot
+ *		Wait until we pass the requested snapshot timestamp.
+ *
+ * This does two things - first it determines what the snapshot timestamp is
+ * (when "current" is used) and if it's actually acceptable both with respect
+ * to current timestamp and other nodes (using a hook).
+ */
+void
+WaitForTimestampSnapshot(void)
+{
+	TimestampTz		current_ts;
+	int				sleep_time;
+
+	if (!snapshot_timestamp_use)
+		return;
+
+	/*
+	 * Decide which snapshot timestamp to use, depending on whether the user
+	 * specified "current" or explicit literal value.
+	 * 
+	 * In the first case ("current") we pick the fist possible timestamp, by
+	 * getting the local timestamp and then letting plugins to update the
+	 * value if we already received changes with a newer timestamp (perhaps
+	 * due to clock skew or something like that).
+	 *
+	 * In case of the explicit literal, we also get the current timestamp and
+	 * then use it to eliminate obviously incorrect timestamp values (already
+	 * in the past locally). Then we check that none of the plugins is ahead.
+	 */
+	current_ts = GetCurrentTimestamp();
+
+	/* for current snapshot timestamp, use it directly */
+	if (snapshot_timestamp_current)
+		snapshot_timestamp = current_ts;
+
+	if (timestamptz_cmp_internal(current_ts, snapshot_timestamp) > 0)
+		elog(ERROR, "snapshot timestamp must not be in the past (locally)");
+
+	/*
+	 * The snapshot timestamp seems viable locally, but what about other
+	 * nodes? Some might be ahead due to clock skew etc. Either reject
+	 * the timestamp or update it, depending on snapshot_timestamp_current.
+	 */
+	if (GetSnapshotTimestamp_hook)
+		snapshot_timestamp = GetSnapshotTimestamp_hook(snapshot_timestamp,
+													   snapshot_timestamp_current);
+
+	/*
+	 * With current timestamp, we need to report the actually used timestamp
+	 * somehow. For now simply print a WARNING, although it's not a great
+	 * solution.
+	 */
+	if (snapshot_timestamp_current)
+		elog(WARNING, "using snapshot timestamp %s", timestamptz_to_str(snapshot_timestamp));
+
+	/* sleep until we reach the snapshot timestamp locally */
+	CHECK_FOR_INTERRUPTS();
+
+	sleep_time = (snapshot_timestamp - GetCurrentTimestamp()) / INT64CONST(1000);
+
+	if (sleep_time > 0)
+	{
+		/* XXX Does this need WL_POSTMASTER_DEATH too? */
+		WaitLatch(MyLatch,
+				  WL_LATCH_SET | WL_TIMEOUT,
+				  sleep_time, PG_WAIT_TIMEOUT);
+
+		ResetLatch(MyLatch);
+	}
+
+	/*
+	 * Now make sure the plugin also thinks it's OK to proceed. E.g. we may
+	 * need to wait for all data from all remote nodes.
+	 */
+	if (WaitSnapshotTimestamp_hook)
+		WaitSnapshotTimestamp_hook(snapshot_timestamp);
 }
 
 /*

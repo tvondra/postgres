@@ -492,6 +492,17 @@ PortalStart(Portal portal, ParamListInfo params,
 					PushActiveSnapshot(GetTransactionSnapshot());
 
 				/*
+				 * Set snapshot using the timestamp if necessary.
+				 */
+				PushTimestampSnapshot();
+
+				/*
+				 * Wait until we the requested snapshot timestamp passes and
+				 * until we get data from all other nodes.
+				 */
+				WaitForTimestampSnapshot();
+
+				/*
 				 * Create QueryDesc in portal's context; for the moment, set
 				 * the destination to DestNone.
 				 */
@@ -535,6 +546,11 @@ PortalStart(Portal portal, ParamListInfo params,
 				portal->atStart = true;
 				portal->atEnd = false;	/* allow fetches */
 				portal->portalPos = 0;
+
+				/*
+				 * Remove the timestamp snapshot if needed.
+				 */
+				PopTimestampSnapshot();
 
 				PopActiveSnapshot();
 				break;

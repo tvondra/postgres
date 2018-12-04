@@ -18,6 +18,7 @@
 
 #include <ctype.h>
 
+#include "access/commit_ts.h"
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/xact.h"
@@ -30,6 +31,7 @@
 #include "utils/syscache.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/tqual.h"
 #include "utils/varlena.h"
 #include "mb/pg_wchar.h"
 
@@ -949,4 +951,109 @@ show_role(void)
 
 	/* Otherwise we can just use the GUC string */
 	return role_string ? role_string : "none";
+}
+
+/*
+ * SNAPSHOT_TIMESTAMP
+ */
+
+/* used to pass parsed data between the check and assign callbacks */
+struct snap_timestamp {
+	bool		current;
+	TimestampTz	value;
+} snap_timestamp;
+
+/*
+ * check_snapshot_timestamp: GUC check_hook for snapshot_timestamp
+ *
+ * Checks that the value is either "current" or a timestamp literal recognized
+ * by timestamptz input function.
+ */
+bool
+check_snapshot_timestamp(char **newval, void **extra, GucSource source)
+{
+	struct snap_timestamp  *ts;
+
+	/* when set to empty string, reset the timestamp to 'empty' */
+	if (strcmp(*newval, "") == 0)
+	{
+		*extra = NULL;
+		return true;
+	}
+
+	/* this feature requires tracking of commit timestamps */
+	if (!track_commit_timestamp)
+		elog(ERROR, "timestamp-based snapshots require track_commit_timestamp = on");
+
+	ts = malloc(sizeof(struct snap_timestamp));
+	if (!ts)
+		return false;
+
+	ts->current = false;
+	*extra = ts;
+
+	/* pass back data for assign_snapshot_timestamp to use */
+	if (strcmp(*newval, "current") == 0)
+	{
+		ts->current = true;
+		return true;
+	}
+
+	/* may throw error, so maybe wrap in PG_TRY block? */
+	ts->value = DirectFunctionCall3(timestamptz_in,
+									  CStringGetDatum(*newval),
+									  ObjectIdGetDatum(InvalidOid),
+									  Int32GetDatum(-1));
+
+	return true;
+}
+
+/*
+ * assign_snapshot_timestamp: GUC assign_hook for snapshot_timestamp
+ */
+void
+assign_snapshot_timestamp(const char *newval, void *extra)
+{
+	struct snap_timestamp  *ts;
+
+	/* NULL in extra value means "don't use snapshot timestamp" */
+	if (!extra)
+	{
+		snapshot_timestamp_use = false;
+		snapshot_timestamp = (Datum) 0;
+		return;
+	}
+
+	snapshot_timestamp_use = true;
+
+	ts = (struct snap_timestamp  *) extra;
+
+	/* if instructed to use current timestamp */
+	if (ts->current)
+	{
+		snapshot_timestamp_current = true;
+		snapshot_timestamp = (Datum) 0;
+	}
+	else
+	{
+		snapshot_timestamp_current = false;
+		snapshot_timestamp = ts->value;
+	}
+}
+
+/*
+ * show_snapshot_timestamp: GUC show_hook for snapshot_timestamp
+ */
+const char *
+show_snapshot_timestamp(void)
+{
+	Datum	str;
+
+	if (!snapshot_timestamp_use)
+		return "";
+
+	str = DirectFunctionCall1(timestamptz_out,
+							  TimestampTzGetDatum(snapshot_timestamp));
+
+	return DatumGetCString(str);
 }

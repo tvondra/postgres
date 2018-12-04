@@ -24,6 +24,11 @@ extern PGDLLIMPORT SnapshotData SnapshotSelfData;
 extern PGDLLIMPORT SnapshotData SnapshotAnyData;
 extern PGDLLIMPORT SnapshotData CatalogSnapshotData;
 
+extern bool			snapshot_timestamp_use;
+extern bool			snapshot_timestamp_current;
+extern TimestampTz	snapshot_timestamp;
+extern int			snapshot_timestamp_timeout;
+
 #define SnapshotSelf		(&SnapshotSelfData)
 #define SnapshotAny			(&SnapshotAnyData)
 
@@ -57,6 +62,8 @@ typedef enum
 
 /* These are the "satisfies" test routines for the various snapshot types */
 extern bool HeapTupleSatisfiesMVCC(HeapTuple htup,
+					   Snapshot snapshot, Buffer buffer);
+extern bool HeapTupleSatisfiesTimestamp(HeapTuple htup,
 					   Snapshot snapshot, Buffer buffer);
 extern bool HeapTupleSatisfiesSelf(HeapTuple htup,
 					   Snapshot snapshot, Buffer buffer);

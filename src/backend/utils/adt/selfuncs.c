@@ -182,10 +182,6 @@ static double eqjoinsel_semi(Oid opfuncoid,
 			   RelOptInfo *inner_rel);
 static bool estimate_multivariate_ndistinct(PlannerInfo *root,
 								RelOptInfo *rel, List **varinfos, double *ndistinct);
-static bool convert_to_scalar(Datum value, Oid valuetypid, Oid collid,
-				  double *scaledvalue,
-				  Datum lobound, Datum hibound, Oid boundstypid,
-				  double *scaledlobound, double *scaledhibound);
 static double convert_numeric_to_scalar(Datum value, Oid typid, bool *failure);
 static void convert_string_to_scalar(char *value,
 						 double *scaledvalue,
@@ -3822,8 +3818,7 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 	/*
 	 * Get the numdistinct estimate for the Vars of this rel.
 	 *
-	 * We
-	 * iteratively search for multivariate n-distinct with maximum number
+	 * We iteratively search for multivariate n-distinct with maximum number
 	 * of vars; assuming that each var group is independent of the others,
 	 * we multiply them together.  Any remaining relvarinfos after no more
 	 * multivariate matches are found are assumed independent too, so
@@ -4123,7 +4118,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		int			nshared;
 
 		/* skip statistics of other kinds */
-		if (info->kind != STATS_EXT_NDISTINCT)
+		if ((info->kinds & STATS_EXT_INFO_NDISTINCT) == 0)
 			continue;
 
 		/* compute attnums shared by the vars and the statistics object */
@@ -4232,7 +4227,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
  * The several datatypes representing relative times (intervals) are all
  * converted to measurements expressed in seconds.
  */
-static bool
+bool
 convert_to_scalar(Datum value, Oid valuetypid, Oid collid, double *scaledvalue,
 				  Datum lobound, Datum hibound, Oid boundstypid,
 				  double *scaledlobound, double *scaledhibound)

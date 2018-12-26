@@ -222,6 +222,11 @@ extern void genericcostestimate(PlannerInfo *root, IndexPath *path,
 					List *qinfos,
 					GenericCosts *costs);
 
+extern bool convert_to_scalar(Datum value, Oid valuetypid, Oid collid,
+				  double *scaledvalue, Datum lobound, Datum hibound,
+				  Oid boundstypid,
+				  double *scaledlobound, double *scaledhibound);
+
 /* Functions in array_selfuncs.c */
 
 extern Selectivity scalararraysel_containment(PlannerInfo *root,

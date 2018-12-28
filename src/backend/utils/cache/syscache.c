@@ -265,6 +265,30 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		256
 	},
+	{
+		ChangeSetRelationId,	/* CHANGESETOID */
+		ChangeSetOidIndexId,
+		1,
+		{
+			Anum_pg_changeset_chsetid,
+			0,
+			0,
+			0
+		},
+		64
+	},
+	{
+		ChangeSetRelationId,	/* CHANGESETRELID */
+		ChangeSetRelidIndexId,
+		2,
+		{
+			Anum_pg_changeset_chsetrelid,
+			Anum_pg_changeset_chsetid,
+			0,
+			0
+		},
+		64
+	},
 	{OperatorClassRelationId,	/* CLAAMNAMENSP */
 		OpclassAmNameNspIndexId,
 		3,
@@ -348,6 +372,39 @@ static const struct cachedesc cacheinfo[] = {
 		{
 			Anum_pg_conversion_oid,
 			0,
+			0,
+			0
+		},
+		8
+	},
+	{CubeRelationId,			/* CUBECHSETID */
+		CubeChangeSetIdIndexId,
+		2,
+		{
+			Anum_pg_cube_cubechsetid,
+			Anum_pg_cube_cubeid,
+			0,
+			0
+		},
+		8
+	},
+	{CubeRelationId,			/* CUBEOID */
+		CubeIdIndexId,
+		1,
+		{
+			Anum_pg_cube_cubeid,
+			0,
+			0,
+			0
+		},
+		8
+	},
+	{CubeRelationId,			/* CUBERELID */
+		CubeRelidIndexId,
+		2,
+		{
+			Anum_pg_cube_cuberelid,
+			Anum_pg_cube_cubeid,
 			0,
 			0
 		},

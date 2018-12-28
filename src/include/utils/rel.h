@@ -17,6 +17,8 @@
 #include "access/tupdesc.h"
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_changeset.h"
+#include "catalog/pg_cube.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_publication.h"
 #include "fmgr.h"
@@ -63,6 +65,10 @@ typedef struct RelationData
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
 	bool		rd_statvalid;	/* is rd_statlist valid? */
+	bool		rd_chsetvalid;	/* state of rd_chsetlist: false = not valid,
+								 * true = valid */
+	bool		rd_cubevalid;	/* state of rd_cubelist: false = not valid,
+								 * true = valid */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -119,6 +125,12 @@ typedef struct RelationData
 
 	PublicationActions *rd_pubactions;	/* publication actions */
 
+	/* data managed by RelationGetChangeSetList: */
+	List	   *rd_chsetlist;	/* list of OIDs of changesets on relation */
+
+	/* data managed by RelationGetCubeList: */
+	List	   *rd_cubelist;	/* list of OIDs of cubes on relation */
+
 	/*
 	 * rd_options is set whenever rd_rel is loaded into the relcache entry.
 	 * Note that you can NOT look into rd_rel for this data.  NULL means "use
@@ -162,6 +174,19 @@ typedef struct RelationData
 	uint16	   *rd_exclstrats;	/* exclusion ops' strategy numbers, if any */
 	void	   *rd_amcache;		/* available for use by index AM */
 	Oid		   *rd_indcollation;	/* OIDs of index collations */
+
+	/* These are non-NULL only for an changeset relation: */
+	Form_pg_changeset rd_changeset;	/* pg_changeset tuple describing this changeset */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_changesettuple;	/* all of pg_changeset tuple */
+
+	/* These are non-NULL only for an cube relation: */
+	Form_pg_cube rd_cube;	/* pg_cube tuple describing this changeset */
+	/* use "struct" here to avoid needing to include htup.h: */
+	struct HeapTupleData *rd_cubetuple;	/* all of pg_cube tuple */
+
+	MemoryContext rd_cubecxt;	/* private memory cxt for this stuff */
+	List	   *rd_cubeexprs;	/* cube expression trees, if any */
 
 	/*
 	 * foreign-table support

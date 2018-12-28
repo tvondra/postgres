@@ -1119,6 +1119,7 @@ ExecCleanupTupleRouting(ModifyTableState *mtstate,
 														   resultRelInfo);
 
 		ExecCloseIndices(resultRelInfo);
+		ExecCloseChangeSets(resultRelInfo);
 		heap_close(resultRelInfo->ri_RelationDesc, NoLock);
 	}
 }

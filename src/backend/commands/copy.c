@@ -2969,6 +2969,10 @@ CopyFrom(CopyState cstate)
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
+
+					/* and now also insert the tuple into all changesets */
+					if (resultRelInfo->ri_NumChangeSets > 0)
+						ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 				}
 			}
 
@@ -3030,6 +3034,7 @@ CopyFrom(CopyState cstate)
 															  target_resultRelInfo);
 
 	ExecCloseIndices(target_resultRelInfo);
+	ExecCloseChangeSets(resultRelInfo);
 
 	/* Close all the partitioned tables, leaf partitions, and their indices */
 	if (proute)
@@ -3123,6 +3128,21 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			ExecARInsertTriggers(estate, resultRelInfo,
 								 bufferedTuples[i],
 								 NIL, cstate->transition_capture);
+		}
+	}
+
+	/*
+	 * If there are any changesets, insert the tuples into them.
+	 *
+	 * FIXME This should probably do a batch insert too (now it's each row).
+	 */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+	{
+		for (i = 0; i < nBufferedTuples; i++)
+		{
+			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ExecInsertChangeSetTuples(CHANGESET_INSERT, myslot, estate);
 		}
 	}
 

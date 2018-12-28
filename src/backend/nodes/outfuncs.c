@@ -2004,6 +2004,18 @@ _outGroupingSetsPath(StringInfo str, const GroupingSetsPath *node)
 }
 
 static void
+_outCubePath(StringInfo str, const CubePath *node)
+{
+	WRITE_NODE_TYPE("CUBEPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(cubepath);
+	WRITE_NODE_FIELD(chsetpath);
+	WRITE_FLOAT_FIELD(numGroups, "%.0f");
+}
+
+static void
 _outMinMaxAggPath(StringInfo str, const MinMaxAggPath *node)
 {
 	WRITE_NODE_TYPE("MINMAXAGGPATH");
@@ -2337,6 +2349,24 @@ _outStatisticExtInfo(StringInfo str, const StatisticExtInfo *node)
 }
 
 static void
+_outChangeSetOptInfo(StringInfo str, const ChangeSetOptInfo *node)
+{
+	WRITE_NODE_TYPE("CHANGESETOPTINFO");
+
+	/* this isn't a complete set of fields */
+	WRITE_OID_FIELD(chsetoid);
+}
+
+static void
+_outCubeOptInfo(StringInfo str, const CubeOptInfo *node)
+{
+	WRITE_NODE_TYPE("CUBEOPTINFO");
+
+	/* this isn't a complete set of fields */
+	WRITE_OID_FIELD(cubeoid);
+}
+
+static void
 _outEquivalenceClass(StringInfo str, const EquivalenceClass *node)
 {
 	/*
@@ -2642,6 +2672,34 @@ _outCreateStatsStmt(StringInfo str, const CreateStatsStmt *node)
 	WRITE_NODE_FIELD(exprs);
 	WRITE_NODE_FIELD(relations);
 	WRITE_STRING_FIELD(stxcomment);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
+_outCreateChangeSetStmt(StringInfo str, const CreateChangeSetStmt *node)
+{
+	WRITE_NODE_TYPE("CREATECHANGESETSTMT");
+
+	WRITE_STRING_FIELD(chsetname);
+	WRITE_NODE_FIELD(relation);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(chsetColumns);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
+_outCreateCubeStmt(StringInfo str, const CreateCubeStmt *node)
+{
+	WRITE_NODE_TYPE("CREATECUBESTMT");
+
+	WRITE_STRING_FIELD(cubename);
+	WRITE_NODE_FIELD(relation);
+	WRITE_NODE_FIELD(changeset);
+	WRITE_STRING_FIELD(tableSpace);
+	WRITE_NODE_FIELD(cubeExprs);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(transformed);
 	WRITE_BOOL_FIELD(if_not_exists);
 }
 
@@ -3977,6 +4035,9 @@ outNode(StringInfo str, const void *obj)
 			case T_GroupingSetsPath:
 				_outGroupingSetsPath(str, obj);
 				break;
+			case T_CubePath:
+				_outCubePath(str, obj);
+				break;
 			case T_MinMaxAggPath:
 				_outMinMaxAggPath(str, obj);
 				break;
@@ -4084,6 +4145,12 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
+				break;
+			case T_CreateChangeSetStmt:
+				_outCreateChangeSetStmt(str, obj);
+				break;
+			case T_CreateCubeStmt:
+				_outCreateCubeStmt(str, obj);
 				break;
 			case T_CreateStatsStmt:
 				_outCreateStatsStmt(str, obj);
@@ -4237,6 +4304,12 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_PartitionRangeDatum:
 				_outPartitionRangeDatum(str, obj);
+				break;
+			case T_ChangeSetOptInfo:
+				_outChangeSetOptInfo(str, obj);
+				break;
+			case T_CubeOptInfo:
+				_outCubeOptInfo(str, obj);
 				break;
 
 			default:

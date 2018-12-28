@@ -1831,6 +1831,9 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
 		case EXPR_KIND_INDEX_EXPRESSION:
 			err = _("cannot use subquery in index expression");
 			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			err = _("cannot use subquery in cube expression");
+			break;
 		case EXPR_KIND_INDEX_PREDICATE:
 			err = _("cannot use subquery in index predicate");
 			break;
@@ -3475,6 +3478,8 @@ ParseExprKindName(ParseExprKind exprKind)
 			return "PARTITION BY";
 		case EXPR_KIND_CALL_ARGUMENT:
 			return "CALL";
+		case EXPR_KIND_CUBE_EXPRESSION:
+			return "cube expression";
 
 			/*
 			 * There is intentionally no default: case here, so that the

@@ -470,6 +470,10 @@ ExecInsert(ModifyTableState *mtstate,
 			else
 				heap_abort_speculative(resultRelationDesc, tuple);
 
+			/* insert changeset entries for tuple */
+			if (resultRelInfo->ri_NumChangeSets > 0)
+				ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
+
 			/*
 			 * Wake up anyone waiting for our decision.  They will re-check
 			 * the tuple, see that it's no longer speculative, and wait on our
@@ -509,6 +513,10 @@ ExecInsert(ModifyTableState *mtstate,
 				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 													   estate, false, NULL,
 													   NIL);
+
+			/* insert changeset entries for tuple */
+			if (resultRelInfo->ri_NumChangeSets > 0)
+				ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 		}
 	}
 
@@ -821,6 +829,10 @@ ldelete:;
 		 */
 		ar_delete_trig_tcs = NULL;
 	}
+
+	/* insert changeset entries for the deleted tuple */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
 
 	/* AFTER ROW DELETE Triggers */
 	ExecARDeleteTriggers(estate, resultRelInfo, tupleid, oldtuple,
@@ -1283,6 +1295,13 @@ lreplace:;
 
 	if (canSetTag)
 		(estate->es_processed)++;
+
+	/* insert changeset entries for the updated tuple */
+	if (resultRelInfo->ri_NumChangeSets > 0)
+	{
+		ExecInsertChangeSetTuples2(CHANGESET_INSERT,    NULL,    tuple, estate);
+		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
+	}
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple, tuple,
@@ -2184,6 +2203,16 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			resultRelInfo->ri_TrigDesc->trig_update_before_row &&
 			operation == CMD_UPDATE)
 			update_tuple_routing_needed = true;
+
+		/*
+		 * If there are changesets on the result relation, open them and save
+		 * descriptors in the result relation info, so that we can add new
+		 * changeset entries for the tuples we add/update/delete.
+		 *
+		 * FIXME do we need relhaschsets (similar to relhasindex)?
+		 */
+		if (resultRelInfo->ri_ChangeSetRelationDescs == NULL)
+			ExecOpenChangeSets(resultRelInfo);
 
 		/* Now init the plan for this result rel */
 		estate->es_result_relation_info = resultRelInfo;

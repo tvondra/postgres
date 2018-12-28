@@ -38,6 +38,8 @@ typedef enum NodeTag
 	T_ResultRelInfo,
 	T_EState,
 	T_TupleTableSlot,
+	T_ChangeSetInfo,
+	T_CubeInfo,
 
 	/*
 	 * TAGS FOR PLAN NODES (plannodes.h)
@@ -76,6 +78,7 @@ typedef enum NodeTag
 	T_Sort,
 	T_Group,
 	T_Agg,
+	T_Cube,
 	T_WindowAgg,
 	T_Unique,
 	T_Gather,
@@ -249,6 +252,7 @@ typedef enum NodeTag
 	T_UpperUniquePath,
 	T_AggPath,
 	T_GroupingSetsPath,
+	T_CubePath,
 	T_MinMaxAggPath,
 	T_WindowAggPath,
 	T_SetOpPath,
@@ -271,6 +275,8 @@ typedef enum NodeTag
 	T_RollupData,
 	T_GroupingSetData,
 	T_StatisticExtInfo,
+	T_ChangeSetOptInfo,
+	T_CubeOptInfo,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
@@ -419,6 +425,9 @@ typedef enum NodeTag
 	T_CreateStatsStmt,
 	T_AlterCollationStmt,
 	T_CallStmt,
+	T_CreateChangeSetStmt,
+	T_CreateCubeStmt,
+	T_FlushChangeSetStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)

@@ -1293,6 +1293,9 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_NumIndices = 0;
 	resultRelInfo->ri_IndexRelationDescs = NULL;
 	resultRelInfo->ri_IndexRelationInfo = NULL;
+	resultRelInfo->ri_NumChangeSets = 0;
+	resultRelInfo->ri_ChangeSetRelationDescs = NULL;
+	resultRelInfo->ri_ChangeSetRelationInfo = NULL;
 	/* make a copy so as not to depend on relcache info not changing... */
 	resultRelInfo->ri_TrigDesc = CopyTriggerDesc(resultRelationDesc->trigdesc);
 	if (resultRelInfo->ri_TrigDesc)
@@ -1566,6 +1569,7 @@ ExecEndPlan(PlanState *planstate, EState *estate)
 	for (i = estate->es_num_result_relations; i > 0; i--)
 	{
 		ExecCloseIndices(resultRelInfo);
+		ExecCloseChangeSets(resultRelInfo);
 		resultRelInfo++;
 	}
 

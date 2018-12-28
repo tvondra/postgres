@@ -3048,9 +3048,10 @@ create_cube_path(PlannerInfo *root,
 
 	cost_agg(&pathnode->path, root,
 			 AGG_SORTED, /* sorted only, at this point */
-			 agg_costs,
+			 NULL,
 			 numGroupCols,
 			 numGroups,
+			 NIL,
 			 cubepath->startup_cost + chsetpath->startup_cost,
 			 cubepath->total_cost + chsetpath->total_cost,
 			 cubepath->rows);

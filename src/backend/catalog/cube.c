@@ -146,27 +146,26 @@ cube_create(Relation heapRelation,
 	 * file again.)
 	 */
 	cubeRelationId
-		= heap_create_with_catalog(cubeRelationName,
-								   namespaceId,
-								   tableSpaceId,
-								   InvalidOid, /* relid */
-								   InvalidOid, /* reltypeid */
-								   InvalidOid, /* reloftypeid */
+		= heap_create_with_catalog(cubeRelationName,	/* cube name */
+								   namespaceId,			/* relnamespace */
+								   tableSpaceId,		/* reltablespace */
+								   InvalidOid,			/* relid */
+								   InvalidOid,			/* reltypeid */
+								   InvalidOid,			/* reloftypeid */
 								   heapRelation->rd_rel->relowner,
-								   cubeTupDesc,
-								   NIL,
+								   cubeTupDesc,			/* tuple descriptor */
+								   NIL,					/* constraits */
 								   RELKIND_CUBE,
 								   relpersistence,
-								   false, /* not shared */
-								   false, /* not mapped */
-								   false, /* oidislocal */
-								   0,     /* attinhcount */
+								   false,				/* not shared */
+								   false,				/* not mapped */
 								   ONCOMMIT_NOOP,
 								   reloptions,
-								   false, /* no ACLs */
-								   false, /* not a system catalog */
-								   false, /* not internal */
-								   NULL); /* no object address */
+								   false,				/* no ACLs */
+								   false,				/* not a system catalog */
+								   false,				/* not internal */
+								   InvalidOid,			/* relrewrite */
+								   NULL);				/* no object address */
 
 	Assert(OidIsValid(cubeRelationId));
 
@@ -253,7 +252,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	/*
 	 * allocate the new tuple descriptor
 	 */
-	cubeTupDesc = CreateTemplateTupleDesc(numatts, false);
+	cubeTupDesc = CreateTemplateTupleDesc(numatts);
 
 	/*
 	 * Cubes can contain both simple columns and expressions (either regular
@@ -270,7 +269,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		Oid			keyType;
 		HeapTuple	tuple;
 		Form_pg_type typeTup;
-		Form_pg_attribute to = cubeTupDesc->attrs[i];
+		Form_pg_attribute to = &cubeTupDesc->attrs[i];
 
 		/* simple column (no system attributes) */
 		if ((atnum > 0) && (atnum <= natts))
@@ -282,7 +281,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			if (atnum > natts)		/* safety check */
 				elog(ERROR, "invalid column number %d", atnum);
 
-			from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+			from = &heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
 
 			/*
 			 * now that we've determined the "from", let's copy the tuple desc
@@ -433,9 +432,7 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 
 	/* insert the tuple into the pg_cube catalog */
-	simple_heap_insert(pg_cube, tuple);
-
-	CatalogUpdateIndexes(pg_cube, tuple);
+	CatalogTupleInsert(pg_cube, tuple);
 
 	/* free the tuple and close the relation */
 	heap_freetuple(tuple);

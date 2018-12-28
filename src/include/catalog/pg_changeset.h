@@ -22,15 +22,14 @@
 #define PG_CHANGESET_H
 
 #include "catalog/genbki.h"
+#include "catalog/pg_changeset_d.h"
 
 /* ----------------
  *		pg_changeset definition.  cpp turns this into
  *		typedef struct FormData_pg_changeset.
  * ----------------
  */
-#define ChangeSetRelationId  4002
-
-CATALOG(pg_changeset,4002) BKI_WITHOUT_OIDS BKI_SCHEMA_MACRO
+CATALOG(pg_changeset,4002,ChangeSetRelationId) BKI_SCHEMA_MACRO
 {
 	Oid			chsetid;		/* OID of the changeset */
 	Oid			chsetrelid;		/* OID of the relation the changeset is defined on */
@@ -49,14 +48,7 @@ CATALOG(pg_changeset,4002) BKI_WITHOUT_OIDS BKI_SCHEMA_MACRO
  */
 typedef FormData_pg_changeset *Form_pg_changeset;
 
-/* ----------------
- *		compiler constants for pg_changeset
- * ----------------
- */
-#define Natts_pg_changeset					4
-#define Anum_pg_changeset_chsetid			1
-#define Anum_pg_changeset_chsetrelid		2
-#define Anum_pg_changeset_chsetnatts		3
-#define Anum_pg_changeset_chsetkey			4
+#define CHANGESET_INSERT		'I'
+#define CHANGESET_DELETE		'D'
 
 #endif   /* PG_CHANGESET_H */

@@ -2595,7 +2595,7 @@ transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString
 	 * relation, but we still need to open it.
 	 */
 	rel = relation_open(relid, NoLock);
-	rte = addRangeTableEntryForRelation(pstate, rel, NULL, false, true);
+	rte = addRangeTableEntryForRelation(pstate, rel, AccessShareLock, NULL, false, true);
 
 	/* no to join list, yes to namespaces */
 	addRTEtoQuery(pstate, rte, false, true, true);

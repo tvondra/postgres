@@ -1561,7 +1561,7 @@ RelationInitCubeInfo(Relation relation)
 	 * contain much data.
 	 */
 	cubecxt = AllocSetContextCreate(CacheMemoryContext,
-									 RelationGetRelationName(relation),
+									 "cube",
 									 ALLOCSET_SMALL_MINSIZE,
 									 ALLOCSET_SMALL_INITSIZE,
 									 ALLOCSET_SMALL_MAXSIZE);
@@ -4869,7 +4869,7 @@ RelationGetCubeExpressions(Relation relation)
 
 	/* Quick exit if there is nothing to do. */
 	if (relation->rd_cubetuple == NULL ||
-		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs))
+		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs, NULL))
 		return NIL;
 
 	/* FIXME no locking needed (structure can't change) */

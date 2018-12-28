@@ -282,6 +282,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
+		CreateChangeSetStmt CreateCubeStmt FlushChangeSetStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause

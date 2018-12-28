@@ -154,7 +154,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
 										  ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
 	}
 
@@ -180,7 +180,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 		aclresult = pg_tablespace_aclcheck(tablespaceId, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
+			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
 	}
 
@@ -316,7 +316,7 @@ CreateCube(CreateCubeStmt *stmt)
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
 										  ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
 	}
 
@@ -342,7 +342,7 @@ CreateCube(CreateCubeStmt *stmt)
 		aclresult = pg_tablespace_aclcheck(tablespaceId, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
+			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
 	}
 
@@ -1013,7 +1013,7 @@ build_tupdesc_for_cube(CubeOptInfo *cube, ChangeSetInfo *chsetInfo,
 
 	Assert(*nkeys <= numatts);
 
-	tdesc = CreateTemplateTupleDesc(numatts, false);
+	tdesc = CreateTemplateTupleDesc(numatts);
 
 	/*
 	 * First attribute is always the change_type, so we can simply copy
@@ -1112,7 +1112,7 @@ build_tss_for_cube(TupleDesc tdesc, int nkeys)
 	for (i = 0; i < nkeys; i++)
 	{
 		keys[i] = i+1;	/* first nkeys are keys */
-		get_sort_group_operators(tdesc->attrs[i]->atttypid,
+		get_sort_group_operators(tdesc->attrs[i].atttypid,
 								 true, false, false,
 								 &sortops[i], NULL, NULL, NULL);
 		collations[i] = DEFAULT_COLLATION_OID;
@@ -1121,7 +1121,7 @@ build_tss_for_cube(TupleDesc tdesc, int nkeys)
 	return tuplesort_begin_heap(tdesc,
 					 nkeys, keys,
 					 sortops, collations,
-					 nullsfirst, work_mem, false);
+					 nullsfirst, work_mem, NULL, false);
 }
 
 static CubeOptInfo *
@@ -1188,7 +1188,7 @@ fix_changeset_walker(Node *node, ChangeSetInfo *changeset)
 	if (IsA(node, Var))
 	{
 		int i;
-		bool	found = false;
+		bool	found PG_USED_FOR_ASSERTS_ONLY = false;
 		Var	   *var = (Var*)node;
 
 		/* search for the attnum in the changeset */
@@ -1198,6 +1198,7 @@ fix_changeset_walker(Node *node, ChangeSetInfo *changeset)
 			{
 				/* skip change type and 1-indexed */
 				var->varattno = (i+2);
+				found = true;
 				break;
 			}
 		}

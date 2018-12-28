@@ -360,7 +360,7 @@ typedef struct ChangeSetOptInfo
 
 	Oid			chsetoid;		/* OID of the changeset relation */
 	Oid			reltablespace;	/* tablespace of changeset (not table) */
-	RelOptInfo *rel;			/* back-link to changeset's table */
+	struct RelOptInfo *rel;		/* back-link to changeset's table */
 
 	/* changeset-size statistics (from pg_class and elsewhere) */
 	BlockNumber pages;			/* number of disk pages in changeset */
@@ -390,7 +390,7 @@ typedef struct CubeOptInfo
 	Oid			cubeoid;		/* OID of the cube relation */
 	Oid			chsetoid;		/* OID of the changeset relation */
 	Oid			reltablespace;	/* tablespace of changeset (not table) */
-	RelOptInfo *rel;			/* back-link to cube's table */
+	struct RelOptInfo *rel;		/* back-link to cube's table */
 
 	/* cube-size statistics (from pg_class and elsewhere) */
 	BlockNumber pages;			/* number of disk pages in cube */

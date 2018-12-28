@@ -1842,7 +1842,7 @@ build_cube_tlist(PlannerInfo *root, CubeOptInfo *cube,
 			if (cubekey < 0)
 				elog(ERROR, "system attributes not allowed in cubes");
 			else
-				att_tup = heapRelation->rd_att->attrs[cubekey - 1];
+				att_tup = &heapRelation->rd_att->attrs[cubekey - 1];
 
 			cubevar = (Expr *) makeVar(varno,
 									   cubekey,

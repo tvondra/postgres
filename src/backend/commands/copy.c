@@ -3141,7 +3141,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		for (i = 0; i < nBufferedTuples; i++)
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
-			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ExecStoreHeapTuple(bufferedTuples[i], myslot, false);
 			ExecInsertChangeSetTuples(CHANGESET_INSERT, myslot, estate);
 		}
 	}

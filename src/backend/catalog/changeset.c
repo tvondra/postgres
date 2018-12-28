@@ -126,30 +126,28 @@ changeset_create(Relation heapRelation,
 	 * file again.)
 	 */
 	chsetRelationId
-		= heap_create_with_catalog(chsetRelationName,
-								   namespaceId,
-								   tableSpaceId,
-								   InvalidOid, /* relid */
-								   InvalidOid, /* reltypeid */
-								   InvalidOid, /* reloftypeid */
-								   heapRelation->rd_rel->relowner,
-								   chsetTupDesc,
-								   NIL,
-								   RELKIND_CHANGESET,
-								   relpersistence,
-								   false, /* not shared */
-								   false, /* not mapped */
-								   false, /* oidislocal */
-								   0,     /* attinhcount */
-								   ONCOMMIT_NOOP,
-								   reloptions,
-								   false, /* no ACLs */
-								   false, /* not a system catalog */
-								   false, /* not internal */
-								   NULL); /* no object address */
+		= heap_create_with_catalog(chsetRelationName,	/* relname */
+								   namespaceId,			/* relnamespace */
+								   tableSpaceId,		/* reltablespace */
+								   InvalidOid,			/* relid */
+								   InvalidOid,			/* reltypeid */
+								   InvalidOid,			/* reloftypeid */
+								   heapRelation->rd_rel->relowner,	/* owner */
+								   chsetTupDesc,		/* tuple descriptor */
+								   NIL,					/* constraits */
+								   RELKIND_CHANGESET,	/* relkind */
+								   relpersistence,		/* persistence */
+								   false,				/* not shared */
+								   false,				/* not mapped */
+								   ONCOMMIT_NOOP,		/* oncommit */
+								   reloptions,			/* reloptions */
+								   false,				/* no user ACLs */
+								   false,				/* not a system catalog */
+								   false,				/* not internal */
+								   InvalidOid,			/* relrewrite */
+								   NULL);				/* no object address */
 
 	Assert(OidIsValid(chsetRelationId));
-
 
 	/* done with pg_class */
 	heap_close(pg_class, RowExclusiveLock);
@@ -229,7 +227,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	 *
 	 * include extra attribute for change type info (insert/delete)
 	 */
-	chsetTupDesc = CreateTemplateTupleDesc(numatts + 1, false);
+	chsetTupDesc = CreateTemplateTupleDesc(numatts + 1);
 
 	/*
 	 * initialize the extra attribute (always the first one)
@@ -252,7 +250,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	for (i = 0; i < numatts; i++)
 	{
 		AttrNumber	atnum = chsetInfo->csi_KeyAttrNumbers[i];
-		Form_pg_attribute to = chsetTupDesc->attrs[++idx];
+		Form_pg_attribute to = &chsetTupDesc->attrs[++idx];
 
 		/* Simple index column */
 		Form_pg_attribute from;
@@ -263,7 +261,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		if ((atnum < 0) || (atnum > natts))		/* safety check */
 			elog(ERROR, "invalid column number %d", atnum);
 
-		from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+		from = &heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
 
 		/*
 		 * now that we've determined the "from", let's copy the tuple desc
@@ -331,11 +329,8 @@ UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_changeset), values, nulls);
 
-	/* insert the tuple into the pg_changeset catalog */
-	simple_heap_insert(pg_changeset, tuple);
-
 	/* update the indexes on pg_changeset */
-	CatalogUpdateIndexes(pg_changeset, tuple);
+	CatalogTupleInsert(pg_changeset, tuple);
 
 	/* close the relation and free the tuple */
 	heap_close(pg_changeset, RowExclusiveLock);

@@ -794,9 +794,6 @@ ExecFlushChangeSet(FlushChangeSetStmt *stmt)
 	chsetDesc = RelationGetDescr(chsetRel);
 	chsetInfo = BuildChangeSetInfo(chsetRel);
 
-	/* We don't allow an oid column for a changeset. */
-	Assert(!chsetRel->rd_rel->relhasoids);
-
 	/*
 	 * FIXME Do we need to switch to the relation owner, similarly to REFRESH
 	 * MATERIALIZED VIEW? See SetUserIdAndSecContext() in RefreshMatViewStmt.

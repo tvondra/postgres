@@ -2394,11 +2394,10 @@ bucket_is_smaller_than_value(FmgrInfo opproc, Oid typeoid, Oid colloid,
  * might be performed just like for simple bitmap by using & and |,
  * which might be faster than min/max.
  */
-static void
-histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
-							  Bitmapset *stakeys,
-							  MVHistogram * histogram,
-							  bucket_match *matches, bool is_or)
+static bucket_match *
+histogram_get_match_bitmap(PlannerInfo *root,
+						   List *clauses, Bitmapset *stakeys,
+						   MVHistogram *histogram, bool is_or)
 {
 	int			i;
 	ListCell   *l;
@@ -2417,12 +2416,39 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 	 * result is 'true'
 	 */
 	char	   *callcache = palloc(histogram->nbuckets);
+	Size		len;
+	bucket_match *matches;
 
 	Assert(histogram != NULL);
 	Assert(histogram->nbuckets > 0);
 
 	Assert(clauses != NIL);
 	Assert(list_length(clauses) >= 1);
+
+	/* size of the match "bitmap" */
+	len = sizeof(bucket_match) * histogram->nbuckets;
+
+	/* by default all the histogram buckets match the clauses fully */
+	matches = palloc0(len);
+
+	/*
+	 * The default state is different for AND and OR clauses. For OR
+	 * clauses we start with 'no matches' while for AND clauses we start
+	 * with everything matching.
+	 */
+	for (i = 0; i < histogram->nbuckets; i++)
+	{
+		if (is_or)
+		{
+			matches[i].match = false;
+			matches[i].fraction = 0.0;
+		}
+		else
+		{
+			matches[i].match = true;
+			matches[i].fraction = 1.0;
+		}
+	}
 
 	/* loop through the clauses and do the estimation */
 	foreach(l, clauses)
@@ -2672,35 +2698,12 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(bool_clauses != NIL);
 			Assert(list_length(bool_clauses) >= 2);
 
-			/* by default none of the buckets matches the clauses */
-			bool_matches = palloc0(sizeof(bucket_match) * histogram->nbuckets);
-
-			if (or_clause(clause))
-			{
-				/* OR clauses assume nothing matches, initially */
-				for (i = 0; i < histogram->nbuckets; i++)
-				{
-					bool_matches[i].match = false;
-					bool_matches[i].fraction = 0.0;
-				}
-			}
-			else
-			{
-				/* AND clauses assume nothing matches, initially */
-				for (i = 0; i < histogram->nbuckets; i++)
-				{
-					bool_matches[i].match = true;
-					bool_matches[i].fraction = 1.0;
-				}
-			}
-
-			/* build the match bitmap for the OR-clauses */
-			histogram_update_match_bitmap(root, bool_clauses,
-										  stakeys, histogram,
-										  bool_matches, or_clause(clause));
+			bool_matches = histogram_get_match_bitmap(root, bool_clauses,
+													  stakeys, histogram,
+													  or_clause(clause));
 
 			/*
-			 * Merge the bitmap produced by histogram_update_match_bitmap into
+			 * Merge the bitmap produced by histogram_get_match_bitmap into
 			 * the current one. We need to consider if we're evaluating AND or
 			 * OR condition when merging the results.
 			 */
@@ -2754,25 +2757,13 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			/* by default none of the MCV items matches the clauses */
 			not_matches = palloc0(sizeof(bucket_match) * histogram->nbuckets);
 
-			/* NOT clauses assume nothing matches, initially
-			 *
-			 * FIXME The comment seems to disagree with the code - not sure
-			 * if nothing should match (code is wrong) or everything should
-			 * match (comment is wrong) by default.
-			 */
-			for (i = 0; i < histogram->nbuckets; i++)
-			{
-				not_matches[i].match = true;
-				not_matches[i].fraction = 1.0;
-			}
-
-			/* build the match bitmap for the OR-clauses */
-			histogram_update_match_bitmap(root, not_args,
-										  stakeys, histogram,
-										  not_matches, false);
+			/* build the match bitmap for the clause(s) */
+			not_matches = histogram_get_match_bitmap(root, not_args,
+													 stakeys, histogram,
+													 false);
 
 			/*
-			 * Merge the bitmap produced by histogram_update_match_bitmap into
+			 * Merge the bitmap produced by histogram_get_match_bitmap into
 			 * the current one.
 			 *
 			 * This is similar to what mcv_update_match_bitmap does, but we
@@ -2900,6 +2891,8 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 	/* free the call cache */
 	pfree(callcache);
+
+	return matches;
 }
 
 /*
@@ -2952,7 +2945,6 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	MVHistogram *histogram;
 	Selectivity	s = 0.0;
 	Selectivity	total_sel = 0.0;
-	Size		len;
 	int			nclauses;
 
 	/* match/mismatch bitmap for each MCV item */
@@ -2964,38 +2956,14 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	/* load the histogram stored in the statistics object */
 	histogram = statext_histogram_load(stat->statOid);
 
-	/* size of the match "bitmap" */
-	len = sizeof(bucket_match) * histogram->nbuckets;
-
-	/* by default all the histogram buckets match the clauses fully */
-	matches = palloc0(len);
-
-	/* by default all buckets match fully */
-	for (i = 0; i < histogram->nbuckets; i++)
-	{
-		matches[i].match = true;
-		matches[i].fraction = 1.0;
-	}
-
-	histogram_update_match_bitmap(root, clauses, stat->keys,
-								  histogram, matches, false);
+	/* build match bitmap for the clauses */
+	matches = histogram_get_match_bitmap(root, clauses, stat->keys,
+										 histogram, false);
 
 	/* if there are condition clauses, build a match bitmap for them */
-	if (conditions)
-	{
-		/* match bitmap for conditions, by default all buckets match */
-		condition_matches = palloc0(len);
-
-		/* by default all buckets match fully */
-		for (i = 0; i < histogram->nbuckets; i++)
-		{
-			condition_matches[i].match = true;
-			condition_matches[i].fraction = 1.0;
-		}
-
-		histogram_update_match_bitmap(root, conditions, stat->keys,
-									  histogram, condition_matches, false);
-	}
+	condition_matches = histogram_get_match_bitmap(root,
+												   conditions, stat->keys,
+												   histogram, false);
 
 	/* now, walk through the buckets and sum the selectivities */
 	for (i = 0; i < histogram->nbuckets; i++)

@@ -5008,7 +5008,7 @@
 
 { oid => '3430',
   descr => 'details about histogram buckets',
-  proname => 'pg_histogram_buckets', prorows => '1000', proisstrict => 'f',
+  proname => 'pg_histogram_buckets', prorows => '1000', proisstrict => 't',
   proretset => 't', provolatile => 's', prorettype => 'record',
   proargtypes => 'pg_histogram int4',
   proallargtypes => '{pg_histogram,int4,int4,_text,_text,_bool,_bool,_bool,float8,float8,float8}',

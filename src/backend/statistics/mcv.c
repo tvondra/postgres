@@ -1260,7 +1260,7 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * mcv_update_match_bitmap
+ * mcv_get_match_bitmap
  *	Evaluate clauses using the MCV list, and update the match bitmap.
  *
  * A match bitmap keeps match/mismatch status for each MCV item, and we
@@ -1278,13 +1278,13 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
  * & and |, which should be faster than min/max. The bitmaps are fairly
  * small, though (as we cap the MCV list size to 8k items).
  */
-static void
-mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
-						Bitmapset *keys, MCVList * mcvlist, char *matches,
-						bool is_or)
+static char *
+mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
+					  Bitmapset *keys, MCVList * mcvlist, bool is_or)
 {
 	int			i;
 	ListCell   *l;
+	char	   *matches;
 
 	/* The bitmap may be partially built. */
 	Assert(clauses != NIL);
@@ -1292,6 +1292,10 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
 	Assert(mcvlist->nitems <= STATS_MCVLIST_MAX_ITEMS);
+
+	matches = palloc0(sizeof(char) * mcvlist->nitems);
+	memset(matches, (is_or) ? STATS_MATCH_NONE : STATS_MATCH_FULL,
+		   sizeof(char) * mcvlist->nitems);
 
 	/*
 	 * Loop through the list of clauses, and for each of them evaluate all the
@@ -1328,7 +1332,6 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 
 			if (ok)
 			{
-
 				FmgrInfo	gtproc;
 				Var		   *var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 				Const	   *cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
@@ -1482,27 +1485,12 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(bool_clauses != NIL);
 			Assert(list_length(bool_clauses) >= 2);
 
-			/* by default none of the MCV items matches the clauses */
-			bool_matches = palloc0(sizeof(char) * mcvlist->nitems);
-
-			if (or_clause(clause))
-			{
-				/* OR clauses assume nothing matches, initially */
-				memset(bool_matches, STATS_MATCH_NONE, sizeof(char) * mcvlist->nitems);
-			}
-			else
-			{
-				/* AND clauses assume everything matches, initially */
-				memset(bool_matches, STATS_MATCH_FULL, sizeof(char) * mcvlist->nitems);
-			}
-
 			/* build the match bitmap for the OR-clauses */
-			mcv_update_match_bitmap(root, bool_clauses, keys,
-									mcvlist, bool_matches,
-									or_clause(clause));
+			bool_matches = mcv_get_match_bitmap(root, bool_clauses, keys,
+												mcvlist, or_clause(clause));
 
 			/*
-			 * Merge the bitmap produced by mcv_update_match_bitmap into the
+			 * Merge the bitmap produced by mcv_get_match_bitmap into the
 			 * current one. We need to consider if we're evaluating AND or OR
 			 * condition when merging the results.
 			 */
@@ -1531,18 +1519,12 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(not_args != NIL);
 			Assert(list_length(not_args) == 1);
 
-			/* by default none of the MCV items matches the clauses */
-			not_matches = palloc0(sizeof(char) * mcvlist->nitems);
-
-			/* NOT clauses assume nothing matches, initially */
-			memset(not_matches, STATS_MATCH_FULL, sizeof(char) * mcvlist->nitems);
-
 			/* build the match bitmap for the NOT-clause */
-			mcv_update_match_bitmap(root, not_args, keys,
-									mcvlist, not_matches, false);
+			not_matches = mcv_get_match_bitmap(root, not_args, keys,
+											   mcvlist, false);
 
 			/*
-			 * Merge the bitmap produced by mcv_update_match_bitmap into the
+			 * Merge the bitmap produced by mcv_get_match_bitmap into the
 			 * current one.
 			 */
 			for (i = 0; i < mcvlist->nitems; i++)
@@ -1602,6 +1584,8 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 			elog(ERROR, "unknown clause type: %d", clause->type);
 		}
 	}
+
+	return matches;
 }
 
 
@@ -1630,12 +1614,8 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	/* load the MCV list stored in the statistics object */
 	mcv = statext_mcv_load(stat->statOid);
 
-	/* by default all the MCV items match the clauses fully */
-	matches = palloc0(sizeof(char) * mcv->nitems);
-	memset(matches, STATS_MATCH_FULL, sizeof(char) * mcv->nitems);
-
-	mcv_update_match_bitmap(root, clauses, stat->keys, mcv,
-							matches, false);
+	/* build a match bitmap for the clauses */
+	matches = mcv_get_match_bitmap(root, clauses, stat->keys, mcv, false);
 
 	/* sum frequencies for all the matching MCV items */
 	*basesel = 0.0;

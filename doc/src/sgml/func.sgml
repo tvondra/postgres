@@ -21324,6 +21324,11 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
         <entry><type>double precision</type></entry>
         <entry>frequency of this <literal>MCV</literal> item</entry>
        </row>
+       <row>
+        <entry><literal>base_frequency</literal></entry>
+        <entry><type>double precision</type></entry>
+        <entry>base frequency of this <literal>MCV</literal> item</entry>
+       </row>
       </tbody>
      </tgroup>
     </informaltable>

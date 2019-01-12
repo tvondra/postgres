@@ -3768,7 +3768,7 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 	double		numdistinct;
 	ListCell   *l;
 
-	RelOptInfo *rel;
+	RelOptInfo *rel = NULL;
 	double		reldistinct = 1;
 	double		relmaxndistinct = reldistinct;
 	int			relvarcount = 0;

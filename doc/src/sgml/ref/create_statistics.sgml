@@ -178,7 +178,7 @@ CREATE TABLE t2 (
 INSERT INTO t2 SELECT mod(i,100), mod(i,100)
                  FROM generate_series(1,1000000) s(i);
 
-CREATE STATISTICS s2 WITH (mcv) ON (a, b) FROM t2;
+CREATE STATISTICS s2 (mcv) ON (a, b) FROM t2;
 
 ANALYZE t2;
 
@@ -188,6 +188,11 @@ EXPLAIN ANALYZE SELECT * FROM t2 WHERE (a = 1) AND (b = 1);
 -- invalid combination (not found in MCV)
 EXPLAIN ANALYZE SELECT * FROM t2 WHERE (a = 1) AND (b = 2);
 </programlisting>
+
+   The MCV list gives the planner more detailed information about the
+   specific values that commonly appear in the table, as well as an upper
+   bound on the selectivities of combinations of values that do not appear
+   in the table, allowing it to generate better estimates in both cases.
   </para>
 
  </refsect1>

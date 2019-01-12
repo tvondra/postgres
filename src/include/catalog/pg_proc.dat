@@ -4984,7 +4984,7 @@
 
 { oid => '3424',
   descr => 'details about MCV list items',
-  proname => 'pg_mcv_list_items', prorows => '1000', proisstrict => 'f',
+  proname => 'pg_mcv_list_items', prorows => '1000', proisstrict => 't',
   proretset => 't', provolatile => 's', prorettype => 'record',
   proargtypes => 'pg_mcv_list',
   proallargtypes => '{pg_mcv_list,int4,text,_bool,float8,float8}',

@@ -60,16 +60,92 @@ static RelOptInfo *find_single_rel_for_clauses(PlannerInfo *root,
  *
  * See clause_selectivity() for the meaning of the additional parameters.
  *
+ * The basic approach is to apply extended statistics first, on as many
+ * clauses as possible, in order to capture cross-column dependencies etc.
+ * The remaining clauses are then estimated using regular statistics tracked
+ * for individual columns.  This is done by simply passing the clauses to
+ * clauselist_selectivity_simple.
+ */
+Selectivity
+clauselist_selectivity(PlannerInfo *root,
+					   List *clauses,
+					   int varRelid,
+					   JoinType jointype,
+					   SpecialJoinInfo *sjinfo)
+{
+	Selectivity s1 = 1.0;
+	RelOptInfo *rel;
+	Bitmapset  *estimatedclauses = NULL;
+
+	/*
+	 * If there's exactly one clause, just go directly to
+	 * clause_selectivity(). None of what we might do below is relevant.
+	 */
+	if (list_length(clauses) == 1)
+		return clause_selectivity(root, (Node *) linitial(clauses),
+								  varRelid, jointype, sjinfo);
+
+	/*
+	 * Determine if these clauses reference a single relation.  If so, and if
+	 * it has extended statistics, try to apply those.
+	 */
+	rel = find_single_rel_for_clauses(root, clauses);
+	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+	{
+		/*
+		 * Estimate selectivity on any clauses applicable by stats tracking
+		 * actual values first, then apply functional dependencies on the
+		 * remaining clauses.  The reasoning for this particular order is that
+		 * the more complex stats can track more complex correlations between
+		 * the attributes, and may be considered more reliable.
+		 *
+		 * For example MCV list can give us an exact selectivity for values in
+		 * two columns, while functional dependencies can only provide
+		 * information about overall strength of the dependency.
+		 *
+		 * 'estimatedclauses' is a bitmap of 0-based list positions of clauses
+		 * used that way, so that we can ignore them later (not to estimate
+		 * them twice).
+		 */
+		s1 *= statext_clauselist_selectivity(root, clauses, varRelid,
+											 jointype, sjinfo, rel,
+											 &estimatedclauses);
+
+		/*
+		 * Perform selectivity estimations on any clauses found applicable by
+		 * dependencies_clauselist_selectivity.  'estimatedclauses' will be
+		 * filled with the 0-based list positions of clauses used that way, so
+		 * that we can ignore them lager (not to estimate them twice).
+		 */
+		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
+												  jointype, sjinfo, rel,
+												  &estimatedclauses);
+	}
+
+	/*
+	 * Apply normal selectivity estimates for remaining clauses. We'll be
+	 * careful to skip any clauses which were already estimated above.
+	 */
+	return s1 * clauselist_selectivity_simple(root, clauses, varRelid,
+											  jointype, sjinfo,
+											  estimatedclauses);
+}
+
+/*
+ * clauselist_selectivity_simple -
+ *	  Compute the selectivity of an implicitly-ANDed list of boolean
+ *	  expression clauses.  The list can be empty, in which case 1.0
+ *	  must be returned.  List elements may be either RestrictInfos
+ *	  or bare expression clauses --- the former is preferred since
+ *	  it allows caching of results.  The estimatedclauses bitmap tracks
+ *	  clauses that have already been estimated by other means.
+ *
+ * See clause_selectivity() for the meaning of the additional parameters.
+ *
  * Our basic approach is to take the product of the selectivities of the
  * subclauses.  However, that's only right if the subclauses have independent
  * probabilities, and in reality they are often NOT independent.  So,
  * we want to be smarter where we can.
- *
- * If the clauses taken together refer to just one relation, we'll try to
- * apply selectivity estimates using any extended statistics for that rel.
- * Currently we only have (soft) functional dependencies, so apply these in as
- * many cases as possible, and fall back on normal estimates for remaining
- * clauses.
  *
  * We also recognize "range queries", such as "x > 34 AND x < 42".  Clauses
  * are recognized as possible range query components if they are restriction
@@ -98,54 +174,19 @@ static RelOptInfo *find_single_rel_for_clauses(PlannerInfo *root,
  * selectivity functions; perhaps some day we can generalize the approach.
  */
 Selectivity
-clauselist_selectivity(PlannerInfo *root,
-					   List *clauses,
-					   int varRelid,
-					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo)
+clauselist_selectivity_simple(PlannerInfo *root,
+							  List *clauses,
+							  int varRelid,
+							  JoinType jointype,
+							  SpecialJoinInfo *sjinfo,
+							  Bitmapset *estimatedclauses)
 {
 	Selectivity s1 = 1.0;
-	RelOptInfo *rel;
-	Bitmapset  *estimatedclauses = NULL;
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
 
 	/*
-	 * If there's exactly one clause, just go directly to
-	 * clause_selectivity(). None of what we might do below is relevant.
-	 */
-	if (list_length(clauses) == 1)
-		return clause_selectivity(root, (Node *) linitial(clauses),
-								  varRelid, jointype, sjinfo);
-
-	/*
-	 * Determine if these clauses reference a single relation.  If so, and if
-	 * it has extended statistics, try to apply those.
-	 */
-	rel = find_single_rel_for_clauses(root, clauses);
-	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
-	{
-		/*
-		 * Perform selectivity estimations on any clauses found applicable by
-		 * dependencies_clauselist_selectivity.  'estimatedclauses' will be
-		 * filled with the 0-based list positions of clauses used that way, so
-		 * that we can ignore them below.
-		 */
-		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
-												  jointype, sjinfo, rel,
-												  &estimatedclauses);
-
-		/*
-		 * This would be the place to apply any other types of extended
-		 * statistics selectivity estimations for remaining clauses.
-		 */
-	}
-
-	/*
-	 * Apply normal selectivity estimates for remaining clauses. We'll be
-	 * careful to skip any clauses which were already estimated above.
-	 *
 	 * Anything that doesn't look like a potential rangequery clause gets
 	 * multiplied into s1 and forgotten. Anything that does gets inserted into
 	 * an rqlist entry.

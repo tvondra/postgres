@@ -330,6 +330,10 @@
 { castsource => 'pg_mcv_list', casttarget => 'text', castfunc => '0',
   castcontext => 'i', castmethod => 'i' },
 
+# pg_histogram can be coerced to, but not from, bytea
+{ castsource => 'pg_histogram', casttarget => 'bytea', castfunc => '0',
+  castcontext => 'i', castmethod => 'b' },
+
 # Datetime category
 { castsource => 'date', casttarget => 'timestamp',
   castfunc => 'timestamp(date)', castcontext => 'i', castmethod => 'f' },

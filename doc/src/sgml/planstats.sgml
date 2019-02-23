@@ -697,6 +697,112 @@ EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a &lt;= 49 AND b &gt; 49;
 
   </sect2>
 
+  <sect2 id="mv-histograms">
+   <title>Histograms</title>
+
+   <para>
+    <acronym>MCV</acronym> lists, introduced in <xref linkend="mcv-lists"/>,
+    work very well for columns with only a few distinct values, and for
+    columns with only few common values. In those cases, <acronym>MCV</acronym>
+    lists are a very accurate approximation of the real distribution.
+    Histograms, briefly described in <xref linkend="row-estimation-examples"/>,
+    are meant to address the high-cardinality case.
+   </para>
+
+   <para>
+    Although the example data we've used in <xref linkend="mcv-lists"/> does
+    not quality as a high-cardinality case, we can try creating a histogram
+    instead of the <acronym>MCV</acronym> list. With the histogram in place,
+    you may get a plan like this:
+
+<programlisting>
+DROP STATISTICS stts2;
+CREATE STATISTICS stts3 (histogram) ON a, b FROM t;
+ANALYZE t;
+EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 1;
+                                  QUERY PLAN
+-------------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=100 width=8) (actual rows=100 loops=1)
+   Filter: ((a = 1) AND (b = 1))
+   Rows Removed by Filter: 9900
+</programlisting>
+
+    Which seems quite accurate. For other combinations of values the
+    estimates may be worse, as illustrated by the following query:
+
+<programlisting>
+EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 10;
+                                 QUERY PLAN                                 
+-----------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=100 width=8) (actual rows=0 loops=1)
+   Filter: ((a = 1) AND (b = 10))
+   Rows Removed by Filter: 10000
+</programlisting>
+
+    This happens due to histograms tracking ranges of values, which makes it
+    impossible to decide how tuples with the exact combination of values there
+    are in the bucket.
+   </para>
+
+   <para>
+    It's also possible to build <acronym>MCV</acronym> lists and a histogram, in
+    which case <command>ANALYZE</command> will build a <acronym>MCV</acronym> lists
+    with the most frequent values, and a histogram on the remaining part of the
+    sample.
+
+<programlisting>
+DROP STATISTICS stts3;
+CREATE STATISTICS stts4 (mcv, histogram) ON a, b FROM t;
+ANALYZE t;
+EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 10;
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Seq Scan on t  (cost=0.00..195.00 rows=1 width=8) (actual rows=0 loops=1)
+   Filter: ((a = 1) AND (b = 10))
+   Rows Removed by Filter: 10000
+</programlisting>
+
+    In this case the <acronym>MCV</acronym> list and histogram are treated as a
+    single composed statistics.
+   </para>
+
+   <para>
+    Similarly to <acronym>MCV</acronym> lists, it is possible to inspect
+    histograms using a function called <function>pg_histogram_buckets</function>,
+    which simply lists buckets of a histogram, along with information about
+    boundaries, frequencies, volume etc. When applied to the histogram from
+    <varname>stts3</varname>, you should get something like this:
+
+<programlisting>
+SELECT m.* FROM pg_statistic_ext,
+                pg_histogram_buckets(stxhistogram) m WHERE stxname = 'stts3';
+ index | minvals | maxvals | nullsonly | mininclusive | maxinclusive | frequency | density  | bucket_volume 
+-------+---------+---------+-----------+--------------+--------------+-----------+----------+---------------
+     0 | {0,0}   | {3,1}   | {f,f}     | {t,t}        | {f,f}        |      0.01 |    2.635 |      0.003795
+     1 | {50,0}  | {99,51} | {f,f}     | {t,t}        | {t,f}        |      0.01 | 0.034444 |      0.290323
+     2 | {0,25}  | {26,37} | {f,f}     | {t,t}        | {f,f}        |      0.01 | 0.292778 |      0.034156
+...
+    61 | {60,56} | {99,62} | {f,f}     | {t,t}        | {t,f}        |      0.02 | 0.752857 |      0.026565
+    62 | {35,25} | {50,37} | {f,f}     | {t,t}        | {f,f}        |      0.02 | 0.878333 |       0.02277
+    63 | {81,85} | {87,99} | {f,f}     | {t,t}        | {f,t}        |      0.02 | 1.756667 |      0.011385
+(64 rows)
+</programlisting>
+
+    Which shows that there are 64 buckets, with frequencies ranging between 1%
+    and 2%. The <structfield>minvals</structfield> and <structfield>maxvals</structfield>
+    show the bucket boundaries, <structfield>nullsonly</structfield> shows which
+    columns contain only null values (in the given bucket).
+   </para>
+
+   <para>
+    Similarly to <acronym>MCV</acronym> lists, the planner applies all conditions
+    to the buckets, and sums the frequencies of the matching ones. For details,
+    see <function>histogram_clauselist_selectivity</function> function in
+    <filename>src/backend/statistics/histogram.c</filename>.
+   </para>
+
+  </sect2>
+
  </sect1>
 
  <sect1 id="planner-stats-security">

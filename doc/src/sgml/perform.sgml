@@ -1351,6 +1351,56 @@ SELECT m.* FROM pg_statistic_ext,
     </para>
    </sect3>
 
+   <sect3>
+    <title>Multivariate histogram</title>
+
+    <para>
+     <command>ANALYZE</command> may also build histograms on multiple columns,
+     a simple extension of per-column histograms to multiple columns. Just like
+     for the other types of statistics, the data is collected only for groups
+     of columns appearing together in a statistics object defined with the
+     <literal>histogram</literal> option.
+    </para>
+
+    <para>
+     Continuing the previous example, the histogram for a table of ZIP codes
+     might look like the following (similarly to MCV lists, a function is
+     required for inspection of histogram contents):
+
+<programlisting>
+CREATE STATISTICS stts4 (histogram) ON longitude, latitude FROM zipcodes;
+
+ANALYZE zipcodes;
+
+SELECT m.* FROM pg_statistic_ext,
+                pg_histogram_buckets(stxhistogram) m WHERE stxname = 'stts4';
+
+ index |     minvals     |     maxvals     | nullsonly | mininclusive | maxinclusive | frequency |   density    | bucket_volume 
+-------+-----------------+-----------------+-----------+--------------+--------------+-----------+--------------+---------------
+     0 | {5.29,-176.67}  | {21.31,-156.98} | {f,f}     | {t,t}        | {f,f}        |  0.001267 |    12.447702 |      0.000102
+     1 | {NULL,NULL}     | {NULL,NULL}     | {t,t}     | {t,t}        | {t,t}        |  0.007167 | 12677.001607 |         1e-06
+     2 | {5.29,-86.71}   | {27.48,-82.54}  | {f,f}     | {t,t}        | {f,f}        |    0.0001 |     0.018914 |      0.005287
+     3 | {39.74,-86.71}  | {39.79,-85.61}  | {f,f}     | {t,t}        | {f,f}        |  0.001067 |     9.930577 |      0.000107
+     4 | {38.55,-176.67} | {39.48,-123.53} | {f,f}     | {t,t}        | {f,f}        |  0.000233 |     0.264577 |      0.000882
+     5 | {35.58,-86.71}  | {35.85,-86.13}  | {f,f}     | {t,t}        | {f,f}        |  0.000133 |     1.310284 |      0.000102
+     6 | {38.55,-96.18}  | {39.03,-95.25}  | {f,f}     | {t,t}        | {f,f}        |    0.0002 |     0.232748 |      0.000859
+     7 | {5.29,-96.75}   | {28.67,-94.79}  | {f,f}     | {t,t}        | {f,f}        |    0.0002 |     0.073155 |      0.002734
+     8 | {41.43,-86.71}  | {41.67,-86.25}  | {f,f}     | {t,t}        | {f,f}        |  0.000133 |       1.7342 |       7.7e-05
+     9 | {28.56,-86.71}  | {30.17,-84.79}  | {f,f}     | {t,t}        | {f,f}        |  0.000233 |     0.157956 |      0.001477
+    10 | {34.13,-176.67} | {35.5,-120.76}  | {f,f}     | {t,t}        | {f,f}        |    0.0002 |     0.050167 |      0.003987
+   ...
+(3710 rows)
+</programlisting>
+     </para>
+
+    <para>
+     It's advisable to create histogram statistics objects only on combinations
+     of columns that are actually used in conditions together, and for which
+     misestimation of the number of groups is resulting in bad plans.  Otherwise,
+     the <command>ANALYZE</command> cycles are just wasted.
+    </para>
+   </sect3>
+
   </sect2>
  </sect1>
 

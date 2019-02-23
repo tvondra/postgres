@@ -2543,7 +2543,8 @@ describeOneTableDetails(const char *schemaname,
 							  "        a.attnum = s.attnum AND NOT attisdropped)) AS columns,\n"
 							  "  'd' = any(stxkind) AS ndist_enabled,\n"
 							  "  'f' = any(stxkind) AS deps_enabled,\n"
-							  "  'm' = any(stxkind) AS mcv_enabled\n"
+							  "  'm' = any(stxkind) AS mcv_enabled,\n"
+							  "  'h' = any(stxkind) AS histogram_enabled\n"
 							  "FROM pg_catalog.pg_statistic_ext stat "
 							  "WHERE stxrelid = '%s'\n"
 							  "ORDER BY 1;",
@@ -2586,6 +2587,12 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 7), "t") == 0)
 					{
 						appendPQExpBuffer(&buf, "%smcv", gotone ? ", " : "");
+						gotone = true;
+					}
+
+					if (strcmp(PQgetvalue(result, i, 8), "t") == 0)
+					{
+						appendPQExpBuffer(&buf, "%shistogram", gotone ? ", " : "");
 					}
 
 					appendPQExpBuffer(&buf, ") ON %s FROM %s",

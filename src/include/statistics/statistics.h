@@ -119,9 +119,68 @@ typedef struct MCVList
 	MCVItem   **items;			/* array of MCV items */
 }			MCVList;
 
+
+/* used to flag stats serialized to bytea */
+#define STATS_HIST_MAGIC       0x7F8C5670	/* marks serialized bytea */
+#define STATS_HIST_TYPE_BASIC  1	/* basic histogram type */
+
+/* max buckets in a histogram (mostly arbitrary number) */
+#define STATS_HIST_MAX_BUCKETS 16384
+
+/*
+ * Histogram in a partially serialized form, with deduplicated boundary
+ * values etc.
+ */
+typedef struct MVBucket
+{
+	/* Frequencies of this bucket. */
+	float		frequency;
+
+	/*
+	 * Information about dimensions being NULL-only. Not yet used.
+	 */
+	bool	   *nullsonly;
+
+	/* lower boundaries - values and information about the inequalities */
+	uint16	   *min;
+	bool	   *min_inclusive;
+
+	/*
+	 * indexes of upper boundaries - values and information about the
+	 * inequalities (exclusive vs. inclusive)
+	 */
+	uint16	   *max;
+	bool	   *max_inclusive;
+}			MVBucket;
+
+typedef struct MVHistogram
+{
+	/* varlena header (do not touch directly!) */
+	int32		vl_len_;
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of histogram (BASIC) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
+	uint32		ndimensions;	/* number of dimensions */
+	Oid			types[STATS_MAX_DIMENSIONS];	/* OIDs of data types */
+
+	/*
+	 * keep this the same with MVHistogram, because of deserialization (same
+	 * offset)
+	 */
+	MVBucket  **buckets;		/* array of buckets */
+
+	/*
+	 * serialized boundary values, one array per dimension, deduplicated (the
+	 * min/max indexes point into these arrays)
+	 */
+	int		   *nvalues;
+	Datum	  **values;
+}			MVHistogram;
+
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 extern MVDependencies *statext_dependencies_load(Oid mvoid);
 extern MCVList * statext_mcv_load(Oid mvoid);
+extern MVHistogram * statext_histogram_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
@@ -141,8 +200,8 @@ extern Selectivity statext_clauselist_selectivity(PlannerInfo *root,
 							   SpecialJoinInfo *sjinfo,
 							   RelOptInfo *rel,
 							   Bitmapset **estimatedclauses);
-extern bool has_stats_of_kind(List *stats, char requiredkind);
+extern bool has_stats_of_kind(List *stats, int requiredkinds);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
-					   Bitmapset *attnums, char requiredkind);
+					   Bitmapset *attnums, int requiredkinds);
 
 #endif							/* STATISTICS_H */

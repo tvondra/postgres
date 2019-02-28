@@ -3360,7 +3360,7 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 	 * apply.  We apply a fudge factor below, but only if we multiplied
 	 * more than one such values.
 	 */
-	while (varinfos)
+	while (true)
 	{
 		double		mvndistinct;
 
@@ -3386,8 +3386,7 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 				relvarcount++;
 			}
 
-			/* we're done with this relation */
-			varinfos = NIL;
+			break;
 		}
 	}
 

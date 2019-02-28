@@ -56,10 +56,10 @@
 /*
  * Macros for convenient access to parts of a serialized MCV item.
  */
-#define ITEM_INDEXES(item)			((uint16*)item)
-#define ITEM_NULLS(item,ndims)		((bool*)(ITEM_INDEXES(item) + ndims))
-#define ITEM_FREQUENCY(item,ndims)	((double*)(ITEM_NULLS(item,ndims) + ndims))
-#define ITEM_BASE_FREQUENCY(item,ndims)	((double*)(ITEM_FREQUENCY(item,ndims) + 1))
+#define ITEM_INDEXES(item)			((uint16 *) (item))
+#define ITEM_NULLS(item,ndims)		((bool *) (ITEM_INDEXES(item) + (ndims)))
+#define ITEM_FREQUENCY(item,ndims)	((double *) (ITEM_NULLS(item, ndims) + (ndims)))
+#define ITEM_BASE_FREQUENCY(item,ndims)	((double *) (ITEM_FREQUENCY(item, ndims) + 1))
 
 
 static MultiSortSupport build_mss(VacAttrStats **stats, Bitmapset *attrs);

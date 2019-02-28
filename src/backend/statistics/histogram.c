@@ -128,17 +128,17 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
  * boolean arrays.
  */
 #define BUCKET_SIZE(ndims)	\
-	(ndims * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
+	((ndims) * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
 
 /*
  * Macros for convenient access to parts of a serialized bucket.
  */
-#define BUCKET_FREQUENCY(b)		(*(float*)b)
-#define BUCKET_MIN_INCL(b,n)	((bool*)(b + sizeof(float)))
-#define BUCKET_MAX_INCL(b,n)	(BUCKET_MIN_INCL(b,n) + n)
-#define BUCKET_NULLS_ONLY(b,n)	(BUCKET_MAX_INCL(b,n) + n)
-#define BUCKET_MIN_INDEXES(b,n) ((uint16*)(BUCKET_NULLS_ONLY(b,n) + n))
-#define BUCKET_MAX_INDEXES(b,n) ((BUCKET_MIN_INDEXES(b,n) + n))
+#define BUCKET_FREQUENCY(b)		(*(float *) (b))
+#define BUCKET_MIN_INCL(b,n)	((bool *) ((b) + sizeof(float)))
+#define BUCKET_MAX_INCL(b,n)	(BUCKET_MIN_INCL(b,n) + (n))
+#define BUCKET_NULLS_ONLY(b,n)	(BUCKET_MAX_INCL(b,n) + (n))
+#define BUCKET_MIN_INDEXES(b,n) ((uint16 *) (BUCKET_NULLS_ONLY(b,n) + (n)))
+#define BUCKET_MAX_INDEXES(b,n) ((BUCKET_MIN_INDEXES(b,n) + (n)))
 
 /*
  * Minimal number of rows per bucket (can't split smaller buckets).
@@ -767,11 +767,11 @@ statext_histogram_deserialize(bytea *data)
 	tmp += offsetof(MVHistogram, buckets);
 
 	if (histogram->magic != STATS_HIST_MAGIC)
-		elog(ERROR, "invalid histogram magic %d (expected %dd)",
+		elog(ERROR, "invalid histogram magic %u (expected %dd)",
 			 histogram->magic, STATS_HIST_MAGIC);
 
 	if (histogram->type != STATS_HIST_TYPE_BASIC)
-		elog(ERROR, "invalid histogram type %d (expected %dd)",
+		elog(ERROR, "invalid histogram type %u (expected %dd)",
 			 histogram->type, STATS_HIST_TYPE_BASIC);
 
 	if (histogram->ndimensions == 0)
@@ -781,7 +781,7 @@ statext_histogram_deserialize(bytea *data)
 	else if (histogram->ndimensions > STATS_MAX_DIMENSIONS)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid length (%d) dimension array in histogram",
+				 errmsg("invalid length (%u) dimension array in histogram",
 						histogram->ndimensions)));
 
 	if (histogram->nbuckets == 0)
@@ -791,7 +791,7 @@ statext_histogram_deserialize(bytea *data)
 	else if (histogram->nbuckets > STATS_HIST_MAX_BUCKETS)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid length (%d) bucket array in histogram",
+				 errmsg("invalid length (%u) bucket array in histogram",
 						histogram->nbuckets)));
 
 	nbuckets = histogram->nbuckets;

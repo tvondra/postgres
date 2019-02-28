@@ -988,11 +988,8 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 				other_sel,
 				sel;
 
-	/* we're interested in MCV lists */
-	int			types = STATS_EXT_MCV;
-
 	/* check if there's any stats that might be useful for us. */
-	if (!has_stats_of_kind(rel->statlist, types))
+	if (!has_stats_of_kind(rel->statlist, STATS_EXT_MCV))
 		return (Selectivity) 1.0;
 
 	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
@@ -1032,11 +1029,11 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	}
 
 	/* We need at least two attributes for MCV lists. */
-	if (bms_num_members(clauses_attnums) < 2)
+	if (bms_membership(clauses_attnums) != BMS_MULTIPLE)
 		return 1.0;
 
 	/* find the best suited statistics object for these attnums */
-	stat = choose_best_statistics(rel->statlist, clauses_attnums, types);
+	stat = choose_best_statistics(rel->statlist, clauses_attnums, STATS_EXT_MCV);
 
 	/* if no matching stats could be found then we've nothing to do */
 	if (!stat)

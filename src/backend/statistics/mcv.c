@@ -1102,6 +1102,7 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 	FuncCallContext *funcctx;
 	int			call_cntr;
 	int			max_calls;
+	AttInMetadata *attinmeta;
 
 	/* stuff done only on the first call of the function */
 	if (SRF_IS_FIRSTCALL())
@@ -1132,6 +1133,13 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 					 errmsg("function returning record called in context "
 							"that cannot accept type record")));
 
+		/*
+		 * generate attribute metadata needed later to produce tuples from raw
+		 * C strings
+		 */
+		attinmeta = TupleDescGetAttInMetadata(tupdesc);
+		funcctx->attinmeta = attinmeta;
+
 		MemoryContextSwitchTo(oldcontext);
 	}
 
@@ -1140,14 +1148,13 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 
 	call_cntr = funcctx->call_cntr;
 	max_calls = funcctx->max_calls;
+	attinmeta = funcctx->attinmeta;
 
 	if (call_cntr < max_calls)	/* do when there is more left to send */
 	{
-		Datum	   *values;
-		bool	   *nulls;
+		char	  **values;
 		HeapTuple	tuple;
 		Datum		result;
-		TupleDesc	tupdesc;
 
 		StringInfoData	itemValues;
 		StringInfoData	itemNulls;
@@ -1171,11 +1178,11 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		 * be an array of C strings which will be processed later by the type
 		 * input functions.
 		 */
-		values = (Datum *) palloc(5 * sizeof(Datum));
-		nulls = (bool *) palloc(5 * sizeof(bool));
+		values = (char **) palloc0(5 * sizeof(char *));
 
-		/* no NULL values */
-		memset(nulls, 0, 5 * sizeof(bool));
+		values[0] = (char *) palloc(64 * sizeof(char));	/* item index */
+		values[3] = (char *) palloc(64 * sizeof(char));	/* frequency */
+		values[4] = (char *) palloc(64 * sizeof(char));	/* base frequency */
 
 		outfuncs = (Oid *) palloc0(sizeof(Oid) * mcvlist->ndimensions);
 		fmgrinfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo) * mcvlist->ndimensions);
@@ -1188,8 +1195,6 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 
 			fmgr_info(outfuncs[i], &fmgrinfo[i]);
 		}
-
-		values[0] = Int32GetDatum(call_cntr);	/* item ID */
 
 		/* build the arrays of values / nulls */
 		initStringInfo(&itemValues);
@@ -1224,17 +1229,15 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		appendStringInfoChar(&itemValues, '}');
 		appendStringInfoChar(&itemNulls, '}');
 
-		values[1] = CStringGetDatum(itemValues.data);
-		values[2] = CStringGetDatum(itemNulls.data);
+		snprintf(values[0], 64, "%d", call_cntr);
+		snprintf(values[3], 64, "%f", item->frequency);
+		snprintf(values[4], 64, "%f", item->base_frequency);
 
-		values[3] = Float8GetDatum(item->frequency);		/* frequency */
-		values[4] = Float8GetDatum(item->base_frequency);	/* base frequency */
-
-		/* get tuple descriptor (we've checked it's correct on first call) */
-		get_call_result_type(fcinfo, NULL, &tupdesc);
+		values[1] = itemValues.data;
+		values[2] = itemNulls.data;
 
 		/* build a tuple */
-		tuple = heap_form_tuple(tupdesc, values, nulls);
+		tuple = BuildTupleFromCStrings(attinmeta, values);
 
 		/* make the tuple into a datum */
 		result = HeapTupleGetDatum(tuple);
@@ -1243,8 +1246,10 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		pfree(itemValues.data);
 		pfree(itemNulls.data);
 
+		pfree(values[0]);
+		pfree(values[3]);
+		pfree(values[4]);
 		pfree(values);
-		pfree(nulls);
 
 		SRF_RETURN_NEXT(funcctx, result);
 	}

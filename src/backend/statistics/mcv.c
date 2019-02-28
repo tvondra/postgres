@@ -158,7 +158,6 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	int			numattrs = bms_num_members(attrs);
 	int			ngroups;
 	int			nitems;
-	int		   *mcv_counts;
 
 	int		   *attnums = build_attnums_array(attrs);
 
@@ -188,35 +187,21 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		nitems = ngroups;
 
 	/*
-	 * Decide how many items to keep in the MCV list. We simply use the same
-	 * algorithm as for per-column MCV lists, to keep it consistent.
+	 * Decide how many items to keep in the MCV list. We can't use the same
+	 * algorithm as per-column MCV lists, because that only considers the
+	 * actual group frequency - but we're primarily interested in how the
+	 * actual frequency differs from the base frequency (product of simple
+	 * per-column frequencies, as if the columns were independent).
 	 *
-	 * One difference is that we do not have a multi-column stanullfrac, and
-	 * we simply treat it as a special item in the MCV list (if it makes it).
-	 * We could compute and store it, of course, but we may have statistics
-	 * on more than two columns, so we'd probably want to store this for
-	 * various combinations of columns - for K columns that'd be 2^K values.
-	 * So we instead store those as items of the multi-column MCV list (if
-	 * common enough).
+	 * Using the same algorithm might exclude items that are close to the
+	 * "average" frequency. But it does not say whether the frequency is
+	 * close to base frequency or not. We also need to consider unexpectedly
+	 * uncommon items (compared to base frequency), and the single-column
+	 * algorithm ignores that entirely.
 	 *
-	 * XXX Conceptually this is similar to the NULL-buckets of histograms.
-	 */
-	mcv_counts = (int *) palloc(sizeof(int) * nitems);
-
-	for (i = 0; i < nitems; i++)
-		mcv_counts[i] = groups[i].count;
-
-	/*
 	 * If we can fit all the items onto the MCV list, do that. Otherwise
 	 * use get_mincount_for_mcv_list to decide which items to keep in the
-	 * MCV list, based on the number of occurences in the sample.
-	 *
-	 * XXX We don't use the same criteria as for single-column MCV lists
-	 * (which is what analyze_mcv_list does), because that may exclude
-	 * items that are close to "average" frequency. But it does not say
-	 * whether the frequency is close to base frequency or not. We also
-	 * need to consider unexpectedly uncommon items (compared to base
-	 * frequency), and the single-column algorithm ignores that.
+	 * MCV list, based on the number of occurrences in the sample.
 	 */
 	if (ngroups > nitems)
 	{
@@ -224,9 +209,14 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 		mincount = get_mincount_for_mcv_list(numrows, totalrows);
 
+		/*
+		 * Walk the groups until we find the first group with a count below
+		 * the mincount threshold (the index of that group is the number of
+		 * groups we want to keep).
+		 */
 		for (i = 0; i < nitems; i++)
 		{
-			if (mcv_counts[i] < mincount)
+			if (groups[i].count < mincount)
 			{
 				nitems = i;
 				break;
@@ -315,7 +305,6 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	pfree(items);
 	pfree(groups);
-	pfree(mcv_counts);
 
 	return mcvlist;
 }

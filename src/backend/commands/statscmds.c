@@ -454,9 +454,6 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 	HeapTuple	stup,
 				oldtup;
 
-	/* Do we need to reset anything? */
-	bool		reset_stats = false;
-
 	Relation	rel;
 
 	Datum		values[Natts_pg_statistic_ext];
@@ -468,17 +465,11 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 		elog(ERROR, "cache lookup failed for statistics object %u", statsOid);
 
 	/*
-	 * We can also leave the record as it is if there are no statistics
-	 * including the datum values, like for example MCV lists.
+	 * When none of the defined statistics types contain datum values
+	 * from the table's columns then there's no need to reset the stats.
+	 * Functional dependencies and ndistinct stats should still hold true.
 	 */
-	if (statext_is_kind_built(oldtup, STATS_EXT_MCV))
-		reset_stats = true;
-
-	/*
-	 * If we can leave the statistics as it is, just do minimal cleanup
-	 * and we're done.
-	 */
-	if (!reset_stats)
+	if (!statext_is_kind_built(oldtup, STATS_EXT_MCV))
 	{
 		ReleaseSysCache(oldtup);
 		return;

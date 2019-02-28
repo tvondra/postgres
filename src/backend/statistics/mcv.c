@@ -1195,15 +1195,15 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		initStringInfo(&itemValues);
 		initStringInfo(&itemNulls);
 
-		appendStringInfoString(&itemValues, "{");
-		appendStringInfoString(&itemNulls, "{");
+		appendStringInfoChar(&itemValues, '{');
+		appendStringInfoChar(&itemNulls, '{');
 
 		for (i = 0; i < mcvlist->ndimensions; i++)
 		{
 			Datum		val,
 						valout;
 
-			if (i == 0)
+			if (i > 0)
 			{
 				appendStringInfoString(&itemValues, ", ");
 				appendStringInfoString(&itemNulls, ", ");
@@ -1220,6 +1220,9 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 			appendStringInfoString(&itemValues, DatumGetCString(valout));
 			appendStringInfoString(&itemNulls, item->isnull[i] ? "t" : "f");
 		}
+
+		appendStringInfoChar(&itemValues, '}');
+		appendStringInfoChar(&itemNulls, '}');
 
 		values[1] = CStringGetDatum(itemValues.data);
 		values[2] = CStringGetDatum(itemNulls.data);

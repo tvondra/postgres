@@ -475,7 +475,7 @@ CREATE TABLE histograms (
     filler1 TEXT,
     filler2 NUMERIC,
     a INT,
-    b TEXT,
+    b VARCHAR,
     filler3 DATE,
     c INT,
     d TEXT

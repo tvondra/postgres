@@ -2485,13 +2485,18 @@ histogram_get_match_bitmap(PlannerInfo *root,
 				RegProcedure oprrest = get_oprrest(expr->opno);
 				TypeCacheEntry *typecache;
 				Oid			colloid;
+				int			idx;
 
 				Var		   *var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 				Const	   *cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
 				bool		isgt = (!varonleft);
 
+				/* strip binary-compatible relabeling */
+				if (IsA(var, RelabelType))
+					var = (Var *) ((RelabelType *) var)->arg;
+
 				/* lookup dimension for the attribute */
-				int			idx = bms_member_index(stakeys, var->varattno);
+				idx = bms_member_index(stakeys, var->varattno);
 
 				typecache = lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
 				fmgr_info(get_opcode(typecache->lt_opr), &ltproc);

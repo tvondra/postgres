@@ -838,7 +838,7 @@ CREATE TABLE histograms (
     filler1 TEXT,
     filler2 NUMERIC,
     a INT,
-    b TEXT,
+    b VARCHAR,
     filler3 DATE,
     c INT,
     d TEXT
@@ -853,22 +853,22 @@ INSERT INTO histograms (a, b, c, filler1)
 ANALYZE histograms;
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 5 AND b < '5';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on histograms
-   Recheck Cond: ((a < 5) AND (b < '5'::text))
+   Recheck Cond: ((a < 5) AND ((b)::text < '5'::text))
    ->  Bitmap Index Scan on histograms_abc_idx
-         Index Cond: ((a < 5) AND (b < '5'::text))
+         Index Cond: ((a < 5) AND ((b)::text < '5'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 5 AND b < '5' AND c < 5;
-                          QUERY PLAN                           
----------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Bitmap Heap Scan on histograms
-   Recheck Cond: ((a < 5) AND (b < '5'::text) AND (c < 5))
+   Recheck Cond: ((a < 5) AND ((b)::text < '5'::text) AND (c < 5))
    ->  Bitmap Index Scan on histograms_abc_idx
-         Index Cond: ((a < 5) AND (b < '5'::text) AND (c < 5))
+         Index Cond: ((a < 5) AND ((b)::text < '5'::text) AND (c < 5))
 (4 rows)
 
 -- create statistics
@@ -876,22 +876,22 @@ CREATE STATISTICS histograms_stats (histogram) ON a, b, c FROM histograms;
 ANALYZE histograms;
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 5 AND b < '5';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on histograms
-   Recheck Cond: ((a < 5) AND (b < '5'::text))
+   Recheck Cond: ((a < 5) AND ((b)::text < '5'::text))
    ->  Bitmap Index Scan on histograms_abc_idx
-         Index Cond: ((a < 5) AND (b < '5'::text))
+         Index Cond: ((a < 5) AND ((b)::text < '5'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 5 AND b < '5' AND c < 5;
-                          QUERY PLAN                           
----------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Bitmap Heap Scan on histograms
-   Recheck Cond: ((a < 5) AND (b < '5'::text) AND (c < 5))
+   Recheck Cond: ((a < 5) AND ((b)::text < '5'::text) AND (c < 5))
    ->  Bitmap Index Scan on histograms_abc_idx
-         Index Cond: ((a < 5) AND (b < '5'::text) AND (c < 5))
+         Index Cond: ((a < 5) AND ((b)::text < '5'::text) AND (c < 5))
 (4 rows)
 
 -- values correlated along the diagonal
@@ -910,10 +910,10 @@ EXPLAIN (COSTS OFF)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 3 AND b > '2' AND c < 3;
-                       QUERY PLAN                        
----------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Index Scan using histograms_abc_idx on histograms
-   Index Cond: ((a < 3) AND (b > '2'::text) AND (c < 3))
+   Index Cond: ((a < 3) AND ((b)::text > '2'::text) AND (c < 3))
 (2 rows)
 
 -- create statistics
@@ -931,12 +931,12 @@ EXPLAIN (COSTS OFF)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a < 3 AND b > '2' AND c < 3;
-                          QUERY PLAN                           
----------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Bitmap Heap Scan on histograms
-   Recheck Cond: ((a < 3) AND (b > '2'::text) AND (c < 3))
+   Recheck Cond: ((a < 3) AND ((b)::text > '2'::text) AND (c < 3))
    ->  Bitmap Index Scan on histograms_abc_idx
-         Index Cond: ((a < 3) AND (b > '2'::text) AND (c < 3))
+         Index Cond: ((a < 3) AND ((b)::text > '2'::text) AND (c < 3))
 (4 rows)
 
 -- almost 5000 unique combinations with NULL values

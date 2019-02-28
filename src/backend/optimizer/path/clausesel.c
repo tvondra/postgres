@@ -60,42 +60,11 @@ static RelOptInfo *find_single_rel_for_clauses(PlannerInfo *root,
  *
  * See clause_selectivity() for the meaning of the additional parameters.
  *
- * Our basic approach is to take the product of the selectivities of the
- * subclauses.  However, that's only right if the subclauses have independent
- * probabilities, and in reality they are often NOT independent.  So,
- * we want to be smarter where we can.
- *
- * If the clauses taken together refer to just one relation, we'll try to
- * apply selectivity estimates using any extended statistics for that rel.
- * Currently we only have (soft) functional dependencies, so apply these in as
- * many cases as possible, and fall back on normal estimates for remaining
- * clauses.
- *
- * We also recognize "range queries", such as "x > 34 AND x < 42".  Clauses
- * are recognized as possible range query components if they are restriction
- * opclauses whose operators have scalarltsel or a related function as their
- * restriction selectivity estimator.  We pair up clauses of this form that
- * refer to the same variable.  An unpairable clause of this kind is simply
- * multiplied into the selectivity product in the normal way.  But when we
- * find a pair, we know that the selectivities represent the relative
- * positions of the low and high bounds within the column's range, so instead
- * of figuring the selectivity as hisel * losel, we can figure it as hisel +
- * losel - 1.  (To visualize this, see that hisel is the fraction of the range
- * below the high bound, while losel is the fraction above the low bound; so
- * hisel can be interpreted directly as a 0..1 value but we need to convert
- * losel to 1-losel before interpreting it as a value.  Then the available
- * range is 1-losel to hisel.  However, this calculation double-excludes
- * nulls, so really we need hisel + losel + null_frac - 1.)
- *
- * If either selectivity is exactly DEFAULT_INEQ_SEL, we forget this equation
- * and instead use DEFAULT_RANGE_INEQ_SEL.  The same applies if the equation
- * yields an impossible (negative) result.
- *
- * A free side-effect is that we can recognize redundant inequalities such
- * as "x < 4 AND x < 5"; only the tighter constraint will be counted.
- *
- * Of course this is all very dependent on the behavior of the inequality
- * selectivity functions; perhaps some day we can generalize the approach.
+ * The basic approach is to apply extended statistics first, on as many
+ * clauses as possible, in order to capture cross-column dependencies etc.
+ * The remaining clauses are then estimated using regular statistics tracked
+ * for individual columns.  This is done by simply passing the clauses to
+ * clauselist_selectivity_simple.
  */
 Selectivity
 clauselist_selectivity(PlannerInfo *root,

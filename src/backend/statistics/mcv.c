@@ -1408,6 +1408,10 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 				cst = (varonleft) ? lsecond(expr->args) : linitial(expr->args);
 				isgt = (!varonleft);
 
+				/* strip binary-compatible relabeling */
+				if (IsA(var, RelabelType))
+					var = (Var *) ((RelabelType *) var)->arg;
+
 				/* match the attribute to a dimension of the statistic */
 				idx = bms_member_index(keys, var->varattno);
 

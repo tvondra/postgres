@@ -747,6 +747,10 @@ estimate_ndistinct(double totalrows, int numrows, int d, int f1)
 static bool
 statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **attnums)
 {
+	/* Look inside any binary-compatible relabeling (as in examine_variable) */
+	if (IsA(clause, RelabelType))
+		clause = (Node *) ((RelabelType *) clause)->arg;
+
 	/* We only support plain Vars for now */
 	if (IsA(clause, Var))
 	{

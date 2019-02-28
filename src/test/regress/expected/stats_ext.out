@@ -514,7 +514,7 @@ CREATE TABLE mcv_lists (
     filler1 TEXT,
     filler2 NUMERIC,
     a INT,
-    b TEXT,
+    b VARCHAR,
     filler3 DATE,
     c INT,
     d TEXT
@@ -528,20 +528,20 @@ INSERT INTO mcv_lists (a, b, c, filler1)
 ANALYZE mcv_lists;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
-                       QUERY PLAN                        
----------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a = 1) AND (b = '1'::text) AND (c = 1))
+   Index Cond: ((a = 1) AND ((b)::text = '1'::text) AND (c = 1))
 (2 rows)
 
 -- create statistics
@@ -549,20 +549,20 @@ CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
 ANALYZE mcv_lists;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
-                       QUERY PLAN                        
----------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a = 1) AND (b = '1'::text) AND (c = 1))
+   Index Cond: ((a = 1) AND ((b)::text = '1'::text) AND (c = 1))
 (2 rows)
 
 -- 100 distinct combinations, all in the MCV list
@@ -573,50 +573,50 @@ INSERT INTO mcv_lists (a, b, c, filler1)
 ANALYZE mcv_lists;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                   QUERY PLAN                    
--------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a = 1) AND (b = '1'::text))
+   Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (2 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 1 AND b < '1';
-                   QUERY PLAN                    
--------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a < 1) AND (b < '1'::text))
+   Index Cond: ((a < 1) AND ((b)::text < '1'::text))
 (2 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
-                   QUERY PLAN                    
--------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a <= 0) AND (b <= '0'::text))
+   Index Cond: ((a <= 0) AND ((b)::text <= '0'::text))
 (2 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
-                       QUERY PLAN                        
----------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a = 1) AND (b = '1'::text) AND (c = 1))
+   Index Cond: ((a = 1) AND ((b)::text = '1'::text) AND (c = 1))
 (2 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 5 AND b < '1' AND c < 5;
-                       QUERY PLAN                        
----------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a < 5) AND (b < '1'::text) AND (c < 5))
+   Index Cond: ((a < 5) AND ((b)::text < '1'::text) AND (c < 5))
 (2 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a <= 4) AND (b <= '0'::text) AND (c <= 4))
+   Index Cond: ((a <= 4) AND ((b)::text <= '0'::text) AND (c <= 4))
 (2 rows)
 
 -- create statistics
@@ -624,98 +624,98 @@ CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
 ANALYZE mcv_lists;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 1 AND b < '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a < 1) AND (b < '1'::text))
+   Recheck Cond: ((a < 1) AND ((b)::text < '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a < 1) AND (b < '1'::text))
+         Index Cond: ((a < 1) AND ((b)::text < '1'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a <= 0 AND b <= '0';
-                     QUERY PLAN                      
------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a <= 0) AND (b <= '0'::text))
+   Recheck Cond: ((a <= 0) AND ((b)::text <= '0'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a <= 0) AND (b <= '0'::text))
+         Index Cond: ((a <= 0) AND ((b)::text <= '0'::text))
 (4 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1' AND c = 1;
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    Filter: (c = 1)
    ->  Bitmap Index Scan on mcv_lists_ab_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (5 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a < 5 AND b < '1' AND c < 5;
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a < 5) AND (b < '1'::text))
+   Recheck Cond: ((a < 5) AND ((b)::text < '1'::text))
    Filter: (c < 5)
    ->  Bitmap Index Scan on mcv_lists_ab_idx
-         Index Cond: ((a < 5) AND (b < '1'::text))
+         Index Cond: ((a < 5) AND ((b)::text < '1'::text))
 (5 rows)
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a <= 4 AND b <= '0' AND c <= 4;
-                     QUERY PLAN                      
------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a <= 4) AND (b <= '0'::text))
+   Recheck Cond: ((a <= 4) AND ((b)::text <= '0'::text))
    Filter: (c <= 4)
    ->  Bitmap Index Scan on mcv_lists_ab_idx
-         Index Cond: ((a <= 4) AND (b <= '0'::text))
+         Index Cond: ((a <= 4) AND ((b)::text <= '0'::text))
 (5 rows)
 
 -- check change of unrelated column type does not reset the MCV statistics
 ALTER TABLE mcv_lists ALTER COLUMN d TYPE VARCHAR(64);
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (4 rows)
 
 -- check change of column type resets the MCV statistics
 ALTER TABLE mcv_lists ALTER COLUMN c TYPE numeric;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                   QUERY PLAN                    
--------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Index Scan using mcv_lists_abc_idx on mcv_lists
-   Index Cond: ((a = 1) AND (b = '1'::text))
+   Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (2 rows)
 
 ANALYZE mcv_lists;
 EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a = 1 AND b = '1';
-                    QUERY PLAN                     
----------------------------------------------------
+                        QUERY PLAN                         
+-----------------------------------------------------------
  Bitmap Heap Scan on mcv_lists
-   Recheck Cond: ((a = 1) AND (b = '1'::text))
+   Recheck Cond: ((a = 1) AND ((b)::text = '1'::text))
    ->  Bitmap Index Scan on mcv_lists_abc_idx
-         Index Cond: ((a = 1) AND (b = '1'::text))
+         Index Cond: ((a = 1) AND ((b)::text = '1'::text))
 (4 rows)
 
 -- 100 distinct combinations with NULL values, all in the MCV list

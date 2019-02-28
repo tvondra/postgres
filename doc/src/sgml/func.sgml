@@ -21287,8 +21287,8 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
    </indexterm>
 
    <para>
-    To inspect statistics defined using <command>CREATE STATISTICS</command>
-    command, <productname>PostgreSQL</productname> provides multiple functions.
+    <productname>PostgreSQL</productname> provides a function to inspect complex
+    statistics defined using <command>CREATE STATISTICS</command> command.
    </para>
 
   <sect2 id="functions-statistics-mcv">
@@ -21301,7 +21301,7 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
 
    <para>
     <function>pg_mcv_list_items</function> returns a list of all items
-    stored in a multi-column <literal>MCV</literal> list, and returns the
+    stored in a multi-column <acronym>MCV</acronym> list, and returns the
     following columns:
 
     <informaltable>
@@ -21318,7 +21318,7 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
        <row>
         <entry><literal>index</literal></entry>
         <entry><type>int</type></entry>
-        <entry>index of the item in the <literal>MCV</literal> list</entry>
+        <entry>index of the item in the <acronym>MCV</acronym> list</entry>
        </row>
        <row>
         <entry><literal>values</literal></entry>
@@ -21333,12 +21333,12 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
        <row>
         <entry><literal>frequency</literal></entry>
         <entry><type>double precision</type></entry>
-        <entry>frequency of this <literal>MCV</literal> item</entry>
+        <entry>frequency of this <acronym>MCV</acronym> item</entry>
        </row>
        <row>
         <entry><literal>base_frequency</literal></entry>
         <entry><type>double precision</type></entry>
-        <entry>base frequency of this <literal>MCV</literal> item</entry>
+        <entry>base frequency of this <acronym>MCV</acronym> item</entry>
        </row>
       </tbody>
      </tgroup>

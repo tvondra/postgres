@@ -1343,7 +1343,7 @@ SELECT m.* FROM pg_statistic_ext,
     </para>
 
     <para>
-     It's advisable to create <literal>MCV</literal> statistics objects only
+     It's advisable to create <acronym>MCV</acronym> statistics objects only
      on combinations of columns that are actually used in conditions together,
      and for which misestimation of the number of groups is resulting in bad
      plans.  Otherwise, the <command>ANALYZE</command> and planning cycles

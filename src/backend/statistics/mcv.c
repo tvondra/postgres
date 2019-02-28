@@ -152,9 +152,7 @@ MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 				  VacAttrStats **stats, double totalrows)
 {
-	int			i,
-				j,
-				k;
+	int			i;
 	int			numattrs = bms_num_members(attrs);
 	int			ngroups;
 	int			nitems;
@@ -231,6 +229,8 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	 */
 	if (nitems > 0)
 	{
+		int	j;
+
 		/*
 		 * Allocate the MCV list structure, set the global parameters.
 		 */
@@ -291,6 +291,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			for (j = 0; j < numattrs; j++)
 			{
 				int			count = 0;
+				int			k;
 
 				for (k = 0; k < ngroups; k++)
 				{
@@ -388,7 +389,7 @@ compare_sort_item_count(const void *a, const void *b)
 
 /*
  * build_distinct_groups
- *	build array of SortItems for distinct groups and counts matching items
+ *	build an array of SortItems for distinct groups and counts matching items
  *
  * The input array is assumed to be sorted
  */
@@ -437,7 +438,7 @@ build_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss,
 MCVList *
 statext_mcv_load(Oid mvoid)
 {
-	bool		isnull = false;
+	bool		isnull;
 	Datum		mcvlist;
 	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 
@@ -808,7 +809,7 @@ statext_mcv_deserialize(bytea *data)
 	 * header.
 	 */
 	if (VARSIZE_ANY_EXHDR(data) < offsetof(MCVList, items))
-		elog(ERROR, "invalid MCV Size %ld (expected at least %ld)",
+		elog(ERROR, "invalid MCV Size %ld (expected at least %zu)",
 			 VARSIZE_ANY_EXHDR(data), offsetof(MCVList, items));
 
 	/* read the MCV list header */
@@ -822,18 +823,19 @@ statext_mcv_deserialize(bytea *data)
 	tmp += offsetof(MCVList, items);
 
 	if (mcvlist->magic != STATS_MCV_MAGIC)
-		elog(ERROR, "invalid MCV magic %d (expected %d)",
+		elog(ERROR, "invalid MCV magic %u (expected %u)",
 			 mcvlist->magic, STATS_MCV_MAGIC);
 
 	if (mcvlist->type != STATS_MCV_TYPE_BASIC)
-		elog(ERROR, "invalid MCV type %d (expected %d)",
+		elog(ERROR, "invalid MCV type %u (expected %u)",
 			 mcvlist->type, STATS_MCV_TYPE_BASIC);
 
 	if (mcvlist->ndimensions == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid zero-length dimension array in MCVList")));
-	else if (mcvlist->ndimensions > STATS_MAX_DIMENSIONS)
+	else if ((mcvlist->ndimensions > STATS_MAX_DIMENSIONS) ||
+			 (mcvlist->ndimensions < 0))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid length (%d) dimension array in MCVList",
@@ -846,7 +848,7 @@ statext_mcv_deserialize(bytea *data)
 	else if (mcvlist->nitems > STATS_MCVLIST_MAX_ITEMS)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid length (%d) item array in MCVList",
+				 errmsg("invalid length (%u) item array in MCVList",
 						mcvlist->nitems)));
 
 	nitems = mcvlist->nitems;
@@ -894,7 +896,7 @@ statext_mcv_deserialize(bytea *data)
 	 * check on size.
 	 */
 	if (VARSIZE_ANY_EXHDR(data) != expected_size)
-		elog(ERROR, "invalid MCV size %ld (expected %ld)",
+		elog(ERROR, "invalid MCV size %ld (expected %zu)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
 	/*

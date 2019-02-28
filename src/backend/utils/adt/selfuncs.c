@@ -3140,12 +3140,13 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		}
 
 		/*
-		 * Get the numdistinct estimate for the Vars of this rel.  We
-		 * iteratively search for multivariate n-distinct with maximum number
-		 * of vars; assuming that each var group is independent of the others,
-		 * we multiply them together.  Any remaining relvarinfos after no more
-		 * multivariate matches are found are assumed independent too, so
-		 * their individual ndistinct estimates are multiplied also.
+		 * Get the numdistinct estimate for the Vars of this rel.
+		 *
+		 * We iteratively search for multivariate n-distinct with the maximum
+		 * number of vars; assuming that each var group is independent of the
+		 * others, we multiply them together.  Any remaining relvarinfos after
+		 * no more multivariate matches are found are assumed independent too,
+		 * so their individual ndistinct estimates are multiplied also.
 		 *
 		 * While iterating, count how many separate numdistinct values we
 		 * apply.  We apply a fudge factor below, but only if we multiplied
@@ -3349,12 +3350,11 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 	/*
 	 * Get the numdistinct estimate for the Vars of this rel.
 	 *
-	 * We
-	 * iteratively search for multivariate n-distinct with maximum number
-	 * of vars; assuming that each var group is independent of the others,
-	 * we multiply them together.  Any remaining relvarinfos after no more
-	 * multivariate matches are found are assumed independent too, so
-	 * their individual ndistinct estimates are multiplied also.
+	 * We iteratively search for multivariate n-distinct with the maximum
+	 * number of vars; assuming that each var group is independent of the
+	 * others, we multiply them together.  Any remaining relvarinfos after
+	 * no more multivariate matches are found are assumed independent too,
+	 * so their individual ndistinct estimates are multiplied also.
 	 *
 	 * While iterating, count how many separate numdistinct values we
 	 * apply.  We apply a fudge factor below, but only if we multiplied
@@ -3392,7 +3392,7 @@ estimate_num_groups_simple(PlannerInfo *root, List *vars)
 	}
 
 	/*
-	 * Sanity check --- don't divide by zero if empty relation.
+	 * Clamp the ndistinct estimate based on the number of tuples.
 	 */
 	Assert(IS_SIMPLE_REL(rel));
 	if (rel->tuples > 0)

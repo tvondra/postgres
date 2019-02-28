@@ -115,7 +115,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * Perform selectivity estimations on any clauses found applicable by
 		 * dependencies_clauselist_selectivity.  'estimatedclauses' will be
 		 * filled with the 0-based list positions of clauses used that way, so
-		 * that we can ignore them below.
+		 * that we can ignore them lager (not to estimate them twice).
 		 */
 		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
 												  jointype, sjinfo, rel,
@@ -137,7 +137,8 @@ clauselist_selectivity(PlannerInfo *root,
  *	  expression clauses.  The list can be empty, in which case 1.0
  *	  must be returned.  List elements may be either RestrictInfos
  *	  or bare expression clauses --- the former is preferred since
- *	  it allows caching of results.
+ *	  it allows caching of results.  The estimatedclauses bitmap tracks
+ *	  clauses that have already been estimated by other means.
  *
  * See clause_selectivity() for the meaning of the additional parameters.
  *

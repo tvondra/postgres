@@ -90,7 +90,7 @@ Hashed MCV (not yet implemented)
 --------------------------------
 
 Regular MCV lists have to include actual values for each item, so if those items
-are large the list may be quite large. This is especially true for multi-variate
+are large the list may be quite large. This is especially true for multivariate
 MCV lists, although the current implementation partially mitigates this by
 performing de-duplicating the values before storing them on disk.
 
@@ -121,7 +121,7 @@ all the items have the same data type, so anyarray provides a simple way to
 get a text representation.
 
 With multivariate MCV lists the columns may use different data types, making
-it impossible to use anyarrays. It might be possible to produce similar
+it impossible to use anyarrays. It might be possible to produce a similar
 array-like representation, but that would complicate further processing and
 analysis of the MCV list.
 

@@ -504,7 +504,7 @@ bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
 
 /*
  * build_attnums_array
- *		Transforms an array of AttrNumber values into a bitmap.
+ *		Transforms a bitmap into an array of AttrNumber values.
  *
  * This is used for extended statistics only, so all the attribute must be
  * user-defined. That means offsetting by FirstLowInvalidHeapAttributeNumber
@@ -536,7 +536,7 @@ build_attnums_array(Bitmapset *attrs)
 /* build_sorted_items
  * 	build sorted array of SortItem with values from rows
  *
- * XXX All the memory is allocated in a single chunk, so that the caller
+ * Note: All the memory is allocated in a single chunk, so that the caller
  * can simply pfree the return value to release all of it.
  */
 SortItem *
@@ -751,7 +751,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 	if (IsA(clause, RelabelType))
 		clause = (Node *) ((RelabelType *) clause)->arg;
 
-	/* We only support plain Vars for now */
+	/* plain Var references (boolean Vars or recursive checks) */
 	if (IsA(clause, Var))
 	{
 		Var		   *var = (Var *) clause;
@@ -773,7 +773,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 		return true;
 	}
 
-	/* Var op Const */
+	/* (Var op Const) or (Const op Var) */
 	if (is_opclause(clause))
 	{
 		OpExpr	   *expr = (OpExpr *) clause;
@@ -814,7 +814,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 				break;
 
 			default:
-				/* fall-through */
+				/* other estimators are considered unknown/unsupported */
 				return false;
 		}
 
@@ -888,14 +888,17 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
  * statext_is_compatible_clause
  *		Determines if the clause is compatible with MCV lists.
  *
- * Only OpExprs with two arguments using an equality operator are supported.
- * When returning True attnum is set to the attribute number of the Var within
- * the supported clause.
+ * Currently, we only support three types of clauses:
  *
- * Currently we only support (Var op Const), or (Const op Var), where the
- * op is one of ("=", "<", ">", ">=", "<=") and (Var IS [NOT] NULL), and
- * combinations of those using AND/OR/NOT. It may be possible to expand on
- * this later.
+ * (a) OpExprs of the form (Var op Const), or (Const op Var), where the op
+ * is one of ("=", "<", ">", ">=", "<=")
+ *
+ * (b) (Var IS [NOT] NULL)
+ *
+ * (c) combinations using AND/OR/NOT
+ *
+ * In the future, the range of supported clauses may be expanded to more
+ * complex cases, for example (Var op Var).
  */
 static bool
 statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
@@ -922,7 +925,7 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
  *		Estimate clauses using the best multi-column statistics.
  *
  * Selects the best extended (multi-column) statistic on a table (measured by
- * a number of attributes extracted from the clauses and covered by it), and
+ * the number of attributes extracted from the clauses and covered by it), and
  * computes the selectivity for supplied clauses.
  *
  * One of the main challenges with using MCV lists is how to extrapolate the

@@ -63,7 +63,9 @@
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/walprefetcher.h"
 #include "postmaster/walwriter.h"
 #include "replication/logicallauncher.h"
 #include "replication/slot.h"
@@ -194,6 +196,8 @@ static bool check_max_wal_senders(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_work_mem(int *newval, void **extra, GucSource source);
 static bool check_effective_io_concurrency(int *newval, void **extra, GucSource source);
 static void assign_effective_io_concurrency(int newval, void *extra);
+static bool check_async_prefetch(bool *newval, void **extra, GucSource source);
+static bool check_async_prefetch_workers(int *newval, void **extra, GucSource source);
 static void assign_pgstat_temp_directory(const char *newval, void *extra);
 static bool check_application_name(char **newval, void **extra, GucSource source);
 static void assign_application_name(const char *newval, void *extra);
@@ -1954,6 +1958,39 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"wal_prefetch_enabled", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Allow prefetch of blocks referenced by WAL records."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&WalPrefetchEnabled,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"async_prefetch_enabled", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Enables use of asynchronous prefetcher."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&async_prefetch_enabled,
+		false,
+		check_async_prefetch, NULL, NULL
+	},
+
+	{
+		{"async_prefetch_check_buffers", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Check shared buffers before prefetching a block."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&async_prefetch_buffers,
+		true,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2613,6 +2650,39 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"wal_prefetch_min_lead", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Minimal lead (kb) before WAL replay LSN and prefetched LSN."),
+		 NULL,
+		 GUC_UNIT_KB
+		},
+		&WalPrefetchMinLead,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_prefetch_max_lead", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Maximal lead (kb) before WAL replay LSN and prefetched LSN."),
+		 NULL,
+		 GUC_UNIT_KB
+		},
+		&WalPrefetchMaxLead,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_prefetch_poll_interval", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Interval of polling WAL by WAL prefetcher."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&WalPrefetchPollInterval,
+		100, 1, 10000,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_writer_delay", PGC_SIGHUP, WAL_SETTINGS,
 			gettext_noop("Time between WAL flushes performed in the WAL writer."),
 			NULL,
@@ -2775,6 +2845,26 @@ static struct config_int ConfigureNamesInt[] =
 #endif
 		0, MAX_IO_CONCURRENCY,
 		check_effective_io_concurrency, assign_effective_io_concurrency, NULL
+	},
+
+	{
+		{"async_prefetch_workers", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Sets the number of processes handling async prefetch requests."),
+			NULL
+		},
+		&async_prefetch_workers,
+		8, 0, 64,
+		check_async_prefetch_workers, NULL, NULL
+	},
+	{
+		{"async_prefetch_naptime", PGC_SIGHUP, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Time to sleep between starting prefetch workers."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&async_prefetch_naptime,
+		60, 1, INT_MAX / 1000,
+		NULL, NULL, NULL
 	},
 
 	{
@@ -11119,6 +11209,13 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 }
 
 static bool
+check_async_prefetch(bool *newval, void **extra, GucSource source)
+{
+	/* FIXME do the check here */
+	return true;
+}
+
+static bool
 check_canonical_path(char **newval, void **extra, GucSource source)
 {
 	/*
@@ -11367,6 +11464,13 @@ assign_effective_io_concurrency(int newval, void *extra)
 #ifdef USE_PREFETCH
 	target_prefetch_pages = *((int *) extra);
 #endif							/* USE_PREFETCH */
+}
+
+static bool
+check_async_prefetch_workers(int *newval, void **extra, GucSource source)
+{
+	/* FIXME do the check here */
+	return true;
 }
 
 static void

@@ -544,7 +544,6 @@ typedef struct PgStat_MsgChecksumFailure
 	TimestampTz m_failure_time;
 } PgStat_MsgChecksumFailure;
 
-
 /* ----------
  * PgStat_Msg					Union over all possible messages.
  * ----------
@@ -728,7 +727,10 @@ typedef enum BackendType
 	B_STARTUP,
 	B_WAL_RECEIVER,
 	B_WAL_SENDER,
-	B_WAL_WRITER
+	B_WAL_WRITER,
+	B_WAL_PREFETCHER,
+	B_PREFETCH_LAUNCHER,
+	B_PREFETCH_WORKER
 } BackendType;
 
 
@@ -785,7 +787,9 @@ typedef enum
 	WAIT_EVENT_SYSLOGGER_MAIN,
 	WAIT_EVENT_WAL_RECEIVER_MAIN,
 	WAIT_EVENT_WAL_SENDER_MAIN,
-	WAIT_EVENT_WAL_WRITER_MAIN
+	WAIT_EVENT_WAL_WRITER_MAIN,
+	WAIT_EVENT_WAL_PREFETCHER_MAIN,
+	WAIT_EVENT_PREFETCH_MAIN
 } WaitEventActivity;
 
 /* ----------
@@ -854,7 +858,9 @@ typedef enum
 	WAIT_EVENT_REPLICATION_ORIGIN_DROP,
 	WAIT_EVENT_REPLICATION_SLOT_DROP,
 	WAIT_EVENT_SAFE_SNAPSHOT,
-	WAIT_EVENT_SYNC_REP
+	WAIT_EVENT_SYNC_REP,
+	WAIT_EVENT_PREFETCH_QUEUE,
+	WAIT_EVENT_PREFETCH_IDLE
 } WaitEventIPC;
 
 /* ----------

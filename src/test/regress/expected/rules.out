@@ -1846,6 +1846,11 @@ pg_stat_gssapi| SELECT s.pid,
     s.gss_princ AS principal,
     s.gss_enc AS encrypted
    FROM pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, ssl_client_dn, ssl_client_serial, ssl_issuer_dn, gss_auth, gss_princ, gss_enc);
+pg_stat_prefetcher| SELECT pg_stat_get_prefetch_submitted() AS requests_submitted,
+    pg_stat_get_prefetch_processed() AS requests_processed,
+    pg_stat_get_prefetch_skipped() AS requests_skipped,
+    pg_stat_get_prefetch_failed() AS requests_failed,
+    pg_stat_get_prefetch_queue_full() AS queue_full;
 pg_stat_progress_cluster| SELECT s.pid,
     s.datid,
     d.datname,

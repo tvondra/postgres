@@ -52,6 +52,7 @@
 #include "pgstat.h"
 #include "portability/instr_time.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/prefetch.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
@@ -2071,14 +2072,24 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 		{
 			BlockNumber prefetchStart;
 			BlockNumber pblkno;
+			PrefetchQueue	prequests;
+
+			if (async_prefetch_buffers)
+				PrefetchQueueInit(&prequests);
 
 			prefetchStart = blkno & ~(PREFETCH_SIZE - 1);
 			for (pblkno = prefetchStart; pblkno <= blkno; pblkno++)
 			{
-				PrefetchBuffer(onerel, MAIN_FORKNUM, pblkno);
+				if (async_prefetch_enabled)
+					PrefetchQueueAdd(&prequests, onerel->rd_node, MAIN_FORKNUM, pblkno);
+				else
+					PrefetchBuffer(onerel, MAIN_FORKNUM, pblkno);
+
 				CHECK_FOR_INTERRUPTS();
 			}
 			prefetchedUntil = prefetchStart;
+
+			PrefetchQueueFlush(&prequests);
 		}
 
 		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,

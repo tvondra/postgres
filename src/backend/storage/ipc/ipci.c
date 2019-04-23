@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/prefetch.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
@@ -147,6 +148,7 @@ CreateSharedMemoryAndSemaphores(int port)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+		size = add_size(size, PrefetchShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -263,6 +265,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();
+	PrefetchShmemInit();
 
 #ifdef EXEC_BACKEND
 

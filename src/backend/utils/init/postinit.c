@@ -41,6 +41,7 @@
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
@@ -708,8 +709,9 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 */
 	before_shmem_exit(ShutdownPostgres, 0);
 
-	/* The autovacuum launcher is done here */
-	if (IsAutoVacuumLauncherProcess())
+	/* The autovacuum and prefetch launchers are done here */
+	if (IsAutoVacuumLauncherProcess() ||
+		IsPrefetchLauncherProcess())
 	{
 		/* report this backend in the PgBackendStatus array */
 		pgstat_bestart();

@@ -652,7 +652,7 @@ XLogTruncateRelation(RelFileNode rnode, ForkNumber forkNum,
  * in walsender.c but for small differences (such as lack of elog() in
  * frontend).  Probably these should be merged at some point.
  */
-static void
+void
 XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 		 Size count)
 {

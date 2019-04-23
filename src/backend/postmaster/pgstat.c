@@ -51,6 +51,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "replication/walsender.h"
 #include "storage/backendid.h"
 #include "storage/dsm.h"
@@ -2909,6 +2910,16 @@ pgstat_bestart(void)
 			/* Autovacuum Worker */
 			lbeentry.st_backendType = B_AUTOVAC_WORKER;
 		}
+		else if (IsPrefetchLauncherProcess())
+		{
+			/* Autovacuum Launcher */
+			lbeentry.st_backendType = B_PREFETCH_LAUNCHER;
+		}
+		else if (IsPrefetchWorkerProcess())
+		{
+			/* Autovacuum Worker */
+			lbeentry.st_backendType = B_PREFETCH_WORKER;
+		}
 		else if (am_walsender)
 		{
 			/* Wal sender */
@@ -2945,6 +2956,9 @@ pgstat_bestart(void)
 				break;
 			case WalReceiverProcess:
 				lbeentry.st_backendType = B_WAL_RECEIVER;
+				break;
+			case WalPrefetcherProcess:
+				lbeentry.st_backendType = B_WAL_PREFETCHER;
 				break;
 			default:
 				elog(FATAL, "unrecognized process type: %d",
@@ -3679,6 +3693,12 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_WRITER_MAIN:
 			event_name = "WalWriterMain";
 			break;
+		case WAIT_EVENT_WAL_PREFETCHER_MAIN:
+			event_name = "WalPrefetcherMain";
+			break;
+		case WAIT_EVENT_PREFETCH_MAIN:
+			event_name = "AutoVacuumMain";
+			break;
 			/* no default case, so that compiler will warn */
 	}
 
@@ -3854,6 +3874,12 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 			break;
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
+			break;
+		case WAIT_EVENT_PREFETCH_QUEUE:
+			event_name = "PrefetchQueue";
+			break;
+		case WAIT_EVENT_PREFETCH_IDLE:
+			event_name = "PrefetchIdle";
 			break;
 			/* no default case, so that compiler will warn */
 	}
@@ -4301,11 +4327,20 @@ pgstat_get_backend_desc(BackendType backendType)
 		case B_WAL_RECEIVER:
 			backendDesc = "walreceiver";
 			break;
+		case B_WAL_PREFETCHER:
+			backendDesc = "walprefetcher";
+			break;
 		case B_WAL_SENDER:
 			backendDesc = "walsender";
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
+			break;
+		case B_PREFETCH_LAUNCHER:
+			backendDesc = "prefetch launcher";
+			break;
+		case B_PREFETCH_WORKER:
+			backendDesc = "prefetch worker";
 			break;
 	}
 

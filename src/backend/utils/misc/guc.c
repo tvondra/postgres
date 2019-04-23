@@ -64,6 +64,7 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/walprefetcher.h"
 #include "postmaster/walwriter.h"
 #include "replication/logicallauncher.h"
 #include "replication/slot.h"
@@ -1953,6 +1954,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"wal_prefetch_enabled", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Allow prefetch of blocks referenced by WAL records."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&WalPrefetchEnabled,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2609,6 +2621,39 @@ static struct config_int ConfigureNamesInt[] =
 		&XLOGbuffers,
 		-1, -1, (INT_MAX / XLOG_BLCKSZ),
 		check_wal_buffers, NULL, NULL
+	},
+
+	{
+		{"wal_prefetch_min_lead", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Minimal lead (kb) before WAL replay LSN and prefetched LSN."),
+		 NULL,
+		 GUC_UNIT_KB
+		},
+		&WalPrefetchMinLead,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_prefetch_max_lead", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Maximal lead (kb) before WAL replay LSN and prefetched LSN."),
+		 NULL,
+		 GUC_UNIT_KB
+		},
+		&WalPrefetchMaxLead,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_prefetch_poll_interval", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Interval of polling WAL by WAL prefetcher."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&WalPrefetchPollInterval,
+		100, 1, 10000,
+		NULL, NULL, NULL
 	},
 
 	{

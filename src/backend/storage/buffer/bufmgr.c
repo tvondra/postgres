@@ -585,6 +585,19 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 #endif							/* USE_PREFETCH */
 }
 
+bool
+IsBlockCached(BufferTag* tag)
+{
+	uint32	hash = BufTableHashCode(tag);
+	LWLock *plock = BufMappingPartitionLock(hash);
+	int		bufid;
+
+	LWLockAcquire(plock, LW_SHARED);
+	bufid = BufTableLookup(tag, hash);
+	LWLockRelease(plock);
+
+	return bufid >= 0;
+}
 
 /*
  * ReadBuffer -- a shorthand for ReadBufferExtended, for reading from main

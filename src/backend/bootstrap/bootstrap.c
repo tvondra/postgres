@@ -36,6 +36,7 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
 #include "postmaster/walwriter.h"
+#include "postmaster/walprefetcher.h"
 #include "replication/walreceiver.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
@@ -338,6 +339,9 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			case WalReceiverProcess:
 				statmsg = pgstat_get_backend_desc(B_WAL_RECEIVER);
 				break;
+			case WalPrefetcherProcess:
+				statmsg = pgstat_get_backend_desc(B_WAL_PREFETCHER);
+				break;
 			default:
 				statmsg = "??? process";
 				break;
@@ -470,6 +474,11 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		case WalReceiverProcess:
 			/* don't set signals, walreceiver has its own agenda */
 			WalReceiverMain();
+			proc_exit(1);		/* should never return */
+
+		case WalPrefetcherProcess:
+			/* don't set signals, walprefetcher has its own agenda */
+			WalPrefetcherMain();
 			proc_exit(1);		/* should never return */
 
 		default:

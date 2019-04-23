@@ -40,6 +40,8 @@
 #include "utils/memutils.h"
 #include "pg_trace.h"
 
+/* #define DEBUG_PREFETCH 1 */
+
 /*
  *	The magnetic disk storage manager keeps track of open file
  *	descriptors in its own descriptor pool.  This is done to make it
@@ -587,7 +589,10 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	off_t		seekpos;
 	int			nbytes;
 	MdfdVec    *v;
-
+#if DEBUG_PREFETCH	
+	instr_time start, stop;
+	INSTR_TIME_SET_CURRENT(start);
+#endif
 	TRACE_POSTGRESQL_SMGR_MD_READ_START(forknum, blocknum,
 										reln->smgr_rnode.node.spcNode,
 										reln->smgr_rnode.node.dbNode,
@@ -636,6 +641,11 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 							blocknum, FilePathName(v->mdfd_vfd),
 							nbytes, BLCKSZ)));
 	}
+#if DEBUG_PREFETCH	
+	INSTR_TIME_SET_CURRENT(stop);
+	INSTR_TIME_SUBTRACT(stop,start);
+	elog(LOG, "Read block %d fork %d of relation %d (%d usec)", blocknum, forknum, reln->smgr_rnode.node.relNode, (int)INSTR_TIME_GET_MICROSEC(stop));
+#endif
 }
 
 /*

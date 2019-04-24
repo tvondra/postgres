@@ -215,7 +215,9 @@ extern bool XLogReaderValidatePageHeader(XLogReaderState *state,
 /* Invalidate read state */
 extern void XLogReaderInvalReadState(XLogReaderState *state);
 
+#ifdef FRONTEND
 extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr);
+#endif							/* FRONTEND */
 
 /* Functions for decoding an XLogRecord */
 

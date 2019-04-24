@@ -585,6 +585,9 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 #endif							/* USE_PREFETCH */
 }
 
+/*
+ * IsBlockCached -- check if a given block is present in shared buffers
+ */
 bool
 IsBlockCached(BufferTag* tag)
 {

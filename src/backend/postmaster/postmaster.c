@@ -256,8 +256,7 @@ static pid_t StartupPID = 0,
 			PgArchPID = 0,
 			PgStatPID = 0,
 			SysLoggerPID = 0,
-			WalPrefetcherPID = 0
-;
+			WalPrefetcherPID = 0;
 
 /* Startup process's status */
 typedef enum
@@ -1377,7 +1376,7 @@ PostmasterMain(int argc, char *argv[])
 	StartupStatus = STARTUP_RUNNING;
 	pmState = PM_STARTUP;
 
-	/* Start Wal prefetcher now because it may speed-up WAL redo */
+	/* Start wal prefetcher as it may speed-up recovery */
 	WalPrefetcherPID = StartWalPrefetcher();
 
 	/* Some workers may be scheduled to start now */
@@ -3078,8 +3077,8 @@ reaper(SIGNAL_ARGS)
 		}
 
 		/*
-		 * Was it the wal prefetcher?  Normal exit can be ignored; we'll start a
-		 * new one at the next iteration of the postmaster's main loop, if
+		 * Was it the wal prefetcher?  Normal exit can be ignored; we'll start
+		 * a new one at the next iteration of the postmaster's main loop, if
 		 * necessary.  Any other exit condition is treated as a crash.
 		 */
 		if (pid == WalPrefetcherPID)
@@ -3576,7 +3575,7 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		signal_child(WalWriterPID, (SendStop ? SIGSTOP : SIGQUIT));
 	}
 
-	/* Take care of the walprefetcherr too */
+	/* Take care of the walprefetcher too */
 	if (pid == WalPrefetcherPID)
 		WalPrefetcherPID = 0;
 	else if (WalPrefetcherPID != 0 && take_action)
@@ -3749,10 +3748,10 @@ PostmasterStateMachine(void)
 	{
 		/*
 		 * PM_WAIT_READONLY state ends when we have no regular backends that
-		 * have been started during recovery.  We kill the startup and
-		 * walreceiver processes and transition to PM_WAIT_BACKENDS.  Ideally,
-		 * we might like to kill these processes first and then wait for
-		 * backends to die off, but that doesn't work at present because
+		 * have been started during recovery.  We kill the startup, walreceiver
+		 * and walprefetched processes and transition to PM_WAIT_BACKENDS.
+		 * Ideally, we might like to kill these processes first and then wait
+		 * for backends to die off, but that doesn't work at present because
 		 * killing the startup process doesn't release its locks.
 		 */
 		if (CountChildren(BACKEND_TYPE_NORMAL) == 0)
@@ -5157,7 +5156,10 @@ sigusr1_handler(SIGNAL_ARGS)
 		Assert(BgWriterPID == 0);
 		BgWriterPID = StartBackgroundWriter();
 
-		/* WAL prefetcher is expected to be started earlier but if not, try to start it now */
+		/*
+		 * WAL prefetcher is expected to be started earlier, but if not try
+		 * to start it now.
+		 */
 		if (WalPrefetcherPID == 0)
 			WalPrefetcherPID = StartWalPrefetcher();
 

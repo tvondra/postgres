@@ -63,6 +63,7 @@
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walprefetcher.h"
 #include "postmaster/walwriter.h"
@@ -195,6 +196,7 @@ static bool check_max_wal_senders(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_work_mem(int *newval, void **extra, GucSource source);
 static bool check_effective_io_concurrency(int *newval, void **extra, GucSource source);
 static void assign_effective_io_concurrency(int newval, void *extra);
+static bool check_prefetch_workers(int *newval, void **extra, GucSource source);
 static void assign_pgstat_temp_directory(const char *newval, void *extra);
 static bool check_application_name(char **newval, void **extra, GucSource source);
 static void assign_application_name(const char *newval, void *extra);
@@ -2819,6 +2821,16 @@ static struct config_int ConfigureNamesInt[] =
 #endif
 		0, MAX_IO_CONCURRENCY,
 		check_effective_io_concurrency, assign_effective_io_concurrency, NULL
+	},
+
+	{
+		{"prefetch_workers", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Sets the number of processes handling prefetch requests."),
+			NULL
+		},
+		&prefetch_workers,
+		16, 0, 64,
+		check_prefetch_workers, NULL, NULL
 	},
 
 	{
@@ -11406,6 +11418,14 @@ assign_effective_io_concurrency(int newval, void *extra)
 #ifdef USE_PREFETCH
 	target_prefetch_pages = *((int *) extra);
 #endif							/* USE_PREFETCH */
+}
+
+static bool
+check_prefetch_workers(int *newval, void **extra, GucSource source)
+{
+	if (prefetch_workers > max_worker_processes)
+		return false;
+	return true;
 }
 
 static void

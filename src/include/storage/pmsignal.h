@@ -41,6 +41,8 @@ typedef enum
 	PMSIGNAL_BACKGROUND_WORKER_CHANGE,	/* background worker state change */
 	PMSIGNAL_START_WALRECEIVER, /* start a walreceiver */
 	PMSIGNAL_ADVANCE_STATE_MACHINE, /* advance postmaster's state machine */
+	PMSIGNAL_START_PREFETCH_LAUNCHER,	/* start a prefetch launcher */
+	PMSIGNAL_START_PREFETCH_WORKER,	/* start a prefetch worker */
 
 	NUM_PMSIGNALS				/* Must be last value of enum! */
 } PMSignalReason;

@@ -173,6 +173,7 @@
 # - Asynchronous Behavior -
 
 #effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
+#prefetch_workers = 16			# 1-64; 0 disables async prefetching
 #max_worker_processes = 8		# (change requires restart)
 #max_parallel_maintenance_workers = 2	# taken from max_parallel_workers
 #max_parallel_workers_per_gather = 2	# taken from max_parallel_workers

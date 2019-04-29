@@ -114,6 +114,7 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "postmaster/syslogger.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
@@ -256,7 +257,8 @@ static pid_t StartupPID = 0,
 			PgArchPID = 0,
 			PgStatPID = 0,
 			SysLoggerPID = 0,
-			WalPrefetcherPID = 0;
+			WalPrefetcherPID = 0,
+			PrefetchPID = 0;
 
 /* Startup process's status */
 typedef enum
@@ -366,6 +368,9 @@ static volatile sig_atomic_t WalReceiverRequested = false;
 
 /* received START_WALPREFETCHER signal */
 static volatile sig_atomic_t WalPrefetcherRequested = false;
+
+/* received START_PREFETCH_LAUNCHER signal */
+static volatile sig_atomic_t start_prefetch_launcher = false;
 
 /* set when there's a worker that needs to be started up */
 static volatile bool StartWorkerNeeded = true;
@@ -1761,6 +1766,20 @@ ServerLoop(void)
 			AutoVacPID = StartAutoVacLauncher();
 			if (AutoVacPID != 0)
 				start_autovac_launcher = false; /* signal processed */
+		}
+
+		/*
+		 * If we have lost the prefetch launcher, try to start a new one. We
+		 * don't want prefetch to run in binary upgrade mode, though (maybe
+		 * we should?).
+		 */
+		if (!IsBinaryUpgrade && PrefetchPID == 0 &&
+			(PrefetchActive() || start_prefetch_launcher) &&
+			pmState == PM_RUN)
+		{
+			PrefetchPID = StartPrefetchLauncher();
+			if (PrefetchPID != 0)
+				start_prefetch_launcher = false; /* signal processed */
 		}
 
 		/* If we have lost the stats collector, try to start a new one */
@@ -5264,6 +5283,17 @@ sigusr1_handler(SIGNAL_ARGS)
 		/* Start immediately if possible, else remember request for later. */
 		WalReceiverRequested = true;
 		MaybeStartWalReceiver();
+	}
+
+	if (CheckPostmasterSignal(PMSIGNAL_START_PREFETCH_LAUNCHER))
+	{
+		start_autovac_launcher = true;
+	}
+
+	if (CheckPostmasterSignal(PMSIGNAL_START_PREFETCH_WORKER))
+	{
+		/* The prefetch launcher wants us to start a worker process. */
+		StartPrefetchWorker();
 	}
 
 	if (CheckPostmasterSignal(PMSIGNAL_ADVANCE_STATE_MACHINE) &&

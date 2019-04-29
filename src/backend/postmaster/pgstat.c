@@ -51,6 +51,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/prefetch.h"
 #include "replication/walsender.h"
 #include "storage/backendid.h"
 #include "storage/dsm.h"
@@ -2895,6 +2896,16 @@ pgstat_bestart(void)
 			/* Autovacuum Worker */
 			beentry->st_backendType = B_AUTOVAC_WORKER;
 		}
+		else if (IsPrefetchLauncherProcess())
+		{
+			/* Autovacuum Launcher */
+			beentry->st_backendType = B_PREFETCH_LAUNCHER;
+		}
+		else if (IsPrefetchWorkerProcess())
+		{
+			/* Autovacuum Worker */
+			beentry->st_backendType = B_PREFETCH_WORKER;
+		}
 		else if (am_walsender)
 		{
 			/* Wal sender */
@@ -3607,6 +3618,9 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_PREFETCHER_MAIN:
 			event_name = "WalPrefetcherMain";
 			break;
+		case WAIT_EVENT_PREFETCH_MAIN:
+			event_name = "AutoVacuumMain";
+			break;
 			/* no default case, so that compiler will warn */
 	}
 
@@ -4237,6 +4251,12 @@ pgstat_get_backend_desc(BackendType backendType)
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
+			break;
+		case B_PREFETCH_LAUNCHER:
+			backendDesc = "prefetch launcher";
+			break;
+		case B_PREFETCH_WORKER:
+			backendDesc = "prefetch worker";
 			break;
 	}
 

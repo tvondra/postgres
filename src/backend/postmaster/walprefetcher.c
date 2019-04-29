@@ -75,14 +75,31 @@ static void WpfShutdownHandler(SIGNAL_ARGS);
 static void WpfSigusr1Handler(SIGNAL_ARGS);
 
 /*
+ * Block LRU hash table is used to keep information about most recently prefetched blocks.
+ */
+typedef struct BlockHashEntry
+{
+	BufferTag				tag;
+	dlist_node				node;
+} BlockHashEntry;
+
+
+static dlist_head cached_blocks_lru;
+static HTAB *cached_blocks_htab = NULL;
+static size_t block_hash_size;	/* XXX rename to max-size or something like that */
+static size_t block_hash_used;
+
+static TimeLineID replay_timeline;
+
+/*
  * Main entry point for walprefetcher background worker
  */
 void
 WalPrefetcherMain()
 {
-	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext walprefetcher_context;
-	int rc;
+	sigjmp_buf		local_sigjmp_buf;
+	MemoryContext	walprefetcher_context;
+	int				rc;
 
 	pqsignal(SIGHUP, WpfSigHupHandler); /* set flag to read config file */
 	pqsignal(SIGINT, WpfShutdownHandler);	/* request shutdown */
@@ -112,8 +129,9 @@ WalPrefetcherMain()
 	 * TopMemoryContext, but resetting that would be a really bad idea.
 	 */
 	walprefetcher_context = AllocSetContextCreate(TopMemoryContext,
-											  "Wal Prefetcher",
-											  ALLOCSET_DEFAULT_SIZES);
+												  "Wal Prefetcher",
+												  ALLOCSET_DEFAULT_SIZES);
+
 	MemoryContextSwitchTo(walprefetcher_context);
 
 	/*
@@ -275,135 +293,47 @@ WalReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr,
 			int reqLen, XLogRecPtr targetRecPtr, char *cur_page,
 			TimeLineID *pageTLI);
 
-#define FILE_HASH_SIZE  1009     /* Size of opened files hash */
-#define STAT_REFRESH_PERIOD 1024 /* Refresh backend status rate */
-
-/*
- * Block LRU hash table is used to keep information about most recently prefetched blocks.
- */
-typedef struct BlockHashEntry
-{
-	struct BlockHashEntry* next;
-	struct BlockHashEntry* prev;
-	struct BlockHashEntry* collision;
-	BufferTag tag;
-	uint32 hash;
-} BlockHashEntry;
-
-static BlockHashEntry** block_hash_table;
-static size_t block_hash_size;
-static size_t block_hash_used;
-static BlockHashEntry lru = {&lru, &lru};
-static TimeLineID replay_timeline;
-
-/*
- * Yet another L2-list implementation
- */
-static void
-unlink_block(BlockHashEntry* entry)
-{
-	entry->next->prev = entry->prev;
-	entry->prev->next = entry->next;
-}
-
-static void
-link_block_after(BlockHashEntry* head, BlockHashEntry* entry)
-{
-	entry->next = head->next;
-	entry->prev = head;
-	head->next->prev = entry;
-	head->next = entry;
-}
-
 /*
  * Put block in LRU hash or link it to the head of LRU list. Returns true if block was not present in hash, false otherwise.
  */
 static bool
 put_block_in_cache(BufferTag* tag)
 {
-	uint32 hash;
-	BlockHashEntry* entry;
+	bool			found;
+	BlockHashEntry *entry;
 
-	hash = BufTableHashCode(tag) % block_hash_size;
-	for (entry = block_hash_table[hash]; entry != NULL; entry = entry->collision)
+	entry = hash_search(cached_blocks_htab, tag, HASH_ENTER, &found);
+
+	/*
+	 * If we found the block in recently cached blocks, we simply move it
+	 * to the head of the list, and we're done.
+	 */
+	if (found)
 	{
-		if (BUFFERTAGS_EQUAL(entry->tag, *tag))
-		{
-			unlink_block(entry);
-			link_block_after(&lru, entry);
-			return false;
-		}
+		dlist_move_head(&cached_blocks_lru, &entry->node);
+		return false;
 	}
+
+	Assert(block_hash_used <= block_hash_size);
+
+	/*
+	 * New entry in the list, so make sure we haven't exceeded the size.
+	 */
 	if (block_hash_size == block_hash_used)
 	{
-		BlockHashEntry* victim = lru.prev;
-		BlockHashEntry** epp = &block_hash_table[victim->hash];
-		while (*epp != victim)
-			epp = &(*epp)->collision;
-		*epp = (*epp)->collision;
-		unlink_block(victim);
-		entry = victim;
+		/* just delete the tail node */
+		dlist_delete(dlist_tail_node(&cached_blocks_lru));
+		block_hash_used--;
 	}
-	else
-	{
-		entry = (BlockHashEntry*)palloc(sizeof(BlockHashEntry));
-		block_hash_used += 1;
-	}
-	entry->tag = *tag;
-	entry->hash = hash;
-	entry->collision = block_hash_table[hash];
-	block_hash_table[hash] = entry;
-	link_block_after(&lru, entry);
 
+	/* now we can add the entry to the LRU list */
+	Assert(block_hash_used < block_hash_size);
+
+	dlist_push_head(&cached_blocks_lru, &entry->node);
+	block_hash_used++;
+
+	/* no additional information to set in the entry */
 	return true;
-}
-
-/*
- * Hash of of opened files. It seems to be simpler to maintain own cache rather than provide SMgrRelation for smgr functions.
- */
-typedef struct FileHashEntry
-{
-    BufferTag tag;
-	File file;
-} FileHashEntry;
-
-static FileHashEntry file_hash_table[FILE_HASH_SIZE];
-
-static File
-WalOpenFile(BufferTag* tag)
-{
-	BufferTag segment_tag = *tag;
-	uint32 hash;
-	char* path;
-	File file;
-
-	/* Transform block number into segment number */
-	segment_tag.blockNum /= RELSEG_SIZE;
-	hash = BufTableHashCode(&segment_tag) % FILE_HASH_SIZE;
-
-	if (BUFFERTAGS_EQUAL(file_hash_table[hash].tag, segment_tag))
-		return file_hash_table[hash].file;
-
-	path = relpathperm(tag->rnode, tag->forkNum);
-	if (segment_tag.blockNum > 0)
-	{
-		char* fullpath = psprintf("%s.%d", path, segment_tag.blockNum);
-		pfree(path);
-		path = fullpath;
-	}
-	file = PathNameOpenFile(path, O_RDONLY | PG_BINARY);
-
-	if (file >= 0)
-	{
-		elog(LOG_LEVEL, "WAL_PREFETCH: open file %s", path);
-		if (file_hash_table[hash].tag.rnode.dbNode != 0)
-			FileClose(file_hash_table[hash].file);
-
-		file_hash_table[hash].file = file;
-		file_hash_table[hash].tag = segment_tag;
-	}
-	pfree(path);
-	return file;
 }
 
 /*
@@ -428,26 +358,49 @@ WalWaitWAL(void)
 
 }
 
+static void
+WalPrefetchSubmit(int nrequests, BufferTag *requests)
+{
+	elog(LOG, "requesting prefetch of %d blocks", nrequests);
+}
+
 /*
  * Main function: perform prefetch of blocks referenced by WAL records starting from given LSN or from WAL replay position if lsn=0
  */
 void
 WalPrefetch(XLogRecPtr lsn)
 {
+	MemoryContext	block_cache_context;
 	XLogReaderState *xlogreader;
 	long n_prefetched = 0;
 	long n_fpw = 0;
 	long n_cached= 0;
 	long n_initialized = 0;
+	HASHCTL			ctl;
 
 	/* Dirty hack: prevent recovery conflict */
 	MyPgXact->xmin = InvalidTransactionId;
 
-	memset(file_hash_table, 0, sizeof file_hash_table);
+	/*
+	 * Create hash table used to track recently prefetched blocks, in a separate
+	 * memory context, so that it's easier to track memory leaks etc.
+	 */
+	block_cache_context = AllocSetContextCreate(CurrentMemoryContext,
+												"Block LRU Hash",
+												ALLOCSET_DEFAULT_SIZES);
 
-	free(block_hash_table);
-	block_hash_size = effective_cache_size;
-	block_hash_table = (BlockHashEntry**)calloc(block_hash_size, sizeof(BlockHashEntry*));
+	MemoryContextSwitchTo(block_cache_context);
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(BufferTag);
+	ctl.entrysize = sizeof(struct BlockHashEntry);
+	cached_blocks_htab = hash_create("Cache of recently prefetched blocks",
+									 256, &ctl, HASH_ELEM | HASH_BLOBS);
+
+	/* also init head of the LRU dlist */
+	dlist_init(&cached_blocks_lru);
+
+
 	block_hash_used = 0;
 
 	xlogreader = XLogReaderAllocate(wal_segment_size, &WalReadPage, NULL);
@@ -500,14 +453,18 @@ WalPrefetch(XLogRecPtr lsn)
 
 		if (record != NULL)
 		{
+			/* prefetch requests extracted from this XLog record */
+			int			nrequests = 0;
+			BufferTag	requests[XLR_MAX_BLOCK_ID];
+
 			lsn = InvalidXLogRecPtr; /* continue with next record */
 
 			/* Loop through blocks referenced by this WAL record */
 			for (block_id = 0; block_id <= xlogreader->max_block_id; block_id++)
 			{
 				BufferTag tag;
-				File      file;
 
+				/* Ignore requests without a tag */
 				if (!XLogRecGetBlockTag(xlogreader, block_id, &tag.rnode, &tag.forkNum, &tag.blockNum))
 					continue;
 
@@ -537,38 +494,14 @@ WalPrefetch(XLogRecPtr lsn)
 					continue;
 				}
 
-				file = WalOpenFile(&tag);
-				if (file >= 0)
-				{
-					off_t offs = (off_t) BLCKSZ * (tag.blockNum % ((BlockNumber) RELSEG_SIZE));
-					int rc;
-#if DEBUG_PREFETCH
-					instr_time start, stop;
-					INSTR_TIME_SET_CURRENT(start);
-#endif
-					rc = FilePrefetch(file, offs, BLCKSZ, WAIT_EVENT_DATA_FILE_PREFETCH);
-					if (rc != 0)
-						elog(ERROR, "WAL_PREFETCH: failed to prefetch file: %m");
-					else if (++n_prefetched % STAT_REFRESH_PERIOD == 0)
-					{
-						char buf[1024];
-						sprintf(buf, "Prefetch %ld blocks at LSN %llx, replay LSN %llx",
-								n_prefetched, (long long)xlogreader->ReadRecPtr, (long long)replay_lsn);
-						pgstat_report_activity(STATE_RUNNING, buf);
-						elog(DEBUG1, "%s", buf);
-					}
-#if DEBUG_PREFETCH
-					INSTR_TIME_SET_CURRENT(stop);
-					INSTR_TIME_SUBTRACT(stop,start);
-					elog(LOG, "WAL_PREFETCH: %x/%x prefetch block %d fork %d of relation %d at LSN %llx, replay LSN %llx (%u usec), %ld prefetched, %ld cached, %ld fpw, %ld initialized",
-						 XLogRecGetRmid(xlogreader), XLogRecGetInfo(xlogreader),
-						 tag.blockNum, tag.forkNum, tag.rnode.relNode, (long long)xlogreader->ReadRecPtr, (long long)replay_lsn,
-						 (int)INSTR_TIME_GET_MICROSEC(stop), n_prefetched, n_cached, n_fpw, n_initialized);
-#endif
-				}
-				else
-					elog(LOG, "WAL_PREFETCH: file segment doesn't exists");
+				Assert(nrequests < XLR_MAX_BLOCK_ID);
+
+				/* accumulate the prefetch requests */
+				requests[nrequests++] = tag;
 			}
+
+			/* submit prefetch requests, if any */
+			WalPrefetchSubmit(nrequests, requests);
 		}
 		else
 		{

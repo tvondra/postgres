@@ -11423,8 +11423,6 @@ assign_effective_io_concurrency(int newval, void *extra)
 static bool
 check_prefetch_workers(int *newval, void **extra, GucSource source)
 {
-	if (prefetch_workers > max_worker_processes)
-		return false;
 	return true;
 }
 

@@ -101,7 +101,7 @@
  * GUC parameters
  */
 int			prefetch_workers;
-int			prefetch_naptime;
+int			prefetch_naptime = 60;
 
 /* Flags to tell if we are in an prefetch process */
 static bool am_prefetch_launcher = false;
@@ -665,7 +665,7 @@ prefetch_worker_forkexec(void)
 	int			ac = 0;
 
 	av[ac++] = "postgres";
-	av[ac++] = "--forkavworker";
+	av[ac++] = "--forkprefetchworker";
 	av[ac++] = NULL;			/* filled in by postmaster_forkexec */
 	av[ac] = NULL;
 
@@ -898,7 +898,7 @@ FreeWorkerInfo(int code, Datum arg)
 static void
 do_prefetch(void)
 {
-	
+	sleep(60);
 }
 
 /*

@@ -41,6 +41,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/prefetch.h"
 #include "replication/slot.h"
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
@@ -373,10 +374,12 @@ InitProcess(void)
 	/*
 	 * Now that we have a PGPROC, mark ourselves as an active postmaster
 	 * child; this is so that the postmaster can detect it if we exit without
-	 * cleaning up.  (XXX autovac launcher currently doesn't participate in
-	 * this; it probably should.)
+	 * cleaning up.  (XXX autovac and prefetch launchers currently don't
+	 * participate in this; they probably should.)
 	 */
-	if (IsUnderPostmaster && !IsAutoVacuumLauncherProcess())
+	if (IsUnderPostmaster &&
+		!IsAutoVacuumLauncherProcess() &&
+		!IsPrefetchLauncherProcess())
 		MarkPostmasterChildActive();
 
 	/*
@@ -920,14 +923,20 @@ ProcKill(int code, Datum arg)
 	/*
 	 * This process is no longer present in shared memory in any meaningful
 	 * way, so tell the postmaster we've cleaned up acceptably well. (XXX
-	 * autovac launcher should be included here someday)
+	 * autovac and prefetch launchers should be included here someday)
 	 */
-	if (IsUnderPostmaster && !IsAutoVacuumLauncherProcess())
+	if (IsUnderPostmaster &&
+		!IsAutoVacuumLauncherProcess() &&
+		!IsPrefetchLauncherProcess())
 		MarkPostmasterChildInactive();
 
 	/* wake autovac launcher if needed -- see comments in FreeWorkerInfo */
 	if (AutovacuumLauncherPid != 0)
 		kill(AutovacuumLauncherPid, SIGUSR2);
+
+	/* wake prefetch launcher if needed -- see comments in FreeWorkerInfo */
+	if (PrefetchLauncherPid != 0)
+		kill(PrefetchLauncherPid, SIGUSR2);
 }
 
 /*

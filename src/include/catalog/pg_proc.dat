@@ -5369,6 +5369,12 @@
 { oid => '2859', descr => 'statistics: number of buffer allocations',
   proname => 'pg_stat_get_buf_alloc', provolatile => 's', proparallel => 'r',
   prorettype => 'int8', proargtypes => '', prosrc => 'pg_stat_get_buf_alloc' },
+{ oid => '4217', descr => 'statistics: number of prefetched blocks',
+  proname => 'pg_stat_get_prefetch_blocks', provolatile => 's', proparallel => 'r',
+  prorettype => 'int8', proargtypes => '', prosrc => 'pg_stat_get_prefetch_blocks' },
+{ oid => '4218', descr => 'statistics: number of failed block prefetches',
+  proname => 'pg_stat_get_prefetch_failures', provolatile => 's', proparallel => 'r',
+  prorettype => 'int8', proargtypes => '', prosrc => 'pg_stat_get_prefetch_failures' },
 
 { oid => '2978', descr => 'statistics: number of function calls',
   proname => 'pg_stat_get_function_calls', provolatile => 's',

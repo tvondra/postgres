@@ -338,6 +338,7 @@ static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int le
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
+static void pgstat_recv_prefetch(PgStat_MsgPrefetch *msg, int len);
 
 /* ------------------------------------------------------------
  * Public functions called from postmaster follow
@@ -1574,6 +1575,27 @@ pgstat_report_tempfile(size_t filesize)
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_TEMPFILE);
 	msg.m_databaseid = MyDatabaseId;
 	msg.m_filesize = filesize;
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_prefetch() -
+ *
+ *	Tell the collector about progress of block prefetching.
+ * --------
+ */
+void
+pgstat_report_prefetch(int blocks, int failures)
+{
+	PgStat_MsgPrefetch msg;
+
+	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_PREFETCH);
+	msg.m_blocks_prefetched = blocks;
+	msg.m_blocks_failed = failures;
+
 	pgstat_send(&msg, sizeof(msg));
 }
 
@@ -4588,6 +4610,10 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_checksum_failure((PgStat_MsgChecksumFailure *) &msg, len);
 					break;
 
+				case PGSTAT_MTYPE_PREFETCH:
+					pgstat_recv_prefetch((PgStat_MsgPrefetch *) &msg, len);
+					break;
+
 				default:
 					break;
 			}
@@ -6346,6 +6372,19 @@ pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len)
 
 	dbentry->n_checksum_failures += msg->m_failurecount;
 	dbentry->last_checksum_failure = msg->m_failure_time;
+}
+
+/* ----------
+ * pgstat_recv_prefetch() -
+ *
+ *	Process a PREFETCH message.
+ * ----------
+ */
+static void
+pgstat_recv_prefetch(PgStat_MsgPrefetch *msg, int len)
+{
+	globalStats.prefetch_blocks += msg->m_blocks_prefetched;
+	globalStats.prefetch_failures += msg->m_blocks_failed;
 }
 
 /* ----------

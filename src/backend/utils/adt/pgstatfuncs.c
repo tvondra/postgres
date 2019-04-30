@@ -1660,6 +1660,18 @@ pg_stat_get_buf_alloc(PG_FUNCTION_ARGS)
 }
 
 Datum
+pg_stat_get_prefetch_blocks(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_blocks);
+}
+
+Datum
+pg_stat_get_prefetch_failures(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_failures);
+}
+
+Datum
 pg_stat_get_xact_numscans(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);

@@ -902,8 +902,6 @@ do_prefetch(void)
 
 		CHECK_FOR_INTERRUPTS();
 
-		elog(LOG, "checking pages to prefetch");
-
 		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
 
 		start = PrefetchShmem->prefetch_queue_start;
@@ -922,9 +920,6 @@ do_prefetch(void)
 
 		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
 
-		elog(LOG, "prefetch get %d requests (count %d)",
-			 nrequests, count);
-
 		/*
 		 * If we got requests, notify others there's free space in the queue
 		 * now, and do the actual prefetching.
@@ -934,21 +929,38 @@ do_prefetch(void)
 			int i;
 			ConditionVariableBroadcast(&PrefetchShmem->free_cv);
 
-			elog(LOG, "prefetching %d blocks", nrequests);
-
 			for (i = 0; i < nrequests; i++)
 			{
-				elog(LOG, "prefetching block %d/%d/%d %d %d",
-					 requests[i].rnode.spcNode, requests[i].rnode.dbNode, requests[i].rnode.relNode,
-					 requests[i].forkNum, requests[i].blockNum);
+				BufferTag	tag;
+				uint32		hash;
+				LWLock	   *partitionLock;
+				int			buf_id;
+
+				/* for convenience */
+				tag = requests[i];
+
+				/* determine its hash code and partition lock ID */
+				hash = BufTableHashCode(&tag);
+				partitionLock = BufMappingPartitionLock(hash);
+
+				/* see if the block is in the buffer pool already */
+				LWLockAcquire(partitionLock, LW_SHARED);
+				buf_id = BufTableLookup(&tag, hash);
+				LWLockRelease(partitionLock);
+
+				/* If not in buffers, initiate prefetch */
+				if (buf_id < 0)
+				{
+					SMgrRelation	reln = smgropen(tag.rnode, InvalidBackendId);
+
+					smgrprefetch(reln, tag.forkNum, tag.blockNum);
+				}
 			}
 
 			pgstat_report_prefetch(nrequests, nerrors);
 		}
 		else
 		{
-			elog(LOG, "no prefetch requests available, sleeping ...");
-
 			/* otherwise sleep for a while and wait for new requests */
 			ConditionVariableSleep(&PrefetchShmem->requests_cv,
 								   WAIT_EVENT_PREFETCH_IDLE);

@@ -478,11 +478,13 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 		if (prefetch_iterator)
 		{
 			/*
-			 * Trigger prefetching once we're about half-way through, or
-			 * half-way through, whichever is closer.
+			 * Trigger prefetching once we're sufficiently far away from
+			 * the target number of pages.
 			 */
-			int		distance = Min(16, node->prefetch_target / 2);
-			bool	prefetch = (node->prefetch_pages < distance);
+			int		min_distance = Min(64, node->prefetch_target / 2);
+			int		distance = (node->prefetch_target - node->prefetch_pages);
+
+			bool	prefetch = (distance > min_distance);
 
 #define		MAX_REQUESTS	64
 			int			nrequests = 0;
@@ -533,10 +535,7 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 			}
 
 			if (nrequests > 0)
-			{
-				elog(WARNING, "prefetching %d pages", nrequests);
 				SubmitPrefetchRequests(nrequests, requests, false);
-			}
 		}
 
 		return;

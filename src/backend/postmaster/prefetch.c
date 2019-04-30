@@ -54,22 +54,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "access/heapam.h"
-#include "access/htup_details.h"
-#include "access/multixact.h"
-#include "access/reloptions.h"
-#include "access/tableam.h"
-#include "access/transam.h"
 #include "access/xact.h"
-#include "catalog/dependency.h"
-#include "catalog/namespace.h"
-#include "catalog/pg_database.h"
-#include "commands/dbcommands.h"
-#include "commands/vacuum.h"
-#include "lib/ilist.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
-#include "nodes/makefuncs.h"
 #include "pgstat.h"
 #include "postmaster/prefetch.h"
 #include "postmaster/fork_process.h"
@@ -86,14 +73,8 @@
 #include "storage/smgr.h"
 #include "storage/buf_internals.h"
 #include "tcop/tcopprot.h"
-#include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
@@ -914,6 +895,7 @@ do_prefetch(void)
 	for (;;)
 	{
 		int			nrequests = 0,
+					nerrors = 0,
 					start,
 					count;
 		BufferTag	requests[NUM_REQUESTS];
@@ -953,9 +935,11 @@ do_prefetch(void)
 					 requests[i].rnode.spcNode, requests[i].rnode.dbNode, requests[i].rnode.relNode,
 					 requests[i].forkNum, requests[i].blockNum);
 			}
+
+			pgstat_report_prefetch(nrequests, nerrors);
 		}
 		else
-			/* otherwise sleep for a while */
+			/* otherwise sleep for a while and wait for new requests */
 			ConditionVariableSleep(&PrefetchShmem->requests_cv,
 								   WAIT_EVENT_PREFETCH_IDLE);
 	}

@@ -45,7 +45,9 @@
 #include "executor/nodeBitmapHeapscan.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "postmaster/prefetch.h"
 #include "storage/bufmgr.h"
+#include "storage/buf_internals.h"
 #include "storage/predicate.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -475,7 +477,18 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 
 		if (prefetch_iterator)
 		{
-			while (node->prefetch_pages < node->prefetch_target)
+			/*
+			 * Trigger prefetching once we're about half-way through, or
+			 * half-way through, whichever is closer.
+			 */
+			int		distance = Min(16, node->prefetch_target / 2);
+			bool	prefetch = (node->prefetch_pages < distance);
+
+#define		MAX_REQUESTS	64
+			int			nrequests = 0;
+			BufferTag	requests[MAX_REQUESTS];
+
+			while (prefetch && (nrequests < MAX_REQUESTS))
 			{
 				TBMIterateResult *tbmpre = tbm_iterate(prefetch_iterator);
 				bool		skip_fetch;
@@ -488,6 +501,10 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					break;
 				}
 				node->prefetch_pages++;
+
+				/* stop prefetching once we reach the target */
+				if (node->prefetch_pages == node->prefetch_target)
+					prefetch = false;
 
 				/*
 				 * If we expect not to have to actually read this heap page,
@@ -507,7 +524,18 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 											 &node->pvmbuffer));
 
 				if (!skip_fetch)
-					PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, tbmpre->blockno);
+				{
+					requests[nrequests].rnode = scan->rs_rd->rd_node;
+					requests[nrequests].forkNum = MAIN_FORKNUM;
+					requests[nrequests].blockNum = tbmpre->blockno;
+					nrequests++;
+				}
+			}
+
+			if (nrequests > 0)
+			{
+				elog(WARNING, "prefetching %d pages", nrequests);
+				SubmitPrefetchRequests(nrequests, requests, false);
 			}
 		}
 

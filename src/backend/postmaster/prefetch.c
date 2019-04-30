@@ -735,7 +735,7 @@ PrefetchWorkerMain(int argc, char *argv[])
 	pqsignal(SIGHUP, prefetch_sighup_handler);
 
 	/*
-	 * SIGINT is used to signal canceling the current table's vacuum; SIGTERM
+	 * SIGINT is used to signal canceling the current block prefetch; SIGTERM
 	 * means abort and exit cleanly, and SIGQUIT means abandon ship.
 	 */
 	pqsignal(SIGINT, StatementCancelHandler);
@@ -900,6 +900,10 @@ do_prefetch(void)
 					count;
 		BufferTag	requests[NUM_REQUESTS];
 
+		CHECK_FOR_INTERRUPTS();
+
+		elog(LOG, "checking pages to prefetch");
+
 		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
 
 		start = PrefetchShmem->prefetch_queue_start;
@@ -917,6 +921,9 @@ do_prefetch(void)
 		PrefetchShmem->prefetch_queue_count = count;
 
 		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+
+		elog(LOG, "prefetch get %d requests (count %d)",
+			 nrequests, count);
 
 		/*
 		 * If we got requests, notify others there's free space in the queue
@@ -939,9 +946,13 @@ do_prefetch(void)
 			pgstat_report_prefetch(nrequests, nerrors);
 		}
 		else
+		{
+			elog(LOG, "no prefetch requests available, sleeping ...");
+
 			/* otherwise sleep for a while and wait for new requests */
 			ConditionVariableSleep(&PrefetchShmem->requests_cv,
 								   WAIT_EVENT_PREFETCH_IDLE);
+		}
 	}
 	ConditionVariableCancelSleep();
 }
@@ -1077,6 +1088,9 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 		PrefetchShmem->prefetch_queue_count = count;
 
 		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+
+		elog(LOG, "prefetch add %d requests (queue %d)",
+			 nsubmitted, count);
 
 		/* notify we have submitted new requests */
 		if (submitted)

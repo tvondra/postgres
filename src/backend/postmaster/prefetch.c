@@ -75,6 +75,7 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
 #include "storage/bufmgr.h"
+#include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
@@ -158,8 +159,8 @@ typedef enum
  * prefetch_runningWorkers	the WorkerInfo non-free queue
  * prefetch_startingWorker	pointer to WorkerInfo currently being started (cleared
  * 							by the worker itself as soon as it's up and running)
- * prefetch_requests_first	first request in the queue
- * prefetch_requests_num	number of valid requests in the queue
+ * prefetch_requests_start	first request in the queue
+ * prefetch_requests_count	number of valid requests in the queue
  * prefetch_requests		an array of prefetch requests
  *
  * This struct is protected by PrefetchLock, except for prefetch_signal.
@@ -172,8 +173,14 @@ typedef struct
 	dlist_head	prefetch_freeWorkers;
 	dlist_head	prefetch_runningWorkers;
 	WorkerInfo	prefetch_startingWorker;
-	int			prefetch_queue_start;
-	int			prefetch_queue_end;
+
+	/* used to notify about new requests and available space in queue */
+	ConditionVariable requests_cv; /* signaled after adding new requests */
+	ConditionVariable free_cv;	/* signaled after removing requests */
+
+	slock_t		prefetch_queue_lck;		/* protects the queue fields */
+	int			prefetch_queue_start;	/* index of first request */
+	int			prefetch_queue_count;	/* number of queued requests */
 	BufferTag	prefetch_queue[QUEUE_SIZE];
 } PrefetchShmemStruct;
 
@@ -892,13 +899,67 @@ FreeWorkerInfo(int code, Datum arg)
 	}
 }
 
+#define NUM_REQUESTS	8
+
 /*
  * TODO do the actual prefetching
  */
 static void
 do_prefetch(void)
 {
-	sleep(60);
+	/*
+	 * get a bunch of prefetch requests
+	 */
+	ConditionVariablePrepareToSleep(&PrefetchShmem->requests_cv);
+	for (;;)
+	{
+		int			nrequests = 0,
+					start,
+					count;
+		BufferTag	requests[NUM_REQUESTS];
+
+		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
+
+		start = PrefetchShmem->prefetch_queue_start;
+		count = PrefetchShmem->prefetch_queue_count;
+
+		while ((nrequests < NUM_REQUESTS) && (count > 0))
+		{
+			requests[nrequests++] = PrefetchShmem->prefetch_queue[start];
+
+			start = (start + 1) % QUEUE_SIZE;
+			count--;
+		}
+
+		PrefetchShmem->prefetch_queue_start = start;
+		PrefetchShmem->prefetch_queue_count = count;
+
+		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+
+		/*
+		 * If we got requests, notify others there's free space in the queue
+		 * now, and do the actual prefetching.
+		 */
+		if (nrequests > 0)
+		{
+			int i;
+			ConditionVariableBroadcast(&PrefetchShmem->free_cv);
+
+			elog(LOG, "prefetching %d blocks", nrequests);
+
+			for (i = 0; i < nrequests; i++)
+			{
+				elog(LOG, "prefetching block %d/%d/%d %d %d",
+					 requests[i].rnode.spcNode, requests[i].rnode.dbNode, requests[i].rnode.relNode,
+					 requests[i].forkNum, requests[i].blockNum);
+			}
+		}
+		else
+			/* otherwise sleep for a while */
+			ConditionVariableSleep(&PrefetchShmem->requests_cv,
+								   WAIT_EVENT_PREFETCH_IDLE);
+	}
+	ConditionVariableCancelSleep();
 }
 
 /*
@@ -969,10 +1030,22 @@ PrefetchShmemInit(void)
 
 		Assert(!found);
 
+		/* generic child process fields */
 		PrefetchShmem->prefetch_launcherpid = 0;
 		dlist_init(&PrefetchShmem->prefetch_freeWorkers);
 		dlist_init(&PrefetchShmem->prefetch_runningWorkers);
 		PrefetchShmem->prefetch_startingWorker = NULL;
+
+		/* queue of prefetch requests */
+		ConditionVariableInit(&PrefetchShmem->requests_cv);
+		ConditionVariableInit(&PrefetchShmem->free_cv);
+
+		SpinLockInit(&PrefetchShmem->prefetch_queue_lck);
+
+		/* (count == 0) means there are no requests */
+		PrefetchShmem->prefetch_queue_start = 0;
+		PrefetchShmem->prefetch_queue_count = 0;
+
 		memset(PrefetchShmem->prefetch_queue, 0,
 			   sizeof(BufferTag) * QUEUE_SIZE);
 
@@ -986,4 +1059,57 @@ PrefetchShmemInit(void)
 	}
 	else
 		Assert(found);
+}
+
+int
+SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
+{
+	int nsubmitted = 0;
+
+	/*
+	 * Submit the requests.
+	 */
+	ConditionVariablePrepareToSleep(&PrefetchShmem->free_cv);
+	for (;;)
+	{
+		int			start,
+					count;
+		bool		submitted = false;
+
+		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
+
+		start = PrefetchShmem->prefetch_queue_start;
+		count = PrefetchShmem->prefetch_queue_count;
+
+		while ((count < QUEUE_SIZE) && (nsubmitted < nrequests))
+		{
+			int qidx = (start + count) % QUEUE_SIZE;
+
+			PrefetchShmem->prefetch_queue[qidx] = requests[nsubmitted++];
+			count++;
+			submitted = true;
+		}
+
+		PrefetchShmem->prefetch_queue_count = count;
+
+		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+
+		/* notify we have submitted new requests */
+		if (submitted)
+			ConditionVariableBroadcast(&PrefetchShmem->requests_cv);
+
+		/*
+		 * Bail of if we've submitted all the requests, of when called with
+		 * (nowait = true).
+		 */
+		if ((nsubmitted == nrequests) || nowait)
+			break;
+
+		/* otherwise sleep for a while */
+		ConditionVariableSleep(&PrefetchShmem->free_cv,
+							   WAIT_EVENT_PREFETCH_QUEUE);
+	}
+	ConditionVariableCancelSleep();
+
+	return nsubmitted;
 }

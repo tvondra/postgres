@@ -15,7 +15,7 @@
 #define PREFETCH_H
 
 #include "storage/block.h"
-
+#include "storage/buf_internals.h"
 
 /* GUC variables */
 extern int			prefetch_workers;
@@ -50,5 +50,8 @@ extern void PrefetchLauncherIAm(void);
 /* shared memory stuff */
 extern Size PrefetchShmemSize(void);
 extern void PrefetchShmemInit(void);
+
+/* used to submit requests */
+extern int SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait);
 
 #endif							/* PREFETCH_H */

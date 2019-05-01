@@ -19,6 +19,7 @@
 
 /* GUC variables */
 extern bool			async_prefetch_enabled;
+extern bool			async_prefetch_buffers;
 extern int			async_prefetch_workers;
 extern int			async_prefetch_naptime;
 

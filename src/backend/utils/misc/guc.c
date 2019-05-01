@@ -1979,6 +1979,17 @@ static struct config_bool ConfigureNamesBool[] =
 		check_async_prefetch, NULL, NULL
 	},
 
+	{
+		{"async_prefetch_check_buffers", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Check shared buffers before prefetching a block."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&async_prefetch_buffers,
+		true,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

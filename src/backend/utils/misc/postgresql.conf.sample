@@ -175,6 +175,7 @@
 #effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
 #async_prefetch = on
 #async_prefetch_workers = 8			# 0-64;
+#async_prefetch_check_buffers = on	# inspect contents of shared buffers
 #max_worker_processes = 8		# (change requires restart)
 #max_parallel_maintenance_workers = 2	# taken from max_parallel_workers
 #max_parallel_workers_per_gather = 2	# taken from max_parallel_workers

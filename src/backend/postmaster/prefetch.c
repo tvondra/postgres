@@ -83,6 +83,7 @@
  * GUC parameters
  */
 bool		async_prefetch_enabled;
+bool		async_prefetch_buffers;
 int			async_prefetch_workers;
 int			async_prefetch_naptime;
 
@@ -956,24 +957,33 @@ do_prefetch(void)
 			for (i = 0; i < nrequests; i++)
 			{
 				BufferTag	tag;
-				uint32		hash;
-				LWLock	   *partitionLock;
-				int			buf_id;
+				bool		prefetch = true;
 
 				/* for convenience */
 				tag = requests[i];
 
-				/* determine its hash code and partition lock ID */
-				hash = BufTableHashCode(&tag);
-				partitionLock = BufMappingPartitionLock(hash);
+				/* optionally inspect shared buffers */
+				if (async_prefetch_buffers)
+				{
+					uint32		hash;
+					LWLock	   *partitionLock;
+					int			buf_id;
 
-				/* see if the block is in the buffer pool already */
-				LWLockAcquire(partitionLock, LW_SHARED);
-				buf_id = BufTableLookup(&tag, hash);
-				LWLockRelease(partitionLock);
+					/* determine its hash code and partition lock ID */
+					hash = BufTableHashCode(&tag);
+					partitionLock = BufMappingPartitionLock(hash);
 
-				/* If not in buffers, initiate prefetch */
-				if (buf_id < 0)
+					/* see if the block is in the buffer pool already */
+					LWLockAcquire(partitionLock, LW_SHARED);
+					buf_id = BufTableLookup(&tag, hash);
+					LWLockRelease(partitionLock);
+
+					/* prefetch only if not already in shared buffers */
+					prefetch = (buf_id < 0);
+				}
+
+				/* initiate prefetch */
+				if (prefetch)
 				{
 					SMgrRelation	reln = smgropen(tag.rnode, InvalidBackendId);
 

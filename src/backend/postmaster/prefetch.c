@@ -82,8 +82,9 @@
 /*
  * GUC parameters
  */
-int			prefetch_workers;
-int			prefetch_naptime = 60;
+bool		async_prefetch_enabled;
+int			async_prefetch_workers;
+int			async_prefetch_naptime;
 
 /* Flags to tell if we are in an prefetch process */
 static bool am_prefetch_launcher = false;
@@ -502,7 +503,7 @@ PrefetchLauncherMain(int argc, char *argv[])
 			 * before the worker removes the WorkerInfo from the
 			 * startingWorker pointer.
 			 */
-			waittime = Min(prefetch_naptime, 60) * 1000;
+			waittime = Min(async_prefetch_naptime, 60) * 1000;
 			if (TimestampDifferenceExceeds(worker->wi_launchtime, current_time,
 										   waittime))
 			{
@@ -990,13 +991,12 @@ do_prefetch(void)
 
 /*
  * PrefetchActive
- *		Check GUC vars and report whether the prefetch process should be
- *		running.
+ *		Check GUC vars and report whether the prefetch should be running.
  */
 bool
 PrefetchActive(void)
 {
-	return (prefetch_workers > 0);
+	return (async_prefetch_workers > 0);
 }
 
 /*
@@ -1030,7 +1030,7 @@ PrefetchShmemSize(void)
 	 */
 	size = sizeof(PrefetchShmemStruct);
 	size = MAXALIGN(size);
-	size = add_size(size, mul_size(prefetch_workers,
+	size = add_size(size, mul_size(async_prefetch_workers,
 								   sizeof(WorkerInfoData)));
 	return size;
 }
@@ -1079,7 +1079,7 @@ PrefetchShmemInit(void)
 							   MAXALIGN(sizeof(PrefetchShmemStruct)));
 
 		/* initialize the WorkerInfo free list */
-		for (i = 0; i < prefetch_workers; i++)
+		for (i = 0; i < async_prefetch_workers; i++)
 			dlist_push_head(&PrefetchShmem->prefetch_freeWorkers,
 							&worker[i].wi_links);
 	}

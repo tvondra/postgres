@@ -196,7 +196,8 @@ static bool check_max_wal_senders(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_work_mem(int *newval, void **extra, GucSource source);
 static bool check_effective_io_concurrency(int *newval, void **extra, GucSource source);
 static void assign_effective_io_concurrency(int newval, void *extra);
-static bool check_prefetch_workers(int *newval, void **extra, GucSource source);
+static bool check_async_prefetch(bool *newval, void **extra, GucSource source);
+static bool check_async_prefetch_workers(int *newval, void **extra, GucSource source);
 static void assign_pgstat_temp_directory(const char *newval, void *extra);
 static bool check_application_name(char **newval, void **extra, GucSource source);
 static void assign_application_name(const char *newval, void *extra);
@@ -1967,6 +1968,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"async_prefetch_enabled", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Enables use of asynchronous prefetcher."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&async_prefetch_enabled,
+		true,
+		check_async_prefetch, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2824,13 +2836,23 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"prefetch_workers", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
-			gettext_noop("Sets the number of processes handling prefetch requests."),
+		{"async_prefetch_workers", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Sets the number of processes handling async prefetch requests."),
 			NULL
 		},
-		&prefetch_workers,
-		16, 0, 64,
-		check_prefetch_workers, NULL, NULL
+		&async_prefetch_workers,
+		8, 0, 64,
+		check_async_prefetch_workers, NULL, NULL
+	},
+	{
+		{"async_prefetch_naptime", PGC_SIGHUP, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Time to sleep between starting prefetch workers."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&async_prefetch_naptime,
+		60, 1, INT_MAX / 1000,
+		NULL, NULL, NULL
 	},
 
 	{
@@ -11170,6 +11192,13 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 }
 
 static bool
+check_async_prefetch(bool *newval, void **extra, GucSource source)
+{
+	/* FIXME do the check here */
+	return true;
+}
+
+static bool
 check_canonical_path(char **newval, void **extra, GucSource source)
 {
 	/*
@@ -11421,8 +11450,9 @@ assign_effective_io_concurrency(int newval, void *extra)
 }
 
 static bool
-check_prefetch_workers(int *newval, void **extra, GucSource source)
+check_async_prefetch_workers(int *newval, void **extra, GucSource source)
 {
+	/* FIXME do the check here */
 	return true;
 }
 

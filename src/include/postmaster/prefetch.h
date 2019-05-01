@@ -18,8 +18,9 @@
 #include "storage/buf_internals.h"
 
 /* GUC variables */
-extern int			prefetch_workers;
-extern int			prefetch_naptime;
+extern bool			async_prefetch_enabled;
+extern int			async_prefetch_workers;
+extern int			async_prefetch_naptime;
 
 /* prefetch launcher PID, only valid when worker is shutting down */
 extern int	PrefetchLauncherPid;

@@ -1660,15 +1660,33 @@ pg_stat_get_buf_alloc(PG_FUNCTION_ARGS)
 }
 
 Datum
-pg_stat_get_prefetch_blocks(PG_FUNCTION_ARGS)
+pg_stat_get_prefetch_submitted(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_blocks);
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_requests_submitted);
 }
 
 Datum
-pg_stat_get_prefetch_failures(PG_FUNCTION_ARGS)
+pg_stat_get_prefetch_processed(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_failures);
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_requests_processed);
+}
+
+Datum
+pg_stat_get_prefetch_skipped(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_requests_skipped);
+}
+
+Datum
+pg_stat_get_prefetch_failed(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_requests_failures);
+}
+
+Datum
+pg_stat_get_prefetch_queue_full(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_global()->prefetch_queue_full);
 }
 
 Datum

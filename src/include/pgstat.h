@@ -553,8 +553,11 @@ typedef struct PgStat_MsgChecksumFailure
 typedef struct PgStat_MsgPrefetch
 {
 	PgStat_MsgHdr m_hdr;
-	int			m_blocks_prefetched;
-	int			m_blocks_failed;
+	int			m_requests_submitted;
+	int			m_requests_processed;
+	int			m_requests_skipped;
+	int			m_requests_failed;
+	int			m_queue_full;
 } PgStat_MsgPrefetch;
 
 
@@ -721,8 +724,11 @@ typedef struct PgStat_GlobalStats
 	PgStat_Counter buf_written_backend;
 	PgStat_Counter buf_fsync_backend;
 	PgStat_Counter buf_alloc;
-	PgStat_Counter prefetch_blocks;
-	PgStat_Counter prefetch_failures;
+	PgStat_Counter prefetch_requests_submitted;
+	PgStat_Counter prefetch_requests_processed;
+	PgStat_Counter prefetch_requests_skipped;
+	PgStat_Counter prefetch_requests_failures;
+	PgStat_Counter prefetch_queue_full;
 	TimestampTz stat_reset_timestamp;
 } PgStat_GlobalStats;
 
@@ -1267,7 +1273,8 @@ extern void pgstat_report_recovery_conflict(int reason);
 extern void pgstat_report_deadlock(void);
 extern void pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount);
 extern void pgstat_report_checksum_failure(void);
-extern void pgstat_report_prefetch(int blocks, int failures);
+extern void pgstat_report_prefetch_submitted(int nrequests, int nfull);
+extern void pgstat_report_prefetch_processed(int nrequests, int nskipped, int nfailures);
 
 extern void pgstat_initialize(void);
 extern void pgstat_bestart(void);

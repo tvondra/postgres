@@ -903,9 +903,15 @@ CREATE VIEW pg_stat_bgwriter AS
         pg_stat_get_buf_written_backend() AS buffers_backend,
         pg_stat_get_buf_fsync_backend() AS buffers_backend_fsync,
         pg_stat_get_buf_alloc() AS buffers_alloc,
-        pg_stat_get_prefetch_blocks() AS prefetch_blocks,
-        pg_stat_get_prefetch_failures() AS prefetch_failures,
         pg_stat_get_bgwriter_stat_reset_time() AS stats_reset;
+
+CREATE VIEW pg_stat_prefetcher AS
+    SELECT
+        pg_stat_get_prefetch_submitted() AS requests_submitted,
+        pg_stat_get_prefetch_processed() AS requests_processed,
+        pg_stat_get_prefetch_skipped() AS requests_skipped,
+        pg_stat_get_prefetch_failed() AS requests_failed,
+        pg_stat_get_prefetch_queue_full() AS queue_full;
 
 CREATE VIEW pg_stat_progress_vacuum AS
     SELECT

@@ -880,7 +880,12 @@ FreeWorkerInfo(int code, Datum arg)
 	}
 }
 
-#define NUM_REQUESTS	8
+/*
+ * The workers don't grab requests one by one, but in small chunks, to
+ * reduce lock contention. We must not use too large chunks though, as
+ * it changes ordering of the requests.
+ */
+#define MAX_PREFETCH_REQUESTS	8
 
 /*
  * TODO do the actual prefetching
@@ -897,7 +902,7 @@ do_prefetch(void)
 					nerrors = 0,
 					start,
 					count;
-		BufferTag	requests[NUM_REQUESTS];
+		BufferTag	requests[MAX_PREFETCH_REQUESTS];
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -906,10 +911,12 @@ do_prefetch(void)
 		{
 			SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
 
+			/* shorter variables for convenience */
 			start = PrefetchShmem->prefetch_queue_start;
 			count = PrefetchShmem->prefetch_queue_count;
 
-			while ((nrequests < NUM_REQUESTS) && (count > 0))
+			/* XXX Maybe do a memcpy instead? */
+			while ((nrequests < MAX_PREFETCH_REQUESTS) && (count > 0))
 			{
 				requests[nrequests++] = PrefetchShmem->prefetch_queue[start];
 
@@ -917,6 +924,7 @@ do_prefetch(void)
 				count--;
 			}
 
+			/* store modified values */
 			PrefetchShmem->prefetch_queue_start = start;
 			PrefetchShmem->prefetch_queue_count = count;
 
@@ -938,6 +946,8 @@ do_prefetch(void)
 		if (nrequests > 0)
 		{
 			int i;
+			int		nprefetched = 0,
+					nskipped = 0;
 
 			/* XXX maybe do ConditionVariableSignal instead? */
 			ConditionVariableBroadcast(&PrefetchShmem->free_cv);
@@ -967,10 +977,13 @@ do_prefetch(void)
 					SMgrRelation	reln = smgropen(tag.rnode, InvalidBackendId);
 
 					smgrprefetch(reln, tag.forkNum, tag.blockNum);
+					nprefetched++;
 				}
+				else
+					nskipped++;
 			}
 
-			pgstat_report_prefetch(nrequests, nerrors);
+			pgstat_report_prefetch_processed(nprefetched, nskipped, nerrors);
 		}
 	}
 }
@@ -1077,7 +1090,8 @@ PrefetchShmemInit(void)
 int
 SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 {
-	int nsubmitted = 0;
+	int	nsubmitted = 0,
+		nqueuefull = 0;
 
 	/*
 	 * Submit the requests.
@@ -1105,6 +1119,9 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 
 		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
 
+		if (nsubmitted < nrequests)
+			nqueuefull++;
+
 		/*
 		 * Bail of if we've submitted all the requests, of when called
 		 * with (nowait = true).
@@ -1122,6 +1139,8 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 	/* XXX maybe do ConditionVariableSignal instead? */
 	if (nsubmitted > 0)
 		ConditionVariableBroadcast(&PrefetchShmem->requests_cv);
+
+	pgstat_report_prefetch_submitted(nsubmitted, nqueuefull);
 
 	return nsubmitted;
 }

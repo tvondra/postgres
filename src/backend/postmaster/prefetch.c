@@ -891,7 +891,6 @@ do_prefetch(void)
 	/*
 	 * get a bunch of prefetch requests
 	 */
-	ConditionVariablePrepareToSleep(&PrefetchShmem->requests_cv);
 	for (;;)
 	{
 		int			nrequests = 0,
@@ -902,23 +901,35 @@ do_prefetch(void)
 
 		CHECK_FOR_INTERRUPTS();
 
-		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
-
-		start = PrefetchShmem->prefetch_queue_start;
-		count = PrefetchShmem->prefetch_queue_count;
-
-		while ((nrequests < NUM_REQUESTS) && (count > 0))
+		ConditionVariablePrepareToSleep(&PrefetchShmem->requests_cv);
+		for (;;)
 		{
-			requests[nrequests++] = PrefetchShmem->prefetch_queue[start];
+			SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
 
-			start = (start + 1) % QUEUE_SIZE;
-			count--;
+			start = PrefetchShmem->prefetch_queue_start;
+			count = PrefetchShmem->prefetch_queue_count;
+
+			while ((nrequests < NUM_REQUESTS) && (count > 0))
+			{
+				requests[nrequests++] = PrefetchShmem->prefetch_queue[start];
+
+				start = (start + 1) % QUEUE_SIZE;
+				count--;
+			}
+
+			PrefetchShmem->prefetch_queue_start = start;
+			PrefetchShmem->prefetch_queue_count = count;
+
+			SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+
+			if (nrequests > 0)
+				break;
+
+			/* otherwise sleep for a while and wait for new requests */
+			ConditionVariableSleep(&PrefetchShmem->requests_cv,
+								   WAIT_EVENT_PREFETCH_IDLE);
 		}
-
-		PrefetchShmem->prefetch_queue_start = start;
-		PrefetchShmem->prefetch_queue_count = count;
-
-		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
+		ConditionVariableCancelSleep();
 
 		/*
 		 * If we got requests, notify others there's free space in the queue
@@ -927,6 +938,8 @@ do_prefetch(void)
 		if (nrequests > 0)
 		{
 			int i;
+
+			/* XXX maybe do ConditionVariableSignal instead? */
 			ConditionVariableBroadcast(&PrefetchShmem->free_cv);
 
 			for (i = 0; i < nrequests; i++)
@@ -959,14 +972,7 @@ do_prefetch(void)
 
 			pgstat_report_prefetch(nrequests, nerrors);
 		}
-		else
-		{
-			/* otherwise sleep for a while and wait for new requests */
-			ConditionVariableSleep(&PrefetchShmem->requests_cv,
-								   WAIT_EVENT_PREFETCH_IDLE);
-		}
 	}
-	ConditionVariableCancelSleep();
 }
 
 /*
@@ -1081,7 +1087,6 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 	{
 		int			start,
 					count;
-		bool		submitted = false;
 
 		SpinLockAcquire(&PrefetchShmem->prefetch_queue_lck);
 
@@ -1094,23 +1099,15 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 
 			PrefetchShmem->prefetch_queue[qidx] = requests[nsubmitted++];
 			count++;
-			submitted = true;
 		}
 
 		PrefetchShmem->prefetch_queue_count = count;
 
 		SpinLockRelease(&PrefetchShmem->prefetch_queue_lck);
 
-		elog(LOG, "prefetch add %d requests (queue %d)",
-			 nsubmitted, count);
-
-		/* notify we have submitted new requests */
-		if (submitted)
-			ConditionVariableBroadcast(&PrefetchShmem->requests_cv);
-
 		/*
-		 * Bail of if we've submitted all the requests, of when called with
-		 * (nowait = true).
+		 * Bail of if we've submitted all the requests, of when called
+		 * with (nowait = true).
 		 */
 		if ((nsubmitted == nrequests) || nowait)
 			break;
@@ -1120,6 +1117,11 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 							   WAIT_EVENT_PREFETCH_QUEUE);
 	}
 	ConditionVariableCancelSleep();
+
+	/* notify we have submitted new requests */
+	/* XXX maybe do ConditionVariableSignal instead? */
+	if (nsubmitted > 0)
+		ConditionVariableBroadcast(&PrefetchShmem->requests_cv);
 
 	return nsubmitted;
 }

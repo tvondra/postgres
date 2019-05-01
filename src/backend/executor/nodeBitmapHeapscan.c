@@ -475,22 +475,51 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 	{
 		TBMIterator *prefetch_iterator = node->prefetch_iterator;
 
+/*
+ * How many requests to issue at a time (we want sufficiently large
+ * number to give enough work to the prefetch workers at once, but
+ * not too high to hog all the bandwidth of prefetching).
+ */
+#define		MAX_PREFETCH_REQUESTS	64
+
 		if (prefetch_iterator)
 		{
 			/*
 			 * Trigger prefetching once we're sufficiently far away from
-			 * the target number of pages.
+			 * the target number of pages - either when there are at least
+			 * MAX_PREFETCH_REQUESTS from the target, or less than half-way
+			 * through (the target may be less than MAX_PREFETCH_REQUESTS).
+			 *
+			 * If we are more than MAX_PREFETCH_REQUESTS from the target,
+			 * we issue a single batch of requests this round, and then
+			 * another batch next time we get here (after the next page).
+			 * This is probably a good idea anyway, because then prefetch
+			 * requests from other backends will interleave with ours and
+			 * we won't hog the whole prefetching bandwidth.
 			 */
-			int		min_distance = Min(64, node->prefetch_target / 2);
+			int		min_distance = Min(MAX_PREFETCH_REQUESTS,
+									   node->prefetch_target / 2);
 			int		distance = (node->prefetch_target - node->prefetch_pages);
 
-			bool	prefetch = (distance > min_distance);
+			/* number of request to issue this round (maximum) */
+			int		prefetch_count = 0;
 
-#define		MAX_REQUESTS	64
+			/* array of prefetch request */
 			int			nrequests = 0;
-			BufferTag	requests[MAX_REQUESTS];
+			BufferTag	requests[MAX_PREFETCH_REQUESTS];
 
-			while (prefetch && (nrequests < MAX_REQUESTS))
+			/*
+			 * Prefetch up to MAX_PREFETCH_REQUESTS, but don't overshoot
+			 * target (we may be further than MAX_PREFETCH_REQUESTS at
+			 * the beginning).
+			 */
+			if (distance >= min_distance)
+			{
+				prefetch_count = Min(MAX_PREFETCH_REQUESTS, distance);
+				node->prefetch_pages += prefetch_count;
+			}
+
+			while (prefetch_count > 0)
 			{
 				TBMIterateResult *tbmpre = tbm_iterate(prefetch_iterator);
 				bool		skip_fetch;
@@ -502,11 +531,9 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					node->prefetch_iterator = NULL;
 					break;
 				}
-				node->prefetch_pages++;
 
-				/* stop prefetching once we reach the target */
-				if (node->prefetch_pages == node->prefetch_target)
-					prefetch = false;
+				/* one less prefetch request to generate this round */
+				prefetch_count--;
 
 				/*
 				 * If we expect not to have to actually read this heap page,
@@ -532,6 +559,8 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					requests[nrequests].blockNum = tbmpre->blockno;
 					nrequests++;
 				}
+
+				Assert(nrequests <= MAX_PREFETCH_REQUESTS);
 			}
 
 			if (nrequests > 0)
@@ -550,42 +579,74 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 			while (1)
 			{
 				TBMIterateResult *tbmpre;
-				bool		do_prefetch = false;
 				bool		skip_fetch;
+				int			prefetch_count = 0;
+
+				/*
+				 * Trigger prefetching once we're sufficiently far away from
+				 * the target number of pages.
+				 */
+				int		min_distance,
+						distance;
+
+				int			nrequests = 0;
+				BufferTag	requests[MAX_PREFETCH_REQUESTS];
 
 				/*
 				 * Recheck under the mutex. If some other process has already
 				 * done enough prefetching then we need not to do anything.
 				 */
 				SpinLockAcquire(&pstate->mutex);
-				if (pstate->prefetch_pages < pstate->prefetch_target)
+
+				min_distance = Min(MAX_PREFETCH_REQUESTS, node->prefetch_target / 2);
+				distance = (node->prefetch_target - node->prefetch_pages);
+
+				if (distance >= min_distance)
 				{
-					pstate->prefetch_pages++;
-					do_prefetch = true;
+					prefetch_count = Min(MAX_PREFETCH_REQUESTS, distance);
+					pstate->prefetch_pages += prefetch_count;
 				}
+
 				SpinLockRelease(&pstate->mutex);
 
-				if (!do_prefetch)
+				/* nothing to do this round */
+				if (prefetch_count == 0)
 					return;
 
-				tbmpre = tbm_shared_iterate(prefetch_iterator);
-				if (tbmpre == NULL)
+				while (prefetch_count > 0)
 				{
-					/* No more pages to prefetch */
-					tbm_end_shared_iterate(prefetch_iterator);
-					node->shared_prefetch_iterator = NULL;
-					break;
+					tbmpre = tbm_shared_iterate(prefetch_iterator);
+					if (tbmpre == NULL)
+					{
+						/* No more pages to prefetch */
+						tbm_end_shared_iterate(prefetch_iterator);
+						node->shared_prefetch_iterator = NULL;
+						break;
+					}
+
+					/* one less prefetch request to generate this round */
+					prefetch_count--;
+
+					/* As above, skip prefetch if we expect not to need page */
+					skip_fetch = (node->can_skip_fetch &&
+								  (node->tbmres ? !node->tbmres->recheck : false) &&
+								  VM_ALL_VISIBLE(node->ss.ss_currentRelation,
+												 tbmpre->blockno,
+												 &node->pvmbuffer));
+
+					if (!skip_fetch)
+					{
+						requests[nrequests].rnode = scan->rs_rd->rd_node;
+						requests[nrequests].forkNum = MAIN_FORKNUM;
+						requests[nrequests].blockNum = tbmpre->blockno;
+						nrequests++;
+					}
+
+					Assert(nrequests <= MAX_PREFETCH_REQUESTS);
 				}
 
-				/* As above, skip prefetch if we expect not to need page */
-				skip_fetch = (node->can_skip_fetch &&
-							  (node->tbmres ? !node->tbmres->recheck : false) &&
-							  VM_ALL_VISIBLE(node->ss.ss_currentRelation,
-											 tbmpre->blockno,
-											 &node->pvmbuffer));
-
-				if (!skip_fetch)
-					PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, tbmpre->blockno);
+				if (nrequests > 0)
+					SubmitPrefetchRequests(nrequests, requests, false);
 			}
 		}
 	}

@@ -694,8 +694,8 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					 */
 					SpinLockAcquire(&pstate->mutex);
 
-					min_distance = Min(MAX_PREFETCH_REQUESTS, node->prefetch_target / 2);
-					distance = (node->prefetch_target - node->prefetch_pages);
+					min_distance = Min(MAX_PREFETCH_REQUESTS, pstate->prefetch_target / 2);
+					distance = (pstate->prefetch_target - pstate->prefetch_pages);
 
 					if (distance >= min_distance)
 					{
@@ -708,6 +708,8 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					/* nothing to do this round */
 					if (prefetch_count == 0)
 						return;
+
+					Assert(prefetch_count <= MAX_PREFETCH_REQUESTS);
 
 					while (prefetch_count > 0)
 					{
@@ -743,6 +745,10 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 
 					if (nrequests > 0)
 						SubmitPrefetchRequests(nrequests, requests, false);
+
+					/* did we reach the end of the iterator? */
+					if (!node->shared_prefetch_iterator)
+						break;
 				}
 			}
 		}

@@ -54,6 +54,8 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
+#include "postmaster/prefetch.h"
+#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
@@ -6898,6 +6900,10 @@ xid_horizon_prefetch_buffer(Relation rel,
 	int			nitems = prefetch_state->nitems;
 	ItemPointerData *tids = prefetch_state->tids;
 
+#define MAX_PREFETCH_REQUESTS	32
+	int			nrequests = 0;
+	BufferTag	requests[MAX_PREFETCH_REQUESTS];
+
 	for (i = prefetch_state->next_item;
 		 i < nitems && count < prefetch_count;
 		 i++)
@@ -6908,10 +6914,24 @@ xid_horizon_prefetch_buffer(Relation rel,
 			ItemPointerGetBlockNumber(htid) != cur_hblkno)
 		{
 			cur_hblkno = ItemPointerGetBlockNumber(htid);
-			PrefetchBuffer(rel, MAIN_FORKNUM, cur_hblkno);
+
+			requests[nrequests].rnode = rel->rd_node;
+			requests[nrequests].forkNum = MAIN_FORKNUM;
+			requests[nrequests].blockNum = cur_hblkno;
+
 			count++;
+			nrequests++;
+
+			if (nrequests == MAX_PREFETCH_REQUESTS)
+			{
+				SubmitPrefetchRequests(nrequests, requests, false);
+				nrequests = 0;
+			}
 		}
 	}
+
+	if (nrequests > 0)
+		SubmitPrefetchRequests(nrequests, requests, false);
 
 	/*
 	 * Save the prefetch position so that next time we can continue from that

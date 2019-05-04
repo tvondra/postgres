@@ -6915,18 +6915,23 @@ xid_horizon_prefetch_buffer(Relation rel,
 		{
 			cur_hblkno = ItemPointerGetBlockNumber(htid);
 
-			requests[nrequests].rnode = rel->rd_node;
-			requests[nrequests].forkNum = MAIN_FORKNUM;
-			requests[nrequests].blockNum = cur_hblkno;
+			if (async_prefetch_enabled)
+			{
+				requests[nrequests].rnode = rel->rd_node;
+				requests[nrequests].forkNum = MAIN_FORKNUM;
+				requests[nrequests].blockNum = cur_hblkno;
+				nrequests++;
+
+				if (nrequests == MAX_PREFETCH_REQUESTS)
+				{
+					SubmitPrefetchRequests(nrequests, requests, false);
+					nrequests = 0;
+				}
+			}
+			else
+				PrefetchBuffer(rel, MAIN_FORKNUM, cur_hblkno);
 
 			count++;
-			nrequests++;
-
-			if (nrequests == MAX_PREFETCH_REQUESTS)
-			{
-				SubmitPrefetchRequests(nrequests, requests, false);
-				nrequests = 0;
-			}
 		}
 	}
 

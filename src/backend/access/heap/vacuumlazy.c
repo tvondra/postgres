@@ -2102,17 +2102,22 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 			prefetchStart = blkno & ~(PREFETCH_SIZE - 1);
 			for (pblkno = prefetchStart; pblkno <= blkno; pblkno++)
 			{
-				requests[nrequests].rnode = onerel->rd_node;
-				requests[nrequests].forkNum = MAIN_FORKNUM;
-				requests[nrequests].blockNum = pblkno;
-
-				nrequests++;
-
-				if (nrequests == MAX_PREFETCH_REQUESTS)
+				if (async_prefetch_enabled)
 				{
-					SubmitPrefetchRequests(nrequests, requests, false);
-					nrequests = 0;
+					requests[nrequests].rnode = onerel->rd_node;
+					requests[nrequests].forkNum = MAIN_FORKNUM;
+					requests[nrequests].blockNum = pblkno;
+
+					nrequests++;
+
+					if (nrequests == MAX_PREFETCH_REQUESTS)
+					{
+						SubmitPrefetchRequests(nrequests, requests, false);
+						nrequests = 0;
+					}
 				}
+				else
+					PrefetchBuffer(onerel, MAIN_FORKNUM, pblkno);
 
 				CHECK_FOR_INTERRUPTS();
 			}

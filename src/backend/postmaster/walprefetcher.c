@@ -35,6 +35,7 @@
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
 #include "portability/instr_time.h"
+#include "postmaster/prefetch.h"
 #include "postmaster/walprefetcher.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
@@ -358,12 +359,6 @@ WalWaitWAL(void)
 
 }
 
-static void
-WalPrefetchSubmit(int nrequests, BufferTag *requests)
-{
-	elog(LOG, "requesting prefetch of %d blocks", nrequests);
-}
-
 /*
  * Main function: perform prefetch of blocks referenced by WAL records starting from given LSN or from WAL replay position if lsn=0
  */
@@ -501,7 +496,7 @@ WalPrefetch(XLogRecPtr lsn)
 			}
 
 			/* submit prefetch requests, if any */
-			WalPrefetchSubmit(nrequests, requests);
+			SubmitPrefetchRequests(nrequests, requests, false);
 		}
 		else
 		{

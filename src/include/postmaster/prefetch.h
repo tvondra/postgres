@@ -53,7 +53,21 @@ extern void PrefetchLauncherIAm(void);
 extern Size PrefetchShmemSize(void);
 extern void PrefetchShmemInit(void);
 
-/* used to submit requests */
-extern int SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait);
+/* API used to submit requests */
+#define MAX_PREFETCH_REQUESTS	32
+
+typedef struct PrefetchQueue
+{
+	int			nrequests;
+	BufferTag	requests[MAX_PREFETCH_REQUESTS];
+} PrefetchQueue;
+
+extern void PrefetchQueueInit(PrefetchQueue *requests);
+
+extern void PrefetchQueueAdd(PrefetchQueue *requests,
+							 RelFileNode rnode, ForkNumber forkNum,
+							 BlockNumber blockNum);
+
+extern void PrefetchQueueFlush(PrefetchQueue *requests);
 
 #endif							/* PREFETCH_H */

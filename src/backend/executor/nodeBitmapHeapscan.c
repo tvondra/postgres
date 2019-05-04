@@ -47,7 +47,6 @@
 #include "pgstat.h"
 #include "postmaster/prefetch.h"
 #include "storage/bufmgr.h"
-#include "storage/buf_internals.h"
 #include "storage/predicate.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -475,13 +474,6 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 	{
 		TBMIterator *prefetch_iterator = node->prefetch_iterator;
 
-/*
- * How many requests to issue at a time (we want sufficiently large
- * number to give enough work to the prefetch workers at once, but
- * not too high to hog all the bandwidth of prefetching).
- */
-#define		MAX_PREFETCH_REQUESTS	64
-
 		if (prefetch_iterator)
 		{
 			/*
@@ -548,8 +540,9 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 				int		prefetch_count = 0;
 
 				/* array of prefetch request */
-				int			nrequests = 0;
-				BufferTag	requests[MAX_PREFETCH_REQUESTS];
+				PrefetchQueue	prequests;
+
+				PrefetchQueueInit(&prequests);
 
 				/*
 				 * Prefetch up to MAX_PREFETCH_REQUESTS, but don't overshoot
@@ -596,18 +589,11 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 												 &node->pvmbuffer));
 
 					if (!skip_fetch)
-					{
-						requests[nrequests].rnode = scan->rs_rd->rd_node;
-						requests[nrequests].forkNum = MAIN_FORKNUM;
-						requests[nrequests].blockNum = tbmpre->blockno;
-						nrequests++;
-					}
-
-					Assert(nrequests <= MAX_PREFETCH_REQUESTS);
+						PrefetchQueueAdd(&prequests, scan->rs_rd->rd_node,
+										 MAIN_FORKNUM, tbmpre->blockno);
 				}
 
-				if (nrequests > 0)
-					SubmitPrefetchRequests(nrequests, requests, false);
+				PrefetchQueueFlush(&prequests);
 			}
 		}
 
@@ -685,8 +671,9 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 					int		min_distance,
 							distance;
 
-					int			nrequests = 0;
-					BufferTag	requests[MAX_PREFETCH_REQUESTS];
+					PrefetchQueue	prequests;
+
+					PrefetchQueueInit(&prequests);
 
 					/*
 					 * Recheck under the mutex. If some other process has already
@@ -733,18 +720,11 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 													 &node->pvmbuffer));
 
 						if (!skip_fetch)
-						{
-							requests[nrequests].rnode = scan->rs_rd->rd_node;
-							requests[nrequests].forkNum = MAIN_FORKNUM;
-							requests[nrequests].blockNum = tbmpre->blockno;
-							nrequests++;
-						}
-
-						Assert(nrequests <= MAX_PREFETCH_REQUESTS);
+							PrefetchQueueAdd(&prequests, scan->rs_rd->rd_node,
+											 MAIN_FORKNUM, tbmpre->blockno);
 					}
 
-					if (nrequests > 0)
-						SubmitPrefetchRequests(nrequests, requests, false);
+					PrefetchQueueFlush(&prequests);
 
 					/* did we reach the end of the iterator? */
 					if (!node->shared_prefetch_iterator)

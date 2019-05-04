@@ -449,8 +449,9 @@ WalPrefetch(XLogRecPtr lsn)
 		if (record != NULL)
 		{
 			/* prefetch requests extracted from this XLog record */
-			int			nrequests = 0;
-			BufferTag	requests[XLR_MAX_BLOCK_ID];
+			PrefetchQueue	prequests;
+
+			PrefetchQueueInit(&prequests);
 
 			lsn = InvalidXLogRecPtr; /* continue with next record */
 
@@ -492,11 +493,11 @@ WalPrefetch(XLogRecPtr lsn)
 				Assert(nrequests < XLR_MAX_BLOCK_ID);
 
 				/* accumulate the prefetch requests */
-				requests[nrequests++] = tag;
+				PrefetchQueueAdd(&prequests, tag.rnode, tag.forkNum, tag.blockNum);
 			}
 
 			/* submit prefetch requests, if any */
-			SubmitPrefetchRequests(nrequests, requests, false);
+			PrefetchQueueFlush(&prequests);
 		}
 		else
 		{

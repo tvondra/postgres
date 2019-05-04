@@ -54,7 +54,6 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/prefetch.h"
 #include "storage/bufmgr.h"
-#include "storage/buf_internals.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
@@ -2089,33 +2088,21 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 
 		blkno--;
 
-#define MAX_PREFETCH_REQUESTS 32
-
 		/* If we haven't prefetched this lot yet, do so now. */
 		if (prefetchedUntil > blkno)
 		{
 			BlockNumber prefetchStart;
 			BlockNumber pblkno;
-			int			nrequests = 0;
-			BufferTag	requests[MAX_PREFETCH_REQUESTS];
+			PrefetchQueue	prequests;
+
+			if (async_prefetch_buffers)
+				PrefetchQueueInit(&prequests);
 
 			prefetchStart = blkno & ~(PREFETCH_SIZE - 1);
 			for (pblkno = prefetchStart; pblkno <= blkno; pblkno++)
 			{
 				if (async_prefetch_enabled)
-				{
-					requests[nrequests].rnode = onerel->rd_node;
-					requests[nrequests].forkNum = MAIN_FORKNUM;
-					requests[nrequests].blockNum = pblkno;
-
-					nrequests++;
-
-					if (nrequests == MAX_PREFETCH_REQUESTS)
-					{
-						SubmitPrefetchRequests(nrequests, requests, false);
-						nrequests = 0;
-					}
-				}
+					PrefetchQueueAdd(&prequests, onerel->rd_node, MAIN_FORKNUM, pblkno);
 				else
 					PrefetchBuffer(onerel, MAIN_FORKNUM, pblkno);
 
@@ -2123,8 +2110,7 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 			}
 			prefetchedUntil = prefetchStart;
 
-			if (nrequests > 0)
-				SubmitPrefetchRequests(nrequests, requests, false);
+			PrefetchQueueFlush(&prequests);
 		}
 
 		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,

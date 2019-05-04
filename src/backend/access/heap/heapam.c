@@ -55,7 +55,6 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "postmaster/prefetch.h"
-#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
@@ -6900,9 +6899,11 @@ xid_horizon_prefetch_buffer(Relation rel,
 	int			nitems = prefetch_state->nitems;
 	ItemPointerData *tids = prefetch_state->tids;
 
-#define MAX_PREFETCH_REQUESTS	32
-	int			nrequests = 0;
-	BufferTag	requests[MAX_PREFETCH_REQUESTS];
+	/* async prefetching */
+	PrefetchQueue	prequests;
+
+	if (async_prefetch_enabled)
+		PrefetchQueueInit(&prequests);
 
 	for (i = prefetch_state->next_item;
 		 i < nitems && count < prefetch_count;
@@ -6916,18 +6917,8 @@ xid_horizon_prefetch_buffer(Relation rel,
 			cur_hblkno = ItemPointerGetBlockNumber(htid);
 
 			if (async_prefetch_enabled)
-			{
-				requests[nrequests].rnode = rel->rd_node;
-				requests[nrequests].forkNum = MAIN_FORKNUM;
-				requests[nrequests].blockNum = cur_hblkno;
-				nrequests++;
-
-				if (nrequests == MAX_PREFETCH_REQUESTS)
-				{
-					SubmitPrefetchRequests(nrequests, requests, false);
-					nrequests = 0;
-				}
-			}
+				PrefetchQueueAdd(&prequests,
+								 rel->rd_node, MAIN_FORKNUM, cur_hblkno);
 			else
 				PrefetchBuffer(rel, MAIN_FORKNUM, cur_hblkno);
 
@@ -6935,8 +6926,7 @@ xid_horizon_prefetch_buffer(Relation rel,
 		}
 	}
 
-	if (nrequests > 0)
-		SubmitPrefetchRequests(nrequests, requests, false);
+	PrefetchQueueFlush(&prequests);
 
 	/*
 	 * Save the prefetch position so that next time we can continue from that

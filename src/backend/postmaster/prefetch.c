@@ -130,6 +130,10 @@ typedef enum
 	PrefetchNumSignals			/* must be last */
 }			PrefetchSignal;
 
+/*
+ * Length of the prefetch queue. 2048 seems like a reasonable value,
+ * although it might be insufficient for multi-tablespace setups etc.
+ */
 #define	QUEUE_SIZE		2048
 
 /*-------------
@@ -887,7 +891,7 @@ FreeWorkerInfo(int code, Datum arg)
  * reduce lock contention. We must not use too large chunks though, as
  * it changes ordering of the requests.
  */
-#define MAX_PREFETCH_REQUESTS	8
+#define MAX_PREFETCH_WORKER_REQUESTS	8
 
 /*
  * TODO do the actual prefetching
@@ -904,7 +908,7 @@ do_prefetch(void)
 					nerrors = 0,
 					start,
 					count;
-		BufferTag	requests[MAX_PREFETCH_REQUESTS];
+		BufferTag	requests[MAX_PREFETCH_WORKER_REQUESTS];
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -918,7 +922,7 @@ do_prefetch(void)
 			count = PrefetchShmem->prefetch_queue_count;
 
 			/* XXX Maybe do a memcpy instead? */
-			while ((nrequests < MAX_PREFETCH_REQUESTS) && (count > 0))
+			while ((nrequests < MAX_PREFETCH_WORKER_REQUESTS) && (count > 0))
 			{
 				requests[nrequests++] = PrefetchShmem->prefetch_queue[start];
 
@@ -1097,7 +1101,7 @@ PrefetchShmemInit(void)
 		Assert(found);
 }
 
-int
+static int
 SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 {
 	int	nsubmitted = 0,
@@ -1153,4 +1157,43 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 	pgstat_report_prefetch_submitted(nsubmitted, nqueuefull);
 
 	return nsubmitted;
+}
+
+void
+PrefetchQueueInit(struct PrefetchQueue *requests)
+{
+	Assert(requests);
+
+	requests->nrequests = 0;
+}
+
+void
+PrefetchQueueAdd(PrefetchQueue *requests, RelFileNode rnode,
+				 ForkNumber forkNum, BlockNumber blockNum)
+{
+	Assert(requests);
+	Assert(requests->nrequests < MAX_PREFETCH_REQUESTS);
+
+	requests->requests[requests->nrequests].rnode = rnode;
+	requests->requests[requests->nrequests].forkNum = forkNum;
+	requests->requests[requests->nrequests].blockNum = blockNum;
+
+	requests->nrequests++;
+
+	/* when the local queue is full, send it to prefetcher */
+	if (requests->nrequests == MAX_PREFETCH_REQUESTS)
+		PrefetchQueueFlush(requests);
+}
+
+void
+PrefetchQueueFlush(PrefetchQueue *requests)
+{
+	Assert(requests);
+
+	if (requests->nrequests == 0)
+		return;
+
+	/* send the requests with nowait=true, so that we don't get blocked
+	 * in case the prefetcher workers fail, get stuck or something */
+	SubmitPrefetchRequests(requests->nrequests, requests->requests, true);
 }

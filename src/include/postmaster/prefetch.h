@@ -75,5 +75,6 @@ Datum pg_stat_get_prefetch_processed(PG_FUNCTION_ARGS);
 Datum pg_stat_get_prefetch_skipped(PG_FUNCTION_ARGS);
 Datum pg_stat_get_prefetch_failed(PG_FUNCTION_ARGS);
 Datum pg_stat_get_prefetch_queue_full(PG_FUNCTION_ARGS);
+Datum pg_stat_reset_prefetch_stats(PG_FUNCTION_ARGS);
 
 #endif							/* PREFETCH_H */

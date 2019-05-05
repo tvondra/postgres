@@ -1295,3 +1295,20 @@ pg_stat_get_prefetch_queue_full(PG_FUNCTION_ARGS)
 
 	PG_RETURN_INT64(r);
 }
+
+Datum
+pg_stat_reset_prefetch_stats(PG_FUNCTION_ARGS)
+{
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	PrefetchShmem->prefetch_stats_nsubmitted = 0;
+	PrefetchShmem->prefetch_stats_nprocessed = 0;
+	PrefetchShmem->prefetch_stats_nskipped = 0;
+	PrefetchShmem->prefetch_stats_nerrors = 0;
+	PrefetchShmem->prefetch_stats_nfull = 0;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_VOID();
+}

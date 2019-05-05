@@ -5385,6 +5385,9 @@
 { oid => '4226', descr => 'statistics: number of times prefetch queue got full',
   proname => 'pg_stat_get_prefetch_queue_full', provolatile => 's', proparallel => 'r',
   prorettype => 'int8', proargtypes => '', prosrc => 'pg_stat_get_prefetch_queue_full' },
+{ oid => '4227', descr => 'statistics: reset prefetch stats',
+  proname => 'pg_stat_reset_prefetch_stats', provolatile => 's', proparallel => 'r',
+  prorettype => 'void', proargtypes => '', prosrc => 'pg_stat_reset_prefetch_stats' },
 
 { oid => '2978', descr => 'statistics: number of function calls',
   proname => 'pg_stat_get_function_calls', provolatile => 's',

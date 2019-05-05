@@ -65,8 +65,7 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_RECOVERYCONFLICT,
 	PGSTAT_MTYPE_TEMPFILE,
 	PGSTAT_MTYPE_DEADLOCK,
-	PGSTAT_MTYPE_CHECKSUMFAILURE,
-	PGSTAT_MTYPE_PREFETCH
+	PGSTAT_MTYPE_CHECKSUMFAILURE
 } StatMsgType;
 
 /* ----------
@@ -546,22 +545,6 @@ typedef struct PgStat_MsgChecksumFailure
 } PgStat_MsgChecksumFailure;
 
 /* ----------
- * PgStat_MsgPrefetch			Sent by the prefetch workers to tell the
- * 								collector block prefetches.
- * ----------
- */
-typedef struct PgStat_MsgPrefetch
-{
-	PgStat_MsgHdr m_hdr;
-	int			m_requests_submitted;
-	int			m_requests_processed;
-	int			m_requests_skipped;
-	int			m_requests_failed;
-	int			m_queue_full;
-} PgStat_MsgPrefetch;
-
-
-/* ----------
  * PgStat_Msg					Union over all possible messages.
  * ----------
  */
@@ -585,7 +568,6 @@ typedef union PgStat_Msg
 	PgStat_MsgFuncpurge msg_funcpurge;
 	PgStat_MsgRecoveryConflict msg_recoveryconflict;
 	PgStat_MsgDeadlock msg_deadlock;
-	PgStat_MsgPrefetch msg_prefetch;
 } PgStat_Msg;
 
 
@@ -724,11 +706,6 @@ typedef struct PgStat_GlobalStats
 	PgStat_Counter buf_written_backend;
 	PgStat_Counter buf_fsync_backend;
 	PgStat_Counter buf_alloc;
-	PgStat_Counter prefetch_requests_submitted;
-	PgStat_Counter prefetch_requests_processed;
-	PgStat_Counter prefetch_requests_skipped;
-	PgStat_Counter prefetch_requests_failures;
-	PgStat_Counter prefetch_queue_full;
 	TimestampTz stat_reset_timestamp;
 } PgStat_GlobalStats;
 
@@ -1273,8 +1250,6 @@ extern void pgstat_report_recovery_conflict(int reason);
 extern void pgstat_report_deadlock(void);
 extern void pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount);
 extern void pgstat_report_checksum_failure(void);
-extern void pgstat_report_prefetch_submitted(int nrequests, int nfull);
-extern void pgstat_report_prefetch_processed(int nrequests, int nskipped, int nfailures);
 
 extern void pgstat_initialize(void);
 extern void pgstat_bestart(void);

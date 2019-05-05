@@ -338,7 +338,6 @@ static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int le
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
-static void pgstat_recv_prefetch(PgStat_MsgPrefetch *msg, int len);
 
 /* ------------------------------------------------------------
  * Public functions called from postmaster follow
@@ -1575,54 +1574,6 @@ pgstat_report_tempfile(size_t filesize)
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_TEMPFILE);
 	msg.m_databaseid = MyDatabaseId;
 	msg.m_filesize = filesize;
-	pgstat_send(&msg, sizeof(msg));
-}
-
-/* --------
- * pgstat_report_prefetch_submitted() -
- *
- *	Tell the collector about submitted prefetch requests.
- * --------
- */
-void
-pgstat_report_prefetch_submitted(int nrequests, int nqueuefull)
-{
-	PgStat_MsgPrefetch msg;
-
-	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
-		return;
-
-	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_PREFETCH);
-	msg.m_requests_submitted = nrequests;
-	msg.m_queue_full = nqueuefull;
-	msg.m_requests_processed = 0;
-	msg.m_requests_skipped = 0;
-	msg.m_requests_failed = 0;
-
-	pgstat_send(&msg, sizeof(msg));
-}
-
-/* --------
- * pgstat_report_prefetch_processed() -
- *
- *	Tell the collector about processed prefetch requests.
- * --------
- */
-void
-pgstat_report_prefetch_processed(int nrequests, int nskipped, int nfailures)
-{
-	PgStat_MsgPrefetch msg;
-
-	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
-		return;
-
-	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_PREFETCH);
-	msg.m_requests_submitted = 0;
-	msg.m_queue_full = 0;
-	msg.m_requests_processed = nrequests;
-	msg.m_requests_skipped = nskipped;
-	msg.m_requests_failed = nfailures;
-
 	pgstat_send(&msg, sizeof(msg));
 }
 
@@ -4637,10 +4588,6 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_checksum_failure((PgStat_MsgChecksumFailure *) &msg, len);
 					break;
 
-				case PGSTAT_MTYPE_PREFETCH:
-					pgstat_recv_prefetch((PgStat_MsgPrefetch *) &msg, len);
-					break;
-
 				default:
 					break;
 			}
@@ -6399,22 +6346,6 @@ pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len)
 
 	dbentry->n_checksum_failures += msg->m_failurecount;
 	dbentry->last_checksum_failure = msg->m_failure_time;
-}
-
-/* ----------
- * pgstat_recv_prefetch() -
- *
- *	Process a PREFETCH message.
- * ----------
- */
-static void
-pgstat_recv_prefetch(PgStat_MsgPrefetch *msg, int len)
-{
-	globalStats.prefetch_requests_submitted += msg->m_requests_submitted;
-	globalStats.prefetch_requests_processed += msg->m_requests_processed;
-	globalStats.prefetch_requests_skipped += msg->m_requests_skipped;
-	globalStats.prefetch_requests_failures += msg->m_requests_failed;
-	globalStats.prefetch_queue_full += msg->m_queue_full;
 }
 
 /* ----------

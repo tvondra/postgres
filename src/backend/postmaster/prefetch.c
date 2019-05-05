@@ -161,11 +161,21 @@ typedef struct
 	dlist_head	prefetch_runningWorkers;
 	WorkerInfo	prefetch_startingWorker;
 
+	/* locks */
+	slock_t		prefetch_stats_lck;		/* protects the stats fields */
+	slock_t		prefetch_queue_lck;		/* protects the queue fields */
+
+	/* prefetch queue statistics */
+	uint64		prefetch_stats_nsubmitted;
+	uint64		prefetch_stats_nprocessed;
+	uint64		prefetch_stats_nskipped;
+	uint64		prefetch_stats_nerrors;
+	uint64		prefetch_stats_nfull;
+
 	/* used to notify about new requests and available space in queue */
 	ConditionVariable requests_cv; /* signaled after adding new requests */
 	ConditionVariable free_cv;	/* signaled after removing requests */
 
-	slock_t		prefetch_queue_lck;		/* protects the queue fields */
 	int			prefetch_queue_start;	/* index of first request */
 	int			prefetch_queue_count;	/* number of queued requests */
 	BufferTag	prefetch_queue[QUEUE_SIZE];
@@ -998,7 +1008,13 @@ do_prefetch(void)
 					nskipped++;
 			}
 
-			pgstat_report_prefetch_processed(nprefetched, nskipped, nerrors);
+			SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+			PrefetchShmem->prefetch_stats_nprocessed += nprefetched;
+			PrefetchShmem->prefetch_stats_nskipped += nskipped;
+			PrefetchShmem->prefetch_stats_nerrors += nerrors;
+
+			SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
 		}
 	}
 }
@@ -1081,6 +1097,7 @@ PrefetchShmemInit(void)
 		ConditionVariableInit(&PrefetchShmem->free_cv);
 
 		SpinLockInit(&PrefetchShmem->prefetch_queue_lck);
+		SpinLockInit(&PrefetchShmem->prefetch_stats_lck);
 
 		/* (count == 0) means there are no requests */
 		PrefetchShmem->prefetch_queue_start = 0;
@@ -1154,7 +1171,13 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 	if (nsubmitted > 0)
 		ConditionVariableBroadcast(&PrefetchShmem->requests_cv);
 
-	pgstat_report_prefetch_submitted(nsubmitted, nqueuefull);
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	PrefetchShmem->prefetch_stats_nsubmitted += nsubmitted;
+	PrefetchShmem->prefetch_stats_nfull += nqueuefull;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
 
 	return nsubmitted;
 }
@@ -1196,4 +1219,79 @@ PrefetchQueueFlush(PrefetchQueue *requests)
 	/* send the requests with nowait=true, so that we don't get blocked
 	 * in case the prefetcher workers fail, get stuck or something */
 	SubmitPrefetchRequests(requests->nrequests, requests->requests, true);
+}
+
+Datum
+pg_stat_get_prefetch_submitted(PG_FUNCTION_ARGS)
+{
+	int64	r;
+
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	r = PrefetchShmem->prefetch_stats_nsubmitted;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_INT64(r);
+}
+
+Datum
+pg_stat_get_prefetch_processed(PG_FUNCTION_ARGS)
+{
+	int64	r;
+
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	r = PrefetchShmem->prefetch_stats_nprocessed;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_INT64(r);
+}
+
+Datum
+pg_stat_get_prefetch_skipped(PG_FUNCTION_ARGS)
+{
+	int64	r;
+
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	r = PrefetchShmem->prefetch_stats_nskipped;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_INT64(r);
+}
+
+Datum
+pg_stat_get_prefetch_failed(PG_FUNCTION_ARGS)
+{
+	int64	r;
+
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	r = PrefetchShmem->prefetch_stats_nerrors;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_INT64(r);
+}
+
+Datum
+pg_stat_get_prefetch_queue_full(PG_FUNCTION_ARGS)
+{
+	int64	r;
+
+	/* update stats */
+	SpinLockAcquire(&PrefetchShmem->prefetch_stats_lck);
+
+	r = PrefetchShmem->prefetch_stats_nfull;
+
+	SpinLockRelease(&PrefetchShmem->prefetch_stats_lck);
+
+	PG_RETURN_INT64(r);
 }

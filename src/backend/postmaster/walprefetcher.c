@@ -490,8 +490,6 @@ WalPrefetch(XLogRecPtr lsn)
 					continue;
 				}
 
-				Assert(nrequests < XLR_MAX_BLOCK_ID);
-
 				/* accumulate the prefetch requests */
 				PrefetchQueueAdd(&prequests, tag.rnode, tag.forkNum, tag.blockNum);
 			}

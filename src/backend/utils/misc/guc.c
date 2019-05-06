@@ -1975,7 +1975,7 @@ static struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&async_prefetch_enabled,
-		true,
+		false,
 		check_async_prefetch, NULL, NULL
 	},
 

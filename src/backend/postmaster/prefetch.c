@@ -909,6 +909,9 @@ FreeWorkerInfo(int code, Datum arg)
 static void
 do_prefetch(void)
 {
+	if (!async_prefetch_enabled)
+		return;
+
 	/*
 	 * get a bunch of prefetch requests
 	 */
@@ -1123,6 +1126,9 @@ SubmitPrefetchRequests(int nrequests, BufferTag *requests, bool nowait)
 {
 	int	nsubmitted = 0,
 		nqueuefull = 0;
+
+	if (!async_prefetch_enabled)
+		return 0;
 
 	/*
 	 * Submit the requests.

@@ -553,8 +553,12 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 			/* varlena, so just use VARSIZE_ANY */
 			for (i = 0; i < info[dim].nvalues; i++)
 			{
+				Size	len;
+
 				values[dim][i] = PointerGetDatum(PG_DETOAST_DATUM(values[dim][i]));
-				info[dim].nbytes += VARSIZE_ANY(values[dim][i]);
+
+				len = VARSIZE_ANY(values[dim][i]);
+				info[dim].nbytes += MAXALIGN(len);
 			}
 		}
 		else if (info[dim].typlen == -2)
@@ -562,13 +566,18 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 			/* cstring, so simply strlen */
 			for (i = 0; i < info[dim].nvalues; i++)
 			{
+				Size	len;
+
+				/* c-strings include terminator, so +1 byte */
 				values[dim][i] = PointerGetDatum(PG_DETOAST_DATUM(values[dim][i]));
-				info[dim].nbytes += strlen(DatumGetPointer(values[dim][i]));
+
+				len = strlen(DatumGetCString(values[dim][i])) + 1;
+				info[dim].nbytes += MAXALIGN(len);
 			}
 		}
-		else
-			elog(ERROR, "unknown data type typbyval=%d typlen=%d",
-				 info[dim].typbyval, info[dim].typlen);
+
+		/* we know (count > 0) so there must be some data */
+		Assert(info[dim].nbytes > 0);
 	}
 
 	/*
@@ -956,11 +965,11 @@ statext_histogram_deserialize(bytea *data)
 	/*
 	 * Arrays of uint16 indexes and isnull/inclusive flags for all buckets.
 	 *
-	 * Each bucket has min/max boundary, and we need ndims elements for each.
+	 * Each bucket has min/max boundary flags, and we need ndims elements for each.
 	 */
 	histlen += 2 * nbuckets * MAXALIGN(sizeof(uint16) * ndims);	/* min/max indexes */
-	histlen += 2 * nbuckets * MAXALIGN(sizeof(bool) * ndims);		/* min/max inclusive */
-	histlen += 2 * nbuckets * MAXALIGN(sizeof(bool) * ndims);		/* min/max nulls */
+	histlen += 2 * nbuckets * MAXALIGN(sizeof(bool) * ndims);	/* min/max inclusive */
+	histlen += nbuckets * MAXALIGN(sizeof(bool) * ndims);	/* nullsonly */
 
 	/* we don't quite need to align this, but it makes some asserts easier */
 	histlen += MAXALIGN(datalen);
@@ -1009,7 +1018,7 @@ statext_histogram_deserialize(bytea *data)
 	 * inclusive flags - each with ndims elements)
 	 */
 	boolptr = tmp;
-	tmp += 4 * nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+	tmp += 3 * nbuckets * MAXALIGN(sizeof(bool) * ndims);
 
 	/*
 	 * pointer to the beginning of deduplicated data arrays (we need four
@@ -1110,23 +1119,28 @@ statext_histogram_deserialize(bytea *data)
 		MVBucket   *bucket = &histogram->buckets[i];
 
 		/* scalar values can be just directly assigned */
-		bucket->frequency = BUCKET_FREQUENCY(tmp);
+		bucket->frequency = BUCKET_FREQUENCY(ptr);
 
 		/* for arrays we need to allocate + copy */
 		bucket->nullsonly = (bool *) boolptr;
-		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
+		boolptr += MAXALIGN(sizeof(bool) * ndims);
+		memcpy(bucket->nullsonly, BUCKET_NULLS_ONLY(ptr, ndims), sizeof(bool) * ndims);
 
 		bucket->min_inclusive = (bool *) boolptr;
-		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
+		boolptr += MAXALIGN(sizeof(bool) * ndims);
+		memcpy(bucket->min_inclusive, BUCKET_MIN_INCL(ptr, ndims), sizeof(bool) * ndims);
 
 		bucket->max_inclusive = (bool *) boolptr;
-		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
+		boolptr += MAXALIGN(sizeof(bool) * ndims);
+		memcpy(bucket->max_inclusive, BUCKET_MAX_INCL(ptr, ndims), sizeof(bool) * ndims);
 
 		bucket->min = (uint16 *) indexptr;
-		indexptr += nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+		indexptr += MAXALIGN(sizeof(uint16) * ndims);
+		memcpy(bucket->min, BUCKET_MIN_INDEXES(ptr, ndims), sizeof(uint16) * ndims);
 
 		bucket->max = (uint16 *) indexptr;
-		indexptr += nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+		indexptr += MAXALIGN(sizeof(uint16) * ndims);
+		memcpy(bucket->max, BUCKET_MAX_INDEXES(ptr, ndims), sizeof(uint16) * ndims);
 
 		ptr += bucketsize;
 

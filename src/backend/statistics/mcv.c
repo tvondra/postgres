@@ -159,14 +159,17 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-				  VacAttrStats **stats, double totalrows)
+				  VacAttrStats **stats, HeapTuple **rows_filtered,
+				  int *numrows_filtered, double totalrows)
 {
 	int			i,
 				numattrs,
 				ngroups,
-				nitems;
+				nitems,
+				numrows_mcv;
 	AttrNumber *attnums;
 	double		mincount;
+
 	SortItem   *items;
 	SortItem   *groups;
 	MCVList    *mcvlist = NULL;
@@ -186,6 +189,9 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* transform the sorted rows into groups (sorted by frequency) */
 	groups = build_distinct_groups(nitems, items, mss, &ngroups);
+
+	/* Either we have both pointers or none of them. */
+	Assert((rows_filtered && numrows_filtered) || (!rows_filtered && !numrows_filtered));
 
 	/*
 	 * Maximum number of MCV items to store, based on the attribute with the
@@ -232,6 +238,9 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			break;
 		}
 	}
+
+	/* number of rows represented by MCV items */
+	numrows_mcv = 0;
 
 	/*
 	 * At this point we know the number of items for the MCV list. There might
@@ -291,7 +300,91 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 				item->base_frequency *= (double) count / numrows;
 			}
+
+			/* update the number of sampled rows represented by the MCV list */
+			numrows_mcv += groups[i].count;
 		}
+	}
+
+	/* Assume we're not returning any filtered rows by default. */
+	if (numrows_filtered)
+		*numrows_filtered = 0;
+
+	if (rows_filtered)
+		*rows_filtered = NULL;
+
+	/*
+	 * Produce an array with only tuples not covered by the MCV list. This is
+	 * needed when building MCV+histogram pair, where MCV covers the most
+	 * common combinations and histogram covers the remaining part.
+	 *
+	 * We will first sort the groups by the keys (not by count) and then use
+	 * binary search in the group array to check which rows are covered by the
+	 * MCV items.
+	 *
+	 * Do not modify the array in place, as there may be additional stats on
+	 * the table and we need to keep the original array for them.
+	 *
+	 * We only do this when requested by passing non-NULL rows_filtered, and
+	 * when there are rows not covered by the MCV list (that is, when
+	 * numrows_mcv < numrows), or also (nitems < ngroups).
+	 */
+	if (rows_filtered && numrows_filtered && (nitems < ngroups))
+	{
+		int			i,
+					j;
+
+		/* used to build the filtered array of tuples */
+		HeapTuple  *filtered;
+		int			nfiltered;
+
+		/* used for the searches */
+		SortItem	key;
+
+		/* We do know how many rows we expect (total - MCV rows). */
+		nfiltered = (numrows - numrows_mcv);
+		filtered = (HeapTuple *) palloc(nfiltered * sizeof(HeapTuple));
+
+		/* wfill this with data from the rows */
+		key.values = (Datum *) palloc0(numattrs * sizeof(Datum));
+		key.isnull = (bool *) palloc0(numattrs * sizeof(bool));
+
+		/*
+		 * Sort the groups for bsearch_r (but only the items that actually
+		 * made it to the MCV list).
+		 */
+		qsort_arg((void *) groups, nitems, sizeof(SortItem),
+				  multi_sort_compare, mss);
+
+		/* walk through the tuples, compare the values to MCV items */
+		nfiltered = 0;
+		for (i = 0; i < numrows; i++)
+		{
+			/* collect the key values from the row */
+			for (j = 0; j < numattrs; j++)
+				key.values[j]
+					= heap_getattr(rows[i], attnums[j],
+								   stats[j]->tupDesc, &key.isnull[j]);
+
+			/* if not included in the MCV list, keep it in the array */
+			if (bsearch_arg(&key, groups, nitems, sizeof(SortItem),
+							multi_sort_compare, mss) == NULL)
+				filtered[nfiltered++] = rows[i];
+
+			/* do not overflow the array */
+			Assert(nfiltered <= (numrows - numrows_mcv));
+		}
+
+		/* expect to get the right number of remaining rows exactly */
+		Assert(nfiltered + numrows_mcv == numrows);
+
+		/* pass the filtered tuples up */
+		*numrows_filtered = nfiltered;
+		*rows_filtered = filtered;
+
+		/* free all the data used here */
+		pfree(key.values);
+		pfree(key.isnull);
 	}
 
 	pfree(items);

@@ -50,6 +50,7 @@ CATALOG(pg_statistic_ext,3381,StatisticExtRelationId)
 	pg_ndistinct stxndistinct;	/* ndistinct coefficients (serialized) */
 	pg_dependencies stxdependencies;	/* dependencies (serialized) */
 	pg_mcv_list stxmcv;			/* MCV (serialized) */
+	pg_histogram stxhistogram;	/* MV histogram (serialized) */
 #endif
 
 } FormData_pg_statistic_ext;
@@ -66,6 +67,7 @@ typedef FormData_pg_statistic_ext *Form_pg_statistic_ext;
 #define STATS_EXT_NDISTINCT			'd'
 #define STATS_EXT_DEPENDENCIES		'f'
 #define STATS_EXT_MCV				'm'
+#define STATS_EXT_HISTOGRAM			'h'
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

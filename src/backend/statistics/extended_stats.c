@@ -67,7 +67,7 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcvlist, VacAttrStats **stats);
+			  MCVList * mcvlist, MVHistogram * histogram, VacAttrStats **stats);
 
 
 /*
@@ -101,9 +101,13 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
+		MVHistogram *histogram = NULL;
 		MCVList    *mcv = NULL;
 		VacAttrStats **stats;
 		ListCell   *lc2;
+
+		bool		build_mcv = false;
+		bool		build_histogram = false;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -140,12 +144,49 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				dependencies = statext_dependencies_build(numrows, rows,
 														  stat->columns, stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
-										totalrows);
+				build_mcv = true;
+			else if (t == STATS_EXT_HISTOGRAM)
+				build_histogram = true;
 		}
 
+		/*
+		 * If asked to build both MCV and histogram, first build the MCV part
+		 * and then histogram on the remaining rows.
+		 */
+		if (build_mcv && build_histogram)
+		{
+			HeapTuple  *rows_filtered = NULL;
+			int			numrows_filtered;
+
+			mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
+									&rows_filtered, &numrows_filtered,
+									totalrows);
+
+			/*
+			 * Only build the histogram when there are rows not covered by
+			 * MCV.
+			 */
+			if (rows_filtered)
+			{
+				Assert(numrows_filtered > 0);
+
+				histogram = statext_histogram_build(numrows_filtered, rows_filtered,
+													stat->columns, stats, numrows);
+
+				/* free this immediately, as we may be building many stats */
+				pfree(rows_filtered);
+			}
+		}
+		else if (build_mcv)
+			mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
+									NULL, NULL, totalrows);
+		else if (build_histogram)
+			histogram = statext_histogram_build(numrows, rows, stat->columns,
+												stats, numrows);
+
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, mcv,
+					  histogram, stats);
 	}
 
 	table_close(pg_stext, RowExclusiveLock);
@@ -175,6 +216,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 
 		case STATS_EXT_MCV:
 			attnum = Anum_pg_statistic_ext_stxmcv;
+			break;
+
+		case STATS_EXT_HISTOGRAM:
+			attnum = Anum_pg_statistic_ext_stxhistogram;
 			break;
 
 		default:
@@ -242,7 +287,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
-				   (enabled[i] == STATS_EXT_MCV));
+				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_HISTOGRAM));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -317,7 +363,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 static void
 statext_store(Relation pg_stext, Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList * mcv, VacAttrStats **stats)
+			  MCVList * mcv, MVHistogram * histogram, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -356,10 +402,18 @@ statext_store(Relation pg_stext, Oid statOid,
 		values[Anum_pg_statistic_ext_stxmcv - 1] = PointerGetDatum(data);
 	}
 
+	if (histogram != NULL)
+	{
+		/* histogram already is a bytea value, not need to serialize */
+		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = BoolGetDatum(false);
+		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(histogram);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_stxndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxdependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_stxmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_stxhistogram - 1] = true;
 
 	/* there should already be a pg_statistic_ext tuple */
 	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
@@ -472,6 +526,19 @@ compare_scalars_simple(const void *a, const void *b, void *arg)
 	return compare_datums_simple(*(Datum *) a,
 								 *(Datum *) b,
 								 (SortSupport) arg);
+}
+
+/*
+ * qsort_arg comparator for sorting data when partitioning a MV bucket
+ */
+int
+compare_scalars_partition(const void *a, const void *b, void *arg)
+{
+	Datum		da = ((ScalarItem *) a)->value;
+	Datum		db = ((ScalarItem *) b)->value;
+	SortSupport ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da, false, db, false, ssup);
 }
 
 int
@@ -664,10 +731,11 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
 
 /*
  * has_stats_of_kind
- *		Check whether the list contains statistic of a given kind
+ *		Check whether the list contains statistic of a given kind (at least
+ * one of those specified statistics types).
  */
 bool
-has_stats_of_kind(List *stats, char requiredkind)
+has_stats_of_kind(List *stats, int requiredkinds)
 {
 	ListCell   *l;
 
@@ -675,7 +743,7 @@ has_stats_of_kind(List *stats, char requiredkind)
 	{
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(l);
 
-		if (stat->kind == requiredkind)
+		if (stat->kinds & requiredkinds)
 			return true;
 	}
 
@@ -697,7 +765,7 @@ has_stats_of_kind(List *stats, char requiredkind)
  * further tiebreakers are needed.
  */
 StatisticExtInfo *
-choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
+choose_best_statistics(List *stats, Bitmapset *attnums, int requiredkinds)
 {
 	ListCell   *lc;
 	StatisticExtInfo *best_match = NULL;
@@ -711,8 +779,8 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 		int			numkeys;
 		Bitmapset  *matched;
 
-		/* skip statistics that are not of the correct type */
-		if (info->kind != requiredkind)
+		/* skip statistics that do not match any of the requested types */
+		if ((info->kinds & requiredkinds) == 0)
 			continue;
 
 		/* determine how many attributes of these stats can be matched to */
@@ -887,7 +955,7 @@ statext_is_compatible_clause_internal(Node *clause, Index relid, Bitmapset **att
 
 /*
  * statext_is_compatible_clause
- *		Determines if the clause is compatible with MCV lists.
+ *		Determines if the clause is compatible with MCV lists and histograms
  *
  * Currently, we only support three types of clauses:
  *
@@ -922,7 +990,90 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
 }
 
 /*
- * statext_mcv_clauselist_selectivity
+ * examine_equality_clause
+ *		Extract variable from a simple top-level equality clause.
+ *
+ * For simple equality clause (Var = Const) or (Const = Var) extracts
+ * the Var. For other clauses returns NULL.
+ */
+static Var *
+examine_equality_clause(PlannerInfo *root, RestrictInfo *rinfo)
+{
+	OpExpr	   *expr;
+	Var		   *var;
+	bool		ok;
+	bool		varonleft = true;
+
+	if (!IsA(rinfo->clause, OpExpr))
+		return NULL;
+
+	expr = (OpExpr *) rinfo->clause;
+
+	if (list_length(expr->args) != 2)
+		return NULL;
+
+	/* see if it actually has the right */
+	ok = (NumRelids((Node *) expr) == 1) &&
+		(is_pseudo_constant_clause(lsecond(expr->args)) ||
+		 (varonleft = false,
+		  is_pseudo_constant_clause(linitial(expr->args))));
+
+	/* unsupported structure (two variables or so) */
+	if (!ok)
+		return NULL;
+
+	if (get_oprrest(expr->opno) != F_EQSEL)
+		return NULL;
+
+	var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+	return var;
+}
+
+/*
+ * estimate_equality_groups
+ *		Estimates number of groups for attributes in equality clauses.
+ *
+ * Extracts simple top-level equality clauses, and estimates ndistinct
+ * for that combination (using simplified estimate_num_groups). Then
+ * returns number of attributes with an equality clause, and a lists
+ * of equality clauses (to use as conditions for histograms) and also
+ * remaining non-equality clauses.
+ */
+static double
+estimate_equality_groups(PlannerInfo *root, List *clauses,
+						 List **eqclauses, List **neqclauses)
+{
+	List   *vars = NIL;
+	ListCell *lc;
+
+	*eqclauses = NIL;
+	*neqclauses = NIL;
+
+	foreach(lc, clauses)
+	{
+		Var	   *var;
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+		Assert(IsA(rinfo, RestrictInfo));
+
+		var = examine_equality_clause(root, rinfo);
+
+		/* is it a simple equality clause */
+		if (var)
+		{
+			vars = lappend(vars, var);
+			*eqclauses = lappend(*eqclauses, rinfo);
+		}
+		else
+			*neqclauses = lappend(*neqclauses, rinfo);
+	}
+
+	return estimate_num_groups_simple(root, vars);
+}
+
+/*
+ * statext_mcv_hist_selectivity
  *		Estimate clauses using the best multi-column statistics.
  *
  * Selects the best extended (multi-column) statistic on a table (measured by
@@ -978,9 +1129,9 @@ statext_is_compatible_clause(Node *clause, Index relid, Bitmapset **attnums)
  * using conditional probability formula).
  */
 static Selectivity
-statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
-								   JoinType jointype, SpecialJoinInfo *sjinfo,
-								   RelOptInfo *rel, Bitmapset **estimatedclauses)
+statext_mcv_hist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
+							 JoinType jointype, SpecialJoinInfo *sjinfo,
+							 RelOptInfo *rel, Bitmapset **estimatedclauses)
 {
 	ListCell   *l;
 	Bitmapset  *clauses_attnums = NULL;
@@ -989,15 +1140,19 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	StatisticExtInfo *stat;
 	List	   *stat_clauses;
 	Selectivity	simple_sel,
-				mcv_sel,
-				mcv_basesel,
-				mcv_totalsel,
-				other_sel,
+				mcv_sel = 0.0,
+				mcv_basesel = 0.0,
+				mcv_totalsel = 0.0,
+				histogram_sel = 0.0,
+				other_sel = 0.0,
 				sel;
 
-	/* check if there's any stats that might be useful for us. */
-	if (!has_stats_of_kind(rel->statlist, STATS_EXT_MCV))
-		return 1.0;
+	/* we're interested in MCV lists and histograms */
+	int			types = (STATS_EXT_INFO_MCV | STATS_EXT_INFO_HISTOGRAM);
+
+	/* Check if there's any stats that might be useful for us. */
+	if (!has_stats_of_kind(rel->statlist, types))
+		return (Selectivity) 1.0;
 
 	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
 										 list_length(clauses));
@@ -1012,6 +1167,10 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	 *
 	 * We also skip clauses that we already estimated using different types of
 	 * statistics (we treat them as incompatible).
+	 *
+	 * XXX Currently, the estimated clauses are always empty because the extra
+	 * statistics are applied before functional dependencies. Once we decide
+	 * to apply multiple statistics, this may change.
 	 */
 	listidx = 0;
 	foreach(l, clauses)
@@ -1019,8 +1178,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		Node	   *clause = (Node *) lfirst(l);
 		Bitmapset  *attnums = NULL;
 
-		if (!bms_is_member(listidx, *estimatedclauses) &&
-			statext_is_compatible_clause(clause, rel->relid, &attnums))
+		if ((!bms_is_member(listidx, *estimatedclauses)) &&
+			(statext_is_compatible_clause(clause, rel->relid, &attnums)))
 		{
 			list_attnums[listidx] = attnums;
 			clauses_attnums = bms_add_members(clauses_attnums, attnums);
@@ -1031,7 +1190,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		listidx++;
 	}
 
-	/* We need at least two attributes for multivariate statistics. */
+	/* We need at least two attributes for MCV lists. */
 	if (bms_membership(clauses_attnums) != BMS_MULTIPLE)
 		return 1.0;
 
@@ -1040,10 +1199,10 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 	/* if no matching stats could be found then we've nothing to do */
 	if (!stat)
-		return 1.0;
+		return (Selectivity) 1.0;
 
-	/* Ensure choose_best_statistics produced an expected stats type. */
-	Assert(stat->kind == STATS_EXT_MCV);
+	/* Ensure choose_best_statistics produced the expected stats type(s). */
+	Assert(stat->kinds & (STATS_EXT_INFO_MCV | STATS_EXT_INFO_HISTOGRAM));
 
 	/* now filter the clauses to be estimated using the selected MCV */
 	stat_clauses = NIL;
@@ -1055,8 +1214,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		 * If the clause is compatible with the selected statistics, mark it
 		 * as estimated and add it to the list to estimate.
 		 */
-		if (list_attnums[listidx] != NULL &&
-			bms_is_subset(list_attnums[listidx], stat->keys))
+		if ((list_attnums[listidx] != NULL) &&
+			(bms_is_subset(list_attnums[listidx], stat->keys)))
 		{
 			stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
 			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
@@ -1066,28 +1225,59 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	}
 
 	/*
-	 * First compute "simple" selectivity, i.e. without the extended statistics,
-	 * and essentially assuming independence of the columns/clauses. We'll then
-	 * use the various selectivities computed from MCV list to improve it.
+	 * For statistics with MCV list, we'll estimate the MCV and non-MCV parts.
 	 */
-	simple_sel = clauselist_selectivity_simple(root, stat_clauses, varRelid,
-											   jointype, sjinfo, NULL);
+	if (stat->kinds & STATS_EXT_INFO_MCV)
+	{
+		/*
+		 * First compute "simple" selectivity, i.e. without the extended statistics,
+		 * and essentially assuming independence of the columns/clauses. We'll then
+		 * use the various selectivities computed from MCV list to improve it.
+		 */
+		simple_sel = clauselist_selectivity_simple(root, stat_clauses, varRelid,
+												   jointype, sjinfo, NULL);
+
+		/*
+		 * Now compute the multi-column estimate from the MCV list, along with the
+		 * other selectivities (base & total selectivity).
+		 */
+		mcv_sel = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
+											 jointype, sjinfo, rel,
+											 &mcv_basesel, &mcv_totalsel);
+
+		/* Estimated selectivity of values not covered by MCV matches */
+		other_sel = simple_sel - mcv_basesel;
+		CLAMP_PROBABILITY(other_sel);
+
+		/* The non-MCV selectivity can't exceed the 1 - mcv_totalsel. */
+		if (other_sel > 1.0 - mcv_totalsel)
+			other_sel = 1.0 - mcv_totalsel;
+	}
+	else
+	{
+		/* Otherwise just remember there was no MCV list. */
+		mcv_totalsel = 0.0;
+	}
 
 	/*
-	 * Now compute the multi-column estimate from the MCV list, along with the
-	 * other selectivities (base & total selectivity).
+	 * If we have a histogram, we'll use it to improve the non-MCV estimate.
 	 */
-	mcv_sel = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
-										 jointype, sjinfo, rel,
-										 &mcv_basesel, &mcv_totalsel);
+	if (stat->kinds & STATS_EXT_INFO_HISTOGRAM)
+	{
+		List   *eqclauses,
+			   *neqclauses;
+		double	ngroups;
 
-	/* Estimated selectivity of values not covered by MCV matches */
-	other_sel = simple_sel - mcv_basesel;
-	CLAMP_PROBABILITY(other_sel);
+		ngroups = estimate_equality_groups(root, stat_clauses,
+										   &eqclauses, &neqclauses);
 
-	/* The non-MCV selectivity can't exceed the 1 - mcv_totalsel. */
-	if (other_sel > 1.0 - mcv_totalsel)
-		other_sel = 1.0 - mcv_totalsel;
+		histogram_sel = histogram_clauselist_selectivity(root, stat,
+														 neqclauses, eqclauses,
+														 varRelid, jointype,
+														 sjinfo, rel);
+
+		other_sel = (1 / ngroups) * histogram_sel;
+	}
 
 	/* Overall selectivity is the combination of MCV and non-MCV estimates. */
 	sel = mcv_sel + other_sel;
@@ -1108,8 +1298,8 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	Selectivity	sel;
 
 	/* First, try estimating clauses using a multivariate MCV list. */
-	sel = statext_mcv_clauselist_selectivity(root, clauses, varRelid, jointype,
-											 sjinfo, rel, estimatedclauses);
+	sel = statext_mcv_hist_selectivity(root, clauses, varRelid, jointype,
+									   sjinfo, rel, estimatedclauses);
 
 	/*
 	 * Then, apply functional dependencies on the remaining clauses by

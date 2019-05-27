@@ -128,7 +128,7 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
  * boolean arrays.
  */
 #define BUCKET_SIZE(ndims)	\
-	((ndims) * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
+	MAXALIGN((ndims) * (4 * sizeof(uint16) + 3 * sizeof(bool)) + sizeof(float))
 
 /*
  * Macros for convenient access to parts of a serialized bucket.
@@ -141,12 +141,29 @@ static MVHistogram * serialize_histogram(MVHistogramBuild * histogram,
 #define BUCKET_MAX_INDEXES(b,n) ((BUCKET_MIN_INDEXES(b,n) + (n)))
 
 /*
+ * Used to compute size of serialized histogram representation.
+ */
+#define MinSizeOfMVHistogram		\
+	(VARHDRSZ + sizeof(uint32) * 3 + sizeof(AttrNumber))
+
+#define SizeOfMVHistogram(ndims,nbuckets)	\
+	(MAXALIGN(MinSizeOfMVHistogram + sizeof(Oid) * (ndims)) + \
+	 MAXALIGN((ndims) * sizeof(DimensionInfo)) + \
+	 MAXALIGN((nbuckets) * BUCKET_SIZE(ndims)))
+
+/*
  * Minimal number of rows per bucket (can't split smaller buckets).
  *
  * XXX The single-column statistics (std_typanalyze) pretty much says we
  * need 300 rows per bucket. Should we use the same value here?
  */
 #define MIN_BUCKET_ROWS			10
+
+static void
+AssertIsAligned(const void *base, const void *ptr)
+{
+	Assert(((char *) ptr - (char *) base) == MAXALIGN((char *) ptr - (char *) base));
+}
 
 /*
  * Represents match info for a histogram bucket.
@@ -430,8 +447,9 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 				i;
 	Size		total_length = 0;
 
-	bytea	   *output = NULL;	/* serialized histogram as bytea */
-	char	   *data = NULL;
+	/* serialized items (indexes into arrays, etc.) */
+	char	   *raw;
+	char	   *ptr;
 
 	DimensionInfo *info;
 	SortSupport ssup;
@@ -554,150 +572,194 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	}
 
 	/*
-	 * Now we finally know how much space we'll need for the serialized
-	 * histogram, as it contains these fields:
+	 * Now we can finally compute how much space we'll actually need for the
+	 * whole serialized histogram (varlena header, histogram header, dimension
+	 * info for each attribute, deduplicated values and buckets).
 	 *
-	 * - length (4B) for varlena
-	 * - magic (4B)
-	 * - type (4B)
-	 * - ndimensions (4B)
-	 * - nbuckets (4B)
-	 * - info (ndim * sizeof(DimensionInfo)
-	 * - arrays of values for each dimension
-	 * - serialized buckets (nbuckets * bucketsize)
-	 *
-	 * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then
-	 * we'll place the data (and buckets).
+	 * The header fields are copied one by one, so that we don't need any
+	 * explicit alignment (we copy them while deserializing). All fields
+	 * after this need to be properly aligned, for direct access.
 	 */
-	total_length = (offsetof(MVHistogram, buckets)
-					+ ndims * sizeof(DimensionInfo)
-					+ nbuckets * bucketsize);
+	total_length = MAXALIGN(VARHDRSZ + (3 * sizeof(uint32))
+			+ sizeof(AttrNumber) + (ndims * sizeof(Oid)));
 
-	/* account for the deduplicated data */
-	for (dim = 0; dim < ndims; dim++)
-		total_length += info[dim].nbytes;
+	/* dimension info (properly aligned) */
+	total_length += MAXALIGN(ndims * sizeof(DimensionInfo));
 
-	/* allocate space for the serialized histogram list, set header */
-	output = (bytea *) palloc0(total_length);
+	/* add space for the arrays of deduplicated values */
+	for (i = 0; i < ndims; i++)
+		total_length += MAXALIGN(info[i].nbytes);
 
 	/*
-	 * we'll use 'data' to keep track of the place to write data
-	 *
-	 * XXX No VARDATA() here, as MVHistogramBuild includes the length.
+	 * And finally the buckets (no additional alignment needed, we start
+	 * at proper alignment and the bucketsize formula uses MAXALIGN)
 	 */
-	data = (char *) output;
+	total_length += (nbuckets * bucketsize);
 
-	memcpy(data, histogram, offsetof(MVHistogramBuild, buckets));
-	data += offsetof(MVHistogramBuild, buckets);
+	/*
+	 * Allocate space for the whole serialized histogram (we'll skip bytes,
+	 * so we set them to zero to make the result more compressible).
+	 */
+	raw = palloc0(total_length);
+	SET_VARSIZE(raw, total_length);
+	ptr = VARDATA(raw);
 
-	memcpy(data, info, sizeof(DimensionInfo) * ndims);
-	data += sizeof(DimensionInfo) * ndims;
+	/* copy the histogram list header fields, one by one */
+	memcpy(ptr, &histogram->magic, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(ptr, &histogram->type, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(ptr, &histogram->nbuckets, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(ptr, &histogram->ndimensions, sizeof(AttrNumber));
+	ptr += sizeof(AttrNumber);
+
+	memcpy(ptr, histogram->types, sizeof(Oid) * ndims);
+	ptr += (sizeof(Oid) * ndims);
+
+	/* the header may not be exactly aligned, so make sure it is */
+	ptr = raw + MAXALIGN(ptr - raw);
+
+	/* store information about the attributes */
+	memcpy(ptr, info, sizeof(DimensionInfo) * ndims);
+	ptr += MAXALIGN(sizeof(DimensionInfo) * ndims);
 
 	/* serialize the deduplicated values for all attributes */
 	for (dim = 0; dim < ndims; dim++)
 	{
-#ifdef USE_ASSERT_CHECKING
-		char	   *tmp = data;
-#endif
+		/* remember the starting point for Asserts later */
+		char	   *start PG_USED_FOR_ASSERTS_ONLY = ptr;
+
 		for (i = 0; i < info[dim].nvalues; i++)
 		{
-			Datum		v = values[dim][i];
+			Datum		value = values[dim][i];
 
 			if (info[dim].typbyval) /* passed by value */
 			{
-				memcpy(data, &v, info[dim].typlen);
-				data += info[dim].typlen;
+				Datum		tmp;
+
+				/*
+				 * For values passed by value, we need to copy just the
+				 * significant bytes - we can't use memcpy directly, as that
+				 * assumes little endian behavior.  store_att_byval does
+				 * almost what we need, but it requires properly aligned
+				 * buffer - the output buffer does not guarantee that. So we
+				 * simply use a static Datum variable (which guarantees proper
+				 * alignment), and then copy the value from it.
+				 */
+				store_att_byval(&tmp, value, info[dim].typlen);
+
+				memcpy(ptr, &tmp, info[dim].typlen);
+				ptr += info[dim].typlen;
 			}
 			else if (info[dim].typlen > 0)	/* pased by reference */
 			{
-				memcpy(data, DatumGetPointer(v), info[dim].typlen);
-				data += info[dim].typlen;
+				/* no special alignment needed, treated as char array */
+				memcpy(ptr, DatumGetPointer(value), info[dim].typlen);
+				ptr += info[dim].typlen;
 			}
 			else if (info[dim].typlen == -1)	/* varlena */
 			{
-				memcpy(data, DatumGetPointer(v), VARSIZE_ANY(v));
-				data += VARSIZE_ANY(values[dim][i]);
+				int			len = VARSIZE_ANY(value);
+
+				memcpy(ptr, DatumGetPointer(value), len);
+				ptr += MAXALIGN(len);
 			}
 			else if (info[dim].typlen == -2)	/* cstring */
 			{
-				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v)) + 1);
-				data += strlen(DatumGetPointer(v)) + 1;
+				Size		len = strlen(DatumGetCString(value)) + 1;	/* terminator */
+
+				memcpy(ptr, DatumGetCString(value), len);
+				ptr += MAXALIGN(len);
 			}
+
+			/* no underflows or overflows */
+			Assert((ptr > start) && ((ptr - start) <= info[dim].nbytes));
 		}
 
-		/* make sure we got exactly the amount of data we expected */
-		Assert((data - tmp) == info[dim].nbytes);
+		/* we should get exactly nbytes of data for this dimension */
+		Assert((ptr - start) == info[dim].nbytes);
+
+		/* make sure the pointer is aligned correctly after each dimension */
+		ptr = raw + MAXALIGN(ptr - raw);
 	}
 
-	/* finally serialize the items, with uint16 indexes instead of the values */
+	/* finally serialize the buckets, with uint16 indexes instead of the values */
 	for (i = 0; i < nbuckets; i++)
 	{
+		MVBucketBuild *b = histogram->buckets[i];
+
 		/* don't write beyond the allocated space */
-		Assert(data <= (char *) output + total_length - bucketsize);
+		Assert(ptr <= raw + total_length - bucketsize);
 
 		/* reset the values for each item */
 		memset(bucket, 0, bucketsize);
 
-		BUCKET_FREQUENCY(bucket) = histogram->buckets[i]->frequency;
+		BUCKET_FREQUENCY(bucket) = b->frequency;
 
 		for (dim = 0; dim < ndims; dim++)
 		{
 			/* do the lookup only for non-NULL values */
-			if (!histogram->buckets[i]->nullsonly[dim])
+			if (!b->nullsonly[dim])
 			{
-				uint16		idx;
 				Datum	   *v = NULL;
 
 				/* min boundary */
-				v = (Datum *) bsearch_arg(&histogram->buckets[i]->min[dim],
+				v = (Datum *) bsearch_arg(&b->min[dim],
 										  values[dim], info[dim].nvalues, sizeof(Datum),
 										  compare_scalars_simple, &ssup[dim]);
 
 				Assert(v != NULL);	/* serialization or deduplication error */
 
 				/* compute index within the array */
-				idx = (v - values[dim]);
+				BUCKET_MIN_INDEXES(bucket, ndims)[dim] = (uint16) (v - values[dim]);
 
-				Assert((idx >= 0) && (idx < info[dim].nvalues));
-
-				BUCKET_MIN_INDEXES(bucket, ndims)[dim] = idx;
+				Assert(BUCKET_MIN_INDEXES(bucket, ndims)[dim] < info[dim].nvalues);
 
 				/* max boundary */
-				v = (Datum *) bsearch_arg(&histogram->buckets[i]->max[dim],
+				v = (Datum *) bsearch_arg(&b->max[dim],
 										  values[dim], info[dim].nvalues, sizeof(Datum),
 										  compare_scalars_simple, &ssup[dim]);
 
 				Assert(v != NULL);	/* serialization or deduplication error */
 
 				/* compute index within the array */
-				idx = (v - values[dim]);
+				BUCKET_MAX_INDEXES(bucket, ndims)[dim] = (uint16) (v - values[dim]);
 
-				Assert((idx >= 0) && (idx < info[dim].nvalues));
+				Assert(BUCKET_MAX_INDEXES(bucket, ndims)[dim] < info[dim].nvalues);
 
-				BUCKET_MAX_INDEXES(bucket, ndims)[dim] = idx;
+				/*
+				 * The array of deduplicated values is sorted, so the lower boundary
+				 * should get a lower index.
+				 */
+				Assert(BUCKET_MIN_INDEXES(bucket, ndims)[dim] <= BUCKET_MAX_INDEXES(bucket, ndims)[dim]);
 			}
 		}
 
 		/* copy flags (nulls, min/max inclusive) */
 		memcpy(BUCKET_NULLS_ONLY(bucket, ndims),
-			   histogram->buckets[i]->nullsonly, sizeof(bool) * ndims);
+			   b->nullsonly, sizeof(bool) * ndims);
 
 		memcpy(BUCKET_MIN_INCL(bucket, ndims),
-			   histogram->buckets[i]->min_inclusive, sizeof(bool) * ndims);
+			   b->min_inclusive, sizeof(bool) * ndims);
 
 		memcpy(BUCKET_MAX_INCL(bucket, ndims),
-			   histogram->buckets[i]->max_inclusive, sizeof(bool) * ndims);
+			   b->max_inclusive, sizeof(bool) * ndims);
 
 		/* copy the item into the array */
-		memcpy(data, bucket, bucketsize);
+		memcpy(ptr, bucket, bucketsize);
 
-		data += bucketsize;
+		ptr += bucketsize;
 	}
 
 	/* at this point we expect to match the total_length exactly */
-	Assert((data - (char *) output) == total_length);
+	Assert((ptr - raw) == total_length);
 
 	/* free the values/counts arrays here */
+	pfree(bucket);
 	pfree(counts);
 	pfree(info);
 	pfree(ssup);
@@ -705,12 +767,7 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	for (dim = 0; dim < ndims; dim++)
 		pfree(values[dim]);
 
-	pfree(values);
-
-	/* make sure the length is correct */
-	SET_VARSIZE(output, total_length);
-
-	return (MVHistogram *)output;
+	return (MVHistogram *) raw;
 }
 
 /*
@@ -730,6 +787,7 @@ statext_histogram_deserialize(bytea *data)
 	char	   *tmp = NULL;
 
 	MVHistogram *histogram;
+	char	   *raw;
 	DimensionInfo *info;
 
 	int			nbuckets;
@@ -737,176 +795,268 @@ statext_histogram_deserialize(bytea *data)
 	int			bucketsize;
 
 	/* temporary deserialization buffer */
-	int			bufflen;
-	char	   *buff;
+	int			histlen;
 	char	   *ptr;
+
+	/* buffer used for the result */
+	Size		datalen;
+	char	   *dataptr;
+	char	   *boolptr;
+	char	   *indexptr;
+
 
 	if (data == NULL)
 		return NULL;
 
 	/*
-	 * We can't possibly deserialize a histogram if there's not even a
-	 * complete header.
+	 * We can't possibly deserialize a histogram if there's not even a complete
+	 * header. We need an explicit formula here, because we serialize the
+	 * header fields one by one, so we need to ignore struct alignment.
 	 */
-	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVHistogram, buckets))
-		elog(ERROR, "invalid histogram size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), offsetof(MVHistogram, buckets));
+	if (VARSIZE_ANY(data) < MinSizeOfMVHistogram)
+		elog(ERROR, "invalid histogram size %zd (expected at least %zu)",
+			 VARSIZE_ANY(data), MinSizeOfMVHistogram);
 
 	/* read the histogram header */
-	histogram
-		= (MVHistogram *) palloc(sizeof(MVHistogram));
+	histogram = (MVHistogram *) palloc0(offsetof(MVHistogram, buckets));
 
-	/* initialize pointer to data (varlena header is included) */
-	tmp = (char *) data;
+	/* pointer to the data part (skip the varlena header) */
+	ptr = VARDATA_ANY(data);
+	raw = (char *) data;
 
-	/* get the header and perform basic sanity checks */
-	memcpy(histogram, tmp, offsetof(MVHistogram, buckets));
-	tmp += offsetof(MVHistogram, buckets);
+	/* get the header and perform further sanity checks */
+	memcpy(&histogram->magic, ptr, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(&histogram->type, ptr, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(&histogram->nbuckets, ptr, sizeof(uint32));
+	ptr += sizeof(uint32);
+
+	memcpy(&histogram->ndimensions, ptr, sizeof(AttrNumber));
+	ptr += sizeof(AttrNumber);
 
 	if (histogram->magic != STATS_HIST_MAGIC)
-		elog(ERROR, "invalid histogram magic %u (expected %dd)",
+		elog(ERROR, "invalid histogram magic %u (expected %u)",
 			 histogram->magic, STATS_HIST_MAGIC);
 
 	if (histogram->type != STATS_HIST_TYPE_BASIC)
-		elog(ERROR, "invalid histogram type %u (expected %dd)",
+		elog(ERROR, "invalid histogram type %u (expected %u)",
 			 histogram->type, STATS_HIST_TYPE_BASIC);
 
 	if (histogram->ndimensions == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid zero-length dimension array in histogram")));
+		elog(ERROR, "invalid zero-length dimension array in histogram");
 	else if (histogram->ndimensions > STATS_MAX_DIMENSIONS)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid length (%u) dimension array in histogram",
-						histogram->ndimensions)));
+		elog(ERROR, "invalid length (%u) dimension array in histogram",
+			 histogram->ndimensions);
 
 	if (histogram->nbuckets == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid zero-length bucket array in histogram")));
+		elog(ERROR, "invalid zero-length bucket array in histogram");
 	else if (histogram->nbuckets > STATS_HIST_MAX_BUCKETS)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid length (%u) bucket array in histogram",
-						histogram->nbuckets)));
+		elog(ERROR, "invalid length (%u) bucket array in histogram",
+			 histogram->nbuckets);
 
 	nbuckets = histogram->nbuckets;
 	ndims = histogram->ndimensions;
 	bucketsize = BUCKET_SIZE(ndims);
 
 	/*
-	 * What size do we expect with those parameters (it's incomplete, as we
-	 * yet have to count the array sizes (from DimensionInfo records).
+	 * Check amount of data including DimensionInfo for all dimensions and
+	 * also the serialized buckets (including uint16 indexes). Also, walk
+	 * through the dimension information and add it to the sum.
 	 */
-	expected_size = offsetof(MVHistogram, buckets) +
-		ndims * sizeof(DimensionInfo) +
-		(nbuckets * bucketsize);
+	expected_size = SizeOfMVHistogram(ndims, nbuckets);
 
-	/* check that we have at least the DimensionInfo records */
+	/*
+	 * Check that we have at least the dimension and info records, along with
+	 * the items. We don't know the size of the serialized values yet. We need
+	 * to do this check first, before accessing the dimension info.
+	 */
 	if (VARSIZE_ANY(data) < expected_size)
-		elog(ERROR, "invalid histogram size %ld (expected %ld)",
-			 VARSIZE_ANY_EXHDR(data), expected_size);
+		elog(ERROR, "invalid histogram size %zd (expected %zu)",
+			 VARSIZE_ANY(data), expected_size);
 
-	/* Now it's safe to access the dimention info. */
-	info = (DimensionInfo *) (tmp);
-	tmp += ndims * sizeof(DimensionInfo);
+	/* Now copy the array of type Oids. */
+	memcpy(histogram->types, ptr, sizeof(Oid) * ndims);
+	ptr += (sizeof(Oid) * ndims);
+
+	/* ensure alignment of the pointer (after the header fields) */
+	ptr = raw + MAXALIGN(ptr - raw);
+
+	/* Now it's safe to access the dimension info. */
+	info = (DimensionInfo *) ptr;
+	ptr += MAXALIGN(ndims * sizeof(DimensionInfo));
 
 	/* account for the value arrays */
 	for (dim = 0; dim < ndims; dim++)
-		expected_size += info[dim].nbytes;
+	{
+		/*
+		 * XXX I wonder if we can/should rely on asserts here. Maybe those
+		 * checks should be done every time?
+		 */
+		Assert(info[dim].nvalues >= 0);
+		Assert(info[dim].nbytes >= 0);
 
-	if (VARSIZE_ANY(data) != expected_size)
-		elog(ERROR, "invalid histogram size %ld (expected %ld)",
-			 VARSIZE_ANY_EXHDR(data), expected_size);
-
-	/* looks OK - not corrupted or something */
-
-	/* a single buffer for all the values and counts */
-	bufflen = (sizeof(int) + sizeof(Datum *)) * ndims;
-
-	for (dim = 0; dim < ndims; dim++)
-		/* don't allocate space for byval types, matching Datum */
-		if (!(info[dim].typbyval && (info[dim].typlen == sizeof(Datum))))
-			bufflen += (sizeof(Datum) * info[dim].nvalues);
-
-	/* also, include space for the result, tracking the buckets */
-	bufflen += nbuckets * (sizeof(MVBucket *) + /* bucket pointer */
-						   sizeof(MVBucket));	/* bucket data */
-
-	buff = palloc0(bufflen);
-	ptr = buff;
-
-	histogram->nvalues = (int *) ptr;
-	ptr += (sizeof(int) * ndims);
-
-	histogram->values = (Datum **) ptr;
-	ptr += (sizeof(Datum *) * ndims);
+		expected_size += MAXALIGN(info[dim].nbytes);
+	}
 
 	/*
-	 * XXX This uses pointers to the original data array (the types not passed
-	 * by value), so when someone frees the memory, e.g. by doing something
-	 * like this:
+	 * Now we know the total expected MCV size, including all the pieces
+	 * (header, dimension info. items and deduplicated data). So do the final
+	 * check on size.
+	 */
+	if (VARSIZE_ANY(data) != expected_size)
+		elog(ERROR, "invalid histogram size %zd (expected %zu)",
+			 VARSIZE_ANY(data), expected_size);
+
+	/*
+	 * We need an array of Datum values for each dimension, so that we can
+	 * easily translate the uint16 indexes later. We also need a top-level
+	 * array of pointers to those per-dimension arrays.
 	 *
-	 *	bytea * data = ... fetch the data from catalog ...
-	 *	MVHistogramBuild histogram = deserialize_histogram(data);
-	 *	pfree(data);
+	 * While allocating the arrays for dimensions, compute how much space we
+	 * need for a copy of the by-ref data, as we can't simply point to the
+	 * original values (it might go away).
+	 */
+	datalen = 0;				/* space for by-ref data */
+	for (dim = 0; dim < ndims; dim++)
+	{
+		/* space needed for a copy of data for by-ref types */
+		if (!info[dim].typbyval)
+			datalen += MAXALIGN(info[dim].nbytes);
+
+		/* mapping uint16 to pointer in the copy (for byref types those
+		 * are just pointers elsewhere) */
+		datalen += MAXALIGN(info[dim].nvalues * sizeof(Datum));
+	}
+
+	/*
+	 * Now resize the histogram so that the allocation includes all the data
+	 * Allocate space for a copy of the data, as we can't simply reference the
+	 * original data - it may disappear while we're still using the histogram,
+	 * e.g. due to catcache release. Only needed for by-ref types.
+	 */
+	histlen = MAXALIGN(sizeof(MVHistogram));
+
+	/* space for buckets */
+	histlen += MAXALIGN(sizeof(MVBucket) * nbuckets);
+
+	/*
+	 * We don't expand the histogram fully - we keep the arrays of deduplicated
+	 * values, and use indexes into it in the buckets. That means we need to store
+	 * the deduplicated values, and make them easily accessible. That's what
+	 * nvalues/values in MVHistogram are for, and we need to account for that.
+	 * The deduplicated values are then serialized elsewhere, these are just
+	 * pointers to them.
+	 */
+	histlen += MAXALIGN(sizeof(int) * ndims);
+	histlen += MAXALIGN(sizeof(Datum *) * ndims);
+
+	/*
+	 * Arrays of uint16 indexes and isnull/inclusive flags for all buckets.
 	 *
-	 * then 'histogram' references the freed memory. Should copy the pieces.
+	 * Each bucket has min/max boundary, and we need ndims elements for each.
+	 */
+	histlen += 2 * nbuckets * MAXALIGN(sizeof(uint16) * ndims);	/* min/max indexes */
+	histlen += 2 * nbuckets * MAXALIGN(sizeof(bool) * ndims);		/* min/max inclusive */
+	histlen += 2 * nbuckets * MAXALIGN(sizeof(bool) * ndims);		/* min/max nulls */
+
+	/* we don't quite need to align this, but it makes some asserts easier */
+	histlen += MAXALIGN(datalen);
+
+	/* now resize the deserialized histogram, and compute pointers to parts */
+	histogram = repalloc(histogram, histlen);
+
+	/* first byte (aligned) after the histogram header */
+	tmp = (char *) histogram + MAXALIGN(sizeof(MVHistogram));
+
+	/* histogram buckets */
+	histogram->buckets = (MVBucket *) tmp;
+	tmp += MAXALIGN(sizeof(MVBucket) * nbuckets);
+
+	/* deduplicated arrays of per-dimension data (count and values) */
+	histogram->nvalues = (int *) tmp;
+	tmp += MAXALIGN(sizeof(int) * ndims);
+
+	histogram->values = (Datum **) tmp;
+	tmp += MAXALIGN(sizeof(Datum **) * ndims);
+
+	/* set the per-dimension maps (uint16 -> (Datum *)) */
+	for (dim = 0; dim < ndims; dim++)
+	{
+		/*
+		 * FIXME can the number of values in a dimension be zero? Perhaps
+		 * that may happen for NULL-only dimension, in which case we don't
+		 * need to mess with the values.
+		 */
+		histogram->nvalues[dim] = info[dim].nvalues;
+		histogram->values[dim] = (Datum *) tmp;
+		tmp += MAXALIGN(histogram->nvalues[dim] * sizeof(Datum));
+	}
+
+	/* now the per-bucket fields */
+
+	/*
+	 * pointer to the beginning of uint16 indexes (we need two arrays per
+	 * bucket, each with ndims elements)
+	 */
+	indexptr = tmp;
+	tmp += 2 * nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+
+	/*
+	 * bool flags (we need four arrays per bucket - two for nulls, two for
+	 * inclusive flags - each with ndims elements)
+	 */
+	boolptr = tmp;
+	tmp += 4 * nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+
+	/*
+	 * pointer to the beginning of deduplicated data arrays (we need four
+	 * for each bucket min/max and nulls/inclusive)
+	 */
+	dataptr = tmp;
+
+	/*
+	 * Build mapping (index => value) for translating the uint16 indexes to
+	 * the deduplicated values.
 	 */
 	for (dim = 0; dim < ndims; dim++)
 	{
-#ifdef USE_ASSERT_CHECKING
-		/* remember where data for this dimension starts */
-		char	   *start = tmp;
-#endif
-
-		histogram->nvalues[dim] = info[dim].nvalues;
+		/* remember start position in the input array */
+		char	   *start PG_USED_FOR_ASSERTS_ONLY = ptr;
 
 		if (info[dim].typbyval)
 		{
-			/* passed by value / Datum - simply reuse the array */
-			if (info[dim].typlen == sizeof(Datum))
+			/* for by-val types we simply copy data directly into the mapping */
+			for (i = 0; i < info[dim].nvalues; i++)
 			{
-				histogram->values[dim] = (Datum *) tmp;
-				tmp += info[dim].nbytes;
+				Datum		v = 0;
 
-				/* no overflow of input array */
-				Assert(tmp <= start + info[dim].nbytes);
-			}
-			else
-			{
-				histogram->values[dim] = (Datum *) ptr;
-				ptr += (sizeof(Datum) * info[dim].nvalues);
+				memcpy(&v, ptr, info[dim].typlen);
+				ptr += info[dim].typlen;
 
-				for (i = 0; i < info[dim].nvalues; i++)
-				{
-					/* just point into the array */
-					memcpy(&histogram->values[dim][i], tmp, info[dim].typlen);
-					tmp += info[dim].typlen;
+				histogram->values[dim][i] = fetch_att(&v, true, info[dim].typlen);
 
-					/* no overflow of input array */
-					Assert(tmp <= start + info[dim].nbytes);
-				}
+				/* no under/overflow of input array */
+				Assert(ptr <= (start + info[dim].nbytes));
 			}
 		}
 		else
 		{
-			/* all the other types need a chunk of the buffer */
-			histogram->values[dim] = (Datum *) ptr;
-			ptr += (sizeof(Datum) * info[dim].nvalues);
+			/* for by-ref types we need to also make a copy of the data */
 
+			/* passed by reference, but fixed length (name, tid, ...) */
 			if (info[dim].typlen > 0)
 			{
-				/* pased by reference, but fixed length (name, tid, ...) */
 				for (i = 0; i < info[dim].nvalues; i++)
 				{
-					/* just point into the array */
-					histogram->values[dim][i] = PointerGetDatum(tmp);
-					tmp += info[dim].typlen;
+					memcpy(dataptr, ptr, info[dim].typlen);
+					ptr += info[dim].typlen;
 
-					/* no overflow of input array */
-					Assert(tmp <= start + info[dim].nbytes);
+					/* just point into the array */
+					histogram->values[dim][i] = PointerGetDatum(dataptr);
+					dataptr += info[dim].typlen;
 				}
 			}
 			else if (info[dim].typlen == -1)
@@ -914,12 +1064,14 @@ statext_histogram_deserialize(bytea *data)
 				/* varlena */
 				for (i = 0; i < info[dim].nvalues; i++)
 				{
-					/* just point into the array */
-					histogram->values[dim][i] = PointerGetDatum(tmp);
-					tmp += VARSIZE_ANY(tmp);
+					Size		len = VARSIZE_ANY(ptr);
 
-					/* no overflow of input array */
-					Assert(tmp <= start + info[dim].nbytes);
+					memcpy(dataptr, ptr, len);
+					ptr += MAXALIGN(len);
+
+					/* just point into the array */
+					histogram->values[dim][i] = PointerGetDatum(dataptr);
+					dataptr += MAXALIGN(len);
 				}
 			}
 			else if (info[dim].typlen == -2)
@@ -927,50 +1079,63 @@ statext_histogram_deserialize(bytea *data)
 				/* cstring */
 				for (i = 0; i < info[dim].nvalues; i++)
 				{
-					/* just point into the array */
-					histogram->values[dim][i] = PointerGetDatum(tmp);
-					tmp += (strlen(tmp) + 1);	/* don't forget the \0 */
+					Size		len = (strlen(ptr) + 1);	/* don't forget the \0 */
 
-					/* no overflow of input array */
-					Assert(tmp <= start + info[dim].nbytes);
+					memcpy(dataptr, ptr, len);
+					ptr += MAXALIGN(len);
+
+					/* just point into the array */
+					histogram->values[dim][i] = PointerGetDatum(dataptr);
+					dataptr += MAXALIGN(len);
 				}
 			}
+
+			/* no under/overflow of input array */
+			Assert(ptr <= (start + info[dim].nbytes));
+
+			/* no overflow of the output histogram value */
+			Assert(dataptr <= ((char *) histogram + histlen));
 		}
 
-		/* check we consumed the serialized data for this dimension exactly */
-		Assert((tmp - start) == info[dim].nbytes);
+		/* check we consumed input data for this dimension exactly */
+		Assert(ptr == (start + info[dim].nbytes));
+
+		/* ensure proper alignment of the data */
+		ptr = raw + MAXALIGN(ptr - raw);
 	}
 
 	/* now deserialize the buckets and point them into the varlena values */
-	histogram->buckets = (MVBucket * *) ptr;
-	ptr += (sizeof(MVBucket *) * nbuckets);
-
 	for (i = 0; i < nbuckets; i++)
 	{
-		MVBucket   *bucket = (MVBucket *) ptr;
+		MVBucket   *bucket = &histogram->buckets[i];
 
-		ptr += sizeof(MVBucket);
-
+		/* scalar values can be just directly assigned */
 		bucket->frequency = BUCKET_FREQUENCY(tmp);
-		bucket->nullsonly = BUCKET_NULLS_ONLY(tmp, ndims);
-		bucket->min_inclusive = BUCKET_MIN_INCL(tmp, ndims);
-		bucket->max_inclusive = BUCKET_MAX_INCL(tmp, ndims);
 
-		bucket->min = BUCKET_MIN_INDEXES(tmp, ndims);
-		bucket->max = BUCKET_MAX_INDEXES(tmp, ndims);
+		/* for arrays we need to allocate + copy */
+		bucket->nullsonly = (bool *) boolptr;
+		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
 
-		histogram->buckets[i] = bucket;
+		bucket->min_inclusive = (bool *) boolptr;
+		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
 
-		Assert(tmp <= (char *) data + VARSIZE_ANY(data));
+		bucket->max_inclusive = (bool *) boolptr;
+		boolptr += nbuckets * MAXALIGN(sizeof(bool) * ndims);
 
-		tmp += bucketsize;
+		bucket->min = (uint16 *) indexptr;
+		indexptr += nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+
+		bucket->max = (uint16 *) indexptr;
+		indexptr += nbuckets * MAXALIGN(sizeof(uint16) * ndims);
+
+		ptr += bucketsize;
+
+		/* check we're not overflowing the input */
+		Assert(ptr <= (char *) raw + VARSIZE_ANY(data));
 	}
 
 	/* at this point we expect to match the total_length exactly */
-	Assert((tmp - (char *) data) == expected_size);
-
-	/* we should exhaust the output buffer exactly */
-	Assert((ptr - buff) == bufflen);
+	Assert((ptr - (char *) data) == expected_size);
 
 	return histogram;
 }
@@ -1907,7 +2072,7 @@ pg_histogram_buckets(PG_FUNCTION_ARGS)
 
 		Assert(call_cntr < histogram->nbuckets);
 
-		bucket = histogram->buckets[call_cntr];
+		bucket = &histogram->buckets[call_cntr];
 
 		/*
 		 * The scalar values will be formatted directly, using snprintf.
@@ -2515,7 +2680,7 @@ histogram_get_match_bitmap(PlannerInfo *root,
 					bool		res;
 					double		fraction;
 
-					MVBucket   *bucket = histogram->buckets[i];
+					MVBucket   *bucket = &histogram->buckets[i];
 
 					/* histogram boundaries */
 					Datum		minval,
@@ -2653,7 +2818,7 @@ histogram_get_match_bitmap(PlannerInfo *root,
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
 				char		match = false;
-				MVBucket   *bucket = histogram->buckets[i];
+				MVBucket   *bucket = &histogram->buckets[i];
 
 				/*
 				 * Skip buckets that were already eliminated - this is
@@ -2832,7 +2997,7 @@ histogram_get_match_bitmap(PlannerInfo *root,
 			 */
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
-				MVBucket   *bucket = histogram->buckets[i];
+				MVBucket   *bucket = &histogram->buckets[i];
 				bool	match = false;
 				double	fraction = 0.0;
 
@@ -2986,13 +3151,13 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 			continue;
 
 		/* compute selectivity for buckets matching conditions */
-		total_sel += histogram->buckets[i]->frequency;
+		total_sel += histogram->buckets[i].frequency;
 
 		/* geometric mean of the bucket fraction */
 		fraction = pow(matches[i].fraction, 1.0 / nclauses);
 
 		if (matches[i].match)
-			s += histogram->buckets[i]->frequency * fraction;
+			s += histogram->buckets[i].frequency * fraction;
 	}
 
 	/* conditional selectivity P(clauses|conditions) */

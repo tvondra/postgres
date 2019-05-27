@@ -134,14 +134,14 @@ typedef struct MVHistogram
 	uint32		magic;			/* magic constant marker */
 	uint32		type;			/* type of histogram (BASIC) */
 	uint32		nbuckets;		/* number of buckets (buckets array) */
-	uint32		ndimensions;	/* number of dimensions */
+	AttrNumber	ndimensions;	/* number of dimensions */
 	Oid			types[STATS_MAX_DIMENSIONS];	/* OIDs of data types */
 
 	/*
 	 * keep this the same with MVHistogram, because of deserialization (same
 	 * offset)
 	 */
-	MVBucket  **buckets;		/* array of buckets */
+	MVBucket   *buckets;		/* array of buckets */
 
 	/*
 	 * serialized boundary values, one array per dimension, deduplicated (the

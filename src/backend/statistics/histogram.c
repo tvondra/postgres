@@ -632,9 +632,13 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 	/* the header may not be exactly aligned, so make sure it is */
 	ptr = raw + MAXALIGN(ptr - raw);
 
+	AssertIsAligned(raw, ptr);
+
 	/* store information about the attributes */
 	memcpy(ptr, info, sizeof(DimensionInfo) * ndims);
 	ptr += MAXALIGN(sizeof(DimensionInfo) * ndims);
+
+	AssertIsAligned(raw, ptr);
 
 	/* serialize the deduplicated values for all attributes */
 	for (dim = 0; dim < ndims; dim++)
@@ -695,6 +699,8 @@ serialize_histogram(MVHistogramBuild * histogram, VacAttrStats **stats)
 		/* make sure the pointer is aligned correctly after each dimension */
 		ptr = raw + MAXALIGN(ptr - raw);
 	}
+
+	AssertIsAligned(raw, ptr);
 
 	/* finally serialize the buckets, with uint16 indexes instead of the values */
 	for (i = 0; i < nbuckets; i++)
@@ -977,12 +983,10 @@ statext_histogram_deserialize(bytea *data)
 	/* now resize the deserialized histogram, and compute pointers to parts */
 	histogram = repalloc(histogram, histlen);
 
-	/* first byte (aligned) after the histogram header */
-	tmp = (char *) histogram + MAXALIGN(sizeof(MVHistogram));
-
-	/* histogram buckets */
-	histogram->buckets = (MVBucket *) tmp;
-	tmp += MAXALIGN(sizeof(MVBucket) * nbuckets);
+	/* first byte (aligned) after the histogram header and buckets */
+	tmp = (char *) histogram;
+	tmp += MAXALIGN(offsetof(MVHistogram, buckets) +
+					sizeof(MVBucket) * nbuckets);
 
 	/* deduplicated arrays of per-dimension data (count and values) */
 	histogram->nvalues = (int *) tmp;
@@ -1034,6 +1038,8 @@ statext_histogram_deserialize(bytea *data)
 	{
 		/* remember start position in the input array */
 		char	   *start PG_USED_FOR_ASSERTS_ONLY = ptr;
+
+		AssertIsAligned(raw, start);
 
 		if (info[dim].typbyval)
 		{
@@ -1109,7 +1115,7 @@ statext_histogram_deserialize(bytea *data)
 		/* check we consumed input data for this dimension exactly */
 		Assert(ptr == (start + info[dim].nbytes));
 
-		/* ensure proper alignment of the data */
+		/* ensure proper alignment of the data after data for dimension */
 		ptr = raw + MAXALIGN(ptr - raw);
 	}
 

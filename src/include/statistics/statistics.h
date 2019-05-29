@@ -138,17 +138,14 @@ typedef struct MVHistogram
 	Oid			types[STATS_MAX_DIMENSIONS];	/* OIDs of data types */
 
 	/*
-	 * keep this the same with MVHistogram, because of deserialization (same
-	 * offset)
-	 */
-	MVBucket   *buckets;		/* array of buckets */
-
-	/*
 	 * serialized boundary values, one array per dimension, deduplicated (the
 	 * min/max indexes point into these arrays)
 	 */
 	int		   *nvalues;
 	Datum	  **values;
+
+	/* array of buckets */
+	MVBucket	buckets[FLEXIBLE_ARRAY_MEMBER];
 }			MVHistogram;
 
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);

@@ -110,6 +110,7 @@ brin_inclusion_opcinfo(PG_FUNCTION_ARGS)
 	 */
 	result = palloc0(MAXALIGN(SizeofBrinOpcInfo(3)) + sizeof(InclusionOpaque));
 	result->oi_nstored = 3;
+	result->oi_regular_nulls = true;
 	result->oi_opaque = (InclusionOpaque *)
 		MAXALIGN((char *) result + SizeofBrinOpcInfo(3));
 
@@ -141,7 +142,7 @@ brin_inclusion_add_value(PG_FUNCTION_ARGS)
 	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
 	BrinValues *column = (BrinValues *) PG_GETARG_POINTER(1);
 	Datum		newval = PG_GETARG_DATUM(2);
-	bool		isnull = PG_GETARG_BOOL(3);
+	bool		isnull PG_USED_FOR_ASSERTS_ONLY = PG_GETARG_BOOL(3);
 	Oid			colloid = PG_GET_COLLATION();
 	FmgrInfo   *finfo;
 	Datum		result;
@@ -149,18 +150,7 @@ brin_inclusion_add_value(PG_FUNCTION_ARGS)
 	AttrNumber	attno;
 	Form_pg_attribute attr;
 
-	/*
-	 * If the new value is null, we record that we saw it if it's the first
-	 * one; otherwise, there's nothing to do.
-	 */
-	if (isnull)
-	{
-		if (column->bv_hasnulls)
-			PG_RETURN_BOOL(false);
-
-		column->bv_hasnulls = true;
-		PG_RETURN_BOOL(true);
-	}
+	Assert(!isnull);
 
 	attno = column->bv_attno;
 	attr = TupleDescAttr(bdesc->bd_tupdesc, attno - 1);
@@ -504,36 +494,10 @@ brin_inclusion_union(PG_FUNCTION_ARGS)
 	Datum		result;
 
 	Assert(col_a->bv_attno == col_b->bv_attno);
-
-	/* Adjust "hasnulls". */
-	if (!col_a->bv_hasnulls && col_b->bv_hasnulls)
-		col_a->bv_hasnulls = true;
-
-	/* If there are no values in B, there's nothing left to do. */
-	if (col_b->bv_allnulls)
-		PG_RETURN_VOID();
+	Assert(!col_a->bv_allnulls && !col_b->bv_allnulls);
 
 	attno = col_a->bv_attno;
 	attr = TupleDescAttr(bdesc->bd_tupdesc, attno - 1);
-
-	/*
-	 * Adjust "allnulls".  If A doesn't have values, just copy the values from
-	 * B into A, and we're done.  We cannot run the operators in this case,
-	 * because values in A might contain garbage.  Note we already established
-	 * that B contains values.
-	 */
-	if (col_a->bv_allnulls)
-	{
-		col_a->bv_allnulls = false;
-		col_a->bv_values[INCLUSION_UNION] =
-			datumCopy(col_b->bv_values[INCLUSION_UNION],
-					  attr->attbyval, attr->attlen);
-		col_a->bv_values[INCLUSION_UNMERGEABLE] =
-			col_b->bv_values[INCLUSION_UNMERGEABLE];
-		col_a->bv_values[INCLUSION_CONTAINS_EMPTY] =
-			col_b->bv_values[INCLUSION_CONTAINS_EMPTY];
-		PG_RETURN_VOID();
-	}
 
 	/* If B includes empty elements, mark A similarly, if needed. */
 	if (!DatumGetBool(col_a->bv_values[INCLUSION_CONTAINS_EMPTY]) &&

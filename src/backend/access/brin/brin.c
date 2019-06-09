@@ -383,8 +383,10 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	BrinMemTuple *dtup;
 	BrinTuple  *btup = NULL;
 	Size		btupsz = 0;
-	ScanKey	  **keys;
-	int		   *nkeys;
+	ScanKey	  **keys,
+			  **nullkeys;
+	int		   *nkeys,
+			   *nnullkeys;
 	int			keyno;
 
 	opaque = (BrinOpaque *) scan->opaque;
@@ -409,10 +411,13 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 	/*
 	 * Make room for per-attribute lists of scan keys that we'll pass to the
-	 * consistent support procedure.
+	 * consistent support procedure. We keep null and regular keys separate,
+	 * so that we can easily pass regular keys to the consistent function.
 	 */
 	keys = palloc0(sizeof(ScanKey *) * bdesc->bd_tupdesc->natts);
+	nullkeys = palloc0(sizeof(ScanKey *) * bdesc->bd_tupdesc->natts);
 	nkeys = palloc0(sizeof(int) * bdesc->bd_tupdesc->natts);
+	nnullkeys = palloc0(sizeof(int) * bdesc->bd_tupdesc->natts);
 
 	/*
 	 * Preprocess the scan keys - split them into per-attribute arrays.
@@ -434,14 +439,12 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 							  keyattno - 1)->attcollation));
 
 		/* First time we see this index attribute, so init as needed. */
-		if (!keys[keyattno-1])
+		if (consistentFn[keyattno - 1].fn_oid == InvalidOid)
 		{
 			FmgrInfo   *tmp;
 
-			keys[keyattno-1] = palloc0(sizeof(ScanKey) * scan->numberOfKeys);
-
-			/* First time this column, so look up consistent function */
-			Assert(consistentFn[keyattno - 1].fn_oid == InvalidOid);
+			Assert((keys[keyattno - 1] == NULL) && (nkeys[keyattno - 1] == 0));
+			Assert((nullkeys[keyattno - 1] == NULL) && (nnullkeys[keyattno - 1] == 0));
 
 			tmp = index_getprocinfo(idxRel, keyattno,
 									BRIN_PROCNUM_CONSISTENT);
@@ -449,9 +452,23 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 						   CurrentMemoryContext);
 		}
 
-		/* Add key to the per-attribute array. */
-		keys[keyattno - 1][nkeys[keyattno - 1]] = key;
-		nkeys[keyattno - 1]++;
+		/* Add key to the proper per-attribute array. */
+		if (key->sk_flags & SK_ISNULL)
+		{
+			if (!nullkeys[keyattno - 1])
+				nullkeys[keyattno - 1] = palloc0(sizeof(ScanKey) * scan->numberOfKeys);
+
+			nullkeys[keyattno - 1][nnullkeys[keyattno - 1]] = key;
+			nnullkeys[keyattno - 1]++;
+		}
+		else
+		{
+			if (!keys[keyattno - 1])
+				keys[keyattno - 1] = palloc0(sizeof(ScanKey) * scan->numberOfKeys);
+
+			keys[keyattno - 1][nkeys[keyattno - 1]] = key;
+			nkeys[keyattno - 1]++;
+		}
 	}
 
 	/* allocate an initial in-memory tuple, out of the per-range memcxt */
@@ -537,6 +554,83 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 					Assert((nkeys[attno - 1] > 0) &&
 						   (nkeys[attno - 1] <= scan->numberOfKeys));
+
+					/*
+					 * First check if there are any IS [NOT] NULL scan keys, and
+					 * if we're violating them. In that case we can terminate
+					 * early, without invoking the support function.
+					 *
+					 * As there may be more keys, we can only detemine mismatch
+					 * within this loop.
+					 */
+					for (keyno = 0; (keyno < nnullkeys[attno - 1]); keyno++)
+					{
+						ScanKey	key = nullkeys[attno - 1][keyno];
+
+						Assert(key->sk_attno == bval->bv_attno);
+
+						/* interrupt the loop as soon as we find a mismatch */
+						if (!addrange)
+							break;
+
+						/* handle IS NULL/IS NOT NULL tests */
+						if (key->sk_flags & SK_ISNULL)
+						{
+							/* IS NULL scan key, but range has no NULLs */
+							if (key->sk_flags & SK_SEARCHNULL)
+							{
+								if (!bval->bv_allnulls && !bval->bv_hasnulls)
+									addrange = false;
+
+								continue;
+							}
+
+							/*
+							 * For IS NOT NULL, we can only skip ranges that are
+							 * known to have only nulls.
+							 */
+							if (key->sk_flags & SK_SEARCHNOTNULL)
+							{
+								if (bval->bv_allnulls)
+									addrange = false;
+
+								continue;
+							}
+
+							/*
+							 * Neither IS NULL nor IS NOT NULL was used; assume all
+							 * indexable operators are strict and thus return false
+							 * with NULL value in the scan key.
+							 */
+							addrange = false;
+						}
+					}
+
+					/*
+					 * If any of the IS [NOT] NULL keys failed, the page range as
+					 * a whole can't pass. So terminate the loop.
+					 */
+					if (!addrange)
+						break;
+
+					/*
+					 * So either there are no IS [NOT] NULL keys, or all passed. If
+					 * there are no regular scan keys, we're done - the page range
+					 * matches. If there are regular keys, but the page range is
+					 * marked as 'all nulls' it can't possibly pass (we're assuming
+					 * the operators are strict).
+					 */
+
+					/* No regular scan keys - page range as a whole passes. */
+					if (!nkeys[attno - 1])
+						continue;
+
+					/* If it is all nulls, it cannot possibly be consistent. */
+					if (bval->bv_allnulls)
+					{
+						addrange = false;
+						break;
+					}
 
 					/*
 					 * Check whether the scan key is consistent with the page

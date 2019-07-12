@@ -119,5 +119,6 @@ extern bool has_stats_of_kind(List *stats, char requiredkind);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
 												Bitmapset *attnums, char requiredkind);
 extern int determine_operator_strategy(Oid opno);
+extern bool deconstruct_opexpr(OpExpr *expr, Var **varp, Const **cstp, bool *isgtp);
 
 #endif							/* STATISTICS_H */

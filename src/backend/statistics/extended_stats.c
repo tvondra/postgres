@@ -797,21 +797,13 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 		RangeTblEntry *rte = root->simple_rte_array[relid];
 		OpExpr	   *expr = (OpExpr *) clause;
 		Var		   *var;
-		bool		varonleft = true;
-		bool		ok;
 
 		/* Only expressions with two arguments are considered compatible. */
 		if (list_length(expr->args) != 2)
 			return false;
 
-		/* see if it actually has the right shape (one Var, one Const) */
-		ok = (NumRelids((Node *) expr) == 1) &&
-			(is_pseudo_constant_clause(lsecond(expr->args)) ||
-			 (varonleft = false,
-			  is_pseudo_constant_clause(linitial(expr->args))));
-
-		/* unsupported structure (two variables or so) */
-		if (!ok)
+		/* Check if the expression the right shape (one Var, one Const) */
+		if (!deconstruct_opexpr(expr, &var, NULL, NULL))
 			return false;
 
 		/*
@@ -841,8 +833,6 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 		if (rte->securityQuals != NIL &&
 			!get_func_leakproof(get_opcode(expr->opno)))
 			return false;
-
-		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
 
 		return statext_is_compatible_clause_internal(root, (Node *) var,
 													 relid, attnums);
@@ -1210,4 +1200,40 @@ determine_operator_strategy(Oid opno)
 		return -1;
 
 	return bms_singleton_member(strats);
+}
+
+bool
+deconstruct_opexpr(OpExpr *expr, Var **varp, Const **cstp, bool *isgtp)
+{
+	Var	   *var;
+	Const  *cst;
+	bool	isgt;
+
+	if ((IsA(linitial(expr->args), Var) || IsA(linitial(expr->args), RelabelType)) &&
+		IsA(lsecond(expr->args), Const))
+	{
+		var = linitial(expr->args);
+		cst = lsecond(expr->args);
+		isgt = false;
+	}
+	else if (IsA(linitial(expr->args), Const) &&
+			 (IsA(lsecond(expr->args), Var) || IsA(lsecond(expr->args), RelabelType)))
+	{
+		var = lsecond(expr->args);
+		cst = linitial(expr->args);
+		isgt = true;
+	}
+	else
+		return false;
+
+	if (varp)
+		*varp = var;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (isgtp)
+		*isgtp = isgt;
+
+	return true;
 }

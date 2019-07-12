@@ -20,6 +20,7 @@
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/tuptoaster.h"
+#include "access/stratnum.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
@@ -819,22 +820,13 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 		 *
 		 * This uses the function for estimating selectivity, not the operator
 		 * directly (a bit awkward, but well ...).
+		 *
+		 * XXX We must not check individual strategies based on stratnum.h,
+		 * because that'd miss the "<>" strategy which may have been added by
+		 * get_op_btree_interpretation.
 		 */
-		switch (get_oprrest(expr->opno))
-		{
-			case F_EQSEL:
-			case F_NEQSEL:
-			case F_SCALARLTSEL:
-			case F_SCALARLESEL:
-			case F_SCALARGTSEL:
-			case F_SCALARGESEL:
-				/* supported, will continue with inspection of the Var */
-				break;
-
-			default:
-				/* other estimators are considered unknown/unsupported */
-				return false;
-		}
+		if (determine_operator_strategy(expr->opno) == -1)
+			return false;
 
 		/*
 		 * If there are any securityQuals on the RTE from security barrier
@@ -1195,4 +1187,27 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 											   estimatedclauses);
 
 	return sel;
+}
+
+int
+determine_operator_strategy(Oid opno)
+{
+	ListCell   *lc;
+	int			strat;
+	List	   *opinfos;
+	Bitmapset  *strats = NULL;
+
+	opinfos = get_op_btree_interpretation(opno);
+
+	foreach(lc, opinfos)
+	{
+		OpBtreeInterpretation *opinfo = lfirst(lc);
+
+		strats = bms_add_member(strats, opinfo->strategy);
+	}
+
+	if (!bms_get_singleton_member(strats, &strat))
+		return -1;
+
+	return bms_singleton_member(strats);
 }

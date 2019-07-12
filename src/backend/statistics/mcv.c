@@ -1565,9 +1565,6 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			bool		ok;
 			FmgrInfo	opproc;
 
-			/* get procedure computing operator selectivity */
-			RegProcedure oprrest = get_oprrest(expr->opno);
-
 			fmgr_info(get_opcode(expr->opno), &opproc);
 
 			ok = (NumRelids(clause) == 1) &&
@@ -1583,6 +1580,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 				Const	   *cst;
 				bool		isgt;
 				int			idx;
+				int			strategy;
 
 				/* extract the var and const from the expression */
 				var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
@@ -1599,6 +1597,16 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 				/* get information about the >= procedure */
 				typecache = lookup_type_cache(var->vartype, TYPECACHE_GT_OPR);
 				fmgr_info(get_opcode(typecache->gt_opr), &gtproc);
+
+				/* determine operator interpretation, based on btree */
+				strategy = determine_operator_strategy(expr->opno);
+
+				/*
+				 * at this point all the expressions must have a meaningful
+				 * btree opclass interpretation (thanks to passing through
+				 * statext_is_compatible_clause, which enforces that).
+				 */
+				Assert(strategy > 0);
 
 				/*
 				 * Walk through the MCV items and evaluate the current clause.
@@ -1625,27 +1633,12 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					else if (is_or && (matches[i] == true))
 						continue;
 
-					switch (oprrest)
+					switch (strategy)
 					{
-						case F_EQSEL:
-						case F_NEQSEL:
-
-							/*
-							 * We don't care about isgt in equality, because
-							 * it does not matter whether it's (var op const)
-							 * or (const op var).
-							 */
-							mismatch = !DatumGetBool(FunctionCall2Coll(&opproc,
-																	   DEFAULT_COLLATION_OID,
-																	   cst->constvalue,
-																	   item->values[idx]));
-
-							break;
-
-						case F_SCALARLTSEL: /* column < constant */
-						case F_SCALARLESEL: /* column <= constant */
-						case F_SCALARGTSEL: /* column > constant */
-						case F_SCALARGESEL: /* column >= constant */
+						case BTLessStrategyNumber:         /* column < constant */
+						case BTLessEqualStrategyNumber:    /* column <= constant */
+						case BTGreaterEqualStrategyNumber: /* column > constant */
+						case BTGreaterStrategyNumber:      /* column >= constant */
 
 							/*
 							 * First check whether the constant is below the
@@ -1662,6 +1655,27 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 																		   DEFAULT_COLLATION_OID,
 																		   item->values[idx],
 																		   cst->constvalue));
+
+							break;
+
+						default:
+
+							/*
+							 * This does handle equality and inequality, but we handle
+							 * that as a default case because inequality operator '<>'
+							 * does not actually have a btree opclass strategy, it's
+							 * added by get_op_btree_interpretation.
+							 */
+
+							/*
+							 * We don't care about isgt in equality, because
+							 * it does not matter whether it's (var op const)
+							 * or (const op var).
+							 */
+							mismatch = !DatumGetBool(FunctionCall2Coll(&opproc,
+																	   DEFAULT_COLLATION_OID,
+																	   cst->constvalue,
+																	   item->values[idx]));
 
 							break;
 					}

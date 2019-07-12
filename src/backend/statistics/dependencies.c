@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/stratnum.h"
 #include "access/sysattr.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
@@ -788,15 +789,10 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 		 * If it's not an "=" operator, just ignore the clause, as it's not
 		 * compatible with functional dependencies.
 		 *
-		 * This uses the function for estimating selectivity, not the operator
-		 * directly (a bit awkward, but well ...).
-		 *
-		 * XXX this is pretty dubious; probably it'd be better to check btree
-		 * or hash opclass membership, so as not to be fooled by custom
-		 * selectivity functions, and to be more consistent with decisions
-		 * elsewhere in the planner.
+		 * We match the operator to btree opclasses, in order to determine how
+		 *  to interpret it.
 		 */
-		if (get_oprrest(expr->opno) != F_EQSEL)
+		if (determine_operator_strategy(expr->opno) != BTEqualStrategyNumber)
 			return false;
 
 		/* OK to proceed with checking "var" */

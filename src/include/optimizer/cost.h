@@ -66,6 +66,7 @@ extern PGDLLIMPORT bool enable_parallel_append;
 extern PGDLLIMPORT bool enable_parallel_hash;
 extern PGDLLIMPORT bool enable_partition_pruning;
 extern PGDLLIMPORT int constraint_exclusion;
+extern PGDLLIMPORT bool force_incremental_sort;
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

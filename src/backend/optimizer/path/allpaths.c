@@ -63,6 +63,7 @@ bool		enable_geqo = false;	/* just in case GUC doesn't set it */
 int			geqo_threshold;
 int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
+bool		devel_create_ordered_paths = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
@@ -3882,6 +3883,10 @@ print_path(PlannerInfo *root, Path *path, int indent)
 			break;
 		case T_SortPath:
 			ptype = "Sort";
+			subpath = ((SortPath *) path)->subpath;
+			break;
+		case T_IncrementalSortPath:
+			ptype = "IncrementalSort";
 			subpath = ((SortPath *) path)->subpath;
 			break;
 		case T_GroupPath:

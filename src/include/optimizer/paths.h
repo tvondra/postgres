@@ -24,6 +24,7 @@ extern PGDLLIMPORT bool enable_geqo;
 extern PGDLLIMPORT int geqo_threshold;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
+extern PGDLLIMPORT bool devel_create_ordered_paths;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
@@ -183,6 +184,8 @@ typedef enum
 
 extern PathKeysComparison compare_pathkeys(List *keys1, List *keys2);
 extern bool pathkeys_contained_in(List *keys1, List *keys2);
+extern bool pathkeys_common_contained_in(List *keys1, List *keys2, int *n_common);
+extern int pathkeys_common(List *keys1, List *keys2);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 											Relids required_outer,
 											CostSelector cost_criterion,

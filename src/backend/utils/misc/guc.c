@@ -942,6 +942,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_incrementalsort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of incremental sort steps."),
+			NULL
+		},
+		&enable_incrementalsort,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of hashed aggregation plans."),
 			NULL,
@@ -1949,6 +1958,17 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Whether to continue running after a failure to sync data files."),
 		},
 		&data_sync_retry,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"devel_create_ordered_paths", PGC_USERSET, DEVELOPER_OPTIONS,
+			NULL,
+			NULL,
+			GUC_EXPLAIN
+		},
+		&devel_create_ordered_paths,
 		false,
 		NULL, NULL, NULL
 	},

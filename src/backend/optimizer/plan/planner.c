@@ -7222,7 +7222,12 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	 * one of the generated paths may turn out to be the cheapest one.
 	 */
 	if (rel->consider_parallel && !IS_OTHER_REL(rel))
-		generate_gather_paths(root, rel, false);
+	{
+		if (devel_apply_scanjoin_target_to_paths)
+			generate_useful_gather_paths(root, rel, false);
+		else
+			generate_gather_paths(root, rel, false);
+	}
 
 	/*
 	 * Reassess which paths are the cheapest, now that we've potentially added

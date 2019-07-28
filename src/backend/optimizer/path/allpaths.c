@@ -65,6 +65,7 @@ int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
 bool		devel_create_ordered_paths = false;
 bool		devel_standard_join_search = false;
+bool		devel_apply_scanjoin_target_to_paths = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;

@@ -140,6 +140,8 @@ bool		enable_parallel_append = true;
 bool		enable_parallel_hash = true;
 bool		enable_partition_pruning = true;
 
+bool		force_incremental_sort = true;
+
 typedef struct
 {
 	PlannerInfo *root;
@@ -1898,6 +1900,12 @@ cost_incremental_sort(Path *path,
 	path->rows = input_tuples;
 	path->startup_cost = startup_cost;
 	path->total_cost = startup_cost + run_cost;
+
+	if (force_incremental_sort)
+	{
+		path->startup_cost = input_startup_cost;
+		path->total_cost = input_total_cost;
+	}
 }
 
 /*

@@ -71,6 +71,7 @@ bool		devel_create_ordered_paths_parallel = false;
 bool		devel_add_paths_to_grouping_rel = false;
 bool		devel_add_paths_to_grouping_rel_parallel = false;
 bool		devel_create_partial_grouping_paths = false;
+bool		devel_create_partial_grouping_paths_2 = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;

@@ -2100,6 +2100,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"devel_add_paths_to_grouping_rel", PGC_USERSET, DEVELOPER_OPTIONS,
+			NULL,
+			NULL,
+			GUC_EXPLAIN
+		},
+		&devel_add_paths_to_grouping_rel,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

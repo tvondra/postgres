@@ -2056,6 +2056,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"devel_standard_join_search", PGC_USERSET, DEVELOPER_OPTIONS,
+			NULL,
+			NULL,
+			GUC_EXPLAIN
+		},
+		&devel_standard_join_search,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

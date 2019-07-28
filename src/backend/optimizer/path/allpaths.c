@@ -63,6 +63,7 @@ bool		enable_geqo = false;	/* just in case GUC doesn't set it */
 int			geqo_threshold;
 int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
+bool		devel_standard_join_search = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
@@ -3113,7 +3114,12 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 			 * once we know the final targetlist (see grouping_planner).
 			 */
 			if (lev < levels_needed)
-				generate_gather_paths(root, rel, false);
+			{
+				if (devel_standard_join_search)
+					generate_useful_gather_paths(root, rel, false);
+				else
+					generate_gather_paths(root, rel, false);
+			}
 
 			/* Find and save the cheapest paths for this rel */
 			set_cheapest(rel);

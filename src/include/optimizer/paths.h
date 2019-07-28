@@ -33,6 +33,7 @@ extern PGDLLIMPORT bool devel_add_paths_to_grouping_rel;
 extern PGDLLIMPORT bool devel_add_paths_to_grouping_rel_parallel;
 extern PGDLLIMPORT bool devel_create_partial_grouping_paths;
 extern PGDLLIMPORT bool devel_create_partial_grouping_paths_2;
+extern PGDLLIMPORT bool devel_gather_grouping_paths;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,

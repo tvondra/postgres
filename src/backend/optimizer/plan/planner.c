@@ -7228,6 +7228,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 static void
 gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 {
+	ListCell   *lc;
 	Path	   *cheapest_partial_path;
 
 	/* Try Gather for unordered paths and Gather Merge for ordered ones. */
@@ -7257,6 +7258,46 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 
 		add_path(rel, path);
 	}
+
+	/* also consider incremental sort on all partial paths */
+if (devel_gather_grouping_paths)
+{
+	foreach (lc, rel->partial_pathlist)
+	{
+		Path	   *path = (Path *) lfirst(lc);
+		bool		is_sorted;
+		int			presorted_keys;
+		double		total_groups;
+
+		is_sorted = pathkeys_common_contained_in(root->group_pathkeys,
+												 path->pathkeys,
+												 &presorted_keys);
+
+		if (is_sorted)
+			continue;
+
+		if (presorted_keys == 0)
+			continue;
+
+		path = (Path *) create_incremental_sort_path(root,
+													 rel,
+													 path,
+													 root->group_pathkeys,
+													 presorted_keys,
+													 -1.0);
+
+		path = (Path *)
+			create_gather_merge_path(root,
+									 rel,
+									 path,
+									 rel->reltarget,
+									 root->group_pathkeys,
+									 NULL,
+									 &total_groups);
+
+		add_path(rel, path);
+	}
+}
 }
 
 /*

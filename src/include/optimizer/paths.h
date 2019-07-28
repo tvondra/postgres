@@ -29,6 +29,7 @@ extern PGDLLIMPORT bool devel_apply_scanjoin_target_to_paths;
 extern PGDLLIMPORT bool devel_set_rel_pathlist;
 extern PGDLLIMPORT bool devel_create_ordered_paths_parallel;
 extern PGDLLIMPORT bool devel_add_paths_to_grouping_rel;
+extern PGDLLIMPORT bool devel_add_paths_to_grouping_rel_parallel;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,

@@ -24,6 +24,7 @@ extern PGDLLIMPORT bool enable_geqo;
 extern PGDLLIMPORT int geqo_threshold;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
+extern PGDLLIMPORT bool devel_create_ordered_paths;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
@@ -54,6 +55,8 @@ extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 
 extern void generate_gather_paths(PlannerInfo *root, RelOptInfo *rel,
 								  bool override_rows);
+extern void generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel,
+										 bool override_rows);
 extern int	compute_parallel_worker(RelOptInfo *rel, double heap_pages,
 									double index_pages, int max_workers);
 extern void create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,

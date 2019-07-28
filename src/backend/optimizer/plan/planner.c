@@ -6982,6 +6982,62 @@ create_partial_grouping_paths(PlannerInfo *root,
 											   dNumPartialGroups));
 			}
 		}
+
+		/*
+		 * Use any available suitably-sorted path as input, and also consider
+		 * sorting the cheapest partial path.
+		 */
+
+	if (devel_create_partial_grouping_paths)
+	{
+		foreach(lc, input_rel->pathlist)
+		{
+			Path	   *path = (Path *) lfirst(lc);
+			bool		is_sorted;
+			int			presorted_keys;
+
+			is_sorted = pathkeys_common_contained_in(root->group_pathkeys,
+													 path->pathkeys,
+													 &presorted_keys);
+
+			/* also ignore already sorted paths */
+			if (is_sorted)
+				continue;
+
+			if (presorted_keys == 0)
+				continue;
+
+			/* add incremental sort */
+			path = (Path *) create_incremental_sort_path(root,
+														 partially_grouped_rel,
+														 path,
+														 root->group_pathkeys,
+														 presorted_keys,
+														 -1.0);
+
+			if (parse->hasAggs)
+				add_path(partially_grouped_rel, (Path *)
+						 create_agg_path(root,
+										 partially_grouped_rel,
+										 path,
+										 partially_grouped_rel->reltarget,
+										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+										 AGGSPLIT_INITIAL_SERIAL,
+										 parse->groupClause,
+										 NIL,
+										 agg_partial_costs,
+										 dNumPartialGroups));
+			else
+				add_path(partially_grouped_rel, (Path *)
+						 create_group_path(root,
+										   partially_grouped_rel,
+										   path,
+										   parse->groupClause,
+										   NIL,
+										   dNumPartialGroups));
+		}
+	}
+
 	}
 
 	if (can_sort && cheapest_partial_path != NULL)

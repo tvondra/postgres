@@ -69,6 +69,7 @@ bool		devel_apply_scanjoin_target_to_paths = false;
 bool		devel_set_rel_pathlist = false;
 bool		devel_create_ordered_paths_parallel = false;
 bool		devel_add_paths_to_grouping_rel = false;
+bool		devel_add_paths_to_grouping_rel_parallel = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;

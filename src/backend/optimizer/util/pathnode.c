@@ -777,41 +777,30 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 		/* Unless pathkeys are incompatible, keep just one of the two paths. */
 		if (keyscmp != PATHKEYS_DIFFERENT)
 		{
-			if (new_path->total_cost > old_path->total_cost * STD_FUZZ_FACTOR)
+			PathCostComparison costcmp;
+
+			/*
+			 * Do a fuzzy cost comparison with standard fuzziness limit.
+			 */
+			costcmp = compare_path_costs_fuzzily(new_path, old_path,
+												 STD_FUZZ_FACTOR);
+
+			if (costcmp == COSTS_BETTER1)
 			{
-				/* New path costs more; keep it only if pathkeys are better. */
-				if (keyscmp != PATHKEYS_BETTER1)
-					accept_new = false;
-			}
-			else if (old_path->total_cost > new_path->total_cost
-					 * STD_FUZZ_FACTOR)
-			{
-				/* Old path costs more; keep it only if pathkeys are better. */
-				if (keyscmp != PATHKEYS_BETTER2)
+				if (keyscmp == PATHKEYS_BETTER1)
 					remove_old = true;
 			}
-			else if (keyscmp == PATHKEYS_BETTER1)
+			else if (costcmp == COSTS_BETTER2)
 			{
-				/* Costs are about the same, new path has better pathkeys. */
-				remove_old = true;
+				if (keyscmp == PATHKEYS_BETTER2)
+					accept_new = false;
 			}
-			else if (keyscmp == PATHKEYS_BETTER2)
+			else if (costcmp == COSTS_EQUAL)
 			{
-				/* Costs are about the same, old path has better pathkeys. */
-				accept_new = false;
-			}
-			else if (old_path->total_cost > new_path->total_cost * 1.0000000001)
-			{
-				/* Pathkeys are the same, and the old path costs more. */
-				remove_old = true;
-			}
-			else
-			{
-				/*
-				 * Pathkeys are the same, and new path isn't materially
-				 * cheaper.
-				 */
-				accept_new = false;
+				if (keyscmp == PATHKEYS_BETTER1)
+					remove_old = true;
+				else if (keyscmp == PATHKEYS_BETTER2)
+					accept_new = false;
 			}
 		}
 

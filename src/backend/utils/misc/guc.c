@@ -2005,6 +2005,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"devel_set_rel_pathlist", PGC_USERSET, DEVELOPER_OPTIONS,
+			NULL,
+			NULL,
+			GUC_EXPLAIN
+		},
+		&devel_set_rel_pathlist,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

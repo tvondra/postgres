@@ -948,6 +948,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"force_incremental_sort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Makes the incremental sort look like no-cost."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&force_incremental_sort,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_incrementalsort", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of incremental sort steps."),
 			NULL

@@ -65,6 +65,7 @@ int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
 bool		devel_standard_join_search = false;
 bool		devel_apply_scanjoin_target_to_paths = false;
+bool		devel_set_rel_pathlist = false;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
@@ -558,7 +559,12 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		bms_membership(root->all_baserels) != BMS_SINGLETON)
-		generate_gather_paths(root, rel, false);
+	{
+		if (devel_set_rel_pathlist)
+			generate_useful_gather_paths(root, rel, false);
+		else
+			generate_gather_paths(root, rel, false);
+	}
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);

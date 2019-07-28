@@ -26,6 +26,7 @@ extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
 extern PGDLLIMPORT bool devel_standard_join_search;
 extern PGDLLIMPORT bool devel_apply_scanjoin_target_to_paths;
+extern PGDLLIMPORT bool devel_set_rel_pathlist;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,

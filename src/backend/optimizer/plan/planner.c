@@ -5069,6 +5069,63 @@ create_ordered_paths(PlannerInfo *root,
 
 			add_path(ordered_rel, path);
 		}
+
+		/* also consider incremental sorts on all partial paths */
+		if (devel_create_ordered_paths_parallel)
+		{
+			ListCell *lc;
+			foreach (lc, input_rel->partial_pathlist)
+			{
+				Path	   *input_path = (Path *) lfirst(lc);
+				Path	   *sorted_path = input_path;
+				bool		is_sorted;
+				int			presorted_keys;
+				double		total_groups;
+
+				/* already handled above */
+				/* if (input_path == cheapest_partial_path) */
+				/* 	continue; */
+
+				is_sorted = pathkeys_common_contained_in(root->sort_pathkeys,
+														 input_path->pathkeys, &presorted_keys);
+
+				/* also ignore already sorted paths */
+				if (is_sorted)
+					continue;
+
+				if (presorted_keys > 0)
+				{
+					/* Also consider incremental sort. */
+					sorted_path = (Path *) create_incremental_sort_path(root,
+																		ordered_rel,
+																		input_path,
+																		root->sort_pathkeys,
+																		presorted_keys,
+																		limit_tuples);
+					total_groups = input_path->rows *
+						input_path->parallel_workers;
+					sorted_path = (Path *)
+						create_gather_merge_path(root, ordered_rel,
+												 sorted_path,
+												 sorted_path->pathtarget,
+												 root->sort_pathkeys, NULL,
+												 &total_groups);
+
+					/* Add projection step if needed */
+					if (sorted_path->pathtarget != target)
+						sorted_path = apply_projection_to_path(root, ordered_rel,
+															   sorted_path, target);
+
+					/*
+					 * XXX: what case does this cover?
+					 * (or is it entirely duplicative of generate_useful_gather_paths()
+					 * in apply_scanjoin_target_to_paths())
+					 */
+					add_path(ordered_rel, sorted_path);
+				}
+			}
+
+		}
 	}
 
 	/*

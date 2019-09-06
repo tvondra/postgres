@@ -149,6 +149,13 @@ typedef struct IndexScanDescData
 
 	/* parallel index scan information, in shared memory */
 	struct ParallelIndexScanDescData *parallel_scan;
+
+	/* prefetch for (regular) index scan */
+	int			pref_ntids;
+	int			pref_maxtids;
+	int			pref_cursor;
+	bool		pref_done;
+	ItemPointerData *pref_tids;
 }			IndexScanDescData;
 
 /* Generic structure for parallel scans */

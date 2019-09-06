@@ -100,7 +100,8 @@ do { \
 
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
-											  ParallelIndexScanDesc pscan, bool temp_snap);
+											  ParallelIndexScanDesc pscan, bool temp_snap,
+											  bool prefetch);
 
 
 /* ----------------------------------------------------------------
@@ -201,7 +202,7 @@ index_beginscan(Relation heapRelation,
 {
 	IndexScanDesc scan;
 
-	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false);
+	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false, true);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -229,7 +230,7 @@ index_beginscan_bitmap(Relation indexRelation,
 {
 	IndexScanDesc scan;
 
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false);
+	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -246,7 +247,8 @@ index_beginscan_bitmap(Relation indexRelation,
 static IndexScanDesc
 index_beginscan_internal(Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
-						 ParallelIndexScanDesc pscan, bool temp_snap)
+						 ParallelIndexScanDesc pscan, bool temp_snap,
+						 bool prefetch)
 {
 	IndexScanDesc scan;
 
@@ -269,6 +271,19 @@ index_beginscan_internal(Relation indexRelation,
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
+
+	/* initialize information for prefetch */
+	scan->pref_ntids = 0;
+	scan->pref_cursor = 0;
+	scan->pref_maxtids = 0;
+	scan->pref_done = false;
+	scan->pref_tids = NULL;
+
+	if (prefetch)
+	{
+		scan->pref_tids = palloc(sizeof(ItemPointerData) * 128);
+		scan->pref_maxtids = 128;
+	}
 
 	return scan;
 }
@@ -483,7 +498,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true);
+									pscan, true, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -514,6 +529,51 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	CHECK_SCAN_PROCEDURE(amgettuple);
 
 	Assert(TransactionIdIsValid(RecentGlobalXmin));
+
+	/* with prefetch enabled, try prefetching enough buffers in advance */
+	if (scan->pref_maxtids)
+	{
+		/* Reset kill flag immediately for safety */
+		scan->kill_prior_tuple = false;
+		scan->xs_heap_continue = false;
+
+		while (scan->pref_ntids < scan->pref_maxtids && !scan->pref_done) 
+		{
+			/*
+			 * The AM's amgettuple proc finds the next index entry matching the scan
+			 * keys, and puts the TID into scan->xs_heaptid.  It should also set
+			 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
+			 * pay no attention to those fields here.
+			 */
+			found = scan->indexRelation->rd_indam->amgettuple(scan, direction);
+
+			if (!found)
+			{
+				scan->pref_done = true;
+				break;
+			}
+
+			pgstat_count_index_tuples(scan->indexRelation, 1);
+
+			scan->pref_tids[(scan->pref_cursor + scan->pref_ntids) % scan->pref_maxtids] = scan->xs_heaptid;
+			scan->pref_ntids++;
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, ItemPointerGetBlockNumber(&scan->xs_heaptid));
+			elog(LOG, "prefetching buffer");
+		}
+
+		if (scan->pref_ntids > 0)
+		{
+			int		cursor = scan->pref_cursor;
+			scan->pref_ntids--;
+			scan->pref_cursor = (scan->pref_cursor + 1) % scan->pref_maxtids;
+
+			scan->xs_heaptid = scan->pref_tids[cursor];
+			return &scan->xs_heaptid;
+		}
+
+		return NULL;
+	}
 
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan

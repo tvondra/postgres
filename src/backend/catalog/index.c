@@ -114,7 +114,6 @@ static void UpdateIndexRelation(Oid indexoid, Oid heapoid,
 								IndexInfo *indexInfo,
 								Oid *collationOids,
 								Oid *classOids,
-								int16 *coloptions,
 								bool primary,
 								bool isexclusion,
 								bool immediate,
@@ -535,7 +534,6 @@ UpdateIndexRelation(Oid indexoid,
 					IndexInfo *indexInfo,
 					Oid *collationOids,
 					Oid *classOids,
-					int16 *coloptions,
 					bool primary,
 					bool isexclusion,
 					bool immediate,
@@ -545,7 +543,6 @@ UpdateIndexRelation(Oid indexoid,
 	int2vector *indkey;
 	oidvector  *indcollation;
 	oidvector  *indclass;
-	int2vector *indoption;
 	Datum		exprsDatum;
 	Datum		predDatum;
 	Datum		values[Natts_pg_index];
@@ -555,7 +552,7 @@ UpdateIndexRelation(Oid indexoid,
 	int			i;
 
 	/*
-	 * Copy the index key, opclass, and indoption info into arrays (should we
+	 * Copy the index key and opclass info into arrays (should we
 	 * make the caller pass them like this to start with?)
 	 */
 	indkey = buildint2vector(NULL, indexInfo->ii_NumIndexAttrs);
@@ -563,7 +560,6 @@ UpdateIndexRelation(Oid indexoid,
 		indkey->values[i] = indexInfo->ii_IndexAttrNumbers[i];
 	indcollation = buildoidvector(collationOids, indexInfo->ii_NumIndexKeyAttrs);
 	indclass = buildoidvector(classOids, indexInfo->ii_NumIndexKeyAttrs);
-	indoption = buildint2vector(coloptions, indexInfo->ii_NumIndexKeyAttrs);
 
 	/*
 	 * Convert the index expressions (if any) to a text datum
@@ -622,7 +618,6 @@ UpdateIndexRelation(Oid indexoid,
 	values[Anum_pg_index_indkey - 1] = PointerGetDatum(indkey);
 	values[Anum_pg_index_indcollation - 1] = PointerGetDatum(indcollation);
 	values[Anum_pg_index_indclass - 1] = PointerGetDatum(indclass);
-	values[Anum_pg_index_indoption - 1] = PointerGetDatum(indoption);
 	values[Anum_pg_index_indexprs - 1] = exprsDatum;
 	if (exprsDatum == (Datum) 0)
 		nulls[Anum_pg_index_indexprs - 1] = true;
@@ -665,7 +660,6 @@ UpdateIndexRelation(Oid indexoid,
  * tableSpaceId: OID of tablespace to use
  * collationObjectId: array of collation OIDs, one per index column
  * classObjectId: array of index opclass OIDs, one per index column
- * coloptions: array of per-index-column indoption settings
  * reloptions: AM-specific options
  * flags: bitmask that can include any combination of these bits:
  *		INDEX_CREATE_IS_PRIMARY
@@ -705,7 +699,6 @@ index_create(Relation heapRelation,
 			 Oid tableSpaceId,
 			 Oid *collationObjectId,
 			 Oid *classObjectId,
-			 int16 *coloptions,
 			 Datum reloptions,
 			 bits16 flags,
 			 bits16 constr_flags,
@@ -950,7 +943,7 @@ index_create(Relation heapRelation,
 	 */
 	UpdateIndexRelation(indexRelationId, heapRelationId, parentIndexRelid,
 						indexInfo,
-						collationObjectId, classObjectId, coloptions,
+						collationObjectId, classObjectId,
 						isprimary, is_exclusion,
 						(constr_flags & INDEX_CONSTR_CREATE_DEFERRABLE) == 0,
 						!concurrent && !invalid,
@@ -1215,10 +1208,8 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId, const char
 	HeapTuple	indexTuple,
 				classTuple;
 	Datum		indclassDatum,
-				colOptionDatum,
 				optionDatum;
 	oidvector  *indclass;
-	int2vector *indcoloptions;
 	bool		isnull;
 	List	   *indexColNames = NIL;
 	List	   *indexExprs = NIL;
@@ -1246,11 +1237,6 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId, const char
 									Anum_pg_index_indclass, &isnull);
 	Assert(!isnull);
 	indclass = (oidvector *) DatumGetPointer(indclassDatum);
-
-	colOptionDatum = SysCacheGetAttr(INDEXRELID, indexTuple,
-									 Anum_pg_index_indoption, &isnull);
-	Assert(!isnull);
-	indcoloptions = (int2vector *) DatumGetPointer(colOptionDatum);
 
 	/* Fetch options of index if any */
 	classTuple = SearchSysCache1(RELOID, oldIndexId);
@@ -1339,7 +1325,6 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId, const char
 							  indexRelation->rd_rel->reltablespace,
 							  indexRelation->rd_indcollation,
 							  indclass->values,
-							  indcoloptions->values,
 							  optionDatum,
 							  INDEX_CREATE_SKIP_BUILD | INDEX_CREATE_CONCURRENT,
 							  0,

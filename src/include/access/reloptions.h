@@ -316,4 +316,7 @@ extern bytea *attribute_reloptions(Datum reloptions, bool validate);
 extern bytea *tablespace_reloptions(Datum reloptions, bool validate);
 extern LOCKMODE AlterTableGetRelOptionsLockLevel(List *defList);
 
+extern void ordered_index_attoptions(local_relopts *relopts, int attno);
+extern OrderedAttOptions *get_ordered_attoptions(Datum attoptions);
+
 #endif							/* RELOPTIONS_H */

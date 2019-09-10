@@ -117,6 +117,13 @@ typedef enum IndexUniqueCheck
 	UNIQUE_CHECK_EXISTING		/* Check if existing tuple is unique */
 } IndexUniqueCheck;
 
+/* Common attribute options for ordered indexes */
+typedef struct OrderedAttOptions
+{
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	bool		desc;			/* DESCending ordering */
+	bool		nulls_first;	/* NULLS FIRST/LAST */
+} OrderedAttOptions;
 
 /*
  * generalized index_ interface routines (in indexam.c)

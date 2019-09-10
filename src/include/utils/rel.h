@@ -159,7 +159,6 @@ typedef struct RelationData
 	Oid		   *rd_opcintype;	/* OIDs of opclass declared input data types */
 	RegProcedure *rd_support;	/* OIDs of support procedures */
 	struct FmgrInfo *rd_supportinfo; /* lookup info for support procedures */
-	int16	   *rd_indoption;	/* per-column AM-specific flags */
 	List	   *rd_indexprs;	/* index expression trees, if any */
 	List	   *rd_indpred;		/* index predicate tree, if any */
 	Oid		   *rd_exclops;		/* OIDs of exclusion operators, if any */

@@ -73,7 +73,6 @@ static void ComputeIndexAttrs(IndexInfo *indexInfo,
 							  Oid *typeOidP,
 							  Oid *collationOidP,
 							  Oid *classOidP,
-							  int16 *colOptionP,
 							  List *attList,
 							  List *exclusionOpNames,
 							  Oid relId,
@@ -155,7 +154,6 @@ CheckIndexCompatible(Oid oldId,
 	Form_pg_am	accessMethodForm;
 	IndexAmRoutine *amRoutine;
 	bool		amcanorder;
-	int16	   *coloptions;
 	IndexInfo  *indexInfo;
 	int			numberOfAttributes;
 	int			old_natts;
@@ -208,11 +206,9 @@ CheckIndexCompatible(Oid oldId,
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	collationObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	classObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
-	coloptions = (int16 *) palloc(numberOfAttributes * sizeof(int16));
 	ComputeIndexAttrs(indexInfo,
 					  typeObjectId, collationObjectId, classObjectId,
-					  coloptions, attributeList,
-					  exclusionOpNames, relationId,
+					  attributeList, exclusionOpNames, relationId,
 					  accessMethodName, accessMethodId,
 					  amcanorder, isconstraint);
 
@@ -504,7 +500,6 @@ DefineIndex(Oid relationId,
 	amoptions_function amoptions;
 	bool		partitioned;
 	Datum		reloptions;
-	int16	   *coloptions;
 	IndexInfo  *indexInfo;
 	bits16		flags;
 	bits16		constr_flags;
@@ -834,11 +829,9 @@ DefineIndex(Oid relationId,
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	collationObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	classObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
-	coloptions = (int16 *) palloc(numberOfAttributes * sizeof(int16));
 	ComputeIndexAttrs(indexInfo,
 					  typeObjectId, collationObjectId, classObjectId,
-					  coloptions, allIndexParams,
-					  stmt->excludeOpNames, relationId,
+					  allIndexParams, stmt->excludeOpNames, relationId,
 					  accessMethodName, accessMethodId,
 					  amcanorder, stmt->isconstraint);
 
@@ -1036,7 +1029,7 @@ DefineIndex(Oid relationId,
 					 stmt->oldNode, indexInfo, indexColNames,
 					 accessMethodId, tablespaceId,
 					 collationObjectId, classObjectId,
-					 coloptions, reloptions,
+					 reloptions,
 					 flags, constr_flags,
 					 allowSystemTableMods, !check_rights,
 					 &createdConstraintId);
@@ -1566,7 +1559,6 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 				  Oid *typeOidP,
 				  Oid *collationOidP,
 				  Oid *classOidP,
-				  int16 *colOptionP,
 				  List *attList,	/* list of IndexElem's */
 				  List *exclusionOpNames,
 				  Oid relId,
@@ -1714,7 +1706,6 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 						 errmsg("including column does not support NULLS FIRST/LAST options")));
 
 			classOidP[attn] = InvalidOid;
-			colOptionP[attn] = 0;
 			collationOidP[attn] = InvalidOid;
 			attn++;
 
@@ -1829,22 +1820,7 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 		 * zero for any un-ordered index, while ordered indexes have DESC and
 		 * NULLS FIRST/LAST options.
 		 */
-		colOptionP[attn] = 0;
-		if (amcanorder)
-		{
-			/* default ordering is ASC */
-			if (attribute->ordering == SORTBY_DESC)
-				colOptionP[attn] |= INDOPTION_DESC;
-			/* default null ordering is LAST for ASC, FIRST for DESC */
-			if (attribute->nulls_ordering == SORTBY_NULLS_DEFAULT)
-			{
-				if (attribute->ordering == SORTBY_DESC)
-					colOptionP[attn] |= INDOPTION_NULLS_FIRST;
-			}
-			else if (attribute->nulls_ordering == SORTBY_NULLS_FIRST)
-				colOptionP[attn] |= INDOPTION_NULLS_FIRST;
-		}
-		else
+		if (!amcanorder)
 		{
 			/* index AM does not support ordering */
 			if (attribute->ordering != SORTBY_DEFAULT)
@@ -1857,6 +1833,25 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("access method \"%s\" does not support NULLS FIRST/LAST options",
 								accessMethodName)));
+		}
+
+		if (attribute->ordering == SORTBY_DESC)
+		{
+			attribute->opclassopts =
+				lappend(attribute->opclassopts,
+						makeDefElem(INDOPTION_DESC, NULL, -1));
+
+			if (attribute->nulls_ordering == SORTBY_NULLS_LAST)
+				attribute->opclassopts =
+					lappend(attribute->opclassopts,
+							makeDefElem(INDOPTION_NULLS_FIRST,
+										(Node *) makeString("false"), -1));
+		}
+		else if (attribute->nulls_ordering == SORTBY_NULLS_FIRST)
+		{
+			attribute->opclassopts =
+				lappend(attribute->opclassopts,
+						makeDefElem(INDOPTION_NULLS_FIRST, NULL, -1));
 		}
 
 		/* Set up the per-column opclass options (attoptions field). */

@@ -1888,3 +1888,40 @@ AlterTableGetRelOptionsLockLevel(List *defList)
 
 	return lockmode;
 }
+
+static void
+ordattoptions_validator(void *parsed_options, relopt_value *vals, int nvals)
+{
+	OrderedAttOptions *ordopts = parsed_options;
+
+	for (int i = 0; i < nvals; i++)
+		if (!strcmp(vals[i].gen->name, "nulls_first") &&
+			!vals[i].isset)
+			ordopts->nulls_first = ordopts->desc;
+}
+
+void
+ordered_index_attoptions(local_relopts *relopts, int attno)
+{
+	OrderedAttOptions *attopts = NULL;
+
+	init_local_reloptions(relopts, attopts, sizeof(*attopts));
+	add_local_bool_reloption(relopts, INDOPTION_DESC,
+							 "Descending ordering",
+							 false, &attopts->desc);
+	add_local_bool_reloption(relopts, INDOPTION_NULLS_FIRST,
+							 "NULLs sorted first",
+							 false, &attopts->nulls_first);
+	register_reloptions_validator(relopts, ordattoptions_validator);
+}
+
+OrderedAttOptions *
+get_ordered_attoptions(Datum attoptions)
+{
+	local_relopts relopts;
+
+	ordered_index_attoptions(&relopts, 0);
+
+	return (OrderedAttOptions *)
+		parseAndFillLocalRelOptions(&relopts, attoptions, false);
+}

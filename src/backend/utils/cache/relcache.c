@@ -1365,11 +1365,9 @@ RelationInitIndexAccessInfo(Relation relation)
 	Form_pg_am	aform;
 	Datum		indcollDatum;
 	Datum		indclassDatum;
-	Datum		indoptionDatum;
 	bool		isnull;
 	oidvector  *indcoll;
 	oidvector  *indclass;
-	int2vector *indoption;
 	MemoryContext indexcxt;
 	MemoryContext oldcontext;
 	int			indnatts;
@@ -1454,9 +1452,6 @@ RelationInitIndexAccessInfo(Relation relation)
 	relation->rd_indcollation = (Oid *)
 		MemoryContextAllocZero(indexcxt, indnkeyatts * sizeof(Oid));
 
-	relation->rd_indoption = (int16 *)
-		MemoryContextAllocZero(indexcxt, indnkeyatts * sizeof(int16));
-
 	/*
 	 * indcollation cannot be referenced directly through the C struct,
 	 * because it comes after the variable-width indkey field.  Must extract
@@ -1490,17 +1485,6 @@ RelationInitIndexAccessInfo(Relation relation)
 	IndexSupportInitialize(indclass, relation->rd_support,
 						   relation->rd_opfamily, relation->rd_opcintype,
 						   amsupport, indnkeyatts);
-
-	/*
-	 * Similarly extract indoption and copy it to the cache entry
-	 */
-	indoptionDatum = fastgetattr(relation->rd_indextuple,
-								 Anum_pg_index_indoption,
-								 GetPgIndexDescriptor(),
-								 &isnull);
-	Assert(!isnull);
-	indoption = (int2vector *) DatumGetPointer(indoptionDatum);
-	memcpy(relation->rd_indoption, indoption->values, indnkeyatts * sizeof(int16));
 
 #if 0
 	(void) RelationGetIndexAttOptions(relation, false);
@@ -5232,6 +5216,14 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
 			if (attoptions != (Datum) 0)
 				pfree(DatumGetPointer(attoptions));
 		}
+		else
+		{
+			OrderedAttOptions *opt = palloc0(sizeof(*opt));
+
+			SET_VARSIZE(opt, sizeof(*opt));
+
+			opts[i] = (bytea *) opt;
+		}
 	}
 
 	/* Copy parsed options to the cache. */
@@ -5527,7 +5519,6 @@ load_relcache_init_file(bool shared)
 			Oid		   *opcintype;
 			RegProcedure *support;
 			int			nsupport;
-			int16	   *indoption;
 			Oid		   *indcollation;
 
 			/* Count nailed indexes to ensure we have 'em all */
@@ -5604,16 +5595,6 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_indcollation = indcollation;
 
-			/* finally, read the vector of indoption values */
-			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
-				goto read_failed;
-
-			indoption = (int16 *) MemoryContextAlloc(indexcxt, len);
-			if (fread(indoption, 1, len, fp) != len)
-				goto read_failed;
-
-			rel->rd_indoption = indoption;
-
 #if 0
 			/* finally, read the vector of opcoptions values */
 			rel->rd_opcoptions = (bytea **)
@@ -5659,7 +5640,6 @@ load_relcache_init_file(bool shared)
 			Assert(rel->rd_opcintype == NULL);
 			Assert(rel->rd_support == NULL);
 			Assert(rel->rd_supportinfo == NULL);
-			Assert(rel->rd_indoption == NULL);
 			Assert(rel->rd_indcollation == NULL);
 			Assert(rel->rd_opcoptions == NULL);
 		}
@@ -5942,11 +5922,6 @@ write_relcache_init_file(bool shared)
 			/* next, write the vector of collation OIDs */
 			write_item(rel->rd_indcollation,
 					   relform->relnatts * sizeof(Oid),
-					   fp);
-
-			/* finally, write the vector of indoption values */
-			write_item(rel->rd_indoption,
-					   relform->relnatts * sizeof(int16),
 					   fp);
 
 #if 0

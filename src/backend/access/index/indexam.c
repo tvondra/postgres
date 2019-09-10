@@ -940,10 +940,10 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 					  bool validate)
 {
 	Oid			procid = index_getprocid(indrel, attnum, 0);
-	FmgrInfo   *procinfo;
 	local_relopts relopts;
+	amattoptions_function amattoptions = indrel->rd_indam->amattoptions;
 
-	if (!OidIsValid(procid))
+	if (!OidIsValid(procid) && !amattoptions)
 	{
 		Oid			opclass;
 		Datum		indclassDatum;
@@ -969,11 +969,17 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 						generate_opclass_name(opclass))));
 	}
 
-	init_local_reloptions(&relopts, NULL, 0);
+	if (amattoptions)
+		amattoptions(&relopts, attnum);
+	else
+		init_local_reloptions(&relopts, NULL, 0);
 
-	procinfo = index_getprocinfo(indrel, attnum, 0);
+	if (OidIsValid(procid))
+	{
+		FmgrInfo   *procinfo = index_getprocinfo(indrel, attnum, 0);
 
-	(void) FunctionCall1(procinfo, PointerGetDatum(&relopts));
+		(void) FunctionCall1(procinfo, PointerGetDatum(&relopts));
+	}
 
 	return parseAndFillLocalRelOptions(&relopts, attoptions, validate);
 }

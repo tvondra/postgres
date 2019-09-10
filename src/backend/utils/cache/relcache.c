@@ -5172,7 +5172,8 @@ RelationGetIndexRawAttOptions(Relation indexrel)
 
 	for (attnum = 1; attnum <= natts; attnum++)
 	{
-		if (!OidIsValid(index_getprocid(indexrel, attnum, OPCLASS_OPTIONS_PROC)))
+		if (!indexrel->rd_indam->amattoptions &&
+			!OidIsValid(index_getprocid(indexrel, attnum, OPCLASS_OPTIONS_PROC)))
 			continue;
 
 		if (!options)

@@ -131,6 +131,7 @@ blhandler(PG_FUNCTION_ARGS)
 	amroutine->amcanreturn = NULL;
 	amroutine->amcostestimate = blcostestimate;
 	amroutine->amoptions = bloptions;
+	amroutine->amattoptions = NULL;
 	amroutine->amproperty = NULL;
 	amroutine->ambuildphasename = NULL;
 	amroutine->amvalidate = blvalidate;

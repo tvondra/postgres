@@ -31,6 +31,8 @@ typedef struct MinmaxOpaque
 
 static FmgrInfo *minmax_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno,
 											  Oid subtype, uint16 strategynum);
+static bool minmax_consistent_key(BrinDesc *bdesc, BrinValues *column,
+								  ScanKey key, Oid colloid);
 
 
 Datum
@@ -147,47 +149,99 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 {
 	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
 	BrinValues *column = (BrinValues *) PG_GETARG_POINTER(1);
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(2);
-	Oid			colloid = PG_GET_COLLATION(),
-				subtype;
-	AttrNumber	attno;
-	Datum		value;
+	ScanKey	   *keys = (ScanKey *) PG_GETARG_POINTER(2);
+	int			nkeys = PG_GETARG_INT32(3);
+	Oid			colloid = PG_GET_COLLATION();
 	Datum		matches;
-	FmgrInfo   *finfo;
+	int			keyno;
+	bool		regular_keys = false;
 
-	Assert(key->sk_attno == column->bv_attno);
-
-	/* handle IS NULL/IS NOT NULL tests */
-	if (key->sk_flags & SK_ISNULL)
+	/*
+	 * First check if there are any IS NULL scan keys, and if we're
+	 * violating them. In that case we can terminate early, without
+	 * inspecting the ranges.
+	 */
+	for (keyno = 0; keyno < nkeys; keyno++)
 	{
-		if (key->sk_flags & SK_SEARCHNULL)
+		ScanKey	key = keys[keyno];
+
+		Assert(key->sk_attno == column->bv_attno);
+
+		/* handle IS NULL/IS NOT NULL tests */
+		if (key->sk_flags & SK_ISNULL)
 		{
-			if (column->bv_allnulls || column->bv_hasnulls)
-				PG_RETURN_BOOL(true);
+			if (key->sk_flags & SK_SEARCHNULL)
+			{
+				if (column->bv_allnulls || column->bv_hasnulls)
+					continue;	/* this key is fine, continue */
+
+				PG_RETURN_BOOL(false);
+			}
+
+			/*
+			 * For IS NOT NULL, we can only skip ranges that are known to have
+			 * only nulls.
+			 */
+			if (key->sk_flags & SK_SEARCHNOTNULL)
+			{
+				if (column->bv_allnulls)
+					PG_RETURN_BOOL(false);
+
+				continue;
+			}
+
+			/*
+			 * Neither IS NULL nor IS NOT NULL was used; assume all indexable
+			 * operators are strict and return false.
+			 */
 			PG_RETURN_BOOL(false);
 		}
-
-		/*
-		 * For IS NOT NULL, we can only skip ranges that are known to have
-		 * only nulls.
-		 */
-		if (key->sk_flags & SK_SEARCHNOTNULL)
-			PG_RETURN_BOOL(!column->bv_allnulls);
-
-		/*
-		 * Neither IS NULL nor IS NOT NULL was used; assume all indexable
-		 * operators are strict and return false.
-		 */
-		PG_RETURN_BOOL(false);
+		else
+			/* note we have regular (non-NULL) scan keys */
+			regular_keys = true;
 	}
 
-	/* if the range is all empty, it cannot possibly be consistent */
-	if (column->bv_allnulls)
+	/*
+	 * If the page range is all nulls, it cannot possibly be consistent if
+	 * there are some regular scan keys.
+	 */
+	if (column->bv_allnulls && regular_keys)
 		PG_RETURN_BOOL(false);
 
-	attno = key->sk_attno;
-	subtype = key->sk_subtype;
-	value = key->sk_argument;
+	/* If there are no regular keys, the page range is considered consistent. */
+	if (!regular_keys)
+		PG_RETURN_BOOL(true);
+
+	matches = true;
+
+	for (keyno = 0; keyno < nkeys; keyno++)
+	{
+		ScanKey	key = keys[keyno];
+
+		/* ignore IS NULL/IS NOT NULL tests handled above */
+		if (key->sk_flags & SK_ISNULL)
+			continue;
+
+		matches = minmax_consistent_key(bdesc, column, key, colloid);
+
+		/* found non-matching key */
+		if (!matches)
+			break;
+	}
+
+	PG_RETURN_DATUM(matches);
+}
+
+static bool
+minmax_consistent_key(BrinDesc *bdesc, BrinValues *column, ScanKey key,
+					  Oid colloid)
+{
+	FmgrInfo   *finfo;
+	AttrNumber	attno = key->sk_attno;
+	Oid			subtype = key->sk_subtype;
+	Datum		value = key->sk_argument;
+	Datum		matches;
+
 	switch (key->sk_strategy)
 	{
 		case BTLessStrategyNumber:
@@ -230,7 +284,7 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 			break;
 	}
 
-	PG_RETURN_DATUM(matches);
+	return DatumGetBool(matches);
 }
 
 /*

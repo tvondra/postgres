@@ -383,6 +383,9 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	BrinMemTuple *dtup;
 	BrinTuple  *btup = NULL;
 	Size		btupsz = 0;
+	ScanKey	  **keys;
+	int		   *nkeys;
+	int			keyno;
 
 	opaque = (BrinOpaque *) scan->opaque;
 	bdesc = opaque->bo_bdesc;
@@ -403,6 +406,53 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	 * key reference each of them.  We rely on zeroing fn_oid to InvalidOid.
 	 */
 	consistentFn = palloc0(sizeof(FmgrInfo) * bdesc->bd_tupdesc->natts);
+
+	/*
+	 * Make room for per-attribute lists of scan keys that we'll pass to the
+	 * consistent support procedure.
+	 */
+	keys = palloc0(sizeof(ScanKey *) * bdesc->bd_tupdesc->natts);
+	nkeys = palloc0(sizeof(int) * bdesc->bd_tupdesc->natts);
+
+	/*
+	 * Preprocess the scan keys - split them into per-attribute arrays.
+	 */
+	for (keyno = 0; keyno < scan->numberOfKeys; keyno++)
+	{
+		ScanKey		key = &scan->keyData[keyno];
+		AttrNumber	keyattno = key->sk_attno;
+
+		/*
+		 * The collation of the scan key must match the collation
+		 * used in the index column (but only if the search is not
+		 * IS NULL/ IS NOT NULL).  Otherwise we shouldn't be using
+		 * this index ...
+		 */
+		Assert((key->sk_flags & SK_ISNULL) ||
+			   (key->sk_collation ==
+				TupleDescAttr(bdesc->bd_tupdesc,
+							  keyattno - 1)->attcollation));
+
+		/* First time we see this index attribute, so init as needed. */
+		if (!keys[keyattno-1])
+		{
+			FmgrInfo   *tmp;
+
+			keys[keyattno-1] = palloc0(sizeof(ScanKey) * scan->numberOfKeys);
+
+			/* First time this column, so look up consistent function */
+			Assert(consistentFn[keyattno - 1].fn_oid == InvalidOid);
+
+			tmp = index_getprocinfo(idxRel, keyattno,
+									BRIN_PROCNUM_CONSISTENT);
+			fmgr_info_copy(&consistentFn[keyattno - 1], tmp,
+						   CurrentMemoryContext);
+		}
+
+		/* Add key to the per-attribute array. */
+		keys[keyattno - 1][nkeys[keyattno - 1]] = key;
+		nkeys[keyattno - 1]++;
+	}
 
 	/* allocate an initial in-memory tuple, out of the per-range memcxt */
 	dtup = brin_new_memtuple(bdesc);
@@ -464,7 +514,7 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			}
 			else
 			{
-				int			keyno;
+				int		attno;
 
 				/*
 				 * Compare scan keys with summary values stored for the range.
@@ -474,34 +524,19 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 				 * no keys.
 				 */
 				addrange = true;
-				for (keyno = 0; keyno < scan->numberOfKeys; keyno++)
+				for (attno = 1; attno <= bdesc->bd_tupdesc->natts; attno++)
 				{
-					ScanKey		key = &scan->keyData[keyno];
-					AttrNumber	keyattno = key->sk_attno;
-					BrinValues *bval = &dtup->bt_columns[keyattno - 1];
+					BrinValues *bval;
 					Datum		add;
 
-					/*
-					 * The collation of the scan key must match the collation
-					 * used in the index column (but only if the search is not
-					 * IS NULL/ IS NOT NULL).  Otherwise we shouldn't be using
-					 * this index ...
-					 */
-					Assert((key->sk_flags & SK_ISNULL) ||
-						   (key->sk_collation ==
-							TupleDescAttr(bdesc->bd_tupdesc,
-										  keyattno - 1)->attcollation));
+					/* skip attributes without any san keys */
+					if (!nkeys[attno - 1])
+						continue;
 
-					/* First time this column? look up consistent function */
-					if (consistentFn[keyattno - 1].fn_oid == InvalidOid)
-					{
-						FmgrInfo   *tmp;
+					bval = &dtup->bt_columns[attno - 1];
 
-						tmp = index_getprocinfo(idxRel, keyattno,
-												BRIN_PROCNUM_CONSISTENT);
-						fmgr_info_copy(&consistentFn[keyattno - 1], tmp,
-									   CurrentMemoryContext);
-					}
+					Assert((nkeys[attno - 1] > 0) &&
+						   (nkeys[attno - 1] <= scan->numberOfKeys));
 
 					/*
 					 * Check whether the scan key is consistent with the page
@@ -513,12 +548,43 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 					 * the range as a whole, so break out of the loop as soon
 					 * as a false return value is obtained.
 					 */
-					add = FunctionCall3Coll(&consistentFn[keyattno - 1],
-											key->sk_collation,
-											PointerGetDatum(bdesc),
-											PointerGetDatum(bval),
-											PointerGetDatum(key));
-					addrange = DatumGetBool(add);
+					if (consistentFn[attno - 1].fn_nargs >= 4)
+					{
+						Oid			collation;
+
+						/*
+						 * Collation from the first key (has to be the same for
+						 * all keys for the same attribue).
+						 */
+						collation = keys[attno - 1][0]->sk_collation;
+
+						/* Check all keys at once */
+						add = FunctionCall4Coll(&consistentFn[attno - 1],
+												collation,
+												PointerGetDatum(bdesc),
+												PointerGetDatum(bval),
+												PointerGetDatum(keys[attno - 1]),
+												Int32GetDatum(nkeys[attno - 1]));
+						addrange = DatumGetBool(add);
+					}
+					else
+					{
+						/* Check keys one by one */
+						int			keyno;
+
+						for (keyno = 0; keyno < nkeys[attno - 1]; keyno++)
+						{
+							add = FunctionCall3Coll(&consistentFn[attno - 1],
+													keys[attno - 1][keyno]->sk_collation,
+													PointerGetDatum(bdesc),
+													PointerGetDatum(bval),
+													PointerGetDatum(keys[attno - 1][keyno]));
+							addrange = DatumGetBool(add);
+							if (!addrange)
+								break;
+						}
+					}
+
 					if (!addrange)
 						break;
 				}

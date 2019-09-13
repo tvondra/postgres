@@ -24,6 +24,7 @@ typedef struct BrinOptions
 	bool		autosummarize;
 	double		nDistinctPerRange;	/* number of distinct values per range */
 	double		falsePositiveRate;	/* false positive for bloom filter */
+	int			valuesPerRange;		/* number of values per range */
 } BrinOptions;
 
 

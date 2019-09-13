@@ -7958,6 +7958,26 @@
   proargtypes => 'internal internal internal',
   prosrc => 'brin_inclusion_union' },
 
+# BRIN bloom
+{ oid => '5039', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_opcinfo', prorettype => 'internal',
+  proargtypes => 'internal', prosrc => 'brin_bloom_opcinfo' },
+{ oid => '5040', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_add_value', prorettype => 'bool',
+  proargtypes => 'internal internal internal internal',
+  prosrc => 'brin_bloom_add_value' },
+{ oid => '5043', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_consistent', prorettype => 'bool',
+  proargtypes => 'internal internal internal int4',
+  prosrc => 'brin_bloom_consistent' },
+{ oid => '5044', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_union', prorettype => 'bool',
+  proargtypes => 'internal internal internal',
+  prosrc => 'brin_bloom_union' },
+{ oid => '6016', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_options', prorettype => 'void', proisstrict => 'f',
+  proargtypes => 'internal', prosrc => 'brin_bloom_options' },
+
 # userlock replacements
 { oid => '2880', descr => 'obtain exclusive advisory lock',
   proname => 'pg_advisory_lock', provolatile => 'v', proparallel => 'r',

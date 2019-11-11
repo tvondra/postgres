@@ -1736,14 +1736,15 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 	/* Determine which columns the statistics are on */
 	for (i = 0; i < statsrec->stxkeys.dim1; i++)
 	{
-		ColumnRef  *cref = makeNode(ColumnRef);
+		StatsElem  *selem = makeNode(StatsElem);
 		AttrNumber	attnum = statsrec->stxkeys.values[i];
 
-		cref->fields = list_make1(makeString(get_attname(heapRelid,
-														 attnum, false)));
-		cref->location = -1;
+		selem->name = get_attname(heapRelid, attnum, false);
+		selem->expr = NULL;
 
-		def_names = lappend(def_names, cref);
+		/* FIXME handle expressions properly */
+
+		def_names = lappend(def_names, selem);
 	}
 
 	/* finally, build the output node */
@@ -2663,6 +2664,84 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 			 *
 			 * DefineIndex() will make more checks.
 			 */
+		}
+	}
+
+	/*
+	 * Check that only the base rel is mentioned.  (This should be dead code
+	 * now that add_missing_from is history.)
+	 */
+	if (list_length(pstate->p_rtable) != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("index expressions and predicates can refer only to the table being indexed")));
+
+	free_parsestate(pstate);
+
+	/* Close relation */
+	table_close(rel, NoLock);
+
+	/* Mark statement as successfully transformed */
+	stmt->transformed = true;
+
+	return stmt;
+}
+
+/*
+ * transformStatsStmt - parse analysis for CREATE STATISTICS
+ *
+ * To avoid race conditions, it's important that this function rely only on
+ * the passed-in relid (and not on stmt->relation) to determine the target
+ * relation.
+ */
+CreateStatsStmt *
+transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
+{
+	ParseState *pstate;
+	RangeTblEntry *rte;
+	ListCell   *l;
+	Relation	rel;
+
+	/* Nothing to do if statement already transformed. */
+	if (stmt->transformed)
+		return stmt;
+
+	/*
+	 * We must not scribble on the passed-in CreateStatsStmt, so copy it.  (This is
+	 * overkill, but easy.)
+	 */
+	stmt = copyObject(stmt);
+
+	/* Set up pstate */
+	pstate = make_parsestate(NULL);
+	pstate->p_sourcetext = queryString;
+
+	/*
+	 * Put the parent table into the rtable so that the expressions can refer
+	 * to its fields without qualification.  Caller is responsible for locking
+	 * relation, but we still need to open it.
+	 */
+	rel = relation_open(relid, NoLock);
+	rte = addRangeTableEntryForRelation(pstate, rel,
+										AccessShareLock,
+										NULL, false, true);
+
+	/* no to join list, yes to namespaces */
+	addRTEtoQuery(pstate, rte, false, true, true);
+
+	/* take care of any expressions */
+	foreach(l, stmt->exprs)
+	{
+		StatsElem  *selem = (StatsElem *) lfirst(l);
+
+		if (selem->expr)
+		{
+			/* Now do parse transformation of the expression */
+			selem->expr = transformExpr(pstate, selem->expr,
+										EXPR_KIND_INDEX_EXPRESSION);
+
+			/* We have to fix its collations too */
+			assign_expr_collations(pstate, selem->expr);
 		}
 	}
 

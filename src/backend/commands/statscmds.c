@@ -29,6 +29,8 @@
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -42,6 +44,7 @@
 static char *ChooseExtendedStatisticName(const char *name1, const char *name2,
 										 const char *label, Oid namespaceid);
 static char *ChooseExtendedStatisticNameAddition(List *exprs);
+static bool CheckMutability(Expr *expr);
 
 
 /* qsort comparator for the attnums in CreateStatistics */
@@ -62,6 +65,7 @@ ObjectAddress
 CreateStatistics(CreateStatsStmt *stmt)
 {
 	int16		attnums[STATS_MAX_DIMENSIONS];
+	int			nattnums = 0;
 	int			numcols = 0;
 	char	   *namestr;
 	NameData	stxname;
@@ -74,6 +78,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Datum		datavalues[Natts_pg_statistic_ext_data];
 	bool		datanulls[Natts_pg_statistic_ext_data];
 	int2vector *stxkeys;
+	List	   *stxexprs = NIL;
+	Datum		exprsDatum;
 	Relation	statrel;
 	Relation	datarel;
 	Relation	rel = NULL;
@@ -192,56 +198,95 @@ CreateStatistics(CreateStatsStmt *stmt)
 	foreach(cell, stmt->exprs)
 	{
 		Node	   *expr = (Node *) lfirst(cell);
-		ColumnRef  *cref;
-		char	   *attname;
+		StatsElem  *selem;
 		HeapTuple	atttuple;
 		Form_pg_attribute attForm;
 		TypeCacheEntry *type;
 
-		if (!IsA(expr, ColumnRef))
+		if (!IsA(expr, StatsElem))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("only simple column references are allowed in CREATE STATISTICS")));
-		cref = (ColumnRef *) expr;
+		selem = (StatsElem *) expr;
 
-		if (list_length(cref->fields) != 1)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("only simple column references are allowed in CREATE STATISTICS")));
-		attname = strVal((Value *) linitial(cref->fields));
+		if (selem->name)	/* column reference */
+		{
+			char	   *attname;
+			attname = selem->name;
 
-		atttuple = SearchSysCacheAttName(relid, attname);
-		if (!HeapTupleIsValid(atttuple))
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_COLUMN),
-					 errmsg("column \"%s\" does not exist",
-							attname)));
-		attForm = (Form_pg_attribute) GETSTRUCT(atttuple);
+			atttuple = SearchSysCacheAttName(relid, attname);
+			if (!HeapTupleIsValid(atttuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg("column \"%s\" does not exist",
+								attname)));
+			attForm = (Form_pg_attribute) GETSTRUCT(atttuple);
 
-		/* Disallow use of system attributes in extended stats */
-		if (attForm->attnum <= 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("statistics creation on system columns is not supported")));
+			/* Disallow use of system attributes in extended stats */
+			if (attForm->attnum <= 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("statistics creation on system columns is not supported")));
 
-		/* Disallow data types without a less-than operator */
-		type = lookup_type_cache(attForm->atttypid, TYPECACHE_LT_OPR);
-		if (type->lt_opr == InvalidOid)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
-							attname, format_type_be(attForm->atttypid))));
+			/* Disallow data types without a less-than operator */
+			type = lookup_type_cache(attForm->atttypid, TYPECACHE_LT_OPR);
+			if (type->lt_opr == InvalidOid)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
+								attname, format_type_be(attForm->atttypid))));
 
-		/* Make sure no more than STATS_MAX_DIMENSIONS columns are used */
-		if (numcols >= STATS_MAX_DIMENSIONS)
-			ereport(ERROR,
-					(errcode(ERRCODE_TOO_MANY_COLUMNS),
-					 errmsg("cannot have more than %d columns in statistics",
-							STATS_MAX_DIMENSIONS)));
+			/* Make sure no more than STATS_MAX_DIMENSIONS columns are used */
+			if (numcols >= STATS_MAX_DIMENSIONS)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_COLUMNS),
+						 errmsg("cannot have more than %d columns in statistics",
+								STATS_MAX_DIMENSIONS)));
 
-		attnums[numcols] = attForm->attnum;
-		numcols++;
-		ReleaseSysCache(atttuple);
+			attnums[nattnums] = attForm->attnum;
+			nattnums++;
+			numcols++;
+			ReleaseSysCache(atttuple);
+		}
+		else	/* expression */
+		{
+			Node	   *expr = selem->expr;
+			TypeCacheEntry *type;
+			Oid			atttype;
+
+			Assert(expr != NULL);
+
+			/*
+			 * An expression using mutable functions is probably wrong,
+			 * since if you aren't going to get the same result for the
+			 * same data every time, it's not clear what the index entries
+			 * mean at all.
+			 */
+			if (CheckMutability((Expr *) expr))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("functions in statistics expression must be marked IMMUTABLE")));
+
+			/* Disallow data types without a less-than operator */
+			atttype = exprType(expr);
+			type = lookup_type_cache(atttype, TYPECACHE_LT_OPR);
+			if (type->lt_opr == InvalidOid)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("expression cannot be used in statistics because its type %s has no default btree operator class",
+								format_type_be(atttype))));
+
+			/* Make sure no more than STATS_MAX_DIMENSIONS columns are used */
+			if (numcols >= STATS_MAX_DIMENSIONS)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_COLUMNS),
+						 errmsg("cannot have more than %d columns in statistics",
+								STATS_MAX_DIMENSIONS)));
+
+			numcols++;
+
+			stxexprs = lappend(stxexprs, expr);
+		}
 	}
 
 	/*
@@ -258,13 +303,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * it does not hurt (it does not affect the efficiency, unlike for
 	 * indexes, for example).
 	 */
-	qsort(attnums, numcols, sizeof(int16), compare_int16);
+	qsort(attnums, nattnums, sizeof(int16), compare_int16);
 
 	/*
 	 * Check for duplicates in the list of columns. The attnums are sorted so
 	 * just check consecutive elements.
 	 */
-	for (i = 1; i < numcols; i++)
+	for (i = 1; i < nattnums; i++)
 	{
 		if (attnums[i] == attnums[i - 1])
 			ereport(ERROR,
@@ -273,7 +318,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/* Form an int2vector representation of the sorted column list */
-	stxkeys = buildint2vector(attnums, numcols);
+	stxkeys = buildint2vector(attnums, nattnums);
 
 	/*
 	 * Parse the statistics kinds.
@@ -325,6 +370,18 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
 	stxkind = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
+	/* convert the expressions (if any) to a text datum */
+	if (stxexprs != NIL)
+	{
+		char	   *exprsString;
+
+		exprsString = nodeToString(stxexprs);
+		exprsDatum = CStringGetTextDatum(exprsString);
+		pfree(exprsString);
+	}
+	else
+		exprsDatum = (Datum) 0;
+
 	statrel = table_open(StatisticExtRelationId, RowExclusiveLock);
 
 	/*
@@ -343,6 +400,15 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_statistic_ext_stxowner - 1] = ObjectIdGetDatum(stxowner);
 	values[Anum_pg_statistic_ext_stxkeys - 1] = PointerGetDatum(stxkeys);
 	values[Anum_pg_statistic_ext_stxkind - 1] = PointerGetDatum(stxkind);
+
+	values[Anum_pg_statistic_ext_stxexprs - 1] = exprsDatum;
+	if (exprsDatum == (Datum) 0)
+		nulls[Anum_pg_statistic_ext_stxexprs - 1] = true;
+
+	/*
+	 * FIXME add dependencies on anything mentioned in the expressions,
+	 * see recordDependencyOnSingleRelExpr in index_create
+	 */
 
 	/* insert it into pg_statistic_ext */
 	htup = heap_form_tuple(statrel->rd_att, values, nulls);
@@ -387,7 +453,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 */
 	ObjectAddressSet(myself, StatisticExtRelationId, statoid);
 
-	for (i = 0; i < numcols; i++)
+	for (i = 0; i < nattnums; i++)
 	{
 		ObjectAddressSubSet(parentobject, RelationRelationId, relid, attnums[i]);
 		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
@@ -722,14 +788,14 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 	buf[0] = '\0';
 	foreach(lc, exprs)
 	{
-		ColumnRef  *cref = (ColumnRef *) lfirst(lc);
+		StatsElem  *selem = (StatsElem *) lfirst(lc);
 		const char *name;
 
 		/* It should be one of these, but just skip if it happens not to be */
-		if (!IsA(cref, ColumnRef))
+		if (!IsA(selem, StatsElem))
 			continue;
 
-		name = strVal((Value *) linitial(cref->fields));
+		name = selem->name;
 
 		if (buflen > 0)
 			buf[buflen++] = '_';	/* insert _ between names */
@@ -744,4 +810,30 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 			break;
 	}
 	return pstrdup(buf);
+}
+
+/*
+ * CheckMutability
+ *		Test whether given expression is mutable
+ */
+static bool
+CheckMutability(Expr *expr)
+{
+	/*
+	 * First run the expression through the planner.  This has a couple of
+	 * important consequences.  First, function default arguments will get
+	 * inserted, which may affect volatility (consider "default now()").
+	 * Second, inline-able functions will get inlined, which may allow us to
+	 * conclude that the function is really less volatile than it's marked. As
+	 * an example, polymorphic functions must be marked with the most volatile
+	 * behavior that they have for any input type, but once we inline the
+	 * function we may be able to conclude that it's not so volatile for the
+	 * particular input type we're dealing with.
+	 *
+	 * We assume here that expression_planner() won't scribble on its input.
+	 */
+	expr = expression_planner(expr);
+
+	/* Now we can search for non-immutable functions */
+	return contain_mutable_functions((Node *) expr);
 }

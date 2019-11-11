@@ -1509,6 +1509,9 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 	bool		dependencies_enabled;
 	bool		mcv_enabled;
 	int			i;
+	List	   *context;
+	ListCell   *lc;
+	List	   *exprs = NIL;
 
 	statexttup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statextid));
 
@@ -1599,6 +1602,62 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 		attname = get_attname(statextrec->stxrelid, attnum, false);
 
 		appendStringInfoString(&buf, quote_identifier(attname));
+	}
+
+	/* deparse expressions */
+
+	{
+			bool		isnull;
+			Datum		datum;
+
+			/* decode expression (if any) */
+			datum = SysCacheGetAttr(STATEXTOID, statexttup,
+									Anum_pg_statistic_ext_stxexprs, &isnull);
+
+			if (!isnull)
+			{
+				char *exprsString;
+
+				exprsString = TextDatumGetCString(datum);
+				exprs = (List *) stringToNode(exprsString);
+				pfree(exprsString);
+
+				/*
+				 * Run the expressions through eval_const_expressions. This is not just an
+				 * optimization, but is necessary, because the planner will be comparing
+				 * them to similarly-processed qual clauses, and may fail to detect valid
+				 * matches without this.  We must not use canonicalize_qual, however,
+				 * since these aren't qual expressions.
+				 */
+				exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+
+				/* May as well fix opfuncids too */
+				fix_opfuncids((Node *) exprs);
+			}
+	}
+
+	context = deparse_context_for(get_relation_name(statextrec->stxrelid),
+								  statextrec->stxrelid);
+
+	foreach (lc, exprs)
+	{
+		Node	   *expr = (Node *) lfirst(lc);
+		char	   *str;
+		int			prettyFlags = PRETTYFLAG_INDENT;
+
+		str = deparse_expression_pretty(expr, context, false, false,
+										prettyFlags, 0);
+
+		if (colno > 0)
+			appendStringInfoString(&buf, ", ");
+
+		/* Need parens if it's not a bare function call */
+		if (looks_like_function(expr))
+			appendStringInfoString(&buf, str);
+		else
+			appendStringInfo(&buf, "(%s)", str);
+
+		colno++;
 	}
 
 	appendStringInfo(&buf, " FROM %s",

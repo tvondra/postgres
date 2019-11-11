@@ -3082,6 +3082,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		double		this_srf_multiplier;
 		VariableStatData vardata;
 		List	   *varshere;
+		Relids		varnos;
 		ListCell   *l2;
 
 		/* is expression in this grouping set? */
@@ -3147,6 +3148,16 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			if (contain_volatile_functions(groupexpr))
 				return input_rows;
 			continue;
+		}
+
+		/*
+		 * Are all the variables from the same relation? If yes, search for
+		 * an extended statistic matching this expression exactly.
+		 */
+		varnos = pull_varnos((Node *) varshere);
+		if (bms_membership(varnos) == BMS_SINGLETON)
+		{
+			// FIXME try to match it to expressions in mvdistinct stats
 		}
 
 		/*

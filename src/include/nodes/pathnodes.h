@@ -883,6 +883,7 @@ typedef struct StatisticExtInfo
 	RelOptInfo *rel;			/* back-link to statistic's table */
 	char		kind;			/* statistic kind of this entry */
 	Bitmapset  *keys;			/* attnums of the columns covered */
+	List	   *exprs;			/* expressions */
 } StatisticExtInfo;
 
 /*

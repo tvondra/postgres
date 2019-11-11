@@ -180,7 +180,9 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  *
  */
 MCVList *
-statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
+statext_mcv_build(int numrows, HeapTuple *rows,
+				  Datum *exprvals, bool *exprnulls,
+				  Bitmapset *attrs, List *exprs,
 				  VacAttrStats **stats, double totalrows, int stattarget)
 {
 	int			i,
@@ -194,13 +196,23 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	MCVList    *mcvlist = NULL;
 	MultiSortSupport mss;
 
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	for (i = 1; i <= list_length(exprs); i++)
+		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
+
 	attnums = build_attnums_array(attrs, &numattrs);
 
 	/* comparator for all the columns */
 	mss = build_mss(stats, numattrs);
 
 	/* sort the rows */
-	items = build_sorted_items(numrows, &nitems, rows, stats[0]->tupDesc,
+	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
+							   list_length(exprs), stats[0]->tupDesc,
 							   mss, numattrs, attnums);
 
 	if (!items)
@@ -337,6 +349,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	pfree(items);
 	pfree(groups);
+	pfree(attrs);
 
 	return mcvlist;
 }

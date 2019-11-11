@@ -69,8 +69,10 @@ static void generate_dependencies(DependencyGenerator state);
 static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
-static double dependency_degree(int numrows, HeapTuple *rows, int k,
-								AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
+static double dependency_degree(int numrows, HeapTuple *rows,
+								Datum *exprvals, bool *exprnulls, int nexprs, int k,
+								AttrNumber *dependency, VacAttrStats **stats,
+								Bitmapset *attrs);
 static bool dependency_is_fully_matched(MVDependency *dependency,
 										Bitmapset *attnums);
 static bool dependency_implies_attribute(MVDependency *dependency,
@@ -213,8 +215,8 @@ DependencyGenerator_next(DependencyGenerator state)
  * the last one.
  */
 static double
-dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
-				  VacAttrStats **stats, Bitmapset *attrs)
+dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls,
+				  int nexprs, int k, AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs)
 {
 	int			i,
 				nitems;
@@ -283,8 +285,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	 * descriptor.  For now that assumption holds, but it might change in the
 	 * future for example if we support statistics on multiple tables.
 	 */
-	items = build_sorted_items(numrows, &nitems, rows, stats[0]->tupDesc,
-							   mss, k, attnums_dep);
+	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
+							   nexprs, stats[0]->tupDesc, mss, k, attnums_dep);
 
 	/*
 	 * Walk through the sorted array, split it into rows according to the
@@ -354,7 +356,9 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
  *	   (c) -> b
  */
 MVDependencies *
-statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
+statext_dependencies_build(int numrows, HeapTuple *rows,
+						   Datum *exprvals, bool *exprnulls,
+						   Bitmapset *attrs, List *exprs,
 						   VacAttrStats **stats)
 {
 	int			i,
@@ -364,6 +368,15 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* result */
 	MVDependencies *dependencies = NULL;
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	for (i = 1; i <= list_length(exprs); i++)
+		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	/*
 	 * Transform the bms into an array, to make accessing i-th member easier.
@@ -392,7 +405,9 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			MVDependency *d;
 
 			/* compute how valid the dependency seems */
-			degree = dependency_degree(numrows, rows, k, dependency, stats, attrs);
+			degree = dependency_degree(numrows, rows, exprvals, exprnulls,
+									   list_length(exprs), k, dependency,
+									   stats, attrs);
 
 			/*
 			 * if the dependency seems entirely invalid, don't store it
@@ -434,6 +449,8 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		 */
 		DependencyGenerator_free(DependencyGenerator);
 	}
+
+	pfree(attrs);
 
 	return dependencies;
 }
@@ -915,6 +932,128 @@ find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
 }
 
 /*
+ * Similar to dependency_is_compatible_clause, but don't enforce that the
+ * expression is a simple Var.
+ */
+static bool
+dependency_clause_matches_expression(Node *clause, Index relid, List *statlist)
+{
+	List	   *vars;
+	ListCell   *lc, *lc2;
+
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
+	Node		   *clause_expr;
+
+	if (!IsA(rinfo, RestrictInfo))
+		return false;
+
+	/* Pseudoconstants are not interesting (they couldn't contain a Var) */
+	if (rinfo->pseudoconstant)
+		return false;
+
+	/* Clauses referencing multiple, or no, varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return false;
+
+	if (is_opclause(rinfo->clause))
+	{
+		/* If it's an opclause, check for Var = Const or Const = Var. */
+		OpExpr	   *expr = (OpExpr *) rinfo->clause;
+
+		/* Only expressions with two arguments are candidates. */
+		if (list_length(expr->args) != 2)
+			return false;
+
+		/* Make sure non-selected argument is a pseudoconstant. */
+		if (is_pseudo_constant_clause(lsecond(expr->args)))
+			clause_expr = linitial(expr->args);
+		else if (is_pseudo_constant_clause(linitial(expr->args)))
+			clause_expr = lsecond(expr->args);
+		else
+			return false;
+
+		/*
+		 * If it's not an "=" operator, just ignore the clause, as it's not
+		 * compatible with functional dependencies.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 *
+		 * XXX this is pretty dubious; probably it'd be better to check btree
+		 * or hash opclass membership, so as not to be fooled by custom
+		 * selectivity functions, and to be more consistent with decisions
+		 * elsewhere in the planner.
+		 */
+		if (get_oprrest(expr->opno) != F_EQSEL)
+			return false;
+
+		/* OK to proceed with checking "var" */
+	}
+	else if (is_notclause(rinfo->clause))
+	{
+		/*
+		 * "NOT x" can be interpreted as "x = false", so get the argument and
+		 * proceed with seeing if it's a suitable Var.
+		 */
+		clause_expr = (Node *) get_notclausearg(rinfo->clause);
+	}
+	else
+	{
+		/*
+		 * A boolean expression "x" can be interpreted as "x = true", so
+		 * proceed with seeing if it's a suitable Var.
+		 */
+		clause_expr = (Node *) rinfo->clause;
+	}
+
+	/*
+	 * We may ignore any RelabelType node above the operand.  (There won't be
+	 * more than one, since eval_const_expressions has been applied already.)
+	 */
+	if (IsA(clause_expr, RelabelType))
+		clause_expr = (Node *) ((RelabelType *) clause_expr)->arg;
+
+	vars = pull_var_clause(clause_expr, 0);
+
+	elog(WARNING, "nvars = %d", list_length(vars));
+
+	foreach (lc, vars)
+	{
+		Var *var = (Var *) lfirst(lc);
+
+		/* Ensure Var is from the correct relation */
+		if (var->varno != relid)
+			return false;
+
+		/* We also better ensure the Var is from the current level */
+		if (var->varlevelsup != 0)
+			return false;
+
+		/* Also ignore system attributes (we don't allow stats on those) */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return false;
+	}
+
+	foreach (lc, statlist)
+	{
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+
+		foreach (lc2, info->exprs)
+		{
+			Node *expr = (Node *) lfirst(lc2);
+
+			if (equal(clause_expr, expr))
+			{
+				elog(WARNING, "match");
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/*
  * dependencies_clauselist_selectivity
  *		Return the estimated selectivity of (a subset of) the given clauses
  *		using functional dependency statistics, or 1.0 if no useful functional
@@ -981,8 +1120,10 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		Node	   *clause = (Node *) lfirst(l);
 		AttrNumber	attnum;
 
+		dependency_clause_matches_expression(clause, rel->relid, rel->statlist);
+
 		if (!bms_is_member(listidx, *estimatedclauses) &&
-			dependency_is_compatible_clause(clause, rel->relid, &attnum))
+			 dependency_is_compatible_clause(clause, rel->relid, &attnum))
 		{
 			list_attnums[listidx] = bms_make_singleton(attnum);
 			clauses_attnums = bms_add_member(clauses_attnums, attnum);

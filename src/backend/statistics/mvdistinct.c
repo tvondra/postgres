@@ -37,8 +37,10 @@
 #include "utils/typcache.h"
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-										HeapTuple *rows, VacAttrStats **stats,
-										int k, int *combination);
+										HeapTuple *rows, Datum *exprvals,
+										bool *exprnulls, int nexprs,
+										VacAttrStats **stats, int k,
+										int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -84,13 +86,25 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						Bitmapset *attrs, VacAttrStats **stats)
+						Datum *exprvals, bool *exprnulls,
+						Bitmapset *attrs, List *exprs,
+						VacAttrStats **stats)
 {
 	MVNDistinct *result;
+	int			i;
 	int			k;
 	int			itemcnt;
-	int			numattrs = bms_num_members(attrs);
+	int			numattrs = bms_num_members(attrs) + list_length(exprs);
 	int			numcombs = num_combinations(numattrs);
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	for (i = 1; i <= list_length(exprs); i++)
+		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -114,10 +128,18 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->attrs = NULL;
 			for (j = 0; j < k; j++)
-				item->attrs = bms_add_member(item->attrs,
-											 stats[combination[j]]->attr->attnum);
+			{
+				if (combination[j] <= MaxHeapAttributeNumber)
+					item->attrs = bms_add_member(item->attrs,
+												 stats[combination[j]]->attr->attnum);
+				else
+					item->attrs = bms_add_member(item->attrs, combination[j]);
+			}
+
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
+										  exprvals, exprnulls,
+										  list_length(exprs),
 										  stats, k, combination);
 
 			itemcnt++;
@@ -428,6 +450,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
+						  Datum *exprvals, bool *exprnulls, int nexprs,
 						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
@@ -481,11 +504,17 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
-			items[j].values[i] =
-				heap_getattr(rows[j],
-							 colstat->attr->attnum,
-							 colstat->tupDesc,
-							 &items[j].isnull[i]);
+			if (combination[i] <= MaxHeapAttributeNumber)
+				items[j].values[i] =
+					heap_getattr(rows[j],
+								 colstat->attr->attnum,
+								 colstat->tupDesc,
+								 &items[j].isnull[i]);
+			else
+			{
+				items[j].values[i] = exprvals[j * nexprs + combination[i] - MaxHeapAttributeNumber - 1];
+				items[j].isnull[i] = exprnulls[j * nexprs + combination[i] - MaxHeapAttributeNumber - 1];
+			}
 		}
 	}
 

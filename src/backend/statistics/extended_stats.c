@@ -964,13 +964,15 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 		RangeTblEntry *rte = root->simple_rte_array[relid];
 		OpExpr	   *expr = (OpExpr *) clause;
 		Var		   *var;
+		Var		   *var2 = NULL;
 
 		/* Only expressions with two arguments are considered compatible. */
 		if (list_length(expr->args) != 2)
 			return false;
 
 		/* Check if the expression the right shape (one Var, one Const) */
-		if (!examine_opclause_expression(expr, &var, NULL, NULL))
+		if ((!examine_opclause_expression(expr, &var, NULL, NULL)) &&
+			(!examine_opclause_expression2(expr, &var, &var2)))
 			return false;
 
 		/*
@@ -1010,8 +1012,16 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 			!get_func_leakproof(get_opcode(expr->opno)))
 			return false;
 
-		return statext_is_compatible_clause_internal(root, (Node *) var,
-													 relid, attnums);
+		if (var2)
+		{
+			return statext_is_compatible_clause_internal(root, (Node *) var,
+														 relid, attnums) &&
+				   statext_is_compatible_clause_internal(root, (Node *) var2,
+														 relid, attnums);
+		}
+		else
+			return statext_is_compatible_clause_internal(root, (Node *) var,
+														 relid, attnums);
 	}
 
 	/* AND/OR/NOT clause */
@@ -1443,6 +1453,52 @@ examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp, bool *varonl
 
 	if (varonleftp)
 		*varonleftp = varonleft;
+
+	return true;
+}
+
+bool
+examine_opclause_expression2(OpExpr *expr, Var **varap, Var **varbp)
+{
+	Var	   *vara;
+	Var	   *varb;
+	Node   *leftop,
+		   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(expr->args) == 2);
+
+	leftop = linitial(expr->args);
+	rightop = lsecond(expr->args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(leftop, Var) && IsA(rightop, Var))
+	{
+		vara = (Var *) leftop;
+		varb = (Var *) rightop;
+	}
+	else
+		return false;
+
+	/*
+	 * Both variables have to be for the same relation (otherwise it's a
+	 * join clause, and we don't deal with those yet.
+	 */
+	if (vara->varno != varb->varno)
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (varap)
+		*varap = vara;
+
+	if (varbp)
+		*varbp = varb;
 
 	return true;
 }

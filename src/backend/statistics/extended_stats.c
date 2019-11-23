@@ -852,7 +852,9 @@ has_stats_of_kind(List *stats, char requiredkind)
  * further tiebreakers are needed.
  */
 StatisticExtInfo *
-choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
+choose_best_statistics(List *stats, char requiredkind,
+					   Bitmapset **clauses, int nclauses,
+					   Bitmapset **estimatedclauses)
 {
 	ListCell   *lc;
 	StatisticExtInfo *best_match = NULL;
@@ -861,22 +863,42 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 
 	foreach(lc, stats)
 	{
+		int			i;
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+		Bitmapset  *matched = NULL;
 		int			num_matched;
 		int			numkeys;
-		Bitmapset  *matched;
 
 		/* skip statistics that are not of the correct type */
 		if (info->kind != requiredkind)
 			continue;
 
-		/* determine how many attributes of these stats can be matched to */
-		matched = bms_intersect(attnums, info->keys);
+		/*
+		 * Collect attributes in remaining (unestimated) clauses covered by
+		 * this statistic object.
+		 */
+		for (i = 0; i < nclauses; i++)
+		{
+			/* ignore incompatible clauses */
+			if (!clauses[i])
+				continue;
+
+			/* ignore already estimated clauses */
+			if (bms_is_member(i, *estimatedclauses))
+				continue;
+
+			/* ignore clauses that are not covered by this object */
+			if (!bms_is_subset(clauses[i], info->keys))
+				continue;
+
+			matched = bms_add_members(matched, clauses[i]);
+		}
+
 		num_matched = bms_num_members(matched);
 		bms_free(matched);
 
 		/*
-		 * save the actual number of keys in the stats so that we can choose
+		 * Save the actual number of keys in the stats so that we can choose
 		 * the narrowest stats with the most matching keys.
 		 */
 		numkeys = bms_num_members(info->keys);
@@ -1238,7 +1260,9 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		return 1.0;
 
 	/* find the best suited statistics object for these attnums */
-	stat = choose_best_statistics(rel->statlist, clauses_attnums, STATS_EXT_MCV);
+	stat = choose_best_statistics(rel->statlist, STATS_EXT_MCV,
+								  list_attnums, list_length(clauses),
+								  estimatedclauses);
 
 	/* if no matching stats could be found then we've nothing to do */
 	if (!stat)

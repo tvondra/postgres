@@ -1198,7 +1198,8 @@ statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
 static Selectivity
 statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 								   JoinType jointype, SpecialJoinInfo *sjinfo,
-								   RelOptInfo *rel, Bitmapset **estimatedclauses)
+								   RelOptInfo *rel, Bitmapset **estimatedclauses,
+								   bool is_or)
 {
 	ListCell   *l;
 	Bitmapset **list_attnums;
@@ -1285,13 +1286,36 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		}
 
 		/*
-		 * First compute "simple" selectivity, i.e. without the extended
-		 * statistics, and essentially assuming independence of the
-		 * columns/clauses. We'll then use the various selectivities computed from
-		 * MCV list to improve it.
+		 * First compute "simple" selectivity, i.e. without the extended stats,
+		 * and essentially assuming independence of the columns/clauses. We'll
+		 * then use the selectivities computed from MCV list to improve it.
 		 */
-		simple_sel = clauselist_selectivity_simple(root, stat_clauses, varRelid,
-												jointype, sjinfo, NULL);
+		if (is_or)
+		{
+			ListCell   *lc;
+			Selectivity	s1 = 0.0,
+						s2;
+
+			/*
+			 * Selectivities of OR clauses are computed s1+s2 - s1*s2 to account
+			 * for the probable overlap of selected tuple sets.
+			 */
+			foreach(lc, stat_clauses)
+			{
+				s2 = clause_selectivity(root,
+										(Node *) lfirst(lc),
+										varRelid,
+										jointype,
+										sjinfo);
+
+				s1 = s1 + s2 - s1 * s2;
+			}
+
+			simple_sel = s1;
+		}
+		else
+			simple_sel = clauselist_selectivity_simple(root, stat_clauses, varRelid,
+													   jointype, sjinfo, NULL);
 
 		/*
 		 * Now compute the multi-column estimate from the MCV list, along with the
@@ -1299,7 +1323,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		 */
 		mcv_sel = mcv_clauselist_selectivity(root, stat, stat_clauses, varRelid,
 											 jointype, sjinfo, rel,
-											 &mcv_basesel, &mcv_totalsel);
+											 &mcv_basesel, &mcv_totalsel,
+											 is_or);
 
 		/* Estimated selectivity of values not covered by MCV matches */
 		other_sel = simple_sel - mcv_basesel;
@@ -1327,13 +1352,14 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 Selectivity
 statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 							   JoinType jointype, SpecialJoinInfo *sjinfo,
-							   RelOptInfo *rel, Bitmapset **estimatedclauses)
+							   RelOptInfo *rel, Bitmapset **estimatedclauses,
+							   bool is_or)
 {
 	Selectivity sel;
 
 	/* First, try estimating clauses using a multivariate MCV list. */
 	sel = statext_mcv_clauselist_selectivity(root, clauses, varRelid, jointype,
-											 sjinfo, rel, estimatedclauses);
+											 sjinfo, rel, estimatedclauses, is_or);
 
 	/*
 	 * Then, apply functional dependencies on the remaining clauses by calling
@@ -1347,10 +1373,14 @@ statext_clauselist_selectivity(PlannerInfo *root, List *clauses, int varRelid,
 	 * For example, MCV list can give us an exact selectivity for values in
 	 * two columns, while functional dependencies can only provide information
 	 * about the overall strength of the dependency.
+	 *
+	 * Functional dependencies only work for clauses connected by AND, so skip
+	 * this for OR clauses.
 	 */
-	sel *= dependencies_clauselist_selectivity(root, clauses, varRelid,
-											   jointype, sjinfo, rel,
-											   estimatedclauses);
+	if (!is_or)
+		sel *= dependencies_clauselist_selectivity(root, clauses, varRelid,
+												   jointype, sjinfo, rel,
+												   estimatedclauses);
 
 	return sel;
 }

@@ -2738,7 +2738,7 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 		{
 			/* Now do parse transformation of the expression */
 			selem->expr = transformExpr(pstate, selem->expr,
-										EXPR_KIND_INDEX_EXPRESSION);
+										EXPR_KIND_STATS_EXPRESSION);
 
 			/* We have to fix its collations too */
 			assign_expr_collations(pstate, selem->expr);

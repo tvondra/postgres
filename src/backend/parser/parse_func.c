@@ -2493,6 +2493,9 @@ check_srf_call_placement(ParseState *pstate, Node *last_srf, int location)
 		case EXPR_KIND_INDEX_PREDICATE:
 			err = _("set-returning functions are not allowed in index predicates");
 			break;
+		case EXPR_KIND_STATS_EXPRESSION:
+			err = _("set-returning functions are not allowed in stats expressions");
+			break;
 		case EXPR_KIND_ALTER_COL_TRANSFORM:
 			err = _("set-returning functions are not allowed in transform expressions");
 			break;

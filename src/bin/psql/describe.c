@@ -2671,6 +2671,7 @@ describeOneTableDetails(const char *schemaname,
 		/* print any extended statistics */
 		if (pset.sversion >= 100000)
 		{
+			/* FIXME improve this with printing expressions the statistics is defined on */
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, "
 							  "stxrelid::pg_catalog.regclass, "

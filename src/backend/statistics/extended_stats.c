@@ -1303,6 +1303,182 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 	return false;
 }
 
+
+
+/*
+ * statext_extract_clause_internal
+ *		Determines if the clause is compatible with MCV lists.
+ *
+ * Does the heavy lifting of actually inspecting the clauses for
+ * statext_is_compatible_clause. It needs to be split like this because
+ * of recursion.  The attnums bitmap is an input/output parameter collecting
+ * attribute numbers from all compatible clauses (recursively).
+ */
+static List *
+statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
+{
+	List   *result = NIL;
+
+	/* Look inside any binary-compatible relabeling (as in examine_variable) */
+	if (IsA(clause, RelabelType))
+		clause = (Node *) ((RelabelType *) clause)->arg;
+
+	/* plain Var references (boolean Vars or recursive checks) */
+	if (IsA(clause, Var))
+	{
+		Var		   *var = (Var *) clause;
+
+		/* Ensure var is from the correct relation */
+		if (var->varno != relid)
+			return NIL;
+
+		/* we also better ensure the Var is from the current level */
+		if (var->varlevelsup > 0)
+			return NIL;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return NIL;
+
+		*attnums = bms_add_member(*attnums, var->varattno);
+
+		result = lappend(result, clause);
+
+		return result;
+	}
+
+	/* (Var op Const) or (Const op Var) */
+	if (is_opclause(clause))
+	{
+		RangeTblEntry *rte = root->simple_rte_array[relid];
+		OpExpr	   *expr = (OpExpr *) clause;
+		Var		   *var;
+		Var		   *var2 = NULL;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return NIL;
+
+		/* Check if the expression the right shape (one Var, one Const) */
+		if ((!examine_opclause_expression(expr, &var, NULL, NULL)) &&
+			(!examine_opclause_expression2(expr, &var, &var2)))
+			return NIL;
+
+		/*
+		 * If it's not one of the supported operators ("=", "<", ">", etc.),
+		 * just ignore the clause, as it's not compatible with MCV lists.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		switch (get_oprrest(expr->opno))
+		{
+			case F_EQSEL:
+			case F_NEQSEL:
+			case F_SCALARLTSEL:
+			case F_SCALARLESEL:
+			case F_SCALARGTSEL:
+			case F_SCALARGESEL:
+				/* supported, will continue with inspection of the Var */
+				break;
+
+			default:
+				/* other estimators are considered unknown/unsupported */
+				return NIL;
+		}
+
+		/*
+		 * If there are any securityQuals on the RTE from security barrier
+		 * views or RLS policies, then the user may not have access to all the
+		 * table's data, and we must check that the operator is leak-proof.
+		 *
+		 * If the operator is leaky, then we must ignore this clause for the
+		 * purposes of estimating with MCV lists, otherwise the operator might
+		 * reveal values from the MCV list that the user doesn't have
+		 * permission to see.
+		 */
+		if (rte->securityQuals != NIL &&
+			!get_func_leakproof(get_opcode(expr->opno)))
+			return NIL;
+
+		if (var2)
+		{
+			List *l
+
+			l = statext_extract_clause_internal(root, (Node *) var, relid));
+			if (!l)
+				return NIL;
+
+			result = lconcat(result, l);
+
+			l = statext_extract_clause_internal(root, (Node *) var2, relid));
+			if (!l)
+				return NIL;
+
+			result = lconcat(result, l);
+
+			return result;
+		}
+		else
+			return statext_extract_clause_internal(root, (Node *) var, relid);
+	}
+
+	/* AND/OR/NOT clause */
+	if (is_andclause(clause) ||
+		is_orclause(clause) ||
+		is_notclause(clause))
+	{
+		/*
+		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
+		 *
+		 * Perhaps we could improve this by handling mixed cases, when some of
+		 * the clauses are supported and some are not. Selectivity for the
+		 * supported subclauses would be computed using extended statistics,
+		 * and the remaining clauses would be estimated using the traditional
+		 * algorithm (product of selectivities).
+		 *
+		 * It however seems overly complex, and in a way we already do that
+		 * because if we reject the whole clause as unsupported here, it will
+		 * be eventually passed to clauselist_selectivity() which does exactly
+		 * this (split into supported/unsupported clauses etc).
+		 */
+		BoolExpr   *expr = (BoolExpr *) clause;
+		ListCell   *lc;
+
+		foreach(lc, expr->args)
+		{
+			/*
+			 * Had we found incompatible clause in the arguments, treat the
+			 * whole clause as incompatible.
+			 */
+			if (!statext_is_compatible_clause_internal(root,
+													   (Node *) lfirst(lc),
+													   relid, attnums))
+				return false;
+		}
+
+		return true;
+	}
+
+	/* Var IS NULL */
+	if (IsA(clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) clause;
+
+		/*
+		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
+		 * could use examine_variable to fix this?
+		 */
+		if (!IsA(nt->arg, Var))
+			return false;
+
+		return statext_is_compatible_clause_internal(root, (Node *) (nt->arg),
+													 relid, attnums);
+	}
+
+	return false;
+}
+
 /*
  * statext_is_compatible_clause
  *		Determines if the clause is compatible with MCV lists.
@@ -1378,6 +1554,53 @@ statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
 }
 
 /*
+ * statext_extract_clause
+ *		Determines if the clause is compatible with MCV lists.
+ *
+ * Currently, we only support three types of clauses:
+ *
+ * (a) OpExprs of the form (Var op Const), or (Const op Var), where the op
+ * is one of ("=", "<", ">", ">=", "<=")
+ *
+ * (b) (Var IS [NOT] NULL)
+ *
+ * (c) combinations using AND/OR/NOT
+ *
+ * In the future, the range of supported clauses may be expanded to more
+ * complex cases, for example (Var op Var).
+ */
+static Node *
+statext_extract_clause(PlannerInfo *root, Node *clause, Index relid)
+{
+	RangeTblEntry *rte = root->simple_rte_array[relid];
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
+	Oid			userid;
+	Node		 *expr;
+
+	if (!IsA(rinfo, RestrictInfo))
+		return false;
+
+	/* Pseudoconstants are not really interesting here. */
+	if (rinfo->pseudoconstant)
+		return false;
+
+	/* clauses referencing multiple varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return false;
+
+	/* Check the clause and determine what attributes it references. */
+	expr = statext_extract_clause_internal(root, (Node *) rinfo->clause, relid));
+
+	if (!expr)
+		return NULL;
+
+	/* FIXME do the same ACL check as in statext_is_compatible_clause */
+
+	/* If we reach here, the clause is OK */
+	return expr;
+}
+
+/*
  * statext_mcv_clauselist_selectivity
  *		Estimate clauses using the best multi-column statistics.
  *
@@ -1435,7 +1658,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 								   bool is_or)
 {
 	ListCell   *l;
-	Bitmapset **list_attnums;
+	Bitmapset **list_attnums;	/* attnums extracted from the clause */
+	bool	   *exact_clauses;	/* covered as-is by at least one statistic */
 	int			listidx;
 	Selectivity	sel = 1.0;
 
@@ -1445,6 +1669,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
 										 list_length(clauses));
+
+	exact_clauses = (bool *) palloc(sizeof(bool) * list_length(clauses));
 
 	/*
 	 * Pre-process the clauses list to extract the attnums seen in each item.
@@ -1463,11 +1689,55 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		Node	   *clause = (Node *) lfirst(l);
 		Bitmapset  *attnums = NULL;
 
+		/* the clause is considered incompatible by default */
+		list_attnums[listidx] = NULL;
+
+		/* and it's also not covered exactly by the statistic */
+		exact_clauses[listidx] = false;
+
+		/*
+		 * First see if the clause is simple enough to be covered directly
+		 * by the attributes. If not, see if there's at least one statistic
+		 * object using the expression as-is.
+		 */
 		if (!bms_is_member(listidx, *estimatedclauses) &&
 			statext_is_compatible_clause(root, clause, rel->relid, &attnums))
+			/* simple expression, covered through attnum(s) */
 			list_attnums[listidx] = attnums;
 		else
-			list_attnums[listidx] = NULL;
+		{
+			ListCell   *lc;
+
+			Node *expr = statext_is_extract_clause(root, clause, rel->relid);
+
+			/* complex expression, search for statistic */
+			foreach(lc, rel->statlist)
+			{
+				ListCell		   *lc2;
+				StatisticExtInfo   *info = (StatisticExtInfo *) lfirst(lc);
+
+				/* no expressions */
+				if (!info->exprs)
+					continue;
+
+				/* walk the expressions, compare them to the clause */
+				foreach (lc2, info->exprs)
+				{
+					Node *key = (Node *) lfirst(lc2);
+
+					if (equal(clause, key))
+					{
+						exact_clauses[listidx] = true;
+						elog(WARNING, "clause covered by statistic");
+						break;
+					}
+				}
+
+				/* stop looking for another statistic */
+				if (exact_clauses[listidx])
+					break;
+			}
+		}
 
 		listidx++;
 	}

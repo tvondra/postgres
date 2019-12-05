@@ -1340,7 +1340,7 @@ statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
 		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
 			return NIL;
 
-		*attnums = bms_add_member(*attnums, var->varattno);
+		// *attnums = bms_add_member(*attnums, var->varattno);
 
 		result = lappend(result, clause);
 
@@ -1403,19 +1403,19 @@ statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
 
 		if (var2)
 		{
-			List *l
+			List *l;
 
-			l = statext_extract_clause_internal(root, (Node *) var, relid));
+			l = statext_extract_clause_internal(root, (Node *) var, relid);
 			if (!l)
 				return NIL;
 
-			result = lconcat(result, l);
+			result = list_concat(result, l);
 
-			l = statext_extract_clause_internal(root, (Node *) var2, relid));
+			l = statext_extract_clause_internal(root, (Node *) var2, relid);
 			if (!l)
 				return NIL;
 
-			result = lconcat(result, l);
+			result = list_concat(result, l);
 
 			return result;
 		}
@@ -1451,13 +1451,13 @@ statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
 			 * Had we found incompatible clause in the arguments, treat the
 			 * whole clause as incompatible.
 			 */
-			if (!statext_is_compatible_clause_internal(root,
-													   (Node *) lfirst(lc),
-													   relid, attnums))
-				return false;
+			if (!statext_extract_clause_internal(root,
+												 (Node *) lfirst(lc),
+												 relid))
+				return NIL;
 		}
 
-		return true;
+		return result;
 	}
 
 	/* Var IS NULL */
@@ -1472,8 +1472,8 @@ statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
 		if (!IsA(nt->arg, Var))
 			return false;
 
-		return statext_is_compatible_clause_internal(root, (Node *) (nt->arg),
-													 relid, attnums);
+		return statext_extract_clause_internal(root, (Node *) (nt->arg),
+											   relid);
 	}
 
 	return false;
@@ -1569,13 +1569,11 @@ statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
  * In the future, the range of supported clauses may be expanded to more
  * complex cases, for example (Var op Var).
  */
-static Node *
+static List *
 statext_extract_clause(PlannerInfo *root, Node *clause, Index relid)
 {
-	RangeTblEntry *rte = root->simple_rte_array[relid];
 	RestrictInfo *rinfo = (RestrictInfo *) clause;
-	Oid			userid;
-	Node		 *expr;
+	List		 *exprs;
 
 	if (!IsA(rinfo, RestrictInfo))
 		return false;
@@ -1589,15 +1587,15 @@ statext_extract_clause(PlannerInfo *root, Node *clause, Index relid)
 		return false;
 
 	/* Check the clause and determine what attributes it references. */
-	expr = statext_extract_clause_internal(root, (Node *) rinfo->clause, relid));
+	exprs = statext_extract_clause_internal(root, (Node *) rinfo->clause, relid);
 
-	if (!expr)
+	if (!exprs)
 		return NULL;
 
 	/* FIXME do the same ACL check as in statext_is_compatible_clause */
 
 	/* If we reach here, the clause is OK */
-	return expr;
+	return exprs;
 }
 
 /*
@@ -1708,34 +1706,55 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		{
 			ListCell   *lc;
 
-			Node *expr = statext_is_extract_clause(root, clause, rel->relid);
+			List *exprs = statext_extract_clause(root, clause, rel->relid);
 
 			/* complex expression, search for statistic */
 			foreach(lc, rel->statlist)
 			{
 				ListCell		   *lc2;
 				StatisticExtInfo   *info = (StatisticExtInfo *) lfirst(lc);
+				bool				all_found = true;
+
+				/* have we already found all expressions in a statistic? */
+				Assert(!exact_clauses[listidx]);
 
 				/* no expressions */
 				if (!info->exprs)
 					continue;
 
-				/* walk the expressions, compare them to the clause */
-				foreach (lc2, info->exprs)
+				foreach (lc2, exprs)
 				{
-					Node *key = (Node *) lfirst(lc2);
+					Node   *expr = (Node *) lfirst(lc2);
 
-					if (equal(clause, key))
+					/*
+					 * Walk the expressions, see if all expressions extracted from
+					 * the clause are covered by the extended statistic object.
+					 */
+					foreach (lc2, info->exprs)
 					{
-						exact_clauses[listidx] = true;
-						elog(WARNING, "clause covered by statistic");
-						break;
+						Node   *stat_expr = (Node *) lfirst(lc2);
+						bool	expr_found = false;
+
+						if (equal(expr, stat_expr))
+						{
+							expr_found = true;
+							break;
+						}
+
+						if (!expr_found)
+						{
+							all_found = false;
+							break;
+						}
 					}
 				}
 
 				/* stop looking for another statistic */
-				if (exact_clauses[listidx])
+				if (all_found)
+				{
+					exact_clauses[listidx] = true;
 					break;
+				}
 			}
 		}
 

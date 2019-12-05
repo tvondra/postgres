@@ -1401,26 +1401,12 @@ statext_extract_clause_internal(PlannerInfo *root, Node *clause, Index relid)
 			!get_func_leakproof(get_opcode(expr->opno)))
 			return NIL;
 
+		result = lappend(result, var);
+
 		if (var2)
-		{
-			List *l;
+			result = lappend(result, var2);
 
-			l = statext_extract_clause_internal(root, (Node *) var, relid);
-			if (!l)
-				return NIL;
-
-			result = list_concat(result, l);
-
-			l = statext_extract_clause_internal(root, (Node *) var2, relid);
-			if (!l)
-				return NIL;
-
-			result = list_concat(result, l);
-
-			return result;
-		}
-		else
-			return statext_extract_clause_internal(root, (Node *) var, relid);
+		return result;
 	}
 
 	/* AND/OR/NOT clause */

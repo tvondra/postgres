@@ -806,6 +806,15 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 		/* If it's an scalar array operator, check for Var IN Const. */
 		ScalarArrayOpExpr	   *expr = (ScalarArrayOpExpr *) rinfo->clause;
 
+		/*
+		 * Reject ALL() variant, we only care about ANY/IN.
+		 *
+		 * FIXME Maybe we should check if all the values are the same, and
+		 * allow ALL in that case? Doesn't seem very practical, though.
+		 */
+		if (!expr->useOr)
+			return false;
+
 		/* Only expressions with two arguments are candidates. */
 		if (list_length(expr->args) != 2)
 			return false;

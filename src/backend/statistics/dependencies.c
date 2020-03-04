@@ -803,20 +803,21 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 	}
 	else if (IsA(rinfo->clause, ScalarArrayOpExpr))
 	{
-		/* If it's an opclause, check for Var IN Const. */
+		/* If it's an scalar array operator, check for Var IN Const. */
 		ScalarArrayOpExpr	   *expr = (ScalarArrayOpExpr *) rinfo->clause;
 
 		/* Only expressions with two arguments are candidates. */
 		if (list_length(expr->args) != 2)
 			return false;
 
-		/* Make sure non-selected argument is a pseudoconstant. */
-		if (is_pseudo_constant_clause(lsecond(expr->args)))
-			var = linitial(expr->args);
-		else if (is_pseudo_constant_clause(linitial(expr->args)))
-			var = lsecond(expr->args);
-		else
+		/*
+		 * We know it's always (Var IN Const), so we assume the var is the
+		 * first argument, and pseudoconstant is the second one.
+		 */
+		if (!is_pseudo_constant_clause(lsecond(expr->args)))
 			return false;
+
+		var = linitial(expr->args);
 
 		/*
 		 * If it's not an "=" operator, just ignore the clause, as it's not

@@ -785,13 +785,31 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = 
          1 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 1 = a AND ''1'' = b');
+ estimated | actual 
+-----------+--------
+         1 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 1 AND b < ''1''');
  estimated | actual 
 -----------+--------
          1 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 1 > a AND ''1'' > b');
+ estimated | actual 
+-----------+--------
+         1 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 0 AND b <= ''0''');
+ estimated | actual 
+-----------+--------
+         1 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 0 >= a AND ''0'' >= b');
  estimated | actual 
 -----------+--------
          1 |     50
@@ -809,7 +827,19 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND b < 
          1 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND ''1'' > b AND 5 > c');
+ estimated | actual 
+-----------+--------
+         1 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 4 AND b <= ''0'' AND c <= 4');
+ estimated | actual 
+-----------+--------
+         1 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 4 >= a AND ''0'' >= b AND 4 >= c');
  estimated | actual 
 -----------+--------
          1 |     50
@@ -866,13 +896,31 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = 
         50 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 1 = a AND ''1'' = b');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 1 AND b < ''1''');
  estimated | actual 
 -----------+--------
         50 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 1 > a AND ''1'' > b');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 0 AND b <= ''0''');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 0 >= a AND ''0'' >= b');
  estimated | actual 
 -----------+--------
         50 |     50
@@ -890,7 +938,19 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND b < 
         50 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND ''1'' > b AND 5 > c');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 4 AND b <= ''0'' AND c <= 4');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE 4 >= a AND ''0'' >= b AND 4 >= c');
  estimated | actual 
 -----------+--------
         50 |     50

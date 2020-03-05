@@ -1106,7 +1106,7 @@ TRUNCATE mcv_lists;
 DROP STATISTICS mcv_lists_stats;
 INSERT INTO mcv_lists (a, b, c, d)
      SELECT
-         (CASE WHEN mod(i,2) = 0 THEN NULL ELSE 0 END),
+         NULL, -- always NULL
          (CASE WHEN mod(i,2) = 0 THEN NULL ELSE 'x' END),
          (CASE WHEN mod(i,2) = 0 THEN NULL ELSE 0 END),
          (CASE WHEN mod(i,2) = 0 THEN NULL ELSE 'x' END)
@@ -1119,8 +1119,20 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE b = ''x'' OR d
 (1 row)
 
 -- create statistics
-CREATE STATISTICS mcv_lists_stats (mcv) ON b, d FROM mcv_lists;
+CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, d FROM mcv_lists;
 ANALYZE mcv_lists;
+-- test pg_mcv_list_items with MCV list containing variable-length data and NULLs
+SELECT m.*
+  FROM pg_statistic_ext s, pg_statistic_ext_data d,
+       pg_mcv_list_items(d.stxdmcv) m
+ WHERE s.stxname = 'mcv_lists_stats'
+   AND d.stxoid = s.oid;
+ index |      values      |  nulls  | frequency | base_frequency 
+-------+------------------+---------+-----------+----------------
+     0 | {NULL,x,x}       | {t,f,f} |       0.5 |           0.25
+     1 | {NULL,NULL,NULL} | {t,t,t} |       0.5 |           0.25
+(2 rows)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE b = ''x'' OR d = ''x''');
  estimated | actual 
 -----------+--------

@@ -558,6 +558,10 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND 
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL AND c IS NULL');
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NOT NULL');
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NOT NULL AND b IS NULL AND c IS NOT NULL');
+
 -- create statistics
 CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
 
@@ -566,6 +570,10 @@ ANALYZE mcv_lists;
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL AND c IS NULL');
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NOT NULL');
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NOT NULL AND b IS NULL AND c IS NOT NULL');
 
 -- test pg_mcv_list_items with a very simple (single item) MCV list
 TRUNCATE mcv_lists;

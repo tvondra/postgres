@@ -863,7 +863,19 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (1, 2, 51
          8 |    200
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (1, 2, 51, 52, NULL) AND b IN ( ''1'', ''2'', NULL)');
+ estimated | actual 
+-----------+--------
+         8 |    200
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = ANY (ARRAY[1, 2, 51, 52]) AND b = ANY (ARRAY[''1'', ''2''])');
+ estimated | actual 
+-----------+--------
+         8 |    200
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = ANY (ARRAY[NULL, 1, 2, 51, 52]) AND b = ANY (ARRAY[''1'', ''2'', NULL])');
  estimated | actual 
 -----------+--------
          8 |    200
@@ -875,13 +887,31 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= ANY (ARRA
         26 |    150
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= ANY (ARRAY[1, NULL, 2, 3]) AND b IN (''1'', ''2'', NULL, ''3'')');
+ estimated | actual 
+-----------+--------
+        26 |    150
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND c > ANY (ARRAY[1, 2, 3])');
  estimated | actual 
 -----------+--------
         10 |    100
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND c > ANY (ARRAY[1, 2, 3, NULL])');
+ estimated | actual 
+-----------+--------
+        10 |    100
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND b IN (''1'', ''2'', ''3'') AND c > ANY (ARRAY[1, 2, 3])');
+ estimated | actual 
+-----------+--------
+         1 |    100
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND b IN (''1'', ''2'', NULL, ''3'') AND c > ANY (ARRAY[1, 2, NULL, 3])');
  estimated | actual 
 -----------+--------
          1 |    100
@@ -968,7 +998,19 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (1, 2, 51
        200 |    200
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (1, 2, 51, 52, NULL) AND b IN ( ''1'', ''2'', NULL)');
+ estimated | actual 
+-----------+--------
+       200 |    200
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = ANY (ARRAY[1, 2, 51, 52]) AND b = ANY (ARRAY[''1'', ''2''])');
+ estimated | actual 
+-----------+--------
+       200 |    200
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = ANY (ARRAY[NULL, 1, 2, 51, 52]) AND b = ANY (ARRAY[''1'', ''2'', NULL])');
  estimated | actual 
 -----------+--------
        200 |    200
@@ -980,13 +1022,31 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= ANY (ARRA
        150 |    150
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= ANY (ARRAY[1, NULL, 2, 3]) AND b IN (''1'', ''2'', NULL, ''3'')');
+ estimated | actual 
+-----------+--------
+       150 |    150
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND c > ANY (ARRAY[1, 2, 3])');
  estimated | actual 
 -----------+--------
        100 |    100
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND c > ANY (ARRAY[1, 2, 3, NULL])');
+ estimated | actual 
+-----------+--------
+       100 |    100
+(1 row)
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND b IN (''1'', ''2'', ''3'') AND c > ANY (ARRAY[1, 2, 3])');
+ estimated | actual 
+-----------+--------
+       100 |    100
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < ALL (ARRAY[4, 5]) AND b IN (''1'', ''2'', NULL, ''3'') AND c > ANY (ARRAY[1, 2, NULL, 3])');
  estimated | actual 
 -----------+--------
        100 |    100

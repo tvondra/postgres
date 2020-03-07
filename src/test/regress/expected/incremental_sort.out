@@ -436,6 +436,82 @@ select * from (select * from t order by a) s order by a, b limit 55;
  2 | 55
 (55 rows)
 
+-- Test EXPLAIN ANALYZE (text output) with only a fullsort group.
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from t order by a) s order by a, b limit 55;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Limit (actual rows=55 loops=1)
+   ->  Incremental Sort (actual rows=55 loops=1)
+         Sort Key: t.a, t.b
+         Presorted Key: t.a
+         Full-sort Groups: 2 (Methods: quicksort, top-N heapsort) Memory: 27kB (avg), 27kB (max)
+         ->  Sort (actual rows=100 loops=1)
+               Sort Key: t.a
+               Sort Method: quicksort  Memory: 30kB
+               ->  Seq Scan on t (actual rows=100 loops=1)
+(9 rows)
+
+explain (analyze, costs off, summary off, timing off, format json)
+select * from (select * from t order by a) s order by a, b limit 55;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ [                                                                +
+   {                                                              +
+     "Plan": {                                                    +
+       "Node Type": "Limit",                                      +
+       "Parallel Aware": false,                                   +
+       "Actual Rows": 55,                                         +
+       "Actual Loops": 1,                                         +
+       "Plans": [                                                 +
+         {                                                        +
+           "Node Type": "Incremental Sort",                       +
+           "Parent Relationship": "Outer",                        +
+           "Parallel Aware": false,                               +
+           "Actual Rows": 55,                                     +
+           "Actual Loops": 1,                                     +
+           "Sort Key": ["t.a", "t.b"],                            +
+           "Presorted Key": ["t.a"],                              +
+           "Full-sort Groups": {                                  +
+             "Group Count": 2,                                    +
+             "Sort Methods Used": ["quicksort", "top-N heapsort"],+
+             "Average Sort Space Used": 27,                       +
+             "Maximum Sort Space Used": 27,                       +
+             "Sort Space Type": "Memory"                          +
+           },                                                     +
+           "Plans": [                                             +
+             {                                                    +
+               "Node Type": "Sort",                               +
+               "Parent Relationship": "Outer",                    +
+               "Parallel Aware": false,                           +
+               "Actual Rows": 100,                                +
+               "Actual Loops": 1,                                 +
+               "Sort Key": ["t.a"],                               +
+               "Sort Method": "quicksort",                        +
+               "Sort Space Used": 30,                             +
+               "Sort Space Type": "Memory",                       +
+               "Plans": [                                         +
+                 {                                                +
+                   "Node Type": "Seq Scan",                       +
+                   "Parent Relationship": "Outer",                +
+                   "Parallel Aware": false,                       +
+                   "Relation Name": "t",                          +
+                   "Alias": "t",                                  +
+                   "Actual Rows": 100,                            +
+                   "Actual Loops": 1                              +
+                 }                                                +
+               ]                                                  +
+             }                                                    +
+           ]                                                      +
+         }                                                        +
+       ]                                                          +
+     },                                                           +
+     "Triggers": [                                                +
+     ]                                                            +
+   }                                                              +
+ ]
+(1 row)
+
 delete from t;
 -- An initial small group followed by a large group.
 insert into t(a, b) select (case when i < 5 then i else 9 end), i from generate_series(1, 100) n(i);
@@ -525,6 +601,90 @@ select * from (select * from t order by a) s order by a, b limit 70;
  9 | 69
  9 | 70
 (70 rows)
+
+-- Test EXPLAIN ANALYZE (text output) with both fullsort and presorted groups.
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from t order by a) s order by a, b limit 70;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Limit (actual rows=70 loops=1)
+   ->  Incremental Sort (actual rows=70 loops=1)
+         Sort Key: t.a, t.b
+         Presorted Key: t.a
+         Full-sort Groups: 1 (Methods: quicksort) Memory: 28kB (avg), 28kB (max)
+         Presorted Groups: 5 (Methods: quicksort) Memory: 26kB (avg), 30kB (max)
+         ->  Sort (actual rows=100 loops=1)
+               Sort Key: t.a
+               Sort Method: quicksort  Memory: 30kB
+               ->  Seq Scan on t (actual rows=100 loops=1)
+(10 rows)
+
+explain (analyze, costs off, summary off, timing off, format json)
+select * from (select * from t order by a) s order by a, b limit 70;
+                    QUERY PLAN                     
+---------------------------------------------------
+ [                                                +
+   {                                              +
+     "Plan": {                                    +
+       "Node Type": "Limit",                      +
+       "Parallel Aware": false,                   +
+       "Actual Rows": 70,                         +
+       "Actual Loops": 1,                         +
+       "Plans": [                                 +
+         {                                        +
+           "Node Type": "Incremental Sort",       +
+           "Parent Relationship": "Outer",        +
+           "Parallel Aware": false,               +
+           "Actual Rows": 70,                     +
+           "Actual Loops": 1,                     +
+           "Sort Key": ["t.a", "t.b"],            +
+           "Presorted Key": ["t.a"],              +
+           "Full-sort Groups": {                  +
+             "Group Count": 1,                    +
+             "Sort Methods Used": ["quicksort"],  +
+             "Average Sort Space Used": 28,       +
+             "Maximum Sort Space Used": 28,       +
+             "Sort Space Type": "Memory"          +
+           },                                     +
+           "Presorted Groups": {                  +
+             "Group Count": 5,                    +
+             "Sort Methods Used": ["quicksort"],  +
+             "Average Sort Space Used": 26,       +
+             "Maximum Sort Space Used": 30,       +
+             "Sort Space Type": "Memory"          +
+           },                                     +
+           "Plans": [                             +
+             {                                    +
+               "Node Type": "Sort",               +
+               "Parent Relationship": "Outer",    +
+               "Parallel Aware": false,           +
+               "Actual Rows": 100,                +
+               "Actual Loops": 1,                 +
+               "Sort Key": ["t.a"],               +
+               "Sort Method": "quicksort",        +
+               "Sort Space Used": 30,             +
+               "Sort Space Type": "Memory",       +
+               "Plans": [                         +
+                 {                                +
+                   "Node Type": "Seq Scan",       +
+                   "Parent Relationship": "Outer",+
+                   "Parallel Aware": false,       +
+                   "Relation Name": "t",          +
+                   "Alias": "t",                  +
+                   "Actual Rows": 100,            +
+                   "Actual Loops": 1              +
+                 }                                +
+               ]                                  +
+             }                                    +
+           ]                                      +
+         }                                        +
+       ]                                          +
+     },                                           +
+     "Triggers": [                                +
+     ]                                            +
+   }                                              +
+ ]
+(1 row)
 
 delete from t;
 -- Small groups of 10 tuples each tested around each mode transition point.

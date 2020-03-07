@@ -68,6 +68,47 @@
 #include "utils/lsyscache.h"
 #include "utils/tuplesort.h"
 
+static void
+instrumentSortedGroup(PlanState *pstate, IncrementalSortGroupInfo *groupInfo,
+	Tuplesortstate *sortState)
+{
+	IncrementalSortState *node = castNode(IncrementalSortState, pstate);
+	TuplesortInstrumentation	sort_instr;
+
+	groupInfo->groupCount++;
+
+	tuplesort_get_stats(sortState, &sort_instr);
+	switch (sort_instr.spaceType)
+	{
+		case SORT_SPACE_TYPE_DISK:
+			groupInfo->totalDiskSpaceUsed += sort_instr.spaceUsed;
+			if (sort_instr.spaceUsed > groupInfo->maxDiskSpaceUsed)
+				groupInfo->maxDiskSpaceUsed = sort_instr.spaceUsed;
+
+			break;
+		case SORT_SPACE_TYPE_MEMORY:
+			groupInfo->totalMemorySpaceUsed += sort_instr.spaceUsed;
+			if (sort_instr.spaceUsed > groupInfo->maxMemorySpaceUsed)
+				groupInfo->maxMemorySpaceUsed = sort_instr.spaceUsed;
+
+			break;
+	}
+
+	if (!list_member_int(groupInfo->sortMethods, sort_instr.sortMethod))
+		groupInfo->sortMethods = lappend_int(groupInfo->sortMethods,
+				sort_instr.sortMethod);
+
+	/* Record shared stats if we're a parallel worker. */
+	if (node->shared_info && node->am_worker)
+	{
+		Assert(IsParallelWorker());
+		Assert(ParallelWorkerNumber <= node->shared_info->num_workers);
+
+		memcpy(&node->shared_info->sinfo[ParallelWorkerNumber],
+				&node->incsort_info, sizeof(IncrementalSortInfo));
+	}
+}
+
 /*
  * Prepare information for presorted_keys comparison.
  */
@@ -199,8 +240,9 @@ isCurrentGroup(IncrementalSortState *node, TupleTableSlot *pivot, TupleTableSlot
  * one different prefix key group before the large prefix key group.
  */
 static void
-switchToPresortedPrefixMode(IncrementalSortState *node)
+switchToPresortedPrefixMode(PlanState *pstate)
 {
+	IncrementalSortState *node = castNode(IncrementalSortState, pstate);
 	ScanDirection		dir;
 	int64 nTuples = 0;
 	bool lastTuple = false;
@@ -355,7 +397,11 @@ switchToPresortedPrefixMode(IncrementalSortState *node)
 		 */
 		SO1_printf("Sorting presorted prefix tuplesort with %ld tuples\n", nTuples);
 		tuplesort_performsort(node->prefixsort_state);
-		node->prefixsort_group_count++;
+
+		if (pstate->instrument != NULL)
+			instrumentSortedGroup(pstate,
+					&node->incsort_info.prefixsortGroupInfo,
+					node->prefixsort_state);
 
 		if (node->bounded)
 		{
@@ -479,7 +525,7 @@ ExecIncrementalSort(PlanState *pstate)
 			 */
 			SO1_printf("Re-calling switchToPresortedPrefixMode() because n_fullsort_remaining is > 0 (%ld)\n",
 					node->n_fullsort_remaining);
-			switchToPresortedPrefixMode(node);
+			switchToPresortedPrefixMode(pstate);
 		}
 		else
 		{
@@ -602,7 +648,11 @@ ExecIncrementalSort(PlanState *pstate)
 
 				SO1_printf("Sorting fullsort with %ld tuples\n", nTuples);
 				tuplesort_performsort(fullsort_state);
-				node->fullsort_group_count++;
+
+				if (pstate->instrument != NULL)
+					instrumentSortedGroup(pstate,
+							&node->incsort_info.fullsortGroupInfo,
+							fullsort_state);
 
 				SO_printf("Setting execution_status to INCSORT_READFULLSORT (final tuple) \n");
 				node->execution_status = INCSORT_READFULLSORT;
@@ -673,7 +723,12 @@ ExecIncrementalSort(PlanState *pstate)
 					 */
 					SO1_printf("Sorting fullsort tuplesort with %ld tuples\n", nTuples);
 					tuplesort_performsort(fullsort_state);
-					node->fullsort_group_count++;
+
+					if (pstate->instrument != NULL)
+						instrumentSortedGroup(pstate,
+								&node->incsort_info.fullsortGroupInfo,
+								fullsort_state);
+
 					SO_printf("Setting execution_status to INCSORT_READFULLSORT (found end of group)\n");
 					node->execution_status = INCSORT_READFULLSORT;
 					break;
@@ -705,7 +760,10 @@ ExecIncrementalSort(PlanState *pstate)
 				 */
 				SO1_printf("Sorting fullsort tuplesort with %ld tuples\n", nTuples);
 				tuplesort_performsort(fullsort_state);
-				node->fullsort_group_count++;
+				if (pstate->instrument != NULL)
+					instrumentSortedGroup(pstate,
+							&node->incsort_info.fullsortGroupInfo,
+							fullsort_state);
 
 				/*
 				 * If the full sort tuplesort happened to switch into top-n heapsort mode
@@ -735,7 +793,7 @@ ExecIncrementalSort(PlanState *pstate)
 				node->n_fullsort_remaining = nTuples;
 
 				/* Transition the tuples to the presorted prefix tuplesort. */
-				switchToPresortedPrefixMode(node);
+				switchToPresortedPrefixMode(pstate);
 
 				/*
 				 * Since we know we had tuples to move to the presorted prefix
@@ -801,7 +859,12 @@ ExecIncrementalSort(PlanState *pstate)
 		/* Perform the sort and return the tuples to the inner plan nodes. */
 		SO1_printf("Sorting presorted prefix tuplesort with >= %ld tuples\n", nTuples);
 		tuplesort_performsort(node->prefixsort_state);
-		node->prefixsort_group_count++;
+
+		if (pstate->instrument != NULL)
+			instrumentSortedGroup(pstate,
+					&node->incsort_info.prefixsortGroupInfo,
+					node->prefixsort_state);
+
 		SO_printf("Setting execution_status to INCSORT_READPREFIXSORT (found end of group)\n");
 		node->execution_status = INCSORT_READPREFIXSORT;
 
@@ -827,26 +890,6 @@ ExecIncrementalSort(PlanState *pstate)
 	 * rescan.
 	 */
 	node->sort_Done = true;
-
-	/* Record shared stats if we're a parallel worker. */
-	if (node->shared_info && node->am_worker)
-	{
-		IncrementalSortInfo *incsort_info =
-			&node->shared_info->sinfo[ParallelWorkerNumber];
-
-		Assert(IsParallelWorker());
-		Assert(ParallelWorkerNumber <= node->shared_info->num_workers);
-
-		tuplesort_get_stats(fullsort_state, &incsort_info->fullsort_instrument);
-		incsort_info->fullsort_group_count = node->fullsort_group_count;
-
-		if (node->prefixsort_state)
-		{
-			tuplesort_get_stats(node->prefixsort_state,
-					&incsort_info->prefixsort_instrument);
-			incsort_info->prefixsort_group_count = node->prefixsort_group_count;
-		}
-	}
 
 	/*
 	 * Get the first or next tuple from tuplesort. Returns NULL if no more
@@ -900,9 +943,27 @@ ExecInitIncrementalSort(IncrementalSort *node, EState *estate, int eflags)
 	incrsortstate->transfer_tuple = NULL;
 	incrsortstate->n_fullsort_remaining = 0;
 	incrsortstate->bound_Done = 0;
-	incrsortstate->fullsort_group_count = 0;
-	incrsortstate->prefixsort_group_count = 0;
 	incrsortstate->presorted_keys = NULL;
+
+	if (incrsortstate->ss.ps.instrument != NULL)
+	{
+		IncrementalSortGroupInfo *fullsortGroupInfo =
+			&incrsortstate->incsort_info.fullsortGroupInfo;
+		IncrementalSortGroupInfo *prefixsortGroupInfo =
+			&incrsortstate->incsort_info.prefixsortGroupInfo;
+		fullsortGroupInfo->groupCount = 0;
+		fullsortGroupInfo->maxDiskSpaceUsed = 0;
+		fullsortGroupInfo->totalDiskSpaceUsed = 0;
+		fullsortGroupInfo->maxMemorySpaceUsed = 0;
+		fullsortGroupInfo->totalMemorySpaceUsed = 0;
+		fullsortGroupInfo->sortMethods = NIL;
+		prefixsortGroupInfo->groupCount = 0;
+		prefixsortGroupInfo->maxDiskSpaceUsed = 0;
+		prefixsortGroupInfo->totalDiskSpaceUsed = 0;
+		prefixsortGroupInfo->maxMemorySpaceUsed = 0;
+		prefixsortGroupInfo->totalMemorySpaceUsed = 0;
+		prefixsortGroupInfo->sortMethods = NIL;
+	}
 
 	/*
 	 * Miscellaneous initialization

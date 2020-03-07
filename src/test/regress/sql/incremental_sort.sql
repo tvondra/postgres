@@ -39,11 +39,21 @@ delete from t;
 insert into t(a, b) select (case when i < 50 then 1 else 2 end), i from generate_series(1, 100) n(i);
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 55;
 select * from (select * from t order by a) s order by a, b limit 55;
+-- Test EXPLAIN ANALYZE (text output) with only a fullsort group.
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from t order by a) s order by a, b limit 55;
+explain (analyze, costs off, summary off, timing off, format json)
+select * from (select * from t order by a) s order by a, b limit 55;
 delete from t;
 
 -- An initial small group followed by a large group.
 insert into t(a, b) select (case when i < 5 then i else 9 end), i from generate_series(1, 100) n(i);
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 70;
+select * from (select * from t order by a) s order by a, b limit 70;
+-- Test EXPLAIN ANALYZE (text output) with both fullsort and presorted groups.
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from t order by a) s order by a, b limit 70;
+explain (analyze, costs off, summary off, timing off, format json)
 select * from (select * from t order by a) s order by a, b limit 70;
 delete from t;
 

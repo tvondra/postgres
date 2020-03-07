@@ -2022,18 +2022,26 @@ typedef struct SortState
 	SharedSortInfo *shared_info;	/* one entry per worker */
 } SortState;
 
+typedef struct IncrementalSortGroupInfo
+{
+	int64 groupCount;
+	long maxDiskSpaceUsed;
+	long totalDiskSpaceUsed;
+	long maxMemorySpaceUsed;
+	long totalMemorySpaceUsed;
+	List *sortMethods;
+} IncrementalSortGroupInfo;
+
+typedef struct IncrementalSortInfo
+{
+	IncrementalSortGroupInfo fullsortGroupInfo;
+	IncrementalSortGroupInfo prefixsortGroupInfo;
+} IncrementalSortInfo;
+
 /* ----------------
  *	 Shared memory container for per-worker incremental sort information
  * ----------------
  */
-typedef struct IncrementalSortInfo
-{
-	TuplesortInstrumentation	fullsort_instrument;
-	int64						fullsort_group_count;
-	TuplesortInstrumentation	prefixsort_instrument;
-	int64						prefixsort_group_count;
-} IncrementalSortInfo;
-
 typedef struct SharedIncrementalSortInfo
 {
 	int							num_workers;
@@ -2067,8 +2075,9 @@ typedef struct IncrementalSortState
 	Tuplesortstate	   *prefixsort_state; /* private state of tuplesort.c */
 	/* the keys by which the input path is already sorted */
 	PresortedKeyData *presorted_keys;
-	int64		fullsort_group_count;	/* number of groups with equal presorted keys */
-	int64		prefixsort_group_count;	/* number of groups with equal presorted keys */
+
+	IncrementalSortInfo incsort_info;
+
 	/* slot for pivot tuple defining values of presorted keys within group */
 	TupleTableSlot *group_pivot;
 	TupleTableSlot *transfer_tuple;

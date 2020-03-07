@@ -2701,6 +2701,95 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 	}
 }
 
+
+static void
+show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
+						   const char *groupLabel, ExplainState *es)
+{
+	const char *sortMethodName;
+	const char *spaceTypeName;
+	ListCell *methodCell;
+	int methodCount = list_length(groupInfo->sortMethods);
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		appendStringInfoSpaces(es->str, es->indent * 2);
+		appendStringInfo(es->str, "%s Groups: %ld (Methods: ", groupLabel,
+						 groupInfo->groupCount);
+		foreach(methodCell, groupInfo->sortMethods)
+		{
+			sortMethodName = tuplesort_method_name(methodCell->int_value);
+			appendStringInfo(es->str, "%s", sortMethodName);
+			if (foreach_current_index(methodCell) < methodCount - 1)
+				appendStringInfo(es->str, ", ");
+		}
+		appendStringInfo(es->str, ")");
+
+		if (groupInfo->maxMemorySpaceUsed > 0)
+		{
+			long avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			appendStringInfo(es->str, " %s: %ldkB (avg), %ldkB (max)",
+							 spaceTypeName, avgSpace,
+							 groupInfo->maxMemorySpaceUsed);
+		}
+
+		if (groupInfo->maxDiskSpaceUsed > 0)
+		{
+			long avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_DISK);
+			/* Add a semicolon separator only if memory stats were printed. */
+			if (groupInfo->maxMemorySpaceUsed > 0)
+				appendStringInfo(es->str, ";");
+			appendStringInfo(es->str, " %s: %ldkB (avg), %ldkB (max)",
+							 spaceTypeName, avgSpace,
+							 groupInfo->maxDiskSpaceUsed);
+		}
+
+		appendStringInfo(es->str, "\n");
+	}
+	else
+	{
+		List *methodNames = NIL;
+		StringInfoData groupName;
+
+		initStringInfo(&groupName);
+		appendStringInfo(&groupName, "%s Groups", groupLabel);
+		ExplainOpenGroup("Incremental Sort Groups", groupName.data, true, es);
+		ExplainPropertyInteger("Group Count", NULL, groupInfo->groupCount, es);
+
+		foreach(methodCell, groupInfo->sortMethods)
+		{
+			sortMethodName = tuplesort_method_name(methodCell->int_value);
+			methodNames = lappend(methodNames, sortMethodName);
+		}
+		ExplainPropertyList("Sort Methods Used", methodNames, es);
+
+		if (groupInfo->maxMemorySpaceUsed > 0)
+		{
+			long avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+
+			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
+			ExplainPropertyInteger("Maximum Sort Space Used", "kB",
+					groupInfo->maxMemorySpaceUsed, es);
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			ExplainPropertyText("Sort Space Type", spaceTypeName, es);
+		}
+		if (groupInfo->maxDiskSpaceUsed > 0)
+		{
+			long avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+
+			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
+			ExplainPropertyInteger("Maximum Sort Space Used", "kB",
+					groupInfo->maxDiskSpaceUsed, es);
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			ExplainPropertyText("Sort Space Type", spaceTypeName, es);
+		}
+
+		ExplainCloseGroup("Incremental Sort Groups", "XXX Groups", true, es);
+	}
+}
+
 /*
  * If it's EXPLAIN ANALYZE, show tuplesort stats for a incremental sort node
  */
@@ -2708,73 +2797,18 @@ static void
 show_incremental_sort_info(IncrementalSortState *incrsortstate,
 						   ExplainState *es)
 {
-	if (es->analyze && incrsortstate->sort_Done &&
-		incrsortstate->fullsort_state != NULL)
-	{
-		/* TODO: is it valid to get space used etc. only once given we re-use the sort? */
-		/* TODO: maybe show average, min, max sort group size? */
+	IncrementalSortGroupInfo *fullsortGroupInfo;
+	IncrementalSortGroupInfo *prefixsortGroupInfo;
 
-		Tuplesortstate *fullsort_state = incrsortstate->fullsort_state;
-		TuplesortInstrumentation fullsort_stats;
-		const char *fullsort_sortMethod;
-		const char *fullsort_spaceType;
-		Tuplesortstate *prefixsort_state = incrsortstate->prefixsort_state;
-		TuplesortInstrumentation prefixsort_stats;
-		const char *prefixsort_sortMethod;
-		const char *prefixsort_spaceType;
+	if (!(es->analyze && incrsortstate->sort_Done))
+		return;
 
-		tuplesort_get_stats(fullsort_state, &fullsort_stats);
-		fullsort_sortMethod = tuplesort_method_name(fullsort_stats.sortMethod);
-		fullsort_spaceType = tuplesort_space_type_name(fullsort_stats.spaceType);
-		if (prefixsort_state != NULL)
-		{
-			tuplesort_get_stats(prefixsort_state, &prefixsort_stats);
-			prefixsort_sortMethod = tuplesort_method_name(prefixsort_stats.sortMethod);
-			prefixsort_spaceType = tuplesort_space_type_name(prefixsort_stats.spaceType);
-		}
-
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
-			appendStringInfo(es->str, "Sort Method: Full: %s  %s: %ldkB",
-							 fullsort_sortMethod, fullsort_spaceType,
-							 fullsort_stats.spaceUsed);
-			if (prefixsort_state != NULL)
-				appendStringInfo(es->str, ", Prefix-only: %s %s: %ldkB\n",
-								 prefixsort_sortMethod, prefixsort_spaceType,
-								 prefixsort_stats.spaceUsed);
-			else
-				appendStringInfo(es->str, "\n");
-			appendStringInfoSpaces(es->str, es->indent * 2);
-			appendStringInfo(es->str, "Sort Groups: Full:  %ld",
-							 incrsortstate->fullsort_group_count);
-			if (prefixsort_state != NULL)
-				appendStringInfo(es->str, ", Prefix-only: %ld\n",
-							 incrsortstate->prefixsort_group_count);
-			else
-				appendStringInfo(es->str, "\n");
-		}
-		else
-		{
-			/* TODO */
-			ExplainPropertyText("Full Sort Method", fullsort_sortMethod, es);
-			ExplainPropertyInteger("Full Sort Space Used", "kB",
-					fullsort_stats.spaceUsed, es);
-			ExplainPropertyText("Full Sort Space Type", fullsort_spaceType, es);
-			ExplainPropertyInteger("Full Sort Groups", NULL,
-								   incrsortstate->fullsort_group_count, es);
-
-			if (prefixsort_state != NULL)
-			{
-				ExplainPropertyText("Prefix Sort Method", prefixsort_sortMethod, es);
-				ExplainPropertyInteger("Prefix Sort Space Used", "kB",
-						prefixsort_stats.spaceUsed, es);
-				ExplainPropertyText("Prefix Sort Space Type", prefixsort_spaceType, es);
-				ExplainPropertyInteger("Prefix Sort Groups", NULL,
-									   incrsortstate->prefixsort_group_count, es);
-			}
-		}
-	}
+	fullsortGroupInfo = &incrsortstate->incsort_info.fullsortGroupInfo;
+	if (fullsortGroupInfo->groupCount > 0)
+		show_incremental_sort_group_info(fullsortGroupInfo, "Full-sort", es);
+	prefixsortGroupInfo = &incrsortstate->incsort_info.prefixsortGroupInfo;
+	if (prefixsortGroupInfo->groupCount > 0)
+		show_incremental_sort_group_info(prefixsortGroupInfo, "Presorted", es);
 
 	if (incrsortstate->shared_info != NULL)
 	{
@@ -2785,79 +2819,36 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 		{
 			IncrementalSortInfo *incsort_info =
 				&incrsortstate->shared_info->sinfo[n];
-			TuplesortInstrumentation *fullsort_instrument;
-			const char *fullsort_sortMethod;
-			const char *fullsort_spaceType;
-			long		fullsort_spaceUsed;
-			int64		fullsort_group_count;
-			TuplesortInstrumentation *prefixsort_instrument;
-			const char *prefixsort_sortMethod;
-			const char *prefixsort_spaceType;
-			long		prefixsort_spaceUsed;
-			int64		prefixsort_group_count;
+			/*
+			 * XXX: The previous version of the patch chcked:
+			 * fullsort_instrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS
+			 * and continued if the condition was true (with the comment "ignore
+			 * any unfilled slots").
+			 * I'm not convinced that makes sense since the same sort instrument
+			 * can have been used multiple times, so the last time it being used
+			 * being still in progress, doesn't seem to be relevant.
+			 * Instead I'm now checking to see if the group count for each group
+			 * info is 0. If both are 0, then we exclude the worker since it
+			 * didn't contribute anything meaningful.
+			 */
+			fullsortGroupInfo = &incsort_info->fullsortGroupInfo;
+			prefixsortGroupInfo = &incsort_info->prefixsortGroupInfo;
+			if (fullsortGroupInfo->groupCount == 0 &&
+					prefixsortGroupInfo->groupCount == 0)
+				continue;
 
-			fullsort_instrument = &incsort_info->fullsort_instrument;
-			fullsort_group_count = incsort_info->fullsort_group_count;
-
-			prefixsort_instrument = &incsort_info->prefixsort_instrument;
-			prefixsort_group_count = incsort_info->prefixsort_group_count;
-
-			if (fullsort_instrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS)
-				continue;		/* ignore any unfilled slots */
-
-			fullsort_sortMethod = tuplesort_method_name(
-					fullsort_instrument->sortMethod);
-			fullsort_spaceType = tuplesort_space_type_name(
-					fullsort_instrument->spaceType);
-			fullsort_spaceUsed = fullsort_instrument->spaceUsed;
-
-			if (prefixsort_instrument)
+			if (!opened_group)
 			{
-				prefixsort_sortMethod = tuplesort_method_name(
-						prefixsort_instrument->sortMethod);
-				prefixsort_spaceType = tuplesort_space_type_name(
-						prefixsort_instrument->spaceType);
-				prefixsort_spaceUsed = prefixsort_instrument->spaceUsed;
+				ExplainOpenGroup("Workers", "Workers", false, es);
+				opened_group = true;
 			}
 
-			if (es->format == EXPLAIN_FORMAT_TEXT)
-			{
-				appendStringInfoSpaces(es->str, es->indent * 2);
-				appendStringInfo(es->str,
-								 "Worker %d: Full Sort Method: %s  %s: %ldkB  Groups: %ld",
-								 n, fullsort_sortMethod, fullsort_spaceType,
-								 fullsort_spaceUsed, fullsort_group_count);
-				if (prefixsort_instrument)
-					appendStringInfo(es->str,
-									 ", Prefix Sort Method: %s  %s: %ldkB  Groups: %ld\n",
-									 prefixsort_sortMethod, prefixsort_spaceType,
-									 prefixsort_spaceUsed, prefixsort_group_count);
-				else
-					appendStringInfo(es->str, "\n");
-			}
-			else
-			{
-				if (!opened_group)
-				{
-					ExplainOpenGroup("Workers", "Workers", false, es);
-					opened_group = true;
-				}
-				ExplainOpenGroup("Worker", NULL, true, es);
-				ExplainPropertyInteger("Worker Number", NULL, n, es);
-				ExplainPropertyText("Full Sort Method", fullsort_sortMethod, es);
-				ExplainPropertyInteger("Full Sort Space Used", "kB", fullsort_spaceUsed, es);
-				ExplainPropertyText("Full Sort Space Type", fullsort_spaceType, es);
-				ExplainPropertyInteger("Full Sort Groups", NULL, fullsort_group_count, es);
-				if (prefixsort_instrument)
-				{
-					ExplainPropertyText("Prefix Sort Method", prefixsort_sortMethod, es);
-					ExplainPropertyInteger("Prefix Sort Space Used", "kB", prefixsort_spaceUsed, es);
-					ExplainPropertyText("Prefix Sort Space Type", prefixsort_spaceType, es);
-					ExplainPropertyInteger("Prefix Sort Groups", NULL, prefixsort_group_count, es);
-				}
-				ExplainCloseGroup("Worker", NULL, true, es);
-			}
+			if (fullsortGroupInfo->groupCount > 0)
+				show_incremental_sort_group_info(fullsortGroupInfo, "Full-sort", es);
+			if (prefixsortGroupInfo->groupCount > 0)
+				show_incremental_sort_group_info(prefixsortGroupInfo, "Presorted", es);
 		}
+
 		if (opened_group)
 			ExplainCloseGroup("Workers", "Workers", false, es);
 	}

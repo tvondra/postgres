@@ -852,12 +852,13 @@ ExecSetTupleBound(int64 tuples_needed, PlanState *child_node)
 	else if (IsA(child_node, IncrementalSortState))
 	{
 		/*
-		 * If it is a Sort node, notify it that it can use bounded sort.
+		 * If it is an IncrementalSort node, notify it that it can use bounded
+		 * sort.
 		 *
-		 * Note: it is the responsibility of nodeSort.c to react properly to
-		 * changes of these parameters.  If we ever redesign this, it'd be a
-		 * good idea to integrate this signaling with the parameter-change
-		 * mechanism.
+		 * Note: it is the responsibility of nodeIncrementalSort.c to react
+		 * properly to changes of these parameters.  If we ever redesign this,
+		 * it'd be a good idea to integrate this signaling with the
+		 * parameter-change mechanism.
 		 */
 		IncrementalSortState *sortState = (IncrementalSortState *) child_node;
 

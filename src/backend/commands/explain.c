@@ -2767,7 +2767,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 
 		foreach(methodCell, groupInfo->sortMethods)
 		{
-			const	   *sortMethodName = tuplesort_method_name(methodCell->int_value);
+			const char *sortMethodName = tuplesort_method_name(methodCell->int_value);
 
 			methodNames = lappend(methodNames, sortMethodName);
 		}
@@ -2776,7 +2776,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 		if (groupInfo->maxMemorySpaceUsed > 0)
 		{
 			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
-			const	   *spaceTypeName;
+			const char *spaceTypeName;
 
 			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
 			ExplainPropertyInteger("Maximum Sort Space Used", "kB",
@@ -2787,7 +2787,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
 			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
-			const	   *spaceTypeName;
+			const char *spaceTypeName;
 
 			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
 			ExplainPropertyInteger("Maximum Sort Space Used", "kB",

@@ -256,8 +256,8 @@ struct Tuplesortstate
 	bool		isMaxSpaceDisk; /* true when maxSpace is value for on-disk
 								 * space, false when it's value for in-memory
 								 * space */
-	TupSortStatus maxSpaceStatus;	/* sort status when maxSpace was reached */
-	MemoryContext maincontext;	/* memory context for tuple sort metadata that
+	TupSortStatus	maxSpaceStatus;	/* sort status when maxSpace was reached */
+	MemoryContext	maincontext;	/* memory context for tuple sort metadata that
 								 * persists across multiple batches */
 	MemoryContext sortcontext;	/* memory context holding most sort data */
 	MemoryContext tuplecontext; /* sub-context of sortcontext for tuple data */
@@ -803,6 +803,9 @@ tuplesort_begin_common(int workMem, SortCoordinate coordinate,
 	return state;
 }
 
+/*
+ * XXX Missing comment.
+ */
 static void
 tuplesort_begin_batch(Tuplesortstate *state)
 {
@@ -1288,6 +1291,9 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 	state->sortKeys->abbrev_full_comparator = NULL;
 }
 
+/*
+ * XXX Missing comment.
+ */
 bool
 tuplesort_used_bound(Tuplesortstate *state)
 {

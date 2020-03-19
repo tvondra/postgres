@@ -4869,7 +4869,7 @@ create_distinct_paths(PlannerInfo *root,
 	else
 	{
 		Size		hashentrysize = hash_agg_entry_size(
-														0, cheapest_input_path->pathtarget->width, 0);
+			0, cheapest_input_path->pathtarget->width, 0);
 
 		/* Allow hashing only if hashtable is predicted to fit in work_mem */
 		allow_hash = (hashentrysize * numDistinctRows <= work_mem * 1024L);
@@ -4932,6 +4932,9 @@ create_distinct_paths(PlannerInfo *root,
  * target: the output tlist the result Paths must emit
  * limit_tuples: estimated bound on the number of output tuples,
  *		or -1 if no LIMIT or couldn't estimate
+ *
+ * XXX This only looks at sort_pathkeys. I wonder if it needs to look at the
+ * other pathkeys (grouping, ...) like generate_useful_gather_paths.
  */
 static RelOptInfo *
 create_ordered_paths(PlannerInfo *root,
@@ -5002,23 +5005,29 @@ create_ordered_paths(PlannerInfo *root,
 
 				add_path(ordered_rel, sorted_path);
 			}
-			if (enable_incrementalsort && presorted_keys > 0)
-			{
-				/* Also consider incremental sort. */
-				sorted_path = (Path *) create_incremental_sort_path(root,
-																	ordered_rel,
-																	input_path,
-																	root->sort_pathkeys,
-																	presorted_keys,
-																	limit_tuples);
 
-				/* Add projection step if needed */
-				if (sorted_path->pathtarget != target)
-					sorted_path = apply_projection_to_path(root, ordered_rel,
-														   sorted_path, target);
+			/* With incremental sort disabled, don't build those paths. */
+			if (!enable_incrementalsort)
+				continue;
 
-				add_path(ordered_rel, sorted_path);
-			}
+			/* Likewise, if the path can't be used for incremental sort. */
+			if (!presorted_keys)
+				continue;
+
+			/* Also consider incremental sort. */
+			sorted_path = (Path *) create_incremental_sort_path(root,
+																ordered_rel,
+																input_path,
+																root->sort_pathkeys,
+																presorted_keys,
+																limit_tuples);
+
+			/* Add projection step if needed */
+			if (sorted_path->pathtarget != target)
+				sorted_path = apply_projection_to_path(root, ordered_rel,
+													   sorted_path, target);
+
+			add_path(ordered_rel, sorted_path);
 		}
 	}
 

@@ -774,7 +774,6 @@ typedef struct Sort
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
 } Sort;
 
-
 /* ----------------
  *		incremental sort node
  * ----------------

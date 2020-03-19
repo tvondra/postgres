@@ -82,6 +82,8 @@ static void show_upper_qual(List *qual, const char *qlabel,
 							ExplainState *es);
 static void show_sort_keys(SortState *sortstate, List *ancestors,
 						   ExplainState *es);
+static void show_incremental_sort_keys(IncrementalSortState *incrsortstate,
+									   List *ancestors, ExplainState *es);
 static void show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 								   ExplainState *es);
 static void show_agg_keys(AggState *astate, List *ancestors,
@@ -95,7 +97,7 @@ static void show_grouping_set_keys(PlanState *planstate,
 static void show_group_keys(GroupState *gstate, List *ancestors,
 							ExplainState *es);
 static void show_sort_group_keys(PlanState *planstate, const char *qlabel,
-								 int nkeys, AttrNumber *keycols,
+								 int nkeys, int nPresortedKeys, AttrNumber *keycols,
 								 Oid *sortOperators, Oid *collations, bool *nullsFirst,
 								 List *ancestors, ExplainState *es);
 static void show_sortorder_options(StringInfo buf, Node *sortexpr,
@@ -103,6 +105,8 @@ static void show_sortorder_options(StringInfo buf, Node *sortexpr,
 static void show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 							 List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
+static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
+									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
 static void show_hashagg_info(AggState *hashstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
@@ -1240,6 +1244,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Sort:
 			pname = sname = "Sort";
 			break;
+		case T_IncrementalSort:
+			pname = sname = "Incremental Sort";
+			break;
 		case T_Group:
 			pname = sname = "Group";
 			break;
@@ -1899,6 +1906,12 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_sort_keys(castNode(SortState, planstate), ancestors, es);
 			show_sort_info(castNode(SortState, planstate), es);
 			break;
+		case T_IncrementalSort:
+			show_incremental_sort_keys(castNode(IncrementalSortState, planstate),
+									   ancestors, es);
+			show_incremental_sort_info(castNode(IncrementalSortState, planstate),
+									   es);
+			break;
 		case T_MergeAppend:
 			show_merge_append_keys(castNode(MergeAppendState, planstate),
 								   ancestors, es);
@@ -2227,9 +2240,26 @@ show_sort_keys(SortState *sortstate, List *ancestors, ExplainState *es)
 	Sort	   *plan = (Sort *) sortstate->ss.ps.plan;
 
 	show_sort_group_keys((PlanState *) sortstate, "Sort Key",
-						 plan->numCols, plan->sortColIdx,
+						 plan->numCols, 0, plan->sortColIdx,
 						 plan->sortOperators, plan->collations,
 						 plan->nullsFirst,
+						 ancestors, es);
+}
+
+/*
+ * Show the sort keys for a IncrementalSort node.
+ */
+static void
+show_incremental_sort_keys(IncrementalSortState *incrsortstate,
+						   List *ancestors, ExplainState *es)
+{
+	IncrementalSort *plan = (IncrementalSort *) incrsortstate->ss.ps.plan;
+
+	show_sort_group_keys((PlanState *) incrsortstate, "Sort Key",
+						 plan->sort.numCols, plan->presortedCols,
+						 plan->sort.sortColIdx,
+						 plan->sort.sortOperators, plan->sort.collations,
+						 plan->sort.nullsFirst,
 						 ancestors, es);
 }
 
@@ -2243,7 +2273,7 @@ show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 	MergeAppend *plan = (MergeAppend *) mstate->ps.plan;
 
 	show_sort_group_keys((PlanState *) mstate, "Sort Key",
-						 plan->numCols, plan->sortColIdx,
+						 plan->numCols, 0, plan->sortColIdx,
 						 plan->sortOperators, plan->collations,
 						 plan->nullsFirst,
 						 ancestors, es);
@@ -2267,7 +2297,7 @@ show_agg_keys(AggState *astate, List *ancestors,
 			show_grouping_sets(outerPlanState(astate), plan, ancestors, es);
 		else
 			show_sort_group_keys(outerPlanState(astate), "Group Key",
-								 plan->numCols, plan->grpColIdx,
+								 plan->numCols, 0, plan->grpColIdx,
 								 NULL, NULL, NULL,
 								 ancestors, es);
 
@@ -2336,7 +2366,7 @@ show_grouping_set_keys(PlanState *planstate,
 	if (sortnode)
 	{
 		show_sort_group_keys(planstate, "Sort Key",
-							 sortnode->numCols, sortnode->sortColIdx,
+							 sortnode->numCols, 0, sortnode->sortColIdx,
 							 sortnode->sortOperators, sortnode->collations,
 							 sortnode->nullsFirst,
 							 ancestors, es);
@@ -2393,7 +2423,7 @@ show_group_keys(GroupState *gstate, List *ancestors,
 	/* The key columns refer to the tlist of the child plan */
 	ancestors = lcons(plan, ancestors);
 	show_sort_group_keys(outerPlanState(gstate), "Group Key",
-						 plan->numCols, plan->grpColIdx,
+						 plan->numCols, 0, plan->grpColIdx,
 						 NULL, NULL, NULL,
 						 ancestors, es);
 	ancestors = list_delete_first(ancestors);
@@ -2406,13 +2436,14 @@ show_group_keys(GroupState *gstate, List *ancestors,
  */
 static void
 show_sort_group_keys(PlanState *planstate, const char *qlabel,
-					 int nkeys, AttrNumber *keycols,
+					 int nkeys, int nPresortedKeys, AttrNumber *keycols,
 					 Oid *sortOperators, Oid *collations, bool *nullsFirst,
 					 List *ancestors, ExplainState *es)
 {
 	Plan	   *plan = planstate->plan;
 	List	   *context;
 	List	   *result = NIL;
+	List	   *resultPresorted = NIL;
 	StringInfoData sortkeybuf;
 	bool		useprefix;
 	int			keyno;
@@ -2452,9 +2483,13 @@ show_sort_group_keys(PlanState *planstate, const char *qlabel,
 								   nullsFirst[keyno]);
 		/* Emit one property-list item per sort key */
 		result = lappend(result, pstrdup(sortkeybuf.data));
+		if (keyno < nPresortedKeys)
+			resultPresorted = lappend(resultPresorted, exprstr);
 	}
 
 	ExplainPropertyList(qlabel, result, es);
+	if (nPresortedKeys > 0)
+		ExplainPropertyList("Presorted Key", resultPresorted, es);
 }
 
 /*
@@ -2665,6 +2700,168 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			if (es->workers_state)
 				ExplainCloseWorker(n, es);
 		}
+	}
+}
+
+
+static void
+show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
+								 const char *groupLabel, ExplainState *es)
+{
+	ListCell   *methodCell;
+	int			methodCount = list_length(groupInfo->sortMethods);
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		appendStringInfoSpaces(es->str, es->indent * 2);
+		appendStringInfo(es->str, "%s Groups: %ld (Methods: ", groupLabel,
+						 groupInfo->groupCount);
+		foreach(methodCell, groupInfo->sortMethods)
+		{
+			const char *sortMethodName;
+
+			sortMethodName = tuplesort_method_name(methodCell->int_value);
+			appendStringInfo(es->str, "%s", sortMethodName);
+			if (foreach_current_index(methodCell) < methodCount - 1)
+				appendStringInfo(es->str, ", ");
+		}
+		appendStringInfo(es->str, ")");
+
+		if (groupInfo->maxMemorySpaceUsed > 0)
+		{
+			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			const char *spaceTypeName;
+
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			appendStringInfo(es->str, " %s: %ldkB (avg), %ldkB (max)",
+							 spaceTypeName, avgSpace,
+							 groupInfo->maxMemorySpaceUsed);
+		}
+
+		if (groupInfo->maxDiskSpaceUsed > 0)
+		{
+			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+
+			const char *spaceTypeName;
+
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_DISK);
+			/* Add a semicolon separator only if memory stats were printed. */
+			if (groupInfo->maxMemorySpaceUsed > 0)
+				appendStringInfo(es->str, ";");
+			appendStringInfo(es->str, " %s: %ldkB (avg), %ldkB (max)",
+							 spaceTypeName, avgSpace,
+							 groupInfo->maxDiskSpaceUsed);
+		}
+
+		appendStringInfo(es->str, "\n");
+	}
+	else
+	{
+		List	   *methodNames = NIL;
+		StringInfoData groupName;
+
+		initStringInfo(&groupName);
+		appendStringInfo(&groupName, "%s Groups", groupLabel);
+		ExplainOpenGroup("Incremental Sort Groups", groupName.data, true, es);
+		ExplainPropertyInteger("Group Count", NULL, groupInfo->groupCount, es);
+
+		foreach(methodCell, groupInfo->sortMethods)
+		{
+			const	   *sortMethodName = tuplesort_method_name(methodCell->int_value);
+
+			methodNames = lappend(methodNames, sortMethodName);
+		}
+		ExplainPropertyList("Sort Methods Used", methodNames, es);
+
+		if (groupInfo->maxMemorySpaceUsed > 0)
+		{
+			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			const	   *spaceTypeName;
+
+			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
+			ExplainPropertyInteger("Maximum Sort Space Used", "kB",
+								   groupInfo->maxMemorySpaceUsed, es);
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			ExplainPropertyText("Sort Space Type", spaceTypeName, es);
+		}
+		if (groupInfo->maxDiskSpaceUsed > 0)
+		{
+			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			const	   *spaceTypeName;
+
+			ExplainPropertyInteger("Average Sort Space Used", "kB", avgSpace, es);
+			ExplainPropertyInteger("Maximum Sort Space Used", "kB",
+								   groupInfo->maxDiskSpaceUsed, es);
+			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
+			ExplainPropertyText("Sort Space Type", spaceTypeName, es);
+		}
+
+		ExplainCloseGroup("Incremental Sort Groups", "XXX Groups", true, es);
+	}
+}
+
+/*
+ * If it's EXPLAIN ANALYZE, show tuplesort stats for a incremental sort node
+ */
+static void
+show_incremental_sort_info(IncrementalSortState *incrsortstate,
+						   ExplainState *es)
+{
+	IncrementalSortGroupInfo *fullsortGroupInfo;
+	IncrementalSortGroupInfo *prefixsortGroupInfo;
+
+	if (!(es->analyze && incrsortstate->sort_Done))
+		return;
+
+	fullsortGroupInfo = &incrsortstate->incsort_info.fullsortGroupInfo;
+	if (fullsortGroupInfo->groupCount > 0)
+		show_incremental_sort_group_info(fullsortGroupInfo, "Full-sort", es);
+	prefixsortGroupInfo = &incrsortstate->incsort_info.prefixsortGroupInfo;
+	if (prefixsortGroupInfo->groupCount > 0)
+		show_incremental_sort_group_info(prefixsortGroupInfo, "Presorted", es);
+
+	if (incrsortstate->shared_info != NULL)
+	{
+		int			n;
+		bool		opened_group = false;
+
+		for (n = 0; n < incrsortstate->shared_info->num_workers; n++)
+		{
+			IncrementalSortInfo *incsort_info =
+			&incrsortstate->shared_info->sinfo[n];
+
+			/*
+			 * XXX: The previous version of the patch chcked:
+			 * fullsort_instrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS
+			 * and continued if the condition was true (with the comment
+			 * "ignore any unfilled slots"). I'm not convinced that makes
+			 * sense since the same sort instrument can have been used
+			 * multiple times, so the last time it being used being still in
+			 * progress, doesn't seem to be relevant. Instead I'm now checking
+			 * to see if the group count for each group info is 0. If both are
+			 * 0, then we exclude the worker since it didn't contribute
+			 * anything meaningful.
+			 */
+			fullsortGroupInfo = &incsort_info->fullsortGroupInfo;
+			prefixsortGroupInfo = &incsort_info->prefixsortGroupInfo;
+			if (fullsortGroupInfo->groupCount == 0 &&
+				prefixsortGroupInfo->groupCount == 0)
+				continue;
+
+			if (!opened_group)
+			{
+				ExplainOpenGroup("Workers", "Workers", false, es);
+				opened_group = true;
+			}
+
+			if (fullsortGroupInfo->groupCount > 0)
+				show_incremental_sort_group_info(fullsortGroupInfo, "Full-sort", es);
+			if (prefixsortGroupInfo->groupCount > 0)
+				show_incremental_sort_group_info(prefixsortGroupInfo, "Presorted", es);
+		}
+
+		if (opened_group)
+			ExplainCloseGroup("Workers", "Workers", false, es);
 	}
 }
 

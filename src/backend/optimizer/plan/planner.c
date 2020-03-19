@@ -5100,17 +5100,17 @@ create_ordered_paths(PlannerInfo *root,
 				double		total_groups;
 
 				/*
-				 * We don't care if this is the cheapest partial path - we
-				 * can't simply skip it, because it may be partially sorted in
-				 * which case we want to consider incremental sort on top of
-				 * it (instead of full sort, which is what happens above).
+				 * We don't care if this is the cheapest partial path - we can't
+				 * simply skip it, because it may be partially sorted in which
+				 * case we want to consider adding incremental sort (instead of
+				 * full sort, which is what happens above).
 				 */
 
 				is_sorted = pathkeys_common_contained_in(root->sort_pathkeys,
 														 input_path->pathkeys,
 														 &presorted_keys);
 
-				/* Ignore already sorted paths */
+				/* No point in adding incremental sort on fully sorted paths. */
 				if (is_sorted)
 					continue;
 
@@ -7005,9 +7005,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 			}
 		}
 
-		/*
-		 * Also consider incremental sort on all partially sorted paths.
-		 */
+		/* Consider incremental sort on all partial paths, if enabled. */
 		if (enable_incrementalsort)
 		{
 			foreach(lc, input_rel->pathlist)
@@ -7122,10 +7120,10 @@ create_partial_grouping_paths(PlannerInfo *root,
 			/* We've already skipped fully sorted paths above. */
 			Assert(!is_sorted);
 
+			/* no shared prefix, not point in building incremental sort */
 			if (presorted_keys == 0)
 				continue;
 
-			/* Since we have presorted keys, consider incremental sort. */
 			path = (Path *) create_incremental_sort_path(root,
 														 partially_grouped_rel,
 														 path,

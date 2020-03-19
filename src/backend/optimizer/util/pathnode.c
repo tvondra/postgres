@@ -733,10 +733,11 @@ add_path_precheck(RelOptInfo *parent_rel,
  *
  *	  Because we don't consider parameterized paths here, we also don't
  *	  need to consider the row counts as a measure of quality: every path will
- *	  produce the same number of rows.  Neither do we need to consider startup
- *	  costs: parallelism is only used for plans that will be run to completion.
- *	  Therefore, this routine is much simpler than add_path: it needs to
- *	  consider only pathkeys and total cost.
+ *	  produce the same number of rows.  It may however matter how much the
+ *	  path ordering matches the final ordering, needed by upper parts of the
+ *	  plan, because that will affect how expensive the incremental sort is.
+ *	  because of that we need to consider both the total and startup path,
+ *	  in addition to pathkeys.
  *
  *	  As with add_path, we pfree paths that are found to be dominated by
  *	  another partial path; this requires that there be no other references to
@@ -774,7 +775,14 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 		/* Compare pathkeys. */
 		keyscmp = compare_pathkeys(new_path->pathkeys, old_path->pathkeys);
 
-		/* Unless pathkeys are incompatible, keep just one of the two paths. */
+		/*
+		 * Unless pathkeys are incompatible, see if one of the paths dominates
+		 * the other (both in startup and total cost). It may happen that one
+		 * path has lower startup cost, the other has lower total cost.
+		 *
+		 * XXX Perhaps we could do this only when incremental sort is enabled,
+		 * and use the simpler version (compring just total cost) otherwise?
+		 */
 		if (keyscmp != PATHKEYS_DIFFERENT)
 		{
 			PathCostComparison costcmp;

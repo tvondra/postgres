@@ -2764,6 +2764,14 @@ find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel)
  * order matches the final output ordering for the overall query we're
  * planning, or because it enables an efficient merge join.  Here, we try
  * to figure out which pathkeys to consider.
+ *
+ * This allows us to do incremental sort on top of an index scan under a gather
+ * merge node, i.e. parallelized.
+ *
+ * XXX At the moment this can only ever return a list with a single element,
+ * because it looks at query_pathkeys only. So we might return the pathkeys
+ * directly, but it seems plausible we'll want to consider other orderings
+ * in the future.
  */
 static List *
 get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
@@ -2772,8 +2780,8 @@ get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 	ListCell   *lc;
 
 	/*
-	 * Pushing the query_pathkeys to the remote server is always worth
-	 * considering, because it might let us avoid a local sort.
+	 * Considering query_pathkeys is always worth it, because it might let us
+	 * avoid a local sort.
 	 */
 	if (root->query_pathkeys)
 	{
@@ -2786,14 +2794,9 @@ get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 			Expr	   *em_expr;
 
 			/*
-			 * The planner and executor don't have any clever strategy for
-			 * taking data sorted by a prefix of the query's pathkeys and
-			 * getting it to be sorted by all of those pathkeys. We'll just
-			 * end up re-sorting the entire data set.  So, unless we can push
-			 * down all of the query pathkeys, forget it.
-			 *
-			 * is_foreign_expr would detect volatile expressions as well, but
-			 * checking ec_has_volatile here saves some cycles.
+			 * We can't use incremental sort for pathkeys containing volatile
+			 * expressions. We could walk the exppression itself, but checking
+			 * ec_has_volatile here saves some cycles.
 			 */
 			if (pathkey_ec->ec_has_volatile ||
 				!(em_expr = find_em_expr_for_rel(pathkey_ec, rel)))
@@ -2803,10 +2806,6 @@ get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
 			}
 		}
 
-		/*
-		 * This ends up allowing us to do incremental sort on top of an index
-		 * scan all parallelized under a gather merge node.
-		 */
 		if (query_pathkeys_ok)
 			useful_pathkeys_list = list_make1(list_copy(root->query_pathkeys));
 	}
@@ -2819,10 +2818,10 @@ get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel)
  *		Generate parallel access paths for a relation by pushing a Gather or
  *		Gather Merge on top of a partial path.
  *
- * Unlike generate_gather_paths, this does not look only at pathkeys of the
- * input paths (aiming to preserve the ordering). It also considers ordering
- * that might be useful by nodes above the gather merge node, and tries to
- * add a sort (regular or incremental) to provide that.
+ * Unlike plain generate_gather_paths, this looks both at pathkeys of input
+ * paths (aiming to preserve the ordering), but also considers ordering that
+ * might be useful for nodes above the gather merge node, and tries to add
+ * a sort (regular or incremental) to provide that.
  */
 void
 generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_rows)
@@ -2841,7 +2840,7 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 	if (override_rows)
 		rowsp = &rows;
 
-	/* generate the regular gather merge paths */
+	/* generate the regular gather (merge) paths */
 	generate_gather_paths(root, rel, override_rows);
 
 	/* when incremental sort is disabled, we're done */
@@ -2851,7 +2850,7 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 	/* consider incremental sort for interesting orderings */
 	useful_pathkeys_list = get_useful_pathkeys_for_relation(root, rel);
 
-	/* used for explicit sort paths */
+	/* used for explicit (full) sort paths */
 	cheapest_partial_path = linitial(rel->partial_pathlist);
 
 	/*
@@ -2880,6 +2879,14 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 													 subpath->pathkeys,
 													 &presorted_keys);
 
+			/*
+			 * When the partial path is already sorted, we can just add a gather
+			 * merge on top, and we're done - no point in adding explicit sort.
+			 *
+			 * XXX Can't we skip this (maybe only for the cheapest partial path)
+			 * when the path is already sorted? Then it's likely duplicate with
+			 * the path created by generate_gather_paths.
+			 */
 			if (is_sorted)
 			{
 				path = create_gather_merge_path(root, rel, subpath, rel->reltarget,
@@ -2892,8 +2899,14 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 			Assert(!is_sorted);
 
 			/*
-			 * consider regular sort for cheapest partial path (for each
-			 * useful pathkeys)
+			 * Consider regular sort for the cheapest partial path (for each
+			 * useful pathkeys). We know the path is not sorted, because we'd
+			 * not get here otherwise.
+			 *
+			 * XXX This is not redundant with the gather merge path created in
+			 * generate_gather_paths, because that merely preserves ordering of
+			 * the cheapest partial path, while here we add an explicit sort to
+			 * get match the useful ordering.
 			 */
 			if (cheapest_partial_path == subpath)
 			{
@@ -2919,7 +2932,10 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 				/* Fall through */
 			}
 
-			/* Also consider incremental sort */
+			/*
+			 * Consider incremental sort, but only when the subpath is already
+			 * partially sorted on a pathkey prefix.
+			 */
 			if (presorted_keys > 0)
 			{
 				Path	   *tmp;

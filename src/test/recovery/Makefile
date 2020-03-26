@@ -9,7 +9,7 @@
 #
 #-------------------------------------------------------------------------
 
-EXTRA_INSTALL=contrib/test_decoding contrib/pg_prewarm
+EXTRA_INSTALL=contrib/test_decoding contrib/pg_prewarm contrib/pageinspect contrib/postgres_fdw
 
 subdir = src/test/recovery
 top_builddir = ../../..

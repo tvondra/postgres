@@ -329,6 +329,10 @@ GetFdwRoutine(Oid fdwhandler)
 		elog(ERROR, "foreign-data wrapper handler function %u did not return an FdwRoutine struct",
 			 fdwhandler);
 
+	/* The FDW must support both or nothing */
+	Assert((routine->CommitForeignTransaction && routine->RollbackForeignTransaction) ||
+		   (!routine->CommitForeignTransaction && !routine->RollbackForeignTransaction));
+
 	return routine;
 }
 

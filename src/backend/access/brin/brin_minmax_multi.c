@@ -1735,6 +1735,7 @@ brin_minmax_multi_opcinfo(PG_FUNCTION_ARGS)
 
 	result = palloc0(MAXALIGN(SizeofBrinOpcInfo(1)) +
 					 sizeof(MinmaxMultiOpaque));
+	result->oi_ignore_correlation = true;
 	result->oi_nstored = 1;
 	result->oi_regular_nulls = true;
 	result->oi_opaque = (MinmaxMultiOpaque *)

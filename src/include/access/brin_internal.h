@@ -30,6 +30,9 @@ typedef struct BrinOpcInfo
 	/* Regular processing of NULLs in BrinValues? */
 	bool		oi_regular_nulls;
 
+	/* Ignore correlation during cost estimation */
+	bool		oi_ignore_correlation;
+
 	/* Opaque pointer for the opclass' private use */
 	void	   *oi_opaque;
 

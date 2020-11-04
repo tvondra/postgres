@@ -199,6 +199,8 @@ typedef void (*ForeignAsyncNotify_function) (AsyncRequest *areq);
 typedef void (*PrepareForeignTransaction_function) (FdwXactInfo *finfo);
 typedef void (*CommitForeignTransaction_function) (FdwXactInfo *finfo);
 typedef void (*RollbackForeignTransaction_function) (FdwXactInfo *finfo);
+typedef char *(*GetPrepareId_function) (TransactionId xid, Oid serverid,
+										Oid userid, int *prep_id_len);
 
 
 /*
@@ -293,6 +295,7 @@ typedef struct FdwRoutine
 	CommitForeignTransaction_function CommitForeignTransaction;
 	RollbackForeignTransaction_function RollbackForeignTransaction;
 	PrepareForeignTransaction_function PrepareForeignTransaction;
+	GetPrepareId_function GetPrepareId;
 } FdwRoutine;
 
 

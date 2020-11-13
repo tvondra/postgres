@@ -59,17 +59,26 @@ typedef struct SortItem
 
 extern MVNDistinct *statext_ndistinct_build(double totalrows,
 											int numrows, HeapTuple *rows,
-											Bitmapset *attrs, VacAttrStats **stats);
+											Datum *exprvals, bool *exprnulls,
+											Oid *exprtypes, Oid *exrcollations,
+											Bitmapset *attrs, List *exprs,
+											VacAttrStats **stats);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
 extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 
 extern MVDependencies *statext_dependencies_build(int numrows, HeapTuple *rows,
-												  Bitmapset *attrs, VacAttrStats **stats);
+												  Datum *exprvals, bool *exprnulls,
+												  Oid *exprtypes, Oid *exprcollations,
+												  Bitmapset *attrs, List *exprs,
+												  VacAttrStats **stats);
 extern bytea *statext_dependencies_serialize(MVDependencies *dependencies);
 extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MCVList *statext_mcv_build(int numrows, HeapTuple *rows,
-								  Bitmapset *attrs, VacAttrStats **stats,
+								  Datum *exprvals, bool *exprnulls,
+								  Oid *exprtypes, Oid *exprcollations,
+								  Bitmapset *attrs, List *exprs,
+								  VacAttrStats **stats,
 								  double totalrows, int stattarget);
 extern bytea *statext_mcv_serialize(MCVList *mcv, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
@@ -93,11 +102,19 @@ extern void *bsearch_arg(const void *key, const void *base,
 extern AttrNumber *build_attnums_array(Bitmapset *attrs, int *numattrs);
 
 extern SortItem *build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
+									Datum *exprvals, bool *exprnulls,
+									Oid *exprtypes, int nexprs,
 									TupleDesc tdesc, MultiSortSupport mss,
 									int numattrs, AttrNumber *attnums);
 
 extern bool examine_clause_args(List *args, Var **varp,
 								Const **cstp, bool *varonleftp);
+extern bool examine_clause_args2(List *args, Node **exprp,
+								 Const **cstp, bool *expronleftp);
+extern bool examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp,
+										bool *varonleftp);
+extern bool examine_opclause_expression2(OpExpr *expr, Node **exprp, Const **cstp,
+										 bool *expronleftp);
 
 extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
 											  StatisticExtInfo *stat,

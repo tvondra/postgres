@@ -37,8 +37,12 @@
 #include "utils/typcache.h"
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-										HeapTuple *rows, VacAttrStats **stats,
-										int k, int *combination);
+										HeapTuple *rows, Datum *exprvals,
+										bool *exprnulls, Oid *exprtypes,
+										Oid *exprcollations,
+										int nattrs, int nexprs,
+										VacAttrStats **stats, int k,
+										int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -84,13 +88,26 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						Bitmapset *attrs, VacAttrStats **stats)
+						Datum *exprvals, bool *exprnulls,
+						Oid *exprtypes, Oid *exprcollations,
+						Bitmapset *attrs, List *exprs,
+						VacAttrStats **stats)
 {
 	MVNDistinct *result;
+	int			i;
 	int			k;
 	int			itemcnt;
 	int			numattrs = bms_num_members(attrs);
-	int			numcombs = num_combinations(numattrs);
+	int			numcombs = num_combinations(numattrs + list_length(exprs));
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	for (i = 1; i <= list_length(exprs); i++)
+		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -99,13 +116,13 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	result->nitems = numcombs;
 
 	itemcnt = 0;
-	for (k = 2; k <= numattrs; k++)
+	for (k = 2; k <= bms_num_members(attrs); k++)
 	{
 		int		   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
-		generator = generator_init(numattrs, k);
+		generator = generator_init(bms_num_members(attrs), k);
 
 		while ((combination = generator_next(generator)))
 		{
@@ -114,10 +131,19 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->attrs = NULL;
 			for (j = 0; j < k; j++)
-				item->attrs = bms_add_member(item->attrs,
-											 stats[combination[j]]->attr->attnum);
+			{
+				if (combination[j] < numattrs)
+					item->attrs = bms_add_member(item->attrs,
+												 stats[combination[j]]->attr->attnum);
+				else
+					item->attrs = bms_add_member(item->attrs, MaxHeapAttributeNumber + combination[j] + 1);
+			}
+
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
+										  exprvals, exprnulls,
+										  exprtypes, exprcollations,
+										  numattrs, list_length(exprs),
 										  stats, k, combination);
 
 			itemcnt++;
@@ -428,6 +454,9 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
+						  Datum *exprvals, bool *exprnulls,
+						  Oid *exprtypes, Oid *exprcollations,
+						  int nattrs, int nexprs,
 						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
@@ -467,25 +496,48 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats *colstat = stats[combination[i]];
+		Oid				typid;
 		TypeCacheEntry *type;
+		AttrNumber		attnum = InvalidAttrNumber;
+		TupleDesc		tdesc = NULL;
+		Oid				collid = InvalidOid;
 
-		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
+		if (combination[i] < nattrs)
+		{
+			VacAttrStats *colstat = stats[combination[i]];
+			typid = colstat->attrtypid;
+			attnum = colstat->attr->attnum;
+			collid = colstat->attrcollid;
+			tdesc = colstat->tupDesc;
+		}
+		else
+		{
+			typid = exprtypes[combination[i] - nattrs];
+			collid = exprcollations[combination[i] - nattrs];
+		}
+
+		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 colstat->attrtypid);
+				 typid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
+		multi_sort_add_dimension(mss, i, type->lt_opr, collid);
 
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
-			items[j].values[i] =
-				heap_getattr(rows[j],
-							 colstat->attr->attnum,
-							 colstat->tupDesc,
-							 &items[j].isnull[i]);
+			if (combination[i] < nattrs)
+				items[j].values[i] =
+					heap_getattr(rows[j],
+								 attnum,
+								 tdesc,
+								 &items[j].isnull[i]);
+			else
+			{
+				items[j].values[i] = exprvals[j * nexprs + combination[i]];
+				items[j].isnull[i] = exprnulls[j * nexprs + combination[i]];
+			}
 		}
 	}
 

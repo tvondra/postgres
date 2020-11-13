@@ -52,6 +52,9 @@ CATALOG(pg_statistic_ext,3381,StatisticExtRelationId)
 #ifdef CATALOG_VARLEN
 	char		stxkind[1] BKI_FORCE_NOT_NULL;	/* statistics kinds requested
 												 * to build */
+	pg_node_tree stxexprs;		/* expression trees for stats attributes that
+								 * are not simple column references; one for
+								 * each zero entry in stxkeys[] */
 #endif
 
 } FormData_pg_statistic_ext;

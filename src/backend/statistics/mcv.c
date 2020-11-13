@@ -73,7 +73,9 @@
 	 ((ndims) * sizeof(DimensionInfo)) + \
 	 ((nitems) * ITEM_SIZE(ndims)))
 
-static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs);
+static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs,
+								  Oid *exprtypes, Oid *exprcollations,
+								  int nexprs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
 									   MultiSortSupport mss, int *ndistinct);
@@ -180,7 +182,10 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  *
  */
 MCVList *
-statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
+statext_mcv_build(int numrows, HeapTuple *rows,
+				  Datum *exprvals, bool *exprnulls,
+				  Oid *exprtypes, Oid *exprcollations,
+				  Bitmapset *attrs, List *exprs,
 				  VacAttrStats **stats, double totalrows, int stattarget)
 {
 	int			i,
@@ -194,14 +199,24 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	MCVList    *mcvlist = NULL;
 	MultiSortSupport mss;
 
+	/* comparator for all the columns */
+	mss = build_mss(stats, bms_num_members(attrs), exprtypes, exprcollations, list_length(exprs));
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	for (i = 1; i <= list_length(exprs); i++)
+		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
+
 	attnums = build_attnums_array(attrs, &numattrs);
 
-	/* comparator for all the columns */
-	mss = build_mss(stats, numattrs);
-
 	/* sort the rows */
-	items = build_sorted_items(numrows, &nitems, rows, stats[0]->tupDesc,
-							   mss, numattrs, attnums);
+	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
+							   exprtypes, list_length(exprs),
+							   stats[0]->tupDesc, mss, numattrs, attnums);
 
 	if (!items)
 		return NULL;
@@ -337,6 +352,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	pfree(items);
 	pfree(groups);
+	pfree(attrs);
 
 	return mcvlist;
 }
@@ -346,12 +362,12 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
  *	build MultiSortSupport for the attributes passed in attrs
  */
 static MultiSortSupport
-build_mss(VacAttrStats **stats, int numattrs)
+build_mss(VacAttrStats **stats, int numattrs, Oid *exprtypes, Oid *exprcollations, int nexprs)
 {
 	int			i;
 
 	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(numattrs);
+	MultiSortSupport mss = multi_sort_init(numattrs + nexprs);
 
 	/* prepare the sort functions for all the attributes */
 	for (i = 0; i < numattrs; i++)
@@ -365,6 +381,20 @@ build_mss(VacAttrStats **stats, int numattrs)
 				 colstat->attrtypid);
 
 		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
+	}
+
+	/* prepare the sort functions for all the expressions */
+	for (i = 0; i < nexprs; i++)
+	{
+		TypeCacheEntry *type;
+
+		type = lookup_type_cache(exprtypes[i], TYPECACHE_LT_OPR);
+		if (type->lt_opr == InvalidOid) /* shouldn't happen */
+			elog(ERROR, "cache lookup failed for ordering operator for type %u",
+				 exprtypes[i]);
+
+		multi_sort_add_dimension(mss, numattrs + i, type->lt_opr,
+								 exprcollations[i]);
 	}
 
 	return mss;
@@ -1543,7 +1573,8 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
  */
 static bool *
 mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
-					 Bitmapset *keys, MCVList *mcvlist, bool is_or)
+					 Bitmapset *keys, List *exprs,
+					 MCVList *mcvlist, bool is_or)
 {
 	int			i;
 	ListCell   *l;
@@ -1583,8 +1614,10 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 
 			/* valid only after examine_clause_args returns true */
 			Var		   *var;
+			Node	   *clause_expr;
 			Const	   *cst;
 			bool		varonleft;
+			bool		expronleft;
 
 			fmgr_info(get_opcode(expr->opno), &opproc);
 
@@ -1653,6 +1686,89 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = RESULT_MERGE(matches[i], is_or, match);
 				}
 			}
+			/* extract the expr and const from the expression */
+			else if (examine_clause_args2(expr->args, &clause_expr, &cst, &expronleft))
+			{
+				ListCell   *lc;
+				int			idx;
+				Oid			collid = exprCollation(clause_expr);
+
+				/* match the attribute to a dimension of the statistic */
+				idx = bms_num_members(keys);
+
+				foreach(lc, exprs)
+				{
+					Node *stat_expr = (Node *) lfirst(lc);
+
+					if (equal(clause_expr, stat_expr))
+						break;
+
+					idx++;
+				}
+
+				/* index should be valid */
+				Assert((idx >= 0) &&
+					   (idx < bms_num_members(keys) + list_length(exprs)));
+
+				/*
+				 * Walk through the MCV items and evaluate the current clause.
+				 * We can skip items that were already ruled out, and
+				 * terminate if there are no remaining MCV items that might
+				 * possibly match.
+				 */
+				for (i = 0; i < mcvlist->nitems; i++)
+				{
+					bool		match = true;
+					MCVItem    *item = &mcvlist->items[i];
+
+					/*
+					 * When the MCV item or the Const value is NULL we can
+					 * treat this as a mismatch. We must not call the operator
+					 * because of strictness.
+					 */
+					if (item->isnull[idx] || cst->constisnull)
+					{
+						matches[i] = RESULT_MERGE(matches[i], is_or, false);
+						continue;
+					}
+
+					/*
+					 * Skip MCV items that can't change result in the bitmap.
+					 * Once the value gets false for AND-lists, or true for
+					 * OR-lists, we don't need to look at more clauses.
+					 */
+					if (RESULT_IS_FINAL(matches[i], is_or))
+						continue;
+
+					/*
+					 * First check whether the constant is below the lower
+					 * boundary (in that case we can skip the bucket, because
+					 * there's no overlap).
+					 *
+					 * We don't store collations used to build the statistics,
+					 * but we can use the collation for the attribute itself,
+					 * as stored in varcollid. We do reset the statistics
+					 * after a type change (including collation change), so
+					 * this is OK. We may need to relax this after allowing
+					 * extended statistics on expressions.
+					 */
+					if (expronleft)
+						match = DatumGetBool(FunctionCall2Coll(&opproc,
+															   collid,
+															   item->values[idx],
+															   cst->constvalue));
+					else
+						match = DatumGetBool(FunctionCall2Coll(&opproc,
+															   collid,
+															   cst->constvalue,
+															   item->values[idx]));
+
+					/* update the match bitmap with the result */
+					matches[i] = RESULT_MERGE(matches[i], is_or, match);
+				}
+			}
+			else
+				elog(ERROR, "incompatible clause");
 		}
 		else if (IsA(clause, ScalarArrayOpExpr))
 		{
@@ -1661,8 +1777,10 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 
 			/* valid only after examine_clause_args returns true */
 			Var		   *var;
+			Node	   *clause_expr;
 			Const	   *cst;
 			bool		varonleft;
+			bool		expronleft;
 
 			fmgr_info(get_opcode(expr->opno), &opproc);
 
@@ -1760,14 +1878,154 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = RESULT_MERGE(matches[i], is_or, match);
 				}
 			}
+			/* extract the expr and const from the expression */
+			else if (examine_clause_args2(expr->args, &clause_expr, &cst, &expronleft))
+			{
+				ListCell   *lc;
+				int			idx;
+
+				ArrayType  *arrayval;
+				int16		elmlen;
+				bool		elmbyval;
+				char		elmalign;
+				int			num_elems;
+				Datum	   *elem_values;
+				bool	   *elem_nulls;
+
+				/* ScalarArrayOpExpr has the Var always on the left */
+				Assert(varonleft);
+
+				if (!cst->constisnull)
+				{
+					arrayval = DatumGetArrayTypeP(cst->constvalue);
+					get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+										 &elmlen, &elmbyval, &elmalign);
+					deconstruct_array(arrayval,
+									  ARR_ELEMTYPE(arrayval),
+									  elmlen, elmbyval, elmalign,
+									  &elem_values, &elem_nulls, &num_elems);
+				}
+
+				/* match the attribute to a dimension of the statistic */
+				idx = bms_num_members(keys);
+
+				foreach(lc, exprs)
+				{
+					Node *stat_expr = (Node *) lfirst(lc);
+
+					if (equal(clause_expr, stat_expr))
+						break;
+
+					idx++;
+				}
+
+				/* index should be valid */
+				Assert((idx >= 0) &&
+					   (idx < bms_num_members(keys) + list_length(exprs)));
+
+				/*
+				 * Walk through the MCV items and evaluate the current clause.
+				 * We can skip items that were already ruled out, and
+				 * terminate if there are no remaining MCV items that might
+				 * possibly match.
+				 */
+				for (i = 0; i < mcvlist->nitems; i++)
+				{
+					int			j;
+					bool		match = (expr->useOr ? false : true);
+					MCVItem    *item = &mcvlist->items[i];
+
+					/*
+					 * When the MCV item or the Const value is NULL we can
+					 * treat this as a mismatch. We must not call the operator
+					 * because of strictness.
+					 */
+					if (item->isnull[idx] || cst->constisnull)
+					{
+						matches[i] = RESULT_MERGE(matches[i], is_or, false);
+						continue;
+					}
+
+					/*
+					 * Skip MCV items that can't change result in the bitmap.
+					 * Once the value gets false for AND-lists, or true for
+					 * OR-lists, we don't need to look at more clauses.
+					 */
+					if (RESULT_IS_FINAL(matches[i], is_or))
+						continue;
+
+					for (j = 0; j < num_elems; j++)
+					{
+						Datum		elem_value = elem_values[j];
+						bool		elem_isnull = elem_nulls[j];
+						bool		elem_match;
+
+						/* NULL values always evaluate as not matching. */
+						if (elem_isnull)
+						{
+							match = RESULT_MERGE(match, expr->useOr, false);
+							continue;
+						}
+
+						/*
+						 * Stop evaluating the array elements once we reach
+						 * match value that can't change - ALL() is the same
+						 * as AND-list, ANY() is the same as OR-list.
+						 */
+						if (RESULT_IS_FINAL(match, expr->useOr))
+							break;
+
+						elem_match = DatumGetBool(FunctionCall2Coll(&opproc,
+																	var->varcollid,
+																	item->values[idx],
+																	elem_value));
+
+						match = RESULT_MERGE(match, expr->useOr, elem_match);
+					}
+
+					/* update the match bitmap with the result */
+					matches[i] = RESULT_MERGE(matches[i], is_or, match);
+				}
+			}
+			else
+				elog(ERROR, "incompatible clause");
 		}
 		else if (IsA(clause, NullTest))
 		{
 			NullTest   *expr = (NullTest *) clause;
-			Var		   *var = (Var *) (expr->arg);
+			Node	   *clause_expr = (Node *) (expr->arg);
 
 			/* match the attribute to a dimension of the statistic */
-			int			idx = bms_member_index(keys, var->varattno);
+			int			idx = -1;
+
+			if (IsA(clause_expr, Var))
+			{
+				/* simple Var, so just lookup using varattno */
+				Var *var = (Var *) clause_expr;
+
+				idx = bms_member_index(keys, var->varattno);
+			}
+			else
+			{
+				ListCell *lc;
+
+				/* expressions are after the simple columns */
+				idx = bms_num_members(keys);
+
+				/* expression - lookup in stats expressions */
+				foreach(lc, exprs)
+				{
+					Node *stat_expr = (Node *) lfirst(lc);
+
+					if (equal(clause_expr, stat_expr))
+						break;
+
+					idx++;
+				}
+			}
+
+			/* index should be valid */
+			Assert((idx >= 0) && (idx < bms_num_members(keys) + list_length(exprs)));
 
 			/*
 			 * Walk through the MCV items and evaluate the current clause. We
@@ -1810,7 +2068,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(list_length(bool_clauses) >= 2);
 
 			/* build the match bitmap for the OR-clauses */
-			bool_matches = mcv_get_match_bitmap(root, bool_clauses, keys,
+			bool_matches = mcv_get_match_bitmap(root, bool_clauses, keys, exprs,
 												mcvlist, is_orclause(clause));
 
 			/*
@@ -1838,7 +2096,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(list_length(not_args) == 1);
 
 			/* build the match bitmap for the NOT-clause */
-			not_matches = mcv_get_match_bitmap(root, not_args, keys,
+			not_matches = mcv_get_match_bitmap(root, not_args, keys, exprs,
 											   mcvlist, false);
 
 			/*
@@ -1917,7 +2175,8 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	mcv = statext_mcv_load(stat->statOid);
 
 	/* build a match bitmap for the clauses */
-	matches = mcv_get_match_bitmap(root, clauses, stat->keys, mcv, false);
+	matches = mcv_get_match_bitmap(root, clauses, stat->keys, stat->exprs,
+								   mcv, false);
 
 	/* sum frequencies for all the matching MCV items */
 	*basesel = 0.0;

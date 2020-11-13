@@ -1835,7 +1835,22 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_CreateStatsStmt:
-				address = CreateStatistics((CreateStatsStmt *) parsetree);
+				{
+					Oid			relid;
+					CreateStatsStmt *stmt = (CreateStatsStmt *) parsetree;
+					RangeVar   *rel = (RangeVar *) linitial(stmt->relations);
+
+					/*
+					 * XXX RangeVarCallbackOwnsRelation not needed needed here,
+					 * to keep the same behavior as before.
+					 */
+					relid = RangeVarGetRelid(rel, ShareLock, false);
+
+					/* Run parse analysis ... */
+					stmt = transformStatsStmt(relid, stmt, queryString);
+
+					address = CreateStatistics(stmt);
+				}
 				break;
 
 			case T_AlterStatsStmt:

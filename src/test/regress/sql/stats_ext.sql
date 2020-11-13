@@ -815,7 +815,7 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AN
 DROP TABLE mcv_lists_multi;
 
 
--- statistics on expressions
+-- statistics on integer expressions
 CREATE TABLE expr_stats (a int, b int, c int);
 INSERT INTO expr_stats SELECT mod(i,10), mod(i,10), mod(i,10) FROM generate_series(1,10000) s(i);
 ANALYZE expr_stats;
@@ -829,7 +829,47 @@ ANALYZE expr_stats;
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
 
+-- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
+-- (not it fails, when there are no simple column references)
+DROP STATISTICS expr_stats_1;
 DROP TABLE expr_stats;
+
+-- statistics on a mix columns and expressions
+CREATE TABLE expr_stats (a int, b int, c int);
+INSERT INTO expr_stats SELECT mod(i,10), mod(i,10), mod(i,10) FROM generate_series(1,10000) s(i);
+ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (2*a) = 0 AND (3*b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 3 AND b = 3 AND (a-b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND b = 1 AND (a-b) = 0');
+
+CREATE STATISTICS expr_stats_1 (mcv) ON a, b, (a+b), (a-b) FROM expr_stats;
+ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (2*a) = 0 AND (3*b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 3 AND b = 3 AND (a-b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND b = 1 AND (a-b) = 0');
+
+DROP TABLE expr_stats;
+
+-- statistics on expressions with different data types
+CREATE TABLE expr_stats (a int, b name, c text);
+INSERT INTO expr_stats SELECT mod(i,10), md5(mod(i,10)::text), md5(mod(i,10)::text) FROM generate_series(1,10000) s(i);
+ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (b || c) <= ''z'' AND (c || b) >= ''0''');
+
+CREATE STATISTICS expr_stats_1 (mcv) ON a, b, (b || c), (c || b) FROM expr_stats;
+ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (b || c) <= ''z'' AND (c || b) >= ''0''');
+
+-- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
+-- (not it fails, when there are no simple column references)
+DROP STATISTICS expr_stats_1;
+
+DROP TABLE expr_stats;
+
 
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in

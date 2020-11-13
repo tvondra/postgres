@@ -71,7 +71,8 @@ static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows,
-								Datum *exprvals, bool *exprnulls, int nexprs, int k,
+								Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+								int nexprs, int k,
 								AttrNumber *dependency, VacAttrStats **stats,
 								Bitmapset *attrs);
 static bool dependency_is_fully_matched(MVDependency *dependency,
@@ -221,7 +222,7 @@ DependencyGenerator_next(DependencyGenerator state)
  * the last one.
  */
 static double
-dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls,
+dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls, Oid *exprtypes,
 				  int nexprs, int k, AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs)
 {
 	int			i,
@@ -293,7 +294,7 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
 	 *
 	 * FIXME pass proper exprtypes
 	 */
-	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls, NULL,
+	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls, exprtypes,
 							   nexprs, stats[0]->tupDesc, mss, k, attnums_dep);
 
 	/*
@@ -365,7 +366,7 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
  */
 MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows,
-						   Datum *exprvals, bool *exprnulls,
+						   Datum *exprvals, bool *exprnulls, Oid *exprtypes,
 						   Bitmapset *attrs, List *exprs,
 						   VacAttrStats **stats)
 {
@@ -413,7 +414,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 			MVDependency *d;
 
 			/* compute how valid the dependency seems */
-			degree = dependency_degree(numrows, rows, exprvals, exprnulls,
+			degree = dependency_degree(numrows, rows, exprvals, exprnulls, exprtypes,
 									   list_length(exprs), k, dependency,
 									   stats, attrs);
 

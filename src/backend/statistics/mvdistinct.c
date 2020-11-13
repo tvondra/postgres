@@ -38,7 +38,8 @@
 
 static double ndistinct_for_combination(double totalrows, int numrows,
 										HeapTuple *rows, Datum *exprvals,
-										bool *exprnulls, int nexprs,
+										bool *exprnulls, Oid *exprtypes,
+										int nexprs,
 										VacAttrStats **stats, int k,
 										int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
@@ -86,7 +87,7 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						Datum *exprvals, bool *exprnulls,
+						Datum *exprvals, bool *exprnulls, Oid *exprtypes,
 						Bitmapset *attrs, List *exprs,
 						VacAttrStats **stats)
 {
@@ -138,7 +139,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
-										  exprvals, exprnulls,
+										  exprvals, exprnulls, exprtypes,
 										  list_length(exprs),
 										  stats, k, combination);
 
@@ -450,7 +451,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  Datum *exprvals, bool *exprnulls, int nexprs,
+						  Datum *exprvals, bool *exprnulls, Oid *exprtypes, int nexprs,
 						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,

@@ -262,12 +262,12 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 			if (t == STATS_EXT_NDISTINCT)
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-													exprvals, exprnulls,
+													exprvals, exprnulls, exprtypes,
 													stat->columns, stat->exprs,
 													stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
-														  exprvals, exprnulls,
+														  exprvals, exprnulls, exprtypes,
 														  stat->columns,
 														  stat->exprs, stats);
 			else if (t == STATS_EXT_MCV)

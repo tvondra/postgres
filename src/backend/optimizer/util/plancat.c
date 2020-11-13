@@ -35,6 +35,7 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -1315,6 +1316,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		HeapTuple	dtup;
 		Bitmapset  *keys = NULL;
 		int			i;
+		List	   *exprs = NIL;
 
 		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
 		if (!HeapTupleIsValid(htup))
@@ -1333,6 +1335,41 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		for (i = 0; i < staForm->stxkeys.dim1; i++)
 			keys = bms_add_member(keys, staForm->stxkeys.values[i]);
 
+		/*
+		 * preprocess expression (if any)
+		 *
+		 * FIXME we probably need to cache the result somewhere
+		 */
+		{
+			bool		isnull;
+			Datum		datum;
+
+			/* decode expression (if any) */
+			datum = SysCacheGetAttr(STATEXTOID, htup,
+									Anum_pg_statistic_ext_stxexprs, &isnull);
+
+			if (!isnull)
+			{
+				char *exprsString;
+
+				exprsString = TextDatumGetCString(datum);
+				exprs = (List *) stringToNode(exprsString);
+				pfree(exprsString);
+
+				/*
+				 * Run the expressions through eval_const_expressions. This is not just an
+				 * optimization, but is necessary, because the planner will be comparing
+				 * them to similarly-processed qual clauses, and may fail to detect valid
+				 * matches without this.  We must not use canonicalize_qual, however,
+				 * since these aren't qual expressions.
+				 */
+				exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+
+				/* May as well fix opfuncids too */
+				fix_opfuncids((Node *) exprs);
+			}
+		}
+
 		/* add one StatisticExtInfo for each kind built */
 		if (statext_is_kind_built(dtup, STATS_EXT_NDISTINCT))
 		{
@@ -1342,6 +1379,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_NDISTINCT;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}
@@ -1354,6 +1392,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_DEPENDENCIES;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}
@@ -1366,6 +1405,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_MCV;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}

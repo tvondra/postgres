@@ -1840,10 +1840,11 @@ ProcessUtilitySlow(ParseState *pstate,
 					CreateStatsStmt *stmt = (CreateStatsStmt *) parsetree;
 					RangeVar   *rel = (RangeVar *) linitial(stmt->relations);
 
-					relid = RangeVarGetRelidExtended(rel, ShareLock,
-												 0,
-												 RangeVarCallbackOwnsRelation,
-												 NULL);
+					/*
+					 * XXX RangeVarCallbackOwnsRelation not needed needed here,
+					 * to keep the same behavior as before.
+					 */
+					relid = RangeVarGetRelid(rel, ShareLock, false);
 
 					/* Run parse analysis ... */
 					stmt = transformStatsStmt(relid, stmt, queryString);

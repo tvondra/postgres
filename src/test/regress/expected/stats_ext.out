@@ -43,12 +43,17 @@ CREATE STATISTICS tst ON a, b FROM pg_class;
 ERROR:  column "a" does not exist
 CREATE STATISTICS tst ON relname, relname, relnatts FROM pg_class;
 ERROR:  duplicate column name in statistics definition
-CREATE STATISTICS tst ON relnatts + relpages FROM pg_class;
-ERROR:  only simple column references are allowed in CREATE STATISTICS
-CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class;
-ERROR:  only simple column references are allowed in CREATE STATISTICS
 CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
 ERROR:  unrecognized statistics kind "unrecognized"
+-- incorrect expressions
+CREATE STATISTICS tst ON relnatts + relpages FROM pg_class; -- missing parentheses
+ERROR:  syntax error at or near "+"
+LINE 1: CREATE STATISTICS tst ON relnatts + relpages FROM pg_class;
+                                          ^
+CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class; -- tuple expression
+ERROR:  syntax error at or near ","
+LINE 1: CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class...
+                                          ^
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
 CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
 CREATE STATISTICS IF NOT EXISTS ab1_a_b_stats ON a, b FROM ab1;
@@ -1535,6 +1540,37 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AN
 (1 row)
 
 DROP TABLE mcv_lists_multi;
+-- statistics on expressions
+CREATE TABLE expr_stats (a int, b int, c int);
+INSERT INTO expr_stats SELECT mod(i,10), mod(i,10), mod(i,10) FROM generate_series(1,10000) s(i);
+ANALYZE expr_stats;
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
+ estimated | actual 
+-----------+--------
+         1 |   1000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
+ estimated | actual 
+-----------+--------
+         1 |   1000
+(1 row)
+
+CREATE STATISTICS expr_stats_1 (mcv) ON (a+b), (a-b), (2*a), (3*b) FROM expr_stats;
+ANALYZE expr_stats;
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
+ estimated | actual 
+-----------+--------
+      1000 |   1000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
+ estimated | actual 
+-----------+--------
+      1000 |   1000
+(1 row)
+
+DROP TABLE expr_stats;
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in
 -- the underlying table.

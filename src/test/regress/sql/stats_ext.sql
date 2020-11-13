@@ -34,9 +34,10 @@ CREATE STATISTICS tst FROM sometab;
 CREATE STATISTICS tst ON a, b FROM nonexistent;
 CREATE STATISTICS tst ON a, b FROM pg_class;
 CREATE STATISTICS tst ON relname, relname, relnatts FROM pg_class;
-CREATE STATISTICS tst ON relnatts + relpages FROM pg_class;
-CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class;
 CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
+-- incorrect expressions
+CREATE STATISTICS tst ON relnatts + relpages FROM pg_class; -- missing parentheses
+CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class; -- tuple expression
 
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
 CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
@@ -812,6 +813,23 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AN
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
 
 DROP TABLE mcv_lists_multi;
+
+
+-- statistics on expressions
+CREATE TABLE expr_stats (a int, b int, c int);
+INSERT INTO expr_stats SELECT mod(i,10), mod(i,10), mod(i,10) FROM generate_series(1,10000) s(i);
+ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
+
+CREATE STATISTICS expr_stats_1 (mcv) ON (a+b), (a-b), (2*a), (3*b) FROM expr_stats;
+--ANALYZE expr_stats;
+
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
+SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
+
+DROP TABLE expr_stats;
 
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in

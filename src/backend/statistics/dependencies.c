@@ -1258,8 +1258,6 @@ dependency_clause_matches_expression(Node *clause, Index relid, List *statlist)
 
 	vars = pull_var_clause(clause_expr, 0);
 
-	elog(WARNING, "nvars = %d", list_length(vars));
-
 	foreach (lc, vars)
 	{
 		Var *var = (Var *) lfirst(lc);
@@ -1286,10 +1284,7 @@ dependency_clause_matches_expression(Node *clause, Index relid, List *statlist)
 			Node *expr = (Node *) lfirst(lc2);
 
 			if (equal(clause_expr, expr))
-			{
-				elog(WARNING, "match");
 				return true;
-			}
 		}
 	}
 

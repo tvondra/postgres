@@ -2889,7 +2889,7 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	if (list_length(pstate->p_rtable) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("index expressions and predicates can refer only to the table being indexed")));
+				 errmsg("statistics expressions and predicates can refer only to the table being indexed")));
 
 	free_parsestate(pstate);
 

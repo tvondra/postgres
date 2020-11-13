@@ -241,8 +241,6 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 			ExecDropSingleTupleTableSlot(slot);
 			FreeExecutorState(estate);
-
-			elog(WARNING, "idx = %d", idx);
 		}
 
 		/* compute statistic of each requested type */
@@ -676,8 +674,6 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 		 */
 		Assert(!stats[i]->attr->attisdropped);
 
-		elog(WARNING, "A: %d => %p", i, stats[i]);
-
 		i++;
 	}
 
@@ -686,8 +682,6 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 		Node *expr = (Node *) lfirst(lc);
 
 		stats[i] = examine_attribute(expr);
-
-		elog(WARNING, "B: %d => %p (%s)", i, stats[i], nodeToString(expr));
 
 		i++;
 	}
@@ -1217,7 +1211,7 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 			return false;
 
 		/* Check if the expression has the right shape (one Var, one Const) */
-		if (!examine_clause_args(expr->args, &var, NULL, NULL))
+		if (!examine_opclause_expression(expr, &var, NULL, NULL))
 			return false;
 
 		/*
@@ -2001,6 +1995,102 @@ examine_clause_args(List *args, Var **varp, Const **cstp, bool *varonleftp)
 
 	if (varonleftp)
 		*varonleftp = varonleft;
+
+	return true;
+}
+
+bool
+examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp, bool *varonleftp)
+{
+	Var		   *var;
+	Const	   *cst;
+	bool		varonleft;
+	Node	   *leftop,
+			   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(expr->args) == 2);
+
+	leftop = linitial(expr->args);
+	rightop = lsecond(expr->args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(leftop, Var) && IsA(rightop, Const))
+	{
+		var = (Var *) leftop;
+		cst = (Const *) rightop;
+		varonleft = true;
+	}
+	else if (IsA(leftop, Const) && IsA(rightop, Var))
+	{
+		var = (Var *) rightop;
+		cst = (Const *) leftop;
+		varonleft = false;
+	}
+	else
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (varp)
+		*varp = var;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (varonleftp)
+		*varonleftp = varonleft;
+
+	return true;
+}
+
+bool
+examine_opclause_expression2(OpExpr *expr, Var **varap, Var **varbp)
+{
+	Var	   *vara;
+	Var	   *varb;
+	Node   *leftop,
+		   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(expr->args) == 2);
+
+	leftop = linitial(expr->args);
+	rightop = lsecond(expr->args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(leftop, Var) && IsA(rightop, Var))
+	{
+		vara = (Var *) leftop;
+		varb = (Var *) rightop;
+	}
+	else
+		return false;
+
+	/*
+	 * Both variables have to be for the same relation (otherwise it's a
+	 * join clause, and we don't deal with those yet.
+	 */
+	if (vara->varno != varb->varno)
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (varap)
+		*varap = vara;
+
+	if (varbp)
+		*varbp = varb;
 
 	return true;
 }

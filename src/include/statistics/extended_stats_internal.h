@@ -74,6 +74,7 @@ extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MCVList *statext_mcv_build(int numrows, HeapTuple *rows,
 								  Datum *exprvals, bool *exprnulls,
+								  Oid *exprtypes,
 								  Bitmapset *attrs, List *exprs,
 								  VacAttrStats **stats,
 								  double totalrows, int stattarget);
@@ -99,7 +100,8 @@ extern void *bsearch_arg(const void *key, const void *base,
 extern AttrNumber *build_attnums_array(Bitmapset *attrs, int *numattrs);
 
 extern SortItem *build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
-									Datum *exprvals, bool *exprnulls, int nexprs,
+									Datum *exprvals, bool *exprnulls,
+									Oid *exprtypes, int nexprs,
 									TupleDesc tdesc, MultiSortSupport mss,
 									int numattrs, AttrNumber *attnums);
 

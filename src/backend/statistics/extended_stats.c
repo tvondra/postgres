@@ -136,10 +136,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		/* evaluated expressions */
 		Datum	   *exprvals = NULL;
 		bool	   *exprnulls = NULL;
+		Oid		   *exprtypes = NULL;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
 		 * not, report this fact (except in autovacuum) and move on.
+		 *
+		 * FIXME This is confusing - we have 'stats' list, but it's shadowed
+		 * by another 'stats' variable here.
 		 */
 		stats = lookup_var_attr_stats(onerel, stat->columns, stat->exprs,
 									  natts, vacattrstats);
@@ -199,6 +203,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			/* Compute and save index expression values */
 			exprvals = (Datum *) palloc(numrows * list_length(stat->exprs) * sizeof(Datum));
 			exprnulls = (bool *) palloc(numrows * list_length(stat->exprs) * sizeof(bool));
+			exprtypes = (Oid *) palloc(list_length(stat->exprs) * sizeof(Oid));
+
+			idx = 0;
+			foreach (lc2, stat->exprs)
+			{
+				Node *expr = (Node *) lfirst(lc2);
+				exprtypes[idx++] = exprType(expr);
+			}
 
 			/* Set up expression evaluation state */
 			exprstates = ExecPrepareExprList(stat->exprs, estate);
@@ -260,7 +272,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 														  stat->exprs, stats);
 			else if (t == STATS_EXT_MCV)
 				mcv = statext_mcv_build(numrows, rows,
-										exprvals, exprnulls,
+										exprvals, exprnulls, exprtypes,
 										stat->columns, stat->exprs,
 										stats, totalrows, stattarget);
 		}
@@ -677,11 +689,20 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 		i++;
 	}
 
+	/* also add info for expressions */
 	foreach (lc, exprs)
 	{
 		Node *expr = (Node *) lfirst(lc);
 
 		stats[i] = examine_attribute(expr);
+
+		/*
+		 * FIXME We need tuple descriptor later, and we just grab it from
+		 * stats[0]->tupDesc (see e.g. statext_mcv_build). But as coded
+		 * examine_attribute does not set that, so just grab it from the
+		 * first vacatts element.
+		 */
+		stats[i]->tupDesc = vacatts[0]->tupDesc;
 
 		i++;
 	}
@@ -948,7 +969,7 @@ build_attnums_array(Bitmapset *attrs, int *numattrs)
  */
 SortItem *
 build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
-				   Datum *exprvals, bool *exprnulls, int nexprs,
+				   Datum *exprvals, bool *exprnulls, Oid *exprtypes, int nexprs,
 				   TupleDesc tdesc, MultiSortSupport mss,
 				   int numattrs, AttrNumber *attnums)
 {
@@ -997,9 +1018,13 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 		{
 			Datum		value;
 			bool		isnull;
+			int			attlen;
 
 			if (attnums[j] <= MaxHeapAttributeNumber)
+			{
 				value = heap_getattr(rows[i], attnums[j], tdesc, &isnull);
+				attlen = TupleDescAttr(tdesc, attnums[j] - 1)->attlen;
+			}
 			else
 			{
 				int	expridx = (attnums[j] - MaxHeapAttributeNumber - 1);
@@ -1007,6 +1032,8 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 
 				value = exprvals[idx];
 				isnull = exprnulls[idx];
+
+				attlen = get_typlen(exprtypes[expridx]);
 			}
 
 			/*
@@ -1018,8 +1045,7 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 			 * on the assumption that those are small (below WIDTH_THRESHOLD)
 			 * and will be discarded at the end of analyze.
 			 */
-			if ((!isnull) &&
-				(TupleDescAttr(tdesc, attnums[j] - 1)->attlen == -1))
+			if ((!isnull) && (attlen == -1))
 			{
 				if (toast_raw_datum_size(value) > WIDTH_THRESHOLD)
 				{

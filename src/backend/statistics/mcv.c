@@ -181,7 +181,7 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows,
-				  Datum *exprvals, bool *exprnulls,
+				  Datum *exprvals, bool *exprnulls, Oid *exprtypes,
 				  Bitmapset *attrs, List *exprs,
 				  VacAttrStats **stats, double totalrows, int stattarget)
 {
@@ -212,8 +212,8 @@ statext_mcv_build(int numrows, HeapTuple *rows,
 
 	/* sort the rows */
 	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
-							   list_length(exprs), stats[0]->tupDesc,
-							   mss, numattrs, attnums);
+							   exprtypes, list_length(exprs),
+							   stats[0]->tupDesc, mss, numattrs, attnums);
 
 	if (!items)
 		return NULL;

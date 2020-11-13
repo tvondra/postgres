@@ -290,8 +290,10 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
 	 * XXX This relies on all stats entries pointing to the same tuple
 	 * descriptor.  For now that assumption holds, but it might change in the
 	 * future for example if we support statistics on multiple tables.
+	 *
+	 * FIXME pass proper exprtypes
 	 */
-	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
+	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls, NULL,
 							   nexprs, stats[0]->tupDesc, mss, k, attnums_dep);
 
 	/*

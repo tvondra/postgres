@@ -824,7 +824,7 @@ SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
 
 CREATE STATISTICS expr_stats_1 (mcv) ON (a+b), (a-b), (2*a), (3*b) FROM expr_stats;
---ANALYZE expr_stats;
+ANALYZE expr_stats;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');

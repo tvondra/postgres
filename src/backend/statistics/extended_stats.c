@@ -1393,6 +1393,8 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 			/*
 			 * Had we found incompatible clause in the arguments, treat the
 			 * whole clause as incompatible.
+			 *
+			 * XXX This fails for expressions, at the moment.
 			 */
 			if (!statext_is_compatible_clause_internal(root,
 													   (Node *) lfirst(lc),

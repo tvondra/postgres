@@ -1688,6 +1688,8 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					idx++;
 				}
 
+				elog(WARNING, "idx = %d", idx);
+
 				/*
 				 * Walk through the MCV items and evaluate the current clause.
 				 * We can skip items that were already ruled out, and
@@ -1730,7 +1732,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					 * this is OK. We may need to relax this after allowing
 					 * extended statistics on expressions.
 					 */
-					if (varonleft)
+					if (expronleft)
 						match = DatumGetBool(FunctionCall2Coll(&opproc,
 															   var->varcollid,
 															   item->values[idx],
@@ -1743,6 +1745,8 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 
 					/* update the match bitmap with the result */
 					matches[i] = RESULT_MERGE(matches[i], is_or, match);
+
+					elog(WARNING, "%d => %ld %ld : %d", i, item->values[idx], cst->constvalue, matches[i]);
 				}
 			}
 			else

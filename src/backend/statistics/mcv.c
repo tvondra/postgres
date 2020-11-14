@@ -73,7 +73,9 @@
 	 ((ndims) * sizeof(DimensionInfo)) + \
 	 ((nitems) * ITEM_SIZE(ndims)))
 
-static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs);
+static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs,
+								  Oid *exprtypes, Oid *exprcollations,
+								  int nexprs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
 									   MultiSortSupport mss, int *ndistinct);
@@ -197,6 +199,9 @@ statext_mcv_build(int numrows, HeapTuple *rows,
 	MCVList    *mcvlist = NULL;
 	MultiSortSupport mss;
 
+	/* comparator for all the columns */
+	mss = build_mss(stats, bms_num_members(attrs), exprtypes, exprcollations, list_length(exprs));
+
 	/*
 	 * Copy the bitmapset and add fake attnums representing expressions,
 	 * starting above MaxHeapAttributeNumber.
@@ -207,9 +212,6 @@ statext_mcv_build(int numrows, HeapTuple *rows,
 		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	attnums = build_attnums_array(attrs, &numattrs);
-
-	/* comparator for all the columns */
-	mss = build_mss(stats, numattrs);
 
 	/* sort the rows */
 	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
@@ -360,12 +362,12 @@ statext_mcv_build(int numrows, HeapTuple *rows,
  *	build MultiSortSupport for the attributes passed in attrs
  */
 static MultiSortSupport
-build_mss(VacAttrStats **stats, int numattrs)
+build_mss(VacAttrStats **stats, int numattrs, Oid *exprtypes, Oid *exprcollations, int nexprs)
 {
 	int			i;
 
 	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(numattrs);
+	MultiSortSupport mss = multi_sort_init(numattrs + nexprs);
 
 	/* prepare the sort functions for all the attributes */
 	for (i = 0; i < numattrs; i++)
@@ -378,9 +380,21 @@ build_mss(VacAttrStats **stats, int numattrs)
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
 				 colstat->attrtypid);
 
-		elog(WARNING, "collid = %d", colstat->attrcollid);
-
 		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
+	}
+
+	/* prepare the sort functions for all the expressions */
+	for (i = 0; i < nexprs; i++)
+	{
+		TypeCacheEntry *type;
+
+		type = lookup_type_cache(exprtypes[i], TYPECACHE_LT_OPR);
+		if (type->lt_opr == InvalidOid) /* shouldn't happen */
+			elog(ERROR, "cache lookup failed for ordering operator for type %u",
+				 exprtypes[i]);
+
+		multi_sort_add_dimension(mss, numattrs + i, type->lt_opr,
+								 exprcollations[i]);
 	}
 
 	return mss;
@@ -697,8 +711,6 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 		/* if there are just NULL values in this dimension, we're done */
 		if (counts[dim] == 0)
 			continue;
-
-		elog(WARNING, "B: attrcollid = %d", stats[dim]->attrcollid);
 
 		/* sort and deduplicate the data */
 		ssup[dim].ssup_cxt = CurrentMemoryContext;

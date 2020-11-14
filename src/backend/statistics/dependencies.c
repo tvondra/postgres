@@ -656,14 +656,11 @@ dependency_is_fully_matched(StatisticExtInfo *info, MVDependency *dependency, Bi
 				{
 					attnums = bms_add_member(attnums,
 											 bms_num_members(info->keys) + MaxHeapAttributeNumber + offset);
-					elog(WARNING, "adding %d", bms_num_members(info->keys) + MaxHeapAttributeNumber + offset);
 					break;
 				}
 			}
 		}
 	}
-
-	elog(WARNING, "attnum members %d", bms_num_members(attnums));
 
 	/*
 	 * Check that the dependency actually is fully covered by clauses. We have
@@ -682,8 +679,6 @@ dependency_is_fully_matched(StatisticExtInfo *info, MVDependency *dependency, Bi
 
 	if (exprs)
 		bms_free(attnums);
-
-	elog(WARNING, "result = %d", result);
 
 	return result;
 }
@@ -1044,7 +1039,10 @@ find_strongest_dependency(MVDependencies **dependencies, StatisticExtInfo **info
 			 * it's slightly more expensive than the previous checks.
 			 */
 			if (dependency_is_fully_matched(infos[i], dependency, attnums, exprs))
+			{
 				strongest = dependency; /* save new best match */
+				*info = infos[i];
+			}
 		}
 	}
 
@@ -1113,7 +1111,10 @@ clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 		{
 			AttrNumber	attnum = dependencies[i]->attributes[j];
 
-			attnums = bms_add_member(attnums, attnum);
+			if (attnum < MaxHeapAttributeNumber)
+				attnums = bms_add_member(attnums, attnum);
+			else
+				elog(ERROR, "FIXME clauselist_apply_dependencies");
 		}
 	}
 
@@ -1457,8 +1458,6 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		listidx++;
 	}
 
-	elog(WARNING, "matching clauses %d", matching_clauses);
-
 	/*
 	 * If there's not at least two distinct attnums and expressions, then
 	 * reject the whole list of clauses. We must return 1.0 so the calling
@@ -1551,21 +1550,6 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		return 1.0;
 	}
 
-	for (i = 0; i < nfunc_dependencies; i++)
-	{
-		int j;
-		for (j = 0; j < func_dependencies[i]->ndeps; j++)
-		{
-			int k;
-			for (k = 0; k < func_dependencies[i]->deps[j]->nattributes; k++)
-			{
-				elog(WARNING, "%d %d %d => %d", i, j, k, func_dependencies[i]->deps[j]->attributes[k]);
-			}
-			elog(WARNING, "%d %d %d => %f", i, j, k, func_dependencies[i]->deps[j]->degree);
-			elog(WARNING, "--------------");
-		}
-	}
-
 	/*
 	 * Work out which dependencies we can apply, starting with the
 	 * widest/strongest ones, and proceeding to smaller/weaker ones.
@@ -1574,11 +1558,9 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 											total_ndeps);
 	ndependencies = 0;
 
-	elog(WARNING, "=======================");
-
 	while (true)
 	{
-		StatisticExtInfo *info;
+		StatisticExtInfo *info = NULL;
 		MVDependency *dependency;
 		AttrNumber	attnum;
 		List	   *exprs = NIL;
@@ -1601,6 +1583,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		if (!dependency)
 			break;
 
+		Assert(info);
+
 		dependencies[ndependencies++] = dependency;
 
 		/* Ignore dependencies using this implied attribute in later loops */
@@ -1612,9 +1596,6 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 * is wrong though. */
 		break;
 	}
-
-	elog(WARNING, "ndependencies = %d", ndependencies);
-	elog(WARNING, "=======================");
 
 	/*
 	 * If we found applicable dependencies, use them to estimate all

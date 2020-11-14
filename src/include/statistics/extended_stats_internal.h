@@ -60,7 +60,7 @@ typedef struct SortItem
 extern MVNDistinct *statext_ndistinct_build(double totalrows,
 											int numrows, HeapTuple *rows,
 											Datum *exprvals, bool *exprnulls,
-											Oid *exprtypes,
+											Oid *exprtypes, Oid *exrcollations,
 											Bitmapset *attrs, List *exprs,
 											VacAttrStats **stats);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
@@ -68,7 +68,7 @@ extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 
 extern MVDependencies *statext_dependencies_build(int numrows, HeapTuple *rows,
 												  Datum *exprvals, bool *exprnulls,
-												  Oid *exprtypes,
+												  Oid *exprtypes, Oid *exprcollations,
 												  Bitmapset *attrs, List *exprs,
 												  VacAttrStats **stats);
 extern bytea *statext_dependencies_serialize(MVDependencies *dependencies);
@@ -76,7 +76,7 @@ extern MVDependencies *statext_dependencies_deserialize(bytea *data);
 
 extern MCVList *statext_mcv_build(int numrows, HeapTuple *rows,
 								  Datum *exprvals, bool *exprnulls,
-								  Oid *exprtypes,
+								  Oid *exprtypes, Oid *exprcollations,
 								  Bitmapset *attrs, List *exprs,
 								  VacAttrStats **stats,
 								  double totalrows, int stattarget);

@@ -137,6 +137,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		Datum	   *exprvals = NULL;
 		bool	   *exprnulls = NULL;
 		Oid		   *exprtypes = NULL;
+		Oid		   *exprcollations = NULL;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -204,12 +205,15 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			exprvals = (Datum *) palloc(numrows * list_length(stat->exprs) * sizeof(Datum));
 			exprnulls = (bool *) palloc(numrows * list_length(stat->exprs) * sizeof(bool));
 			exprtypes = (Oid *) palloc(list_length(stat->exprs) * sizeof(Oid));
+			exprcollations = (Oid *) palloc(list_length(stat->exprs) * sizeof(Oid));
 
 			idx = 0;
 			foreach (lc2, stat->exprs)
 			{
 				Node *expr = (Node *) lfirst(lc2);
-				exprtypes[idx++] = exprType(expr);
+				exprtypes[idx] = exprType(expr);
+				exprcollations[idx] = exprCollation(expr);
+				idx++;
 			}
 
 			/* Set up expression evaluation state */
@@ -262,17 +266,20 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 			if (t == STATS_EXT_NDISTINCT)
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-													exprvals, exprnulls, exprtypes,
+													exprvals, exprnulls,
+													exprtypes, exprcollations,
 													stat->columns, stat->exprs,
 													stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
-														  exprvals, exprnulls, exprtypes,
+														  exprvals, exprnulls,
+														  exprtypes, exprcollations,
 														  stat->columns,
 														  stat->exprs, stats);
 			else if (t == STATS_EXT_MCV)
 				mcv = statext_mcv_build(numrows, rows,
-										exprvals, exprnulls, exprtypes,
+										exprvals, exprnulls,
+										exprtypes, exprcollations,
 										stat->columns, stat->exprs,
 										stats, totalrows, stattarget);
 		}

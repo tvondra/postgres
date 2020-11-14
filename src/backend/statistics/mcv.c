@@ -181,7 +181,8 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows,
-				  Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+				  Datum *exprvals, bool *exprnulls,
+				  Oid *exprtypes, Oid *exprcollations,
 				  Bitmapset *attrs, List *exprs,
 				  VacAttrStats **stats, double totalrows, int stattarget)
 {
@@ -376,6 +377,8 @@ build_mss(VacAttrStats **stats, int numattrs)
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
 				 colstat->attrtypid);
+
+		elog(WARNING, "collid = %d", colstat->attrcollid);
 
 		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
 	}
@@ -694,6 +697,8 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 		/* if there are just NULL values in this dimension, we're done */
 		if (counts[dim] == 0)
 			continue;
+
+		elog(WARNING, "B: attrcollid = %d", stats[dim]->attrcollid);
 
 		/* sort and deduplicate the data */
 		ssup[dim].ssup_cxt = CurrentMemoryContext;
@@ -1674,6 +1679,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			{
 				ListCell   *lc;
 				int			idx;
+				Oid			collid = exprCollation(clause_expr);
 
 				/* match the attribute to a dimension of the statistic */
 				idx = bms_num_members(keys);
@@ -1736,12 +1742,12 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					 */
 					if (expronleft)
 						match = DatumGetBool(FunctionCall2Coll(&opproc,
-															   var->varcollid,
+															   collid,
 															   item->values[idx],
 															   cst->constvalue));
 					else
 						match = DatumGetBool(FunctionCall2Coll(&opproc,
-															   var->varcollid,
+															   collid,
 															   cst->constvalue,
 															   item->values[idx]));
 

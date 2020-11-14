@@ -370,7 +370,8 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
  */
 MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows,
-						   Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+						   Datum *exprvals, bool *exprnulls,
+						   Oid *exprtypes, Oid *exprcollations,
 						   Bitmapset *attrs, List *exprs,
 						   VacAttrStats **stats)
 {
@@ -1605,8 +1606,6 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		s1 = clauselist_apply_dependencies(root, clauses, varRelid, jointype,
 										   sjinfo, dependencies, ndependencies,
 										   list_attnums, estimatedclauses);
-
-	elog(WARNING, "s1 = %f", s1);
 
 	/* free deserialized functional dependencies (and then the array) */
 	for (i = 0; i < nfunc_dependencies; i++)

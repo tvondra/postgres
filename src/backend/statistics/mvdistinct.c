@@ -39,6 +39,7 @@
 static double ndistinct_for_combination(double totalrows, int numrows,
 										HeapTuple *rows, Datum *exprvals,
 										bool *exprnulls, Oid *exprtypes,
+										Oid *exprcollations,
 										int nattrs, int nexprs,
 										VacAttrStats **stats, int k,
 										int *combination);
@@ -87,7 +88,8 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+						Datum *exprvals, bool *exprnulls,
+						Oid *exprtypes, Oid *exprcollations,
 						Bitmapset *attrs, List *exprs,
 						VacAttrStats **stats)
 {
@@ -139,7 +141,8 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
-										  exprvals, exprnulls, exprtypes,
+										  exprvals, exprnulls,
+										  exprtypes, exprcollations,
 										  numattrs, list_length(exprs),
 										  stats, k, combination);
 
@@ -451,7 +454,8 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+						  Datum *exprvals, bool *exprnulls,
+						  Oid *exprtypes, Oid *exprcollations,
 						  int nattrs, int nexprs,
 						  VacAttrStats **stats, int k, int *combination)
 {
@@ -496,16 +500,21 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		TypeCacheEntry *type;
 		AttrNumber		attnum = InvalidAttrNumber;
 		TupleDesc		tdesc = NULL;
+		Oid				collid = InvalidOid;
 
 		if (combination[i] < nattrs)
 		{
 			VacAttrStats *colstat = stats[combination[i]];
 			typid = colstat->attrtypid;
 			attnum = colstat->attr->attnum;
+			collid = colstat->attrcollid;
 			tdesc = colstat->tupDesc;
 		}
 		else
+		{
 			typid = exprtypes[combination[i] - nattrs];
+			collid = exprcollations[combination[i] - nattrs];
+		}
 
 		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
@@ -513,7 +522,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 				 typid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr, InvalidOid);
+		multi_sort_add_dimension(mss, i, type->lt_opr, collid);
 
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)

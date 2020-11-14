@@ -405,11 +405,6 @@ CreateStatistics(CreateStatsStmt *stmt)
 	if (exprsDatum == (Datum) 0)
 		nulls[Anum_pg_statistic_ext_stxexprs - 1] = true;
 
-	/*
-	 * FIXME add dependencies on anything mentioned in the expressions,
-	 * see recordDependencyOnSingleRelExpr in index_create
-	 */
-
 	/* insert it into pg_statistic_ext */
 	htup = heap_form_tuple(statrel->rd_att, values, nulls);
 	CatalogTupleInsert(statrel, htup);
@@ -459,6 +454,19 @@ CreateStatistics(CreateStatsStmt *stmt)
 	{
 		ObjectAddressSubSet(parentobject, RelationRelationId, relid, attnums[i]);
 		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+	}
+
+	/*
+	 * Store dependencies on anything mentioned in statistics expressions,
+	 * just like we do e.g. in index_create.
+	 */
+	if (stxexprs)
+	{
+		recordDependencyOnSingleRelExpr(&myself,
+										(Node *) stxexprs,
+										relid,
+										DEPENDENCY_NORMAL,
+										DEPENDENCY_AUTO, false, true);
 	}
 
 	/*

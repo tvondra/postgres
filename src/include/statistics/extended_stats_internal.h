@@ -109,6 +109,8 @@ extern SortItem *build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 
 extern bool examine_clause_args(List *args, Var **varp,
 								Const **cstp, bool *varonleftp);
+extern bool examine_clause_args2(List *args, Node **exprp,
+								 Const **cstp, bool *expronleftp);
 extern bool examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp,
 										bool *varonleftp);
 extern bool examine_opclause_expression2(OpExpr *expr, Node **exprp, Const **cstp,

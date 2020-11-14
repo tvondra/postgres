@@ -1556,7 +1556,8 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
  */
 static bool *
 mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
-					 Bitmapset *keys, MCVList *mcvlist, bool is_or)
+					 Bitmapset *keys, List *exprs,
+					 MCVList *mcvlist, bool is_or)
 {
 	int			i;
 	ListCell   *l;
@@ -1596,8 +1597,10 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 
 			/* valid only after examine_clause_args returns true */
 			Var		   *var;
+			Node	   *clause_expr;
 			Const	   *cst;
 			bool		varonleft;
+			bool		expronleft;
 
 			fmgr_info(get_opcode(expr->opno), &opproc);
 
@@ -1608,6 +1611,82 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 
 				/* match the attribute to a dimension of the statistic */
 				idx = bms_member_index(keys, var->varattno);
+
+				/*
+				 * Walk through the MCV items and evaluate the current clause.
+				 * We can skip items that were already ruled out, and
+				 * terminate if there are no remaining MCV items that might
+				 * possibly match.
+				 */
+				for (i = 0; i < mcvlist->nitems; i++)
+				{
+					bool		match = true;
+					MCVItem    *item = &mcvlist->items[i];
+
+					/*
+					 * When the MCV item or the Const value is NULL we can
+					 * treat this as a mismatch. We must not call the operator
+					 * because of strictness.
+					 */
+					if (item->isnull[idx] || cst->constisnull)
+					{
+						matches[i] = RESULT_MERGE(matches[i], is_or, false);
+						continue;
+					}
+
+					/*
+					 * Skip MCV items that can't change result in the bitmap.
+					 * Once the value gets false for AND-lists, or true for
+					 * OR-lists, we don't need to look at more clauses.
+					 */
+					if (RESULT_IS_FINAL(matches[i], is_or))
+						continue;
+
+					/*
+					 * First check whether the constant is below the lower
+					 * boundary (in that case we can skip the bucket, because
+					 * there's no overlap).
+					 *
+					 * We don't store collations used to build the statistics,
+					 * but we can use the collation for the attribute itself,
+					 * as stored in varcollid. We do reset the statistics
+					 * after a type change (including collation change), so
+					 * this is OK. We may need to relax this after allowing
+					 * extended statistics on expressions.
+					 */
+					if (varonleft)
+						match = DatumGetBool(FunctionCall2Coll(&opproc,
+															   var->varcollid,
+															   item->values[idx],
+															   cst->constvalue));
+					else
+						match = DatumGetBool(FunctionCall2Coll(&opproc,
+															   var->varcollid,
+															   cst->constvalue,
+															   item->values[idx]));
+
+					/* update the match bitmap with the result */
+					matches[i] = RESULT_MERGE(matches[i], is_or, match);
+				}
+			}
+			/* extract the expr and const from the expression */
+			else if (examine_clause_args2(expr->args, &clause_expr, &cst, &expronleft))
+			{
+				ListCell   *lc;
+				int			idx;
+
+				/* match the attribute to a dimension of the statistic */
+				idx = bms_num_members(keys);
+
+				foreach(lc, exprs)
+				{
+					Node *stat_expr = (Node *) lfirst(lc);
+
+					if (equal(clause_expr, stat_expr))
+						break;
+
+					idx++;
+				}
 
 				/*
 				 * Walk through the MCV items and evaluate the current clause.
@@ -1825,7 +1904,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(list_length(bool_clauses) >= 2);
 
 			/* build the match bitmap for the OR-clauses */
-			bool_matches = mcv_get_match_bitmap(root, bool_clauses, keys,
+			bool_matches = mcv_get_match_bitmap(root, bool_clauses, keys, exprs,
 												mcvlist, is_orclause(clause));
 
 			/*
@@ -1853,7 +1932,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			Assert(list_length(not_args) == 1);
 
 			/* build the match bitmap for the NOT-clause */
-			not_matches = mcv_get_match_bitmap(root, not_args, keys,
+			not_matches = mcv_get_match_bitmap(root, not_args, keys, exprs,
 											   mcvlist, false);
 
 			/*
@@ -1932,7 +2011,8 @@ mcv_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 	mcv = statext_mcv_load(stat->statOid);
 
 	/* build a match bitmap for the clauses */
-	matches = mcv_get_match_bitmap(root, clauses, stat->keys, mcv, false);
+	matches = mcv_get_match_bitmap(root, clauses, stat->keys, stat->exprs,
+								   mcv, false);
 
 	/* sum frequencies for all the matching MCV items */
 	*basesel = 0.0;

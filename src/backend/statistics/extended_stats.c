@@ -2058,6 +2058,56 @@ examine_clause_args(List *args, Var **varp, Const **cstp, bool *varonleftp)
 }
 
 bool
+examine_clause_args2(List *args, Node **exprp, Const **cstp, bool *expronleftp)
+{
+	Node	   *expr;
+	Const	   *cst;
+	bool		expronleft;
+	Node	   *leftop,
+			   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(args) == 2);
+
+	leftop = linitial(args);
+	rightop = lsecond(args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(rightop, Const))
+	{
+		expr = (Node *) leftop;
+		cst = (Const *) rightop;
+		expronleft = true;
+	}
+	else if (IsA(leftop, Const))
+	{
+		expr = (Node *) rightop;
+		cst = (Const *) leftop;
+		expronleft = false;
+	}
+	else
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (exprp)
+		*exprp = expr;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (expronleftp)
+		*expronleftp = expronleft;
+
+	return true;
+}
+
+bool
 examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp, bool *varonleftp)
 {
 	Var		   *var;

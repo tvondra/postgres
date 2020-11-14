@@ -75,13 +75,17 @@ static double dependency_degree(int numrows, HeapTuple *rows,
 								int nexprs, int k,
 								AttrNumber *dependency, VacAttrStats **stats,
 								Bitmapset *attrs);
-static bool dependency_is_fully_matched(MVDependency *dependency,
-										Bitmapset *attnums);
+static bool dependency_is_fully_matched(StatisticExtInfo *info,
+										MVDependency *dependency,
+										Bitmapset *attnums,
+										List *exprs);
 static bool dependency_is_compatible_clause(Node *clause, Index relid,
 											AttrNumber *attnum);
-static MVDependency *find_strongest_dependency(MVDependencies **dependencies,
-											   int ndependencies,
-											   Bitmapset *attnums);
+static bool dependency_is_compatible_expression(Node *clause, Index relid,
+												List *statlist, Node **expr);
+static MVDependency *find_strongest_dependency(MVDependencies **dependencies, StatisticExtInfo **infos,
+						  int ndependencies, Bitmapset *attnums,
+						  List *exprs, StatisticExtInfo **info);
 static Selectivity clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 												 int varRelid, JoinType jointype,
 												 SpecialJoinInfo *sjinfo,
@@ -620,9 +624,46 @@ statext_dependencies_deserialize(bytea *data)
  *		attributes (assuming the clauses are suitable equality clauses)
  */
 static bool
-dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
+dependency_is_fully_matched(StatisticExtInfo *info, MVDependency *dependency, Bitmapset *attnums, List *exprs)
 {
 	int			j;
+	bool		result = true;	/* match by default */
+
+	/*
+	 * XXX copy attnums, so that we can add attnums for expressions. But
+	 * only when there are expressions.
+	 */
+	if (exprs)
+	{
+		ListCell   *lc;
+
+		attnums = bms_copy(attnums);
+
+		/* loop over expressions, find a matching expression in statistics */
+		foreach (lc, exprs)
+		{
+			ListCell   *lc2;
+			Node	   *clause_expr = (Node *) lfirst(lc);
+			int			offset = 0;
+
+			foreach (lc2, info->exprs)
+			{
+				Node	   *stat_expr = (Node *) lfirst(lc2);
+				offset++;
+
+				/* found a match */
+				if (equal(stat_expr, clause_expr))
+				{
+					attnums = bms_add_member(attnums,
+											 bms_num_members(info->keys) + MaxHeapAttributeNumber + offset);
+					elog(WARNING, "adding %d", bms_num_members(info->keys) + MaxHeapAttributeNumber + offset);
+					break;
+				}
+			}
+		}
+	}
+
+	elog(WARNING, "attnum members %d", bms_num_members(attnums));
 
 	/*
 	 * Check that the dependency actually is fully covered by clauses. We have
@@ -633,10 +674,18 @@ dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
 		int			attnum = dependency->attributes[j];
 
 		if (!bms_is_member(attnum, attnums))
-			return false;
+		{
+			result = false;
+			break;
+		}
 	}
 
-	return true;
+	if (exprs)
+		bms_free(attnums);
+
+	elog(WARNING, "result = %d", result);
+
+	return result;
 }
 
 /*
@@ -947,8 +996,9 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
  * (see the comment in dependencies_clauselist_selectivity).
  */
 static MVDependency *
-find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
-						  Bitmapset *attnums)
+find_strongest_dependency(MVDependencies **dependencies, StatisticExtInfo **infos,
+						  int ndependencies, Bitmapset *attnums,
+						  List *exprs, StatisticExtInfo **info)
 {
 	int			i,
 				j;
@@ -956,6 +1006,7 @@ find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
 
 	/* number of attnums in clauses */
 	int			nattnums = bms_num_members(attnums);
+	int			nexprs = list_length(exprs);
 
 	/*
 	 * Iterate over the MVDependency items and find the strongest one from the
@@ -972,7 +1023,7 @@ find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
 			 * Skip dependencies referencing more attributes than available
 			 * clauses, as those can't be fully matched.
 			 */
-			if (dependency->nattributes > nattnums)
+			if (dependency->nattributes > nattnums + nexprs)
 				continue;
 
 			if (strongest)
@@ -988,11 +1039,11 @@ find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
 			}
 
 			/*
-			 * this dependency is stronger, but we must still check that it's
+			 * This dependency is stronger, but we must still check that it's
 			 * fully matched to these attnums. We perform this check last as
 			 * it's slightly more expensive than the previous checks.
 			 */
-			if (dependency_is_fully_matched(dependency, attnums))
+			if (dependency_is_fully_matched(infos[i], dependency, attnums, exprs))
 				strongest = dependency; /* save new best match */
 		}
 	}
@@ -1179,10 +1230,11 @@ clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 
 /*
  * Similar to dependency_is_compatible_clause, but don't enforce that the
- * expression is a simple Var.
+ * expression is a simple Var. OTOH we check that there's at least one
+ * statistics matching the expression.
  */
 static bool
-dependency_clause_matches_expression(Node *clause, Index relid, List *statlist)
+dependency_is_compatible_expression(Node *clause, Index relid, List *statlist, Node **expr)
 {
 	List	   *vars;
 	ListCell   *lc, *lc2;
@@ -1282,12 +1334,19 @@ dependency_clause_matches_expression(Node *clause, Index relid, List *statlist)
 	{
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
 
+		/* ignore stats without dependencies */
+		if (info->kind != STATS_EXT_DEPENDENCIES)
+			continue;
+
 		foreach (lc2, info->exprs)
 		{
-			Node *expr = (Node *) lfirst(lc2);
+			Node *stat_expr = (Node *) lfirst(lc2);
 
-			if (equal(clause_expr, expr))
+			if (equal(clause_expr, stat_expr))
+			{
+				*expr = stat_expr;
 				return true;
+			}
 		}
 	}
 
@@ -1334,13 +1393,16 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	ListCell   *l;
 	Bitmapset  *clauses_attnums = NULL;
 	AttrNumber *list_attnums;
+	Node	  **list_exprs;		/* expressions matched to any statistic */
 	int			listidx;
 	MVDependencies **func_dependencies;
+	StatisticExtInfo **func_info;
 	int			nfunc_dependencies;
 	int			total_ndeps;
 	MVDependency **dependencies;
 	int			ndependencies;
 	int			i;
+	int			matching_clauses;
 
 	/* check if there's any stats that might be useful for us. */
 	if (!has_stats_of_kind(rel->statlist, STATS_EXT_DEPENDENCIES))
@@ -1348,6 +1410,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 	list_attnums = (AttrNumber *) palloc(sizeof(AttrNumber) *
 										 list_length(clauses));
+
+	list_exprs = (Node **) palloc(sizeof(Node *) * list_length(clauses));
 
 	/*
 	 * Pre-process the clauses list to extract the attnums seen in each item.
@@ -1361,34 +1425,50 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 * statistics (we treat them as incompatible).
 	 */
 	listidx = 0;
+	matching_clauses = 0;
 	foreach(l, clauses)
 	{
 		Node	   *clause = (Node *) lfirst(l);
 		AttrNumber	attnum;
+		Node	   *expr = NULL;
 
-		dependency_clause_matches_expression(clause, rel->relid, rel->statlist);
+		/* ignore clause by default */
+		list_attnums[listidx] = InvalidAttrNumber;
+		list_exprs[listidx] = NULL;
 
-		if (!bms_is_member(listidx, *estimatedclauses) &&
-			 dependency_is_compatible_clause(clause, rel->relid, &attnum))
+		if (!bms_is_member(listidx, *estimatedclauses))
 		{
-			list_attnums[listidx] = attnum;
-			clauses_attnums = bms_add_member(clauses_attnums, attnum);
+			if (dependency_is_compatible_clause(clause, rel->relid, &attnum))
+			{
+				list_attnums[listidx] = attnum;
+				clauses_attnums = bms_add_member(clauses_attnums, attnum);
+				matching_clauses++;
+			}
+			else if (dependency_is_compatible_expression(clause, rel->relid,
+														 rel->statlist,
+														 &expr))
+			{
+				Assert(expr != NULL);
+				list_exprs[listidx] = expr;
+				matching_clauses++;
+			}
 		}
-		else
-			list_attnums[listidx] = InvalidAttrNumber;
 
 		listidx++;
 	}
 
+	elog(WARNING, "matching clauses %d", matching_clauses);
+
 	/*
-	 * If there's not at least two distinct attnums then reject the whole list
-	 * of clauses. We must return 1.0 so the calling function's selectivity is
-	 * unaffected.
+	 * If there's not at least two distinct attnums and expressions, then
+	 * reject the whole list of clauses. We must return 1.0 so the calling
+	 * function's selectivity is unaffected.
 	 */
-	if (bms_membership(clauses_attnums) != BMS_MULTIPLE)
+	if (matching_clauses < 2)
 	{
 		bms_free(clauses_attnums);
 		pfree(list_attnums);
+		pfree(list_exprs);
 		return 1.0;
 	}
 
@@ -1405,6 +1485,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 */
 	func_dependencies = (MVDependencies **) palloc(sizeof(MVDependencies *) *
 												   list_length(rel->statlist));
+	func_info = (StatisticExtInfo **) palloc(sizeof(StatisticExtInfo *) *
+												   list_length(rel->statlist));
 	nfunc_dependencies = 0;
 	total_ndeps = 0;
 
@@ -1412,22 +1494,48 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	{
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(l);
 		Bitmapset  *matched;
-		BMS_Membership membership;
+		int			nmatched;
+		int			nexprs;
 
 		/* skip statistics that are not of the correct type */
 		if (stat->kind != STATS_EXT_DEPENDENCIES)
 			continue;
 
+		/* count matching simple clauses */
 		matched = bms_intersect(clauses_attnums, stat->keys);
-		membership = bms_membership(matched);
+		nmatched = bms_num_members(matched);
 		bms_free(matched);
 
-		/* skip objects matching fewer than two attributes from clauses */
-		if (membership != BMS_MULTIPLE)
+		/* count matching expressions */
+		nexprs = 0;
+		for (i = 0; i < list_length(clauses); i++)
+		{
+			ListCell   *lc;
+
+			/* not a complex expression */
+			if (!list_exprs[i])
+				continue;
+
+			foreach (lc, stat->exprs)
+			{
+				Node *stat_expr = (Node *) lfirst(lc);
+
+				/* try to match it */
+				if (equal(stat_expr, list_exprs[i]))
+					nexprs++;
+			}
+		}
+
+		/*
+		 * Skip objects matching fewer than two attributes/expressions
+		 * from clauses.
+		 */
+		if (nmatched + nexprs < 2)
 			continue;
 
 		func_dependencies[nfunc_dependencies]
 			= statext_dependencies_load(stat->statOid);
+		func_info[nfunc_dependencies] = stat;
 
 		total_ndeps += func_dependencies[nfunc_dependencies]->ndeps;
 		nfunc_dependencies++;
@@ -1439,7 +1547,23 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		pfree(func_dependencies);
 		bms_free(clauses_attnums);
 		pfree(list_attnums);
+		pfree(list_exprs);
 		return 1.0;
+	}
+
+	for (i = 0; i < nfunc_dependencies; i++)
+	{
+		int j;
+		for (j = 0; j < func_dependencies[i]->ndeps; j++)
+		{
+			int k;
+			for (k = 0; k < func_dependencies[i]->deps[j]->nattributes; k++)
+			{
+				elog(WARNING, "%d %d %d => %d", i, j, k, func_dependencies[i]->deps[j]->attributes[k]);
+			}
+			elog(WARNING, "%d %d %d => %f", i, j, k, func_dependencies[i]->deps[j]->degree);
+			elog(WARNING, "--------------");
+		}
 	}
 
 	/*
@@ -1450,15 +1574,30 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 											total_ndeps);
 	ndependencies = 0;
 
+	elog(WARNING, "=======================");
+
 	while (true)
 	{
+		StatisticExtInfo *info;
 		MVDependency *dependency;
 		AttrNumber	attnum;
+		List	   *exprs = NIL;
+
+		for (i = 0; i < list_length(clauses); i++)
+		{
+			if (!list_exprs[i])
+				continue;
+
+			exprs = lappend(exprs, list_exprs[i]);
+		}
 
 		/* the widest/strongest dependency, fully matched by clauses */
 		dependency = find_strongest_dependency(func_dependencies,
+											   func_info,
 											   nfunc_dependencies,
-											   clauses_attnums);
+											   clauses_attnums,
+											   exprs,
+											   &info);
 		if (!dependency)
 			break;
 
@@ -1467,7 +1606,15 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		/* Ignore dependencies using this implied attribute in later loops */
 		attnum = dependency->attributes[dependency->nattributes - 1];
 		clauses_attnums = bms_del_member(clauses_attnums, attnum);
+
+		/* FIXME Stop considering the expressions. This just stops after
+		 * the first dependency in order not to overrun the array, which
+		 * is wrong though. */
+		break;
 	}
+
+	elog(WARNING, "ndependencies = %d", ndependencies);
+	elog(WARNING, "=======================");
 
 	/*
 	 * If we found applicable dependencies, use them to estimate all
@@ -1478,12 +1625,15 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 										   sjinfo, dependencies, ndependencies,
 										   list_attnums, estimatedclauses);
 
+	elog(WARNING, "s1 = %f", s1);
+
 	/* free deserialized functional dependencies (and then the array) */
 	for (i = 0; i < nfunc_dependencies; i++)
 		pfree(func_dependencies[i]);
 
 	pfree(dependencies);
 	pfree(func_dependencies);
+	pfree(func_info);
 	bms_free(clauses_attnums);
 	pfree(list_attnums);
 

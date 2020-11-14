@@ -1824,9 +1824,6 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 				{
 					Node   *stat_expr = (Node *) lfirst(lc2);
 
-					elog(WARNING, "expr = %s", nodeToString(expr));
-					elog(WARNING, "stat expr = %s", nodeToString(stat_expr));
-
 					if (equal(expr, stat_expr))
 					{
 						list_exprs[listidx] = expr;
@@ -1862,8 +1859,6 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		stat = choose_best_statistics(rel->statlist, STATS_EXT_MCV,
 									  list_attnums, list_exprs,
 									  list_length(clauses));
-
-		elog(WARNING, "stat = %p", stat);
 
 		/*
 		 * if no (additional) matching stats could be found then we've nothing

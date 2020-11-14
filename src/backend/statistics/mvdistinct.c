@@ -39,7 +39,7 @@
 static double ndistinct_for_combination(double totalrows, int numrows,
 										HeapTuple *rows, Datum *exprvals,
 										bool *exprnulls, Oid *exprtypes,
-										int nexprs,
+										int nattrs, int nexprs,
 										VacAttrStats **stats, int k,
 										int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
@@ -95,8 +95,8 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	int			i;
 	int			k;
 	int			itemcnt;
-	int			numattrs = bms_num_members(attrs) + list_length(exprs);
-	int			numcombs = num_combinations(numattrs);
+	int			numattrs = bms_num_members(attrs);
+	int			numcombs = num_combinations(numattrs + list_length(exprs));
 
 	/*
 	 * Copy the bitmapset and add fake attnums representing expressions,
@@ -114,13 +114,13 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	result->nitems = numcombs;
 
 	itemcnt = 0;
-	for (k = 2; k <= numattrs; k++)
+	for (k = 2; k <= bms_num_members(attrs); k++)
 	{
 		int		   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
-		generator = generator_init(numattrs, k);
+		generator = generator_init(bms_num_members(attrs), k);
 
 		while ((combination = generator_next(generator)))
 		{
@@ -130,17 +130,17 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 			item->attrs = NULL;
 			for (j = 0; j < k; j++)
 			{
-				if (combination[j] <= MaxHeapAttributeNumber)
+				if (combination[j] < numattrs)
 					item->attrs = bms_add_member(item->attrs,
 												 stats[combination[j]]->attr->attnum);
 				else
-					item->attrs = bms_add_member(item->attrs, combination[j]);
+					item->attrs = bms_add_member(item->attrs, MaxHeapAttributeNumber + combination[j] + 1);
 			}
 
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
 										  exprvals, exprnulls, exprtypes,
-										  list_length(exprs),
+										  numattrs, list_length(exprs),
 										  stats, k, combination);
 
 			itemcnt++;
@@ -451,7 +451,8 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  Datum *exprvals, bool *exprnulls, Oid *exprtypes, int nexprs,
+						  Datum *exprvals, bool *exprnulls, Oid *exprtypes,
+						  int nattrs, int nexprs,
 						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
@@ -491,30 +492,42 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats *colstat = stats[combination[i]];
+		Oid				typid;
 		TypeCacheEntry *type;
+		AttrNumber		attnum = InvalidAttrNumber;
+		TupleDesc		tdesc = NULL;
 
-		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
+		if (combination[i] < nattrs)
+		{
+			VacAttrStats *colstat = stats[combination[i]];
+			typid = colstat->attrtypid;
+			attnum = colstat->attr->attnum;
+			tdesc = colstat->tupDesc;
+		}
+		else
+			typid = exprtypes[combination[i] - nattrs];
+
+		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 colstat->attrtypid);
+				 typid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
+		multi_sort_add_dimension(mss, i, type->lt_opr, InvalidOid);
 
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
-			if (combination[i] <= MaxHeapAttributeNumber)
+			if (combination[i] < nattrs)
 				items[j].values[i] =
 					heap_getattr(rows[j],
-								 colstat->attr->attnum,
-								 colstat->tupDesc,
+								 attnum,
+								 tdesc,
 								 &items[j].isnull[i]);
 			else
 			{
-				items[j].values[i] = exprvals[j * nexprs + combination[i] - MaxHeapAttributeNumber - 1];
-				items[j].isnull[i] = exprnulls[j * nexprs + combination[i] - MaxHeapAttributeNumber - 1];
+				items[j].values[i] = exprvals[j * nexprs + combination[i]];
+				items[j].isnull[i] = exprnulls[j * nexprs + combination[i]];
 			}
 		}
 	}

@@ -1666,6 +1666,8 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					matches[i] = RESULT_MERGE(matches[i], is_or, match);
 				}
 			}
+			else
+				elog(ERROR, "incompatible clause");
 		}
 		else if (IsA(clause, ScalarArrayOpExpr))
 		{

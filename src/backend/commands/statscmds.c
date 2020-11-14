@@ -457,6 +457,21 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/*
+	 * If there are no simply-referenced columns, give the statistics an
+	 * auto dependency on the whole table.  In most cases, this will
+	 * be redundant, but it might not be if the statistics expressions
+	 * contain no Vars.
+	 *
+	 * XXX This is copied from index_create, not sure if it's applicable
+	 * to extended statistics too.
+	 */
+	if (nattnums)
+	{
+		ObjectAddressSet(parentobject, RelationRelationId, relid);
+		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+	}
+
+	/*
 	 * Store dependencies on anything mentioned in statistics expressions,
 	 * just like we do e.g. in index_create.
 	 */

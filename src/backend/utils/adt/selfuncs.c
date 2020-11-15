@@ -3243,6 +3243,15 @@ typedef struct
 	double		ndistinct;		/* # distinct values */
 } GroupVarInfo;
 
+
+typedef struct
+{
+	Node	   *expr;			/* expression */
+	RelOptInfo *rel;			/* relation it belongs to */
+	List	   *varinfos;		/* info for variables in this expression */
+} GroupExprInfo;
+
+
 static List *
 add_unique_group_var(PlannerInfo *root, List *varinfos,
 					 Node *var, VariableStatData *vardata)
@@ -3290,6 +3299,47 @@ add_unique_group_var(PlannerInfo *root, List *varinfos,
 	varinfos = lappend(varinfos, varinfo);
 	return varinfos;
 }
+
+static List *
+add_unique_group_expr(PlannerInfo *root, List *exprinfos,
+					 Node *expr, List *vars)
+{
+	GroupExprInfo *exprinfo;
+	ListCell   *lc;
+
+	foreach(lc, exprinfos)
+	{
+		exprinfo = (GroupExprInfo *) lfirst(lc);
+
+		/* Drop exact duplicates */
+		if (equal(expr, exprinfo->expr))
+			return exprinfos;
+	}
+
+	exprinfo = (GroupExprInfo *) palloc(sizeof(GroupExprInfo));
+
+	exprinfo->expr = expr;
+	exprinfo->varinfos = NIL;
+
+	foreach (lc, vars)
+	{
+		VariableStatData vardata;
+		Node *var = (Node *) lfirst(lc);
+
+		examine_variable(root, var, 0, &vardata);
+
+		add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
+
+		exprinfo->rel = vardata.rel;
+
+		ReleaseVariableStats(vardata);
+	}
+
+	exprinfos = lappend(exprinfos, exprinfo);
+
+	return exprinfos;
+}
+
 
 /*
  * estimate_num_groups		- Estimate number of groups in a grouped query
@@ -3361,6 +3411,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 					List **pgset)
 {
 	List	   *varinfos = NIL;
+	List	   *exprinfos = NIL;
 	double		srf_multiplier = 1.0;
 	double		numdistinct;
 	ListCell   *l;
@@ -3473,7 +3524,9 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		varnos = pull_varnos((Node *) varshere);
 		if (bms_membership(varnos) == BMS_SINGLETON)
 		{
-			// FIXME try to match it to expressions in mvdistinct stats
+			exprinfos = add_unique_group_expr(root, exprinfos,
+											  groupexpr, varshere);
+			elog(WARNING, "exprinfos: %d", list_length(exprinfos));
 		}
 
 		/*
@@ -3517,32 +3570,32 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 	 */
 	do
 	{
-		GroupVarInfo *varinfo1 = (GroupVarInfo *) linitial(varinfos);
-		RelOptInfo *rel = varinfo1->rel;
+		GroupExprInfo *exprinfo1 = (GroupExprInfo *) linitial(exprinfos);
+		RelOptInfo *rel = exprinfo1->rel;
 		double		reldistinct = 1;
 		double		relmaxndistinct = reldistinct;
 		int			relvarcount = 0;
-		List	   *newvarinfos = NIL;
-		List	   *relvarinfos = NIL;
+		List	   *newexprinfos = NIL;
+		List	   *relexprinfos = NIL;
 
 		/*
 		 * Split the list of varinfos in two - one for the current rel, one
 		 * for remaining Vars on other rels.
 		 */
-		relvarinfos = lappend(relvarinfos, varinfo1);
-		for_each_from(l, varinfos, 1)
+		relexprinfos = lappend(relexprinfos, exprinfo1);
+		for_each_from(l, exprinfos, 1)
 		{
-			GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(l);
+			GroupExprInfo *exprinfo2 = (GroupExprInfo *) lfirst(l);
 
-			if (varinfo2->rel == varinfo1->rel)
+			if (exprinfo2->rel == exprinfo1->rel)
 			{
 				/* varinfos on current rel */
-				relvarinfos = lappend(relvarinfos, varinfo2);
+				relexprinfos = lappend(relexprinfos, exprinfo2);
 			}
 			else
 			{
-				/* not time to process varinfo2 yet */
-				newvarinfos = lappend(newvarinfos, varinfo2);
+				/* not time to process exprinfo2 yet */
+				newexprinfos = lappend(newexprinfos, exprinfo2);
 			}
 		}
 
@@ -3558,11 +3611,11 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		 * apply.  We apply a fudge factor below, but only if we multiplied
 		 * more than one such values.
 		 */
-		while (relvarinfos)
+		while (relexprinfos)
 		{
 			double		mvndistinct;
 
-			if (estimate_multivariate_ndistinct(root, rel, &relvarinfos,
+			if (estimate_multivariate_ndistinct(root, rel, &relexprinfos,
 												&mvndistinct))
 			{
 				reldistinct *= mvndistinct;
@@ -3572,18 +3625,24 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			}
 			else
 			{
-				foreach(l, relvarinfos)
+				foreach(l, relexprinfos)
 				{
-					GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(l);
+					ListCell *lc;
+					GroupExprInfo *exprinfo2 = (GroupExprInfo *) lfirst(l);
 
-					reldistinct *= varinfo2->ndistinct;
-					if (relmaxndistinct < varinfo2->ndistinct)
-						relmaxndistinct = varinfo2->ndistinct;
-					relvarcount++;
+					foreach (lc, exprinfo2->varinfos)
+					{
+						GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(lc);
+
+						reldistinct *= varinfo2->ndistinct;
+						if (relmaxndistinct < varinfo2->ndistinct)
+							relmaxndistinct = varinfo2->ndistinct;
+						relvarcount++;
+					}
 				}
 
 				/* we're done with this relation */
-				relvarinfos = NIL;
+				relexprinfos = NIL;
 			}
 		}
 
@@ -3669,8 +3728,8 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			numdistinct *= reldistinct;
 		}
 
-		varinfos = newvarinfos;
-	} while (varinfos != NIL);
+		exprinfos = newexprinfos;
+	} while (exprinfos != NIL);
 
 	/* Now we can account for the effects of any SRFs */
 	numdistinct *= srf_multiplier;
@@ -3886,53 +3945,84 @@ estimate_hashagg_tablesize(Path *path, const AggClauseCosts *agg_costs,
  */
 static bool
 estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
-								List **varinfos, double *ndistinct)
+								List **exprinfos, double *ndistinct)
 {
 	ListCell   *lc;
-	Bitmapset  *attnums = NULL;
-	int			nmatches;
+	int			nmatches_vars;
+	int			nmatches_exprs;
 	Oid			statOid = InvalidOid;
 	MVNDistinct *stats;
-	Bitmapset  *matched = NULL;
+	StatisticExtInfo *matched_info = NULL;
 
 	/* bail out immediately if the table has no extended statistics */
 	if (!rel->statlist)
 		return false;
 
-	/* Determine the attnums we're looking for */
-	foreach(lc, *varinfos)
-	{
-		GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc);
-		AttrNumber	attnum;
-
-		Assert(varinfo->rel == rel);
-
-		if (!IsA(varinfo->var, Var))
-			continue;
-
-		attnum = ((Var *) varinfo->var)->varattno;
-
-		if (!AttrNumberIsForUserDefinedAttr(attnum))
-			continue;
-
-		attnums = bms_add_member(attnums, attnum);
-	}
+	elog(WARNING, "A");
 
 	/* look for the ndistinct statistics matching the most vars */
-	nmatches = 1;				/* we require at least two matches */
+	nmatches_vars = 0;				/* we require at least two matches */
+	nmatches_exprs = 0;
 	foreach(lc, rel->statlist)
 	{
+		ListCell	*lc2;
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
-		Bitmapset  *shared;
-		int			nshared;
+		int			nshared_vars = 0;
+		int			nshared_exprs = 0;
 
 		/* skip statistics of other kinds */
 		if (info->kind != STATS_EXT_NDISTINCT)
 			continue;
 
-		/* compute attnums shared by the vars and the statistics object */
-		shared = bms_intersect(info->keys, attnums);
-		nshared = bms_num_members(shared);
+		/*
+		 * Determine how many expressions (and variables in non-matched
+		 * expressions) match.
+		 */
+		foreach(lc2, *exprinfos)
+		{
+			ListCell *lc3;
+			GroupExprInfo *exprinfo = (GroupExprInfo *) lfirst(lc2);
+			AttrNumber	attnum;
+
+			Assert(exprinfo->rel == rel);
+
+			elog(WARNING, "B");
+
+			/* simple Var, search in statistics keys directly */
+			if (IsA(exprinfo->expr, Var))
+			{
+				attnum = ((Var *) exprinfo->expr)->varattno;
+
+				if (!AttrNumberIsForUserDefinedAttr(attnum))
+					continue;
+
+				if (bms_is_member(attnum, info->keys))
+					nshared_vars++;
+
+				continue;
+			}
+
+			elog(WARNING, "C");
+
+			/* expression - see if it's in the statistics */
+			foreach (lc3, info->exprs)
+			{
+				Node *expr = (Node *) lfirst(lc3);
+
+				if (equal(exprinfo->expr, expr))
+				{
+					nshared_exprs++;
+					elog(WARNING, "list_length(exprinfo->varinfos) = %d", list_length(exprinfo->varinfos));
+					nshared_vars += list_length(exprinfo->varinfos);
+					break;
+				}
+			}
+		}
+
+		elog(WARNING, "D nshared_vars %d nshared_exprs %d", nshared_vars, nshared_exprs);
+
+		if (nshared_vars + nshared_exprs < 2)
+			continue;
 
 		/*
 		 * Does this statistics object match more columns than the currently
@@ -3941,18 +4031,22 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		 * XXX This should break ties using name of the object, or something
 		 * like that, to make the outcome stable.
 		 */
-		if (nshared > nmatches)
+		if ((nshared_vars > nmatches_vars) ||
+			((nshared_vars == nmatches_vars) && (nshared_exprs > nmatches_exprs)))
 		{
+			elog(WARNING, "oid %d", info->statOid);
 			statOid = info->statOid;
-			nmatches = nshared;
-			matched = shared;
+			nmatches_vars = nshared_vars;
+			nmatches_exprs = nshared_exprs;
+			matched_info = info;
 		}
 	}
 
 	/* No match? */
 	if (statOid == InvalidOid)
 		return false;
-	Assert(nmatches > 1 && matched != NULL);
+
+	Assert(nmatches_vars + nmatches_exprs > 1);
 
 	stats = statext_ndistinct_load(statOid);
 
@@ -3965,6 +4059,43 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		int			i;
 		List	   *newlist = NIL;
 		MVNDistinctItem *item = NULL;
+		ListCell   *lc2;
+		Bitmapset  *matched = NULL;
+
+		/* see what actually matched */
+		foreach (lc2, *exprinfos)
+		{
+			ListCell   *lc3;
+			int			idx;
+			bool		found = false;
+
+			GroupExprInfo *exprinfo = (GroupExprInfo *) lfirst(lc2);
+
+			/* expression - see if it's in the statistics */
+			idx = 0;
+			foreach (lc3, matched_info->exprs)
+			{
+				Node *expr = (Node *) lfirst(lc3);
+
+				idx++;
+
+				elog(WARNING, "expr A: %s", nodeToString(exprinfo->expr));
+				elog(WARNING, "expr B: %s", nodeToString(expr));
+
+				if (equal(exprinfo->expr, expr))
+				{
+					elog(WARNING, "adding %d", MaxHeapAttributeNumber + idx);
+					matched = bms_add_member(matched, MaxHeapAttributeNumber + idx);
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+			{
+				/* FIXME try matching the Vars from exprinfo->varinfos */
+			}
+		}
 
 		/* Find the specific item that exactly matches the combination */
 		for (i = 0; i < stats->nitems; i++)
@@ -3974,6 +4105,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (bms_subset_compare(tmpitem->attrs, matched) == BMS_EQUAL)
 			{
 				item = tmpitem;
+				elog(WARNING, "found item with %f", item->ndistinct);
 				break;
 			}
 		}
@@ -3983,9 +4115,10 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			elog(ERROR, "corrupt MVNDistinct entry");
 
 		/* Form the output varinfo list, keeping only unmatched ones */
-		foreach(lc, *varinfos)
+		/*
+		foreach(lc, *exprinfos)
 		{
-			GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc);
+			GroupExprInfo *exprinfo = (GroupExprInfo *) lfirst(lc);
 			AttrNumber	attnum;
 
 			if (!IsA(varinfo->var, Var))
@@ -4002,8 +4135,9 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (!bms_is_member(attnum, matched))
 				newlist = lappend(newlist, varinfo);
 		}
+		*/
 
-		*varinfos = newlist;
+		*exprinfos = newlist;
 		*ndistinct = item->ndistinct;
 		return true;
 	}

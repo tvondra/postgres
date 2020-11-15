@@ -3328,7 +3328,7 @@ add_unique_group_expr(PlannerInfo *root, List *exprinfos,
 
 		examine_variable(root, var, 0, &vardata);
 
-		add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
+		exprinfo->varinfos = add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
 
 		exprinfo->rel = vardata.rel;
 
@@ -3526,7 +3526,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		{
 			exprinfos = add_unique_group_expr(root, exprinfos,
 											  groupexpr, varshere);
-			elog(WARNING, "exprinfos: %d", list_length(exprinfos));
+			elog(WARNING, "exprinfos: %d vars %d", list_length(exprinfos), list_length(varshere));
 		}
 
 		/*
@@ -3625,10 +3625,13 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			}
 			else
 			{
+				elog(WARNING, "relexprinfos %d", list_length(relexprinfos));
 				foreach(l, relexprinfos)
 				{
 					ListCell *lc;
 					GroupExprInfo *exprinfo2 = (GroupExprInfo *) lfirst(l);
+
+					elog(WARNING, "exprinfo2->varinfos %d", list_length(exprinfo2->varinfos));
 
 					foreach (lc, exprinfo2->varinfos)
 					{

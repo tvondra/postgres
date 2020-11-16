@@ -1911,6 +1911,9 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
 		case EXPR_KIND_INDEX_EXPRESSION:
 			err = _("cannot use subquery in index expression");
 			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			err = _("cannot use subquery in cube expression");
+			break;
 		case EXPR_KIND_INDEX_PREDICATE:
 			err = _("cannot use subquery in index predicate");
 			break;
@@ -3542,6 +3545,8 @@ ParseExprKindName(ParseExprKind exprKind)
 			return "WHERE";
 		case EXPR_KIND_GENERATED_COLUMN:
 			return "GENERATED AS";
+		case EXPR_KIND_CUBE_EXPRESSION:
+			return "CUBE EXPRESSION";
 
 			/*
 			 * There is intentionally no default: case here, so that the

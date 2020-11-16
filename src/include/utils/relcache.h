@@ -53,6 +53,9 @@ extern List *RelationGetDummyIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
 extern Datum *RelationGetIndexRawAttOptions(Relation relation);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
+extern List *RelationGetChangeSetList(Relation relation);
+extern List *RelationGetCubeList(Relation relation);
+extern List *RelationGetCubeExpressions(Relation relation);
 
 typedef enum IndexAttrBitmapKind
 {
@@ -71,6 +74,8 @@ extern void RelationGetExclusionInfo(Relation indexRelation,
 									 uint16 **strategies);
 
 extern void RelationInitIndexAccessInfo(Relation relation);
+extern void RelationInitChangeSetInfo(Relation relation);
+extern void RelationInitCubeInfo(Relation relation);
 
 /* caller must include pg_publication.h */
 struct PublicationActions;

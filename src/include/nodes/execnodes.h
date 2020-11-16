@@ -179,6 +179,49 @@ typedef struct IndexInfo
 } IndexInfo;
 
 /* ----------------
+ *	  ChangeSetInfo information
+ *
+ *		this struct holds the information needed to construct new changeset
+ *		entries for a particular changeset.
+ *
+ *		NumChangeSetAttrs	number of columns in this changeset
+ *		KeyAttrNumbers		underlying-rel attribute numbers used as keys
+ *							(zeroes indicate expressions)
+ *		Expressions			expr trees for expression entries, or NIL if none
+ *		ExpressionsState	exec state for expressions, or NIL if none
+ * ----------------
+ */
+typedef struct ChangeSetInfo
+{
+	NodeTag		type;
+	int			csi_NumChangeSetAttrs;
+	AttrNumber *csi_KeyAttrNumbers;
+} ChangeSetInfo;
+
+
+/* ----------------
+ *	  CubeInfo information
+ *
+ *		this struct holds the information needed to construct new cube
+ *		entries for a particular changeset.
+ *
+ *		NumCubeAttrs		number of columns in this cube
+ *		KeyAttrNumbers		underlying-rel attribute numbers used as keys
+ *							(zeroes indicate expressions)
+ *		Expressions			expr trees for expression entries, or NIL if none
+ *		ExpressionsState	exec state for expressions, or NIL if none
+ * ----------------
+ */
+typedef struct CubeInfo
+{
+	NodeTag		type;
+	int			ci_NumCubeAttrs;
+	AttrNumber *ci_KeyAttrNumbers;
+	List	   *ci_Expressions; 		/* list of Expr */
+	List	   *ci_ExpressionsState;	/* list of ExprState */
+} CubeInfo;
+
+/* ----------------
  *	  ExprContext_CB
  *
  *		List of callbacks to be called at ExprContext shutdown.
@@ -419,6 +462,15 @@ typedef struct ResultRelInfo
 
 	/* array of key/attr info for indices */
 	IndexInfo **ri_IndexRelationInfo;
+
+	/*# of changesets existing on result relation */
+	int			ri_NumChangeSets;
+
+	/* array of relation descriptors for changesets */
+	RelationPtr ri_ChangeSetRelationDescs;
+
+	/* array of key/attr info for changesets */
+	ChangeSetInfo **ri_ChangeSetRelationInfo;
 
 	/* triggers to be fired, if any */
 	TriggerDesc *ri_TrigDesc;

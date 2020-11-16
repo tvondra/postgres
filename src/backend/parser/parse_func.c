@@ -2136,6 +2136,9 @@ LookupFuncName(List *funcname, int nargs, const Oid *argtypes, bool missing_ok)
 								func_signature_string(funcname, nargs,
 													  NIL, argtypes))));
 			break;
+		case EXPR_KIND_CUBE_EXPRESSION:
+			err = _("set-returning functions are not allowed in CUBE expressions");
+			break;
 
 		case FUNCLOOKUP_AMBIGUOUS:
 			/* Raise an error regardless of missing_ok */

@@ -616,4 +616,15 @@ extern void CheckCmdReplicaIdentity(Relation rel, CmdType cmd);
 extern void CheckSubscriptionRelkind(char relkind, const char *nspname,
 									 const char *relname);
 
+/*
+ * prototypes from functions in execChangeSet.c
+ */
+extern void ExecInsertChangeSetTuples(char changeType,
+								TupleTableSlot *slot, EState *estate);
+extern void ExecInsertChangeSetTuples2(char changeType,
+								ItemPointer tupleid, HeapTuple tup,
+								EState *estate);
+extern void ExecOpenChangeSets(ResultRelInfo *resultRelInfo);
+extern void ExecCloseChangeSets(ResultRelInfo *resultRelInfo);
+
 #endif							/* EXECUTOR_H  */

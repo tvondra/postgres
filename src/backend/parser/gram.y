@@ -356,6 +356,11 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				table_access_method_clause name cursor_name file_name
 				opt_index_name cluster_index_specification
 
+%type <str>		cube_name opt_cube_name changeset_name opt_changeset_name
+%type <range>	opt_changeset
+
+%type <list>	changeset_cols cube_params
+
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
 				opt_collate
@@ -634,7 +639,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	BOOLEAN_P BOTH BY
 
 	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
-	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
+	CHANGESET CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
 	CONSTRAINTS CONTENT_P CONTINUE_P CONVERSION_P COPY COST CREATE
@@ -651,7 +656,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION
 	EXTENSION EXTERNAL EXTRACT
 
-	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
+	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FLUSH FOLLOWING FOR
 	FORCE FOREIGN FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
@@ -877,7 +882,9 @@ stmt :
 			| CreateAsStmt
 			| CreateAssertionStmt
 			| CreateCastStmt
+			| CreateChangeSetStmt
 			| CreateConversionStmt
+			| CreateCubeStmt
 			| CreateDomainStmt
 			| CreateExtensionStmt
 			| CreateFdwStmt
@@ -925,6 +932,7 @@ stmt :
 			| ExecuteStmt
 			| ExplainStmt
 			| FetchStmt
+			| FlushChangeSetStmt
 			| GrantStmt
 			| GrantRoleStmt
 			| ImportForeignSchemaStmt
@@ -7330,6 +7338,125 @@ opt_asc_desc: ASC							{ $$ = SORTBY_ASC; }
 opt_nulls_order: NULLS_LA FIRST_P			{ $$ = SORTBY_NULLS_FIRST; }
 			| NULLS_LA LAST_P				{ $$ = SORTBY_NULLS_LAST; }
 			| /*EMPTY*/						{ $$ = SORTBY_NULLS_DEFAULT; }
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY: CREATE CHANGESET
+ *
+ *****************************************************************************/
+
+CreateChangeSetStmt:	CREATE CHANGESET opt_changeset_name
+			ON qualified_name '(' changeset_cols ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
+					n->chsetname = $3;
+					n->relation = $5;
+					n->chsetColumns = $7;
+					n->options = $9;
+					n->tableSpace = $10;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE CHANGESET IF_P NOT EXISTS changeset_name
+			ON qualified_name '(' changeset_cols ')'
+			opt_reloptions OptTableSpace
+				{
+					CreateChangeSetStmt *n = makeNode(CreateChangeSetStmt);
+					n->chsetname = $6;
+					n->relation = $8;
+					n->chsetColumns = $10;
+					n->options = $12;
+					n->tableSpace = $13;
+					n->if_not_exists = true;
+					$$ = (Node *)n;
+				}
+		;
+
+changeset_name:	ColId								{ $$ = $1; }
+
+opt_changeset_name:
+			changeset_name							{ $$ = $1; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
+changeset_cols:
+			ColId									{ $$ = list_make1(makeString($1)); }
+			| changeset_cols ',' ColId				{ $$ = lappend($1, makeString($3)); }
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				FLUSH CHANGESET qualified_name
+ *
+ *****************************************************************************/
+
+FlushChangeSetStmt:
+			FLUSH CHANGESET qualified_name
+				{
+					FlushChangeSetStmt *n = makeNode(FlushChangeSetStmt);
+					n->relation = $3;
+					$$ = (Node *) n;
+				}
+		;
+
+
+/*****************************************************************************
+ *
+ *		QUERY: CREATE CUBE
+ *
+ *****************************************************************************/
+
+CreateCubeStmt:	CREATE CUBE opt_cube_name
+			ON qualified_name '(' cube_params ')'
+			opt_changeset opt_reloptions OptTableSpace
+				{
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
+					n->cubename = $3;
+					n->relation = $5;
+					n->cubeExprs = $7;
+					n->changeset = $9;
+					n->options = $10;
+					n->tableSpace = $11;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE CUBE IF_P NOT EXISTS cube_name
+			ON qualified_name '(' cube_params ')'
+			opt_changeset opt_reloptions OptTableSpace
+				{
+					CreateCubeStmt *n = makeNode(CreateCubeStmt);
+					n->cubename = $6;
+					n->relation = $8;
+					n->cubeExprs = $10;
+					n->changeset = $12;
+					n->options = $13;
+					n->tableSpace = $14;
+					n->if_not_exists = true;
+					$$ = (Node *)n;
+				}
+		;
+
+cube_name: ColId									{ $$ = $1; };
+
+opt_cube_name:
+			cube_name								{ $$ = $1; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
+/*
+ * For now, we treat cube elements just like index elements.
+ */
+cube_params: index_params
+		;
+
+opt_changeset:
+			CHANGESET qualified_name				{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
 
@@ -15175,6 +15302,7 @@ unreserved_keyword:
 			| CASCADED
 			| CATALOG_P
 			| CHAIN
+			| CHANGESET
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS
@@ -15237,6 +15365,7 @@ unreserved_keyword:
 			| FAMILY
 			| FILTER
 			| FIRST_P
+			| FLUSH
 			| FOLLOWING
 			| FORCE
 			| FORWARD

@@ -25,6 +25,7 @@ OBJS = \
 	conversioncmds.o \
 	copy.o \
 	createas.o \
+	cubecmds.o \
 	dbcommands.o \
 	define.o \
 	discard.o \

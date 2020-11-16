@@ -1023,9 +1023,11 @@ EventTriggerSupportsObjectClass(ObjectClass objclass)
 		case OCLASS_PROC:
 		case OCLASS_TYPE:
 		case OCLASS_CAST:
+		case OCLASS_CHANGESET:
 		case OCLASS_COLLATION:
 		case OCLASS_CONSTRAINT:
 		case OCLASS_CONVERSION:
+		case OCLASS_CUBE:
 		case OCLASS_DEFAULT:
 		case OCLASS_LANGUAGE:
 		case OCLASS_LARGEOBJECT:

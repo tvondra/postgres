@@ -363,6 +363,67 @@ struct PlannerInfo
 	bool		partColsUpdated;
 };
 
+/*
+ * ChangeSetOptInfo
+ *		Per-changeset information for planning/optimization
+ *
+ *		chsetkeys[] has ncolumns entries.
+ *
+ *		chsettlist is a TargetEntry list representing the changeset columns.
+ *		It provides an equivalent base-relation Var for each column.
+ */
+typedef struct ChangeSetOptInfo
+{
+	NodeTag		type;
+
+	Oid			chsetoid;		/* OID of the changeset relation */
+	Oid			reltablespace;	/* tablespace of changeset (not table) */
+	RelOptInfo *rel;			/* back-link to changeset's table */
+
+	/* changeset-size statistics (from pg_class and elsewhere) */
+	BlockNumber pages;			/* number of disk pages in changeset */
+	double		tuples;			/* number of index tuples in changeset */
+
+	/* changeset descriptor information */
+	int			ncolumns;		/* number of columns in changeset */
+	int		   *chsetkeys;		/* column numbers of changeset's keys */
+
+	List	   *chsettlist;		/* targetlist representing changeset columns */
+
+} ChangeSetOptInfo;
+
+/*
+ * CubeOptInfo
+ *		Per-cube information for planning/optimization
+ *
+ *		cubekeys[] has ncolumns entries.
+ *
+ *		cubetlist is a TargetEntry list representing the cube columns.
+ *		It provides an equivalent base-relation Var for each column.
+ */
+typedef struct CubeOptInfo
+{
+	NodeTag		type;
+
+	Oid			cubeoid;		/* OID of the cube relation */
+	Oid			chsetoid;		/* OID of the changeset relation */
+	Oid			reltablespace;	/* tablespace of changeset (not table) */
+	RelOptInfo *rel;			/* back-link to cube's table */
+
+	/* cube-size statistics (from pg_class and elsewhere) */
+	BlockNumber pages;			/* number of disk pages in cube */
+	double		tuples;			/* number of index tuples in cube */
+
+	/* cube descriptor information */
+	int			ncolumns;		/* number of columns in cube */
+	int		   *cubekeys;		/* column numbers of changeset's keys */
+
+	List	   *cubetlist;		/* targetlist representing cube columns */
+
+	List	   *cubeexprs;		/* expressions for non-simple cube columns */
+
+} CubeOptInfo;
+
 
 /*
  * In places where it's known that simple_rte_array[] must have been prepared
@@ -696,6 +757,7 @@ typedef struct RelOptInfo
 	List	   *lateral_vars;	/* LATERAL Vars and PHVs referenced by rel */
 	Relids		lateral_referencers;	/* rels that reference me laterally */
 	List	   *indexlist;		/* list of IndexOptInfo */
+	List	   *cubelist;		/* list of CubeOptInfo */
 	List	   *statlist;		/* list of StatisticExtInfo */
 	BlockNumber pages;			/* size estimates derived from pg_class */
 	double		tuples;
@@ -1740,6 +1802,21 @@ typedef struct GroupingSetsPath
 	List	   *qual;			/* quals (HAVING quals), if any */
 	uint64		transitionSpace;	/* for pass-by-ref transition data */
 } GroupingSetsPath;
+
+/*
+ * CubePath represents partial aggregation using a cube.
+ *
+ * The path reads data from the pre-aggregated cube, updates it using new data
+ * from the associated changeset and outputs partially-aggregated data just
+ * like partial aggregate.
+ */
+typedef struct CubePath
+{
+	Path		path;
+	Path	   *cubepath;		/* scan from the cube */
+	Path	   *chsetpath;		/* change-set path (for cube update) */
+	double		numGroups;		/* estimated number of groups in input */
+} CubePath;
 
 /*
  * MinMaxAggPath represents computation of MIN/MAX aggregates from indexes

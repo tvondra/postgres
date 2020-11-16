@@ -27,6 +27,7 @@
 #include "catalog/toasting.h"
 #include "commands/alter.h"
 #include "commands/async.h"
+#include "commands/cubes.h"
 #include "commands/cluster.h"
 #include "commands/collationcmds.h"
 #include "commands/comment.h"
@@ -214,6 +215,9 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_SecLabelStmt:
 		case T_TruncateStmt:
 		case T_ViewStmt:
+		case T_CreateChangeSetStmt:
+		case T_CreateCubeStmt:
+		case T_FlushChangeSetStmt:
 			{
 				/* DDL is not read-only, and neither is TRUNCATE. */
 				return COMMAND_IS_NOT_READ_ONLY;
@@ -1542,6 +1546,32 @@ ProcessUtilitySlow(ParseState *pstate,
 				}
 				break;
 
+			case T_CreateChangeSetStmt:
+				address = CreateChangeSet((CreateChangeSetStmt *) parsetree);
+				break;
+
+			case T_FlushChangeSetStmt:
+				address = ExecFlushChangeSet((FlushChangeSetStmt *) parsetree);
+				break;
+
+			case T_CreateCubeStmt:
+				{
+					CreateCubeStmt   *stmt = (CreateCubeStmt *) parsetree;
+					Oid			relid;
+
+					/* Run parse analysis ... */
+					relid =
+						RangeVarGetRelidExtended(stmt->relation, ShareLock,
+												 false, false,
+												 RangeVarCallbackOwnsRelation,
+												 NULL);
+
+					stmt = transformCreateCubeStmt(relid, stmt, queryString);
+
+					address = CreateCube(stmt);
+				}
+				break;
+
 			case T_CreateExtensionStmt:
 				address = CreateExtension(pstate, (CreateExtensionStmt *) parsetree);
 				break;
@@ -2696,6 +2726,14 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		case T_CreateChangeSetStmt:
+			tag = "CREATE CHANGESET";
+			break;
+
+		case T_CreateCubeStmt:
+			tag = "CREATE CUBE";
+			break;
+
 		case T_CompositeTypeStmt:
 			tag = CMDTAG_CREATE_TYPE;
 			break;
@@ -3359,6 +3397,14 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_IndexStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateChangeSetStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateCubeStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

@@ -26,6 +26,8 @@ extern AlterTableStmt *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 											   List **afterStmts);
 extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
 									 const char *queryString);
+extern CreateCubeStmt *transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt,
+											   const char *queryString);
 extern void transformRuleStmt(RuleStmt *stmt, const char *queryString,
 							  List **actions, Node **whereClause);
 extern List *transformCreateSchemaStmt(CreateSchemaStmt *stmt);

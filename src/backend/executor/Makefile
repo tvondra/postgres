@@ -28,6 +28,7 @@ OBJS = \
 	execSRF.o \
 	execScan.o \
 	execTuples.o \
+	execChangeSet.o \
 	execUtils.o \
 	functions.o \
 	instrument.o \

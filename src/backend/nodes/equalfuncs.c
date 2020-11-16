@@ -1378,6 +1378,39 @@ _equalAlterStatsStmt(const AlterStatsStmt *a, const AlterStatsStmt *b)
 }
 
 static bool
+_equalCreateChangeSetStmt(const CreateChangeSetStmt *a, const CreateChangeSetStmt *b)
+{
+	COMPARE_STRING_FIELD(chsetname);
+	COMPARE_NODE_FIELD(relation);
+	COMPARE_STRING_FIELD(tableSpace);
+	COMPARE_NODE_FIELD(chsetColumns);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
+
+	return true;
+}
+
+static bool
+_equalFlushChangeSetStmt(const FlushChangeSetStmt *a, const FlushChangeSetStmt *b)
+{
+	COMPARE_NODE_FIELD(relation);
+	return true;
+}
+
+static bool
+_equalCreateCubeStmt(const CreateCubeStmt *a, const CreateCubeStmt *b)
+{
+	COMPARE_STRING_FIELD(cubename);
+	COMPARE_NODE_FIELD(relation);
+	COMPARE_STRING_FIELD(tableSpace);
+	COMPARE_NODE_FIELD(cubeExprs);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
+
+	return true;
+}
+
+static bool
 _equalCreateFunctionStmt(const CreateFunctionStmt *a, const CreateFunctionStmt *b)
 {
 	COMPARE_SCALAR_FIELD(is_procedure);
@@ -3335,6 +3368,15 @@ equal(const void *a, const void *b)
 			break;
 		case T_AlterStatsStmt:
 			retval = _equalAlterStatsStmt(a, b);
+			break;
+		case T_CreateChangeSetStmt:
+			retval = _equalCreateChangeSetStmt(a, b);
+			break;
+		case T_FlushChangeSetStmt:
+			retval = _equalFlushChangeSetStmt(a, b);
+			break;
+		case T_CreateCubeStmt:
+			retval = _equalCreateCubeStmt(a, b);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _equalCreateFunctionStmt(a, b);

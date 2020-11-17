@@ -937,6 +937,21 @@ gettype(char *type)
 				return (*app)->am_oid;
 			}
 		}
+
+		/* The type wasn't known; check again to handle composite
+		 * types, added since first populating the array. */
+		Typ = NULL;
+		populate_typ_array();
+
+		/* Need to avoid infinite recursion... */
+		for (app = Typ; *app != NULL; app++)
+		{
+			if (strncmp(NameStr((*app)->am_typ.typname), type, NAMEDATALEN) == 0)
+			{
+				Ap = *app;
+				return (*app)->am_oid;
+			}
+		}
 	}
 	else
 	{

@@ -427,6 +427,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	datanulls[Anum_pg_statistic_ext_data_stxdndistinct - 1] = true;
 	datanulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	datanulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
+	datanulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
 
 	/* insert it into pg_statistic_ext_data */
 	htup = heap_form_tuple(datarel->rd_att, datavalues, datanulls);
@@ -727,6 +728,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 
 	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 	nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
+	nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
 
 	rel = table_open(StatisticExtDataRelationId, RowExclusiveLock);
 

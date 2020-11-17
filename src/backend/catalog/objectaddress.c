@@ -3931,6 +3931,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
+
 			/*
 			 * There's intentionally no default: case here; we want the
 			 * compiler to warn if a new OCLASS hasn't been handled above.
@@ -4024,6 +4025,14 @@ getRelationDescription(StringInfo buffer, Oid relid, bool missing_ok)
 			break;
 		case RELKIND_FOREIGN_TABLE:
 			appendStringInfo(buffer, _("foreign table %s"),
+							 relname);
+			break;
+		case RELKIND_CUBE:
+			appendStringInfo(buffer, _("cube %s"),
+							 relname);
+			break;
+		case RELKIND_CHANGESET:
+			appendStringInfo(buffer, _("cube %s"),
 							 relname);
 			break;
 		default:
@@ -4541,6 +4550,12 @@ getRelationTypeDescription(StringInfo buffer, Oid relid, int32 objectSubId,
 			break;
 		case RELKIND_FOREIGN_TABLE:
 			appendStringInfoString(buffer, "foreign table");
+			break;
+		case RELKIND_CUBE:
+			appendStringInfoString(buffer, "cube");
+			break;
+		case RELKIND_CHANGESET:
+			appendStringInfoString(buffer, "changeset");
 			break;
 		default:
 			/* shouldn't get here */

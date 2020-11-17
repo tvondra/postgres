@@ -21,7 +21,8 @@
  */
 #include "postgres.h"
 
-#include "access/amapi.h"
+#include "access/table.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/xact.h"
 #include "bootstrap/bootstrap.h"
@@ -31,6 +32,7 @@
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_type.h"
 #include "commands/cubes.h"
@@ -86,7 +88,7 @@ cube_create(Relation heapRelation,
 	int			i;
 	char		relpersistence;
 
-	pg_class = heap_open(RelationRelationId, RowExclusiveLock);
+	pg_class = table_open(RelationRelationId, RowExclusiveLock);
 
 	/*
 	 * The cube will be in the same namespace as its parent table, and it
@@ -116,7 +118,7 @@ cube_create(Relation heapRelation,
 					(errcode(ERRCODE_DUPLICATE_TABLE),
 					 errmsg("relation \"%s\" already exists, skipping",
 							cubeRelationName)));
-			heap_close(pg_class, RowExclusiveLock);
+			table_close(pg_class, RowExclusiveLock);
 			return InvalidOid;
 		}
 
@@ -153,25 +155,25 @@ cube_create(Relation heapRelation,
 								   InvalidOid, /* reltypeid */
 								   InvalidOid, /* reloftypeid */
 								   heapRelation->rd_rel->relowner,
+								   HEAP_TABLE_AM_OID,
 								   cubeTupDesc,
 								   NIL,
 								   RELKIND_CUBE,
 								   relpersistence,
 								   false, /* not shared */
 								   false, /* not mapped */
-								   false, /* oidislocal */
-								   0,     /* attinhcount */
 								   ONCOMMIT_NOOP,
 								   reloptions,
 								   false, /* no ACLs */
 								   false, /* not a system catalog */
 								   false, /* not internal */
+								   InvalidOid,
 								   NULL); /* no object address */
 
 	Assert(OidIsValid(cubeRelationId));
 
 	/* done with pg_class */
-	heap_close(pg_class, RowExclusiveLock);
+	table_close(pg_class, RowExclusiveLock);
 
 	/* ----------------
 	 *	  update pg_cube
@@ -253,7 +255,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	/*
 	 * allocate the new tuple descriptor
 	 */
-	cubeTupDesc = CreateTemplateTupleDesc(numatts, false);
+	cubeTupDesc = CreateTemplateTupleDesc(numatts);
 
 	/*
 	 * Cubes can contain both simple columns and expressions (either regular
@@ -270,7 +272,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		Oid			keyType;
 		HeapTuple	tuple;
 		Form_pg_type typeTup;
-		Form_pg_attribute to = cubeTupDesc->attrs[i];
+		Form_pg_attribute to = &cubeTupDesc->attrs[i];
 
 		/* simple column (no system attributes) */
 		if ((atnum > 0) && (atnum <= natts))
@@ -282,7 +284,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			if (atnum > natts)		/* safety check */
 				elog(ERROR, "invalid column number %d", atnum);
 
-			from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+			from = &heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
 
 			/*
 			 * now that we've determined the "from", let's copy the tuple desc
@@ -314,7 +316,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 				elog(ERROR, "too few entries in cubeexprs list");
 
 			cubekey = (Node *) lfirst(cubeexpr_item);
-			cubeexpr_item = lnext(cubeexpr_item);
+			cubeexpr_item = lnext(cubeInfo->ci_Expressions, cubeexpr_item);
 
 			/*
 			 * Lookup the expression type in pg_type for the type length etc.
@@ -368,7 +370,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		if (colnames_item == NULL)		/* shouldn't happen */
 			elog(ERROR, "too few entries in colnames list");
 		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
-		colnames_item = lnext(colnames_item);
+		colnames_item = lnext(cubeColNames, colnames_item);
 	}
 
 	return cubeTupDesc;
@@ -412,7 +414,7 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 		exprsDatum = (Datum) 0;
 
 	/* open the system catalog cube relation */
-	pg_cube = heap_open(CubeRelationId, RowExclusiveLock);
+	pg_cube = table_open(CubeRelationId, RowExclusiveLock);
 
 	/* build a pg_cube tuple */
 	MemSet(nulls, false, sizeof(nulls));
@@ -433,13 +435,11 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 
 	/* insert the tuple into the pg_cube catalog */
-	simple_heap_insert(pg_cube, tuple);
-
-	CatalogUpdateIndexes(pg_cube, tuple);
+	CatalogTupleInsert(pg_cube, tuple);
 
 	/* free the tuple and close the relation */
 	heap_freetuple(tuple);
-	heap_close(pg_cube, RowExclusiveLock);
+	table_close(pg_cube, RowExclusiveLock);
 }
 
 /* ----------------

@@ -2837,7 +2837,7 @@ CreateCubeStmt *
 transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString)
 {
 	ParseState *pstate;
-	RangeTblEntry *rte;
+	ParseNamespaceItem *nsitem;
 	ListCell   *l;
 	Relation	rel;
 
@@ -2861,10 +2861,13 @@ transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString
 	 * relation, but we still need to open it.
 	 */
 	rel = relation_open(relid, NoLock);
-	rte = addRangeTableEntryForRelation(pstate, rel, NULL, false, true);
+	nsitem = addRangeTableEntryForRelation(pstate, rel,
+										   AccessShareLock,
+										   NULL, false, true);
+
 
 	/* no to join list, yes to namespaces */
-	addRTEtoQuery(pstate, rte, false, true, true);
+	addNSItemToQuery(pstate, nsitem, false, true, true);
 
 	/* take care of any index expressions */
 	foreach(l, stmt->cubeExprs)
@@ -2908,7 +2911,7 @@ transformCreateCubeStmt(Oid relid, CreateCubeStmt *stmt, const char *queryString
 	free_parsestate(pstate);
 
 	/* Close relation */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	/* Mark statement as successfully transformed */
 	stmt->transformed = true;

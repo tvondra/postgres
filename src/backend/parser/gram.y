@@ -292,6 +292,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
+		CreateChangeSetStmt CreateCubeStmt FlushChangeSetStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -7376,6 +7377,7 @@ CreateChangeSetStmt:	CREATE CHANGESET opt_changeset_name
 		;
 
 changeset_name:	ColId								{ $$ = $1; }
+		;
 
 opt_changeset_name:
 			changeset_name							{ $$ = $1; }
@@ -15817,6 +15819,7 @@ bare_label_keyword:
 			| CAST
 			| CATALOG_P
 			| CHAIN
+			| CHANGESET
 			| CHARACTERISTICS
 			| CHECK
 			| CHECKPOINT
@@ -15905,6 +15908,7 @@ bare_label_keyword:
 			| FAMILY
 			| FIRST_P
 			| FLOAT_P
+			| FLUSH
 			| FOLLOWING
 			| FORCE
 			| FOREIGN

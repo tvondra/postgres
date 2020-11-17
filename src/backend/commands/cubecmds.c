@@ -14,7 +14,8 @@
  */
 #include "postgres.h"
 
-#include "access/amapi.h"
+#include "access/heapam.h"
+#include "access/table.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
@@ -35,11 +36,12 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/planner.h"
-#include "optimizer/var.h"
+#include "optimizer/optimizer.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -121,7 +123,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 
 	/* No special locking needed, AccessShereLock is enough. */
 	relationId = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
- 	rel = heap_open(relationId, NoLock);
+ 	rel = table_open(relationId, NoLock);
 
 	/* possibly not needed, copy-paste from indexcmds.c */
 	relationId = RelationGetRelid(rel);
@@ -154,7 +156,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
 										  ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
 	}
 
@@ -168,7 +170,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 	}
 	else
 	{
-		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence);
+		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence, false);
 		/* note InvalidOid is OK in this case */
 	}
 
@@ -180,7 +182,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 		aclresult = pg_tablespace_aclcheck(tablespaceId, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
+			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
 	}
 
@@ -222,7 +224,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 
 	if (!OidIsValid(chsetRelationId))
 	{
-		heap_close(rel, NoLock);
+		table_close(rel, NoLock);
 		return address;
 	}
 
@@ -230,7 +232,7 @@ CreateChangeSet(CreateChangeSetStmt *stmt)
 	CacheInvalidateRelcache(rel);
 
 	/* Close the heap and we're done */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 	return address;
 }
 
@@ -270,7 +272,7 @@ CreateCube(CreateCubeStmt *stmt)
 
 	/* No special locking needed, AccessShereLock is enough. */
 	relationId = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
- 	rel = heap_open(relationId, NoLock);
+ 	rel = table_open(relationId, NoLock);
 
 	/* FIXME lookup changeset if needed (not supplied in command) */
 	if (stmt->changeset != NULL)
@@ -316,7 +318,7 @@ CreateCube(CreateCubeStmt *stmt)
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
 										  ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
 	}
 
@@ -330,7 +332,7 @@ CreateCube(CreateCubeStmt *stmt)
 	}
 	else
 	{
-		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence);
+		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence, false);
 		/* note InvalidOid is OK in this case */
 	}
 
@@ -342,7 +344,7 @@ CreateCube(CreateCubeStmt *stmt)
 		aclresult = pg_tablespace_aclcheck(tablespaceId, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
+			aclcheck_error(aclresult, OBJECT_TABLESPACE,
 						   get_tablespace_name(tablespaceId));
 	}
 
@@ -394,7 +396,7 @@ CreateCube(CreateCubeStmt *stmt)
 
 	if (!OidIsValid(cubeRelationId))
 	{
-		heap_close(rel, NoLock);
+		table_close(rel, NoLock);
 		return address;
 	}
 
@@ -402,7 +404,7 @@ CreateCube(CreateCubeStmt *stmt)
 	CacheInvalidateRelcache(rel);
 
 	/* Close the heap and changeset and we're done */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 	changeset_close(chsetrel, NoLock);
 
 	return address;
@@ -794,9 +796,6 @@ ExecFlushChangeSet(FlushChangeSetStmt *stmt)
 	chsetDesc = RelationGetDescr(chsetRel);
 	chsetInfo = BuildChangeSetInfo(chsetRel);
 
-	/* We don't allow an oid column for a changeset. */
-	Assert(!chsetRel->rd_rel->relhasoids);
-
 	/*
 	 * FIXME Do we need to switch to the relation owner, similarly to REFRESH
 	 * MATERIALIZED VIEW? See SetUserIdAndSecContext() in RefreshMatViewStmt.
@@ -835,9 +834,9 @@ update_cube(Relation chsetRel, ChangeSetInfo *chsetInfo, TupleDesc chsetDesc,
 	TupleDesc cubeDesc;
 	Tuplesortstate *tss;
 	int nkeys;
-	HeapTuple	htup;
 
-	HeapScanDesc chsetScan;
+	TupleTableSlot *slot;
+	TableScanDesc chsetScan;
 
 	cube = build_cube_opt_info(cubeOid);
 
@@ -846,15 +845,18 @@ update_cube(Relation chsetRel, ChangeSetInfo *chsetInfo, TupleDesc chsetDesc,
 
 	tss = build_tss_for_cube(cubeDesc, nkeys);
 
+	slot = MakeSingleTupleTableSlot(chsetDesc,
+									table_slot_callbacks(chsetRel));
+
 	/* scan the visible part of the changeset */
-	chsetScan = heap_beginscan(chsetRel, GetActiveSnapshot(), 0, NULL);
+	chsetScan = table_beginscan(chsetRel, GetActiveSnapshot(), 0, NULL);
 
 	/*
 	 * Read all the tuples from the changeset, pass them to the tuplestore.
 	 */
-	while ((htup = heap_getnext(chsetScan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(chsetScan, ForwardScanDirection, slot))
 	{
-		tuplesort_putheaptuple(tss, htup);
+		tuplesort_puttupleslot(tss, slot);
 	}
 
 	/* Perform the sort, and then walk the sorted data and update the cube. */
@@ -872,31 +874,34 @@ update_cube(Relation chsetRel, ChangeSetInfo *chsetInfo, TupleDesc chsetDesc,
 	tuplesort_end(tss);
 
 	/* close the scan */
-	heap_endscan(chsetScan);
+	table_endscan(chsetScan);
 }
 
 static void
 changeset_cleanup(Relation rel)
 {
-	HeapScanDesc	chsetScan;
-	HeapTuple		htup;
+	TableScanDesc	chsetScan;
+	TupleTableSlot *slot;
+
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(rel),
+									table_slot_callbacks(rel));
 
 	/* scan the visible part of the changeset */
-	chsetScan = heap_beginscan(rel, GetActiveSnapshot(), 0, NULL);
+	chsetScan = table_beginscan(rel, GetActiveSnapshot(), 0, NULL);
 
 	/*
 	 * Read all the tuples from the changeset, pass them to tuplestores
 	 * for all the cubes connected to this changeset, and delete them
 	 * from the changeset.
 	 */
-	while ((htup = heap_getnext(chsetScan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(chsetScan, ForwardScanDirection, slot))
 	{
 		/* just delete the tuple */
-		simple_heap_delete(rel, &htup->t_self);
+		simple_heap_delete(rel, &slot->tts_tid);
 	}
 
 	/* close the scan */
-	heap_endscan(chsetScan);
+	table_endscan(chsetScan);
 }
 
 
@@ -922,7 +927,7 @@ ChangeSetGetCubeList(Relation changeset)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(RelationGetRelid(changeset)));
 
-	cuberel = heap_open(CubeRelationId, AccessShareLock);
+	cuberel = table_open(CubeRelationId, AccessShareLock);
 	cubescan = systable_beginscan(cuberel, CubeChangeSetIdIndexId, true,
 								 NULL, 1, &skey);
 
@@ -936,7 +941,7 @@ ChangeSetGetCubeList(Relation changeset)
 
 	systable_endscan(cubescan);
 
-	heap_close(cuberel, AccessShareLock);
+	table_close(cuberel, AccessShareLock);
 
 	return result;
 }
@@ -1011,9 +1016,12 @@ build_tupdesc_for_cube(CubeOptInfo *cube, ChangeSetInfo *chsetInfo,
 	*attnums = (AttrNumber*)palloc0(numatts * sizeof(AttrNumber));
 	*expressions = (Node**)palloc0(numatts * sizeof(Node*));
 
+	/* we can't have attnums above MaxHeapAttributeNumber on the input */
+	aggmap = (AttrNumber *) palloc0(sizeof(AttrNumber) * MaxHeapAttributeNumber);
+
 	Assert(*nkeys <= numatts);
 
-	tdesc = CreateTemplateTupleDesc(numatts, false);
+	tdesc = CreateTemplateTupleDesc(numatts);
 
 	/*
 	 * First attribute is always the change_type, so we can simply copy
@@ -1112,7 +1120,7 @@ build_tss_for_cube(TupleDesc tdesc, int nkeys)
 	for (i = 0; i < nkeys; i++)
 	{
 		keys[i] = i+1;	/* first nkeys are keys */
-		get_sort_group_operators(tdesc->attrs[i]->atttypid,
+		get_sort_group_operators(tdesc->attrs[i].atttypid,
 								 true, false, false,
 								 &sortops[i], NULL, NULL, NULL);
 		collations[i] = DEFAULT_COLLATION_OID;
@@ -1121,7 +1129,8 @@ build_tss_for_cube(TupleDesc tdesc, int nkeys)
 	return tuplesort_begin_heap(tdesc,
 					 nkeys, keys,
 					 sortops, collations,
-					 nullsfirst, work_mem, false);
+					 nullsfirst, work_mem,
+					 NULL, false);
 }
 
 static CubeOptInfo *

@@ -1562,7 +1562,7 @@ ProcessUtilitySlow(ParseState *pstate,
 					/* Run parse analysis ... */
 					relid =
 						RangeVarGetRelidExtended(stmt->relation, ShareLock,
-												 false, false,
+												 0,
 												 RangeVarCallbackOwnsRelation,
 												 NULL);
 
@@ -2727,11 +2727,11 @@ CreateCommandTag(Node *parsetree)
 			break;
 
 		case T_CreateChangeSetStmt:
-			tag = "CREATE CHANGESET";
+			tag = CMDTAG_CREATE_CHANGESET;
 			break;
 
 		case T_CreateCubeStmt:
-			tag = "CREATE CUBE";
+			tag = CMDTAG_CREATE_CUBE;
 			break;
 
 		case T_CompositeTypeStmt:

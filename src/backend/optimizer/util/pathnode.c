@@ -3276,9 +3276,11 @@ create_cube_path(PlannerInfo *root,
 			 agg_costs,
 			 numGroupCols,
 			 numGroups,
+			 NIL,
 			 cubepath->startup_cost + chsetpath->startup_cost,
 			 cubepath->total_cost + chsetpath->total_cost,
-			 cubepath->rows);
+			 cubepath->rows,
+			 chsetpath->pathtarget->width);
 
 	/* add tlist eval cost for each output row */
 	pathnode->path.startup_cost += target->cost.startup;

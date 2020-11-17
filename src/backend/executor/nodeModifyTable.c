@@ -604,8 +604,7 @@ ExecInsert(ModifyTableState *mtstate,
 												   arbiterIndexes);
 
 			/* insert changeset entries for tuple */
-			if (resultRelInfo->ri_NumChangeSets > 0)
-				ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
+			ExecInsertChangeSetTuples(estate, resultRelInfo, slot);
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -646,8 +645,7 @@ ExecInsert(ModifyTableState *mtstate,
 													   slot, estate, false,
 													   NULL, NIL);
 			/* insert changeset entries for tuple */
-			if (resultRelInfo->ri_NumChangeSets > 0)
-				ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
+			ExecInsertChangeSetTuples(estate, resultRelInfo, slot);
 		}
 	}
 
@@ -1013,9 +1011,8 @@ ldelete:;
 		ar_delete_trig_tcs = NULL;
 	}
 
-	/* insert changeset entries for the deleted tuple */
-	if (resultRelInfo->ri_NumChangeSets > 0)
-		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
+	/* AFTER ROW DELETE Change Sets */
+	ExecARDeleteChangeSets(estate, resultRelInfo, tupleid, oldtuple);
 
 	/* AFTER ROW DELETE Triggers */
 	ExecARDeleteTriggers(estate, resultRelInfo, tupleid, oldtuple,
@@ -1532,12 +1529,9 @@ lreplace:;
 	if (canSetTag)
 		(estate->es_processed)++;
 
-	/* insert changeset entries for the updated tuple */
-	if (resultRelInfo->ri_NumChangeSets > 0)
-	{
-		ExecInsertChangeSetTuples2(CHANGESET_INSERT,    NULL,    tuple, estate);
-		ExecInsertChangeSetTuples2(CHANGESET_DELETE, tupleid, oldtuple, estate);
-	}
+	/* AFTER ROW UPDATE ChangeSets */
+	ExecARUpdateChangeSets(estate, resultRelInfo, tupleid, oldtuple, slot,
+						   recheckIndexes);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple, slot,

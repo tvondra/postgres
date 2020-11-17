@@ -1877,7 +1877,7 @@ build_cube_tlist(PlannerInfo *root, CubeOptInfo *cube,
 			if (cubekey < 0)
 				elog(ERROR, "system attributes not allowed in cubes");
 			else
-				att_tup = heapRelation->rd_att->attrs[cubekey - 1];
+				att_tup = &heapRelation->rd_att->attrs[cubekey - 1];
 
 			cubevar = (Expr *) makeVar(varno,
 									   cubekey,
@@ -1892,7 +1892,7 @@ build_cube_tlist(PlannerInfo *root, CubeOptInfo *cube,
 			if (cubeexpr_item == NULL)
 				elog(ERROR, "wrong number of cube expressions");
 			cubevar = (Expr *) lfirst(cubeexpr_item);
-			cubeexpr_item = lnext(cubeexpr_item);
+			cubeexpr_item = lnext(cube->cubeexprs, cubeexpr_item);
 		}
 
 		tlist = lappend(tlist,

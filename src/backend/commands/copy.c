@@ -2520,11 +2520,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 		 */
 		if (resultRelInfo->ri_NumChangeSets > 0)
 		{
-			for (i = 0; i < nBufferedTuples; i++)
-			{
-				cstate->cur_lineno = buffer->linenos[i];
-				ExecInsertChangeSetTuples(CHANGESET_INSERT, buffer->slots[i], estate);
-			}
+			cstate->cur_lineno = buffer->linenos[i];
+			ExecInsertChangeSetTuples(estate, resultRelInfo,
+									  buffer->slots[i]);
 		}
 
 		/*
@@ -3287,15 +3285,14 @@ CopyFrom(CopyState cstate)
 																   NIL);
 					}
 
+					/* and now also insert the tuple into all changesets */
+					ExecInsertChangeSetTuples(estate, resultRelInfo, myslot);
+
 					/* AFTER ROW INSERT Triggers */
 					ExecARInsertTriggers(estate, resultRelInfo, myslot,
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
-
-					/* and now also insert the tuple into all changesets */
-					if (resultRelInfo->ri_NumChangeSets > 0)
-						ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 				}
 			}
 

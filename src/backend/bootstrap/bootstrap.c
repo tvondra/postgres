@@ -916,8 +916,36 @@ gettype(char *type)
 {
 	if (Typ != NIL)
 	{
+		static bool did_reread PG_USED_FOR_ASSERTS_ONLY = false; /* Already reread pg_types */
 		ListCell *lc;
 
+		foreach (lc, Typ)
+		{
+			struct typmap *app = lfirst(lc);
+			if (strncmp(NameStr(app->am_typ.typname), type, NAMEDATALEN) == 0)
+			{
+				Ap = app;
+				return app->am_oid;
+			}
+		}
+
+		/*
+		 * The type wasn't known; check again to handle composite
+		 * types, added since first populating the array.
+		 */
+
+		/*
+		 * Once all the types are populated and we handled composite
+		 * types, shouldn't need to do that again.
+		 */
+		Assert(!did_reread);
+		did_reread = true;
+
+		list_free_deep(Typ);
+		Typ = NULL;
+		populate_typ_array();
+
+		/* Need to avoid infinite recursion... */
 		foreach (lc, Typ)
 		{
 			struct typmap *app = lfirst(lc);

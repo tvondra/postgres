@@ -77,21 +77,23 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List
 											int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Oid relid,
 						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, VacAttrStats **stats);
+						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int natts, VacAttrStats **stats);
 
 typedef struct AnlExprData
 {
-	Expr		   *expr;			/* expression to analyze */
+	Node		   *expr;			/* expression to analyze */
 	VacAttrStats   *vacattrstat;	/* index attrs to analyze */
 } AnlExprData;
 
 static void compute_expr_stats(Relation onerel, double totalrows,
 					AnlExprData *exprdata, int nexprs,
 					HeapTuple *rows, int numrows);
+static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
 static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
-
+static AnlExprData *build_expr_data(List *exprs);
+static VacAttrStats *examine_expression(Node *expr);
 /*
  * Compute requested extended stats, using the rows sampled for the plain
  * (single-column) stats.
@@ -141,6 +143,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
 		int			stattarget;
@@ -299,13 +302,18 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		/* if there are any expressions, build stats for those too */
 		if (stat->exprs)
 		{
-			AnlExprData *exprdata = NULL;
+			AnlExprData *exprdata = build_expr_data(stat->exprs);
 			int			nexprs = list_length(stat->exprs);
 
 			compute_expr_stats(onerel, totalrows,
 							   exprdata, nexprs,
 							   rows, numrows);
 
+			elog(WARNING, "serializing stats for %d expressions", nexprs);
+
+			exprstats = serialize_expr_stats(exprdata, nexprs);
+
+			elog(WARNING, "exprstats = %ld", exprstats);
 			/* FIXME form the pg_statistic rows, per update_attstats */
 
 			// /* Some relkinds lack type OIDs */
@@ -322,7 +330,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(stat->statOid, ndistinct, dependencies, mcv, exprstats, stats);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
@@ -762,7 +770,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 static void
 statext_store(Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, VacAttrStats **stats)
+			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup,
@@ -800,14 +808,22 @@ statext_store(Oid statOid,
 	{
 		bytea	   *data = statext_mcv_serialize(mcv, stats);
 
+		elog(WARNING, "AAAA");
 		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
+	}
+	if (exprs != (Datum) 0)
+	{
+		elog(WARNING, "ZZZZ");
+		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
+		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
 	}
 
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_data_stxdndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
 
 	/* there should already be a pg_statistic_ext_data tuple */
 	oldtup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statOid));
@@ -2270,7 +2286,7 @@ compute_expr_stats(Relation onerel, double totalrows,
 	for (ind = 0; ind < nexprs; ind++)
 	{
 		AnlExprData *thisdata = &exprdata[ind];
-		Expr        *expr = thisdata->expr;
+		Node        *expr = thisdata->expr;
 		TupleTableSlot *slot;
 		EState	   *estate;
 		ExprContext *econtext;
@@ -2288,7 +2304,10 @@ compute_expr_stats(Relation onerel, double totalrows,
 		econtext = GetPerTupleExprContext(estate);
 
 		/* Set up expression evaluation state */
-		exprstate = ExecPrepareExpr(expr, estate);
+		exprstate = ExecPrepareExpr((Expr *) expr, estate);
+
+		elog(WARNING, "expr = %s", nodeToString(expr));
+		elog(WARNING, "exprstate = %p", exprstate);
 
 		/* Need a slot to hold the current heap tuple, too */
 		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
@@ -2363,11 +2382,11 @@ compute_expr_stats(Relation onerel, double totalrows,
 		}
 
 		/* And clean up */
-		MemoryContextSwitchTo(expr_context);
+		// MemoryContextSwitchTo(expr_context);
 
 		ExecDropSingleTupleTableSlot(slot);
 		FreeExecutorState(estate);
-		MemoryContextResetAndDeleteChildren(expr_context);
+		// MemoryContextResetAndDeleteChildren(expr_context);
 	}
 
 	MemoryContextSwitchTo(old_context);
@@ -2390,4 +2409,242 @@ expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull)
 	i = rownum * stats->rowstride;
 	*isNull = stats->exprnulls[i];
 	return stats->exprvals[i];
+}
+
+
+static AnlExprData *
+build_expr_data(List *exprs)
+{
+	int				idx;
+	int				nexprs = list_length(exprs);
+	AnlExprData	   *exprdata;
+	ListCell	   *lc;
+
+	exprdata = (AnlExprData *) palloc0(nexprs * sizeof(AnlExprData));
+
+	idx = 0;
+	foreach (lc, exprs)
+	{
+		Node		   *expr = (Node *) lfirst(lc);
+		AnlExprData	   *thisdata = &exprdata[idx];
+
+		thisdata->expr = expr;
+		thisdata->vacattrstat = (VacAttrStats *) palloc(sizeof(VacAttrStats));
+
+		thisdata->vacattrstat = examine_expression(expr);
+		idx++;
+	}
+
+	return exprdata;
+}
+
+/*
+ * examine_expression -- pre-analysis of a single column
+ *
+ * Determine whether the column is analyzable; if so, create and initialize
+ * a VacAttrStats struct for it.  If not, return NULL.
+ */
+static VacAttrStats *
+examine_expression(Node *expr)
+{
+	HeapTuple	typtuple;
+	VacAttrStats *stats;
+	int			i;
+	bool		ok;
+
+	Assert(expr != NULL);
+
+	/*
+	 * Create the VacAttrStats struct.
+	 */
+	stats = (VacAttrStats *) palloc0(sizeof(VacAttrStats));
+
+	/*
+	 * When analyzing an expression, believe the expression tree's type.
+	 */
+	stats->attrtypid = exprType(expr);
+	stats->attrtypmod = exprTypmod(expr);
+
+	/*
+	 * We don't have any pg_attribute for expressions, so let's fake
+	 * something reasonable into attstattarget, which is the only thing
+	 * std_typanalyze needs.
+	 */
+	stats->attr = (Form_pg_attribute) palloc(ATTRIBUTE_FIXED_PART_SIZE);
+
+	stats->attr->attstattarget = default_statistics_target;
+
+	/*
+	 * XXX Do we need to do anything special about the collation, similar
+	 * to what examine_attribute does for expression indexes?
+	 */
+	stats->attrcollid = exprCollation(expr);
+
+	typtuple = SearchSysCacheCopy1(TYPEOID,
+								   ObjectIdGetDatum(stats->attrtypid));
+	if (!HeapTupleIsValid(typtuple))
+		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
+	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
+	stats->anl_context = CurrentMemoryContext;	/* XXX should be using something else? */
+	stats->tupattnum = InvalidAttrNumber;
+
+	/*
+	 * The fields describing the stats->stavalues[n] element types default to
+	 * the type of the data being analyzed, but the type-specific typanalyze
+	 * function can change them if it wants to store something else.
+	 */
+	for (i = 0; i < STATISTIC_NUM_SLOTS; i++)
+	{
+		stats->statypid[i] = stats->attrtypid;
+		stats->statyplen[i] = stats->attrtype->typlen;
+		stats->statypbyval[i] = stats->attrtype->typbyval;
+		stats->statypalign[i] = stats->attrtype->typalign;
+	}
+
+	/*
+	 * Call the type-specific typanalyze function.  If none is specified, use
+	 * std_typanalyze().
+	 */
+	if (OidIsValid(stats->attrtype->typanalyze))
+		ok = DatumGetBool(OidFunctionCall1(stats->attrtype->typanalyze,
+										   PointerGetDatum(stats)));
+	else
+		ok = std_typanalyze(stats);
+
+	if (!ok || stats->compute_stats == NULL || stats->minrows <= 0)
+	{
+		heap_freetuple(typtuple);
+		pfree(stats);
+		return NULL;
+	}
+
+	return stats;
+}
+
+/* form the pg_statistic rows, per update_attstats */
+static Datum
+serialize_expr_stats(AnlExprData *exprdata, int nexprs)
+{
+	int			exprno;
+	Oid			typOid;
+	Relation	sd;
+
+	ArrayBuildState *astate = NULL;
+
+	sd = table_open(StatisticRelationId, RowExclusiveLock);
+
+	/* lookup OID of composite type for pg_statistic */
+	typOid = get_rel_type_id(StatisticRelationId);
+	if (!OidIsValid(typOid))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("relation \"pg_statistic\" does not have a composite type")));
+
+	for (exprno = 0; exprno < nexprs; exprno++)
+	{
+		int				i, k;
+		VacAttrStats   *stats = exprdata[exprno].vacattrstat;
+
+		Datum		values[Natts_pg_statistic];
+		bool		nulls[Natts_pg_statistic];
+		HeapTuple	stup;
+
+		if (!stats->stats_valid)
+		{
+			astate = accumArrayResult(astate,
+									  (Datum) 0,
+									  true,
+									  typOid,
+									  CurrentMemoryContext);
+			continue;
+		}
+
+		/*
+		 * Construct a new pg_statistic tuple
+		 */
+		for (i = 0; i < Natts_pg_statistic; ++i)
+		{
+			nulls[i] = false;
+		}
+
+		values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(InvalidOid);
+		values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(InvalidAttrNumber);
+		values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(false);
+		values[Anum_pg_statistic_stanullfrac - 1] = Float4GetDatum(stats->stanullfrac);
+		values[Anum_pg_statistic_stawidth - 1] = Int32GetDatum(stats->stawidth);
+		values[Anum_pg_statistic_stadistinct - 1] = Float4GetDatum(stats->stadistinct);
+		i = Anum_pg_statistic_stakind1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = Int16GetDatum(stats->stakind[k]); /* stakindN */
+		}
+		i = Anum_pg_statistic_staop1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = ObjectIdGetDatum(stats->staop[k]);	/* staopN */
+		}
+		i = Anum_pg_statistic_stacoll1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = ObjectIdGetDatum(stats->stacoll[k]);	/* stacollN */
+		}
+		i = Anum_pg_statistic_stanumbers1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			int			nnum = stats->numnumbers[k];
+
+			if (nnum > 0)
+			{
+				int			n;
+				Datum	   *numdatums = (Datum *) palloc(nnum * sizeof(Datum));
+				ArrayType  *arry;
+
+				for (n = 0; n < nnum; n++)
+					numdatums[n] = Float4GetDatum(stats->stanumbers[k][n]);
+				/* XXX knows more than it should about type float4: */
+				arry = construct_array(numdatums, nnum,
+									   FLOAT4OID,
+									   sizeof(float4), true, TYPALIGN_INT);
+				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
+			}
+			else
+			{
+				nulls[i] = true;
+				values[i++] = (Datum) 0;
+			}
+		}
+		i = Anum_pg_statistic_stavalues1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			if (stats->numvalues[k] > 0)
+			{
+				ArrayType  *arry;
+
+				arry = construct_array(stats->stavalues[k],
+									   stats->numvalues[k],
+									   stats->statypid[k],
+									   stats->statyplen[k],
+									   stats->statypbyval[k],
+									   stats->statypalign[k]);
+				values[i++] = PointerGetDatum(arry);	/* stavaluesN */
+			}
+			else
+			{
+				nulls[i] = true;
+				values[i++] = (Datum) 0;
+			}
+		}
+
+		stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+
+		astate = accumArrayResult(astate,
+								  heap_copy_tuple_as_datum(stup, RelationGetDescr(sd)),
+								  false,
+								  typOid,
+								  CurrentMemoryContext);
+	}
+
+	table_close(sd, RowExclusiveLock);
+
+	return PointerGetDatum(makeArrayResult(astate, CurrentMemoryContext));
 }

@@ -74,8 +74,7 @@
 	 ((nitems) * ITEM_SIZE(ndims)))
 
 static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs,
-								  Oid *exprtypes, Oid *exprcollations,
-								  int nexprs);
+								  ExprInfo *exprs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
 									   MultiSortSupport mss, int *ndistinct);
@@ -182,11 +181,9 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  *
  */
 MCVList *
-statext_mcv_build(int numrows, HeapTuple *rows,
-				  Datum *exprvals, bool *exprnulls,
-				  Oid *exprtypes, Oid *exprcollations,
-				  Bitmapset *attrs, List *exprs,
-				  VacAttrStats **stats, double totalrows, int stattarget)
+statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
+				  Bitmapset *attrs, VacAttrStats **stats,
+				  double totalrows, int stattarget)
 {
 	int			i,
 				numattrs,
@@ -200,7 +197,7 @@ statext_mcv_build(int numrows, HeapTuple *rows,
 	MultiSortSupport mss;
 
 	/* comparator for all the columns */
-	mss = build_mss(stats, bms_num_members(attrs), exprtypes, exprcollations, list_length(exprs));
+	mss = build_mss(stats, bms_num_members(attrs), exprs);
 
 	/*
 	 * Copy the bitmapset and add fake attnums representing expressions,
@@ -208,14 +205,13 @@ statext_mcv_build(int numrows, HeapTuple *rows,
 	 */
 	attrs = bms_copy(attrs);
 
-	for (i = 1; i <= list_length(exprs); i++)
+	for (i = 1; i <= exprs->nexprs; i++)
 		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	attnums = build_attnums_array(attrs, &numattrs);
 
 	/* sort the rows */
-	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls,
-							   exprtypes, list_length(exprs),
+	items = build_sorted_items(numrows, &nitems, rows, exprs,
 							   stats[0]->tupDesc, mss, numattrs, attnums);
 
 	if (!items)
@@ -362,12 +358,12 @@ statext_mcv_build(int numrows, HeapTuple *rows,
  *	build MultiSortSupport for the attributes passed in attrs
  */
 static MultiSortSupport
-build_mss(VacAttrStats **stats, int numattrs, Oid *exprtypes, Oid *exprcollations, int nexprs)
+build_mss(VacAttrStats **stats, int numattrs, ExprInfo *exprs)
 {
 	int			i;
 
 	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(numattrs + nexprs);
+	MultiSortSupport mss = multi_sort_init(numattrs + exprs->nexprs);
 
 	/* prepare the sort functions for all the attributes */
 	for (i = 0; i < numattrs; i++)
@@ -384,17 +380,17 @@ build_mss(VacAttrStats **stats, int numattrs, Oid *exprtypes, Oid *exprcollation
 	}
 
 	/* prepare the sort functions for all the expressions */
-	for (i = 0; i < nexprs; i++)
+	for (i = 0; i < exprs->nexprs; i++)
 	{
 		TypeCacheEntry *type;
 
-		type = lookup_type_cache(exprtypes[i], TYPECACHE_LT_OPR);
+		type = lookup_type_cache(exprs->types[i], TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 exprtypes[i]);
+				 exprs->types[i]);
 
 		multi_sort_add_dimension(mss, numattrs + i, type->lt_opr,
-								 exprcollations[i]);
+								 exprs->collations[i]);
 	}
 
 	return mss;

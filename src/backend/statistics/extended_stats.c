@@ -95,6 +95,8 @@ static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
 static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static AnlExprData *build_expr_data(List *exprs);
 static VacAttrStats *examine_expression(Node *expr);
+static ExprInfo *evaluate_expressions(Relation rel, List *exprs,
+									  int numrows, HeapTuple *rows);
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -149,12 +151,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		VacAttrStats **stats;
 		ListCell   *lc2;
 		int			stattarget;
-
-		/* evaluated expressions */
-		Datum	   *exprvals = NULL;
-		bool	   *exprnulls = NULL;
-		Oid		   *exprtypes = NULL;
-		Oid		   *exprcollations = NULL;
+		ExprInfo   *exprs;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -195,91 +192,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		if (stattarget == 0)
 			continue;
 
-		/*
-		 * Evaluate the expressions, so that we can use the results to build
-		 * all the requested statistics types. This matters especially for
-		 * expensive expressions, of course.
-		 */
-		if (stat->exprs)
-		{
-			int			i;
-			int			idx;
-			TupleTableSlot *slot;
-			EState	   *estate;
-			ExprContext *econtext;
-			List	   *exprstates = NIL;
-
-			/*
-			 * Need an EState for evaluation of index expressions and
-			 * partial-index predicates.  Create it in the per-index context to be
-			 * sure it gets cleaned up at the bottom of the loop.
-			 */
-			estate = CreateExecutorState();
-			econtext = GetPerTupleExprContext(estate);
-			/* Need a slot to hold the current heap tuple, too */
-			slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
-											&TTSOpsHeapTuple);
-
-			/* Arrange for econtext's scan tuple to be the tuple under test */
-			econtext->ecxt_scantuple = slot;
-
-			/* Compute and save index expression values */
-			exprvals = (Datum *) palloc(numrows * list_length(stat->exprs) * sizeof(Datum));
-			exprnulls = (bool *) palloc(numrows * list_length(stat->exprs) * sizeof(bool));
-			exprtypes = (Oid *) palloc(list_length(stat->exprs) * sizeof(Oid));
-			exprcollations = (Oid *) palloc(list_length(stat->exprs) * sizeof(Oid));
-
-			idx = 0;
-			foreach (lc2, stat->exprs)
-			{
-				Node *expr = (Node *) lfirst(lc2);
-				exprtypes[idx] = exprType(expr);
-				exprcollations[idx] = exprCollation(expr);
-				idx++;
-			}
-
-			/* Set up expression evaluation state */
-			exprstates = ExecPrepareExprList(stat->exprs, estate);
-
-			idx = 0;
-			for (i = 0; i < numrows; i++)
-			{
-				/*
-				 * Reset the per-tuple context each time, to reclaim any cruft
-				 * left behind by evaluating the predicate or index expressions.
-				 */
-				ResetExprContext(econtext);
-
-				/* Set up for predicate or expression evaluation */
-				ExecStoreHeapTuple(rows[i], slot, false);
-
-				foreach (lc2, exprstates)
-				{
-					Datum	datum;
-					bool	isnull;
-					ExprState *exprstate = (ExprState *) lfirst(lc2);
-
-					datum = ExecEvalExprSwitchContext(exprstate,
-											   GetPerTupleExprContext(estate),
-											   &isnull);
-					if (isnull)
-					{
-						exprvals[idx] = (Datum) 0;
-						exprnulls[idx] = true;
-					}
-					else
-					{
-						exprvals[idx] = (Datum) datum;
-						exprnulls[idx] = false;
-					}
-
-					idx++;
-				}
-			}
-
-			ExecDropSingleTupleTableSlot(slot);
-			FreeExecutorState(estate);
-		}
+		/* evaluate expressions (if the statistics has any) */
+		exprs = evaluate_expressions(onerel, stat->exprs, numrows, rows);
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -288,21 +202,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 			if (t == STATS_EXT_NDISTINCT)
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-													exprvals, exprnulls,
-													exprtypes, exprcollations,
-													stat->columns, stat->exprs,
+													exprs, stat->columns,
 													stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
-														  exprvals, exprnulls,
-														  exprtypes, exprcollations,
-														  stat->columns,
-														  stat->exprs, stats);
+														  exprs, stat->columns,
+														  stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows,
-										exprvals, exprnulls,
-										exprtypes, exprcollations,
-										stat->columns, stat->exprs,
+				mcv = statext_mcv_build(numrows, rows, exprs, stat->columns,
 										stats, totalrows, stattarget);
 			else if (t == STATS_EXT_EXPRESSIONS)
 			{
@@ -330,6 +237,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
 									 ++ext_cnt);
+
+		pfree(exprs);
 	}
 
 	table_close(pg_stext, RowExclusiveLock);
@@ -808,13 +717,11 @@ statext_store(Oid statOid,
 	{
 		bytea	   *data = statext_mcv_serialize(mcv, stats);
 
-		// elog(WARNING, "AAAA");
 		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
 	}
 	if (exprs != (Datum) 0)
 	{
-		// elog(WARNING, "ZZZZ");
 		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
 		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
 	}
@@ -1028,8 +935,7 @@ build_attnums_array(Bitmapset *attrs, int *numattrs)
  * can simply pfree the return value to release all of it.
  */
 SortItem *
-build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
-				   Datum *exprvals, bool *exprnulls, Oid *exprtypes, int nexprs,
+build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 				   TupleDesc tdesc, MultiSortSupport mss,
 				   int numattrs, AttrNumber *attnums)
 {
@@ -1087,13 +993,12 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 			}
 			else
 			{
-				int	expridx = (attnums[j] - MaxHeapAttributeNumber - 1);
-				int	idx = i * nexprs + expridx;
+				int	idx = (attnums[j] - MaxHeapAttributeNumber - 1);
 
-				value = exprvals[idx];
-				isnull = exprnulls[idx];
+				value = exprs->values[idx][i];
+				isnull = exprs->nulls[idx][i];
 
-				attlen = get_typlen(exprtypes[expridx]);
+				attlen = get_typlen(exprs->types[idx]);
 			}
 
 			/*
@@ -2306,9 +2211,6 @@ compute_expr_stats(Relation onerel, double totalrows,
 		/* Set up expression evaluation state */
 		exprstate = ExecPrepareExpr((Expr *) expr, estate);
 
-		// elog(WARNING, "expr = %s", nodeToString(expr));
-		// elog(WARNING, "exprstate = %p", exprstate);
-
 		/* Need a slot to hold the current heap tuple, too */
 		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
 										&TTSOpsHeapTuple);
@@ -2411,7 +2313,11 @@ expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull)
 	return stats->exprvals[i];
 }
 
-
+/*
+ * Build analyze data for a list of expressions. As this is not tied
+ * directly to a relation (table or index), we have to fake some of
+ * the data.
+ */
 static AnlExprData *
 build_expr_data(List *exprs)
 {
@@ -2472,6 +2378,10 @@ examine_expression(Node *expr)
 	 */
 	stats->attr = (Form_pg_attribute) palloc(ATTRIBUTE_FIXED_PART_SIZE);
 
+	/*
+	 * FIXME we should probably get the target from the extended stats
+	 * object, or something like that.
+	 */
 	stats->attr->attstattarget = default_statistics_target;
 
 	/*
@@ -2521,7 +2431,7 @@ examine_expression(Node *expr)
 	return stats;
 }
 
-/* form the pg_statistic rows, per update_attstats */
+/* form an array of pg_statistic rows (per update_attstats) */
 static Datum
 serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 {
@@ -2646,10 +2556,14 @@ serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 
 	table_close(sd, RowExclusiveLock);
 
-	return PointerGetDatum(makeArrayResult(astate, CurrentMemoryContext));
+	return makeArrayResult(astate, CurrentMemoryContext);
 }
 
 
+/*
+ * Loads pg_statistic record from expression statistics for expression
+ * identified by the supplied index.
+ */
 HeapTuple
 statext_expressions_load(Oid stxoid, int idx)
 {
@@ -2658,9 +2572,6 @@ statext_expressions_load(Oid stxoid, int idx)
 	HeapTuple	htup;
 	ExpandedArrayHeader *eah;
 	HeapTupleHeader td;
-	// Oid			tupType;
-	// int32		tupTypmod;
-	// TupleDesc	tupdesc;
 	HeapTupleData tmptup;
 	HeapTuple	tup;
 
@@ -2679,17 +2590,7 @@ statext_expressions_load(Oid stxoid, int idx)
 
 	deconstruct_expanded_array(eah);
 
-	// elog(WARNING, "eah = %p", eah);
-	// elog(WARNING, "ndims = %d", eah->ndims);
-	// elog(WARNING, "element_type = %d", eah->element_type);
-	// elog(WARNING, "typlen = %d", eah->typlen);
-	// elog(WARNING, "nelems = %d", eah->nelems);
-
 	td = DatumGetHeapTupleHeader(eah->dvalues[idx]);
-
-	// tupType = HeapTupleHeaderGetTypeId(td);
-	// tupTypmod = HeapTupleHeaderGetTypMod(td);
-	// tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
 
 	/* Build a temporary HeapTuple control structure */
 	tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
@@ -2700,4 +2601,145 @@ statext_expressions_load(Oid stxoid, int idx)
 	ReleaseSysCache(htup);
 
 	return tup;
+}
+
+/*
+ * Evaluate the expressions, so that we can use the results to build
+ * all the requested statistics types. This matters especially for
+ * expensive expressions, of course.
+ */
+static ExprInfo *
+evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
+{
+	/* evaluated expressions */
+	ExprInfo   *result;
+	char	   *ptr;
+	Size		len;
+
+	int			i;
+	int			idx;
+	TupleTableSlot *slot;
+	EState	   *estate;
+	ExprContext *econtext;
+	List	   *exprstates = NIL;
+	int			nexprs = list_length(exprs);
+	ListCell   *lc;
+
+	/* allocate everything as a single chunk, so we can free it easily */
+	len = MAXALIGN(sizeof(ExprInfo));
+	len += MAXALIGN(sizeof(Oid) * nexprs);	/* types */
+	len += MAXALIGN(sizeof(Oid) * nexprs);	/* collations */
+
+	/* values */
+	len += MAXALIGN(sizeof(Datum *) * nexprs);
+	len += nexprs * MAXALIGN(sizeof(Datum) * numrows);
+
+	/* values */
+	len += MAXALIGN(sizeof(bool *) * nexprs);
+	len += nexprs * MAXALIGN(sizeof(bool) * numrows);
+
+	ptr = palloc(len);
+
+	/* set the pointers */
+	result = (ExprInfo *) ptr;
+	ptr += sizeof(ExprInfo);
+
+	/* types */
+	result->types = (Oid *) ptr;
+	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+
+	/* collations */
+	result->collations = (Oid *) ptr;
+	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+
+	/* values */
+	result->values = (Datum **) ptr;
+	ptr += MAXALIGN(sizeof(Datum *) * nexprs);
+
+	/* nulls */
+	result->nulls = (bool **) ptr;
+	ptr += MAXALIGN(sizeof(bool *) * nexprs);
+
+	for (i = 0; i < nexprs; i++)
+	{
+		result->values[i] = (Datum *) ptr;
+		ptr += MAXALIGN(sizeof(Datum) * numrows);
+
+		result->nulls[i] = (bool *) ptr;
+		ptr += MAXALIGN(sizeof(bool) * numrows);
+	}
+
+	Assert((ptr - (char *) result) == len);
+
+	result->nexprs = list_length(exprs);
+
+	idx = 0;
+	foreach (lc, exprs)
+	{
+		Node *expr = (Node *) lfirst(lc);
+
+		result->types[idx] = exprType(expr);
+		result->collations[idx] = exprCollation(expr);
+
+		idx++;
+	}
+
+	/*
+	 * Need an EState for evaluation of index expressions and
+	 * partial-index predicates.  Create it in the per-index context to be
+	 * sure it gets cleaned up at the bottom of the loop.
+	 */
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+
+	/* Need a slot to hold the current heap tuple, too */
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(rel),
+									&TTSOpsHeapTuple);
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/* Set up expression evaluation state */
+	exprstates = ExecPrepareExprList(exprs, estate);
+
+	for (i = 0; i < numrows; i++)
+	{
+		/*
+		 * Reset the per-tuple context each time, to reclaim any cruft
+		 * left behind by evaluating the predicate or index expressions.
+		 */
+		ResetExprContext(econtext);
+
+		/* Set up for predicate or expression evaluation */
+		ExecStoreHeapTuple(rows[i], slot, false);
+
+		idx = 0;
+		foreach (lc, exprstates)
+		{
+			Datum	datum;
+			bool	isnull;
+			ExprState *exprstate = (ExprState *) lfirst(lc);
+
+			datum = ExecEvalExprSwitchContext(exprstate,
+									   GetPerTupleExprContext(estate),
+									   &isnull);
+			if (isnull)
+			{
+				result->values[idx][i] = (Datum) 0;
+				result->nulls[idx][i] = true;
+			}
+			else
+			{
+				result->values[idx][i] = (Datum) datum;
+				result->values[idx][i] = false;
+			}
+
+			idx++;
+		}
+	}
+
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+
+	return result;
 }

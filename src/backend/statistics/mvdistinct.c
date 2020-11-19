@@ -37,12 +37,9 @@
 #include "utils/typcache.h"
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-										HeapTuple *rows, Datum *exprvals,
-										bool *exprnulls, Oid *exprtypes,
-										Oid *exprcollations,
-										int nattrs, int nexprs,
-										VacAttrStats **stats, int k,
-										int *combination);
+										HeapTuple *rows, ExprInfo *exprs,
+										int nattrs, VacAttrStats **stats,
+										int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -88,9 +85,7 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						Datum *exprvals, bool *exprnulls,
-						Oid *exprtypes, Oid *exprcollations,
-						Bitmapset *attrs, List *exprs,
+						ExprInfo *exprs, Bitmapset *attrs,
 						VacAttrStats **stats)
 {
 	MVNDistinct *result;
@@ -98,7 +93,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	int			k;
 	int			itemcnt;
 	int			numattrs = bms_num_members(attrs);
-	int			numcombs = num_combinations(numattrs + list_length(exprs));
+	int			numcombs = num_combinations(numattrs + exprs->nexprs);
 
 	/*
 	 * Copy the bitmapset and add fake attnums representing expressions,
@@ -106,7 +101,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	 */
 	attrs = bms_copy(attrs);
 
-	for (i = 1; i <= list_length(exprs); i++)
+	for (i = 1; i <= exprs->nexprs; i++)
 		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	result = palloc(offsetof(MVNDistinct, items) +
@@ -141,9 +136,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
-										  exprvals, exprnulls,
-										  exprtypes, exprcollations,
-										  numattrs, list_length(exprs),
+										  exprs, numattrs,
 										  stats, k, combination);
 
 			itemcnt++;
@@ -454,9 +447,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  Datum *exprvals, bool *exprnulls,
-						  Oid *exprtypes, Oid *exprcollations,
-						  int nattrs, int nexprs,
+						  ExprInfo *exprs, int nattrs,
 						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
@@ -512,8 +503,8 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		}
 		else
 		{
-			typid = exprtypes[combination[i] - nattrs];
-			collid = exprcollations[combination[i] - nattrs];
+			typid = exprs->types[combination[i] - nattrs];
+			collid = exprs->collations[combination[i] - nattrs];
 		}
 
 		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
@@ -535,8 +526,9 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 								 &items[j].isnull[i]);
 			else
 			{
-				items[j].values[i] = exprvals[j * nexprs + combination[i]];
-				items[j].isnull[i] = exprnulls[j * nexprs + combination[i]];
+				/* FIXME probably should subtract nattrs from the combination */
+				items[j].values[i] = exprs->values[combination[i] - nattrs][j];
+				items[j].isnull[i] = exprs->nulls[combination[i] - nattrs][j];
 			}
 		}
 	}

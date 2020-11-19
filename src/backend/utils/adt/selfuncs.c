@@ -3526,7 +3526,6 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		{
 			exprinfos = add_unique_group_expr(root, exprinfos,
 											  groupexpr, varshere);
-			// elog(WARNING, "exprinfos: %d vars %d", list_length(exprinfos), list_length(varshere));
 		}
 
 		/*
@@ -3625,13 +3624,10 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			}
 			else
 			{
-				// elog(WARNING, "relexprinfos %d", list_length(relexprinfos));
 				foreach(l, relexprinfos)
 				{
 					ListCell *lc;
 					GroupExprInfo *exprinfo2 = (GroupExprInfo *) lfirst(l);
-
-					// elog(WARNING, "exprinfo2->varinfos %d", list_length(exprinfo2->varinfos));
 
 					foreach (lc, exprinfo2->varinfos)
 					{
@@ -3961,8 +3957,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 	if (!rel->statlist)
 		return false;
 
-	// elog(WARNING, "A");
-
 	/* look for the ndistinct statistics matching the most vars */
 	nmatches_vars = 0;				/* we require at least two matches */
 	nmatches_exprs = 0;
@@ -3989,8 +3983,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 			Assert(exprinfo->rel == rel);
 
-			// elog(WARNING, "B");
-
 			/* simple Var, search in statistics keys directly */
 			if (IsA(exprinfo->expr, Var))
 			{
@@ -4005,8 +3997,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				continue;
 			}
 
-			// elog(WARNING, "C");
-
 			/* expression - see if it's in the statistics */
 			foreach (lc3, info->exprs)
 			{
@@ -4015,14 +4005,11 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				if (equal(exprinfo->expr, expr))
 				{
 					nshared_exprs++;
-					// elog(WARNING, "list_length(exprinfo->varinfos) = %d", list_length(exprinfo->varinfos));
 					nshared_vars += list_length(exprinfo->varinfos);
 					break;
 				}
 			}
 		}
-
-		// elog(WARNING, "D nshared_vars %d nshared_exprs %d", nshared_vars, nshared_exprs);
 
 		if (nshared_vars + nshared_exprs < 2)
 			continue;
@@ -4037,7 +4024,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		if ((nshared_vars > nmatches_vars) ||
 			((nshared_vars == nmatches_vars) && (nshared_exprs > nmatches_exprs)))
 		{
-			// elog(WARNING, "oid %d", info->statOid);
 			statOid = info->statOid;
 			nmatches_vars = nshared_vars;
 			nmatches_exprs = nshared_exprs;
@@ -4082,12 +4068,8 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 				idx++;
 
-				// elog(WARNING, "expr A: %s", nodeToString(exprinfo->expr));
-				// elog(WARNING, "expr B: %s", nodeToString(expr));
-
 				if (equal(exprinfo->expr, expr))
 				{
-					// elog(WARNING, "adding %d", MaxHeapAttributeNumber + idx);
 					matched = bms_add_member(matched, MaxHeapAttributeNumber + idx);
 					found = true;
 					break;
@@ -4108,7 +4090,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (bms_subset_compare(tmpitem->attrs, matched) == BMS_EQUAL)
 			{
 				item = tmpitem;
-				// elog(WARNING, "found item with %f", item->ndistinct);
 				break;
 			}
 		}
@@ -5141,7 +5122,6 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 				break;
 		}
 
-
 		/*
 		 * Search extended statistics for one with a matching expression.
 		 * There might be multiple ones, so just grab the first one. In
@@ -5152,6 +5132,13 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 			StatisticExtInfo *info = (StatisticExtInfo *) lfirst(slist);
 			ListCell   *expr_item;
 			int			pos;
+
+			/*
+			 * Stop once we've found statistics for the expression (either
+			 * from extended stats, or for an index in the preceding loop).
+			 */
+			if (vardata->statsTuple)
+				break;
 
 			/* skip stats without per-expression stats */
 			if (info->kind != STATS_EXT_EXPRESSIONS)
@@ -5181,8 +5168,6 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 
 				pos++;
 			}
-			if (vardata->statsTuple)
-				break;
 		}
 	}
 }

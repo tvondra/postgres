@@ -71,8 +71,7 @@ static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows,
-								Datum *exprvals, bool *exprnulls, Oid *exprtypes,
-								int nexprs, int k,
+								ExprInfo *exprs, int k,
 								AttrNumber *dependency, VacAttrStats **stats,
 								Bitmapset *attrs);
 static bool dependency_is_fully_matched(StatisticExtInfo *info,
@@ -226,8 +225,9 @@ DependencyGenerator_next(DependencyGenerator state)
  * the last one.
  */
 static double
-dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls, Oid *exprtypes,
-				  int nexprs, int k, AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs)
+dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
+				  AttrNumber *dependency, VacAttrStats **stats,
+				  Bitmapset *attrs)
 {
 	int			i,
 				nitems;
@@ -298,8 +298,8 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
 	 *
 	 * FIXME pass proper exprtypes
 	 */
-	items = build_sorted_items(numrows, &nitems, rows, exprvals, exprnulls, exprtypes,
-							   nexprs, stats[0]->tupDesc, mss, k, attnums_dep);
+	items = build_sorted_items(numrows, &nitems, rows, exprs,
+							   stats[0]->tupDesc, mss, k, attnums_dep);
 
 	/*
 	 * Walk through the sorted array, split it into rows according to the
@@ -370,9 +370,7 @@ dependency_degree(int numrows, HeapTuple *rows, Datum *exprvals, bool *exprnulls
  */
 MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows,
-						   Datum *exprvals, bool *exprnulls,
-						   Oid *exprtypes, Oid *exprcollations,
-						   Bitmapset *attrs, List *exprs,
+						   ExprInfo *exprs, Bitmapset *attrs,
 						   VacAttrStats **stats)
 {
 	int			i,
@@ -389,7 +387,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 	 */
 	attrs = bms_copy(attrs);
 
-	for (i = 1; i <= list_length(exprs); i++)
+	for (i = 1; i <= exprs->nexprs; i++)
 		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	/*
@@ -419,8 +417,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 			MVDependency *d;
 
 			/* compute how valid the dependency seems */
-			degree = dependency_degree(numrows, rows, exprvals, exprnulls, exprtypes,
-									   list_length(exprs), k, dependency,
+			degree = dependency_degree(numrows, rows, exprs, k, dependency,
 									   stats, attrs);
 
 			/*

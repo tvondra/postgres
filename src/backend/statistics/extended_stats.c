@@ -44,6 +44,7 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 /*
  * To avoid consuming too much memory during analysis and/or too much space
@@ -94,6 +95,7 @@ static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
 static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static AnlExprData *build_expr_data(List *exprs);
 static VacAttrStats *examine_expression(Node *expr);
+
 /*
  * Compute requested extended stats, using the rows sampled for the plain
  * (single-column) stats.
@@ -2647,4 +2649,57 @@ serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 	table_close(sd, RowExclusiveLock);
 
 	return PointerGetDatum(makeArrayResult(astate, CurrentMemoryContext));
+}
+
+
+HeapTuple
+statext_expressions_load(Oid stxoid, int idx)
+{
+	bool		isnull;
+	Datum		value;
+	HeapTuple	htup;
+	ExpandedArrayHeader *eah;
+	HeapTupleHeader td;
+	// Oid			tupType;
+	// int32		tupTypmod;
+	// TupleDesc	tupdesc;
+	HeapTupleData tmptup;
+	HeapTuple	tup;
+
+	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(stxoid));
+	if (!HeapTupleIsValid(htup))
+		elog(ERROR, "cache lookup failed for statistics object %u", stxoid);
+
+	value = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+							Anum_pg_statistic_ext_data_stxdexpr, &isnull);
+	if (isnull)
+		elog(ERROR,
+			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
+			 STATS_EXT_DEPENDENCIES, stxoid);
+
+	eah = DatumGetExpandedArray(value);
+
+	deconstruct_expanded_array(eah);
+
+	elog(WARNING, "eah = %p", eah);
+	elog(WARNING, "ndims = %d", eah->ndims);
+	elog(WARNING, "element_type = %d", eah->element_type);
+	elog(WARNING, "typlen = %d", eah->typlen);
+	elog(WARNING, "nelems = %d", eah->nelems);
+
+	td = DatumGetHeapTupleHeader(eah->dvalues[idx]);
+
+	// tupType = HeapTupleHeaderGetTypeId(td);
+	// tupTypmod = HeapTupleHeaderGetTypMod(td);
+	// tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
+
+	/* Build a temporary HeapTuple control structure */
+	tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
+	tmptup.t_data = td;
+
+	tup = heap_copytuple(&tmptup);
+
+	ReleaseSysCache(htup);
+
+	return tup;
 }

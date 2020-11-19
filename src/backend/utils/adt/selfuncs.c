@@ -4836,6 +4836,12 @@ get_join_variables(PlannerInfo *root, List *args, SpecialJoinInfo *sjinfo,
 		*join_is_reversed = false;
 }
 
+static void
+ReleaseDummy(HeapTuple tuple)
+{
+	pfree(tuple);
+}
+
 /*
  * examine_variable
  *		Try to look up statistical data about an expression.
@@ -4976,6 +4982,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 		 * operator we are estimating for.  FIXME later.
 		 */
 		ListCell   *ilist;
+		ListCell   *slist;
 
 		foreach(ilist, onerel->indexlist)
 		{
@@ -5128,6 +5135,49 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 					}
 					indexpr_item = lnext(index->indexprs, indexpr_item);
 				}
+			}
+			if (vardata->statsTuple)
+				break;
+		}
+
+
+		/*
+		 * Search extended statistics for one with a matching expression.
+		 * There might be multiple ones, so just grab the first one. In
+		 * the future, we might consider 
+		 */
+		foreach(slist, onerel->statlist)
+		{
+			StatisticExtInfo *info = (StatisticExtInfo *) lfirst(slist);
+			ListCell   *expr_item;
+			int			pos;
+
+			/* FIXME maybe add a special STATS_EXT_EXPRESSION kind?*/
+
+			pos = 0;
+			foreach (expr_item, info->exprs)
+			{
+				Node *expr = (Node *) lfirst(expr_item);
+
+				Assert(expr);
+
+				/* strip RelabelType before comparing it */
+				if (expr && IsA(expr, RelabelType))
+					expr = (Node *) ((RelabelType *) expr)->arg;
+
+				/* found a match, see if we can extract pg_statistic row */
+				if (equal(node, expr))
+				{
+					HeapTuple t = statext_expressions_load(info->statOid, pos);
+
+					vardata->statsTuple = t;
+					vardata->freefunc = ReleaseDummy;
+
+					elog(WARNING, "found matching stats %d tup %p for expression %s", info->statOid, t, nodeToString(node));
+					break;
+				}
+
+				pos++;
 			}
 			if (vardata->statsTuple)
 				break;

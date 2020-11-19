@@ -122,5 +122,6 @@ extern StatisticExtInfo *choose_best_statistics(List *stats, char requiredkind,
 												Bitmapset **clause_attnums,
 												Node **clause_exprs,
 												int nclauses);
+extern HeapTuple statext_expressions_load(Oid stxoid, int idx);
 
 #endif							/* STATISTICS_H */

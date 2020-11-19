@@ -4836,6 +4836,7 @@ get_join_variables(PlannerInfo *root, List *args, SpecialJoinInfo *sjinfo,
 		*join_is_reversed = false;
 }
 
+/* statext_expressions_load copies the tuple, so just pfree it. */
 static void
 ReleaseDummy(HeapTuple tuple)
 {

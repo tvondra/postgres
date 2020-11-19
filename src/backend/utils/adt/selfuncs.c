@@ -5152,7 +5152,9 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 			ListCell   *expr_item;
 			int			pos;
 
-			/* FIXME maybe add a special STATS_EXT_EXPRESSION kind?*/
+			/* skip stats without per-expression stats */
+			if (info->kind != STATS_EXT_EXPRESSIONS)
+				continue;
 
 			pos = 0;
 			foreach (expr_item, info->exprs)

@@ -1549,6 +1549,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 	bool		ndistinct_enabled;
 	bool		dependencies_enabled;
 	bool		mcv_enabled;
+	bool		exprs_enabled;
 	int			i;
 	List	   *context;
 	ListCell   *lc;
@@ -1599,6 +1600,8 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 				dependencies_enabled = true;
 			if (enabled[i] == STATS_EXT_MCV)
 				mcv_enabled = true;
+			if (enabled[i] == STATS_EXT_EXPRESSIONS)
+				exprs_enabled = true;
 		}
 
 		/*
@@ -1608,7 +1611,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		 * statistics types on a newer postgres version, if the statistics had all
 		 * options enabled on the original version.
 		 */
-		if (!ndistinct_enabled || !dependencies_enabled || !mcv_enabled)
+		if (!ndistinct_enabled || !dependencies_enabled || !mcv_enabled || !exprs_enabled)
 		{
 			bool		gotone = false;
 
@@ -1627,7 +1630,13 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 			}
 
 			if (mcv_enabled)
+			{
 				appendStringInfo(&buf, "%smcv", gotone ? ", " : "");
+				gotone = true;
+			}
+
+			if (exprs_enabled)
+				appendStringInfo(&buf, "%sexpressions", gotone ? ", " : "");
 
 			appendStringInfoChar(&buf, ')');
 		}

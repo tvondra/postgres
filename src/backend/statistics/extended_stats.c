@@ -195,6 +195,11 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		if (stattarget == 0)
 			continue;
 
+		/*
+		 * Evaluate the expressions, so that we can use the results to build
+		 * all the requested statistics types. This matters especially for
+		 * expensive expressions, of course.
+		 */
 		if (stat->exprs)
 		{
 			int			i;
@@ -299,36 +304,24 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 										exprtypes, exprcollations,
 										stat->columns, stat->exprs,
 										stats, totalrows, stattarget);
-		}
+			else if (t == STATS_EXT_EXPRESSIONS)
+			{
+				AnlExprData *exprdata;
+				int			nexprs;
 
-		/* if there are any expressions, build stats for those too */
-		if (stat->exprs)
-		{
-			AnlExprData *exprdata = build_expr_data(stat->exprs);
-			int			nexprs = list_length(stat->exprs);
+				/* should not happen, thanks to checks when defining stats */
+				if (!stat->exprs)
+					elog(ERROR, "requested expression stats, but there are no expressions");
 
-			compute_expr_stats(onerel, totalrows,
-							   exprdata, nexprs,
-							   rows, numrows);
+				exprdata = build_expr_data(stat->exprs);
+				nexprs = list_length(stat->exprs);
 
-			// elog(WARNING, "serializing stats for %d expressions", nexprs);
+				compute_expr_stats(onerel, totalrows,
+								   exprdata, nexprs,
+								   rows, numrows);
 
-			exprstats = serialize_expr_stats(exprdata, nexprs);
-
-			// elog(WARNING, "exprstats = %ld", exprstats);
-			/* FIXME form the pg_statistic rows, per update_attstats */
-
-			// /* Some relkinds lack type OIDs */
-			// typOid = get_rel_type_id(classOid);
-			// if (!OidIsValid(typOid))
-			// 	ereport(ERROR,
-			// 			(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-			// 			errmsg("relation \"%s\" does not have a composite type",
-			// 					ident)));
-
-			// load_typcache_tupdesc
-			// heap_copy_tuple_as_datum
-
+				exprstats = serialize_expr_stats(exprdata, nexprs);
+			}
 		}
 
 		/* store the statistics in the catalog */
@@ -497,6 +490,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdmcv;
 			break;
 
+		case STATS_EXT_EXPRESSIONS:
+			attnum = Anum_pg_statistic_ext_data_stxdexpr;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -564,7 +561,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
-				   (enabled[i] == STATS_EXT_MCV));
+				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_EXPRESSIONS));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 

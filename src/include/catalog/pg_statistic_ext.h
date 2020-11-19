@@ -80,6 +80,7 @@ DECLARE_INDEX(pg_statistic_ext_relid_index, 3379, on pg_statistic_ext using btre
 #define STATS_EXT_NDISTINCT			'd'
 #define STATS_EXT_DEPENDENCIES		'f'
 #define STATS_EXT_MCV				'm'
+#define STATS_EXT_EXPRESSIONS		'e'
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

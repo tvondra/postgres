@@ -86,12 +86,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				myself;
-	Datum		types[3];		/* one for each possible type of statistic */
+	Datum		types[4];		/* one for each possible type of statistic */
 	int			ntypes;
 	ArrayType  *stxkind;
 	bool		build_ndistinct;
 	bool		build_dependencies;
 	bool		build_mcv;
+	bool		build_expressions;
+	bool		build_expressions_only;
 	bool		requested_type = false;
 	int			i;
 	ListCell   *cell;
@@ -290,10 +292,69 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/*
-	 * Check that at least two columns were specified in the statement. The
-	 * upper bound was already checked in the loop above.
+	 * Parse the statistics kinds.
 	 */
-	if (numcols < 2)
+	build_ndistinct = false;
+	build_dependencies = false;
+	build_mcv = false;
+	build_expressions = false;
+	foreach(cell, stmt->stat_types)
+	{
+		char	   *type = strVal((Value *) lfirst(cell));
+
+		if (strcmp(type, "ndistinct") == 0)
+		{
+			build_ndistinct = true;
+			requested_type = true;
+		}
+		else if (strcmp(type, "dependencies") == 0)
+		{
+			build_dependencies = true;
+			requested_type = true;
+		}
+		else if (strcmp(type, "mcv") == 0)
+		{
+			build_mcv = true;
+			requested_type = true;
+		}
+		else if (strcmp(type, "expressions") == 0)
+		{
+			build_expressions = true;
+			requested_type = true;
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized statistics kind \"%s\"",
+							type)));
+	}
+
+	/* Are we building only the expression statistics? */
+	build_expressions_only = build_expressions &&
+		(!build_ndistinct) && (!build_dependencies) && (!build_mcv);
+
+	/*
+	 * Check that with explicitly requested expression stats there really
+	 * are some expressions.
+	 */
+	if (build_expressions && (list_length(stxexprs) == 0))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("extended expression statistics require at least one expression")));
+
+	/*
+	 * Check that at least two columns were specified in the statement, or
+	 * one when only expression stats were requested. The upper bound was
+	 * already checked in the loop above.
+	 *
+	 * XXX The first check is probably pointless after the one checking for
+	 * expressions.
+	 */
+	if (build_expressions_only && (numcols == 0))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("extended expression statistics require at least 1 column")));
+	else if (!build_expressions_only && (numcols < 2))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("extended statistics require at least 2 columns")));
@@ -321,42 +382,15 @@ CreateStatistics(CreateStatsStmt *stmt)
 	stxkeys = buildint2vector(attnums, nattnums);
 
 	/*
-	 * Parse the statistics kinds.
+	 * If no statistic type was specified, build them all (but request
+	 * expression stats only when there actually are any expressions).
 	 */
-	build_ndistinct = false;
-	build_dependencies = false;
-	build_mcv = false;
-	foreach(cell, stmt->stat_types)
-	{
-		char	   *type = strVal((Value *) lfirst(cell));
-
-		if (strcmp(type, "ndistinct") == 0)
-		{
-			build_ndistinct = true;
-			requested_type = true;
-		}
-		else if (strcmp(type, "dependencies") == 0)
-		{
-			build_dependencies = true;
-			requested_type = true;
-		}
-		else if (strcmp(type, "mcv") == 0)
-		{
-			build_mcv = true;
-			requested_type = true;
-		}
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized statistics kind \"%s\"",
-							type)));
-	}
-	/* If no statistic type was specified, build them all. */
 	if (!requested_type)
 	{
 		build_ndistinct = true;
 		build_dependencies = true;
 		build_mcv = true;
+		build_expressions = (list_length(stxexprs) != 0);
 	}
 
 	/* construct the char array of enabled statistic types */
@@ -367,6 +401,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 		types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 	if (build_mcv)
 		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
+	if (build_expressions)
+		types[ntypes++] = CharGetDatum(STATS_EXT_EXPRESSIONS);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
 	stxkind = construct_array(types, ntypes, CHAROID, 1, true, TYPALIGN_CHAR);
 

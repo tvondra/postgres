@@ -311,11 +311,11 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 							   exprdata, nexprs,
 							   rows, numrows);
 
-			elog(WARNING, "serializing stats for %d expressions", nexprs);
+			// elog(WARNING, "serializing stats for %d expressions", nexprs);
 
 			exprstats = serialize_expr_stats(exprdata, nexprs);
 
-			elog(WARNING, "exprstats = %ld", exprstats);
+			// elog(WARNING, "exprstats = %ld", exprstats);
 			/* FIXME form the pg_statistic rows, per update_attstats */
 
 			// /* Some relkinds lack type OIDs */
@@ -810,13 +810,13 @@ statext_store(Oid statOid,
 	{
 		bytea	   *data = statext_mcv_serialize(mcv, stats);
 
-		elog(WARNING, "AAAA");
+		// elog(WARNING, "AAAA");
 		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
 	}
 	if (exprs != (Datum) 0)
 	{
-		elog(WARNING, "ZZZZ");
+		// elog(WARNING, "ZZZZ");
 		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
 		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
 	}
@@ -2308,8 +2308,8 @@ compute_expr_stats(Relation onerel, double totalrows,
 		/* Set up expression evaluation state */
 		exprstate = ExecPrepareExpr((Expr *) expr, estate);
 
-		elog(WARNING, "expr = %s", nodeToString(expr));
-		elog(WARNING, "exprstate = %p", exprstate);
+		// elog(WARNING, "expr = %s", nodeToString(expr));
+		// elog(WARNING, "exprstate = %p", exprstate);
 
 		/* Need a slot to hold the current heap tuple, too */
 		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
@@ -2681,11 +2681,11 @@ statext_expressions_load(Oid stxoid, int idx)
 
 	deconstruct_expanded_array(eah);
 
-	elog(WARNING, "eah = %p", eah);
-	elog(WARNING, "ndims = %d", eah->ndims);
-	elog(WARNING, "element_type = %d", eah->element_type);
-	elog(WARNING, "typlen = %d", eah->typlen);
-	elog(WARNING, "nelems = %d", eah->nelems);
+	// elog(WARNING, "eah = %p", eah);
+	// elog(WARNING, "ndims = %d", eah->ndims);
+	// elog(WARNING, "element_type = %d", eah->element_type);
+	// elog(WARNING, "typlen = %d", eah->typlen);
+	// elog(WARNING, "nelems = %d", eah->nelems);
 
 	td = DatumGetHeapTupleHeader(eah->dvalues[idx]);
 

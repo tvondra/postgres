@@ -5173,7 +5173,6 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 					vardata->statsTuple = t;
 					vardata->freefunc = ReleaseDummy;
 
-					elog(WARNING, "found matching stats %d tup %p for expression %s", info->statOid, t, nodeToString(node));
 					break;
 				}
 

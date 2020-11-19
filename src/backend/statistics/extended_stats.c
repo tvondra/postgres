@@ -36,6 +36,7 @@
 #include "statistics/statistics.h"
 #include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -79,6 +80,17 @@ static void statext_store(Oid relid,
 						  MCVList *mcv, VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int natts, VacAttrStats **stats);
+
+typedef struct AnlExprData
+{
+	Expr		   *expr;			/* expression to analyze */
+	VacAttrStats   *vacattrstat;	/* index attrs to analyze */
+} AnlExprData;
+
+static void compute_expr_stats(Relation onerel, double totalrows,
+					AnlExprData *exprdata, int nexprs,
+					HeapTuple *rows, int numrows);
+static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -282,6 +294,31 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 										exprtypes, exprcollations,
 										stat->columns, stat->exprs,
 										stats, totalrows, stattarget);
+		}
+
+		/* if there are any expressions, build stats for those too */
+		if (stat->exprs)
+		{
+			AnlExprData *exprdata = NULL;
+			int			nexprs = list_length(stat->exprs);
+
+			compute_expr_stats(onerel, totalrows,
+							   exprdata, nexprs,
+							   rows, numrows);
+
+			/* FIXME form the pg_statistic rows, per update_attstats */
+
+			// /* Some relkinds lack type OIDs */
+			// typOid = get_rel_type_id(classOid);
+			// if (!OidIsValid(typOid))
+			// 	ereport(ERROR,
+			// 			(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+			// 			errmsg("relation \"%s\" does not have a composite type",
+			// 					ident)));
+
+			// load_typcache_tupdesc
+			// heap_copy_tuple_as_datum
+
 		}
 
 		/* store the statistics in the catalog */
@@ -2209,4 +2246,148 @@ examine_opclause_expression2(OpExpr *expr, Node **exprp, Const **cstp, bool *exp
 		*expronleftp = expronleft;
 
 	return true;
+}
+
+
+/*
+ * Compute statistics about expressions of a relation.
+ */
+static void
+compute_expr_stats(Relation onerel, double totalrows,
+				   AnlExprData *exprdata, int nexprs,
+				   HeapTuple *rows, int numrows)
+{
+	MemoryContext expr_context,
+				old_context;
+	int			ind,
+				i;
+
+	expr_context = AllocSetContextCreate(CurrentMemoryContext,
+										 "Analyze Expression",
+										 ALLOCSET_DEFAULT_SIZES);
+	old_context = MemoryContextSwitchTo(expr_context);
+
+	for (ind = 0; ind < nexprs; ind++)
+	{
+		AnlExprData *thisdata = &exprdata[ind];
+		Expr        *expr = thisdata->expr;
+		TupleTableSlot *slot;
+		EState	   *estate;
+		ExprContext *econtext;
+		Datum	   *exprvals;
+		bool	   *exprnulls;
+		ExprState  *exprstate;
+		int			tcnt;
+
+		/*
+		 * Need an EState for evaluation of expressions.  Create it in
+		 * the per-expression context to be sure it gets cleaned up at
+		 * the bottom of the loop.
+		 */
+		estate = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+
+		/* Set up expression evaluation state */
+		exprstate = ExecPrepareExpr(expr, estate);
+
+		/* Need a slot to hold the current heap tuple, too */
+		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
+										&TTSOpsHeapTuple);
+
+		/* Arrange for econtext's scan tuple to be the tuple under test */
+		econtext->ecxt_scantuple = slot;
+
+		/* Compute and save index expression values */
+		exprvals = (Datum *) palloc(numrows * sizeof(Datum));
+		exprnulls = (bool *) palloc(numrows * sizeof(bool));
+
+		tcnt = 0;
+		for (i = 0; i < numrows; i++)
+		{
+			Datum	datum;
+			bool	isnull;
+
+			/*
+			 * Reset the per-tuple context each time, to reclaim any cruft
+			 * left behind by evaluating the predicate or index expressions.
+			 */
+			ResetExprContext(econtext);
+
+			/* Set up for predicate or expression evaluation */
+			ExecStoreHeapTuple(rows[i], slot, false);
+
+			datum = ExecEvalExprSwitchContext(exprstate,
+											  GetPerTupleExprContext(estate),
+											  &isnull);
+			if (isnull)
+			{
+				exprvals[tcnt] = (Datum) 0;
+				exprnulls[tcnt] = true;
+			}
+			else
+			{
+				exprvals[tcnt] = (Datum) datum;
+				exprnulls[tcnt] = false;
+			}
+
+			tcnt++;
+		}
+
+		/*
+		 * Now we can compute the statistics for the expression columns.
+		 */
+		if (tcnt > 0)
+		{
+			// MemoryContextSwitchTo(col_context);
+			VacAttrStats *stats = thisdata->vacattrstat;
+			AttributeOpts *aopt =
+				get_attribute_options(stats->attr->attrelid,
+									  stats->attr->attnum);
+
+			stats->exprvals = exprvals;
+			stats->exprnulls = exprnulls;
+			stats->rowstride = 1;
+			stats->compute_stats(stats,
+								 expr_fetch_func,
+								 tcnt,
+								 tcnt);
+
+			/*
+			 * If the n_distinct option is specified, it overrides the
+			 * above computation.
+			 */
+			if (aopt != NULL && aopt->n_distinct != 0.0)
+				stats->stadistinct = aopt->n_distinct;
+
+			// MemoryContextResetAndDeleteChildren(col_context);
+		}
+
+		/* And clean up */
+		MemoryContextSwitchTo(expr_context);
+
+		ExecDropSingleTupleTableSlot(slot);
+		FreeExecutorState(estate);
+		MemoryContextResetAndDeleteChildren(expr_context);
+	}
+
+	MemoryContextSwitchTo(old_context);
+	MemoryContextDelete(expr_context);
+}
+
+
+/*
+ * Fetch function for analyzing index expressions.
+ *
+ * We have not bothered to construct index tuples, instead the data is
+ * just in Datum arrays.
+ */
+static Datum
+expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull)
+{
+	int			i;
+
+	/* exprvals and exprnulls are already offset for proper column */
+	i = rownum * stats->rowstride;
+	*isNull = stats->exprnulls[i];
+	return stats->exprvals[i];
 }

@@ -1517,6 +1517,11 @@ pg_get_statisticsobjdef(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(string_to_text(res));
 }
 
+
+/*
+ * pg_get_statisticsobjdef_columns
+ *		Get columns and expressions for an extended statistics object
+ */
 Datum
 pg_get_statisticsobjdef_columns(PG_FUNCTION_ARGS)
 {

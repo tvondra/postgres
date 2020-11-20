@@ -269,7 +269,12 @@ CreateStatistics(CreateStatsStmt *stmt)
 						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 						 errmsg("functions in statistics expression must be marked IMMUTABLE")));
 
-			/* Disallow data types without a less-than operator */
+			/*
+			 * Disallow data types without a less-than operator
+			 *
+			 * XXX Maybe allow this, but only for EXPRESSIONS stats and
+			 * prevent building e.g. MCV etc.
+			 */
 			atttype = exprType(expr);
 			type = lookup_type_cache(atttype, TYPECACHE_LT_OPR);
 			if (type->lt_opr == InvalidOid)
@@ -502,7 +507,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * XXX This is copied from index_create, not sure if it's applicable
 	 * to extended statistics too.
 	 */
-	if (nattnums)
+	if (!nattnums)
 	{
 		ObjectAddressSet(parentobject, RelationRelationId, relid);
 		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
@@ -878,6 +883,8 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 /*
  * CheckMutability
  *		Test whether given expression is mutable
+ *
+ * FIXME copied from indexcmds.c, maybe use some shared function?
  */
 static bool
 CheckMutability(Expr *expr)

@@ -3243,15 +3243,6 @@ typedef struct
 	double		ndistinct;		/* # distinct values */
 } GroupVarInfo;
 
-
-typedef struct
-{
-	Node	   *expr;			/* expression */
-	RelOptInfo *rel;			/* relation it belongs to */
-	List	   *varinfos;		/* info for variables in this expression */
-} GroupExprInfo;
-
-
 static List *
 add_unique_group_var(PlannerInfo *root, List *varinfos,
 					 Node *var, VariableStatData *vardata)
@@ -3299,6 +3290,18 @@ add_unique_group_var(PlannerInfo *root, List *varinfos,
 	varinfos = lappend(varinfos, varinfo);
 	return varinfos;
 }
+
+/*
+ * Helper routine for estimate_num_groups: add an item to a list of
+ * GrouExprInfos, but only if it's not known equal to any of the existing
+ * entries.
+ */
+typedef struct
+{
+	Node	   *expr;			/* expression */
+	RelOptInfo *rel;			/* relation it belongs to */
+	List	   *varinfos;		/* info for variables in this expression */
+} GroupExprInfo;
 
 static List *
 add_unique_group_expr(PlannerInfo *root, List *exprinfos,

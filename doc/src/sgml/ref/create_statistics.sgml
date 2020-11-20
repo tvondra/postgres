@@ -144,6 +144,24 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_na
    similar to creating index on the expression, except that it eliminates
    the index maintenance overhead.
   </para>
+
+  <para>
+   The expression can refer only to columns of the underlying table, but
+   it can use all columns, not just the ones the statistics is defined
+   on.  In fact, the statistics may be defined only on expressions.
+   Presently, subqueries and aggregate expressions are also forbidden
+   in the expressions.
+  </para>
+
+  <para>
+   All functions and operators used in an statistics definition must be
+   <quote>immutable</quote>, that is, their results must depend only on
+   their arguments and never on any outside influence (such as
+   the contents of another table or the current time).  This restriction
+   ensures that the behavior of the statistics is well-defined.  To use a
+   user-defined function in a statistics expression, remember to mark
+   the function immutable when you create it.
+  </para>
  </refsect1>
 
  <refsect1 id="sql-createstatistics-examples">

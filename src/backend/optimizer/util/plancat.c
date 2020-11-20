@@ -1338,7 +1338,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		/*
 		 * preprocess expression (if any)
 		 *
-		 * FIXME we probably need to cache the result somewhere
+		 * FIXME Should we cache the result somewhere?
 		 */
 		{
 			bool		isnull;

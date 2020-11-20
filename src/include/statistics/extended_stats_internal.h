@@ -57,7 +57,12 @@ typedef struct SortItem
 	int			count;
 } SortItem;
 
-typedef struct ExprInfo {
+/*
+ * Used to pass pre-computed information about expressions the stats
+ * object is defined on.
+ */
+typedef struct ExprInfo
+{
 	int			nexprs;			/* number of expressions */
 	Oid		   *collations;		/* collation for each expression */
 	Oid		   *types;			/* type of each expression */

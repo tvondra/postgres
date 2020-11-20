@@ -2812,7 +2812,7 @@ typedef struct CreateStatsStmt
 	List	   *relations;		/* rels to build stats on (list of RangeVar) */
 	char	   *stxcomment;		/* comment to apply to stats, or NULL */
 	bool		if_not_exists;	/* do nothing if stats name already exists */
-	bool		transformed;	/* true when transformIndexStmt is finished */
+	bool		transformed;	/* true when transformStatsStmt is finished */
 } CreateStatsStmt;
 
 /*

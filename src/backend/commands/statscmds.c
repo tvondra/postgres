@@ -492,6 +492,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 */
 	ObjectAddressSet(myself, StatisticExtRelationId, statoid);
 
+	/* add dependencies for plain column references */
 	for (i = 0; i < nattnums; i++)
 	{
 		ObjectAddressSubSet(parentobject, RelationRelationId, relid, attnums[i]);
@@ -502,7 +503,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * If there are no simply-referenced columns, give the statistics an
 	 * auto dependency on the whole table.  In most cases, this will
 	 * be redundant, but it might not be if the statistics expressions
-	 * contain no Vars.
+	 * contain no Vars (which might seem strange but possible).
 	 *
 	 * XXX This is copied from index_create, not sure if it's applicable
 	 * to extended statistics too.
@@ -515,16 +516,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/*
 	 * Store dependencies on anything mentioned in statistics expressions,
-	 * just like we do e.g. in index_create.
+	 * just like we do for index expressions.
 	 */
 	if (stxexprs)
-	{
 		recordDependencyOnSingleRelExpr(&myself,
 										(Node *) stxexprs,
 										relid,
 										DEPENDENCY_NORMAL,
 										DEPENDENCY_AUTO, false, true);
-	}
 
 	/*
 	 * Also add dependencies on namespace and owner.  These are required
@@ -867,6 +866,14 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 
 		if (buflen > 0)
 			buf[buflen++] = '_';	/* insert _ between names */
+
+		/*
+		 * FIXME use 'expr' for expressions, which have empty column names.
+		 * For indexes this is handled in ChooseIndexColumnNames, but we
+		 * have no such function for stats.
+		 */
+		if (!name)
+			name = "expr";
 
 		/*
 		 * At this point we have buflen <= NAMEDATALEN.  name should be less

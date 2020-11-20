@@ -1889,9 +1889,37 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 		selem->name = get_attname(heapRelid, attnum, false);
 		selem->expr = NULL;
 
-		/* FIXME handle expressions properly */
-
 		def_names = lappend(def_names, selem);
+	}
+
+	/*
+	 * Now handle expressions, if there are any.  The order does not
+	 * matter for extended stats, so we simply append them after
+	 * simple column references.
+     */
+	datum = SysCacheGetAttr(STATEXTOID, ht_stats,
+							Anum_pg_statistic_ext_stxexprs, &isnull);
+
+	if (!isnull)
+	{
+		ListCell   *lc;
+		List	   *exprs = NIL;
+		char	   *exprsString;
+
+		exprsString = TextDatumGetCString(datum);
+		exprs = (List *) stringToNode(exprsString);
+
+		foreach(lc, exprs)
+		{
+			StatsElem  *selem = makeNode(StatsElem);
+
+			selem->name = NULL;
+			selem->expr = (Node *) lfirst(lc);
+
+			def_names = lappend(def_names, selem);
+		}
+
+		pfree(exprsString);
 	}
 
 	/* finally, build the output node */
@@ -1902,6 +1930,7 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 	stats->relations = list_make1(heapRel);
 	stats->stxcomment = NULL;
 	stats->if_not_exists = false;
+	stats->transformed = true;	/* don't need transformStatsStmt */
 
 	/* Clean up */
 	ReleaseSysCache(ht_stats);

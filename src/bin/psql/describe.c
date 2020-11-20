@@ -2676,8 +2676,10 @@ describeOneTableDetails(const char *schemaname,
 		/* print any extended statistics */
 		if (pset.sversion >= 100000)
 		{
-			/* FIXME this needs to be version-dependent, because older
-			 * versions don't have pg_get_statisticsobjdef_columns */
+			/*
+			 * FIXME this needs to be version-dependent, because older
+			 * versions don't have pg_get_statisticsobjdef_columns.
+			 */
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, "
 							  "stxrelid::pg_catalog.regclass, "

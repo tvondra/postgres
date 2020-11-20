@@ -2686,7 +2686,8 @@ describeOneTableDetails(const char *schemaname,
 							  "pg_get_statisticsobjdef_columns(oid) AS columns,\n"
 							  "  'd' = any(stxkind) AS ndist_enabled,\n"
 							  "  'f' = any(stxkind) AS deps_enabled,\n"
-							  "  'm' = any(stxkind) AS mcv_enabled,\n");
+							  "  'm' = any(stxkind) AS mcv_enabled,\n"
+							  "  'e' = any(stxkind) AS expressions_enabled,\n");
 
 			if (pset.sversion >= 130000)
 				appendPQExpBufferStr(&buf, "  stxstattarget\n");
@@ -2734,6 +2735,12 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 7), "t") == 0)
 					{
 						appendPQExpBuffer(&buf, "%smcv", gotone ? ", " : "");
+						gotone = true;
+					}
+
+					if (strcmp(PQgetvalue(result, i, 8), "t") == 0)
+					{
+						appendPQExpBuffer(&buf, "%sexpressions", gotone ? ", " : "");
 					}
 
 					appendPQExpBuffer(&buf, ") ON %s FROM %s",
@@ -2741,7 +2748,7 @@ describeOneTableDetails(const char *schemaname,
 									  PQgetvalue(result, i, 1));
 
 					/* Show the stats target if it's not default */
-					if (strcmp(PQgetvalue(result, i, 8), "-1") != 0)
+					if (strcmp(PQgetvalue(result, i, 9), "-1") != 0)
 						appendPQExpBuffer(&buf, "; STATISTICS %s",
 										  PQgetvalue(result, i, 8));
 

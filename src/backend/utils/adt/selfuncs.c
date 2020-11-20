@@ -3309,6 +3309,8 @@ add_unique_group_expr(PlannerInfo *root, List *exprinfos,
 {
 	GroupExprInfo *exprinfo;
 	ListCell   *lc;
+	Bitmapset  *varnos;
+	Index		varno;
 
 	foreach(lc, exprinfos)
 	{
@@ -3324,6 +3326,15 @@ add_unique_group_expr(PlannerInfo *root, List *exprinfos,
 	exprinfo->expr = expr;
 	exprinfo->varinfos = NIL;
 
+	varnos = pull_varnos(expr);
+
+	/* maybe we need to check for this earlier */
+	Assert(bms_num_members(varnos) == 1);
+
+	varno = bms_singleton_member(varnos);
+
+	exprinfo->rel = root->simple_rel_array[varno];
+
 	foreach (lc, vars)
 	{
 		VariableStatData vardata;
@@ -3332,8 +3343,6 @@ add_unique_group_expr(PlannerInfo *root, List *exprinfos,
 		examine_variable(root, var, 0, &vardata);
 
 		exprinfo->varinfos = add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
-
-		exprinfo->rel = vardata.rel;
 
 		ReleaseVariableStats(vardata);
 	}
@@ -3489,8 +3498,18 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		examine_variable(root, groupexpr, 0, &vardata);
 		if (HeapTupleIsValid(vardata.statsTuple) || vardata.isunique)
 		{
-			varinfos = add_unique_group_var(root, varinfos,
-											groupexpr, &vardata);
+			List *tmp = NIL;
+
+			if (IsA(groupexpr, Var))
+			{
+				varinfos = add_unique_group_var(root, varinfos,
+												groupexpr, &vardata);
+				tmp = lappend(tmp, groupexpr);
+			}
+
+			exprinfos = add_unique_group_expr(root, exprinfos,
+											  groupexpr, tmp);
+
 			ReleaseVariableStats(vardata);
 			continue;
 		}
@@ -3516,7 +3535,10 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		if (varshere == NIL)
 		{
 			if (contain_volatile_functions(groupexpr))
+			{
+				elog(WARNING, "volatile");
 				return input_rows;
+			}
 			continue;
 		}
 
@@ -3548,7 +3570,25 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 	 * If now no Vars, we must have an all-constant or all-boolean GROUP BY
 	 * list.
 	 */
-	if (varinfos == NIL)
+	if (false) // if (varinfos == NIL)
+	{
+		/* Apply SRF multiplier as we would do in the long path */
+		numdistinct *= srf_multiplier;
+		/* Round off */
+		numdistinct = ceil(numdistinct);
+		/* Guard against out-of-range answers */
+		if (numdistinct > input_rows)
+			numdistinct = input_rows;
+		if (numdistinct < 1.0)
+			numdistinct = 1.0;
+		return numdistinct;
+	}
+
+	/*
+	 * If now no Vars, we must have an all-constant or all-boolean GROUP BY
+	 * list.
+	 */
+	if (exprinfos == NIL)
 	{
 		/* Apply SRF multiplier as we would do in the long path */
 		numdistinct *= srf_multiplier;

@@ -23,7 +23,7 @@ PostgreSQL documentation
 <synopsis>
 CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_name</replaceable>
     [ ( <replaceable class="parameter">statistics_kind</replaceable> [, ... ] ) ]
-    ON <replaceable class="parameter">column_name</replaceable>, <replaceable class="parameter">column_name</replaceable> [, ...]
+    ON { <replaceable class="parameter">column_name</replaceable> | ( <replaceable class="parameter">expression</replaceable> ) } [, ...]
     FROM <replaceable class="parameter">table_name</replaceable>
 </synopsis>
 
@@ -81,6 +81,7 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_na
      <para>
       A statistics kind to be computed in this statistics object.
       Currently supported kinds are
+      <literal>expressions</literal>, which enables expression statistics,
       <literal>ndistinct</literal>, which enables n-distinct statistics,
       <literal>dependencies</literal>, which enables functional
       dependency statistics, and <literal>mcv</literal> which enables
@@ -105,6 +106,17 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_na
    </varlistentry>
 
    <varlistentry>
+    <term><replaceable class="parameter">expression</replaceable></term>
+    <listitem>
+     <para>
+      The expression to be covered by the computed statistics. In this case
+      only a single expression is required, in which case only the expression
+      statistics kind is allowed. The order of expressions is insignificant.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><replaceable class="parameter">table_name</replaceable></term>
     <listitem>
      <para>
@@ -124,6 +136,13 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_na
    You must be the owner of a table to create a statistics object
    reading it.  Once created, however, the ownership of the statistics
    object is independent of the underlying table(s).
+  </para>
+
+  <para>
+   Creating expressions statistics is allowed only when there actually are
+   any expression. Expression statistics are per-expression and are very
+   similar to creating index on the expression, except that it eliminates
+   the index maintenance overhead.
   </para>
  </refsect1>
 
@@ -194,6 +213,62 @@ EXPLAIN ANALYZE SELECT * FROM t2 WHERE (a = 1) AND (b = 2);
    specific values that commonly appear in the table, as well as an upper
    bound on the selectivities of combinations of values that do not appear
    in the table, allowing it to generate better estimates in both cases.
+  </para>
+
+  <para>
+   Create table <structname>t3</structname> with a single timestamp column,
+   and run a query using an expression on that column. 
+   knowledge of a value in the first column is sufficient for determining the
+   value in the other column. Then functional dependency statistics are built
+   on those columns:
+
+<programlisting>
+CREATE TABLE t3 (
+    a   timestamp
+);
+
+INSERT INTO t3 SELECT i FROM generate_series('2020-01-01'::timestamp,
+                                             '2020-12-31'::timestamp,
+                                             '1 minute'::interval) s(i);
+
+ANALYZE t3;
+
+-- the number of matching rows will be drastically underestimated:
+EXPLAIN ANALYZE SELECT * FROM t3
+  WHERE date_trunc('month', a) = '2020-01-01'::timestamp;
+
+EXPLAIN ANALYZE SELECT * FROM t3
+  WHERE date_trunc('day', a) BETWEEN '2020-01-01'::timestamp
+                                 AND '2020-06-30'::timestamp;
+
+EXPLAIN ANALYZE SELECT date_trunc('month', a), date_trunc('day', a)
+   FROM t3 GROUP BY 1, 2;
+
+CREATE STATISTICS s3 (expressions, ndistinct) ON date_trunc('month', a), date_trunc('day', a) FROM t3;
+
+ANALYZE t1;
+
+-- now the row count estimates are more accurate:
+EXPLAIN ANALYZE SELECT * FROM t3
+  WHERE date_trunc('month', a) = '2020-01-01'::timestamp;
+
+EXPLAIN ANALYZE SELECT * FROM t3
+  WHERE date_trunc('day', a) BETWEEN '2020-01-01'::timestamp
+                                 AND '2020-06-30'::timestamp;
+
+EXPLAIN ANALYZE SELECT date_trunc('month', a), date_trunc('day', a)
+   FROM t3 GROUP BY 1, 2;
+</programlisting>
+
+   Without expression and ndistinct statistics, the planner would assume
+   that the two <literal>WHERE</literal> and <literal>GROUP BY</literal>
+   conditions are independent, and would multiply their selectivities
+   together to arrive at a much-too-small row count estimate in the first
+   two queries, and a much-too-high group count estimate in the aggregate
+   query. This is further exacerbated by the lack of accurate statistics
+   for the expressions, forcing the planner to use default selectivities.
+   With such statistics, the planner recognizes that the conditions are
+   correlated and arrives at much more accurate estimates.
   </para>
 
  </refsect1>

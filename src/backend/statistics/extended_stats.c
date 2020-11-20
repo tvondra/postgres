@@ -2625,6 +2625,8 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 	int			nexprs = list_length(exprs);
 	ListCell   *lc;
 
+	Assert(list_length(exprs) != 0);
+
 	/* allocate everything as a single chunk, so we can free it easily */
 	len = MAXALIGN(sizeof(ExprInfo));
 	len += MAXALIGN(sizeof(Oid) * nexprs);	/* types */
@@ -2731,7 +2733,7 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 			else
 			{
 				result->values[idx][i] = (Datum) datum;
-				result->values[idx][i] = false;
+				result->nulls[idx][i] = false;
 			}
 
 			idx++;

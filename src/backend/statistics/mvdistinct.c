@@ -526,7 +526,6 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 								 &items[j].isnull[i]);
 			else
 			{
-				/* FIXME probably should subtract nattrs from the combination */
 				items[j].values[i] = exprs->values[combination[i] - nattrs][j];
 				items[j].isnull[i] = exprs->nulls[combination[i] - nattrs][j];
 			}

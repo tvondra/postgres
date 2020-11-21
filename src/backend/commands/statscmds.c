@@ -348,6 +348,19 @@ CreateStatistics(CreateStatsStmt *stmt)
 				 errmsg("extended expression statistics require at least one expression")));
 
 	/*
+	 * When building only expression stats, all the elements have to be
+	 * expressions. It's pointless to build those stats for regular
+	 * columns, as we already have that in pg_statistic.
+	 *
+	 * XXX This is probably easy to evade by doing "dummy" expression on
+	 * the column, but meh.
+	 */
+	if (build_expressions_only && (nattnums > 0))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("building only extended expression statistics on simple columns not allowed")));
+
+	/*
 	 * Check that at least two columns were specified in the statement, or
 	 * one when only expression stats were requested. The upper bound was
 	 * already checked in the loop above.

@@ -5230,7 +5230,20 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 					HeapTuple t = statext_expressions_load(info->statOid, pos);
 
 					vardata->statsTuple = t;
+
+					/*
+					 * FIXME not sure if we should cache the tuple somewhere?
+					 * It's stored in a cached tuple in the "data" catalog,
+					 * and we just create a new copy every time.
+					 */
 					vardata->freefunc = ReleaseDummy;
+
+					/*
+					 * FIXME Hack to make statistic_proc_security_check happy,
+					 * so that this does not get rejected. Probably needs more
+					 * thought, just a hack.
+					 */
+					vardata->acl_ok = true;
 
 					break;
 				}

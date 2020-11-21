@@ -3323,33 +3323,53 @@ add_unique_group_expr(PlannerInfo *root, List *exprinfos,
 
 	exprinfo = (GroupExprInfo *) palloc(sizeof(GroupExprInfo));
 
-	exprinfo->expr = expr;
-	exprinfo->varinfos = NIL;
-
 	varnos = pull_varnos(expr);
 
-	/* maybe we need to check for this earlier */
+	/*
+	 * Expressions with vars from multiple relations should never get
+	 * here, as we split them to vars.
+	 */
 	Assert(bms_num_members(varnos) == 1);
 
 	varno = bms_singleton_member(varnos);
 
+	exprinfo->expr = expr;
+	exprinfo->varinfos = NIL;
 	exprinfo->rel = root->simple_rel_array[varno];
 
+	Assert(exprinfo->rel);
+
+	/* Track vars for this expression. */
 	foreach (lc, vars)
 	{
 		VariableStatData vardata;
 		Node *var = (Node *) lfirst(lc);
 
+		/* can we get no vardata for the variable? */
 		examine_variable(root, var, 0, &vardata);
 
-		exprinfo->varinfos = add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
+		exprinfo->varinfos
+			= add_unique_group_var(root, exprinfo->varinfos, var, &vardata);
 
 		ReleaseVariableStats(vardata);
 	}
 
-	exprinfos = lappend(exprinfos, exprinfo);
+	/* without a list of variables, use the expression itself */
+	if (vars == NIL)
+	{
+		VariableStatData vardata;
 
-	return exprinfos;
+		/* can we get no vardata for the variable? */
+		examine_variable(root, expr, 0, &vardata);
+
+		exprinfo->varinfos
+			= add_unique_group_var(root, exprinfo->varinfos,
+								   expr, &vardata);
+
+		ReleaseVariableStats(vardata);
+	}
+
+	return lappend(exprinfos, exprinfo);
 }
 
 
@@ -3422,7 +3442,6 @@ double
 estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 					List **pgset)
 {
-	List	   *varinfos = NIL;
 	List	   *exprinfos = NIL;
 	double		srf_multiplier = 1.0;
 	double		numdistinct;
@@ -3498,17 +3517,8 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		examine_variable(root, groupexpr, 0, &vardata);
 		if (HeapTupleIsValid(vardata.statsTuple) || vardata.isunique)
 		{
-			List *tmp = NIL;
-
-			if (IsA(groupexpr, Var))
-			{
-				varinfos = add_unique_group_var(root, varinfos,
-												groupexpr, &vardata);
-				tmp = lappend(tmp, groupexpr);
-			}
-
 			exprinfos = add_unique_group_expr(root, exprinfos,
-											  groupexpr, tmp);
+											  groupexpr, NIL);
 
 			ReleaseVariableStats(vardata);
 			continue;
@@ -3535,10 +3545,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		if (varshere == NIL)
 		{
 			if (contain_volatile_functions(groupexpr))
-			{
-				elog(WARNING, "volatile");
 				return input_rows;
-			}
 			continue;
 		}
 
@@ -3550,7 +3557,9 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		if (bms_membership(varnos) == BMS_SINGLETON)
 		{
 			exprinfos = add_unique_group_expr(root, exprinfos,
-											  groupexpr, varshere);
+											  groupexpr,
+											  varshere);
+			continue;
 		}
 
 		/*
@@ -3560,28 +3569,9 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		{
 			Node	   *var = (Node *) lfirst(l2);
 
-			examine_variable(root, var, 0, &vardata);
-			varinfos = add_unique_group_var(root, varinfos, var, &vardata);
-			ReleaseVariableStats(vardata);
+			exprinfos = add_unique_group_expr(root, exprinfos,
+											  var, NIL);
 		}
-	}
-
-	/*
-	 * If now no Vars, we must have an all-constant or all-boolean GROUP BY
-	 * list.
-	 */
-	if (false) // if (varinfos == NIL)
-	{
-		/* Apply SRF multiplier as we would do in the long path */
-		numdistinct *= srf_multiplier;
-		/* Round off */
-		numdistinct = ceil(numdistinct);
-		/* Guard against out-of-range answers */
-		if (numdistinct > input_rows)
-			numdistinct = input_rows;
-		if (numdistinct < 1.0)
-			numdistinct = 1.0;
-		return numdistinct;
 	}
 
 	/*
@@ -4119,9 +4109,26 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				}
 			}
 
-			if (!found)
+			if (found)
+				continue;
+
+			foreach (lc3, exprinfo->varinfos)
 			{
-				/* FIXME try matching the Vars from exprinfo->varinfos */
+				GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc2);
+
+				/* simple Var, search in statistics keys directly */
+				if (IsA(varinfo->var, Var))
+				{
+					AttrNumber	attnum = ((Var *) varinfo->var)->varattno;
+
+					if (!AttrNumberIsForUserDefinedAttr(attnum))
+						continue;
+
+					if (!bms_is_member(attnum, matched_info->keys))
+						continue;
+
+					matched = bms_add_member(matched, attnum);
+				}
 			}
 		}
 
@@ -4141,28 +4148,43 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		if (!item)
 			elog(ERROR, "corrupt MVNDistinct entry");
 
-		/* Form the output varinfo list, keeping only unmatched ones */
-		/*
+		/* Form the output exprinfo list, keeping only unmatched ones */
 		foreach(lc, *exprinfos)
 		{
 			GroupExprInfo *exprinfo = (GroupExprInfo *) lfirst(lc);
 			AttrNumber	attnum;
+			ListCell   *lc3;
+			bool		found = false;
 
-			if (!IsA(varinfo->var, Var))
+			foreach (lc3, matched_info->exprs)
 			{
-				newlist = lappend(newlist, varinfo);
+				Node *expr = (Node *) lfirst(lc3);
+
+				if (equal(exprinfo->expr, expr))
+				{
+					found = true;
+					break;
+				}
+			}
+
+			/* the whole expression was matched, so skip it */
+			if (found)
+				continue;
+
+			if (!IsA(exprinfo->expr, Var))
+			{
+				newlist = lappend(newlist, exprinfo);
 				continue;
 			}
 
-			attnum = ((Var *) varinfo->var)->varattno;
+			attnum = ((Var *) exprinfo->expr)->varattno;
 
 			if (!AttrNumberIsForUserDefinedAttr(attnum))
 				continue;
 
 			if (!bms_is_member(attnum, matched))
-				newlist = lappend(newlist, varinfo);
+				newlist = lappend(newlist, exprinfo);
 		}
-		*/
 
 		*exprinfos = newlist;
 		*ndistinct = item->ndistinct;

@@ -1091,7 +1091,7 @@ has_stats_of_kind(List *stats, char requiredkind)
  */
 StatisticExtInfo *
 choose_best_statistics(List *stats, char requiredkind,
-					   Bitmapset **clause_attnums, Node **clause_exprs,
+					   Bitmapset **clause_attnums, List **clause_exprs,
 					   int nclauses)
 {
 	ListCell   *lc;
@@ -1139,21 +1139,27 @@ choose_best_statistics(List *stats, char requiredkind,
 		num_matched_exprs = 0;
 		for (i = 0; i < nclauses; i++)
 		{
-			ListCell *lc2;
+			ListCell *lc3;
 
 			/* ignore incompatible/estimated expressions */
 			if (!clause_exprs[i])
 				continue;
 
 			/* ignore expressions that are not covered by this object */
-			foreach(lc2, info->exprs)
+			foreach (lc3, clause_exprs[i])
 			{
-				Node   *stat_expr = (Node *) lfirst(lc2);
+				ListCell   *lc2;
+				Node	   *expr = (Node *) lfirst(lc3);
 
-				if (equal(clause_exprs[i], stat_expr))
+				foreach(lc2, info->exprs)
 				{
-					num_matched_exprs++;
-					break;
+					Node   *stat_expr = (Node *) lfirst(lc2);
+
+					if (equal(expr, stat_expr))
+					{
+						num_matched_exprs++;
+						break;
+					}
 				}
 			}
 		}
@@ -1398,7 +1404,7 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
  *		FIXME
  *
  */
-static Node *
+static List *
 statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid)
 {
 	/* Look inside any binary-compatible relabeling (as in examine_variable) */
@@ -1412,18 +1418,17 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 
 		/* Ensure var is from the correct relation */
 		if (var->varno != relid)
-			return NULL;
+			return NIL;
 
 		/* we also better ensure the Var is from the current level */
 		if (var->varlevelsup > 0)
-			return NULL;
+			return NIL;
 
 		/* Also skip system attributes (we don't allow stats on those). */
 		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
-			return NULL;
+			return NIL;
 
-		// *attnums = bms_add_member(*attnums, var->varattno);
-		return clause;
+		return list_make1(clause);
 	}
 
 	/* (Var op Const) or (Const op Var) */
@@ -1435,11 +1440,11 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 
 		/* Only expressions with two arguments are considered compatible. */
 		if (list_length(expr->args) != 2)
-			return NULL;
+			return NIL;
 
 		/* Check if the expression has the right shape (one Expr, one Const) */
 		if (!examine_opclause_expression2(expr, &expr2, NULL, NULL))
-			return false;
+			return NIL;
 
 		/*
 		 * If it's not one of the supported operators ("=", "<", ">", etc.),
@@ -1461,7 +1466,7 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 
 			default:
 				/* other estimators are considered unknown/unsupported */
-				return NULL;
+				return NIL;
 		}
 
 		/*
@@ -1476,9 +1481,9 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 		 */
 		if (rte->securityQuals != NIL &&
 			!get_func_leakproof(get_opcode(expr->opno)))
-			return NULL;
+			return NIL;
 
-		return expr2;
+		return list_make1(expr2);
 	}
 
 	else if (IsA(clause, ScalarArrayOpExpr))
@@ -1489,11 +1494,11 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 
 		/* Only expressions with two arguments are considered compatible. */
 		if (list_length(expr->args) != 2)
-			return NULL;
+			return NIL;
 
 		/* Check if the expression has the right shape (one Expr, one Const) */
 		if (!examine_clause_args2(expr->args, &expr2, NULL, NULL))
-			return false;
+			return NIL;
 
 		/*
 		 * If there are any securityQuals on the RTE from security barrier
@@ -1507,9 +1512,9 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 		 */
 		if (rte->securityQuals != NIL &&
 			!get_func_leakproof(get_opcode(expr->opno)))
-			return NULL;
+			return NIL;
 
-		return expr2;
+		return list_make1(expr2);
 	}
 
 	/* AND/OR/NOT clause */
@@ -1533,20 +1538,27 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 		 */
 		BoolExpr   *expr = (BoolExpr *) clause;
 		ListCell   *lc;
+		List	   *exprs = NIL;
 
 		foreach(lc, expr->args)
 		{
+			List *tmp;
+
 			/*
 			 * Had we found incompatible clause in the arguments, treat the
 			 * whole clause as incompatible.
 			 */
-			if (!statext_extract_expression_internal(root,
-													 (Node *) lfirst(lc),
-													 relid))
-				return NULL;
+			tmp = statext_extract_expression_internal(root,
+													  (Node *) lfirst(lc),
+													  relid);
+
+			if (!tmp)
+				return NIL;
+
+			exprs = list_concat(exprs, tmp);
 		}
 
-		return clause;
+		return exprs;
 	}
 
 	/* Var IS NULL */
@@ -1559,13 +1571,13 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 		 * could use examine_variable to fix this?
 		 */
 		if (!IsA(nt->arg, Var))
-			return NULL;
+			return NIL;
 
 		return statext_extract_expression_internal(root, (Node *) (nt->arg),
 												   relid);
 	}
 
-	return NULL;
+	return NIL;
 }
 
 /*
@@ -1658,33 +1670,33 @@ statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
  * In the future, the range of supported clauses may be expanded to more
  * complex cases, for example (Var op Var).
  */
-static Node *
+static List *
 statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
 {
 	RestrictInfo *rinfo = (RestrictInfo *) clause;
-	Node		 *expr;
+	List		 *exprs;
 
 	if (!IsA(rinfo, RestrictInfo))
-		return false;
+		return NIL;
 
 	/* Pseudoconstants are not really interesting here. */
 	if (rinfo->pseudoconstant)
-		return false;
+		return NIL;
 
 	/* clauses referencing multiple varnos are incompatible */
 	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
-		return false;
+		return NIL;
 
 	/* Check the clause and determine what attributes it references. */
-	expr = statext_extract_expression_internal(root, (Node *) rinfo->clause, relid);
+	exprs = statext_extract_expression_internal(root, (Node *) rinfo->clause, relid);
 
-	if (!expr)
-		return NULL;
+	if (!exprs)
+		return NIL;
 
 	/* FIXME do the same ACL check as in statext_is_compatible_clause */
 
 	/* If we reach here, the clause is OK */
-	return expr;
+	return exprs;
 }
 
 /*
@@ -1749,7 +1761,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 {
 	ListCell   *l;
 	Bitmapset **list_attnums;	/* attnums extracted from the clause */
-	Node	  **list_exprs;		/* expressions matched to any statistic */
+	List	  **list_exprs;		/* expressions matched to any statistic */
 	int			listidx;
 	Selectivity sel = 1.0;
 
@@ -1760,7 +1772,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
 										 list_length(clauses));
 
-	list_exprs = (Node **) palloc(sizeof(Node *) * list_length(clauses));
+	list_exprs = (List **) palloc(sizeof(Node *) * list_length(clauses));
 
 	/*
 	 * Pre-process the clauses list to extract the attnums seen in each item.
@@ -1798,16 +1810,28 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		}
 		else
 		{
-			ListCell *lc;
-			Node	 *expr;
+			ListCell   *lc;
+			List	 *exprs;
 
-			expr = statext_extract_expression(root, clause, rel->relid);
+			/*
+			 * XXX This is kinda dubious, because we extract the smallest
+			 * clauses - e.g. from (Var op Const) we extract Var. But maybe
+			 * the statistics covers larger expressions, so maybe this will
+			 * skip that.
+			 */
+			exprs = statext_extract_expression(root, clause, rel->relid);
 
-			/* complex expression, search for statistic */
+			/* complex expression, search for statistic covering all parts */
 			foreach(lc, rel->statlist)
 			{
-				ListCell		   *lc2;
+				ListCell		   *le;
 				StatisticExtInfo   *info = (StatisticExtInfo *) lfirst(lc);
+
+				/*
+				 * Assume all parts are covered by this statistics, we'll
+				 * stop if we found part that is not covered.
+				 */
+				bool covered = true;
 
 				/* have we already matched the expression to a statistic? */
 				Assert(!list_exprs[listidx]);
@@ -1816,27 +1840,46 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 				if (!info->exprs)
 					continue;
 
-				/*
-				 * Walk the expressions, see if all expressions extracted from
-				 * the clause are covered by the extended statistic object.
-				 */
-				foreach (lc2, info->exprs)
+				foreach(le, exprs)
 				{
-					Node   *stat_expr = (Node *) lfirst(lc2);
+					ListCell   *lc2;
+					Node	   *expr = (Node *) lfirst(le);
+					bool		found = false;
 
-					if (equal(expr, stat_expr))
+					/*
+					 * Walk the expressions, see if all expressions extracted from
+					 * the clause are covered by the extended statistic object.
+					 */
+					foreach (lc2, info->exprs)
 					{
-						list_exprs[listidx] = expr;
-						break;
+						Node   *stat_expr = (Node *) lfirst(lc2);
+
+						if (equal(expr, stat_expr))
+						{
+							found = true;
+							break;
+						}
 					}
 
-					if (list_exprs[listidx])
+					/* found expression not covered by the statistics, stop */
+					if (!found)
+					{
+						covered = false;
 						break;
+					}
 				}
 
-				/* stop looking for another statistic */
-				if (list_exprs[listidx])
+				/*
+				 * OK, we found a statistics covering this clause, stop looking
+				 * for another one
+				 */
+				if (covered)
+				{
+					/* XXX should this add the original expression instead? */
+					list_exprs[listidx] = exprs;
 					break;
+				}
+
 			}
 		}
 
@@ -1893,24 +1936,43 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 			}
 			else
 			{
-				/* expression */
-				ListCell *lc;
+				/* are all parts of the expression covered by the statistic? */
+				ListCell   *lc;
+				bool		covered = true;
 
-				foreach (lc, stat->exprs)
+				foreach (lc, list_exprs[listidx])
 				{
-					Node   *stat_expr = (Node *) lfirst(lc);
+					ListCell   *lc2;
+					Node	   *expr = (Node *) lfirst(lc);
+					bool		found = false;
 
-					if (equal(list_exprs[listidx], stat_expr))
+					foreach (lc2, stat->exprs)
 					{
-						stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
-						*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+						Node   *stat_expr = (Node *) lfirst(lc2);
 
-						// bms_free(list_attnums[listidx]);
-						list_exprs[listidx] = NULL;
+						if (equal(expr, stat_expr))
+						{
+							found = true;
+							break;
+						}
+					}
 
+					if (!found)
+					{
+						covered = false;
 						break;
 					}
 				}
+
+				if (covered)
+				{
+					stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
+					*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+
+					// bms_free(list_attnums[listidx]);
+					list_exprs[listidx] = NULL;
+				}
+
 			}
 
 			listidx++;

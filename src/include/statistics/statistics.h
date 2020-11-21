@@ -120,7 +120,7 @@ extern Selectivity statext_clauselist_selectivity(PlannerInfo *root,
 extern bool has_stats_of_kind(List *stats, char requiredkind);
 extern StatisticExtInfo *choose_best_statistics(List *stats, char requiredkind,
 												Bitmapset **clause_attnums,
-												Node **clause_exprs,
+												List **clause_exprs,
 												int nclauses);
 extern HeapTuple statext_expressions_load(Oid stxoid, int idx);
 

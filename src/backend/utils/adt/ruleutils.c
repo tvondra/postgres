@@ -1600,6 +1600,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		ndistinct_enabled = false;
 		dependencies_enabled = false;
 		mcv_enabled = false;
+		exprs_enabled = false;
 
 		for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 		{

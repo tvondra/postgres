@@ -2270,9 +2270,14 @@ compute_expr_stats(Relation onerel, double totalrows,
 			/* Set up for predicate or expression evaluation */
 			ExecStoreHeapTuple(rows[i], slot, false);
 
-			datum = ExecEvalExprSwitchContext(exprstate,
-											  GetPerTupleExprContext(estate),
-											  &isnull);
+			/*
+			 * FIXME this probably leaks memory. Maybe we should use
+			 * ExecEvalExprSwitchContext but then we need to copy the
+			 * result somewhere else.
+			 */
+			datum = ExecEvalExpr(exprstate,
+								 GetPerTupleExprContext(estate),
+								 &isnull);
 			if (isnull)
 			{
 				exprvals[tcnt] = (Datum) 0;
@@ -2405,6 +2410,12 @@ examine_expression(Node *expr)
 	stats->attrtypmod = exprTypmod(expr);
 
 	/*
+	 * XXX Do we need to do anything special about the collation, similar
+	 * to what examine_attribute does for expression indexes?
+	 */
+	stats->attrcollid = exprCollation(expr);
+
+	/*
 	 * We don't have any pg_attribute for expressions, so let's fake
 	 * something reasonable into attstattarget, which is the only thing
 	 * std_typanalyze needs.
@@ -2417,11 +2428,10 @@ examine_expression(Node *expr)
 	 */
 	stats->attr->attstattarget = default_statistics_target;
 
-	/*
-	 * XXX Do we need to do anything special about the collation, similar
-	 * to what examine_attribute does for expression indexes?
-	 */
-	stats->attrcollid = exprCollation(expr);
+	/* initialize some basic fields */
+	stats->attr->attrelid = InvalidOid;
+	stats->attr->attnum = InvalidAttrNumber;
+	stats->attr->atttypid = stats->attrtypid;
 
 	typtuple = SearchSysCacheCopy1(TYPEOID,
 								   ObjectIdGetDatum(stats->attrtypid));

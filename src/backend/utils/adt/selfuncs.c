@@ -4173,6 +4173,10 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 			if (!IsA(exprinfo->expr, Var))
 			{
+				/*
+				 * FIXME Probably should remove varinfos that match the
+				 * selected MVNDistinct item.
+				 */
 				newlist = lappend(newlist, exprinfo);
 				continue;
 			}

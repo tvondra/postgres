@@ -995,6 +995,8 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 			{
 				int	idx = (attnums[j] - MaxHeapAttributeNumber - 1);
 
+				Assert((idx >= 0) && (idx < exprs->nexprs));
+
 				value = exprs->values[idx][i];
 				isnull = exprs->nulls[idx][i];
 
@@ -2720,9 +2722,14 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 			bool	isnull;
 			ExprState *exprstate = (ExprState *) lfirst(lc);
 
-			datum = ExecEvalExprSwitchContext(exprstate,
-									   GetPerTupleExprContext(estate),
-									   &isnull);
+			/*
+			 * FIXME this probably leaks memory. Maybe we should use
+			 * ExecEvalExprSwitchContext but then we need to copy the
+			 * result somewhere else.
+			 */
+			datum = ExecEvalExpr(exprstate,
+								 GetPerTupleExprContext(estate),
+								 &isnull);
 			if (isnull)
 			{
 				result->values[idx][i] = (Datum) 0;

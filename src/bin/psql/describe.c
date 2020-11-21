@@ -2752,7 +2752,7 @@ describeOneTableDetails(const char *schemaname,
 					/* Show the stats target if it's not default */
 					if (strcmp(PQgetvalue(result, i, 9), "-1") != 0)
 						appendPQExpBuffer(&buf, "; STATISTICS %s",
-										  PQgetvalue(result, i, 8));
+										  PQgetvalue(result, i, 9));
 
 					printTableAddFooter(&cont, buf.data);
 				}

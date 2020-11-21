@@ -1559,6 +1559,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 	List	   *context;
 	ListCell   *lc;
 	List	   *exprs = NIL;
+	bool		has_exprs;
 
 	statexttup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statextid));
 
@@ -1579,6 +1580,9 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		appendStringInfo(&buf, "CREATE STATISTICS %s",
 						 quote_qualified_identifier(nsp,
 													NameStr(statextrec->stxname)));
+
+		/* has the statistics expressions? */
+		has_exprs = !heap_attisnull(statexttup, Anum_pg_statistic_ext_stxexprs, NULL);
 
 		/*
 		 * Decode the stxkind column so that we know which stats types to print.
@@ -1616,7 +1620,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		 * statistics types on a newer postgres version, if the statistics had all
 		 * options enabled on the original version.
 		 */
-		if (!ndistinct_enabled || !dependencies_enabled || !mcv_enabled || !exprs_enabled)
+		if (!ndistinct_enabled || !dependencies_enabled || !mcv_enabled || (!exprs_enabled && has_exprs))
 		{
 			bool		gotone = false;
 
@@ -1668,7 +1672,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 	 * relcache versions of the expressions and predicate, because we want
 	 * to display non-const-folded expressions.)
 	 */
-	if (!heap_attisnull(statexttup, Anum_pg_statistic_ext_stxexprs, NULL))
+	if (has_exprs)
 	{
 		Datum		exprsDatum;
 		bool		isnull;

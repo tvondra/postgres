@@ -1934,11 +1934,11 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 				bms_free(list_attnums[listidx]);
 				list_attnums[listidx] = NULL;
 			}
-			else
+			else if (list_exprs[listidx] != NIL)
 			{
 				/* are all parts of the expression covered by the statistic? */
 				ListCell   *lc;
-				bool		covered = true;
+				int			ncovered = 0;
 
 				foreach (lc, list_exprs[listidx])
 				{
@@ -1957,14 +1957,13 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 						}
 					}
 
-					if (!found)
-					{
-						covered = false;
-						break;
-					}
+					/* count it as covered and continue to the next expression */
+					if (found)
+						ncovered++;
 				}
 
-				if (covered)
+				/* all parts of thi expression are covered by this statistics */
+				if (ncovered == list_length(list_exprs[listidx]))
 				{
 					stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
 					*estimatedclauses = bms_add_member(*estimatedclauses, listidx);

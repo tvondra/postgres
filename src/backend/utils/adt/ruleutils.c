@@ -1570,6 +1570,9 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		elog(ERROR, "cache lookup failed for statistics object %u", statextid);
 	}
 
+	/* has the statistics expressions? */
+	has_exprs = !heap_attisnull(statexttup, Anum_pg_statistic_ext_stxexprs, NULL);
+
 	statextrec = (Form_pg_statistic_ext) GETSTRUCT(statexttup);
 
 	initStringInfo(&buf);
@@ -1580,9 +1583,6 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		appendStringInfo(&buf, "CREATE STATISTICS %s",
 						 quote_qualified_identifier(nsp,
 													NameStr(statextrec->stxname)));
-
-		/* has the statistics expressions? */
-		has_exprs = !heap_attisnull(statexttup, Anum_pg_statistic_ext_stxexprs, NULL);
 
 		/*
 		 * Decode the stxkind column so that we know which stats types to print.

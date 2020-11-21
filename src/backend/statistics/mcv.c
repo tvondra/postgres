@@ -1887,9 +1887,10 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 				int			num_elems;
 				Datum	   *elem_values;
 				bool	   *elem_nulls;
+				Oid			collid = exprCollation(clause_expr);
 
 				/* ScalarArrayOpExpr has the Var always on the left */
-				Assert(varonleft);
+				Assert(expronleft);
 
 				if (!cst->constisnull)
 				{
@@ -1972,7 +1973,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 							break;
 
 						elem_match = DatumGetBool(FunctionCall2Coll(&opproc,
-																	var->varcollid,
+																	collid,
 																	item->values[idx],
 																	elem_value));
 

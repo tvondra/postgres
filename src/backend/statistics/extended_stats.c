@@ -1481,6 +1481,37 @@ statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid
 		return expr2;
 	}
 
+	else if (IsA(clause, ScalarArrayOpExpr))
+	{
+		RangeTblEntry *rte = root->simple_rte_array[relid];
+		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) clause;
+		Node	   *expr2 = NULL;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return NULL;
+
+		/* Check if the expression has the right shape (one Expr, one Const) */
+		if (!examine_clause_args2(expr->args, &expr2, NULL, NULL))
+			return false;
+
+		/*
+		 * If there are any securityQuals on the RTE from security barrier
+		 * views or RLS policies, then the user may not have access to all the
+		 * table's data, and we must check that the operator is leak-proof.
+		 *
+		 * If the operator is leaky, then we must ignore this clause for the
+		 * purposes of estimating with MCV lists, otherwise the operator might
+		 * reveal values from the MCV list that the user doesn't have
+		 * permission to see.
+		 */
+		if (rte->securityQuals != NIL &&
+			!get_func_leakproof(get_opcode(expr->opno)))
+			return NULL;
+
+		return expr2;
+	}
+
 	/* AND/OR/NOT clause */
 	if (is_andclause(clause) ||
 		is_orclause(clause) ||

@@ -43,6 +43,14 @@ CREATE STATISTICS tst ON a, b FROM pg_class;
 ERROR:  column "a" does not exist
 CREATE STATISTICS tst ON relname, relname, relnatts FROM pg_class;
 ERROR:  duplicate column name in statistics definition
+CREATE STATISTICS tst ON relname, relname, relnatts, relname, relname, relnatts, relname, relname, relnatts FROM pg_class;
+ERROR:  cannot have more than 8 columns in statistics
+CREATE STATISTICS tst ON relname, relname, relnatts, relname, relname, (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1) FROM pg_class;
+ERROR:  cannot have more than 8 columns in statistics
+CREATE STATISTICS tst ON (relname || 'x'), (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1) FROM pg_class;
+ERROR:  cannot have more than 8 columns in statistics
+CREATE STATISTICS tst ON (relname || 'x'), (relname || 'x'), relnatts FROM pg_class;
+ERROR:  duplicate expression in statistics definition
 CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
 ERROR:  unrecognized statistics kind "unrecognized"
 -- incorrect expressions
@@ -2169,9 +2177,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (b 
       1000 |   1000
 (1 row)
 
--- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
--- (not it fails, when there are no simple column references)
-DROP STATISTICS expr_stats_1;
 DROP TABLE expr_stats;
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in

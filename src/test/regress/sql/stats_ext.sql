@@ -34,6 +34,10 @@ CREATE STATISTICS tst FROM sometab;
 CREATE STATISTICS tst ON a, b FROM nonexistent;
 CREATE STATISTICS tst ON a, b FROM pg_class;
 CREATE STATISTICS tst ON relname, relname, relnatts FROM pg_class;
+CREATE STATISTICS tst ON relname, relname, relnatts, relname, relname, relnatts, relname, relname, relnatts FROM pg_class;
+CREATE STATISTICS tst ON relname, relname, relnatts, relname, relname, (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1) FROM pg_class;
+CREATE STATISTICS tst ON (relname || 'x'), (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1), (relname || 'x'), (relname || 'x'), (relnatts + 1) FROM pg_class;
+CREATE STATISTICS tst ON (relname || 'x'), (relname || 'x'), relnatts FROM pg_class;
 CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
 -- incorrect expressions
 CREATE STATISTICS tst ON relnatts + relpages FROM pg_class; -- missing parentheses
@@ -1097,10 +1101,6 @@ CREATE STATISTICS expr_stats_1 (mcv) ON a, b, (b || c), (c || b) FROM expr_stats
 ANALYZE expr_stats;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (b || c) <= ''z'' AND (c || b) >= ''0''');
-
--- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
--- (not it fails, when there are no simple column references)
-DROP STATISTICS expr_stats_1;
 
 DROP TABLE expr_stats;
 

@@ -376,14 +376,8 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 	/* result */
 	MVDependencies *dependencies = NULL;
 
-	/*
-	 * Copy the bitmapset and add fake attnums representing expressions,
-	 * starting above MaxHeapAttributeNumber.
-	 */
-	attrs = bms_copy(attrs);
-
-	for (i = 1; i <= exprs->nexprs; i++)
-		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
+	/* treat expressions as special attributes with high attnums */
+	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
 
 	/*
 	 * Transform the bms into an array, to make accessing i-th member easier.
@@ -1401,6 +1395,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 														 rel->statlist,
 														 &expr))
 			{
+				/* special attnum assigned to this expression */
 				attnum = InvalidAttrNumber;
 
 				Assert(expr != NULL);
@@ -1418,11 +1413,16 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				/* not found in the list, so add it */
 				if (attnum == InvalidAttrNumber)
 				{
-					attnum = (MaxHeapAttributeNumber + unique_exprs_cnt + 1);
+					attnum = EXPRESSION_ATTNUM(unique_exprs_cnt);
 					unique_exprs[unique_exprs_cnt++] = expr;
+
+					/* shouldn't have seen this attnum yet */
+					Assert(!bms_is_member(attnum, clauses_attnums));
 				}
 
+				/* we may add the attnum repeatedly to clauses_attnums */
 				clauses_attnums = bms_add_member(clauses_attnums, attnum);
+
 				list_attnums[listidx] = attnum;
 			}
 		}
@@ -1503,8 +1503,11 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		/*
 		 * The expressions may be represented by different attnums in the
 		 * stats, we need to remap them to be consistent with the clauses.
-		 * We can also remove dependencies referencing missing clauses
-		 * (i.e. expressions that are not in the clauses).
+		 * That will make the later steps (e.g. picking the strongest item
+		 * and so on) much simpler.
+		 *
+		 * When we're at it, we can also remove dependencies referencing
+		 * missing clauses (i.e. expressions that are not in the clauses).
 		 *
 		 * XXX We might also skip clauses referencing missing attnums, not
 		 * just expressions.
@@ -1526,25 +1529,37 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					int			k;
 					AttrNumber	unique_attnum = InvalidAttrNumber;
 
-					/* regular attribute, do nothing */
+					/* regular attribute, no need to remap */
 					if (dep->attributes[j] <= MaxHeapAttributeNumber)
 						continue;
 
 					/* index of the expression */
-					idx = dep->attributes[j] - MaxHeapAttributeNumber - 1;
+					idx = EXPRESSION_INDEX(dep->attributes[j]);
+
+					/* make sure the expression index is valid */
+					Assert((idx >= 0) && (idx < list_length(stat->exprs)));
+
 					expr = (Node *) list_nth(stat->exprs, idx);
 
 					/* try to find the expression in the unique list */
 					for (k = 0; k < unique_exprs_cnt; k++)
 					{
+						/*
+						 * found a matching unique expression, use the attnum
+						 * (derived from index of the unique expression)
+						 */
 						if (equal(unique_exprs[k], expr))
 						{
-							unique_attnum = (k + MaxHeapAttributeNumber + 1);
+							unique_attnum = EXPRESSION_ATTNUM(k);
 							break;
 						}
 					}
 
-					/* not found a matching expression, so just skip it */
+					/*
+					 * Not found a matching expression, so we can simply
+					 * skip this dependency, because there's no chance it
+					 * will be fully covered.
+					 */
 					if (unique_attnum == InvalidAttrNumber)
 					{
 						skip = true;

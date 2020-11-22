@@ -97,6 +97,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	bool		requested_type = false;
 	int			i;
 	ListCell   *cell;
+	ListCell   *cell2;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -394,6 +395,33 @@ CreateStatistics(CreateStatsStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_COLUMN),
 					 errmsg("duplicate column name in statistics definition")));
+	}
+
+	/*
+	 * Check for duplicate expressions. We do two loops, counting the
+	 * occurrences of each expression. This is O(N^2) but we only allow
+	 * small number of expressions and it's not executed often.
+	 */
+	foreach (cell, stxexprs)
+	{
+		Node   *expr1 = (Node *) lfirst(cell);
+		int		cnt = 0;
+
+		foreach (cell2, stxexprs)
+		{
+			Node   *expr2 = (Node *) lfirst(cell2);
+
+			if (equal(expr1, expr2))
+				cnt += 1;
+		}
+
+		/* every expression should find at least itself */
+		Assert(cnt >= 1);
+
+		if (cnt > 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_COLUMN),
+					 errmsg("duplicate expression in statistics definition")));
 	}
 
 	/* Form an int2vector representation of the sorted column list */

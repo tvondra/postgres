@@ -200,14 +200,14 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 	mss = build_mss(stats, bms_num_members(attrs), exprs);
 
 	/*
-	 * Copy the bitmapset and add fake attnums representing expressions,
-	 * starting above MaxHeapAttributeNumber.
+	 * treat expressions as special attributes with high attnums
+	 *
+	 * XXX We do this after build_mss, because that expects the bitmapset
+	 * to only contain simple attributes (with a matching VacAttrStats)
 	 */
-	attrs = bms_copy(attrs);
+	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
 
-	for (i = 1; i <= exprs->nexprs; i++)
-		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
-
+	/* now build the array, with the special expression attnums */
 	attnums = build_attnums_array(attrs, &numattrs);
 
 	/* sort the rows */

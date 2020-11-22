@@ -132,4 +132,13 @@ extern Selectivity mcv_clauselist_selectivity(PlannerInfo *root,
 											  Selectivity *basesel,
 											  Selectivity *totalsel);
 
+extern Bitmapset *add_expressions_to_attributes(Bitmapset *attrs, int nexprs);
+
+/* translate 0-based expression index to attnum and back */
+#define	EXPRESSION_ATTNUM(index)	\
+	(MaxHeapAttributeNumber + (index) + 1)
+
+#define	EXPRESSION_INDEX(attnum)	\
+	((attnum) - MaxHeapAttributeNumber - 1)
+
 #endif							/* EXTENDED_STATS_INTERNAL_H */

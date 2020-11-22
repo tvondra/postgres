@@ -75,13 +75,16 @@ static void generator_free(CombinationGenerator *state);
 static int *generator_next(CombinationGenerator *state);
 static void generate_combinations(CombinationGenerator *state);
 
-
 /*
  * statext_ndistinct_build
  *		Compute ndistinct coefficient for the combination of attributes.
  *
  * This computes the ndistinct estimate using the same estimator used
  * in analyze.c and then computes the coefficient.
+ *
+ * To handle expressions easily, we treat them as special attributes with
+ * attnums above MaxHeapAttributeNumber, and we assume the expressions are
+ * placed after all simple attributes.
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
@@ -89,26 +92,22 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 						VacAttrStats **stats)
 {
 	MVNDistinct *result;
-	int			i;
 	int			k;
 	int			itemcnt;
 	int			numattrs = bms_num_members(attrs);
 	int			numcombs = num_combinations(numattrs + exprs->nexprs);
-
-	/*
-	 * Copy the bitmapset and add fake attnums representing expressions,
-	 * starting above MaxHeapAttributeNumber.
-	 */
-	attrs = bms_copy(attrs);
-
-	for (i = 1; i <= exprs->nexprs; i++)
-		attrs = bms_add_member(attrs, MaxHeapAttributeNumber + i);
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
 	result->magic = STATS_NDISTINCT_MAGIC;
 	result->type = STATS_NDISTINCT_TYPE_BASIC;
 	result->nitems = numcombs;
+
+	/* treat expressions as special attributes with high attnums */
+	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
+
+	/* make sure there were no clashes */
+	Assert(bms_num_members(attrs) == numattrs + exprs->nexprs);
 
 	itemcnt = 0;
 	for (k = 2; k <= bms_num_members(attrs); k++)
@@ -127,11 +126,26 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 			item->attrs = NULL;
 			for (j = 0; j < k; j++)
 			{
+				AttrNumber attnum = InvalidAttrNumber;
+
+				/*
+				 * The simple attributes are before expressions, so have
+				 * indexes below numattrs.
+				 * */
 				if (combination[j] < numattrs)
-					item->attrs = bms_add_member(item->attrs,
-												 stats[combination[j]]->attr->attnum);
+					attnum = stats[combination[j]]->attr->attnum;
 				else
-					item->attrs = bms_add_member(item->attrs, MaxHeapAttributeNumber + combination[j] + 1);
+				{
+					/* make sure the expression index is valid */
+					Assert((combination[j] - numattrs) >= 0);
+					Assert((combination[j] - numattrs) < exprs->nexprs);
+
+					attnum = EXPRESSION_ATTNUM(combination[j] - numattrs);
+				}
+
+				Assert(attnum != InvalidAttrNumber);
+
+				item->attrs = bms_add_member(item->attrs, attnum);
 			}
 
 			item->ndistinct =
@@ -518,6 +532,10 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
+			/*
+			 * The first nattrs indexes identify simple attributes, higher
+			 * indexes are expressions.
+			 */
 			if (combination[i] < nattrs)
 				items[j].values[i] =
 					heap_getattr(rows[j],
@@ -526,8 +544,13 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 								 &items[j].isnull[i]);
 			else
 			{
-				items[j].values[i] = exprs->values[combination[i] - nattrs][j];
-				items[j].isnull[i] = exprs->nulls[combination[i] - nattrs][j];
+				int idx = (combination[i] - nattrs);
+
+				/* make sure the expression index is valid */
+				Assert((idx >= 0) && (idx < exprs->nexprs));
+
+				items[j].values[i] = exprs->values[idx][j];
+				items[j].isnull[i] = exprs->nulls[idx][j];
 			}
 		}
 	}

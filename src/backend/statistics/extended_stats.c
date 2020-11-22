@@ -2852,3 +2852,37 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 
 	return result;
 }
+
+/*
+ * add_expressions_to_attributes
+ *		add expressions as attributes with high attnums
+ *
+ * Treat the expressions as attributes with attnums above the regular
+ * attnum range. This will allow us to handle everything in the same
+ * way, and identify exressions in the dependencies.
+ *
+ * XXX This always creates a copy of the bitmap. We might optimize this
+ * by only creating the copy with (nexprs > 0) but then we'd have to track
+ * this in order to free it (if we want to). Does not seem worth it.
+ */
+Bitmapset *
+add_expressions_to_attributes(Bitmapset *attrs, int nexprs)
+{
+	int			i;
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	/* start with (MaxHeapAttributeNumber + 1) */
+	for (i = 0; i < nexprs; i++)
+	{
+		Assert(EXPRESSION_ATTNUM(i) > MaxHeapAttributeNumber);
+
+		attrs = bms_add_member(attrs, EXPRESSION_ATTNUM(i));
+	}
+
+	return attrs;
+}

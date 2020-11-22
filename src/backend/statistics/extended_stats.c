@@ -993,7 +993,7 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 			}
 			else
 			{
-				int	idx = (attnums[j] - MaxHeapAttributeNumber - 1);
+				int	idx = EXPRESSION_INDEX(attnums[j]);
 
 				Assert((idx >= 0) && (idx < exprs->nexprs));
 

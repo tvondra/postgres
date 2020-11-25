@@ -35,6 +35,23 @@
  *
  * FOREIGN TRANSACTION RESOLUTION
  *
+ * The transaction involving multiple foreign transactions uses two-phase commit
+ * protocol to commit the distributed transaction if enabled.  The basic strategy
+ * is that we prepare all of the remote transactions before committing locally and
+ * commit them after committing locally.
+ *
+ * At pre-commit of local transaction, we prepare the transactions on all foreign
+ * servers after logging the information of foreign transaction.  The result of
+ * distributed transaction is determined by the result of the corresponding local
+ * transaction.  Once the local transaction is successfully committed, all
+ * transactions on foreign servers must be committed.  In case where an error occurred
+ * before the local transaction commit all transactions must be aborted.  After
+ * committing or rolling back locally, we leave foreign transactions as in-doubt
+ * transactions and then notify the resolver process. The resolver process asynchronously
+ * resolves these foreign transactions according to the result of the corresponding local
+ * transaction.  Also, the user can use pg_resolve_foreign_xact() SQL function to
+ * resolve a foreign transaction manually.
+ *
  * At PREPARE TRANSACTION, we prepare all transactions on foreign servers by executing
  * PrepareForeignTransaction() API for each foreign transaction regardless of data on
  * the foreign server having been modified.  At COMMIT PREPARED and ROLLBACK PREPARED,
@@ -112,8 +129,10 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
+#include "storage/pmsignal.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
+#include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -134,6 +153,10 @@
 /* Check the FdwXactEntry is capable of two-phase commit  */
 #define ServerSupportTwophaseCommit(fdwent) \
 	(((FdwXactEntry *)(fdwent))->prepare_foreign_xact_fn != NULL)
+
+/* Foreign twophase commit is enabled and requested by user */
+#define IsForeignTwophaseCommitRequested() \
+	 (foreign_twophase_commit > FOREIGN_TWOPHASE_COMMIT_DISABLED)
 
 /*
  * Name of foreign prepared transaction file is 8 bytes xid and
@@ -170,6 +193,9 @@ typedef struct FdwXactEntry
 	 * is not inserted yet but this is registered as a participant.
 	 */
 	FdwXactState fdwxact;
+
+	/* true if modified the data on the server */
+	bool		modified;
 
 	/* Callbacks for foreign transaction */
 	CommitForeignTransaction_function commit_foreign_xact_fn;
@@ -230,10 +256,13 @@ typedef struct DistributedXactStateData
 {
 	bool		local_prepared; /* will (did) we prepare the local transaction? */
 
+	bool	twophase_commit_required;
+
 	/* Statistics of participants */
 	int			nparticipants_no_twophase;	/* how many participants doesn't
 											 * support two-phase commit
 											 * protocol? */
+	int		nparticipants_modified;		/* how many participants are modified? */
 
 	HTAB	   *participants;	/* foreign transaction participants (FdwXactEntry) */
 	List	   *serveroids_uniq;	/* list of unique server OIDs in
@@ -242,7 +271,9 @@ typedef struct DistributedXactStateData
 
 static DistributedXactStateData DistributedXactState = {
 	.local_prepared = false,
+	.twophase_commit_required = false,
 	.nparticipants_no_twophase = 0,
+	.nparticipants_modified = 0,
 	.participants = NULL,
 	.serveroids_uniq = NIL,
 };
@@ -260,9 +291,11 @@ static DistributedXactStateData DistributedXactState = {
 /* Keep track of registering process exit call back. */
 static bool fdwXactExitRegistered = false;
 
+
 /* Guc parameter */
 int			max_prepared_foreign_xacts = 0;
 int			max_foreign_xact_resolvers = 0;
+int			foreign_twophase_commit = FOREIGN_TWOPHASE_COMMIT_DISABLED;
 
 /*
  * XXX "End" seems a bit confusing, because it suggest the entry is a
@@ -286,9 +319,8 @@ static void RemoveFdwXactEntry(Oid umid);
 
 static char *getFdwXactIdentifier(FdwXactEntry *fdwent, TransactionId xid);
 static void ForgetAllParticipants(void);
-static void FdwXactLaunchResolvers(void);
 
-static void PrepareAllFdwXacts(TransactionId xid);
+static void PrepareAllFdwXacts(TransactionId xid, bool prepare_all);
 static XLogRecPtr FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent,
 									 char *identifier);
 static void AtProcExit_FdwXact(int code, Datum arg);
@@ -302,6 +334,7 @@ static char *ProcessFdwXactBuffer(TransactionId xid, Oid umid,
 static char *ReadFdwXactStateFile(TransactionId xid, Oid umid);
 static void RemoveFdwXactStateFile(TransactionId xid, Oid umid, bool giveWarning);
 static void RecreateFdwXactFile(TransactionId xid, Oid umid, void *content, int len);
+static bool checkForeignTwophaseCommitRequired(bool local_modified);
 
 static FdwXactState insert_fdwxact(Oid dbid, TransactionId xid, Oid umid, Oid serverid,
 								   Oid owner, char *identifier);
@@ -379,7 +412,7 @@ FdwXactShmemInit(void)
  * given user mapping OID as a participant of the transaction.
  */
 void
-FdwXactRegisterEntry(UserMapping *usermapping)
+FdwXactRegisterEntry(UserMapping *usermapping, bool modified)
 {
 	FdwXactEntry *fdwent;
 	FdwRoutine *routine;
@@ -405,8 +438,21 @@ FdwXactRegisterEntry(UserMapping *usermapping)
 	fdwent = hash_search(DistributedXactState.participants,
 						 (void *) &umid, HASH_ENTER, &found);
 
+	/* Already registered */
 	if (found)
+	{
+		/* Update statistics if necessary  */
+		if (fdwent->modified && !modified)
+			DistributedXactState.nparticipants_modified--;
+		else if (!fdwent->modified && modified)
+			DistributedXactState.nparticipants_modified++;
+
+		fdwent->modified = modified;
+
+		Assert(DistributedXactState.nparticipants_modified <=
+		   hash_get_num_entries(DistributedXactState.participants));
 		return;
+	}
 
 	/*
 	 * The participant information needs to live until the end of the
@@ -432,6 +478,7 @@ FdwXactRegisterEntry(UserMapping *usermapping)
 				(errmsg("cannot register foreign server not supporting transaction callback")));
 
 	fdwent->fdwxact = NULL;
+	fdwent->modified = modified;
 	fdwent->commit_foreign_xact_fn = routine->CommitForeignTransaction;
 	fdwent->rollback_foreign_xact_fn = routine->RollbackForeignTransaction;
 	fdwent->prepare_foreign_xact_fn = routine->PrepareForeignTransaction;
@@ -441,8 +488,12 @@ FdwXactRegisterEntry(UserMapping *usermapping)
 	/* Update statistics */
 	if (!ServerSupportTwophaseCommit(fdwent))
 		DistributedXactState.nparticipants_no_twophase++;
+	if (fdwent->modified)
+		DistributedXactState.nparticipants_modified++;
 
 	Assert(DistributedXactState.nparticipants_no_twophase <=
+			   hash_get_num_entries(DistributedXactState.participants));
+	Assert(DistributedXactState.nparticipants_modified <=
 		   hash_get_num_entries(DistributedXactState.participants));
 }
 
@@ -474,8 +525,12 @@ RemoveFdwXactEntry(Oid umid)
 		/* Update statistics */
 		if (!ServerSupportTwophaseCommit(fdwent))
 			DistributedXactState.nparticipants_no_twophase--;
+		if (fdwent->modified)
+			DistributedXactState.nparticipants_modified--;
 
 		Assert(DistributedXactState.nparticipants_no_twophase <=
+			   hash_get_num_entries(DistributedXactState.participants));
+		Assert(DistributedXactState.nparticipants_modified <=
 			   hash_get_num_entries(DistributedXactState.participants));
 	}
 }
@@ -565,12 +620,15 @@ AtEOXact_FdwXact(bool isCommit, bool is_parallel_worker)
 	 * only from FinishPreparedTransaction()? Although, we already call
 	 * FdwXactLaunchResolversForXid() from there ...
 	 */
-	if (DistributedXactState.local_prepared && !isCommit)
+	if (DistributedXactState.twophase_commit_required ||
+		(DistributedXactState.local_prepared && !isCommit))
 		FdwXactLaunchResolvers();
 
 	/* Reset all fields */
 	DistributedXactState.local_prepared = false;
+	DistributedXactState.twophase_commit_required = false;
 	DistributedXactState.nparticipants_no_twophase = 0;
+	DistributedXactState.nparticipants_modified = 0;
 	list_free(DistributedXactState.serveroids_uniq);
 	DistributedXactState.serveroids_uniq = NIL;
 }
@@ -650,7 +708,7 @@ AtPrepare_FdwXact(void)
 	 */
 	DistributedXactState.local_prepared = true;
 
-	PrepareAllFdwXacts(xid);
+	PrepareAllFdwXacts(xid, true);
 }
 
 /*
@@ -662,6 +720,8 @@ PreCommit_FdwXact(bool is_parallel_worker)
 {
 	HASH_SEQ_STATUS scan;
 	FdwXactEntry *fdwent;
+	TransactionId xid;
+	bool		local_modified;
 
 	/*
 	 * If there is no foreign server involved or all foreign transactions are
@@ -674,6 +734,41 @@ PreCommit_FdwXact(bool is_parallel_worker)
 
 	/* XXX Why isn't this assert at the beginning? */
 	Assert(!RecoveryInProgress());
+
+	/*
+	 * Check if the current transaction did writes.	 We need to include the
+	 * local node to the distributed transaction participant and to regard it
+	 * as modified, if the current transaction has performed WAL logging and
+	 * has assigned an xid.	 The transaction can end up not writing any WAL,
+	 * even if it has an xid, if it only wrote to temporary and/or unlogged
+	 * tables.	It can end up having written WAL without an xid if did HOT
+	 * pruning.
+	 */
+	xid = GetTopTransactionIdIfAny();
+	local_modified = (TransactionIdIsValid(xid) && (XactLastRecEnd != 0));
+
+	/*
+	 * Perform twophase commit if required. Note that we don't support foreign
+	 * twophase commit in single user mode.
+	 */
+	if (IsUnderPostmaster && checkForeignTwophaseCommitRequired(local_modified))
+	{
+		/*
+		 * Two-phase commit is required.  Assign a transaction id to the
+		 * current transaction if not yet because the local transaction is
+		 * necessary to determine the result of the distributed transaction.
+		 * Then we prepare foreign transactions on foreign servers that support
+		 * two-phase commit.  Note that we keep FdwXactParticipants until the
+		 * end of the transaction.
+		 */
+		if (!TransactionIdIsValid(xid))
+			xid = GetTopTransactionId();
+
+		DistributedXactState.twophase_commit_required = true;
+		PrepareAllFdwXacts(xid, false);
+
+		return;
+	}
 
 	/* Commit all foreign transactions in the participant list */
 	hash_seq_init(&scan, DistributedXactState.participants);
@@ -817,6 +912,53 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
 }
 
 /*
+ * Return true if the current transaction modifies data on two or more servers
+ * in FdwXactParticipants and local server itself.
+ */
+static bool
+checkForeignTwophaseCommitRequired(bool local_modified)
+{
+	int		nserverswritten;
+
+	if (!IsForeignTwophaseCommitRequested())
+		return false;
+
+	nserverswritten = DistributedXactState.nparticipants_modified;
+
+	/* Did we modify the local non-temporary data? */
+	if (local_modified)
+		nserverswritten++;
+
+	/*
+	 * Two-phase commit is not required if the number of servers performing
+	 * writes is less than 2.
+	 */
+	if (nserverswritten < 2)
+		return false;
+
+	if (DistributedXactState.nparticipants_no_twophase > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot process a distributed transaction that has operated on a foreign server that does not support two-phase commit protocol"),
+				 errdetail("foreign_twophase_commit is \'required\' but the transaction has some foreign servers which are not capable of two-phase commit")));
+
+	/* Two-phase commit is required. Check parameters */
+	if (max_prepared_foreign_xacts == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("foreign two-phase commit is required but prepared foreign transactions are disabled"),
+				 errhint("Set max_prepared_foreign_transactions to a nonzero value.")));
+
+	if (max_foreign_xact_resolvers == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("foreign two-phase commit is required but prepared foreign transactions are disabled"),
+				 errhint("Set max_foreign_transaction_resolvers to a nonzero value.")));
+
+	return true;
+}
+
+/*
  * PrepareAllFdwXacts
  *		Prepare and WAL-log foreign transactions.
  *
@@ -838,6 +980,9 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
  * Point (b) guarantees that foreign transaction information are not lost even
  * if the failover happens.
  *
+ * If prepare_all is true, we prepare all foreign transaction regardless of
+ * writes having happened on the server.
+ *
  * XXX Well, we might do the wait for flush / sync replica after each record,
  * but that seems like a pretty inefficient thing. Better to WAL-log everything
  * and then wait just once, I guess. Or do I not understand the failure modes?
@@ -848,7 +993,7 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
  * a different commit/rollback callback API - with a start/stop phase.
  */
 static void
-PrepareAllFdwXacts(TransactionId xid)
+PrepareAllFdwXacts(TransactionId xid, bool prepare_all)
 {
 	FdwXactEntry *fdwent;
 	XLogRecPtr	flush_lsn = InvalidXLogRecPtr;
@@ -866,6 +1011,9 @@ PrepareAllFdwXacts(TransactionId xid)
 		Assert(ServerSupportTwophaseCommit(fdwent));
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (!prepare_all && !fdwent->modified)
+			continue;
 
 		/* Get prepared transaction identifier */
 		identifier = getFdwXactIdentifier(fdwent, xid);
@@ -1319,7 +1467,7 @@ ForgetAllParticipants(void)
 	Assert(!HasFdwXactParticipant());
 }
 
-static void
+void
 FdwXactLaunchResolvers(void)
 {
 	if (list_length(DistributedXactState.serveroids_uniq) > 0)
@@ -1520,7 +1668,7 @@ FdwXactGetTransactionFate(TransactionId xid)
  *
  * XXX Why is it OK to discard the existing content of the file?
  */
-void
+static void
 RecreateFdwXactFile(TransactionId xid, Oid umid, void *content, int len)
 {
 	char		path[MAXPGPATH];

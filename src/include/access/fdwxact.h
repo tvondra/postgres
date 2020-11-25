@@ -22,6 +22,14 @@
 											 * without preparation */
 #define FDWXACT_FLAG_PARALLEL_WORKER	0x02	/* is parallel worker? */
 
+/* Enum for foreign_twophase_commit parameter */
+typedef enum
+{
+	FOREIGN_TWOPHASE_COMMIT_DISABLED,	/* disable foreign twophase commit */
+	FOREIGN_TWOPHASE_COMMIT_REQUIRED	/* all foreign servers have to support
+										 * twophase commit */
+}			ForeignTwophaseCommitLevel;
+
 /* Enum to track the status of foreign transaction */
 typedef enum
 {
@@ -82,6 +90,7 @@ extern int	max_prepared_foreign_xacts;
 extern int	max_foreign_xact_resolvers;
 extern int	foreign_xact_resolution_retry_interval;
 extern int	foreign_xact_resolver_timeout;
+extern int	foreign_twophase_commit;
 
 /* Function declarations */
 extern void PreCommit_FdwXact(bool is_parallel_worker);
@@ -89,7 +98,7 @@ extern void AtEOXact_FdwXact(bool isCommit, bool is_parallel_worker);
 extern Size FdwXactShmemSize(void);
 extern void FdwXactShmemInit(void);
 extern void AtPrepare_FdwXact(void);
-extern bool FdwXactIsForeignTwophaseCommitRequired(void);
+extern void FdwXactLaunchResolvers(void);
 extern int CountFdwXactsForUserMapping(Oid umid);
 extern int CountFdwXactsForDB(Oid dbid);
 extern void FdwXactLaunchResolversForXid(TransactionId xid);

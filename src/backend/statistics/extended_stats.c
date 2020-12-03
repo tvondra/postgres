@@ -24,6 +24,7 @@
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_statistic_ext_data.h"
+#include "executor/executor.h"
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -35,6 +36,7 @@
 #include "statistics/statistics.h"
 #include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -42,6 +44,7 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 /*
  * To avoid consuming too much memory during analysis and/or too much space
@@ -66,17 +69,34 @@ typedef struct StatExtEntry
 	Bitmapset  *columns;		/* attribute numbers covered by the object */
 	List	   *types;			/* 'char' list of enabled statistic kinds */
 	int			stattarget;		/* statistics target (-1 for default) */
+	List	   *exprs;			/* expressions */
 } StatExtEntry;
 
 
 static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
-static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
+static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 											int nvacatts, VacAttrStats **vacatts);
-static void statext_store(Oid relid,
+static void statext_store(Oid statOid,
 						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, VacAttrStats **stats);
+						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int natts, VacAttrStats **stats);
+
+typedef struct AnlExprData
+{
+	Node		   *expr;			/* expression to analyze */
+	VacAttrStats   *vacattrstat;	/* index attrs to analyze */
+} AnlExprData;
+
+static void compute_expr_stats(Relation onerel, double totalrows,
+					AnlExprData *exprdata, int nexprs,
+					HeapTuple *rows, int numrows);
+static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
+static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
+static AnlExprData *build_expr_data(List *exprs);
+static VacAttrStats *examine_expression(Node *expr);
+static ExprInfo *evaluate_expressions(Relation rel, List *exprs,
+									  int numrows, HeapTuple *rows);
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -92,7 +112,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 {
 	Relation	pg_stext;
 	ListCell   *lc;
-	List	   *stats;
+	List	   *statslist;
 	MemoryContext cxt;
 	MemoryContext oldcxt;
 	int64		ext_cnt;
@@ -103,10 +123,10 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 	oldcxt = MemoryContextSwitchTo(cxt);
 
 	pg_stext = table_open(StatisticExtRelationId, RowExclusiveLock);
-	stats = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
+	statslist = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
 
 	/* report this phase */
-	if (stats != NIL)
+	if (statslist != NIL)
 	{
 		const int	index[] = {
 			PROGRESS_ANALYZE_PHASE,
@@ -114,28 +134,31 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		};
 		const int64 val[] = {
 			PROGRESS_ANALYZE_PHASE_COMPUTE_EXT_STATS,
-			list_length(stats)
+			list_length(statslist)
 		};
 
 		pgstat_progress_update_multi_param(2, index, val);
 	}
 
 	ext_cnt = 0;
-	foreach(lc, stats)
+	foreach(lc, statslist)
 	{
 		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
 		int			stattarget;
+		ExprInfo   *exprs;
+		int			min_attrs;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
 		 * not, report this fact (except in autovacuum) and move on.
 		 */
-		stats = lookup_var_attr_stats(onerel, stat->columns,
+		stats = lookup_var_attr_stats(onerel, stat->columns, stat->exprs,
 									  natts, vacattrstats);
 		if (!stats)
 		{
@@ -150,9 +173,28 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			continue;
 		}
 
+		/* determine the minimum required number of attributes/expressions */
+		min_attrs = 1;
+		foreach(lc2, stat->types)
+		{
+			char	t = (char) lfirst_int(lc2);
+
+			switch (t)
+			{
+				/* expressions only need a single item */
+				case STATS_EXT_EXPRESSIONS:
+					break;
+
+				/* all other statistics kinds require at least two */
+				default:
+					min_attrs = 2;
+					break;
+			}
+		}
+
 		/* check allowed number of dimensions */
-		Assert(bms_num_members(stat->columns) >= 2 &&
-			   bms_num_members(stat->columns) <= STATS_MAX_DIMENSIONS);
+		Assert(bms_num_members(stat->columns) + list_length(stat->exprs) >= min_attrs &&
+			   bms_num_members(stat->columns) + list_length(stat->exprs) <= STATS_MAX_DIMENSIONS);
 
 		/* compute statistics target for this statistics */
 		stattarget = statext_compute_stattarget(stat->stattarget,
@@ -167,6 +209,9 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		if (stattarget == 0)
 			continue;
 
+		/* evaluate expressions (if the statistics has any) */
+		exprs = evaluate_expressions(onerel, stat->exprs, numrows, rows);
+
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
 		{
@@ -174,21 +219,43 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 			if (t == STATS_EXT_NDISTINCT)
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-													stat->columns, stats);
+													exprs, stat->columns,
+													stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
-														  stat->columns, stats);
+														  exprs, stat->columns,
+														  stats);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, stat->columns, stats,
-										totalrows, stattarget);
+				mcv = statext_mcv_build(numrows, rows, exprs, stat->columns,
+										stats, totalrows, stattarget);
+			else if (t == STATS_EXT_EXPRESSIONS)
+			{
+				AnlExprData *exprdata;
+				int			nexprs;
+
+				/* should not happen, thanks to checks when defining stats */
+				if (!stat->exprs)
+					elog(ERROR, "requested expression stats, but there are no expressions");
+
+				exprdata = build_expr_data(stat->exprs);
+				nexprs = list_length(stat->exprs);
+
+				compute_expr_stats(onerel, totalrows,
+								   exprdata, nexprs,
+								   rows, numrows);
+
+				exprstats = serialize_expr_stats(exprdata, nexprs);
+			}
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(stat->statOid, ndistinct, dependencies, mcv, stats);
+		statext_store(stat->statOid, ndistinct, dependencies, mcv, exprstats, stats);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
 									 ++ext_cnt);
+
+		pfree(exprs);
 	}
 
 	table_close(pg_stext, RowExclusiveLock);
@@ -241,7 +308,7 @@ ComputeExtStatisticsRows(Relation onerel,
 		 * analyzed. If not, ignore it (don't report anything, we'll do that
 		 * during the actual build BuildRelationExtStatistics).
 		 */
-		stats = lookup_var_attr_stats(onerel, stat->columns,
+		stats = lookup_var_attr_stats(onerel, stat->columns, stat->exprs,
 									  natts, vacattrstats);
 
 		if (!stats)
@@ -349,6 +416,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdmcv;
 			break;
 
+		case STATS_EXT_EXPRESSIONS:
+			attnum = Anum_pg_statistic_ext_data_stxdexpr;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -388,6 +459,7 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		ArrayType  *arr;
 		char	   *enabled;
 		Form_pg_statistic_ext staForm;
+		List	   *exprs = NIL;
 
 		entry = palloc0(sizeof(StatExtEntry));
 		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
@@ -415,9 +487,38 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		{
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
-				   (enabled[i] == STATS_EXT_MCV));
+				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_EXPRESSIONS));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
+
+		/* decode expression (if any) */
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stxexprs, &isnull);
+
+		if (!isnull)
+		{
+			char *exprsString;
+
+			exprsString = TextDatumGetCString(datum);
+			exprs = (List *) stringToNode(exprsString);
+
+			pfree(exprsString);
+
+			/*
+			 * Run the expressions through eval_const_expressions. This is not just an
+			 * optimization, but is necessary, because the planner will be comparing
+			 * them to similarly-processed qual clauses, and may fail to detect valid
+			 * matches without this.  We must not use canonicalize_qual, however,
+			 * since these aren't qual expressions.
+			 */
+			exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+
+			/* May as well fix opfuncids too */
+			fix_opfuncids((Node *) exprs);
+		}
+
+		entry->exprs = exprs;
 
 		result = lappend(result, entry);
 	}
@@ -425,6 +526,86 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 	systable_endscan(scan);
 
 	return result;
+}
+
+
+/*
+ * examine_attribute -- pre-analysis of a single column
+ *
+ * Determine whether the column is analyzable; if so, create and initialize
+ * a VacAttrStats struct for it.  If not, return NULL.
+ */
+static VacAttrStats *
+examine_attribute(Node *expr)
+{
+	HeapTuple	typtuple;
+	VacAttrStats *stats;
+	int			i;
+	bool		ok;
+
+	/*
+	 * Create the VacAttrStats struct.  Note that we only have a copy of the
+	 * fixed fields of the pg_attribute tuple.
+	 */
+	stats = (VacAttrStats *) palloc0(sizeof(VacAttrStats));
+
+	/* fake the attribute */
+	stats->attr = (Form_pg_attribute) palloc0(ATTRIBUTE_FIXED_PART_SIZE);
+	stats->attr->attstattarget = -1;
+
+	/*
+	 * When analyzing an expression index, believe the expression tree's type
+	 * not the column datatype --- the latter might be the opckeytype storage
+	 * type of the opclass, which is not interesting for our purposes.  (Note:
+	 * if we did anything with non-expression index columns, we'd need to
+	 * figure out where to get the correct type info from, but for now that's
+	 * not a problem.)	It's not clear whether anyone will care about the
+	 * typmod, but we store that too just in case.
+	 */
+	stats->attrtypid = exprType(expr);
+	stats->attrtypmod = exprTypmod(expr);
+	stats->attrcollid = exprCollation(expr);
+
+	typtuple = SearchSysCacheCopy1(TYPEOID,
+								   ObjectIdGetDatum(stats->attrtypid));
+	if (!HeapTupleIsValid(typtuple))
+		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
+	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
+	// stats->anl_context = anl_context;
+	stats->tupattnum = InvalidAttrNumber;
+
+	/*
+	 * The fields describing the stats->stavalues[n] element types default to
+	 * the type of the data being analyzed, but the type-specific typanalyze
+	 * function can change them if it wants to store something else.
+	 */
+	for (i = 0; i < STATISTIC_NUM_SLOTS; i++)
+	{
+		stats->statypid[i] = stats->attrtypid;
+		stats->statyplen[i] = stats->attrtype->typlen;
+		stats->statypbyval[i] = stats->attrtype->typbyval;
+		stats->statypalign[i] = stats->attrtype->typalign;
+	}
+
+	/*
+	 * Call the type-specific typanalyze function.  If none is specified, use
+	 * std_typanalyze().
+	 */
+	if (OidIsValid(stats->attrtype->typanalyze))
+		ok = DatumGetBool(OidFunctionCall1(stats->attrtype->typanalyze,
+										   PointerGetDatum(stats)));
+	else
+		ok = std_typanalyze(stats);
+
+	if (!ok || stats->compute_stats == NULL || stats->minrows <= 0)
+	{
+		heap_freetuple(typtuple);
+		pfree(stats->attr);
+		pfree(stats);
+		return NULL;
+	}
+
+	return stats;
 }
 
 /*
@@ -435,15 +616,18 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
  * to the caller that the stats should not be built.
  */
 static VacAttrStats **
-lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
+lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 					  int nvacatts, VacAttrStats **vacatts)
 {
 	int			i = 0;
 	int			x = -1;
+	int			natts;
 	VacAttrStats **stats;
+	ListCell   *lc;
 
-	stats = (VacAttrStats **)
-		palloc(bms_num_members(attrs) * sizeof(VacAttrStats *));
+	natts = bms_num_members(attrs) + list_length(exprs);
+
+	stats = (VacAttrStats **) palloc(natts * sizeof(VacAttrStats *));
 
 	/* lookup VacAttrStats info for the requested columns (same attnum) */
 	while ((x = bms_next_member(attrs, x)) >= 0)
@@ -480,6 +664,24 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 		i++;
 	}
 
+	/* also add info for expressions */
+	foreach (lc, exprs)
+	{
+		Node *expr = (Node *) lfirst(lc);
+
+		stats[i] = examine_attribute(expr);
+
+		/*
+		 * FIXME We need tuple descriptor later, and we just grab it from
+		 * stats[0]->tupDesc (see e.g. statext_mcv_build). But as coded
+		 * examine_attribute does not set that, so just grab it from the
+		 * first vacatts element.
+		 */
+		stats[i]->tupDesc = vacatts[0]->tupDesc;
+
+		i++;
+	}
+
 	return stats;
 }
 
@@ -491,7 +693,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 static void
 statext_store(Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, VacAttrStats **stats)
+			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup,
@@ -532,11 +734,17 @@ statext_store(Oid statOid,
 		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
 	}
+	if (exprs != (Datum) 0)
+	{
+		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
+		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
+	}
 
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_data_stxdndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
 
 	/* there should already be a pg_statistic_ext_data tuple */
 	oldtup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statOid));
@@ -741,8 +949,9 @@ build_attnums_array(Bitmapset *attrs, int *numattrs)
  * can simply pfree the return value to release all of it.
  */
 SortItem *
-build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
-				   MultiSortSupport mss, int numattrs, AttrNumber *attnums)
+build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
+				   TupleDesc tdesc, MultiSortSupport mss,
+				   int numattrs, AttrNumber *attnums)
 {
 	int			i,
 				j,
@@ -789,8 +998,24 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
 		{
 			Datum		value;
 			bool		isnull;
+			int			attlen;
 
-			value = heap_getattr(rows[i], attnums[j], tdesc, &isnull);
+			if (attnums[j] <= MaxHeapAttributeNumber)
+			{
+				value = heap_getattr(rows[i], attnums[j], tdesc, &isnull);
+				attlen = TupleDescAttr(tdesc, attnums[j] - 1)->attlen;
+			}
+			else
+			{
+				int	idx = EXPRESSION_INDEX(attnums[j]);
+
+				Assert((idx >= 0) && (idx < exprs->nexprs));
+
+				value = exprs->values[idx][i];
+				isnull = exprs->nulls[idx][i];
+
+				attlen = get_typlen(exprs->types[idx]);
+			}
 
 			/*
 			 * If this is a varlena value, check if it's too wide and if yes
@@ -801,8 +1026,7 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, TupleDesc tdesc,
 			 * on the assumption that those are small (below WIDTH_THRESHOLD)
 			 * and will be discarded at the end of analyze.
 			 */
-			if ((!isnull) &&
-				(TupleDescAttr(tdesc, attnums[j] - 1)->attlen == -1))
+			if ((!isnull) && (attlen == -1))
 			{
 				if (toast_raw_datum_size(value) > WIDTH_THRESHOLD)
 				{
@@ -881,7 +1105,8 @@ has_stats_of_kind(List *stats, char requiredkind)
  */
 StatisticExtInfo *
 choose_best_statistics(List *stats, char requiredkind,
-					   Bitmapset **clause_attnums, int nclauses)
+					   Bitmapset **clause_attnums, List **clause_exprs,
+					   int nclauses)
 {
 	ListCell   *lc;
 	StatisticExtInfo *best_match = NULL;
@@ -894,6 +1119,7 @@ choose_best_statistics(List *stats, char requiredkind,
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
 		Bitmapset  *matched = NULL;
 		int			num_matched;
+		int			num_matched_exprs;
 		int			numkeys;
 
 		/* skip statistics that are not of the correct type */
@@ -921,6 +1147,38 @@ choose_best_statistics(List *stats, char requiredkind,
 		bms_free(matched);
 
 		/*
+		 * Collect expressions in remaining (unestimated) expressions, covered
+		 * by an expression in this statistic object.
+		 */
+		num_matched_exprs = 0;
+		for (i = 0; i < nclauses; i++)
+		{
+			ListCell *lc3;
+
+			/* ignore incompatible/estimated expressions */
+			if (!clause_exprs[i])
+				continue;
+
+			/* ignore expressions that are not covered by this object */
+			foreach (lc3, clause_exprs[i])
+			{
+				ListCell   *lc2;
+				Node	   *expr = (Node *) lfirst(lc3);
+
+				foreach(lc2, info->exprs)
+				{
+					Node   *stat_expr = (Node *) lfirst(lc2);
+
+					if (equal(expr, stat_expr))
+					{
+						num_matched_exprs++;
+						break;
+					}
+				}
+			}
+		}
+
+		/*
 		 * save the actual number of keys in the stats so that we can choose
 		 * the narrowest stats with the most matching keys.
 		 */
@@ -931,11 +1189,12 @@ choose_best_statistics(List *stats, char requiredkind,
 		 * when it matches the same number of attributes but these stats have
 		 * fewer keys than any previous match.
 		 */
-		if (num_matched > best_num_matched ||
-			(num_matched == best_num_matched && numkeys < best_match_keys))
+		if (num_matched + num_matched_exprs > best_num_matched ||
+			((num_matched + num_matched_exprs) == best_num_matched &&
+			 numkeys < best_match_keys))
 		{
 			best_match = info;
-			best_num_matched = num_matched;
+			best_num_matched = num_matched + num_matched_exprs;
 			best_match_keys = numkeys;
 		}
 	}
@@ -994,7 +1253,7 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 			return false;
 
 		/* Check if the expression has the right shape (one Var, one Const) */
-		if (!examine_clause_args(expr->args, &var, NULL, NULL))
+		if (!examine_opclause_expression(expr, &var, NULL, NULL))
 			return false;
 
 		/*
@@ -1151,6 +1410,187 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 }
 
 /*
+ * statext_extract_expression_internal
+ *		FIXME
+ *
+ */
+static List *
+statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid)
+{
+	/* Look inside any binary-compatible relabeling (as in examine_variable) */
+	if (IsA(clause, RelabelType))
+		clause = (Node *) ((RelabelType *) clause)->arg;
+
+	/* plain Var references (boolean Vars or recursive checks) */
+	if (IsA(clause, Var))
+	{
+		Var		   *var = (Var *) clause;
+
+		/* Ensure var is from the correct relation */
+		if (var->varno != relid)
+			return NIL;
+
+		/* we also better ensure the Var is from the current level */
+		if (var->varlevelsup > 0)
+			return NIL;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return NIL;
+
+		return list_make1(clause);
+	}
+
+	/* (Var op Const) or (Const op Var) */
+	if (is_opclause(clause))
+	{
+		RangeTblEntry *rte = root->simple_rte_array[relid];
+		OpExpr	   *expr = (OpExpr *) clause;
+		Node	   *expr2 = NULL;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return NIL;
+
+		/* Check if the expression has the right shape (one Expr, one Const) */
+		if (!examine_opclause_expression2(expr, &expr2, NULL, NULL))
+			return NIL;
+
+		/*
+		 * If it's not one of the supported operators ("=", "<", ">", etc.),
+		 * just ignore the clause, as it's not compatible with MCV lists.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		switch (get_oprrest(expr->opno))
+		{
+			case F_EQSEL:
+			case F_NEQSEL:
+			case F_SCALARLTSEL:
+			case F_SCALARLESEL:
+			case F_SCALARGTSEL:
+			case F_SCALARGESEL:
+				/* supported, will continue with inspection of the Var */
+				break;
+
+			default:
+				/* other estimators are considered unknown/unsupported */
+				return NIL;
+		}
+
+		/*
+		 * If there are any securityQuals on the RTE from security barrier
+		 * views or RLS policies, then the user may not have access to all the
+		 * table's data, and we must check that the operator is leak-proof.
+		 *
+		 * If the operator is leaky, then we must ignore this clause for the
+		 * purposes of estimating with MCV lists, otherwise the operator might
+		 * reveal values from the MCV list that the user doesn't have
+		 * permission to see.
+		 */
+		if (rte->securityQuals != NIL &&
+			!get_func_leakproof(get_opcode(expr->opno)))
+			return NIL;
+
+		return list_make1(expr2);
+	}
+
+	if (IsA(clause, ScalarArrayOpExpr))
+	{
+		RangeTblEntry *rte = root->simple_rte_array[relid];
+		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) clause;
+		Node	   *expr2 = NULL;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return NIL;
+
+		/* Check if the expression has the right shape (one Expr, one Const) */
+		if (!examine_clause_args2(expr->args, &expr2, NULL, NULL))
+			return NIL;
+
+		/*
+		 * If there are any securityQuals on the RTE from security barrier
+		 * views or RLS policies, then the user may not have access to all the
+		 * table's data, and we must check that the operator is leak-proof.
+		 *
+		 * If the operator is leaky, then we must ignore this clause for the
+		 * purposes of estimating with MCV lists, otherwise the operator might
+		 * reveal values from the MCV list that the user doesn't have
+		 * permission to see.
+		 */
+		if (rte->securityQuals != NIL &&
+			!get_func_leakproof(get_opcode(expr->opno)))
+			return NIL;
+
+		return list_make1(expr2);
+	}
+
+	/* AND/OR/NOT clause */
+	if (is_andclause(clause) ||
+		is_orclause(clause) ||
+		is_notclause(clause))
+	{
+		/*
+		 * AND/OR/NOT-clauses are supported if all sub-clauses are supported
+		 *
+		 * Perhaps we could improve this by handling mixed cases, when some of
+		 * the clauses are supported and some are not. Selectivity for the
+		 * supported subclauses would be computed using extended statistics,
+		 * and the remaining clauses would be estimated using the traditional
+		 * algorithm (product of selectivities).
+		 *
+		 * It however seems overly complex, and in a way we already do that
+		 * because if we reject the whole clause as unsupported here, it will
+		 * be eventually passed to clauselist_selectivity() which does exactly
+		 * this (split into supported/unsupported clauses etc).
+		 */
+		BoolExpr   *expr = (BoolExpr *) clause;
+		ListCell   *lc;
+		List	   *exprs = NIL;
+
+		foreach(lc, expr->args)
+		{
+			List *tmp;
+
+			/*
+			 * Had we found incompatible clause in the arguments, treat the
+			 * whole clause as incompatible.
+			 */
+			tmp = statext_extract_expression_internal(root,
+													  (Node *) lfirst(lc),
+													  relid);
+
+			if (!tmp)
+				return NIL;
+
+			exprs = list_concat(exprs, tmp);
+		}
+
+		return exprs;
+	}
+
+	/* Var IS NULL */
+	if (IsA(clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) clause;
+
+		/*
+		 * Only simple (Var IS NULL) expressions supported for now. Maybe we
+		 * could use examine_variable to fix this?
+		 */
+		if (!IsA(nt->arg, Var))
+			return NIL;
+
+		return statext_extract_expression_internal(root, (Node *) (nt->arg),
+												   relid);
+	}
+
+	return NIL;
+}
+
+/*
  * statext_is_compatible_clause
  *		Determines if the clause is compatible with MCV lists.
  *
@@ -1162,6 +1602,8 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
  * (b) (Var IS [NOT] NULL)
  *
  * (c) combinations using AND/OR/NOT
+ *
+ * (d) ScalarArrayOpExprs of the form (Var op ANY (array)) or (Var op ALL (array))
  *
  * In the future, the range of supported clauses may be expanded to more
  * complex cases, for example (Var op Var).
@@ -1250,6 +1692,53 @@ statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
 }
 
 /*
+ * statext_extract_expression
+ *		Determines if the clause is compatible with extended statistics.
+ *
+ * Currently, we only support three types of clauses:
+ *
+ * (a) OpExprs of the form (Var op Const), or (Const op Var), where the op
+ * is one of ("=", "<", ">", ">=", "<=")
+ *
+ * (b) (Var IS [NOT] NULL)
+ *
+ * (c) combinations using AND/OR/NOT
+ *
+ * (d) ScalarArrayOpExprs of the form (Var op ANY (array)) or (Var op ALL (array))
+ *
+ * In the future, the range of supported clauses may be expanded to more
+ * complex cases, for example (Var op Var).
+ */
+static List *
+statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
+{
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
+	List		 *exprs;
+
+	if (!IsA(rinfo, RestrictInfo))
+		return NIL;
+
+	/* Pseudoconstants are not really interesting here. */
+	if (rinfo->pseudoconstant)
+		return NIL;
+
+	/* clauses referencing multiple varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return NIL;
+
+	/* Check the clause and determine what attributes it references. */
+	exprs = statext_extract_expression_internal(root, (Node *) rinfo->clause, relid);
+
+	if (!exprs)
+		return NIL;
+
+	/* FIXME do the same ACL check as in statext_is_compatible_clause */
+
+	/* If we reach here, the clause is OK */
+	return exprs;
+}
+
+/*
  * statext_mcv_clauselist_selectivity
  *		Estimate clauses using the best multi-column statistics.
  *
@@ -1290,7 +1779,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 								   bool is_or)
 {
 	ListCell   *l;
-	Bitmapset **list_attnums;
+	Bitmapset **list_attnums;	/* attnums extracted from the clause */
+	List	  **list_exprs;		/* expressions matched to any statistic */
 	int			listidx;
 	Selectivity sel = (is_or) ? 0.0 : 1.0;
 
@@ -1300,6 +1790,9 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 	list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
 										 list_length(clauses));
+
+	/* expressions extracted from complex expressions */
+	list_exprs = (List **) palloc(sizeof(Node *) * list_length(clauses));
 
 	/*
 	 * Pre-process the clauses list to extract the attnums seen in each item.
@@ -1318,11 +1811,100 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		Node	   *clause = (Node *) lfirst(l);
 		Bitmapset  *attnums = NULL;
 
+		/* the clause is considered incompatible by default */
+		list_attnums[listidx] = NULL;
+
+		/* and it's also not covered exactly by the statistic */
+		list_exprs[listidx] = NULL;
+
+		/*
+		 * First see if the clause is simple enough to be covered directly
+		 * by the attributes. If not, see if there's at least one statistic
+		 * object using the expression as-is.
+		 */
 		if (!bms_is_member(listidx, *estimatedclauses) &&
 			statext_is_compatible_clause(root, clause, rel->relid, &attnums))
+		{
+			/* simple expression, covered through attnum(s) */
 			list_attnums[listidx] = attnums;
+		}
 		else
-			list_attnums[listidx] = NULL;
+		{
+			ListCell   *lc;
+			List	 *exprs;
+
+			/*
+			 * XXX This is kinda dubious, because we extract the smallest
+			 * clauses - e.g. from (Var op Const) we extract Var. But maybe
+			 * the statistics covers larger expressions, so maybe this will
+			 * skip that. For example give ((a+b) + (c+d)) it's not clear
+			 * if we should extract the whole clause or some smaller parts.
+			 * OTOH we need (Expr op Const) so maybe we only care about the
+			 * clause as a whole?
+			 */
+			exprs = statext_extract_expression(root, clause, rel->relid);
+
+			/* complex expression, search for statistic covering all parts */
+			foreach(lc, rel->statlist)
+			{
+				ListCell		   *le;
+				StatisticExtInfo   *info = (StatisticExtInfo *) lfirst(lc);
+
+				/*
+				 * Assume all parts are covered by this statistics, we'll
+				 * stop if we found part that is not covered.
+				 */
+				bool covered = true;
+
+				/* have we already matched the expression to a statistic? */
+				Assert(!list_exprs[listidx]);
+
+				/* no expressions in the statistic */
+				if (!info->exprs)
+					continue;
+
+				foreach(le, exprs)
+				{
+					ListCell   *lc2;
+					Node	   *expr = (Node *) lfirst(le);
+					bool		found = false;
+
+					/*
+					 * Walk the expressions, see if all expressions extracted from
+					 * the clause are covered by the extended statistic object.
+					 */
+					foreach (lc2, info->exprs)
+					{
+						Node   *stat_expr = (Node *) lfirst(lc2);
+
+						if (equal(expr, stat_expr))
+						{
+							found = true;
+							break;
+						}
+					}
+
+					/* found expression not covered by the statistics, stop */
+					if (!found)
+					{
+						covered = false;
+						break;
+					}
+				}
+
+				/*
+				 * OK, we found a statistics covering this clause, stop looking
+				 * for another one
+				 */
+				if (covered)
+				{
+					/* XXX should this add the original expression instead? */
+					list_exprs[listidx] = exprs;
+					break;
+				}
+
+			}
+		}
 
 		listidx++;
 	}
@@ -1336,7 +1918,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 		/* find the best suited statistics object for these attnums */
 		stat = choose_best_statistics(rel->statlist, STATS_EXT_MCV,
-									  list_attnums, list_length(clauses));
+									  list_attnums, list_exprs,
+									  list_length(clauses));
 
 		/*
 		 * if no (additional) matching stats could be found then we've nothing
@@ -1359,11 +1942,13 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		{
 			/*
 			 * If the clause is compatible with the selected statistics, mark
-			 * it as estimated and add it to the list to estimate.
+			 * it as estimated and add it to the list to estimate. It may be
+			 * either a simple clause, or an expression.
 			 */
 			if (list_attnums[listidx] != NULL &&
 				bms_is_subset(list_attnums[listidx], stat->keys))
 			{
+				/* simple clause (single Var) */
 				if (bms_membership(list_attnums[listidx]) == BMS_SINGLETON)
 					simple_clauses = bms_add_member(simple_clauses,
 													list_length(stat_clauses));
@@ -1373,6 +1958,45 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 				bms_free(list_attnums[listidx]);
 				list_attnums[listidx] = NULL;
+			}
+			else if (list_exprs[listidx] != NIL)
+			{
+				/* are all parts of the expression covered by the statistic? */
+				ListCell   *lc;
+				int			ncovered = 0;
+
+				foreach (lc, list_exprs[listidx])
+				{
+					ListCell   *lc2;
+					Node	   *expr = (Node *) lfirst(lc);
+					bool		found = false;
+
+					foreach (lc2, stat->exprs)
+					{
+						Node   *stat_expr = (Node *) lfirst(lc2);
+
+						if (equal(expr, stat_expr))
+						{
+							found = true;
+							break;
+						}
+					}
+
+					/* count it as covered and continue to the next expression */
+					if (found)
+						ncovered++;
+				}
+
+				/* all parts of thi expression are covered by this statistics */
+				if (ncovered == list_length(list_exprs[listidx]))
+				{
+					stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
+					*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+
+					// bms_free(list_attnums[listidx]);
+					list_exprs[listidx] = NULL;
+				}
+
 			}
 
 			listidx++;
@@ -1620,4 +2244,778 @@ examine_clause_args(List *args, Var **varp, Const **cstp, bool *varonleftp)
 		*varonleftp = varonleft;
 
 	return true;
+}
+
+bool
+examine_clause_args2(List *args, Node **exprp, Const **cstp, bool *expronleftp)
+{
+	Node	   *expr;
+	Const	   *cst;
+	bool		expronleft;
+	Node	   *leftop,
+			   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(args) == 2);
+
+	leftop = linitial(args);
+	rightop = lsecond(args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(rightop, Const))
+	{
+		expr = (Node *) leftop;
+		cst = (Const *) rightop;
+		expronleft = true;
+	}
+	else if (IsA(leftop, Const))
+	{
+		expr = (Node *) rightop;
+		cst = (Const *) leftop;
+		expronleft = false;
+	}
+	else
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (exprp)
+		*exprp = expr;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (expronleftp)
+		*expronleftp = expronleft;
+
+	return true;
+}
+
+bool
+examine_opclause_expression(OpExpr *expr, Var **varp, Const **cstp, bool *varonleftp)
+{
+	Var		   *var;
+	Const	   *cst;
+	bool		varonleft;
+	Node	   *leftop,
+			   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(expr->args) == 2);
+
+	leftop = linitial(expr->args);
+	rightop = lsecond(expr->args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(leftop, Var) && IsA(rightop, Const))
+	{
+		var = (Var *) leftop;
+		cst = (Const *) rightop;
+		varonleft = true;
+	}
+	else if (IsA(leftop, Const) && IsA(rightop, Var))
+	{
+		var = (Var *) rightop;
+		cst = (Const *) leftop;
+		varonleft = false;
+	}
+	else
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (varp)
+		*varp = var;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (varonleftp)
+		*varonleftp = varonleft;
+
+	return true;
+}
+
+bool
+examine_opclause_expression2(OpExpr *expr, Node **exprp, Const **cstp, bool *expronleftp)
+{
+	Node	   *expr2;
+	Const	   *cst;
+	bool		expronleft;
+	Node	   *leftop,
+			   *rightop;
+
+	/* enforced by statext_is_compatible_clause_internal */
+	Assert(list_length(expr->args) == 2);
+
+	leftop = linitial(expr->args);
+	rightop = lsecond(expr->args);
+
+	/* strip RelabelType from either side of the expression */
+	if (IsA(leftop, RelabelType))
+		leftop = (Node *) ((RelabelType *) leftop)->arg;
+
+	if (IsA(rightop, RelabelType))
+		rightop = (Node *) ((RelabelType *) rightop)->arg;
+
+	if (IsA(rightop, Const))
+	{
+		expr2 = (Node *) leftop;
+		cst = (Const *) rightop;
+		expronleft = true;
+	}
+	else if (IsA(leftop, Const))
+	{
+		expr2 = (Node *) rightop;
+		cst = (Const *) leftop;
+		expronleft = false;
+	}
+	else
+		return false;
+
+	/* return pointers to the extracted parts if requested */
+	if (exprp)
+		*exprp = expr2;
+
+	if (cstp)
+		*cstp = cst;
+
+	if (expronleftp)
+		*expronleftp = expronleft;
+
+	return true;
+}
+
+
+/*
+ * Compute statistics about expressions of a relation.
+ */
+static void
+compute_expr_stats(Relation onerel, double totalrows,
+				   AnlExprData *exprdata, int nexprs,
+				   HeapTuple *rows, int numrows)
+{
+	MemoryContext expr_context,
+				old_context;
+	int			ind,
+				i;
+
+	expr_context = AllocSetContextCreate(CurrentMemoryContext,
+										 "Analyze Expression",
+										 ALLOCSET_DEFAULT_SIZES);
+	old_context = MemoryContextSwitchTo(expr_context);
+
+	for (ind = 0; ind < nexprs; ind++)
+	{
+		AnlExprData *thisdata = &exprdata[ind];
+		Node        *expr = thisdata->expr;
+		TupleTableSlot *slot;
+		EState	   *estate;
+		ExprContext *econtext;
+		Datum	   *exprvals;
+		bool	   *exprnulls;
+		ExprState  *exprstate;
+		int			tcnt;
+
+		/*
+		 * Need an EState for evaluation of expressions.  Create it in
+		 * the per-expression context to be sure it gets cleaned up at
+		 * the bottom of the loop.
+		 */
+		estate = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+
+		/* Set up expression evaluation state */
+		exprstate = ExecPrepareExpr((Expr *) expr, estate);
+
+		/* Need a slot to hold the current heap tuple, too */
+		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),
+										&TTSOpsHeapTuple);
+
+		/* Arrange for econtext's scan tuple to be the tuple under test */
+		econtext->ecxt_scantuple = slot;
+
+		/* Compute and save index expression values */
+		exprvals = (Datum *) palloc(numrows * sizeof(Datum));
+		exprnulls = (bool *) palloc(numrows * sizeof(bool));
+
+		tcnt = 0;
+		for (i = 0; i < numrows; i++)
+		{
+			Datum	datum;
+			bool	isnull;
+
+			/*
+			 * Reset the per-tuple context each time, to reclaim any cruft
+			 * left behind by evaluating the predicate or index expressions.
+			 */
+			ResetExprContext(econtext);
+
+			/* Set up for predicate or expression evaluation */
+			ExecStoreHeapTuple(rows[i], slot, false);
+
+			/*
+			 * FIXME this probably leaks memory. Maybe we should use
+			 * ExecEvalExprSwitchContext but then we need to copy the
+			 * result somewhere else.
+			 */
+			datum = ExecEvalExpr(exprstate,
+								 GetPerTupleExprContext(estate),
+								 &isnull);
+			if (isnull)
+			{
+				exprvals[tcnt] = (Datum) 0;
+				exprnulls[tcnt] = true;
+			}
+			else
+			{
+				exprvals[tcnt] = (Datum) datum;
+				exprnulls[tcnt] = false;
+			}
+
+			tcnt++;
+		}
+
+		/*
+		 * Now we can compute the statistics for the expression columns.
+		 */
+		if (tcnt > 0)
+		{
+			// MemoryContextSwitchTo(col_context);
+			VacAttrStats *stats = thisdata->vacattrstat;
+			AttributeOpts *aopt =
+				get_attribute_options(stats->attr->attrelid,
+									  stats->attr->attnum);
+
+			stats->exprvals = exprvals;
+			stats->exprnulls = exprnulls;
+			stats->rowstride = 1;
+			stats->compute_stats(stats,
+								 expr_fetch_func,
+								 tcnt,
+								 tcnt);
+
+			/*
+			 * If the n_distinct option is specified, it overrides the
+			 * above computation.
+			 */
+			if (aopt != NULL && aopt->n_distinct != 0.0)
+				stats->stadistinct = aopt->n_distinct;
+
+			// MemoryContextResetAndDeleteChildren(col_context);
+		}
+
+		/* And clean up */
+		// MemoryContextSwitchTo(expr_context);
+
+		ExecDropSingleTupleTableSlot(slot);
+		FreeExecutorState(estate);
+		// MemoryContextResetAndDeleteChildren(expr_context);
+	}
+
+	MemoryContextSwitchTo(old_context);
+	MemoryContextDelete(expr_context);
+}
+
+
+/*
+ * Fetch function for analyzing index expressions.
+ *
+ * We have not bothered to construct index tuples, instead the data is
+ * just in Datum arrays.
+ */
+static Datum
+expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull)
+{
+	int			i;
+
+	/* exprvals and exprnulls are already offset for proper column */
+	i = rownum * stats->rowstride;
+	*isNull = stats->exprnulls[i];
+	return stats->exprvals[i];
+}
+
+/*
+ * Build analyze data for a list of expressions. As this is not tied
+ * directly to a relation (table or index), we have to fake some of
+ * the data.
+ */
+static AnlExprData *
+build_expr_data(List *exprs)
+{
+	int				idx;
+	int				nexprs = list_length(exprs);
+	AnlExprData	   *exprdata;
+	ListCell	   *lc;
+
+	exprdata = (AnlExprData *) palloc0(nexprs * sizeof(AnlExprData));
+
+	idx = 0;
+	foreach (lc, exprs)
+	{
+		Node		   *expr = (Node *) lfirst(lc);
+		AnlExprData	   *thisdata = &exprdata[idx];
+
+		thisdata->expr = expr;
+		thisdata->vacattrstat = (VacAttrStats *) palloc(sizeof(VacAttrStats));
+
+		thisdata->vacattrstat = examine_expression(expr);
+		idx++;
+	}
+
+	return exprdata;
+}
+
+/*
+ * examine_expression -- pre-analysis of a single column
+ *
+ * Determine whether the column is analyzable; if so, create and initialize
+ * a VacAttrStats struct for it.  If not, return NULL.
+ */
+static VacAttrStats *
+examine_expression(Node *expr)
+{
+	HeapTuple	typtuple;
+	VacAttrStats *stats;
+	int			i;
+	bool		ok;
+
+	Assert(expr != NULL);
+
+	/*
+	 * Create the VacAttrStats struct.
+	 */
+	stats = (VacAttrStats *) palloc0(sizeof(VacAttrStats));
+
+	/*
+	 * When analyzing an expression, believe the expression tree's type.
+	 */
+	stats->attrtypid = exprType(expr);
+	stats->attrtypmod = exprTypmod(expr);
+
+	/*
+	 * XXX Do we need to do anything special about the collation, similar
+	 * to what examine_attribute does for expression indexes?
+	 */
+	stats->attrcollid = exprCollation(expr);
+
+	/*
+	 * We don't have any pg_attribute for expressions, so let's fake
+	 * something reasonable into attstattarget, which is the only thing
+	 * std_typanalyze needs.
+	 */
+	stats->attr = (Form_pg_attribute) palloc(ATTRIBUTE_FIXED_PART_SIZE);
+
+	/*
+	 * FIXME we should probably get the target from the extended stats
+	 * object, or something like that.
+	 */
+	stats->attr->attstattarget = default_statistics_target;
+
+	/* initialize some basic fields */
+	stats->attr->attrelid = InvalidOid;
+	stats->attr->attnum = InvalidAttrNumber;
+	stats->attr->atttypid = stats->attrtypid;
+
+	typtuple = SearchSysCacheCopy1(TYPEOID,
+								   ObjectIdGetDatum(stats->attrtypid));
+	if (!HeapTupleIsValid(typtuple))
+		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
+	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
+	stats->anl_context = CurrentMemoryContext;	/* XXX should be using something else? */
+	stats->tupattnum = InvalidAttrNumber;
+
+	/*
+	 * The fields describing the stats->stavalues[n] element types default to
+	 * the type of the data being analyzed, but the type-specific typanalyze
+	 * function can change them if it wants to store something else.
+	 */
+	for (i = 0; i < STATISTIC_NUM_SLOTS; i++)
+	{
+		stats->statypid[i] = stats->attrtypid;
+		stats->statyplen[i] = stats->attrtype->typlen;
+		stats->statypbyval[i] = stats->attrtype->typbyval;
+		stats->statypalign[i] = stats->attrtype->typalign;
+	}
+
+	/*
+	 * Call the type-specific typanalyze function.  If none is specified, use
+	 * std_typanalyze().
+	 */
+	if (OidIsValid(stats->attrtype->typanalyze))
+		ok = DatumGetBool(OidFunctionCall1(stats->attrtype->typanalyze,
+										   PointerGetDatum(stats)));
+	else
+		ok = std_typanalyze(stats);
+
+	if (!ok || stats->compute_stats == NULL || stats->minrows <= 0)
+	{
+		heap_freetuple(typtuple);
+		pfree(stats);
+		return NULL;
+	}
+
+	return stats;
+}
+
+/* form an array of pg_statistic rows (per update_attstats) */
+static Datum
+serialize_expr_stats(AnlExprData *exprdata, int nexprs)
+{
+	int			exprno;
+	Oid			typOid;
+	Relation	sd;
+
+	ArrayBuildState *astate = NULL;
+
+	sd = table_open(StatisticRelationId, RowExclusiveLock);
+
+	/* lookup OID of composite type for pg_statistic */
+	typOid = get_rel_type_id(StatisticRelationId);
+	if (!OidIsValid(typOid))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("relation \"pg_statistic\" does not have a composite type")));
+
+	for (exprno = 0; exprno < nexprs; exprno++)
+	{
+		int				i, k;
+		VacAttrStats   *stats = exprdata[exprno].vacattrstat;
+
+		Datum		values[Natts_pg_statistic];
+		bool		nulls[Natts_pg_statistic];
+		HeapTuple	stup;
+
+		if (!stats->stats_valid)
+		{
+			astate = accumArrayResult(astate,
+									  (Datum) 0,
+									  true,
+									  typOid,
+									  CurrentMemoryContext);
+			continue;
+		}
+
+		/*
+		 * Construct a new pg_statistic tuple
+		 */
+		for (i = 0; i < Natts_pg_statistic; ++i)
+		{
+			nulls[i] = false;
+		}
+
+		values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(InvalidOid);
+		values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(InvalidAttrNumber);
+		values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(false);
+		values[Anum_pg_statistic_stanullfrac - 1] = Float4GetDatum(stats->stanullfrac);
+		values[Anum_pg_statistic_stawidth - 1] = Int32GetDatum(stats->stawidth);
+		values[Anum_pg_statistic_stadistinct - 1] = Float4GetDatum(stats->stadistinct);
+		i = Anum_pg_statistic_stakind1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = Int16GetDatum(stats->stakind[k]); /* stakindN */
+		}
+		i = Anum_pg_statistic_staop1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = ObjectIdGetDatum(stats->staop[k]);	/* staopN */
+		}
+		i = Anum_pg_statistic_stacoll1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			values[i++] = ObjectIdGetDatum(stats->stacoll[k]);	/* stacollN */
+		}
+		i = Anum_pg_statistic_stanumbers1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			int			nnum = stats->numnumbers[k];
+
+			if (nnum > 0)
+			{
+				int			n;
+				Datum	   *numdatums = (Datum *) palloc(nnum * sizeof(Datum));
+				ArrayType  *arry;
+
+				for (n = 0; n < nnum; n++)
+					numdatums[n] = Float4GetDatum(stats->stanumbers[k][n]);
+				/* XXX knows more than it should about type float4: */
+				arry = construct_array(numdatums, nnum,
+									   FLOAT4OID,
+									   sizeof(float4), true, TYPALIGN_INT);
+				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
+			}
+			else
+			{
+				nulls[i] = true;
+				values[i++] = (Datum) 0;
+			}
+		}
+		i = Anum_pg_statistic_stavalues1 - 1;
+		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		{
+			if (stats->numvalues[k] > 0)
+			{
+				ArrayType  *arry;
+
+				arry = construct_array(stats->stavalues[k],
+									   stats->numvalues[k],
+									   stats->statypid[k],
+									   stats->statyplen[k],
+									   stats->statypbyval[k],
+									   stats->statypalign[k]);
+				values[i++] = PointerGetDatum(arry);	/* stavaluesN */
+			}
+			else
+			{
+				nulls[i] = true;
+				values[i++] = (Datum) 0;
+			}
+		}
+
+		stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
+
+		astate = accumArrayResult(astate,
+								  heap_copy_tuple_as_datum(stup, RelationGetDescr(sd)),
+								  false,
+								  typOid,
+								  CurrentMemoryContext);
+	}
+
+	table_close(sd, RowExclusiveLock);
+
+	return makeArrayResult(astate, CurrentMemoryContext);
+}
+
+
+/*
+ * Loads pg_statistic record from expression statistics for expression
+ * identified by the supplied index.
+ */
+HeapTuple
+statext_expressions_load(Oid stxoid, int idx)
+{
+	bool		isnull;
+	Datum		value;
+	HeapTuple	htup;
+	ExpandedArrayHeader *eah;
+	HeapTupleHeader td;
+	HeapTupleData tmptup;
+	HeapTuple	tup;
+
+	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(stxoid));
+	if (!HeapTupleIsValid(htup))
+		elog(ERROR, "cache lookup failed for statistics object %u", stxoid);
+
+	value = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+							Anum_pg_statistic_ext_data_stxdexpr, &isnull);
+	if (isnull)
+		elog(ERROR,
+			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
+			 STATS_EXT_DEPENDENCIES, stxoid);
+
+	eah = DatumGetExpandedArray(value);
+
+	deconstruct_expanded_array(eah);
+
+	td = DatumGetHeapTupleHeader(eah->dvalues[idx]);
+
+	/* Build a temporary HeapTuple control structure */
+	tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
+	tmptup.t_data = td;
+
+	tup = heap_copytuple(&tmptup);
+
+	ReleaseSysCache(htup);
+
+	return tup;
+}
+
+/*
+ * Evaluate the expressions, so that we can use the results to build
+ * all the requested statistics types. This matters especially for
+ * expensive expressions, of course.
+ */
+static ExprInfo *
+evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
+{
+	/* evaluated expressions */
+	ExprInfo   *result;
+	char	   *ptr;
+	Size		len;
+
+	int			i;
+	int			idx;
+	TupleTableSlot *slot;
+	EState	   *estate;
+	ExprContext *econtext;
+	List	   *exprstates = NIL;
+	int			nexprs = list_length(exprs);
+	ListCell   *lc;
+
+	/* allocate everything as a single chunk, so we can free it easily */
+	len = MAXALIGN(sizeof(ExprInfo));
+	len += MAXALIGN(sizeof(Oid) * nexprs);	/* types */
+	len += MAXALIGN(sizeof(Oid) * nexprs);	/* collations */
+
+	/* values */
+	len += MAXALIGN(sizeof(Datum *) * nexprs);
+	len += nexprs * MAXALIGN(sizeof(Datum) * numrows);
+
+	/* nulls */
+	len += MAXALIGN(sizeof(bool *) * nexprs);
+	len += nexprs * MAXALIGN(sizeof(bool) * numrows);
+
+	ptr = palloc(len);
+
+	/* set the pointers */
+	result = (ExprInfo *) ptr;
+	ptr += sizeof(ExprInfo);
+
+	/* types */
+	result->types = (Oid *) ptr;
+	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+
+	/* collations */
+	result->collations = (Oid *) ptr;
+	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+
+	/* values */
+	result->values = (Datum **) ptr;
+	ptr += MAXALIGN(sizeof(Datum *) * nexprs);
+
+	/* nulls */
+	result->nulls = (bool **) ptr;
+	ptr += MAXALIGN(sizeof(bool *) * nexprs);
+
+	for (i = 0; i < nexprs; i++)
+	{
+		result->values[i] = (Datum *) ptr;
+		ptr += MAXALIGN(sizeof(Datum) * numrows);
+
+		result->nulls[i] = (bool *) ptr;
+		ptr += MAXALIGN(sizeof(bool) * numrows);
+	}
+
+	Assert((ptr - (char *) result) == len);
+
+	result->nexprs = list_length(exprs);
+
+	idx = 0;
+	foreach (lc, exprs)
+	{
+		Node *expr = (Node *) lfirst(lc);
+
+		result->types[idx] = exprType(expr);
+		result->collations[idx] = exprCollation(expr);
+
+		idx++;
+	}
+
+	/*
+	 * Need an EState for evaluation of index expressions and
+	 * partial-index predicates.  Create it in the per-index context to be
+	 * sure it gets cleaned up at the bottom of the loop.
+	 */
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+
+	/* Need a slot to hold the current heap tuple, too */
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(rel),
+									&TTSOpsHeapTuple);
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/* Set up expression evaluation state */
+	exprstates = ExecPrepareExprList(exprs, estate);
+
+	for (i = 0; i < numrows; i++)
+	{
+		/*
+		 * Reset the per-tuple context each time, to reclaim any cruft
+		 * left behind by evaluating the predicate or index expressions.
+		 */
+		ResetExprContext(econtext);
+
+		/* Set up for predicate or expression evaluation */
+		ExecStoreHeapTuple(rows[i], slot, false);
+
+		idx = 0;
+		foreach (lc, exprstates)
+		{
+			Datum	datum;
+			bool	isnull;
+			ExprState *exprstate = (ExprState *) lfirst(lc);
+
+			/*
+			 * FIXME this probably leaks memory. Maybe we should use
+			 * ExecEvalExprSwitchContext but then we need to copy the
+			 * result somewhere else.
+			 */
+			datum = ExecEvalExpr(exprstate,
+								 GetPerTupleExprContext(estate),
+								 &isnull);
+			if (isnull)
+			{
+				result->values[idx][i] = (Datum) 0;
+				result->nulls[idx][i] = true;
+			}
+			else
+			{
+				result->values[idx][i] = (Datum) datum;
+				result->nulls[idx][i] = false;
+			}
+
+			idx++;
+		}
+	}
+
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+
+	return result;
+}
+
+/*
+ * add_expressions_to_attributes
+ *		add expressions as attributes with high attnums
+ *
+ * Treat the expressions as attributes with attnums above the regular
+ * attnum range. This will allow us to handle everything in the same
+ * way, and identify expressions in the dependencies.
+ *
+ * XXX This always creates a copy of the bitmap. We might optimize this
+ * by only creating the copy with (nexprs > 0) but then we'd have to track
+ * this in order to free it (if we want to). Does not seem worth it.
+ */
+Bitmapset *
+add_expressions_to_attributes(Bitmapset *attrs, int nexprs)
+{
+	int			i;
+
+	/*
+	 * Copy the bitmapset and add fake attnums representing expressions,
+	 * starting above MaxHeapAttributeNumber.
+	 */
+	attrs = bms_copy(attrs);
+
+	/* start with (MaxHeapAttributeNumber + 1) */
+	for (i = 0; i < nexprs; i++)
+	{
+		Assert(EXPRESSION_ATTNUM(i) > MaxHeapAttributeNumber);
+
+		attrs = bms_add_member(attrs, EXPRESSION_ATTNUM(i));
+	}
+
+	return attrs;
 }

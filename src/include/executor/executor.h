@@ -619,11 +619,19 @@ extern void CheckSubscriptionRelkind(char relkind, const char *nspname,
 /*
  * prototypes from functions in execChangeSet.c
  */
-extern void ExecInsertChangeSetTuples(char changeType,
-								TupleTableSlot *slot, EState *estate);
-extern void ExecInsertChangeSetTuples2(char changeType,
-								ItemPointer tupleid, HeapTuple tup,
-								EState *estate);
+extern void ExecInsertChangeSetTuples(EState *estate, ResultRelInfo *resultRelInfo,
+									  TupleTableSlot *slot);
+
+
+extern void ExecARUpdateChangeSets(EState *estate, ResultRelInfo *relinfo,
+								   ItemPointer tupleid,
+								   HeapTuple fdw_trigtuple,
+								   TupleTableSlot *newslot,
+								   List *recheckIndexes);
+extern void ExecARDeleteChangeSets(EState *estate, ResultRelInfo *relinfo,
+								   ItemPointer tupleid,
+								   HeapTuple fdw_trigtuple);
+
 extern void ExecOpenChangeSets(ResultRelInfo *resultRelInfo);
 extern void ExecCloseChangeSets(ResultRelInfo *resultRelInfo);
 

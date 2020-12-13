@@ -11490,6 +11490,19 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 								 errdetail("Column \"%s\" is used by generated column \"%s\".",
 										   colName, get_attname(foundObject.objectId, foundObject.objectSubId, false))));
 					}
+					else if ((relKind == RELKIND_CUBE) || (relKind == RELKIND_CHANGESET))
+					{
+						/*
+						 * FIXME reflect change of column type to changesets/cubes
+						 */
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot alter type of a column used in a cube/changeset"),
+								 errdetail("%s depends on column \"%s\"",
+										   getObjectDescription(&foundObject, false),
+										   colName)));
+						break;
+					}
 					else
 					{
 						/* Not expecting any other direct dependencies... */

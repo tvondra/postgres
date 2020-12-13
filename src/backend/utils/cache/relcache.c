@@ -1595,10 +1595,8 @@ RelationInitCubeInfo(Relation relation)
 	 * contain much data.
 	 */
 	cubecxt = AllocSetContextCreate(CacheMemoryContext,
-									 RelationGetRelationName(relation),
-									 ALLOCSET_SMALL_MINSIZE,
-									 ALLOCSET_SMALL_INITSIZE,
-									 ALLOCSET_SMALL_MAXSIZE);
+									"cubes",
+									ALLOCSET_SMALL_SIZES);
 	relation->rd_cubecxt = cubecxt;
 
 	/*
@@ -4441,7 +4439,7 @@ RelationGetChangeSetList(Relation relation)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(RelationGetRelid(relation)));
 
-	chsetrel = heap_open(ChangeSetRelationId, AccessShareLock);
+	chsetrel = table_open(ChangeSetRelationId, AccessShareLock);
 	chsetscan = systable_beginscan(chsetrel, ChangeSetRelidIndexId, true,
 								 NULL, 1, &skey);
 
@@ -4449,13 +4447,15 @@ RelationGetChangeSetList(Relation relation)
 	{
 		Form_pg_changeset chset = (Form_pg_changeset) GETSTRUCT(htup);
 
-		/* Add changeset's OID to result list in the proper order */
-		result = insert_ordered_oid(result, chset->chsetid);
+		result = lappend_oid(result, chset->chsetid);
 	}
 
 	systable_endscan(chsetscan);
 
-	heap_close(chsetrel, AccessShareLock);
+	table_close(chsetrel, AccessShareLock);
+
+	/* Sort the result list into OID order, per API spec. */
+	list_sort(result, list_oid_cmp);
 
 	/* Now save a copy of the completed list in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -4519,7 +4519,7 @@ RelationGetCubeList(Relation relation)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(RelationGetRelid(relation)));
 
-	cuberel = heap_open(CubeRelationId, AccessShareLock);
+	cuberel = table_open(CubeRelationId, AccessShareLock);
 	cubescan = systable_beginscan(cuberel, CubeRelidIndexId, true,
 								 NULL, 1, &skey);
 
@@ -4527,13 +4527,15 @@ RelationGetCubeList(Relation relation)
 	{
 		Form_pg_cube cube = (Form_pg_cube) GETSTRUCT(htup);
 
-		/* Add changeset's OID to result list in the proper order */
-		result = insert_ordered_oid(result, cube->cubeid);
+		result = lappend_oid(result, cube->cubeid);
 	}
 
 	systable_endscan(cubescan);
 
-	heap_close(cuberel, AccessShareLock);
+	table_close(cuberel, AccessShareLock);
+
+	/* Sort the result list into OID order, per API spec. */
+	list_sort(result, list_oid_cmp);
 
 	/* Now save a copy of the completed list in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -5116,11 +5118,11 @@ RelationGetCubeExpressions(Relation relation)
 
 	/* Quick exit if there is nothing to do. */
 	if (relation->rd_cubetuple == NULL ||
-		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs))
+		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs, NULL))
 		return NIL;
 
 	/* FIXME no locking needed (structure can't change) */
-	cuberel = relation_open(CubeRelationId, NoLock);
+	cuberel = table_open(CubeRelationId, NoLock);
 
 	/*
 	 * We build the tree we intend to return in the caller's context. After
@@ -5136,7 +5138,7 @@ RelationGetCubeExpressions(Relation relation)
 	result = (List *) stringToNode(exprsString);
 	pfree(exprsString);
 
-	relation_close(cuberel, NoLock);
+	table_close(cuberel, NoLock);
 
 	/*
 	 * Run the expressions through eval_const_expressions. This is not just an

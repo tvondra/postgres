@@ -21,7 +21,8 @@
  */
 #include "postgres.h"
 
-#include "access/amapi.h"
+#include "access/table.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/relscan.h"
 #include "access/xact.h"
@@ -32,6 +33,7 @@
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_type.h"
 #include "commands/cubes.h"
@@ -74,7 +76,7 @@ changeset_create(Relation heapRelation,
 	int			i;
 	char		relpersistence;
 
-	pg_class = heap_open(RelationRelationId, RowExclusiveLock);
+	pg_class = table_open(RelationRelationId, RowExclusiveLock);
 
 	/*
 	 * The index will be in the same namespace as its parent table, and it
@@ -104,7 +106,7 @@ changeset_create(Relation heapRelation,
 					(errcode(ERRCODE_DUPLICATE_TABLE),
 					 errmsg("relation \"%s\" already exists, skipping",
 							chsetRelationName)));
-			heap_close(pg_class, RowExclusiveLock);
+			table_close(pg_class, RowExclusiveLock);
 			return InvalidOid;
 		}
 
@@ -133,26 +135,26 @@ changeset_create(Relation heapRelation,
 								   InvalidOid, /* reltypeid */
 								   InvalidOid, /* reloftypeid */
 								   heapRelation->rd_rel->relowner,
+								   HEAP_TABLE_AM_OID,
 								   chsetTupDesc,
 								   NIL,
 								   RELKIND_CHANGESET,
 								   relpersistence,
 								   false, /* not shared */
 								   false, /* not mapped */
-								   false, /* oidislocal */
-								   0,     /* attinhcount */
 								   ONCOMMIT_NOOP,
 								   reloptions,
 								   false, /* no ACLs */
 								   false, /* not a system catalog */
 								   false, /* not internal */
+								   InvalidOid,
 								   NULL); /* no object address */
 
 	Assert(OidIsValid(chsetRelationId));
 
 
 	/* done with pg_class */
-	heap_close(pg_class, RowExclusiveLock);
+	table_close(pg_class, RowExclusiveLock);
 
 	/* ----------------
 	 *	  update pg_changeset
@@ -229,7 +231,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	 *
 	 * include extra attribute for change type info (insert/delete)
 	 */
-	chsetTupDesc = CreateTemplateTupleDesc(numatts + 1, false);
+	chsetTupDesc = CreateTemplateTupleDesc(numatts + 1);
 
 	/*
 	 * initialize the extra attribute (always the first one)
@@ -252,7 +254,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	for (i = 0; i < numatts; i++)
 	{
 		AttrNumber	atnum = chsetInfo->csi_KeyAttrNumbers[i];
-		Form_pg_attribute to = chsetTupDesc->attrs[++idx];
+		Form_pg_attribute to = &chsetTupDesc->attrs[++idx];
 
 		/* Simple index column */
 		Form_pg_attribute from;
@@ -263,7 +265,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		if ((atnum < 0) || (atnum > natts))		/* safety check */
 			elog(ERROR, "invalid column number %d", atnum);
 
-		from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+		from = &heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
 
 		/*
 		 * now that we've determined the "from", let's copy the tuple desc
@@ -295,7 +297,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 		/*
 		 * Set the attribute name same as in the heap relation.
 		 */
-		namecpy(&to->attname, &from->attname);
+		namestrcpy(&(to->attname), (char *) &(from->attname));
 	}
 
 	return chsetTupDesc;
@@ -319,7 +321,7 @@ UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 		chsetkey->values[i] = chsetInfo->csi_KeyAttrNumbers[i];
 
 	/* open the system catalog changeset relation */
-	pg_changeset = heap_open(ChangeSetRelationId, RowExclusiveLock);
+	pg_changeset = table_open(ChangeSetRelationId, RowExclusiveLock);
 
 	/* build a pg_changeset tuple */
 	MemSet(nulls, false, sizeof(nulls));
@@ -331,14 +333,11 @@ UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_changeset), values, nulls);
 
-	/* insert the tuple into the pg_changeset catalog */
-	simple_heap_insert(pg_changeset, tuple);
-
-	/* update the indexes on pg_changeset */
-	CatalogUpdateIndexes(pg_changeset, tuple);
+	/* insert the tuple into the pg_changeset catalog and update the indexes */
+	CatalogTupleInsert(pg_changeset, tuple);
 
 	/* close the relation and free the tuple */
-	heap_close(pg_changeset, RowExclusiveLock);
+	table_close(pg_changeset, RowExclusiveLock);
 	heap_freetuple(tuple);
 }
 

@@ -22,15 +22,14 @@
 #define PG_CHANGESET_H
 
 #include "catalog/genbki.h"
+#include "catalog/pg_changeset_d.h"
 
 /* ----------------
  *		pg_changeset definition.  cpp turns this into
  *		typedef struct FormData_pg_changeset.
  * ----------------
  */
-#define ChangeSetRelationId  4002
-
-CATALOG(pg_changeset,4002) BKI_WITHOUT_OIDS BKI_SCHEMA_MACRO
+CATALOG(pg_changeset,8882,ChangeSetRelationId)
 {
 	Oid			chsetid;		/* OID of the changeset */
 	Oid			chsetrelid;		/* OID of the relation the changeset is defined on */
@@ -49,19 +48,9 @@ CATALOG(pg_changeset,4002) BKI_WITHOUT_OIDS BKI_SCHEMA_MACRO
  */
 typedef FormData_pg_changeset *Form_pg_changeset;
 
-DECLARE_UNIQUE_INDEX(pg_changeset_chsetrelid_chsetid_index, 4003, on pg_changeset using btree(chsetrelid oid_ops, chsetid oid_ops));
-#define ChangeSetRelidIndexId  4003
-DECLARE_UNIQUE_INDEX(pg_changeset_chsetid_index, 4004, on pg_changeset using btree(chsetid oid_ops));
-#define ChangeSetOidIndexId  4004
-
-/* ----------------
- *		compiler constants for pg_changeset
- * ----------------
- */
-#define Natts_pg_changeset					4
-#define Anum_pg_changeset_chsetid			1
-#define Anum_pg_changeset_chsetrelid		2
-#define Anum_pg_changeset_chsetnatts		3
-#define Anum_pg_changeset_chsetkey			4
+DECLARE_UNIQUE_INDEX(pg_changeset_chsetrelid_chsetid_index, 8887, on pg_changeset using btree(chsetrelid oid_ops, chsetid oid_ops));
+#define ChangeSetRelidIndexId  8887
+DECLARE_UNIQUE_INDEX(pg_changeset_chsetid_index, 8886, on pg_changeset using btree(chsetid oid_ops));
+#define ChangeSetOidIndexId  8886
 
 #endif   /* PG_CHANGESET_H */

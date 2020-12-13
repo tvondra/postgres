@@ -1470,6 +1470,8 @@ doDeletion(const ObjectAddress *object, int flags)
 			{
 				char		relKind = get_rel_relkind(object->objectId);
 
+				/* FIXME do we need to do something for CUBE/CHANGESET? */
+
 				if (relKind == RELKIND_INDEX ||
 					relKind == RELKIND_PARTITIONED_INDEX)
 				{

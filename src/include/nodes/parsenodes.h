@@ -2486,6 +2486,42 @@ typedef struct CreatePLangStmt
 } CreatePLangStmt;
 
 /* ----------------------
+ *		Create ChangeSet Statement
+ *
+ * This represents creation of an changeset.
+ * ----------------------
+ */
+typedef struct CreateChangeSetStmt
+{
+	NodeTag		type;
+	char	   *chsetname;		/* name of new changeset, or NULL for default */
+	RangeVar   *relation;		/* relation to build changeset on */
+	char	   *tableSpace;		/* tablespace, or NULL for default */
+	List	   *chsetColumns;	/* columns to include: a list of column names */
+	List	   *options;		/* WITH clause options: a list of DefElem */
+	bool		if_not_exists;	/* just do nothing if changeset already exists? */
+} CreateChangeSetStmt;
+
+/* ----------------------
+ *		Create Cube Statement
+ *
+ * This represents creation of an cube.
+ * ----------------------
+ */
+typedef struct CreateCubeStmt
+{
+	NodeTag		type;
+	char	   *cubename;		/* name of new cube, or NULL for default */
+	RangeVar   *relation;		/* relation to build cube on */
+	RangeVar   *changeset;		/* changeset to use for the cube */
+	char	   *tableSpace;		/* tablespace, or NULL for default */
+	List	   *cubeExprs;		/* columns to include: a list of IndexElem */
+	List	   *options;		/* WITH clause options: a list of DefElem */
+	bool		transformed;	/* true when transformCubeStmt is finished */
+	bool		if_not_exists;	/* just do nothing if changeset already exists? */
+} CreateCubeStmt;
+
+/* ----------------------
  *	Create/Alter/Drop Role Statements
  *
  * Note: these node types are also used for the backwards-compatible
@@ -3283,6 +3319,16 @@ typedef struct RefreshMatViewStmt
 	bool		skipData;		/* true for WITH NO DATA */
 	RangeVar   *relation;		/* relation to insert into */
 } RefreshMatViewStmt;
+
+/* ----------------------
+ *		FLUSH CHANGESET Statement
+ * ----------------------
+ */
+typedef struct FlushChangeSetStmt
+{
+	NodeTag		type;
+	RangeVar   *relation;		/* relation to insert into */
+} FlushChangeSetStmt;
 
 /* ----------------------
  * Checkpoint Statement

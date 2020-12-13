@@ -330,6 +330,20 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	for (i = 0; i < nused; i++)
 	{
 		/*
+		 * If there are any changesets, insert the tuples into them.
+		 *
+		 * FIXME This should probably do a batch insert too (now its each row).
+		 */
+		if (resultRelInfo->ri_NumChangeSets > 0)
+		{
+			for (i = 0; i < nBufferedTuples; i++)
+			{
+				cstate->cur_lineno = buffer->linenos[i];
+				ExecInsertChangeSetTuples(CHANGESET_INSERT, buffer->slots[i], estate);
+			}
+		}
+
+		/*
 		 * If there are any indexes, update them for all the inserted tuples,
 		 * and run AFTER ROW INSERT triggers.
 		 */
@@ -1094,6 +1108,10 @@ CopyFrom(CopyFromState cstate)
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
+
+					/* and now also insert the tuple into all changesets */
+					if (resultRelInfo->ri_NumChangeSets > 0)
+						ExecInsertChangeSetTuples(CHANGESET_INSERT, slot, estate);
 				}
 			}
 

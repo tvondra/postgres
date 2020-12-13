@@ -24,6 +24,7 @@ struct IndexPath;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 struct IndexInfo;
+struct ChangeSetInfo;
 
 
 /*

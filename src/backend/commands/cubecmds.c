@@ -371,12 +371,19 @@ CreateCube(CreateCubeStmt *stmt)
 	(void) heap_reloptions(RELKIND_RELATION, reloptions, true);
 
 	/*
-	 * Prepare arguments for cube_create, primarily an CubeInfo structure.
+	 * Compute per-cube-column information, including column numbers or cube
+	 * expressions, opclasses and their options. Note, all output vectors
+	 * should be allocated for all columns, including pre-aggregated ones.
+	 *
+	 * XXX switch this to use makeCubeInfo() in makefuncs.c
 	 */
 	cubeInfo = makeNode(CubeInfo);
-	cubeInfo->ci_NumCubeAttrs = numberOfAttributes;
+	cubeInfo->ci_NumCubeAttrs = 0; /* XXX ComputeCubeAttrs will set this. */
+
+	/* includes space for aggregates - meh */
 	cubeInfo->ci_KeyAttrNumbers = palloc0(numberOfAttributes * sizeof(AttrNumber));
 	cubeInfo->ci_Expressions = NIL;
+	cubeInfo->ci_Aggregates = NIL;
 
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	collationObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
@@ -488,6 +495,7 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 		IndexElem  *attribute = (IndexElem *) lfirst(lc);
 		Oid			atttype;
 		Oid			attcollation;
+		bool		is_cube_key = true;
 
 		/*
 		 * Process the column-or-expression to be referenced by the cube.
@@ -519,9 +527,8 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 		{
 			/*
 			 * Cube expression - either it's a Var (i.e. a column in parens),
-			 * or an aggregate call, or a generic expression.
+			 * a generic expression or an aggregate.
 			 *
-			 * 
 			 * FIXME this should differentiate between regular expressions (for
 			 * cube dimensions) and aggregates - we only need collation/opclass
 			 * for the former.
@@ -539,87 +546,118 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 			while (IsA(expr, CollateExpr))
 				expr = (Node *) ((CollateExpr *) expr)->arg;
 
-			if (IsA(expr, Var) &&
-				((Var *) expr)->varattno != InvalidAttrNumber)
+			/*
+			 * Handle aggregates first.  We don't consider those to be cube keys
+			 * and we stash them into a separate list.
+			 *
+			 * We need to check the aggregate function has the moving-aggregate
+			 * methods, because that's what we'll use to build/update the cube.
+			 * We also need to know how to store the type (i.e. we need to know
+			 * how to serialize it - at the moment we don't have serial/deserial
+			 * for moving-aggregate functions, so we'll reject "internal" type.
+			 *
+			 * XXX Maybe we could use regular serial/deserial functions?
+			 */
+			if (IsA(expr, Aggref))
 			{
+				HeapTuple	tup;
+				Form_pg_aggregate classForm;
+
+				/* info about moving aggregate */
+				Oid			mtransfn,
+							minvtransfn,
+							mtranstype;
+
+				Aggref *aggref = (Aggref *) expr;
+
+				/* aggregates are not cube keys */
+				is_cube_key = false;
+
+				tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggref->aggfnoid));
+				if (!HeapTupleIsValid(tup))		/* should not happen */
+					elog(ERROR, "cache lookup failed for aggregate %u", aggref->aggfnoid);
+
+				classForm = (Form_pg_aggregate) GETSTRUCT(tup);
+
+				mtransfn = classForm->aggmtransfn;
+				minvtransfn = classForm->aggminvtransfn;
+				mtranstype = classForm->aggmtranstype;
+
+				ReleaseSysCache(tup);
+
 				/*
-				 * User wrote "(column)", so treat it like a simple attribute.
+				 * FIXME Probably need to check additional things, e.g. that it's
+				 * not a window function, ordered set aggregate etc.
 				 */
-				cubeInfo->ci_KeyAttrNumbers[attn] = ((Var *) expr)->varattno;
+				if (!OidIsValid(mtransfn) ||
+					!OidIsValid(minvtransfn) ||
+					!OidIsValid(mtranstype))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+							 errmsg("only moving-aggregates supported in cubes")));
+
+				/*
+				 * Check we know how to serialize the moving-aggregate state (no
+				 * serial/deserial types for moving-aggregates yet)
+				 */
+				if (mtranstype == INTERNALOID)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+							 errmsg("moving-aggregates with 'internal' state not supported in cubes")));
+
+				/* remember the transition type for pg_attribute */
+				atttype = mtranstype;
+
+				/* add the aggregate to the list */
+				cubeInfo->ci_Aggregates = lappend(cubeInfo->ci_Aggregates, expr);
 			}
 			else
 			{
-				cubeInfo->ci_KeyAttrNumbers[attn] = 0; /* marks expression */
-				cubeInfo->ci_Expressions = lappend(cubeInfo->ci_Expressions,
-													expr);
-
 				/*
-				 * transformExpr() should have already rejected subqueries,
-				 * aggregates, and window functions, based on the EXPR_KIND_
-				 * for an index expression.
+				 * Cube key expression - either a plain Var (which we translate
+				 * to atttnum for simplicity) or a more complex expression.
 				 */
-
-				/*
-				 * Aggregate function - we'll store the moving-aggregate in
-				 * the cube, so so we need to check the aggregate function
-				 * actually has a moving-aggregate methods, and that we know
-				 * how to store the type (must not be internal).
-				 */
-				if (IsA(expr, Aggref))
+				if (IsA(expr, Var))
 				{
-					HeapTuple	tup;
-					Form_pg_aggregate classForm;
-					Oid			mtransfn, minvtransfn, mtranstype;
+					Var *var = ((Var *) expr);
 
-					Aggref *aggref = (Aggref*)expr;
+					Assert(var->varattno != InvalidAttrNumber);
 
-					tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggref->aggfnoid));
-					if (!HeapTupleIsValid(tup))		/* should not happen */
-						elog(ERROR, "cache lookup failed for aggregate %u", aggref->aggfnoid);
-
-					classForm = (Form_pg_aggregate) GETSTRUCT(tup);
-
-					mtransfn = classForm->aggmtransfn;
-					minvtransfn = classForm->aggminvtransfn;
-					mtranstype = classForm->aggmtranstype;
-
-					ReleaseSysCache(tup);
+					cubeInfo->ci_KeyAttrNumbers[attn] = var->varattno;
+					typeOidP[attn] = atttype;
+				}
+				else
+				{
+					cubeInfo->ci_KeyAttrNumbers[attn] = 0; /* marks expression */
+					cubeInfo->ci_Expressions = lappend(cubeInfo->ci_Expressions,
+														expr);
 
 					/*
-					 * FIXME Probably need to check additional things, e.g. that it's
-					 * 		 not a window function, ordered set aggregate etc.
+					 * transformExpr() should have already rejected subqueries,
+					 * aggregates, and window functions, based on the EXPR_KIND_
+					 * for an index expression.
 					 */
-					if (! (OidIsValid(mtransfn) &&
-						   OidIsValid(minvtransfn) &&
-						   OidIsValid(mtranstype)))
+
+					/*
+					 * An expression using mutable functions is probably wrong,
+					 * since if you aren't going to get the same result for the
+					 * same data every time, it's not clear what the index entries
+					 * mean at all.
+					 */
+					if (CheckMutability((Expr *) expr))
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-								 errmsg("only moving-aggregates supported in cubes")));
-
-					/* check we know how to serialize the moving-aggregate state */
-					if (mtranstype == INTERNALOID)
-						ereport(ERROR,
-								(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-								 errmsg("moving-aggregates with 'internal' state not supported in cubes")));
-
-					/* remember the transition type for pg_attribute */
-					atttype = mtranstype;
+								 errmsg("functions in cube expression must be marked IMMUTABLE")));
 				}
-
-				/*
-				 * An expression using mutable functions is probably wrong,
-				 * since if you aren't going to get the same result for the
-				 * same data every time, it's not clear what the index entries
-				 * mean at all.
-				 */
-				if (CheckMutability((Expr *) expr))
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-							 errmsg("functions in cube expression must be marked IMMUTABLE")));
 			}
 		}
 
-		typeOidP[attn] = atttype;
+		/* make sure we have sensible info about cube keys */
+		if (!is_cube_key)
+		{
+			elog(WARNING, "skipping aggregate");
+			continue;
+		}
 
 		/*
 		 * Check we have a collation iff it's a collatable type.  The only
@@ -667,6 +705,10 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 
 		attn++;
 	}
+
+	elog(WARNING, "attn = %d", attn);
+	cubeInfo->ci_NumCubeAttrs = attn;
+	cubeInfo->ci_NumCubeAggregates = list_length(cubeInfo->ci_Aggregates);
 
 	return;
 }

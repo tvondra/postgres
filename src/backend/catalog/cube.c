@@ -101,9 +101,21 @@ cube_create(Relation heapRelation,
 
 	/*
 	 * check parameters
+	 *
+	 * XXX Maybe it'd make sense to have cubes with no key columns, to
+	 * allow simple aggregates.
 	 */
-	if (cubeInfo->ci_NumCubeAttrs < 2)
-		elog(ERROR, "cube must contain at least two columns");
+	if (cubeInfo->ci_NumCubeAttrs < 1)
+		elog(ERROR, "cube must contain at least one columns");
+
+	/*
+	 * There must be at least one aggregate.
+	 *
+	 * XXX Could we allow no aggregates, to speed up DISTINCT or something
+	 * like that? Although, that probably still needs at least COUNT().
+	 */
+	if (cubeInfo->ci_NumCubeAggregates < 1)
+		elog(ERROR, "cube must contain at least one aggregate");
 
 	/* cubes on system catalogs not allowed */
 	if (IsSystemRelation(heapRelation) &&
@@ -320,7 +332,9 @@ ConstructTupleDescriptor(Relation heapRelation,
 	/* we need access to the table's tuple descriptor */
 	heapTupDesc = RelationGetDescr(heapRelation);
 	natts = RelationGetForm(heapRelation)->relnatts;
-
+elog(WARNING, "naggs = %d", cubeInfo->ci_NumCubeAggregates);
+elog(WARNING, "natts = %d", natts);
+elog(WARNING, "numatts = %d", numatts);
 	/*
 	 * allocate the new tuple descriptor
 	 */
@@ -342,6 +356,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 		HeapTuple	tuple;
 		Form_pg_type typeTup;
 		Form_pg_attribute to = &cubeTupDesc->attrs[i];
+
+		elog(WARNING, "Adding attr %d", atnum);
 
 		/* simple column (no system attributes) */
 		if ((atnum > 0) && (atnum <= natts))
@@ -427,7 +443,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			elog(ERROR, "invalid attribute number %d", atnum);
 
 		/*
-		 * We do not yet have the correct relation OID for the index, so just
+		 * We do not yet have the correct relation OID for the cube, so just
 		 * set it invalid for now.  InitializeAttributeOids() will fix it
 		 * later.
 		 */
@@ -458,6 +474,7 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	Relation	pg_cube;
 	HeapTuple	tuple;
 	Datum		exprsDatum;
+	Datum		aggsDatum;
 	int			i;
 
 	/* copy the cube key info into arrays */
@@ -482,6 +499,20 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	else
 		exprsDatum = (Datum) 0;
 
+	/*
+	 * Convert the cube aggregates to a text datum (there have to be some).
+	 */
+	if (cubeInfo->ci_Aggregates != NIL)
+	{
+		char	   *exprsString;
+
+		exprsString = nodeToString(cubeInfo->ci_Aggregates);
+		aggsDatum = CStringGetTextDatum(exprsString);
+		pfree(exprsString);
+	}
+	else
+		elog(ERROR, "missing cube aggregates");
+
 	/* open the system catalog cube relation */
 	pg_cube = table_open(CubeRelationId, RowExclusiveLock);
 
@@ -492,6 +523,7 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	values[Anum_pg_cube_cuberelid   - 1] = ObjectIdGetDatum(heapoid);
 	values[Anum_pg_cube_cubechsetid - 1] = ObjectIdGetDatum(chsetoid);
 	values[Anum_pg_cube_cubenatts   - 1] = Int16GetDatum(cubeInfo->ci_NumCubeAttrs);
+	values[Anum_pg_cube_cubenaggs   - 1] = Int16GetDatum(cubeInfo->ci_NumCubeAggregates);
 	values[Anum_pg_cube_cubekey     - 1] = PointerGetDatum(cubekey);
 
 	values[Anum_pg_cube_cubecollation - 1] = PointerGetDatum(cubecollation);
@@ -500,6 +532,8 @@ UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 	values[Anum_pg_cube_cubeexprs   - 1] = exprsDatum;
 	if (exprsDatum == (Datum) 0)
 		nulls[Anum_pg_cube_cubeexprs - 1] = true;
+
+	values[Anum_pg_cube_cubeaggs    - 1] = aggsDatum;
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_cube), values, nulls);
 
@@ -572,4 +606,28 @@ CubeGetRelation(Oid cubeId, bool missing_ok)
 	result = cube->cuberelid;
 	ReleaseSysCache(tuple);
 	return result;
+}
+
+static void
+cube_rebuild(Oid cubeId)
+{
+	/* lock the cube relation, truncate it */
+
+	/* load data from the source table, sort them by keys */
+
+	/* build info for sorted aggregation */
+
+	/* do the aggregation, insert pre-aggregated data into the cube */
+}
+
+Datum
+pg_rebuild_cube(PG_FUNCTION_ARGS)
+{
+	Oid	cubeId = PG_GETARG_OID(0);
+
+	elog(WARNING, "rebuilding cube %d", cubeId);
+
+	cube_rebuild(cubeId);
+
+	PG_RETURN_VOID();
 }

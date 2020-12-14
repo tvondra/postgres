@@ -11018,4 +11018,8 @@
   proname => 'is_normalized', prorettype => 'bool', proargtypes => 'text text',
   prosrc => 'unicode_is_normalized' },
 
+{ oid => '9612', descr => 'rebuild a pre-aggregated cube',
+  proname => 'pg_rebuild_cube', prorettype => 'void', proargtypes => 'regclass',
+  prosrc => 'pg_rebuild_cube' },
+
 ]

@@ -32,18 +32,21 @@ CATALOG(pg_cube,8881,CubeRelationId)
 	Oid				cubeid;			/* OID of the cube */
 	Oid				cuberelid;		/* OID of the relation the cube is defined on */
 	Oid				cubechsetid;	/* OID of the changeset used by the cube */
-                
-	int16			cubenatts;		/* number of columns in cube */
-	
-	/* variable-length fields start here, but we allow direct access to them */
-	int2vector		cubekey;		/* column numbers of cube dimensions */
+
+	int16			cubenatts;		/* total number of key columns in cube */
+	int16			cubenaggs;		/* number of aggregates in cube */
+
+	/* variable-length fields start here, but we allow direct access to cubekey */
+	int2vector		cubekey BKI_FORCE_NOT_NULL;	/* column numbers of cube keys,
+												 * or 0 */
 
 #ifdef CATALOG_VARLEN
 	oidvector		cubecollation;	/* collation identifiers */
 	oidvector		cubeclass;		/* opclass identifiers */
-	pg_node_tree	cubeexprs;		/* expression trees for cube attributes that
-									 * are not simple column references; one for
+	pg_node_tree	cubeexprs;		/* expression trees for cube keys that are
+									 * not simple column references; one for
 									 * each zero entry in cubekey[] */
+	pg_node_tree	cubeaggs;		/* expression trees for cube aggregates */
 
 	/*
 	 * XXX might be useful to add 'cubepred' to define filtered cubes (on top

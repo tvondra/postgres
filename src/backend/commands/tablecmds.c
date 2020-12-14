@@ -1317,6 +1317,14 @@ RemoveRelations(DropStmt *drop)
 			relkind = RELKIND_FOREIGN_TABLE;
 			break;
 
+		case OBJECT_CHANGESET:
+			relkind = RELKIND_CHANGESET;
+			break;
+
+		case OBJECT_CUBE:
+			relkind = RELKIND_CUBE;
+			break;
+
 		default:
 			elog(ERROR, "unrecognized drop object type: %d",
 				 (int) drop->removeType);

@@ -2862,6 +2862,8 @@ RelationGetNumberOfBlocksInFork(Relation relation, ForkNumber forkNum)
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
+		case RELKIND_CHANGESET:
+		case RELKIND_CUBE:
 			{
 				/*
 				 * Not every table AM uses BLCKSZ wide fixed size blocks.

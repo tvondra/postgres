@@ -39,6 +39,8 @@ SecLabelSupportsObjectType(ObjectType objtype)
 	switch (objtype)
 	{
 		case OBJECT_AGGREGATE:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 		case OBJECT_COLUMN:
 		case OBJECT_DATABASE:
 		case OBJECT_DOMAIN:

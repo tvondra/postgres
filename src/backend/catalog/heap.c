@@ -433,6 +433,8 @@ heap_create(const char *relname,
 			case RELKIND_RELATION:
 			case RELKIND_TOASTVALUE:
 			case RELKIND_MATVIEW:
+			case RELKIND_CHANGESET:
+			case RELKIND_CUBE:
 				table_relation_set_new_filenode(rel, &rel->rd_node,
 												relpersistence,
 												relfrozenxid, relminmxid);

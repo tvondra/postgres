@@ -40,6 +40,7 @@
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
@@ -51,6 +52,7 @@ static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 Oid *classObjectId);
 static void UpdateCubeRelation(Oid cubeoid, Oid chsetoid, Oid heapoid,
 						CubeInfo *cubeInfo, Oid *collationOids, Oid *classOids);
+static Oid CubeGetRelation(Oid cubeId, bool missing_ok);
 
 /*
  * cube_create
@@ -230,6 +232,73 @@ cube_create(Relation heapRelation,
 
 	return cubeRelationId;
 
+}
+
+void
+cube_drop(Oid cubeId)
+{
+	Oid			heapId;
+	HeapTuple	tuple;
+	Relation	cubeRelation;
+	Relation	userHeapRelation;
+	Relation	userCubeRelation;
+	LOCKMODE	lockmode = AccessExclusiveLock;
+
+	heapId = CubeGetRelation(cubeId, false);
+
+	/*
+	 * To drop a cube safely, we must grab exclusive lock on its parent
+	 * table.  Exclusive lock on the cube alone is insufficient because
+	 * another backend might be about to execute a query on the parent table.
+	 *
+	 * XXX copied from index_drop, see details there
+	 */
+	userHeapRelation = table_open(heapId, lockmode);
+	userCubeRelation = table_open(cubeId, lockmode);
+
+	/*
+	 * Close and flush the changeset's relcache entry, to ensure relcache
+	 * doesn't try to rebuild it while we're deleting catalog entries. We
+	 * keep the lock though.
+	 */
+	table_close(userCubeRelation, NoLock);
+
+	RelationForgetRelation(cubeId);
+
+	/*
+	 * fix CUBE relation
+	 */
+	cubeRelation = table_open(CubeRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCache1(CUBEOID, ObjectIdGetDatum(cubeId));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for cube %u", cubeId);
+
+	CatalogTupleDelete(cubeRelation, &tuple->t_self);
+
+	ReleaseSysCache(tuple);
+	table_close(cubeRelation, RowExclusiveLock);
+
+	/*
+	 * fix ATTRIBUTE relation
+	 */
+	DeleteAttributeTuples(cubeId);
+
+	/*
+	 * fix RELATION relation
+	 */
+	DeleteRelationTuple(cubeId);
+
+	/*
+	 * We must send out a shared-cache-inval notice on the owning relation
+	 * to ensure other backends update their relcache lists of changesets.
+	 */
+	CacheInvalidateRelcache(userHeapRelation);
+
+	/*
+	 * Close owning rel, but keep lock
+	 */
+	table_close(userHeapRelation, NoLock);
 }
 
 static TupleDesc
@@ -477,4 +546,30 @@ BuildCubeInfo(Relation cube)
 	ci->ci_ExpressionsState = NIL;
 
 	return ci;
+}
+
+/*
+ * CubeGetRelation: given a cube's relation OID, get the OID of
+ * the relation it is a cube on.  Uses the system cache.
+ */
+static Oid
+CubeGetRelation(Oid cubeId, bool missing_ok)
+{
+	HeapTuple	tuple;
+	Form_pg_cube cube;
+	Oid			result;
+
+	tuple = SearchSysCache1(CUBEOID, ObjectIdGetDatum(cubeId));
+	if (!HeapTupleIsValid(tuple))
+	{
+		if (missing_ok)
+			return InvalidOid;
+		elog(ERROR, "cache lookup failed for cube %u", cubeId);
+	}
+	cube = (Form_pg_cube) GETSTRUCT(tuple);
+	Assert(cube->cubeid == cubeId);
+
+	result = cube->cuberelid;
+	ReleaseSysCache(tuple);
+	return result;
 }

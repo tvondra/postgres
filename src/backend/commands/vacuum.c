@@ -883,7 +883,9 @@ get_all_vacuum_rels(int options)
 		 */
 		if (classForm->relkind != RELKIND_RELATION &&
 			classForm->relkind != RELKIND_MATVIEW &&
-			classForm->relkind != RELKIND_PARTITIONED_TABLE)
+			classForm->relkind != RELKIND_PARTITIONED_TABLE &&
+			classForm->relkind != RELKIND_CHANGESET &&
+			classForm->relkind != RELKIND_CUBE)
 			continue;
 
 		/*
@@ -1413,7 +1415,9 @@ vac_update_datfrozenxid(void)
 		 */
 		if (classForm->relkind != RELKIND_RELATION &&
 			classForm->relkind != RELKIND_MATVIEW &&
-			classForm->relkind != RELKIND_TOASTVALUE)
+			classForm->relkind != RELKIND_TOASTVALUE &&
+			classForm->relkind != RELKIND_CHANGESET &&
+			classForm->relkind != RELKIND_CUBE)
 		{
 			Assert(!TransactionIdIsValid(classForm->relfrozenxid));
 			Assert(!MultiXactIdIsValid(classForm->relminmxid));
@@ -1817,7 +1821,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
 	if (onerel->rd_rel->relkind != RELKIND_RELATION &&
 		onerel->rd_rel->relkind != RELKIND_MATVIEW &&
 		onerel->rd_rel->relkind != RELKIND_TOASTVALUE &&
-		onerel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		onerel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE &&
+		onerel->rd_rel->relkind != RELKIND_CHANGESET &&
+		onerel->rd_rel->relkind != RELKIND_CUBE)
 	{
 		ereport(WARNING,
 				(errmsg("skipping \"%s\" --- cannot vacuum non-tables or special system tables",

@@ -214,7 +214,8 @@ ExecARUpdateChangeSets(EState *estate, ResultRelInfo *relinfo,
 					   TupleTableSlot *newslot,
 					   List *recheckIndexes)
 {
-	elog(ERROR, "not implemented");
+	for (int i = 0; i < relinfo->ri_NumChangeSets; i++)
+		elog(WARNING, "not implemented");
 }
 
 void
@@ -222,5 +223,6 @@ ExecARDeleteChangeSets(EState *estate, ResultRelInfo *relinfo,
 					   ItemPointer tupleid,
 					   HeapTuple fdw_trigtuple)
 {
-	elog(ERROR, "not implemented");
+	for (int i = 0; i < relinfo->ri_NumChangeSets; i++)
+		elog(WARNING, "not implemented");
 }

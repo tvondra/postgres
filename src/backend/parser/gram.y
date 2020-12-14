@@ -6202,6 +6202,8 @@ object_type_any_name:
 			| TEXT_P SEARCH DICTIONARY				{ $$ = OBJECT_TSDICTIONARY; }
 			| TEXT_P SEARCH TEMPLATE				{ $$ = OBJECT_TSTEMPLATE; }
 			| TEXT_P SEARCH CONFIGURATION			{ $$ = OBJECT_TSCONFIGURATION; }
+			| CHANGESET								{ $$ = OBJECT_CHANGESET; }
+			| CUBE									{ $$ = OBJECT_CUBE; }
 		;
 
 /*

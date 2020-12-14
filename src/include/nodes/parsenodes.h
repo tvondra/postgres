@@ -1703,6 +1703,8 @@ typedef enum ObjectType
 	OBJECT_AMPROC,
 	OBJECT_ATTRIBUTE,			/* type's attribute, when distinct from column */
 	OBJECT_CAST,
+	OBJECT_CHANGESET,
+	OBJECT_CUBE,
 	OBJECT_COLUMN,
 	OBJECT_COLLATION,
 	OBJECT_CONVERSION,

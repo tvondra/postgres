@@ -37,15 +37,19 @@
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_type.h"
 #include "commands/cubes.h"
+#include "commands/defrem.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 ChangeSetInfo *chsetInfo);
 static void UpdateChangeSetRelation(Oid chsetoid, Oid heapoid,
 					ChangeSetInfo *chsetInfo);
+static Oid ChangeSetGetRelation(Oid chsetId, bool missing_ok);
 
 /*
  * changeset_create
@@ -135,7 +139,7 @@ changeset_create(Relation heapRelation,
 								   InvalidOid, /* reltypeid */
 								   InvalidOid, /* reloftypeid */
 								   heapRelation->rd_rel->relowner,
-								   HEAP_TABLE_AM_OID,
+								   get_table_am_oid(default_table_access_method, false), /* default AM */
 								   chsetTupDesc,
 								   NIL,
 								   RELKIND_CHANGESET,
@@ -207,6 +211,76 @@ changeset_create(Relation heapRelation,
 
 	return chsetRelationId;
 
+}
+
+/*
+ * FIXME make sure there are no cubes on the changeset
+ */
+void
+changeset_drop(Oid chsetId)
+{
+	Oid			heapId;
+	HeapTuple	tuple;
+	Relation	chsetRelation;
+	Relation	userHeapRelation;
+	Relation	userChsetRelation;
+	LOCKMODE	lockmode = AccessExclusiveLock;
+
+	heapId = ChangeSetGetRelation(chsetId, false);
+
+	/*
+	 * To drop a changeset safely, we must grab exclusive lock on its parent
+	 * table.  Exclusive lock on the changeset alone is insufficient because
+	 * another backend might be about to execute a query on the parent table.
+	 *
+	 * XXX copied from index_drop, see details there
+	 */
+	userHeapRelation = table_open(heapId, lockmode);
+	userChsetRelation = table_open(chsetId, lockmode);
+
+	/*
+	 * Close and flush the changeset's relcache entry, to ensure relcache
+	 * doesn't try to rebuild it while we're deleting catalog entries. We
+	 * keep the lock though.
+	 */
+	table_close(userChsetRelation, NoLock);
+
+	RelationForgetRelation(chsetId);
+
+	/*
+	 * fix CHANGESET relation
+	 */
+	chsetRelation = table_open(ChangeSetRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCache1(CHANGESETOID, ObjectIdGetDatum(chsetId));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for changeset %u", chsetId);
+
+	CatalogTupleDelete(chsetRelation, &tuple->t_self);
+
+	ReleaseSysCache(tuple);
+	table_close(chsetRelation, RowExclusiveLock);
+
+	/*
+	 * fix ATTRIBUTE relation
+	 */
+	DeleteAttributeTuples(chsetId);
+
+	/*
+	 * fix RELATION relation
+	 */
+	DeleteRelationTuple(chsetId);
+
+	/*
+	 * We must send out a shared-cache-inval notice on the owning relation
+	 * to ensure other backends update their relcache lists of changesets.
+	 */
+	CacheInvalidateRelcache(userHeapRelation);
+
+	/*
+	 * Close owning rel, but keep lock
+	 */
+	table_close(userHeapRelation, NoLock);
 }
 
 static TupleDesc
@@ -466,4 +540,31 @@ FormChangeSetDatum2(ChangeSetInfo *chsetInfo,
 		values[i+1] = iDatum;
 		isnull[i+1] = isNull;
 	}
+}
+
+
+/*
+ * ChangeSetGetRelation: given a changeset's relation OID, get the OID of
+ * the relation it is a changeset on.  Uses the system cache.
+ */
+static Oid
+ChangeSetGetRelation(Oid chsetId, bool missing_ok)
+{
+	HeapTuple	tuple;
+	Form_pg_changeset chset;
+	Oid			result;
+
+	tuple = SearchSysCache1(CHANGESETOID, ObjectIdGetDatum(chsetId));
+	if (!HeapTupleIsValid(tuple))
+	{
+		if (missing_ok)
+			return InvalidOid;
+		elog(ERROR, "cache lookup failed for changeset %u", chsetId);
+	}
+	chset = (Form_pg_changeset) GETSTRUCT(tuple);
+	Assert(chset->chsetid == chsetId);
+
+	result = chset->chsetrelid;
+	ReleaseSysCache(tuple);
+	return result;
 }

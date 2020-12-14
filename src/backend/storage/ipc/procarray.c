@@ -3938,7 +3938,9 @@ GlobalVisTestFor(Relation rel)
 		 */
 		Assert(rel->rd_rel->relkind == RELKIND_RELATION ||
 			   rel->rd_rel->relkind == RELKIND_MATVIEW ||
-			   rel->rd_rel->relkind == RELKIND_TOASTVALUE);
+			   rel->rd_rel->relkind == RELKIND_TOASTVALUE ||
+			   rel->rd_rel->relkind == RELKIND_CHANGESET ||
+			   rel->rd_rel->relkind == RELKIND_CUBE);
 
 		need_shared = rel->rd_rel->relisshared || RecoveryInProgress();
 		need_catalog = IsCatalogRelation(rel) || RelationIsAccessibleInLogicalDecoding(rel);

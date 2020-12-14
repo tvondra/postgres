@@ -19,6 +19,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
+#include "catalog/changeset.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
 #include "catalog/objectaccess.h"
@@ -1480,6 +1481,14 @@ doDeletion(const ObjectAddress *object, int flags)
 
 					Assert(object->objectSubId == 0);
 					index_drop(object->objectId, concurrent, concurrent_lock_mode);
+				}
+				else if (relKind == RELKIND_CHANGESET)
+				{
+					changeset_drop(object->objectId);
+				}
+				else if (relKind == RELKIND_CUBE)
+				{
+					cube_drop(object->objectId);
 				}
 				else
 				{

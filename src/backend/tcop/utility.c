@@ -1964,6 +1964,8 @@ ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 		case OBJECT_VIEW:
 		case OBJECT_MATVIEW:
 		case OBJECT_FOREIGN_TABLE:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 			RemoveRelations(stmt);
 			break;
 		default:
@@ -2509,6 +2511,12 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_TYPE:
 					tag = CMDTAG_DROP_TYPE;
+					break;
+				case OBJECT_CHANGESET:
+					tag = CMDTAG_DROP_CHANGESET;
+					break;
+				case OBJECT_CUBE:
+					tag = CMDTAG_DROP_CUBE;
 					break;
 				case OBJECT_DOMAIN:
 					tag = CMDTAG_DROP_DOMAIN;

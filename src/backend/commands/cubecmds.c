@@ -282,9 +282,9 @@ CreateCube(CreateCubeStmt *stmt)
 	}
 	else
 	{
-		elog(WARNING, "lookup suitable changeset");
 		chsetrel = NULL;
 		changesetId = InvalidOid;
+		elog(ERROR, "TODO: lookup suitable changeset");
 	}
 
 	/* possibly not needed, copy-paste from indexcmds.c */

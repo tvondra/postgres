@@ -950,6 +950,8 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_AMOP:
 		case OBJECT_AMPROC:
 		case OBJECT_ATTRIBUTE:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 		case OBJECT_CAST:
 		case OBJECT_COLUMN:
 		case OBJECT_COLLATION:
@@ -2105,6 +2107,8 @@ stringify_grant_objtype(ObjectType objtype)
 		case OBJECT_ATTRIBUTE:
 		case OBJECT_CAST:
 		case OBJECT_COLLATION:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 		case OBJECT_CONVERSION:
 		case OBJECT_DEFAULT:
 		case OBJECT_DEFACL:
@@ -2186,6 +2190,8 @@ stringify_adefprivs_objtype(ObjectType objtype)
 		case OBJECT_AMPROC:
 		case OBJECT_ATTRIBUTE:
 		case OBJECT_CAST:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 		case OBJECT_COLLATION:
 		case OBJECT_CONVERSION:
 		case OBJECT_DEFAULT:

@@ -1182,6 +1182,14 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	relation->rd_partcheckvalid = false;
 	relation->rd_partcheckcxt = NULL;
 
+	/* if it's a changeset, initialize changeset-related information */
+	if (relation->rd_rel->relkind == RELKIND_CHANGESET)
+		RelationInitChangeSetInfo(relation);
+
+	/* if it's a cube, initialize cube-related information */
+	if (relation->rd_rel->relkind == RELKIND_CUBE)
+		RelationInitCubeInfo(relation);
+
 	/*
 	 * initialize access method information
 	 */
@@ -1195,6 +1203,8 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
+		case RELKIND_CHANGESET:
+		case RELKIND_CUBE:
 			Assert(relation->rd_rel->relam != InvalidOid);
 			RelationInitTableAccessMethod(relation);
 			break;
@@ -1209,14 +1219,6 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 			Assert(relation->rd_rel->relam == InvalidOid);
 			break;
 	}
-
-	/* if it's a changeset, initialize changeset-related information */
-	if (relation->rd_rel->relkind == RELKIND_CHANGESET)
-		RelationInitChangeSetInfo(relation);
-
-	/* if it's a cube, initialize cube-related information */
-	if (relation->rd_rel->relkind == RELKIND_CUBE)
-		RelationInitCubeInfo(relation);
 
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
@@ -1558,6 +1560,8 @@ RelationInitChangeSetInfo(Relation relation)
 	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
 	relation->rd_changesettuple = heap_copytuple(tuple);
 	relation->rd_changeset = (Form_pg_changeset) GETSTRUCT(relation->rd_changesettuple);
+	/* XXX: maybe allow other AM */
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
 	MemoryContextSwitchTo(oldcontext);
 	ReleaseSysCache(tuple);
 }
@@ -1585,6 +1589,8 @@ RelationInitCubeInfo(Relation relation)
 	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
 	relation->rd_cubetuple = heap_copytuple(tuple);
 	relation->rd_cube = (Form_pg_cube) GETSTRUCT(relation->rd_cubetuple);
+	/* XXX: maybe allow other AM */
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
 	MemoryContextSwitchTo(oldcontext);
 	ReleaseSysCache(tuple);
 
@@ -3618,7 +3624,9 @@ RelationBuildLocalRelation(const char *relname,
 	if (relkind == RELKIND_RELATION ||
 		relkind == RELKIND_SEQUENCE ||
 		relkind == RELKIND_TOASTVALUE ||
-		relkind == RELKIND_MATVIEW)
+		relkind == RELKIND_MATVIEW ||
+		relkind == RELKIND_CHANGESET ||
+		relkind == RELKIND_CUBE)
 		RelationInitTableAccessMethod(rel);
 
 	/*
@@ -5121,8 +5129,8 @@ RelationGetCubeExpressions(Relation relation)
 		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeexprs, NULL))
 		return NIL;
 
-	/* FIXME no locking needed (structure can't change) */
-	cuberel = table_open(CubeRelationId, NoLock);
+	/* FIXME not sure if this lock mode is appropriate */
+	cuberel = table_open(CubeRelationId, AccessShareLock);
 
 	/*
 	 * We build the tree we intend to return in the caller's context. After
@@ -5138,7 +5146,7 @@ RelationGetCubeExpressions(Relation relation)
 	result = (List *) stringToNode(exprsString);
 	pfree(exprsString);
 
-	table_close(cuberel, NoLock);
+	table_close(cuberel, AccessShareLock);
 
 	/*
 	 * Run the expressions through eval_const_expressions. This is not just an

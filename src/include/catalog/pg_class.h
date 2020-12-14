@@ -202,7 +202,9 @@ DECLARE_INDEX(pg_class_tblspc_relfilenode_index, 3455, on pg_class using btree(r
 	 (relkind) == RELKIND_INDEX || \
 	 (relkind) == RELKIND_SEQUENCE || \
 	 (relkind) == RELKIND_TOASTVALUE || \
-	 (relkind) == RELKIND_MATVIEW)
+	 (relkind) == RELKIND_MATVIEW || \
+	 (relkind) == RELKIND_CHANGESET || \
+	 (relkind) == RELKIND_CUBE)
 
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */

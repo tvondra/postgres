@@ -2266,6 +2266,8 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		case OBJECT_TABCONSTRAINT:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPFAMILY:
+		case OBJECT_CHANGESET:
+		case OBJECT_CUBE:
 			objnode = (Node *) name;
 			break;
 		case OBJECT_ACCESS_METHOD:

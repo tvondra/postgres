@@ -28,6 +28,8 @@ extern Oid changeset_create(Relation heapRelation,
 			 Datum reloptions,
 			 bool if_not_exists);
 
+extern void changeset_drop(Oid chsetId);
+
 ChangeSetInfo * BuildChangeSetInfo(Relation changeset);
 
 void FormChangeSetDatum(ChangeSetInfo *chsetInfo,
@@ -54,6 +56,8 @@ extern Oid cube_create(Relation heapRelation,
 			Oid tableSpaceId,
 			Datum reloptions,
 			bool if_not_exists);
+
+extern void cube_drop(Oid cubeId);
 
 CubeInfo * BuildCubeInfo(Relation cube);
 

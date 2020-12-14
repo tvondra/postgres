@@ -56,6 +56,7 @@ extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 extern List *RelationGetChangeSetList(Relation relation);
 extern List *RelationGetCubeList(Relation relation);
 extern List *RelationGetCubeExpressions(Relation relation);
+extern List *RelationGetCubeAggregates(Relation relation);
 
 typedef enum IndexAttrBitmapKind
 {

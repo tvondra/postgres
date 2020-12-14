@@ -1609,6 +1609,7 @@ RelationInitCubeInfo(Relation relation)
 	 * expressions will be filled later
 	 */
 	relation->rd_cubeexprs = NIL;
+	relation->rd_cubeaggs = NIL;
 }
 
 /*
@@ -5168,6 +5169,72 @@ RelationGetCubeExpressions(Relation relation)
 }
 
 /*
+ * RelationGetCubeAggregates -- get the cube aggregates for a cube
+ *
+ * We cache the result of transforming pg_cube.cubeaggs into a node tree.
+ * If the rel is not a cube or has no expressional columns, we return NIL.
+ * Otherwise, the returned tree is copied into the caller's memory context.
+ * (We don't want to return a pointer to the relcache copy, since it could
+ * disappear due to relcache invalidation.)
+ */
+List *
+RelationGetCubeAggregates(Relation relation)
+{
+	List	   *result;
+	Datum		exprsDatum;
+	bool		isnull;
+	char	   *exprsString;
+	MemoryContext oldcxt;
+	Relation	cuberel;
+
+	/* Quick exit if we already computed the result. */
+	if (relation->rd_cubeaggs)
+		return (List *) copyObject(relation->rd_cubeaggs);
+
+	/* Quick exit if there is nothing to do. */
+	if (relation->rd_cubetuple == NULL ||
+		heap_attisnull(relation->rd_cubetuple, Anum_pg_cube_cubeaggs, NULL))
+		return NIL;
+
+	/* FIXME not sure if this lock mode is appropriate */
+	cuberel = table_open(CubeRelationId, AccessShareLock);
+
+	/*
+	 * We build the tree we intend to return in the caller's context. After
+	 * successfully completing the work, we copy it into the relcache entry.
+	 * This avoids problems if we get some sort of error partway through.
+	 */
+	exprsDatum = heap_getattr(relation->rd_cubetuple,
+							  Anum_pg_cube_cubeaggs,
+							  RelationGetDescr(cuberel),
+							  &isnull);
+	Assert(!isnull);
+	exprsString = TextDatumGetCString(exprsDatum);
+	result = (List *) stringToNode(exprsString);
+	pfree(exprsString);
+
+	table_close(cuberel, AccessShareLock);
+
+	/*
+	 * Run the expressions through eval_const_expressions. This is not just an
+	 * optimization, but is necessary, because the planner will be comparing
+	 * them to similarly-processed qual clauses, and may fail to detect valid
+	 * matches without this.  We don't bother with canonicalize_qual, however.
+	 */
+	result = (List *) eval_const_expressions(NULL, (Node *) result);
+
+	/* May as well fix opfuncids too */
+	fix_opfuncids((Node *) result);
+
+	/* Now save a copy of the completed tree in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(relation->rd_cubecxt);
+	relation->rd_cubeaggs = (List *) copyObject(result);
+	MemoryContextSwitchTo(oldcxt);
+
+	return result;
+}
+
+/*
  * RelationGetIndexPredicate -- get the index predicate for an index
  *
  * We cache the result of transforming pg_index.indpred into an implicit-AND
@@ -6278,6 +6345,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_exclstrats = NULL;
 		rel->rd_fdwroutine = NULL;
 		rel->rd_cubeexprs = NIL;
+		rel->rd_cubeaggs = NIL;
 
 		/*
 		 * Reset transient-state fields in the relcache entry

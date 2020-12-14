@@ -35,14 +35,18 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_changeset.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "commands/cubes.h"
+#include "executor/tuptable.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parse_oper.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
@@ -638,22 +642,34 @@ BuildCubeInfo(Relation cube)
 	Form_pg_cube cubeStruct = cube->rd_cube;
 	int			i;
 	int			numKeys;
+	int			numAggs;
 
 	/* check the number of keys, and copy attr numbers into the CubeInfo */
 	numKeys = cubeStruct->cubenatts;
-	if (numKeys < 2)
+	numAggs = cubeStruct->cubenaggs;
+
+	if (numKeys < 1)
 		elog(ERROR, "invalid cubenatts %d for cube %u",
 			 numKeys, RelationGetRelid(cube));
 
 	ci->ci_NumCubeAttrs = numKeys;
 	ci->ci_KeyAttrNumbers = palloc0(sizeof(AttrNumber) * numKeys);
 
+	if (numAggs < 1)
+		elog(ERROR, "invalid cubenaggs %d for cube %u",
+			 numAggs, RelationGetRelid(cube));
+
+	ci->ci_NumCubeAggregates = cubeStruct->cubenaggs;
+
 	for (i = 0; i < numKeys; i++)
 		ci->ci_KeyAttrNumbers[i] = cubeStruct->cubekey.values[i];
 
-	/* fetch any expressions needed for expressional indexes */
+	/* fetch any expressions needed for cube */
 	ci->ci_Expressions = RelationGetCubeExpressions(cube);
 	ci->ci_ExpressionsState = NIL;
+
+	/* fetch any aggregates needed for cube */
+	ci->ci_Aggregates = RelationGetCubeAggregates(cube);
 
 	return ci;
 }
@@ -687,13 +703,250 @@ CubeGetRelation(Oid cubeId, bool missing_ok)
 static void
 cube_rebuild(Oid cubeId)
 {
-	/* lock the cube relation, truncate it */
+	Oid			heapOid;
+	Relation	heapRelation;
+	Relation	cubeRelation;
+	TableScanDesc scan;
+	CubeInfo   *cube;
+
+	/*  */
+	Tuplesortstate *tss;
+	TupleTableSlot *slot;
+
+	int				sortNKeys;
+	AttrNumber	   *sortKeys;
+	Oid			   *sortOperators;
+	Oid			   *sortCollations;
+	bool		   *sortNullsFirst;
+
+	/* expressions in arguments for aggregates */
+	List	   *agg_args = NIL;
+	TupleDesc	tss_desc;
+	TupleTableSlot *tss_slot;
+	TupleDesc	tdesc;
+
+	Datum	   *values;
+	bool	   *isnull;
+
+	heapOid = CubeGetRelation(cubeId, false);
+
+	/*
+	 * To rebuild a cube, we grab exclusive lock on the cube (so that we
+	 * can truncate it), and a share lock on the heap relation.
+	 */
+	heapRelation = table_open(heapOid, AccessShareLock);
+	cubeRelation = table_open(cubeId, AccessExclusiveLock);
+
+	tdesc = RelationGetDescr(heapRelation);
+	cube = BuildCubeInfo(cubeRelation);
+
+	elog(WARNING, "tdesc %p", tdesc);
+
+	elog(WARNING, "cube %p nkeys %d naggs %d", cube, cube->ci_NumCubeAttrs, cube->ci_NumCubeAggregates);
+
+	/* truncate the cube */
+	heap_truncate_one_rel(cubeRelation);
+
+	/* input slot, used to read stuff from the heap table */
+	slot = MakeSingleTupleTableSlot(tdesc,
+									table_slot_callbacks(heapRelation));
+
+	/* build info needed to transform input tuples for the tuplesort */
+	{
+		ListCell *lc, *lc2;
+		ListCell   *cubeexpr_item;
+		AttrNumber	attnum;
+
+		/* first extract expressions from aggregates */
+		foreach (lc, cube->ci_Aggregates)
+		{
+			Aggref *aggref = (Aggref *) lfirst(lc);
+
+			foreach (lc2, aggref->args)
+			{
+				TargetEntry *te = (TargetEntry *) lfirst(lc2);
+
+				agg_args = lappend(agg_args, te->expr);
+			}
+		}
+
+		elog(WARNING, "agg_args = %d", list_length(agg_args));
+
+		/* ok, let's build the tuplesort info (arrays and tupledesc) */
+		tss_desc = CreateTemplateTupleDesc(cube->ci_NumCubeAttrs + list_length(agg_args));
+
+		elog(WARNING, "tdesc %p natts %d", tss_desc, tss_desc->natts);
+
+		sortNKeys = cube->ci_NumCubeAttrs;
+		sortKeys = (AttrNumber *) palloc(sizeof(AttrNumber) * sortNKeys);
+		sortOperators = (Oid *) palloc(sizeof(Oid) * sortNKeys);
+		sortCollations = (Oid *) palloc(sizeof(Oid) * sortNKeys);
+		sortNullsFirst = (bool *) palloc(sizeof(bool) * sortNKeys);
+
+		cubeexpr_item = list_head(cube->ci_Expressions);
+
+		/* we stash the sort theys at the beginning */
+		attnum = 0;
+		for (int i = 0; i < cube->ci_NumCubeAttrs; i++)
+		{
+			Oid	collation = DEFAULT_COLLATION_OID;
+
+			attnum++;
+
+			/* just a reference to an attribute in heap relation */
+			if (cube->ci_KeyAttrNumbers[i] != 0)
+				TupleDescCopyEntry(tss_desc, attnum,
+								   tdesc, cube->ci_KeyAttrNumbers[i]);
+			else
+			{
+				Node *expr;
+
+				expr = (Node *) lfirst(cubeexpr_item);
+				cubeexpr_item = lnext(cube->ci_Expressions, cubeexpr_item);
+
+				collation = exprCollation(expr);
+
+				TupleDescInitEntry(tss_desc, attnum, "expr",
+								   exprType(expr),
+								   exprTypmod(expr),
+								   0);
+			}
+
+			sortKeys[i] = attnum;
+
+			get_sort_group_operators(tss_desc->attrs[i].atttypid,
+									 true, false, false,
+									 &sortOperators[i],
+									 NULL, NULL, NULL);
+
+			sortCollations[i] = collation;
+			sortNullsFirst[i] = false;
+		}
+
+		/* also add arguments for aggregates */
+		foreach (lc, agg_args)
+		{
+			Node *expr = (Node *) lfirst(lc);
+
+			attnum++;
+
+			TupleDescInitEntry(tss_desc, attnum, "expr",
+							   exprType(expr),
+							   exprTypmod(expr),
+							   0);
+		}
+
+		elog(WARNING, "added %d", attnum);
+	}
+
+	values = (Datum *) palloc(sizeof(Datum) * tss_desc->natts);
+	isnull = (bool *) palloc(sizeof(bool) * tss_desc->natts);
+
+	/* slot for tuplesort */
+	tss_slot = MakeSingleTupleTableSlot(tss_desc, &TTSOpsHeapTuple);
 
 	/* load data from the source table, sort them by keys */
+	scan = table_beginscan(heapRelation, GetActiveSnapshot(), 0, NULL);
+
+	/* build TSS with just enough columns from the heap relation */
+	tss = tuplesort_begin_heap(tss_desc,
+							   sortNKeys,
+							   sortKeys,
+							   sortOperators,
+							   sortCollations,
+							   sortNullsFirst,
+							   work_mem,
+							   NULL,
+							   false);
+
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		int	idx;
+		ListCell *lc;
+		HeapTuple tuple;
+
+		memset(values, 0, sizeof(Datum) * tss_desc->natts);
+		memset(isnull, 0, sizeof(bool) * tss_desc->natts);
+
+		/* Build tuple in the tts_slot. */
+		slot_getsomeattrs(slot, tdesc->natts);
+
+		/* we stash the sort theys at the beginning */
+		idx = 0;
+		for (int i = 0; i < cube->ci_NumCubeAttrs; i++)
+		{
+			/* just a reference to an attribute in heap relation */
+			if (cube->ci_KeyAttrNumbers[i] != 0)
+			{
+				AttrNumber src = cube->ci_KeyAttrNumbers[i];
+
+				values[idx] = slot->tts_values[src-1];
+				isnull[idx] = slot->tts_isnull[src-1];
+			}
+			else
+			{
+				elog(ERROR, "FIXME");
+			}
+
+			idx++;
+		}
+
+		/* also add arguments for aggregates */
+		foreach (lc, agg_args)
+		{
+			Node *expr = (Node *) lfirst(lc);
+			Var *var;
+			AttrNumber src;
+
+			if (!IsA(expr, Var))
+				elog(ERROR, "FIXME");
+
+			var = (Var *) expr;
+			src = var->varattno;
+
+			values[idx] = slot->tts_values[src-1];
+			isnull[idx] = slot->tts_isnull[src-1];
+
+			idx++;
+		}
+
+		elog(WARNING, "idx = %d", idx);
+
+		tuple = heap_form_tuple(tss_desc, values, isnull);
+
+		ExecStoreHeapTuple(tuple, tss_slot, true);
+
+		tuplesort_puttupleslot(tss, tss_slot);
+	}
+
+	table_endscan(scan);
+
+	/* sort the data */
+	tuplesort_performsort(tss);
+
+	/* read data from the sorted state */
+	{
+		HeapTuple tup;
+
+		while ((tup = tuplesort_getheaptuple(tss, true)))
+			elog(WARNING, "got tuple");
+	}
 
 	/* build info for sorted aggregation */
 
 	/* do the aggregation, insert pre-aggregated data into the cube */
+
+
+	/* we're done with the sort */
+	tuplesort_end(tss);
+
+
+	ExecDropSingleTupleTableSlot(slot);
+	// ExecDropSingleTupleTableSlot(tts_slot);
+
+	/* unlock the relations */
+	table_close(heapRelation, AccessShareLock);
+	table_close(cubeRelation, AccessExclusiveLock);
 }
 
 Datum

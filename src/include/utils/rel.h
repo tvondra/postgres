@@ -224,6 +224,7 @@ typedef struct RelationData
 
 	MemoryContext rd_cubecxt;	/* private memory cxt for this stuff */
 	List	   *rd_cubeexprs;	/* cube expression trees, if any */
+	List	   *rd_cubeaggs;	/* cube aggregate expression trees */
 
 	/*
 	 * rd_amcache is available for index and table AMs to cache private data

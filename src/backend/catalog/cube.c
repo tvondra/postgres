@@ -33,6 +33,7 @@
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_aggregate.h"
 #include "catalog/pg_changeset.h"
 #include "catalog/pg_type.h"
 #include "commands/cubes.h"
@@ -322,6 +323,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 						 Oid *classObjectId)
 {
 	int			numatts = cubeInfo->ci_NumCubeAttrs;
+	int			numaggs = cubeInfo->ci_NumCubeAggregates;
+
 	ListCell   *colnames_item = list_head(cubeColNames);
 	ListCell   *cubeexpr_item = list_head(cubeInfo->ci_Expressions);
 	TupleDesc	heapTupDesc;
@@ -332,13 +335,11 @@ ConstructTupleDescriptor(Relation heapRelation,
 	/* we need access to the table's tuple descriptor */
 	heapTupDesc = RelationGetDescr(heapRelation);
 	natts = RelationGetForm(heapRelation)->relnatts;
-elog(WARNING, "naggs = %d", cubeInfo->ci_NumCubeAggregates);
-elog(WARNING, "natts = %d", natts);
-elog(WARNING, "numatts = %d", numatts);
+
 	/*
 	 * allocate the new tuple descriptor
 	 */
-	cubeTupDesc = CreateTemplateTupleDesc(numatts);
+	cubeTupDesc = CreateTemplateTupleDesc(numatts + numaggs);
 
 	/*
 	 * Cubes can contain both simple columns and expressions (either regular
@@ -356,8 +357,6 @@ elog(WARNING, "numatts = %d", numatts);
 		HeapTuple	tuple;
 		Form_pg_type typeTup;
 		Form_pg_attribute to = &cubeTupDesc->attrs[i];
-
-		elog(WARNING, "Adding attr %d", atnum);
 
 		/* simple column (no system attributes) */
 		if ((atnum > 0) && (atnum <= natts))
@@ -457,6 +456,83 @@ elog(WARNING, "numatts = %d", numatts);
 		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
 		colnames_item = lnext(cubeColNames, colnames_item);
 	}
+
+	/* now append the aggregates */
+	cubeexpr_item = list_head(cubeInfo->ci_Aggregates);
+
+	for (i = 0; i < numaggs; i++)
+	{
+		HeapTuple	tuple;
+		Form_pg_type	typeTup;
+		Oid			keyType;
+		Form_pg_attribute to = &cubeTupDesc->attrs[numatts + i];
+		Form_pg_aggregate aggForm;
+
+		Node   *expr;
+		Aggref *aggref;
+
+		MemSet(to, 0, ATTRIBUTE_FIXED_PART_SIZE);
+
+		if (cubeexpr_item == NULL)	/* shouldn't happen */
+			elog(ERROR, "too few entries in cubeexprs list");
+
+		expr = (Node *) lfirst(cubeexpr_item);
+		cubeexpr_item = lnext(cubeInfo->ci_Aggregates, cubeexpr_item);
+
+		Assert(IsA(expr, Aggref));
+
+		aggref = (Aggref *) expr;
+
+		/* info about moving aggregate */
+		tuple = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(aggref->aggfnoid));
+		if (!HeapTupleIsValid(tuple))		/* should not happen */
+			elog(ERROR, "cache lookup failed for aggregate %u", aggref->aggfnoid);
+
+		aggForm = (Form_pg_aggregate) GETSTRUCT(tuple);
+
+		keyType = aggForm->aggmtranstype;
+
+		ReleaseSysCache(tuple);
+
+		/*
+		 * Lookup the mtranstype info in pg_type for the aggregate.
+		 */
+		tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(keyType));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for type %u", keyType);
+		typeTup = (Form_pg_type) GETSTRUCT(tuple);
+
+		/*
+		 * Assign some of the attributes values. Leave the rest as 0.
+		 */
+		to->attnum = numatts + i + 1;
+		to->atttypid = keyType;
+		to->attlen = typeTup->typlen;
+		to->attbyval = typeTup->typbyval;
+		to->attstorage = typeTup->typstorage;
+		to->attalign = typeTup->typalign;
+		to->attstattarget = -1;
+		to->attcacheoff = -1;
+		to->atttypmod = -1;	/* FIXME? */
+		to->attislocal = true;
+		to->attcollation = InvalidOid; /* FIXME? */
+
+		ReleaseSysCache(tuple);
+
+		/* generate fake column mames */
+		sprintf(NameStr(to->attname), "agg_%d", i+1);
+
+		/*
+		 * Make sure the expression yields a type that's safe to store in
+		 * a cube.
+		 *
+		 * FIXME Do we need this?
+		 */
+		CheckAttributeType(NameStr(to->attname),
+						   to->atttypid, to->attcollation,
+						   NIL, false);
+	}
+
 
 	return cubeTupDesc;
 

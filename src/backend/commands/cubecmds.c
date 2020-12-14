@@ -654,10 +654,7 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 
 		/* make sure we have sensible info about cube keys */
 		if (!is_cube_key)
-		{
-			elog(WARNING, "skipping aggregate");
 			continue;
-		}
 
 		/*
 		 * Check we have a collation iff it's a collatable type.  The only
@@ -706,7 +703,6 @@ ComputeCubeAttrs(CubeInfo *cubeInfo,
 		attn++;
 	}
 
-	elog(WARNING, "attn = %d", attn);
 	cubeInfo->ci_NumCubeAttrs = attn;
 	cubeInfo->ci_NumCubeAggregates = list_length(cubeInfo->ci_Aggregates);
 

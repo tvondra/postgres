@@ -740,10 +740,6 @@ cube_rebuild(Oid cubeId)
 	tdesc = RelationGetDescr(heapRelation);
 	cube = BuildCubeInfo(cubeRelation);
 
-	elog(WARNING, "tdesc %p", tdesc);
-
-	elog(WARNING, "cube %p nkeys %d naggs %d", cube, cube->ci_NumCubeAttrs, cube->ci_NumCubeAggregates);
-
 	/* truncate the cube */
 	heap_truncate_one_rel(cubeRelation);
 
@@ -770,12 +766,8 @@ cube_rebuild(Oid cubeId)
 			}
 		}
 
-		elog(WARNING, "agg_args = %d", list_length(agg_args));
-
 		/* ok, let's build the tuplesort info (arrays and tupledesc) */
 		tss_desc = CreateTemplateTupleDesc(cube->ci_NumCubeAttrs + list_length(agg_args));
-
-		elog(WARNING, "tdesc %p natts %d", tss_desc, tss_desc->natts);
 
 		sortNKeys = cube->ci_NumCubeAttrs;
 		sortKeys = (AttrNumber *) palloc(sizeof(AttrNumber) * sortNKeys);
@@ -835,15 +827,13 @@ cube_rebuild(Oid cubeId)
 							   exprTypmod(expr),
 							   0);
 		}
-
-		elog(WARNING, "added %d", attnum);
 	}
 
 	values = (Datum *) palloc(sizeof(Datum) * tss_desc->natts);
 	isnull = (bool *) palloc(sizeof(bool) * tss_desc->natts);
 
 	/* slot for tuplesort */
-	tss_slot = MakeSingleTupleTableSlot(tss_desc, &TTSOpsHeapTuple);
+	tss_slot = MakeSingleTupleTableSlot(tss_desc, &TTSOpsMinimalTuple);
 
 	/* load data from the source table, sort them by keys */
 	scan = table_beginscan(heapRelation, GetActiveSnapshot(), 0, NULL);
@@ -910,11 +900,9 @@ cube_rebuild(Oid cubeId)
 			idx++;
 		}
 
-		elog(WARNING, "idx = %d", idx);
-
 		tuple = heap_form_tuple(tss_desc, values, isnull);
 
-		ExecStoreHeapTuple(tuple, tss_slot, true);
+		ExecForceStoreHeapTuple(tuple, tss_slot, false);
 
 		tuplesort_puttupleslot(tss, tss_slot);
 	}
@@ -928,8 +916,17 @@ cube_rebuild(Oid cubeId)
 	{
 		HeapTuple tup;
 
-		while ((tup = tuplesort_getheaptuple(tss, true)))
-			elog(WARNING, "got tuple");
+		while (tuplesort_gettupleslot(tss, true, false, tss_slot, NULL))
+		{
+			bool isnull;
+			Datum value;
+
+			tup = ExecFetchSlotHeapTuple(tss_slot, true, NULL);
+
+			value = heap_getattr(tup, 1, tss_desc, &isnull);
+
+			elog(WARNING, "%ld", value);
+		}
 	}
 
 	/* build info for sorted aggregation */
@@ -953,8 +950,6 @@ Datum
 pg_rebuild_cube(PG_FUNCTION_ARGS)
 {
 	Oid	cubeId = PG_GETARG_OID(0);
-
-	elog(WARNING, "rebuilding cube %d", cubeId);
 
 	cube_rebuild(cubeId);
 

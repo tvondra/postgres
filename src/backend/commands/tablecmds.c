@@ -276,6 +276,18 @@ static const struct dropmsgstrings dropmsgstringarray[] = {
 		gettext_noop("index \"%s\" does not exist, skipping"),
 		gettext_noop("\"%s\" is not an index"),
 	gettext_noop("Use DROP INDEX to remove an index.")},
+	{RELKIND_CHANGESET,
+		ERRCODE_UNDEFINED_OBJECT,
+		gettext_noop("changeset \"%s\" does not exist"),
+		gettext_noop("changeset \"%s\" does not exist, skipping"),
+		gettext_noop("\"%s\" is not a changeset"),
+	gettext_noop("Use DROP CHANGESET to remove a changeset.")},
+	{RELKIND_CUBE,
+		ERRCODE_UNDEFINED_OBJECT,
+		gettext_noop("cube \"%s\" does not exist"),
+		gettext_noop("cube \"%s\" does not exist, skipping"),
+		gettext_noop("\"%s\" is not a cube"),
+	gettext_noop("Use DROP CUBE to remove a cube.")},
 	{'\0', 0, NULL, NULL, NULL, NULL}
 };
 

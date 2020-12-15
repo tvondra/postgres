@@ -44,10 +44,12 @@
 #include "parser/parse_oper.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 						 CubeInfo *cubeInfo,
@@ -674,6 +676,128 @@ BuildCubeInfo(Relation cube)
 	return ci;
 }
 
+
+typedef struct PerAggState {
+
+	Aggref *aggref;
+	List   *args;
+
+	/* info about aggregate functions */
+	Oid			transfn_oid;
+	Oid			invtransfn_oid;
+	Oid			finalfn_oid;
+	bool		finalextra;
+	char		finalmodify;
+	Oid			transtype;
+	Datum		initValue;
+	bool		initValueIsNull;
+
+	/*
+	 * fmgr lookup data for transition function(s).
+	 */
+	FmgrInfo	transfn;
+	FmgrInfo	invtransfn;
+	FmgrInfo	finalfn;
+
+	/* */
+	Datum		transValue;
+	bool		transtypeByVal;
+	int16		transtypeLen;
+	bool		transValueIsNull;
+	bool		noTransValue;
+
+} PerAggState;
+
+static void
+reset_group(PerAggState *aggs, int naggs)
+{
+	for (int i; i < naggs; i++)
+	{
+		/*
+		 * (Re)set transValue to the initial value.
+		 *
+		 * Note that when the initial value is pass-by-ref, we must copy it (into
+		 * the aggcontext) since we will pfree the transValue later.
+		 */
+		if (aggs[i].initValueIsNull)
+			aggs[i].transValue = aggs[i].initValue;
+		else
+		{
+			aggs[i].transValue = datumCopy(aggs[i].initValue,
+										   aggs[i].transtypeByVal,
+										   aggs[i].transtypeLen);
+		}
+		aggs[i].transValueIsNull = aggs[i].initValueIsNull;
+
+		aggs[i].noTransValue = aggs[i].initValueIsNull;
+	}
+}
+
+static Datum
+GetAggInitVal(Datum textInitVal, Oid transtype)
+{
+	Oid			typinput,
+				typioparam;
+	char	   *strInitVal;
+	Datum		initVal;
+
+	getTypeInputInfo(transtype, &typinput, &typioparam);
+	strInitVal = TextDatumGetCString(textInitVal);
+	initVal = OidInputFunctionCall(typinput, strInitVal,
+								   typioparam, -1);
+	pfree(strInitVal);
+	return initVal;
+}
+
+static void
+init_agg_state(PerAggState *state, Aggref *aggref)
+{
+	HeapTuple	aggTuple;
+	Datum		textInitVal;
+	Form_pg_aggregate aggform;
+
+	state->aggref = aggref;
+
+	/* Fetch the pg_aggregate row */
+	aggTuple = SearchSysCache1(AGGFNOID,
+							   ObjectIdGetDatum(aggref->aggfnoid));
+	if (!HeapTupleIsValid(aggTuple))
+		elog(ERROR, "cache lookup failed for aggregate %u",
+			 aggref->aggfnoid);
+	aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+	state->transfn_oid = aggform->aggmtransfn;
+	state->invtransfn_oid = aggform->aggminvtransfn;
+	state->finalfn_oid = aggform->aggmfinalfn;
+	state->finalextra = aggform->aggmfinalextra;
+	state->finalmodify = aggform->aggmfinalmodify;
+	state->transtype = aggform->aggmtranstype;
+	state->args = NIL;
+
+	fmgr_info(state->transfn_oid, &state->transfn);
+	fmgr_info(state->invtransfn_oid, &state->invtransfn);
+	fmgr_info(state->finalfn_oid, &state->finalfn);
+
+	/*
+	 * initval is potentially null, so don't try to access it as a
+	 * struct field. Must do it the hard way with SysCacheGetAttr.
+	 */
+	textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+								  Anum_pg_aggregate_aggminitval,
+								  &state->initValueIsNull);
+	if (state->initValueIsNull)
+		state->initValue = (Datum) 0;
+	else
+		state->initValue = GetAggInitVal(textInitVal,
+										 state->transtype);
+
+	get_typlenbyval(state->transtype,
+					&state->transtypeLen,
+					&state->transtypeByVal);
+
+	ReleaseSysCache(aggTuple);
+}
+
 /*
  * CubeGetRelation: given a cube's relation OID, get the OID of
  * the relation it is a cube on.  Uses the system cache.
@@ -720,10 +844,12 @@ cube_rebuild(Oid cubeId)
 	bool		   *sortNullsFirst;
 
 	/* expressions in arguments for aggregates */
+	int			nargs;
 	List	   *agg_args = NIL;
 	TupleDesc	tss_desc;
 	TupleTableSlot *tss_slot;
 	TupleDesc	tdesc;
+	PerAggState *aggs;
 
 	Datum	   *values;
 	bool	   *isnull;
@@ -752,22 +878,19 @@ cube_rebuild(Oid cubeId)
 		ListCell *lc, *lc2;
 		ListCell   *cubeexpr_item;
 		AttrNumber	attnum;
+		int			idx;
 
 		/* first extract expressions from aggregates */
+		nargs = 0;
 		foreach (lc, cube->ci_Aggregates)
 		{
 			Aggref *aggref = (Aggref *) lfirst(lc);
 
-			foreach (lc2, aggref->args)
-			{
-				TargetEntry *te = (TargetEntry *) lfirst(lc2);
-
-				agg_args = lappend(agg_args, te->expr);
-			}
+			nargs += list_length(aggref->args);
 		}
 
 		/* ok, let's build the tuplesort info (arrays and tupledesc) */
-		tss_desc = CreateTemplateTupleDesc(cube->ci_NumCubeAttrs + list_length(agg_args));
+		tss_desc = CreateTemplateTupleDesc(cube->ci_NumCubeAttrs + nargs);
 
 		sortNKeys = cube->ci_NumCubeAttrs;
 		sortKeys = (AttrNumber *) palloc(sizeof(AttrNumber) * sortNKeys);
@@ -815,17 +938,37 @@ cube_rebuild(Oid cubeId)
 			sortNullsFirst[i] = false;
 		}
 
+		aggs = (PerAggState *) palloc(sizeof(PerAggState) * cube->ci_NumCubeAggregates);
+		agg_args = NIL;
+
 		/* also add arguments for aggregates */
-		foreach (lc, agg_args)
+		idx = 0;
+		foreach (lc, cube->ci_Aggregates)
 		{
-			Node *expr = (Node *) lfirst(lc);
+			Aggref *aggref = (Aggref *) lfirst(lc);
 
-			attnum++;
+			init_agg_state(&aggs[idx], aggref);
 
-			TupleDescInitEntry(tss_desc, attnum, "expr",
-							   exprType(expr),
-							   exprTypmod(expr),
-							   0);
+			elog(WARNING, "agg %d => %d", idx, aggs[idx].transtype);
+
+			foreach (lc2, aggref->args)
+			{
+				TargetEntry *te = (TargetEntry *) lfirst(lc2);
+				Node *expr = (Node *) te->expr;
+
+				agg_args = lappend(agg_args, expr);
+
+				attnum++;
+
+				TupleDescInitEntry(tss_desc, attnum, "expr",
+								   exprType(expr),
+								   exprTypmod(expr),
+								   0);
+
+				aggs[idx].args = lappend_int(aggs[idx].args, attnum);
+			}
+
+			idx++;
 		}
 	}
 
@@ -914,18 +1057,66 @@ cube_rebuild(Oid cubeId)
 
 	/* read data from the sorted state */
 	{
-		HeapTuple tup;
+		HeapTuple	tup;
+		HeapTuple	groupTuple = NULL;
+
+		reset_group(aggs, cube->ci_NumCubeAggregates);
 
 		while (tuplesort_gettupleslot(tss, true, false, tss_slot, NULL))
 		{
-			bool isnull;
-			Datum value;
+			bool	newgroup = false;
 
 			tup = ExecFetchSlotHeapTuple(tss_slot, true, NULL);
 
-			value = heap_getattr(tup, 1, tss_desc, &isnull);
+			/* if no group tuple, copy the new tuple */
+			if (!groupTuple)
+				groupTuple = heap_copytuple(tup);
 
-			elog(WARNING, "%ld", value);
+			/* are we in the same group as groupTuple? */
+			for (int i = 0; i < sortNKeys; i++)
+			{
+				FmgrInfo	finfo;
+				Datum		value1, value2;
+				bool		isnull1, isnull2;
+				TypeCacheEntry *typcache;
+				Oid			collation = tss_desc->attrs[i].attcollation;
+
+				value1 = heap_getattr(groupTuple, (i + 1), tss_desc, &isnull1);
+				value2 = heap_getattr(tup, (i + 1), tss_desc, &isnull2);
+
+				/* only one is NULL */
+				if (isnull1 != isnull2)
+				{
+					newgroup = true;
+					break;
+				}
+
+				/* both values are NULL */
+				if (isnull1 && isnull2)
+					continue;
+
+				/* both non-NULL */
+				typcache = lookup_type_cache(tss_desc->attrs[i].atttypid,
+										TYPECACHE_EQ_OPR_FINFO);
+
+				Assert(OidIsValid(typcache->eq_opr_finfo.fn_oid));
+
+				fmgr_info(typcache->eq_opr_finfo.fn_oid, &finfo);
+
+				if (!DatumGetBool(FunctionCall2Coll(&finfo, collation,
+													value1, value2)))
+				{
+					newgroup = true;
+					break;
+				}
+			}
+
+			if (newgroup)
+			{
+				reset_group(aggs, cube->ci_NumCubeAggregates);
+				elog(WARNING, "new group");
+				groupTuple = heap_copytuple(tup);
+			}
 		}
 	}
 
@@ -937,9 +1128,9 @@ cube_rebuild(Oid cubeId)
 	/* we're done with the sort */
 	tuplesort_end(tss);
 
-
+	/* get rid of the slots */
 	ExecDropSingleTupleTableSlot(slot);
-	// ExecDropSingleTupleTableSlot(tts_slot);
+	ExecDropSingleTupleTableSlot(tss_slot);
 
 	/* unlock the relations */
 	table_close(heapRelation, AccessShareLock);

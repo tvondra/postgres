@@ -58,6 +58,10 @@ typedef struct BrinDesc
 	/* total number of Datum entries that are stored on-disk for all columns */
 	int			bd_totalstored;
 
+	/* parameters for sizing bloom filter (BRIN bloom opclasses) */
+	double		bd_nDistinctPerRange;
+	double		bd_falsePositiveRange;
+
 	/* per-column info; bd_tupdesc->natts entries long */
 	BrinOpcInfo *bd_info[FLEXIBLE_ARRAY_MEMBER];
 } BrinDesc;

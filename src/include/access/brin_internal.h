@@ -62,6 +62,9 @@ typedef struct BrinDesc
 	double		bd_nDistinctPerRange;
 	double		bd_falsePositiveRange;
 
+	/* parameters for multi-minmax indexes */
+	int			bd_valuesPerRange;
+
 	/* per-column info; bd_tupdesc->natts entries long */
 	BrinOpcInfo *bd_info[FLEXIBLE_ARRAY_MEMBER];
 } BrinDesc;

@@ -38,6 +38,7 @@
 #include "utils/array.h"
 #include "utils/attoptcache.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -571,7 +572,7 @@ examine_attribute(Node *expr)
 	if (!HeapTupleIsValid(typtuple))
 		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
 	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
-	// stats->anl_context = anl_context;
+	// stats->anl_context = anl_context;	/* FIXME? */
 	stats->tupattnum = InvalidAttrNumber;
 
 	/*
@@ -2484,6 +2485,7 @@ compute_expr_stats(Relation onerel, double totalrows,
 	for (ind = 0; ind < nexprs; ind++)
 	{
 		AnlExprData *thisdata = &exprdata[ind];
+		VacAttrStats *stats = thisdata->vacattrstat;
 		Node        *expr = thisdata->expr;
 		TupleTableSlot *slot;
 		EState	   *estate;
@@ -2492,6 +2494,9 @@ compute_expr_stats(Relation onerel, double totalrows,
 		bool	   *exprnulls;
 		ExprState  *exprstate;
 		int			tcnt;
+
+		/* Are we still in the main context? */
+		Assert(CurrentMemoryContext == expr_context);
 
 		/*
 		 * Need an EState for evaluation of expressions.  Create it in
@@ -2527,17 +2532,17 @@ compute_expr_stats(Relation onerel, double totalrows,
 			 */
 			ResetExprContext(econtext);
 
-			/* Set up for predicate or expression evaluation */
+			/* Set up for expression evaluation */
 			ExecStoreHeapTuple(rows[i], slot, false);
 
 			/*
-			 * FIXME this probably leaks memory. Maybe we should use
-			 * ExecEvalExprSwitchContext but then we need to copy the
-			 * result somewhere else.
+			 * Evaluate the expression. We do this in the per-tuple context
+			 * so as not to leak memory, and then copy the result into the
+			 * context created at the beginning of this function.
 			 */
-			datum = ExecEvalExpr(exprstate,
-								 GetPerTupleExprContext(estate),
-								 &isnull);
+			datum = ExecEvalExprSwitchContext(exprstate,
+											  GetPerTupleExprContext(estate),
+											  &isnull);
 			if (isnull)
 			{
 				exprvals[tcnt] = (Datum) 0;
@@ -2545,7 +2550,12 @@ compute_expr_stats(Relation onerel, double totalrows,
 			}
 			else
 			{
-				exprvals[tcnt] = (Datum) datum;
+				/* Make sure we copy the data into the context. */
+				Assert(CurrentMemoryContext == expr_context);
+
+				exprvals[tcnt] = datumCopy(datum,
+										   stats->attrtype->typbyval,
+										   stats->attrtype->typlen);
 				exprnulls[tcnt] = false;
 			}
 
@@ -2554,11 +2564,15 @@ compute_expr_stats(Relation onerel, double totalrows,
 
 		/*
 		 * Now we can compute the statistics for the expression columns.
+		 *
+		 * XXX Unlike compute_index_stats we don't need to switch and reset
+		 * memory contexts here, because we're only computing stats for a
+		 * single expression (and not iterating over many indexes), so we
+		 * just do it in expr_context. Note that compute_stats copies the
+		 * result into stats->anl_context, so it does not disappear.
 		 */
 		if (tcnt > 0)
 		{
-			// MemoryContextSwitchTo(col_context);
-			VacAttrStats *stats = thisdata->vacattrstat;
 			AttributeOpts *aopt =
 				get_attribute_options(stats->attr->attrelid,
 									  stats->attr->attnum);
@@ -2577,16 +2591,14 @@ compute_expr_stats(Relation onerel, double totalrows,
 			 */
 			if (aopt != NULL && aopt->n_distinct != 0.0)
 				stats->stadistinct = aopt->n_distinct;
-
-			// MemoryContextResetAndDeleteChildren(col_context);
 		}
 
 		/* And clean up */
-		// MemoryContextSwitchTo(expr_context);
+		MemoryContextSwitchTo(expr_context);
 
 		ExecDropSingleTupleTableSlot(slot);
 		FreeExecutorState(estate);
-		// MemoryContextResetAndDeleteChildren(expr_context);
+		MemoryContextResetAndDeleteChildren(expr_context);
 	}
 
 	MemoryContextSwitchTo(old_context);

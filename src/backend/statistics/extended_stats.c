@@ -1785,7 +1785,7 @@ statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
 			/* Have a whole-row reference, must have access to all columns */
 			if (pg_attribute_aclcheck_all(rte->relid, userid, ACL_SELECT,
 										  ACLMASK_ALL) != ACLCHECK_OK)
-				return false;
+				return NIL;
 		}
 		else
 		{
@@ -1794,9 +1794,18 @@ statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
 
 			while ((attnum = bms_next_member(attnums, attnum)) >= 0)
 			{
-				if (pg_attribute_aclcheck(rte->relid, attnum, userid,
+				AttrNumber	tmp;
+
+				/* Adjust for system attributes (offset for bitmap). */
+				tmp = attnum + FirstLowInvalidHeapAttributeNumber;
+
+				/* Ignore system attributes, those can't have statistics. */
+				if (!AttrNumberIsForUserDefinedAttr(tmp))
+					return NIL;
+
+				if (pg_attribute_aclcheck(rte->relid, tmp, userid,
 										  ACL_SELECT) != ACLCHECK_OK)
-					return false;
+					return NIL;
 			}
 		}
 	}

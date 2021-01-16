@@ -614,7 +614,6 @@ static bool
 dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
 {
 	int			j;
-	bool		result = true;	/* match by default */
 
 	/*
 	 * Check that the dependency actually is fully covered by clauses. We have
@@ -625,13 +624,10 @@ dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
 		int			attnum = dependency->attributes[j];
 
 		if (!bms_is_member(attnum, attnums))
-		{
-			result = false;
-			break;
-		}
+			return false;
 	}
 
-	return result;
+	return true;
 }
 
 /*
@@ -942,8 +938,8 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
  * (see the comment in dependencies_clauselist_selectivity).
  */
 static MVDependency *
-find_strongest_dependency(MVDependencies **dependencies,
-						  int ndependencies, Bitmapset *attnums)
+find_strongest_dependency(MVDependencies **dependencies, int ndependencies,
+						  Bitmapset *attnums)
 {
 	int			i,
 				j;
@@ -1173,6 +1169,9 @@ clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
 }
 
 /*
+ * dependency_is_compatible_expression
+ *		Determines if the expression is compatible with functional dependencies
+ *
  * Similar to dependency_is_compatible_clause, but don't enforce that the
  * expression is a simple Var. OTOH we check that there's at least one
  * statistics matching the expression.
@@ -1356,7 +1355,11 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	list_attnums = (AttrNumber *) palloc(sizeof(AttrNumber) *
 										 list_length(clauses));
 
-	/* unique expressions */
+	/*
+	 * We allocate space as if every clause was a unique expression, although
+	 * that's probably overkill. Some will be simple column references that
+	 * we'll translate to attnums, and there might be duplicates.
+	 */
 	unique_exprs = (Node **) palloc(sizeof(Node *) * list_length(clauses));
 	unique_exprs_cnt = 0;
 
@@ -1386,6 +1389,11 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 		if (!bms_is_member(listidx, *estimatedclauses))
 		{
+			/*
+			 * If it's a simple column refrence, just extract the attnum. If
+			 * it's an expression, make sure it's not a duplicate and assign
+			 * a special attnum to it (higher than any regular value).
+			 */
 			if (dependency_is_compatible_clause(clause, rel->relid, &attnum))
 			{
 				list_attnums[listidx] = attnum;
@@ -1400,12 +1408,12 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 				Assert(expr != NULL);
 
-				/* build list of unique expressions, for re-mapping later */
+				/* If the expression is duplicate, use the same attnum. */
 				for (i = 0; i < unique_exprs_cnt; i++)
 				{
 					if (equal(unique_exprs[i], expr))
 					{
-						attnum = (i + 1);
+						attnum = EXPRESSION_ATTNUM(i);
 						break;
 					}
 				}
@@ -1418,11 +1426,12 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 					/* shouldn't have seen this attnum yet */
 					Assert(!bms_is_member(attnum, clauses_attnums));
+
+					/* we may add the attnum repeatedly to clauses_attnums */
+					clauses_attnums = bms_add_member(clauses_attnums, attnum);
 				}
 
-				/* we may add the attnum repeatedly to clauses_attnums */
-				clauses_attnums = bms_add_member(clauses_attnums, attnum);
-
+				/* remember which attnum was assigned to this clause */
 				list_attnums[listidx] = attnum;
 			}
 		}

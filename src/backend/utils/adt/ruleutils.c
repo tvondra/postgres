@@ -1591,26 +1591,6 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		exprsString = TextDatumGetCString(exprsDatum);
 		exprs = (List *) stringToNode(exprsString);
 		pfree(exprsString);
-
-		/*
-		 * Run the expressions through eval_const_expressions. This is not just an
-		 * optimization, but is necessary, because the planner will be comparing
-		 * them to similarly-processed qual clauses, and may fail to detect valid
-		 * matches without this.  We must not use canonicalize_qual, however,
-		 * since these aren't qual expressions.
-		 *
-		 * XXX Not sure if this is really needed, it's not in pg_get_indexdef. In
-		 * fact the comment above suggests we don't want const-folding here.
-		 */
-		// exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
-
-		/*
-		 * May as well fix opfuncids too
-		 *
-		 * XXX Same here. Is this something we want/need?
-		 */
-		// fix_opfuncids((Node *) exprs);
-
 	}
 	else
 		exprs = NIL;

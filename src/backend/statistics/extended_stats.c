@@ -1411,8 +1411,35 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
 
 /*
  * statext_extract_expression_internal
- *		FIXME
+ *		Extract parts of an expressions to match against extended stats.
  *
+ * Given an expression, decompose it into "parts" that will be analyzed and
+ * matched against extended statistics. If the expression is not considered
+ * compatible (supported by extended statistics), this returns NIL.
+ *
+ * There's a certain amount of ambiguity, because some expressions may be
+ * split into parts in multiple ways. For example, consider expression
+ *
+ *   (a + b) = 1
+ *
+ * which may be either considered as a single boolean expression, or it may
+ * be split into expression (a + b) and a constant. So this might return
+ * either ((a+b)=1) or (a+b) as valid expressions, but this does affect
+ * matching to extended statistics, because the expressions have to match
+ * the definition exactly. So ((a+b)=1) would match statistics defined as
+ *
+ *   CREATE STATISTICS s ON ((a+b) = 1) FROM t;
+ *
+ * but not
+ *
+ *   CREATE STATISTICS s ON (a+b) FROM t;
+ *
+ * which might be a bit confusing. We might enhance this to track those
+ * alternative decompositions somehow, and then modify the matching to
+ * extended statistics. But it seems non-trivial, because the AND/OR
+ * clauses make it "recursive".
+ *
+ * in which expressions might be extracted.
  */
 static List *
 statext_extract_expression_internal(PlannerInfo *root, Node *clause, Index relid)

@@ -1713,7 +1713,9 @@ static List *
 statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
 {
 	RestrictInfo *rinfo = (RestrictInfo *) clause;
+	RangeTblEntry *rte = root->simple_rte_array[relid];
 	List		 *exprs;
+	Oid			userid;
 
 	if (!IsA(rinfo, RestrictInfo))
 		return NIL;
@@ -1726,13 +1728,50 @@ statext_extract_expression(PlannerInfo *root, Node *clause, Index relid)
 	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
 		return NIL;
 
-	/* Check the clause and determine what attributes it references. */
+	/* Check the clause and extract expressions it's composed of. */
 	exprs = statext_extract_expression_internal(root, (Node *) rinfo->clause, relid);
 
+	/*
+	 * If there are no potentially interesting expressions (supported by
+	 * extended statistics), we're done;
+	 */
 	if (!exprs)
 		return NIL;
 
-	/* FIXME do the same ACL check as in statext_is_compatible_clause */
+	/*
+	 * Check that the user has permission to read all these attributes.  Use
+	 * checkAsUser if it's set, in case we're accessing the table via a view.
+	 */
+	userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
+	if (pg_class_aclcheck(rte->relid, userid, ACL_SELECT) != ACLCHECK_OK)
+	{
+		Bitmapset *attnums = NULL;
+
+		/* Extract all attribute numbers from the expressions. */
+		pull_varattnos((Node *) exprs, relid, &attnums);
+
+		/* Don't have table privilege, must check individual columns */
+		if (bms_is_member(InvalidAttrNumber, attnums))
+		{
+			/* Have a whole-row reference, must have access to all columns */
+			if (pg_attribute_aclcheck_all(rte->relid, userid, ACL_SELECT,
+										  ACLMASK_ALL) != ACLCHECK_OK)
+				return false;
+		}
+		else
+		{
+			/* Check the columns referenced by the clause */
+			int			attnum = -1;
+
+			while ((attnum = bms_next_member(attnums, attnum)) >= 0)
+			{
+				if (pg_attribute_aclcheck(rte->relid, attnum, userid,
+										  ACL_SELECT) != ACLCHECK_OK)
+					return false;
+			}
+		}
+	}
 
 	/* If we reach here, the clause is OK */
 	return exprs;

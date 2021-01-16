@@ -295,7 +295,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/*
 	 * Parse the statistics kinds.  Firstly, check that this is not the
 	 * variant building statistics for a single expression, in which case
-	 * we don't allow specifying any statistis kinds.  The simple variant
+	 * we don't allow specifying any statistics kinds.  The simple variant
 	 * only has one expression, and does not allow statistics kinds.
 	 */
 	if ((list_length(stmt->exprs) == 1) && (list_length(stxexprs) == 1))
@@ -763,7 +763,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 		elog(ERROR, "cache lookup failed for statistics object %u", statsOid);
 
 	/*
-	 * When none of the defined statistics types contain datum values from the
+	 * When none of the defined statistics kinds contain datum values from the
 	 * table's columns then there's no need to reset the stats. Functional
 	 * dependencies and ndistinct stats should still hold true.
 	 */
@@ -775,7 +775,7 @@ UpdateStatisticsForTypeChange(Oid statsOid, Oid relationOid, int attnum,
 
 	/*
 	 * OK, we need to reset some statistics. So let's build the new tuple,
-	 * replacing the affected statistics types with NULL.
+	 * replacing the affected statistics kinds with NULL.
 	 */
 	memset(nulls, 0, Natts_pg_statistic_ext_data * sizeof(bool));
 	memset(replaces, 0, Natts_pg_statistic_ext_data * sizeof(bool));

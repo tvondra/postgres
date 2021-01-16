@@ -650,7 +650,7 @@ statext_dependencies_load(Oid mvoid)
 						   Anum_pg_statistic_ext_data_stxddependencies, &isnull);
 	if (isnull)
 		elog(ERROR,
-			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
+			 "requested statistics kind \"%c\" is not yet built for statistics object %u",
 			 STATS_EXT_DEPENDENCIES, mvoid);
 
 	result = statext_dependencies_deserialize(DatumGetByteaPP(deps));
@@ -1172,9 +1172,9 @@ clauselist_apply_dependencies(PlannerInfo *root, List *clauses,
  * dependency_is_compatible_expression
  *		Determines if the expression is compatible with functional dependencies
  *
- * Similar to dependency_is_compatible_clause, but don't enforce that the
+ * Similar to dependency_is_compatible_clause, but doesn't enforce that the
  * expression is a simple Var. OTOH we check that there's at least one
- * statistics matching the expression.
+ * statistics object matching the expression.
  */
 static bool
 dependency_is_compatible_expression(Node *clause, Index relid, List *statlist, Node **expr)

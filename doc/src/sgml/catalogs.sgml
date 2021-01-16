@@ -7347,7 +7347,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>stxkind</structfield> <type>char[]</type>
       </para>
       <para>
-       An array containing codes for the enabled statistic kinds;
+       An array containing codes for the enabled statistics kinds;
        valid values are:
        <literal>d</literal> for n-distinct statistics,
        <literal>f</literal> for functional dependency statistics, and
@@ -12985,7 +12985,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    <structname>pg_stats_ext_exprs</structname> is also designed to present
    the information in a more readable format than the underlying catalogs
    &mdash; at the cost that its schema must be extended whenever the structure
-   of statistics <link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link> changes.
+   of statistics in <link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link> changes.
   </para>
 
   <table>

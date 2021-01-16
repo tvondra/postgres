@@ -68,7 +68,7 @@ typedef struct StatExtEntry
 	char	   *schema;			/* statistics object's schema */
 	char	   *name;			/* statistics object's name */
 	Bitmapset  *columns;		/* attribute numbers covered by the object */
-	List	   *types;			/* 'char' list of enabled statistic kinds */
+	List	   *types;			/* 'char' list of enabled statistics kinds */
 	int			stattarget;		/* statistics target (-1 for default) */
 	List	   *exprs;			/* expressions */
 } StatExtEntry;
@@ -2063,7 +2063,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 						ncovered++;
 				}
 
-				/* all parts of thi expression are covered by this statistics */
+				/* all parts of the expression are covered by this statistics */
 				if (ncovered == list_length(list_exprs[listidx]))
 				{
 					stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
@@ -2907,7 +2907,7 @@ statext_expressions_load(Oid stxoid, int idx)
 							Anum_pg_statistic_ext_data_stxdexpr, &isnull);
 	if (isnull)
 		elog(ERROR,
-			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
+			 "requested statistics kind \"%c\" is not yet built for statistics object %u",
 			 STATS_EXT_DEPENDENCIES, stxoid);
 
 	eah = DatumGetExpandedArray(value);

@@ -3293,7 +3293,7 @@ add_unique_group_var(PlannerInfo *root, List *varinfos,
 
 /*
  * Helper routine for estimate_num_groups: add an item to a list of
- * GrouExprInfos, but only if it's not known equal to any of the existing
+ * GroupExprInfos, but only if it's not known equal to any of the existing
  * entries.
  */
 typedef struct
@@ -5196,7 +5196,8 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 		/*
 		 * Search extended statistics for one with a matching expression.
 		 * There might be multiple ones, so just grab the first one. In
-		 * the future, we might consider
+		 * the future, we might consider the statistics target (and pick
+		 * the most accurate statistics) and maybe some other parameters.
 		 */
 		foreach(slist, onerel->statlist)
 		{

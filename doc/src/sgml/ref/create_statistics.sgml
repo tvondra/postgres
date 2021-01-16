@@ -48,7 +48,7 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="parameter">statistics_na
    simple variant allows to build statistics for a single expression, does
    not allow specifying any statistics kinds and provides benefits similar
    to an expression index. The full variant allows defining statistics objects
-   on multiple columns and expressions, and pick which statistics kinds will
+   on multiple columns and expressions, and selecting which statistics kinds will
    be built. The per-expression statistics are built automatically when there
    is at least one expression.
   </para>
@@ -241,14 +241,13 @@ EXPLAIN ANALYZE SELECT * FROM t2 WHERE (a = 1) AND (b = 2);
 
   <para>
    Create table <structname>t3</structname> with a single timestamp column,
-   and run a query using an expression on that column.  Without the
-   extended statistics, the planner has no information about data
-   distribution for reasults of those expression, and uses default
-   estimates as illustrated by the first query.  The planner also does
-   not realize the value of the second column fully defines the value
-   of the other column, because date truncated to day still identifies
-   the month). Then expression and ndistinct statistics are built on
-   those two columns:
+   and run a query using an expression on that column.  Without extended
+   statistics, the planner has no information about data distribution for
+   results of those expression, and uses default estimates as illustrated
+   by the first query.  The planner also does not realize the value of the
+   second column fully defines the value of the other column, because date
+   truncated to day still identifies the month. Then expression and
+   ndistinct statistics are built on those two columns:
 
 <programlisting>
 CREATE TABLE t3 (

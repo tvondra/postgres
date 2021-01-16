@@ -1165,8 +1165,6 @@ ANALYZE expr_stats;
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (2*a) = 0 AND (3*b) = 0');
 SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND (a-b) = 0');
 
--- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
--- (not it fails, when there are no simple column references)
 DROP STATISTICS expr_stats_1;
 DROP TABLE expr_stats;
 

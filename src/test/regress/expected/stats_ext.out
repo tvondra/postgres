@@ -2313,8 +2313,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE (a+b) = 0 AND
       1000 |   1000
 (1 row)
 
--- FIXME add dependency tracking for expressions, to automatically drop after DROP TABLE
--- (not it fails, when there are no simple column references)
 DROP STATISTICS expr_stats_1;
 DROP TABLE expr_stats;
 -- statistics on a mix columns and expressions

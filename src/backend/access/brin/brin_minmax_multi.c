@@ -1159,6 +1159,9 @@ build_distances(FmgrInfo *distanceFn, Oid colloid,
 
 	Assert(ncranges >= 2);
 
+	if (!distanceFn)
+		return NULL;
+
 	distances = (DistanceValue *) palloc0(sizeof(DistanceValue) * (ncranges - 1));
 
 	/*
@@ -1259,6 +1262,70 @@ count_values(CombineRange *cranges, int ncranges)
 	return count;
 }
 
+
+static int
+reduce_combine_ranges_simple(CombineRange *cranges, int ncranges,
+							 int max_values, FmgrInfo *cmp, Oid colloid)
+{
+	int		i;
+	int		nvalues;
+	Datum  *values;
+
+	compare_context cxt;
+
+	/* number of values to keep on each tail */
+	int tail = (max_values - 2) / 2;
+	int m = Min(tail / 2, ncranges - 1 / 2);
+
+	/* allocate space for the boundary values */
+	nvalues = 0;
+	values = (Datum *) palloc(sizeof(Datum) * max_values);
+
+	for (i = 0; i < m; i++)
+	{
+		/* head */
+		values[nvalues++] = cranges[i].minval;
+		values[nvalues++] = cranges[i].maxval;
+
+		/* tail */
+		values[nvalues++] = cranges[ncranges - 1 - i].minval;
+		values[nvalues++] = cranges[ncranges - 1 - i].maxval;
+	}
+
+	/* middle part */
+	values[nvalues++] = cranges[m].maxval;
+	values[nvalues++] = cranges[ncranges - 1 - m].minval;
+
+	/* We should have even number of range values. */
+	Assert(nvalues % 2 == 0);
+
+	/* sort the values */
+	cxt.colloid = colloid;
+	cxt.cmpFn = cmp;
+
+	/*
+	 * Sort the values using the comparator function, and form ranges
+	 * from the sorted result.
+	 */
+	qsort_arg(values, nvalues, sizeof(Datum),
+			  compare_values, (void *) &cxt);
+
+	/* We have nvalues boundary values, which means nvalues/2 ranges. */
+	for (i = 0; i < (nvalues / 2); i++)
+	{
+		cranges[i].minval = values[2*i];
+		cranges[i].maxval = values[2*i + 1];
+
+		/* if the boundary values are the same, it's a collapsed range */
+		cranges[i].collapsed = (compare_values(&values[2*i],
+											   &values[2*i+1],
+											   &cxt) == 0);
+	}
+
+	return (nvalues / 2);
+}
+
+
 /*
  * reduce_combine_ranges
  *		reduce the ranges until the number of values is low enough
@@ -1326,6 +1393,14 @@ reduce_combine_ranges(CombineRange *cranges, int ncranges,
 	 */
 	if (keep >= ndistances)
 		return ncranges;
+
+	/*
+	 * Without distances, we use a simple approach keeping as many
+	 * outliers as possible.
+	 */
+	if (!distances)
+		return reduce_combine_ranges_simple(cranges, ncranges, max_values,
+											cmp, colloid);
 
 	/* sort the values */
 	cxt.colloid = colloid;

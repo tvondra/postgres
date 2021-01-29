@@ -486,6 +486,32 @@ compare_combine_ranges(const void *a, const void *b, void *arg)
 }
 
 /*
+ * compare_values
+ *	  Compare the values.
+ */
+static int
+compare_values(const void *a, const void *b, void *arg)
+{
+	Datum *da = (Datum *) a;
+	Datum *db = (Datum *) b;
+	Datum r;
+
+	compare_context *cxt = (compare_context *) arg;
+
+	r = FunctionCall2Coll(cxt->cmpFn, cxt->colloid, *da, *db);
+
+	if (DatumGetBool(r))
+		return -1;
+
+	r = FunctionCall2Coll(cxt->cmpFn, cxt->colloid, *db, *da);
+
+	if (DatumGetBool(r))
+		return 1;
+
+	return 0;
+}
+
+/*
  * range_contains_value
  * 		See if the new value is already contained in the range list.
  *
@@ -961,6 +987,8 @@ typedef struct DistanceValue
 
 /*
  * Simple comparator for distance values, comparing the double value.
+ * This is intentionally sorting the distances in descending order, i.e.
+ * the longer gaps will be at the front.
  */
 static int
 compare_distances(const void *a, const void *b)
@@ -969,9 +997,9 @@ compare_distances(const void *a, const void *b)
 	DistanceValue *db = (DistanceValue *)b;
 
 	if (da->value < db->value)
-		return -1;
-	else if (da->value > db->value)
 		return 1;
+	else if (da->value > db->value)
+		return -1;
 
 	return 0;
 }
@@ -1008,16 +1036,20 @@ build_distances(FmgrInfo *distanceFn, Oid colloid,
 		a1 = cranges[i].maxval;
 		a2 = cranges[i+1].minval;
 
-		/* compute length of the empty gap (distance between max/min) */
+		/* compute length of the gap (between max/min) */
 		r = FunctionCall2Coll(distanceFn, colloid, a1, a2);
 
-		/* remember the index */
+		/* remember the index of the gap the distance is for */
 		distances[i].index = i;
 		distances[i].value = DatumGetFloat8(r);
 	}
 
-	/* sort the distances in ascending order */
-	pg_qsort(distances, (ncranges-1), sizeof(DistanceValue), compare_distances);
+	/*
+	 * Sort the distances in descending order, so that the longest gaps
+	 * are at the front.
+	 */
+	pg_qsort(distances, (ncranges-1), sizeof(DistanceValue),
+			 compare_distances);
 
 	return distances;
 }
@@ -1078,8 +1110,23 @@ count_values(CombineRange *cranges, int ncranges)
 }
 
 /*
- * Combines ranges until the number of boundary values drops below 75%
- * of the capacity (as set by values_per_range reloption).
+ * reduce_combine_ranges
+ *		reduce the ranges until the number of values is low enough
+ *
+ * Combines ranges until the number of boundary values drops below the
+ * threshold specified by max_values. This happens by merging enough
+ * ranges by distance between them.
+ *
+ * Returns the number of result ranges.
+ *
+ * We simply use the global min/max and then add boundaries for enough
+ * largest gaps. Each gap adds 2 values, so we simply use (target/2-1)
+ * distances. Then we simply sort all the values - each two values are
+ * a boundary of a range (possibly collapsed).
+ *
+ * XXX Some of the ranges may be collapsed (i.e. the min/max values are
+ * equal), but we ignore that for now. We could repeat the process,
+ * adding a couple more gaps recursively.
  *
  * XXX The ranges to merge are selected solely using the distance. But
  * that may not be the best strategy, for example when multiple gaps
@@ -1100,66 +1147,86 @@ count_values(CombineRange *cranges, int ncranges)
  * length of the ranges? Or perhaps randomize the choice of ranges, with
  * probability inversely proportional to the distance (the gap lengths
  * may be very close, but not exactly the same).
+ *
+ * XXX Or maybe we could just handle this by using random value as a
+ * tie-break, or by adding random noise to the actual distance.
  */
 static int
 reduce_combine_ranges(CombineRange *cranges, int ncranges,
-					  DistanceValue *distances, int max_values)
+					  DistanceValue *distances, int max_values,
+					  FmgrInfo *cmp, Oid colloid)
 {
 	int i;
+	int		nvalues;
+	Datum  *values;
+
+	compare_context cxt;
+
+	/* total number of gaps between ranges */
 	int	ndistances = (ncranges - 1);
-	int	count = count_values(cranges, ncranges);
+
+	/* number of gaps to keep */
+	int keep = (max_values/2 - 1);
 
 	/*
-	 * We have one fewer 'gaps' than the ranges. We'll be decrementing
-	 * the number of combine ranges (reduction is the primary goal of
-	 * this function), so we must use a separate value.
+	 * Maybe we have sufficiently low number of ranges already?
+	 *
+	 * XXX This should happen before we actually do the expensive stuff
+	 * like sorting, so maybe this should be just an assert.
 	 */
-	for (i = 0; i < ndistances; i++)
+	if (keep >= ndistances)
+		return ncranges;
+
+	/* sort the values */
+	cxt.colloid = colloid;
+	cxt.cmpFn = cmp;
+
+	/* allocate space for the boundary values */
+	nvalues = 0;
+	values = (Datum *) palloc(sizeof(Datum) * max_values);
+
+	/* add the global min/max values, from the first/last range */
+	values[nvalues++] = cranges[0].minval;
+	values[nvalues++] = cranges[ncranges-1].maxval;
+
+	/* add boundary values for enough gaps */
+	for (i = 0; i < keep; i++)
 	{
-		int j;
-		int shortest;
+		/* index of the gap between (index) and (index+1) ranges */
+		int index = distances[i].index;
 
-		if (count <= max_values * 0.75)
-			break;
+		Assert((index >= 0) && ((index+1) < ncranges));
 
-		shortest = distances[i].index;
+		/* add max from the preceding range, minval from the next one */
+		values[nvalues++] = cranges[index].maxval;
+		values[nvalues++] = cranges[index+1].minval;
 
-		/*
-		 * The index must be still valid with respect to the current size
-		 * of cranges array (and it always points to the first range, so
-		 * never to the last one - hence the -1 in the condition).
-		 */
-		Assert(shortest < (ncranges - 1));
-
-		if (!cranges[shortest].collapsed && !cranges[shortest+1].collapsed)
-			count -= 2;
-		else if (!cranges[shortest].collapsed || !cranges[shortest+1].collapsed)
-			count -= 1;
-
-		/*
-		 * Move the values to join the two selected ranges. The new range is
-		 * definiely not collapsed but a regular range.
-		 */
-		cranges[shortest].maxval = cranges[shortest+1].maxval;
-		cranges[shortest].collapsed = false;
-
-		/* shuffle the subsequent combine ranges */
-		memmove(&cranges[shortest+1], &cranges[shortest+2],
-				(ncranges - shortest - 2) * sizeof(CombineRange));
-
-		/* also, shuffle all higher indexes (we've just moved the ranges) */
-		for (j = i; j < ndistances; j++)
-		{
-			if (distances[j].index > shortest)
-				distances[j].index--;
-		}
-
-		ncranges--;
-
-		Assert(ncranges > 0);
+		Assert(nvalues <= max_values);
 	}
 
-	return ncranges;
+	/* We should have even number of range values. */
+	Assert(nvalues % 2 == 0);
+
+	/*
+	 * Sort the values using the comparator function, and form ranges
+	 * from the sorted result.
+	 */
+	qsort_arg(values, nvalues, sizeof(Datum),
+			  compare_values, (void *) &cxt);
+
+	/* We have nvalues boundary values, which means nvalues/2 ranges. */
+	for (i = 0; i < (nvalues / 2); i++)
+	{
+		cranges[i].minval = values[2*i];
+		cranges[i].maxval = values[2*i + 1];
+
+		/* if the boundary values are the same, it's a collapsed range */
+		cranges[i].collapsed = (compare_values(&values[2*i],
+											   &values[2*i+1],
+											   &cxt) == 0);
+	}
+
+	return (nvalues / 2);
 }
 
 /*
@@ -1320,7 +1387,8 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 * use too low or high value.
 	 */
 	ncranges = reduce_combine_ranges(cranges, ncranges, distances,
-									 ranges->maxvalues * MINMAX_LOAD_FACTOR);
+									 ranges->maxvalues * MINMAX_LOAD_FACTOR,
+									 cmpFn, colloid);
 
 	Assert(count_values(cranges, ncranges) <= ranges->maxvalues * MINMAX_LOAD_FACTOR);
 
@@ -2193,7 +2261,8 @@ brin_minmax_multi_union(PG_FUNCTION_ARGS)
 	 * we should use maximum of those?
 	 */
 	ncranges = reduce_combine_ranges(cranges, ncranges, distances,
-									 ranges_a->maxvalues);
+									 ranges_a->maxvalues,
+									 cmpFn, colloid);
 
 	/* update the first range summary */
 	store_combine_ranges(ranges_a, cranges, ncranges);

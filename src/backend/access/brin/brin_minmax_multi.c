@@ -660,8 +660,8 @@ has_matching_range(BrinDesc *bdesc, Oid colloid, Ranges *ranges,
 	 * further leverage the ordering and non-overlap and use bsearch to
 	 * speed this up a bit.
 	 */
-	start = 0;				/* first range */
-	end = ranges->nranges;	/* last range */
+	start = 0;					/* first range */
+	end = ranges->nranges - 1;	/* last range */
 	while (true)
 	{
 		int		midpoint = (start + end) / 2;
@@ -813,7 +813,7 @@ static void
 AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 {
 #ifdef USE_ASSERT_CHECKING
-	int i, j;
+	int i;
 
 	/* some basic sanity checks */
 	Assert(ranges->nranges >= 0);
@@ -840,26 +840,81 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 	 */
 	for (i = 0; i < ranges->nvalues; i++)
 	{
+		Datum	compar;
+		int		start,
+				end;
+		Datum	minvalue,
+				maxvalue;
+
 		Datum	value = ranges->values[2 * ranges->nranges + i];
 
-		for (j = 0; j < ranges->nranges; j++)
+		if (ranges->nranges == 0)
+			break;
+
+		minvalue = ranges->values[0];
+		maxvalue = ranges->values[2*ranges->nranges - 1];
+
+		/*
+		 * Is the value smaller than the minval? If yes, we'll recurse
+		 * to the left side of range array.
+		 */
+		compar = FunctionCall2Coll(cmpFn, colloid, value, minvalue);
+
+		/* smaller than the smallest value in the first range */
+		if (DatumGetBool(compar))
+			continue;
+
+		/*
+		 * Is the value greater than the minval? If yes, we'll recurse
+		 * to the right side of range array.
+		 */
+		compar = FunctionCall2Coll(cmpFn, colloid, maxvalue, value);
+
+		/* larger than the largest value in the last range */
+		if (DatumGetBool(compar))
+			continue;
+
+		start = 0;					/* first range */
+		end = ranges->nranges - 1;	/* last range */
+		while (true)
 		{
-			Datum	r;
+			int		midpoint = (start + end) / 2;
 
-			Datum	minval = ranges->values[2 * j];
-			Datum	maxval = ranges->values[2 * j + 1];
+			/* this means we ran out of ranges in the last step */
+			if (start > end)
+				break;
 
-			/* if value is smaller than range minimum, that's OK */
-			r = FunctionCall2Coll(cmpFn, colloid, value, minval);
-			if (DatumGetBool(r))
+			/* copy the min/max values from the ranges */
+			minvalue = ranges->values[2 * midpoint];
+			maxvalue = ranges->values[2 * midpoint + 1];
+
+			/*
+			 * Is the value smaller than the minval? If yes, we'll recurse
+			 * to the left side of range array.
+			 */
+			compar = FunctionCall2Coll(cmpFn, colloid, value, minvalue);
+
+			/* smaller than the smallest value in this range */
+			if (DatumGetBool(compar))
+			{
+				end = (midpoint - 1);
 				continue;
+			}
 
-			/* if value is greater than range maximum, that's OK */
-			r = FunctionCall2Coll(cmpFn, colloid, maxval, value);
-			if (DatumGetBool(r))
+			/*
+			 * Is the value greater than the minval? If yes, we'll recurse
+			 * to the right side of range array.
+			 */
+			compar = FunctionCall2Coll(cmpFn, colloid, maxvalue, value);
+
+			/* larger than the largest value in this range */
+			if (DatumGetBool(compar))
+			{
+				start = (midpoint + 1);
 				continue;
+			}
 
-			/* value is between [min,max], which is wrong */
+			/* hey, we found a matching range */
 			Assert(false);
 		}
 	}
@@ -867,27 +922,18 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 	/* and values in the unsorted part must not be in sorted part */
 	for (i = ranges->nsorted; i < ranges->nvalues; i++)
 	{
+		compare_context	cxt;
 		Datum	value = ranges->values[2 * ranges->nranges + i];
 
-		for (j = 0; j < ranges->nsorted; j++)
-		{
-			Datum	r;
+		if (ranges->nsorted == 0)
+			break;
 
-			Datum	value2 = ranges->values[2 * ranges->nranges + j];
+		cxt.colloid = ranges->colloid;
+		cxt.cmpFn = ranges->cmp;
 
-			/* if value is smaller than range minimum, that's OK */
-			r = FunctionCall2Coll(cmpFn, colloid, value, value2);
-			if (DatumGetBool(r))
-				continue;
-
-			/* if value is greater than range maximum, that's OK */
-			r = FunctionCall2Coll(cmpFn, colloid, value2, value);
-			if (DatumGetBool(r))
-				continue;
-
-			/* if neither (a<b) or (b<a) then (a=b), which is wrong */
-			Assert(false);
-		}
+		Assert(bsearch_arg(&value, &ranges->values[2*ranges->nranges],
+						ranges->nsorted, sizeof(Datum),
+						compare_values, (void *) &cxt) == NULL);
 	}
 #endif
 }

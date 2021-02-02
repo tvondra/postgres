@@ -57,6 +57,7 @@
 #include "access/brin.h"
 #include "access/brin_internal.h"
 #include "access/brin_tuple.h"
+#include "access/hash.h"	/* XXX strange that it fails because of BRIN_AM_OID without this */
 #include "access/reloptions.h"
 #include "access/stratnum.h"
 #include "access/htup_details.h"
@@ -150,12 +151,27 @@ typedef struct MinMaxOptions
  */
 typedef struct Ranges
 {
-	Oid		typid;
+	/* Cache information that we need quite often. */
+	Oid			typid;
+	Oid			colloid;
+	AttrNumber	attno;
 
 	/* (2*nranges + nvalues) <= maxvalues */
 	int		nranges;	/* number of ranges in the array (stored) */
 	int		nvalues;	/* number of values in the data array (all) */
 	int		maxvalues;	/* maximum number of values (reloption) */
+
+	/*
+	 * In batch mode, we simply add the values into a buffer, without any
+	 * expensive steps (sorting, deduplication, ...). The buffer is sized
+	 * to be larger than the target number of values per range, which
+	 * reduces the number of compactions - operating on larger buffers is
+	 * significantly more efficient, in most cases. We keep the actual
+	 * target and compact to the requested number of values at the very
+	 * end, before serializing to on-disk representation.
+	 */
+	bool	batch_mode;
+	int		target_maxvalues;	/* requested number of values */
 
 	/* values stored for this range - either raw values, or ranges */
 	Datum	values[FLEXIBLE_ARRAY_MEMBER];
@@ -376,6 +392,7 @@ range_deserialize(SerializedRanges *serialized)
 	range->nvalues = serialized->nvalues;
 	range->maxvalues = serialized->maxvalues;
 	range->typid = serialized->typid;
+	range->batch_mode = false;
 
 	typbyval = get_typbyval(serialized->typid);
 	typlen = get_typlen(serialized->typid);
@@ -753,10 +770,6 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 	 */
 	AssertArrayOrder(cmpFn, colloid, ranges->values, 2*ranges->nranges);
 
-	/* then the single-point ranges (with nvalues boundary values ) */
-	AssertArrayOrder(cmpFn, colloid, &ranges->values[2*ranges->nranges],
-					 ranges->nvalues);
-
 	/* finally check that none of the values are not covered by ranges */
 	for (i = 0; i < ranges->nvalues; i++)
 	{
@@ -880,12 +893,22 @@ fill_combine_ranges(CombineRange *cranges, int ncranges, Ranges *ranges)
 
 /*
  * Sort combine ranges using qsort (with BTLessStrategyNumber function).
+ *
+ * Optionally, the cranges may be deduplicated (this matters in batch mode,
+ * where we simply append values, without checking for duplicates etc.).
+ *
+ * Returns the number of combine ranges.
  */
-static void
+static int
 sort_combine_ranges(FmgrInfo *cmp, Oid colloid,
-					CombineRange *cranges, int ncranges)
+					CombineRange *cranges, int ncranges,
+					bool deduplicate)
 {
-	compare_context cxt;
+	int				n;
+	int				i;
+	compare_context	cxt;
+
+	Assert(ncranges > 0);
 
 	/* sort the values */
 	cxt.colloid = colloid;
@@ -893,6 +916,26 @@ sort_combine_ranges(FmgrInfo *cmp, Oid colloid,
 
 	qsort_arg(cranges, ncranges, sizeof(CombineRange),
 			  compare_combine_ranges, (void *) &cxt);
+
+	if (!deduplicate)
+		return ncranges;
+
+	/* optionally deduplicate the ranges */
+	n = 1;
+	for (i = 1; i < ncranges; i++)
+	{
+		if (compare_combine_ranges(&cranges[i-1], &cranges[i], (void *) &cxt))
+		{
+			if (i != n)
+				memcpy(&cranges[n], &cranges[i], sizeof(CombineRange));
+
+			n++;
+		}
+	}
+
+	Assert((n > 0) && (n <= ncranges));
+
+	return n;
 }
 
 /*
@@ -1063,26 +1106,40 @@ build_distances(FmgrInfo *distanceFn, Oid colloid,
  */
 static CombineRange *
 build_combine_ranges(FmgrInfo *cmp, Oid colloid, Ranges *ranges,
-					 Datum newvalue, int *nranges)
+					 bool addvalue, Datum newvalue, int *nranges,
+					 bool deduplicate)
 {
 	int				ncranges;
 	CombineRange   *cranges;
 
 	/* now do the actual merge sort */
-	ncranges = ranges->nranges + ranges->nvalues + 1;
+	ncranges = ranges->nranges + ranges->nvalues;
+
+	/* should we add an extra value? */
+	if (addvalue)
+		ncranges += 1;
+
 	cranges = (CombineRange *) palloc0(ncranges * sizeof(CombineRange));
-	*nranges = ncranges;
 
 	/* put the new value at the beginning */
-	cranges[0].minval = newvalue;
-	cranges[0].maxval = newvalue;
-	cranges[0].collapsed = true;
+	if (addvalue)
+	{
+		cranges[0].minval = newvalue;
+		cranges[0].maxval = newvalue;
+		cranges[0].collapsed = true;
 
-	/* then the regular and collapsed ranges */
-	fill_combine_ranges(&cranges[1], ncranges-1, ranges);
+		/* then the regular and collapsed ranges */
+		fill_combine_ranges(&cranges[1], ncranges-1, ranges);
+	}
+	else
+		fill_combine_ranges(cranges, ncranges, ranges);
 
 	/* and sort the ranges */
-	sort_combine_ranges(cmp, colloid, cranges, ncranges);
+	ncranges = sort_combine_ranges(cmp, colloid, cranges, ncranges,
+								   deduplicate);
+
+	/* remember how many cranges we built */
+	*nranges = ncranges;
 
 	return cranges;
 }
@@ -1293,6 +1350,27 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	/* comprehensive checks of the input ranges */
 	AssertCheckRanges(ranges, cmpFn, colloid);
 
+	Assert((ranges->nranges >= 0) && (ranges->nvalues >= 0) && (ranges->maxvalues >= 0));
+
+	/*
+	 * When batch-building, there should be no ranges. So either the
+	 * number of ranges is 0 or we're not in batching mode.
+	 */
+	Assert(!ranges->batch_mode || (ranges->nranges == 0));
+
+	/* When batch-building, just add it and we're done. */
+	if (ranges->batch_mode)
+	{
+		/* there has to be free space, if we've sized the struct */
+		Assert(ranges->nvalues < ranges->maxvalues);
+
+		/* Make a copy of the value, if needed. */
+		ranges->values[ranges->nvalues++]
+			= datumCopy(newval, attr->attbyval, attr->attlen);;
+
+		return true;
+	}
+
 	/*
 	 * Bail out if the value already is covered by the range.
 	 *
@@ -1373,7 +1451,9 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	oldctx = MemoryContextSwitchTo(ctx);
 
 	/* OK build the combine ranges */
-	cranges = build_combine_ranges(cmpFn, colloid, ranges, newval, &ncranges);
+	cranges = build_combine_ranges(cmpFn, colloid, ranges,
+								   true, newval, &ncranges,
+								   false);
 
 	/* and we'll also need the 'distance' procedure */
 	distanceFn = minmax_multi_get_procinfo(bdesc, attno, PROCNUM_DISTANCE);
@@ -1403,6 +1483,84 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	// FIXME Assert(ranges, cmpFn, colloid);
 
 	return true;
+}
+
+/*
+ * Generate range representation of data collected during "batch mode".
+ * This is similar to reduce_combine_ranges, except that we can't assume
+ * the values are sorted and there may be duplicate values.
+ */
+static void
+compactify_ranges(BrinDesc *bdesc, Ranges *ranges, int max_values)
+{
+	FmgrInfo   *cmpFn,
+			   *distanceFn;
+
+	/* combine ranges */
+	CombineRange   *cranges;
+	int				ncranges;
+	DistanceValue  *distances;
+
+	MemoryContext	ctx;
+	MemoryContext	oldctx;
+
+	/*
+	 * This should only be used in batch mode, and there should be no
+	 * ranges, just individual values.
+	 */
+	Assert((ranges->batch_mode) && (ranges->nranges == 0));
+
+	/* we'll certainly need the comparator, so just look it up now */
+	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, ranges->attno, ranges->typid,
+											   BTLessStrategyNumber);
+
+	/* and we'll also need the 'distance' procedure */
+	distanceFn = minmax_multi_get_procinfo(bdesc, ranges->attno, PROCNUM_DISTANCE);
+
+	/*
+	 * The distanceFn calls (which may internally call e.g. numeric_le) may
+	 * allocate quite a bit of memory, and we must not leak it. Otherwise
+	 * we'd have problems e.g. when building indexes. So we create a local
+	 * memory context and make sure we free the memory before leaving this
+	 * function (not after every call).
+	 */
+	ctx = AllocSetContextCreate(CurrentMemoryContext,
+								"minmax-multi context",
+								ALLOCSET_DEFAULT_SIZES);
+
+	oldctx = MemoryContextSwitchTo(ctx);
+
+	/* OK build the combine ranges */
+	cranges = build_combine_ranges(cmpFn, ranges->colloid, ranges,
+								   false, (Datum) 0, &ncranges,
+								   true);	/* deduplicate */
+
+	if (ncranges > 1)
+	{
+		/* build array of gap distances and sort them in ascending order */
+		distances = build_distances(distanceFn, ranges->colloid, cranges, ncranges);
+
+		/*
+		 * Combine ranges until we get below max_values. We don't use any scale
+		 * factor, because this is used at the very end of "batch mode" and we
+		 * don't expect more tuples to be inserted soon.
+		 */
+		ncranges = reduce_combine_ranges(cranges, ncranges, distances,
+										  max_values, cmpFn, ranges->colloid);
+
+		Assert(count_values(cranges, ncranges) <= max_values);
+	}
+
+	/* decompose the combine ranges into regular ranges and single values */
+	store_combine_ranges(ranges, cranges, ncranges);
+
+	MemoryContextSwitchTo(oldctx);
+	MemoryContextDelete(ctx);
+
+	/* Check the ordering invariants are not violated (for both parts). */
+	AssertArrayOrder(cmpFn, ranges->colloid, ranges->values, ranges->nranges*2);
+	AssertArrayOrder(cmpFn, ranges->colloid, &ranges->values[ranges->nranges*2],
+					 ranges->nvalues);
 }
 
 Datum
@@ -1888,7 +2046,16 @@ static void
 brin_minmax_multi_serialize(BrinDesc *bdesc, Datum src, Datum *dst)
 {
 	Ranges *ranges = (Ranges *) DatumGetPointer(src);
-	SerializedRanges *s = range_serialize(ranges);
+	SerializedRanges *s;
+
+	/*
+	 * In batch mode, we need to compress the accumulated values to the
+	 * actually requested number of values/ranges.
+	 */
+	if (ranges->batch_mode)
+		compactify_ranges(bdesc, ranges, ranges->target_maxvalues);
+
+	s = range_serialize(ranges);
 	dst[0] = PointerGetDatum(s);
 }
 
@@ -1931,15 +2098,31 @@ brin_minmax_multi_add_value(PG_FUNCTION_ARGS)
 	/*
 	 * If this is the first non-null value, we need to initialize the range
 	 * list. Otherwise just extract the existing range list from BrinValues.
+	 *
+	 * When starting with an empty range, we assume this is a batch mode,
+	 * i.e. we size the buffer for the maximum possible number of items in
+	 * the range (based on range size and max number of items on a page).
+	 *
+	 * XXX This may require quite a bit of memory, so maybe we should use
+	 * some value in between. OTOH most tables will have much wider rows,
+	 * so the number of rows per page is much lower.
+	 *
+	 * XXX Maybe we should do this (using larger buffer) even when there
+	 * already is a summary?
 	 */
 	if (column->bv_allnulls)
 	{
 		MemoryContext oldctx;
 
-		oldctx = MemoryContextSwitchTo(column->bv_context);
+		BlockNumber		pagesPerRange = BrinGetPagesPerRange(bdesc->bd_index);
 
-		ranges = minmax_multi_init(brin_minmax_multi_get_values(bdesc, opts));
+		oldctx = MemoryContextSwitchTo(column->bv_context);
+		ranges = minmax_multi_init(MaxHeapTuplesPerPage * pagesPerRange);
+		ranges->attno = attno;
+		ranges->colloid = colloid;
 		ranges->typid = attr->atttypid;
+		ranges->batch_mode = true;
+		ranges->target_maxvalues = brin_minmax_multi_get_values(bdesc, opts);
 
 		MemoryContextSwitchTo(oldctx);
 
@@ -2225,8 +2408,8 @@ brin_minmax_multi_union(PG_FUNCTION_ARGS)
 	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
 											 BTLessStrategyNumber);
 
-	/* sort the combine ranges */
-	sort_combine_ranges(cmpFn, colloid, cranges, ncranges);
+	/* sort the combine ranges (don't deduplicate) */
+	sort_combine_ranges(cmpFn, colloid, cranges, ncranges, false);
 
 	/*
 	 * We've merged two different lists of ranges, so some of them may be

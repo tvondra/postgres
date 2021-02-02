@@ -92,7 +92,15 @@
  */
 #define		PROCNUM_BASE			11
 
-#define		MINMAX_LOAD_FACTOR		0.75
+/*
+ * Sizing the insert buffer - we use 10x the number of values specified
+ * in the reloption, but we cap it to 8192 not to get too large. When
+ * the buffer gets full, we reduce the number of values by half.
+ */
+#define		MINMAX_BUFFER_FACTOR			10
+#define		MINMAX_BUFFER_MIN				256
+#define		MINMAX_BUFFER_MAX				8192
+#define		MINMAX_BUFFER_LOAD_FACTOR		0.5
 
 typedef struct MinmaxMultiOpaque
 {
@@ -155,23 +163,24 @@ typedef struct Ranges
 	Oid			typid;
 	Oid			colloid;
 	AttrNumber	attno;
+	FmgrInfo   *cmp;
 
 	/* (2*nranges + nvalues) <= maxvalues */
 	int		nranges;	/* number of ranges in the array (stored) */
+	int		nsorted;	/* number of sorted values (ranges + points) */
 	int		nvalues;	/* number of values in the data array (all) */
 	int		maxvalues;	/* maximum number of values (reloption) */
 
 	/*
-	 * In batch mode, we simply add the values into a buffer, without any
-	 * expensive steps (sorting, deduplication, ...). The buffer is sized
-	 * to be larger than the target number of values per range, which
-	 * reduces the number of compactions - operating on larger buffers is
-	 * significantly more efficient, in most cases. We keep the actual
-	 * target and compact to the requested number of values at the very
-	 * end, before serializing to on-disk representation.
+	 * We simply add the values into a large buffer, without any expensive
+	 * steps (sorting, deduplication, ...). The buffer is a multiple of
+	 * the target number of values, so the compaction happen less often,
+	 * amortizing the costs. We keep the actual target and compact to
+	 * the requested number of values at the very end, before serializing
+	 * to on-disk representation.
 	 */
-	bool	batch_mode;
-	int		target_maxvalues;	/* requested number of values */
+	/* requested number of values */
+	int		target_maxvalues;
 
 	/* values stored for this range - either raw values, or ranges */
 	Datum	values[FLEXIBLE_ARRAY_MEMBER];
@@ -203,7 +212,7 @@ typedef struct SerializedRanges
 
 static SerializedRanges *range_serialize(Ranges *range);
 
-static Ranges *range_deserialize(SerializedRanges *range);
+static Ranges *range_deserialize(int maxvalues, SerializedRanges *range);
 
 /* Cache for support and strategy procesures. */
 
@@ -212,6 +221,14 @@ static FmgrInfo *minmax_multi_get_procinfo(BrinDesc *bdesc, uint16 attno,
 
 static FmgrInfo *minmax_multi_get_strategy_procinfo(BrinDesc *bdesc,
 					   uint16 attno, Oid subtype, uint16 strategynum);
+
+typedef struct compare_context
+{
+	FmgrInfo   *cmpFn;
+	Oid			colloid;
+} compare_context;
+
+static int compare_values(const void *a, const void *b, void *arg);
 
 
 /*
@@ -240,6 +257,52 @@ minmax_multi_init(int maxvalues)
 	return ranges;
 }
 
+static void
+AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid);
+
+
+static void
+range_deduplicate_values(Ranges *range)
+{
+	int				i, n;
+	int				start;
+	compare_context cxt;
+
+	if (range->nsorted == range->nvalues)
+		return;
+
+	/* sort the values */
+	cxt.colloid = range->colloid;
+	cxt.cmpFn = range->cmp;
+
+	/* how many values to sort? */
+	start = 2 * range->nranges;
+
+	qsort_arg(&range->values[start],
+			  range->nvalues, sizeof(Datum),
+			  compare_values, (void *) &cxt);
+
+	n = 1;
+	for (i = 1; i < range->nvalues; i++)
+	{
+		/* same as preceding value, so store it */
+		if (compare_values(&range->values[start + i - 1],
+						   &range->values[start + i],
+						   (void *) &cxt) == 0)
+			continue;
+
+		range->values[start + n] = range->values[start + i];
+
+		n++;
+	}
+
+	/* now all the values are sorted */
+	range->nvalues = n;
+	range->nsorted = n;
+
+	AssertCheckRanges(range, range->cmp, range->colloid);
+}
+
 /*
  * range_serialize
  *	  Serialize the in-memory representation into a compact varlena value.
@@ -262,13 +325,24 @@ range_serialize(Ranges *range)
 
 	/* simple sanity checks */
 	Assert(range->nranges >= 0);
+	Assert(range->nsorted >= 0);
 	Assert(range->nvalues >= 0);
 	Assert(range->maxvalues > 0);
+	Assert(range->target_maxvalues > 0);
+
+	/* at this point the range should be compacted to the target size */
+	Assert(2*range->nranges + range->nvalues <= range->target_maxvalues);
+
+	Assert(range->target_maxvalues <= range->maxvalues);
+
+	/* range boundaries are always sorted */
+	Assert(range->nvalues >= range->nsorted);
+
+	/* sort and deduplicate values, if there's unsorted part */
+	range_deduplicate_values(range);
 
 	/* see how many Datum values we actually have */
 	nvalues = 2*range->nranges + range->nvalues;
-
-	Assert(2*range->nranges + range->nvalues <= range->maxvalues);
 
 	typid = range->typid;
 	typbyval = get_typbyval(typid);
@@ -316,7 +390,7 @@ range_serialize(Ranges *range)
 	serialized->typid = typid;
 	serialized->nranges = range->nranges;
 	serialized->nvalues = range->nvalues;
-	serialized->maxvalues = range->maxvalues;
+	serialized->maxvalues = range->target_maxvalues;
 
 	/*
 	 * And now copy also the boundary values (like the length calculation
@@ -367,7 +441,7 @@ range_serialize(Ranges *range)
  * in the in-memory value array.
  */
 static Ranges *
-range_deserialize(SerializedRanges *serialized)
+range_deserialize(int maxvalues, SerializedRanges *serialized)
 {
 	int		i,
 			nvalues;
@@ -384,15 +458,18 @@ range_deserialize(SerializedRanges *serialized)
 	nvalues = 2*serialized->nranges + serialized->nvalues;
 
 	Assert(nvalues <= serialized->maxvalues);
+	Assert(serialized->maxvalues <= maxvalues);
 
-	range = minmax_multi_init(serialized->maxvalues);
+	range = minmax_multi_init(maxvalues);
 
 	/* copy the header info */
 	range->nranges = serialized->nranges;
 	range->nvalues = serialized->nvalues;
-	range->maxvalues = serialized->maxvalues;
+	range->nsorted = serialized->nvalues;
+	range->maxvalues = maxvalues;
+	range->target_maxvalues = serialized->maxvalues;
+
 	range->typid = serialized->typid;
-	range->batch_mode = false;
 
 	typbyval = get_typbyval(serialized->typid);
 	typlen = get_typlen(serialized->typid);
@@ -438,12 +515,6 @@ range_deserialize(SerializedRanges *serialized)
 	/* return the deserialized value */
 	return range;
 }
-
-typedef struct compare_context
-{
-	FmgrInfo   *cmpFn;
-	Oid			colloid;
-} compare_context;
 
 /*
  * Used to represent ranges expanded during merging and combining (to
@@ -528,6 +599,115 @@ compare_values(const void *a, const void *b, void *arg)
 	return 0;
 }
 
+void *bsearch_arg(const void *key, const void *base,
+						 size_t nmemb, size_t size,
+						 int (*compar) (const void *, const void *, void *),
+						 void *arg);
+
+static bool
+has_matching_range(BrinDesc *bdesc, Oid colloid, Ranges *ranges,
+				   Datum newval, AttrNumber attno, Oid typid)
+{
+	Datum	compar;
+
+	Datum	minvalue = ranges->values[0];
+	Datum	maxvalue = ranges->values[2*ranges->nranges - 1];
+
+	FmgrInfo *cmpLessFn;
+	FmgrInfo *cmpGreaterFn;
+
+	/* binary search on ranges */
+	int		start,
+			end;
+
+	if (ranges->nranges == 0)
+		return false;
+
+	/*
+	 * Otherwise, need to compare the new value with boundaries of all
+	 * the ranges. First check if it's less than the absolute minimum,
+	 * which is the first value in the array.
+	 */
+	cmpLessFn = minmax_multi_get_strategy_procinfo(bdesc, attno, typid,
+										 BTLessStrategyNumber);
+	compar = FunctionCall2Coll(cmpLessFn, colloid, newval, minvalue);
+
+	/* smaller than the smallest value in the range list */
+	if (DatumGetBool(compar))
+		return false;
+
+	/*
+	 * And now compare it to the existing maximum (last value in the
+	 * data array). But only if we haven't already ruled out a possible
+	 * match in the minvalue check.
+	 */
+	cmpGreaterFn = minmax_multi_get_strategy_procinfo(bdesc, attno, typid,
+										BTGreaterStrategyNumber);
+	compar = FunctionCall2Coll(cmpGreaterFn, colloid, newval, maxvalue);
+
+	if (DatumGetBool(compar))
+		return false;
+
+	/*
+	 * So we know it's in the general min/max, the question is whether it
+	 * falls in one of the ranges or gaps. We'll use a binary search on
+	 * the ranges.
+	 *
+	 * it's in the general range, but is it actually covered by any
+	 * of the ranges? Repeat the check for each range.
+	 *
+	 * XXX We simply walk the ranges sequentially, but maybe we could
+	 * further leverage the ordering and non-overlap and use bsearch to
+	 * speed this up a bit.
+	 */
+	start = 0;				/* first range */
+	end = ranges->nranges;	/* last range */
+	while (true)
+	{
+		int		midpoint = (start + end) / 2;
+
+		/* this means we ran out of ranges in the last step */
+		if (start > end)
+			return false;
+
+		/* copy the min/max values from the ranges */
+		minvalue = ranges->values[2 * midpoint];
+		maxvalue = ranges->values[2 * midpoint + 1];
+
+		/*
+		 * Is the value smaller than the minval? If yes, we'll recurse
+		 * to the left side of range array.
+		 */
+		compar = FunctionCall2Coll(cmpLessFn, colloid, newval, minvalue);
+
+		/* smaller than the smallest value in this range */
+		if (DatumGetBool(compar))
+		{
+			end = (midpoint - 1);
+			continue;
+		}
+
+		/*
+		 * Is the value greater than the minval? If yes, we'll recurse
+		 * to the right side of range array.
+		 */
+		compar = FunctionCall2Coll(cmpGreaterFn, colloid, newval, maxvalue);
+
+		/* larger than the largest value in this range */
+		if (DatumGetBool(compar))
+		{
+			start = (midpoint + 1);
+			continue;
+		}
+
+		/* hey, we found a matching range */
+		return true;
+	}
+
+	return false;
+}
+
+
 /*
  * range_contains_value
  * 		See if the new value is already contained in the range list.
@@ -552,8 +732,6 @@ range_contains_value(BrinDesc *bdesc, Oid colloid,
 							Ranges *ranges, Datum newval)
 {
 	int			i;
-	FmgrInfo   *cmpLessFn;
-	FmgrInfo   *cmpGreaterFn;
 	FmgrInfo   *cmpEqualFn;
 	Oid			typid = attr->atttypid;
 
@@ -562,77 +740,8 @@ range_contains_value(BrinDesc *bdesc, Oid colloid,
 	 * range, and only when there's still a chance of getting a match we
 	 * inspect the individual ranges.
 	 */
-	if (ranges->nranges > 0)
-	{
-		Datum	compar;
-		bool	match = true;
-
-		Datum	minvalue = ranges->values[0];
-		Datum	maxvalue = ranges->values[2*ranges->nranges - 1];
-
-		/*
-		 * Otherwise, need to compare the new value with boundaries of all
-		 * the ranges. First check if it's less than the absolute minimum,
-		 * which is the first value in the array.
-		 */
-		cmpLessFn = minmax_multi_get_strategy_procinfo(bdesc, attno, typid,
-											 BTLessStrategyNumber);
-		compar = FunctionCall2Coll(cmpLessFn, colloid, newval, minvalue);
-
-		/* smaller than the smallest value in the range list */
-		if (DatumGetBool(compar))
-			match = false;
-
-		/*
-		 * And now compare it to the existing maximum (last value in the
-		 * data array). But only if we haven't already ruled out a possible
-		 * match in the minvalue check.
-		 */
-		if (match)
-		{
-			cmpGreaterFn = minmax_multi_get_strategy_procinfo(bdesc, attno, typid,
-												BTGreaterStrategyNumber);
-			compar = FunctionCall2Coll(cmpGreaterFn, colloid, newval, maxvalue);
-
-			if (DatumGetBool(compar))
-				match = false;
-		}
-
-		/*
-		 * So it's in the general range, but is it actually covered by any
-		 * of the ranges? Repeat the check for each range.
-		 *
-		 * XXX We simply walk the ranges sequentially, but maybe we could
-		 * further leverage the ordering and non-overlap and use bsearch to
-		 * speed this up a bit.
-		 */
-		for (i = 0; i < ranges->nranges && match; i++)
-		{
-			/* copy the min/max values from the ranges */
-			minvalue = ranges->values[2*i];
-			maxvalue = ranges->values[2*i+1];
-
-			/*
-			 * Otherwise, need to compare the new value with boundaries of all
-			 * the ranges. First check if it's less than the absolute minimum,
-			 * which is the first value in the array.
-			 */
-			compar = FunctionCall2Coll(cmpLessFn, colloid, newval, minvalue);
-
-			/* smaller than the smallest value in this range */
-			if (DatumGetBool(compar))
-				continue;
-
-			compar = FunctionCall2Coll(cmpGreaterFn, colloid, newval, maxvalue);
-
-			/* larger than the largest value in this range */
-			if (DatumGetBool(compar))
-				continue;
-
-			/* hey, we found a matching row */
-			return true;
-		}
-	}
+	if (has_matching_range(bdesc, colloid, ranges, newval, attno, typid))
+		return true;
 
 	cmpEqualFn = minmax_multi_get_strategy_procinfo(bdesc, attno, typid,
 											 BTEqualStrategyNumber);
@@ -640,92 +749,42 @@ range_contains_value(BrinDesc *bdesc, Oid colloid,
 	/*
 	 * We're done with the ranges, now let's inspect the exact values.
 	 *
-	 * XXX Again, we do sequentially search the values - consider leveraging
-	 * the ordering of values to improve performance.
+	 * XXX We do sequential search for small number of values, and bsearch
+	 * once we have more than 16 values.
+	 *
+	 * XXX We only inspect the sorted part - that's OK. For building it may
+	 * produce false negatives, but only after we already added some values
+	 * to the unsorted part, so we've modified the value. And when querying
+	 * the index, there should be no unsorted values.
 	 */
-	for (i = 2*ranges->nranges; i < 2*ranges->nranges + ranges->nvalues; i++)
+	if (ranges->nsorted >= 16)
 	{
-		Datum compar;
+		compare_context	cxt;
 
-		compar = FunctionCall2Coll(cmpEqualFn, colloid, newval, ranges->values[i]);
+		cxt.colloid = ranges->colloid;
+		cxt.cmpFn = ranges->cmp;
 
-		/* found an exact match */
-		if (DatumGetBool(compar))
+		if (bsearch_arg(&newval, &ranges->values[2*ranges->nranges],
+						ranges->nsorted, sizeof(Datum),
+						compare_values, (void *) &cxt) != NULL)
 			return true;
+	}
+	else
+	{
+		for (i = 2*ranges->nranges; i < 2*ranges->nranges + ranges->nsorted; i++)
+		{
+			Datum compar;
+
+			compar = FunctionCall2Coll(cmpEqualFn, colloid, newval, ranges->values[i]);
+
+			/* found an exact match */
+			if (DatumGetBool(compar))
+				return true;
+		}
 	}
 
 	/* the value is not covered by this BRIN tuple */
 	return false;
-}
-
-/*
- * insert_value
- *	  Adds a new value into the single-point part, while maintaining ordering.
- *
- * The function inserts the new value to the right place in the single-point
- * part of the range. It assumes there's enough free space, and then does
- * essentially an insert-sort.
- *
- * XXX Assumes the 'values' array has space for (nvalues+1) entries, and that
- * only the first nvalues are used.
- */
-static void
-insert_value(FmgrInfo *cmp, Oid colloid, Datum *values, int nvalues,
-			 Datum newvalue)
-{
-	int	i;
-	Datum	lt;
-
-	/* If there are no values yet, store the new one and we're done. */
-	if (!nvalues)
-	{
-		values[0] = newvalue;
-		return;
-	}
-
-	/*
-	 * A common case is that the new value is entirely out of the existing
-	 * range, i.e. it's either smaller or larger than all previous values.
-	 * So we check and handle this case first - first we check the larger
-	 * case, because in that case we can just append the value to the end
-	 * of the array and we're done.
-	 */
-
-	/* Is it greater than all existing values in the array? */
-	lt = FunctionCall2Coll(cmp, colloid, values[nvalues-1], newvalue);
-	if (DatumGetBool(lt))
-	{
-		/* just copy it in-place and we're done */
-		values[nvalues] = newvalue;
-		return;
-	}
-
-	/*
-	 * OK, I lied a bit - we won't check the smaller case explicitly, but
-	 * we'll just compare the value to all existing values in the array.
-	 * But we happen to start with the smallest value, so we're actually
-	 * doing the check anyway.
-	 *
-	 * XXX We do walk the values sequentially. Perhaps we could/should be
-	 * smarter and do some sort of bisection, to improve performance?
-	 */
-	for (i = 0; i < nvalues; i++)
-	{
-		lt = FunctionCall2Coll(cmp, colloid, newvalue, values[i]);
-		if (DatumGetBool(lt))
-		{
-			/*
-			 * Move values to make space for the new entry, which should go
-			 * to index 'i'. Entries 0 ... (i-1) should stay where they are.
-			 */
-			memmove(&values[i+1], &values[i], (nvalues-i) * sizeof(Datum));
-			values[i] = newvalue;
-			return;
-		}
-	}
-
-	/* We should never really get here. */
-	Assert(false);
 }
 
 /*
@@ -758,7 +817,8 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 
 	/* some basic sanity checks */
 	Assert(ranges->nranges >= 0);
-	Assert(ranges->nvalues >= 0);
+	Assert(ranges->nsorted >= 0);
+	Assert(ranges->nvalues >= ranges->nsorted);
 	Assert(ranges->maxvalues >= 2 * ranges->nranges + ranges->nvalues);
 	Assert(ranges->typid != InvalidOid);
 
@@ -770,7 +830,14 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 	 */
 	AssertArrayOrder(cmpFn, colloid, ranges->values, 2*ranges->nranges);
 
-	/* finally check that none of the values are not covered by ranges */
+	/* then the single-point ranges (with nvalues boundar values ) */
+	AssertArrayOrder(cmpFn, colloid, &ranges->values[2*ranges->nranges],
+					 ranges->nsorted);
+
+	/*
+	 * Check that none of the values are not covered by ranges (both
+	 * sorted and unsorted)
+	 */
 	for (i = 0; i < ranges->nvalues; i++)
 	{
 		Datum	value = ranges->values[2 * ranges->nranges + i];
@@ -793,6 +860,32 @@ AssertCheckRanges(Ranges *ranges, FmgrInfo *cmpFn, Oid colloid)
 				continue;
 
 			/* value is between [min,max], which is wrong */
+			Assert(false);
+		}
+	}
+
+	/* and values in the unsorted part must not be in sorted part */
+	for (i = ranges->nsorted; i < ranges->nvalues; i++)
+	{
+		Datum	value = ranges->values[2 * ranges->nranges + i];
+
+		for (j = 0; j < ranges->nsorted; j++)
+		{
+			Datum	r;
+
+			Datum	value2 = ranges->values[2 * ranges->nranges + j];
+
+			/* if value is smaller than range minimum, that's OK */
+			r = FunctionCall2Coll(cmpFn, colloid, value, value2);
+			if (DatumGetBool(r))
+				continue;
+
+			/* if value is greater than range maximum, that's OK */
+			r = FunctionCall2Coll(cmpFn, colloid, value2, value);
+			if (DatumGetBool(r))
+				continue;
+
+			/* if neither (a<b) or (b<a) then (a=b), which is wrong */
 			Assert(false);
 		}
 	}
@@ -1319,6 +1412,9 @@ store_combine_ranges(Ranges *ranges, CombineRange *cranges, int ncranges)
 		}
 	}
 
+	/* all the values are sorted */
+	ranges->nsorted = ranges->nvalues;
+
 	Assert(count_values(cranges, ncranges) == 2*ranges->nranges + ranges->nvalues);
 	Assert(2*ranges->nranges + ranges->nvalues <= ranges->maxvalues);
 }
@@ -1353,23 +1449,24 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	Assert((ranges->nranges >= 0) && (ranges->nvalues >= 0) && (ranges->maxvalues >= 0));
 
 	/*
-	 * When batch-building, there should be no ranges. So either the
-	 * number of ranges is 0 or we're not in batching mode.
+	 * If there's no free space, try to make a bit of space. First try to
+	 * deduplicate the sorted path, then consider also building the ranges.
+	 *
+	 * XXX This needs to happen before we check if the value is contained
+	 * in the range, because the value might be in the unsorted part, and
+	 * we don't check that in range_contains_value. The deduplication would
+	 * then move it to the sorted part, and we'd add the value too, which
+	 * violates the rule that we never have duplicates with the ranges
+	 * or sorted values.
+	 *
+	 * XXX At the moment this only does the deduplication.
+	 *
+	 * XXX We might also deduplicate and recheck if the value is contained,
+	 * but that seems like an overkill. We'd need to deduplicate anyway,
+	 * so why not do it now.
 	 */
-	Assert(!ranges->batch_mode || (ranges->nranges == 0));
-
-	/* When batch-building, just add it and we're done. */
-	if (ranges->batch_mode)
-	{
-		/* there has to be free space, if we've sized the struct */
-		Assert(ranges->nvalues < ranges->maxvalues);
-
-		/* Make a copy of the value, if needed. */
-		ranges->values[ranges->nvalues++]
-			= datumCopy(newval, attr->attbyval, attr->attlen);;
-
-		return true;
-	}
+	if (2*ranges->nranges + ranges->nvalues == ranges->maxvalues)
+		range_deduplicate_values(ranges);
 
 	/*
 	 * Bail out if the value already is covered by the range.
@@ -1401,13 +1498,7 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 */
 	if (2*ranges->nranges + ranges->nvalues < ranges->maxvalues)
 	{
-		Datum	   *values;
-
-		/* beginning of the 'single value' part (for convenience) */
-		values = &ranges->values[2*ranges->nranges];
-
-		insert_value(cmpFn, colloid, values, ranges->nvalues, newval);
-
+		ranges->values[2*ranges->nranges + ranges->nvalues] = newval;
 		ranges->nvalues++;
 
 		/*
@@ -1453,7 +1544,7 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	/* OK build the combine ranges */
 	cranges = build_combine_ranges(cmpFn, colloid, ranges,
 								   true, newval, &ncranges,
-								   false);
+								   true);
 
 	/* and we'll also need the 'distance' procedure */
 	distanceFn = minmax_multi_get_procinfo(bdesc, attno, PROCNUM_DISTANCE);
@@ -1467,10 +1558,10 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 * use too low or high value.
 	 */
 	ncranges = reduce_combine_ranges(cranges, ncranges, distances,
-									 ranges->maxvalues * MINMAX_LOAD_FACTOR,
+									 ranges->maxvalues * MINMAX_BUFFER_LOAD_FACTOR,
 									 cmpFn, colloid);
 
-	Assert(count_values(cranges, ncranges) <= ranges->maxvalues * MINMAX_LOAD_FACTOR);
+	Assert(count_values(cranges, ncranges) <= ranges->maxvalues * MINMAX_BUFFER_LOAD_FACTOR);
 
 	/* decompose the combine ranges into regular ranges and single values */
 	store_combine_ranges(ranges, cranges, ncranges);
@@ -1503,12 +1594,6 @@ compactify_ranges(BrinDesc *bdesc, Ranges *ranges, int max_values)
 
 	MemoryContext	ctx;
 	MemoryContext	oldctx;
-
-	/*
-	 * This should only be used in batch mode, and there should be no
-	 * ranges, just individual values.
-	 */
-	Assert((ranges->batch_mode) && (ranges->nranges == 0));
 
 	/* we'll certainly need the comparator, so just look it up now */
 	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, ranges->attno, ranges->typid,
@@ -1546,7 +1631,7 @@ compactify_ranges(BrinDesc *bdesc, Ranges *ranges, int max_values)
 		 * don't expect more tuples to be inserted soon.
 		 */
 		ncranges = reduce_combine_ranges(cranges, ncranges, distances,
-										  max_values, cmpFn, ranges->colloid);
+										 max_values, cmpFn, ranges->colloid);
 
 		Assert(count_values(cranges, ncranges) <= max_values);
 	}
@@ -2052,8 +2137,7 @@ brin_minmax_multi_serialize(BrinDesc *bdesc, Datum src, Datum *dst)
 	 * In batch mode, we need to compress the accumulated values to the
 	 * actually requested number of values/ranges.
 	 */
-	if (ranges->batch_mode)
-		compactify_ranges(bdesc, ranges, ranges->target_maxvalues);
+	compactify_ranges(bdesc, ranges, ranges->target_maxvalues);
 
 	s = range_serialize(ranges);
 	dst[0] = PointerGetDatum(s);
@@ -2114,15 +2198,39 @@ brin_minmax_multi_add_value(PG_FUNCTION_ARGS)
 	{
 		MemoryContext oldctx;
 
+		int				target_maxvalues;
+		int				maxvalues;
 		BlockNumber		pagesPerRange = BrinGetPagesPerRange(bdesc->bd_index);
 
+		/* what was specified as a reloption? */
+		target_maxvalues = brin_minmax_multi_get_values(bdesc, opts);
+
+		/*
+		 * Determine the insert buffer size - we use 10x the target, capped
+		 * to the maximum number of values in the heap range. This is more
+		 * than enough, considering the actual number of rows per page is
+		 * likely much lower, but meh.
+		 */
+		maxvalues = Min(target_maxvalues * MINMAX_BUFFER_FACTOR,
+						MaxHeapTuplesPerPage * pagesPerRange);
+
+		/* but always at least the original value */
+		maxvalues = Max(maxvalues, target_maxvalues);
+
+		/* always cap by MIN/MAX */
+		maxvalues = Max(maxvalues, MINMAX_BUFFER_MIN);
+		maxvalues = Min(maxvalues, MINMAX_BUFFER_MAX);
+
 		oldctx = MemoryContextSwitchTo(column->bv_context);
-		ranges = minmax_multi_init(MaxHeapTuplesPerPage * pagesPerRange);
+		ranges = minmax_multi_init(maxvalues);
 		ranges->attno = attno;
 		ranges->colloid = colloid;
 		ranges->typid = attr->atttypid;
-		ranges->batch_mode = true;
-		ranges->target_maxvalues = brin_minmax_multi_get_values(bdesc, opts);
+		ranges->target_maxvalues = target_maxvalues;
+
+		/* we'll certainly need the comparator, so just look it up now */
+		ranges->cmp = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
+														 BTLessStrategyNumber);
 
 		MemoryContextSwitchTo(oldctx);
 
@@ -2136,10 +2244,38 @@ brin_minmax_multi_add_value(PG_FUNCTION_ARGS)
 	{
 		MemoryContext oldctx;
 
+		int				maxvalues;
+		BlockNumber		pagesPerRange = BrinGetPagesPerRange(bdesc->bd_index);
+
 		oldctx = MemoryContextSwitchTo(column->bv_context);
 
 		serialized = (SerializedRanges *) PG_DETOAST_DATUM(column->bv_values[0]);
-		ranges = range_deserialize(serialized);
+
+		/*
+		 * Determine the insert buffer size - we use 10x the target, capped
+		 * to the maximum number of values in the heap range. This is more
+		 * than enough, considering the actual number of rows per page is
+		 * likely much lower, but meh.
+		 */
+		maxvalues = Min(serialized->maxvalues * MINMAX_BUFFER_FACTOR,
+						MaxHeapTuplesPerPage * pagesPerRange);
+
+		/* but always at least the original value */
+		maxvalues = Max(maxvalues, serialized->maxvalues);
+
+		/* always cap by MIN/MAX */
+		maxvalues = Max(maxvalues, MINMAX_BUFFER_MIN);
+		maxvalues = Min(maxvalues, MINMAX_BUFFER_MAX);
+
+		ranges = range_deserialize(maxvalues, serialized);
+
+		ranges->attno = attno;
+		ranges->colloid = colloid;
+		ranges->typid = attr->atttypid;
+
+		/* we'll certainly need the comparator, so just look it up now */
+		ranges->cmp = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
+														 BTLessStrategyNumber);
 
 		column->bv_mem_value = PointerGetDatum(ranges);
 		column->bv_serialize = brin_minmax_multi_serialize;
@@ -2184,7 +2320,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 	attno = column->bv_attno;
 
 	serialized = (SerializedRanges *) PG_DETOAST_DATUM(column->bv_values[0]);
-	ranges = range_deserialize(serialized);
+	ranges = range_deserialize(serialized->maxvalues, serialized);
 
 	/* inspect the ranges, and for each one evaluate the scan keys */
 	for (rangeno = 0; rangeno < ranges->nranges; rangeno++)
@@ -2371,8 +2507,8 @@ brin_minmax_multi_union(PG_FUNCTION_ARGS)
 	serialized_a = (SerializedRanges *) PG_DETOAST_DATUM(col_a->bv_values[0]);
 	serialized_b = (SerializedRanges *) PG_DETOAST_DATUM(col_b->bv_values[0]);
 
-	ranges_a = range_deserialize(serialized_a);
-	ranges_b = range_deserialize(serialized_b);
+	ranges_a = range_deserialize(serialized_a->maxvalues, serialized_a);
+	ranges_b = range_deserialize(serialized_b->maxvalues, serialized_b);
 
 	/* make sure neither of the ranges is NULL */
 	Assert(ranges_a && ranges_b);
@@ -2637,7 +2773,7 @@ brin_minmax_multi_summary_out(PG_FUNCTION_ARGS)
 	fmgr_info(outfunc, &fmgrinfo);
 
 	/* deserialize the range info easy-to-process pieces */
-	ranges_deserialized = range_deserialize(ranges);
+	ranges_deserialized = range_deserialize(ranges->maxvalues, ranges);
 
 	appendStringInfo(&str, "nranges: %u  nvalues: %u  maxvalues: %u",
 					 ranges_deserialized->nranges,

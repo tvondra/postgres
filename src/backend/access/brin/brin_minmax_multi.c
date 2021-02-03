@@ -268,6 +268,10 @@ range_deduplicate_values(Ranges *range)
 	int				start;
 	compare_context cxt;
 
+	/*
+	 * If there are no unsorted values, we're done (this probably can't
+	 * happen, as we're adding values to unsorted part).
+	 */
 	if (range->nsorted == range->nvalues)
 		return;
 
@@ -302,6 +306,7 @@ range_deduplicate_values(Ranges *range)
 
 	AssertCheckRanges(range, range->cmp, range->colloid);
 }
+
 
 /*
  * range_serialize
@@ -1248,8 +1253,7 @@ build_distances(FmgrInfo *distanceFn, Oid colloid,
  */
 static CombineRange *
 build_combine_ranges(FmgrInfo *cmp, Oid colloid, Ranges *ranges,
-					 bool addvalue, Datum newvalue, int *nranges,
-					 bool deduplicate)
+					 int *nranges)
 {
 	int				ncranges;
 	CombineRange   *cranges;
@@ -1257,28 +1261,15 @@ build_combine_ranges(FmgrInfo *cmp, Oid colloid, Ranges *ranges,
 	/* now do the actual merge sort */
 	ncranges = ranges->nranges + ranges->nvalues;
 
-	/* should we add an extra value? */
-	if (addvalue)
-		ncranges += 1;
-
 	cranges = (CombineRange *) palloc0(ncranges * sizeof(CombineRange));
 
-	/* put the new value at the beginning */
-	if (addvalue)
-	{
-		cranges[0].minval = newvalue;
-		cranges[0].maxval = newvalue;
-		cranges[0].collapsed = true;
-
-		/* then the regular and collapsed ranges */
-		fill_combine_ranges(&cranges[1], ncranges-1, ranges);
-	}
-	else
-		fill_combine_ranges(cranges, ncranges, ranges);
+	/* fll the combine ranges */
+	fill_combine_ranges(cranges, ncranges, ranges);
 
 	/* and sort the ranges */
-	ncranges = sort_combine_ranges(cmp, colloid, cranges, ncranges,
-								   deduplicate);
+	ncranges = sort_combine_ranges(cmp, colloid,
+								   cranges, ncranges,
+								   true);	/* deduplicate */
 
 	/* remember how many cranges we built */
 	*nranges = ncranges;
@@ -1540,6 +1531,106 @@ store_combine_ranges(Ranges *ranges, CombineRange *cranges, int ncranges)
 	Assert(2*ranges->nranges + ranges->nvalues <= ranges->maxvalues);
 }
 
+
+
+/*
+ * Consider freeing space in the ranges.
+ *
+ * Returns true if the value was actually modified.
+ */
+static bool
+ensure_free_space_in_buffer(BrinDesc *bdesc, Oid colloid,
+							AttrNumber attno, Form_pg_attribute attr,
+							Ranges *range)
+{
+	MemoryContext	ctx;
+	MemoryContext	oldctx;
+
+	FmgrInfo   *cmpFn,
+			   *distanceFn;
+
+	/* combine ranges */
+	CombineRange   *cranges;
+	int				ncranges;
+	DistanceValue  *distances;
+
+	/*
+	 * If there is free space in the buffer, we're done without having
+	 * to modify anything.
+	 */
+	if (2*range->nranges + range->nvalues < range->maxvalues)
+		return false;
+
+	/* we'll certainly need the comparator, so just look it up now */
+	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
+											   BTLessStrategyNumber);
+
+	/* Try deduplicating values in the unsorted part */
+	range_deduplicate_values(range);
+
+	/* did we reduce enough free space by just the deduplication? */
+	if (2*range->nranges + range->nvalues <= range->maxvalues * MINMAX_BUFFER_LOAD_FACTOR)
+		return true;
+
+	/*
+	 * we need to combine some of the existing ranges, to reduce the number
+	 * of values we need to store (joining intervals reduces the number of
+	 * boundary values).
+	 *
+	 * We first construct an array of CombineRange items - each combine range
+	 * tracks if it's a regular range or a collapsed range, where "collapsed"
+	 * means "single point." This makes the processing easier, as it allows
+	 * handling ranges and points the same way.
+	 *
+	 * Then we sort the combine ranges - this is necessary, because although
+	 * ranges and points were sorted on their own, the new array is not. We
+	 * do that by performing a merge sort of the two parts.
+	 *
+	 * The distanceFn calls (which may internally call e.g. numeric_le) may
+	 * allocate quite a bit of memory, and we must not leak it (we might have
+	 * to do this repeatedly, even for a single BRIN page range). Otherwise
+	 * we'd have problems e.g. when building new indexes. So we use a memory
+	 * context and make sure we free the memory at the end (so if we call
+	 * the distance function many times, it might be an issue, but meh).
+	 */
+	ctx = AllocSetContextCreate(CurrentMemoryContext,
+								"minmax-multi context",
+								ALLOCSET_DEFAULT_SIZES);
+
+	oldctx = MemoryContextSwitchTo(ctx);
+
+	/* OK build the combine ranges */
+	cranges = build_combine_ranges(cmpFn, colloid, range, &ncranges);
+
+	/* and we'll also need the 'distance' procedure */
+	distanceFn = minmax_multi_get_procinfo(bdesc, attno, PROCNUM_DISTANCE);
+
+	/* build array of gap distances and sort them in ascending order */
+	distances = build_distances(distanceFn, colloid, cranges, ncranges);
+
+	/*
+	 * Combine ranges until we release at least 25% of the space. This
+	 * threshold is somewhat arbitrary, perhaps needs tuning. We must not
+	 * use too low or high value.
+	 */
+	ncranges = reduce_combine_ranges(cranges, ncranges, distances,
+									 range->maxvalues * MINMAX_BUFFER_LOAD_FACTOR,
+									 cmpFn, colloid);
+
+	Assert(count_values(cranges, ncranges) <= range->maxvalues * MINMAX_BUFFER_LOAD_FACTOR);
+
+	/* decompose the combine ranges into regular ranges and single values */
+	store_combine_ranges(range, cranges, ncranges);
+
+	MemoryContextSwitchTo(oldctx);
+	MemoryContextDelete(ctx);
+
+	/* Did we break the ranges somehow? */
+	AssertCheckRanges(range, cmpFn, colloid);
+
+	return true;
+}
+
 /*
  * range_add_value
  * 		Add the new value to the multi-minmax range.
@@ -1549,16 +1640,8 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 				AttrNumber attno, Form_pg_attribute attr,
 				Ranges *ranges, Datum newval)
 {
-	FmgrInfo   *cmpFn,
-			   *distanceFn;
-
-	/* combine ranges */
-	CombineRange   *cranges;
-	int				ncranges;
-	DistanceValue  *distances;
-
-	MemoryContext	ctx;
-	MemoryContext	oldctx;
+	FmgrInfo   *cmpFn;
+	bool		modified = false;
 
 	/* we'll certainly need the comparator, so just look it up now */
 	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
@@ -1567,11 +1650,10 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	/* comprehensive checks of the input ranges */
 	AssertCheckRanges(ranges, cmpFn, colloid);
 
-	Assert((ranges->nranges >= 0) && (ranges->nvalues >= 0) && (ranges->maxvalues >= 0));
-
 	/*
-	 * If there's no free space, try to make a bit of space. First try to
-	 * deduplicate the sorted path, then consider also building the ranges.
+	 * Make sure there's enough free space in the buffer. We only trigger
+	 * this when the buffer is full, which means it had to be modified as
+	 * we size it to be larger than what is stored on disk.
 	 *
 	 * XXX This needs to happen before we check if the value is contained
 	 * in the range, because the value might be in the unsorted part, and
@@ -1586,8 +1668,8 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 * but that seems like an overkill. We'd need to deduplicate anyway,
 	 * so why not do it now.
 	 */
-	if (2*ranges->nranges + ranges->nvalues == ranges->maxvalues)
-		range_deduplicate_values(ranges);
+	modified = ensure_free_space_in_buffer(bdesc, colloid,
+										   attno, attr, ranges);
 
 	/*
 	 * Bail out if the value already is covered by the range.
@@ -1604,7 +1686,7 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 * This also implies means the values array can't contain duplicities.
 	 */
 	if (range_contains_value(bdesc, colloid, attno, attr, ranges, newval))
-		return false;
+		return modified;
 
 	/* Make a copy of the value, if needed. */
 	newval = datumCopy(newval, attr->attbyval, attr->attlen);
@@ -1617,83 +1699,19 @@ range_add_value(BrinDesc *bdesc, Oid colloid,
 	 * e.g. by sorting the values only now and then, but for small counts
 	 * (e.g. when maxvalues is 64) this should be fine.
 	 */
-	if (2*ranges->nranges + ranges->nvalues < ranges->maxvalues)
-	{
-		ranges->values[2*ranges->nranges + ranges->nvalues] = newval;
-		ranges->nvalues++;
-
-		/*
-		 * Check we haven't broken the ordering of boundary values (checks
-		 * both parts, but that doesn't hurt).
-		 */
-		AssertCheckRanges(ranges, cmpFn, colloid);
-
-		/* Also check the range contains the value we just added. */
-		// FIXME Assert(ranges, cmpFn, colloid);
-
-		/* yep, we've modified the range */
-		return true;
-	}
+	ranges->values[2*ranges->nranges + ranges->nvalues] = newval;
+	ranges->nvalues++;
 
 	/*
-	 * Damn - the new value is not in the range yet, but we don't have space
-	 * to just insert it. So we need to combine some of the existing ranges,
-	 * to reduce the number of values we need to store (joining two intervals
-	 * reduces the number of boundaries to store by 2).
-	 *
-	 * To do that we first construct an array of CombineRange items - each
-	 * combine range tracks if it's a regular range or collapsed range, where
-	 * "collapsed" means "single point."
-	 *
-	 * Existing ranges (we have ranges->nranges of them) map to combine ranges
-	 * directly, while single points (ranges->nvalues of them) have to be
-	 * expanded. We neet the combine ranges to be sorted, and we do that by
-	 * performing a merge sort of ranges, values and new value.
-	 *
-	 * The distanceFn calls (which may internally call e.g. numeric_le) may
-	 * allocate quite a bit of memory, and we must not leak it. Otherwise
-	 * we'd have problems e.g. when building indexes. So we create a local
-	 * memory context and make sure we free the memory before leaving this
-	 * function (not after every call).
+	 * Check we haven't broken the ordering of boundary values (checks
+	 * both parts, but that doesn't hurt).
 	 */
-	ctx = AllocSetContextCreate(CurrentMemoryContext,
-								"minmax-multi context",
-								ALLOCSET_DEFAULT_SIZES);
-
-	oldctx = MemoryContextSwitchTo(ctx);
-
-	/* OK build the combine ranges */
-	cranges = build_combine_ranges(cmpFn, colloid, ranges,
-								   true, newval, &ncranges,
-								   true);
-
-	/* and we'll also need the 'distance' procedure */
-	distanceFn = minmax_multi_get_procinfo(bdesc, attno, PROCNUM_DISTANCE);
-
-	/* build array of gap distances and sort them in ascending order */
-	distances = build_distances(distanceFn, colloid, cranges, ncranges);
-
-	/*
-	 * Combine ranges until we release at least 25% of the space. This
-	 * threshold is somewhat arbitrary, perhaps needs tuning. We must not
-	 * use too low or high value.
-	 */
-	ncranges = reduce_combine_ranges(cranges, ncranges, distances,
-									 ranges->maxvalues * MINMAX_BUFFER_LOAD_FACTOR,
-									 cmpFn, colloid);
-
-	Assert(count_values(cranges, ncranges) <= ranges->maxvalues * MINMAX_BUFFER_LOAD_FACTOR);
-
-	/* decompose the combine ranges into regular ranges and single values */
-	store_combine_ranges(ranges, cranges, ncranges);
-
-	MemoryContextSwitchTo(oldctx);
-	MemoryContextDelete(ctx);
-
-	/* Did we break the ranges somehow? */
 	AssertCheckRanges(ranges, cmpFn, colloid);
+
+	/* Also check the range contains the value we just added. */
 	// FIXME Assert(ranges, cmpFn, colloid);
 
+	/* yep, we've modified the range */
 	return true;
 }
 
@@ -1738,8 +1756,7 @@ compactify_ranges(BrinDesc *bdesc, Ranges *ranges, int max_values)
 
 	/* OK build the combine ranges */
 	cranges = build_combine_ranges(cmpFn, ranges->colloid, ranges,
-								   false, (Datum) 0, &ncranges,
-								   true);	/* deduplicate */
+								   &ncranges);	/* deduplicate */
 
 	if (ncranges > 1)
 	{
@@ -2666,7 +2683,7 @@ brin_minmax_multi_union(PG_FUNCTION_ARGS)
 	cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, attr->atttypid,
 											 BTLessStrategyNumber);
 
-	/* sort the combine ranges (don't deduplicate) */
+	/* sort the combine ranges (no need to deduplicate) */
 	sort_combine_ranges(cmpFn, colloid, cranges, ncranges, false);
 
 	/*

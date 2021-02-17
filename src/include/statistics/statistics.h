@@ -26,7 +26,8 @@
 typedef struct MVNDistinctItem
 {
 	double		ndistinct;		/* ndistinct value for this combination */
-	Bitmapset  *attrs;			/* attr numbers of items */
+	int			nattributes;	/* number of attributes */
+	AttrNumber *attributes;		/* attribute numbers */
 } MVNDistinctItem;
 
 /* A MVNDistinct object, comprising all possible combinations of columns */

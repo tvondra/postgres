@@ -106,7 +106,7 @@ extern void *bsearch_arg(const void *key, const void *base,
 						 int (*compar) (const void *, const void *, void *),
 						 void *arg);
 
-extern AttrNumber *build_attnums_array(Bitmapset *attrs, int *numattrs);
+extern AttrNumber *build_attnums_array(Bitmapset *attrs, int nexprs, int *numattrs);
 
 extern SortItem *build_sorted_items(int numrows, int *nitems, HeapTuple *rows,
 									ExprInfo *exprs, TupleDesc tdesc,
@@ -140,14 +140,5 @@ extern Selectivity mcv_clause_selectivity_or(PlannerInfo *root,
 											 Selectivity *overlap_mcvsel,
 											 Selectivity *overlap_basesel,
 											 Selectivity *totalsel);
-
-extern Bitmapset *add_expressions_to_attributes(Bitmapset *attrs, int nexprs);
-
-/* translate 0-based expression index to attnum and back */
-#define	EXPRESSION_ATTNUM(index)	\
-	(MaxHeapAttributeNumber + (index) + 1)
-
-#define	EXPRESSION_INDEX(attnum)	\
-	((attnum) - MaxHeapAttributeNumber - 1)
 
 #endif							/* EXTENDED_STATS_INTERNAL_H */

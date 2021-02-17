@@ -892,7 +892,7 @@ bsearch_arg(const void *key, const void *base, size_t nmemb, size_t size,
  * is not necessary here (and when querying the bitmap).
  */
 AttrNumber *
-build_attnums_array(Bitmapset *attrs, int *numattrs)
+build_attnums_array(Bitmapset *attrs, int nexprs, int *numattrs)
 {
 	int			i,
 				j;
@@ -908,16 +908,19 @@ build_attnums_array(Bitmapset *attrs, int *numattrs)
 	j = -1;
 	while ((j = bms_next_member(attrs, j)) >= 0)
 	{
+		AttrNumber	attnum = (j - nexprs);
+
 		/*
 		 * Make sure the bitmap contains only user-defined attributes. As
 		 * bitmaps can't contain negative values, this can be violated in two
 		 * ways. Firstly, the bitmap might contain 0 as a member, and secondly
 		 * the integer value might be larger than MaxAttrNumber.
 		 */
-		Assert(AttrNumberIsForUserDefinedAttr(j));
-		Assert(j <= MaxAttrNumber);
+		Assert(AttributeNumberIsValid(attnum));
+		Assert(attnum <= MaxAttrNumber);
+		Assert(attnum >= (-nexprs));
 
-		attnums[i++] = (AttrNumber) j;
+		attnums[i++] = (AttrNumber) attnum;
 
 		/* protect against overflows */
 		Assert(i <= num);
@@ -984,15 +987,16 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 			Datum		value;
 			bool		isnull;
 			int			attlen;
+			AttrNumber	attnum = attnums[j];
 
-			if (attnums[j] <= MaxHeapAttributeNumber)
+			if (AttrNumberIsForUserDefinedAttr(attnum))
 			{
-				value = heap_getattr(rows[i], attnums[j], tdesc, &isnull);
-				attlen = TupleDescAttr(tdesc, attnums[j] - 1)->attlen;
+				value = heap_getattr(rows[i], attnum, tdesc, &isnull);
+				attlen = TupleDescAttr(tdesc, attnum - 1)->attlen;
 			}
 			else
 			{
-				int	idx = EXPRESSION_INDEX(attnums[j]);
+				int	idx = -(attnums[j] + 1);
 
 				Assert((idx >= 0) && (idx < exprs->nexprs));
 
@@ -1097,6 +1101,21 @@ stat_find_expression(StatisticExtInfo *stat, Node *expr)
 	return -1;
 }
 
+static bool
+stat_covers_attributes(StatisticExtInfo *stat, Bitmapset *attnums)
+{
+	int	k;
+
+	k = -1;
+	while ((k = bms_next_member(attnums, k)) >= 0)
+	{
+		if (!bms_is_member(k, stat->keys))
+			return false;
+	}
+
+	return true;
+}
+
 /*
  * stat_covers_expressions
  * 		Test whether a statistics object covers all expressions in a list.
@@ -1181,7 +1200,7 @@ choose_best_statistics(List *stats, char requiredkind,
 				continue;
 
 			/* ignore clauses that are not covered by this object */
-			if (!bms_is_subset(clause_attnums[i], info->keys) ||
+			if (!stat_covers_attributes(info, clause_attnums[i]) ||
 				!stat_covers_expressions(info, clause_exprs[i], &expr_idxs))
 				continue;
 
@@ -1685,7 +1704,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 			 * estimate.
 			 */
 			if (!bms_is_member(listidx, *estimatedclauses) &&
-				bms_is_subset(list_attnums[listidx], stat->keys) &&
+				stat_covers_attributes(stat, list_attnums[listidx]) &&
 				stat_covers_expressions(stat, list_exprs[listidx], NULL))
 			{
 				/* record simple clauses (single column or expression) */
@@ -2554,38 +2573,4 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 	FreeExecutorState(estate);
 
 	return result;
-}
-
-/*
- * add_expressions_to_attributes
- *		add expressions as attributes with high attnums
- *
- * Treat the expressions as attributes with attnums above the regular
- * attnum range. This will allow us to handle everything in the same
- * way, and identify expressions in the dependencies.
- *
- * XXX This always creates a copy of the bitmap. We might optimize this
- * by only creating the copy with (nexprs > 0) but then we'd have to track
- * this in order to free it (if we want to). Does not seem worth it.
- */
-Bitmapset *
-add_expressions_to_attributes(Bitmapset *attrs, int nexprs)
-{
-	int			i;
-
-	/*
-	 * Copy the bitmapset and add fake attnums representing expressions,
-	 * starting above MaxHeapAttributeNumber.
-	 */
-	attrs = bms_copy(attrs);
-
-	/* start with (MaxHeapAttributeNumber + 1) */
-	for (i = 0; i < nexprs; i++)
-	{
-		Assert(EXPRESSION_ATTNUM(i) > MaxHeapAttributeNumber);
-
-		attrs = bms_add_member(attrs, EXPRESSION_ATTNUM(i));
-	}
-
-	return attrs;
 }

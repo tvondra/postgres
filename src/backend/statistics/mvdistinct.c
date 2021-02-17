@@ -83,9 +83,9 @@ static void generate_combinations(CombinationGenerator *state);
  * This computes the ndistinct estimate using the same estimator used
  * in analyze.c and then computes the coefficient.
  *
- * To handle expressions easily, we treat them as special attributes with
- * attnums above MaxHeapAttributeNumber, and we assume the expressions are
- * placed after all simple attributes.
+ * To handle expressions easily, we treat them as system attributes with
+ * negative attnums, and offset everything by number of expressions to
+ * allow using Bitmapsets.
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
@@ -93,10 +93,12 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 						VacAttrStats **stats)
 {
 	MVNDistinct *result;
+	int			i;
 	int			k;
 	int			itemcnt;
 	int			numattrs = bms_num_members(attrs);
 	int			numcombs = num_combinations(numattrs + exprs->nexprs);
+	Bitmapset  *tmp = NULL;
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -104,8 +106,26 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	result->type = STATS_NDISTINCT_TYPE_BASIC;
 	result->nitems = numcombs;
 
-	/* treat expressions as special attributes with high attnums */
-	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
+	/*
+	 * Treat expressions as system attributes with negative attnums,
+	 * but offset everything by number of expressions.
+	 */
+	for (i = 0; i < exprs->nexprs; i++)
+	{
+		AttrNumber	attnum = -(i + 1);
+		tmp = bms_add_member(tmp, attnum + exprs->nexprs);
+	}
+
+	/* regular attributes */
+	k = -1;
+	while ((k = bms_next_member(attrs, k)) >= 0)
+	{
+		AttrNumber	attnum = k;
+		tmp = bms_add_member(tmp, attnum + exprs->nexprs);
+	}
+
+	/* use the newly built bitmapset */
+	attrs = tmp;
 
 	/* make sure there were no clashes */
 	Assert(bms_num_members(attrs) == numattrs + exprs->nexprs);
@@ -124,29 +144,33 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 			MVNDistinctItem *item = &result->items[itemcnt];
 			int			j;
 
-			item->attrs = NULL;
+			item->attributes = palloc(sizeof(AttrNumber) * k);
+			item->nattributes = k;
+
 			for (j = 0; j < k; j++)
 			{
 				AttrNumber attnum = InvalidAttrNumber;
 
 				/*
-				 * The simple attributes are before expressions, so have
-				 * indexes below numattrs.
-				 * */
-				if (combination[j] < numattrs)
-					attnum = stats[combination[j]]->attr->attnum;
+				 * The expressions have negative attnums, so even with the
+				 * offset are before regular attributes. So the first chunk
+				 * of indexes are for expressions.
+				 */
+				if (combination[j] >= exprs->nexprs)
+					attnum
+						= stats[combination[j] - exprs->nexprs]->attr->attnum;
 				else
 				{
 					/* make sure the expression index is valid */
-					Assert((combination[j] - numattrs) >= 0);
-					Assert((combination[j] - numattrs) < exprs->nexprs);
+					Assert(combination[j] >= 0);
+					Assert(combination[j] < exprs->nexprs);
 
-					attnum = EXPRESSION_ATTNUM(combination[j] - numattrs);
+					attnum = -(combination[j] + 1);
 				}
 
 				Assert(attnum != InvalidAttrNumber);
 
-				item->attrs = bms_add_member(item->attrs, attnum);
+				item->attributes[j] = attnum;
 			}
 
 			item->ndistinct =
@@ -223,7 +247,7 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	{
 		int			nmembers;
 
-		nmembers = bms_num_members(ndistinct->items[i].attrs);
+		nmembers = ndistinct->items[i].nattributes;
 		Assert(nmembers >= 2);
 
 		len += SizeOfItem(nmembers);
@@ -248,22 +272,15 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem item = ndistinct->items[i];
-		int			nmembers = bms_num_members(item.attrs);
-		int			x;
+		int			nmembers = item.nattributes;
 
 		memcpy(tmp, &item.ndistinct, sizeof(double));
 		tmp += sizeof(double);
 		memcpy(tmp, &nmembers, sizeof(int));
 		tmp += sizeof(int);
 
-		x = -1;
-		while ((x = bms_next_member(item.attrs, x)) >= 0)
-		{
-			AttrNumber	value = (AttrNumber) x;
-
-			memcpy(tmp, &value, sizeof(AttrNumber));
-			tmp += sizeof(AttrNumber);
-		}
+		memcpy(tmp, item.attributes, sizeof(AttrNumber) * nmembers);
+		tmp += nmembers * sizeof(AttrNumber);
 
 		/* protect against overflows */
 		Assert(tmp <= ((char *) output + len));
@@ -335,27 +352,21 @@ statext_ndistinct_deserialize(bytea *data)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem *item = &ndistinct->items[i];
-		int			nelems;
-
-		item->attrs = NULL;
 
 		/* ndistinct value */
 		memcpy(&item->ndistinct, tmp, sizeof(double));
 		tmp += sizeof(double);
 
 		/* number of attributes */
-		memcpy(&nelems, tmp, sizeof(int));
+		memcpy(&item->nattributes, tmp, sizeof(int));
 		tmp += sizeof(int);
-		Assert((nelems >= 2) && (nelems <= STATS_MAX_DIMENSIONS));
+		Assert((item->nattributes >= 2) && (item->nattributes <= STATS_MAX_DIMENSIONS));
 
-		while (nelems-- > 0)
-		{
-			AttrNumber	attno;
+		item->attributes
+			= (AttrNumber *) palloc(item->nattributes * sizeof(AttrNumber));
 
-			memcpy(&attno, tmp, sizeof(AttrNumber));
-			tmp += sizeof(AttrNumber);
-			item->attrs = bms_add_member(item->attrs, attno);
-		}
+		memcpy(item->attributes, tmp, sizeof(AttrNumber) * item->nattributes);
+		tmp += sizeof(AttrNumber) * item->nattributes;
 
 		/* still within the bytea */
 		Assert(tmp <= ((char *) data + VARSIZE_ANY(data)));
@@ -403,17 +414,16 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < ndist->nitems; i++)
 	{
-		MVNDistinctItem item = ndist->items[i];
-		int			x = -1;
-		bool		first = true;
+		int				j;
+		MVNDistinctItem	item = ndist->items[i];
 
 		if (i > 0)
 			appendStringInfoString(&str, ", ");
 
-		while ((x = bms_next_member(item.attrs, x)) >= 0)
+		for (j = 0; j < item.nattributes; j++)
 		{
-			appendStringInfo(&str, "%s%d", first ? "\"" : ", ", x);
-			first = false;
+			AttrNumber	attnum = item.attributes[j];
+			appendStringInfo(&str, "%s%d", (j == 0) ? "\"" : ", ", attnum);
 		}
 		appendStringInfo(&str, "\": %d", (int) item.ndistinct);
 	}
@@ -508,9 +518,10 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		TupleDesc		tdesc = NULL;
 		Oid				collid = InvalidOid;
 
-		if (combination[i] < nattrs)
+		/* first nexprs indexes are for expressions, then regular attributes */
+		if (combination[i] >= exprs->nexprs)
 		{
-			VacAttrStats *colstat = stats[combination[i]];
+			VacAttrStats *colstat = stats[combination[i] - exprs->nexprs];
 			typid = colstat->attrtypid;
 			attnum = colstat->attr->attnum;
 			collid = colstat->attrcollid;
@@ -518,8 +529,8 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		}
 		else
 		{
-			typid = exprs->types[combination[i] - nattrs];
-			collid = exprs->collations[combination[i] - nattrs];
+			typid = exprs->types[combination[i]];
+			collid = exprs->collations[combination[i]];
 		}
 
 		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
@@ -534,10 +545,13 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		for (j = 0; j < numrows; j++)
 		{
 			/*
-			 * The first nattrs indexes identify simple attributes, higher
-			 * indexes are expressions.
+			 * The first exprs indexes identify expressions, higher indexes
+			 * are for plain attributes.
+			 *
+			 * XXX This seems a bit strange that we don't offset the (i)
+			 * in any way?
 			 */
-			if (combination[i] < nattrs)
+			if (combination[i] >= exprs->nexprs)
 				items[j].values[i] =
 					heap_getattr(rows[j],
 								 attnum,
@@ -545,7 +559,9 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 								 &items[j].isnull[i]);
 			else
 			{
-				int idx = (combination[i] - nattrs);
+				/* we know the first nexprs expressions are expressions,
+				 * and the value is directly the expression index */
+				int idx = combination[i];
 
 				/* make sure the expression index is valid */
 				Assert((idx >= 0) && (idx < exprs->nexprs));

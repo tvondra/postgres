@@ -4144,7 +4144,8 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 				if (equal(exprinfo->expr, expr))
 				{
-					matched = bms_add_member(matched, MaxHeapAttributeNumber + idx);
+					AttrNumber	attnum = -(idx + 1);
+					matched = bms_add_member(matched, attnum + list_length(matched_info->exprs));
 					found = true;
 					break;
 				}
@@ -4165,10 +4166,10 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 					if (!AttrNumberIsForUserDefinedAttr(attnum))
 						continue;
 
-					if (!bms_is_member(attnum, matched_info->keys))
+					if (!bms_is_member(attnum + list_length(matched_info->exprs), matched_info->keys))
 						continue;
 
-					matched = bms_add_member(matched, attnum);
+					matched = bms_add_member(matched, attnum + list_length(matched_info->exprs));
 				}
 			}
 		}
@@ -4176,13 +4177,29 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		/* Find the specific item that exactly matches the combination */
 		for (i = 0; i < stats->nitems; i++)
 		{
+			int				j;
 			MVNDistinctItem *tmpitem = &stats->items[i];
 
-			if (bms_subset_compare(tmpitem->attrs, matched) == BMS_EQUAL)
+			if (tmpitem->nattributes != bms_num_members(matched))
+				continue;
+
+			/* assume it's the right item */
+			item = tmpitem;
+
+			for (j = 0; j < tmpitem->nattributes; j++)
 			{
-				item = tmpitem;
-				break;
+				AttrNumber attnum = tmpitem->attributes[j];
+
+				if (!bms_is_member(attnum, matched))
+				{
+					/* nah, it's not this item */
+					item = NULL;
+					break;
+				}
 			}
+
+			if (item)
+				break;
 		}
 
 		/* make sure we found an item */

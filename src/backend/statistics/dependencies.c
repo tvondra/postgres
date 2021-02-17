@@ -252,7 +252,7 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
 	 * member easier, and then construct a filtered version with only attnums
 	 * referenced by the dependency we validate.
 	 */
-	attnums = build_attnums_array(attrs, &numattrs);
+	attnums = build_attnums_array(attrs, exprs->nexprs, &numattrs);
 
 	attnums_dep = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 	for (i = 0; i < k; i++)
@@ -372,19 +372,46 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 				k;
 	int			numattrs;
 	AttrNumber *attnums;
+	int			nattnums;
 
 	/* result */
 	MVDependencies *dependencies = NULL;
 
-	/* treat expressions as special attributes with high attnums */
-	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
+	/*
+	 * Transform the bms into an array of attnums, to make accessing i-th
+	 * member easier. We add the expressions first, represented by negative
+	 * attnums (this is OK, we don't allow statistics on system attributes),
+	 * and then regular attributes.
+	 */
+	nattnums = bms_num_members(attrs) + exprs->nexprs;
+	attnums = (AttrNumber *) palloc(sizeof(AttrNumber) * nattnums);
+
+	numattrs = 0;
+
+	/* treat expressions as attributes with negative attnums */
+	for (i = 0; i < exprs->nexprs; i++)
+		attnums[numattrs++] = -(i+1);
 
 	/*
-	 * Transform the bms into an array, to make accessing i-th member easier.
+	 * and then regular attributes
+	 *
+	 * XXX Maybe add this in the opposite order, just like in MCV? first
+	 * regular attnums, then exressions.
 	 */
-	attnums = build_attnums_array(attrs, &numattrs);
+	k = -1;
+	while ((k = bms_next_member(attrs, k)) >= 0)
+		attnums[numattrs++] = k;
 
 	Assert(numattrs >= 2);
+	Assert(numattrs == nattnums);
+
+	/*
+	 * Build a new bitmapset of attnums, offset by number of expressions (this
+	 * is needed, because bitmaps can store only non-negative values).
+	 */
+	attrs = NULL;
+	for (i = 0; i < numattrs; i++)
+		attrs = bms_add_member(attrs, attnums[i] + exprs->nexprs);
 
 	/*
 	 * We'll try build functional dependencies starting from the smallest ones
@@ -1374,8 +1401,10 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 * We also skip clauses that we already estimated using different types of
 	 * statistics (we treat them as incompatible).
 	 *
-	 * For expressions, we generate attnums higher than MaxHeapAttributeNumber
-	 * so that we can work with attnums only.
+	 * To handle expressions, we assign them negative attnums, as if it was a
+	 * system attribute (this is fine, as we only allow extended stats on user
+	 * attributes). And then we offset everything by the number of expressions,
+	 * so that we can store the values in a bitmapset.
 	 */
 	listidx = 0;
 	foreach(l, clauses)
@@ -1391,13 +1420,12 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		{
 			/*
 			 * If it's a simple column refrence, just extract the attnum. If
-			 * it's an expression, make sure it's not a duplicate and assign
-			 * a special attnum to it (higher than any regular value).
+			 * it's an expression, assign a negative attnum as if it was a
+			 * system attribute.
 			 */
 			if (dependency_is_compatible_clause(clause, rel->relid, &attnum))
 			{
 				list_attnums[listidx] = attnum;
-				clauses_attnums = bms_add_member(clauses_attnums, attnum);
 			}
 			else if (dependency_is_compatible_expression(clause, rel->relid,
 														 rel->statlist,
@@ -1413,7 +1441,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				{
 					if (equal(unique_exprs[i], expr))
 					{
-						attnum = EXPRESSION_ATTNUM(i);
+						/* negative attribute number to expression */
+						attnum = -(i + 1);
 						break;
 					}
 				}
@@ -1421,14 +1450,10 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				/* not found in the list, so add it */
 				if (attnum == InvalidAttrNumber)
 				{
-					attnum = EXPRESSION_ATTNUM(unique_exprs_cnt);
 					unique_exprs[unique_exprs_cnt++] = expr;
 
-					/* shouldn't have seen this attnum yet */
-					Assert(!bms_is_member(attnum, clauses_attnums));
-
-					/* we may add the attnum repeatedly to clauses_attnums */
-					clauses_attnums = bms_add_member(clauses_attnums, attnum);
+					/* after incrementing the value, to get -1, -2, ... */
+					attnum = -unique_exprs_cnt;
 				}
 
 				/* remember which attnum was assigned to this clause */
@@ -1437,6 +1462,37 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		}
 
 		listidx++;
+	}
+
+	Assert(listidx == list_length(clauses));
+
+	/*
+	 * Now that we know how many expressions there are, we can offset the
+	 * values just enough to build the bitmapset.
+	 */
+	for (i = 0; i < list_length(clauses); i++)
+	{
+		AttrNumber	attnum;
+
+		/* ignore incompatible or already estimated clauses */
+		if (list_attnums[i] == InvalidAttrNumber)
+			continue;
+
+		/* make sure the attnum is in the expected range */
+		Assert(list_attnums[i] >= (-unique_exprs_cnt));
+		Assert(list_attnums[i] <= MaxHeapAttributeNumber);
+
+		/* make sure the attnum is not negative */
+		attnum = list_attnums[i] + unique_exprs_cnt;
+
+		/*
+		 * Expressions are unique, and so we must not have seen this attnum
+		 * before.
+		 */
+		Assert(AttrNumberIsForUserDefinedAttr(list_attnums[i]) ||
+			   !bms_is_member(attnum, clauses_attnums));
+
+		clauses_attnums = bms_add_member(clauses_attnums, attnum);
 	}
 
 	/*
@@ -1470,19 +1526,37 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	foreach(l, rel->statlist)
 	{
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(l);
-		Bitmapset  *matched;
 		int			nmatched;
 		int			nexprs;
+		int			k;
 		MVDependencies *deps;
 
 		/* skip statistics that are not of the correct type */
 		if (stat->kind != STATS_EXT_DEPENDENCIES)
 			continue;
 
-		/* count matching simple clauses */
-		matched = bms_intersect(clauses_attnums, stat->keys);
-		nmatched = bms_num_members(matched);
-		bms_free(matched);
+		/*
+		 * Count matching attributes - we have to undo two attnum offsets.
+		 * First, the dependency is offset using the number of expressions
+		 * for that statistics, and then (if it's a plain attribute) we
+		 * need to apply the same offset as above, by unique_exprs_cnt.
+		 */
+		nmatched = 0;
+		k = -1;
+		while ((k = bms_next_member(stat->keys, k)) >= 0)
+		{
+			AttrNumber	attnum = (AttrNumber) k;
+
+			/* skip expressions */
+			if (!AttrNumberIsForUserDefinedAttr(attnum))
+				continue;
+
+			/* apply the same offset as above */
+			attnum += unique_exprs_cnt;
+
+			if (bms_is_member(attnum, clauses_attnums))
+				nmatched++;
+		}
 
 		/* count matching expressions */
 		nexprs = 0;
@@ -1537,13 +1611,23 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					Node	   *expr;
 					int			k;
 					AttrNumber	unique_attnum = InvalidAttrNumber;
+					AttrNumber	attnum;
 
-					/* regular attribute, no need to remap */
-					if (dep->attributes[j] <= MaxHeapAttributeNumber)
+					/* undo the per-statistics offset */
+					attnum = dep->attributes[j];
+
+					/* regular attribute, simply offset by number of expressions */
+					if (AttrNumberIsForUserDefinedAttr(attnum))
+					{
+						dep->attributes[j] = attnum + unique_exprs_cnt;
 						continue;
+					}
+
+					/* the attnum should be a valid system attnum (-1, -2, ...) */
+					Assert(AttributeNumberIsValid(attnum));
 
 					/* index of the expression */
-					idx = EXPRESSION_INDEX(dep->attributes[j]);
+					idx = (1 - attnum);
 
 					/* make sure the expression index is valid */
 					Assert((idx >= 0) && (idx < list_length(stat->exprs)));
@@ -1559,7 +1643,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 						 */
 						if (equal(unique_exprs[k], expr))
 						{
-							unique_attnum = EXPRESSION_ATTNUM(k);
+							unique_attnum = -(k + 1) + unique_exprs_cnt;
 							break;
 						}
 					}

@@ -187,6 +187,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 				  double totalrows, int stattarget)
 {
 	int			i,
+				k,
 				numattrs,
 				ngroups,
 				nitems;
@@ -206,10 +207,26 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 	 * XXX We do this after build_mss, because that expects the bitmapset
 	 * to only contain simple attributes (with a matching VacAttrStats)
 	 */
-	attrs = add_expressions_to_attributes(attrs, exprs->nexprs);
 
-	/* now build the array, with the special expression attnums */
-	attnums = build_attnums_array(attrs, &numattrs);
+	/*
+	 * Transform the bms into an array, to make accessing i-th member easier.
+	 */
+	attnums = (AttrNumber *) palloc(sizeof(AttrNumber) * (bms_num_members(attrs) + exprs->nexprs));
+
+	numattrs = 0;
+
+	/* regular attributes */
+	k = -1;
+	while ((k = bms_next_member(attrs, k)) >= 0)
+		attnums[numattrs++] = k;
+
+	/* treat expressions as attributes with negative attnums */
+	for (i = 0; i < exprs->nexprs; i++)
+		attnums[numattrs++] = -(i+1);
+
+	Assert(numattrs >= 2);
+	Assert(numattrs == (bms_num_members(attrs) + exprs->nexprs));
+
 
 	/* sort the rows */
 	items = build_sorted_items(numrows, &nitems, rows, exprs,
@@ -349,7 +366,6 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 
 	pfree(items);
 	pfree(groups);
-	pfree(attrs);
 
 	return mcvlist;
 }
@@ -1691,6 +1707,8 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			{
 				bool		match = true;
 				MCVItem    *item = &mcvlist->items[i];
+
+				Assert(idx >= 0);
 
 				/*
 				 * When the MCV item or the Const value is NULL we can

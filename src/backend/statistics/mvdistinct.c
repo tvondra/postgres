@@ -36,9 +36,7 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-static double ndistinct_for_combination(double totalrows, int numrows,
-										HeapTuple *rows, ExprInfo *exprs,
-										int nattrs, VacAttrStats **stats,
+static double ndistinct_for_combination(double totalrows, StatBuildData *data,
 										int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
@@ -88,17 +86,12 @@ static void generate_combinations(CombinationGenerator *state);
  * allow using Bitmapsets.
  */
 MVNDistinct *
-statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						ExprInfo *exprs, Bitmapset *attrs,
-						VacAttrStats **stats)
+statext_ndistinct_build(double totalrows, StatBuildData *data)
 {
 	MVNDistinct *result;
-	int			i;
 	int			k;
 	int			itemcnt;
-	int			numattrs = bms_num_members(attrs);
-	int			numcombs = num_combinations(numattrs + exprs->nexprs);
-	Bitmapset  *tmp = NULL;
+	int			numcombs = num_combinations(data->nattnums);
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -106,38 +99,14 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	result->type = STATS_NDISTINCT_TYPE_BASIC;
 	result->nitems = numcombs;
 
-	/*
-	 * Treat expressions as system attributes with negative attnums,
-	 * but offset everything by number of expressions.
-	 */
-	for (i = 0; i < exprs->nexprs; i++)
-	{
-		AttrNumber	attnum = -(i + 1);
-		tmp = bms_add_member(tmp, attnum + exprs->nexprs);
-	}
-
-	/* regular attributes */
-	k = -1;
-	while ((k = bms_next_member(attrs, k)) >= 0)
-	{
-		AttrNumber	attnum = k;
-		tmp = bms_add_member(tmp, attnum + exprs->nexprs);
-	}
-
-	/* use the newly built bitmapset */
-	attrs = tmp;
-
-	/* make sure there were no clashes */
-	Assert(bms_num_members(attrs) == numattrs + exprs->nexprs);
-
 	itemcnt = 0;
-	for (k = 2; k <= bms_num_members(attrs); k++)
+	for (k = 2; k <= data->nattnums; k++)
 	{
 		int		   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
-		generator = generator_init(bms_num_members(attrs), k);
+		generator = generator_init(data->nattnums, k);
 
 		while ((combination = generator_next(generator)))
 		{
@@ -147,36 +116,16 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 			item->attributes = palloc(sizeof(AttrNumber) * k);
 			item->nattributes = k;
 
+			/* translate the indexes to attnums */
 			for (j = 0; j < k; j++)
 			{
-				AttrNumber attnum = InvalidAttrNumber;
+				item->attributes[j] = data->attnums[combination[j]];
 
-				/*
-				 * The expressions have negative attnums, so even with the
-				 * offset are before regular attributes. So the first chunk
-				 * of indexes are for expressions.
-				 */
-				if (combination[j] >= exprs->nexprs)
-					attnum
-						= stats[combination[j] - exprs->nexprs]->attr->attnum;
-				else
-				{
-					/* make sure the expression index is valid */
-					Assert(combination[j] >= 0);
-					Assert(combination[j] < exprs->nexprs);
-
-					attnum = -(combination[j] + 1);
-				}
-
-				Assert(attnum != InvalidAttrNumber);
-
-				item->attributes[j] = attnum;
+				Assert(AttributeNumberIsValid(item->attributes[j]));
 			}
 
 			item->ndistinct =
-				ndistinct_for_combination(totalrows, numrows, rows,
-										  exprs, numattrs,
-										  stats, k, combination);
+				ndistinct_for_combination(totalrows, data, k, combination);
 
 			itemcnt++;
 			Assert(itemcnt <= result->nitems);
@@ -471,9 +420,8 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  * combination of multiple columns.
  */
 static double
-ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  ExprInfo *exprs, int nattrs,
-						  VacAttrStats **stats, int k, int *combination)
+ndistinct_for_combination(double totalrows, StatBuildData *data,
+						  int k, int *combination)
 {
 	int			i,
 				j;
@@ -493,11 +441,11 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 * using the specified column combination as dimensions.  We could try to
 	 * sort in place, but it'd probably be more complex and bug-prone.
 	 */
-	items = (SortItem *) palloc(numrows * sizeof(SortItem));
-	values = (Datum *) palloc0(sizeof(Datum) * numrows * k);
-	isnull = (bool *) palloc0(sizeof(bool) * numrows * k);
+	items = (SortItem *) palloc(data->numrows * sizeof(SortItem));
+	values = (Datum *) palloc0(sizeof(Datum) * data->numrows * k);
+	isnull = (bool *) palloc0(sizeof(bool) * data->numrows * k);
 
-	for (i = 0; i < numrows; i++)
+	for (i = 0; i < data->numrows; i++)
 	{
 		items[i].values = &values[i * k];
 		items[i].isnull = &isnull[i * k];
@@ -514,24 +462,11 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	{
 		Oid				typid;
 		TypeCacheEntry *type;
-		AttrNumber		attnum = InvalidAttrNumber;
-		TupleDesc		tdesc = NULL;
 		Oid				collid = InvalidOid;
+		VacAttrStats   *colstat = data->stats[combination[i]];
 
-		/* first nexprs indexes are for expressions, then regular attributes */
-		if (combination[i] >= exprs->nexprs)
-		{
-			VacAttrStats *colstat = stats[combination[i] - exprs->nexprs];
-			typid = colstat->attrtypid;
-			attnum = colstat->attr->attnum;
-			collid = colstat->attrcollid;
-			tdesc = colstat->tupDesc;
-		}
-		else
-		{
-			typid = exprs->types[combination[i]];
-			collid = exprs->collations[combination[i]];
-		}
+		typid = colstat->attrtypid;
+		collid = colstat->attrcollid;
 
 		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
@@ -542,38 +477,15 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		multi_sort_add_dimension(mss, i, type->lt_opr, collid);
 
 		/* accumulate all the data for this dimension into the arrays */
-		for (j = 0; j < numrows; j++)
+		for (j = 0; j < data->numrows; j++)
 		{
-			/*
-			 * The first exprs indexes identify expressions, higher indexes
-			 * are for plain attributes.
-			 *
-			 * XXX This seems a bit strange that we don't offset the (i)
-			 * in any way?
-			 */
-			if (combination[i] >= exprs->nexprs)
-				items[j].values[i] =
-					heap_getattr(rows[j],
-								 attnum,
-								 tdesc,
-								 &items[j].isnull[i]);
-			else
-			{
-				/* we know the first nexprs expressions are expressions,
-				 * and the value is directly the expression index */
-				int idx = combination[i];
-
-				/* make sure the expression index is valid */
-				Assert((idx >= 0) && (idx < exprs->nexprs));
-
-				items[j].values[i] = exprs->values[idx][j];
-				items[j].isnull[i] = exprs->nulls[idx][j];
-			}
+			items[j].values[i] = data->values[combination[i]][j];
+			items[j].isnull[i] = data->nulls[combination[i]][j];
 		}
 	}
 
 	/* We can sort the array now ... */
-	qsort_arg((void *) items, numrows, sizeof(SortItem),
+	qsort_arg((void *) items, data->numrows, sizeof(SortItem),
 			  multi_sort_compare, mss);
 
 	/* ... and count the number of distinct combinations */
@@ -581,7 +493,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	f1 = 0;
 	cnt = 1;
 	d = 1;
-	for (i = 1; i < numrows; i++)
+	for (i = 1; i < data->numrows; i++)
 	{
 		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 		{
@@ -598,7 +510,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	if (cnt == 1)
 		f1 += 1;
 
-	return estimate_ndistinct(totalrows, numrows, d, f1);
+	return estimate_ndistinct(totalrows, data->numrows, d, f1);
 }
 
 /* The Duj1 estimator (already used in analyze.c). */

@@ -96,8 +96,11 @@ static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
 static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static AnlExprData *build_expr_data(List *exprs);
 static VacAttrStats *examine_expression(Node *expr);
-static ExprInfo *evaluate_expressions(Relation rel, List *exprs,
-									  int numrows, HeapTuple *rows);
+
+static StatBuildData *make_build_data(Relation onerel, StatExtEntry *stat,
+									  int numrows, HeapTuple *rows,
+									  VacAttrStats **stats);
+
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -156,7 +159,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		VacAttrStats **stats;
 		ListCell   *lc2;
 		int			stattarget;
-		ExprInfo   *exprs;
+		StatBuildData *data;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -191,7 +194,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			continue;
 
 		/* evaluate expressions (if the statistics has any) */
-		exprs = evaluate_expressions(onerel, stat->exprs, numrows, rows);
+		data = make_build_data(onerel, stat, numrows, rows, stats);
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -199,16 +202,11 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			char		t = (char) lfirst_int(lc2);
 
 			if (t == STATS_EXT_NDISTINCT)
-				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-													exprs, stat->columns,
-													stats);
+				ndistinct = statext_ndistinct_build(totalrows, data);
 			else if (t == STATS_EXT_DEPENDENCIES)
-				dependencies = statext_dependencies_build(numrows, rows,
-														  exprs, stat->columns,
-														  stats);
+				dependencies = statext_dependencies_build(data);
 			else if (t == STATS_EXT_MCV)
-				mcv = statext_mcv_build(numrows, rows, exprs, stat->columns,
-										stats, totalrows, stattarget);
+				mcv = statext_mcv_build(data, totalrows, stattarget);
 			else if (t == STATS_EXT_EXPRESSIONS)
 			{
 				AnlExprData *exprdata;
@@ -236,7 +234,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
 									 ++ext_cnt);
 
-		pfree(exprs);
+		/* free the build data (allocated as a single chunk) */
+		pfree(data);
 	}
 
 	table_close(pg_stext, RowExclusiveLock);
@@ -937,30 +936,31 @@ build_attnums_array(Bitmapset *attrs, int nexprs, int *numattrs)
  * can simply pfree the return value to release all of it.
  */
 SortItem *
-build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
-				   TupleDesc tdesc, MultiSortSupport mss,
+build_sorted_items(StatBuildData *data, int *nitems,
+				   MultiSortSupport mss,
 				   int numattrs, AttrNumber *attnums)
 {
 	int			i,
 				j,
 				len,
-				idx;
-	int			nvalues = numrows * numattrs;
+				nrows;
+	int			nvalues = data->numrows * numattrs;
 
 	SortItem   *items;
 	Datum	   *values;
 	bool	   *isnull;
 	char	   *ptr;
+	int		   *typlen;
 
 	/* Compute the total amount of memory we need (both items and values). */
-	len = numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
+	len = data->numrows * sizeof(SortItem) + nvalues * (sizeof(Datum) + sizeof(bool));
 
 	/* Allocate the memory and split it into the pieces. */
 	ptr = palloc0(len);
 
 	/* items to sort */
 	items = (SortItem *) ptr;
-	ptr += numrows * sizeof(SortItem);
+	ptr += data->numrows * sizeof(SortItem);
 
 	/* values and null flags */
 	values = (Datum *) ptr;
@@ -973,13 +973,24 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 	Assert((ptr - (char *) items) == len);
 
 	/* fix the pointers to Datum and bool arrays */
-	idx = 0;
-	for (i = 0; i < numrows; i++)
+	nrows = 0;
+	for (i = 0; i < data->numrows; i++)
+	{
+		items[nrows].values = &values[nrows * numattrs];
+		items[nrows].isnull = &isnull[nrows * numattrs];
+
+		nrows++;
+	}
+
+	/* build a local cache of typlen for all attributes */
+	typlen = (int *) palloc(sizeof(int) * data->nattnums);
+	for (i = 0; i < data->nattnums; i++)
+		typlen[i] = get_typlen(data->stats[i]->attrtypid);
+
+	nrows = 0;
+	for (i = 0; i < data->numrows; i++)
 	{
 		bool		toowide = false;
-
-		items[idx].values = &values[idx * numattrs];
-		items[idx].isnull = &isnull[idx * numattrs];
 
 		/* load the values/null flags from sample rows */
 		for (j = 0; j < numattrs; j++)
@@ -989,22 +1000,20 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 			int			attlen;
 			AttrNumber	attnum = attnums[j];
 
-			if (AttrNumberIsForUserDefinedAttr(attnum))
+			int			idx;
+
+			/* match attnum to the pre-calculated data */
+			for (idx = 0; idx < data->nattnums; idx++)
 			{
-				value = heap_getattr(rows[i], attnum, tdesc, &isnull);
-				attlen = TupleDescAttr(tdesc, attnum - 1)->attlen;
+				if (attnum == data->attnums[idx])
+					break;
 			}
-			else
-			{
-				int	idx = -(attnums[j] + 1);
 
-				Assert((idx >= 0) && (idx < exprs->nexprs));
+			Assert(idx < data->nattnums);
 
-				value = exprs->values[idx][i];
-				isnull = exprs->nulls[idx][i];
-
-				attlen = get_typlen(exprs->types[idx]);
-			}
+			value = data->values[idx][i];
+			isnull = data->nulls[idx][i];
+			attlen = typlen[idx];
 
 			/*
 			 * If this is a varlena value, check if it's too wide and if yes
@@ -1026,21 +1035,21 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 				value = PointerGetDatum(PG_DETOAST_DATUM(value));
 			}
 
-			items[idx].values[j] = value;
-			items[idx].isnull[j] = isnull;
+			items[nrows].values[j] = value;
+			items[nrows].isnull[j] = isnull;
 		}
 
 		if (toowide)
 			continue;
 
-		idx++;
+		nrows++;
 	}
 
 	/* store the actual number of items (ignoring the too-wide ones) */
-	*nitems = idx;
+	*nitems = nrows;
 
 	/* all items were too wide */
-	if (idx == 0)
+	if (nrows == 0)
 	{
 		/* everything is allocated as a single chunk */
 		pfree(items);
@@ -1048,7 +1057,7 @@ build_sorted_items(int numrows, int *nitems, HeapTuple *rows, ExprInfo *exprs,
 	}
 
 	/* do the sort, using the multi-sort */
-	qsort_arg((void *) items, idx, sizeof(SortItem),
+	qsort_arg((void *) items, nrows, sizeof(SortItem),
 			  multi_sort_compare, mss);
 
 	return items;
@@ -2434,59 +2443,61 @@ statext_expressions_load(Oid stxoid, int idx)
  * all the requested statistics types. This matters especially for
  * expensive expressions, of course.
  */
-static ExprInfo *
-evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
+static StatBuildData *
+make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
+				VacAttrStats **stats)
 {
 	/* evaluated expressions */
-	ExprInfo   *result;
+	StatBuildData *result;
 	char	   *ptr;
 	Size		len;
 
 	int			i;
+	int			k;
 	int			idx;
 	TupleTableSlot *slot;
 	EState	   *estate;
 	ExprContext *econtext;
 	List	   *exprstates = NIL;
-	int			nexprs = list_length(exprs);
+	int	nkeys = bms_num_members(stat->columns) + list_length(stat->exprs);
 	ListCell   *lc;
 
 	/* allocate everything as a single chunk, so we can free it easily */
-	len = MAXALIGN(sizeof(ExprInfo));
-	len += MAXALIGN(sizeof(Oid) * nexprs);	/* types */
-	len += MAXALIGN(sizeof(Oid) * nexprs);	/* collations */
+	len = MAXALIGN(sizeof(StatBuildData));
+	len += MAXALIGN(sizeof(AttrNumber) * nkeys);		/* attnums */
+	len += MAXALIGN(sizeof(VacAttrStats *) * nkeys);	/* stats */
 
 	/* values */
-	len += MAXALIGN(sizeof(Datum *) * nexprs);
-	len += nexprs * MAXALIGN(sizeof(Datum) * numrows);
+	len += MAXALIGN(sizeof(Datum *) * nkeys);
+	len += nkeys * MAXALIGN(sizeof(Datum) * numrows);
 
 	/* nulls */
-	len += MAXALIGN(sizeof(bool *) * nexprs);
-	len += nexprs * MAXALIGN(sizeof(bool) * numrows);
+	len += MAXALIGN(sizeof(bool *) * nkeys);
+	len += nkeys * MAXALIGN(sizeof(bool) * numrows);
 
 	ptr = palloc(len);
 
 	/* set the pointers */
-	result = (ExprInfo *) ptr;
-	ptr += MAXALIGN(sizeof(ExprInfo));
+	result = (StatBuildData *) ptr;
+	ptr += MAXALIGN(sizeof(StatBuildData));
 
-	/* types */
-	result->types = (Oid *) ptr;
-	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+	/* attnums */
+	result->attnums = (AttrNumber *) ptr;
+	ptr += MAXALIGN(sizeof(AttrNumber) * nkeys);
 
-	/* collations */
-	result->collations = (Oid *) ptr;
-	ptr += MAXALIGN(sizeof(Oid) * nexprs);
+	/* stats */
+	result->stats = (VacAttrStats **) ptr;
+	ptr += MAXALIGN(sizeof(VacAttrStats *) * nkeys);
 
 	/* values */
 	result->values = (Datum **) ptr;
-	ptr += MAXALIGN(sizeof(Datum *) * nexprs);
+	ptr += MAXALIGN(sizeof(Datum *) * nkeys);
 
 	/* nulls */
 	result->nulls = (bool **) ptr;
-	ptr += MAXALIGN(sizeof(bool *) * nexprs);
+	ptr += MAXALIGN(sizeof(bool *) * nkeys);
 
-	for (i = 0; i < nexprs; i++)
+	for (i = 0; i < nkeys; i++)
 	{
 		result->values[i] = (Datum *) ptr;
 		ptr += MAXALIGN(sizeof(Datum) * numrows);
@@ -2497,17 +2508,46 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 
 	Assert((ptr - (char *) result) == len);
 
-	result->nexprs = list_length(exprs);
+	/* we have it allocated, so let's fill the values */
+	result->nattnums = nkeys;
+	result->numrows = numrows;
 
+	/* fill the attribute info - first attributes, then expressions */
 	idx = 0;
-	foreach (lc, exprs)
+	k = -1;
+	while ((k = bms_next_member(stat->columns, k)) >= 0)
+	{
+		result->attnums[idx] = k;
+		result->stats[idx] = stats[idx];
+
+		idx++;
+	}
+
+	k = -1;
+	foreach (lc, stat->exprs)
 	{
 		Node *expr = (Node *) lfirst(lc);
 
-		result->types[idx] = exprType(expr);
-		result->collations[idx] = exprCollation(expr);
+		result->attnums[idx] = k;
+		result->stats[idx] = examine_expression(expr);
 
 		idx++;
+		k--;
+	}
+
+	/* first extract values for all the regular attributes */
+	for (i = 0; i < numrows; i++)
+	{
+		idx = 0;
+		k = -1;
+		while ((k = bms_next_member(stat->columns, k)) >= 0)
+		{
+			result->values[idx][i] = heap_getattr(rows[i], k,
+												  result->stats[idx]->tupDesc,
+												  &result->nulls[idx][i]);
+
+			idx++;
+		}
 	}
 
 	/*
@@ -2526,7 +2566,7 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 	econtext->ecxt_scantuple = slot;
 
 	/* Set up expression evaluation state */
-	exprstates = ExecPrepareExprList(exprs, estate);
+	exprstates = ExecPrepareExprList(stat->exprs, estate);
 
 	for (i = 0; i < numrows; i++)
 	{
@@ -2539,7 +2579,7 @@ evaluate_expressions(Relation rel, List *exprs, int numrows, HeapTuple *rows)
 		/* Set up for predicate or expression evaluation */
 		ExecStoreHeapTuple(rows[i], slot, false);
 
-		idx = 0;
+		idx = bms_num_members(stat->columns);
 		foreach (lc, exprstates)
 		{
 			Datum	datum;

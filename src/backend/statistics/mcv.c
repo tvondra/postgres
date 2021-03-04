@@ -74,8 +74,7 @@
 	 ((ndims) * sizeof(DimensionInfo)) + \
 	 ((nitems) * ITEM_SIZE(ndims)))
 
-static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs,
-								  ExprInfo *exprs);
+static MultiSortSupport build_mss(StatBuildData *data);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
 									   MultiSortSupport mss, int *ndistinct);
@@ -182,16 +181,11 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  *
  */
 MCVList *
-statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
-				  Bitmapset *attrs, VacAttrStats **stats,
-				  double totalrows, int stattarget)
+statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 {
 	int			i,
-				k,
-				numattrs,
 				ngroups,
 				nitems;
-	AttrNumber *attnums;
 	double		mincount;
 	SortItem   *items;
 	SortItem   *groups;
@@ -199,38 +193,11 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 	MultiSortSupport mss;
 
 	/* comparator for all the columns */
-	mss = build_mss(stats, bms_num_members(attrs), exprs);
-
-	/*
-	 * treat expressions as special attributes with high attnums
-	 *
-	 * XXX We do this after build_mss, because that expects the bitmapset
-	 * to only contain simple attributes (with a matching VacAttrStats)
-	 */
-
-	/*
-	 * Transform the bms into an array, to make accessing i-th member easier.
-	 */
-	attnums = (AttrNumber *) palloc(sizeof(AttrNumber) * (bms_num_members(attrs) + exprs->nexprs));
-
-	numattrs = 0;
-
-	/* regular attributes */
-	k = -1;
-	while ((k = bms_next_member(attrs, k)) >= 0)
-		attnums[numattrs++] = k;
-
-	/* treat expressions as attributes with negative attnums */
-	for (i = 0; i < exprs->nexprs; i++)
-		attnums[numattrs++] = -(i+1);
-
-	Assert(numattrs >= 2);
-	Assert(numattrs == (bms_num_members(attrs) + exprs->nexprs));
-
+	mss = build_mss(data);
 
 	/* sort the rows */
-	items = build_sorted_items(numrows, &nitems, rows, exprs,
-							   stats[0]->tupDesc, mss, numattrs, attnums);
+	items = build_sorted_items(data, &nitems, mss,
+							   data->nattnums, data->attnums);
 
 	if (!items)
 		return NULL;
@@ -265,7 +232,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 	 * using get_mincount_for_mcv_list() and then keep all items that seem to
 	 * be more common than that.
 	 */
-	mincount = get_mincount_for_mcv_list(numrows, totalrows);
+	mincount = get_mincount_for_mcv_list(data->numrows, totalrows);
 
 	/*
 	 * Walk the groups until we find the first group with a count below the
@@ -301,7 +268,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 										+ sizeof(SortSupportData));
 
 		/* compute frequencies for values in each column */
-		nfreqs = (int *) palloc0(sizeof(int) * numattrs);
+		nfreqs = (int *) palloc0(sizeof(int) * data->nattnums);
 		freqs = build_column_frequencies(groups, ngroups, mss, nfreqs);
 
 		/*
@@ -312,12 +279,12 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 
 		mcvlist->magic = STATS_MCV_MAGIC;
 		mcvlist->type = STATS_MCV_TYPE_BASIC;
-		mcvlist->ndimensions = numattrs;
+		mcvlist->ndimensions = data->nattnums;
 		mcvlist->nitems = nitems;
 
 		/* store info about data type OIDs */
-		for (i = 0; i < numattrs; i++)
-			mcvlist->types[i] = stats[i]->attrtypid;
+		for (i = 0; i < data->nattnums; i++)
+			mcvlist->types[i] = data->stats[i]->attrtypid;
 
 		/* Copy the first chunk of groups into the result. */
 		for (i = 0; i < nitems; i++)
@@ -325,22 +292,22 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 			/* just pointer to the proper place in the list */
 			MCVItem    *item = &mcvlist->items[i];
 
-			item->values = (Datum *) palloc(sizeof(Datum) * numattrs);
-			item->isnull = (bool *) palloc(sizeof(bool) * numattrs);
+			item->values = (Datum *) palloc(sizeof(Datum) * data->nattnums);
+			item->isnull = (bool *) palloc(sizeof(bool) * data->nattnums);
 
 			/* copy values for the group */
-			memcpy(item->values, groups[i].values, sizeof(Datum) * numattrs);
-			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * numattrs);
+			memcpy(item->values, groups[i].values, sizeof(Datum) * data->nattnums);
+			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * data->nattnums);
 
 			/* groups should be sorted by frequency in descending order */
 			Assert((i == 0) || (groups[i - 1].count >= groups[i].count));
 
 			/* group frequency */
-			item->frequency = (double) groups[i].count / numrows;
+			item->frequency = (double) groups[i].count / data->numrows;
 
 			/* base frequency, if the attributes were independent */
 			item->base_frequency = 1.0;
-			for (j = 0; j < numattrs; j++)
+			for (j = 0; j < data->nattnums; j++)
 			{
 				SortItem   *freq;
 
@@ -356,7 +323,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
 												sizeof(SortItem),
 												multi_sort_compare, tmp);
 
-				item->base_frequency *= ((double) freq->count) / numrows;
+				item->base_frequency *= ((double) freq->count) / data->numrows;
 			}
 		}
 
@@ -375,17 +342,17 @@ statext_mcv_build(int numrows, HeapTuple *rows, ExprInfo *exprs,
  *	build MultiSortSupport for the attributes passed in attrs
  */
 static MultiSortSupport
-build_mss(VacAttrStats **stats, int numattrs, ExprInfo *exprs)
+build_mss(StatBuildData *data)
 {
 	int			i;
 
 	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(numattrs + exprs->nexprs);
+	MultiSortSupport mss = multi_sort_init(data->nattnums);
 
 	/* prepare the sort functions for all the attributes */
-	for (i = 0; i < numattrs; i++)
+	for (i = 0; i < data->nattnums; i++)
 	{
-		VacAttrStats *colstat = stats[i];
+		VacAttrStats *colstat = data->stats[i];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
@@ -394,20 +361,6 @@ build_mss(VacAttrStats **stats, int numattrs, ExprInfo *exprs)
 				 colstat->attrtypid);
 
 		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
-	}
-
-	/* prepare the sort functions for all the expressions */
-	for (i = 0; i < exprs->nexprs; i++)
-	{
-		TypeCacheEntry *type;
-
-		type = lookup_type_cache(exprs->types[i], TYPECACHE_LT_OPR);
-		if (type->lt_opr == InvalidOid) /* shouldn't happen */
-			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 exprs->types[i]);
-
-		multi_sort_add_dimension(mss, numattrs + i, type->lt_opr,
-								 exprs->collations[i]);
 	}
 
 	return mss;

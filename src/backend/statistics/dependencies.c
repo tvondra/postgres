@@ -70,10 +70,7 @@ static void generate_dependencies(DependencyGenerator state);
 static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
-static double dependency_degree(int numrows, HeapTuple *rows,
-								ExprInfo *exprs, int k,
-								AttrNumber *dependency, VacAttrStats **stats,
-								Bitmapset *attrs);
+static double dependency_degree(StatBuildData *data, int k, AttrNumber *dependency);
 static bool dependency_is_fully_matched(MVDependency *dependency,
 										Bitmapset *attnums);
 static bool dependency_is_compatible_clause(Node *clause, Index relid,
@@ -222,17 +219,13 @@ DependencyGenerator_next(DependencyGenerator state)
  * the last one.
  */
 static double
-dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
-				  AttrNumber *dependency, VacAttrStats **stats,
-				  Bitmapset *attrs)
+dependency_degree(StatBuildData *data, int k, AttrNumber *dependency)
 {
 	int			i,
 				nitems;
 	MultiSortSupport mss;
 	SortItem   *items;
-	AttrNumber *attnums;
 	AttrNumber *attnums_dep;
-	int			numattrs;
 
 	/* counters valid within a group */
 	int			group_size = 0;
@@ -247,16 +240,9 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
 	/* sort info for all attributes columns */
 	mss = multi_sort_init(k);
 
-	/*
-	 * Transform the attrs from bitmap to an array to make accessing the i-th
-	 * member easier, and then construct a filtered version with only attnums
-	 * referenced by the dependency we validate.
-	 */
-	attnums = build_attnums_array(attrs, exprs->nexprs, &numattrs);
-
 	attnums_dep = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 	for (i = 0; i < k; i++)
-		attnums_dep[i] = attnums[dependency[i]];
+		attnums_dep[i] = data->attnums[dependency[i]];
 
 	/*
 	 * Verify the dependency (a,b,...)->z, using a rather simple algorithm:
@@ -274,7 +260,7 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
 	/* prepare the sort function for the dimensions */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats *colstat = stats[dependency[i]];
+		VacAttrStats *colstat = data->stats[dependency[i]];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
@@ -293,8 +279,7 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
 	 * descriptor.  For now that assumption holds, but it might change in the
 	 * future for example if we support statistics on multiple tables.
 	 */
-	items = build_sorted_items(numrows, &nitems, rows, exprs,
-							   stats[0]->tupDesc, mss, k, attnums_dep);
+	items = build_sorted_items(data, &nitems, mss, k, attnums_dep);
 
 	/*
 	 * Walk through the sorted array, split it into rows according to the
@@ -340,11 +325,10 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
 		pfree(items);
 
 	pfree(mss);
-	pfree(attnums);
 	pfree(attnums_dep);
 
 	/* Compute the 'degree of validity' as (supporting/total). */
-	return (n_supporting_rows * 1.0 / numrows);
+	return (n_supporting_rows * 1.0 / data->numrows);
 }
 
 /*
@@ -364,54 +348,15 @@ dependency_degree(int numrows, HeapTuple *rows, ExprInfo *exprs, int k,
  *	   (c) -> b
  */
 MVDependencies *
-statext_dependencies_build(int numrows, HeapTuple *rows,
-						   ExprInfo *exprs, Bitmapset *attrs,
-						   VacAttrStats **stats)
+statext_dependencies_build(StatBuildData *data)
 {
 	int			i,
 				k;
-	int			numattrs;
-	AttrNumber *attnums;
-	int			nattnums;
 
 	/* result */
 	MVDependencies *dependencies = NULL;
 
-	/*
-	 * Transform the bms into an array of attnums, to make accessing i-th
-	 * member easier. We add the expressions first, represented by negative
-	 * attnums (this is OK, we don't allow statistics on system attributes),
-	 * and then regular attributes.
-	 */
-	nattnums = bms_num_members(attrs) + exprs->nexprs;
-	attnums = (AttrNumber *) palloc(sizeof(AttrNumber) * nattnums);
-
-	numattrs = 0;
-
-	/* treat expressions as attributes with negative attnums */
-	for (i = 0; i < exprs->nexprs; i++)
-		attnums[numattrs++] = -(i+1);
-
-	/*
-	 * and then regular attributes
-	 *
-	 * XXX Maybe add this in the opposite order, just like in MCV? first
-	 * regular attnums, then exressions.
-	 */
-	k = -1;
-	while ((k = bms_next_member(attrs, k)) >= 0)
-		attnums[numattrs++] = k;
-
-	Assert(numattrs >= 2);
-	Assert(numattrs == nattnums);
-
-	/*
-	 * Build a new bitmapset of attnums, offset by number of expressions (this
-	 * is needed, because bitmaps can store only non-negative values).
-	 */
-	attrs = NULL;
-	for (i = 0; i < numattrs; i++)
-		attrs = bms_add_member(attrs, attnums[i] + exprs->nexprs);
+	Assert(data->nattnums >= 2);
 
 	/*
 	 * We'll try build functional dependencies starting from the smallest ones
@@ -419,12 +364,12 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 	 * included in the statistics object.  We start from the smallest ones
 	 * because we want to be able to skip already implied ones.
 	 */
-	for (k = 2; k <= numattrs; k++)
+	for (k = 2; k <= data->nattnums; k++)
 	{
 		AttrNumber *dependency; /* array with k elements */
 
 		/* prepare a DependencyGenerator of variation */
-		DependencyGenerator DependencyGenerator = DependencyGenerator_init(numattrs, k);
+		DependencyGenerator DependencyGenerator = DependencyGenerator_init(data->nattnums, k);
 
 		/* generate all possible variations of k values (out of n) */
 		while ((dependency = DependencyGenerator_next(DependencyGenerator)))
@@ -433,8 +378,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 			MVDependency *d;
 
 			/* compute how valid the dependency seems */
-			degree = dependency_degree(numrows, rows, exprs, k, dependency,
-									   stats, attrs);
+			degree = dependency_degree(data, k, dependency);
 
 			/*
 			 * if the dependency seems entirely invalid, don't store it
@@ -449,7 +393,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 			d->degree = degree;
 			d->nattributes = k;
 			for (i = 0; i < k; i++)
-				d->attributes[i] = attnums[dependency[i]];
+				d->attributes[i] = data->attnums[dependency[i]];
 
 			/* initialize the list of dependencies */
 			if (dependencies == NULL)
@@ -476,8 +420,6 @@ statext_dependencies_build(int numrows, HeapTuple *rows,
 		 */
 		DependencyGenerator_free(DependencyGenerator);
 	}
-
-	pfree(attrs);
 
 	return dependencies;
 }

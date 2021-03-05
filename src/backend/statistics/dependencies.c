@@ -1563,8 +1563,13 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 * XXX Maybe we should do this always, because it also eliminates
 		 * some of the dependencies early. It might be cheaper than having
 		 * to walk the longer list in find_strongest_dependency repeatedly?
+		 *
+		 * XXX We have to do this even when there are no expressions in
+		 * clauses, otherwise find_strongest_dependency may fail for stats
+		 * with expressions (due to lookup of negative value in bitmap).
+		 * So we need to at least filter out those dependencies.
 		 */
-		if (unique_exprs_cnt > 0)
+		if (unique_exprs_cnt > 0 || stat->exprs != NIL)
 		{
 			int			ndeps = 0;
 

@@ -295,7 +295,7 @@ SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1'' AND c = 1');
 
 -- create statistics
-CREATE STATISTICS func_deps_stat (dependencies) ON a, b, c FROM functional_dependencies;
+CREATE STATISTICS func_deps_stat (dependencies) ON a, b, c, (a+c) FROM functional_dependencies;
 
 ANALYZE functional_dependencies;
 

@@ -240,6 +240,10 @@ dependency_degree(StatBuildData *data, int k, AttrNumber *dependency)
 	/* sort info for all attributes columns */
 	mss = multi_sort_init(k);
 
+	/*
+	 * Generate array with attnums for the dependency (we need this to identify
+	 * the columns in StatBuildData).
+	 */
 	attnums_dep = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 	for (i = 0; i < k; i++)
 		attnums_dep[i] = data->attnums[dependency[i]];

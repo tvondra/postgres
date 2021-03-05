@@ -1345,9 +1345,11 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			keys = bms_add_member(keys, staForm->stxkeys.values[i]);
 
 		/*
-		 * preprocess expression (if any)
+		 * Preprocess expressions (if any). We read the expressions, run them
+		 * through eval_const_expressions, and fix the varnos.
 		 *
-		 * FIXME Should we cache the result somewhere?
+		 * XXX Should we cache the result somewhere? Probably not needed, the
+		 * nearby places dealing with expressions don't do that either.
 		 */
 		{
 			bool		isnull;

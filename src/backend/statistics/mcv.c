@@ -184,6 +184,8 @@ MCVList *
 statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 {
 	int			i,
+				numattrs,
+				numrows,
 				ngroups,
 				nitems;
 	double		mincount;
@@ -201,6 +203,10 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 
 	if (!items)
 		return NULL;
+
+	/* for convenience */
+	numattrs = data->nattnums;
+	numrows = data->numrows;
 
 	/* transform the sorted rows into groups (sorted by frequency) */
 	groups = build_distinct_groups(nitems, items, mss, &ngroups);
@@ -232,7 +238,7 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 	 * using get_mincount_for_mcv_list() and then keep all items that seem to
 	 * be more common than that.
 	 */
-	mincount = get_mincount_for_mcv_list(data->numrows, totalrows);
+	mincount = get_mincount_for_mcv_list(numrows, totalrows);
 
 	/*
 	 * Walk the groups until we find the first group with a count below the
@@ -268,7 +274,7 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 										+ sizeof(SortSupportData));
 
 		/* compute frequencies for values in each column */
-		nfreqs = (int *) palloc0(sizeof(int) * data->nattnums);
+		nfreqs = (int *) palloc0(sizeof(int) * numattrs);
 		freqs = build_column_frequencies(groups, ngroups, mss, nfreqs);
 
 		/*
@@ -279,11 +285,11 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 
 		mcvlist->magic = STATS_MCV_MAGIC;
 		mcvlist->type = STATS_MCV_TYPE_BASIC;
-		mcvlist->ndimensions = data->nattnums;
+		mcvlist->ndimensions = numattrs;
 		mcvlist->nitems = nitems;
 
 		/* store info about data type OIDs */
-		for (i = 0; i < data->nattnums; i++)
+		for (i = 0; i < numattrs; i++)
 			mcvlist->types[i] = data->stats[i]->attrtypid;
 
 		/* Copy the first chunk of groups into the result. */
@@ -292,22 +298,22 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 			/* just pointer to the proper place in the list */
 			MCVItem    *item = &mcvlist->items[i];
 
-			item->values = (Datum *) palloc(sizeof(Datum) * data->nattnums);
-			item->isnull = (bool *) palloc(sizeof(bool) * data->nattnums);
+			item->values = (Datum *) palloc(sizeof(Datum) * numattrs);
+			item->isnull = (bool *) palloc(sizeof(bool) * numattrs);
 
 			/* copy values for the group */
-			memcpy(item->values, groups[i].values, sizeof(Datum) * data->nattnums);
-			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * data->nattnums);
+			memcpy(item->values, groups[i].values, sizeof(Datum) * numattrs);
+			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * numattrs);
 
 			/* groups should be sorted by frequency in descending order */
 			Assert((i == 0) || (groups[i - 1].count >= groups[i].count));
 
 			/* group frequency */
-			item->frequency = (double) groups[i].count / data->numrows;
+			item->frequency = (double) groups[i].count / numrows;
 
 			/* base frequency, if the attributes were independent */
 			item->base_frequency = 1.0;
-			for (j = 0; j < data->nattnums; j++)
+			for (j = 0; j < numattrs; j++)
 			{
 				SortItem   *freq;
 
@@ -323,7 +329,7 @@ statext_mcv_build(StatBuildData *data, double totalrows, int stattarget)
 												sizeof(SortItem),
 												multi_sort_compare, tmp);
 
-				item->base_frequency *= ((double) freq->count) / data->numrows;
+				item->base_frequency *= ((double) freq->count) / numrows;
 			}
 		}
 
@@ -345,12 +351,13 @@ static MultiSortSupport
 build_mss(StatBuildData *data)
 {
 	int			i;
+	int			numattrs = data->nattnums;
 
 	/* Sort by multiple columns (using array of SortSupport) */
-	MultiSortSupport mss = multi_sort_init(data->nattnums);
+	MultiSortSupport mss = multi_sort_init(numattrs);
 
 	/* prepare the sort functions for all the attributes */
-	for (i = 0; i < data->nattnums; i++)
+	for (i = 0; i < numattrs; i++)
 	{
 		VacAttrStats *colstat = data->stats[i];
 		TypeCacheEntry *type;

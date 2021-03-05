@@ -3569,8 +3569,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		{
 			Node	   *var = (Node *) lfirst(l2);
 
-			exprinfos = add_unique_group_expr(root, exprinfos,
-											  var, NIL);
+			exprinfos = add_unique_group_expr(root, exprinfos, var, NIL);
 		}
 	}
 

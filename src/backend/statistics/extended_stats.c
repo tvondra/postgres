@@ -83,6 +83,7 @@ static void statext_store(Oid statOid,
 static int	statext_compute_stattarget(int stattarget,
 									   int natts, VacAttrStats **stats);
 
+/* Information needed to analyze a single simple expression. */
 typedef struct AnlExprData
 {
 	Node		   *expr;			/* expression to analyze */
@@ -656,7 +657,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 		stats[i] = examine_attribute(expr);
 
 		/*
-		 * FIXME We need tuple descriptor later, and we just grab it from
+		 * XXX We need tuple descriptor later, and we just grab it from
 		 * stats[0]->tupDesc (see e.g. statext_mcv_build). But as coded
 		 * examine_attribute does not set that, so just grab it from the
 		 * first vacatts element.

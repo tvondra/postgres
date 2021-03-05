@@ -1918,9 +1918,12 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 	}
 
 	/*
-	 * Now handle expressions, if there are any.  The order does not
-	 * matter for extended stats, so we simply append them after
-	 * simple column references.
+	 * Now handle expressions, if there are any. The order (with respect
+	 * to regular attributes) does not really matter for extended stats,
+	 * so we simply append them after simple column references.
+	 *
+	 * XXX Some places may treat them as if before atttibutes, but that's
+	 * irrelevant here - we simply generate the command.
 	 */
 	datum = SysCacheGetAttr(STATEXTOID, ht_stats,
 							Anum_pg_statistic_ext_stxexprs, &isnull);

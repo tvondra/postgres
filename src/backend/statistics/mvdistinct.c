@@ -91,7 +91,8 @@ statext_ndistinct_build(double totalrows, StatBuildData *data)
 	MVNDistinct *result;
 	int			k;
 	int			itemcnt;
-	int			numcombs = num_combinations(data->nattnums);
+	int			numattrs = data->nattnums;
+	int			numcombs = num_combinations(numattrs);
 
 	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
@@ -100,13 +101,13 @@ statext_ndistinct_build(double totalrows, StatBuildData *data)
 	result->nitems = numcombs;
 
 	itemcnt = 0;
-	for (k = 2; k <= data->nattnums; k++)
+	for (k = 2; k <= numattrs; k++)
 	{
 		int		   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
-		generator = generator_init(data->nattnums, k);
+		generator = generator_init(numattrs, k);
 
 		while ((combination = generator_next(generator)))
 		{
@@ -432,6 +433,7 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 	Datum	   *values;
 	SortItem   *items;
 	MultiSortSupport mss;
+	int			numrows = data->numrows;
 
 	mss = multi_sort_init(k);
 
@@ -441,11 +443,11 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 	 * using the specified column combination as dimensions.  We could try to
 	 * sort in place, but it'd probably be more complex and bug-prone.
 	 */
-	items = (SortItem *) palloc(data->numrows * sizeof(SortItem));
-	values = (Datum *) palloc0(sizeof(Datum) * data->numrows * k);
-	isnull = (bool *) palloc0(sizeof(bool) * data->numrows * k);
+	items = (SortItem *) palloc(numrows * sizeof(SortItem));
+	values = (Datum *) palloc0(sizeof(Datum) * numrows * k);
+	isnull = (bool *) palloc0(sizeof(bool) * numrows * k);
 
-	for (i = 0; i < data->numrows; i++)
+	for (i = 0; i < numrows; i++)
 	{
 		items[i].values = &values[i * k];
 		items[i].isnull = &isnull[i * k];
@@ -477,7 +479,7 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 		multi_sort_add_dimension(mss, i, type->lt_opr, collid);
 
 		/* accumulate all the data for this dimension into the arrays */
-		for (j = 0; j < data->numrows; j++)
+		for (j = 0; j < numrows; j++)
 		{
 			items[j].values[i] = data->values[combination[i]][j];
 			items[j].isnull[i] = data->nulls[combination[i]][j];
@@ -485,7 +487,7 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 	}
 
 	/* We can sort the array now ... */
-	qsort_arg((void *) items, data->numrows, sizeof(SortItem),
+	qsort_arg((void *) items, numrows, sizeof(SortItem),
 			  multi_sort_compare, mss);
 
 	/* ... and count the number of distinct combinations */
@@ -493,7 +495,7 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 	f1 = 0;
 	cnt = 1;
 	d = 1;
-	for (i = 1; i < data->numrows; i++)
+	for (i = 1; i < numrows; i++)
 	{
 		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 		{
@@ -510,7 +512,7 @@ ndistinct_for_combination(double totalrows, StatBuildData *data,
 	if (cnt == 1)
 		f1 += 1;
 
-	return estimate_ndistinct(totalrows, data->numrows, d, f1);
+	return estimate_ndistinct(totalrows, numrows, d, f1);
 }
 
 /* The Duj1 estimator (already used in analyze.c). */

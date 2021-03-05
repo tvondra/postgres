@@ -1316,6 +1316,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	MVDependency **dependencies;
 	int			ndependencies;
 	int			i;
+	AttrNumber	attnum_offset;
 
 	/* unique expressions */
 	Node	  **unique_exprs;
@@ -1399,7 +1400,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					unique_exprs[unique_exprs_cnt++] = expr;
 
 					/* after incrementing the value, to get -1, -2, ... */
-					attnum = -unique_exprs_cnt;
+					attnum = (- unique_exprs_cnt);
 				}
 
 				/* remember which attnum was assigned to this clause */
@@ -1411,6 +1412,16 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	}
 
 	Assert(listidx == list_length(clauses));
+
+	/*
+	 * How much we need to offset the attnums? If there are no expressions,
+	 * then no offset is needed. Otherwise we need to offset enough for the
+	 * lowest value (-unique_exprs_cnt) to become 1.
+	 */
+	if (unique_exprs_cnt > 0)
+		attnum_offset = (unique_exprs_cnt + 1);
+	else
+		attnum_offset = 0;
 
 	/*
 	 * Now that we know how many expressions there are, we can offset the
@@ -1428,8 +1439,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		Assert(list_attnums[i] >= (-unique_exprs_cnt));
 		Assert(list_attnums[i] <= MaxHeapAttributeNumber);
 
-		/* make sure the attnum is not negative */
-		attnum = list_attnums[i] + unique_exprs_cnt;
+		/* make sure the attnum is positive (valid AttrNumber) */
+		attnum = list_attnums[i] + attnum_offset;
 
 		/*
 		 * Expressions are unique, and so we must not have seen this attnum
@@ -1437,6 +1448,13 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 */
 		Assert(AttrNumberIsForUserDefinedAttr(list_attnums[i]) ||
 			   !bms_is_member(attnum, clauses_attnums));
+
+		/*
+		 * Remember the offset attnum, both for attributes and expressions.
+		 * We'll pass list_attnums to clauselist_apply_dependencies, which
+		 * uses it to identify clauses.
+		 */
+		list_attnums[i] = attnum;
 
 		clauses_attnums = bms_add_member(clauses_attnums, attnum);
 	}
@@ -1498,7 +1516,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				continue;
 
 			/* apply the same offset as above */
-			attnum += unique_exprs_cnt;
+			attnum += attnum_offset;
 
 			if (bms_is_member(attnum, clauses_attnums))
 				nmatched++;
@@ -1535,13 +1553,18 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 * That will make the later steps (e.g. picking the strongest item
 		 * and so on) much simpler.
 		 *
-		 * When we're at it, we can also remove dependencies referencing
-		 * missing clauses (i.e. expressions that are not in the clauses).
+		 * When we're at it, we can ignore dependencies that are not fully
+		 * matched by clauses (i.e. attributes or expressions that are not
+		 * in the clauses).
 		 *
-		 * XXX We might also skip clauses referencing missing attnums, not
-		 * just expressions.
+		 * We have to do this for all statistics, as long as there are any
+		 * expressions - we need to shift the attnums in all dependencies.
+		 *
+		 * XXX Maybe we should do this always, because it also eliminates
+		 * some of the dependencies early. It might be cheaper than having
+		 * to walk the longer list in find_strongest_dependency repeatedly?
 		 */
-		if (stat->exprs)
+		if (unique_exprs_cnt > 0)
 		{
 			int			ndeps = 0;
 
@@ -1565,7 +1588,18 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					/* regular attribute, simply offset by number of expressions */
 					if (AttrNumberIsForUserDefinedAttr(attnum))
 					{
-						dep->attributes[j] = attnum + unique_exprs_cnt;
+						dep->attributes[j] = attnum + attnum_offset;
+
+						/*
+						 * Skip the dependency if the attribute does not match
+						 * any clause - there's no chance to use the dependency.
+						 */
+						if (!bms_is_member(dep->attributes[j], clauses_attnums))
+						{
+							skip = true;
+							break;
+						}
+
 						continue;
 					}
 
@@ -1573,7 +1607,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					Assert(AttributeNumberIsValid(attnum));
 
 					/* index of the expression */
-					idx = (1 - attnum);
+					idx = -(1 + attnum);
 
 					/* make sure the expression index is valid */
 					Assert((idx >= 0) && (idx < list_length(stat->exprs)));
@@ -1589,7 +1623,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 						 */
 						if (equal(unique_exprs[k], expr))
 						{
-							unique_attnum = -(k + 1) + unique_exprs_cnt;
+							unique_attnum = -(k + 1) + attnum_offset;
 							break;
 						}
 					}

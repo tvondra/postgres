@@ -1479,9 +1479,9 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 		/*
 		 * Count matching attributes - we have to undo two attnum offsets.
-		 * First, the dependency is offset using the number of expressions
-		 * for that statistics, and then (if it's a plain attribute) we
-		 * need to apply the same offset as above, by unique_exprs_cnt.
+		 * The input attribute numbers are not offset (expressions are not
+		 * included in stat->keys, so it's not necessary). But we need to
+		 * offset it before checking against clauses_attnums.
 		 */
 		nmatched = 0;
 		k = -1;

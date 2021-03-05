@@ -1110,21 +1110,6 @@ stat_find_expression(StatisticExtInfo *stat, Node *expr)
 	return -1;
 }
 
-static bool
-stat_covers_attributes(StatisticExtInfo *stat, Bitmapset *attnums)
-{
-	int	k;
-
-	k = -1;
-	while ((k = bms_next_member(attnums, k)) >= 0)
-	{
-		if (!bms_is_member(k, stat->keys))
-			return false;
-	}
-
-	return true;
-}
-
 /*
  * stat_covers_expressions
  * 		Test whether a statistics object covers all expressions in a list.
@@ -1209,7 +1194,7 @@ choose_best_statistics(List *stats, char requiredkind,
 				continue;
 
 			/* ignore clauses that are not covered by this object */
-			if (!stat_covers_attributes(info, clause_attnums[i]) ||
+			if (!bms_is_subset(clause_attnums[i], info->keys) ||
 				!stat_covers_expressions(info, clause_exprs[i], &expr_idxs))
 				continue;
 
@@ -1713,7 +1698,7 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 			 * estimate.
 			 */
 			if (!bms_is_member(listidx, *estimatedclauses) &&
-				stat_covers_attributes(stat, list_attnums[listidx]) &&
+				bms_is_subset(list_attnums[listidx], stat->keys) &&
 				stat_covers_expressions(stat, list_exprs[listidx], NULL))
 			{
 				/* record simple clauses (single column or expression) */

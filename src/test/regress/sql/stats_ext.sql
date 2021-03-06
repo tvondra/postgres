@@ -379,6 +379,222 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b
 
 DROP STATISTICS s10;
 
+-- combination of multiple ndistinct statistics, with/without expressions
+TRUNCATE ndistinct;
+
+-- two mostly independent groups of columns
+INSERT INTO ndistinct (a, b, c, d)
+     SELECT mod(i,3), mod(i,9), mod(i,5), mod(i,20)
+       FROM generate_series(1,10000) s(i);
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+-- basic statistics on both attributes (no expressions)
+CREATE STATISTICS s11 (ndistinct) ON a, b FROM ndistinct;
+
+CREATE STATISTICS s12 (ndistinct) ON c, d FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+
+-- replace the second statistics by statistics on expressions
+
+DROP STATISTICS s12;
+
+CREATE STATISTICS s12 (ndistinct) ON (c * 10), (d - 1) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+
+-- replace the second statistics by statistics on both attributes and expressions
+
+DROP STATISTICS s12;
+
+CREATE STATISTICS s12 (ndistinct) ON c, d, (c * 10), (d - 1) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+
+-- replace the other statistics by statistics on both attributes and expressions
+
+DROP STATISTICS s11;
+
+CREATE STATISTICS s11 (ndistinct) ON a, b, (a*5), (b+1) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+
+-- replace statistics by somewhat overlapping ones (this expected to get worse estimate
+-- because the first statistics shall be applied to 3 columns, and the second one can't
+-- be really applied)
+
+DROP STATISTICS s11;
+DROP STATISTICS s12;
+
+CREATE STATISTICS s11 (ndistinct) ON a, b, (a*5), (b+1) FROM ndistinct;
+CREATE STATISTICS s12 (ndistinct) ON (b+1), c, d, (c * 10), (d - 1) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), c, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (c*10), (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (b+1), c, (d-1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a*5), (b+1), (c*10), (d-1)');
+
+DROP STATISTICS s11;
+DROP STATISTICS s12;
+
 -- functional dependencies tests
 CREATE TABLE functional_dependencies (
     filler1 TEXT,

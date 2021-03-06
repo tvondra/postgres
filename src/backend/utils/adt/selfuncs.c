@@ -4234,6 +4234,12 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		if (!item)
 			elog(ERROR, "corrupt MVNDistinct entry");
 
+		/* */
+		for (i = 0; i < item->nattributes; i++)
+		{
+			AttrNumber attnum = item->attributes[i];
+		}
+
 		/* Form the output exprinfo list, keeping only unmatched ones */
 		foreach(lc, *exprinfos)
 		{
@@ -4358,6 +4364,9 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			/* remember the recalculated (filtered) list of varinfos */
 			exprinfo->varinfos = varinfos;
 
+			/* if there are no remaining varinfos for the item, skip it */
+			if (varinfos)
+				newlist = lappend(newlist, exprinfo);
 		}
 
 		*exprinfos = newlist;

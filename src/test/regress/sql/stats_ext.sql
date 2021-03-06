@@ -377,6 +377,8 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (2*c
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
 
+DROP STATISTICS s10;
+
 -- functional dependencies tests
 CREATE TABLE functional_dependencies (
     filler1 TEXT,

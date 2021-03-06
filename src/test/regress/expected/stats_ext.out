@@ -290,6 +290,30 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c
        200 |     11
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+ estimated | actual 
+-----------+--------
+       100 |     11
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       100 |     11
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+       100 |     11
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       100 |     11
+(1 row)
+
 -- correct command
 CREATE STATISTICS s10 ON a, b, c FROM ndistinct;
 ANALYZE ndistinct;
@@ -306,7 +330,7 @@ SELECT s.stxkind, d.stxdndistinct
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY ctid, a, b');
  estimated | actual 
 -----------+--------
-        11 |   1000
+      1000 |   1000
 (1 row)
 
 -- Hash Aggregate, thanks to estimates improved by the statistic
@@ -323,6 +347,32 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c
 (1 row)
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c');
+ estimated | actual 
+-----------+--------
+        11 |     11
+(1 row)
+
+-- partial improvement (match on attributes)
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+ estimated | actual 
+-----------+--------
+        11 |     11
+(1 row)
+
+-- expressions - no improvement
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+        11 |     11
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+        11 |     11
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
  estimated | actual 
 -----------+--------
         11 |     11
@@ -389,6 +439,30 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, d
        500 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
 DROP STATISTICS s10;
 SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
@@ -429,6 +503,212 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, d
        500 |     50
 (1 row)
 
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+-- ndistinct estimates with statistics on expressions
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (b+100), (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |   1632
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+CREATE STATISTICS s10 (ndistinct) ON (a+1), (b+100), (2*c), (d*d) FROM ndistinct;
+ANALYZE ndistinct;
+SELECT s.stxkind, d.stxdndistinct
+  FROM pg_statistic_ext s, pg_statistic_ext_data d
+ WHERE s.stxrelid = 'ndistinct'::regclass
+   AND d.stxoid = s.oid;
+ stxkind |                                                                                          stxdndistinct                                                                                           
+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {d,e}   | {"-1, -2": 2550, "-1, -3": 800, "-1, -4": 50, "-2, -3": 1632, "-2, -4": 51, "-3, -4": 32, "-1, -2, -3": 5000, "-1, -2, -4": 2550, "-1, -3, -4": 800, "-2, -3, -4": 1632, "-1, -2, -3, -4": 5000}
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (b+100), (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+      1632 |   1632
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (d*d)');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b+100)');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
+DROP STATISTICS s10;
+-- a mix of attributes and expressions
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+ estimated | actual 
+-----------+--------
+       500 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |   1632
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+       500 |     32
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+ estimated | actual 
+-----------+--------
+       500 |   5000
+(1 row)
+
+CREATE STATISTICS s10 (ndistinct) ON a, b, (2*c), (d*d) FROM ndistinct;
+ANALYZE ndistinct;
+SELECT s.stxkind, d.stxdndistinct
+  FROM pg_statistic_ext s, pg_statistic_ext_data d
+ WHERE s.stxrelid = 'ndistinct'::regclass
+   AND d.stxoid = s.oid;
+ stxkind |                                                                                   stxdndistinct                                                                                    
+---------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {d,e}   | {"3, 4": 2550, "3, -1": 800, "3, -2": 50, "4, -1": 1632, "4, -2": 51, "-1, -2": 32, "3, 4, -1": 5000, "3, 4, -2": 2550, "3, -1, -2": 800, "4, -1, -2": 1632, "3, 4, -1, -2": 5000}
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+ estimated | actual 
+-----------+--------
+      2550 |   2550
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+      1632 |   1632
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (d*d)');
+ estimated | actual 
+-----------+--------
+        50 |     50
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (2*c), (d*d)');
+ estimated | actual 
+-----------+--------
+        32 |     32
+(1 row)
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+ estimated | actual 
+-----------+--------
+      5000 |   5000
+(1 row)
+
+DROP STATISTICS s10;
 -- functional dependencies tests
 CREATE TABLE functional_dependencies (
     filler1 TEXT,

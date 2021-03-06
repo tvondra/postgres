@@ -4066,13 +4066,21 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (found)
 				continue;
 
+			/*
+			 * Inspect the individual varinfos.
+			 *
+			 * XXX Maybe this should not use nshared_vars, but a separate
+			 * variable, so that we can give preference to "exact" matches
+			 * over partial ones? OTOH for an exact match of an expression
+			 * we won't even get here. So it seems fine.
+			 */
 			foreach(lc3, exprinfo->varinfos)
 			{
 				GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc3);
 
 				if (IsA(varinfo->var, Var))
 				{
-					attnum = ((Var *) exprinfo->expr)->varattno;
+					attnum = ((Var *) varinfo->var)->varattno;
 
 					if (!AttrNumberIsForUserDefinedAttr(attnum))
 						continue;
@@ -4081,7 +4089,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 						nshared_vars++;
 				}
 
-				/* XXX What if it's not a Var? */
+				/* XXX What if it's not a Var? Probably can't do much. */
 			}
 		}
 
@@ -4159,9 +4167,13 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (found)
 				continue;
 
+			/*
+			 * Process the varinfos (this also handles regular attributes,
+			 * which have a GroupExprInfo with one varinfo.
+			 */
 			foreach (lc3, exprinfo->varinfos)
 			{
-				GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc2);
+				GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc3);
 
 				/* simple Var, search in statistics keys directly */
 				if (IsA(varinfo->var, Var))
@@ -4226,10 +4238,51 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		foreach(lc, *exprinfos)
 		{
 			GroupExprInfo *exprinfo = (GroupExprInfo *) lfirst(lc);
-			AttrNumber	attnum;
 			ListCell   *lc3;
 			bool		found = false;
+			List	   *varinfos;
 
+			/*
+			 * Let's look at plain variables first, because it's the most
+			 * common case and the check is quite cheap. We can simply get
+			 * the attnum and check (with an offset) matched bitmap.
+			 */
+			if (IsA(exprinfo->expr, Var))
+			{
+				AttrNumber	attnum = ((Var *) exprinfo->expr)->varattno;
+
+				/*
+				 * If it's a system attribute, we're done. We don't support
+				 * extended statistics on system attributes, so it's clearly
+				 * not matched. Just add the expression and continue.
+				 */
+				if (!AttrNumberIsForUserDefinedAttr(attnum))
+				{
+					newlist = lappend(newlist, exprinfo);
+					continue;
+				}
+
+				/* apply the same offset as above */
+				attnum += list_length(matched_info->exprs) + 1;
+
+				/* if it's not matched, keep the exprinfo */
+				if (!bms_is_member(attnum, matched))
+					newlist = lappend(newlist, exprinfo);
+
+				/* The rest of the loop deals with complex expressions. */
+				continue;
+			}
+
+			/*
+			 * Process complex expressions, not just simple Vars.
+			 *
+			 * First, we search for an exact match of an expression. If we
+			 * find one, we can just discard the whole GroupExprInfo, with
+			 * all the variables we extracted from it.
+			 *
+			 * Otherwise we inspect the individual vars, and try matching
+			 * it to variables in the item.
+			 */
 			foreach (lc3, matched_info->exprs)
 			{
 				Node *expr = (Node *) lfirst(lc3);
@@ -4241,31 +4294,75 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				}
 			}
 
-			/* the whole expression was matched, so skip it */
+			/* found exact match, skip */
 			if (found)
 				continue;
 
-			if (!IsA(exprinfo->expr, Var))
+			/*
+			 * Look at the varinfo parts and filter the matched ones. This
+			 * is quite similar to processing of plain Vars above (the
+			 * logic evaluating them).
+			 *
+			 * XXX Maybe just removing the Var is not sufficient, and we
+			 * should "explode" the current GroupExprInfo into one element
+			 * for each Var? Consider for examle grouping by
+			 *
+			 *   a, b, (a+c), d
+			 *
+			 * with extended stats on [a,b] and [(a+c), d]. If we apply
+			 * the [a,b] first, it will remove "a" from the (a+c) item,
+			 * but then we will estimate the whole expression again when
+			 * applying [(a+c), d]. But maybe it's better than failing
+			 * to match the second statistics?
+			 */
+			varinfos = NIL;
+			foreach(lc3, exprinfo->varinfos)
 			{
+				GroupVarInfo   *varinfo = (GroupVarInfo *) lfirst(lc3);
+				Var			   *var = (Var *) varinfo->var;
+				AttrNumber		attnum;
+
 				/*
-				 * FIXME Probably should remove varinfos that match the
-				 * selected MVNDistinct item.
+				 * Could get expressions, not just plain Vars here. But we
+				 * don't know what to do about those, so just keep them.
+				 *
+				 * XXX Maybe we could inspect them recursively, somehow?
 				 */
-				newlist = lappend(newlist, exprinfo);
-				continue;
+				if (!IsA(varinfo->var, Var))
+				{
+					varinfos = lappend(varinfos, varinfo);
+					continue;
+				}
+
+				attnum = var->varattno;
+
+				/*
+				 * If it's a system attribute, we have to keep it. We don't
+				 * support extended statistics on system attributes, so it's
+				 * clearly not matched. Just add the varinfo and continue.
+				 */
+				if (!AttrNumberIsForUserDefinedAttr(attnum))
+				{
+					varinfos = lappend(varinfos, varinfo);
+					continue;
+				}
+
+				/* it's a user attribute, apply the same offset as above */
+				attnum += list_length(matched_info->exprs) + 1;
+
+				/* if it's not matched, keep the exprinfo */
+				if (!bms_is_member(attnum, matched))
+					varinfos = lappend(varinfos, varinfo);
 			}
 
-			attnum = ((Var *) exprinfo->expr)->varattno;
+			/* remember the recalculated (filtered) list of varinfos */
+			exprinfo->varinfos = varinfos;
 
-			if (!AttrNumberIsForUserDefinedAttr(attnum))
-				continue;
-
-			if (!bms_is_member(attnum + list_length(matched_info->exprs) + 1, matched))
-				newlist = lappend(newlist, exprinfo);
 		}
 
 		*exprinfos = newlist;
 		*ndistinct = item->ndistinct;
+
 		return true;
 	}
 

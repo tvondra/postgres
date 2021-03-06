@@ -199,6 +199,14 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c, d');
 
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
+
 -- correct command
 CREATE STATISTICS s10 ON a, b, c FROM ndistinct;
 
@@ -218,6 +226,16 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c');
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, c');
+
+-- partial improvement (match on attributes)
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+
+-- expressions - no improvement
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
 
 -- last two plans keep using Group Aggregate, because 'd' is not covered
 -- by the statistic and while it's NULL-only we assume 200 values for it
@@ -251,6 +269,14 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, d');
 
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
+
 DROP STATISTICS s10;
 
 SELECT s.stxkind, d.stxdndistinct
@@ -268,6 +294,88 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, c, d');
 
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, d');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (a+1)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
+
+-- ndistinct estimates with statistics on expressions
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (b+100), (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
+
+CREATE STATISTICS s10 (ndistinct) ON (a+1), (b+100), (2*c), (d*d) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT s.stxkind, d.stxdndistinct
+  FROM pg_statistic_ext s, pg_statistic_ext_data d
+ WHERE s.stxrelid = 'ndistinct'::regclass
+   AND d.stxoid = s.oid;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (b+100), (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (b+100), (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (a+1), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (a+1), (b*100)');
+
+DROP STATISTICS s10;
+
+-- a mix of attributes and expressions
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+
+CREATE STATISTICS s10 (ndistinct) ON a, b, (2*c), (d*d) FROM ndistinct;
+
+ANALYZE ndistinct;
+
+SELECT s.stxkind, d.stxdndistinct
+  FROM pg_statistic_ext s, pg_statistic_ext_data d
+ WHERE s.stxrelid = 'ndistinct'::regclass
+   AND d.stxoid = s.oid;
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY b, (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY (2*c), (d*d)');
+
+SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b, (2*c)');
 
 -- functional dependencies tests
 CREATE TABLE functional_dependencies (

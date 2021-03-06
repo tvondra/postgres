@@ -4034,6 +4034,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			{
 				attnum = ((Var *) exprinfo->expr)->varattno;
 
+				/* ignore system attributes */
 				if (!AttrNumberIsForUserDefinedAttr(attnum))
 					continue;
 
@@ -4143,8 +4144,13 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 				if (equal(exprinfo->expr, expr))
 				{
-					AttrNumber	attnum = -(idx + 1);
-					matched = bms_add_member(matched, attnum + list_length(matched_info->exprs));
+					AttrNumber	attnum = -idx;
+
+					attnum = attnum + (list_length(matched_info->exprs) + 1);
+
+					Assert(AttrNumberIsForUserDefinedAttr(attnum));
+
+					matched = bms_add_member(matched, attnum);
 					found = true;
 					break;
 				}
@@ -4165,10 +4171,12 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 					if (!AttrNumberIsForUserDefinedAttr(attnum))
 						continue;
 
-					if (!bms_is_member(attnum + list_length(matched_info->exprs), matched_info->keys))
+					if (!bms_is_member(attnum, matched_info->keys))
 						continue;
 
-					matched = bms_add_member(matched, attnum + list_length(matched_info->exprs));
+					attnum = attnum + list_length(matched_info->exprs) + 1;
+
+					matched = bms_add_member(matched, attnum);
 				}
 			}
 		}
@@ -4185,9 +4193,18 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			/* assume it's the right item */
 			item = tmpitem;
 
+			/* see if the item attributes actually fit the match */
 			for (j = 0; j < tmpitem->nattributes; j++)
 			{
 				AttrNumber attnum = tmpitem->attributes[j];
+
+				/*
+				 * We need to translate the attnum - for plain attributes
+				 * it's fairly simple, we just need to apply the offset.
+				 * For expressions we need to do find the expression in
+				 * the item, and then look it up in matched expressions.
+				 */
+				attnum = attnum + list_length(matched_info->exprs) + 1;
 
 				if (!bms_is_member(attnum, matched))
 				{
@@ -4243,7 +4260,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (!AttrNumberIsForUserDefinedAttr(attnum))
 				continue;
 
-			if (!bms_is_member(attnum, matched))
+			if (!bms_is_member(attnum + list_length(matched_info->exprs) + 1, matched))
 				newlist = lappend(newlist, exprinfo);
 		}
 

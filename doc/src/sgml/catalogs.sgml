@@ -13226,8 +13226,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
   <para>
    The maximum number of entries in the array fields can be controlled on a
    column-by-column basis using the <link linkend="sql-altertable"><command>ALTER
-   TABLE SET STATISTICS</command></link>
-   command, or globally by setting the
+   TABLE SET STATISTICS</command></link> command, or globally by setting the
    <xref linkend="guc-default-statistics-target"/> run-time parameter.
   </para>
 

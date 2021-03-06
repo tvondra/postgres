@@ -265,7 +265,7 @@ EXPLAIN ANALYZE SELECT date_trunc('month', a), date_trunc('day', a)
 -- per-expression statistics are built automatically
 CREATE STATISTICS s3 (ndistinct) ON date_trunc('month', a), date_trunc('day', a) FROM t3;
 
-ANALYZE t1;
+ANALYZE t3;
 
 -- now the row count estimates are more accurate:
 EXPLAIN ANALYZE SELECT * FROM t3

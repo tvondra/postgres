@@ -1922,8 +1922,9 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 	 * to regular attributes) does not really matter for extended stats,
 	 * so we simply append them after simple column references.
 	 *
-	 * XXX Some places may treat them as if before atttibutes, but that's
-	 * irrelevant here - we simply generate the command.
+	 * XXX Some places during build/estimation treat expressions as if
+	 * they are before atttibutes, but for the CREATE command that's
+	 * entirely irrelevant.
 	 */
 	datum = SysCacheGetAttr(STATEXTOID, ht_stats,
 							Anum_pg_statistic_ext_stxexprs, &isnull);

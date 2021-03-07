@@ -4034,7 +4034,11 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			{
 				attnum = ((Var *) exprinfo->expr)->varattno;
 
-				/* ignore system attributes */
+				/*
+				 * Ignore system attributes - we don't support statistics
+				 * on them, so can't match them (and it'd fail as the values
+				 * are negative).
+				 */
 				if (!AttrNumberIsForUserDefinedAttr(attnum))
 					continue;
 
@@ -4067,12 +4071,18 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				continue;
 
 			/*
-			 * Inspect the individual varinfos.
+			 * Inspect the individual Vars extracted from the expression.
 			 *
 			 * XXX Maybe this should not use nshared_vars, but a separate
 			 * variable, so that we can give preference to "exact" matches
-			 * over partial ones? OTOH for an exact match of an expression
-			 * we won't even get here. So it seems fine.
+			 * over partial ones? Consider for example two statistics [a,b,c]
+			 * and [(a+b), c], and query with
+			 *
+			 *	GROUP BY (a+b), c
+			 *
+			 * Then the first statistics matches no expressions and 3 vars,
+			 * while the second statistics matches one expression and 1 var.
+			 * Currently the first statistics wins, which seems silly.
 			 */
 			foreach(lc3, exprinfo->varinfos)
 			{
@@ -4102,6 +4112,9 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		 *
 		 * XXX This should break ties using name of the object, or something
 		 * like that, to make the outcome stable.
+		 *
+		 * XXX Maybe this should consider the vars in the opposite way, i.e.
+		 * expression matches should be more important.
 		 */
 		if ((nshared_vars > nmatches_vars) ||
 			((nshared_vars == nmatches_vars) && (nshared_exprs > nmatches_exprs)))
@@ -4205,7 +4218,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			/* assume it's the right item */
 			item = tmpitem;
 
-			/* see if the item attributes actually fit the match */
+			/* check that all item attributes/expressions fit the match */
 			for (j = 0; j < tmpitem->nattributes; j++)
 			{
 				AttrNumber attnum = tmpitem->attributes[j];
@@ -4230,7 +4243,10 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				break;
 		}
 
-		/* make sure we found an item */
+		/*
+		 * Make sure we found an item. There has to be one, because ndistinct
+		 * statistics includes all combinations of attributes.
+		 */
 		if (!item)
 			elog(ERROR, "corrupt MVNDistinct entry");
 
@@ -4260,7 +4276,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				/*
 				 * If it's a system attribute, we're done. We don't support
 				 * extended statistics on system attributes, so it's clearly
-				 * not matched. Just add the expression and continue.
+				 * not matched. Just keep the expression and continue.
 				 */
 				if (!AttrNumberIsForUserDefinedAttr(attnum))
 				{
@@ -4371,7 +4387,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 
 		*exprinfos = newlist;
 		*ndistinct = item->ndistinct;
-
 		return true;
 	}
 

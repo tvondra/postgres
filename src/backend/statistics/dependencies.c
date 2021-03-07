@@ -241,8 +241,8 @@ dependency_degree(StatBuildData *data, int k, AttrNumber *dependency)
 	mss = multi_sort_init(k);
 
 	/*
-	 * Generate array with attnums for the dependency (we need this to identify
-	 * the columns in StatBuildData).
+	 * Translate the array of indexs to regular attnums for the dependency (we
+	 * will need this to identify the columns in StatBuildData).
 	 */
 	attnums_dep = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 	for (i = 0; i < k; i++)
@@ -1443,8 +1443,12 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		attnum = list_attnums[i] + attnum_offset;
 
 		/*
-		 * Expressions are unique, and so we must not have seen this attnum
-		 * before.
+		 * Either it's a regular attribute, or it's an expression, in which
+		 * case we must not have seen it before (expressions are unique).
+		 *
+		 * XXX Check whether it's a regular attribute has to be done using
+		 * the original attnum, while the second check has to use the value
+		 * with an offset.
 		 */
 		Assert(AttrNumberIsForUserDefinedAttr(list_attnums[i]) ||
 			   !bms_is_member(attnum, clauses_attnums));
@@ -1452,7 +1456,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		/*
 		 * Remember the offset attnum, both for attributes and expressions.
 		 * We'll pass list_attnums to clauselist_apply_dependencies, which
-		 * uses it to identify clauses.
+		 * uses it to identify clauses in a bitmap. We could also pass the
+		 * offset, but this is more convenient.
 		 */
 		list_attnums[i] = attnum;
 
@@ -1567,7 +1572,9 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		 * XXX We have to do this even when there are no expressions in
 		 * clauses, otherwise find_strongest_dependency may fail for stats
 		 * with expressions (due to lookup of negative value in bitmap).
-		 * So we need to at least filter out those dependencies.
+		 * So we need to at least filter out those dependencies. Maybe we
+		 * could do it in a cheaper way (if there are no expr clauses, we
+		 * can just discard all negative attnums without any lookups).
 		 */
 		if (unique_exprs_cnt > 0 || stat->exprs != NIL)
 		{
@@ -1590,15 +1597,15 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					/* undo the per-statistics offset */
 					attnum = dep->attributes[j];
 
-					/* regular attribute, simply offset by number of expressions */
+					/*
+					 * For regular attributes we can simply check if it matches
+					 * any clause. If there's no matching clause, we can just
+					 * ignore it. We need to offset the attnum though.
+					 */
 					if (AttrNumberIsForUserDefinedAttr(attnum))
 					{
 						dep->attributes[j] = attnum + attnum_offset;
 
-						/*
-						 * Skip the dependency if the attribute does not match
-						 * any clause - there's no chance to use the dependency.
-						 */
 						if (!bms_is_member(dep->attributes[j], clauses_attnums))
 						{
 							skip = true;
@@ -1611,10 +1618,16 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 					/* the attnum should be a valid system attnum (-1, -2, ...) */
 					Assert(AttributeNumberIsValid(attnum));
 
-					/* index of the expression */
+					/*
+					 * For expressions, we need to do two translations. First we
+					 * have to translate the negative attnum to index in the list
+					 * of expressions (in the statistics object). Then we need to
+					 * see if there's a matching clause. The index of the unique
+					 * expression determines the attnum (and we offset it).
+					 */
 					idx = -(1 + attnum);
 
-					/* make sure the expression index is valid */
+					/* Is the expression index is valid? */
 					Assert((idx >= 0) && (idx < list_length(stat->exprs)));
 
 					expr = (Node *) list_nth(stat->exprs, idx);

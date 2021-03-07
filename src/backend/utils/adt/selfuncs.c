@@ -4244,16 +4244,8 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				AttrNumber attnum = tmpitem->attributes[j];
 
 				/*
-				 * We need to translate the attnum - for plain attributes
-				 * it's fairly simple, we just need to apply the offset.
-				 * For expressions we need to do find the expression in
-				 * the item, and then look it up in matched expressions.
-				 *
-				 * FIXME Seems the expression lookup is missing? Try doing
-				 *
-				 *	GROUP BY (a+1), (b+2)
-				 *
-				 * with statistics on more than 2 expressions.
+				 * Thanks to how we constructed the matched bitmap above, we
+				 * can just offset all attnums the same way.
 				 */
 				attnum = attnum + attnum_offset;
 

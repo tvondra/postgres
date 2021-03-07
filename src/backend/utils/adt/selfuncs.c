@@ -4145,6 +4145,17 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		MVNDistinctItem *item = NULL;
 		ListCell   *lc2;
 		Bitmapset  *matched = NULL;
+		AttrNumber	attnum_offset;
+
+		/*
+		 * How much we need to offset the attnum? If there are no expressions,
+		 * no offset is needed. Otherwise offset enough to move the lowest
+		 * attnum (which is equal to number of expressions) to 1.
+		 */
+		if (matched_info->exprs)
+			attnum_offset = (list_length(matched_info->exprs) + 1);
+		else
+			attnum_offset = 0;
 
 		/* see what actually matched */
 		foreach (lc2, *exprinfos)
@@ -4161,20 +4172,21 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			{
 				Node *expr = (Node *) lfirst(lc3);
 
-				idx++;
-
 				if (equal(exprinfo->expr, expr))
 				{
-					AttrNumber	attnum = -idx;
+					AttrNumber	attnum = -(idx + 1);
 
-					attnum = attnum + (list_length(matched_info->exprs) + 1);
+					attnum = attnum + attnum_offset;
 
+					/* ensure sufficient offset */
 					Assert(AttrNumberIsForUserDefinedAttr(attnum));
 
 					matched = bms_add_member(matched, attnum);
 					found = true;
 					break;
 				}
+
+				idx++;
 			}
 
 			if (found)
@@ -4193,13 +4205,21 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				{
 					AttrNumber	attnum = ((Var *) varinfo->var)->varattno;
 
+					/*
+					 * Ignore expressions on system attributes. Can't rely
+					 * on the bms check for negative values.
+					 */
 					if (!AttrNumberIsForUserDefinedAttr(attnum))
 						continue;
 
+					/* Is the variable covered by the statistics? */
 					if (!bms_is_member(attnum, matched_info->keys))
 						continue;
 
-					attnum = attnum + list_length(matched_info->exprs) + 1;
+					attnum = attnum + attnum_offset;
+
+					/* ensure sufficient offset */
+					Assert(AttrNumberIsForUserDefinedAttr(attnum));
 
 					matched = bms_add_member(matched, attnum);
 				}
@@ -4228,8 +4248,14 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				 * it's fairly simple, we just need to apply the offset.
 				 * For expressions we need to do find the expression in
 				 * the item, and then look it up in matched expressions.
+				 *
+				 * FIXME Seems the expression lookup is missing? Try doing
+				 *
+				 *	GROUP BY (a+1), (b+2)
+				 *
+				 * with statistics on more than 2 expressions.
 				 */
-				attnum = attnum + list_length(matched_info->exprs) + 1;
+				attnum = attnum + attnum_offset;
 
 				if (!bms_is_member(attnum, matched))
 				{
@@ -4249,12 +4275,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		 */
 		if (!item)
 			elog(ERROR, "corrupt MVNDistinct entry");
-
-		/* */
-		for (i = 0; i < item->nattributes; i++)
-		{
-			AttrNumber attnum = item->attributes[i];
-		}
 
 		/* Form the output exprinfo list, keeping only unmatched ones */
 		foreach(lc, *exprinfos)
@@ -4285,7 +4305,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				}
 
 				/* apply the same offset as above */
-				attnum += list_length(matched_info->exprs) + 1;
+				attnum += attnum_offset;
 
 				/* if it's not matched, keep the exprinfo */
 				if (!bms_is_member(attnum, matched))
@@ -4370,7 +4390,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				}
 
 				/* it's a user attribute, apply the same offset as above */
-				attnum += list_length(matched_info->exprs) + 1;
+				attnum += attnum_offset;
 
 				/* if it's not matched, keep the exprinfo */
 				if (!bms_is_member(attnum, matched))

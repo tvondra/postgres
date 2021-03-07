@@ -4148,9 +4148,9 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		AttrNumber	attnum_offset;
 
 		/*
-		 * How much we need to offset the attnum? If there are no expressions,
-		 * no offset is needed. Otherwise offset enough to move the lowest
-		 * attnum (which is equal to number of expressions) to 1.
+		 * How much we need to offset the attnums? If there are no expressions,
+		 * no offset is needed. Otherwise offset enough to move the lowest one
+		 * (which is equal to number of expressions) to 1.
 		 */
 		if (matched_info->exprs)
 			attnum_offset = (list_length(matched_info->exprs) + 1);

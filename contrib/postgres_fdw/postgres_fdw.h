@@ -144,6 +144,7 @@ extern void process_pending_request(AsyncRequest *areq);
 extern PGconn *GetConnection(UserMapping *user, bool will_prep_stmt,
 							 PgFdwConnState **state);
 extern void ReleaseConnection(PGconn *conn);
+extern void MarkConnectionModified(UserMapping *user);
 extern unsigned int GetCursorNumber(PGconn *conn);
 extern unsigned int GetPrepStmtNumber(PGconn *conn);
 extern void do_sql_command(PGconn *conn, const char *sql);

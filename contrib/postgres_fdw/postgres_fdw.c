@@ -607,6 +607,10 @@ postgres_fdw_handler(PG_FUNCTION_ARGS)
 	routine->ForeignAsyncConfigureWait = postgresForeignAsyncConfigureWait;
 	routine->ForeignAsyncNotify = postgresForeignAsyncNotify;
 
+	/* Support functions for foreign transactions */
+	routine->CommitForeignTransaction = postgresCommitForeignTransaction;
+	routine->RollbackForeignTransaction = postgresRollbackForeignTransaction;
+
 	PG_RETURN_POINTER(routine);
 }
 

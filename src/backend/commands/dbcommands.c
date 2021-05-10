@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "access/fdwxact.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -1520,6 +1521,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	int			nslots,
 				nslots_active;
 	int			nsubscriptions;
+	int			nfdwxacts;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
@@ -1609,6 +1611,18 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 								  "There are %d subscriptions.",
 								  nsubscriptions, nsubscriptions)));
 
+	/*
+	 * Also check if there is foreign transaction associated with the target
+	 * database.
+	 */
+	if ((nfdwxacts = CountFdwXactsForDB(db_id)) > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("database \"%s\" is being used by foreign transaction resolution",
+						dbname),
+				 errdetail_plural("There is %d foreign transaction.",
+								  "There are %d foreign transactions.",
+								  nfdwxacts, nfdwxacts)));
 
 	/*
 	 * Attempt to terminate all existing connections to the target database if

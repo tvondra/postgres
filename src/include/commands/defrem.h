@@ -126,9 +126,11 @@ extern ObjectAddress CreateForeignDataWrapper(ParseState *pstate, CreateFdwStmt 
 extern ObjectAddress AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt);
 extern ObjectAddress CreateForeignServer(CreateForeignServerStmt *stmt);
 extern ObjectAddress AlterForeignServer(AlterForeignServerStmt *stmt);
+extern Oid RemoveForeignServer(DropForeignServerStmt *stmt);
 extern ObjectAddress CreateUserMapping(CreateUserMappingStmt *stmt);
 extern ObjectAddress AlterUserMapping(AlterUserMappingStmt *stmt);
 extern Oid	RemoveUserMapping(DropUserMappingStmt *stmt);
+extern void RemoveUserMappingById(Oid umid);
 extern void CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid);
 extern void ImportForeignSchema(ImportForeignSchemaStmt *stmt);
 extern Datum transformGenericOptions(Oid catalogId,

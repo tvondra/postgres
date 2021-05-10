@@ -16,6 +16,8 @@
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
+#include "access/fdwxact.h"
+#include "access/fdwxact_launcher.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
 #include "access/nbtree.h"
@@ -141,6 +143,8 @@ CalculateShmemSize(int *num_semaphores)
 	size = add_size(size, SyncScanShmemSize());
 	size = add_size(size, AsyncShmemSize());
 	size = add_size(size, StatsShmemSize());
+	size = add_size(size, FdwXactShmemSize());
+	size = add_size(size, FdwXactLauncherShmemSize());
 #ifdef EXEC_BACKEND
 	size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -182,6 +186,7 @@ CreateSharedMemoryAndSemaphores(void)
 
 		/* Compute the size of the shared-memory block */
 		size = CalculateShmemSize(&numSemas);
+
 		elog(DEBUG3, "invoking IpcMemoryCreate(size=%zu)", size);
 
 		/*
@@ -293,6 +298,8 @@ CreateSharedMemoryAndSemaphores(void)
 	SyncScanShmemInit();
 	AsyncShmemInit();
 	StatsShmemInit();
+	FdwXactShmemInit();
+	FdwXactLauncherShmemInit();
 
 #ifdef EXEC_BACKEND
 

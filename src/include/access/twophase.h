@@ -38,6 +38,7 @@ extern TransactionId TwoPhaseGetXidByVirtualXID(VirtualTransactionId vxid,
 												bool *have_more);
 extern PGPROC *TwoPhaseGetDummyProc(TransactionId xid, bool lock_held);
 extern BackendId TwoPhaseGetDummyBackendId(TransactionId xid, bool lock_held);
+extern bool	TwoPhaseExists(TransactionId xid);
 
 extern GlobalTransaction MarkAsPreparing(TransactionId xid, const char *gid,
 										 TimestampTz prepared_at,

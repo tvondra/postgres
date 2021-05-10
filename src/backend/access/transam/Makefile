@@ -16,6 +16,8 @@ OBJS = \
 	clog.o \
 	commit_ts.o \
 	fdwxact.o \
+	fdwxact_launcher.o \
+	fdwxact_resolver.o \
 	generic_xlog.o \
 	multixact.o \
 	parallel.o \

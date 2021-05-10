@@ -744,6 +744,21 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_WAL_WRITE:
 			event_name = "WALWrite";
 			break;
+		case WAIT_EVENT_FDWXACT_FILE_READ:
+			event_name = "FdwXactFileRead";
+			break;
+		case WAIT_EVENT_FDWXACT_FILE_SYNC:
+			event_name = "FdwXactFileSync";
+			break;
+		case WAIT_EVENT_FDWXACT_FILE_WRITE:
+			event_name = "FdwXactFileWrite";
+			break;
+		case WAIT_EVENT_FDWXACT_LAUNCHER_MAIN:
+			event_name = "FdwXactLauncherMain";
+			break;
+		case WAIT_EVENT_FDWXACT_RESOLVER_MAIN:
+			event_name = "FdwXactResolverMain";
+			break;
 
 			/* no default case, so that compiler will warn */
 	}

@@ -77,6 +77,7 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
+#include "access/fdwxact.h"
 #include "access/htup_details.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
@@ -856,6 +857,34 @@ TwoPhaseGetGXact(TransactionId xid, bool lock_held)
 	cached_gxact = result;
 
 	return result;
+}
+
+/*
+ * TwoPhaseExists
+ *		Return true if there is a prepared transaction specified by XID
+ */
+bool
+TwoPhaseExists(TransactionId xid)
+{
+	int		i;
+	bool	found = false;
+
+	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
+
+		if (gxact->xid == xid)
+		{
+			found = true;
+			break;
+		}
+	}
+
+	LWLockRelease(TwoPhaseStateLock);
+
+	return found;
 }
 
 /*
@@ -1645,6 +1674,12 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 
 	/* Count the prepared xact as committed or aborted */
 	AtEOXact_PgStat(isCommit, false);
+
+	/*
+	 * If the prepared transaction was a part of a distributed transaction
+	 * notify a resolver process to handle it.
+	 */
+	FdwXactLaunchResolversForXid(xid);
 
 	/*
 	 * And now we can clean up any files we may have left.

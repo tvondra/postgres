@@ -13,6 +13,8 @@
  */
 #include "postgres.h"
 
+#include "access/fdwxact.h"
+#include "access/fdwxact_launcher.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/table.h"
@@ -1065,6 +1067,49 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 	return address;
 }
 
+/*
+ * Drop foreign server
+ */
+Oid
+RemoveForeignServer(DropForeignServerStmt *stmt)
+{
+	Oid serverid;
+	ObjectAddress object;
+
+	serverid = GetSysCacheOid1(FOREIGNSERVERNAME, Anum_pg_foreign_server_oid,
+							   CStringGetDatum(stmt->servername));
+
+	if (!OidIsValid(serverid))
+	{
+		if (!stmt->missing_ok)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("server \"%s\" does not exist", stmt->servername)));
+
+		ereport(NOTICE,
+				errmsg("server \"%s\" does not exist, skipping",
+					   stmt->servername));
+		return InvalidOid;
+	}
+
+	/*
+	 * Only owner or a superuser can ALTER a SERVER.
+	 */
+	if (!pg_foreign_server_ownercheck(serverid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FOREIGN_SERVER,
+					   stmt->servername);
+
+	/* Do the deletion */
+	object.classId = ForeignServerRelationId;
+	object.objectId = serverid;
+	object.objectSubId = 0;
+	performDeletion(&object, stmt->behavior, 0);
+
+	/* Stop the foreign transaction resolver immediately */
+	StopFdwXactResolver(MyDatabaseId, serverid);
+
+	return serverid;
+}
 
 /*
  * Common routine to check permission for user-mapping-related DDL
@@ -1316,6 +1361,37 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 	return address;
 }
 
+/*
+ * Drop the given user mapping
+ */
+void
+RemoveUserMappingById(Oid umid)
+{
+	HeapTuple	tp;
+	Relation	rel;
+
+	rel = table_open(UserMappingRelationId, RowExclusiveLock);
+
+	tp = SearchSysCache1(USERMAPPINGOID, ObjectIdGetDatum(umid));
+
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for user mapping %u", umid);
+
+	/*
+	 * We cannot drop the user mapping if there is a foreign prepared
+	 * transaction with this user mapping.
+	 */
+	if (CountFdwXactsForUserMapping(umid) > 0)
+		ereport(ERROR,
+				(errmsg("user mapping %u has unresolved prepared transaction",
+						umid)));
+
+	CatalogTupleDelete(rel, &tp->t_self);
+
+	ReleaseSysCache(tp);
+
+	table_close(rel, RowExclusiveLock);
+}
 
 /*
  * Drop user mapping
@@ -1383,6 +1459,7 @@ RemoveUserMapping(DropUserMappingStmt *stmt)
 
 	user_mapping_ddl_aclcheck(useId, srv->serverid, srv->servername);
 
+
 	/*
 	 * Do the deletion
 	 */
@@ -1394,7 +1471,6 @@ RemoveUserMapping(DropUserMappingStmt *stmt)
 
 	return umId;
 }
-
 
 /*
  * Create a foreign table

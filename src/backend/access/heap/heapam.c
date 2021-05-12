@@ -432,11 +432,11 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 	 * transactions on the primary might still be invisible to a read-only
 	 * transaction in the standby. We partly handle this problem by tracking
 	 * the minimum xmin of visible tuples as the cut-off XID while marking a
-	 * page all-visible on the primary and WAL log that along with the visibility
-	 * map SET operation. In hot standby, we wait for (or abort) all
-	 * transactions that can potentially may not see one or more tuples on the
-	 * page. That's how index-only scans work fine in hot standby. A crucial
-	 * difference between index-only scans and heap scans is that the
+	 * page all-visible on the primary and WAL log that along with the
+	 * visibility map SET operation. In hot standby, we wait for (or abort)
+	 * all transactions that can potentially may not see one or more tuples on
+	 * the page. That's how index-only scans work fine in hot standby. A
+	 * crucial difference between index-only scans and heap scans is that the
 	 * index-only scan completely relies on the visibility map where as heap
 	 * scan looks at the page-level PD_ALL_VISIBLE flag. We are not sure if
 	 * the page-level flag can be trusted in the same way, because it might
@@ -2479,7 +2479,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			tupledata = scratchptr;
 
 			/* check that the mutually exclusive flags are not both set */
-			Assert (!(all_visible_cleared && all_frozen_set));
+			Assert(!(all_visible_cleared && all_frozen_set));
 
 			xlrec->flags = 0;
 			if (all_visible_cleared)
@@ -2995,7 +2995,10 @@ l1:
 		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
 
-		/* For logical decode we need combo CIDs to properly decode the catalog */
+		/*
+		 * For logical decode we need combo CIDs to properly decode the
+		 * catalog
+		 */
 		if (RelationIsAccessibleInLogicalDecoding(relation))
 			log_heap_new_cid(relation, &tp);
 
@@ -7864,16 +7867,16 @@ bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate)
 	 * TIDs as each other.  The goal is to ignore relatively small differences
 	 * in the total number of promising entries, so that the whole process can
 	 * give a little weight to heapam factors (like heap block locality)
-	 * instead.  This isn't a trade-off, really -- we have nothing to lose.
-	 * It would be foolish to interpret small differences in npromisingtids
+	 * instead.  This isn't a trade-off, really -- we have nothing to lose. It
+	 * would be foolish to interpret small differences in npromisingtids
 	 * values as anything more than noise.
 	 *
 	 * We tiebreak on nhtids when sorting block group subsets that have the
 	 * same npromisingtids, but this has the same issues as npromisingtids,
-	 * and so nhtids is subject to the same power-of-two bucketing scheme.
-	 * The only reason that we don't fix nhtids in the same way here too is
-	 * that we'll need accurate nhtids values after the sort.  We handle
-	 * nhtids bucketization dynamically instead (in the sort comparator).
+	 * and so nhtids is subject to the same power-of-two bucketing scheme. The
+	 * only reason that we don't fix nhtids in the same way here too is that
+	 * we'll need accurate nhtids values after the sort.  We handle nhtids
+	 * bucketization dynamically instead (in the sort comparator).
 	 *
 	 * See bottomup_nblocksfavorable() for a full explanation of when and how
 	 * heap locality/favorable blocks can significantly influence when and how
@@ -9000,8 +9003,8 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
 	/* check that the mutually exclusive flags are not both set */
-	Assert (!((xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED) &&
-			  (xlrec->flags & XLH_INSERT_ALL_FROZEN_SET)));
+	Assert(!((xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED) &&
+			 (xlrec->flags & XLH_INSERT_ALL_FROZEN_SET)));
 
 	/*
 	 * The visibility map may need to be fixed even if the heap page is

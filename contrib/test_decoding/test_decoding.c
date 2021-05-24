@@ -35,6 +35,7 @@ typedef struct
 	bool		include_timestamp;
 	bool		skip_empty_xacts;
 	bool		only_local;
+	bool		skip_sequence;
 } TestDecodingData;
 
 /*
@@ -76,6 +77,10 @@ static void pg_decode_message(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr message_lsn,
 							  bool transactional, const char *prefix,
 							  Size sz, const char *message);
+static void pg_decode_sequence(LogicalDecodingContext *ctx,
+							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+							  bool created, int64 last_value, int64 log_cnt,
+							  int64 is_called);
 static bool pg_decode_filter_prepare(LogicalDecodingContext *ctx,
 									 TransactionId xid,
 									 const char *gid);
@@ -141,6 +146,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->filter_by_origin_cb = pg_decode_filter;
 	cb->shutdown_cb = pg_decode_shutdown;
 	cb->message_cb = pg_decode_message;
+	cb->sequence_cb = pg_decode_sequence;
 	cb->filter_prepare_cb = pg_decode_filter_prepare;
 	cb->begin_prepare_cb = pg_decode_begin_prepare_txn;
 	cb->prepare_cb = pg_decode_prepare_txn;
@@ -174,6 +180,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	data->include_timestamp = false;
 	data->skip_empty_xacts = false;
 	data->only_local = false;
+	data->skip_sequence = true;
 
 	ctx->output_plugin_private = data;
 
@@ -260,6 +267,17 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			if (elem->arg == NULL)
 				continue;
 			else if (!parse_bool(strVal(elem->arg), &enable_streaming))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
+								strVal(elem->arg), elem->defname)));
+		}
+		else if (strcmp(elem->defname, "skip-sequence") == 0)
+		{
+
+			if (elem->arg == NULL)
+				data->only_local = true;
+			else if (!parse_bool(strVal(elem->arg), &data->skip_sequence))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
@@ -603,6 +621,10 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	data = ctx->output_plugin_private;
 	txndata = txn->output_plugin_private;
 
+	/* return if incoming relation is a sequence and skip_sequence is true */
+	if (change->action == REORDER_BUFFER_CHANGE_SEQUENCE && data->skip_sequence)
+		return;
+
 	/* output BEGIN if we haven't yet */
 	if (data->skip_empty_xacts && !txndata->xact_wrote_changes)
 	{
@@ -666,6 +688,16 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				tuple_to_stringinfo(ctx->out, tupdesc,
 									&change->data.tp.oldtuple->tuple,
 									true);
+			break;
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
+			appendStringInfoString(ctx->out, " SEQUENCE:");
+
+			if (change->data.sequence.tuple == NULL)
+				appendStringInfoString(ctx->out, " (no-tuple-data)");
+			else
+				tuple_to_stringinfo(ctx->out, tupdesc,
+									&change->data.sequence.tuple->tuple,
+									false);
 			break;
 		default:
 			Assert(false);
@@ -741,6 +773,18 @@ pg_decode_message(LogicalDecodingContext *ctx,
 	appendStringInfo(ctx->out, "message: transactional: %d prefix: %s, sz: %zu content:",
 					 transactional, prefix, sz);
 	appendBinaryStringInfo(ctx->out, message, sz);
+	OutputPluginWrite(ctx, true);
+}
+
+static void
+pg_decode_sequence(LogicalDecodingContext *ctx,
+				   ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+				   bool created, int64 last_value, int64 log_cnt,
+				   int64 is_called)
+{
+	OutputPluginPrepareWrite(ctx, true);
+	appendStringInfo(ctx->out, "sequence: created: %d last_value: %zu, log_cnt: %zu is_called: %zu",
+					 created, last_value, log_cnt, is_called);
 	OutputPluginWrite(ctx, true);
 }
 

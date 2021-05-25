@@ -1364,6 +1364,7 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	xl_seq_rec *xlrec;
 	Snapshot	snapshot;
 	RepOriginId origin_id = XLogRecGetOrigin(r);
+	bool		transactional;
 
 	/* only decode changes flagged with XLOG_SEQ_LOG */
 	if (info != XLOG_SEQ_LOG)
@@ -1398,6 +1399,18 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	DecodeSeqTuple(tupledata, datalen, tuplebuf);
 
 	xlrec = (xl_seq_rec *) XLogRecGetData(r);
+
+	transactional = ReorderBufferSequenceIsTransactional(ctx->reorder,
+														 target_node,
+														 xlrec->created);
+
+	if (transactional &&
+		!SnapBuildProcessChange(builder, xid, buf->origptr))
+		return;
+	else if (!transactional &&
+			 (SnapBuildCurrentState(builder) != SNAPBUILD_CONSISTENT ||
+			  SnapBuildXactNeedsSkip(builder, buf->origptr)))
+		return;
 
 	snapshot = SnapBuildGetOrBuildSnapshot(builder, xid);
 	ReorderBufferQueueSequence(ctx->reorder, xid, snapshot, buf->endptr,

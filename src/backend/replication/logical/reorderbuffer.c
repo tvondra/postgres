@@ -870,6 +870,25 @@ ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 	}
 }
 
+/*
+ * Treat the sequence increment as transactional?
+ */
+bool
+ReorderBufferSequenceIsTransactional(ReorderBuffer *rb,
+									 RelFileNode rnode, bool created)
+{
+	bool	found = false;
+
+	if (created)
+		return true;
+
+	hash_search(rb->sequences,
+				(void *) &rnode,
+				HASH_FIND,
+				&found);
+
+	return found;
+}
 
 
 /*

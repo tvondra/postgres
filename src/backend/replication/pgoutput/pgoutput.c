@@ -49,6 +49,10 @@ static void pgoutput_message(LogicalDecodingContext *ctx,
 							 ReorderBufferTXN *txn, XLogRecPtr message_lsn,
 							 bool transactional, const char *prefix,
 							 Size sz, const char *message);
+static void pgoutput_sequence(LogicalDecodingContext *ctx,
+							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+							  bool created, int64 last_value, int64 log_cnt,
+							  int64 is_called);
 static bool pgoutput_origin_filter(LogicalDecodingContext *ctx,
 								   RepOriginId origin_id);
 static void pgoutput_stream_start(struct LogicalDecodingContext *ctx,
@@ -144,6 +148,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->change_cb = pgoutput_change;
 	cb->truncate_cb = pgoutput_truncate;
 	cb->message_cb = pgoutput_message;
+	cb->sequence_cb = pgoutput_sequence;
 	cb->commit_cb = pgoutput_commit_txn;
 	cb->filter_by_origin_cb = pgoutput_origin_filter;
 	cb->shutdown_cb = pgoutput_shutdown;
@@ -166,11 +171,13 @@ parse_output_parameters(List *options, PGOutputData *data)
 	bool		publication_names_given = false;
 	bool		binary_option_given = false;
 	bool		messages_option_given = false;
+	bool		sequences_option_given = false;
 	bool		streaming_given = false;
 
 	data->binary = false;
 	data->streaming = false;
 	data->messages = false;
+	data->sequences = false;
 
 	foreach(lc, options)
 	{
@@ -235,6 +242,16 @@ parse_output_parameters(List *options, PGOutputData *data)
 			messages_option_given = true;
 
 			data->messages = defGetBoolean(defel);
+		}
+		else if (strcmp(defel->defname, "sequences") == 0)
+		{
+			if (sequences_option_given)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			sequences_option_given = true;
+
+			data->sequences = defGetBoolean(defel);
 		}
 		else if (strcmp(defel->defname, "streaming") == 0)
 		{
@@ -750,6 +767,29 @@ pgoutput_message(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 							 prefix,
 							 sz,
 							 message);
+	OutputPluginWrite(ctx, true);
+}
+
+static void
+pgoutput_sequence(LogicalDecodingContext *ctx,
+				  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+				  bool created, int64 last_value, int64 log_cnt,
+				  int64 is_called)
+{
+	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
+	TransactionId xid = InvalidTransactionId;
+
+	if (!data->sequences)
+		return;
+
+	OutputPluginPrepareWrite(ctx, true);
+	logicalrep_write_sequence(ctx->out,
+							 xid,
+							 sequence_lsn,
+							 created,
+							 last_value,
+							 log_cnt,
+							 is_called);
 	OutputPluginWrite(ctx, true);
 }
 

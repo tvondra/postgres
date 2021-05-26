@@ -2017,6 +2017,10 @@ apply_dispatch(StringInfo s)
 			 */
 			return;
 
+		case LOGICAL_REP_MSG_SEQUENCE:
+			elog(WARNING, "TODO: apply sequence");
+			return;
+
 		case LOGICAL_REP_MSG_STREAM_START:
 			apply_handle_stream_start(s);
 			return;

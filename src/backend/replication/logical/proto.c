@@ -390,6 +390,30 @@ logicalrep_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 }
 
 /*
+ * Write SEQUENCE to stream
+ */
+void
+logicalrep_write_sequence(StringInfo out, TransactionId xid,
+						  XLogRecPtr lsn, bool created,
+						  int64 last_value, int64 log_cnt, int64 is_called)
+{
+	uint8		flags = 0;
+
+	pq_sendbyte(out, LOGICAL_REP_MSG_SEQUENCE);
+
+	/* transaction ID (if not valid, we're not streaming) */
+	if (TransactionIdIsValid(xid))
+		pq_sendint32(out, xid);
+
+	pq_sendint8(out, flags);
+	pq_sendint64(out, lsn);
+	pq_sendint8(out, created);
+	pq_sendint64(out, last_value);
+	pq_sendint64(out, log_cnt);
+	pq_sendint64(out, is_called);
+}
+
+/*
  * Write relation description to the output stream.
  */
 void

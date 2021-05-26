@@ -108,6 +108,18 @@ typedef struct LogicalRepTyp
 	char	   *typname;		/* name of the remote type */
 } LogicalRepTyp;
 
+/* Sequence info */
+typedef struct LogicalRepSequence
+{
+	Oid			remoteid;		/* unique id of the remote sequence */
+	char	   *nspname;		/* schema name of remote sequence */
+	char	   *seqname;		/* name of the remote sequence */
+	bool		created;
+	int64		last_value;
+	int64		log_cnt;
+	int64		is_called;
+} LogicalRepSequence;
+
 /* Transaction info */
 typedef struct LogicalRepBeginData
 {
@@ -159,6 +171,7 @@ extern void logicalrep_write_sequence(StringInfo out, TransactionId xid,
 									  XLogRecPtr lsn, bool created,
 									  int64 last_value, int64 log_cnt,
 									  int64 is_called);
+extern void logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata);
 extern void logicalrep_write_rel(StringInfo out, TransactionId xid,
 								 Relation rel);
 extern LogicalRepRelation *logicalrep_read_rel(StringInfo in);

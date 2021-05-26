@@ -814,6 +814,23 @@ apply_handle_origin(StringInfo s)
 }
 
 /*
+ * Handle SEQUENCE message.
+ */
+static void
+apply_handle_sequence(StringInfo s)
+{
+	LogicalRepSequence seq;
+
+	// FIXME
+	// if (handle_streamed_transaction(LOGICAL_REP_MSG_SEQUENCE, s))
+	//	return;
+
+	logicalrep_read_sequence(s, &seq);
+
+	/* FIXME apply the sequence change */
+}
+
+/*
  * Handle STREAM START message.
  */
 static void
@@ -2018,7 +2035,7 @@ apply_dispatch(StringInfo s)
 			return;
 
 		case LOGICAL_REP_MSG_SEQUENCE:
-			elog(WARNING, "TODO: apply sequence");
+			apply_handle_sequence(s);
 			return;
 
 		case LOGICAL_REP_MSG_STREAM_START:

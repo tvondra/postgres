@@ -414,6 +414,18 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 }
 
 /*
+ * Read SEQUENCE from the stream.
+ */
+void
+logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata)
+{
+	seqdata->created = pq_getmsgint(in, 1);
+	seqdata->last_value = pq_getmsgint64(in);
+	seqdata->log_cnt = pq_getmsgint64(in);
+	seqdata->is_called = pq_getmsgint64(in);
+}
+
+/*
  * Write relation description to the output stream.
  */
 void

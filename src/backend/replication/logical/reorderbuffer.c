@@ -1003,14 +1003,25 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 
 		/* setup snapshot to allow catalog access */
 		SetupHistoricSnapshot(snapshot_now, NULL);
+
 		PG_TRY();
 		{
 			Relation	relation;
 			HeapTuple	tuple;
 			bool		isnull;
 			int64		last_value, log_cnt, is_called;
+			Oid			reloid;
 
-			Oid	reloid = RelidByRelfilenode(rnode.spcNode, rnode.relNode);
+			/*
+			 * Running directly from decoding, should be outside any transaction
+			 * or transaction block, so just start one. Without this we'd be
+			 * unable to do RelidByRelfilenode etc.
+			 */
+			Assert(!IsTransactionOrTransactionBlock());
+
+			StartTransactionCommand();
+
+			reloid = RelidByRelfilenode(rnode.spcNode, rnode.relNode);
 
 			if (reloid == InvalidOid)
 				elog(ERROR, "could not map filenode \"%s\" to relation OID",
@@ -1035,10 +1046,12 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			rb->sequence(rb, txn, lsn, transactional, created,
 						 last_value, log_cnt, is_called);
 
+			AbortCurrentTransaction();
 			TeardownHistoricSnapshot(false);
 		}
 		PG_CATCH();
 		{
+			AbortCurrentTransaction();
 			TeardownHistoricSnapshot(true);
 			PG_RE_THROW();
 		}

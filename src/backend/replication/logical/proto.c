@@ -420,6 +420,10 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 void
 logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata)
 {
+	/* XXX flags and lsn */
+	pq_getmsgint(in, 1);
+	pq_getmsgint64(in);
+
 	seqdata->transactional = pq_getmsgint(in, 1);
 	seqdata->created = pq_getmsgint(in, 1);
 	seqdata->last_value = pq_getmsgint64(in);

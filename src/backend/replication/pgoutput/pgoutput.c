@@ -177,7 +177,7 @@ parse_output_parameters(List *options, PGOutputData *data)
 	data->binary = false;
 	data->streaming = false;
 	data->messages = false;
-	data->sequences = false;
+	data->sequences = true;
 
 	foreach(lc, options)
 	{

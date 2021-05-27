@@ -51,8 +51,8 @@ static void pgoutput_message(LogicalDecodingContext *ctx,
 							 Size sz, const char *message);
 static void pgoutput_sequence(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-							  bool transactional, bool created,
-							  int64 last_value, int64 log_cnt, int64 is_called);
+							  Relation rel, bool transactional, bool created,
+							  int64 last_value, int64 log_cnt, bool is_called);
 static bool pgoutput_origin_filter(LogicalDecodingContext *ctx,
 								   RepOriginId origin_id);
 static void pgoutput_stream_start(struct LogicalDecodingContext *ctx,
@@ -773,8 +773,8 @@ pgoutput_message(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 static void
 pgoutput_sequence(LogicalDecodingContext *ctx,
 				  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-				  bool transactional, bool created,
-				  int64 last_value, int64 log_cnt, int64 is_called)
+				  Relation rel, bool transactional, bool created,
+				  int64 last_value, int64 log_cnt, bool is_called)
 {
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
 	TransactionId xid = InvalidTransactionId;
@@ -784,13 +784,14 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 
 	OutputPluginPrepareWrite(ctx, true);
 	logicalrep_write_sequence(ctx->out,
-							 xid,
-							 sequence_lsn,
-							 transactional,
-							 created,
-							 last_value,
-							 log_cnt,
-							 is_called);
+							  rel,
+							  xid,
+							  sequence_lsn,
+							  transactional,
+							  created,
+							  last_value,
+							  log_cnt,
+							  is_called);
 	OutputPluginWrite(ctx, true);
 }
 

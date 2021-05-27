@@ -438,9 +438,10 @@ typedef void (*ReorderBufferMessageCB) (ReorderBuffer *rb,
 typedef void (*ReorderBufferSequenceCB) (ReorderBuffer *rb,
 										 ReorderBufferTXN *txn,
 										 XLogRecPtr sequence_lsn,
+										 Relation rel,
 										 bool transactional, bool created,
 										 int64 last_value, int64 log_cnt,
-										 int64 is_called);
+										 bool is_called);
 
 /* begin prepare callback signature */
 typedef void (*ReorderBufferBeginPrepareCB) (ReorderBuffer *rb,

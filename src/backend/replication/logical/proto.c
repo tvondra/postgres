@@ -393,11 +393,12 @@ logicalrep_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
  * Write SEQUENCE to stream
  */
 void
-logicalrep_write_sequence(StringInfo out, TransactionId xid,
+logicalrep_write_sequence(StringInfo out, Relation rel, TransactionId xid,
 						  XLogRecPtr lsn, bool transactional, bool created,
-						  int64 last_value, int64 log_cnt, int64 is_called)
+						  int64 last_value, int64 log_cnt, bool is_called)
 {
 	uint8		flags = 0;
+	char	   *relname;
 
 	pq_sendbyte(out, LOGICAL_REP_MSG_SEQUENCE);
 
@@ -407,11 +408,16 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 
 	pq_sendint8(out, flags);
 	pq_sendint64(out, lsn);
+
+	logicalrep_write_namespace(out, RelationGetNamespace(rel));
+	relname = RelationGetRelationName(rel);
+	pq_sendstring(out, relname);
+
 	pq_sendint8(out, transactional);
 	pq_sendint8(out, created);
 	pq_sendint64(out, last_value);
 	pq_sendint64(out, log_cnt);
-	pq_sendint64(out, is_called);
+	pq_sendint8(out, is_called);
 }
 
 /*
@@ -420,15 +426,19 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 void
 logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata)
 {
-	/* XXX flags and lsn */
+	/* XXX skipping flags and lsn */
 	pq_getmsgint(in, 1);
 	pq_getmsgint64(in);
+
+	/* Read relation name from stream */
+	seqdata->nspname = pstrdup(logicalrep_read_namespace(in));
+	seqdata->seqname = pstrdup(pq_getmsgstring(in));
 
 	seqdata->transactional = pq_getmsgint(in, 1);
 	seqdata->created = pq_getmsgint(in, 1);
 	seqdata->last_value = pq_getmsgint64(in);
 	seqdata->log_cnt = pq_getmsgint64(in);
-	seqdata->is_called = pq_getmsgint64(in);
+	seqdata->is_called = pq_getmsgint(in, 1);
 }
 
 /*

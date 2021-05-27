@@ -1009,7 +1009,8 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			Relation	relation;
 			HeapTuple	tuple;
 			bool		isnull;
-			int64		last_value, log_cnt, is_called;
+			int64		last_value, log_cnt;
+			bool		is_called;
 			Oid			reloid;
 
 			/*
@@ -1041,10 +1042,10 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
 			is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
 
-			RelationClose(relation);
-
-			rb->sequence(rb, txn, lsn, transactional, created,
+			rb->sequence(rb, txn, lsn, relation, transactional, created,
 						 last_value, log_cnt, is_called);
+
+			RelationClose(relation);
 
 			AbortCurrentTransaction();
 			TeardownHistoricSnapshot(false);
@@ -2185,7 +2186,8 @@ ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
 {
 	HeapTuple	tuple;
 	bool		isnull;
-	int64		last_value, log_cnt, is_called;
+	int64		last_value, log_cnt;
+	bool		is_called;
 
 	/* FIXME support streaming */
 	Assert(!streaming);
@@ -2202,7 +2204,7 @@ ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
 	is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
 
-	rb->sequence(rb, txn, change->lsn, true,	/* gotta be transactional */
+	rb->sequence(rb, txn, change->lsn, relation, true,	/* gotta be transactional */
 				 change->data.sequence.created,
 				 last_value, log_cnt, is_called);
 }

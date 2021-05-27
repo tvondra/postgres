@@ -74,8 +74,9 @@ static void message_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 							   XLogRecPtr message_lsn, bool transactional,
 							   const char *prefix, Size message_size, const char *message);
 static void sequence_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
-							   XLogRecPtr sequence_lsn, bool transactional, bool created,
-							   int64 last_value, int64 log_cnt, int64 is_called);
+							   XLogRecPtr sequence_lsn, Relation rel,
+							   bool transactional, bool created,
+							   int64 last_value, int64 log_cnt, bool is_called);
 
 /* streaming callbacks */
 static void stream_start_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
@@ -1185,8 +1186,9 @@ message_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 
 static void
 sequence_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
-				    XLogRecPtr sequence_lsn, bool transactional, bool created,
-				    int64 last_value, int64 log_cnt, int64 is_called)
+				    XLogRecPtr sequence_lsn, Relation rel,
+				    bool transactional, bool created,
+				    int64 last_value, int64 log_cnt, bool is_called)
 {
 	LogicalDecodingContext *ctx = cache->private_data;
 	LogicalErrorCallbackState state;
@@ -1212,8 +1214,8 @@ sequence_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	ctx->write_location = sequence_lsn;
 
 	/* do the actual work: call callback */
-	ctx->callbacks.sequence_cb(ctx, txn, sequence_lsn, transactional, created,
-							   last_value, log_cnt, is_called);
+	ctx->callbacks.sequence_cb(ctx, txn, sequence_lsn, rel, transactional,
+							   created, last_value, log_cnt, is_called);
 
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;

@@ -70,6 +70,7 @@
 #include "catalog/pg_tablespace.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/execPartition.h"
@@ -819,18 +820,28 @@ apply_handle_origin(StringInfo s)
 static void
 apply_handle_sequence(StringInfo s)
 {
-	LogicalRepSequence seq;
+	LogicalRepSequence	seq;
+	Oid					relid;
 
 	// FIXME
 	// if (handle_streamed_transaction(LOGICAL_REP_MSG_SEQUENCE, s))
 	//	return;
+	ensure_transaction();
 
 	logicalrep_read_sequence(s, &seq);
 
-	elog(WARNING, "applying sequence transactional %d created %d last_value %ld log_cnt %ld is_called %ld",
+	relid = RangeVarGetRelid(makeRangeVar(seq.nspname,
+										  seq.seqname, -1),
+							 RowExclusiveLock, false);
+
+	elog(WARNING, "applying sequence transactional %d created %d last_value %ld log_cnt %ld is_called %d",
 		 seq.transactional, seq.created, seq.last_value, seq.log_cnt, seq.is_called);
 
-	/* FIXME apply the sequence change */
+	/* apply the sequence change */
+	ResetSequence2(relid, seq.last_value, seq.log_cnt, seq.is_called);
+
+	/* Commit the per-stream transaction */
+	CommitTransactionCommand();
 }
 
 /*

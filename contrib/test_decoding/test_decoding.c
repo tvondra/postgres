@@ -79,8 +79,8 @@ static void pg_decode_message(LogicalDecodingContext *ctx,
 							  Size sz, const char *message);
 static void pg_decode_sequence(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-							  bool transactional, bool created,
-							  int64 last_value, int64 log_cnt, int64 is_called);
+							  Relation rel, bool transactional, bool created,
+							  int64 last_value, int64 log_cnt, bool is_called);
 static bool pg_decode_filter_prepare(LogicalDecodingContext *ctx,
 									 TransactionId xid,
 									 const char *gid);
@@ -763,17 +763,21 @@ pg_decode_message(LogicalDecodingContext *ctx,
 }
 
 static void
-pg_decode_sequence(LogicalDecodingContext *ctx,
-				   ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-				   bool transactional, bool created, int64 last_value,
-				   int64 log_cnt, int64 is_called)
+pg_decode_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
+				   XLogRecPtr sequence_lsn, Relation rel,
+				   bool transactional, bool created,
+				   int64 last_value, int64 log_cnt, bool is_called)
 {
+	TestDecodingData *data = ctx->output_plugin_private;
+	char	   *nspname = get_namespace_name(RelationGetNamespace(rel));
+
 	/* return if requested to skip_sequences */
 	if (data->skip_sequence)
 		return;
 
 	OutputPluginPrepareWrite(ctx, true);
-	appendStringInfo(ctx->out, "sequence: transactional: %d created: %d last_value: %zu, log_cnt: %zu is_called: %zu",
+	appendStringInfo(ctx->out, "sequence: %s.%s transactional: %d created: %d last_value: %zu, log_cnt: %zu is_called: %d",
+					 nspname, RelationGetRelationName(rel),
 					 transactional, created, last_value, log_cnt, is_called);
 	OutputPluginWrite(ctx, true);
 }

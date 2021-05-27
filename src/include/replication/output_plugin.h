@@ -92,13 +92,14 @@ typedef void (*LogicalDecodeMessageCB) (struct LogicalDecodingContext *ctx,
  * Called for the generic logical decoding sequences.
  */
 typedef void (*LogicalDecodeSequenceCB) (struct LogicalDecodingContext *ctx,
-										ReorderBufferTXN *txn,
-										XLogRecPtr sequence_lsn,
-										bool transactional,
-										bool created,
-										int64 last_value,
-										int64 log_cnt,
-										int64 is_called);
+										 ReorderBufferTXN *txn,
+										 XLogRecPtr sequence_lsn,
+										 Relation rel,
+										 bool transactional,
+										 bool created,
+										 int64 last_value,
+										 int64 log_cnt,
+										 bool is_called);
 
 /*
  * Filter changes by origin.

@@ -114,6 +114,7 @@ typedef struct LogicalRepSequence
 	Oid			remoteid;		/* unique id of the remote sequence */
 	char	   *nspname;		/* schema name of remote sequence */
 	char	   *seqname;		/* name of the remote sequence */
+	bool		transactional;
 	bool		created;
 	int64		last_value;
 	int64		log_cnt;
@@ -168,7 +169,8 @@ extern List *logicalrep_read_truncate(StringInfo in,
 extern void logicalrep_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 									 bool transactional, const char *prefix, Size sz, const char *message);
 extern void logicalrep_write_sequence(StringInfo out, TransactionId xid,
-									  XLogRecPtr lsn, bool created,
+									  XLogRecPtr lsn,
+									  bool transactional, bool created,
 									  int64 last_value, int64 log_cnt,
 									  int64 is_called);
 extern void logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata);

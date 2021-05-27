@@ -1348,6 +1348,20 @@ DecodeSeqTuple(char *data, Size len, ReorderBufferTupleBuf *tuple)
 
 /*
  * Handle sequence decode
+ *
+ * Decoding sequences is a bit tricky, because while most sequence actions
+ * are non-transactional (not subject to rollback), some need to be handled
+ * as transactional.
+ *
+ * By default, a sequence increment is non-transactional - we must not queue
+ * it in a transaction as other changes, because the transaction might get
+ * rolled back and we'd discard the increment. The downstream would not be
+ * notified about the increment, which is wrong.
+ *
+ * On the other hand, the sequence may be created in a transaction. In this
+ * case we *should* queue the change as other changes in the transaction,
+ * because we don't want to send the increments for unknown sequence to the
+ * plugin - it might get confused about which sequence it's related to etc. 
  */
 static void
 DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -1391,6 +1405,9 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	datalen = XLogRecGetDataLen(r);
 	tuplelen = datalen - SizeOfHeapHeader - sizeof(xl_seq_rec);
 
+	/* extract the WAL record, with "created" flag */
+	xlrec = (xl_seq_rec *) XLogRecGetData(r);
+
 	/* XXX how could we have sequence change without data? */
 	if(!datalen || !tupledata)
 		return;
@@ -1398,12 +1415,19 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	tuplebuf = ReorderBufferGetTupleBuf(ctx->reorder, tuplelen);
 	DecodeSeqTuple(tupledata, datalen, tuplebuf);
 
-	xlrec = (xl_seq_rec *) XLogRecGetData(r);
-
+	/*
+	 * Should we handle the sequence increment as transactional or not?
+	 *
+	 * If the sequence was created in a still-running transaction, treat
+	 * it as transactional and queue the increments. Otherwise it needs
+	 * to be treated as non-transactional, in which case we send it to
+	 * the plugin right away.
+	 */
 	transactional = ReorderBufferSequenceIsTransactional(ctx->reorder,
 														 target_node,
 														 xlrec->created);
 
+	/* Skip the change if already processed (per the snapshot). */
 	if (transactional &&
 		!SnapBuildProcessChange(builder, xid, buf->origptr))
 		return;
@@ -1412,8 +1436,9 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			  SnapBuildXactNeedsSkip(builder, buf->origptr)))
 		return;
 
+	/* Queue the increment (or send immediately if not transactional). */
 	snapshot = SnapBuildGetOrBuildSnapshot(builder, xid);
 	ReorderBufferQueueSequence(ctx->reorder, xid, snapshot, buf->endptr,
-							   origin_id, target_node, xlrec->created,
-							   tuplebuf);
+							   origin_id, target_node, transactional,
+							   xlrec->created, tuplebuf);
 }

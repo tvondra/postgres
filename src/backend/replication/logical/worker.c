@@ -827,6 +827,9 @@ apply_handle_sequence(StringInfo s)
 
 	logicalrep_read_sequence(s, &seq);
 
+	elog(WARNING, "applying sequence transactional %d created %d last_value %ld log_cnt %ld is_called %ld",
+		 seq.transactional, seq.created, seq.last_value, seq.log_cnt, seq.is_called);
+
 	/* FIXME apply the sequence change */
 }
 

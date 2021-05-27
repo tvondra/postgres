@@ -163,8 +163,8 @@ typedef struct ReorderBufferChange
 		struct
 		{
 			RelFileNode relnode;
-			ReorderBufferTupleBuf *tuple;
 			bool		created;
+			ReorderBufferTupleBuf *tuple;
 		}			sequence;
 	}			data;
 
@@ -438,7 +438,7 @@ typedef void (*ReorderBufferMessageCB) (ReorderBuffer *rb,
 typedef void (*ReorderBufferSequenceCB) (ReorderBuffer *rb,
 										 ReorderBufferTXN *txn,
 										 XLogRecPtr sequence_lsn,
-										 bool created,
+										 bool transactional, bool created,
 										 int64 last_value, int64 log_cnt,
 										 int64 is_called);
 
@@ -652,7 +652,7 @@ void		ReorderBufferQueueMessage(ReorderBuffer *, TransactionId, Snapshot snapsho
 									  Size message_size, const char *message);
 void		ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 									   Snapshot snapshot, XLogRecPtr lsn, RepOriginId origin_id,
-									   RelFileNode rnode, bool created,
+									   RelFileNode rnode, bool transactional, bool created,
 									   ReorderBufferTupleBuf *tuplebuf);
 void		ReorderBufferCommit(ReorderBuffer *, TransactionId,
 								XLogRecPtr commit_lsn, XLogRecPtr end_lsn,

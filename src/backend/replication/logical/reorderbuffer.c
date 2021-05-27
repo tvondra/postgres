@@ -116,6 +116,7 @@ typedef struct ReorderBufferTXNByIdEnt
 	ReorderBufferTXN *txn;
 } ReorderBufferTXNByIdEnt;
 
+/* entry for hash table we use to track sequences created in running xacts */
 typedef struct ReorderBufferSequenceEnt
 {
 	RelFileNode		rnode;
@@ -343,6 +344,7 @@ ReorderBufferAllocate(void)
 	buffer->by_txn = hash_create("ReorderBufferByXid", 1000, &hash_ctl,
 								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
+	/* hash table of sequences, mapping relfilenode to XID of transaction */
 	hash_ctl.keysize = sizeof(RelFileNode);
 	hash_ctl.entrysize = sizeof(ReorderBufferSequenceEnt);
 	hash_ctl.hcxt = buffer->context;
@@ -892,6 +894,9 @@ ReorderBufferSequenceIsTransactional(ReorderBuffer *rb,
 
 
 /*
+ * A transactional sequence increment is queued to be processed upon commit
+ * and a non-transactional increment gets processed immediately.
+ *
  * A sequence update may be both transactional and non-transactional. When
  * created in a running transaction, treat it as transactional and queue
  * the change in it. Otherwise treat it as non-transactional, so that we
@@ -900,40 +905,58 @@ ReorderBufferSequenceIsTransactional(ReorderBuffer *rb,
 void
 ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 						   Snapshot snapshot, XLogRecPtr lsn, RepOriginId origin_id,
-						   RelFileNode rnode, bool created,
+						   RelFileNode rnode, bool transactional, bool created,
 						   ReorderBufferTupleBuf *tuplebuf)
 {
-	/* lookup sequence by relfilenode */
-	ReorderBufferSequenceEnt   *ent;
-	bool						found;
-
-	/* search the lookup table (we ignore the return value, found is enough) */
-	ent = hash_search(rb->sequences,
-					  (void *) &rnode,
-					  created ? HASH_ENTER : HASH_FIND,
-					  &found);
-
-	Assert(!(created && found));
-
 	/*
-	 * if we're creating the sequence, remember the XID of the transaction
-	 * that created id
+	 * Change needs to be handled as transactional, because the sequence was
+	 * created in a transaction that is still running. In that case all the
+	 * changes need to be queued in that transaction, we must not send them
+	 * to the downstream until the transaction commits.
+	 *
+	 * There's a bit of a trouble with subtransactions - we can't queue it
+	 * into the subxact, because it might be rolled back and we'd lose the
+	 * increment. We need to queue it into the same (sub)xact that created
+	 * the sequence, which is why we track the XID in the hash table.
 	 */
-	if (created)
-		ent->xid = xid;
-
-	/*
-	 * FIXME What if we're adding it into a subtransaction which will be rolled
-	 * back? maybe we should always add it to the top-level one, or the one where
-	 * the sequence was created?
-	 */
-	if (created | found)
+	if (transactional)
 	{
 		MemoryContext oldcontext;
 		ReorderBufferChange *change;
 
+		/* lookup sequence by relfilenode */
+		ReorderBufferSequenceEnt   *ent;
+		bool						found;
+
+		/* transactional changes require a transaction */
 		Assert(xid != InvalidTransactionId);
 
+		/* search the lookup table (we ignore the return value, found is enough) */
+		ent = hash_search(rb->sequences,
+						  (void *) &rnode,
+						  created ? HASH_ENTER : HASH_FIND,
+						  &found);
+
+		/*
+		 * If this is the "create" increment, we must not have found any
+		 * pre-existing entry in the hash table (i.e. there must not be
+		 * any conflicting sequence).
+		 */
+		Assert(!(created && found));
+
+		/* But we must have either created or found an existing entry. */
+		Assert(created || found);
+
+		/*
+		 * When creating the sequence, remember the XID of the transaction
+		 * that created id.
+		 */
+		if (created)
+			ent->xid = xid;
+
+		/* XXX Maybe check that we're still in the same top-level xact? */
+
+		/* OK, allocate and queue the change */
 		oldcontext = MemoryContextSwitchTo(rb->context);
 
 		change = ReorderBufferGetChange(rb);
@@ -953,10 +976,27 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 	}
 	else
 	{
-		/* not created in a running transaction, so just send it to the
-		 * output plugin as non-transactional */
+		/*
+		 * This increment is for a sequence that was not created in any
+		 * running transaction, so we treat it as non-transactional and
+		 * just send it to the output plugin directly.
+		 */
 		ReorderBufferTXN *txn = NULL;
 		volatile Snapshot snapshot_now = snapshot;
+
+#ifdef USE_ASSERT_CHECKING
+		/* All "creates" have to be handled as transactional. */
+		Assert(!created);
+
+		/* Make sure the sequence is not in the hash table. */
+		{
+			bool	found;
+			hash_search(rb->sequences,
+					    (void *) &rnode,
+						HASH_FIND, &found);
+			Assert(!found);
+		}
+#endif
 
 		if (xid != InvalidTransactionId)
 			txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
@@ -980,13 +1020,20 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			relation = RelationIdGetRelation(reloid);
 			tuple = &tuplebuf->tuple;
 
+			/*
+			 * Extract the internal sequence values, describing the state.
+			 *
+			 * XXX Seems a bit strange to access it directly. Maybe there's
+			 * a better / more correct way?
+			 */
 			last_value = heap_getattr(tuple, 1, RelationGetDescr(relation), &isnull);
 			log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
 			is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
 
 			RelationClose(relation);
 
-			rb->sequence(rb, txn, lsn, false, last_value, log_cnt, is_called);
+			rb->sequence(rb, txn, lsn, transactional, created,
+						 last_value, log_cnt, is_called);
 
 			TeardownHistoricSnapshot(false);
 		}
@@ -2091,6 +2138,38 @@ ReorderBufferApplyMessage(ReorderBuffer *rb, ReorderBufferTXN *txn,
 }
 
 /*
+ * Helper function for ReorderBufferProcessTXN for applying sequences.
+ */
+static inline void
+ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
+						   Relation relation, ReorderBufferChange *change,
+						   bool streaming)
+{
+	HeapTuple	tuple;
+	bool		isnull;
+	int64		last_value, log_cnt, is_called;
+
+	/* FIXME support streaming */
+	Assert(!streaming);
+
+	tuple = &change->data.sequence.tuple->tuple;
+
+	/*
+	 * Extract the internal sequence values, describing the state.
+	 *
+	 * XXX Seems a bit strange to access it directly. Maybe there's
+	 * a better / more correct way?
+	 */
+	last_value = heap_getattr(tuple, 1, RelationGetDescr(relation), &isnull);
+	log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
+	is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
+
+	rb->sequence(rb, txn, change->lsn, true,	/* gotta be transactional */
+				 change->data.sequence.created,
+				 last_value, log_cnt, is_called);
+}
+
+/*
  * Function to store the command id and snapshot at the end of the current
  * stream so that we can reuse the same while sending the next stream.
  */
@@ -2506,6 +2585,7 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
 					elog(ERROR, "tuplecid value in changequeue");
 					break;
+
 				case REORDER_BUFFER_CHANGE_SEQUENCE:
 					Assert(snapshot_now);
 
@@ -2526,7 +2606,9 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 										 MAIN_FORKNUM));
 
 					if (RelationIsLogicallyLogged(relation))
-						rb->apply_change(rb, txn, relation, change);
+						ReorderBufferApplySequence(rb, txn, relation, change, streaming);
+
+					RelationClose(relation);
 					break;
 			}
 		}
@@ -3770,7 +3852,6 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_UPDATE:
 		case REORDER_BUFFER_CHANGE_DELETE:
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_INSERT:
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			{
 				char	   *data;
 				ReorderBufferTupleBuf *oldtup,
@@ -3922,6 +4003,39 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				memcpy(data, change->data.truncate.relids, size);
 				data += size;
+
+				break;
+			}
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
+			{
+				char	   *data;
+				ReorderBufferTupleBuf *tup;
+				Size		len = 0;
+
+				tup = change->data.sequence.tuple;
+
+				if (tup)
+				{
+					sz += sizeof(HeapTupleData);
+					len = tup->tuple.t_len;
+					sz += len;
+				}
+
+				/* make sure we have enough space */
+				ReorderBufferSerializeReserve(rb, sz);
+
+				data = ((char *) rb->outbuf) + sizeof(ReorderBufferDiskChange);
+				/* might have been reallocated above */
+				ondisk = (ReorderBufferDiskChange *) rb->outbuf;
+
+				if (len)
+				{
+					memcpy(data, &tup->tuple, sizeof(HeapTupleData));
+					data += sizeof(HeapTupleData);
+
+					memcpy(data, tup->tuple.t_data, len);
+					data += len;
+				}
 
 				break;
 			}
@@ -4155,22 +4269,6 @@ ReorderBufferChangeSize(ReorderBufferChange *change)
 
 				break;
 			}
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			{
-				ReorderBufferTupleBuf *tup;
-				Size		len = 0;
-
-				tup = change->data.sequence.tuple;
-
-				if (tup)
-				{
-					sz += sizeof(HeapTupleData);
-					len = tup->tuple.t_len;
-					sz += len;
-				}
-
-				break;
-			}
 		case REORDER_BUFFER_CHANGE_MESSAGE:
 			{
 				Size		prefix_size = strlen(change->data.msg.prefix) + 1;
@@ -4201,6 +4299,22 @@ ReorderBufferChangeSize(ReorderBufferChange *change)
 		case REORDER_BUFFER_CHANGE_TRUNCATE:
 			{
 				sz += sizeof(Oid) * change->data.truncate.nrelids;
+
+				break;
+			}
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
+			{
+				ReorderBufferTupleBuf *tup;
+				Size		len = 0;
+
+				tup = change->data.sequence.tuple;
+
+				if (tup)
+				{
+					sz += sizeof(HeapTupleData);
+					len = tup->tuple.t_len;
+					sz += len;
+				}
 
 				break;
 			}
@@ -4502,17 +4616,11 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				break;
 			}
-		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
-		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
-		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
-			break;
+
 		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			if (change->data.sequence.tuple)
 			{
-				uint32		tuplelen;
-
-				memcpy(&tuplelen, data + offsetof(HeapTupleData, t_len),
-					   sizeof(uint32));
+				uint32		tuplelen = ((HeapTuple) data)->t_len;
 
 				change->data.sequence.tuple =
 					ReorderBufferGetTupleBuf(rb, tuplelen - SizeofHeapTupleHeader);
@@ -4530,6 +4638,11 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				memcpy(change->data.sequence.tuple->tuple.t_data, data, tuplelen);
 				data += tuplelen;
 			}
+			break;
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
+		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
+		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
 			break;
 	}
 

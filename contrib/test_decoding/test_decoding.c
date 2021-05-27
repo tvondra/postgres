@@ -79,8 +79,8 @@ static void pg_decode_message(LogicalDecodingContext *ctx,
 							  Size sz, const char *message);
 static void pg_decode_sequence(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-							  bool created, int64 last_value, int64 log_cnt,
-							  int64 is_called);
+							  bool transactional, bool created,
+							  int64 last_value, int64 log_cnt, int64 is_called);
 static bool pg_decode_filter_prepare(LogicalDecodingContext *ctx,
 									 TransactionId xid,
 									 const char *gid);
@@ -621,10 +621,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	data = ctx->output_plugin_private;
 	txndata = txn->output_plugin_private;
 
-	/* return if incoming relation is a sequence and skip_sequence is true */
-	if (change->action == REORDER_BUFFER_CHANGE_SEQUENCE && data->skip_sequence)
-		return;
-
 	/* output BEGIN if we haven't yet */
 	if (data->skip_empty_xacts && !txndata->xact_wrote_changes)
 	{
@@ -688,16 +684,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				tuple_to_stringinfo(ctx->out, tupdesc,
 									&change->data.tp.oldtuple->tuple,
 									true);
-			break;
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			appendStringInfoString(ctx->out, " SEQUENCE:");
-
-			if (change->data.sequence.tuple == NULL)
-				appendStringInfoString(ctx->out, " (no-tuple-data)");
-			else
-				tuple_to_stringinfo(ctx->out, tupdesc,
-									&change->data.sequence.tuple->tuple,
-									false);
 			break;
 		default:
 			Assert(false);
@@ -779,12 +765,16 @@ pg_decode_message(LogicalDecodingContext *ctx,
 static void
 pg_decode_sequence(LogicalDecodingContext *ctx,
 				   ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-				   bool created, int64 last_value, int64 log_cnt,
-				   int64 is_called)
+				   bool transactional, bool created, int64 last_value,
+				   int64 log_cnt, int64 is_called)
 {
+	/* return if requested to skip_sequences */
+	if (data->skip_sequence)
+		return;
+
 	OutputPluginPrepareWrite(ctx, true);
-	appendStringInfo(ctx->out, "sequence: created: %d last_value: %zu, log_cnt: %zu is_called: %zu",
-					 created, last_value, log_cnt, is_called);
+	appendStringInfo(ctx->out, "sequence: transactional: %d created: %d last_value: %zu, log_cnt: %zu is_called: %zu",
+					 transactional, created, last_value, log_cnt, is_called);
 	OutputPluginWrite(ctx, true);
 }
 

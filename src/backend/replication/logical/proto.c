@@ -394,7 +394,7 @@ logicalrep_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
  */
 void
 logicalrep_write_sequence(StringInfo out, TransactionId xid,
-						  XLogRecPtr lsn, bool created,
+						  XLogRecPtr lsn, bool transactional, bool created,
 						  int64 last_value, int64 log_cnt, int64 is_called)
 {
 	uint8		flags = 0;
@@ -407,6 +407,7 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 
 	pq_sendint8(out, flags);
 	pq_sendint64(out, lsn);
+	pq_sendint8(out, transactional);
 	pq_sendint8(out, created);
 	pq_sendint64(out, last_value);
 	pq_sendint64(out, log_cnt);
@@ -419,6 +420,7 @@ logicalrep_write_sequence(StringInfo out, TransactionId xid,
 void
 logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata)
 {
+	seqdata->transactional = pq_getmsgint(in, 1);
 	seqdata->created = pq_getmsgint(in, 1);
 	seqdata->last_value = pq_getmsgint64(in);
 	seqdata->log_cnt = pq_getmsgint64(in);

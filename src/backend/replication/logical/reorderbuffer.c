@@ -1722,6 +1722,31 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 				&found);
 	Assert(found);
 
+	/*
+	 * Remove sequences created in this transaction (if any).
+	 *
+	 * There's no way to search by XID, so we simply do a seqscan of all
+	 * the entries in the hash table. Hopefully there are only a couple
+	 * entries in most cases - people generally don't create many new
+	 * sequences over and over.
+	 */
+	{
+		HASH_SEQ_STATUS scan_status;
+		ReorderBufferSequenceEnt *ent;
+
+		hash_seq_init(&scan_status, rb->sequences);
+		while ((ent = (ReorderBufferSequenceEnt *) hash_seq_search(&scan_status)) != NULL)
+		{
+			/* skip sequences not from this transaction */
+			if (ent->xid != txn->xid)
+				continue;
+
+			(void) hash_search(rb->sequences,
+						   (void *) &(ent->rnode),
+						   HASH_REMOVE, NULL);
+		}
+	}
+
 	/* remove entries spilled to disk */
 	if (rbtxn_is_serialized(txn))
 		ReorderBufferRestoreCleanup(rb, txn);

@@ -778,8 +778,24 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 {
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
 	TransactionId xid = InvalidTransactionId;
+	RelationSyncEntry *relentry;
 
 	if (!data->sequences)
+		return;
+
+	if (!is_publishable_relation(rel))
+		return;
+
+	/* XXX handle (in_streaming) here */
+
+	relentry = get_rel_sync_entry(data, RelationGetRelid(rel));
+
+	/*
+	 * XXX Maybe check some new publication action in the relentry, just like
+	 * pgoutput_change does? For now it's tied to INSERT action.
+	 */
+
+	if (!relentry->pubactions.pubinsert)
 		return;
 
 	OutputPluginPrepareWrite(ctx, true);
@@ -1079,6 +1095,7 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 		List	   *pubids = GetRelationPublications(relid);
 		ListCell   *lc;
 		Oid			publish_as_relid = relid;
+		bool		is_sequence = (get_rel_relkind(relid) == RELKIND_SEQUENCE);
 
 		/* Reload publications if needed before use. */
 		if (!publications_valid)
@@ -1102,11 +1119,25 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 			Publication *pub = lfirst(lc);
 			bool		publish = false;
 
-			if (pub->alltables)
+			/* FIXME handle sequence / allsequences here */
+			
+
+			if (pub->alltables && (!is_sequence))
 			{
 				publish = true;
 				if (pub->pubviaroot && am_partition)
 					publish_as_relid = llast_oid(get_partition_ancestors(relid));
+			}
+			else if (pub->allsequences && is_sequence)
+			{
+				publish = true;
+			}
+
+			/* if a sequence, just cross-check the list of publications */
+			if (!publish && is_sequence)
+			{
+				if (list_member_oid(pubids, pub->oid))
+					publish = true;
 			}
 
 			if (!publish)

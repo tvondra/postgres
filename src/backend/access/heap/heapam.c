@@ -9095,6 +9095,10 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
 
+		/* XLH_INSERT_ALL_FROZEN_SET implies that all tuples are visible */
+		if (xlrec->flags & XLH_INSERT_ALL_FROZEN_SET)
+			PageSetAllVisible(page);
+
 		MarkBufferDirty(buffer);
 	}
 	if (BufferIsValid(buffer))

@@ -353,6 +353,12 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
  *
  * If the synchronization position is reached (SYNCDONE), then the table can
  * be marked as READY and is no longer tracked.
+ *
+ * XXX This needs to handle sequences too - after AlterSubscription_refresh
+ * starts caring about sequences, GetSubscriptionNotReadyRelations won't
+ * return just tables, and we'll have to sync them here. Not sure it's worth
+ * creating a new "sync" worker per sequence, maybe we should just sync them
+ * in the current process (it's pretty light-weight).
  */
 static void
 process_syncing_tables_for_apply(XLogRecPtr current_lsn)

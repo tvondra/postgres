@@ -983,6 +983,7 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 		 */
 		ReorderBufferTXN *txn = NULL;
 		volatile Snapshot snapshot_now = snapshot;
+		bool	using_subtxn;
 
 #ifdef USE_ASSERT_CHECKING
 		/* All "creates" have to be handled as transactional. */
@@ -1004,6 +1005,18 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 		/* setup snapshot to allow catalog access */
 		SetupHistoricSnapshot(snapshot_now, NULL);
 
+		/*
+		 * Decoding needs access to syscaches et al., which in turn use
+		 * heavyweight locks and such. Thus we need to have enough state around to
+		 * keep track of those.  The easiest way is to simply use a transaction
+		 * internally.  That also allows us to easily enforce that nothing writes
+		 * to the database by checking for xid assignments.
+		 *
+		 * When we're called via the SQL SRF there's already a transaction
+		 * started, so start an explicit subtransaction there.
+		 */
+		using_subtxn = IsTransactionOrTransactionBlock();
+
 		PG_TRY();
 		{
 			Relation	relation;
@@ -1013,14 +1026,10 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			bool		is_called;
 			Oid			reloid;
 
-			/*
-			 * Running directly from decoding, should be outside any transaction
-			 * or transaction block, so just start one. Without this we'd be
-			 * unable to do RelidByRelfilenode etc.
-			 */
-			Assert(!IsTransactionOrTransactionBlock());
-
-			StartTransactionCommand();
+			if (using_subtxn)
+				BeginInternalSubTransaction("sequence");
+			else
+				StartTransactionCommand();
 
 			reloid = RelidByRelfilenode(rnode.spcNode, rnode.relNode);
 
@@ -1047,13 +1056,22 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 
 			RelationClose(relation);
 
-			AbortCurrentTransaction();
 			TeardownHistoricSnapshot(false);
+
+			AbortCurrentTransaction();
+
+			if (using_subtxn)
+				RollbackAndReleaseCurrentSubTransaction();
 		}
 		PG_CATCH();
 		{
-			AbortCurrentTransaction();
 			TeardownHistoricSnapshot(true);
+
+			AbortCurrentTransaction();
+
+			if (using_subtxn)
+				RollbackAndReleaseCurrentSubTransaction();
+
 			PG_RE_THROW();
 		}
 		PG_END_TRY();

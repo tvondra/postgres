@@ -58,6 +58,9 @@ CATALOG(pg_publication,6104,PublicationRelationId)
 	/* true if truncates are published */
 	bool		pubtruncate;
 
+	/* true if sequences are published */
+	bool		pubsequence;
+
 	/* true if partition changes are published using root schema */
 	bool		pubviaroot;
 } FormData_pg_publication;
@@ -80,6 +83,7 @@ typedef struct PublicationActions
 	bool		pubupdate;
 	bool		pubdelete;
 	bool		pubtruncate;
+	bool		pubsequence;
 } PublicationActions;
 
 typedef struct Publication

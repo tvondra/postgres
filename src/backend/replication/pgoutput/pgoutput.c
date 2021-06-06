@@ -791,11 +791,11 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 	relentry = get_rel_sync_entry(data, RelationGetRelid(rel));
 
 	/*
-	 * XXX Maybe check some new publication action in the relentry, just like
-	 * pgoutput_change does? For now it's tied to INSERT action.
+	 * First check the sequence filter.
+	 *
+	 * We handle just REORDER_BUFFER_CHANGE_SEQUENCE here.
 	 */
-
-	if (!relentry->pubactions.pubinsert)
+	if (!relentry->pubactions.pubsequence)
 		return;
 
 	OutputPluginPrepareWrite(ctx, true);
@@ -1084,7 +1084,8 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 		entry->streamed_txns = NIL;
 		entry->replicate_valid = false;
 		entry->pubactions.pubinsert = entry->pubactions.pubupdate =
-			entry->pubactions.pubdelete = entry->pubactions.pubtruncate = false;
+			entry->pubactions.pubdelete = entry->pubactions.pubtruncate =
+			entry->pubactions.pubsequence = false;
 		entry->publish_as_relid = InvalidOid;
 		entry->map = NULL;	/* will be set by maybe_send_schema() if needed */
 	}
@@ -1189,10 +1190,12 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 				entry->pubactions.pubupdate |= pub->pubactions.pubupdate;
 				entry->pubactions.pubdelete |= pub->pubactions.pubdelete;
 				entry->pubactions.pubtruncate |= pub->pubactions.pubtruncate;
+				entry->pubactions.pubsequence |= pub->pubactions.pubsequence;
 			}
 
 			if (entry->pubactions.pubinsert && entry->pubactions.pubupdate &&
-				entry->pubactions.pubdelete && entry->pubactions.pubtruncate)
+				entry->pubactions.pubdelete && entry->pubactions.pubtruncate &&
+				entry->pubactions.pubsequence)
 				break;
 		}
 
@@ -1337,5 +1340,6 @@ rel_sync_cache_publication_cb(Datum arg, int cacheid, uint32 hashvalue)
 		entry->pubactions.pubupdate = false;
 		entry->pubactions.pubdelete = false;
 		entry->pubactions.pubtruncate = false;
+		entry->pubactions.pubsequence = false;
 	}
 }

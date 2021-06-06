@@ -107,6 +107,7 @@ parse_publication_options(List *options,
 			pubactions->pubupdate = false;
 			pubactions->pubdelete = false;
 			pubactions->pubtruncate = false;
+			pubactions->pubsequence = false;
 
 			*publish_given = true;
 			publish = defGetString(defel);
@@ -222,6 +223,8 @@ CreatePublication(CreatePublicationStmt *stmt)
 		BoolGetDatum(pubactions.pubdelete);
 	values[Anum_pg_publication_pubtruncate - 1] =
 		BoolGetDatum(pubactions.pubtruncate);
+	values[Anum_pg_publication_pubsequence - 1] =
+		BoolGetDatum(pubactions.pubsequence);
 	values[Anum_pg_publication_pubviaroot - 1] =
 		BoolGetDatum(publish_via_partition_root);
 

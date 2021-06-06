@@ -520,6 +520,7 @@ GetPublication(Oid pubid)
 	pub->pubactions.pubupdate = pubform->pubupdate;
 	pub->pubactions.pubdelete = pubform->pubdelete;
 	pub->pubactions.pubtruncate = pubform->pubtruncate;
+	pub->pubactions.pubsequence = pubform->pubsequence;
 	pub->pubviaroot = pubform->pubviaroot;
 
 	ReleaseSysCache(tup);

@@ -624,6 +624,6 @@ CheckSubscriptionRelkind(char relkind, const char *nspname,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
-				 errdetail("\"%s.%s\" is not a table or sequence.",
+				 errdetail("\"%s.%s\" is not a table or a sequence.",
 						   nspname, relname)));
 }

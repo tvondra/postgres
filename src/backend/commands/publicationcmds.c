@@ -55,13 +55,11 @@ static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
 								 AlterPublicationStmt *stmt);
 static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
 
-
 static List *OpenSequenceList(List *sequences);
 static void CloseSequenceList(List *rels);
 static void PublicationAddSequences(Oid pubid, List *rels, bool if_not_exists,
 								 AlterPublicationStmt *stmt);
 static void PublicationDropSequences(Oid pubid, List *rels, bool missing_ok);
-
 
 static void
 parse_publication_options(List *options,

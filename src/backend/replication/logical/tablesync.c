@@ -963,19 +963,6 @@ copy_sequence(Relation rel)
 		 last_value, log_cnt, is_called);
 
 	ResetSequence2(RelationGetRelid(rel), last_value, log_cnt, is_called);
-	/* FIXME process the copy output */
-
-	// copybuf = makeStringInfo();
-
-	// pstate = make_parsestate(NULL);
-	// (void) addRangeTableEntryForRelation(pstate, rel, AccessShareLock,
-	//									 NULL, false, false);
-
-	// attnamelist = make_copy_attnamelist(relmapentry);
-	// cstate = BeginCopyFrom(pstate, rel, NULL, NULL, false, copy_read_data, attnamelist, NIL);
-
-	/* Do the copy */
-	// (void) CopyFrom(cstate);
 
 	logicalrep_rel_close(relmapentry, NoLock);
 }
@@ -1215,12 +1202,12 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 						originname)));
 	}
 
-	elog(WARNING, "LogicalRepSyncTableStart %d done", RelationGetRelid(rel));
-
 	if (get_rel_relkind(RelationGetRelid(rel)) == RELKIND_SEQUENCE)
 	{
-		elog(WARNING, "LogicalRepSyncTableStart syncing sequence");
+		/* Now do the initial sequence copy */
+		PushActiveSnapshot(GetTransactionSnapshot());
 		copy_sequence(rel);
+		PopActiveSnapshot();
 	}
 	else
 	{
@@ -1229,8 +1216,6 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 		copy_table(rel);
 		PopActiveSnapshot();
 	}
-
-	elog(WARNING, "LogicalRepSyncTableStart %d done", RelationGetRelid(rel));
 
 	res = walrcv_exec(LogRepWorkerWalRcvConn, "COMMIT", 0, NULL);
 	if (res->status != WALRCV_OK_COMMAND)

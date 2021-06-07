@@ -1120,9 +1120,6 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 			Publication *pub = lfirst(lc);
 			bool		publish = false;
 
-			/* FIXME handle sequence / allsequences here */
-			
-
 			if (pub->alltables && (!is_sequence))
 			{
 				publish = true;

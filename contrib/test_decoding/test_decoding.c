@@ -35,7 +35,7 @@ typedef struct
 	bool		include_timestamp;
 	bool		skip_empty_xacts;
 	bool		only_local;
-	bool		skip_sequence;
+	bool		skip_sequences;
 } TestDecodingData;
 
 /*
@@ -180,7 +180,9 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	data->include_timestamp = false;
 	data->skip_empty_xacts = false;
 	data->only_local = false;
-	data->skip_sequence = true;
+
+	/* skip sequences by default for backwards compatibility */
+	data->skip_sequences = true;
 
 	ctx->output_plugin_private = data;
 
@@ -272,12 +274,12 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
 								strVal(elem->arg), elem->defname)));
 		}
-		else if (strcmp(elem->defname, "skip-sequence") == 0)
+		else if (strcmp(elem->defname, "skip-sequences") == 0)
 		{
 
 			if (elem->arg == NULL)
-				data->only_local = true;
-			else if (!parse_bool(strVal(elem->arg), &data->skip_sequence))
+				continue;	/* true by default */
+			else if (!parse_bool(strVal(elem->arg), &data->skip_sequences))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
@@ -772,7 +774,7 @@ pg_decode_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	char	   *nspname = get_namespace_name(RelationGetNamespace(rel));
 
 	/* return if requested to skip_sequences */
-	if (data->skip_sequence)
+	if (data->skip_sequences)
 		return;
 
 	OutputPluginPrepareWrite(ctx, true);

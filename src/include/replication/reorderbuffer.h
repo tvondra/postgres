@@ -524,6 +524,10 @@ struct ReorderBuffer
 	 */
 	HTAB	   *by_txn;
 
+	/*
+	 * relfilenode => XID lookup table for sequences created in a transaction
+	 * (also includes altered sequences, which assigns new relfilenode)
+	 */
 	HTAB	   *sequences;
 
 	/*

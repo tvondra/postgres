@@ -117,8 +117,8 @@ typedef struct LogicalRepSequence
 	bool		transactional;
 	bool		created;
 	int64		last_value;
-	int64		log_cnt;
-	bool		is_called;
+	int64		log_cnt;		/* XXX probably not needed? */
+	bool		is_called;		/* XXX probably not needed? */
 } LogicalRepSequence;
 
 /* Transaction info */

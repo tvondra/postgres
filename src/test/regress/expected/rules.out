@@ -1453,7 +1453,7 @@ pg_prepared_xacts| SELECT p.transaction,
      LEFT JOIN pg_database d ON ((p.dbid = d.oid)));
 pg_publication_sequences| SELECT p.pubname,
     n.nspname AS schemaname,
-    c.relname AS tablename
+    c.relname AS sequencename
    FROM pg_publication p,
     LATERAL pg_get_publication_sequences((p.pubname)::text) gpt(relid),
     (pg_class c

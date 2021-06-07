@@ -376,7 +376,7 @@ CREATE VIEW pg_publication_sequences AS
     SELECT
         P.pubname AS pubname,
         N.nspname AS schemaname,
-        C.relname AS tablename
+        C.relname AS sequencename
     FROM pg_publication P,
          LATERAL pg_get_publication_sequences(P.pubname) GPT,
          pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)

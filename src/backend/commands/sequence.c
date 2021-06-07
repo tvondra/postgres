@@ -327,7 +327,7 @@ ResetSequence(Oid seq_relid)
 	/*
 	 * Insert the modified tuple into the new storage file.
 	 */
-	fill_seq_with_data(seq_rel, tuple, false);
+	fill_seq_with_data(seq_rel, tuple, true);
 
 	/* Clear local cache so that we don't think we have cached numbers */
 	/* Note that we do not change the currval() state */
@@ -398,6 +398,13 @@ ResetSequence2(Oid seq_relid, int64 last_value, int64 log_cnt, bool is_called)
 
 	/*
 	 * Insert the modified tuple into the new storage file.
+	 *
+	 * XXX Maybe this should also use created=true, just like the other places
+	 * calling fill_seq_with_data. That's probably needed for correct cascading
+	 * replication.
+	 *
+	 * XXX That'd mean all fill_seq_with_data callers use created=true, making
+	 * the parameter unnecessary.
 	 */
 	fill_seq_with_data(seq_rel, tuple, false);
 
@@ -588,7 +595,7 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 		/*
 		 * Insert the modified tuple into the new storage file.
 		 */
-		fill_seq_with_data(seqrel, newdatatuple, false);
+		fill_seq_with_data(seqrel, newdatatuple, true);
 	}
 
 	/* process OWNED BY if given */

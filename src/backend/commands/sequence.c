@@ -450,7 +450,20 @@ fill_seq_with_data(Relation rel, HeapTuple tuple, bool create)
 
 	/* check the comment above nextval_internal()'s equivalent call. */
 	if (RelationNeedsWAL(rel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Ensure we have a proper XID, which will be included in the XLOG
+		 * record by XLogRecordAssemble. Otherwise the first nextval() in
+		 * a subxact (without any preceding changes) would get XID 0,
+		 * and it'd be impossible to decide which top xact it belongs to.
+		 * It'd also trigger assert in DecodeSequence.
+		 *
+		 * XXX Not sure if this is the best solution.
+		 */
+		GetCurrentTransactionId();
+	}
 
 	START_CRIT_SECTION();
 
@@ -839,7 +852,20 @@ nextval_internal(Oid relid, bool check_permissions)
 	 * (Have to do that here, so we're outside the critical section)
 	 */
 	if (logit && RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Ensure we have a proper XID, which will be included in the XLOG
+		 * record by XLogRecordAssemble. Otherwise the first nextval() in
+		 * a subxact (without any preceding changes) would get XID 0,
+		 * and it'd be impossible to decide which top xact it belongs to.
+		 * It'd also trigger assert in DecodeSequence.
+		 *
+		 * XXX Not sure if this is the best solution.
+		 */
+		GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();
@@ -1051,7 +1077,20 @@ do_setval(Oid relid, int64 next, bool iscalled)
 
 	/* check the comment above nextval_internal()'s equivalent call. */
 	if (RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Ensure we have a proper XID, which will be included in the XLOG
+		 * record by XLogRecordAssemble. Otherwise the first nextval() in
+		 * a subxact (without any preceding changes) would get XID 0,
+		 * and it'd be impossible to decide which top xact it belongs to.
+		 * It'd also trigger assert in DecodeSequence.
+		 *
+		 * XXX Not sure if this is the best solution.
+		 */
+		GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();

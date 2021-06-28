@@ -26,7 +26,7 @@ extern AlterTableStmt *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 											   List **afterStmts);
 extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
 									 const char *queryString);
-extern CreateStatsStmt *transformStatsStmt(Oid relid, CreateStatsStmt *stmt,
+extern CreateStatsStmt *transformStatsStmt(List *rels, CreateStatsStmt *stmt,
 										   const char *queryString);
 extern void transformRuleStmt(RuleStmt *stmt, const char *queryString,
 							  List **actions, Node **whereClause);
@@ -39,5 +39,6 @@ extern IndexStmt *generateClonedIndexStmt(RangeVar *heapRel,
 										  Relation source_idx,
 										  const struct AttrMap *attmap,
 										  Oid *constraintOid);
+extern List *relationsFromStatsStmt(CreateStatsStmt *stmt);
 
 #endif							/* PARSE_UTILCMD_H */

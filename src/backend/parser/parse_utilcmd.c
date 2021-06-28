@@ -2899,12 +2899,14 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
  * relation.
  */
 CreateStatsStmt *
-transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
+transformStatsStmt(List *rels, CreateStatsStmt *stmt, const char *queryString)
 {
 	ParseState *pstate;
 	ParseNamespaceItem *nsitem;
 	ListCell   *l;
-	Relation	rel;
+
+	int			nrelations;
+	Relation   *relations;
 
 	/* Nothing to do if statement already transformed. */
 	if (stmt->transformed)
@@ -2914,18 +2916,46 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
 
-	/*
-	 * Put the parent table into the rtable so that the expressions can refer
-	 * to its fields without qualification.  Caller is responsible for locking
-	 * relation, but we still need to open it.
-	 */
-	rel = relation_open(relid, NoLock);
-	nsitem = addRangeTableEntryForRelation(pstate, rel,
-										   AccessShareLock,
-										   NULL, false, true);
+	nrelations = 0;
+	relations = (Relation *) palloc(sizeof(Relation) * list_length(rels));
 
-	/* no to join list, yes to namespaces */
-	addNSItemToQuery(pstate, nsitem, false, true, true);
+	/*
+	 * Put the parent tables into the rtable so that the expressions can refer
+	 * to the fields with or without qualification.  Caller is responsible for
+	 * locking the relations, but we still need to open them.
+	 */
+	foreach (l, rels)
+	{
+		Oid			relid;
+		Relation	rel;
+		RangeVar   *rvar = (RangeVar *) lfirst(l);
+
+		Assert(IsA(rvar, RangeVar));
+
+		/*
+		 * CREATE STATISTICS will influence future execution plans
+		 * but does not interfere with currently executing plans.
+		 * So it should be enough to take ShareUpdateExclusiveLock
+		 * on relation, conflicting with ANALYZE and other DDL
+		 * that sets statistical information, but not with normal
+		 * queries.
+		 *
+		 * XXX RangeVarCallbackOwnsRelation not needed here, to
+		 * keep the same behavior as before.
+		 */
+		relid = RangeVarGetRelid(rvar, ShareUpdateExclusiveLock, false);
+elog(WARNING, "opening %d", relid);
+		rel = relation_open(relid, NoLock);
+		nsitem = addRangeTableEntryForRelation(pstate, rel,
+											   AccessShareLock,
+											   NULL, false, true);
+
+		/* no to join list, yes to namespaces */
+		addNSItemToQuery(pstate, nsitem, false, true, true);
+
+		/* remember for unlocking */
+		relations[nrelations++] = rel;
+	}
 
 	/* take care of any expressions */
 	foreach(l, stmt->exprs)
@@ -2953,9 +2983,13 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 				 errmsg("statistics expressions can refer only to the table being referenced")));
 
 	free_parsestate(pstate);
-
+elog(WARNING, "nrelations = %d", nrelations);
 	/* Close relation */
-	table_close(rel, NoLock);
+	for (int i = 0; i < nrelations; i++)
+	{
+		elog(WARNING, "closing %d", RelationGetRelid(relations[i]));
+		table_close(relations[i], NoLock);
+	}
 
 	/* Mark statement as successfully transformed */
 	stmt->transformed = true;
@@ -4369,4 +4403,39 @@ transformPartitionBoundValue(ParseState *pstate, Node *val,
 	((Const *) value)->location = exprLocation(val);
 
 	return (Const *) value;
+}
+
+/* needed for parse analysis of CREATE STATISTICS, but maybe there's a better way? */
+static List *
+extract_rels(Node *rel)
+{
+	List *rels = NIL;
+
+	if (IsA(rel, RangeVar))
+	{
+		rels = lappend(rels, rel);
+	}
+	else if (IsA(rel, JoinExpr))
+	{
+		JoinExpr *expr = (JoinExpr *) rel;
+
+		rels = list_concat(rels, extract_rels(expr->larg));
+		rels = list_concat(rels, extract_rels(expr->rarg));
+	}
+	else
+		elog(ERROR, "unknown element type");
+
+	return rels;
+}
+
+List *
+relationsFromStatsStmt(CreateStatsStmt *stmt)
+{
+	ListCell *lc;
+	List *rels = NIL;
+
+	foreach (lc, stmt->relations)
+		rels = list_concat(rels, extract_rels((Node *) lfirst(lc)));
+
+	return rels;
 }

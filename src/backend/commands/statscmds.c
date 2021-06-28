@@ -31,6 +31,7 @@
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_utilcmd.h"
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -98,28 +99,38 @@ CreateStatistics(CreateStatsStmt *stmt)
 	int			i;
 	ListCell   *cell;
 	ListCell   *cell2;
+	List	   *rangevars;
+	List	   *rels = NIL;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
 	/*
-	 * Examine the FROM clause.  Currently, we only allow it to be a single
-	 * simple table, but later we'll probably allow multiple tables and JOIN
-	 * syntax.  The grammar is already prepared for that, so we have to check
-	 * here that what we got is what we can support.
+	 * Examine the FROM clause.
+	 *
+	 * We allow both a single relation and a JOIN of multiple tables.
+	 *
+	 * XXX For join we should check that we know how to sample it efficiently,
+	 * e.g. by using the correlated approach, which requires PK/FK equijoins.
 	 */
+	/*
 	if (list_length(stmt->relations) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("only a single relation is allowed in CREATE STATISTICS")));
+	*/
 
-	foreach(cell, stmt->relations)
+	rangevars = relationsFromStatsStmt(stmt);
+
+	foreach(cell, rangevars)
 	{
 		Node	   *rln = (Node *) lfirst(cell);
 
+		/*
 		if (!IsA(rln, RangeVar))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("only a single relation is allowed in CREATE STATISTICS")));
+		*/
 
 		/*
 		 * CREATE STATISTICS will influence future execution plans but does
@@ -129,6 +140,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 		 * information, but not with normal queries.
 		 */
 		rel = relation_openrv((RangeVar *) rln, ShareUpdateExclusiveLock);
+
+		rels = lappend(rels, rel);
 
 		/* Restrict to allowed relation types */
 		if (rel->rd_rel->relkind != RELKIND_RELATION &&
@@ -154,8 +167,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 							RelationGetRelationName(rel))));
 	}
 
-	Assert(rel);
-	relid = RelationGetRelid(rel);
+	Assert(list_length(rels) == list_length(rangevars));
+	// relid = RelationGetRelid(rel);
 
 	/*
 	 * If the node has a name, split it up and determine creation namespace.
@@ -227,6 +240,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	{
 		StatsElem  *selem = lfirst_node(StatsElem, cell);
 
+		/* XXX now unused, columns are referenced as ColumnRef */
 		if (selem->name)		/* column reference */
 		{
 			char	   *attname;
@@ -235,6 +249,9 @@ CreateStatistics(CreateStatsStmt *stmt)
 			TypeCacheEntry *type;
 
 			attname = selem->name;
+
+			/* XXX workaround */
+			relid = InvalidOid;
 
 			atttuple = SearchSysCacheAttName(relid, attname);
 			if (!HeapTupleIsValid(atttuple))
@@ -305,6 +322,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 					ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("statistics creation on system columns is not supported")));
+			}
+
+			/* FIXME handle ColumnRef as a special case, as simple references to
+			 * attributes in stxkeys */
+			if (IsA(expr, ColumnRef))
+			{
+				ColumnRef *cref = (ColumnRef *) expr;
+				elog(WARNING, "elements %d", list_length(cref->fields));
 			}
 
 			/*
@@ -556,9 +581,12 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/*
 	 * Invalidate relcache so that others see the new statistics object.
 	 */
-	CacheInvalidateRelcache(rel);
+	foreach (cell, rels)
+	{
+		CacheInvalidateRelcache((Relation) lfirst(cell));
 
-	relation_close(rel, NoLock);
+		relation_close((Relation) lfirst(cell), NoLock);
+	}
 
 	/*
 	 * Add an AUTO dependency on each column used in the stats, so that the
@@ -593,8 +621,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	/*
 	 * Store dependencies on anything mentioned in statistics expressions,
 	 * just like we do for index expressions.
+	 *
+	 * FIXME
 	 */
-	if (stxexprs)
+	if (false && stxexprs)
 		recordDependencyOnSingleRelExpr(&myself,
 										(Node *) stxexprs,
 										relid,

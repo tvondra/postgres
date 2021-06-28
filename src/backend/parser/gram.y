@@ -4147,11 +4147,11 @@ stats_params:	stats_param							{ $$ = list_make1($1); }
 			| stats_params ',' stats_param			{ $$ = lappend($1, $3); }
 		;
 
-stats_param:	ColId
+stats_param:	columnref
 				{
 					$$ = makeNode(StatsElem);
-					$$->name = $1;
-					$$->expr = NULL;
+					$$->name = NULL;
+					$$->expr = $1;
 				}
 			| func_expr_windowless
 				{

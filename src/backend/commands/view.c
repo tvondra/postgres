@@ -306,6 +306,8 @@ checkViewTupleDesc(TupleDesc newdesc, TupleDesc olddesc)
 static void
 DefineViewRules(Oid viewOid, Query *viewParse, bool replace)
 {
+	elog(WARNING, "viewParse %s", nodeToString(viewParse));
+
 	/*
 	 * Set up the ON SELECT rule.  Since the query has already been through
 	 * parse analysis, we use DefineQueryRewrite() directly.
@@ -422,6 +424,8 @@ DefineView(ViewStmt *stmt, const char *queryString,
 	rawstmt->stmt = stmt->query;
 	rawstmt->stmt_location = stmt_location;
 	rawstmt->stmt_len = stmt_len;
+
+	elog(WARNING, "query = %s", nodeToString(stmt->query));
 
 	viewParse = parse_analyze(rawstmt, queryString, NULL, 0, NULL);
 

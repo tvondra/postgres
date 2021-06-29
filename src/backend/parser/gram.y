@@ -238,7 +238,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	WindowDef			*windef;
 	JoinExpr			*jexpr;
 	IndexElem			*ielem;
-	StatsElem			*selem;
 	Alias				*alias;
 	RangeVar			*range;
 	IntoClause			*into;
@@ -496,7 +495,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	def_arg columnElem where_clause where_or_current_clause
 				a_expr b_expr c_expr AexprConst indirection_el opt_slice_bound
 				columnref in_expr having_clause func_table xmltable array_expr
-				OptWhereClause operator_def_arg
+				OptWhereClause operator_def_arg stats_expr
 %type <list>	rowsfrom_item rowsfrom_list opt_col_def_list
 %type <boolean> opt_ordinality
 %type <list>	ExclusionConstraintList ExclusionConstraintElem
@@ -513,7 +512,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	func_alias_clause
 %type <sortby>	sortby
 %type <ielem>	index_elem index_elem_options
-%type <selem>	stats_param
+%type <target>	stats_param
 %type <node>	table_ref
 %type <jexpr>	joined_table
 %type <range>	relation_expr
@@ -4147,25 +4146,21 @@ stats_params:	stats_param							{ $$ = list_make1($1); }
 			| stats_params ',' stats_param			{ $$ = lappend($1, $3); }
 		;
 
-stats_param:	columnref
+stats_expr:	columnref							{ $$ = $1; }
+			| func_expr_windowless					{ $$ = $1; }
+			| '(' a_expr ')'						{ $$ = $2; }
+		;
+
+stats_param: stats_expr
 				{
-					$$ = makeNode(StatsElem);
+					$$ = makeNode(ResTarget);
 					$$->name = NULL;
-					$$->expr = $1;
-				}
-			| func_expr_windowless
-				{
-					$$ = makeNode(StatsElem);
-					$$->name = NULL;
-					$$->expr = $1;
-				}
-			| '(' a_expr ')'
-				{
-					$$ = makeNode(StatsElem);
-					$$->name = NULL;
-					$$->expr = $2;
+					$$->indirection = NIL;
+					$$->val = (Node *)$1;
+					$$->location = @1;
 				}
 		;
+
 
 /*****************************************************************************
  *

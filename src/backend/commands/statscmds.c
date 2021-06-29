@@ -31,6 +31,7 @@
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/analyze.h"
 #include "parser/parse_utilcmd.h"
 #include "statistics/statistics.h"
 #include "utils/builtins.h"
@@ -63,7 +64,8 @@ compare_int16(const void *a, const void *b)
  *		CREATE STATISTICS
  */
 ObjectAddress
-CreateStatistics(CreateStatsStmt *stmt)
+CreateStatistics(CreateStatsStmt *stmt, const char *queryString,
+				 int stmt_location, int stmt_len)
 {
 	int16		attnums[STATS_MAX_DIMENSIONS];
 	int			nattnums = 0;
@@ -102,6 +104,39 @@ CreateStatistics(CreateStatsStmt *stmt)
 	List	   *rangevars;
 	List	   *rels = NIL;
 
+	RawStmt    *rawstmt;
+	SelectStmt *selectstmt;
+	Query	   *viewParse;
+
+	elog(WARNING, "A: relations = %s", nodeToString(stmt->relations));
+
+	/*
+	 * XXX The parse_analyze messes this up for some reason, replacing
+	 * RangeVars with RangeTblRef nodes.
+	 */
+	rangevars = relationsFromStatsStmt(stmt);
+
+	/*
+	 * Run parse analysis to convert the raw parse tree to a Query.  Note this
+	 * also acquires sufficient locks on the source table(s).
+	 */
+	selectstmt = makeNode(SelectStmt);
+	selectstmt->fromClause = list_copy(stmt->relations);
+	selectstmt->targetList = list_copy(stmt->exprs);
+
+	/*
+	 * Run parse analysis to convert the raw parse tree to a Query.  Note this
+	 * also acquires sufficient locks on the source table(s).
+	 */
+	rawstmt = makeNode(RawStmt);
+	rawstmt->stmt = (Node *) selectstmt;
+	rawstmt->stmt_location = stmt_location;
+	rawstmt->stmt_len = stmt_len;
+
+	viewParse = parse_analyze(rawstmt, queryString, NULL, 0, NULL);
+
+	elog(WARNING, "viewParse %s", nodeToString(viewParse));
+
 	Assert(IsA(stmt, CreateStatsStmt));
 
 	/*
@@ -119,18 +154,23 @@ CreateStatistics(CreateStatsStmt *stmt)
 				 errmsg("only a single relation is allowed in CREATE STATISTICS")));
 	*/
 
-	rangevars = relationsFromStatsStmt(stmt);
+	elog(WARNING, "B: relations = %s", nodeToString(stmt->relations));
+
+	foreach(cell, viewParse->rtable)
+	{
+		Node	   *tmp = (Node *) lfirst(cell);
+		elog(WARNING, "%p", tmp);
+	}
 
 	foreach(cell, rangevars)
 	{
 		Node	   *rln = (Node *) lfirst(cell);
 
-		/*
+		/* XXX unnecessary, relationsFromStatsStmt only returns RangeVar */
 		if (!IsA(rln, RangeVar))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("only a single relation is allowed in CREATE STATISTICS")));
-		*/
 
 		/*
 		 * CREATE STATISTICS will influence future execution plans but does
@@ -236,74 +276,76 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * (like the "(a+0)" example), but this makes it somewhat consistent with
 	 * how indexes treat attributes/expressions.
 	 */
-	foreach(cell, stmt->exprs)
+	foreach(cell, viewParse->targetList)
 	{
-		StatsElem  *selem = lfirst_node(StatsElem, cell);
+		Node  *elem = lfirst(cell);
+
+		relid = InvalidOid;
 
 		/* XXX now unused, columns are referenced as ColumnRef */
-		if (selem->name)		/* column reference */
+//		if (selem->name)		/* column reference */
+//		{
+//			char	   *attname;
+//			HeapTuple	atttuple;
+//			Form_pg_attribute attForm;
+//			TypeCacheEntry *type;
+//
+//			attname = selem->name;
+//
+//			/* XXX workaround */
+//			relid = InvalidOid;
+//
+//			atttuple = SearchSysCacheAttName(relid, attname);
+//			if (!HeapTupleIsValid(atttuple))
+//				ereport(ERROR,
+//						(errcode(ERRCODE_UNDEFINED_COLUMN),
+//						 errmsg("column \"%s\" does not exist",
+//								attname)));
+//			attForm = (Form_pg_attribute) GETSTRUCT(atttuple);
+//
+//			/* Disallow use of system attributes in extended stats */
+//			if (attForm->attnum <= 0)
+//				ereport(ERROR,
+//						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+//						 errmsg("statistics creation on system columns is not supported")));
+//
+//			/* Disallow data types without a less-than operator */
+//			type = lookup_type_cache(attForm->atttypid, TYPECACHE_LT_OPR);
+//			if (type->lt_opr == InvalidOid)
+//				ereport(ERROR,
+//						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+//						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
+//								attname, format_type_be(attForm->atttypid))));
+//
+//			attnums[nattnums] = attForm->attnum;
+//			nattnums++;
+//			ReleaseSysCache(atttuple);
+//		}
+//		else if (IsA(selem->expr, Var))	/* column reference in parens */
+//		{
+//			Var *var = (Var *) selem->expr;
+//			TypeCacheEntry *type;
+//
+//			/* Disallow use of system attributes in extended stats */
+//			if (var->varattno <= 0)
+//				ereport(ERROR,
+//						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+//						 errmsg("statistics creation on system columns is not supported")));
+//
+//			/* Disallow data types without a less-than operator */
+//			type = lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
+//			if (type->lt_opr == InvalidOid)
+//				ereport(ERROR,
+//						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+//						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
+//								get_attname(relid, var->varattno, false), format_type_be(var->vartype))));
+//
+//			attnums[nattnums] = var->varattno;
+//			nattnums++;
+//		}
+//		else					/* expression */
 		{
-			char	   *attname;
-			HeapTuple	atttuple;
-			Form_pg_attribute attForm;
-			TypeCacheEntry *type;
-
-			attname = selem->name;
-
-			/* XXX workaround */
-			relid = InvalidOid;
-
-			atttuple = SearchSysCacheAttName(relid, attname);
-			if (!HeapTupleIsValid(atttuple))
-				ereport(ERROR,
-						(errcode(ERRCODE_UNDEFINED_COLUMN),
-						 errmsg("column \"%s\" does not exist",
-								attname)));
-			attForm = (Form_pg_attribute) GETSTRUCT(atttuple);
-
-			/* Disallow use of system attributes in extended stats */
-			if (attForm->attnum <= 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("statistics creation on system columns is not supported")));
-
-			/* Disallow data types without a less-than operator */
-			type = lookup_type_cache(attForm->atttypid, TYPECACHE_LT_OPR);
-			if (type->lt_opr == InvalidOid)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
-								attname, format_type_be(attForm->atttypid))));
-
-			attnums[nattnums] = attForm->attnum;
-			nattnums++;
-			ReleaseSysCache(atttuple);
-		}
-		else if (IsA(selem->expr, Var))	/* column reference in parens */
-		{
-			Var *var = (Var *) selem->expr;
-			TypeCacheEntry *type;
-
-			/* Disallow use of system attributes in extended stats */
-			if (var->varattno <= 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("statistics creation on system columns is not supported")));
-
-			/* Disallow data types without a less-than operator */
-			type = lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
-			if (type->lt_opr == InvalidOid)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
-								get_attname(relid, var->varattno, false), format_type_be(var->vartype))));
-
-			attnums[nattnums] = var->varattno;
-			nattnums++;
-		}
-		else					/* expression */
-		{
-			Node	   *expr = selem->expr;
+			Node	   *expr = elem;
 			Oid			atttype;
 			TypeCacheEntry *type;
 			Bitmapset  *attnums = NULL;
@@ -324,8 +366,17 @@ CreateStatistics(CreateStatsStmt *stmt)
 						 errmsg("statistics creation on system columns is not supported")));
 			}
 
-			/* FIXME handle ColumnRef as a special case, as simple references to
-			 * attributes in stxkeys */
+			Assert(IsA(expr, TargetEntry));
+
+			/* extract the actual value */
+			expr = (Node *) ((TargetEntry *) expr)->expr;
+
+			/*
+			 * FIXME Handle ColumnRef as a special case, as simple references
+			 * to attributes in stxkeys.
+			 *
+			 * FIXME Also handle Var, representing "(column)" expressions.
+			 */
 			if (IsA(expr, ColumnRef))
 			{
 				ColumnRef *cref = (ColumnRef *) expr;
@@ -879,14 +930,16 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 	buf[0] = '\0';
 	foreach(lc, exprs)
 	{
-		StatsElem  *selem = (StatsElem *) lfirst(lc);
-		const char *name;
+		Node  *expr = lfirst(lc);
+		const char *name = NULL;
+
+		elog(WARNING, "expr %p", expr);
 
 		/* It should be one of these, but just skip if it happens not to be */
-		if (!IsA(selem, StatsElem))
-			continue;
+		//if (!IsA(selem, StatsElem))
+		//	continue;
 
-		name = selem->name;
+		//name = selem->name;
 
 		if (buflen > 0)
 			buf[buflen++] = '_';	/* insert _ between names */

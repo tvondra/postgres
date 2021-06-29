@@ -2905,6 +2905,7 @@ transformStatsStmt(List *rels, CreateStatsStmt *stmt, const char *queryString)
 	ParseState *pstate;
 	ParseNamespaceItem *nsitem;
 	ListCell   *l;
+//	List	   *exprs;
 
 	int			nrelations;
 	Relation   *relations;
@@ -2958,21 +2959,29 @@ elog(WARNING, "opening %d", relid);
 		relations[nrelations++] = rel;
 	}
 
-	/* take care of any expressions */
-	foreach(l, stmt->exprs)
-	{
-		StatsElem  *selem = (StatsElem *) lfirst(l);
+// we'll call pg_parse_analyze in CreateStatistics()
+//
+//	elog(WARNING, "A: %s", nodeToString(stmt->exprs));
+//
+//	/* take care of any expressions */
+//	exprs = NIL;
+//	foreach(l, stmt->exprs)
+//	{
+//		Node *expr = lfirst(l);
+//
+//		/* Now do parse transformation of the expression */
+//		expr = transformExpr(pstate, expr,
+//							 EXPR_KIND_STATS_EXPRESSION);
+//
+//		/* We have to fix its collations too */
+//		assign_expr_collations(pstate, expr);
+//
+//		exprs = lappend(exprs, expr);
+//	}
+//
+//	stmt->exprs = exprs;
 
-		if (selem->expr)
-		{
-			/* Now do parse transformation of the expression */
-			selem->expr = transformExpr(pstate, selem->expr,
-										EXPR_KIND_STATS_EXPRESSION);
-
-			/* We have to fix its collations too */
-			assign_expr_collations(pstate, selem->expr);
-		}
-	}
+	elog(WARNING, "B: %s", nodeToString(stmt->exprs));
 
 	free_parsestate(pstate);
 elog(WARNING, "nrelations = %d", nrelations);
@@ -4425,6 +4434,10 @@ relationsFromStatsStmt(CreateStatsStmt *stmt)
 {
 	ListCell *lc;
 	List *rels = NIL;
+
+	Assert(list_length(stmt->relations) == 1);
+
+	elog(WARNING, "relations: %s", nodeToString(stmt->relations));
 
 	foreach (lc, stmt->relations)
 		rels = list_concat(rels, extract_rels((Node *) lfirst(lc)));

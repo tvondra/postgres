@@ -8440,7 +8440,7 @@ ATExecAddStatistics(AlteredTableInfo *tab, Relation rel,
 	/* The CreateStatsStmt has already been through transformStatsStmt */
 	Assert(stmt->transformed);
 
-	address = CreateStatistics(stmt);
+	address = CreateStatistics(stmt, NULL, 0, 0);
 
 	return address;
 }
@@ -12704,7 +12704,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, char *cmd,
 		}
 		else if (IsA(stmt, CreateStatsStmt))
 			querytree_list = lappend(querytree_list,
-									 transformStatsStmt(oldRelId,
+									 transformStatsStmt(relationsFromStatsStmt((CreateStatsStmt *) stmt),
 														(CreateStatsStmt *) stmt,
 														cmd));
 		else

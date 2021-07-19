@@ -344,16 +344,21 @@ bool debug_cheapest_group_by = true;
 /************************</DEBUG PART>************************************/
 
 /*
- * Reorder GROUP BY pathkeys and clauses to match order of pathkeys. Function
- * returns new lists,  original GROUP BY lists stay untouched.
+ * group_keys_reorder_by_pathkeys
+ *		Reorder GROUP BY keys to match pathkeys of input path.
+ *
+ * Function returns new lists (pathkeys and clauses), original GROUP BY lists
+ * stay untouched.
+ *
+ * Returns the number of GROUP BY keys with a matching pathkey.
  */
 int
 group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 							   List **group_clauses)
 {
-	List		*new_group_pathkeys= NIL,
-				*new_group_clauses = NIL;
-	ListCell	*key;
+	List	   *new_group_pathkeys= NIL,
+			   *new_group_clauses = NIL;
+	ListCell   *lc;
 	int			n;
 
 	if (debug_group_by_reorder_by_pathkeys == false)
@@ -363,18 +368,22 @@ group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 		return 0;
 
 	/*
-	 * For each pathkey it tries to find corresponding GROUP BY pathkey and
-	 * clause.
+	 * Walk the pathkeys (determining ordering of the input path) and see if
+	 * there's a matching GROUP BY key. If we find one, we append if to the
+	 * list, and do the same for the clauses.
+	 *
+	 * Once we find first pathkey without a matching GROUP BY key, the rest of
+	 * the pathkeys is useless and can't be used to evaluate the grouping, so
+	 * we abort the loop and ignore the remaining pathkeys.
+	 *
+	 * XXX Pathkeys are built in a way to allow simply comparing pointers.
 	 */
-	foreach(key, pathkeys)
+	foreach(lc, pathkeys)
 	{
-		PathKey			*pathkey = (PathKey *) lfirst(key);
+		PathKey			*pathkey = (PathKey *) lfirst(lc);
 		SortGroupClause	*sgc;
 
-		/*
-		 * Pathkey should use the same allocated struct, so, equiality of
-		 * pointers is enough
-		 */
+		/* abort on first mismatch */
 		if (!list_member_ptr(*group_pathkeys, pathkey))
 			break;
 
@@ -382,33 +391,51 @@ group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 
 		sgc = get_sortgroupref_clause(pathkey->pk_eclass->ec_sortref,
 									  *group_clauses);
+
 		new_group_clauses = lappend(new_group_clauses, sgc);
 	}
 
+	/* remember the number of pathkeys with a matching GROUP BY key */
 	n = list_length(new_group_pathkeys);
 
-	/*
-	 * Just append the rest of pathkeys and clauses
-	 */
+	/* XXX maybe return when (n == 0) */
+
+	/* append the remaining group pathkeys (will be treated as not sorted) */
 	*group_pathkeys = list_concat_unique_ptr(new_group_pathkeys,
-												 *group_pathkeys);
+											 *group_pathkeys);
 	*group_clauses = list_concat_unique_ptr(new_group_clauses,
 											*group_clauses);
 
 	return n;
 }
 
-typedef struct MutatorState {
-	List		*elemsList;
-	ListCell	**elemCells;
-	void		**elems;
-	int			*positions;
+/*
+ * Used to generate all permutations of a pathkey list.
+ */
+typedef struct PathkeyMutatorState {
+	List	   *elemsList;
+	ListCell  **elemCells;
+	void	  **elems;
+	int		   *positions;
 	int			 mutatorNColumns;
 	int			 count;
-} MutatorState;
+} PathkeyMutatorState;
 
+
+/*
+ * PathkeyMutatorInit
+ *		Initialize state of the permutation generator.
+ *
+ * We want to generate permutations of elements in the "elems" list. We may want
+ * to skip some number of elements at the beginning (when treating as presorted)
+ * or at the end (we only permute a limited number of group keys).
+ *
+ * The list is decomposed into elements, and we also keep pointers to individual
+ * cells. This allows us to build the permuted list quickly and cheaply, without
+ * creating any copies.
+ */
 static void
-initMutator(MutatorState *state, List *elems, int start, int end)
+PathkeyMutatorInit(PathkeyMutatorState *state, List *elems, int start, int end)
 {
 	int i;
 	int			n = end - start;
@@ -431,13 +458,15 @@ initMutator(MutatorState *state, List *elems, int start, int end)
 		state->elems[i] = lfirst(lc);
 		state->positions[i] = i + 1;
 		i++;
+
 		if (i >= n)
 			break;
 	}
 }
 
+/* Swap two elements of an array. */
 static void
-swap(int *a, int i, int j)
+PathkeyMutatorSwap(int *a, int i, int j)
 {
   int s = a[i];
 
@@ -445,55 +474,72 @@ swap(int *a, int i, int j)
   a[j] = s;
 }
 
+/*
+ * Generate the next permutation of elements.
+ */
 static bool
-getNextSet(int *a, int n)
+PathkeyMutatorNextSet(int *a, int n)
 {
 	int j, k, l, r;
 
 	j = n - 2;
+
 	while (j >= 0 && a[j] >= a[j + 1])
 		j--;
+
 	if (j < 0)
 		return false;
 
 	k = n - 1;
+
 	while (k >= 0 && a[j] >= a[k])
 		k--;
-	swap(a, j, k);
+
+	PathkeyMutatorSwap(a, j, k);
 
 	l = j + 1;
 	r = n - 1;
-	while (l < r)
-		swap(a, l++, r--);
 
+	while (l < r)
+		PathkeyMutatorSwap(a, l++, r--);
 
 	return true;
 }
 
-static List*
-doMutator(MutatorState *state)
+/*
+ * PathkeyMutatorNext
+ *		Generate the next permutation of list of elements.
+ *
+ * Returns the next permutation (as a list of elements) or NIL if there are no
+ * more permutations.
+ */
+static List *
+PathkeyMutatorNext(PathkeyMutatorState *state)
 {
 	int	i;
 
 	state->count++;
 
-	/* first set is original set */
+	/* first permutation is original list */
 	if (state->count == 1)
 		return state->elemsList;
 
-	if (getNextSet(state->positions, state->mutatorNColumns) == false)
+	/* when there are no more permutations, return NIL */
+	if (!PathkeyMutatorNextSet(state->positions, state->mutatorNColumns))
 	{
 		pfree(state->elems);
 		pfree(state->elemCells);
 		pfree(state->positions);
+
 		list_free(state->elemsList);
 
 		return NIL;
 	}
 
+	/* update the list cells to point to the right elements */
 	for(i=0; i<state->mutatorNColumns; i++)
 		lfirst(state->elemCells[i]) =
-			(void*) state->elems[ state->positions[i] - 1 ];
+			(void *) state->elems[ state->positions[i] - 1 ];
 
 	return state->elemsList;
 }
@@ -516,62 +562,6 @@ pathkey_sort_cost_comparator(const void *_a, const void *_b)
 	return 1;
 }
 
-
-List *
-get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
-								List *group_pathkeys, List *group_clauses,
-								int n_preordered)
-{
-	Query	   *parse = root->parse;
-	List	   *infos = NIL;
-	PathKeyInfo *info;
-
-	List *pathkeys = group_pathkeys;
-	List *clauses = group_clauses;
-
-	/* always return at least the original pathkeys/clauses */
-	info = makeNode(PathKeyInfo);
-	info->pathkeys = pathkeys;
-	info->clauses = clauses;
-
-	infos = lappend(infos, info);
-
-	/* for grouping sets we can't do any reordering */
-	if (parse->groupingSets)
-		return infos;
-
-	/*
-	 * Try reordering pathkeys to minimize the sort cost (ignoring the ORDER
-	 * BY clause for now).
-	 */
-	if (get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
-									  n_preordered, false))
-	{
-		info = makeNode(PathKeyInfo);
-		info->pathkeys = pathkeys;
-		info->clauses = clauses;
-
-		infos = lappend(infos, info);
-	}
-
-	/*
-	 * Try reordering pathkeys to minimize the sort cost (this time consider
-	 * the ORDER BY clause, but only if set debug_group_by_match_order_by).
-	 */
-	if (debug_group_by_match_order_by &&
-		get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
-									  n_preordered, true))
-	{
-		info = makeNode(PathKeyInfo);
-		info->pathkeys = pathkeys;
-		info->clauses = clauses;
-
-		infos = lappend(infos, info);
-	}
-
-	return infos;
-}
-
 /*
  * get_cheapest_group_keys_order
  *		Returns the pathkeys in an order cheapest to evaluate.
@@ -588,7 +578,7 @@ get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
  * Returns newly allocated lists. If no reordering is possible (or needed),
  * the lists are set to NIL.
  */
-bool
+static bool
 get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 							  List **group_pathkeys, List **group_clauses,
 							  int n_preordered, bool consider_group_by)
@@ -598,7 +588,7 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 				   *var_group_pathkeys;
 
 	ListCell	   *cell;
-	MutatorState	mstate;
+	PathkeyMutatorState	mstate;
 	double			cheapest_sort_cost = -1.0;
 
 	int nFreeKeys;
@@ -743,9 +733,9 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 	 *
 	 *
 	 */
-	initMutator(&mstate, new_group_pathkeys, n_preordered, n_preordered + nToPermute);
+	PathkeyMutatorInit(&mstate, new_group_pathkeys, n_preordered, n_preordered + nToPermute);
 
-	while((var_group_pathkeys = doMutator(&mstate)) != NIL)
+	while((var_group_pathkeys = PathkeyMutatorNext(&mstate)) != NIL)
 	{
 		Cost	cost;
 
@@ -757,8 +747,6 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 			new_group_pathkeys = list_copy(var_group_pathkeys);
 			cheapest_sort_cost = cost;
 		}
-
-		/* XXX Shouldn't this pfree the var_group_pathkeys list? */
 	}
 
 	/* Reorder the group clauses according to the reordered pathkeys. */
@@ -779,6 +767,68 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 	*group_clauses = new_group_clauses;
 
 	return true;
+}
+
+/*
+ * get_useful_group_keys_orderings
+ *		Determine which orderings of GROUP BY keys are potentially interesting.
+ *
+ * Returns list of PathKeyInfo items, each representing an interesting ordering
+ * of GROUP BY keys. Each items stores pathkeys and clauses in matching order.
+ */
+List *
+get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
+								List *group_pathkeys, List *group_clauses,
+								int n_preordered)
+{
+	Query	   *parse = root->parse;
+	List	   *infos = NIL;
+	PathKeyInfo *info;
+
+	List *pathkeys = group_pathkeys;
+	List *clauses = group_clauses;
+
+	/* always return at least the original pathkeys/clauses */
+	info = makeNode(PathKeyInfo);
+	info->pathkeys = pathkeys;
+	info->clauses = clauses;
+
+	infos = lappend(infos, info);
+
+	/* for grouping sets we can't do any reordering */
+	if (parse->groupingSets)
+		return infos;
+
+	/*
+	 * Try reordering pathkeys to minimize the sort cost (ignoring the ORDER
+	 * BY clause for now).
+	 */
+	if (get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
+									  n_preordered, false))
+	{
+		info = makeNode(PathKeyInfo);
+		info->pathkeys = pathkeys;
+		info->clauses = clauses;
+
+		infos = lappend(infos, info);
+	}
+
+	/*
+	 * Try reordering pathkeys to minimize the sort cost (this time consider
+	 * the ORDER BY clause, but only if set debug_group_by_match_order_by).
+	 */
+	if (debug_group_by_match_order_by &&
+		get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
+									  n_preordered, true))
+	{
+		info = makeNode(PathKeyInfo);
+		info->pathkeys = pathkeys;
+		info->clauses = clauses;
+
+		infos = lappend(infos, info);
+	}
+
+	return infos;
 }
 
 /*

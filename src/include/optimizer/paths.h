@@ -211,12 +211,6 @@ extern bool debug_group_by_reorder_by_pathkeys;
 extern bool debug_group_by_match_order_by;
 extern bool debug_cheapest_group_by;
 /************************</DEBUG OPT GROUP BY>********************************/
-extern bool get_cheapest_group_keys_order(PlannerInfo *root,
-										  double nrows,
-										  List **group_pathkeys,
-										  List **group_clauses,
-										  int	n_preordered,
-										  bool consider_order_by);
 extern List *get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
 											 List *pathkeys, List *clauses,
 											 int n_preordered);

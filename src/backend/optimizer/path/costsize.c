@@ -1831,27 +1831,53 @@ get_width_cost_multiplier(PlannerInfo *root, Expr *expr)
  * compute_cpu_sort_cost
  *		compute CPU cost of sort (i.e. in-memory)
  *
+ * The main thing we need to calculate to estimate sort CPU costs is the number
+ * of calls to the comparator functions. The difficulty is that for multi-column
+ * sorts there may be different data types involved (for some of which the calls
+ * may be much more expensive). Furthermore, the columns may have very different
+ * number of distinct values - the higher the number, the fewer comparisons will
+ * be needed for the following columns.
+ *
+ * The algoritm is incremental - we add pathkeys one by one, and at each step we
+ * estimate the number of necessary comparisons (based on the number of distinct
+ * groups in the current pathkey prefix and the new pathkey), and the comparison
+ * costs (which is data type specific).
+ *
+ * Estimation of the number of comparisons is based on ideas from two sources:
+ *
+ * 1) "Algorithms" (course), Robert Sedgewick, Kevin Wayne [https://algs4.cs.princeton.edu/home/]
+ *
+ * 2) "Quicksort Is Optimal For Many Equal Keys" (paper), Sebastian Wild,
+ * arXiv:1608.04906v4 [cs.DS] 1 Nov 2017. [https://arxiv.org/abs/1608.04906]
+ *
+ * In term of that paper, let N - number of tuples, Xi - number of tuples with
+ * key Ki, then the estimate of number of comparisons is:
+ *
+ *	log(N! / (X1! * X2! * ..))  ~  sum(Xi * log(N/Xi))
+ *
+ * In our case all Xi are the same because now we don't have any estimation of
+ * group sizes, we have only know the estimate of number of groups (distinct
+ * values). In that case, formula becomes:
+ *
+ *	N * log(NumberOfGroups)
+ *
+ * For multi-column sorts we need to estimate the number of comparisons for
+ * each individual column - for example with columns (c1, c2, ..., ck) we
+ * can estimate that number of comparions on ck is roughly
+ *
+ *	ncomparisons(c1, c2, ..., ck) / ncomparisons(c1, c2, ..., c(k-1))
+ *
+ * Let k be a column number, Gk - number of groups defined by k columns, and Fk
+ * the cost of the comparison is
+ *
+ *	N * sum( Fk * log(Gk) )
+ *
+ * Note: We also consider column witdth, not just the comparator cost.
+ *
  * NOTE: some callers currently pass NIL for pathkeys because they
  * can't conveniently supply the sort keys.  In this case, it will fallback to
  * simple comparison cost estimate.
- *
- * Estimation algorithm is based on ideas from course Algorithms,
- * Robert Sedgewick, Kevin Wayne, https://algs4.cs.princeton.edu/home/ and paper
- * "Quicksort Is Optimal For Many Equal Keys", Sebastian Wild,
- * arXiv:1608.04906v4 [cs.DS] 1 Nov 2017.
- *
- * In term of that papers, let N - number of tuples, Xi - number of tuples with
- * key Ki, then estimation is:
- * log(N! / (X1! * X2! * ..))  ~  sum(Xi * log(N/Xi))
- * In our case all Xi are the same because now we don't have an estimation of
- * group sizes, we have only estimation of number of groups. In this case,
- * formula becomes: N * log(NumberOfGroups). Next, to support correct estimation
- * of multi-column sort we need separately compute each column, so, let k is a
- * column number, Gk - number of groups  defined by k columns:
- * N * sum( Fk * log(Gk) )
- * Fk is a function costs (including width) for k columns.
  */
-
 static Cost
 compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 					  Cost comparison_cost, double tuples, double output_tuples,
@@ -1865,7 +1891,7 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	bool		has_fake_var = false;
 	int			i = 0;
 	Oid			prev_datatype = InvalidOid;
-	Cost		funcCost = 0.;
+	Cost		funcCost = 0.0;
 	List		*cache_varinfos = NIL;
 
 	/* fallback if pathkeys is unknown */
@@ -1891,7 +1917,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	 * - per column comparison function cost
 	 * - we try to compute needed number of comparison per column
 	 */
-
 	foreach(lc, pathkeys)
 	{
 		PathKey				*pathkey = (PathKey*)lfirst(lc);
@@ -1996,7 +2021,7 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		tuplesPerPrevGroup = ceil(1.5 * tuplesPerPrevGroup / nGroups);
 
 		/*
-		 * We could skip all followed columns for cost estimation, because we
+		 * We could skip all following columns for cost estimation, because we
 		 * believe that tuples are unique by set ot previous columns
 		 */
 		if (tuplesPerPrevGroup <= 1.0)

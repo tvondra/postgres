@@ -597,8 +597,9 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 	else
 	{
 		/*
-		 * Since v13 list_free() can clean list elements so for original list not to be modified it should be copied to
-		 * a new one which can then be cleaned safely if needed.
+		 * Since v13 list_free() can clean list elements so for original list
+		 * not to be modified it should be copied to a new one which can then
+		 * be cleaned safely if needed.
 		 */
 		new_group_pathkeys = list_copy(*group_pathkeys);
 		nToPermute = nFreeKeys;

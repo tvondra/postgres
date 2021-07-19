@@ -515,10 +515,19 @@ pathkey_sort_cost_comparator(const void *_a, const void *_b)
 		return 0;
 	return 1;
 }
+
 /*
  * Order tail of list of group pathkeys by uniqueness descendetly. It allows to
  * speedup sorting. Returns newly allocated lists, old ones stay untouched.
  * n_preordered defines a head of list which order should be prevented.
+ *
+ * XXX But we're not generating this only based on uniqueness (that's a bad
+ * term anyway, because we're using ndistinct estimates, not uniqueness).
+ * We're also using the comparator cost to calculate the expected sort cost,
+ * and optimize that.
+ *
+ * XXX This should explain how we generate the values - all permutations for
+ * up to 4 values, etc.
  */
 void
 get_cheapest_group_keys_order(PlannerInfo *root, double nrows,

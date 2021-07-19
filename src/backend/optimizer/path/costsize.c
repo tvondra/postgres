@@ -1758,6 +1758,8 @@ cost_recursive_union(Path *runion, Path *nrterm, Path *rterm)
  * is_fake_var
  *		Workaround for generate_append_tlist() which generates fake Vars with
  *		varno == 0, that will cause a fail of estimate_num_group() call
+ *
+ * XXX Ummm, why would estimate_num_group fail with this?
  */
 static bool
 is_fake_var(Expr *expr)
@@ -1902,6 +1904,10 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		 * a total number of tuple comparisons of N log2 K; but the constant
 		 * factor is a bit higher than for quicksort.  Tweak it so that the
 		 * cost curve is continuous at the crossover point.
+		 *
+		 * XXX I suppose the "quicksort factor" references to 1.5 at the end
+		 * of this function, but I'm not sure. I suggest we introduce some simple
+		 * constants for that, instead of magic values.
 		 */
 		output_tuples = (heapSort) ? 2.0 * output_tuples : tuples;
 		per_tuple_cost += 2.0 * cpu_operator_cost * LOG2(output_tuples);
@@ -1980,6 +1986,11 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 			 * Don't use DEFAULT_NUM_DISTINCT because it used for only one
 			 * column while here we try to estimate number of groups over
 			 * set of columns.
+			 *
+			 * XXX Perhaps this should use DEFAULT_NUM_DISTINCT at least to
+			 * limit the calculated values, somehow?
+			 *
+			 * XXX What's the logic of the following formula?
 			 */
 			nGroups = ceil(2.0 + sqrt(tuples) *
 				list_length(pathkeyExprs) / list_length(pathkeys));
@@ -1996,6 +2007,7 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 			{
 				if (tuplesPerPrevGroup < output_tuples)
 					/* comparing only inside output_tuples */
+					/* XXX why not to use the same multiplier (1.5)? */
 					correctedNGroups =
 						ceil(2.0 * output_tuples / (tuplesPerPrevGroup / nGroups));
 				else

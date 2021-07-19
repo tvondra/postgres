@@ -517,17 +517,20 @@ pathkey_sort_cost_comparator(const void *_a, const void *_b)
 }
 
 /*
- * Order tail of list of group pathkeys by uniqueness descendetly. It allows to
- * speedup sorting. Returns newly allocated lists, old ones stay untouched.
- * n_preordered defines a head of list which order should be prevented.
+ * get_cheapest_group_keys_order
+ *		Returns the pathkeys in an order cheapest to evaluate.
  *
- * XXX But we're not generating this only based on uniqueness (that's a bad
- * term anyway, because we're using ndistinct estimates, not uniqueness).
- * We're also using the comparator cost to calculate the expected sort cost,
- * and optimize that.
+ * Given a list of pathkeys, we try to reorder them in a way that minimizes
+ * the CPU cost of sorting. This depends mainly on the cost of comparator
+ * function (the pathkeys may use different data types) and the number of
+ * distinct values in each column (which affects the number of comparator
+ * calls for the following pathkeys).
  *
- * XXX This should explain how we generate the values - all permutations for
- * up to 4 values, etc.
+ * In case the input is partially sorted, only the remaining pathkeys are
+ * considered.
+ *
+ * Returns newly allocated lists. If no reordering is possible (or needed),
+ * the lists are set to NIL.
  */
 void
 get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
@@ -544,14 +547,33 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 
 	int nFreeKeys;
 	int nToPermute;
-	int i;
 
+	/* If this optimization is disabled, we're done. */
+	if (!debug_cheapest_group_by)
+		return;
+
+	/* If there are less than 2 unsorted pathkeys, we're done. */
 	if (list_length(*group_pathkeys) - n_preordered < 2)
-		return; /* nothing to do */
+		return;
 
 	/*
-	 * Will try to match ORDER BY pathkeys in hope that one sort is cheaper than
-	 * two
+	 * If the query has an ORDER BY clause, we try to use pathkeys that already
+	 * match this ordering, based on the assumption that it's cheaper to do the
+	 * sort only once during grouping, and just reuse it for the ORDER BY.
+	 *
+	 * The other reason why this might be useful is cases when the cost model
+	 * is not accurate enough, and the user tries to "hint" the planner.
+	 *
+	 * XXX This reasoning is flawed, because it ignores the fact that the two
+	 * operations (grouping and sort) may operate on very different numbes of
+	 * rows. The grouping often "reduces" the number of rows by multiple orders
+	 * of magnitude, and so is much more sensitive to comparator costs. It may
+	 * be cheaper to use more efficient order for grouping, and then resort the
+	 * much smaller set of rows as required by ORDER BY. But we can't make the
+	 * decision here, as it requires information that is not available at this
+	 * point. Instead we should generate paths for both pathkeys "variants"
+	 * and let the existing optimizer logic pick later. This is quite similar
+	 * to what get_useful_pathkeys_for_relation does.
 	 */
 	if (debug_group_by_match_order_by &&
 		n_preordered == 0 && root->sort_pathkeys)
@@ -565,22 +587,37 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 													  group_clauses);
 		debug_group_by_reorder_by_pathkeys = _save_debug_group_by_reorder_by_pathkeys;
 
+		/* nothing to do */
 		if (list_length(*group_pathkeys) - n_preordered < 2)
-			return; /* nothing to do */
+			return;
 	}
 
 	/*
-	 * Try all permutations of at most 4 cheapeast pathkeys.
+	 * We could exhaustively cost all possible orderings of the pathkeys, but for
+	 * large number of pathkeys that might be prohibitively expensive. So we try
+	 * to apply a simple cheap heuristics first - we sort the pathkeys by sort
+	 * cost (as if the pathkey was sorted independently) and then check only the
+	 * four cheapest pathkeys. The remaining pathkeys are kept ordered by cost.
+	 *
+	 * XXX This is a very simple heuristics, and likely to work fine for most
+	 * cases (because number of GROUP BY clauses tends to be lower than 4). But
+	 * it ignores how the number of distinct values in each pathkey affects the
+	 * following sorts. It may be better to use "more expensive" pathkey first
+	 * if it has many distinct values, because it then limits the number of
+	 * comparisons for the remaining pathkeys. But evaluating that is kinda the
+	 * expensive bit we're trying to not do.
 	 */
 	nFreeKeys = list_length(*group_pathkeys) - n_preordered;
 	nToPermute = 4;
 	if (nFreeKeys > nToPermute)
 	{
-		/*
-		 * Sort the remaining pathkeys cheapest first.
-		 */
-		PathkeySortCost *costs = palloc(sizeof(*costs) * nFreeKeys);
+		int i;
+		PathkeySortCost *costs = palloc(sizeof(PathkeySortCost) * nFreeKeys);
+
+		/* skip the pre-ordered pathkeys */
 		cell = list_nth_cell(*group_pathkeys, n_preordered);
+
+		/* estimate cost for sorting individual pathkeys */
 		for (i = 0; cell != NULL; i++, (cell = lnext(*group_pathkeys, cell)))
 		{
 			List *to_cost = list_make1(lfirst(cell));
@@ -592,12 +629,16 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 
 			pfree(to_cost);
 		}
+
+		/* sort the pathkeys by sort cost in ascending order */
 		qsort(costs, nFreeKeys, sizeof(*costs), pathkey_sort_cost_comparator);
 
-		/* Construct the sorted list. First, the preordered pathkeys. */
+		/*
+		 * Rebuild the list of pathkeys - first the preordered ones, then the
+		 * rest ordered by cost.
+		 */
 		new_group_pathkeys = list_truncate(list_copy(*group_pathkeys), n_preordered);
 
-		/* The rest, ordered by increasing cost */
 		for (i = 0; i < nFreeKeys; i++)
 			new_group_pathkeys = lappend(new_group_pathkeys, costs[i].pathkey);
 
@@ -614,9 +655,28 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 		nToPermute = nFreeKeys;
 	}
 
-	if (!debug_cheapest_group_by)
-		return;
+	Assert(list_length(new_group_pathkeys) == list_length(*group_pathkeys));
 
+	/*
+	 * Generate pathkey lists with permutations of the first nToPermute pathkeys.
+	 *
+	 * XXX We simply calculate sort cost for each individual pathkey list, but
+	 * there's room for two dynamic programming optimizations here. Firstly, we
+	 * may pass the current "best" cost to cost_sort_estimate so that it can
+	 * "abort" if the estimated pathkeys list exceeds it. Secondly, it could pass
+	 * return information about the position when it exceeded the cost, and we
+	 * could skip all permutations with the same prefix.
+	 *
+	 * Imagine we've already found ordering with cost C1, and we're evaluating
+	 * another ordering - cost_sort_estimate() calculates cost by adding the
+	 * pathkeys one by one (more or less), and the cost only grows. If at any
+	 * point it exceeds C1, it can't possibly be "better" so we can discard it.
+	 * But we also know that we can discard all ordering with the same prefix,
+	 * because if we're estimating (a,b,c,d) and we exceeded C1 at (a,b) then
+	 * the same thing will happen for any ordering with this prefix.
+	 *
+	 *
+	 */
 	initMutator(&mstate, new_group_pathkeys, n_preordered, n_preordered + nToPermute);
 
 	while((var_group_pathkeys = doMutator(&mstate)) != NIL)
@@ -631,11 +691,11 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 			new_group_pathkeys = list_copy(var_group_pathkeys);
 			cheapest_sort_cost = cost;
 		}
+
+		/* XXX Shouldn't this pfree the var_group_pathkeys list? */
 	}
 
-	/*
-	 * repeat order of pathkeys for clauses
-	 */
+	/* Reorder the group clauses according to the reordered pathkeys. */
 	foreach(cell, new_group_pathkeys)
 	{
 		PathKey			*pathkey = (PathKey *) lfirst(cell);

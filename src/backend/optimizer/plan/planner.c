@@ -6005,21 +6005,49 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 			Path	   *path = (Path *) lfirst(lc);
 			Path	   *path_original = path;
 			bool		is_sorted;
-			int			presorted_keys;
+			int			presorted_keys = 0;
 
-			is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
-													path->pathkeys,
-													&presorted_keys);
+			List	   *group_pathkeys = root->group_pathkeys,
+					   *group_clauses = parse->groupClause;
+			int			n_preordered_groups = 0;
+
+			if (parse->groupingSets)
+			{
+				/*
+				 * prevent group pathkey reordering, just check the same
+				 * order paths pathkeys and group pathkeys
+				 */
+				is_sorted = pathkeys_count_contained_in(group_pathkeys,
+												  path->pathkeys,
+												  &presorted_keys);
+			}
+			else
+			{
+				n_preordered_groups =
+						group_keys_reorder_by_pathkeys(path->pathkeys,
+													   &group_pathkeys,
+													   &group_clauses);
+				is_sorted = (n_preordered_groups == list_length(group_pathkeys));
+			}
 
 			if (path == cheapest_path || is_sorted)
 			{
 				/* Sort the cheapest-total path if it isn't already sorted */
 				if (!is_sorted)
+				{
+					if (!parse->groupingSets)
+						get_cheapest_group_keys_order(root,
+													  path->rows,
+													  &group_pathkeys,
+													  &group_clauses,
+													  n_preordered_groups);
+
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
-													 root->group_pathkeys,
+													 group_pathkeys,
 													 -1.0);
+				}
 
 				/* Now decide what to stick atop it */
 				if (parse->groupingSets)
@@ -6039,14 +6067,14 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 											 grouped_rel,
 											 path,
 											 grouped_rel->reltarget,
-											 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											 group_clauses ? AGG_SORTED : AGG_PLAIN,
 											 AGGSPLIT_SIMPLE,
-											 parse->groupClause,
+											 group_clauses,
 											 havingQual,
 											 agg_costs,
 											 dNumGroups));
 				}
-				else if (parse->groupClause)
+				else if (group_clauses)
 				{
 					/*
 					 * We have GROUP BY without aggregation or grouping sets.
@@ -6056,7 +6084,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 							 create_group_path(root,
 											   grouped_rel,
 											   path,
-											   parse->groupClause,
+											   group_clauses,
 											   havingQual,
 											   dNumGroups));
 				}
@@ -6152,11 +6180,18 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				Path	   *path = (Path *) lfirst(lc);
 				Path	   *path_original = path;
 				bool		is_sorted;
-				int			presorted_keys;
+				int			presorted_keys = 0;
+				List	   *group_pathkeys = root->group_pathkeys,
+						   *group_clauses = parse->groupClause;
+				int			n_preordered_groups;
 
-				is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+				is_sorted = pathkeys_count_contained_in(group_pathkeys,
 														path->pathkeys,
 														&presorted_keys);
+				n_preordered_groups = group_keys_reorder_by_pathkeys(path->pathkeys,
+																	 &group_pathkeys,
+																	 &group_clauses);
+				is_sorted = is_sorted || (n_preordered_groups == list_length(group_pathkeys));
 
 				/*
 				 * Insert a Sort node, if required.  But there's no point in
@@ -6166,10 +6201,15 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				{
 					if (path != partially_grouped_rel->cheapest_total_path)
 						continue;
+					get_cheapest_group_keys_order(root,
+												  path->rows,
+												  &group_pathkeys,
+												  &group_clauses,
+												  n_preordered_groups);
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
-													 root->group_pathkeys,
+													 group_pathkeys,
 													 -1.0);
 				}
 
@@ -6179,9 +6219,9 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 											 grouped_rel,
 											 path,
 											 grouped_rel->reltarget,
-											 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											 group_clauses ? AGG_SORTED : AGG_PLAIN,
 											 AGGSPLIT_FINAL_DESERIAL,
-											 parse->groupClause,
+											 group_clauses,
 											 havingQual,
 											 agg_final_costs,
 											 dNumGroups));
@@ -6190,7 +6230,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 							 create_group_path(root,
 											   grouped_rel,
 											   path,
-											   parse->groupClause,
+											   group_clauses,
 											   havingQual,
 											   dNumGroups));
 
@@ -6447,18 +6487,32 @@ create_partial_grouping_paths(PlannerInfo *root,
 		{
 			Path	   *path = (Path *) lfirst(lc);
 			bool		is_sorted;
+			List	   *group_pathkeys = root->group_pathkeys,
+					   *group_clauses = parse->groupClause;
+			int			n_preordered_groups;
 
-			is_sorted = pathkeys_contained_in(root->group_pathkeys,
-											  path->pathkeys);
+			n_preordered_groups = group_keys_reorder_by_pathkeys(path->pathkeys,
+																 &group_pathkeys,
+																 &group_clauses);
+			is_sorted = (n_preordered_groups == list_length(group_pathkeys)) ||
+				pathkeys_contained_in(group_pathkeys, path->pathkeys);
+
 			if (path == cheapest_total_path || is_sorted)
 			{
 				/* Sort the cheapest partial path, if it isn't already */
 				if (!is_sorted)
+				{
+					get_cheapest_group_keys_order(root,
+												  path->rows,
+												  &group_pathkeys,
+												  &group_clauses,
+												  n_preordered_groups);
 					path = (Path *) create_sort_path(root,
 													 partially_grouped_rel,
 													 path,
-													 root->group_pathkeys,
+													 group_pathkeys,
 													 -1.0);
+				}
 
 				if (parse->hasAggs)
 					add_path(partially_grouped_rel, (Path *)
@@ -6466,9 +6520,9 @@ create_partial_grouping_paths(PlannerInfo *root,
 											 partially_grouped_rel,
 											 path,
 											 partially_grouped_rel->reltarget,
-											 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											 group_clauses ? AGG_SORTED : AGG_PLAIN,
 											 AGGSPLIT_INITIAL_SERIAL,
-											 parse->groupClause,
+											 group_clauses,
 											 NIL,
 											 agg_partial_costs,
 											 dNumPartialGroups));
@@ -6477,7 +6531,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 							 create_group_path(root,
 											   partially_grouped_rel,
 											   path,
-											   parse->groupClause,
+											   group_clauses,
 											   NIL,
 											   dNumPartialGroups));
 			}
@@ -6550,21 +6604,37 @@ create_partial_grouping_paths(PlannerInfo *root,
 			Path	   *path = (Path *) lfirst(lc);
 			Path	   *path_original = path;
 			bool		is_sorted;
-			int			presorted_keys;
+			int			presorted_keys = 0;
+			List	   *group_pathkeys = root->group_pathkeys,
+					   *group_clauses = parse->groupClause;
+			int			n_preordered_groups;
 
-			is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+			is_sorted = pathkeys_count_contained_in(group_pathkeys,
 													path->pathkeys,
 													&presorted_keys);
 
+			n_preordered_groups = group_keys_reorder_by_pathkeys(path->pathkeys,
+																 &group_pathkeys,
+																 &group_clauses);
+			is_sorted = is_sorted || (n_preordered_groups == list_length(group_pathkeys));
+
 			if (path == cheapest_partial_path || is_sorted)
 			{
+
 				/* Sort the cheapest partial path, if it isn't already */
 				if (!is_sorted)
+				{
+					get_cheapest_group_keys_order(root,
+												  path->rows,
+												  &group_pathkeys,
+												  &group_clauses,
+												  n_preordered_groups);
 					path = (Path *) create_sort_path(root,
 													 partially_grouped_rel,
 													 path,
-													 root->group_pathkeys,
+													 group_pathkeys,
 													 -1.0);
+				}
 
 				if (parse->hasAggs)
 					add_partial_path(partially_grouped_rel, (Path *)
@@ -6572,9 +6642,9 @@ create_partial_grouping_paths(PlannerInfo *root,
 													 partially_grouped_rel,
 													 path,
 													 partially_grouped_rel->reltarget,
-													 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+													 group_clauses ? AGG_SORTED : AGG_PLAIN,
 													 AGGSPLIT_INITIAL_SERIAL,
-													 parse->groupClause,
+													 group_clauses,
 													 NIL,
 													 agg_partial_costs,
 													 dNumPartialPartialGroups));
@@ -6583,7 +6653,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 									 create_group_path(root,
 													   partially_grouped_rel,
 													   path,
-													   parse->groupClause,
+													   group_clauses,
 													   NIL,
 													   dNumPartialPartialGroups));
 			}

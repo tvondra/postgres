@@ -6002,52 +6002,136 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 		 */
 		foreach(lc, input_rel->pathlist)
 		{
+			ListCell   *lc2;
 			Path	   *path = (Path *) lfirst(lc);
+			Path	   *path_save = path;
 			Path	   *path_original = path;
 			bool		is_sorted;
 			int			presorted_keys = 0;
 
-			List	   *group_pathkeys = root->group_pathkeys,
-					   *group_clauses = parse->groupClause;
-			int			n_preordered_groups = 0;
+			List	   *pathkey_orderings = NIL;
+			int			n_preordered = 0;
 
-			if (parse->groupingSets)
-			{
-				/*
-				 * prevent group pathkey reordering, just check the same
-				 * order paths pathkeys and group pathkeys
-				 */
-				is_sorted = pathkeys_count_contained_in(group_pathkeys,
-												  path->pathkeys,
-												  &presorted_keys);
-			}
-			else
-			{
-				n_preordered_groups =
-						group_keys_reorder_by_pathkeys(path->pathkeys,
-													   &group_pathkeys,
-													   &group_clauses);
-				is_sorted = (n_preordered_groups == list_length(group_pathkeys));
-			}
+			List	   *group_pathkeys = root->group_pathkeys;
+			List	   *group_clauses = parse->groupClause;
 
-			if (path == cheapest_path || is_sorted)
+			/*
+			 * Try reordering group keys to match pathkeys of the current path, but
+			 * only when there are no grouping sets.
+			 *
+			 * XXX Isn't this somewhat redundant with presorted_keys?
+			 */
+			if (!parse->groupingSets)
+				n_preordered = group_keys_reorder_by_pathkeys(path->pathkeys,
+															  &group_pathkeys,
+															  &group_clauses);
+
+			/* generate alternative group orderings that might be useful */
+			pathkey_orderings = get_useful_group_keys_orderings(root,
+																path->rows,
+																group_pathkeys,
+																group_clauses,
+																n_preordered);
+
+			Assert(list_length(pathkey_orderings) > 0);
+
+			/* process all potentially interesting grouping reorderings */
+			foreach (lc2, pathkey_orderings)
 			{
-				/* Sort the cheapest-total path if it isn't already sorted */
-				if (!is_sorted)
+				PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
+
+				/* restore the path (we replace it in the loop) */
+				path = path_save;
+
+				is_sorted = pathkeys_count_contained_in(info->pathkeys,
+														path->pathkeys,
+														&presorted_keys);
+
+				if (path == cheapest_path || is_sorted)
 				{
-					if (!parse->groupingSets)
-						get_cheapest_group_keys_order(root,
-													  path->rows,
-													  &group_pathkeys,
-													  &group_clauses,
-													  n_preordered_groups);
+					/* Sort the cheapest-total path if it isn't already sorted */
+					if (!is_sorted)
+					{
+						path = (Path *) create_sort_path(root,
+														 grouped_rel,
+														 path,
+														 info->pathkeys,
+														 -1.0);
+					}
 
-					path = (Path *) create_sort_path(root,
-													 grouped_rel,
-													 path,
-													 group_pathkeys,
-													 -1.0);
+					/* Now decide what to stick atop it */
+					if (parse->groupingSets)
+					{
+						consider_groupingsets_paths(root, grouped_rel,
+													path, true, can_hash,
+													gd, agg_costs, dNumGroups);
+					}
+					else if (parse->hasAggs)
+					{
+						/*
+						 * We have aggregation, possibly with plain GROUP BY. Make
+						 * an AggPath.
+						 */
+						add_path(grouped_rel, (Path *)
+								 create_agg_path(root,
+												 grouped_rel,
+												 path,
+												 grouped_rel->reltarget,
+												 info->clauses ? AGG_SORTED : AGG_PLAIN,
+												 AGGSPLIT_SIMPLE,
+												 info->clauses,
+												 havingQual,
+												 agg_costs,
+												 dNumGroups));
+					}
+					else if (group_clauses)
+					{
+						/*
+						 * We have GROUP BY without aggregation or grouping sets.
+						 * Make a GroupPath.
+						 */
+						add_path(grouped_rel, (Path *)
+								 create_group_path(root,
+												   grouped_rel,
+												   path,
+												   info->clauses,
+												   havingQual,
+												   dNumGroups));
+					}
+					else
+					{
+						/* Other cases should have been handled above */
+						Assert(false);
+					}
 				}
+
+				/*
+				 * Now we may consider incremental sort on this path, but only
+				 * when the path is not already sorted and when incremental sort
+				 * is enabled.
+				 */
+				if (is_sorted || !enable_incremental_sort)
+					continue;
+
+				/* Restore the input path (we might have added Sort on top). */
+				path = path_original;
+
+				/* no shared prefix, no point in building incremental sort */
+				if (presorted_keys == 0)
+					continue;
+
+				/*
+				 * We should have already excluded pathkeys of length 1 because
+				 * then presorted_keys > 0 would imply is_sorted was true.
+				 */
+				Assert(list_length(root->group_pathkeys) != 1);
+
+				path = (Path *) create_incremental_sort_path(root,
+															 grouped_rel,
+															 path,
+															 info->pathkeys,
+															 presorted_keys,
+															 -1.0);
 
 				/* Now decide what to stick atop it */
 				if (parse->groupingSets)
@@ -6059,32 +6143,32 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				else if (parse->hasAggs)
 				{
 					/*
-					 * We have aggregation, possibly with plain GROUP BY. Make
-					 * an AggPath.
+					 * We have aggregation, possibly with plain GROUP BY. Make an
+					 * AggPath.
 					 */
 					add_path(grouped_rel, (Path *)
 							 create_agg_path(root,
 											 grouped_rel,
 											 path,
 											 grouped_rel->reltarget,
-											 group_clauses ? AGG_SORTED : AGG_PLAIN,
+											 info->clauses ? AGG_SORTED : AGG_PLAIN,
 											 AGGSPLIT_SIMPLE,
-											 group_clauses,
+											 info->clauses,
 											 havingQual,
 											 agg_costs,
 											 dNumGroups));
 				}
-				else if (group_clauses)
+				else if (parse->groupClause)
 				{
 					/*
-					 * We have GROUP BY without aggregation or grouping sets.
-					 * Make a GroupPath.
+					 * We have GROUP BY without aggregation or grouping sets. Make
+					 * a GroupPath.
 					 */
 					add_path(grouped_rel, (Path *)
 							 create_group_path(root,
 											   grouped_rel,
 											   path,
-											   group_clauses,
+											   info->clauses,
 											   havingQual,
 											   dNumGroups));
 				}
@@ -6093,79 +6177,6 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 					/* Other cases should have been handled above */
 					Assert(false);
 				}
-			}
-
-			/*
-			 * Now we may consider incremental sort on this path, but only
-			 * when the path is not already sorted and when incremental sort
-			 * is enabled.
-			 */
-			if (is_sorted || !enable_incremental_sort)
-				continue;
-
-			/* Restore the input path (we might have added Sort on top). */
-			path = path_original;
-
-			/* no shared prefix, no point in building incremental sort */
-			if (presorted_keys == 0)
-				continue;
-
-			/*
-			 * We should have already excluded pathkeys of length 1 because
-			 * then presorted_keys > 0 would imply is_sorted was true.
-			 */
-			Assert(list_length(root->group_pathkeys) != 1);
-
-			path = (Path *) create_incremental_sort_path(root,
-														 grouped_rel,
-														 path,
-														 root->group_pathkeys,
-														 presorted_keys,
-														 -1.0);
-
-			/* Now decide what to stick atop it */
-			if (parse->groupingSets)
-			{
-				consider_groupingsets_paths(root, grouped_rel,
-											path, true, can_hash,
-											gd, agg_costs, dNumGroups);
-			}
-			else if (parse->hasAggs)
-			{
-				/*
-				 * We have aggregation, possibly with plain GROUP BY. Make an
-				 * AggPath.
-				 */
-				add_path(grouped_rel, (Path *)
-						 create_agg_path(root,
-										 grouped_rel,
-										 path,
-										 grouped_rel->reltarget,
-										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-										 AGGSPLIT_SIMPLE,
-										 parse->groupClause,
-										 havingQual,
-										 agg_costs,
-										 dNumGroups));
-			}
-			else if (parse->groupClause)
-			{
-				/*
-				 * We have GROUP BY without aggregation or grouping sets. Make
-				 * a GroupPath.
-				 */
-				add_path(grouped_rel, (Path *)
-						 create_group_path(root,
-										   grouped_rel,
-										   path,
-										   parse->groupClause,
-										   havingQual,
-										   dNumGroups));
-			}
-			else
-			{
-				/* Other cases should have been handled above */
-				Assert(false);
 			}
 		}
 
@@ -6205,7 +6216,8 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 												  path->rows,
 												  &group_pathkeys,
 												  &group_clauses,
-												  n_preordered_groups);
+												  n_preordered_groups,
+												  debug_group_by_match_order_by);
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
@@ -6506,7 +6518,8 @@ create_partial_grouping_paths(PlannerInfo *root,
 												  path->rows,
 												  &group_pathkeys,
 												  &group_clauses,
-												  n_preordered_groups);
+												  n_preordered_groups,
+												  debug_group_by_match_order_by);
 					path = (Path *) create_sort_path(root,
 													 partially_grouped_rel,
 													 path,
@@ -6628,7 +6641,8 @@ create_partial_grouping_paths(PlannerInfo *root,
 												  path->rows,
 												  &group_pathkeys,
 												  &group_clauses,
-												  n_preordered_groups);
+												  n_preordered_groups,
+												  debug_group_by_match_order_by);
 					path = (Path *) create_sort_path(root,
 													 partially_grouped_rel,
 													 path,

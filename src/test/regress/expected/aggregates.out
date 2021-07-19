@@ -2594,10 +2594,11 @@ SELECT count(*) FROM btg GROUP BY v, p, c;
 -------------------------------------------------
  GroupAggregate
    Group Key: p, v, c
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: p, v, c
+         Presorted Key: p, v
          ->  Index Scan using btg_p_v_idx on btg
-(5 rows)
+(6 rows)
 
 EXPLAIN (COSTS off)
 SELECT count(*) FROM btg GROUP BY v, p, c ORDER BY p, v;
@@ -2605,10 +2606,11 @@ SELECT count(*) FROM btg GROUP BY v, p, c ORDER BY p, v;
 -------------------------------------------------
  GroupAggregate
    Group Key: p, v, c
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: p, v, c
+         Presorted Key: p, v
          ->  Index Scan using btg_p_v_idx on btg
-(5 rows)
+(6 rows)
 
 EXPLAIN (COSTS off)
 SELECT count(*) FROM btg GROUP BY v, c, p, d;
@@ -2616,10 +2618,11 @@ SELECT count(*) FROM btg GROUP BY v, c, p, d;
 -------------------------------------------------
  GroupAggregate
    Group Key: p, v, c, d
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: p, v, c, d
+         Presorted Key: p, v
          ->  Index Scan using btg_p_v_idx on btg
-(5 rows)
+(6 rows)
 
 EXPLAIN (COSTS off)
 SELECT count(*) FROM btg GROUP BY v, c, p, d ORDER BY p, v;
@@ -2627,10 +2630,11 @@ SELECT count(*) FROM btg GROUP BY v, c, p, d ORDER BY p, v;
 -------------------------------------------------
  GroupAggregate
    Group Key: p, v, c, d
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: p, v, c, d
+         Presorted Key: p, v
          ->  Index Scan using btg_p_v_idx on btg
-(5 rows)
+(6 rows)
 
 DROP TABLE btg;
 RESET enable_hashagg;

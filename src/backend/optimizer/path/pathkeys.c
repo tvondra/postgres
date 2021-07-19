@@ -516,6 +516,62 @@ pathkey_sort_cost_comparator(const void *_a, const void *_b)
 	return 1;
 }
 
+
+List *
+get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
+								List *group_pathkeys, List *group_clauses,
+								int n_preordered)
+{
+	Query	   *parse = root->parse;
+	List	   *infos = NIL;
+	PathKeyInfo *info;
+
+	List *pathkeys = group_pathkeys;
+	List *clauses = group_clauses;
+
+	/* always return at least the original pathkeys/clauses */
+	info = makeNode(PathKeyInfo);
+	info->pathkeys = pathkeys;
+	info->clauses = clauses;
+
+	infos = lappend(infos, info);
+
+	/* for grouping sets we can't do any reordering */
+	if (parse->groupingSets)
+		return infos;
+
+	/*
+	 * Try reordering pathkeys to minimize the sort cost (ignoring the ORDER
+	 * BY clause for now).
+	 */
+	if (get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
+									  n_preordered, false))
+	{
+		info = makeNode(PathKeyInfo);
+		info->pathkeys = pathkeys;
+		info->clauses = clauses;
+
+		infos = lappend(infos, info);
+	}
+
+	/*
+	 * Try reordering pathkeys to minimize the sort cost (this time consider
+	 * the ORDER BY clause, but only if set debug_group_by_match_order_by).
+	 */
+	if (debug_group_by_match_order_by &&
+		get_cheapest_group_keys_order(root, nrows, &pathkeys, &clauses,
+									  n_preordered, true))
+	{
+		info = makeNode(PathKeyInfo);
+		info->pathkeys = pathkeys;
+		info->clauses = clauses;
+
+		infos = lappend(infos, info);
+	}
+
+	return infos;
+}
+
 /*
  * get_cheapest_group_keys_order
  *		Returns the pathkeys in an order cheapest to evaluate.
@@ -532,10 +588,10 @@ pathkey_sort_cost_comparator(const void *_a, const void *_b)
  * Returns newly allocated lists. If no reordering is possible (or needed),
  * the lists are set to NIL.
  */
-void
+bool
 get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 							  List **group_pathkeys, List **group_clauses,
-							  int n_preordered)
+							  int n_preordered, bool consider_group_by)
 {
 	List		   *new_group_pathkeys = NIL,
 				   *new_group_clauses = NIL,
@@ -550,11 +606,11 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 
 	/* If this optimization is disabled, we're done. */
 	if (!debug_cheapest_group_by)
-		return;
+		return false;
 
 	/* If there are less than 2 unsorted pathkeys, we're done. */
 	if (list_length(*group_pathkeys) - n_preordered < 2)
-		return;
+		return false;
 
 	/*
 	 * If the query has an ORDER BY clause, we try to use pathkeys that already
@@ -574,8 +630,11 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 	 * point. Instead we should generate paths for both pathkeys "variants"
 	 * and let the existing optimizer logic pick later. This is quite similar
 	 * to what get_useful_pathkeys_for_relation does.
+	 *
+	 * XXX The (n_preordered == 0) restriction seems unnecessary - we might
+	 * check if the prefix matches sort_pathkeys first.
 	 */
-	if (debug_group_by_match_order_by &&
+	if (consider_group_by &&
 		n_preordered == 0 && root->sort_pathkeys)
 	{
 		bool _save_debug_group_by_reorder_by_pathkeys =
@@ -587,9 +646,16 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 													  group_clauses);
 		debug_group_by_reorder_by_pathkeys = _save_debug_group_by_reorder_by_pathkeys;
 
-		/* nothing to do */
+		/*
+		 * Nothing else to do (the GROUP BY and ORDER BY have the same set
+		 * of pathkeys, in different order).
+		 *
+		 * XXX Maybe return false if the ordering is the same for both, because
+		 * in that case get_useful_group_keys_orderings would end up with two
+		 * equal elements in the result?
+		 */
 		if (list_length(*group_pathkeys) - n_preordered < 2)
-			return;
+			return true;
 	}
 
 	/*
@@ -711,6 +777,8 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 
 	*group_pathkeys = new_group_pathkeys;
 	*group_clauses = new_group_clauses;
+
+	return true;
 }
 
 /*

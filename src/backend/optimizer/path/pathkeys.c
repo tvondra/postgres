@@ -2390,8 +2390,19 @@ pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys)
  *		Count the number of pathkeys that are useful for grouping (instead of
  *		explicit sort)
  *
- * Group pathkeys could be reordered, so we don't bother about actual order in
- * pathkeys
+ * Group pathkeys could be reordered to benefit from the odering. The ordering
+ * may not be "complete" and may require incremental sort, but that's fine. So
+ * we simply count prefix pathkeys with a matching group key, and stop once we
+ * find the first pathkey without a match.
+ *
+ * So e.g. with pathkeys (a,b,c) and group keys (a,b,e) this determines (a,b)
+ * pathkeys are useful for grouping, and we might do incremental sort to get
+ * path ordered by (a,b,e).
+ *
+ * This logic is necessary to retain paths with ordeding not matching grouping
+ * keys directly, without the reordering.
+ *
+ * Returns the length of pathkey prefix with matching group keys.
  */
 static int
 pathkeys_useful_for_grouping(PlannerInfo *root, List *pathkeys)
@@ -2399,16 +2410,20 @@ pathkeys_useful_for_grouping(PlannerInfo *root, List *pathkeys)
 	ListCell *key;
 	int		  n = 0;
 
+	/* no special ordering requested for grouping */
 	if (root->group_pathkeys == NIL)
-		return 0;				/* no special ordering requested */
+		return 0;
 
+	/* unordered path */
 	if (pathkeys == NIL)
-		return 0;				/* unordered path */
+		return 0;
 
+	/* walk the pathkeys and search for matching group key */
 	foreach(key, pathkeys)
 	{
 		PathKey	*pathkey = (PathKey *) lfirst(key);
 
+		/* no matching group key, we're done */
 		if (!list_member_ptr(root->group_pathkeys, pathkey))
 			break;
 

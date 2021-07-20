@@ -2593,10 +2593,10 @@ SELECT count(*) FROM btg GROUP BY v, p, c;
                    QUERY PLAN                    
 -------------------------------------------------
  GroupAggregate
-   Group Key: p, v, c
+   Group Key: p, c, v
    ->  Incremental Sort
-         Sort Key: p, v, c
-         Presorted Key: p, v
+         Sort Key: p, c, v
+         Presorted Key: p
          ->  Index Scan using btg_p_v_idx on btg
 (6 rows)
 
@@ -2617,10 +2617,10 @@ SELECT count(*) FROM btg GROUP BY v, c, p, d;
                    QUERY PLAN                    
 -------------------------------------------------
  GroupAggregate
-   Group Key: p, v, c, d
+   Group Key: p, c, d, v
    ->  Incremental Sort
-         Sort Key: p, v, c, d
-         Presorted Key: p, v
+         Sort Key: p, c, d, v
+         Presorted Key: p
          ->  Index Scan using btg_p_v_idx on btg
 (6 rows)
 

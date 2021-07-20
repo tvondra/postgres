@@ -6008,28 +6008,16 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 			Path	   *path_original = path;
 
 			List	   *pathkey_orderings = NIL;
-			int			n_preordered = 0;
 
 			List	   *group_pathkeys = root->group_pathkeys;
 			List	   *group_clauses = parse->groupClause;
 
-			/*
-			 * Try reordering group keys to match pathkeys of the current path, but
-			 * only when there are no grouping sets.
-			 *
-			 * XXX Isn't this somewhat redundant with presorted_keys?
-			 */
-			if (!parse->groupingSets)
-				n_preordered = group_keys_reorder_by_pathkeys(path->pathkeys,
-															  &group_pathkeys,
-															  &group_clauses);
-
 			/* generate alternative group orderings that might be useful */
 			pathkey_orderings = get_useful_group_keys_orderings(root,
 																path->rows,
+																path->pathkeys,
 																group_pathkeys,
-																group_clauses,
-																n_preordered);
+																group_clauses);
 
 			Assert(list_length(pathkey_orderings) > 0);
 
@@ -6191,28 +6179,18 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				ListCell   *lc2;
 				Path	   *path = (Path *) lfirst(lc);
 				Path	   *path_original = path;
-				int			n_preordered = 0;
 
 				List	   *pathkey_orderings = NIL;
 
 				List	   *group_pathkeys = root->group_pathkeys;
 				List	   *group_clauses = parse->groupClause;
 
-				/*
-				 * Try reordering group keys to match pathkeys of the current path.
-				 *
-				 * XXX Isn't this somewhat redundant with presorted_keys?
-				 */
-				n_preordered = group_keys_reorder_by_pathkeys(path->pathkeys,
-															  &group_pathkeys,
-															  &group_clauses);
-
 				/* generate alternative group orderings that might be useful */
 				pathkey_orderings = get_useful_group_keys_orderings(root,
 																	path->rows,
+																	path->pathkeys,
 																	group_pathkeys,
-																	group_clauses,
-																	n_preordered);
+																	group_clauses);
 
 				Assert(list_length(pathkey_orderings) > 0);
 
@@ -6524,24 +6502,16 @@ create_partial_grouping_paths(PlannerInfo *root,
 			Path	   *path_save = path;
 
 			List	   *pathkey_orderings = NIL;
-			int			n_preordered = 0;
 
 			List	   *group_pathkeys = root->group_pathkeys;
 			List	   *group_clauses = parse->groupClause;
 
-			/*
-			 * Try reordering group keys to match pathkeys of the current path.
-			 */
-			n_preordered = group_keys_reorder_by_pathkeys(path->pathkeys,
-														  &group_pathkeys,
-														  &group_clauses);
-
 			/* generate alternative group orderings that might be useful */
 			pathkey_orderings = get_useful_group_keys_orderings(root,
 																path->rows,
+																path->pathkeys,
 																group_pathkeys,
-																group_clauses,
-																n_preordered);
+																group_clauses);
 
 			Assert(list_length(pathkey_orderings) > 0);
 
@@ -6666,24 +6636,16 @@ create_partial_grouping_paths(PlannerInfo *root,
 			Path	   *path_original = path;
 
 			List	   *pathkey_orderings = NIL;
-			int			n_preordered = 0;
 
 			List	   *group_pathkeys = root->group_pathkeys;
 			List	   *group_clauses = parse->groupClause;
 
-			/*
-			 * Try reordering group keys to match pathkeys of the current path.
-			 */
-			n_preordered = group_keys_reorder_by_pathkeys(path->pathkeys,
-														  &group_pathkeys,
-														  &group_clauses);
-
 			/* generate alternative group orderings that might be useful */
 			pathkey_orderings = get_useful_group_keys_orderings(root,
 																path->rows,
+																path->pathkeys,
 																group_pathkeys,
-																group_clauses,
-																n_preordered);
+																group_clauses);
 
 			Assert(list_length(pathkey_orderings) > 0);
 

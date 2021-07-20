@@ -212,8 +212,8 @@ extern bool debug_group_by_match_order_by;
 extern bool debug_cheapest_group_by;
 /************************</DEBUG OPT GROUP BY>********************************/
 extern List *get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
-											 List *pathkeys, List *clauses,
-											 int n_preordered);
+											 List *path_pathkeys,
+											 List *pathkeys, List *clauses);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 											Relids required_outer,
 											CostSelector cost_criterion,

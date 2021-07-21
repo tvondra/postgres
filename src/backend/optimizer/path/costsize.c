@@ -2011,15 +2011,14 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 				heap_tuples = Max(ceil(output_tuples / tuplesPerPrevGroup) * tuplesPerPrevGroup,
 								  tuplesPerPrevGroup);
 
-				/* so how many groups is that? */
-				correctedNGroups = 2.0 * heap_tuples / tuplesPerPrevGroup;
+				/* so how many (whole) groups is that? */
+				correctedNGroups = ceil(heap_tuples / tuplesPerPrevGroup);
 			}
 			else
 				/* all groups in the input */
 				correctedNGroups = nGroups;
 
-			// correctedNGroups = nGroups;
-			correctedNGroups = ceil(correctedNGroups);
+			correctedNGroups = Max(1.0, ceil(correctedNGroups));
 
 			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups);
 		}

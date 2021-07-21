@@ -2005,22 +2005,22 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		{
 			if (heapSort)
 			{
-				if (tuplesPerPrevGroup < output_tuples)
-					/* comparing only inside output_tuples */
-					/* XXX why not to use the same multiplier (1.5)? */
-					correctedNGroups =
-						ceil(2.0 * output_tuples / (tuplesPerPrevGroup / nGroups));
-				else
-					/* two groups - in output and out */
-					correctedNGroups = 2.0;
+				double heap_tuples;
+
+				/* have to keep at least one group, and a multiple of group size */
+				heap_tuples = Max(ceil(output_tuples / tuplesPerPrevGroup) * tuplesPerPrevGroup,
+								  tuplesPerPrevGroup);
+
+				/* so how many groups is that? */
+				correctedNGroups = 2.0 * heap_tuples / tuplesPerPrevGroup;
 			}
 			else
+				/* all groups in the input */
 				correctedNGroups = nGroups;
 
-			if (correctedNGroups <= 1.0)
-				correctedNGroups = 2.0;
-			else
-				correctedNGroups = ceil(correctedNGroups);
+			// correctedNGroups = nGroups;
+			correctedNGroups = ceil(correctedNGroups);
+
 			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups);
 		}
 

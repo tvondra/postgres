@@ -1888,7 +1888,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	Cost		per_tuple_cost = 0.0;
 	ListCell	*lc;
 	List		*pathkeyExprs = NIL;
-	double		tuplesPerPrevGroup = tuples;
 	double		totalFuncCost = 1.0;
 	bool		has_fake_var = false;
 	int			i = 0;
@@ -1896,7 +1895,10 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	Cost		funcCost = 0.0;
 	List		*cache_varinfos = NIL;
 
-	/* fallback if pathkeys is unknown */
+	/* start with all tuples in a single group */
+	double		prevNGroups = 1;
+
+	/* fallback if pathkeys is unknown (see comment at cost_sort) */
 	if (list_length(pathkeys) == 0)
 	{
 		/*
@@ -1919,16 +1921,27 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	}
 
 	/*
-	 * Computing total cost of sorting takes into account:
-	 * - per column comparison function cost
-	 * - we try to compute needed number of comparison per column
+	 * Computing total cost of sorting, by considering comparisons of all the
+	 * sort keys. For each sort key we consider
+	 *
+	 * - per column comparison cost (associated with the comparison function)
+	 *
+	 * - estimated number of comparisons per column (per row)
+	 *
+	 * We process the keys iteratively, and for each sort key we estimate the
+	 * number of groups at that level. We start with no sort keys, and a single
+	 * group containing all rows. Then we add the first sort key, estimate the
+	 * number of groups (and also the number of rows per group). This allows
+	 * estimating the comparison costs for this sort key. Then we repeat this
+	 * for the next key.
 	 */
 	foreach(lc, pathkeys)
 	{
-		PathKey				*pathkey = (PathKey*)lfirst(lc);
-		EquivalenceMember	*em;
-		double				 nGroups,
-							 correctedNGroups;
+		PathKey			   *pathkey = (PathKey*)lfirst(lc);
+		EquivalenceMember  *em;
+		double				nGroups;
+		double				newGroups;
+		double				tuplesPerGroup;
 
 		/*
 		 * We believe than equivalence members aren't very  different, so, to
@@ -1950,9 +1963,16 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 
 				cost.startup = 0;
 				cost.per_tuple = 0;
+
 				add_function_cost(root, get_opcode(sortop), NULL, &cost);
-				/* we need procost, not product of procost and cpu_operator_cost */
+
+				/*
+				 * we need procost, not product of procost and cpu_operator_cost
+				 *
+				 * XXX Seems pointless, when we do the product at the end anyway?
+				 */
 				funcCost = cost.per_tuple / cpu_operator_cost;
+
 				prev_datatype = em->em_datatype;
 			}
 		}
@@ -1969,15 +1989,17 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		pathkeyExprs = lappend(pathkeyExprs, em->em_expr);
 
 		/*
-		 * Prevent call estimate_num_groups() with fake Var. Note,
-		 * pathkeyExprs contains only previous columns
+		 * Estimate the number of groups for the current list of sort keys.
+		 * We use the total number of input tuples, to make the estimates
+		 * consistent. If we tweaked the number of tuples somehow (e.g. to
+		 * track only one group), we might get strange amplifications due
+		 * to non-linearities in estimate_num_groups.
+		 *
+		 * XXX Prevent call estimate_num_groups() with fake Var.
 		 */
-		if (has_fake_var == false)
-			/*
-			 * Recursively compute number of group in group from previous step
-			 */
+		if (!has_fake_var)
 			nGroups = estimate_num_groups_incremental(root, pathkeyExprs,
-													  tuplesPerPrevGroup, NULL, NULL,
+													  tuples, NULL, NULL,
 													  &cache_varinfos,
 													  list_length(pathkeyExprs) - 1);
 		else if (tuples > 4.0)
@@ -1998,44 +2020,61 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 			nGroups = tuples;
 
 		/*
-		 * Presorted keys aren't participated in comparison but still checked
-		 * by qsort comparator.
+		 * We might get inconsistent results (e.g. due to matching extended
+		 * statistics unlike the preceding loops, etc), so fix that - the
+		 * number of groups should not decrease.
+		 */
+		nGroups = Max(nGroups, prevNGroups);
+
+		/*
+		 * Calculate the number of "new" groups that need to be considered
+		 * for one group (defined by the already considered keys).
+		 */
+		newGroups = (nGroups / prevNGroups);
+
+		/*
+		 * Calculate the number of tuples "per group" after considering the
+		 * new sort key.
+		 */
+		tuplesPerGroup = (tuples / nGroups);
+
+		/*
+		 * Presorted don't participate in comparisons, so don't include them
+		 * in the per-tuple cost estimates.
+		 *
+		 * XXX Why do we actually do the preceding code for presorted keys?
+		 * Can't we skip most of that too?
+		 *
+		 * XXX Isn't it wrong not to consider any comparisons on the presorted keys?
 		 */
 		if (i >= nPresortedKeys)
 		{
-			if (heapSort)
+			/* by default we use all "new" groups in the input */
+			double correctedNGroups = nGroups;
+
+			if (heapSort && output_tuples < tuples)
 			{
-				double heap_tuples;
+				double	per_group = ceil(tuples / prevNGroups);
+				double	num_groups = ceil(output_tuples / per_group);
 
-				/* have to keep at least one group, and a multiple of group size */
-				heap_tuples = Max(ceil(output_tuples / tuplesPerPrevGroup) * tuplesPerPrevGroup,
-								  tuplesPerPrevGroup);
+				double	heap_tuples = per_group * num_groups;
 
-				/* so how many (whole) groups is that? */
-				correctedNGroups = ceil(heap_tuples / tuplesPerPrevGroup);
+				correctedNGroups = heap_tuples / tuplesPerGroup;
 			}
-			else
-				/* all groups in the input */
-				correctedNGroups = nGroups;
-
-			correctedNGroups = Max(1.0, ceil(correctedNGroups));
 
 			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups);
 		}
 
 		i++;
 
-		/*
-		 * Real-world distribution isn't uniform but now we don't have a way to
-		 * determine that, so, add multiplier to get closer to worst case.
-		 */
-		tuplesPerPrevGroup = ceil(1.5 * tuplesPerPrevGroup / nGroups);
+		/* remember number of groups from this step */
+		prevNGroups = nGroups;
 
 		/*
 		 * We could skip all following columns for cost estimation, because we
 		 * believe that tuples are unique by set ot previous columns
 		 */
-		if (tuplesPerPrevGroup <= 1.0)
+		if (tuplesPerGroup <= 1.0)
 			break;
 	}
 

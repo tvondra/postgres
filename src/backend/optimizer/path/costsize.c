@@ -2050,8 +2050,9 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		if (i >= nPresortedKeys)
 		{
 			/* by default we use all "new" groups in the input */
-			double correctedNGroups = nGroups;
+			double correctedNGroups = newGroups;
 
+			/* how many groups we need to keep in the heap? */
 			if (heapSort && output_tuples < tuples)
 			{
 				double	per_group = ceil(tuples / prevNGroups);
@@ -2062,7 +2063,9 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 				correctedNGroups = heap_tuples / tuplesPerGroup;
 			}
 
-			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups);
+			//elog(WARNING, "%d => totalFuncCost %f correctedNGroups = %f", i, totalFuncCost, correctedNGroups);
+
+			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups) * correctedNGroups * tuplesPerGroup / tuples;
 		}
 
 		i++;

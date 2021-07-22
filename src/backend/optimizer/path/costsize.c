@@ -1897,7 +1897,9 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 
 	/* start with all tuples in a single group */
 	double		prevNGroups = 1;
+	double		prevNComparisons = tuples;	/* tuples * log2(groups) */
 
+	// elog(WARNING, "------------------------------");
 	/* fallback if pathkeys is unknown (see comment at cost_sort) */
 	if (list_length(pathkeys) == 0)
 	{
@@ -1940,7 +1942,7 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		PathKey			   *pathkey = (PathKey*)lfirst(lc);
 		EquivalenceMember  *em;
 		double				nGroups;
-		double				newGroups;
+		double				nComparisons;
 		double				tuplesPerGroup;
 
 		/*
@@ -1965,6 +1967,8 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 				cost.per_tuple = 0;
 
 				add_function_cost(root, get_opcode(sortop), NULL, &cost);
+
+				//elog(WARNING, "%d => func per tuple %f", i, cost.per_tuple);
 
 				/*
 				 * we need procost, not product of procost and cpu_operator_cost
@@ -2027,16 +2031,19 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		nGroups = Max(nGroups, prevNGroups);
 
 		/*
-		 * Calculate the number of "new" groups that need to be considered
-		 * for one group (defined by the already considered keys).
-		 */
-		newGroups = (nGroups / prevNGroups);
-
-		/*
 		 * Calculate the number of tuples "per group" after considering the
-		 * new sort key.
+		 * new sort key. We'll use this to reduce the amount of work in case
+		 * of top-N heap sort.
 		 */
 		tuplesPerGroup = (tuples / nGroups);
+
+		/*
+		 * N * log(ngroups). In principle we could do this without tuples,
+		 * because the division will eliminate that anyway, but meh.
+		 */
+		nComparisons = Max(1.0, tuples * LOG2(nGroups));
+
+		//elog(WARNING, "%d => groups %f new %f tuples %f", i, nGroups, newGroups, tuplesPerGroup);
 
 		/*
 		 * Presorted don't participate in comparisons, so don't include them
@@ -2049,29 +2056,52 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		 */
 		if (i >= nPresortedKeys)
 		{
-			/* by default we use all "new" groups in the input */
-			double correctedNGroups = newGroups;
+			/* comparisons on the new key */
+			double	keyComparisons = ceil(nComparisons / prevNComparisons);
+			double	coeff = 1.0;
 
-			/* how many groups we need to keep in the heap? */
+			/*
+			 * For the heap sort, we can reduce the amount of work a bit,
+			 * because we can keep fewer rows in the heap as we go. So we
+			 * calculate a corrected number of groups (and comparisons),
+			 * but we also need to calculate correction coefficient, as
+			 * it's meant to be
+			 *
+			 *		output_tuples * comparisons
+			 *
+			 * but we'll multiply it with tuples.
+			 */
 			if (heapSort && output_tuples < tuples)
 			{
-				double	per_group = ceil(tuples / prevNGroups);
-				double	num_groups = ceil(output_tuples / per_group);
+				/* number of "previous" groups in heap */
+				double	a = Max(1.0, LOG2(ceil(output_tuples / tuples) * prevNGroups));
 
-				double	heap_tuples = per_group * num_groups;
+				/* number of "current" groups in heap */
+				double	b = Max(1.0, LOG2(ceil(output_tuples / tuples) * nGroups));
 
-				correctedNGroups = heap_tuples / tuplesPerGroup;
+// elog(WARNING, "a = %f b = %f", a, b);
+				/* number of comparisons */
+				double	c = ceil(b / a);
+
+				keyComparisons = c;
+				coeff = output_tuples / tuples;
 			}
 
 			//elog(WARNING, "%d => totalFuncCost %f correctedNGroups = %f", i, totalFuncCost, correctedNGroups);
 
-			per_tuple_cost += totalFuncCost * LOG2(correctedNGroups) * correctedNGroups * tuplesPerGroup / tuples;
+//			elog(WARNING, "%d groups %f comparisons %f coeff %f", i, nGroups, keyComparisons, coeff);
+
+			per_tuple_cost += totalFuncCost * keyComparisons * coeff;
 		}
+		else
+			/* we need to compare it to the pivot tuple */
+			per_tuple_cost += totalFuncCost;
 
 		i++;
 
 		/* remember number of groups from this step */
 		prevNGroups = nGroups;
+		prevNComparisons = nComparisons;
 
 		/*
 		 * We could skip all following columns for cost estimation, because we
@@ -2100,6 +2130,8 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	per_tuple_cost += 10 * cpu_operator_cost;
 
 	per_tuple_cost += comparison_cost;
+
+//	elog(WARNING, "tuples * per_tuple_cost %f * %f = %f", tuples, per_tuple_cost, tuples * per_tuple_cost);
 
 	return tuples * per_tuple_cost;
 }

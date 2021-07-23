@@ -1899,7 +1899,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	double		prevNGroups = 1;
 	double		prevNComparisons = tuples;	/* tuples * log2(groups) */
 
-	// elog(WARNING, "------------------------------");
 	/* fallback if pathkeys is unknown (see comment at cost_sort) */
 	if (list_length(pathkeys) == 0)
 	{
@@ -1933,9 +1932,27 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	 * We process the keys iteratively, and for each sort key we estimate the
 	 * number of groups at that level. We start with no sort keys, and a single
 	 * group containing all rows. Then we add the first sort key, estimate the
-	 * number of groups (and also the number of rows per group). This allows
-	 * estimating the comparison costs for this sort key. Then we repeat this
-	 * for the next key.
+	 * number of groups (and also the number of rows per group).
+	 *
+	 * Once we know the number of groups, we estimate the number of comparison
+	 * for this list of keys as
+	 *
+	 *   ncomparisons = tuples * log2(ngroups)
+	 *
+	 * which includes comparisons on all keys. To get the number of comparisons
+	 * on the last key, we divide it by number of comparisons without the key
+	 * (i.e. one calculated in the last loop).
+	 *
+	 *   ncomparisons_on_key = ncomparisons / ncomparisons_prev
+	 *
+	 * Once we have this, we multiply this with the comparison cost.
+	 *
+	 * XXX There's an issue with grouping estimates - if the number of groups
+	 * does not increase (e.g. because keys are redundant or once we reach the
+	 * 10% limit in estimate_num_groups) this assumes there are no comparisons
+	 * needed, which seems perhaps overly-optimistic. Maybe we should assume
+	 * some small number / fraction of comparisons in this case? Perhaps 5% of
+	 * the previous number of comparisons, or something like that.
 	 */
 	foreach(lc, pathkeys)
 	{
@@ -2043,8 +2060,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 		 */
 		nComparisons = Max(1.0, tuples * LOG2(nGroups));
 
-		//elog(WARNING, "%d => groups %f new %f tuples %f", i, nGroups, newGroups, tuplesPerGroup);
-
 		/*
 		 * Presorted don't participate in comparisons, so don't include them
 		 * in the per-tuple cost estimates.
@@ -2079,7 +2094,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 				/* number of "current" groups in heap */
 				double	b = Max(1.0, LOG2(ceil(output_tuples / tuples) * nGroups));
 
-// elog(WARNING, "a = %f b = %f", a, b);
 				/* number of comparisons */
 				double	c = ceil(b / a);
 
@@ -2087,15 +2101,16 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 				coeff = output_tuples / tuples;
 			}
 
-			//elog(WARNING, "%d => totalFuncCost %f correctedNGroups = %f", i, totalFuncCost, correctedNGroups);
-
-//			elog(WARNING, "%d groups %f comparisons %f coeff %f", i, nGroups, keyComparisons, coeff);
-
+			/*
+			 * should this use the total or per-key func cost?
+			 *
+			 * XXX Why does this use totalFuncCost and not funcCost? If we're
+			 * estimating cost for the one key, why include cost for preceding
+			 * keys? Or do we assume all the other keys are compared too? Not
+			 * sure what tuplestore does for multicolumn sorts.
+			 */
 			per_tuple_cost += totalFuncCost * keyComparisons * coeff;
 		}
-		else
-			/* we need to compare it to the pivot tuple */
-			per_tuple_cost += totalFuncCost;
 
 		i++;
 
@@ -2130,8 +2145,6 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	per_tuple_cost += 10 * cpu_operator_cost;
 
 	per_tuple_cost += comparison_cost;
-
-//	elog(WARNING, "tuples * per_tuple_cost %f * %f = %f", tuples, per_tuple_cost, tuples * per_tuple_cost);
 
 	return tuples * per_tuple_cost;
 }

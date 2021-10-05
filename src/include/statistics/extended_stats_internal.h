@@ -131,4 +131,15 @@ extern bool *mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 								  Bitmapset *keys, List *exprs,
 								  MCVList *mcvlist, bool is_or);
 
+extern Selectivity mcv_combine_mcvs(PlannerInfo *root,
+									RelOptInfo *rel1,
+									RelOptInfo *rel2,
+									StatisticExtInfo *stat1,
+									StatisticExtInfo *stat2,
+									List *clauses);
+
+extern List *statext_determine_join_restrictions(PlannerInfo *root,
+												 RelOptInfo *rel,
+												 StatisticExtInfo *info);
+
 #endif							/* EXTENDED_STATS_INTERNAL_H */

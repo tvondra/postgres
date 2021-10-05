@@ -105,14 +105,6 @@ static StatsBuildData *make_build_data(Relation onerel, StatExtEntry *stat,
 static bool stat_covers_expressions(StatisticExtInfo *stat, List *exprs,
 									Bitmapset **expr_idxs);
 
-static List *statext_mcv_get_conditions(PlannerInfo *root,
-										RelOptInfo *rel,
-										StatisticExtInfo *info);
-
-static bool *statext_mcv_eval_conditions(PlannerInfo *root, RelOptInfo *rel,
-										 StatisticExtInfo *stat, MCVList *mcv,
-										 Selectivity *sel);
-
 /*
  * Compute requested extended stats, using the rows sampled for the plain
  * (single-column) stats.
@@ -2699,8 +2691,8 @@ statext_find_matching_mcv(PlannerInfo *root, RelOptInfo *rel,
 		 * run them through statext_is_compatible_clause first and then match
 		 * them.to the statistics.
 		 */
-		conditions1 = statext_mcv_get_conditions(root, rel, stat);
-		conditions2 = statext_mcv_get_conditions(root, rel, mcv);
+		conditions1 = statext_determine_join_restrictions(root, rel, stat);
+		conditions2 = statext_determine_join_restrictions(root, rel, mcv);
 
 		/* if the new statistics covers more conditions, use it */
 		if (list_length(conditions2) > list_length(conditions1))
@@ -2721,7 +2713,7 @@ statext_find_matching_mcv(PlannerInfo *root, RelOptInfo *rel,
 }
 
 /*
- * statext_mcv_get_conditions
+ * statext_determine_join_restrictions
  *		Get restrictions on base relation, covered by the statistics.
  *
  * Returns a list of baserel restrictinfos, compatible with extended statistics
@@ -2735,9 +2727,9 @@ statext_find_matching_mcv(PlannerInfo *root, RelOptInfo *rel,
  * which should be a better estimate than just P(join clauses). We want to pick
  * the statistics covering the most such conditions.
  */
-static List *
-statext_mcv_get_conditions(PlannerInfo *root, RelOptInfo *rel,
-						   StatisticExtInfo *info)
+List *
+statext_determine_join_restrictions(PlannerInfo *root, RelOptInfo *rel,
+									StatisticExtInfo *info)
 {
 	ListCell   *lc;
 	List	   *conditions = NIL;
@@ -2767,394 +2759,6 @@ statext_mcv_get_conditions(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	return conditions;
-}
-
-/*
- * statext_mcv_eval_conditions
- *		Evaluate a list of conditions on the MCV lists.
- *
- * This returns a match bitmap for the conditions, which can be used later
- * to restrict just the "interesting" part of the MCV lists. Also returns
- * the selectivity of the conditions, or 1.0 if there are no conditions.
- *
- * FIXME Maybe move this to the mcv.c file?
- */
-static bool *
-statext_mcv_eval_conditions(PlannerInfo *root, RelOptInfo *rel,
-							StatisticExtInfo *stat, MCVList *mcv,
-							Selectivity *sel)
-{
-	List   *conditions;
-
-	/* everything matches by default */
-	*sel = 1.0;
-
-	/*
-	 * XXX We've already evaluated this before, when picking the statistics
-	 * object. Maybe we should stash it somewhere, so that we don't have to
-	 * evaluate it again.
-	 */
-	conditions = statext_mcv_get_conditions(root, rel, stat);
-
-	/* If no conditions, we're done. */
-	if (!conditions)
-		return NULL;
-
-	/* what's the selectivity of the conditions alone? */
-	*sel = clauselist_selectivity(root, conditions, rel->relid, 0, NULL);
-
-	return mcv_get_match_bitmap(root, conditions, stat->keys, stat->exprs,
-								mcv, false);
-}
-
-/*
- * statext_ndistinct_estimate
- *		Estimate number of distinct values for a given relation in a join.
- *
- * Given a list of join clauses, estimate the number of distinct values in
- * expressions for one of the relations. We need this when estimating joins
- * with multiple join clauses, just like we do in eqjoinsel.
- *
- * XXX This assumes the join clauses are equality opclauses, but that's fine
- * because we only ever call this from eqjoinsel.
- *
- * XXX 
- */
-static double
-statext_ndistinct_estimate(PlannerInfo *root, RelOptInfo *rel, List *clauses)
-{
-	ListCell *lc;
-
-	List *exprs = NIL;
-
-	foreach (lc, clauses)
-	{
-		ListCell *lc2;
-		Node   *clause = (Node *) lfirst(lc);
-		OpExpr *opexpr = (OpExpr *) clause;
-		bool	found = false PG_USED_FOR_ASSERTS_ONLY;
-
-		/* The expression should be opclause with two arguments. */
-		Assert(is_opclause(clause));
-		Assert(list_length(opexpr->args) == 2);
-
-		/*
-		 * We only call this for join clauses for a pair of relations, so one
-		 * of the arguments should be for the relation we're dealing with.
-		 */
-		foreach (lc2, opexpr->args)
-		{
-			Node *expr = (Node *) lfirst(lc2);
-			Bitmapset *varnos = pull_varnos(root, expr);
-
-			if (bms_singleton_member(varnos) == rel->relid)
-			{
-				exprs = lappend(exprs, expr);
-				found = true;
-			}
-		}
-
-		Assert(found);
-	}
-
-	/*
-	 * Estimate the number of groups using the regular method. This might use
-	 * extended statistics internally, if there are ndistinct coefficients.
-	 */
-	return estimate_num_groups(root, exprs, rel->rows, NULL, NULL);
-}
-
-/*
- * statext_compare_mcvs
- *		Calculte join selectivity using extended statistics, similarly to
- *		eqjoinsel_inner.
- *
- * Considers restrictions on base relations too, essentially computing a
- * conditional probability
- *
- *	P(join clauses | baserestrictinfos on either side)
- *
- * Compared to eqjoinsel_inner there's a couple problems. With per-column MCV
- * lists it's obvious that the number of distinct values not covered by the MCV
- * is (ndistinct - size(MCV)). With multi-column MCVs it's not that simple,
- * particularly when the conditions are on a subset of the MCV attributes and/or
- * NULLs are involved. E.g. with MCV (a,b,c) and conditions on (a,b), it's not
- * clear if the number of (a,b) combinations not covered by the MCV is
- *
- * (ndistinct(a,b) - ndistinct_mcv(a,b))
- *
- * where ndistinct_mcv(a,b) is the number of distinct (a,b) combinations
- * included in the MCV list. These combinations may be present in the rest
- * of the data (outside MCV), just with some extra values in "c". So in
- * principle there may be between
- *
- * (ndistinct(a,b) - ndistinct_mcv(a,b)) and ndistinct(a,b)
- *
- * distinct values in the part of the data not covered by the MCV. So we need
- * to pick something in between, there's no way to calculate this accurately.
- */
-static Selectivity
-statext_compare_mcvs(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
-					 StatisticExtInfo *stat1, StatisticExtInfo *stat2,
-					 List *clauses)
-{
-	MCVList    *mcv1,
-			   *mcv2;
-	int			i, j;
-	Selectivity s = 0;
-
-	/* match bitmaps and selectivity for baserel conditions (if any) */
-	bool   *conditions1 = NULL,
-		   *conditions2 = NULL;
-
-	double	conditions1_sel = 1.0,
-			conditions2_sel = 1.0;
-
-	bool   *matches1 = NULL,
-		   *matches2 = NULL;
-
-	/* estimates for the two relations */
-	double	matchfreq1,
-			unmatchfreq1,
-			otherfreq1,
-			mcvfreq1,
-			nd1,
-			totalsel1;
-
-	double 	matchfreq2,
-			unmatchfreq2,
-			otherfreq2,
-			mcvfreq2,
-			nd2,
-			totalsel2;
-
-	/* we picked the stats so that they have MCV enabled */
-	Assert((stat1->kind = STATS_EXT_MCV) && (stat2->kind = STATS_EXT_MCV));
-
-	mcv1 = statext_mcv_load(stat1->statOid);
-	mcv2 = statext_mcv_load(stat2->statOid);
-
-	/* should only get here with MCV on both sides */
-	Assert(mcv1 && mcv2);
-
-	/*
-	 * Calculate match bitmaps for restrictions on either side of the join
-	 * (there may be none, in which case this will be NULL).
-	 */
-	conditions1 = statext_mcv_eval_conditions(root, rel1, stat1, mcv1,
-											  &conditions1_sel);
-	conditions2 = statext_mcv_eval_conditions(root, rel2, stat2, mcv2,
-											  &conditions2_sel);
-
-	/*
-	 * Match bitmaps for matches between MCV elements. By default there
-	 * are no matches, so we set all items to 0.
-	 */
-	matches1 = (bool *) palloc0(sizeof(bool) * mcv1->nitems);
-	matches2 = (bool *) palloc0(sizeof(bool) * mcv2->nitems);
-
-	/*
-	 * Match items between the two MCV lists.
-	 *
-	 * We don't know if the join conditions match all attributes in the MCV, the
-	 * overlap may be just on a subset  of attributes, e.g. (a,b,c) vs. (b,c,d).
-	 * So there may be multiple matches on either side. So we can't optimize by
-	 * aborting the inner loop after the first match, etc.
-	 *
-	 * XXX We can skip the items eliminated by the base restrictions, of course.
-	 *
-	 * XXX We might optimize this in two ways. We might sort the MCV items on
-	 * both sides using the "join" attributes, and then perform somthing like
-	 * merge join. Or we might calculate hash from the join columns, and then
-	 * compare this (to eliminate most expensive equality functions).
-	 */
-	for (i = 0; i < mcv1->nitems; i++)
-	{
-		/* skip items eliminated by restrictions on rel1 */
-		if (conditions1 && !conditions1[i])
-			continue;
-
-		/* find matches in the second MCV list */
-		for (j = 0; j < mcv2->nitems; j++)
-		{
-			ListCell   *lc;
-			bool		items_match = true;
-
-			/* skip items eliminated by restrictions on rel2 */
-			if (conditions2 && !conditions2[j])
-				continue;
-
-			/*
-			 * XXX We can't skip based on existing matches2 value, because there
-			 * may be duplicates in the first MCV.
-			 */
-
-			/*
-			 * Evaluate if all the join clauses match between the two MCV items.
-			 *
-			 * XXX We might optimize the order of evaluation, using the costs of
-			 * operator functions for individual columns. It does depend on the
-			 * number of distinct values, etc.
-			 */
-			foreach (lc, clauses)
-			{
-				Node *clause = (Node *) lfirst(lc);
-				Bitmapset  *atts1 = NULL;
-				Bitmapset  *atts2 = NULL;
-				Datum		value1, value2;
-				int			index1, index2;
-				AttrNumber	attnum1;
-				AttrNumber	attnum2;
-				bool		match;
-
-				FmgrInfo	opproc;
-				OpExpr	   *expr = (OpExpr *) clause;
-
-				Assert(is_opclause(clause));
-
-				fmgr_info(get_opcode(expr->opno), &opproc);
-
-				/* determine the columns in each statistics object */
-
-				/*
-				 * FIXME Don't call the pull_varattnos for every MCV item.
-				 * Calculate it once and then reuse it for all calls.
-				 *
-				 * FIXME Make this work for expressions too.
-				 */
-				pull_varattnos(clause, rel1->relid, &atts1);
-				attnum1 = bms_singleton_member(atts1) + FirstLowInvalidHeapAttributeNumber;
-				index1 = bms_member_index(stat1->keys, attnum1);
-
-				pull_varattnos(clause, rel2->relid, &atts2);
-				attnum2 = bms_singleton_member(atts2) + FirstLowInvalidHeapAttributeNumber;
-				index2 = bms_member_index(stat2->keys, attnum2);
-
-				/* FIXME evaluate the NULLs before the expensive stuff. */
-
-				/* If either value is null, it's a mismatch */
-				if (mcv1->items[i].isnull[index1] || mcv2->items[j].isnull[index2])
-					match = false;
-				else
-				{
-					value1 = mcv1->items[i].values[index1];
-					value2 = mcv2->items[j].values[index2];
-
-					/*
-					 * FIXME Might have issues with order of parameters, but for
-					 * same-type equality that should not matter.
-					 * */
-					match = DatumGetBool(FunctionCall2Coll(&opproc,
-														   InvalidOid,
-														   value1, value2));
-				}
-
-				items_match &= match;
-
-				if (!items_match)
-					break;
-			}
-
-			if (items_match)
-			{
-				matches1[i] = matches2[j] = true;
-				s += mcv1->items[i].frequency * mcv2->items[j].frequency;
-
-				/* XXX Do we need to do something about base frequency? */
-			}
-		}
-	}
-
-	matchfreq1 = unmatchfreq1 = mcvfreq1 = 0.0;
-	for (i = 0; i < mcv1->nitems; i++)
-	{
-		mcvfreq1 += mcv1->items[i].frequency;
-
-		/* ignore MCV items eliminated by baserel conditions */
-		if (conditions1 && !conditions1[i])
-			continue;
-
-		if (matches1[i])
-			matchfreq1 += mcv1->items[i].frequency;
-		else
-			unmatchfreq1 += mcv1->items[i].frequency;
-	}
-
-	/* not represented by the MCV */
-	otherfreq1 = 1 - mcvfreq1;
-
-	matchfreq2 = unmatchfreq2 = mcvfreq2 = 0.0;
-	for (i = 0; i < mcv2->nitems; i++)
-	{
-		mcvfreq2 += mcv2->items[i].frequency;
-
-		/* ignore MCV items eliminated by baserel conditions */
-		if (conditions2 && !conditions2[i])
-			continue;
-
-		if (matches2[i])
-			matchfreq2 += mcv2->items[i].frequency;
-		else
-			unmatchfreq2 += mcv2->items[i].frequency;
-	}
-
-	/* not represented by the MCV */
-	otherfreq2 = 1 - mcvfreq2;
-
-	/* FIXME the correction will fail because of div/0 when all MCV is eliminated by conditions. */
-
-	/* correction for MCV parts eliminated by the conditions */
-	s = s * mcvfreq1 * mcvfreq2 / (matchfreq1 + unmatchfreq1) / (matchfreq2 + unmatchfreq2);
-
-	nd1 = statext_ndistinct_estimate(root, rel1, clauses);
-	nd2 = statext_ndistinct_estimate(root, rel2, clauses);
-
-	/*
-	 * XXX this is a bit bogus, because we don't know what fraction of
-	 * distinct combinations is covered by the MCV list (we're only
-	 * dealing with some of the columns), so we can't use the same
-	 * formular as eqjoinsel_inner exactly. We just use the estimates
-	 * for the whole table - this is likely an overestimate, because
-	 * (a) items may repeat in the MCV list, if it has more columns,
-	 * and (b) some of the combinations may be present in non-MCV data.
-	 *
-	 * Moreover, we need to look at the conditions. For now we simply
-	 * assume the conditions affect the distinct groups, and use that.
-	 *
-	 * XXX We might calculate the number of distinct groups in the MCV,
-	 * and then use something between (nd1 - distinct(MCV)) and (nd1),
-	 * which are the possible extreme values, assuming the estimates
-	 * are accurate. Maybe mean or geometric mean would work?
-	 *
-	 * XXX Not sure multiplying ndistinct with probabilities is good.
-	 * Maybe we should do something more like estimate_num_groups?
-	 */
-	nd1 *= conditions1_sel;
-	nd2 *= conditions2_sel;
-
-	totalsel1 = s;
-	totalsel1 += unmatchfreq1 * otherfreq2 / nd2;
-	totalsel1 += otherfreq1 * (otherfreq2 + unmatchfreq2) / nd2;
-
-//	if (nd2 > mcvb->nitems)
-//		totalsel1 += unmatchfreq1 * otherfreq2 / (nd2 - mcvb->nitems);
-//	if (nd2 > nmatches)
-//		totalsel1 += otherfreq1 * (otherfreq2 + unmatchfreq2) /
-//			(nd2 - nmatches);
-
-	totalsel2 = s;
-	totalsel2 += unmatchfreq2 * otherfreq1 / nd1;
-	totalsel2 += otherfreq2 * (otherfreq1 + unmatchfreq1) / nd1;
-
-//	if (nd1 > mcva->nitems)
-//		totalsel2 += unmatchfreq2 * otherfreq1 / (nd1 - mcva->nitems);
-//	if (nd1 > nmatches)
-//		totalsel2 += otherfreq2 * (otherfreq1 + unmatchfreq1) /
-//			(nd1 - nmatches);
-
-	s = Min(totalsel1, totalsel2);
-
-	return s;
 }
 
 /*
@@ -3457,9 +3061,9 @@ extract_relation_info(PlannerInfo *root, JoinPairInfo *info, int index,
 	int			relid;
 	RelOptInfo *rel;
 	ListCell   *lc;
+	List	   *exprs = NIL;
 
 	Bitmapset  *attnums = NULL;
-	List	   *exprs = NIL;
 
 	Assert((index >= 0) && (index <= 1));
 
@@ -3611,8 +3215,7 @@ statext_clauselist_join_selectivity(PlannerInfo *root, List *clauses, int varRel
 		if (!stat1 || !stat2)
 			continue;
 
-		s *= statext_compare_mcvs(root, rel1, rel2, stat1, stat2,
-								  info[i].clauses);
+		s *= mcv_combine_mcvs(root, rel1, rel2, stat1, stat2, clauses);
 
 		/*
 		 * Now mark all the clauses for this join pair as estimated.

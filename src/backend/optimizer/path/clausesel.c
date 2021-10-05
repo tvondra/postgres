@@ -108,7 +108,9 @@ clauselist_selectivity(PlannerInfo *root,
 	return clauselist_selectivity_ext(root, clauses, varRelid,
 									  jointype, sjinfo, true);
 }
-
+static inline bool
+treat_as_join_clause(PlannerInfo *root, Node *clause, RestrictInfo *rinfo,
+					 int varRelid, SpecialJoinInfo *sjinfo);
 /*
  * clauselist_selectivity_ext -
  *	  Extended version of clauselist_selectivity().  If "use_extended_stats"
@@ -129,12 +131,47 @@ clauselist_selectivity_ext(PlannerInfo *root,
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
+	bool		single_clause_optimization = true;
+
+	/*
+	 * The optimization of skipping to clause_selectivity_ext for single
+	 * clauses means we can't improve join estimates with a single join
+	 * clause but additional baserel restrictions. So we disable it for
+	 * join clause estimates.
+	 *
+	 * XXX Not sure if this is the right way to do it, but more elaborate
+	 * checks would mostly negate the whole point of the optimization.
+	 * The (Var op Var) patch has the same issue.
+	 *
+	 * XXX An alternative might be making clause_selectivity_ext smarter
+	 * and make it use the join extended stats there. But that seems kinda
+	 * against the whole point of the optimization (skipping expensive
+	 * stuff) and it's making other parts more complex.
+	 */
+	if (list_length(clauses) == 1)
+	{
+		Node *clause = linitial(clauses);
+		RestrictInfo *rinfo = NULL;
+
+		if (IsA(clause, RestrictInfo))
+		{
+			rinfo = (RestrictInfo *) clause;
+			clause = (Node *) rinfo->clause;
+		}
+
+		single_clause_optimization
+			= !treat_as_join_clause(root, clause, rinfo, varRelid, sjinfo);
+	}
 
 	/*
 	 * If there's exactly one clause, just go directly to
 	 * clause_selectivity_ext(). None of what we might do below is relevant.
+	 *
+	 * XXX This means we won't try using extended stats on OR-clauses (which
+	 * are a single BoolExpr clause at this point), although we'll do that
+	 * later (once we look at the arguments).
 	 */
-	if (list_length(clauses) == 1)
+	if ((list_length(clauses) == 1) && single_clause_optimization)
 		return clause_selectivity_ext(root, (Node *) linitial(clauses),
 									  varRelid, jointype, sjinfo,
 									  use_extended_stats);

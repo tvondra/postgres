@@ -2410,12 +2410,6 @@ mcv_combine_mcvs(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 			 * XXX We might optimize the order of evaluation, using the costs of
 			 * operator functions for individual columns. It does depend on the
 			 * number of distinct values, etc.
-			 *
-			 * FIXME It's not clear if this deals both with clauses that have
-			 * expressions from the rels on either side. We simply extract them
-			 * and forget if it was (expr1 op expr2) or (expr2 op expr1). It's
-			 * true we're dealing with equalities, but it might be an issue for
-			 * different data types etc. Needs investigation.
 			 */
 			idx = 0;
 			foreach (lc, clauses)
@@ -2485,7 +2479,7 @@ mcv_combine_mcvs(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	}
 
 	/* not represented by the MCV */
-	otherfreq1 = 1 - mcvfreq1;
+	otherfreq1 = 1.0 - mcvfreq1;
 
 	matchfreq2 = unmatchfreq2 = mcvfreq2 = 0.0;
 	for (i = 0; i < mcv2->nitems; i++)
@@ -2503,18 +2497,33 @@ mcv_combine_mcvs(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	}
 
 	/* not represented by the MCV */
-	otherfreq2 = 1 - mcvfreq2;
+	otherfreq2 = 1.0 - mcvfreq2;
 
-	/* FIXME the correction will fail because of div/0 when all MCV is eliminated by conditions. */
+	/*
+	 * Correction for MCV parts eliminated by the conditions.
+	 *
+	 * We need to be careful about cases where conditions eliminated all
+	 * the MCV items. We must not divide by 0.0, because that would either
+	 * produce bogus value or trigger division by zero. Instead we simply
+	 * set the selectivity to 0.0, because there can't be any matches.
+	 */
+	if ((matchfreq1 + unmatchfreq1) > 0)
+		s = s * mcvfreq1 / (matchfreq1 + unmatchfreq1);
+	else
+		s = 0.0;
 
-	/* correction for MCV parts eliminated by the conditions */
-	s = s * mcvfreq1 * mcvfreq2 / (matchfreq1 + unmatchfreq1) / (matchfreq2 + unmatchfreq2);
+	if ((matchfreq2 + unmatchfreq2) > 0)
+		s = s * mcvfreq2 / (matchfreq2 + unmatchfreq2);
+	else
+		s = 0.0;
 
 	/* calculate ndistinct for the expression in join clauses for each rel */
 	nd1 = estimate_num_groups(root, exprs1, rel1->rows, NULL, NULL);
 	nd2 = estimate_num_groups(root, exprs2, rel2->rows, NULL, NULL);
 
 	/*
+	 * Consider the part of the data not represented by the MCV lists.
+	 *
 	 * XXX this is a bit bogus, because we don't know what fraction of
 	 * distinct combinations is covered by the MCV list (we're only
 	 * dealing with some of the columns), so we can't use the same

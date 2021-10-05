@@ -2690,6 +2690,12 @@ statext_find_matching_mcv(PlannerInfo *root, RelOptInfo *rel,
 		 * know which of them are compatible with extended stats, so we have to
 		 * run them through statext_is_compatible_clause first and then match
 		 * them.to the statistics.
+		 *
+		 * XXX Maybe we shouldn't pick statistics that covers just a single join
+		 * clause, without any additional conditions. In such case we could just
+		 * as well pick regular statistics for the column/expression, but it's
+		 * not clear if that actually exists (so we might reject the stats here
+		 * and then fail to find something simpler/better).
 		 */
 		conditions1 = statext_determine_join_restrictions(root, rel, stat);
 		conditions2 = statext_determine_join_restrictions(root, rel, mcv);
@@ -3140,6 +3146,40 @@ extract_relation_info(PlannerInfo *root, JoinPairInfo *info, int index,
 	return rel;
 }
 
+static Node *
+get_expression_for_rel(PlannerInfo *root, RelOptInfo *rel, Node *clause)
+{
+	OpExpr *opexpr;
+	Node   *expr;
+
+	/*
+	 * Strip the RestrictInfo node, get the actual clause.
+	 *
+	 * XXX Not sure if we need to care about removing other node types
+	 * too (e.g. RelabelType etc.). statext_is_supported_join_clause
+	 * matches this, but maybe we need to relax it?
+	 */
+	if (IsA(clause, RestrictInfo))
+		clause = (Node *) ((RestrictInfo *) clause)->clause;
+
+	opexpr = (OpExpr *) clause;
+
+	/* Make sure we have the expected node type. */
+	Assert(is_opclause(clause));
+	Assert(list_length(opexpr->args) == 2);
+
+	/* FIXME strip relabel etc. the way examine_opclause_args does */
+	expr = linitial(opexpr->args);
+	if (bms_singleton_member(pull_varnos(root, expr)) == rel->relid)
+		return expr;
+
+	expr = lsecond(opexpr->args);
+	if (bms_singleton_member(pull_varnos(root, expr)) == rel->relid)
+		return expr;
+
+	return NULL;
+}
+
 /*
  * statext_clauselist_join_selectivity
  *		Use extended stats to estimate join clauses.
@@ -3211,11 +3251,111 @@ statext_clauselist_join_selectivity(PlannerInfo *root, List *clauses, int varRel
 		/* extract info about the second relation */
 		rel2 = extract_relation_info(root, &info[i], 1, &stat2);
 
-		/* XXX only handling case with MCV on both sides for now */
-		if (!stat1 || !stat2)
-			continue;
+		/*
+		 * We can handle three basic cases:
+		 *
+		 * a) Extended stats (with MCV) on both sides is an ideal case, and we
+		 * can simply combine the two MCVs, possibly with additional conditions
+		 * from the relations.
+		 *
+		 * b) Extended stats on one side, regular MCV on the other side (this
+		 * means there's just one join clause / expression). It also means the
+		 * extended stats likely covers at least one extra condition, otherwise
+		 * we could just use regular statistics. We can combine the stats just
+		 * similarly to (a).
+		 *
+		 * c) No extended stats with MCV. If there are multiple join clauses,
+		 * we can try using ndistinct coefficients and do what esjoinsel does.
+		 *
+		 * If none of these applies, we fallback to the regular selectivity
+		 * estimation in eqjoinsel.
+		 */
+		if (stat1 && stat2)
+		{
+			s *= mcv_combine_extended(root, rel1, rel2, stat1, stat2, clauses);
+		}
+		else if (stat1 && (list_length(info[i].clauses) == 1))
+		{
+			/* try finding MCV on the other relation */
+			VariableStatData	vardata;
+			AttStatsSlot		sslot;
+			Form_pg_statistic	stats = NULL;
+			bool				have_mcvs = false;
+			Node			   *clause = linitial(info[i].clauses);
+			Node			   *expr = get_expression_for_rel(root, rel2, clause);
+			double				nd;
+			bool				isdefault;
 
-		s *= mcv_combine_mcvs(root, rel1, rel2, stat1, stat2, clauses);
+			examine_variable(root, expr, 0, &vardata);
+
+			nd = get_variable_numdistinct(&vardata, &isdefault);
+
+			memset(&sslot, 0, sizeof(sslot));
+
+			if (HeapTupleIsValid(vardata.statsTuple))
+			{
+				/* note we allow use of nullfrac regardless of security check */
+				stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
+				/* FIXME should this call statistic_proc_security_check like eqjoinsel? */
+				have_mcvs = get_attstatsslot(&sslot, vardata.statsTuple,
+											 STATISTIC_KIND_MCV, InvalidOid,
+											 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+			}
+
+			if (have_mcvs)
+				s *= mcv_combine_simple(root, rel1, stat1, &sslot,
+										stats->stanullfrac, nd, isdefault, clause);
+
+			free_attstatsslot(&sslot);
+
+			ReleaseVariableStats(vardata);
+
+			/* no stats, don't mark the clauses as estimated */
+			if (!have_mcvs)
+				continue;
+		}
+		else if (stat2 && (list_length(info[i].clauses) == 1))
+		{
+			/* try finding MCV on the other relation */
+			VariableStatData	vardata;
+			AttStatsSlot		sslot;
+			Form_pg_statistic	stats = NULL;
+			bool				have_mcvs = false;
+			Node			   *clause = (Node *) linitial(info[i].clauses);
+			Node			   *expr = get_expression_for_rel(root, rel1, clause);
+			double				nd;
+			bool				isdefault;
+
+			examine_variable(root, expr, 0, &vardata);
+
+			nd = get_variable_numdistinct(&vardata, &isdefault);
+
+			memset(&sslot, 0, sizeof(sslot));
+
+			if (HeapTupleIsValid(vardata.statsTuple))
+			{
+				/* note we allow use of nullfrac regardless of security check */
+				stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
+				/* FIXME should this call statistic_proc_security_check like eqjoinsel? */
+				have_mcvs = get_attstatsslot(&sslot, vardata.statsTuple,
+											 STATISTIC_KIND_MCV, InvalidOid,
+											 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+			}
+
+			if (have_mcvs)
+				s *= mcv_combine_simple(root, rel2, stat2, &sslot,
+										stats->stanullfrac, nd, isdefault, clause);
+
+			free_attstatsslot(&sslot);
+
+			ReleaseVariableStats(vardata);
+
+			/* no stats, don't mark the clauses as estimated */
+			if (!have_mcvs)
+				continue;
+		}
+		else
+			continue;
 
 		/*
 		 * Now mark all the clauses for this join pair as estimated.

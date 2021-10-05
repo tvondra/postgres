@@ -15,6 +15,7 @@
 #define EXTENDED_STATS_INTERNAL_H
 
 #include "statistics/statistics.h"
+#include "utils/lsyscache.h"
 #include "utils/sortsupport.h"
 
 typedef struct
@@ -131,12 +132,20 @@ extern bool *mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 								  Bitmapset *keys, List *exprs,
 								  MCVList *mcvlist, bool is_or);
 
-extern Selectivity mcv_combine_mcvs(PlannerInfo *root,
-									RelOptInfo *rel1,
-									RelOptInfo *rel2,
-									StatisticExtInfo *stat1,
-									StatisticExtInfo *stat2,
-									List *clauses);
+extern Selectivity mcv_combine_simple(PlannerInfo *root,
+									  RelOptInfo *rel,
+									  StatisticExtInfo *stat,
+									  AttStatsSlot *sslot,
+									  double stanullfrac,
+									  double nd, bool isdefault,
+									  Node *clause);
+
+extern Selectivity mcv_combine_extended(PlannerInfo *root,
+										RelOptInfo *rel1,
+										RelOptInfo *rel2,
+										StatisticExtInfo *stat1,
+										StatisticExtInfo *stat2,
+										List *clauses);
 
 extern List *statext_determine_join_restrictions(PlannerInfo *root,
 												 RelOptInfo *rel,

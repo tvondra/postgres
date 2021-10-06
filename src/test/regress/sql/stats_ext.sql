@@ -1523,6 +1523,9 @@ SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_
 SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on ((j1.a + 1 = j2.a + 1)) where j1.c < 5 and j2.c < 5');
 SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on ((j1.a + 1 = j2.a + 1)) where j1.c < 5 and j2.c > 5');
 
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a) where j1.c < 5');
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a + 1) where j1.c < 5');
+
 -- create extended statistics on the join/where columns
 CREATE STATISTICS join_stats_1 ON a, b, c, (a+1), (b+1) FROM join_test_1;
 CREATE STATISTICS join_stats_2 ON a, b, c, (a+1), (b+1) FROM join_test_2;
@@ -1541,6 +1544,22 @@ SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_
 SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on ((j1.a + 1 = j2.a + 1)) where j1.c < 5');
 SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on ((j1.a + 1 = j2.a + 1)) where j1.c < 5 and j2.c < 5');
 SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on ((j1.a + 1 = j2.a + 1)) where j1.c < 5 and j2.c > 5');
+
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a) where j1.c < 5');
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a + 1) where j1.c < 5');
+
+-- try combining with single-column (and single-expression) statistics
+DROP STATISTICS join_test_2;
+
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a) where j1.c < 5');
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a + 1) where j1.c < 5');
+
+CREATE STATISTICS join_stats_2 ON (a+1) FROM join_test_2;
+ANALYZE join_test_2;
+
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a) where j1.c < 5');
+SELECT * FROM check_estimated_rows('select * from join_test_1 j1 join join_test_2 j2 on (j1.a + 1 = j2.a + 1) where j1.c < 5');
+
 
 DROP TABLE join_test_1;
 DROP TABLE join_test_2;

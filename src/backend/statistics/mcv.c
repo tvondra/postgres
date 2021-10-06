@@ -2385,14 +2385,26 @@ mcv_combine_extended(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	 */
 	for (i = 0; i < mcv1->nitems; i++)
 	{
+		bool	has_nulls;
+
 		/* skip items eliminated by restrictions on rel1 */
 		if (cmatches1 && !cmatches1[i])
 			continue;
 
 		/*
-		 * FIXME maybe we could check mcv1->items[i].isnull[index1] here,
-		 * because it'll be mismatch anyway?
+		 * Check if any value in the first MCV item is NULL, because it'll be
+		 * mismatch anyway.
+		 *
+		 * XXX This might not work for some join clauses, e.g. IS NOT DISTINCT
+		 * FROM, but those are currently not considered compatible (we only
+		 * allow OpExpr at the moment).
 		 */
+		has_nulls = false;
+		for (j = 0; j < list_length(clauses); j++)
+			has_nulls |= mcv1->items[i].isnull[indexes1[j]];
+
+		if (has_nulls)
+			continue;
 
 		/* find matches in the second MCV list */
 		for (j = 0; j < mcv2->nitems; j++)
@@ -2427,7 +2439,7 @@ mcv_combine_extended(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 				bool	reverse_args = reverse[idx];
 
 				/* If either value is null, it's a mismatch */
-				if (mcv1->items[i].isnull[index1] || mcv2->items[j].isnull[index2])
+				if (mcv2->items[j].isnull[index2])
 					match = false;
 				else
 				{
@@ -2460,10 +2472,9 @@ mcv_combine_extended(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 
 			if (items_match)
 			{
+				/* XXX Do we need to do something about base frequency? */
 				matches1[i] = matches2[j] = true;
 				s += mcv1->items[i].frequency * mcv2->items[j].frequency;
-
-				/* XXX Do we need to do something about base frequency? */
 			}
 		}
 	}
@@ -2578,12 +2589,14 @@ mcv_combine_extended(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 
 
 /*
- * statext_compare_mcvs
- *		Calculte join selectivity using extended statistics, similarly to
- *		eqjoinsel_inner.
+ * statext_compare_simple
+ *		Calculte join selectivity using a combination of extended statistics
+ * MCV on one side, and simple per-column MCV on the other.
  *
- * Considers restrictions on base relations too, essentially computing a
- * conditional probability
+ * Works fairly similarly to eqjoinsel_inner, except that one of the lists
+ * is a multi-column MCV. That means it can handle only joins with a single
+ * join clause. We however consider restrictions on base relations as
+ * additional conditions, essentially computing a conditional probability.
  *
  *	P(join clauses | baserestrictinfos on either side)
  *
@@ -2770,56 +2783,50 @@ mcv_combine_simple(PlannerInfo *root, RelOptInfo *rel, StatisticExtInfo *stat,
 			continue;
 
 		/*
-		 * FIXME maybe we could check mcv1->items[i].isnull[index1] here,
-		 * because it'll be mismatch anyway?
+		 * We can check mcv1->items[i].isnull[index1] here, because it'll be a
+		 * mismatch anyway (the simple MCV does not contain NULLs).
 		 */
+		if (mcv->items[i].isnull[index])
+			continue;
 
 		/* find matches in the second MCV list */
 		for (j = 0; j < sslot->nvalues; j++)
 		{
-			bool		match = true;
+			bool	match;
+			Datum	value1 = mcv->items[i].values[index];
+			Datum	value2 = sslot->values[j];
 
 			/*
-			 * Evaluate the join clause between the two MCV lists. First we
-			 * need to deal with NULL values - if the value in the first MCV
-			 * is NULL, it's a mismatch.
+			 * Evaluate the join clause between the two MCV lists. We don't
+			 * need to deal with NULL values here - we've already checked for
+			 * NULL in the extended statistics earlier, and the simple MCV
+			 * does not contain NULL values.
+			*
+			 * Careful about order of parameters. For same-type equality
+			 * that should not matter, but easy enough.
 			 *
-			 * XXX We know the regular MCV does not contain NULL values.
+			 * FIXME Use appropriate collation.
 			 */
-			if (mcv->items[i].isnull[index])
-				match = false;
+			if (reverse)
+				match = DatumGetBool(FunctionCall2Coll(&opproc,
+													   InvalidOid,
+													   value2, value1));
 			else
-			{
-				Datum		value1 = mcv->items[i].values[index];
-				Datum		value2 = sslot->values[j];
-
-				/*
-				 * Careful about order of parameters. For same-type equality
-				 * that should not matter, but easy enough.
-				 *
-				 * FIXME Use appropriate collation.
-				 */
-				if (reverse)
-					match = DatumGetBool(FunctionCall2Coll(&opproc,
-														   InvalidOid,
-														   value2, value1));
-				else
-					match = DatumGetBool(FunctionCall2Coll(&opproc,
-														   InvalidOid,
-														   value1, value2));
-			}
+				match = DatumGetBool(FunctionCall2Coll(&opproc,
+													   InvalidOid,
+													   value1, value2));
 
 			if (match)
 			{
+				/* XXX Do we need to do something about base frequency? */
 				matches1[i] = matches2[j] = true;
 				s += mcv->items[i].frequency * sslot->numbers[j];
 
-				/* XXX Do we need to do something about base frequency? */
-
 				/*
-				 * FIXME We know there can be just one match in the regular
-				 * MCV list, then we can abort the inner loop.
+				 * We know there can be just a single match in the regular
+				 * MCV list, so we can abort the inner loop.
 				 */
+				break;
 			}
 		}
 	}

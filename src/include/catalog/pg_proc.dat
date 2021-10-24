@@ -9602,6 +9602,9 @@
 { oid => '2137', descr => 'jsonb typanalyze',
   proname => 'jsonb_typanalyze', provolatile => 's', prorettype => 'bool',
   proargtypes => 'internal', prosrc => 'jsonb_typanalyze' },
+{ oid => '4565', descr => 'restriction selectivity for jsonb containment comparison operators',
+  proname => 'jsonbcontsel', provolatile => 's', prorettype => 'bool',
+  proargtypes => 'internal', prosrc => 'jsonbcontsel' },
 
 { oid => '3263', descr => 'map text array of key value pairs to jsonb object',
   proname => 'jsonb_object', prorettype => 'jsonb', proargtypes => '_text',

@@ -238,4 +238,7 @@ extern Selectivity scalararraysel_containment(PlannerInfo *root,
 											  Oid elemtype, bool isEquality, bool useOr,
 											  int varRelid);
 
+/* Functions in jsonb_selfuncs.c */
+extern Datum jsonbcontsel(PG_FUNCTION_ARGS);
+
 #endif							/* SELFUNCS_H */

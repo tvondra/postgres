@@ -1430,6 +1430,19 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			stainfos = lappend(stainfos, info);
 		}
 
+		if (statext_is_kind_built(dtup, STATS_EXT_JSON))
+		{
+			StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+			info->statOid = statOid;
+			info->rel = rel;
+			info->kind = STATS_EXT_JSON;
+			info->keys = bms_copy(keys);
+			info->exprs = exprs;
+
+			stainfos = lappend(stainfos, info);
+		}
+
 		ReleaseSysCache(htup);
 		ReleaseSysCache(dtup);
 		bms_free(keys);

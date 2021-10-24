@@ -86,13 +86,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				myself;
-	Datum		types[4];		/* one for each possible type of statistic */
+	Datum		types[5];		/* one for each possible type of statistic */
 	int			ntypes;
 	ArrayType  *stxkind;
 	bool		build_ndistinct;
 	bool		build_dependencies;
 	bool		build_mcv;
 	bool		build_expressions;
+	bool		build_json = false;
 	bool		requested_type = false;
 	int			i;
 	ListCell   *cell;
@@ -257,6 +258,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
 								attname, format_type_be(attForm->atttypid))));
 
+			/* enable json stats for jsonb columns */
+			if (attForm->atttypid == JSONBOID)
+				build_json = true;
+
 			attnums[nattnums] = attForm->attnum;
 			nattnums++;
 			ReleaseSysCache(atttuple);
@@ -322,6 +327,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("expression cannot be used in multivariate statistics because its type %s has no default btree operator class",
 									format_type_be(atttype))));
+
+				/* if there are jsonb expressions, enable jsonb stats */
+				if (atttype == JSONBOID)
+					build_json = true;
 			}
 
 			stxexprs = lappend(stxexprs, expr);
@@ -468,6 +477,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
 	if (build_expressions)
 		types[ntypes++] = CharGetDatum(STATS_EXT_EXPRESSIONS);
+	if (build_json)
+		types[ntypes++] = CharGetDatum(STATS_EXT_JSON);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
 	stxkind = construct_array(types, ntypes, CHAROID, 1, true, TYPALIGN_CHAR);
 
@@ -529,6 +540,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	datanulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	datanulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 	datanulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
+	datanulls[Anum_pg_statistic_ext_data_stxdjson - 1] = true;
 
 	/* insert it into pg_statistic_ext_data */
 	htup = heap_form_tuple(datarel->rd_att, datavalues, datanulls);

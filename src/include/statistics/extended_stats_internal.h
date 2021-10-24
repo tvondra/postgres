@@ -82,6 +82,11 @@ extern MCVList *statext_mcv_build(StatsBuildData *data,
 extern bytea *statext_mcv_serialize(MCVList *mcv, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 
+extern JsonStats *statext_json_stats_build(StatsBuildData *data,
+										   double totalrows, int stattarget);
+extern bytea *statext_json_stats_serialize(JsonStats *stats);
+extern JsonStats *statext_json_stats_deserialize(bytea *data);
+
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
 									 Oid oper, Oid collation);

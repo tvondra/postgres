@@ -25,6 +25,7 @@
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_statistic_ext_data.h"
 #include "executor/executor.h"
+#include "common/hashfn.h"
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -40,6 +41,7 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -79,7 +81,8 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List
 											int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Oid statOid,
 						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
+						  MCVList *mcv, Datum exprs, JsonStats *json,
+						  VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int natts, VacAttrStats **stats);
 
@@ -157,11 +160,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		JsonStats  *json = NULL;
 		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
 		int			stattarget;
 		StatsBuildData *data;
+		int			i;
+		bool		has_jsonb = false;
 
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
@@ -194,6 +200,19 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		 */
 		if (stattarget == 0)
 			continue;
+
+		/*
+		 * Check if there are any JSONB columns, so that we build additional
+		 * stats on those later.
+		 */
+		for (i = 0; i < bms_num_members(stat->columns) + list_length(stat->exprs); i++)
+		{
+			if (stats[i]->attrtypid == JSONBOID)
+			{
+				has_jsonb = true;
+				break;
+			}
+		}
 
 		/* evaluate expressions (if the statistics object has any) */
 		data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
@@ -229,8 +248,12 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			}
 		}
 
+		/* if there are json columns, build extra stats for each of them */
+		if (has_jsonb)
+			json = statext_json_stats_build(data, totalrows, stattarget);
+
 		/* store the statistics in the catalog */
-		statext_store(stat->statOid, ndistinct, dependencies, mcv, exprstats, stats);
+		statext_store(stat->statOid, ndistinct, dependencies, mcv, exprstats, json, stats);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
@@ -408,6 +431,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdexpr;
 			break;
 
+		case STATS_EXT_JSON:
+			attnum = Anum_pg_statistic_ext_data_stxdjson;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -476,7 +503,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
 				   (enabled[i] == STATS_EXT_MCV) ||
-				   (enabled[i] == STATS_EXT_EXPRESSIONS));
+				   (enabled[i] == STATS_EXT_EXPRESSIONS) ||
+				   (enabled[i] == STATS_EXT_JSON));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -783,7 +811,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 static void
 statext_store(Oid statOid,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
+			  MCVList *mcv, Datum exprs, JsonStats *json, VacAttrStats **stats)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup,
@@ -830,11 +858,20 @@ statext_store(Oid statOid,
 		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
 	}
 
+	if (json != NULL)
+	{
+		bytea	   *data = statext_json_stats_serialize(json);
+
+		nulls[Anum_pg_statistic_ext_data_stxdjson - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdjson - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_data_stxdndistinct - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 	replaces[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
+	replaces[Anum_pg_statistic_ext_data_stxdjson - 1] = true;
 
 	/* there should already be a pg_statistic_ext_data tuple */
 	oldtup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statOid));
@@ -2605,6 +2642,409 @@ make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
 
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
+
+	return result;
+}
+
+static void
+statext_json_stats_add_value(JsonPathCounter *path, JsonbValue v)
+{
+	int		k;
+	uint32	hash;
+
+	/* calculate hash for JSON value with a given type */
+	switch (v.type)
+	{
+		case jbvNull:
+			hash = 0;
+			break;
+
+		case jbvString:
+			hash = string_hash(v.val.string.val, v.val.string.len + 1);
+			break;
+
+		case jbvNumeric:
+			hash = DatumGetUInt32(DirectFunctionCall1(hash_numeric,
+													  PointerGetDatum(v.val.numeric)));
+			break;
+
+		case jbvBool:
+			if (v.val.boolean)
+				hash = 0;
+			else
+				hash = 1;
+			break;
+		default:
+			elog(ERROR, "unknown jsonb scalar type");
+	}
+
+	/*
+	 * Check if the value is already added to the array.
+	 *
+	 * XXX Use something better than a linear search, like a hash table
+	 * lookup, or something.
+	 */
+	for (k = 0; k < path->nvalues; k++)
+	{
+		if (path->values[k].hash == hash)
+		{
+			path->values[k].count++;
+			return;
+		}
+	}
+
+	if (!path->values)
+	{
+		path->maxvalues = 8;
+		path->values = palloc(sizeof(JsonValueCounter) * path->maxvalues);
+	}
+
+	/*
+	 * If needed, increase size of the array.
+	 *
+	 * XXX We should limit the number of values to track by some reasonable
+	 * upper limit (perhaps derived from statistics target).
+	 */
+	if (path->maxvalues == path->nvalues)
+	{
+		path->maxvalues *= 2;
+		path->values = repalloc(path->values,
+								 sizeof(JsonValueCounter) * path->maxvalues);
+	}
+
+	path->values[path->nvalues].hash = hash;
+	path->values[path->nvalues].count = 1;
+	path->nvalues++;
+}
+
+static JsonPathCounter *
+statext_json_stats_add_path(JsonColumnStats *colstats, uint32 hash)
+{
+	int		k;
+	JsonPathCounter *entry = NULL;
+
+	for (k = 0; k < colstats->npaths; k++)
+	{
+		if (colstats->paths[k].hash == hash)
+		{
+			entry = &colstats->paths[k];
+			entry->count++;
+			return entry;
+		}
+	}
+
+	if (colstats->npaths == colstats->maxpaths)
+	{
+		colstats->maxpaths *= 2;
+		colstats->paths = repalloc(colstats->paths,
+								   colstats->maxpaths * sizeof(JsonPathCounter));
+	}
+
+	entry = &colstats->paths[colstats->npaths];
+	entry->hash = hash;
+	entry->count = 0;
+	entry->maxvalues = 0;
+	entry->nvalues = 0;
+	entry->values = NULL;
+
+	colstats->npaths++;
+
+	Assert(entry->hash == hash);
+	entry->count++;
+
+	return entry;
+}
+
+JsonStats *
+statext_json_stats_build(StatsBuildData *data, double totalrows, int stattarget)
+{
+	int		i;
+	JsonStats	*stats;
+
+	stats = palloc0(offsetof(JsonStats,columns) +
+							 sizeof(JsonColumnStats) * data->nattnums);
+
+	for (i = 0; i < data->nattnums; i++)
+	{
+		if (data->stats[i]->attrtypid == JSONBOID)
+		{
+			int		j;
+			JsonColumnStats *colstats;
+
+			/* hashes for parts of the "current" path */
+			uint32	hashes[1024];
+
+			/* grab the next free slot for column stats */
+			colstats = &stats->columns[stats->ncolumns++];
+
+			colstats->npaths = 0;
+			colstats->maxpaths = 8;
+			colstats->paths = palloc(sizeof(JsonPathCounter) * colstats->maxpaths);
+
+			/* extract data for this column */
+			for (j = 0; j < data->numrows; j++)
+			{
+				JsonbIterator *it;
+				JsonbValue	v;
+				Jsonb	   *jb;
+				bool		redo_switch = false;
+				JsonbIteratorToken type = WJB_DONE;
+				int			level = 0;
+				JsonPathCounter  *entry = NULL;
+
+				/* skip NULL values */
+				if (data->nulls[i][j])
+					continue;
+
+				colstats->count++;
+
+				jb = (Jsonb *) DatumGetPointer(PG_DETOAST_DATUM(data->values[i][j]));
+
+				it = JsonbIteratorInit(&jb->root);
+
+				while (redo_switch ||
+					   ((type = JsonbIteratorNext(&it, &v, false)) != WJB_DONE))
+				{
+					redo_switch = false;
+					switch (type)
+					{
+						case WJB_BEGIN_ARRAY:
+							level++;
+							break;
+						case WJB_BEGIN_OBJECT:
+							level++;
+							break;
+						case WJB_KEY:
+							{
+								uint32	hash = 0;
+								char *key = pnstrdup(v.val.string.val, v.val.string.len);
+
+								// keys[level-1] = key;
+								hashes[level-1] = string_hash(v.val.string.val, v.val.string.len + 1);
+
+								/* hash the hashes for the json path */
+								hash = hash_bytes((unsigned char *) hashes, level * sizeof(uint32));
+								entry = statext_json_stats_add_path(colstats, hash);
+							}
+							break;
+
+						case WJB_VALUE:
+							{
+								Assert(entry);
+								statext_json_stats_add_value(entry, v);
+							}
+							break;
+
+						case WJB_ELEM:
+							elog(WARNING, "processing element");
+							// FIXME should do about the same thing as WJB_VALUE
+							// jsonb_put_escaped_value(out, &v);
+							break;
+						case WJB_END_ARRAY:
+							entry = NULL;
+							level--;
+							break;
+						case WJB_END_OBJECT:
+							entry = NULL;
+							level--;
+							break;
+						default:
+							elog(ERROR, "unknown jsonb iterator token type");
+					}
+				}
+
+			}
+		}
+	}
+
+	return stats;
+}
+
+bytea *
+statext_json_stats_serialize(JsonStats *stats)
+{
+	int		i,
+			j,
+			k;
+	Size	len;
+	bytea  *raw;
+	char   *ptr;
+	char	   *endptr PG_USED_FOR_ASSERTS_ONLY;
+
+	len = sizeof(int32);
+
+	/* calculate size of each column stats */
+	for (i = 0; i < stats->ncolumns; i++)
+	{
+		JsonColumnStats *col = &stats->columns[i];
+
+		/* number of documents and paths */
+		len += 2 * sizeof(int32);
+
+		/* calculate size of each path */
+		for (j = 0; j < col->npaths; j++)
+		{
+			JsonPathCounter *path = &col->paths[j];
+
+			/* hash, count and number of values tracked for the path */
+			len += 3 * sizeof(int32);
+
+			/* space needed for each values (hash + count) */
+			len += path->nvalues * sizeof(int32) * 2;
+		}
+	}
+
+	raw = (bytea *) palloc0(VARHDRSZ + len);
+	SET_VARSIZE(raw, VARHDRSZ + len);
+
+	ptr = VARDATA(raw);
+	endptr = ptr + len;
+
+	memcpy(ptr, &stats->ncolumns, sizeof(int32));
+	ptr += sizeof(int32);
+
+	/* copy in the data */
+	for (i = 0; i < stats->ncolumns; i++)
+	{
+		JsonColumnStats *col = &stats->columns[i];
+
+		memcpy(ptr, &col->count, sizeof(int32));
+		ptr += sizeof(int32);
+
+		memcpy(ptr, &col->npaths, sizeof(int32));
+		ptr += sizeof(int32);
+
+		for (j = 0; j < col->npaths; j++)
+		{
+			JsonPathCounter *path = &col->paths[j];
+
+			memcpy(ptr, &path->hash, sizeof(int32));
+			ptr += sizeof(int32);
+
+			memcpy(ptr, &path->count, sizeof(int32));
+			ptr += sizeof(int32);
+
+			memcpy(ptr, &path->nvalues, sizeof(int32));
+			ptr += sizeof(int32);
+
+			for (k = 0; k < path->nvalues; k++)
+			{
+				JsonValueCounter *value = &path->values[k];
+
+				memcpy(ptr, &value->hash, sizeof(int32));
+				ptr += sizeof(int32);
+
+				memcpy(ptr, &value->count, sizeof(int32));
+				ptr += sizeof(int32);
+			}
+		}
+
+		Assert(ptr <= endptr);
+	}
+
+	Assert(ptr == endptr);
+
+	return raw;
+}
+
+/* FIXME this needs protections agains reading corrupted data */
+JsonStats *
+statext_json_stats_deserialize(bytea *data)
+{
+	int			i,
+				j,
+				k;
+	JsonStats  *stats;
+	char	   *raw;
+	char	   *ptr;
+	char	   *endptr PG_USED_FOR_ASSERTS_ONLY;
+	int			ncolumns;
+
+	raw = (char *) data;
+	ptr = VARDATA_ANY(raw);
+	endptr = (char *) raw + VARSIZE_ANY(data);
+
+	memcpy(&ncolumns, ptr, sizeof(int32));
+	ptr += sizeof(int32);
+
+	stats = palloc(offsetof(JsonStats, columns) + ncolumns * sizeof(JsonColumnStats));
+	stats->ncolumns = ncolumns;
+
+	for (i = 0; i < ncolumns; i++)
+	{
+		JsonColumnStats *col = &stats->columns[i];
+
+		memcpy(&col->count, ptr, sizeof(int32));
+		ptr += sizeof(int32);
+
+		memcpy(&col->npaths, ptr, sizeof(int32));
+		ptr += sizeof(int32);
+
+		col->paths = palloc(sizeof(JsonPathCounter) * col->npaths);
+
+		for (j = 0; j < col->npaths; j++)
+		{
+			JsonPathCounter *path = &col->paths[j];
+
+			memcpy(&path->hash, ptr, sizeof(int32));
+			ptr += sizeof(int32);
+
+			memcpy(&path->count, ptr, sizeof(int32));
+			ptr += sizeof(int32);
+
+			memcpy(&path->nvalues, ptr, sizeof(int32));
+			ptr += sizeof(int32);
+
+			path->values = palloc(sizeof(JsonValueCounter) * path->nvalues);
+
+			for (k = 0; k < path->nvalues; k++)
+			{
+				JsonValueCounter *value = &path->values[k];
+
+				memcpy(&value->hash, ptr, sizeof(int32));
+				ptr += sizeof(int32);
+
+				memcpy(&value->count, ptr, sizeof(int32));
+				ptr += sizeof(int32);
+			}
+		}
+
+		Assert(ptr <= endptr);
+	}
+
+	Assert(ptr == endptr);
+
+	return stats;
+}
+
+
+
+/*
+ * statext_json_stats_load
+ *		Load the JSON stats for the indicated pg_statistic_ext tuple.
+ */
+JsonStats *
+statext_json_stats_load(Oid jsonoid)
+{
+	JsonStats  *result;
+	bool		isnull;
+	Datum		jsonstats;
+	HeapTuple	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(jsonoid));
+
+	if (!HeapTupleIsValid(htup))
+		elog(ERROR, "cache lookup failed for statistics object %u", jsonoid);
+
+	jsonstats = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+								Anum_pg_statistic_ext_data_stxdjson, &isnull);
+
+	if (isnull)
+		elog(ERROR,
+			 "requested statistics kind \"%c\" is not yet built for statistics object %u",
+			 STATS_EXT_JSON, jsonoid);
+
+	result = statext_json_stats_deserialize(DatumGetByteaP(jsonstats));
+
+	ReleaseSysCache(htup);
 
 	return result;
 }

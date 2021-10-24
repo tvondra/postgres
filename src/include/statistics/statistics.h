@@ -94,9 +94,45 @@ typedef struct MCVList
 	MCVItem		items[FLEXIBLE_ARRAY_MEMBER];	/* array of MCV items */
 } MCVList;
 
+/* statistics for JSON documents */
+typedef struct JsonValueCounter
+{
+	uint32		hash;
+	uint32		count;
+} JsonValueCounter;
+
+#define		MAX_VALUES	256
+#define		MAX_PATHS	8192
+
+typedef struct JsonPathCounter
+{
+	uint32		hash;	/* hash identifying this path */
+	uint32		count;	/* number of times we saw this path */
+
+	/* values for this path */
+	uint32		maxvalues;
+	uint32		nvalues;
+	JsonValueCounter *values;
+} JsonPathCounter;
+
+typedef struct JsonColumnStats
+{
+	uint32		count;
+	int			npaths;
+	int			maxpaths;
+	JsonPathCounter *paths;
+} JsonColumnStats;
+
+typedef struct JsonStats
+{
+	uint32		ncolumns;
+	JsonColumnStats	columns[FLEXIBLE_ARRAY_MEMBER];
+} JsonStats;
+
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 extern MVDependencies *statext_dependencies_load(Oid mvoid);
 extern MCVList *statext_mcv_load(Oid mvoid);
+extern JsonStats *statext_json_stats_load(Oid jsonoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 									   int numrows, HeapTuple *rows,

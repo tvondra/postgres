@@ -108,6 +108,7 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_statistic_ext.h"
+#include "common/hashfn.h"
 #include "executor/nodeAgg.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -211,6 +212,8 @@ static bool get_actual_variable_endpoint(Relation heapRel,
 										 Datum *endpointDatum);
 static RelOptInfo *find_join_input_rel(PlannerInfo *root, Relids relids);
 
+static JsonColumnStats *examine_json_expression(PlannerInfo *root,
+												Node *node, int varRelid);
 
 /*
  *		eqsel			- Selectivity of "=" for any data types.
@@ -253,6 +256,64 @@ eqsel_internal(PG_FUNCTION_ARGS, bool negate)
 		{
 			/* Use default selectivity (should we raise an error instead?) */
 			return 1.0 - DEFAULT_EQ_SEL;
+		}
+	}
+
+	/* FIXME handle (JSONB ->> text = text), but don't match to OID directly */
+	if (operator == 98)
+	{
+		/* make sure left argument is jsonb ->> text */
+		Node *expr = (Node *) linitial(args);
+		Node *value = (Node *) lsecond(args);
+
+		if (IsA(expr, OpExpr) && IsA(value, Const))
+		{
+			Const *value_cst = (Const *) value;
+			OpExpr *opexpr = (OpExpr *) expr;
+
+			text *val = (text *) value_cst->constvalue;
+			char *value_str = text_to_cstring(val);
+			uint32	val_hash = string_hash(value_str, strlen(value_str) + 1);
+
+			if (opexpr->opno == 3477)
+			{
+				JsonColumnStats	   *stats;
+				Node *jsonexpr = (Node *) linitial(opexpr->args);
+				Node *key = (Node *) lsecond(opexpr->args);
+
+				stats = examine_json_expression(root, jsonexpr, varRelid);
+
+				if (stats && IsA(key, Const))
+				{
+					int	i, j;
+					Const *path_cst = ((Const *) key);
+					text *path = (text *) path_cst->constvalue;
+					char *path_str = text_to_cstring(path);
+					uint32	path_tmp = string_hash(path_str, strlen(path_str) + 1);
+					uint32	path_hash = hash_bytes((unsigned char *) &path_tmp, sizeof(uint32));
+
+					float8 selec = 0.0;
+
+					for (i = 0; i < stats->npaths; i++)
+					{
+						if (stats->paths[i].hash == path_hash)
+						{
+							JsonPathCounter *path = &stats->paths[i];
+							for (j = 0; j < path->nvalues; j++)
+							{
+								if (path->values[j].hash == val_hash)
+								{
+									selec = ((float8) path->values[j].count) / stats->count;
+									break;
+								}
+							}
+							break;
+						}
+					}
+					return selec;
+				}
+
+			}
 		}
 	}
 
@@ -3215,6 +3276,37 @@ matchingsel(PG_FUNCTION_ARGS)
 	Oid			collation = PG_GET_COLLATION();
 	double		selec;
 
+	/* FIXME Dirty, should have a separate function for jsonb_exists operator. */
+	if (operator == 3247)
+	{
+		JsonColumnStats	   *stats;
+		Node			   *key = (Node *) lsecond(args);
+
+		stats = examine_json_expression(root, linitial(args), varRelid);
+
+		if (stats && IsA(key, Const))
+		{
+			int	i;
+			Const *cst = ((Const *) key);
+			text *key = (text *) cst->constvalue;
+			char *key_str = text_to_cstring(key);
+			uint32	key_hash = string_hash(key_str, strlen(key_str) + 1);
+			uint32	hash = hash_bytes((unsigned char *) &key_hash, sizeof(uint32));
+			float8 selec = 0.0;
+
+			for (i = 0; i < stats->npaths; i++)
+			{
+				if (stats->paths[i].hash == hash)
+				{
+					selec = ((float8) stats->paths[i].count) / stats->count;
+					break;
+				}
+			}
+
+			PG_RETURN_FLOAT8(selec);
+		}
+	}
+
 	/* Use generic restriction selectivity logic. */
 	selec = generic_restriction_selectivity(root, operator, collation,
 											args, varRelid,
@@ -5336,6 +5428,143 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 			}
 		}
 	}
+}
+
+static JsonColumnStats *
+examine_json_expression(PlannerInfo *root, Node *node, int varRelid)
+{
+	Node	   *basenode;
+	Relids		varnos;
+	RelOptInfo *onerel;
+
+	/* XXX only works with jsonb for now */
+	Assert(exprType(node) == JSONBOID);
+
+	/* Look inside any binary-compatible relabeling */
+
+	if (IsA(node, RelabelType))
+		basenode = (Node *) ((RelabelType *) node)->arg;
+	else
+		basenode = node;
+
+	/* Fast path for a simple Var */
+
+	if (IsA(basenode, Var) &&
+		(varRelid == 0 || varRelid == ((Var *) basenode)->varno))
+	{
+		ListCell   *slist;
+		Var		   *var = (Var *) basenode;
+		RelOptInfo *rel = find_base_rel(root, var->varno);
+
+		/* Try to locate some JSON stats */
+		foreach(slist, rel->statlist)
+		{
+			StatisticExtInfo *info = (StatisticExtInfo *) lfirst(slist);
+
+			/* skip stats without per-expression stats */
+			if (info->kind != STATS_EXT_JSON)
+				continue;
+
+			if (bms_is_member(var->varattno, info->keys))
+			{
+				/* FIXME load stats just for the column we need */
+				JsonStats *stats = statext_json_stats_load(info->statOid);
+
+				/* FIXME use the correct index */
+				return &stats->columns[0];
+			}
+		}
+
+		return NULL;
+	}
+
+	/*
+	 * Okay, it's a more complicated expression.  Determine variable
+	 * membership.  Note that when varRelid isn't zero, only vars of that
+	 * relation are considered "real" vars.
+	 */
+	varnos = pull_varnos(root, basenode);
+
+	onerel = NULL;
+
+	switch (bms_membership(varnos))
+	{
+		case BMS_EMPTY_SET:
+			/* No Vars at all ... must be pseudo-constant clause */
+			break;
+		case BMS_SINGLETON:
+			if (varRelid == 0 || bms_is_member(varRelid, varnos))
+			{
+				onerel = find_base_rel(root,
+									   (varRelid ? varRelid : bms_singleton_member(varnos)));
+				node = basenode;	/* strip any relabeling */
+			}
+			/* else treat it as a constant */
+			break;
+		case BMS_MULTIPLE:
+			if (varRelid == 0)
+			{
+				/* treat it as a variable of a join relation */
+				node = basenode;	/* strip any relabeling */
+			}
+			else if (bms_is_member(varRelid, varnos))
+			{
+				/* ignore the vars belonging to other relations */
+				node = basenode;	/* strip any relabeling */
+				/* note: no point in expressional-index search here */
+			}
+			/* else treat it as a constant */
+			break;
+	}
+
+	bms_free(varnos);
+
+	if (onerel)
+	{
+		ListCell   *slist;
+
+		/*
+		 * Search extended statistics for one with a matching expression.
+		 * There might be multiple ones, so just grab the first one. In the
+		 * future, we might consider the statistics target (and pick the most
+		 * accurate statistics) and maybe some other parameters.
+		 */
+		foreach(slist, onerel->statlist)
+		{
+			StatisticExtInfo *info = (StatisticExtInfo *) lfirst(slist);
+			ListCell   *expr_item;
+			int			pos;
+
+			/* skip stats without per-expression stats */
+			if (info->kind != STATS_EXT_JSON)
+				continue;
+
+			pos = 0;
+			foreach(expr_item, info->exprs)
+			{
+				Node	   *expr = (Node *) lfirst(expr_item);
+
+				Assert(expr);
+
+				/* strip RelabelType before comparing it */
+				if (expr && IsA(expr, RelabelType))
+					expr = (Node *) ((RelabelType *) expr)->arg;
+
+				/* found a match, see if we can extract pg_statistic row */
+				if (equal(node, expr))
+				{
+					JsonStats *stats = statext_json_stats_load(info->statOid);
+
+					/* FIXME return the correct element (by position) */
+					return &stats->columns[0];
+				}
+
+				pos++;
+			}
+		}
+	}
+
+	return NULL;
 }
 
 /*

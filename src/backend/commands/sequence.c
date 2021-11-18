@@ -37,6 +37,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
+#include "replication/message.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
@@ -75,6 +76,7 @@ typedef struct SeqTableData
 {
 	Oid			relid;			/* pg_class OID of this sequence (hash key) */
 	Oid			filenode;		/* last seen relfilenode of this sequence */
+	Oid			tablespace;		/* last seen tablespace of this sequence */
 	LocalTransactionId lxid;	/* xact in which we last did a seq op */
 	bool		last_valid;		/* do we have a valid "last" value? */
 	int64		last;			/* value last returned by nextval */
@@ -82,6 +84,10 @@ typedef struct SeqTableData
 	/* if last != cached, we have not used up all the cached values */
 	int64		increment;		/* copy of sequence's increment field */
 	/* note that increment is zero until we first do nextval_internal() */
+	bool		need_log;		/* should be written to WAL at commit? */
+	bool		touched;
+	int64		log_cnt;
+	bool		is_called;
 } SeqTableData;
 
 typedef SeqTableData *SeqTable;
@@ -94,7 +100,7 @@ static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
  */
 static SeqTableData *last_used_seq = NULL;
 
-static void fill_seq_with_data(Relation rel, HeapTuple tuple, bool create);
+static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static Relation lock_and_open_sequence(SeqTable seq);
 static void create_seq_hashtable(void);
 static void init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel);
@@ -222,7 +228,7 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 
 	/* now initialize the sequence's data */
 	tuple = heap_form_tuple(tupDesc, value, null);
-	fill_seq_with_data(rel, tuple, true);
+	fill_seq_with_data(rel, tuple);
 
 	/* process OWNED BY if given */
 	if (owned_by)
@@ -327,11 +333,16 @@ ResetSequence(Oid seq_relid)
 	/*
 	 * Insert the modified tuple into the new storage file.
 	 */
-	fill_seq_with_data(seq_rel, tuple, true);
+	fill_seq_with_data(seq_rel, tuple);
 
 	/* Clear local cache so that we don't think we have cached numbers */
 	/* Note that we do not change the currval() state */
 	elm->cached = elm->last;
+
+	/* Remember we need to write the sequence to WAL at commit. */
+	elm->need_log = true;
+	elm->is_called = false;
+	elm->log_cnt = 0;
 
 	relation_close(seq_rel, NoLock);
 }
@@ -340,7 +351,7 @@ ResetSequence(Oid seq_relid)
  * Initialize a sequence's relation with the specified tuple as content
  */
 static void
-fill_seq_with_data(Relation rel, HeapTuple tuple, bool create)
+fill_seq_with_data(Relation rel, HeapTuple tuple)
 {
 	Buffer		buf;
 	Page		page;
@@ -380,27 +391,7 @@ fill_seq_with_data(Relation rel, HeapTuple tuple, bool create)
 	if (RelationNeedsWAL(rel))
 	{
 		GetTopTransactionId();
-
-		/*
-		 * Ensure we have a proper XID, which will be included in the XLOG
-		 * record by XLogRecordAssemble. Otherwise the first nextval() in
-		 * a subxact (without any preceding changes) would get XID 0,
-		 * and it'd be impossible to decide which top xact it belongs to.
-		 * It'd also trigger assert in DecodeSequence.
-		 *
-		 * XXX This might seem unnecessary, because if there's no XID the
-		 * transaction couldn't have done anything important yet, e.g. it
-		 * could not have created a sequence. But that's incorrect, as it
-		 * ignores subtransactions. The current subtransaction might not
-		 * have done anything yet (thus no XID), but an earlier one might
-		 * have created the sequence.
-		 *
-		 * XXX Not sure if this is the best solution. Maybe do this only
-		 * with wal_level=logical to minimize the overhead. OTOH advancing
-		 * the sequence is likely followed by using the value(s) for some
-		 * other activity, which assigns the XID.
-		 */
-		GetCurrentTransactionId();
+		// GetCurrentTransactionId();
 	}
 
 	START_CRIT_SECTION();
@@ -422,7 +413,6 @@ fill_seq_with_data(Relation rel, HeapTuple tuple, bool create)
 		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
 
 		xlrec.node = rel->rd_node;
-		xlrec.created = create;
 
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) tuple->t_data, tuple->t_len);
@@ -526,7 +516,11 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 		/*
 		 * Insert the modified tuple into the new storage file.
 		 */
-		fill_seq_with_data(seqrel, newdatatuple, true);
+		fill_seq_with_data(seqrel, newdatatuple);
+
+		elm->need_log = true;
+		elm->is_called = false;
+		elm->log_cnt = 0;
 	}
 
 	/* process OWNED BY if given */
@@ -792,27 +786,7 @@ nextval_internal(Oid relid, bool check_permissions)
 	if (logit && RelationNeedsWAL(seqrel))
 	{
 		GetTopTransactionId();
-
-		/*
-		 * Ensure we have a proper XID, which will be included in the XLOG
-		 * record by XLogRecordAssemble. Otherwise the first nextval() in
-		 * a subxact (without any preceding changes) would get XID 0,
-		 * and it'd be impossible to decide which top xact it belongs to.
-		 * It'd also trigger assert in DecodeSequence.
-		 *
-		 * XXX This might seem unnecessary, because if there's no XID the
-		 * transaction couldn't have done anything important yet, e.g. it
-		 * could not have created a sequence. But that's incorrect, as it
-		 * ignores subtransactions. The current subtransaction might not
-		 * have done anything yet (thus no XID), but an earlier one might
-		 * have created the sequence.
-		 *
-		 * XXX Not sure if this is the best solution. Maybe do this only
-		 * with wal_level=logical to minimize the overhead. OTOH advancing
-		 * the sequence is likely followed by using the value(s) for some
-		 * other activity, which assigns the XID.
-		 */
-		GetCurrentTransactionId();
+		// GetCurrentTransactionId();
 	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
@@ -850,7 +824,6 @@ nextval_internal(Oid relid, bool check_permissions)
 		seq->log_cnt = 0;
 
 		xlrec.node = seqrel->rd_node;
-		xlrec.created = false;
 
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) seqdatatuple.t_data, seqdatatuple.t_len);
@@ -858,6 +831,10 @@ nextval_internal(Oid relid, bool check_permissions)
 		recptr = XLogInsert(RM_SEQ_ID, XLOG_SEQ_LOG);
 
 		PageSetLSN(page, recptr);
+
+		elm->need_log = true;
+		elm->is_called = true;
+		elm->log_cnt = 0;
 	}
 
 	/* Now update sequence tuple to the intended final state */
@@ -1027,27 +1004,7 @@ do_setval(Oid relid, int64 next, bool iscalled)
 	if (RelationNeedsWAL(seqrel))
 	{
 		GetTopTransactionId();
-
-		/*
-		 * Ensure we have a proper XID, which will be included in the XLOG
-		 * record by XLogRecordAssemble. Otherwise the first nextval() in
-		 * a subxact (without any preceding changes) would get XID 0,
-		 * and it'd be impossible to decide which top xact it belongs to.
-		 * It'd also trigger assert in DecodeSequence.
-		 *
-		 * XXX This might seem unnecessary, because if there's no XID the
-		 * transaction couldn't have done anything important yet, e.g. it
-		 * could not have created a sequence. But that's incorrect, as it
-		 * ignores subtransactions. The current subtransaction might not
-		 * have done anything yet (thus no XID), but an earlier one might
-		 * have created the sequence.
-		 *
-		 * XXX Not sure if this is the best solution. Maybe do this only
-		 * with wal_level=logical to minimize the overhead. OTOH advancing
-		 * the sequence is likely followed by using the value(s) for some
-		 * other activity, which assigns the XID.
-		 */
-		GetCurrentTransactionId();
+		// GetCurrentTransactionId();
 	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
@@ -1070,14 +1027,16 @@ do_setval(Oid relid, int64 next, bool iscalled)
 		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
 
 		xlrec.node = seqrel->rd_node;
-		xlrec.created = false;
-
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) seqdatatuple.t_data, seqdatatuple.t_len);
 
 		recptr = XLogInsert(RM_SEQ_ID, XLOG_SEQ_LOG);
 
 		PageSetLSN(page, recptr);
+
+		elm->need_log = true;
+		elm->is_called = false;
+		elm->log_cnt = 0;
 	}
 
 	END_CRIT_SECTION();
@@ -1196,10 +1155,13 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 	{
 		/* relid already filled in */
 		elm->filenode = InvalidOid;
+		elm->tablespace = InvalidOid;
 		elm->lxid = InvalidLocalTransactionId;
 		elm->last_valid = false;
 		elm->last = elm->cached = 0;
 	}
+
+	elm->touched = true;
 
 	/*
 	 * Open the sequence relation.
@@ -1219,6 +1181,7 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 	 */
 	if (seqrel->rd_rel->relfilenode != elm->filenode)
 	{
+		elm->tablespace = seqrel->rd_rel->reltablespace;
 		elm->filenode = seqrel->rd_rel->relfilenode;
 		elm->cached = elm->last;
 	}
@@ -1977,6 +1940,8 @@ seq_redo(XLogReaderState *record)
 
 /*
  * Flush cached sequence information.
+ *
+ * XXX Do we need to WAL-log the entries based on need_log?
  */
 void
 ResetSequenceCaches(void)
@@ -1999,4 +1964,75 @@ seq_mask(char *page, BlockNumber blkno)
 	mask_page_lsn_and_checksum(page);
 
 	mask_unused_space(page);
+}
+
+/* XXX Do this only for wal_level = logical, probably? */
+void
+AtEOXact_Sequences(bool isCommit)
+{
+	SeqTable		entry;
+	HASH_SEQ_STATUS	scan;
+
+	if (!seqhashtab)
+		return;
+
+	/*
+	 * XXX If we run just nextval() that returns cached value, the xact may
+	 * not have XID, but we expect it in reorderbuffer. Maybe treat that as
+	 * transactional?
+	 */
+	// GetTopTransactionId();
+	// GetCurrentTransactionId();
+
+	hash_seq_init(&scan, seqhashtab);
+
+	while ((entry = (SeqTable) hash_seq_search(&scan)))
+	{
+		RelFileNode			rnode;
+		xl_logical_sequence	xlrec;
+
+		if (!isCommit)
+			entry->touched = false;
+
+		/*
+		 * If not touched in the current transaction, don't log anything.
+		 * We leave needs_log set, so that if future transactions touch
+		 * the sequence we'll log it properly.
+		 */
+		if (!entry->touched)
+			continue;
+
+		/*
+		 * Likewise, if the sequence does not need logging, we're done.
+		 */
+		if (!entry->need_log)
+			continue;
+
+		/* if this is commit, we'll log the */
+		entry->need_log = false;
+		entry->touched = false;
+
+		rnode.spcNode = entry->tablespace;		/* tablespace */
+		rnode.dbNode = MyDatabaseId;			/* database */
+		rnode.relNode = entry->filenode;		/* relation */
+
+		xlrec.node = rnode;
+		xlrec.reloid = entry->relid;
+
+		/* XXX is it good enough to log values we have in cache? seems
+		 * wrong and we may need to re-read that. */
+		// xlrec.dbId = MyDatabaseId;
+		// xlrec.relId = entry->relid;
+		xlrec.last = entry->last;
+		xlrec.log_cnt = entry->log_cnt;
+		xlrec.is_called = entry->is_called;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfLogicalSequence);
+
+		/* allow origin filtering */
+		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+		(void) XLogInsert(RM_LOGICALMSG_ID, XLOG_LOGICAL_SEQUENCE);
+	}
 }

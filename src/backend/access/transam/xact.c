@@ -36,6 +36,7 @@
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/tablecmds.h"
+#include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "libpq/be-fsstubs.h"
@@ -2220,6 +2221,9 @@ CommitTransaction(void)
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
+	/* Write state of sequences to WAL */
+	AtEOXact_Sequences(true);
+
 	/* Commit updates to the relation map --- do this as late as possible */
 	AtEOXact_RelationMap(true, is_parallel_worker);
 
@@ -2378,6 +2382,8 @@ CommitTransaction(void)
  *	PrepareTransaction
  *
  * NB: if you change this routine, better look at CommitTransaction too!
+ *
+ * XXX Does this need to do something about logging of sequences?
  */
 static void
 PrepareTransaction(void)
@@ -2775,6 +2781,9 @@ AbortTransaction(void)
 	AtAbort_Notify();
 	AtEOXact_RelationMap(false, is_parallel_worker);
 	AtAbort_Twophase();
+
+	/* XXX not sure we need to do anything about sequences at abort */
+	AtEOXact_Sequences(false);
 
 	/*
 	 * Advertise the fact that we aborted in pg_xact (assuming that we got as

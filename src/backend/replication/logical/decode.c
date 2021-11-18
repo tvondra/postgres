@@ -59,6 +59,9 @@ static void DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeStandbyOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeLogicalMsgOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 
+static void DecodeLogicalMessage(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+static void DecodeLogicalSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+
 /* individual record(group)'s handlers */
 static void DecodeInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
@@ -75,11 +78,9 @@ static void DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 						bool two_phase);
 static void DecodePrepare(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 						  xl_xact_parsed_prepare *parsed);
-static void DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 
 /* common function to decode tuples */
 static void DecodeXLogTuple(char *data, Size len, ReorderBufferTupleBuf *tup);
-static void DecodeSeqTuple(char *data, Size len, ReorderBufferTupleBuf *tuple);
 
 /* helper functions for decoding transactions */
 static inline bool FilterPrepare(LogicalDecodingContext *ctx,
@@ -158,10 +159,6 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 
 		case RM_LOGICALMSG_ID:
 			DecodeLogicalMsgOp(ctx, &buf);
-			break;
-
-		case RM_SEQ_ID:
-			DecodeSequence(ctx, &buf);
 			break;
 
 			/*
@@ -626,6 +623,27 @@ FilterByOrigin(LogicalDecodingContext *ctx, RepOriginId origin_id)
  */
 static void
 DecodeLogicalMsgOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	uint8		info = XLogRecGetInfo(r) & ~XLR_INFO_MASK;
+
+	switch (info)
+	{
+		case XLOG_LOGICAL_MESSAGE:
+			DecodeLogicalMessage(ctx, buf);
+			break;
+
+		case XLOG_LOGICAL_SEQUENCE:
+			DecodeLogicalSequence(ctx, buf);
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_LOGICALMSG_ID record type: %u", info);
+	}
+}
+
+static void
+DecodeLogicalMessage(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
 	SnapBuild  *builder = ctx->snapshot_builder;
 	XLogReaderState *r = buf->record;
@@ -1320,31 +1338,6 @@ DecodeTXNNeedSkip(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 }
 
 /*
- * Decode Sequence Tuple
- */
-static void
-DecodeSeqTuple(char *data, Size len, ReorderBufferTupleBuf *tuple)
-{
-	int			datalen = len - sizeof(xl_seq_rec) - SizeofHeapTupleHeader;
-
-	Assert(datalen >= 0);
-
-	tuple->tuple.t_len = datalen + SizeofHeapTupleHeader;;
-
-	ItemPointerSetInvalid(&tuple->tuple.t_self);
-
-	tuple->tuple.t_tableOid = InvalidOid;
-
-	memcpy(((char *) tuple->tuple.t_data),
-		   data + sizeof(xl_seq_rec),
-		   SizeofHeapTupleHeader);
-
-	memcpy(((char *) tuple->tuple.t_data) + SizeofHeapTupleHeader,
-		   data + sizeof(xl_seq_rec) + SizeofHeapTupleHeader,
-		   datalen);
-}
-
-/*
  * Handle sequence decode
  *
  * Decoding sequences is a bit tricky, because while most sequence actions
@@ -1362,24 +1355,20 @@ DecodeSeqTuple(char *data, Size len, ReorderBufferTupleBuf *tuple)
  * plugin - it might get confused about which sequence it's related to etc.
  */
 static void
-DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+DecodeLogicalSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
 	SnapBuild  *builder = ctx->snapshot_builder;
-	ReorderBufferTupleBuf *tuplebuf;
 	RelFileNode target_node;
 	XLogReaderState *r = buf->record;
-	char	   *tupledata = NULL;
-	Size		tuplelen;
-	Size		datalen = 0;
 	TransactionId xid = XLogRecGetXid(r);
 	uint8		info = XLogRecGetInfo(buf->record) & ~XLR_INFO_MASK;
-	xl_seq_rec *xlrec;
+	xl_logical_sequence *xlrec;
 	Snapshot	snapshot;
 	RepOriginId origin_id = XLogRecGetOrigin(r);
-	bool		transactional;
+	bool		transactional = TransactionIdIsValid(xid);
 
 	/* only decode changes flagged with XLOG_SEQ_LOG */
-	if (info != XLOG_SEQ_LOG)
+	if (info != XLOG_LOGICAL_SEQUENCE)
 		elog(ERROR, "unexpected RM_SEQ_ID record type: %u", info);
 
 	/*
@@ -1390,8 +1379,11 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		ctx->fast_forward)
 		return;
 
+	/* extract the WAL record, with "created" flag */
+	xlrec = (xl_logical_sequence *) XLogRecGetData(r);
+
 	/* only interested in our database */
-	XLogRecGetBlockTag(r, 0, &target_node, NULL, NULL);
+	target_node = xlrec->node;
 	if (target_node.dbNode != ctx->slot->data.database)
 		return;
 
@@ -1399,44 +1391,18 @@ DecodeSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
 		return;
 
-	tupledata = XLogRecGetData(r);
-	datalen = XLogRecGetDataLen(r);
-	tuplelen = datalen - SizeOfHeapHeader - sizeof(xl_seq_rec);
-
-	/* extract the WAL record, with "created" flag */
-	xlrec = (xl_seq_rec *) XLogRecGetData(r);
-
-	/* XXX how could we have sequence change without data? */
-	if(!datalen || !tupledata)
-		return;
-
-	tuplebuf = ReorderBufferGetTupleBuf(ctx->reorder, tuplelen);
-	DecodeSeqTuple(tupledata, datalen, tuplebuf);
-
-	/*
-	 * Should we handle the sequence increment as transactional or not?
-	 *
-	 * If the sequence was created in a still-running transaction, treat
-	 * it as transactional and queue the increments. Otherwise it needs
-	 * to be treated as non-transactional, in which case we send it to
-	 * the plugin right away.
-	 */
-	transactional = ReorderBufferSequenceIsTransactional(ctx->reorder,
-														 target_node,
-														 xlrec->created);
-
 	/* Skip the change if already processed (per the snapshot). */
 	if (transactional &&
 		!SnapBuildProcessChange(builder, xid, buf->origptr))
 		return;
 	else if (!transactional &&
 			 (SnapBuildCurrentState(builder) != SNAPBUILD_CONSISTENT ||
-			  SnapBuildXactNeedsSkip(builder, buf->origptr)))
+			 SnapBuildXactNeedsSkip(builder, buf->origptr)))
 		return;
 
 	/* Queue the increment (or send immediately if not transactional). */
 	snapshot = SnapBuildGetOrBuildSnapshot(builder, xid);
 	ReorderBufferQueueSequence(ctx->reorder, xid, snapshot, buf->endptr,
-							   origin_id, target_node, transactional,
-							   xlrec->created, tuplebuf);
+							   origin_id, xlrec->reloid, target_node,
+							   xlrec->last, xlrec->log_cnt, xlrec->is_called);
 }

@@ -569,17 +569,11 @@ ReorderBufferReturnChange(ReorderBuffer *rb, ReorderBufferChange *change,
 				change->data.truncate.relids = NULL;
 			}
 			break;
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			if (change->data.sequence.tuple)
-			{
-				ReorderBufferReturnTupleBuf(rb, change->data.sequence.tuple);
-				change->data.sequence.tuple = NULL;
-			}
-			break;
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			break;
 	}
 
@@ -973,9 +967,10 @@ ReorderBufferSequenceCleanup(ReorderBuffer *rb, TransactionId xid)
 void
 ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 						   Snapshot snapshot, XLogRecPtr lsn, RepOriginId origin_id,
-						   RelFileNode rnode, bool transactional, bool created,
-						   ReorderBufferTupleBuf *tuplebuf)
+						   Oid reloid, RelFileNode rnode, int64 last, int64 log_cnt, bool is_called)
 {
+	bool transactional = TransactionIdIsValid(xid);
+
 	/*
 	 * Change needs to be handled as transactional, because the sequence was
 	 * created in a transaction that is still running. In that case all the
@@ -992,38 +987,6 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 		MemoryContext oldcontext;
 		ReorderBufferChange *change;
 
-		/* lookup sequence by relfilenode */
-		ReorderBufferSequenceEnt   *ent;
-		bool						found;
-
-		/* transactional changes require a transaction */
-		Assert(xid != InvalidTransactionId);
-
-		/* search the lookup table (we ignore the return value, found is enough) */
-		ent = hash_search(rb->sequences,
-						  (void *) &rnode,
-						  created ? HASH_ENTER : HASH_FIND,
-						  &found);
-
-		/*
-		 * If this is the "create" increment, we must not have found any
-		 * pre-existing entry in the hash table (i.e. there must not be
-		 * any conflicting sequence).
-		 */
-		Assert(!(created && found));
-
-		/* But we must have either created or found an existing entry. */
-		Assert(created || found);
-
-		/*
-		 * When creating the sequence, remember the XID of the transaction
-		 * that created id.
-		 */
-		if (created)
-			ent->xid = xid;
-
-		/* XXX Maybe check that we're still in the same top-level xact? */
-
 		/* OK, allocate and queue the change */
 		oldcontext = MemoryContextSwitchTo(rb->context);
 
@@ -1034,38 +997,26 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 
 		memcpy(&change->data.sequence.relnode, &rnode, sizeof(RelFileNode));
 
-		change->data.sequence.created = created;
-		change->data.sequence.tuple = tuplebuf;
+		change->data.sequence.reloid = reloid;
+		change->data.sequence.last = last;
+		change->data.sequence.log_cnt = log_cnt;
+		change->data.sequence.is_called = is_called;
 
 		/* add it to the same subxact that created the sequence */
-		ReorderBufferQueueChange(rb, ent->xid, lsn, change, false);
+		ReorderBufferQueueChange(rb, xid, lsn, change, false);
 
 		MemoryContextSwitchTo(oldcontext);
 	}
 	else
 	{
 		/*
-		 * This increment is for a sequence that was not created in any
-		 * running transaction, so we treat it as non-transactional and
-		 * just send it to the output plugin directly.
-		 */
+		* This increment is for a sequence that was not created in any
+		* running transaction, so we treat it as non-transactional and
+		* just send it to the output plugin directly.
+		*/
 		ReorderBufferTXN *txn = NULL;
 		volatile Snapshot snapshot_now = snapshot;
-		bool	using_subtxn;
-
-#ifdef USE_ASSERT_CHECKING
-		/* All "creates" have to be handled as transactional. */
-		Assert(!created);
-
-		/* Make sure the sequence is not in the hash table. */
-		{
-			bool	found;
-			hash_search(rb->sequences,
-						(void *) &rnode,
-						HASH_FIND, &found);
-			Assert(!found);
-		}
-#endif
+		bool    using_subtxn;
 
 		if (xid != InvalidTransactionId)
 			txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
@@ -1074,40 +1025,35 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 		SetupHistoricSnapshot(snapshot_now, NULL);
 
 		/*
-		 * Decoding needs access to syscaches et al., which in turn use
-		 * heavyweight locks and such. Thus we need to have enough state around to
-		 * keep track of those.  The easiest way is to simply use a transaction
-		 * internally.  That also allows us to easily enforce that nothing writes
-		 * to the database by checking for xid assignments.
-		 *
-		 * When we're called via the SQL SRF there's already a transaction
-		 * started, so start an explicit subtransaction there.
-		 */
+		* Decoding needs access to syscaches et al., which in turn use
+		* heavyweight locks and such. Thus we need to have enough state around to
+		* keep track of those.  The easiest way is to simply use a transaction
+		* internally.  That also allows us to easily enforce that nothing writes
+		* to the database by checking for xid assignments.
+		*
+		* When we're called via the SQL SRF there's already a transaction
+		* started, so start an explicit subtransaction there.
+		*/
 		using_subtxn = IsTransactionOrTransactionBlock();
 
 		PG_TRY();
 		{
 			Relation	relation;
-			HeapTuple	tuple;
-			bool		isnull;
-			int64		last_value, log_cnt;
-			bool		is_called;
-			Oid			reloid;
+//			Oid			reloid;
 
 			if (using_subtxn)
 				BeginInternalSubTransaction("sequence");
 			else
 				StartTransactionCommand();
-
+/*
 			reloid = RelidByRelfilenode(rnode.spcNode, rnode.relNode);
 
 			if (reloid == InvalidOid)
 				elog(ERROR, "could not map filenode \"%s\" to relation OID",
-					 relpathperm(rnode,
-								 MAIN_FORKNUM));
-
+					relpathperm(rnode,
+								MAIN_FORKNUM));
+*/
 			relation = RelationIdGetRelation(reloid);
-			tuple = &tuplebuf->tuple;
 
 			/*
 			 * Extract the internal sequence values, describing the state.
@@ -1115,12 +1061,8 @@ ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
 			 * XXX Seems a bit strange to access it directly. Maybe there's
 			 * a better / more correct way?
 			 */
-			last_value = heap_getattr(tuple, 1, RelationGetDescr(relation), &isnull);
-			log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
-			is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
-
-			rb->sequence(rb, txn, lsn, relation, transactional, created,
-						 last_value, log_cnt, is_called);
+			rb->sequence(rb, txn, lsn, relation, transactional, false,
+						last, log_cnt, is_called);
 
 			RelationClose(relation);
 
@@ -2248,12 +2190,8 @@ ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
 						   Relation relation, ReorderBufferChange *change,
 						   bool streaming)
 {
-	HeapTuple	tuple;
-	bool		isnull;
 	int64		last_value, log_cnt;
 	bool		is_called;
-
-	tuple = &change->data.sequence.tuple->tuple;
 
 	/*
 	 * Extract the internal sequence values, describing the state.
@@ -2261,18 +2199,18 @@ ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	 * XXX Seems a bit strange to access it directly. Maybe there's
 	 * a better / more correct way?
 	 */
-	last_value = heap_getattr(tuple, 1, RelationGetDescr(relation), &isnull);
-	log_cnt = heap_getattr(tuple, 2, RelationGetDescr(relation), &isnull);
-	is_called = heap_getattr(tuple, 3, RelationGetDescr(relation), &isnull);
+	last_value = change->data.sequence.last;
+	log_cnt = change->data.sequence.log_cnt;
+	is_called = change->data.sequence.is_called;
 
 	/* Only ever called from ReorderBufferApplySequence, so transational. */
 	if (streaming)
 		rb->stream_sequence(rb, txn, change->lsn, relation, true,
-							change->data.sequence.created,
+							false,	/* FIXME */
 							last_value, log_cnt, is_called);
 	else
 		rb->sequence(rb, txn, change->lsn, relation, true,
-					 change->data.sequence.created,
+					 false,	/* FIXME */
 					 last_value, log_cnt, is_called);
 }
 
@@ -2722,15 +2660,17 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				case REORDER_BUFFER_CHANGE_SEQUENCE:
 					Assert(snapshot_now);
 
+					/*
 					reloid = RelidByRelfilenode(change->data.sequence.relnode.spcNode,
 												change->data.sequence.relnode.relNode);
 
 					if (reloid == InvalidOid)
-						elog(ERROR, "could not map filenode \"%s\" to relation OID",
+						elog(ERROR, "zz could not map filenode \"%s\" to relation OID",
 							 relpathperm(change->data.sequence.relnode,
 										 MAIN_FORKNUM));
 
-					relation = RelationIdGetRelation(reloid);
+					*/
+					relation = RelationIdGetRelation(change->data.sequence.reloid);
 
 					if (!RelationIsValid(relation))
 						elog(ERROR, "could not open relation with OID %u (for filenode \"%s\")",
@@ -4129,43 +4069,11 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				break;
 			}
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			{
-				char	   *data;
-				ReorderBufferTupleBuf *tup;
-				Size		len = 0;
-
-				tup = change->data.sequence.tuple;
-
-				if (tup)
-				{
-					sz += sizeof(HeapTupleData);
-					len = tup->tuple.t_len;
-					sz += len;
-				}
-
-				/* make sure we have enough space */
-				ReorderBufferSerializeReserve(rb, sz);
-
-				data = ((char *) rb->outbuf) + sizeof(ReorderBufferDiskChange);
-				/* might have been reallocated above */
-				ondisk = (ReorderBufferDiskChange *) rb->outbuf;
-
-				if (len)
-				{
-					memcpy(data, &tup->tuple, sizeof(HeapTupleData));
-					data += sizeof(HeapTupleData);
-
-					memcpy(data, tup->tuple.t_data, len);
-					data += len;
-				}
-
-				break;
-			}
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			/* ReorderBufferChange contains everything important */
 			break;
 	}
@@ -4426,26 +4334,11 @@ ReorderBufferChangeSize(ReorderBufferChange *change)
 
 				break;
 			}
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			{
-				ReorderBufferTupleBuf *tup;
-				Size		len = 0;
-
-				tup = change->data.sequence.tuple;
-
-				if (tup)
-				{
-					sz += sizeof(HeapTupleData);
-					len = tup->tuple.t_len;
-					sz += len;
-				}
-
-				break;
-			}
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			/* ReorderBufferChange contains everything important */
 			break;
 	}
@@ -4742,33 +4635,11 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				break;
 			}
 
-		case REORDER_BUFFER_CHANGE_SEQUENCE:
-			if (change->data.sequence.tuple)
-			{
-				uint32		tuplelen = ((HeapTuple) data)->t_len;
-
-				change->data.sequence.tuple =
-					ReorderBufferGetTupleBuf(rb, tuplelen - SizeofHeapTupleHeader);
-
-				/* restore ->tuple */
-				memcpy(&change->data.sequence.tuple->tuple, data,
-					   sizeof(HeapTupleData));
-				data += sizeof(HeapTupleData);
-
-				/* reset t_data pointer into the new tuplebuf */
-				change->data.sequence.tuple->tuple.t_data =
-					ReorderBufferTupleBufData(change->data.sequence.tuple);
-
-				/* restore tuple data itself */
-				memcpy(change->data.sequence.tuple->tuple.t_data, data, tuplelen);
-				data += tuplelen;
-			}
-			break;
-
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			break;
 	}
 

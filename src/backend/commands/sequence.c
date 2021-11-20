@@ -344,6 +344,7 @@ ResetSequence(Oid seq_relid)
 	elm->need_log = true;
 	elm->is_called = false;
 	elm->log_cnt = 0;
+	elm->touched = true;
 
 	relation_close(seq_rel, NoLock);
 }
@@ -620,6 +621,8 @@ nextval_internal(Oid relid, bool check_permissions)
 
 	/* open and lock sequence */
 	init_sequence(relid, &elm, &seqrel);
+
+	elm->touched = true;
 
 	if (check_permissions &&
 		pg_class_aclcheck(elm->relid, GetUserId(),
@@ -948,6 +951,8 @@ do_setval(Oid relid, int64 next, bool iscalled)
 	/* open and lock sequence */
 	init_sequence(relid, &elm, &seqrel);
 
+	elm->touched = true;
+
 	if (pg_class_aclcheck(elm->relid, GetUserId(), ACL_UPDATE) != ACLCHECK_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -1163,8 +1168,6 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 		elm->last_valid = false;
 		elm->last = elm->cached = 0;
 	}
-
-	elm->touched = true;
 
 	/*
 	 * Open the sequence relation.

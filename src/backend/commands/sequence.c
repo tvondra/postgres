@@ -237,6 +237,31 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 
 	table_close(rel, NoLock);
 
+	/*
+	 * Add the new sequence to local cache, so that we log it at commit.
+	 */
+	{
+		Relation	seqrel;
+		SeqTable	elm;
+		Buffer		buf;
+		Form_pg_sequence_data seq;
+		HeapTupleData	seqdatatuple;
+
+		init_sequence(seqoid, &elm, &seqrel);
+
+		seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
+
+		elm->last_value = seq->last_value;
+		elm->is_called = seq->is_called;
+		elm->log_cnt = 0;
+		elm->touched = true;
+		elm->need_log = true;
+
+		relation_close(seqrel, NoLock);
+
+		UnlockReleaseBuffer(buf);
+	}
+
 	/* fill in pg_sequence */
 	rel = table_open(SequenceRelationId, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);

@@ -1997,6 +1997,23 @@ seq_mask(char *page, BlockNumber blkno)
 	mask_unused_space(page);
 }
 
+
+static void
+read_sequence_info(Relation seqrel, int64 *last_value, int64 *log_cnt, bool *is_called)
+{
+	Buffer		buf;
+	Form_pg_sequence_data seq;
+	HeapTupleData	seqdatatuple;
+
+	seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
+
+	*last_value = seq->last_value;
+	*is_called = seq->is_called;
+	*log_cnt = seq->log_cnt;
+
+	UnlockReleaseBuffer(buf);
+}
+
 /* XXX Do this only for wal_level = logical, probably? */
 void
 AtEOXact_Sequences(bool isCommit)
@@ -2062,9 +2079,7 @@ AtEOXact_Sequences(bool isCommit)
 		 * wrong and we may need to re-read that. */
 		// xlrec.dbId = MyDatabaseId;
 		// xlrec.relId = entry->relid;
-		xlrec.last = entry->last_value;
-		xlrec.log_cnt = entry->log_cnt;
-		xlrec.is_called = entry->is_called;
+		read_sequence_info(rel, &xlrec.last, &xlrec.log_cnt, &xlrec.is_called);
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfLogicalSequence);

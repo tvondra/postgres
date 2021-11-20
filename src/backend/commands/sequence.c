@@ -1991,6 +1991,7 @@ AtEOXact_Sequences(bool isCommit)
 
 	while ((entry = (SeqTable) hash_seq_search(&scan)))
 	{
+		Relation			rel;
 		RelFileNode			rnode;
 		xl_logical_sequence	xlrec;
 
@@ -2009,6 +2010,13 @@ AtEOXact_Sequences(bool isCommit)
 		 * Likewise, if the sequence does not need logging, we're done.
 		 */
 		if (!entry->need_log)
+			continue;
+
+		/* does the relation still exist? */
+		rel = try_relation_open(entry->relid, NoLock);
+
+		/* relation might have been dropped */
+		if (!rel)
 			continue;
 
 		/* if this is commit, we'll log the */
@@ -2037,5 +2045,7 @@ AtEOXact_Sequences(bool isCommit)
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
 		(void) XLogInsert(RM_LOGICALMSG_ID, XLOG_LOGICAL_SEQUENCE);
+
+		relation_close(rel, NoLock);
 	}
 }

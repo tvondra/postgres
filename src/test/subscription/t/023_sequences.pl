@@ -74,7 +74,7 @@ is( $result, '132|0|t',
 	'check replicated sequence values on subscriber');
 
 
-# advance the sequence in a rolled-back transaction - should be replicated
+# advance the sequence in a rolled-back transaction - should not be replicated
 $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
@@ -90,7 +90,7 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s;
 ));
 
-is( $result, '231|0|t',
+is( $result, '132|0|t',
 	'check replicated sequence values on subscriber');
 
 
@@ -149,7 +149,7 @@ is( $result, '132|0|t',
 
 
 # advance the new sequence in a transaction, and roll it back - in this case
-# it should be replicated as the behavior is non-transactional
+# it should not be replicated at commit
 $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
@@ -165,7 +165,7 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s2;
 ));
 
-is( $result, '231|0|t',
+is( $result, '132|0|t',
 	'check replicated sequence values on subscriber');
 
 

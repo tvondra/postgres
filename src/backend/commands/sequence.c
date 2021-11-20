@@ -86,6 +86,7 @@ typedef struct SeqTableData
 	/* note that increment is zero until we first do nextval_internal() */
 	bool		need_log;		/* should be written to WAL at commit? */
 	bool		touched;
+	int64		last_value;
 	int64		log_cnt;
 	bool		is_called;
 } SeqTableData;
@@ -834,6 +835,7 @@ nextval_internal(Oid relid, bool check_permissions)
 
 		elm->need_log = true;
 		elm->is_called = true;
+		elm->last_value = next;
 		elm->log_cnt = 0;
 	}
 
@@ -1036,6 +1038,7 @@ do_setval(Oid relid, int64 next, bool iscalled)
 
 		elm->need_log = true;
 		elm->is_called = false;
+		elm->last_value = next;
 		elm->log_cnt = 0;
 	}
 
@@ -2023,7 +2026,7 @@ AtEOXact_Sequences(bool isCommit)
 		 * wrong and we may need to re-read that. */
 		// xlrec.dbId = MyDatabaseId;
 		// xlrec.relId = entry->relid;
-		xlrec.last = entry->last;
+		xlrec.last = entry->last_value;
 		xlrec.log_cnt = entry->log_cnt;
 		xlrec.is_called = entry->is_called;
 

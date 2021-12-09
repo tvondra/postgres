@@ -100,6 +100,7 @@
 #include "access/brin.h"
 #include "access/brin_page.h"
 #include "access/gin.h"
+#include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
@@ -7992,9 +7993,9 @@ stats_form_tuple(StatsData *data)
 			nulls[Anum_pg_statistic_stavalues1 + i - 1] = true;
 	}
 
-	rel = heap_open(StatisticRelationId, NoLock);
+	rel = relation_open(StatisticRelationId, NoLock);
 	tuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
-	heap_close(rel, NoLock);
+	relation_close(rel, NoLock);
 
 	return tuple;
 }

@@ -15,7 +15,7 @@
 
 #include "fmgr.h"
 #include "access/hash.h"
-#include "access/tuptoaster.h"
+#include "access/detoast.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
@@ -29,6 +29,7 @@
 #include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/typcache.h"
 
 typedef struct JsonPathEntry JsonPathEntry;
 
@@ -1031,6 +1032,7 @@ jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
 	int					nsubpaths = 0;
 	int					nvalues;
 	int					i;
+	TypeCacheEntry	   *entry;
 
 	JsonValueInitStringWithLen(&pathkey, "path", 4);
 
@@ -1071,9 +1073,11 @@ jsonAnalyzeBuildSubPathsData(Datum *pathsDatums, int npaths, int index,
 	pfree(pvalues);
 	pfree(values);
 
+	entry = lookup_type_cache(FLOAT4OID, 0);
+
 	numbers[0] = Float4GetDatum(nullfrac);
 	*pnums = PointerGetDatum(construct_array(numbers, 1, FLOAT4OID, 4,
-											 FLOAT4PASSBYVAL, 'i'));
+											 entry->typbyval, 'i'));
 
 	return true;
 }

@@ -18,6 +18,7 @@
 #include "fmgr.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
@@ -29,6 +30,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
+#include "utils/typcache.h"
 
 #define DEFAULT_JSON_CONTAINS_SEL	0.001
 
@@ -482,6 +484,8 @@ jsonStatsConvertArray(Datum jsonbValueArray, JsonStatType type, Oid typid,
 	int			nvalues;
 	int			i;
 
+	TypeCacheEntry *entry;
+
 	if (!DatumGetPointer(jsonbValueArray))
 		return PointerGetDatum(NULL);
 
@@ -533,11 +537,13 @@ jsonStatsConvertArray(Datum jsonbValueArray, JsonStatType type, Oid typid,
 
 	Assert(i == nvalues);
 
+	entry = lookup_type_cache(typid, 0);
+
 	return PointerGetDatum(
 			construct_array(values, nvalues,
 							typid,
-							typid == FLOAT4OID ? 4 : -1,
-							typid == FLOAT4OID ? FLOAT4PASSBYVAL : false,
+							entry->typlen,
+							entry->typbyval,
 							'i'));
 }
 
@@ -922,6 +928,7 @@ jsonSelectivity(JsonPathStats stats, Datum scalar, Oid operator)
 {
 	VariableStatData vardata;
 	Selectivity sel;
+	Oid collation = DEFAULT_COLLATION_OID;
 
 	if (!stats)
 		return 0.0;
@@ -937,14 +944,14 @@ jsonSelectivity(JsonPathStats stats, Datum scalar, Oid operator)
 												JsonStatJsonbWithoutSubpaths, 0.0);
 
 	if (operator == JsonbEqOperator)
-		sel = var_eq_const(&vardata, operator, scalar, false, true, false);
+		sel = var_eq_const(&vardata, operator, collation, scalar, false, true, false);
 	else
 		sel = scalarineqsel(NULL, operator,
 							operator == JsonbGtOperator ||
 							operator == JsonbGeOperator,
 							operator == JsonbLeOperator ||
 							operator == JsonbGeOperator,
-							&vardata, scalar, JSONBOID);
+							collation, &vardata, scalar, JSONBOID);
 
 	if (vardata.statsTuple)
 		heap_freetuple(vardata.statsTuple);

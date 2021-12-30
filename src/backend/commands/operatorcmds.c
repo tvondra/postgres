@@ -52,6 +52,11 @@
 
 static Oid	ValidateRestrictionEstimator(List *restrictionName);
 static Oid	ValidateJoinEstimator(List *joinName);
+
+/*
+ * XXX Maybe not the right name, because "estimator" implies we're calculating
+ * selectivity. But we're actually deriving statistics for an expression.
+ */
 static Oid	ValidateStatisticsEstimator(List *joinName);
 
 /*
@@ -134,6 +139,7 @@ DefineOperator(List *names, List *parameters)
 			restrictionName = defGetQualifiedName(defel);
 		else if (strcmp(defel->defname, "join") == 0)
 			joinName = defGetQualifiedName(defel);
+		/* XXX perhaps full "statistics" wording would be better */
 		else if (strcmp(defel->defname, "stats") == 0)
 			statisticsName = defGetQualifiedName(defel);
 		else if (strcmp(defel->defname, "hashes") == 0)
@@ -368,9 +374,8 @@ ValidateJoinEstimator(List *joinName)
 }
 
 /*
- * Look up a statisitcs estimator function ny name, and verify that it has the
- * correct signature and we have the permissions to attach it to an
- * operator.
+ * Look up a statistics estimator function by name, and verify that it has the
+ * correct signature and we have the permissions to attach it to an operator.
  */
 static Oid
 ValidateStatisticsEstimator(List *statName)

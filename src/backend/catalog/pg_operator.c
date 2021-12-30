@@ -302,6 +302,7 @@ OperatorShellMake(const char *operatorName,
  *		negatorName				X negator operator
  *		restrictionId			X restriction selectivity procedure ID
  *		joinId					X join selectivity procedure ID
+ *		statsId					X statistics derivation procedure ID
  *		canMerge				merge join can be used with this operator
  *		canHash					hash join can be used with this operator
  *
@@ -858,7 +859,7 @@ makeOperatorDependencies(HeapTuple tuple,
 		add_exact_object_address(&referenced, addrs);
 	}
 
-	/* Dependency on statistics estimation function */
+	/* Dependency on statistics derivation function */
 	if (OidIsValid(oper->oprstat))
 	{
 		ObjectAddressSet(referenced, ProcedureRelationId, oper->oprstat);

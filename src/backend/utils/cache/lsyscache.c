@@ -1570,7 +1570,7 @@ get_oprjoin(Oid opno)
 /*
  * get_oprstat
  *
- *		Returns procedure id for computing resulting operator statistics.
+ *		Returns procedure id for estimating statistics for an operator.
  */
 RegProcedure
 get_oprstat(Oid opno)

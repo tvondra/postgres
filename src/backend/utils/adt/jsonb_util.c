@@ -618,6 +618,10 @@ pushJsonbValue(JsonbParseState **pstate, JsonbIteratorToken seq,
 		return pushJsonbValueScalar(pstate, seq, jbval);
 	}
 
+	/*
+	 * XXX I'm not quite sure why we actually do this? Why do we need to change
+	 * how JsonbValue is converted to Jsonb for the statistics patch?
+	 */
 	/* push value from scalar container without its enclosing array */
 	if (*pstate && JsonbExtractScalar(jbval->val.binary.data, &v))
 	{

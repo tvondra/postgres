@@ -418,6 +418,12 @@ extern Datum jsonb_set_element(Jsonb *jb, Datum *path, int path_len,
 extern Datum jsonb_get_element(Jsonb *jb, Datum *path, int npath,
 							   bool *isnull, bool as_text);
 
+/*
+ * XXX Not sure we want to add these functions to jsonb.h, which is the
+ * public API. Maybe it belongs rather to jsonb_typanalyze.c or elsewhere,
+ * closer to how it's used?
+ */
+
 /* helper inline functions for JsonbValue initialization */
 static inline JsonbValue *
 JsonValueInitObject(JsonbValue *val, int nPairs, int nPairsAllocated)

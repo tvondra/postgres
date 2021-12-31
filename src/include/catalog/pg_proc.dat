@@ -11726,4 +11726,11 @@
   proname => 'jsonb_stats', provolatile => 's', prorettype => 'bool',
   proargtypes => 'internal internal int4 internal', prosrc => 'jsonb_stats' },
 
+# stats for arithmetic operators
+{ oid => '2137',
+  descr => 'statistics estimation for binary arithmetic operators',
+  proname => 'arithm_binop_stats', provolatile => 's', prorettype => 'bool',
+  proargtypes => 'internal internal int4 internal',
+  prosrc => 'arithm_binop_stats' },
+
 ]

@@ -362,6 +362,10 @@ CREATE VIEW pg_stats_ext_exprs WITH (security_barrier) AS
 -- unprivileged users may read pg_statistic_ext but not pg_statistic_ext_data
 REVOKE ALL ON pg_statistic_ext_data FROM public;
 
+-- XXX This probably needs to do the same checks as pg_stats, i.e. 
+--    WHERE NOT attisdropped
+--    AND has_column_privilege(c.oid, a.attnum, 'select')
+--    AND (c.relrowsecurity = false OR NOT row_security_active(c.oid));
 CREATE VIEW pg_stats_json AS
 	SELECT
 		nspname AS schemaname,
@@ -411,6 +415,8 @@ CREATE VIEW pg_stats_json AS
 					WHEN stakind5 = 8 THEN stavalues5
 				END ::text::jsonb[])[2:]) AS path
 		) paths;
+
+-- no need to revoke any privileges, we've already revoked accss to pg_statistic
 
 CREATE VIEW pg_publication_tables AS
     SELECT

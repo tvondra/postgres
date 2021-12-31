@@ -120,7 +120,6 @@ OBJS = \
 	xid8funcs.o \
 	xml.o
 
-
 jsonpath_scan.c: FLEXFLAGS = -CF -p -p
 jsonpath_scan.c: FLEX_NO_BACKUP=yes
 

@@ -393,7 +393,7 @@ findJsonbValueFromContainer(JsonbContainer *container, uint32 flags,
  */
 JsonbValue *
 findJsonbValueFromContainerLen(JsonbContainer *container, uint32 flags,
-							   const char *key, uint32 keylen)
+							   char *key, uint32 keylen)
 {
 	JsonbValue	k;
 

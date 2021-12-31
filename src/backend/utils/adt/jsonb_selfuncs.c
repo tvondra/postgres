@@ -32,6 +32,10 @@
 
 #define DEFAULT_JSON_CONTAINS_SEL	0.001
 
+/*
+ * jsonGetField
+ *		Given a JSONB document and a key, extract the JSONB value for the key.
+ */
 static inline Datum
 jsonGetField(Datum obj, const char *field)
 {
@@ -41,6 +45,16 @@ jsonGetField(Datum obj, const char *field)
 	return jbv ? JsonbPGetDatum(JsonbValueToJsonb(jbv)) : PointerGetDatum(NULL);
 }
 
+/*
+ * jsonGetFloat4
+ *		Given a JSONB value, interpret it as a float4 value.
+ *
+ * This expects the JSONB value to be a numeric, because that's how we store
+ * floats in JSONB, and we cast it to float4.
+ *
+ * XXX Not sure assert is a sufficient protection against different types of
+ * JSONB values to be passed in.
+ */
 static inline Datum
 jsonGetFloat4(Datum jsonb)
 {
@@ -53,6 +67,10 @@ jsonGetFloat4(Datum jsonb)
 	return DirectFunctionCall1(numeric_float4, NumericGetDatum(jv.val.numeric));
 }
 
+/*
+ * jsonStatsInit
+ *		Given a pg_statistic tuple, expand STATISTIC_KIND_JSON into JsonStats.
+ */
 bool
 jsonStatsInit(JsonStats data, const VariableStatData *vardata)
 {
@@ -62,26 +80,31 @@ jsonStatsInit(JsonStats data, const VariableStatData *vardata)
 	memset(&data->attslot, 0, sizeof(data->attslot));
 	data->statsTuple = vardata->statsTuple;
 
+	/* FIXME Could be before the memset, I guess? Checking vardata->statsTuple. */
 	if (!data->statsTuple)
 		return false;
 
+	/* Were there just NULL values in the column? No JSON stats, but still useful. */
 	if (((Form_pg_statistic) GETSTRUCT(data->statsTuple))->stanullfrac >= 1.0)
 	{
 		data->nullfrac = 1.0;
 		return true;
 	}
 
+	/* Do we have the JSON stats built in the pg_statistic? */
 	if (!get_attstatsslot(&data->attslot, data->statsTuple,
 						  STATISTIC_KIND_JSON, InvalidOid,
 						  ATTSTATSSLOT_NUMBERS | ATTSTATSSLOT_VALUES))
 		return false;
 
+	/* XXX Not sure what this means / how could it happen? */
 	if (data->attslot.nvalues < 2)
 	{
 		free_attstatsslot(&data->attslot);
 		return false;
 	}
 
+	/* XXX If the ACL check was not OK, would we even get here? */
 	data->acl_ok = vardata->acl_ok;
 	data->rel = vardata->rel;
 	data->nullfrac =
@@ -98,12 +121,22 @@ jsonStatsInit(JsonStats data, const VariableStatData *vardata)
 	return true;
 }
 
+/*
+ * jsonStatsRelease
+ *		Release resources (statistics slot) associated with the JsonStats value.
+ */
 void
 jsonStatsRelease(JsonStats data)
 {
 	free_attstatsslot(&data->attslot);
 }
 
+/*
+ * jsonPathStatsGetSpecialStats
+ *		Extract statistics of given type for JSON path.
+ *
+ * XXX This does not really extract any stats, it merely allocates the struct?
+ */
 static JsonPathStats
 jsonPathStatsGetSpecialStats(JsonPathStats pstats, JsonPathStatsType type)
 {
@@ -120,9 +153,18 @@ jsonPathStatsGetSpecialStats(JsonPathStats pstats, JsonPathStatsType type)
 	return stats;
 }
 
+/*
+ * jsonPathStatsGetLengthStats
+ *		Extract statistics of lengths (for arrays or objects) for the path.
+ */
 JsonPathStats
 jsonPathStatsGetLengthStats(JsonPathStats pstats)
 {
+	/*
+	 * The length statistics is relevant only for values that are objects or
+	 * arrays. So if we observed no such values, we know there can't be such
+	 * statistics and so we simply return NULL.
+	 */
 	if (jsonPathStatsGetTypeFreq(pstats, jbvObject, 0.0) <= 0.0 &&
 		jsonPathStatsGetTypeFreq(pstats, jbvArray, 0.0) <= 0.0)
 		return NULL;
@@ -130,34 +172,62 @@ jsonPathStatsGetLengthStats(JsonPathStats pstats)
 	return jsonPathStatsGetSpecialStats(pstats, JsonPathStatsLength);
 }
 
+/*
+ * jsonPathStatsGetArrayLengthStats
+ *		Extract statistics of lengths for arrays.
+ *
+ * XXX Why doesn't this do jsonPathStatsGetTypeFreq check similar to what
+ * jsonPathStatsGetLengthStats does?
+ */
 static JsonPathStats
 jsonPathStatsGetArrayLengthStats(JsonPathStats pstats)
 {
 	return jsonPathStatsGetSpecialStats(pstats, JsonPathStatsArrayLength);
 }
 
+/*
+ * jsonPathStatsCompare
+ *		Compare two JsonPathStats structs, so that we can sort them.
+ *
+ * We do this so that we can search for stats for a given path simply by
+ * bsearch().
+ *
+ * XXX We never build two structs for the same path, so we know the paths
+ * are different - one may be a prefix of the other, but then we sort the
+ * strings by length.
+ */
 static int
 jsonPathStatsCompare(const void *pv1, const void *pv2)
 {
 	JsonbValue	pathkey;
 	JsonbValue *path2;
 	JsonbValue const *path1 = pv1;
+	/* XXX Seems a bit convoluted to first cast it to Datum, then Jsonb ... */
 	Datum const *pdatum = pv2;
 	Jsonb	   *jsonb = DatumGetJsonbP(*pdatum);
 	int			res;
 
+	/* extract path from the statistics represented as jsonb document */
 	JsonValueInitStringWithLen(&pathkey, "path", 4);
 	path2 = findJsonbValueFromContainer(&jsonb->root, JB_FOBJECT, &pathkey);
 
+	/* XXX Not sure about this? Does empty path mean global stats? */
 	if (!path2 || path2->type != jbvString)
 		return 1;
 
+	/* compare the shared part first, then compare by length */
 	res = strncmp(path1->val.string.val, path2->val.string.val,
 				  Min(path1->val.string.len, path2->val.string.len));
 
 	return res ? res : path1->val.string.len - path2->val.string.len;
 }
 
+/*
+ * jsonStatsFindPathStats
+ *		Find stats for a given path.
+ *
+ * The stats are sorted by path, so we can simply do bsearch().
+ */
 static JsonPathStats
 jsonStatsFindPathStats(JsonStats jsdata, char *path, int pathlen)
 {
@@ -183,6 +253,14 @@ jsonStatsFindPathStats(JsonStats jsdata, char *path, int pathlen)
 	return stats;
 }
 
+/*
+ * jsonStatsGetPathStatsStr
+ *		???
+ *
+ * XXX Seems to do essentially what jsonStatsFindPathStats, except that it also
+ * considers jsdata->prefix. Seems fairly easy to combine those into a single
+ * function.
+ */
 JsonPathStats
 jsonStatsGetPathStatsStr(JsonStats jsdata, const char *subpath, int subpathlen)
 {
@@ -207,6 +285,10 @@ jsonStatsGetPathStatsStr(JsonStats jsdata, const char *subpath, int subpathlen)
 	return stats;
 }
 
+/*
+ * jsonPathAppendEntry
+ *		Append entry (represented as simple string) to a path.
+ */
 static void
 jsonPathAppendEntry(StringInfo path, const char *entry)
 {
@@ -214,6 +296,12 @@ jsonPathAppendEntry(StringInfo path, const char *entry)
 	escape_json(path, entry);
 }
 
+/*
+ * jsonPathAppendEntryWithLen
+ *		Append string (represented as string + length) to a path.
+ *
+ * XXX Doesn't this need ecape_json too?
+ */
 static void
 jsonPathAppendEntryWithLen(StringInfo path, const char *entry, int len)
 {
@@ -222,6 +310,10 @@ jsonPathAppendEntryWithLen(StringInfo path, const char *entry, int len)
 	pfree(tmpentry);
 }
 
+/*
+ * jsonPathStatsGetSubpath
+ *		???
+ */
 JsonPathStats
 jsonPathStatsGetSubpath(JsonPathStats pstats, const char *key, int keylen)
 {
@@ -255,6 +347,10 @@ jsonPathStatsGetSubpath(JsonPathStats pstats, const char *key, int keylen)
 	return spstats;
 }
 
+/*
+ * jsonPathStatsGetArrayIndexSelectivity
+ *		Given stats for a path, determine selectivity for an array index.
+ */
 Selectivity
 jsonPathStatsGetArrayIndexSelectivity(JsonPathStats pstats, int index)
 {
@@ -262,14 +358,28 @@ jsonPathStatsGetArrayIndexSelectivity(JsonPathStats pstats, int index)
 	JsonbValue	tmpjbv;
 	Jsonb	   *jb;
 
+	/*
+	 * If we have no array length stats, assume all documents match.
+	 *
+	 * XXX Shouldn't this use a default smaller than 1.0? What do the selfuncs
+	 * for regular arrays use?
+	 */
 	if (!lenstats)
 		return 1.0;
 
 	jb = JsonbValueToJsonb(JsonValueInitInteger(&tmpjbv, index));
 
+	/* calculate fraction of elements smaller than the index */
 	return jsonSelectivity(lenstats, JsonbPGetDatum(jb), JsonbGtOperator);
 }
 
+/*
+ * jsonStatsGetPathStats
+ *		???
+ *		
+ * XXX I guess pathLen stored number of pathEntries elements, so it should be
+ * nEntries or something. pathLen implies it's a string length.
+ */
 static JsonPathStats
 jsonStatsGetPathStats(JsonStats jsdata, Datum *pathEntries, int pathLen,
 					  float4 *nullfrac)
@@ -295,6 +405,7 @@ jsonStatsGetPathStats(JsonStats jsdata, Datum *pathEntries, int pathLen,
 			char	   *key = text_to_cstring(DatumGetTextP(pathEntries[i]));
 			int			keylen = strlen(key);
 
+			/* XXX What's this key "0123456789" about? */
 			if (key[0] >= '0' && key[0] <= '9' &&
 				key[strspn(key, "0123456789")] == '\0')
 			{
@@ -331,6 +442,10 @@ jsonStatsGetPathStats(JsonStats jsdata, Datum *pathEntries, int pathLen,
 	return pstats;
 }
 
+/*
+ * jsonPathStatsGetNextKeyStats
+ *		???
+ */
 bool
 jsonPathStatsGetNextKeyStats(JsonPathStats stats, JsonPathStats *pkeystats,
 							 bool keysOnly)
@@ -396,6 +511,13 @@ jsonPathStatsGetNextKeyStats(JsonPathStats stats, JsonPathStats *pkeystats,
 	return false;
 }
 
+/*
+ * jsonStatsConvertArray
+ *		Convert a JSONB array into an array of some regular data type.
+ *
+ * The "type" identifies what elements are in the input JSONB array, while
+ * typid determines the target type.
+ */
 static Datum
 jsonStatsConvertArray(Datum jsonbValueArray, JsonStatType type, Oid typid,
 					  float4 multiplier)
@@ -459,6 +581,10 @@ jsonStatsConvertArray(Datum jsonbValueArray, JsonStatType type, Oid typid,
 
 	Assert(i == nvalues);
 
+	/*
+	 * FIXME Does this actually work on all 32/64-bit systems? What if typid is
+	 * FLOAT8OID or something? Should look at TypeCache instead, probably.
+	 */
 	return PointerGetDatum(
 			construct_array(values, nvalues,
 							typid,
@@ -467,6 +593,12 @@ jsonStatsConvertArray(Datum jsonbValueArray, JsonStatType type, Oid typid,
 							'i'));
 }
 
+/*
+ * jsonPathStatsExtractData
+ *		Extract pg_statistics values from statistics for a single path.
+ *
+ *
+ */
 static bool
 jsonPathStatsExtractData(JsonPathStats pstats, JsonStatType stattype,
 						 float4 nullfrac, StatsData *statdata)
@@ -617,6 +749,16 @@ jsonPathStatsGetAvgArraySize(JsonPathStats pstats)
 	return jsonPathStatsGetFloat(pstats, "avg_array_length", 1.0);
 }
 
+/*
+ * jsonPathStatsGetTypeFreq
+ *		Get frequency of different JSON object types for a given path.
+ *
+ * JSON documents don't have any particular schema, and the same path may point
+ * to values with different types in multiple documents. Consider for example
+ * two documents {"a" : "b"} and {"a" : 100} which have both a string and int
+ * for the same path. So we track the frequency of different JSON types for
+ * each path, so that we can consider this later.
+ */
 float4
 jsonPathStatsGetTypeFreq(JsonPathStats pstats, JsonbValueType type,
 						 float4 defaultfreq)
@@ -626,18 +768,25 @@ jsonPathStatsGetTypeFreq(JsonPathStats pstats, JsonbValueType type,
 	if (!pstats)
 		return defaultfreq;
 
+	/*
+	 * When dealing with (object/array) length stats, we only really care about
+	 * objects and arrays.
+	 */
 	if (pstats->type == JsonPathStatsLength ||
 		pstats->type == JsonPathStatsArrayLength)
 	{
+		/* XXX Seems more like an error, no? Why ignore it? */
 		if (type != jbvNumeric)
 			return 0.0;
 
+		/* FIXME This is really hard to read/understand, with two nested ternary operators. */
 		return pstats->type == JsonPathStatsArrayLength
 				? jsonPathStatsGetFreq(pstats, defaultfreq)
 				: jsonPathStatsGetFloat(pstats, "freq_array", defaultfreq) +
 				  jsonPathStatsGetFloat(pstats, "freq_object", defaultfreq);
 	}
 
+	/* Which JSON type are we interested in? Pick the right freq_type key. */
 	switch (type)
 	{
 		case jbvNull:
@@ -666,6 +815,14 @@ jsonPathStatsGetTypeFreq(JsonPathStats pstats, JsonbValueType type,
 	return jsonPathStatsGetFloat(pstats, key, defaultfreq);
 }
 
+/*
+ * jsonPathStatsFormTuple
+ *		For a pg_statistic tuple representing JSON statistics.
+ *
+ * XXX Maybe it's a bit expensive to first build StatsData and then transform it
+ * again while building the tuple. Could it be done in a single step? Would it be
+ * more efficient? Not sure how expensive it actually is, though.
+ */
 static HeapTuple
 jsonPathStatsFormTuple(JsonPathStats pstats, JsonStatType type, float4 nullfrac)
 {
@@ -674,6 +831,7 @@ jsonPathStatsFormTuple(JsonPathStats pstats, JsonStatType type, float4 nullfrac)
 	if (!pstats || !pstats->datum)
 		return NULL;
 
+	/* FIXME What does this mean? */
 	if (pstats->datum == &pstats->data->values[1] &&
 		pstats->type == JsonPathStatsValues)
 		return heap_copytuple(pstats->data->statsTuple);
@@ -686,6 +844,10 @@ jsonPathStatsFormTuple(JsonPathStats pstats, JsonStatType type, float4 nullfrac)
 	return stats_form_tuple(&statdata);
 }
 
+/*
+ * jsonStatsGetPathStatsTuple
+ *		???
+ */
 static HeapTuple
 jsonStatsGetPathStatsTuple(JsonStats jsdata, JsonStatType type,
 						   Datum *path, int pathlen)
@@ -697,6 +859,10 @@ jsonStatsGetPathStatsTuple(JsonStats jsdata, JsonStatType type,
 	return jsonPathStatsFormTuple(pstats, type, nullfrac);
 }
 
+/*
+ * jsonStatsGetPathFreq
+ *		Return frequency of a path (fraction of documents containing it).
+ */
 static float4
 jsonStatsGetPathFreq(JsonStats jsdata, Datum *path, int pathlen)
 {
@@ -709,6 +875,21 @@ jsonStatsGetPathFreq(JsonStats jsdata, Datum *path, int pathlen)
 	return freq;
 }
 
+/*
+ * jsonbStatsVarOpConst
+ *		Prepare optimizer statistics for a given operator, from JSON stats.
+ *
+ * This handles only OpExpr expressions, with variable and a constant. We get
+ * the constant as is, and the variable is represented by statistics fetched
+ * by get_restriction_variable().
+ *
+ * opid    - OID of the operator (input parameter)
+ * resdata - pointer to calculated statistics for result of operator
+ * vardata - statistics for the restriction variable
+ * cnst    - constant from the operator expression
+ *
+ * Returns true when useful optimizer statistics have been calculated.
+ */
 static bool
 jsonbStatsVarOpConst(Oid opid, VariableStatData *resdata,
 					 const VariableStatData *vardata, Const *cnst)
@@ -812,6 +993,15 @@ jsonbStatsVarOpConst(Oid opid, VariableStatData *resdata,
 	return true;
 }
 
+/*
+ * jsonb_stats
+ *		Statistics estimation procedure for JSONB data type.
+ *
+ * This only supports OpExpr expressions, with (Var op Const) shape.
+ *
+ * XXX It might be useful to allow recursion, i.e. get_restriction_variable
+ * might derive statistics too. I don't think it does that now, right?
+ */
 Datum
 jsonb_stats(PG_FUNCTION_ARGS)
 {
@@ -824,10 +1014,15 @@ jsonb_stats(PG_FUNCTION_ARGS)
 	bool		result;
 	bool		varonleft;
 
+	/* should only be called for OpExpr expressions */
+	Assert(IsA(opexpr, OpExpr));
+
+	/* Is the expression simple enough? (Var op Const) or similar? */
 	if (!get_restriction_variable(root, opexpr->args, varRelid,
 								  &vardata, &constexpr, &varonleft))
 		return false;
 
+	/* XXX Could we also get varonleft=false in useful cases? */
 	result = IsA(constexpr, Const) && varonleft &&
 		jsonbStatsVarOpConst(opexpr->opno, resdata, &vardata,
 							 (Const *) constexpr);
@@ -837,6 +1032,13 @@ jsonb_stats(PG_FUNCTION_ARGS)
 	return result;
 }
 
+/*
+ * jsonSelectivity
+ *		Use JSON statistics to estimate selectivity for (in)equalities.
+ *
+ * The statistics is represented as (arrays of) JSON values etc. so we
+ * need to pass the right operators to the functions.
+ */
 Selectivity
 jsonSelectivity(JsonPathStats stats, Datum scalar, Oid operator)
 {
@@ -873,6 +1075,12 @@ jsonSelectivity(JsonPathStats stats, Datum scalar, Oid operator)
 	return sel;
 }
 
+/*
+ * jsonSelectivityContains
+ *		Estimate selectivity for containment operator on JSON.
+ *
+ * XXX This really needs more comments explaining the logic.
+ */
 static Selectivity
 jsonSelectivityContains(JsonStats stats, Jsonb *jb)
 {
@@ -1008,6 +1216,10 @@ jsonSelectivityContains(JsonStats stats, Jsonb *jb)
 	return sel;
 }
 
+/*
+ * jsonSelectivityExists
+ *		Estimate selectivity for JSON "exists" operator.
+ */
 static Selectivity
 jsonSelectivityExists(JsonStats stats, Datum key)
 {
@@ -1039,6 +1251,10 @@ jsonSelectivityExists(JsonStats stats, Datum key)
 	return sel;
 }
 
+/*
+ * jsonb_sel
+ *		The main procedure estimating selectivity for all JSONB operators.
+ */
 Datum
 jsonb_sel(PG_FUNCTION_ARGS)
 {

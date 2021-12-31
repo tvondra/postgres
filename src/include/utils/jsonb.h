@@ -470,7 +470,7 @@ JsonValueInitString(JsonbValue *jbv, const char *str)
 }
 
 static inline JsonbValue *
-JsonValueInitStringWithLen(JsonbValue *jbv, char *str, int len)
+JsonValueInitStringWithLen(JsonbValue *jbv, const char *str, int len)
 {
 	jbv->type = jbvString;
 	jbv->val.string.val = str;

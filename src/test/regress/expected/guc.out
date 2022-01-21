@@ -858,10 +858,13 @@ SELECT name FROM tab_settings_flags
 SELECT name FROM tab_settings_flags
   WHERE category ~ '^Query Tuning' AND NOT explain
   ORDER BY 1;
-           name            
----------------------------
+                 name                 
+--------------------------------------
+ debug_enable_cheapest_group_by
+ debug_enable_group_by_match_order_by
+ debug_group_by_reorder_by_pathkeys
  default_statistics_target
-(1 row)
+(4 rows)
 
 -- Runtime-computed GUCs should be part of the preset category.
 SELECT name FROM tab_settings_flags

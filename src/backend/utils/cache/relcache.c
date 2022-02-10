@@ -5606,6 +5606,7 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		pubdesc->pubactions.pubupdate |= pubform->pubupdate;
 		pubdesc->pubactions.pubdelete |= pubform->pubdelete;
 		pubdesc->pubactions.pubtruncate |= pubform->pubtruncate;
+		pubactions->pubsequence |= pubform->pubsequence;
 
 		/*
 		 * Check if all columns referenced in the filter expression are part of
@@ -5631,6 +5632,8 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		 * If we know everything is replicated and the row filter is invalid
 		 * for update and delete, there is no point to check for other
 		 * publications.
+		 *
+		 * XXX We ignore sequences here, because those don't use row filters.
 		 */
 		if (pubdesc->pubactions.pubinsert && pubdesc->pubactions.pubupdate &&
 			pubdesc->pubactions.pubdelete && pubdesc->pubactions.pubtruncate &&

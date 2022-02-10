@@ -143,7 +143,6 @@ SELECT pg_get_object_address('publication', '{one}', '{}');
 SELECT pg_get_object_address('publication', '{one,two}', '{}');
 SELECT pg_get_object_address('subscription', '{one}', '{}');
 SELECT pg_get_object_address('subscription', '{one,two}', '{}');
-
 -- test successful cases
 WITH objects (type, name, args) AS (VALUES
 				('table', '{addr_nsp, gentable}'::text[], '{}'::text[]),

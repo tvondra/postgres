@@ -40,6 +40,12 @@ CATALOG(pg_publication,6104,PublicationRelationId)
 	 */
 	bool		puballtables;
 
+	/*
+	 * indicates that this is special publication which should encompass all
+	 * sequences in the database (except for the unlogged and temp ones)
+	 */
+	bool		puballsequences;
+
 	/* true if inserts are published */
 	bool		pubinsert;
 
@@ -51,6 +57,9 @@ CATALOG(pg_publication,6104,PublicationRelationId)
 
 	/* true if truncates are published */
 	bool		pubtruncate;
+
+	/* true if sequences are published */
+	bool		pubsequence;
 
 	/* true if partition changes are published using root schema */
 	bool		pubviaroot;
@@ -72,6 +81,7 @@ typedef struct PublicationActions
 	bool		pubupdate;
 	bool		pubdelete;
 	bool		pubtruncate;
+	bool		pubsequence;
 } PublicationActions;
 
 typedef struct PublicationDesc
@@ -92,6 +102,7 @@ typedef struct Publication
 	Oid			oid;
 	char	   *name;
 	bool		alltables;
+	bool		allsequences;
 	bool		pubviaroot;
 	PublicationActions pubactions;
 } Publication;
@@ -122,26 +133,30 @@ typedef enum PublicationPartOpt
 	PUBLICATION_PART_ALL,
 } PublicationPartOpt;
 
-extern List *GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt);
+extern List *GetPublicationRelations(Oid pubid, bool sequences,
+									 PublicationPartOpt pub_partopt);
 extern List *GetAllTablesPublications(void);
 extern List *GetAllTablesPublicationRelations(bool pubviaroot);
-extern List *GetPublicationSchemas(Oid pubid);
+extern List *GetPublicationSchemas(Oid pubid, bool sequence);
 extern List *GetSchemaPublications(Oid schemaid);
-extern List *GetSchemaPublicationRelations(Oid schemaid,
+extern List *GetSchemaPublicationRelations(Oid schemaid, bool sequences,
 										   PublicationPartOpt pub_partopt);
-extern List *GetAllSchemaPublicationRelations(Oid puboid,
+extern List *GetAllSchemaPublicationRelations(Oid puboid, bool sequences,
 											  PublicationPartOpt pub_partopt);
 extern List *GetPubPartitionOptionRelations(List *result,
 											PublicationPartOpt pub_partopt,
 											Oid relid);
 extern Oid	GetTopMostAncestorInPublication(Oid puboid, List *ancestors);
 
+extern List *GetAllSequencesPublications(void);
+extern List *GetAllSequencesPublicationRelations(void);
+
 extern bool is_publishable_relation(Relation rel);
 extern bool is_schema_publication(Oid pubid);
 extern ObjectAddress publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 											  bool if_not_exists);
 extern ObjectAddress publication_add_schema(Oid pubid, Oid schemaid,
-											bool if_not_exists);
+											bool sequences, bool if_not_exists);
 
 extern Oid	get_publication_oid(const char *pubname, bool missing_ok);
 extern char *get_publication_name(Oid pubid, bool missing_ok);

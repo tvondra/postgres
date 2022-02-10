@@ -9701,12 +9701,16 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
  *
  * CREATE PUBLICATION FOR ALL TABLES [WITH options]
  *
+ * CREATE PUBLICATION FOR ALL SEQUENCES [WITH options]
+ *
  * CREATE PUBLICATION FOR pub_obj [, ...] [WITH options]
  *
  * pub_obj is one of:
  *
  *		TABLE table [, ...]
+ *		SEQUENCE table [, ...]
  *		ALL TABLES IN SCHEMA schema [, ...]
+ *		ALL SEQUENCES IN SCHEMA schema [, ...]
  *
  *****************************************************************************/
 
@@ -9724,6 +9728,14 @@ CreatePublicationStmt:
 					n->pubname = $3;
 					n->options = $7;
 					n->for_all_tables = true;
+					$$ = (Node *)n;
+				}
+			| CREATE PUBLICATION name FOR ALL SEQUENCES opt_definition
+				{
+					CreatePublicationStmt *n = makeNode(CreatePublicationStmt);
+					n->pubname = $3;
+					n->options = $7;
+					n->for_all_sequences = true;
 					$$ = (Node *)n;
 				}
 			| CREATE PUBLICATION name FOR pub_obj_list opt_definition
@@ -9770,6 +9782,26 @@ PublicationObjSpec:
 				{
 					$$ = makeNode(PublicationObjSpec);
 					$$->pubobjtype = PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA;
+					$$->location = @5;
+				}
+			| SEQUENCE relation_expr
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_SEQUENCE;
+					$$->pubtable = makeNode(PublicationTable);
+					$$->pubtable->relation = $2;
+				}
+			| ALL SEQUENCES IN_P SCHEMA ColId
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_SEQUENCES_IN_SCHEMA;
+					$$->name = $5;
+					$$->location = @5;
+				}
+			| ALL SEQUENCES IN_P SCHEMA CURRENT_SCHEMA
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_SEQUENCES_IN_CUR_SCHEMA;
 					$$->location = @5;
 				}
 			| ColId OptWhereClause
@@ -9839,7 +9871,9 @@ pub_obj_list: 	PublicationObjSpec
  * pub_obj is one of:
  *
  *		TABLE table_name [, ...]
+ *		SEQUENCE table_name [, ...]
  *		ALL TABLES IN SCHEMA schema_name [, ...]
+ *		ALL SEQUENCES IN SCHEMA schema_name [, ...]
  *
  *****************************************************************************/
 
@@ -10124,6 +10158,12 @@ UnlistenStmt:
 				}
 		;
 
+/*
+ * FIXME
+ *
+ * opt_publication_for_sequences and publication_for_sequences should be
+ * copies for sequences
+ */
 
 /*****************************************************************************
  *

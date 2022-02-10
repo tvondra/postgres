@@ -1976,10 +1976,11 @@ get_object_address_publication_schema(List *object, bool missing_ok)
 
 	/* Find the publication schema mapping in syscache */
 	address.objectId =
-		GetSysCacheOid2(PUBLICATIONNAMESPACEMAP,
+		GetSysCacheOid3(PUBLICATIONNAMESPACEMAP,
 						Anum_pg_publication_namespace_oid,
 						ObjectIdGetDatum(schemaid),
-						ObjectIdGetDatum(pub->oid));
+						ObjectIdGetDatum(pub->oid),
+						BoolGetDatum(false));	/* FIXME */
 	if (!OidIsValid(address.objectId) && !missing_ok)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),

@@ -3725,7 +3725,10 @@ char *
 PQgetvalue(const PGresult *res, int tup_num, int field_num)
 {
 	if (!check_tuple_field_number(res, tup_num, field_num))
+	{
+		printf("getvalue\n");
 		return NULL;
+	}
 	return res->tuples[tup_num][field_num].value;
 }
 
@@ -3736,7 +3739,10 @@ int
 PQgetlength(const PGresult *res, int tup_num, int field_num)
 {
 	if (!check_tuple_field_number(res, tup_num, field_num))
+	{
+		printf("getlength\n");
 		return 0;
+	}
 	if (res->tuples[tup_num][field_num].len != NULL_LEN)
 		return res->tuples[tup_num][field_num].len;
 	else
@@ -3750,7 +3756,10 @@ int
 PQgetisnull(const PGresult *res, int tup_num, int field_num)
 {
 	if (!check_tuple_field_number(res, tup_num, field_num))
+	{
+		printf("getisnull\n");
 		return 1;				/* pretend it is null */
+	}
 	if (res->tuples[tup_num][field_num].len == NULL_LEN)
 		return 1;
 	else

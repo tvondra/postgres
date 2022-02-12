@@ -20,6 +20,7 @@ $node_subscriber->start;
 
 # Create some preexisting content on publisher
 my $ddl = qq(
+	CREATE TABLE seq_test (v BIGINT);
 	CREATE SEQUENCE s;
 );
 
@@ -29,6 +30,7 @@ $node_publisher->safe_psql('postgres', $ddl);
 # Create some the same structure on subscriber, and an extra sequence that
 # we'll create on the publisher later
 $ddl = qq(
+	CREATE TABLE seq_test (v BIGINT);
 	CREATE SEQUENCE s;
 	CREATE SEQUENCE s2;
 );
@@ -59,7 +61,7 @@ $node_subscriber->poll_query_until('postgres', $synced_query)
 $node_publisher->safe_psql(
 	'postgres', qq(
 	-- generate a number of values using the sequence
-	SELECT nextval('s') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s') FROM generate_series(1,100);
 ));
 
 $node_publisher->wait_for_catchup('seq_sub');
@@ -80,7 +82,7 @@ is( $result, '132|0|t',
 $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
-	SELECT nextval('s') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s') FROM generate_series(1,100);
 	ROLLBACK;
 	INSERT INTO seq_test VALUES (-1);
 ));
@@ -104,7 +106,7 @@ $node_publisher->safe_psql(
 	BEGIN;
 	CREATE SEQUENCE s2;
 	ALTER PUBLICATION seq_pub ADD SEQUENCE s2;
-	SELECT nextval('s2') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s2') FROM generate_series(1,100);
 	ROLLBACK;
 ));
 
@@ -128,7 +130,7 @@ $node_publisher->safe_psql(
 	CREATE SEQUENCE s2;
 	ALTER PUBLICATION seq_pub ADD SEQUENCE s2;
 	SAVEPOINT sp1;
-	SELECT nextval('s2') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s2') FROM generate_series(1,100);
 	ROLLBACK TO sp1;
 	COMMIT;
 ));
@@ -157,7 +159,7 @@ is( $result, '132|0|t',
 $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
-	SELECT nextval('s2') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s2') FROM generate_series(1,100);
 	ROLLBACK;
 	INSERT INTO seq_test VALUES (-1);
 ));
@@ -180,7 +182,7 @@ $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
 	SAVEPOINT s1;
-	SELECT nextval('s2') FROM generate_series(1,100);
+	INSERT INTO seq_test SELECT nextval('s2') FROM generate_series(1,100);
 	ROLLBACK TO s1;
 	COMMIT;
 ));

@@ -1433,10 +1433,10 @@ pg_publication_sequences| SELECT p.pubname,
     n.nspname AS schemaname,
     c.relname AS sequencename
    FROM pg_publication p,
-    LATERAL pg_get_publication_sequences((p.pubname)::text) gpt(relid),
+    LATERAL pg_get_publication_sequences((p.pubname)::text) gps(relid),
     (pg_class c
      JOIN pg_namespace n ON ((n.oid = c.relnamespace)))
-  WHERE (c.oid = gpt.relid);
+  WHERE (c.oid = gps.relid);
 pg_publication_tables| SELECT p.pubname,
     n.nspname AS schemaname,
     c.relname AS tablename

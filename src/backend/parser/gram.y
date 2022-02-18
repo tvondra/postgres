@@ -9701,12 +9701,16 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
  *
  * CREATE PUBLICATION FOR ALL TABLES [WITH options]
  *
+ * CREATE PUBLICATION FOR ALL SEQUENCES [WITH options]
+ *
  * CREATE PUBLICATION FOR pub_obj [, ...] [WITH options]
  *
  * pub_obj is one of:
  *
  *		TABLE table [, ...]
+ *		SEQUENCE table [, ...]
  *		ALL TABLES IN SCHEMA schema [, ...]
+ *		ALL SEQUENCES IN SCHEMA schema [, ...]
  *
  *****************************************************************************/
 
@@ -9724,6 +9728,14 @@ CreatePublicationStmt:
 					n->pubname = $3;
 					n->options = $7;
 					n->for_all_tables = true;
+					$$ = (Node *)n;
+				}
+			| CREATE PUBLICATION name FOR ALL SEQUENCES opt_definition
+				{
+					CreatePublicationStmt *n = makeNode(CreatePublicationStmt);
+					n->pubname = $3;
+					n->options = $7;
+					n->for_all_sequences = true;
 					$$ = (Node *)n;
 				}
 			| CREATE PUBLICATION name FOR pub_obj_list opt_definition
@@ -9859,7 +9871,9 @@ pub_obj_list: 	PublicationObjSpec
  * pub_obj is one of:
  *
  *		TABLE table_name [, ...]
+ *		SEQUENCE table_name [, ...]
  *		ALL TABLES IN SCHEMA schema_name [, ...]
+ *		ALL SEQUENCES IN SCHEMA schema_name [, ...]
  *
  *****************************************************************************/
 
@@ -10157,12 +10171,6 @@ UnlistenStmt:
  *
  *		BEGIN / COMMIT / ROLLBACK
  *		(also older versions END / ABORT)
- *
- * ALTER PUBLICATION name ADD SEQUENCE sequence [, sequence2]
- *
- * ALTER PUBLICATION name DROP SEQUENCE sequence [, sequence2]
- *
- * ALTER PUBLICATION name SET SEQUENCE sequence [, sequence2]
  *
  *****************************************************************************/
 

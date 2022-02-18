@@ -279,6 +279,14 @@ CheckObjSchemaNotAlreadyInPublication(List *rels, List *schemaidlist,
 						errdetail("Table \"%s\" in schema \"%s\" is already part of the publication, adding the same schema is not supported.",
 								  RelationGetRelationName(rel),
 								  get_namespace_name(relSchemaId)));
+			else if (checkobjtype == PUBLICATIONOBJ_SEQUENCES_IN_SCHEMA)
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cannot add schema \"%s\" to publication",
+							   get_namespace_name(relSchemaId)),
+						errdetail("SEquence \"%s\" in schema \"%s\" is already part of the publication, adding the same schema is not supported.",
+								  RelationGetRelationName(rel),
+								  get_namespace_name(relSchemaId)));
 			else if (checkobjtype == PUBLICATIONOBJ_TABLE)
 				ereport(ERROR,
 						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -286,6 +294,14 @@ CheckObjSchemaNotAlreadyInPublication(List *rels, List *schemaidlist,
 							   get_namespace_name(relSchemaId),
 							   RelationGetRelationName(rel)),
 						errdetail("Table's schema \"%s\" is already part of the publication or part of the specified schema list.",
+								  get_namespace_name(relSchemaId)));
+			else if (checkobjtype == PUBLICATIONOBJ_SEQUENCE)
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("cannot add relation \"%s.%s\" to publication",
+							   get_namespace_name(relSchemaId),
+							   RelationGetRelationName(rel)),
+						errdetail("Sequence's schema \"%s\" is already part of the publication or part of the specified schema list.",
 								  get_namespace_name(relSchemaId)));
 		}
 	}
@@ -714,6 +730,8 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 	values[Anum_pg_publication_oid - 1] = ObjectIdGetDatum(puboid);
 	values[Anum_pg_publication_puballtables - 1] =
 		BoolGetDatum(stmt->for_all_tables);
+	values[Anum_pg_publication_puballsequences - 1] =
+		BoolGetDatum(stmt->for_all_sequences);
 	values[Anum_pg_publication_pubinsert - 1] =
 		BoolGetDatum(pubactions.pubinsert);
 	values[Anum_pg_publication_pubupdate - 1] =
@@ -782,7 +800,7 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 			rels = OpenSequenceList(sequences);
 			CheckObjSchemaNotAlreadyInPublication(rels, sequences_schemaidlist,
 												  PUBLICATIONOBJ_SEQUENCE);
-			PublicationAddTables(puboid, rels, true, NULL);
+			PublicationAddSequences(puboid, rels, true, NULL);
 			CloseSequenceList(rels);
 		}
 
@@ -1112,6 +1130,10 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 			 */
 			if (!found)
 			{
+				/* don't drop sequences (not in list of tables) */
+				if (get_rel_relkind(oldrelid) == RELKIND_SEQUENCE)
+					continue;
+
 				oldrel = palloc(sizeof(PublicationRelInfo));
 				oldrel->whereClause = NULL;
 				oldrel->relation = table_open(oldrelid,
@@ -1324,6 +1346,10 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 			{
 				Relation	oldrel;
 				PublicationRelInfo *pubrel;
+
+				/* don't drop non-sequences (not in list of sequences) */
+				if (get_rel_relkind(oldrelid) != RELKIND_SEQUENCE)
+					continue;
 
 				/* Wrap relation into PublicationRelInfo */
 				oldrel = table_open(oldrelid, ShareUpdateExclusiveLock);
@@ -1760,6 +1786,10 @@ PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
 		Relation	rel = pub_rel->relation;
 		ObjectAddress obj;
 
+		/* don't add sequences */
+		if (rel->rd_rel->relkind == RELKIND_SEQUENCE)
+			continue;
+
 		/* Must be owner of the table or superuser. */
 		if (!pg_class_ownercheck(RelationGetRelid(rel), GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
@@ -1965,6 +1995,10 @@ PublicationAddSequences(Oid pubid, List *rels, bool if_not_exists,
 		Relation	rel = pub_rel->relation;
 		ObjectAddress obj;
 
+		/* ignore non-sequences */
+		if (rel->rd_rel->relkind != RELKIND_SEQUENCE)
+			continue;
+
 		/* Must be owner of the sequence or superuser. */
 		if (!pg_class_ownercheck(RelationGetRelid(rel), GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
@@ -1994,7 +2028,8 @@ PublicationDropSequences(Oid pubid, List *rels, bool missing_ok)
 
 	foreach(lc, rels)
 	{
-		Relation	rel = (Relation) lfirst(lc);
+		PublicationRelInfo *pubrel = (PublicationRelInfo *) lfirst(lc);
+		Relation	rel = pubrel->relation;
 		Oid			relid = RelationGetRelid(rel);
 
 		prid = GetSysCacheOid2(PUBLICATIONRELMAP, Anum_pg_publication_rel_oid,
@@ -2061,6 +2096,8 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 					 errmsg("permission denied to change owner of publication \"%s\"",
 							NameStr(form->pubname)),
 					 errhint("The owner of a FOR ALL TABLES IN SCHEMA publication must be a superuser.")));
+
+		/* FIXME do the same thing for FOR ALL SEQUENCES publication */
 	}
 
 	form->pubowner = newOwnerId;

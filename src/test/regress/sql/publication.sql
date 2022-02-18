@@ -104,6 +104,64 @@ RESET client_min_messages;
 DROP TABLE testpub_tbl3, testpub_tbl3a;
 DROP PUBLICATION testpub3, testpub4;
 
+--- adding sequences
+CREATE SEQUENCE testpub_seq0;
+CREATE SEQUENCE pub_test.testpub_seq1;
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forallsequences FOR ALL SEQUENCES WITH (publish = 'sequence');
+RESET client_min_messages;
+ALTER PUBLICATION testpub_forallsequences SET (publish = 'insert, sequence');
+
+CREATE SEQUENCE testpub_seq2;
+-- fail - can't add to for all sequences publication
+ALTER PUBLICATION testpub_forallsequences ADD SEQUENCE testpub_seq2;
+-- fail - can't drop from all sequences publication
+ALTER PUBLICATION testpub_forallsequences DROP SEQUENCE testpub_seq2;
+-- fail - can't add to for all sequences publication
+ALTER PUBLICATION testpub_forallsequences SET SEQUENCE pub_test.testpub_seq1;
+
+-- fail - can't add schema to 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences ADD ALL SEQUENCES IN SCHEMA pub_test;
+-- fail - can't drop schema from 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences DROP ALL SEQUENCES IN SCHEMA pub_test;
+-- fail - can't set schema to 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences SET ALL SEQUENCES IN SCHEMA pub_test;
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forsequence FOR SEQUENCE testpub_seq0;
+RESET client_min_messages;
+-- should be able to add schema to 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence ADD ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+-- should be able to drop schema from 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence DROP ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+-- should be able to set schema to 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence SET ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forschema FOR ALL SEQUENCES IN SCHEMA pub_test;
+RESET client_min_messages;
+-- fail - can't create publication with schema and table of the same schema
+CREATE PUBLICATION testpub_for_seq_schema FOR ALL SEQUENCES IN SCHEMA pub_test, SEQUENCE pub_test.testpub_seq1;
+-- fail - can't add a sequence of the same schema to the schema publication
+ALTER PUBLICATION testpub_forschema ADD SEQUENCE pub_test.testpub_seq1;
+-- fail - can't drop a sequence from the schema publication which isn't in the
+-- publication
+ALTER PUBLICATION testpub_forschema DROP SEQUENCE pub_test.testpub_seq1;
+-- should be able to set sequence to schema publication
+ALTER PUBLICATION testpub_forschema SET SEQUENCE pub_test.testpub_seq1;
+\dRp+ testpub_forschema
+
+SELECT pubname, puballtables, puballsequences FROM pg_publication WHERE pubname = 'testpub_forallsequences';
+\d+ pub_test.testpub_seq1
+\dRp+ testpub_forallsequences
+
+DROP SEQUENCE testpub_seq0, pub_test.testpub_seq1, testpub_seq2;
+DROP PUBLICATION testpub_forallsequences, testpub_forsequence, testpub_forschema;
+
 -- Tests for partitioned tables
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_forparted;

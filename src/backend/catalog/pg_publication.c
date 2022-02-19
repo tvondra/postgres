@@ -207,7 +207,7 @@ is_schema_publication(Oid pubid)
 				ObjectIdGetDatum(pubid));
 
 	scan = systable_beginscan(pubschsrel,
-							  PublicationNamespacePnnspidPnpubidIndexId,
+							  PublicationNamespacePnnspidPnpubidSeqIndexId,
 							  true, NULL, 1, &scankey);
 	tup = systable_getnext(scan);
 	result = HeapTupleIsValid(tup);
@@ -370,7 +370,7 @@ publication_add_relation(Oid pubid, PublicationRelInfo *targetrel,
  * Insert new publication / schema mapping.
  */
 ObjectAddress
-publication_add_schema(Oid pubid, Oid schemaid, bool if_not_exists)
+publication_add_schema(Oid pubid, Oid schemaid, bool sequences, bool if_not_exists)
 {
 	Relation	rel;
 	HeapTuple	tup;
@@ -389,9 +389,10 @@ publication_add_schema(Oid pubid, Oid schemaid, bool if_not_exists)
 	 * duplicates, it's here just to provide nicer error message in common
 	 * case. The real protection is the unique key on the catalog.
 	 */
-	if (SearchSysCacheExists2(PUBLICATIONNAMESPACEMAP,
+	if (SearchSysCacheExists3(PUBLICATIONNAMESPACEMAP,
 							  ObjectIdGetDatum(schemaid),
-							  ObjectIdGetDatum(pubid)))
+							  ObjectIdGetDatum(pubid),
+							  BoolGetDatum(sequences)))
 	{
 		table_close(rel, RowExclusiveLock);
 
@@ -417,6 +418,8 @@ publication_add_schema(Oid pubid, Oid schemaid, bool if_not_exists)
 		ObjectIdGetDatum(pubid);
 	values[Anum_pg_publication_namespace_pnnspid - 1] =
 		ObjectIdGetDatum(schemaid);
+	values[Anum_pg_publication_namespace_pnsequences - 1] =
+		BoolGetDatum(sequences);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
@@ -673,25 +676,30 @@ GetAllTablesPublicationRelations(bool pubviaroot)
  * This should only be used FOR ALL TABLES IN SCHEMA publications.
  */
 List *
-GetPublicationSchemas(Oid pubid)
+GetPublicationSchemas(Oid pubid, bool sequence)
 {
 	List	   *result = NIL;
 	Relation	pubschsrel;
-	ScanKeyData scankey;
+	ScanKeyData scankey[2];
 	SysScanDesc scan;
 	HeapTuple	tup;
 
 	/* Find all schemas associated with the publication */
 	pubschsrel = table_open(PublicationNamespaceRelationId, AccessShareLock);
 
-	ScanKeyInit(&scankey,
+	ScanKeyInit(&scankey[0],
 				Anum_pg_publication_namespace_pnpubid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(pubid));
 
+	ScanKeyInit(&scankey[1],
+				Anum_pg_publication_namespace_pnsequences,
+				BTEqualStrategyNumber, F_BOOLEQ,
+				BoolGetDatum(sequence));
+
 	scan = systable_beginscan(pubschsrel,
-							  PublicationNamespacePnnspidPnpubidIndexId,
-							  true, NULL, 1, &scankey);
+							  PublicationNamespacePnnspidPnpubidSeqIndexId,
+							  true, NULL, 2, scankey);
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
 		Form_pg_publication_namespace pubsch;
@@ -762,6 +770,7 @@ GetSchemaPublicationRelations(Oid schemaid, PublicationPartOpt pub_partopt)
 		Oid			relid = relForm->oid;
 		char		relkind;
 
+		/* FIXME need to differentiate tables and sequences */
 		if (!is_publishable_class(relid, relForm))
 			continue;
 
@@ -797,7 +806,7 @@ List *
 GetAllSchemaPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 {
 	List	   *result = NIL;
-	List	   *pubschemalist = GetPublicationSchemas(pubid);
+	List	   *pubschemalist = GetPublicationSchemas(pubid, false); /* FIXME sequences */
 	ListCell   *cell;
 
 	foreach(cell, pubschemalist)

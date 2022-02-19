@@ -74,8 +74,8 @@ static void LockSchemaList(List *schemalist);
 static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
 								 AlterPublicationStmt *stmt);
 static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
-static void PublicationAddSchemas(Oid pubid, List *schemas, bool if_not_exists,
-								  AlterPublicationStmt *stmt);
+static void PublicationAddSchemas(Oid pubid, List *schemas, bool sequences,
+								  bool if_not_exists, AlterPublicationStmt *stmt);
 static void PublicationDropSchemas(Oid pubid, List *schemas, bool missing_ok);
 
 static List *OpenSequenceList(List *sequences);
@@ -804,14 +804,24 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 			CloseSequenceList(rels);
 		}
 
-		if (list_length(schemaidlist) > 0)
+		if (list_length(tables_schemaidlist) > 0)
 		{
 			/*
 			 * Schema lock is held until the publication is created to prevent
 			 * concurrent schema deletion.
 			 */
-			LockSchemaList(schemaidlist);
-			PublicationAddSchemas(puboid, schemaidlist, true, NULL);
+			LockSchemaList(tables_schemaidlist);
+			PublicationAddSchemas(puboid, tables_schemaidlist, false, true, NULL);
+		}
+
+		if (list_length(sequences_schemaidlist) > 0)
+		{
+			/*
+			 * Schema lock is held until the publication is created to prevent
+			 * concurrent schema deletion.
+			 */
+			LockSchemaList(sequences_schemaidlist);
+			PublicationAddSchemas(puboid, sequences_schemaidlist, true, true, NULL);
 		}
 	}
 
@@ -1045,7 +1055,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 		 * Check if the relation is member of the existing schema in the
 		 * publication or member of the schema list specified.
 		 */
-		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid));
+		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid, false));
 		CheckObjSchemaNotAlreadyInPublication(rels, schemas,
 											  PUBLICATIONOBJ_TABLE);
 
@@ -1164,7 +1174,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
  */
 static void
 AlterPublicationSchemas(AlterPublicationStmt *stmt,
-						HeapTuple tup, List *schemaidlist)
+						HeapTuple tup, List *schemaidlist,
+						bool sequences)
 {
 	Form_pg_publication pubform = (Form_pg_publication) GETSTRUCT(tup);
 
@@ -1193,13 +1204,13 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 											  PUBLICATIONOBJ_TABLES_IN_SCHEMA);
 
 		CloseTableList(rels);
-		PublicationAddSchemas(pubform->oid, schemaidlist, false, stmt);
+		PublicationAddSchemas(pubform->oid, schemaidlist, sequences, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
 		PublicationDropSchemas(pubform->oid, schemaidlist, false);
 	else						/* AP_SetObjects */
 	{
-		List	   *oldschemaids = GetPublicationSchemas(pubform->oid);
+		List	   *oldschemaids = GetPublicationSchemas(pubform->oid, sequences);
 		List	   *delschemas = NIL;
 
 		/* Identify which schemas should be dropped */
@@ -1218,7 +1229,7 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 		 * Don't bother calculating the difference for adding, we'll catch and
 		 * skip existing ones when doing catalog update.
 		 */
-		PublicationAddSchemas(pubform->oid, schemaidlist, true, stmt);
+		PublicationAddSchemas(pubform->oid, schemaidlist, sequences, true, stmt);
 	}
 }
 
@@ -1306,7 +1317,7 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 		 * Check if the relation is member of the existing schema in the
 		 * publication or member of the schema list specified.
 		 */
-		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid));
+		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid, true));
 		CheckObjSchemaNotAlreadyInPublication(rels, schemas,
 											  PUBLICATIONOBJ_SEQUENCE);
 		PublicationAddSequences(pubid, rels, false, stmt);
@@ -1459,7 +1470,9 @@ AlterPublication(ParseState *pstate, AlterPublicationStmt *stmt)
 
 		AlterPublicationSequences(stmt, tup, sequences, sequences_schemaidlist);
 
-		AlterPublicationSchemas(stmt, tup, schemaidlist);
+		AlterPublicationSchemas(stmt, tup, tables_schemaidlist, false);
+
+		AlterPublicationSchemas(stmt, tup, sequences_schemaidlist, true);
 	}
 
 	/* Cleanup. */
@@ -1851,8 +1864,8 @@ PublicationDropTables(Oid pubid, List *rels, bool missing_ok)
  * Add listed schemas to the publication.
  */
 static void
-PublicationAddSchemas(Oid pubid, List *schemas, bool if_not_exists,
-					  AlterPublicationStmt *stmt)
+PublicationAddSchemas(Oid pubid, List *schemas, bool sequences,
+					  bool if_not_exists, AlterPublicationStmt *stmt)
 {
 	ListCell   *lc;
 
@@ -1863,7 +1876,7 @@ PublicationAddSchemas(Oid pubid, List *schemas, bool if_not_exists,
 		Oid			schemaid = lfirst_oid(lc);
 		ObjectAddress obj;
 
-		obj = publication_add_schema(pubid, schemaid, if_not_exists);
+		obj = publication_add_schema(pubid, schemaid, sequences, if_not_exists);
 		if (stmt)
 		{
 			EventTriggerCollectSimpleCommand(obj, InvalidObjectAddress,

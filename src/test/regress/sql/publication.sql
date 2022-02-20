@@ -162,6 +162,31 @@ SELECT pubname, puballtables, puballsequences FROM pg_publication WHERE pubname 
 DROP SEQUENCE testpub_seq0, pub_test.testpub_seq1, testpub_seq2;
 DROP PUBLICATION testpub_forallsequences, testpub_forsequence, testpub_forschema;
 
+-- Publication mixing tables and sequences
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_mix;
+RESET client_min_messages;
+
+CREATE SEQUENCE testpub_seq1;
+CREATE SEQUENCE pub_test.testpub_seq2;
+
+ALTER PUBLICATION testpub_mix ADD SEQUENCE testpub_seq1, TABLE testpub_tbl1;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix ADD ALL SEQUENCES IN SCHEMA pub_test, ALL TABLES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix DROP ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix DROP ALL TABLES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+DROP PUBLICATION testpub_mix;
+DROP SEQUENCE testpub_seq1;
+DROP SEQUENCE pub_test.testpub_seq2;
+
+
 -- Tests for partitioned tables
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_forparted;

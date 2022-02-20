@@ -58,7 +58,7 @@ static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
 static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
 static void PublicationAddSchemas(Oid pubid, List *schemas, bool sequences,
 								  bool if_not_exists, AlterPublicationStmt *stmt);
-static void PublicationDropSchemas(Oid pubid, List *schemas, bool missing_ok);
+static void PublicationDropSchemas(Oid pubid, List *schemas, bool sequences, bool missing_ok);
 
 static List *OpenSequenceList(List *sequences);
 static void CloseSequenceList(List *rels);
@@ -713,7 +713,7 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 		PublicationAddSchemas(pubform->oid, schemaidlist, sequences, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
-		PublicationDropSchemas(pubform->oid, schemaidlist, false);
+		PublicationDropSchemas(pubform->oid, schemaidlist, sequences, false);
 	else						/* AP_SetObjects */
 	{
 		List	   *oldschemaids = GetPublicationSchemas(pubform->oid, sequences);
@@ -729,7 +729,7 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 		LockSchemaList(delschemas);
 
 		/* And drop them */
-		PublicationDropSchemas(pubform->oid, delschemas, true);
+		PublicationDropSchemas(pubform->oid, delschemas, sequences, true);
 
 		/*
 		 * Don't bother calculating the difference for adding, we'll catch and
@@ -1354,7 +1354,7 @@ PublicationAddSchemas(Oid pubid, List *schemas, bool sequences,
  * Remove listed schemas from the publication.
  */
 static void
-PublicationDropSchemas(Oid pubid, List *schemas, bool missing_ok)
+PublicationDropSchemas(Oid pubid, List *schemas, bool sequences, bool missing_ok)
 {
 	ObjectAddress obj;
 	ListCell   *lc;
@@ -1364,10 +1364,11 @@ PublicationDropSchemas(Oid pubid, List *schemas, bool missing_ok)
 	{
 		Oid			schemaid = lfirst_oid(lc);
 
-		psid = GetSysCacheOid2(PUBLICATIONNAMESPACEMAP,
+		psid = GetSysCacheOid3(PUBLICATIONNAMESPACEMAP,
 							   Anum_pg_publication_namespace_oid,
 							   ObjectIdGetDatum(schemaid),
-							   ObjectIdGetDatum(pubid));
+							   ObjectIdGetDatum(pubid),
+							   BoolGetDatum(sequences));
 		if (!OidIsValid(psid))
 		{
 			if (missing_ok)

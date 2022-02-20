@@ -128,19 +128,19 @@ ALTER PUBLICATION <replaceable class="parameter">name</replaceable> RENAME TO <r
    </varlistentry>
 
    <varlistentry>
-    <term><replaceable class="parameter">schema_name</replaceable></term>
+    <term><replaceable class="parameter">sequence_name</replaceable></term>
     <listitem>
      <para>
-      Name of an existing schema.
+      Name of an existing sequence.
      </para>
     </listitem>
    </varlistentry>
 
    <varlistentry>
-    <term><replaceable class="parameter">sequence_name</replaceable></term>
+    <term><replaceable class="parameter">schema_name</replaceable></term>
     <listitem>
      <para>
-      Name of an existing sequence.
+      Name of an existing schema.
      </para>
     </listitem>
    </varlistentry>

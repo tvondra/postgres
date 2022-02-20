@@ -27,7 +27,7 @@ CREATE PUBLICATION testpub_xxx WITH (publish_via_partition_root = 'true', publis
 
 \dRp
 
-ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete');
+ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete, sequence');
 
 \dRp
 
@@ -158,7 +158,6 @@ ALTER PUBLICATION testpub_forschema SET SEQUENCE pub_test.testpub_seq1;
 SELECT pubname, puballtables, puballsequences FROM pg_publication WHERE pubname = 'testpub_forallsequences';
 \d+ pub_test.testpub_seq1
 \dRp+ testpub_forallsequences
-
 DROP SEQUENCE testpub_seq0, pub_test.testpub_seq1, testpub_seq2;
 DROP PUBLICATION testpub_forallsequences, testpub_forsequence, testpub_forschema;
 

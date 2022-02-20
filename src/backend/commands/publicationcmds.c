@@ -937,6 +937,9 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 
 		values[Anum_pg_publication_pubtruncate - 1] = BoolGetDatum(pubactions.pubtruncate);
 		replaces[Anum_pg_publication_pubtruncate - 1] = true;
+
+		values[Anum_pg_publication_pubsequence - 1] = BoolGetDatum(pubactions.pubsequence);
+		replaces[Anum_pg_publication_pubsequence - 1] = true;
 	}
 
 	if (publish_via_partition_root_given)

@@ -6006,7 +6006,7 @@ describePublications(const char *pattern)
 	PGresult   *res;
 	bool		has_pubtruncate;
 	bool		has_pubviaroot;
-	bool		has_sequence;
+	bool		has_pubsequence;
 
 	PQExpBufferData title;
 	printTableContent cont;
@@ -6023,7 +6023,7 @@ describePublications(const char *pattern)
 
 	has_pubtruncate = (pset.sversion >= 110000);
 	has_pubviaroot = (pset.sversion >= 130000);
-	has_sequence = (pset.sversion >= 150000);
+	has_pubsequence = (pset.sversion >= 150000);
 
 	initPQExpBuffer(&buf);
 
@@ -6031,19 +6031,16 @@ describePublications(const char *pattern)
 		printfPQExpBuffer(&buf,
 						  "SELECT oid, pubname,\n"
 						  "  pg_catalog.pg_get_userbyid(pubowner) AS owner,\n"
-						  "  puballtables, puballsequences, pubinsert, pubupdate, pubdelete");
+						  "  puballtables, puballsequences, pubinsert, pubupdate, pubdelete, pubsequence");
 	else
 		printfPQExpBuffer(&buf,
 						  "SELECT oid, pubname,\n"
 						  "  pg_catalog.pg_get_userbyid(pubowner) AS owner,\n"
-						  "  puballtables, false as puballsequences, pubinsert, pubupdate, pubdelete");
+						  "  puballtables, false as puballsequences, pubinsert, pubupdate, pubdelete, false as pubsequence");
 
 	if (has_pubtruncate)
 		appendPQExpBufferStr(&buf,
 							 ", pubtruncate");
-	if (has_sequence)
-		appendPQExpBufferStr(&buf,
-							 ", pubsequence");
 	if (has_pubviaroot)
 		appendPQExpBufferStr(&buf,
 							 ", pubviaroot");
@@ -6082,7 +6079,7 @@ describePublications(const char *pattern)
 	for (i = 0; i < PQntuples(res); i++)
 	{
 		const char	align = 'l';
-		int			ncols = 6;
+		int			ncols = 5;
 		int			nrows = 1;
 		char	   *pubid = PQgetvalue(res, i, 0);
 		char	   *pubname = PQgetvalue(res, i, 1);
@@ -6094,6 +6091,8 @@ describePublications(const char *pattern)
 			ncols++;
 		if (has_pubviaroot)
 			ncols++;
+		if (has_pubsequence)
+			ncols += 2;	/* adds "truncate" action and "all sequences" */
 
 		initPQExpBuffer(&title);
 		printfPQExpBuffer(&title, _("Publication %s"), pubname);
@@ -6101,27 +6100,30 @@ describePublications(const char *pattern)
 
 		printTableAddHeader(&cont, gettext_noop("Owner"), true, align);
 		printTableAddHeader(&cont, gettext_noop("All tables"), true, align);
+		if (has_pubsequence)
+			printTableAddHeader(&cont, gettext_noop("All sequences"), true, align);
 		printTableAddHeader(&cont, gettext_noop("Inserts"), true, align);
 		printTableAddHeader(&cont, gettext_noop("Updates"), true, align);
 		printTableAddHeader(&cont, gettext_noop("Deletes"), true, align);
+		if (has_pubsequence)
+			printTableAddHeader(&cont, gettext_noop("Sequences"), true, align);
 		if (has_pubtruncate)
 			printTableAddHeader(&cont, gettext_noop("Truncates"), true, align);
-		if (has_sequence)
-			printTableAddHeader(&cont, gettext_noop("Sequences"), true, align);
 		if (has_pubviaroot)
 			printTableAddHeader(&cont, gettext_noop("Via root"), true, align);
 
-		printTableAddCell(&cont, PQgetvalue(res, i, 2), false, false);
-		printTableAddCell(&cont, PQgetvalue(res, i, 3), false, false);
-		printTableAddCell(&cont, PQgetvalue(res, i, 4), false, false);
-		printTableAddCell(&cont, PQgetvalue(res, i, 5), false, false);
-		printTableAddCell(&cont, PQgetvalue(res, i, 6), false, false);
+		printTableAddCell(&cont, PQgetvalue(res, i, 2), false, false); /* owner */
+		printTableAddCell(&cont, PQgetvalue(res, i, 3), false, false); /* all tables */
+		printTableAddCell(&cont, PQgetvalue(res, i, 4), false, false); /* all sequences */
+		printTableAddCell(&cont, PQgetvalue(res, i, 5), false, false); /* insert */
+		printTableAddCell(&cont, PQgetvalue(res, i, 6), false, false); /* update */
+		printTableAddCell(&cont, PQgetvalue(res, i, 7), false, false); /* delete */
+		if (has_pubsequence)
+			printTableAddCell(&cont, PQgetvalue(res, i, 8), false, false); /* sequence */
 		if (has_pubtruncate)
-			printTableAddCell(&cont, PQgetvalue(res, i, 7), false, false);
-		if (has_sequence)
-			printTableAddCell(&cont, PQgetvalue(res, i, 8), false, false);
+			printTableAddCell(&cont, PQgetvalue(res, i, 9), false, false); /* truncate */
 		if (has_pubviaroot)
-			printTableAddCell(&cont, PQgetvalue(res, i, 9), false, false);
+			printTableAddCell(&cont, PQgetvalue(res, i, 10), false, false); /* via root */
 
 		if (!puballtables)
 		{

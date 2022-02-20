@@ -5903,14 +5903,12 @@ listPublications(const char *pattern)
 						  "SELECT pubname AS \"%s\",\n"
 						  "  pg_catalog.pg_get_userbyid(pubowner) AS \"%s\",\n"
 						  "  puballtables AS \"%s\",\n"
-						  "  false AS \"%s\",\n"
 						  "  pubinsert AS \"%s\",\n"
 						  "  pubupdate AS \"%s\",\n"
 						  "  pubdelete AS \"%s\"",
 						  gettext_noop("Name"),
 						  gettext_noop("Owner"),
 						  gettext_noop("All tables"),
-						  gettext_noop("All sequences"),
 						  gettext_noop("Inserts"),
 						  gettext_noop("Updates"),
 						  gettext_noop("Deletes"));

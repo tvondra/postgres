@@ -50,21 +50,16 @@
 #include "utils/varlena.h"
 
 static List *OpenRelIdList(List *relids);
-static List *OpenTableList(List *tables);
-static void CloseTableList(List *rels);
+static List *OpenRelationList(List *rels);
+static void CloseRelationList(List *rels);
 static void LockSchemaList(List *schemalist);
-static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
+static void PublicationAddRelations(Oid pubid, List *rels, bool if_not_exists,
 								 AlterPublicationStmt *stmt);
-static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
+static void PublicationDropRelations(Oid pubid, List *rels, bool missing_ok);
 static void PublicationAddSchemas(Oid pubid, List *schemas, bool sequences,
 								  bool if_not_exists, AlterPublicationStmt *stmt);
 static void PublicationDropSchemas(Oid pubid, List *schemas, bool sequences, bool missing_ok);
 
-static List *OpenSequenceList(List *sequences);
-static void CloseSequenceList(List *rels);
-static void PublicationAddSequences(Oid pubid, List *rels, bool if_not_exists,
-								 AlterPublicationStmt *stmt);
-static void PublicationDropSequences(Oid pubid, List *rels, bool missing_ok);
 
 static void
 parse_publication_options(ParseState *pstate,
@@ -408,22 +403,22 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 		{
 			List	   *rels;
 
-			rels = OpenTableList(tables);
+			rels = OpenRelationList(tables);
 			CheckObjSchemaNotAlreadyInPublication(rels, tables_schemaidlist,
 												  PUBLICATIONOBJ_TABLE);
-			PublicationAddTables(puboid, rels, true, NULL);
-			CloseTableList(rels);
+			PublicationAddRelations(puboid, rels, true, NULL);
+			CloseRelationList(rels);
 		}
 
 		if (list_length(sequences) > 0)
 		{
 			List	   *rels;
 
-			rels = OpenSequenceList(sequences);
+			rels = OpenRelationList(sequences);
 			CheckObjSchemaNotAlreadyInPublication(rels, sequences_schemaidlist,
 												  PUBLICATIONOBJ_SEQUENCE);
-			PublicationAddSequences(puboid, rels, true, NULL);
-			CloseSequenceList(rels);
+			PublicationAddRelations(puboid, rels, true, NULL);
+			CloseRelationList(rels);
 		}
 
 		if (list_length(tables_schemaidlist) > 0)
@@ -592,7 +587,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 	if (!tables && stmt->action != AP_SetObjects)
 		return;
 
-	rels = OpenTableList(tables);
+	rels = OpenRelationList(tables);
 
 	if (stmt->action == AP_AddObjects)
 	{
@@ -605,10 +600,10 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid, false));
 		CheckObjSchemaNotAlreadyInPublication(rels, schemas,
 											  PUBLICATIONOBJ_TABLE);
-		PublicationAddTables(pubid, rels, false, stmt);
+		PublicationAddRelations(pubid, rels, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
-		PublicationDropTables(pubid, rels, false);
+		PublicationDropRelations(pubid, rels, false);
 	else						/* AP_SetObjects */
 	{
 		List	   *oldrelids = GetPublicationRelations(pubid,
@@ -637,7 +632,6 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 					break;
 				}
 			}
-
 			/* Not yet in the list, open it and add to the list */
 			if (!found)
 			{
@@ -659,18 +653,18 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 		}
 
 		/* And drop them. */
-		PublicationDropTables(pubid, delrels, true);
+		PublicationDropRelations(pubid, delrels, true);
 
 		/*
 		 * Don't bother calculating the difference for adding, we'll catch and
 		 * skip existing ones when doing catalog update.
 		 */
-		PublicationAddTables(pubid, rels, true, stmt);
+		PublicationAddRelations(pubid, rels, true, stmt);
 
-		CloseTableList(delrels);
+		CloseRelationList(delrels);
 	}
 
-	CloseTableList(rels);
+	CloseRelationList(rels);
 }
 
 /*
@@ -709,7 +703,7 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 		CheckObjSchemaNotAlreadyInPublication(rels, schemaidlist,
 											  PUBLICATIONOBJ_TABLES_IN_SCHEMA);
 
-		CloseTableList(rels);
+		CloseRelationList(rels);
 		PublicationAddSchemas(pubform->oid, schemaidlist, sequences, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
@@ -813,7 +807,7 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 	if (!sequences && stmt->action != AP_SetObjects)
 		return;
 
-	rels = OpenSequenceList(sequences);
+	rels = OpenRelationList(sequences);
 
 	if (stmt->action == AP_AddObjects)
 	{
@@ -826,10 +820,10 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 		schemas = list_concat_copy(schemaidlist, GetPublicationSchemas(pubid, true));
 		CheckObjSchemaNotAlreadyInPublication(rels, schemas,
 											  PUBLICATIONOBJ_SEQUENCE);
-		PublicationAddSequences(pubid, rels, false, stmt);
+		PublicationAddRelations(pubid, rels, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
-		PublicationDropSequences(pubid, rels, false);
+		PublicationDropRelations(pubid, rels, false);
 	else						/* DEFELEM_SET */
 	{
 		List	   *oldrelids = GetPublicationRelations(pubid,
@@ -879,18 +873,18 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 		}
 
 		/* And drop them. */
-		PublicationDropSequences(pubid, delrels, true);
+		PublicationDropRelations(pubid, delrels, true);
 
 		/*
 		 * Don't bother calculating the difference for adding, we'll catch and
 		 * skip existing ones when doing catalog update.
 		 */
-		PublicationAddSequences(pubid, rels, true, stmt);
+		PublicationAddRelations(pubid, rels, true, stmt);
 
-		CloseSequenceList(delrels);
+		CloseRelationList(delrels);
 	}
 
-	CloseSequenceList(rels);
+	CloseRelationList(rels);
 }
 
 /*
@@ -1119,16 +1113,16 @@ OpenRelIdList(List *relids)
  * add them to a publication.
  */
 static List *
-OpenTableList(List *tables)
+OpenRelationList(List *rels)
 {
 	List	   *relids = NIL;
-	List	   *rels = NIL;
+	List	   *result = NIL;
 	ListCell   *lc;
 
 	/*
 	 * Open, share-lock, and check all the explicitly-specified relations
 	 */
-	foreach(lc, tables)
+	foreach(lc, rels)
 	{
 		PublicationTable *t = lfirst_node(PublicationTable, lc);
 		bool		recurse = t->relation->inh;
@@ -1157,7 +1151,7 @@ OpenTableList(List *tables)
 
 		pub_rel = palloc(sizeof(PublicationRelInfo));
 		pub_rel->relation = rel;
-		rels = lappend(rels, pub_rel);
+		result = lappend(result, pub_rel);
 		relids = lappend_oid(relids, myrelid);
 
 		/*
@@ -1192,7 +1186,7 @@ OpenTableList(List *tables)
 				rel = table_open(childrelid, NoLock);
 				pub_rel = palloc(sizeof(PublicationRelInfo));
 				pub_rel->relation = rel;
-				rels = lappend(rels, pub_rel);
+				result = lappend(result, pub_rel);
 				relids = lappend_oid(relids, childrelid);
 			}
 		}
@@ -1200,14 +1194,14 @@ OpenTableList(List *tables)
 
 	list_free(relids);
 
-	return rels;
+	return result;
 }
 
 /*
  * Close all relations in the list.
  */
 static void
-CloseTableList(List *rels)
+CloseRelationList(List *rels)
 {
 	ListCell   *lc;
 
@@ -1253,7 +1247,7 @@ LockSchemaList(List *schemalist)
  * Add listed tables to the publication.
  */
 static void
-PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
+PublicationAddRelations(Oid pubid, List *rels, bool if_not_exists,
 					 AlterPublicationStmt *stmt)
 {
 	ListCell   *lc;
@@ -1265,10 +1259,6 @@ PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
 		PublicationRelInfo *pub_rel = (PublicationRelInfo *) lfirst(lc);
 		Relation	rel = pub_rel->relation;
 		ObjectAddress obj;
-
-		/* don't add sequences */
-		if (rel->rd_rel->relkind == RELKIND_SEQUENCE)
-			continue;
 
 		/* Must be owner of the table or superuser. */
 		if (!pg_class_ownercheck(RelationGetRelid(rel), GetUserId()))
@@ -1291,7 +1281,7 @@ PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
  * Remove listed tables from the publication.
  */
 static void
-PublicationDropTables(Oid pubid, List *rels, bool missing_ok)
+PublicationDropRelations(Oid pubid, List *rels, bool missing_ok)
 {
 	ObjectAddress obj;
 	ListCell   *lc;
@@ -1386,149 +1376,6 @@ PublicationDropSchemas(Oid pubid, List *schemas, bool sequences, bool missing_ok
 }
 
 /*
- * Open relations specified by a PublicationTable list.
- * In the returned list of PublicationRelInfo, tables are locked
- * in ShareUpdateExclusiveLock mode in order to add them to a publication.
- */
-static List *
-OpenSequenceList(List *sequences)
-{
-	List	   *relids = NIL;
-	List	   *rels = NIL;
-	ListCell   *lc;
-
-	/*
-	 * Open, share-lock, and check all the explicitly-specified relations
-	 */
-	foreach(lc, sequences)
-	{
-		PublicationTable *s = lfirst_node(PublicationTable, lc);
-		Relation	rel;
-		Oid			myrelid;
-		PublicationRelInfo *pub_rel;
-
-		/* Allow query cancel in case this takes a long time */
-		CHECK_FOR_INTERRUPTS();
-
-		rel = table_openrv(s->relation, ShareUpdateExclusiveLock);
-		myrelid = RelationGetRelid(rel);
-
-		/*
-		 * Filter out duplicates if user specifies "foo, foo".
-		 *
-		 * Note that this algorithm is known to not be very efficient (O(N^2))
-		 * but given that it only works on list of tables given to us by user
-		 * it's deemed acceptable.
-		 */
-		if (list_member_oid(relids, myrelid))
-		{
-			table_close(rel, ShareUpdateExclusiveLock);
-			continue;
-		}
-
-		pub_rel = palloc(sizeof(PublicationRelInfo));
-		pub_rel->relation = rel;
-		rels = lappend(rels, pub_rel);
-		relids = lappend_oid(relids, myrelid);
-	}
-
-	list_free(relids);
-
-	return rels;
-}
-
-/*
- * Close all relations in the list.
- */
-static void
-CloseSequenceList(List *rels)
-{
-	ListCell   *lc;
-
-	foreach(lc, rels)
-	{
-		PublicationRelInfo *pub_rel;
-
-		pub_rel = (PublicationRelInfo *) lfirst(lc);
-		table_close(pub_rel->relation, NoLock);
-	}
-}
-
-/*
- * Add listed tables to the publication.
- */
-static void
-PublicationAddSequences(Oid pubid, List *rels, bool if_not_exists,
-						AlterPublicationStmt *stmt)
-{
-	ListCell   *lc;
-
-	Assert(!stmt || !stmt->for_all_sequences);
-
-	foreach(lc, rels)
-	{
-		PublicationRelInfo *pub_rel = (PublicationRelInfo *) lfirst(lc);
-		Relation	rel = pub_rel->relation;
-		ObjectAddress obj;
-
-		/* ignore non-sequences */
-		if (rel->rd_rel->relkind != RELKIND_SEQUENCE)
-			continue;
-
-		/* Must be owner of the sequence or superuser. */
-		if (!pg_class_ownercheck(RelationGetRelid(rel), GetUserId()))
-			aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
-						   RelationGetRelationName(rel));
-
-		obj = publication_add_relation(pubid, pub_rel, if_not_exists);
-		if (stmt)
-		{
-			EventTriggerCollectSimpleCommand(obj, InvalidObjectAddress,
-											 (Node *) stmt);
-
-			InvokeObjectPostCreateHook(PublicationRelRelationId,
-									   obj.objectId, 0);
-		}
-	}
-}
-
-/*
- * Remove listed sequences from the publication.
- */
-static void
-PublicationDropSequences(Oid pubid, List *rels, bool missing_ok)
-{
-	ObjectAddress obj;
-	ListCell   *lc;
-	Oid			prid;
-
-	foreach(lc, rels)
-	{
-		PublicationRelInfo *pubrel = (PublicationRelInfo *) lfirst(lc);
-		Relation	rel = pubrel->relation;
-		Oid			relid = RelationGetRelid(rel);
-
-		prid = GetSysCacheOid2(PUBLICATIONRELMAP, Anum_pg_publication_rel_oid,
-							   ObjectIdGetDatum(relid),
-							   ObjectIdGetDatum(pubid));
-		if (!OidIsValid(prid))
-		{
-			if (missing_ok)
-				continue;
-
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("relation \"%s\" is not part of the publication",
-							RelationGetRelationName(rel))));
-		}
-
-		ObjectAddressSet(obj, PublicationRelRelationId, prid);
-		performDeletion(&obj, DROP_CASCADE, 0);
-	}
-}
-
-
-/*
  * Internal workhorse for changing a publication owner
  */
 static void
@@ -1566,14 +1413,19 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 							NameStr(form->pubname)),
 					 errhint("The owner of a FOR ALL TABLES publication must be a superuser.")));
 
+		if (form->puballsequences && !superuser_arg(newOwnerId))
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("permission denied to change owner of publication \"%s\"",
+							NameStr(form->pubname)),
+					 errhint("The owner of a FOR ALL SEQUENCES publication must be a superuser.")));
+
 		if (!superuser_arg(newOwnerId) && is_schema_publication(form->oid))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to change owner of publication \"%s\"",
 							NameStr(form->pubname)),
 					 errhint("The owner of a FOR ALL TABLES IN SCHEMA publication must be a superuser.")));
-
-		/* FIXME do the same thing for FOR ALL SEQUENCES publication */
 	}
 
 	form->pubowner = newOwnerId;

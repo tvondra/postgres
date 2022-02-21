@@ -724,10 +724,13 @@ GetAllTablesPublicationRelations(bool pubviaroot)
 /*
  * Gets the list of schema oids for a publication.
  *
- * This should only be used FOR ALL TABLES IN SCHEMA publications.
+ * This should only be used FOR ALL TABLES IN SCHEMA and FOR ALL SEQUENCES
+ * publications.
+ *
+ * 'sequences' determines whether to get FOR TABLE or FOR SEQUENCES schemas
  */
 List *
-GetPublicationSchemas(Oid pubid, bool sequence)
+GetPublicationSchemas(Oid pubid, bool sequences)
 {
 	List	   *result = NIL;
 	Relation	pubschsrel;
@@ -746,7 +749,7 @@ GetPublicationSchemas(Oid pubid, bool sequence)
 	ScanKeyInit(&scankey[1],
 				Anum_pg_publication_namespace_pnsequences,
 				BTEqualStrategyNumber, F_BOOLEQ,
-				BoolGetDatum(sequence));
+				BoolGetDatum(sequences));
 
 	scan = systable_beginscan(pubschsrel,
 							  PublicationNamespacePnnspidPnpubidSeqIndexId,
@@ -857,7 +860,7 @@ List *
 GetAllSchemaPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 {
 	List	   *result = NIL;
-	List	   *pubschemalist = GetPublicationSchemas(pubid, false); /* FIXME sequences */
+	List	   *pubschemalist = GetPublicationSchemas(pubid, false);
 	ListCell   *cell;
 
 	foreach(cell, pubschemalist)

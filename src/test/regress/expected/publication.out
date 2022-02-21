@@ -370,6 +370,174 @@ Sequences:
 DROP PUBLICATION testpub_mix;
 DROP SEQUENCE testpub_seq1;
 DROP SEQUENCE pub_test.testpub_seq2;
+-- make sure we replicate only the correct relation type
+CREATE SCHEMA pub_test1;
+CREATE SEQUENCE pub_test1.test_seq1;
+CREATE TABLE pub_test1.test_tbl1 (a int primary key, b int);
+CREATE SCHEMA pub_test2;
+CREATE SEQUENCE pub_test2.test_seq2;
+CREATE TABLE pub_test2.test_tbl2 (a int primary key, b int);
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_schemas;
+RESET client_min_messages;
+ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
+\dRp+ testpub_schemas
+                                              Publication testpub_schemas
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
+Tables from schemas:
+    "pub_test1"
+Sequences from schemas:
+    "pub_test2"
+
+\d+ pub_test1.test_seq1;
+                        Sequence "pub_test1.test_seq1"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+
+\d+ pub_test1.test_tbl1;
+                               Table "pub_test1.test_tbl1"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl1_pkey" PRIMARY KEY, btree (a)
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_seq2;
+                        Sequence "pub_test2.test_seq2"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_tbl2;
+                               Table "pub_test2.test_tbl2"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl2_pkey" PRIMARY KEY, btree (a)
+
+-- should fail (publication contains the whole schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
+ERROR:  cannot add relation "pub_test1.test_tbl1" to publication
+DETAIL:  Table's schema "pub_test1" is already part of the publication or part of the specified schema list.
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_seq2;
+ERROR:  cannot add relation "pub_test2.test_seq2" to publication
+DETAIL:  Sequence's schema "pub_test2" is already part of the publication or part of the specified schema list.
+-- should work (different schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_seq1;
+\dRp+ testpub_schemas
+                                              Publication testpub_schemas
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
+Tables:
+    "pub_test2.test_tbl2"
+Tables from schemas:
+    "pub_test1"
+Sequences:
+    "pub_test1.test_seq1"
+Sequences from schemas:
+    "pub_test2"
+
+\d+ pub_test1.test_seq1;
+                        Sequence "pub_test1.test_seq1"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test1.test_tbl1;
+                               Table "pub_test1.test_tbl1"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl1_pkey" PRIMARY KEY, btree (a)
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_seq2;
+                        Sequence "pub_test2.test_seq2"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_tbl2;
+                               Table "pub_test2.test_tbl2"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl2_pkey" PRIMARY KEY, btree (a)
+Publications:
+    "testpub_schemas"
+-- now drop the explicitly added objects again
+ALTER PUBLICATION testpub_schemas DROP TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas DROP TABLE pub_test1.test_seq1;
+\dRp+ testpub_schemas
+                                              Publication testpub_schemas
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
+Tables from schemas:
+    "pub_test1"
+Sequences from schemas:
+    "pub_test2"
+
+\d+ pub_test1.test_seq1;
+                        Sequence "pub_test1.test_seq1"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+
+\d+ pub_test1.test_tbl1;
+                               Table "pub_test1.test_tbl1"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl1_pkey" PRIMARY KEY, btree (a)
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_seq2;
+                        Sequence "pub_test2.test_seq2"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache 
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+Publications:
+    "testpub_schemas"
+
+\d+ pub_test2.test_tbl2;
+                               Table "pub_test2.test_tbl2"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "test_tbl2_pkey" PRIMARY KEY, btree (a)
+
+DROP PUBLICATION testpub_schemas;
+DROP TABLE pub_test1.test_tbl1, pub_test2.test_tbl2;
+DROP SEQUENCE pub_test1.test_seq1, pub_test2.test_seq2;
+DROP SCHEMA pub_test1, pub_test2;
 -- Tests for partitioned tables
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_forparted;

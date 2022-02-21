@@ -186,6 +186,62 @@ DROP SEQUENCE testpub_seq1;
 DROP SEQUENCE pub_test.testpub_seq2;
 
 
+-- make sure we replicate only the correct relation type
+CREATE SCHEMA pub_test1;
+CREATE SEQUENCE pub_test1.test_seq1;
+CREATE TABLE pub_test1.test_tbl1 (a int primary key, b int);
+
+CREATE SCHEMA pub_test2;
+CREATE SEQUENCE pub_test2.test_seq2;
+CREATE TABLE pub_test2.test_tbl2 (a int primary key, b int);
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_schemas;
+RESET client_min_messages;
+
+ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
+
+\dRp+ testpub_schemas
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- should fail (publication contains the whole schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_seq2;
+
+-- should work (different schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_seq1;
+
+\dRp+ testpub_schemas
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+ALTER PUBLICATION testpub_schemas DROP TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas DROP TABLE pub_test1.test_seq1;
+
+\dRp+ testpub_schemas
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+DROP PUBLICATION testpub_schemas;
+DROP TABLE pub_test1.test_tbl1, pub_test2.test_tbl2;
+DROP SEQUENCE pub_test1.test_seq1, pub_test2.test_seq2;
+DROP SCHEMA pub_test1, pub_test2;
+
 -- Tests for partitioned tables
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_forparted;

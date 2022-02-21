@@ -199,10 +199,44 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_schemas;
 RESET client_min_messages;
 
+-- add tables from one schema, sequences from the other
+ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test1;
+
+\dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- add the other object type from each schema
 ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test1;
 ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
 
 \dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- now drop the object type added first
+ALTER PUBLICATION testpub_schemas DROP ALL TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas DROP ALL SEQUENCES IN SCHEMA pub_test1;
+
+\dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
 
 \d+ pub_test1.test_seq1;
 \d+ pub_test1.test_tbl1;
@@ -617,32 +651,51 @@ CREATE SCHEMA sch1;
 CREATE SCHEMA sch2;
 CREATE TABLE sch1.tbl1 (a int) PARTITION BY RANGE(a);
 CREATE TABLE sch2.tbl1_part1 PARTITION OF sch1.tbl1 FOR VALUES FROM (1) to (10);
+CREATE SEQUENCE sch1.seq1;
+CREATE SEQUENCE sch2.seq2;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Table publication that does not include the parent table
 CREATE PUBLICATION pub FOR TABLE sch2.tbl1_part1 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD SEQUENCE sch2.seq2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=0);
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Sequence publication
+CREATE PUBLICATION pub FOR SEQUENCE sch2.seq2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Table publication that does not include the parent table
 CREATE PUBLICATION pub FOR TABLE sch2.tbl1_part1 WITH (PUBLISH_VIA_PARTITION_ROOT=0);
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 DROP TABLE sch2.tbl1_part1;
@@ -655,10 +708,36 @@ CREATE TABLE sch1.tbl1_part3 (a int) PARTITION BY RANGE(a);
 ALTER TABLE sch1.tbl1 ATTACH PARTITION sch1.tbl1_part3 FOR VALUES FROM (20) to (30);
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch1 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Schema publication
+CREATE PUBLICATION pub FOR SEQUENCE sch2.seq2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Sequence publication
+CREATE PUBLICATION pub FOR ALL SEQUENCES IN SCHEMA sch2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub DROP SEQUENCE sch1.seq1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 RESET client_min_messages;
 DROP PUBLICATION pub;
 DROP TABLE sch1.tbl1;
+DROP SEQUENCE sch1.seq1, sch2.seq2;
 DROP SCHEMA sch1 cascade;
 DROP SCHEMA sch2 cascade;
 

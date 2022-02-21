@@ -119,21 +119,22 @@ typedef enum PublicationPartOpt
 	PUBLICATION_PART_ALL,
 } PublicationPartOpt;
 
-extern List *GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt);
+extern List *GetPublicationRelations(Oid pubid, bool sequences,
+									 PublicationPartOpt pub_partopt);
 extern List *GetAllTablesPublications(void);
 extern List *GetAllTablesPublicationRelations(bool pubviaroot);
 extern List *GetPublicationSchemas(Oid pubid, bool sequence);
 extern List *GetSchemaPublications(Oid schemaid);
-extern List *GetSchemaPublicationRelations(Oid schemaid,
+extern List *GetSchemaPublicationRelations(Oid schemaid, bool sequences,
 										   PublicationPartOpt pub_partopt);
-extern List *GetAllSchemaPublicationRelations(Oid puboid,
+extern List *GetAllSchemaPublicationRelations(Oid puboid, bool sequences,
 											  PublicationPartOpt pub_partopt);
 extern List *GetPubPartitionOptionRelations(List *result,
 											PublicationPartOpt pub_partopt,
 											Oid relid);
 
+extern List *GetAllSequencesPublications(void);
 extern List *GetAllSequencesPublicationRelations(void);
-extern List *GetPublicationSequenceRelations(Oid pubid);
 
 extern bool is_publishable_relation(Relation rel);
 extern bool is_schema_publication(Oid pubid);

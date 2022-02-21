@@ -959,7 +959,7 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 	pubform = (Form_pg_publication) GETSTRUCT(tup);
 
 	/* Invalidate the relcache. */
-	if (pubform->puballtables)
+	if (pubform->puballtables)	/* FIXME probably needs to handle puballsequences too? */
 	{
 		CacheInvalidateRelcacheAll();
 	}
@@ -974,7 +974,7 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 		 * trees, not just those explicitly mentioned in the publication.
 		 */
 		if (root_relids == NIL)
-			relids = GetPublicationRelations(pubform->oid,
+			relids = GetPublicationRelations(pubform->oid, false,
 											 PUBLICATION_PART_ALL);
 		else
 		{
@@ -989,6 +989,18 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 		}
 
 		schemarelids = GetAllSchemaPublicationRelations(pubform->oid,
+
+		/* tables */
+		schemarelids = GetAllSchemaPublicationRelations(pubform->oid, false,
+														PUBLICATION_PART_ALL);
+		relids = list_concat_unique_oid(relids, schemarelids);
+
+		/* sequences */
+		relids = list_concat_unique_oid(relids,
+										GetPublicationRelations(pubform->oid,
+										true, PUBLICATION_PART_ALL));
+
+		schemarelids = GetAllSchemaPublicationRelations(pubform->oid, true,
 														PUBLICATION_PART_ALL);
 		relids = list_concat_unique_oid(relids, schemarelids);
 
@@ -1070,7 +1082,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 		PublicationDropRelations(pubid, rels, false);
 	else						/* AP_SetObjects */
 	{
-		List	   *oldrelids = GetPublicationRelations(pubid,
+		List	   *oldrelids = GetPublicationRelations(pubid, false,
 														PUBLICATION_PART_ROOT);
 		List	   *delrels = NIL;
 		ListCell   *oldlc;
@@ -1200,7 +1212,7 @@ AlterPublicationSchemas(AlterPublicationStmt *stmt,
 		List	   *rels;
 		List	   *reloids;
 
-		reloids = GetPublicationRelations(pubform->oid, PUBLICATION_PART_ROOT);
+		reloids = GetPublicationRelations(pubform->oid, sequences, PUBLICATION_PART_ROOT);
 		rels = OpenRelIdList(reloids);
 
 		CheckObjSchemaNotAlreadyInPublication(rels, schemaidlist,
@@ -1334,7 +1346,7 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 		PublicationDropRelations(pubid, rels, false);
 	else						/* DEFELEM_SET */
 	{
-		List	   *oldrelids = GetPublicationRelations(pubid,
+		List	   *oldrelids = GetPublicationRelations(pubid, true,
 														PUBLICATION_PART_ROOT);
 		List	   *delrels = NIL;
 		ListCell   *oldlc;
@@ -1548,7 +1560,7 @@ RemovePublicationById(Oid pubid)
 	pubform = (Form_pg_publication) GETSTRUCT(tup);
 
 	/* Invalidate relcache so that publication info is rebuilt. */
-	if (pubform->puballtables)
+	if (pubform->puballtables)	/* FIXME handle puballsequences too? */
 		CacheInvalidateRelcacheAll();
 
 	CatalogTupleDelete(rel, &tup->t_self);
@@ -1584,6 +1596,7 @@ RemovePublicationSchemaById(Oid psoid)
 	 * partitions.
 	 */
 	schemaRels = GetSchemaPublicationRelations(pubsch->pnnspid,
+											   pubsch->pnsequences,
 											   PUBLICATION_PART_ALL);
 	InvalidatePublicationRels(schemaRels);
 

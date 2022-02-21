@@ -497,6 +497,7 @@ publication_add_schema(Oid pubid, Oid schemaid, bool sequences, bool if_not_exis
 	 * partitions.
 	 */
 	schemaRels = GetSchemaPublicationRelations(schemaid,
+											   sequences,
 											   PUBLICATION_PART_ALL);
 	InvalidatePublicationRels(schemaRels);
 
@@ -530,11 +531,14 @@ GetRelationPublications(Oid relid)
 /*
  * Gets list of relation oids for a publication.
  *
- * This should only be used FOR TABLE publications, the FOR ALL TABLES
- * should use GetAllTablesPublicationRelations().
+ * This should only be used FOR TABLE / FOR SEQUENCE publications, the FOR
+ * ALL TABLES / SEQUENCES should use GetAllTablesPublicationRelations()
+ * and GetAllSequencesPublicationRelations().
+ *
+ * XXX It's a bit weird the pub_partopt does not really matter for sequences.
  */
 List *
-GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
+GetPublicationRelations(Oid pubid, bool sequences, PublicationPartOpt pub_partopt)
 {
 	List	   *result;
 	Relation	pubrelsrel;
@@ -556,16 +560,21 @@ GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 	result = NIL;
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
+		char	relkind;
 		Form_pg_publication_rel pubrel;
 
 		pubrel = (Form_pg_publication_rel) GETSTRUCT(tup);
+		relkind = get_rel_relkind(pubrel->prrelid);
 
-		/* skip sequences here */
-		if (get_rel_relkind(pubrel->prrelid) == RELKIND_SEQUENCE)
-			continue;
-
-		result = GetPubPartitionOptionRelations(result, pub_partopt,
-												pubrel->prrelid);
+		/*
+		 * Handle tables and sequences, depending on the combination of relkind
+		 * and sequences flag. If there's a mismatch, we ignore the relation.
+		 */
+		if (sequences && (relkind == RELKIND_SEQUENCE))
+			result = lappend_oid(result, pubrel->prrelid);
+		else if (!sequences && (relkind != RELKIND_SEQUENCE))
+			result = GetPubPartitionOptionRelations(result, pub_partopt,
+													pubrel->prrelid);
 	}
 
 	systable_endscan(scan);
@@ -574,49 +583,6 @@ GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 	/* Now sort and de-duplicate the result list */
 	list_sort(result, list_oid_cmp);
 	list_deduplicate_oid(result);
-
-	return result;
-}
-
-/*
- * Gets list of relation oids for a publication (sequences only).
- *
- * This should only be used for normal publications, the FOR ALL TABLES
- * should use GetAllSequencesPublicationRelations().
- */
-List *
-GetPublicationSequenceRelations(Oid pubid)
-{
-	List	   *result;
-	Relation	pubrelsrel;
-	ScanKeyData scankey;
-	SysScanDesc scan;
-	HeapTuple	tup;
-
-	/* Find all publications associated with the relation. */
-	pubrelsrel = table_open(PublicationRelRelationId, AccessShareLock);
-
-	ScanKeyInit(&scankey,
-				Anum_pg_publication_rel_prpubid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(pubid));
-
-	scan = systable_beginscan(pubrelsrel, PublicationRelPrrelidPrpubidIndexId,
-							  true, NULL, 1, &scankey);
-
-	result = NIL;
-	while (HeapTupleIsValid(tup = systable_getnext(scan)))
-	{
-		Form_pg_publication_rel pubrel;
-
-		pubrel = (Form_pg_publication_rel) GETSTRUCT(tup);
-
-		if (get_rel_relkind(pubrel->prrelid) == RELKIND_SEQUENCE)
-			result = lappend_oid(result, pubrel->prrelid);
-	}
-
-	systable_endscan(scan);
-	table_close(pubrelsrel, AccessShareLock);
 
 	return result;
 }
@@ -638,6 +604,43 @@ GetAllTablesPublications(void)
 
 	ScanKeyInit(&scankey,
 				Anum_pg_publication_puballtables,
+				BTEqualStrategyNumber, F_BOOLEQ,
+				BoolGetDatum(true));
+
+	scan = systable_beginscan(rel, InvalidOid, false,
+							  NULL, 1, &scankey);
+
+	result = NIL;
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Oid			oid = ((Form_pg_publication) GETSTRUCT(tup))->oid;
+
+		result = lappend_oid(result, oid);
+	}
+
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return result;
+}
+
+/*
+ * Gets list of publication oids for publications marked as FOR ALL SEQUENCES.
+ */
+List *
+GetAllSequencesPublications(void)
+{
+	List	   *result;
+	Relation	rel;
+	ScanKeyData scankey;
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	/* Find all publications that are marked as for all tables. */
+	rel = table_open(PublicationRelationId, AccessShareLock);
+
+	ScanKeyInit(&scankey,
+				Anum_pg_publication_puballsequences,
 				BTEqualStrategyNumber, F_BOOLEQ,
 				BoolGetDatum(true));
 
@@ -771,6 +774,9 @@ GetPublicationSchemas(Oid pubid, bool sequences)
 
 /*
  * Gets the list of publication oids associated with a specified schema.
+ *
+ * XXX probably should handle pnsequences somehow, either by taking a
+ * parameter or returning the flag, somehow
  */
 List *
 GetSchemaPublications(Oid schemaid)
@@ -799,7 +805,8 @@ GetSchemaPublications(Oid schemaid)
  * Get the list of publishable relation oids for a specified schema.
  */
 List *
-GetSchemaPublicationRelations(Oid schemaid, PublicationPartOpt pub_partopt)
+GetSchemaPublicationRelations(Oid schemaid, bool sequences,
+							  PublicationPartOpt pub_partopt)
 {
 	Relation	classRel;
 	ScanKeyData key[1];
@@ -829,7 +836,14 @@ GetSchemaPublicationRelations(Oid schemaid, PublicationPartOpt pub_partopt)
 			continue;
 
 		relkind = get_rel_relkind(relid);
-		if (relkind == RELKIND_RELATION)
+
+		/* Filter by relkind depending on FOR ALL TABLES / SEQUENCES */
+		if ((sequences && relkind != RELKIND_SEQUENCE) ||
+			(!sequences && relkind == RELKIND_SEQUENCE))
+			continue;
+
+		if ((relkind == RELKIND_RELATION) ||
+			(relkind == RELKIND_SEQUENCE))
 			result = lappend_oid(result, relid);
 		else if (relkind == RELKIND_PARTITIONED_TABLE)
 		{
@@ -854,13 +868,14 @@ GetSchemaPublicationRelations(Oid schemaid, PublicationPartOpt pub_partopt)
 
 /*
  * Gets the list of all relations published by FOR ALL TABLES IN SCHEMA
- * publication.
+ * or FOR ALL SEQUENCES IN SCHEMA publication.
  */
 List *
-GetAllSchemaPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
+GetAllSchemaPublicationRelations(Oid pubid, bool sequences,
+								 PublicationPartOpt pub_partopt)
 {
 	List	   *result = NIL;
-	List	   *pubschemalist = GetPublicationSchemas(pubid, false);
+	List	   *pubschemalist = GetPublicationSchemas(pubid, sequences);
 	ListCell   *cell;
 
 	foreach(cell, pubschemalist)
@@ -868,7 +883,8 @@ GetAllSchemaPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 		Oid			schemaid = lfirst_oid(cell);
 		List	   *schemaRels = NIL;
 
-		schemaRels = GetSchemaPublicationRelations(schemaid, pub_partopt);
+		schemaRels = GetSchemaPublicationRelations(schemaid, sequences,
+												   pub_partopt);
 		result = list_concat(result, schemaRels);
 	}
 
@@ -1053,10 +1069,12 @@ pg_get_publication_tables(PG_FUNCTION_ARGS)
 					   *schemarelids;
 
 			relids = GetPublicationRelations(publication->oid,
+											 false, /* tables only */
 											 publication->pubviaroot ?
 											 PUBLICATION_PART_ROOT :
 											 PUBLICATION_PART_LEAF);
 			schemarelids = GetAllSchemaPublicationRelations(publication->oid,
+															false, /* tables only */
 															publication->pubviaroot ?
 															PUBLICATION_PART_ROOT :
 															PUBLICATION_PART_LEAF);
@@ -1125,7 +1143,22 @@ pg_get_publication_sequences(PG_FUNCTION_ARGS)
 		if (publication->allsequences)
 			sequences = GetAllSequencesPublicationRelations();
 		else
-			sequences = GetPublicationSequenceRelations(publication->oid);
+		{
+			List	   *relids,
+					   *schemarelids;
+
+			relids = GetPublicationRelations(publication->oid,
+											 true, /* sequences */
+											 publication->pubviaroot ?
+											 PUBLICATION_PART_ROOT :
+											 PUBLICATION_PART_LEAF);
+			schemarelids = GetAllSchemaPublicationRelations(publication->oid,
+															true, /* sequences only */
+															publication->pubviaroot ?
+															PUBLICATION_PART_ROOT :
+															PUBLICATION_PART_LEAF);
+			sequences = list_concat_unique_oid(relids, schemarelids);
+		}
 
 		funcctx->user_fctx = (void *) sequences;
 

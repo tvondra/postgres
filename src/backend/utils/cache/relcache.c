@@ -5587,7 +5587,15 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 											 GetSchemaPublications(schemaid));
 		}
 	}
-	puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
+
+	/*
+	 * Consider also FOR ALL TABLES and FOR ALL SEQUENCES publications,
+	 * depending on the relkind of the relation.
+	 */
+	if (relation->rd_rel->relkind == RELKIND_SEQUENCE)
+		puboids = list_concat_unique_oid(puboids, GetAllSequencesPublications());
+	else
+		puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
 
 	foreach(lc, puboids)
 	{

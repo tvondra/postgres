@@ -212,11 +212,11 @@ ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
 
 -- should fail (publication contains the whole schema)
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
-ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_seq2;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test2.test_seq2;
 
 -- should work (different schema)
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
-ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_seq1;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test1.test_seq1;
 
 \dRp+ testpub_schemas
 
@@ -226,8 +226,9 @@ ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_seq1;
 \d+ pub_test2.test_seq2;
 \d+ pub_test2.test_tbl2;
 
+-- now drop the explicitly added objects again
 ALTER PUBLICATION testpub_schemas DROP TABLE pub_test2.test_tbl2;
-ALTER PUBLICATION testpub_schemas DROP TABLE pub_test1.test_seq1;
+ALTER PUBLICATION testpub_schemas DROP SEQUENCE pub_test1.test_seq1;
 
 \dRp+ testpub_schemas
 

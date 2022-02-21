@@ -583,6 +583,11 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 	Oid			pubid = pubform->oid;
 
 	/*
+	 * FIXME Do we need to test relkind of the relations? Otherwise we
+	 * can do "ADD TABLE sequence" and it'll "work".
+	 */
+
+	/*
 	 * Nothing to do if no objects, except in SET: for that it is quite
 	 * possible that user has not specified any tables in which case we need
 	 * to remove all the existing tables.
@@ -802,6 +807,11 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 	List	   *rels = NIL;
 	Form_pg_publication pubform = (Form_pg_publication) GETSTRUCT(tup);
 	Oid			pubid = pubform->oid;
+
+	/*
+	 * FIXME Do we need to test relkind of the relations? Otherwise we
+	 * can do "ADD SEQUENCE table" and it'll "work".
+	 */
 
 	/*
 	 * It is quite possible that for the SET case user has not specified any

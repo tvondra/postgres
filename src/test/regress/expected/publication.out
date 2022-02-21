@@ -430,12 +430,12 @@ Indexes:
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
 ERROR:  cannot add relation "pub_test1.test_tbl1" to publication
 DETAIL:  Table's schema "pub_test1" is already part of the publication or part of the specified schema list.
-ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_seq2;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test2.test_seq2;
 ERROR:  cannot add relation "pub_test2.test_seq2" to publication
 DETAIL:  Sequence's schema "pub_test2" is already part of the publication or part of the specified schema list.
 -- should work (different schema)
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
-ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_seq1;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test1.test_seq1;
 \dRp+ testpub_schemas
                                               Publication testpub_schemas
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
@@ -487,9 +487,10 @@ Indexes:
     "test_tbl2_pkey" PRIMARY KEY, btree (a)
 Publications:
     "testpub_schemas"
+
 -- now drop the explicitly added objects again
 ALTER PUBLICATION testpub_schemas DROP TABLE pub_test2.test_tbl2;
-ALTER PUBLICATION testpub_schemas DROP TABLE pub_test1.test_seq1;
+ALTER PUBLICATION testpub_schemas DROP SEQUENCE pub_test1.test_seq1;
 \dRp+ testpub_schemas
                                               Publication testpub_schemas
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 

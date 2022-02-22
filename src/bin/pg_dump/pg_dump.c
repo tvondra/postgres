@@ -4013,6 +4013,7 @@ getPublicationNamespaces(Archive *fout)
 	int			i_oid;
 	int			i_pnpubid;
 	int			i_pnnspid;
+	int			i_pnsequences;
 	int			i,
 				j,
 				ntups;
@@ -4024,7 +4025,7 @@ getPublicationNamespaces(Archive *fout)
 
 	/* Collect all publication membership info. */
 	appendPQExpBufferStr(query,
-						 "SELECT tableoid, oid, pnpubid, pnnspid "
+						 "SELECT tableoid, oid, pnpubid, pnnspid, pnsequences "
 						 "FROM pg_catalog.pg_publication_namespace");
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
@@ -4034,6 +4035,7 @@ getPublicationNamespaces(Archive *fout)
 	i_oid = PQfnumber(res, "oid");
 	i_pnpubid = PQfnumber(res, "pnpubid");
 	i_pnnspid = PQfnumber(res, "pnnspid");
+	i_pnsequences = PQfnumber(res, "pnsequences");
 
 	/* this allocation may be more than we need */
 	pubsinfo = pg_malloc(ntups * sizeof(PublicationSchemaInfo));
@@ -4043,6 +4045,7 @@ getPublicationNamespaces(Archive *fout)
 	{
 		Oid			pnpubid = atooid(PQgetvalue(res, i, i_pnpubid));
 		Oid			pnnspid = atooid(PQgetvalue(res, i, i_pnnspid));
+		bool		pnsequences = (strcmp(PQgetvalue(res, i, i_pnsequences), "t") == 0);
 		PublicationInfo *pubinfo;
 		NamespaceInfo *nspinfo;
 
@@ -4074,6 +4077,7 @@ getPublicationNamespaces(Archive *fout)
 		pubsinfo[j].dobj.name = nspinfo->dobj.name;
 		pubsinfo[j].publication = pubinfo;
 		pubsinfo[j].pubschema = nspinfo;
+		pubsinfo[j].pubsequences = pnsequences;
 
 		/* Decide whether we want to dump it */
 		selectDumpablePublicationObject(&(pubsinfo[j].dobj), fout);
@@ -4207,7 +4211,11 @@ dumpPublicationNamespace(Archive *fout, const PublicationSchemaInfo *pubsinfo)
 	query = createPQExpBuffer();
 
 	appendPQExpBuffer(query, "ALTER PUBLICATION %s ", fmtId(pubinfo->dobj.name));
-	appendPQExpBuffer(query, "ADD ALL TABLES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
+
+	if (pubsinfo->pubsequences)
+		appendPQExpBuffer(query, "ADD ALL SEQUENCES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
+	else
+		appendPQExpBuffer(query, "ADD ALL TABLES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
 
 	/*
 	 * There is no point in creating drop query as the drop is done by schema

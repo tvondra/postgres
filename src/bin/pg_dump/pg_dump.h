@@ -645,6 +645,7 @@ typedef struct _PublicationSchemaInfo
 	DumpableObject dobj;
 	PublicationInfo *publication;
 	NamespaceInfo *pubschema;
+	bool pubsequences;
 } PublicationSchemaInfo;
 
 /*

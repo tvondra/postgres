@@ -878,7 +878,7 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 		LockDatabaseObject(PublicationRelationId, pubform->oid, 0,
 						   AccessShareLock);
 
-		root_relids = GetPublicationRelations(pubform->oid,
+		root_relids = GetPublicationRelations(pubform->oid, false,
 											  PUBLICATION_PART_ROOT);
 
 		foreach(lc, root_relids)
@@ -987,8 +987,6 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 														PUBLICATION_PART_ALL,
 														lfirst_oid(lc));
 		}
-
-		schemarelids = GetAllSchemaPublicationRelations(pubform->oid,
 
 		/* tables */
 		schemarelids = GetAllSchemaPublicationRelations(pubform->oid, false,
@@ -1387,6 +1385,7 @@ AlterPublicationSequences(AlterPublicationStmt *stmt, HeapTuple tup,
 
 				pubrel = palloc(sizeof(PublicationRelInfo));
 				pubrel->relation = oldrel;
+				pubrel->whereClause = NULL;
 
 				delrels = lappend(delrels, pubrel);
 			}

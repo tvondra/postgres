@@ -751,20 +751,20 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub5 FOR TABLE testpub_rf_tbl1, testpub_rf_tbl2 WHERE (c <> 'test' AND d < 5) WITH (publish = 'insert');
 RESET client_min_messages;
 \dRp+ testpub5
-                                    Publication testpub5
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                                  Publication testpub5
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl1"
     "public.testpub_rf_tbl2" WHERE ((c <> 'test'::text) AND (d < 5))
 
 ALTER PUBLICATION testpub5 ADD TABLE testpub_rf_tbl3 WHERE (e > 1000 AND e < 2000);
 \dRp+ testpub5
-                                    Publication testpub5
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                                  Publication testpub5
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl1"
     "public.testpub_rf_tbl2" WHERE ((c <> 'test'::text) AND (d < 5))
@@ -772,10 +772,10 @@ Tables:
 
 ALTER PUBLICATION testpub5 DROP TABLE testpub_rf_tbl2;
 \dRp+ testpub5
-                                    Publication testpub5
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                                  Publication testpub5
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl1"
     "public.testpub_rf_tbl3" WHERE ((e > 1000) AND (e < 2000))
@@ -783,10 +783,10 @@ Tables:
 -- remove testpub_rf_tbl1 and add testpub_rf_tbl3 again (another WHERE expression)
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl3 WHERE (e > 300 AND e < 500);
 \dRp+ testpub5
-                                    Publication testpub5
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                                  Publication testpub5
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl3" WHERE ((e > 300) AND (e < 500))
 
@@ -811,10 +811,10 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_syntax1 FOR TABLE testpub_rf_tbl1, ONLY testpub_rf_tbl3 WHERE (e < 999) WITH (publish = 'insert');
 RESET client_min_messages;
 \dRp+ testpub_syntax1
-                                Publication testpub_syntax1
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                              Publication testpub_syntax1
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl1"
     "public.testpub_rf_tbl3" WHERE (e < 999)
@@ -824,10 +824,10 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_syntax2 FOR TABLE testpub_rf_tbl1, testpub_rf_schema1.testpub_rf_tbl5 WHERE (h < 999) WITH (publish = 'insert');
 RESET client_min_messages;
 \dRp+ testpub_syntax2
-                                Publication testpub_syntax2
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | f       | f       | f         | f
+                                              Publication testpub_syntax2
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Sequences | Truncates | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | f       | f       | f         | f         | f
 Tables:
     "public.testpub_rf_tbl1"
     "testpub_rf_schema1.testpub_rf_tbl5" WHERE (h < 999)

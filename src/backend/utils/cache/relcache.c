@@ -5614,7 +5614,7 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		pubdesc->pubactions.pubupdate |= pubform->pubupdate;
 		pubdesc->pubactions.pubdelete |= pubform->pubdelete;
 		pubdesc->pubactions.pubtruncate |= pubform->pubtruncate;
-		pubactions->pubsequence |= pubform->pubsequence;
+		pubdesc->pubactions.pubsequence |= pubform->pubsequence;
 
 		/*
 		 * Check if all columns referenced in the filter expression are part of

@@ -1064,6 +1064,7 @@ copy_sequence(Relation rel)
 {
 	LogicalRepRelMapEntry *relmapentry;
 	LogicalRepRelation lrel;
+	List	   *qual = NIL;
 	StringInfoData cmd;
 	int64		last_value = 0,
 				log_cnt = 0;
@@ -1071,7 +1072,10 @@ copy_sequence(Relation rel)
 
 	/* Get the publisher relation info. */
 	fetch_remote_table_info(get_namespace_name(RelationGetNamespace(rel)),
-							RelationGetRelationName(rel), &lrel);
+							RelationGetRelationName(rel), &lrel, &qual);
+
+	/* sequences don't have row filters */
+	Assert(!qual);
 
 	/* Put the relation into relmap. */
 	logicalrep_relmap_update(&lrel);

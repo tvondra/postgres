@@ -55,7 +55,7 @@ static void pgoutput_message(LogicalDecodingContext *ctx,
 							 Size sz, const char *message);
 static void pgoutput_sequence(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-							  Relation rel, bool transactional,
+							  Relation relation, bool transactional,
 							  int64 last_value, int64 log_cnt, bool is_called);
 static bool pgoutput_origin_filter(LogicalDecodingContext *ctx,
 								   RepOriginId origin_id);
@@ -1461,7 +1461,7 @@ pgoutput_message(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 static void
 pgoutput_sequence(LogicalDecodingContext *ctx,
 				  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
-				  Relation rel, bool transactional,
+				  Relation relation, bool transactional,
 				  int64 last_value, int64 log_cnt, bool is_called)
 {
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
@@ -1471,7 +1471,7 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 	if (!data->sequences)
 		return;
 
-	if (!is_publishable_relation(rel))
+	if (!is_publishable_relation(relation))
 		return;
 
 	/*
@@ -1481,7 +1481,7 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 	if (in_streaming)
 		xid = txn->xid;
 
-	relentry = get_rel_sync_entry(data, RelationGetRelid(rel));
+	relentry = get_rel_sync_entry(data, relation);
 
 	/*
 	 * First check the sequence filter.
@@ -1493,7 +1493,7 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 
 	OutputPluginPrepareWrite(ctx, true);
 	logicalrep_write_sequence(ctx->out,
-							  rel,
+							  relation,
 							  xid,
 							  sequence_lsn,
 							  transactional,

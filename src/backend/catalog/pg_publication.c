@@ -45,12 +45,22 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+static void check_publication_columns(Publication *pub, Relation targetrel,
+									  Bitmapset *columns);
+static void publication_translate_columns(Relation targetrel, List *columns,
+										  int *natts, AttrNumber **attrs,
+										  Bitmapset **attset);
+
 /*
- * Check if relation can be in given publication and throws appropriate
- * error if not.
+ * Check if relation can be in given publication and that the column
+ * filter is sensible, and throws appropriate error if not.
+ *
+ * columns is the bitmapset of attribute numbers included in the column list,
+ * or NULL if no column list was specified (i.e. all columns are replicated)
  */
 static void
-check_publication_add_relation(Relation targetrel)
+check_publication_add_relation(Publication *pub, Relation targetrel,
+							   Bitmapset *columns)
 {
 	/* Must be a regular or partitioned table */
 	if (RelationGetForm(targetrel)->relkind != RELKIND_RELATION &&
@@ -82,6 +92,76 @@ check_publication_add_relation(Relation targetrel)
 				 errmsg("cannot add relation \"%s\" to publication",
 						RelationGetRelationName(targetrel)),
 				 errdetail("This operation is not supported for unlogged tables.")));
+
+	/*
+	 * Ensure the column filter is compatible with the replica identity and the
+	 * actions the publication is replicating.
+	 */
+	check_publication_columns(pub, targetrel, columns);
+}
+
+/*
+ * Enforce that the column list can only leave out columns that don't
+ * need to be sent as part of replica identity.
+ *
+ * If the relation uses REPLICA IDENTITY FULL, we can't allow any column
+ * list even if it lists all columns of the relation - it'd cause issues
+ * if a column is added later. The column would become part of a replica
+ * identity, violating the rule that the column list includes the whole
+ * replica identity. We could add the column to the column list too, of
+ * course, but it seems rather useles - the column list would always
+ * include all columns, i.e. as if there's no column filter.
+ *
+ * In other cases, the columns in the REPLICA IDENTITY cannot be left out,
+ * except when the publication replicates only inserts. So we check that
+ * for UPDATE/DELETE the replica identity is a subset of the column filter.
+ */
+static void
+check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *columns)
+{
+	/*
+	 * If there is no column list, we treat it as if the list contains all columns. In
+	 * which case there's nothing to check so we're done.
+	 */
+	if (!columns)
+		return;
+
+	/* With REPLICA IDENTITY FULL no column filter is allowed. */
+	if (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("cannot change column set for relation \"%s\"",
+					   RelationGetRelationName(targetrel)),
+				errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
+
+	/* When replicating UPDATE/DELETE, all replica identity have to be sent. */
+	if (pub->pubactions.pubupdate || pub->pubactions.pubdelete)
+	{
+		Bitmapset  *idattrs;
+		int			x;
+
+		idattrs = RelationGetIndexAttrBitmap(targetrel,
+											 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+		/*
+		 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
+		 * offset (to handle system columns the usual way), while column filter
+		 * does not use offset, so we can't do bms_is_subset(). Instead, we have
+		 * to loop over the idattrs and check all of them are in the filter.
+		 */
+		x = -1;
+		while ((x = bms_next_member(idattrs, x)) >= 0)
+		{
+			if (!bms_is_member(x + FirstLowInvalidHeapAttributeNumber, columns))
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+						errmsg("invalid column list for publishing relation \"%s\"",
+							   RelationGetRelationName(targetrel)),
+						errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
+		}
+
+		bms_free(idattrs);
+	}
 }
 
 /*
@@ -328,6 +408,9 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 	Oid			relid = RelationGetRelid(targetrel);
 	Oid			pubreloid;
 	Publication *pub = GetPublication(pubid);
+	Bitmapset  *attset = NULL;
+	AttrNumber *attarray;
+	int			natts = 0;
 	ObjectAddress myself,
 				referenced;
 	List	   *relids = NIL;
@@ -353,7 +436,18 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 						RelationGetRelationName(targetrel), pub->name)));
 	}
 
-	check_publication_add_relation(targetrel);
+	/*
+	 * Translate column names to attnums and check the column list is valid.
+	 * We build both a bitmap and array of attnums - array is stored in the
+	 * catalog, while the bitmap is more convenient for checking.
+	 */
+	publication_translate_columns(pri->relation, pri->columns,
+								  &natts, &attarray, &attset);
+
+	check_publication_add_relation(pub, targetrel, attset);
+
+	/* Won't need the bitmapset anymore. */
+	bms_free(attset);
 
 	/* Form a tuple. */
 	memset(values, 0, sizeof(values));
@@ -366,6 +460,16 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 		ObjectIdGetDatum(pubid);
 	values[Anum_pg_publication_rel_prrelid - 1] =
 		ObjectIdGetDatum(relid);
+
+	if (pri->columns)
+	{
+		int2vector *prattrs;
+
+		prattrs = buildint2vector(attarray, natts);
+		values[Anum_pg_publication_rel_prattrs - 1] = PointerGetDatum(prattrs);
+	}
+	else
+		nulls[Anum_pg_publication_rel_prattrs - 1] = true;
 
 	/* Add qualifications, if available */
 	if (pri->whereClause != NULL)
@@ -381,6 +485,14 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 
 	/* Register dependencies as needed */
 	ObjectAddressSet(myself, PublicationRelRelationId, pubreloid);
+
+	/* Add dependency on the columns, if any are listed */
+	for (int i = 0; i < natts; i++)
+	{
+		ObjectAddressSubSet(referenced, RelationRelationId, relid, attarray[i]);
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
+	}
+	pfree(attarray);
 
 	/* Add dependency on the publication */
 	ObjectAddressSet(referenced, PublicationRelationId, pubid);
@@ -413,6 +525,164 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 	InvalidatePublicationRels(relids);
 
 	return myself;
+}
+
+/*
+ * Update the column list for a relation in a publication.
+ */
+void
+publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
+							  Relation targetrel, List *columns)
+{
+	Bitmapset  *attset;
+	AttrNumber *attarray;
+	HeapTuple	copytup;
+	int			natts;
+	bool		nulls[Natts_pg_publication_rel];
+	bool		replaces[Natts_pg_publication_rel];
+	Datum		values[Natts_pg_publication_rel];
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+	memset(replaces, false, sizeof(replaces));
+
+	replaces[Anum_pg_publication_rel_prattrs - 1] = true;
+
+	deleteDependencyRecordsForClass(PublicationRelationId,
+									((Form_pg_publication_rel) GETSTRUCT(pubreltup))->oid,
+									RelationRelationId,
+									DEPENDENCY_AUTO);
+
+	if (columns == NULL)
+	{
+		nulls[Anum_pg_publication_rel_prattrs - 1] = true;
+	}
+	else
+	{
+		ObjectAddress 	myself,
+						referenced;
+		int2vector	   *prattrs;
+		Publication	   *pub;
+
+		pub = GetPublication(((Form_pg_publication_rel) GETSTRUCT(pubreltup))->prpubid);
+
+		publication_translate_columns(targetrel, columns,
+									  &natts, &attarray, &attset);
+
+		/*
+		 * Make sure the column list checks out.
+		 *
+		 * XXX this should occur at caller in publicationcmds.c, not here.
+		 * XXX How come this does not check replica identity? Should this prevent
+		 * replica identity full, just like check_publication_add_relation?
+		 */
+		check_publication_columns(pub, targetrel, attset);
+		bms_free(attset);
+
+		/* XXX "pub" is leaked here */
+
+		prattrs = buildint2vector(attarray, natts);
+		values[Anum_pg_publication_rel_prattrs - 1] = PointerGetDatum(prattrs);
+
+		/* Add dependencies on the new list of columns */
+		ObjectAddressSet(myself, PublicationRelRelationId,
+						 ((Form_pg_publication_rel) GETSTRUCT(pubreltup))->oid);
+		for (int i = 0; i < natts; i++)
+		{
+			ObjectAddressSubSet(referenced, RelationRelationId,
+								RelationGetRelid(targetrel), attarray[i]);
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
+		}
+	}
+
+	copytup = heap_modify_tuple(pubreltup, RelationGetDescr(pubrel),
+								values, nulls, replaces);
+
+	CatalogTupleUpdate(pubrel, &pubreltup->t_self, copytup);
+
+	heap_freetuple(copytup);
+}
+
+/*
+ * qsort comparator for attnums
+ *
+ * XXX We already have compare_int16, so maybe let's share that, somehow?
+ */
+static int
+compare_int16(const void *a, const void *b)
+{
+	int			av = *(const int16 *) a;
+	int			bv = *(const int16 *) b;
+
+	/* this can't overflow if int is wider than int16 */
+	return (av - bv);
+}
+
+/*
+ * Translate a list of column names to an array of attribute numbers
+ * and a Bitmapset with them; verify that each attribute is appropriate
+ * to have in a publication column list (no system or generated attributes,
+ * no duplicates).  Additional checks with replica identity are done later;
+ * see check_publication_columns.
+ *
+ * Note that the attribute numbers are *not* offset by
+ * FirstLowInvalidHeapAttributeNumber; system columns are forbidden so this
+ * is okay.
+ */
+static void
+publication_translate_columns(Relation targetrel, List *columns, int *natts,
+							  AttrNumber **attrs, Bitmapset **attset)
+{
+	AttrNumber *attarray;
+	Bitmapset  *set = NULL;
+	ListCell   *lc;
+	int			n = 0;
+	TupleDesc	tupdesc = RelationGetDescr(targetrel);
+
+	/*
+	 * Translate list of columns to attnums. We prohibit system attributes and
+	 * make sure there are no duplicate columns.
+	 */
+	attarray = palloc(sizeof(AttrNumber) * list_length(columns));
+	foreach(lc, columns)
+	{
+		char	   *colname = strVal(lfirst(lc));
+		AttrNumber	attnum = get_attnum(RelationGetRelid(targetrel), colname);
+
+		if (attnum == InvalidAttrNumber)
+			ereport(ERROR,
+					errcode(ERRCODE_UNDEFINED_COLUMN),
+					errmsg("column \"%s\" of relation \"%s\" does not exist",
+						   colname, RelationGetRelationName(targetrel)));
+
+		if (!AttrNumberIsForUserDefinedAttr(attnum))
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("cannot reference system column \"%s\" in publication column list",
+						   colname));
+
+		if (TupleDescAttr(tupdesc, attnum - 1)->attgenerated)
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("cannot reference generated column \"%s\" in publication column list",
+						   colname));
+
+		if (bms_is_member(attnum, set))
+			ereport(ERROR,
+					errcode(ERRCODE_DUPLICATE_OBJECT),
+					errmsg("duplicate column \"%s\" in publication column list",
+						   colname));
+
+		set = bms_add_member(set, attnum);
+		attarray[n++] = attnum;
+	}
+
+	/* Be tidy, so that the catalog representation is always sorted */
+	qsort(attarray, n, sizeof(AttrNumber), compare_int16);
+
+	*natts = n;
+	*attrs = attarray;
+	*attset = set;
 }
 
 /*
@@ -520,6 +790,96 @@ GetRelationPublications(Oid relid)
 	ReleaseSysCacheList(pubrellist);
 
 	return result;
+}
+
+/*
+ * Gets a list of OIDs of all partial-column publications of the given
+ * relation, that is, those that specify a column list.
+ */
+List *
+GetRelationColumnPartialPublications(Oid relid)
+{
+	CatCList   *pubrellist;
+	List	   *pubs = NIL;
+
+	pubrellist = SearchSysCacheList1(PUBLICATIONRELMAP,
+									 ObjectIdGetDatum(relid));
+	for (int i = 0; i < pubrellist->n_members; i++)
+	{
+		HeapTuple	tup = &pubrellist->members[i]->tuple;
+		bool		isnull;
+
+		(void) SysCacheGetAttr(PUBLICATIONRELMAP, tup,
+							   Anum_pg_publication_rel_prattrs,
+							   &isnull);
+		if (isnull)
+			continue;
+
+		pubs = lappend_oid(pubs,
+						   ((Form_pg_publication_rel) GETSTRUCT(tup))->prpubid);
+	}
+
+	ReleaseSysCacheList(pubrellist);
+
+	return pubs;
+}
+
+/* FIXME maybe these two routines should be in lsyscache.c */
+/* Return the set of actions that the given publication includes */
+void
+GetActionsInPublication(Oid pubid, PublicationActions *actions)
+{
+	HeapTuple	pub;
+	Form_pg_publication	pubForm;
+
+	pub = SearchSysCache1(PUBLICATIONOID,
+						  ObjectIdGetDatum(pubid));
+	if (!HeapTupleIsValid(pub))
+		elog(ERROR, "cache lookup failed for publication %u", pubid);
+
+	pubForm = (Form_pg_publication) GETSTRUCT(pub);
+	actions->pubinsert = pubForm->pubinsert;
+	actions->pubupdate = pubForm->pubupdate;
+	actions->pubdelete = pubForm->pubdelete;
+	actions->pubtruncate = pubForm->pubtruncate;
+
+	ReleaseSysCache(pub);
+}
+
+/*
+ * For a relation in a publication that is known to have a non-null column
+ * list, return the list of attribute numbers that are in it.
+ */
+List *
+GetRelationColumnListInPublication(Oid relid, Oid pubid)
+{
+	HeapTuple	tup;
+	Datum		adatum;
+	bool		isnull;
+	ArrayType  *arr;
+	int			nelems;
+	int16	   *elems;
+	List	   *attnos = NIL;
+
+	tup = SearchSysCache2(PUBLICATIONRELMAP,
+						  ObjectIdGetDatum(relid),
+						  ObjectIdGetDatum(pubid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for rel %u of publication %u", relid, pubid);
+	adatum = SysCacheGetAttr(PUBLICATIONRELMAP, tup,
+							 Anum_pg_publication_rel_prattrs, &isnull);
+	if (isnull)
+		elog(ERROR, "found unexpected null in pg_publication_rel.prattrs");
+	arr = DatumGetArrayTypeP(adatum);
+	nelems = ARR_DIMS(arr)[0];
+	elems = (int16 *) ARR_DATA_PTR(arr);
+
+	for (int i = 0; i < nelems; i++)
+		attnos = lappend_oid(attnos, elems[i]);
+
+	ReleaseSysCache(tup);
+
+	return attnos;
 }
 
 /*

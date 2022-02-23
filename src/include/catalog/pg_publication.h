@@ -100,6 +100,7 @@ typedef struct PublicationRelInfo
 {
 	Relation	relation;
 	Node	   *whereClause;
+	List	   *columns;
 } PublicationRelInfo;
 
 extern Publication *GetPublication(Oid pubid);
@@ -123,8 +124,11 @@ typedef enum PublicationPartOpt
 } PublicationPartOpt;
 
 extern List *GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt);
+extern List *GetRelationColumnPartialPublications(Oid relid);
+extern List *GetRelationColumnListInPublication(Oid relid, Oid pubid);
 extern List *GetAllTablesPublications(void);
 extern List *GetAllTablesPublicationRelations(bool pubviaroot);
+extern void GetActionsInPublication(Oid pubid, PublicationActions *actions);
 extern List *GetPublicationSchemas(Oid pubid);
 extern List *GetSchemaPublications(Oid schemaid);
 extern List *GetSchemaPublicationRelations(Oid schemaid,
@@ -142,6 +146,8 @@ extern ObjectAddress publication_add_relation(Oid pubid, PublicationRelInfo *pri
 											  bool if_not_exists);
 extern ObjectAddress publication_add_schema(Oid pubid, Oid schemaid,
 											bool if_not_exists);
+extern void publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
+										  Relation targetrel, List *columns);
 
 extern Oid	get_publication_oid(const char *pubname, bool missing_ok);
 extern char *get_publication_name(Oid pubid, bool missing_ok);

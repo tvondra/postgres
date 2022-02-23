@@ -5867,7 +5867,7 @@ listPublications(const char *pattern)
  */
 static bool
 addFooterToPublicationDesc(PQExpBuffer buf, char *footermsg,
-						   bool singlecol, printTableContent *cont)
+						   bool as_schema, printTableContent *cont)
 {
 	PGresult   *res;
 	int			count = 0;
@@ -5884,15 +5884,19 @@ addFooterToPublicationDesc(PQExpBuffer buf, char *footermsg,
 
 	for (i = 0; i < count; i++)
 	{
-		if (!singlecol)
+		if (as_schema)
+			printfPQExpBuffer(buf, "    \"%s\"", PQgetvalue(res, i, 0));
+		else
 		{
 			printfPQExpBuffer(buf, "    \"%s.%s\"", PQgetvalue(res, i, 0),
 							  PQgetvalue(res, i, 1));
+
+			if (!PQgetisnull(res, i, 3))
+				appendPQExpBuffer(buf, " (%s)", PQgetvalue(res, i, 3));
+
 			if (!PQgetisnull(res, i, 2))
 				appendPQExpBuffer(buf, " WHERE %s", PQgetvalue(res, i, 2));
 		}
-		else
-			printfPQExpBuffer(buf, "    \"%s\"", PQgetvalue(res, i, 0));
 
 		printTableAddFooter(cont, buf->data);
 	}
@@ -6021,11 +6025,22 @@ describePublications(const char *pattern)
 			printfPQExpBuffer(&buf,
 							  "SELECT n.nspname, c.relname");
 			if (pset.sversion >= 150000)
+			{
 				appendPQExpBufferStr(&buf,
 									 ", pg_get_expr(pr.prqual, c.oid)");
+				appendPQExpBufferStr(&buf,
+									 ", (CASE WHEN pr.prattrs IS NOT NULL THEN\n"
+									 "     pg_catalog.array_to_string("
+									 "      ARRAY(SELECT attname\n"
+									 "              FROM\n"
+									 "                pg_catalog.generate_series(0, pg_catalog.array_upper(pr.prattrs::pg_catalog.int2[], 1)) s,\n"
+									 "                pg_catalog.pg_attribute\n"
+									 "        WHERE attrelid = c.oid AND attnum = prattrs[s]), ', ')\n"
+									 "       ELSE NULL END)");
+			}
 			else
 				appendPQExpBufferStr(&buf,
-									 ", NULL");
+									 ", NULL, NULL");
 			appendPQExpBuffer(&buf,
 							  "\nFROM pg_catalog.pg_class c,\n"
 							  "     pg_catalog.pg_namespace n,\n"

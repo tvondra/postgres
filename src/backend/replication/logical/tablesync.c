@@ -112,6 +112,7 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -700,20 +701,23 @@ fetch_remote_table_info(char *nspname, char *relname,
 	WalRcvExecResult *res;
 	StringInfoData cmd;
 	TupleTableSlot *slot;
-	Oid			tableRow[] = {OIDOID, CHAROID, CHAROID};
-	Oid			attrRow[] = {TEXTOID, OIDOID, BOOLOID};
+	Oid			tableRow[] = {OIDOID, CHAROID, CHAROID, CHAROID};
+	Oid			attrRow[] = {TEXTOID, OIDOID, BOOLOID, BOOLOID};
 	Oid			qualRow[] = {TEXTOID};
 	bool		isnull;
 	int			natt;
 	ListCell   *lc;
 	bool		first;
+	bool		am_partition;
+	Bitmapset  *included_cols = NULL;
 
 	lrel->nspname = nspname;
 	lrel->relname = relname;
 
 	/* First fetch Oid and replica identity. */
+	/* XXX Why do we need relispartition? */
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident, c.relkind"
+	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident, c.relkind, c.relispartition"
 					 "  FROM pg_catalog.pg_class c"
 					 "  INNER JOIN pg_catalog.pg_namespace n"
 					 "        ON (c.relnamespace = n.oid)"
@@ -743,14 +747,19 @@ fetch_remote_table_info(char *nspname, char *relname,
 	Assert(!isnull);
 	lrel->relkind = DatumGetChar(slot_getattr(slot, 3, &isnull));
 	Assert(!isnull);
+	am_partition = DatumGetBool(slot_getattr(slot, 4, &isnull));
+	Assert(!isnull);
 
 	ExecDropSingleTupleTableSlot(slot);
 	walrcv_clear_result(res);
 
-	/* Now fetch columns. */
+	/*
+	 * Now fetch column names and types.
+	 */
 	resetStringInfo(&cmd);
 	appendStringInfo(&cmd,
-					 "SELECT a.attname,"
+					 "SELECT a.attnum,"
+					 "       a.attname,"
 					 "       a.atttypid,"
 					 "       a.attnum = ANY(i.indkey)"
 					 "  FROM pg_catalog.pg_attribute a"
@@ -778,16 +787,91 @@ fetch_remote_table_info(char *nspname, char *relname,
 	lrel->atttyps = palloc0(MaxTupleAttributeNumber * sizeof(Oid));
 	lrel->attkeys = NULL;
 
+	/*
+	 * In server versions 15 and higher, obtain the publication column list,
+	 * if any.
+	 */
+	if (walrcv_server_version(LogRepWorkerWalRcvConn) >= 150000)
+	{
+		WalRcvExecResult *pubres;
+		TupleTableSlot *slot;
+		Oid			attrsRow[] = {INT2OID};
+		StringInfoData publications;
+		bool		first = true;
+
+		initStringInfo(&publications);
+		foreach(lc, MySubscription->publications)
+		{
+			if (!first)
+				appendStringInfo(&publications, ", ");
+			appendStringInfoString(&publications, quote_literal_cstr(strVal(lfirst(lc))));
+			first = false;
+		}
+
+		resetStringInfo(&cmd);
+		appendStringInfo(&cmd,
+						 "  SELECT pg_catalog.unnest(prattrs)\n"
+						 "    FROM pg_catalog.pg_publication p JOIN\n"
+						 "         pg_catalog.pg_publication_rel pr ON (p.oid = pr.prpubid)\n"
+						 "   WHERE p.pubname IN (%s) AND\n",
+						 publications.data);
+		if (!am_partition)
+			appendStringInfo(&cmd, "prrelid = %u", lrel->remoteid);
+		else
+			appendStringInfo(&cmd,
+							 "prrelid IN (SELECT relid\n"
+							 "    FROM pg_catalog.pg_partition_tree(pg_catalog.pg_partition_root(%u)))",
+							 lrel->remoteid);
+
+		pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+							 lengthof(attrsRow), attrsRow);
+
+		if (pubres->status != WALRCV_OK_TUPLES)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not fetch attribute info for table \"%s.%s\" from publisher: %s",
+							nspname, relname, pubres->err)));
+
+		slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+		while (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+		{
+			AttrNumber	attnum;
+
+			attnum = DatumGetInt16(slot_getattr(slot, 1, &isnull));
+			if (isnull)
+				continue;
+			included_cols = bms_add_member(included_cols, attnum);
+		}
+		ExecDropSingleTupleTableSlot(slot);
+		pfree(publications.data);
+		walrcv_clear_result(pubres);
+	}
+
+	/*
+	 * Store the columns as a list of names.  Ignore those that are not
+	 * present in the column list, if there is one.
+	 */
 	natt = 0;
 	slot = MakeSingleTupleTableSlot(res->tupledesc, &TTSOpsMinimalTuple);
 	while (tuplestore_gettupleslot(res->tuplestore, true, false, slot))
 	{
-		lrel->attnames[natt] =
-			TextDatumGetCString(slot_getattr(slot, 1, &isnull));
+		char	   *rel_colname;
+		AttrNumber	attnum;
+
+		attnum = DatumGetInt16(slot_getattr(slot, 1, &isnull));
 		Assert(!isnull);
-		lrel->atttyps[natt] = DatumGetObjectId(slot_getattr(slot, 2, &isnull));
+
+		if (included_cols != NULL && !bms_is_member(attnum, included_cols))
+			continue;
+
+		rel_colname = TextDatumGetCString(slot_getattr(slot, 2, &isnull));
 		Assert(!isnull);
-		if (DatumGetBool(slot_getattr(slot, 3, &isnull)))
+
+		lrel->attnames[natt] = rel_colname;
+		lrel->atttyps[natt] = DatumGetObjectId(slot_getattr(slot, 3, &isnull));
+		Assert(!isnull);
+
+		if (DatumGetBool(slot_getattr(slot, 4, &isnull)))
 			lrel->attkeys = bms_add_member(lrel->attkeys, natt);
 
 		/* Should never happen. */
@@ -930,8 +1014,23 @@ copy_table(Relation rel)
 
 	/* Regular table with no row filter */
 	if (lrel.relkind == RELKIND_RELATION && qual == NIL)
-		appendStringInfo(&cmd, "COPY %s TO STDOUT",
+	{
+		appendStringInfo(&cmd, "COPY %s (",
 						 quote_qualified_identifier(lrel.nspname, lrel.relname));
+
+		/*
+		 * XXX Do we need to list the columns in all cases? Maybe we're replicating
+		 * all columns?
+		 */
+		for (int i = 0; i < lrel.natts; i++)
+		{
+			appendStringInfoString(&cmd, quote_identifier(lrel.attnames[i]));
+			if (i < lrel.natts - 1)
+				appendStringInfoString(&cmd, ", ");
+		}
+
+		appendStringInfo(&cmd, ") TO STDOUT");
+	}
 	else
 	{
 		/*

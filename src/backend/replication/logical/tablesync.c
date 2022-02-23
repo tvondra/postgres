@@ -1024,9 +1024,10 @@ copy_table(Relation rel)
 		 */
 		for (int i = 0; i < lrel.natts; i++)
 		{
-			appendStringInfoString(&cmd, quote_identifier(lrel.attnames[i]));
-			if (i < lrel.natts - 1)
+			if (i > 0)
 				appendStringInfoString(&cmd, ", ");
+
+			appendStringInfoString(&cmd, quote_identifier(lrel.attnames[i]));
 		}
 
 		appendStringInfo(&cmd, ") TO STDOUT");

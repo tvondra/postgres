@@ -63,8 +63,6 @@ static void
 check_publication_add_relation(Publication *pub, Relation targetrel,
 							   Bitmapset *columns)
 {
-	bool	replidentfull = (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL);
-
 	/* Must be a regular or partitioned table */
 	if (RelationGetForm(targetrel)->relkind != RELKIND_RELATION &&
 		RelationGetForm(targetrel)->relkind != RELKIND_PARTITIONED_TABLE)
@@ -97,50 +95,39 @@ check_publication_add_relation(Publication *pub, Relation targetrel,
 				 errdetail("This operation is not supported for unlogged tables.")));
 
 	/*
-	 * If a column filter was specified, check it's sensible with respect to
-	 * replica identity - the list has to include all columns in the replica
-	 * identity.
+	 * Ensure the column filter is compatible with the replica identity and the
+	 * actions the publication is replicating.
 	 */
-	if (columns != NULL)
-	{
-		/*
-		 *
-		 * If the relation uses REPLICA IDENTITY FULL, we can't allow any column
-		 * list even if it lists all columns of the relation - it'd cause issues
-		 * if a column is added later. The column would become part of a replica
-		 * identity, violating the rule that the column list includes the whole
-		 * replica identity. We could add the column to the column list too, of
-		 * course, but it seems rather useles - the column list would always
-		 * include all columns, i.e. as if there's no column filter.
-		 *
-		 * So just reject this case altogether.
-		 */
-		if (replidentfull)
-			ereport(ERROR,
-					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("invalid column list for publishing relation \"%s\"",
-						   RelationGetRelationName(targetrel)),
-					errdetail("Cannot specify a column list on relations with REPLICA IDENTITY FULL."));
-
-		check_publication_columns(pub, targetrel, columns);
-	}
+	check_publication_columns(pub, targetrel, columns);
 }
 
 /*
  * Enforce that the column list can only leave out columns that aren't
  * forced to be sent.
  *
- * No column can be excluded if REPLICA IDENTITY is FULL (since all the
- * columns need to be sent regardless); and in other cases, the columns in
- * the REPLICA IDENTITY cannot be left out.
+ * If the relation uses REPLICA IDENTITY FULL, we can't allow any column
+ * list even if it lists all columns of the relation - it'd cause issues
+ * if a column is added later. The column would become part of a replica
+ * identity, violating the rule that the column list includes the whole
+ * replica identity. We could add the column to the column list too, of
+ * course, but it seems rather useles - the column list would always
+ * include all columns, i.e. as if there's no column filter.
  *
- * Then we need to cross-check the replica identity and column list. For
- * UPDATE/DELETE we need to ensure the replica identity is a subset of the
- * column filter. For INSERT, we don't need to check anything.
+ * In other cases, the columns in the REPLICA IDENTITY cannot be left out,
+ * except when the publication replicates only inserts. So we check that
+ * for UPDATE/DELETE the replica identity is a subset of the column filter.
  */
 static void
 check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *columns)
 {
+	/*
+	 * If there is no column list, we treat it as if the list contains all columns. In
+	 * which case there's nothing to check so we're done.
+	 */
+	if (!columns)
+		return;
+
+	/* With REPLICA IDENTITY FULL no column filter is allowed. */
 	if (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
 		ereport(ERROR,
 				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -548,7 +535,7 @@ publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
 	Datum		values[Natts_pg_publication_rel];
 
 	memset(values, 0, sizeof(values));
-	memset(nulls, 0, sizeof(nulls));
+	memset(nulls, false, sizeof(nulls));
 	memset(replaces, false, sizeof(replaces));
 
 	replaces[Anum_pg_publication_rel_prattrs - 1] = true;

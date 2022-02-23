@@ -168,8 +168,8 @@ typedef struct RelationSyncEntry
 	AttrMap    *attrmap;
 
 	/*
-	 * Set of columns included in the publication, or NULL if all columns are
-	 * included implicitly.  Note that the attnums in this list are not
+	 * Columns included in the publication, or NULL if all columns are
+	 * included implicitly.  Note that the attnums in this bitmap are not
 	 * shifted by FirstLowInvalidHeapAttributeNumber.
 	 */
 	Bitmapset  *columns;
@@ -1882,9 +1882,8 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 			 * publish, and list of columns, if appropriate.
 			 *
 			 * Don't publish changes for partitioned tables, because
-			 * publishing those of its partitions suffices.  (However, ignore
-			 * this if partition changes are not to published due to
-			 * pubviaroot being set.)
+			 * publishing those of its partitions suffices, unless partition
+			 * changes won't be published due to pubviaroot being set.
 			 */
 			if (publish &&
 				(relkind != RELKIND_PARTITIONED_TABLE || pub->pubviaroot))
@@ -1897,7 +1896,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 				/*
 				 * Obtain columns published by this publication, and add them
 				 * to the list for this rel.  Note that if at least one
-				 * publication has a empty column list, that means to publish
+				 * publication has an empty column list, that means to publish
 				 * everything; so if we saw a publication that includes all
 				 * columns, skip this.
 				 */
@@ -1924,14 +1923,15 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 						if (isnull)
 						{
 							/*
-							 * If we see a publication with no columns, reset the
+							 * If we see a publication with no column filter, it
+							 * means we need to publish all columns, so reset the
 							 * list and ignore further ones.
 							 */
 							all_columns = true;
 							bms_free(entry->columns);
 							entry->columns = NULL;
 						}
-						else if (!isnull)
+						else
 						{
 							ArrayType  *arr;
 							int			nelems;

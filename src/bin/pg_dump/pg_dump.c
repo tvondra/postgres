@@ -4169,7 +4169,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 
 				appendPQExpBufferStr(attribs, fmtId(attnames[k]));
 			}
-			pubrinfo[i].pubrattrs = attribs->data;
+			pubrinfo[j].pubrattrs = attribs->data;
 		}
 		else
 			pubrinfo[j].pubrattrs = NULL;

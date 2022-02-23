@@ -930,11 +930,6 @@ logicalrep_write_attrs(StringInfo out, Relation rel, Bitmapset *columns)
 
 	desc = RelationGetDescr(rel);
 
-	/* fetch bitmap of REPLICATION IDENTITY attributes */
-	replidentfull = (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL);
-	if (!replidentfull)
-		idattrs = RelationGetIdentityKeyBitmap(rel);
-
 	/* send number of live attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
@@ -950,6 +945,11 @@ logicalrep_write_attrs(StringInfo out, Relation rel, Bitmapset *columns)
 		nliveatts++;
 	}
 	pq_sendint16(out, nliveatts);
+
+	/* fetch bitmap of REPLICATION IDENTITY attributes */
+	replidentfull = (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL);
+	if (!replidentfull)
+		idattrs = RelationGetIdentityKeyBitmap(rel);
 
 	/* send the attributes */
 	for (i = 0; i < desc->natts; i++)

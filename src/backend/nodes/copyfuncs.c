@@ -4150,7 +4150,6 @@ _copyRefreshMatViewStmt(const RefreshMatViewStmt *from)
 	COPY_SCALAR_FIELD(concurrent);
 	COPY_SCALAR_FIELD(skipData);
 	COPY_NODE_FIELD(relation);
-	COPY_NODE_FIELD(columns);
 
 	return newnode;
 }
@@ -4851,6 +4850,7 @@ _copyPublicationTable(const PublicationTable *from)
 
 	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(whereClause);
+	COPY_NODE_FIELD(columns);
 
 	return newnode;
 }

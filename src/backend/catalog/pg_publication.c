@@ -435,8 +435,8 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 	}
 
 	/* Translate column names to numbers and verify suitability */
-	publication_translate_columns(targetrel->relation,
-								  targetrel->columns,
+	publication_translate_columns(pri->relation,
+								  pri->columns,
 								  &natts, &attarray, &attset);
 
 	check_publication_add_relation(pub, targetrel, attset);
@@ -454,7 +454,7 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 		ObjectIdGetDatum(pubid);
 	values[Anum_pg_publication_rel_prrelid - 1] =
 		ObjectIdGetDatum(relid);
-	if (targetrel->columns)
+	if (pri->columns)
 	{
 		int2vector *prattrs;
 

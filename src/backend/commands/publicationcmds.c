@@ -1110,7 +1110,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 			{
 				oldrel = palloc(sizeof(PublicationRelInfo));
 				oldrel->whereClause = NULL;
-				pubrel->columns = NIL;
+				oldrel->columns = NIL;
 				oldrel->relation = table_open(oldrelid,
 											  ShareUpdateExclusiveLock);
 				delrels = lappend(delrels, oldrel);
@@ -1443,7 +1443,6 @@ OpenRelIdList(List *relids)
 
 		pub_rel = palloc(sizeof(PublicationRelInfo));
 		pub_rel->relation = rel;
-		pub_rel->columns = t->columns;
 
 		rels = lappend(rels, pub_rel);
 	}
@@ -1504,6 +1503,7 @@ OpenTableList(List *tables)
 		pub_rel = palloc(sizeof(PublicationRelInfo));
 		pub_rel->relation = rel;
 		pub_rel->whereClause = t->whereClause;
+		pub_rel->columns = t->columns;
 		rels = lappend(rels, pub_rel);
 		relids = lappend_oid(relids, myrelid);
 

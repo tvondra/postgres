@@ -1302,8 +1302,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					break;
 				case REORDER_BUFFER_CHANGE_DELETE:
 					logicalrep_write_delete(ctx->out, xid, targetrel,
-											old_slot, data->binary,
-											relentry->columns);
+											old_slot, data->binary);
 					break;
 				default:
 					Assert(false);

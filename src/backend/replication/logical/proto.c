@@ -791,7 +791,11 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 		if (att->attisdropped || att->attgenerated)
 			continue;
 
-		/* Ignore attributes that are not to be sent. */
+		/* Ignore attributes that are not to be sent.
+		 *
+		 * XXX Do we need the (columns != NULL) check? I don't think so, because
+		 * such bitmap has no members.
+		 */
 		if (columns != NULL && !bms_is_member(att->attnum, columns))
 			continue;
 
@@ -938,8 +942,11 @@ logicalrep_write_attrs(StringInfo out, Relation rel, Bitmapset *columns)
 
 		if (att->attisdropped || att->attgenerated)
 			continue;
+
+		/* XXX we should have a function/macro for this check */
 		if (columns != NULL && !bms_is_member(att->attnum, columns))
 			continue;
+
 		nliveatts++;
 	}
 	pq_sendint16(out, nliveatts);
@@ -952,8 +959,11 @@ logicalrep_write_attrs(StringInfo out, Relation rel, Bitmapset *columns)
 
 		if (att->attisdropped || att->attgenerated)
 			continue;
+
+		/* XXX we should have a function/macro for this check */
 		if (columns != NULL && !bms_is_member(att->attnum, columns))
 			continue;
+
 		/* REPLICA IDENTITY FULL means all columns are sent as part of key. */
 		if (replidentfull ||
 			bms_is_member(att->attnum - FirstLowInvalidHeapAttributeNumber,

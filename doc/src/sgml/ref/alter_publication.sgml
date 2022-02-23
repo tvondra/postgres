@@ -67,7 +67,8 @@ ALTER PUBLICATION <replaceable class="parameter">name</replaceable> RENAME TO <r
 
   <para>
    The <literal>ALTER TABLE ... SET COLUMNS</literal> variant allows changing
-   the set of columns that are included in the publication.
+   the set of columns that are included in the publication.  If a column list
+   is specified, it must include the replica identity columns.
   </para>
 
   <para>

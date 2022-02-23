@@ -56,14 +56,14 @@ static void publication_translate_columns(Relation targetrel, List *columns,
  * Check if relation can be in given publication and that the column
  * filter is sensible, and throws appropriate error if not.
  *
- * targetcols is the bitmapset of attribute numbers given in the column list,
- * or NULL if it was not specified.
+ * columns is the bitmapset of attribute numbers included in the column list,
+ * or NULL if no column list was specified (i.e. all columns are replicated)
  */
 static void
 check_publication_add_relation(Publication *pub, Relation targetrel,
 							   Bitmapset *columns)
 {
-	bool		replidentfull = (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL);
+	bool	replidentfull = (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL);
 
 	/* Must be a regular or partitioned table */
 	if (RelationGetForm(targetrel)->relkind != RELKIND_RELATION &&
@@ -96,17 +96,24 @@ check_publication_add_relation(Publication *pub, Relation targetrel,
 						RelationGetRelationName(targetrel)),
 				 errdetail("This operation is not supported for unlogged tables.")));
 
-	/* Make sure the column list checks out */
+	/*
+	 * If a column filter was specified, check it's sensible with respect to
+	 * replica identity - the list has to include all columns in the replica
+	 * identity.
+	 */
 	if (columns != NULL)
 	{
 		/*
-		 * Even if the user listed all columns in the column list, we cannot
-		 * allow a column list to be specified when REPLICA IDENTITY is FULL;
-		 * that would cause problems if a new column is added later, because
-		 * the new column would have to be included (because of being part of
-		 * the replica identity) but it's technically not allowed (because of
-		 * not being in the publication's column list yet).  So reject this
-		 * case altogether.
+		 *
+		 * If the relation uses REPLICA IDENTITY FULL, we can't allow any column
+		 * list even if it lists all columns of the relation - it'd cause issues
+		 * if a column is added later. The column would become part of a replica
+		 * identity, violating the rule that the column list includes the whole
+		 * replica identity. We could add the column to the column list too, of
+		 * course, but it seems rather useles - the column list would always
+		 * include all columns, i.e. as if there's no column filter.
+		 *
+		 * So just reject this case altogether.
 		 */
 		if (replidentfull)
 			ereport(ERROR,
@@ -126,6 +133,10 @@ check_publication_add_relation(Publication *pub, Relation targetrel,
  * No column can be excluded if REPLICA IDENTITY is FULL (since all the
  * columns need to be sent regardless); and in other cases, the columns in
  * the REPLICA IDENTITY cannot be left out.
+ *
+ * Then we need to cross-check the replica identity and column list. For
+ * UPDATE/DELETE we need to ensure the replica identity is a subset of the
+ * column filter. For INSERT, we don't need to check anything.
  */
 static void
 check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *columns)
@@ -564,11 +575,15 @@ publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
 									  &natts, &attarray, &attset);
 
 		/*
-		 * Make sure the column list checks out.  XXX this should occur at
-		 * caller in publicationcmds.c, not here.
+		 * Make sure the column list checks out.
+		 *
+		 * XXX this should occur at caller in publicationcmds.c, not here.
+		 * XXX How come this does not check replica identity? Should this prevent
+		 * replica identity full, just like check_publication_add_relation?
 		 */
 		check_publication_columns(pub, targetrel, attset);
 		bms_free(attset);
+
 		/* XXX "pub" is leaked here */
 
 		prattrs = buildint2vector(attarray, natts);
@@ -593,7 +608,11 @@ publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
 	heap_freetuple(copytup);
 }
 
-/* qsort comparator for attnums */
+/*
+ * qsort comparator for attnums
+ *
+ * XXX We already have compare_int16, so maybe let's share that, somehow?
+ */
 static int
 compare_int16(const void *a, const void *b)
 {
@@ -607,7 +626,8 @@ compare_int16(const void *a, const void *b)
 /*
  * Translate a list of column names to an array of attribute numbers
  * and a Bitmapset with them; verify that each attribute is appropriate
- * to have in a publication column list.  Other checks are done later;
+ * to have in a publication column list (no system or generated attributes,
+ * no duplicates).  Additional checks with replica identity are done later;
  * see check_publication_columns.
  *
  * Note that the attribute numbers are *not* offset by

@@ -878,6 +878,12 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 		}
 	}
 
+	/*
+	 * FIXME check pubactions vs. replica identity, to ensure the replica
+	 * identity is included in the column filter. Only do this for update
+	 * and delete publications. See check_publication_columns.
+	 */
+
 	/* Everything ok, form a new tuple. */
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));

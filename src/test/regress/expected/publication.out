@@ -204,8 +204,8 @@ Tables:
 CREATE TABLE testpub_tbl6 (a int, b text, c text);
 ALTER TABLE testpub_tbl6 REPLICA IDENTITY FULL;
 ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);  -- error
-ERROR:  invalid column list for publishing relation "testpub_tbl6"
-DETAIL:  Cannot specify a column list on relations with REPLICA IDENTITY FULL.
+ERROR:  cannot change column set for relation "testpub_tbl6"
+DETAIL:  Cannot specify column list on relations with REPLICA IDENTITY FULL.
 ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
 ALTER PUBLICATION testpub_fortable
   ALTER TABLE testpub_tbl6 SET COLUMNS (a, b, c);	-- error
@@ -1088,7 +1088,7 @@ ERROR:  syntax error at or near "("
 LINE 1: ...TION testpub1_forschema ADD ALL TABLES IN SCHEMA foo (a, b);
                                                                 ^
 ALTER PUBLICATION testpub1_forschema ADD ALL TABLES IN SCHEMA foo, bar (a, b);
-ERROR:  column specification not allowed for schemas
+ERROR:  column specification not allowed for schema
 LINE 1: ... testpub1_forschema ADD ALL TABLES IN SCHEMA foo, bar (a, b)...
                                                              ^
 -- cleanup pub_test1 schema for invalidation tests

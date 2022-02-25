@@ -9777,8 +9777,8 @@ PublicationObjSpec:
 				{
 					$$ = makeNode(PublicationObjSpec);
 					$$->pubobjtype = PUBLICATIONOBJ_CONTINUATION;
-					/* FIXME not sure this part works correctly */
-					if ($3)
+					/* FIXME this is a bit cumbersome */
+					if ($2 || $3)
 					{
 						/*
 						 * The OptWhereClause must be stored here but it is
@@ -9788,8 +9788,15 @@ PublicationObjSpec:
 						 */
 						$$->pubtable = makeNode(PublicationTable);
 						$$->pubtable->relation = makeRangeVar(NULL, $1, @1);
-						$$->pubtable->columns = $2;
-						$$->pubtable->whereClause = $3;
+						if ($2)
+							$$->pubtable->columns = $2;
+						else
+							$$->pubtable->columns = NIL;
+
+						if ($3)
+							$$->pubtable->whereClause = $3;
+						else
+							$$->pubtable->whereClause = NIL;
 					}
 					else
 					{

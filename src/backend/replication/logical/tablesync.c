@@ -702,7 +702,7 @@ fetch_remote_table_info(char *nspname, char *relname,
 	StringInfoData cmd;
 	TupleTableSlot *slot;
 	Oid			tableRow[] = {OIDOID, CHAROID, CHAROID, CHAROID};
-	Oid			attrRow[] = {TEXTOID, OIDOID, BOOLOID, BOOLOID};
+	Oid			attrRow[] = {INT2OID, TEXTOID, OIDOID, BOOLOID};
 	Oid			qualRow[] = {TEXTOID};
 	bool		isnull;
 	int			natt;

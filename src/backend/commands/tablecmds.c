@@ -15900,8 +15900,10 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 
 	pubs = GetRelationColumnPartialPublications(RelationGetRelid(rel));
 
+	/* cross-check the column lists and replica identity (if defined) */
 	if (stmt->identity_type == REPLICA_IDENTITY_DEFAULT)
 	{
+		/* XXX not sure what's the right check for publications here */
 		relation_mark_replica_identity(rel, stmt->identity_type, InvalidOid, true);
 		return;
 	}
@@ -15911,6 +15913,7 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 			ereport(ERROR,
 					errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					errmsg("cannot set REPLICA IDENTITY FULL when publications contain relations that specify column lists"));
+
 		relation_mark_replica_identity(rel, stmt->identity_type, InvalidOid, true);
 		return;
 	}
@@ -16011,10 +16014,10 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 	}
 
 	/*
-	 * Check partial-column publications.  For those that include UPDATE and
-	 * DELETE, we must enforce that the columns in the replica identity are
-	 * included in the column list.  For publications that only include INSERT
-	 * and TRUNCATE, we don't need to restrict the replica identity.
+	 * Check partial-column publications.  For publications that replicate UPDATE
+	 * and DELETE, we must enforce that all replica identity columns are included
+	 * in the column list.  For publications that only include INSERT/TRUNCATE,
+	 * there are no restrictions regarding replica identity and column list.
 	 */
 	foreach(lc, pubs)
 	{
@@ -16023,6 +16026,7 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 		PublicationActions actions;
 
 		GetActionsInPublication(pubid, &actions);
+
 		/* No need to worry about this one */
 		if (!actions.pubupdate && !actions.pubdelete)
 			continue;
@@ -16030,6 +16034,7 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 		published_cols =
 			GetRelationColumnListInPublication(RelationGetRelid(rel), pubid);
 
+		/* Check replica identity is subset of the column list. */
 		for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)
 		{
 			int16	attno = indexRel->rd_index->indkey.values[key];

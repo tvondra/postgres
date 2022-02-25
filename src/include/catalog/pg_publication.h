@@ -100,8 +100,6 @@ typedef struct PublicationRelInfo
 {
 	Relation	relation;
 	Node	   *whereClause;
-
-	/* List of columns to replicate (or NIL to replicate all columns) */
 	List	   *columns;
 } PublicationRelInfo;
 

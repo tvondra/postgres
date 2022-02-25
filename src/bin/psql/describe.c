@@ -5884,7 +5884,9 @@ addFooterToPublicationDesc(PQExpBuffer buf, char *footermsg,
 
 	for (i = 0; i < count; i++)
 	{
-		if (!as_schema)			/* as table */
+		if (as_schema)
+			printfPQExpBuffer(buf, "    \"%s\"", PQgetvalue(res, i, 0));
+		else
 		{
 			printfPQExpBuffer(buf, "    \"%s.%s\"", PQgetvalue(res, i, 0),
 							  PQgetvalue(res, i, 1));
@@ -5895,8 +5897,6 @@ addFooterToPublicationDesc(PQExpBuffer buf, char *footermsg,
 			if (!PQgetisnull(res, i, 2))
 				appendPQExpBuffer(buf, " WHERE %s", PQgetvalue(res, i, 2));
 		}
-		else					/* as schema */
-			printfPQExpBuffer(buf, "    \"%s\"", PQgetvalue(res, i, 0));
 
 		printTableAddFooter(cont, buf->data);
 	}

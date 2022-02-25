@@ -45,7 +45,6 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-
 static void check_publication_columns(Publication *pub, Relation targetrel,
 									  Bitmapset *columns);
 static void publication_translate_columns(Relation targetrel, List *columns,
@@ -102,8 +101,8 @@ check_publication_add_relation(Publication *pub, Relation targetrel,
 }
 
 /*
- * Enforce that the column list can only leave out columns that aren't
- * forced to be sent.
+ * Enforce that the column list can only leave out columns that don't
+ * need to be sent as part of replica identity.
  *
  * If the relation uses REPLICA IDENTITY FULL, we can't allow any column
  * list even if it lists all columns of the relation - it'd cause issues
@@ -135,6 +134,7 @@ check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *colum
 					   RelationGetRelationName(targetrel)),
 				errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
 
+	/* When replicating UPDATE/DELETE, all replica identity have to be sent. */
 	if (pub->pubactions.pubupdate || pub->pubactions.pubdelete)
 	{
 		Bitmapset  *idattrs;
@@ -144,8 +144,10 @@ check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *colum
 											 INDEX_ATTR_BITMAP_IDENTITY_KEY);
 
 		/*
-		 * We have to test membership the hard way, because the values returned by
-		 * RelationGetIndexAttrBitmap are offset.
+		 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
+		 * offset (to handle system columns the usual way), while column filter
+		 * does not use offset, so we can't do bms_is_subset(). Instead, we have
+		 * to loop over the idattrs and check all of them are in the filter.
 		 */
 		x = -1;
 		while ((x = bms_next_member(idattrs, x)) >= 0)
@@ -434,13 +436,17 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 						RelationGetRelationName(targetrel), pub->name)));
 	}
 
-	/* Translate column names to numbers and verify suitability */
-	publication_translate_columns(pri->relation,
-								  pri->columns,
+	/*
+	 * Translate column names to attnums and check the column list is valid.
+	 * We build both a bitmap and array of attnums - array is stored in the
+	 * catalog, while the bitmap is more convenient for checking.
+	 */
+	publication_translate_columns(pri->relation, pri->columns,
 								  &natts, &attarray, &attset);
 
 	check_publication_add_relation(pub, targetrel, attset);
 
+	/* Won't need the bitmapset anymore. */
 	bms_free(attset);
 
 	/* Form a tuple. */
@@ -454,6 +460,7 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 		ObjectIdGetDatum(pubid);
 	values[Anum_pg_publication_rel_prrelid - 1] =
 		ObjectIdGetDatum(relid);
+
 	if (pri->columns)
 	{
 		int2vector *prattrs;
@@ -486,6 +493,7 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 	}
 	pfree(attarray);
+
 	/* Add dependency on the publication */
 	ObjectAddressSet(referenced, PublicationRelationId, pubid);
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
@@ -551,10 +559,10 @@ publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
 	}
 	else
 	{
-		ObjectAddress myself,
-					referenced;
-		int2vector *prattrs;
-		Publication *pub;
+		ObjectAddress 	myself,
+						referenced;
+		int2vector	   *prattrs;
+		Publication	   *pub;
 
 		pub = GetPublication(((Form_pg_publication_rel) GETSTRUCT(pubreltup))->prpubid);
 

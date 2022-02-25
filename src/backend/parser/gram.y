@@ -9788,15 +9788,8 @@ PublicationObjSpec:
 						 */
 						$$->pubtable = makeNode(PublicationTable);
 						$$->pubtable->relation = makeRangeVar(NULL, $1, @1);
-						if ($2)
-							$$->pubtable->columns = $2;
-						else
-							$$->pubtable->columns = NIL;
-
-						if ($3)
-							$$->pubtable->whereClause = $3;
-						else
-							$$->pubtable->whereClause = NIL;
+						$$->pubtable->columns = $2;
+						$$->pubtable->whereClause = $3;
 					}
 					else
 					{
@@ -9849,6 +9842,7 @@ pub_obj_list: 	PublicationObjSpec
  * ALTER PUBLICATION name SET pub_obj [, ...]
  *
  * ALTER PUBLICATION name SET COLUMNS table_name (column[, ...])
+ *
  * ALTER PUBLICATION name SET COLUMNS table_name ALL
  *
  * pub_obj is one of:
@@ -17529,10 +17523,7 @@ preprocess_pubobj_list(List *pubobjspec_list, core_yyscan_t yyscanner)
 						errmsg("WHERE clause not allowed for schema"),
 						parser_errposition(pubobj->location));
 
-			/*
-			 * This can happen if a column list is specified in a continuation
-			 * for a schema entry; reject it.
-			 */
+			/* Column filter is not allowed on a schema object */
 			if (pubobj->pubtable && pubobj->pubtable->columns)
 				ereport(ERROR,
 						errcode(ERRCODE_SYNTAX_ERROR),

@@ -4090,8 +4090,15 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 		appendPQExpBufferStr(query,
 							 "SELECT tableoid, oid, prpubid, prrelid, "
 							 "pg_catalog.pg_get_expr(prqual, prrelid) AS prrelqual, "
-							 "prattrs "
-							 "FROM pg_catalog.pg_publication_rel");
+							 "(CASE\n"
+							 "  WHEN pr.prattrs IS NOT NULL THEN\n"
+							 "    (SELECT array_agg(attname)\n"
+							 "       FROM\n"
+							 "         pg_catalog.generate_series(0, pg_catalog.array_upper(pr.prattrs::pg_catalog.int2[], 1)) s,\n"
+							 "         pg_catalog.pg_attribute\n"
+							 "      WHERE attrelid = pr.prrelid AND attnum = prattrs[s])\n"
+							 "  ELSE NULL END) prattrs "
+							 "FROM pg_catalog.pg_publication_rel pr");
 	else
 		appendPQExpBufferStr(query,
 							 "SELECT tableoid, oid, prpubid, prrelid, "
@@ -4254,8 +4261,6 @@ dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo)
 
 	if (pubrinfo->pubrattrs)
 		appendPQExpBuffer(query, " (%s)", pubrinfo->pubrattrs);
-
-	appendPQExpBufferStr(query, ";\n");
 
 	if (pubrinfo->pubrelqual)
 	{

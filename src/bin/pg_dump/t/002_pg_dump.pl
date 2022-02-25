@@ -2407,12 +2407,23 @@ my %tests = (
 		},
 	},
 
-	'ALTER PUBLICATION pub1 ADD TABLE test_second_table' => {
+	'ALTER PUBLICATION pub1 ADD TABLE test_second_table WHERE (col1 = 1)' => {
 		create_order => 52,
 		create_sql =>
-		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_second_table;',
+		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_second_table WHERE (col1 = 1);',
 		regexp => qr/^
-			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_second_table;\E
+			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_second_table WHERE ((col1 = 1));\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub1 ADD TABLE test_sixth_table (col3, col2)' => {
+		create_order => 52,
+		create_sql =>
+		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_sixth_table (col3, col2);',
+		regexp => qr/^
+			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_sixth_table (col2, col3);\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -2736,6 +2747,25 @@ my %tests = (
 			\n\s+\Qcol3 boolean,\E
 			\n\s+\Qcol4 bit(5),\E
 			\n\s+\Qcol5 double precision\E
+			\n\);
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_sixth_table' => {
+		create_order => 6,
+		create_sql   => 'CREATE TABLE dump_test.test_sixth_table (
+						   col1 int,
+						   col2 text,
+						   col3 bytea
+					   );',
+		regexp => qr/^
+			\QCREATE TABLE dump_test.test_sixth_table (\E
+			\n\s+\Qcol1 integer,\E
+			\n\s+\Qcol2 text,\E
+			\n\s+\Qcol3 bytea\E
 			\n\);
 			/xm,
 		like =>

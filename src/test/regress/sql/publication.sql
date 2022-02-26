@@ -89,39 +89,8 @@ SELECT pubname, puballtables FROM pg_publication WHERE pubname = 'testpub_forall
 \d+ testpub_tbl2
 \dRp+ testpub_foralltables
 
-CREATE TABLE testpub_tbl5 (a int PRIMARY KEY, b text, c text,
-	d int generated always as (a + length(b)) stored);
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, x);  -- error
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (b, c);  -- error
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, d);  -- error
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);  -- ok
-ALTER TABLE testpub_tbl5 DROP COLUMN c;		-- no dice
-
-/* not all replica identities are good enough */
-CREATE UNIQUE INDEX testpub_tbl5_b_key ON testpub_tbl5 (b, c);
-ALTER TABLE testpub_tbl5 ALTER b SET NOT NULL, ALTER c SET NOT NULL;
-ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key; -- nope
-ALTER PUBLICATION testpub_fortable DROP TABLE testpub_tbl5;
-
-ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key; -- ok, but ...
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);	-- no dice
-
-/* But if upd/del are not published, it works OK */
-SET client_min_messages = 'ERROR';
-CREATE PUBLICATION testpub_table_ins WITH (publish = 'insert, truncate');
-RESET client_min_messages;
-ALTER PUBLICATION testpub_table_ins ADD TABLE testpub_tbl5 (a);		-- ok
-\dRp+ testpub_table_ins
-
-CREATE TABLE testpub_tbl6 (a int, b text, c text);
-ALTER TABLE testpub_tbl6 REPLICA IDENTITY FULL;
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);  -- error
-ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
-ALTER PUBLICATION testpub_fortable
-  ALTER TABLE testpub_tbl6 SET COLUMNS (a, b, c);	-- error
-
-DROP TABLE testpub_tbl2, testpub_tbl5, testpub_tbl6;
-DROP PUBLICATION testpub_foralltables, testpub_fortable, testpub_forschema, testpub_table_ins;
+DROP TABLE testpub_tbl2;
+DROP PUBLICATION testpub_foralltables, testpub_fortable, testpub_forschema;
 
 CREATE TABLE testpub_tbl3 (a int);
 CREATE TABLE testpub_tbl3a (b text) INHERITS (testpub_tbl3);
@@ -403,6 +372,45 @@ DROP PUBLICATION testpub6;
 DROP TABLE rf_tbl_abcd_pk;
 DROP TABLE rf_tbl_abcd_nopk;
 DROP TABLE rf_tbl_abcd_part_pk;
+-- ======================================================
+
+-- test for column filters
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_fortable FOR TABLE testpub_tbl1;
+RESET client_min_messages;
+CREATE TABLE testpub_tbl5 (a int PRIMARY KEY, b text, c text,
+	d int generated always as (a + length(b)) stored);
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, x);  -- error
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (b, c);  -- error
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, d);  -- error
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);  -- ok
+ALTER TABLE testpub_tbl5 DROP COLUMN c;		-- no dice
+
+/* not all replica identities are good enough */
+CREATE UNIQUE INDEX testpub_tbl5_b_key ON testpub_tbl5 (b, c);
+ALTER TABLE testpub_tbl5 ALTER b SET NOT NULL, ALTER c SET NOT NULL;
+ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key; -- nope
+ALTER PUBLICATION testpub_fortable DROP TABLE testpub_tbl5;
+
+ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key; -- ok, but ...
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);	-- no dice
+
+/* But if upd/del are not published, it works OK */
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_table_ins WITH (publish = 'insert, truncate');
+RESET client_min_messages;
+ALTER PUBLICATION testpub_table_ins ADD TABLE testpub_tbl5 (a);		-- ok
+\dRp+ testpub_table_ins
+
+CREATE TABLE testpub_tbl6 (a int, b text, c text);
+ALTER TABLE testpub_tbl6 REPLICA IDENTITY FULL;
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);  -- error
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
+ALTER PUBLICATION testpub_fortable
+  ALTER TABLE testpub_tbl6 SET COLUMNS (a, b, c);	-- error
+
+DROP TABLE testpub_tbl5, testpub_tbl6;
+DROP PUBLICATION testpub_table_ins, testpub_fortable;
 -- ======================================================
 
 -- Test cache invalidation FOR ALL TABLES publication

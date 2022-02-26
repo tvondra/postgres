@@ -747,7 +747,7 @@ fetch_remote_table_info(char *nspname, char *relname,
 	Assert(!isnull);
 	lrel->relkind = DatumGetChar(slot_getattr(slot, 3, &isnull));
 	Assert(!isnull);
-	am_partition = DatumGetBool(slot_getattr(slot, 4, &isnull));
+	am_partition = (DatumGetChar(slot_getattr(slot, 4, &isnull)) == 't');
 	Assert(!isnull);
 
 	ExecDropSingleTupleTableSlot(slot);

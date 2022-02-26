@@ -234,15 +234,19 @@ CREATE COLLATION user_collation FROM "C";
 ALTER PUBLICATION testpub5 ADD TABLE testpub_rf_tbl1 WHERE (b < '2' COLLATE user_collation);
 -- ok - NULLIF is allowed
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE (NULLIF(1,2) = a);
+\d+ testpub_rf_tbl1
 -- ok - built-in operators are allowed
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE (a IS NULL);
+\d+ testpub_rf_tbl1
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE ((a > 5) IS FALSE);
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE (a IS DISTINCT FROM 5);
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE ((a, a + 1) < (2, 3));
 -- ok - built-in type coercions between two binary compatible datatypes are allowed
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl1 WHERE (b::varchar < '2');
+\d+ testpub_rf_tbl1
 -- ok - immutable built-in functions are allowed
 ALTER PUBLICATION testpub5 SET TABLE testpub_rf_tbl4 WHERE (length(g) < 6);
+\d+ testpub_rf_tbl1
 -- fail - user-defined types are not allowed
 CREATE TYPE rf_bug_status AS ENUM ('new', 'open', 'closed');
 CREATE TABLE rf_bug (id serial, description text, status rf_bug_status);

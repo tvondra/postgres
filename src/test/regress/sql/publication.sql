@@ -427,8 +427,37 @@ ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, b);
 ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, c);
 \d+ testpub_tbl7
 
-DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7;
-DROP PUBLICATION testpub_table_ins, testpub_fortable;
+-- column filter for partitioned tables has to cover replica identities for
+-- all child relations
+CREATE TABLE testpub_tbl8 (a int, b text, c text) PARTITION BY HASH (a);
+-- first partition has replica identity "a"
+CREATE TABLE testpub_tbl8_0 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 0);
+ALTER TABLE testpub_tbl8_0 ADD PRIMARY KEY (a);
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY USING INDEX testpub_tbl8_0_pkey;
+-- second partition has replica identity "b"
+CREATE TABLE testpub_tbl8_1 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 1);
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (b);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+
+-- ok: column filter covers both "a" and "b"
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_col_filter FOR TABLE testpub_tbl8 (a, b);
+RESET client_min_messages;
+
+-- ok: the same thing, but try plain ADD TABLE
+ALTER PUBLICATION testpub_col_filter DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, b);
+
+-- failure: column filter does not cover replica identity for the second partition
+ALTER PUBLICATION testpub_col_filter DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
+
+-- failure: one of the partitions has REPLICA IDENTITY FULL
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
+
+DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8;
+DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_col_filter;
 -- ======================================================
 
 -- Test cache invalidation FOR ALL TABLES publication

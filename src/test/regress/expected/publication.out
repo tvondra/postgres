@@ -677,11 +677,11 @@ Tables:
 CREATE TABLE testpub_tbl6 (a int, b text, c text);
 ALTER TABLE testpub_tbl6 REPLICA IDENTITY FULL;
 ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);
-ERROR:  cannot change column set for relation "testpub_tbl6"
+ERROR:  invalid column list for publishing relation "testpub_tbl6"
 DETAIL:  Cannot specify column list on relations with REPLICA IDENTITY FULL.
 ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
 ALTER PUBLICATION testpub_fortable ALTER TABLE testpub_tbl6 SET COLUMNS (a, b, c);
-ERROR:  cannot change column set for relation "testpub_tbl6"
+ERROR:  invalid column list for publishing relation "testpub_tbl6"
 DETAIL:  Cannot specify column list on relations with REPLICA IDENTITY FULL.
 -- make sure changing the column filter is updated in SET TABLE
 CREATE TABLE testpub_tbl7 (a int primary key, b text, c text);
@@ -726,8 +726,36 @@ Indexes:
 Publications:
     "testpub_fortable" (a, c)
 
-DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7;
-DROP PUBLICATION testpub_table_ins, testpub_fortable;
+-- column filter for partitioned tables has to cover replica identities for
+-- all child relations
+CREATE TABLE testpub_tbl8 (a int, b text, c text) PARTITION BY HASH (a);
+-- first partition has replica identity "a"
+CREATE TABLE testpub_tbl8_0 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 0);
+ALTER TABLE testpub_tbl8_0 ADD PRIMARY KEY (a);
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY USING INDEX testpub_tbl8_0_pkey;
+-- second partition has replica identity "b"
+CREATE TABLE testpub_tbl8_1 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 1);
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (b);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+-- ok: column filter covers both "a" and "b"
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_col_filter FOR TABLE testpub_tbl8 (a, b);
+RESET client_min_messages;
+-- ok: the same thing, but try plain ADD TABLE
+ALTER PUBLICATION testpub_col_filter DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, b);
+-- failure: column filter does not cover replica identity for the second partition
+ALTER PUBLICATION testpub_col_filter DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
+ERROR:  invalid column list for publishing relation "testpub_tbl8"
+DETAIL:  All columns in REPLICA IDENTITY must be present in the column list.
+-- failure: one of the partitions has REPLICA IDENTITY FULL
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
+ERROR:  invalid column list for publishing relation "testpub_tbl8"
+DETAIL:  Cannot specify column list on relations with REPLICA IDENTITY FULL.
+DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8;
+DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_col_filter;
 -- ======================================================
 -- Test cache invalidation FOR ALL TABLES publication
 SET client_min_messages = 'ERROR';

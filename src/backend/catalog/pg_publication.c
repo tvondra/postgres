@@ -119,6 +119,10 @@ check_publication_add_relation(Publication *pub, Relation targetrel,
 static void
 check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *columns)
 {
+	List	   *relids;
+	Oid			relid;
+	ListCell   *lc;
+
 	/*
 	 * If there is no column list, we treat it as if the list contains all columns. In
 	 * which case there's nothing to check so we're done.
@@ -126,41 +130,60 @@ check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *colum
 	if (!columns)
 		return;
 
-	/* With REPLICA IDENTITY FULL no column filter is allowed. */
-	if (targetrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
-		ereport(ERROR,
-				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				errmsg("cannot change column set for relation \"%s\"",
-					   RelationGetRelationName(targetrel)),
-				errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
+	relid = RelationGetRelid(targetrel);
+	relids = find_all_inheritors(relid, NoLock, NULL);
 
-	/* When replicating UPDATE/DELETE, all replica identity have to be sent. */
-	if (pub->pubactions.pubupdate || pub->pubactions.pubdelete)
+	/* We only care about replica identity on leaf partitions. */
+	foreach(lc, relids)
 	{
-		Bitmapset  *idattrs;
-		int			x;
+		Oid			partOid = lfirst_oid(lc);
 
-		idattrs = RelationGetIndexAttrBitmap(targetrel,
-											 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+		/* XXX Do we need to lock this? */
+		Relation	partrel = relation_open(partOid, AccessShareLock);
 
-		/*
-		 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
-		 * offset (to handle system columns the usual way), while column filter
-		 * does not use offset, so we can't do bms_is_subset(). Instead, we have
-		 * to loop over the idattrs and check all of them are in the filter.
-		 */
-		x = -1;
-		while ((x = bms_next_member(idattrs, x)) >= 0)
+		/* ignore non-leaf relations */
+		if (partrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+			goto cleanup;
+
+		/* With REPLICA IDENTITY FULL no column filter is allowed. */
+		if (partrel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("invalid column list for publishing relation \"%s\"",
+						   RelationGetRelationName(targetrel)),	/* XXX maybe report the partition? */
+					errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
+
+		/* When replicating UPDATE/DELETE, the whole replica identity has to be sent. */
+		if (pub->pubactions.pubupdate || pub->pubactions.pubdelete)
 		{
-			if (!bms_is_member(x + FirstLowInvalidHeapAttributeNumber, columns))
-				ereport(ERROR,
-						errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-						errmsg("invalid column list for publishing relation \"%s\"",
-							   RelationGetRelationName(targetrel)),
-						errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
+			Bitmapset  *idattrs;
+			int			x;
+
+			idattrs = RelationGetIndexAttrBitmap(partrel,
+												 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+			/*
+			 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
+			 * offset (to handle system columns the usual way), while column filter
+			 * does not use offset, so we can't do bms_is_subset(). Instead, we have
+			 * to loop over the idattrs and check all of them are in the filter.
+			 */
+			x = -1;
+			while ((x = bms_next_member(idattrs, x)) >= 0)
+			{
+				if (!bms_is_member(x + FirstLowInvalidHeapAttributeNumber, columns))
+					ereport(ERROR,
+							errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+							errmsg("invalid column list for publishing relation \"%s\"",
+								   RelationGetRelationName(targetrel)),	/* XXX maybe report the partition? */
+							errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
+			}
+
+			bms_free(idattrs);
 		}
 
-		bms_free(idattrs);
+cleanup:
+		relation_close(partrel, AccessShareLock);
 	}
 }
 

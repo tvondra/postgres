@@ -1056,23 +1056,54 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 			PublicationRelInfo *oldrel;
 			bool		found = false;
 			HeapTuple	rftuple;
-			bool		rfisnull = true;
 			Node	   *oldrelwhereclause = NULL;
+			Bitmapset  *oldcolumns = NULL;
 
 			/* look up the cache for the old relmap */
 			rftuple = SearchSysCache2(PUBLICATIONRELMAP,
 									  ObjectIdGetDatum(oldrelid),
 									  ObjectIdGetDatum(pubid));
 
+			/*
+			 * See if the existing relation currently has a WHERE clause or a
+			 * column filter. We need to compare those too.
+			 */
 			if (HeapTupleIsValid(rftuple))
 			{
+				bool		isnull = true;
 				Datum		whereClauseDatum;
+				Datum		columnListDatum;
 
+				/* Load the WHERE clause for this table. */
 				whereClauseDatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
 												   Anum_pg_publication_rel_prqual,
-												   &rfisnull);
-				if (!rfisnull)
+												   &isnull);
+				if (!isnull)
 					oldrelwhereclause = stringToNode(TextDatumGetCString(whereClauseDatum));
+
+				/* Transform the int2vector column list to a bitmap. */
+				columnListDatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
+												   Anum_pg_publication_rel_prattrs,
+												   &isnull);
+
+				/*
+				 * XXX Maybe make this a separate function. We do this on
+				 * multiple places.
+				 */
+				if (!isnull)
+				{
+					ArrayType  *arr;
+					int			nelems;
+					int16	   *elems;
+
+					arr = DatumGetArrayTypeP(columnListDatum);
+					nelems = ARR_DIMS(arr)[0];
+					elems = (int16 *) ARR_DATA_PTR(arr);
+
+					/* XXX is there a danger of memory leak here? beware */
+					for (int i = 0; i < nelems; i++)
+						oldcolumns = bms_add_member(oldcolumns, elems[i]);
+				}
 
 				ReleaseSysCache(rftuple);
 			}
@@ -1080,8 +1111,30 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 			foreach(newlc, rels)
 			{
 				PublicationRelInfo *newpubrel;
+				Oid					newrelid;
+				Bitmapset		   *newcolumns = NULL;
 
 				newpubrel = (PublicationRelInfo *) lfirst(newlc);
+				newrelid = RelationGetRelid(newpubrel->relation);
+
+				/*
+				 * If the new publication has column filter, transform it to
+				 * a bitmap too.
+				 */
+				if (newpubrel->columns)
+				{
+					ListCell   *lc;
+
+					foreach(lc, newpubrel->columns)
+					{
+						char	   *colname = strVal(lfirst(lc));
+						AttrNumber	attnum = get_attnum(newrelid, colname);
+
+						/* no checks needed here, that happens elsewhere */
+
+						newcolumns = bms_add_member(newcolumns, attnum);
+					}
+				}
 
 				/*
 				 * Check if any of the new set of relations matches with the
@@ -1091,7 +1144,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 				 */
 				if (RelationGetRelid(newpubrel->relation) == oldrelid)
 				{
-					if (equal(oldrelwhereclause, newpubrel->whereClause))
+					if (equal(oldrelwhereclause, newpubrel->whereClause) &&
+						bms_equal(oldcolumns, newcolumns))
 					{
 						found = true;
 						break;

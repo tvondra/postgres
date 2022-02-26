@@ -416,7 +416,18 @@ ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);
 ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
 ALTER PUBLICATION testpub_fortable ALTER TABLE testpub_tbl6 SET COLUMNS (a, b, c);
 
-DROP TABLE testpub_tbl5, testpub_tbl6;
+-- make sure changing the column filter is updated in SET TABLE
+CREATE TABLE testpub_tbl7 (a int primary key, b text, c text);
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl7 (a, b);
+\d+ testpub_tbl7
+-- ok: we'll skip this table
+ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, b);
+\d+ testpub_tbl7
+-- ok: update the column filter
+ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, c);
+\d+ testpub_tbl7
+
+DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7;
 DROP PUBLICATION testpub_table_ins, testpub_fortable;
 -- ======================================================
 

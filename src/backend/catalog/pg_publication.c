@@ -628,6 +628,8 @@ compare_int16(const void *a, const void *b)
  * Note that the attribute numbers are *not* offset by
  * FirstLowInvalidHeapAttributeNumber; system columns are forbidden so this
  * is okay.
+ *
+ * XXX Should this detect duplicate columns?
  */
 static void
 publication_translate_columns(Relation targetrel, List *columns, int *natts,

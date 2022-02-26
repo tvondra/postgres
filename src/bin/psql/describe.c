@@ -2880,6 +2880,7 @@ describeOneTableDetails(const char *schemaname,
 				printfPQExpBuffer(&buf,
 								  "SELECT pubname\n"
 								  "		, NULL\n"
+								  "		, NULL\n"
 								  "FROM pg_catalog.pg_publication p\n"
 								  "		JOIN pg_catalog.pg_publication_namespace pn ON p.oid = pn.pnpubid\n"
 								  "		JOIN pg_catalog.pg_class pc ON pc.relnamespace = pn.pnnspid\n"
@@ -2887,12 +2888,19 @@ describeOneTableDetails(const char *schemaname,
 								  "UNION\n"
 								  "SELECT pubname\n"
 								  "		, pg_get_expr(pr.prqual, c.oid)\n"
+								  "		, (CASE WHEN pr.prattrs IS NOT NULL THEN\n"
+								  "			(SELECT string_agg(attname, ', ')\n"
+								  "			  FROM pg_catalog.generate_series(0, pg_catalog.array_upper(pr.prattrs::pg_catalog.int2[], 1)) s,\n"
+								  "				   pg_catalog.pg_attribute\n"
+								  "			 WHERE attrelid = pr.prrelid AND attnum = prattrs[s])\n"
+								  "		   ELSE NULL END) "
 								  "FROM pg_catalog.pg_publication p\n"
 								  "		JOIN pg_catalog.pg_publication_rel pr ON p.oid = pr.prpubid\n"
 								  "		JOIN pg_catalog.pg_class c ON c.oid = pr.prrelid\n"
 								  "WHERE pr.prrelid = '%s'\n"
 								  "UNION\n"
 								  "SELECT pubname\n"
+								  "		, NULL\n"
 								  "		, NULL\n"
 								  "FROM pg_catalog.pg_publication p\n"
 								  "WHERE p.puballtables AND pg_catalog.pg_relation_is_publishable('%s')\n"
@@ -2904,11 +2912,13 @@ describeOneTableDetails(const char *schemaname,
 				printfPQExpBuffer(&buf,
 								  "SELECT pubname\n"
 								  "		, NULL\n"
+								  "		, NULL\n"
 								  "FROM pg_catalog.pg_publication p\n"
 								  "JOIN pg_catalog.pg_publication_rel pr ON p.oid = pr.prpubid\n"
 								  "WHERE pr.prrelid = '%s'\n"
 								  "UNION ALL\n"
 								  "SELECT pubname\n"
+								  "		, NULL\n"
 								  "		, NULL\n"
 								  "FROM pg_catalog.pg_publication p\n"
 								  "WHERE p.puballtables AND pg_catalog.pg_relation_is_publishable('%s')\n"
@@ -2930,6 +2940,11 @@ describeOneTableDetails(const char *schemaname,
 			{
 				printfPQExpBuffer(&buf, "    \"%s\"",
 								  PQgetvalue(result, i, 0));
+
+				/* column filter (if any) */
+				if (!PQgetisnull(result, i, 2))
+					appendPQExpBuffer(&buf, " (%s)",
+									  PQgetvalue(result, i, 2));
 
 				/* row filter (if any) */
 				if (!PQgetisnull(result, i, 1))

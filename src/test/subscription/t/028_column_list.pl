@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 31;
+use Test::More tests => 23;
 
 # setup
 
@@ -82,7 +82,8 @@ $node_subscriber->safe_psql('postgres', qq(
 # column lists
 $node_publisher->safe_psql('postgres', qq(
 	CREATE PUBLICATION pub1
-	FOR TABLE tab1 (a, "B"), tab3 ("a'", "c'"), test_part (a, b), tab4 (a, b, d);
+	FOR TABLE tab1 (a, "B"), tab3 ("a'", "c'"), test_part (a, b), tab4 (a, b, d)
+	WITH (publish_via_partition_root = 'true');
 ));
 
 # check that we got the right prattrs values for the publication in the
@@ -458,7 +459,7 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM tab7 ORDER BY a"),
 # a different RI, but a column filter not covering all those RI.
 
 $node_publisher->safe_psql('postgres', qq(
-	CREATE TABLE test_part_a (a int, b int) PARTITION BY LIST (a);
+	CREATE TABLE test_part_a (a int, b int, c int) PARTITION BY LIST (a);
 
 	CREATE TABLE test_part_a_1 PARTITION OF test_part_a FOR VALUES IN (1);
 	ALTER TABLE test_part_a_1 ADD PRIMARY KEY (a);
@@ -469,9 +470,9 @@ $node_publisher->safe_psql('postgres', qq(
 	ALTER TABLE test_part_a_2 REPLICA IDENTITY USING INDEX test_part_a_2_pkey;
 ));
 
-# do the same thing on the subscriber
+# do the same thing on the subscriber (with the opposite column order)
 $node_subscriber->safe_psql('postgres', qq(
-	CREATE TABLE test_part_a (a int, b int) PARTITION BY LIST (a);
+	CREATE TABLE test_part_a (b int, a int) PARTITION BY LIST (a);
 
 	CREATE TABLE test_part_a_1 PARTITION OF test_part_a FOR VALUES IN (1);
 	ALTER TABLE test_part_a_1 ADD PRIMARY KEY (a);
@@ -485,7 +486,9 @@ $node_subscriber->safe_psql('postgres', qq(
 # create a publication replicating just the column "a", which is not enough
 # for the second partition
 $node_publisher->safe_psql('postgres', qq(
-	CREATE PUBLICATION pub6 FOR TABLE test_part_a (a) WITH (publish_via_partition_root = false);
+	CREATE PUBLICATION pub6 FOR TABLE test_part_a (b, a) WITH (publish_via_partition_root = true);
+	ALTER PUBLICATION pub6 ADD TABLE test_part_a_1 (a);
+	ALTER PUBLICATION pub6 ADD TABLE test_part_a_2 (b);
 ));
 
 # add the publication to our subscription, wait for sync to complete
@@ -496,16 +499,15 @@ $node_subscriber->safe_psql('postgres', qq(
 $node_publisher->wait_for_catchup('sub1');
 
 $node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_part_a VALUES (1, 1);
-	-- FIXME: This fails, because it does not send (b) as needed for the RI
-	-- INSERT INTO test_part_a VALUES (2, 2);
+	INSERT INTO test_part_a VALUES (1, 3);
+	INSERT INTO test_part_a VALUES (2, 4);
 ));
 
 $node_publisher->wait_for_catchup('sub1');
 
-is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_a ORDER BY a, b"),
-   qq(1|1
-2|2),
+is($node_subscriber->safe_psql('postgres',"SELECT a, b FROM test_part_a ORDER BY a, b"),
+   qq(1|3
+2|4),
    'partitions with different replica identities not replicated correctly');
 
 
@@ -541,7 +543,7 @@ $node_subscriber->safe_psql('postgres', qq(
 # create a publication replicating both columns, which is sufficient for
 # both partitions
 $node_publisher->safe_psql('postgres', qq(
-	CREATE PUBLICATION pub7 FOR TABLE test_part_b (a, b) WITH (publish_via_partition_root = false);
+	CREATE PUBLICATION pub7 FOR TABLE test_part_b (a, b) WITH (publish_via_partition_root = true);
 ));
 
 # add the publication to our subscription, wait for sync to complete
@@ -563,34 +565,13 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_b ORDER BY a,
 2|2),
    'partitions with different replica identities not replicated correctly');
 
-# now alter the publication to only replicate column "a"
-$node_publisher->safe_psql('postgres', qq(
-	ALTER PUBLICATION pub7 ALTER TABLE test_part_b SET COLUMNS (a);
-));
-
-# now retry the inserts
-$node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_part_b VALUES (3, 2);
-	-- FIXME: This fails, because it does not send (b) as needed for the RI
-	-- INSERT INTO test_part_b VALUES (4, 3);
-));
-
-$node_publisher->wait_for_catchup('sub1');
-
-is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_b ORDER BY a, b"),
-   qq(1|1
-2|2
-3|2
-4|3),
-   'partitions with different replica identities not replicated correctly');
-
 
 # TEST: This time start with a column filter covering RI for all partitions,
 # but then update RI for one of the partitions to not be covered by the
 # column filter anymore.
 
 $node_publisher->safe_psql('postgres', qq(
-	CREATE TABLE test_part_c (a int, b int) PARTITION BY LIST (a);
+	CREATE TABLE test_part_c (a int, b int, c int) PARTITION BY LIST (a);
 
 	CREATE TABLE test_part_c_1 PARTITION OF test_part_c FOR VALUES IN (1,3);
 	ALTER TABLE test_part_c_1 ADD PRIMARY KEY (a);
@@ -603,21 +584,24 @@ $node_publisher->safe_psql('postgres', qq(
 
 # do the same thing on the subscriber
 $node_subscriber->safe_psql('postgres', qq(
-	CREATE TABLE test_part_c (a int, b int) PARTITION BY LIST (a);
+	CREATE TABLE test_part_c (a int, b int, c int) PARTITION BY LIST (a);
 
 	CREATE TABLE test_part_c_1 PARTITION OF test_part_c FOR VALUES IN (1,3);
 	ALTER TABLE test_part_c_1 ADD PRIMARY KEY (a);
 	ALTER TABLE test_part_c_1 REPLICA IDENTITY USING INDEX test_part_c_1_pkey;
 
 	CREATE TABLE test_part_c_2 PARTITION OF test_part_c FOR VALUES IN (2,4);
-	ALTER TABLE test_part_c_2 ADD PRIMARY KEY (a);
+	ALTER TABLE test_part_c_2 ADD PRIMARY KEY (b);
 	ALTER TABLE test_part_c_2 REPLICA IDENTITY USING INDEX test_part_c_2_pkey;
 ));
 
-# create a publication replicating both columns, which is sufficient for
-# both partitions
+# create a publication replicating data through partition root, with a column
+# filter on the root, and then add the partitions one by one with separate
+# column filters (but those are not applied)
 $node_publisher->safe_psql('postgres', qq(
-	CREATE PUBLICATION pub8 FOR TABLE test_part_c (a) WITH (publish_via_partition_root = false);
+	CREATE PUBLICATION pub8 FOR TABLE test_part_c (a, b) WITH (publish_via_partition_root = true);
+	ALTER PUBLICATION pub8 ADD TABLE test_part_c_1 (a);
+	ALTER PUBLICATION pub8 ADD TABLE test_part_c_2 (b);
 ));
 
 # add the publication to our subscription, wait for sync to complete
@@ -628,15 +612,15 @@ $node_subscriber->safe_psql('postgres', qq(
 $node_publisher->wait_for_catchup('sub1');
 
 $node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_part_c VALUES (1, 1);
-	INSERT INTO test_part_c VALUES (2, 2);
+	INSERT INTO test_part_c VALUES (1, 3, 5);
+	INSERT INTO test_part_c VALUES (2, 4, 6);
 ));
 
 $node_publisher->wait_for_catchup('sub1');
 
 is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_c ORDER BY a, b"),
-   qq(1|1
-2|2),
+   qq(1|3|
+2|4|),
    'partitions with different replica identities not replicated correctly');
 
 # now alter the publication to only replicate column "a"
@@ -647,18 +631,70 @@ $node_publisher->safe_psql('postgres', qq(
 
 # now retry the inserts
 $node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_part_c VALUES (3, 2);
-	-- FIXME: This fails, because it does not send (b) as needed for the RI
-	-- INSERT INTO test_part_c VALUES (4, 3);
+	INSERT INTO test_part_c VALUES (3, 5);
+	INSERT INTO test_part_c VALUES (4, 6);
 ));
 
 $node_publisher->wait_for_catchup('sub1');
 
 is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_c ORDER BY a, b"),
-   qq(1|1
-2|2
-3|2
-4|3),
+   qq(1|3|
+2|4|
+3|5|
+4|6|),
+   'partitions with different replica identities not replicated correctly');
+
+
+# create a publication not replicating data through partition root, without
+# a column filter on the root, and then add the partitions one by one with
+# separate column filters
+$node_publisher->safe_psql('postgres', qq(
+	DROP PUBLICATION pub8;
+	CREATE PUBLICATION pub8 FOR TABLE test_part_c WITH (publish_via_partition_root = false);
+	ALTER PUBLICATION pub8 ADD TABLE test_part_c_1 (a);
+	ALTER PUBLICATION pub8 ADD TABLE test_part_c_2 (b);
+));
+
+# add the publication to our subscription, wait for sync to complete
+$node_subscriber->safe_psql('postgres', qq(
+	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+	TRUNCATE test_part_c;
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+$node_publisher->safe_psql('postgres', qq(
+	TRUNCATE test_part_c;
+	INSERT INTO test_part_c VALUES (1, 3, 5);
+	INSERT INTO test_part_c VALUES (2, 4, 6);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_c ORDER BY a, b"),
+   qq(1||
+|4|),
+   'partitions with different replica identities not replicated correctly');
+
+# now alter the publication to only replicate column "a"
+$node_publisher->safe_psql('postgres', qq(
+	ALTER TABLE test_part_c_2 DROP CONSTRAINT test_part_c_2_pkey;
+	ALTER TABLE test_part_c_2 ADD PRIMARY KEY (a);
+));
+
+# now retry the inserts
+$node_publisher->safe_psql('postgres', qq(
+	INSERT INTO test_part_c VALUES (3, 5);
+	INSERT INTO test_part_c VALUES (4, 6);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_c ORDER BY a, b"),
+   qq(1||
+|4|
+3||
+|6|),
    'partitions with different replica identities not replicated correctly');
 
 
@@ -690,7 +726,7 @@ $node_subscriber->safe_psql('postgres', qq(
 # create a publication replicating both columns, which is sufficient for
 # both partitions
 $node_publisher->safe_psql('postgres', qq(
-	CREATE PUBLICATION pub9 FOR TABLE test_part_d (a) WITH (publish_via_partition_root = false);
+	CREATE PUBLICATION pub9 FOR TABLE test_part_d (a) WITH (publish_via_partition_root = true);
 ));
 
 # add the publication to our subscription, wait for sync to complete
@@ -707,7 +743,7 @@ $node_publisher->safe_psql('postgres', qq(
 $node_publisher->wait_for_catchup('sub1');
 
 is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_part_d ORDER BY a, b"),
-   qq(1|1),
+   qq(1|),
    'partitions with different replica identities not replicated correctly');
 
 # now add the second partition, with a mismatching RI
@@ -817,7 +853,6 @@ $node_publisher->safe_psql('postgres', qq(
 	CREATE TABLE test_root_2 PARTITION OF test_root FOR VALUES FROM (10) TO (20);
 
 	CREATE PUBLICATION pub_root_true FOR TABLE test_root (a) WITH (publish_via_partition_root = true);
-	CREATE PUBLICATION pub_root_false FOR TABLE test_root (a) WITH (publish_via_partition_root = false);
 ));
 
 $node_subscriber->safe_psql('postgres', qq(
@@ -842,46 +877,7 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_root ORDER BY a, b
 10||),
    'publication via partition root applies column filter');
 
-# now switch to using the publication with (publish_via_partition_root = false),
-# which should not apply the column filter
-$node_subscriber->safe_psql('postgres', qq(
-	ALTER SUBSCRIPTION sub1 DROP PUBLICATION pub_root_true;
-	ALTER SUBSCRIPTION sub1 ADD PUBLICATION pub_root_false;
-));
+$node_subscriber->stop('fast');
+$node_publisher->stop('fast');
 
-$node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_root VALUES (2, 4, 6);
-	INSERT INTO test_root VALUES (11, 22, 33);
-));
-
-$node_publisher->wait_for_catchup('sub1');
-
-is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_root ORDER BY a, b, c"),
-   qq(1||
-2|4|6
-10||
-11|22|33),
-   'publication via partition root applies column filter');
-
-# and finally add both publications to the subscription - in this case we
-# should not apply the column filter either, because the "false" case is
-# handled as column filter with all columns
-$node_subscriber->safe_psql('postgres', qq(
-	ALTER SUBSCRIPTION sub1 ADD PUBLICATION pub_root_true;
-));
-
-$node_publisher->safe_psql('postgres', qq(
-	INSERT INTO test_root VALUES (3, 6, 9);
-	INSERT INTO test_root VALUES (12, 24, 36);
-));
-
-$node_publisher->wait_for_catchup('sub1');
-
-is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_root ORDER BY a, b, c"),
-   qq(1||
-2|4|6
-3|6|9
-10||
-11|22|33
-12|24|36),
-   'publication via partition root applies column filter');
+done_testing();

@@ -740,7 +740,7 @@ ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (b);
 ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
 -- ok: column filter covers both "a" and "b"
 SET client_min_messages = 'ERROR';
-CREATE PUBLICATION testpub_col_filter FOR TABLE testpub_tbl8 (a, b);
+CREATE PUBLICATION testpub_col_filter FOR TABLE testpub_tbl8 (a, b) WITH (publish_via_partition_root = 'true');
 RESET client_min_messages;
 -- ok: the same thing, but try plain ADD TABLE
 ALTER PUBLICATION testpub_col_filter DROP TABLE testpub_tbl8;

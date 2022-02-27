@@ -608,6 +608,45 @@ TransformPubWhereClauses(List *tables, const char *queryString,
 	}
 }
 
+
+/*
+ * Transform the publication column lists expression for all the relations
+ * in the list.
+ *
+ * XXX The name is a bit misleading, because we don't really transform
+ * anything here - we merely check the column list is compatible with the
+ * definition of the publication (with publish_via_partition_root=false)
+ * we only allow filters on the leaf relations. So maybe rename it?
+ */
+static void
+TransformPubColumnList(List *tables, const char *queryString,
+					   bool pubviaroot)
+{
+	ListCell   *lc;
+
+	foreach(lc, tables)
+	{
+		PublicationRelInfo *pri = (PublicationRelInfo *) lfirst(lc);
+
+		if (pri->columns == NIL)
+			continue;
+
+		/*
+		 * If the publication doesn't publish changes via the root partitioned
+		 * table, the partition's column filter will be used. So disallow using
+		 * the column list on partitioned table in this case.
+		 */
+		if (!pubviaroot &&
+			pri->relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("cannot use publication column list for relation \"%s\"",
+							RelationGetRelationName(pri->relation)),
+					 errdetail("column list cannot be used for a partitioned table when %s is false.",
+							   "publish_via_partition_root")));
+	}
+}
+
 /*
  * Create new publication.
  */
@@ -723,6 +762,9 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 
 			TransformPubWhereClauses(rels, pstate->p_sourcetext,
 									 publish_via_partition_root);
+
+			TransformPubColumnList(rels, pstate->p_sourcetext,
+								   publish_via_partition_root);
 
 			PublicationAddTables(puboid, rels, true, NULL);
 			CloseTableList(rels);
@@ -1021,6 +1063,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 
 		TransformPubWhereClauses(rels, queryString, pubform->pubviaroot);
 
+		TransformPubColumnList(rels, queryString, pubform->pubviaroot);
+
 		PublicationAddTables(pubid, rels, false, stmt);
 	}
 	else if (stmt->action == AP_DropObjects)
@@ -1044,6 +1088,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 											  PUBLICATIONOBJ_TABLE);
 
 		TransformPubWhereClauses(rels, queryString, pubform->pubviaroot);
+
+		TransformPubColumnList(rels, queryString, pubform->pubviaroot);
 
 		/*
 		 * To recreate the relation list for the publication, look for

@@ -485,8 +485,11 @@ ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
 ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_0 FOR VALUES WITH (modulus 2, remainder 0);
 -- failure: second partition has replica identity (c), which si not in column filter
 ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_1 FOR VALUES WITH (modulus 2, remainder 1);
+-- failure: changing replica identity to FULL for partition fails, because
+-- of the column filter on the parent
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY FULL;
 
-DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8;
+DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8, testpub_tbl8_1;
 DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_col_filter;
 -- ======================================================
 

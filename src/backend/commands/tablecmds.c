@@ -625,6 +625,8 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 static char GetAttributeCompression(Oid atttypid, char *compression);
+static void check_replica_identity(List *relations, char relreplident,
+								   Relation rel, Bitmapset *cols);
 
 
 /* ----------------------------------------------------------------
@@ -15894,32 +15896,40 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 	Oid			indexOid;
 	Relation	indexRel;
 	int			key;
-	List	   *pubs;
 	Bitmapset  *indexed_cols = NULL;
-	ListCell   *lc;
+	List	   *ancestors = NIL;
 
-	pubs = GetRelationColumnPartialPublications(RelationGetRelid(rel));
+	/*
+	 * Check that the new partition is compatible with all publications the
+	 * parent relation (to which we're attaching) is part of. Each ancestor
+	 * may be added to multiple publications - we need to check all of them,
+	 * not just the top-most, because the top-most one might be removed later.
+	 */
+	ancestors = get_partition_ancestors(RelationGetRelid(rel));
+
+	/*
+	 * Include the rel itself too, because it may already have publications.
+	 */
+	ancestors = lappend_oid(ancestors, RelationGetRelid(rel));
 
 	/* cross-check the column lists and replica identity (if defined) */
 	if (stmt->identity_type == REPLICA_IDENTITY_DEFAULT)
 	{
 		/* XXX not sure what's the right check for publications here */
+		check_replica_identity(ancestors, REPLICA_IDENTITY_DEFAULT, rel, NULL);
 		relation_mark_replica_identity(rel, stmt->identity_type, InvalidOid, true);
 		return;
 	}
 	else if (stmt->identity_type == REPLICA_IDENTITY_FULL)
 	{
-		if (pubs != NIL)
-			ereport(ERROR,
-					errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					errmsg("cannot set REPLICA IDENTITY FULL when publications contain relations that specify column lists"));
-
+		check_replica_identity(ancestors, REPLICA_IDENTITY_FULL, rel, NULL);
 		relation_mark_replica_identity(rel, stmt->identity_type, InvalidOid, true);
 		return;
 	}
 	else if (stmt->identity_type == REPLICA_IDENTITY_NOTHING)
 	{
 		/* XXX not sure what's the right check for publications here */
+		check_replica_identity(ancestors, REPLICA_IDENTITY_NOTHING, rel, NULL);
 		relation_mark_replica_identity(rel, stmt->identity_type, InvalidOid, true);
 		return;
 	}
@@ -16007,49 +16017,15 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 
 		/*
 		 * Collect columns used, in case we have any publications that we need
-		 * to vet.  System attributes are disallowed so no need to subtract
-		 * FirstLowInvalidHeapAttributeNumber.
+		 * to vet. Offset by FirstLowInvalidHeapAttributeNumber, because that's
+		 * what check_replica_identity expects.
 		 */
-		indexed_cols = bms_add_member(indexed_cols, attno);
-	}
-
-	/*
-	 * Check partial-column publications.  For publications that replicate UPDATE
-	 * and DELETE, we must enforce that all replica identity columns are included
-	 * in the column list.  For publications that only include INSERT/TRUNCATE,
-	 * there are no restrictions regarding replica identity and column list.
-	 */
-	foreach(lc, pubs)
-	{
-		Oid			pubid = lfirst_oid(lc);
-		List	   *published_cols;
-		PublicationActions actions;
-
-		GetActionsInPublication(pubid, &actions);
-
-		/* No need to worry about this one */
-		if (!actions.pubupdate && !actions.pubdelete)
-			continue;
-
-		published_cols =
-			GetRelationColumnListInPublication(RelationGetRelid(rel), pubid);
-
-		/* Check replica identity is subset of the column list. */
-		for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)
-		{
-			int16	attno = indexRel->rd_index->indkey.values[key];
-
-			if (!list_member_oid(published_cols, attno))
-				ereport(ERROR,
-						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("index \"%s\" cannot be used because publication \"%s\" does not include all indexed columns",
-							   RelationGetRelationName(indexRel),
-							   get_publication_name(pubid, false)));
-		}
+		indexed_cols = bms_add_member(indexed_cols, attno - FirstLowInvalidHeapAttributeNumber);
 	}
 
 	/* This index is suitable for use as a replica identity. Mark it. */
 	relation_mark_replica_identity(rel, stmt->identity_type, indexOid, true);
+	check_replica_identity(ancestors, REPLICA_IDENTITY_INDEX, rel, indexed_cols);
 
 	index_close(indexRel, NoLock);
 }
@@ -17708,8 +17684,6 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 	Oid			defaultPartOid;
 	List	   *partBoundConstraint;
 	ParseState *pstate = make_parsestate(NULL);
-
-	ListCell   *lc;
 	List	   *ancestors = NIL;
 
 	pstate->p_sourcetext = context->queryString;
@@ -17880,100 +17854,18 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 	 */
 	ancestors = get_partition_ancestors(RelationGetRelid(rel));
 
-	/* include the parent too, not just it's ancestors */
+	/*
+	 * Include the rel to which we attach the new partition, so that we have
+	 * all ancestors of the attachrel.
+	 */
 	ancestors = lappend_oid(ancestors, RelationGetRelid(rel));
 
-	foreach(lc, ancestors)
-	{
-		ListCell   *lc2;
-		Oid			ancestor = lfirst_oid(lc);
-
-		/* only publications with a column filter */
-		List	   *pubids = GetRelationColumnPartialPublications(ancestor);
-
-		/* no publications with column filter for this parent */
-		if (!pubids)
-			continue;
-
-		/* With REPLICA IDENTITY FULL no column filter is allowed. */
-		if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
-			ereport(ERROR,
-					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("invalid column list for publishing relation \"%s\"",
-						   RelationGetRelationName(attachrel)),	/* XXX maybe report the ancestor? */
-					errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
-
-		/* check the column filter vs. replica identity for each partition */
-		foreach (lc2, pubids)
-		{
-			ListCell   *lc3;
-			Oid			pubid = lfirst_oid(lc2);
-			List	   *columns = GetRelationColumnListInPublication(ancestor, pubid);
-			Bitmapset  *colset = NULL;
-			Bitmapset  *idattrs;
-			Publication *pub;
-
-			pub = GetPublication(pubid);
-
-			/*
-			 * When not replicating UPDATE/DELETE, we're done. Otherwise check the
-			 * whole replica identity is included in the column filter.
-			 */
-			if (!pub->pubactions.pubupdate && !pub->pubactions.pubdelete)
-				continue;
-
-			idattrs = RelationGetIndexAttrBitmap(attachrel,
-												 INDEX_ATTR_BITMAP_IDENTITY_KEY);
-
-			/*
-			 * This can happen, in which case the replica identity is inherited
-			 * from the ancestor, which means it's OK for the publication.
-			 */
-			if (!idattrs)
-				continue;
-
-			/*
-			 * Build bitmap from the filter columns, for easy comparison with the
-			 * replica identity bitmap. Offset by FirstLowInvalidHeapAttributeNumber
-			 * for each comparison with idattrs.
-			 *
-			 * XXX Do we need to map attnums between the partitions? For now
-			 * just lookup name in the ancestor (per the column list), and then
-			 * lookup the attnum in the child. But maybe that's not needed?
-			 */
-			foreach (lc3, columns)
-			{
-				AttrNumber	attnum;
-				char	   *attname;
-
-				attnum = lfirst_oid(lc3);
-				attname = get_attname(ancestor, attnum, false);
-
-				/* reverse lookup */
-				attnum = get_attnum(RelationGetRelid(attachrel), attname);
-
-				colset = bms_add_member(colset, attnum - FirstLowInvalidHeapAttributeNumber);
-			}
-
-			/*
-			 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
-			 * offset (to handle system columns the usual way), while column filter
-			 * does not use offset, so we can't do bms_is_subset(). Instead, we have
-			 * to loop over the idattrs and check all of them are in the filter.
-			 */
-			if (!bms_is_subset(idattrs, colset))
-			{
-				ereport(ERROR,
-						errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-						errmsg("invalid column list for publishing relation \"%s\"",
-							   RelationGetRelationName(attachrel)),	/* XXX maybe report the partition? */
-						errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
-			}
-
-			bms_free(colset);
-			bms_free(idattrs);
-		}
-	}
+	/*
+	 * Check the replica identity of the new partition is compatible with
+	 * all publications.
+	 */
+	check_replica_identity(ancestors, attachrel->rd_rel->relreplident,
+						   attachrel, NULL);
 
 	/*
 	 * Check that the new partition's bound is valid and does not overlap any
@@ -19429,4 +19321,123 @@ GetAttributeCompression(Oid atttypid, char *compression)
 				 errmsg("invalid compression method \"%s\"", compression)));
 
 	return cmethod;
+}
+
+/*
+ * - relations - list of OIDs for relations for which we need to inspect the
+ * publications (this includes ancestors and possibly the relation itself)
+ *
+ * - rel - the relation for which we verify the replica identity
+ *
+ * XXX This has a bit of a problem, becase for ALTER TABLE ... REPLICA
+ * IDENTITY it's called before the relation has it assigned. So we get the
+ * relreplident and indexed columns separately. Maybe we could just call
+ * it a bit later?
+ */
+static void
+check_replica_identity(List *relations, char relreplident, Relation rel,
+					   Bitmapset *cols)
+{
+	ListCell   *lc;
+
+	/*
+	 * Check that the new partition is compatible with all publications the
+	 * ancestors are members of. Each ancestor may be added to multiple
+	 * publications - we need to check all of them, not just the top-most,
+	 * because the top-most one might be removed later.
+	 */
+	foreach(lc, relations)
+	{
+		ListCell   *lc2;
+		Oid			ancestor = lfirst_oid(lc);
+
+		/* only publications with a column filter */
+		List	   *pubids = GetRelationColumnPartialPublications(ancestor);
+
+		/* no publications with column filter for this parent */
+		if (!pubids)
+			continue;
+
+		/* With REPLICA IDENTITY FULL no column filter is allowed. */
+		if (relreplident == REPLICA_IDENTITY_FULL)
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("invalid column list for publishing relation \"%s\"",
+						   RelationGetRelationName(rel)),	/* XXX maybe report the ancestor? */
+					errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
+
+		/* check the column filter vs. replica identity for each partition */
+		foreach (lc2, pubids)
+		{
+			ListCell   *lc3;
+			Oid			pubid = lfirst_oid(lc2);
+			List	   *columns = GetRelationColumnListInPublication(ancestor, pubid);
+			Bitmapset  *colset = NULL;
+			Bitmapset  *idattrs;
+			Publication *pub;
+
+			pub = GetPublication(pubid);
+
+			/*
+			 * When not replicating UPDATE/DELETE, we're done. Otherwise check the
+			 * whole replica identity is included in the column filter.
+			 */
+			if (!pub->pubactions.pubupdate && !pub->pubactions.pubdelete)
+				continue;
+
+			/* Get replica identity attributes. */
+			if ((relreplident == REPLICA_IDENTITY_INDEX) && cols)
+				idattrs = cols;
+			else
+				idattrs = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+			/*
+			 * This can happen, in which case the replica identity is inherited
+			 * from the ancestor, which means it's OK for the publication.
+			 */
+			if (!idattrs)
+				continue;
+
+			/*
+			 * Build bitmap from the filter columns, for easy comparison with the
+			 * replica identity bitmap. Offset by FirstLowInvalidHeapAttributeNumber
+			 * for each comparison with idattrs.
+			 *
+			 * XXX Do we need to map attnums between the partitions? For now
+			 * just lookup name in the ancestor (per the column list), and then
+			 * lookup the attnum in the child. But maybe that's not needed?
+			 */
+			foreach (lc3, columns)
+			{
+				AttrNumber	attnum;
+				char	   *attname;
+
+				attnum = lfirst_oid(lc3);
+				attname = get_attname(ancestor, attnum, false);
+
+				/* reverse lookup for the current relation */
+				attnum = get_attnum(RelationGetRelid(rel), attname);
+
+				colset = bms_add_member(colset, attnum - FirstLowInvalidHeapAttributeNumber);
+			}
+
+			/*
+			 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
+			 * offset (to handle system columns the usual way), while column filter
+			 * does not use offset, so we can't do bms_is_subset(). Instead, we have
+			 * to loop over the idattrs and check all of them are in the filter.
+			 */
+			if (!bms_is_subset(idattrs, colset))
+			{
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+						errmsg("invalid column list for publishing relation \"%s\"",
+							   RelationGetRelationName(rel)),	/* XXX maybe report the ancestor? */
+						errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
+			}
+
+			bms_free(colset);
+			bms_free(idattrs);
+		}
+	}
 }

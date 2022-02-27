@@ -17709,6 +17709,9 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 	List	   *partBoundConstraint;
 	ParseState *pstate = make_parsestate(NULL);
 
+	ListCell   *lc;
+	List	   *ancestors = NIL;
+
 	pstate->p_sourcetext = context->queryString;
 
 	/*
@@ -17868,6 +17871,109 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 				 errmsg("trigger \"%s\" prevents table \"%s\" from becoming a partition",
 						trigger_name, RelationGetRelationName(attachrel)),
 				 errdetail("ROW triggers with transition tables are not supported on partitions")));
+
+	/*
+	 * Check that the new partition is compatible with all publications the
+	 * parent relation (to which we're attaching) is part of. Each ancestor
+	 * may be added to multiple publications - we need to check all of them,
+	 * not just the top-most, because the top-most one might be removed later.
+	 */
+	ancestors = get_partition_ancestors(RelationGetRelid(rel));
+
+	/* include the parent too, not just it's ancestors */
+	ancestors = lappend_oid(ancestors, RelationGetRelid(rel));
+
+	foreach(lc, ancestors)
+	{
+		ListCell   *lc2;
+		Oid			ancestor = lfirst_oid(lc);
+
+		/* only publications with a column filter */
+		List	   *pubids = GetRelationColumnPartialPublications(ancestor);
+
+		/* no publications with column filter for this parent */
+		if (!pubids)
+			continue;
+
+		/* With REPLICA IDENTITY FULL no column filter is allowed. */
+		if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("invalid column list for publishing relation \"%s\"",
+						   RelationGetRelationName(attachrel)),	/* XXX maybe report the ancestor? */
+					errdetail("Cannot specify column list on relations with REPLICA IDENTITY FULL."));
+
+		/* check the column filter vs. replica identity for each partition */
+		foreach (lc2, pubids)
+		{
+			ListCell   *lc3;
+			Oid			pubid = lfirst_oid(lc2);
+			List	   *columns = GetRelationColumnListInPublication(ancestor, pubid);
+			Bitmapset  *colset = NULL;
+			Bitmapset  *idattrs;
+			Publication *pub;
+
+			pub = GetPublication(pubid);
+
+			/*
+			 * When not replicating UPDATE/DELETE, we're done. Otherwise check the
+			 * whole replica identity is included in the column filter.
+			 */
+			if (!pub->pubactions.pubupdate && !pub->pubactions.pubdelete)
+				continue;
+
+			idattrs = RelationGetIndexAttrBitmap(attachrel,
+												 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+			/*
+			 * This can happen, in which case the replica identity is inherited
+			 * from the ancestor, which means it's OK for the publication.
+			 */
+			if (!idattrs)
+				continue;
+
+			/*
+			 * Build bitmap from the filter columns, for easy comparison with the
+			 * replica identity bitmap. Offset by FirstLowInvalidHeapAttributeNumber
+			 * for each comparison with idattrs.
+			 *
+			 * XXX Do we need to map attnums between the partitions? For now
+			 * just lookup name in the ancestor (per the column list), and then
+			 * lookup the attnum in the child. But maybe that's not needed?
+			 */
+			foreach (lc3, columns)
+			{
+				AttrNumber	attnum;
+				char	   *attname;
+
+				attnum = lfirst_oid(lc3);
+				attname = get_attname(ancestor, attnum, false);
+
+				/* reverse lookup */
+				attnum = get_attnum(RelationGetRelid(attachrel), attname);
+
+				colset = bms_add_member(colset, attnum - FirstLowInvalidHeapAttributeNumber);
+			}
+
+			/*
+			 * Attnums in the bitmap returned by RelationGetIndexAttrBitmap are
+			 * offset (to handle system columns the usual way), while column filter
+			 * does not use offset, so we can't do bms_is_subset(). Instead, we have
+			 * to loop over the idattrs and check all of them are in the filter.
+			 */
+			if (!bms_is_subset(idattrs, colset))
+			{
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+						errmsg("invalid column list for publishing relation \"%s\"",
+							   RelationGetRelationName(attachrel)),	/* XXX maybe report the partition? */
+						errdetail("All columns in REPLICA IDENTITY must be present in the column list."));
+			}
+
+			bms_free(colset);
+			bms_free(idattrs);
+		}
+	}
 
 	/*
 	 * Check that the new partition's bound is valid and does not overlap any

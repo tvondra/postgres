@@ -141,7 +141,11 @@ check_publication_columns(Publication *pub, Relation targetrel, Bitmapset *colum
 		/* XXX Do we need to lock this? */
 		Relation	partrel = relation_open(partOid, AccessShareLock);
 
-		/* ignore non-leaf relations */
+		/*
+		 * ignore non-leaf relations
+		 *
+		 * XXX Should we consider what replica identity is set for the relation?
+		 */
 		if (partrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 			goto cleanup;
 

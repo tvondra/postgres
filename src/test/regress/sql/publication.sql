@@ -456,6 +456,36 @@ ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
 ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
 ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, c);
 
+-- add table and then try changing replica identity
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, b);
+-- failure: replica identity full can't be used with a column filter
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
+-- failure: replica identity has to be covered by the column filter
+ALTER TABLE testpub_tbl8_1 DROP CONSTRAINT testpub_tbl8_1_pkey;
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (c);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+
+DROP TABLE testpub_tbl8;
+
+-- column filter for partitioned tables has to cover replica identities for
+-- all child relations
+CREATE TABLE testpub_tbl8 (a int, b text, c text) PARTITION BY HASH (a);
+ALTER PUBLICATION testpub_col_filter ADD TABLE testpub_tbl8 (a, b);
+-- first partition has replica identity "a"
+CREATE TABLE testpub_tbl8_0 (a int, b text, c text);
+ALTER TABLE testpub_tbl8_0 ADD PRIMARY KEY (a);
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY USING INDEX testpub_tbl8_0_pkey;
+-- second partition has replica identity "b"
+CREATE TABLE testpub_tbl8_1 (a int, b text, c text);
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (c);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+
+-- ok: attaching first partition works, because (a) is in column filter
+ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_0 FOR VALUES WITH (modulus 2, remainder 0);
+-- failure: second partition has replica identity (c), which si not in column filter
+ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_1 FOR VALUES WITH (modulus 2, remainder 1);
+
 DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8;
 DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_col_filter;
 -- ======================================================

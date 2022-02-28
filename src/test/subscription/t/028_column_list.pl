@@ -21,6 +21,17 @@ $node_subscriber->start;
 
 my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
 
+sub wait_for_subscription_sync
+{
+	my ($node) = @_;
+
+	# Also wait for initial table sync to finish
+	my $synced_query = "SELECT count(1) = 0 FROM pg_subscription_rel WHERE srsubstate NOT IN ('r', 's');";
+
+	$node->poll_query_until('postgres', $synced_query)
+		or die "Timed out while waiting for subscriber to synchronize data";
+}
+
 # setup tables on both nodes
 
 # tab1: simple 1:1 replication
@@ -221,6 +232,8 @@ $node_publisher->safe_psql('postgres',
 $node_subscriber->safe_psql('postgres',
 	"ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION");
 
+wait_for_subscription_sync($node_subscriber);
+
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO tab2 VALUES (2, 'def', 6);
 ));
@@ -261,6 +274,8 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub2, pub3
 ));
 
+wait_for_subscription_sync($node_subscriber);
+
 $node_publisher->wait_for_catchup('sub1');
 
 # TEST: insert data and make sure all the columns (union of the columns lists)
@@ -286,6 +301,8 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
 	ALTER TABLE tab5 ADD COLUMN c INT;
 ));
+
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', "INSERT INTO tab5 VALUES (3, 33, 333, 3333)");
 
@@ -313,7 +330,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub4
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO tab6 VALUES (1, 22, 333, 4444);
@@ -345,6 +362,8 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION
 ));
 
+wait_for_subscription_sync($node_subscriber);
+
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO tab6 VALUES (2, 55, 666, 8888);
 	UPDATE tab6 SET b = b * 2, c = c * 3, d = d * 4 WHERE a = 2;
@@ -374,7 +393,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub5
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO tab7 VALUES (1, 22, 333, 4444);
@@ -475,7 +494,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub6
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_part_a VALUES (1, 3);
@@ -488,7 +507,6 @@ is($node_subscriber->safe_psql('postgres',"SELECT a, b FROM test_part_a ORDER BY
    qq(1|3
 2|4),
    'partitions with different replica identities not replicated correctly');
-
 
 # This time start with a column filter covering RI for all partitions, but
 # then update the column filter to not cover column "b" (needed by the
@@ -530,7 +548,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub7
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_part_b VALUES (1, 1);
@@ -620,7 +638,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	TRUNCATE test_part_c;
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	TRUNCATE test_part_c;
@@ -672,7 +690,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub9
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_part_d VALUES (1, 1);
@@ -699,7 +717,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub_mix_1, pub_mix_2;
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_mix_1 VALUES (1, 2, 3);
@@ -734,7 +752,7 @@ $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
 ));
 
-$node_publisher->wait_for_catchup('sub1');
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_mix_2 VALUES (1, 2, 3);
@@ -761,6 +779,8 @@ $node_subscriber->safe_psql('postgres', qq(
 	CREATE TABLE test_mix_3 (a int PRIMARY KEY, b int, c int);
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub_mix_5, pub_mix_6;
 ));
+
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_mix_3 VALUES (1, 2, 3);
@@ -795,6 +815,8 @@ $node_subscriber->safe_psql('postgres', qq(
 $node_subscriber->safe_psql('postgres', qq(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub_root_true;
 ));
+
+wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
 	INSERT INTO test_root VALUES (1, 2, 3);

@@ -1898,7 +1898,6 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 				if (pub->alltables ||
 					list_member_oid(schemaPubids, pub->oid))
 				{
-					elog(WARNING, "ALL COLUMNS");
 					all_columns = true;
 					bms_free(entry->columns);
 					entry->columns = NULL;

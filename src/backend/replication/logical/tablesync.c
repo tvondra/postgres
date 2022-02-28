@@ -862,7 +862,10 @@ fetch_remote_table_info(char *nspname, char *relname,
 		Assert(!isnull);
 
 		if (included_cols != NULL && !bms_is_member(attnum, included_cols))
+		{
+			ExecClearTuple(slot);
 			continue;
+		}
 
 		rel_colname = TextDatumGetCString(slot_getattr(slot, 2, &isnull));
 		Assert(!isnull);

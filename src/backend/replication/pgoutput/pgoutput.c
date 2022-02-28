@@ -1723,7 +1723,6 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 {
 	RelationSyncEntry *entry;
 	bool		found;
-	Oid			ancestor_id;
 	MemoryContext oldctx;
 	Oid			relid = RelationGetRelid(relation);
 
@@ -1864,7 +1863,6 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 					if (ancestor != InvalidOid)
 					{
 						ancestor_published = true;
-						ancestor_id = ancestor;
 						if (pub->pubviaroot)
 							publish_as_relid = ancestor;
 					}
@@ -1893,21 +1891,36 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 				entry->pubactions.pubtruncate |= pub->pubactions.pubtruncate;
 
 				/*
+				 * This might be FOR ALL TABLES or FOR ALL TABLES IN SCHEMA
+				 * publication, in which case there are no column lists, and
+				 * we treat that as all_columns=true.
+				 */
+				if (pub->alltables ||
+					list_member_oid(schemaPubids, pub->oid))
+				{
+					elog(WARNING, "ALL COLUMNS");
+					all_columns = true;
+					bms_free(entry->columns);
+					entry->columns = NULL;
+				}
+
+				/*
 				 * Obtain columns published by this publication, and add them
 				 * to the list for this rel.  Note that if at least one
 				 * publication has an empty column list, that means to publish
 				 * everything; so if we saw a publication that includes all
 				 * columns, skip this.
+				 *
+				 * FIXME This fails to consider column filters defined in
+				 * FOR ALL TABLES and FOR ALL TABLES IN SCHEMA publications.
+				 * We need to check those too.
 				 */
 				if (!all_columns)
 				{
 					HeapTuple	pub_rel_tuple;
-					Oid			relid;
-
-					relid = ancestor_published ? ancestor_id : publish_as_relid;
 
 					pub_rel_tuple = SearchSysCache2(PUBLICATIONRELMAP,
-													ObjectIdGetDatum(relid),
+													ObjectIdGetDatum(publish_as_relid),
 													ObjectIdGetDatum(pub->oid));
 
 					if (HeapTupleIsValid(pub_rel_tuple))

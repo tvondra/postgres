@@ -491,43 +491,6 @@ ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY FULL;
 
 DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8, testpub_tbl8_1;
 DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_col_filter;
-
-
-
-
-	CREATE TABLE test_part_a (a int, b int) PARTITION BY LIST (a);
-
-	CREATE TABLE test_part_a_1 PARTITION OF test_part_a FOR VALUES IN (1);
-	ALTER TABLE test_part_a_1 ADD PRIMARY KEY (a);
-	ALTER TABLE test_part_a_1 REPLICA IDENTITY USING INDEX test_part_a_1_pkey;
-
-	CREATE TABLE test_part_a_2 PARTITION OF test_part_a FOR VALUES IN (2);
-	ALTER TABLE test_part_a_2 ADD PRIMARY KEY (b);
-	ALTER TABLE test_part_a_2 REPLICA IDENTITY USING INDEX test_part_a_2_pkey;
-));
-
-# do the same thing on the subscriber
-$node_subscriber->safe_psql('postgres', qq(
-	CREATE TABLE test_part_a (a int, b int) PARTITION BY LIST (a);
-
-	CREATE TABLE test_part_a_1 PARTITION OF test_part_a FOR VALUES IN (1);
-	ALTER TABLE test_part_a_1 ADD PRIMARY KEY (a);
-	ALTER TABLE test_part_a_1 REPLICA IDENTITY USING INDEX test_part_a_1_pkey;
-
-	CREATE TABLE test_part_a_2 PARTITION OF test_part_a FOR VALUES IN (2);
-	ALTER TABLE test_part_a_2 ADD PRIMARY KEY (b);
-	ALTER TABLE test_part_a_2 REPLICA IDENTITY USING INDEX test_part_a_2_pkey;
-));
-
-# create a publication replicating just the column "a", which is not enough
-# for the second partition
-$node_publisher->safe_psql('postgres', qq(
-	CREATE PUBLICATION pub6 FOR TABLE test_part_a (a) WITH (publish_via_partition_root = false);
-
-
-
-
-
 -- ======================================================
 
 -- Test cache invalidation FOR ALL TABLES publication

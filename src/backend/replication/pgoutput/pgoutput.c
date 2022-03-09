@@ -1814,12 +1814,13 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 		{
 			Publication *pub = lfirst(lc);
 			bool		publish = false;
+			Oid			publish_as_relid_tmp = relid;
 
 			if (pub->alltables)
 			{
 				publish = true;
 				if (pub->pubviaroot && am_partition)
-					publish_as_relid = llast_oid(get_partition_ancestors(relid));
+					publish_as_relid_tmp = llast_oid(get_partition_ancestors(relid));
 			}
 
 			if (!publish)
@@ -1844,7 +1845,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 					{
 						ancestor_published = true;
 						if (pub->pubviaroot)
-							publish_as_relid = ancestor;
+							publish_as_relid_tmp = ancestor;
 					}
 				}
 
@@ -1862,12 +1863,35 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 			if (publish &&
 				(relkind != RELKIND_PARTITIONED_TABLE || pub->pubviaroot))
 			{
+				List *ancestors;
+
 				entry->pubactions.pubinsert |= pub->pubactions.pubinsert;
 				entry->pubactions.pubupdate |= pub->pubactions.pubupdate;
 				entry->pubactions.pubdelete |= pub->pubactions.pubdelete;
 				entry->pubactions.pubtruncate |= pub->pubactions.pubtruncate;
 
 				rel_publications = lappend(rel_publications, pub);
+
+				/*
+				 * If we found a published ancestor that is higher than the
+				 * already known publish_as_relid, keep it.
+				 */
+				ancestors = get_partition_ancestors(publish_as_relid_tmp);
+
+				/*
+				 * If the same relation, or when the current publish_as_relid
+				 * is an ancestor of publish_as_relid_tmp, keep it.
+				 */
+				if ((publish_as_relid_tmp == publish_as_relid) ||
+					list_member_oid(ancestors, publish_as_relid))
+				{
+					continue;
+				}
+
+				/*
+				 * The new publish_as_relid_tmp is higher up, so keep it.
+				 */
+				publish_as_relid = publish_as_relid_tmp;
 			}
 		}
 

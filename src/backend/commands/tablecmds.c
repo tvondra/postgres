@@ -8365,6 +8365,7 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 				 bool missing_ok, LOCKMODE lockmode,
 				 ObjectAddresses *addrs)
 {
+	Oid			relid = RelationGetRelid(rel);
 	HeapTuple	tuple;
 	Form_pg_attribute targetatt;
 	AttrNumber	attnum;
@@ -8384,7 +8385,7 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 	/*
 	 * get the number of the attribute
 	 */
-	tuple = SearchSysCacheAttName(RelationGetRelid(rel), colName);
+	tuple = SearchSysCacheAttName(relid, colName);
 	if (!HeapTupleIsValid(tuple))
 	{
 		if (!missing_ok)
@@ -8439,12 +8440,41 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 	ReleaseSysCache(tuple);
 
 	/*
+	 * Also, if the column is used in the column list of a publication,
+	 * disallow the drop if the DROP is RESTRICT.  We don't do anything if the
+	 * DROP is CASCADE, which means that the dependency mechanism will remove
+	 * the relation from the publication.
+	 */
+	if (behavior == DROP_RESTRICT)
+	{
+		List	   *pubs;
+		ListCell   *lc;
+
+		pubs = GetRelationColumnPartialPublications(relid);
+		foreach(lc, pubs)
+		{
+			Oid			pubid = lfirst_oid(lc);
+			List	   *published_cols;
+
+			published_cols =
+				GetRelationColumnListInPublication(relid, pubid);
+
+			if (list_member_oid(published_cols, attnum))
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						errmsg("cannot drop column \"%s\" because it is part of publication \"%s\"",
+							   colName, get_publication_name(pubid, false)),
+						errhint("Specify CASCADE or use ALTER PUBLICATION to remove the column from the publication."));
+		}
+	}
+
+	/*
 	 * Propagate to children as appropriate.  Unlike most other ALTER
 	 * routines, we have to do this one level of recursion at a time; we can't
 	 * use find_all_inheritors to do it in one pass.
 	 */
 	children =
-		find_inheritance_children(RelationGetRelid(rel), lockmode);
+		find_inheritance_children(relid, lockmode);
 
 	if (children)
 	{
@@ -8532,7 +8562,7 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 
 	/* Add object to delete */
 	object.classId = RelationRelationId;
-	object.objectId = RelationGetRelid(rel);
+	object.objectId = relid;
 	object.objectSubId = attnum;
 	add_exact_object_address(&object, addrs);
 

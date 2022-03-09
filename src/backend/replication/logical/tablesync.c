@@ -112,6 +112,7 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -700,20 +701,22 @@ fetch_remote_table_info(char *nspname, char *relname,
 	WalRcvExecResult *res;
 	StringInfoData cmd;
 	TupleTableSlot *slot;
-	Oid			tableRow[] = {OIDOID, CHAROID, CHAROID};
-	Oid			attrRow[] = {TEXTOID, OIDOID, BOOLOID};
+	Oid			tableRow[] = {OIDOID, CHAROID, CHAROID, BOOLOID};
+	Oid			attrRow[] = {INT2OID, TEXTOID, OIDOID, BOOLOID};
 	Oid			qualRow[] = {TEXTOID};
 	bool		isnull;
 	int			natt;
 	ListCell   *lc;
 	bool		first;
+	bool		am_partition;
+	Bitmapset  *included_cols = NULL;
 
 	lrel->nspname = nspname;
 	lrel->relname = relname;
 
 	/* First fetch Oid and replica identity. */
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident, c.relkind"
+	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident, c.relkind, c.relispartition"
 					 "  FROM pg_catalog.pg_class c"
 					 "  INNER JOIN pg_catalog.pg_namespace n"
 					 "        ON (c.relnamespace = n.oid)"
@@ -743,14 +746,225 @@ fetch_remote_table_info(char *nspname, char *relname,
 	Assert(!isnull);
 	lrel->relkind = DatumGetChar(slot_getattr(slot, 3, &isnull));
 	Assert(!isnull);
+	am_partition = DatumGetBool(slot_getattr(slot, 4, &isnull));
+	Assert(!isnull);
 
 	ExecDropSingleTupleTableSlot(slot);
 	walrcv_clear_result(res);
 
-	/* Now fetch columns. */
+
+	/*
+	 * Get column lists for each relation.
+	 *
+	 * For initial synchronization, column lists can be ignored in following
+	 * cases:
+	 *
+	 * 1) one of the subscribed publications for the table hasn't specified
+	 * any column list
+	 *
+	 * 2) one of the subscribed publications has puballtables set to true
+	 *
+	 * 3) one of the subscribed publications is declared as ALL TABLES IN
+	 * SCHEMA that includes this relation
+	 */
+	if (walrcv_server_version(LogRepWorkerWalRcvConn) >= 150000)
+	{
+		WalRcvExecResult *pubres;
+		TupleTableSlot *slot;
+		Oid			attrsRow[] = {INT2OID};
+		Oid			tmpRow[] = {INT4OID};
+		StringInfoData publications;
+		bool		first = true;
+		bool		all_columns = false;
+
+		initStringInfo(&publications);
+		foreach(lc, MySubscription->publications)
+		{
+			if (!first)
+				appendStringInfo(&publications, ", ");
+			appendStringInfoString(&publications, quote_literal_cstr(strVal(lfirst(lc))));
+			first = false;
+		}
+
+		/*
+		 * First, check if any of the publications FOR ALL TABLES? If yes, we
+		 * should not use any column list. It's enough to find a single such
+		 * publication.
+		 *
+		 * XXX Maybe we could combine all three steps into a single query, but
+		 * this seems cleaner / easier to understand.
+		 *
+		 * XXX Does this need any handling of partitions / publish_via_part_root?
+		 */
+		resetStringInfo(&cmd);
+		appendStringInfo(&cmd,
+						 "SELECT 1\n"
+						 "  FROM pg_publication p\n"
+						 " WHERE p.pubname IN ( %s ) AND p.puballtables LIMIT 1\n",
+						 publications.data);
+
+		pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+							 lengthof(tmpRow), tmpRow);
+
+		if (pubres->status != WALRCV_OK_TUPLES)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not fetch publication info for table \"%s.%s\" from publisher: %s",
+							nspname, relname, pubres->err)));
+
+		slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+
+		if (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+			all_columns = true;
+
+		ExecDropSingleTupleTableSlot(slot);
+		walrcv_clear_result(pubres);
+
+		/*
+		 * If there's no FOR ALL TABLES publication, look for a FOR ALL TABLES
+		 * IN SCHEMA publication, with schema of the remote relation. The logic
+		 * is the same - such publications have no column lists.
+		 *
+		 * XXX Does this need any handling of partitions / publish_via_part_root?
+		 */
+		if (!all_columns)
+		{
+			resetStringInfo(&cmd);
+			appendStringInfo(&cmd,
+							 "SELECT 1\n"
+							 "  FROM pg_publication p\n"
+							 "       JOIN pg_publication_namespace pn ON (pn.pnpubid = p.oid)\n"
+							 "       JOIN pg_class c ON (pn.pnnspid = c.relnamespace)\n"
+							 " WHERE c.oid = %u AND p.pubname IN ( %s ) LIMIT 1",
+							 lrel->remoteid,
+							 publications.data);
+
+			pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+								 lengthof(tmpRow), tmpRow);
+
+			if (pubres->status != WALRCV_OK_TUPLES)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("could not fetch publication info for table \"%s.%s\" from publisher: %s",
+								nspname, relname, pubres->err)));
+
+			slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+
+			if (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+				all_columns = true;
+
+			ExecDropSingleTupleTableSlot(slot);
+			walrcv_clear_result(pubres);
+		}
+
+		/*
+		 * If we haven't found any FOR ALL TABLES [IN SCHEMA] publications for
+		 * the table, we have to look for the column lists for relations.
+		 * First, we check if there's a publication with no column list for
+		 * the relation - which means all columns need to be replicated.
+		 */
+		if (!all_columns)
+		{
+			resetStringInfo(&cmd);
+			appendStringInfo(&cmd,
+							 "SELECT 1\n"
+							 "  FROM pg_catalog.pg_publication p JOIN\n"
+							 "       pg_catalog.pg_publication_rel pr ON (p.oid = pr.prpubid)\n"
+							 " WHERE p.pubname IN (%s) AND pr.prattrs IS NULL AND ",
+							 publications.data);
+
+			/*
+			 * For non-partitions, we simply join directly to the catalog. For
+			 * partitions, we need to check all the ancestors, because maybe the
+			 * root was not added to a publication but one of the intermediate
+			 * partitions was.
+			 */
+			if (!am_partition)
+				appendStringInfo(&cmd, "prrelid = %u", lrel->remoteid);
+			else
+				appendStringInfo(&cmd,
+								 "prrelid IN (SELECT relid\n"
+								 "    FROM pg_catalog.pg_partition_tree(pg_catalog.pg_partition_root(%u)))",
+								 lrel->remoteid);
+
+			pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+								 lengthof(tmpRow), tmpRow);
+
+			if (pubres->status != WALRCV_OK_TUPLES)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("could not fetch attribute info for table \"%s.%s\" from publisher: %s",
+								nspname, relname, pubres->err)));
+
+			slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+
+			if (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+				all_columns = true;
+
+			ExecDropSingleTupleTableSlot(slot);
+			walrcv_clear_result(pubres);
+		}
+
+		/*
+		 * All that FIXME
+		 */
+		if (!all_columns)
+		{
+			resetStringInfo(&cmd);
+			appendStringInfo(&cmd,
+							 "SELECT unnest(pr.prattrs)\n"
+							 "  FROM pg_catalog.pg_publication p JOIN\n"
+							 "       pg_catalog.pg_publication_rel pr ON (p.oid = pr.prpubid)\n"
+							 " WHERE p.pubname IN (%s) AND pr.prattrs IS NOT NULL AND ",
+							 publications.data);
+
+			/*
+			 * For non-partitions, we simply join directly to the catalog. For
+			 * partitions, we need to check all the ancestors, because maybe the
+			 * root was not added to a publication but one of the intermediate
+			 * partitions was.
+			 */
+			if (!am_partition)
+				appendStringInfo(&cmd, "prrelid = %u", lrel->remoteid);
+			else
+				appendStringInfo(&cmd,
+								 "prrelid IN (SELECT relid\n"
+								 "    FROM pg_catalog.pg_partition_tree(pg_catalog.pg_partition_root(%u)))",
+								 lrel->remoteid);
+
+			pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+								 lengthof(attrsRow), attrsRow);
+
+			if (pubres->status != WALRCV_OK_TUPLES)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("could not fetch attribute info for table \"%s.%s\" from publisher: %s",
+								nspname, relname, pubres->err)));
+
+			slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+			while (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+			{
+				AttrNumber	attnum;
+
+				attnum = DatumGetInt16(slot_getattr(slot, 1, &isnull));
+				Assert(!isnull);
+
+				included_cols = bms_add_member(included_cols, attnum);
+			}
+			ExecDropSingleTupleTableSlot(slot);
+			walrcv_clear_result(pubres);
+		}
+
+		pfree(publications.data);
+	}
+
+	/*
+	 * Now fetch column names and types.
+	 */
 	resetStringInfo(&cmd);
 	appendStringInfo(&cmd,
-					 "SELECT a.attname,"
+					 "SELECT a.attnum,"
+					 "       a.attname,"
 					 "       a.atttypid,"
 					 "       a.attnum = ANY(i.indkey)"
 					 "  FROM pg_catalog.pg_attribute a"
@@ -778,16 +992,34 @@ fetch_remote_table_info(char *nspname, char *relname,
 	lrel->atttyps = palloc0(MaxTupleAttributeNumber * sizeof(Oid));
 	lrel->attkeys = NULL;
 
+	/*
+	 * Store the columns as a list of names.  Ignore those that are not
+	 * present in the column list, if there is one.
+	 */
 	natt = 0;
 	slot = MakeSingleTupleTableSlot(res->tupledesc, &TTSOpsMinimalTuple);
 	while (tuplestore_gettupleslot(res->tuplestore, true, false, slot))
 	{
-		lrel->attnames[natt] =
-			TextDatumGetCString(slot_getattr(slot, 1, &isnull));
+		char	   *rel_colname;
+		AttrNumber	attnum;
+
+		attnum = DatumGetInt16(slot_getattr(slot, 1, &isnull));
 		Assert(!isnull);
-		lrel->atttyps[natt] = DatumGetObjectId(slot_getattr(slot, 2, &isnull));
+
+		if (included_cols != NULL && !bms_is_member(attnum, included_cols))
+		{
+			ExecClearTuple(slot);
+			continue;
+		}
+
+		rel_colname = TextDatumGetCString(slot_getattr(slot, 2, &isnull));
 		Assert(!isnull);
-		if (DatumGetBool(slot_getattr(slot, 3, &isnull)))
+
+		lrel->attnames[natt] = rel_colname;
+		lrel->atttyps[natt] = DatumGetObjectId(slot_getattr(slot, 3, &isnull));
+		Assert(!isnull);
+
+		if (DatumGetBool(slot_getattr(slot, 4, &isnull)))
 			lrel->attkeys = bms_add_member(lrel->attkeys, natt);
 
 		/* Should never happen. */
@@ -821,6 +1053,9 @@ fetch_remote_table_info(char *nspname, char *relname,
 	 *
 	 * 3) one of the subscribed publications is declared as ALL TABLES IN
 	 * SCHEMA that includes this relation
+	 *
+	 * XXX Does this actually handle puballtables and schema publications
+	 * correctly?
 	 */
 	if (walrcv_server_version(LogRepWorkerWalRcvConn) >= 150000)
 	{
@@ -930,8 +1165,24 @@ copy_table(Relation rel)
 
 	/* Regular table with no row filter */
 	if (lrel.relkind == RELKIND_RELATION && qual == NIL)
-		appendStringInfo(&cmd, "COPY %s TO STDOUT",
+	{
+		appendStringInfo(&cmd, "COPY %s (",
 						 quote_qualified_identifier(lrel.nspname, lrel.relname));
+
+		/*
+		 * XXX Do we need to list the columns in all cases? Maybe we're replicating
+		 * all columns?
+		 */
+		for (int i = 0; i < lrel.natts; i++)
+		{
+			if (i > 0)
+				appendStringInfoString(&cmd, ", ");
+
+			appendStringInfoString(&cmd, quote_identifier(lrel.attnames[i]));
+		}
+
+		appendStringInfo(&cmd, ") TO STDOUT");
+	}
 	else
 	{
 		/*

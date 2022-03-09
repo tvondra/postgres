@@ -45,6 +45,9 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+static void publication_translate_columns(Relation targetrel, List *columns,
+										  int *natts, AttrNumber **attrs);
+
 /*
  * Check if relation can be in given publication and throws appropriate
  * error if not.
@@ -328,6 +331,8 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 	Oid			relid = RelationGetRelid(targetrel);
 	Oid			pubreloid;
 	Publication *pub = GetPublication(pubid);
+	AttrNumber *attarray;
+	int			natts = 0;
 	ObjectAddress myself,
 				referenced;
 	List	   *relids = NIL;
@@ -355,6 +360,14 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 
 	check_publication_add_relation(targetrel);
 
+	/*
+	 * Translate column names to attnums and check the column list is valid.
+	 * We also deconstruct the bitmap into an array of attnums, for storing
+	 * in the catalog.
+	 */
+	publication_translate_columns(pri->relation, pri->columns,
+								  &natts, &attarray);
+
 	/* Form a tuple. */
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
@@ -366,6 +379,17 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 		ObjectIdGetDatum(pubid);
 	values[Anum_pg_publication_rel_prrelid - 1] =
 		ObjectIdGetDatum(relid);
+
+	/* Add column list, if available */
+	if (pri->columns)
+	{
+		int2vector *prattrs;
+
+		prattrs = buildint2vector(attarray, natts);
+		values[Anum_pg_publication_rel_prattrs - 1] = PointerGetDatum(prattrs);
+	}
+	else
+		nulls[Anum_pg_publication_rel_prattrs - 1] = true;
 
 	/* Add qualifications, if available */
 	if (pri->whereClause != NULL)
@@ -381,6 +405,14 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 
 	/* Register dependencies as needed */
 	ObjectAddressSet(myself, PublicationRelRelationId, pubreloid);
+
+	/* Add dependency on the columns, if any are listed */
+	for (int i = 0; i < natts; i++)
+	{
+		ObjectAddressSubSet(referenced, RelationRelationId, relid, attarray[i]);
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
+	}
+	pfree(attarray);
 
 	/* Add dependency on the publication */
 	ObjectAddressSet(referenced, PublicationRelationId, pubid);
@@ -413,6 +445,154 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 	InvalidatePublicationRels(relids);
 
 	return myself;
+}
+
+/*
+ * Update the column list for a relation in a publication.
+ */
+void
+publication_set_table_columns(Relation pubrel, HeapTuple pubreltup,
+							  Relation targetrel, List *columns)
+{
+	AttrNumber *attarray;
+	HeapTuple	copytup;
+	int			natts;
+	bool		nulls[Natts_pg_publication_rel];
+	bool		replaces[Natts_pg_publication_rel];
+	Datum		values[Natts_pg_publication_rel];
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+	memset(replaces, false, sizeof(replaces));
+
+	replaces[Anum_pg_publication_rel_prattrs - 1] = true;
+
+	deleteDependencyRecordsForClass(PublicationRelationId,
+									((Form_pg_publication_rel) GETSTRUCT(pubreltup))->oid,
+									RelationRelationId,
+									DEPENDENCY_AUTO);
+
+	if (columns == NULL)
+	{
+		nulls[Anum_pg_publication_rel_prattrs - 1] = true;
+	}
+	else
+	{
+		ObjectAddress	myself,
+						referenced;
+		int2vector	   *prattrs;
+		Form_pg_publication_rel	pubrel;
+
+		publication_translate_columns(targetrel, columns, &natts, &attarray);
+
+		/* XXX "pub" is leaked here ??? */
+
+		prattrs = buildint2vector(attarray, natts);
+		values[Anum_pg_publication_rel_prattrs - 1] = PointerGetDatum(prattrs);
+
+		/* Add dependencies on the new list of columns */
+		pubrel = (Form_pg_publication_rel) GETSTRUCT(pubreltup);
+		ObjectAddressSet(myself, PublicationRelRelationId, pubrel->oid);
+
+		for (int i = 0; i < natts; i++)
+		{
+			ObjectAddressSubSet(referenced, RelationRelationId,
+								RelationGetRelid(targetrel), attarray[i]);
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
+		}
+	}
+
+	copytup = heap_modify_tuple(pubreltup, RelationGetDescr(pubrel),
+								values, nulls, replaces);
+
+	CatalogTupleUpdate(pubrel, &pubreltup->t_self, copytup);
+
+	heap_freetuple(copytup);
+}
+
+/*
+ * qsort comparator for attnums
+ *
+ * XXX We already have compare_int16, so maybe let's share that, somehow?
+ */
+static int
+compare_int16(const void *a, const void *b)
+{
+	int			av = *(const int16 *) a;
+	int			bv = *(const int16 *) b;
+
+	/* this can't overflow if int is wider than int16 */
+	return (av - bv);
+}
+
+/*
+ * Translate a list of column names to an array of attribute numbers
+ * and a Bitmapset with them; verify that each attribute is appropriate
+ * to have in a publication column list (no system or generated attributes,
+ * no duplicates).  Additional checks with replica identity are done later;
+ * see check_publication_columns.
+ *
+ * Note that the attribute numbers are *not* offset by
+ * FirstLowInvalidHeapAttributeNumber; system columns are forbidden so this
+ * is okay.
+ *
+ * XXX Should this detect duplicate columns?
+ */
+static void
+publication_translate_columns(Relation targetrel, List *columns,
+							  int *natts, AttrNumber **attrs)
+{
+	AttrNumber *attarray;
+	Bitmapset  *set = NULL;
+	ListCell   *lc;
+	int			n = 0;
+	TupleDesc	tupdesc = RelationGetDescr(targetrel);
+
+	/*
+	 * Translate list of columns to attnums. We prohibit system attributes and
+	 * make sure there are no duplicate columns.
+	 */
+	attarray = palloc(sizeof(AttrNumber) * list_length(columns));
+	foreach(lc, columns)
+	{
+		char	   *colname = strVal(lfirst(lc));
+		AttrNumber	attnum = get_attnum(RelationGetRelid(targetrel), colname);
+
+		if (attnum == InvalidAttrNumber)
+			ereport(ERROR,
+					errcode(ERRCODE_UNDEFINED_COLUMN),
+					errmsg("column \"%s\" of relation \"%s\" does not exist",
+						   colname, RelationGetRelationName(targetrel)));
+
+		if (!AttrNumberIsForUserDefinedAttr(attnum))
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("cannot reference system column \"%s\" in publication column list",
+						   colname));
+
+		if (TupleDescAttr(tupdesc, attnum - 1)->attgenerated)
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("cannot reference generated column \"%s\" in publication column list",
+						   colname));
+
+		if (bms_is_member(attnum, set))
+			ereport(ERROR,
+					errcode(ERRCODE_DUPLICATE_OBJECT),
+					errmsg("duplicate column \"%s\" in publication column list",
+						   colname));
+
+		set = bms_add_member(set, attnum);
+		attarray[n++] = attnum;
+	}
+
+	/* Be tidy, so that the catalog representation is always sorted */
+	qsort(attarray, n, sizeof(AttrNumber), compare_int16);
+
+	*natts = n;
+	*attrs = attarray;
+
+	bms_free(set);
 }
 
 /*
@@ -520,6 +700,82 @@ GetRelationPublications(Oid relid)
 	ReleaseSysCacheList(pubrellist);
 
 	return result;
+}
+
+/*
+ * Gets a list of OIDs of all partial-column publications of the given
+ * relation, that is, those that specify a column list.
+ */
+List *
+GetRelationColumnPartialPublications(Oid relid)
+{
+	CatCList   *pubrellist;
+	List	   *pubs = NIL;
+
+	pubrellist = SearchSysCacheList1(PUBLICATIONRELMAP,
+									 ObjectIdGetDatum(relid));
+	for (int i = 0; i < pubrellist->n_members; i++)
+	{
+		HeapTuple	tup = &pubrellist->members[i]->tuple;
+		bool		isnull;
+		Form_pg_publication_rel	pubrel;
+
+		(void) SysCacheGetAttr(PUBLICATIONRELMAP, tup,
+							   Anum_pg_publication_rel_prattrs,
+							   &isnull);
+
+		/* no column list for this publications/relation */
+		if (isnull)
+			continue;
+
+		pubrel = (Form_pg_publication_rel) GETSTRUCT(tup);
+
+		pubs = lappend_oid(pubs, pubrel->prpubid);
+	}
+
+	ReleaseSysCacheList(pubrellist);
+
+	return pubs;
+}
+
+
+/*
+ * For a relation in a publication that is known to have a non-null column
+ * list, return the list of attribute numbers that are in it.
+ */
+List *
+GetRelationColumnListInPublication(Oid relid, Oid pubid)
+{
+	HeapTuple	tup;
+	Datum		adatum;
+	bool		isnull;
+	ArrayType  *arr;
+	int			nelems;
+	int16	   *elems;
+	List	   *attnos = NIL;
+
+	tup = SearchSysCache2(PUBLICATIONRELMAP,
+						  ObjectIdGetDatum(relid),
+						  ObjectIdGetDatum(pubid));
+
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for rel %u of publication %u", relid, pubid);
+
+	adatum = SysCacheGetAttr(PUBLICATIONRELMAP, tup,
+							 Anum_pg_publication_rel_prattrs, &isnull);
+	if (isnull)
+		elog(ERROR, "found unexpected null in pg_publication_rel.prattrs");
+
+	arr = DatumGetArrayTypeP(adatum);
+	nelems = ARR_DIMS(arr)[0];
+	elems = (int16 *) ARR_DATA_PTR(arr);
+
+	for (int i = 0; i < nelems; i++)
+		attnos = lappend_oid(attnos, elems[i]);
+
+	ReleaseSysCache(tup);
+
+	return attnos;
 }
 
 /*

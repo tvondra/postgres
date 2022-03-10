@@ -7,12 +7,12 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-# setup
-
+# create publisher node
 my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
 $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
+# create subscriber node
 my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->append_conf('postgresql.conf',
@@ -829,6 +829,149 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM test_root ORDER BY a, b
    qq(1||
 10||),
    'publication via partition root applies column list');
+
+
+# TEST: Multiple publications which publish schema of parent table and
+# partition. The partition is published through two publications, once
+# through a schema (so no column list) containing the parent, and then
+# also directly (with a columns list). The expected outcome is there is
+# no column list.
+
+$node_publisher->safe_psql('postgres', qq(
+	DROP PUBLICATION pub1, pub2, pub3, pub4, pub5, pub6, pub7, pub8;
+
+	CREATE SCHEMA s1;
+	CREATE TABLE s1.t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF s1.t FOR VALUES FROM (1) TO (10);
+
+	INSERT INTO s1.t VALUES (1, 2, 3);
+
+	CREATE PUBLICATION pub1 FOR ALL TABLES IN SCHEMA s1;
+	CREATE PUBLICATION pub2 FOR TABLE t_1(b);
+));
+
+$node_subscriber->safe_psql('postgres', qq(
+	CREATE SCHEMA s1;
+	CREATE TABLE s1.t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF s1.t FOR VALUES FROM (1) TO (10);
+
+	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub1, pub2;
+));
+
+wait_for_subscription_sync($node_subscriber);
+
+$node_publisher->safe_psql('postgres', qq(
+	-- FIXME: INSERT INTO s1.t VALUES (4, 5, 6);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM s1.t ORDER BY a"),
+   qq(1|2|3
+4|5|6),
+   'two publications, publishing the same relation');
+
+# Now resync the subcription, but with publications in the opposite order.
+# The result should be the same.
+
+$node_subscriber->safe_psql('postgres', qq(
+	TRUNCATE s1.t;
+
+	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub2, pub1;
+));
+
+wait_for_subscription_sync($node_subscriber);
+
+$node_publisher->safe_psql('postgres', qq(
+	-- FIXME: INSERT INTO s1.t VALUES (7, 8, 9);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM s1.t ORDER BY a"),
+   qq(7|8|9),
+   'two publications, publishing the same relation');
+
+
+# TEST: One publication, containing both the parent and child relations.
+# The expected outcome is list "a", because that's the column list defined
+# for the top-most ancestor added to the publication.
+
+$node_publisher->safe_psql('postgres', qq(
+	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
+		   PARTITION BY RANGE (a);
+	CREATE TABLE t_2 PARTITION OF t_1 FOR VALUES FROM (1) TO (10);
+
+	INSERT INTO t VALUES (1, 2, 3);
+
+	CREATE PUBLICATION pub3 FOR TABLE t_1 (a), t_2
+	  WITH (PUBLISH_VIA_PARTITION_ROOT);
+));
+
+$node_subscriber->safe_psql('postgres', qq(
+	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
+		   PARTITION BY RANGE (a);
+	CREATE TABLE t_2 PARTITION OF t_1 FOR VALUES FROM (1) TO (10);
+
+	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub3;
+));
+
+wait_for_subscription_sync($node_subscriber);
+
+$node_publisher->safe_psql('postgres', qq(
+	INSERT INTO t VALUES (4, 5, 6);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM t ORDER BY a, b, c"),
+   qq(1||
+4||),
+   'publication containing both parent and child relation');
+
+
+# TEST: One publication, containing both the parent and child relations.
+# The expected outcome is list "a", because that's the column list defined
+# for the top-most ancestor added to the publication.
+# Note: The difference from the preceding test is that in this case both
+# relations have a column list defined.
+
+$node_publisher->safe_psql('postgres', qq(
+	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
+		   PARTITION BY RANGE (a);
+	CREATE TABLE t_2 PARTITION OF t_1 FOR VALUES FROM (1) TO (10);
+
+	INSERT INTO t VALUES (1, 2, 3);
+
+	CREATE PUBLICATION pub3 FOR TABLE t_1 (a), t_2 (b)
+	  WITH (PUBLISH_VIA_PARTITION_ROOT);
+));
+
+$node_subscriber->safe_psql('postgres', qq(
+	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
+	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
+		   PARTITION BY RANGE (a);
+	CREATE TABLE t_2 PARTITION OF t_1 FOR VALUES FROM (1) TO (10);
+
+	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub3;
+));
+
+wait_for_subscription_sync($node_subscriber);
+
+$node_publisher->safe_psql('postgres', qq(
+	INSERT INTO t VALUES (4, 5, 6);
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+is($node_subscriber->safe_psql('postgres',"SELECT * FROM t ORDER BY a, b, c"),
+   qq(1||
+4||),
+   'publication containing both parent and child relation');
+
 
 $node_subscriber->stop('fast');
 $node_publisher->stop('fast');

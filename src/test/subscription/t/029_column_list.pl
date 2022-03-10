@@ -861,7 +861,7 @@ $node_subscriber->safe_psql('postgres', qq(
 wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
-	-- FIXME: INSERT INTO s1.t VALUES (4, 5, 6);
+	INSERT INTO s1.t VALUES (4, 5, 6);
 ));
 
 $node_publisher->wait_for_catchup('sub1');
@@ -883,7 +883,7 @@ $node_subscriber->safe_psql('postgres', qq(
 wait_for_subscription_sync($node_subscriber);
 
 $node_publisher->safe_psql('postgres', qq(
-	-- FIXME: INSERT INTO s1.t VALUES (7, 8, 9);
+	INSERT INTO s1.t VALUES (7, 8, 9);
 ));
 
 $node_publisher->wait_for_catchup('sub1');
@@ -898,6 +898,7 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM s1.t ORDER BY a"),
 # for the top-most ancestor added to the publication.
 
 $node_publisher->safe_psql('postgres', qq(
+	DROP SCHEMA s1 CASCADE;
 	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
 	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
 		   PARTITION BY RANGE (a);
@@ -910,6 +911,7 @@ $node_publisher->safe_psql('postgres', qq(
 ));
 
 $node_subscriber->safe_psql('postgres', qq(
+	DROP SCHEMA s1 CASCADE;
 	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
 	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
 		   PARTITION BY RANGE (a);
@@ -939,6 +941,7 @@ is($node_subscriber->safe_psql('postgres',"SELECT * FROM t ORDER BY a, b, c"),
 # relations have a column list defined.
 
 $node_publisher->safe_psql('postgres', qq(
+	DROP TABLE t;
 	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
 	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
 		   PARTITION BY RANGE (a);
@@ -946,17 +949,18 @@ $node_publisher->safe_psql('postgres', qq(
 
 	INSERT INTO t VALUES (1, 2, 3);
 
-	CREATE PUBLICATION pub3 FOR TABLE t_1 (a), t_2 (b)
+	CREATE PUBLICATION pub4 FOR TABLE t_1 (a), t_2 (b)
 	  WITH (PUBLISH_VIA_PARTITION_ROOT);
 ));
 
 $node_subscriber->safe_psql('postgres', qq(
+	DROP TABLE t;
 	CREATE TABLE t (a int, b int, c int) PARTITION BY RANGE (a);
 	CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (1) TO (10)
 		   PARTITION BY RANGE (a);
 	CREATE TABLE t_2 PARTITION OF t_1 FOR VALUES FROM (1) TO (10);
 
-	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub3;
+	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub4;
 ));
 
 wait_for_subscription_sync($node_subscriber);

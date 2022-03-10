@@ -199,12 +199,18 @@ static EState *create_estate_for_relation(Relation rel);
 static void pgoutput_row_filter_init(PGOutputData *data,
 									 List *publications,
 									 RelationSyncEntry *entry);
+
 static bool pgoutput_row_filter_exec_expr(ExprState *state,
 										  ExprContext *econtext);
 static bool pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 								TupleTableSlot **new_slot_ptr,
 								RelationSyncEntry *entry,
 								ReorderBufferChangeType *action);
+
+/* column filter routines */
+static void pgoutput_column_filter_init(PGOutputData *data,
+										List *publications,
+										RelationSyncEntry *entry);
 
 /*
  * Specify output plugin callbacks
@@ -874,6 +880,108 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 
 		RelationClose(relation);
 	}
+}
+
+/*
+ * Initialize the column filter.
+ */
+static void
+pgoutput_column_filter_init(PGOutputData *data, List *publications,
+							RelationSyncEntry *entry)
+{
+	ListCell   *lc;
+	MemoryContext oldctx;
+
+	/*
+	 * Find if there are any row filters for this relation. If there are, then
+	 * prepare the necessary ExprState and cache it in entry->exprstate. To
+	 * build an expression state, we need to ensure the following:
+	 *
+	 * All the given publication-table mappings must be checked.
+	 *
+	 * Multiple publications might have multiple row filters for this
+	 * relation. Since row filter usage depends on the DML operation, there
+	 * are multiple lists (one for each operation) to which row filters will
+	 * be appended.
+	 *
+	 * FOR ALL TABLES implies "don't use row filter expression" so it takes
+	 * precedence.
+	 */
+	foreach(lc, publications)
+	{
+		Publication *pub = lfirst(lc);
+		HeapTuple	cftuple = NULL;
+		Datum		cfdatum = 0;
+		bool		pub_no_filter = false;
+
+		if (pub->alltables)
+		{
+			/*
+			 * If the publication is FOR ALL TABLES then it is treated the
+			 * same as if this table has no row filters (even if for other
+			 * publications it does).
+			 */
+			pub_no_filter = true;
+		}
+		else
+		{
+			/*
+			 * Check for the presence of a row filter in this publication.
+			 */
+			cftuple = SearchSysCache2(PUBLICATIONRELMAP,
+									  ObjectIdGetDatum(entry->publish_as_relid),
+									  ObjectIdGetDatum(pub->oid));
+
+			if (HeapTupleIsValid(cftuple))
+			{
+				/* Null indicates no filter. */
+				cfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, cftuple,
+										  Anum_pg_publication_rel_prattrs,
+										  &pub_no_filter);
+
+				/*
+				 * When no column list is defined, so publish all columns.
+				 * Otherwise merge the columns to the column list.
+				 */
+				if (!pub_no_filter)	/* when not null */
+				{
+					ArrayType  *arr;
+					int			nelems;
+					int16	   *elems;
+
+					arr = DatumGetArrayTypeP(cfdatum);
+					nelems = ARR_DIMS(arr)[0];
+					elems = (int16 *) ARR_DATA_PTR(arr);
+
+					/* XXX is there a danger of memory leak here? beware */
+					oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+					for (int i = 0; i < nelems; i++)
+						entry->columns = bms_add_member(entry->columns,
+														elems[i]);
+					MemoryContextSwitchTo(oldctx);
+				}
+			}
+			else
+			{
+				pub_no_filter = true;
+			}
+		}
+
+		/* found publication with no filter, so we're done */
+		if (pub_no_filter)
+		{
+			if (cftuple)
+				ReleaseSysCache(cftuple);
+
+			bms_free(entry->columns);
+			entry->columns = NULL;
+
+			break;
+		}
+
+		ReleaseSysCache(cftuple);
+	}							/* loop all subscribed publications */
+
 }
 
 /*
@@ -1770,7 +1878,6 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 		bool		am_partition = get_rel_relispartition(relid);
 		char		relkind = get_rel_relkind(relid);
 		List	   *rel_publications = NIL;
-		bool		all_columns = false;
 
 		/* Reload publications if needed before use. */
 		if (!publications_valid)
@@ -1926,82 +2033,8 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 					if (list_member_oid(ancestors, publish_as_relid))
 						continue;
 
-					/* Parent, so reset the column list etc. */
-					all_columns = false;
-					bms_free(entry->columns);
-					entry->columns = NULL;
-
 					/* Also remember the relation to publish changes as. */
 					publish_as_relid = publish_as_relid_tmp;
-				}
-
-				/*
-				 * Now update the column list - if this is a FOR ALL TABLES
-				 * publication, or publishing the relation through schema,
-				 * we treat it as empty column list (so all columns).
-				 */
-				if (pub->alltables ||
-					list_member_oid(schemaPubids, pub->oid))
-				{
-					all_columns = true;
-					bms_free(entry->columns);
-					entry->columns = NULL;
-					continue;
-				}
-
-				/*
-				 * Obtain columns published by this publication, and add them
-				 * to the list for this rel.  If the publication does not have
-				 * a column list, we replicate all columns.
-				 */
-				if (!all_columns)
-				{
-					HeapTuple	pub_rel_tuple;
-
-					pub_rel_tuple = SearchSysCache2(PUBLICATIONRELMAP,
-													ObjectIdGetDatum(publish_as_relid),
-													ObjectIdGetDatum(pub->oid));
-
-					if (HeapTupleIsValid(pub_rel_tuple))
-					{
-						Datum		pub_rel_cols;
-						bool		isnull;
-
-						pub_rel_cols = SysCacheGetAttr(PUBLICATIONRELMAP,
-													   pub_rel_tuple,
-													   Anum_pg_publication_rel_prattrs,
-													   &isnull);
-
-						/*
-						 * When no column list is defined, so publish all columns.
-						 * Otherwise merge the columns to the column list.
-						 */
-						if (isnull)
-						{
-							all_columns = true;
-							bms_free(entry->columns);
-							entry->columns = NULL;
-						}
-						else
-						{
-							ArrayType  *arr;
-							int			nelems;
-							int16	   *elems;
-
-							arr = DatumGetArrayTypeP(pub_rel_cols);
-							nelems = ARR_DIMS(arr)[0];
-							elems = (int16 *) ARR_DATA_PTR(arr);
-
-							/* XXX is there a danger of memory leak here? beware */
-							oldctx = MemoryContextSwitchTo(CacheMemoryContext);
-							for (int i = 0; i < nelems; i++)
-								entry->columns = bms_add_member(entry->columns,
-																elems[i]);
-							MemoryContextSwitchTo(oldctx);
-						}
-
-						ReleaseSysCache(pub_rel_tuple);
-					}
 				}
 			}
 		}
@@ -2020,6 +2053,9 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 
 			/* Initialize the row filter */
 			pgoutput_row_filter_init(data, rel_publications, entry);
+
+			/* Initialize the column filter */
+			pgoutput_column_filter_init(data, rel_publications, entry);
 		}
 
 		list_free(pubids);

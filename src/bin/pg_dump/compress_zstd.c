@@ -67,6 +67,11 @@ ZstdCStreamParams(pg_compress_specification compress)
 		ZSTD_CCtx_setParam_or_die(cstream, ZSTD_c_nbWorkers,
 								  compress.workers);
 
+	if (compress.options & PG_COMPRESSION_OPTION_LONG_DISTANCE)
+		ZSTD_CCtx_setParam_or_die(cstream,
+				ZSTD_c_enableLongDistanceMatching,
+				compress.long_distance);
+
 #if 0
 	if (compress.options & PG_COMPRESSION_OPTION_CHECKSUM)
 		ZSTD_CCtx_setParam_or_die(cstream, ZSTD_c_checksumFlag,

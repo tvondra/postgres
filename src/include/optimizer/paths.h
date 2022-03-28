@@ -24,6 +24,7 @@ extern PGDLLIMPORT bool enable_geqo;
 extern PGDLLIMPORT int geqo_threshold;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
+extern PGDLLIMPORT bool enable_group_by_reordering;
 
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
@@ -206,11 +207,6 @@ extern bool pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common)
 extern int group_keys_reorder_by_pathkeys(List *pathkeys,
 										  List **group_pathkeys,
 										  List **group_clauses);
-/************************<DEBUG OPT GROUP BY>*********************************/
-extern bool debug_group_by_reorder_by_pathkeys;
-extern bool debug_group_by_match_order_by;
-extern bool debug_cheapest_group_by;
-/************************</DEBUG OPT GROUP BY>********************************/
 extern List *get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
 											 List *path_pathkeys,
 											 List *pathkeys, List *clauses);

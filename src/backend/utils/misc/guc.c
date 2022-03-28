@@ -1183,6 +1183,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_group_by_reordering", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("enable reordering of GROUP BY key"),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_group_by_reordering,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "
@@ -2140,38 +2150,6 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
-/************************<DEBUG OPT GROUP BY>*********************************/
-	{
-		{"debug_group_by_reorder_by_pathkeys", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("enable reorder GROUP BY by pathkeys"),
-			NULL,
-			GUC_NOT_IN_SAMPLE
-		},
-		&debug_group_by_reorder_by_pathkeys,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"debug_enable_group_by_match_order_by", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("enable matching GROUP BY by ORDER BY."),
-			NULL,
-			GUC_NOT_IN_SAMPLE
-		},
-		&debug_group_by_match_order_by,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"debug_enable_cheapest_group_by", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("find a cheapest order of columns in GROUP BY."),
-			NULL,
-			GUC_NOT_IN_SAMPLE
-		},
-		&debug_cheapest_group_by,
-		true,
-		NULL, NULL, NULL
-	},
-/************************</DEBUG OPT GROUP BY>********************************/
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

@@ -31,6 +31,8 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
+/* Consider reordering of GROUP BY keys? */
+bool enable_group_by_reordering = true;
 
 static bool pathkey_is_redundant(PathKey *new_pathkey, List *pathkeys);
 static bool matches_boolean_partition_clause(RestrictInfo *rinfo,
@@ -337,12 +339,6 @@ pathkeys_contained_in(List *keys1, List *keys2)
 	return false;
 }
 
-/************************<DEBUG PART>*************************************/
-bool debug_group_by_reorder_by_pathkeys = true;
-bool debug_group_by_match_order_by = true;
-bool debug_cheapest_group_by = true;
-/************************</DEBUG PART>************************************/
-
 /*
  * group_keys_reorder_by_pathkeys
  *		Reorder GROUP BY keys to match pathkeys of input path.
@@ -360,9 +356,6 @@ group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 			   *new_group_clauses = NIL;
 	ListCell   *lc;
 	int			n;
-
-	if (debug_group_by_reorder_by_pathkeys == false)
-		return 0;
 
 	if (pathkeys == NIL || *group_pathkeys == NIL)
 		return 0;
@@ -598,10 +591,6 @@ get_cheapest_group_keys_order(PlannerInfo *root, double nrows,
 	int nFreeKeys;
 	int nToPermute;
 
-	/* If this optimization is disabled, we're done. */
-	if (!debug_cheapest_group_by)
-		return false;
-
 	/* If there are less than 2 unsorted pathkeys, we're done. */
 	if (list_length(*group_pathkeys) - n_preordered < 2)
 		return false;
@@ -771,6 +760,13 @@ get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
 
 	infos = lappend(infos, info);
 
+	/*
+	 * If the optimization is disabled, we consider only the pathkey order as
+	 * specified in the query. We don't do any reorderings.
+	 */
+	if (!enable_group_by_reordering)
+		return infos;
+
 	/* for grouping sets we can't do any reordering */
 	if (parse->groupingSets)
 		return infos;
@@ -834,7 +830,7 @@ get_useful_group_keys_orderings(PlannerInfo *root, double nrows,
 	 * XXX This does nothing if (n_preordered == 0). We shouldn't create the
 	 * info in this case.
 	 */
-	if (root->sort_pathkeys && debug_group_by_match_order_by)
+	if (root->sort_pathkeys)
 	{
 		n_preordered = group_keys_reorder_by_pathkeys(root->sort_pathkeys,
 													  &pathkeys,

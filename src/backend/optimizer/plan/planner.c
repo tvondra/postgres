@@ -6158,7 +6158,6 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 		{
 			ListCell   *lc2;
 			Path	   *path = (Path *) lfirst(lc);
-			Path	   *path_save = path;
 			Path	   *path_original = path;
 
 			List	   *pathkey_orderings = NIL;
@@ -6183,7 +6182,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
 
 				/* restore the path (we replace it in the loop) */
-				path = path_save;
+				path = path_original;
 
 				is_sorted = pathkeys_count_contained_in(info->pathkeys,
 														path->pathkeys,
@@ -6193,13 +6192,11 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				{
 					/* Sort the cheapest-total path if it isn't already sorted */
 					if (!is_sorted)
-					{
 						path = (Path *) create_sort_path(root,
 														 grouped_rel,
 														 path,
 														 info->pathkeys,
 														 -1.0);
-					}
 
 					/* Now decide what to stick atop it */
 					if (parse->groupingSets)
@@ -6370,7 +6367,6 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 					{
 						if (path != partially_grouped_rel->cheapest_total_path)
 							continue;
-
 						path = (Path *) create_sort_path(root,
 														 grouped_rel,
 														 path,

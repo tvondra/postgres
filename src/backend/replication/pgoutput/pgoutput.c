@@ -143,7 +143,7 @@ typedef struct RelationSyncEntry
 	 * replica identity index whereas inserts do not have this restriction, so
 	 * there is one ExprState per publication action.
 	 */
-	ExprState  *exprstate[NUM_ROWFILTER_PUBACTIONS];
+	dlist_head	pubinfos;		/* one per publication */
 	EState	   *estate;			/* executor state used for row filter */
 	TupleTableSlot *new_slot;	/* slot for storing new tuple */
 	TupleTableSlot *old_slot;	/* slot for storing old tuple */
@@ -821,6 +821,25 @@ pgoutput_ensure_entry_cxt(PGOutputData *data, RelationSyncEntry *entry)
 									  RelationGetRelationName(relation));
 }
 
+typedef struct PublicationInfo {
+
+	/* doubly-linked list */
+	dlist_node	node;
+
+	/* publication OID */
+	Oid			oid;
+
+	/* row filter (expression state) */
+	ExprState  *rowfilter;
+
+	/* column list */
+	Bitmapset  *columns;
+
+	/* actions published by the publication */
+	PublicationActions	pubactions;
+
+} PublicationInfo;
+
 /*
  * Initialize the row filter.
  */
@@ -829,11 +848,11 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 						 RelationSyncEntry *entry)
 {
 	ListCell   *lc;
-	List	   *rfnodes[] = {NIL, NIL, NIL};	/* One per pubaction */
-	bool		no_filter[] = {false, false, false};	/* One per pubaction */
+	// List	   *rfnodes[] = {NIL, NIL, NIL};	/* One per pubaction */
+	// bool		no_filter[] = {false, false, false};	/* One per pubaction */
 	MemoryContext oldctx;
-	int			idx;
-	bool		has_filter = true;
+
+	dlist_init(&entry->pubinfos);
 
 	/*
 	 * Find if there are any row filters for this relation. If there are, then
@@ -856,6 +875,9 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 		HeapTuple	rftuple = NULL;
 		Datum		rfdatum = 0;
 		bool		pub_no_filter = false;
+		Relation	relation = RelationIdGetRelation(entry->publish_as_relid);
+
+		PublicationInfo *pubinfo = NULL;
 
 		if (pub->alltables)
 		{
@@ -888,86 +910,33 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 			}
 		}
 
-		if (pub_no_filter)
-		{
-			if (rftuple)
-				ReleaseSysCache(rftuple);
-
-			no_filter[PUBACTION_INSERT] |= pub->pubactions.pubinsert;
-			no_filter[PUBACTION_UPDATE] |= pub->pubactions.pubupdate;
-			no_filter[PUBACTION_DELETE] |= pub->pubactions.pubdelete;
-
-			/*
-			 * Quick exit if all the DML actions are publicized via this
-			 * publication.
-			 */
-			if (no_filter[PUBACTION_INSERT] &&
-				no_filter[PUBACTION_UPDATE] &&
-				no_filter[PUBACTION_DELETE])
-			{
-				has_filter = false;
-				break;
-			}
-
-			/* No additional work for this publication. Next one. */
-			continue;
-		}
-
-		/* Form the per pubaction row filter lists. */
-		if (pub->pubactions.pubinsert && !no_filter[PUBACTION_INSERT])
-			rfnodes[PUBACTION_INSERT] = lappend(rfnodes[PUBACTION_INSERT],
-												TextDatumGetCString(rfdatum));
-		if (pub->pubactions.pubupdate && !no_filter[PUBACTION_UPDATE])
-			rfnodes[PUBACTION_UPDATE] = lappend(rfnodes[PUBACTION_UPDATE],
-												TextDatumGetCString(rfdatum));
-		if (pub->pubactions.pubdelete && !no_filter[PUBACTION_DELETE])
-			rfnodes[PUBACTION_DELETE] = lappend(rfnodes[PUBACTION_DELETE],
-												TextDatumGetCString(rfdatum));
-
-		ReleaseSysCache(rftuple);
-	}							/* loop all subscribed publications */
-
-	/* Clean the row filter */
-	for (idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
-	{
-		if (no_filter[idx])
-		{
-			list_free_deep(rfnodes[idx]);
-			rfnodes[idx] = NIL;
-		}
-	}
-
-	if (has_filter)
-	{
-		Relation	relation = RelationIdGetRelation(entry->publish_as_relid);
-
 		pgoutput_ensure_entry_cxt(data, entry);
 
-		/*
-		 * Now all the filters for all pubactions are known. Combine them when
-		 * their pubactions are the same.
-		 */
 		oldctx = MemoryContextSwitchTo(entry->entry_cxt);
-		entry->estate = create_estate_for_relation(relation);
-		for (idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
+
+		pubinfo = (PublicationInfo *) palloc0(sizeof(PublicationInfo));
+
+		pubinfo->oid = pub->oid;
+		pubinfo->pubactions = pub->pubactions;
+
+		if (!pub_no_filter)
 		{
-			List	   *filters = NIL;
-			Expr	   *rfnode;
+			entry->estate = create_estate_for_relation(relation);
 
-			if (rfnodes[idx] == NIL)
-				continue;
+			pubinfo->rowfilter
+				= ExecPrepareExpr(stringToNode(TextDatumGetCString(rfdatum)),
+								  entry->estate);
 
-			foreach(lc, rfnodes[idx])
-				filters = lappend(filters, stringToNode((char *) lfirst(lc)));
+			ReleaseSysCache(rftuple);
+		}
 
-			/* combine the row filter and cache the ExprState */
-			rfnode = make_orclause(filters);
-			entry->exprstate[idx] = ExecPrepareExpr(rfnode, entry->estate);
-		}						/* for each pubaction */
 		MemoryContextSwitchTo(oldctx);
-
 		RelationClose(relation);
-	}
+
+		dlist_push_tail(&entry->pubinfos, &pubinfo->node);
+
+	}							/* loop all subscribed publications */
+
 }
 
 /*
@@ -1171,13 +1140,17 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 {
 	TupleDesc	desc;
 	int			i;
-	bool		old_matched,
-				new_matched,
+	bool		old_matched_any = false,
+				new_matched_any = false,
 				result;
-	TupleTableSlot *tmp_new_slot;
+	TupleTableSlot *tmp_new_slot = NULL;
 	TupleTableSlot *new_slot = *new_slot_ptr;
-	ExprContext *ecxt;
-	ExprState  *filter_exprstate;
+	dlist_iter	iter;
+	Bitmapset  *columns = NULL;
+	bool		matching = false;
+
+	bool		transform_to_delete = false;
+	bool		transform_to_insert = false;
 
 	/*
 	 * We need this map to avoid relying on ReorderBufferChangeType enums
@@ -1195,115 +1168,148 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 
 	Assert(new_slot || old_slot);
 
-	/* Get the corresponding row filter */
-	filter_exprstate = entry->exprstate[map_changetype_pubaction[*action]];
-
-	/* Bail out if there is no row filter */
-	if (!filter_exprstate)
-		return true;
-
-	elog(DEBUG3, "table \"%s.%s\" has row filter",
-		 get_namespace_name(RelationGetNamespace(relation)),
-		 RelationGetRelationName(relation));
-
-	ResetPerTupleExprContext(entry->estate);
-
-	ecxt = GetPerTupleExprContext(entry->estate);
-
-	/*
-	 * For the following occasions where there is only one tuple, we can
-	 * evaluate the row filter for that tuple and return.
-	 *
-	 * For inserts, we only have the new tuple.
-	 *
-	 * For updates, we can have only a new tuple when none of the replica
-	 * identity columns changed and none of those columns have external data
-	 * but we still need to evaluate the row filter for the new tuple as the
-	 * existing values of those columns might not match the filter. Also, users
-	 * can use constant expressions in the row filter, so we anyway need to
-	 * evaluate it for the new tuple.
-	 *
-	 * For deletes, we only have the old tuple.
-	 */
-	if (!new_slot || !old_slot)
+	dlist_foreach(iter, &entry->pubinfos)
 	{
-		ecxt->ecxt_scantuple = new_slot ? new_slot : old_slot;
-		result = pgoutput_row_filter_exec_expr(filter_exprstate, ecxt);
+		ExprContext *ecxt;
+		bool		old_matched,
+					new_matched;
 
-		return result;
-	}
+		PublicationInfo  *pubinfo
+			= dlist_container(PublicationInfo, node, iter.cur);
 
-	/*
-	 * Both the old and new tuples must be valid only for updates and need to
-	 * be checked against the row filter.
-	 */
-	Assert(map_changetype_pubaction[*action] == PUBACTION_UPDATE);
-
-	slot_getallattrs(new_slot);
-	slot_getallattrs(old_slot);
-
-	tmp_new_slot = NULL;
-	desc = RelationGetDescr(relation);
-
-	/*
-	 * The new tuple might not have all the replica identity columns, in which
-	 * case it needs to be copied over from the old tuple.
-	 */
-	for (i = 0; i < desc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(desc, i);
-
-		/*
-		 * if the column in the new tuple or old tuple is null, nothing to do
-		 */
-		if (new_slot->tts_isnull[i] || old_slot->tts_isnull[i])
+		if ((*action == REORDER_BUFFER_CHANGE_INSERT) &&
+			(!pubinfo->pubactions.pubinsert))
+			continue;
+		else if ((*action == REORDER_BUFFER_CHANGE_UPDATE) &&
+				 (!pubinfo->pubactions.pubupdate))
+			continue;
+		else if ((*action == REORDER_BUFFER_CHANGE_DELETE) &&
+			(!pubinfo->pubactions.pubdelete))
 			continue;
 
-		/*
-		 * Unchanged toasted replica identity columns are only logged in the
-		 * old tuple. Copy this over to the new tuple. The changed (or WAL
-		 * Logged) toast values are always assembled in memory and set as
-		 * VARTAG_INDIRECT. See ReorderBufferToastReplace.
-		 */
-		if (att->attlen == -1 &&
-			VARATT_IS_EXTERNAL_ONDISK(new_slot->tts_values[i]) &&
-			!VARATT_IS_EXTERNAL_ONDISK(old_slot->tts_values[i]))
+		if (!pubinfo->rowfilter)
 		{
-			if (!tmp_new_slot)
-			{
-				tmp_new_slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
-				ExecClearTuple(tmp_new_slot);
-
-				memcpy(tmp_new_slot->tts_values, new_slot->tts_values,
-					   desc->natts * sizeof(Datum));
-				memcpy(tmp_new_slot->tts_isnull, new_slot->tts_isnull,
-					   desc->natts * sizeof(bool));
-			}
-
-			tmp_new_slot->tts_values[i] = old_slot->tts_values[i];
-			tmp_new_slot->tts_isnull[i] = old_slot->tts_isnull[i];
+			matching = true;
+			continue;
 		}
+
+		elog(DEBUG3, "table \"%s.%s\" has row filter",
+			get_namespace_name(RelationGetNamespace(relation)),
+			RelationGetRelationName(relation));
+
+		ResetPerTupleExprContext(entry->estate);
+
+		ecxt = GetPerTupleExprContext(entry->estate);
+
+		/*
+		 * For the following occasions where there is only one tuple, we can
+		 * evaluate the row filter for that tuple and return.
+		 *
+		 * For inserts, we only have the new tuple.
+		 *
+		 * For updates, we can have only a new tuple when none of the replica
+		 * identity columns changed and none of those columns have external data
+		 * but we still need to evaluate the row filter for the new tuple as the
+		 * existing values of those columns might not match the filter. Also, users
+		 * can use constant expressions in the row filter, so we anyway need to
+		 * evaluate it for the new tuple.
+		 *
+		 * For deletes, we only have the old tuple.
+		 */
+		if (!new_slot || !old_slot)
+		{
+			ecxt->ecxt_scantuple = new_slot ? new_slot : old_slot;
+			result = pgoutput_row_filter_exec_expr(pubinfo->rowfilter, ecxt);
+
+			matching |= result;
+			continue;
+		}
+
+		/*
+		 * Both the old and new tuples must be valid only for updates and need to
+		 * be checked against the row filter.
+		 */
+		Assert(map_changetype_pubaction[*action] == PUBACTION_UPDATE);
+
+		slot_getallattrs(new_slot);
+		slot_getallattrs(old_slot);
+
+		tmp_new_slot = NULL;
+		desc = RelationGetDescr(relation);
+
+		/*
+		 * The new tuple might not have all the replica identity columns, in which
+		 * case it needs to be copied over from the old tuple.
+		 */
+		for (i = 0; i < desc->natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(desc, i);
+
+			/*
+			 * if the column in the new tuple or old tuple is null, nothing to do
+			 */
+			if (new_slot->tts_isnull[i] || old_slot->tts_isnull[i])
+				continue;
+
+			/*
+			 * Unchanged toasted replica identity columns are only logged in the
+			 * old tuple. Copy this over to the new tuple. The changed (or WAL
+			 * Logged) toast values are always assembled in memory and set as
+			 * VARTAG_INDIRECT. See ReorderBufferToastReplace.
+			 */
+			if (att->attlen == -1 &&
+				VARATT_IS_EXTERNAL_ONDISK(new_slot->tts_values[i]) &&
+				!VARATT_IS_EXTERNAL_ONDISK(old_slot->tts_values[i]))
+			{
+				if (!tmp_new_slot)
+				{
+					tmp_new_slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+					ExecClearTuple(tmp_new_slot);
+
+					memcpy(tmp_new_slot->tts_values, new_slot->tts_values,
+						   desc->natts * sizeof(Datum));
+					memcpy(tmp_new_slot->tts_isnull, new_slot->tts_isnull,
+						   desc->natts * sizeof(bool));
+				}
+
+				tmp_new_slot->tts_values[i] = old_slot->tts_values[i];
+				tmp_new_slot->tts_isnull[i] = old_slot->tts_isnull[i];
+			}
+		}
+
+		ecxt->ecxt_scantuple = old_slot;
+
+		old_matched = pgoutput_row_filter_exec_expr(pubinfo->rowfilter, ecxt);
+		old_matched_any |= old_matched;
+
+		if (tmp_new_slot)
+		{
+			ExecStoreVirtualTuple(tmp_new_slot);
+			ecxt->ecxt_scantuple = tmp_new_slot;
+		}
+		else
+			ecxt->ecxt_scantuple = new_slot;
+
+		new_matched = pgoutput_row_filter_exec_expr(pubinfo->rowfilter, ecxt);
+		new_matched_any |= new_matched;
+
+		elog(WARNING, "old_matched = %d new_matched = %d", old_matched, new_matched);
+
+		/*
+		 * Case 1: if both tuples don't match the row filter, bailout. Send
+		 * nothing.
+		 */
+		if (!old_matched && !new_matched)
+			continue;	/* continue with the next row filter */
+
+		/*
+		 * Case 4: if both tuples match the row filter, transformation isn't
+		 * required. (*action is default UPDATE).
+		 */
+		// matching = true;
 	}
 
-	ecxt->ecxt_scantuple = old_slot;
-	old_matched = pgoutput_row_filter_exec_expr(filter_exprstate, ecxt);
-
-	if (tmp_new_slot)
-	{
-		ExecStoreVirtualTuple(tmp_new_slot);
-		ecxt->ecxt_scantuple = tmp_new_slot;
-	}
-	else
-		ecxt->ecxt_scantuple = new_slot;
-
-	new_matched = pgoutput_row_filter_exec_expr(filter_exprstate, ecxt);
-
-	/*
-	 * Case 1: if both tuples don't match the row filter, bailout. Send
-	 * nothing.
-	 */
-	if (!old_matched && !new_matched)
-		return false;
+	elog(WARNING, "ANY old_matched = %d new_matched = %d", old_matched_any, new_matched_any);
 
 	/*
 	 * Case 2: if the old tuple doesn't satisfy the row filter but the new
@@ -1314,9 +1320,9 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 	 * while inserting the tuple in the downstream node, we have all the
 	 * required column values.
 	 */
-	if (!old_matched && new_matched)
+	if (!old_matched_any && new_matched_any)
 	{
-		*action = REORDER_BUFFER_CHANGE_INSERT;
+		transform_to_insert = true;
 
 		if (tmp_new_slot)
 			*new_slot_ptr = tmp_new_slot;
@@ -1329,15 +1335,25 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 	 * This transformation does not require another tuple. The Old tuple will
 	 * be used for DELETE.
 	 */
-	else if (old_matched && !new_matched)
+	else if (old_matched_any && !new_matched_any)
+		transform_to_delete = true;
+	else if (old_matched_any && new_matched_any)
+		matching = true;
+
+	if (!matching && transform_to_insert)
+	{
+		elog(WARNING, "transform to insert");
+		*action = REORDER_BUFFER_CHANGE_INSERT;
+		matching = true;
+	}
+	else if (!matching && transform_to_delete)
+	{
+		elog(WARNING, "transform to delete");
 		*action = REORDER_BUFFER_CHANGE_DELETE;
-
-	/*
-	 * Case 4: if both tuples match the row filter, transformation isn't
-	 * required. (*action is default UPDATE).
-	 */
-
-	return true;
+		matching = true;
+	}
+elog(WARNING, "matching %d", matching);
+	return matching;
 }
 
 /*
@@ -1977,7 +1993,8 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 			entry->pubactions.pubdelete = entry->pubactions.pubtruncate = false;
 		entry->new_slot = NULL;
 		entry->old_slot = NULL;
-		memset(entry->exprstate, 0, sizeof(entry->exprstate));
+		// memset(entry->exprstate, 0, sizeof(entry->exprstate));
+		dlist_init(&entry->pubinfos);
 		entry->entry_cxt = NULL;
 		entry->publish_as_relid = InvalidOid;
 		entry->columns = NULL;
@@ -2056,7 +2073,8 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 
 		entry->entry_cxt = NULL;
 		entry->estate = NULL;
-		memset(entry->exprstate, 0, sizeof(entry->exprstate));
+		// memset(entry->exprstate, 0, sizeof(entry->exprstate));
+		dlist_init(&entry->pubinfos);
 
 		/*
 		 * Build publication cache. We can't use one provided by relcache as

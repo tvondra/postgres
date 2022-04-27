@@ -1163,19 +1163,22 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 
 			matching |= result;
 
-			/* FIXME refactor to reuse this code in multiple places */
+			/*
+			 * FIXME refactor to reuse this code in multiple places
+			 * 
+			 * XXX Should this only update column list when using new slot?
+			 * If evaluationg old slot, that's delete, no?
+			 */
 			if (result)
 			{
 				if (!pubinfo->columns)
 				{
-					elog(WARNING, "pubinfo %p all columns", pubinfo);
 					all_columns = true;
 					bms_free(columns);
 					columns = NULL;
 				}
 				else if (!all_columns)
 				{
-					elog(WARNING, "merging %d %p %p", pubinfo->oid, columns, pubinfo->columns);
 					columns = bms_union(columns, pubinfo->columns);
 				}
 			}
@@ -1251,8 +1254,6 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 		new_matched = pgoutput_row_filter_exec_expr(pubinfo->rowfilter, ecxt);
 		new_matched_any |= new_matched;
 
-		elog(WARNING, "old_matched = %d new_matched = %d", old_matched, new_matched);
-
 		/*
 		 * Case 1: if both tuples don't match the row filter, bailout. Send
 		 * nothing.
@@ -1267,19 +1268,13 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 		// matching = true;
 		if (!pubinfo->columns)
 		{
-			elog(WARNING, "pubinfo %p all columns", pubinfo);
 			all_columns = true;
 			bms_free(columns);
 			columns = NULL;
 		}
 		else if (!all_columns && new_matched)
-		{
-			elog(WARNING, "merging %d %p %p", pubinfo->oid, columns, pubinfo->columns);
 			columns = bms_union(columns, pubinfo->columns);
-		}
 	}
-
-	elog(WARNING, "ANY old_matched = %d new_matched = %d", old_matched_any, new_matched_any);
 
 	/*
 	 * Case 2: if the old tuple doesn't satisfy the row filter but the new
@@ -1312,17 +1307,14 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 
 	if (!matching && transform_to_insert)
 	{
-		elog(WARNING, "transform to insert");
 		*action = REORDER_BUFFER_CHANGE_INSERT;
 		matching = true;
 	}
 	else if (!matching && transform_to_delete)
 	{
-		elog(WARNING, "transform to delete");
 		*action = REORDER_BUFFER_CHANGE_DELETE;
 		matching = true;
 	}
-elog(WARNING, "matching %d all columns %d", matching, all_columns);
 
 	if (column_list)
 		*column_list = columns;
@@ -1432,8 +1424,6 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			 * also sends the ancestor's relation.
 			 */
 			maybe_send_schema(ctx, change, relation, relentry);
-
-			elog(WARNING, "relentry->columns %p columns %p", relentry->columns, columns);
 
 			OutputPluginPrepareWrite(ctx, true);
 			logicalrep_write_insert(ctx->out, xid, targetrel, new_slot,

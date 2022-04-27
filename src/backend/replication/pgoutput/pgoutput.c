@@ -235,12 +235,8 @@ static bool pgoutput_row_filter_exec_expr(ExprState *state,
 static bool pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 								TupleTableSlot **new_slot_ptr,
 								RelationSyncEntry *entry,
-								ReorderBufferChangeType *action);
-
-/* column list routines */
-static void pgoutput_column_list_init(PGOutputData *data,
-									  List *publications,
-									  RelationSyncEntry *entry);
+								ReorderBufferChangeType *action,
+								Bitmapset **column_list);
 
 /*
  * Specify output plugin callbacks
@@ -851,6 +847,7 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 	// List	   *rfnodes[] = {NIL, NIL, NIL};	/* One per pubaction */
 	// bool		no_filter[] = {false, false, false};	/* One per pubaction */
 	MemoryContext oldctx;
+	bool		all_columns = false;
 
 	dlist_init(&entry->pubinfos);
 
@@ -874,7 +871,9 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 		Publication *pub = lfirst(lc);
 		HeapTuple	rftuple = NULL;
 		Datum		rfdatum = 0;
+		Datum		cfdatum = 0;
 		bool		pub_no_filter = false;
+		bool		pub_no_list = false;
 		Relation	relation = RelationIdGetRelation(entry->publish_as_relid);
 
 		PublicationInfo *pubinfo = NULL;
@@ -887,6 +886,7 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 			 * publications it does).
 			 */
 			pub_no_filter = true;
+			pub_no_list = true;
 		}
 		else
 		{
@@ -903,10 +903,20 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 				rfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
 										  Anum_pg_publication_rel_prqual,
 										  &pub_no_filter);
+
+				/*
+				 * Lookup the column list attribute.
+				 *
+				 * Null indicates no list.
+				 */
+				cfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
+										  Anum_pg_publication_rel_prattrs,
+										  &pub_no_list);
 			}
 			else
 			{
 				pub_no_filter = true;
+				pub_no_list = true;
 			}
 		}
 
@@ -926,9 +936,31 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 			pubinfo->rowfilter
 				= ExecPrepareExpr(stringToNode(TextDatumGetCString(rfdatum)),
 								  entry->estate);
-
-			ReleaseSysCache(rftuple);
 		}
+
+		/*
+		 * Build the column list bitmap in the per-entry context.
+		 *
+		 * We need to merge column lists from all publications, so we
+		 * update the same bitmapset. If the column list is null, we
+		 * interpret it as replicating all columns.
+		 */
+		pubinfo->columns = NULL;
+		if (!pub_no_list)	/* when not null */
+		{
+			pubinfo->columns = pub_collist_to_bitmapset(pubinfo->columns,
+														cfdatum,
+														entry->entry_cxt);
+
+			entry->columns = pub_collist_to_bitmapset(entry->columns,
+													  cfdatum,
+													  entry->entry_cxt);
+		}
+		else
+			all_columns = true;
+
+		if (HeapTupleIsValid(rftuple))
+			ReleaseSysCache(rftuple);
 
 		MemoryContextSwitchTo(oldctx);
 		RelationClose(relation);
@@ -937,105 +969,11 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 
 	}							/* loop all subscribed publications */
 
+	/* any of the publications replicates all columns */
+	if (all_columns)
+		entry->columns = NULL;
 }
 
-/*
- * Initialize the column list.
- */
-static void
-pgoutput_column_list_init(PGOutputData *data, List *publications,
-						  RelationSyncEntry *entry)
-{
-	ListCell   *lc;
-
-	/*
-	 * Find if there are any column lists for this relation. If there are,
-	 * build a bitmap merging all the column lists.
-	 *
-	 * All the given publication-table mappings must be checked.
-	 *
-	 * Multiple publications might have multiple column lists for this relation.
-	 *
-	 * FOR ALL TABLES and FOR ALL TABLES IN SCHEMA implies "don't use column
-	 * list" so it takes precedence.
-	 */
-	foreach(lc, publications)
-	{
-		Publication *pub = lfirst(lc);
-		HeapTuple	cftuple = NULL;
-		Datum		cfdatum = 0;
-
-		/*
-		 * Assume there's no column list. Only if we find pg_publication_rel
-		 * entry with a column list we'll switch it to false.
-		 */
-		bool		pub_no_list = true;
-
-		/*
-		 * If the publication is FOR ALL TABLES then it is treated the same as if
-		 * there are no column lists (even if other publications have a list).
-		 */
-		if (!pub->alltables)
-		{
-			/*
-			 * Check for the presence of a column list in this publication.
-			 *
-			 * Note: If we find no pg_publication_rel row, it's a publication
-			 * defined for a whole schema, so it can't have a column list, just
-			 * like a FOR ALL TABLES publication.
-			 */
-			cftuple = SearchSysCache2(PUBLICATIONRELMAP,
-									  ObjectIdGetDatum(entry->publish_as_relid),
-									  ObjectIdGetDatum(pub->oid));
-
-			if (HeapTupleIsValid(cftuple))
-			{
-				/*
-				 * Lookup the column list attribute.
-				 *
-				 * Note: We update the pub_no_list value directly, because if
-				 * the value is NULL, we have no list (and vice versa).
-				 */
-				cfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, cftuple,
-										  Anum_pg_publication_rel_prattrs,
-										  &pub_no_list);
-
-				/*
-				 * Build the column list bitmap in the per-entry context.
-				 *
-				 * We need to merge column lists from all publications, so we
-				 * update the same bitmapset. If the column list is null, we
-				 * interpret it as replicating all columns.
-				 */
-				if (!pub_no_list)	/* when not null */
-				{
-					pgoutput_ensure_entry_cxt(data, entry);
-
-					entry->columns = pub_collist_to_bitmapset(entry->columns,
-															  cfdatum,
-															  entry->entry_cxt);
-				}
-			}
-		}
-
-		/*
-		 * Found a publication with no column list, so we're done. But first
-		 * discard column list we might have from preceding publications.
-		 */
-		if (pub_no_list)
-		{
-			if (cftuple)
-				ReleaseSysCache(cftuple);
-
-			bms_free(entry->columns);
-			entry->columns = NULL;
-
-			break;
-		}
-
-		ReleaseSysCache(cftuple);
-	}							/* loop all subscribed publications */
-}
 
 /*
  * Initialize the slot for storing new and old tuples, and build the map that
@@ -1136,7 +1074,7 @@ init_tuple_slot(PGOutputData *data, Relation relation,
 static bool
 pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 					TupleTableSlot **new_slot_ptr, RelationSyncEntry *entry,
-					ReorderBufferChangeType *action)
+					ReorderBufferChangeType *action, Bitmapset **column_list)
 {
 	TupleDesc	desc;
 	int			i;
@@ -1147,6 +1085,7 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 	TupleTableSlot *new_slot = *new_slot_ptr;
 	dlist_iter	iter;
 	Bitmapset  *columns = NULL;
+	bool		all_columns = false;
 	bool		matching = false;
 
 	bool		transform_to_delete = false;
@@ -1189,6 +1128,7 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 
 		if (!pubinfo->rowfilter)
 		{
+			// FIXME should merge the column list even in this case
 			matching = true;
 			continue;
 		}
@@ -1222,6 +1162,24 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 			result = pgoutput_row_filter_exec_expr(pubinfo->rowfilter, ecxt);
 
 			matching |= result;
+
+			/* FIXME refactor to reuse this code in multiple places */
+			if (result)
+			{
+				if (!pubinfo->columns)
+				{
+					elog(WARNING, "pubinfo %p all columns", pubinfo);
+					all_columns = true;
+					bms_free(columns);
+					columns = NULL;
+				}
+				else if (!all_columns)
+				{
+					elog(WARNING, "merging %d %p %p", pubinfo->oid, columns, pubinfo->columns);
+					columns = bms_union(columns, pubinfo->columns);
+				}
+			}
+
 			continue;
 		}
 
@@ -1307,6 +1265,18 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 		 * required. (*action is default UPDATE).
 		 */
 		// matching = true;
+		if (!pubinfo->columns)
+		{
+			elog(WARNING, "pubinfo %p all columns", pubinfo);
+			all_columns = true;
+			bms_free(columns);
+			columns = NULL;
+		}
+		else if (!all_columns)
+		{
+			elog(WARNING, "merging %d %p %p", pubinfo->oid, columns, pubinfo->columns);
+			columns = bms_union(columns, pubinfo->columns);
+		}
 	}
 
 	elog(WARNING, "ANY old_matched = %d new_matched = %d", old_matched_any, new_matched_any);
@@ -1352,7 +1322,11 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 		*action = REORDER_BUFFER_CHANGE_DELETE;
 		matching = true;
 	}
-elog(WARNING, "matching %d", matching);
+elog(WARNING, "matching %d all columns %d", matching, all_columns);
+
+	if (column_list)
+		*column_list = columns;
+
 	return matching;
 }
 
@@ -1375,6 +1349,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	ReorderBufferChangeType action = change->action;
 	TupleTableSlot *old_slot = NULL;
 	TupleTableSlot *new_slot = NULL;
+	Bitmapset	   *columns = NULL;
 
 	if (!is_publishable_relation(relation))
 		return;
@@ -1439,7 +1414,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 			/* Check row filter */
 			if (!pgoutput_row_filter(targetrel, NULL, &new_slot, relentry,
-									 &action))
+									 &action, &columns))
 				break;
 
 			/*
@@ -1458,9 +1433,12 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			 */
 			maybe_send_schema(ctx, change, relation, relentry);
 
+			elog(WARNING, "relentry->columns %p columns %p", relentry->columns, columns);
+
 			OutputPluginPrepareWrite(ctx, true);
 			logicalrep_write_insert(ctx->out, xid, targetrel, new_slot,
-									data->binary, relentry->columns);
+									data->binary,
+									relentry->columns, columns);
 			OutputPluginWrite(ctx, true);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
@@ -1499,7 +1477,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 			/* Check row filter */
 			if (!pgoutput_row_filter(targetrel, old_slot, &new_slot,
-									 relentry, &action))
+									 relentry, &action, &columns))
 				break;
 
 			/* Send BEGIN if we haven't yet */
@@ -1519,12 +1497,12 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				case REORDER_BUFFER_CHANGE_INSERT:
 					logicalrep_write_insert(ctx->out, xid, targetrel,
 											new_slot, data->binary,
-											relentry->columns);
+											relentry->columns, columns);
 					break;
 				case REORDER_BUFFER_CHANGE_UPDATE:
 					logicalrep_write_update(ctx->out, xid, targetrel,
 											old_slot, new_slot, data->binary,
-											relentry->columns);
+											relentry->columns, columns);
 					break;
 				case REORDER_BUFFER_CHANGE_DELETE:
 					logicalrep_write_delete(ctx->out, xid, targetrel,
@@ -1563,7 +1541,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 				/* Check row filter */
 				if (!pgoutput_row_filter(targetrel, old_slot, &new_slot,
-										 relentry, &action))
+										 relentry, &action, NULL))
 					break;
 
 				/* Send BEGIN if we haven't yet */
@@ -2214,7 +2192,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 			pgoutput_row_filter_init(data, rel_publications, entry);
 
 			/* Initialize the column list */
-			pgoutput_column_list_init(data, rel_publications, entry);
+			// pgoutput_column_list_init(data, rel_publications, entry);
 		}
 
 		list_free(pubids);

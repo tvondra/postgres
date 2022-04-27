@@ -33,7 +33,9 @@ static void logicalrep_write_attrs(StringInfo out, Relation rel,
 								   Bitmapset *columns);
 static void logicalrep_write_tuple(StringInfo out, Relation rel,
 								   TupleTableSlot *slot,
-								   bool binary, Bitmapset *columns);
+								   bool binary,
+								   Bitmapset *schema_columns,
+								   Bitmapset *columns);
 static void logicalrep_read_attrs(StringInfo in, LogicalRepRelation *rel);
 static void logicalrep_read_tuple(StringInfo in, LogicalRepTupleData *tuple);
 
@@ -412,7 +414,8 @@ logicalrep_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
  */
 void
 logicalrep_write_insert(StringInfo out, TransactionId xid, Relation rel,
-						TupleTableSlot *newslot, bool binary, Bitmapset *columns)
+						TupleTableSlot *newslot, bool binary,
+						Bitmapset *schema_columns, Bitmapset *columns)
 {
 	pq_sendbyte(out, LOGICAL_REP_MSG_INSERT);
 
@@ -424,7 +427,8 @@ logicalrep_write_insert(StringInfo out, TransactionId xid, Relation rel,
 	pq_sendint32(out, RelationGetRelid(rel));
 
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	logicalrep_write_tuple(out, rel, newslot, binary, columns);
+	logicalrep_write_tuple(out, rel, newslot, binary,
+						   schema_columns, columns);
 }
 
 /*
@@ -457,7 +461,8 @@ logicalrep_read_insert(StringInfo in, LogicalRepTupleData *newtup)
 void
 logicalrep_write_update(StringInfo out, TransactionId xid, Relation rel,
 						TupleTableSlot *oldslot, TupleTableSlot *newslot,
-						bool binary, Bitmapset *columns)
+						bool binary, Bitmapset *schema_columns,
+						Bitmapset *columns)
 {
 	pq_sendbyte(out, LOGICAL_REP_MSG_UPDATE);
 
@@ -478,11 +483,12 @@ logicalrep_write_update(StringInfo out, TransactionId xid, Relation rel,
 			pq_sendbyte(out, 'O');	/* old tuple follows */
 		else
 			pq_sendbyte(out, 'K');	/* old key follows */
-		logicalrep_write_tuple(out, rel, oldslot, binary, NULL);
+		logicalrep_write_tuple(out, rel, oldslot, binary, NULL, NULL);
 	}
 
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	logicalrep_write_tuple(out, rel, newslot, binary, columns);
+	logicalrep_write_tuple(out, rel, newslot, binary,
+						   schema_columns, columns);
 }
 
 /*
@@ -551,7 +557,7 @@ logicalrep_write_delete(StringInfo out, TransactionId xid, Relation rel,
 	else
 		pq_sendbyte(out, 'K');	/* old key follows */
 
-	logicalrep_write_tuple(out, rel, oldslot, binary, NULL);
+	logicalrep_write_tuple(out, rel, oldslot, binary, NULL, NULL);
 }
 
 /*
@@ -766,7 +772,8 @@ logicalrep_read_typ(StringInfo in, LogicalRepTyp *ltyp)
  */
 static void
 logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
-					   bool binary, Bitmapset *columns)
+					   bool binary,
+					   Bitmapset *schema_columns, Bitmapset *columns)
 {
 	TupleDesc	desc;
 	Datum	   *values;
@@ -783,7 +790,7 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 		if (att->attisdropped || att->attgenerated)
 			continue;
 
-		if (!column_in_column_list(att->attnum, columns))
+		if (!column_in_column_list(att->attnum, schema_columns))
 			continue;
 
 		nliveatts++;
@@ -804,10 +811,23 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 		if (att->attisdropped || att->attgenerated)
 			continue;
 
-		if (!column_in_column_list(att->attnum, columns))
+		/*
+		 * Columns that are not in schema (union of column lists) should
+		 * be skipped entirely.
+		 */
+		if (!column_in_column_list(att->attnum, schema_columns))
 			continue;
 
-		if (isnull[i])
+		/*
+		 * Columns not in the column list (derived consindering row filters)
+		 * we just send NULL.
+		 *
+		 * XXX Not sure this is quite correct, though. Imagine you replicate
+		 * values for columns (A,B), but it changes the row filter. Can we
+		 * send NULL that would overwrite "proper" value replicated earlier?
+		 */
+		if (isnull[i] ||
+			!column_in_column_list(att->attnum, columns))
 		{
 			pq_sendbyte(out, LOGICALREP_COLUMN_NULL);
 			continue;

@@ -1272,7 +1272,7 @@ pgoutput_row_filter(Relation relation, TupleTableSlot *old_slot,
 			bms_free(columns);
 			columns = NULL;
 		}
-		else if (!all_columns)
+		else if (!all_columns && new_matched)
 		{
 			elog(WARNING, "merging %d %p %p", pubinfo->oid, columns, pubinfo->columns);
 			columns = bms_union(columns, pubinfo->columns);

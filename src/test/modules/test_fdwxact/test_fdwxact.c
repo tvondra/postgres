@@ -56,6 +56,7 @@ typedef struct testFdwXactSharedState
 } testFdwXactSharedState;
 testFdwXactSharedState *fxss = NULL;
 
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static bool log_api_calls = false;
 
@@ -67,6 +68,7 @@ PG_FUNCTION_INFO_V1(test_2pc_fdw_handler);
 PG_FUNCTION_INFO_V1(test_inject_error);
 PG_FUNCTION_INFO_V1(test_reset_error);
 
+static void test_fdwxact_shmem_request(void);
 static void test_fdwxact_shmem_startup(void);
 static bool check_event(char *servername, char *phase, int *elevel);
 static void testGetForeignRelSize(PlannerInfo *root,
@@ -127,8 +129,8 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
-	RequestAddinShmemSpace(MAXALIGN(sizeof(testFdwXactSharedState)));
-	RequestNamedLWLockTranche("test_fdwxact", 1);
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = test_fdwxact_shmem_request;
 
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = test_fdwxact_shmem_startup;
@@ -138,7 +140,23 @@ void
 _PG_fini(void)
 {
 	/* Uninstall hooks. */
+	shmem_request_hook = prev_shmem_request_hook;
 	shmem_startup_hook = prev_shmem_startup_hook;
+}
+
+
+/*
+ * shmem_request hook: request additional shared resources.  We'll allocate or
+ * attach to the shared resources in pgss_shmem_startup().
+ */
+static void
+test_fdwxact_shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(MAXALIGN(sizeof(testFdwXactSharedState)));
+	RequestNamedLWLockTranche("test_fdwxact", 1);
 }
 
 static void

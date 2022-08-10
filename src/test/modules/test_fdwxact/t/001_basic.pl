@@ -1,11 +1,12 @@
 use File::Copy qw/copy move/;
+
 use strict;
 use warnings;
-use PostgresNode;
-use TestLib;
-use Test::More tests => 7;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
 
-my $node = get_new_node('main');
+my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->append_conf('postgresql.conf', qq(
 shared_preload_libraries = 'test_fdwxact'
@@ -61,7 +62,7 @@ sub run_transaction
 	$node->poll_query_until('postgres',
 							"SELECT count(*) = $expected FROM pg_foreign_xacts");
 
-	my $log = TestLib::slurp_file($node->logfile);
+	my $log = slurp_file($node->logfile);
 
 	return $log, $stdout;
 }
@@ -108,3 +109,5 @@ $node->safe_psql('postgres', "COMMIT PREPARED 'tx1'");
 like($log, qr/rollback $xid on srv_2pc_1/, "rollback on failed server");
 like($log, qr/rollback prepared tx_$xid on srv_2pc_1/, "rollback prepared on failed server");
 like($log, qr/rollback .* on srv_2pc_2/, "rollback on another server");
+
+done_testing();

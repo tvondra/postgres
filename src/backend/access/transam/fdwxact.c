@@ -914,7 +914,8 @@ FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent, char *identifier)
 	START_CRIT_SECTION();
 
 	/* See note in RecordTransactionCommit */
-	MyProc->delayChkpt = true;
+	Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
+	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 
 	/* Add the entry in the xlog and save LSN for checkpointer */
 	XLogBeginInsert();
@@ -930,7 +931,7 @@ FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent, char *identifier)
 	fdwxact->valid = true;
 
 	/* Checkpoint can process now */
-	MyProc->delayChkpt = false;
+	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 
 	END_CRIT_SECTION();
 
@@ -1037,7 +1038,8 @@ remove_fdwxact(FdwXactState fdwxact)
 		 */
 		START_CRIT_SECTION();
 
-		MyProc->delayChkpt = true;
+		Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
+		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 
 		/*
 		 * Log that we are removing the foreign transaction entry and remove
@@ -1051,7 +1053,7 @@ remove_fdwxact(FdwXactState fdwxact)
 		XLogFlush(recptr);
 
 		/* Now we can mark ourselves as out of the commit critical section */
-		MyProc->delayChkpt = false;
+		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 
 		END_CRIT_SECTION();
 	}

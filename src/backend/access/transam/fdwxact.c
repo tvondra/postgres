@@ -1631,7 +1631,6 @@ XlogReadFdwXactData(XLogRecPtr lsn, char **buf, int *len)
 	XLogRecord *record;
 	XLogReaderState *xlogreader;
 	char	   *errormsg;
-	TimeLineID	save_currtli = ThisTimeLineID;
 
 	xlogreader = XLogReaderAllocate(wal_segment_size, NULL,
 									XL_ROUTINE(.page_read = &read_local_xlog_page,
@@ -1647,13 +1646,6 @@ XlogReadFdwXactData(XLogRecPtr lsn, char **buf, int *len)
 
 	XLogBeginRead(xlogreader, lsn);
 	record = XLogReadRecord(xlogreader, &errormsg);
-
-	/*
-	 * Restore immediately the timeline where it was previously, as
-	 * read_local_xlog_page() could have changed it if the record was read
-	 * while recovery was finishing or if the timeline has jumped in-between.
-	 */
-	ThisTimeLineID = save_currtli;
 
 	if (record == NULL)
 		ereport(ERROR,

@@ -718,7 +718,7 @@ begin_remote_xact(ConnCacheEntry *entry, UserMapping *user)
 			 entry->conn);
 
 		/* Register the foreign server to the transaction */
-		FdwXactRegisterEntry(user);
+		FdwXactRegisterEntry(user, false);
 
 		if (IsolationIsSerializable())
 			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";

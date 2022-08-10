@@ -88,11 +88,11 @@ FdwXactResolverDetach(void)
 	 * Force to send remaining WAL statistics to the stats collector at
 	 * process exit.
 	 *
-	 * Since pgstat_send_wal is invoked with 'force' is false in main loop
+	 * Since pgstat_report_wal is invoked with 'force' is false in main loop
 	 * to avoid overloading to the stats collector, there may exist unsent
 	 * stats counters for the WAL writer.
 	 */
-	pgstat_send_wal(true);
+	pgstat_report_wal(true);
 }
 
 /*
@@ -219,7 +219,7 @@ FdwXactResolverLoop(void)
 		sleep_time = FdwXactResolverComputeSleepTime(now);
 
 		/* Send WAL statistics to the stats collector */
-		pgstat_send_wal(false);
+		pgstat_report_wal(false);
 
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

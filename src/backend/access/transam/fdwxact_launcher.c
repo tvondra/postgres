@@ -387,9 +387,9 @@ RelaunchFdwXactResolvers(void)
 								   32, &ctl, HASH_ELEM | HASH_BLOBS);
 
 	LWLockAcquire(FdwXactLock, LW_SHARED);
-	for (int i = 0; i < FdwXactCtl->num_xacts; i++)
+	for (int i = 0; i < FdwXactCount(); i++)
 	{
-		FdwXactState fdwxact = FdwXactCtl->xacts[i];
+		FdwXactState fdwxact = FdwXactGetState(i);
 
 		if (!fdwxact->valid)
 			continue;

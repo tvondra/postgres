@@ -65,26 +65,6 @@ typedef struct FdwXactStateData
 	bool		inredo;			/* true if entry was added via xlog_redo */
 } FdwXactStateData;
 
-/*
- * Shared memory layout for maintaining foreign prepared transaction entries.
- * Adding or removing FdwXactState entry needs to hold FdwXactLock in exclusive mode,
- * and iterating fdwXacts needs that in shared mode.
- */
-typedef struct
-{
-	/* Head of linked list of free FdwXactStateData structs */
-	FdwXactState	free_fdwxacts;
-
-	/* Number of valid foreign transaction entries */
-	int	num_xacts;
-
-	/* Upto max_prepared_foreign_xacts entries in the array */
-	FdwXactState	xacts[FLEXIBLE_ARRAY_MEMBER];	/* Variable length array */
-} FdwXactCtlData;
-
-/* Pointer to the shared memory holding the foreign transactions data */
-FdwXactCtlData *FdwXactCtl;
-
 /* State data for foreign transaction resolution, passed to FDW callbacks */
 typedef struct FdwXactInfo
 {
@@ -116,5 +96,8 @@ extern void ResolveOneFdwXact(FdwXactState fdwxact);
 extern void RestoreFdwXactData(void);
 extern void RecoverFdwXacts(void);
 extern TransactionId PrescanFdwXacts(TransactionId oldestActiveXid);
+
+extern int	FdwXactCount(void);
+extern FdwXactState FdwXactGetState(int i);
 
 #endif /* FDWXACT_H */

@@ -302,9 +302,9 @@ FdwXactResolverProcessInDoubtXacts(void)
 
 	/* Hold all in-doubt foreign transactions */
 	LWLockAcquire(FdwXactLock, LW_EXCLUSIVE);
-	for (int i = 0; i < FdwXactCtl->num_xacts; i++)
+	for (int i = 0; i < FdwXactCount(); i++)
 	{
-		FdwXactState fdwxact = FdwXactCtl->xacts[i];
+		FdwXactState fdwxact = FdwXactGetState(i);
 
 		if (fdwxact->valid &&
 			fdwxact->locking_backend == InvalidBackendId &&

@@ -178,6 +178,26 @@ typedef struct FdwXactEntry
 } FdwXactEntry;
 
 /*
+ * Shared memory layout for maintaining foreign prepared transaction entries.
+ * Adding or removing FdwXactState entry needs to hold FdwXactLock in exclusive mode,
+ * and iterating fdwXacts needs that in shared mode.
+ */
+typedef struct
+{
+	/* Head of linked list of free FdwXactStateData structs */
+	FdwXactState	free_fdwxacts;
+
+	/* Number of valid foreign transaction entries */
+	int	num_xacts;
+
+	/* Upto max_prepared_foreign_xacts entries in the array */
+	FdwXactState	xacts[FLEXIBLE_ARRAY_MEMBER];	/* Variable length array */
+} FdwXactCtlData;
+
+/* Pointer to the shared memory holding the foreign transactions data */
+static FdwXactCtlData *FdwXactCtl = NULL;
+
+/*
  * The current distributed transaction state.  Members of participants
  * must support at least both commit and rollback APIs
  * (i.g., ServerSupportTransactionCallback() is true).
@@ -759,7 +779,7 @@ static void
 PrepareAllFdwXacts(TransactionId xid)
 {
 	FdwXactEntry *fdwent;
-	XLogRecPtr	flush_lsn;
+	XLogRecPtr	flush_lsn = InvalidXLogRecPtr;
 	bool	canceled;
 	HASH_SEQ_STATUS scan;
 
@@ -790,6 +810,10 @@ PrepareAllFdwXacts(TransactionId xid)
 		 */
 		flush_lsn = FdwXactInsertEntry(xid, fdwent, identifier);
 	}
+
+	/* We only get here when there are transactions to prepare, so the LSN
+	 * should have been set. */
+	Assert(flush_lsn != InvalidXLogRecPtr);
 
 	HOLD_INTERRUPTS();
 
@@ -2145,4 +2169,16 @@ pg_remove_foreign_xact(PG_FUNCTION_ARGS)
 	LWLockRelease(FdwXactLock);
 
 	PG_RETURN_BOOL(true);
+}
+
+extern int
+FdwXactCount(void)
+{
+	return FdwXactCtl->num_xacts;
+}
+
+extern FdwXactState
+FdwXactGetState(int i)
+{
+	return FdwXactCtl->xacts[i];
 }

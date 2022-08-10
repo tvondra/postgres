@@ -1,13 +1,13 @@
 # Tests for transaction involving foreign servers
 use strict;
 use warnings;
-use PostgresNode;
-use TestLib;
-use Test::More tests => 7;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
 
 # Setup master node
-my $node_master = get_new_node("master");
-my $node_standby = get_new_node("standby");
+my $node_master = PostgreSQL::Test::Cluster->new("master");
+my $node_standby = PostgreSQL::Test::Cluster->new("standby");
 
 $node_master->init(allows_streaming => 1);
 $node_master->append_conf('postgresql.conf', qq(
@@ -30,8 +30,8 @@ $node_standby->init_from_backup($node_master, $backup_name,
 $node_standby->start;
 
 # Set up foreign nodes
-my $node_fs1 = get_new_node("fs1");
-my $node_fs2 = get_new_node("fs2");
+my $node_fs1 = PostgreSQL::Test::Cluster->new("fs1");
+my $node_fs2 = PostgreSQL::Test::Cluster->new("fs2");
 my $fs1_port = $node_fs1->port;
 my $fs2_port = $node_fs2->port;
 $node_fs1->init;
@@ -173,3 +173,5 @@ $result = $node_standby->psql('postgres', qq(COMMIT PREPARED 'gxid1';));
 is($result, 0, 'Commit foreign transaction after promotion');
 $result = $node_standby->psql('postgres', qq(ROLLBACK PREPARED 'gxid2';));
 is($result, 0, 'Rollback foreign transaction after promotion');
+
+done_testing();

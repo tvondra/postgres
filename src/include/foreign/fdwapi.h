@@ -192,6 +192,10 @@ typedef void (*ForeignAsyncConfigureWait_function) (AsyncRequest *areq);
 
 typedef void (*ForeignAsyncNotify_function) (AsyncRequest *areq);
 
+/*
+ * XXX I'm a bit unsure if we want to pass FdwXactInfo, or just individual
+ * parameters (in which case FdwXactInfo would be internal only).
+ */
 typedef void (*CommitForeignTransaction_function) (FdwXactInfo *finfo);
 typedef void (*RollbackForeignTransaction_function) (FdwXactInfo *finfo);
 

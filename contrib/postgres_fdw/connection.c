@@ -5,6 +5,10 @@
  *
  * Portions Copyright (c) 2012-2022, PostgreSQL Global Development Group
  *
+ * XXX There have been a couple changes in pgfdw_xact_callback, and we may
+ * need to keep some of them after the rebase (but add them to a different
+ * place, of course).
+ *
  * IDENTIFICATION
  *		  contrib/postgres_fdw/connection.c
  *
@@ -131,6 +135,10 @@ static bool disconnect_cached_connections(Oid serverid);
  *
  * If state is not NULL, *state receives the per-connection state associated
  * with the PGconn.
+ *
+ * XXX I suggest to do the refactoring (creating GetConnectionCacheEntry)
+ * in a separate patch first, and then do the new stuff. That makes it much
+ * easier to see the actual changes, rebase stuff etc.
  */
 PGconn *
 GetConnection(UserMapping *user, bool will_prep_stmt, PgFdwConnState **state)
@@ -687,6 +695,12 @@ do_sql_command_end(PGconn *conn, const char *sql, bool consume_input)
  * those scans.  A disadvantage is that we can't provide sane emulation of
  * READ COMMITTED behavior --- it would be nice if we had some other way to
  * control which remote queries share a snapshot.
+ *
+ * XXX Why do we need the extra UserMapping parameter? The connection entry
+ * is mapped to the user 1:1, so we could just store the pointer there. In
+ * fact, it even uses the UserMapping Oid as the key, so we kinda already
+ * have that (and FdwXactRegisterEntry does a lookup anyway, to ensure we
+ * have a copy in a proper memory context, so we might just pass the Oid).
  */
 static void
 begin_remote_xact(ConnCacheEntry *entry, UserMapping *user)
@@ -1422,6 +1436,16 @@ pgfdw_abort_cleanup(ConnCacheEntry *entry, bool toplevel)
 /*
  * Finish pre-commit cleanup of connections on each of which we've sent a
  * COMMIT command to the remote server.
+ *
+ * XXX This ends up unused after a rebase, due to the patch getting rid of
+ * pgfdw_xact_callback, so maybe we need to keep of this? Maybe check what
+ * changes were done in pgfdw_xact_callback and add them to the appropriate
+ * place in the patch.
+ *
+ * XXX Maybe it's not needed, though, due to handling parallel commit in
+ * a different way?
+ *
+ * XXX Perhaps pgfdw_cleanup_after_transaction should do some of this?
  */
 static void
 pgfdw_finish_pre_commit_cleanup(List *pending_entries)
@@ -1743,6 +1767,10 @@ disconnect_cached_connections(Oid serverid)
 	return result;
 }
 
+/*
+ * XXX This is missing comments, and maybe it should be in postgres_fdw.c
+ * along with the other FDW callbacks?
+ */
 void
 postgresCommitForeignTransaction(FdwXactInfo *finfo)
 {
@@ -1790,6 +1818,10 @@ postgresCommitForeignTransaction(FdwXactInfo *finfo)
 	pgfdw_cleanup_after_transaction(entry);
 }
 
+/*
+ * XXX This is missing comments, and maybe it should be in postgres_fdw.c
+ * along with the other FDW callbacks?
+ */
 void
 postgresRollbackForeignTransaction(FdwXactInfo *finfo)
 {
@@ -1895,7 +1927,7 @@ pgfdw_cleanup_after_transaction(ConnCacheEntry *entry)
 	 * Regardless of the event type, we can now mark ourselves as out of the
 	 * transaction.
 	 */
-   xact_got_connection = false;
+	xact_got_connection = false;
 
 	/* Also reset cursor numbering for next transaction */
 	cursor_number = 0;

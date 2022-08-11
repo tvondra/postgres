@@ -370,6 +370,15 @@ make_new_connection(ConnCacheEntry *entry, UserMapping *user)
 		 entry->conn, server->servername, user->umid, user->userid);
 }
 
+/*
+ * This seems pretty pointless, because we might have earily shipped a function
+ * that modifies data on the remote server in various ways. If we really think
+ * this optimization makes sense, we probably need to do some other check, e.g.
+ * if the session has a XID assigned, or something like that.
+ *
+ * But it might be easier to just do the PREPARE EVERYWHERE, assuming it's going
+ * to be pretty check with no changes.
+ */
 void
 MarkConnectionModified(UserMapping *user)
 {

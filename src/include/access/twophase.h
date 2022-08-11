@@ -38,6 +38,8 @@ extern TransactionId TwoPhaseGetXidByVirtualXID(VirtualTransactionId vxid,
 												bool *have_more);
 extern PGPROC *TwoPhaseGetDummyProc(TransactionId xid, bool lock_held);
 extern BackendId TwoPhaseGetDummyBackendId(TransactionId xid, bool lock_held);
+
+/* XXX Maybe TwoPhaseExistsFoxXid? Otherwise it might seem xid is expected to be 2PC, which it's not. */
 extern bool	TwoPhaseExists(TransactionId xid);
 
 extern GlobalTransaction MarkAsPreparing(TransactionId xid, const char *gid,

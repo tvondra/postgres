@@ -1459,7 +1459,6 @@ RemoveUserMapping(DropUserMappingStmt *stmt)
 
 	user_mapping_ddl_aclcheck(useId, srv->serverid, srv->servername);
 
-
 	/*
 	 * Do the deletion
 	 */
@@ -1471,6 +1470,7 @@ RemoveUserMapping(DropUserMappingStmt *stmt)
 
 	return umId;
 }
+
 
 /*
  * Create a foreign table

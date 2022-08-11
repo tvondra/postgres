@@ -181,6 +181,24 @@ typedef struct FdwXactEntry
  * Shared memory layout for maintaining foreign prepared transaction entries.
  * Adding or removing FdwXactState entry needs to hold FdwXactLock in exclusive mode,
  * and iterating fdwXacts needs that in shared mode.
+ *
+ * XXX I suggest we include the FdwXactState struct here, and only expose
+ * a simple forward declaration in fdwxact.h. No need to expose the internal
+ * stuff there, I think.
+ *
+ * XXX I think we've stopped doing the Data + pointer pairs some time ago.
+ * It still exists in old code, but we don't use it for new stuff.
+ *
+ * XXX Explain that the empty entries are organized in a linked list, to
+ * quickly pick the next free entry. Maybe there should be a function doing
+ * thorough consistency with asserts (AssertCheckFdwXactCtl or something),
+ * and for the local stuff too.
+ *
+ * XXX Apparently, this stores FdwXactState, but then also FdwXactStateData
+ * right after that. At least that's what FdwXactShmemSize/FdwXactShmemInit
+ * seems to do. Not sure why? Why not to store just FdwXactStateData array?
+ * After all, FdwXactState is merely a pointer to FdwXactStateData, so what
+ * would we get from this?
  */
 typedef struct
 {
@@ -204,6 +222,9 @@ static FdwXactCtlData *FdwXactCtl = NULL;
  *
  * XXX Should be "e.g." instead of "i.g."? Also, clearly Entry is the
  * same as Participants.
+ *
+ * XXX I wonder if we should have a separate memory context for this,
+ * if only to make it clearer what consumes the memory.
  */
 typedef struct DistributedXactStateData
 {
@@ -218,6 +239,7 @@ typedef struct DistributedXactStateData
 	List	   *serveroids_uniq;	/* list of unique server OIDs in
 									 * participants */
 } DistributedXactStateData;
+
 static DistributedXactStateData DistributedXactState = {
 	.local_prepared = false,
 	.nparticipants_no_twophase = 0,
@@ -336,6 +358,7 @@ FdwXactShmemInit(void)
 			((char *) FdwXactCtl +
 			 MAXALIGN(offsetof(FdwXactCtlData, xacts) +
 					  sizeof(FdwXactState) * max_prepared_foreign_xacts));
+
 		for (cnt = 0; cnt < max_prepared_foreign_xacts; cnt++)
 		{
 			fdwxacts[cnt].status = FDWXACT_STATUS_INVALID;
@@ -459,6 +482,9 @@ RemoveFdwXactEntry(Oid umid)
 
 /*
  * Commit or rollback all foreign transactions.
+ *
+ * XXX This probably deserves a better commit. Clearly, we don't do
+ * any commits here, just aborts, so the comment is wrong.
  */
 void
 AtEOXact_FdwXact(bool isCommit, bool is_parallel_worker)
@@ -505,6 +531,9 @@ AtEOXact_FdwXact(bool isCommit, bool is_parallel_worker)
 			 * is in-progress.  Since the transaction might have been already
 			 * prepared on the foreign we set the status to aborting and leave
 			 * it.
+			 *
+			 * xxx So is this a synchronous abort? Are we waiting for a response?
+			 * In principle we don't need to do that (unlike for commit).
 			 */
 			SpinLockAcquire(&(fdwxact->mutex));
 			status = fdwxact->status;
@@ -517,12 +546,24 @@ AtEOXact_FdwXact(bool isCommit, bool is_parallel_worker)
 	}
 
 	/* Unlock all participants */
+	/* XXX Unlock? The function name says "forget". This however leaves
+	 * behind the entries in shared memory, maybe the comment should
+	 * mention that. */
 	ForgetAllParticipants();
 
 	/*
 	 * Launch the resolver processes if we failed to prepare the local
 	 * transaction after preparing the foreign transactions.  In this case, we
 	 * need to rollback the prepared transaction on the foreign servers.
+	 *
+	 * XXX Hmmm, would it make sense to try launching the resolvers earlier?
+	 * Although it we're not waiting for them, that may not be needed.
+	 *
+	 * XXX But we call this from PrepareTransaction - does that mean we will
+	 * try resolving the transaction over and over, until it eventually gets
+	 * committed/rolledback locally? Maybe we should really poke the resolvers
+	 * only from FinishPreparedTransaction()? Although, we already call
+	 * FdwXactLaunchResolversForXid() from there ...
 	 */
 	if (DistributedXactState.local_prepared && !isCommit)
 		FdwXactLaunchResolvers();
@@ -548,7 +589,7 @@ EndFdwXactEntry(FdwXactEntry *fdwent, bool isCommit, bool is_parallel_worker)
 	finfo.usermapping = fdwent->usermapping;
 	finfo.flags = FDWXACT_FLAG_ONEPHASE |
 		((is_parallel_worker) ? FDWXACT_FLAG_PARALLEL_WORKER : 0);
-	finfo.identifier = NULL;
+	finfo.identifier = NULL;	/* XXX Shouldn't we pfree this? */
 
 	if (isCommit)
 	{
@@ -590,8 +631,9 @@ AtPrepare_FdwXact(void)
 				 errmsg("cannot PREPARE a distributed transaction that has operated on a foreign server not supporting two-phase commit protocol")));
 
 	/*
-	 * Assign a transaction id if not yet because the local transaction id
-	 * is needed to determine the result of the distributed transaction.
+	 * Make sure the local transaction has a proper transaction ID. We will
+	 * use the local transaction to determine the result of the distributed
+	 * one (e.g. during retry) so we need a proper commit/rollback record.
 	 */
 	xid = GetTopTransactionId();
 
@@ -600,6 +642,11 @@ AtPrepare_FdwXact(void)
 	 * any foreign trasactions so that in a case where an error happens during
 	 * preparing a foreign transaction or preparing the local transaction, we can
 	 * launch a resolver to rollback already-prepared foreign transactions.
+	 *
+	 * XXX I'm not sure I understand this. Why do we need this flag? Surely
+	 * if any prepare fails, we know we need to rollback the transactions?
+	 * In principle, we the backend could crash/exit, in which case we lose
+	 * the flag anyway, right?
 	 */
 	DistributedXactState.local_prepared = true;
 
@@ -619,10 +666,13 @@ PreCommit_FdwXact(bool is_parallel_worker)
 	/*
 	 * If there is no foreign server involved or all foreign transactions are
 	 * already prepared (see AtPrepare_FdwXact()), we have no business here.
+	 *
+	 * XXX This doesn't explain why we check the local_prepared flag too.
 	 */
 	if (!HasFdwXactParticipant() || DistributedXactState.local_prepared)
 		return;
 
+	/* XXX Why isn't this assert at the beginning? */
 	Assert(!RecoveryInProgress());
 
 	/* Commit all foreign transactions in the participant list */
@@ -672,9 +722,13 @@ CountFdwXactsForDB(Oid dbid)
 /*
  * We must fsync the foreign transaction state file that is valid or generated
  * during redo and has a inserted LSN <= the checkpoint's redo horizon.
- * The foreign transaction entries and hence the corresponding files are expected
+ *
+ * XXX Why only inserted_LSN <= redo horizon? We don't ant extra records for
+ * future transactions, right?
+ *
+ * Foreign transaction entries (and thus the corresponding files) are expected
  * to be very short-lived. By executing this function at the end, we might have
- * lesser files to fsync, thus reducing some I/O. This is similar to
+ * fewer files to fsync, thus reducing the amount of I/O. This is similar to
  * CheckPointTwoPhase().
  *
  * This is deliberately run as late as possible in the checkpoint sequence,
@@ -683,6 +737,11 @@ CountFdwXactsForDB(Oid dbid)
  * exist if we wait a little bit. With typical checkpoint settings this
  * will be about 3 minutes for an online checkpoint, so as a result we
  * expect that there will be no FdwXactStates that need to be copied to disk.
+ *
+ * XXX This just repeats (with a bit more detail) the preceding paragraph, no?
+ *
+ * XXX This fails to mention that the information is read from WAL, which may
+ * be quite significant source of I/O (perhaps worse than the write/fsync).
  *
  * If a FdwXactState remains valid across multiple checkpoints, it will already
  * be on disk so we don't bother to repeat that write.
@@ -726,6 +785,9 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
 			int			len;
 
 			XlogReadFdwXactData(fdwxact->insert_start_lsn, &buf, &len);
+
+			/* XXX Why "recreate"? Does that mean we're simply discarding old
+			 * file, which might be e.g. corrupted after a crash? */
 			RecreateFdwXactFile(fdwxact->data.xid, fdwxact->data.umid, buf, len);
 			fdwxact->ondisk = true;
 			fdwxact->insert_start_lsn = InvalidXLogRecPtr;
@@ -755,7 +817,8 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
 }
 
 /*
- * Prepare all foreign transactions.
+ * PrepareAllFdwXacts
+ *		Prepare and WAL-log foreign transactions.
  *
  * The basic strategy is to create all FdwXactState entries with WAL-logging,
  * wait for those WAL records to be replicated if synchronous replication is
@@ -774,6 +837,15 @@ CheckPointFdwXacts(XLogRecPtr redo_horizon)
  * able to resolve it after the server crash.  Hence  persist first then prepare.
  * Point (b) guarantees that foreign transaction information are not lost even
  * if the failover happens.
+ *
+ * XXX Well, we might do the wait for flush / sync replica after each record,
+ * but that seems like a pretty inefficient thing. Better to WAL-log everything
+ * and then wait just once, I guess. Or do I not understand the failure modes?
+ *
+ * XXX What seems annoying is that we issue all the prepares synchronously, while
+ * we could parallelize that quite easily by issuing the PREPARE TRANSACTION for
+ * all nodes, and only then waiting for all the replies. But that does require
+ * a different commit/rollback callback API - with a start/stop phase.
  */
 static void
 PrepareAllFdwXacts(TransactionId xid)
@@ -815,6 +887,14 @@ PrepareAllFdwXacts(TransactionId xid)
 	 * should have been set. */
 	Assert(flush_lsn != InvalidXLogRecPtr);
 
+	/*
+	 * XXX Pretty sure we should do a flush here, before starting the syncrep
+	 * wait. FdwXactInsertEntry doesn't do the flush (and it should not, IMO)
+	 * and other SyncRepWaitForLSN callers (like RecordTransactionCommit) do
+	 * call XLogFlush. Otherwise we might wait for a long time, if there's not
+	 * much other WAL activity.
+	 */
+
 	HOLD_INTERRUPTS();
 
 	/* Wait for all WAL records to be replicated, if necessary */
@@ -847,6 +927,8 @@ PrepareAllFdwXacts(TransactionId xid)
 		 * Prepare the foreign transaction.  Between FdwXactInsertEntry call
 		 * till this backend hears acknowledge from foreign server, the
 		 * backend may abort the local transaction (say, because of a signal).
+		 *
+		 * XXX Can we just do this without holding the mutex?
 		 */
 		finfo.server = fdwent->server;
 		finfo.usermapping = fdwent->usermapping;
@@ -865,17 +947,46 @@ PrepareAllFdwXacts(TransactionId xid)
 
 /*
  * Return a null-terminated foreign transaction identifier.  We generate an
- * unique identifier with in the form of
+ * unique identifier with the format
  * "fx_<random number>_<xid>_<umid> whose length is less than FDWXACT_ID_MAX_LEN.
  *
  * Returned string value is used to identify foreign transaction. The
  * identifier should not be same as any other concurrent prepared transaction
  * identifier.
  *
- * To make the foreign transactionid unique, we should ideally use something
+ * To make the foreign transaction ID unique, we should ideally use something
  * like UUID, which gives unique ids with high probability, but that may be
  * expensive here and UUID extension which provides the function to generate
  * UUID is not part of the core code.
+ *
+ * XXX I'm not even sure we can just generte arbitrary ID, to be honest, and
+ * this part of the API may need rethinking. I'm no expert in XA, but from
+ * cursory reading of the spec [1] (p. 19-20) it seems the "official" format
+ * is not arbitrary and different from what we have. So it seems possible
+ * other databases may not allow/understand "our" format.
+ *
+ * XXX But even worse, do all XA resources allow specifying a custom XID?
+ * Maybe they allow calling PREPARE and only then you get the XID so that
+ * you can commit it? I did check Oracle and it does not seem to allow
+ * specifying GLOBAL_TRAN_ID, which is always in the format
+ *
+ *    global_db_name.db_hex_id.local_tran_id
+ *
+ * so entirely different from what we have. There's TRAN_COMMENT so maybe
+ * we could use that?
+ *
+ * XXX However, it might be better to allow the "prepare" callback to allow
+ * returning the XID, instead of having to generate it in advance. Of course,
+ * that does not address the case where we fail right after issuing prepare,
+ * but maybe we can WAL-log at least some identifying information (which would
+ * help us to resolve the XACT later)?
+ *
+ * XXX Also, the XA spec suggests the XID can be up to 128 bytes (well, plus a
+ * "long" format field), but this allows 200B. And then later GetPrepareId is
+ * documented to allow only 64 bytes (NAMEDATALEN). Shouldn't this match?
+ *
+ * [1] https://pubs.opengroup.org/onlinepubs/009680699/toc.pdf
+ * [2] https://docs.oracle.com/cd/E18283_01/server.112/e17120/ds_txnman003.htm
  */
 static char *
 getFdwXactIdentifier(FdwXactEntry *fdwent, TransactionId xid)
@@ -889,8 +1000,18 @@ getFdwXactIdentifier(FdwXactEntry *fdwent, TransactionId xid)
 }
 
 /*
- * This function insert a new FdwXactState entry to the global array with
+ * This function inserts a new FdwXactState entry to the global array with
  * WAL-logging. The new entry is held by the backend who inserted.
+ *
+ * XXX I wonder if we might track / WAL-log other info too. For example, if
+ * we WAL-log enough info to open a connection, we could use the same resolver
+ * for all databases (because we would not require access to per-db objects
+ * like foreign servers / user mapping etc.). But maybe that would not work
+ * because of invalidations etc.?
+ *
+ * XXX It seems pretty confusing that we have a number of "insert" functions
+ * like FdwXactInsertEntry, insert_fdwxact (and same fore "remove" funcs),
+ * without clear indication *where* are we adding the stuff.
  */
 static XLogRecPtr
 FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent, char *identifier)
@@ -928,6 +1049,10 @@ FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent, char *identifier)
 	/*
 	 * Prepare to write the entry to a file. Also add xlog entry. The contents
 	 * of the xlog record are same as what is written to the file.
+	 *
+	 * XXX This is misleading, because we're not actually writing anything
+	 * to a file (particularly not to the xact state file, which is generated
+	 * by a checkpoint). We're only generating the data to be written to WAL.
 	 */
 	data_len = offsetof(FdwXactStateOnDiskData, identifier);
 	data_len = data_len + strlen(identifier) + 1;
@@ -969,6 +1094,12 @@ FdwXactInsertEntry(TransactionId xid, FdwXactEntry *fdwent, char *identifier)
  * must hold FdwXactLock in exclusive mode.
  *
  * If the entry already exists, the function raises an error.
+ *
+ * XXX I don't understand why we need the duplicate check. Maybe that should be
+ * an assert instead?
+ *
+ * XXX But if we do the sequential scan to check duplicity, doesn't that mean
+ * we don't need the freelist? Surely we can remember the first empty entry.
  */
 static FdwXactState
 insert_fdwxact(Oid dbid, TransactionId xid, Oid umid, Oid serverid, Oid owner,
@@ -1003,6 +1134,7 @@ insert_fdwxact(Oid dbid, TransactionId xid, Oid umid, Oid serverid, Oid owner,
 				 errhint("Increase max_prepared_foreign_transactions: \"%d\".",
 						 max_prepared_foreign_xacts)));
 	}
+
 	fdwxact = FdwXactCtl->free_fdwxacts;
 	FdwXactCtl->free_fdwxacts = fdwxact->fdwxact_free_next;
 
@@ -1032,6 +1164,10 @@ insert_fdwxact(Oid dbid, TransactionId xid, Oid umid, Oid serverid, Oid owner,
 /*
  * Remove the foreign prepared transaction entry from shared memory.
  * Caller must hold FdwXactLock in exclusive mode.
+ *
+ * XXX This fails to mention it's also removes the xact state file, which
+ * seems like a fairly important thing.
+ *
  */
 static void
 remove_fdwxact(FdwXactState fdwxact)
@@ -1074,6 +1210,12 @@ remove_fdwxact(FdwXactState fdwxact)
 		recptr = XLogInsert(RM_FDWXACT_ID, XLOG_FDWXACT_REMOVE);
 
 		/* Always flush, since we're about to remove the FdwXact state file */
+		/*
+		 * XXX Do we actually need/want to do this flush now? Firstly, the
+		 * fdwxact may not be on disk, so maybe we can check that. Secondly,
+		 * what if we're processing multiple entries - can't we do just one
+		 * flush later for all of them, and then go and remove all the files?
+		 */
 		XLogFlush(recptr);
 
 		/* Now we can mark ourselves as out of the commit critical section */
@@ -1113,6 +1255,9 @@ remove_fdwxact(FdwXactState fdwxact)
 
 /*
  * When the process exits, unlock all the entries.
+ *
+ * XXX This does far more than just "unlocking" entries. It also starts the
+ * resolvers, and it should briefly explain what happens to remaining xacts.
  */
 static void
 AtProcExit_FdwXact(int code, Datum arg)
@@ -1146,6 +1291,10 @@ ForgetAllParticipants(void)
 
 		if (fdwxact)
 		{
+			/*
+			 * XXX Is it legal to access the locking_backend without
+			 * acquiring the lock first?
+			 */
 			Assert(fdwxact->locking_backend == MyBackendId);
 
 			/* Unlock the foreign transaction entry */
@@ -1179,6 +1328,16 @@ FdwXactLaunchResolvers(void)
 
 /*
  * Launch or wake up the resolver to resolve the given transaction.
+ *
+ * XXX The naming here seems a bit confused whether we're dealing with
+ * a single server or multiple ones. Presumably, we may need multiple
+ * resolvers - one for each remote server. So we collect the OIDs, but
+ * then we call LaunchOrWakeupFdwXactResolver, which talks about one
+ * server.
+ *
+ * XXX In fact, shouldn't this be resolver per-database? And even that
+ * seems a bit strange, maybe we should allow multiple resolvers for
+ * a single DB?
  */
 void
 FdwXactLaunchResolversForXid(TransactionId xid)
@@ -1358,6 +1517,8 @@ FdwXactGetTransactionFate(TransactionId xid)
  * and during checkpoint creation.
  *
  * Note: content and len don't include CRC.
+ *
+ * XXX Why is it OK to discard the existing content of the file?
  */
 void
 RecreateFdwXactFile(TransactionId xid, Oid umid, void *content, int len)
@@ -1458,11 +1619,11 @@ fdwxact_redo(XLogReaderState *record)
  * XIDs present.  This is run during database startup, after we have completed
  * reading WAL.	 ShmemVariableCache->nextXid has been set to one more than
  * the highest XID for which evidence exists in WAL.
-
+ *
  * On corrupted two-phase files, fail immediately.	Keeping around broken
  * entries and let replay continue causes harm on the system, and a new
  * backup should be rolled in.
-
+ *
  * Our other responsibility is to update and return the oldest valid XID
  * among the distributed transactions. This is needed to synchronize pg_subtrans
  * startup properly.
@@ -1512,6 +1673,10 @@ RestoreFdwXactData(void)
 	cldir = AllocateDir(FDWXACTS_DIR);
 	while ((clde = ReadDir(cldir, FDWXACTS_DIR)) != NULL)
 	{
+		/*
+		 * XXX shouldn't we error out if these checks fail? Suggests there
+		 * is garbage in the pg_fdwxact directory.
+		 */
 		if (strlen(clde->d_name) == FDWXACT_FILE_NAME_LEN &&
 			strspn(clde->d_name, "0123456789ABCDEF_") == FDWXACT_FILE_NAME_LEN)
 		{
@@ -1524,6 +1689,8 @@ RestoreFdwXactData(void)
 			/* Read fdwxact data from disk */
 			buf = ProcessFdwXactBuffer(xid, umid, InvalidXLogRecPtr,
 									   true);
+
+			/* XXX We're reading the data from file, so how could this be NULL? */
 			if (buf == NULL)
 				continue;
 
@@ -1537,10 +1704,12 @@ RestoreFdwXactData(void)
 }
 
 /*
- * Scan the shared memory entries of FdwXactState and valid them.
+ * Scan the shared memory entries of FdwXactState and validate them.
  *
  * This is run at the end of recovery, but before we allow backends to write
  * WAL.
+ *
+ * XXX It's a bit confusing that we have both RestoreFdwXacts and RecoverFdwXacts.
  */
 void
 RecoverFdwXacts(void)
@@ -1615,6 +1784,11 @@ FdwXactRedoAdd(char *buf, XLogRecPtr start_lsn, XLogRecPtr end_lsn)
  * FdwXactState file if a foreign transaction was saved via an earlier checkpoint.
  * We could not found the FdwXactState entry in the case where a crash recovery
  * starts from the point where is after added but before removed the entry.
+ *
+ * XXX So can the issue actually happen? If we start from LSN where we already
+ * added the entry, shouldn't RestoreFdwXactData already added the entry?
+ *
+ * XXX The givewarning parameter is unused, so maybe the comment is obsolete?
  */
 static void
 FdwXactRedoRemove(TransactionId xid, Oid umid, bool givewarning)
@@ -1633,6 +1807,8 @@ FdwXactRedoRemove(TransactionId xid, Oid umid, bool givewarning)
 			break;
 	}
 
+	/* XXX What if we haven't found a matching entry? Shouldn't that be
+	 * actually an error? */
 	if (i >= FdwXactCtl->num_xacts)
 		return;
 
@@ -1650,6 +1826,10 @@ FdwXactRedoRemove(TransactionId xid, Oid umid, bool givewarning)
  * Note clearly that this function accesses WAL during normal operation, similarly
  * to the way WALSender or Logical Decoding would do. It does not run during
  * crash recovery or standby processing.
+ *
+ * XXX Isn't it quite inefficient that we allocate xlogreader over and over,
+ * for each xact? Do we do that for each xact that we find in the WAL, even if
+ * we remove the entry shortly after?
  */
 static void
 XlogReadFdwXactData(XLogRecPtr lsn, char **buf, int *len)
@@ -1863,6 +2043,9 @@ ReadFdwXactStateFile(TransactionId xid, Oid umid)
  *
  * If giveWarning is false, do not complain about file-not-present;
  * this is an expected case during WAL replay.
+ *
+ * XXX Shouldn't this fsync the directory, to make the unlink persistent?
+ * Although, maybe it's fine if we find old files during recovery?
  */
 static void
 RemoveFdwXactStateFile(TransactionId xid, Oid umid, bool giveWarning)
@@ -1880,6 +2063,15 @@ RemoveFdwXactStateFile(TransactionId xid, Oid umid, bool giveWarning)
 /*
  * Return the list of FdwXactState entries that match at least one given criteria
  * that is not invalid.  The caller must hold FdwXactLock.
+ *
+ * XXX I guess this should say "list of valid entries matching any criteria". But
+ * it's a bit misleading, because we never supply more than just a single param.
+ * So it could just as well say "matching all criteria" considering we ignore
+ * InvalidOid and InvalidTransactionId.
+ *
+ * XXX It's a bit pointless to return List, because we don't use it at all. In
+ * fact, we only use this to check if any matching entries exist. So we might
+ * just as well return "true" or "false" on the first matching entry.
  */
 static List *
 find_fdwxacts(TransactionId xid, Oid umid, Oid dbid)
@@ -2151,6 +2343,11 @@ pg_resolve_foreign_xact(PG_FUNCTION_ARGS)
  * resolution. The function gives a way to forget about such prepared
  * transaction in case: the foreign server where it is prepared is no longer
  * available, the user which prepared this transaction needs to be dropped.
+ *
+ * XXX The XA specification [1] actually has xa_forget, so maybe this should
+ * be called pg_forget_foreign_xact?
+ *
+ * [1] https://pubs.opengroup.org/onlinepubs/009680699/toc.pdf
  */
 Datum
 pg_remove_foreign_xact(PG_FUNCTION_ARGS)

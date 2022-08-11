@@ -21,6 +21,8 @@
  * entries should be added at the end, to avoid changing IDs of existing
  * entries.
  *
+ * XXX I wonder if it should be "FDWTransaction" to keep the name a single token.
+ *
  * Changes to this list possibly need an XLOG_PAGE_MAGIC bump.
  */
 
@@ -47,4 +49,4 @@ PG_RMGR(RM_COMMIT_TS_ID, "CommitTs", commit_ts_redo, commit_ts_desc, commit_ts_i
 PG_RMGR(RM_REPLORIGIN_ID, "ReplicationOrigin", replorigin_redo, replorigin_desc, replorigin_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, NULL, NULL, generic_mask, NULL)
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL, logicalmsg_decode)
-PG_RMGR(RM_FDWXACT_ID, "Fdw Transaction", fdwxact_redo, fdwxact_desc, fdwxact_identify, NULL, NULL, NULL, NULL)
+PG_RMGR(RM_FDWXACT_ID, "FDW Transaction", fdwxact_redo, fdwxact_desc, fdwxact_identify, NULL, NULL, NULL, NULL)

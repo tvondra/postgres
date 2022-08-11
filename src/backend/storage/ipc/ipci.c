@@ -186,7 +186,6 @@ CreateSharedMemoryAndSemaphores(void)
 
 		/* Compute the size of the shared-memory block */
 		size = CalculateShmemSize(&numSemas);
-
 		elog(DEBUG3, "invoking IpcMemoryCreate(size=%zu)", size);
 
 		/*

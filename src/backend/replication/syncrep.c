@@ -144,7 +144,7 @@ static bool SyncRepQueueIsOrderedByLSN(int mode);
  * to be flushed if synchronous_commit is set to the higher level of
  * remote_apply, because only commit records provide apply feedback.
  *
- * Return true if the waits is cancaled by an interruption.
+ * Return true if the waits is canceled by an interruption.
  */
 bool
 SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)

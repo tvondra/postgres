@@ -96,7 +96,7 @@ FdwXactResolverDetach(void)
 }
 
 /*
- * Cleanup up foreign transaction resolver info and releas the holding
+ * Cleanup up foreign transaction resolver info and release the holding
  * FdwXactState entries.
  */
 static void
@@ -190,6 +190,8 @@ FdwXactResolverMain(Datum main_arg)
 
 /*
  * Fdwxact resolver main loop
+ *
+ * XXX Not sure why we have this separate function.
  */
 static void
 FdwXactResolverLoop(void)
@@ -234,6 +236,9 @@ FdwXactResolverLoop(void)
 /*
  * Check whether there have been foreign transactions by the backend within
  * foreign_xact_resolver_timeout and shutdown if not.
+ *
+ * XXX I suggest we don't call proc_exit() from too many places. Let's rewrite
+ * this into a function returning "true" to inform the main loop to exit.
  */
 static void
 FdwXactResolverCheckTimeout(TimestampTz now)
@@ -254,7 +259,7 @@ FdwXactResolverCheckTimeout(TimestampTz now)
 	StartTransactionCommand();
 	server = GetForeignServer(MyFdwXactResolver->serverid);
 	ereport(LOG,
-			(errmsg("foreign transaction resolver for server \"%s\" on database \"%s\" will stop because the timeout",
+			(errmsg("foreign transaction resolver for server \"%s\" on database \"%s\" will stop because of a timeout",
 					server->servername,
 					get_database_name(MyDatabaseId))));
 	CommitTransactionCommand();
@@ -263,8 +268,8 @@ FdwXactResolverCheckTimeout(TimestampTz now)
 }
 
 /*
- * Compute how long we should sleep by the next cycle. We can sleep until the time
- * out.
+ * Compute how long we should sleep by the next cycle. We can sleep until the
+ * time out.
  */
 static long
 FdwXactResolverComputeSleepTime(TimestampTz now)
@@ -325,6 +330,12 @@ FdwXactResolverProcessInDoubtXacts(void)
 		/*
 		 * Resolve one foreign transaction. ResolveOneFdwXact() releases and
 		 * removes FdwXactState entry after resolution.
+		 *
+		 * XXX I wonder if we should be more careful here - perhaps use try/catch.
+		 * Imagine something bad happens in ResolveOneFdwXact and it throws ERROR.
+		 * If the issue is persistent and specific to that one transaction, maybe
+		 * we should try resolving the other xacts. Otherwise we might easily end
+		 * up in a situation when one failure blocks everything.
 		 */
 		StartTransactionCommand();
 		ResolveOneFdwXact(fdwxact);

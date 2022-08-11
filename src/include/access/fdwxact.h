@@ -53,6 +53,8 @@ typedef struct FdwXactStateData
 	 * state data back from WAL when committing a FdwXactState. We keep track of
 	 * the end LSN because that is the LSN we need to wait for prior to
 	 * commit.
+	 *
+	 * XXX Should be "checkpointing" instead of "committing", no?
 	 */
 	XLogRecPtr	insert_start_lsn;	/* XLOG offset of inserting this entry
 									 * start */

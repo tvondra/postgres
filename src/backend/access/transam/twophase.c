@@ -861,7 +861,10 @@ TwoPhaseGetGXact(TransactionId xid, bool lock_held)
 
 /*
  * TwoPhaseExists
- *		Return true if there is a prepared transaction specified by XID
+ *		Return true if there is a prepared transaction specified by XID.
+ *
+ * XXX Presumably this means there is at least one foreign transaction started
+ * from the local transaction identified by XID.
  */
 bool
 TwoPhaseExists(TransactionId xid)
@@ -1678,6 +1681,14 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	/*
 	 * If the prepared transaction was a part of a distributed transaction
 	 * notify a resolver process to handle it.
+	 *
+	 * XXX This means PREPARE TRANSACTION will only ever be committed from the
+	 * resolver process. Which probably makes sense, because who knows if the
+	 * backend already has the FDW connections opened.
+	 *
+	 * XXX But we should wait for COMMIT confirmation from the remote nodes,
+	 * to guarantee read-your-writes etc. Otherwise how could you guarantee
+	 * anything?
 	 */
 	FdwXactLaunchResolversForXid(xid);
 

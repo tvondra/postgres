@@ -2644,7 +2644,7 @@ PrepareTransaction(void)
 	PostPrepare_Twophase();
 
 	/* PREPARE acts the same as COMMIT as far as GUC is concerned */
-	AtEOXact_FdwXact(true, false);
+	AtEOXact_FdwXact(true, false);	/* XXX Why do we call this in differrent order from COMMIT? */
 	AtEOXact_GUC(true, 1);
 	AtEOXact_SPI(true);
 	AtEOXact_Enum();

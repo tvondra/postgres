@@ -6,6 +6,22 @@
  * transaction resolver processes. The launcher schedules resolver
  * process to be started when requested by backend process.
  *
+ *
+ * XXX I wonder if the processes should communicate in a different way, e.g. by
+ * shm_queue and/or ConditionalVariables. It probably is not much cheaper (after
+ * all SetLatch sends a signal using kill too), but it seems the usual pattern.
+ * Also, if we end up using multiple resolvers per DB, it seems like an elegant
+ * way to wake them through ConditionVariable.
+ *
+ * XXX Another idea - could we make it so that the resolver is not database
+ * specific? For example, imagine we generate all information needed to connect
+ * to the remote server (e.g. connection string) and include it in the 2PC
+ * info (WAL record, ...). Maybe the resolver would then don't need to be
+ * associated with a specific database, and we could work with only a couple
+ * resolvers (now we kinda need one resolver per db, and we need to juggle
+ * them - start/stop - if we have more databases than resolver slots).
+ *
+ *
  * Portions Copyright (c) 2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -83,7 +99,7 @@ FdwXactLauncherShmemInit(void)
 {
 	bool		found;
 
-	FdwXactResolverCtl = ShmemInitStruct("Foreign Transaction Launcher Data",
+	FdwXactResolverCtl = ShmemInitStruct("Foreign Transaction Resolver Launcher",
 										 FdwXactLauncherShmemSize(),
 										 &found);
 
@@ -237,6 +253,21 @@ FdwXactLauncherMain(Datum main_arg)
 /*
  * Request the launcher to launch or wakeup foreign transaction resolvers for
  * the given servers.
+ *
+ * XXX I don't understand how we map resolvers to servers. This kinda suggest we
+ * can have multiple resolvers for the same database, each for a different set
+ * of foreign servers. But what'd be the point of that? Yes, it'll parallelize
+ * the COMMIT requests, but that seems pretty inexpensive - the real work should
+ * be on the remote side.
+ *
+ * XXX This matters, because what if we have 100 remote servers (which can easily
+ * happen e.g. with sharding systems). Does that mean we need 100 resolvers? Now,
+ * maybe it's not that bad because we can espect most xacts to be fully resolved
+ * directly by the backend, but perhaps we could do it asynchronously at least in
+ * some cases (when read-consistency is not needed)?
+ *
+ * XXX What if we end up not having enough resolvers? Say we start with 10 shards
+ * and 10 resolvers, but then we add a couple more shards. Will it work?
  */
 void
 LaunchOrWakeupFdwXactResolver(List *serveroids_orig)

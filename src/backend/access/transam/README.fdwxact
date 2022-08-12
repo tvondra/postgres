@@ -5,60 +5,115 @@ Atomic Commit for Distributed Transactions
 
 The atomic commit feature enables us to commit and rollback either all of
 foreign servers or nothing. This ensures that the database data is always left
-in a conssitent state in term of federated database.
+in a consistent state in term of federated database.
+
+Note the two-pase protocol guarantees consistency in the durability sense,
+i.e. either all parts of the distributed transaction get committed, or none
+of it. It doeds not guarantee the parts to get committed at the same instant,
+so the data on different nodes may get committed and visible at different
+times, with arbitrary delay. This is an inherent limitation of the protocol
+and also the reason why it is reliable.
 
 
 Commit Sequence of Global Transactions
---------------------------------
+--------------------------------------
 
 We employee two-phase commit protocol to achieve commit among all foreign
 servers atomically. The sequence of distributed transaction commit consisnts
 of the following four steps:
 
-1. Foriegn Transaction Registration
-FDW implementation can register the transaction that opened on the foreign server
-(foreign transaction) to the group of the distributed transaction by calling
-FdwXactRegisterEntry() function.  The foreign transaction are managed until
-the end of the transaction by PostgreSQL's distributed transaction manager.
+
+1. Foreign Transaction Registration
+
+FDW implementation can register the transaction opened on the foreign server
+(foreign transaction) in a transaction manager on the local node by calling
+the FdwXactRegisterEntry() function.  The foreign transactions are managed by
+this distributed transaction manager until the end of the local transaction.
+
 
 2. Pre-Commit phase (1st phase of two-phase commit)
-The two-phase commit is required only if the transaction modified two or more
-servers including the local node.
 
-In this step, we write WAL record (XLOG_FDWXACT_INSERT) for all foreign
-transactions indicating that the foreign server is involved with the current
-transaction before doing PREPARE all foreign transactions.  Also, we wait for
-those WAL records to be replicated to the standby if synchronous replication is
-enabled.  After that we prepare all foreign transactions on the foreign server.
-Both writing the WAL records and waiting for synchronous replication must be
-done before actual preparing foreign transactions.  Because if we prepare all
-foerign transactions first then write the WAL records and synchronous replication,
-in cases where the server crashes between preparing the foreign transaction and
-writing the WAL record, we will end up losing foreign transaction after the
-crash recovery. Similarly, if the failover also happens before the replica
-receives the records, we will end up losing them on the new primary server.
+The two-phase commit is required only if the transaction needs to be committed
+on at least two nodes (this may involve the local node). If a transaction needs
+to be committed on a single node, a simple COMMIT is used on the single node.
 
-In cases where we could not prepare one foreign transaction for some reason,
-we error out and change to rollback.  We rollback foreign transaction that is
-not prepared yet and leave other already-prepared foreign transactions as a
-in-doubt transaction to the resolver process.
+If a two-phase commit is necessary, we need to first PREPARE and then COMMIT
+transactions on all remote nodes (and locally). We use a minor optimization
+of the protocol - we use a simple COMMIT for the local node, which is possible
+because it's the last transaction we commit. This also means we can use the
+local transaction to determine whether the whole distributed transaction
+committed or not.
+
+We need to be careful about properly recording all foreign transactions that
+need to be prepared and committed, so that we don't lose any of them due to
+a restart, crash recovery, failover to sync replica etc.
+
+We achieve that by writing WAL record (XLOG_FDWXACT_INSERT) for all foreign
+transactions associated with the local transaction. We flush the WAL and
+possibly wait for confirmation from a sync standby. Only then we actually
+issue PREPARE on those foreign transactions.
+
+This ordering and the wait for synchronous replication are necessary to not
+lose information about which foreign transactions might have been PREPARED.
+Imagine a PREPARE on a foreign transaction is execued right before failover
+to sync replica - if the WAL-logging happens after the PREPARE, or when we
+don't wait for the sync replica confirmation, we may lose this information.
+The consequence will be that some of the remote nodes will have prepared
+transactions that we're unaware of. While this is not a typical data loss
+case (the transaction was not committed yet, so we haven't lost any use
+data), it may cause all sorts of issues until the foreign transaction is
+rolled back.
+
+If any of the PREPARE commands fails for whatever reason (node failure,
+connection issue, ...) we error out and issue ROLLBACK both locally and on
+all remote nodes.  Only the not-yet-prepared foreign transactions are
+rolled back immediately, while those where PREPARE succeeded are left to
+a background resolver process.
+
 
 3. Commit locally
-Once we've prepared all of them, commit the transaction locally.
 
-Once we've committed the local transaction (to be xact, right after flushing
+Once all the foreign transactions are PREPAREd, we commit the local transaction.
+
+Once we've committed the local transaction (to be exact, right after flushing
 the commit WAL record to the disk), the outcome of the distributed transaction
-is determined and must not be changed.  All foreign prepared transactions must
-be committed anyway.
+is determined and can't be changed.  We'll try performing a COMMIT PREPARED
+but even if some of the commits fail, it must be a temporary failure only.
+
 
 4. Post-Commit Phase (2nd phase of two-phase commit)
+
 The steps so far are done by the backend process committing the transaction but
 this step (commit or rollback) is performed asynchronously by the foreign
 transaction resolver process.
 
+XXX This seems a bit weird, really. It might make sense when the user issues
+a 2PC commit, because then the commit can be issued from a completely different
+backend that may not have opened the connections etc. But when the user does
+a plain COMMIT (which we translate to 2PC), why not to try at least issuing
+the COMMIT PREPARED? It might fail, and we'll have to report that to the user
+somehow (so that user knows the commit succeeded, but some nodes have issues).
+But that should be fairly rare.
+
+The problem here is that without this (i.e. with async COMMIT PREPARED) the
+user may fail to see his own writes, which seems like a pretty annoying
+thing. Yes, 2PC does not give us globally consistent stanpshots, but this
+seems like a pretty annoying anomaly.
+
+We can hand it over to the resolver processes, but then we should wait for
+the process to confirm all the foreign transactions were committed. That'd
+work too, I think.
+
 
 Identifying Foreign Transactions In GTM
 ---------------------------------------
+
+XXX We should not use GTM, because that implies "global". And we don't have
+anything global here - the transaction manager is kinda within each backend,
+so it's not even node-level.
+
+XXX Maybe mention this is about identifying participants within each backend,
+not a globally unique transaction ID or anything like that.
 
 To identify foreign transaction participants (as well as FdwXact entries) there
 are two ways: using {server OID, user OID} and using user mapping OID. The same
@@ -95,6 +150,12 @@ will be user_A, not user_B. But it’s not big problem in practice.
 
 Therefore, in fdwxact.c, we identify the foreign transaction by
 {server OID, user OID}.
+
+XXX I'm a bit confused, now. So this essentially says TM and FDW has to identify
+connections in the same way, and if it opens multiple connections it needs to
+regiester each connection as a separate participant? How much is this specific
+to postgres_fdw?
+
 
 Foreign Transactions Status
 ----------------------------

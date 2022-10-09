@@ -1100,6 +1100,7 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 		case T_IndexScan:
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
+		case T_BrinSort:
 		case T_TidScan:
 		case T_TidRangeScan:
 		case T_SubqueryScan:
@@ -1261,6 +1262,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_IndexOnlyScan:
 			pname = sname = "Index Only Scan";
+			break;
+		case T_BrinSort:
+			pname = sname = "BRIN Sort";
 			break;
 		case T_BitmapIndexScan:
 			pname = sname = "Bitmap Index Scan";
@@ -1506,6 +1510,16 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										indexonlyscan->indexorderdir,
 										es);
 				ExplainScanTarget((Scan *) indexonlyscan, es);
+			}
+			break;
+		case T_BrinSort:
+			{
+				BrinSort  *brinsort = (BrinSort *) plan;
+
+				ExplainIndexScanDetails(brinsort->indexid,
+										brinsort->indexorderdir,
+										es);
+				ExplainScanTarget((Scan *) brinsort, es);
 			}
 			break;
 		case T_BitmapIndexScan:
@@ -1789,6 +1803,19 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (es->analyze)
 				ExplainPropertyFloat("Heap Fetches", NULL,
 									 planstate->instrument->ntuples2, 0, es);
+			break;
+		case T_BrinSort:
+			show_scan_qual(((BrinSort *) plan)->indexqualorig,
+						   "Index Cond", planstate, ancestors, es);
+			if (((BrinSort *) plan)->indexqualorig)
+				show_instrumentation_count("Rows Removed by Index Recheck", 2,
+										   planstate, es);
+			show_scan_qual(((BrinSort *) plan)->indexorderbyorig,
+						   "Order By", planstate, ancestors, es);
+			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			if (plan->qual)
+				show_instrumentation_count("Rows Removed by Filter", 1,
+										   planstate, es);
 			break;
 		case T_BitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
@@ -3812,6 +3839,7 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 		case T_ForeignScan:
 		case T_CustomScan:
 		case T_ModifyTable:
+		case T_BrinSort:
 			/* Assert it's on a real relation */
 			Assert(rte->rtekind == RTE_RELATION);
 			objectname = get_rel_name(rte->relid);

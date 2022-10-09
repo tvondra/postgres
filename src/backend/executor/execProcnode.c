@@ -226,6 +226,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 														 estate, eflags);
 			break;
 
+		case T_BrinSort:
+			result = (PlanState *) ExecInitBrinSort((BrinSort *) node,
+													estate, eflags);
+			break;
+
 		case T_BitmapIndexScan:
 			result = (PlanState *) ExecInitBitmapIndexScan((BitmapIndexScan *) node,
 														   estate, eflags);
@@ -637,6 +642,10 @@ ExecEndNode(PlanState *node)
 
 		case T_IndexOnlyScanState:
 			ExecEndIndexOnlyScan((IndexOnlyScanState *) node);
+			break;
+
+		case T_BrinSortState:
+			ExecEndBrinSort((BrinSortState *) node);
 			break;
 
 		case T_BitmapIndexScanState:

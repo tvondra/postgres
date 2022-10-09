@@ -1151,7 +1151,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		idx = 0;
 		foreach(lc, index->indextlist)
 		{
-			TargetEntry	    *indextle = (TargetEntry *) lfirst(lc);
+			TargetEntry	   *indextle = (TargetEntry *) lfirst(lc);
+			BrinSortPath   *bpath;
 			AttrNumber	attnum;
 			Oid			opclass;
 
@@ -1206,6 +1207,29 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 			orderbyclauses = NIL;
 			orderbyclausecols = NIL;
+
+			bpath = create_brinsort_path(root, index,
+										 index_clauses,
+										 orderbyclauses,
+										 orderbyclausecols,
+										 useful_pathkeys,
+										 index_is_ordered ?
+										 ForwardScanDirection :
+										 NoMovementScanDirection,
+										 index_only_scan,
+										 outer_relids,
+										 loop_count,
+										 false);
+
+			/*
+			 * XXX We don't do this, because this function is supposed to
+			 * generate IndexPaths. We should be building this in a different
+			 * place, perhaps in create_index_paths() or so.
+			 */
+			// result = lappend(result, bpath);
+
+			/* cheat and add it anyway */
+			add_path(rel, (Path *) bpath);
 
 			idx++;
 		}

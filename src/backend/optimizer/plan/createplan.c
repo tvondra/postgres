@@ -125,7 +125,7 @@ static SampleScan *create_samplescan_plan(PlannerInfo *root, Path *best_path,
 static Scan *create_indexscan_plan(PlannerInfo *root, IndexPath *best_path,
 								   List *tlist, List *scan_clauses, bool indexonly);
 static BrinSort *create_brinsort_plan(PlannerInfo *root, BrinSortPath *best_path,
-									  List *tlist, List *scan_clauses, bool indexonly);
+									  List *tlist, List *scan_clauses);
 static BitmapHeapScan *create_bitmap_scan_plan(PlannerInfo *root,
 											   BitmapHeapPath *best_path,
 											   List *tlist, List *scan_clauses);
@@ -193,6 +193,11 @@ static IndexOnlyScan *make_indexonlyscan(List *qptlist, List *qpqual,
 										 List *indexorderby,
 										 List *indextlist,
 										 ScanDirection indexscandir);
+static BrinSort *make_brinsort(List *qptlist, List *qpqual, Index scanrelid,
+							   Oid indexid, List *indexqual, List *indexqualorig,
+							   List *indexorderby, List *indexorderbyorig,
+							   List *indexorderbyops,
+							   ScanDirection indexscandir);
 static BitmapIndexScan *make_bitmap_indexscan(Index scanrelid, Oid indexid,
 											  List *indexqual,
 											  List *indexqualorig);
@@ -410,6 +415,9 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 		case T_NamedTuplestoreScan:
 		case T_ForeignScan:
 		case T_CustomScan:
+			plan = create_scan_plan(root, best_path, flags);
+			break;
+		case T_BrinSort:
 			plan = create_scan_plan(root, best_path, flags);
 			break;
 		case T_HashJoin:
@@ -776,6 +784,13 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 												   (CustomPath *) best_path,
 												   tlist,
 												   scan_clauses);
+			break;
+
+		case T_BrinSort:
+			plan = (Plan *) create_brinsort_plan(root,
+												 (BrinSortPath *) best_path,
+												 tlist,
+												 scan_clauses);
 			break;
 
 		default:
@@ -3196,8 +3211,7 @@ static BrinSort *
 create_brinsort_plan(PlannerInfo *root,
 					 BrinSortPath *best_path,
 					 List *tlist,
-					 List *scan_clauses,
-					 bool indexonly)
+					 List *scan_clauses)
 {
 	Scan	   *scan_plan;
 	List	   *indexclauses = best_path->indexclauses;
@@ -3211,6 +3225,7 @@ create_brinsort_plan(PlannerInfo *root,
 	List	   *fixed_indexorderbys;
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
+	bool		indexonly = false;	// hack to compile
 
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
@@ -3353,27 +3368,16 @@ create_brinsort_plan(PlannerInfo *root,
 	}
 
 	/* Finally ready to build the plan node */
-	if (indexonly)
-		scan_plan = (Scan *) make_indexonlyscan(tlist,
-												qpqual,
-												baserelid,
-												indexoid,
-												fixed_indexquals,
-												stripped_indexquals,
-												fixed_indexorderbys,
-												indexinfo->indextlist,
-												best_path->indexscandir);
-	else
-		scan_plan = (Scan *) make_indexscan(tlist,
-											qpqual,
-											baserelid,
-											indexoid,
-											fixed_indexquals,
-											stripped_indexquals,
-											fixed_indexorderbys,
-											indexorderbys,
-											indexorderbyops,
-											best_path->indexscandir);
+	scan_plan = (Scan *) make_brinsort(tlist,
+									   qpqual,
+									   baserelid,
+									   indexoid,
+									   fixed_indexquals,
+									   stripped_indexquals,
+									   fixed_indexorderbys,
+									   indexorderbys,
+									   indexorderbyops,
+									   best_path->indexscandir);
 
 	copy_generic_path_info(&scan_plan->plan, &best_path->path);
 
@@ -5705,6 +5709,37 @@ make_indexscan(List *qptlist,
 			   ScanDirection indexscandir)
 {
 	IndexScan  *node = makeNode(IndexScan);
+	Plan	   *plan = &node->scan.plan;
+
+	plan->targetlist = qptlist;
+	plan->qual = qpqual;
+	plan->lefttree = NULL;
+	plan->righttree = NULL;
+	node->scan.scanrelid = scanrelid;
+	node->indexid = indexid;
+	node->indexqual = indexqual;
+	node->indexqualorig = indexqualorig;
+	node->indexorderby = indexorderby;
+	node->indexorderbyorig = indexorderbyorig;
+	node->indexorderbyops = indexorderbyops;
+	node->indexorderdir = indexscandir;
+
+	return node;
+}
+
+static BrinSort *
+make_brinsort(List *qptlist,
+			   List *qpqual,
+			   Index scanrelid,
+			   Oid indexid,
+			   List *indexqual,
+			   List *indexqualorig,
+			   List *indexorderby,
+			   List *indexorderbyorig,
+			   List *indexorderbyops,
+			   ScanDirection indexscandir)
+{
+	BrinSort  *node = makeNode(BrinSort);
 	Plan	   *plan = &node->scan.plan;
 
 	plan->targetlist = qptlist;

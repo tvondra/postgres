@@ -101,6 +101,10 @@ extern bool debug_brin_stats;
 extern bool debug_brin_cross_check;
 #endif
 
+#ifdef DEBUG_BRIN_SORT
+extern bool debug_brin_sort;
+#endif
+
 #ifdef TRACE_SYNCSCAN
 extern bool trace_syncscan;
 #endif
@@ -1018,6 +1022,16 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_brinsort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of BRIN sort plans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_brinsort,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "
@@ -1253,6 +1267,20 @@ struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&debug_brin_cross_check,
+		false,
+		NULL, NULL, NULL
+	},
+#endif
+
+#ifdef DEBUG_BRIN_SORT
+	/* this is undocumented because not exposed in a standard build */
+	{
+		{"debug_brin_sort", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Print info about BRIN sorting."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&debug_brin_sort,
 		false,
 		NULL, NULL, NULL
 	},

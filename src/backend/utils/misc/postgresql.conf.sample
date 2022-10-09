@@ -376,6 +376,7 @@
 
 #enable_async_append = on
 #enable_bitmapscan = on
+#enable_brinsort = off
 #enable_gathermerge = on
 #enable_hashagg = on
 #enable_hashjoin = on

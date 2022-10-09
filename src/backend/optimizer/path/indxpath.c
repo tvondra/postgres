@@ -1143,24 +1143,23 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		ListCell *lc;
 		Relation rel2 = relation_open(index->indexoid, NoLock);
-		int		idx;
+		int		 idx;
 
 		/*
 		 * Try generating sorted paths for each key with the right opclass.
 		 */
-		idx = 0;
+		idx = -1;
 		foreach(lc, index->indextlist)
 		{
 			TargetEntry	   *indextle = (TargetEntry *) lfirst(lc);
 			BrinSortPath   *bpath;
-			AttrNumber	attnum;
 			Oid			opclass;
 
-			attnum = index->indexkeys[idx];
+			idx++;
 
 			/* skip expressions for now */
-			if (!AttributeNumberIsValid(attnum))
-				break;
+			if (!AttributeNumberIsValid(index->indexkeys[idx]))
+				continue;
 
 			/* XXX ignore non-BRIN indexes */
 			if (rel2->rd_rel->relam != BRIN_AM_OID)
@@ -1176,7 +1175,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * hardcode that logic here. For now we only deal with minmax
 			 * so we know how to do that.
 			 */
-			opclass = get_index_column_opclass(index->indexoid, attnum);
+			opclass = get_index_column_opclass(index->indexoid, idx+1);
 			if (opclass != INT4_BRIN_MINMAX_OPS_OID)
 				continue;
 
@@ -1200,7 +1199,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * one for the key data type. And BRIN does not allow specifying
 			 */
 
-			index_pathkeys = build_index_pathkeys_brin(root, index, indextle, idx);
+			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
+													   idx);
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
@@ -1230,8 +1230,6 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 			/* cheat and add it anyway */
 			add_path(rel, (Path *) bpath);
-
-			idx++;
 		}
 
 		relation_close(rel2, NoLock);

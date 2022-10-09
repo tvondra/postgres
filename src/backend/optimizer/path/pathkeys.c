@@ -675,6 +675,9 @@ build_index_pathkeys_brin(PlannerInfo *root,
 										  index->rel->relids,
 										  false);
 
+	if (!cpathkey)
+		return NIL;
+
 	return list_make1(cpathkey);
 }
 

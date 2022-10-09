@@ -1141,32 +1141,76 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (enable_brinsort && pathkeys_possibly_useful)
 	{
-		Relation rel = relation_open(index->indexoid, NoLock);
-		int		attno;
+		ListCell *lc;
+		Relation rel2 = relation_open(index->indexoid, NoLock);
+		int		idx;
 
-		/* match the first ORDER BY column */
-		for (attno = 1; attno < index->ncolumns; attno++)
+		/*
+		 * Try generating sorted paths for each key with the right opclass.
+		 */
+		idx = 0;
+		foreach(lc, index->indextlist)
 		{
-			Oid	opclass = get_index_column_opclass(index->indexoid, attno);
+			TargetEntry	    *indextle = (TargetEntry *) lfirst(lc);
+			AttrNumber	attnum;
+			Oid			opclass;
+
+			attnum = index->indexkeys[idx];
+
+			/* skip expressions for now */
+			if (!AttributeNumberIsValid(attnum))
+				break;
+
+			/* XXX ignore non-BRIN indexes */
+			if (rel2->rd_rel->relam != BRIN_AM_OID)
+				continue;
 
 			/*
-			 * XXX Hardcoded one specific opclass for now.
-			 *
-			 * XXX The relam check is not really necessary, but meh.
+			 * XXX Ignore keys not using the hardcoded int4 opclass. We
+			 * should fix eventually have this in the catalog, somewhere
+			 * (a flag tracking which opclasses allow this). It may even
+			 * require some sort of opclass support, e.g. a function that
+			 * extracts min/max from the summary. The multi-minmax will
+			 * require more complicated code, and we don't want to
+			 * hardcode that logic here. For now we only deal with minmax
+			 * so we know how to do that.
 			 */
-			if (rel->rd_rel->relam == BRIN_AM_OID &&
-				opclass == INT4_BRIN_MINMAX_OPS_OID)
-			{
-				/*
-				index_pathkeys = build_index_pathkeys(root, index,
-													  ForwardScanDirection);
-				useful_pathkeys = truncate_useless_pathkeys(root, rel,
-															index_pathkeys);
-				orderbyclauses = NIL;
-				orderbyclausecols = NIL;
-				*/
-			}
+			opclass = get_index_column_opclass(index->indexoid, attnum);
+			if (opclass != INT4_BRIN_MINMAX_OPS_OID)
+				continue;
+
+			elog(WARNING, "BRIN index key %d matches", idx);
+
+			/*
+			 * XXX stuff extracted from build_index_pathkeys, except that we
+			 * only deal with a single index key (producing a single pathkey),
+			 * so we only sort on a single column. I guess we could use more
+			 * index keys and sort on more expressions? But that seems rather
+			 * complex, so I leave it as a possible future improvement.
+			 *
+			 * XXX This could also use the other BRIN keys (even from other
+			 * indexes) in a different way - we might use the other ranges
+			 * to quickly eliminate some of the chunks, essentially like a
+			 * bitmap, but maybe without using the bitmap. Or we might use
+			 * other indexes through bitmaps.
+			 *
+			 * XXX This fakes a number of parameters, because we don't store
+			 * the btree opclass in the index, instead we use the default
+			 * one for the key data type. And BRIN does not allow specifying
+			 */
+
+			index_pathkeys = build_index_pathkeys_brin(root, index, indextle, idx);
+
+			useful_pathkeys = truncate_useless_pathkeys(root, rel,
+														index_pathkeys);
+
+			orderbyclauses = NIL;
+			orderbyclausecols = NIL;
+
+			idx++;
 		}
+
+		relation_close(rel2, NoLock);
 	}
 
 	return result;

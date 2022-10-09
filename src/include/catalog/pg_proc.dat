@@ -8411,6 +8411,9 @@
   proname => 'brin_minmax_stats', prorettype => 'bool',
   proargtypes => 'internal internal int2 int2 internal int4',
   prosrc => 'brin_minmax_stats' },
+{ oid => '9980', descr => 'BRIN minmax support',
+  proname => 'brin_minmax_ranges', prorettype => 'bool',
+  proargtypes => 'internal int2 bool', prosrc => 'brin_minmax_ranges' },
 
 # BRIN minmax multi
 { oid => '4616', descr => 'BRIN multi minmax support',

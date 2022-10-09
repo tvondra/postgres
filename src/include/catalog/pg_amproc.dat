@@ -806,6 +806,8 @@
   amprocrighttype => 'bytea', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/bytea_minmax_ops', amproclefttype => 'bytea',
   amprocrighttype => 'bytea', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/bytea_minmax_ops', amproclefttype => 'bytea',
+  amprocrighttype => 'bytea', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # bloom bytea
 { amprocfamily => 'brin/bytea_bloom_ops', amproclefttype => 'bytea',
@@ -839,6 +841,8 @@
   amprocrighttype => 'char', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/char_minmax_ops', amproclefttype => 'char',
   amprocrighttype => 'char', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/char_minmax_ops', amproclefttype => 'char',
+  amprocrighttype => 'char', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # bloom "char"
 { amprocfamily => 'brin/char_bloom_ops', amproclefttype => 'char',
@@ -870,6 +874,8 @@
   amprocrighttype => 'name', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/name_minmax_ops', amproclefttype => 'name',
   amprocrighttype => 'name', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/name_minmax_ops', amproclefttype => 'name',
+  amprocrighttype => 'name', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # bloom name
 { amprocfamily => 'brin/name_bloom_ops', amproclefttype => 'name',
@@ -901,6 +907,8 @@
   amprocrighttype => 'int8', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int8',
+  amprocrighttype => 'int8', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '1',
@@ -915,6 +923,8 @@
   amprocrighttype => 'int2', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
+  amprocrighttype => 'int2', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '1',
@@ -929,6 +939,8 @@
   amprocrighttype => 'int4', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
+  amprocrighttype => 'int4', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi integer: int2, int4, int8
 { amprocfamily => 'brin/integer_minmax_multi_ops', amproclefttype => 'int2',
@@ -1048,6 +1060,8 @@
   amprocrighttype => 'text', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/text_minmax_ops', amproclefttype => 'text',
   amprocrighttype => 'text', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/text_minmax_ops', amproclefttype => 'text',
+  amprocrighttype => 'text', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # bloom text
 { amprocfamily => 'brin/text_bloom_ops', amproclefttype => 'text',
@@ -1078,6 +1092,8 @@
   amprocrighttype => 'oid', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/oid_minmax_ops', amproclefttype => 'oid',
   amprocrighttype => 'oid', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/oid_minmax_ops', amproclefttype => 'oid',
+  amprocrighttype => 'oid', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi oid
 { amprocfamily => 'brin/oid_minmax_multi_ops', amproclefttype => 'oid',
@@ -1128,6 +1144,8 @@
   amprocrighttype => 'tid', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/tid_minmax_ops', amproclefttype => 'tid',
   amprocrighttype => 'tid', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/tid_minmax_ops', amproclefttype => 'tid',
+  amprocrighttype => 'tid', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # bloom tid
 { amprocfamily => 'brin/tid_bloom_ops', amproclefttype => 'tid',
@@ -1181,6 +1199,9 @@
 { amprocfamily => 'brin/float_minmax_ops', amproclefttype => 'float4',
   amprocrighttype => 'float4', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/float_minmax_ops', amproclefttype => 'float4',
+  amprocrighttype => 'float4', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 { amprocfamily => 'brin/float_minmax_ops', amproclefttype => 'float8',
   amprocrighttype => 'float8', amprocnum => '1',
@@ -1197,6 +1218,9 @@
 { amprocfamily => 'brin/float_minmax_ops', amproclefttype => 'float8',
   amprocrighttype => 'float8', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/float_minmax_ops', amproclefttype => 'float8',
+  amprocrighttype => 'float8', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi float
 { amprocfamily => 'brin/float_minmax_multi_ops', amproclefttype => 'float4',
@@ -1288,6 +1312,9 @@
 { amprocfamily => 'brin/macaddr_minmax_ops', amproclefttype => 'macaddr',
   amprocrighttype => 'macaddr', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/macaddr_minmax_ops', amproclefttype => 'macaddr',
+  amprocrighttype => 'macaddr', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi macaddr
 { amprocfamily => 'brin/macaddr_minmax_multi_ops', amproclefttype => 'macaddr',
@@ -1344,6 +1371,9 @@
 { amprocfamily => 'brin/macaddr8_minmax_ops', amproclefttype => 'macaddr8',
   amprocrighttype => 'macaddr8', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/macaddr8_minmax_ops', amproclefttype => 'macaddr8',
+  amprocrighttype => 'macaddr8', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi macaddr8
 { amprocfamily => 'brin/macaddr8_minmax_multi_ops',
@@ -1398,6 +1428,8 @@
   amprocrighttype => 'inet', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/network_minmax_ops', amproclefttype => 'inet',
   amprocrighttype => 'inet', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/network_minmax_ops', amproclefttype => 'inet',
+  amprocrighttype => 'inet', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi inet
 { amprocfamily => 'brin/network_minmax_multi_ops', amproclefttype => 'inet',
@@ -1471,6 +1503,9 @@
 { amprocfamily => 'brin/bpchar_minmax_ops', amproclefttype => 'bpchar',
   amprocrighttype => 'bpchar', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/bpchar_minmax_ops', amproclefttype => 'bpchar',
+  amprocrighttype => 'bpchar', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # bloom character
 { amprocfamily => 'brin/bpchar_bloom_ops', amproclefttype => 'bpchar',
@@ -1504,6 +1539,8 @@
   amprocrighttype => 'time', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/time_minmax_ops', amproclefttype => 'time',
   amprocrighttype => 'time', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/time_minmax_ops', amproclefttype => 'time',
+  amprocrighttype => 'time', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi time without time zone
 { amprocfamily => 'brin/time_minmax_multi_ops', amproclefttype => 'time',
@@ -1557,6 +1594,9 @@
 { amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'timestamp',
   amprocrighttype => 'timestamp', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'timestamp',
+  amprocrighttype => 'timestamp', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 { amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'timestamptz',
   amprocrighttype => 'timestamptz', amprocnum => '1',
@@ -1573,6 +1613,9 @@
 { amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'timestamptz',
   amprocrighttype => 'timestamptz', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'timestamptz',
+  amprocrighttype => 'timestamptz', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 { amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'date',
   amprocrighttype => 'date', amprocnum => '1',
@@ -1587,6 +1630,8 @@
   amprocrighttype => 'date', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'date',
   amprocrighttype => 'date', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/datetime_minmax_ops', amproclefttype => 'date',
+  amprocrighttype => 'date', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi datetime (date, timestamp, timestamptz)
 { amprocfamily => 'brin/datetime_minmax_multi_ops',
@@ -1716,6 +1761,9 @@
 { amprocfamily => 'brin/interval_minmax_ops', amproclefttype => 'interval',
   amprocrighttype => 'interval', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/interval_minmax_ops', amproclefttype => 'interval',
+  amprocrighttype => 'interval', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi interval
 { amprocfamily => 'brin/interval_minmax_multi_ops',
@@ -1772,6 +1820,9 @@
 { amprocfamily => 'brin/timetz_minmax_ops', amproclefttype => 'timetz',
   amprocrighttype => 'timetz', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/timetz_minmax_ops', amproclefttype => 'timetz',
+  amprocrighttype => 'timetz', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi time with time zone
 { amprocfamily => 'brin/timetz_minmax_multi_ops', amproclefttype => 'timetz',
@@ -1824,6 +1875,8 @@
   amprocrighttype => 'bit', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/bit_minmax_ops', amproclefttype => 'bit',
   amprocrighttype => 'bit', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/bit_minmax_ops', amproclefttype => 'bit',
+  amprocrighttype => 'bit', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax bit varying
 { amprocfamily => 'brin/varbit_minmax_ops', amproclefttype => 'varbit',
@@ -1841,6 +1894,9 @@
 { amprocfamily => 'brin/varbit_minmax_ops', amproclefttype => 'varbit',
   amprocrighttype => 'varbit', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/varbit_minmax_ops', amproclefttype => 'varbit',
+  amprocrighttype => 'varbit', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax numeric
 { amprocfamily => 'brin/numeric_minmax_ops', amproclefttype => 'numeric',
@@ -1858,6 +1914,9 @@
 { amprocfamily => 'brin/numeric_minmax_ops', amproclefttype => 'numeric',
   amprocrighttype => 'numeric', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/numeric_minmax_ops', amproclefttype => 'numeric',
+  amprocrighttype => 'numeric', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi numeric
 { amprocfamily => 'brin/numeric_minmax_multi_ops', amproclefttype => 'numeric',
@@ -1912,6 +1971,8 @@
   amprocrighttype => 'uuid', amprocnum => '4', amproc => 'brin_minmax_union' },
 { amprocfamily => 'brin/uuid_minmax_ops', amproclefttype => 'uuid',
   amprocrighttype => 'uuid', amprocnum => '6', amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/uuid_minmax_ops', amproclefttype => 'uuid',
+  amprocrighttype => 'uuid', amprocnum => '7', amproc => 'brin_minmax_ranges' },
 
 # minmax multi uuid
 { amprocfamily => 'brin/uuid_minmax_multi_ops', amproclefttype => 'uuid',
@@ -1988,6 +2049,9 @@
 { amprocfamily => 'brin/pg_lsn_minmax_ops', amproclefttype => 'pg_lsn',
   amprocrighttype => 'pg_lsn', amprocnum => '6',
   amproc => 'brin_minmax_stats' },
+{ amprocfamily => 'brin/pg_lsn_minmax_ops', amproclefttype => 'pg_lsn',
+  amprocrighttype => 'pg_lsn', amprocnum => '7',
+  amproc => 'brin_minmax_ranges' },
 
 # minmax multi pg_lsn
 { amprocfamily => 'brin/pg_lsn_minmax_multi_ops', amproclefttype => 'pg_lsn',

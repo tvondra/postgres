@@ -16,6 +16,10 @@
 #include "access/brin_tuple.h"
 #include "access/genam.h"
 #include "access/stratnum.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
@@ -41,6 +45,9 @@ typedef struct MinmaxOpaque
 static FmgrInfo *minmax_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno,
 											  Oid subtype, uint16 strategynum);
 
+
+/* print info about ranges */
+#define BRINSORT_DEBUG
 
 Datum
 brin_minmax_opcinfo(PG_FUNCTION_ARGS)
@@ -1726,6 +1733,400 @@ cleanup:
 	brin_free_desc(opaque->bo_bdesc);
 
 	PG_RETURN_POINTER(stats);
+}
+
+/*
+ * brin_minmax_range_tupdesc
+ *		Create a tuple descriptor to store BrinRange data.
+ */
+static TupleDesc
+brin_minmax_range_tupdesc(BrinDesc *brdesc, AttrNumber attnum)
+{
+	TupleDesc	tupdesc;
+	AttrNumber	attno = 1;
+
+	/* expect minimum and maximum */
+	Assert(brdesc->bd_info[attnum - 1]->oi_nstored == 2);
+
+	tupdesc = CreateTemplateTupleDesc(7);
+
+	/* blkno_start */
+	TupleDescInitEntry(tupdesc, attno++, NULL, INT8OID, -1, 0);
+
+	/* blkno_end (could be calculated as blkno_start + pages_per_range) */
+	TupleDescInitEntry(tupdesc, attno++, NULL, INT8OID, -1, 0);
+
+	/* has_nulls */
+	TupleDescInitEntry(tupdesc, attno++, NULL, BOOLOID, -1, 0);
+
+	/* all_nulls */
+	TupleDescInitEntry(tupdesc, attno++, NULL, BOOLOID, -1, 0);
+
+	/* not_summarized */
+	TupleDescInitEntry(tupdesc, attno++, NULL, BOOLOID, -1, 0);
+
+	/* min_value */
+	TupleDescInitEntry(tupdesc, attno++, NULL,
+					   brdesc->bd_info[attnum - 1]->oi_typcache[0]->type_id,
+								   -1, 0);
+
+	/* max_value */
+	TupleDescInitEntry(tupdesc, attno++, NULL,
+					   brdesc->bd_info[attnum - 1]->oi_typcache[0]->type_id,
+								   -1, 0);
+
+	return tupdesc;
+}
+
+/*
+ * brin_minmax_scan_init
+ *		Prepare the BrinRangeScanDesc including the sorting info etc.
+ *
+ * We want to have the ranges in roughly this order
+ *
+ * - not-summarized
+ * - summarized, non-null values
+ * - summarized, all-nulls
+ *
+ * We do it this way, because the not-summarized ranges need to be
+ * scanned always (both to produce NULL and non-NULL values), and
+ * we need to read all of them into the tuplesort before producing
+ * anything. So placing them at the beginning is reasonable.
+ *
+ * The all-nulls ranges are placed last, because when processing
+ * NULLs we need to scan everything anyway (some of the ranges might
+ * have has_nulls=true). But for non-NULL values we can abort once
+ * we hit the first all-nulls range.
+ *
+ * The regular ranges are sorted by blkno_start, to make it maybe
+ * a bit more sequential (but this only helps if there are ranges
+ * with the same minval).
+ */
+static BrinRangeScanDesc *
+brin_minmax_scan_init(BrinDesc *bdesc, AttrNumber attnum, bool asc)
+{
+	BrinRangeScanDesc  *scan;
+
+	/* sort by (not_summarized, minval, blkno_start, all_nulls) */
+	AttrNumber			keys[4];
+	Oid					collations[4];
+	bool				nullsFirst[4];
+	Oid					operators[4];
+	Oid					typid;
+	TypeCacheEntry	   *typcache;
+
+	/* we expect to have min/max value for each range, same type for both */
+	Assert(bdesc->bd_info[attnum - 1]->oi_nstored == 2);
+	Assert(bdesc->bd_info[attnum - 1]->oi_typcache[0]->type_id ==
+		   bdesc->bd_info[attnum - 1]->oi_typcache[1]->type_id);
+
+	scan = (BrinRangeScanDesc *) palloc0(sizeof(BrinRangeScanDesc));
+
+	/* build tuple descriptor for range data */
+	scan->tdesc = brin_minmax_range_tupdesc(bdesc, attnum);
+
+	/* initialize ordering info */
+	keys[0] = 5;				/* not_summarized */
+	keys[1] = 4;				/* all_nulls */
+	keys[2] = (asc) ? 6 : 7;	/* min_value (asc) or max_value (desc) */
+	keys[3] = 1;				/* blkno_start */
+
+	collations[0] = InvalidOid;	/* FIXME */
+	collations[1] = InvalidOid;	/* FIXME */
+	collations[2] = InvalidOid;	/* FIXME */
+	collations[3] = InvalidOid;	/* FIXME */
+
+	/* unrelated to the ordering desired by the user */
+	nullsFirst[0] = false;
+	nullsFirst[1] = false;
+	nullsFirst[2] = false;
+	nullsFirst[3] = false;
+
+	/* lookup sort operator for the boolean type (used for not_summarized) */
+	typcache = lookup_type_cache(BOOLOID, TYPECACHE_GT_OPR);
+	operators[0] = typcache->gt_opr;
+
+	/* lookup sort operator for the boolean type (used for all_nulls) */
+	typcache = lookup_type_cache(BOOLOID, TYPECACHE_LT_OPR);
+	operators[1] = typcache->lt_opr;
+
+	/* lookup sort operator for the min/max type */
+	typid = bdesc->bd_info[attnum - 1]->oi_typcache[0]->type_id;
+	typcache = lookup_type_cache(typid, TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
+	operators[2] = (asc) ? typcache->lt_opr : typcache->gt_opr;
+
+	/* lookup sort operator for the bigint type (used for blkno_start) */
+	typcache = lookup_type_cache(INT8OID, TYPECACHE_LT_OPR);
+	operators[3] = typcache->lt_opr;
+
+	/*
+	 * XXX better to keep this small enough to fit into L2/L3, large values
+	 * of work_mem may easily make this slower.
+	 */
+	scan->ranges = tuplesort_begin_heap(scan->tdesc,
+										4, /* nkeys */
+										keys,
+										operators,
+										collations,
+										nullsFirst,
+										work_mem,
+										NULL,
+										TUPLESORT_RANDOMACCESS);
+
+	scan->slot = MakeSingleTupleTableSlot(scan->tdesc,
+										  &TTSOpsMinimalTuple);
+
+	return scan;
+}
+
+/*
+ * brin_minmax_scan_add_tuple
+ *		Form and store a tuple representing the BRIN range to the tuplestore.
+ */
+static void
+brin_minmax_scan_add_tuple(BrinRangeScanDesc *scan, TupleTableSlot *slot,
+						   BlockNumber block_start, BlockNumber block_end,
+						   bool has_nulls, bool all_nulls, bool not_summarized,
+						   Datum min_value, Datum max_value)
+{
+	ExecClearTuple(slot);
+
+	memset(slot->tts_isnull, false, 7 * sizeof(bool));
+
+	slot->tts_values[0] = Int64GetDatum(block_start);
+	slot->tts_values[1] = Int64GetDatum(block_end);
+	slot->tts_values[2] = BoolGetDatum(has_nulls);
+	slot->tts_values[3] = BoolGetDatum(all_nulls);
+	slot->tts_values[4] = BoolGetDatum(not_summarized);
+	slot->tts_values[5] = min_value;
+	slot->tts_values[6] = max_value;
+
+	if (all_nulls || not_summarized)
+	{
+		slot->tts_isnull[5] = true;
+		slot->tts_isnull[6] = true;
+	}
+
+	ExecStoreVirtualTuple(slot);
+
+	tuplesort_puttupleslot(scan->ranges, slot);
+
+	scan->nranges++;
+}
+
+#ifdef BRINSORT_DEBUG
+/*
+ * brin_minmax_scan_next
+ *		Return the next BRIN range information from the tuplestore.
+ *
+ * Returns NULL when there are no more ranges.
+ */
+static BrinRange *
+brin_minmax_scan_next(BrinRangeScanDesc *scan)
+{
+	if (tuplesort_gettupleslot(scan->ranges, true, false, scan->slot, NULL))
+	{
+		bool		isnull;
+		BrinRange  *range = (BrinRange *) palloc(sizeof(BrinRange));
+
+		range->blkno_start = slot_getattr(scan->slot, 1, &isnull);
+		range->blkno_end = slot_getattr(scan->slot, 2, &isnull);
+		range->has_nulls = slot_getattr(scan->slot, 3, &isnull);
+		range->all_nulls = slot_getattr(scan->slot, 4, &isnull);
+		range->not_summarized = slot_getattr(scan->slot, 5, &isnull);
+		range->min_value = slot_getattr(scan->slot, 6, &isnull);
+		range->max_value = slot_getattr(scan->slot, 7, &isnull);
+
+		return range;
+	}
+
+	return NULL;
+}
+
+/*
+ * brin_minmax_scan_dump
+ *		Print info about all page ranges stored in the tuplestore.
+ */
+static void
+brin_minmax_scan_dump(BrinRangeScanDesc *scan)
+{
+	BrinRange *range;
+
+	if (!message_level_is_interesting(WARNING))
+		return;
+
+	elog(WARNING, "===== dumping =====");
+	while ((range = brin_minmax_scan_next(scan)) != NULL)
+	{
+		elog(WARNING, "[%u %u] has_nulls %d all_nulls %d not_summarized %d values [%ld %ld]",
+			 range->blkno_start, range->blkno_end,
+			 range->has_nulls, range->all_nulls, range->not_summarized,
+			 range->min_value, range->max_value);
+
+		pfree(range);
+	}
+
+	/* reset the tuplestore, so that we can start scanning again */
+	tuplesort_rescan(scan->ranges);
+}
+#endif
+
+static void
+brin_minmax_scan_finalize(BrinRangeScanDesc *scan)
+{
+	tuplesort_performsort(scan->ranges);
+}
+
+/*
+ * brin_minmax_ranges
+ *		Load the BRIN ranges and sort them.
+ */
+Datum
+brin_minmax_ranges(PG_FUNCTION_ARGS)
+{
+	IndexScanDesc	scan = (IndexScanDesc) PG_GETARG_POINTER(0);
+	AttrNumber		attnum = PG_GETARG_INT16(1);
+	bool			asc = PG_GETARG_BOOL(2);
+	BrinOpaque *opaque;
+	Relation	indexRel;
+	Relation	heapRel;
+	BlockNumber nblocks;
+	BlockNumber	heapBlk;
+	Oid			heapOid;
+	BrinMemTuple *dtup;
+	BrinTuple  *btup = NULL;
+	Size		btupsz = 0;
+	Buffer		buf = InvalidBuffer;
+	BlockNumber	pagesPerRange;
+	BrinDesc	   *bdesc;
+	BrinRangeScanDesc *brscan;
+	TupleTableSlot *slot;
+
+	/*
+	 * Determine how many BRIN ranges could there be, allocate space and read
+	 * all the min/max values.
+	 */
+	opaque = (BrinOpaque *) scan->opaque;
+	bdesc = opaque->bo_bdesc;
+	pagesPerRange = opaque->bo_pagesPerRange;
+
+	indexRel = bdesc->bd_index;
+
+	/* make sure the provided attnum is valid */
+	Assert((attnum > 0) && (attnum <= bdesc->bd_tupdesc->natts));
+
+	/*
+	 * We need to know the size of the table so that we know how long to iterate
+	 * on the revmap (and to pre-allocate the arrays).
+	 */
+	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+	heapRel = table_open(heapOid, AccessShareLock);
+	nblocks = RelationGetNumberOfBlocks(heapRel);
+	table_close(heapRel, AccessShareLock);
+
+	/* allocate an initial in-memory tuple, out of the per-range memcxt */
+	dtup = brin_new_memtuple(bdesc);
+
+	/* initialize the scan describing scan of ranges sorted by minval */
+	brscan = brin_minmax_scan_init(bdesc, attnum, asc);
+
+	slot = MakeSingleTupleTableSlot(brscan->tdesc, &TTSOpsVirtual);
+
+	/*
+	 * Now scan the revmap.  We start by querying for heap page 0,
+	 * incrementing by the number of pages per range; this gives us a full
+	 * view of the table.
+	 *
+	 * XXX The sort may be quite expensive, e.g. for small BRIN ranges. Maybe
+	 * we could optimize this somehow? For example, we know the not-summarized
+	 * ranges are always going to be first, and all-null ranges last, so maybe
+	 * we could stash those somewhere, and not sort them? But there are likely
+	 * only very few such ranges, in most cases. Moreover, how would we then
+	 * prepend/append those ranges to the sorted ones? Probably would have to
+	 * store them in a tuplestore, or something.
+	 *
+	 * XXX Seems that having large work_mem can be quite detrimental, because
+	 * then it overflows L2/L3 caches, making the sort much slower.
+	 *
+	 * XXX If there are other indexes, would be great to filter the ranges, so
+	 * that we only sort the interesting ones - reduces the number of ranges,
+	 * makes the sort faster.
+	 *
+	 * XXX Another option is making this incremental - e.g. only ask for the
+	 * first 1000 ranges, using a top-N sort. And then if it's not enough we
+	 * could request another chunk. But the second request would have to be
+	 * rather unlikely (because quite expensive), and the top-N sort does not
+	 * seem all that faster (as long as we don't overflow L2/L3).
+	 */
+	for (heapBlk = 0; heapBlk < nblocks; heapBlk += pagesPerRange)
+	{
+		bool		gottuple = false;
+		BrinTuple  *tup;
+		OffsetNumber off;
+		Size		size;
+
+		CHECK_FOR_INTERRUPTS();
+
+		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
+									   &off, &size, BUFFER_LOCK_SHARE,
+									   scan->xs_snapshot);
+		if (tup)
+		{
+			gottuple = true;
+			btup = brin_copy_tuple(tup, size, btup, &btupsz);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		}
+
+		/*
+		 * Ranges with no indexed tuple may contain anything.
+		 */
+		if (!gottuple)
+		{
+			brin_minmax_scan_add_tuple(brscan, slot,
+									   heapBlk, heapBlk + (pagesPerRange - 1),
+									   false, false, true, 0, 0);
+		}
+		else
+		{
+			dtup = brin_deform_tuple(bdesc, btup, dtup);
+			if (dtup->bt_placeholder)
+			{
+				/*
+				 * Placeholder tuples are treated as if not summarized.
+				 *
+				 * XXX Is this correct?
+				 */
+				brin_minmax_scan_add_tuple(brscan, slot,
+										   heapBlk, heapBlk + (pagesPerRange - 1),
+										   false, false, true, 0, 0);
+			}
+			else
+			{
+				BrinValues *bval;
+
+				bval = &dtup->bt_columns[attnum - 1];
+
+				brin_minmax_scan_add_tuple(brscan, slot,
+										   heapBlk, heapBlk + (pagesPerRange - 1),
+										   bval->bv_hasnulls, bval->bv_allnulls, false,
+										   bval->bv_values[0], bval->bv_values[1]);
+			}
+		}
+	}
+
+	ExecDropSingleTupleTableSlot(slot);
+
+	if (buf != InvalidBuffer)
+		ReleaseBuffer(buf);
+
+	/* do the sort and any necessary post-processing */
+	brin_minmax_scan_finalize(brscan);
+
+#ifdef BRINSORT_DEBUG
+	brin_minmax_scan_dump(brscan);
+#endif
+
+	PG_RETURN_POINTER(brscan);
 }
 
 /*

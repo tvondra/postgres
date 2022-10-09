@@ -1597,6 +1597,21 @@ typedef struct IndexPath
 } IndexPath;
 
 /*
+ * read sorted data from brin index
+ */
+typedef struct BrinSortPath
+{
+	Path		path;
+	IndexOptInfo *indexinfo;
+	List	   *indexclauses;
+	List	   *indexorderbys;
+	List	   *indexorderbycols;
+	ScanDirection indexscandir;
+	Cost		indextotalcost;
+	Selectivity indexselectivity;
+} BrinSortPath;
+
+/*
  * Each IndexClause references a RestrictInfo node from the query's WHERE
  * or JOIN conditions, and shows how that restriction can be applied to
  * the particular index.  We support both indexclauses that are directly

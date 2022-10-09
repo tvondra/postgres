@@ -17,12 +17,15 @@
 
 #include <math.h>
 
+#include "access/relation.h"
 #include "access/stratnum.h"
 #include "access/sysattr.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
@@ -32,9 +35,12 @@
 #include "optimizer/paths.h"
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
+#include "utils/rel.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
+
+bool		enable_brinsort = true;
 
 /* XXX see PartCollMatchesExprColl */
 #define IndexCollMatchesExprColl(idxcollation, exprcollation) \
@@ -1123,6 +1129,42 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 					add_partial_path(rel, (Path *) ipath);
 				else
 					pfree(ipath);
+			}
+		}
+	}
+
+	/*
+	 * If this is a BRIN index with suitable opclass (minmax or such), we may
+	 * try doing BRIN sort. BRIN indexes are not ordered and amcanorderbyop
+	 * is set to false, so we probably will need some new opclass flag to
+	 * mark indexes that support this.
+	 */
+	if (enable_brinsort && pathkeys_possibly_useful)
+	{
+		Relation rel = relation_open(index->indexoid, NoLock);
+		int		attno;
+
+		/* match the first ORDER BY column */
+		for (attno = 1; attno < index->ncolumns; attno++)
+		{
+			Oid	opclass = get_index_column_opclass(index->indexoid, attno);
+
+			/*
+			 * XXX Hardcoded one specific opclass for now.
+			 *
+			 * XXX The relam check is not really necessary, but meh.
+			 */
+			if (rel->rd_rel->relam == BRIN_AM_OID &&
+				opclass == INT4_BRIN_MINMAX_OPS_OID)
+			{
+				/*
+				index_pathkeys = build_index_pathkeys(root, index,
+													  ForwardScanDirection);
+				useful_pathkeys = truncate_useless_pathkeys(root, rel,
+															index_pathkeys);
+				orderbyclauses = NIL;
+				orderbyclausecols = NIL;
+				*/
 			}
 		}
 	}

@@ -124,6 +124,8 @@ static SampleScan *create_samplescan_plan(PlannerInfo *root, Path *best_path,
 										  List *tlist, List *scan_clauses);
 static Scan *create_indexscan_plan(PlannerInfo *root, IndexPath *best_path,
 								   List *tlist, List *scan_clauses, bool indexonly);
+static BrinSort *create_brinsort_plan(PlannerInfo *root, BrinSortPath *best_path,
+									  List *tlist, List *scan_clauses, bool indexonly);
 static BitmapHeapScan *create_bitmap_scan_plan(PlannerInfo *root,
 											   BitmapHeapPath *best_path,
 											   List *tlist, List *scan_clauses);
@@ -2998,6 +3000,204 @@ create_indexscan_plan(PlannerInfo *root,
 					  List *tlist,
 					  List *scan_clauses,
 					  bool indexonly)
+{
+	Scan	   *scan_plan;
+	List	   *indexclauses = best_path->indexclauses;
+	List	   *indexorderbys = best_path->indexorderbys;
+	Index		baserelid = best_path->path.parent->relid;
+	IndexOptInfo *indexinfo = best_path->indexinfo;
+	Oid			indexoid = indexinfo->indexoid;
+	List	   *qpqual;
+	List	   *stripped_indexquals;
+	List	   *fixed_indexquals;
+	List	   *fixed_indexorderbys;
+	List	   *indexorderbyops = NIL;
+	ListCell   *l;
+
+	/* it should be a base rel... */
+	Assert(baserelid > 0);
+	Assert(best_path->path.parent->rtekind == RTE_RELATION);
+
+	/*
+	 * Extract the index qual expressions (stripped of RestrictInfos) from the
+	 * IndexClauses list, and prepare a copy with index Vars substituted for
+	 * table Vars.  (This step also does replace_nestloop_params on the
+	 * fixed_indexquals.)
+	 */
+	fix_indexqual_references(root, best_path,
+							 &stripped_indexquals,
+							 &fixed_indexquals);
+
+	/*
+	 * Likewise fix up index attr references in the ORDER BY expressions.
+	 */
+	fixed_indexorderbys = fix_indexorderby_references(root, best_path);
+
+	/*
+	 * The qpqual list must contain all restrictions not automatically handled
+	 * by the index, other than pseudoconstant clauses which will be handled
+	 * by a separate gating plan node.  All the predicates in the indexquals
+	 * will be checked (either by the index itself, or by nodeIndexscan.c),
+	 * but if there are any "special" operators involved then they must be
+	 * included in qpqual.  The upshot is that qpqual must contain
+	 * scan_clauses minus whatever appears in indexquals.
+	 *
+	 * is_redundant_with_indexclauses() detects cases where a scan clause is
+	 * present in the indexclauses list or is generated from the same
+	 * EquivalenceClass as some indexclause, and is therefore redundant with
+	 * it, though not equal.  (The latter happens when indxpath.c prefers a
+	 * different derived equality than what generate_join_implied_equalities
+	 * picked for a parameterized scan's ppi_clauses.)  Note that it will not
+	 * match to lossy index clauses, which is critical because we have to
+	 * include the original clause in qpqual in that case.
+	 *
+	 * In some situations (particularly with OR'd index conditions) we may
+	 * have scan_clauses that are not equal to, but are logically implied by,
+	 * the index quals; so we also try a predicate_implied_by() check to see
+	 * if we can discard quals that way.  (predicate_implied_by assumes its
+	 * first input contains only immutable functions, so we have to check
+	 * that.)
+	 *
+	 * Note: if you change this bit of code you should also look at
+	 * extract_nonindex_conditions() in costsize.c.
+	 */
+	qpqual = NIL;
+	foreach(l, scan_clauses)
+	{
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+
+		if (rinfo->pseudoconstant)
+			continue;			/* we may drop pseudoconstants here */
+		if (is_redundant_with_indexclauses(rinfo, indexclauses))
+			continue;			/* dup or derived from same EquivalenceClass */
+		if (!contain_mutable_functions((Node *) rinfo->clause) &&
+			predicate_implied_by(list_make1(rinfo->clause), stripped_indexquals,
+								 false))
+			continue;			/* provably implied by indexquals */
+		qpqual = lappend(qpqual, rinfo);
+	}
+
+	/* Sort clauses into best execution order */
+	qpqual = order_qual_clauses(root, qpqual);
+
+	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
+	qpqual = extract_actual_clauses(qpqual, false);
+
+	/*
+	 * We have to replace any outer-relation variables with nestloop params in
+	 * the indexqualorig, qpqual, and indexorderbyorig expressions.  A bit
+	 * annoying to have to do this separately from the processing in
+	 * fix_indexqual_references --- rethink this when generalizing the inner
+	 * indexscan support.  But note we can't really do this earlier because
+	 * it'd break the comparisons to predicates above ... (or would it?  Those
+	 * wouldn't have outer refs)
+	 */
+	if (best_path->path.param_info)
+	{
+		stripped_indexquals = (List *)
+			replace_nestloop_params(root, (Node *) stripped_indexquals);
+		qpqual = (List *)
+			replace_nestloop_params(root, (Node *) qpqual);
+		indexorderbys = (List *)
+			replace_nestloop_params(root, (Node *) indexorderbys);
+	}
+
+	/*
+	 * If there are ORDER BY expressions, look up the sort operators for their
+	 * result datatypes.
+	 */
+	if (indexorderbys)
+	{
+		ListCell   *pathkeyCell,
+				   *exprCell;
+
+		/*
+		 * PathKey contains OID of the btree opfamily we're sorting by, but
+		 * that's not quite enough because we need the expression's datatype
+		 * to look up the sort operator in the operator family.
+		 */
+		Assert(list_length(best_path->path.pathkeys) == list_length(indexorderbys));
+		forboth(pathkeyCell, best_path->path.pathkeys, exprCell, indexorderbys)
+		{
+			PathKey    *pathkey = (PathKey *) lfirst(pathkeyCell);
+			Node	   *expr = (Node *) lfirst(exprCell);
+			Oid			exprtype = exprType(expr);
+			Oid			sortop;
+
+			/* Get sort operator from opfamily */
+			sortop = get_opfamily_member(pathkey->pk_opfamily,
+										 exprtype,
+										 exprtype,
+										 pathkey->pk_strategy);
+			if (!OidIsValid(sortop))
+				elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
+					 pathkey->pk_strategy, exprtype, exprtype, pathkey->pk_opfamily);
+			indexorderbyops = lappend_oid(indexorderbyops, sortop);
+		}
+	}
+
+	/*
+	 * For an index-only scan, we must mark indextlist entries as resjunk if
+	 * they are columns that the index AM can't return; this cues setrefs.c to
+	 * not generate references to those columns.
+	 */
+	if (indexonly)
+	{
+		int			i = 0;
+
+		foreach(l, indexinfo->indextlist)
+		{
+			TargetEntry *indextle = (TargetEntry *) lfirst(l);
+
+			indextle->resjunk = !indexinfo->canreturn[i];
+			i++;
+		}
+	}
+
+	/* Finally ready to build the plan node */
+	if (indexonly)
+		scan_plan = (Scan *) make_indexonlyscan(tlist,
+												qpqual,
+												baserelid,
+												indexoid,
+												fixed_indexquals,
+												stripped_indexquals,
+												fixed_indexorderbys,
+												indexinfo->indextlist,
+												best_path->indexscandir);
+	else
+		scan_plan = (Scan *) make_indexscan(tlist,
+											qpqual,
+											baserelid,
+											indexoid,
+											fixed_indexquals,
+											stripped_indexquals,
+											fixed_indexorderbys,
+											indexorderbys,
+											indexorderbyops,
+											best_path->indexscandir);
+
+	copy_generic_path_info(&scan_plan->plan, &best_path->path);
+
+	return scan_plan;
+}
+
+/*
+ * create_indexscan_plan
+ *	  Returns an indexscan plan for the base relation scanned by 'best_path'
+ *	  with restriction clauses 'scan_clauses' and targetlist 'tlist'.
+ *
+ * We use this for both plain IndexScans and IndexOnlyScans, because the
+ * qual preprocessing work is the same for both.  Note that the caller tells
+ * us which to build --- we don't look at best_path->path.pathtype, because
+ * create_bitmap_subplan needs to be able to override the prior decision.
+ */
+static BrinSort *
+create_brinsort_plan(PlannerInfo *root,
+					 BrinSortPath *best_path,
+					 List *tlist,
+					 List *scan_clauses,
+					 bool indexonly)
 {
 	Scan	   *scan_plan;
 	List	   *indexclauses = best_path->indexclauses;

@@ -301,7 +301,7 @@
   opckeytype => 'int2' },
 { opcmethod => 'brin', opcname => 'int4_minmax_ops',
   opcfamily => 'brin/integer_minmax_ops', opcintype => 'int4',
-  opckeytype => 'int4' },
+  opckeytype => 'int4', oid_symbol => 'INT4_BRIN_MINMAX_OPS_OID'},
 { opcmethod => 'brin', opcname => 'int4_minmax_multi_ops',
   opcfamily => 'brin/integer_minmax_multi_ops', opcintype => 'int4',
   opcdefault => 'f', opckeytype => 'int4' },

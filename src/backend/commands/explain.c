@@ -85,6 +85,8 @@ static void show_sort_keys(SortState *sortstate, List *ancestors,
 						   ExplainState *es);
 static void show_incremental_sort_keys(IncrementalSortState *incrsortstate,
 									   List *ancestors, ExplainState *es);
+static void show_brinsort_keys(BrinSortState *sortstate, List *ancestors,
+							   ExplainState *es);
 static void show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 								   ExplainState *es);
 static void show_agg_keys(AggState *astate, List *ancestors,
@@ -1813,6 +1815,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_scan_qual(((BrinSort *) plan)->indexorderbyorig,
 						   "Order By", planstate, ancestors, es);
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_brinsort_keys(castNode(BrinSortState, planstate), ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
@@ -2413,6 +2416,21 @@ show_incremental_sort_keys(IncrementalSortState *incrsortstate,
 						 plan->sort.sortColIdx,
 						 plan->sort.sortOperators, plan->sort.collations,
 						 plan->sort.nullsFirst,
+						 ancestors, es);
+}
+
+/*
+ * Show the sort keys for a BRIN Sort node.
+ */
+static void
+show_brinsort_keys(BrinSortState *sortstate, List *ancestors, ExplainState *es)
+{
+	BrinSort	   *plan = (BrinSort *) sortstate->ss.ps.plan;
+
+	show_sort_group_keys((PlanState *) sortstate, "Sort Key",
+						 plan->numCols, 0, plan->sortColIdx,
+						 plan->sortOperators, plan->collations,
+						 plan->nullsFirst,
 						 ancestors, es);
 }
 

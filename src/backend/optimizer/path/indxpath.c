@@ -1185,8 +1185,10 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * XXX stuff extracted from build_index_pathkeys, except that we
 			 * only deal with a single index key (producing a single pathkey),
 			 * so we only sort on a single column. I guess we could use more
-			 * index keys and sort on more expressions? But that seems rather
-			 * complex, so I leave it as a possible future improvement.
+			 * index keys and sort on more expressions? Would that mean these
+			 * keys need to be rather well correlated? In any case, it seems
+			 * rather complex to implement, so I leave it as a possible
+			 * future improvement.
 			 *
 			 * XXX This could also use the other BRIN keys (even from other
 			 * indexes) in a different way - we might use the other ranges

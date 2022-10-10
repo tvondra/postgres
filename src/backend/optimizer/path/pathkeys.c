@@ -675,6 +675,10 @@ build_index_pathkeys_brin(PlannerInfo *root,
 										  index->rel->relids,
 										  false);
 
+	/*
+	 * There may be no pathkey if we haven't matched any sortkey, in which
+	 * case ignore it.
+	 */
 	if (!cpathkey)
 		return NIL;
 

@@ -79,6 +79,7 @@
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeBitmapOr.h"
+#include "executor/nodeBrinSort.h"
 #include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"

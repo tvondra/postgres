@@ -3213,7 +3213,7 @@ create_brinsort_plan(PlannerInfo *root,
 					 List *tlist,
 					 List *scan_clauses)
 {
-	Scan	   *scan_plan;
+	BrinSort   *brinsort_plan;
 	List	   *indexclauses = best_path->indexclauses;
 	List	   *indexorderbys = best_path->indexorderbys;
 	Index		baserelid = best_path->path.parent->relid;
@@ -3226,6 +3226,8 @@ create_brinsort_plan(PlannerInfo *root,
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
 	bool		indexonly = false;	// hack to compile
+
+	List	   *pathkeys = best_path->path.pathkeys;
 
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
@@ -3368,20 +3370,47 @@ create_brinsort_plan(PlannerInfo *root,
 	}
 
 	/* Finally ready to build the plan node */
-	scan_plan = (Scan *) make_brinsort(tlist,
-									   qpqual,
-									   baserelid,
-									   indexoid,
-									   fixed_indexquals,
-									   stripped_indexquals,
-									   fixed_indexorderbys,
-									   indexorderbys,
-									   indexorderbyops,
-									   best_path->indexscandir);
+	brinsort_plan = make_brinsort(tlist,
+								  qpqual,
+								  baserelid,
+								  indexoid,
+								  fixed_indexquals,
+								  stripped_indexquals,
+								  fixed_indexorderbys,
+								  indexorderbys,
+								  indexorderbyops,
+								  best_path->indexscandir);
 
-	copy_generic_path_info(&scan_plan->plan, &best_path->path);
+	if (pathkeys != NIL)
+	{
+		/*
+		 * Compute sort column info, and adjust the Append's tlist as needed.
+		 * Because we pass adjust_tlist_in_place = true, we may ignore the
+		 * function result; it must be the same plan node.  However, we then
+		 * need to detect whether any tlist entries were added.
+		 */
+		(void) prepare_sort_from_pathkeys((Plan *) brinsort_plan, pathkeys,
+										  best_path->path.parent->relids,
+										  NULL,
+										  true,
+										  &brinsort_plan->numCols,
+										  &brinsort_plan->sortColIdx,
+										  &brinsort_plan->sortOperators,
+										  &brinsort_plan->collations,
+										  &brinsort_plan->nullsFirst);
+		//tlist_was_changed = (orig_tlist_length != list_length(plan->plan.targetlist));
+		elog(WARNING, "sortkeys %d", brinsort_plan->numCols);
+		for (int i = 0; i < brinsort_plan->numCols; i++)
+			elog(WARNING, "%d => %d %d %d %d", i,
+				 brinsort_plan->sortColIdx[i],
+				 brinsort_plan->sortOperators[i],
+				 brinsort_plan->collations[i],
+				 brinsort_plan->nullsFirst[i]);
+	}
 
-	return scan_plan;
+	copy_generic_path_info(&brinsort_plan->scan.plan, &best_path->path);
+
+	return brinsort_plan;
 }
 
 /*

@@ -1549,7 +1549,16 @@ typedef struct IndexScanState
 	Size		iss_PscanLen;
 } IndexScanState;
 
+typedef struct BrinSortRange
+{
+	BlockNumber blkno;
 
+	Datum	min_value;
+	Datum	max_value;
+	bool	has_nulls;
+	bool	all_nulls;
+	bool	not_summarized;
+} BrinSortRange;
 
 typedef struct BrinSortState
 {
@@ -1576,6 +1585,10 @@ typedef struct BrinSortState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+
+	/* */
+	int				bs_nranges;
+	BrinSortRange  *bs_ranges;
 } BrinSortState;
 
 /* ----------------

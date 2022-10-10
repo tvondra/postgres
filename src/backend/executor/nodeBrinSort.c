@@ -29,9 +29,12 @@
  */
 #include "postgres.h"
 
+#include "access/brin_revmap.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
+#include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "executor/execdebug.h"
 #include "executor/nodeBrinSort.h"
@@ -69,6 +72,7 @@ static void reorderqueue_push(BrinSortState *node, TupleTableSlot *slot,
 							  Datum *orderbyvals, bool *orderbynulls);
 static HeapTuple reorderqueue_pop(BrinSortState *node);
 
+static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
 /* ----------------------------------------------------------------
  *		IndexNext
@@ -126,6 +130,15 @@ IndexNext(BrinSortState *node)
 						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
+
+	/*
+	 * Load info about BRIN ranges, sort them to match the desired ordering.
+	 *
+	 * Maybe this should happen later, i.e. at the beginning of execution,
+	 * otherwise we might do expensive stuff in EXPLAIN.
+	 */
+	ExecInitBrinSortRanges((BrinSort *) node->ss.ps.plan, node);
+	elog(ERROR, "fixme");
 
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
@@ -702,6 +715,219 @@ ExecBrinSortRestrPos(BrinSortState *node)
 	}
 
 	index_restrpos(node->iss_ScanDesc);
+}
+
+/* XXX copy from brin.c */
+typedef struct BrinOpaque
+{
+	BlockNumber bo_pagesPerRange;
+	BrinRevmap *bo_rmAccess;
+	BrinDesc   *bo_bdesc;
+} BrinOpaque;
+
+typedef struct brin_cmp_context
+{
+	
+} brin_cmp_context;
+
+static int
+brin_sort_range_cmp(const void *a, const void *b, void *arg)
+{
+	int				r;
+	BrinSortRange  *ra = (BrinSortRange *) a;
+	BrinSortRange  *rb = (BrinSortRange *) b;
+	SortSupport		ssup = (SortSupport) arg;
+
+	/* XXX consider NULL FIRST/LAST and ASC/DESC */
+	/* XXX also handle un-summarized ranges */
+
+	r = ApplySortComparator(ra->max_value, false, rb->max_value, false, ssup);
+	if (r != 0)
+		return r;
+
+	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
+}
+
+/* somewhat crippled verson of bringetbitmap */
+static void
+ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
+{
+	Relation	indexRel = planstate->iss_RelationDesc;
+	Relation	heapRel;
+	BrinOpaque *opaque;
+	BrinDesc   *bdesc;
+	BlockNumber nblocks;
+	BlockNumber	nranges;
+	BlockNumber	heapBlk;
+	Oid			heapOid;
+	BrinMemTuple *dtup;
+	BrinTuple  *btup = NULL;
+	Size		btupsz = 0;
+	Buffer		buf = InvalidBuffer;
+	SortSupportData	ssup;
+
+	IndexScanDesc	scan = planstate->iss_ScanDesc;
+
+	/* index attribute we're interested in */
+	int			attno;
+
+	opaque = (BrinOpaque *) scan->opaque;
+	bdesc = opaque->bo_bdesc;
+
+	/*
+	 * We need to know the size of the table so that we know how long to
+	 * iterate on the revmap.
+	 */
+	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+	heapRel = table_open(heapOid, AccessShareLock);
+	nblocks = RelationGetNumberOfBlocks(heapRel);
+	table_close(heapRel, AccessShareLock);
+
+	/*
+	 * How many ranges can there be?
+	 *
+	 * XXX Make sure not to overflow, so don't do (m + n - 1), and just
+	 * add +1.
+	 */
+	nranges = (nblocks / opaque->bo_pagesPerRange) + 1;
+
+	planstate->bs_nranges = 0;
+	planstate->bs_ranges = (BrinSortRange *) palloc0(nranges * sizeof(BrinSortRange));
+
+	/*
+	 * XXX We might apply keys on the remaining index attributes, similarly
+	 * to what bringetbitmap does.
+	 */
+
+	/* allocate an initial in-memory tuple, out of the per-range memcxt */
+	dtup = brin_new_memtuple(bdesc);
+
+	/*
+	 * Map the sortColIdx (which is for the whole table) to index attnum.
+	 *
+	 * XXX Maybe this is wrong and we should arrange the tlists differently?
+	 */
+	Assert(node->numCols == 1);
+
+	attno = 0;
+	for (int i = 0; i < indexRel->rd_index->indnatts; i++)
+	{
+		if (indexRel->rd_index->indkey.values[i] == node->sortColIdx[0])
+		{
+			attno = (i + 1);
+			break;
+		}
+	}
+
+	/* make sure attnum is valid */
+	Assert(attno != 0);
+	Assert(attno <= bdesc->bd_tupdesc->natts);
+
+	/*
+	 * XXX We don't call consistent function (or any other function), so
+	 * unlike bringetbitmap we don't set a separate memory context.
+	 */
+
+	/*
+	 * Now scan the revmap.  We start by querying for heap page 0,
+	 * incrementing by the number of pages per range; this gives us a full
+	 * view of the table.
+	 */
+	for (heapBlk = 0; heapBlk < nblocks; heapBlk += opaque->bo_pagesPerRange)
+	{
+		bool		gottuple = false;
+		BrinTuple  *tup;
+		OffsetNumber off;
+		Size		size;
+
+		CHECK_FOR_INTERRUPTS();
+
+		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
+									   &off, &size, BUFFER_LOCK_SHARE,
+									   scan->xs_snapshot);
+		if (tup)
+		{
+			gottuple = true;
+			btup = brin_copy_tuple(tup, size, btup, &btupsz);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		}
+
+		/*
+		 * Ranges with no indexed tuple may contain anything.
+		 */
+		if (!gottuple)
+		{
+			planstate->bs_ranges[planstate->bs_nranges].not_summarized = true;
+		}
+		else
+		{
+			dtup = brin_deform_tuple(bdesc, btup, dtup);
+			if (dtup->bt_placeholder)
+			{
+				/*
+				 * Placeholder tuples are treated as if not populated.
+				 *
+				 * XXX Is this correct?
+				 */
+				planstate->bs_ranges[planstate->bs_nranges].not_summarized = true;
+			}
+			else
+			{
+				BrinValues *bval;
+
+				bval = &dtup->bt_columns[attno - 1];
+
+				planstate->bs_ranges[planstate->bs_nranges].all_nulls = bval->bv_allnulls;
+				planstate->bs_ranges[planstate->bs_nranges].all_nulls = bval->bv_hasnulls;
+
+				if (!bval->bv_allnulls)
+				{
+					planstate->bs_ranges[planstate->bs_nranges].min_value = bval->bv_values[0];
+					planstate->bs_ranges[planstate->bs_nranges].max_value = bval->bv_values[1];
+				}
+			}
+		}
+
+		planstate->bs_nranges++;
+	}
+
+	if (buf != InvalidBuffer)
+		ReleaseBuffer(buf);
+
+	/*
+	 * Sort ranges by maximum value.
+	 *
+	 * XXX Needs to consider the other parameters (ASC/DESC, NULLS FIRST/LAST, etc.),
+	 */
+	memset(&ssup, 0, sizeof(SortSupportData));
+	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &ssup);
+
+	/*
+	 * XXX This needs a bit smore complicated sort. Yes, we need to sort by
+	 * max_value in the first step, so that we can add ranges incrementally,
+	 * as they add "minimum" number of rows.
+	 *
+	 * But then in the second step we need to add all intersecting ranges X
+	 * until X.min_value > A.max_value (where A is the range added in first
+	 * step). And for that we probably need a separate sort by min_value,
+	 * perhaps of just a pointer array, pointing back to bs_ranges.
+	 *
+	 * XXX For DESC sort this would work the opposite way, i.e. first step
+	 * sort by min_value, then max_value.
+	 */
+	qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
+			  brin_sort_range_cmp, &ssup);
+
+	elog(WARNING, "ranges = %d", planstate->bs_nranges);
+
+	/* dump ranges for debugging */
+	for (int i = 0; i < planstate->bs_nranges; i++)
+	{
+		elog(WARNING, "%d => %d  [%ld,%ld]", i,
+			 planstate->bs_ranges[i].blkno,
+			 planstate->bs_ranges[i].min_value,
+			 planstate->bs_ranges[i].max_value);
+	}
 }
 
 /* ----------------------------------------------------------------

@@ -188,8 +188,41 @@ IndexNext(BrinSortState *node)
 
 			while (table_scan_getnextslot_tidrange(node->ss.ss_currentScanDesc, direction, slot))
 			{
-				elog(DEBUG1, "adding tuple");
-				tuplesort_puttupleslot(node->tuplesortstate, slot);
+				ExprContext *econtext;
+				ExprState  *qual;
+				ProjectionInfo *projInfo;
+
+				/*
+				 * Fetch data from node
+				 */
+				qual = node->bs_qual;
+				projInfo = node->ss.ps.ps_ProjInfo;
+				econtext = node->ss.ps.ps_ExprContext;
+
+				/*
+				 * place the current tuple into the expr context
+				 */
+				econtext->ecxt_scantuple = slot;
+
+				/*
+				 * check that the current tuple satisfies the qual-clause
+				 *
+				 * check for non-null qual here to avoid a function call to ExecQual()
+				 * when the qual is null ... saves only a few cycles, but they add up
+				 * ...
+				 *
+				 * XXX Done here, because in ExecScan we'll get different slot type
+				 * (minimal tuple vs. buffered tuple). Scan expects slot while reading
+				 * from the table (like here), but we're stashing it into a tuplesort.
+				 */
+				if (qual == NULL || ExecQual(qual, econtext))
+				{
+					elog(DEBUG1, "adding tuple");
+					tuplesort_puttupleslot(node->tuplesortstate, slot);
+				}
+				else
+					elog(DEBUG1, "filtered tuple");
+
 				ExecClearTuple(slot);
 			}
 
@@ -1184,7 +1217,8 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	}
 
 	indexstate->tuplesortstate = NULL;
-
+	indexstate->bs_qual = indexstate->ss.ps.qual;
+	indexstate->ss.ps.qual = NULL;
 	ExecInitResultTupleSlotTL(&indexstate->ss.ps, &TTSOpsMinimalTuple);
 
 	/*

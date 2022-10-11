@@ -1591,6 +1591,7 @@ typedef struct BrinSortState
 	int				bs_nranges;
 	BrinSortRange  *bs_ranges;
 	int				bs_next_range;
+	ExprState	   *bs_qual;
 	void		   *tuplesortstate; /* private state of tuplesort.c */
 } BrinSortState;
 

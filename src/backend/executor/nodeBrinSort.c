@@ -164,7 +164,7 @@ IndexNext(BrinSortState *node)
 			ItemPointerSetBlockNumber(&maxtid, range->blkno_end);
 			ItemPointerSetOffsetNumber(&maxtid, MaxHeapTuplesPerPage);
 
-			elog(WARNING, "initializing tidscan");
+			elog(DEBUG1, "initializing tidscan");
 
 			tscandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
 												 estate->es_snapshot,
@@ -188,14 +188,14 @@ IndexNext(BrinSortState *node)
 
 			while (table_scan_getnextslot_tidrange(node->ss.ss_currentScanDesc, direction, slot))
 			{
-				elog(WARNING, "adding tuple");
+				elog(DEBUG1, "adding tuple");
 				tuplesort_puttupleslot(node->tuplesortstate, slot);
 				ExecClearTuple(slot);
 			}
 
 			ExecClearTuple(slot);
 
-			elog(WARNING, "performing sort");
+			elog(DEBUG1, "performing sort");
 			tuplesort_performsort(node->tuplesortstate);
 		}
 		
@@ -206,15 +206,15 @@ IndexNext(BrinSortState *node)
 
 		if (node->tuplesortstate != NULL)
 		{
-			elog(WARNING, "getting tuple");
+			elog(DEBUG1, "getting tuple");
 			if (tuplesort_gettupleslot(node->tuplesortstate,
 								  ScanDirectionIsForward(direction),
 								  false, slot, NULL))
 			{
-				elog(WARNING, "returning tuple");
 				return slot;
 			}
-				node->tuplesortstate = NULL;
+
+			node->tuplesortstate = NULL;
 		}
 
 	/*
@@ -976,12 +976,12 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
 			  brin_sort_range_cmp, &ssup);
 
-	elog(WARNING, "ranges = %d", planstate->bs_nranges);
+	elog(DEBUG1, "ranges = %d", planstate->bs_nranges);
 
 	/* dump ranges for debugging */
 	for (int i = 0; i < planstate->bs_nranges; i++)
 	{
-		elog(WARNING, "%d => (%d,%d) [%ld,%ld]", i,
+		elog(DEBUG1, "%d => (%d,%d) [%ld,%ld]", i,
 			 planstate->bs_ranges[i].blkno_start,
 			 planstate->bs_ranges[i].blkno_end,
 			 planstate->bs_ranges[i].min_value,

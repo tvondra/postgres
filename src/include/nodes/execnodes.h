@@ -1551,7 +1551,8 @@ typedef struct IndexScanState
 
 typedef struct BrinSortRange
 {
-	BlockNumber blkno;
+	BlockNumber blkno_start;
+	BlockNumber blkno_end;
 
 	Datum	min_value;
 	Datum	max_value;
@@ -1589,6 +1590,8 @@ typedef struct BrinSortState
 	/* */
 	int				bs_nranges;
 	BrinSortRange  *bs_ranges;
+	int				bs_next_range;
+	void		   *tuplesortstate; /* private state of tuplesort.c */
 } BrinSortState;
 
 /* ----------------

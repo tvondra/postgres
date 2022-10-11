@@ -74,6 +74,7 @@ static HeapTuple reorderqueue_pop(BrinSortState *node);
 
 static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
+
 /* ----------------------------------------------------------------
  *		IndexNext
  *
@@ -89,6 +90,7 @@ IndexNext(BrinSortState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
+	BrinSort *plan = (BrinSort *) node->ss.ps.plan;
 
 	/*
 	 * extract necessary information from index scan node
@@ -129,41 +131,91 @@ IndexNext(BrinSortState *node)
 			index_rescan(scandesc,
 						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
-	}
 
-	/*
-	 * Load info about BRIN ranges, sort them to match the desired ordering.
-	 *
-	 * Maybe this should happen later, i.e. at the beginning of execution,
-	 * otherwise we might do expensive stuff in EXPLAIN.
-	 */
-	ExecInitBrinSortRanges((BrinSort *) node->ss.ps.plan, node);
-	elog(ERROR, "fixme");
+		/*
+		 * Load info about BRIN ranges, sort them to match the desired ordering.
+		 *
+		 * Maybe this should happen later, i.e. at the beginning of execution,
+		 * otherwise we might do expensive stuff in EXPLAIN.
+		 */
+		ExecInitBrinSortRanges((BrinSort *) node->ss.ps.plan, node);
+		node->bs_next_range = 0;
+	}
 
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot))
+	// while (true)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * If the index was lossy, we have to recheck the index quals using
-		 * the fetched tuple.
-		 */
-		if (scandesc->xs_recheck)
+		/* get the first range, read all tuples using a tid range scan */
+		if (node->ss.ss_currentScanDesc == NULL)
 		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
-			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				continue;
-			}
+			TableScanDesc		tscandesc;
+			ItemPointerData		mintid,
+								maxtid;
+
+			BrinSortRange *range = &node->bs_ranges[node->bs_next_range];
+
+			ItemPointerSetBlockNumber(&mintid, range->blkno_start);
+			ItemPointerSetOffsetNumber(&mintid, 0);
+
+			ItemPointerSetBlockNumber(&maxtid, range->blkno_end);
+			ItemPointerSetOffsetNumber(&maxtid, MaxHeapTuplesPerPage);
+
+			elog(WARNING, "initializing tidscan");
+
+			tscandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
+												 estate->es_snapshot,
+												 &mintid, &maxtid);
+			node->ss.ss_currentScanDesc = tscandesc;
 		}
 
-		return slot;
+		if (node->tuplesortstate == NULL)
+		{
+			TupleDesc	tupDesc = RelationGetDescr(node->ss.ss_currentRelation);
+
+			node->tuplesortstate = tuplesort_begin_heap(tupDesc,
+														plan->numCols,
+														plan->sortColIdx,
+														plan->sortOperators,
+														plan->collations,
+														plan->nullsFirst,
+														work_mem,
+														NULL,
+														TUPLESORT_NONE);
+
+			while (table_scan_getnextslot_tidrange(node->ss.ss_currentScanDesc, direction, slot))
+			{
+				elog(WARNING, "adding tuple");
+				tuplesort_puttupleslot(node->tuplesortstate, slot);
+				ExecClearTuple(slot);
+			}
+
+			ExecClearTuple(slot);
+
+			elog(WARNING, "performing sort");
+			tuplesort_performsort(node->tuplesortstate);
+		}
+		
+		// break;
 	}
+
+		slot = node->ss.ps.ps_ResultTupleSlot;
+
+		if (node->tuplesortstate != NULL)
+		{
+			elog(WARNING, "getting tuple");
+			if (tuplesort_gettupleslot(node->tuplesortstate,
+								  ScanDirectionIsForward(direction),
+								  false, slot, NULL))
+			{
+				elog(WARNING, "returning tuple");
+				return slot;
+			}
+				node->tuplesortstate = NULL;
+		}
 
 	/*
 	 * if we get here it means the index scan failed so we are at the end of
@@ -172,6 +224,7 @@ IndexNext(BrinSortState *node)
 	node->iss_ReachedEnd = true;
 	return ExecClearTuple(slot);
 }
+
 
 /* ----------------------------------------------------------------
  *		IndexNextWithReorder
@@ -646,6 +699,9 @@ ExecEndBrinSort(BrinSortState *node)
 		index_endscan(IndexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	if (node->ss.ss_currentScanDesc != NULL)
+		table_endscan(node->ss.ss_currentScanDesc);
 }
 
 /* ----------------------------------------------------------------
@@ -839,6 +895,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 		BrinTuple  *tup;
 		OffsetNumber off;
 		Size		size;
+		BrinSortRange *range = &planstate->bs_ranges[planstate->bs_nranges++];
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -852,12 +909,15 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		}
 
+		range->blkno_start = heapBlk;
+		range->blkno_end = heapBlk + (opaque->bo_pagesPerRange - 1);
+
 		/*
 		 * Ranges with no indexed tuple may contain anything.
 		 */
 		if (!gottuple)
 		{
-			planstate->bs_ranges[planstate->bs_nranges].not_summarized = true;
+			range->not_summarized = true;
 		}
 		else
 		{
@@ -869,7 +929,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 				 *
 				 * XXX Is this correct?
 				 */
-				planstate->bs_ranges[planstate->bs_nranges].not_summarized = true;
+				range->not_summarized = true;
 			}
 			else
 			{
@@ -877,18 +937,16 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 
 				bval = &dtup->bt_columns[attno - 1];
 
-				planstate->bs_ranges[planstate->bs_nranges].all_nulls = bval->bv_allnulls;
-				planstate->bs_ranges[planstate->bs_nranges].all_nulls = bval->bv_hasnulls;
+				range->has_nulls = bval->bv_allnulls;
+				range->all_nulls = bval->bv_hasnulls;
 
 				if (!bval->bv_allnulls)
 				{
-					planstate->bs_ranges[planstate->bs_nranges].min_value = bval->bv_values[0];
-					planstate->bs_ranges[planstate->bs_nranges].max_value = bval->bv_values[1];
+					range->min_value = bval->bv_values[0];
+					range->max_value = bval->bv_values[1];
 				}
 			}
 		}
-
-		planstate->bs_nranges++;
 	}
 
 	if (buf != InvalidBuffer)
@@ -923,8 +981,9 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	/* dump ranges for debugging */
 	for (int i = 0; i < planstate->bs_nranges; i++)
 	{
-		elog(WARNING, "%d => %d  [%ld,%ld]", i,
-			 planstate->bs_ranges[i].blkno,
+		elog(WARNING, "%d => (%d,%d) [%ld,%ld]", i,
+			 planstate->bs_ranges[i].blkno_start,
+			 planstate->bs_ranges[i].blkno_end,
 			 planstate->bs_ranges[i].min_value,
 			 planstate->bs_ranges[i].max_value);
 	}
@@ -1123,6 +1182,10 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	{
 		indexstate->iss_RuntimeContext = NULL;
 	}
+
+	indexstate->tuplesortstate = NULL;
+
+	ExecInitResultTupleSlotTL(&indexstate->ss.ps, &TTSOpsMinimalTuple);
 
 	/*
 	 * all done.

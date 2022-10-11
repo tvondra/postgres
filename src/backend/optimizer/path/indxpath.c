@@ -1227,6 +1227,10 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * XXX We don't do this, because this function is supposed to
 			 * generate IndexPaths. We should be building this in a different
 			 * place, perhaps in create_index_paths() or so.
+			 *
+			 * XXX By building it elsewhere, we could also leverage the index
+			 * paths we've built here, particularly the bitmap index paths,
+			 * which we could use to eliminate many of the ranges.
 			 */
 			// result = lappend(result, bpath);
 

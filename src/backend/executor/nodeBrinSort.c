@@ -18,7 +18,7 @@
  *		IndexNext				retrieve next tuple using index
  *		ExecInitBrinSort		creates and initializes state info.
  *		ExecReScanBrinSort		rescans the indexed relation.
- *		ExecEndBrinSort		releases all storage.
+ *		ExecEndBrinSort			releases all storage.
  *		ExecIndexMarkPos		marks scan position.
  *		ExecIndexRestrPos		restores scan position.
  *		ExecBrinSortEstimate	estimates DSM space needed for parallel index scan

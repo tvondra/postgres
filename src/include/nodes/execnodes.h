@@ -1559,7 +1559,14 @@ typedef struct BrinSortRange
 	bool	has_nulls;
 	bool	all_nulls;
 	bool	not_summarized;
+	bool	processed;
 } BrinSortRange;
+
+typedef enum {
+	LOAD_RANGE,
+	PROCESS_RANGE,
+	FINISHED
+} BrinSortPhase;
 
 typedef struct BrinSortState
 {
@@ -1592,7 +1599,15 @@ typedef struct BrinSortState
 	BrinSortRange  *bs_ranges;
 	int				bs_next_range;
 	ExprState	   *bs_qual;
-	void		   *tuplesortstate; /* private state of tuplesort.c */
+	Datum			bs_watermark;
+	BrinSortPhase	bs_phase;
+
+	/*
+	 * We need two tuplesort instances - one for current range, one for
+	 * spill-over tuples from the overlapping ranges
+	 */
+	void		   *bs_tuplesortstate;
+	Tuplestorestate *bs_tuplestore;
 } BrinSortState;
 
 /* ----------------

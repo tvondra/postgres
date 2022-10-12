@@ -502,9 +502,6 @@ typedef struct BrinSort
 	Oid			indexid;		/* OID of index to scan */
 	List	   *indexqual;		/* list of index quals (usually OpExprs) */
 	List	   *indexqualorig;	/* the same in original form */
-	List	   *indexorderby;	/* list of index ORDER BY exprs */
-	List	   *indexorderbyorig;	/* the same in original form */
-	List	   *indexorderbyops;	/* OIDs of sort ops for ORDER BY exprs */
 	ScanDirection indexorderdir;	/* forward or backward or don't care */
 
 	/* number of sort-key columns */

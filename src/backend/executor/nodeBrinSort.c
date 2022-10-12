@@ -77,7 +77,7 @@ brinsort_start_tidscan(BrinSortState *node, int range_index, bool update_waterma
 		ItemPointerData		mintid,
 							maxtid;
 
-		BrinSortRange *range = &node->bs_ranges[node->bs_next_range];
+		BrinSortRange *range = &node->bs_ranges[range_index];
 
 		/*
 		 * Remember maximum value for the current range (but not when
@@ -94,7 +94,7 @@ brinsort_start_tidscan(BrinSortState *node, int range_index, bool update_waterma
 		ItemPointerSetBlockNumber(&maxtid, range->blkno_end);
 		ItemPointerSetOffsetNumber(&maxtid, MaxHeapTuplesPerPage);
 
-		elog(DEBUG1, "loading range %d, %d", range->blkno_start, range->blkno_end);
+		elog(WARNING, "loading range %d, %d", range->blkno_start, range->blkno_end);
 
 		tscandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
 											 estate->es_snapshot,
@@ -449,6 +449,10 @@ elog(WARNING, "loading range %d", node->bs_next_range);
 					/* no possible overlap, so skip this range */
 					if (cmp > 0)
 						continue;
+
+					elog(WARNING, "loading intersecting range %d [%ld,%ld] %ld", i,
+								  range->min_value, range->max_value,
+								  node->bs_watermark);
 
 					brinsort_start_tidscan(node, i, false);
 
@@ -978,8 +982,6 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
 	indexstate->indexqualorig =
 		ExecInitQual(node->indexqualorig, (PlanState *) indexstate);
-	indexstate->indexorderbyorig =
-		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
@@ -1019,7 +1021,7 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	 */
 	ExecIndexBuildScanKeys((PlanState *) indexstate,
 						   indexstate->iss_RelationDesc,
-						   node->indexorderby,
+						   NULL,
 						   true,
 						   &indexstate->iss_OrderByKeys,
 						   &indexstate->iss_NumOrderByKeys,

@@ -1598,17 +1598,13 @@ typedef struct IndexPath
 
 /*
  * read sorted data from brin index
+ *
+ * We use IndexPath, because that's what amcostestimate is expecting, but
+ * we typedef it as a separate struct.
  */
 typedef struct BrinSortPath
 {
-	Path		path;
-	IndexOptInfo *indexinfo;
-	List	   *indexclauses;
-	List	   *indexorderbys;
-	List	   *indexorderbycols;
-	ScanDirection indexscandir;
-	Cost		indextotalcost;
-	Selectivity indexselectivity;
+	IndexPath	ipath;
 } BrinSortPath;
 
 /*

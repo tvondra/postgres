@@ -1070,23 +1070,21 @@ create_brinsort_path(PlannerInfo *root,
 	BrinSortPath  *pathnode = makeNode(BrinSortPath);
 	RelOptInfo *rel = index->rel;
 
-	pathnode->path.pathtype = T_BrinSort;
-	pathnode->path.parent = rel;
-	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+	pathnode->ipath.path.pathtype = T_BrinSort;
+	pathnode->ipath.path.parent = rel;
+	pathnode->ipath.path.pathtarget = rel->reltarget;
+	pathnode->ipath.path.param_info = get_baserel_parampathinfo(root, rel,
 														  required_outer);
-	pathnode->path.parallel_aware = false;
-	pathnode->path.parallel_safe = rel->consider_parallel;
-	pathnode->path.parallel_workers = 0;
-	pathnode->path.pathkeys = pathkeys;
+	pathnode->ipath.path.parallel_aware = false;
+	pathnode->ipath.path.parallel_safe = rel->consider_parallel;
+	pathnode->ipath.path.parallel_workers = 0;
+	pathnode->ipath.path.pathkeys = pathkeys;
 
-	pathnode->indexinfo = index;
-	pathnode->indexclauses = indexclauses;
-	pathnode->indexorderbys = indexorderbys;
-	pathnode->indexorderbycols = indexorderbycols;
-	pathnode->indexscandir = indexscandir;
+	pathnode->ipath.indexinfo = index;
+	pathnode->ipath.indexclauses = indexclauses;
+	pathnode->ipath.indexscandir = indexscandir;
 
-	cost_index(pathnode, root, loop_count, partial_path);
+	cost_brinsort(pathnode, root, loop_count, partial_path);
 
 	return pathnode;
 }

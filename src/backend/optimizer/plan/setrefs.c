@@ -626,12 +626,6 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->indexqualorig =
 					fix_scan_list(root, splan->indexqualorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
-				splan->indexorderby =
-					fix_scan_list(root, splan->indexorderby,
-								  rtoffset, 1);
-				splan->indexorderbyorig =
-					fix_scan_list(root, splan->indexorderbyorig,
-								  rtoffset, NUM_EXEC_QUAL(plan));
 			}
 			break;
 		case T_BitmapIndexScan:

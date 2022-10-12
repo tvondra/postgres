@@ -195,8 +195,6 @@ static IndexOnlyScan *make_indexonlyscan(List *qptlist, List *qpqual,
 										 ScanDirection indexscandir);
 static BrinSort *make_brinsort(List *qptlist, List *qpqual, Index scanrelid,
 							   Oid indexid, List *indexqual, List *indexqualorig,
-							   List *indexorderby, List *indexorderbyorig,
-							   List *indexorderbyops,
 							   ScanDirection indexscandir);
 static BitmapIndexScan *make_bitmap_indexscan(Index scanrelid, Oid indexid,
 											  List *indexqual,
@@ -3214,24 +3212,20 @@ create_brinsort_plan(PlannerInfo *root,
 					 List *scan_clauses)
 {
 	BrinSort   *brinsort_plan;
-	List	   *indexclauses = best_path->indexclauses;
-	List	   *indexorderbys = best_path->indexorderbys;
-	Index		baserelid = best_path->path.parent->relid;
-	IndexOptInfo *indexinfo = best_path->indexinfo;
+	List	   *indexclauses = best_path->ipath.indexclauses;
+	Index		baserelid = best_path->ipath.path.parent->relid;
+	IndexOptInfo *indexinfo = best_path->ipath.indexinfo;
 	Oid			indexoid = indexinfo->indexoid;
 	List	   *qpqual;
 	List	   *stripped_indexquals;
 	List	   *fixed_indexquals;
-	List	   *fixed_indexorderbys;
-	List	   *indexorderbyops = NIL;
 	ListCell   *l;
-	bool		indexonly = false;	// hack to compile
 
-	List	   *pathkeys = best_path->path.pathkeys;
+	List	   *pathkeys = best_path->ipath.path.pathkeys;
 
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
-	Assert(best_path->path.parent->rtekind == RTE_RELATION);
+	Assert(best_path->ipath.path.parent->rtekind == RTE_RELATION);
 
 	/*
 	 * Extract the index qual expressions (stripped of RestrictInfos) from the
@@ -3239,14 +3233,9 @@ create_brinsort_plan(PlannerInfo *root,
 	 * table Vars.  (This step also does replace_nestloop_params on the
 	 * fixed_indexquals.)
 	 */
-	fix_indexqual_references(root, best_path,
+	fix_indexqual_references(root, &best_path->ipath,
 							 &stripped_indexquals,
 							 &fixed_indexquals);
-
-	/*
-	 * Likewise fix up index attr references in the ORDER BY expressions.
-	 */
-	fixed_indexorderbys = fix_indexorderby_references(root, best_path);
 
 	/*
 	 * The qpqual list must contain all restrictions not automatically handled
@@ -3307,66 +3296,12 @@ create_brinsort_plan(PlannerInfo *root,
 	 * it'd break the comparisons to predicates above ... (or would it?  Those
 	 * wouldn't have outer refs)
 	 */
-	if (best_path->path.param_info)
+	if (best_path->ipath.path.param_info)
 	{
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
 		qpqual = (List *)
 			replace_nestloop_params(root, (Node *) qpqual);
-		indexorderbys = (List *)
-			replace_nestloop_params(root, (Node *) indexorderbys);
-	}
-
-	/*
-	 * If there are ORDER BY expressions, look up the sort operators for their
-	 * result datatypes.
-	 */
-	if (indexorderbys)
-	{
-		ListCell   *pathkeyCell,
-				   *exprCell;
-
-		/*
-		 * PathKey contains OID of the btree opfamily we're sorting by, but
-		 * that's not quite enough because we need the expression's datatype
-		 * to look up the sort operator in the operator family.
-		 */
-		Assert(list_length(best_path->path.pathkeys) == list_length(indexorderbys));
-		forboth(pathkeyCell, best_path->path.pathkeys, exprCell, indexorderbys)
-		{
-			PathKey    *pathkey = (PathKey *) lfirst(pathkeyCell);
-			Node	   *expr = (Node *) lfirst(exprCell);
-			Oid			exprtype = exprType(expr);
-			Oid			sortop;
-
-			/* Get sort operator from opfamily */
-			sortop = get_opfamily_member(pathkey->pk_opfamily,
-										 exprtype,
-										 exprtype,
-										 pathkey->pk_strategy);
-			if (!OidIsValid(sortop))
-				elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
-					 pathkey->pk_strategy, exprtype, exprtype, pathkey->pk_opfamily);
-			indexorderbyops = lappend_oid(indexorderbyops, sortop);
-		}
-	}
-
-	/*
-	 * For an index-only scan, we must mark indextlist entries as resjunk if
-	 * they are columns that the index AM can't return; this cues setrefs.c to
-	 * not generate references to those columns.
-	 */
-	if (indexonly)
-	{
-		int			i = 0;
-
-		foreach(l, indexinfo->indextlist)
-		{
-			TargetEntry *indextle = (TargetEntry *) lfirst(l);
-
-			indextle->resjunk = !indexinfo->canreturn[i];
-			i++;
-		}
 	}
 
 	/* Finally ready to build the plan node */
@@ -3376,10 +3311,7 @@ create_brinsort_plan(PlannerInfo *root,
 								  indexoid,
 								  fixed_indexquals,
 								  stripped_indexquals,
-								  fixed_indexorderbys,
-								  indexorderbys,
-								  indexorderbyops,
-								  best_path->indexscandir);
+								  best_path->ipath.indexscandir);
 
 	if (pathkeys != NIL)
 	{
@@ -3390,7 +3322,7 @@ create_brinsort_plan(PlannerInfo *root,
 		 * need to detect whether any tlist entries were added.
 		 */
 		(void) prepare_sort_from_pathkeys((Plan *) brinsort_plan, pathkeys,
-										  best_path->path.parent->relids,
+										  best_path->ipath.path.parent->relids,
 										  NULL,
 										  true,
 										  &brinsort_plan->numCols,
@@ -3399,7 +3331,6 @@ create_brinsort_plan(PlannerInfo *root,
 										  &brinsort_plan->collations,
 										  &brinsort_plan->nullsFirst);
 		//tlist_was_changed = (orig_tlist_length != list_length(plan->plan.targetlist));
-		elog(WARNING, "sortkeys %d", brinsort_plan->numCols);
 		for (int i = 0; i < brinsort_plan->numCols; i++)
 			elog(WARNING, "%d => %d %d %d %d", i,
 				 brinsort_plan->sortColIdx[i],
@@ -3408,7 +3339,7 @@ create_brinsort_plan(PlannerInfo *root,
 				 brinsort_plan->nullsFirst[i]);
 	}
 
-	copy_generic_path_info(&brinsort_plan->scan.plan, &best_path->path);
+	copy_generic_path_info(&brinsort_plan->scan.plan, &best_path->ipath.path);
 
 	return brinsort_plan;
 }
@@ -5763,9 +5694,6 @@ make_brinsort(List *qptlist,
 			   Oid indexid,
 			   List *indexqual,
 			   List *indexqualorig,
-			   List *indexorderby,
-			   List *indexorderbyorig,
-			   List *indexorderbyops,
 			   ScanDirection indexscandir)
 {
 	BrinSort  *node = makeNode(BrinSort);
@@ -5779,9 +5707,6 @@ make_brinsort(List *qptlist,
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
-	node->indexorderby = indexorderby;
-	node->indexorderbyorig = indexorderbyorig;
-	node->indexorderbyops = indexorderbyops;
 	node->indexorderdir = indexscandir;
 
 	return node;

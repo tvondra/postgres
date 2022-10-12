@@ -1812,8 +1812,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (((BrinSort *) plan)->indexqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
-			show_scan_qual(((BrinSort *) plan)->indexorderbyorig,
-						   "Order By", planstate, ancestors, es);
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			show_brinsort_keys(castNode(BrinSortState, planstate), ancestors, es);
 			if (plan->qual)

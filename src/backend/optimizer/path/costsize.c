@@ -794,9 +794,8 @@ void
 cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 		   bool partial_path)
 {
-	IndexOptInfo *index = path->indexinfo;
+	IndexOptInfo *index = path->ipath.indexinfo;
 	RelOptInfo *baserel = index->rel;
-	bool		indexonly = (path->path.pathtype == T_IndexOnlyScan);
 	amcostestimate_function amcostestimate;
 	List	   *qpquals;
 	Cost		startup_cost = 0;
@@ -831,21 +830,21 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 	 * baserestrictinfo as the list of relevant restriction clauses for the
 	 * rel.
 	 */
-	if (path->path.param_info)
+	if (path->ipath.path.param_info)
 	{
-		path->path.rows = path->path.param_info->ppi_rows;
+		path->ipath.path.rows = path->ipath.path.param_info->ppi_rows;
 		/* qpquals come from the rel's restriction clauses and ppi_clauses */
-		qpquals = list_concat(extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-														  path->indexclauses),
-							  extract_nonindex_conditions(path->path.param_info->ppi_clauses,
-														  path->indexclauses));
+		qpquals = list_concat(extract_nonindex_conditions(path->ipath.indexinfo->indrestrictinfo,
+														  path->ipath.indexclauses),
+							  extract_nonindex_conditions(path->ipath.path.param_info->ppi_clauses,
+														  path->ipath.indexclauses));
 	}
 	else
 	{
-		path->path.rows = baserel->rows;
+		path->ipath.path.rows = baserel->rows;
 		/* qpquals come from just the rel's restriction clauses */
-		qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-											  path->indexclauses);
+		qpquals = extract_nonindex_conditions(path->ipath.indexinfo->indrestrictinfo,
+											  path->ipath.indexclauses);
 	}
 
 	if (!enable_indexscan)
@@ -860,7 +859,7 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 	 * pathnodes.h uses a weak function type to avoid including amapi.h.
 	 */
 	amcostestimate = (amcostestimate_function) index->amcostestimate;
-	amcostestimate(root, path, loop_count,
+	amcostestimate(root, &path->ipath, loop_count,
 				   &indexStartupCost, &indexTotalCost,
 				   &indexSelectivity, &indexCorrelation,
 				   &index_pages);
@@ -870,8 +869,8 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 	 * We don't bother to save indexStartupCost or indexCorrelation, because a
 	 * bitmap scan doesn't care about either.
 	 */
-	path->indextotalcost = indexTotalCost;
-	path->indexselectivity = indexSelectivity;
+	path->ipath.indextotalcost = indexTotalCost;
+	path->ipath.indexselectivity = indexSelectivity;
 
 	/* all costs for touching index itself included here */
 	startup_cost += indexStartupCost;
@@ -927,9 +926,6 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 											(double) index->pages,
 											root);
 
-		if (indexonly)
-			pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
 		rand_heap_pages = pages_fetched;
 
 		max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
@@ -951,9 +947,6 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 											(double) index->pages,
 											root);
 
-		if (indexonly)
-			pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
 		min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
 	}
 	else
@@ -967,9 +960,6 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 											(double) index->pages,
 											root);
 
-		if (indexonly)
-			pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
 		rand_heap_pages = pages_fetched;
 
 		/* max_IO_cost is for the perfectly uncorrelated case (csquared=0) */
@@ -977,9 +967,6 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 
 		/* min_IO_cost is for the perfectly correlated case (csquared=1) */
 		pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-
-		if (indexonly)
-			pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
 
 		if (pages_fetched > 0)
 		{
@@ -994,20 +981,12 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 	if (partial_path)
 	{
 		/*
-		 * For index only scans compute workers based on number of index pages
-		 * fetched; the number of heap pages we fetch might be so small as to
-		 * effectively rule out parallelism, which we don't want to do.
-		 */
-		if (indexonly)
-			rand_heap_pages = -1;
-
-		/*
 		 * Estimate the number of parallel workers required to scan index. Use
 		 * the number of heap pages computed considering heap fetches won't be
 		 * sequential as for parallel scans the pages are accessed in random
 		 * order.
 		 */
-		path->path.parallel_workers = compute_parallel_worker(baserel,
+		path->ipath.path.parallel_workers = compute_parallel_worker(baserel,
 															  rand_heap_pages,
 															  index_pages,
 															  max_parallel_workers_per_gather);
@@ -1017,10 +996,10 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 		 * such a case this path will be rejected.  So there is no benefit in
 		 * doing extra computation.
 		 */
-		if (path->path.parallel_workers <= 0)
+		if (path->ipath.path.parallel_workers <= 0)
 			return;
 
-		path->path.parallel_aware = true;
+		path->ipath.path.parallel_aware = true;
 	}
 
 	/*
@@ -1045,15 +1024,15 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 	cpu_run_cost += cpu_per_tuple * tuples_fetched;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
-	startup_cost += path->path.pathtarget->cost.startup;
-	cpu_run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
+	startup_cost += path->ipath.path.pathtarget->cost.startup;
+	cpu_run_cost += path->ipath.path.pathtarget->cost.per_tuple * path->ipath.path.rows;
 
 	/* Adjust costing for parallelism, if used. */
-	if (path->path.parallel_workers > 0)
+	if (path->ipath.path.parallel_workers > 0)
 	{
-		double		parallel_divisor = get_parallel_divisor(&path->path);
+		double		parallel_divisor = get_parallel_divisor(&path->ipath.path);
 
-		path->path.rows = clamp_row_est(path->path.rows / parallel_divisor);
+		path->ipath.path.rows = clamp_row_est(path->ipath.path.rows / parallel_divisor);
 
 		/* The CPU cost is divided among all the workers. */
 		cpu_run_cost /= parallel_divisor;
@@ -1061,8 +1040,8 @@ cost_brinsort(BrinSortPath *path, PlannerInfo *root, double loop_count,
 
 	run_cost += cpu_run_cost;
 
-	path->path.startup_cost = startup_cost;
-	path->path.total_cost = startup_cost + run_cost;
+	path->ipath.path.startup_cost = startup_cost;
+	path->ipath.path.total_cost = startup_cost + run_cost;
 }
 
 /*

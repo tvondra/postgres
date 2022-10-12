@@ -16,7 +16,6 @@
  * INTERFACE ROUTINES
  *		ExecBrinSort			scans a relation using an index
  *		IndexNext				retrieve next tuple using index
- *		IndexNextWithReorder	same, but recheck ORDER BY expressions
  *		ExecInitBrinSort		creates and initializes state info.
  *		ExecReScanBrinSort		rescans the indexed relation.
  *		ExecEndBrinSort		releases all storage.
@@ -60,18 +59,7 @@ typedef struct
 } ReorderTuple;
 
 static TupleTableSlot *IndexNext(BrinSortState *node);
-static TupleTableSlot *IndexNextWithReorder(BrinSortState *node);
-static void EvalOrderByExpressions(BrinSortState *node, ExprContext *econtext);
 static bool IndexRecheck(BrinSortState *node, TupleTableSlot *slot);
-static int	cmp_orderbyvals(const Datum *adist, const bool *anulls,
-							const Datum *bdist, const bool *bnulls,
-							BrinSortState *node);
-static int	reorderqueue_cmp(const pairingheap_node *a,
-							 const pairingheap_node *b, void *arg);
-static void reorderqueue_push(BrinSortState *node, TupleTableSlot *slot,
-							  Datum *orderbyvals, bool *orderbynulls);
-static HeapTuple reorderqueue_pop(BrinSortState *node);
-
 static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
 static void
@@ -511,229 +499,6 @@ elog(WARNING, "loading range %d", node->bs_next_range);
 	return ExecClearTuple(slot);
 }
 
-
-/* ----------------------------------------------------------------
- *		IndexNextWithReorder
- *
- *		Like IndexNext, but this version can also re-check ORDER BY
- *		expressions, and reorder the tuples as necessary.
- * ----------------------------------------------------------------
- */
-static TupleTableSlot *
-IndexNextWithReorder(BrinSortState *node)
-{
-	EState	   *estate;
-	ExprContext *econtext;
-	IndexScanDesc scandesc;
-	TupleTableSlot *slot;
-	ReorderTuple *topmost = NULL;
-	bool		was_exact;
-	Datum	   *lastfetched_vals;
-	bool	   *lastfetched_nulls;
-	int			cmp;
-
-	estate = node->ss.ps.state;
-
-	/*
-	 * Only forward scan is supported with reordering.  Note: we can get away
-	 * with just Asserting here because the system will not try to run the
-	 * plan backwards if ExecSupportsBackwardScan() says it won't work.
-	 * Currently, that is guaranteed because no index AMs support both
-	 * amcanorderbyop and amcanbackward; if any ever do,
-	 * ExecSupportsBackwardScan() will need to consider indexorderbys
-	 * explicitly.
-	 */
-	Assert(!ScanDirectionIsBackward(((BrinSort *) node->ss.ps.plan)->indexorderdir));
-	Assert(ScanDirectionIsForward(estate->es_direction));
-
-	scandesc = node->iss_ScanDesc;
-	econtext = node->ss.ps.ps_ExprContext;
-	slot = node->ss.ss_ScanTupleSlot;
-
-	if (scandesc == NULL)
-	{
-		/*
-		 * We reach here if the index scan is not parallel, or if we're
-		 * serially executing an index scan that was planned to be parallel.
-		 */
-		scandesc = index_beginscan(node->ss.ss_currentRelation,
-								   node->iss_RelationDesc,
-								   estate->es_snapshot,
-								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
-
-		node->iss_ScanDesc = scandesc;
-
-		/*
-		 * If no run-time keys to calculate or they are ready, go ahead and
-		 * pass the scankeys to the index AM.
-		 */
-		if (node->iss_NumRuntimeKeys == 0 || node->iss_RuntimeKeysReady)
-			index_rescan(scandesc,
-						 node->iss_ScanKeys, node->iss_NumScanKeys,
-						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
-	}
-
-	for (;;)
-	{
-		CHECK_FOR_INTERRUPTS();
-
-		/*
-		 * Check the reorder queue first.  If the topmost tuple in the queue
-		 * has an ORDER BY value smaller than (or equal to) the value last
-		 * returned by the index, we can return it now.
-		 */
-		if (!pairingheap_is_empty(node->iss_ReorderQueue))
-		{
-			topmost = (ReorderTuple *) pairingheap_first(node->iss_ReorderQueue);
-
-			if (node->iss_ReachedEnd ||
-				cmp_orderbyvals(topmost->orderbyvals,
-								topmost->orderbynulls,
-								scandesc->xs_orderbyvals,
-								scandesc->xs_orderbynulls,
-								node) <= 0)
-			{
-				HeapTuple	tuple;
-
-				tuple = reorderqueue_pop(node);
-
-				/* Pass 'true', as the tuple in the queue is a palloc'd copy */
-				ExecForceStoreHeapTuple(tuple, slot, true);
-				return slot;
-			}
-		}
-		else if (node->iss_ReachedEnd)
-		{
-			/* Queue is empty, and no more tuples from index.  We're done. */
-			return ExecClearTuple(slot);
-		}
-
-		/*
-		 * Fetch next tuple from the index.
-		 */
-next_indextuple:
-		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot))
-		{
-			/*
-			 * No more tuples from the index.  But we still need to drain any
-			 * remaining tuples from the queue before we're done.
-			 */
-			node->iss_ReachedEnd = true;
-			continue;
-		}
-
-		/*
-		 * If the index was lossy, we have to recheck the index quals and
-		 * ORDER BY expressions using the fetched tuple.
-		 */
-		if (scandesc->xs_recheck)
-		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
-			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				/* allow this loop to be cancellable */
-				CHECK_FOR_INTERRUPTS();
-				goto next_indextuple;
-			}
-		}
-
-		if (scandesc->xs_recheckorderby)
-		{
-			econtext->ecxt_scantuple = slot;
-			ResetExprContext(econtext);
-			EvalOrderByExpressions(node, econtext);
-
-			/*
-			 * Was the ORDER BY value returned by the index accurate?  The
-			 * recheck flag means that the index can return inaccurate values,
-			 * but then again, the value returned for any particular tuple
-			 * could also be exactly correct.  Compare the value returned by
-			 * the index with the recalculated value.  (If the value returned
-			 * by the index happened to be exact right, we can often avoid
-			 * pushing the tuple to the queue, just to pop it back out again.)
-			 */
-			cmp = cmp_orderbyvals(node->iss_OrderByValues,
-								  node->iss_OrderByNulls,
-								  scandesc->xs_orderbyvals,
-								  scandesc->xs_orderbynulls,
-								  node);
-			if (cmp < 0)
-				elog(ERROR, "index returned tuples in wrong order");
-			else if (cmp == 0)
-				was_exact = true;
-			else
-				was_exact = false;
-			lastfetched_vals = node->iss_OrderByValues;
-			lastfetched_nulls = node->iss_OrderByNulls;
-		}
-		else
-		{
-			was_exact = true;
-			lastfetched_vals = scandesc->xs_orderbyvals;
-			lastfetched_nulls = scandesc->xs_orderbynulls;
-		}
-
-		/*
-		 * Can we return this tuple immediately, or does it need to be pushed
-		 * to the reorder queue?  If the ORDER BY expression values returned
-		 * by the index were inaccurate, we can't return it yet, because the
-		 * next tuple from the index might need to come before this one. Also,
-		 * we can't return it yet if there are any smaller tuples in the queue
-		 * already.
-		 */
-		if (!was_exact || (topmost && cmp_orderbyvals(lastfetched_vals,
-													  lastfetched_nulls,
-													  topmost->orderbyvals,
-													  topmost->orderbynulls,
-													  node) > 0))
-		{
-			/* Put this tuple to the queue */
-			reorderqueue_push(node, slot, lastfetched_vals, lastfetched_nulls);
-			continue;
-		}
-		else
-		{
-			/* Can return this tuple immediately. */
-			return slot;
-		}
-	}
-
-	/*
-	 * if we get here it means the index scan failed so we are at the end of
-	 * the scan..
-	 */
-	return ExecClearTuple(slot);
-}
-
-/*
- * Calculate the expressions in the ORDER BY clause, based on the heap tuple.
- */
-static void
-EvalOrderByExpressions(BrinSortState *node, ExprContext *econtext)
-{
-	int			i;
-	ListCell   *l;
-	MemoryContext oldContext;
-
-	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
-
-	i = 0;
-	foreach(l, node->indexorderbyorig)
-	{
-		ExprState  *orderby = (ExprState *) lfirst(l);
-
-		node->iss_OrderByValues[i] = ExecEvalExpr(orderby,
-												  econtext,
-												  &node->iss_OrderByNulls[i]);
-		i++;
-	}
-
-	MemoryContextSwitchTo(oldContext);
-}
-
 /*
  * IndexRecheck -- access method routine to recheck a tuple in EvalPlanQual
  */
@@ -753,119 +518,6 @@ IndexRecheck(BrinSortState *node, TupleTableSlot *slot)
 }
 
 
-/*
- * Compare ORDER BY expression values.
- */
-static int
-cmp_orderbyvals(const Datum *adist, const bool *anulls,
-				const Datum *bdist, const bool *bnulls,
-				BrinSortState *node)
-{
-	int			i;
-	int			result;
-
-	for (i = 0; i < node->iss_NumOrderByKeys; i++)
-	{
-		SortSupport ssup = &node->iss_SortSupport[i];
-
-		/*
-		 * Handle nulls.  We only need to support NULLS LAST ordering, because
-		 * match_pathkeys_to_index() doesn't consider indexorderby
-		 * implementation otherwise.
-		 */
-		if (anulls[i] && !bnulls[i])
-			return 1;
-		else if (!anulls[i] && bnulls[i])
-			return -1;
-		else if (anulls[i] && bnulls[i])
-			return 0;
-
-		result = ssup->comparator(adist[i], bdist[i], ssup);
-		if (result != 0)
-			return result;
-	}
-
-	return 0;
-}
-
-/*
- * Pairing heap provides getting topmost (greatest) element while KNN provides
- * ascending sort.  That's why we invert the sort order.
- */
-static int
-reorderqueue_cmp(const pairingheap_node *a, const pairingheap_node *b,
-				 void *arg)
-{
-	ReorderTuple *rta = (ReorderTuple *) a;
-	ReorderTuple *rtb = (ReorderTuple *) b;
-	BrinSortState *node = (BrinSortState *) arg;
-
-	/* exchange argument order to invert the sort order */
-	return cmp_orderbyvals(rtb->orderbyvals, rtb->orderbynulls,
-						   rta->orderbyvals, rta->orderbynulls,
-						   node);
-}
-
-/*
- * Helper function to push a tuple to the reorder queue.
- */
-static void
-reorderqueue_push(BrinSortState *node, TupleTableSlot *slot,
-				  Datum *orderbyvals, bool *orderbynulls)
-{
-	IndexScanDesc scandesc = node->iss_ScanDesc;
-	EState	   *estate = node->ss.ps.state;
-	MemoryContext oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
-	ReorderTuple *rt;
-	int			i;
-
-	rt = (ReorderTuple *) palloc(sizeof(ReorderTuple));
-	rt->htup = ExecCopySlotHeapTuple(slot);
-	rt->orderbyvals =
-		(Datum *) palloc(sizeof(Datum) * scandesc->numberOfOrderBys);
-	rt->orderbynulls =
-		(bool *) palloc(sizeof(bool) * scandesc->numberOfOrderBys);
-	for (i = 0; i < node->iss_NumOrderByKeys; i++)
-	{
-		if (!orderbynulls[i])
-			rt->orderbyvals[i] = datumCopy(orderbyvals[i],
-										   node->iss_OrderByTypByVals[i],
-										   node->iss_OrderByTypLens[i]);
-		else
-			rt->orderbyvals[i] = (Datum) 0;
-		rt->orderbynulls[i] = orderbynulls[i];
-	}
-	pairingheap_add(node->iss_ReorderQueue, &rt->ph_node);
-
-	MemoryContextSwitchTo(oldContext);
-}
-
-/*
- * Helper function to pop the next tuple from the reorder queue.
- */
-static HeapTuple
-reorderqueue_pop(BrinSortState *node)
-{
-	HeapTuple	result;
-	ReorderTuple *topmost;
-	int			i;
-
-	topmost = (ReorderTuple *) pairingheap_remove_first(node->iss_ReorderQueue);
-
-	result = topmost->htup;
-	for (i = 0; i < node->iss_NumOrderByKeys; i++)
-	{
-		if (!node->iss_OrderByTypByVals[i] && !topmost->orderbynulls[i])
-			pfree(DatumGetPointer(topmost->orderbyvals[i]));
-	}
-	pfree(topmost->orderbyvals);
-	pfree(topmost->orderbynulls);
-	pfree(topmost);
-
-	return result;
-}
-
-
 /* ----------------------------------------------------------------
  *		ExecBrinSort(node)
  * ----------------------------------------------------------------
@@ -881,14 +533,9 @@ ExecBrinSort(PlanState *pstate)
 	if (node->iss_NumRuntimeKeys != 0 && !node->iss_RuntimeKeysReady)
 		ExecReScan((PlanState *) node);
 
-	if (node->iss_NumOrderByKeys > 0)
-		return ExecScan(&node->ss,
-						(ExecScanAccessMtd) IndexNextWithReorder,
-						(ExecScanRecheckMtd) IndexRecheck);
-	else
-		return ExecScan(&node->ss,
-						(ExecScanAccessMtd) IndexNext,
-						(ExecScanRecheckMtd) IndexRecheck);
+	return ExecScan(&node->ss,
+					(ExecScanAccessMtd) IndexNext,
+					(ExecScanRecheckMtd) IndexRecheck);
 }
 
 /* ----------------------------------------------------------------
@@ -922,18 +569,6 @@ ExecReScanBrinSort(BrinSortState *node)
 								 node->iss_NumRuntimeKeys);
 	}
 	node->iss_RuntimeKeysReady = true;
-
-	/* flush the reorder queue */
-	if (node->iss_ReorderQueue)
-	{
-		HeapTuple	tuple;
-
-		while (!pairingheap_is_empty(node->iss_ReorderQueue))
-		{
-			tuple = reorderqueue_pop(node);
-			heap_freetuple(tuple);
-		}
-	}
 
 	/* reset index scan */
 	if (node->iss_ScanDesc)
@@ -1392,63 +1027,6 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 						   &indexstate->iss_NumRuntimeKeys,
 						   NULL,	/* no ArrayKeys */
 						   NULL);
-
-	/* Initialize sort support, if we need to re-check ORDER BY exprs */
-	if (indexstate->iss_NumOrderByKeys > 0)
-	{
-		int			numOrderByKeys = indexstate->iss_NumOrderByKeys;
-		int			i;
-		ListCell   *lco;
-		ListCell   *lcx;
-
-		/*
-		 * Prepare sort support, and look up the data type for each ORDER BY
-		 * expression.
-		 */
-		Assert(numOrderByKeys == list_length(node->indexorderbyops));
-		Assert(numOrderByKeys == list_length(node->indexorderbyorig));
-		indexstate->iss_SortSupport = (SortSupportData *)
-			palloc0(numOrderByKeys * sizeof(SortSupportData));
-		indexstate->iss_OrderByTypByVals = (bool *)
-			palloc(numOrderByKeys * sizeof(bool));
-		indexstate->iss_OrderByTypLens = (int16 *)
-			palloc(numOrderByKeys * sizeof(int16));
-		i = 0;
-		forboth(lco, node->indexorderbyops, lcx, node->indexorderbyorig)
-		{
-			Oid			orderbyop = lfirst_oid(lco);
-			Node	   *orderbyexpr = (Node *) lfirst(lcx);
-			Oid			orderbyType = exprType(orderbyexpr);
-			Oid			orderbyColl = exprCollation(orderbyexpr);
-			SortSupport orderbysort = &indexstate->iss_SortSupport[i];
-
-			/* Initialize sort support */
-			orderbysort->ssup_cxt = CurrentMemoryContext;
-			orderbysort->ssup_collation = orderbyColl;
-			/* See cmp_orderbyvals() comments on NULLS LAST */
-			orderbysort->ssup_nulls_first = false;
-			/* ssup_attno is unused here and elsewhere */
-			orderbysort->ssup_attno = 0;
-			/* No abbreviation */
-			orderbysort->abbreviate = false;
-			PrepareSortSupportFromOrderingOp(orderbyop, orderbysort);
-
-			get_typlenbyval(orderbyType,
-							&indexstate->iss_OrderByTypLens[i],
-							&indexstate->iss_OrderByTypByVals[i]);
-			i++;
-		}
-
-		/* allocate arrays to hold the re-calculated distances */
-		indexstate->iss_OrderByValues = (Datum *)
-			palloc(numOrderByKeys * sizeof(Datum));
-		indexstate->iss_OrderByNulls = (bool *)
-			palloc(numOrderByKeys * sizeof(bool));
-
-		/* and initialize the reorder queue */
-		indexstate->iss_ReorderQueue = pairingheap_allocate(reorderqueue_cmp,
-															indexstate);
-	}
 
 	/*
 	 * If we have runtime keys, we need an ExprContext to evaluate them. The

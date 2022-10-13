@@ -1179,7 +1179,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			if (opclass != INT4_BRIN_MINMAX_OPS_OID)
 				continue;
 
-			elog(WARNING, "BRIN index key %d matches", idx);
+			elog(DEBUG1, "BRIN index key %d matches", idx);
 
 			/*
 			 * XXX stuff extracted from build_index_pathkeys, except that we

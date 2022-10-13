@@ -94,7 +94,7 @@ brinsort_start_tidscan(BrinSortState *node, int range_index, bool update_waterma
 		ItemPointerSetBlockNumber(&maxtid, range->blkno_end);
 		ItemPointerSetOffsetNumber(&maxtid, MaxHeapTuplesPerPage);
 
-		elog(WARNING, "loading range %d, %d", range->blkno_start, range->blkno_end);
+		elog(DEBUG1, "loading range %d, %d", range->blkno_start, range->blkno_end);
 
 		tscandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
 											 estate->es_snapshot,
@@ -294,7 +294,7 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 									  node->bs_watermark, false,
 									  &ssup);
 
-		elog(WARNING, "watermark %ld value %ld %d", node->bs_watermark, value, cmp);
+		elog(DEBUG1, "watermark %ld value %ld %d", node->bs_watermark, value, cmp);
 
 		elog(DEBUG1, "%ld %ld %d", node->bs_watermark, value, cmp);
 
@@ -417,7 +417,7 @@ IndexNext(BrinSortState *node)
 					node->bs_phase = FINISHED;
 					break;
 				}
-elog(WARNING, "loading range %d", node->bs_next_range);
+elog(DEBUG1, "loading range %d", node->bs_next_range);
 				brinsort_start_tidscan(node, node->bs_next_range, true);
 
 				/* no need to check the watermark */
@@ -450,7 +450,7 @@ elog(WARNING, "loading range %d", node->bs_next_range);
 					if (cmp > 0)
 						continue;
 
-					elog(WARNING, "loading intersecting range %d [%ld,%ld] %ld", i,
+					elog(DEBUG1, "loading intersecting range %d [%ld,%ld] %ld", i,
 								  range->min_value, range->max_value,
 								  node->bs_watermark);
 
@@ -627,6 +627,14 @@ ExecEndBrinSort(BrinSortState *node)
 
 	if (node->ss.ss_currentScanDesc != NULL)
 		table_endscan(node->ss.ss_currentScanDesc);
+
+	if (node->bs_tuplestore != NULL)
+		tuplestore_end(node->bs_tuplestore);
+	node->bs_tuplestore = NULL;
+
+	if (node->bs_tuplesortstate != NULL)
+		tuplesort_end(node->bs_tuplesortstate);
+	node->bs_tuplesortstate = NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -906,7 +914,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	/* dump ranges for debugging */
 	for (int i = 0; i < planstate->bs_nranges; i++)
 	{
-		elog(WARNING, "%d => (%d,%d) [%ld,%ld]", i,
+		elog(DEBUG1, "%d => (%d,%d) [%ld,%ld]", i,
 			 planstate->bs_ranges[i].blkno_start,
 			 planstate->bs_ranges[i].blkno_end,
 			 planstate->bs_ranges[i].min_value,

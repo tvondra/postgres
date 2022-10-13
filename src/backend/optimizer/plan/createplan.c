@@ -3332,7 +3332,7 @@ create_brinsort_plan(PlannerInfo *root,
 										  &brinsort_plan->nullsFirst);
 		//tlist_was_changed = (orig_tlist_length != list_length(plan->plan.targetlist));
 		for (int i = 0; i < brinsort_plan->numCols; i++)
-			elog(WARNING, "%d => %d %d %d %d", i,
+			elog(DEBUG1, "%d => %d %d %d %d", i,
 				 brinsort_plan->sortColIdx[i],
 				 brinsort_plan->sortOperators[i],
 				 brinsort_plan->collations[i],

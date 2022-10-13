@@ -63,12 +63,10 @@ static bool IndexRecheck(BrinSortState *node, TupleTableSlot *slot);
 static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
 static void
-brinsort_start_tidscan(BrinSortState *node, int range_index, bool update_watermark)
+brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_watermark)
 {
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
 	EState	   *estate = node->ss.ps.state;
-
-	Assert(range_index < node->bs_nranges);
 
 	/* get the first range, read all tuples using a tid range scan */
 	if (node->ss.ss_currentScanDesc == NULL)
@@ -76,8 +74,6 @@ brinsort_start_tidscan(BrinSortState *node, int range_index, bool update_waterma
 		TableScanDesc		tscandesc;
 		ItemPointerData		mintid,
 							maxtid;
-
-		BrinSortRange *range = &node->bs_ranges[range_index];
 
 		/*
 		 * Remember maximum value for the current range (but not when
@@ -389,6 +385,8 @@ IndexNext(BrinSortState *node)
 		switch (node->bs_phase)
 		{
 			case LOAD_RANGE:
+				{
+				BrinSortRange *range;
 
 				elog(DEBUG1, "phase = LOAD_RANGE");
 
@@ -417,8 +415,11 @@ IndexNext(BrinSortState *node)
 					node->bs_phase = FINISHED;
 					break;
 				}
+
+				range = &node->bs_ranges[node->bs_next_range];
+
 elog(DEBUG1, "loading range %d", node->bs_next_range);
-				brinsort_start_tidscan(node, node->bs_next_range, true);
+				brinsort_start_tidscan(node, range, true);
 
 				/* no need to check the watermark */
 				brinsort_load_tuples(node, false);
@@ -432,7 +433,7 @@ elog(DEBUG1, "loading range %d", node->bs_next_range);
 				for (int i = 0; i < node->bs_nranges; i++)
 				{
 					int	cmp;
-					BrinSortRange  *range = &node->bs_ranges[i];
+					BrinSortRange  *range = node->bs_ranges_minval[i];
 					SortSupportData	ssup;
 
 					/* skip already processed ranges */
@@ -446,15 +447,19 @@ elog(DEBUG1, "loading range %d", node->bs_next_range);
 											  node->bs_watermark, false,
 											  &ssup);
 
-					/* no possible overlap, so skip this range */
+					/*
+					 * No possible overlap, so break, we know all following
+					 * ranges have a higher minval and thus can't intersect
+					 * either.
+					 */
 					if (cmp > 0)
-						continue;
+						break;
 
 					elog(DEBUG1, "loading intersecting range %d [%ld,%ld] %ld", i,
 								  range->min_value, range->max_value,
 								  node->bs_watermark);
 
-					brinsort_start_tidscan(node, i, false);
+					brinsort_start_tidscan(node, range, false);
 
 					/* now check the watermark */
 					brinsort_load_tuples(node, true);
@@ -467,7 +472,7 @@ elog(DEBUG1, "loading range %d", node->bs_next_range);
 
 				node->bs_phase = PROCESS_RANGE;
 				break;
-
+				}
 			case PROCESS_RANGE:
 
 				slot = node->ss.ps.ps_ResultTupleSlot;
@@ -737,6 +742,19 @@ brin_sort_range_cmp(const void *a, const void *b, void *arg)
 	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
 }
 
+static int
+brin_sort_rangeptr_cmp(const void *a, const void *b, void *arg)
+{
+	BrinSortRange  *ra = *(BrinSortRange **) a;
+	BrinSortRange  *rb = *(BrinSortRange **) b;
+	SortSupport		ssup = (SortSupport) arg;
+
+	/* XXX consider NULL FIRST/LAST and ASC/DESC */
+	/* XXX also handle un-summarized ranges */
+
+	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
+}
+
 /* somewhat crippled verson of bringetbitmap */
 static void
 ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
@@ -782,6 +800,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 
 	planstate->bs_nranges = 0;
 	planstate->bs_ranges = (BrinSortRange *) palloc0(nranges * sizeof(BrinSortRange));
+	planstate->bs_ranges_minval = (BrinSortRange **) palloc0(nranges * sizeof(BrinSortRange *));
 
 	/*
 	 * XXX We might apply keys on the remaining index attributes, similarly
@@ -828,7 +847,11 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 		BrinTuple  *tup;
 		OffsetNumber off;
 		Size		size;
-		BrinSortRange *range = &planstate->bs_ranges[planstate->bs_nranges++];
+		BrinSortRange *range = &planstate->bs_ranges[planstate->bs_nranges];
+
+		planstate->bs_ranges_minval[planstate->bs_nranges] = range;
+
+		planstate->bs_nranges++;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -909,6 +932,9 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
 			  brin_sort_range_cmp, &ssup);
 
+	qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
+			  brin_sort_rangeptr_cmp, &ssup);
+
 	elog(DEBUG1, "ranges = %d", planstate->bs_nranges);
 
 	/* dump ranges for debugging */
@@ -919,6 +945,15 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 			 planstate->bs_ranges[i].blkno_end,
 			 planstate->bs_ranges[i].min_value,
 			 planstate->bs_ranges[i].max_value);
+	}
+
+	for (int i = 0; i < planstate->bs_nranges; i++)
+	{
+		elog(DEBUG1, "minval %d => (%d,%d) [%ld,%ld]", i,
+			 planstate->bs_ranges_minval[i]->blkno_start,
+			 planstate->bs_ranges_minval[i]->blkno_end,
+			 planstate->bs_ranges_minval[i]->min_value,
+			 planstate->bs_ranges_minval[i]->max_value);
 	}
 }
 

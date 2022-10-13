@@ -1597,6 +1597,7 @@ typedef struct BrinSortState
 	/* */
 	int				bs_nranges;
 	BrinSortRange  *bs_ranges;
+	BrinSortRange **bs_ranges_minval;
 	int				bs_next_range;
 	ExprState	   *bs_qual;
 	Datum			bs_watermark;

@@ -68,6 +68,9 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_wa
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
 	EState	   *estate = node->ss.ps.state;
 
+	Assert(!range->processed);
+	Assert(node->bs_nranges >= node->bs_next_range);
+
 	/* get the first range, read all tuples using a tid range scan */
 	if (node->ss.ss_currentScanDesc == NULL)
 	{
@@ -126,7 +129,12 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_wa
 		*/
 	}
 
-	node->bs_next_range++;
+	// node->bs_next_range++;
+
+	Assert(range->processed);
+
+	elog(DEBUG1, "brinsort_start_tidscan incremented node->bs_next_range = %d", node->bs_next_range);
+	Assert(node->bs_next_range <= node->bs_nranges);
 }
 
 static void
@@ -393,7 +401,12 @@ IndexNext(BrinSortState *node)
 				/* skip already processed ranges */
 				while ((node->bs_next_range < node->bs_nranges) &&
 					   (node->bs_ranges[node->bs_next_range].processed))
+				{
 					node->bs_next_range++;
+					elog(DEBUG1, "A: incremented node->bs_next_range = %d", node->bs_next_range);
+				}
+
+				Assert(node->bs_next_range <= node->bs_nranges);
 
 				if ((node->bs_next_range == node->bs_nranges) &&
 					(node->bs_tuplestore != NULL))
@@ -417,6 +430,7 @@ IndexNext(BrinSortState *node)
 				}
 
 				range = &node->bs_ranges[node->bs_next_range];
+				node->bs_next_range++;
 
 elog(DEBUG1, "loading range %d", node->bs_next_range);
 				brinsort_start_tidscan(node, range, true);

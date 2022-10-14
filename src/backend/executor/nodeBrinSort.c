@@ -230,7 +230,7 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 	}
 
 	/* Maybe mark the range as processed. */
-	range->processed = true;
+	range->processed = mark_processed;
 }
 
 /*
@@ -257,7 +257,7 @@ brinsort_end_tidscan(BrinSortState *node)
  * skip the comparator call to save CPU cost.
  */
 static void
-brinsort_load_tuples(BrinSortState *node, bool check_watermark)
+brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_processing)
 {
 	BrinSort	   *plan = (BrinSort *) node->ss.ps.plan;
 	TableScanDesc	scan = node->ss.ss_currentScanDesc;
@@ -333,8 +333,25 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 			 * a separate tuplestore (so that we can output them first or
 			 * last), and then skip them in the regular processing?
 			 */
-			Assert(!isnull);
+			if (null_processing)
+			{
+				/* Stash it to the tuplestore (when NULL, or ignore
+				 * it (when not-NULL). */
+				if (isnull)
+					tuplestore_puttupleslot(node->bs_tuplestore, slot);
 
+				/* NULL or not, we're done */
+				continue;
+			}
+
+			/* we're not processing NULL values, so ignore NULLs */
+			if (isnull)
+				continue;
+
+			/*
+			 * Otherwise compare to watermark, and stash it either to the
+			 * tuplesort or tuplestore.
+			 */
 			if (check_watermark)
 				cmp = ApplySortComparator(value, false,
 										  node->bs_watermark, false,
@@ -434,6 +451,13 @@ brinsort_load_intersecting_ranges(BrinSort *plan, BrinSortState *node)
 		if (range->processed)
 			continue;
 
+		/*
+		 * Abort on the first all-null or not-summarized range. These are
+		 * intentionally kept at the end, but don't intersect with anything.
+		 */
+		if (range->all_nulls || range->not_summarized)
+			break;
+
 		if (ScanDirectionIsForward(plan->indexorderdir))
 			cmp = ApplySortComparator(range->min_value, false,
 									  node->bs_watermark, false,
@@ -459,7 +483,50 @@ brinsort_load_intersecting_ranges(BrinSort *plan, BrinSortState *node)
 
 		/* load tuples from the rage, check the watermark */
 		brinsort_start_tidscan(node, range, false, true);
-		brinsort_load_tuples(node, true);
+		brinsort_load_tuples(node, true, false);
+		brinsort_end_tidscan(node);
+	}
+}
+
+/*
+ * brinsort_load_unsummarized_ranges
+ *		Load ranges that don't have a proper summary, so we don't know
+ *		what values are in them (might be even NULL values).
+ *
+ * We simply load them into the spill tuplestore, because that's the
+ * best thing we can do. We ignore NULL values though - those are handled
+ * in a separate step.
+ */
+static void
+brinsort_load_unsummarized_ranges(BrinSort *plan, BrinSortState *node)
+{
+	/* Should be called only once, right after the first range. */
+	Assert(node->bs_next_range == 1);
+
+	/* load unsummarized ranges */
+	for (int i = 0; i < node->bs_nranges; i++)
+	{
+		BrinSortRange  *range = node->bs_ranges_minval[i];
+
+		/* skip already processed ranges (there should be just one) */
+		if (range->processed)
+			continue;
+
+		/* we're interested only in not-summarized ranges */
+		if (!range->not_summarized)
+			continue;
+
+		elog(DEBUG1, "loading not-summarized range %d (%u,%u) [%ld,%ld] %ld", i,
+					  range->blkno_start, range->blkno_end,
+					  range->min_value, range->max_value,
+					  node->bs_watermark);
+
+		/*
+		 * Load tuples from the rage, check the watermark and mark the
+		 * ranges as processed.
+		 */
+		brinsort_start_tidscan(node, range, false, true);
+		brinsort_load_tuples(node, true, false);
 		brinsort_end_tidscan(node);
 	}
 }
@@ -528,6 +595,7 @@ IndexNext(BrinSortState *node)
 		ExecInitBrinSortRanges(plan, node);
 		node->bs_next_range = 0;
 		node->bs_next_range_intersect = 0;
+		node->bs_next_range_nulls = 0;
 		node->bs_phase = BRINSORT_START;
 
 
@@ -577,6 +645,8 @@ IndexNext(BrinSortState *node)
 					/*
 					 * Some of the ranges might intersect with already processed
 					 * range and thus have already been processed, so skip them.
+					 *
+					 * FIXME Should this care about all-null / not_summarized?
 					 */
 					while ((node->bs_next_range < node->bs_nranges) &&
 						   (node->bs_ranges[node->bs_next_range].processed))
@@ -584,35 +654,45 @@ IndexNext(BrinSortState *node)
 
 					Assert(node->bs_next_range <= node->bs_nranges);
 
-					/*
-					 * Did we process the last range? If we still have some rows
-					 * in the tuplestore, sort them and move to process them.
-					 */
-					if ((node->bs_next_range == node->bs_nranges) &&
-						(node->bs_tuplestore != NULL))
-					{
-						brinsort_load_spill_tuples(node, false);
-
-						node->bs_tuplestore = NULL;
-
-						tuplesort_performsort(node->bs_tuplesortstate);
-
-						node->bs_phase = BRINSORT_PROCESS_RANGE;
-						break;
-					}
-
-					/*
-					 * We've reached the end, and there are no more rows in the
-					 * tuplestore, so we're done.
-					 */
-					if (node->bs_next_range == node->bs_nranges)
-					{
-						elog(DEBUG1, "phase => FINISHED");
-						node->bs_phase = BRINSORT_FINISHED;
-						break;
-					}
-
+					/* might point just after the last range */
 					range = &node->bs_ranges[node->bs_next_range];
+
+					/*
+					 * Is this the last regular range? We might have either run
+					 * out of ranges in general, or maybe we just hit the first
+					 * all-null or unprocessed range.
+					 *
+					 * In this case there might still be a bunch of tuples in
+					 * the tuplestore, so we need to process them properly. We
+					 * load them into the tuplesort and process them.
+					 */
+					if ((node->bs_next_range == node->bs_nranges) ||
+						(range->all_nulls || range->not_summarized))
+					{
+						/* still some tuples to process */
+						if (node->bs_tuplestore != NULL)
+						{
+							brinsort_load_spill_tuples(node, false);
+							node->bs_tuplestore = NULL;
+							tuplesort_performsort(node->bs_tuplesortstate);
+
+							node->bs_phase = BRINSORT_PROCESS_RANGE;
+							break;
+						}
+
+						/*
+						 * We've reached the end, and there are no more rows in the
+						 * tuplestore, so we're done.
+						 */
+						if (node->bs_next_range == node->bs_nranges)
+						{
+							elog(DEBUG1, "phase => FINISHED / last range processed");
+							node->bs_phase = BRINSORT_FINISHED;
+							break;
+						}
+					}
+
+					/* Fine, we can process this range, so move the index too. */
 					node->bs_next_range++;
 
 					/*
@@ -620,7 +700,7 @@ IndexNext(BrinSortState *node)
 					 * so that we don't need to check it when loading tuples.
 					 */
 					brinsort_start_tidscan(node, range, true, true);
-					brinsort_load_tuples(node, false);
+					brinsort_load_tuples(node, false, false);
 					brinsort_end_tidscan(node);
 
 					/* Load matching tuples from the current spill tuplestore. */
@@ -636,6 +716,15 @@ IndexNext(BrinSortState *node)
 					 */
 					elog(DEBUG1, "loading intersecting ranges");
 					brinsort_load_intersecting_ranges(plan, node);
+
+					/*
+					 * If this is the first range, process unsummarized ranges
+					 * too. Similarly to the intersecting ranges, we do this
+					 * after loading tuples from the spill tuplestore, because
+					 * we might write some (many) tuples into that.
+					 */
+					if (node->bs_next_range == 1)
+						brinsort_load_unsummarized_ranges(plan, node);
 
 					elog(DEBUG1, "performing sort");
 					tuplesort_performsort(node->bs_tuplesortstate);
@@ -663,7 +752,80 @@ IndexNext(BrinSortState *node)
 				break;
 
 			case BRINSORT_LOAD_NULLS:
-				elog(ERROR, "unexpected BrinSort phase: LOAD_NULLS");
+				{
+					BrinSortRange *range;
+
+					elog(DEBUG1, "phase = LOAD_NULLS");
+
+					/*
+					 * Ignore ranges that can't possibly have NULL values. We do
+					 * not care about whether the range was already processed.
+					 */
+					while (node->bs_next_range_nulls < node->bs_nranges)
+					{
+						/* these ranges may have NULL values */
+						if (node->bs_ranges[node->bs_next_range_nulls].has_nulls ||
+							node->bs_ranges[node->bs_next_range_nulls].all_nulls ||
+							node->bs_ranges[node->bs_next_range_nulls].not_summarized)
+							break;
+
+						node->bs_next_range_nulls++;
+					}
+
+					Assert(node->bs_next_range_nulls <= node->bs_nranges);
+
+					/*
+					 * Did we process the last range? There should be nothing left
+					 * in the tuplestore, because we flush that at the end of
+					 * processing regular tuples.
+					 */
+					if (node->bs_next_range == node->bs_nranges)
+					{
+						elog(DEBUG1, "phase => FINISHED / last range processed");
+						Assert(node->bs_tuplestore == NULL);
+						node->bs_phase = BRINSORT_FINISHED;
+						break;
+					}
+
+					range = &node->bs_ranges[node->bs_next_range_nulls];
+					node->bs_next_range_nulls++;
+
+					/*
+					 * Load the next unprocessed range. We update the watermark,
+					 * so that we don't need to check it when loading tuples.
+					 */
+					brinsort_start_tidscan(node, range, false, false);
+					brinsort_load_tuples(node, true, true);
+					brinsort_end_tidscan(node);
+
+					node->bs_phase = BRINSORT_PROCESS_NULLS;
+					break;
+				}
+
+				break;
+
+			case BRINSORT_PROCESS_NULLS:
+
+				slot = node->ss.ps.ps_ResultTupleSlot;
+
+				/* read tuples from the tuplesort range, and output them */
+				if (node->bs_tuplestore != NULL)
+				{
+					tuplestore_rescan(node->bs_tuplestore);
+
+					while (tuplestore_gettupleslot(node->bs_tuplestore, true, true, slot))
+						return slot;
+
+					/*
+					 * Discard the existing tuplestore (that we just processed), use the new
+					 * one instead.
+					 */
+					tuplestore_end(node->bs_tuplestore);
+					node->bs_tuplestore = NULL;
+
+					node->bs_phase = BRINSORT_LOAD_NULLS;	/* load next range */
+				}
+
 				break;
 
 			case BRINSORT_FINISHED:
@@ -871,6 +1033,15 @@ ExecBrinSortRestrPos(BrinSortState *node)
 	index_restrpos(node->iss_ScanDesc);
 }
 
+
+/*
+ * We always sort the ranges so that we have them in this general order
+ *
+ * 1) ranges sorted by min/max value, as dictated by ASC/DESC
+ * 2) all-null ranges
+ * 3) not-summarized ranges
+ *
+ */
 static int
 brin_sort_range_asc_cmp(const void *a, const void *b, void *arg)
 {
@@ -879,8 +1050,25 @@ brin_sort_range_asc_cmp(const void *a, const void *b, void *arg)
 	BrinSortRange  *rb = (BrinSortRange *) b;
 	SortSupport		ssup = (SortSupport) arg;
 
-	/* XXX consider NULL FIRST/LAST and ASC/DESC */
-	/* XXX also handle un-summarized ranges */
+	/* unsummarized ranges are sorted last */
+	if (ra->not_summarized && rb->not_summarized)
+		return 0;
+	else if (ra->not_summarized)
+		return -1;
+	else if (rb->not_summarized)
+		return 1;
+
+	Assert(!(ra->not_summarized || rb->not_summarized));
+
+	/* then we sort all-null ranges */
+	if (ra->all_nulls && rb->all_nulls)
+		return 0;
+	else if (ra->all_nulls)
+		return -1;
+	else if (rb->all_nulls)
+		return 1;
+
+	Assert(!(ra->all_nulls || rb->all_nulls));
 
 	r = ApplySortComparator(ra->max_value, false, rb->max_value, false, ssup);
 	if (r != 0)
@@ -897,8 +1085,25 @@ brin_sort_range_desc_cmp(const void *a, const void *b, void *arg)
 	BrinSortRange  *rb = (BrinSortRange *) b;
 	SortSupport		ssup = (SortSupport) arg;
 
-	/* XXX consider NULL FIRST/LAST and ASC/DESC */
-	/* XXX also handle un-summarized ranges */
+	/* unsummarized ranges are sorted last */
+	if (ra->not_summarized && rb->not_summarized)
+		return 0;
+	else if (ra->not_summarized)
+		return -1;
+	else if (rb->not_summarized)
+		return 1;
+
+	Assert(!(ra->not_summarized || rb->not_summarized));
+
+	/* then we sort all-null ranges */
+	if (ra->all_nulls && rb->all_nulls)
+		return 0;
+	else if (ra->all_nulls)
+		return -1;
+	else if (rb->all_nulls)
+		return 1;
+
+	Assert(!(ra->all_nulls || rb->all_nulls));
 
 	r = ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
 	if (r != 0)
@@ -914,8 +1119,25 @@ brin_sort_rangeptr_asc_cmp(const void *a, const void *b, void *arg)
 	BrinSortRange  *rb = *(BrinSortRange **) b;
 	SortSupport		ssup = (SortSupport) arg;
 
-	/* XXX consider NULL FIRST/LAST and ASC/DESC */
-	/* XXX also handle un-summarized ranges */
+	/* unsummarized ranges are sorted last */
+	if (ra->not_summarized && rb->not_summarized)
+		return 0;
+	else if (ra->not_summarized)
+		return -1;
+	else if (rb->not_summarized)
+		return 1;
+
+	Assert(!(ra->not_summarized || rb->not_summarized));
+
+	/* then we sort all-null ranges */
+	if (ra->all_nulls && rb->all_nulls)
+		return 0;
+	else if (ra->all_nulls)
+		return -1;
+	else if (rb->all_nulls)
+		return 1;
+
+	Assert(!(ra->all_nulls || rb->all_nulls));
 
 	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
 }
@@ -927,8 +1149,25 @@ brin_sort_rangeptr_desc_cmp(const void *a, const void *b, void *arg)
 	BrinSortRange  *rb = *(BrinSortRange **) b;
 	SortSupport		ssup = (SortSupport) arg;
 
-	/* XXX consider NULL FIRST/LAST and ASC/DESC */
-	/* XXX also handle un-summarized ranges */
+	/* unsummarized ranges are sorted last */
+	if (ra->not_summarized && rb->not_summarized)
+		return 0;
+	else if (ra->not_summarized)
+		return -1;
+	else if (rb->not_summarized)
+		return 1;
+
+	Assert(!(ra->not_summarized || rb->not_summarized));
+
+	/* then we sort all-null ranges */
+	if (ra->all_nulls && rb->all_nulls)
+		return 0;
+	else if (ra->all_nulls)
+		return -1;
+	else if (rb->all_nulls)
+		return 1;
+
+	Assert(!(ra->all_nulls || rb->all_nulls));
 
 	return ApplySortComparator(ra->max_value, false, rb->max_value, false, ssup);
 }

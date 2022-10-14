@@ -1568,6 +1568,7 @@ typedef enum {
 	BRINSORT_LOAD_RANGE,
 	BRINSORT_PROCESS_RANGE,
 	BRINSORT_LOAD_NULLS,
+	BRINSORT_PROCESS_NULLS,
 	BRINSORT_FINISHED
 } BrinSortPhase;
 
@@ -1603,6 +1604,7 @@ typedef struct BrinSortState
 	BrinSortRange **bs_ranges_minval;
 	int				bs_next_range;
 	int				bs_next_range_intersect;
+	int				bs_next_range_nulls;
 	ExprState	   *bs_qual;
 	Datum			bs_watermark;
 	BrinSortPhase	bs_phase;

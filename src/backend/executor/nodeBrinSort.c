@@ -214,6 +214,8 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 	 * We use the larger value, according to the sort operator, so that this
 	 * gets the right value even for DESC ordering (in which case the lower
 	 * boundary will be evaluated as "greater").
+	 *
+	 * XXX Could also use the scan direction, like in other places.
 	 */
 	if (update_watermark)
 	{
@@ -420,7 +422,7 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
  * This does not increment bs_next_range, but bs_next_range_intersect.
  */
 static void
-brinsort_load_intersecting_ranges(BrinSortState *node)
+brinsort_load_intersecting_ranges(BrinSort *plan, BrinSortState *node)
 {
 	/* load intersecting ranges */
 	for (int i = node->bs_next_range_intersect; i < node->bs_nranges; i++)
@@ -432,9 +434,14 @@ brinsort_load_intersecting_ranges(BrinSortState *node)
 		if (range->processed)
 			continue;
 
-		cmp = ApplySortComparator(range->min_value, false,
-								  node->bs_watermark, false,
-								  &node->bs_sortsupport);
+		if (ScanDirectionIsForward(plan->indexorderdir))
+			cmp = ApplySortComparator(range->min_value, false,
+									  node->bs_watermark, false,
+									  &node->bs_sortsupport);
+		else
+			cmp = ApplySortComparator(range->max_value, false,
+									  node->bs_watermark, false,
+									  &node->bs_sortsupport);
 
 		/*
 		 * No possible overlap, so break, we know all following ranges have
@@ -478,8 +485,11 @@ IndexNext(BrinSortState *node)
 	 */
 	estate = node->ss.ps.state;
 	direction = estate->es_direction;
+
 	/* flip direction if this is an overall backward scan */
-	if (ScanDirectionIsBackward(((BrinSort *) node->ss.ps.plan)->indexorderdir))
+	/* XXX For BRIN indexes this is always forward direction */
+	// if (ScanDirectionIsBackward(((BrinSort *) node->ss.ps.plan)->indexorderdir))
+	if (false)
 	{
 		if (ScanDirectionIsForward(direction))
 			direction = BackwardScanDirection;
@@ -625,7 +635,7 @@ IndexNext(BrinSortState *node)
 					 * them again unnecessarily.
 					 */
 					elog(DEBUG1, "loading intersecting ranges");
-					brinsort_load_intersecting_ranges(node);
+					brinsort_load_intersecting_ranges(plan, node);
 
 					elog(DEBUG1, "performing sort");
 					tuplesort_performsort(node->bs_tuplesortstate);
@@ -862,7 +872,7 @@ ExecBrinSortRestrPos(BrinSortState *node)
 }
 
 static int
-brin_sort_range_cmp(const void *a, const void *b, void *arg)
+brin_sort_range_asc_cmp(const void *a, const void *b, void *arg)
 {
 	int				r;
 	BrinSortRange  *ra = (BrinSortRange *) a;
@@ -880,7 +890,25 @@ brin_sort_range_cmp(const void *a, const void *b, void *arg)
 }
 
 static int
-brin_sort_rangeptr_cmp(const void *a, const void *b, void *arg)
+brin_sort_range_desc_cmp(const void *a, const void *b, void *arg)
+{
+	int				r;
+	BrinSortRange  *ra = (BrinSortRange *) a;
+	BrinSortRange  *rb = (BrinSortRange *) b;
+	SortSupport		ssup = (SortSupport) arg;
+
+	/* XXX consider NULL FIRST/LAST and ASC/DESC */
+	/* XXX also handle un-summarized ranges */
+
+	r = ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
+	if (r != 0)
+		return r;
+
+	return ApplySortComparator(ra->max_value, false, rb->max_value, false, ssup);
+}
+
+static int
+brin_sort_rangeptr_asc_cmp(const void *a, const void *b, void *arg)
 {
 	BrinSortRange  *ra = *(BrinSortRange **) a;
 	BrinSortRange  *rb = *(BrinSortRange **) b;
@@ -890,6 +918,19 @@ brin_sort_rangeptr_cmp(const void *a, const void *b, void *arg)
 	/* XXX also handle un-summarized ranges */
 
 	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
+}
+
+static int
+brin_sort_rangeptr_desc_cmp(const void *a, const void *b, void *arg)
+{
+	BrinSortRange  *ra = *(BrinSortRange **) a;
+	BrinSortRange  *rb = *(BrinSortRange **) b;
+	SortSupport		ssup = (SortSupport) arg;
+
+	/* XXX consider NULL FIRST/LAST and ASC/DESC */
+	/* XXX also handle un-summarized ranges */
+
+	return ApplySortComparator(ra->max_value, false, rb->max_value, false, ssup);
 }
 
 /*
@@ -909,7 +950,6 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	int			attno;
 	FmgrInfo   *rangeproc;
 	BrinRanges *ranges;
-	elog(WARNING, "scandir %d", node->indexorderdir);
 
 	/* BRIN Sort only allows ORDER BY using a single column */
 	Assert(node->numCols == 1);
@@ -991,11 +1031,23 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 * XXX For DESC sort this would work the opposite way, i.e. first step
 	 * sort by min_value, then max_value.
 	 */
-	qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
-			  brin_sort_range_cmp, &planstate->bs_sortsupport);
 
-	qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
-			  brin_sort_rangeptr_cmp, &planstate->bs_sortsupport);
+	if (ScanDirectionIsForward(node->indexorderdir))
+	{
+		qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
+				  brin_sort_range_asc_cmp, &planstate->bs_sortsupport);
+
+		qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
+				  brin_sort_rangeptr_asc_cmp, &planstate->bs_sortsupport);
+	}
+	else
+	{
+		qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
+				  brin_sort_range_desc_cmp, &planstate->bs_sortsupport);
+
+		qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
+				  brin_sort_rangeptr_desc_cmp, &planstate->bs_sortsupport);
+	}
 }
 
 /* ----------------------------------------------------------------

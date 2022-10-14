@@ -1181,6 +1181,9 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 			elog(DEBUG1, "BRIN index key %d matches", idx);
 
+			orderbyclauses = NIL;
+			orderbyclausecols = NIL;
+
 			/*
 			 * XXX stuff extracted from build_index_pathkeys, except that we
 			 * only deal with a single index key (producing a single pathkey),
@@ -1206,9 +1209,6 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
-
-			orderbyclauses = NIL;
-			orderbyclausecols = NIL;
 
 			if (useful_pathkeys != NIL)
 			{

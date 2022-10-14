@@ -34,6 +34,26 @@ typedef struct BrinStatsData
 	BlockNumber revmapNumPages;
 } BrinStatsData;
 
+/*
+ * Info about ranges for BRIN Sort.
+ */
+typedef struct BrinRange
+{
+	BlockNumber blkno_start;
+	BlockNumber blkno_end;
+
+	Datum	min_value;
+	Datum	max_value;
+	bool	has_nulls;
+	bool	all_nulls;
+	bool	not_summarized;
+} BrinRange;
+
+typedef struct BrinRanges
+{
+	int			nranges;
+	BrinRange	ranges[FLEXIBLE_ARRAY_MEMBER];
+} BrinRanges;
 
 #define BRIN_DEFAULT_PAGES_PER_RANGE	128
 #define BrinGetPagesPerRange(relation) \

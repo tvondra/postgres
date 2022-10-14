@@ -1559,6 +1559,7 @@ typedef struct BrinSortRange
 	bool	has_nulls;
 	bool	all_nulls;
 	bool	not_summarized;
+
 	bool	processed;
 } BrinSortRange;
 

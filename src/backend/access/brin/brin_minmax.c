@@ -10,12 +10,20 @@
  */
 #include "postgres.h"
 
+#include "access/brin.h"
 #include "access/brin_internal.h"
+#include "access/brin_revmap.h"
 #include "access/brin_tuple.h"
 #include "access/genam.h"
 #include "access/stratnum.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -251,6 +259,147 @@ brin_minmax_union(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_VOID();
+}
+
+typedef struct BrinOpaque
+{
+	BlockNumber bo_pagesPerRange;
+	BrinRevmap *bo_rmAccess;
+	BrinDesc   *bo_bdesc;
+} BrinOpaque;
+
+Datum
+brin_minmax_ranges(PG_FUNCTION_ARGS)
+{
+	IndexScanDesc	scan = (IndexScanDesc) PG_GETARG_POINTER(0);
+	AttrNumber		attnum = PG_GETARG_INT16(1);
+	BrinOpaque *opaque;
+	Relation	indexRel;
+	Relation	heapRel;
+	BlockNumber nblocks;
+	BlockNumber	nranges;
+	BlockNumber	heapBlk;
+	Oid			heapOid;
+	BrinMemTuple *dtup;
+	BrinTuple  *btup = NULL;
+	Size		btupsz = 0;
+	Buffer		buf = InvalidBuffer;
+	BrinRanges  *ranges;
+	BlockNumber	pagesPerRange;
+	BrinDesc	   *bdesc;
+
+	/*
+	 * Determine how many BRIN ranges could there be, allocate space and read
+	 * all the min/max values.
+	 */
+	opaque = (BrinOpaque *) scan->opaque;
+	bdesc = opaque->bo_bdesc;
+	pagesPerRange = opaque->bo_pagesPerRange;
+
+	indexRel = bdesc->bd_index;
+
+	/* make sure the provided attnum is valid */
+	Assert((attnum > 0) && (attnum <= bdesc->bd_tupdesc->natts));
+
+	/*
+	 * We need to know the size of the table so that we know how long to iterate
+	 * on the revmap (and to pre-allocate the arrays).
+	 */
+	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+	heapRel = table_open(heapOid, AccessShareLock);
+	nblocks = RelationGetNumberOfBlocks(heapRel);
+	table_close(heapRel, AccessShareLock);
+
+	/*
+	 * How many ranges can there be? We simply look at the number of pages,
+	 * divide it by the pages_per_range.
+	 *
+	 * XXX We need to be careful not to overflow nranges, so we just divide
+	 * and then maybe add 1 for partial ranges.
+	 */
+	nranges = (nblocks / pagesPerRange);
+	if (nblocks % pagesPerRange != 0)
+		nranges += 1;
+
+	/* allocate for space, and also for the alternative ordering */
+	ranges = palloc0(offsetof(BrinRanges, ranges) + nranges * sizeof(BrinRange));
+	ranges->nranges = 0;
+
+	/* allocate an initial in-memory tuple, out of the per-range memcxt */
+	dtup = brin_new_memtuple(bdesc);
+
+	/*
+	 * Now scan the revmap.  We start by querying for heap page 0,
+	 * incrementing by the number of pages per range; this gives us a full
+	 * view of the table.
+	 */
+	for (heapBlk = 0; heapBlk < nblocks; heapBlk += pagesPerRange)
+	{
+		bool		gottuple = false;
+		BrinTuple  *tup;
+		OffsetNumber off;
+		Size		size;
+		BrinRange  *range = &ranges->ranges[ranges->nranges];
+
+		ranges->nranges++;
+
+		CHECK_FOR_INTERRUPTS();
+
+		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
+									   &off, &size, BUFFER_LOCK_SHARE,
+									   scan->xs_snapshot);
+		if (tup)
+		{
+			gottuple = true;
+			btup = brin_copy_tuple(tup, size, btup, &btupsz);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		}
+
+		range->blkno_start = heapBlk;
+		range->blkno_end = heapBlk + (pagesPerRange - 1);
+
+		/*
+		 * Ranges with no indexed tuple may contain anything.
+		 */
+		if (!gottuple)
+		{
+			range->not_summarized = true;
+		}
+		else
+		{
+			dtup = brin_deform_tuple(bdesc, btup, dtup);
+			if (dtup->bt_placeholder)
+			{
+				/*
+				 * Placeholder tuples are treated as if not populated.
+				 *
+				 * XXX Is this correct?
+				 */
+				range->not_summarized = true;
+			}
+			else
+			{
+				BrinValues *bval;
+
+				bval = &dtup->bt_columns[attnum - 1];
+
+				range->has_nulls = bval->bv_allnulls;
+				range->all_nulls = bval->bv_hasnulls;
+
+				if (!bval->bv_allnulls)
+				{
+					/* FIXME copy the values, if needed (e.g. varlena) */
+					range->min_value = bval->bv_values[0];
+					range->max_value = bval->bv_values[1];
+				}
+			}
+		}
+	}
+
+	if (buf != InvalidBuffer)
+		ReleaseBuffer(buf);
+
+	PG_RETURN_POINTER(ranges);
 }
 
 /*

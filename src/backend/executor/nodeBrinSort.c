@@ -73,7 +73,8 @@
  */
 #include "postgres.h"
 
-#include "access/brin_revmap.h"
+#include "access/brin.h"
+#include "access/brin_internal.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/table.h"
@@ -211,7 +212,8 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 	 * regular tuple processing, not when scanning NULL values.
 	 *
 	 * We use the larger value, according to the sort operator, so that this
-	 * gets the right value even for DESC ordering (in which case 
+	 * gets the right value even for DESC ordering (in which case the lower
+	 * boundary will be evaluated as "greater").
 	 */
 	if (update_watermark)
 	{
@@ -859,19 +861,6 @@ ExecBrinSortRestrPos(BrinSortState *node)
 	index_restrpos(node->iss_ScanDesc);
 }
 
-/* XXX copy from brin.c */
-typedef struct BrinOpaque
-{
-	BlockNumber bo_pagesPerRange;
-	BrinRevmap *bo_rmAccess;
-	BrinDesc   *bo_bdesc;
-} BrinOpaque;
-
-typedef struct brin_cmp_context
-{
-	
-} brin_cmp_context;
-
 static int
 brin_sort_range_cmp(const void *a, const void *b, void *arg)
 {
@@ -917,28 +906,13 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 {
 	IndexScanDesc	scan = planstate->iss_ScanDesc;
 	Relation	indexRel = planstate->iss_RelationDesc;
-	Relation	heapRel;
-	BrinOpaque *opaque;
-	BrinDesc   *bdesc;
-	BlockNumber nblocks;
-	BlockNumber	nranges;
-	BlockNumber	heapBlk;
-	Oid			heapOid;
-	BrinMemTuple *dtup;
-	BrinTuple  *btup = NULL;
-	Size		btupsz = 0;
-	Buffer		buf = InvalidBuffer;
 	int			attno;
+	FmgrInfo   *rangeproc;
+	BrinRanges *ranges;
+	elog(WARNING, "scandir %d", node->indexorderdir);
 
 	/* BRIN Sort only allows ORDER BY using a single column */
 	Assert(node->numCols == 1);
-
-	/*
-	 * Determine how many BRIN ranges could there be, allocate space and read
-	 * all the min/max values.
-	 */
-	opaque = (BrinOpaque *) scan->opaque;
-	bdesc = opaque->bo_bdesc;
 
 	/*
 	 * Determine index attnum we're interested in. The sortColIdx has attnums
@@ -958,114 +932,48 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 		}
 	}
 
-	/* make sure the calculated attnum is valid */
-	Assert((attno > 0) && (attno <= bdesc->bd_tupdesc->natts));
+	/* get procedure to generate sort ranges */
+	rangeproc = index_getprocinfo(indexRel, attno, BRIN_PROCNUM_RANGES);
 
 	/*
-	 * We need to know the size of the table so that we know how long to iterate
-	 * on the revmap.
+	 * Should not get here without a proc, thanks to the check before
+	 * building the BrinSort path.
 	 */
-	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
-	heapRel = table_open(heapOid, AccessShareLock);
-	nblocks = RelationGetNumberOfBlocks(heapRel);
-	table_close(heapRel, AccessShareLock);
+	Assert(OidIsValid(rangeproc));
 
-	/*
-	 * How many ranges can there be? We simply look at the number of pages,
-	 * divide it by the pages_per_range.
-	 *
-	 * XXX We need to be careful not to overflow nranges, so we just divide
-	 * and then maybe add 1 for partial ranges.
-	 */
-	nranges = (nblocks / opaque->bo_pagesPerRange);
-	if (nblocks % opaque->bo_pagesPerRange != 0)
-		nranges += 1;
+	/* XXX maybe call this in a separate memory context? */
+	ranges = (BrinRanges *) DatumGetPointer(FunctionCall2Coll(rangeproc,
+											InvalidOid,	/* FIXME use proper collation*/
+											PointerGetDatum(scan),
+											Int16GetDatum(attno)));
 
 	/* allocate for space, and also for the alternative ordering */
 	planstate->bs_nranges = 0;
-	planstate->bs_ranges = (BrinSortRange *) palloc0(nranges * sizeof(BrinSortRange));
-	planstate->bs_ranges_minval = (BrinSortRange **) palloc0(nranges * sizeof(BrinSortRange *));
+	planstate->bs_ranges = (BrinSortRange *) palloc0(ranges->nranges * sizeof(BrinSortRange));
+	planstate->bs_ranges_minval = (BrinSortRange **) palloc0(ranges->nranges * sizeof(BrinSortRange *));
 
-	/* allocate an initial in-memory tuple, out of the per-range memcxt */
-	dtup = brin_new_memtuple(bdesc);
-
-	/*
-	 * Now scan the revmap.  We start by querying for heap page 0,
-	 * incrementing by the number of pages per range; this gives us a full
-	 * view of the table.
-	 */
-	for (heapBlk = 0; heapBlk < nblocks; heapBlk += opaque->bo_pagesPerRange)
+	for (int i = 0; i < ranges->nranges; i++)
 	{
-		bool		gottuple = false;
-		BrinTuple  *tup;
-		OffsetNumber off;
-		Size		size;
-		BrinSortRange *range = &planstate->bs_ranges[planstate->bs_nranges];
+		planstate->bs_ranges[i].blkno_start = ranges->ranges[i].blkno_start;
+		planstate->bs_ranges[i].blkno_end = ranges->ranges[i].blkno_end;
+		planstate->bs_ranges[i].min_value = ranges->ranges[i].min_value;
+		planstate->bs_ranges[i].max_value = ranges->ranges[i].max_value;
+		planstate->bs_ranges[i].has_nulls = ranges->ranges[i].has_nulls;
+		planstate->bs_ranges[i].all_nulls = ranges->ranges[i].all_nulls;
+		planstate->bs_ranges[i].not_summarized = ranges->ranges[i].not_summarized;
 
-		planstate->bs_ranges_minval[planstate->bs_nranges] = range;
-
-		planstate->bs_nranges++;
-
-		CHECK_FOR_INTERRUPTS();
-
-		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
-									   &off, &size, BUFFER_LOCK_SHARE,
-									   scan->xs_snapshot);
-		if (tup)
-		{
-			gottuple = true;
-			btup = brin_copy_tuple(tup, size, btup, &btupsz);
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		}
-
-		range->blkno_start = heapBlk;
-		range->blkno_end = heapBlk + (opaque->bo_pagesPerRange - 1);
-
-		/*
-		 * Ranges with no indexed tuple may contain anything.
-		 */
-		if (!gottuple)
-		{
-			range->not_summarized = true;
-		}
-		else
-		{
-			dtup = brin_deform_tuple(bdesc, btup, dtup);
-			if (dtup->bt_placeholder)
-			{
-				/*
-				 * Placeholder tuples are treated as if not populated.
-				 *
-				 * XXX Is this correct?
-				 */
-				range->not_summarized = true;
-			}
-			else
-			{
-				BrinValues *bval;
-
-				bval = &dtup->bt_columns[attno - 1];
-
-				range->has_nulls = bval->bv_allnulls;
-				range->all_nulls = bval->bv_hasnulls;
-
-				if (!bval->bv_allnulls)
-				{
-					/* FIXME copy the values, if needed (e.g. varlena) */
-					range->min_value = bval->bv_values[0];
-					range->max_value = bval->bv_values[1];
-				}
-			}
-		}
+		planstate->bs_ranges_minval[i] = &planstate->bs_ranges[i];
 	}
 
-	if (buf != InvalidBuffer)
-		ReleaseBuffer(buf);
+	planstate->bs_nranges = ranges->nranges;
 
 	/*
-	 * Sort ranges by maximum value.
+	 * Sort ranges by maximum value, as determined by the sort operator.
 	 *
-	 * XXX Needs to consider the other parameters (ASC/DESC, NULLS FIRST/LAST, etc.),
+	 * This automatically considers the ASC/DESC, because for DESC we use
+	 * an operator that deems the "min_value" value greater.
+	 *
+	 * XXX Not sure what to do about NULLS FIRST / LAST.
 	 */
 	memset(&planstate->bs_sortsupport, 0, sizeof(SortSupportData));
 	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &planstate->bs_sortsupport);

@@ -17,6 +17,7 @@
 
 #include <math.h>
 
+#include "access/brin_internal.h"
 #include "access/relation.h"
 #include "access/stratnum.h"
 #include "access/sysattr.h"
@@ -1153,9 +1154,11 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		{
 			TargetEntry	   *indextle = (TargetEntry *) lfirst(lc);
 			BrinSortPath   *bpath;
-			Oid			opclass;
+			Oid				rangeproc;
+			AttrNumber		attnum;
 
 			idx++;
+			attnum = (idx + 1);
 
 			/* skip expressions for now */
 			if (!AttributeNumberIsValid(index->indexkeys[idx]))
@@ -1166,20 +1169,14 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				continue;
 
 			/*
-			 * XXX Ignore keys not using the hardcoded int4 opclass. We
-			 * should fix eventually have this in the catalog, somewhere
-			 * (a flag tracking which opclasses allow this). It may even
-			 * require some sort of opclass support, e.g. a function that
-			 * extracts min/max from the summary. The multi-minmax will
-			 * require more complicated code, and we don't want to
-			 * hardcode that logic here. For now we only deal with minmax
-			 * so we know how to do that.
+			 * XXX Ignore keys not using an opclass with the "ranges" proc.
+			 * For now we only do this for some minmax opclasses, but adding
+			 * it to all minmax is simple, and adding it to minmax-multi
+			 * should not be very hard.
 			 */
-			opclass = get_index_column_opclass(index->indexoid, idx+1);
-			if (opclass != INT4_BRIN_MINMAX_OPS_OID)
+			rangeproc = index_getprocid(rel2, attnum, BRIN_PROCNUM_RANGES);
+			if (!OidIsValid(rangeproc))
 				continue;
-
-			elog(DEBUG1, "BRIN index key %d matches", idx);
 
 			orderbyclauses = NIL;
 			orderbyclausecols = NIL;

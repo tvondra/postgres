@@ -1605,6 +1605,7 @@ typedef struct BrinSortState
 	ExprState	   *bs_qual;
 	Datum			bs_watermark;
 	BrinSortPhase	bs_phase;
+	SortSupportData	bs_sortsupport;
 
 	/*
 	 * We need two tuplesort instances - one for current range, one for

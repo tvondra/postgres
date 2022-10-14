@@ -1240,14 +1240,17 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				add_path(rel, (Path *) bpath);
 			}
 
+			/*
+			 * XXX Now try the alternative DESC ordering too. The BRIN minmax
+			 * indexes do rely on ordering, but don't have any other ordering
+			 * dependencies, so we just try both orderings. We might try the
+			 * other combinations with NULLS FIRST / NULLS LAST.
+			 */
 			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
 													   idx, BackwardScanDirection);
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
-
-			orderbyclauses = NIL;
-			orderbyclausecols = NIL;
 
 			if (useful_pathkeys != NIL)
 			{

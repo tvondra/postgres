@@ -209,9 +209,21 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 	 * Remember maximum value for the current range (but not when
 	 * processing overlapping ranges). We only do this during the
 	 * regular tuple processing, not when scanning NULL values.
+	 *
+	 * We use the larger value, according to the sort operator, so that this
+	 * gets the right value even for DESC ordering (in which case 
 	 */
 	if (update_watermark)
-		node->bs_watermark = range->max_value;
+	{
+		int cmp = ApplySortComparator(range->min_value, false,
+									  range->max_value, false,
+									  &node->bs_sortsupport);
+
+		if (cmp < 0)
+			node->bs_watermark = range->max_value;
+		else
+			node->bs_watermark = range->min_value;
+	}
 
 	/* Maybe mark the range as processed. */
 	range->processed = true;
@@ -248,20 +260,11 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 	EState		   *estate;
 	ScanDirection	direction;
 	TupleTableSlot *slot;
-	SortSupportData	ssup;
 
 	estate = node->ss.ps.state;
 	direction = estate->es_direction;
 
 	slot = node->ss.ss_ScanTupleSlot;
-
-	/*
-	 * Initialize info we'll need to compare the tuple value to the current
-	 * watermark, so that we can decide if it goes into the tuplestore or
-	 * tuplesort.
-	 */
-	memset(&ssup, 0, sizeof(SortSupportData));
-	PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
 
 	/*
 	 * Read tuples, evaluate the filer (so that we don't keep tuples only to
@@ -331,7 +334,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 			if (check_watermark)
 				cmp = ApplySortComparator(value, false,
 										  node->bs_watermark, false,
-										  &ssup);
+										  &node->bs_sortsupport);
 
 			if (cmp <= 0)
 				tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
@@ -358,12 +361,7 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 {
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
 	Tuplestorestate *tupstore;
-	SortSupportData	ssup;
 	TupleTableSlot *slot;
-
-	/* prepare info for watermark comparison */
-	memset(&ssup, 0, sizeof(SortSupportData));
-	PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
 
 	/* start scanning the existing tuplestore (XXX needed?) */
 	tuplestore_rescan(node->bs_tuplestore);
@@ -395,7 +393,7 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 		if (check_watermark)
 			cmp = ApplySortComparator(value, false,
 									  node->bs_watermark, false,
-									  &ssup);
+									  &node->bs_sortsupport);
 
 		if (cmp <= 0)
 			tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
@@ -422,25 +420,19 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 static void
 brinsort_load_intersecting_ranges(BrinSortState *node)
 {
-	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
-
 	/* load intersecting ranges */
 	for (int i = node->bs_next_range_intersect; i < node->bs_nranges; i++)
 	{
 		int	cmp;
 		BrinSortRange  *range = node->bs_ranges_minval[i];
-		SortSupportData	ssup;
 
 		/* skip already processed ranges */
 		if (range->processed)
 			continue;
 
-		memset(&ssup, 0, sizeof(SortSupportData));
-		PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
-
 		cmp = ApplySortComparator(range->min_value, false,
 								  node->bs_watermark, false,
-								  &ssup);
+								  &node->bs_sortsupport);
 
 		/*
 		 * No possible overlap, so break, we know all following ranges have
@@ -936,7 +928,6 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	BrinTuple  *btup = NULL;
 	Size		btupsz = 0;
 	Buffer		buf = InvalidBuffer;
-	SortSupportData	ssup;
 	int			attno;
 
 	/* BRIN Sort only allows ORDER BY using a single column */
@@ -1076,8 +1067,8 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 *
 	 * XXX Needs to consider the other parameters (ASC/DESC, NULLS FIRST/LAST, etc.),
 	 */
-	memset(&ssup, 0, sizeof(SortSupportData));
-	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &ssup);
+	memset(&planstate->bs_sortsupport, 0, sizeof(SortSupportData));
+	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &planstate->bs_sortsupport);
 
 	/*
 	 * XXX This needs a bit smore complicated sort. Yes, we need to sort by
@@ -1093,10 +1084,10 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 * sort by min_value, then max_value.
 	 */
 	qsort_arg(planstate->bs_ranges, planstate->bs_nranges, sizeof(BrinSortRange),
-			  brin_sort_range_cmp, &ssup);
+			  brin_sort_range_cmp, &planstate->bs_sortsupport);
 
 	qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
-			  brin_sort_rangeptr_cmp, &ssup);
+			  brin_sort_rangeptr_cmp, &planstate->bs_sortsupport);
 }
 
 /* ----------------------------------------------------------------

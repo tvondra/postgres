@@ -1,10 +1,55 @@
 /*-------------------------------------------------------------------------
  *
  * nodeBrinSort.c
- *	  Routines to support indexed scans of relations
+ *	  Routines to support sorted scan of relations using a BRIN index
  *
  * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *
+ * FIXME handling of ASC/DESC
+ *
+ * FIXME handling of NULLS FIRST/LAST
+ *
+ * FIXME handling of other brin opclasses (minmax, minmax-multi)
+ *
+ * FIXME improve costing
+ *
+ * FIXME handling of unsummarized ranges (both for NULL and regular phase)
+ *
+ *
+ * Improvement ideas:
+ *
+ * 1) multiple tuplestores for overlapping ranges
+ *
+ * When there are many overlapping ranges (so that maxval > current.maxval),
+ * we're loading all the "future" tuples into a new tuplestore. However, if
+ * there are multiple such ranges (imagine ranges "shifting" by 10%, which
+ * gives us 9 more ranges), we know in the next round we'll only need rows
+ * until the next maxval. We'll not sort these rows, but we'll still shuffle
+ * them around until we get to the proper range (so about 10x each row).
+ * Maybe we should pre-allocate the tuplestores (or maybe even tuplesorts)
+ * for future ranges, and route the tuples to the correct one? Maybe we
+ * could be a bit smarter and discard tuples once we have enough rows for
+ * the preceding ranges (say, with LIMIT queries). We'd also need to worry
+ * about work_mem, though - we can't just use many tuplestores, each with
+ * whole work_mem. So we'd probably use e.g. work_mem/2 for the next one,
+ * and then /4, /8 etc. for the following ones. That's work_mem in total.
+ * And there'd need to be some limit on number of tuplestores, I guess.
+ *
+ * 2) handling NULL values
+ *
+ * We need to handle NULLS FIRST / NULLS LAST cases. The question is how
+ * to do that - the easiest way is to simply do a separate scan of ranges
+ * that might contain NULL values, processing just rows with NULLs, and
+ * discarding other rows. And then process non-NULL values as currently.
+ * The NULL scan would happen before/after this regular phase.
+ *
+ * Byt maybe we could be smarter, and not do separate scans. When reading
+ * a page, we might stash the tuple in a tuplestore, so that we can read
+ * it the next round. Obviously, this might be expensive if we need to
+ * keep too many rows, so the tuplestore would grow too large - in that
+ * case it might be better to just do the two scans.
  *
  *
  * IDENTIFICATION
@@ -19,8 +64,8 @@
  *		ExecInitBrinSort		creates and initializes state info.
  *		ExecReScanBrinSort		rescans the indexed relation.
  *		ExecEndBrinSort			releases all storage.
- *		ExecIndexMarkPos		marks scan position.
- *		ExecIndexRestrPos		restores scan position.
+ *		ExecBrinSortMarkPos		marks scan position.
+ *		ExecBrinSortRestrPos	restores scan position.
  *		ExecBrinSortEstimate	estimates DSM space needed for parallel index scan
  *		ExecBrinSortInitializeDSM initialize DSM for parallel BrinSort
  *		ExecBrinSortReInitializeDSM reinitialize DSM for fresh scan
@@ -62,12 +107,19 @@ static TupleTableSlot *IndexNext(BrinSortState *node);
 static bool IndexRecheck(BrinSortState *node, TupleTableSlot *slot);
 static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
+/* do various consistency checks */
 static void
 AssertCheckRanges(BrinSortState *node)
 {
 #ifdef USE_ASSERT_CHECKING
-	Assert((0 <= node->bs_next_range) && (node->bs_next_range <= node->bs_nranges));
-	Assert((0 <= node->bs_next_range_intersect) && (node->bs_next_range <= node->bs_nranges));
+
+	/* the primary range index has to be valid */
+	Assert((0 <= node->bs_next_range) &&
+		   (node->bs_next_range <= node->bs_nranges));
+
+	/* the intersect range index has to be valid*/
+	Assert((0 <= node->bs_next_range_intersect) &&
+		   (node->bs_next_range_intersect <= node->bs_nranges));
 
 	/* all the ranges up to bs_next_range should be marked as processed */
 	for (int i = 0; i < node->bs_next_range; i++)
@@ -85,30 +137,41 @@ AssertCheckRanges(BrinSortState *node)
 #endif
 }
 
+/*
+ * brinsort_start_tidscan
+ *		Start scanning tuples from a given page range.
+ *
+ * We open a TID range scan for the given range, and initialize the tuplesort.
+ * Optionally, we update the watermark (with either high/low value). We only
+ * need to do this for the main page range, not for the intersecting ranges.
+ *
+ * XXX Maybe we should initialize the tidscan only once, and then do rescan
+ * for the following ranges? And similarly for the tuplesort?
+ */
 static void
-brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_watermark)
+brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
+					   bool update_watermark, bool mark_processed)
 {
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
 	EState	   *estate = node->ss.ps.state;
 
-	Assert(!range->processed);
-	Assert(node->bs_nranges >= node->bs_next_range);
+	/*
+	 * When scanning the range during NULL processing, in which case the range
+	 * might be already marked as processed (for NULLS LAST). So we only check
+	 * the page is not alreayd marked as processed when we're supposed to mark
+	 * it as processed.
+	 */
+	Assert(!(mark_processed && range->processed));
 
-	/* get the first range, read all tuples using a tid range scan */
+	/* There must not be any TID scan in progress yet. */
+	Assert(node->ss.ss_currentScanDesc == NULL);
+
+	/* Initialize the TID range scan, for the provided block range. */
 	if (node->ss.ss_currentScanDesc == NULL)
 	{
 		TableScanDesc		tscandesc;
 		ItemPointerData		mintid,
 							maxtid;
-
-		/*
-		 * Remember maximum value for the current range (but not when
-		 * processing overlapping ranges).
-		 */
-		if (update_watermark)
-			node->bs_watermark = range->max_value;
-
-		range->processed = true;
 
 		ItemPointerSetBlockNumber(&mintid, range->blkno_start);
 		ItemPointerSetOffsetNumber(&mintid, 0);
@@ -116,7 +179,8 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_wa
 		ItemPointerSetBlockNumber(&maxtid, range->blkno_end);
 		ItemPointerSetOffsetNumber(&maxtid, MaxHeapTuplesPerPage);
 
-		elog(DEBUG1, "loading range %d, %d", range->blkno_start, range->blkno_end);
+		elog(DEBUG1, "loading range blocks [%u, %u]",
+			 range->blkno_start, range->blkno_end);
 
 		tscandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
 											 estate->es_snapshot,
@@ -139,27 +203,24 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_wa
 													TUPLESORT_NONE);
 
 		node->bs_tuplestore = tuplestore_begin_heap(false, false, work_mem);
-		/*
-		tuplesort_begin_heap(tupDesc,
-													plan->numCols,
-													plan->sortColIdx,
-													plan->sortOperators,
-													plan->collations,
-													plan->nullsFirst,
-													work_mem,
-													NULL,
-													TUPLESORT_NONE);
-		*/
 	}
 
-	// node->bs_next_range++;
+	/*
+	 * Remember maximum value for the current range (but not when
+	 * processing overlapping ranges). We only do this during the
+	 * regular tuple processing, not when scanning NULL values.
+	 */
+	if (update_watermark)
+		node->bs_watermark = range->max_value;
 
-	Assert(range->processed);
-
-	elog(DEBUG1, "brinsort_start_tidscan incremented node->bs_next_range = %d", node->bs_next_range);
-	Assert(node->bs_next_range <= node->bs_nranges);
+	/* Maybe mark the range as processed. */
+	range->processed = true;
 }
 
+/*
+ * brinsort_end_tidscan
+ *		Finish the TID range scan.
+ */
 static void
 brinsort_end_tidscan(BrinSortState *node)
 {
@@ -171,14 +232,21 @@ brinsort_end_tidscan(BrinSortState *node)
 	}
 }
 
-static bool
+/*
+ * brinsort_load_tuples
+ *		Load tuples from the TID range scan, add them to tuplesort/store.
+ *
+ * When called for the "current" range, we don't need to check the watermark,
+ * we know the tuple goes into the tuplesort. So with check_watermark we
+ * skip the comparator call to save CPU cost.
+ */
+static void
 brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 {
-	bool			res = false;
-	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
+	BrinSort	   *plan = (BrinSort *) node->ss.ps.plan;
 	TableScanDesc	scan = node->ss.ss_currentScanDesc;
-	EState	   *estate;
-	ScanDirection direction;
+	EState		   *estate;
+	ScanDirection	direction;
 	TupleTableSlot *slot;
 	SortSupportData	ssup;
 
@@ -188,13 +256,18 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 	slot = node->ss.ss_ScanTupleSlot;
 
 	/*
-	 * Sort ranges by maximum value.
-	 *
-	 * XXX Needs to consider the other parameters (ASC/DESC, NULLS FIRST/LAST, etc.),
+	 * Initialize info we'll need to compare the tuple value to the current
+	 * watermark, so that we can decide if it goes into the tuplestore or
+	 * tuplesort.
 	 */
 	memset(&ssup, 0, sizeof(SortSupportData));
 	PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
 
+	/*
+	 * Read tuples, evaluate the filer (so that we don't keep tuples only to
+	 * discard them later), and decide if it goes into the current range
+	 * (tuplesort) or overflow (tuplestore).
+	 */
 	while (table_scan_getnextslot_tidrange(scan, direction, slot))
 	{
 		ExprContext *econtext;
@@ -242,17 +315,15 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 		 */
 		if (qual == NULL || ExecQual(qual, econtext))
 		{
+			int		cmp = 0;	/* matters for check_watermark=false */
 			Datum	value;
-			int		cmp = 0;
 			bool	isnull;
-
-			elog(DEBUG1, "adding tuple");
 
 			value = slot_getattr(slot, plan->sortColIdx[0], &isnull);
 
 			/*
-			 * Not handling NULLS for now, we need to stash them into a
-			 * separate tuplestore (so that we can output them first or
+			 * FIXME Not handling NULLS for now, we need to stash them into
+			 * a separate tuplestore (so that we can output them first or
 			 * last), and then skip them in the regular processing?
 			 */
 			Assert(!isnull);
@@ -262,26 +333,26 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark)
 										  node->bs_watermark, false,
 										  &ssup);
 
-			elog(DEBUG1, "%ld %ld %d", node->bs_watermark, value, cmp);
-
 			if (cmp <= 0)
 				tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
 			else
 				tuplestore_puttupleslot(node->bs_tuplestore, slot);
-
-			res = true;
 		}
-		else
-			elog(DEBUG1, "filtered tuple");
 
 		ExecClearTuple(slot);
 	}
 
 	ExecClearTuple(slot);
-
-	return res;
 }
 
+/*
+ * brinsort_load_spill_tuples
+ *		Load tuples from the spill tuplestore, and either stash them into
+ *		a tuplesort or a new tuplestore.
+ *
+ * After processing the last range, we want to process all remaining ranges,
+ * so with check_watermark=false we skip the check.
+ */
 static void
 brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 {
@@ -290,30 +361,35 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 	SortSupportData	ssup;
 	TupleTableSlot *slot;
 
+	/* prepare info for watermark comparison */
 	memset(&ssup, 0, sizeof(SortSupportData));
 	PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
 
+	/* start scanning the existing tuplestore (XXX needed?) */
+	tuplestore_rescan(node->bs_tuplestore);
+
+	/*
+	 * Create a new tuplestore, for tuples that exceed the watermark and so
+	 * should not be included in the current sort.
+	 */
+	tupstore = tuplestore_begin_heap(false, false, work_mem);
+
+	/*
+	 * We need a slot for minimal tuples. The scan slot uses buffered tuples,
+	 * so it'd trigger an error in the loop.
+	 */
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(node->ss.ss_currentRelation),
 									&TTSOpsMinimalTuple);
 
-	tupstore = tuplestore_begin_heap(false, false, work_mem);
-
-	tuplestore_rescan(node->bs_tuplestore);
-
 	while (tuplestore_gettupleslot(node->bs_tuplestore, true, true, slot))
 	{
-		int		cmp = 0;
-
+		int		cmp = 0;	/* matters for check_watermark=false */
 		bool	isnull;
 		Datum	value;
 
 		value = slot_getattr(slot, plan->sortColIdx[0], &isnull);
 
-		/*
-		 * Not handling NULLS for now, we need to stash them into a
-		 * separate tuplestore (so that we can output them first or
-		 * last), and then skip them in the regular processing?
-		 */
+		/* We shouldn't have NULL values in the spill, at least not now. */
 		Assert(!isnull);
 
 		if (check_watermark)
@@ -321,21 +397,70 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 									  node->bs_watermark, false,
 									  &ssup);
 
-		elog(DEBUG1, "watermark %ld value %ld %d", node->bs_watermark, value, cmp);
-
-		elog(DEBUG1, "%ld %ld %d", node->bs_watermark, value, cmp);
-
 		if (cmp <= 0)
 			tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
 		else
 			tuplestore_puttupleslot(tupstore, slot);
 	}
 
+	/*
+	 * Discard the existing tuplestore (that we just processed), use the new
+	 * one instead.
+	 */
 	tuplestore_end(node->bs_tuplestore);
-
 	node->bs_tuplestore = tupstore;
 
 	ExecDropSingleTupleTableSlot(slot);
+}
+
+/*
+ * brinsort_load_intersecting_ranges
+ *		Load ranges intersecting with the current watermark.
+ *
+ * This does not increment bs_next_range, but bs_next_range_intersect.
+ */
+static void
+brinsort_load_intersecting_ranges(BrinSortState *node)
+{
+	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
+
+	/* load intersecting ranges */
+	for (int i = node->bs_next_range_intersect; i < node->bs_nranges; i++)
+	{
+		int	cmp;
+		BrinSortRange  *range = node->bs_ranges_minval[i];
+		SortSupportData	ssup;
+
+		/* skip already processed ranges */
+		if (range->processed)
+			continue;
+
+		memset(&ssup, 0, sizeof(SortSupportData));
+		PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
+
+		cmp = ApplySortComparator(range->min_value, false,
+								  node->bs_watermark, false,
+								  &ssup);
+
+		/*
+		 * No possible overlap, so break, we know all following ranges have
+		 * a higher minval and thus can't intersect either.
+		 */
+		if (cmp > 0)
+			break;
+
+		node->bs_next_range_intersect++;
+
+		elog(DEBUG1, "loading intersecting range %d (%u,%u) [%ld,%ld] %ld", i,
+					  range->blkno_start, range->blkno_end,
+					  range->min_value, range->max_value,
+					  node->bs_watermark);
+
+		/* load tuples from the rage, check the watermark */
+		brinsort_start_tidscan(node, range, false, true);
+		brinsort_load_tuples(node, true);
+		brinsort_end_tidscan(node);
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -348,8 +473,8 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 static TupleTableSlot *
 IndexNext(BrinSortState *node)
 {
-	EState	   *estate;
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
+	EState	   *estate;
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
@@ -395,20 +520,37 @@ IndexNext(BrinSortState *node)
 
 		/*
 		 * Load info about BRIN ranges, sort them to match the desired ordering.
-		 *
-		 * Maybe this should happen later, i.e. at the beginning of execution,
-		 * otherwise we might do expensive stuff in EXPLAIN.
 		 */
-		ExecInitBrinSortRanges((BrinSort *) node->ss.ps.plan, node);
+		ExecInitBrinSortRanges(plan, node);
 		node->bs_next_range = 0;
 		node->bs_next_range_intersect = 0;
-		node->bs_phase = LOAD_RANGE;
+		node->bs_phase = BRINSORT_START;
+
+
+		/* dump ranges for debugging */
+		for (int i = 0; i < node->bs_nranges; i++)
+		{
+			elog(DEBUG1, "%d => (%u,%u) [%ld,%ld]", i,
+				 node->bs_ranges[i].blkno_start,
+				 node->bs_ranges[i].blkno_end,
+				 node->bs_ranges[i].min_value,
+				 node->bs_ranges[i].max_value);
+		}
+
+		for (int i = 0; i < node->bs_nranges; i++)
+		{
+			elog(DEBUG1, "minval %d => (%u,%u) [%ld,%ld]", i,
+				 node->bs_ranges_minval[i]->blkno_start,
+				 node->bs_ranges_minval[i]->blkno_end,
+				 node->bs_ranges_minval[i]->min_value,
+				 node->bs_ranges_minval[i]->max_value);
+		}
 	}
 
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (node->bs_phase != FINISHED)
+	while (node->bs_phase != BRINSORT_FINISHED)
 	{
 		CHECK_FOR_INTERRUPTS();
 
@@ -418,126 +560,110 @@ IndexNext(BrinSortState *node)
 
 		switch (node->bs_phase)
 		{
-			case LOAD_RANGE:
-				{
-				BrinSortRange *range;
+			case BRINSORT_START:
+				node->bs_phase = BRINSORT_LOAD_RANGE;
+				break;
 
-				elog(DEBUG1, "phase = LOAD_RANGE");
-
-				/* skip already processed ranges */
-				while ((node->bs_next_range < node->bs_nranges) &&
-					   (node->bs_ranges[node->bs_next_range].processed))
+			case BRINSORT_LOAD_RANGE:
 				{
+					BrinSortRange *range;
+
+					elog(DEBUG1, "phase = LOAD_RANGE");
+
+					/*
+					 * Some of the ranges might intersect with already processed
+					 * range and thus have already been processed, so skip them.
+					 */
+					while ((node->bs_next_range < node->bs_nranges) &&
+						   (node->bs_ranges[node->bs_next_range].processed))
+						node->bs_next_range++;
+
+					Assert(node->bs_next_range <= node->bs_nranges);
+
+					/*
+					 * Did we process the last range? If we still have some rows
+					 * in the tuplestore, sort them and move to process them.
+					 */
+					if ((node->bs_next_range == node->bs_nranges) &&
+						(node->bs_tuplestore != NULL))
+					{
+						brinsort_load_spill_tuples(node, false);
+
+						node->bs_tuplestore = NULL;
+
+						tuplesort_performsort(node->bs_tuplesortstate);
+
+						node->bs_phase = BRINSORT_PROCESS_RANGE;
+						break;
+					}
+
+					/*
+					 * We've reached the end, and there are no more rows in the
+					 * tuplestore, so we're done.
+					 */
+					if (node->bs_next_range == node->bs_nranges)
+					{
+						elog(DEBUG1, "phase => FINISHED");
+						node->bs_phase = BRINSORT_FINISHED;
+						break;
+					}
+
+					range = &node->bs_ranges[node->bs_next_range];
 					node->bs_next_range++;
-					elog(DEBUG1, "A: incremented node->bs_next_range = %d", node->bs_next_range);
-				}
 
-				Assert(node->bs_next_range <= node->bs_nranges);
+					/*
+					 * Load the next unprocessed range. We update the watermark,
+					 * so that we don't need to check it when loading tuples.
+					 */
+					brinsort_start_tidscan(node, range, true, true);
+					brinsort_load_tuples(node, false);
+					brinsort_end_tidscan(node);
 
-				if ((node->bs_next_range == node->bs_nranges) &&
-					(node->bs_tuplestore != NULL))
-				{
-					brinsort_load_spill_tuples(node, false);
+					/* Load matching tuples from the current spill tuplestore. */
+					brinsort_load_spill_tuples(node, true);
 
-					node->bs_tuplestore = NULL;
+					/*
+					 * Load tuples from intersecting ranges.
+					 *
+					 * XXX We do this after processing the spill tuplestore,
+					 * because we will add rows to it - but we know those rows
+					 * should be there, and brinsort_load_spill would recheck
+					 * them again unnecessarily.
+					 */
+					elog(DEBUG1, "loading intersecting ranges");
+					brinsort_load_intersecting_ranges(node);
 
 					elog(DEBUG1, "performing sort");
 					tuplesort_performsort(node->bs_tuplesortstate);
 
-					node->bs_phase = PROCESS_RANGE;
+					node->bs_phase = BRINSORT_PROCESS_RANGE;
 					break;
 				}
-
-				if (node->bs_next_range == node->bs_nranges)
-				{
-					elog(DEBUG1, "phase => FINISHED");
-					node->bs_phase = FINISHED;
-					break;
-				}
-
-				range = &node->bs_ranges[node->bs_next_range];
-				node->bs_next_range++;
-
-elog(DEBUG1, "loading range %d", node->bs_next_range);
-				brinsort_start_tidscan(node, range, true);
-
-				/* no need to check the watermark */
-				brinsort_load_tuples(node, false);
-
-				brinsort_end_tidscan(node);
-
-				/* load matching tuples from the current spill tuplestore */
-				brinsort_load_spill_tuples(node, true);
-
-				/* load intersecting ranges */
-				for (int i = node->bs_next_range_intersect; i < node->bs_nranges; i++)
-				{
-					int	cmp;
-					BrinSortRange  *range = node->bs_ranges_minval[i];
-					SortSupportData	ssup;
-
-					/* skip already processed ranges */
-					if (range->processed)
-						continue;
-
-					memset(&ssup, 0, sizeof(SortSupportData));
-					PrepareSortSupportFromOrderingOp(plan->sortOperators[0], &ssup);
-
-					cmp = ApplySortComparator(range->min_value, false,
-											  node->bs_watermark, false,
-											  &ssup);
-
-					/*
-					 * No possible overlap, so break, we know all following
-					 * ranges have a higher minval and thus can't intersect
-					 * either.
-					 */
-					if (cmp > 0)
-						break;
-
-					node->bs_next_range_intersect++;
-
-					elog(DEBUG1, "loading intersecting range %d [%ld,%ld] %ld", i,
-								  range->min_value, range->max_value,
-								  node->bs_watermark);
-
-					brinsort_start_tidscan(node, range, false);
-
-					/* now check the watermark */
-					brinsort_load_tuples(node, true);
-
-					brinsort_end_tidscan(node);
-				}
-
-				elog(DEBUG1, "performing sort");
-				tuplesort_performsort(node->bs_tuplesortstate);
-
-				node->bs_phase = PROCESS_RANGE;
-				break;
-				}
-			case PROCESS_RANGE:
+			case BRINSORT_PROCESS_RANGE:
 
 				slot = node->ss.ps.ps_ResultTupleSlot;
 
+				/* read tuples from the tuplesort range, and output them */
 				if (node->bs_tuplesortstate != NULL)
 				{
-					elog(DEBUG1, "getting tuple");
 					if (tuplesort_gettupleslot(node->bs_tuplesortstate,
 										ScanDirectionIsForward(direction),
 										false, slot, NULL))
-					{
 						return slot;
-					}
 
-					elog(DEBUG1, "resetting");
+					/* once we're done with the tuplesort, reset it */
 					tuplesort_reset(node->bs_tuplesortstate);
-					node->bs_phase = LOAD_RANGE;
+					node->bs_phase = BRINSORT_LOAD_RANGE;	/* load next range */
 				}
 
 				break;
 
-			case FINISHED:
-				elog(ERROR, "finished should not happen here");
+			case BRINSORT_LOAD_NULLS:
+				elog(ERROR, "unexpected BrinSort phase: LOAD_NULLS");
+				break;
+
+			case BRINSORT_FINISHED:
+				elog(ERROR, "unexpected BrinSort phase: FINISHED");
 				break;
 		}
 	}
@@ -595,9 +721,6 @@ ExecBrinSort(PlanState *pstate)
  *		Recalculates the values of any scan keys whose value depends on
  *		information known at runtime, then rescans the indexed relation.
  *
- *		Updating the scan key was formerly done separately in
- *		ExecUpdateBrinSortKeys. Integrating it into ReScan makes
- *		rescans of indices and relations/general streams more uniform.
  * ----------------------------------------------------------------
  */
 void
@@ -649,15 +772,6 @@ ExecEndBrinSort(BrinSortState *node)
 	IndexScanDesc = node->iss_ScanDesc;
 
 	/*
-	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
-	 */
-#ifdef NOT_USED
-	ExecFreeExprContext(&node->ss.ps);
-	if (node->iss_RuntimeContext)
-		FreeExprContext(node->iss_RuntimeContext, true);
-#endif
-
-	/*
 	 * clear out tuple table slots
 	 */
 	if (node->ss.ps.ps_ResultTupleSlot)
@@ -685,7 +799,7 @@ ExecEndBrinSort(BrinSortState *node)
 }
 
 /* ----------------------------------------------------------------
- *		ExecIndexMarkPos
+ *		ExecBrinSortMarkPos
  *
  * Note: we assume that no caller attempts to set a mark before having read
  * at least one tuple.  Otherwise, iss_ScanDesc might still be NULL.
@@ -716,7 +830,7 @@ ExecBrinSortMarkPos(BrinSortState *node)
 		{
 			/* Verify the claim above */
 			if (!epqstate->relsubs_done[scanrelid - 1])
-				elog(ERROR, "unexpected ExecIndexMarkPos call in EPQ recheck");
+				elog(ERROR, "unexpected ExecBrinSortMarkPos call in EPQ recheck");
 			return;
 		}
 	}
@@ -745,7 +859,7 @@ ExecBrinSortRestrPos(BrinSortState *node)
 		{
 			/* Verify the claim above */
 			if (!epqstate->relsubs_done[scanrelid - 1])
-				elog(ERROR, "unexpected ExecIndexRestrPos call in EPQ recheck");
+				elog(ERROR, "unexpected ExecBrinSortRestrPos call in EPQ recheck");
 			return;
 		}
 	}
@@ -797,10 +911,19 @@ brin_sort_rangeptr_cmp(const void *a, const void *b, void *arg)
 	return ApplySortComparator(ra->min_value, false, rb->min_value, false, ssup);
 }
 
-/* somewhat crippled verson of bringetbitmap */
+/*
+ * somewhat crippled verson of bringetbitmap
+ *
+ * XXX We don't call consistent function (or any other function), so unlike
+ * bringetbitmap we don't set a separate memory context. If we end up filtering
+ * the ranges somehow (e.g. by WHERE conditions), this might be necessary.
+ *
+ * XXX Should be part of opclass, to somewhere in brin_minmax.c etc.
+ */
 static void
 ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 {
+	IndexScanDesc	scan = planstate->iss_ScanDesc;
 	Relation	indexRel = planstate->iss_RelationDesc;
 	Relation	heapRel;
 	BrinOpaque *opaque;
@@ -814,51 +937,26 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	Size		btupsz = 0;
 	Buffer		buf = InvalidBuffer;
 	SortSupportData	ssup;
-
-	IndexScanDesc	scan = planstate->iss_ScanDesc;
-
-	/* index attribute we're interested in */
 	int			attno;
 
+	/* BRIN Sort only allows ORDER BY using a single column */
+	Assert(node->numCols == 1);
+
+	/*
+	 * Determine how many BRIN ranges could there be, allocate space and read
+	 * all the min/max values.
+	 */
 	opaque = (BrinOpaque *) scan->opaque;
 	bdesc = opaque->bo_bdesc;
 
 	/*
-	 * We need to know the size of the table so that we know how long to
-	 * iterate on the revmap.
-	 */
-	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
-	heapRel = table_open(heapOid, AccessShareLock);
-	nblocks = RelationGetNumberOfBlocks(heapRel);
-	table_close(heapRel, AccessShareLock);
-
-	/*
-	 * How many ranges can there be?
+	 * Determine index attnum we're interested in. The sortColIdx has attnums
+	 * from the table, but we need index attnum so that we can fetch the right
+	 * range summary.
 	 *
-	 * XXX Make sure not to overflow, so don't do (m + n - 1), and just
-	 * add +1.
+	 * XXX Maybe we could/should arrange the tlists differently, so that this
+	 * is not necessary?
 	 */
-	nranges = (nblocks / opaque->bo_pagesPerRange) + 1;
-
-	planstate->bs_nranges = 0;
-	planstate->bs_ranges = (BrinSortRange *) palloc0(nranges * sizeof(BrinSortRange));
-	planstate->bs_ranges_minval = (BrinSortRange **) palloc0(nranges * sizeof(BrinSortRange *));
-
-	/*
-	 * XXX We might apply keys on the remaining index attributes, similarly
-	 * to what bringetbitmap does.
-	 */
-
-	/* allocate an initial in-memory tuple, out of the per-range memcxt */
-	dtup = brin_new_memtuple(bdesc);
-
-	/*
-	 * Map the sortColIdx (which is for the whole table) to index attnum.
-	 *
-	 * XXX Maybe this is wrong and we should arrange the tlists differently?
-	 */
-	Assert(node->numCols == 1);
-
 	attno = 0;
 	for (int i = 0; i < indexRel->rd_index->indnatts; i++)
 	{
@@ -869,14 +967,36 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 		}
 	}
 
-	/* make sure attnum is valid */
-	Assert(attno != 0);
-	Assert(attno <= bdesc->bd_tupdesc->natts);
+	/* make sure the calculated attnum is valid */
+	Assert((attno > 0) && (attno <= bdesc->bd_tupdesc->natts));
 
 	/*
-	 * XXX We don't call consistent function (or any other function), so
-	 * unlike bringetbitmap we don't set a separate memory context.
+	 * We need to know the size of the table so that we know how long to iterate
+	 * on the revmap.
 	 */
+	heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+	heapRel = table_open(heapOid, AccessShareLock);
+	nblocks = RelationGetNumberOfBlocks(heapRel);
+	table_close(heapRel, AccessShareLock);
+
+	/*
+	 * How many ranges can there be? We simply look at the number of pages,
+	 * divide it by the pages_per_range.
+	 *
+	 * XXX We need to be careful not to overflow nranges, so we just divide
+	 * and then maybe add 1 for partial ranges.
+	 */
+	nranges = (nblocks / opaque->bo_pagesPerRange);
+	if (nblocks % opaque->bo_pagesPerRange != 0)
+		nranges += 1;
+
+	/* allocate for space, and also for the alternative ordering */
+	planstate->bs_nranges = 0;
+	planstate->bs_ranges = (BrinSortRange *) palloc0(nranges * sizeof(BrinSortRange));
+	planstate->bs_ranges_minval = (BrinSortRange **) palloc0(nranges * sizeof(BrinSortRange *));
+
+	/* allocate an initial in-memory tuple, out of the per-range memcxt */
+	dtup = brin_new_memtuple(bdesc);
 
 	/*
 	 * Now scan the revmap.  We start by querying for heap page 0,
@@ -940,6 +1060,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 
 				if (!bval->bv_allnulls)
 				{
+					/* FIXME copy the values, if needed (e.g. varlena) */
 					range->min_value = bval->bv_values[0];
 					range->max_value = bval->bv_values[1];
 				}
@@ -976,27 +1097,6 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 
 	qsort_arg(planstate->bs_ranges_minval, planstate->bs_nranges, sizeof(BrinSortRange *),
 			  brin_sort_rangeptr_cmp, &ssup);
-
-	elog(DEBUG1, "ranges = %d", planstate->bs_nranges);
-
-	/* dump ranges for debugging */
-	for (int i = 0; i < planstate->bs_nranges; i++)
-	{
-		elog(DEBUG1, "%d => (%d,%d) [%ld,%ld]", i,
-			 planstate->bs_ranges[i].blkno_start,
-			 planstate->bs_ranges[i].blkno_end,
-			 planstate->bs_ranges[i].min_value,
-			 planstate->bs_ranges[i].max_value);
-	}
-
-	for (int i = 0; i < planstate->bs_nranges; i++)
-	{
-		elog(DEBUG1, "minval %d => (%d,%d) [%ld,%ld]", i,
-			 planstate->bs_ranges_minval[i]->blkno_start,
-			 planstate->bs_ranges_minval[i]->blkno_end,
-			 planstate->bs_ranges_minval[i]->min_value,
-			 planstate->bs_ranges_minval[i]->max_value);
-	}
 }
 
 /* ----------------------------------------------------------------
@@ -1096,20 +1196,6 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 						   false,
 						   &indexstate->iss_ScanKeys,
 						   &indexstate->iss_NumScanKeys,
-						   &indexstate->iss_RuntimeKeys,
-						   &indexstate->iss_NumRuntimeKeys,
-						   NULL,	/* no ArrayKeys */
-						   NULL);
-
-	/*
-	 * any ORDER BY exprs have to be turned into scankeys in the same way
-	 */
-	ExecIndexBuildScanKeys((PlanState *) indexstate,
-						   indexstate->iss_RelationDesc,
-						   NULL,
-						   true,
-						   &indexstate->iss_OrderByKeys,
-						   &indexstate->iss_NumOrderByKeys,
 						   &indexstate->iss_RuntimeKeys,
 						   &indexstate->iss_NumRuntimeKeys,
 						   NULL,	/* no ArrayKeys */

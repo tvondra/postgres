@@ -1563,9 +1563,11 @@ typedef struct BrinSortRange
 } BrinSortRange;
 
 typedef enum {
-	LOAD_RANGE,
-	PROCESS_RANGE,
-	FINISHED
+	BRINSORT_START,
+	BRINSORT_LOAD_RANGE,
+	BRINSORT_PROCESS_RANGE,
+	BRINSORT_LOAD_NULLS,
+	BRINSORT_FINISHED
 } BrinSortPhase;
 
 typedef struct BrinSortState

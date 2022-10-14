@@ -384,6 +384,9 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 	Tuplestorestate *tupstore;
 	TupleTableSlot *slot;
 
+	if (node->bs_tuplestore == NULL)
+		return;
+
 	/* start scanning the existing tuplestore (XXX needed?) */
 	tuplestore_rescan(node->bs_tuplestore);
 
@@ -546,6 +549,7 @@ IndexNext(BrinSortState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
+	bool		nullsFirst;
 
 	/*
 	 * extract necessary information from index scan node
@@ -565,6 +569,8 @@ IndexNext(BrinSortState *node)
 	}
 	scandesc = node->iss_ScanDesc;
 	slot = node->ss.ss_ScanTupleSlot;
+
+	nullsFirst = plan->nullsFirst[0];
 
 	if (scandesc == NULL)
 	{
@@ -633,7 +639,12 @@ IndexNext(BrinSortState *node)
 		switch (node->bs_phase)
 		{
 			case BRINSORT_START:
-				node->bs_phase = BRINSORT_LOAD_RANGE;
+				/*
+				 * If we have NULLS FIRST, move to that stage. Otherwise
+				 * start scanning regular ranges.
+				 */
+				node->bs_phase = (nullsFirst) ? BRINSORT_LOAD_NULLS : BRINSORT_LOAD_RANGE;
+
 				break;
 
 			case BRINSORT_LOAD_RANGE:
@@ -687,7 +698,7 @@ IndexNext(BrinSortState *node)
 						if (node->bs_next_range == node->bs_nranges)
 						{
 							elog(DEBUG1, "phase => FINISHED / last range processed");
-							node->bs_phase = BRINSORT_FINISHED;
+							node->bs_phase = (nullsFirst) ? BRINSORT_FINISHED : BRINSORT_LOAD_NULLS;
 							break;
 						}
 					}
@@ -732,6 +743,7 @@ IndexNext(BrinSortState *node)
 					node->bs_phase = BRINSORT_PROCESS_RANGE;
 					break;
 				}
+
 			case BRINSORT_PROCESS_RANGE:
 
 				slot = node->ss.ps.ps_ResultTupleSlot;
@@ -779,11 +791,12 @@ IndexNext(BrinSortState *node)
 					 * in the tuplestore, because we flush that at the end of
 					 * processing regular tuples.
 					 */
-					if (node->bs_next_range == node->bs_nranges)
+					if (node->bs_next_range_nulls == node->bs_nranges)
 					{
 						elog(DEBUG1, "phase => FINISHED / last range processed");
 						Assert(node->bs_tuplestore == NULL);
 						node->bs_phase = BRINSORT_FINISHED;
+						node->bs_phase = (nullsFirst) ? BRINSORT_LOAD_RANGE : BRINSORT_FINISHED;
 						break;
 					}
 
@@ -808,18 +821,15 @@ IndexNext(BrinSortState *node)
 
 				slot = node->ss.ps.ps_ResultTupleSlot;
 
+				Assert(node->bs_tuplestore != NULL);
+
 				/* read tuples from the tuplesort range, and output them */
 				if (node->bs_tuplestore != NULL)
 				{
-					tuplestore_rescan(node->bs_tuplestore);
 
 					while (tuplestore_gettupleslot(node->bs_tuplestore, true, true, slot))
 						return slot;
 
-					/*
-					 * Discard the existing tuplestore (that we just processed), use the new
-					 * one instead.
-					 */
 					tuplestore_end(node->bs_tuplestore);
 					node->bs_tuplestore = NULL;
 

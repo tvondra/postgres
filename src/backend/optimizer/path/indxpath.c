@@ -1202,7 +1202,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 */
 
 			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
-													   idx);
+													   idx, ForwardScanDirection);
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
@@ -1210,32 +1210,74 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			orderbyclauses = NIL;
 			orderbyclausecols = NIL;
 
-			bpath = create_brinsort_path(root, index,
-										 index_clauses,
-										 orderbyclauses,
-										 orderbyclausecols,
-										 useful_pathkeys,
-										 index_is_ordered ?
-										 ForwardScanDirection :
-										 NoMovementScanDirection,
-										 index_only_scan,
-										 outer_relids,
-										 loop_count,
-										 false);
+			if (useful_pathkeys != NIL)
+			{
+				bpath = create_brinsort_path(root, index,
+											 index_clauses,
+											 orderbyclauses,
+											 orderbyclausecols,
+											 useful_pathkeys,
+											 index_is_ordered ?
+											 ForwardScanDirection :
+											 NoMovementScanDirection,
+											 index_only_scan,
+											 outer_relids,
+											 loop_count,
+											 false);
 
-			/*
-			 * XXX We don't do this, because this function is supposed to
-			 * generate IndexPaths. We should be building this in a different
-			 * place, perhaps in create_index_paths() or so.
-			 *
-			 * XXX By building it elsewhere, we could also leverage the index
-			 * paths we've built here, particularly the bitmap index paths,
-			 * which we could use to eliminate many of the ranges.
-			 */
-			// result = lappend(result, bpath);
+				/*
+				 * XXX We don't do this, because this function is supposed to
+				 * generate IndexPaths. We should be building this in a different
+				 * place, perhaps in create_index_paths() or so.
+				 *
+				 * XXX By building it elsewhere, we could also leverage the index
+				 * paths we've built here, particularly the bitmap index paths,
+				 * which we could use to eliminate many of the ranges.
+				 */
+				// result = lappend(result, bpath);
 
-			/* cheat and add it anyway */
-			add_path(rel, (Path *) bpath);
+				/* cheat and add it anyway */
+				add_path(rel, (Path *) bpath);
+			}
+
+			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
+													   idx, BackwardScanDirection);
+
+			useful_pathkeys = truncate_useless_pathkeys(root, rel,
+														index_pathkeys);
+
+			orderbyclauses = NIL;
+			orderbyclausecols = NIL;
+
+			if (useful_pathkeys != NIL)
+			{
+				bpath = create_brinsort_path(root, index,
+											 index_clauses,
+											 orderbyclauses,
+											 orderbyclausecols,
+											 useful_pathkeys,
+											 index_is_ordered ?
+											 ForwardScanDirection :
+											 NoMovementScanDirection,
+											 index_only_scan,
+											 outer_relids,
+											 loop_count,
+											 false);
+
+				/*
+				 * XXX We don't do this, because this function is supposed to
+				 * generate IndexPaths. We should be building this in a different
+				 * place, perhaps in create_index_paths() or so.
+				 *
+				 * XXX By building it elsewhere, we could also leverage the index
+				 * paths we've built here, particularly the bitmap index paths,
+				 * which we could use to eliminate many of the ranges.
+				 */
+				// result = lappend(result, bpath);
+
+				/* cheat and add it anyway */
+				add_path(rel, (Path *) bpath);
+			}
 		}
 
 		relation_close(rel2, NoLock);

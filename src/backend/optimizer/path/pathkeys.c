@@ -636,7 +636,7 @@ List *
 build_index_pathkeys_brin(PlannerInfo *root,
 						  IndexOptInfo *index,
 						  TargetEntry  *tle,
-						  int idx)
+						  int idx, ScanDirection scandir)
 {
 	TypeCacheEntry *typcache;
 	PathKey		   *cpathkey;
@@ -648,6 +648,12 @@ build_index_pathkeys_brin(PlannerInfo *root,
 	 */
 	bool		reverse_sort = false,
 				nulls_first = false;
+
+	if (ScanDirectionIsBackward(scandir))
+	{
+		reverse_sort = true;
+		nulls_first = true;
+	}
 
 	/*
 	 * Get default btree opfamily for the type, extracted from the

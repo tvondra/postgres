@@ -63,6 +63,29 @@ static bool IndexRecheck(BrinSortState *node, TupleTableSlot *slot);
 static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 
 static void
+AssertCheckRanges(BrinSortState *node)
+{
+#ifdef USE_ASSERT_CHECKING
+	Assert((0 <= node->bs_next_range) && (node->bs_next_range <= node->bs_nranges));
+	Assert((0 <= node->bs_next_range_intersect) && (node->bs_next_range <= node->bs_nranges));
+
+	/* all the ranges up to bs_next_range should be marked as processed */
+	for (int i = 0; i < node->bs_next_range; i++)
+	{
+		BrinSortRange *range = &node->bs_ranges[i];
+		Assert(range->processed);
+	}
+
+	/* same for bs_next_range_intersect */
+	for (int i = 0; i < node->bs_next_range_intersect; i++)
+	{
+		BrinSortRange *range = node->bs_ranges_minval[i];
+		Assert(range->processed);
+	}
+#endif
+}
+
+static void
 brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range, bool update_watermark)
 {
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
@@ -378,6 +401,7 @@ IndexNext(BrinSortState *node)
 		 */
 		ExecInitBrinSortRanges((BrinSort *) node->ss.ps.plan, node);
 		node->bs_next_range = 0;
+		node->bs_next_range_intersect = 0;
 		node->bs_phase = LOAD_RANGE;
 	}
 
@@ -389,6 +413,8 @@ IndexNext(BrinSortState *node)
 		CHECK_FOR_INTERRUPTS();
 
 		elog(DEBUG1, "phase = %d", node->bs_phase);
+
+		AssertCheckRanges(node);
 
 		switch (node->bs_phase)
 		{
@@ -444,7 +470,7 @@ elog(DEBUG1, "loading range %d", node->bs_next_range);
 				brinsort_load_spill_tuples(node, true);
 
 				/* load intersecting ranges */
-				for (int i = 0; i < node->bs_nranges; i++)
+				for (int i = node->bs_next_range_intersect; i < node->bs_nranges; i++)
 				{
 					int	cmp;
 					BrinSortRange  *range = node->bs_ranges_minval[i];
@@ -468,6 +494,8 @@ elog(DEBUG1, "loading range %d", node->bs_next_range);
 					 */
 					if (cmp > 0)
 						break;
+
+					node->bs_next_range_intersect++;
 
 					elog(DEBUG1, "loading intersecting range %d [%ld,%ld] %ld", i,
 								  range->min_value, range->max_value,

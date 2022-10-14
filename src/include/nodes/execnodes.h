@@ -1599,6 +1599,7 @@ typedef struct BrinSortState
 	BrinSortRange  *bs_ranges;
 	BrinSortRange **bs_ranges_minval;
 	int				bs_next_range;
+	int				bs_next_range_intersect;
 	ExprState	   *bs_qual;
 	Datum			bs_watermark;
 	BrinSortPhase	bs_phase;

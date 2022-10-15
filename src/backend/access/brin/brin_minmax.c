@@ -383,8 +383,8 @@ brin_minmax_ranges(PG_FUNCTION_ARGS)
 
 				bval = &dtup->bt_columns[attnum - 1];
 
-				range->has_nulls = bval->bv_allnulls;
-				range->all_nulls = bval->bv_hasnulls;
+				range->has_nulls = bval->bv_hasnulls;
+				range->all_nulls = bval->bv_allnulls;
 
 				if (!bval->bv_allnulls)
 				{

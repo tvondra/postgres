@@ -202,7 +202,10 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 													work_mem,
 													NULL,
 													TUPLESORT_NONE);
+	}
 
+	if (node->bs_tuplestore == NULL)
+	{
 		node->bs_tuplestore = tuplestore_begin_heap(false, false, work_mem);
 	}
 
@@ -230,7 +233,7 @@ brinsort_start_tidscan(BrinSortState *node, BrinSortRange *range,
 	}
 
 	/* Maybe mark the range as processed. */
-	range->processed = mark_processed;
+	range->processed |= mark_processed;
 }
 
 /*
@@ -651,7 +654,7 @@ IndexNext(BrinSortState *node)
 				{
 					BrinSortRange *range;
 
-					elog(DEBUG1, "phase = LOAD_RANGE");
+					elog(DEBUG1, "phase = LOAD_RANGE %d of %d", node->bs_next_range, node->bs_nranges);
 
 					/*
 					 * Some of the ranges might intersect with already processed
@@ -713,6 +716,8 @@ IndexNext(BrinSortState *node)
 					brinsort_start_tidscan(node, range, true, true);
 					brinsort_load_tuples(node, false, false);
 					brinsort_end_tidscan(node);
+
+					Assert(range->processed);
 
 					/* Load matching tuples from the current spill tuplestore. */
 					brinsort_load_spill_tuples(node, true);

@@ -636,24 +636,13 @@ List *
 build_index_pathkeys_brin(PlannerInfo *root,
 						  IndexOptInfo *index,
 						  TargetEntry  *tle,
-						  int idx, ScanDirection scandir)
+						  int idx,
+						  bool reverse_sort,
+						  bool nulls_first)
 {
 	TypeCacheEntry *typcache;
 	PathKey		   *cpathkey;
 	Oid				sortopfamily;
-
-	/*
-	 * BRIN does not allow specifying these parameters, so we just
-	 * assume the default.
-	 */
-	bool		reverse_sort = false,
-				nulls_first = false;
-
-	if (ScanDirectionIsBackward(scandir))
-	{
-		reverse_sort = true;
-		nulls_first = true;
-	}
 
 	/*
 	 * Get default btree opfamily for the type, extracted from the

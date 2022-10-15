@@ -1199,10 +1199,28 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * XXX This fakes a number of parameters, because we don't store
 			 * the btree opclass in the index, instead we use the default
 			 * one for the key data type. And BRIN does not allow specifying
+			 *
+			 * XXX We don't add the path to result, because this function is
+			 * supposed to generate IndexPaths. Instead, we just add the path
+			 * using add_path(). We should be building this in a different
+			 * place, perhaps in create_index_paths() or so.
+			 *
+			 * XXX By building it elsewhere, we could also leverage the index
+			 * paths we've built here, particularly the bitmap index paths,
+			 * which we could use to eliminate many of the ranges.
+			 *
+			 * XXX We don't have any explicit ordering associated with the
+			 * BRIN index, e.g. we don't have ASC/DESC and NULLS FIRST/LAST.
+			 * So this is not encoded in the index, and we can satisfy all
+			 * these cases - but we need to add paths for each combination.
+			 * I wonder if there's a better way to do this.
 			 */
 
+			/* ASC NULLS LAST */
 			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
-													   idx, ForwardScanDirection);
+													   idx,
+													   false,	/* reverse_sort */
+													   false);	/* nulls_first */
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
@@ -1220,29 +1238,15 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 											 loop_count,
 											 false);
 
-				/*
-				 * XXX We don't do this, because this function is supposed to
-				 * generate IndexPaths. We should be building this in a different
-				 * place, perhaps in create_index_paths() or so.
-				 *
-				 * XXX By building it elsewhere, we could also leverage the index
-				 * paths we've built here, particularly the bitmap index paths,
-				 * which we could use to eliminate many of the ranges.
-				 */
-				// result = lappend(result, bpath);
-
 				/* cheat and add it anyway */
 				add_path(rel, (Path *) bpath);
 			}
 
-			/*
-			 * XXX Now try the alternative DESC ordering too. The BRIN minmax
-			 * indexes do rely on ordering, but don't have any other ordering
-			 * dependencies, so we just try both orderings. We might try the
-			 * other combinations with NULLS FIRST / NULLS LAST.
-			 */
+			/* DESC NULLS LAST */
 			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
-													   idx, BackwardScanDirection);
+													   idx,
+													   true,	/* reverse_sort */
+													   false);	/* nulls_first */
 
 			useful_pathkeys = truncate_useless_pathkeys(root, rel,
 														index_pathkeys);
@@ -1260,16 +1264,57 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 											 loop_count,
 											 false);
 
-				/*
-				 * XXX We don't do this, because this function is supposed to
-				 * generate IndexPaths. We should be building this in a different
-				 * place, perhaps in create_index_paths() or so.
-				 *
-				 * XXX By building it elsewhere, we could also leverage the index
-				 * paths we've built here, particularly the bitmap index paths,
-				 * which we could use to eliminate many of the ranges.
-				 */
-				// result = lappend(result, bpath);
+				/* cheat and add it anyway */
+				add_path(rel, (Path *) bpath);
+			}
+
+			/* ASC NULLS FIRST */
+			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
+													   idx,
+													   false,	/* reverse_sort */
+													   true);	/* nulls_first */
+
+			useful_pathkeys = truncate_useless_pathkeys(root, rel,
+														index_pathkeys);
+
+			if (useful_pathkeys != NIL)
+			{
+				bpath = create_brinsort_path(root, index,
+											 index_clauses,
+											 orderbyclauses,
+											 orderbyclausecols,
+											 useful_pathkeys,
+											 ForwardScanDirection,
+											 index_only_scan,
+											 outer_relids,
+											 loop_count,
+											 false);
+
+				/* cheat and add it anyway */
+				add_path(rel, (Path *) bpath);
+			}
+
+			/* DESC NULLS FIRST */
+			index_pathkeys = build_index_pathkeys_brin(root, index, indextle,
+													   idx,
+													   true,	/* reverse_sort */
+													   true);	/* nulls_first */
+
+			useful_pathkeys = truncate_useless_pathkeys(root, rel,
+														index_pathkeys);
+
+			if (useful_pathkeys != NIL)
+			{
+				bpath = create_brinsort_path(root, index,
+											 index_clauses,
+											 orderbyclauses,
+											 orderbyclausecols,
+											 useful_pathkeys,
+											 BackwardScanDirection,
+											 index_only_scan,
+											 outer_relids,
+											 loop_count,
+											 false);
 
 				/* cheat and add it anyway */
 				add_path(rel, (Path *) bpath);

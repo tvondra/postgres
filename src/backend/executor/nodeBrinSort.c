@@ -51,6 +51,12 @@
  * keep too many rows, so the tuplestore would grow too large - in that
  * case it might be better to just do the two scans.
  *
+ * 3) parallelism
+ *
+ * Presumably we could do a parallel version of this. The leader or first
+ * worker would prepare the range information, and the workers would then
+ * grab ranges (in a kinda round robin manner), sort them independently,
+ * and then the results would be merged by Gather Merge.
  *
  * IDENTIFICATION
  *	  src/backend/executor/nodeBrinSort.c

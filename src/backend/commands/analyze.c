@@ -467,10 +467,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			 * Should we collect AM-specific statistics for any of the columns?
 			 *
 			 * If AM-specific statistics are enabled (using a GUC), see if we
-			 * have an optional support procedure to build the statistics. At
-			 * the moment we only support this for BRIN indexes, so we just
-			 * check the OID and use BRIN_PROCNUM_STATISTICS directly. But the
-			 * correct way would be like amoptsprocnum.
+			 * have an optional support procedure to build the statistics.
 			 *
 			 * If there's any such attribute, we just force building stats
 			 * even for regular index keys (not just expressions) and indexes
@@ -484,11 +481,11 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			 * do that for the keys with the optional procedure. not all of them.
 			 */
 			collectAmStats = false;
-			if (enable_indexam_stats && (Irel[ind]->rd_rel->relam == BRIN_AM_OID))
+			if (enable_indexam_stats && (Irel[ind]->rd_indam->amstatsprocnum != 0))
 			{
 				for (int j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
 				{
-					regproc = index_getprocid(Irel[ind], (j+1), BRIN_PROCNUM_STATISTICS);
+					regproc = index_getprocid(Irel[ind], (j+1), Irel[ind]->rd_indam->amstatsprocnum);
 					if (OidIsValid(regproc))
 					{
 						collectAmStats = true;
@@ -887,8 +884,8 @@ compute_indexam_stats(Relation onerel,
 	if (!enable_indexam_stats)
 		return;
 
-	/* ignore non-BRIN indexes */
-	if (indexInfo->ii_Am != BRIN_AM_OID)
+	/* ignore index AMs without the optional procedure */
+	if (indexRel->rd_indam->amstatsprocnum == 0)
 		return;
 
 	/*
@@ -906,13 +903,13 @@ compute_indexam_stats(Relation onerel,
 		MemoryContext	oldcxt;
 
 		/* do this first, as it doesn't fail when proc not defined */
-		regproc = index_getprocid(indexRel, attno, BRIN_PROCNUM_STATISTICS);
+		regproc = index_getprocid(indexRel, attno, indexRel->rd_indam->amstatsprocnum);
 
 		/* ignore opclasses without the optional procedure */
 		if (!RegProcedureIsValid(regproc))
 			continue;
 
-		statsproc = index_getprocinfo(indexRel, attno, BRIN_PROCNUM_STATISTICS);
+		statsproc = index_getprocinfo(indexRel, attno, indexRel->rd_indam->amstatsprocnum);
 
 		stats = indexdata->vacattrstats[i];
 

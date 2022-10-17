@@ -871,7 +871,7 @@ compute_brin_index_stats(Relation onerel, Relation indexRel, IndexInfo *indexInf
 		RegProcedure	regproc;
 		FmgrInfo	   *statsproc;
 		Datum			datum;
-		VacAttrStats   *stats = indexdata->vacattrstats[i];
+		VacAttrStats   *stats;
 		MemoryContext	oldcxt;
 
 		/* do this first, as it doesn't fail when proc not defined */
@@ -882,6 +882,8 @@ compute_brin_index_stats(Relation onerel, Relation indexRel, IndexInfo *indexInf
 			continue;
 
 		statsproc = index_getprocinfo(indexRel, attno, BRIN_PROCNUM_STATISTICS);
+
+		stats = indexdata->vacattrstats[i];
 
 		if (statsproc != NULL)
 			elog(WARNING, "collecting stats on BRIN ranges %p using proc %p attnum %d",

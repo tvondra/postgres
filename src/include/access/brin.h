@@ -34,6 +34,69 @@ typedef struct BrinStatsData
 	BlockNumber revmapNumPages;
 } BrinStatsData;
 
+/*
+ * Info about ranges for BRIN Sort.
+ */
+typedef struct BrinRange
+{
+	BlockNumber blkno_start;
+	BlockNumber blkno_end;
+
+	Datum	min_value;
+	Datum	max_value;
+	bool	has_nulls;
+	bool	all_nulls;
+	bool	not_summarized;
+
+	/*
+	 * Index of the range when ordered by min_value (if there are multiple
+	 * ranges with the same min_value, it's the lowest one).
+	 */
+	uint32	min_index;
+
+	/*
+	 * Minimum min_index from all ranges with higher max_value (i.e. when
+	 * sorted by max_value). If there are multiple ranges with the same
+	 * max_value, it depends on the ordering (i.e. the ranges may get
+	 * different min_index_lowest, depending on the exact ordering).
+	 */
+	uint32	min_index_lowest;
+} BrinRange;
+
+typedef struct BrinRanges
+{
+	int			nranges;
+	BrinRange	ranges[FLEXIBLE_ARRAY_MEMBER];
+} BrinRanges;
+
+typedef struct BrinMinmaxStats
+{
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	int64		n_ranges;
+	int64		n_summarized;
+	int64		n_all_nulls;
+	int64		n_has_nulls;
+
+	/* average number of overlapping ranges */
+	double		avg_overlaps;
+
+	/* average number of matching ranges (per value) */
+	double		avg_matches;
+	double		avg_matches_unique;
+
+	/* minval/maxval stats (ndistinct, correlation to blkno) */
+	int64		minval_ndistinct;
+	int64		maxval_ndistinct;
+	double		minval_correlation;
+	double		maxval_correlation;
+
+	/* minval/maxval increment stats */
+	double		minval_increment_avg;
+	double		minval_increment_max;
+	double		maxval_increment_avg;
+	double		maxval_increment_max;
+
+} BrinMinmaxStats;
 
 #define BRIN_DEFAULT_PAGES_PER_RANGE	128
 #define BrinGetPagesPerRange(relation) \

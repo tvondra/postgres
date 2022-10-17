@@ -10,17 +10,23 @@
  */
 #include "postgres.h"
 
+#include "access/brin.h"
 #include "access/brin_internal.h"
+#include "access/brin_revmap.h"
 #include "access/brin_tuple.h"
 #include "access/genam.h"
 #include "access/stratnum.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
+#include "executor/executor.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/timestamp.h"
 
 typedef struct MinmaxOpaque
 {
@@ -251,6 +257,902 @@ brin_minmax_union(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_VOID();
+}
+
+/* FIXME copy of a private struct from brin.c */
+typedef struct BrinOpaque
+{
+	BlockNumber bo_pagesPerRange;
+	BrinRevmap *bo_rmAccess;
+	BrinDesc   *bo_bdesc;
+} BrinOpaque;
+
+/*
+ * Compare ranges by minval (collation and operator are taken from the extra
+ * argument, which is expected to be TypeCacheEntry).
+ */
+static int
+range_minval_cmp(const void *a, const void *b, void *arg)
+{
+	BrinRange *ra = *(BrinRange **) a;
+	BrinRange *rb = *(BrinRange **) b;
+	TypeCacheEntry *typentry = (TypeCacheEntry *) arg;
+	FmgrInfo   *cmpfunc = &typentry->cmp_proc_finfo;
+	Datum	c;
+	int		r;
+
+	c = FunctionCall2Coll(cmpfunc, typentry->typcollation,
+						  ra->min_value, rb->min_value);
+	r = DatumGetInt32(c);
+
+	if (r != 0)
+		return r;
+
+	if (ra->blkno_start < rb->blkno_start)
+		return -1;
+	else
+		return 1;
+}
+
+/*
+ * Compare ranges by maxval (collation and operator are taken from the extra
+ * argument, which is expected to be TypeCacheEntry).
+ */
+static int
+range_maxval_cmp(const void *a, const void *b, void *arg)
+{
+	BrinRange *ra = *(BrinRange **) a;
+	BrinRange *rb = *(BrinRange **) b;
+	TypeCacheEntry *typentry = (TypeCacheEntry *) arg;
+	FmgrInfo   *cmpfunc = &typentry->cmp_proc_finfo;
+	Datum	c;
+	int		r;
+
+	c = FunctionCall2Coll(cmpfunc, typentry->typcollation,
+						  ra->max_value, rb->max_value);
+	r = DatumGetInt32(c);
+
+	if (r != 0)
+		return r;
+
+	if (ra->blkno_start < rb->blkno_start)
+		return -1;
+	else
+		return 1;
+}
+
+/* compare values using an operator from typcache */
+static int
+range_values_cmp(const void *a, const void *b, void *arg)
+{
+	Datum	da = * (Datum *) a;
+	Datum	db = * (Datum *) b;
+	TypeCacheEntry *typentry = (TypeCacheEntry *) arg;
+	FmgrInfo   *cmpfunc = &typentry->cmp_proc_finfo;
+	Datum	c;
+
+	c = FunctionCall2Coll(cmpfunc, typentry->typcollation,
+						  da, db);
+	return DatumGetInt32(c);
+}
+
+/*
+ * minval_end
+ *		Determine first index so that (minval > value).
+ *
+ * The array of ranges is expected to be sorted by minvalue, so this is the first
+ * range that can't possibly intersect with a range having "value" as maxval.
+ */
+static int
+minval_end(BrinRange **ranges, int nranges, Datum value, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nranges - 1);
+
+	// everything matches
+	if (range_values_cmp(&value, &ranges[end]->min_value, typcache) >= 0)
+		return nranges;
+
+	// no matches
+	if (range_values_cmp(&value, &ranges[start]->min_value, typcache) < 0)
+		return 0;
+
+	while ((end - start) > 0)
+	{
+		int midpoint;
+		int r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = range_values_cmp(&value, &ranges[midpoint]->min_value, typcache);
+
+		if (r >= 0)
+			start = midpoint + 1;
+		else
+			end = midpoint;
+	}
+
+	Assert(range_values_cmp(&ranges[start]->min_value, &value, typcache) > 0);
+	Assert(range_values_cmp(&ranges[start-1]->min_value, &value, typcache) <= 0);
+
+	return start;
+}
+
+
+/*
+ * lower_bound
+ *		Determine first index so that (values[index] >= value).
+ *
+ * The array of values is sorted, and this returns the first value that
+ * exceeds (or is equal) to the minvalue.
+ */
+static int
+lower_bound(Datum *values, int nvalues, Datum minvalue, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nvalues - 1);
+
+	/* all values exceed minvalue - return the first element */
+	if (range_values_cmp(&minvalue, &values[start], typcache) <= 0)
+		return 0;
+
+	/* nothing matches - return the element after the last one */
+	if (range_values_cmp(&minvalue, &values[end], typcache) > 0)
+		return nvalues;
+
+	/*
+	 * Now we know the lower boundary is somewhere in the array (and we know
+	 * it's not the first element, because that's covered by the first check
+	 * above). So do a binary search.
+	 */
+	while ((end - start) > 0)
+	{
+		int	midpoint;
+		int	r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = range_values_cmp(&minvalue, &values[midpoint], typcache);
+
+		if (r <= 0)	/* minvalue >= midpoint */
+			end = midpoint;
+		else		/* midpoint < minvalue */
+			start = (midpoint + 1);
+	}
+
+	Assert(range_values_cmp(&minvalue, &values[start], typcache) <= 0);
+	Assert(range_values_cmp(&minvalue, &values[start-1], typcache) > 0);
+
+	return start;
+}
+
+/*
+ * upper_bound
+ *		Determine last index so that (values[index] <= maxvalue).
+ *
+ * The array of values is sorted, and this returns the last value that
+ * does not exceed (or is equal) to the maxvalue.
+ */
+static int
+upper_bound(Datum *values, int nvalues, Datum maxvalue, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nvalues - 1);
+
+	/* everything matches, return the last element */
+	if (range_values_cmp(&values[end], &maxvalue, typcache) <= 0)
+		return (nvalues - 1);
+
+	/* nothing matches, return the element before the first one */
+	if (range_values_cmp(&values[start], &maxvalue, typcache) > 0)
+		return -1;
+
+	/*
+	 * Now we know the lower boundary is somewhere in the array (and we know
+	 * it's not the last element, because that's covered by the first check
+	 * above). So do a binary search.
+	 */
+	while ((end - start) > 0)
+	{
+		int midpoint;
+		int r;
+
+		midpoint = start + (end - start) / 2;
+
+		/* Ensure we always move (it might be equal to start due to rounding). */
+		midpoint = Max(start+1, midpoint);
+
+		r = range_values_cmp(&values[midpoint], &maxvalue, typcache);
+
+		if (r <= 0)			/* value <= maxvalue */
+			start = midpoint;
+		else				/* value > maxvalue */
+			end = midpoint - 1;
+	}
+
+	Assert(range_values_cmp(&values[start], &maxvalue, typcache) <= 0);
+	Assert(range_values_cmp(&values[start+1], &maxvalue, typcache) > 0);
+
+	return start;
+}
+
+/*
+ * brin_minmax_count_overlaps
+ *		Calculate number of overlaps.
+ *
+ * This uses the minranges to quickly eliminate ranges that can't possibly
+ * intersect. We simply walk minranges until minval > current maxval, and
+ * we're done.
+ *
+ * Unlike brin_minmax_count_overlaps2, this does not have issues with wide
+ * ranges, so this is what we should use.
+ */
+static void
+brin_minmax_count_overlaps(BrinRange **minranges, int nranges,
+						   TypeCacheEntry *typcache, BrinMinmaxStats *stats)
+{
+	int64	noverlaps;
+
+	noverlaps = 0;
+	for (int i = 0; i < nranges; i++)
+	{
+		Datum	maxval = minranges[i]->max_value;
+
+		/*
+		 * Determine index of the first range with (minval > current maxval)
+		 * by binary search. We know all other ranges can't overlap the
+		 * current one. We simply subtract indexes to count ranges.
+		 */
+		int		idx = minval_end(minranges, nranges, maxval, typcache);
+
+		/* -1 because we don't count the range as intersecting with itself */
+		noverlaps += (idx - i - 1);
+	}
+
+	/*
+	 * We only count 1/2 the ranges (minval > current minval), so the total
+	 * number of overlaps is twice what we counted.
+	 */
+	noverlaps *= 2;
+
+	stats->avg_overlaps = (double) noverlaps / nranges;
+}
+
+/*
+ * brin_minmax_match_tuples_to_ranges
+ *		Match tuples to ranges, count average number of ranges per tuple.
+ *
+ * Alternative to brin_minmax_match_tuples_to_ranges2, leveraging ordering
+ * of values, not ranges.
+ *
+ * XXX This seems like the optimal way to do this.
+ */
+static void
+brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
+								   int numrows, HeapTuple *rows,
+								   int nvalues, Datum *values,
+								   TypeCacheEntry *typcache,
+								   BrinMinmaxStats *stats)
+{
+	int64	nmatches = 0;
+	int64	nmatches_unique = 0;
+	int64	nvalues_unique = 0;
+
+	int64  *unique = (int64 *) palloc0(sizeof(int64) * nvalues);
+
+	/*
+	 * Build running count of unique values. We know there are unique[i]
+	 * unique values in values array up to index "i".
+	 */
+	unique[0] = 1;
+	for (int i = 1; i < nvalues; i++)
+	{
+		if (range_values_cmp(&values[i-1], &values[i], typcache) == 0)
+			unique[i] = unique[i-1];
+		else
+			unique[i] = unique[i-1] + 1;
+	}
+
+	nvalues_unique = unique[nvalues-1];
+
+	/*
+	 * Walk the ranges, for each range determine the first/last mapping
+	 * value. Use the "unique" array to count the unique values.
+	 */
+	for (int i = 0; i < ranges->nranges; i++)
+	{
+		int		start,
+				end,
+				nvalues_match,
+				nunique_match;
+
+		CHECK_FOR_INTERRUPTS();
+
+		start = lower_bound(values, nvalues, ranges->ranges[i].min_value, typcache);
+		end = upper_bound(values, nvalues, ranges->ranges[i].max_value, typcache);
+
+		/* if nothing matches (e.g. end=0), skip this range */
+		if (end <= start)
+			continue;
+
+		nvalues_match = (end - start + 1);
+		nunique_match = (unique[end] - unique[start] + 1);
+
+		Assert((nvalues_match >= 1) && (nvalues_match <= nvalues));
+		Assert((nunique_match >= 1) && (nunique_match <= unique[nvalues-1]));
+
+		nmatches += nvalues_match;
+		nmatches_unique += nunique_match;
+	}
+
+	Assert(nmatches >= 0);
+	Assert(nmatches_unique >= 0);
+
+	stats->avg_matches = (double) nmatches / numrows;
+	stats->avg_matches_unique = (double) nmatches_unique / nvalues_unique;
+}
+
+/*
+ * brin_minmax_value_stats
+ *		Calculate statistics about minval/maxval values.
+ *
+ * We calculate the number of distinct values, and also correlation with respect
+ * to blkno_start. We don't calculate the regular correlation coefficient, because
+ * our goal is to estimate how sequential the accesses are. The regular correlation
+ * would produce 0 for cyclical data sets like mod(i,1000000), but it may be quite
+ * sequantial access. Maybe it should be called differently, not correlation?
+ *
+ * XXX Maybe this should calculate minval vs. maxval correlation too?
+ *
+ * XXX I don't know how important the sequentiality is - BRIN generally uses 1MB
+ * page ranges, which is pretty sequential and the one random seek in between is
+ * likely going to be negligible. Maybe for small page ranges it'll matter, though.
+ */
+static void
+brin_minmax_value_stats(BrinRange **minranges, BrinRange **maxranges,
+						int nranges, TypeCacheEntry *typcache,
+						BrinMinmaxStats *stats)
+{
+	/* */
+	int64	minval_ndist = 1,
+			maxval_ndist = 1,
+			minval_corr = 0,
+			maxval_corr = 0;
+
+	for (int i = 1; i < nranges; i++)
+	{
+		if (range_values_cmp(&minranges[i-1]->min_value, &minranges[i]->min_value, typcache) != 0)
+			minval_ndist++;
+
+		if (range_values_cmp(&maxranges[i-1]->max_value, &maxranges[i]->max_value, typcache) != 0)
+			maxval_ndist++;
+
+		/* is it immediately sequential? */
+		if (minranges[i-1]->blkno_end + 1 == minranges[i]->blkno_start)
+			minval_corr++;
+
+		/* is it immediately sequential? */
+		if (maxranges[i-1]->blkno_end + 1 == maxranges[i]->blkno_start)
+			maxval_corr++;
+	}
+
+	stats->minval_ndistinct = minval_ndist;
+	stats->maxval_ndistinct = maxval_ndist;
+
+	stats->minval_correlation = (double) minval_corr / nranges;
+	stats->maxval_correlation = (double) maxval_corr / nranges;
+}
+
+/*
+ * brin_minmax_increment_stats
+ *		Calculate the increment size for minval/maxval steps.
+ *
+ * Calculates the minval/maxval increment size, i.e. number of rows that need
+ * to be added to the sort. This serves as an input to calculation of a good
+ * watermark step.
+ */
+static void
+brin_minmax_increment_stats(BrinRange **minranges, BrinRange **maxranges,
+							int nranges, Datum *values, int nvalues,
+							TypeCacheEntry *typcache, BrinMinmaxStats *stats)
+{
+	/* */
+	int64	minval_ndist = 1,
+			maxval_ndist = 1;
+
+	double	sum_minval = 0,
+			sum_maxval = 0,
+			max_minval = 0,
+			max_maxval = 0;
+
+	for (int i = 1; i < nranges; i++)
+	{
+		if (range_values_cmp(&minranges[i-1]->min_value, &minranges[i]->min_value, typcache) != 0)
+		{
+			double	p;
+			int		start = upper_bound(values, nvalues, minranges[i-1]->min_value, typcache);
+			int		end = upper_bound(values, nvalues, minranges[i]->min_value, typcache);
+
+			/*
+			 * Maybe there are no matching rows, but we still need to count
+			 * this as distinct minval (even though the sample increase is 0).
+			 */
+			minval_ndist++;
+
+			Assert(end >= start);
+
+			/* no sample rows match this, so skip */
+			if (end == start)
+				continue;
+
+			p = (double) (end - start) / nvalues;
+
+			max_minval = Max(max_minval, p);
+			sum_minval += p;
+		}
+
+		if (range_values_cmp(&maxranges[i-1]->max_value, &maxranges[i]->max_value, typcache) != 0)
+		{
+			double	p;
+			int		start = upper_bound(values, nvalues, maxranges[i-1]->max_value, typcache);
+			int		end = upper_bound(values, nvalues, maxranges[i]->max_value, typcache);
+
+			/*
+			 * Maybe there are no matching rows, but we still need to count
+			 * this as distinct maxval (even though the sample increase is 0).
+			 */
+			maxval_ndist++;
+
+			Assert(end >= start);
+
+			/* no sample rows match this, so skip */
+			if (end == start)
+				continue;
+
+			p = (double) (end - start) / nvalues;
+
+			max_maxval = Max(max_maxval, p);
+			sum_maxval += p;
+		}
+	}
+
+	stats->minval_increment_avg = (sum_minval / minval_ndist);
+	stats->minval_increment_max = max_minval;
+
+	stats->maxval_increment_avg = (sum_maxval / maxval_ndist);
+	stats->maxval_increment_max = max_maxval;
+}
+
+/*
+ * brin_minmax_stats
+ *		Calculate custom statistics for a BRIN minmax index.
+ *
+ * At the moment this calculates:
+ *
+ *  - number of summarized/not-summarized and all/has nulls ranges
+ *  - average number of overlaps for a range
+ *  - average number of rows matching a range
+ *  - number of distinct minval/maxval values
+ *
+ * XXX This could also calculate correlation of the range minval, so that
+ * we can estimate how much random I/O will happen during the BrinSort.
+ * And perhaps we should also sort the ranges by (minval,block_start) to
+ * make this as sequential as possible?
+ *
+ * XXX Another interesting statistics might be the number of ranges with
+ * the same minval (or number of distinct minval values), because that's
+ * essentially what we need to estimate how many ranges will be read in
+ * one brinsort step. In fact, knowing the number of distinct minval
+ * values tells us the number of BrinSort loops.
+ *
+ * XXX We might also calculate a histogram of minval/maxval values.
+ *
+ * XXX I wonder if we could track for each range track probabilities:
+ *
+ * - P1 = P(v <= minval)
+ * - P2 = P(x <= Max(maxval)) for Max(maxval) over preceding ranges
+ *
+ * That would allow us to estimate how many ranges we'll have to read to produce
+ * a particular number of rows, because we need the first probability to exceed
+ * the requested number of rows (fraction of the table):
+ *
+ *     (limit rows / reltuples) <= P(v <= minval)
+ *
+ * and then the second probability would say how many rows we'll process (either
+ * sort or spill). And inversely for the DESC ordering.
+ *
+ * The difference between P1 for two ranges is how much we'd have to sort
+ * if we moved the watermark between the ranges (first minval to second one).
+ * The (P2 - P1) for the new watermark range measures the number of rows in
+ * the tuplestore. We'll need to aggregate this, though, we can't keep the
+ * whole data - probably average/median/max for the differences would be nice.
+ * Might be tricky for different watermark step values, though.
+ *
+ * This would also allow estimating how many rows will spill from each range,
+ * because we have an estimate how many rows match a range on average, and
+ * we can compare it to the difference between P1.
+ *
+ * One issue is we don't have actual tuples from the ranges, so we can't
+ * measure exactly how many rows would we add. But we can match the sample
+ * and at least estimate the the probability difference.
+ *
+ * Actually - we do know the tuples *are* in those ranges, because if we
+ * assume the tuple is in some other range, that range would have to have
+ * a minimal/maximal value so that the value is consistent. Which means
+ * the range has to be between those ranges. Of course, this only estimates
+ * the rows we'd going to add to the tuplesort - there might be more rows
+ * we read and spill to tuplestore, but that's something we can estimate
+ * using average tuples per range.
+ */
+Datum
+brin_minmax_stats(PG_FUNCTION_ARGS)
+{
+	Relation		heapRel = (Relation) PG_GETARG_POINTER(0);
+	Relation		indexRel = (Relation) PG_GETARG_POINTER(1);
+	AttrNumber		attnum = PG_GETARG_INT16(2);	/* index attnum */
+	AttrNumber		heap_attnum = PG_GETARG_INT16(3);
+	Expr		   *expr = (Expr *) PG_GETARG_POINTER(4);
+	HeapTuple	   *rows = (HeapTuple *) PG_GETARG_POINTER(5);
+	int				numrows = PG_GETARG_INT32(6);
+
+	BrinOpaque *opaque;
+	BlockNumber nblocks;
+	BlockNumber	nranges;
+	BlockNumber	heapBlk;
+	BrinMemTuple *dtup;
+	BrinTuple  *btup = NULL;
+	Size		btupsz = 0;
+	Buffer		buf = InvalidBuffer;
+	BrinRanges  *ranges;
+	BlockNumber	pagesPerRange;
+	BrinDesc	   *bdesc;
+	BrinMinmaxStats *stats;
+	Form_pg_attribute attr;
+
+	Oid				typoid;
+	TypeCacheEntry *typcache;
+	BrinRange	  **minranges,
+				  **maxranges;
+	int64			prev_min_index;
+
+	/* expression stats */
+	EState	   *estate;
+	ExprContext *econtext;
+	ExprState  *exprstate;
+	TupleTableSlot *slot;
+
+	/* attnum or expression has to be supplied */
+	Assert(AttributeNumberIsValid(heap_attnum) || (expr != NULL));
+
+	/* but not both of them at the same time */
+	Assert(!(AttributeNumberIsValid(heap_attnum) && (expr != NULL)));
+
+	/*
+	 * Mostly what brinbeginscan does to initialize BrinOpaque, except that
+	 * we use active snapshot instead of the scan snapshot.
+	 */
+	opaque = palloc_object(BrinOpaque);
+	opaque->bo_rmAccess = brinRevmapInitialize(indexRel,
+											   &opaque->bo_pagesPerRange,
+											   GetActiveSnapshot());
+	opaque->bo_bdesc = brin_build_desc(indexRel);
+
+	bdesc = opaque->bo_bdesc;
+	pagesPerRange = opaque->bo_pagesPerRange;
+
+	/* make sure the provided attnum is valid */
+	Assert((attnum > 0) && (attnum <= bdesc->bd_tupdesc->natts));
+
+	/* attribute information */
+	attr = TupleDescAttr(bdesc->bd_tupdesc, attnum - 1);
+
+	/*
+	 * We need to know the size of the table so that we know how long to iterate
+	 * on the revmap (and to pre-allocate the arrays).
+	 */
+	nblocks = RelationGetNumberOfBlocks(heapRel);
+
+	/*
+	 * How many ranges can there be? We simply look at the number of pages,
+	 * divide it by the pages_per_range.
+	 *
+	 * XXX We need to be careful not to overflow nranges, so we just divide
+	 * and then maybe add 1 for partial ranges.
+	 */
+	nranges = (nblocks / pagesPerRange);
+	if (nblocks % pagesPerRange != 0)
+		nranges += 1;
+
+	/* allocate for space, and also for the alternative ordering */
+	ranges = palloc0(offsetof(BrinRanges, ranges) + nranges * sizeof(BrinRange));
+	ranges->nranges = 0;
+
+	/* allocate an initial in-memory tuple, out of the per-range memcxt */
+	dtup = brin_new_memtuple(bdesc);
+
+	/* result stats */
+	stats = palloc0(sizeof(BrinMinmaxStats));
+	SET_VARSIZE(stats, sizeof(BrinMinmaxStats));
+
+	/*
+	 * Now scan the revmap.  We start by querying for heap page 0,
+	 * incrementing by the number of pages per range; this gives us a full
+	 * view of the table.
+	 *
+	 * XXX We count the ranges, and count the special types (not summarized,
+	 * all-null and has-null). The regular ranges are accumulated into an
+	 * array, so that we can calculate additional statistics (overlaps, hits
+	 * for sample tuples, etc).
+	 *
+	 * XXX This needs rethinking to make it work with large indexes with more
+	 * ranges than we can fit into memory (work_mem/maintenance_work_mem).
+	 */
+	for (heapBlk = 0; heapBlk < nblocks; heapBlk += pagesPerRange)
+	{
+		bool		gottuple = false;
+		BrinTuple  *tup;
+		OffsetNumber off;
+		Size		size;
+
+		stats->n_ranges++;
+
+		CHECK_FOR_INTERRUPTS();
+
+		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
+									   &off, &size, BUFFER_LOCK_SHARE,
+									   GetActiveSnapshot());
+		if (tup)
+		{
+			gottuple = true;
+			btup = brin_copy_tuple(tup, size, btup, &btupsz);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		}
+
+		/* Ranges with no indexed tuple are ignored for overlap analysis. */
+		if (!gottuple)
+		{
+			continue;
+		}
+		else
+		{
+			dtup = brin_deform_tuple(bdesc, btup, dtup);
+			if (dtup->bt_placeholder)
+			{
+				/* Placeholders can be ignored too, as if not summarized. */
+				continue;
+			}
+			else
+			{
+				BrinValues *bval;
+
+				bval = &dtup->bt_columns[attnum - 1];
+
+				/* OK this range is summarized */
+				stats->n_summarized++;
+
+				if (bval->bv_allnulls)
+					stats->n_all_nulls++;
+
+				if (bval->bv_hasnulls)
+					stats->n_has_nulls++;
+
+				if (!bval->bv_allnulls)
+				{
+					BrinRange  *range;
+
+					range = &ranges->ranges[ranges->nranges++];
+
+					range->blkno_start = heapBlk;
+					range->blkno_end = heapBlk + (pagesPerRange - 1);
+
+					range->min_value = datumCopy(bval->bv_values[0],
+												 attr->attbyval, attr->attlen);
+					range->max_value = datumCopy(bval->bv_values[1],
+												 attr->attbyval, attr->attlen);
+				}
+			}
+		}
+	}
+
+	if (buf != InvalidBuffer)
+		ReleaseBuffer(buf);
+
+	/* if we have no regular ranges, we're done */
+	if (ranges->nranges == 0)
+		goto cleanup;
+
+	/*
+	 * Build auxiliary info to optimize the calculation.
+	 *
+	 * We have ranges in the blocknum order, but that is not very useful when
+	 * calculating which ranges interstect - we could cross-check every range
+	 * against every other range, but that's O(N^2) and thus may get extremely
+	 * expensive pretty quick).
+	 *
+	 * To make that cheaper, we'll build two orderings, allowing us to quickly
+	 * eliminate ranges that can't possibly overlap:
+	 *
+	 * - minranges = ranges ordered by min_value
+	 * - maxranges = ranges ordered by max_value
+	 *
+	 * To count intersections, we'll then walk maxranges (i.e. ranges ordered
+	 * by maxval), and for each following range we'll check if it overlaps.
+	 * If yes, we'll proceed to the next one, until we find a range that does
+	 * not overlap. But there might be a later page overlapping - but we can
+	 * use a min_index_lowest tracking the minimum min_index for "future"
+	 * ranges to quickly decide if there are such ranges. If there are none,
+	 * we can terminate (and proceed to the next maxranges element), else we
+	 * have to process additional ranges.
+	 *
+	 * Note: This only counts overlaps with ranges with max_value higher than
+	 * the current one - we want to count all, but the overlaps with preceding
+	 * ranges have already been counted when processing those preceding ranges.
+	 * That is, we'll end up with counting each overlap just for one of those
+	 * ranges, so we get only 1/2 the count.
+	 *
+	 * Note: We don't count the range as overlapping with itself. This needs
+	 * to be considered later, when applying the statistics.
+	 *
+	 *
+	 * XXX This will not work for very many ranges - we can have up to 2^32 of
+	 * them, so allocating a ~32B struct for each would need a lot of memory.
+	 * Not sure what to do about that, perhaps we could sample a couple ranges
+	 * and do some calculations based on that? That is, we could process all
+	 * ranges up to some number (say, statistics_target * 300, as for rows), and
+	 * then sample ranges for larger tables. Then sort the sampled ranges, and
+	 * walk through all ranges once, comparing them to the sample and counting
+	 * overlaps (having them sorted should allow making this quite efficient,
+	 * I think - following algorithm similar to the one implemented here).
+	 */
+
+	/* info about ordering for the data type */
+	typoid = get_atttype(RelationGetRelid(indexRel), attnum);
+	typcache = lookup_type_cache(typoid, TYPECACHE_CMP_PROC_FINFO);
+
+	/* shouldn't happen, I think - we use this to build the index */
+	Assert(OidIsValid(typcache->cmp_proc_finfo.fn_oid));
+
+	minranges = (BrinRange **) palloc0(ranges->nranges * sizeof(BrinRanges *));
+	maxranges = (BrinRange **) palloc0(ranges->nranges * sizeof(BrinRanges *));
+
+	/*
+	 * Build and sort the ranges min_value / max_value (just pointers
+	 * to the main array). Then go and assign the min_index to each
+	 * range, and finally walk the maxranges array backwards and track
+	 * the min_index_lowest as minimum of "future" indexes.
+	 */
+	for (int i = 0; i < ranges->nranges; i++)
+	{
+		minranges[i] = &ranges->ranges[i];
+		maxranges[i] = &ranges->ranges[i];
+	}
+
+	qsort_arg(minranges, ranges->nranges, sizeof(BrinRange *),
+			  range_minval_cmp, typcache);
+
+	qsort_arg(maxranges, ranges->nranges, sizeof(BrinRange *),
+			  range_maxval_cmp, typcache);
+
+	/*
+	 * Update the min_index for each range. If the values are equal, be sure to
+	 * pick the lowest index with that min_value.
+	 */
+	minranges[0]->min_index = 0;
+	for (int i = 1; i < ranges->nranges; i++)
+	{
+		if (range_values_cmp(&minranges[i]->min_value, &minranges[i-1]->min_value, typcache) == 0)
+			minranges[i]->min_index = minranges[i-1]->min_index;
+		else
+			minranges[i]->min_index = i;
+	}
+
+	/*
+	 * Walk the maxranges backward and assign the min_index_lowest as
+	 * a running minimum.
+	 */
+	prev_min_index = ranges->nranges;
+	for (int i = (ranges->nranges - 1); i >= 0; i--)
+	{
+		maxranges[i]->min_index_lowest = Min(maxranges[i]->min_index,
+											 prev_min_index);
+		prev_min_index = maxranges[i]->min_index_lowest;
+	}
+
+	/* calculate average number of overlapping ranges for any range */
+	brin_minmax_count_overlaps(minranges, ranges->nranges, typcache, stats);
+
+	/* calculate minval/maxval stats (distinct values and correlation) */
+	brin_minmax_value_stats(minranges, maxranges,
+							ranges->nranges, typcache, stats);
+
+	/*
+	 * If processing expression, prepare context to evaluate it.
+	 *
+	 * XXX cleanup / refactoring needed
+	 */
+	if (expr)
+	{
+		estate = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+
+		/* Need a slot to hold the current heap tuple, too */
+		slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRel),
+										&TTSOpsHeapTuple);
+
+		/* Arrange for econtext's scan tuple to be the tuple under test */
+		econtext->ecxt_scantuple = slot;
+
+		exprstate = ExecPrepareExpr(expr, estate);
+	}
+
+	/* match tuples to ranges */
+	{
+		int		nvalues = 0;
+		Datum  *values = (Datum *) palloc0(numrows * sizeof(Datum));
+
+		TupleDesc	tdesc = RelationGetDescr(heapRel);
+
+		for (int i = 0; i < numrows; i++)
+		{
+			bool	isnull;
+			Datum	value;
+
+			if (!expr)
+				value = heap_getattr(rows[i], heap_attnum, tdesc, &isnull);
+			else
+			{
+				/*
+				 * Reset the per-tuple context each time, to reclaim any cruft
+				 * left behind by evaluating the predicate or index expressions.
+				 */
+				ResetExprContext(econtext);
+
+				/* Set up for predicate or expression evaluation */
+				ExecStoreHeapTuple(rows[i], slot, false);
+
+				value = ExecEvalExpr(exprstate,
+									 GetPerTupleExprContext(estate),
+									 &isnull);
+			}
+
+			if (!isnull)
+				values[nvalues++] = value;
+		}
+
+		qsort_arg(values, nvalues, sizeof(Datum), range_values_cmp, typcache);
+
+		/* optimized algorithm */
+		brin_minmax_match_tuples_to_ranges(ranges,
+										   numrows, rows, nvalues, values,
+										   typcache, stats);
+
+		brin_minmax_increment_stats(minranges, maxranges, ranges->nranges,
+									values, nvalues, typcache, stats);
+	}
+
+	/* XXX cleanup / refactoring needed */
+	if (expr)
+	{
+		ExecDropSingleTupleTableSlot(slot);
+		FreeExecutorState(estate);
+	}
+
+	/*
+	 * Possibly quite large, so release explicitly and don't rely
+	 * on the memory context to discard this.
+	 */
+	pfree(minranges);
+	pfree(maxranges);
+
+cleanup:
+	/* possibly quite large, so release explicitly */
+	pfree(ranges);
+
+	/* free the BrinOpaque, just like brinendscan() would */
+	brinRevmapTerminate(opaque->bo_rmAccess);
+	brin_free_desc(opaque->bo_bdesc);
+
+	PG_RETURN_POINTER(stats);
 }
 
 /*

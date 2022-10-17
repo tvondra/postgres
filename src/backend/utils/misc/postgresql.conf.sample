@@ -380,6 +380,7 @@
 #enable_hashagg = on
 #enable_hashjoin = on
 #enable_incremental_sort = on
+#enable_indexam_stats = off
 #enable_indexscan = on
 #enable_indexonlyscan = on
 #enable_material = on

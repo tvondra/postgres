@@ -595,6 +595,37 @@ brin_minmax_count_overlaps(BrinRanges *ranges, BrinRange **minranges, BrinRange 
 }
 
 static int
+brin_minmax_count_overlaps2(BrinRange **minranges, int nranges, TypeCacheEntry *typcache)
+{
+	int noverlaps;
+
+	noverlaps = 0;
+	for (int i = 0; i < nranges; i++)
+	{
+		Datum	maxval = minranges[i]->max_value;
+
+		/* ranges are sorted by minval - we can quickly find the first range
+		 * with minval > current maxval */
+		int		idx = minval_end(minranges, nranges, maxval, typcache);
+/*
+		for (int j = i+1; j < nranges; j++)
+		{
+			if (range_values_cmp(&maxval, &minranges[j]->min_value, typcache) < 0)
+				break;
+
+			noverlaps++;
+		}
+*/
+		/* -1 because we don't count the range as intersecting with itself */
+		noverlaps += (idx - i - 1);
+	}
+
+	noverlaps *= 2;
+
+	return noverlaps;
+}
+
+static int
 brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges, TypeCacheEntry *typcache)
 {
 	int noverlaps;
@@ -634,8 +665,8 @@ brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges, TypeCacheEntry *typcac
 }
 
 /*
- * Match sample tuples to the ranges, so that we can count how many ranges a
- * value matches on average. This might seem redundant to the number of
+ * Match sample tuples to the ranges, so that we can count how many ranges
+ * a value matches on average. This might seem redundant to the number of
  * overlaps, because the value is ~avg_overlaps/2.
  *
  * Imagine ranges arranged in "shifted" uniformly by 1/overlaps, e.g. with 3
@@ -650,6 +681,13 @@ brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges, TypeCacheEntry *typcac
  * very frequent value in the sample, it's likely in many places/ranges. Which
  * will skew the average, because it'll be added repeatedly. So we also count
  * avg_ranges for unique values.
+ *
+ * XXX The relationship that (average_matches ~ average_overlaps/2) only
+ * works for minmax opclass, and can't be extended to minmax-multi. The
+ * overlaps can only consider the two extreme values (essentially treating
+ * the summary as a single minmax range), because that's what brinsort
+ * needs. But the minmax-multi range may have "gaps" (kinda the whole point
+ * of these opclasses), which affects matching tuples to ranges.
  */
 static void
 brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
@@ -1044,6 +1082,9 @@ brin_minmax_stats(PG_FUNCTION_ARGS)
 
 	noverlaps = brin_minmax_count_overlaps(ranges, minranges, maxranges, typcache);
 	elog(WARNING, "noverlaps = %ld", noverlaps);
+
+	noverlaps = brin_minmax_count_overlaps2(minranges, ranges->nranges, typcache);
+	elog(WARNING, "noverlaps (2) = %ld", noverlaps);
 
 	noverlaps = brin_minmax_count_overlaps_bruteforce(ranges, typcache);
 	elog(WARNING, "bruteforce: noverlaps = %ld", noverlaps);

@@ -463,7 +463,26 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			thisdata->indexInfo = indexInfo = BuildIndexInfo(Irel[ind]);
 			thisdata->tupleFract = 1.0; /* fix later if partial */
 
-			/* does any of the attributes have the extra BRIN procedure? */
+			/*
+			 * Should we collect AM-specific statistics for any of the columns?
+			 *
+			 * If AM-specific statistics are enabled (using a GUC), see if we
+			 * have an optional support procedure to build the statistics. At
+			 * the moment we only support this for BRIN indexes, so we just
+			 * check the OID and use BRIN_PROCNUM_STATISTICS directly. But the
+			 * correct way would be like amoptsprocnum.
+			 *
+			 * If there's any such attribute, we just force building stats
+			 * even for regular index keys (not just expressions) and indexes
+			 * without predicates. It'd be good to only build the AM stats, but
+			 * for now this is good enough.
+			 *
+			 * XXX The GUC is there morestly to make it easier to enable/disable
+			 * this during development.
+			 *
+			 * FIXME Only build the AM statistics, not the other stats. And only
+			 * do that for the keys with the optional procedure. not all of them.
+			 */
 			collectAmStats = false;
 			if (enable_indexam_stats && (Irel[ind]->rd_rel->relam == BRIN_AM_OID))
 			{
@@ -849,9 +868,21 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	anl_context = NULL;
 }
 
+/*
+ * compute_indexam_stats
+ *		Call the optional procedure to compute AM-specific statistics.
+ *
+ * We simply call the procedure, which is expected to produce a bytea value.
+ *
+ * At the moment this only deals with BRIN indexes, and bails out for other
+ * access methods, but it should be generic - use something like amoptsprocnum
+ * and just check if the procedure exists.
+ */
 static void
-compute_brin_index_stats(Relation onerel, Relation indexRel, IndexInfo *indexInfo, double totalrows,
-						 AnlIndexData *indexdata, HeapTuple *rows, int numrows, MemoryContext col_context)
+compute_indexam_stats(Relation onerel,
+					  Relation indexRel, IndexInfo *indexInfo,
+					  double totalrows, AnlIndexData *indexdata,
+					  HeapTuple *rows, int numrows)
 {
 	if (!enable_indexam_stats)
 		return;
@@ -901,7 +932,6 @@ compute_brin_index_stats(Relation onerel, Relation indexRel, IndexInfo *indexInf
 								  PointerGetDatum(rows),
 								  Int32GetDatum(numrows));
 
-		elog(WARNING, "attno %d datum %ld", attno, datum);
 		stats->staindexam = datum;
 
 		MemoryContextSwitchTo(oldcxt);
@@ -950,8 +980,8 @@ compute_index_stats(Relation onerel, double totalrows,
 		 * If this is a BRIN index, try calling a procedure to collect
 		 * extra opfamily-specific statistics (if procedure defined).
 		 */
-		compute_brin_index_stats(onerel, indexRel, indexInfo, totalrows,
-								 thisdata, rows, numrows, col_context);
+		compute_indexam_stats(onerel, indexRel, indexInfo, totalrows,
+							  thisdata, rows, numrows);
 
 		/* Ignore index if no columns to analyze and not partial */
 		if (attr_cnt == 0 && indexInfo->ii_Predicate == NIL)

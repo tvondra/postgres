@@ -7773,6 +7773,15 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		/* attempt to lookup stats in relation for this index column */
 		if (attnum != 0)
 		{
+			/*
+			 * If AM-specific statistics are enabled, try looking up the stats
+			 * for the index key. We only have this for minmax opclasses, so
+			 * we just cast it like that. But other BRIN opclasses might need
+			 * other stats so either we need to abstract this somehow, or maybe
+			 * just collect a sufficiently generic stats for all BRIN indexes.
+			 *
+			 * XXX Make this non-minmax specific.
+			 */
 			if (enable_indexam_stats)
 			{
 				BrinMinmaxStats  *amstats
@@ -7785,6 +7794,10 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 						 amstats->n_all_nulls, amstats->n_has_nulls,
 						 amstats->avg_overlaps);
 
+					/*
+					 * The only thing we use at the moment is the average number
+					 * of overlaps for a single range. Use the other stuff too.
+					 */
 					averageOverlaps = Max(averageOverlaps,
 										  1.0 + amstats->avg_overlaps);
 				}
@@ -7871,6 +7884,14 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 											 JOIN_INNER, NULL);
 
 	/*
+	 * XXX Can we combine qualSelectivity with the average number of matching
+	 * ranges per value? qualSelectivity estimates how many tuples ar we
+	 * going to match, and average number of matches says how many ranges
+	 * will each of those match on average. We don't know how many will
+	 * be duplicate, but it gives us a worst-case estimate, at least.
+	 */
+
+	/*
 	 * Now calculate the minimum possible ranges we could match with if all of
 	 * the rows were in the perfect order in the table's heap.
 	 */
@@ -7889,15 +7910,16 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	elog(WARNING, "before index AM stats: cestimatedRanges = %f", estimatedRanges);
 
 	/*
-	 * If we found some statistics of overlapping ranges, apply that to the
-	 * currently estimated ranges.
+	 * If we found some AM stats, look at average number of overlapping ranges,
+	 * and apply that to the currently estimated ranges.
 	 *
-	 * XXX We pretty much combine this with correlation info, which might
-	 * be overly pessimistic. If we have info about overlaps, it's mostly
-	 * redundant with the correlation (which can be seen as an alternative
-	 * approach to get the same number), maybe we should do just one. The
-	 * AM stats seems like a more accurate way, so prefer that, and only
-	 * if we don't have that we should fall-back to correlation.
+	 * XXX We pretty much combine this with correlation info (because it was
+	 * already applied in the estimatedRanges formula above), which might be
+	 * overly pessimistic. The overlaps stats seems somewhat redundant with
+	 * the correlation, so maybe we should do just one? The AM stats seems
+	 * like a more reliable information, because the correlation is not very
+	 * sensitive to outliers, for example. So maybe let's prefer that, and
+	 * only use the correlation as fallback when AM stats are not available?
 	 */
 	if (averageOverlaps > 0.0)
 		estimatedRanges = Min(estimatedRanges * averageOverlaps, indexRanges);

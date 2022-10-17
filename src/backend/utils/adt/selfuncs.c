@@ -7715,6 +7715,7 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	Relation	indexRel;
 	ListCell   *l;
 	VariableStatData vardata;
+	double		averageOverlaps;
 
 	Assert(rte->rtekind == RTE_RELATION);
 
@@ -7762,6 +7763,7 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * correlation statistics, we will keep it as 0.
 	 */
 	*indexCorrelation = 0;
+	averageOverlaps = 0.0;
 
 	foreach(l, path->indexclauses)
 	{
@@ -7771,6 +7773,23 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		/* attempt to lookup stats in relation for this index column */
 		if (attnum != 0)
 		{
+			if (enable_indexam_stats)
+			{
+				BrinMinmaxStats  *amstats
+					= (BrinMinmaxStats *) get_attindexam(index->indexoid, attnum);
+
+				if (amstats)
+				{
+					elog(WARNING, "found AM stats: attnum %d n_ranges %ld n_summarized %ld n_all_nulls %ld n_has_nulls %ld avg_overlaps %f",
+						 attnum, amstats->n_ranges, amstats->n_summarized,
+						 amstats->n_all_nulls, amstats->n_has_nulls,
+						 amstats->avg_overlaps);
+
+					averageOverlaps = Max(averageOverlaps,
+										  1.0 + amstats->avg_overlaps);
+				}
+			}
+
 			/* Simple variable -- look to stats for the underlying table */
 			if (get_relation_stats_hook &&
 				(*get_relation_stats_hook) (root, rte, attnum, &vardata))
@@ -7866,6 +7885,24 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		estimatedRanges = indexRanges;
 	else
 		estimatedRanges = Min(minimalRanges / *indexCorrelation, indexRanges);
+
+	elog(WARNING, "before index AM stats: cestimatedRanges = %f", estimatedRanges);
+
+	/*
+	 * If we found some statistics of overlapping ranges, apply that to the
+	 * currently estimated ranges.
+	 *
+	 * XXX We pretty much combine this with correlation info, which might
+	 * be overly pessimistic. If we have info about overlaps, it's mostly
+	 * redundant with the correlation (which can be seen as an alternative
+	 * approach to get the same number), maybe we should do just one. The
+	 * AM stats seems like a more accurate way, so prefer that, and only
+	 * if we don't have that we should fall-back to correlation.
+	 */
+	if (averageOverlaps > 0.0)
+		estimatedRanges = Min(estimatedRanges * averageOverlaps, indexRanges);
+
+	elog(WARNING, "after index AM stats: cestimatedRanges = %f", estimatedRanges);
 
 	/* we expect to visit this portion of the table */
 	selec = estimatedRanges / indexRanges;

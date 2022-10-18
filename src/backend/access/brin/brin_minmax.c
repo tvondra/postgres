@@ -400,6 +400,91 @@ minval_end(BrinRange **ranges, int nranges, Datum value, TypeCacheEntry *typcach
 	return start;
 }
 
+
+/*
+ * lower_bound
+ *		Determine first index so that (values[index] >= value).
+ *
+ * The array of ranges is expected to be sorted by maxvalue, so this is the first
+ * range that can possibly intersect with range having "value" as minval.
+ */
+static int
+lower_bound(Datum *values, int nvalues, Datum value, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nvalues - 1);
+
+	// everything matches
+	if (range_values_cmp(&value, &values[start], typcache) <= 0)
+		return 0;
+
+	// no matches
+	if (range_values_cmp(&value, &values[end], typcache) > 0)
+		return nvalues;
+
+	while ((end - start) > 0)
+	{
+		int	midpoint;
+		int	r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = range_values_cmp(&value, &values[midpoint], typcache);
+
+		if (r <= 0)
+			end = midpoint;
+		else
+			start = (midpoint + 1);
+	}
+
+	Assert(values[start] >= value);
+	Assert(values[start-1] < value);
+
+	return start;
+}
+
+/*
+ * upper_bound
+ *		Determine first index so that (values[index] > value).
+ *
+ * The array of ranges is expected to be sorted by minvalue, so this is the first
+ * range that can't possibly intersect with a range having "value" as maxval.
+ */
+static int
+upper_bound(Datum *values, int nvalues, Datum value, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nvalues - 1);
+
+	// everything matches
+	if (range_values_cmp(&value, &values[end], typcache) >= 0)
+		return nvalues;
+
+	// no matches
+	if (range_values_cmp(&value, &values[start], typcache) < 0)
+		return 0;
+
+	while ((end - start) > 0)
+	{
+		int midpoint;
+		int r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = range_values_cmp(&value, &values[midpoint], typcache);
+
+		if (r >= 0)
+			start = midpoint + 1;
+		else
+			end = midpoint;
+	}
+
+	Assert(values[start] > value);
+	Assert(values[start-1] <= value);
+
+	return start;
+}
+
 /*
  * Simple histogram, with bins tracking value and two overlap counts.
  *
@@ -771,6 +856,57 @@ brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
 	*res_nvalues_unique = nvalues_unique;
 }
 
+static void
+brin_minmax_match_tuples_to_ranges2(BrinRanges *ranges,
+								    int numrows, HeapTuple *rows,
+								    int nvalues, Datum *values,
+								    TypeCacheEntry *typcache,
+								    int *res_nmatches,
+								    int *res_nmatches_unique,
+								    int *res_nvalues_unique)
+{
+	int		nmatches = 0;
+	int		nmatches_unique = 0;
+	int		nvalues_unique = 0;
+	int		nmatches_value = 0;
+
+	int	   *unique = (int *) palloc0(sizeof(int) * nvalues);
+
+	unique[0] = 1;
+	for (int i = 1; i < nvalues; i++)
+	{
+		if (range_values_cmp(&values[i-1], &values[i], typcache) == 0)
+			unique[i] = unique[i-1];
+		else
+			unique[i] = unique[i-1] + 1;
+	}
+
+	nvalues_unique = unique[nvalues-1];
+
+	for (int i = 0; i < ranges->nranges; i++)
+	{
+		int		start;
+		int		end;
+
+		start = lower_bound(values, nvalues, ranges->ranges[i].min_value, typcache);
+		end = upper_bound(values, nvalues, ranges->ranges[i].max_value, typcache);
+
+		Assert(end > start);
+
+		nmatches_value = (end - start);
+		nmatches_unique += (unique[end-1] - unique[start] + 1);
+
+		nmatches += nmatches_value;
+	}
+
+	elog(WARNING, "nmatches = %d %f", nmatches, (double) nmatches / numrows);
+	elog(WARNING, "nmatches unique = %d %d %f", nmatches_unique, nvalues_unique, (double) nmatches_unique / nvalues_unique);
+
+	*res_nmatches = nmatches;
+	*res_nmatches_unique = nmatches_unique;
+	*res_nvalues_unique = nvalues_unique;
+}
+
 /* bruteforce matching values to ranges (cross-check with algorithm above) */
 static void
 brin_minmax_match_tuples_to_ranges_bruteforce(BrinRanges *ranges,
@@ -1129,6 +1265,15 @@ brin_minmax_stats(PG_FUNCTION_ARGS)
 		stats->avg_matches = (double) nmatches / numrows;
 		stats->avg_matches_unique = (double) nmatches_unique / nvalues_unique;
 
+		/* optimized algorithm */
+		brin_minmax_match_tuples_to_ranges2(ranges,
+										   numrows, rows, nvalues, values,
+										   typcache,
+										   &nmatches,
+										   &nmatches_unique,
+										   &nvalues_unique);
+		elog(WARNING, "nmatches (2) = %d", nmatches);
+
 		/*
 		 * XXX Serialize the histogram. There might be a data set where we
 		 * have very many distinct buckets (values having very different
@@ -1147,7 +1292,8 @@ brin_minmax_stats(PG_FUNCTION_ARGS)
 													  &nmatches,
 													  &nmatches_unique,
 													  &nvalues_unique);
-		elog(WARNING, "bruteforce: nmatches = %d", nmatches);
+		elog(WARNING, "bruteforce: nmatches = %d unique %d values %d",
+			 nmatches, nmatches_unique, nvalues_unique);
 	}
 
 	/*

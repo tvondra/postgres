@@ -492,6 +492,14 @@ upper_bound(Datum *values, int nvalues, Datum value, TypeCacheEntry *typcache)
  *
  * XXX Maybe we should have two separate histograms, one for all counts and
  * another one for "unique" values.
+ *
+ * XXX Serialize the histogram. There might be a data set where we have very
+ * many distinct buckets (values having very different number of matching
+ * ranges) - not sure if there's some sort of upper limit (but hard to say for
+ * other opclasses, like bloom). And we don't want arbitrarily large histogram,
+ * to keep the statistics fairly small, I guess. So we'd need to pick a subset,
+ * merge buckets with "similar" counts, or approximate it somehow. For now we
+ * don't serialize it, because we don't use the histogram.
  */
 typedef struct histogram_bin_t
 {

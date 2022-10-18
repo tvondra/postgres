@@ -657,6 +657,7 @@ brin_minmax_count_overlaps(BrinRange **minranges, int nranges, TypeCacheEntry *t
 	return noverlaps;
 }
 
+#ifdef STATS_CROSS_CHECK
 /*
  * brin_minmax_count_overlaps2
  *		Calculate number of overlaps.
@@ -674,9 +675,7 @@ brin_minmax_count_overlaps2(BrinRanges *ranges,
 {
 	int noverlaps;
 
-#ifdef STATS_CROSS_CHECK
 	TimestampTz		start_ts = GetCurrentTimestamp();
-#endif
 
 	/*
 	 * Walk the ranges ordered by max_values, see how many ranges overlap.
@@ -771,12 +770,10 @@ brin_minmax_count_overlaps2(BrinRanges *ranges,
 	 */
 	noverlaps *= 2;
 
-#ifdef STATS_CROSS_CHECK
 	elog(WARNING, "----- brin_minmax_count_overlaps2 -----");
 	elog(WARNING, "noverlaps = %d", noverlaps);
 	elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
 									GetCurrentTimestamp()));
-#endif
 
 	return noverlaps;
 }
@@ -793,9 +790,7 @@ brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges, TypeCacheEntry *typcac
 {
 	int noverlaps;
 
-#ifdef STATS_CROSS_CHECK
 	TimestampTz		start_ts = GetCurrentTimestamp();
-#endif
 
 	/*
 	 * Brute force calculation of overlapping ranges, comparing each
@@ -829,15 +824,14 @@ brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges, TypeCacheEntry *typcac
 		}
 	}
 
-#ifdef STATS_CROSS_CHECK
 	elog(WARNING, "----- brin_minmax_count_overlaps_bruteforce -----");
 	elog(WARNING, "noverlaps = %d", noverlaps);
 	elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
 									GetCurrentTimestamp()));
-#endif
 
 	return noverlaps;
 }
+#endif
 
 /*
  * brin_minmax_match_tuples_to_ranges
@@ -917,6 +911,7 @@ brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
 	*res_nvalues_unique = nvalues_unique;
 }
 
+#ifdef STATS_CROSS_CHECK
 /*
  * brin_minmax_match_tuples_to_ranges2
  *		Match tuples to ranges, count average number of ranges per tuple.
@@ -969,9 +964,7 @@ brin_minmax_match_tuples_to_ranges2(BrinRanges *ranges,
 	histogram_t *hist_unique = histogram_init();
 	int		nmatches_value = 0;
 
-#ifdef STATS_CROSS_CHECK
 	TimestampTz		start_ts = GetCurrentTimestamp();
-#endif
 
 	for (int i = 0; i < nvalues; i++)
 	{
@@ -1014,14 +1007,12 @@ brin_minmax_match_tuples_to_ranges2(BrinRanges *ranges,
 		nvalues_unique++;
 	}
 
-#ifdef STATS_CROSS_CHECK
 	elog(WARNING, "----- brin_minmax_match_tuples_to_ranges2 -----");
 	elog(WARNING, "nmatches = %d %f", nmatches, (double) nmatches / numrows);
 	elog(WARNING, "nmatches unique = %d %d %f",
 		 nmatches_unique, nvalues_unique, (double) nmatches_unique / nvalues_unique);
 	elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
 									GetCurrentTimestamp()));
-#endif
 
 	pg_qsort(hist->bins, hist->nbins, sizeof(histogram_bin_t), histogram_bin_cmp);
 	pg_qsort(hist_unique->bins, hist_unique->nbins, sizeof(histogram_bin_t), histogram_bin_cmp);
@@ -1056,9 +1047,7 @@ brin_minmax_match_tuples_to_ranges_bruteforce(BrinRanges *ranges,
 	int nmatches_unique = 0;
 	int nvalues_unique = 0;
 
-#ifdef STATS_CROSS_CHECK
 	TimestampTz		start_ts = GetCurrentTimestamp();
-#endif
 
 	for (int i = 0; i < nvalues; i++)
 	{
@@ -1086,19 +1075,18 @@ brin_minmax_match_tuples_to_ranges_bruteforce(BrinRanges *ranges,
 		nmatches_unique += (is_unique) ? nmatches_value : 0;
 	}
 
-#ifdef STATS_CROSS_CHECK
 	elog(WARNING, "----- brin_minmax_match_tuples_to_ranges_bruteforce -----");
 	elog(WARNING, "nmatches = %d %f", nmatches, (double) nmatches / numrows);
 	elog(WARNING, "nmatches unique = %d %d %f", nmatches_unique, nvalues_unique,
 		 (double) nmatches_unique / nvalues_unique);
 	elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
 									GetCurrentTimestamp()));
-#endif
 
 	*res_nmatches = nmatches;
 	*res_nmatches_unique = nmatches_unique;
 	*res_nvalues_unique = nvalues_unique;
 }
+#endif
 
 /*
  * brin_minmax_stats

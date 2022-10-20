@@ -259,6 +259,14 @@ static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 bool debug_brin_sort = false;
 #endif
 
+/*
+ * How many distinct minval values to look forward for the next watermark?
+ *
+ * The smallest step we can do is 1, which means the immediately following
+ * (while distinct) minval.
+ */
+int brinsort_watermark_step = 1;
+
 /* do various consistency checks */
 static void
 AssertCheckRanges(BrinSortState *node)
@@ -362,10 +370,23 @@ brinsort_end_tidscan(BrinSortState *node)
  * a separate "first" parameter - "set=false" has the same meaning.
  */
 static void
-brinsort_update_watermark(BrinSortState *node, bool asc)
+brinsort_update_watermark(BrinSortState *node, bool first, bool asc, int steps)
 {
 	int		cmp;
+
+	/* assume we haven't found a watermark */
 	bool	found = false;
+
+	Assert(steps > 0);
+
+	/*
+	 * If the watermark is empty, either this is the first call (in
+	 * which case we just use the first (or rather second) value.
+	 * Otherwise it means we've reached the end, so no point in looking
+	 * for more watermarks.
+	 */
+	if (node->bs_watermark_empty && !first)
+		return;
 
 	tuplesort_markpos(node->bs_scan->ranges);
 
@@ -392,22 +413,48 @@ brinsort_update_watermark(BrinSortState *node, bool asc)
 		else
 			value = slot_getattr(node->bs_scan->slot, 7, &isnull);
 
+		/*
+		 * Has to be the first call (otherwise we would not get here, because we
+		 * terminate after bs_watermark_set gets flipped back to false), so we
+		 * just set the value. But we don't count this as a step, because that
+		 * just picks the first minval value, as we certainly need to do at least
+		 * one more step.
+		 *
+		 * XXX Actually, do we need to make another step? Maybe there are enough
+		 * not-summarized ranges? Although, we don't know what values are in
+		 * those, ranges, and with increasing data we might easily end up just
+		 * writing all of it into the spill tuplestore. So making one more step
+		 * seems like a better idea - we'll at lest be able to produce something
+		 * which is good for LIMIT queries.
+		 */
 		if (!node->bs_watermark_set)
 		{
+			Assert(first);
 			node->bs_watermark_set = true;
 			node->bs_watermark = value;
+			found = true;
 			continue;
 		}
 
 		cmp = ApplySortComparator(node->bs_watermark, false, value, false,
 								  &node->bs_sortsupport);
 
-		if (cmp < 0)
+		/*
+		 * Values should not decrease (or whatever the operator says, might
+		 * be a DESC sort).
+		 */
+		Assert(cmp <= 0);
+
+		if (cmp < 0)	/* new watermark value */
 		{
 			node->bs_watermark_set = true;
 			node->bs_watermark = value;
 			found = true;
-			break;
+
+			steps--;
+
+			if (steps == 0)
+				break;
 		}
 	}
 
@@ -909,7 +956,7 @@ IndexNext(BrinSortState *node)
 					node->bs_phase = BRINSORT_LOAD_RANGE;
 
 					/* set the first watermark */
-					brinsort_update_watermark(node, asc);
+					brinsort_update_watermark(node, true, asc, brinsort_watermark_step);
 				}
 
 				break;
@@ -1030,7 +1077,7 @@ IndexNext(BrinSortState *node)
 				{
 					/* updte the watermark and try reading more ranges */
 					node->bs_phase = BRINSORT_LOAD_RANGE;
-					brinsort_update_watermark(node, asc);
+					brinsort_update_watermark(node, false, asc, brinsort_watermark_step);
 				}
 
 				break;
@@ -1055,7 +1102,7 @@ IndexNext(BrinSortState *node)
 							{
 								brinsort_rescan(node);
 								node->bs_phase = BRINSORT_LOAD_RANGE;
-								brinsort_update_watermark(node, asc);
+								brinsort_update_watermark(node, true, asc, brinsort_watermark_step);
 							}
 							else
 								node->bs_phase = BRINSORT_FINISHED;

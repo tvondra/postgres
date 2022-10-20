@@ -47,6 +47,7 @@ ExplainOneQuery_hook_type ExplainOneQuery_hook = NULL;
 /* Hook for plugins to get control in explain_get_index_name() */
 explain_get_index_name_hook_type explain_get_index_name_hook = NULL;
 
+extern int brinsort_watermark_step;
 
 /* OR-able flags for ExplainXMLTag() */
 #define X_OPENING 0
@@ -2455,6 +2456,8 @@ show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 						 stats.spaceUsed,
 						 tuplesort_space_type_name(stats.spaceType));
 	}
+
+	ExplainPropertyInteger("Step", NULL, (int64) brinsort_watermark_step, es);
 
 	if (stats->sort_count > 0)
 	{

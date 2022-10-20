@@ -98,6 +98,7 @@ extern char *temp_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool ignore_invalid_pages;
 extern bool synchronize_seqscans;
+extern int	brinsort_watermark_step;
 
 #ifdef DEBUG_BRIN_STATS
 extern bool debug_brin_stats;
@@ -3582,6 +3583,17 @@ struct config_int ConfigureNamesInt[] =
 		},
 		&scram_sha_256_iterations,
 		SCRAM_SHA_256_DEFAULT_ITERATIONS, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"brinsort_watermark_step", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("sets the step for brinsort watermark increments"),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&brinsort_watermark_step,
+		1, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 

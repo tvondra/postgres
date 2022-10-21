@@ -1690,7 +1690,7 @@ typedef struct BrinSortState
 	 * We need two tuplesort instances - one for current range, one for
 	 * spill-over tuples from the overlapping ranges
 	 */
-	void		   *bs_tuplesortstate;
+	Tuplesortstate  *bs_tuplesortstate;
 	Tuplestorestate *bs_tuplestore;
 } BrinSortState;
 

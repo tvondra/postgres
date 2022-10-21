@@ -3375,7 +3375,12 @@ create_brinsort_plan(PlannerInfo *root,
 	 */
 	brinsort_plan->watermark_step = brinsort_watermark_step;
 
-	if (brinsort_plan->watermark_step == 0)
+	if (root->limit_tuples > 0)
+		brinsort_plan->step_maxrows = root->limit_tuples;
+	else
+		brinsort_plan->step_maxrows = brinsort_plan->scan.plan.plan_rows;
+
+	if (brinsort_plan->watermark_step <= 0)
 	{
 		BrinMinmaxStats *amstats;
 

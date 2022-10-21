@@ -1648,6 +1648,10 @@ typedef struct BrinSortStats
 	/* time to build ranges (milliseconds) */
 	int64	ranges_build_ms;
 
+	/* number/sum of watermark update steps */
+	int64	watermark_updates_steps;
+	int64	watermark_updates_count;
+
 } BrinSortStats;
 
 typedef struct BrinSortState
@@ -1680,6 +1684,7 @@ typedef struct BrinSortState
 	BrinRangeScanDesc *bs_scan;
 	BrinRange	   *bs_range;
 	ExprState	   *bs_qual;
+	int				bs_watermark_step;
 	Datum			bs_watermark;
 	bool			bs_watermark_set;
 	bool			bs_watermark_empty;

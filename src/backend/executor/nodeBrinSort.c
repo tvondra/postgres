@@ -218,6 +218,8 @@
  *		ExecBrinSortReInitializeDSM reinitialize DSM for fresh scan
  *		ExecBrinSortInitializeWorker attach to DSM info in parallel worker
  */
+#include <math.h>
+
 #include "postgres.h"
 
 #include "access/brin.h"
@@ -247,6 +249,14 @@ static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 #ifdef DEBUG_BRIN_SORT
 bool debug_brin_sort = false;
 #endif
+
+/*
+ * How many distinct minval values to look forward for the next watermark?
+ *
+ * The smallest step we can do is 1, which means the immediately following
+ * (while distinct) minval.
+ */
+int	brinsort_watermark_step = 0;
 
 /* do various consistency checks */
 static void
@@ -859,6 +869,175 @@ brinsort_rescan(BrinSortState *node)
 	tuplesort_rescan(node->bs_scan->ranges);
 }
 
+/*
+ * Look at the tuplesort statistics, and maybe increase or decrease the
+ * watermark step. If the last sort was in-memory, we decrease the step.
+ * If the sort was in-memory, but we used less than work_mem/3, increment
+ * the step value.
+ *
+ * XXX This should probably behave differently for LIMIT queries, so that
+ * we don't load too many rows unnecessarily. We already consider that in
+ * create_brinsort_plan, but maybe we should limit increments to the step
+ * value here too - say, by tracking how many rows are we supposed to
+ * produce, and limiting the watermark so that we don't process too many
+ * rows in future steps.
+ *
+ * XXX We might also track the number of rows in the sort and space used,
+ * to calculate more accurate estimate of row width. And then use that to
+ * calculate number of rows that fit into work_mem. But the number of rows
+ * that go into tuplesort (per range) added would still remain fairly
+ * inaccurate, so not sure how good this woud be.
+ */
+static void
+brinsort_adjust_watermark_step(BrinSortState *node, TuplesortInstrumentation *stats)
+{
+	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
+
+	if (brinsort_watermark_step != -1)
+		return;
+
+	if (stats->spaceType == SORT_SPACE_TYPE_DISK)
+	{
+		/*
+		 * We don't know how much to decrease the step (hard to estimate
+		 * due to space needed for in-memory and on-disk sorts is not
+		 * easily comparable, so we just cut the step in half. For the
+		 * in-memory sort, we then can do better estimate and increase
+		 * the step more accurately.
+		 */
+		plan->watermark_step = Max(1, plan->watermark_step / 2);
+	}
+	else
+	{
+		/*
+		 * Adjust the step based on the last sort - we shoot for 2/3 of
+		 * work_mem, to keep some slack (and not switch to on-disk sort
+		 * due to minor differences). We calculate the average row width
+		 * using space used and number of rows in the tuplesort, number
+		 * of rows we could fit into work_mem, and how many steps would
+		 * that mean (assuming number of rows is proportional to the
+		 * number of steps).
+		 *
+		 * We need to be careful about the number of rows we're supposed
+		 * to produce (and how many we already produced). Consider for
+		 * example a query with LIMIT 1000, and that we produce 999 rows
+		 * in the first sort, so that we need only 1 more row. It would
+		 * be silly to pick the steps with the goal to "fill work_mem"
+		 * instead of just enough to produce the one row.
+		 *
+		 * XXX In principle, we don't know how many rows will need to be
+		 * read from the table - there may be interesting rows already in
+		 * the tuplestore (in which case we could do a smaller step). But
+		 * we don't know how many such rows are there - maybe if we had
+		 * multiple smaller tuplestores, which would also reduce the
+		 * amount of "respill" we need to do.
+		 */
+		int		nrows_remaining;
+		int		step = plan->watermark_step;
+		int		step_max = plan->watermark_step * 2;
+
+		/* number of remaining rows we're expected to produce */
+		nrows_remaining = Max(1.0, plan->step_maxrows - node->bs_stats.ntuples_tuplesort_all);
+
+		/*
+		 * If we sorted any rows, calculate how many similar rows we can fit
+		 * into work_mem. We restrict ourselves to 2/3 of work_mem, to leave
+		 * a bit of slack space.
+		 *
+		 * XXX Hopefully the average width is somewhat accurate, but maybe
+		 * we should remember the width we originally expected, and combine
+		 * that somehow. Maybe we should not use just the last tuplesort,
+		 * but instead accumulate average from all preceding sorts and
+		 * combine them somehow (say, using weighted average with older
+		 * values having less influence).
+		 */
+		if (node->bs_stats.ntuples_tuplesort > 0)
+		{
+			int		nrows_wmem;
+			int		avgwidth;
+
+			/* average tuple width, calculated from last sort */
+			avgwidth = (stats->spaceUsed * 1024L / node->bs_stats.ntuples_tuplesort);
+
+			/*
+			 * Calculate the numer of rows to fit into 2/3 of work_mem, but
+			 * cap to the number of rows we're expected to produce.
+			 */
+			nrows_wmem = Min(nrows_remaining, (2 * 1024L * work_mem / 3) / avgwidth);
+
+			/* scale the number of steps to produce the number of rows */
+			step = step * ((double) (nrows_wmem * avgwidth) / (stats->spaceUsed * 1024L));
+
+			/* remember this as the max, so that we don't overflow work_mem */
+			step_max = Min(step, step_max);
+
+			/* however, make sure we don't grow too fast - cap to 2x */
+			step = Min(step, step_max);
+		}
+
+		/*
+		 * Now calculate average step size using data from all sorts we did
+		 * up to now. Then we calculate the number of steps we expect to be
+		 * necessary.
+		 *
+		 * If we had calculated average number of rows per step from AM stats,
+		 * consider that too. It's possible the batch had just one row, which
+		 * might result in very high estimate of steps - it'd be silly to
+		 * jump e.g. from 1 to 1000 based on this unreliable statistics. To
+		 * prevent that, we combine the two rows_per_step sources as weighted
+		 * sum, using the observed vs. target number of rows as weight. The
+		 * closer we're to the target, the more reliable value from past
+		 * executions is.
+		 *
+		 * But we don't want to overflow work_mem, so cap by step_max.
+		 */
+		if (node->bs_stats.ntuples_tuplesort_all > 0)
+		{
+			double		rows_per_step;
+
+			/* average number of rows we produced per step so far */
+			rows_per_step = (double) node->bs_stats.ntuples_tuplesort_all / node->bs_stats.watermark_updates_steps;
+
+			/*
+			 * If we have AM stats with average number of rows per step, consider
+			 * that too - approximate depending on what fraction of rows we already
+			 * produced (with higher fraction of rows produced we prefer the local
+			 * average, as opposed to the global average from index AM stats).
+			 */
+			if (plan->rows_per_step > 0)
+			{
+				/* number of rows we already produced (as a fraction) */
+				double weight = (double) node->bs_stats.ntuples_tuplesort_all / plan->step_maxrows;
+
+				/* paranoia */
+				weight = Min(1.0, weight);
+
+				/*
+				 * Approximate between index AM and "local" average calculated
+				 * from past executions. The closer we get to target rows, the
+				 * more we ignore the index AM stats.
+				 */
+				rows_per_step = weight * rows_per_step + (1 - weight) * plan->rows_per_step;
+			}
+
+			/* approximate the steps between */
+			step = Max(step, ceil((double) nrows_remaining / rows_per_step));
+
+			/*
+			 * But don't overflow the current max (which is set either
+			 * as 2x starting value, or from work_mem.
+			 */
+			step = Min(step, step_max);
+		}
+
+		plan->watermark_step = step;
+
+	}
+
+	plan->watermark_step = Max(1, plan->watermark_step);
+	plan->watermark_step = Min(8192, plan->watermark_step);
+}
+
 /* ----------------------------------------------------------------
  *		IndexNext
  *
@@ -997,13 +1176,21 @@ IndexNext(BrinSortState *node)
 
 						/*
 						 * Reset tuplesort statistics between runs, otherwise
-						 * we'll keep re-using stats from the largest run.
+						 * we'll keep re-using stats from the largest run, which
+						 * would then confuse the adaptive adjustment of the
+						 * watermark step.
 						 */
 						tuplesort_reset_stats(node->bs_tuplesortstate);
 
 						tuplesort_performsort(node->bs_tuplesortstate);
 
 						node->bs_stats.sort_count++;
+
+						memset(&stats, 0, sizeof(TuplesortInstrumentation));
+						tuplesort_get_stats(node->bs_tuplesortstate, &stats);
+
+						brinsort_adjust_watermark_step(node, &stats);
+
 						node->bs_stats.ntuples_tuplesort = 0;
 
 						tuplesort_get_stats(node->bs_tuplesortstate, &stats);

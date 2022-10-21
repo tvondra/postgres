@@ -47,9 +47,6 @@ static FmgrInfo *minmax_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno,
 											  Oid subtype, uint16 strategynum);
 
 
-/* print info about ranges */
-#define BRINSORT_DEBUG
-
 Datum
 brin_minmax_opcinfo(PG_FUNCTION_ARGS)
 {
@@ -1995,7 +1992,7 @@ brin_minmax_scan_add_tuple(BrinRangeScanDesc *scan, TupleTableSlot *slot,
 	scan->nranges++;
 }
 
-#ifdef BRINSORT_DEBUG
+#ifdef BRIN_SORT_DEBUG
 /*
  * brin_minmax_scan_next
  *		Return the next BRIN range information from the tuplestore.
@@ -2204,7 +2201,7 @@ brin_minmax_ranges(PG_FUNCTION_ARGS)
 	/* do the sort and any necessary post-processing */
 	brin_minmax_scan_finalize(brscan);
 
-#ifdef BRINSORT_DEBUG
+#ifdef BRIN_SORT_DEBUG
 	brin_minmax_scan_dump(brscan);
 #endif
 

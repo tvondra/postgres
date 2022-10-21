@@ -533,7 +533,8 @@ typedef struct BrinSort
 
 	/* number of watermark steps to make */
 	int			watermark_step;
-
+	int			step_maxrows;
+	int			rows_per_step;
 } BrinSort;
 
 /* ----------------

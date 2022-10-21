@@ -322,13 +322,8 @@ static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
 
-/*
- * How many distinct minval values to look forward for the next watermark?
- *
- * The smallest step we can do is 1, which means the immediately following
- * (while distinct) minval.
- */
-int brinsort_watermark_step = 0;
+/* defined in nodeBrinSort.c */
+extern int brinsort_watermark_step;
 
 /*
  * create_plan
@@ -3374,8 +3369,14 @@ create_brinsort_plan(PlannerInfo *root,
 	 * are there, and if there are only few then try increasing the step?
 	 */
 	brinsort_plan->watermark_step = brinsort_watermark_step;
+	brinsort_plan->rows_per_step = -1;
 
-	if (brinsort_plan->watermark_step == 0)
+	if (root->limit_tuples > 0)
+		brinsort_plan->step_maxrows = root->limit_tuples;
+	else
+		brinsort_plan->step_maxrows = brinsort_plan->scan.plan.plan_rows;
+
+	if (brinsort_plan->watermark_step <= 0)
 	{
 		BrinMinmaxStats *amstats;
 
@@ -3402,7 +3403,9 @@ create_brinsort_plan(PlannerInfo *root,
 									   amstats->maxval_increment_avg);
 			double	rows_per_step = Max(1.0, pct_per_step * rows);
 
-			brinsort_plan->watermark_step = (int) (maxrows / rows_per_step);
+			brinsort_plan->rows_per_step = rows_per_step;
+
+			brinsort_plan->watermark_step = (int) ceil(maxrows / rows_per_step);
 		}
 
 		/* some rough safety estimates */

@@ -457,6 +457,8 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 	if (null_processing && !(range->has_nulls || range->not_summarized || range->all_nulls))
 		return;
 
+	node->bs_stats.range_count++;
+
 	brinsort_start_tidscan(node);
 
 	scan = node->ss.ss_currentScanDesc;
@@ -529,7 +531,10 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 				/* Stash it to the tuplestore (when NULL, or ignore
 				 * it (when not-NULL). */
 				if (isnull)
+				{
 					tuplestore_puttupleslot(node->bs_tuplestore, slot);
+					node->bs_stats.ntuples_spilled++;
+				}
 
 				/* NULL or not, we're done */
 				continue;
@@ -549,9 +554,17 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 										  &node->bs_sortsupport);
 
 			if (cmp <= 0)
+			{
 				tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
+				node->bs_stats.ntuples_tuplesort_direct++;
+				node->bs_stats.ntuples_tuplesort_all++;
+				node->bs_stats.ntuples_tuplesort++;
+			}
 			else
+			{
 				tuplestore_puttupleslot(node->bs_tuplestore, slot);
+				node->bs_stats.ntuples_spilled++;
+			}
 		}
 
 		ExecClearTuple(slot);
@@ -613,9 +626,16 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 									  &node->bs_sortsupport);
 
 		if (cmp <= 0)
+		{
 			tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
+			node->bs_stats.ntuples_tuplesort_all++;
+			node->bs_stats.ntuples_tuplesort++;
+		}
 		else
+		{
 			tuplestore_puttupleslot(tupstore, slot);
+			node->bs_stats.ntuples_respilled++;
+		}
 	}
 
 	/*
@@ -904,11 +924,30 @@ IndexNext(BrinSortState *node)
 					if (node->bs_tuplesortstate)
 					{
 						tuplesort_performsort(node->bs_tuplesortstate);
+						node->bs_stats.sort_count++;
+
+						node->bs_stats.ntuples_tuplesort = 0;
+
 #ifdef BRINSORT_DEBUG
 						{
 							TuplesortInstrumentation stats;
 
 							tuplesort_get_stats(node->bs_tuplesortstate, &stats);
+
+							if (stats.spaceType == SORT_SPACE_TYPE_DISK)
+							{
+								node->bs_stats.sort_count_on_disk++;
+								node->bs_stats.total_space_used_on_disk += stats.spaceUsed;
+								node->bs_stats.max_space_used_on_disk = Max(node->bs_stats.max_space_used_on_disk,
+																			stats.spaceUsed);
+							}
+							else if (stats.spaceType == SORT_SPACE_TYPE_MEMORY)
+							{
+								node->bs_stats.sort_count_in_memory++;
+								node->bs_stats.total_space_used_in_memory += stats.spaceUsed;
+								node->bs_stats.max_space_used_in_memory = Max(node->bs_stats.max_space_used_in_memory,
+																			  stats.spaceUsed);
+							}
 
 							elog(DEBUG1, "method: %s  space: %ld kB (%s)",
 								 tuplesort_method_name(stats.sortMethod),

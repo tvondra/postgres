@@ -531,6 +531,9 @@ typedef struct BrinSort
 	/* NULLS FIRST/LAST directions */
 	bool	   *nullsFirst pg_node_attr(array_size(numCols));
 
+	/* number of watermark steps to make */
+	int			watermark_step;
+
 } BrinSort;
 
 /* ----------------

@@ -2454,6 +2454,7 @@ static void
 show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 {
 	BrinSortStats  *stats = &sortstate->bs_stats;
+	BrinSort   *plan = (BrinSort *) sortstate->ss.ps.plan;
 
 	if (sortstate->bs_scan != NULL &&
 		sortstate->bs_scan->ranges != NULL)
@@ -2476,6 +2477,9 @@ show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 
 	if (stats->sort_count > 0)
 	{
+		ExplainPropertyInteger("Average Step", NULL, (int64)
+							   stats->watermark_updates_steps / stats->watermark_updates_count, es);
+
 		ExplainPropertyInteger("Ranges Processed", NULL, (int64)
 							   stats->range_count, es);
 
@@ -2517,6 +2521,8 @@ show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 			ExplainCloseGroup("Sorts", "Sorts", true, es);
 		}
 	}
+	else
+		ExplainPropertyInteger("Initial Step", NULL, (int64) plan->watermark_step, es);
 
 	if (stats->sort_count_in_memory > 0)
 	{

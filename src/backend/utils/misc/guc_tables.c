@@ -3593,7 +3593,7 @@ struct config_int ConfigureNamesInt[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&brinsort_watermark_step,
-		1, 1, INT_MAX,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 

@@ -248,14 +248,6 @@ static void ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate);
 bool debug_brin_sort = false;
 #endif
 
-/*
- * How many distinct minval values to look forward for the next watermark?
- *
- * The smallest step we can do is 1, which means the immediately following
- * (while distinct) minval.
- */
-int brinsort_watermark_step = 1;
-
 /* do various consistency checks */
 static void
 AssertCheckRanges(BrinSortState *node)
@@ -359,9 +351,11 @@ brinsort_end_tidscan(BrinSortState *node)
  * a separate "first" parameter - "set=false" has the same meaning.
  */
 static void
-brinsort_update_watermark(BrinSortState *node, bool first, bool asc, int steps)
+brinsort_update_watermark(BrinSortState *node, bool first, bool asc)
 {
 	int		cmp;
+	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
+	int			steps = plan->watermark_step;
 
 	/* assume we haven't found a watermark */
 	bool	found = false;
@@ -448,6 +442,9 @@ brinsort_update_watermark(BrinSortState *node, bool first, bool asc, int steps)
 	}
 
 	tuplesort_restorepos(node->bs_scan->ranges);
+
+	node->bs_stats.watermark_updates_count++;
+	node->bs_stats.watermark_updates_steps += plan->watermark_step;
 
 	node->bs_watermark_empty = (!found);
 }
@@ -960,7 +957,7 @@ IndexNext(BrinSortState *node)
 					node->bs_phase = BRINSORT_LOAD_RANGE;
 
 					/* set the first watermark */
-					brinsort_update_watermark(node, true, asc, brinsort_watermark_step);
+					brinsort_update_watermark(node, true, asc);
 				}
 
 				break;
@@ -1081,7 +1078,7 @@ IndexNext(BrinSortState *node)
 				{
 					/* updte the watermark and try reading more ranges */
 					node->bs_phase = BRINSORT_LOAD_RANGE;
-					brinsort_update_watermark(node, false, asc, brinsort_watermark_step);
+					brinsort_update_watermark(node, false, asc);
 				}
 
 				break;
@@ -1106,7 +1103,7 @@ IndexNext(BrinSortState *node)
 							{
 								brinsort_rescan(node);
 								node->bs_phase = BRINSORT_LOAD_RANGE;
-								brinsort_update_watermark(node, true, asc, brinsort_watermark_step);
+								brinsort_update_watermark(node, true, asc);
 							}
 							else
 								node->bs_phase = BRINSORT_FINISHED;

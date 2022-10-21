@@ -2440,6 +2440,9 @@ show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 {
 	BrinSortStats  *stats = &sortstate->bs_stats;
 
+	ExplainPropertyInteger("Step", NULL, (int64)
+						   stats->watermark_updates_steps / stats->watermark_updates_count, es);
+
 	if (stats->sort_count > 0)
 	{
 		ExplainPropertyInteger("Ranges Processed", NULL, (int64)

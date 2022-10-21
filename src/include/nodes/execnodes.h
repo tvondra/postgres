@@ -1642,6 +1642,10 @@ typedef struct BrinSortStats
 	int64	max_space_used_in_memory;
 	int64	max_space_used_on_disk;
 
+	/* number/sum of watermark update steps */
+	int64	watermark_updates_steps;
+	int64	watermark_updates_count;
+
 } BrinSortStats;
 
 typedef struct BrinSortState
@@ -1674,6 +1678,7 @@ typedef struct BrinSortState
 	BrinRangeScanDesc *bs_scan;
 	BrinRange	   *bs_range;
 	ExprState	   *bs_qual;
+	int				bs_watermark_step;
 	Datum			bs_watermark;
 	bool			bs_watermark_set;
 	bool			bs_watermark_empty;

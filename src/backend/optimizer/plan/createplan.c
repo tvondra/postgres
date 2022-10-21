@@ -18,6 +18,7 @@
 
 #include <math.h>
 
+#include "access/brin.h"
 #include "access/sysattr.h"
 #include "catalog/pg_class.h"
 #include "foreign/fdwapi.h"
@@ -320,6 +321,14 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
+
+/*
+ * How many distinct minval values to look forward for the next watermark?
+ *
+ * The smallest step we can do is 1, which means the immediately following
+ * (while distinct) minval.
+ */
+int brinsort_watermark_step = 0;
 
 /*
  * create_plan
@@ -3339,6 +3348,67 @@ create_brinsort_plan(PlannerInfo *root,
 	}
 
 	copy_generic_path_info(&brinsort_plan->scan.plan, &best_path->ipath.path);
+
+	/*
+	 * determine watermark step (how fast to advance)
+	 *
+	 * If the brinsort_watermark_step is set to a non-zero value, we just use
+	 * that value directly. Otherwise we pick a value using some simple
+	 * heuristics heuristics - we don't want the rows to exceed work_mem, and
+	 * we leave a bit slack (because we're adding batches of rows, not row
+	 * by row).
+	 *
+	 * This has a weakness, because it assumes we incrementally add the same
+	 * number of rows into the "sort" set - but imagine very wide overlapping
+	 * ranges (e.g. random data on the same domain). Most of them will have
+	 * about the same minval, so the sort grows only very slowly. Until the
+	 * very last range, that removes the watermark and only then do most of
+	 * the rows get to the tuplesort.
+	 *
+	 * XXX But maybe we can look at the other statistics we have, like number
+	 * of overlaps and average range selectivity (% of tuples matching), and
+	 * deduce something from that?
+	 *
+	 * XXX Could we maybe adjust the watermark step adaptively at runtime?
+	 * That is, when we get to the "sort" step, maybe check how many rows
+	 * are there, and if there are only few then try increasing the step?
+	 */
+	brinsort_plan->watermark_step = brinsort_watermark_step;
+
+	if (brinsort_plan->watermark_step == 0)
+	{
+		BrinMinmaxStats *amstats;
+
+		/**/
+		Cardinality		rows = brinsort_plan->scan.plan.plan_rows;
+
+		/* estimate rowsize in the tuplesort */
+		int				width = brinsort_plan->scan.plan.plan_width;
+		int				tupwidth = (MAXALIGN(width) + MAXALIGN(SizeofHeapTupleHeader));
+
+		/* Don't overflow work_mem (use only half to absorb variations. */
+		int				maxrows = (work_mem * 1024L / tupwidth / 2);
+
+		/* If this is a LIMIT query, aim only for the required number of rows. */
+		if (root->limit_tuples > 0)
+			maxrows = Min(maxrows, root->limit_tuples);
+
+		/* FIXME hard-coded attnum */
+		amstats = (BrinMinmaxStats *) get_attindexam(brinsort_plan->indexid, 1);
+
+		if (amstats)
+		{
+			double	pct_per_step = Max(amstats->minval_increment_avg,
+									   amstats->maxval_increment_avg);
+			double	rows_per_step = Max(1.0, pct_per_step * rows);
+
+			brinsort_plan->watermark_step = (int) (maxrows / rows_per_step);
+		}
+
+		/* some rough safety estimates */
+		brinsort_plan->watermark_step = Max(brinsort_plan->watermark_step, 1);
+		brinsort_plan->watermark_step = Min(brinsort_plan->watermark_step, 8192);
+	}
 
 	return brinsort_plan;
 }

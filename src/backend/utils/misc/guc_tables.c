@@ -101,6 +101,7 @@ extern bool synchronize_seqscans;
 
 #ifdef DEBUG_BRIN_STATS
 extern bool debug_brin_stats;
+extern bool debug_brin_cross_check;
 #endif
 
 #ifdef TRACE_SYNCSCAN
@@ -1263,6 +1264,15 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&debug_brin_stats,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"debug_brin_cross_check", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Cross-check calculation of BRIN statistics."),
+			NULL
+		},
+		&debug_brin_cross_check,
 		false,
 		NULL, NULL, NULL
 	},

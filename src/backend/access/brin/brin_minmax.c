@@ -29,6 +29,7 @@
 
 #ifdef DEBUG_BRIN_STATS
 bool debug_brin_stats = false;
+bool debug_brin_cross_check = false;
 #endif
 
 typedef struct MinmaxOpaque
@@ -339,6 +340,50 @@ range_values_cmp(const void *a, const void *b, void *arg)
 	return DatumGetInt32(c);
 }
 
+#ifdef DEBUG_BRIN_STATS
+/*
+ * maxval_start
+ *		Determine first index so that (maxvalue >= value).
+ *
+ * The array of ranges is expected to be sorted by maxvalue, so this is the first
+ * range that can possibly intersect with range having "value" as minval.
+ */
+static int
+maxval_start(BrinRange **ranges, int nranges, Datum value, TypeCacheEntry *typcache)
+{
+	int		start = 0,
+			end = (nranges - 1);
+
+	// everything matches
+	if (range_values_cmp(&value, &ranges[start]->max_value, typcache) <= 0)
+		return 0;
+
+	// no matches
+	if (range_values_cmp(&value, &ranges[end]->max_value, typcache) > 0)
+		return nranges;
+
+	while ((end - start) > 0)
+	{
+		int	 midpoint;
+		int	 r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = range_values_cmp(&value, &ranges[midpoint]->max_value, typcache);
+
+		if (r <= 0)
+			end = midpoint;
+		else
+			start = (midpoint + 1);
+	}
+
+	Assert(ranges[start]->max_value >= value);
+	Assert(ranges[start-1]->max_value < value);
+
+	return start;
+}
+#endif
+
 /*
  * minval_end
  *		Determine first index so that (minval > value).
@@ -616,6 +661,316 @@ brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
 	stats->avg_matches_unique = (double) nmatches_unique / nvalues_unique;
 }
 
+#ifdef DEBUG_BRIN_STATS
+/*
+ * Simple histogram, with bins tracking value and two overlap counts.
+ *
+ * XXX Maybe we should have two separate histograms, one for all counts and
+ * another one for "unique" values.
+ *
+ * XXX Serialize the histogram. There might be a data set where we have very
+ * many distinct buckets (values having very different number of matching
+ * ranges) - not sure if there's some sort of upper limit (but hard to say for
+ * other opclasses, like bloom). And we don't want arbitrarily large histogram,
+ * to keep the statistics fairly small, I guess. So we'd need to pick a subset,
+ * merge buckets with "similar" counts, or approximate it somehow. For now we
+ * don't serialize it, because we don't use the histogram.
+ */
+typedef struct histogram_bin_t
+{
+	int64	value;
+	int64	count;
+} histogram_bin_t;
+
+typedef struct histogram_t
+{
+	int				nbins;
+	int				nbins_max;
+	histogram_bin_t	bins[FLEXIBLE_ARRAY_MEMBER];
+} histogram_t;
+
+#define HISTOGRAM_BINS_START 32
+
+/* allocate histogram with default number of bins */
+static histogram_t *
+histogram_init(void)
+{
+	histogram_t *hist;
+
+	hist = (histogram_t *) palloc0(offsetof(histogram_t, bins) +
+								   sizeof(histogram_bin_t) * HISTOGRAM_BINS_START);
+	hist->nbins_max = HISTOGRAM_BINS_START;
+
+	return hist;
+}
+
+/*
+ * histogram_add
+ *			 Add a hit for a particular value to the histogram.
+ *
+ * XXX We don't sort the bins, so just do binary sort. For large number of values
+ * this might be an issue, for small number of values a linear search is fine.
+ */
+static histogram_t *
+histogram_add(histogram_t *hist, int value)
+{
+	bool	found = false;
+	histogram_bin_t *bin;
+
+	for (int i = 0; i < hist->nbins; i++)
+	{
+		if (hist->bins[i].value == value)
+		{
+			bin = &hist->bins[i];
+			found = true;
+		}
+	}
+
+	if (!found)
+	{
+		if (hist->nbins == hist->nbins_max)
+		{
+			int		nbins = (2 * hist->nbins_max);
+
+			hist = repalloc(hist, offsetof(histogram_t, bins) +
+							sizeof(histogram_bin_t) * nbins);
+			hist->nbins_max = nbins;
+		}
+
+		Assert(hist->nbins < hist->nbins_max);
+
+		bin = &hist->bins[hist->nbins++];
+		bin->value = value;
+		bin->count = 0;
+	}
+
+	bin->count += 1;
+
+	Assert(bin->value == value);
+	Assert(bin->count >= 0);
+
+	return hist;
+}
+
+/* used to sort histogram bins by value */
+static int
+histogram_bin_cmp(const void *a, const void *b)
+{
+	histogram_bin_t *ba = (histogram_bin_t *) a;
+	histogram_bin_t *bb = (histogram_bin_t *) b;
+
+	if (ba->value < bb->value)
+		return -1;
+
+	if (bb->value < ba->value)
+		return 1;
+
+	return 0;
+}
+
+static void
+histogram_print(histogram_t *hist)
+{
+	return;
+
+	elog(WARNING, "----- histogram -----");
+	for (int i = 0; i < hist->nbins; i++)
+	{
+		elog(WARNING, "bin %d value %ld count %ld",
+				i, hist->bins[i].value, hist->bins[i].count);
+	}
+}
+
+/*
+ * brin_minmax_match_tuples_to_ranges2
+ *		Match tuples to ranges, count average number of ranges per tuple.
+ *
+ * Match sample tuples to the ranges, so that we can count how many ranges
+ * a value matches on average. This might seem redundant to the number of
+ * overlaps, because the value is ~avg_overlaps/2.
+ *
+ * Imagine ranges arranged in "shifted" uniformly by 1/overlaps, e.g. with 3
+ * overlaps [0,100], [33,133], [66, 166] and so on. A random value will hit
+ * only half of there ranges, thus 1/2. This can be extended to randomly
+ * overlapping ranges.
+ *
+ * However, we may not be able to count overlaps for some opclasses (e.g. for
+ * bloom ranges), in which case we have at least this.
+ *
+ * This simply walks the values, and determines matching ranges by looking
+ * for lower/upper bound in ranges ordered by minval/maxval.
+ *
+ * XXX The other question is what to do about duplicate values. If we have a
+ * very frequent value in the sample, it's likely in many places/ranges. Which
+ * will skew the average, because it'll be added repeatedly. So we also count
+ * avg_ranges for unique values.
+ *
+ * XXX The relationship that (average_matches ~ average_overlaps/2) only
+ * works for minmax opclass, and can't be extended to minmax-multi. The
+ * overlaps can only consider the two extreme values (essentially treating
+ * the summary as a single minmax range), because that's what brinsort
+ * needs. But the minmax-multi range may have "gaps" (kinda the whole point
+ * of these opclasses), which affects matching tuples to ranges.
+ *
+ * XXX This also builds histograms of the number of matches, both for the
+ * raw and unique values. At the moment we don't do anything with the
+ * results, though (except for printing those).
+ */
+static void
+brin_minmax_match_tuples_to_ranges2(BrinRanges *ranges,
+									BrinRange **minranges, BrinRange **maxranges,
+									int numrows, HeapTuple *rows,
+									int nvalues, Datum *values,
+									TypeCacheEntry *typcache,
+									BrinMinmaxStats *stats)
+{
+	int64	nmatches = 0;
+	int64	nmatches_unique = 0;
+	int64	nmatches_value = 0;
+	int64	nvalues_unique = 0;
+
+	histogram_t	   *hist = histogram_init();
+	histogram_t	   *hist_unique = histogram_init();
+	TimestampTz		start_ts = GetCurrentTimestamp();
+
+	for (int i = 0; i < nvalues; i++)
+	{
+		int		start;
+		int		end;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Same value as preceding, so just use the preceding count.
+		 * We don't increment the unique counters, because this is
+		 * a duplicate.
+		 */
+		if ((i > 0) && (range_values_cmp(&values[i-1], &values[i], typcache) == 0))
+		{
+			nmatches += nmatches_value;
+			hist = histogram_add(hist, nmatches_value);
+			continue;
+		}
+
+		nmatches_value = 0;
+
+		start = maxval_start(maxranges, ranges->nranges, values[i], typcache);
+		end = minval_end(minranges, ranges->nranges, values[i], typcache);
+
+		for (int j = start; j < ranges->nranges; j++)
+		{
+			if (maxranges[j]->min_index >= end)
+				continue;
+
+			if (maxranges[j]->min_index_lowest >= end)
+				break;
+
+			nmatches_value++;
+		}
+
+		hist = histogram_add(hist, nmatches_value);
+		hist_unique = histogram_add(hist_unique, nmatches_value);
+
+		nmatches += nmatches_value;
+		nmatches_unique += nmatches_value;
+		nvalues_unique++;
+	}
+
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_match_tuples_to_ranges2 -----");
+		elog(WARNING, "nmatches = %ld %f", nmatches, (double) nmatches / numrows);
+		elog(WARNING, "nmatches unique = %ld %ld %f",
+			 nmatches_unique, nvalues_unique, (double) nmatches_unique / nvalues_unique);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+
+	if (stats->avg_matches != (double) nmatches / numrows)
+		elog(ERROR, "brin_minmax_match_tuples_to_ranges2: avg_matches mismatch %f != %f",
+			 stats->avg_matches, (double) nmatches / numrows);
+
+	if (stats->avg_matches_unique != (double) nmatches_unique / nvalues_unique)
+		elog(ERROR, "brin_minmax_match_tuples_to_ranges2: avg_matches_unique mismatch %f != %f",
+			 stats->avg_matches_unique, (double) nmatches_unique / nvalues_unique);
+
+	pg_qsort(hist->bins, hist->nbins, sizeof(histogram_bin_t), histogram_bin_cmp);
+	pg_qsort(hist_unique->bins, hist_unique->nbins, sizeof(histogram_bin_t), histogram_bin_cmp);
+
+	histogram_print(hist);
+	histogram_print(hist_unique);
+
+	pfree(hist);
+	pfree(hist_unique);
+}
+
+/*
+ * brin_minmax_match_tuples_to_ranges_bruteforce
+ *		Match tuples to ranges, count average number of ranges per tuple.
+ *
+ * Bruteforce approach, used mostly for cross-checking.
+ */
+static void
+brin_minmax_match_tuples_to_ranges_bruteforce(BrinRanges *ranges,
+											  int numrows, HeapTuple *rows,
+											  int nvalues, Datum *values,
+											  TypeCacheEntry *typcache,
+											  BrinMinmaxStats *stats)
+{
+	int64	nmatches = 0;
+	int64	nmatches_unique = 0;
+	int64	nvalues_unique = 0;
+
+	TimestampTz		start_ts = GetCurrentTimestamp();
+
+	for (int i = 0; i < nvalues; i++)
+	{
+		bool	is_unique;
+		int64	nmatches_value = 0;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* is this a new value? */
+		is_unique = ((i == 0) || (range_values_cmp(&values[i-1], &values[i], typcache) != 0));
+
+		/* count unique values */
+		nvalues_unique += (is_unique) ? 1 : 0;
+
+		for (int j = 0; j < ranges->nranges; j++)
+		{
+			if (range_values_cmp(&values[i], &ranges->ranges[j].min_value, typcache) < 0)
+				continue;
+
+			if (range_values_cmp(&values[i], &ranges->ranges[j].max_value, typcache) > 0)
+				continue;
+
+			nmatches_value++;
+		}
+
+		nmatches += nmatches_value;
+		nmatches_unique += (is_unique) ? nmatches_value : 0;
+	}
+
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_match_tuples_to_ranges_bruteforce -----");
+		elog(WARNING, "nmatches = %ld %f", nmatches, (double) nmatches / numrows);
+		elog(WARNING, "nmatches unique = %ld %ld %f", nmatches_unique, nvalues_unique,
+			 (double) nmatches_unique / nvalues_unique);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+
+	if (stats->avg_matches != (double) nmatches / numrows)
+		elog(ERROR, "brin_minmax_match_tuples_to_ranges_bruteforce: avg_matches mismatch %f != %f",
+			 stats->avg_matches, (double) nmatches / numrows);
+
+	if (stats->avg_matches_unique != (double) nmatches_unique / nvalues_unique)
+		elog(ERROR, "brin_minmax_match_tuples_to_ranges_bruteforce: avg_matches_unique mismatch %f != %f",
+			 stats->avg_matches_unique, (double) nmatches_unique / nvalues_unique);
+}
+#endif
+
 /*
  * brin_minmax_value_stats
  *		Calculate statistics about minval/maxval values.
@@ -787,6 +1142,196 @@ brin_minmax_increment_stats(BrinRange **minranges, BrinRange **maxranges,
 	stats->maxval_increment_max = max_maxval;
 }
 
+#ifdef DEBUG_BRIN_STATS
+/*
+ * brin_minmax_count_overlaps2
+ *		Calculate number of overlaps.
+ *
+ * This uses the minranges/maxranges to quickly eliminate ranges that can't
+ * possibly intersect.
+ *
+ * XXX Seems rather complicated and works poorly for wide ranges (with outlier
+ * values), brin_minmax_count_overlaps is likely better.
+ */
+static void
+brin_minmax_count_overlaps2(BrinRanges *ranges,
+						   BrinRange **minranges, BrinRange **maxranges,
+						   TypeCacheEntry *typcache, BrinMinmaxStats *stats)
+{
+	int64			noverlaps;
+	TimestampTz		start_ts = GetCurrentTimestamp();
+
+	/*
+	 * Walk the ranges ordered by max_values, see how many ranges overlap.
+	 *
+	 * Once we get to a state where (min_value > current.max_value) for
+	 * all future ranges, we know none of them can overlap and we can
+	 * terminate. This is what min_index_lowest is for.
+	 *
+	 * XXX If there are very wide ranges (with outlier min/max values),
+	 * the min_index_lowest is going to be pretty useless, because the
+	 * range will be sorted at the very end by max_value, but will have
+	 * very low min_index, so this won't work.
+	 *
+	 * XXX We could collect a more elaborate stuff, like for example a
+	 * histogram of number of overlaps, or maximum number of overlaps.
+	 * So we'd have average, but then also an info if there are some
+	 * ranges with very many overlaps.
+	 */
+	noverlaps = 0;
+	for (int i = 0; i < ranges->nranges; i++)
+	{
+		int			idx = (i + 1);
+		BrinRange *ra = maxranges[i];
+		uint64		min_index = ra->min_index;
+
+		CHECK_FOR_INTERRUPTS();
+
+#ifdef NOT_USED
+		/*
+		 * XXX Not needed, we can just count "future" ranges and then
+		 * we just multiply by 2.
+		 */
+
+		/*
+		 * What's the first range that might overlap with this one?
+		 * needs to have maxval > current.minval.
+		 */
+		while (idx > 0)
+		{
+			BrinRange *rb = maxranges[idx - 1];
+
+			/* the range is before the current one, so can't intersect */
+			if (range_values_cmp(&rb->max_value, &ra->min_value, typcache) < 0)
+				break;
+
+			idx--;
+		}
+#endif
+
+		/*
+		 * Find the first min_index that is higher than the max_value,
+		 * so that we can compare that instead of the values in the
+		 * next loop. There should be fewer value comparisons than in
+		 * the next loop, so we'll save on function calls.
+		 */
+		while (min_index < ranges->nranges)
+		{
+			if (range_values_cmp(&minranges[min_index]->min_value,
+								 &ra->max_value, typcache) > 0)
+				break;
+
+			min_index++;
+		}
+
+		/*
+		 * Walk the following ranges (ordered by max_value), and check
+		 * if it overlaps. If it matches, we look at the next one. If
+		 * not, we check if there can be more ranges.
+		 */
+		for (int j = idx; j < ranges->nranges; j++)
+		{
+			BrinRange *rb = maxranges[j];
+
+			/* the range overlaps - just continue with the next one */
+			// if (range_values_cmp(&rb->min_value, &ra->max_value, typcache) <= 0)
+			if (rb->min_index < min_index)
+			{
+				noverlaps++;
+				continue;
+			}
+
+			/*
+			 * Are there any future ranges that might overlap? We can
+			 * check the min_index_lowest to decide quickly.
+			 */
+			 if (rb->min_index_lowest >= min_index)
+					break;
+		}
+	}
+
+	/*
+	 * We only count intersect for "following" ranges when ordered by maxval,
+	 * so we only see 1/2 the overlaps. So double the result.
+	 */
+	noverlaps *= 2;
+
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_count_overlaps2 -----");
+		elog(WARNING, "noverlaps = %ld", noverlaps);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+
+	if (stats->avg_overlaps != (double) noverlaps / ranges->nranges)
+		elog(ERROR, "brin_minmax_count_overlaps2: mismatch %f != %f",
+			 stats->avg_overlaps, (double) noverlaps / ranges->nranges);
+}
+
+/*
+ * brin_minmax_count_overlaps_bruteforce
+ *		Calculate number of overlaps by brute force.
+ *
+ * Actually compares every range to every other range. Quite expensive, used
+ * primarily to cross-check the other algorithms.
+ */
+static void
+brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges,
+									  TypeCacheEntry *typcache,
+									  BrinMinmaxStats *stats)
+{
+	int64			noverlaps;
+	TimestampTz		start_ts = GetCurrentTimestamp();
+
+	/*
+	 * Brute force calculation of overlapping ranges, comparing each
+	 * range to every other range - bound to be pretty expensive, as
+	 * it's pretty much O(N^2). Kept mostly for easy cross-check with
+	 * the preceding "optimized" code.
+	 */
+	noverlaps = 0;
+	for (int i = 0; i < ranges->nranges; i++)
+	{
+		BrinRange *ra = &ranges->ranges[i];
+
+		for (int j = 0; j < ranges->nranges; j++)
+		{
+			BrinRange *rb = &ranges->ranges[j];
+
+			CHECK_FOR_INTERRUPTS();
+
+			if (i == j)
+				continue;
+
+			if (range_values_cmp(&ra->max_value, &rb->min_value, typcache) < 0)
+				continue;
+
+			if (range_values_cmp(&rb->max_value, &ra->min_value, typcache) < 0)
+				continue;
+
+			elog(DEBUG1, "[%ld,%ld] overlaps [%ld,%ld]",
+				 ra->min_value, ra->max_value,
+				 rb->min_value, rb->max_value);
+
+			noverlaps++;
+		}
+	}
+
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_count_overlaps_bruteforce -----");
+		elog(WARNING, "noverlaps = %ld", noverlaps);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+
+	if (stats->avg_overlaps != (double) noverlaps / ranges->nranges)
+		elog(ERROR, "brin_minmax_count_overlaps2: mismatch %f != %f",
+			 stats->avg_overlaps, (double) noverlaps / ranges->nranges);
+}
+#endif
+
 /*
  * brin_minmax_stats
  *		Calculate custom statistics for a BRIN minmax index.
@@ -797,6 +1342,11 @@ brin_minmax_increment_stats(BrinRange **minranges, BrinRange **maxranges,
  *  - average number of overlaps for a range
  *  - average number of rows matching a range
  *  - number of distinct minval/maxval values
+ *
+ * There are multiple ways to calculate some of the metrics, so to allow
+ * cross-checking during development it's possible to run and compare all.
+ * To do that, define STATS_CROSS_CHECK. There's also STATS_DEBUG define
+ * that simply prints the calculated results.
  *
  * XXX This could also calculate correlation of the range minval, so that
  * we can estimate how much random I/O will happen during the BrinSort.
@@ -1106,6 +1656,14 @@ brin_minmax_stats(PG_FUNCTION_ARGS)
 	/* calculate average number of overlapping ranges for any range */
 	brin_minmax_count_overlaps(minranges, ranges->nranges, typcache, stats);
 
+#ifdef DEBUG_BRIN_STATS
+	if (debug_brin_cross_check)
+	{
+		brin_minmax_count_overlaps2(ranges, minranges, maxranges, typcache, stats);
+		brin_minmax_count_overlaps_bruteforce(ranges, typcache, stats);
+	}
+#endif
+
 	/* calculate minval/maxval stats (distinct values and correlation) */
 	brin_minmax_value_stats(minranges, maxranges,
 							ranges->nranges, typcache, stats);
@@ -1133,6 +1691,20 @@ brin_minmax_stats(PG_FUNCTION_ARGS)
 		brin_minmax_match_tuples_to_ranges(ranges,
 										   numrows, rows, nvalues, values,
 										   typcache, stats);
+
+#ifdef DEBUG_BRIN_STATS
+		if (debug_brin_cross_check)
+		{
+			brin_minmax_match_tuples_to_ranges2(ranges, minranges, maxranges,
+												numrows, rows, nvalues, values,
+												typcache, stats);
+
+			brin_minmax_match_tuples_to_ranges_bruteforce(ranges,
+														  numrows, rows,
+														  nvalues, values,
+														  typcache, stats);
+		}
+#endif
 
 		brin_minmax_increment_stats(minranges, maxranges, ranges->nranges,
 									values, nvalues, typcache, stats);

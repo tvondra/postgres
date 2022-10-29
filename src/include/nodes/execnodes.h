@@ -1612,6 +1612,44 @@ typedef struct BrinRanges
 	BrinRange	ranges[FLEXIBLE_ARRAY_MEMBER];
 } BrinRanges;
 
+typedef struct BrinSortStats
+{
+	/* number of sorts */
+	int64	sort_count;
+
+	/* number of ranges loaded */
+	int64	range_count;
+
+	/* tuples in the current tuplesort */
+	int64	ntuples_tuplesort;
+
+	/* tuples written directly to tuplesort */
+	int64	ntuples_tuplesort_direct;
+
+	/* tuples written to tuplesort (all) */
+	int64	ntuples_tuplesort_all;
+
+	/* tuples written to tuplestore */
+	int64	ntuples_spilled;
+
+	/* tuples copied from old to new tuplestore */
+	int64	ntuples_respilled;
+
+	/* number of in-memory/on-disk sorts */
+	int64	sort_count_in_memory;
+	int64	sort_count_on_disk;
+
+	/* total/maximum amount of space used by either sort */
+	int64	total_space_used_in_memory;
+	int64	total_space_used_on_disk;
+	int64	max_space_used_in_memory;
+	int64	max_space_used_on_disk;
+
+	/* time to build ranges (milliseconds) */
+	int64	ranges_build_ms;
+
+} BrinSortStats;
+
 typedef struct BrinSortState
 {
 	ScanState	ss;				/* its first field is NodeTag */
@@ -1647,6 +1685,7 @@ typedef struct BrinSortState
 	bool			bs_watermark_empty;
 	BrinSortPhase	bs_phase;
 	SortSupportData	bs_sortsupport;
+	BrinSortStats	bs_stats;
 
 	/*
 	 * We need two tuplesort instances - one for current range, one for

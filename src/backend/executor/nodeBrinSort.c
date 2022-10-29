@@ -459,6 +459,8 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 	if (null_processing && !(range->has_nulls || range->not_summarized || range->all_nulls))
 		return;
 
+	node->bs_stats.range_count++;
+
 	brinsort_start_tidscan(node);
 
 	scan = node->ss.ss_currentScanDesc;
@@ -537,7 +539,10 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 				/* Stash it to the tuplestore (when NULL, or ignore
 				 * it (when not-NULL). */
 				if (isnull)
+				{
 					tuplestore_puttupleslot(node->bs_tuplestore, slot);
+					node->bs_stats.ntuples_spilled++;
+				}
 
 				/* NULL or not, we're done */
 				continue;
@@ -557,7 +562,12 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 										  &node->bs_sortsupport);
 
 			if (cmp <= 0)
+			{
 				tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
+				node->bs_stats.ntuples_tuplesort_direct++;
+				node->bs_stats.ntuples_tuplesort_all++;
+				node->bs_stats.ntuples_tuplesort++;
+			}
 			else
 			{
 				/*
@@ -568,6 +578,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 				 * respill) and stop spilling.
 				 */
 				tuplestore_puttupleslot(node->bs_tuplestore, slot);
+				node->bs_stats.ntuples_spilled++;
 			}
 		}
 
@@ -630,7 +641,11 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 									  &node->bs_sortsupport);
 
 		if (cmp <= 0)
+		{
 			tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
+			node->bs_stats.ntuples_tuplesort_all++;
+			node->bs_stats.ntuples_tuplesort++;
+		}
 		else
 		{
 			/*
@@ -641,6 +656,7 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 			 * respill) and stop spilling.
 			 */
 			tuplestore_puttupleslot(tupstore, slot);
+			node->bs_stats.ntuples_respilled++;
 		}
 	}
 
@@ -929,22 +945,39 @@ IndexNext(BrinSortState *node)
 					 */
 					if (node->bs_tuplesortstate)
 					{
-#ifdef DEBUG_BRIN_SORT
+						TuplesortInstrumentation stats;
+
+						/*
+						 * Reset tuplesort statistics between runs, otherwise
+						 * we'll keep re-using stats from the largest run.
+						 */
 						tuplesort_reset_stats(node->bs_tuplesortstate);
-#endif
 
 						tuplesort_performsort(node->bs_tuplesortstate);
+
+						node->bs_stats.sort_count++;
+						node->bs_stats.ntuples_tuplesort = 0;
+
+						tuplesort_get_stats(node->bs_tuplesortstate, &stats);
+
+						if (stats.spaceType == SORT_SPACE_TYPE_DISK)
+						{
+							node->bs_stats.sort_count_on_disk++;
+							node->bs_stats.total_space_used_on_disk += stats.spaceUsed;
+							node->bs_stats.max_space_used_on_disk = Max(node->bs_stats.max_space_used_on_disk,
+																		stats.spaceUsed);
+						}
+						else if (stats.spaceType == SORT_SPACE_TYPE_MEMORY)
+						{
+							node->bs_stats.sort_count_in_memory++;
+							node->bs_stats.total_space_used_in_memory += stats.spaceUsed;
+							node->bs_stats.max_space_used_in_memory = Max(node->bs_stats.max_space_used_in_memory,
+																		  stats.spaceUsed);
+						}
 
 #ifdef DEBUG_BRIN_SORT
 						if (debug_brin_sort)
 						{
-							TuplesortInstrumentation stats;
-
-							memset(&stats, 0, sizeof(TuplesortInstrumentation));
-							tuplesort_get_stats(node->bs_tuplesortstate, &stats);
-
-							tuplesort_get_stats(node->bs_tuplesortstate, &stats);
-
 							elog(WARNING, "method: %s  space: %ld kB (%s)",
 								 tuplesort_method_name(stats.sortMethod),
 								 stats.spaceUsed,
@@ -1307,6 +1340,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	FmgrInfo   *rangeproc;
 	BrinRangeScanDesc *brscan;
 	bool		asc;
+	TimestampTz	start_ts;
 
 	/* BRIN Sort only allows ORDER BY using a single column */
 	Assert(node->numCols == 1);
@@ -1358,14 +1392,17 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 
 	/*
 	 * Ask the opclass to produce ranges in appropriate ordering.
-	 *
-	 * XXX Pass info about ASC/DESC, NULLS FIRST/LAST.
 	 */
+	start_ts = GetCurrentTimestamp();
+
 	brscan = (BrinRangeScanDesc *) DatumGetPointer(FunctionCall3Coll(rangeproc,
 											InvalidOid,	/* FIXME use proper collation*/
 											PointerGetDatum(scan),
 											Int16GetDatum(attno),
 											BoolGetDatum(asc)));
+
+	planstate->bs_stats.ranges_build_ms
+		= TimestampDifferenceMilliseconds(start_ts, GetCurrentTimestamp());
 
 	/* allocate for space, and also for the alternative ordering */
 	planstate->bs_scan = brscan;

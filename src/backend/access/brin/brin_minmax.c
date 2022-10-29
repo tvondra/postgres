@@ -28,6 +28,10 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
+#ifdef DEBUG_BRIN_STATS
+bool debug_brin_stats = false;
+#endif
+
 typedef struct MinmaxOpaque
 {
 	Oid			cached_subtype;
@@ -493,6 +497,13 @@ brin_minmax_count_overlaps(BrinRange **minranges, int nranges,
 {
 	int64	noverlaps;
 
+#ifdef DEBUG_BRIN_STATS
+	TimestampTz		start_ts;
+
+	if (debug_brin_stats)
+		start_ts = GetCurrentTimestamp();
+#endif
+
 	noverlaps = 0;
 	for (int i = 0; i < nranges; i++)
 	{
@@ -514,6 +525,16 @@ brin_minmax_count_overlaps(BrinRange **minranges, int nranges,
 	 * number of overlaps is twice what we counted.
 	 */
 	noverlaps *= 2;
+
+#ifdef DEBUG_BRIN_STATS
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_count_overlaps -----");
+		elog(WARNING, "noverlaps = %ld", noverlaps);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+#endif
 
 	stats->avg_overlaps = (double) noverlaps / nranges;
 }
@@ -539,6 +560,13 @@ brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
 	int64	nvalues_unique = 0;
 
 	int64  *unique = (int64 *) palloc0(sizeof(int64) * nvalues);
+
+#ifdef DEBUG_BRIN_STATS
+	TimestampTz		start_ts;
+
+	if (debug_brin_stats)
+		start_ts = GetCurrentTimestamp();
+#endif
 
 	/*
 	 * Build running count of unique values. We know there are unique[i]
@@ -588,6 +616,18 @@ brin_minmax_match_tuples_to_ranges(BrinRanges *ranges,
 	Assert(nmatches >= 0);
 	Assert(nmatches_unique >= 0);
 
+#ifdef DEBUG_BRIN_STATS
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_match_tuples_to_ranges -----");
+		elog(WARNING, "nmatches = %ld %f", nmatches, (double) nmatches / numrows);
+		elog(WARNING, "nmatches unique = %ld %ld %f", nmatches_unique, nvalues_unique,
+			(double) nmatches_unique / nvalues_unique);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+									GetCurrentTimestamp()));
+	}
+#endif
+
 	stats->avg_matches = (double) nmatches / numrows;
 	stats->avg_matches_unique = (double) nmatches_unique / nvalues_unique;
 }
@@ -619,6 +659,13 @@ brin_minmax_value_stats(BrinRange **minranges, BrinRange **maxranges,
 			minval_corr = 0,
 			maxval_corr = 0;
 
+#ifdef DEBUG_BRIN_STATS
+	TimestampTz		start_ts;
+
+	if (debug_brin_stats)
+		start_ts = GetCurrentTimestamp();
+#endif
+
 	for (int i = 1; i < nranges; i++)
 	{
 		if (range_values_cmp(&minranges[i-1]->min_value, &minranges[i]->min_value, typcache) != 0)
@@ -641,6 +688,19 @@ brin_minmax_value_stats(BrinRange **minranges, BrinRange **maxranges,
 
 	stats->minval_correlation = (double) minval_corr / nranges;
 	stats->maxval_correlation = (double) maxval_corr / nranges;
+
+#ifdef DEBUG_BRIN_STATS
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_value_stats -----");
+		elog(WARNING, "minval ndistinct " INT64_FORMAT " correlation %f",
+			 stats->minval_ndistinct, stats->minval_correlation);
+		elog(WARNING, "maxval ndistinct " INT64_FORMAT " correlation %f",
+			 stats->maxval_ndistinct, stats->maxval_correlation);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+#endif
 }
 
 /*
@@ -664,6 +724,13 @@ brin_minmax_increment_stats(BrinRange **minranges, BrinRange **maxranges,
 			sum_maxval = 0,
 			max_minval = 0,
 			max_maxval = 0;
+
+#ifdef DEBUG_BRIN_STATS
+	TimestampTz		start_ts;
+
+	if (debug_brin_stats)
+		start_ts = GetCurrentTimestamp();
+#endif
 
 	for (int i = 1; i < nranges; i++)
 	{
@@ -715,6 +782,19 @@ brin_minmax_increment_stats(BrinRange **minranges, BrinRange **maxranges,
 			sum_maxval += p;
 		}
 	}
+
+#ifdef DEBUG_BRIN_STATS
+	if (debug_brin_stats)
+	{
+		elog(WARNING, "----- brin_minmax_increment_stats -----");
+		elog(WARNING, "minval ndistinct %ld sum %f max %f avg %f",
+			 minval_ndist, sum_minval, max_minval, sum_minval / minval_ndist);
+		elog(WARNING, "maxval ndistinct %ld sum %f max %f avg %f",
+			 maxval_ndist, sum_maxval, max_maxval, sum_maxval / maxval_ndist);
+		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
+										GetCurrentTimestamp()));
+	}
+#endif
 
 	stats->minval_increment_avg = (sum_minval / minval_ndist);
 	stats->minval_increment_max = max_minval;

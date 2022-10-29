@@ -99,6 +99,10 @@ extern bool ignore_checksum_failure;
 extern bool ignore_invalid_pages;
 extern bool synchronize_seqscans;
 
+#ifdef DEBUG_BRIN_STATS
+extern bool debug_brin_stats;
+#endif
+
 #ifdef TRACE_SYNCSCAN
 extern bool trace_syncscan;
 #endif
@@ -1249,6 +1253,20 @@ struct config_bool ConfigureNamesBool[] =
 		DEFAULT_ASSERT_ENABLED,
 		NULL, NULL, NULL
 	},
+
+#ifdef DEBUG_BRIN_STATS
+	/* this is undocumented because not exposed in a standard build */
+	{
+		{"debug_brin_stats", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Print info about calculated BRIN statistics."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&debug_brin_stats,
+		false,
+		NULL, NULL, NULL
+	},
+#endif
 
 	{
 		{"exit_on_error", PGC_USERSET, ERROR_HANDLING_OPTIONS,

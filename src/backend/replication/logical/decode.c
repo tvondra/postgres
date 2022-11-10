@@ -42,6 +42,10 @@
 #include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
 #include "storage/standby.h"
+#include "commands/sequence.h"
+
+static void DecodeLogicalMessage(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+static void DecodeLogicalSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 
 /* individual record(group)'s handlers */
 static void DecodeInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
@@ -558,6 +562,27 @@ FilterByOrigin(LogicalDecodingContext *ctx, RepOriginId origin_id)
  */
 void
 logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	uint8		info = XLogRecGetInfo(r) & ~XLR_INFO_MASK;
+
+	switch (info)
+	{
+		case XLOG_LOGICAL_MESSAGE:
+			DecodeLogicalMessage(ctx, buf);
+			break;
+
+		case XLOG_LOGICAL_SEQUENCE:
+			DecodeLogicalSequence(ctx, buf);
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_LOGICALMSG_ID record type: %u", info);
+	}
+}
+
+static void
+DecodeLogicalMessage(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
 	SnapBuild  *builder = ctx->snapshot_builder;
 	XLogReaderState *r = buf->record;
@@ -1250,4 +1275,68 @@ DecodeTXNNeedSkip(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	return (SnapBuildXactNeedsSkip(ctx->snapshot_builder, buf->origptr) ||
 			(txn_dbid != InvalidOid && txn_dbid != ctx->slot->data.database) ||
 			ctx->fast_forward || FilterByOrigin(ctx, origin_id));
+}
+
+/*
+ * Handle sequence decode
+ *
+ * Decoding sequences is a bit tricky, because while most sequence actions
+ * are non-transactional (not subject to rollback), some need to be handled
+ * as transactional.
+ *
+ * By default, a sequence increment is non-transactional - we must not queue
+ * it in a transaction as other changes, because the transaction might get
+ * rolled back and we'd discard the increment. The downstream would not be
+ * notified about the increment, which is wrong.
+ *
+ * On the other hand, the sequence may be created in a transaction. In this
+ * case we *should* queue the change as other changes in the transaction,
+ * because we don't want to send the increments for unknown sequence to the
+ * plugin - it might get confused about which sequence it's related to etc.
+ */
+void
+DecodeLogicalSequence(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	SnapBuild  *builder = ctx->snapshot_builder;
+	RelFileLocator target_locator;
+	XLogReaderState *r = buf->record;
+	TransactionId xid = XLogRecGetXid(r);
+	uint8		info = XLogRecGetInfo(buf->record) & ~XLR_INFO_MASK;
+	xl_logical_sequence *xlrec;
+	RepOriginId origin_id = XLogRecGetOrigin(r);
+
+	/* only decode changes flagged with XLOG_SEQ_LOG */
+	if (info != XLOG_LOGICAL_SEQUENCE)
+		elog(ERROR, "unexpected RM_SEQ_ID record type: %u", info);
+
+	ReorderBufferProcessXid(ctx->reorder, XLogRecGetXid(r), buf->origptr);
+
+	/*
+	 * If we don't have snapshot or we are just fast-forwarding, there is no
+	 * point in decoding messages.
+	 */
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT ||
+		ctx->fast_forward)
+		return;
+
+	/* extract the WAL record, with "created" flag */
+	xlrec = (xl_logical_sequence *) XLogRecGetData(r);
+
+	/* only interested in our database */
+	target_locator = xlrec->locator;
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	/* Skip the change if already processed (per the snapshot). */
+	if (!SnapBuildProcessChange(builder, xid, buf->origptr))
+		return;
+
+	/* Queue the increment (or send immediately if not transactional). */
+	ReorderBufferQueueSequence(ctx->reorder, xid, buf->endptr,
+							   origin_id, xlrec->reloid, target_locator,
+							   xlrec->last, xlrec->log_cnt, xlrec->is_called);
 }

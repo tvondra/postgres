@@ -27,13 +27,27 @@ typedef struct xl_logical_message
 	char		message[FLEXIBLE_ARRAY_MEMBER];
 } xl_logical_message;
 
+/*
+ * Generic logical decoding sequence wal record.
+ */
+typedef struct xl_logical_sequence
+{
+	RelFileLocator	locator;
+	Oid			reloid;
+	int64		last;			/* last value emitted for sequence */
+	int64		log_cnt;		/* last value cached for sequence */
+	bool		is_called;
+} xl_logical_sequence;
+
 #define SizeOfLogicalMessage	(offsetof(xl_logical_message, message))
+#define SizeOfLogicalSequence	(sizeof(xl_logical_sequence))
 
 extern XLogRecPtr LogLogicalMessage(const char *prefix, const char *message,
 									size_t size, bool transactional);
 
 /* RMGR API */
 #define XLOG_LOGICAL_MESSAGE	0x00
+#define XLOG_LOGICAL_SEQUENCE	0x10
 extern void logicalmsg_redo(XLogReaderState *record);
 extern void logicalmsg_desc(StringInfo buf, XLogReaderState *record);
 extern const char *logicalmsg_identify(uint8 info);

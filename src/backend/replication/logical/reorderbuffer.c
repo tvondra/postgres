@@ -77,6 +77,8 @@
  *	  a bit more memory to the oldest subtransactions, because it's likely
  *	  they are the source for the next sequence of changes.
  *
+ *	  FIXME
+ *
  * -------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -91,6 +93,7 @@
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/catalog.h"
+#include "commands/sequence.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -537,6 +540,7 @@ ReorderBufferReturnChange(ReorderBuffer *rb, ReorderBufferChange *change,
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			break;
 	}
 
@@ -865,6 +869,45 @@ ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 		}
 		PG_END_TRY();
 	}
+}
+
+/*
+ * A transactional sequence increment is queued to be processed upon commit
+ * and a non-transactional increment gets processed immediately.
+ *
+ * A sequence update may be both transactional and non-transactional. When
+ * created in a running transaction, treat it as transactional and queue
+ * the change in it. Otherwise treat it as non-transactional, so that we
+ * don't forget the increment in case of a rollback.
+ */
+void
+ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
+						   XLogRecPtr lsn, RepOriginId origin_id,
+						   Oid reloid, RelFileLocator locator,
+						   int64 last, int64 log_cnt, bool is_called)
+{
+	MemoryContext oldcontext;
+	ReorderBufferChange *change;
+
+	/* OK, allocate and queue the change */
+	oldcontext = MemoryContextSwitchTo(rb->context);
+
+	change = ReorderBufferGetChange(rb);
+
+	change->action = REORDER_BUFFER_CHANGE_SEQUENCE;
+	change->origin_id = origin_id;
+
+	memcpy(&change->data.sequence.locator, &locator, sizeof(RelFileLocator));
+
+	change->data.sequence.reloid = reloid;
+	change->data.sequence.last = last;
+	change->data.sequence.log_cnt = log_cnt;
+	change->data.sequence.is_called = is_called;
+
+	/* add it to the same subxact that created the sequence */
+	ReorderBufferQueueChange(rb, xid, lsn, change, false);
+
+	MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -1976,6 +2019,33 @@ ReorderBufferApplyMessage(ReorderBuffer *rb, ReorderBufferTXN *txn,
 }
 
 /*
+ * Helper function for ReorderBufferProcessTXN for applying sequences.
+ */
+static inline void
+ReorderBufferApplySequence(ReorderBuffer *rb, ReorderBufferTXN *txn,
+						   Relation relation, ReorderBufferChange *change,
+						   bool streaming)
+{
+	int64		last_value, log_cnt;
+	bool		is_called;
+/*
+ * FIXME is it possible that we write sequence state for T1 before T2, but
+ * then end up committing T2 first? If the sequence could be incremented
+ * in between, that might cause data corruption result.
+ */
+	last_value = change->data.sequence.last;
+	log_cnt = change->data.sequence.log_cnt;
+	is_called = change->data.sequence.is_called;
+
+	if (streaming)
+		rb->stream_sequence(rb, txn, change->lsn, relation,
+							last_value, log_cnt, is_called);
+	else
+		rb->sequence(rb, txn, change->lsn, relation,
+					 last_value, log_cnt, is_called);
+}
+
+/*
  * Function to store the command id and snapshot at the end of the current
  * stream so that we can reuse the same while sending the next stream.
  */
@@ -2417,6 +2487,33 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
 					elog(ERROR, "tuplecid value in changequeue");
+					break;
+
+				case REORDER_BUFFER_CHANGE_SEQUENCE:
+					Assert(snapshot_now);
+
+					/*
+					reloid = RelidByRelfilenode(change->data.sequence.relnode.spcNode,
+												change->data.sequence.relnode.relNode);
+
+					if (reloid == InvalidOid)
+						elog(ERROR, "zz could not map filenode \"%s\" to relation OID",
+							 relpathperm(change->data.sequence.relnode,
+										 MAIN_FORKNUM));
+
+					*/
+					relation = RelationIdGetRelation(change->data.sequence.reloid);
+
+					if (!RelationIsValid(relation))
+						elog(ERROR, "could not open relation with OID %u (for filenode \"%s\")",
+							 RelationGetRelid(relation),
+							 relpathperm(change->data.sequence.locator,
+										 MAIN_FORKNUM));
+
+					if (RelationIsLogicallyLogged(relation))
+						ReorderBufferApplySequence(rb, txn, relation, change, streaming);
+
+					RelationClose(relation);
 					break;
 			}
 		}
@@ -3856,6 +3953,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			/* ReorderBufferChange contains everything important */
 			break;
 	}
@@ -4120,6 +4218,7 @@ ReorderBufferChangeSize(ReorderBufferChange *change)
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			/* ReorderBufferChange contains everything important */
 			break;
 	}
@@ -4421,6 +4520,7 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+		case REORDER_BUFFER_CHANGE_SEQUENCE:
 			break;
 	}
 

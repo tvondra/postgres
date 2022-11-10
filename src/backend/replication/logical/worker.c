@@ -143,6 +143,7 @@
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_tablespace.h"
+#include "commands/sequence.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
@@ -1165,6 +1166,47 @@ apply_handle_origin(StringInfo s)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("ORIGIN message sent out of order")));
+}
+
+/*
+ * Handle SEQUENCE message.
+ */
+static void
+apply_handle_sequence(StringInfo s)
+{
+	LogicalRepSequence	seq;
+	Oid					relid;
+
+	if (handle_streamed_transaction(LOGICAL_REP_MSG_SEQUENCE, s))
+		return;
+
+	logicalrep_read_sequence(s, &seq);
+
+	/*
+	 * We should be in remote transaction.
+	 */
+	Assert(in_remote_transaction);
+
+	/*
+	 * Make sure we're in a transaction (needed by SetSequence). For
+	 * non-transactional updates we're guaranteed to start a new one,
+	 * and we'll commit it at the end.
+	 */
+	if (!IsTransactionState())
+	{
+		StartTransactionCommand();
+		maybe_reread_subscription();
+	}
+
+	relid = RangeVarGetRelid(makeRangeVar(seq.nspname,
+										  seq.seqname, -1),
+							 RowExclusiveLock, false);
+
+	/* lock the sequence in AccessExclusiveLock, as expected by SetSequence */
+	LockRelationOid(relid, AccessExclusiveLock);
+
+	/* apply the sequence change */
+	SetSequence(relid, seq.last_value, seq.log_cnt, seq.is_called);
 }
 
 /*
@@ -2566,6 +2608,10 @@ apply_dispatch(StringInfo s)
 			 * output plugin.
 			 */
 			break;
+
+		case LOGICAL_REP_MSG_SEQUENCE:
+			apply_handle_sequence(s);
+			return;
 
 		case LOGICAL_REP_MSG_STREAM_START:
 			apply_handle_stream_start(s);

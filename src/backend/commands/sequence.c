@@ -38,6 +38,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
+#include "replication/message.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
@@ -76,6 +77,7 @@ typedef struct SeqTableData
 {
 	Oid			relid;			/* pg_class OID of this sequence (hash key) */
 	RelFileNumber filenumber;	/* last seen relfilenumber of this sequence */
+	Oid			tablespace;		/* last seen tablespace of this sequence */
 	LocalTransactionId lxid;	/* xact in which we last did a seq op */
 	bool		last_valid;		/* do we have a valid "last" value? */
 	int64		last;			/* value last returned by nextval */
@@ -83,6 +85,7 @@ typedef struct SeqTableData
 	/* if last != cached, we have not used up all the cached values */
 	int64		increment;		/* copy of sequence's increment field */
 	/* note that increment is zero until we first do nextval_internal() */
+	bool		need_log;		/* should be written to WAL at commit? */
 } SeqTableData;
 
 typedef SeqTableData *SeqTable;
@@ -341,6 +344,69 @@ ResetSequence(Oid seq_relid)
 }
 
 /*
+ * Update the sequence state by creating a new relfilenode.
+ *
+ * This creates a new relfilenode, to allow transactional behavior.
+ */
+void
+SetSequence(Oid seq_relid, int64 last_value, int64 log_cnt, bool is_called)
+{
+	SeqTable	elm;
+	Relation	seqrel;
+	Buffer		buf;
+	HeapTupleData seqdatatuple;
+	Form_pg_sequence_data seq;
+	HeapTuple	tuple;
+
+	/* open and lock sequence */
+	init_sequence(seq_relid, &elm, &seqrel);
+
+	/* lock page' buffer and read tuple */
+	seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
+
+	/* Copy the existing sequence tuple. */
+	tuple = heap_copytuple(&seqdatatuple);
+
+	/* Now we're done with the old page */
+	UnlockReleaseBuffer(buf);
+
+	/*
+	 * Modify the copied tuple to update the sequence state (similar to what
+	 * ResetSequence does).
+	 */
+	seq = (Form_pg_sequence_data) GETSTRUCT(tuple);
+	seq->last_value = last_value;
+	seq->is_called = is_called;
+	seq->log_cnt = log_cnt;
+
+	/*
+	 * Create a new storage file for the sequence - this is needed for the
+	 * transactional behavior.
+	 */
+	RelationSetNewRelfilenumber(seqrel, seqrel->rd_rel->relpersistence);
+
+	/*
+	 * Ensure sequence's relfrozenxid is at 0, since it won't contain any
+	 * unfrozen XIDs.  Same with relminmxid, since a sequence will never
+	 * contain multixacts.
+	 */
+	Assert(seqrel->rd_rel->relfrozenxid == InvalidTransactionId);
+	Assert(seqrel->rd_rel->relminmxid == InvalidMultiXactId);
+
+	/*
+	 * Insert the modified tuple into the new storage file. This does all the
+	 * necessary WAL-logging etc.
+	 */
+	fill_seq_with_data(seqrel, tuple);
+
+	/* Clear local cache so that we don't think we have cached numbers */
+	/* Note that we do not change the currval() state */
+	elm->cached = elm->last;
+
+	relation_close(seqrel, NoLock);
+}
+
+/*
  * Initialize a sequence's relation with the specified tuple as content
  *
  * This handles unlogged sequences by writing to both the main and the init
@@ -404,9 +470,20 @@ fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum)
 	tuple->t_data->t_infomask |= HEAP_XMAX_INVALID;
 	ItemPointerSet(&tuple->t_data->t_ctid, 0, FirstOffsetNumber);
 
-	/* check the comment above nextval_internal()'s equivalent call. */
+	/*
+	 * Remember we need to write this sequence to WAL at commit, and make sure
+	 * we have XID if we may need to decode this sequence.
+	 *
+	 * XXX Maybe we should not be doing this except when actually reading a
+	 * value from the sequence?
+	 */
 	if (RelationNeedsWAL(rel))
+	{
 		GetTopTransactionId();
+
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	START_CRIT_SECTION();
 
@@ -652,6 +729,23 @@ nextval_internal(Oid relid, bool check_permissions)
 	/* open and lock sequence */
 	init_sequence(relid, &elm, &seqrel);
 
+	/*
+	 * Remember we need to write this sequence to WAL at commit, and make sure
+	 * we have XID if we may need to decode this sequence.
+	 *
+	 * XXX Maybe we should not be doing this except when actually reading a
+	 * value from the sequence?
+	 */
+	if (RelationNeedsWAL(seqrel))
+	{
+		elm->need_log = true;
+
+		GetTopTransactionId();
+
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
+
 	if (check_permissions &&
 		pg_class_aclcheck(elm->relid, GetUserId(),
 						  ACL_USAGE | ACL_UPDATE) != ACLCHECK_OK)
@@ -806,9 +900,27 @@ nextval_internal(Oid relid, bool check_permissions)
 	 * It's sufficient to ensure the toplevel transaction has an xid, no need
 	 * to assign xids subxacts, that'll already trigger an appropriate wait.
 	 * (Have to do that here, so we're outside the critical section)
+	 *
+	 * We have to ensure we have a proper XID, which will be included in
+	 * the XLOG record by XLogRecordAssemble. Otherwise the first nextval()
+	 * in a subxact (without any preceding changes) would get XID 0, and it
+	 * would then be impossible to decide which top xact it belongs to.
+	 * It'd also trigger assert in DecodeSequence. We only do that with
+	 * wal_level=logical, though.
+	 *
+	 * XXX This might seem unnecessary, because if there's no XID the xact
+	 * couldn't have done anything important yet, e.g. it could not have
+	 * created a sequence. But that's incorrect, because of subxacts. The
+	 * current subtransaction might not have done anything yet (thus no XID),
+	 * but an earlier one might have created the sequence.
 	 */
 	if (logit && RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();
@@ -963,6 +1075,23 @@ do_setval(Oid relid, int64 next, bool iscalled)
 	/* open and lock sequence */
 	init_sequence(relid, &elm, &seqrel);
 
+	/*
+	 * Remember we need to write this sequence to WAL at commit, and make sure
+	 * we have XID if we may need to decode this sequence.
+	 *
+	 * XXX Maybe we should not be doing this except when actually reading a
+	 * value from the sequence?
+	 */
+	if (RelationNeedsWAL(seqrel))
+	{
+		elm->need_log = true;
+
+		GetTopTransactionId();
+
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
+
 	if (pg_class_aclcheck(elm->relid, GetUserId(), ACL_UPDATE) != ACLCHECK_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -1010,7 +1139,12 @@ do_setval(Oid relid, int64 next, bool iscalled)
 
 	/* check the comment above nextval_internal()'s equivalent call. */
 	if (RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();
@@ -1180,6 +1314,7 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 	if (seqrel->rd_rel->relfilenode != elm->filenumber)
 	{
 		elm->filenumber = seqrel->rd_rel->relfilenode;
+		elm->tablespace = seqrel->rd_rel->reltablespace;
 		elm->cached = elm->last;
 	}
 
@@ -1915,4 +2050,122 @@ seq_mask(char *page, BlockNumber blkno)
 	mask_page_lsn_and_checksum(page);
 
 	mask_unused_space(page);
+}
+
+
+static void
+read_sequence_info(Relation seqrel, int64 *last_value, int64 *log_cnt, bool *is_called)
+{
+	Buffer		buf;
+	Form_pg_sequence_data seq;
+	HeapTupleData	seqdatatuple;
+
+	seq = read_seq_tuple(seqrel, &buf, &seqdatatuple);
+
+	*last_value = seq->last_value;
+	*is_called = seq->is_called;
+	*log_cnt = seq->log_cnt;
+
+	UnlockReleaseBuffer(buf);
+}
+
+/* XXX Do this only for wal_level = logical, probably? */
+void
+AtEOXact_Sequences(bool isCommit)
+{
+	SeqTable		entry;
+	HASH_SEQ_STATUS	scan;
+
+	if (!seqhashtab)
+		return;
+
+	/* only do this with wal_level=logical */
+	if (!XLogLogicalInfoActive())
+		return;
+
+	/*
+	 * XXX Maybe we could enforce having XID here? Or is it too late?
+	 */
+	// Assert(GetTopTransactionId() != InvalidTransactionId);
+	// Assert(GetCurrentTransactionId() != InvalidTransactionId);
+
+	hash_seq_init(&scan, seqhashtab);
+
+	while ((entry = (SeqTable) hash_seq_search(&scan)))
+	{
+		Relation			rel;
+		RelFileLocator		rlocator;
+		xl_logical_sequence	xlrec;
+
+		/* not commit, we don't guarantee any data to be durable */
+		if (!isCommit)
+			entry->need_log = false;
+
+		/*
+		 * If not touched in the current transaction, don't log anything.
+		 * We leave needs_log set, so that if future transactions touch
+		 * the sequence we'll log it properly.
+		 */
+		if (!entry->need_log)
+			continue;
+
+		/* if this is commit, we'll log the */
+		entry->need_log = false;
+
+		/*
+		 * does the relation still exist?
+		 *
+		 * XXX We need to make sure another transaction can't jump ahead of
+		 * this one, otherwise the ordering of sequence changes could change.
+		 * Imagine T1 and T2, where T1 writes sequence state first, but then
+		 * T2 does it too and commits first:
+		 *
+		 * T1: log sequence state
+		 * T2: increment sequence
+		 * T2: log sequence state
+		 * T2: commit
+		 * T1: commit
+		 *
+		 * If we apply the sequences in this order, it'd be broken as the
+		 * value might go backwars. ShareUpdateExclusive protects against
+		 * that, but it's also restricting commit throughtput, probably.
+		 *
+		 * XXX This might be an issue for deadlocks, too, if two xacts try
+		 * to write sequences in different ordering. We may need to sort
+		 * the OIDs first, to enforce the same lock ordering.
+		 */
+		rel = try_relation_open(entry->relid, ShareUpdateExclusiveLock);
+
+		/* XXX relation might have been dropped, maybe we should have logged
+		 * the last change? */
+		if (!rel)
+			continue;
+
+		/* tablespace */
+		if (OidIsValid(entry->tablespace))
+			rlocator.spcOid = entry->tablespace;
+		else
+			rlocator.spcOid = MyDatabaseTableSpace;
+
+		rlocator.dbOid = MyDatabaseId;				/* database */
+		rlocator.relNumber = entry->filenumber;		/* relation */
+
+		xlrec.locator = rlocator;
+		xlrec.reloid = entry->relid;
+
+		/* XXX is it good enough to log values we have in cache? seems
+		 * wrong and we may need to re-read that. */
+		read_sequence_info(rel, &xlrec.last, &xlrec.log_cnt, &xlrec.is_called);
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfLogicalSequence);
+
+		/* allow origin filtering */
+		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+		(void) XLogInsert(RM_LOGICALMSG_ID, XLOG_LOGICAL_SEQUENCE);
+
+		/* hold the sequence lock until the end of the transaction */
+		relation_close(rel, NoLock);
+	}
 }

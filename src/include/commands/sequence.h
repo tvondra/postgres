@@ -60,7 +60,10 @@ extern ObjectAddress AlterSequence(ParseState *pstate, AlterSeqStmt *stmt);
 extern void SequenceChangePersistence(Oid relid, char newrelpersistence);
 extern void DeleteSequenceTuple(Oid relid);
 extern void ResetSequence(Oid seq_relid);
+extern void SetSequence(Oid seq_relid, int64 last_value, int64 log_cnt, bool is_called);
 extern void ResetSequenceCaches(void);
+
+extern void AtEOXact_Sequences(bool isCommit);
 
 extern void seq_redo(XLogReaderState *record);
 extern void seq_desc(StringInfo buf, XLogReaderState *record);

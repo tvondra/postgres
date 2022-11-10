@@ -37,6 +37,7 @@
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/tablecmds.h"
+#include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "common/pg_prng.h"
 #include "executor/spi.h"
@@ -2237,6 +2238,15 @@ CommitTransaction(void)
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
+	/*
+	 * Write state of sequences to WAL. We need to do this early enough so
+	 * that we can still write stuff to WAL, but probably before changing
+	 * the transaction state.
+	 *
+	 * XXX Should this happen before/after holding the interrupts?
+	 */
+	AtEOXact_Sequences(true);
+
 	/* Commit updates to the relation map --- do this as late as possible */
 	AtEOXact_RelationMap(true, is_parallel_worker);
 
@@ -2514,6 +2524,15 @@ PrepareTransaction(void)
 	HOLD_INTERRUPTS();
 
 	/*
+	 * Write state of sequences to WAL. We need to do this early enough so
+	 * that we can still write stuff to WAL, but probably before changing
+	 * the transaction state.
+	 *
+	 * XXX Should this happen before/after holding the interrupts?
+	 */
+	AtEOXact_Sequences(true);
+
+	/*
 	 * set the current transaction state information appropriately during
 	 * prepare processing
 	 */
@@ -2747,6 +2766,12 @@ AbortTransaction(void)
 		elog(WARNING, "AbortTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
+
+	/*
+	 * For transaction abort we don't need to write anything to WAL, we just
+	 * do cleanup of the hash table etc.
+	 */
+	AtEOXact_Sequences(false);
 
 	/*
 	 * set the current transaction state information appropriately during the

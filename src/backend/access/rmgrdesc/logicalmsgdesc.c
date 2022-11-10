@@ -40,6 +40,16 @@ logicalmsg_desc(StringInfo buf, XLogReaderState *record)
 			sep = " ";
 		}
 	}
+	else if (info == XLOG_LOGICAL_SEQUENCE)
+	{
+		xl_logical_sequence *xlrec = (xl_logical_sequence *) rec;
+
+		appendStringInfo(buf, "rel %u/%u/%u last: %lu log_cnt: %lu is_called: %d",
+						 xlrec->locator.spcOid,
+						 xlrec->locator.dbOid,
+						 xlrec->locator.relNumber,
+						 xlrec->last, xlrec->log_cnt, xlrec->is_called);
+	}
 }
 
 const char *
@@ -47,6 +57,9 @@ logicalmsg_identify(uint8 info)
 {
 	if ((info & ~XLR_INFO_MASK) == XLOG_LOGICAL_MESSAGE)
 		return "MESSAGE";
+
+	if ((info & ~XLR_INFO_MASK) == XLOG_LOGICAL_SEQUENCE)
+		return "SEQUENCE";
 
 	return NULL;
 }

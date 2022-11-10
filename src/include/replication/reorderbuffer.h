@@ -64,7 +64,8 @@ typedef enum ReorderBufferChangeType
 	REORDER_BUFFER_CHANGE_INTERNAL_SPEC_INSERT,
 	REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM,
 	REORDER_BUFFER_CHANGE_INTERNAL_SPEC_ABORT,
-	REORDER_BUFFER_CHANGE_TRUNCATE
+	REORDER_BUFFER_CHANGE_TRUNCATE,
+	REORDER_BUFFER_CHANGE_SEQUENCE
 } ReorderBufferChangeType;
 
 /* forward declaration */
@@ -158,6 +159,16 @@ typedef struct ReorderBufferChange
 			uint32		ninvalidations; /* Number of messages */
 			SharedInvalidationMessage *invalidations;	/* invalidation message */
 		}			inval;
+
+		/* Context data for Sequence changes */
+		struct
+		{
+			RelFileLocator locator;
+			Oid			reloid;
+			int64		last;
+			int64		log_cnt;
+			bool		is_called;
+		}			sequence;
 	}			data;
 
 	/*
@@ -435,6 +446,14 @@ typedef void (*ReorderBufferMessageCB) (ReorderBuffer *rb,
 										const char *prefix, Size sz,
 										const char *message);
 
+/* sequence callback signature */
+typedef void (*ReorderBufferSequenceCB) (ReorderBuffer *rb,
+										 ReorderBufferTXN *txn,
+										 XLogRecPtr sequence_lsn,
+										 Relation rel,
+										 int64 last_value, int64 log_cnt,
+										 bool is_called);
+
 /* begin prepare callback signature */
 typedef void (*ReorderBufferBeginPrepareCB) (ReorderBuffer *rb,
 											 ReorderBufferTXN *txn);
@@ -501,6 +520,14 @@ typedef void (*ReorderBufferStreamMessageCB) (
 											  const char *prefix, Size sz,
 											  const char *message);
 
+/* stream sequence callback signature */
+typedef void (*ReorderBufferStreamSequenceCB) (ReorderBuffer *rb,
+											   ReorderBufferTXN *txn,
+											   XLogRecPtr sequence_lsn,
+											   Relation rel,
+											   int64 last_value, int64 log_cnt,
+											   bool is_called);
+
 /* stream truncate callback signature */
 typedef void (*ReorderBufferStreamTruncateCB) (
 											   ReorderBuffer *rb,
@@ -515,6 +542,12 @@ struct ReorderBuffer
 	 * xid => ReorderBufferTXN lookup table
 	 */
 	HTAB	   *by_txn;
+
+	/*
+	 * relfilenumber => XID lookup table for sequences created in a transaction
+	 * (also includes altered sequences, which assigns new relfilenumber)
+	 */
+	HTAB	   *sequences;
 
 	/*
 	 * Transactions that could be a toplevel xact, ordered by LSN of the first
@@ -551,6 +584,7 @@ struct ReorderBuffer
 	ReorderBufferApplyTruncateCB apply_truncate;
 	ReorderBufferCommitCB commit;
 	ReorderBufferMessageCB message;
+	ReorderBufferSequenceCB sequence;
 
 	/*
 	 * Callbacks to be called when streaming a transaction at prepare time.
@@ -570,6 +604,7 @@ struct ReorderBuffer
 	ReorderBufferStreamCommitCB stream_commit;
 	ReorderBufferStreamChangeCB stream_change;
 	ReorderBufferStreamMessageCB stream_message;
+	ReorderBufferStreamSequenceCB stream_sequence;
 	ReorderBufferStreamTruncateCB stream_truncate;
 
 	/*
@@ -649,6 +684,10 @@ extern void ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 									  Snapshot snap, XLogRecPtr lsn,
 									  bool transactional, const char *prefix,
 									  Size message_size, const char *message);
+extern void ReorderBufferQueueSequence(ReorderBuffer *rb, TransactionId xid,
+									   XLogRecPtr lsn, RepOriginId origin_id,
+									   Oid reloid, RelFileLocator locator,
+									   int64 last, int64 log_cnt, bool is_called);
 extern void ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 								XLogRecPtr commit_lsn, XLogRecPtr end_lsn,
 								TimestampTz commit_time, RepOriginId origin_id, XLogRecPtr origin_lsn);

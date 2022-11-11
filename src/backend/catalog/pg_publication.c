@@ -1329,9 +1329,10 @@ pg_get_publication_tables(PG_FUNCTION_ARGS)
 		 * FOR TABLES IN SCHEMA publications.
 		 */
 		if (!publication->alltables &&
-			!SearchSysCacheExists2(PUBLICATIONNAMESPACEMAP,
+			!SearchSysCacheExists3(PUBLICATIONNAMESPACEMAP,
 								   ObjectIdGetDatum(schemaid),
-								   ObjectIdGetDatum(publication->oid)))
+								   ObjectIdGetDatum(publication->oid),
+								   CharGetDatum(PUB_OBJTYPE_TABLE)))
 			pubtuple = SearchSysCacheCopy2(PUBLICATIONRELMAP,
 										   ObjectIdGetDatum(relid),
 										   ObjectIdGetDatum(publication->oid));

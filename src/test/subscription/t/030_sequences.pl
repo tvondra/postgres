@@ -72,13 +72,14 @@ my $result = $node_subscriber->safe_psql(
 	SELECT * FROM s;
 ));
 
-is( $result, '132|0|t',
+is( $result, '100|32|t',
 	'initial test data replicated');
 
 
 # advance the sequence in a rolled-back transaction - the rollback
 # does not wait for the replication, so we could see any intermediate state
 # so do something else after the test, to ensure we wait for everything
+# (but make sure not to use the sequence)
 $node_publisher->safe_psql(
 	'postgres', qq(
 	BEGIN;
@@ -95,8 +96,8 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s;
 ));
 
-is( $result, '231|0|t',
-	'advance sequence in rolled-back transaction');
+is( $result, '100|32|t',
+	'sequence advanced in rolled-back transaction does not replicate');
 
 
 # create a new sequence and roll it back - should not be replicated, due to
@@ -149,7 +150,7 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s2;
 ));
 
-is( $result, '132|0|t',
+is( $result, '100|32|t',
 	'create sequence, advance it in rolled-back transaction, but commit the create');
 
 
@@ -172,7 +173,9 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s2;
 ));
 
-is( $result, '231|0|t',
+# we did touch the sequence in the transaction, so even tough the advance
+# was rolled back, we should have replicated it at the end
+is( $result, '100|32|t',
 	'advance the new sequence in a transaction and roll it back');
 
 
@@ -195,7 +198,7 @@ $result = $node_subscriber->safe_psql(
 	SELECT * FROM s2;
 ));
 
-is( $result, '330|0|t',
+is( $result, '300|30|t',
 	'advance sequence in a subtransaction');
 
 

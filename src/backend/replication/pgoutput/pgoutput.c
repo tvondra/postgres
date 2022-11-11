@@ -904,9 +904,10 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 		 * (even if other publications have a row filter).
 		 */
 		if (!pub->alltables &&
-			!SearchSysCacheExists2(PUBLICATIONNAMESPACEMAP,
+			!SearchSysCacheExists3(PUBLICATIONNAMESPACEMAP,
 								   ObjectIdGetDatum(schemaid),
-								   ObjectIdGetDatum(pub->oid)))
+								   ObjectIdGetDatum(pub->oid),
+								   CharGetDatum(PUB_OBJTYPE_TABLE)))
 		{
 			/*
 			 * Check for the presence of a row filter in this publication.

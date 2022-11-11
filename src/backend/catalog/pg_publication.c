@@ -1047,8 +1047,7 @@ GetSchemaPublications(Oid schemaid, char objectType)
 /*
  * Get the list of publishable relation oids for a specified schema.
  *
- * objectType specifies whether this is FOR ALL TABLES IN SCHEMA or FOR ALL
- * SEQUENCES IN SCHEMA
+ * objectType specifies whether this is FOR TABLES / SEQUENCES IN SCHEMA
  */
 List *
 GetSchemaPublicationRelations(Oid schemaid, char objectType,
@@ -1104,11 +1103,9 @@ GetSchemaPublicationRelations(Oid schemaid, char objectType,
 														   pub_partopt,
 														   relForm->oid);
 			result = list_concat_unique_oid(result, partitionrels);
-			continue;
 		}
-
-		/* non-partitioned tables and sequences */
-		result = lappend_oid(result, relid);
+		else	/* non-partitioned tables and sequences */
+			result = lappend_oid(result, relid);
 	}
 
 	table_endscan(scan);

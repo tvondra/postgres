@@ -72,7 +72,7 @@ static List *OpenRelationList(List *rels, char objectType);
 static void CloseRelationList(List *rels);
 static void LockSchemaList(List *schemalist);
 static void PublicationAddRelations(Oid pubid, List *rels, bool if_not_exists,
-								 AlterPublicationStmt *stmt);
+									AlterPublicationStmt *stmt);
 static void PublicationDropRelations(Oid pubid, List *rels, bool missing_ok);
 static void PublicationAddSchemas(Oid pubid, List *schemas, char objectType,
 								  bool if_not_exists, AlterPublicationStmt *stmt);
@@ -1925,6 +1925,7 @@ OpenRelationList(List *rels, char objectType)
 				pub_rel->relation = rel;
 				/* child inherits WHERE clause from parent */
 				pub_rel->whereClause = t->whereClause;
+
 				/* child inherits column list from parent */
 				pub_rel->columns = t->columns;
 				result = lappend(result, pub_rel);

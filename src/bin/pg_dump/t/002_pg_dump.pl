@@ -2618,23 +2618,23 @@ my %tests = (
 		unlike => { exclude_dump_test_schema => 1, },
 	  },
 
-	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test' => {
+	'ALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA dump_test' => {
 		create_order => 51,
 		create_sql =>
-		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;',
+		  'ALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA dump_test;',
 		regexp => qr/^
-			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;\E
+			\QALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA dump_test;\E
 			/xm,
 		like   => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
 	},
 
-	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public' => {
+	'ALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA public' => {
 		create_order => 52,
 		create_sql =>
-		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;',
+		  'ALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA public;',
 		regexp => qr/^
-			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;\E
+			\QALTER PUBLICATION pub3 ADD SEQUENCES IN SCHEMA public;\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},

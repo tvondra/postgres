@@ -19,6 +19,7 @@ CREATE TEXT SEARCH CONFIGURATION addr_ts_conf (copy=english);
 CREATE TEXT SEARCH TEMPLATE addr_ts_temp (lexize=dsimple_lexize);
 CREATE TEXT SEARCH PARSER addr_ts_prs
     (start = prsd_start, gettoken = prsd_nexttoken, end = prsd_end, lextypes = prsd_lextype);
+CREATE SEQUENCE addr_nsp.gensequence;
 CREATE TABLE addr_nsp.gentable (
 	a serial primary key CONSTRAINT a_chk CHECK (a > 0),
 	b text DEFAULT 'hello');
@@ -48,6 +49,7 @@ CREATE TRANSFORM FOR int LANGUAGE SQL (
 -- suppress warning that depends on wal_level
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION addr_pub FOR TABLE addr_nsp.gentable;
+CREATE PUBLICATION addr_pub2 FOR SEQUENCE addr_nsp.gensequence;
 CREATE PUBLICATION addr_pub_schema FOR TABLES IN SCHEMA addr_nsp;
 CREATE PUBLICATION addr_pub_schema2 FOR SEQUENCES IN SCHEMA addr_nsp;
 RESET client_min_messages;
@@ -219,6 +221,7 @@ SELECT (pg_identify_object(addr1.classid, addr1.objid, addr1.objsubid)).*,
 ---
 DROP FOREIGN DATA WRAPPER addr_fdw CASCADE;
 DROP PUBLICATION addr_pub;
+DROP PUBLICATION addr_pub2;
 DROP PUBLICATION addr_pub_schema;
 DROP PUBLICATION addr_pub_schema2;
 DROP SUBSCRIPTION regress_addr_sub;

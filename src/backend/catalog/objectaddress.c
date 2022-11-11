@@ -2291,7 +2291,16 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 			/* fall through to check args length */
 			/* FALLTHROUGH */
 		case OBJECT_OPERATOR:
+			if (list_length(args) != 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("argument list length must be exactly %d", 2)));
+			break;
 		case OBJECT_PUBLICATION_NAMESPACE:
+			if (list_length(name) != 1)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("name list length must be exactly %d", 1)));
 			if (list_length(args) != 2)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),

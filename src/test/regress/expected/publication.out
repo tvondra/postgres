@@ -102,20 +102,20 @@ Tables from schemas:
 -- should be able to drop schema from 'FOR TABLE' publication
 ALTER PUBLICATION testpub_fortable DROP TABLES IN SCHEMA pub_test;
 \dRp+ testpub_fortable
-                                Publication testpub_fortable
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                              Publication testpub_fortable
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables:
     "public.testpub_tbl1"
 
 -- should be able to set schema to 'FOR TABLE' publication
 ALTER PUBLICATION testpub_fortable SET TABLES IN SCHEMA pub_test;
 \dRp+ testpub_fortable
-                                Publication testpub_fortable
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                              Publication testpub_fortable
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test"
 
@@ -126,10 +126,10 @@ CREATE PUBLICATION testpub_forschema FOR TABLES IN SCHEMA pub_test;
 CREATE PUBLICATION testpub_for_tbl_schema FOR TABLES IN SCHEMA pub_test, TABLE pub_test.testpub_nopk;
 RESET client_min_messages;
 \dRp+ testpub_for_tbl_schema
-                             Publication testpub_for_tbl_schema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                           Publication testpub_for_tbl_schema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables:
     "pub_test.testpub_nopk"
 Tables from schemas:
@@ -138,10 +138,10 @@ Tables from schemas:
 -- should be able to add a table of the same schema to the schema publication
 ALTER PUBLICATION testpub_forschema ADD TABLE pub_test.testpub_nopk;
 \dRp+ testpub_forschema
-                               Publication testpub_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables:
     "pub_test.testpub_nopk"
 Tables from schemas:
@@ -150,10 +150,10 @@ Tables from schemas:
 -- should be able to drop the table
 ALTER PUBLICATION testpub_forschema DROP TABLE pub_test.testpub_nopk;
 \dRp+ testpub_forschema
-                               Publication testpub_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test"
 
@@ -243,22 +243,22 @@ ALTER PUBLICATION testpub_forallsequences SET SEQUENCE pub_test.testpub_seq1;
 ERROR:  publication "testpub_forallsequences" is defined as FOR ALL SEQUENCES
 DETAIL:  Sequences cannot be added to or dropped from FOR ALL SEQUENCES publications.
 -- fail - can't add schema to 'FOR ALL SEQUENCES' publication
-ALTER PUBLICATION testpub_forallsequences ADD ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forallsequences ADD SEQUENCES IN SCHEMA pub_test;
 ERROR:  publication "testpub_forallsequences" is defined as FOR ALL SEQUENCES
-DETAIL:  Sequences from schema cannot be added to, dropped from, or set on FOR ALL SEQUENCES publications.
+DETAIL:  Schemas cannot be added to or dropped from FOR ALL SEQUENCES publications.
 -- fail - can't drop schema from 'FOR ALL SEQUENCES' publication
-ALTER PUBLICATION testpub_forallsequences DROP ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forallsequences DROP SEQUENCES IN SCHEMA pub_test;
 ERROR:  publication "testpub_forallsequences" is defined as FOR ALL SEQUENCES
-DETAIL:  Sequences from schema cannot be added to, dropped from, or set on FOR ALL SEQUENCES publications.
+DETAIL:  Schemas cannot be added to or dropped from FOR ALL SEQUENCES publications.
 -- fail - can't set schema to 'FOR ALL SEQUENCES' publication
-ALTER PUBLICATION testpub_forallsequences SET ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forallsequences SET SEQUENCES IN SCHEMA pub_test;
 ERROR:  publication "testpub_forallsequences" is defined as FOR ALL SEQUENCES
-DETAIL:  Sequences from schema cannot be added to, dropped from, or set on FOR ALL SEQUENCES publications.
+DETAIL:  Schemas cannot be added to or dropped from FOR ALL SEQUENCES publications.
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_forsequence FOR SEQUENCE testpub_seq0;
 RESET client_min_messages;
 -- should be able to add schema to 'FOR SEQUENCE' publication
-ALTER PUBLICATION testpub_forsequence ADD ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forsequence ADD SEQUENCES IN SCHEMA pub_test;
 \dRp+ testpub_forsequence
                                             Publication testpub_forsequence
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -269,25 +269,24 @@ Sequences:
 Sequences from schemas:
     "pub_test"
 
--- fail - can't add sequence from the schema we already added
+-- add sequence from the schema we already added
 ALTER PUBLICATION testpub_forsequence ADD SEQUENCE pub_test.testpub_seq1;
-ERROR:  cannot add relation "pub_test.testpub_seq1" to publication
-DETAIL:  Sequence's schema "pub_test" is already part of the publication or part of the specified schema list.
 -- fail - can't add sequence using ADD TABLE command
 ALTER PUBLICATION testpub_forsequence ADD TABLE pub_test.testpub_seq1;
 ERROR:  object type does not match type expected by command
 -- should be able to drop schema from 'FOR SEQUENCE' publication
-ALTER PUBLICATION testpub_forsequence DROP ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forsequence DROP SEQUENCES IN SCHEMA pub_test;
 \dRp+ testpub_forsequence
                                             Publication testpub_forsequence
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
 --------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
  regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Sequences:
+    "pub_test.testpub_seq1"
     "public.testpub_seq0"
 
 -- should be able to set schema to 'FOR SEQUENCE' publication
-ALTER PUBLICATION testpub_forsequence SET ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_forsequence SET SEQUENCES IN SCHEMA pub_test;
 \dRp+ testpub_forsequence
                                             Publication testpub_forsequence
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -297,18 +296,19 @@ Sequences from schemas:
     "pub_test"
 
 SET client_min_messages = 'ERROR';
-CREATE PUBLICATION testpub_forschema FOR ALL SEQUENCES IN SCHEMA pub_test;
+CREATE PUBLICATION testpub_forschema FOR SEQUENCES IN SCHEMA pub_test;
 RESET client_min_messages;
--- fail - can't create publication with schema and sequence of the same schema
-CREATE PUBLICATION testpub_for_seq_schema FOR ALL SEQUENCES IN SCHEMA pub_test, SEQUENCE pub_test.testpub_seq1;
-ERROR:  cannot add relation "pub_test.testpub_seq1" to publication
-DETAIL:  Sequence's schema "pub_test" is already part of the publication or part of the specified schema list.
--- fail - can't add a sequence of the same schema to the schema publication
+-- create publication with schema and sequence of the same schema
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_for_seq_schema FOR SEQUENCES IN SCHEMA pub_test, SEQUENCE pub_test.testpub_seq1;
+RESET client_min_messages;
+-- drop the publication again
+DROP PUBLICATION testpub_for_seq_schema;
+-- add a sequence of the same schema to the schema publication
 ALTER PUBLICATION testpub_forschema ADD SEQUENCE pub_test.testpub_seq1;
-ERROR:  cannot add relation "pub_test.testpub_seq1" to publication
-DETAIL:  Sequence's schema "pub_test" is already part of the publication or part of the specified schema list.
--- fail - can't drop a sequence from the schema publication which isn't in the
--- publication
+-- drop a sequence from the publication again
+ALTER PUBLICATION testpub_forschema DROP SEQUENCE pub_test.testpub_seq1;
+-- drop a sequence from the schema publication which isn't in the publication
 ALTER PUBLICATION testpub_forschema DROP SEQUENCE pub_test.testpub_seq1;
 ERROR:  relation "testpub_seq1" is not part of the publication
 -- should be able to set sequence to schema publication
@@ -381,7 +381,7 @@ Tables:
 Sequences:
     "public.testpub_seq1"
 
-ALTER PUBLICATION testpub_mix ADD ALL SEQUENCES IN SCHEMA pub_test, ALL TABLES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_mix ADD SEQUENCES IN SCHEMA pub_test, TABLES IN SCHEMA pub_test;
 \dRp+ testpub_mix
                                                 Publication testpub_mix
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -396,7 +396,7 @@ Sequences:
 Sequences from schemas:
     "pub_test"
 
-ALTER PUBLICATION testpub_mix DROP ALL SEQUENCES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_mix DROP SEQUENCES IN SCHEMA pub_test;
 \dRp+ testpub_mix
                                                 Publication testpub_mix
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -409,7 +409,7 @@ Tables from schemas:
 Sequences:
     "public.testpub_seq1"
 
-ALTER PUBLICATION testpub_mix DROP ALL TABLES IN SCHEMA pub_test;
+ALTER PUBLICATION testpub_mix DROP TABLES IN SCHEMA pub_test;
 \dRp+ testpub_mix
                                                 Publication testpub_mix
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -434,8 +434,8 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub_schemas;
 RESET client_min_messages;
 -- add tables from one schema, sequences from the other
-ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test2;
-ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas ADD TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCES IN SCHEMA pub_test1;
 \dRp+ testpub_schemas
                                               Publication testpub_schemas
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -497,8 +497,8 @@ Publications:
     "testpub_schemas"
 
 -- add the other object type from each schema
-ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test1;
-ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas ADD TABLES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCES IN SCHEMA pub_test2;
 \dRp+ testpub_schemas
                                               Publication testpub_schemas
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -568,8 +568,8 @@ Publications:
     "testpub_schemas"
 
 -- now drop the object type added first
-ALTER PUBLICATION testpub_schemas DROP ALL TABLES IN SCHEMA pub_test2;
-ALTER PUBLICATION testpub_schemas DROP ALL SEQUENCES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas DROP TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas DROP SEQUENCES IN SCHEMA pub_test1;
 \dRp+ testpub_schemas
                                               Publication testpub_schemas
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
@@ -630,13 +630,9 @@ Publications:
 Indexes:
     "test_tbl2_pkey" PRIMARY KEY, btree (a)
 
--- should fail (publication contains the whole schema)
+-- should work, we're not enforcing there's no overlap
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
-ERROR:  cannot add relation "pub_test1.test_tbl1" to publication
-DETAIL:  Table's schema "pub_test1" is already part of the publication or part of the specified schema list.
 ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test2.test_seq2;
-ERROR:  cannot add relation "pub_test2.test_seq2" to publication
-DETAIL:  Sequence's schema "pub_test2" is already part of the publication or part of the specified schema list.
 -- should work (different schema)
 ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
 ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test1.test_seq1;
@@ -646,11 +642,13 @@ ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test1.test_seq1;
 --------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
  regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables:
+    "pub_test1.test_tbl1"
     "pub_test2.test_tbl2"
 Tables from schemas:
     "pub_test1"
 Sequences:
     "pub_test1.test_seq1"
+    "pub_test2.test_seq2"
 Sequences from schemas:
     "pub_test2"
 
@@ -700,8 +698,12 @@ ALTER PUBLICATION testpub_schemas DROP SEQUENCE pub_test1.test_seq1;
           Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
 --------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
  regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
+Tables:
+    "pub_test1.test_tbl1"
 Tables from schemas:
     "pub_test1"
+Sequences:
+    "pub_test2.test_seq2"
 Sequences from schemas:
     "pub_test2"
 
@@ -1021,10 +1023,10 @@ CREATE PUBLICATION testpub6 FOR TABLES IN SCHEMA testpub_rf_schema2;
 ALTER PUBLICATION testpub6 SET TABLES IN SCHEMA testpub_rf_schema2, TABLE testpub_rf_schema2.testpub_rf_tbl6 WHERE (i < 99);
 RESET client_min_messages;
 \dRp+ testpub6
-                                    Publication testpub6
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                                  Publication testpub6
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables:
     "testpub_rf_schema2.testpub_rf_tbl6" WHERE (i < 99)
 Tables from schemas:
@@ -1787,19 +1789,19 @@ CREATE TABLE "CURRENT_SCHEMA"."CURRENT_SCHEMA"(id int);
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub1_forschema FOR TABLES IN SCHEMA pub_test1;
 \dRp+ testpub1_forschema
-                               Publication testpub1_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub1_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test1"
 
 CREATE PUBLICATION testpub2_forschema FOR TABLES IN SCHEMA pub_test1, pub_test2, pub_test3;
 \dRp+ testpub2_forschema
-                               Publication testpub2_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub2_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test1"
     "pub_test2"
@@ -1865,7 +1867,7 @@ CREATE PUBLICATION testpub_forschema1 FOR CURRENT_SCHEMA;
 ERROR:  invalid publication object list
 LINE 1: CREATE PUBLICATION testpub_forschema1 FOR CURRENT_SCHEMA;
                                                   ^
-DETAIL:  One of TABLE or TABLES IN SCHEMA must be specified before a standalone table or schema name.
+DETAIL:  One of TABLE, SEQUENCE, TABLES IN SCHEMA or SEQUENCES IN SCHEMA must be specified before a standalone table, sequence or schema name.
 -- check create publication on CURRENT_SCHEMA along with FOR TABLE
 CREATE PUBLICATION testpub_forschema1 FOR TABLE CURRENT_SCHEMA;
 ERROR:  syntax error at or near "CURRENT_SCHEMA"
@@ -1973,29 +1975,29 @@ Tables from schemas:
 ALTER PUBLICATION testpub1_forschema DROP TABLES IN SCHEMA non_existent_schema;
 ERROR:  schema "non_existent_schema" does not exist
 \dRp+ testpub1_forschema
-                               Publication testpub1_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub1_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test1"
 
 -- drop all schemas
 ALTER PUBLICATION testpub1_forschema DROP TABLES IN SCHEMA pub_test1;
 \dRp+ testpub1_forschema
-                               Publication testpub1_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub1_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 (1 row)
 
 -- alter publication set multiple schema
 ALTER PUBLICATION testpub1_forschema SET TABLES IN SCHEMA pub_test1, pub_test2;
 \dRp+ testpub1_forschema
-                               Publication testpub1_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub1_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test1"
     "pub_test2"
@@ -2098,18 +2100,18 @@ SET client_min_messages = 'ERROR';
 CREATE PUBLICATION testpub3_forschema;
 RESET client_min_messages;
 \dRp+ testpub3_forschema
-                               Publication testpub3_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub3_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 (1 row)
 
 ALTER PUBLICATION testpub3_forschema SET TABLES IN SCHEMA pub_test1;
 \dRp+ testpub3_forschema
-                               Publication testpub3_forschema
-          Owner           | All tables | Inserts | Updates | Deletes | Truncates | Via root 
---------------------------+------------+---------+---------+---------+-----------+----------
- regress_publication_user | f          | t       | t       | t       | t         | f
+                                             Publication testpub3_forschema
+          Owner           | All tables | All sequences | Inserts | Updates | Deletes | Truncates | Sequences | Via root 
+--------------------------+------------+---------------+---------+---------+---------+-----------+-----------+----------
+ regress_publication_user | f          | f             | t       | t       | t       | t         | t         | f
 Tables from schemas:
     "pub_test1"
 
@@ -2144,7 +2146,7 @@ CREATE PUBLICATION testpub_error FOR pub_test2.tbl1;
 ERROR:  invalid publication object list
 LINE 1: CREATE PUBLICATION testpub_error FOR pub_test2.tbl1;
                                              ^
-DETAIL:  One of TABLE or TABLES IN SCHEMA must be specified before a standalone table or schema name.
+DETAIL:  One of TABLE, SEQUENCE, TABLES IN SCHEMA or SEQUENCES IN SCHEMA must be specified before a standalone table, sequence or schema name.
 DROP VIEW testpub_view;
 DROP PUBLICATION testpub_default;
 DROP PUBLICATION testpib_ins_trunct;
@@ -2176,38 +2178,83 @@ CREATE SCHEMA sch1;
 CREATE SCHEMA sch2;
 CREATE TABLE sch1.tbl1 (a int) PARTITION BY RANGE(a);
 CREATE TABLE sch2.tbl1_part1 PARTITION OF sch1.tbl1 FOR VALUES FROM (1) to (10);
+CREATE SEQUENCE sch1.seq1;
+CREATE SEQUENCE sch2.seq2;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename  | attnames | rowfilter 
 ---------+------------+------------+----------+-----------
  pub     | sch2       | tbl1_part1 | {a}      | 
+(1 row)
+
+SELECT * FROM pg_publication_sequences;
+ pubname | schemaname | sequencename 
+---------+------------+--------------
+ pub     | sch2       | seq2
 (1 row)
 
 DROP PUBLICATION pub;
 -- Table publication that does not include the parent table
 CREATE PUBLICATION pub FOR TABLE sch2.tbl1_part1 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD SEQUENCE sch2.seq2;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename  | attnames | rowfilter 
 ---------+------------+------------+----------+-----------
  pub     | sch2       | tbl1_part1 | {a}      | 
 (1 row)
 
+SELECT * FROM pg_publication_sequences;
+ pubname | schemaname | sequencename 
+---------+------------+--------------
+ pub     | sch2       | seq2
+(1 row)
+
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename | attnames | rowfilter 
 ---------+------------+-----------+----------+-----------
  pub     | sch1       | tbl1      | {a}      | 
 (1 row)
 
+SELECT * FROM pg_publication_sequences;
+ pubname | schemaname | sequencename 
+---------+------------+--------------
+ pub     | sch1       | seq1
+ pub     | sch2       | seq2
+(2 rows)
+
 DROP PUBLICATION pub;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=0);
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename  | attnames | rowfilter 
 ---------+------------+------------+----------+-----------
  pub     | sch2       | tbl1_part1 | {a}      | 
+(1 row)
+
+SELECT * FROM pg_publication_sequences;
+ pubname | schemaname | sequencename 
+---------+------------+--------------
+ pub     | sch1       | seq1
+(1 row)
+
+DROP PUBLICATION pub;
+-- Sequence publication
+CREATE PUBLICATION pub FOR SEQUENCE sch2.seq2;
+SELECT * FROM pg_publication_tables;
+ pubname | schemaname | tablename | attnames | rowfilter 
+---------+------------+-----------+----------+-----------
+(0 rows)
+
+SELECT * FROM pg_publication_sequences;
+ pubname | schemaname | sequencename 
+---------+------------+--------------
+ pub     | sch2       | seq2
 (1 row)
 
 DROP PUBLICATION pub;
@@ -2226,7 +2273,7 @@ SELECT * FROM pg_publication_sequences;
 
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
-ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch2;
+ALTER PUBLICATION pub ADD SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename  | attnames | rowfilter 
 ---------+------------+------------+----------+-----------
@@ -2275,7 +2322,7 @@ SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Sequence publication
-CREATE PUBLICATION pub FOR ALL SEQUENCES IN SCHEMA sch2;
+CREATE PUBLICATION pub FOR SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename | attnames | rowfilter 
 ---------+------------+-----------+----------+-----------
@@ -2312,7 +2359,7 @@ SELECT * FROM pg_publication_sequences;
  pub     | sch2       | seq2
 (1 row)
 
-ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch1;
+ALTER PUBLICATION pub ADD SEQUENCES IN SCHEMA sch1;
 SELECT * FROM pg_publication_tables;
  pubname | schemaname | tablename | attnames | rowfilter 
 ---------+------------+-----------+----------+-----------

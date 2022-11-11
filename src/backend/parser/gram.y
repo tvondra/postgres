@@ -10346,6 +10346,8 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
  *
  *		TABLE table [, ...]
  *		TABLES IN SCHEMA schema [, ...]
+ *		SEQUENCE sequence [, ...]
+ *		SEQUENCES IN SCHEMA schema [, ...]
  *
  *****************************************************************************/
 
@@ -10422,18 +10424,18 @@ PublicationObjSpec:
 					$$->pubtable = makeNode(PublicationTable);
 					$$->pubtable->relation = $2;
 				}
-			| ALL SEQUENCES IN_P SCHEMA ColId
+			| SEQUENCES IN_P SCHEMA ColId
 				{
 					$$ = makeNode(PublicationObjSpec);
 					$$->pubobjtype = PUBLICATIONOBJ_SEQUENCES_IN_SCHEMA;
-					$$->name = $5;
-					$$->location = @5;
+					$$->name = $4;
+					$$->location = @4;
 				}
-			| ALL SEQUENCES IN_P SCHEMA CURRENT_SCHEMA
+			| SEQUENCES IN_P SCHEMA CURRENT_SCHEMA
 				{
 					$$ = makeNode(PublicationObjSpec);
 					$$->pubobjtype = PUBLICATIONOBJ_SEQUENCES_IN_CUR_SCHEMA;
-					$$->location = @5;
+					$$->location = @4;
 				}
 			| ColId opt_column_list OptWhereClause
 				{
@@ -18493,7 +18495,7 @@ preprocess_pubobj_list(List *pubobjspec_list, core_yyscan_t yyscanner)
 		ereport(ERROR,
 				errcode(ERRCODE_SYNTAX_ERROR),
 				errmsg("invalid publication object list"),
-				errdetail("One of TABLE or TABLES IN SCHEMA must be specified before a standalone table or schema name."),
+				errdetail("One of TABLE, SEQUENCE, TABLES IN SCHEMA or SEQUENCES IN SCHEMA must be specified before a standalone table, sequence or schema name."),
 				parser_errposition(pubobj->location));
 
 	foreach(cell, pubobjspec_list)

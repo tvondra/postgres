@@ -717,8 +717,8 @@ main(int argc, char **argv)
 	if ((archiveFormat == archCustom || archiveFormat == archDirectory) &&
 		!user_compression_defined)
 	{
-#ifdef HAVE_LIBZ
-		parse_compress_specification(PG_COMPRESSION_GZIP, NULL,
+#ifdef USE_ZSTD
+		parse_compress_specification(PG_COMPRESSION_ZSTD, NULL,
 									 &compression_spec);
 #else
 		/* Nothing to do in the default case */

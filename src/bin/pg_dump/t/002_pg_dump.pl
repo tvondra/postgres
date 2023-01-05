@@ -54,8 +54,9 @@ my $tempdir = PostgreSQL::Test::Utils::tempdir;
 # those lines) to validate that part of the process.
 
 my $supports_icu  = ($ENV{with_icu} eq 'yes');
-my $supports_lz4  = check_pg_config("#define USE_LZ4 1");
 my $supports_gzip = check_pg_config("#define HAVE_LIBZ 1");
+my $supports_lz4  = check_pg_config("#define USE_LZ4 1");
+my $supports_zstd  = check_pg_config("#define USE_ZSTD 1");
 
 my %pgdump_runs = (
 	binary_upgrade => {
@@ -383,10 +384,10 @@ my %pgdump_runs = (
 		command_like => {
 			command =>
 			  [ 'pg_restore', '-l', "$tempdir/defaults_custom_format.dump", ],
-			expected => $supports_gzip ?
-			qr/Compression: gzip/ :
+			expected => $supports_zstd ?
+			qr/Compression: zstd/ :
 			qr/Compression: none/,
-			name => 'data content is gzip-compressed by default if available',
+			name => 'data content is zstd-compressed by default if available',
 		},
 	},
 
@@ -408,8 +409,8 @@ my %pgdump_runs = (
 		command_like => {
 			command =>
 			  [ 'pg_restore', '-l', "$tempdir/defaults_dir_format", ],
-			expected => $supports_gzip ?
-			qr/Compression: gzip/ :
+			expected => $supports_zstd ?
+			qr/Compression: zstd/ :
 			qr/Compression: none/,
 			name => 'data content is gzip-compressed by default',
 		},
@@ -417,7 +418,7 @@ my %pgdump_runs = (
 			"$tempdir/defaults_dir_format/toc.dat",
 			"$tempdir/defaults_dir_format/blobs.toc",
 			$supports_gzip ?
-			"$tempdir/defaults_dir_format/*.dat.gz" :
+			"$tempdir/defaults_dir_format/*.dat.zst" :
 			"$tempdir/defaults_dir_format/*.dat",
 		],
 	},

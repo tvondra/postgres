@@ -856,6 +856,12 @@ ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 
 		Assert(xid != InvalidTransactionId);
 
+		/*
+		 * No explicit snapshot for transactional changes - we'll use a
+		 * snapshot derived later during apply (if not skipped).
+		 */
+		Assert(!snap);
+
 		oldcontext = MemoryContextSwitchTo(rb->context);
 
 		change = ReorderBufferGetChange(rb);
@@ -873,6 +879,9 @@ ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 	{
 		ReorderBufferTXN *txn = NULL;
 		volatile Snapshot snapshot_now = snap;
+
+		/* non-transactional changes require a valid snapshot */
+		Assert(snapshot_now);
 
 		if (xid != InvalidTransactionId)
 			txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);

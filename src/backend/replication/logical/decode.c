@@ -564,7 +564,7 @@ logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	TransactionId xid = XLogRecGetXid(r);
 	uint8		info = XLogRecGetInfo(r) & ~XLR_INFO_MASK;
 	RepOriginId origin_id = XLogRecGetOrigin(r);
-	Snapshot	snapshot;
+	Snapshot	snapshot = NULL;
 	xl_logical_message *message;
 
 	if (info != XLOG_LOGICAL_MESSAGE)
@@ -594,7 +594,14 @@ logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			  SnapBuildXactNeedsSkip(builder, buf->origptr)))
 		return;
 
-	snapshot = SnapBuildGetOrBuildSnapshot(builder);
+	/*
+	 * Get the snapshot we are expected to use. We only get here when we
+	 * already have a consistent snapshot, and the change is not meant to
+	 * be skipped.
+	 */
+	if (!message->transactional)
+		snapshot = SnapBuildGetOrBuildSnapshot(builder);
+
 	ReorderBufferQueueMessage(ctx->reorder, xid, snapshot, buf->endptr,
 							  message->transactional,
 							  message->message, /* first part of message is

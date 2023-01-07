@@ -29,6 +29,7 @@ OBJS = \
 	compress_io.o \
 	compress_lz4.o \
 	compress_none.o \
+	compress_zstd.o \
 	dumputils.o \
 	parallel.o \
 	pg_backup_archiver.o \

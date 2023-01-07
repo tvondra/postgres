@@ -5,6 +5,7 @@ pg_dump_common_sources = files(
   'compress_io.c',
   'compress_lz4.c',
   'compress_none.c',
+  'compress_zstd.c',
   'dumputils.c',
   'parallel.c',
   'pg_backup_archiver.c',

@@ -213,6 +213,77 @@ my %pgdump_runs = (
 		},
 	},
 
+	compression_zstd_custom => {
+		test_key       => 'compression',
+		compile_option => 'zstd',
+		dump_cmd       => [
+			'pg_dump',      '--format=custom',
+			'--compress=zstd', "--file=$tempdir/compression_zstd_custom.dump",
+			'postgres',
+		],
+		restore_cmd => [
+			'pg_restore',
+			"--file=$tempdir/compression_zstd_custom.sql",
+			"$tempdir/compression_zstd_custom.dump",
+		],
+		command_like => {
+			command => [
+				'pg_restore',
+				'-l', "$tempdir/compression_zstd_custom.dump",
+			],
+			expected => qr/Compression: zstd/,
+			name => 'data content is zstd compressed'
+		},
+	},
+
+	compression_zstd_dir => {
+		test_key       => 'compression',
+		compile_option => 'zstd',
+		dump_cmd       => [
+			'pg_dump',                              '--jobs=2',
+			'--format=directory',                   '--compress=zstd:1',
+			"--file=$tempdir/compression_zstd_dir", 'postgres',
+		],
+		# Give coverage for manually compressed blob.toc files during
+		# restore.
+		compress_cmd => {
+			program => $ENV{'ZSTD'},
+			args    => [
+				'-z', '-f', '--rm',
+				"$tempdir/compression_zstd_dir/blobs.toc",
+				"$tempdir/compression_zstd_dir/blobs.toc.zst",
+			],
+		},
+		# Verify that data files were compressed
+		glob_patterns => [
+			"$tempdir/compression_zstd_dir/toc.dat",
+		    "$tempdir/compression_zstd_dir/*.dat.zst",
+		],
+		restore_cmd => [
+			'pg_restore', '--jobs=2',
+			"--file=$tempdir/compression_zstd_dir.sql",
+			"$tempdir/compression_zstd_dir",
+		],
+	},
+
+	compression_zstd_plain => {
+		test_key       => 'compression',
+		compile_option => 'zstd',
+		dump_cmd       => [
+			'pg_dump', '--format=plain', '--compress=zstd',
+			"--file=$tempdir/compression_zstd_plain.sql.zst", 'postgres',
+		],
+		# Decompress the generated file to run through the tests.
+		compress_cmd => {
+			program => $ENV{'ZSTD'},
+			args    => [
+				'-d', '-f',
+				"$tempdir/compression_zstd_plain.sql.zst",
+				"$tempdir/compression_zstd_plain.sql",
+			],
+		},
+	},
+
 	clean => {
 		dump_cmd => [
 			'pg_dump',

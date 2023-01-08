@@ -70,6 +70,8 @@ typedef struct BrinOpaque
 
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
 
+#define BRIN_RANGE_IS_EMPTY(col) ((col)->bv_allnulls && (col)->bv_hasnulls)
+
 static BrinBuildState *initialize_brin_buildstate(Relation idxRel,
 												  BrinRevmap *revmap, BlockNumber pagesPerRange);
 static void terminate_brin_buildstate(BrinBuildState *state);
@@ -590,6 +592,17 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 						continue;
 
 					bval = &dtup->bt_columns[attno - 1];
+
+					/*
+					 * If the range has both allnulls and hasnulls set, it means
+					 * there are no rows in the range, so we can skip it (we know
+					 * there's nothing to match).
+					 */
+					if (BRIN_RANGE_IS_EMPTY(bval))
+					{
+						addrange = false;
+						break;
+					}
 
 					/*
 					 * First check if there are any IS [NOT] NULL scan keys,
@@ -1615,25 +1628,29 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 
 		if (opcinfo->oi_regular_nulls)
 		{
-			/* Adjust "hasnulls". */
-			if (!col_a->bv_hasnulls && col_b->bv_hasnulls)
-				col_a->bv_hasnulls = true;
-
-			/* If there are no values in B, there's nothing left to do. */
-			if (col_b->bv_allnulls)
+			/*
+			 * If B is empty (represents no rows), ignore it and just keep
+			 * A as is (might be empty etc.).
+			 */
+			if (BRIN_RANGE_IS_EMPTY(col_b))
 				continue;
 
 			/*
-			 * Adjust "allnulls".  If A doesn't have values, just copy the
-			 * values from B into A, and we're done.  We cannot run the
-			 * operators in this case, because values in A might contain
-			 * garbage.  Note we already established that B contains values.
+			 * Now we know B is not empty - it has either NULLs or data, or
+			 * some combination of it. We need to merge it into A somehow.
+			 *
+			 * If A is empty, we simply copy all the flags and data from B.
 			 */
-			if (col_a->bv_allnulls)
+			if (BRIN_RANGE_IS_EMPTY(col_a))
 			{
-				int			i;
+				int		i;
 
-				col_a->bv_allnulls = false;
+				col_a->bv_allnulls = col_b->bv_allnulls;
+				col_a->bv_hasnulls = col_b->bv_hasnulls;
+
+				/* If B has no data, we're done. */
+				if (col_b->bv_allnulls)
+					continue;
 
 				for (i = 0; i < opcinfo->oi_nstored; i++)
 					col_a->bv_values[i] =
@@ -1642,6 +1659,124 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 								  opcinfo->oi_typcache[i]->typlen);
 
 				continue;
+			}
+
+			/*
+			 * Both A and B are not empty, and we need to merge B into A.
+			 * There are multiple combinations of allnulls/hasnulls flags.
+			 * We've handled the "empty" case on either side above, so we
+			 * can ignore those cases - which leaves 3 flag combinations
+			 * on each side, so 9 combinations in total.
+			 *
+			 * A:all  A:has  B:all  B:has
+			 * true   false  true   false  - nothing to do
+			 * true   false  false  true   - set A:has=true, copy from B
+			 * true   false  false  false  - set A:has=true, copy from B
+			 *
+			 * false  true   true   false  - nothing to do
+			 * false  true   false  true   - flags OK, call union proc
+			 * false  true   false  false  - flags OK, call union proc
+			 *
+			 * false  false  true   false  - set A:has=true
+			 * false  false  false  true   - set A:has=true, call union proc
+			 * false  false  false  false  - flags OK, call union proc
+			 */
+			if (col_a->bv_allnulls && col_b->bv_allnulls)
+			{
+				/* nothing to do - both sides are NULL-only */
+				continue;
+			}
+			else if (col_a->bv_allnulls && col_b->bv_hasnulls)
+			{
+				int		i;
+				/*
+				 * A is NULL-only, but B has some non-NULL values too. So the
+				 * result has both NULLs and non-NULL values.
+				 */
+				col_a->bv_allnulls = false;
+				col_a->bv_hasnulls = true;
+
+				/* copy data from B to A */
+				for (i = 0; i < opcinfo->oi_nstored; i++)
+					col_a->bv_values[i] =
+						datumCopy(col_b->bv_values[i],
+								  opcinfo->oi_typcache[i]->typbyval,
+								  opcinfo->oi_typcache[i]->typlen);
+
+				continue;
+			}
+			else if (col_a->bv_allnulls)	/* B has no NULLs */
+			{
+				int		i;
+
+				/*
+				 * A is NULL-only, but B has some non-NULL values too. So the
+				 * result has both NULLs and non-NULL values.
+				 *
+				 * XXX This is the same as the preceding branch, but I've left
+				 * it here to keep the branches mapped 1:1 to the table of
+				 * combinations.
+				 */
+				col_a->bv_allnulls = false;
+				col_a->bv_hasnulls = true;
+
+				/* copy data from B to A */
+				for (i = 0; i < opcinfo->oi_nstored; i++)
+					col_a->bv_values[i] =
+						datumCopy(col_b->bv_values[i],
+								  opcinfo->oi_typcache[i]->typbyval,
+								  opcinfo->oi_typcache[i]->typlen);
+
+				continue;
+			}
+			else if (col_a->bv_hasnulls && col_b->bv_allnulls)
+			{
+				/* Nothing to do (flags are correct, no data to copy). */
+				continue;
+			}
+			else if (col_a->bv_hasnulls && col_b->bv_hasnulls)
+			{
+				/*
+				 * Flags are correct, but both A and B have non-NULL values.
+				 * So we have to call the support proc BRIN_PROCNUM_UNION
+				 * (so no 'continue' here).
+				 */
+			}
+			else if (col_a->bv_hasnulls)	/* B has no NULLs */
+			{
+				/*
+				 * B has no NULL values, so flags are OK. But both sides have
+				 * some non-NULL values, so we have to call the support proc
+				 * (so no 'continue' here).
+				 *
+				 * XXX Same as the preceding branch, but kept for 1:1 mapping.
+				 */
+			}
+			else if (col_b->bv_allnulls)	/* A has no NULLs */
+			{
+				/*
+				 * Just update the hasnulls flag to remember B has NULL values
+				 * and we're done (no data non-NULL values to copy/merge).
+				 */
+				col_a->bv_hasnulls = true;
+				continue;
+			}
+			else if (col_b->bv_hasnulls)	/* A has no NULLs */
+			{
+				/*
+				 * Update the hasnulls flag to remember B has NULL values, but
+				 * both sides have some non-NULL data so we needto call the
+				 * BRIN_PROCNUM_UNION procedure (so no 'continue' here).
+				 */
+				col_a->bv_hasnulls = true;
+			}
+			else
+			{
+				/*
+				 * Neither side has any NULL values, both sides have non-NULL
+				 * values, so we need to call the BRIN_PROCNUM_UNION proc (so
+				 * no 'continue' here).
+				 */
 			}
 		}
 
@@ -1717,19 +1852,67 @@ add_values_to_range(Relation idxRel, BrinDesc *bdesc, BrinMemTuple *dtup,
 		Datum		result;
 		BrinValues *bval;
 		FmgrInfo   *addValue;
+		bool		hasnulls;
 
 		bval = &dtup->bt_columns[keyno];
 
+		/*
+		 * Does the range have actual NULL values? Either of the flags can
+		 * be set, but we ignore the state before adding first row.
+		 *
+		 * We have to remember this, because we'll modify the flags and we
+		 * need to know if the range started as empty.
+		 */
+		hasnulls = (!BRIN_RANGE_IS_EMPTY(bval)) &&
+				   (bval->bv_hasnulls || bval->bv_allnulls);
+
+		/*
+		 * We need to consider whether the range is empty (not representing
+		 * any rows yet), i.e. if it has both flags (allnulls hasnulls) set
+		 * to true.
+		 *
+		 * If the range is empty, we clear the hasnulls flag - after adding
+		 * a value it won't be empty anymore. Either it'll be all-NULL (and
+		 * leaving allnulls=true covers that), or it will have no NULLs at
+		 * all (but building the state is up to the opclass).
+		 *
+		 * If the range is not empty, we remember if there are NULL values.
+		 * In this case both flags can't be set to true (that'd be empty
+		 * range), so it's either allnulls=true or hasnulls=true. But the
+		 * opclasses clear allnulls when adding the first non-NULL value,
+		 * so we need to remember this.
+		 *
+		 * When adding a null value we can do everything locally, without
+		 * calling BRIN_PROCNUM_ADDVALUE.
+		 */
+		if (BRIN_RANGE_IS_EMPTY(bval))
+		{
+			bval->bv_hasnulls = false;
+			modified = true;
+		}
+
+		/*
+		 * If the value we're adding is NULL, handle it locally. Otherwise
+		 * call the BRIN_PROCNUM_ADDVALUE procedure.
+		 */
 		if (bdesc->bd_info[keyno]->oi_regular_nulls && nulls[keyno])
 		{
 			/*
 			 * If the new value is null, we record that we saw it if it's the
 			 * first one; otherwise, there's nothing to do.
+			 *
+			 * We can't check "bv_hasnulls" because then we might end up with
+			 * both flags set to true, which is interpreted as empty range.
+			 * But that'd be wrong, because we've just added a value.
+			 *
+			 * So either the range has allnulls=true, or we have to set the
+			 * hasnulls flag. Check if we're changing the value to determine
+			 * if the index tuple was modified.
 			 */
-			if (!bval->bv_hasnulls)
+			if (!bval->bv_allnulls)
 			{
+				modified |= (!bval->bv_hasnulls);
 				bval->bv_hasnulls = true;
-				modified = true;
 			}
 
 			continue;
@@ -1745,6 +1928,20 @@ add_values_to_range(Relation idxRel, BrinDesc *bdesc, BrinMemTuple *dtup,
 								   nulls[keyno]);
 		/* if that returned true, we need to insert the updated tuple */
 		modified |= DatumGetBool(result);
+
+		/*
+		 * If the range was not empty and had NULL values, make sure we don't
+		 * forget about the NULL values. Either the allnulls flag is still set
+		 * to true, or (if the opclass cleared it) we need to set hasnulls=true.
+		 */
+		if (hasnulls && !bval->bv_allnulls)
+		{
+			modified |= (!bval->bv_hasnulls);
+			bval->bv_hasnulls = true;
+		}
+
+		/* We've added a row, so the summary should not be empty. */
+		Assert(!BRIN_RANGE_IS_EMPTY(bval));
 	}
 
 	return modified;

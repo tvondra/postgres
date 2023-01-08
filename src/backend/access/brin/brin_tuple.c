@@ -394,7 +394,20 @@ brin_form_placeholder_tuple(BrinDesc *brdesc, BlockNumber blkno, Size *size)
 
 		*bitP |= bitmask;
 	}
-	/* no need to set hasnulls */
+	/* set hasnulls true for all attributes */
+	for (keyno = 0; keyno < brdesc->bd_tupdesc->natts; keyno++)
+	{
+		if (bitmask != HIGHBIT)
+			bitmask <<= 1;
+		else
+		{
+			bitP += 1;
+			*bitP = 0x0;
+			bitmask = 1;
+		}
+
+		*bitP |= bitmask;
+	}
 
 	*size = len;
 	return rettuple;
@@ -493,8 +506,15 @@ brin_memtuple_initialize(BrinMemTuple *dtuple, BrinDesc *brdesc)
 	for (i = 0; i < brdesc->bd_tupdesc->natts; i++)
 	{
 		dtuple->bt_columns[i].bv_attno = i + 1;
+
+		/*
+		 * Each memtuple starts as if it represents no rows, which is indicated
+		 * by having bot allnulls and hasnulls set to true. We track this for
+		 * all columns, because we don't have a flag for the whole memtuple.
+		 */
 		dtuple->bt_columns[i].bv_allnulls = true;
-		dtuple->bt_columns[i].bv_hasnulls = false;
+		dtuple->bt_columns[i].bv_hasnulls = true;
+
 		dtuple->bt_columns[i].bv_values = (Datum *) currdatum;
 		currdatum += sizeof(Datum) * brdesc->bd_info[i]->oi_nstored;
 	}
@@ -556,6 +576,13 @@ brin_deform_tuple(BrinDesc *brdesc, BrinTuple *tuple, BrinMemTuple *dMemtuple)
 	for (valueno = 0, keyno = 0; keyno < brdesc->bd_tupdesc->natts; keyno++)
 	{
 		int			i;
+
+		/*
+		 * Make sure to overwrite the hasnulls flag, because it was initialized
+		 * to true by brin_memtuple_initialize and we don't want to skip it if
+		 * allnulls=true.
+		 */
+		dtup->bt_columns[keyno].bv_hasnulls = hasnulls[keyno];
 
 		if (allnulls[keyno])
 		{

@@ -405,7 +405,18 @@ fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum)
 
 	/* check the comment above nextval_internal()'s equivalent call. */
 	if (RelationNeedsWAL(rel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	START_CRIT_SECTION();
 
@@ -426,6 +437,7 @@ fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum)
 		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
 
 		xlrec.locator = rel->rd_locator;
+		xlrec.created = true;
 
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) tuple->t_data, tuple->t_len);
@@ -805,9 +817,33 @@ nextval_internal(Oid relid, bool check_permissions)
 	 * It's sufficient to ensure the toplevel transaction has an xid, no need
 	 * to assign xids subxacts, that'll already trigger an appropriate wait.
 	 * (Have to do that here, so we're outside the critical section)
+	 *
+	 * We have to ensure we have a proper XID, which will be included in
+	 * the XLOG record by XLogRecordAssemble. Otherwise the first nextval()
+	 * in a subxact (without any preceding changes) would get XID 0, and it
+	 * would then be impossible to decide which top xact it belongs to.
+	 * It'd also trigger assert in DecodeSequence. We only do that with
+	 * wal_level=logical, though.
+	 *
+	 * XXX This might seem unnecessary, because if there's no XID the xact
+	 * couldn't have done anything important yet, e.g. it could not have
+	 * created a sequence. But that's incorrect, because of subxacts. The
+	 * current subtransaction might not have done anything yet (thus no XID),
+	 * but an earlier one might have created the sequence.
 	 */
 	if (logit && RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();
@@ -844,6 +880,7 @@ nextval_internal(Oid relid, bool check_permissions)
 		seq->log_cnt = 0;
 
 		xlrec.locator = seqrel->rd_locator;
+		xlrec.created = false;
 
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) seqdatatuple.t_data, seqdatatuple.t_len);
@@ -1009,7 +1046,18 @@ do_setval(Oid relid, int64 next, bool iscalled)
 
 	/* check the comment above nextval_internal()'s equivalent call. */
 	if (RelationNeedsWAL(seqrel))
+	{
 		GetTopTransactionId();
+
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
+		if (XLogLogicalInfoActive())
+			GetCurrentTransactionId();
+	}
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
 	START_CRIT_SECTION();
@@ -1031,6 +1079,8 @@ do_setval(Oid relid, int64 next, bool iscalled)
 		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
 
 		xlrec.locator = seqrel->rd_locator;
+		xlrec.created = false;
+
 		XLogRegisterData((char *) &xlrec, sizeof(xl_seq_rec));
 		XLogRegisterData((char *) seqdatatuple.t_data, seqdatatuple.t_len);
 

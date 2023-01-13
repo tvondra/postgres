@@ -72,6 +72,10 @@ static void pg_decode_message(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, XLogRecPtr lsn,
 							  bool transactional, const char *prefix,
 							  Size sz, const char *message);
+static void pg_decode_sequence(LogicalDecodingContext *ctx,
+							  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+							  Relation rel, bool transactional,
+							  int64 value);
 static bool pg_decode_filter_prepare(LogicalDecodingContext *ctx,
 									 TransactionId xid,
 									 const char *gid);
@@ -112,6 +116,10 @@ static void pg_decode_stream_message(LogicalDecodingContext *ctx,
 									 ReorderBufferTXN *txn, XLogRecPtr lsn,
 									 bool transactional, const char *prefix,
 									 Size sz, const char *message);
+static void pg_decode_stream_sequence(LogicalDecodingContext *ctx,
+									  ReorderBufferTXN *txn, XLogRecPtr sequence_lsn,
+									  Relation rel, bool transactional,
+									  int64 value);
 static void pg_decode_stream_truncate(LogicalDecodingContext *ctx,
 									  ReorderBufferTXN *txn,
 									  int nrelations, Relation relations[],
@@ -135,6 +143,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->filter_by_origin_cb = pg_decode_filter;
 	cb->shutdown_cb = pg_decode_shutdown;
 	cb->message_cb = pg_decode_message;
+	cb->sequence_cb = pg_decode_sequence;
 	cb->filter_prepare_cb = pg_decode_filter_prepare;
 	cb->begin_prepare_cb = pg_decode_begin_prepare_txn;
 	cb->prepare_cb = pg_decode_prepare_txn;
@@ -147,6 +156,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->stream_commit_cb = pg_decode_stream_commit;
 	cb->stream_change_cb = pg_decode_stream_change;
 	cb->stream_message_cb = pg_decode_stream_message;
+	cb->stream_sequence_cb = pg_decode_stream_sequence;
 	cb->stream_truncate_cb = pg_decode_stream_truncate;
 }
 
@@ -159,6 +169,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	ListCell   *option;
 	TestDecodingData *data;
 	bool		enable_streaming = false;
+	bool		enable_sequences = false;
 
 	data = palloc0(sizeof(TestDecodingData));
 	data->context = AllocSetContextCreate(ctx->context,
@@ -259,6 +270,17 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
 								strVal(elem->arg), elem->defname)));
 		}
+		else if (strcmp(elem->defname, "include-sequences") == 0)
+		{
+
+			if (elem->arg == NULL)
+				continue;
+			else if (!parse_bool(strVal(elem->arg), &enable_sequences))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
+								strVal(elem->arg), elem->defname)));
+		}
 		else
 		{
 			ereport(ERROR,
@@ -269,7 +291,11 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 	}
 
+	/* remember the user explicitly requested sequences, otherwise the */
+	ctx->sequences_opt_given = enable_sequences;
+
 	ctx->streaming &= enable_streaming;
+	ctx->sequences &= enable_sequences;
 }
 
 /* cleanup this plugin's resources */
@@ -763,6 +789,35 @@ pg_decode_message(LogicalDecodingContext *ctx,
 }
 
 static void
+pg_decode_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
+				   XLogRecPtr sequence_lsn, Relation rel,
+				   bool transactional,
+				   int64 value)
+{
+	TestDecodingData *data = ctx->output_plugin_private;
+	TestDecodingTxnData *txndata = txn->output_plugin_private;
+
+	/* output BEGIN if we haven't yet, but only for the transactional case */
+	if (transactional)
+	{
+		if (data->skip_empty_xacts && !txndata->xact_wrote_changes)
+		{
+			pg_output_begin(ctx, data, txn, false);
+		}
+		txndata->xact_wrote_changes = true;
+	}
+
+	OutputPluginPrepareWrite(ctx, true);
+	appendStringInfoString(ctx->out, "sequence ");
+	appendStringInfoString(ctx->out,
+						   quote_qualified_identifier(get_namespace_name(get_rel_namespace(RelationGetRelid(rel))),
+													  RelationGetRelationName(rel)));
+	appendStringInfo(ctx->out, 	": transactional: %d value: " INT64_FORMAT,
+					 transactional, value);
+	OutputPluginWrite(ctx, true);
+}
+
+static void
 pg_decode_stream_start(LogicalDecodingContext *ctx,
 					   ReorderBufferTXN *txn)
 {
@@ -958,6 +1013,35 @@ pg_decode_stream_message(LogicalDecodingContext *ctx,
 		appendBinaryStringInfo(ctx->out, message, sz);
 	}
 
+	OutputPluginWrite(ctx, true);
+}
+
+static void
+pg_decode_stream_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
+						  XLogRecPtr sequence_lsn, Relation rel,
+						  bool transactional,
+						  int64 value)
+{
+	TestDecodingData *data = ctx->output_plugin_private;
+	TestDecodingTxnData *txndata = txn->output_plugin_private;
+
+	/* output BEGIN if we haven't yet, but only for the transactional case */
+	if (transactional)
+	{
+		if (data->skip_empty_xacts && !txndata->xact_wrote_changes)
+		{
+			pg_output_begin(ctx, data, txn, false);
+		}
+		txndata->xact_wrote_changes = true;
+	}
+
+	OutputPluginPrepareWrite(ctx, true);
+	appendStringInfoString(ctx->out, "streaming sequence ");
+	appendStringInfoString(ctx->out,
+						   quote_qualified_identifier(get_namespace_name(get_rel_namespace(RelationGetRelid(rel))),
+													  RelationGetRelationName(rel)));
+	appendStringInfo(ctx->out, 	": transactional: %d value: " INT64_FORMAT,
+					 transactional, value);
 	OutputPluginWrite(ctx, true);
 }
 

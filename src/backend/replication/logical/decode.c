@@ -1357,7 +1357,7 @@ sequence_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 	/* XXX how could we have sequence change without data? */
 	if(!datalen || !tupledata)
-		return;
+		elog(ERROR, "sequence decode missing tuple data");
 
 	tuplebuf = ReorderBufferGetTupleBuf(ctx->reorder, tuplelen);
 	DecodeSeqTuple(tupledata, datalen, tuplebuf);

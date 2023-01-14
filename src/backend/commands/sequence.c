@@ -409,6 +409,12 @@ fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum)
 	{
 		GetTopTransactionId();
 
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
 		if (XLogLogicalInfoActive())
 			GetCurrentTransactionId();
 	}
@@ -830,6 +836,12 @@ nextval_internal(Oid relid, bool check_permissions)
 	{
 		GetTopTransactionId();
 
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
 		if (XLogLogicalInfoActive())
 			GetCurrentTransactionId();
 	}
@@ -1038,6 +1050,12 @@ do_setval(Oid relid, int64 next, bool iscalled)
 	{
 		GetTopTransactionId();
 
+		/*
+		 * Make sure the subtransaction has a XID assigned, so that the sequence
+		 * increment WAL record is properly associated with it. This matters for
+		 * increments of sequences created/altered in the transaction, which are
+		 * handled as transactional.
+		 */
 		if (XLogLogicalInfoActive())
 			GetCurrentTransactionId();
 	}

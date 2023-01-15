@@ -1435,8 +1435,20 @@ apply_handle_sequence(StringInfo s)
 	LogicalRepSequence	seq;
 	Oid					relid;
 
+	bool				fake_xact = false;
+
+	if (!in_remote_transaction &&
+		!in_streamed_transaction)
+	{
+		in_remote_transaction = true;
+		fake_xact = true;
+	}
+
 	if (handle_streamed_transaction(LOGICAL_REP_MSG_SEQUENCE, s))
 		return;
+
+	if (fake_xact)
+		in_remote_transaction = false;
 
 	logicalrep_read_sequence(s, &seq);
 

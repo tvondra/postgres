@@ -2552,6 +2552,55 @@ create_mergejoin_path(PlannerInfo *root,
 	return pathnode;
 }
 
+static Path *
+find_pushdown_node(Path *path, Relids relids)
+{
+	/* the initial path has to be a valid pushdown candidate */
+	Assert(bms_is_subset(relids, path->parent->relids));
+
+	switch (path->pathtype)
+	{
+		case T_HashJoin:
+		case T_NestLoop:
+		case T_MergeJoin:
+			{
+				JoinPath *jpath = (JoinPath *) path;
+
+				/* can we push into one of the join sides? */
+				if (bms_is_subset(relids, jpath->outerjoinpath->parent->relids))
+					return find_pushdown_node(jpath->outerjoinpath, relids);
+				else if (bms_is_subset(relids, jpath->innerjoinpath->parent->relids))
+					return find_pushdown_node(jpath->innerjoinpath, relids);
+
+				/* if not, the join itself still matches */
+				return path;
+			}
+
+		/* for scans (or close similar nodes), push into that node */
+		case T_SeqScan:
+			elog(WARNING, "pushdown SeqScan");
+			return path;
+
+		case T_IndexScan:
+			elog(WARNING, "pushdown IndexScan");
+			return path;
+
+		case T_IndexOnlyScan:
+			elog(WARNING, "pushdown IndexOnlyScan");
+			return path;
+
+		case T_BitmapHeapScan:
+			elog(WARNING, "pushdown BitmapHeapPath");
+			return path;
+
+		/* FIXME handle upper relations that we can push through */
+		default:
+			break;
+	}
+
+	return NULL;
+}
+
 /*
  * create_hashjoin_path
  *	  Creates a pathnode corresponding to a hash join between two relations.
@@ -2620,6 +2669,59 @@ create_hashjoin_path(PlannerInfo *root,
 	pathnode->jpath.joinrestrictinfo = restrict_clauses;
 	pathnode->path_hashclauses = hashclauses;
 	/* final_cost_hashjoin will fill in pathnode->num_batches */
+
+	pathnode->filters = NIL;
+
+	/*
+	 * Consider bloom filter on the hash (outer side) with a pushdown to the
+	 * inner side. We need to be careful to only look at clauses of the right
+	 * form, that can be evaluated using a bloom filter - it needs to be an
+	 * equality with hash support. And it needs to be binary opclause with
+	 * each argument referencing one side of the join.
+	 *
+	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
+	 * hashclauses.
+	 *
+	 * XXX We can't modify the path yet, because it's referenced by multiple
+	 * upper paths for alternative plans.
+	 */
+	{
+		ListCell *lc;
+
+		foreach (lc, hashclauses)
+		{
+			Relids	relids;
+			Path   *path;
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+			/* grab relids for the inner side (not the hash) */
+			if (rinfo->outer_is_left)
+				relids = rinfo->right_relids;
+			else
+				relids = rinfo->left_relids;
+
+			/* now, try to pushdown the condition as far as possible */
+			path = find_pushdown_node(inner_path, relids);
+
+			/*
+			 * Did we find a good place for pushdown?
+			 *
+			 * XXX We should generally find at least one place where to
+			 * push the filter, but maybe not - not all node types allow
+			 * pushdown for now (only scans).
+			 */
+			if (path)
+			{
+				HashFilter *filter = makeNode(HashFilter);
+
+				filter->filterId = ++(root->glob->lastFilterId);
+				filter->path = path;
+				filter->clauses = list_make1(rinfo);
+
+				pathnode->filters = lappend(pathnode->filters, filter);
+			}
+		}
+	}
 
 	final_cost_hashjoin(root, pathnode, workspace, extra);
 
@@ -3131,6 +3233,7 @@ create_agg_path(PlannerInfo *root,
 		pathnode->path.pathkeys = subpath->pathkeys;	/* preserves order */
 	else
 		pathnode->path.pathkeys = NIL;	/* output is unordered */
+
 	pathnode->subpath = subpath;
 
 	pathnode->aggstrategy = aggstrategy;
@@ -3603,7 +3706,6 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
 	 * key columns to be replaced with new values.
 	 */
 	pathnode->path.pathkeys = NIL;
-
 	pathnode->subpath = subpath;
 	pathnode->rowMarks = rowMarks;
 	pathnode->epqParam = epqParam;

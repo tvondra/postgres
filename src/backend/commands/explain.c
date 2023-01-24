@@ -3040,6 +3040,7 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 static void
 show_hash_info(HashState *hashstate, ExplainState *es)
 {
+	Hash   *plan = (Hash *) hashstate->ps.plan;
 	HashInstrumentation hinstrument = {0};
 
 	/*
@@ -3101,6 +3102,8 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 								   hinstrument.nbatch_original, es);
 			ExplainPropertyInteger("Peak Memory Usage", "kB",
 								   spacePeakKb, es);
+			ExplainPropertyInteger("Bloom Filter", NULL, (int64)
+								   plan->nfilters, es);
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
@@ -3121,6 +3124,19 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 "Buckets: %d  Batches: %d  Memory Usage: %ldkB\n",
 							 hinstrument.nbuckets, hinstrument.nbatch,
 							 spacePeakKb);
+		}
+	}
+
+	if (plan->nfilters)
+	{
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+			ExplainPropertyInteger("Bloom Filter", NULL, (int64)
+								   plan->nfilters, es);
+		else
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Bloom filters: %d\n", plan->nfilters);
 		}
 	}
 }

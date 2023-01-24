@@ -146,6 +146,9 @@ typedef struct PlannerGlobal
 	/* highest plan node ID assigned */
 	int			lastPlanNodeId;
 
+	/* highest filter ID assigned */
+	Index		lastFilterId;
+
 	/* redo plan when TransactionXmin changes? */
 	bool		transientPlan;
 
@@ -1556,7 +1559,6 @@ typedef struct ParamPathInfo
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
 } ParamPathInfo;
 
-
 /*
  * Type "Path" is used as-is for sequential-scan paths, as well as some other
  * simple plan types that we don't need any extra information in the path for.
@@ -2098,6 +2100,27 @@ typedef struct MergePath
 	bool		materialize_inner;	/* add Materialize to inner? */
 } MergePath;
 
+
+/*
+ * Filter pushed to the node from a different part of the plan.
+ *
+ * Typically a bloom filter pushded down from a hash join.
+ */
+typedef struct HashFilter
+{
+	pg_node_attr(no_copy_equal, no_read)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within planner run) */
+	Index		filterId;
+
+	/* to which path is it pushed? */
+	Path	   *path;
+	List	   *clauses;
+
+} HashFilter;
+
 /*
  * A hashjoin path has these fields.
  *
@@ -2113,6 +2136,7 @@ typedef struct HashPath
 	List	   *path_hashclauses;	/* join clauses used for hashing */
 	int			num_batches;	/* number of batches expected */
 	Cardinality inner_rows_total;	/* total inner rows expected */
+	List	   *filters;			/* bloom filters to build */
 } HashPath;
 
 /*

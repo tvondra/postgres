@@ -1209,6 +1209,7 @@ typedef struct Hash
 	bool		skewInherit;	/* is outer join rel an inheritance tree? */
 	/* all other info is in the parent HashJoin node */
 	Cardinality rows_total;		/* estimate total rows if parallel_aware */
+	int			nfilters;		/* filters for pushdown */
 } Hash;
 
 /* ----------------

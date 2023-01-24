@@ -388,6 +388,7 @@ typedef struct Scan
 
 	Plan		plan;
 	Index		scanrelid;		/* relid is index into the range table */
+	List	   *filters;
 } Scan;
 
 /* ----------------
@@ -1187,6 +1188,38 @@ typedef struct GatherMerge
 	Bitmapset  *initParam;
 } GatherMerge;
 
+/*
+ * Filter pushed to the node from a different part of the plan.
+ *
+ * Typically a bloom filter pushded down from a hash join.
+ */
+typedef struct HashFilter
+{
+	pg_node_attr(no_copy_equal, no_read)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within planner run) */
+	Index		filterId;
+
+	/* expressions evaluated against the filter */
+	List	   *clauses;
+
+} HashFilter;
+
+typedef struct HashFilterReference
+{
+	pg_node_attr(no_copy_equal, no_read)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within planner run) */
+	HashFilter *filter;
+
+	/* expressions evaluated against the filter */
+	List	   *clauses;
+} HashFilterReference;
+
 /* ----------------
  *		hash build node
  *
@@ -1209,7 +1242,7 @@ typedef struct Hash
 	bool		skewInherit;	/* is outer join rel an inheritance tree? */
 	/* all other info is in the parent HashJoin node */
 	Cardinality rows_total;		/* estimate total rows if parallel_aware */
-	int			nfilters;		/* filters for pushdown */
+	List *		filters;		/* XXX number of filters for pushdown */
 } Hash;
 
 /* ----------------

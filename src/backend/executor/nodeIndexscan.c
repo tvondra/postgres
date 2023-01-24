@@ -103,6 +103,17 @@ IndexNext(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
+		/* build pushed-down filters */
+		ExecBuildFilters((ScanState *) node, estate,
+					 (FilterTypeExact | FilterTypeRange));
+
+		/*
+		 * try deriving scan keys from the available filters
+		 */
+		ExecFiltersDeriveScanKeys((ScanState *) node,
+								  &node->iss_NumScanKeys,
+								  &node->iss_ScanKeys);
+
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
@@ -817,6 +828,8 @@ ExecEndIndexScan(IndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------
@@ -958,6 +971,14 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitQual(node->indexqualorig, (PlanState *) indexstate);
 	indexstate->indexorderbyorig =
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
+
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

@@ -22,6 +22,8 @@
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "commands/vacuum.h"
+#include "common/hashfn.h"
+#include "common/pg_prng.h"
 #include "executor/execAsync.h"
 #include "foreign/fdwapi.h"
 #include "funcapi.h"
@@ -82,7 +84,10 @@ enum FdwScanPrivateIndex
 	 * String describing join i.e. names of relations being joined and types
 	 * of join, added when the scan is join
 	 */
-	FdwScanPrivateRelations
+	FdwScanPrivateRelations,
+
+	/* List of filters to (maybe) push to the remote server */
+	FdwScanPrivateFilters
 };
 
 /*
@@ -145,6 +150,7 @@ typedef struct PgFdwScanState
 	/* extracted fdw_private data */
 	char	   *query;			/* text of SELECT command */
 	List	   *retrieved_attrs;	/* list of retrieved attribute numbers */
+	List	   *filters;			/* list of filters pushed to this node */
 
 	/* for remote query execution */
 	PGconn	   *conn;			/* connection for the scan */
@@ -320,6 +326,7 @@ typedef struct
  * SQL functions
  */
 PG_FUNCTION_INFO_V1(postgres_fdw_handler);
+PG_FUNCTION_INFO_V1(postgres_fdw_bloom);
 
 /*
  * FDW callback routines
@@ -1396,7 +1403,8 @@ postgresGetForeignPlan(PlannerInfo *root,
 	deparseSelectStmtForRel(&sql, root, foreignrel, fdw_scan_tlist,
 							remote_exprs, best_path->path.pathkeys,
 							has_final_sort, has_limit, false,
-							&retrieved_attrs, &params_list);
+							&retrieved_attrs, &params_list,
+							best_path->path.filters);
 
 	/* Remember remote_exprs for possible use by postgresPlanDirectModify */
 	fpinfo->final_remote_exprs = remote_exprs;
@@ -1411,6 +1419,14 @@ postgresGetForeignPlan(PlannerInfo *root,
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name));
+	else
+		fdw_private = lappend(fdw_private, NIL);
+
+	/* if there are derived filters, add them to the list */
+	if (best_path->path.filters)
+		fdw_private = lappend(fdw_private, best_path->path.filters);
+	else
+		fdw_private = lappend(fdw_private, NIL);
 
 	/*
 	 * Create the ForeignScan node for the given relation.
@@ -1541,6 +1557,9 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
+
+	/* XXX perhaps pass using the fdw_private list too? */
+	fsstate->filters = node->ss.ss_Filters;
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -2823,7 +2842,8 @@ postgresExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	 * We do that here, not when the plan is created, because we can't know
 	 * what aliases ruleutils.c will assign at plan creation time.
 	 */
-	if (list_length(fdw_private) > FdwScanPrivateRelations)
+	if ((list_length(fdw_private) > FdwScanPrivateRelations) &&
+		(list_nth(fdw_private, FdwScanPrivateRelations) != NIL))
 	{
 		StringInfo	relations;
 		char	   *rawrelations;
@@ -3141,7 +3161,7 @@ estimate_path_cost_size(PlannerInfo *root,
 								remote_conds, pathkeys,
 								fpextra ? fpextra->has_final_sort : false,
 								fpextra ? fpextra->has_limit : false,
-								false, &retrieved_attrs, NULL);
+								false, &retrieved_attrs, NULL, NIL);
 
 		/* Get the remote estimate */
 		conn = GetConnection(fpinfo->user, false, NULL);
@@ -3712,6 +3732,9 @@ create_cursor(ForeignScanState *node)
 	PGconn	   *conn = fsstate->conn;
 	StringInfoData buf;
 	PGresult   *res;
+	ListCell   *lc;
+	bool		is_first;
+	StringInfoData	filters;
 
 	/* First, process a pending asynchronous request, if any. */
 	if (fsstate->conn_state->pendingAreq)
@@ -3740,6 +3763,272 @@ create_cursor(ForeignScanState *node)
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
 					 fsstate->cursor_number, fsstate->query);
+
+	/*
+	 * Now that we have the derived filters built, build and append conditions
+	 * for each filter.
+	 *
+	 * The exact condition depends on the filter type.
+	 *
+	 * For "exact" filter we generate an IN clause, listing all the values.
+	 *
+	 * For "range" filters the condition is either a single BETWEEN condition,
+	 * or a collection of range conditions with OR. This depends on whether the
+	 * constant EXACT_RANGE_CONDITIONS is defined.
+	 *
+	 * Finally, for "bloom" the condition is a function call checking a filter
+	 * and a hashed value.
+	 *
+	 * XXX All of this assumes a single-column filters.
+	 *
+	 * FIXME The filter may be empty (when the restriction on the dimension
+	 * eliminates all rows), in which case we should add false to the query
+	 * (or something like that). That's an optimization, but now it likely
+	 * fails due to accessing invalid elements.
+	 */
+	is_first = true;
+	initStringInfo(&filters);
+
+	foreach (lc, fsstate->filters)
+	{
+		char *expr;
+		FilterState *state = (FilterState *) lfirst(lc);
+		Filter *filter = state->filter;
+
+		/* make sure the filter is initialized and built */
+		Assert(state && state->built);
+
+		/*
+		 * For bloom filters we need the expresion with hash function call,
+		 * otherwise the plain expression.
+		 */
+		if (state->filter_type == FilterTypeBloom)
+			expr = ((String *) lsecond(filter->deparsed))->sval;
+		else
+			expr = ((String *) linitial(filter->deparsed))->sval;
+
+		/*
+		 * Deparse filter into conditions that we can send into remote node.
+		 *
+		 * exact => x IN (values)
+		 * range => x BETWEEN a AND b
+		 * range => (x BETWEEN a AND b) OR (x BETWEEN a AND b) OR (x IN (...))
+		 * Bloom filter => postgres_fdw_bloom(hashfunc(x), ....)
+		 */
+		if (state->filter_type == FilterTypeExact)
+		{
+			StringInfoData	cond;
+			StringInfoData	values;
+
+			Datum *filterValues = (Datum *) state->data;
+
+			initStringInfo(&values);
+
+			/* generate a formatted list of values for the "IN" clause */
+			for (int i = 0; i < state->nvalues; i++)
+			{
+				Datum	value = filterValues[i];
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	r;
+
+				getTypeOutputInfo(state->types[0], &outfuncoid, &isvarlena);
+
+				if (i > 0)
+					appendStringInfoString(&values, ", ");
+
+				r = OidFunctionCall1Coll(outfuncoid, state->collations[0], value);
+
+				/*
+				 * FIXME Does this need to have the extra apostrophes for each
+				 * value, or can we detect which types need it and which don't?
+				 */
+				appendStringInfo(&values, "'%s'", DatumGetPointer(r));
+			}
+
+			initStringInfo(&cond);
+			appendStringInfo(&cond, "%s IN (%s)", expr, values.data);
+
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
+
+			if (state->nvalues > 0)
+				appendStringInfo(&filters, "(%s)", cond.data);
+			else
+				appendStringInfoString(&filters, "(false)");
+
+			/* no need to evaluate the filter locally */
+			state->skip = true;
+		}
+#ifdef EXACT_RANGE_CONDITIONS
+		else if (state->filter_type == FilterTypeRange)
+		{
+			StringInfoData	cond;
+			StringInfoData	values;
+
+			Datum *filterValues = (Datum *) state->data;
+
+			initStringInfo(&cond);
+
+			/* first generate BETWEEN conditions for ranges (if any) */
+			for (int i = 0; i < state->nranges; i++)
+			{
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	start = filterValues[2*i];
+				Datum	end = filterValues[2*i + 1];
+
+				if (i > 0)
+					appendStringInfoString(&cond, " OR ");
+
+				getTypeOutputInfo(state->types[0], &outfuncoid, &isvarlena);
+
+				start = OidFunctionCall1Coll(outfuncoid, state->collations[0], start);
+				end = OidFunctionCall1Coll(outfuncoid, state->collations[0], end);
+
+				appendStringInfo(&cond, "(%s BETWEEN '%s' AND '%s')", expr,
+								 DatumGetPointer(start), DatumGetPointer(end));
+			}
+
+			initStringInfo(&values);
+
+			/* now generate values for the IN clause */
+			for (int i = 2 * state->nranges; i < state->nvalues; i++)
+			{
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	value = filterValues[i];
+
+				if (i > 2 * state->nranges)
+					appendStringInfoString(&values, ", ");
+
+				value = OidFunctionCall1Coll(outfuncoid, state->collations[0], start);
+
+				appendStringInfo(&values, "'%s'", DatumGetPointer(value));
+			}
+
+			/*
+			 * If there are individual values, append them to the condition (possibly
+			 * with OR, if there are ranges.
+			 */
+			if (state->nvalues > 2 * state->nranges)
+			{
+				if (state->nranges > 0)
+					appendStringInfoString(&cond, " OR ");
+
+				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
+			}
+
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
+
+			appendStringInfo(&filters, "(%s)", cond.data);
+
+			/* no need to evaluate locally */
+			state->skip = true;
+		}
+#else
+		else if (state->filter_type == FilterTypeRange)
+		{
+			StringInfoData	cond;
+
+			Datum *filterValues = (Datum *) state->data;
+
+			initStringInfo(&cond);
+
+			/* determine the single min/max range from all the individual ranges */
+			{
+				Datum	minval = 0,
+						maxval = 0;
+				Oid		outfuncoid;
+				bool	isvarlena;
+
+				if ((state->nranges > 0) && (state->nvalues > 2 * state->nranges))
+				{
+					minval = filterValues[0];
+					maxval = filterValues[2 * state->nranges - 1];
+
+					minval = Min(minval, filterValues[2 * state->nranges]);
+					maxval = Max(maxval, filterValues[state->nvalues - 1]);
+				}
+				else if ((state->nranges > 0) || (state->nvalues > 2 * state->nranges))
+				{
+					minval = filterValues[0];
+					maxval = filterValues[state->nvalues - 1];
+				}
+				else
+				{
+					// FIXME empty filter
+				}
+
+				getTypeOutputInfo(state->types[0], &outfuncoid, &isvarlena);
+
+				minval = OidFunctionCall1Coll(outfuncoid, state->collations[0], minval);
+				maxval = OidFunctionCall1Coll(outfuncoid, state->collations[0], maxval);
+
+				if (state->nvalues > 0)
+					appendStringInfo(&cond, "(%s BETWEEN '%s' AND '%s')", expr,
+									 DatumGetPointer(minval), DatumGetPointer(maxval));
+				else
+					appendStringInfo(&cond, "(false)");
+			}
+
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
+
+			appendStringInfo(&filters, "(%s)", cond.data);
+
+			/*
+			 * We've pushed down just a simplified condition, so evaluate
+			 * the filter locally too.
+			 */
+		}
+#endif
+		else if (state->filter_type == FilterTypeBloom)
+		{
+			char   *encoded;
+			int		nbytes;
+			char   *ptr;
+
+			StringInfoData cond;
+
+			/* serialize the filter as a bytea (in hex encoding) */
+			nbytes = (state->nbits / 8);
+
+			encoded = palloc(2 * nbytes + 1);
+			ptr = encoded;
+
+			ptr += hex_encode(state->data, nbytes, ptr);
+			*ptr = '\0';
+
+			initStringInfo(&cond);
+			appendStringInfo(&cond, "public.postgres_fdw_bloom(%s, %d, %d, '\\x%s')",
+							 expr, state->nhashes, state->nbits, encoded);
+
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
+
+			appendStringInfo(&filters, "(%s)", cond.data);
+
+			pfree(encoded);
+
+			/* no need to evaluate locally */
+			state->skip = true;
+		}
+
+		is_first = false;
+	}
+
+	/* format the SQL query and swap it into the buffer */
+	{
+		StringInfoData	tmp;
+		initStringInfo(&tmp);
+		appendStringInfo(&tmp, buf.data, filters.data);
+		resetStringInfo(&buf);
+		appendStringInfoString(&buf, tmp.data);
+
+		elog(WARNING, "SQL: %s", buf.data);
+	}
 
 	/*
 	 * Notice that we pass NULL for paramTypes, thus forcing the remote server
@@ -7806,4 +8095,45 @@ get_batch_size_option(Relation rel)
 	}
 
 	return batch_size;
+}
+
+/* XXX has to match the seeds used in execFilters */
+#define BLOOM_SEED_1	0x71d924af
+#define BLOOM_SEED_2	0xba48b314
+
+/*
+ * Check the value (or rather a hash of it) against the Bloom filter with
+ * specified parameters (number of hash functions, bits, ...).
+ */
+Datum
+postgres_fdw_bloom(PG_FUNCTION_ARGS)
+{
+	uint32	hashvalue = PG_GETARG_UINT32(0);
+	int		nhashes = PG_GETARG_INT32(1);
+	int		nbits = PG_GETARG_INT32(2);
+	bytea  *filter = PG_GETARG_BYTEA_P(3);
+	int			i;
+	uint64		h1,
+				h2;
+
+	char   *data = VARDATA_ANY(filter);
+
+	/* compute the hashes, used for the bloom filter */
+	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_2) % nbits;
+
+	/* compute the requested number of hashes */
+	for (i = 0; i < nhashes; i++)
+	{
+		/* h1 + h2 + f(i) */
+		uint32		h = (h1 + i * h2) % nbits;
+		uint32		byte = (h / 8);
+		uint32		bit = (h % 8);
+
+		/* if the bit is not set, the value is not there */
+		if (!(data[byte] & (0x01 << bit)))
+			PG_RETURN_BOOL(false);
+	}
+
+	PG_RETURN_BOOL(true);
 }

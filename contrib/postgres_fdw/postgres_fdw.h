@@ -245,7 +245,8 @@ extern void deparseSelectStmtForRel(StringInfo buf, PlannerInfo *root,
 									List *remote_conds, List *pathkeys,
 									bool has_final_sort, bool has_limit,
 									bool is_subquery,
-									List **retrieved_attrs, List **params_list);
+									List **retrieved_attrs, List **params_list,
+									List *filters);
 extern const char *get_jointype_name(JoinType jointype);
 
 /* in shippable.c */

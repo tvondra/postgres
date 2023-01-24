@@ -388,6 +388,7 @@ typedef struct Scan
 
 	Plan		plan;
 	Index		scanrelid;		/* relid is index into the range table */
+	List	   *filters;
 } Scan;
 
 /* ----------------
@@ -1186,6 +1187,52 @@ typedef struct GatherMerge
 	 */
 	Bitmapset  *initParam;
 } GatherMerge;
+
+/*
+ * Filter (e.g. a bloom filter) built on a dimension / subquery, to derive
+ * additional filters for joined tables.
+ *
+ * XXX local copy of the clauses (or rather expressions) in order to allow
+ * setrefs to do the right thing for this particular node
+ *
+ * XXX create in a separate memory context
+ *
+ * XXX define API of callbacks to allow alternative implementations (not
+ * just a bloom filter)
+ *
+ * XXX Add statistics to measure number of hits/misses, and perhaps disable
+ * querying the filter when only queries return false (we already paid the
+ * price for building it, though. Seems risky to disable based on initial
+ * chunk of data (possibly skewed) - maybe start sampling instead, and
+ * then start using the filter again if the filtering improves?
+ */
+typedef struct Filter
+{
+	pg_node_attr(no_equal, no_read)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within the planner run) */
+	Index		filterId;
+
+	/* expressions evaluated against the filter */
+	Selectivity	selectivity;
+
+	/* expressions for the scan node (the filter is pushed to) */
+	List	   *clauses;
+	List	   *deparsed;
+
+	/* expresions for the subplan (that we build the filter on) */
+	List	   *hashclauses;
+	List	   *hashoperators;
+	List	   *hashcollations;
+	bool		searcharray;
+	AttrNumber	attnum;
+
+	/* subplan evaluated to build the filter */
+	Plan	   *subplan;
+
+} Filter;
 
 /* ----------------
  *		hash build node

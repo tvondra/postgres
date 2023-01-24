@@ -158,6 +158,7 @@ static Plan *set_mergeappend_references(PlannerInfo *root,
 										int rtoffset);
 static void set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset);
 static Relids offset_relid_set(Relids relids, int rtoffset);
+static List *fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset);
 static Node *fix_scan_expr(PlannerInfo *root, Node *node,
 						   int rtoffset, double num_exec);
 static Node *fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context);
@@ -656,6 +657,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->scan.plan.qual =
 					fix_scan_list(root, splan->scan.plan.qual,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_SampleScan:
@@ -672,6 +675,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->tablesample = (TableSampleClause *)
 					fix_scan_expr(root, (Node *) splan->tablesample,
 								  rtoffset, 1);
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_IndexScan:
@@ -697,6 +702,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->indexorderbyorig =
 					fix_scan_list(root, splan->indexorderbyorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_IndexOnlyScan:
@@ -719,6 +726,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->indexqualorig =
 					fix_scan_list(root, splan->indexqualorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_BitmapHeapScan:
@@ -735,6 +744,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->bitmapqualorig =
 					fix_scan_list(root, splan->bitmapqualorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_TidScan:
@@ -1388,6 +1399,8 @@ set_indexonlyscan_references(PlannerInfo *root,
 	plan->indextlist = fix_scan_list(root, plan->indextlist,
 									 rtoffset, NUM_EXEC_TLIST((Plan *) plan));
 
+	plan->scan.filters = fix_scan_filters(root, (Plan *) plan, rtoffset);
+
 	pfree(index_itlist);
 
 	return (Plan *) plan;
@@ -1634,6 +1647,10 @@ set_foreignscan_references(PlannerInfo *root,
 			fix_scan_list(root, fscan->fdw_recheck_quals,
 						  rtoffset, NUM_EXEC_QUAL((Plan *) fscan));
 	}
+
+	/* FIXME should be done differently in the two branches above? */
+	fscan->scan.filters =
+		fix_scan_filters(root, (Plan *) fscan, rtoffset);
 
 	fscan->fs_relids = offset_relid_set(fscan->fs_relids, rtoffset);
 	fscan->fs_base_relids = offset_relid_set(fscan->fs_base_relids, rtoffset);
@@ -2115,6 +2132,43 @@ fix_alternative_subplan(PlannerInfo *root, AlternativeSubPlan *asplan,
 	root->isUsedSubplan[bestplan->plan_id - 1] = true;
 
 	return (Node *) bestplan;
+}
+
+/*
+ * fix_scan_filters
+ *		Fix references in expressions in filters pushed-down to scan node.
+ */
+static List *
+fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
+{
+	ListCell   *lc;
+	Scan	   *splan = (Scan *) plan;
+
+	/* hash clauses in filter references */
+	foreach(lc, splan->filters)
+	{
+		Filter *filter = (Filter *) lfirst(lc);
+		filter->clauses = fix_scan_list(root, filter->clauses,
+										rtoffset, NUM_EXEC_QUAL(plan));
+
+		/*
+		 * XXX Not sure this is correct, but it seems to work. We need to
+		 * translate the hashkey expressions to the subplan results.
+		 */
+		filter->hashclauses = (List *) fix_upper_expr(root,
+									(Node *) filter->hashclauses,
+									build_tlist_index(filter->subplan->targetlist),
+									OUTER_VAR,
+									rtoffset,
+									NRM_EQUAL,
+									NUM_EXEC_QUAL(plan));
+
+		filter->subplan = set_plan_refs(root,
+										filter->subplan,
+										rtoffset);
+	}
+
+	return splan->filters;
 }
 
 /*

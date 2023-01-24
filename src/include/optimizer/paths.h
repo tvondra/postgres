@@ -25,6 +25,10 @@ extern PGDLLIMPORT int geqo_threshold;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
 
+extern PGDLLIMPORT double filter_seqscan_cost;
+extern PGDLLIMPORT double filter_indexscan_cost;
+extern PGDLLIMPORT double filter_bitmapscan_cost;
+
 /* Hook for plugins to get control in set_rel_pathlist() */
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
 											RelOptInfo *rel,
@@ -81,6 +85,9 @@ extern bool indexcol_is_bool_constant_for_query(PlannerInfo *root,
 extern bool match_index_to_operand(Node *operand, int indexcol,
 								   IndexOptInfo *index);
 extern void check_index_predicates(PlannerInfo *root, RelOptInfo *rel);
+extern bool check_index_only(RelOptInfo *rel, IndexOptInfo *index);
+extern Path *choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel,
+							   List *paths);
 
 /*
  * tidpath.h
@@ -259,5 +266,8 @@ extern PathKey *make_canonical_pathkey(PlannerInfo *root,
 									   int strategy, bool nulls_first);
 extern void add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 									List *live_childrels);
+
+extern List *get_index_restriction_clauses(PlannerInfo *root,
+											   IndexOptInfo *index);
 
 #endif							/* PATHS_H */

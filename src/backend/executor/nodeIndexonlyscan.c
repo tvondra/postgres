@@ -81,8 +81,24 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
+	/*
+	 * build pushed-down filters
+	 *
+	 * XXX If we can't push-down any conditions (no common attnum), allow
+	 * also bloom filters.
+	 */
+	ExecBuildFilters((ScanState *) node, estate,
+					 (FilterTypeExact | FilterTypeRange));
+
 	if (scandesc == NULL)
 	{
+		/*
+		 * try deriving scan keys from the available filters
+		 */
+		ExecFiltersDeriveScanKeys((ScanState *) node,
+								  &node->ioss_NumScanKeys,
+								  &node->ioss_ScanKeys);
+
 		/*
 		 * We reach here if the index only scan is not parallel, or if we're
 		 * serially executing an index only scan that was planned to be
@@ -403,6 +419,8 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------
@@ -553,6 +571,14 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
 	indexstate->recheckqual =
 		ExecInitQual(node->recheckqual, (PlanState *) indexstate);
+
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

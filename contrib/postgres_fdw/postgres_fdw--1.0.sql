@@ -16,3 +16,8 @@ LANGUAGE C STRICT;
 CREATE FOREIGN DATA WRAPPER postgres_fdw
   HANDLER postgres_fdw_handler
   VALIDATOR postgres_fdw_validator;
+
+CREATE FUNCTION postgres_fdw_bloom(val int, nhashes int, nbits int, filter_data bytea)
+RETURNS bool
+AS 'MODULE_PATHNAME'
+LANGUAGE C;

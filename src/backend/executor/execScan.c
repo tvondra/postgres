@@ -162,6 +162,7 @@ ExecScan(ScanState *node,
 	ExprContext *econtext;
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
+	List *filters;
 
 	/*
 	 * Fetch data from node
@@ -169,14 +170,15 @@ ExecScan(ScanState *node,
 	qual = node->ps.qual;
 	projInfo = node->ps.ps_ProjInfo;
 	econtext = node->ps.ps_ExprContext;
+	filters = node->ss_Filters;
 
 	/* interrupt checks are in ExecScanFetch */
 
 	/*
-	 * If we have neither a qual to check nor a projection to do, just skip
-	 * all the overhead and return the raw scan tuple.
+	 * If we have neither a qual or pushed-down filter to check nor a projection
+	 * to do, just skip all the overhead and return the raw scan tuple.
 	 */
-	if (!qual && !projInfo)
+	if (!qual && !projInfo && !filters)
 	{
 		ResetExprContext(econtext);
 		return ExecScanFetch(node, accessMtd, recheckMtd);
@@ -218,13 +220,18 @@ ExecScan(ScanState *node,
 		econtext->ecxt_scantuple = slot;
 
 		/*
-		 * check that the current tuple satisfies the qual-clause
+		 * check that the current tuple satisfies the qual-clause and filte (if
+		 * any was pushed down)
 		 *
 		 * check for non-null qual here to avoid a function call to ExecQual()
 		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
+		 *
+		 * XXX Maybe we should check filters first, before quals, which may be
+		 * fairly expensive?
 		 */
-		if (qual == NULL || ExecQual(qual, econtext))
+		if ((qual == NULL || ExecQual(qual, econtext)) &&
+			(filters == NIL || ExecFilters(node, econtext)))
 		{
 			/*
 			 * Found a satisfactory scan tuple.

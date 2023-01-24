@@ -234,6 +234,14 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 									  estate->es_epq_active == NULL);
 
 	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	scanstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) scanstate, node->scan.filters,
+								   estate, eflags);
+
+	/*
 	 * Initialize FDW-related state.
 	 */
 	scanstate->fdwroutine = fdwroutine;
@@ -266,6 +274,17 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 			ExecInitNode(outerPlan(node), estate, eflags);
 
 	/*
+	 * build pushed-down filters, copy them into fsstate and reset the
+	 * list in ForeignScanState so that we don't check them locally too
+	 *
+	 * XXX Ideally we'd prefer exact/range filers, but we can push bloom
+	 * too (but we should check the remote server version and/if it has
+	 * the pg_bloom_filter function installed).
+	 */
+	ExecBuildFilters((ScanState *) scanstate, scanstate->ss.ps.state,
+					 (FilterTypeExact | FilterTypeRange | FilterTypeBloom));
+
+	/*
 	 * Tell the FDW to initialize the scan.
 	 */
 	if (node->operation != CMD_SELECT)
@@ -284,6 +303,13 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	}
 	else
 		fdwroutine->BeginForeignScan(scanstate, eflags);
+
+	/*
+	 * Postgres_fdw pushes the filter to remote node, no point in executing
+	 * it here again. Although, it depends on what is the exact clause - if we
+	 * generate a single range condition for exact/range filter, that may not
+	 * filter all rows. In which case we should recheck the filter locally too.
+	 */
 
 	return scanstate;
 }
@@ -320,6 +346,8 @@ ExecEndForeignScan(ForeignScanState *node)
 	if (node->ss.ps.ps_ResultTupleSlot)
 		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

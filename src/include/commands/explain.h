@@ -47,6 +47,7 @@ typedef struct ExplainState
 	bool		summary;		/* print total planning and execution timing */
 	bool		settings;		/* print modified settings */
 	bool		generic;		/* generate a generic plan */
+	bool		filters;		/* print info about bloom filters */
 	ExplainFormat format;		/* output format */
 	/* state for output formatting --- not reset for each new plan tree */
 	int			indent;			/* current indentation level */

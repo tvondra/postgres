@@ -1,0 +1,22 @@
+
+Derived Filters
+===============
+
+- Deparse clauses in filters derived from joined relations.
+- not tying this to hash joins
+- which nodes
+
+Estimation
+----------
+not applying selectivity twice
+
+
+Types of filters
+----------------
+
+
+Filters in Foreign Scan
+------------------------
+- deparsing details
+- deparsing range/bloom
+- postgres_fdw_bloom

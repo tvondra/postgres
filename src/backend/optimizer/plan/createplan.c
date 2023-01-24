@@ -4840,6 +4840,9 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewColumn,
 						  skewInherit);
 
+	/* track number of filters */
+	hash_plan->nfilters = list_length(best_path->filters);
+
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input
 	 * plan; this only affects EXPLAIN display not decisions.

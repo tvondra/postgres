@@ -702,11 +702,16 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->indexorderbyorig =
 					fix_scan_list(root, splan->indexorderbyorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_IndexOnlyScan:
 			{
 				IndexOnlyScan *splan = (IndexOnlyScan *) plan;
+
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 
 				return set_indexonlyscan_references(root, splan, rtoffset);
 			}
@@ -740,6 +745,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->bitmapqualorig =
 					fix_scan_list(root, splan->bitmapqualorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_TidScan:
@@ -1854,6 +1861,23 @@ set_mergeappend_references(PlannerInfo *root,
 	return (Plan *) mplan;
 }
 
+static List *
+fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset)
+{
+	ListCell   *lc;
+	Hash	   *hplan = (Hash *) plan;
+
+	/* hash clauses in filter references */
+	foreach(lc, hplan->filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		ref->clauses = fix_scan_list(root, ref->clauses,
+									 rtoffset, NUM_EXEC_QUAL(plan));
+	}
+
+	return hplan->filters;
+}
+
 /*
  * set_hash_references
  *	   Do set_plan_references processing on a Hash node
@@ -1879,6 +1903,8 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   rtoffset,
 					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
+
+	hplan->filters = fix_hash_filters(root, plan, rtoffset);
 
 	/* Hash doesn't project */
 	set_dummy_tlist_references(plan, rtoffset);
@@ -2115,7 +2141,6 @@ fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 
 	return splan->filters;
 }
-
 
 /*
  * fix_scan_expr

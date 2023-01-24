@@ -1639,6 +1639,9 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+
+	/* references to filters pushed down from joins above this relation */
+	List	   *filters;
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
@@ -2099,27 +2102,6 @@ typedef struct MergePath
 	bool		skip_mark_restore;	/* can executor skip mark/restore? */
 	bool		materialize_inner;	/* add Materialize to inner? */
 } MergePath;
-
-
-/*
- * Filter pushed to the node from a different part of the plan.
- *
- * Typically a bloom filter pushded down from a hash join.
- */
-typedef struct HashFilter
-{
-	pg_node_attr(no_copy_equal, no_read)
-
-	NodeTag		type;
-
-	/* ID for filter (unique within planner run) */
-	Index		filterId;
-
-	/* to which path is it pushed? */
-	Path	   *path;
-	List	   *clauses;
-
-} HashFilter;
 
 /*
  * A hashjoin path has these fields.

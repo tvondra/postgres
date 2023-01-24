@@ -2925,6 +2925,13 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
+	/* has references? */
+	if (best_path->filters)
+	{
+		elog(WARNING, "seqscan has %d filters", list_length(best_path->filters));
+		scan_plan->scan.filters = best_path->filters;
+	}
+
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
 	return scan_plan;
@@ -4702,6 +4709,55 @@ create_mergejoin_plan(PlannerInfo *root,
 	return join_plan;
 }
 
+static Path *
+find_pushdown_node(Path *path, Relids relids)
+{
+	/* the initial path has to be a valid pushdown candidate */
+	Assert(bms_is_subset(relids, path->parent->relids));
+
+	switch (path->pathtype)
+	{
+		case T_HashJoin:
+		case T_NestLoop:
+		case T_MergeJoin:
+			{
+				JoinPath *jpath = (JoinPath *) path;
+
+				/* can we push into one of the join sides? */
+				if (bms_is_subset(relids, jpath->outerjoinpath->parent->relids))
+					return find_pushdown_node(jpath->outerjoinpath, relids);
+				else if (bms_is_subset(relids, jpath->innerjoinpath->parent->relids))
+					return find_pushdown_node(jpath->innerjoinpath, relids);
+
+				/* if not, the join itself still matches */
+				return path;
+			}
+
+		/* for scans (or close similar nodes), push into that node */
+		case T_SeqScan:
+			elog(WARNING, "pushdown SeqScan");
+			return path;
+
+		case T_IndexScan:
+			elog(WARNING, "pushdown IndexScan");
+			return path;
+
+		case T_IndexOnlyScan:
+			elog(WARNING, "pushdown IndexOnlyScan");
+			return path;
+
+		case T_BitmapHeapScan:
+			elog(WARNING, "pushdown BitmapHeapPath");
+			return path;
+
+		/* FIXME handle upper relations that we can push through */
+		default:
+			break;
+	}
+
+	return NULL;
+}
+
 static HashJoin *
 create_hashjoin_plan(PlannerInfo *root,
 					 HashPath *best_path)
@@ -4722,6 +4778,78 @@ create_hashjoin_plan(PlannerInfo *root,
 	AttrNumber	skewColumn = InvalidAttrNumber;
 	bool		skewInherit = false;
 	ListCell   *lc;
+	List	   *filters = NIL;
+
+	/*
+	 * try to pushdown bloom filter
+	 *
+	 * Consider bloom filter on the hash (outer side) with a pushdown to the
+	 * inner side. We need to be careful to only look at clauses of the right
+	 * form, that can be evaluated using a bloom filter - it needs to be an
+	 * equality with hash support. And it needs to be binary opclause with
+	 * each argument referencing one side of the join.
+	 *
+	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
+	 * hashclauses.
+	 *
+	 * XXX We can't modify the path yet, because it's referenced by multiple
+	 * upper paths for alternative plans.
+	 */
+	{
+		ListCell *lc2;
+
+		foreach (lc2, best_path->path_hashclauses)
+		{
+			Relids	relids;
+			Path   *path;
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
+			OpExpr *opexpr;
+			Node   *expr;
+
+			/* guaranteed by clause_sides_match_join */
+			opexpr = (OpExpr *) rinfo->clause;
+
+			/* grab relids for the inner side (not the hash) */
+			if (rinfo->outer_is_left)
+			{
+				relids = rinfo->right_relids;
+				expr = (Node *) linitial(opexpr->args);
+			}
+			else
+			{
+				expr = (Node *) lsecond(opexpr->args);
+				relids = rinfo->left_relids;
+			}
+
+			/* now, try to pushdown the condition as far as possible */
+			path = find_pushdown_node(best_path->jpath.outerjoinpath, relids);
+
+			/*
+			 * Did we find a good place for pushdown?
+			 *
+			 * XXX We should generally find at least one place where to
+			 * push the filter, but maybe not - not all node types allow
+			 * pushdown for now (only scans).
+			 */
+			if (path)
+			{
+				HashFilter *filter = makeNode(HashFilter);
+				HashFilterReference *ref = makeNode(HashFilterReference);
+
+				filter->filterId = ++(root->glob->lastFilterId);
+				filter->clauses = list_make1(expr);
+
+				ref->filter = filter;
+				ref->clauses = filter->clauses;
+
+				/* add the filter */
+				filters = lappend(filters, filter);
+
+				/* add the reference */
+				path->filters = lappend(path->filters, ref);
+			}
+		}
+	}
 
 	/*
 	 * HashJoin can project, so we don't have to demand exact tlists from the
@@ -4840,8 +4968,8 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewColumn,
 						  skewInherit);
 
-	/* track number of filters */
-	hash_plan->nfilters = list_length(best_path->filters);
+	/* FIXME add as parameter */
+	hash_plan->filters = filters;
 
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input
@@ -5480,6 +5608,7 @@ make_seqscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 
 	return node;
 }
@@ -5523,6 +5652,7 @@ make_indexscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
@@ -5553,6 +5683,7 @@ make_indexonlyscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->recheckqual = recheckqual;
@@ -5599,6 +5730,7 @@ make_bitmap_heapscan(List *qptlist,
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->bitmapqualorig = bitmapqualorig;
 
 	return node;
@@ -5618,6 +5750,7 @@ make_tidscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tidquals = tidquals;
 
 	return node;
@@ -5637,6 +5770,7 @@ make_tidrangescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tidrangequals = tidrangequals;
 
 	return node;
@@ -5656,6 +5790,7 @@ make_subqueryscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->subplan = subplan;
 	node->scanstatus = SUBQUERY_SCAN_UNKNOWN;
 
@@ -5677,6 +5812,7 @@ make_functionscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->functions = functions;
 	node->funcordinality = funcordinality;
 
@@ -5697,6 +5833,7 @@ make_tablefuncscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tablefunc = tablefunc;
 
 	return node;
@@ -5716,6 +5853,7 @@ make_valuesscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->values_lists = values_lists;
 
 	return node;
@@ -5736,6 +5874,7 @@ make_ctescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->ctePlanId = ctePlanId;
 	node->cteParam = cteParam;
 
@@ -5757,6 +5896,7 @@ make_namedtuplestorescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->enrname = enrname;
 
 	return node;
@@ -5776,6 +5916,7 @@ make_worktablescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->wtParam = wtParam;
 
 	return node;
@@ -5800,6 +5941,7 @@ make_foreignscan(List *qptlist,
 	plan->lefttree = outer_plan;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 
 	/* these may be overridden by the FDW's PlanDirectModify callback. */
 	node->operation = CMD_SELECT;

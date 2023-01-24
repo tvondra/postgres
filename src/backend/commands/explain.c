@@ -109,6 +109,10 @@ static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
+static void show_hash_filters(HashState *planstate, List *ancestors,
+							  ExplainState *es);
+static void show_scan_filters(Scan *scan, PlanState *planstate, List *ancestors,
+							  ExplainState *es);
 static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
@@ -1773,6 +1777,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_IndexOnlyScan:
 			show_scan_qual(((IndexOnlyScan *) plan)->indexqual,
@@ -1789,6 +1794,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (es->analyze)
 				ExplainPropertyFloat("Heap Fetches", NULL,
 									 planstate->instrument->ntuples2, 0, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_BitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
@@ -1806,6 +1812,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										   planstate, es);
 			if (es->analyze)
 				show_tidbitmap_info((BitmapHeapScanState *) planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_SampleScan:
 			show_tablesample(((SampleScan *) plan)->tablesample,
@@ -1822,6 +1829,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_Gather:
 			{
@@ -2053,6 +2061,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_Hash:
 			show_hash_info(castNode(HashState, planstate), es);
+			show_hash_filters(castNode(HashState, planstate), ancestors, es);
 			break;
 		case T_Memoize:
 			show_memoize_info(castNode(MemoizeState, planstate), ancestors,
@@ -3040,7 +3049,6 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 static void
 show_hash_info(HashState *hashstate, ExplainState *es)
 {
-	Hash   *plan = (Hash *) hashstate->ps.plan;
 	HashInstrumentation hinstrument = {0};
 
 	/*
@@ -3102,8 +3110,6 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 								   hinstrument.nbatch_original, es);
 			ExplainPropertyInteger("Peak Memory Usage", "kB",
 								   spacePeakKb, es);
-			ExplainPropertyInteger("Bloom Filter", NULL, (int64)
-								   plan->nfilters, es);
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
@@ -3126,17 +3132,34 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 spacePeakKb);
 		}
 	}
+}
 
-	if (plan->nfilters)
+static void
+show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
+{
+	Hash   *plan = (Hash *) hashstate->ps.plan;
+
+	if (plan->filters)
 	{
 		if (es->format != EXPLAIN_FORMAT_TEXT)
 			ExplainPropertyInteger("Bloom Filter", NULL, (int64)
-								   plan->nfilters, es);
+								   list_length(plan->filters), es);
 		else
 		{
+			ListCell *lc;
+
 			ExplainIndentText(es);
 			appendStringInfo(es->str,
-							 "Bloom filters: %d\n", plan->nfilters);
+							 "Bloom filters: %d\n", list_length(plan->filters));
+
+			foreach (lc, plan->filters)
+			{
+				HashFilter *filter = (HashFilter *) lfirst(lc);
+
+				show_scan_qual(filter->clauses,
+							   "Bloom filter", (PlanState *) hashstate,
+							   ancestors, es);
+			}
 		}
 	}
 }
@@ -3781,6 +3804,40 @@ static void
 ExplainScanTarget(Scan *plan, ExplainState *es)
 {
 	ExplainTargetRel((Plan *) plan, plan->scanrelid, es);
+}
+
+/*
+ * Show filters attached to a Scan node (if any)
+ */
+static void
+show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainState *es)
+{
+	if (!plan->filters)
+		return;
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		ListCell *lc;
+
+		ExplainIndentText(es);
+		appendStringInfo(es->str, "Scan filters: %d\n",
+						 list_length(plan->filters));
+
+		elog(WARNING, "filters %p", plan->filters);
+
+		foreach (lc, plan->filters)
+		{
+			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+
+			show_scan_qual(ref->clauses,
+						   "Bloom filter", planstate, ancestors, es);
+		}
+	}
+	else
+	{
+		ExplainPropertyInteger("Scan Filters", NULL,
+							   list_length(plan->filters), es);
+	}
 }
 
 /*

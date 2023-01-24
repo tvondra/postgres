@@ -158,6 +158,7 @@ static Plan *set_mergeappend_references(PlannerInfo *root,
 										int rtoffset);
 static void set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset);
 static Relids offset_relid_set(Relids relids, int rtoffset);
+static List *fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset);
 static Node *fix_scan_expr(PlannerInfo *root, Node *node,
 						   int rtoffset, double num_exec);
 static Node *fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context);
@@ -658,6 +659,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->scan.plan.qual =
 					fix_scan_list(root, splan->scan.plan.qual,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_SampleScan:
@@ -2095,6 +2098,24 @@ fix_alternative_subplan(PlannerInfo *root, AlternativeSubPlan *asplan,
 
 	return (Node *) bestplan;
 }
+
+static List *
+fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
+{
+	ListCell   *lc;
+	Scan	   *splan = (Scan *) plan;
+
+	/* hash clauses in filter references */
+	foreach(lc, splan->filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		ref->clauses = fix_scan_list(root, ref->clauses,
+									 rtoffset, NUM_EXEC_QUAL(plan));
+	}
+
+	return splan->filters;
+}
+
 
 /*
  * fix_scan_expr

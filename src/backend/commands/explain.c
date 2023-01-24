@@ -78,6 +78,9 @@ static void show_qual(List *qual, const char *qlabel,
 static void show_scan_qual(List *qual, const char *qlabel,
 						   PlanState *planstate, List *ancestors,
 						   ExplainState *es);
+static void show_scan_derived_qual(const char *qlabel,
+								   Scan *plan, PlanState *planstate, List *ancestors,
+								   ExplainState *es);
 static void show_upper_qual(List *qual, const char *qlabel,
 							PlanState *planstate, List *ancestors,
 							ExplainState *es);
@@ -109,6 +112,8 @@ static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
+static void show_scan_filters(Scan *scan, PlanState *planstate, List *ancestors,
+							  ExplainState *es);
 static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
@@ -192,6 +197,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 			es->settings = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "generic_plan") == 0)
 			es->generic = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "filters") == 0)
+			es->filters = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "timing") == 0)
 		{
 			timing_set = true;
@@ -1778,6 +1785,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IndexScan:
 			show_scan_qual(((IndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((IndexScan *) plan)->indexqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -1787,10 +1796,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_IndexOnlyScan:
 			show_scan_qual(((IndexOnlyScan *) plan)->indexqual,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((IndexOnlyScan *) plan)->recheckqual)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -1803,14 +1815,20 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (es->analyze)
 				ExplainPropertyFloat("Heap Fetches", NULL,
 									 planstate->instrument->ntuples2, 0, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_BitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_BitmapHeapScan:
 			show_scan_qual(((BitmapHeapScan *) plan)->bitmapqualorig,
 						   "Recheck Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Filter",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((BitmapHeapScan *) plan)->bitmapqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -1820,6 +1838,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										   planstate, es);
 			if (es->analyze)
 				show_tidbitmap_info((BitmapHeapScanState *) planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_SampleScan:
 			show_tablesample(((SampleScan *) plan)->tablesample,
@@ -1833,9 +1852,12 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WorkTableScan:
 		case T_SubqueryScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Filter",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_Gather:
 			{
@@ -1962,10 +1984,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_ForeignScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Filter",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_foreignscan_info((ForeignScanState *) planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_CustomScan:
 			{
@@ -3779,6 +3804,184 @@ static void
 ExplainScanTarget(Scan *plan, ExplainState *es)
 {
 	ExplainTargetRel((Plan *) plan, plan->scanrelid, es);
+}
+
+/*
+ * show_scan_filters
+ *		Show filters attached to a Scan node (if any).
+ *
+ * XXX It's a bit annoying we show exactly the same information for both the
+ * filter and then also the reference.
+ */
+static void
+show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainState *es)
+{
+	if (!es->filters)
+		return;
+
+	if (!plan->filters)
+		return;
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		ListCell *lc1;
+		ListCell *lc2;
+
+		forboth (lc1, plan->filters, lc2, ((ScanState *) planstate)->ss_Filters)
+		{
+			Filter *filter = (Filter *) lfirst(lc1);
+			FilterState *state = (FilterState *) lfirst(lc2);
+
+			List	   *context;
+			char	   *exprstr;
+			bool		useprefix;
+			StringInfoData	label;
+			char	   *filtertype = "unknown";
+
+			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+			/* Set up deparsing context */
+			context = set_deparse_context_plan(es->deparse_cxt,
+											   planstate->plan,
+											   ancestors);
+
+			/*
+			 * Deparse the expression
+			 *
+			 * XXX we can't deparse hash clauses - there are OUTER_VAR references,
+			 * which causes failures because the filter subplan is not a regular
+			 * outer subplan (at least that's my understanding of the failures).
+			 */
+			exprstr = deparse_expression((Node *) filter->clauses, context, useprefix, false);
+
+			switch (state->filter_type)
+			{
+				case FilterTypeBloom:
+					filtertype = "bloom";
+					break;
+
+				case FilterTypeExact:
+					filtertype = "exact";
+					break;
+
+				case FilterTypeRange:
+					filtertype = "range";
+					break;
+
+				default:
+					filtertype = "unknown";
+			}
+
+			initStringInfo(&label);
+
+			appendStringInfo(&label, "Filter %d: (%s)  Type: %s  Values: %d",
+							 state->filterId, exprstr, filtertype, state->nvalues);
+
+			if (state->filter_type == FilterTypeBloom)
+				appendStringInfo(&label, "  Size: %d bits (%.1f kB)",
+								 state->nbits, ((state->nbits/8) /1024.0)); /* size in bytes */
+			else if (state->filter_type == FilterTypeRange)
+				appendStringInfo(&label, "  Ranges: %d  Size: %.1f (%.1f) kB",
+								 state->nranges,
+								 state->nallocated * sizeof(Datum) / 1024.0,
+								 state->nvalues * sizeof(Datum) / 1024.0);
+			else
+				appendStringInfo(&label, "  Size: %.1f (%.1f) kB",
+								 state->nallocated * sizeof(Datum) / 1024.0,
+								 state->nvalues * sizeof(Datum) / 1024.0);
+
+			if (!state->skip)
+				appendStringInfo(&label, "  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
+								 state->nqueries, state->nhits,
+								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+
+			ancestors = lcons(plan, ancestors);
+
+			ExplainNode(state->planstate, ancestors,
+					"Filter", label.data, es);
+
+			ancestors = list_delete_first(ancestors);
+		}
+	}
+	else
+	{
+		/* FIXME show additional info about the filters */
+		ExplainPropertyInteger("Scan Filters", NULL,
+							   list_length(plan->filters), es);
+	}
+}
+
+/*
+ * show_scan_filters
+ *		Show filters attached to a Scan node (if any).
+ *
+ * XXX It's a bit annoying we show exactly the same information for both the
+ * filter and then also the reference.
+ */
+static void
+show_scan_derived_qual(const char *qlabel,
+					   Scan *plan, PlanState *planstate, List *ancestors,
+					   ExplainState *es)
+{
+	if (!es->filters)
+		return;
+
+	if (!plan->filters)
+		return;
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		ListCell *lc1;
+		ListCell *lc2;
+
+		forboth (lc1, plan->filters, lc2, ((ScanState *) planstate)->ss_Filters)
+		{
+			Filter *filter = (Filter *) lfirst(lc1);
+			FilterState *state = (FilterState *) lfirst(lc2);
+
+			List	   *context;
+			char	   *exprstr;
+			bool		useprefix;
+
+			if (state->skip)
+				continue;
+
+			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+			/* Set up deparsing context */
+			context = set_deparse_context_plan(es->deparse_cxt,
+											   planstate->plan,
+											   ancestors);
+
+			/*
+			 * Deparse the expression
+			 *
+			 * XXX we can't deparse hash clauses - there are OUTER_VAR references,
+			 * which causes failures because the filter subplan is not a regular
+			 * outer subplan (at least that's my understanding of the failures).
+			 */
+			exprstr = deparse_expression((Node *) filter->clauses, context, useprefix, false);
+
+			ExplainIndentText(es);
+
+			switch (state->filter_type)
+			{
+				case FilterTypeExact:
+					appendStringInfo(es->str, "%s: %s IN (...)\n", qlabel, exprstr);
+					break;
+				case FilterTypeRange:
+					appendStringInfo(es->str, "%s: (%s >= A) AND (%s <= B)\n", qlabel, exprstr, exprstr);
+					break;
+				case FilterTypeBloom:
+					appendStringInfo(es->str, "%s: (%s IN BLOOM X)\n", qlabel, exprstr);
+					break;
+			}
+		}
+	}
+	else
+	{
+		// FIXME info on derived keys for non-text output
+	}
 }
 
 /*

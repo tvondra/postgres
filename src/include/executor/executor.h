@@ -14,6 +14,7 @@
 #ifndef EXECUTOR_H
 #define EXECUTOR_H
 
+#include "access/skey.h"
 #include "executor/execdesc.h"
 #include "fmgr.h"
 #include "nodes/lockoptions.h"
@@ -675,5 +676,21 @@ extern ResultRelInfo *ExecLookupResultRelByOid(ModifyTableState *node,
 											   Oid resultoid,
 											   bool missing_ok,
 											   bool update_cache);
+
+/*
+ * prototypes from functions in execFilters.c
+ */
+extern List *ExecInitFilters(PlanState *planstate, List *filters,
+							 EState *estate, int eflags);
+extern void ExecBuildFilters(ScanState *node, EState *estate, int types);
+extern void ExecEndFilters(List *filters);
+
+extern bool ExecFilterContainsValue(FilterState *filter,
+									ExprContext *econtext);
+
+extern bool ExecFilters(ScanState *node, ExprContext *econtext);
+
+extern int ExecFiltersCountScanKeys(FilterState *filter);
+extern void ExecFiltersDeriveScanKeys(ScanState *state, int *nkeys, ScanKey *keys);
 
 #endif							/* EXECUTOR_H  */

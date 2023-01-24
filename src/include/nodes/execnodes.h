@@ -715,6 +715,9 @@ typedef struct EState
 	 */
 	List	   *es_insert_pending_result_relations;
 	List	   *es_insert_pending_modifytables;
+
+	/* Pushed-down filters. */
+	List	   *es_filters;
 } EState;
 
 
@@ -1465,6 +1468,7 @@ typedef struct ScanState
 	Relation	ss_currentRelation;
 	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
+	List	   *ss_Filters;
 } ScanState;
 
 /* ----------------
@@ -2641,6 +2645,66 @@ typedef struct SharedHashInfo
 	int			num_workers;
 	HashInstrumentation hinstrument[FLEXIBLE_ARRAY_MEMBER];
 } SharedHashInfo;
+
+/*
+ * Explicitly assigned values, to allow bitmasks specifying "acceptable"
+ * filter types.
+ */
+typedef enum FilterType
+{
+	FilterTypeBloom = 0x01,
+	FilterTypeExact = 0x02,
+	FilterTypeRange = 0x04
+} FilterType;
+
+/*
+ * State of a filter built on top of a Hash.
+ */
+typedef struct FilterState
+{
+	NodeTag		type;
+
+	Index		filterId;		/* ID of the filter */
+
+	Filter	   *filter;			/* link to the filter */
+	List	   *clauses;		/* list of ExprState nodes */
+	List	   *hashclauses;	/* list of ExprState nodes */
+
+	PlanState  *planstate;		/* planstate for the subplan */
+
+	/* functions used to hash data, NULL handling, types, collations etc. */
+	FmgrInfo   *hashfunctions;
+	bool	   *hashStrict;
+	Oid		   *collations;
+	Oid		   *types;
+	bool		keepNulls;
+
+	MemoryContext	filterCxt;
+
+	/* private data used by the filter implementation (e.g. qsort context) */
+	void	   *private_data;
+
+	FilterType	filter_type;	/* exact/range/bloom filter? */
+	bool		built;		/* is the filter populated with data? */
+	bool		skip;		/* should we skip this filter? */
+
+	/* statistics about querying the filter */
+	int64		nqueries;
+	int64		nhits;
+
+	/* fields used by exact/range filters */
+	int			nallocated;
+	int			nvalues;
+	int			nranges;
+
+	/* fields used by Bloom filters */
+	int			nhashes;
+	int			nbits;
+
+	/* data of the filter (raw values or bitmap) */
+	char	   *data;
+
+} FilterState;
 
 /* ----------------
  *	 HashState information

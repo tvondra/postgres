@@ -18,6 +18,7 @@ OBJS = \
 	execCurrent.o \
 	execExpr.o \
 	execExprInterp.o \
+	execFilters.o \
 	execGrouping.o \
 	execIndexing.o \
 	execJunk.o \

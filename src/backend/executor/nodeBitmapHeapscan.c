@@ -184,6 +184,16 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		node->initialized = true;
 	}
 
+	/*
+	 * build derived filters
+	 *
+	 * XXX For the heap scan we can evaluate any filter, because the pushed
+	 * down conditions are evaluated at bitmap index scan level. But maybe
+	 * we could reuse the filter ... (instead of building it twice, as now).
+	 */
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state,
+					 (FilterTypeExact | FilterTypeRange | FilterTypeBloom));
+
 	for (;;)
 	{
 		bool		skip_fetch;
@@ -694,6 +704,8 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 	 * close heap scan
 	 */
 	table_endscan(scanDesc);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------
@@ -803,6 +815,14 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 														  estate->es_snapshot,
 														  0,
 														  NULL);
+
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	scanstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) scanstate, node->scan.filters,
+								   estate, eflags);
 
 	/*
 	 * all done.

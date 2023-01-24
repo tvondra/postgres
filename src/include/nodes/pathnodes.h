@@ -146,6 +146,9 @@ typedef struct PlannerGlobal
 	/* highest plan node ID assigned */
 	int			lastPlanNodeId;
 
+	/* highest filter ID assigned */
+	Index		lastFilterId;
+
 	/* redo plan when TransactionXmin changes? */
 	bool		transientPlan;
 
@@ -1637,6 +1640,9 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+
+	/* references to filters pushed down from joins above this relation */
+	List	   *filters;
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
@@ -3366,5 +3372,31 @@ typedef struct AggTransInfo
 	Datum		initValue pg_node_attr(read_write_ignore);
 	bool		initValueIsNull;
 } AggTransInfo;
+
+
+typedef struct FilterInfo
+{
+	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within the planner run) */
+	Index		filterId;
+
+	/* expressions for the scan node (the filter is pushed to) */
+	List	   *clauses;
+	List	   *deparsed;
+
+	/* expresions for the subplan (that we build the filter on) */
+	List	   *hashclauses;
+	List	   *hashoperators;
+	List	   *hashcollations;
+	bool		searcharray;
+	AttrNumber	attnum;
+
+	/* subplan evaluated to build the filter */
+	Path	   *subpath;
+
+} FilterInfo;
 
 #endif							/* PATHNODES_H */

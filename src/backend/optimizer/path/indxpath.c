@@ -112,8 +112,6 @@ static List *build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 								List *clauses, List *other_clauses);
 static List *generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
 									  List *clauses, List *other_clauses);
-static Path *choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel,
-							   List *paths);
 static int	path_usage_comparator(const void *a, const void *b);
 static Cost bitmap_scan_cost_est(PlannerInfo *root, RelOptInfo *rel,
 								 Path *ipath);
@@ -123,7 +121,6 @@ static PathClauseUsage *classify_index_clause_usage(Path *path,
 													List **clauselist);
 static void find_indexpath_quals(Path *bitmapqual, List **quals, List **preds);
 static int	find_list_position(Node *node, List **nodelist);
-static bool check_index_only(RelOptInfo *rel, IndexOptInfo *index);
 static double get_loop_count(PlannerInfo *root, Index cur_relid, Relids outer_relids);
 static double adjust_rowcount_for_semijoins(PlannerInfo *root,
 											Index cur_relid,
@@ -1331,7 +1328,7 @@ generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
  * The result is either a single one of the inputs, or a BitmapAndPath
  * combining multiple inputs.
  */
-static Path *
+Path *
 choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 {
 	int			npaths = list_length(paths);
@@ -1774,7 +1771,7 @@ find_list_position(Node *node, List **nodelist)
  * check_index_only
  *		Determine whether an index-only scan is possible for this index.
  */
-static bool
+bool
 check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 {
 	bool		result;
@@ -2019,6 +2016,46 @@ match_restriction_clauses_to_index(PlannerInfo *root,
 {
 	/* We can ignore clauses that are implied by the index predicate */
 	match_clauses_to_index(root, index->indrestrictinfo, index, clauseset);
+}
+
+List *
+get_index_restriction_clauses(PlannerInfo *root, IndexOptInfo *index)
+{
+	IndexClauseSet	rclauseset;
+	List *index_clauses = NIL;
+	int			indexcol;
+
+	MemSet(&rclauseset, 0, sizeof(rclauseset));
+	match_restriction_clauses_to_index(root, index, &rclauseset);
+
+	for (indexcol = 0; indexcol < index->nkeycolumns; indexcol++)
+	{
+		ListCell   *lc;
+
+		foreach(lc, rclauseset.indexclauses[indexcol])
+		{
+			IndexClause *iclause = (IndexClause *) lfirst(lc);
+			RestrictInfo *rinfo = iclause->rinfo;
+
+			/*
+			 * FIXME See the full check in build_index_paths(), here we ignore
+			 * both and skip_nonnative_saop and skip_lower_saop, but that does
+			 * not seem right. Good enough for PoC.
+			 */
+
+			/* We might need to omit ScalarArrayOpExpr clauses */
+			if (IsA(rinfo->clause, ScalarArrayOpExpr))
+			{
+				if (!index->amsearcharray)
+					continue;
+			}
+
+			/* OK to include this clause */
+			index_clauses = lappend(index_clauses, iclause);
+		}
+	}
+
+	return index_clauses;
 }
 
 /*

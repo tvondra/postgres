@@ -18,11 +18,20 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/brin.h"
+#include "access/brin_internal.h"
+#include "access/brin_revmap.h"
+#include "access/genam.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/tsmapi.h"
+#include "catalog/index.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_statistic.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -40,6 +49,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
@@ -49,7 +59,12 @@
 #include "partitioning/partprune.h"
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
+#include "storage/bufmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/syscache.h"
+#include "utils/typcache.h"
 
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
@@ -98,6 +113,8 @@ static void set_rel_size(PlannerInfo *root, RelOptInfo *rel,
 						 Index rti, RangeTblEntry *rte);
 static void set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 							 Index rti, RangeTblEntry *rte);
+static void set_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+									 Index rti, RangeTblEntry *rte);
 static void set_plain_rel_size(PlannerInfo *root, RelOptInfo *rel,
 							   RangeTblEntry *rte);
 static void create_plain_partial_paths(PlannerInfo *root, RelOptInfo *rel);
@@ -105,6 +122,8 @@ static void set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 									  RangeTblEntry *rte);
 static void set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								   RangeTblEntry *rte);
+static void set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+										   RangeTblEntry *rte);
 static void set_tablesample_rel_size(PlannerInfo *root, RelOptInfo *rel,
 									 RangeTblEntry *rte);
 static void set_tablesample_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -113,6 +132,8 @@ static void set_foreign_size(PlannerInfo *root, RelOptInfo *rel,
 							 RangeTblEntry *rte);
 static void set_foreign_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								 RangeTblEntry *rte);
+static void set_foreign_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+										 RangeTblEntry *rte);
 static void set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 								Index rti, RangeTblEntry *rte);
 static void set_append_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -353,6 +374,38 @@ set_base_rel_pathlists(PlannerInfo *root)
 
 		set_rel_pathlist(root, rel, rti, root->simple_rte_array[rti]);
 	}
+
+	/*
+	 * Now that we have pathlists for all baserels, consider building paths
+	 * with pushed-down filters.
+	 *
+	 * This is naive/simplistic, as it allows deriving only single-relation
+	 * filters. So good enough for fact-dimension schemas, but not for more
+	 * complex schemas (snowflake etc.). Allowing joins would be great, but
+	 * we don't have them yet at this point and I'm not sure how to do that
+	 * (maybe we could build a subquery and plan it separately?).
+	 *
+	 * We have to do this *after* building paths for all the relations, so
+	 * that we can use those paths to build the filters.
+	 *
+	 * XXX consider how to allow filters derived from joins.
+	 */
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		RelOptInfo *rel = root->simple_rel_array[rti];
+
+		/* there may be empty slots corresponding to non-baserel RTEs */
+		if (rel == NULL)
+			continue;
+
+		Assert(rel->relid == rti);	/* sanity check on array */
+
+		/* ignore RTEs that are "other rels" */
+		if (rel->reloptkind != RELOPT_BASEREL)
+			continue;
+
+		set_rel_pathlist_filters(root, rel, rti, root->simple_rte_array[rti]);
+	}
 }
 
 /*
@@ -558,6 +611,73 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		!bms_equal(rel->relids, root->all_query_rels))
 		generate_useful_gather_paths(root, rel, false);
+
+	/* Now find the cheapest of the paths for this rel */
+	set_cheapest(rel);
+
+#ifdef OPTIMIZER_DEBUG
+	debug_print_rel(root, rel);
+#endif
+}
+
+/*
+ * set_rel_pathlist_filters
+ *	  Build access paths with derived filters for a base relation
+ *
+ * XXX Almost the same as set_rel_pathlist, but constructing paths with
+ * derived filters for "plain" tables only.
+ */
+static void
+set_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+						 Index rti, RangeTblEntry *rte)
+{
+	if (IS_DUMMY_REL(rel))
+	{
+		/* We already proved the relation empty, so nothing more to do */
+	}
+	else if (rte->inh)
+	{
+		/* It's an "append relation", ignore for now */
+	}
+	else
+	{
+		switch (rel->rtekind)
+		{
+			case RTE_RELATION:
+				if (rte->relkind == RELKIND_FOREIGN_TABLE)
+				{
+					/* Foreign table */
+					set_foreign_pathlist_filters(root, rel, rte);
+				}
+				else if (rte->tablesample != NULL)
+				{
+					/* Sampled relation */
+				}
+				else
+				{
+					/* Plain relation */
+					set_plain_rel_pathlist_filters(root, rel, rte);
+				}
+				break;
+			case RTE_SUBQUERY:
+			case RTE_FUNCTION:
+			case RTE_TABLEFUNC:
+			case RTE_VALUES:
+			case RTE_CTE:
+			case RTE_NAMEDTUPLESTORE:
+			case RTE_RESULT:
+				/* we ignore all of those */
+				break;
+			default:
+				elog(ERROR, "unexpected rtekind: %d", (int) rel->rtekind);
+				break;
+		}
+	}
+
+	/*
+	 * XXX if we want a hook (similar to set_rel_pathlist_hook), this is where
+	 * we'd call it, probably.
+	 */
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);
@@ -789,6 +909,639 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	create_tidscan_paths(root, rel);
 }
 
+static FilterInfo *
+hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
+				   AttrNumber attnum, Oid type, Oid collation,
+				   bool searcharray, Path *subpath)
+{
+	TypeCacheEntry *entry;
+	FilterInfo *filter = makeNode(FilterInfo);
+
+	filter->filterId = ++(root->glob->lastFilterId);
+
+	filter->clauses = list_make1(copyObject(local_expr));
+
+	filter->hashclauses = list_make1(copyObject(remote_expr));
+
+	/* XXX maybe use em_datatype instead? */
+	entry = lookup_type_cache(exprType(remote_expr), TYPECACHE_EQ_OPR);
+
+	filter->hashoperators = lappend_oid(NIL, entry->eq_opr);
+	filter->hashcollations = lappend_oid(NIL, collation);
+
+	filter->searcharray = searcharray;
+	filter->attnum = attnum;
+
+	filter->subpath = subpath;
+
+	return filter;
+}
+
+typedef struct FilterClause
+{
+	Node   *local_var;
+	Node   *remote_var;
+	Oid		collation;
+	AttrNumber	attnum;	/* index attnum */
+	Selectivity selectivity;
+} FilterClause;
+
+/*
+ * set_plain_rel_pathlist_filters
+ *	  Build access paths for a plain relation (no subquery, no inheritance)
+ *
+ * XXX Almost the same as set_plain_rel_pathlist_filters, but considering
+ * filters derived from joined relations.
+ *
+ * XXX Ignores parallel paths for simplicity, and TID scans.
+ */
+static void
+set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	Relids		required_outer;
+
+	if (filter_pushdown_mode == FILTER_PUSHDOWN_OFF)
+		return;
+
+	/*
+	 * We don't support pushing join clauses into the quals of a seqscan, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
+	 */
+	required_outer = rel->lateral_relids;
+
+	/* XXX no parameterized / lateral stuff for now */
+	if (required_outer)
+		return;
+
+	/*
+	 * FIXME we should limit building these paths only when the cheapest
+	 * path for "rel" is sufficiently expensive, just like we do for "jit"
+	 * for example. If it only costs 10, it's pointless to do stuff like
+	 * this.
+	 */
+
+	/*
+	 * inspect eclass joins to derive filters
+	 *
+	 * XXX We should inspect other join types (non-EC joins) too.
+	 */
+	if (rel->has_eclass_joins)
+	{
+		ListCell *lc;
+		List *filter_clauses = NIL;
+		List	   *bitpaths = NIL;
+
+		foreach(lc, root->eq_classes)
+		{
+			ListCell *lc2;
+			EquivalenceClass *ec = (EquivalenceClass *) lfirst(lc);
+			Var *local_var = NULL;
+			List *remote_vars = NIL;
+
+			foreach (lc2, ec->ec_members)
+			{
+				EquivalenceMember *em = (EquivalenceMember *) lfirst(lc2);
+
+				/* FIXME support arbitrary expressions */
+				Var *var = (Var *) em->em_expr;
+
+				if (!IsA(var, Var))
+					continue;
+
+				if (var->varno == rel->relid)
+					local_var = var;
+				else
+				{
+					RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+
+					if (!rel2)
+						continue;
+
+					Assert(rel2->reloptkind == RELOPT_BASEREL);
+
+					if (!rel2->baserestrictinfo)
+						continue;
+
+					remote_vars = lappend(remote_vars, var);
+				}
+			}
+
+			if (!local_var)
+				continue;
+
+			foreach (lc2, remote_vars)
+			{
+				Var *var = (Var *) lfirst(lc2);
+
+				FilterClause *clause = (FilterClause *) palloc(sizeof(FilterClause));
+
+				clause->local_var = (Node *) local_var;
+				clause->remote_var = (Node *) var;
+				clause->collation = ec->ec_collation;
+				clause->selectivity = 1.0;
+
+				filter_clauses = lappend(filter_clauses, clause);
+			}
+		}
+
+		/* haven't manaded to build any filters, so bail out */
+		if (!filter_clauses)
+			return;
+
+		/*
+		 * Now that we've collected all the conditions from EC joins, it's time
+		 * to actually build some paths. First, let's build the simplest path
+		 * possible - sequential scan with filters for all the rels.
+		 *
+		 * XXX Maybe we should consider an index-only scan too?
+		 *
+		 * XXX We still keep just one condition per filter, but that can/should
+		 * be relaxed - if there are multiple conditions, we'll end up doing
+		 * multiple seqscans of rel2.
+		 */
+		{
+			FilterInfo *filter;
+			Path *path;
+			ListCell *lc2;
+			double		coeff = 1.0;
+
+			/*
+			 * ignore parameterized paths for now
+			 *
+			 * Without this, some queries fail because of infinite recursion.
+			 * For example '\d relname' does that. Apparently the cheapest_total_path
+			 * may "silently" change to a different path (e.g. from SeqScan to
+			 * a NestLoop), which in turn may reference a path that alredy has
+			 * a hash filter. And it's possible we now build a patch that is
+			 * later (in this loop) used picked as cheapest for another filter.
+			 * That on it's own shouldn't cause an infinite loop, but it seems
+			 * something in the planner decides to "alter" the existing path,
+			 * rewriting it from SeqScan to NestLoop. Reparameterezition?
+			 *
+			 * XXX Actually, I'm not sure this check is/was correct - it seems
+			 * we should be checking param_info? Anyway, I saw the paths change
+			 * (same pointer, different path later).
+			 */
+			// if (rel2->cheapest_total_path->parent->ppilist != NULL)
+			//	continue;
+
+			/*
+			 * FIXME probably need to restrict which filter types we can build
+			 * (so that we can push derive conditions suitable for e.g. bitmap
+			 * index scans)
+			 *
+			 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
+			 * because then it'd might be referenced from two places, and we'd do
+			 * some actions twice (e.g. for indexscans we call
+			 * fix_indexqual_references which tweaks some of the path fields).
+			 *
+			 * XXX Maybe we could copy the path somehow? Or maybe we should create a
+			 * separate RelOptInfo for the filter? Or rather planning the filter
+			 * as a subquery would solve this, probably (and also would allow more
+			 * complicated filters with joins).
+			 *
+			 * XXX For now we just build a new seqscan. Seems trivial.
+			 *
+			 * XXX Perhaps we could build the filter in a different ways too, not just
+			 * by processing all the tuples. For example, to build the range filter,
+			 * it would be enough to determine the matching min/max, just like we do
+			 * with MinMax paths for aggregates.
+			 *
+			 * XXX I wonder if we could derive the filter values for estimation in
+			 * different ways? Either for estimation, or to calculate values for
+			 * the scan (without having to scan the whole relation).
+			 *
+			 * For the estimation, we don't need the exact value - we might inspect
+			 * some multi-column indexes (especially BRIN minmax) to determine how
+			 * a range for one attribute maps to the other (typically PK). For the
+			 * dimension we have conditions on "b" (non-PK), and we need to know
+			 * what range of PK column it matches (which is what matters for the
+			 * filter applied on the linked table).
+			 *
+			 * If we have a BRIN index, we can simply check all ranges matching
+			 * the "b" condition, and then combine the ranges on "PK" into a new
+			 * range. And then use that to calculate selectivity on the other
+			 * table (the one we're actually querying). We could either ignore
+			 * the non-summarized ranges, or read the tuples (hopefully there's
+			 * going to be very few such ranges).
+			 *
+			 * It's not all that different from bitmap index scan on the index,
+			 * except that we don't read the actual heap tuples - we just read
+			 * the summaries and process those. However, this only works for
+			 * sufficiently large "dimension" tables with enough BRIN ranges.
+			 * If it's tiny (perhaps just a single BRIN range), this does not
+			 * really provide any information about how the restriction applies
+			 * to the other (large) table. That can be improved by making the
+			 * BRIN ranges smaller (perhaps just a single page), fillfactor can
+			 * be set to 10% (essentially artificially inflating the table so
+			 * that each BRIN page range represents fewer actual tuples). But
+			 * maybe this is pointless - this is an issue only for tiny tables,
+			 * and we could just read them directly instead. Using the BRIN is
+			 * mostly just optimization for large tables.
+			 *
+			 * In fact, we probably need a sufficient number of page ranges to
+			 * derive filter that reasonably filters rows of the other table.
+			 * Even assuming perfect ordering for BRIN and ideal correlation
+			 * (both "x" and "y" correlated with physical location), the number
+			 * of page ranges determines how strict the derived filter can be.
+			 * Imagine the table only has 1 page range. Then we can't restrict
+			 * "y" at all, because the min/max will match everything. With 2
+			 * page ranges, the best filter on "y" can be ~50%, no matter how
+			 * strict the condition on "x" is. In principle, given an index
+			 * with "K" page ranges, the best derived restriction on "y" will
+			 * have 1/K selectivity. So maybe this is what we should consider
+			 * when deciding whether to scan the whole dimension or just read
+			 * the BRIN index - if the index has too few page ranges, read the
+			 * table instead (which however depends on pages_per_range option).
+			 *
+			 * get_actual_variable_range() does something similar for individual
+			 * columns (not for mapping ranges from one column to another one).
+			 *
+			 * We could even aggregate this into a min/max histogram in pg_stats,
+			 * that is for each bin on "b" we'd track min/max for PK column.
+			 *
+			 * I'm not sure it's doable for other index types (like btree), as
+			 * it would require scanning much larger part of the index. But maybe
+			 * for estimation it'd be enough to just sample/stratify the index?
+			 * That is, sample some part of it? Still fairly expensive to be done
+			 * in the planning phase, though. We had a lot of issues with
+			 * get_actual_variable_range() in this regard.
+			 *
+			 * But maybe we could also derive the range for the actual filter?
+			 * That would mean we don't have to scan the whole table at all.
+			 * In this case the range must be "accurate" (i.e. we must not omit
+			 * any values, although we could make it larger, as in the "range"
+			 * filter). We could either do this based on a BRIN index (but this
+			 * time we'd definitely have to read the tuples from un-summarized
+			 * ranges). Or maybe we could have a small "range" index mapping
+			 * ranges - specialized AM, unusable for any other queries.
+			 *
+			 * For example, the special index type on columns (x,y) would build
+			 * a number of bins on (x) and for each bin it'd track min(y), max(y).
+			 * So similar to BRIN minmax, but somewhat aggregated - we don't need
+			 * to determine which page ranges match, only map ranges on "x" to
+			 * ranges on "y". The problem however would be maintaining the index
+			 * when the two columns are often updated - so the "y" value either
+			 * moves to a different "x" bin, or changes the min/max value in the
+			 * current bin. In both cases the mapping gets less accurate, and we
+			 * would get worse and worse estimates, similar to degrated BRIN.
+			 * It's only overestimates, though, which seems safer. But the only
+			 * way to fix this index seems rebuilding it from scratch. Maybe we
+			 * could maintain it per-segment, and only rebuild those segments.
+			 * And maybe merge the per-segment indexes, to get a complete index.
+			 * We could also track number of modifications, and trigger rebuild
+			 * based on that.
+			 *
+			 * Also, we would need to store the individual bins, so that inserts
+			 * do not block on a single lock. Similar to how BRIN is split into
+			 * page-range summaries.
+			 *
+			 * XXX I wonder if it'd be better to actually add the derived filters
+			 * as regular baserestrictinfo, so that we'd have them for costing
+			 * purposes etc. While now we add them later, which seems to be quite
+			 * confusing because some paths don't consider those filters while
+			 * others do.
+			 */
+
+			/*
+			 * FIXME check cost of the path and see if adding the filter could
+			 * possibly make it cheaper, based on filter selectivity estimate
+			 * etc.
+			 *
+			 * seqscan cost reduction > filter subpath cost
+			 */
+			path = create_seqscan_path(root, rel, required_outer, 0);
+
+			foreach (lc2, filter_clauses)
+			{
+				FilterClause *clause = (FilterClause *) lfirst(lc2);
+				Var *local_var = (Var *) clause->local_var;
+				Var *remote_var = (Var *) clause->remote_var;
+
+				RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+				filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+											InvalidAttrNumber, local_var->vartype, clause->collation,
+											false,
+											create_seqscan_path(root, rel2, required_outer, 0));
+
+				/* attach the filter (with the subpath) */
+				path->filters = lcons(filter, path->filters);
+
+				/*
+				 * calculate selectivity for this particular filter
+				 *
+				 * FIXME This needs to somehow consider how much the filter
+				 * reduces the matches, beyond the regular join clauses. So
+				 * we need to somehow estimate how much the other conditions
+				 * (e.g. at the baserel level) reduce the match probability.
+				 * Not sure how to do that easily, so let's just assume 10%
+				 * for now, which is fairly conservative.
+				 *
+				 * For now we only handle a special case when joining to a base
+				 * relations, because in that case we can easily compare the
+				 * estimated rows for a path and the relation tuples, to
+				 * calculate the filter selectivity.
+				 *
+				 * XXX In principle we'd probably want to calculate joinrel
+				 * selectivity without the baserel restrictinfos?
+				 */
+				coeff *= rel2->rows / rel2->tuples;
+
+				clause->selectivity = (rel2->rows / rel2->tuples);
+
+				elog(WARNING, "filter %p => %f",
+					 filter, (rel2->rows / rel2->tuples));
+			}
+
+			/*
+			 * XXX cut the cost in half, needs to be improved (consider the
+			 * filter selectivity)
+			 */
+			cost_seqscan_adjust_filters(path, root, rel, path->param_info, coeff);
+
+			/*
+			 * Maybe adjust path cost through GUC, mostly for development
+			 * purposes.
+			 */
+			adjust_path_cost(path, filter_seqscan_cost);
+
+			add_path(rel, path);
+		}
+
+		/*
+		 * now also build some index paths
+		 *
+		 * We match as many clauses to each index as possible, to allow index
+		 * scan to derive conditions from the filter.
+		 */
+
+		/* consider other types of paths, e.g. index-based */
+		foreach(lc, rel->indexlist)
+		{
+			IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+			Relids		outer_relids;
+			double		loop_count;
+			List	   *index_clauses[INDEX_MAX_KEYS];
+			ListCell   *lc2;
+			FilterInfo *filter;
+			bool		matches = false;
+			List	   *iclauses;
+
+			memset(index_clauses, 0, INDEX_MAX_KEYS * sizeof(List *));
+
+			/* Protect limited-size array in IndexClauseSets */
+			Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
+
+			/* FIXME this should do all the business with matching
+			 * clauses to indexes etc. we'd do in create_index_paths,
+			 * but for simplicily of the PoC we just check if the
+			 * index is on the varattno. */
+			foreach (lc2, filter_clauses)
+			{
+				FilterClause   *clause = (FilterClause *) lfirst(lc2);
+				Var			   *var = (Var *) clause->local_var;
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					if (index->indexkeys[i] == var->varattno)
+					{
+						index_clauses[i] = lappend(index_clauses[i], clause);
+
+						/* remember we matched at least one clause to the index */
+						matches = true;
+
+						/* continue with the next filter clause */
+						break;
+					}
+				}
+			}
+
+			/* no filter clauses for this index */
+			if (!matches)
+				continue;
+
+			/*
+			 * we have derived filters for this index path, so match restriction
+			 * clauses to the index, if we have some.
+			 */
+			iclauses = get_index_restriction_clauses(root, index);
+
+			/* copied from build_index_paths */
+			outer_relids = bms_copy(rel->lateral_relids);
+			loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
+
+			/* */
+			if (index->amhasgettuple)
+			{
+				IndexPath	 *ipath;
+				double		coeff = 1.0;
+
+				ipath = create_index_path(root, index,
+										  iclauses, // restriction clauses
+										  NIL, // FIXME orderbyclauses,
+										  NIL, // FIXME orderbyclausecols,
+										  NIL, // FIXME useful_pathkeys,
+										  ForwardScanDirection,
+										  check_index_only(rel, index), // index_only_scan,
+										  outer_relids,
+										  loop_count,
+										  false);
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					foreach (lc2, index_clauses[i])
+					{
+						FilterClause *clause = (FilterClause *) lfirst(lc2);
+						Var *local_var = (Var *) clause->local_var;
+						Var *remote_var = (Var *) clause->remote_var;
+						AttrNumber attnum = (i+1);
+
+						RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+													attnum, local_var->vartype, clause->collation,
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
+
+						ipath->path.filters = lappend(ipath->path.filters, filter);
+
+						/*
+						 * calculate selectivity for this particular filter
+						 *
+						 * FIXME This needs to somehow consider how much the filter
+						 * reduces the matches, beyond the regular join clauses. So
+						 * we need to somehow estimate how much the other conditions
+						 * (e.g. at the baserel level) reduce the match probability.
+						 * Not sure how to do that easily, so let's just assume 10%
+						 * for now, which is fairly conservative.
+						 *
+						 * For now we only handle a special case when joining to a base
+						 * relations, because in that case we can easily compare the
+						 * estimated rows for a path and the relation tuples, to
+						 * calculate the filter selectivity.
+						 *
+						 * XXX In principle we'd probably want to calculate joinrel
+						 * selectivity without the baserel restrictinfos?
+						 */
+						coeff *= rel2->rows / rel2->tuples;
+					}
+				}
+
+				Assert(ipath->path.filters);
+
+				/*
+				 * adjust the index cost to somewhat reflect derived filters
+				 *
+				 * FIXME This is really rudimentary cost adjustment, needs to be
+				 * made more accurate, refactor it a bit etc.
+				 */
+				cost_index_adjust_filters(ipath, root, loop_count, false, coeff);
+
+				/*
+				 * Maybe adjust path cost through GUC, mostly for development
+				 * purposes.
+				 */
+				adjust_path_cost((Path *) ipath, filter_indexscan_cost);
+
+				add_path(rel, (Path *) ipath);
+			}
+
+			if (index->amhasgetbitmap)
+			{
+				IndexPath	 *ipath;
+				double		coeff = 1.0;
+
+				/*
+				 * XXX We should collect all the index scans paths created above,
+				 * and then consider building a BitmapAnd paths, just like what
+				 * indxpath.c does (call choose_bitmap_and etc.).
+				 */
+				ipath = create_index_path(root, index,
+										  iclauses, // FIXME match rel->baserestrictinfo to index
+										  NIL, // FIXME orderbyclauses,
+										  NIL, // FIXME orderbyclausecols,
+										  NIL, // FIXME useful_pathkeys,
+										  ForwardScanDirection,
+										  check_index_only(rel, index), // index_only_scan,
+										  outer_relids,
+										  loop_count,
+										  false);
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					foreach (lc2, index_clauses[i])
+					{
+						FilterClause *clause = (FilterClause *) lfirst(lc2);
+						Var *local_var = (Var *) clause->local_var;
+						Var *remote_var = (Var *) clause->remote_var;
+						AttrNumber attnum = (i+1);
+
+						RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+													attnum, local_var->vartype, clause->collation,
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
+
+						ipath->path.filters = lappend(ipath->path.filters, filter);
+
+						/*
+						 * calculate selectivity for this particular filter
+						 *
+						 * FIXME This needs to somehow consider how much the filter
+						 * reduces the matches, beyond the regular join clauses. So
+						 * we need to somehow estimate how much the other conditions
+						 * (e.g. at the baserel level) reduce the match probability.
+						 * Not sure how to do that easily, so let's just assume 10%
+						 * for now, which is fairly conservative.
+						 *
+						 * For now we only handle a special case when joining to a base
+						 * relations, because in that case we can easily compare the
+						 * estimated rows for a path and the relation tuples, to
+						 * calculate the filter selectivity.
+						 *
+						 * XXX In principle we'd probably want to calculate joinrel
+						 * selectivity without the baserel restrictinfos?
+						 */
+						coeff *= rel2->rows / rel2->tuples;
+					}
+				}
+
+				Assert(ipath->path.filters);
+
+				/*
+				 * adjust the index cost to somewhat reflect derived filters
+				 *
+				 * FIXME This is really rudimentary cost adjustment, needs to be
+				 * made more accurate, refactor it a bit etc.
+				 */
+				cost_index_adjust_filters(ipath, root, loop_count, false, coeff);
+
+				/*
+				 * Maybe adjust path cost through GUC, mostly for development
+				 * purposes.
+				 */
+				adjust_path_cost((Path *) ipath, filter_bitmapscan_cost);
+
+				bitpaths = lappend(bitpaths, ipath);
+			}
+		}
+
+		if (bitpaths)
+		{
+			// Path	   *bitmapqual = choose_bitmap_and(root, rel, bitpaths);
+			Path *bitmapqual;
+			BitmapHeapPath *bpath;
+
+			if (list_length(bitpaths) == 1)
+				bitmapqual = linitial(bitpaths);
+			else
+				bitmapqual = (Path *) create_bitmap_and_path(root, rel, bitpaths);
+
+			/*
+			 * XXX Maybe we should build/attach another copy of the
+			 * filter to the heap scan node. The bitmap filter may
+			 * be lossy and the point is to reduce the number of
+			 * tuples we return. Currently we'd build the filter
+			 * twice (so double the cost) but maybe we could have
+			 * just one copy with multiple references. Considering
+			 * we now have a separate subplan (instead of just
+			 * piggy-backing on a Hash node), we have good control
+			 * over when the filter is built etc. (which is an issue
+			 * for Hash, where this is managed by the hashjoin node).
+			 */
+			bpath = create_bitmap_heap_path(root, rel, bitmapqual,
+											rel->lateral_relids, 1.0, 0);
+
+			/*
+			 * XXX We don't adjust the bitmap heap scan cost for derived
+			 * filters, because the filters are pushed to index scan level,
+			 * so that should be sufficient. Maybe if we add filters to
+			 * the heap scan (e.g. because index range filters may not
+			 * filter all rows), this would need to be revisited.
+			 */
+
+			/*
+			 * We still allow adjusting the cost through GUC, mostly for
+			 * development purposes.
+			 */
+			adjust_path_cost((Path *) bpath, filter_bitmapscan_cost);
+
+			add_path(rel, (Path *) bpath);
+		}
+	}
+
+	/* Consider sequential scan */
+	// add_path(rel, create_seqscan_path(root, rel, required_outer, 0));
+
+	/* Consider index scans */
+	// create_index_paths(root, rel);
+}
+
 /*
  * create_plain_partial_paths
  *	  Build partial access paths for parallel scan of a plain relation
@@ -930,6 +1683,128 @@ set_foreign_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
 	/* Call the FDW's GetForeignPaths function to generate path(s) */
 	rel->fdwroutine->GetForeignPaths(root, rel, rte->relid);
+}
+
+/*
+ * set_foreign_pathlist
+ *		Build access paths for a foreign table RTE
+ */
+static void
+set_foreign_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	Relids		required_outer;
+
+	if (filter_pushdown_mode == FILTER_PUSHDOWN_OFF)
+		return;
+
+	/*
+	 * We don't support pushing join clauses into the quals of a seqscan, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
+	 */
+	required_outer = rel->lateral_relids;
+
+	/* XXX no parameterized / lateral stuff for now */
+	if (required_outer)
+		return;
+
+	/* inspect eclass joins to derive filters */
+	if (rel->has_eclass_joins)
+	{
+		ListCell *lc;
+
+		foreach(lc, root->eq_classes)
+		{
+			ListCell *lc2;
+			EquivalenceClass *ec = (EquivalenceClass *) lfirst(lc);
+			Var *local_var = NULL;
+			List *remote_vars = NIL;
+
+			foreach (lc2, ec->ec_members)
+			{
+				EquivalenceMember *em = (EquivalenceMember *) lfirst(lc2);
+
+				/* FIXME support arbitrary expressions */
+				Var *var = (Var *) em->em_expr;
+
+				if (!IsA(var, Var))
+					continue;
+
+				if (var->varno == rel->relid)
+					local_var = var;
+				else
+					remote_vars = lappend(remote_vars, var);
+			}
+
+			if (!local_var)
+				continue;
+
+			foreach (lc2, remote_vars)
+			{
+				Var *var = (Var *) lfirst(lc2);
+				FilterInfo *filter;
+				ListCell *lc3;
+
+				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+
+Assert(rel2->reloptkind == RELOPT_BASEREL);
+
+				if (!rel2->baserestrictinfo)
+					continue;
+
+				foreach (lc3, rel->pathlist)
+				{
+					Path *path = (Path *) lfirst(lc3);
+
+					/* XXX ignore parameterized paths for now */
+					if (path->param_info != NULL)
+						continue;
+
+					/*
+					 * FIXME probably need to restrict which filter types we can build
+					 * (so that we can push derive conditions suitable for e.g. bitmap
+					 * index scans)
+					 *
+					 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
+					 * because then it'd might be referenced from two places, and we'd do
+					 * some actions twice (e.g. for indexscans we call
+					 * fix_indexqual_references which tweaks some of the path fields).
+					 *
+					 * XXX Maybe we could copy the path somehow? Or maybe we should create a
+					 * separate RelOptInfo for the filter? Or rather planning the filter
+					 * as a subquery would solve this, probably (and also would allow more
+					 * complicated filters with joins).
+					 *
+					 * XXX For now we just build a new seqscan. Seems trivial.
+					 *
+					 * XXX Perhaps we could build the filter in a different ways too, not just
+					 * by processing all the tuples. For example, to build the range filter,
+					 * it would be enough to determine the matching min/max, just like we do
+					 * with MinMax paths for aggregates.
+					 */
+					filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
+												InvalidAttrNumber, var->vartype, ec->ec_collation,
+												false,
+												create_seqscan_path(root, rel2, required_outer, 0));
+
+					/*
+					 * XXX cut the cost in half, needs to be improved (consider the
+					 * filter selectivity)
+					 */
+					path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
+
+					/*
+					 * attach the filter (with the subpath)
+					 *
+					 * XXX This is not great, because it changes cost for a path we
+					 * already added. That might confuse things, I guess.
+					 */
+					path->filters = lcons(filter, path->filters);
+
+				}
+			}
+		}
+	}
 }
 
 /*

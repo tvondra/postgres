@@ -420,6 +420,14 @@ static const struct config_enum_entry logical_replication_mode_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry filter_pushdown_mode_options[] = {
+	{"off", FILTER_PUSHDOWN_OFF, false},
+	{"exact", FILTER_PUSHDOWN_EXACT, false},
+	{"range", FILTER_PUSHDOWN_RANGE, false},
+	{"bloom", FILTER_PUSHDOWN_BLOOM, false},
+	{NULL, 0, false}
+};
+
 StaticAssertDecl(lengthof(ssl_protocol_versions_info) == (PG_TLS1_3_VERSION + 2),
 				 "array length mismatch");
 
@@ -538,6 +546,10 @@ int			tcp_keepalives_idle;
 int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
 int			tcp_user_timeout;
+
+double		filter_seqscan_cost = 1.0;
+double		filter_indexscan_cost = 1.0;
+double		filter_bitmapscan_cost = 1.0;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -3800,6 +3812,36 @@ struct config_real ConfigureNamesReal[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"filter_seqscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of seqscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_seqscan_cost,
+		1.0, 0.0, 1000000.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_indexscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of indexscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_indexscan_cost,
+		1.0, 0.0, 1000000.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_bitmapscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of indexscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_bitmapscan_cost,
+		1.0, 0.0, 1000000.0,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0.0, 0.0, 0.0, NULL, NULL, NULL
@@ -5003,6 +5045,17 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&logical_replication_mode,
 		LOGICAL_REP_MODE_BUFFERED, logical_replication_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_pushown_mode", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables pushdown of bloom filter from hash join."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&filter_pushdown_mode,
+		FILTER_PUSHDOWN_RANGE, filter_pushdown_mode_options,
 		NULL, NULL, NULL
 	},
 

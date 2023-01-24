@@ -319,6 +319,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	glob->lastPHId = 0;
 	glob->lastRowMarkId = 0;
 	glob->lastPlanNodeId = 0;
+	glob->lastFilterId = 0;
 	glob->transientPlan = false;
 	glob->dependsOnRole = false;
 

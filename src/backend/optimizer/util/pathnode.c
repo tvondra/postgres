@@ -940,6 +940,7 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->parallel_safe = rel->consider_parallel;
 	pathnode->parallel_workers = parallel_workers;
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
+	pathnode->filters = NIL;
 
 	cost_seqscan(pathnode, root, rel, pathnode->param_info);
 
@@ -1017,6 +1018,8 @@ create_index_path(PlannerInfo *root,
 	pathnode->path.parallel_workers = 0;
 	pathnode->path.pathkeys = pathkeys;
 
+	pathnode->path.filters = NIL;
+
 	pathnode->indexinfo = index;
 	pathnode->indexclauses = indexclauses;
 	pathnode->indexorderbys = indexorderbys;
@@ -1059,6 +1062,8 @@ create_bitmap_heap_path(PlannerInfo *root,
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_degree;
 	pathnode->path.pathkeys = NIL;	/* always unordered */
+
+	pathnode->path.filters = NIL;
 
 	pathnode->bitmapqual = bitmapqual;
 
@@ -2248,6 +2253,8 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
+
+	pathnode->path.filters = NIL;
 
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;

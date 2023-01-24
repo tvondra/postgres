@@ -29,6 +29,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/paramassign.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
@@ -2903,6 +2904,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 {
 	SeqScan    *scan_plan;
 	Index		scan_relid = best_path->parent->relid;
+	ListCell   *lc;
 
 	/* it should be a base rel... */
 	Assert(scan_relid > 0);
@@ -2924,6 +2926,37 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 	scan_plan = make_seqscan(tlist,
 							 scan_clauses,
 							 scan_relid);
+
+	/*
+	 * If we attached any derived filters to the scan, add them into the plan.
+	 *
+	 * XXX We mostly just copy most fields, but we need a type with Plan instead
+	 * of Path (for the subquery). So we need a separate struct.
+	 *
+	 * XXX We do this initialization for each scan (or rather node with filters)
+	 * so maybe factor it into a separate function.
+	 */
+	scan_plan->scan.filters = NIL;
+
+	foreach(lc, best_path->filters)
+	{
+		FilterInfo *info = (FilterInfo *) lfirst(lc);
+		Filter *filter = makeNode(Filter);
+
+		filter->filterId = info->filterId;
+		filter->clauses = info->clauses;
+		filter->deparsed = info->clauses;
+		filter->hashclauses = info->hashclauses;
+		filter->hashoperators = info->hashoperators;
+		filter->hashcollations = info->hashcollations;
+		filter->searcharray = info->searcharray;
+		filter->attnum = info->attnum;
+
+		filter->subplan = create_plan_recurse(root, info->subpath,
+								 			  CP_SMALL_TLIST);
+
+		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
+	}
 
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
@@ -3174,6 +3207,34 @@ create_indexscan_plan(PlannerInfo *root,
 
 	copy_generic_path_info(&scan_plan->plan, &best_path->path);
 
+	/*
+	 * If we attached any derived filters to the scan, add them into the plan.
+	 *
+	 * XXX We mostly just copy most fields, but we need a type with Plan instead
+	 * of Path (for the subquery). So we need a separate struct.
+	 */
+	scan_plan->filters = NIL;
+
+	foreach(l, best_path->path.filters)
+	{
+		FilterInfo *info = (FilterInfo *) lfirst(l);
+		Filter *filter = makeNode(Filter);
+
+		filter->filterId = info->filterId;
+		filter->clauses = info->clauses;
+		filter->deparsed = info->clauses;
+		filter->hashclauses = info->hashclauses;
+		filter->hashoperators = info->hashoperators;
+		filter->hashcollations = info->hashcollations;
+		filter->searcharray = info->searcharray;
+		filter->attnum = info->attnum;
+
+		filter->subplan = create_plan_recurse(root, info->subpath,
+									 		  CP_SMALL_TLIST);
+
+		scan_plan->filters = lappend(scan_plan->filters, filter);
+	}
+
 	return scan_plan;
 }
 
@@ -3286,6 +3347,34 @@ create_bitmap_scan_plan(PlannerInfo *root,
 									 bitmapqualplan,
 									 bitmapqualorig,
 									 baserelid);
+
+	/*
+	 * If we attached any derived filters to the scan, add them into the plan.
+	 *
+	 * XXX We mostly just copy most fields, but we need a type with Plan instead
+	 * of Path (for the subquery). So we need a separate struct.
+	 */
+	scan_plan->scan.filters = NIL;
+
+	foreach(l, best_path->path.filters)
+	{
+		FilterInfo *info = (FilterInfo *) lfirst(l);
+		Filter *filter = makeNode(Filter);
+
+		filter->filterId = info->filterId;
+		filter->clauses = info->clauses;
+		filter->deparsed = info->clauses;
+		filter->hashclauses = info->hashclauses;
+		filter->hashoperators = info->hashoperators;
+		filter->hashcollations = info->hashcollations;
+		filter->searcharray = info->searcharray;
+		filter->attnum = info->attnum;
+
+		filter->subplan = create_plan_recurse(root, info->subpath,
+									 		  CP_SMALL_TLIST);
+
+		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
+	}
 
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
 
@@ -3469,6 +3558,10 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->plan_width = 0;	/* meaningless */
 		plan->parallel_aware = false;
 		plan->parallel_safe = ipath->path.parallel_safe;
+
+		/* copy filterd from the index scan to the bitmap index scan */
+		((Scan *) plan)->filters = iscan->scan.filters;
+
 		/* Extract original index clauses, actual index quals, relevant ECs */
 		subquals = NIL;
 		subindexquals = NIL;
@@ -4102,6 +4195,7 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 	Index		scan_relid = rel->relid;
 	Oid			rel_oid = InvalidOid;
 	Plan	   *outer_plan = NULL;
+	ListCell   *l;
 
 	Assert(rel->fdwroutine != NULL);
 
@@ -4238,6 +4332,34 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 		}
 
 		bms_free(attrs_used);
+	}
+
+	/*
+	 * If we attached any derived filters to the scan, add them into the plan.
+	 *
+	 * XXX We mostly just copy most fields, but we need a type with Plan instead
+	 * of Path (for the subquery). So we need a separate struct.
+	 */
+	scan_plan->scan.filters = NIL;
+
+	foreach(l, best_path->path.filters)
+	{
+		FilterInfo *info = (FilterInfo *) lfirst(l);
+		Filter *filter = makeNode(Filter);
+
+		filter->filterId = info->filterId;
+		filter->clauses = info->clauses;
+		filter->deparsed = info->clauses;
+		filter->hashclauses = info->hashclauses;
+		filter->hashoperators = info->hashoperators;
+		filter->hashcollations = info->hashcollations;
+		filter->searcharray = info->searcharray;
+		filter->attnum = info->attnum;
+
+		filter->subplan = create_plan_recurse(root, info->subpath,
+									 		  CP_SMALL_TLIST);
+
+		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
 	}
 
 	return scan_plan;
@@ -5477,6 +5599,7 @@ make_seqscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 
 	return node;
 }
@@ -5495,6 +5618,7 @@ make_samplescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tablesample = tsc;
 
 	return node;
@@ -5520,6 +5644,7 @@ make_indexscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
@@ -5550,6 +5675,7 @@ make_indexonlyscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->recheckqual = recheckqual;
@@ -5596,6 +5722,7 @@ make_bitmap_heapscan(List *qptlist,
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->bitmapqualorig = bitmapqualorig;
 
 	return node;
@@ -5615,6 +5742,7 @@ make_tidscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tidquals = tidquals;
 
 	return node;
@@ -5634,6 +5762,7 @@ make_tidrangescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tidrangequals = tidrangequals;
 
 	return node;
@@ -5653,6 +5782,7 @@ make_subqueryscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->subplan = subplan;
 	node->scanstatus = SUBQUERY_SCAN_UNKNOWN;
 
@@ -5674,6 +5804,7 @@ make_functionscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->functions = functions;
 	node->funcordinality = funcordinality;
 
@@ -5694,6 +5825,7 @@ make_tablefuncscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tablefunc = tablefunc;
 
 	return node;
@@ -5713,6 +5845,7 @@ make_valuesscan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->values_lists = values_lists;
 
 	return node;
@@ -5733,6 +5866,7 @@ make_ctescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->ctePlanId = ctePlanId;
 	node->cteParam = cteParam;
 
@@ -5754,6 +5888,7 @@ make_namedtuplestorescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->enrname = enrname;
 
 	return node;
@@ -5773,6 +5908,7 @@ make_worktablescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->wtParam = wtParam;
 
 	return node;
@@ -5797,6 +5933,7 @@ make_foreignscan(List *qptlist,
 	plan->lefttree = outer_plan;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 
 	/* these may be overridden by the FDW's PlanDirectModify callback. */
 	node->operation = CMD_SELECT;

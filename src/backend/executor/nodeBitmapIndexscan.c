@@ -199,6 +199,8 @@ ExecEndBitmapIndexScan(BitmapIndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------
@@ -235,6 +237,14 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 
 	indexstate->ss.ss_currentRelation = NULL;
 	indexstate->ss.ss_currentScanDesc = NULL;
+
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
 
 	/*
 	 * Miscellaneous initialization
@@ -304,6 +314,21 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	{
 		indexstate->biss_RuntimeContext = NULL;
 	}
+
+	/*
+	 * build pushed-down filters
+	 *
+	 * FIXME make sure we only build filters of the correct type
+	 */
+	ExecBuildFilters((ScanState *) indexstate, estate,
+					 (FilterTypeRange | FilterTypeRange));
+
+	/*
+	 * try deriving scan keys from the available filters
+	 */
+	ExecFiltersDeriveScanKeys((ScanState *) indexstate,
+							  &indexstate->biss_NumScanKeys,
+							  &indexstate->biss_ScanKeys);
 
 	/*
 	 * Initialize scan descriptor.

@@ -75,6 +75,15 @@ SeqNext(SeqScanState *node)
 	}
 
 	/*
+	 * build pushed-down filters
+	 *
+	 * We can't push any conditions to the seqscan, so allow all filter types
+	 * (including bloom).
+	 */
+	ExecBuildFilters((ScanState *) node, estate,
+					 (FilterTypeExact | FilterTypeRange | FilterTypeBloom));
+
+	/*
 	 * get the next tuple from the table
 	 */
 	if (table_scan_getnextslot(scandesc, direction, slot))
@@ -171,6 +180,14 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.qual =
 		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
 
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	scanstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) scanstate, node->scan.filters,
+								   estate, eflags);
+
 	return scanstate;
 }
 
@@ -207,6 +224,8 @@ ExecEndSeqScan(SeqScanState *node)
 	 */
 	if (scanDesc != NULL)
 		table_endscan(scanDesc);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

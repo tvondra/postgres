@@ -4833,6 +4833,11 @@ create_hashjoin_plan(PlannerInfo *root,
 			 *
 			 * XXX Should check if it's efficient to build this filter.
 			 * If we don't expect to filter anything, why push it down?
+			 * Not sure how much we can/want to rely on estimates, the
+			 * risk seems pretty low and gains may be significant even
+			 * if we end up filtering only a small fraction of rows.
+			 * Could we estimate it like a fraction of (total - startup)
+			 * of the inner path cost?
 			 */
 			if (path)
 			{

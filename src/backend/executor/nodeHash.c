@@ -353,6 +353,7 @@ MultiExecParallelHash(HashState *node)
 HashState *
 ExecInitHash(Hash *node, EState *estate, int eflags)
 {
+	ListCell   *lc;
 	HashState  *hashstate;
 
 	/* check for unsupported flags */
@@ -367,6 +368,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate->ps.ExecProcNode = ExecHash;
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
+	hashstate->filters = NIL;
 
 	/*
 	 * Miscellaneous initialization
@@ -393,6 +395,21 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	Assert(node->plan.qual == NIL);
 	hashstate->hashkeys =
 		ExecInitExprList(node->hashkeys, (PlanState *) hashstate);
+
+	/*
+	 * If there are any filters assigned to this Hash node, initialize
+	 * expressions for those too.
+	 */
+	foreach (lc, node->filters)
+	{
+		HashFilter *filter = (HashFilter *) lfirst(lc);
+		HashFilterState *state = makeNode(HashFilterState);
+
+		state->filter = filter;
+		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
+
+		hashstate->filters = lappend(hashstate->filters, state);
+	}
 
 	return hashstate;
 }

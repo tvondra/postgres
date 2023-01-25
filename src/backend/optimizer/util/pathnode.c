@@ -2625,6 +2625,8 @@ create_hashjoin_path(PlannerInfo *root,
 	/* list of filters pushed down to other parts of the plan */
 	pathnode->filters = NIL;
 
+	/* FIXME check if we'd build any filters, and include them in cost */
+
 	final_cost_hashjoin(root, pathnode, workspace, extra);
 
 	return pathnode;

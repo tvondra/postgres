@@ -2927,10 +2927,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 
 	/* has references? */
 	if (best_path->filters)
-	{
-		elog(WARNING, "seqscan has %d filters", list_length(best_path->filters));
 		scan_plan->scan.filters = best_path->filters;
-	}
 
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
@@ -4735,19 +4732,9 @@ find_pushdown_node(Path *path, Relids relids)
 
 		/* for scans (or close similar nodes), push into that node */
 		case T_SeqScan:
-			elog(WARNING, "pushdown SeqScan");
-			return path;
-
 		case T_IndexScan:
-			elog(WARNING, "pushdown IndexScan");
-			return path;
-
 		case T_IndexOnlyScan:
-			elog(WARNING, "pushdown IndexOnlyScan");
-			return path;
-
 		case T_BitmapHeapScan:
-			elog(WARNING, "pushdown BitmapHeapPath");
 			return path;
 
 		/* FIXME handle upper relations that we can push through */
@@ -4800,7 +4787,7 @@ create_hashjoin_plan(PlannerInfo *root,
 
 		foreach (lc2, best_path->path_hashclauses)
 		{
-			Relids	relids;
+			Relids	relids = NULL;
 			Path   *path;
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
 			OpExpr *opexpr;
@@ -4809,17 +4796,24 @@ create_hashjoin_plan(PlannerInfo *root,
 			/* guaranteed by clause_sides_match_join */
 			opexpr = (OpExpr *) rinfo->clause;
 
-			/* grab relids for the inner side (not the hash) */
-			if (rinfo->outer_is_left)
+			/*
+			 * grab relids for the outer side (inner side is hash)
+			 *
+			 * XXX I did try using rinfo->outer_is_left but that failed in
+			 * some cases. Maybe I was doing something wrong, not sure.
+			 */
+			if (bms_is_subset(rinfo->left_relids, best_path->jpath.outerjoinpath->parent->relids))
 			{
-				relids = rinfo->right_relids;
+				relids = rinfo->left_relids;
 				expr = (Node *) linitial(opexpr->args);
 			}
-			else
+			else if (bms_is_subset(rinfo->right_relids, best_path->jpath.outerjoinpath->parent->relids))
 			{
+				relids = rinfo->right_relids;
 				expr = (Node *) lsecond(opexpr->args);
-				relids = rinfo->left_relids;
 			}
+
+			Assert(relids != NULL);
 
 			/* now, try to pushdown the condition as far as possible */
 			path = find_pushdown_node(best_path->jpath.outerjoinpath, relids);
@@ -4852,11 +4846,13 @@ create_hashjoin_plan(PlannerInfo *root,
 				filter->index = list_length(filters);
 				filter->filterId = ++(root->glob->lastFilterId);
 				filter->clauses = list_make1(expr);
+				filter->state = NULL;
 
+				/* XXX not sure a copy is needed, but maybe it is */
 				ref->filter = filter;
-				ref->clauses = filter->clauses;
+				ref->clauses = list_copy(filter->clauses);
 
-				/* add the filter */
+				/* add the filter to the list */
 				filters = lappend(filters, filter);
 
 				/* add the reference */

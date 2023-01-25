@@ -122,6 +122,7 @@ ExecSeqScan(PlanState *pstate)
 SeqScanState *
 ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 {
+	ListCell *lc;
 	SeqScanState *scanstate;
 
 	/*
@@ -170,6 +171,23 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	 */
 	scanstate->ss.ps.qual =
 		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
+
+	/*
+	 * If there are any filter references assigned to this node, initialize
+	 * expressions for those too.
+	 */
+	scanstate->ss.ss_filters = NIL;
+	foreach (lc, node->scan.filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		HashFilter *filter = ref->filter;
+		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
+
+		state->filter = (HashFilterState *) filter->state;
+		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
+
+		scanstate->ss.ss_filters = lappend(scanstate->ss.ss_filters, state);
+	}
 
 	return scanstate;
 }

@@ -1216,6 +1216,12 @@ typedef struct HashFilter
 	/* link to the Hash node building the filter */
 	Node	   *hash;
 
+	/*
+	 * XXX add reference to the state, so that we can get it from the scan
+	 * node easily. But we need a cleaner solution.
+	 */
+	Node	   *state;
+
 	/* index of the filter (in the parent list) */
 	Index		index;
 

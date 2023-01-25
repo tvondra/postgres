@@ -1189,9 +1189,23 @@ typedef struct GatherMerge
 } GatherMerge;
 
 /*
- * Filter pushed to the node from a different part of the plan.
+ * Filter (e.g. a bloom filter) built on the Hash side of a hashjoin, pushed
+ * to at least one other node. The other node references this through a node
+ * HashFilterReference.
  *
- * Typically a bloom filter pushded down from a hash join.
+ * XXX local copy of the clauses (or rather expressions) in order to allow
+ * setrefs to do the right thing for this particular node
+ *
+ * XXX create in a separate memory context
+ *
+ * XXX define API of callbacks to allow alternative implementations (not
+ * just a bloom filter)
+ *
+ * XXX Add statistics to measure number of hits/misses, and perhaps disable
+ * querying the filter when only queries return false (we already paid the
+ * price for building it, though. Seems risky to disable based on initial
+ * chunk of data (possibly skewed) - maybe start sampling instead, and
+ * then start using the filter again if the filtering improves?
  */
 typedef struct HashFilter
 {
@@ -1207,6 +1221,13 @@ typedef struct HashFilter
 
 } HashFilter;
 
+/*
+ * Reference from the node to which the filter was pushed down. We only do
+ * that from createplan, because only then we know what filters will be
+ * pushed down to that node.
+ *
+ * XXX A local copy of clauses (or rather expressions)
+ */
 typedef struct HashFilterReference
 {
 	pg_node_attr(no_copy_equal, no_read)

@@ -1870,9 +1870,9 @@ fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 	/* hash clauses in filter references */
 	foreach(lc, hplan->filters)
 	{
-		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-		ref->clauses = fix_scan_list(root, ref->clauses,
-									 rtoffset, NUM_EXEC_QUAL(plan));
+		HashFilter *filter = (HashFilter *) lfirst(lc);
+		filter->clauses = fix_scan_list(root, filter->clauses,
+										rtoffset, NUM_EXEC_QUAL(plan));
 	}
 
 	return hplan->filters;

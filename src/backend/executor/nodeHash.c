@@ -415,6 +415,9 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		state->filter = filter;
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
 
+		/* FIXME */
+		filter->state = (Node *) state;
+
 		hashstate->filters = lappend(hashstate->filters, state);
 	}
 

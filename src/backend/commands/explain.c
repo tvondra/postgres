@@ -3149,9 +3149,6 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 			ListCell *lc;
 
 			ExplainIndentText(es);
-			appendStringInfo(es->str,
-							 "Bloom filters: %d\n", list_length(plan->filters));
-
 			foreach (lc, plan->filters)
 			{
 				HashFilter *filter = (HashFilter *) lfirst(lc);
@@ -3820,11 +3817,6 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 		ListCell *lc;
 
 		ExplainIndentText(es);
-		appendStringInfo(es->str, "Scan filters: %d\n",
-						 list_length(plan->filters));
-
-		elog(WARNING, "filters %p", plan->filters);
-
 		foreach (lc, plan->filters)
 		{
 			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);

@@ -1462,6 +1462,7 @@ typedef struct ScanState
 	Relation	ss_currentRelation;
 	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
+	List	   *ss_filters;
 } ScanState;
 
 /* ----------------
@@ -2653,6 +2654,15 @@ typedef struct HashFilterState
 	int64		nqueries;
 	int64		nhits;
 } HashFilterState;
+
+typedef struct HashFilterReferenceState
+{
+	NodeTag		type;
+
+	HashFilterState *filter;	/* link to the filter state */
+	List	   *clauses;		/* list of ExprState nodes */
+
+} HashFilterReferenceState;
 
 /* ----------------
  *	 HashState information

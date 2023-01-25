@@ -4830,6 +4830,9 @@ create_hashjoin_plan(PlannerInfo *root,
 			 * XXX We should generally find at least one place where to
 			 * push the filter, but maybe not - not all node types allow
 			 * pushdown for now (only scans).
+			 *
+			 * XXX Should check if it's efficient to build this filter.
+			 * If we don't expect to filter anything, why push it down?
 			 */
 			if (path)
 			{

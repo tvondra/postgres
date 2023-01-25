@@ -1904,6 +1904,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
 
+	/* FIXME maybe this should do the same thing as for hashkeys? */
 	hplan->filters = fix_hash_filters(root, plan, rtoffset);
 
 	/* Hash doesn't project */

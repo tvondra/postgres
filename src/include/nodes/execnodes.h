@@ -2638,6 +2638,22 @@ typedef struct SharedHashInfo
 	HashInstrumentation hinstrument[FLEXIBLE_ARRAY_MEMBER];
 } SharedHashInfo;
 
+/*
+ * State of a filter built on top of a Hash.
+ */
+typedef struct HashFilterState
+{
+	NodeTag		type;
+
+	HashFilter *filter;			/* link to the filter */
+	List	   *clauses;		/* list of ExprState nodes */
+
+	/* statistics */
+	int64		nvalues;		/* number of values added to filter */
+	int64		nqueries;
+	int64		nhits;
+} HashFilterState;
+
 /* ----------------
  *	 HashState information
  * ----------------
@@ -2647,6 +2663,8 @@ typedef struct HashState
 	PlanState	ps;				/* its first field is NodeTag */
 	HashJoinTable hashtable;	/* hash table for the hashjoin */
 	List	   *hashkeys;		/* list of ExprState nodes */
+
+	List	   *filters;		/* list of HashFilterState nodes */
 
 	/*
 	 * In a parallelized hash join, the leader retains a pointer to the

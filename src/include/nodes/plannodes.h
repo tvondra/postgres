@@ -1213,7 +1213,13 @@ typedef struct HashFilter
 
 	NodeTag		type;
 
-	/* ID for filter (unique within planner run) */
+	/* link to the Hash node building the filter */
+	Node	   *hash;
+
+	/* index of the filter (in the parent list) */
+	Index		index;
+
+	/* ID for filter (unique within the planner run) */
 	Index		filterId;
 
 	/* expressions evaluated against the filter */
@@ -1234,7 +1240,7 @@ typedef struct HashFilterReference
 
 	NodeTag		type;
 
-	/* ID for filter (unique within planner run) */
+	/* pointer to the filter */
 	HashFilter *filter;
 
 	/* expressions evaluated against the filter */

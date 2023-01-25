@@ -4838,12 +4838,18 @@ create_hashjoin_plan(PlannerInfo *root,
 			 * if we end up filtering only a small fraction of rows.
 			 * Could we estimate it like a fraction of (total - startup)
 			 * of the inner path cost?
+			 *
+			 * XXX We need to do this before building the subplans, so
+			 * we don't have the Hash node yet. We'll leave the pointer
+			 * NULL and update it later.
 			 */
 			if (path)
 			{
 				HashFilter *filter = makeNode(HashFilter);
 				HashFilterReference *ref = makeNode(HashFilterReference);
 
+				filter->hash = NULL;	/* will fix later */
+				filter->index = list_length(filters);
 				filter->filterId = ++(root->glob->lastFilterId);
 				filter->clauses = list_make1(expr);
 
@@ -4978,6 +4984,13 @@ create_hashjoin_plan(PlannerInfo *root,
 
 	/* FIXME add as parameter */
 	hash_plan->filters = filters;
+
+	foreach (lc, filters)
+	{
+		HashFilter *filter = (HashFilter *) lfirst(lc);
+
+		filter->hash = (Node *) hash_plan;
+	}
 
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input

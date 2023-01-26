@@ -1231,6 +1231,9 @@ typedef struct HashFilter
 	/* expressions evaluated against the filter */
 	List	   *clauses;
 
+	List	   *hashoperators;
+	List	   *hashcollations;
+
 } HashFilter;
 
 /*

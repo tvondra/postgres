@@ -3146,16 +3146,20 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 								   list_length(plan->filters), es);
 		else
 		{
-			ListCell *lc;
+			ListCell *lc1,
+					 *lc2;
 
 			ExplainIndentText(es);
-			foreach (lc, plan->filters)
+			forboth (lc1, plan->filters, lc2, hashstate->filters)
 			{
-				HashFilter *filter = (HashFilter *) lfirst(lc);
+				HashFilter *filter = (HashFilter *) lfirst(lc1);
+				HashFilterState *state = (HashFilterState *) lfirst(lc2);
 
 				show_scan_qual(filter->clauses,
 							   "Bloom filter", (PlanState *) hashstate,
 							   ancestors, es);
+				ExplainIndentText(es);
+				appendStringInfo(es->str, "Values: " INT64_FORMAT "\n", state->nvalues);
 			}
 		}
 	}

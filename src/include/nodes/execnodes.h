@@ -2649,6 +2649,10 @@ typedef struct HashFilterState
 	HashFilter *filter;			/* link to the filter */
 	List	   *clauses;		/* list of ExprState nodes */
 
+	FmgrInfo   *hashfunctions;
+	bool	   *hashStrict;
+	Oid		   *collations;
+
 	/* statistics */
 	int64		nvalues;		/* number of values added to filter */
 	int64		nqueries;

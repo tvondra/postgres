@@ -4836,6 +4836,9 @@ create_hashjoin_plan(PlannerInfo *root,
 			 * XXX We need to do this before building the subplans, so
 			 * we don't have the Hash node yet. We'll leave the pointer
 			 * NULL and update it later.
+			 *
+			 * We should group the clauses by relids, and then push each
+			 * group to the same node at once.
 			 */
 			if (path)
 			{
@@ -4847,6 +4850,12 @@ create_hashjoin_plan(PlannerInfo *root,
 				filter->filterId = ++(root->glob->lastFilterId);
 				filter->clauses = list_make1(expr);
 				filter->state = NULL;
+
+				filter->hashoperators = NIL;
+				filter->hashoperators = lappend_oid(filter->hashoperators, opexpr->opno);
+
+				filter->hashcollations = NIL;
+				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
 
 				/* XXX not sure a copy is needed, but maybe it is */
 				ref->filter = filter;

@@ -81,6 +81,10 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
+static bool ExecHashGetFilterHashValue(HashFilterState *filter,
+									   ExprContext *econtext,
+									   bool keep_nulls,
+									   uint32 *hashvalue);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -188,6 +192,27 @@ MultiExecPrivateHash(HashState *node)
 				ExecHashTableInsert(hashtable, slot, hashvalue);
 			}
 			hashtable->totalTuples += 1;
+
+			/*
+			 * add tuple to all hash filters
+			 *
+			 * XXX maybe pointless to do unless after the hash is built (when
+			 * we can decide if the filter is useful)
+			 */
+			{
+				ListCell *lc;
+				foreach (lc, node->filters)
+				{
+					HashFilterState *filter = (HashFilterState *) lfirst(lc);
+					uint32 hash;
+					econtext->ecxt_scantuple = slot; /* FIXME */
+					ExecHashGetFilterHashValue(filter, econtext,
+											   hashtable->keepNulls,
+											   &hash);
+					filter->nvalues++;
+					econtext->ecxt_scantuple = NULL;
+				}
+			}
 		}
 	}
 
@@ -402,11 +427,40 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	 */
 	foreach (lc, node->filters)
 	{
+		int			nkeys;
+		int			i;
+		ListCell   *ho,
+				   *hc;
+
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
 		state->filter = filter;
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
+
+		nkeys = list_length(filter->hashoperators);
+		state->hashfunctions = palloc_array(FmgrInfo, nkeys);
+		state->hashStrict = palloc_array(bool, nkeys);
+		state->collations = palloc_array(Oid, nkeys);
+
+		/* FIXME properly handle the left/right function, for details see
+		 * ExecHashTableCreate() */
+		i = 0;
+		forboth(ho, filter->hashoperators, hc, filter->hashcollations)
+		{
+			Oid			hashop = lfirst_oid(ho);
+			Oid			left_hashfn;
+			Oid			right_hashfn;
+
+			if (!get_op_hash_functions(hashop, &left_hashfn, &right_hashfn))
+				elog(ERROR, "could not find hash function for hash operator %u",
+					hashop);
+			fmgr_info(left_hashfn, &state->hashfunctions[i]);
+			// fmgr_info(right_hashfn, &hashtable->inner_hashfunctions[i]);
+			state->hashStrict[i] = op_strict(hashop);
+			state->collations[i] = lfirst_oid(hc);
+			i++;
+		}
 
 		/* FIXME */
 		filter->state = (Node *) state;
@@ -1885,6 +1939,100 @@ ExecHashGetHashValue(HashJoinTable hashtable,
 			uint32		hkey;
 
 			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], hashtable->collations[i], keyval));
+			hashkey ^= hkey;
+		}
+
+		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	*hashvalue = hashkey;
+	return true;
+}
+
+
+/*
+ * ExecHashGetHashValue
+ *		Compute the hash value for a tuple
+ *
+ * The tuple to be tested must be in econtext->ecxt_outertuple (thus Vars in
+ * the hashkeys expressions need to have OUTER_VAR as varno). If outer_tuple
+ * is false (meaning it's the HashJoin's inner node, Hash), econtext,
+ * hashkeys, and slot need to be from Hash, with hashkeys/slot referencing and
+ * being suitable for tuples from the node below the Hash. Conversely, if
+ * outer_tuple is true, econtext is from HashJoin, and hashkeys/slot need to
+ * be appropriate for tuples from HashJoin's outer node.
+ *
+ * A true result means the tuple's hash value has been successfully computed
+ * and stored at *hashvalue.  A false result means the tuple cannot match
+ * because it contains a null attribute, and hence it should be discarded
+ * immediately.  (If keep_nulls is true then false is never returned.)
+ */
+static bool
+ExecHashGetFilterHashValue(HashFilterState *filter,
+					 ExprContext *econtext,
+					 bool keep_nulls,
+					 uint32 *hashvalue)
+{
+	uint32		hashkey = 0;
+	FmgrInfo   *hashfunctions;
+	ListCell   *hk;
+	int			i = 0;
+	MemoryContext oldContext;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	hashfunctions = filter->hashfunctions;
+
+	foreach(hk, filter->clauses)
+	{
+		ExprState  *keyexpr = (ExprState *) lfirst(hk);
+		Datum		keyval;
+		bool		isNull;
+
+		/* combine successive hashkeys by rotating */
+		hashkey = pg_rotate_left32(hashkey, 1);
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;	/* cannot match */
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+		{
+			/* Compute the hash function */
+			uint32		hkey;
+
+			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 			hashkey ^= hkey;
 		}
 

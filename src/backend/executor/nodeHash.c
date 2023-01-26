@@ -29,6 +29,7 @@
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "catalog/pg_statistic.h"
+#include "common/hashfn.h"
 #include "commands/tablespace.h"
 #include "executor/execdebug.h"
 #include "executor/hashjoin.h"
@@ -85,6 +86,7 @@ static bool ExecHashGetFilterHashValue(HashFilterState *filter,
 									   ExprContext *econtext,
 									   bool keep_nulls,
 									   uint32 *hashvalue);
+static void ExecHashFilterAddHash(HashFilterState *filter, uint32 hashvalue);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -209,10 +211,19 @@ MultiExecPrivateHash(HashState *node)
 					ExecHashGetFilterHashValue(filter, econtext,
 											   hashtable->keepNulls,
 											   &hash);
-					filter->nvalues++;
+					ExecHashFilterAddHash(filter, hash);
 					econtext->ecxt_scantuple = NULL;
 				}
 			}
+		}
+	}
+
+	{
+		ListCell *lc;
+		foreach (lc, node->filters)
+		{
+			HashFilterState *filter = (HashFilterState *) lfirst(lc);
+			filter->built = true;
 		}
 	}
 
@@ -462,8 +473,15 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 			i++;
 		}
 
+		/* 1kB is good enough for 1000 values and 1% fpr */
+		/* FIXME size properly using estimates */
+		state->nbits = 8 * 1024L;
+		state->nhashes = 7;
+		state->data = palloc0(1024);
+
 		/* FIXME */
 		filter->state = (Node *) state;
+		state->built = false;
 
 		hashstate->filters = lappend(hashstate->filters, state);
 	}
@@ -2043,6 +2061,36 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 
 	*hashvalue = hashkey;
 	return true;
+}
+
+#define SEED_1	0x88f44a44
+#define SEED_2	0xe80f9165
+
+static void
+ExecHashFilterAddHash(HashFilterState *filter, uint32 hashvalue)
+{
+	int			i;
+	uint64		h1,
+				h2;
+
+	/* compute the hashes, used for the bloom filter */
+	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, SEED_2) % filter->nbits;
+
+	/* compute the requested number of hashes */
+	for (i = 0; i < filter->nhashes; i++)
+	{
+		/* h1 + h2 + f(i) */
+		uint32		h = (h1 + i * h2) % filter->nbits;
+		uint32		byte = (h / 8);
+		uint32		bit = (h % 8);
+
+		/* if the bit is not set, set it and remember we did that */
+		if (!(filter->data[byte] & (0x01 << bit)))
+			filter->data[byte] |= (0x01 << bit);
+	}
+
+	filter->nvalues++;
 }
 
 /*

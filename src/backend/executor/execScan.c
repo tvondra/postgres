@@ -18,11 +18,18 @@
  */
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
+static bool ExecScanGetFilterHashValue(HashFilterState *filter,
+									   ExprContext *econtext,
+									   bool keep_nulls,
+									   uint32 *hashvalue);
 
+static bool ExecHashFilterContainsHash(HashFilterState *filter,
+									   uint32 hashvalue);
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple
@@ -162,6 +169,7 @@ ExecScan(ScanState *node,
 	ExprContext *econtext;
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
+	List *filters;
 
 	/*
 	 * Fetch data from node
@@ -169,6 +177,7 @@ ExecScan(ScanState *node,
 	qual = node->ps.qual;
 	projInfo = node->ps.ps_ProjInfo;
 	econtext = node->ps.ps_ExprContext;
+	filters = node->ss_Filters;
 
 	/* interrupt checks are in ExecScanFetch */
 
@@ -176,7 +185,7 @@ ExecScan(ScanState *node,
 	 * If we have neither a qual to check nor a projection to do, just skip
 	 * all the overhead and return the raw scan tuple.
 	 */
-	if (!qual && !projInfo)
+	if (!qual && !projInfo && !filters)
 	{
 		ResetExprContext(econtext);
 		return ExecScanFetch(node, accessMtd, recheckMtd);
@@ -194,7 +203,9 @@ ExecScan(ScanState *node,
 	 */
 	for (;;)
 	{
+		ListCell *lc;
 		TupleTableSlot *slot;
+		bool		filter_ok = true;
 
 		slot = ExecScanFetch(node, accessMtd, recheckMtd);
 
@@ -217,6 +228,25 @@ ExecScan(ScanState *node,
 		 */
 		econtext->ecxt_scantuple = slot;
 
+		foreach (lc, filters)
+		{
+			uint32 hashvalue;
+			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
+			HashFilter *filter = refstate->filter;
+			HashFilterState *filterstate = (HashFilterState *) filter->state;
+
+			if (!filterstate->built)
+				continue;
+
+			ExecScanGetFilterHashValue(filterstate, econtext, false, &hashvalue);
+
+			if (!ExecHashFilterContainsHash(filterstate, hashvalue))
+			{
+				filter_ok = false;
+				break;
+			}
+		}
+
 		/*
 		 * check that the current tuple satisfies the qual-clause
 		 *
@@ -224,7 +254,7 @@ ExecScan(ScanState *node,
 		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
 		 */
-		if (qual == NULL || ExecQual(qual, econtext))
+		if (filter_ok && (qual == NULL || ExecQual(qual, econtext)))
 		{
 			/*
 			 * Found a satisfactory scan tuple.
@@ -339,4 +369,111 @@ ExecScanReScan(ScanState *node)
 			}
 		}
 	}
+}
+
+static bool
+ExecScanGetFilterHashValue(HashFilterState *filter,
+						   ExprContext *econtext,
+						   bool keep_nulls,
+						   uint32 *hashvalue)
+{
+	uint32		hashkey = 0;
+	FmgrInfo   *hashfunctions;
+	ListCell   *hk;
+	int			i = 0;
+	MemoryContext oldContext;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	hashfunctions = filter->hashfunctions;
+
+	foreach(hk, filter->clauses)
+	{
+		ExprState  *keyexpr = (ExprState *) lfirst(hk);
+		Datum		keyval;
+		bool		isNull;
+
+		/* combine successive hashkeys by rotating */
+		hashkey = pg_rotate_left32(hashkey, 1);
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;	/* cannot match */
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+		{
+			/* Compute the hash function */
+			uint32		hkey;
+
+			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+			hashkey ^= hkey;
+		}
+
+		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	*hashvalue = hashkey;
+	return true;
+}
+
+#define SEED_1	0x88f44a44
+#define SEED_2	0xe80f9165
+
+static bool
+ExecHashFilterContainsHash(HashFilterState *filter, uint32 hashvalue)
+{
+	int			i;
+	uint64		h1,
+				h2;
+
+	/* calculate the two hashes */
+	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, SEED_2) % filter->nbits;
+
+	/* compute the requested number of hashes */
+	for (i = 0; i < filter->nhashes; i++)
+	{
+		/* h1 + h2 + f(i) */
+		uint32		h = (h1 + i * h2) % filter->nbits;
+		uint32		byte = (h / 8);
+		uint32		bit = (h % 8);
+
+		/* if the bit is not set, the value is not there */
+		if (!(filter->data[byte] & (0x01 << bit)))
+			return false;
+	}
+
+	/* all hashes found in bloom filter */
+	return true;
 }

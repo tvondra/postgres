@@ -66,6 +66,7 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
  */
 extern PGDLLIMPORT int from_collapse_limit;
 extern PGDLLIMPORT int join_collapse_limit;
+extern PGDLLIMPORT bool enable_hash_filter_pushdown;
 
 extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
 extern void add_other_rels_to_query(PlannerInfo *root);

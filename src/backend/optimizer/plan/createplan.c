@@ -315,6 +315,7 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
+bool enable_hash_filter_pushdown = true;
 
 /*
  * create_plan
@@ -4782,6 +4783,7 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * XXX We can't modify the path yet, because it's referenced by multiple
 	 * upper paths for alternative plans.
 	 */
+	if (enable_hash_filter_pushdown)
 	{
 		ListCell *lc2;
 

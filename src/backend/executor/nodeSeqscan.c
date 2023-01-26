@@ -176,17 +176,17 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	 * If there are any filter references assigned to this node, initialize
 	 * expressions for those too.
 	 */
-	scanstate->ss.ss_filters = NIL;
+	scanstate->ss.ss_Filters = NIL;
 	foreach (lc, node->scan.filters)
 	{
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
 		HashFilter *filter = ref->filter;
 		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
 
-		state->filter = (HashFilterState *) filter->state;
+		state->filter = filter;
 		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
 
-		scanstate->ss.ss_filters = lappend(scanstate->ss.ss_filters, state);
+		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
 	}
 
 	return scanstate;

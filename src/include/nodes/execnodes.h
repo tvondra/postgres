@@ -1462,7 +1462,7 @@ typedef struct ScanState
 	Relation	ss_currentRelation;
 	struct TableScanDescData *ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
-	List	   *ss_filters;
+	List	   *ss_Filters;
 } ScanState;
 
 /* ----------------
@@ -2653,17 +2653,24 @@ typedef struct HashFilterState
 	bool	   *hashStrict;
 	Oid		   *collations;
 
+	bool		built;
+
 	/* statistics */
 	int64		nvalues;		/* number of values added to filter */
 	int64		nqueries;
 	int64		nhits;
+
+	/* bloom filter */
+	int			nhashes;
+	int			nbits;
+	char	   *data;
 } HashFilterState;
 
 typedef struct HashFilterReferenceState
 {
 	NodeTag		type;
 
-	HashFilterState *filter;	/* link to the filter state */
+	HashFilter *filter;			/* link to the filter */
 	List	   *clauses;		/* list of ExprState nodes */
 
 } HashFilterReferenceState;

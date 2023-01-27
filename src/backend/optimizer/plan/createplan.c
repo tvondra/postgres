@@ -4782,8 +4782,11 @@ create_hashjoin_plan(PlannerInfo *root,
 	 *
 	 * XXX We can't modify the path yet, because it's referenced by multiple
 	 * upper paths for alternative plans.
+	 *
+	 * XXX Disabled for parallel plans for now.
 	 */
-	if (enable_hash_filter_pushdown)
+	if (enable_hash_filter_pushdown &&
+		(best_path->jpath.outerjoinpath->parallel_workers == 0))
 	{
 		ListCell *lc2;
 

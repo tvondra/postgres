@@ -426,7 +426,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	ExecInitResultTupleSlotTL(&hashstate->ps, &TTSOpsMinimalTuple);
 	hashstate->ps.ps_ProjInfo = NULL;
 	// elog(WARNING, "AAA hashkeys %s", nodeToString(node->hashkeys));
-
+	// elog(WARNING, "hashkeys = %s", nodeToString(node->hashkeys));
 	/*
 	 * initialize child expressions
 	 */
@@ -450,6 +450,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 
 		state->filter = filter;
 
+		// elog(WARNING, "filter %s", nodeToString(filter->clauses));
+
 		/*
 		 * FIXME
 		 *
@@ -457,6 +459,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * to reference the outer relation. For now we just forcefully
 		 * set the varno/varattno.
 		 */
+		/*
 		{
 			ListCell *lc2;
 			foreach (lc2, filter->clauses)
@@ -469,6 +472,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 				}
 			}
 		}
+		*/
+		// elog(WARNING, "fixed filter %s", nodeToString(filter->clauses));
 
 		// elog(WARNING, "AAA state clauses %s", nodeToString(filter->clauses));
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);

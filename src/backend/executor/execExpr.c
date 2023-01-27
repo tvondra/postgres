@@ -937,14 +937,14 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					/* regular user column */
 					scratch.d.var.attnum = variable->varattno - 1;
 					scratch.d.var.vartype = variable->vartype;
-					elog(WARNING, "variable %p varno %d %s", variable, variable->varno, nodeToString(variable));
+					//elog(WARNING, "variable %p varno %d %s", variable, variable->varno, nodeToString(variable));
 					switch (variable->varno)
 					{
 						case INNER_VAR:
 							scratch.opcode = EEOP_INNER_VAR;
 							break;
 						case OUTER_VAR:
-							elog(WARNING, "OUTER_VAR");
+							//elog(WARNING, "OUTER_VAR");
 							scratch.opcode = EEOP_OUTER_VAR;
 							break;
 

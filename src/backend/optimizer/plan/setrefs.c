@@ -1872,18 +1872,12 @@ fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset, indexed_tlist *out
 	{
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		filter->clauses = (List *)
-			fix_scan_list(root, filter->clauses,
-						  rtoffset, NUM_EXEC_QUAL(plan));
-
-/*
-		filter->clauses = (List *)
 			fix_upper_expr(root,
 					   (Node *) filter->clauses,
 					   outer_itlist,
 					   OUTER_VAR,
 					   rtoffset,
 					   NUM_EXEC_QUAL(plan));
-*/
 	}
 
 	return hplan->filters;
@@ -1899,7 +1893,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 	Hash	   *hplan = (Hash *) plan;
 	Plan	   *outer_plan = plan->lefttree;
 	indexed_tlist *outer_itlist;
-
+//elog(WARNING, "set_hash_references hplan->hashkeys %s", nodeToString(hplan->hashkeys));
 	/*
 	 * Hash's hashkeys are used when feeding tuples into the hashtable,
 	 * therefore have them reference Hash's outer plan (which itself is the
@@ -1914,7 +1908,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   rtoffset,
 					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
-
+//elog(WARNING, "set_hash_references (2) hplan->hashkeys %s", nodeToString(hplan->hashkeys));
 	/* FIXME maybe this should do the same thing as for hashkeys? */
 	hplan->filters = fix_hash_filters(root, plan, rtoffset, outer_itlist);
 

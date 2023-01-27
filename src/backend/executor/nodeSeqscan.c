@@ -166,8 +166,8 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	ExecInitResultTypeTL(&scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
-	elog(WARNING, "=====================================");
-	elog(WARNING, "node->scan.plan.qual = %s", nodeToString(node->scan.plan.qual));
+	// elog(WARNING, "=====================================");
+	// elog(WARNING, "node->scan.plan.qual = %s", nodeToString(node->scan.plan.qual));
 
 	/*
 	 * initialize child expressions
@@ -187,7 +187,7 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
 
 		// elog(WARNING, "before: clauses = %s", nodeToString(ref->clauses));
-
+/*
 		elog(WARNING, "==== ref->clauses =====");
 		{
 			ListCell *lc2;
@@ -197,17 +197,18 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 				elog(WARNING, "var %p %s", var, nodeToString(var));
 			}
 		}
-elog(WARNING, "============ ExecInitExprList seqscan / start ===========");
+*/
+//elog(WARNING, "============ ExecInitExprList seqscan / start ===========");
 		state->filter = filter;
 		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
-		elog(WARNING, "%s", nodeToString(state->clauses));
-elog(WARNING, "============ ExecInitExprList seqscan / end ===========");
+//		elog(WARNING, "%s", nodeToString(state->clauses));
+//elog(WARNING, "============ ExecInitExprList seqscan / end ===========");
 		// elog(WARNING, "after: clauses = %s", nodeToString(ref->clauses));
 
 		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
 	}
 
-	elog(WARNING, "=====================================");
+	// elog(WARNING, "=====================================");
 
 	return scanstate;
 }

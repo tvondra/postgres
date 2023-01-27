@@ -4818,8 +4818,8 @@ create_hashjoin_plan(PlannerInfo *root,
 				expr2 = (Node *) lsecond(opexpr->args);
 			}
 
-			elog(WARNING, "expr %p str = %s", expr, nodeToString(expr));
-			elog(WARNING, "expr2 %p str = %s", expr2, nodeToString(expr2));
+			// elog(WARNING, "expr %p str = %s", expr, nodeToString(expr));
+			// elog(WARNING, "expr2 %p str = %s", expr2, nodeToString(expr2));
 
 			Assert(relids != NULL);
 
@@ -4985,6 +4985,8 @@ create_hashjoin_plan(PlannerInfo *root,
 		outer_hashkeys = lappend(outer_hashkeys, linitial(hclause->args));
 		inner_hashkeys = lappend(inner_hashkeys, lsecond(hclause->args));
 	}
+
+	// elog(WARNING, "inner_hashkeys = %s", nodeToString(inner_hashkeys));
 
 	/*
 	 * Build the hash node and hash join node.

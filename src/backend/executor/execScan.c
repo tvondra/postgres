@@ -23,12 +23,12 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
-static bool ExecScanGetFilterHashValue(HashFilterState *filter,
+static bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 									   ExprContext *econtext,
 									   bool keep_nulls,
 									   uint32 *hashvalue);
 
-static bool ExecHashFilterContainsHash(HashFilterState *filter,
+static bool ExecHashFilterContainsHash(HashFilterReferenceState *ref,
 									   uint32 hashvalue);
 
 /*
@@ -228,6 +228,12 @@ ExecScan(ScanState *node,
 		 */
 		econtext->ecxt_scantuple = slot;
 
+		/* FIXME The expression in find_pushdown_node() references the
+		 * outer plan. We need to tweak that, somehow. */
+		// econtext->ecxt_outertuple = slot;
+
+		// elog(WARNING, "node %p evalfunc = %p", node, econtext->evalfunc);
+
 		foreach (lc, filters)
 		{
 			uint32 hashvalue;
@@ -238,9 +244,9 @@ ExecScan(ScanState *node,
 			if (!filterstate->built)
 				continue;
 
-			ExecScanGetFilterHashValue(filterstate, econtext, false, &hashvalue);
+			ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
-			if (!ExecHashFilterContainsHash(filterstate, hashvalue))
+			if (!ExecHashFilterContainsHash(refstate, hashvalue))
 			{
 				filter_ok = false;
 				break;
@@ -372,7 +378,7 @@ ExecScanReScan(ScanState *node)
 }
 
 static bool
-ExecScanGetFilterHashValue(HashFilterState *filter,
+ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 						   ExprContext *econtext,
 						   bool keep_nulls,
 						   uint32 *hashvalue)
@@ -382,6 +388,7 @@ ExecScanGetFilterHashValue(HashFilterState *filter,
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
+	HashFilterState *filter = (HashFilterState *) ref->filter->state;
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -393,7 +400,8 @@ ExecScanGetFilterHashValue(HashFilterState *filter,
 
 	hashfunctions = filter->hashfunctions;
 
-	foreach(hk, filter->clauses)
+	/* XXX use expressions from the reference, with adjusted varnos etc. */
+	foreach(hk, ref->clauses)
 	{
 		ExprState  *keyexpr = (ExprState *) lfirst(hk);
 		Datum		keyval;
@@ -451,11 +459,12 @@ ExecScanGetFilterHashValue(HashFilterState *filter,
 #define SEED_2	0xe80f9165
 
 static bool
-ExecHashFilterContainsHash(HashFilterState *filter, uint32 hashvalue)
+ExecHashFilterContainsHash(HashFilterReferenceState *ref, uint32 hashvalue)
 {
 	int			i;
 	uint64		h1,
 				h2;
+	HashFilterState *filter = (HashFilterState *) ref->filter->state;
 
 	/* calculate the two hashes */
 	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;

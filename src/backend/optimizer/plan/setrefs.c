@@ -1862,7 +1862,7 @@ set_mergeappend_references(PlannerInfo *root,
 }
 
 static List *
-fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset)
+fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset, indexed_tlist *outer_itlist)
 {
 	ListCell   *lc;
 	Hash	   *hplan = (Hash *) plan;
@@ -1871,8 +1871,19 @@ fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 	foreach(lc, hplan->filters)
 	{
 		HashFilter *filter = (HashFilter *) lfirst(lc);
-		filter->clauses = fix_scan_list(root, filter->clauses,
-										rtoffset, NUM_EXEC_QUAL(plan));
+		filter->clauses = (List *)
+			fix_scan_list(root, filter->clauses,
+						  rtoffset, NUM_EXEC_QUAL(plan));
+
+/*
+		filter->clauses = (List *)
+			fix_upper_expr(root,
+					   (Node *) filter->clauses,
+					   outer_itlist,
+					   OUTER_VAR,
+					   rtoffset,
+					   NUM_EXEC_QUAL(plan));
+*/
 	}
 
 	return hplan->filters;
@@ -1905,7 +1916,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   NUM_EXEC_QUAL(plan));
 
 	/* FIXME maybe this should do the same thing as for hashkeys? */
-	hplan->filters = fix_hash_filters(root, plan, rtoffset);
+	hplan->filters = fix_hash_filters(root, plan, rtoffset, outer_itlist);
 
 	/* Hash doesn't project */
 	set_dummy_tlist_references(plan, rtoffset);

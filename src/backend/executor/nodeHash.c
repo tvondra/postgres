@@ -207,6 +207,7 @@ MultiExecPrivateHash(HashState *node)
 				{
 					HashFilterState *filter = (HashFilterState *) lfirst(lc);
 					uint32 hash;
+					/* */
 					econtext->ecxt_scantuple = slot; /* FIXME */
 					ExecHashGetFilterHashValue(filter, econtext,
 											   hashtable->keepNulls,
@@ -424,6 +425,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	 */
 	ExecInitResultTupleSlotTL(&hashstate->ps, &TTSOpsMinimalTuple);
 	hashstate->ps.ps_ProjInfo = NULL;
+	// elog(WARNING, "AAA hashkeys %s", nodeToString(node->hashkeys));
 
 	/*
 	 * initialize child expressions
@@ -447,6 +449,28 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		HashFilterState *state = makeNode(HashFilterState);
 
 		state->filter = filter;
+
+		/*
+		 * FIXME
+		 *
+		 * The clauses should get the same treatment as hashkeys above
+		 * to reference the outer relation. For now we just forcefully
+		 * set the varno/varattno.
+		 */
+		{
+			ListCell *lc2;
+			foreach (lc2, filter->clauses)
+			{
+				Var *var = (Var *) lfirst(lc2);
+				if (IsA(var, Var))
+				{
+					var->varno = -2;
+					var->varattno = 1;
+				}
+			}
+		}
+
+		// elog(WARNING, "AAA state clauses %s", nodeToString(filter->clauses));
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
 
 		nkeys = list_length(filter->hashoperators);

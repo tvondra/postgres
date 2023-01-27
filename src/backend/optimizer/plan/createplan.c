@@ -4794,6 +4794,7 @@ create_hashjoin_plan(PlannerInfo *root,
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
 			OpExpr *opexpr;
 			Node   *expr;
+			Node   *expr2;
 
 			/* guaranteed by clause_sides_match_join */
 			opexpr = (OpExpr *) rinfo->clause;
@@ -4807,13 +4808,18 @@ create_hashjoin_plan(PlannerInfo *root,
 			if (bms_is_subset(rinfo->left_relids, best_path->jpath.outerjoinpath->parent->relids))
 			{
 				relids = rinfo->left_relids;
-				expr = (Node *) linitial(opexpr->args);
+				expr = (Node *) lsecond(opexpr->args);
+				expr2 = (Node *) linitial(opexpr->args);
 			}
 			else if (bms_is_subset(rinfo->right_relids, best_path->jpath.outerjoinpath->parent->relids))
 			{
 				relids = rinfo->right_relids;
-				expr = (Node *) lsecond(opexpr->args);
+				expr = (Node *) linitial(opexpr->args);
+				expr2 = (Node *) lsecond(opexpr->args);
 			}
+
+			elog(WARNING, "expr %p str = %s", expr, nodeToString(expr));
+			elog(WARNING, "expr2 %p str = %s", expr2, nodeToString(expr2));
 
 			Assert(relids != NULL);
 
@@ -4850,7 +4856,7 @@ create_hashjoin_plan(PlannerInfo *root,
 				filter->hash = NULL;	/* will fix later */
 				filter->index = list_length(filters);
 				filter->filterId = ++(root->glob->lastFilterId);
-				filter->clauses = list_make1(expr);
+				filter->clauses = list_make1(copyObject(expr));
 				filter->state = NULL;
 
 				filter->hashoperators = NIL;
@@ -4861,7 +4867,7 @@ create_hashjoin_plan(PlannerInfo *root,
 
 				/* XXX not sure a copy is needed, but maybe it is */
 				ref->filter = filter;
-				ref->clauses = list_copy(filter->clauses);
+				ref->clauses = list_make1(copyObject(expr2));
 
 				/* add the filter to the list */
 				filters = lappend(filters, filter);

@@ -84,6 +84,7 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
 static void ExecHashFilterAddValue(HashFilterState *filter, bool keep_value,
 								   ExprContext *econtext);
+static void ExecHashFilterFinalize(HashFilterState *filter);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -215,6 +216,7 @@ MultiExecPrivateHash(HashState *node)
 		foreach (lc, node->filters)
 		{
 			HashFilterState *filter = (HashFilterState *) lfirst(lc);
+			ExecHashFilterFinalize(filter);
 			filter->built = true;
 		}
 	}
@@ -2169,6 +2171,27 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	memcpy(&filter->data[offset], values, entrylen);
 
 	return true;
+}
+
+static int
+filter_comparator(const void *a, const void *b, void *c)
+{
+	Size	len = * (Size *) c;
+
+	return memcmp(a, b, len);
+}
+
+static void
+ExecHashFilterFinalize(HashFilterState *filter)
+{
+	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+
+	if (filter->filter_type != HashFilterExact)
+		return;
+
+	elog(WARNING, "sorting %d values", filter->nvalues);
+
+	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
 }
 
 static void

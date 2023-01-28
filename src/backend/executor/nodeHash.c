@@ -82,11 +82,8 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
-static bool ExecHashGetFilterHashValue(HashFilterState *filter,
-									   ExprContext *econtext,
-									   bool keep_nulls,
-									   uint32 *hashvalue);
-static void ExecHashFilterAddHash(HashFilterState *filter, uint32 hashvalue);
+static void ExecHashFilterAddValue(HashFilterState *filter, bool keep_value,
+								   ExprContext *econtext);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -206,14 +203,8 @@ MultiExecPrivateHash(HashState *node)
 				foreach (lc, node->filters)
 				{
 					HashFilterState *filter = (HashFilterState *) lfirst(lc);
-					uint32 hash;
-					/* */
-					econtext->ecxt_scantuple = slot; /* FIXME */
-					ExecHashGetFilterHashValue(filter, econtext,
-											   hashtable->keepNulls,
-											   &hash);
-					ExecHashFilterAddHash(filter, hash);
-					econtext->ecxt_scantuple = NULL;
+
+					ExecHashFilterAddValue(filter, hashtable->keepNulls, econtext);
 				}
 			}
 		}
@@ -2096,15 +2087,18 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 #define SEED_2	0xe80f9165
 
 static void
-ExecHashFilterAddHash(HashFilterState *filter, uint32 hashvalue)
+ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
 	int			i;
 	uint64		h1,
 				h2;
+	uint32		hash;
+
+	ExecHashGetFilterHashValue(filter, econtext, keep_nulls, &hash);
 
 	/* compute the hashes, used for the bloom filter */
-	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;
-	h2 = hash_bytes_uint32_extended(hashvalue, SEED_2) % filter->nbits;
+	h1 = hash_bytes_uint32_extended(hash, SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(hash, SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

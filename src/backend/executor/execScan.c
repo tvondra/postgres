@@ -29,7 +29,7 @@ static bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 									   uint32 *hashvalue);
 
 static bool ExecHashFilterContainsHash(HashFilterReferenceState *ref,
-									   uint32 hashvalue);
+									   ExprContext *econtext);
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple
@@ -236,7 +236,6 @@ ExecScan(ScanState *node,
 
 		foreach (lc, filters)
 		{
-			uint32 hashvalue;
 			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
 			HashFilter *filter = refstate->filter;
 			HashFilterState *filterstate = (HashFilterState *) filter->state;
@@ -244,9 +243,7 @@ ExecScan(ScanState *node,
 			if (!filterstate->built)
 				continue;
 
-			ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
-
-			if (!ExecHashFilterContainsHash(refstate, hashvalue))
+			if (!ExecHashFilterContainsHash(refstate, econtext))
 			{
 				filter_ok = false;
 				break;
@@ -459,12 +456,15 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 #define SEED_2	0xe80f9165
 
 static bool
-ExecHashFilterContainsHash(HashFilterReferenceState *ref, uint32 hashvalue)
+ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
 	int			i;
 	uint64		h1,
 				h2;
-	HashFilterState *filter = (HashFilterState *) ref->filter->state;
+	uint32		hashvalue;
+	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+
+	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
 	/* calculate the two hashes */
 	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;

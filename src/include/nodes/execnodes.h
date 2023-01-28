@@ -2639,6 +2639,12 @@ typedef struct SharedHashInfo
 	HashInstrumentation hinstrument[FLEXIBLE_ARRAY_MEMBER];
 } SharedHashInfo;
 
+typedef enum HashFilterType
+{
+	HashFilterExact,
+	HashFilterBloom
+} HashFilterType;
+
 /*
  * State of a filter built on top of a Hash.
  */
@@ -2653,14 +2659,17 @@ typedef struct HashFilterState
 	bool	   *hashStrict;
 	Oid		   *collations;
 
-	bool		built;
+	HashFilterType	filter_type;
+	bool			built;
 
 	/* statistics */
-	int64		nvalues;		/* number of values added to filter */
 	int64		nqueries;
 	int64		nhits;
 
-	/* bloom filter */
+	/* exact filter */
+	int64		nvalues;
+
+	/* bloom filter mode */
 	int			nhashes;
 	int			nbits;
 	char	   *data;

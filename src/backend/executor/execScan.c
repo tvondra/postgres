@@ -551,27 +551,32 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	return true;
 }
 
+static int
+filter_comparator(const void *a, const void *b, void *c)
+{
+	Size	len = * (Size *) c;
+
+	return memcmp(a, b, len);
+}
+
 static bool
 ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
-	int			i;
 	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
 	Datum	   *values;
 	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
+	char	   *ptr;
 
 	values = palloc(entrysize);
 
 	ExecScanGetFilterGetValues(refstate, econtext, false, values);
 
-	for (i = 0; i < filter->nvalues; i++)
-	{
-		int		offset = i * entrysize;
-		if (memcmp(values, &filter->data[offset], entrysize) == 0)
-			return true;
-	}
+	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize, filter_comparator, &entrysize);
+
+	pfree(values);
 
 	/* all hashes found in bloom filter */
-	return false;
+	return (ptr != NULL);
 }
 
 static bool

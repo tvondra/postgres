@@ -2164,11 +2164,22 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 
 	Assert(filter->type == HashFilterExact);
 
+	/* too much data for exact filter */
+	if ((filter->nvalues + 1) * entrylen > filter->nbits/8)
+	{
+		elog(WARNING, "too many values");
+		return false;
+	}
+
 	values = palloc(sizeof(Datum) * list_length(filter->clauses));
 
 	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
 
 	memcpy(&filter->data[offset], values, entrylen);
+
+	pfree(values);
+
+	filter->nvalues++;
 
 	return true;
 }
@@ -2189,22 +2200,19 @@ ExecHashFilterFinalize(HashFilterState *filter)
 	if (filter->filter_type != HashFilterExact)
 		return;
 
-	elog(WARNING, "sorting %d values", filter->nvalues);
+	elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
 
 	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
 }
 
 static void
-ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint32 hash)
 {
-	uint32		hash;
 	uint64		h1,
 				h2;
 	int			i;
 
 	Assert(filter->filter_type == HashFilterBloom);
-
-	ExecHashGetFilterHashValue(filter, econtext, keep_nulls, &hash);
 
 	/* compute the hashes, used for the bloom filter */
 	h1 = hash_bytes_uint32_extended(hash, SEED_1) % filter->nbits;
@@ -2224,13 +2232,116 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	}
 }
 
+static bool
+ExecHashGetFilterHashValue2(HashFilterState *filter,
+					 ExprContext *econtext,
+					 Datum *values,
+					 bool keep_nulls,
+					 uint32 *hashvalue)
+{
+	uint32		hashkey = 0;
+	FmgrInfo   *hashfunctions;
+	int			i = 0;
+	MemoryContext oldContext;
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	hashfunctions = filter->hashfunctions;
+
+	for (i = 0; i < list_length(filter->clauses); i++)
+	{
+		Datum		keyval;
+		bool		isNull = false; /* FIXME */
+
+		/* combine successive hashkeys by rotating */
+		hashkey = pg_rotate_left32(hashkey, 1);
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = values[i];
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;	/* cannot match */
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+		{
+			/* Compute the hash function */
+			uint32		hkey;
+
+			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+			hashkey ^= hkey;
+		}
+
+		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	*hashvalue = hashkey;
+	return true;
+}
+
 static void
 ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	if (!ExecHashFilterAddExact(filter, keep_nulls, econtext))
-		ExecHashFilterAddHash(filter, keep_nulls, econtext);
+	/* filter tracking exact values */
+	if (filter->filter_type == HashFilterExact)
+	{
+		int		i,
+				nvalues;
+		char   *data;
 
-	filter->nvalues++;
+		Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+
+		/* if adding value worker, we're done */
+		if (ExecHashFilterAddExact(filter, keep_nulls, econtext))
+			return;
+
+		nvalues = filter->nvalues;
+		data = filter->data;
+
+		filter->data = palloc0(filter->nbits/8);
+		filter->filter_type = HashFilterBloom;
+
+		for (i = 0; i < nvalues; i++)
+		{
+			uint32	hashvalue = 0;
+			Datum  *values = (Datum *) (data + i * entrylen);
+
+			ExecHashGetFilterHashValue2(filter, econtext, values, false, &hashvalue);
+			ExecHashFilterAddHash(filter, false, econtext, hashvalue);
+		}
+	}
+
+	Assert(filter->filter_type != HashFilterExact);
+
+	if (filter->filter_type == HashFilterBloom)
+	{
+		uint32	hash = 0;
+		ExecHashGetFilterHashValue(filter, econtext, keep_nulls, &hash);
+		ExecHashFilterAddHash(filter, keep_nulls, econtext, hash);
+		filter->nvalues++;
+	}
 }
 
 /*

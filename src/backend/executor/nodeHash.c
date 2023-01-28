@@ -439,6 +439,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
+		state->filter_type = HashFilterExact;
 		state->filter = filter;
 
 		// elog(WARNING, "filter %s", nodeToString(filter->clauses));
@@ -498,6 +499,9 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		state->nbits = 8 * 1024L;
 		state->nhashes = 7;
 		state->data = palloc0(1024);
+
+		/* exact hash */
+		state->nvalues = 0;
 
 		/* FIXME */
 		filter->state = (Node *) state;
@@ -2083,16 +2087,99 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 	return true;
 }
 
+static bool
+ExecHashGetFilterGetValues(HashFilterState *filter,
+						   ExprContext *econtext,
+						   bool keep_nulls,
+						   Datum *values)
+{
+	ListCell   *hk;
+	int			i = 0;
+	MemoryContext oldContext;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	foreach(hk, filter->clauses)
+	{
+		ExprState  *keyexpr = (ExprState *) lfirst(hk);
+		Datum		keyval;
+		bool		isNull;
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+			values[i] = keyval;
+
+		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	return true;
+}
+
 #define SEED_1	0x88f44a44
 #define SEED_2	0xe80f9165
 
-static void
-ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+
+static bool
+ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	int			i;
+	Datum  *values;
+	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+	int		offset = entrylen * filter->nvalues;
+
+	Assert(filter->type == HashFilterExact);
+
+	values = palloc(sizeof(Datum) * list_length(filter->clauses));
+
+	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
+
+	memcpy(&filter->data[offset], values, entrylen);
+
+	return true;
+}
+
+static void
+ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+{
+	uint32		hash;
 	uint64		h1,
 				h2;
-	uint32		hash;
+	int			i;
+
+	Assert(filter->filter_type == HashFilterBloom);
 
 	ExecHashGetFilterHashValue(filter, econtext, keep_nulls, &hash);
 
@@ -2112,6 +2199,13 @@ ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 		if (!(filter->data[byte] & (0x01 << bit)))
 			filter->data[byte] |= (0x01 << bit);
 	}
+}
+
+static void
+ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+{
+	if (!ExecHashFilterAddExact(filter, keep_nulls, econtext))
+		ExecHashFilterAddHash(filter, keep_nulls, econtext);
 
 	filter->nvalues++;
 }

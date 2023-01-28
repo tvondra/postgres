@@ -28,8 +28,8 @@ static bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 									   bool keep_nulls,
 									   uint32 *hashvalue);
 
-static bool ExecHashFilterContainsHash(HashFilterReferenceState *ref,
-									   ExprContext *econtext);
+static bool ExecHashFilterContainsValue(HashFilterReferenceState *ref,
+										ExprContext *econtext);
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple
@@ -243,7 +243,7 @@ ExecScan(ScanState *node,
 			if (!filterstate->built)
 				continue;
 
-			if (!ExecHashFilterContainsHash(refstate, econtext))
+			if (!ExecHashFilterContainsValue(refstate, econtext))
 			{
 				filter_ok = false;
 				break;
@@ -452,6 +452,70 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 	return true;
 }
 
+static bool
+ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
+						   ExprContext *econtext,
+						   bool keep_nulls,
+						   Datum *values)
+{
+	ListCell   *hk;
+	int			i = 0;
+	MemoryContext oldContext;
+	HashFilterState *filter = (HashFilterState *) ref->filter->state;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	/* XXX use expressions from the reference, with adjusted varnos etc. */
+	foreach(hk, ref->clauses)
+	{
+		ExprState  *keyexpr = (ExprState *) lfirst(hk);
+		Datum		keyval;
+		bool		isNull;
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;	/* cannot match */
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+			values[i] = keyval;
+
+		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	return true;
+}
+
 #define SEED_1	0x88f44a44
 #define SEED_2	0xe80f9165
 
@@ -485,4 +549,38 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 
 	/* all hashes found in bloom filter */
 	return true;
+}
+
+static bool
+ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *econtext)
+{
+	int			i;
+	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+	Datum	   *values;
+	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
+
+	values = palloc(entrysize);
+
+	ExecScanGetFilterGetValues(refstate, econtext, false, values);
+
+	for (i = 0; i < filter->nvalues; i++)
+	{
+		int		offset = i * entrysize;
+		if (memcmp(values, &filter->data[offset], entrysize) == 0)
+			return true;
+	}
+
+	/* all hashes found in bloom filter */
+	return false;
+}
+
+static bool
+ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *econtext)
+{
+	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+
+	if (filter->filter_type == HashFilterExact)
+		return ExecHashFilterContainsExact(refstate, econtext);
+	else
+		return ExecHashFilterContainsHash(refstate, econtext);
 }

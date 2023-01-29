@@ -3154,12 +3154,33 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 			{
 				HashFilter *filter = (HashFilter *) lfirst(lc1);
 				HashFilterState *state = (HashFilterState *) lfirst(lc2);
+				PlanState *planstate = (PlanState *) hashstate;
 
-				show_scan_qual(filter->clauses,
-							   "Bloom filter", (PlanState *) hashstate,
-							   ancestors, es);
+				List	   *context;
+				char	   *exprstr;
+				bool		useprefix;
+
+				useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+				/* Set up deparsing context */
+				context = set_deparse_context_plan(es->deparse_cxt,
+												   planstate->plan,
+												   ancestors);
+
+				/* Deparse the expression */
+				exprstr = deparse_expression((Node *) filter->clauses,
+											 context, useprefix, false);
+
 				ExplainIndentText(es);
-				appendStringInfo(es->str, "Values: " INT64_FORMAT "\n", state->nvalues);
+
+				if (state)
+					appendStringInfo(es->str, "Bloom filter: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
+									 exprstr, state->nbits,
+									 ((state->nbits/8) /1024.0), /* size in bytes */
+									 state->nqueries, state->nhits,
+									 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+				else
+					appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
 			}
 		}
 	}
@@ -3827,14 +3848,30 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 			HashFilter *filter = ref->filter;
 			HashFilterState *state = (HashFilterState *) filter->state;
 
-			show_scan_qual(ref->clauses,
-						   "Bloom filter", planstate, ancestors, es);
+			List	   *context;
+			char	   *exprstr;
+			bool		useprefix;
+
+			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+			/* Set up deparsing context */
+			context = set_deparse_context_plan(es->deparse_cxt,
+											   planstate->plan,
+											   ancestors);
+
+			/* Deparse the expression */
+			exprstr = deparse_expression((Node *) ref->clauses, context, useprefix, false);
 
 			ExplainIndentText(es);
-			appendStringInfo(es->str, "Size: %d bits (%.1f kB)\n", state->nbits, ((state->nbits/8) /1024.0));
 
-			ExplainIndentText(es);
-			appendStringInfo(es->str, "Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n", state->nqueries, state->nhits, state->nhits * 100.0 / Max(1, state->nqueries));
+			if (state)
+				appendStringInfo(es->str, "Bloom filter: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
+								 exprstr, state->nbits,
+								 ((state->nbits/8) /1024.0), /* size in bytes */
+								 state->nqueries, state->nhits,
+								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+			else
+				appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
 		}
 	}
 	else

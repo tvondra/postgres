@@ -1028,7 +1028,7 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_brinsort,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{

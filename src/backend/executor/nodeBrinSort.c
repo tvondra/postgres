@@ -464,7 +464,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 	scan = node->ss.ss_currentScanDesc;
 
 	/*
-	 * Read tuples, evaluate the filer (so that we don't keep tuples only to
+	 * Read tuples, evaluate the filter (so that we don't keep tuples only to
 	 * discard them later), and decide if it goes into the current range
 	 * (tuplesort) or overflow (tuplestore).
 	 */
@@ -506,7 +506,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 		 *
 		 * XXX However, maybe we could also leverage other bitmap indexes,
 		 * particularly for BRIN indexes because that makes it simpler to
-		 * eliminage the ranges incrementally - we know which ranges to
+		 * eliminate the ranges incrementally - we know which ranges to
 		 * load from the index, while for other indexes (e.g. btree) we
 		 * have to read the whole index and build a bitmap in order to have
 		 * a bitmap for any range. Although, if the condition is very
@@ -1344,7 +1344,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 * Should not get here without a proc, thanks to the check before
 	 * building the BrinSort path.
 	 */
-	Assert(rangeproc != NULL);
+	Assert(OidIsValid(rangeproc->fn_oid));
 
 	memset(&planstate->bs_sortsupport, 0, sizeof(SortSupportData));
 	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &planstate->bs_sortsupport);

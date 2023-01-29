@@ -11,8 +11,8 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef NODEBrinSort_H
-#define NODEBrinSort_H
+#ifndef NODEBRIN_SORT_H
+#define NODEBRIN_SORT_H
 
 #include "access/genam.h"
 #include "access/parallel.h"
@@ -44,4 +44,4 @@ extern bool ExecIndexEvalArrayKeys(ExprContext *econtext,
 								   IndexArrayKeyInfo *arrayKeys, int numArrayKeys);
 extern bool ExecIndexAdvanceArrayKeys(IndexArrayKeyInfo *arrayKeys, int numArrayKeys);
 
-#endif							/* NODEBrinSort_H */
+#endif							/* NODEBRIN_SORT_H */

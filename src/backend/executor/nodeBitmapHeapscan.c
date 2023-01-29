@@ -707,6 +707,7 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 {
 	BitmapHeapScanState *scanstate;
 	Relation	currentRelation;
+	ListCell   *lc;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -803,6 +804,23 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 														  estate->es_snapshot,
 														  0,
 														  NULL);
+
+	/*
+	 * If there are any filter references assigned to this node, initialize
+	 * expressions for those too.
+	 */
+	scanstate->ss.ss_Filters = NIL;
+	foreach (lc, node->scan.filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		HashFilter *filter = ref->filter;
+		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
+
+		state->filter = filter;
+		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
+
+		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
+	}
 
 	/*
 	 * all done.

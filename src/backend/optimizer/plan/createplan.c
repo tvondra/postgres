@@ -3292,6 +3292,10 @@ create_bitmap_scan_plan(PlannerInfo *root,
 									 bitmapqualorig,
 									 baserelid);
 
+	/* has references? */
+	if (best_path->path.filters)
+		scan_plan->scan.filters = best_path->path.filters;
+
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
 
 	return scan_plan;
@@ -4875,8 +4879,12 @@ create_hashjoin_plan(PlannerInfo *root,
 				/* add the filter to the list */
 				filters = lappend(filters, filter);
 
-				/* add the reference */
-				path->filters = lappend(path->filters, ref);
+				/* add the reference - we push filters from joins higher up first,
+				 * but joins are generally ordered from the most selective first
+				 * (to keep results small), and we want to start with the most
+				 * selective filters - so we add the filters at the beginning,
+				 * to run those filters first */
+				path->filters = lcons(ref, path->filters);
 			}
 		}
 	}

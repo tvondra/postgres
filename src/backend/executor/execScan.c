@@ -140,6 +140,30 @@ ExecScanFetch(ScanState *node,
 	return (*accessMtd) (node);
 }
 
+static bool
+ExecFilters(ScanState *node, ExprContext *econtext)
+{
+	ListCell *lc;
+	List *filters;
+
+	filters = node->ss_Filters;
+
+	foreach (lc, filters)
+	{
+		HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
+		HashFilter *filter = refstate->filter;
+		HashFilterState *filterstate = (HashFilterState *) filter->state;
+
+		if (!filterstate->built)
+			continue;
+
+		if (!ExecHashFilterContainsValue(refstate, econtext))
+			return false;
+	}
+
+	return true;
+}
+
 /* ----------------------------------------------------------------
  *		ExecScan
  *
@@ -169,7 +193,6 @@ ExecScan(ScanState *node,
 	ExprContext *econtext;
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
-	List *filters;
 
 	/*
 	 * Fetch data from node
@@ -177,7 +200,6 @@ ExecScan(ScanState *node,
 	qual = node->ps.qual;
 	projInfo = node->ps.ps_ProjInfo;
 	econtext = node->ps.ps_ExprContext;
-	filters = node->ss_Filters;
 
 	/* interrupt checks are in ExecScanFetch */
 
@@ -185,7 +207,7 @@ ExecScan(ScanState *node,
 	 * If we have neither a qual to check nor a projection to do, just skip
 	 * all the overhead and return the raw scan tuple.
 	 */
-	if (!qual && !projInfo && !filters)
+	if (!qual && !projInfo && !node->ss_Filters)
 	{
 		ResetExprContext(econtext);
 		return ExecScanFetch(node, accessMtd, recheckMtd);
@@ -205,7 +227,6 @@ ExecScan(ScanState *node,
 	{
 		ListCell *lc;
 		TupleTableSlot *slot;
-		bool		filter_ok = true;
 
 		slot = ExecScanFetch(node, accessMtd, recheckMtd);
 
@@ -234,21 +255,6 @@ ExecScan(ScanState *node,
 
 		// elog(WARNING, "node %p evalfunc = %p", node, econtext->evalfunc);
 
-		foreach (lc, filters)
-		{
-			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
-			HashFilter *filter = refstate->filter;
-			HashFilterState *filterstate = (HashFilterState *) filter->state;
-
-			if (!filterstate->built)
-				continue;
-
-			if (!ExecHashFilterContainsValue(refstate, econtext))
-			{
-				filter_ok = false;
-				break;
-			}
-		}
 
 		/*
 		 * check that the current tuple satisfies the qual-clause
@@ -257,7 +263,7 @@ ExecScan(ScanState *node,
 		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
 		 */
-		if (filter_ok && (qual == NULL || ExecQual(qual, econtext)))
+		if ((qual == NULL || ExecQual(qual, econtext)) && ExecFilters(node, econtext))
 		{
 			/*
 			 * Found a satisfactory scan tuple.

@@ -438,6 +438,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		ListCell   *ho,
 				   *hc;
 
+		double		m, p, n, k;
+
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
@@ -496,11 +498,26 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 			i++;
 		}
 
-		/* 1kB is good enough for 1000 values and 1% fpr */
 		/* FIXME size properly using estimates */
-		state->nbits = 8 * 1024L;
-		state->nhashes = 7;
-		state->data = palloc0(1024);
+
+		/*
+		 * Maybe we should do some sort of balancing - if the filter gets too
+		 * large with these params, try with a lower p value? Better to fit in
+		 * L2/L3 with worse false positive rate than cache misses.
+		 */
+		p = 0.01;				/* 1% false positive */
+
+		/* 1000 seems like a reasonable lower bound */
+		n = Min(1000, outerPlan(node)->plan_rows);	/* assume unique values */
+
+		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
+		k = round((m / n) * log(2)); 
+
+		m = ((m + 7) / 8) * 8;
+
+		state->nbits = m;
+		state->nhashes = k;
+		state->data = palloc0(m / 8);
 
 		/* exact hash */
 		state->nvalues = 0;
@@ -2164,12 +2181,9 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 
 	Assert(filter->type == HashFilterExact);
 
-	/* too much data for exact filter */
+	/* too much data for exact filter, switch to bloom */
 	if ((filter->nvalues + 1) * entrylen > filter->nbits/8)
-	{
-		elog(WARNING, "too many values");
 		return false;
-	}
 
 	values = palloc(sizeof(Datum) * list_length(filter->clauses));
 
@@ -2200,7 +2214,7 @@ ExecHashFilterFinalize(HashFilterState *filter)
 	if (filter->filter_type != HashFilterExact)
 		return;
 
-	elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
+	// elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
 
 	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
 }

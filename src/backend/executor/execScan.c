@@ -553,6 +553,8 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 			return false;
 	}
 
+	filter->nhits++;
+
 	/* all hashes found in bloom filter */
 	return true;
 }
@@ -579,6 +581,9 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 
 	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize, filter_comparator, &entrysize);
 
+	if (ptr != NULL)
+		filter->nhits++;
+
 	pfree(values);
 
 	/* all hashes found in bloom filter */
@@ -589,6 +594,8 @@ static bool
 ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
 	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+
+	filter->nqueries++;
 
 	if (filter->filter_type == HashFilterExact)
 		return ExecHashFilterContainsExact(refstate, econtext);

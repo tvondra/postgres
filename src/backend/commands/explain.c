@@ -3824,9 +3824,17 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 		foreach (lc, plan->filters)
 		{
 			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+			HashFilter *filter = ref->filter;
+			HashFilterState *state = (HashFilterState *) filter->state;
 
 			show_scan_qual(ref->clauses,
 						   "Bloom filter", planstate, ancestors, es);
+
+			ExplainIndentText(es);
+			appendStringInfo(es->str, "Size: %d bits (%.1f kB)\n", state->nbits, ((state->nbits/8) /1024.0));
+
+			ExplainIndentText(es);
+			appendStringInfo(es->str, "Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n", state->nqueries, state->nhits, state->nhits * 100.0 / Max(1, state->nqueries));
 		}
 	}
 	else

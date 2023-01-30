@@ -677,9 +677,9 @@ brin_minmax_value_stats(BrinRange **minranges, BrinRange **maxranges,
 	if (debug_brin_stats)
 	{
 		elog(WARNING, "----- brin_minmax_value_stats -----");
-		elog(WARNING, "minval ndistinct %ld correlation %f",
+		elog(WARNING, "minval ndistinct " INT64_FORMAT " correlation %f",
 			 stats->minval_ndistinct, stats->minval_correlation);
-		elog(WARNING, "maxval ndistinct %ld correlation %f",
+		elog(WARNING, "maxval ndistinct " INT64_FORMAT " correlation %f",
 			 stats->maxval_ndistinct, stats->maxval_correlation);
 		elog(WARNING, "duration = %ld", TimestampDifferenceMilliseconds(start_ts,
 										GetCurrentTimestamp()));

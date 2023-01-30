@@ -3537,7 +3537,8 @@ struct config_int ConfigureNamesInt[] =
 	{
 		{"brinsort_watermark_step", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("sets the step for brinsort watermark increments"),
-			NULL
+			NULL,
+			GUC_NOT_IN_SAMPLE
 		},
 		&brinsort_watermark_step,
 		1, 1, INT_MAX,

@@ -1310,9 +1310,11 @@ brin_minmax_count_overlaps_bruteforce(BrinRanges *ranges,
 			if (range_values_cmp(&rb->max_value, &ra->min_value, typcache) < 0)
 				continue;
 
+#if 0
 			elog(DEBUG1, "[%ld,%ld] overlaps [%ld,%ld]",
 				 ra->min_value, ra->max_value,
 				 rb->min_value, rb->max_value);
+#endif
 
 			noverlaps++;
 		}

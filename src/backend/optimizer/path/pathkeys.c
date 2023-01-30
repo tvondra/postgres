@@ -652,7 +652,6 @@ build_index_pathkeys_brin(PlannerInfo *root,
 	 */
 	cpathkey = make_pathkey_from_sortinfo(root,
 										  tle->expr,
-										  NULL,
 										  sortopfamily,
 										  index->opcintype[idx],
 										  index->indexcollations[idx],

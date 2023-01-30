@@ -7908,9 +7908,9 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 
 				if (amstats)
 				{
-					elog(DEBUG1, "found AM stats: attnum %d n_ranges %ld n_summarized %ld n_all_nulls %ld n_has_nulls %ld avg_overlaps %f",
-						 attnum, amstats->n_ranges, amstats->n_summarized,
-						 amstats->n_all_nulls, amstats->n_has_nulls,
+					elog(DEBUG1, "found AM stats: attnum %d n_ranges %lld n_summarized %lld n_all_nulls %lld n_has_nulls %lld avg_overlaps %f",
+						 attnum, (long long)amstats->n_ranges, (long long)amstats->n_summarized,
+						 (long long)amstats->n_all_nulls, (long long)amstats->n_has_nulls,
 						 amstats->avg_overlaps);
 
 					/*

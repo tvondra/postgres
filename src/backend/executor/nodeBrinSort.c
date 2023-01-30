@@ -978,7 +978,7 @@ IndexNext(BrinSortState *node)
 #ifdef DEBUG_BRIN_SORT
 						if (debug_brin_sort)
 						{
-							elog(WARNING, "method: %s  space: %ld kB (%s)",
+							elog(WARNING, "method: %s  space: " INT64_FORMAT " kB (%s)",
 								 tuplesort_method_name(stats.sortMethod),
 								 stats.spaceUsed,
 								 tuplesort_space_type_name(stats.spaceType));

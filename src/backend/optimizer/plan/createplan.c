@@ -7436,6 +7436,7 @@ is_projection_capable_path(Path *path)
 		case T_Memoize:
 		case T_Sort:
 		case T_IncrementalSort:
+		case T_BrinSort:
 		case T_Unique:
 		case T_SetOp:
 		case T_LockRows:

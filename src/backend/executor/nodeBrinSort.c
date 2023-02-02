@@ -1593,8 +1593,6 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 */
 	tle = list_nth(node->scan.plan.targetlist, node->sortColIdx[0] - 1);
 
-	elog(WARNING, "tle = %s", nodeToString(tle));
-
 	/*
 	 * XXX Match tle (using sortColIdx) to index column. Surely there is
 	 * a better way to match sort expressions to index keys.
@@ -1605,8 +1603,6 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	for (int i = 0; i < indexRel->rd_index->indnatts; i++)
 	{
 		AttrNumber indkey = indexRel->rd_index->indkey.values[i];
-
-		elog(WARNING, "%d => %d", i, indkey);
 
 		if (AttributeNumberIsValid(indkey) && IsA(tle->expr, Var))
 		{

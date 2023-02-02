@@ -1479,9 +1479,10 @@ ExecEndBrinSort(BrinSortState *node)
 		tuplesort_end(node->bs_tuplesortstate);
 	node->bs_tuplesortstate = NULL;
 
-	if (node->bs_scan->ranges != NULL)
+	if (node->bs_scan != NULL &&
+		node->bs_scan->ranges != NULL)
 		tuplesort_end(node->bs_scan->ranges);
-	node->bs_scan->ranges = NULL;
+	node->bs_scan = NULL;
 }
 
 /* ----------------------------------------------------------------

@@ -2442,7 +2442,8 @@ show_brinsort_stats(BrinSortState *sortstate, List *ancestors, ExplainState *es)
 	BrinSortStats  *stats = &sortstate->bs_stats;
 	BrinSort   *plan = (BrinSort *) sortstate->ss.ps.plan;
 
-	if (sortstate->bs_scan->ranges != NULL)
+	if (sortstate->bs_scan != NULL &&
+		sortstate->bs_scan->ranges != NULL)
 	{
 		TuplesortInstrumentation stats;
 

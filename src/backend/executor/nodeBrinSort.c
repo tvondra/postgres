@@ -1692,7 +1692,7 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	 * Initialize result type and projection.
 	 */
 	ExecInitResultTypeTL(&indexstate->ss.ps);
-	ExecAssignScanProjectionInfo(&indexstate->ss);
+	// ExecAssignScanProjectionInfo(&indexstate->ss);
 
 	/*
 	 * initialize child expressions

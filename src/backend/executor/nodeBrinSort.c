@@ -1573,6 +1573,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	BrinRangeScanDesc *brscan;
 	bool		asc;
 	TimestampTz	start_ts;
+	TargetEntry *tle;
 
 	/* BRIN Sort only allows ORDER BY using a single column */
 	Assert(node->numCols == 1);
@@ -1590,13 +1591,31 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 *
 	 * FIXME Also the projection is broken.
 	 */
+	tle = list_nth(node->scan.plan.targetlist, node->sortColIdx[0] - 1);
+
+	elog(WARNING, "tle = %s", nodeToString(tle));
+
+	/*
+	 * XXX Match tle (using sortColIdx) to index column. Surely there is
+	 * a better way to match sort expressions to index keys.
+	 *
+	 * XXX Has to handle expressions too, not just plain index keys.
+	 */
 	attno = 0;
 	for (int i = 0; i < indexRel->rd_index->indnatts; i++)
 	{
-		if (indexRel->rd_index->indkey.values[i] == node->sortColIdx[0])
+		AttrNumber indkey = indexRel->rd_index->indkey.values[i];
+
+		elog(WARNING, "%d => %d", i, indkey);
+
+		if (AttributeNumberIsValid(indkey) && IsA(tle->expr, Var))
 		{
-			attno = (i + 1);
-			break;
+			Var *var = (Var *) tle->expr;
+			if (var->varattno == indkey)
+			{
+				attno = (i + 1);
+				break;
+			}
 		}
 	}
 

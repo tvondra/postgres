@@ -131,3 +131,9 @@ test: fast_default
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
 test: tablespace
+
+# try sorting using BRIN index
+test: brin_sort
+test: brin_sort_multi
+test: brin_sort_exprs
+test: brin_sort_multi_exprs

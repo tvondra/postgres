@@ -487,9 +487,11 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 	ScanDirection	direction;
 	TupleTableSlot *slot;
 	BrinRange	   *range = node->bs_range;
+	ProjectionInfo *projInfo;
 
 	estate = node->ss.ps.state;
 	direction = estate->es_direction;
+	projInfo = node->bs_ProjInfo;
 
 	slot = node->ss.ss_ScanTupleSlot;
 
@@ -574,8 +576,14 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 			int		cmp = 0;	/* matters for check_watermark=false */
 			Datum	value;
 			bool	isnull;
+			TupleTableSlot *tmpslot;
 
-			value = slot_getattr(slot, plan->sortColIdx[0], &isnull);
+			if (projInfo)
+				tmpslot = ExecProject(projInfo);
+			else
+				tmpslot = slot;
+
+			value = slot_getattr(tmpslot, plan->sortColIdx[0], &isnull);
 
 			/*
 			 * Handle NULL values - stash them into the tuplestore, and then
@@ -594,7 +602,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 				 * it (when not-NULL). */
 				if (isnull)
 				{
-					tuplestore_puttupleslot(node->bs_tuplestore, slot);
+					tuplestore_puttupleslot(node->bs_tuplestore, tmpslot);
 					node->bs_stats.ntuples_spilled++;
 				}
 
@@ -617,7 +625,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 
 			if (cmp <= 0)
 			{
-				tuplesort_puttupleslot(node->bs_tuplesortstate, slot);
+				tuplesort_puttupleslot(node->bs_tuplesortstate, tmpslot);
 				node->bs_stats.ntuples_tuplesort_direct++;
 				node->bs_stats.ntuples_tuplesort_all++;
 				node->bs_stats.ntuples_tuplesort++;
@@ -631,7 +639,7 @@ brinsort_load_tuples(BrinSortState *node, bool check_watermark, bool null_proces
 				 * to be needed. We can discard the tuplesort (no need to
 				 * respill) and stop spilling.
 				 */
-				tuplestore_puttupleslot(node->bs_tuplestore, slot);
+				tuplestore_puttupleslot(node->bs_tuplestore, tmpslot);
 				node->bs_stats.ntuples_spilled++;
 			}
 		}
@@ -658,6 +666,9 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 	BrinSort   *plan = (BrinSort *) node->ss.ps.plan;
 	Tuplestorestate *tupstore;
 	TupleTableSlot *slot;
+	ProjectionInfo *projInfo;
+
+	projInfo = node->bs_ProjInfo;
 
 	if (node->bs_tuplestore == NULL)
 		return;
@@ -675,6 +686,9 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 	 * We need a slot for minimal tuples. The scan slot uses buffered tuples,
 	 * so it'd trigger an error in the loop.
 	 */
+	if (projInfo)
+		slot = node->ss.ps.ps_ResultTupleSlot;
+	else
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(node->ss.ss_currentRelation),
 									&TTSOpsMinimalTuple);
 
@@ -721,7 +735,8 @@ brinsort_load_spill_tuples(BrinSortState *node, bool check_watermark)
 	tuplestore_end(node->bs_tuplestore);
 	node->bs_tuplestore = tupstore;
 
-	ExecDropSingleTupleTableSlot(slot);
+	if (!projInfo)
+		ExecDropSingleTupleTableSlot(slot);
 }
 
 static bool
@@ -1574,6 +1589,8 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	bool		asc;
 	TimestampTz	start_ts;
 	TargetEntry *tle;
+	int			j;
+	List	   *indexprs = RelationGetIndexExpressions(indexRel);
 
 	/* BRIN Sort only allows ORDER BY using a single column */
 	Assert(node->numCols == 1);
@@ -1599,22 +1616,38 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	 *
 	 * XXX Has to handle expressions too, not just plain index keys.
 	 */
+	j = 0;
 	attno = 0;
 	for (int i = 0; i < indexRel->rd_index->indnatts; i++)
 	{
 		AttrNumber indkey = indexRel->rd_index->indkey.values[i];
 
-		if (AttributeNumberIsValid(indkey) && IsA(tle->expr, Var))
+		if (AttributeNumberIsValid(indkey))
 		{
 			Var *var = (Var *) tle->expr;
+
+			if (!IsA(tle->expr, Var))
+				continue;
+
 			if (var->varattno == indkey)
 			{
 				attno = (i + 1);
 				break;
 			}
 		}
-	}
+		else
+		{
+			Node *expr = (Node *) list_nth(indexprs, j);
 
+			if (equal(expr, tle->expr))
+			{
+				attno = (i + 1);
+				break;
+			}
+
+			j++;
+		}
+	}
 	/* make sure we matched the argument */
 	Assert(attno > 0);
 
@@ -1708,6 +1741,14 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	 */
 	ExecInitResultTypeTL(&indexstate->ss.ps);
 	// ExecAssignScanProjectionInfo(&indexstate->ss);
+
+	ExecInitResultSlot(&indexstate->ss.ps, &TTSOpsVirtual);
+
+	indexstate->bs_ProjInfo = ExecBuildProjectionInfo(((Plan *) node)->targetlist,
+													  indexstate->ss.ps.ps_ExprContext,
+													  indexstate->ss.ps.ps_ResultTupleSlot,
+													  &indexstate->ss.ps,
+													  indexstate->ss.ss_ScanTupleSlot->tts_tupleDescriptor);
 
 	/*
 	 * initialize child expressions

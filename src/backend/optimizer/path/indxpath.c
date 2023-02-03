@@ -1136,9 +1136,6 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			idx++;
 			attnum = (idx + 1);
 
-			/* skip expressions for now */
-			if (!AttributeNumberIsValid(index->indexkeys[idx]))
-				continue;
 
 			/* XXX ignore non-BRIN indexes */
 			if (rel2->rd_rel->relam != BRIN_AM_OID)

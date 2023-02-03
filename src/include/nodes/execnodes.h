@@ -1707,6 +1707,7 @@ typedef struct BrinSortState
 	BrinSortPhase	bs_phase;
 	SortSupportData	bs_sortsupport;
 	BrinSortStats	bs_stats;
+	ProjectionInfo *bs_ProjInfo;
 
 	/*
 	 * We need two tuplesort instances - one for current range, one for

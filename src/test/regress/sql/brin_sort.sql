@@ -266,3 +266,5 @@ select brinsort_check_ordering('select text_val as val from brin_sort_test order
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100 offset 100', 100, true);
 
+
+drop table brin_sort_test;

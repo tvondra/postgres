@@ -135,3 +135,6 @@ test: fast_default
 
 # try sorting using BRIN index
 test: brin_sort
+test: brin_sort_multi
+test: brin_sort_exprs
+test: brin_sort_multi_exprs

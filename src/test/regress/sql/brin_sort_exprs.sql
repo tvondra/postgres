@@ -74,8 +74,8 @@ from generate_series(1,1000) s(i);
 -- create brin indexes on individual columns
 create index brin_sort_test_int_idx on brin_sort_test using brin ((int_val + 1)) with (pages_per_range=1);
 create index brin_sort_test_bigint_idx on brin_sort_test using brin ((bigint_val + 1)) with (pages_per_range=1);
--- create index brin_sort_test_text_idx on brin_sort_test using brin (('x' || text_val)) with (pages_per_range=1);
--- create index brin_sort_test_inet_idx on brin_sort_test using brin ((inet_val + 1) inet_minmax_ops) with (pages_per_range=1);
+create index brin_sort_test_text_idx on brin_sort_test using brin (('x' || text_val)) with (pages_per_range=1);
+create index brin_sort_test_inet_idx on brin_sort_test using brin ((inet_val + 1) inet_minmax_ops) with (pages_per_range=1);
 
 -- 
 vacuum analyze brin_sort_test;

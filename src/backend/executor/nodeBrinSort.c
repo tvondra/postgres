@@ -323,7 +323,7 @@ brinsort_start_tidscan(BrinSortState *node)
 
 	if (node->bs_tuplesortstate == NULL)
 	{
-		TupleDesc	tupDesc = RelationGetDescr(node->ss.ss_currentRelation);
+		TupleDesc	tupDesc = (node->ss.ps.ps_ResultTupleDesc);
 
 		node->bs_tuplesortstate = tuplesort_begin_heap(tupDesc,
 													plan->numCols,
@@ -1750,10 +1750,10 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	/*
 	 * Initialize result type and projection.
 	 */
-	ExecInitResultTypeTL(&indexstate->ss.ps);
+	ExecInitResultTupleSlotTL(&indexstate->ss.ps, &TTSOpsMinimalTuple);
+	// ExecInitResultTypeTL(&indexstate->ss.ps);
 	// ExecAssignScanProjectionInfo(&indexstate->ss);
-
-	ExecInitResultSlot(&indexstate->ss.ps, &TTSOpsVirtual);
+	// ExecInitResultSlot(&indexstate->ss.ps, &TTSOpsVirtual);
 
 	indexstate->bs_ProjInfo = ExecBuildProjectionInfo(((Plan *) node)->targetlist,
 													  indexstate->ss.ps.ps_ExprContext,
@@ -1831,7 +1831,7 @@ ExecInitBrinSort(BrinSort *node, EState *estate, int eflags)
 	indexstate->bs_tuplesortstate = NULL;
 	indexstate->bs_qual = indexstate->ss.ps.qual;
 	indexstate->ss.ps.qual = NULL;
-	ExecInitResultTupleSlotTL(&indexstate->ss.ps, &TTSOpsMinimalTuple);
+	// ExecInitResultTupleSlotTL(&indexstate->ss.ps, &TTSOpsMinimalTuple);
 
 	/*
 	 * all done.

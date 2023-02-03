@@ -1661,7 +1661,10 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	Assert(OidIsValid(rangeproc->fn_oid));
 
 	memset(&planstate->bs_sortsupport, 0, sizeof(SortSupportData));
+
 	planstate->bs_sortsupport.ssup_collation = node->collations[0];
+	planstate->bs_sortsupport.ssup_cxt = CurrentMemoryContext; // FIXME
+
 	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &planstate->bs_sortsupport);
 
 	/*
@@ -1677,7 +1680,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	start_ts = GetCurrentTimestamp();
 
 	brscan = (BrinRangeScanDesc *) DatumGetPointer(FunctionCall3Coll(rangeproc,
-											InvalidOid,	/* FIXME use proper collation*/
+											node->collations[0],	/* FIXME use proper collation*/
 											PointerGetDatum(scan),
 											Int16GetDatum(attno),
 											BoolGetDatum(asc)));

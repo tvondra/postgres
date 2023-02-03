@@ -1802,7 +1802,7 @@ brin_minmax_range_tupdesc(BrinDesc *brdesc, AttrNumber attnum)
  * with the same minval).
  */
 static BrinRangeScanDesc *
-brin_minmax_scan_init(BrinDesc *bdesc, AttrNumber attnum, bool asc)
+brin_minmax_scan_init(BrinDesc *bdesc, Oid collation, AttrNumber attnum, bool asc)
 {
 	BrinRangeScanDesc  *scan;
 
@@ -1832,7 +1832,7 @@ brin_minmax_scan_init(BrinDesc *bdesc, AttrNumber attnum, bool asc)
 
 	collations[0] = InvalidOid;	/* FIXME */
 	collations[1] = InvalidOid;	/* FIXME */
-	collations[2] = InvalidOid;	/* FIXME */
+	collations[2] = collation;	/* FIXME */
 	collations[3] = InvalidOid;	/* FIXME */
 
 	/* unrelated to the ordering desired by the user */
@@ -1986,6 +1986,7 @@ brin_minmax_ranges(PG_FUNCTION_ARGS)
 	IndexScanDesc	scan = (IndexScanDesc) PG_GETARG_POINTER(0);
 	AttrNumber		attnum = PG_GETARG_INT16(1);
 	bool			asc = PG_GETARG_BOOL(2);
+	Oid				colloid = PG_GET_COLLATION();
 	BrinOpaque *opaque;
 	Relation	indexRel;
 	Relation	heapRel;
@@ -2027,7 +2028,7 @@ brin_minmax_ranges(PG_FUNCTION_ARGS)
 	dtup = brin_new_memtuple(bdesc);
 
 	/* initialize the scan describing scan of ranges sorted by minval */
-	brscan = brin_minmax_scan_init(bdesc, attnum, asc);
+	brscan = brin_minmax_scan_init(bdesc, colloid, attnum, asc);
 
 	slot = MakeSingleTupleTableSlot(brscan->tdesc, &TTSOpsVirtual);
 

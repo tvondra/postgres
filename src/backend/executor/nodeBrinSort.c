@@ -1651,7 +1651,14 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	/* make sure we matched the argument */
 	Assert(attno > 0);
 
-	/* get procedure to generate sort ranges */
+	/*
+	 * get procedure to generate sort ranges
+	 *
+	 * FIXME we can't rely on a particular procnum to identify which opclass
+	 * allows building sort ranges, because the optinal procnums are not
+	 * unique (e.g. inclusion_ops have 12 too). So we probably need a flag
+	 * for the opclass.
+	 */
 	rangeproc = index_getprocinfo(indexRel, attno, BRIN_PROCNUM_RANGES);
 
 	/*

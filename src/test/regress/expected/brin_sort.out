@@ -89,6 +89,30 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
@@ -98,6 +122,30 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
 (1 row)
 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  
@@ -117,6 +165,30 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
@@ -126,6 +198,30 @@ select brinsort_check_ordering('select text_val as val from brin_sort_test order
 (1 row)
 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  
@@ -156,6 +252,30 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
@@ -165,6 +285,30 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
 (1 row)
 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  
@@ -184,6 +328,30 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
@@ -193,6 +361,30 @@ select brinsort_check_ordering('select text_val as val from brin_sort_test order
 (1 row)
 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  
@@ -223,6 +415,30 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
@@ -232,6 +448,30 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
 (1 row)
 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  
@@ -251,6 +491,30 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val desc limit 100 offset 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
 \c
 set enable_seqscan = off;
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
@@ -260,6 +524,30 @@ select brinsort_check_ordering('select text_val as val from brin_sort_test order
 (1 row)
 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc', 1000, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100', 100, true);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val limit 100 offset 100', 100, false);
+ brinsort_check_ordering 
+-------------------------
+ 
+(1 row)
+
+select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val desc limit 100 offset 100', 100, true);
  brinsort_check_ordering 
 -------------------------
  

@@ -1661,6 +1661,7 @@ ExecInitBrinSortRanges(BrinSort *node, BrinSortState *planstate)
 	Assert(OidIsValid(rangeproc->fn_oid));
 
 	memset(&planstate->bs_sortsupport, 0, sizeof(SortSupportData));
+	planstate->bs_sortsupport.ssup_collation = node->collations[0];
 	PrepareSortSupportFromOrderingOp(node->sortOperators[0], &planstate->bs_sortsupport);
 
 	/*

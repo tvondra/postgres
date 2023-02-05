@@ -8,6 +8,9 @@ declare
     v_count int := 0;
 begin
 
+    -- needed because the p_sql query has different data types
+    execute 'discard plans';
+
     OPEN v_curs NO SCROLL FOR EXECUTE format('explain %s', p_sql);
 
     LOOP
@@ -72,8 +75,8 @@ from generate_series(1,1000) s(i);
 create index brin_sort_test_multi_idx on brin_sort_test using brin (int_val, bigint_val, text_val, inet_val inet_minmax_ops) with (pages_per_range=1);
 -- 
 vacuum analyze brin_sort_test;
-\c
 set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -110,8 +113,7 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -148,8 +150,7 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -186,8 +187,7 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -235,8 +235,7 @@ select
 from generate_series(1,1000) s(i);
 reindex table brin_sort_test;
 vacuum analyze brin_sort_test;
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -273,8 +272,7 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -311,8 +309,7 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -349,8 +346,7 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -398,8 +394,7 @@ select
 from generate_series(1,1000) s(i);
 reindex table brin_sort_test;
 vacuum analyze brin_sort_test;
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select int_val as val from brin_sort_test order by int_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -436,8 +431,7 @@ select brinsort_check_ordering('select int_val as val from brin_sort_test order 
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select bigint_val as val from brin_sort_test order by bigint_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -474,8 +468,7 @@ select brinsort_check_ordering('select bigint_val as val from brin_sort_test ord
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select inet_val as val from brin_sort_test order by inet_val', 1000, false);
  brinsort_check_ordering 
 -------------------------
@@ -512,8 +505,7 @@ select brinsort_check_ordering('select inet_val as val from brin_sort_test order
  
 (1 row)
 
-\c
-set enable_seqscan = off;
+ 
 select brinsort_check_ordering('select text_val as val from brin_sort_test order by text_val', 1000, false);
  brinsort_check_ordering 
 -------------------------

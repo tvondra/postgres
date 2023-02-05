@@ -8,6 +8,9 @@ declare
     v_count int := 0;
 begin
 
+    -- needed because the p_sql query has different data types
+    execute 'discard plans';
+
     OPEN v_curs NO SCROLL FOR EXECUTE format('explain %s', p_sql);
 
     LOOP
@@ -80,10 +83,8 @@ create index brin_sort_test_inet_idx on brin_sort_test using brin ((inet_val + 1
 -- 
 vacuum analyze brin_sort_test;
 
-\c
-
 set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1) desc', 1000, true);
@@ -105,10 +106,7 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1) desc', 1000, true);
@@ -129,10 +127,7 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val) desc', 1000, true);
@@ -153,10 +148,7 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1) desc', 1000, true);
@@ -192,10 +184,7 @@ reindex table brin_sort_test;
 
 vacuum analyze brin_sort_test;
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1) desc', 1000, true);
@@ -217,10 +206,7 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1) desc', 1000, true);
@@ -241,10 +227,7 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val) desc', 1000, true);
@@ -265,10 +248,7 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1) desc', 1000, true);
@@ -304,10 +284,7 @@ reindex table brin_sort_test;
 
 vacuum analyze brin_sort_test;
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1) desc', 1000, true);
@@ -329,10 +306,7 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1) desc', 1000, true);
@@ -353,10 +327,7 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val) desc', 1000, true);
@@ -377,10 +348,7 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 
-\c
-
-set enable_seqscan = off;
-
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1) desc', 1000, true);

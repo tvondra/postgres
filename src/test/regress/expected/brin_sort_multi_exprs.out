@@ -8,6 +8,9 @@ declare
     v_count int := 0;
 begin
 
+    -- needed because the p_sql query has different data types
+    execute 'discard plans';
+
     OPEN v_curs NO SCROLL FOR EXECUTE format('explain %s', p_sql);
 
     LOOP
@@ -71,8 +74,8 @@ from generate_series(1,1000) s(i);
 -- create brin indexes on individual columns
 create index brin_sort_test_int_idx on brin_sort_test using brin ((int_val + 1), (bigint_val + 1), ('x' || text_val), (inet_val + 1) inet_minmax_ops) with (pages_per_range=1);
 vacuum analyze brin_sort_test;
-\c
 set enable_seqscan = off;
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -113,24 +116,23 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 -- mismatching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -171,24 +173,23 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 -- mismatching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
  brinsort_check_ordering 
@@ -229,24 +230,23 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 -- mismatching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -287,22 +287,22 @@ select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test
 -- mismatching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 -- semi-random data (sequential + randomness)
 truncate table brin_sort_test;
 insert into brin_sort_test
@@ -314,8 +314,7 @@ select
 from generate_series(1,1000) s(i);
 reindex table brin_sort_test;
 vacuum analyze brin_sort_test;
-\c
-set enable_seqscan = off;
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -356,24 +355,23 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 -- mismatching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -414,24 +412,23 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 -- mismatching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
  brinsort_check_ordering 
@@ -472,24 +469,23 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 -- mismatching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -530,22 +526,22 @@ select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test
 -- mismatching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 -- random data
 truncate table brin_sort_test;
 insert into brin_sort_test
@@ -557,8 +553,7 @@ select
 from generate_series(1,1000) s(i);
 reindex table brin_sort_test;
 vacuum analyze brin_sort_test;
-\c
-set enable_seqscan = off;
+ 
 -- matching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -599,24 +594,23 @@ select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test 
 -- mismatching expression
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (int_val + 1) as val from brin_sort_test order by (int_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -657,24 +651,23 @@ select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_te
 -- mismatching expression
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (bigint_val + 1) as val from brin_sort_test order by (bigint_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''x'' || text_val)', 1000, false);
  brinsort_check_ordering 
@@ -715,24 +708,23 @@ select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort
 -- mismatching expression
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (''x'' || text_val) as val from brin_sort_test order by (''y'' || text_val) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
-\c
-set enable_seqscan = off;
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
+ 
 -- matching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val + 1)', 1000, false);
  brinsort_check_ordering 
@@ -773,20 +765,20 @@ select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test
 -- mismatching expression
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1)', 1000, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc', 1000, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) limit 100 offset 100', 100, false);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 select brinsort_check_ordering('select (inet_val + 1) as val from brin_sort_test order by (inet_val - 1) desc limit 100 offset 100', 100, true);
 ERROR:  BRIN Sort: not found
-CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 28 at RAISE
+CONTEXT:  PL/pgSQL function brinsort_check_ordering(text,integer,boolean) line 31 at RAISE
 drop table brin_sort_test;

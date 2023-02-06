@@ -67,7 +67,7 @@ def recreate_table(conn, nrows, randomness, fillfactor):
 	cur.close()
 
 
-def create_indexes(conn):
+def create_indexes(conn, pages_per_range):
 
 	cur = conn.cursor()
 
@@ -77,9 +77,9 @@ def create_indexes(conn):
 	indexed = random.sample(cols, num_indexes)
 
 	for c in indexed:
-		f = random.random()
-		num_pages = 1 + int(f * f * f * 256)
-		index_sql = 'CREATE INDEX ON test_table USING brin (%s %s) WITH (pages_per_range=%d)' % (c[0], c[1], num_pages)
+		# f = random.random()
+		# num_pages = 1 + int(f * f * f * 256)
+		index_sql = 'CREATE INDEX ON test_table USING brin (%s %s) WITH (pages_per_range=%d)' % (c[0], c[1], pages_per_range)
 		print(index_sql)
 		execute_query(cur, index_sql)
 
@@ -239,7 +239,7 @@ def check_timing(conn, config, query):
 
 	(brinsort_time, brinsort_costs) = query_timing(cur, query)
 
-	print ("timing", 'rows', config['nrows'], 'limit', config['limit'], 'offset', config['offset'], 'randomness', config['randomness'], 'fillfactor', config['fillfactor'], 'work_mem', config['work_mem'], 'watermark_step', config['watermark_step'], "seqscan", seqscan_time, "brinsort", brinsort_time, "costs seqscan", seqscan_costs[0], seqscan_costs[1], "brinsort", brinsort_costs[0], brinsort_costs[1])
+	print ("timing", 'rows', config['nrows'], 'pages_per_range', config['pages_per_range'], 'randomness', config['randomness'], 'fillfactor', config['fillfactor'], 'work_mem', config['work_mem'], 'watermark_step', config['watermark_step'], 'limit', config['limit'], 'offset', config['offset'], "seqscan", seqscan_time, "brinsort", brinsort_time, "costs seqscan", seqscan_costs[0], seqscan_costs[1], "brinsort", brinsort_costs[0], brinsort_costs[1])
 	# print ("brinsort timing", brinsort_time, "costs", brinsort_costs[0], brinsort_costs[1])
 
 	if (seqscan_costs[1] * 1.1 < brinsort_costs[1]) and (seqscan_time > brinsort_time * 1.1):
@@ -284,21 +284,25 @@ def run_query(conn, config, indexed_cols):
 	query = 'SELECT %s FROM test_table ORDER BY %s' % (', '.join([v[0] for v in select_list]), ', '.join(order_by))
 
 	# randomly add LIMIT and OFFSET clause(s)
-	if random.randint(0,100) < 50:
+	if random.random() < 0.5:
+
 		limit_rows = 1 + int(pow(random.random(), 3) * random.randint(1,config['nrows']))
 		query = query + ' LIMIT %d' % (limit_rows,);
 
-	if random.randint(0,100) < 50:
-		offset_rows = int(pow(random.random(), 3) * random.randint(1,config['nrows']))
-		query = query + ' OFFSET %d' % (offset_rows,);
+		if limit_rows < config['nrows'] and random.random() < 0.5:
+
+			offset_rows = int(pow(random.random(), 3) * random.randint(1,config['nrows'] - limit_rows))
+			query = query + ' OFFSET %d' % (offset_rows,);
 
 	expected_rows = min(limit_rows, config['nrows'] - offset_rows)
 
-	watermark_step = random.randint(-1, 3)
+	# watermark_step = random.randint(-1, 3)
+	watermark_step = random.choice([-1, 0, 1, 8, 32, 128])
 	execute_query(cur, 'SET brinsort_watermark_step = %d' % (watermark_step,))
 
 	f = random.random()
-	work_mem_kb = 64 + int((f * f * f) * random.randint(64, 32768))
+	#work_mem_kb = 64 + int((f * f * f) * random.randint(64, 32768))
+	work_mem_kb = random.choice([64, 1024, 4096, 32768])
 
 	execute_query(cur, "SET work_mem = '%dkB'" % (work_mem_kb,))
 
@@ -368,11 +372,14 @@ while True:
 	config['fillfactor'] = 10 + int(pow(random.random(),3) * 90)
 
 	# random number of rows
-	config['nrows'] = random.choice([10000, 100000, 1000000])
+	config['nrows'] = random.choice([100000, 1000000])
+
+	# pages per BRIN range (for all indexes)
+	config['pages_per_range'] = random.choice([1, 32, 128])
 
 	recreate_table(conn, config['nrows'], config['randomness'], config['fillfactor'])
 
-	indexed_cols = create_indexes(conn)
+	indexed_cols = create_indexes(conn, config['pages_per_range'])
 
 	run_queries(conn, config, indexed_cols)
 

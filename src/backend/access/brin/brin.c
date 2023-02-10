@@ -101,7 +101,7 @@ brinhandler(PG_FUNCTION_ARGS)
 	amroutine->amcanunique = false;
 	amroutine->amcanmulticol = true;
 	amroutine->amoptionalkey = true;
-	amroutine->amsearcharray = false;
+	amroutine->amsearcharray = true;
 	amroutine->amsearchnulls = true;
 	amroutine->amstorage = true;
 	amroutine->amclusterable = false;

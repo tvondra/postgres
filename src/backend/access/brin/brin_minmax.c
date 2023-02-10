@@ -16,6 +16,7 @@
 #include "access/stratnum.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -157,46 +158,146 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 	attno = key->sk_attno;
 	subtype = key->sk_subtype;
 	value = key->sk_argument;
-	switch (key->sk_strategy)
-	{
-		case BTLessStrategyNumber:
-		case BTLessEqualStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			break;
-		case BTEqualStrategyNumber:
 
-			/*
-			 * In the equality case (WHERE col = someval), we want to return
-			 * the current page range if the minimum value in the range <=
-			 * scan key, and the maximum value >= scan key.
-			 */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTLessEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			if (!DatumGetBool(matches))
+	/*
+	 * For regular (scalar) scan keys, we simply compare the value to the
+	 * range min/max values, and we're done. For SK_SEARCHARRAY keys we
+	 * need to deparse the array and loop through the values.
+	 */
+	if (likely(!(key->sk_flags & SK_SEARCHARRAY)))
+	{
+		switch (key->sk_strategy)
+		{
+			case BTLessStrategyNumber:
+			case BTLessEqualStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
 				break;
-			/* max() >= scankey */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTGreaterEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		case BTGreaterEqualStrategyNumber:
-		case BTGreaterStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		default:
-			/* shouldn't happen */
-			elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-			matches = 0;
-			break;
+			case BTEqualStrategyNumber:
+
+				/*
+				 * In the equality case (WHERE col = someval), we want to return
+				 * the current page range if the minimum value in the range <=
+				 * scan key, and the maximum value >= scan key.
+				 */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 BTLessEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
+				if (!DatumGetBool(matches))
+					break;
+				/* max() >= scankey */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 BTGreaterEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			case BTGreaterEqualStrategyNumber:
+			case BTGreaterStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			default:
+				/* shouldn't happen */
+				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+				matches = 0;
+				break;
+		}
+	}
+	else
+	{
+		ArrayType  *arrayval;
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		int			num_elems;
+		Datum	   *elem_values;
+		bool	   *elem_nulls;
+
+		arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+							 &elmlen, &elmbyval, &elmalign);
+
+		deconstruct_array(arrayval,
+						  ARR_ELEMTYPE(arrayval),
+						  elmlen, elmbyval, elmalign,
+						  &elem_values, &elem_nulls, &num_elems);
+
+		switch (key->sk_strategy)
+		{
+			case BTLessStrategyNumber:
+			case BTLessEqualStrategyNumber:
+
+				for (int j = 0; j < num_elems; j++)
+				{
+					Datum val = elem_values[j];
+
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 key->sk_strategy);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+												val);
+
+					if (DatumGetBool(matches))
+						break;
+				}
+				break;
+			case BTEqualStrategyNumber:
+
+				/*
+				 * In the equality case (WHERE col = someval), we want to return
+				 * the current page range if the minimum value in the range <=
+				 * scan key, and the maximum value >= scan key.
+				 *
+				 * XXX For any of the array values.
+				 */
+				for (int j = 0; j < num_elems; j++)
+				{
+					Datum val = elem_values[j];
+
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTLessEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+												val);
+					if (!DatumGetBool(matches))
+						continue;
+
+					/* max() >= scankey */
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTGreaterEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+												val);
+
+					if (DatumGetBool(matches))
+						break;
+				}
+				break;
+			case BTGreaterEqualStrategyNumber:
+			case BTGreaterStrategyNumber:
+
+				for (int j = 0; j < num_elems; j++)
+				{
+					Datum val = elem_values[j];
+
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 key->sk_strategy);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+												val);
+
+					if (DatumGetBool(matches))
+						break;
+				}
+				break;
+			default:
+				/* shouldn't happen */
+				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+				matches = 0;
+				break;
+		}
 	}
 
 	PG_RETURN_DATUM(matches);

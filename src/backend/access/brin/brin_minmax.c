@@ -14,11 +14,23 @@
 #include "access/brin_tuple.h"
 #include "access/stratnum.h"
 #include "catalog/pg_amop.h"
+#include "catalog/pg_type.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/sortsupport.h"
+
+/*
+ * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
+ * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
+ * index's indoption[] array entry for the index attribute.
+ */
+#define SK_BRIN_SORTED	0x00010000	/* deconstructed and sorted array */
+
 
 typedef struct MinmaxOpaque
 {
@@ -125,6 +137,195 @@ brin_minmax_add_value(PG_FUNCTION_ARGS)
 }
 
 /*
+ * preprocessing of scan keys for the minmax opclass
+ *
+ * For now we care only about array keys - instead of simple linear search
+ * in the array (for each range), we sort the arrays during preprocessing
+ * and then use that for binary sort in consistent function.
+ */
+
+/* qsort comparator used to sort array elements */
+static int
+minmax_compare_values(const void *a, const void *b, void *arg)
+{
+	Datum	da = * (Datum *) a;
+	Datum	db = * (Datum *) b;
+	SortSupport	ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da, false, db, false, ssup);
+}
+
+/*
+ * Deconstructed and sorted scan key array (we might build ArrayType, but then
+ * we'd have to deconstruct it over and over for each page range). So we just
+ * do it once during preprocessing.
+ */
+typedef struct ScanKeyArray {
+	Oid		typeid;
+	int		nelements;
+	Datum  *elements;
+} ScanKeyArray;
+
+/*
+ * minmax_lower_boundary
+ *		Given a value, determine the minimum index so that (array[index] >= value)
+ *
+ * We use this to check if a minmax range [minvalue, maxvalue] intersects with
+ * the array in the scan key (which is expected to be sorted). We calculate
+ * the lower boundary for [minvalue] and then check if it actually falls under
+ * the maxvalue too. If yes, we found an element consistent with the page range.
+ *
+ * If all array elements match (i.e. all elements >= value), returns 0. If no
+ * elements match (i.e. all elements < 0), returns nvalues.
+ */
+static int
+minmax_lower_boundary(Datum *values, int nvalues, Datum minvalue, SortSupport ssup)
+{
+	int		start = 0,
+			end = (nvalues - 1);
+
+	/* everything exceeds minval and might match */
+	if (minmax_compare_values(&minvalue, &values[start], ssup) <= 0)
+		return 0;
+
+	/* nothing could match */
+	if (minmax_compare_values(&minvalue, &values[end], ssup) > 0)
+		return nvalues;
+
+	while ((end - start) > 0)
+	{
+		int midpoint;
+		int r;
+
+		midpoint = start + (end - start) / 2;
+
+		r = minmax_compare_values(&minvalue, &values[midpoint], ssup);
+
+		if (r > 0)
+			start = Max(midpoint, start + 1);
+		else
+			end = midpoint;
+	}
+
+	/* the value should meet the (v >=minvalue) requirement */
+	Assert(minmax_compare_values(&values[start], &minvalue, ssup) >= 0);
+
+	/* we know start can't be 0, so it's legal to subtract 1 */
+	Assert(minmax_compare_values(&values[start-1], &minvalue, ssup) < 0);
+
+	return start;
+}
+
+/*
+ * brin_minmax_preprocess
+ *		preprocess scan keys for the minmax opclass
+ *
+ * For now we just care about SK_SEARCHARRAY keys, which we sort and keep the
+ * deconstructed array. All other scan keys are ignored (returned as is).
+ *
+ * XXX Do we need to remember if the array contained NULL values?
+ */
+Datum
+brin_minmax_preprocess(PG_FUNCTION_ARGS)
+{
+	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
+	ScanKey		newkey;
+	ScanKeyArray *scanarray;
+
+	ArrayType  *arrayval;
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	int			num_elems;
+	Datum	   *elem_values;
+	bool	   *elem_nulls;
+	TypeCacheEntry *type;
+	SortSupportData ssup;
+
+	/* number of non-null elements in the array */
+	int			num_nonnulls;
+
+	/*
+	 * ignore scalar keys (just return the original scan key)
+	 *
+	 * XXX Maybe we should preprocess scalar keys too, and treat them as arrays
+	 * with a single element. It'd make the consistent function simpler by not
+	 * having to do branching.
+	 */
+	if (!(key->sk_flags & SK_SEARCHARRAY))
+		PG_RETURN_POINTER(key);
+
+	arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+						 &elmlen, &elmbyval, &elmalign);
+
+	deconstruct_array(arrayval,
+					  ARR_ELEMTYPE(arrayval),
+					  elmlen, elmbyval, elmalign,
+					  &elem_values, &elem_nulls, &num_elems);
+
+	/* eliminate NULL elements */
+	num_nonnulls = 0;
+	for (int i = 0; i < num_elems; i++)
+	{
+		/* skip NULL elements */
+		if (elem_nulls[i])
+			continue;
+
+		/* if needed, move the non-NULL ones */
+		if (num_nonnulls != i)
+			elem_values[num_nonnulls] = elem_values[i];
+
+		num_nonnulls++;
+	}
+
+	num_elems = num_nonnulls;
+
+	/* FIXME What if num_nonnulls is 0? Can it even happen / get here? */
+
+	/*
+	 * sort the array
+	 *
+	 * XXX Should we walk the sorted array again and eliminate duplicate values?
+	 * Seems unnecessary - we're not going to repalloc/release the memory anyway
+	 * and it's unlikely to speed up the binsearch (unless there's a lot of
+	 * duplicate values, which does not seem plausible/common).
+	 */
+	type = lookup_type_cache(ARR_ELEMTYPE(arrayval), TYPECACHE_LT_OPR);
+
+	memset(&ssup, 0, sizeof(SortSupportData));
+
+	ssup.ssup_collation = key->sk_collation;
+	ssup.ssup_cxt = CurrentMemoryContext;
+
+	PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
+
+	qsort_interruptible(elem_values, num_elems, sizeof(Datum),
+						minmax_compare_values, &ssup);
+
+	/* Construct the new scan key, with sorted array as ScanKeyArray. */
+	scanarray = palloc0(sizeof(ScanKeyArray));
+	scanarray->typeid = ARR_ELEMTYPE(arrayval);
+	scanarray->nelements = num_elems;
+	scanarray->elements = elem_values;
+
+	newkey = palloc0(sizeof(ScanKeyData));
+
+	ScanKeyEntryInitializeWithInfo(newkey,
+								   (key->sk_flags | SK_BRIN_SORTED),
+								   key->sk_attno,
+								   key->sk_strategy,
+								   key->sk_subtype,
+								   key->sk_collation,
+								   &key->sk_func,
+								   PointerGetDatum(scanarray));
+
+	PG_RETURN_POINTER(newkey);
+}
+
+
+/*
  * Given an index tuple corresponding to a certain page range and a scan key,
  * return whether the scan key is consistent with the index tuple's min/max
  * values.  Return true if so, false otherwise.
@@ -155,46 +356,300 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 	attno = key->sk_attno;
 	subtype = key->sk_subtype;
 	value = key->sk_argument;
-	switch (key->sk_strategy)
-	{
-		case BTLessStrategyNumber:
-		case BTLessEqualStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			break;
-		case BTEqualStrategyNumber:
 
-			/*
-			 * In the equality case (WHERE col = someval), we want to return
-			 * the current page range if the minimum value in the range <=
-			 * scan key, and the maximum value >= scan key.
-			 */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTLessEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-										value);
-			if (!DatumGetBool(matches))
+	/*
+	 * For regular (scalar) scan keys, we simply compare the value to the
+	 * range min/max values, and we're done. For preprocessed SK_SEARCHARRAY
+	 * keys we can do a binary search in the sorted array.
+	 *
+	 * FIXME This should also handle the "array but not preprocessed" case
+	 * too, for opclasses not defining the optional preprocess procedure.
+	 * Otherwise we'd have issues with such opclasses because amsearcharray
+	 * is defined at the AM level.
+	 */
+	if (key->sk_flags & SK_BRIN_SORTED)			/* preprocessed array*/
+	{
+		ScanKeyArray *array = (ScanKeyArray *) value;
+
+		/* can happen if the IN list contained just NULLs */
+		if (array->nelements == 0)
+			PG_RETURN_BOOL(false);
+
+		switch (key->sk_strategy)
+		{
+			case BTLessStrategyNumber:
+			case BTLessEqualStrategyNumber:
+				/*
+				 * Check the last (largest) value in the array - at least this
+				 * value has to exceed the range minval.
+				 */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											array->elements[array->nelements-1]);
 				break;
-			/* max() >= scankey */
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 BTGreaterEqualStrategyNumber);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		case BTGreaterEqualStrategyNumber:
-		case BTGreaterStrategyNumber:
-			finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-												 key->sk_strategy);
-			matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-										value);
-			break;
-		default:
-			/* shouldn't happen */
-			elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-			matches = 0;
-			break;
+			case BTEqualStrategyNumber:
+
+				/*
+				 * In the equality case (WHERE col = someval), we want to return
+				 * the current page range if the minimum value in the range <=
+				 * scan key, and the maximum value >= scan key.
+				 *
+				 * We do this in two phases. We check the array min/max values to see
+				 * if there even can be a matching value, and if yes we do a binary
+				 * search to find the first value that exceeds range minval. And then
+				 * we check if it actually matches the range.
+				 *
+				 * XXX The first phase is probably unnecessary, because lower_bound()
+				 * does pretty much exactly that too.
+				 */
+				{
+					TypeCacheEntry *type;
+					SortSupportData	ssup;
+
+					Datum 		element,
+								minvalue,
+								maxvalue;
+					int			lower;
+
+					/* for readability */
+					minvalue = column->bv_values[0];
+					maxvalue = column->bv_values[1];
+
+					/*
+					 * Before doing the binary search on sorted array, do a quick search
+					 * if the range can match at all. If the whole array is outside the
+					 * page range, we're done. This is much cheaper than the binsearch,
+					 * and we assume most ranges do not match.
+					 */
+
+					/* Is the first (smallest) array element after the BRIN range? */
+					element = array->elements[0];
+
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTLessEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, element, maxvalue);
+
+					/* first element > range maxvalue */
+					if (!DatumGetBool(matches))
+						break;
+
+					/* Is the last (largest) array element before the BRIN range? */
+					element = array->elements[array->nelements-1];
+
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTGreaterEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, element, minvalue);
+
+					/* last element < range minvalue */
+					if (!DatumGetBool(matches))
+						break;
+
+					/*
+					 * It seems there might be some array elements consistent with
+					 * the page range. We find the first element above the range
+					 * minvalue and check if it's smaller than maxvalue. If yes,
+					 * we have a match. If not, other elements can't be consistent
+					 * either (will exceed maxval too, thanks to sort).
+					 */
+					type = lookup_type_cache(array->typeid, TYPECACHE_LT_OPR);
+
+					memset(&ssup, 0, sizeof(SortSupportData));
+
+					ssup.ssup_collation = key->sk_collation;
+					ssup.ssup_cxt = CurrentMemoryContext;
+
+					PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
+
+					lower = minmax_lower_boundary(array->elements, array->nelements,
+												  minvalue, &ssup);
+
+					/*
+					 * If the lower boundary is nelements, then no array elements
+					 * can possibly match this page range.
+					 *
+					 * XXX This is probably impossible due to the earlier check.
+					 * This would mean all elements are < minvalue, but we did
+					 * check for that.
+					 */
+					if (lower == array->nelements)
+					{
+						matches = BoolGetDatum(false);
+						break;
+					}
+
+					/*
+					 * We have an element that might be consistent with the page
+					 * range, so let's check the maxvalue too (if it exceeds it,
+					 * no following elements will too).
+					 */
+					element = array->elements[lower];
+
+					/*
+					 * In the equality case (WHERE col = someval), we want to return
+					 * the current page range if the minimum value in the range <=
+					 * scan key, and the maximum value >= scan key.
+					 *
+					 * XXX This minvalue check is likely unnecessary, thanks to the
+					 * lower boundary guaranteeing this to be true.
+					 */
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTLessEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid,
+												minvalue, element);
+					if (!DatumGetBool(matches))
+						break;
+
+					/* maxvalue >= element */
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTGreaterEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid,
+												maxvalue, element);
+					break;
+				}
+			case BTGreaterEqualStrategyNumber:
+			case BTGreaterStrategyNumber:
+				/*
+				 * Check the first (smallest) value in the array - at least this
+				 * value has to be smaller than the range maxval.
+				 */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											array->elements[0]);
+				break;
+			default:
+				/* shouldn't happen */
+				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+				matches = 0;
+				break;
+		}
+	}
+	else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
+	{
+		ArrayType  *arrayval;
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		int			num_elems;
+		Datum	   *elem_values;
+		bool	   *elem_nulls;
+
+		arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+							 &elmlen, &elmbyval, &elmalign);
+
+		deconstruct_array(arrayval,
+						  ARR_ELEMTYPE(arrayval),
+						  elmlen, elmbyval, elmalign,
+						  &elem_values, &elem_nulls, &num_elems);
+
+		/* we'll skip NULL elements */
+		for (int i = 0; i < num_elems; i++)
+		{
+			/* skip NULL elements */
+			if (elem_nulls[i])
+				continue;
+
+			switch (key->sk_strategy)
+			{
+				case BTLessStrategyNumber:
+				case BTLessEqualStrategyNumber:
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 key->sk_strategy);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+												elem_values[i]);
+					break;
+				case BTEqualStrategyNumber:
+
+					/*
+					 * In the equality case (WHERE col = someval), we want to return
+					 * the current page range if the minimum value in the range <=
+					 * scan key, and the maximum value >= scan key.
+					 */
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTLessEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+												elem_values[i]);
+					if (!DatumGetBool(matches))
+						break;
+					/* max() >= scankey */
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 BTGreaterEqualStrategyNumber);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+												elem_values[i]);
+					break;
+				case BTGreaterEqualStrategyNumber:
+				case BTGreaterStrategyNumber:
+					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+														 key->sk_strategy);
+					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+												elem_values[i]);
+					break;
+				default:
+					/* shouldn't happen */
+					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+					matches = 0;
+					break;
+			}
+
+			/* found a consistent value, we're done */
+			if (DatumGetBool(matches))
+				break;
+		}
+
+		/*
+		 * free the arrays
+		 *
+		 * XXX is this necessary?
+		 */
+		pfree(elem_values);
+		pfree(elem_nulls);
+	}
+	else										/* scalar scan key */
+	{
+		switch (key->sk_strategy)
+		{
+			case BTLessStrategyNumber:
+			case BTLessEqualStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
+				break;
+			case BTEqualStrategyNumber:
+
+				/*
+				 * In the equality case (WHERE col = someval), we want to return
+				 * the current page range if the minimum value in the range <=
+				 * scan key, and the maximum value >= scan key.
+				 */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 BTLessEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
+											value);
+				if (!DatumGetBool(matches))
+					break;
+				/* max() >= scankey */
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 BTGreaterEqualStrategyNumber);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			case BTGreaterEqualStrategyNumber:
+			case BTGreaterStrategyNumber:
+				finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
+													 key->sk_strategy);
+				matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
+											value);
+				break;
+			default:
+				/* shouldn't happen */
+				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+				matches = 0;
+				break;
+		}
 	}
 
 	PG_RETURN_DATUM(matches);

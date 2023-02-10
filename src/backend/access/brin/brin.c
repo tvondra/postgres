@@ -39,6 +39,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/index_selfuncs.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
@@ -277,7 +278,7 @@ brinhandler(PG_FUNCTION_ARGS)
 	amroutine->amcanunique = false;
 	amroutine->amcanmulticol = true;
 	amroutine->amoptionalkey = true;
-	amroutine->amsearcharray = false;
+	amroutine->amsearcharray = true;
 	amroutine->amsearchnulls = true;
 	amroutine->amstorage = true;
 	amroutine->amclusterable = false;

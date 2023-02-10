@@ -38,6 +38,7 @@
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/index_selfuncs.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -721,6 +722,16 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	return totalpages * 10;
 }
 
+static int
+compare_array_values(const void *a, const void *b, void *arg)
+{
+	Datum	da = * (Datum *) a;
+	Datum	db = * (Datum *) b;
+	SortSupport	ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da, false, db, false, ssup);
+}
+
 /*
  * Re-initialize state for a BRIN index scan
  */
@@ -735,6 +746,64 @@ brinrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 * _bt_preprocess_keys for an example.  Something like that could be added
 	 * here someday, too.
 	 */
+
+	/*
+	 * Presort the array for SK_SEARCHARRAY scan keys.
+	 *
+	 * We simply stash the value back into the ScanKey, because that way it's
+	 * transparent for the opclass. But there's a couple issues with this:
+	 *
+	 * 1) On rescans, we'll preprocess the array again, unnecessarily. And the
+	 * memory is likely retained too, so this may be a memory leak.
+	 *
+	 * 2) It assumes we want to preprocess the keys into the same data type.
+	 * That works for minmax (where we just sort the array), but may not work
+	 * for other opclasses - e.g. for "bloom" we might want pre-compute the
+	 * h1/h2 hashes (two uint64 values) and "inclusion" might try building
+	 * a union of the values, or something like that. And none of this fits
+	 * into an array of the same data type (which may be swapped into ScanKey).
+	 *
+	 * FIXME Needs to handle NULLs correctly.
+	 */
+	for (int i = 0; i < nscankeys; i++)
+	{
+		ScanKey		key = &scankey[i];
+		ArrayType  *arrayval;
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		int			num_elems;
+		Datum	   *elem_values;
+		bool	   *elem_nulls;
+		TypeCacheEntry *type;
+		SortSupportData ssup;
+
+		if (!(key->sk_flags & SK_SEARCHNULL))
+			continue;
+
+		arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+							 &elmlen, &elmbyval, &elmalign);
+
+		deconstruct_array(arrayval,
+						  ARR_ELEMTYPE(arrayval),
+						  elmlen, elmbyval, elmalign,
+						  &elem_values, &elem_nulls, &num_elems);
+
+		type = lookup_type_cache(ARR_ELEMTYPE(arrayval), TYPECACHE_LT_OPR);
+
+		memset(&ssup, 0, sizeof(SortSupportData));
+		PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
+
+		qsort_interruptible(elem_values, num_elems, sizeof(Datum),
+							compare_array_values, &ssup);
+
+		arrayval = construct_array_builtin(elem_values, num_elems,
+										   ARR_ELEMTYPE(arrayval));
+
+		key->sk_argument = PointerGetDatum(arrayval);
+	}
 
 	if (scankey && scan->numberOfKeys > 0)
 		memmove(scan->keyData, scankey,

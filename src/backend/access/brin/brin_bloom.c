@@ -125,8 +125,14 @@
 #include "access/reloptions.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_amop.h"
 #include "common/hashfn.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #define BloomEqualStrategyNumber	1
@@ -146,6 +152,13 @@
  * (Must be equal to minimum of private procnums).
  */
 #define		PROCNUM_BASE			11
+
+/*
+ * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
+ * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
+ * index's indoption[] array entry for the index attribute.
+ */
+#define SK_BRIN_HASHES	0x00010000	/* deconstructed array, calculated hashes */
 
 /*
  * Storage type for BRIN's reloptions.
@@ -399,19 +412,13 @@ bloom_add_value(BloomFilter *filter, uint32 value, bool *updated)
 
 
 /*
- * bloom_contains_value
- * 		Check if the bloom filter contains a particular value.
+ * bloom_contains_hashes
+ * 		Check if the bloom filter contains a particular pair of hash values.
  */
 static bool
-bloom_contains_value(BloomFilter *filter, uint32 value)
+bloom_contains_hashes(BloomFilter *filter, uint64 h1, uint64 h2)
 {
 	int			i;
-	uint64		h1,
-				h2;
-
-	/* calculate the two hashes */
-	h1 = hash_bytes_uint32_extended(value, BLOOM_SEED_1) % filter->nbits;
-	h2 = hash_bytes_uint32_extended(value, BLOOM_SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)
@@ -428,6 +435,23 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 
 	/* all hashes found in bloom filter */
 	return true;
+}
+
+/*
+ * bloom_contains_value
+ * 		Check if the bloom filter contains a particular value.
+ */
+static bool
+bloom_contains_value(BloomFilter *filter, uint32 value)
+{
+	uint64		h1,
+				h2;
+
+	/* calculate the two hashes */
+	h1 = hash_bytes_uint32_extended(value, BLOOM_SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(value, BLOOM_SEED_2) % filter->nbits;
+
+	return bloom_contains_hashes(filter, h1, h2);
 }
 
 typedef struct BloomOpaque
@@ -585,6 +609,124 @@ brin_bloom_add_value(PG_FUNCTION_ARGS)
 }
 
 /*
+ * preprocessing of scan keys for the minmax opclass
+ *
+ * Cache of precalculated hashes for values (either a single value or an array
+ * of them).
+ */
+typedef struct HashCache {
+	int		nelements;
+	uint64 *h1;
+	uint64 *h2;
+} HashCache;
+
+/*
+ * brin_bloom_preprocess
+ *		preprocess scan keys for the bloom opclass
+ *
+ * For now we just care about SK_SEARCHARRAY keys, for which we precalculate
+ * hash values so that we don't need to do that for each page range.
+ *
+ * XXX Do we need to remember if the array contained NULL values?
+ */
+Datum
+brin_bloom_preprocess(PG_FUNCTION_ARGS)
+{
+	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
+	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
+	BloomOptions *opts = (BloomOptions *) PG_GET_OPCLASS_OPTIONS();
+	ScanKey		newkey;
+	HashCache  *cache = palloc0(sizeof(HashCache));
+
+	int			nbits;
+	FmgrInfo   *finfo;
+	uint32		hashValue;
+
+	/* we'll need to calculate hashes, so get the hash proc */
+	finfo = bloom_get_procinfo(bdesc, key->sk_attno, PROCNUM_HASH);
+
+	/*
+	 * We don't have a filter from any range yet, so we just re-calculate
+	 * the size (number of bits) just like bloom_init.
+	 */
+	bloom_filter_size(brin_bloom_get_ndistinct(bdesc, opts),
+					  BloomGetFalsePositiveRate(opts),
+					  NULL, &nbits, NULL);
+
+	/* precalculate the hash even for scalar scan keys */
+	if (!(key->sk_flags & SK_SEARCHARRAY))
+	{
+		Datum value = key->sk_argument;
+
+		cache->nelements = 1;
+		cache->h1 = (uint64 *) palloc0(sizeof(uint64));
+		cache->h2 = (uint64 *) palloc0(sizeof(uint64));
+
+		hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, key->sk_collation, value));
+
+		cache->h1[0] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_1) % nbits;
+		cache->h2[0] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_2) % nbits;
+	}
+	else
+	{
+		ArrayType  *arrayval;
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		int			num_elems;
+		Datum	   *elem_values;
+		bool	   *elem_nulls;
+
+		arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+							 &elmlen, &elmbyval, &elmalign);
+
+		deconstruct_array(arrayval,
+						  ARR_ELEMTYPE(arrayval),
+						  elmlen, elmbyval, elmalign,
+						  &elem_values, &elem_nulls, &num_elems);
+
+		cache->h1 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
+		cache->h2 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
+
+		for (int i = 0; i < num_elems; i++)
+		{
+			Datum	element = elem_values[i];
+
+			/* ignore NULL elements */
+			if (elem_nulls[i])
+				continue;
+
+			hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, key->sk_collation, element));
+
+			cache->h1[cache->nelements] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_1) % nbits;
+			cache->h2[cache->nelements] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_2) % nbits;
+
+			cache->nelements++;
+		}
+
+		/* free the deconstructed array representation */
+		pfree(elem_values);
+		pfree(elem_nulls);
+	}
+
+	/* Construct the new scan key, with the array of hashes in HashCache. */
+	newkey = palloc0(sizeof(ScanKeyData));
+
+	ScanKeyEntryInitializeWithInfo(newkey,
+								   (key->sk_flags | SK_BRIN_HASHES),
+								   key->sk_attno,
+								   key->sk_strategy,
+								   key->sk_subtype,
+								   key->sk_collation,
+								   &key->sk_func,
+								   PointerGetDatum(cache));
+
+	PG_RETURN_POINTER(newkey);
+}
+
+/*
  * Given an index tuple corresponding to a certain page range and a scan key,
  * return whether the scan key is consistent with the index tuple's bloom
  * filter.  Return true if so, false otherwise.
@@ -625,6 +767,13 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 		attno = key->sk_attno;
 		value = key->sk_argument;
 
+		/*
+		 * The opclass may not use the optional preprocess procedure, in which
+		 * case we need to calculate the hash here as before.
+		 *
+		 * With preprocessed keys we just use the hash cache (even for scalar
+		 * keys, not just for SK_SEARCHARRAY ones).
+		 */
 		switch (key->sk_strategy)
 		{
 			case BloomEqualStrategyNumber:
@@ -635,8 +784,79 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 				 */
 				finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
 
-				hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, value));
-				matches &= bloom_contains_value(filter, hashValue);
+				if (key->sk_flags & SK_BRIN_HASHES)		/* preprocessed keys */
+				{
+					HashCache  *cache = (HashCache *) value;
+
+					/* assume no match */
+					matches = false;
+
+					/*
+					 * We want to return the current page range if the bloom filter
+					 * seems to contain any of the values (or a single value).
+					 *
+					 * XXX With empty cache (which can happen for IN clause with
+					 * only NULL values), we leave the matches flag set to false.
+					 */
+					for (int i = 0; i < cache->nelements; i++)
+					{
+						bool	tmp = false;
+
+						tmp = bloom_contains_hashes(filter, cache->h1[i], cache->h2[i]);
+
+						/* if we found a matching value, we have a match */
+						if (DatumGetBool(tmp))
+						{
+							matches = BoolGetDatum(true);
+							break;
+						}
+					}
+				}
+				else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
+				{
+					ArrayType  *arrayval;
+					int16		elmlen;
+					bool		elmbyval;
+					char		elmalign;
+					int			num_elems;
+					Datum	   *elem_values;
+					bool	   *elem_nulls;
+					bool		match = false;
+
+					/* deconstruct the array */
+					arrayval = DatumGetArrayTypeP(value);
+
+					get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+										 &elmlen, &elmbyval, &elmalign);
+
+					deconstruct_array(arrayval,
+									  ARR_ELEMTYPE(arrayval),
+									  elmlen, elmbyval, elmalign,
+									  &elem_values, &elem_nulls, &num_elems);
+
+					/* we'll skip NULL elements */
+					for (int i = 0; i < num_elems; i++)
+					{
+						/* skip NULL elements */
+						if (elem_nulls[i])
+							continue;
+
+						hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, elem_values[i]));
+						match = bloom_contains_value(filter, hashValue);
+
+						/* did we find a match in the array? */
+						if (match)
+							break;
+					}
+
+					matches &= match;
+
+				}
+				else	/* scalar value without preprocessing */
+				{
+					hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, value));
+					matches &= bloom_contains_value(filter, hashValue);
+				}
 
 				break;
 			default:

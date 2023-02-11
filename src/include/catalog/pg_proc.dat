@@ -9023,6 +9023,9 @@
 { oid => '4595', descr => 'BRIN bloom support',
   proname => 'brin_bloom_options', proisstrict => 'f', prorettype => 'void',
   proargtypes => 'internal', prosrc => 'brin_bloom_options' },
+{ oid => '9325', descr => 'BRIN bloom support',
+  proname => 'brin_bloom_preprocess', proisstrict => 'f', prorettype => 'internal',
+  proargtypes => 'internal internal', prosrc => 'brin_bloom_preprocess' },
 
 # userlock replacements
 { oid => '2880', descr => 'obtain exclusive advisory lock',

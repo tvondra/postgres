@@ -129,6 +129,7 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -260,6 +261,8 @@ typedef struct BloomFilter
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 } BloomFilter;
 
+static uint64 *cache_h1 = NULL;
+static uint64 *cache_h2 = NULL;
 
 /*
  * bloom_init
@@ -405,6 +408,32 @@ bloom_contains_value(BloomFilter *filter, uint32 value)
 	return true;
 }
 
+/*
+ * bloom_contains_value
+ * 		Check if the bloom filter contains a particular value.
+ */
+static bool
+bloom_contains_hashes(BloomFilter *filter, uint64 h1, uint64 h2)
+{
+	int			i;
+
+	/* compute the requested number of hashes */
+	for (i = 0; i < filter->nhashes; i++)
+	{
+		/* h1 + h2 + f(i) */
+		uint32		h = (h1 + i * h2) % filter->nbits;
+		uint32		byte = (h / 8);
+		uint32		bit = (h % 8);
+
+		/* if the bit is not set, the value is not there */
+		if (!(filter->data[byte] & (0x01 << bit)))
+			return false;
+	}
+
+	/* all hashes found in bloom filter */
+	return true;
+}
+
 typedef struct BloomOpaque
 {
 	/*
@@ -439,6 +468,9 @@ brin_bloom_opcinfo(PG_FUNCTION_ARGS)
 	result->oi_opaque = (BloomOpaque *)
 		MAXALIGN((char *) result + SizeofBrinOpcInfo(1));
 	result->oi_typcache[0] = lookup_type_cache(PG_BRIN_BLOOM_SUMMARYOID, 0);
+
+	cache_h1 = NULL;
+	cache_h2 = NULL;
 
 	PG_RETURN_POINTER(result);
 }
@@ -641,6 +673,28 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 							  elmlen, elmbyval, elmalign,
 							  &elem_values, &elem_nulls, &num_elems);
 
+			if (cache_h1 == NULL && cache_h2 == NULL)
+			{
+				MemoryContext oldcxt;
+
+				oldcxt = MemoryContextSwitchTo(bdesc->bd_context);
+				cache_h1 = palloc0(num_elems * sizeof(uint64));
+				cache_h2 = palloc0(num_elems * sizeof(uint64));
+				MemoryContextSwitchTo(oldcxt);
+
+				finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
+
+				for (int i = 0; i < num_elems; i++)
+				{
+					Datum	element = elem_values[i];
+
+					hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, element));
+
+					cache_h1[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_1) % filter->nbits;
+					cache_h2[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_2) % filter->nbits;
+				}
+			}
+
 			switch (key->sk_strategy)
 			{
 				case BloomEqualStrategyNumber:
@@ -658,11 +712,8 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 						for (int i = 0; i < num_elems; i++)
 						{
 							bool	tmp = false;
-							Datum	element = elem_values[i];
 
-							hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid,
-																		 element));
-							tmp = bloom_contains_value(filter, hashValue);
+							tmp = bloom_contains_hashes(filter, cache_h1[i], cache_h2[i]);
 
 							if (DatumGetBool(tmp))
 							{

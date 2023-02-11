@@ -8993,6 +8993,10 @@
   proname => 'brin_inclusion_union', prorettype => 'bool',
   proargtypes => 'internal internal internal',
   prosrc => 'brin_inclusion_union' },
+{ oid => '9324', descr => 'BRIN inclusion support',
+  proname => 'brin_inclusion_preprocess', proisstrict => 'f',
+  prorettype => 'internal', proargtypes => 'internal internal',
+  prosrc => 'brin_inclusion_preprocess' },
 
 # BRIN bloom
 { oid => '4591', descr => 'BRIN bloom support',

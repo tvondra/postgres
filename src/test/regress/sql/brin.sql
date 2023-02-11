@@ -817,3 +817,56 @@ SELECT COUNT(*) FROM brin_in_test_2 WHERE a IN (NULL, '33e75ff09dd601bbe69f35103
 
 DROP TABLE brin_in_test_2;
 RESET enable_seqscan;
+
+
+-- do some tests on IN clauses for boxes and points
+CREATE TABLE brin_in_test_3 (a BOX) WITH (fillfactor=10);
+INSERT INTO brin_in_test_3
+SELECT format('((%s,%s), (%s,%s))', x - mod(i,17), y - mod(i,13), x + mod(i,19), y + mod(i,11))::box FROM (
+  SELECT i,
+         i/10 + mod(991 * i + 617, 20) AS x,
+         i/10 + mod(853 * i + 491, 30) AS y
+    FROM generate_series(1,1000) s(i)
+) foo;
+
+CREATE INDEX brin_in_test_3_idx ON brin_in_test_3 USING brin (a box_inclusion_ops) WITH (pages_per_range=1);
+
+SET enable_seqscan=off;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, NULL]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, NULL]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY[NULL::point, NULL::point]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY[NULL::point, NULL::point]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point, NULL]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point, NULL]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point, '(25,25)'::point]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY['(10,10)'::point, '(50,50)'::point, '(25,25)'::point]);
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY[NULL, '(10,10)'::point, '(50,50)'::point, '(25,25)'::point]);
+
+SELECT COUNT(*) FROM brin_in_test_3 WHERE a @> ANY (ARRAY[NULL, '(10,10)'::point, '(50,50)'::point, '(25,25)'::point]);
+
+DROP TABLE brin_in_test_3;
+RESET enable_seqscan;

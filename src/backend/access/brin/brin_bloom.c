@@ -125,6 +125,7 @@
 #include "access/stratnum.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_amop.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -596,26 +597,87 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 		attno = key->sk_attno;
 		value = key->sk_argument;
 
-		switch (key->sk_strategy)
+		if (likely(!(key->sk_flags & SK_SEARCHARRAY)))
 		{
-			case BloomEqualStrategyNumber:
+			switch (key->sk_strategy)
+			{
+				case BloomEqualStrategyNumber:
 
-				/*
-				 * In the equality case (WHERE col = someval), we want to
-				 * return the current page range if the minimum value in the
-				 * range <= scan key, and the maximum value >= scan key.
-				 */
-				finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
+					/*
+					 * In the equality case (WHERE col = someval), we want to
+					 * return the current page range if the minimum value in the
+					 * range <= scan key, and the maximum value >= scan key.
+					 */
+					finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
 
-				hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, value));
-				matches &= bloom_contains_value(filter, hashValue);
+					hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, value));
+					matches &= bloom_contains_value(filter, hashValue);
 
-				break;
-			default:
-				/* shouldn't happen */
-				elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-				matches = 0;
-				break;
+					break;
+				default:
+					/* shouldn't happen */
+					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+					matches = 0;
+					break;
+			}
+		}
+		else
+		{
+			ArrayType  *arrayval;
+			int16		elmlen;
+			bool		elmbyval;
+			char		elmalign;
+			int			num_elems;
+			Datum	   *elem_values;
+			bool	   *elem_nulls;
+
+			arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+			get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+								 &elmlen, &elmbyval, &elmalign);
+
+			deconstruct_array(arrayval,
+							  ARR_ELEMTYPE(arrayval),
+							  elmlen, elmbyval, elmalign,
+							  &elem_values, &elem_nulls, &num_elems);
+
+			switch (key->sk_strategy)
+			{
+				case BloomEqualStrategyNumber:
+					{
+						/* assume no match */
+						matches = BoolGetDatum(false);
+
+						/*
+						 * In the equality case (WHERE col = someval), we want to
+						 * return the current page range if the minimum value in the
+						 * range <= scan key, and the maximum value >= scan key.
+						 */
+						finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
+
+						for (int i = 0; i < num_elems; i++)
+						{
+							bool	tmp = false;
+							Datum	element = elem_values[i];
+
+							hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid,
+																		 element));
+							tmp = bloom_contains_value(filter, hashValue);
+
+							if (DatumGetBool(tmp))
+							{
+								matches = BoolGetDatum(true);
+								break;
+							}
+						}
+					}
+					break;
+				default:
+					/* shouldn't happen */
+					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
+					matches = 0;
+					break;
+			}
 		}
 
 		if (!matches)

@@ -823,6 +823,9 @@
   amprocrighttype => 'bytea', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/bytea_bloom_ops', amproclefttype => 'bytea',
+  amprocrighttype => 'bytea', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/bytea_bloom_ops', amproclefttype => 'bytea',
   amprocrighttype => 'bytea', amprocnum => '11', amproc => 'hashvarlena' },
 
 # minmax "char"
@@ -854,6 +857,8 @@
 { amprocfamily => 'brin/char_bloom_ops', amproclefttype => 'char',
   amprocrighttype => 'char', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/char_bloom_ops', amproclefttype => 'char',
+  amprocrighttype => 'char', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/char_bloom_ops', amproclefttype => 'char',
   amprocrighttype => 'char', amprocnum => '11', amproc => 'hashchar' },
 
 # minmax name
@@ -884,6 +889,8 @@
   amprocrighttype => 'name', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/name_bloom_ops', amproclefttype => 'name',
   amprocrighttype => 'name', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/name_bloom_ops', amproclefttype => 'name',
+  amprocrighttype => 'name', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/name_bloom_ops', amproclefttype => 'name',
   amprocrighttype => 'name', amprocnum => '11', amproc => 'hashname' },
 
@@ -1011,6 +1018,8 @@
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
+  amprocrighttype => 'int8', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '11', amproc => 'hashint8' },
 
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
@@ -1026,6 +1035,8 @@
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
+  amprocrighttype => 'int2', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '11', amproc => 'hashint2' },
 
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
@@ -1040,6 +1051,8 @@
   amprocrighttype => 'int4', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
+  amprocrighttype => 'int4', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '11', amproc => 'hashint4' },
 
@@ -1071,6 +1084,8 @@
   amprocrighttype => 'text', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/text_bloom_ops', amproclefttype => 'text',
   amprocrighttype => 'text', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/text_bloom_ops', amproclefttype => 'text',
+  amprocrighttype => 'text', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/text_bloom_ops', amproclefttype => 'text',
   amprocrighttype => 'text', amprocnum => '11', amproc => 'hashtext' },
 
@@ -1125,6 +1140,8 @@
 { amprocfamily => 'brin/oid_bloom_ops', amproclefttype => 'oid',
   amprocrighttype => 'oid', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/oid_bloom_ops', amproclefttype => 'oid',
+  amprocrighttype => 'oid', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/oid_bloom_ops', amproclefttype => 'oid',
   amprocrighttype => 'oid', amprocnum => '11', amproc => 'hashoid' },
 
 # minmax tid
@@ -1154,6 +1171,8 @@
   amprocrighttype => 'tid', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/tid_bloom_ops', amproclefttype => 'tid',
   amprocrighttype => 'tid', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/tid_bloom_ops', amproclefttype => 'tid',
+  amprocrighttype => 'tid', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/tid_bloom_ops', amproclefttype => 'tid',
   amprocrighttype => 'tid', amprocnum => '11', amproc => 'hashtid' },
 
@@ -1274,6 +1293,9 @@
   amprocrighttype => 'float4', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float4',
+  amprocrighttype => 'float4', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float4',
   amprocrighttype => 'float4', amprocnum => '11', amproc => 'hashfloat4' },
 
 { amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float8',
@@ -1290,6 +1312,9 @@
 { amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float8',
   amprocrighttype => 'float8', amprocnum => '5',
   amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float8',
+  amprocrighttype => 'float8', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/float_bloom_ops', amproclefttype => 'float8',
   amprocrighttype => 'float8', amprocnum => '11', amproc => 'hashfloat8' },
 
@@ -1350,6 +1375,9 @@
   amprocrighttype => 'macaddr', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/macaddr_bloom_ops', amproclefttype => 'macaddr',
+  amprocrighttype => 'macaddr', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/macaddr_bloom_ops', amproclefttype => 'macaddr',
   amprocrighttype => 'macaddr', amprocnum => '11', amproc => 'hashmacaddr' },
 
 # minmax macaddr8
@@ -1409,6 +1437,9 @@
   amprocrighttype => 'macaddr8', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/macaddr8_bloom_ops', amproclefttype => 'macaddr8',
+  amprocrighttype => 'macaddr8', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/macaddr8_bloom_ops', amproclefttype => 'macaddr8',
   amprocrighttype => 'macaddr8', amprocnum => '11', amproc => 'hashmacaddr8' },
 
 # minmax inet
@@ -1462,6 +1493,8 @@
   amprocrighttype => 'inet', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/network_bloom_ops', amproclefttype => 'inet',
   amprocrighttype => 'inet', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/network_bloom_ops', amproclefttype => 'inet',
+  amprocrighttype => 'inet', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/network_bloom_ops', amproclefttype => 'inet',
   amprocrighttype => 'inet', amprocnum => '11', amproc => 'hashinet' },
 
@@ -1521,6 +1554,9 @@
   amprocrighttype => 'bpchar', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/bpchar_bloom_ops', amproclefttype => 'bpchar',
+  amprocrighttype => 'bpchar', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/bpchar_bloom_ops', amproclefttype => 'bpchar',
   amprocrighttype => 'bpchar', amprocnum => '11', amproc => 'hashbpchar' },
 
 # minmax time without time zone
@@ -1574,6 +1610,8 @@
   amprocrighttype => 'time', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/time_bloom_ops', amproclefttype => 'time',
   amprocrighttype => 'time', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/time_bloom_ops', amproclefttype => 'time',
+  amprocrighttype => 'time', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/time_bloom_ops', amproclefttype => 'time',
   amprocrighttype => 'time', amprocnum => '11', amproc => 'time_hash' },
 
@@ -1708,6 +1746,9 @@
   amprocrighttype => 'timestamp', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'timestamp',
+  amprocrighttype => 'timestamp', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'timestamp',
   amprocrighttype => 'timestamp', amprocnum => '11',
   amproc => 'timestamp_hash' },
 
@@ -1727,6 +1768,9 @@
   amprocrighttype => 'timestamptz', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'timestamptz',
+  amprocrighttype => 'timestamptz', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'timestamptz',
   amprocrighttype => 'timestamptz', amprocnum => '11',
   amproc => 'timestamp_hash' },
 
@@ -1742,6 +1786,8 @@
   amprocrighttype => 'date', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'date',
   amprocrighttype => 'date', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'date',
+  amprocrighttype => 'date', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/datetime_bloom_ops', amproclefttype => 'date',
   amprocrighttype => 'date', amprocnum => '11', amproc => 'hashint4' },
 
@@ -1802,6 +1848,9 @@
   amprocrighttype => 'interval', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/interval_bloom_ops', amproclefttype => 'interval',
+  amprocrighttype => 'interval', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/interval_bloom_ops', amproclefttype => 'interval',
   amprocrighttype => 'interval', amprocnum => '11', amproc => 'interval_hash' },
 
 # minmax time with time zone
@@ -1859,6 +1908,9 @@
 { amprocfamily => 'brin/timetz_bloom_ops', amproclefttype => 'timetz',
   amprocrighttype => 'timetz', amprocnum => '5',
   amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/timetz_bloom_ops', amproclefttype => 'timetz',
+  amprocrighttype => 'timetz', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/timetz_bloom_ops', amproclefttype => 'timetz',
   amprocrighttype => 'timetz', amprocnum => '11', amproc => 'timetz_hash' },
 
@@ -1950,6 +2002,9 @@
   amprocrighttype => 'numeric', amprocnum => '5',
   amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/numeric_bloom_ops', amproclefttype => 'numeric',
+  amprocrighttype => 'numeric', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/numeric_bloom_ops', amproclefttype => 'numeric',
   amprocrighttype => 'numeric', amprocnum => '11', amproc => 'hash_numeric' },
 
 # minmax uuid
@@ -2003,6 +2058,8 @@
   amprocrighttype => 'uuid', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/uuid_bloom_ops', amproclefttype => 'uuid',
   amprocrighttype => 'uuid', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/uuid_bloom_ops', amproclefttype => 'uuid',
+  amprocrighttype => 'uuid', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/uuid_bloom_ops', amproclefttype => 'uuid',
   amprocrighttype => 'uuid', amprocnum => '11', amproc => 'uuid_hash' },
 
@@ -2087,6 +2144,9 @@
 { amprocfamily => 'brin/pg_lsn_bloom_ops', amproclefttype => 'pg_lsn',
   amprocrighttype => 'pg_lsn', amprocnum => '5',
   amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/pg_lsn_bloom_ops', amproclefttype => 'pg_lsn',
+  amprocrighttype => 'pg_lsn', amprocnum => '6',
+  amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/pg_lsn_bloom_ops', amproclefttype => 'pg_lsn',
   amprocrighttype => 'pg_lsn', amprocnum => '11', amproc => 'pg_lsn_hash' },
 

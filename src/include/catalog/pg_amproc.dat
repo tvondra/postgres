@@ -893,6 +893,8 @@
   amproc => 'brin_minmax_consistent' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '4', amproc => 'brin_minmax_union' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int8',
+  amprocrighttype => 'int8', amprocnum => '6', amproc => 'brin_minmax_preprocess' },
 
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '1',
@@ -905,6 +907,8 @@
   amproc => 'brin_minmax_consistent' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '4', amproc => 'brin_minmax_union' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int2',
+  amprocrighttype => 'int2', amprocnum => '6', amproc => 'brin_minmax_preprocess' },
 
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '1',
@@ -917,6 +921,8 @@
   amproc => 'brin_minmax_consistent' },
 { amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '4', amproc => 'brin_minmax_union' },
+{ amprocfamily => 'brin/integer_minmax_ops', amproclefttype => 'int4',
+  amprocrighttype => 'int4', amprocnum => '6', amproc => 'brin_minmax_preprocess' },
 
 # minmax multi integer: int2, int4, int8
 { amprocfamily => 'brin/integer_minmax_multi_ops', amproclefttype => 'int2',

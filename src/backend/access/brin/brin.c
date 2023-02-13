@@ -67,6 +67,12 @@ typedef struct BrinOpaque
 	BlockNumber bo_pagesPerRange;
 	BrinRevmap *bo_rmAccess;
 	BrinDesc   *bo_bdesc;
+
+	/* preprocessed scan keys */
+	int			bo_numScanKeys;		/* number of (preprocessed) scan keys */
+	ScanKey	   *bo_scanKeys;		/* modified copy of scan->keyData */
+	MemoryContext bo_scanKeysCxt;	/* scan-lifespan context for key data */
+
 } BrinOpaque;
 
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
@@ -335,6 +341,11 @@ brinbeginscan(Relation r, int nkeys, int norderbys)
 	opaque->bo_rmAccess = brinRevmapInitialize(r, &opaque->bo_pagesPerRange,
 											   scan->xs_snapshot);
 	opaque->bo_bdesc = brin_build_desc(r);
+
+	opaque->bo_numScanKeys = 0;
+	opaque->bo_scanKeys = NULL;
+	opaque->bo_scanKeysCxt = NULL;
+
 	scan->opaque = opaque;
 
 	return scan;
@@ -457,7 +468,7 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	/* Preprocess the scan keys - split them into per-attribute arrays. */
 	for (int keyno = 0; keyno < scan->numberOfKeys; keyno++)
 	{
-		ScanKey		key = &scan->keyData[keyno];
+		ScanKey		key = opaque->bo_scanKeys[keyno];
 		AttrNumber	keyattno = key->sk_attno;
 
 		/*
@@ -722,16 +733,6 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	return totalpages * 10;
 }
 
-static int
-compare_array_values(const void *a, const void *b, void *arg)
-{
-	Datum	da = * (Datum *) a;
-	Datum	db = * (Datum *) b;
-	SortSupport	ssup = (SortSupport) arg;
-
-	return ApplySortComparator(da, false, db, false, ssup);
-}
-
 /*
  * Re-initialize state for a BRIN index scan
  */
@@ -739,6 +740,10 @@ void
 brinrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		   ScanKey orderbys, int norderbys)
 {
+	BrinOpaque *bo = (BrinOpaque *) scan->opaque;
+	Relation	idxRel = scan->indexRelation;
+	MemoryContext	oldcxt;
+
 	/*
 	 * Other index AMs preprocess the scan keys at this point, or sometime
 	 * early during the scan; this lets them optimize by removing redundant
@@ -746,6 +751,10 @@ brinrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 * _bt_preprocess_keys for an example.  Something like that could be added
 	 * here someday, too.
 	 */
+
+	if (scankey && scan->numberOfKeys > 0)
+		memmove(scan->keyData, scankey,
+				scan->numberOfKeys * sizeof(ScanKeyData));
 
 	/*
 	 * Presort the array for SK_SEARCHARRAY scan keys.
@@ -765,49 +774,46 @@ brinrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 *
 	 * FIXME Needs to handle NULLs correctly.
 	 */
+	if (bo->bo_scanKeysCxt == NULL)
+		bo->bo_scanKeysCxt = AllocSetContextCreate(CurrentMemoryContext,
+												   "BRIN scan keys context",
+												   ALLOCSET_SMALL_SIZES);
+	else
+		MemoryContextReset(bo->bo_scanKeysCxt);
+
+	oldcxt = MemoryContextSwitchTo(bo->bo_scanKeysCxt);
+
+	bo->bo_scanKeys = palloc0(sizeof(ScanKey) * nscankeys);
+
 	for (int i = 0; i < nscankeys; i++)
 	{
-		ScanKey		key = &scankey[i];
-		ArrayType  *arrayval;
-		int16		elmlen;
-		bool		elmbyval;
-		char		elmalign;
-		int			num_elems;
-		Datum	   *elem_values;
-		bool	   *elem_nulls;
-		TypeCacheEntry *type;
-		SortSupportData ssup;
+		FmgrInfo   *finfo;
+		ScanKey		key = &scan->keyData[i];
+		Oid			procid;
+		Datum		ret;
 
-		if (!(key->sk_flags & SK_SEARCHNULL))
+		/* fetch key preprocess support procedure if specified */
+		procid = index_getprocid(idxRel, key->sk_attno,
+								 BRIN_PROCNUM_PREPROCESS);
+
+		/* not specified, just point to the original key */
+		if (!OidIsValid(procid))
+		{
+			bo->bo_scanKeys[i] = key;
 			continue;
+		}
 
-		arrayval = DatumGetArrayTypeP(key->sk_argument);
+		finfo = index_getprocinfo(idxRel, key->sk_attno,
+								  BRIN_PROCNUM_PREPROCESS);
 
-		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-							 &elmlen, &elmbyval, &elmalign);
+		ret = FunctionCall2(finfo,
+							PointerGetDatum(bo->bo_bdesc),
+							PointerGetDatum(key));
 
-		deconstruct_array(arrayval,
-						  ARR_ELEMTYPE(arrayval),
-						  elmlen, elmbyval, elmalign,
-						  &elem_values, &elem_nulls, &num_elems);
-
-		type = lookup_type_cache(ARR_ELEMTYPE(arrayval), TYPECACHE_LT_OPR);
-
-		memset(&ssup, 0, sizeof(SortSupportData));
-		PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
-
-		qsort_interruptible(elem_values, num_elems, sizeof(Datum),
-							compare_array_values, &ssup);
-
-		arrayval = construct_array_builtin(elem_values, num_elems,
-										   ARR_ELEMTYPE(arrayval));
-
-		key->sk_argument = PointerGetDatum(arrayval);
+		bo->bo_scanKeys[i] = (ScanKey) DatumGetPointer(ret);
 	}
 
-	if (scankey && scan->numberOfKeys > 0)
-		memmove(scan->keyData, scankey,
-				scan->numberOfKeys * sizeof(ScanKeyData));
+	MemoryContextSwitchTo(oldcxt);
 }
 
 /*

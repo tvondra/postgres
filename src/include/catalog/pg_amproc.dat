@@ -1005,6 +1005,8 @@
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
+  amprocrighttype => 'int8', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int8',
   amprocrighttype => 'int8', amprocnum => '11', amproc => 'hashint8' },
 
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
@@ -1020,6 +1022,8 @@
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '5', amproc => 'brin_bloom_options' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
+  amprocrighttype => 'int2', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int2',
   amprocrighttype => 'int2', amprocnum => '11', amproc => 'hashint2' },
 
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
@@ -1034,6 +1038,8 @@
   amprocrighttype => 'int4', amprocnum => '4', amproc => 'brin_bloom_union' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '5', amproc => 'brin_bloom_options' },
+{ amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
+  amprocrighttype => 'int4', amprocnum => '6', amproc => 'brin_bloom_preprocess' },
 { amprocfamily => 'brin/integer_bloom_ops', amproclefttype => 'int4',
   amprocrighttype => 'int4', amprocnum => '11', amproc => 'hashint4' },
 

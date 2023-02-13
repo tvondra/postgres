@@ -154,6 +154,13 @@
 #define		PROCNUM_BASE			11
 
 /*
+ * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
+ * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
+ * index's indoption[] array entry for the index attribute.
+ */
+#define SK_BRIN_HASHES	0x00010000	/* deconstructed array, calculated hashes */
+
+/*
  * Storage type for BRIN's reloptions.
  */
 typedef struct BloomOptions
@@ -261,8 +268,6 @@ typedef struct BloomFilter
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 } BloomFilter;
 
-static uint64 *cache_h1 = NULL;
-static uint64 *cache_h2 = NULL;
 
 /*
  * bloom_init
@@ -469,9 +474,6 @@ brin_bloom_opcinfo(PG_FUNCTION_ARGS)
 		MAXALIGN((char *) result + SizeofBrinOpcInfo(1));
 	result->oi_typcache[0] = lookup_type_cache(PG_BRIN_BLOOM_SUMMARYOID, 0);
 
-	cache_h1 = NULL;
-	cache_h2 = NULL;
-
 	PG_RETURN_POINTER(result);
 }
 
@@ -592,6 +594,91 @@ brin_bloom_add_value(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(updated);
 }
 
+typedef struct HashCache {
+	int		nelements;
+	uint64 *h1;
+	uint64 *h2;
+} HashCache;
+
+Datum
+brin_bloom_preprocess(PG_FUNCTION_ARGS)
+{
+	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
+	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
+	BloomOptions *opts = (BloomOptions *) PG_GET_OPCLASS_OPTIONS();
+	ScanKey		newkey;
+	HashCache  *cache;
+
+	double		false_positive_rate;
+	int			nbits,
+				nbytes,
+				ndistinct;
+	FmgrInfo   *finfo;
+	uint32		hashValue;
+
+	ArrayType  *arrayval;
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	int			num_elems;
+	Datum	   *elem_values;
+	bool	   *elem_nulls;
+
+	/* ignore scalar keys */
+	if (!(key->sk_flags & SK_SEARCHARRAY))
+		PG_RETURN_POINTER(key);
+
+	arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+						 &elmlen, &elmbyval, &elmalign);
+
+	deconstruct_array(arrayval,
+					  ARR_ELEMTYPE(arrayval),
+					  elmlen, elmbyval, elmalign,
+					  &elem_values, &elem_nulls, &num_elems);
+
+	cache = palloc0(sizeof(HashCache));
+	cache->nelements = num_elems;
+	cache->h1 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
+	cache->h2 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
+
+	finfo = bloom_get_procinfo(bdesc, key->sk_attno, PROCNUM_HASH);
+
+	/* calculate filter size just like bloom_init */
+	false_positive_rate = BloomGetFalsePositiveRate(opts);
+	ndistinct = brin_bloom_get_ndistinct(bdesc, opts);
+
+	nbits = ceil(-(ndistinct * log(false_positive_rate)) / pow(log(2.0), 2));
+
+	/* round m to whole bytes */
+	nbytes = ((nbits + 7) / 8);
+	nbits = nbytes * 8;
+
+	for (int i = 0; i < num_elems; i++)
+	{
+		Datum	element = elem_values[i];
+
+		hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, key->sk_collation, element));
+
+		cache->h1[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_1) % nbits;
+		cache->h2[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_2) % nbits;
+	}
+
+	newkey = palloc0(sizeof(ScanKeyData));
+
+	ScanKeyEntryInitializeWithInfo(newkey,
+								   (key->sk_flags | SK_BRIN_HASHES),
+								   key->sk_attno,
+								   key->sk_strategy,
+								   key->sk_subtype,
+								   key->sk_collation,
+								   &key->sk_func,
+								   PointerGetDatum(cache));
+
+	PG_RETURN_POINTER(newkey);
+}
+
 /*
  * Given an index tuple corresponding to a certain page range and a scan key,
  * return whether the scan key is consistent with the index tuple's bloom
@@ -629,7 +716,7 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 		attno = key->sk_attno;
 		value = key->sk_argument;
 
-		if (likely(!(key->sk_flags & SK_SEARCHARRAY)))
+		if (likely(!(key->sk_flags & SK_BRIN_HASHES)))
 		{
 			switch (key->sk_strategy)
 			{
@@ -655,45 +742,7 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			ArrayType  *arrayval;
-			int16		elmlen;
-			bool		elmbyval;
-			char		elmalign;
-			int			num_elems;
-			Datum	   *elem_values;
-			bool	   *elem_nulls;
-
-			arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-			get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-								 &elmlen, &elmbyval, &elmalign);
-
-			deconstruct_array(arrayval,
-							  ARR_ELEMTYPE(arrayval),
-							  elmlen, elmbyval, elmalign,
-							  &elem_values, &elem_nulls, &num_elems);
-
-			if (cache_h1 == NULL && cache_h2 == NULL)
-			{
-				MemoryContext oldcxt;
-
-				oldcxt = MemoryContextSwitchTo(bdesc->bd_context);
-				cache_h1 = palloc0(num_elems * sizeof(uint64));
-				cache_h2 = palloc0(num_elems * sizeof(uint64));
-				MemoryContextSwitchTo(oldcxt);
-
-				finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
-
-				for (int i = 0; i < num_elems; i++)
-				{
-					Datum	element = elem_values[i];
-
-					hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, element));
-
-					cache_h1[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_1) % filter->nbits;
-					cache_h2[i] = hash_bytes_uint32_extended(hashValue, BLOOM_SEED_2) % filter->nbits;
-				}
-			}
+			HashCache *cache = (HashCache *) value;
 
 			switch (key->sk_strategy)
 			{
@@ -709,11 +758,11 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 						 */
 						finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
 
-						for (int i = 0; i < num_elems; i++)
+						for (int i = 0; i < cache->nelements; i++)
 						{
 							bool	tmp = false;
 
-							tmp = bloom_contains_hashes(filter, cache_h1[i], cache_h2[i]);
+							tmp = bloom_contains_hashes(filter, cache->h1[i], cache->h2[i]);
 
 							if (DatumGetBool(tmp))
 							{

@@ -109,6 +109,14 @@
 #define		MINMAX_BUFFER_MAX				8192
 #define		MINMAX_BUFFER_LOAD_FACTOR		0.5
 
+/*
+ * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
+ * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
+ * index's indoption[] array entry for the index attribute.
+ */
+#define SK_BRIN_SORTED	0x00010000	/* deconstructed and sorted array */
+
+
 typedef struct MinmaxMultiOpaque
 {
 	FmgrInfo	extra_procinfos[MINMAX_MAX_PROCNUMS];
@@ -2619,6 +2627,71 @@ lower_boundary(Datum *values, int nvalues, Datum minvalue, SortSupport ssup)
 	return start;
 }
 
+typedef struct ScanKeyArray {
+	Oid		typeid;
+	int		nelements;
+	Datum  *elements;
+} ScanKeyArray;
+
+Datum
+brin_minmax_multi_preprocess(PG_FUNCTION_ARGS)
+{
+	// BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
+	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
+	ScanKey		newkey;
+	ScanKeyArray *scanarray;
+
+	ArrayType  *arrayval;
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	int			num_elems;
+	Datum	   *elem_values;
+	bool	   *elem_nulls;
+	TypeCacheEntry *type;
+	SortSupportData ssup;
+
+	/* ignore scalar keys */
+	if (!(key->sk_flags & SK_SEARCHARRAY))
+		PG_RETURN_POINTER(key);
+
+	arrayval = DatumGetArrayTypeP(key->sk_argument);
+
+	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+						 &elmlen, &elmbyval, &elmalign);
+
+	deconstruct_array(arrayval,
+					  ARR_ELEMTYPE(arrayval),
+					  elmlen, elmbyval, elmalign,
+					  &elem_values, &elem_nulls, &num_elems);
+
+	type = lookup_type_cache(ARR_ELEMTYPE(arrayval), TYPECACHE_LT_OPR);
+
+	memset(&ssup, 0, sizeof(SortSupportData));
+	PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
+
+	qsort_interruptible(elem_values, num_elems, sizeof(Datum),
+						compare_array_values, &ssup);
+
+	scanarray = palloc0(sizeof(ScanKeyArray));
+	scanarray->typeid = ARR_ELEMTYPE(arrayval);
+	scanarray->nelements = num_elems;
+	scanarray->elements = elem_values;
+
+	newkey = palloc0(sizeof(ScanKeyData));
+
+	ScanKeyEntryInitializeWithInfo(newkey,
+								   (key->sk_flags | SK_BRIN_SORTED),
+								   key->sk_attno,
+								   key->sk_strategy,
+								   key->sk_subtype,
+								   key->sk_collation,
+								   &key->sk_func,
+								   PointerGetDatum(scanarray));
+
+	PG_RETURN_POINTER(newkey);
+}
+
 /*
  * Given an index tuple corresponding to a certain page range and a scan key,
  * return whether the scan key is consistent with the index tuple's min/max
@@ -2678,7 +2751,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 			subtype = key->sk_subtype;
 			value = key->sk_argument;
 
-			if (likely(!(key->sk_flags & SK_SEARCHARRAY)))
+			if (likely(!(key->sk_flags & SK_BRIN_SORTED)))
 			{
 				switch (key->sk_strategy)
 				{
@@ -2745,37 +2818,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 			}
 			else
 			{
-				/*
-				 * FIXME This is really wrong, because it deserializes the
-				 * array over and over for each value in the minmax-multi
-				 * summary range.
-				 *
-				 * FIXME In fact, this is even worse than for brin_minmax.c
-				 * because we deconstruct it for every range in the summary
-				 * (so if there are 32 values, that's 16 ranges, and we'll
-				 * deconstruct it again for each of those).
-				 *
-				 * XXX We could deconstruct it once, when we need it for the
-				 * first time. But even better we should do it only once while
-				 * preprocessing the scan keys.
-				 */
-				ArrayType  *arrayval;
-				int16		elmlen;
-				bool		elmbyval;
-				char		elmalign;
-				int			num_elems;
-				Datum	   *elem_values;
-				bool	   *elem_nulls;
-
-				arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-				get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-									 &elmlen, &elmbyval, &elmalign);
-
-				deconstruct_array(arrayval,
-								  ARR_ELEMTYPE(arrayval),
-								  elmlen, elmbyval, elmalign,
-								  &elem_values, &elem_nulls, &num_elems);
+				ScanKeyArray *array = (ScanKeyArray *) value;
 
 				switch (key->sk_strategy)
 				{
@@ -2785,7 +2828,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 																   key->sk_strategy);
 						/* first value from the array */
 						matches = FunctionCall2Coll(finfo, colloid, minval,
-													elem_values[num_elems-1]);
+													array->elements[array->nelements-1]);
 						break;
 
 					case BTEqualStrategyNumber:
@@ -2800,7 +2843,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 							TypeCacheEntry *type;
 
 							/* Is the first (smallest) value after the BRIN range? */
-							val = elem_values[0];
+							val = array->elements[0];
 
 							finfo = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
 																	   BTLessEqualStrategyNumber);
@@ -2811,7 +2854,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 								break;
 
 							/* Is the last (largest) value before the BRIN range? */
-							val = elem_values[num_elems-1];
+							val = array->elements[array->nelements-1];
 
 							finfo = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
 																	   BTGreaterEqualStrategyNumber);
@@ -2825,15 +2868,15 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 							 * OK, there might be some values matching the range. We have
 							 * to search them one by one, or perhaps try binsearch.
 							 */
-							type = lookup_type_cache(ARR_ELEMTYPE(arrayval), TYPECACHE_LT_OPR);
+							type = lookup_type_cache(array->typeid, TYPECACHE_LT_OPR);
 
 							memset(&ssup, 0, sizeof(SortSupportData));
 							PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
 
-							lower = lower_boundary(elem_values, num_elems, minval, &ssup);
+							lower = lower_boundary(array->elements, array->nelements, minval, &ssup);
 
 							/* no elements can possibly match */
-							if (lower == num_elems)
+							if (lower == array->nelements)
 							{
 								matches = BoolGetDatum(false);
 								break;
@@ -2843,7 +2886,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 							 * OK, the first element must match the upper boundary too
 							 * (if it does not, no following elements can).
 							 */
-							val = elem_values[lower];
+							val = array->elements[lower];
 
 							/*
 							 * In the equality case (WHERE col = someval), we want to return
@@ -2867,7 +2910,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 																   key->sk_strategy);
 						/* last value from the array */
 						matches = FunctionCall2Coll(finfo, colloid, maxval,
-													elem_values[0]);
+													array->elements[0]);
 						break;
 
 					default:

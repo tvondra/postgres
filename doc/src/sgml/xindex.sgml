@@ -468,6 +468,13 @@
        </entry>
        <entry>6</entry>
       </row>
+      <row>
+       <entry>
+        Preprocess scan keys in a way specific to this operator class
+        (optional)
+       </entry>
+       <entry>7</entry>
+      </row>
      </tbody>
     </tgroup>
    </table>

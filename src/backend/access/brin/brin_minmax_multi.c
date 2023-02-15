@@ -2627,7 +2627,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 						FmgrInfo   *cmpFn;
 
 						/* by default this range does not match */
-						matches = false;
+						matches = BoolGetDatum(false);
 
 						/*
 						 * Otherwise, need to compare the new value with
@@ -2655,7 +2655,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 						 * We haven't managed to eliminate this range, so
 						 * consider it matching.
 						 */
-						matches = true;
+						matches = BoolGetDatum(true);
 
 						break;
 					}
@@ -2670,7 +2670,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 				default:
 					/* shouldn't happen */
 					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-					matches = 0;
+					matches = BoolGetDatum(false);
 					break;
 			}
 
@@ -2686,7 +2686,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 		 * have we found a range matching all scan keys? if yes, we're done
 		 */
 		if (matching)
-			PG_RETURN_DATUM(BoolGetDatum(true));
+			PG_RETURN_BOOL(true);
 	}
 
 	/*
@@ -2729,7 +2729,7 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 				default:
 					/* shouldn't happen */
 					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-					matches = 0;
+					matches = BoolGetDatum(false);
 					break;
 			}
 
@@ -2743,10 +2743,10 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 
 		/* have we found a range matching all scan keys? if yes, we're done */
 		if (matching)
-			PG_RETURN_DATUM(BoolGetDatum(true));
+			PG_RETURN_BOOL(true);
 	}
 
-	PG_RETURN_DATUM(BoolGetDatum(false));
+	PG_RETURN_BOOL(false);
 }
 
 /*

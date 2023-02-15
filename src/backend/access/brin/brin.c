@@ -686,6 +686,13 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 								break;
 						}
 					}
+
+					/*
+					 * Did we find a clause that eliminates this range? No point
+					 * in evaluating additional clauses.
+					 */
+					if (!addrange)
+						break;
 				}
 			}
 		}

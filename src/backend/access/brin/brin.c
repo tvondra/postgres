@@ -660,7 +660,7 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 												PointerGetDatum(bval),
 												PointerGetDatum(keys[attno - 1]),
 												Int32GetDatum(nkeys[attno - 1]));
-						addrange = DatumGetBool(add);
+						addrange &= DatumGetBool(add);
 					}
 					else
 					{
@@ -681,11 +681,18 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 													PointerGetDatum(bdesc),
 													PointerGetDatum(bval),
 													PointerGetDatum(keys[attno - 1][keyno]));
-							addrange = DatumGetBool(add);
+							addrange &= DatumGetBool(add);
 							if (!addrange)
 								break;
 						}
 					}
+
+					/*
+					 * We found a clause that eliminates this range. No point
+					 * in evaluating more clauses.
+					 */
+					if (!addrange)
+						break;
 				}
 			}
 		}

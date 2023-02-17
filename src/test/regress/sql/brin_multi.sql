@@ -414,3 +414,139 @@ VACUUM ANALYZE brin_test_multi;
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE a = 1;
 -- Ensure brin index is not used when values are not correlated
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE b = 1;
+
+
+-- do some inequality tests
+CREATE TABLE brin_test_multi_1 (a INT, b BIGINT) WITH (fillfactor=10);
+INSERT INTO brin_test_multi_1
+SELECT i/5 + mod(911 * i + 483, 25),
+       i/10 + mod(751 * i + 221, 41)
+  FROM generate_series(1,1000) s(i);
+
+CREATE INDEX brin_test_multi_1_idx_1 ON brin_test_multi_1 USING brin (a int4_minmax_multi_ops) WITH (pages_per_range=5);
+CREATE INDEX brin_test_multi_1_idx_2 ON brin_test_multi_1 USING brin (b int8_minmax_multi_ops) WITH (pages_per_range=5);
+
+SET enable_seqscan=off;
+
+-- int: less than
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a < 37;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a < 37;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a < 113;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a < 113;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a <= 177;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a <= 177;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a <= 25;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a <= 25;
+
+-- int: greater than
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a > 120;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a > 120;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a >= 180;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a >= 180;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a > 71;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a > 71;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a >= 63;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE a >= 63;
+
+-- bigint: less than
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b < 73;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b < 73;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b <= 47;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b <= 47;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b < 199;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b < 199;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b <= 150;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b <= 150;
+
+-- bigint: greater than
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 93;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 93;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 37;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 37;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b >= 215;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b >= 215;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 201;
+
+SELECT COUNT(*) FROM brin_test_multi_1 WHERE b > 201;
+
+DROP TABLE brin_test_multi_1;
+RESET enable_seqscan;
+
+
+-- do some inequality tests for varlena data types
+CREATE TABLE brin_test_multi_2 (a UUID) WITH (fillfactor=10);
+INSERT INTO brin_test_multi_2
+SELECT v::uuid FROM (SELECT row_number() OVER (ORDER BY v) c, v FROM (SELECT md5((i/13)::text) AS v FROM generate_series(1,1000) s(i)) foo) bar ORDER BY c + 25 * random();
+
+CREATE INDEX brin_test_multi_2_idx ON brin_test_multi_2 USING brin (a uuid_minmax_multi_ops) WITH (pages_per_range=5);
+
+SET enable_seqscan=off;
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a < '33e75ff0-9dd6-01bb-e69f-351039152189';
+
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a < '33e75ff0-9dd6-01bb-e69f-351039152189';
+
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a > '33e75ff0-9dd6-01bb-e69f-351039152189';
+
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a > '33e75ff0-9dd6-01bb-e69f-351039152189';
+
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a <= 'f457c545-a9de-d88f-18ec-ee47145a72c0';
+
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a <= 'f457c545-a9de-d88f-18ec-ee47145a72c0';
+
+
+EXPLAIN (COSTS OFF)
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a >= 'c51ce410-c124-a10e-0db5-e4b97fc2af39';
+
+SELECT COUNT(*) FROM brin_test_multi_2 WHERE a >= 'c51ce410-c124-a10e-0db5-e4b97fc2af39';
+
+DROP TABLE brin_test_multi_2;
+RESET enable_seqscan;

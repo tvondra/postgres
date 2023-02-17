@@ -8910,6 +8910,10 @@
   proname => 'brin_minmax_multi_options', proisstrict => 'f',
   prorettype => 'void', proargtypes => 'internal',
   prosrc => 'brin_minmax_multi_options' },
+{ oid => '9326', descr => 'BRIN multi minmax support',
+  proname => 'brin_minmax_multi_preprocess', proisstrict => 'f',
+  prorettype => 'internal', proargtypes => 'internal internal',
+  prosrc => 'brin_minmax_multi_preprocess' },
 
 { oid => '4621', descr => 'BRIN multi minmax int2 distance',
   proname => 'brin_minmax_multi_distance_int2', prorettype => 'float8',

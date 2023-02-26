@@ -82,7 +82,8 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
-static void ExecHashFilterAddValue(HashFilterState *filter, bool keep_value,
+static void ExecHashFilterAddValue(HashJoinTable hashtable,
+								   HashFilterState *filter,
 								   ExprContext *econtext);
 static void ExecHashFilterFinalize(HashFilterState *filter);
 
@@ -205,7 +206,7 @@ MultiExecPrivateHash(HashState *node)
 				{
 					HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
-					ExecHashFilterAddValue(filter, hashtable->keepNulls, econtext);
+					ExecHashFilterAddValue(hashtable, filter, econtext);
 				}
 			}
 		}
@@ -513,9 +514,9 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
 		k = round((m / n) * log(2)); 
 
-		m = ((m + 7) / 8) * 8;
+		/* round to multiples of 8 */
+		state->nbits = ((int) ((m + 7) / 8)) * 8;
 
-		state->nbits = m;
 		state->nhashes = k;
 		state->data = palloc0(m / 8);
 
@@ -2316,7 +2317,7 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 }
 
 static void
-ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprContext *econtext)
 {
 	/* filter tracking exact values */
 	if (filter->filter_type == HashFilterExact)
@@ -2324,18 +2325,23 @@ ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 		int		i,
 				nvalues;
 		char   *data;
+		MemoryContext oldcxt;
 
 		Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
 
 		/* if adding value worker, we're done */
-		if (ExecHashFilterAddExact(filter, keep_nulls, econtext))
+		if (ExecHashFilterAddExact(filter, hashtable->keepNulls, econtext))
 			return;
 
 		nvalues = filter->nvalues;
 		data = filter->data;
 
-		filter->data = palloc0(filter->nbits/8);
+		oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
+
+		filter->data = palloc0(filter->nbits/8 + 10);
 		filter->filter_type = HashFilterBloom;
+
+		MemoryContextSwitchTo(oldcxt);
 
 		for (i = 0; i < nvalues; i++)
 		{
@@ -2352,8 +2358,8 @@ ExecHashFilterAddValue(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	if (filter->filter_type == HashFilterBloom)
 	{
 		uint32	hash = 0;
-		ExecHashGetFilterHashValue(filter, econtext, keep_nulls, &hash);
-		ExecHashFilterAddHash(filter, keep_nulls, econtext, hash);
+		ExecHashGetFilterHashValue(filter, econtext, hashtable->keepNulls, &hash);
+		ExecHashFilterAddHash(filter, hashtable->keepNulls, econtext, hash);
 		filter->nvalues++;
 	}
 }

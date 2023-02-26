@@ -36,13 +36,16 @@
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "port/pg_bitutils.h"
+#include "utils/datum.h"
 #include "utils/dynahash.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/palloc.h"
 #include "utils/syscache.h"
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
@@ -444,7 +447,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		int			nkeys;
 		int			i;
 		ListCell   *ho,
-				   *hc;
+				   *hc,
+				   *hk;
 
 		double		m, p, n, k;
 
@@ -486,6 +490,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		state->hashfunctions = palloc_array(FmgrInfo, nkeys);
 		state->hashStrict = palloc_array(bool, nkeys);
 		state->collations = palloc_array(Oid, nkeys);
+		state->types = palloc(sizeof(Oid) * nkeys);
 
 		/* FIXME properly handle the left/right function, for details see
 		 * ExecHashTableCreate() */
@@ -503,6 +508,13 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 			// fmgr_info(right_hashfn, &hashtable->inner_hashfunctions[i]);
 			state->hashStrict[i] = op_strict(hashop);
 			state->collations[i] = lfirst_oid(hc);
+			i++;
+		}
+
+		i = 0;
+		foreach(hk, filter->clauses)
+		{
+			state->types[i] = exprType(lfirst(hk));
 			i++;
 		}
 
@@ -2166,7 +2178,14 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
 		}
 		else
-			values[i] = keyval;
+		{
+			int16	typlen;
+			bool	typbyval;
+			char	typalign;
+			get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
+
+			values[i] = datumCopy(keyval, typbyval, typlen);
+		}
 
 		i++;
 	}

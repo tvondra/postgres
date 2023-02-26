@@ -2658,6 +2658,7 @@ typedef struct HashFilterState
 	FmgrInfo   *hashfunctions;
 	bool	   *hashStrict;
 	Oid		   *collations;
+	Oid		   *types;
 
 	HashFilterType	filter_type;
 	bool			built;

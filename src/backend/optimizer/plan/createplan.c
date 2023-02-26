@@ -4784,13 +4784,21 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
 	 * hashclauses.
 	 *
+	 * We can only make this work for some join types, when a missing match
+	 * in the hash table is enough to eliminate the row. That means we can't
+	 * do this for outer joins (maybe unless there are additional conditions
+	 * making it inner?), or antijoins (because the bloom filter can have
+	 * false positives).
+	 *
 	 * XXX We can't modify the path yet, because it's referenced by multiple
 	 * upper paths for alternative plans.
 	 *
 	 * XXX Disabled for parallel plans for now.
 	 */
 	if (enable_hash_filter_pushdown &&
-		(best_path->jpath.outerjoinpath->parallel_workers == 0))
+		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&
+		(best_path->jpath.jointype == JOIN_INNER ||
+		 best_path->jpath.jointype == JOIN_SEMI))
 	{
 		ListCell *lc2;
 

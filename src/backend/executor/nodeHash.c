@@ -455,8 +455,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
-		// state->filter_type = HashFilterExact;
-		// FIXME HashFilterExact needs fixes in ExecHashFilterAddValue
+		state->filter_type = HashFilterExact;
 		state->filter_type = HashFilterBloom;
 		state->filter = filter;
 
@@ -2051,6 +2050,11 @@ ExecHashGetHashValue(HashJoinTable hashtable,
  * and stored at *hashvalue.  A false result means the tuple cannot match
  * because it contains a null attribute, and hence it should be discarded
  * immediately.  (If keep_nulls is true then false is never returned.)
+ *
+ * XXX We probably don't need to worry about keep_nulls, because we don't
+ * actually keep the NULLs - it's probably enough to remember there were
+ * NULLs, assuming the operator is strict (in which case NULLs will never
+ * match).
  */
 static bool
 ExecHashGetFilterHashValue(HashFilterState *filter,
@@ -2109,6 +2113,14 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 				return false;	/* cannot match */
 			}
 			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+
+			/*
+			 * XXX Ignore if any of the values is NULL. At the moment we only
+			 * have a single-key filters, but this should apply even to multiple
+			 * keys I think.
+			 */
+			MemoryContextSwitchTo(oldContext);
+			return false;	/* cannot match */
 		}
 		else
 		{
@@ -2375,8 +2387,11 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 		{
 			uint32	hashvalue = 0;
 			Datum  *values = (Datum *) (data + i * entrylen);
-			/* FIXME this needs to also keep the null flags somewhere */
 
+			/*
+			 * XXX We ignore nulls when adding data to the filter, so we
+			 * don't need to worry about them here either.
+			 */
 			ExecHashGetFilterHashValue2(filter, econtext, values, false, &hashvalue);
 			ExecHashFilterAddHash(filter, false, econtext, hashvalue);
 		}

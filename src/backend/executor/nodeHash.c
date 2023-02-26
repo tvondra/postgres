@@ -529,7 +529,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		p = 0.01;				/* 1% false positive */
 
 		/* 1000 seems like a reasonable lower bound */
-		n = Min(1000, outerPlan(node)->plan_rows);	/* assume unique values */
+		n = Max(1000, outerPlan(node)->plan_rows);	/* assume unique values */
 
 		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
 		k = round((m / n) * log(2)); 

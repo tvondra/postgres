@@ -225,7 +225,6 @@ ExecScan(ScanState *node,
 	 */
 	for (;;)
 	{
-		ListCell *lc;
 		TupleTableSlot *slot;
 
 		slot = ExecScanFetch(node, accessMtd, recheckMtd);

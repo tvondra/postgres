@@ -448,7 +448,9 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
-		state->filter_type = HashFilterExact;
+		// state->filter_type = HashFilterExact;
+		// FIXME HashFilterExact needs fixes in ExecHashFilterAddValue
+		state->filter_type = HashFilterBloom;
 		state->filter = filter;
 
 		// elog(WARNING, "filter %s", nodeToString(filter->clauses));
@@ -2366,6 +2368,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 		{
 			uint32	hashvalue = 0;
 			Datum  *values = (Datum *) (data + i * entrylen);
+			/* FIXME this needs to also keep the null flags somewhere */
 
 			ExecHashGetFilterHashValue2(filter, econtext, values, false, &hashvalue);
 			ExecHashFilterAddHash(filter, false, econtext, hashvalue);

@@ -1877,6 +1877,7 @@ fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset, indexed_tlist *out
 					   outer_itlist,
 					   OUTER_VAR,
 					   rtoffset,
+					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
 	}
 

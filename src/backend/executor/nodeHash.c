@@ -2186,7 +2186,7 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
 	int		offset = entrylen * filter->nvalues;
 
-	Assert(filter->type == HashFilterExact);
+	Assert(filter->filter_type == HashFilterExact);
 
 	/* too much data for exact filter, switch to bloom */
 	if ((filter->nvalues + 1) * entrylen > filter->nbits/8)

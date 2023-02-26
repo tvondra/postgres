@@ -194,6 +194,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 			es->wal = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "settings") == 0)
 			es->settings = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "filters") == 0)
+			es->filters = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "timing") == 0)
 		{
 			timing_set = true;
@@ -3139,6 +3141,9 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 {
 	Hash   *plan = (Hash *) hashstate->ps.plan;
 
+	if (!es->filters)
+		return;
+
 	if (plan->filters)
 	{
 		if (es->format != EXPLAIN_FORMAT_TEXT)
@@ -3834,6 +3839,9 @@ ExplainScanTarget(Scan *plan, ExplainState *es)
 static void
 show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainState *es)
 {
+	if (!es->filters)
+		return;
+
 	if (!plan->filters)
 		return;
 

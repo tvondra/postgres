@@ -1219,6 +1219,13 @@ typedef struct HashFilter
 	/*
 	 * XXX add reference to the state, so that we can get it from the scan
 	 * node easily. But we need a cleaner solution.
+	 *
+	 * FIXME This is wrong because it means we can't copy the plan - with
+	 * these references it leads to an infinite loop e.g. in plan caching.
+	 * We need a different way to fetch the filter / filter state. The
+	 * filterId should be good enough for that, I think. But requires a
+	 * place to record this the mapping from filterId to filter / filter
+	 * state at execution time (in some executor global state).
 	 */
 	Node	   *state;
 

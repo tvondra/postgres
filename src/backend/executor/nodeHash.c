@@ -530,7 +530,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		state->nbits = ((int) ((m + 7) / 8)) * 8;
 
 		state->nhashes = k;
-		state->data = palloc0(m / 8);
+		state->data = palloc0(state->nbits / 8);
 
 		/* exact hash */
 		state->nvalues = 0;

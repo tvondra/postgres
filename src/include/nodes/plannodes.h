@@ -1209,7 +1209,7 @@ typedef struct GatherMerge
  */
 typedef struct HashFilter
 {
-	pg_node_attr(no_copy_equal, no_read)
+	pg_node_attr(no_equal, no_read)
 
 	NodeTag		type;
 
@@ -1245,7 +1245,7 @@ typedef struct HashFilter
  */
 typedef struct HashFilterReference
 {
-	pg_node_attr(no_copy_equal, no_read)
+	pg_node_attr(no_equal, no_read)
 
 	NodeTag		type;
 

@@ -4790,6 +4790,10 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * making it inner?), or antijoins (because the bloom filter can have
 	 * false positives).
 	 *
+	 * XXX If we want to allow using the filters to serve as parameters for
+	 * other types of plans (e.g. to fill IN (...) queries), that could work
+	 * if we force keeping the "exact" filter, not turning it into bloom.
+	 *
 	 * XXX We can't modify the path yet, because it's referenced by multiple
 	 * upper paths for alternative plans.
 	 *

@@ -29,6 +29,7 @@ extern HashJoinTable ExecHashTableCreate(HashState *state, List *hashOperators, 
 extern void ExecParallelHashTableAlloc(HashJoinTable hashtable,
 									   int batchno);
 extern void ExecHashTableDestroy(HashJoinTable hashtable);
+extern void ExecHashResetFilters(HashState *node);
 extern void ExecHashTableDetach(HashJoinTable hashtable);
 extern void ExecHashTableDetachBatch(HashJoinTable hashtable);
 extern void ExecParallelHashTableSetCurrentBatch(HashJoinTable hashtable,

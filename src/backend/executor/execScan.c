@@ -639,6 +639,7 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 
 	ExecScanGetFilterGetValues(refstate, econtext, false, values);
 
+	/* FIXME wrong, needs to use the proper comparator, not memcmp() */
 	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize, filter_comparator, &entrysize);
 
 	if (ptr != NULL)

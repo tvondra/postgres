@@ -1284,6 +1284,15 @@ ExecReScanHashJoin(HashJoinState *node)
 	PlanState  *innerPlan = innerPlanState(node);
 
 	/*
+	 * Reset the existing hash filters (if any). Otherwise it might happen we'll
+	 * apply those filters to rows we read from outer subtree, eliminating them.
+	 * In which case we won't call ExecReScanHash, because that only happens if
+	 * when the first outer row bubbles up to the hashjoin - but if we discard
+	 * it, that won't happen.
+	 */
+	ExecHashResetFilters(castNode(HashState, innerPlan));
+
+	/*
 	 * In a multi-batch join, we currently have to do rescans the hard way,
 	 * primarily because batch temp files may have already been released. But
 	 * if it's a single-batch join, and there is no parameter change for the

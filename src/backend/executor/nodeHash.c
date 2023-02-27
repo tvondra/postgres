@@ -2337,6 +2337,8 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 static void
 ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprContext *econtext)
 {
+	Assert(!filter->built);
+
 	/* filter tracking exact values */
 	if (filter->filter_type == HashFilterExact)
 	{
@@ -3908,4 +3910,20 @@ get_hash_memory_limit(void)
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);
 
 	return (size_t) mem_limit;
+}
+
+void
+ExecHashResetFilters(HashState *node)
+{
+	ListCell *lc;
+
+	foreach (lc, node->filters)
+	{
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+
+		filter->built = false;
+		memset(filter->data, 0, filter->nbits/8);
+		filter->nvalues = 0;
+	}
+
 }

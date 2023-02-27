@@ -3845,16 +3845,20 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 	if (!plan->filters)
 		return;
 
+	/* FIXME handle other scan types */
+	if (!IsA(planstate, SeqScanState))
+		return;
+
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
 		ListCell *lc;
 
 		ExplainIndentText(es);
-		foreach (lc, plan->filters)
+		foreach (lc, ((ScanState *) planstate)->ss_Filters)
 		{
-			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-			HashFilter *filter = ref->filter;
-			HashFilterState *state = (HashFilterState *) filter->state;
+			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
+			HashFilterReference *ref = (HashFilterReference *) refstate->ref;
+			HashFilterState *state = (HashFilterState *) refstate->filter;
 
 			List	   *context;
 			char	   *exprstr;

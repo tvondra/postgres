@@ -813,13 +813,11 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	foreach (lc, node->scan.filters)
 	{
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-		HashFilter *filter = ref->filter;
 		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
 
-		state->filter = filter;
+		state->ref = ref;
+		state->filterId = ref->filterId;
 		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
-
-		/* FIXME search through the plan upwards and lookup the filter. */
 
 		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
 	}

@@ -4868,11 +4868,8 @@ create_hashjoin_plan(PlannerInfo *root,
 				HashFilter *filter = makeNode(HashFilter);
 				HashFilterReference *ref = makeNode(HashFilterReference);
 
-				filter->hash = NULL;	/* will fix later */
-				filter->index = list_length(filters);
 				filter->filterId = ++(root->glob->lastFilterId);
 				filter->clauses = list_make1(copyObject(expr));
-				filter->state = NULL;
 
 				filter->hashoperators = NIL;
 				filter->hashoperators = lappend_oid(filter->hashoperators, opexpr->opno);
@@ -4881,7 +4878,7 @@ create_hashjoin_plan(PlannerInfo *root,
 				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
 
 				/* XXX not sure a copy is needed, but maybe it is */
-				ref->filter = filter;
+				ref->filterId = filter->filterId;
 				ref->clauses = list_make1(copyObject(expr2));
 
 				/* add the filter to the list */
@@ -5016,18 +5013,6 @@ create_hashjoin_plan(PlannerInfo *root,
 
 	/* FIXME add as parameter to make_hash? */
 	hash_plan->filters = filters;
-
-	/*
-	 * Update the filter to have a reference bacj to the hash node.
-	 *
-	 * FIXME This shouldn't be necessary, it causes cycle in the plan.
-	 */
-	foreach (lc, filters)
-	{
-		HashFilter *filter = (HashFilter *) lfirst(lc);
-
-		filter->hash = (Node *) hash_plan;
-	}
 
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input

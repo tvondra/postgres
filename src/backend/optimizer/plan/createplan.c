@@ -4710,6 +4710,10 @@ create_mergejoin_plan(PlannerInfo *root,
 	return join_plan;
 }
 
+/*
+ * find_pushdown_node
+ *		Find node where we could push down the filter.
+ */
 static Path *
 find_pushdown_node(Path *path, Relids relids)
 {
@@ -5011,7 +5015,7 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewColumn,
 						  skewInherit);
 
-	/* FIXME add as parameter to make_hash? */
+	/* FIXME add as parameter to make_hash()? */
 	hash_plan->filters = filters;
 
 	/*
@@ -5670,6 +5674,7 @@ make_samplescan(List *qptlist,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+	node->scan.filters = NIL;
 	node->tablesample = tsc;
 
 	return node;

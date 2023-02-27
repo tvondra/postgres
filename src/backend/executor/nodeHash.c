@@ -215,13 +215,12 @@ MultiExecPrivateHash(HashState *node)
 	}
 
 	/*
-	 * Now that we fed all the tuples to the filter, finalize the filters and
-	 * mark it as built.
+	 * Now that we fed all the tuples to the filter, finalize the filters (sort
+	 * data in exact filters etc.) and mark them as built.
 	 */
 	foreach (lc, node->filters)
 	{
 		HashFilterState *filter = (HashFilterState *) lfirst(lc);
-
 		ExecHashFilterFinalize(node, filter);
 	}
 
@@ -2396,6 +2395,22 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 	}
 }
 
+void
+ExecHashResetFilters(HashState *node)
+{
+	ListCell *lc;
+
+	foreach (lc, node->filters)
+	{
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+
+		filter->built = false;
+		memset(filter->data, 0, filter->nbits/8);
+		filter->nvalues = 0;
+	}
+
+}
+
 /*
  * ExecHashGetBucketAndBatch
  *		Determine the bucket number and batch number for a hash value
@@ -3927,20 +3942,4 @@ get_hash_memory_limit(void)
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);
 
 	return (size_t) mem_limit;
-}
-
-void
-ExecHashResetFilters(HashState *node)
-{
-	ListCell *lc;
-
-	foreach (lc, node->filters)
-	{
-		HashFilterState *filter = (HashFilterState *) lfirst(lc);
-
-		filter->built = false;
-		memset(filter->data, 0, filter->nbits/8);
-		filter->nvalues = 0;
-	}
-
 }

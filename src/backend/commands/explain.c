@@ -3136,6 +3136,13 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 	}
 }
 
+/*
+ * show_hash_filters
+ *		Show info on filters for a Hash node.
+ *
+ * XXX It's a bit annoying we show exactly the same information for both the
+ * filter and then also the reference.
+ */
 static void
 show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 {
@@ -3144,49 +3151,56 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 	if (!es->filters)
 		return;
 
-	if (plan->filters)
+	if (!plan->filters)
+		return;
+
+	if (es->format != EXPLAIN_FORMAT_TEXT)
 	{
-		if (es->format != EXPLAIN_FORMAT_TEXT)
-			ExplainPropertyInteger("Bloom Filter", NULL, (int64)
-								   list_length(plan->filters), es);
-		else
+		/*
+		 * FIXME show additional information about individual filters, just like
+		 * for the text output.
+		 */
+		ExplainPropertyInteger("Bloom Filter", NULL, (int64)
+							   list_length(plan->filters), es);
+	}
+	else
+	{
+		ListCell *lc1,
+				 *lc2;
+
+		ExplainIndentText(es);
+
+		forboth (lc1, plan->filters, lc2, hashstate->filters)
 		{
-			ListCell *lc1,
-					 *lc2;
+			HashFilter *filter = (HashFilter *) lfirst(lc1);
+			HashFilterState *state = (HashFilterState *) lfirst(lc2);
+			PlanState *planstate = (PlanState *) hashstate;
+
+			List	   *context;
+			char	   *exprstr;
+			bool		useprefix;
+
+			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+			/* Set up deparsing context */
+			context = set_deparse_context_plan(es->deparse_cxt,
+											   planstate->plan,
+											   ancestors);
+
+			/* Deparse the expression */
+			exprstr = deparse_expression((Node *) filter->clauses,
+										 context, useprefix, false);
 
 			ExplainIndentText(es);
-			forboth (lc1, plan->filters, lc2, hashstate->filters)
-			{
-				HashFilter *filter = (HashFilter *) lfirst(lc1);
-				HashFilterState *state = (HashFilterState *) lfirst(lc2);
-				PlanState *planstate = (PlanState *) hashstate;
 
-				List	   *context;
-				char	   *exprstr;
-				bool		useprefix;
-
-				useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
-
-				/* Set up deparsing context */
-				context = set_deparse_context_plan(es->deparse_cxt,
-												   planstate->plan,
-												   ancestors);
-
-				/* Deparse the expression */
-				exprstr = deparse_expression((Node *) filter->clauses,
-											 context, useprefix, false);
-
-				ExplainIndentText(es);
-
-				if (state)
-					appendStringInfo(es->str, "Bloom filter: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
-									 exprstr, state->nbits,
-									 ((state->nbits/8) /1024.0), /* size in bytes */
-									 state->nqueries, state->nhits,
-									 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
-				else
-					appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
-			}
+			if (state)
+				appendStringInfo(es->str, "Bloom filter: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
+								 exprstr, state->nbits,
+								 ((state->nbits/8) /1024.0), /* size in bytes */
+								 state->nqueries, state->nhits,
+								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+			else
+				appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
 		}
 	}
 }
@@ -3834,7 +3848,11 @@ ExplainScanTarget(Scan *plan, ExplainState *es)
 }
 
 /*
- * Show filters attached to a Scan node (if any)
+ * show_scan_filters
+ *		Show filters attached to a Scan node (if any).
+ *
+ * XXX It's a bit annoying we show exactly the same information for both the
+ * filter and then also the reference.
  */
 static void
 show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainState *es)
@@ -3843,10 +3861,6 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 		return;
 
 	if (!plan->filters)
-		return;
-
-	/* FIXME handle other scan types */
-	if (!IsA(planstate, SeqScanState))
 		return;
 
 	if (es->format == EXPLAIN_FORMAT_TEXT)
@@ -3888,6 +3902,7 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 	}
 	else
 	{
+		/* FIXME show additional info about the filters */
 		ExplainPropertyInteger("Scan Filters", NULL,
 							   list_length(plan->filters), es);
 	}

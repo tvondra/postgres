@@ -712,6 +712,9 @@ typedef struct EState
 	 */
 	List	   *es_insert_pending_result_relations;
 	List	   *es_insert_pending_modifytables;
+
+	/* Pushed-down filters. */
+	List	   *es_filters;
 } EState;
 
 
@@ -2652,6 +2655,8 @@ typedef struct HashFilterState
 {
 	NodeTag		type;
 
+	Index		filterId;		/* ID of the filter */
+
 	HashFilter *filter;			/* link to the filter */
 	List	   *clauses;		/* list of ExprState nodes */
 
@@ -2680,7 +2685,11 @@ typedef struct HashFilterReferenceState
 {
 	NodeTag		type;
 
-	HashFilter *filter;			/* link to the filter */
+	Index		filterId;
+
+	HashFilterState *filter;	/* link to the filter */
+	HashFilterReference *ref;
+
 	List	   *clauses;		/* list of ExprState nodes */
 
 } HashFilterReferenceState;

@@ -140,6 +140,30 @@ ExecScanFetch(ScanState *node,
 	return (*accessMtd) (node);
 }
 
+static HashFilterState *
+filter_lookup(EState *estate, HashFilterReferenceState *refstate)
+{
+	// FIXME
+	ListCell *lc;
+
+	if (refstate->filter)
+		return refstate->filter;
+
+	elog(WARNING, "estate->es_filters = %p", estate->es_filters);
+
+	foreach (lc, estate->es_filters)
+	{
+		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
+		elog(WARNING, "%p %d", filterstate, filterstate->filterId);
+		if (filterstate->filterId == refstate->filterId)
+		{
+			refstate->filter = filterstate;
+			return filterstate;
+		}
+	}
+	return NULL;
+}
+
 /*
  * ExecFilters
  *		Chech if the tuple matches the pushed-down filters.
@@ -155,8 +179,10 @@ ExecFilters(ScanState *node, ExprContext *econtext)
 	foreach (lc, filters)
 	{
 		HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
-		HashFilter *filter = refstate->filter;
-		HashFilterState *filterstate = (HashFilterState *) filter->state;
+		HashFilterState *filterstate = filter_lookup(node->ps.state, refstate);
+
+		if (!filterstate)
+			continue;
 
 		if (!filterstate->built)
 			continue;
@@ -397,7 +423,7 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
-	HashFilterState *filter = (HashFilterState *) ref->filter->state;
+	HashFilterState *filter = ref->filter;
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -482,7 +508,7 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
-	HashFilterState *filter = (HashFilterState *) ref->filter->state;
+	HashFilterState *filter = ref->filter;
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -554,7 +580,7 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	uint64		h1,
 				h2;
 	uint32		hashvalue;
-	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+	HashFilterState *filter = refstate->filter;
 
 	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
@@ -605,7 +631,7 @@ filter_comparator(const void *a, const void *b, void *c)
 static bool
 ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
-	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+	HashFilterState *filter = refstate->filter;
 	Datum	   *values;
 	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
 	char	   *ptr;
@@ -634,7 +660,7 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 static bool
 ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
-	HashFilterState *filter = (HashFilterState *) refstate->filter->state;
+	HashFilterState *filter = refstate->filter;
 
 	filter->nqueries++;
 

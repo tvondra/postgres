@@ -89,7 +89,7 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 static void ExecHashFilterAddValue(HashJoinTable hashtable,
 								   HashFilterState *filter,
 								   ExprContext *econtext);
-static void ExecHashFilterFinalize(HashFilterState *filter);
+static void ExecHashFilterFinalize(HashState *node, HashFilterState *filter);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -222,8 +222,7 @@ MultiExecPrivateHash(HashState *node)
 	{
 		HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
-		ExecHashFilterFinalize(filter);
-		filter->built = true;
+		ExecHashFilterFinalize(node, filter);
 	}
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
@@ -455,9 +454,10 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * the pointers to the filter. So there may be much more memory needed.
 		 * This should copy the values into the filter.
 		 */
-		state->filter_type = HashFilterExact;
-		// state->filter_type = HashFilterBloom;
+		//state->filter_type = HashFilterExact;
+		state->filter_type = HashFilterBloom;
 		state->filter = filter;
+		state->filterId = filter->filterId;
 
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
 
@@ -517,8 +517,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		/* exact hash */
 		state->nvalues = 0;
 
-		/* FIXME */
-		filter->state = (Node *) state;
+		/* consider the filter not built yet */
 		state->built = false;
 
 		hashstate->filters = lappend(hashstate->filters, state);
@@ -2222,16 +2221,23 @@ filter_comparator(const void *a, const void *b, void *c)
 }
 
 static void
-ExecHashFilterFinalize(HashFilterState *filter)
+ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 {
 	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
 
-	if (filter->filter_type != HashFilterExact)
-		return;
+	if (filter->filter_type == HashFilterExact)
+	{
+		// elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
 
-	// elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
+		qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
+	}
 
-	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
+	filter->built = true;
+
+	node->ps.state->es_filters
+		= lappend(node->ps.state->es_filters, filter);
+
+	elog(WARNING, "adding %d to estate", filter->filterId);
 }
 
 static void
@@ -2354,6 +2360,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 		filter->data = palloc0(filter->nbits/8 + 10);
 		filter->filter_type = HashFilterBloom;
+		filter->nvalues = 0;
 
 		MemoryContextSwitchTo(oldcxt);
 

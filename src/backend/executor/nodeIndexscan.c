@@ -967,12 +967,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	indexstate->ss.ss_Filters = NIL;
 	foreach (lc, node->scan.filters)
 	{
+
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-		HashFilter *filter = ref->filter;
 		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
 
-		state->filter = filter;
-		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) indexstate);
+		state->ref = ref;
+		state->filterId = ref->filterId;
+		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) indexstate);;
 
 		indexstate->ss.ss_Filters = lappend(indexstate->ss.ss_Filters, state);
 	}

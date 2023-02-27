@@ -98,6 +98,8 @@ typedef struct PlannedStmt
 
 	Node	   *utilityStmt;	/* non-null if this is utility stmt */
 
+	List	   *filters;		/* list of filters pushed down */
+
 	/* statement location in source string (copied from Query) */
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
@@ -1213,24 +1215,8 @@ typedef struct HashFilter
 
 	NodeTag		type;
 
-	/* link to the Hash node building the filter */
-	Node	   *hash;
-
-	/*
-	 * XXX add reference to the state, so that we can get it from the scan
-	 * node easily. But we need a cleaner solution.
-	 *
-	 * FIXME This is wrong because it means we can't copy the plan - with
-	 * these references it leads to an infinite loop e.g. in plan caching.
-	 * We need a different way to fetch the filter / filter state. The
-	 * filterId should be good enough for that, I think. But requires a
-	 * place to record this the mapping from filterId to filter / filter
-	 * state at execution time (in some executor global state).
-	 */
-	Node	   *state;
-
 	/* index of the filter (in the parent list) */
-	Index		index;
+	/* Index		index; */
 
 	/* ID for filter (unique within the planner run) */
 	Index		filterId;
@@ -1256,8 +1242,7 @@ typedef struct HashFilterReference
 
 	NodeTag		type;
 
-	/* pointer to the filter */
-	HashFilter *filter;
+	Index		filterId;
 
 	/* expressions evaluated against the filter */
 	List	   *clauses;

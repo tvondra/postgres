@@ -283,7 +283,6 @@ ExecReadyInterpretedExpr(ExprState *state)
 		else if (step0 == EEOP_OUTER_FETCHSOME &&
 				 step1 == EEOP_OUTER_VAR)
 		{
-			//elog(WARNING, "XXX");
 			state->evalfunc_private = (void *) ExecJustOuterVar;
 			return;
 		}

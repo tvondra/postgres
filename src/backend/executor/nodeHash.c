@@ -85,6 +85,7 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
+/* hash filter pushdown */
 static void ExecHashFilterAddValue(HashJoinTable hashtable,
 								   HashFilterState *filter,
 								   ExprContext *econtext);
@@ -152,6 +153,7 @@ MultiExecPrivateHash(HashState *node)
 	TupleTableSlot *slot;
 	ExprContext *econtext;
 	uint32		hashvalue;
+	ListCell   *lc;
 
 	/*
 	 * get state info from node
@@ -198,31 +200,30 @@ MultiExecPrivateHash(HashState *node)
 			hashtable->totalTuples += 1;
 
 			/*
-			 * add tuple to all hash filters
+			 * add the tuple to all hash pushed-down filters
 			 *
 			 * XXX maybe pointless to do unless after the hash is built (when
-			 * we can decide if the filter is useful)
+			 * we can decide if the filter is useful).
 			 */
+			foreach (lc, node->filters)
 			{
-				ListCell *lc;
-				foreach (lc, node->filters)
-				{
-					HashFilterState *filter = (HashFilterState *) lfirst(lc);
+				HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
-					ExecHashFilterAddValue(hashtable, filter, econtext);
-				}
+				ExecHashFilterAddValue(hashtable, filter, econtext);
 			}
 		}
 	}
 
+	/*
+	 * Now that we fed all the tuples to the filter, finalize the filters and
+	 * mark it as built.
+	 */
+	foreach (lc, node->filters)
 	{
-		ListCell *lc;
-		foreach (lc, node->filters)
-		{
-			HashFilterState *filter = (HashFilterState *) lfirst(lc);
-			ExecHashFilterFinalize(filter);
-			filter->built = true;
-		}
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+
+		ExecHashFilterFinalize(filter);
+		filter->built = true;
 	}
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
@@ -429,8 +430,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	 */
 	ExecInitResultTupleSlotTL(&hashstate->ps, &TTSOpsMinimalTuple);
 	hashstate->ps.ps_ProjInfo = NULL;
-	// elog(WARNING, "AAA hashkeys %s", nodeToString(node->hashkeys));
-	// elog(WARNING, "hashkeys = %s", nodeToString(node->hashkeys));
+
 	/*
 	 * initialize child expressions
 	 */
@@ -455,36 +455,17 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		HashFilterState *state = makeNode(HashFilterState);
 
+		/*
+		 * Start the filter in exact mode, we'll switch to Bloom if we fill it.
+		 *
+		 * FIXME this is a bit misleading, because for byref values we only store
+		 * the pointers to the filter. So there may be much more memory needed.
+		 * This should copy the values into the filter.
+		 */
 		state->filter_type = HashFilterExact;
-		state->filter_type = HashFilterBloom;
+		// state->filter_type = HashFilterBloom;
 		state->filter = filter;
 
-		// elog(WARNING, "filter %s", nodeToString(filter->clauses));
-
-		/*
-		 * FIXME
-		 *
-		 * The clauses should get the same treatment as hashkeys above
-		 * to reference the outer relation. For now we just forcefully
-		 * set the varno/varattno.
-		 */
-		/*
-		{
-			ListCell *lc2;
-			foreach (lc2, filter->clauses)
-			{
-				Var *var = (Var *) lfirst(lc2);
-				if (IsA(var, Var))
-				{
-					var->varno = -2;
-					var->varattno = 1;
-				}
-			}
-		}
-		*/
-		// elog(WARNING, "fixed filter %s", nodeToString(filter->clauses));
-
-		// elog(WARNING, "AAA state clauses %s", nodeToString(filter->clauses));
 		state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
 
 		nkeys = list_length(filter->hashoperators);

@@ -819,6 +819,8 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 		state->filter = filter;
 		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
 
+		/* FIXME search through the plan upwards and lookup the filter. */
+
 		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
 	}
 

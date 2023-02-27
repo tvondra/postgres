@@ -3137,7 +3137,6 @@ create_agg_path(PlannerInfo *root,
 		pathnode->path.pathkeys = subpath->pathkeys;	/* preserves order */
 	else
 		pathnode->path.pathkeys = NIL;	/* output is unordered */
-
 	pathnode->subpath = subpath;
 
 	pathnode->aggstrategy = aggstrategy;
@@ -3610,6 +3609,7 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
 	 * key columns to be replaced with new values.
 	 */
 	pathnode->path.pathkeys = NIL;
+
 	pathnode->subpath = subpath;
 	pathnode->rowMarks = rowMarks;
 	pathnode->epqParam = epqParam;

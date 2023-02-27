@@ -315,7 +315,6 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
-bool enable_hash_filter_pushdown = true;
 
 /*
  * create_plan
@@ -2926,7 +2925,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
-	/* has references? */
+	/* does the scan has pushed-down filter references? */
 	if (best_path->filters)
 		scan_plan->scan.filters = best_path->filters;
 
@@ -3292,7 +3291,7 @@ create_bitmap_scan_plan(PlannerInfo *root,
 									 bitmapqualorig,
 									 baserelid);
 
-	/* has references? */
+	/* does the scan has pushed-down filter references? */
 	if (best_path->path.filters)
 		scan_plan->scan.filters = best_path->path.filters;
 
@@ -4837,9 +4836,6 @@ create_hashjoin_plan(PlannerInfo *root,
 				expr2 = (Node *) lsecond(opexpr->args);
 			}
 
-			// elog(WARNING, "expr %p str = %s", expr, nodeToString(expr));
-			// elog(WARNING, "expr2 %p str = %s", expr2, nodeToString(expr2));
-
 			Assert(relids != NULL);
 
 			/* now, try to pushdown the condition as far as possible */
@@ -5009,8 +5005,6 @@ create_hashjoin_plan(PlannerInfo *root,
 		inner_hashkeys = lappend(inner_hashkeys, lsecond(hclause->args));
 	}
 
-	// elog(WARNING, "inner_hashkeys = %s", nodeToString(inner_hashkeys));
-
 	/*
 	 * Build the hash node and hash join node.
 	 */
@@ -5020,9 +5014,14 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewColumn,
 						  skewInherit);
 
-	/* FIXME add as parameter */
+	/* FIXME add as parameter to make_hash? */
 	hash_plan->filters = filters;
 
+	/*
+	 * Update the filter to have a reference bacj to the hash node.
+	 *
+	 * FIXME This shouldn't be necessary, it causes cycle in the plan.
+	 */
 	foreach (lc, filters)
 	{
 		HashFilter *filter = (HashFilter *) lfirst(lc);

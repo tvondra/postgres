@@ -1861,6 +1861,10 @@ set_mergeappend_references(PlannerInfo *root,
 	return (Plan *) mplan;
 }
 
+/*
+ * fix_hash_filters
+ *	   Do set_plan_references processing on pushed-down filters in a Hash node
+ */
 static List *
 fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset, indexed_tlist *outer_itlist)
 {
@@ -1894,7 +1898,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 	Hash	   *hplan = (Hash *) plan;
 	Plan	   *outer_plan = plan->lefttree;
 	indexed_tlist *outer_itlist;
-//elog(WARNING, "set_hash_references hplan->hashkeys %s", nodeToString(hplan->hashkeys));
+
 	/*
 	 * Hash's hashkeys are used when feeding tuples into the hashtable,
 	 * therefore have them reference Hash's outer plan (which itself is the
@@ -1909,7 +1913,7 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   rtoffset,
 					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
-//elog(WARNING, "set_hash_references (2) hplan->hashkeys %s", nodeToString(hplan->hashkeys));
+
 	/* FIXME maybe this should do the same thing as for hashkeys? */
 	hplan->filters = fix_hash_filters(root, plan, rtoffset, outer_itlist);
 
@@ -2132,6 +2136,10 @@ fix_alternative_subplan(PlannerInfo *root, AlternativeSubPlan *asplan,
 	return (Node *) bestplan;
 }
 
+/*
+ * fix_scan_filters
+ *		Fix references in expressions in filters pushed-down to scan node.
+ */
 static List *
 fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 {

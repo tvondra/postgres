@@ -140,6 +140,10 @@ ExecScanFetch(ScanState *node,
 	return (*accessMtd) (node);
 }
 
+/*
+ * ExecFilters
+ *		Chech if the tuple matches the pushed-down filters.
+ */
 static bool
 ExecFilters(ScanState *node, ExprContext *econtext)
 {
@@ -193,6 +197,7 @@ ExecScan(ScanState *node,
 	ExprContext *econtext;
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
+	List *filters;
 
 	/*
 	 * Fetch data from node
@@ -200,14 +205,15 @@ ExecScan(ScanState *node,
 	qual = node->ps.qual;
 	projInfo = node->ps.ps_ProjInfo;
 	econtext = node->ps.ps_ExprContext;
+	filters = node->ss_Filters;
 
 	/* interrupt checks are in ExecScanFetch */
 
 	/*
-	 * If we have neither a qual to check nor a projection to do, just skip
-	 * all the overhead and return the raw scan tuple.
+	 * If we have neither a qual or pushed-down filter to check nor a projection
+	 * to do, just skip all the overhead and return the raw scan tuple.
 	 */
-	if (!qual && !projInfo && !node->ss_Filters)
+	if (!qual && !projInfo && !filters)
 	{
 		ResetExprContext(econtext);
 		return ExecScanFetch(node, accessMtd, recheckMtd);
@@ -248,21 +254,16 @@ ExecScan(ScanState *node,
 		 */
 		econtext->ecxt_scantuple = slot;
 
-		/* FIXME The expression in find_pushdown_node() references the
-		 * outer plan. We need to tweak that, somehow. */
-		// econtext->ecxt_outertuple = slot;
-
-		// elog(WARNING, "node %p evalfunc = %p", node, econtext->evalfunc);
-
-
 		/*
-		 * check that the current tuple satisfies the qual-clause
+		 * check that the current tuple satisfies the qual-clause and filte (if
+		 * any was pushed down)
 		 *
 		 * check for non-null qual here to avoid a function call to ExecQual()
 		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
 		 */
-		if ((qual == NULL || ExecQual(qual, econtext)) && ExecFilters(node, econtext))
+		if ((qual == NULL || ExecQual(qual, econtext)) &&
+			(filters == NIL || ExecFilters(node, econtext)))
 		{
 			/*
 			 * Found a satisfactory scan tuple.
@@ -379,6 +380,12 @@ ExecScanReScan(ScanState *node)
 	}
 }
 
+/*
+ * ExecScanGetFilterHashValue
+ *		Calculate a hash value for the tuple in the scan slot.
+ *
+ * We'll then check the presence of this hash value in the bloom filter.
+ */
 static bool
 ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 						   ExprContext *econtext,
@@ -438,6 +445,8 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 				return false;	/* cannot match */
 			}
 			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+			/* FIXME should we ignore NULL values altogether? what about the
+			 * keep_nulls flag? */
 		}
 		else
 		{
@@ -457,6 +466,13 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 	return true;
 }
 
+/*
+ * ExecScanGetFilterGetValues
+ *		Extract values from the scan tuple.
+ *
+ * FIXME Probably does not handle NULLs correctly, needs a separate isnull
+ * array, or something like that?
+ */
 static bool
 ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 						   ExprContext *econtext,
@@ -509,8 +525,11 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 				return false;	/* cannot match */
 			}
 			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+			/* FIXME should we ignore NULL values altogether? what about the
+			 * keep_nulls flag? */
 		}
 		else
+			/* FIXME probably needs to copy the value using datumCopy? */
 			values[i] = keyval;
 
 		i++;
@@ -524,6 +543,10 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 #define SEED_1	0x88f44a44
 #define SEED_2	0xe80f9165
 
+/*
+ * ExecHashFilterContainsHash
+ *		Check if the tuple matches the Bloom filter.
+ */
 static bool
 ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
@@ -558,6 +581,12 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	return true;
 }
 
+/*
+ * Simple comparator of Datum arrays.
+ *
+ * FIXME This only works for byval types, needs to check byref types too. That
+ * requires looking up comparators for types etc.
+ */
 static int
 filter_comparator(const void *a, const void *b, void *c)
 {
@@ -566,6 +595,13 @@ filter_comparator(const void *a, const void *b, void *c)
 	return memcmp(a, b, len);
 }
 
+/*
+ * ExecHashFilterContainsExact
+ *		Check if the filter (in 'exact' mode) contains exact value.
+ *
+ * FIXME This assumes all the types allow sorting, but that may not be true.
+ * In that case this should just do linear search.
+ */
 static bool
 ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *econtext)
 {
@@ -573,6 +609,8 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 	Datum	   *values;
 	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
 	char	   *ptr;
+
+	Assert(filter->filter_type == HashFilterExact);
 
 	values = palloc(entrysize);
 
@@ -589,6 +627,10 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 	return (ptr != NULL);
 }
 
+/*
+ * ExecHashFilterContainsExact
+ *		Check the filter - either in exact or hashed mode, as needed.
+ */
 static bool
 ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *econtext)
 {

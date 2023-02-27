@@ -562,7 +562,6 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	indexstate->ss.ss_Filters = NIL;
 	foreach (lc, node->scan.filters)
 	{
-
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
 		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
 

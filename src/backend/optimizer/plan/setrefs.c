@@ -677,6 +677,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->tablesample = (TableSampleClause *)
 					fix_scan_expr(root, (Node *) splan->tablesample,
 								  rtoffset, 1);
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_IndexScan:

@@ -140,8 +140,15 @@ ExecScanFetch(ScanState *node,
 	return (*accessMtd) (node);
 }
 
+/*
+ * hash_filter_lookup
+ *		Lookup filter by filterId in the plan-level executor registry.
+ *
+ * The filter may not exist yet, depending on whether the Hash node was already
+ * initialized. If the filter does not exist, we treat that matching everything.
+ */
 static HashFilterState *
-filter_lookup(EState *estate, HashFilterReferenceState *refstate)
+hash_filter_lookup(EState *estate, HashFilterReferenceState *refstate)
 {
 	ListCell *lc;
 
@@ -176,7 +183,7 @@ ExecFilters(ScanState *node, ExprContext *econtext)
 	foreach (lc, filters)
 	{
 		HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
-		HashFilterState *filterstate = filter_lookup(node->ps.state, refstate);
+		HashFilterState *filterstate = hash_filter_lookup(node->ps.state, refstate);
 
 		if (!filterstate)
 			continue;

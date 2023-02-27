@@ -143,18 +143,15 @@ ExecScanFetch(ScanState *node,
 static HashFilterState *
 filter_lookup(EState *estate, HashFilterReferenceState *refstate)
 {
-	// FIXME
 	ListCell *lc;
 
 	if (refstate->filter)
 		return refstate->filter;
 
-	elog(WARNING, "estate->es_filters = %p", estate->es_filters);
-
 	foreach (lc, estate->es_filters)
 	{
 		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
-		elog(WARNING, "%p %d", filterstate, filterstate->filterId);
+
 		if (filterstate->filterId == refstate->filterId)
 		{
 			refstate->filter = filterstate;

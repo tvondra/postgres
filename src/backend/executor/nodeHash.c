@@ -2243,8 +2243,6 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 
 	node->ps.state->es_filters
 		= lappend(node->ps.state->es_filters, filter);
-
-	elog(WARNING, "adding %d to estate", filter->filterId);
 }
 
 static void

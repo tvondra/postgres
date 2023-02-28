@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	dynahash.o \
-	pg_crc.o
+	pg_crc.o \
+	xxhash.o
 
 include $(top_srcdir)/src/backend/common.mk

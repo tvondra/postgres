@@ -22,6 +22,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
+#include "utils/xxhash.h"
 
 static bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 									   ExprContext *econtext,
@@ -483,7 +484,11 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 			/* Compute the hash function */
 			uint32		hkey;
 
-			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+			if (filter->types[i] == INT4OID)
+				hkey = XXH32(&keyval, sizeof(Datum), 0);
+			else
+				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+
 			hashkey ^= hkey;
 		}
 
@@ -589,8 +594,8 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
 	/* calculate the two hashes */
-	h1 = hash_bytes_uint32_extended(hashvalue, SEED_1) % filter->nbits;
-	h2 = hash_bytes_uint32_extended(hashvalue, SEED_2) % filter->nbits;
+	h1 = XXH32(&hashvalue, 4, SEED_1) % filter->nbits;
+	h2 = XXH32(&hashvalue, 4, SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

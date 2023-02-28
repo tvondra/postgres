@@ -47,6 +47,7 @@
 #include "utils/memutils.h"
 #include "utils/palloc.h"
 #include "utils/syscache.h"
+#include "utils/xxhash.h"
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
 static void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
@@ -2099,7 +2100,11 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 			/* Compute the hash function */
 			uint32		hkey;
 
-			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+			if (filter->types[i] == INT4OID)
+				hkey = XXH32(&keyval, sizeof(Datum), 0);
+			else
+				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+
 			hashkey ^= hkey;
 		}
 
@@ -2247,8 +2252,8 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	Assert(filter->filter_type == HashFilterBloom);
 
 	/* compute the hashes, used for the bloom filter */
-	h1 = hash_bytes_uint32_extended(hash, SEED_1) % filter->nbits;
-	h2 = hash_bytes_uint32_extended(hash, SEED_2) % filter->nbits;
+	h1 = XXH32(&hash, 4, SEED_1) % filter->nbits;
+	h2 = XXH32(&hash, 4, SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

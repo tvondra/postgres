@@ -594,9 +594,12 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	Assert(filter->filter_type == HashFilterBloom);
 
 	/* compute the hashes, used for the bloom filter */
-	xxhash = XXH3_128bits(&hashvalue, sizeof(uint64));
-	h1 = xxhash.low64 % filter->nbits;
-	h2 = xxhash.high64 % filter->nbits;
+	// xxhash = XXH3_128bits(&hashvalue, sizeof(uint64));
+	// h1 = xxhash.low64 % filter->nbits;
+	// h2 = xxhash.high64 % filter->nbits;
+
+	h1 = ((uint32) hashvalue) % filter->nbits;
+	h2 = (hashvalue >> 32) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

@@ -2256,9 +2256,12 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	Assert(filter->filter_type == HashFilterBloom);
 
 	/* compute the hashes, used for the bloom filter */
-	xxhash = XXH3_128bits(&hash, sizeof(uint64));
-	h1 = xxhash.low64 % filter->nbits;
-	h2 = xxhash.high64 % filter->nbits;
+	// xxhash = XXH3_128bits(&hash, sizeof(uint64));
+	// h1 = xxhash.low64 % filter->nbits;
+	// h2 = xxhash.high64 % filter->nbits;
+
+	h1 = ((uint32) hash) % filter->nbits;
+	h2 = (hash >> 32) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

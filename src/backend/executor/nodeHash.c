@@ -454,7 +454,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * the pointers to the filter. So there may be much more memory needed.
 		 * This should copy the values into the filter.
 		 */
-		//state->filter_type = HashFilterExact;
+		// state->filter_type = HashFilterExact;
 		state->filter_type = HashFilterBloom;
 		state->filter = filter;
 		state->filterId = filter->filterId;
@@ -2033,9 +2033,9 @@ static bool
 ExecHashGetFilterHashValue(HashFilterState *filter,
 					 ExprContext *econtext,
 					 bool keep_nulls,
-					 uint32 *hashvalue)
+					 uint64 *hashvalue)
 {
-	uint32		hashkey = 0;
+	uint64		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	ListCell   *hk;
 	int			i = 0;
@@ -2098,10 +2098,10 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 		else
 		{
 			/* Compute the hash function */
-			uint32		hkey;
+			uint64		hkey;
 
 			if (filter->types[i] == INT4OID)
-				hkey = XXH32(&keyval, sizeof(Datum), 0);
+				hkey = XXH3_64bits(&keyval, sizeof(Datum));
 			else
 				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 
@@ -2186,10 +2186,6 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 	return true;
 }
 
-#define SEED_1	0x88f44a44
-#define SEED_2	0xe80f9165
-
-
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
@@ -2243,17 +2239,19 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 }
 
 static void
-ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint32 hash)
+ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint64 hash)
 {
 	uint64		h1,
 				h2;
 	int			i;
+	XXH128_hash_t xxhash;
 
 	Assert(filter->filter_type == HashFilterBloom);
 
 	/* compute the hashes, used for the bloom filter */
-	h1 = XXH32(&hash, 4, SEED_1) % filter->nbits;
-	h2 = XXH32(&hash, 4, SEED_2) % filter->nbits;
+	xxhash = XXH3_128bits(&hash, sizeof(uint64));
+	h1 = xxhash.low64 % filter->nbits;
+	h2 = xxhash.high64 % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)
@@ -2274,9 +2272,9 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 					 ExprContext *econtext,
 					 Datum *values,
 					 bool keep_nulls,
-					 uint32 *hashvalue)
+					 uint64 *hashvalue)
 {
-	uint32		hashkey = 0;
+	uint64		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	int			i = 0;
 	MemoryContext oldContext;
@@ -2323,7 +2321,7 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 		else
 		{
 			/* Compute the hash function */
-			uint32		hkey;
+			uint64		hkey;
 
 			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 			hashkey ^= hkey;
@@ -2368,7 +2366,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 		for (i = 0; i < nvalues; i++)
 		{
-			uint32	hashvalue = 0;
+			uint64	hashvalue = 0;
 			Datum  *values = (Datum *) (data + i * entrylen);
 
 			/*
@@ -2384,7 +2382,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 	if (filter->filter_type == HashFilterBloom)
 	{
-		uint32	hash = 0;
+		uint64	hash = 0;
 		ExecHashGetFilterHashValue(filter, econtext, hashtable->keepNulls, &hash);
 		ExecHashFilterAddHash(filter, hashtable->keepNulls, econtext, hash);
 		filter->nvalues++;

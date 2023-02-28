@@ -27,7 +27,7 @@
 static bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 									   ExprContext *econtext,
 									   bool keep_nulls,
-									   uint32 *hashvalue);
+									   uint64 *hashvalue);
 
 static bool ExecHashFilterContainsValue(HashFilterReferenceState *ref,
 										ExprContext *econtext);
@@ -421,9 +421,9 @@ static bool
 ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 						   ExprContext *econtext,
 						   bool keep_nulls,
-						   uint32 *hashvalue)
+						   uint64 *hashvalue)
 {
-	uint32		hashkey = 0;
+	uint64		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	ListCell   *hk;
 	int			i = 0;
@@ -482,10 +482,10 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 		else
 		{
 			/* Compute the hash function */
-			uint32		hkey;
+			uint64		hkey;
 
 			if (filter->types[i] == INT4OID)
-				hkey = XXH32(&keyval, sizeof(Datum), 0);
+				hkey = XXH3_64bits(&keyval, sizeof(Datum));
 			else
 				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 
@@ -575,9 +575,6 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 	return true;
 }
 
-#define SEED_1	0x88f44a44
-#define SEED_2	0xe80f9165
-
 /*
  * ExecHashFilterContainsHash
  *		Check if the tuple matches the Bloom filter.
@@ -588,14 +585,18 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	int			i;
 	uint64		h1,
 				h2;
-	uint32		hashvalue;
+	uint64		hashvalue;
 	HashFilterState *filter = refstate->filter;
+	XXH128_hash_t xxhash;
 
 	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
-	/* calculate the two hashes */
-	h1 = XXH32(&hashvalue, 4, SEED_1) % filter->nbits;
-	h2 = XXH32(&hashvalue, 4, SEED_2) % filter->nbits;
+	Assert(filter->filter_type == HashFilterBloom);
+
+	/* compute the hashes, used for the bloom filter */
+	xxhash = XXH3_128bits(&hashvalue, sizeof(uint64));
+	h1 = xxhash.low64 % filter->nbits;
+	h2 = xxhash.high64 % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

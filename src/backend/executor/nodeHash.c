@@ -2330,8 +2330,6 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 			hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 			hashkey ^= hkey;
 		}
-
-		i++;
 	}
 
 	MemoryContextSwitchTo(oldContext);

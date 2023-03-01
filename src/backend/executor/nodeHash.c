@@ -2251,7 +2251,6 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	uint64		h1,
 				h2;
 	int			i;
-	XXH128_hash_t xxhash;
 
 	Assert(filter->filter_type == HashFilterBloom);
 

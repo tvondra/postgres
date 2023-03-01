@@ -585,9 +585,8 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	int			i;
 	uint64		h1,
 				h2;
-	uint64		hashvalue;
+	uint64		hashvalue = 0;
 	HashFilterState *filter = refstate->filter;
-	XXH128_hash_t xxhash;
 
 	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 

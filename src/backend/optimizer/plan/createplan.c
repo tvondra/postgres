@@ -4815,8 +4815,8 @@ create_hashjoin_plan(PlannerInfo *root,
 			Path   *path;
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
 			OpExpr *opexpr;
-			Node   *expr;
-			Node   *expr2;
+			Node   *expr = NULL;
+			Node   *expr2 = NULL;
 
 			/* guaranteed by clause_sides_match_join */
 			opexpr = (OpExpr *) rinfo->clause;

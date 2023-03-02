@@ -3868,7 +3868,6 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 	{
 		ListCell *lc;
 
-		ExplainIndentText(es);
 		foreach (lc, ((ScanState *) planstate)->ss_Filters)
 		{
 			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);

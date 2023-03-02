@@ -3819,9 +3819,24 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	int			num_skew_mcvs;
 	size_t		space_allowed;	/* unused */
 
+	/*
+	 * XXX When there are pushed-down filters, we need to reduce the costs
+	 * accordingly, because we'll do fewer lookups etc. And the outer path
+	 * may get cheaper too. For now we just assume the filter eliminates
+	 * 99% of rows, and that the runtime cost reduction is proportional.
+	 * In reality we should estimate how many outer rows have a match (we
+	 * already do that for the join). Not sure what to do about the costs,
+	 * because we can't just rerun the costing easily.
+	 *
+	 * XXX Make this conditional on having pushed-down filters.
+	 */
+	double		filter_coefficient = 0.01;
+
+	outer_path_rows *= filter_coefficient;
+
 	/* cost of source data */
 	startup_cost += outer_path->startup_cost;
-	run_cost += outer_path->total_cost - outer_path->startup_cost;
+	run_cost += (outer_path->total_cost - outer_path->startup_cost) * filter_coefficient;
 	startup_cost += inner_path->total_cost;
 
 	/*
@@ -3931,6 +3946,19 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	Selectivity innerbucketsize;
 	Selectivity innermcvfreq;
 	ListCell   *hcl;
+
+	/*
+	 * XXX When there are pushed-down filters, we need to reduce the costs
+	 * accordingly, because we'll do fewer lookups etc. And the outer path
+	 * may get cheaper too. For now we just assume the filter eliminates
+	 * 99% of rows, and that the runtime cost reduction is proportional.
+	 * In reality we should estimate how many outer rows have a match (we
+	 * already do that for the join). Not sure what to do about the costs,
+	 * because we can't just rerun the costing easily.
+	 */
+	double		filter_coefficient = 0.01;
+
+	outer_path_rows *= filter_coefficient;
 
 	/* Mark the path with the correct row estimate */
 	if (path->jpath.path.param_info)
@@ -4128,6 +4156,9 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 		run_cost += hash_qual_cost.per_tuple * outer_path_rows *
 			clamp_row_est(inner_path_rows * innerbucketsize) * 0.5;
 
+		/* FIXME reduce the runtime cost to make hashjoins more likely */
+		run_cost *= 0.5;
+
 		/*
 		 * Get approx # tuples passing the hashquals.  We use
 		 * approx_tuple_count here because we need an estimate done with
@@ -4136,7 +4167,7 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 		hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
 	}
 
-	/* penalize the case with building hash on the larger table */
+	/* XXX penalize the case with building hash on the larger table */
 	if (inner_path_rows > outer_path_rows)
 	{
 		startup_cost += 1000000000.0;

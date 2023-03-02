@@ -4136,6 +4136,13 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 		hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
 	}
 
+	/* penalize the case with building hash on the larger table */
+	if (inner_path_rows > outer_path_rows)
+	{
+		startup_cost += 1000000000.0;
+		run_cost += 1000000000.0;
+	}
+
 	/*
 	 * For each tuple that gets through the hashjoin proper, we charge
 	 * cpu_tuple_cost plus the cost of evaluating additional restriction

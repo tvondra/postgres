@@ -105,6 +105,7 @@ typedef struct deparse_expr_cxt
 								 * a base relation. */
 	StringInfo	buf;			/* output buffer to append to */
 	List	  **params_list;	/* exprs that will become remote Params */
+	List	   *filters;
 } deparse_expr_cxt;
 
 #define REL_ALIAS_PREFIX	"r"
@@ -177,14 +178,17 @@ static void appendOrderByClause(List *pathkeys, bool has_final_sort,
 								deparse_expr_cxt *context);
 static void appendLimitClause(deparse_expr_cxt *context);
 static void appendConditions(List *exprs, deparse_expr_cxt *context);
+static void appendFilters(List *filters, deparse_expr_cxt *context);
 static void deparseFromExprForRel(StringInfo buf, PlannerInfo *root,
 								  RelOptInfo *foreignrel, bool use_alias,
 								  Index ignore_rel, List **ignore_conds,
-								  List **params_list);
+								  List **params_list, List *filters);
 static void deparseFromExpr(List *quals, deparse_expr_cxt *context);
+static void deparseFilterExpr(bool has_where, List *filters, deparse_expr_cxt *context);
 static void deparseRangeTblRef(StringInfo buf, PlannerInfo *root,
 							   RelOptInfo *foreignrel, bool make_subquery,
-							   Index ignore_rel, List **ignore_conds, List **params_list);
+							   Index ignore_rel, List **ignore_conds, List **params_list,
+							   List *filters);
 static void deparseAggref(Aggref *node, deparse_expr_cxt *context);
 static void appendGroupByClause(List *tlist, deparse_expr_cxt *context);
 static void appendOrderBySuffix(Oid sortop, Oid sortcoltype, bool nulls_first,
@@ -1229,7 +1233,8 @@ void
 deparseSelectStmtForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel,
 						List *tlist, List *remote_conds, List *pathkeys,
 						bool has_final_sort, bool has_limit, bool is_subquery,
-						List **retrieved_attrs, List **params_list)
+						List **retrieved_attrs, List **params_list,
+						List *filters)
 {
 	deparse_expr_cxt context;
 	PgFdwRelationInfo *fpinfo = (PgFdwRelationInfo *) rel->fdw_private;
@@ -1247,6 +1252,7 @@ deparseSelectStmtForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel,
 	context.foreignrel = rel;
 	context.scanrel = IS_UPPER_REL(rel) ? fpinfo->outerrel : rel;
 	context.params_list = params_list;
+	context.filters = filters;
 
 	/* Construct SELECT clause */
 	deparseSelectSql(tlist, is_subquery, retrieved_attrs, &context);
@@ -1268,6 +1274,9 @@ deparseSelectStmtForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel,
 
 	/* Construct FROM and WHERE clauses */
 	deparseFromExpr(quals, &context);
+
+	/* Append bloom filter(s), if present */
+	deparseFilterExpr((quals != NIL), filters, &context);
 
 	if (IS_UPPER_REL(rel))
 	{
@@ -1379,13 +1388,39 @@ deparseFromExpr(List *quals, deparse_expr_cxt *context)
 	appendStringInfoString(buf, " FROM ");
 	deparseFromExprForRel(buf, context->root, scanrel,
 						  (bms_membership(scanrel->relids) == BMS_MULTIPLE),
-						  (Index) 0, NULL, context->params_list);
+						  (Index) 0, NULL, context->params_list,
+						  context->filters);
 
 	/* Construct WHERE clause */
 	if (quals != NIL)
 	{
 		appendStringInfoString(buf, " WHERE ");
 		appendConditions(quals, context);
+	}
+}
+
+/*
+ * 
+ */
+static void
+deparseFilterExpr(bool has_where, List *filters, deparse_expr_cxt *context)
+{
+	StringInfo	buf = context->buf;
+	RelOptInfo *scanrel = context->scanrel;
+
+	/* For upper relations, scanrel must be either a joinrel or a baserel */
+	Assert(!IS_UPPER_REL(context->foreignrel) ||
+		   IS_JOIN_REL(scanrel) || IS_SIMPLE_REL(scanrel));
+
+	/* Construct WHERE clause */
+	if (filters != NIL)
+	{
+		if (!has_where)
+			appendStringInfoString(buf, " WHERE ");
+		else
+			appendStringInfoString(buf, " ");
+
+		appendFilters(filters, context);
 	}
 }
 
@@ -1598,6 +1633,47 @@ appendConditions(List *exprs, deparse_expr_cxt *context)
 	reset_transmission_modes(nestlevel);
 }
 
+/*
+ * Deparse conditions from the provided list and append them to buf.
+ *
+ * The conditions in the list are assumed to be ANDed. This function is used to
+ * deparse WHERE clauses, JOIN .. ON clauses and HAVING clauses.
+ *
+ * Depending on the caller, the list elements might be either RestrictInfos
+ * or bare clauses.
+ */
+static void
+appendFilters(List *filters, deparse_expr_cxt *context)
+{
+	int			nestlevel;
+	ListCell   *lc;
+	bool		is_first = true;
+	StringInfo	buf = context->buf;
+
+	/* Make sure any constants in the exprs are printed portably */
+	nestlevel = set_transmission_modes();
+
+	foreach(lc, filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+
+		/* Connect expressions with "AND" and parenthesize each condition. */
+		if (!is_first)
+			appendStringInfoString(buf, " AND ");
+
+		appendStringInfoChar(buf, '(');
+		// deparseExpr(expr, context);
+		appendStringInfoString(buf, "public.postgres_fdw_bloom(");
+		deparseExpr((Expr *) linitial(ref->clauses), context);
+		appendStringInfoString(buf, ", %d, %d, '\\x%s')");
+		appendStringInfoChar(buf, ')');
+
+		is_first = false;
+	}
+
+	reset_transmission_modes(nestlevel);
+}
+
 /* Output join name for given join type */
 const char *
 get_jointype_name(JoinType jointype)
@@ -1716,7 +1792,7 @@ deparseSubqueryTargetList(deparse_expr_cxt *context)
 static void
 deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 					  bool use_alias, Index ignore_rel, List **ignore_conds,
-					  List **params_list)
+					  List **params_list, List *filters)
 {
 	PgFdwRelationInfo *fpinfo = (PgFdwRelationInfo *) foreignrel->fdw_private;
 
@@ -1764,7 +1840,8 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 			initStringInfo(&join_sql_o);
 			deparseRangeTblRef(&join_sql_o, root, outerrel,
 							   fpinfo->make_outerrel_subquery,
-							   ignore_rel, ignore_conds, params_list);
+							   ignore_rel, ignore_conds, params_list,
+							   filters);
 
 			/*
 			 * If inner relation is the target relation, skip deparsing it.
@@ -1790,7 +1867,8 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 			initStringInfo(&join_sql_i);
 			deparseRangeTblRef(&join_sql_i, root, innerrel,
 							   fpinfo->make_innerrel_subquery,
-							   ignore_rel, ignore_conds, params_list);
+							   ignore_rel, ignore_conds, params_list,
+							   filters);
 
 			/*
 			 * If outer relation is the target relation, skip deparsing it.
@@ -1826,6 +1904,7 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 			context.scanrel = foreignrel;
 			context.root = root;
 			context.params_list = params_list;
+			context.filters = filters;
 
 			appendStringInfoChar(buf, '(');
 			appendConditions(fpinfo->joinclauses, &context);
@@ -1867,7 +1946,7 @@ deparseFromExprForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 static void
 deparseRangeTblRef(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 				   bool make_subquery, Index ignore_rel, List **ignore_conds,
-				   List **params_list)
+				   List **params_list, List *filters)
 {
 	PgFdwRelationInfo *fpinfo = (PgFdwRelationInfo *) foreignrel->fdw_private;
 
@@ -1895,7 +1974,7 @@ deparseRangeTblRef(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 		deparseSelectStmtForRel(buf, root, foreignrel, NIL,
 								fpinfo->remote_conds, NIL,
 								false, false, true,
-								&retrieved_attrs, params_list);
+								&retrieved_attrs, params_list, filters);
 		appendStringInfoChar(buf, ')');
 
 		/* Append the relation alias. */
@@ -1925,7 +2004,7 @@ deparseRangeTblRef(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
 	}
 	else
 		deparseFromExprForRel(buf, root, foreignrel, true, ignore_rel,
-							  ignore_conds, params_list);
+							  ignore_conds, params_list, filters);
 }
 
 /*
@@ -2191,7 +2270,7 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 
 		appendStringInfoString(buf, " FROM ");
 		deparseFromExprForRel(buf, root, foreignrel, true, rtindex,
-							  &ignore_conds, params_list);
+							  &ignore_conds, params_list, NIL);
 		remote_conds = list_concat(remote_conds, ignore_conds);
 	}
 
@@ -2274,7 +2353,7 @@ deparseDirectDeleteSql(StringInfo buf, PlannerInfo *root,
 
 		appendStringInfoString(buf, " USING ");
 		deparseFromExprForRel(buf, root, foreignrel, true, rtindex,
-							  &ignore_conds, params_list);
+							  &ignore_conds, params_list, NIL);
 		remote_conds = list_concat(remote_conds, ignore_conds);
 	}
 

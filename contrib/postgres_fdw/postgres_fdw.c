@@ -82,7 +82,10 @@ enum FdwScanPrivateIndex
 	 * String describing join i.e. names of relations being joined and types
 	 * of join, added when the scan is join
 	 */
-	FdwScanPrivateRelations
+	FdwScanPrivateRelations,
+
+	/* Integer list of filter IDs to push down */
+	FdwScanPrivateFilterIds
 };
 
 /*
@@ -145,6 +148,7 @@ typedef struct PgFdwScanState
 	/* extracted fdw_private data */
 	char	   *query;			/* text of SELECT command */
 	List	   *retrieved_attrs;	/* list of retrieved attribute numbers */
+	List	   *filters;		/* list of filter IDs to push down */
 
 	/* for remote query execution */
 	PGconn	   *conn;			/* connection for the scan */
@@ -320,6 +324,7 @@ typedef struct
  * SQL functions
  */
 PG_FUNCTION_INFO_V1(postgres_fdw_handler);
+PG_FUNCTION_INFO_V1(postgres_fdw_bloom);
 
 /*
  * FDW callback routines
@@ -1396,7 +1401,8 @@ postgresGetForeignPlan(PlannerInfo *root,
 	deparseSelectStmtForRel(&sql, root, foreignrel, fdw_scan_tlist,
 							remote_exprs, best_path->path.pathkeys,
 							has_final_sort, has_limit, false,
-							&retrieved_attrs, &params_list);
+							&retrieved_attrs, &params_list,
+							best_path->path.filters);
 
 	/* Remember remote_exprs for possible use by postgresPlanDirectModify */
 	fpinfo->final_remote_exprs = remote_exprs;
@@ -1411,7 +1417,23 @@ postgresGetForeignPlan(PlannerInfo *root,
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name));
+	else
+		fdw_private = lappend(fdw_private, NIL);
 
+	if (best_path->path.filters)
+	{
+		List *filters = NIL;
+
+		foreach(lc, best_path->path.filters)
+		{
+			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+			filters = lappend_int(filters, ref->filterId);
+		}
+
+		fdw_private = lappend(fdw_private, filters);
+	}
+	else
+		fdw_private = lappend(fdw_private, NIL);
 	/*
 	 * Create the ForeignScan node for the given relation.
 	 *
@@ -1541,6 +1563,8 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
+	fsstate->filters = (List *) list_nth(fsplan->fdw_private,
+										 FdwScanPrivateFilterIds);
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -2823,7 +2847,8 @@ postgresExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	 * We do that here, not when the plan is created, because we can't know
 	 * what aliases ruleutils.c will assign at plan creation time.
 	 */
-	if (list_length(fdw_private) > FdwScanPrivateRelations)
+	if ((list_length(fdw_private) > FdwScanPrivateRelations) &&
+		(list_nth(fdw_private, FdwScanPrivateRelations) != NIL))
 	{
 		StringInfo	relations;
 		char	   *rawrelations;
@@ -3141,7 +3166,7 @@ estimate_path_cost_size(PlannerInfo *root,
 								remote_conds, pathkeys,
 								fpextra ? fpextra->has_final_sort : false,
 								fpextra ? fpextra->has_limit : false,
-								false, &retrieved_attrs, NULL);
+								false, &retrieved_attrs, NULL, NIL);
 
 		/* Get the remote estimate */
 		conn = GetConnection(fpinfo->user, false, NULL);
@@ -3699,6 +3724,30 @@ ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 	return true;
 }
 
+
+
+/*
+ * hash_filter_lookup
+ *		Lookup filter by filterId in the plan-level executor registry.
+ *
+ * The filter may not exist yet, depending on whether the Hash node was already
+ * initialized. If the filter does not exist, we treat that matching everything.
+ */
+static HashFilterState *
+hash_filter_lookup(EState *estate, int filterId)
+{
+	ListCell *lc;
+
+	foreach (lc, estate->es_filters)
+	{
+		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
+
+		if (filterstate->filterId == filterId)
+			return filterstate;
+	}
+	return NULL;
+}
+
 /*
  * Create cursor for node's query with current parameter values.
  */
@@ -3706,12 +3755,15 @@ static void
 create_cursor(ForeignScanState *node)
 {
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
+	EState	   *estate = node->ss.ps.state;
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 	int			numParams = fsstate->numParams;
 	const char **values = fsstate->param_values;
 	PGconn	   *conn = fsstate->conn;
 	StringInfoData buf;
 	PGresult   *res;
+	ListCell   *lc;
+	StringInfoData buf2;
 
 	/* First, process a pending asynchronous request, if any. */
 	if (fsstate->conn_state->pendingAreq)
@@ -3740,6 +3792,18 @@ create_cursor(ForeignScanState *node)
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
 					 fsstate->cursor_number, fsstate->query);
+
+	/* replace filters */
+	foreach (lc, fsstate->filters)
+	{
+		int filterId = lfirst_int(lc);
+		HashFilterState *filter = hash_filter_lookup(estate, filterId);
+
+		initStringInfo(&buf2);
+		appendStringInfo(&buf2, buf.data, filter->nhashes, filter->nbits, "ffff");
+		initStringInfo(&buf);
+		appendStringInfoString(&buf, buf2.data);
+	}
 
 	/*
 	 * Notice that we pass NULL for paramTypes, thus forcing the remote server
@@ -7806,4 +7870,14 @@ get_batch_size_option(Relation rel)
 	}
 
 	return batch_size;
+}
+
+
+Datum
+postgres_fdw_bloom(PG_FUNCTION_ARGS)
+{
+	if (random() % 100 <= 1)
+		PG_RETURN_BOOL(true);
+
+	PG_RETURN_BOOL(false);
 }

@@ -1649,6 +1649,10 @@ set_foreignscan_references(PlannerInfo *root,
 						  rtoffset, NUM_EXEC_QUAL((Plan *) fscan));
 	}
 
+	/* FIXME should be done differently in the two branches above? */
+	fscan->scan.filters =
+		fix_scan_filters(root, (Plan *) fscan, rtoffset);
+
 	fscan->fs_relids = offset_relid_set(fscan->fs_relids, rtoffset);
 	fscan->fs_base_relids = offset_relid_set(fscan->fs_base_relids, rtoffset);
 

@@ -147,6 +147,7 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	Index		scanrelid = node->scan.scanrelid;
 	int			tlistvarno;
 	FdwRoutine *fdwroutine;
+	ListCell   *lc;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -232,6 +233,23 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	 */
 	scanstate->ss.ps.async_capable = (((Plan *) node)->async_capable &&
 									  estate->es_epq_active == NULL);
+
+	/*
+	 * If there are any filter references assigned to this node, initialize
+	 * expressions for those too.
+	 */
+	scanstate->ss.ss_Filters = NIL;
+	foreach (lc, node->scan.filters)
+	{
+		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
+
+		state->ref = ref;
+		state->filterId = ref->filterId;
+		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) scanstate);
+
+		scanstate->ss.ss_Filters = lappend(scanstate->ss.ss_Filters, state);
+	}
 
 	/*
 	 * Initialize FDW-related state.

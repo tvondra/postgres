@@ -22,6 +22,7 @@
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "commands/vacuum.h"
+#include "common/pg_prng.h"
 #include "executor/execAsync.h"
 #include "foreign/fdwapi.h"
 #include "funcapi.h"
@@ -7876,7 +7877,9 @@ get_batch_size_option(Relation rel)
 Datum
 postgres_fdw_bloom(PG_FUNCTION_ARGS)
 {
-	if (random() % 100 <= 1)
+	double r = pg_prng_double(&pg_global_prng_state);
+
+	if (r <= 0.01)
 		PG_RETURN_BOOL(true);
 
 	PG_RETURN_BOOL(false);

@@ -303,6 +303,10 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	else
 		fdwroutine->BeginForeignScan(scanstate, eflags);
 
+	/* postgres_fdw pushes the filter to remote node, no point in executing
+	 * it here again */
+	scanstate->ss.ss_Filters = NIL;
+
 	return scanstate;
 }
 

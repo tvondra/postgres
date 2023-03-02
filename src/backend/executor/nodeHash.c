@@ -2346,7 +2346,9 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 static void
 ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprContext *econtext)
 {
-	Assert(!filter->built);
+	/* second pass through the node init */
+	if (filter->built)
+		return;
 
 	/* filter tracking exact values */
 	if (filter->filter_type == HashFilterExact)

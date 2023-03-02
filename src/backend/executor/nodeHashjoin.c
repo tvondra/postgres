@@ -690,10 +690,50 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	outerNode = outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
-	outerDesc = ExecGetResultType(outerPlanState(hjstate));
+	/*
+	 * If the Hash has filters, cheat a little bit and build the hash table
+	 * right away, so that we have the filter before we start processing
+	 * the outer tree.
+	 *
+	 * XXX This is a hack, as it scans and builds the hash table twice.
+	 * Ideally we'd do the thing just once when there are any filters, but
+	 * that requires reworking the state machine in ExecHashJoinImpl. So
+	 * for now this has to do.
+	 */
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 	innerDesc = ExecGetResultType(innerPlanState(hjstate));
+
+	if (hashNode->filters)
+	{
+		HashJoinTable hashtable;
+		HashState *hashState = (HashState *) innerPlanState(hjstate);
+
+		/*
+		 * Create the hash table.  If using Parallel Hash, then
+		 * whoever gets here first will create the hash table and any
+		 * later arrivals will merely attach to it.
+		 */
+		hashtable = ExecHashTableCreate(hashState,
+										node->hashoperators,
+										node->hashcollations,
+										true);	/* FIXME */
+
+		/*
+		 * Execute the Hash node, to build the hash table.  If using
+		 * Parallel Hash, then we'll try to help hashing unless we
+		 * arrived too late.
+		 */
+		hashState->hashtable = hashtable;
+		(void) MultiExecProcNode((PlanState *) hashState);
+
+		/*
+		 * XXX Make sure we scan the hash data again on the second pass.
+		 */
+		ExecReScanHash(hashState);
+	}
+
+	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
+	outerDesc = ExecGetResultType(outerPlanState(hjstate));
 
 	/*
 	 * Initialize result slot, type and projection.

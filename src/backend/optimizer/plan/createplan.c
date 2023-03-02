@@ -4150,6 +4150,10 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 												tlist, scan_clauses,
 												outer_plan);
 
+	/* does the scan has pushed-down filter references? */
+	if (best_path->path.filters)
+		scan_plan->scan.filters = best_path->path.filters;
+
 	/* Copy cost data from Path to Plan; no need to make FDW do this */
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
 
@@ -4743,6 +4747,7 @@ find_pushdown_node(Path *path, Relids relids)
 		case T_IndexScan:
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
+		case T_ForeignScan:
 			return path;
 
 		/* FIXME handle upper relations that we can push through */

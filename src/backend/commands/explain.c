@@ -1962,6 +1962,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_foreignscan_info((ForeignScanState *) planstate, es);
+			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_CustomScan:
 			{

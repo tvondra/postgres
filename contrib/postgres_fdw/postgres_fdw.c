@@ -3810,7 +3810,7 @@ create_cursor(ForeignScanState *node)
 		ptr = encoded;
 
 		ptr += hex_encode(filter->data, nbytes, ptr);
-		ptr = '\0';
+		*ptr = '\0';
 
 		initStringInfo(&buf2);
 		appendStringInfo(&buf2, buf.data, filter->nhashes, filter->nbits, encoded);

@@ -1663,9 +1663,9 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 
 		appendStringInfoChar(buf, '(');
 		// deparseExpr(expr, context);
-		appendStringInfoString(buf, "public.postgres_fdw_bloom(");
+		appendStringInfoString(buf, "%s(");
 		deparseExpr((Expr *) linitial(ref->clauses), context);
-		appendStringInfoString(buf, ", %d, %d, '\\x%s')");
+		appendStringInfoString(buf, ")%s");
 		appendStringInfoChar(buf, ')');
 
 		is_first = false;

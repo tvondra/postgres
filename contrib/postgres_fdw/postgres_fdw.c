@@ -3800,26 +3800,55 @@ create_cursor(ForeignScanState *node)
 	{
 		int	filterId = lfirst_int(lc);
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
-		char   *encoded;
-		int		nbytes;
-		char   *ptr;
 
-		nbytes = (filter->nbits / 8);
+		if (filter->filter_type == HashFilterExact)
+		{
+			StringInfoData	values;
 
-		encoded = palloc(2 * nbytes + 1);
-		ptr = encoded;
+			initStringInfo(&values);
 
-		ptr += hex_encode(filter->data, nbytes, ptr);
-		*ptr = '\0';
+			for (int i = 0; i < filter->nvalues; i++)
+			{
+				Datum value = ((Datum *) filter->data)[i];
 
-		initStringInfo(&buf2);
-		appendStringInfo(&buf2, buf.data, filter->nhashes, filter->nbits, encoded);
-		initStringInfo(&buf);
-		appendStringInfoString(&buf, buf2.data);
+				if (i > 0)
+					appendStringInfoString(&values, ", ");
 
-		elog(WARNING, "SQL: %s", buf.data);
+				appendStringInfo(&values, "%ld", value);
+			}
 
-		pfree(encoded);
+			initStringInfo(&buf2);
+			appendStringInfo(&buf2, buf.data, "", " IN (%s)");
+			initStringInfo(&buf);
+
+			appendStringInfo(&buf, buf2.data, values.data);
+
+			elog(WARNING, "SQL: %s", buf.data);
+		}
+		else if (filter->filter_type == HashFilterExact)
+		{
+			char   *encoded;
+			int		nbytes;
+			char   *ptr;
+
+			nbytes = (filter->nbits / 8);
+
+			encoded = palloc(2 * nbytes + 1);
+			ptr = encoded;
+
+			ptr += hex_encode(filter->data, nbytes, ptr);
+			*ptr = '\0';
+
+			initStringInfo(&buf2);
+			appendStringInfo(&buf2, buf.data, "public.postgres_fdw_bloom(", ", %d, %d, '\\x%s')");
+			initStringInfo(&buf);
+
+			appendStringInfo(&buf, buf2.data, filter->nhashes, filter->nbits, encoded);
+
+			elog(WARNING, "SQL: %s", buf.data);
+
+			pfree(encoded);
+		}
 	}
 
 	/*

@@ -3825,7 +3825,7 @@ create_cursor(ForeignScanState *node)
 
 			elog(WARNING, "SQL: %s", buf.data);
 		}
-		else if (filter->filter_type == HashFilterExact)
+		else if (filter->filter_type == HashFilterBloom)
 		{
 			char   *encoded;
 			int		nbytes;

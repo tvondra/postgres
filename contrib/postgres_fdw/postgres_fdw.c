@@ -51,6 +51,7 @@
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
+#include "utils/xxhash.h"
 
 PG_MODULE_MAGIC;
 
@@ -3797,13 +3798,28 @@ create_cursor(ForeignScanState *node)
 	/* replace filters */
 	foreach (lc, fsstate->filters)
 	{
-		int filterId = lfirst_int(lc);
+		int	filterId = lfirst_int(lc);
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
+		char   *encoded;
+		int		nbytes;
+		char   *ptr;
+
+		nbytes = (filter->nbits / 8);
+
+		encoded = palloc(2 * nbytes + 1);
+		ptr = encoded;
+
+		ptr += hex_encode(filter->data, nbytes, ptr);
+		ptr = '\0';
 
 		initStringInfo(&buf2);
-		appendStringInfo(&buf2, buf.data, filter->nhashes, filter->nbits, "ffff");
+		appendStringInfo(&buf2, buf.data, filter->nhashes, filter->nbits, encoded);
 		initStringInfo(&buf);
 		appendStringInfoString(&buf, buf2.data);
+
+		elog(WARNING, "SQL: %s", buf.data);
+
+		pfree(encoded);
 	}
 
 	/*
@@ -7877,10 +7893,34 @@ get_batch_size_option(Relation rel)
 Datum
 postgres_fdw_bloom(PG_FUNCTION_ARGS)
 {
-	double r = pg_prng_double(&pg_global_prng_state);
+	Datum	value = PG_GETARG_DATUM(0);
+	int		nhashes = PG_GETARG_INT32(1);
+	int		nbits = PG_GETARG_INT32(2);
+	bytea  *filter = PG_GETARG_BYTEA_P(3);
+	int			i;
+	uint64		h1,
+				h2;
+	uint64		hashvalue = 0;
 
-	if (r <= 0.01)
-		PG_RETURN_BOOL(true);
+	char   *data = VARDATA_ANY(filter);
 
-	PG_RETURN_BOOL(false);
+	hashvalue = XXH3_64bits(&value, sizeof(Datum));
+
+	h1 = ((uint32) hashvalue) % nbits;
+	h2 = (hashvalue >> 32) % nbits;
+
+	/* compute the requested number of hashes */
+	for (i = 0; i < nhashes; i++)
+	{
+		/* h1 + h2 + f(i) */
+		uint32		h = (h1 + i * h2) % nbits;
+		uint32		byte = (h / 8);
+		uint32		bit = (h % 8);
+
+		/* if the bit is not set, the value is not there */
+		if (!(data[byte] & (0x01 << bit)))
+			PG_RETURN_BOOL(false);
+	}
+
+	PG_RETURN_BOOL(true);
 }

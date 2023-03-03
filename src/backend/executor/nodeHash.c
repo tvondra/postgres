@@ -454,8 +454,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * the pointers to the filter. So there may be much more memory needed.
 		 * This should copy the values into the filter.
 		 */
-		// state->filter_type = HashFilterExact;
-		state->filter_type = HashFilterBloom;
+		state->filter_type = HashFilterExact;
+		// state->filter_type = HashFilterBloom;
 		state->filter = filter;
 		state->filterId = filter->filterId;
 

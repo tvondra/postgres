@@ -2645,6 +2645,7 @@ typedef struct SharedHashInfo
 typedef enum HashFilterType
 {
 	HashFilterExact,
+	HashFilterRange,
 	HashFilterBloom
 } HashFilterType;
 
@@ -2674,6 +2675,7 @@ typedef struct HashFilterState
 
 	/* exact filter */
 	int64		nvalues;
+	int64		nranges;
 
 	/* bloom filter mode */
 	int			nhashes;

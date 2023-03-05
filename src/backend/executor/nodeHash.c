@@ -454,7 +454,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * the pointers to the filter. So there may be much more memory needed.
 		 * This should copy the values into the filter.
 		 */
-		state->filter_type = HashFilterExact;
+		// state->filter_type = HashFilterExact;
+		state->filter_type = HashFilterRange;
 		// state->filter_type = HashFilterBloom;
 		state->filter = filter;
 		state->filterId = filter->filterId;
@@ -2225,6 +2226,16 @@ ranges_overlap(FilterRange *ra, FilterRange *rb)
 }
 
 static bool
+ranges_contiguous(FilterRange *ra, FilterRange *rb)
+{
+	Assert(ra->end <= rb->start);
+	if (ra->end + 1 >= rb->start)
+		return true;
+
+	return false;
+}
+
+static bool
 ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
 	Datum  *values;
@@ -2277,6 +2288,26 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 			if (ranges_overlap(&ranges[idx], &ranges[i]))
 			{
 				ranges[idx].end = Max(ranges[idx].end, ranges[i].end);
+				continue;
+			}
+
+			idx++;
+
+			ranges[idx] = ranges[i];
+
+			Assert(idx < nranges);
+		}
+
+		nranges = (idx + 1);
+
+		// combine contiguous ranges (e.g. for integers, ranges [1.10] and [11,20]
+		// can be combined into [1,20]
+		idx = 0;
+		for (i = 1; i < nranges; i++)
+		{
+			if (ranges_contiguous(&ranges[idx], &ranges[i]))
+			{
+				ranges[idx].end = ranges[i].end;
 				continue;
 			}
 

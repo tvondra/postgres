@@ -1246,6 +1246,8 @@ typedef struct HashFilterReference
 
 	/* expressions evaluated against the filter */
 	List	   *clauses;
+	
+	List	   *deparsed;		/* list of deparsed clauses */
 } HashFilterReference;
 
 /* ----------------

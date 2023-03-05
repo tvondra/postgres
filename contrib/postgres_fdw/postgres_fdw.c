@@ -86,8 +86,9 @@ enum FdwScanPrivateIndex
 	 */
 	FdwScanPrivateRelations,
 
-	/* Integer list of filter IDs to push down */
-	FdwScanPrivateFilterIds
+	/* Integer list of filter IDs and expressions to push down */
+	FdwScanPrivateFilterIds,
+	FdwScanPrivateFilterExprs
 };
 
 /*
@@ -150,7 +151,8 @@ typedef struct PgFdwScanState
 	/* extracted fdw_private data */
 	char	   *query;			/* text of SELECT command */
 	List	   *retrieved_attrs;	/* list of retrieved attribute numbers */
-	List	   *filters;		/* list of filter IDs to push down */
+	List	   *filter_ids;			/* list of filter IDs to push down */
+	List	   *filter_exprs;		/* list of deparsed push down expressions */
 
 	/* for remote query execution */
 	PGconn	   *conn;			/* connection for the scan */
@@ -1425,17 +1427,24 @@ postgresGetForeignPlan(PlannerInfo *root,
 	if (best_path->path.filters)
 	{
 		List *filters = NIL;
+		List *exprs = NIL;
 
 		foreach(lc, best_path->path.filters)
 		{
 			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
 			filters = lappend_int(filters, ref->filterId);
+			exprs = lappend(exprs, ref->deparsed);
 		}
 
 		fdw_private = lappend(fdw_private, filters);
+		fdw_private = lappend(fdw_private, exprs);
 	}
 	else
+	{
 		fdw_private = lappend(fdw_private, NIL);
+		fdw_private = lappend(fdw_private, NIL);
+	}
+
 	/*
 	 * Create the ForeignScan node for the given relation.
 	 *
@@ -1565,8 +1574,10 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
-	fsstate->filters = (List *) list_nth(fsplan->fdw_private,
-										 FdwScanPrivateFilterIds);
+	fsstate->filter_ids = (List *) list_nth(fsplan->fdw_private,
+											FdwScanPrivateFilterIds);
+	fsstate->filter_exprs = (List *) list_nth(fsplan->fdw_private,
+											  FdwScanPrivateFilterExprs);
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -3765,6 +3776,7 @@ create_cursor(ForeignScanState *node)
 	StringInfoData buf;
 	PGresult   *res;
 	ListCell   *lc;
+	ListCell   *lc2;
 	StringInfoData buf2;
 
 	/* First, process a pending asynchronous request, if any. */
@@ -3796,9 +3808,11 @@ create_cursor(ForeignScanState *node)
 					 fsstate->cursor_number, fsstate->query);
 
 	/* replace filters */
-	foreach (lc, fsstate->filters)
+	forboth (lc, fsstate->filter_ids, lc2, fsstate->filter_exprs)
 	{
 		int	filterId = lfirst_int(lc);
+		List *filterExprs = (List *) lfirst(lc2);
+
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
 
 		if (filter->filter_type == HashFilterExact)
@@ -3827,10 +3841,12 @@ create_cursor(ForeignScanState *node)
 		}
 		else if (filter->filter_type == HashFilterRange)
 		{
+			StringInfoData	cond;
 			StringInfoData	values;
-			StringInfoData	values2;
 
-			initStringInfo(&values);
+			char *expr = ((String *) linitial(filterExprs))->sval;
+
+			initStringInfo(&cond);
 
 			for (int i = 0; i < filter->nranges; i++)
 			{
@@ -3838,32 +3854,36 @@ create_cursor(ForeignScanState *node)
 				Datum end = ((Datum *) filter->data)[2*i + 1];
 
 				if (i > 0)
-					appendStringInfoString(&values, ") OR ((a) ");
+					appendStringInfoString(&cond, " OR ");
 
-				appendStringInfo(&values, " BETWEEN %ld AND %ld", start, end);
+				appendStringInfo(&cond, "(%s BETWEEN %ld AND %ld)", expr, start, end);
 			}
 
-			initStringInfo(&values2);
+			initStringInfo(&values);
+
 			for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
 			{
 				Datum value = ((Datum *) filter->data)[i];
 
 				if (i > 2 * filter->nranges)
-					appendStringInfoString(&values2, ", ");
+					appendStringInfoString(&values, ", ");
 
-				appendStringInfo(&values2, "%ld", value);
+				appendStringInfo(&values, "%ld", value);
 			}
 
 			if (filter->nvalues > 2 * filter->nranges)
 			{
-				appendStringInfo(&values, ") OR ((a) IN (%s)", values2.data);
+				if (filter->nranges > 0)
+					appendStringInfoString(&cond, " OR ");
+
+				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
 			}
 
 			initStringInfo(&buf2);
-			appendStringInfo(&buf2, buf.data, "", " %s ");
-			initStringInfo(&buf);
+			appendStringInfo(&buf2, buf.data, cond.data);
 
-			appendStringInfo(&buf, buf2.data, values.data);
+			initStringInfo(&buf);
+			appendStringInfoString(&buf, buf2.data);
 
 			elog(WARNING, "SQL: %s", buf.data);
 		}

@@ -3825,6 +3825,48 @@ create_cursor(ForeignScanState *node)
 
 			elog(WARNING, "SQL: %s", buf.data);
 		}
+		else if (filter->filter_type == HashFilterRange)
+		{
+			StringInfoData	values;
+			StringInfoData	values2;
+
+			initStringInfo(&values);
+
+			for (int i = 0; i < filter->nranges; i++)
+			{
+				Datum start = ((Datum *) filter->data)[2*i];
+				Datum end = ((Datum *) filter->data)[2*i + 1];
+
+				if (i > 0)
+					appendStringInfoString(&values, ") OR ((a) ");
+
+				appendStringInfo(&values, " BETWEEN %ld AND %ld", start, end);
+			}
+
+			initStringInfo(&values2);
+			for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
+			{
+				Datum value = ((Datum *) filter->data)[i];
+
+				if (i > 2 * filter->nranges)
+					appendStringInfoString(&values2, ", ");
+
+				appendStringInfo(&values2, "%ld", value);
+			}
+
+			if (filter->nvalues > 2 * filter->nranges)
+			{
+				appendStringInfo(&values, ") OR ((a) IN (%s)", values2.data);
+			}
+
+			initStringInfo(&buf2);
+			appendStringInfo(&buf2, buf.data, "", " %s ");
+			initStringInfo(&buf);
+
+			appendStringInfo(&buf, buf2.data, values.data);
+
+			elog(WARNING, "SQL: %s", buf.data);
+		}
 		else if (filter->filter_type == HashFilterBloom)
 		{
 			char   *encoded;

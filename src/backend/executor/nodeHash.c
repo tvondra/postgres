@@ -2186,6 +2186,185 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 	return true;
 }
 
+typedef struct FilterRange
+{
+	Datum	start;
+	Datum	end;
+} FilterRange;
+
+
+static int
+filter_range_cmp(const void *a, const void *b)
+{
+	FilterRange *ra = (FilterRange *) a;
+	FilterRange *rb = (FilterRange *) b;
+
+	if (ra->start < rb->start)
+		return -1;
+	else if (ra->start > rb->start)
+		return 1;
+
+	if (ra->end < rb->end)
+		return -1;
+	else if (ra->end > rb->end)
+		return 1;
+
+	return 0;
+}
+
+static bool
+ranges_overlap(FilterRange *ra, FilterRange *rb)
+{
+	if (ra->end < rb->start)
+		return false;
+
+	if (ra->start > rb->end)
+		return false;
+
+	return true;
+}
+
+static bool
+ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+{
+	Datum  *values;
+	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+	int		offset;
+	int		maxvalues = (filter->nbits/8 / entrylen);
+
+	Assert(filter->filter_type == HashFilterRange);
+
+	/* too much data for exact filter, compact the ranges */
+	if ((filter->nvalues + 1) * entrylen > filter->nbits/8)
+	{
+		int		i;
+		Datum  *filter_data = (Datum *) filter->data;
+		int		filter_idx = 0;
+		int		idx = 0;
+		int		nranges = (filter->nranges + (filter->nvalues - 2 * filter->nranges));
+
+		FilterRange *ranges = palloc(sizeof(FilterRange) * nranges);
+
+		for (i = 0; i < filter->nranges; i++)
+		{
+			Assert(idx < nranges);
+
+			ranges[idx].start = filter_data[filter_idx++];
+			ranges[idx].end = filter_data[filter_idx++];
+			idx++;
+			Assert(filter_idx < filter->nvalues);
+		}
+
+		for (i = filter_idx; i < filter->nvalues; i++)
+		{
+			Assert(idx < nranges);
+
+			ranges[idx].start = filter_data[i];
+			ranges[idx].end = filter_data[i];
+			Assert(i < filter->nvalues);
+			idx++;
+		}
+
+		Assert(idx == nranges);
+
+		// sort ranges by start
+		pg_qsort(ranges, nranges, sizeof(FilterRange), filter_range_cmp);
+
+		// combine overlapping ranges
+		idx = 0;
+		for (i = 1; i < nranges; i++)
+		{
+			if (ranges_overlap(&ranges[idx], &ranges[i]))
+			{
+				ranges[idx].end = Max(ranges[idx].end, ranges[i].end);
+				continue;
+			}
+
+			idx++;
+
+			ranges[idx] = ranges[i];
+
+			Assert(idx < nranges);
+		}
+
+		nranges = (idx + 1);
+
+		// now combine the closest ranges
+		while (true)
+		{
+			int		nvalues = 0;
+			int		mindist;
+			int		minidx;
+
+			for (i = 0; i < nranges; i++)
+			{
+				if (ranges[i].start == ranges[i].end)
+					nvalues++;
+				else
+					nvalues += 2;
+			}
+
+			if (nvalues <= maxvalues / 2)
+				break;
+
+			minidx = 1;
+			mindist = ranges[1].end - ranges[0].start;
+
+			for (i = 2; i < nranges; i++)
+			{
+				if (ranges[i].end - ranges[i-1].start < mindist)
+				{
+					mindist = ranges[i].end - ranges[i-1].start;
+					minidx = i;
+				}
+			}
+
+			ranges[minidx-1].end = ranges[minidx].end;
+			memmove(&ranges[minidx], &ranges[minidx+1], sizeof(FilterRange) * (nranges - (minidx + 1)));
+			nranges--;
+
+		}
+
+		filter->nranges = 0;
+		filter->nvalues = 0;
+
+		for (i = 0; i < nranges; i++)
+		{
+			if (ranges[i].start != ranges[i].end)
+			{
+				filter_data[filter->nvalues++] = ranges[i].start;
+				filter_data[filter->nvalues++] = ranges[i].end;
+				filter->nranges++;
+				Assert(filter->nvalues <= maxvalues);
+			}
+		}
+
+		for (i = 0; i < nranges; i++)
+		{
+			if (ranges[i].start == ranges[i].end)
+			{
+				filter_data[filter->nvalues++] = ranges[i].start;
+				Assert(filter->nvalues <= maxvalues);
+			}
+		}
+
+	}
+
+	values = palloc(sizeof(Datum) * list_length(filter->clauses));
+
+	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
+
+	offset = entrylen * filter->nvalues;
+	memcpy(&filter->data[offset], values, entrylen);
+
+	pfree(values);
+
+	filter->nvalues++;
+
+	return true;
+}
+
+/* FIXME deduplicate the values first */
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
@@ -2342,6 +2521,12 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 	/* second pass through the node init */
 	if (filter->built)
 		return;
+
+	if (filter->filter_type == HashFilterRange)
+	{
+		ExecHashFilterAddRange(filter, hashtable->keepNulls, econtext);
+		return;
+	}
 
 	/* filter tracking exact values */
 	if (filter->filter_type == HashFilterExact)

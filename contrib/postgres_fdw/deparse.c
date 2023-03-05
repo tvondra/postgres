@@ -1655,6 +1655,7 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 
 	foreach(lc, filters)
 	{
+		StringInfoData	expr;
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
 
 		/* Connect expressions with "AND" and parenthesize each condition. */
@@ -1662,11 +1663,14 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 			appendStringInfoString(buf, " AND ");
 
 		appendStringInfoChar(buf, '(');
-		// deparseExpr(expr, context);
-		appendStringInfoString(buf, "%s(");
-		deparseExpr((Expr *) linitial(ref->clauses), context);
-		appendStringInfoString(buf, ")%s");
+		appendStringInfoString(buf, "%s");
 		appendStringInfoChar(buf, ')');
+
+		initStringInfo(&expr);
+		context->buf = &expr;
+		deparseExpr((Expr *) linitial(ref->clauses), context);
+		ref->deparsed = list_make1(makeString(expr.data));
+		context->buf = buf;
 
 		is_first = false;
 	}

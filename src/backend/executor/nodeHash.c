@@ -2395,6 +2395,108 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	return true;
 }
 
+static void
+ExecHashFilterFinalizeRange(HashFilterState *filter)
+{
+	int		i;
+	Datum  *filter_data = (Datum *) filter->data;
+	int		filter_idx = 0;
+	int		idx = 0;
+	int		nranges;
+
+	FilterRange *ranges;
+
+	Assert(filter->filter_type == HashFilterRange);
+
+	nranges = (filter->nranges + (filter->nvalues - 2 * filter->nranges));
+	ranges = palloc(sizeof(FilterRange) * nranges);
+
+	for (i = 0; i < filter->nranges; i++)
+	{
+		Assert(idx < nranges);
+
+		ranges[idx].start = filter_data[filter_idx++];
+		ranges[idx].end = filter_data[filter_idx++];
+		idx++;
+		Assert(filter_idx <= filter->nvalues);
+	}
+
+	for (i = filter_idx; i < filter->nvalues; i++)
+	{
+		Assert(idx < nranges);
+
+		ranges[idx].start = filter_data[i];
+		ranges[idx].end = filter_data[i];
+		Assert(i < filter->nvalues);
+		idx++;
+	}
+
+	Assert(idx == nranges);
+
+	// sort ranges by start
+	pg_qsort(ranges, nranges, sizeof(FilterRange), filter_range_cmp);
+
+	// combine overlapping ranges
+	idx = 0;
+	for (i = 1; i < nranges; i++)
+	{
+		if (ranges_overlap(&ranges[idx], &ranges[i]))
+		{
+			ranges[idx].end = Max(ranges[idx].end, ranges[i].end);
+			continue;
+		}
+
+		idx++;
+
+		ranges[idx] = ranges[i];
+
+		Assert(idx < nranges);
+	}
+
+	nranges = (idx + 1);
+
+	// combine contiguous ranges (e.g. for integers, ranges [1.10] and [11,20]
+	// can be combined into [1,20]
+	idx = 0;
+	for (i = 1; i < nranges; i++)
+	{
+		if (ranges_contiguous(&ranges[idx], &ranges[i]))
+		{
+			ranges[idx].end = ranges[i].end;
+			continue;
+		}
+	
+		idx++;
+	
+		ranges[idx] = ranges[i];
+	
+		Assert(idx < nranges);
+	}
+
+	nranges = (idx + 1);
+
+	filter->nranges = 0;
+	filter->nvalues = 0;
+
+	for (i = 0; i < nranges; i++)
+	{
+		if (ranges[i].start != ranges[i].end)
+		{
+			filter_data[filter->nvalues++] = ranges[i].start;
+			filter_data[filter->nvalues++] = ranges[i].end;
+			filter->nranges++;
+		}
+	}
+
+	for (i = 0; i < nranges; i++)
+	{
+		if (ranges[i].start == ranges[i].end)
+		{
+			filter_data[filter->nvalues++] = ranges[i].start;
+		}
+	}
+}
+
 /* FIXME deduplicate the values first */
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
@@ -2441,6 +2543,8 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 
 		qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
 	}
+	else if (filter->filter_type == HashFilterRange)
+		ExecHashFilterFinalizeRange(filter);
 
 	filter->built = true;
 

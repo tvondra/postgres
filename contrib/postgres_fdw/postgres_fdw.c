@@ -3777,7 +3777,6 @@ create_cursor(ForeignScanState *node)
 	PGresult   *res;
 	ListCell   *lc;
 	ListCell   *lc2;
-	StringInfoData buf2;
 
 	/* First, process a pending asynchronous request, if any. */
 	if (fsstate->conn_state->pendingAreq)
@@ -3815,9 +3814,13 @@ create_cursor(ForeignScanState *node)
 
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
 
+		char *expr = ((String *) linitial(filterExprs))->sval;
+
 		if (filter->filter_type == HashFilterExact)
 		{
+			StringInfoData	cond;
 			StringInfoData	values;
+			StringInfoData	tmp;
 
 			initStringInfo(&values);
 
@@ -3831,11 +3834,14 @@ create_cursor(ForeignScanState *node)
 				appendStringInfo(&values, "%ld", value);
 			}
 
-			initStringInfo(&buf2);
-			appendStringInfo(&buf2, buf.data, "", " IN (%s)");
-			initStringInfo(&buf);
+			initStringInfo(&cond);
+			appendStringInfo(&cond, "%s IN (%s)", expr, values.data);
 
-			appendStringInfo(&buf, buf2.data, values.data);
+			initStringInfo(&tmp);
+			appendStringInfo(&tmp, buf.data, cond.data);
+
+			resetStringInfo(&buf);
+			appendStringInfoString(&buf, tmp.data);
 
 			elog(WARNING, "SQL: %s", buf.data);
 		}
@@ -3843,8 +3849,7 @@ create_cursor(ForeignScanState *node)
 		{
 			StringInfoData	cond;
 			StringInfoData	values;
-
-			char *expr = ((String *) linitial(filterExprs))->sval;
+			StringInfoData	tmp;
 
 			initStringInfo(&cond);
 
@@ -3879,11 +3884,11 @@ create_cursor(ForeignScanState *node)
 				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
 			}
 
-			initStringInfo(&buf2);
-			appendStringInfo(&buf2, buf.data, cond.data);
+			initStringInfo(&tmp);
+			appendStringInfo(&tmp, buf.data, cond.data);
 
-			initStringInfo(&buf);
-			appendStringInfoString(&buf, buf2.data);
+			resetStringInfo(&buf);
+			appendStringInfoString(&buf, tmp.data);
 
 			elog(WARNING, "SQL: %s", buf.data);
 		}
@@ -3893,6 +3898,9 @@ create_cursor(ForeignScanState *node)
 			int		nbytes;
 			char   *ptr;
 
+			StringInfoData tmp;
+			StringInfoData cond;
+
 			nbytes = (filter->nbits / 8);
 
 			encoded = palloc(2 * nbytes + 1);
@@ -3901,11 +3909,16 @@ create_cursor(ForeignScanState *node)
 			ptr += hex_encode(filter->data, nbytes, ptr);
 			*ptr = '\0';
 
-			initStringInfo(&buf2);
-			appendStringInfo(&buf2, buf.data, "public.postgres_fdw_bloom(", ", %d, %d, '\\x%s')");
-			initStringInfo(&buf);
+			initStringInfo(&cond);
+			appendStringInfo(&cond, "public.postgres_fdw_bloom(%s, %d, %d, '\\x%s')",
+							 expr, filter->nhashes, filter->nbits, encoded);
 
-			appendStringInfo(&buf, buf2.data, filter->nhashes, filter->nbits, encoded);
+			initStringInfo(&tmp);
+			appendStringInfo(&tmp, buf.data, cond.data);
+
+
+			resetStringInfo(&buf);
+			appendStringInfoString(&buf, tmp.data);
 
 			elog(WARNING, "SQL: %s", buf.data);
 

@@ -668,6 +668,65 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 
 /*
  * ExecHashFilterContainsExact
+ *		Check if the filter (in 'range' mode) contains exact value.
+ *
+ * FIXME This assumes all the types allow sorting, but that may not be true.
+ * In that case this should just do linear search.
+ */
+static bool
+ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *econtext)
+{
+	HashFilterState *filter = refstate->filter;
+	Datum	   *values;
+	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
+
+	Assert(filter->filter_type == HashFilterRange);
+
+	values = palloc(entrysize);
+
+	ExecScanGetFilterGetValues(refstate, econtext, false, values);
+
+	/* FIXME wrong, needs to use the proper comparator, not memcmp() */
+	/* TODO use binary search to check ranges */
+	for (int i = 0; i < filter->nranges; i++)
+	{
+		Datum  *start,
+			   *end;
+
+		start = (Datum *) (filter->data + (2 * i * entrysize));
+		end = (Datum *) (filter->data + ((2 * i + 1) * entrysize));
+
+		if ((memcmp(values, start, entrysize) >= 0) &&
+			(memcmp(values, end, entrysize) <= 0))
+		{
+			filter->nhits++;
+			pfree(values);
+			return true;
+		}
+	}
+
+	for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
+	{
+		Datum  *entry;
+
+		entry = (Datum *) (filter->data + (2 * i * entrysize));
+
+		if (memcmp(values, entry, entrysize) == 0)
+		{
+			filter->nhits++;
+			pfree(values);
+			return true;
+		}
+	}
+
+	pfree(values);
+
+	/* all hashes found in bloom filter */
+	return false;
+}
+
+/*
+ * ExecHashFilterContainsExact
  *		Check the filter - either in exact or hashed mode, as needed.
  */
 static bool
@@ -679,6 +738,8 @@ ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *eco
 
 	if (filter->filter_type == HashFilterExact)
 		return ExecHashFilterContainsExact(refstate, econtext);
+	else if (filter->filter_type == HashFilterRange)
+		return ExecHashFilterContainsRange(refstate, econtext);
 	else
 		return ExecHashFilterContainsHash(refstate, econtext);
 }

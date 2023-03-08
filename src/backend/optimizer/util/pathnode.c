@@ -2730,6 +2730,32 @@ create_hashjoin_path(PlannerInfo *root,
 				filter->hashcollations = NIL;
 				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
 
+				/*
+				 * calculate selectivity for this particular filter
+				 *
+				 * FIXME This needs to somehow consider how much the filter
+				 * reduces the matches, beyond the regular join clauses. So
+				 * we need to somehow estimate how much the other conditions
+				 * (e.g. at the baserel level) reduce the match probability.
+				 * Not sure how to do that easily, so let's just assume 10%
+				 * for now, which is fairly conservative.
+				 */
+				filter->selectivity = 0.1;
+
+				/*
+				 * Special case, when we can directly compare the estimated
+				 * rows for a path and the relation tuples, to calculate the
+				 * filter selectivity.
+				 *
+				 * XXX In principle we'd probably want to calculate joinrel
+				 * selectivity without the baserel restrictinfos?
+				 */
+				if (inner_path->parent->reloptkind == RELOPT_BASEREL)
+				{
+					filter->selectivity
+						= (inner_path->parent->rows / inner_path->parent->tuples);
+				}
+
 				/* XXX not sure a copy is needed, but maybe it is */
 				ref->filterId = filter->filterId;
 				ref->clauses = list_make1(copyObject(expr2));

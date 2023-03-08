@@ -3831,13 +3831,121 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 *
 	 * XXX Make this conditional on having pushed-down filters.
 	 */
-	double		filter_coefficient = 0.01;
+	workspace->filter_selectivity = 1.0;
 
-	outer_path_rows *= filter_coefficient;
+	/*
+	 * See if we can derive a filter from the hash side and push it down to
+	 * the outer subtree. We only need to estimate the selectivity here, the
+	 * filter is actually constructed in create_hashjoin_plan.
+	 *
+	 * Consider filter on the hash (innner side) with a pushdown to the outer
+	 * side. We need to be careful to only look at clauses of the right form,
+	 * that can be evaluated using a bloom filter - it needs to be an equality
+	 * with hash support. And it needs to be binary opclause with each argument
+	 * referencing one side of the join.
+	 *
+	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
+	 * hashclauses.
+	 *
+	 * We can only make this work for some join types, when a missing match
+	 * in the hash table is enough to eliminate the row. That means we can't
+	 * do this for outer joins (maybe unless there are additional conditions
+	 * making it inner?), or antijoins (because the bloom filter can have
+	 * false positives).
+	 *
+	 * XXX Actually, why not antijoins? Or maybe we could have special "exact"
+	 * type of a filter for these cases?
+	 *
+	 * XXX If we want to allow using the filters to serve as parameters for
+	 * other types of plans (e.g. to fill IN (...) queries), that could work
+	 * if we force keeping the "exact" filter, not turning it into bloom.
+	 *
+	 * XXX We can't modify the path yet, because it's referenced by multiple
+	 * upper paths for alternative plans.
+	 *
+	 * XXX Disabled for parallel plans for now. Building parallel filters
+	 * should be possible, though.
+	 */
+	if (enable_hash_filter_pushdown &&
+		(outer_path->parallel_workers == 0) &&
+		(extra->sjinfo->jointype == JOIN_INNER ||
+		 extra->sjinfo->jointype == JOIN_SEMI))
+	{
+		ListCell *lc2;
+
+		foreach (lc2, hashclauses)
+		{
+			Relids	relids = NULL;
+			Path   *path;
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
+
+			/*
+			 * grab relids for the outer side (inner side is hash)
+			 *
+			 * XXX I did try using rinfo->outer_is_left but that failed in
+			 * some cases. Maybe I was doing something wrong, not sure.
+			 */
+			if (bms_is_subset(rinfo->left_relids, outer_path->parent->relids))
+				relids = rinfo->left_relids;
+			else if (bms_is_subset(rinfo->right_relids, outer_path->parent->relids))
+				relids = rinfo->right_relids;
+
+			Assert(relids != NULL);
+
+			/*
+			 * See if we can pushdown a filter for this hash clause, and
+			 * if yes, estimate the filter selectivity. We're not going to
+			 * create the filter at this point, because we don't know if
+			 * this hash join is going to be selected - we just need to
+			 * consider the filter for costing purposes.
+			 * 
+			 *  */
+			path = find_filter_pushdown_target(outer_path, relids);
+
+			/*
+			 * Did we find a good place for pushdown? If not, try filters
+			 * for the other hash clauses.
+			 *
+			 * XXX Can we find more places to push the filter down? Maybe
+			 * there could be a couple conditions derived from EC or
+			 * something like that?
+			 */
+			if (!path)
+				continue;
+
+			/*
+			 * calculate selectivity for this particular filter
+			 *
+			 * FIXME This needs to somehow consider how much the filter
+			 * reduces the matches, beyond the regular join clauses. So
+			 * we need to somehow estimate how much the other conditions
+			 * (e.g. at the baserel level) reduce the match probability.
+			 * Not sure how to do that easily, so let's just assume 10%
+			 * for now, which is fairly conservative.
+			 *
+			 * For now we only handle a special case when joining to a base
+			 * relations, because in that case we can easily compare the
+			 * estimated rows for a path and the relation tuples, to
+			 * calculate the filter selectivity.
+			 *
+			 * XXX In principle we'd probably want to calculate joinrel
+			 * selectivity without the baserel restrictinfos?
+			 */
+			workspace->filter_selectivity *= 0.1;
+
+			if (inner_path->parent->reloptkind == RELOPT_BASEREL)
+			{
+				workspace->filter_selectivity
+					*= (inner_path->parent->rows / inner_path->parent->tuples);
+			}
+		}
+	}
+
+	outer_path_rows *= workspace->filter_selectivity;
 
 	/* cost of source data */
 	startup_cost += outer_path->startup_cost;
-	run_cost += (outer_path->total_cost - outer_path->startup_cost) * filter_coefficient;
+	run_cost += (outer_path->total_cost - outer_path->startup_cost) * workspace->filter_selectivity;
 	startup_cost += inner_path->total_cost;
 
 	/*
@@ -3947,7 +4055,6 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	Selectivity innerbucketsize;
 	Selectivity innermcvfreq;
 	ListCell   *hcl;
-	ListCell   *lc;
 
 	/*
 	 * XXX When there are pushed-down filters, we need to reduce the costs
@@ -3958,15 +4065,8 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	 * already do that for the join). Not sure what to do about the costs,
 	 * because we can't just rerun the costing easily.
 	 */
-	double		filter_coefficient = 1.0;
 
-	foreach (lc, path->filters)
-	{
-		HashFilter *filter  = (HashFilter *) lfirst(lc);
-		filter_coefficient *= filter->selectivity;
-	}
-
-	outer_path_rows *= filter_coefficient;
+	outer_path_rows *= workspace->filter_selectivity;
 
 	/* Mark the path with the correct row estimate */
 	if (path->jpath.path.param_info)

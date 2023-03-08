@@ -57,8 +57,6 @@ static List *reparameterize_pathlist_by_child(PlannerInfo *root,
 											  List *pathlist,
 											  RelOptInfo *child_rel);
 
-/* filter pushdown (bloom, range, ...) */
-static Path *find_filter_pushdown_target(Path *path, Relids relids);
 
 /*****************************************************************************
  *		MISC. PATH UTILITIES
@@ -2624,164 +2622,6 @@ create_hashjoin_path(PlannerInfo *root,
 	pathnode->path_hashclauses = hashclauses;
 	/* final_cost_hashjoin will fill in pathnode->num_batches */
 
-	/*
-	 * try to pushdown bloom filter
-	 *
-	 * Consider bloom filter on the hash (outer side) with a pushdown to the
-	 * inner side. We need to be careful to only look at clauses of the right
-	 * form, that can be evaluated using a bloom filter - it needs to be an
-	 * equality with hash support. And it needs to be binary opclause with
-	 * each argument referencing one side of the join.
-	 *
-	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
-	 * hashclauses.
-	 *
-	 * We can only make this work for some join types, when a missing match
-	 * in the hash table is enough to eliminate the row. That means we can't
-	 * do this for outer joins (maybe unless there are additional conditions
-	 * making it inner?), or antijoins (because the bloom filter can have
-	 * false positives).
-	 *
-	 * XXX If we want to allow using the filters to serve as parameters for
-	 * other types of plans (e.g. to fill IN (...) queries), that could work
-	 * if we force keeping the "exact" filter, not turning it into bloom.
-	 *
-	 * XXX We can't modify the path yet, because it's referenced by multiple
-	 * upper paths for alternative plans.
-	 *
-	 * XXX Disabled for parallel plans for now.
-	 */
-	if (enable_hash_filter_pushdown &&
-		(pathnode->jpath.outerjoinpath->parallel_workers == 0) &&
-		(pathnode->jpath.jointype == JOIN_INNER ||
-		 pathnode->jpath.jointype == JOIN_SEMI))
-	{
-		ListCell *lc2;
-
-		foreach (lc2, pathnode->path_hashclauses)
-		{
-			Relids	relids = NULL;
-			Path   *path;
-			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
-			OpExpr *opexpr;
-			Node   *expr = NULL;
-			Node   *expr2 = NULL;
-
-			/* guaranteed by clause_sides_match_join */
-			opexpr = (OpExpr *) rinfo->clause;
-
-			/*
-			 * grab relids for the outer side (inner side is hash)
-			 *
-			 * XXX I did try using rinfo->outer_is_left but that failed in
-			 * some cases. Maybe I was doing something wrong, not sure.
-			 */
-			if (bms_is_subset(rinfo->left_relids, pathnode->jpath.outerjoinpath->parent->relids))
-			{
-				relids = rinfo->left_relids;
-				expr = (Node *) lsecond(opexpr->args);
-				expr2 = (Node *) linitial(opexpr->args);
-			}
-			else if (bms_is_subset(rinfo->right_relids, pathnode->jpath.outerjoinpath->parent->relids))
-			{
-				relids = rinfo->right_relids;
-				expr = (Node *) linitial(opexpr->args);
-				expr2 = (Node *) lsecond(opexpr->args);
-			}
-
-			Assert(relids != NULL);
-
-			/* now, try to pushdown the condition as far as possible */
-			path = find_filter_pushdown_target(pathnode->jpath.outerjoinpath, relids);
-
-			/*
-			 * Did we find a good place for pushdown?
-			 *
-			 * XXX We should generally find at least one place where to
-			 * push the filter, but maybe not - not all node types allow
-			 * pushdown for now (only scans).
-			 *
-			 * XXX Should check if it's efficient to build this filter.
-			 * If we don't expect to filter anything, why push it down?
-			 * Not sure how much we can/want to rely on estimates, the
-			 * risk seems pretty low and gains may be significant even
-			 * if we end up filtering only a small fraction of rows.
-			 * Could we estimate it like a fraction of (total - startup)
-			 * of the inner path cost?
-			 *
-			 * XXX We need to do this before building the subplans, so
-			 * we don't have the Hash node yet. We'll leave the pointer
-			 * NULL and update it later.
-			 *
-			 * We should group the clauses by relids, and then push each
-			 * group to the same node at once.
-			 */
-			if (path)
-			{
-				HashFilter *filter = makeNode(HashFilter);
-				HashFilterReference *ref = makeNode(HashFilterReference);
-
-				filter->filterId = ++(root->glob->lastFilterId);
-				filter->clauses = list_make1(copyObject(expr));
-
-				filter->hashoperators = NIL;
-				filter->hashoperators = lappend_oid(filter->hashoperators, opexpr->opno);
-
-				filter->hashcollations = NIL;
-				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
-
-				/*
-				 * calculate selectivity for this particular filter
-				 *
-				 * FIXME This needs to somehow consider how much the filter
-				 * reduces the matches, beyond the regular join clauses. So
-				 * we need to somehow estimate how much the other conditions
-				 * (e.g. at the baserel level) reduce the match probability.
-				 * Not sure how to do that easily, so let's just assume 10%
-				 * for now, which is fairly conservative.
-				 */
-				filter->selectivity = 0.1;
-
-				/*
-				 * Special case, when we can directly compare the estimated
-				 * rows for a path and the relation tuples, to calculate the
-				 * filter selectivity.
-				 *
-				 * XXX In principle we'd probably want to calculate joinrel
-				 * selectivity without the baserel restrictinfos?
-				 */
-				if (inner_path->parent->reloptkind == RELOPT_BASEREL)
-				{
-					filter->selectivity
-						= (inner_path->parent->rows / inner_path->parent->tuples);
-				}
-
-				/* XXX not sure a copy is needed, but maybe it is */
-				ref->filterId = filter->filterId;
-				ref->clauses = list_make1(copyObject(expr2));
-
-				/* add the filter to the list */
-				pathnode->filters = lappend(pathnode->filters, filter);
-
-				/*
-				 * add the reference - we push filters from joins higher up first,
-				 * but joins are generally ordered from the most selective first
-				 * (to keep results small), and we want to start with the most
-				 * selective filters - so we add the filters at the beginning,
-				 * to run those filters first
-				 *
-				 * XXX This is an issue, because the path will contain filters
-				 * from all considered hashjoins, even those we didn't use in the
-				 * end. We should probably remove those while creating the plan,
-				 * or maybe postpone adding them to the plan until then (and
-				 * just remember to which path to add them). This way we need to
-				 * handle this in the scan nodes, which si annoying.
-				 */
-				path->filters = lcons(ref, path->filters);
-			}
-		}
-	}
-
 	final_cost_hashjoin(root, pathnode, workspace, extra);
 
 	return pathnode;
@@ -4508,7 +4348,7 @@ reparameterize_pathlist_by_child(PlannerInfo *root,
  * find_filter_pushdown_target
  *		Find node where we could push down the filter.
  */
-static Path *
+Path *
 find_filter_pushdown_target(Path *path, Relids relids)
 {
 	/* the initial path has to be a valid pushdown candidate */

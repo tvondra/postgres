@@ -29,6 +29,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/paramassign.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
@@ -4734,6 +4735,130 @@ create_hashjoin_plan(PlannerInfo *root,
 	AttrNumber	skewColumn = InvalidAttrNumber;
 	bool		skewInherit = false;
 	ListCell   *lc;
+	List	   *filters = NIL;
+
+	/*
+	 * try to pushdown bloom filter
+	 *
+	 * Consider bloom filter on the hash (outer side) with a pushdown to the
+	 * inner side. We need to be careful to only look at clauses of the right
+	 * form, that can be evaluated using a bloom filter - it needs to be an
+	 * equality with hash support. And it needs to be binary opclause with
+	 * each argument referencing one side of the join.
+	 *
+	 * Luckily that's what hash_inner_and_outer does, so we just reuse the
+	 * hashclauses.
+	 *
+	 * We can only make this work for some join types, when a missing match
+	 * in the hash table is enough to eliminate the row. That means we can't
+	 * do this for outer joins (maybe unless there are additional conditions
+	 * making it inner?), or antijoins (because the bloom filter can have
+	 * false positives).
+	 *
+	 * XXX If we want to allow using the filters to serve as parameters for
+	 * other types of plans (e.g. to fill IN (...) queries), that could work
+	 * if we force keeping the "exact" filter, not turning it into bloom.
+	 *
+	 * XXX We can't modify the path yet, because it's referenced by multiple
+	 * upper paths for alternative plans.
+	 *
+	 * XXX Disabled for parallel plans for now.
+	 */
+	if (enable_hash_filter_pushdown &&
+		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&
+		(best_path->jpath.jointype == JOIN_INNER ||
+		 best_path->jpath.jointype == JOIN_SEMI))
+	{
+		ListCell *lc2;
+
+		foreach (lc2, best_path->path_hashclauses)
+		{
+			Relids	relids = NULL;
+			Path   *path;
+			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
+			OpExpr *opexpr;
+			Node   *expr = NULL;
+			Node   *expr2 = NULL;
+
+			/* guaranteed by clause_sides_match_join */
+			opexpr = (OpExpr *) rinfo->clause;
+
+			/*
+			 * grab relids for the outer side (inner side is hash)
+			 *
+			 * XXX I did try using rinfo->outer_is_left but that failed in
+			 * some cases. Maybe I was doing something wrong, not sure.
+			 */
+			if (bms_is_subset(rinfo->left_relids, best_path->jpath.outerjoinpath->parent->relids))
+			{
+				relids = rinfo->left_relids;
+				expr = (Node *) lsecond(opexpr->args);
+				expr2 = (Node *) linitial(opexpr->args);
+			}
+			else if (bms_is_subset(rinfo->right_relids, best_path->jpath.outerjoinpath->parent->relids))
+			{
+				relids = rinfo->right_relids;
+				expr = (Node *) linitial(opexpr->args);
+				expr2 = (Node *) lsecond(opexpr->args);
+			}
+
+			Assert(relids != NULL);
+
+			/* now, try to pushdown the condition as far as possible */
+			path = find_filter_pushdown_target(best_path->jpath.outerjoinpath, relids);
+
+			/*
+			 * Did we find a good place for pushdown?
+			 *
+			 * XXX We should generally find at least one place where to
+			 * push the filter, but maybe not - not all node types allow
+			 * pushdown for now (only scans).
+			 *
+			 * XXX Should check if it's efficient to build this filter.
+			 * If we don't expect to filter anything, why push it down?
+			 * Not sure how much we can/want to rely on estimates, the
+			 * risk seems pretty low and gains may be significant even
+			 * if we end up filtering only a small fraction of rows.
+			 * Could we estimate it like a fraction of (total - startup)
+			 * of the inner path cost?
+			 *
+			 * XXX We need to do this before building the subplans, so
+			 * we don't have the Hash node yet. We'll leave the pointer
+			 * NULL and update it later.
+			 *
+			 * We should group the clauses by relids, and then push each
+			 * group to the same node at once.
+			 */
+			if (path)
+			{
+				HashFilter *filter = makeNode(HashFilter);
+				HashFilterReference *ref = makeNode(HashFilterReference);
+
+				filter->filterId = ++(root->glob->lastFilterId);
+				filter->clauses = list_make1(copyObject(expr));
+
+				filter->hashoperators = NIL;
+				filter->hashoperators = lappend_oid(filter->hashoperators, opexpr->opno);
+
+				filter->hashcollations = NIL;
+				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
+
+				/* XXX not sure a copy is needed, but maybe it is */
+				ref->filterId = filter->filterId;
+				ref->clauses = list_make1(copyObject(expr2));
+
+				/* add the filter to the list */
+				filters = lappend(filters, filter);
+
+				/* add the reference - we push filters from joins higher up first,
+				 * but joins are generally ordered from the most selective first
+				 * (to keep results small), and we want to start with the most
+				 * selective filters - so we add the filters at the beginning,
+				 * to run those filters first */
+				path->filters = lcons(ref, path->filters);
+			}
+		}
+	}
 
 	/*
 	 * HashJoin can project, so we don't have to demand exact tlists from the
@@ -4853,7 +4978,7 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewInherit);
 
 	/* FIXME add as parameter to make_hash()? */
-	hash_plan->filters = best_path->filters;
+	hash_plan->filters = filters;
 
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input

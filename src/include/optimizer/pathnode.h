@@ -339,4 +339,7 @@ extern RelOptInfo *build_child_join_rel(PlannerInfo *root,
 										RelOptInfo *parent_joinrel, List *restrictlist,
 										SpecialJoinInfo *sjinfo);
 
+/* filter pushdown (bloom, range, ...) */
+Path *find_filter_pushdown_target(Path *path, Relids relids);
+
 #endif							/* PATHNODE_H */

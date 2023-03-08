@@ -3821,8 +3821,7 @@ create_cursor(ForeignScanState *node)
 		char *expr = ((String *) linitial(filterExprs))->sval;
 
 		/* the filter may not be built */
-		if (!filter)
-			continue;
+		Assert(filter);
 
 		if (filter->filter_type == HashFilterExact)
 		{

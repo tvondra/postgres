@@ -3294,6 +3294,7 @@ typedef struct JoinCostWorkspace
 	int			numbuckets;
 	int			numbatches;
 	Cardinality inner_rows_total;
+	Selectivity	filter_selectivity;
 } JoinCostWorkspace;
 
 /*

@@ -1222,6 +1222,7 @@ typedef struct HashFilter
 	Index		filterId;
 
 	/* expressions evaluated against the filter */
+	Selectivity	selectivity;
 	List	   *clauses;
 
 	List	   *hashoperators;

@@ -3947,6 +3947,7 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	Selectivity innerbucketsize;
 	Selectivity innermcvfreq;
 	ListCell   *hcl;
+	ListCell   *lc;
 
 	/*
 	 * XXX When there are pushed-down filters, we need to reduce the costs
@@ -3957,7 +3958,13 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	 * already do that for the join). Not sure what to do about the costs,
 	 * because we can't just rerun the costing easily.
 	 */
-	double		filter_coefficient = (path->filters) ? 0.01 : 1.0;
+	double		filter_coefficient = 1.0;
+
+	foreach (lc, path->filters)
+	{
+		HashFilter *filter  = (HashFilter *) lfirst(lc);
+		filter_coefficient *= filter->selectivity;
+	}
 
 	outer_path_rows *= filter_coefficient;
 

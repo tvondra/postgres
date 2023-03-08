@@ -1416,9 +1416,9 @@ deparseFilterExpr(bool has_where, List *filters, deparse_expr_cxt *context)
 	if (filters != NIL)
 	{
 		if (!has_where)
-			appendStringInfoString(buf, " WHERE ");
+			appendStringInfoString(buf, " WHERE (%s) ");
 		else
-			appendStringInfoString(buf, " ");
+			appendStringInfoString(buf, " AND (%s) ");
 
 		appendFilters(filters, context);
 	}
@@ -1647,7 +1647,6 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 {
 	int			nestlevel;
 	ListCell   *lc;
-	bool		is_first = true;
 	StringInfo	buf = context->buf;
 
 	/* Make sure any constants in the exprs are printed portably */
@@ -1658,21 +1657,22 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 		StringInfoData	expr;
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
 
-		/* Connect expressions with "AND" and parenthesize each condition. */
-		if (!is_first)
-			appendStringInfoString(buf, " AND ");
+		/*
+		 * We don't know which filters will be actually available during
+		 * query execution. We've pushed a filter for every possible hash
+		 * join etc. and we may not have used it in the end.
+		 *
+		 * XXX Could we somehow walk the plan and check which of the filters
+		 * are actually available? For now we just deparse everything and
+		 * then do the rest when building the actual SQL.
+		 */
 
-		appendStringInfoChar(buf, '(');
-		appendStringInfoString(buf, "%s");
-		appendStringInfoChar(buf, ')');
-
+		/* deparse filter expressions */
 		initStringInfo(&expr);
 		context->buf = &expr;
 		deparseExpr((Expr *) linitial(ref->clauses), context);
 		ref->deparsed = list_make1(makeString(expr.data));
 		context->buf = buf;
-
-		is_first = false;
 	}
 
 	reset_transmission_modes(nestlevel);

@@ -2743,12 +2743,9 @@ create_hashjoin_path(PlannerInfo *root,
 				 * selective filters - so we add the filters at the beginning,
 				 * to run those filters first */
 				path->filters = lcons(ref, path->filters);
-				elog(WARNING, "adding filter %d", ref->filterId);
 			}
 		}
 	}
-
-	/* FIXME check if we'd build any filters, and include them in cost */
 
 	final_cost_hashjoin(root, pathnode, workspace, extra);
 

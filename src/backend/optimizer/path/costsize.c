@@ -3956,7 +3956,7 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	 * already do that for the join). Not sure what to do about the costs,
 	 * because we can't just rerun the costing easily.
 	 */
-	double		filter_coefficient = 0.01;
+	double		filter_coefficient = (path->filters) ? 0.01 : 1.0;
 
 	outer_path_rows *= filter_coefficient;
 
@@ -4156,22 +4156,12 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 		run_cost += hash_qual_cost.per_tuple * outer_path_rows *
 			clamp_row_est(inner_path_rows * innerbucketsize) * 0.5;
 
-		/* FIXME reduce the runtime cost to make hashjoins more likely */
-		run_cost *= 0.5;
-
 		/*
 		 * Get approx # tuples passing the hashquals.  We use
 		 * approx_tuple_count here because we need an estimate done with
 		 * JOIN_INNER semantics.
 		 */
 		hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
-	}
-
-	/* XXX penalize the case with building hash on the larger table */
-	if (inner_path_rows > outer_path_rows)
-	{
-		startup_cost += 1000000000.0;
-		run_cost += 1000000000.0;
 	}
 
 	/*

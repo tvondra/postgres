@@ -3777,6 +3777,8 @@ create_cursor(ForeignScanState *node)
 	PGresult   *res;
 	ListCell   *lc;
 	ListCell   *lc2;
+	bool		is_first;
+	StringInfoData	filters;
 
 	/* First, process a pending asynchronous request, if any. */
 	if (fsstate->conn_state->pendingAreq)
@@ -3806,21 +3808,26 @@ create_cursor(ForeignScanState *node)
 	appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
 					 fsstate->cursor_number, fsstate->query);
 
-	/* replace filters */
+	/* build conditions for filters */
+	is_first = true;
+	initStringInfo(&filters);
+
 	forboth (lc, fsstate->filter_ids, lc2, fsstate->filter_exprs)
 	{
 		int	filterId = lfirst_int(lc);
 		List *filterExprs = (List *) lfirst(lc2);
 
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
-
 		char *expr = ((String *) linitial(filterExprs))->sval;
+
+		/* the filter may not be built */
+		if (!filter)
+			continue;
 
 		if (filter->filter_type == HashFilterExact)
 		{
 			StringInfoData	cond;
 			StringInfoData	values;
-			StringInfoData	tmp;
 
 			initStringInfo(&values);
 
@@ -3837,19 +3844,17 @@ create_cursor(ForeignScanState *node)
 			initStringInfo(&cond);
 			appendStringInfo(&cond, "%s IN (%s)", expr, values.data);
 
-			initStringInfo(&tmp);
-			appendStringInfo(&tmp, buf.data, cond.data);
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
 
-			resetStringInfo(&buf);
-			appendStringInfoString(&buf, tmp.data);
+			appendStringInfo(&filters, "(%s)", cond.data);
 
-			elog(WARNING, "SQL: %s", buf.data);
+			elog(WARNING, "filter condition: %s", cond.data);
 		}
 		else if (filter->filter_type == HashFilterRange)
 		{
 			StringInfoData	cond;
 			StringInfoData	values;
-			StringInfoData	tmp;
 
 			initStringInfo(&cond);
 
@@ -3884,13 +3889,12 @@ create_cursor(ForeignScanState *node)
 				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
 			}
 
-			initStringInfo(&tmp);
-			appendStringInfo(&tmp, buf.data, cond.data);
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
 
-			resetStringInfo(&buf);
-			appendStringInfoString(&buf, tmp.data);
+			appendStringInfo(&filters, "(%s)", cond.data);
 
-			elog(WARNING, "SQL: %s", buf.data);
+			elog(WARNING, "filter condition: %s", cond.data);
 		}
 		else if (filter->filter_type == HashFilterBloom)
 		{
@@ -3898,7 +3902,6 @@ create_cursor(ForeignScanState *node)
 			int		nbytes;
 			char   *ptr;
 
-			StringInfoData tmp;
 			StringInfoData cond;
 
 			nbytes = (filter->nbits / 8);
@@ -3913,17 +3916,25 @@ create_cursor(ForeignScanState *node)
 			appendStringInfo(&cond, "public.postgres_fdw_bloom(%s, %d, %d, '\\x%s')",
 							 expr, filter->nhashes, filter->nbits, encoded);
 
-			initStringInfo(&tmp);
-			appendStringInfo(&tmp, buf.data, cond.data);
+			if (!is_first)
+				appendStringInfoString(&filters, " AND ");
 
-
-			resetStringInfo(&buf);
-			appendStringInfoString(&buf, tmp.data);
-
-			elog(WARNING, "SQL: %s", buf.data);
+			appendStringInfo(&filters, "(%s)", cond.data);
 
 			pfree(encoded);
 		}
+
+		is_first = false;
+	}
+
+	{
+		StringInfoData	tmp;
+		initStringInfo(&tmp);
+		appendStringInfo(&tmp, buf.data, filters.data);
+		resetStringInfo(&buf);
+		appendStringInfoString(&buf, tmp.data);
+
+		elog(WARNING, "%s", buf.data);
 	}
 
 	/*

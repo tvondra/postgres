@@ -2763,11 +2763,20 @@ create_hashjoin_path(PlannerInfo *root,
 				/* add the filter to the list */
 				pathnode->filters = lappend(pathnode->filters, filter);
 
-				/* add the reference - we push filters from joins higher up first,
+				/*
+				 * add the reference - we push filters from joins higher up first,
 				 * but joins are generally ordered from the most selective first
 				 * (to keep results small), and we want to start with the most
 				 * selective filters - so we add the filters at the beginning,
-				 * to run those filters first */
+				 * to run those filters first
+				 *
+				 * XXX This is an issue, because the path will contain filters
+				 * from all considered hashjoins, even those we didn't use in the
+				 * end. We should probably remove those while creating the plan,
+				 * or maybe postpone adding them to the plan until then (and
+				 * just remember to which path to add them). This way we need to
+				 * handle this in the scan nodes, which si annoying.
+				 */
 				path->filters = lcons(ref, path->filters);
 			}
 		}

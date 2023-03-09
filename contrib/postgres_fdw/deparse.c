@@ -1655,7 +1655,10 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 	foreach(lc, filters)
 	{
 		StringInfoData	expr;
+		StringInfoData	hashexpr;
 		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+
+		TypeCacheEntry *typentry;
 
 		/*
 		 * We don't know which filters will be actually available during
@@ -1671,8 +1674,19 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 		initStringInfo(&expr);
 		context->buf = &expr;
 		deparseExpr((Expr *) linitial(ref->clauses), context);
-		ref->deparsed = list_make1(makeString(expr.data));
 		context->buf = buf;
+
+		initStringInfo(&hashexpr);
+
+		typentry = lookup_type_cache(exprType(linitial(ref->clauses)),
+									 TYPECACHE_HASH_PROC);
+
+		appendStringInfo(&hashexpr, "%s.%s(%s)", 
+			get_namespace_name(get_func_namespace(typentry->hash_proc)),
+			get_func_name(typentry->hash_proc),
+			expr.data);
+
+		ref->deparsed = list_make1(makeString(hashexpr.data));
 	}
 
 	reset_transmission_modes(nestlevel);

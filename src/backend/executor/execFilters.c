@@ -85,7 +85,7 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 		 * Get the join attribute value of the tuple
 		 */
 		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-elog(WARNING, "keyval = %s", text_to_cstring(keyval));
+
 		/*
 		 * If the attribute is NULL, and the join operator is strict, then
 		 * this tuple cannot pass the join qual so we can reject it
@@ -739,7 +739,6 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 	{
 		uint32	hash = 0;
 		ExecHashGetFilterHashValue(filter, econtext, hashtable->keepNulls, &hash);
-		elog(WARNING, "hash = %u", hash);
 		ExecHashFilterAddHash(filter, hashtable->keepNulls, econtext, hash);
 		filter->nvalues++;
 	}

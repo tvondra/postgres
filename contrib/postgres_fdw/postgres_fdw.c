@@ -22,6 +22,7 @@
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "commands/vacuum.h"
+#include "common/hashfn.h"
 #include "common/pg_prng.h"
 #include "executor/execAsync.h"
 #include "foreign/fdwapi.h"
@@ -51,7 +52,6 @@
 #include "utils/rel.h"
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
-#include "utils/xxhash.h"
 
 PG_MODULE_MAGIC;
 
@@ -8038,24 +8038,25 @@ get_batch_size_option(Relation rel)
 }
 
 
+#define BLOOM_SEED_1	0x71d924af
+#define BLOOM_SEED_2	0xba48b314
+
 Datum
 postgres_fdw_bloom(PG_FUNCTION_ARGS)
 {
-	Datum	value = PG_GETARG_DATUM(0);
+	uint32	hashvalue = PG_GETARG_UINT32(0);
 	int		nhashes = PG_GETARG_INT32(1);
 	int		nbits = PG_GETARG_INT32(2);
 	bytea  *filter = PG_GETARG_BYTEA_P(3);
 	int			i;
 	uint64		h1,
 				h2;
-	uint64		hashvalue = 0;
 
 	char   *data = VARDATA_ANY(filter);
 
-	hashvalue = XXH3_64bits(&value, sizeof(Datum));
-
-	h1 = ((uint32) hashvalue) % nbits;
-	h2 = (hashvalue >> 32) % nbits;
+	/* compute the hashes, used for the bloom filter */
+	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_2) % nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < nhashes; i++)

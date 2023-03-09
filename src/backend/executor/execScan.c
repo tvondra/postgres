@@ -22,7 +22,6 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
-#include "utils/xxhash.h"
 
 /*
  * ExecScanFetch -- check interrupts & fetch next potential tuple

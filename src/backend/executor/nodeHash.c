@@ -2406,8 +2406,6 @@ ExecHashFilterFinalizeRange(HashFilterState *filter)
 
 	FilterRange *ranges;
 
-elog(WARNING, "ExecHashFilterFinalizeRange nvalues %ld nranges %ld", filter->nvalues, filter->nranges);
-
 	Assert(filter->filter_type == HashFilterRange);
 
 	/* nothing to do if the filter represents no values */
@@ -2543,9 +2541,11 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 {
 	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
 
+	if (filter->built)
+		return;
+
 	if (filter->filter_type == HashFilterExact)
 	{
-		// elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
 		/* nothing to do if the filter represents no values */
 		if (filter->nvalues > 0)
 			qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);

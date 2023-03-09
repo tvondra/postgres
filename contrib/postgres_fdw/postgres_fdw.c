@@ -3854,8 +3854,6 @@ create_cursor(ForeignScanState *node)
 				appendStringInfo(&filters, "(%s)", cond.data);
 			else
 				appendStringInfoString(&filters, "(false)");
-
-			elog(WARNING, "filter condition: %s", cond.data);
 		}
 		else if (filter->filter_type == HashFilterRange)
 		{
@@ -3918,7 +3916,7 @@ create_cursor(ForeignScanState *node)
 				{
 					// FIXME empty filter
 				}
-elog(WARNING, "filter->nranges = %ld  filter->nvalues = %ld", filter->nranges, filter->nvalues);
+
 				if (filter->nvalues > 0)
 					appendStringInfo(&cond, "(%s BETWEEN %ld AND %ld)", expr, minval, maxval);
 				else
@@ -3930,8 +3928,6 @@ elog(WARNING, "filter->nranges = %ld  filter->nvalues = %ld", filter->nranges, f
 				appendStringInfoString(&filters, " AND ");
 
 			appendStringInfo(&filters, "(%s)", cond.data);
-
-			elog(WARNING, "filter condition: %s", cond.data);
 		}
 		else if (filter->filter_type == HashFilterBloom)
 		{
@@ -3971,7 +3967,7 @@ elog(WARNING, "filter->nranges = %ld  filter->nvalues = %ld", filter->nranges, f
 		resetStringInfo(&buf);
 		appendStringInfoString(&buf, tmp.data);
 
-		elog(WARNING, "%s", buf.data);
+		elog(WARNING, "SQL: %s", buf.data);
 	}
 
 	/*

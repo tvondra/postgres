@@ -445,8 +445,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 		 * This should copy the values into the filter.
 		 */
 		// state->filter_type = HashFilterExact;
-		state->filter_type = HashFilterRange;
-		// state->filter_type = HashFilterBloom;
+		// state->filter_type = HashFilterRange;
+		state->filter_type = HashFilterBloom;
 		state->filter = filter;
 		state->filterId = filter->filterId;
 

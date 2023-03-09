@@ -22,10 +22,10 @@
 #include "executor/executor.h"
 #include "executor/hashjoin.h"
 #include "miscadmin.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/xxhash.h"
 
 
 /*
@@ -54,9 +54,9 @@ static bool
 ExecHashGetFilterHashValue(HashFilterState *filter,
 					 ExprContext *econtext,
 					 bool keep_nulls,
-					 uint64 *hashvalue)
+					 uint32 *hashvalue)
 {
-	uint64		hashkey = 0;
+	uint32		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	ListCell   *hk;
 	int			i = 0;
@@ -85,7 +85,7 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 		 * Get the join attribute value of the tuple
 		 */
 		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-
+elog(WARNING, "keyval = %s", text_to_cstring(keyval));
 		/*
 		 * If the attribute is NULL, and the join operator is strict, then
 		 * this tuple cannot pass the join qual so we can reject it
@@ -119,14 +119,7 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 		else
 		{
 			/* Compute the hash function */
-			uint64		hkey;
-
-			if (filter->types[i] == INT4OID)
-				hkey = XXH3_64bits(&keyval, sizeof(Datum));
-			else
-				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
-
-			hashkey ^= hkey;
+			hashkey ^= DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 		}
 
 		i++;
@@ -588,7 +581,7 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 }
 
 static void
-ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint64 hash)
+ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint32 hashvalue)
 {
 	uint64		h1,
 				h2;
@@ -600,9 +593,12 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	// xxhash = XXH3_128bits(&hash, sizeof(uint64));
 	// h1 = xxhash.low64 % filter->nbits;
 	// h2 = xxhash.high64 % filter->nbits;
+#define BLOOM_SEED_1	0x71d924af
+#define BLOOM_SEED_2	0xba48b314
 
-	h1 = ((uint32) hash) % filter->nbits;
-	h2 = (hash >> 32) % filter->nbits;
+	/* compute the hashes, used for the bloom filter */
+	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)
@@ -623,9 +619,9 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 					 ExprContext *econtext,
 					 Datum *values,
 					 bool keep_nulls,
-					 uint64 *hashvalue)
+					 uint32 *hashvalue)
 {
-	uint64		hashkey = 0;
+	uint32		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	int			i = 0;
 	MemoryContext oldContext;
@@ -725,7 +721,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 		for (i = 0; i < nvalues; i++)
 		{
-			uint64	hashvalue = 0;
+			uint32	hashvalue = 0;
 			Datum  *values = (Datum *) (data + i * entrylen);
 
 			/*
@@ -741,8 +737,9 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 	if (filter->filter_type == HashFilterBloom)
 	{
-		uint64	hash = 0;
+		uint32	hash = 0;
 		ExecHashGetFilterHashValue(filter, econtext, hashtable->keepNulls, &hash);
+		elog(WARNING, "hash = %u", hash);
 		ExecHashFilterAddHash(filter, hashtable->keepNulls, econtext, hash);
 		filter->nvalues++;
 	}
@@ -836,14 +833,7 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 		else
 		{
 			/* Compute the hash function */
-			uint64		hkey;
-
-			if (filter->types[i] == INT4OID)
-				hkey = XXH3_64bits(&keyval, sizeof(Datum));
-			else
-				hkey = DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
-
-			hashkey ^= hkey;
+			hashkey ^= DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
 		}
 
 		i++;
@@ -951,8 +941,12 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	// h1 = xxhash.low64 % filter->nbits;
 	// h2 = xxhash.high64 % filter->nbits;
 
-	h1 = ((uint32) hashvalue) % filter->nbits;
-	h2 = (hashvalue >> 32) % filter->nbits;
+#define BLOOM_SEED_1	0x71d924af
+#define BLOOM_SEED_2	0xba48b314
+
+	/* compute the hashes, used for the bloom filter */
+	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % filter->nbits;
+	h2 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_2) % filter->nbits;
 
 	/* compute the requested number of hashes */
 	for (i = 0; i < filter->nhashes; i++)

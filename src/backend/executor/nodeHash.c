@@ -2406,7 +2406,13 @@ ExecHashFilterFinalizeRange(HashFilterState *filter)
 
 	FilterRange *ranges;
 
+elog(WARNING, "ExecHashFilterFinalizeRange nvalues %ld nranges %ld", filter->nvalues, filter->nranges);
+
 	Assert(filter->filter_type == HashFilterRange);
+
+	/* nothing to do if the filter represents no values */
+	if (filter->nvalues == 0)
+		return;
 
 	nranges = (filter->nranges + (filter->nvalues - 2 * filter->nranges));
 	ranges = palloc(sizeof(FilterRange) * nranges);
@@ -2540,8 +2546,9 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 	if (filter->filter_type == HashFilterExact)
 	{
 		// elog(WARNING, "sorting " INT64_FORMAT " values", filter->nvalues);
-
-		qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
+		/* nothing to do if the filter represents no values */
+		if (filter->nvalues > 0)
+			qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
 	}
 	else if (filter->filter_type == HashFilterRange)
 		ExecHashFilterFinalizeRange(filter);

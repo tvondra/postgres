@@ -3823,6 +3823,10 @@ create_cursor(ForeignScanState *node)
 		/* the filter may not be built */
 		Assert(filter);
 
+		/*
+		 * FIXME the filter may be empty, in which case we should push false
+		 * to the condition. For bloom it'd work just fine.
+		 */
 		if (filter->filter_type == HashFilterExact)
 		{
 			StringInfoData	cond;
@@ -3846,7 +3850,10 @@ create_cursor(ForeignScanState *node)
 			if (!is_first)
 				appendStringInfoString(&filters, " AND ");
 
-			appendStringInfo(&filters, "(%s)", cond.data);
+			if (filter->nvalues > 0)
+				appendStringInfo(&filters, "(%s)", cond.data);
+			else
+				appendStringInfoString(&filters, "(false)");
 
 			elog(WARNING, "filter condition: %s", cond.data);
 		}
@@ -3857,6 +3864,7 @@ create_cursor(ForeignScanState *node)
 
 			initStringInfo(&cond);
 
+#ifdef EXACT_RANGE_CONDITIONS
 			for (int i = 0; i < filter->nranges; i++)
 			{
 				Datum start = ((Datum *) filter->data)[2*i];
@@ -3887,6 +3895,36 @@ create_cursor(ForeignScanState *node)
 
 				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
 			}
+#else
+			{
+				Datum  *datums = (Datum *) filter->data;
+				Datum	minval = 0,
+						maxval = 0;
+
+				if ((filter->nranges > 0) && (filter->nvalues > 2 * filter->nranges))
+				{
+					minval = datums[0];
+					maxval = datums[2 * filter->nranges - 1];
+
+					minval = Min(minval, datums[2 * filter->nranges]);
+					maxval = Max(maxval, datums[filter->nvalues - 1]);
+				}
+				else if ((filter->nranges > 0) || (filter->nvalues > 2 * filter->nranges))
+				{
+					minval = datums[0];
+					maxval = datums[filter->nvalues - 1];
+				}
+				else
+				{
+					// FIXME empty filter
+				}
+elog(WARNING, "filter->nranges = %ld  filter->nvalues = %ld", filter->nranges, filter->nvalues);
+				if (filter->nvalues > 0)
+					appendStringInfo(&cond, "(%s BETWEEN %ld AND %ld)", expr, minval, maxval);
+				else
+					appendStringInfo(&cond, "(false)");
+			}
+#endif
 
 			if (!is_first)
 				appendStringInfoString(&filters, " AND ");

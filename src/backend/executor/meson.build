@@ -6,6 +6,7 @@ backend_sources += files(
   'execCurrent.c',
   'execExpr.c',
   'execExprInterp.c',
+  'execFilters.c',
   'execGrouping.c',
   'execIndexing.c',
   'execJunk.c',

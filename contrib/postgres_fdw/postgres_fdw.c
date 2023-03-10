@@ -3737,14 +3737,13 @@ ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 	return true;
 }
 
-
-
 /*
  * hash_filter_lookup
  *		Lookup filter by filterId in the plan-level executor registry.
  *
  * The filter may not exist yet, depending on whether the Hash node was already
- * initialized. If the filter does not exist, we treat that matching everything.
+ * initialized. If the filter does not exist yet, we treat that as matching
+ * everything.
  */
 static HashFilterState *
 hash_filter_lookup(EState *estate, int filterId)

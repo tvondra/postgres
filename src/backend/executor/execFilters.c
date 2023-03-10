@@ -1,18 +1,11 @@
 /*-------------------------------------------------------------------------
  *
- * execScan.c
- *	  This code provides support for generalized relation scans. ExecScan
- *	  is passed a node and a pointer to a function to "do the right thing"
- *	  and return a tuple from the relation. ExecScan then does the tedious
- *	  stuff - checking the qualification and projecting the tuple
- *	  appropriately.
- *
- * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
- * Portions Copyright (c) 1994, Regents of the University of California
+ * execFilters.c
+ *	  This code provides support for pushed-down filters.
  *
  *
  * IDENTIFICATION
- *	  src/backend/executor/execScan.c
+ *	  src/backend/executor/execFilters.c
  *
  *-------------------------------------------------------------------------
  */
@@ -131,6 +124,13 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 	return true;
 }
 
+/*
+ * ExecHashGetHashValue
+ *		Extract values from the tuple.
+ *
+ * Pretty much exactly the same as ExecHashGetFilterHashValue, but it returns
+ * the values instead of hashing them.
+ */
 static bool
 ExecHashGetFilterGetValues(HashFilterState *filter,
 						   ExprContext *econtext,
@@ -200,6 +200,7 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 	return true;
 }
 
+/* A simple pair of values, representing an interval. */
 typedef struct FilterRange
 {
 	Datum	start;
@@ -207,6 +208,12 @@ typedef struct FilterRange
 } FilterRange;
 
 
+/*
+ * FilterRange comparator. It compares by start, then by end.
+ *
+ * FIXME This needs to use a comparator for the particular data type, instead of
+ * just comparing the Datum values.
+ */
 static int
 filter_range_cmp(const void *a, const void *b)
 {
@@ -226,6 +233,16 @@ filter_range_cmp(const void *a, const void *b)
 	return 0;
 }
 
+/*
+ * ranges_overlap
+ *		returns true iff the two ranges overlap
+ *
+ * Assumes the ranges are sorted by filter_range_cmp, i.e. first by start
+ * and then by end.
+ *
+ * FIXME This needs to use a comparator for the particular data type, instead of
+ * just comparing the Datum values.
+ */
 static bool
 ranges_overlap(FilterRange *ra, FilterRange *rb)
 {
@@ -238,6 +255,20 @@ ranges_overlap(FilterRange *ra, FilterRange *rb)
 	return true;
 }
 
+/*
+ * ranges_contiguous
+ *		returns true iff the ranges are contiguous
+ *
+ * Assumes the ranges are sorted by filter_range_cmp, i.e. first by start
+ * and then by end.
+ *
+ * Ranges are contiguous when there can be no values in between them. For
+ * integer types this means the second range either starts where the first
+ * range ends, or within distance "1" from that value.
+ *
+ * FIXME This needs to use a comparator for the particular data type, instead of
+ * just comparing the Datum values.
+ */
 static bool
 ranges_contiguous(FilterRange *ra, FilterRange *rb)
 {
@@ -248,6 +279,14 @@ ranges_contiguous(FilterRange *ra, FilterRange *rb)
 	return false;
 }
 
+/*
+ * ExecHashFilterAddRange
+ *		Add values to a range filter.
+ *
+ * If there's not enough space for the new value, combine the values into
+ * fewer ranges. We combine ranges that overlap or are contiguous, and then
+ * we combine closest ranges.
+ */
 static bool
 ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
@@ -408,6 +447,17 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	return true;
 }
 
+/*
+ * ExecHashFilterFinalizeRange
+ *		Combine filter represented as ranges.
+ *
+ * This is pretty much a subset of what ExecHashFilterAddRange does - it sorts
+ * the ranges and values, combines overlapping/contiguous ranges, etc. The one
+ * thing it does not do is combining close ranges, because we don't need to fit
+ * any more values into the filter. We just want to make it easier to use.
+ *
+ * FIXME refactor to reuse as much of the code with ExecHashFilterAddRange.
+ */
 static void
 ExecHashFilterFinalizeRange(HashFilterState *filter)
 {
@@ -557,6 +607,10 @@ filter_comparator(const void *a, const void *b, void *c)
 	return memcmp(a, b, len);
 }
 
+/*
+ * ExecHashFilterFinalize
+ *		Finalize the filter (to have it nicely sorted etc.).
+ */
 void
 ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 {
@@ -580,6 +634,13 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 		= lappend(node->ps.state->es_filters, filter);
 }
 
+#define BLOOM_SEED_1	0x71d924af
+#define BLOOM_SEED_2	0xba48b314
+
+/*
+ * ExecHashFilterAddHash
+ *		Add value (a hash of the actual value) to a Bloom filter.
+ */
 static void
 ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *econtext, uint32 hashvalue)
 {
@@ -588,13 +649,6 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	int			i;
 
 	Assert(filter->filter_type == HashFilterBloom);
-
-	/* compute the hashes, used for the bloom filter */
-	// xxhash = XXH3_128bits(&hash, sizeof(uint64));
-	// h1 = xxhash.low64 % filter->nbits;
-	// h2 = xxhash.high64 % filter->nbits;
-#define BLOOM_SEED_1	0x71d924af
-#define BLOOM_SEED_2	0xba48b314
 
 	/* compute the hashes, used for the bloom filter */
 	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % filter->nbits;
@@ -614,6 +668,13 @@ ExecHashFilterAddHash(HashFilterState *filter, bool keep_nulls, ExprContext *eco
 	}
 }
 
+/*
+ * ExecHashGetFilterHashValue2
+ *		Calculate hash for values represented by Datum array.
+ *
+ * This is used when switching from exact filter to a bloom (once it reaches the
+ * size limit).
+ */
 static bool
 ExecHashGetFilterHashValue2(HashFilterState *filter,
 					 ExprContext *econtext,
@@ -681,6 +742,10 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 	return true;
 }
 
+/*
+ * ExecHashFilterAddValue
+ *		Add a value to a filter (of any type).
+ */
 void
 ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprContext *econtext)
 {
@@ -744,6 +809,10 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 	}
 }
 
+/*
+ * ExecHashResetFilters
+ *		Reset the filter state before a rescan.
+ */
 void
 ExecHashResetFilters(HashState *node)
 {
@@ -766,6 +835,13 @@ ExecHashResetFilters(HashState *node)
  *		Calculate a hash value for the tuple in the scan slot.
  *
  * We'll then check the presence of this hash value in the bloom filter.
+ *
+ * XXX Almost the same as ExecHashGetFilterHashValue, except that it's
+ * executed for the filter reference. Could we refactor it somehow to
+ * reduce the code duplication?
+ *
+ * XXX In any case, we should rename this to not include "scan" because
+ * we could inject this to other node types (e.g. subquery).
  */
 bool
 ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
@@ -850,6 +926,10 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
  *
  * FIXME Probably does not handle NULLs correctly, needs a separate isnull
  * array, or something like that?
+ *
+ * FIXME Almost the same as ExecHashGetFilterGetValues, except that it's
+ * executed for the filter reference. Could we refactor it somehow to
+ * reduce the code duplication?
  */
 static bool
 ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
@@ -934,14 +1014,6 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
 	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
 
 	Assert(filter->filter_type == HashFilterBloom);
-
-	/* compute the hashes, used for the bloom filter */
-	// xxhash = XXH3_128bits(&hashvalue, sizeof(uint64));
-	// h1 = xxhash.low64 % filter->nbits;
-	// h2 = xxhash.high64 % filter->nbits;
-
-#define BLOOM_SEED_1	0x71d924af
-#define BLOOM_SEED_2	0xba48b314
 
 	/* compute the hashes, used for the bloom filter */
 	h1 = hash_bytes_uint32_extended(hashvalue, BLOOM_SEED_1) % filter->nbits;

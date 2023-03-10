@@ -564,6 +564,35 @@ ExecHashFilterFinalizeRange(HashFilterState *filter)
 	}
 }
 
+/*
+ * Simple comparator of Datum arrays.
+ *
+ * FIXME This only works for byval types, needs to check byref types too. That
+ * requires looking up comparators for types etc.
+ */
+static int
+filter_comparator(const void *a, const void *b, void *c)
+{
+	Size	len = * (Size *) c;
+
+	return memcmp(a, b, len);
+}
+
+static void
+ExecHashFilterFinalizeExact(HashFilterState *filter)
+{
+	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+
+	Assert(filter->filter_type == HashFilterExact);
+
+	/* nothing to do if the filter represents no values */
+	if (filter->nvalues == 0)
+		return;
+
+	/* nothing to do if the filter represents no values */
+	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
+}
+
 /* FIXME deduplicate the values first */
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
@@ -592,21 +621,6 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 }
 
 
-
-/*
- * Simple comparator of Datum arrays.
- *
- * FIXME This only works for byval types, needs to check byref types too. That
- * requires looking up comparators for types etc.
- */
-static int
-filter_comparator(const void *a, const void *b, void *c)
-{
-	Size	len = * (Size *) c;
-
-	return memcmp(a, b, len);
-}
-
 /*
  * ExecHashFilterFinalize
  *		Finalize the filter (to have it nicely sorted etc.).
@@ -614,17 +628,11 @@ filter_comparator(const void *a, const void *b, void *c)
 void
 ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 {
-	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
-
 	if (filter->built)
 		return;
 
 	if (filter->filter_type == HashFilterExact)
-	{
-		/* nothing to do if the filter represents no values */
-		if (filter->nvalues > 0)
-			qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator, &entrylen);
-	}
+		ExecHashFilterFinalizeExact(filter);
 	else if (filter->filter_type == HashFilterRange)
 		ExecHashFilterFinalizeRange(filter);
 

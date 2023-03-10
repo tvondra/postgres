@@ -1702,7 +1702,13 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 			get_func_name(typentry->hash_proc),
 			expr.data);
 
-		ref->deparsed = list_make1(makeString(hashexpr.data));
+		/*
+		 * We keep the original expression (e.g. column name) first, then
+		 * the hash function call. We don't know what type of filter we get
+		 * in the end.
+		 */
+		elog(WARNING, "expr.data = %p %s", expr.data, expr.data);
+		ref->deparsed = list_make2(makeString(expr.data), makeString(hashexpr.data));
 	}
 
 	reset_transmission_modes(nestlevel);

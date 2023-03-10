@@ -105,7 +105,7 @@ typedef struct deparse_expr_cxt
 								 * a base relation. */
 	StringInfo	buf;			/* output buffer to append to */
 	List	  **params_list;	/* exprs that will become remote Params */
-	List	   *filters;
+	List	   *filters;		/* filters */
 } deparse_expr_cxt;
 
 #define REL_ALIAS_PREFIX	"r"
@@ -1275,7 +1275,14 @@ deparseSelectStmtForRel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel,
 	/* Construct FROM and WHERE clauses */
 	deparseFromExpr(quals, &context);
 
-	/* Append bloom filter(s), if present */
+	/*
+	 * Append condition(s) for pushed-down filters, if present. Remember if the
+	 * query already has a WHERE clauses, so that the deparsing knows whether to
+	 * add AND or WHERE keywords.
+	 *
+	 * XXX Maybe it'd be easier to make this part of deparseFromExpr. In a way,
+	 * the filters are just an extra where clause.
+	 */
 	deparseFilterExpr((quals != NIL), filters, &context);
 
 	if (IS_UPPER_REL(rel))
@@ -1400,7 +1407,13 @@ deparseFromExpr(List *quals, deparse_expr_cxt *context)
 }
 
 /*
- * 
+ * deparseFilterExpr
+ *		Deparse a condition representing the pushed-down filters.
+ *
+ * This initially added a separate condition placeholder for each filter, but
+ * it's actually simpler to just have a single place holder and then expand
+ * that into many conditions at execution time (we don't have the filters
+ * until then).
  */
 static void
 deparseFilterExpr(bool has_where, List *filters, deparse_expr_cxt *context)
@@ -1415,10 +1428,11 @@ deparseFilterExpr(bool has_where, List *filters, deparse_expr_cxt *context)
 	/* Construct WHERE clause */
 	if (filters != NIL)
 	{
-		if (!has_where)
-			appendStringInfoString(buf, " WHERE (%s) ");
-		else
+		/* if the query already has WHERE, we just append an AND condition. */
+		if (has_where)
 			appendStringInfoString(buf, " AND (%s) ");
+		else
+			appendStringInfoString(buf, " WHERE (%s) ");
 
 		appendFilters(filters, context);
 	}
@@ -1634,13 +1648,15 @@ appendConditions(List *exprs, deparse_expr_cxt *context)
 }
 
 /*
- * Deparse conditions from the provided list and append them to buf.
+ * Deparse conditions from the provided pushed-down filters.
  *
- * The conditions in the list are assumed to be ANDed. This function is used to
- * deparse WHERE clauses, JOIN .. ON clauses and HAVING clauses.
+ * XXX We don't append the expressions to the query yet, because we don't
+ * know how the filter will look like - it might be a Bloom filter, exact
+ * or range filter. So we just stash the deparsed expression in the filter
+ * and then we'll use it to construct the query at runtime.
  *
- * Depending on the caller, the list elements might be either RestrictInfos
- * or bare clauses.
+ * XXX It might be better to make this part of deparseFilterExpr, the current
+ * division is somewhat strange.
  */
 static void
 appendFilters(List *filters, deparse_expr_cxt *context)

@@ -2926,9 +2926,8 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
-	/* does the scan has pushed-down filter references? */
-	if (best_path->filters)
-		scan_plan->scan.filters = best_path->filters;
+	/* copy the filters pushed-down to the scan */
+	scan_plan->scan.filters = best_path->filters;
 
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
@@ -3292,9 +3291,8 @@ create_bitmap_scan_plan(PlannerInfo *root,
 									 bitmapqualorig,
 									 baserelid);
 
-	/* does the scan has pushed-down filter references? */
-	if (best_path->path.filters)
-		scan_plan->scan.filters = best_path->path.filters;
+	/* copy the filters pushed-down to the scan */
+	scan_plan->scan.filters = best_path->path.filters;
 
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);
 
@@ -4151,9 +4149,8 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 												tlist, scan_clauses,
 												outer_plan);
 
-	/* does the scan has pushed-down filter references? */
-	if (best_path->path.filters)
-		scan_plan->scan.filters = best_path->path.filters;
+	/* copy the filters pushed-down to the scan */
+	scan_plan->scan.filters = best_path->path.filters;
 
 	/* Copy cost data from Path to Plan; no need to make FDW do this */
 	copy_generic_path_info(&scan_plan->scan.plan, &best_path->path);

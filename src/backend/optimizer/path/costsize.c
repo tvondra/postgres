@@ -3822,13 +3822,11 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	/*
 	 * XXX When there are pushed-down filters, we need to reduce the costs
 	 * accordingly, because we'll do fewer lookups etc. And the outer path
-	 * may get cheaper too. For now we just assume the filter eliminates
-	 * 99% of rows, and that the runtime cost reduction is proportional.
-	 * In reality we should estimate how many outer rows have a match (we
-	 * already do that for the join). Not sure what to do about the costs,
-	 * because we can't just rerun the costing easily.
-	 *
-	 * XXX Make this conditional on having pushed-down filters.
+	 * may get cheaper too. For now we just assume the cost reduction is
+	 * proportional to the filter selectivity, although we may actually
+	 * change the plan due to pushdown of new conditions (e.g. into foreign
+	 * scan). Not sure if we can do much better, because we'd have to rerun
+	 * the costing / planning with this new information.
 	 */
 	workspace->filter_selectivity = 1.0;
 
@@ -3877,6 +3875,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 			Relids	relids = NULL;
 			Path   *path;
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc2);
+			Selectivity	filter_selectivity;
 
 			/*
 			 * grab relids for the outer side (inner side is hash)
@@ -3930,13 +3929,15 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 			 * XXX In principle we'd probably want to calculate joinrel
 			 * selectivity without the baserel restrictinfos?
 			 */
-			workspace->filter_selectivity *= 0.1;
+			filter_selectivity = 0.1;
 
 			if (inner_path->parent->reloptkind == RELOPT_BASEREL)
 			{
-				workspace->filter_selectivity
-					*= (inner_path->parent->rows / inner_path->parent->tuples);
+				filter_selectivity
+					= (inner_path->parent->rows / inner_path->parent->tuples);
 			}
+
+			workspace->filter_selectivity *= filter_selectivity;
 		}
 	}
 
@@ -3945,6 +3946,12 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	/* cost of source data */
 	startup_cost += outer_path->startup_cost;
 	run_cost += (outer_path->total_cost - outer_path->startup_cost) * workspace->filter_selectivity;
+
+	/*
+	 * XXX We should count this twice, because we're building the hash twice.
+	 * But it tends to be cheap and maybe we'll rearrange the hashjoin states
+	 * to only build it once.
+	 */
 	startup_cost += inner_path->total_cost;
 
 	/*
@@ -4058,13 +4065,12 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	/*
 	 * XXX When there are pushed-down filters, we need to reduce the costs
 	 * accordingly, because we'll do fewer lookups etc. And the outer path
-	 * may get cheaper too. For now we just assume the filter eliminates
-	 * 99% of rows, and that the runtime cost reduction is proportional.
-	 * In reality we should estimate how many outer rows have a match (we
-	 * already do that for the join). Not sure what to do about the costs,
-	 * because we can't just rerun the costing easily.
+	 * may get cheaper too. For now we just assume the cost reduction is
+	 * proportional to the filter selectivity, although we may actually
+	 * change the plan due to pushdown of new conditions (e.g. into foreign
+	 * scan). Not sure if we can do much better, because we'd have to rerun
+	 * the costing / planning with this new information.
 	 */
-
 	outer_path_rows *= workspace->filter_selectivity;
 
 	/* Mark the path with the correct row estimate */

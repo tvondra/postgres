@@ -687,4 +687,6 @@ extern HashFilterState *ExecHashFilterInit(HashState *hashstate,
 										   Plan *outerPlan,
 										   HashFilter *filter);
 
+extern Datum *ExecHashFilterDeserializeExact(HashFilterState *filter);
+
 #endif							/* EXECUTOR_H  */

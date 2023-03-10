@@ -3828,6 +3828,10 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * change the plan due to pushdown of new conditions (e.g. into foreign
 	 * scan). Not sure if we can do much better, because we'd have to rerun
 	 * the costing / planning with this new information.
+	 *
+	 * XXX In principle we could quickly check if deriving the filter and
+	 * pushing it down can actually help - if the cost of running the hash
+	 * side twice is worth the savings.
 	 */
 	workspace->filter_selectivity = 1.0;
 

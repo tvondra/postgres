@@ -153,7 +153,7 @@ bool		enable_parallel_hash = true;
 bool		enable_partition_pruning = true;
 bool		enable_presorted_aggregate = true;
 bool		enable_async_append = true;
-bool		enable_hash_filter_pushdown = true;
+int			filter_pushdown_mode = FILTER_PUSHDOWN_RANGE;
 
 typedef struct
 {
@@ -3868,7 +3868,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * XXX Disabled for parallel plans for now. Building parallel filters
 	 * should be possible, though.
 	 */
-	if (enable_hash_filter_pushdown &&
+	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(outer_path->parallel_workers == 0) &&
 		(extra->sjinfo->jointype == JOIN_INNER ||
 		 extra->sjinfo->jointype == JOIN_SEMI))

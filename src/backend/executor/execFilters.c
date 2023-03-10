@@ -15,6 +15,8 @@
 #include "executor/executor.h"
 #include "executor/hashjoin.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/planmain.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -1155,4 +1157,100 @@ ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *eco
 		return ExecHashFilterContainsRange(refstate, econtext);
 	else
 		return ExecHashFilterContainsHash(refstate, econtext);
+}
+
+HashFilterState *
+ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
+{
+	int			nkeys;
+	int			i;
+	ListCell   *ho,
+			   *hc,
+			   *hk;
+
+	double		m, p, n, k;
+
+	HashFilterState *state = makeNode(HashFilterState);
+
+	/*
+	 * Start the filter in exact mode, we'll switch to Bloom if we fill it.
+	 *
+	 * FIXME this is a bit misleading, because for byref values we only store
+	 * the pointers to the filter. So there may be much more memory needed.
+	 * This should copy the values into the filter.
+	 */
+	state->filter = filter;
+	state->filterId = filter->filterId;
+
+	state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
+
+	nkeys = list_length(filter->hashoperators);
+	state->hashfunctions = palloc_array(FmgrInfo, nkeys);
+	state->hashStrict = palloc_array(bool, nkeys);
+	state->collations = palloc_array(Oid, nkeys);
+	state->types = palloc(sizeof(Oid) * nkeys);
+
+	/* FIXME properly handle the left/right function, for details see
+	 * ExecHashTableCreate() */
+	i = 0;
+	forboth(ho, filter->hashoperators, hc, filter->hashcollations)
+	{
+		Oid			hashop = lfirst_oid(ho);
+		Oid			left_hashfn;
+		Oid			right_hashfn;
+
+		if (!get_op_hash_functions(hashop, &left_hashfn, &right_hashfn))
+			elog(ERROR, "could not find hash function for hash operator %u",
+				hashop);
+		fmgr_info(left_hashfn, &state->hashfunctions[i]);
+		// fmgr_info(right_hashfn, &hashtable->inner_hashfunctions[i]);
+		state->hashStrict[i] = op_strict(hashop);
+		state->collations[i] = lfirst_oid(hc);
+		i++;
+	}
+
+	i = 0;
+	foreach(hk, filter->clauses)
+	{
+		state->types[i] = exprType(lfirst(hk));
+		i++;
+	}
+
+	Assert(filter_pushdown_mode != FILTER_PUSHDOWN_OFF);
+
+	if (filter_pushdown_mode == FILTER_PUSHDOWN_EXACT)
+		state->filter_type = HashFilterExact;
+	else if (filter_pushdown_mode == FILTER_PUSHDOWN_RANGE)
+		state->filter_type = HashFilterRange;
+	else if (filter_pushdown_mode == FILTER_PUSHDOWN_BLOOM)
+		state->filter_type = HashFilterBloom;
+
+	/* size using estimates */
+
+	/*
+	 * Maybe we should do some sort of balancing - if the filter gets too
+	 * large with these params, try with a lower p value? Better to fit in
+	 * L2/L3 with worse false positive rate than cache misses.
+	 */
+	p = 0.01;				/* 1% false positive */
+
+	/* 1000 seems like a reasonable lower bound */
+	n = Max(1000, outerPlan->plan_rows);	/* assume unique values */
+
+	m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
+	k = round((m / n) * log(2)); 
+
+	/* round to multiples of 8 */
+	state->nbits = ((int) ((m + 7) / 8)) * 8;
+
+	state->nhashes = k;
+	state->data = palloc0(state->nbits / 8);
+
+	/* exact hash */
+	state->nvalues = 0;
+
+	/* consider the filter not built yet */
+	state->built = false;
+
+	return state;
 }

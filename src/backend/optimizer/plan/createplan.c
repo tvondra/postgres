@@ -4761,7 +4761,7 @@ create_hashjoin_plan(PlannerInfo *root,
 	 *
 	 * XXX Disabled for parallel plans for now.
 	 */
-	if (enable_hash_filter_pushdown &&
+	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&
 		(best_path->jpath.jointype == JOIN_INNER ||
 		 best_path->jpath.jointype == JOIN_SEMI))

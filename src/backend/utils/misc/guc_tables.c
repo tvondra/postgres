@@ -402,6 +402,14 @@ static const struct config_enum_entry logical_replication_mode_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry filter_pushdown_mode_options[] = {
+	{"off", FILTER_PUSHDOWN_OFF, false},
+	{"exact", FILTER_PUSHDOWN_EXACT, false},
+	{"range", FILTER_PUSHDOWN_RANGE, false},
+	{"bloom", FILTER_PUSHDOWN_BLOOM, false},
+	{NULL, 0, false}
+};
+
 StaticAssertDecl(lengthof(ssl_protocol_versions_info) == (PG_TLS1_3_VERSION + 2),
 				 "array length mismatch");
 
@@ -1000,16 +1008,6 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_async_append,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_hash_filter_pushown", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables pushdown of bloom filter from hash join."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&enable_hash_filter_pushdown,
 		true,
 		NULL, NULL, NULL
 	},
@@ -4941,6 +4939,17 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&logical_replication_mode,
 		LOGICAL_REP_MODE_BUFFERED, logical_replication_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_pushown_mode", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables pushdown of bloom filter from hash join."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&filter_pushdown_mode,
+		FILTER_PUSHDOWN_RANGE, filter_pushdown_mode_options,
 		NULL, NULL, NULL
 	},
 

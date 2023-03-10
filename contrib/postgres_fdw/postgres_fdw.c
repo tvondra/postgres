@@ -3817,7 +3817,16 @@ create_cursor(ForeignScanState *node)
 		List *filterExprs = (List *) lfirst(lc2);
 
 		HashFilterState *filter = hash_filter_lookup(estate, filterId);
-		char *expr = ((String *) linitial(filterExprs))->sval;
+		char *expr;
+
+		/*
+		 * For bloom filters we need the expresion with hash function call,
+		 * otherwise the plain expression.
+		 */
+		if (filter->filter_type == HashFilterBloom)
+			expr = ((String *) lsecond(filterExprs))->sval;
+		else
+			expr = ((String *) linitial(filterExprs))->sval;
 
 		/* the filter may not be built */
 		Assert(filter);

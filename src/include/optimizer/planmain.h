@@ -66,7 +66,15 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
  */
 extern PGDLLIMPORT int from_collapse_limit;
 extern PGDLLIMPORT int join_collapse_limit;
-extern PGDLLIMPORT bool enable_hash_filter_pushdown;
+extern PGDLLIMPORT int filter_pushdown_mode;
+
+typedef enum
+{
+	FILTER_PUSHDOWN_OFF,
+	FILTER_PUSHDOWN_EXACT,
+	FILTER_PUSHDOWN_RANGE,
+	FILTER_PUSHDOWN_BLOOM
+} FilterPushdownMode;
 
 extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
 extern void add_other_rels_to_query(PlannerInfo *root);

@@ -683,5 +683,8 @@ extern bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 extern bool ExecHashFilterContainsValue(HashFilterReferenceState *ref,
 										ExprContext *econtext);
 
+extern HashFilterState *ExecHashFilterInit(HashState *hashstate,
+										   Plan *outerPlan,
+										   HashFilter *filter);
 
 #endif							/* EXECUTOR_H  */

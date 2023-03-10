@@ -3840,16 +3840,28 @@ create_cursor(ForeignScanState *node)
 			StringInfoData	cond;
 			StringInfoData	values;
 
+			Datum *filterValues = ExecHashFilterDeserializeExact(filter);
+
 			initStringInfo(&values);
 
+			/* FIXME needs to handle multi-column filters */
 			for (int i = 0; i < filter->nvalues; i++)
 			{
-				Datum value = ((Datum *) filter->data)[i];
+				Datum	value = filterValues[i];
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	r;
+
+				getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
 
 				if (i > 0)
 					appendStringInfoString(&values, ", ");
 
-				appendStringInfo(&values, "%ld", value);
+				r = OidFunctionCall1Coll(outfuncoid, filter->collations[0], value);
+
+				/* FIXME Does this need to have the extra apostrophes, or can we
+				 * detect which types need it and which don't? */
+				appendStringInfo(&values, "'%s'", DatumGetPointer(r));
 			}
 
 			initStringInfo(&cond);

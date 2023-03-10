@@ -2661,26 +2661,32 @@ typedef struct HashFilterState
 	HashFilter *filter;			/* link to the filter */
 	List	   *clauses;		/* list of ExprState nodes */
 
+	/* functions used to hash data, NULL handling, types, collations etc. */
 	FmgrInfo   *hashfunctions;
 	bool	   *hashStrict;
 	Oid		   *collations;
 	Oid		   *types;
 
-	HashFilterType	filter_type;
-	bool			built;
+	HashFilterType	filter_type;	/* exact/range/bloom filter? */
+	bool			built;		/* is the filter populated with data? */
 
-	/* statistics */
+	/* statistics about querying the filter */
 	int64		nqueries;
 	int64		nhits;
 
-	/* exact filter */
-	int64		nvalues;
-	int64		nranges;
+	/* fields used by exact/range filters */
+	int			nvalues;
+	int			nranges;
+	int			nallocated;		/* size of the data buffer */
+	int			nused;			/* number of used bytes */
 
-	/* bloom filter mode */
+	/* fields used by Bloom filters */
 	int			nhashes;
 	int			nbits;
+
+	/* data of the filter (raw values or bitmap) */
 	char	   *data;
+
 } HashFilterState;
 
 typedef struct HashFilterReferenceState

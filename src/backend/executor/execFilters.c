@@ -807,22 +807,13 @@ ExecHashFilterDeserializeExact(HashFilterState *filter)
 	return values;
 }
 
-/* FIXME deduplicate the values first */
-static bool
-ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+static int
+calculate_filter_entry_length(HashFilterState *filter, Datum *values)
 {
-	int		nvalues = list_length(filter->clauses);
-	Datum  *values;
-	int		len;
-
-	Assert(filter->filter_type == HashFilterExact);
-
-	values = palloc(sizeof(Datum) * nvalues);
-
-	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
+	int	len = 0;
+	int	nvalues = list_length(filter->clauses);
 
 	/* calculate space needed to store the entry */
-	len = 0;
 	for (int i = 0; i < nvalues; i++)
 	{
 		int16	typlen;
@@ -847,16 +838,13 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 		}
 	}
 
-	/* consider enlarging the filter as long as needed */
-	while (filter->nallocated - filter->nused < len)
-	{
-		/* FIXME handle nicely */
-		if (filter->nallocated * 2 > work_mem * 1024L)
-			elog(ERROR, "filter exceeds work_mem");
+	return len;
+}
 
-		filter->nallocated *= 2;
-		filter->data = repalloc(filter->data, filter->nallocated);
-	}
+static void
+serialize_filter_entry(HashFilterState *filter, Datum *values)
+{
+	int	nvalues = list_length(filter->clauses);
 
 	/* copy the values into the filter */
 	for (int i = 0; i < nvalues; i++)
@@ -899,6 +887,36 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 			filter->nused += tmp;
 		}
 	}
+}
+
+/* FIXME deduplicate the values first */
+static bool
+ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
+{
+	int		nvalues = list_length(filter->clauses);
+	Datum  *values;
+	int		entrylen;
+
+	Assert(filter->filter_type == HashFilterExact);
+
+	values = palloc(sizeof(Datum) * nvalues);
+
+	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
+
+	entrylen = calculate_filter_entry_length(filter, values);
+
+	/* consider enlarging the filter as long as needed */
+	while (filter->nallocated - filter->nused < entrylen)
+	{
+		/* FIXME handle nicely */
+		if (filter->nallocated * 2 > work_mem * 1024L)
+			elog(ERROR, "filter exceeds work_mem");
+
+		filter->nallocated *= 2;
+		filter->data = repalloc(filter->data, filter->nallocated);
+	}
+
+	serialize_filter_entry(filter, values);
 
 	pfree(values);
 

@@ -3880,30 +3880,44 @@ create_cursor(ForeignScanState *node)
 			StringInfoData	cond;
 			StringInfoData	values;
 
+			Datum *filterValues = ExecHashFilterDeserializeExact(filter);
+
 			initStringInfo(&cond);
 
 #ifdef EXACT_RANGE_CONDITIONS
 			for (int i = 0; i < filter->nranges; i++)
 			{
-				Datum start = ((Datum *) filter->data)[2*i];
-				Datum end = ((Datum *) filter->data)[2*i + 1];
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	start = filterValues[2*i];
+				Datum	end = filterValues[2*i + 1];
 
 				if (i > 0)
 					appendStringInfoString(&cond, " OR ");
 
-				appendStringInfo(&cond, "(%s BETWEEN %ld AND %ld)", expr, start, end);
+				getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
+
+				start = OidFunctionCall1Coll(outfuncoid, filter->collations[0], start);
+				end = OidFunctionCall1Coll(outfuncoid, filter->collations[0], end);
+
+				appendStringInfo(&cond, "(%s BETWEEN '%s' AND '%s')", expr,
+								 DatumGetPointer(start), DatumGetPointer(end));
 			}
 
 			initStringInfo(&values);
 
 			for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
 			{
-				Datum value = ((Datum *) filter->data)[i];
+				Oid		outfuncoid;
+				bool	isvarlena;
+				Datum	value = filterValues[i];
 
 				if (i > 2 * filter->nranges)
 					appendStringInfoString(&values, ", ");
 
-				appendStringInfo(&values, "%ld", value);
+				value = OidFunctionCall1Coll(outfuncoid, filter->collations[0], start);
+
+				appendStringInfo(&values, "'%s'", DatumGetPointer(value));
 			}
 
 			if (filter->nvalues > 2 * filter->nranges)
@@ -3915,30 +3929,37 @@ create_cursor(ForeignScanState *node)
 			}
 #else
 			{
-				Datum  *datums = (Datum *) filter->data;
 				Datum	minval = 0,
 						maxval = 0;
+				Oid		outfuncoid;
+				bool	isvarlena;
 
 				if ((filter->nranges > 0) && (filter->nvalues > 2 * filter->nranges))
 				{
-					minval = datums[0];
-					maxval = datums[2 * filter->nranges - 1];
+					minval = filterValues[0];
+					maxval = filterValues[2 * filter->nranges - 1];
 
-					minval = Min(minval, datums[2 * filter->nranges]);
-					maxval = Max(maxval, datums[filter->nvalues - 1]);
+					minval = Min(minval, filterValues[2 * filter->nranges]);
+					maxval = Max(maxval, filterValues[filter->nvalues - 1]);
 				}
 				else if ((filter->nranges > 0) || (filter->nvalues > 2 * filter->nranges))
 				{
-					minval = datums[0];
-					maxval = datums[filter->nvalues - 1];
+					minval = filterValues[0];
+					maxval = filterValues[filter->nvalues - 1];
 				}
 				else
 				{
 					// FIXME empty filter
 				}
 
+				getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
+
+				minval = OidFunctionCall1Coll(outfuncoid, filter->collations[0], minval);
+				maxval = OidFunctionCall1Coll(outfuncoid, filter->collations[0], maxval);
+
 				if (filter->nvalues > 0)
-					appendStringInfo(&cond, "(%s BETWEEN %ld AND %ld)", expr, minval, maxval);
+					appendStringInfo(&cond, "(%s BETWEEN '%s' AND '%s')", expr,
+									 DatumGetPointer(minval), DatumGetPointer(maxval));
 				else
 					appendStringInfo(&cond, "(false)");
 			}

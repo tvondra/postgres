@@ -23,6 +23,8 @@
 #include "utils/memutils.h"
 #include "utils/typcache.h"
 
+static int calculate_filter_entry_length(HashFilterState *filter, Datum *values);
+static void serialize_filter_entry(HashFilterState *filter, Datum *values);
 
 /*
  * ExecHashGetHashValue
@@ -203,13 +205,18 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 	return true;
 }
 
+typedef struct qsort_cxt
+{
+	int		nelements;
+	SortSupportData	ssup[FLEXIBLE_ARRAY_MEMBER];
+} qsort_cxt;
+
 /* A simple pair of values, representing an interval. */
 typedef struct FilterRange
 {
 	Datum	start;
 	Datum	end;
 } FilterRange;
-
 
 /*
  * FilterRange comparator. It compares by start, then by end.
@@ -218,7 +225,7 @@ typedef struct FilterRange
  * just comparing the Datum values.
  */
 static int
-filter_range_cmp(const void *a, const void *b)
+filter_range_cmp(const void *a, const void *b, qsort_cxt *cxt)
 {
 	FilterRange *ra = (FilterRange *) a;
 	FilterRange *rb = (FilterRange *) b;
@@ -247,12 +254,12 @@ filter_range_cmp(const void *a, const void *b)
  * just comparing the Datum values.
  */
 static bool
-ranges_overlap(FilterRange *ra, FilterRange *rb)
+ranges_overlap(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
 {
-	if (ra->end < rb->start)
+	if (filter_range_cmp(&ra->end, &rb->start, cxt) < 0)
 		return false;
 
-	if (ra->start > rb->end)
+	if (filter_range_cmp(&ra->start, &rb->end, cxt) > 0)
 		return false;
 
 	return true;
@@ -273,13 +280,294 @@ ranges_overlap(FilterRange *ra, FilterRange *rb)
  * just comparing the Datum values.
  */
 static bool
-ranges_contiguous(FilterRange *ra, FilterRange *rb)
+ranges_contiguous(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
 {
+	/* FIXME restrict this to integer/discrete types */
 	Assert(ra->end <= rb->start);
 	if (ra->end + 1 >= rb->start)
 		return true;
 
 	return false;
+}
+
+static int
+filter_range_comparator(const void *a, const void *b, void *c)
+{
+	FilterRange  *ra = (FilterRange *) a;
+	FilterRange  *rb = (FilterRange *) b;
+	qsort_cxt *cxt = (qsort_cxt *) c;
+
+	for (int i = 0; i < cxt->nelements; i++)
+	{
+		int r;
+
+		/* FIXME subscript the start/end */
+		r = ApplySortComparator(ra->start, false,
+								rb->start, false, &cxt->ssup[i]);
+		if (r != 0)
+			return r;
+
+		r = ApplySortComparator(ra->end, false,
+								rb->end, false, &cxt->ssup[i]);
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
+
+
+/*
+ * Simple comparator of Datum arrays.
+ *
+ * FIXME This only works for byval types, needs to check byref types too. That
+ * requires looking up comparators for types etc.
+ */
+static int
+filter_comparator(const void *a, const void *b, void *c)
+{
+	Size	len = * (Size *) c;
+
+	return memcmp(a, b, len);
+}
+
+static int
+filter_comparator_2(const void *a, const void *b, void *c)
+{
+	Datum  *da = (Datum *) a;
+	Datum  *db = (Datum *) b;
+	qsort_cxt *cxt = (qsort_cxt *) c;
+
+	for (int i = 0; i < cxt->nelements; i++)
+	{
+		int r = ApplySortComparator(da[i], false, db[i], false, &cxt->ssup[i]);
+
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
+
+/*
+ * ExecHashFilterCompactRange
+ *		Compact the range filter by combining closes values/ranges, etc.
+ *
+ * XXX This may not work if some of the values are very long (e.g. adding
+ * a 64-kB value into a filter with work_mem=64kB can cause this).
+ */
+static void
+ExecHashFilterCompactRange(HashFilterState *filter)
+{
+	Datum		   *values;
+	FilterRange	   *ranges;
+	int				nranges;
+	int				rangeidx;
+	int				nvalues;
+	qsort_cxt	   *cxt;
+
+	Assert(filter->filter_type == HashFilterRange);
+
+	/* deserialize the values into a simple Datum array */
+	values = ExecHashFilterDeserializeExact(filter);
+
+	/* build the ranges (some of which may be just points with min==max) */
+	nranges = (filter->nvalues - filter->nranges);
+	ranges = palloc(sizeof(FilterRange) * nranges);
+
+	/*
+	 * use the first 2*nranges values for (min,max)
+	 *
+	 * FIXME this doesn't work for multi-column filters, the range boundaries
+	 * need to be arrays, not individual Datum values.
+	 */
+	rangeidx = 0;
+	for (int i = 0; i < filter->nranges; i++)
+	{
+		Assert(rangeidx < nranges);
+
+		ranges[rangeidx].start = values[2*i];
+		ranges[rangeidx].end = values[2*i + 1];
+		rangeidx++;
+		Assert((2*i + 1) < filter->nvalues);
+	}
+
+	for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
+	{
+		Assert(rangeidx < nranges);
+
+		ranges[rangeidx].start = values[i];
+		ranges[rangeidx].end = values[i];
+		rangeidx++;
+		Assert(i < filter->nvalues);
+	}
+
+	Assert(rangeidx == nranges);
+
+	cxt = palloc0(offsetof(qsort_cxt, ssup) +
+				  sizeof(SortSupportData) * list_length(filter->clauses));
+
+	for (int i = 0; i < list_length(filter->clauses); i++)
+	{
+		SortSupport		ssup = &cxt->ssup[i];
+		TypeCacheEntry *entry
+			= lookup_type_cache(filter->types[i], TYPECACHE_LT_OPR);
+
+		ssup->ssup_cxt = CurrentMemoryContext;
+		ssup->ssup_collation = filter->collations[i];
+		ssup->ssup_nulls_first = false;	/* FIXME? */
+
+		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);
+	}
+
+	/* sort ranges by start/end */
+	qsort_arg(ranges, nranges, sizeof(FilterRange),
+			  filter_range_comparator, cxt);
+
+	/* combine overlapping ranges */
+	rangeidx = 0;
+	for (int i = 1; i < nranges; i++)
+	{
+		/*
+		 * if the next range overlaps, combine them
+		 *
+		 * XXX This is problematic for multi-column filters, where some of
+		 * the dimensions may overlap, some not. So combining overlapping
+		 * ranges does not produce equivalent range to a union of ranges,
+		 * because the overlap may be only partial (imagine two boxes that
+		 * only partially overlap).
+		 */
+		if (ranges_overlap(&ranges[rangeidx], &ranges[i], cxt))
+		{
+			ranges[rangeidx].end = Max(ranges[rangeidx].end, ranges[i].end);
+			continue;
+		}
+
+		/* no overlap, we have found the next separate range */
+		ranges[++rangeidx] = ranges[i];
+		Assert(rangeidx < nranges);
+	}
+
+	/* the last used range index determines how many ranges we have */
+	nranges = (rangeidx + 1);
+
+	/*
+	 * combine contiguous ranges
+	 *
+	 * Ranges may not exactly overlap, but it may be impossible to have
+	 * values between them (e.g. for integers, ranges [1.10] and [11,20]
+	 * can be combined into [1,20] without losing any information).
+	 */
+	rangeidx = 0;
+	for (int i = 1; i < nranges; i++)
+	{
+		if (ranges_contiguous(&ranges[rangeidx], &ranges[i], cxt))
+		{
+			ranges[rangeidx].end = ranges[i].end;
+			continue;
+		}
+
+		ranges[++rangeidx] = ranges[i];
+		Assert(rangeidx < nranges);
+	}
+
+	/* again, the last used range index determines how many ranges we have */
+	nranges = (rangeidx + 1);
+
+	/*
+	 * Until now, all the changes were lossless, i.e. we haven't lost any
+	 * filtering information (unless we do some approximation when evaluating
+	 * overlaps of ranges in multi-column filters).
+	 *
+	 * Now we're going to start to redude the number of ranges by merging the
+	 * closest ones, etc. We'll do that until we reduce the size enough to
+	 * accept a bunch of new values. Ideally, we'd probably do that based on
+	 * size required to store the data, but that's either expensive (having
+	 * to calculate the size over and over) or complex (tracking the changes
+	 * as we go). It's easier to just count the ranges, and use that as an
+	 * approximation.
+	 *
+	 * We shoot for 0.75 load, i.e. we want to get rid of 25% values (but
+	 * we need to be careful about collapsed ranges, because joining two
+	 * such ranges does not reduce anything).
+	 */
+	while (true)
+	{
+		int		nvalues = 0;
+		int		mindist;
+		int		minidx;
+
+		/* count how many filter entries we have to store */
+		for (int i = 0; i < nranges; i++)
+		{
+			if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) != 0)
+				nvalues += 2;
+			else
+				nvalues += 1;
+		}
+
+		/* did we reduce the filter enough */
+		if (nvalues <= filter->nvalues * 0.75)
+			break;
+
+		/*
+		 * find the minimum distance between ranges
+		 *
+		 * XXX If there are multiple gaps of the ssme length, this just uses
+		 * the first one. Maybe we should randomize that somehow? Or maybe we
+		 * should combine all of them?
+		 */
+		minidx = 1;
+		mindist = ranges[1].end - ranges[0].start;
+
+		for (int i = 2; i < nranges; i++)
+		{
+			if (ranges[i].end - ranges[i-1].start < mindist)
+			{
+				mindist = ranges[i].end - ranges[i-1].start;
+				minidx = i;
+			}
+		}
+
+		ranges[minidx-1].end = ranges[minidx].end;
+		memmove(&ranges[minidx], &ranges[minidx+1], sizeof(FilterRange) * (nranges - (minidx + 1)));
+		nranges--;
+	}
+
+	/*
+	 * Transform the filter ranges back into the simple Datum array. We store
+	 * the ranges first, then the points (ranges of with start==end).
+	 */
+	filter->nranges = 0;
+	nvalues = 0;
+
+	for (int i = 0; i < nranges; i++)
+	{
+		if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) != 0)
+		{
+			values[nvalues++] = ranges[i].start;
+			values[nvalues++] = ranges[i].end;
+			filter->nranges++;
+			Assert(nvalues <= filter->nvalues * list_length(filter->clauses));
+		}
+	}
+
+	for (int i = 0; i < nranges; i++)
+	{
+		if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) == 0)
+		{
+			values[nvalues++] = ranges[i].start;
+			Assert(nvalues <= filter->nvalues * list_length(filter->clauses));
+		}
+	}
+
+	ExecHashFilterSerializeExact(filter, values, nvalues);
+
+	Assert(filter->nranges * 2 <= filter->nvalues);
+
+	pfree(values);
 }
 
 /*
@@ -293,155 +581,33 @@ ranges_contiguous(FilterRange *ra, FilterRange *rb)
 static bool
 ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
+	int		nvalues = list_length(filter->clauses);
 	Datum  *values;
-	Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
-	int		offset;
-	int		maxvalues = (filter->nbits/8 / entrylen);
+	int		entrylen;
 
 	Assert(filter->filter_type == HashFilterRange);
 
-	/* too much data for exact filter, compact the ranges */
-	if ((filter->nvalues + 1) * entrylen > filter->nbits/8)
-	{
-		int		i;
-		Datum  *filter_data = (Datum *) filter->data;
-		int		filter_idx = 0;
-		int		idx = 0;
-		int		nranges = (filter->nranges + (filter->nvalues - 2 * filter->nranges));
-
-		FilterRange *ranges = palloc(sizeof(FilterRange) * nranges);
-
-		for (i = 0; i < filter->nranges; i++)
-		{
-			Assert(idx < nranges);
-
-			ranges[idx].start = filter_data[filter_idx++];
-			ranges[idx].end = filter_data[filter_idx++];
-			idx++;
-			Assert(filter_idx < filter->nvalues);
-		}
-
-		for (i = filter_idx; i < filter->nvalues; i++)
-		{
-			Assert(idx < nranges);
-
-			ranges[idx].start = filter_data[i];
-			ranges[idx].end = filter_data[i];
-			Assert(i < filter->nvalues);
-			idx++;
-		}
-
-		Assert(idx == nranges);
-
-		// sort ranges by start
-		pg_qsort(ranges, nranges, sizeof(FilterRange), filter_range_cmp);
-
-		// combine overlapping ranges
-		idx = 0;
-		for (i = 1; i < nranges; i++)
-		{
-			if (ranges_overlap(&ranges[idx], &ranges[i]))
-			{
-				ranges[idx].end = Max(ranges[idx].end, ranges[i].end);
-				continue;
-			}
-
-			idx++;
-
-			ranges[idx] = ranges[i];
-
-			Assert(idx < nranges);
-		}
-
-		nranges = (idx + 1);
-
-		// combine contiguous ranges (e.g. for integers, ranges [1.10] and [11,20]
-		// can be combined into [1,20]
-		idx = 0;
-		for (i = 1; i < nranges; i++)
-		{
-			if (ranges_contiguous(&ranges[idx], &ranges[i]))
-			{
-				ranges[idx].end = ranges[i].end;
-				continue;
-			}
-
-			idx++;
-
-			ranges[idx] = ranges[i];
-
-			Assert(idx < nranges);
-		}
-
-		nranges = (idx + 1);
-
-		// now combine the closest ranges
-		while (true)
-		{
-			int		nvalues = 0;
-			int		mindist;
-			int		minidx;
-
-			for (i = 0; i < nranges; i++)
-			{
-				if (ranges[i].start == ranges[i].end)
-					nvalues++;
-				else
-					nvalues += 2;
-			}
-
-			if (nvalues <= maxvalues / 2)
-				break;
-
-			minidx = 1;
-			mindist = ranges[1].end - ranges[0].start;
-
-			for (i = 2; i < nranges; i++)
-			{
-				if (ranges[i].end - ranges[i-1].start < mindist)
-				{
-					mindist = ranges[i].end - ranges[i-1].start;
-					minidx = i;
-				}
-			}
-
-			ranges[minidx-1].end = ranges[minidx].end;
-			memmove(&ranges[minidx], &ranges[minidx+1], sizeof(FilterRange) * (nranges - (minidx + 1)));
-			nranges--;
-
-		}
-
-		filter->nranges = 0;
-		filter->nvalues = 0;
-
-		for (i = 0; i < nranges; i++)
-		{
-			if (ranges[i].start != ranges[i].end)
-			{
-				filter_data[filter->nvalues++] = ranges[i].start;
-				filter_data[filter->nvalues++] = ranges[i].end;
-				filter->nranges++;
-				Assert(filter->nvalues <= maxvalues);
-			}
-		}
-
-		for (i = 0; i < nranges; i++)
-		{
-			if (ranges[i].start == ranges[i].end)
-			{
-				filter_data[filter->nvalues++] = ranges[i].start;
-				Assert(filter->nvalues <= maxvalues);
-			}
-		}
-
-	}
-
-	values = palloc(sizeof(Datum) * list_length(filter->clauses));
+	values = palloc(sizeof(Datum) * nvalues);
 
 	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
 
-	offset = entrylen * filter->nvalues;
-	memcpy(&filter->data[offset], values, entrylen);
+	entrylen = calculate_filter_entry_length(filter, values);
+
+	/* consider enlarging the filter as long as needed */
+	while (filter->nallocated - filter->nused < entrylen)
+	{
+		/* FIXME handle nicely */
+		if (filter->nallocated * 2 > work_mem * 1024L)
+		{
+			ExecHashFilterCompactRange(filter);
+			continue;
+		}
+
+		filter->nallocated *= 2;
+		filter->data = repalloc(filter->data, filter->nallocated);
+	}
+
+	serialize_filter_entry(filter, values);
 
 	pfree(values);
 
@@ -464,145 +630,9 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 static void
 ExecHashFilterFinalizeRange(HashFilterState *filter)
 {
-	int		i;
-	Datum  *filter_data = (Datum *) filter->data;
-	int		filter_idx = 0;
-	int		idx = 0;
-	int		nranges;
-
-	FilterRange *ranges;
-
 	Assert(filter->filter_type == HashFilterRange);
 
-	/* nothing to do if the filter represents no values */
-	if (filter->nvalues == 0)
-		return;
-
-	nranges = (filter->nranges + (filter->nvalues - 2 * filter->nranges));
-	ranges = palloc(sizeof(FilterRange) * nranges);
-
-	for (i = 0; i < filter->nranges; i++)
-	{
-		Assert(idx < nranges);
-
-		ranges[idx].start = filter_data[filter_idx++];
-		ranges[idx].end = filter_data[filter_idx++];
-		idx++;
-		Assert(filter_idx <= filter->nvalues);
-	}
-
-	for (i = filter_idx; i < filter->nvalues; i++)
-	{
-		Assert(idx < nranges);
-
-		ranges[idx].start = filter_data[i];
-		ranges[idx].end = filter_data[i];
-		Assert(i < filter->nvalues);
-		idx++;
-	}
-
-	Assert(idx == nranges);
-
-	// sort ranges by start
-	pg_qsort(ranges, nranges, sizeof(FilterRange), filter_range_cmp);
-
-	// combine overlapping ranges
-	idx = 0;
-	for (i = 1; i < nranges; i++)
-	{
-		if (ranges_overlap(&ranges[idx], &ranges[i]))
-		{
-			ranges[idx].end = Max(ranges[idx].end, ranges[i].end);
-			continue;
-		}
-
-		idx++;
-
-		ranges[idx] = ranges[i];
-
-		Assert(idx < nranges);
-	}
-
-	nranges = (idx + 1);
-
-	// combine contiguous ranges (e.g. for integers, ranges [1.10] and [11,20]
-	// can be combined into [1,20]
-	idx = 0;
-	for (i = 1; i < nranges; i++)
-	{
-		if (ranges_contiguous(&ranges[idx], &ranges[i]))
-		{
-			ranges[idx].end = ranges[i].end;
-			continue;
-		}
-	
-		idx++;
-	
-		ranges[idx] = ranges[i];
-	
-		Assert(idx < nranges);
-	}
-
-	nranges = (idx + 1);
-
-	filter->nranges = 0;
-	filter->nvalues = 0;
-
-	for (i = 0; i < nranges; i++)
-	{
-		if (ranges[i].start != ranges[i].end)
-		{
-			filter_data[filter->nvalues++] = ranges[i].start;
-			filter_data[filter->nvalues++] = ranges[i].end;
-			filter->nranges++;
-		}
-	}
-
-	for (i = 0; i < nranges; i++)
-	{
-		if (ranges[i].start == ranges[i].end)
-		{
-			filter_data[filter->nvalues++] = ranges[i].start;
-		}
-	}
-}
-
-/*
- * Simple comparator of Datum arrays.
- *
- * FIXME This only works for byval types, needs to check byref types too. That
- * requires looking up comparators for types etc.
- */
-static int
-filter_comparator(const void *a, const void *b, void *c)
-{
-	Size	len = * (Size *) c;
-
-	return memcmp(a, b, len);
-}
-
-typedef struct qsort_cxt
-{
-	int		nelements;
-	SortSupportData	ssup[FLEXIBLE_ARRAY_MEMBER];
-} qsort_cxt;
-
-static int
-filter_comparator_2(const void *a, const void *b, void *c)
-{
-	Datum  *da = (Datum *) a;
-	Datum  *db = (Datum *) b;
-	qsort_cxt *cxt = (qsort_cxt *) c;
-
-	for (int i = 0; i < cxt->nelements; i++)
-	{
-		int r = ApplySortComparator(da[i], false, db[i], false, &cxt->ssup[i]);
-
-		if (r != 0)
-			return r;
-	}
-
-	return 0;
+	ExecHashFilterCompactRange(filter);
 }
 
 static void
@@ -685,7 +715,7 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 	}
 
 	/* nothing to do if the filter represents no values */
-	qsort_arg(filter->data, filter->nvalues, entrylen, filter_comparator_2, cxt);
+	qsort_arg(values, filter->nvalues, entrylen, filter_comparator_2, cxt);
 
 	idx = 0;
 	ptr = filter->data;
@@ -749,7 +779,8 @@ ExecHashFilterDeserializeExact(HashFilterState *filter)
 	int		idx;
 	char   *ptr;
 
-	Assert(filter->filter_type == HashFilterExact);
+	Assert((filter->filter_type == HashFilterExact) ||
+		   (filter->filter_type == HashFilterRange));
 
 	/* nothing to do if the filter represents no values */
 	if (filter->nvalues == 0)
@@ -805,6 +836,28 @@ ExecHashFilterDeserializeExact(HashFilterState *filter)
 	}
 
 	return values;
+}
+
+/*
+ * ExecHashFilterDeserializeExact
+ *		Deserialize filter data into a simple array of datum values.
+ */
+void
+ExecHashFilterSerializeExact(HashFilterState *filter, Datum *values, int nvalues)
+{
+	int		entryvalues = list_length(filter->clauses);
+	int		entrylen;
+	char   *ptr = (char *) values;
+
+	filter->nused = 0;
+
+	entrylen = calculate_filter_entry_length(filter, (Datum *) ptr);
+
+	/* we only serialize filter after reducing it somehow */
+	Assert(filter->nallocated - filter->nused >= entrylen);
+
+	serialize_filter_entry(filter, (Datum *) ptr);
+	ptr += entryvalues * sizeof(Datum);
 }
 
 static int

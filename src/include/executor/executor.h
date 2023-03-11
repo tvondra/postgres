@@ -688,5 +688,6 @@ extern HashFilterState *ExecHashFilterInit(HashState *hashstate,
 										   HashFilter *filter);
 
 extern Datum *ExecHashFilterDeserializeExact(HashFilterState *filter);
+extern void ExecHashFilterSerializeExact(HashFilterState *filter, Datum *values, int nvalues);
 
 #endif							/* EXECUTOR_H  */

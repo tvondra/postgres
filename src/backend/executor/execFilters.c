@@ -737,11 +737,15 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 	Assert(filter->nused == (ptr - filter->data));
 }
 
+/*
+ * ExecHashFilterDeserializeExact
+ *		Deserialize filter data into a simple array of datum values.
+ */
 Datum *
 ExecHashFilterDeserializeExact(HashFilterState *filter)
 {
 	Datum  *values;
-	Size	entrylen = (sizeof(Datum) * list_length(filter->clauses));
+	int		nvalues;
 	int		idx;
 	char   *ptr;
 
@@ -751,7 +755,9 @@ ExecHashFilterDeserializeExact(HashFilterState *filter)
 	if (filter->nvalues == 0)
 		return NULL;
 
-	values = palloc(filter->nvalues * entrylen);
+	/* how many values we'll need */
+	nvalues = (filter->nvalues * list_length(filter->clauses));
+	values = palloc(nvalues * sizeof(Datum));
 
 	idx = 0;
 	ptr = filter->data;

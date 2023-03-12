@@ -1258,7 +1258,9 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 
 	entry = palloc(entrylen * sizeof(Datum));
 
-	ExecScanGetFilterGetValues(refstate, econtext, false, entry);
+	/* reject NULL values */
+	if (!ExecScanGetFilterGetValues(refstate, econtext, false, entry))
+		return false;
 
 	/* TODO use binary search to check ranges */
 	for (int i = 0; i < filter->nranges; i++)

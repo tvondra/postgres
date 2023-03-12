@@ -217,6 +217,30 @@ typedef struct FilterRange
 } FilterRange;
 
 /*
+ * Simple comparator of Datum arrays.
+ *
+ * FIXME This only works for byval types, needs to check byref types too. That
+ * requires looking up comparators for types etc.
+ */
+static int
+filter_value_comparator(const void *a, const void *b, void *c)
+{
+	Datum  *da = (Datum *) a;
+	Datum  *db = (Datum *) b;
+	qsort_cxt *cxt = (qsort_cxt *) c;
+
+	for (int i = 0; i < cxt->nelements; i++)
+	{
+		int r = ApplySortComparator(da[i], false, db[i], false, &cxt->ssup[i]);
+
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
+/*
  * FilterRange comparator. It compares by start, then by end.
  *
  * FIXME This needs to use a comparator for the particular data type, instead of
@@ -225,18 +249,40 @@ typedef struct FilterRange
 static int
 filter_range_cmp(const void *a, const void *b, qsort_cxt *cxt)
 {
-	FilterRange *ra = (FilterRange *) a;
-	FilterRange *rb = (FilterRange *) b;
+	int				r;
+	FilterRange	   *ra = (FilterRange *) a;
+	FilterRange	   *rb = (FilterRange *) b;
 
-	if (ra->start < rb->start)
-		return -1;
-	else if (ra->start > rb->start)
-		return 1;
+	r = filter_value_comparator(&ra->start, &rb->start, cxt);
+	if (r != 0)
+		return r;
 
-	if (ra->end < rb->end)
-		return -1;
-	else if (ra->end > rb->end)
-		return 1;
+	return filter_value_comparator(&ra->end, &rb->end, cxt);
+}
+
+/* FIXME Isn't this really just what filter_range_cmp already does? */
+static int
+filter_range_comparator(const void *a, const void *b, void *c)
+{
+	FilterRange  *ra = (FilterRange *) a;
+	FilterRange  *rb = (FilterRange *) b;
+	qsort_cxt *cxt = (qsort_cxt *) c;
+
+	for (int i = 0; i < cxt->nelements; i++)
+	{
+		int r;
+
+		/* FIXME subscript the start/end */
+		r = ApplySortComparator(ra->start, false,
+								rb->start, false, &cxt->ssup[i]);
+		if (r != 0)
+			return r;
+
+		r = ApplySortComparator(ra->end, false,
+								rb->end, false, &cxt->ssup[i]);
+		if (r != 0)
+			return r;
+	}
 
 	return 0;
 }
@@ -288,58 +334,35 @@ ranges_contiguous(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
 	return false;
 }
 
-static int
-filter_range_comparator(const void *a, const void *b, void *c)
+static void
+dump_filter(HashFilterState *filter)
 {
-	FilterRange  *ra = (FilterRange *) a;
-	FilterRange  *rb = (FilterRange *) b;
-	qsort_cxt *cxt = (qsort_cxt *) c;
+	Oid		outfuncoid;
+	bool	isvarlena;
+	Datum  *values = (Datum *) filter->data;
 
-	for (int i = 0; i < cxt->nelements; i++)
+	Assert((filter->filter_type == HashFilterRange) ||
+		   (filter->filter_type == HashFilterExact));
+
+	Assert(list_length(filter->clauses) == 1);
+
+	getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
+
+	elog(WARNING, "===============================================");
+
+	elog(WARNING, "filter %p nranges %d nvalues %d",
+		 filter, filter->nranges, filter->nvalues);
+
+	for (int i = 0; i < filter->nvalues; i++)
 	{
-		int r;
+		Datum	r;
+		Datum	value = values[i];
 
-		/* FIXME subscript the start/end */
-		r = ApplySortComparator(ra->start, false,
-								rb->start, false, &cxt->ssup[i]);
-		if (r != 0)
-			return r;
-
-		r = ApplySortComparator(ra->end, false,
-								rb->end, false, &cxt->ssup[i]);
-		if (r != 0)
-			return r;
+		r = OidFunctionCall1Coll(outfuncoid, filter->collations[0], value);
+		elog(WARNING, "%d => '%s'", i, DatumGetPointer(r));
 	}
 
-	return 0;
 }
-
-
-
-/*
- * Simple comparator of Datum arrays.
- *
- * FIXME This only works for byval types, needs to check byref types too. That
- * requires looking up comparators for types etc.
- */
-static int
-filter_comparator_2(const void *a, const void *b, void *c)
-{
-	Datum  *da = (Datum *) a;
-	Datum  *db = (Datum *) b;
-	qsort_cxt *cxt = (qsort_cxt *) c;
-
-	for (int i = 0; i < cxt->nelements; i++)
-	{
-		int r = ApplySortComparator(da[i], false, db[i], false, &cxt->ssup[i]);
-
-		if (r != 0)
-			return r;
-	}
-
-	return 0;
-}
-
 
 /*
  * ExecHashFilterCompactRange
@@ -355,14 +378,21 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	FilterRange	   *ranges;
 	int				nranges;
 	int				rangeidx;
-	int				nvalues;
 	qsort_cxt	   *cxt;
+	int				nvalues_orig PG_USED_FOR_ASSERTS_ONLY;
 
 	Assert(filter->filter_type == HashFilterRange);
+	Assert(list_length(filter->clauses) == 1);
+
+	if (filter->nvalues < 1)
+		return;
+
+	// dump_filter(filter);
 
 	/* deserialize the values into a simple Datum array */
 	values = (Datum *) filter->data;
 	cxt = (qsort_cxt *) filter->private_data;
+	nvalues_orig = filter->nvalues;
 
 	/* build the ranges (some of which may be just points with min==max) */
 	nranges = (filter->nvalues - filter->nranges);
@@ -434,18 +464,25 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	 * Ranges may not exactly overlap, but it may be impossible to have
 	 * values between them (e.g. for integers, ranges [1.10] and [11,20]
 	 * can be combined into [1,20] without losing any information).
+	 *
+	 * XXX Only do this for some integer data types.
 	 */
-	rangeidx = 0;
-	for (int i = 1; i < nranges; i++)
+	if ((filter->types[0] == INT2OID) ||
+		(filter->types[0] == INT4OID) ||
+		(filter->types[0] == INT8OID))
 	{
-		if (ranges_contiguous(&ranges[rangeidx], &ranges[i], cxt))
+		rangeidx = 0;
+		for (int i = 1; i < nranges; i++)
 		{
-			ranges[rangeidx].end = ranges[i].end;
-			continue;
-		}
+			if (ranges_contiguous(&ranges[rangeidx], &ranges[i], cxt))
+			{
+				ranges[rangeidx].end = ranges[i].end;
+				continue;
+			}
 
-		ranges[++rangeidx] = ranges[i];
-		Assert(rangeidx < nranges);
+			ranges[++rangeidx] = ranges[i];
+			Assert(rangeidx < nranges);
+		}
 	}
 
 	/* again, the last used range index determines how many ranges we have */
@@ -477,7 +514,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 		/* count how many filter entries we have to store */
 		for (int i = 0; i < nranges; i++)
 		{
-			if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) != 0)
+			if (filter_value_comparator(&ranges[i].start, &ranges[i].end, cxt) != 0)
 				nvalues += 2;
 			else
 				nvalues += 1;
@@ -516,29 +553,38 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	 * the ranges first, then the points (ranges of with start==end).
 	 */
 	filter->nranges = 0;
-	nvalues = 0;
+	filter->nvalues = 0;
 
 	for (int i = 0; i < nranges; i++)
 	{
-		if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) != 0)
+		if (filter_value_comparator(&ranges[i].start, &ranges[i].end, cxt) != 0)
 		{
-			values[nvalues++] = ranges[i].start;
-			values[nvalues++] = ranges[i].end;
+			values[filter->nvalues++] = ranges[i].start;
+			values[filter->nvalues++] = ranges[i].end;
 			filter->nranges++;
-			Assert(nvalues <= filter->nvalues * list_length(filter->clauses));
+
+			Assert(filter->nvalues <= nvalues_orig);
+			Assert(filter->nvalues <= filter->nallocated);
 		}
 	}
 
 	for (int i = 0; i < nranges; i++)
 	{
-		if (filter_comparator_2(&ranges[i].start, &ranges[i].end, cxt) == 0)
+		if (filter_value_comparator(&ranges[i].start, &ranges[i].end, cxt) == 0)
 		{
-			values[nvalues++] = ranges[i].start;
-			Assert(nvalues <= filter->nvalues * list_length(filter->clauses));
+			values[filter->nvalues++] = ranges[i].start;
+
+			Assert(filter->nvalues <= nvalues_orig);
+			Assert(filter->nvalues <= filter->nallocated);
 		}
 	}
 
-	Assert(filter->nranges * 2 <= filter->nvalues);
+	Assert(filter->nallocated >= filter->nvalues);
+
+	if (filter->nvalues < filter->nallocated)
+	{
+		memset(&values[filter->nvalues], 0x7f, sizeof(Datum) * (filter->nallocated - filter->nvalues));
+	}
 }
 
 /*
@@ -577,11 +623,21 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, entry);
 
 	values = (Datum *) filter->data;
-	memcpy(&values[filter->nvalues], entry, entrylen * sizeof(Datum)); 
+
+	for (int i = 0; i < entrylen; i++)
+	{
+		int16	typlen;
+		bool	typbyval;
+		char	typalign;
+
+		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
+
+		Assert(filter->nvalues < filter->nallocated);
+
+		values[filter->nvalues++] = datumCopy(entry[i], typbyval, typlen);
+	}
 
 	pfree(entry);
-
-	filter->nvalues++;
 
 	return true;
 }
@@ -622,7 +678,7 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 	cxt = (qsort_cxt *) filter->private_data;
 
 	/* nothing to do if the filter represents no values */
-	qsort_arg(values, filter->nvalues, entrylen, filter_comparator_2, cxt);
+	qsort_arg(values, filter->nvalues, entrylen, filter_value_comparator, cxt);
 
 	/* FIXME deduplicate values */
 }
@@ -1112,7 +1168,7 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 	ExecScanGetFilterGetValues(refstate, econtext, false, values);
 
 	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize,
-					  filter_comparator_2, cxt);
+					  filter_value_comparator, cxt);
 
 	if (ptr != NULL)
 		filter->nhits++;
@@ -1156,11 +1212,11 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 		start = &values[2 * i * entrylen];
 		end = &values[(2 * i + 1) * entrylen];
 
-		if ((filter_comparator_2(entry, start, cxt) >= 0) &&
-			(filter_comparator_2(entry, end, cxt) <= 0))
+		if ((filter_value_comparator(entry, start, cxt) >= 0) &&
+			(filter_value_comparator(entry, end, cxt) <= 0))
 		{
 			filter->nhits++;
-			pfree(values);
+			pfree(entry);
 			return true;
 		}
 	}
@@ -1169,15 +1225,15 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 	{
 		Datum  *value = &values[i * entrylen];
 
-		if (filter_comparator_2(entry, value, cxt) == 0)
+		if (filter_value_comparator(entry, value, cxt) == 0)
 		{
 			filter->nhits++;
-			pfree(values);
+			pfree(entry);
 			return true;
 		}
 	}
 
-	pfree(values);
+	pfree(entry);
 
 	/* all hashes found in bloom filter */
 	return false;
@@ -1303,8 +1359,8 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 	}
 	else
 	{
-		state->nallocated = 8192;	/* start with 8kB */
-		state->data = palloc0(state->nallocated);
+		state->nallocated = 1024;	/* start with 8kB */
+		state->data = palloc0(state->nallocated * sizeof(Datum));
 	}
 
 	cxt = palloc0(offsetof(qsort_cxt, ssup) +
@@ -1321,6 +1377,8 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 		ssup->ssup_nulls_first = false;	/* FIXME? */
 
 		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);
+
+		cxt->nelements++;
 	}
 
 	state->private_data = cxt;

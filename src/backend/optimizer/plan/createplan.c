@@ -3178,6 +3178,9 @@ create_indexscan_plan(PlannerInfo *root,
 
 	copy_generic_path_info(&scan_plan->plan, &best_path->path);
 
+	/* copy the filters pushed-down to the scan */
+	scan_plan->filters = best_path->path.filters;
+
 	return scan_plan;
 }
 

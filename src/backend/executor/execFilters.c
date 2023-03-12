@@ -300,10 +300,10 @@ filter_range_comparator(const void *a, const void *b, void *c)
 static bool
 ranges_overlap(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
 {
-	if (filter_range_cmp(&ra->end, &rb->start, cxt) < 0)
+	if (filter_value_comparator(&ra->end, &rb->start, cxt) < 0)
 		return false;
 
-	if (filter_range_cmp(&ra->start, &rb->end, cxt) > 0)
+	if (filter_value_comparator(&ra->start, &rb->end, cxt) > 0)
 		return false;
 
 	return true;
@@ -362,6 +362,25 @@ dump_filter(HashFilterState *filter)
 		elog(WARNING, "%d => '%s'", i, DatumGetPointer(r));
 	}
 
+}
+
+static void
+dump_ranges(HashFilterState *filter, FilterRange *ranges, int nranges)
+{
+	Oid		outfuncoid;
+	bool	isvarlena;
+
+	Assert(list_length(filter->clauses) == 1);
+
+	getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
+
+	for (int i = 0; i < nranges; i++)
+	{
+		Datum start = OidFunctionCall1Coll(outfuncoid, filter->collations[0], ranges[i].start);
+		Datum end = OidFunctionCall1Coll(outfuncoid, filter->collations[0], ranges[i].end);
+
+		elog(WARNING, "range %d => %s %s", i, DatumGetPointer(start), DatumGetPointer(end));
+	}
 }
 
 /*
@@ -430,6 +449,8 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	/* sort ranges by start/end */
 	qsort_arg(ranges, nranges, sizeof(FilterRange),
 			  filter_range_comparator, cxt);
+
+	// dump_ranges(filter, ranges, nranges);
 
 	/* combine overlapping ranges */
 	rangeidx = 0;
@@ -930,8 +951,13 @@ ExecHashResetFilters(HashState *node)
 		HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
 		filter->built = false;
-		memset(filter->data, 0, filter->nbits/8);
 		filter->nvalues = 0;
+		filter->nranges = 0;
+
+		if (filter->filter_type == HashFilterBloom)
+			memset(filter->data, 0, filter->nbits/8);
+		else
+			memset(filter->data, 0, filter->nallocated * sizeof(Datum));
 	}
 
 }

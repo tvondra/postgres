@@ -23,8 +23,6 @@
 #include "utils/memutils.h"
 #include "utils/typcache.h"
 
-static int calculate_filter_entry_length(HashFilterState *filter, Datum *values);
-static void serialize_filter_entry(HashFilterState *filter, Datum *values);
 
 /*
  * ExecHashGetHashValue
@@ -325,14 +323,6 @@ filter_range_comparator(const void *a, const void *b, void *c)
  * requires looking up comparators for types etc.
  */
 static int
-filter_comparator(const void *a, const void *b, void *c)
-{
-	Size	len = * (Size *) c;
-
-	return memcmp(a, b, len);
-}
-
-static int
 filter_comparator_2(const void *a, const void *b, void *c)
 {
 	Datum  *da = (Datum *) a;
@@ -371,7 +361,8 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	Assert(filter->filter_type == HashFilterRange);
 
 	/* deserialize the values into a simple Datum array */
-	values = ExecHashFilterDeserializeExact(filter);
+	values = (Datum *) filter->data;
+	cxt = (qsort_cxt *) filter->private_data;
 
 	/* build the ranges (some of which may be just points with min==max) */
 	nranges = (filter->nvalues - filter->nranges);
@@ -405,22 +396,6 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	}
 
 	Assert(rangeidx == nranges);
-
-	cxt = palloc0(offsetof(qsort_cxt, ssup) +
-				  sizeof(SortSupportData) * list_length(filter->clauses));
-
-	for (int i = 0; i < list_length(filter->clauses); i++)
-	{
-		SortSupport		ssup = &cxt->ssup[i];
-		TypeCacheEntry *entry
-			= lookup_type_cache(filter->types[i], TYPECACHE_LT_OPR);
-
-		ssup->ssup_cxt = CurrentMemoryContext;
-		ssup->ssup_collation = filter->collations[i];
-		ssup->ssup_nulls_first = false;	/* FIXME? */
-
-		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);
-	}
 
 	/* sort ranges by start/end */
 	qsort_arg(ranges, nranges, sizeof(FilterRange),
@@ -563,11 +538,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 		}
 	}
 
-	ExecHashFilterSerializeExact(filter, values, nvalues);
-
 	Assert(filter->nranges * 2 <= filter->nvalues);
-
-	pfree(values);
 }
 
 /*
@@ -581,35 +552,34 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 static bool
 ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	int		nvalues = list_length(filter->clauses);
+	int		entrylen = list_length(filter->clauses);
+	Datum  *entry;
 	Datum  *values;
-	int		entrylen;
 
 	Assert(filter->filter_type == HashFilterRange);
 
-	values = palloc(sizeof(Datum) * nvalues);
-
-	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
-
-	entrylen = calculate_filter_entry_length(filter, values);
+	entry = palloc(sizeof(Datum) * entrylen);
 
 	/* consider enlarging the filter as long as needed */
-	while (filter->nallocated - filter->nused < entrylen)
+	while (filter->nallocated - filter->nvalues < entrylen)
 	{
 		/* FIXME handle nicely */
-		if (filter->nallocated * 2 > work_mem * 1024L)
+		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
 		{
 			ExecHashFilterCompactRange(filter);
 			continue;
 		}
 
 		filter->nallocated *= 2;
-		filter->data = repalloc(filter->data, filter->nallocated);
+		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
 	}
 
-	serialize_filter_entry(filter, values);
+	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, entry);
 
-	pfree(values);
+	values = (Datum *) filter->data;
+	memcpy(&values[filter->nvalues], entry, entrylen * sizeof(Datum)); 
+
+	pfree(entry);
 
 	filter->nvalues++;
 
@@ -640,8 +610,6 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 {
 	Datum  *values;
 	Size	entrylen = (sizeof(Datum) * list_length(filter->clauses));
-	int		idx;
-	char   *ptr;
 	qsort_cxt *cxt;
 
 	Assert(filter->filter_type == HashFilterExact);
@@ -650,328 +618,45 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 	if (filter->nvalues == 0)
 		return;
 
-	values = palloc(filter->nvalues * entrylen);
-
-	idx = 0;
-	ptr = filter->data;
-	for (int i = 0; i < filter->nvalues; i++)
-	{
-		for (int j = 0; j < list_length(filter->clauses); j++)
-		{
-			int16	typlen;
-			bool	typbyval;
-			char	typalign;
-
-			get_typlenbyvalalign(filter->types[j], &typlen, &typbyval, &typalign);
-
-			if (typbyval)
-			{
-				Datum		tmp = 0;
-				memcpy(&tmp, ptr, typlen);
-				values[idx] = fetch_att(&tmp, true, typlen);
-				ptr += typlen;
-				idx++;
-			}
-			else if (typlen > 0)
-			{
-				values[idx] = PointerGetDatum(palloc(typlen));
-				memcpy(DatumGetPointer(values[idx]), ptr, typlen);
-				ptr += typlen;
-				idx++;
-			}
-			else if (typlen == -1)	/* varlena */
-			{
-				values[idx] = PointerGetDatum(palloc(VARSIZE_ANY(ptr)));
-				memcpy(DatumGetPointer(values[idx]), ptr, VARSIZE_ANY(ptr));
-				ptr += VARSIZE_ANY(ptr);
-				idx++;
-			}
-			else if (typlen == -2)	/* cstring */
-			{
-				Size		slen = strlen(ptr) + 1;
-				values[idx] = PointerGetDatum(palloc(slen));
-				memcpy(DatumGetPointer(values[idx]), ptr, slen);
-				ptr += slen;
-				idx++;
-			}
-		}
-	}
-
-	/* prepare the context for qsort */
-	cxt = palloc0(offsetof(qsort_cxt, ssup) +
-				  sizeof(SortSupportData) * list_length(filter->clauses));
-
-	for (int i = 0; i < list_length(filter->clauses); i++)
-	{
-		SortSupport		ssup = &cxt->ssup[i];
-		TypeCacheEntry *entry
-			= lookup_type_cache(filter->types[i], TYPECACHE_LT_OPR);
-
-		ssup->ssup_cxt = CurrentMemoryContext;
-		ssup->ssup_collation = filter->collations[i];
-		ssup->ssup_nulls_first = false;	/* FIXME? */
-
-		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);
-	}
+	values = (Datum *) filter->data;
+	cxt = (qsort_cxt *) filter->private_data;
 
 	/* nothing to do if the filter represents no values */
 	qsort_arg(values, filter->nvalues, entrylen, filter_comparator_2, cxt);
 
-	idx = 0;
-	ptr = filter->data;
-	for (int i = 0; i < filter->nvalues; i++)
-	{
-		for (int j = 0; j < list_length(filter->clauses); j++)
-		{
-			int16	typlen;
-			bool	typbyval;
-			char	typalign;
-
-			get_typlenbyvalalign(filter->types[j], &typlen, &typbyval, &typalign);
-
-			if (typbyval)
-			{
-				/* see brin_minmax_multi for store_att_byval */
-				Datum tmp;
-
-				store_att_byval(&tmp, values[idx], typlen);
-				memcpy(ptr, &tmp, typlen);
-				ptr += typlen;
-			}
-			else if (typlen > 0)
-			{
-				memcpy(ptr, DatumGetPointer(values[idx]), typlen);
-				ptr += typlen;
-			}
-			else if (typlen == -1)
-			{
-				/* size including the varlena header */
-				int			tmp = VARSIZE_ANY(DatumGetPointer(values[idx]));
-
-				memcpy(ptr, DatumGetPointer(values[idx]), tmp);
-				ptr += tmp;
-			}
-			else if (typlen == -2)
-			{
-				/* not sure if we can get cstring here, but maybe yes */
-				int			tmp = strlen(DatumGetCString(values[idx])) + 1;
-
-				memcpy(ptr, DatumGetCString(values[idx]), tmp);
-				ptr += tmp;
-			}
-
-			idx++;
-		}
-	}
-
-	Assert(filter->nused == (ptr - filter->data));
-}
-
-/*
- * ExecHashFilterDeserializeExact
- *		Deserialize filter data into a simple array of datum values.
- */
-Datum *
-ExecHashFilterDeserializeExact(HashFilterState *filter)
-{
-	Datum  *values;
-	int		nvalues;
-	int		idx;
-	char   *ptr;
-
-	Assert((filter->filter_type == HashFilterExact) ||
-		   (filter->filter_type == HashFilterRange));
-
-	/* nothing to do if the filter represents no values */
-	if (filter->nvalues == 0)
-		return NULL;
-
-	/* how many values we'll need */
-	nvalues = (filter->nvalues * list_length(filter->clauses));
-	values = palloc(nvalues * sizeof(Datum));
-
-	idx = 0;
-	ptr = filter->data;
-	for (int i = 0; i < filter->nvalues; i++)
-	{
-		for (int j = 0; j < list_length(filter->clauses); j++)
-		{
-			int16	typlen;
-			bool	typbyval;
-			char	typalign;
-
-			get_typlenbyvalalign(filter->types[j], &typlen, &typbyval, &typalign);
-
-			if (typbyval)
-			{
-				Datum		tmp = 0;
-				memcpy(&tmp, ptr, typlen);
-				values[idx] = fetch_att(&tmp, true, typlen);
-				ptr += typlen;
-				idx++;
-			}
-			else if (typlen > 0)
-			{
-				values[idx] = PointerGetDatum(palloc(typlen));
-				memcpy(DatumGetPointer(values[idx]), ptr, typlen);
-				ptr += typlen;
-				idx++;
-			}
-			else if (typlen == -1)	/* varlena */
-			{
-				values[idx] = PointerGetDatum(palloc(VARSIZE_ANY(ptr)));
-				memcpy(DatumGetPointer(values[idx]), ptr, VARSIZE_ANY(ptr));
-				ptr += VARSIZE_ANY(ptr);
-				idx++;
-			}
-			else if (typlen == -2)	/* cstring */
-			{
-				Size		slen = strlen(ptr) + 1;
-				values[idx] = PointerGetDatum(palloc(slen));
-				memcpy(DatumGetPointer(values[idx]), ptr, slen);
-				ptr += slen;
-				idx++;
-			}
-		}
-	}
-
-	return values;
-}
-
-/*
- * ExecHashFilterDeserializeExact
- *		Deserialize filter data into a simple array of datum values.
- */
-void
-ExecHashFilterSerializeExact(HashFilterState *filter, Datum *values, int nvalues)
-{
-	int		entryvalues = list_length(filter->clauses);
-	int		entrylen;
-	char   *ptr = (char *) values;
-
-	filter->nused = 0;
-
-	entrylen = calculate_filter_entry_length(filter, (Datum *) ptr);
-
-	/* we only serialize filter after reducing it somehow */
-	Assert(filter->nallocated - filter->nused >= entrylen);
-
-	serialize_filter_entry(filter, (Datum *) ptr);
-	ptr += entryvalues * sizeof(Datum);
-}
-
-static int
-calculate_filter_entry_length(HashFilterState *filter, Datum *values)
-{
-	int	len = 0;
-	int	nvalues = list_length(filter->clauses);
-
-	/* calculate space needed to store the entry */
-	for (int i = 0; i < nvalues; i++)
-	{
-		int16	typlen;
-		bool	typbyval;
-		char	typalign;
-
-		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
-
-		if (typlen > 0)
-		{
-			len += typlen;
-		}
-		else if (typlen == -1)
-		{
-			/* size including the varlena header */
-			len += VARSIZE_ANY(values[i]);
-		}
-		else if (typlen == -2)
-		{
-			/* not sure if we can get cstring here, but maybe yes */
-			len += strlen(DatumGetPointer(values[i])) + 1;
-		}
-	}
-
-	return len;
-}
-
-static void
-serialize_filter_entry(HashFilterState *filter, Datum *values)
-{
-	int	nvalues = list_length(filter->clauses);
-
-	/* copy the values into the filter */
-	for (int i = 0; i < nvalues; i++)
-	{
-		int16	typlen;
-		bool	typbyval;
-		char	typalign;
-		char   *ptr = filter->data + filter->nused;
-
-		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
-
-		if (typbyval)
-		{
-			/* see brin_minmax_multi for store_att_byval */
-			Datum tmp;
-
-			store_att_byval(&tmp, values[i], typlen);
-			memcpy(ptr, &tmp, typlen);
-			filter->nused += typlen;
-		}
-		else if (typlen > 0)
-		{
-			memcpy(ptr, DatumGetPointer(values[i]), typlen);
-			filter->nused += typlen;
-		}
-		else if (typlen == -1)
-		{
-			/* size including the varlena header */
-			int			tmp = VARSIZE_ANY(DatumGetPointer(values[i]));
-
-			memcpy(ptr, DatumGetPointer(values[i]), tmp);
-			filter->nused += tmp;
-		}
-		else if (typlen == -2)
-		{
-			/* not sure if we can get cstring here, but maybe yes */
-			int			tmp = strlen(DatumGetCString(values[i])) + 1;
-
-			memcpy(ptr, DatumGetCString(values[i]), tmp);
-			filter->nused += tmp;
-		}
-	}
+	/* FIXME deduplicate values */
 }
 
 /* FIXME deduplicate the values first */
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	int		nvalues = list_length(filter->clauses);
+	int		entrylen = list_length(filter->clauses);
+	Datum  *entry;
 	Datum  *values;
-	int		entrylen;
 
 	Assert(filter->filter_type == HashFilterExact);
 
-	values = palloc(sizeof(Datum) * nvalues);
-
-	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, values);
-
-	entrylen = calculate_filter_entry_length(filter, values);
+	entry = palloc(sizeof(Datum) * entrylen);
 
 	/* consider enlarging the filter as long as needed */
-	while (filter->nallocated - filter->nused < entrylen)
+	while (filter->nallocated - filter->nvalues < entrylen)
 	{
 		/* FIXME handle nicely */
-		if (filter->nallocated * 2 > work_mem * 1024L)
+		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
 			elog(ERROR, "filter exceeds work_mem");
 
 		filter->nallocated *= 2;
-		filter->data = repalloc(filter->data, filter->nallocated);
+		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
 	}
 
-	serialize_filter_entry(filter, values);
+	/* now we know there's enough space, so add the entry */
+	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, entry);
 
-	pfree(values);
+	values = (Datum *) filter->data;
+	memcpy(&values[filter->nvalues], entry, entrylen * sizeof(Datum));
+
+	pfree(entry);
 
 	filter->nvalues++;
 
@@ -1418,6 +1103,7 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 	Datum	   *values;
 	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
 	char	   *ptr;
+	qsort_cxt  *cxt = (qsort_cxt *) filter->private_data;
 
 	Assert(filter->filter_type == HashFilterExact);
 
@@ -1425,8 +1111,8 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 
 	ExecScanGetFilterGetValues(refstate, econtext, false, values);
 
-	/* FIXME wrong, needs to use the proper comparator, not memcmp() */
-	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize, filter_comparator, &entrysize);
+	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize,
+					  filter_comparator_2, cxt);
 
 	if (ptr != NULL)
 		filter->nhits++;
@@ -1449,26 +1135,29 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 {
 	HashFilterState *filter = refstate->filter;
 	Datum	   *values;
-	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
+	Datum	   *entry;
+	Size		entrylen = list_length(refstate->clauses);
+	qsort_cxt  *cxt = (qsort_cxt *) filter->private_data;
 
 	Assert(filter->filter_type == HashFilterRange);
 
-	values = palloc(entrysize);
+	values = (Datum *) filter->data;
 
-	ExecScanGetFilterGetValues(refstate, econtext, false, values);
+	entry = palloc(entrylen * sizeof(Datum));
 
-	/* FIXME wrong, needs to use the proper comparator, not memcmp() */
+	ExecScanGetFilterGetValues(refstate, econtext, false, entry);
+
 	/* TODO use binary search to check ranges */
 	for (int i = 0; i < filter->nranges; i++)
 	{
 		Datum  *start,
 			   *end;
 
-		start = (Datum *) (filter->data + (2 * i * entrysize));
-		end = (Datum *) (filter->data + ((2 * i + 1) * entrysize));
+		start = &values[2 * i * entrylen];
+		end = &values[(2 * i + 1) * entrylen];
 
-		if ((memcmp(values, start, entrysize) >= 0) &&
-			(memcmp(values, end, entrysize) <= 0))
+		if ((filter_comparator_2(entry, start, cxt) >= 0) &&
+			(filter_comparator_2(entry, end, cxt) <= 0))
 		{
 			filter->nhits++;
 			pfree(values);
@@ -1478,11 +1167,9 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 
 	for (int i = 2 * filter->nranges; i < filter->nvalues; i++)
 	{
-		Datum  *entry;
+		Datum  *value = &values[i * entrylen];
 
-		entry = (Datum *) (filter->data + (2 * i * entrysize));
-
-		if (memcmp(values, entry, entrysize) == 0)
+		if (filter_comparator_2(entry, value, cxt) == 0)
 		{
 			filter->nhits++;
 			pfree(values);
@@ -1523,6 +1210,7 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 	ListCell   *ho,
 			   *hc,
 			   *hk;
+	qsort_cxt  *cxt;
 
 	HashFilterState *state = makeNode(HashFilterState);
 
@@ -1618,6 +1306,24 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 		state->nallocated = 8192;	/* start with 8kB */
 		state->data = palloc0(state->nallocated);
 	}
+
+	cxt = palloc0(offsetof(qsort_cxt, ssup) +
+				  sizeof(SortSupportData) * list_length(filter->clauses));
+
+	for (int i = 0; i < list_length(filter->clauses); i++)
+	{
+		SortSupport		ssup = &cxt->ssup[i];
+		TypeCacheEntry *entry
+			= lookup_type_cache(state->types[i], TYPECACHE_LT_OPR);
+
+		ssup->ssup_cxt = CurrentMemoryContext;
+		ssup->ssup_collation = state->collations[i];
+		ssup->ssup_nulls_first = false;	/* FIXME? */
+
+		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);
+	}
+
+	state->private_data = cxt;
 
 	return state;
 }

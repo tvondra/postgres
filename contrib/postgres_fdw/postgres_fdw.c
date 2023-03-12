@@ -3840,7 +3840,7 @@ create_cursor(ForeignScanState *node)
 			StringInfoData	cond;
 			StringInfoData	values;
 
-			Datum *filterValues = ExecHashFilterDeserializeExact(filter);
+			Datum *filterValues = (Datum *) filter->data;
 
 			initStringInfo(&values);
 
@@ -3880,7 +3880,7 @@ create_cursor(ForeignScanState *node)
 			StringInfoData	cond;
 			StringInfoData	values;
 
-			Datum *filterValues = ExecHashFilterDeserializeExact(filter);
+			Datum *filterValues = (Datum *) filter->data;
 
 			initStringInfo(&cond);
 

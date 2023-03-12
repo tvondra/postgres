@@ -2667,6 +2667,9 @@ typedef struct HashFilterState
 	Oid		   *collations;
 	Oid		   *types;
 
+	/* private data used by the filter implementation (e.g. qsort context) */
+	void	   *private_data;
+
 	HashFilterType	filter_type;	/* exact/range/bloom filter? */
 	bool			built;		/* is the filter populated with data? */
 
@@ -2675,10 +2678,9 @@ typedef struct HashFilterState
 	int64		nhits;
 
 	/* fields used by exact/range filters */
+	int			nallocated;
 	int			nvalues;
 	int			nranges;
-	int			nallocated;		/* size of the data buffer */
-	int			nused;			/* number of used bytes */
 
 	/* fields used by Bloom filters */
 	int			nhashes;

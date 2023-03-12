@@ -11,6 +11,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/namespace.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "executor/hashjoin.h"
@@ -324,11 +325,37 @@ ranges_overlap(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
  * just comparing the Datum values.
  */
 static bool
-ranges_contiguous(FilterRange *ra, FilterRange *rb, qsort_cxt *cxt)
+ranges_contiguous(HashFilterState *filter, FilterRange *ra, FilterRange *rb)
 {
-	/* FIXME restrict this to integer/discrete types */
-	Assert(ra->end <= rb->start);
-	if (ra->end + 1 >= rb->start)
+	qsort_cxt  *cxt = (qsort_cxt *) filter->private_data;
+	Oid 		plusOid;
+	FmgrInfo	opproc;
+	Datum		increment;
+	Datum		r;
+
+#ifdef USE_ASSERT_CHECKING
+	/* ranges are sorted in ascending order */
+	Assert(ApplySortComparator(ra->end, false, rb->start, false, &cxt->ssup[0]) <= 0);
+#endif
+
+	plusOid = OpernameGetOprid(
+					list_make2(makeString("pg_catalog"), makeString("+")),
+					filter->types[0], filter->types[0]);
+
+	fmgr_info(get_opcode(plusOid), &opproc);
+
+	/* XXX maybe pass '1' into the type input function, instead of hardcoding
+	 * it like this? */
+	if (filter->types[0] == INT2OID)
+		increment = Int16GetDatum(1);
+	else if (filter->types[0] == INT4OID)
+		increment = Int32GetDatum(1);
+	else /* INT8OID */
+		increment = Int64GetDatum(1);
+
+	r = FunctionCall2Coll(&opproc, InvalidOid, ra->end, increment);
+
+	if (ApplySortComparator(r, false, rb->start, false, &cxt->ssup[0]) >= 0)
 		return true;
 
 	return false;
@@ -444,6 +471,8 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 		Assert(i < filter->nvalues);
 	}
 
+	// dump_ranges(filter, ranges, nranges);
+
 	Assert(rangeidx == nranges);
 
 	/* sort ranges by start/end */
@@ -479,6 +508,8 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	/* the last used range index determines how many ranges we have */
 	nranges = (rangeidx + 1);
 
+	// dump_ranges(filter, ranges, nranges);
+
 	/*
 	 * combine contiguous ranges
 	 *
@@ -495,7 +526,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 		rangeidx = 0;
 		for (int i = 1; i < nranges; i++)
 		{
-			if (ranges_contiguous(&ranges[rangeidx], &ranges[i], cxt))
+			if (ranges_contiguous(filter, &ranges[rangeidx], &ranges[i]))
 			{
 				ranges[rangeidx].end = ranges[i].end;
 				continue;

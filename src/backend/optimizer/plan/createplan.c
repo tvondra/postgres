@@ -4767,7 +4767,8 @@ create_hashjoin_plan(PlannerInfo *root,
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&
 		(best_path->jpath.jointype == JOIN_INNER ||
-		 best_path->jpath.jointype == JOIN_SEMI))
+		 best_path->jpath.jointype == JOIN_SEMI) &&
+		 (root->outer_params == NULL))
 	{
 		ListCell *lc2;
 

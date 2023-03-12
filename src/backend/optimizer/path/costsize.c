@@ -3867,11 +3867,18 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 *
 	 * XXX Disabled for parallel plans for now. Building parallel filters
 	 * should be possible, though.
+	 *
+	 * XXX We also can't do filters when this is a parameterized subplan, as
+	 * we need to build the filter. In practice, It should be possible to build
+	 * the filter after passing the first set of prameters, but at the moment
+	 * this crashes e.g. for selects from pg_stats_ext. Other similar cases
+	 * (lateral and parameterizes paths) might have the same issue.
 	 */
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(outer_path->parallel_workers == 0) &&
 		(extra->sjinfo->jointype == JOIN_INNER ||
-		 extra->sjinfo->jointype == JOIN_SEMI))
+		 extra->sjinfo->jointype == JOIN_SEMI) &&
+		 (root->outer_params == NULL))
 	{
 		ListCell *lc2;
 

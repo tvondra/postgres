@@ -1402,6 +1402,25 @@ set_indexonlyscan_references(PlannerInfo *root,
 	plan->indextlist = fix_scan_list(root, plan->indextlist,
 									 rtoffset, NUM_EXEC_TLIST((Plan *) plan));
 
+	{
+		ListCell   *lc;
+		Scan	   *splan = (Scan *) plan;
+
+		/* hash clauses in filter references */
+		foreach(lc, splan->filters)
+		{
+			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+			ref->clauses = (List *)
+				fix_upper_expr(root,
+							   (Node *) ref->clauses,
+							   index_itlist,
+							   INDEX_VAR,
+							   rtoffset,
+							   NRM_EQUAL,
+							   NUM_EXEC_QUAL((Plan *) plan));
+		}
+	}
+
 	pfree(index_itlist);
 
 	return (Plan *) plan;

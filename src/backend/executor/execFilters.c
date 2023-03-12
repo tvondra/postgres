@@ -493,7 +493,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	 * we need to be careful about collapsed ranges, because joining two
 	 * such ranges does not reduce anything).
 	 */
-	while (true)
+	while (nranges > 1)
 	{
 		int		nvalues = 0;
 		int		mindist;

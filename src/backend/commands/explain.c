@@ -3201,7 +3201,7 @@ show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
 								 state->nqueries, state->nhits,
 								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
 			else
-				appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
+				appendStringInfo(es->str, "Bloom filter %d: %s\n", filter->filterId, exprstr);
 		}
 	}
 }
@@ -3891,13 +3891,13 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 			ExplainIndentText(es);
 
 			if (state)
-				appendStringInfo(es->str, "Bloom filter: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
-								 exprstr, state->nbits,
+				appendStringInfo(es->str, "Bloom filter %d: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
+								 state->filterId, exprstr, state->nbits,
 								 ((state->nbits/8) /1024.0), /* size in bytes */
 								 state->nqueries, state->nhits,
 								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
 			else
-				appendStringInfo(es->str, "Bloom filter: %s\n", exprstr);
+				appendStringInfo(es->str, "Bloom filter %d: %s\n", refstate->filterId, exprstr);
 		}
 	}
 	else

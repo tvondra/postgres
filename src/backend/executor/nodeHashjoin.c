@@ -671,7 +671,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 	innerDesc = ExecGetResultType(innerPlanState(hjstate));
 
-	if (hashNode->filters)
+	if (hashNode->filters && !(eflags && EXEC_FLAG_EXPLAIN_ONLY))
 	{
 		HashJoinTable hashtable;
 		HashState *hashState = (HashState *) innerPlanState(hjstate);

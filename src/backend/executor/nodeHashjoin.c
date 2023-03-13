@@ -703,7 +703,22 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 	innerDesc = ExecGetResultType(innerPlanState(hjstate));
 
-	if (hashNode->filters && !(eflags && EXEC_FLAG_EXPLAIN_ONLY))
+	/*
+	 * Build the filters.
+	 *
+	 * This is problematic, because we're in "init" executor phase. So this
+	 * runs even when doing EXPLAIN for example. But many nodes don't do full
+	 * initialization in that case and bail out early, so we may not be able
+	 * to actually run them. For example, a hashagg won't create hash tables,
+	 * and so on. It also means that EXPLAIN may take quite a bit of time, as
+	 * it runs some part of the qery.
+	 *
+	 * 
+	 *
+	 * This is rather problematic for a number of reasones, because we run the filter in init phase.
+	 *
+	 */
+	if (hashNode->filters && (!(eflags & EXEC_FLAG_EXPLAIN_ONLY)))
 	{
 		HashJoinTable hashtable;
 		HashState *hashState = (HashState *) innerPlanState(hjstate);

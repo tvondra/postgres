@@ -4763,12 +4763,26 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * upper paths for alternative plans.
 	 *
 	 * XXX Disabled for parallel plans for now.
+	 *
+	 * XXX Also disable this for parameterized paths, i.e. for joins that
+	 * expect parameters from other (upper) parts of the plan. In principle
+	 * this should not be a problem, but at the moment we build the filter
+	 * in "init" where the parameters may not be available.
+	 *
+	 * The right solution is to not base building the filter on Hash, but
+	 * build it as initplan/subplan, or something like that. That'd allow
+	 * building filters for any join type (except maybe for parameterized
+	 * nestloops, where we have circular dependency on values from the path
+	 * where we want to push the filter), not just for hash joins (which
+	 * makes the planning a bit weird anyway).
 	 */
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&
 		(best_path->jpath.jointype == JOIN_INNER ||
 		 best_path->jpath.jointype == JOIN_SEMI) &&
-		 (root->outer_params == NULL))
+		 (root->outer_params == NULL) &&
+		 (root->init_plans == NIL) &&
+		 (best_path->jpath.path.parent->lateral_relids == NULL))
 	{
 		ListCell *lc2;
 

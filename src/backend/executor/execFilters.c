@@ -184,6 +184,11 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 				MemoryContextSwitchTo(oldContext);
 				return false;
 			}
+
+			/* FIXME handle NULLs correctly, instead of just ignoring them */
+			MemoryContextSwitchTo(oldContext);
+			return false;
+
 			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
 		}
 		else
@@ -672,7 +677,8 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
 	}
 
-	ExecHashGetFilterGetValues(filter, econtext, keep_nulls, entry);
+	if (!ExecHashGetFilterGetValues(filter, econtext, keep_nulls, entry))
+		return false;
 
 	values = (Datum *) filter->data;
 

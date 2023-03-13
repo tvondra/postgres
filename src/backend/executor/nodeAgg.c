@@ -3608,6 +3608,9 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		find_hash_columns(aggstate);
 
 		/* Skip massive memory allocation if we are just doing EXPLAIN */
+		// FIXME this may fail with pushed-down filters, because at the moment
+		// we build those in ExecInitHashJoin (needs to be changed), which means
+		// the Hash subtree is executed - so we need to check
 		if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 			build_hash_tables(aggstate);
 

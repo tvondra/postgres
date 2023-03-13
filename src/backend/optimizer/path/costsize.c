@@ -3872,12 +3872,30 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * the filter after passing the first set of prameters, but at the moment
 	 * this crashes e.g. for selects from pg_stats_ext. Other similar cases
 	 * (lateral and parameterizes paths) might have the same issue.
+	 *
+	 * XXX Likewise, don't build pushdown for cases with initplans, because in
+	 * such cases the hashjoin likely references the initplan output (through
+	 * a parameter), and we don't want to run the initplan just to build the
+	 * filter. Or maybe we should? Maybe there's a better way how to identify
+	 * and ignore parameterized paths.
+	 *
+	 * The initplan/subplan approach would separate building the filter from
+	 * the join itself (e.g. modifying the hashjoin to also build filter),
+	 * which seems like a good idea as it simplifies things. It means running
+	 * this part of the plan twice, which may be expensive, though. Another
+	 * issue is that maybe the "isolated" subplan might use a different plan
+	 * (e.g. not sorted) than as part for the whole query (assuming we just
+	 * use the path to build the filter-building subplan, but maybe we can
+	 * just get the cheapest total path).
 	 */
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(outer_path->parallel_workers == 0) &&
 		(extra->sjinfo->jointype == JOIN_INNER ||
 		 extra->sjinfo->jointype == JOIN_SEMI) &&
-		 (root->outer_params == NULL))
+		 (root->outer_params == NULL) &&
+		 (root->init_plans == NIL) &&
+		 (inner_path->parent->lateral_relids == NULL) &&
+		 (outer_path->parent->lateral_relids == NULL))
 	{
 		ListCell *lc2;
 

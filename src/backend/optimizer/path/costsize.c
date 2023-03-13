@@ -3887,6 +3887,19 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * (e.g. not sorted) than as part for the whole query (assuming we just
 	 * use the path to build the filter-building subplan, but maybe we can
 	 * just get the cheapest total path).
+	 *
+	 * Also, we if there are multiple places where we could push the filter,
+	 * we don't want to build it twice - in that case we could place the
+	 * initplan/subplan building the filter to the "highest" node, so that
+	 * all the nodes actually using it just referene the one filter.
+	 *
+	 * Another idea: instead of "pushing down" the filter when creating the
+	 * join node, maybe we could/should consider filters when building the
+	 * paths "bottom-up". For example, when building a plan, we can look at
+	 * join conditions referencing it, and derive the filter definition from
+	 * this, somehow? In principle, we'll need to do something like that to
+	 * build "new" parameterized plans leveraging the exact/range filters
+	 * (pushing it down to remote server, allowing use of indexes, etc.).
 	 */
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(outer_path->parallel_workers == 0) &&

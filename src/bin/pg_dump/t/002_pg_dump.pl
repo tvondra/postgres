@@ -178,9 +178,16 @@ my %pgdump_runs = (
 		compress_cmd => {
 			program => $ENV{'LZ4'},
 			args    => [
-				'-z', '-f', '--rm',
+				'-z', '-f',
 				"$tempdir/compression_lz4_dir/blobs.toc",
 				"$tempdir/compression_lz4_dir/blobs.toc.lz4",
+			],
+		},
+		# remove the source (uncompressed) .toc file
+		cleanup_cmd => {
+			program => 'rm',
+			args    => [
+				"$tempdir/compression_lz4_dir/blobs.toc",
 			],
 		},
 		# Verify that data files were compressed
@@ -4272,6 +4279,20 @@ foreach my $run (sort keys %pgdump_runs)
 		my @full_compress_cmd =
 		  ($compress_cmd->{program}, @{ $compress_cmd->{args} });
 		command_ok(\@full_compress_cmd, "$run: compression commands");
+	}
+
+	if ($pgdump_runs{$run}->{cleanup_cmd})
+	{
+		my ($cleanup_cmd) = $pgdump_runs{$run}->{cleanup_cmd};
+		my $cleanup_program = $cleanup_cmd->{program};
+
+		# Skip the rest of the test if the compression program is
+		# not defined.
+		next if (!defined($cleanup_cmd) || $cleanup_cmd eq '');
+
+		my @full_cleanup_cmd =
+		  ($cleanup_cmd->{program}, @{ $cleanup_cmd->{args} });
+		command_ok(\@full_cleanup_cmd, "$run: cleanup commands");
 	}
 
 	if ($pgdump_runs{$run}->{glob_patterns})

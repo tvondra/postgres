@@ -2220,15 +2220,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	if (planstate->subPlan)
 		ExplainSubPlans(planstate->subPlan, ancestors, "SubPlan", es);
 
-	/* filters */
-	elog(WARNING, "ZZZZ");
-	if (IsA(plan, SeqScan) && ((Scan *) plan)->filters)
-	{
-		elog(WARNING, "YYYY");
-		show_scan_filters((Scan *) plan, planstate, ancestors, es);
-		elog(WARNING, "QQQQ");
-	}
-
 	/* end of child plans */
 	if (haschildren)
 	{
@@ -3803,15 +3794,18 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
-		ListCell *lc;
+		ListCell *lc1;
+		ListCell *lc2;
 
-		foreach (lc, ((ScanState *) planstate)->ss_Filters)
+		forboth (lc1, plan->filters, lc2, ((ScanState *) planstate)->ss_Filters)
 		{
-			HashFilterState *state = (HashFilterState *) lfirst(lc);
+			HashFilter *filter = (HashFilter *) lfirst(lc1);
+			HashFilterState *state = (HashFilterState *) lfirst(lc2);
 
 			List	   *context;
 			char	   *exprstr;
 			bool		useprefix;
+			StringInfoData	label;
 
 			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
 
@@ -3821,21 +3815,22 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 											   ancestors);
 
 			/* Deparse the expression */
-			exprstr = deparse_expression((Node *) state->hashclauses, context, useprefix, false);
+			exprstr = deparse_expression((Node *) filter->hashclauses, context, useprefix, false);
 
-			ExplainIndentText(es);
+			initStringInfo(&label);
 
-			if (state)
-				appendStringInfo(es->str, "Bloom filter %d: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
-								 state->filterId, exprstr, state->nbits,
-								 ((state->nbits/8) /1024.0), /* size in bytes */
-								 state->nqueries, state->nhits,
-								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
-			else
-				appendStringInfo(es->str, "Bloom filter %d: %s\n", state->filterId, exprstr);
+			appendStringInfo(&label, "Bloom filter %d: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
+							 state->filterId, exprstr, state->nbits,
+							 ((state->nbits/8) /1024.0), /* size in bytes */
+							 state->nqueries, state->nhits,
+							 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+
+			ancestors = lcons(plan, ancestors);
 
 			ExplainNode(state->planstate, ancestors,
-					"Filter", "Filter", es);
+					"Filter", label.data, es);
+
+			ancestors = list_delete_first(ancestors);
 		}
 	}
 	else

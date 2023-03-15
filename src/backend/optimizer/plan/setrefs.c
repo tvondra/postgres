@@ -1409,11 +1409,21 @@ set_indexonlyscan_references(PlannerInfo *root,
 		/* hash clauses in filter references */
 		foreach(lc, splan->filters)
 		{
-			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-			ref->clauses = (List *)
+			HashFilter *filter = (HashFilter *) lfirst(lc);
+
+			filter->clauses = (List *)
 				fix_upper_expr(root,
-							   (Node *) ref->clauses,
+							   (Node *) filter->clauses,
 							   index_itlist,
+							   INDEX_VAR,
+							   rtoffset,
+							   NRM_EQUAL,
+							   NUM_EXEC_QUAL((Plan *) plan));
+
+			filter->hashclauses = (List *)
+				fix_upper_expr(root,
+							   (Node *) filter->hashclauses,
+							   build_tlist_index(filter->subplan->targetlist), /* FIXME pfree */
 							   INDEX_VAR,
 							   rtoffset,
 							   NRM_EQUAL,
@@ -1887,33 +1897,6 @@ set_mergeappend_references(PlannerInfo *root,
 }
 
 /*
- * fix_hash_filters
- *	   Do set_plan_references processing on pushed-down filters in a Hash node
- */
-static List *
-fix_hash_filters(PlannerInfo *root, Plan *plan, int rtoffset, indexed_tlist *outer_itlist)
-{
-	ListCell   *lc;
-	Hash	   *hplan = (Hash *) plan;
-
-	/* hash clauses in filter references */
-	foreach(lc, hplan->filters)
-	{
-		HashFilter *filter = (HashFilter *) lfirst(lc);
-		filter->clauses = (List *)
-			fix_upper_expr(root,
-					   (Node *) filter->clauses,
-					   outer_itlist,
-					   OUTER_VAR,
-					   rtoffset,
-					   NRM_EQUAL,
-					   NUM_EXEC_QUAL(plan));
-	}
-
-	return hplan->filters;
-}
-
-/*
  * set_hash_references
  *	   Do set_plan_references processing on a Hash node
  */
@@ -1938,9 +1921,6 @@ set_hash_references(PlannerInfo *root, Plan *plan, int rtoffset)
 					   rtoffset,
 					   NRM_EQUAL,
 					   NUM_EXEC_QUAL(plan));
-
-	/* FIXME maybe this should do the same thing as for hashkeys? */
-	hplan->filters = fix_hash_filters(root, plan, rtoffset, outer_itlist);
 
 	/* Hash doesn't project */
 	set_dummy_tlist_references(plan, rtoffset);
@@ -2174,9 +2154,10 @@ fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 	/* hash clauses in filter references */
 	foreach(lc, splan->filters)
 	{
-		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-		ref->clauses = fix_scan_list(root, ref->clauses,
-									 rtoffset, NUM_EXEC_QUAL(plan));
+		HashFilter *filter = (HashFilter *) lfirst(lc);
+		filter->clauses = fix_scan_list(root, filter->clauses,
+										rtoffset, NUM_EXEC_QUAL(plan));
+		filter->subplan = set_plan_references(root, filter->subplan);
 	}
 
 	return splan->filters;

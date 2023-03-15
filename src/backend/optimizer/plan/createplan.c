@@ -4735,7 +4735,6 @@ create_hashjoin_plan(PlannerInfo *root,
 	AttrNumber	skewColumn = InvalidAttrNumber;
 	bool		skewInherit = false;
 	ListCell   *lc;
-	List	   *filters = NIL;
 
 	/*
 	 * try to pushdown bloom filter
@@ -4847,10 +4846,15 @@ create_hashjoin_plan(PlannerInfo *root,
 			if (path)
 			{
 				HashFilter *filter = makeNode(HashFilter);
-				HashFilterReference *ref = makeNode(HashFilterReference);
 
 				filter->filterId = ++(root->glob->lastFilterId);
-				filter->clauses = list_make1(copyObject(expr));
+
+				filter->subplan = create_plan_recurse(root, best_path->jpath.innerjoinpath,
+									 CP_SMALL_TLIST);
+
+				filter->clauses = list_make1(copyObject(expr2));
+
+				filter->hashclauses = list_make1(copyObject(expr));
 
 				filter->hashoperators = NIL;
 				filter->hashoperators = lappend_oid(filter->hashoperators, opexpr->opno);
@@ -4858,19 +4862,12 @@ create_hashjoin_plan(PlannerInfo *root,
 				filter->hashcollations = NIL;
 				filter->hashcollations = lappend_oid(filter->hashcollations, opexpr->inputcollid);
 
-				/* XXX not sure a copy is needed, but maybe it is */
-				ref->filterId = filter->filterId;
-				ref->clauses = list_make1(copyObject(expr2));
-
-				/* add the filter to the list */
-				filters = lappend(filters, filter);
-
 				/* add the reference - we push filters from joins higher up first,
 				 * but joins are generally ordered from the most selective first
 				 * (to keep results small), and we want to start with the most
 				 * selective filters - so we add the filters at the beginning,
 				 * to run those filters first */
-				path->filters = lcons(ref, path->filters);
+				path->filters = lcons(filter, path->filters);
 			}
 		}
 	}
@@ -4991,9 +4988,6 @@ create_hashjoin_plan(PlannerInfo *root,
 						  skewTable,
 						  skewColumn,
 						  skewInherit);
-
-	/* FIXME add as parameter to make_hash()? */
-	hash_plan->filters = filters;
 
 	/*
 	 * Set Hash node's startup & total costs equal to total cost of input

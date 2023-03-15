@@ -2660,6 +2660,9 @@ typedef struct HashFilterState
 
 	HashFilter *filter;			/* link to the filter */
 	List	   *clauses;		/* list of ExprState nodes */
+	List	   *hashclauses;	/* list of ExprState nodes */
+
+	PlanState  *planstate;		/* planstate for the subplan */
 
 	/* functions used to hash data, NULL handling, types, collations etc. */
 	FmgrInfo   *hashfunctions;
@@ -2690,19 +2693,6 @@ typedef struct HashFilterState
 	char	   *data;
 
 } HashFilterState;
-
-typedef struct HashFilterReferenceState
-{
-	NodeTag		type;
-
-	Index		filterId;
-
-	HashFilterState *filter;	/* link to the filter */
-	HashFilterReference *ref;
-
-	List	   *clauses;		/* list of ExprState nodes */
-
-} HashFilterReferenceState;
 
 /* ----------------
  *	 HashState information

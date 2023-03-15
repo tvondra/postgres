@@ -109,8 +109,6 @@ static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
-static void show_hash_filters(HashState *planstate, List *ancestors,
-							  ExplainState *es);
 static void show_scan_filters(Scan *scan, PlanState *planstate, List *ancestors,
 							  ExplainState *es);
 static void show_memoize_info(MemoizeState *mstate, List *ancestors,
@@ -2064,7 +2062,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_Hash:
 			show_hash_info(castNode(HashState, planstate), es);
-			show_hash_filters(castNode(HashState, planstate), ancestors, es);
 			break;
 		case T_Memoize:
 			show_memoize_info(castNode(MemoizeState, planstate), ancestors,
@@ -2222,6 +2219,15 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	/* subPlan-s */
 	if (planstate->subPlan)
 		ExplainSubPlans(planstate->subPlan, ancestors, "SubPlan", es);
+
+	/* filters */
+	elog(WARNING, "ZZZZ");
+	if (IsA(plan, SeqScan) && ((Scan *) plan)->filters)
+	{
+		elog(WARNING, "YYYY");
+		show_scan_filters((Scan *) plan, planstate, ancestors, es);
+		elog(WARNING, "QQQQ");
+	}
 
 	/* end of child plans */
 	if (haschildren)
@@ -3138,75 +3144,6 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 }
 
 /*
- * show_hash_filters
- *		Show info on filters for a Hash node.
- *
- * XXX It's a bit annoying we show exactly the same information for both the
- * filter and then also the reference.
- */
-static void
-show_hash_filters(HashState *hashstate, List *ancestors, ExplainState *es)
-{
-	Hash   *plan = (Hash *) hashstate->ps.plan;
-
-	if (!es->filters)
-		return;
-
-	if (!plan->filters)
-		return;
-
-	if (es->format != EXPLAIN_FORMAT_TEXT)
-	{
-		/*
-		 * FIXME show additional information about individual filters, just like
-		 * for the text output.
-		 */
-		ExplainPropertyInteger("Bloom Filter", NULL, (int64)
-							   list_length(plan->filters), es);
-	}
-	else
-	{
-		ListCell *lc1,
-				 *lc2;
-
-		ExplainIndentText(es);
-
-		forboth (lc1, plan->filters, lc2, hashstate->filters)
-		{
-			HashFilter *filter = (HashFilter *) lfirst(lc1);
-			HashFilterState *state = (HashFilterState *) lfirst(lc2);
-			PlanState *planstate = (PlanState *) hashstate;
-
-			List	   *context;
-			char	   *exprstr;
-			bool		useprefix;
-
-			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
-
-			/* Set up deparsing context */
-			context = set_deparse_context_plan(es->deparse_cxt,
-											   planstate->plan,
-											   ancestors);
-
-			/* Deparse the expression */
-			exprstr = deparse_expression((Node *) filter->clauses,
-										 context, useprefix, false);
-
-			ExplainIndentText(es);
-
-			if (state)
-				appendStringInfo(es->str, "Bloom filter %d: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)\n",
-								 state->filterId, exprstr, state->nbits,
-								 ((state->nbits/8) /1024.0), /* size in bytes */
-								 state->nqueries, state->nhits,
-								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
-			else
-				appendStringInfo(es->str, "Bloom filter %d: %s\n", filter->filterId, exprstr);
-		}
-	}
-}
-
-/*
  * Show information on memoize hits/misses/evictions and memory usage.
  */
 static void
@@ -3870,9 +3807,7 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 
 		foreach (lc, ((ScanState *) planstate)->ss_Filters)
 		{
-			HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
-			HashFilterReference *ref = (HashFilterReference *) refstate->ref;
-			HashFilterState *state = (HashFilterState *) refstate->filter;
+			HashFilterState *state = (HashFilterState *) lfirst(lc);
 
 			List	   *context;
 			char	   *exprstr;
@@ -3886,7 +3821,7 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 											   ancestors);
 
 			/* Deparse the expression */
-			exprstr = deparse_expression((Node *) ref->clauses, context, useprefix, false);
+			exprstr = deparse_expression((Node *) state->hashclauses, context, useprefix, false);
 
 			ExplainIndentText(es);
 
@@ -3897,7 +3832,10 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 								 state->nqueries, state->nhits,
 								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
 			else
-				appendStringInfo(es->str, "Bloom filter %d: %s\n", refstate->filterId, exprstr);
+				appendStringInfo(es->str, "Bloom filter %d: %s\n", state->filterId, exprstr);
+
+			ExplainNode(state->planstate, ancestors,
+					"Filter", "Filter", es);
 		}
 	}
 	else

@@ -144,7 +144,6 @@ MultiExecPrivateHash(HashState *node)
 	TupleTableSlot *slot;
 	ExprContext *econtext;
 	uint32		hashvalue;
-	ListCell   *lc;
 
 	/*
 	 * get state info from node
@@ -189,30 +188,7 @@ MultiExecPrivateHash(HashState *node)
 				ExecHashTableInsert(hashtable, slot, hashvalue);
 			}
 			hashtable->totalTuples += 1;
-
-			/*
-			 * add the tuple to all hash pushed-down filters
-			 *
-			 * XXX maybe pointless to do unless after the hash is built (when
-			 * we can decide if the filter is useful).
-			 */
-			foreach (lc, node->filters)
-			{
-				HashFilterState *filter = (HashFilterState *) lfirst(lc);
-
-				ExecHashFilterAddValue(hashtable, filter, econtext);
-			}
 		}
-	}
-
-	/*
-	 * Now that we fed all the tuples to the filter, finalize the filters (sort
-	 * data in exact filters etc.) and mark them as built.
-	 */
-	foreach (lc, node->filters)
-	{
-		HashFilterState *filter = (HashFilterState *) lfirst(lc);
-		ExecHashFilterFinalize(node, filter);
 	}
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
@@ -384,7 +360,6 @@ MultiExecParallelHash(HashState *node)
 HashState *
 ExecInitHash(Hash *node, EState *estate, int eflags)
 {
-	ListCell   *lc;
 	HashState  *hashstate;
 
 	/* check for unsupported flags */
@@ -399,7 +374,6 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate->ps.ExecProcNode = ExecHash;
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
-	hashstate->filters = NIL;
 
 	/*
 	 * Miscellaneous initialization
@@ -426,20 +400,6 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	Assert(node->plan.qual == NIL);
 	hashstate->hashkeys =
 		ExecInitExprList(node->hashkeys, (PlanState *) hashstate);
-
-	/*
-	 * If there are any filters assigned to this Hash node, initialize them
-	 * (including expressions in those filters).
-	 */
-	foreach (lc, node->filters)
-	{
-		HashFilter *filter = (HashFilter *) lfirst(lc);
-		HashFilterState *state = ExecHashFilterInit(hashstate,
-													outerPlan(node),
-													filter);
-
-		hashstate->filters = lappend(hashstate->filters, state);
-	}
 
 	return hashstate;
 }

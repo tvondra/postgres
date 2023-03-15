@@ -690,65 +690,10 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	outerNode = outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	/*
-	 * If the Hash has filters, cheat a little bit and build the hash table
-	 * right away, so that we have the filter before we start processing
-	 * the outer tree.
-	 *
-	 * XXX This is a hack, as it scans and builds the hash table twice.
-	 * Ideally we'd do the thing just once when there are any filters, but
-	 * that requires reworking the state machine in ExecHashJoinImpl. So
-	 * for now this has to do.
-	 */
-	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
-	innerDesc = ExecGetResultType(innerPlanState(hjstate));
-
-	/*
-	 * Build the filters.
-	 *
-	 * This is problematic, because we're in "init" executor phase. So this
-	 * runs even when doing EXPLAIN for example. But many nodes don't do full
-	 * initialization in that case and bail out early, so we may not be able
-	 * to actually run them. For example, a hashagg won't create hash tables,
-	 * and so on. It also means that EXPLAIN may take quite a bit of time, as
-	 * it runs some part of the qery.
-	 *
-	 * 
-	 *
-	 * This is rather problematic for a number of reasones, because we run the filter in init phase.
-	 *
-	 */
-	if (hashNode->filters && (!(eflags & EXEC_FLAG_EXPLAIN_ONLY)))
-	{
-		HashJoinTable hashtable;
-		HashState *hashState = (HashState *) innerPlanState(hjstate);
-
-		/*
-		 * Create the hash table.  If using Parallel Hash, then
-		 * whoever gets here first will create the hash table and any
-		 * later arrivals will merely attach to it.
-		 */
-		hashtable = ExecHashTableCreate(hashState,
-										node->hashoperators,
-										node->hashcollations,
-										true);	/* FIXME */
-
-		/*
-		 * Execute the Hash node, to build the hash table.  If using
-		 * Parallel Hash, then we'll try to help hashing unless we
-		 * arrived too late.
-		 */
-		hashState->hashtable = hashtable;
-		(void) MultiExecProcNode((PlanState *) hashState);
-
-		/*
-		 * XXX Make sure we scan the hash data again on the second pass.
-		 */
-		ExecReScanHash(hashState);
-	}
-
 	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
 	outerDesc = ExecGetResultType(outerPlanState(hjstate));
+	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
+	innerDesc = ExecGetResultType(innerPlanState(hjstate));
 
 	/*
 	 * Initialize result slot, type and projection.
@@ -1361,15 +1306,6 @@ ExecReScanHashJoin(HashJoinState *node)
 {
 	PlanState  *outerPlan = outerPlanState(node);
 	PlanState  *innerPlan = innerPlanState(node);
-
-	/*
-	 * Reset the existing hash filters (if any). Otherwise it might happen we'll
-	 * apply those filters to rows we read from outer subtree, eliminating them.
-	 * In which case we won't call ExecReScanHash, because that only happens if
-	 * when the first outer row bubbles up to the hashjoin - but if we discard
-	 * it, that won't happen.
-	 */
-	ExecHashResetFilters(castNode(HashState, innerPlan));
 
 	/*
 	 * In a multi-batch join, we currently have to do rescans the hard way,

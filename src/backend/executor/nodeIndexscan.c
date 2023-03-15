@@ -905,7 +905,6 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	IndexScanState *indexstate;
 	Relation	currentRelation;
 	LOCKMODE	lockmode;
-	ListCell   *lc;
 
 	/*
 	 * create state structure
@@ -961,21 +960,12 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 
 	/*
-	 * If there are any filter references assigned to this node, initialize
-	 * expressions for those too.
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
 	 */
-	indexstate->ss.ss_Filters = NIL;
-	foreach (lc, node->scan.filters)
-	{
-		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-		HashFilterReferenceState *state = makeNode(HashFilterReferenceState);
-
-		state->ref = ref;
-		state->filterId = ref->filterId;
-		state->clauses = ExecInitExprList(ref->clauses, (PlanState *) indexstate);;
-
-		indexstate->ss.ss_Filters = lappend(indexstate->ss.ss_Filters, state);
-	}
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

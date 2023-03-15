@@ -1215,41 +1215,25 @@ typedef struct HashFilter
 
 	NodeTag		type;
 
-	/* index of the filter (in the parent list) */
-	/* Index		index; */
-
 	/* ID for filter (unique within the planner run) */
 	Index		filterId;
 
 	/* expressions evaluated against the filter */
 	Selectivity	selectivity;
-	List	   *clauses;
 
+	/* expressions for the scan node (the filter is pushed to) */
+	List	   *clauses;
+	List	   *deparsed;
+
+	/* expresions for the subplan (that we build the filter on) */
+	List	   *hashclauses;
 	List	   *hashoperators;
 	List	   *hashcollations;
 
+	/* subplan evaluated to build the filter */
+	Plan	   *subplan;
+
 } HashFilter;
-
-/*
- * Reference from the node to which the filter was pushed down. We only do
- * that from createplan, because only then we know what filters will be
- * pushed down to that node.
- *
- * XXX A local copy of clauses (or rather expressions)
- */
-typedef struct HashFilterReference
-{
-	pg_node_attr(no_equal, no_read)
-
-	NodeTag		type;
-
-	Index		filterId;
-
-	/* expressions evaluated against the filter */
-	List	   *clauses;
-	
-	List	   *deparsed;		/* list of deparsed clauses */
-} HashFilterReference;
 
 /* ----------------
  *		hash build node
@@ -1273,7 +1257,6 @@ typedef struct Hash
 	bool		skewInherit;	/* is outer join rel an inheritance tree? */
 	/* all other info is in the parent HashJoin node */
 	Cardinality rows_total;		/* estimate total rows if parallel_aware */
-	List *		filters;		/* XXX number of filters for pushdown */
 } Hash;
 
 /* ----------------

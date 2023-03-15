@@ -675,16 +675,15 @@ extern void ExecHashFilterAddValue(HashJoinTable hashtable,
 extern void ExecHashFilterFinalize(HashState *node, HashFilterState *filter);
 extern void ExecHashResetFilters(HashState *node);
 
-extern bool ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
-									   ExprContext *econtext,
-									   bool keep_nulls,
-									   uint64 *hashvalue);
+extern bool ExecFilterGetHashValue(HashFilterState *filter,
+								   ExprContext *econtext,
+								   bool keep_nulls,
+								   uint64 *hashvalue);
 
-extern bool ExecHashFilterContainsValue(HashFilterReferenceState *ref,
+extern List *ExecInitFilters(PlanState *planstate, List *filters,
+							 EState *estate, int eflags);
+
+extern bool ExecHashFilterContainsValue(HashFilterState *filter,
 										ExprContext *econtext);
-
-extern HashFilterState *ExecHashFilterInit(HashState *hashstate,
-										   Plan *outerPlan,
-										   HashFilter *filter);
 
 #endif							/* EXECUTOR_H  */

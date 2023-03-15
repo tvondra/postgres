@@ -135,34 +135,6 @@ ExecScanFetch(ScanState *node,
 }
 
 /*
- * hash_filter_lookup
- *		Lookup filter by filterId in the plan-level executor registry.
- *
- * The filter may not exist yet, depending on whether the Hash node was already
- * initialized. If the filter does not exist, we treat that matching everything.
- */
-static HashFilterState *
-hash_filter_lookup(EState *estate, HashFilterReferenceState *refstate)
-{
-	ListCell *lc;
-
-	if (refstate->filter)
-		return refstate->filter;
-
-	foreach (lc, estate->es_filters)
-	{
-		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
-
-		if (filterstate->filterId == refstate->filterId)
-		{
-			refstate->filter = filterstate;
-			return filterstate;
-		}
-	}
-	return NULL;
-}
-
-/*
  * ExecFilters
  *		Chech if the tuple matches the pushed-down filters.
  */
@@ -176,8 +148,7 @@ ExecFilters(ScanState *node, ExprContext *econtext)
 
 	foreach (lc, filters)
 	{
-		HashFilterReferenceState *refstate = (HashFilterReferenceState *) lfirst(lc);
-		HashFilterState *filterstate = hash_filter_lookup(node->ps.state, refstate);
+		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
 
 		if (!filterstate)
 			continue;
@@ -185,7 +156,7 @@ ExecFilters(ScanState *node, ExprContext *econtext)
 		if (!filterstate->built)
 			continue;
 
-		if (!ExecHashFilterContainsValue(refstate, econtext))
+		if (!ExecHashFilterContainsValue(filterstate, econtext))
 			return false;
 	}
 

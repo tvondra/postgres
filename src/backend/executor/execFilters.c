@@ -69,7 +69,7 @@ ExecHashGetFilterHashValue(HashFilterState *filter,
 
 	hashfunctions = filter->hashfunctions;
 
-	foreach(hk, filter->clauses)
+	foreach(hk, filter->hashclauses)
 	{
 		ExprState  *keyexpr = (ExprState *) lfirst(hk);
 		Datum		keyval;
@@ -153,7 +153,7 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 
 	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 
-	foreach(hk, filter->clauses)
+	foreach(hk, filter->hashclauses)
 	{
 		ExprState  *keyexpr = (ExprState *) lfirst(hk);
 		Datum		keyval;
@@ -377,6 +377,7 @@ dump_filter(HashFilterState *filter)
 		   (filter->filter_type == HashFilterExact));
 
 	Assert(list_length(filter->clauses) == 1);
+	Assert(list_length(filter->hashclauses) == 1);
 
 	getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
 
@@ -403,6 +404,7 @@ dump_ranges(HashFilterState *filter, FilterRange *ranges, int nranges)
 	bool	isvarlena;
 
 	Assert(list_length(filter->clauses) == 1);
+	Assert(list_length(filter->hashclauses) == 1);
 
 	getTypeOutputInfo(filter->types[0], &outfuncoid, &isvarlena);
 
@@ -433,7 +435,9 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	int				nvalues_orig PG_USED_FOR_ASSERTS_ONLY;
 
 	Assert(filter->filter_type == HashFilterRange);
+
 	Assert(list_length(filter->clauses) == 1);
+	Assert(list_length(filter->hashclauses) == 1);
 
 	if (filter->nvalues < 1)
 		return;
@@ -655,7 +659,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 static bool
 ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	int		entrylen = list_length(filter->clauses);
+	int		entrylen = list_length(filter->hashclauses);
 	Datum  *entry;
 	Datum  *values;
 
@@ -723,7 +727,7 @@ static void
 ExecHashFilterFinalizeExact(HashFilterState *filter)
 {
 	Datum  *values;
-	Size	entrylen = (sizeof(Datum) * list_length(filter->clauses));
+	Size	entrylen = (sizeof(Datum) * list_length(filter->hashclauses));
 	qsort_cxt *cxt;
 
 	Assert(filter->filter_type == HashFilterExact);
@@ -745,7 +749,7 @@ ExecHashFilterFinalizeExact(HashFilterState *filter)
 static bool
 ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *econtext)
 {
-	int		entrylen = list_length(filter->clauses);
+	int		entrylen = list_length(filter->hashclauses);
 	Datum  *entry;
 	Datum  *values;
 
@@ -856,7 +860,7 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
 
 	hashfunctions = filter->hashfunctions;
 
-	for (i = 0; i < list_length(filter->clauses); i++)
+	for (i = 0; i < list_length(filter->hashclauses); i++)
 	{
 		Datum		keyval;
 		bool		isNull = false; /* FIXME */
@@ -932,7 +936,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 		char   *data;
 		MemoryContext oldcxt;
 
-		Size	entrylen = sizeof(Datum) * list_length(filter->clauses);
+		Size	entrylen = sizeof(Datum) * list_length(filter->hashclauses);
 
 		/* if adding value worker, we're done */
 		if (ExecHashFilterAddExact(filter, hashtable->keepNulls, econtext))
@@ -1013,8 +1017,8 @@ ExecHashResetFilters(HashState *node)
  * XXX In any case, we should rename this to not include "scan" because
  * we could inject this to other node types (e.g. subquery).
  */
-bool
-ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
+static bool
+ExecScanGetFilterHashValue(HashFilterState *filter,
 						   ExprContext *econtext,
 						   bool keep_nulls,
 						   uint64 *hashvalue)
@@ -1024,7 +1028,6 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
-	HashFilterState *filter = ref->filter;
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -1037,7 +1040,7 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
 	hashfunctions = filter->hashfunctions;
 
 	/* XXX use expressions from the reference, with adjusted varnos etc. */
-	foreach(hk, ref->clauses)
+	foreach(hk, filter->clauses)
 	{
 		ExprState  *keyexpr = (ExprState *) lfirst(hk);
 		Datum		keyval;
@@ -1102,7 +1105,7 @@ ExecScanGetFilterHashValue(HashFilterReferenceState *ref,
  * reduce the code duplication?
  */
 static bool
-ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
+ExecScanGetFilterGetValues(HashFilterState *filter,
 						   ExprContext *econtext,
 						   bool keep_nulls,
 						   Datum *values)
@@ -1110,7 +1113,6 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
-	HashFilterState *filter = ref->filter;
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -1121,7 +1123,7 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
 	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 
 	/* XXX use expressions from the reference, with adjusted varnos etc. */
-	foreach(hk, ref->clauses)
+	foreach(hk, filter->clauses)
 	{
 		ExprState  *keyexpr = (ExprState *) lfirst(hk);
 		Datum		keyval;
@@ -1173,15 +1175,14 @@ ExecScanGetFilterGetValues(HashFilterReferenceState *ref,
  *		Check if the tuple matches the Bloom filter.
  */
 static bool
-ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econtext)
+ExecHashFilterContainsHash(HashFilterState *filter, ExprContext *econtext)
 {
 	int			i;
 	uint64		h1,
 				h2;
 	uint64		hashvalue = 0;
-	HashFilterState *filter = refstate->filter;
 
-	ExecScanGetFilterHashValue(refstate, econtext, false, &hashvalue);
+	ExecScanGetFilterHashValue(filter, econtext, false, &hashvalue);
 
 	Assert(filter->filter_type == HashFilterBloom);
 
@@ -1216,11 +1217,10 @@ ExecHashFilterContainsHash(HashFilterReferenceState *refstate, ExprContext *econ
  * In that case this should just do linear search.
  */
 static bool
-ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *econtext)
+ExecHashFilterContainsExact(HashFilterState *filter, ExprContext *econtext)
 {
-	HashFilterState *filter = refstate->filter;
 	Datum	   *values;
-	Size		entrysize = sizeof(Datum) * list_length(refstate->clauses);
+	Size		entrysize = sizeof(Datum) * list_length(filter->hashclauses);
 	char	   *ptr;
 	qsort_cxt  *cxt = (qsort_cxt *) filter->private_data;
 
@@ -1228,7 +1228,7 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
 
 	values = palloc(entrysize);
 
-	ExecScanGetFilterGetValues(refstate, econtext, false, values);
+	ExecScanGetFilterGetValues(filter, econtext, false, values);
 
 	ptr = bsearch_arg(values, filter->data, filter->nvalues, entrysize,
 					  filter_value_comparator, cxt);
@@ -1250,12 +1250,11 @@ ExecHashFilterContainsExact(HashFilterReferenceState *refstate, ExprContext *eco
  * In that case this should just do linear search.
  */
 static bool
-ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *econtext)
+ExecHashFilterContainsRange(HashFilterState *filter, ExprContext *econtext)
 {
-	HashFilterState *filter = refstate->filter;
 	Datum	   *values;
 	Datum	   *entry;
-	Size		entrylen = list_length(refstate->clauses);
+	Size		entrylen = list_length(filter->hashclauses);
 	qsort_cxt  *cxt = (qsort_cxt *) filter->private_data;
 
 	Assert(filter->filter_type == HashFilterRange);
@@ -1265,7 +1264,7 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
 	entry = palloc(entrylen * sizeof(Datum));
 
 	/* reject NULL values */
-	if (!ExecScanGetFilterGetValues(refstate, econtext, false, entry))
+	if (!ExecScanGetFilterGetValues(filter, econtext, false, entry))
 		return false;
 
 	/* TODO use binary search to check ranges */
@@ -1309,22 +1308,21 @@ ExecHashFilterContainsRange(HashFilterReferenceState *refstate, ExprContext *eco
  *		Check the filter - either in exact or hashed mode, as needed.
  */
 bool
-ExecHashFilterContainsValue(HashFilterReferenceState *refstate, ExprContext *econtext)
+ExecHashFilterContainsValue(HashFilterState *filter, ExprContext *econtext)
 {
-	HashFilterState *filter = refstate->filter;
-
 	filter->nqueries++;
 
 	if (filter->filter_type == HashFilterExact)
-		return ExecHashFilterContainsExact(refstate, econtext);
+		return ExecHashFilterContainsExact(filter, econtext);
 	else if (filter->filter_type == HashFilterRange)
-		return ExecHashFilterContainsRange(refstate, econtext);
+		return ExecHashFilterContainsRange(filter, econtext);
 	else
-		return ExecHashFilterContainsHash(refstate, econtext);
+		return ExecHashFilterContainsHash(filter, econtext);
 }
 
-HashFilterState *
-ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
+static HashFilterState *
+ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
+				   EState *estate, int eflags)
 {
 	int			nkeys;
 	int			i;
@@ -1332,8 +1330,11 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 			   *hc,
 			   *hk;
 	qsort_cxt  *cxt;
+	Plan	   *subplan = filter->subplan;
 
 	HashFilterState *state = makeNode(HashFilterState);
+
+	state->planstate = ExecInitNode(filter->subplan, estate, eflags);
 
 	/*
 	 * Start the filter in exact mode, we'll switch to Bloom if we fill it.
@@ -1345,7 +1346,10 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 	state->filter = filter;
 	state->filterId = filter->filterId;
 
-	state->clauses = ExecInitExprList(filter->clauses, (PlanState *) hashstate);
+	state->clauses = ExecInitExprList(filter->clauses, planstate);
+
+	/* the hashclauses are evaluated on the subplan, so initialize them accordingly */
+	state->hashclauses = ExecInitExprList(filter->hashclauses, state->planstate);
 
 	nkeys = list_length(filter->hashoperators);
 	state->hashfunctions = palloc_array(FmgrInfo, nkeys);
@@ -1373,7 +1377,7 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 	}
 
 	i = 0;
-	foreach(hk, filter->clauses)
+	foreach(hk, filter->hashclauses)
 	{
 		state->types[i] = exprType(lfirst(hk));
 		i++;
@@ -1411,7 +1415,7 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 		p = 0.01;	/* 1% false positive */
 
 		/* 1000 seems like a reasonable lower bound */
-		n = Max(1000, outerPlan->plan_rows);	/* assume unique values */
+		n = Max(1000, subplan->plan_rows);	/* assume unique values */
 
 		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
 		k = round((m / n) * log(2)); 
@@ -1449,4 +1453,25 @@ ExecHashFilterInit(HashState *hashstate, Plan *outerPlan, HashFilter *filter)
 	state->private_data = cxt;
 
 	return state;
+}
+
+List *
+ExecInitFilters(PlanState *planstate, List *filters, EState *estate, int eflags)
+{
+	ListCell   *lc;
+	List	   *states = NIL;
+
+	foreach (lc, filters)
+	{
+		HashFilter *filter = (HashFilter *) lfirst(lc);
+		HashFilterState *state;
+
+		state = ExecHashFilterInit(planstate, filter, estate, eflags);
+
+		elog(WARNING, "state = %p  planstate = %p", state, state->planstate);
+
+		states = lappend(states, state);
+	}
+
+	return states;
 }

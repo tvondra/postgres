@@ -46,8 +46,7 @@ ForeignNext(ForeignScanState *node)
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 	MemoryContext oldcontext;
 
-	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+	// elog(WARNING, "ForeignNext %p %p", node, node->ss.ss_Filters);
 
 	/* Call the Iterate function in short-lived context */
 	oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
@@ -240,9 +239,14 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	 * If there are any filter pushed down to this node, initialize them too
 	 * (both subplan and the expressions).
 	 */
+	elog(WARNING, "initialize scanstate->ss.ss_Filters %p (%d)",
+		 scanstate, list_length(node->scan.filters));
+
 	scanstate->ss.ss_Filters
 		= ExecInitFilters((PlanState *) scanstate, node->scan.filters,
 								   estate, eflags);
+
+	elog(WARNING, "done: ss_Filters %p %p", scanstate, scanstate->ss.ss_Filters);
 
 	/*
 	 * Initialize FDW-related state.
@@ -297,8 +301,12 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 		fdwroutine->BeginForeignScan(scanstate, eflags);
 
 	/* postgres_fdw pushes the filter to remote node, no point in executing
-	 * it here again */
-	scanstate->ss.ss_Filters = NIL;
+	 * it here again
+	 *
+	 * Not clear who's responsibility is it to build/evaluate the filter
+	 * it'd be silly to do it both remotely and locally, I guess (which
+	 * is what happens now.
+	 */
 
 	return scanstate;
 }

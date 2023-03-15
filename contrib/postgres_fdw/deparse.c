@@ -1672,7 +1672,7 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 	{
 		StringInfoData	expr;
 		StringInfoData	hashexpr;
-		HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
+		HashFilter *filter = (HashFilter *) lfirst(lc);
 
 		TypeCacheEntry *typentry;
 
@@ -1689,12 +1689,12 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 		/* deparse filter expressions */
 		initStringInfo(&expr);
 		context->buf = &expr;
-		deparseExpr((Expr *) linitial(ref->clauses), context);
+		deparseExpr((Expr *) linitial(filter->clauses), context);
 		context->buf = buf;
 
 		initStringInfo(&hashexpr);
 
-		typentry = lookup_type_cache(exprType(linitial(ref->clauses)),
+		typentry = lookup_type_cache(exprType(linitial(filter->clauses)),
 									 TYPECACHE_HASH_PROC);
 
 		appendStringInfo(&hashexpr, "%s.%s(%s)", 
@@ -1707,7 +1707,7 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 		 * the hash function call. We don't know what type of filter we get
 		 * in the end.
 		 */
-		ref->deparsed = list_make2(makeString(expr.data), makeString(hashexpr.data));
+		filter->deparsed = list_make2(makeString(expr.data), makeString(hashexpr.data));
 	}
 
 	reset_transmission_modes(nestlevel);

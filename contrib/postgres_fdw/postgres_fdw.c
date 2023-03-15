@@ -86,9 +86,8 @@ enum FdwScanPrivateIndex
 	 */
 	FdwScanPrivateRelations,
 
-	/* Integer list of filter IDs and expressions to push down */
-	FdwScanPrivateFilterIds,
-	FdwScanPrivateFilterExprs
+	/* List of filters to (maybe) push to the remote server */
+	FdwScanPrivateFilters
 };
 
 /*
@@ -151,8 +150,7 @@ typedef struct PgFdwScanState
 	/* extracted fdw_private data */
 	char	   *query;			/* text of SELECT command */
 	List	   *retrieved_attrs;	/* list of retrieved attribute numbers */
-	List	   *filter_ids;			/* list of filter IDs to push down */
-	List	   *filter_exprs;		/* list of deparsed push down expressions */
+	List	   *filters;			/* list of filters pushed to this node */
 
 	/* for remote query execution */
 	PGconn	   *conn;			/* connection for the scan */
@@ -1425,25 +1423,9 @@ postgresGetForeignPlan(PlannerInfo *root,
 		fdw_private = lappend(fdw_private, NIL);
 
 	if (best_path->path.filters)
-	{
-		List *filters = NIL;
-		List *exprs = NIL;
-
-		foreach(lc, best_path->path.filters)
-		{
-			HashFilterReference *ref = (HashFilterReference *) lfirst(lc);
-			filters = lappend_int(filters, ref->filterId);
-			exprs = lappend(exprs, ref->deparsed);
-		}
-
-		fdw_private = lappend(fdw_private, filters);
-		fdw_private = lappend(fdw_private, exprs);
-	}
+		fdw_private = lappend(fdw_private, best_path->path.filters);
 	else
-	{
 		fdw_private = lappend(fdw_private, NIL);
-		fdw_private = lappend(fdw_private, NIL);
-	}
 
 	/*
 	 * Create the ForeignScan node for the given relation.
@@ -1574,10 +1556,9 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
-	fsstate->filter_ids = (List *) list_nth(fsplan->fdw_private,
-											FdwScanPrivateFilterIds);
-	fsstate->filter_exprs = (List *) list_nth(fsplan->fdw_private,
-											  FdwScanPrivateFilterExprs);
+
+	/* XXX perhaps pass using the fdw_private list too */
+	fsstate->filters = node->ss.ss_Filters;
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -1619,6 +1600,16 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 
 	/* Set the async-capable flag */
 	fsstate->async_capable = node->ss.ps.async_capable;
+
+	/* build pushed-down filters, copy them into fsstate and reset the
+	 * list in ForeignScanState so that we don't check them locally too
+	 *
+	 * XXX This is a bit weird, there needs to be a better way to track
+	 * what's evaluated where.
+	 */
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+	// fsstate->filters = node->ss.ss_Filters;
+	// node->ss.ss_Filters = NIL;
 }
 
 /*
@@ -3738,36 +3729,13 @@ ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 }
 
 /*
- * hash_filter_lookup
- *		Lookup filter by filterId in the plan-level executor registry.
- *
- * The filter may not exist yet, depending on whether the Hash node was already
- * initialized. If the filter does not exist yet, we treat that as matching
- * everything.
- */
-static HashFilterState *
-hash_filter_lookup(EState *estate, int filterId)
-{
-	ListCell *lc;
-
-	foreach (lc, estate->es_filters)
-	{
-		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
-
-		if (filterstate->filterId == filterId)
-			return filterstate;
-	}
-	return NULL;
-}
-
-/*
  * Create cursor for node's query with current parameter values.
  */
 static void
 create_cursor(ForeignScanState *node)
 {
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
-	EState	   *estate = node->ss.ps.state;
+	// EState	   *estate = node->ss.ps.state;
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 	int			numParams = fsstate->numParams;
 	const char **values = fsstate->param_values;
@@ -3775,7 +3743,7 @@ create_cursor(ForeignScanState *node)
 	StringInfoData buf;
 	PGresult   *res;
 	ListCell   *lc;
-	ListCell   *lc2;
+	// ListCell   *lc2;
 	bool		is_first;
 	StringInfoData	filters;
 
@@ -3811,22 +3779,23 @@ create_cursor(ForeignScanState *node)
 	is_first = true;
 	initStringInfo(&filters);
 
-	forboth (lc, fsstate->filter_ids, lc2, fsstate->filter_exprs)
+	foreach (lc, fsstate->filters)
 	{
-		int	filterId = lfirst_int(lc);
-		List *filterExprs = (List *) lfirst(lc2);
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
-		HashFilterState *filter = hash_filter_lookup(estate, filterId);
-		char *expr;
+		char *expr = ((String *) linitial(filter->filter->deparsed))->sval;
+		
 
 		/*
 		 * For bloom filters we need the expresion with hash function call,
 		 * otherwise the plain expression.
 		 */
+		 /*
 		if (filter->filter_type == HashFilterBloom)
 			expr = ((String *) lsecond(filterExprs))->sval;
 		else
 			expr = ((String *) linitial(filterExprs))->sval;
+		*/
 
 		/* the filter may not be built */
 		Assert(filter);

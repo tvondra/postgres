@@ -163,7 +163,7 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 		 * Get the join attribute value of the tuple
 		 */
 		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-elog(WARNING, "adding %ld", keyval);
+
 		/*
 		 * If the attribute is NULL, and the join operator is strict, then
 		 * this tuple cannot pass the join qual so we can reject it
@@ -1338,7 +1338,6 @@ ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
 
 	HashFilterState *state = makeNode(HashFilterState);
 
-	elog(WARNING, "initializing subplan");
 	state->planstate = ExecInitNode(filter->subplan, estate, eflags);
 
 	/*
@@ -1480,8 +1479,6 @@ ExecInitFilters(PlanState *planstate, List *filters, EState *estate, int eflags)
 
 		state = ExecHashFilterInit(planstate, filter, estate, eflags);
 
-		elog(WARNING, "state = %p  planstate = %p", state, state->planstate);
-
 		states = lappend(states, state);
 	}
 
@@ -1544,6 +1541,8 @@ void
 ExecBuildFilters(ScanState *node, EState *estate)
 {
 	ListCell *lc;
+
+	// elog(WARNING, "building node->ss_Filters = %p (%d)", node->ss_Filters, list_length(node->ss_Filters));
 
 	foreach (lc, node->ss_Filters)
 	{

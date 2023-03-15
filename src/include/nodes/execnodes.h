@@ -2669,6 +2669,9 @@ typedef struct HashFilterState
 	bool	   *hashStrict;
 	Oid		   *collations;
 	Oid		   *types;
+	bool		keepNulls;
+
+	MemoryContext	filterCxt;
 
 	/* private data used by the filter implementation (e.g. qsort context) */
 	void	   *private_data;

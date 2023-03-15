@@ -669,10 +669,6 @@ extern ResultRelInfo *ExecLookupResultRelByOid(ModifyTableState *node,
 /*
  * prototypes from functions in execFilters.c
  */
-extern void ExecHashFilterAddValue(HashJoinTable hashtable,
-								   HashFilterState *filter,
-								   ExprContext *econtext);
-extern void ExecHashFilterFinalize(HashState *node, HashFilterState *filter);
 extern void ExecHashResetFilters(HashState *node);
 
 extern bool ExecFilterGetHashValue(HashFilterState *filter,
@@ -682,8 +678,11 @@ extern bool ExecFilterGetHashValue(HashFilterState *filter,
 
 extern List *ExecInitFilters(PlanState *planstate, List *filters,
 							 EState *estate, int eflags);
+extern void ExecEndFilters(List *filters);
 
 extern bool ExecHashFilterContainsValue(HashFilterState *filter,
 										ExprContext *econtext);
+
+extern void ExecBuildFilters(ScanState *node, EState *estate);
 
 #endif							/* EXECUTOR_H  */

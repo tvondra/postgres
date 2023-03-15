@@ -113,6 +113,9 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_NumOrderByKeys);
 	}
 
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) node, estate);
+
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
@@ -403,6 +406,8 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

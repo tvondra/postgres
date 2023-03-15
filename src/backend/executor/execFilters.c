@@ -163,7 +163,7 @@ ExecHashGetFilterGetValues(HashFilterState *filter,
 		 * Get the join attribute value of the tuple
 		 */
 		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-
+elog(WARNING, "adding %ld", keyval);
 		/*
 		 * If the attribute is NULL, and the join operator is strict, then
 		 * this tuple cannot pass the join qual so we can reject it
@@ -425,7 +425,7 @@ dump_ranges(HashFilterState *filter, FilterRange *ranges, int nranges)
  * a 64-kB value into a filter with work_mem=64kB can cause this).
  */
 static void
-ExecHashFilterCompactRange(HashFilterState *filter)
+ExecHashFilterCompactRange(HashFilterState *filter, bool reduce)
 {
 	Datum		   *values;
 	FilterRange	   *ranges;
@@ -566,7 +566,7 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 	 * we need to be careful about collapsed ranges, because joining two
 	 * such ranges does not reduce anything).
 	 */
-	while (nranges > 1)
+	while (reduce && (nranges > 1))
 	{
 		int		nvalues = 0;
 		int		mindist;
@@ -618,6 +618,13 @@ ExecHashFilterCompactRange(HashFilterState *filter)
 
 	for (int i = 0; i < nranges; i++)
 	{
+		/*
+		 * XXX Naybe we should keep ranges of length 1 (i.e.  [a, a+1]) as individual
+		 * values, not as ranges. That'll just complicate stuff e.g. when passing
+		 * the filter to a remote server by making the conditions more complex, but
+		 * it doesn't really save any space. The ranges_contiguous() just combines
+		 * such values, as it only sees values incrementally.
+		 */
 		if (filter_value_comparator(&ranges[i].start, &ranges[i].end, cxt) != 0)
 		{
 			values[filter->nvalues++] = ranges[i].start;
@@ -673,7 +680,7 @@ ExecHashFilterAddRange(HashFilterState *filter, bool keep_nulls, ExprContext *ec
 		/* FIXME handle nicely */
 		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
 		{
-			ExecHashFilterCompactRange(filter);
+			ExecHashFilterCompactRange(filter, true);
 			continue;
 		}
 
@@ -720,7 +727,7 @@ ExecHashFilterFinalizeRange(HashFilterState *filter)
 {
 	Assert(filter->filter_type == HashFilterRange);
 
-	ExecHashFilterCompactRange(filter);
+	ExecHashFilterCompactRange(filter, false);
 }
 
 static void
@@ -786,8 +793,8 @@ ExecHashFilterAddExact(HashFilterState *filter, bool keep_nulls, ExprContext *ec
  * ExecHashFilterFinalize
  *		Finalize the filter (to have it nicely sorted etc.).
  */
-void
-ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
+static void
+ExecHashFilterFinalize(HashFilterState *filter)
 {
 	if (filter->built)
 		return;
@@ -798,9 +805,6 @@ ExecHashFilterFinalize(HashState *node, HashFilterState *filter)
 		ExecHashFilterFinalizeRange(filter);
 
 	filter->built = true;
-
-	node->ps.state->es_filters
-		= lappend(node->ps.state->es_filters, filter);
 }
 
 #define BLOOM_SEED_1	0x71d924af
@@ -915,8 +919,8 @@ ExecHashGetFilterHashValue2(HashFilterState *filter,
  * ExecHashFilterAddValue
  *		Add a value to a filter (of any type).
  */
-void
-ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprContext *econtext)
+static void
+ExecHashFilterAddValue(HashFilterState *filter, ExprContext *econtext)
 {
 	/* second pass through the node init */
 	if (filter->built)
@@ -924,7 +928,7 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 
 	if (filter->filter_type == HashFilterRange)
 	{
-		ExecHashFilterAddRange(filter, hashtable->keepNulls, econtext);
+		ExecHashFilterAddRange(filter, filter->keepNulls, econtext);
 		return;
 	}
 
@@ -939,13 +943,13 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 		Size	entrylen = sizeof(Datum) * list_length(filter->hashclauses);
 
 		/* if adding value worker, we're done */
-		if (ExecHashFilterAddExact(filter, hashtable->keepNulls, econtext))
+		if (ExecHashFilterAddExact(filter, filter->keepNulls, econtext))
 			return;
 
 		nvalues = filter->nvalues;
 		data = filter->data;
 
-		oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
+		oldcxt = MemoryContextSwitchTo(filter->filterCxt);
 
 		filter->data = palloc0(filter->nbits/8 + 10);
 		filter->filter_type = HashFilterBloom;
@@ -972,8 +976,8 @@ ExecHashFilterAddValue(HashJoinTable hashtable, HashFilterState *filter, ExprCon
 	if (filter->filter_type == HashFilterBloom)
 	{
 		uint32	hash = 0;
-		ExecHashGetFilterHashValue(filter, econtext, hashtable->keepNulls, &hash);
-		ExecHashFilterAddHash(filter, hashtable->keepNulls, econtext, hash);
+		ExecHashGetFilterHashValue(filter, econtext, filter->keepNulls, &hash);
+		ExecHashFilterAddHash(filter, filter->keepNulls, econtext, hash);
 		filter->nvalues++;
 	}
 }
@@ -1334,6 +1338,7 @@ ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
 
 	HashFilterState *state = makeNode(HashFilterState);
 
+	elog(WARNING, "initializing subplan");
 	state->planstate = ExecInitNode(filter->subplan, estate, eflags);
 
 	/*
@@ -1356,6 +1361,9 @@ ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
 	state->hashStrict = palloc_array(bool, nkeys);
 	state->collations = palloc_array(Oid, nkeys);
 	state->types = palloc(sizeof(Oid) * nkeys);
+
+	/* FIXME */
+	state->keepNulls = false;
 
 	/* FIXME properly handle the left/right function, for details see
 	 * ExecHashTableCreate() */
@@ -1452,6 +1460,10 @@ ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
 
 	state->private_data = cxt;
 
+	state->filterCxt = AllocSetContextCreate(CurrentMemoryContext,
+											 "hash filter context",
+											 ALLOCSET_DEFAULT_SIZES);
+
 	return state;
 }
 
@@ -1474,4 +1486,69 @@ ExecInitFilters(PlanState *planstate, List *filters, EState *estate, int eflags)
 	}
 
 	return states;
+}
+
+void
+ExecEndFilters(List *filters)
+{
+	ListCell   *lc;
+
+	foreach (lc, filters)
+	{
+		HashFilterState *state = (HashFilterState *) lfirst(lc);
+
+		ExecEndNode(state->planstate);
+	}
+}
+
+static void
+ExecBuildFilter(HashFilterState *filter, EState *estate)
+{
+	PlanState  *subplan = filter->planstate;
+	TupleTableSlot *slot;
+	ExprContext *econtext;
+
+	/* if filter is already built, we're done */
+	if (filter->built)
+		return;
+
+	/* create expression context */
+	econtext = CreateExprContext(estate);
+
+	/*
+	 * Get all tuples from the node below the Hash node and insert into the
+	 * hash table (or temp files).
+	 */
+	for (;;)
+	{
+		slot = ExecProcNode(subplan);
+		if (TupIsNull(slot))
+			break;
+
+		/* We have to compute the hash value */
+		econtext->ecxt_scantuple = slot;
+
+		/*
+		 * add the tuple to all hash pushed-down filters
+		 *
+		 * XXX maybe pointless to do unless after the hash is built (when
+		 * we can decide if the filter is useful).
+		 */
+		ExecHashFilterAddValue(filter, econtext);
+	}
+
+	ExecHashFilterFinalize(filter);
+}
+
+void
+ExecBuildFilters(ScanState *node, EState *estate)
+{
+	ListCell *lc;
+
+	foreach (lc, node->ss_Filters)
+	{
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+
+		ExecBuildFilter(filter, estate);
+	}
 }

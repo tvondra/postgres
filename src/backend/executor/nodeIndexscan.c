@@ -125,6 +125,9 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) node, estate);
+
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
@@ -817,6 +820,8 @@ ExecEndIndexScan(IndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

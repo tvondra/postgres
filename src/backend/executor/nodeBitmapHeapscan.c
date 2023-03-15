@@ -184,6 +184,9 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		node->initialized = true;
 	}
 
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+
 	for (;;)
 	{
 		bool		skip_fetch;
@@ -694,6 +697,8 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 	 * close heap scan
 	 */
 	table_endscan(scanDesc);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

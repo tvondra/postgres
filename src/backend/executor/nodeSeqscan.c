@@ -74,6 +74,9 @@ SeqNext(SeqScanState *node)
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) node, estate);
+
 	/*
 	 * get the next tuple from the table
 	 */
@@ -123,7 +126,7 @@ SeqScanState *
 ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 {
 	SeqScanState *scanstate;
-elog(WARNING, "ExecInitSeqScan");
+
 	/*
 	 * Once upon a time it was possible to have an outerPlan of a SeqScan, but
 	 * not any more.
@@ -215,6 +218,8 @@ ExecEndSeqScan(SeqScanState *node)
 	 */
 	if (scanDesc != NULL)
 		table_endscan(scanDesc);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

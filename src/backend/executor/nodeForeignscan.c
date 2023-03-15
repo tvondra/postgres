@@ -46,6 +46,9 @@ ForeignNext(ForeignScanState *node)
 	ExprContext *econtext = node->ss.ps.ps_ExprContext;
 	MemoryContext oldcontext;
 
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+
 	/* Call the Iterate function in short-lived context */
 	oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 	if (plan->operation != CMD_SELECT)
@@ -332,6 +335,8 @@ ExecEndForeignScan(ForeignScanState *node)
 	if (node->ss.ps.ps_ResultTupleSlot)
 		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------

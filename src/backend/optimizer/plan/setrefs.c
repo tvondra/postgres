@@ -2157,7 +2157,10 @@ fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		filter->clauses = fix_scan_list(root, filter->clauses,
 										rtoffset, NUM_EXEC_QUAL(plan));
-		filter->subplan = set_plan_references(root, filter->subplan);
+
+		filter->subplan = set_plan_refs(root,
+										filter->subplan,
+										rtoffset);
 	}
 
 	return splan->filters;

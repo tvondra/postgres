@@ -4774,6 +4774,14 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * nestloops, where we have circular dependency on values from the path
 	 * where we want to push the filter), not just for hash joins (which
 	 * makes the planning a bit weird anyway).
+	 *
+	 * XXX Maybe a different approach would be to build interesting paths
+	 * in set_plain_rel_pathlist, similarly to what we do for join clauses
+	 * etc. That is, we'd match join clauses and build suitable index (and
+	 * other) paths with the filter attached, instead of pushing-down the
+	 * filter ex-post from here. The trouble is we don't haven't planned
+	 * the join relations at that point, so if the Hash would be built on
+	 * something "complex" we would not know at that point.
 	 */
 	if ((filter_pushdown_mode != FILTER_PUSHDOWN_OFF) &&
 		(best_path->jpath.outerjoinpath->parallel_workers == 0) &&

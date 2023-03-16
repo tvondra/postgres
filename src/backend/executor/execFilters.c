@@ -1522,8 +1522,12 @@ ExecBuildFilter(HashFilterState *filter, EState *estate)
 		if (TupIsNull(slot))
 			break;
 
-		/* We have to compute the hash value */
-		econtext->ecxt_scantuple = slot;
+		/*
+		 * We have to compute the hash value from a subplan (fix_scan_filters
+		 * translates hash expressions to subplan as OUTER_VAR, so fill the
+		 * outer slot here).
+		 */
+		econtext->ecxt_outertuple = slot;
 
 		/*
 		 * add the tuple to all hash pushed-down filters

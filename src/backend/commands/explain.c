@@ -3814,8 +3814,14 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 											   planstate->plan,
 											   ancestors);
 
-			/* Deparse the expression */
-			exprstr = deparse_expression((Node *) filter->hashclauses, context, useprefix, false);
+			/*
+			 * Deparse the expression
+			 *
+			 * XXX we can't deparse hash clauses - there are OUTER_VAR references,
+			 * which causes failures because the filter subplan is not a regular
+			 * outer subplan (at least that's my understanding of the failures).
+			 */
+			exprstr = deparse_expression((Node *) filter->clauses, context, useprefix, false);
 
 			initStringInfo(&label);
 

@@ -4849,12 +4849,16 @@ create_hashjoin_plan(PlannerInfo *root,
 
 				filter->filterId = ++(root->glob->lastFilterId);
 
-				/* requires CP_LABEL_TLIST, otherwise some queries fail with
+				/*
+				 * XXX Requires CP_LABEL_TLIST, otherwise some queries fail with
 				 *
 				 *   ERROR: attribute 1 of type record has wrong type
 				 *
 				 * in CheckVarSlotCompatibility (in ExecQual) when building
 				 * the filter (when scanning the subplan).
+				 *
+				 * XXX Probably should use CP_SMALL_TLIST, or maybe CP_EXACT_TLIST
+				 * because we're not going to store the data.
 				 */
 				filter->subplan = create_plan_recurse(root, best_path->jpath.innerjoinpath,
 									 CP_LABEL_TLIST);

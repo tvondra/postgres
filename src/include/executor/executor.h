@@ -684,5 +684,6 @@ extern bool ExecHashFilterContainsValue(HashFilterState *filter,
 										ExprContext *econtext);
 
 extern void ExecBuildFilters(ScanState *node, EState *estate);
+extern bool ExecFilters(ScanState *node, ExprContext *econtext);
 
 #endif							/* EXECUTOR_H  */

@@ -2678,6 +2678,7 @@ typedef struct HashFilterState
 
 	HashFilterType	filter_type;	/* exact/range/bloom filter? */
 	bool			built;		/* is the filter populated with data? */
+	bool			skip;		/* should we skip this filter? */
 
 	/* statistics about querying the filter */
 	int64		nqueries;

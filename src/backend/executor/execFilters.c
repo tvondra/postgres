@@ -1555,3 +1555,35 @@ ExecBuildFilters(ScanState *node, EState *estate)
 		ExecBuildFilter(filter, estate);
 	}
 }
+
+/*
+ * ExecFilters
+ *		Chech if the tuple matches the pushed-down filters.
+ */
+bool
+ExecFilters(ScanState *node, ExprContext *econtext)
+{
+	ListCell *lc;
+	List *filters;
+
+	filters = node->ss_Filters;
+
+	foreach (lc, filters)
+	{
+		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
+
+		if (!filterstate)
+			continue;
+
+		if (!filterstate->built)
+			continue;
+
+		if (filterstate->skip)
+			continue;
+
+		if (!ExecHashFilterContainsValue(filterstate, econtext))
+			return false;
+	}
+
+	return true;
+}

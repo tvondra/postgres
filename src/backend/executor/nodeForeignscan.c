@@ -239,14 +239,14 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	 * If there are any filter pushed down to this node, initialize them too
 	 * (both subplan and the expressions).
 	 */
-	elog(WARNING, "initialize scanstate->ss.ss_Filters %p (%d)",
-		 scanstate, list_length(node->scan.filters));
+	// elog(WARNING, "initialize scanstate->ss.ss_Filters %p (%d)",
+	//	 scanstate, list_length(node->scan.filters));
 
 	scanstate->ss.ss_Filters
 		= ExecInitFilters((PlanState *) scanstate, node->scan.filters,
 								   estate, eflags);
 
-	elog(WARNING, "done: ss_Filters %p %p", scanstate, scanstate->ss.ss_Filters);
+	// elog(WARNING, "done: ss_Filters %p %p", scanstate, scanstate->ss.ss_Filters);
 
 	/*
 	 * Initialize FDW-related state.

@@ -3840,6 +3840,9 @@ create_cursor(ForeignScanState *node)
 				appendStringInfo(&filters, "(%s)", cond.data);
 			else
 				appendStringInfoString(&filters, "(false)");
+
+			/* no need to evaluate locally */
+			filter->skip = true;
 		}
 		else if (filter->filter_type == HashFilterRange)
 		{
@@ -3893,6 +3896,9 @@ create_cursor(ForeignScanState *node)
 
 				appendStringInfo(&cond, "(%s IN (%s))", expr, values.data);
 			}
+
+			/* no need to evaluate locally */
+			filter->skip = true;
 #else
 			{
 				Datum	minval = 0,
@@ -3929,6 +3935,11 @@ create_cursor(ForeignScanState *node)
 				else
 					appendStringInfo(&cond, "(false)");
 			}
+
+			/*
+			 * We've pushed down just a simplified conditions, so evaluate
+			 * the filter locally too.
+			 */
 #endif
 
 			if (!is_first)
@@ -3962,6 +3973,9 @@ create_cursor(ForeignScanState *node)
 			appendStringInfo(&filters, "(%s)", cond.data);
 
 			pfree(encoded);
+
+			/* no need to evaluate locally */
+			filter->skip = true;
 		}
 
 		is_first = false;

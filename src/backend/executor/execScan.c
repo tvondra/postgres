@@ -134,35 +134,6 @@ ExecScanFetch(ScanState *node,
 	return (*accessMtd) (node);
 }
 
-/*
- * ExecFilters
- *		Chech if the tuple matches the pushed-down filters.
- */
-static bool
-ExecFilters(ScanState *node, ExprContext *econtext)
-{
-	ListCell *lc;
-	List *filters;
-
-	filters = node->ss_Filters;
-
-	foreach (lc, filters)
-	{
-		HashFilterState *filterstate = (HashFilterState *) lfirst(lc);
-
-		if (!filterstate)
-			continue;
-
-		if (!filterstate->built)
-			continue;
-
-		if (!ExecHashFilterContainsValue(filterstate, econtext))
-			return false;
-	}
-
-	return true;
-}
-
 /* ----------------------------------------------------------------
  *		ExecScan
  *

@@ -712,9 +712,6 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			{
 				IndexOnlyScan *splan = (IndexOnlyScan *) plan;
 
-				splan->scan.filters =
-					fix_scan_filters(root, plan, rtoffset);
-
 				return set_indexonlyscan_references(root, splan, rtoffset);
 			}
 			break;
@@ -1402,34 +1399,7 @@ set_indexonlyscan_references(PlannerInfo *root,
 	plan->indextlist = fix_scan_list(root, plan->indextlist,
 									 rtoffset, NUM_EXEC_TLIST((Plan *) plan));
 
-	{
-		ListCell   *lc;
-		Scan	   *splan = (Scan *) plan;
-
-		/* hash clauses in filter references */
-		foreach(lc, splan->filters)
-		{
-			HashFilter *filter = (HashFilter *) lfirst(lc);
-
-			filter->clauses = (List *)
-				fix_upper_expr(root,
-							   (Node *) filter->clauses,
-							   index_itlist,
-							   INDEX_VAR,
-							   rtoffset,
-							   NRM_EQUAL,
-							   NUM_EXEC_QUAL((Plan *) plan));
-
-			filter->hashclauses = (List *)
-				fix_upper_expr(root,
-							   (Node *) filter->hashclauses,
-							   build_tlist_index(filter->subplan->targetlist), /* FIXME pfree */
-							   INDEX_VAR,
-							   rtoffset,
-							   NRM_EQUAL,
-							   NUM_EXEC_QUAL((Plan *) plan));
-		}
-	}
+	plan->scan.filters = fix_scan_filters(root, (Plan *) plan, rtoffset);
 
 	pfree(index_itlist);
 
@@ -2157,6 +2127,18 @@ fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 		HashFilter *filter = (HashFilter *) lfirst(lc);
 		filter->clauses = fix_scan_list(root, filter->clauses,
 										rtoffset, NUM_EXEC_QUAL(plan));
+
+		/*
+		 * XXX Not sure this is correct, but it seems to work. We need to
+		 * translate the hashkey expressions to the subplan results.
+		 */
+		filter->hashclauses = (List *) fix_upper_expr(root,
+									(Node *) filter->hashclauses,
+									build_tlist_index(filter->subplan->targetlist),
+									OUTER_VAR,
+									rtoffset,
+									NRM_EQUAL,
+									NUM_EXEC_QUAL(plan));
 
 		filter->subplan = set_plan_refs(root,
 										filter->subplan,

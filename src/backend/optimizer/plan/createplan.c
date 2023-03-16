@@ -4836,12 +4836,12 @@ create_hashjoin_plan(PlannerInfo *root,
 			 * Could we estimate it like a fraction of (total - startup)
 			 * of the inner path cost?
 			 *
-			 * XXX We need to do this before building the subplans, so
-			 * we don't have the Hash node yet. We'll leave the pointer
-			 * NULL and update it later.
-			 *
 			 * We should group the clauses by relids, and then push each
 			 * group to the same node at once.
+			 *
+			 * XXX Maybe we could/should check if there's a better plan
+			 * on the subpath? Although, we probably pick the path with
+			 * the lowest total cost to build the Hash anyway.
 			 */
 			if (path)
 			{

@@ -3806,6 +3806,7 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 			char	   *exprstr;
 			bool		useprefix;
 			StringInfoData	label;
+			char	   *filtertype = "unknown";
 
 			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
 
@@ -3823,11 +3824,43 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 			 */
 			exprstr = deparse_expression((Node *) filter->clauses, context, useprefix, false);
 
+			switch (state->filter_type)
+			{
+				case HashFilterBloom:
+					filtertype = "bloom";
+					break;
+
+				case HashFilterExact:
+					filtertype = "exact";
+					break;
+
+				case HashFilterRange:
+					filtertype = "range";
+					break;
+
+				default:
+					filtertype = "unknown";
+			}
+
 			initStringInfo(&label);
 
-			appendStringInfo(&label, "Bloom filter %d: %s  Size: %d bits (%.1f kB)  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
-							 state->filterId, exprstr, state->nbits,
-							 ((state->nbits/8) /1024.0), /* size in bytes */
+			appendStringInfo(&label, "Filter %d: (%s)  Type: %s  Values: %d",
+							 state->filterId, exprstr, filtertype, state->nvalues);
+
+			if (state->filter_type == HashFilterBloom)
+				appendStringInfo(&label, "  Size: %d bits (%.1f kB)",
+								 state->nbits, ((state->nbits/8) /1024.0)); /* size in bytes */
+			else if (state->filter_type == HashFilterRange)
+				appendStringInfo(&label, "  Ranges: %d  Size: %.1f (%.1f) kB",
+								 state->nranges,
+								 state->nallocated * sizeof(Datum) / 1024.0,
+								 state->nvalues * sizeof(Datum) / 1024.0);
+			else
+				appendStringInfo(&label, "  Size: %.1f (%.1f) kB",
+								 state->nallocated * sizeof(Datum) / 1024.0,
+								 state->nvalues * sizeof(Datum) / 1024.0);
+
+			appendStringInfo(&label, "  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
 							 state->nqueries, state->nhits,
 							 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
 

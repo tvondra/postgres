@@ -3860,9 +3860,10 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 								 state->nallocated * sizeof(Datum) / 1024.0,
 								 state->nvalues * sizeof(Datum) / 1024.0);
 
-			appendStringInfo(&label, "  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
-							 state->nqueries, state->nhits,
-							 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
+			if (!state->skip)
+				appendStringInfo(&label, "  Queries: " INT64_FORMAT "  Hits: " INT64_FORMAT "  (%.2f %%)",
+								 state->nqueries, state->nhits,
+								 state->nhits * 100.0 / Max(1, state->nqueries)); /* hit ratio */
 
 			ancestors = lcons(plan, ancestors);
 

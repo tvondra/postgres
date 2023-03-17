@@ -23,7 +23,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
-
+#include <math.h>
 
 /*
  * ExecHashGetHashValue
@@ -1442,14 +1442,14 @@ ExecHashFilterInit(PlanState *planstate, HashFilter *filter,
 	cxt = palloc0(offsetof(qsort_cxt, ssup) +
 				  sizeof(SortSupportData) * list_length(filter->clauses));
 
-	for (int i = 0; i < list_length(filter->clauses); i++)
+	for (int j = 0; j < list_length(filter->clauses); j++)
 	{
-		SortSupport		ssup = &cxt->ssup[i];
+		SortSupport		ssup = &cxt->ssup[j];
 		TypeCacheEntry *entry
-			= lookup_type_cache(state->types[i], TYPECACHE_LT_OPR);
+			= lookup_type_cache(state->types[j], TYPECACHE_LT_OPR);
 
 		ssup->ssup_cxt = CurrentMemoryContext;
-		ssup->ssup_collation = state->collations[i];
+		ssup->ssup_collation = state->collations[j];
 		ssup->ssup_nulls_first = false;	/* FIXME? */
 
 		PrepareSortSupportFromOrderingOp(entry->lt_opr, ssup);

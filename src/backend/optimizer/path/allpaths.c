@@ -27,6 +27,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/plannodes.h"
 #include "nodes/supportnodes.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -50,6 +51,7 @@
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/typcache.h"
 
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
@@ -98,6 +100,8 @@ static void set_rel_size(PlannerInfo *root, RelOptInfo *rel,
 						 Index rti, RangeTblEntry *rte);
 static void set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 							 Index rti, RangeTblEntry *rte);
+static void set_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+									 Index rti, RangeTblEntry *rte);
 static void set_plain_rel_size(PlannerInfo *root, RelOptInfo *rel,
 							   RangeTblEntry *rte);
 static void create_plain_partial_paths(PlannerInfo *root, RelOptInfo *rel);
@@ -105,6 +109,8 @@ static void set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 									  RangeTblEntry *rte);
 static void set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								   RangeTblEntry *rte);
+static void set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+										   RangeTblEntry *rte);
 static void set_tablesample_rel_size(PlannerInfo *root, RelOptInfo *rel,
 									 RangeTblEntry *rte);
 static void set_tablesample_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -353,6 +359,38 @@ set_base_rel_pathlists(PlannerInfo *root)
 
 		set_rel_pathlist(root, rel, rti, root->simple_rte_array[rti]);
 	}
+
+	/*
+	 * Now that we have pathlists for all baserels, consider building paths
+	 * with pushed-down filters.
+	 *
+	 * This is naive/simplistic, as it allows deriving only single-relation
+	 * filters. So good enough for fact-dimension schemas, but not for more
+	 * complex schemas (snowflake etc.). Allowing joins would be great, but
+	 * we don't have them yet at this point and I'm not sure how to do that
+	 * (maybe we could build a subquery and plan it separately?).
+	 *
+	 * We have to do this *after* building paths for all the relations, so
+	 * that we can use those paths to build the filters.
+	 *
+	 * XXX consider how to allow filters derived from joins.
+	 */
+	for (rti = 1; rti < root->simple_rel_array_size; rti++)
+	{
+		RelOptInfo *rel = root->simple_rel_array[rti];
+
+		/* there may be empty slots corresponding to non-baserel RTEs */
+		if (rel == NULL)
+			continue;
+
+		Assert(rel->relid == rti);	/* sanity check on array */
+
+		/* ignore RTEs that are "other rels" */
+		if (rel->reloptkind != RELOPT_BASEREL)
+			continue;
+
+		set_rel_pathlist_filters(root, rel, rti, root->simple_rte_array[rti]);
+	}
 }
 
 /*
@@ -558,6 +596,73 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		!bms_equal(rel->relids, root->all_query_rels))
 		generate_useful_gather_paths(root, rel, false);
+
+	/* Now find the cheapest of the paths for this rel */
+	set_cheapest(rel);
+
+#ifdef OPTIMIZER_DEBUG
+	debug_print_rel(root, rel);
+#endif
+}
+
+/*
+ * set_rel_pathlist_filters
+ *	  Build access paths with derived filters for a base relation
+ *
+ * XXX Almost the same as set_rel_pathlist, but constructing paths with
+ * derived filters for "plain" tables only.
+ */
+static void
+set_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+						 Index rti, RangeTblEntry *rte)
+{
+	if (IS_DUMMY_REL(rel))
+	{
+		/* We already proved the relation empty, so nothing more to do */
+	}
+	else if (rte->inh)
+	{
+		/* It's an "append relation", ignore for now */
+	}
+	else
+	{
+		switch (rel->rtekind)
+		{
+			case RTE_RELATION:
+				if (rte->relkind == RELKIND_FOREIGN_TABLE)
+				{
+					/* Foreign table */
+					// FIXME to allow passing filters to foreign servers
+				}
+				else if (rte->tablesample != NULL)
+				{
+					/* Sampled relation */
+				}
+				else
+				{
+					/* Plain relation */
+					set_plain_rel_pathlist_filters(root, rel, rte);
+				}
+				break;
+			case RTE_SUBQUERY:
+			case RTE_FUNCTION:
+			case RTE_TABLEFUNC:
+			case RTE_VALUES:
+			case RTE_CTE:
+			case RTE_NAMEDTUPLESTORE:
+			case RTE_RESULT:
+				/* we ignore all of those */
+				break;
+			default:
+				elog(ERROR, "unexpected rtekind: %d", (int) rel->rtekind);
+				break;
+		}
+	}
+
+	/*
+	 * XXX if we want a hook (similar to set_rel_pathlist_hook), this is where
+	 * we'd call it, probably.
+	 */
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);
@@ -787,6 +892,121 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 
 	/* Consider TID scans */
 	create_tidscan_paths(root, rel);
+}
+
+/*
+ * set_plain_rel_pathlist_filters
+ *	  Build access paths for a plain relation (no subquery, no inheritance)
+ *
+ * XXX Almost the same as set_plain_rel_pathlist_filters, but considering
+ * filters derived from joined relations.
+ *
+ * XXX Ignores parallel paths for simplicity, and TID scans.
+ */
+static void
+set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	Relids		required_outer;
+
+	/*
+	 * We don't support pushing join clauses into the quals of a seqscan, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
+	 */
+	required_outer = rel->lateral_relids;
+
+	elog(WARNING, "set_plain_rel_pathlist_filters %d %d baserestrictinfo %d joininfo %d eclass_joins %d", rel->relid, rte->relid, list_length(rel->baserestrictinfo), list_length(rel->joininfo), rel->has_eclass_joins);
+
+	/* inspect eclass joins to derive filters */
+	if (rel->has_eclass_joins)
+	{
+		ListCell *lc;
+
+		foreach(lc, root->eq_classes)
+		{
+			ListCell *lc2;
+			EquivalenceClass *ec = (EquivalenceClass *) lfirst(lc);
+			Var *local_var = NULL;
+			List *remote_vars = NIL;
+
+			foreach (lc2, ec->ec_members)
+			{
+				EquivalenceMember *em = (EquivalenceMember *) lfirst(lc2);
+
+				/* FIXME support arbitrary expressions */
+				Var *var = (Var *) em->em_expr;
+
+				if (!IsA(var, Var))
+					continue;
+
+				if (var->varno == rel->relid)
+				{
+					elog(WARNING, "  local variable: %s", nodeToString(var));
+					local_var = var;
+				}
+				else
+				{
+					elog(WARNING, "  remote variable: %s", nodeToString(var));
+					remote_vars = lappend(remote_vars, var);
+				}
+			}
+
+			foreach (lc2, remote_vars)
+			{
+				Var *var = (Var *) lfirst(lc2);
+				HashFilter *filter;
+				TypeCacheEntry *entry;
+				Path *path;
+
+				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+
+				if (!rel2->baserestrictinfo)
+					continue;
+
+				elog(WARNING, "relid = %d", rel2->relid);
+
+				filter = makeNode(HashFilter);
+
+				filter->clauses = list_make1(copyObject(local_var));
+
+				filter->hashclauses = list_make1(copyObject(var));
+
+				/* XXX maybe use em_datatype instead? */
+				entry = lookup_type_cache(var->vartype, TYPECACHE_EQ_OPR);
+
+				filter->hashoperators = NIL;
+				filter->hashoperators = lappend_oid(filter->hashoperators, entry->eq_opr);
+
+				filter->hashcollations = NIL;
+				filter->hashcollations = lappend_oid(filter->hashcollations, ec->ec_collation);
+
+				/* FIXME use field of the correct type, storing as Plan is a PoC hack */
+				filter->subplan = (Plan *) rel2->cheapest_total_path;
+
+				/* FIXME check cost of the path and see if adding the filter could
+				 * possibly make it cheaper, based on filter selectivity estimate
+				 * etc.
+				 *
+				 * seqscan cost reduction > filter subpath cost
+				 */
+				path = create_seqscan_path(root, rel, required_outer, 0);
+
+				/* XXX cut the cost in half, needs to be improved */
+				path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
+
+				path->filters = lcons(filter, path->filters);
+				add_path(rel, path);
+
+				/* consider other types of paths */
+			}
+		}
+	}
+
+	/* Consider sequential scan */
+	// add_path(rel, create_seqscan_path(root, rel, required_outer, 0));
+
+	/* Consider index scans */
+	// create_index_paths(root, rel);
 }
 
 /*

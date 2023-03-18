@@ -3374,4 +3374,28 @@ typedef struct AggTransInfo
 	bool		initValueIsNull;
 } AggTransInfo;
 
+
+typedef struct HashFilterInfo
+{
+	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
+
+	NodeTag		type;
+
+	/* ID for filter (unique within the planner run) */
+	Index		filterId;
+
+	/* expressions for the scan node (the filter is pushed to) */
+	List	   *clauses;
+	List	   *deparsed;
+
+	/* expresions for the subplan (that we build the filter on) */
+	List	   *hashclauses;
+	List	   *hashoperators;
+	List	   *hashcollations;
+
+	/* subplan evaluated to build the filter */
+	Path	   *subpath;
+
+} HashFilterInfo;
+
 #endif							/* PATHNODES_H */

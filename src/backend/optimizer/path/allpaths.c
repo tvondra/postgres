@@ -27,7 +27,6 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/plannodes.h"
 #include "nodes/supportnodes.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -915,6 +914,10 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 	 */
 	required_outer = rel->lateral_relids;
 
+	/* XXX no parameterized / lateral stuff for now */
+	if (required_outer)
+		return;
+
 	elog(WARNING, "set_plain_rel_pathlist_filters %d %d baserestrictinfo %d joininfo %d eclass_joins %d", rel->relid, rte->relid, list_length(rel->baserestrictinfo), list_length(rel->joininfo), rel->has_eclass_joins);
 
 	/* inspect eclass joins to derive filters */
@@ -951,16 +954,34 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			foreach (lc2, remote_vars)
 			{
 				Var *var = (Var *) lfirst(lc2);
-				HashFilter *filter;
+				HashFilterInfo *filter;
 				TypeCacheEntry *entry;
 				Path *path;
 
 				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
 
+Assert(rel2->reloptkind == RELOPT_BASEREL);
+
 				if (!rel2->baserestrictinfo)
 					continue;
 
-				filter = makeNode(HashFilter);
+				/*
+				 * ignore parameterized paths for now
+				 *
+				 * Without this, some queries fail because of infinite recursion.
+				 * For example '\d' does that. Apparently the cheapest_total_path
+				 * may "silently" change to a different path (e.g. from SeqScan to
+				 * a NestLoop), which in turn may reference a path that alredy has
+				 * a hash filter. And it's possible we now build a patch that is
+				 * later (in this loop) used picked as cheapest for another filter.
+				 * That on it's own shouldn't cause an infinite loop, but it seems
+				 * something in the planner decides to "alter" the existing path,
+				 * rewriting it from SeqScan to NestLoop. Reparameterezition?
+				 */
+				if (rel2->cheapest_total_path->parent->ppilist != NULL)
+					continue;
+
+				filter = makeNode(HashFilterInfo);
 
 				filter->filterId = ++(root->glob->lastFilterId);
 
@@ -978,7 +999,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				filter->hashcollations = lappend_oid(filter->hashcollations, ec->ec_collation);
 
 				/* FIXME use field of the correct type, storing as Plan is a PoC hack */
-				filter->subplan = (Plan *) rel2->cheapest_total_path;
+				filter->subpath = rel2->cheapest_total_path;
 
 				/* FIXME check cost of the path and see if adding the filter could
 				 * possibly make it cheaper, based on filter selectivity estimate

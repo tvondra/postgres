@@ -40,6 +40,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
@@ -907,6 +908,9 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 {
 	Relids		required_outer;
 
+	if (filter_pushdown_mode == FILTER_PUSHDOWN_OFF)
+		return;
+
 	/*
 	 * We don't support pushing join clauses into the quals of a seqscan, but
 	 * it could still have required parameterization due to LATERAL refs in
@@ -999,7 +1003,21 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				filter->hashcollations = lappend_oid(filter->hashcollations, ec->ec_collation);
 
 				/* FIXME use field of the correct type, storing as Plan is a PoC hack */
-				filter->subpath = rel2->cheapest_total_path;
+				// filter->subpath = rel2->cheapest_total_path;
+
+				/*
+				 * XXX We can't just use the path, because then it'd might be referenced
+				 * from two places, and we'd do some actions twice (e.g. for indexscans
+				 * we call fix_indexqual_references which tweaks some of the path fields).
+				 *
+				 * XXX Maybe we could copy the path somehow? Or maybe we should create a
+				 * separate RelOptInfo for the filter? Or rather planning the filter
+				 * as a subquery would solve this, probably (and also would allow more
+				 * complicated filters with joins).
+				 *
+				 * XXX For now we just build a new seqscan. Seems trivial.
+				 */
+				filter->subpath = create_seqscan_path(root, rel2, required_outer, 0);
 
 				/* FIXME check cost of the path and see if adding the filter could
 				 * possibly make it cheaper, based on filter selectivity estimate
@@ -1027,6 +1045,9 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 				{
 					bool			matches = false;
 					IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+					IndexPath	 *ipath;
+					Relids		outer_relids;
+					double		loop_count;
 
 					/* Protect limited-size array in IndexClauseSets */
 					Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
@@ -1045,7 +1066,38 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 						}
 					}
 
+					if (!matches)
+						continue;
 
+					/* */
+					if (index->amhasgettuple)
+						elog(WARNING, "build index scan");
+
+					if (index->amhasgetbitmap)
+						elog(WARNING, "build bitmap index scan");
+
+					/* copied from build_index_paths */
+					outer_relids = bms_copy(rel->lateral_relids);
+					loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
+
+					ipath = create_index_path(root, index,
+											  NIL, // index_clauses,
+											  NIL, // orderbyclauses,
+											  NIL, // orderbyclausecols,
+											  NIL, // useful_pathkeys,
+											  ForwardScanDirection,
+											  false, // index_only_scan,
+											  outer_relids,
+											  loop_count,
+											  false);
+
+					ipath->path.filters = lcons(filter, ipath->path.filters);
+					elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
+
+					ipath->path.startup_cost /= 10;
+					ipath->path.total_cost /= 10;
+
+					add_path(rel, (Path *) ipath);
 				}
 			}
 		}

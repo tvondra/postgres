@@ -940,16 +940,13 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					continue;
 
 				if (var->varno == rel->relid)
-				{
-					elog(WARNING, "  local variable: %s", nodeToString(var));
 					local_var = var;
-				}
 				else
-				{
-					elog(WARNING, "  remote variable: %s", nodeToString(var));
 					remote_vars = lappend(remote_vars, var);
-				}
 			}
+
+			if (!local_var)
+				continue;
 
 			foreach (lc2, remote_vars)
 			{
@@ -963,9 +960,9 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				if (!rel2->baserestrictinfo)
 					continue;
 
-				elog(WARNING, "relid = %d", rel2->relid);
-
 				filter = makeNode(HashFilter);
+
+				filter->filterId = ++(root->glob->lastFilterId);
 
 				filter->clauses = list_make1(copyObject(local_var));
 
@@ -990,14 +987,45 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				 * seqscan cost reduction > filter subpath cost
 				 */
 				path = create_seqscan_path(root, rel, required_outer, 0);
-
+elog(WARNING, "===========================================");
+elog(WARNING, "local %s", nodeToString(local_var));
+elog(WARNING, "remote %s", nodeToString(var));
+elog(WARNING, "rel %d rel2 %d", rel->relid, rel2->relid);
+elog(WARNING, "created path %p %s" ,path, nodeToString(path));
+elog(WARNING, "adding filter subpath %p %s", rel2->cheapest_total_path, nodeToString(rel2->cheapest_total_path));
+elog(WARNING, "===========================================");
 				/* XXX cut the cost in half, needs to be improved */
 				path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
 
 				path->filters = lcons(filter, path->filters);
+elog(WARNING, "result %p %s" ,path, nodeToString(path));
 				add_path(rel, path);
 
-				/* consider other types of paths */
+				/* consider other types of paths, e.g. index-based */
+				foreach(lc, rel->indexlist)
+				{
+					bool			matches = false;
+					IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+
+					/* Protect limited-size array in IndexClauseSets */
+					Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
+
+					/* FIXME this should do all the business with matching
+					 * clauses to indexes etc. we'd do in create_index_paths,
+					 * but for simplicily of the PoC we just check if the
+					 * index is on the varattno. */
+
+					for (int i = 0; i < index->nkeycolumns; i++)
+					{
+						if (index->indexkeys[i] == local_var->varattno)
+						{
+							matches = true;
+							break;
+						}
+					}
+
+
+				}
 			}
 		}
 	}

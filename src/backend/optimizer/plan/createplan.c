@@ -3030,7 +3030,7 @@ create_indexscan_plan(PlannerInfo *root,
 	List	   *fixed_indexorderbys;
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
-
+elog(WARNING, "create_indexscan_plan %p", best_path);
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
 	Assert(best_path->path.parent->rtekind == RTE_RELATION);
@@ -3199,8 +3199,28 @@ create_indexscan_plan(PlannerInfo *root,
 
 	copy_generic_path_info(&scan_plan->plan, &best_path->path);
 
-	/* copy the filters pushed-down to the scan */
-	scan_plan->filters = best_path->path.filters;
+	scan_plan->filters = NIL;
+
+	{
+		ListCell *lc;
+		foreach(lc, best_path->path.filters)
+		{
+			HashFilterInfo *info = (HashFilterInfo *) lfirst(lc);
+			HashFilter *filter = makeNode(HashFilter);
+
+			filter->filterId = info->filterId;
+			filter->clauses = info->clauses;
+			filter->deparsed = info->clauses;
+			filter->hashclauses = info->hashclauses;
+			filter->hashoperators = info->hashoperators;
+			filter->hashcollations = info->hashcollations;
+elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
+			filter->subplan = create_plan_recurse(root, info->subpath,
+									 CP_SMALL_TLIST);
+
+			scan_plan->filters = lappend(scan_plan->filters, filter);
+		}
+	}
 
 	return scan_plan;
 }

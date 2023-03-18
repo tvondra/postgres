@@ -3908,7 +3908,8 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 		 (root->outer_params == NULL) &&
 		 (root->init_plans == NIL) &&
 		 (inner_path->parent->lateral_relids == NULL) &&
-		 (outer_path->parent->lateral_relids == NULL))
+		 (outer_path->parent->lateral_relids == NULL) &&
+		 false)
 	{
 		ListCell *lc2;
 

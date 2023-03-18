@@ -2925,9 +2925,20 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 	scan_plan = make_seqscan(tlist,
 							 scan_clauses,
 							 scan_relid);
-
+	elog(WARNING, "filters = %d", list_length(best_path->filters));
 	/* copy the filters pushed-down to the scan */
 	scan_plan->scan.filters = best_path->filters;
+
+	{
+		ListCell *lc;
+		foreach(lc, best_path->filters)
+		{
+			HashFilter *filter = (HashFilter *) lfirst(lc);
+			elog(WARNING, "filter->subplan = %s", nodeToString(filter->subplan));
+			filter->subplan = create_plan_recurse(root, (Path *) filter->subplan,
+									 CP_SMALL_TLIST);
+		}
+	}
 
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
@@ -4789,7 +4800,8 @@ create_hashjoin_plan(PlannerInfo *root,
 		 best_path->jpath.jointype == JOIN_SEMI) &&
 		 (root->outer_params == NULL) &&
 		 (root->init_plans == NIL) &&
-		 (best_path->jpath.path.parent->lateral_relids == NULL))
+		 (best_path->jpath.path.parent->lateral_relids == NULL) &&
+		 false)
 	{
 		ListCell *lc2;
 

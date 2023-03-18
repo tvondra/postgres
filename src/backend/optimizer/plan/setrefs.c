@@ -728,6 +728,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				splan->indexqualorig =
 					fix_scan_list(root, splan->indexqualorig,
 								  rtoffset, NUM_EXEC_QUAL(plan));
+				splan->scan.filters =
+					fix_scan_filters(root, plan, rtoffset);
 			}
 			break;
 		case T_BitmapHeapScan:

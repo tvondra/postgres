@@ -1045,7 +1045,6 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 				{
 					bool			matches = false;
 					IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
-					IndexPath	 *ipath;
 					Relids		outer_relids;
 					double		loop_count;
 
@@ -1069,35 +1068,71 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 					if (!matches)
 						continue;
 
-					/* */
-					if (index->amhasgettuple)
-						elog(WARNING, "build index scan");
-
-					if (index->amhasgetbitmap)
-						elog(WARNING, "build bitmap index scan");
-
 					/* copied from build_index_paths */
 					outer_relids = bms_copy(rel->lateral_relids);
 					loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
 
-					ipath = create_index_path(root, index,
-											  NIL, // index_clauses,
-											  NIL, // orderbyclauses,
-											  NIL, // orderbyclausecols,
-											  NIL, // useful_pathkeys,
-											  ForwardScanDirection,
-											  false, // index_only_scan,
-											  outer_relids,
-											  loop_count,
-											  false);
+					/* */
+					if (index->amhasgettuple && false)
+					{
+						IndexPath	 *ipath;
 
-					ipath->path.filters = lcons(filter, ipath->path.filters);
-					elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
+						elog(WARNING, "build index scan");
 
-					ipath->path.startup_cost /= 10;
-					ipath->path.total_cost /= 10;
+						ipath = create_index_path(root, index,
+												  NIL, // index_clauses,
+												  NIL, // orderbyclauses,
+												  NIL, // orderbyclausecols,
+												  NIL, // useful_pathkeys,
+												  ForwardScanDirection,
+												  false, // index_only_scan,
+												  outer_relids,
+												  loop_count,
+												  false);
 
-					add_path(rel, (Path *) ipath);
+						ipath->path.filters = lcons(filter, ipath->path.filters);
+						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
+
+						// ipath->path.startup_cost /= 10;
+						// ipath->path.total_cost /= 10;
+
+						add_path(rel, (Path *) ipath);
+					}
+
+					if (index->amhasgetbitmap)
+					{
+						IndexPath	 *ipath;
+						BitmapHeapPath *bpath;
+
+						elog(WARNING, "build bitmap scan");
+
+						ipath = create_index_path(root, index,
+												  NIL, // index_clauses,
+												  NIL, // orderbyclauses,
+												  NIL, // orderbyclausecols,
+												  NIL, // useful_pathkeys,
+												  ForwardScanDirection,
+												  false, // index_only_scan,
+												  outer_relids,
+												  loop_count,
+												  false);
+
+						ipath->path.filters = lcons(filter, ipath->path.filters);
+						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
+
+						ipath->path.startup_cost /= 10;
+						ipath->path.total_cost /= 10;
+
+						elog(WARNING, "build bitmap index scan");
+
+						bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
+														rel->lateral_relids, 1.0, 0);
+
+						bpath->path.startup_cost /= 10;
+						bpath->path.total_cost /= 10;
+
+						add_path(rel, (Path *) bpath);
+					}
 				}
 			}
 		}

@@ -213,6 +213,11 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	BitmapIndexScanState *indexstate;
 	LOCKMODE	lockmode;
 
+	ListCell	   *lc;
+	int				numkeys;
+	ScanKeyData	   *keys;
+
+
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
 
@@ -305,13 +310,70 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 		indexstate->biss_RuntimeContext = NULL;
 	}
 
+
+	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	elog(WARNING, "initializing %p %d", node->scan.filters, list_length(node->scan.filters));
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
+
+	elog(WARNING, "initialized %p %d", indexstate->ss.ss_Filters, list_length(indexstate->ss.ss_Filters));
+
+	numkeys = indexstate->biss_NumScanKeys;
+	keys = indexstate->biss_ScanKeys;
+
+	/* build pushed-down filters */
+	ExecBuildFilters((ScanState *) indexstate, estate);
+
+	elog(WARNING, "indexstate->ss.ss_Filters = %p", indexstate->ss.ss_Filters);
+
+	foreach (lc, indexstate->ss.ss_Filters)
+	{
+		numkeys++;
+		numkeys++;
+	}
+
+	elog(WARNING, "numkeys = %d", numkeys);
+
+	keys = (ScanKeyData *) palloc(sizeof(ScanKeyData) * numkeys);
+	memcpy(keys, indexstate->biss_ScanKeys, sizeof(ScanKeyData) * indexstate->biss_NumScanKeys);
+	numkeys = indexstate->biss_NumScanKeys;
+
+	foreach (lc, indexstate->ss.ss_Filters)
+	{
+		HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
+		Datum			   *values = (Datum *) filter->data;
+elog(WARNING, "filter values %d", filter->nvalues);
+		// FIXME handle all filter types
+		if (filter->filter_type == HashFilterExact)
+		{
+			filter->skip = false;
+
+			elog(WARNING, "%ld %ld", values[0], values[filter->nvalues - 1]);
+			ScanKeyInit(&keys[numkeys++],
+						1, // FIXME attribute number
+						BTGreaterEqualStrategyNumber, // strategy number
+						150, // int4ge
+						values[0]);
+
+			ScanKeyInit(&keys[numkeys++],
+						1, // FIXME attribute number
+						BTLessEqualStrategyNumber, // strategy number
+						149, // int4le
+						values[1]);
+		}
+	}
+
 	/*
 	 * Initialize scan descriptor.
 	 */
 	indexstate->biss_ScanDesc =
 		index_beginscan_bitmap(indexstate->biss_RelationDesc,
 							   estate->es_snapshot,
-							   indexstate->biss_NumScanKeys);
+							   numkeys);
 
 	/*
 	 * If no run-time keys to calculate, go ahead and pass the scankeys to the
@@ -320,7 +382,7 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	if (indexstate->biss_NumRuntimeKeys == 0 &&
 		indexstate->biss_NumArrayKeys == 0)
 		index_rescan(indexstate->biss_ScanDesc,
-					 indexstate->biss_ScanKeys, indexstate->biss_NumScanKeys,
+					 keys, numkeys,
 					 NULL, 0);
 
 	/*

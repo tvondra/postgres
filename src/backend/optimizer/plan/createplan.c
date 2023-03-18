@@ -2927,24 +2927,26 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_relid);
 
 	/* copy the filters pushed-down to the scan */
-	scan_plan->scan.filters = best_path->filters;
+	scan_plan->scan.filters = NIL;
 
 	{
 		ListCell *lc;
 		foreach(lc, best_path->filters)
 		{
-			HashFilter *filter = (HashFilter *) lfirst(lc);
-			Path *subpath = (Path *) filter->subplan;
+			HashFilterInfo *info = (HashFilterInfo *) lfirst(lc);
+			HashFilter *filter = makeNode(HashFilter);
 
-			// filter->subplan = NULL;
-elog(WARNING, "================================");
-elog(WARNING, "best_path = %s", nodeToString(best_path));
-elog(WARNING, "filter %d subpath = %s", filter->filterId, nodeToString(subpath));
-			if (!subpath)
-				continue;
-
-			filter->subplan = create_plan_recurse(root, subpath,
+			filter->filterId = info->filterId;
+			filter->clauses = info->clauses;
+			filter->deparsed = info->clauses;
+			filter->hashclauses = info->hashclauses;
+			filter->hashoperators = info->hashoperators;
+			filter->hashcollations = info->hashcollations;
+elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
+			filter->subplan = create_plan_recurse(root, info->subpath,
 									 CP_SMALL_TLIST);
+
+			scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
 		}
 	}
 

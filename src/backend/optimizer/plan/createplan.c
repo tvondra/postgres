@@ -2925,7 +2925,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 	scan_plan = make_seqscan(tlist,
 							 scan_clauses,
 							 scan_relid);
-	elog(WARNING, "filters = %d", list_length(best_path->filters));
+
 	/* copy the filters pushed-down to the scan */
 	scan_plan->scan.filters = best_path->filters;
 
@@ -2934,8 +2934,16 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 		foreach(lc, best_path->filters)
 		{
 			HashFilter *filter = (HashFilter *) lfirst(lc);
-			elog(WARNING, "filter->subplan = %s", nodeToString(filter->subplan));
-			filter->subplan = create_plan_recurse(root, (Path *) filter->subplan,
+			Path *subpath = (Path *) filter->subplan;
+
+			// filter->subplan = NULL;
+elog(WARNING, "================================");
+elog(WARNING, "best_path = %s", nodeToString(best_path));
+elog(WARNING, "filter %d subpath = %s", filter->filterId, nodeToString(subpath));
+			if (!subpath)
+				continue;
+
+			filter->subplan = create_plan_recurse(root, subpath,
 									 CP_SMALL_TLIST);
 		}
 	}

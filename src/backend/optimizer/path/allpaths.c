@@ -1083,7 +1083,7 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 					loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
 
 					/* */
-					if (index->amhasgettuple && false)
+					if (index->amhasgettuple)
 					{
 						IndexPath	 *ipath;
 
@@ -1103,8 +1103,8 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 						ipath->path.filters = lcons(filter, ipath->path.filters);
 						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
 
-						// ipath->path.startup_cost /= 10;
-						// ipath->path.total_cost /= 10;
+						ipath->path.startup_cost /= 10;
+						ipath->path.total_cost /= 10;
 
 						add_path(rel, (Path *) ipath);
 					}

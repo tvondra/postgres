@@ -93,6 +93,13 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	if (scandesc == NULL)
 	{
 		/*
+		 * try deriving scan keys from the available filters
+		 */
+		ExecFiltersDeriveScanKeys((ScanState *) node,
+								  &node->ioss_NumScanKeys,
+								  &node->ioss_ScanKeys);
+
+		/*
 		 * We reach here if the index only scan is not parallel, or if we're
 		 * serially executing an index only scan that was planned to be
 		 * parallel.

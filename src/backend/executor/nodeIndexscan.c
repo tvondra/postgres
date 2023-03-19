@@ -101,49 +101,18 @@ IndexNext(IndexScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
-	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, estate,
-					 (HashFilterExact | HashFilterRange));
-
 	if (scandesc == NULL)
 	{
-		ListCell	   *lc;
-		int				numkeys = node->iss_NumScanKeys;
-		ScanKeyData	   *keys = node->iss_ScanKeys;
+		/* build pushed-down filters */
+		ExecBuildFilters((ScanState *) node, estate,
+					 (HashFilterExact | HashFilterRange));
 
-		foreach (lc, node->ss.ss_Filters)
-		{
-			numkeys++;
-			numkeys++;
-		}
-
-		keys = (ScanKeyData *) palloc(sizeof(ScanKeyData) * numkeys);
-		memcpy(keys, node->iss_ScanKeys, sizeof(ScanKeyData) * node->iss_NumScanKeys);
-		numkeys = node->iss_NumScanKeys;
-
-		foreach (lc, node->ss.ss_Filters)
-		{
-			HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
-			Datum			   *values = (Datum *) filter->data;
-
-			if (filter->filter_type)
-			{
-				filter->skip = true;
-
-				elog(WARNING, "%ld %ld", values[0], values[1]);
-				ScanKeyInit(&keys[numkeys++],
-							1, // FIXME attribute number
-							BTGreaterEqualStrategyNumber, // strategy number
-							150, // int4ge
-							values[0]);
-
-				ScanKeyInit(&keys[numkeys++],
-							1, // FIXME attribute number
-							BTLessEqualStrategyNumber, // strategy number
-							149, // int4le
-							values[1]);
-			}
-		}
+		/*
+		 * try deriving scan keys from the available filters
+		 */
+		ExecFiltersDeriveScanKeys((ScanState *) node,
+								  &node->iss_NumScanKeys,
+								  &node->iss_ScanKeys);
 
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
@@ -152,18 +121,18 @@ IndexNext(IndexScanState *node)
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
 								   estate->es_snapshot,
-								   numkeys,
+								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys);
 
 		node->iss_ScanDesc = scandesc;
-elog(WARNING, "numkeys %d", numkeys);
+
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
 		 * pass the scankeys to the index AM.
 		 */
 		if (node->iss_NumRuntimeKeys == 0 || node->iss_RuntimeKeysReady)
 			index_rescan(scandesc,
-						 keys, node->iss_NumScanKeys,
+						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 

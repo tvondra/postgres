@@ -2644,9 +2644,9 @@ typedef struct SharedHashInfo
 
 typedef enum HashFilterType
 {
-	HashFilterExact,
-	HashFilterRange,
-	HashFilterBloom
+	HashFilterExact = 0x01,
+	HashFilterRange = 0x02,
+	HashFilterBloom = 0x04
 } HashFilterType;
 
 /*

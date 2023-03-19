@@ -1499,7 +1499,7 @@ ExecEndFilters(List *filters)
 }
 
 static void
-ExecBuildFilter(HashFilterState *filter, EState *estate)
+ExecBuildFilter(HashFilterState *filter, EState *estate, int types)
 {
 	PlanState  *subplan = filter->planstate;
 	TupleTableSlot *slot;
@@ -1542,7 +1542,7 @@ ExecBuildFilter(HashFilterState *filter, EState *estate)
 }
 
 void
-ExecBuildFilters(ScanState *node, EState *estate)
+ExecBuildFilters(ScanState *node, EState *estate, int types)
 {
 	ListCell *lc;
 
@@ -1552,7 +1552,7 @@ ExecBuildFilters(ScanState *node, EState *estate)
 	{
 		HashFilterState *filter = (HashFilterState *) lfirst(lc);
 
-		ExecBuildFilter(filter, estate);
+		ExecBuildFilter(filter, estate, types);
 	}
 }
 
@@ -1586,4 +1586,195 @@ ExecFilters(ScanState *node, ExprContext *econtext)
 	}
 
 	return true;
+}
+
+static bool
+filter_derive_minmax_range(HashFilterState *filter, Datum *minval, Datum *maxval)
+{
+	Datum  *values = (Datum *) filter->data;
+
+	Assert(filter->filter_type != HashFilterBloom);
+
+	/* FIXME handle the case with nvalues = 0 */
+	if (filter->nvalues == 0)
+		return false;
+
+	if (filter->filter_type == HashFilterExact)
+	{
+		*minval = values[0];
+		*maxval = values[filter->nvalues - 1];
+		elog(WARNING, "minval %ld maxval %ld", *minval, *maxval);
+	}
+	else
+	{
+		if (filter->nranges > 0)
+		{
+			*minval = values[0];
+			*maxval = values[2 * filter->nranges - 1];
+
+			if (filter->nvalues > 2 * filter->nranges)
+			{
+				SortSupportData		ssup;
+				Datum	tmpmin,
+						tmpmax;
+
+				TypeCacheEntry *typentry = lookup_type_cache(filter->types[0],
+															 TYPECACHE_LT_OPR);
+
+				memset(&ssup, 0, sizeof(SortSupportData));
+
+				ssup.ssup_cxt = CurrentMemoryContext;
+				ssup.ssup_collation = filter->collations[0];
+				ssup.ssup_nulls_first = false;
+
+				PrepareSortSupportFromOrderingOp(typentry->lt_opr, &ssup);
+
+				tmpmin = values[2 * filter->nranges];
+				tmpmax = values[filter->nvalues - 1];
+elog(WARNING, "minval %ld maxval %ld", tmpmin, tmpmax);
+				if (ApplySortComparator(*minval, false, tmpmin, false, &ssup) > 0)
+					*minval = tmpmin;
+
+
+				if (ApplySortComparator(*maxval, false, tmpmax, false, &ssup) < 0)
+					*maxval = tmpmax;
+			}
+		}
+		else
+		{
+			*minval = values[0];
+			*maxval = values[filter->nvalues - 1];
+		}
+	}
+
+	return true;
+}
+
+int
+ExecFiltersCountScanKeys(HashFilterState *filter)
+{
+	/* column IN (...) */
+	if (filter->filter_type == HashFilterExact)
+		return 1;
+
+	/* column >= $1 AND column <= $2 */
+	if (filter->filter_type == HashFilterRange)
+		return 2;
+
+	return 0;
+}
+
+void
+ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
+{
+	int		idx = 0;
+	Datum  *values = (Datum *) filter->data;
+
+	TypeCacheEntry *typentry;
+
+	/* no scan keys for Bloom filters */
+	if (filter->filter_type == HashFilterBloom)
+		return;
+
+	typentry = lookup_type_cache(filter->types[0],
+								 TYPECACHE_BTREE_OPFAMILY);
+
+	/*
+	 * XXX Not sure what to do about range filters with multi-range conditions.
+	 * At the moment we just derive a single [min,max] range, but it'd be nice
+	 * to allow more complex conditions without having to build BitmapOr, which
+	 * does not quite work because (a) we don't know how many ranges there'll be
+	 * during planning, and (b) we don't want to scan the index multiple times
+	 * only to build the bitmap. For btree that may not be an issue, assuming
+	 * the conditions allow quickly determining which part of the index to scan,
+	 * but for BRIN that's an issue as it requires scanning the whole index
+	 * repeatedly. That's kinda the point of the patch adding SK_SEARCHARRAY
+	 * handling for BRIN (cheaper to deserialize once and match all scan keys).
+	 *
+	 * FIXME if there's nothing in the filter (nvalues == 0), build a scan key
+	 * evaluating to false, or something like that.
+	 */
+	if (filter->filter_type == HashFilterExact)
+	{
+		Datum	minval,
+				maxval;
+
+		Oid		ge_opr = get_opfamily_member(typentry->btree_opf,
+									 typentry->btree_opintype,
+									 typentry->btree_opintype,
+									 BTGreaterEqualStrategyNumber);
+
+		Oid		le_opr = get_opfamily_member(typentry->btree_opf,
+									 typentry->btree_opintype,
+									 typentry->btree_opintype,
+									 BTLessEqualStrategyNumber);
+
+		/*
+		 * FIXME If index supports SK_SEARCHARRAY, build a single scankey
+		 * with the exact values as an array.
+		 */
+
+		filter_derive_minmax_range(filter, &minval, &maxval);
+
+		elog(WARNING, "exact %ld %ld", values[0], values[filter->nvalues - 1]);
+
+		ScanKeyEntryInitialize(&keys[idx++],
+							   0,	// flags
+							   1,	// FIXME attnum
+							   BTGreaterEqualStrategyNumber,
+							   filter->types[0],	// subtype
+							   InvalidOid,	// collation
+							   get_opcode(ge_opr),	// int4ge
+							   values[0]);
+
+		ScanKeyEntryInitialize(&keys[idx++],
+							   0,	// flags
+							   1,	// FIXME attnum
+							   BTLessEqualStrategyNumber,
+							   filter->types[0],	// subtype
+							   InvalidOid,	// collation
+							   get_opcode(le_opr),	// int4le
+							   values[filter->nvalues - 1]);
+
+		filter->skip = false;
+	}
+	else if (filter->filter_type == HashFilterRange)
+	{
+		Datum	minval,
+				maxval;
+
+		Oid		ge_opr = get_opfamily_member(typentry->btree_opf,
+									 typentry->btree_opintype,
+									 typentry->btree_opintype,
+									 BTGreaterEqualStrategyNumber);
+
+		Oid		le_opr = get_opfamily_member(typentry->btree_opf,
+									 typentry->btree_opintype,
+									 typentry->btree_opintype,
+									 BTLessEqualStrategyNumber);
+
+		filter_derive_minmax_range(filter, &minval, &maxval);
+
+		elog(WARNING, "range %ld %ld", values[0], values[filter->nvalues - 1]);
+
+		ScanKeyEntryInitialize(&keys[idx++],
+							   0,	// flags
+							   1,	// FIXME index attnum
+							   BTGreaterEqualStrategyNumber,
+							   filter->types[0],		// subtype
+							   filter->collations[0],	// collation
+							   get_opcode(ge_opr),		// int4ge
+							   minval);
+
+		ScanKeyEntryInitialize(&keys[idx++],
+							   0,	// flags
+							   1,	// FIXME index attnum
+							   BTLessEqualStrategyNumber,
+							   filter->types[0],		// subtype
+							   filter->collations[0],	// collation
+							   get_opcode(le_opr),		// int4le
+							   maxval);
+
+		filter->skip = false;
+	}
 }

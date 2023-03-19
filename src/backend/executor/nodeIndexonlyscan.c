@@ -81,6 +81,15 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
+	/*
+	 * build pushed-down filters
+	 *
+	 * XXX If we can't push-down any conditions (no common attnum), allow
+	 * also bloom filters.
+	 */
+	ExecBuildFilters((ScanState *) node, estate,
+					 (HashFilterExact | HashFilterRange));
+
 	if (scandesc == NULL)
 	{
 		/*
@@ -112,9 +121,6 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_OrderByKeys,
 						 node->ioss_NumOrderByKeys);
 	}
-
-	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, estate);
 
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.

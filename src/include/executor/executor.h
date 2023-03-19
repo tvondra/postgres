@@ -14,6 +14,7 @@
 #ifndef EXECUTOR_H
 #define EXECUTOR_H
 
+#include "access/skey.h"
 #include "executor/execdesc.h"
 #include "fmgr.h"
 #include "nodes/lockoptions.h"
@@ -683,7 +684,10 @@ extern void ExecEndFilters(List *filters);
 extern bool ExecHashFilterContainsValue(HashFilterState *filter,
 										ExprContext *econtext);
 
-extern void ExecBuildFilters(ScanState *node, EState *estate);
+extern void ExecBuildFilters(ScanState *node, EState *estate, int types);
 extern bool ExecFilters(ScanState *node, ExprContext *econtext);
+
+extern int ExecFiltersCountScanKeys(HashFilterState *filter);
+extern void ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *scankeys);
 
 #endif							/* EXECUTOR_H  */

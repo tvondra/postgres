@@ -985,6 +985,11 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				if (rel2->cheapest_total_path->parent->ppilist != NULL)
 					continue;
 
+				/*
+				 * FIXME probably need to restrict which filter types we can build
+				 * (so that we can push derive conditions suitable for e.g. bitmap
+				 * index scans)
+				 */
 				filter = makeNode(HashFilterInfo);
 
 				filter->filterId = ++(root->glob->lastFilterId);

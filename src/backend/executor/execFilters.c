@@ -1604,7 +1604,6 @@ filter_derive_minmax_range(HashFilterState *filter, Datum *minval, Datum *maxval
 	{
 		*minval = values[0];
 		*maxval = values[filter->nvalues - 1];
-		elog(WARNING, "minval %ld maxval %ld", *minval, *maxval);
 	}
 	else
 	{
@@ -1632,7 +1631,7 @@ filter_derive_minmax_range(HashFilterState *filter, Datum *minval, Datum *maxval
 
 				tmpmin = values[2 * filter->nranges];
 				tmpmax = values[filter->nvalues - 1];
-elog(WARNING, "minval %ld maxval %ld", tmpmin, tmpmax);
+
 				if (ApplySortComparator(*minval, false, tmpmin, false, &ssup) > 0)
 					*minval = tmpmin;
 
@@ -1745,8 +1744,6 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		filter_derive_minmax_range(filter, &minval, &maxval);
 
-		elog(WARNING, "exact %ld %ld", values[0], values[filter->nvalues - 1]);
-
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
 							   1,	// FIXME attnum
@@ -1783,8 +1780,6 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 									 BTLessEqualStrategyNumber);
 
 		filter_derive_minmax_range(filter, &minval, &maxval);
-
-		elog(WARNING, "range %ld %ld", values[0], values[filter->nvalues - 1]);
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags

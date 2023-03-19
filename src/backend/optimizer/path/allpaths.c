@@ -119,6 +119,8 @@ static void set_foreign_size(PlannerInfo *root, RelOptInfo *rel,
 							 RangeTblEntry *rte);
 static void set_foreign_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								 RangeTblEntry *rte);
+static void set_foreign_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
+										 RangeTblEntry *rte);
 static void set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 								Index rti, RangeTblEntry *rte);
 static void set_append_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -632,7 +634,7 @@ set_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel,
 				if (rte->relkind == RELKIND_FOREIGN_TABLE)
 				{
 					/* Foreign table */
-					// FIXME to allow passing filters to foreign servers
+					set_foreign_pathlist_filters(root, rel, rte);
 				}
 				else if (rte->tablesample != NULL)
 				{
@@ -948,8 +950,6 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 	if (required_outer)
 		return;
 
-	elog(WARNING, "set_plain_rel_pathlist_filters %d %d baserestrictinfo %d joininfo %d eclass_joins %d", rel->relid, rte->relid, list_length(rel->baserestrictinfo), list_length(rel->joininfo), rel->has_eclass_joins);
-
 	/* inspect eclass joins to derive filters */
 	if (rel->has_eclass_joins)
 	{
@@ -998,7 +998,7 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				 * ignore parameterized paths for now
 				 *
 				 * Without this, some queries fail because of infinite recursion.
-				 * For example '\d' does that. Apparently the cheapest_total_path
+				 * For example '\d relname' does that. Apparently the cheapest_total_path
 				 * may "silently" change to a different path (e.g. from SeqScan to
 				 * a NestLoop), which in turn may reference a path that alredy has
 				 * a hash filter. And it's possible we now build a patch that is
@@ -1006,9 +1006,13 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				 * That on it's own shouldn't cause an infinite loop, but it seems
 				 * something in the planner decides to "alter" the existing path,
 				 * rewriting it from SeqScan to NestLoop. Reparameterezition?
+				 *
+				 * XXX Actually, I'm not sure this check is/was correct - it seems
+				 * we should be checking param_info? Anyway, I saw the paths change
+				 * (same pointer, different path later).
 				 */
-				if (rel2->cheapest_total_path->parent->ppilist != NULL)
-					continue;
+				// if (rel2->cheapest_total_path->parent->ppilist != NULL)
+				//	continue;
 
 				/*
 				 * FIXME probably need to restrict which filter types we can build
@@ -1112,7 +1116,6 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 												  false);
 
 						ipath->path.filters = lcons(filter, ipath->path.filters);
-						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
 
 						/* FIXME proper costing */
 						ipath->path.startup_cost /= 10;
@@ -1125,8 +1128,6 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 					{
 						IndexPath	 *ipath;
 						BitmapHeapPath *bpath;
-
-						elog(WARNING, "build bitmap scan");
 
 						/* create a new filter */
 						filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
@@ -1325,6 +1326,128 @@ set_foreign_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
 	/* Call the FDW's GetForeignPaths function to generate path(s) */
 	rel->fdwroutine->GetForeignPaths(root, rel, rte->relid);
+}
+
+/*
+ * set_foreign_pathlist
+ *		Build access paths for a foreign table RTE
+ */
+static void
+set_foreign_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	Relids		required_outer;
+
+	if (filter_pushdown_mode == FILTER_PUSHDOWN_OFF)
+		return;
+
+	/*
+	 * We don't support pushing join clauses into the quals of a seqscan, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
+	 */
+	required_outer = rel->lateral_relids;
+
+	/* XXX no parameterized / lateral stuff for now */
+	if (required_outer)
+		return;
+
+	/* inspect eclass joins to derive filters */
+	if (rel->has_eclass_joins)
+	{
+		ListCell *lc;
+
+		foreach(lc, root->eq_classes)
+		{
+			ListCell *lc2;
+			EquivalenceClass *ec = (EquivalenceClass *) lfirst(lc);
+			Var *local_var = NULL;
+			List *remote_vars = NIL;
+
+			foreach (lc2, ec->ec_members)
+			{
+				EquivalenceMember *em = (EquivalenceMember *) lfirst(lc2);
+
+				/* FIXME support arbitrary expressions */
+				Var *var = (Var *) em->em_expr;
+
+				if (!IsA(var, Var))
+					continue;
+
+				if (var->varno == rel->relid)
+					local_var = var;
+				else
+					remote_vars = lappend(remote_vars, var);
+			}
+
+			if (!local_var)
+				continue;
+
+			foreach (lc2, remote_vars)
+			{
+				Var *var = (Var *) lfirst(lc2);
+				HashFilterInfo *filter;
+				ListCell *lc3;
+
+				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+
+Assert(rel2->reloptkind == RELOPT_BASEREL);
+
+				if (!rel2->baserestrictinfo)
+					continue;
+
+				foreach (lc3, rel->pathlist)
+				{
+					Path *path = (Path *) lfirst(lc3);
+
+					/* XXX ignore parameterized paths for now */
+					if (path->param_info != NULL)
+						continue;
+
+					/*
+					 * FIXME probably need to restrict which filter types we can build
+					 * (so that we can push derive conditions suitable for e.g. bitmap
+					 * index scans)
+					 *
+					 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
+					 * because then it'd might be referenced from two places, and we'd do
+					 * some actions twice (e.g. for indexscans we call
+					 * fix_indexqual_references which tweaks some of the path fields).
+					 *
+					 * XXX Maybe we could copy the path somehow? Or maybe we should create a
+					 * separate RelOptInfo for the filter? Or rather planning the filter
+					 * as a subquery would solve this, probably (and also would allow more
+					 * complicated filters with joins).
+					 *
+					 * XXX For now we just build a new seqscan. Seems trivial.
+					 *
+					 * XXX Perhaps we could build the filter in a different ways too, not just
+					 * by processing all the tuples. For example, to build the range filter,
+					 * it would be enough to determine the matching min/max, just like we do
+					 * with MinMax paths for aggregates.
+					 */
+					filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
+												var->vartype, ec->ec_collation,
+												false,
+												create_seqscan_path(root, rel2, required_outer, 0));
+
+					/*
+					 * XXX cut the cost in half, needs to be improved (consider the
+					 * filter selectivity)
+					 */
+					path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
+
+					/*
+					 * attach the filter (with the subpath)
+					 *
+					 * XXX This is not great, because it changes cost for a path we
+					 * already added. That might confuse things, I guess.
+					 */
+					path->filters = lcons(filter, path->filters);
+
+				}
+			}
+		}
+	}
 }
 
 /*

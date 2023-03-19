@@ -18,6 +18,7 @@
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/planmain.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -1655,7 +1656,7 @@ ExecFiltersCountScanKeys(HashFilterState *filter)
 {
 	/* column IN (...) */
 	if (filter->filter_type == HashFilterExact)
-		return 1;
+		return (filter->filter->searcharray) ? 1 : 2;
 
 	/* column >= $1 AND column <= $2 */
 	if (filter->filter_type == HashFilterRange)
@@ -1695,7 +1696,34 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 	 * evaluating to false, or something like that. Or maybe we should just
 	 * skip the whole plan execution and not return anything?
 	 */
-	if (filter->filter_type == HashFilterExact)
+	if ((filter->filter_type == HashFilterExact) && (filter->filter->searcharray))
+	{
+		int16	typlen;
+		bool	typbyval;
+		char	typalign;
+		ArrayType *ret;
+
+		Oid		eq_opr = get_opfamily_member(typentry->btree_opf,
+									 typentry->btree_opintype,
+									 typentry->btree_opintype,
+									 BTEqualStrategyNumber);
+
+		get_typlenbyvalalign(filter->types[0], &typlen, &typbyval, &typalign);
+
+
+		ret = construct_array((Datum *) filter->data, filter->nvalues, filter->types[0],
+							  typlen, typbyval, typalign);
+
+		ScanKeyEntryInitialize(&keys[idx++],
+							   SK_SEARCHARRAY,	// flags
+							   1,	// FIXME attnum
+							   BTEqualStrategyNumber,
+							   filter->types[0],	// subtype
+							   filter->collations[0],	// collation
+							   get_opcode(eq_opr),	// int4ge
+							   PointerGetDatum(ret));
+	}
+	else if (filter->filter_type == HashFilterExact)
 	{
 		Datum	minval,
 				maxval;
@@ -1723,18 +1751,18 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 							   0,	// flags
 							   1,	// FIXME attnum
 							   BTGreaterEqualStrategyNumber,
-							   filter->types[0],	// subtype
-							   InvalidOid,	// collation
-							   get_opcode(ge_opr),	// int4ge
+							   filter->types[0],		// subtype
+							   filter->collations[0],	// collation
+							   get_opcode(ge_opr),		// int4ge
 							   values[0]);
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
 							   1,	// FIXME attnum
 							   BTLessEqualStrategyNumber,
-							   filter->types[0],	// subtype
-							   InvalidOid,	// collation
-							   get_opcode(le_opr),	// int4le
+							   filter->types[0],		// subtype
+							   filter->collations[0],	// collation
+							   get_opcode(le_opr),		// int4le
 							   values[filter->nvalues - 1]);
 
 		filter->skip = false;

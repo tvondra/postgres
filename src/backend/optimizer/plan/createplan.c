@@ -2942,6 +2942,8 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 			filter->hashclauses = info->hashclauses;
 			filter->hashoperators = info->hashoperators;
 			filter->hashcollations = info->hashcollations;
+			filter->searcharray = info->searcharray;
+
 elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
 			filter->subplan = create_plan_recurse(root, info->subpath,
 									 CP_SMALL_TLIST);
@@ -3214,6 +3216,8 @@ elog(WARNING, "create_indexscan_plan %p", best_path);
 			filter->hashclauses = info->hashclauses;
 			filter->hashoperators = info->hashoperators;
 			filter->hashcollations = info->hashcollations;
+			filter->searcharray = info->searcharray;
+
 elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
 			filter->subplan = create_plan_recurse(root, info->subpath,
 									 CP_SMALL_TLIST);

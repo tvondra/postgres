@@ -894,6 +894,32 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	create_tidscan_paths(root, rel);
 }
 
+static HashFilterInfo *
+hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
+				   bool searcharray, Oid type, Oid collation, Path *subpath)
+{
+	TypeCacheEntry *entry;
+	HashFilterInfo *filter = makeNode(HashFilterInfo);
+
+	filter->filterId = ++(root->glob->lastFilterId);
+
+	filter->clauses = list_make1(copyObject(local_expr));
+
+	filter->hashclauses = list_make1(copyObject(remote_expr));
+
+	/* XXX maybe use em_datatype instead? */
+	entry = lookup_type_cache(exprType(remote_expr), TYPECACHE_EQ_OPR);
+
+	filter->hashoperators = lappend_oid(NIL, entry->eq_opr);
+	filter->hashcollations = lappend_oid(NIL, collation);
+
+	filter->searcharray = searcharray;
+
+	filter->subpath = subpath;
+
+	return filter;
+}
+
 /*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
@@ -959,7 +985,6 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			{
 				Var *var = (Var *) lfirst(lc2);
 				HashFilterInfo *filter;
-				TypeCacheEntry *entry;
 				Path *path;
 
 				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
@@ -989,31 +1014,11 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				 * FIXME probably need to restrict which filter types we can build
 				 * (so that we can push derive conditions suitable for e.g. bitmap
 				 * index scans)
-				 */
-				filter = makeNode(HashFilterInfo);
-
-				filter->filterId = ++(root->glob->lastFilterId);
-
-				filter->clauses = list_make1(copyObject(local_var));
-
-				filter->hashclauses = list_make1(copyObject(var));
-
-				/* XXX maybe use em_datatype instead? */
-				entry = lookup_type_cache(var->vartype, TYPECACHE_EQ_OPR);
-
-				filter->hashoperators = NIL;
-				filter->hashoperators = lappend_oid(filter->hashoperators, entry->eq_opr);
-
-				filter->hashcollations = NIL;
-				filter->hashcollations = lappend_oid(filter->hashcollations, ec->ec_collation);
-
-				/* FIXME use field of the correct type, storing as Plan is a PoC hack */
-				// filter->subpath = rel2->cheapest_total_path;
-
-				/*
-				 * XXX We can't just use the path, because then it'd might be referenced
-				 * from two places, and we'd do some actions twice (e.g. for indexscans
-				 * we call fix_indexqual_references which tweaks some of the path fields).
+				 *
+				 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
+				 * because then it'd might be referenced from two places, and we'd do
+				 * some actions twice (e.g. for indexscans we call
+				 * fix_indexqual_references which tweaks some of the path fields).
 				 *
 				 * XXX Maybe we could copy the path somehow? Or maybe we should create a
 				 * separate RelOptInfo for the filter? Or rather planning the filter
@@ -1027,27 +1032,29 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				 * it would be enough to determine the matching min/max, just like we do
 				 * with MinMax paths for aggregates.
 				 */
-				filter->subpath = create_seqscan_path(root, rel2, required_outer, 0);
+				filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
+											var->vartype, ec->ec_collation,
+											false,
+											create_seqscan_path(root, rel2, required_outer, 0));
 
-				/* FIXME check cost of the path and see if adding the filter could
+				/*
+				 * FIXME check cost of the path and see if adding the filter could
 				 * possibly make it cheaper, based on filter selectivity estimate
 				 * etc.
 				 *
 				 * seqscan cost reduction > filter subpath cost
 				 */
 				path = create_seqscan_path(root, rel, required_outer, 0);
-elog(WARNING, "===========================================");
-elog(WARNING, "local %s", nodeToString(local_var));
-elog(WARNING, "remote %s", nodeToString(var));
-elog(WARNING, "rel %d rel2 %d", rel->relid, rel2->relid);
-elog(WARNING, "created path %p %s" ,path, nodeToString(path));
-elog(WARNING, "adding filter subpath %p %s", rel2->cheapest_total_path, nodeToString(rel2->cheapest_total_path));
-elog(WARNING, "===========================================");
-				/* XXX cut the cost in half, needs to be improved */
+
+				/*
+				 * XXX cut the cost in half, needs to be improved (consider the
+				 * filter selectivity)
+				 */
 				path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
 
+				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
-elog(WARNING, "result %p %s" ,path, nodeToString(path));
+
 				add_path(rel, path);
 
 				/* consider other types of paths, e.g. index-based */
@@ -1087,7 +1094,11 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 					{
 						IndexPath	 *ipath;
 
-						elog(WARNING, "build index scan");
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
+													var->vartype, ec->ec_collation,
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
 
 						ipath = create_index_path(root, index,
 												  NIL, // index_clauses,
@@ -1103,6 +1114,7 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 						ipath->path.filters = lcons(filter, ipath->path.filters);
 						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
 
+						/* FIXME proper costing */
 						ipath->path.startup_cost /= 10;
 						ipath->path.total_cost /= 10;
 
@@ -1116,6 +1128,12 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 
 						elog(WARNING, "build bitmap scan");
 
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
+													var->vartype, ec->ec_collation,
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
+
 						ipath = create_index_path(root, index,
 												  NIL, // index_clauses,
 												  NIL, // orderbyclauses,
@@ -1128,12 +1146,10 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 												  false);
 
 						ipath->path.filters = lcons(filter, ipath->path.filters);
-						elog(WARNING, "result %p %s", ipath, nodeToString(ipath));
 
+						/* FIXME proper costing */
 						ipath->path.startup_cost /= 10;
 						ipath->path.total_cost /= 10;
-
-						elog(WARNING, "build bitmap index scan");
 
 						/*
 						 * XXX Maybe we should build/attach another copy of the
@@ -1150,6 +1166,7 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 						bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
 														rel->lateral_relids, 1.0, 0);
 
+						/* FIXME proper costing */
 						bpath->path.startup_cost /= 10;
 						bpath->path.total_cost /= 10;
 

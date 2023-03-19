@@ -3392,6 +3392,7 @@ typedef struct HashFilterInfo
 	List	   *hashclauses;
 	List	   *hashoperators;
 	List	   *hashcollations;
+	bool		searcharray;
 
 	/* subplan evaluated to build the filter */
 	Path	   *subpath;

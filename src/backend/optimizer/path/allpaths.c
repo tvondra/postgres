@@ -1016,6 +1016,11 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 				 * complicated filters with joins).
 				 *
 				 * XXX For now we just build a new seqscan. Seems trivial.
+				 *
+				 * XXX Perhaps we could build the filter in a different ways too, not just
+				 * by processing all the tuples. For example, to build the range filter,
+				 * it would be enough to determine the matching min/max, just like we do
+				 * with MinMax paths for aggregates.
 				 */
 				filter->subpath = create_seqscan_path(root, rel2, required_outer, 0);
 
@@ -1125,6 +1130,18 @@ elog(WARNING, "result %p %s" ,path, nodeToString(path));
 
 						elog(WARNING, "build bitmap index scan");
 
+						/*
+						 * XXX Maybe we should build/attach another copy of the
+						 * filter to the heap scan node. The bitmap filter may
+						 * be lossy and the point is to reduce the number of
+						 * tuples we return. Currently we'd build the filter
+						 * twice (so double the cost) but maybe we could have
+						 * just one copy with multiple references. Considering
+						 * we now have a separate subplan (instead of just
+						 * piggy-backing on a Hash node), we have good control
+						 * over when the filter is built etc. (which is an issue
+						 * for Hash, where this is managed by the hashjoin node).
+						 */
 						bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
 														rel->lateral_relids, 1.0, 0);
 

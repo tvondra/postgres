@@ -281,6 +281,20 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 			ExecInitNode(outerPlan(node), estate, eflags);
 
 	/*
+	 * build pushed-down filters, copy them into fsstate and reset the
+	 * list in ForeignScanState so that we don't check them locally too
+	 *
+	 * XXX This is a bit weird, there needs to be a better way to track
+	 * what's evaluated where.
+	 *
+	 * XXX Ideally we'd prefer exact/range filers, but we can push bloom
+	 * too (but we should check the remote server version and/if it has
+	 * the pg_bloom_filter function installed).
+	 */
+	ExecBuildFilters((ScanState *) scanstate, scanstate->ss.ps.state,
+					 (HashFilterExact | HashFilterRange | HashFilterBloom));
+
+	/*
 	 * Tell the FDW to initialize the scan.
 	 */
 	if (node->operation != CMD_SELECT)

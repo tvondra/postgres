@@ -217,11 +217,6 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	BitmapIndexScanState *indexstate;
 	LOCKMODE	lockmode;
 
-	ListCell	   *lc;
-
-	/* number of keys derived from the filter */
-	int				numkeys;
-
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
 
@@ -330,35 +325,12 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	ExecBuildFilters((ScanState *) indexstate, estate,
 					 (HashFilterRange | HashFilterRange));
 
-	/* count scan keys we can derive from the filter(s) */
-	numkeys = 0;
-	foreach (lc, indexstate->ss.ss_Filters)
-	{
-		HashFilterState *filter = (HashFilterState *) lfirst(lc);
-		numkeys += ExecFiltersCountScanKeys(filter);
-	}
-
 	/*
-	 * If we can derive any scan keys from filters, make sure we have enough
-	 * space for them, and then derive the actual filters.
+	 * try deriving scan keys from the available filters
 	 */
-	if (numkeys > 0)
-	{
-		indexstate->biss_ScanKeys
-			= repalloc(indexstate->biss_ScanKeys,
-					   sizeof(ScanKeyData) * (indexstate->biss_NumScanKeys + numkeys));
-
-		/* derive the actual scan keys from each filter */
-		foreach (lc, indexstate->ss.ss_Filters)
-		{
-			HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
-
-			ExecFiltersAddScanKeys(filter,
-								   &indexstate->biss_NumScanKeys[indexstate->biss_ScanKeys]);
-
-			indexstate->biss_NumScanKeys += ExecFiltersCountScanKeys(filter);
-		}
-	}
+	ExecFiltersDeriveScanKeys((ScanState *) indexstate,
+							  &indexstate->biss_NumScanKeys,
+							  &indexstate->biss_ScanKeys);
 
 	/*
 	 * Initialize scan descriptor.

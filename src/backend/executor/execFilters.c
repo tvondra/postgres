@@ -1664,7 +1664,7 @@ ExecFiltersCountScanKeys(HashFilterState *filter)
 	return 0;
 }
 
-void
+static void
 ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 {
 	int		idx = 0;
@@ -1777,5 +1777,43 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 							   maxval);
 
 		filter->skip = false;
+	}
+}
+
+void
+ExecFiltersDeriveScanKeys(ScanState *state, int *nkeys, ScanKey *keys)
+{
+	/* number of scan keys derived from filters */
+	int				numkeys = 0;
+	ScanKeyData	   *scanKeys = *keys;
+	ListCell	   *lc;
+
+	/* count scan keys we can derive from the filter(s) */
+	foreach (lc, state->ss_Filters)
+	{
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+		numkeys += ExecFiltersCountScanKeys(filter);
+	}
+
+	if (numkeys == 0)
+		return;
+
+	/*
+	 * If we can derive any scan keys from filters, make sure we have enough
+	 * space for them, and then derive the actual filters.
+	 */
+	scanKeys = repalloc(scanKeys,
+						sizeof(ScanKeyData) * (*nkeys + numkeys));
+	*keys = scanKeys;
+
+	/* derive the actual scan keys from each filter */
+	foreach (lc, state->ss_Filters)
+	{
+		HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
+
+		ExecFiltersAddScanKeys(filter,
+							   &scanKeys[*nkeys]);
+
+		*nkeys += ExecFiltersCountScanKeys(filter);
 	}
 }

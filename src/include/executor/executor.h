@@ -688,6 +688,7 @@ extern void ExecBuildFilters(ScanState *node, EState *estate, int types);
 extern bool ExecFilters(ScanState *node, ExprContext *econtext);
 
 extern int ExecFiltersCountScanKeys(HashFilterState *filter);
-extern void ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *scankeys);
+extern void ExecFiltersDeriveScanKeys(ScanState *state, int *nkeys, ScanKey *keys);
+
 
 #endif							/* EXECUTOR_H  */

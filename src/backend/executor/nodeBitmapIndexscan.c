@@ -218,9 +218,9 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	LOCKMODE	lockmode;
 
 	ListCell	   *lc;
-	int				numkeys;
-	ScanKeyData	   *keys;
 
+	/* number of keys derived from the filter */
+	int				numkeys;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -314,103 +314,51 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 		indexstate->biss_RuntimeContext = NULL;
 	}
 
-
 	/*
 	 * If there are any filter pushed down to this node, initialize them too
 	 * (both subplan and the expressions).
 	 */
-	elog(WARNING, "initializing %p %d", node->scan.filters, list_length(node->scan.filters));
 	indexstate->ss.ss_Filters
 		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
 								   estate, eflags);
 
-	elog(WARNING, "initialized %p %d", indexstate->ss.ss_Filters, list_length(indexstate->ss.ss_Filters));
+	/*
+	 * build pushed-down filters
+	 *
+	 * FIXME make sure we only build filters of the correct type
+	 */
+	ExecBuildFilters((ScanState *) indexstate, estate,
+					 (HashFilterRange | HashFilterRange));
 
-	numkeys = indexstate->biss_NumScanKeys;
-	keys = indexstate->biss_ScanKeys;
-
-	/* build pushed-down filters */
-	/* FIXME make sure we only build filters of the correct type */
-	ExecBuildFilters((ScanState *) indexstate, estate);
-
-	elog(WARNING, "indexstate->ss.ss_Filters = %p", indexstate->ss.ss_Filters);
-
+	/* count scan keys we can derive from the filter(s) */
+	numkeys = 0;
 	foreach (lc, indexstate->ss.ss_Filters)
 	{
-		numkeys++;
-		numkeys++;
+		HashFilterState *filter = (HashFilterState *) lfirst(lc);
+		numkeys += ExecFiltersCountScanKeys(filter);
 	}
-
-	elog(WARNING, "numkeys = %d", numkeys);
-
-	keys = (ScanKeyData *) palloc(sizeof(ScanKeyData) * numkeys);
-	memcpy(keys, indexstate->biss_ScanKeys, sizeof(ScanKeyData) * indexstate->biss_NumScanKeys);
-	numkeys = indexstate->biss_NumScanKeys;
 
 	/*
-	 * XXX Not sure what to do about range filters with multi-range conditions.
-	 * At the moment we just derive a single [min,max] range, but it'd be nice
-	 * to allow more complex conditions without having to build BitmapOr, which
-	 * does not quite work because (a) we don't know how many ranges there'll be
-	 * during planning, and (b) we don't want to scan the index multiple times
-	 * only to build the bitmap. For btree that may not be an issue, assuming
-	 * the conditions allow quickly determining which part of the index to scan,
-	 * but for BRIN that's an issue as it requires scanning the whole index
-	 * repeatedly. That's kinda the point of the patch adding SK_SEARCHARRAY
-	 * handling for BRIN (cheaper to deserialize once and match all scan keys).
+	 * If we can derive any scan keys from filters, make sure we have enough
+	 * space for them, and then derive the actual filters.
 	 */
-	foreach (lc, indexstate->ss.ss_Filters)
+	if (numkeys > 0)
 	{
-		HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
-		Datum			   *values = (Datum *) filter->data;
-elog(WARNING, "filter values %d", filter->nvalues);
-		// FIXME handle all filter types
-		if (filter->filter_type == HashFilterExact)
+		indexstate->biss_ScanKeys
+			= repalloc(indexstate->biss_ScanKeys,
+					   sizeof(ScanKeyData) * (indexstate->biss_NumScanKeys + numkeys));
+
+		/* derive the actual scan keys from each filter */
+		foreach (lc, indexstate->ss.ss_Filters)
 		{
-			TypeCacheEntry *typentry
-				= lookup_type_cache(filter->types[0],
-									TYPECACHE_BTREE_OPFAMILY);
+			HashFilterState	   *filter = (HashFilterState *) lfirst(lc);
 
-			Oid		ge_opr = get_opfamily_member(typentry->btree_opf,
-										 typentry->btree_opintype,
-										 typentry->btree_opintype,
-										 BTGreaterEqualStrategyNumber);
+			ExecFiltersAddScanKeys(filter,
+								   &indexstate->biss_NumScanKeys[indexstate->biss_ScanKeys]);
 
-			Oid		le_opr = get_opfamily_member(typentry->btree_opf,
-										 typentry->btree_opintype,
-										 typentry->btree_opintype,
-										 BTLessEqualStrategyNumber);
-
-
-			elog(WARNING, "%ld %ld", values[0], values[filter->nvalues - 1]);
-			ScanKeyEntryInitialize(&keys[numkeys++],
-								   0,	// flags
-								   1,	// FIXME attnum
-								   BTGreaterEqualStrategyNumber,
-								   filter->types[0],	// subtype
-								   InvalidOid,	// collation
-								   get_opcode(ge_opr),	// int4ge
-								   values[0]);
-
-			elog(WARNING, "%p %d %ld", &keys[numkeys-1], keys[numkeys-1].sk_attno, values[0]);
-
-			ScanKeyEntryInitialize(&keys[numkeys++],
-								   0,	// flags
-								   1,	// FIXME attnum
-								   BTLessEqualStrategyNumber,
-								   filter->types[0],	// subtype
-								   InvalidOid,	// collation
-								   get_opcode(le_opr),	// int4le
-								   values[filter->nvalues - 1]);
-
-			elog(WARNING, "%p %d %ld", &keys[numkeys-1], keys[numkeys-1].sk_attno, values[filter->nvalues - 1]);
-
-			filter->skip = false;
+			indexstate->biss_NumScanKeys += ExecFiltersCountScanKeys(filter);
 		}
 	}
-
-	indexstate->biss_NumScanKeys = numkeys;
-	indexstate->biss_ScanKeys = keys;
 
 	/*
 	 * Initialize scan descriptor.

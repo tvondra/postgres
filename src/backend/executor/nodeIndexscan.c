@@ -102,7 +102,8 @@ IndexNext(IndexScanState *node)
 	slot = node->ss.ss_ScanTupleSlot;
 
 	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, estate);
+	ExecBuildFilters((ScanState *) node, estate,
+					 (HashFilterExact | HashFilterRange));
 
 	if (scandesc == NULL)
 	{

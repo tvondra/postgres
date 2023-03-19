@@ -74,8 +74,14 @@ SeqNext(SeqScanState *node)
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
-	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, estate);
+	/*
+	 * build pushed-down filters
+	 *
+	 * We can't push any conditions to the seqscan, so allow all filter types
+	 * (including bloom).
+	 */
+	ExecBuildFilters((ScanState *) node, estate,
+					 (HashFilterExact | HashFilterRange | HashFilterBloom));
 
 	/*
 	 * get the next tuple from the table

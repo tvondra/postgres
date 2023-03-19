@@ -184,8 +184,15 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		node->initialized = true;
 	}
 
-	/* build pushed-down filters */
-	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+	/*
+	 * build pushed-down filters
+	 *
+	 * XXX For the heap scan we can evaluate any filter, because the pushed
+	 * down conditions are evaluated at bitmap index scan level. But maybe
+	 * we could reuse the filter ...
+	 */
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state,
+					 (HashFilterExact | HashFilterRange | HashFilterBloom));
 
 	for (;;)
 	{

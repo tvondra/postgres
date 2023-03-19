@@ -1692,7 +1692,8 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 	 * handling for BRIN (cheaper to deserialize once and match all scan keys).
 	 *
 	 * FIXME if there's nothing in the filter (nvalues == 0), build a scan key
-	 * evaluating to false, or something like that.
+	 * evaluating to false, or something like that. Or maybe we should just
+	 * skip the whole plan execution and not return anything?
 	 */
 	if (filter->filter_type == HashFilterExact)
 	{

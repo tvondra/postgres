@@ -26,7 +26,9 @@
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/typcache.h"
 
 
 /* ----------------------------------------------------------------
@@ -199,6 +201,8 @@ ExecEndBitmapIndexScan(BitmapIndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	ExecEndFilters(node->ss.ss_Filters);
 }
 
 /* ----------------------------------------------------------------
@@ -350,22 +354,50 @@ elog(WARNING, "filter values %d", filter->nvalues);
 		// FIXME handle all filter types
 		if (filter->filter_type == HashFilterExact)
 		{
-			filter->skip = false;
+			TypeCacheEntry *typentry
+				= lookup_type_cache(filter->types[0],
+									TYPECACHE_BTREE_OPFAMILY);
+
+			Oid		ge_opr = get_opfamily_member(typentry->btree_opf,
+										 typentry->btree_opintype,
+										 typentry->btree_opintype,
+										 BTGreaterEqualStrategyNumber);
+
+			Oid		le_opr = get_opfamily_member(typentry->btree_opf,
+										 typentry->btree_opintype,
+										 typentry->btree_opintype,
+										 BTLessEqualStrategyNumber);
+
 
 			elog(WARNING, "%ld %ld", values[0], values[filter->nvalues - 1]);
-			ScanKeyInit(&keys[numkeys++],
-						1, // FIXME attribute number
-						BTGreaterEqualStrategyNumber, // strategy number
-						150, // int4ge
-						values[0]);
+			ScanKeyEntryInitialize(&keys[numkeys++],
+								   0,	// flags
+								   1,	// FIXME attnum
+								   BTGreaterEqualStrategyNumber,
+								   filter->types[0],	// subtype
+								   InvalidOid,	// collation
+								   get_opcode(ge_opr),	// int4ge
+								   values[0]);
 
-			ScanKeyInit(&keys[numkeys++],
-						1, // FIXME attribute number
-						BTLessEqualStrategyNumber, // strategy number
-						149, // int4le
-						values[1]);
+			elog(WARNING, "%p %d %ld", &keys[numkeys-1], keys[numkeys-1].sk_attno, values[0]);
+
+			ScanKeyEntryInitialize(&keys[numkeys++],
+								   0,	// flags
+								   1,	// FIXME attnum
+								   BTLessEqualStrategyNumber,
+								   filter->types[0],	// subtype
+								   InvalidOid,	// collation
+								   get_opcode(le_opr),	// int4le
+								   values[filter->nvalues - 1]);
+
+			elog(WARNING, "%p %d %ld", &keys[numkeys-1], keys[numkeys-1].sk_attno, values[filter->nvalues - 1]);
+
+			filter->skip = false;
 		}
 	}
+
+	indexstate->biss_NumScanKeys = numkeys;
+	indexstate->biss_ScanKeys = keys;
 
 	/*
 	 * Initialize scan descriptor.
@@ -373,7 +405,7 @@ elog(WARNING, "filter values %d", filter->nvalues);
 	indexstate->biss_ScanDesc =
 		index_beginscan_bitmap(indexstate->biss_RelationDesc,
 							   estate->es_snapshot,
-							   numkeys);
+							   indexstate->biss_NumScanKeys);
 
 	/*
 	 * If no run-time keys to calculate, go ahead and pass the scankeys to the
@@ -382,7 +414,7 @@ elog(WARNING, "filter values %d", filter->nvalues);
 	if (indexstate->biss_NumRuntimeKeys == 0 &&
 		indexstate->biss_NumArrayKeys == 0)
 		index_rescan(indexstate->biss_ScanDesc,
-					 keys, numkeys,
+					 indexstate->biss_ScanKeys, indexstate->biss_NumScanKeys,
 					 NULL, 0);
 
 	/*

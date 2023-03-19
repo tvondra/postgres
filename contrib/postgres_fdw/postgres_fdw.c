@@ -1601,7 +1601,8 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	/* Set the async-capable flag */
 	fsstate->async_capable = node->ss.ps.async_capable;
 
-	/* build pushed-down filters, copy them into fsstate and reset the
+	/*
+	 * build pushed-down filters, copy them into fsstate and reset the
 	 * list in ForeignScanState so that we don't check them locally too
 	 *
 	 * XXX This is a bit weird, there needs to be a better way to track
@@ -1611,9 +1612,6 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	 * too (but we should check the remote server version and/if it has
 	 * the pg_bloom_filter function installed).
 	 */
-	ExecBuildFilters((ScanState *) node, node->ss.ps.state,
-					 (HashFilterExact | HashFilterRange | HashFilterBloom));
-
 	// fsstate->filters = node->ss.ss_Filters;
 	// node->ss.ss_Filters = NIL;
 }

@@ -1672,7 +1672,7 @@ appendFilters(List *filters, deparse_expr_cxt *context)
 	{
 		StringInfoData	expr;
 		StringInfoData	hashexpr;
-		HashFilter *filter = (HashFilter *) lfirst(lc);
+		HashFilterInfo *filter = (HashFilterInfo *) lfirst(lc);
 
 		TypeCacheEntry *typentry;
 

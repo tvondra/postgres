@@ -2944,7 +2944,6 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 			filter->hashcollations = info->hashcollations;
 			filter->searcharray = info->searcharray;
 
-elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
 			filter->subplan = create_plan_recurse(root, info->subpath,
 									 CP_SMALL_TLIST);
 
@@ -3032,7 +3031,7 @@ create_indexscan_plan(PlannerInfo *root,
 	List	   *fixed_indexorderbys;
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
-elog(WARNING, "create_indexscan_plan %p", best_path);
+
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
 	Assert(best_path->path.parent->rtekind == RTE_RELATION);
@@ -3218,7 +3217,6 @@ elog(WARNING, "create_indexscan_plan %p", best_path);
 			filter->hashcollations = info->hashcollations;
 			filter->searcharray = info->searcharray;
 
-elog(WARNING, "info %p subpath %p %d", info, info->subpath, info->subpath->pathtype);
 			filter->subplan = create_plan_recurse(root, info->subpath,
 									 CP_SMALL_TLIST);
 
@@ -3257,7 +3255,7 @@ create_bitmap_scan_plan(PlannerInfo *root,
 	bitmapqualplan = create_bitmap_subplan(root, best_path->bitmapqual,
 										   &bitmapqualorig, &indexquals,
 										   &indexECs);
-elog(WARNING, "bitmapqualplan %p", ((Scan *) bitmapqualplan)->filters);
+
 	if (best_path->path.parallel_aware)
 		bitmap_subplan_mark_shared(bitmapqualplan);
 
@@ -3525,7 +3523,7 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->parallel_aware = false;
 		plan->parallel_safe = ipath->path.parallel_safe;
 
-		elog(WARNING, "XXXXXXXXXXXXXXXXXXXXXXXXXXXX %p (%d)", iscan->scan.filters, list_length(iscan->scan.filters));
+		/* copy filterd from the index scan to the bitmap index scan */
 		((Scan *) plan)->filters = iscan->scan.filters;
 
 		/* Extract original index clauses, actual index quals, relevant ECs */
@@ -4300,6 +4298,33 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 		}
 
 		bms_free(attrs_used);
+	}
+
+
+
+	scan_plan->scan.filters = NIL;
+
+	{
+		ListCell *lc;
+		foreach(lc, best_path->path.filters)
+		{
+			HashFilterInfo *info = (HashFilterInfo *) lfirst(lc);
+			HashFilter *filter = makeNode(HashFilter);
+
+			filter->filterId = info->filterId;
+			filter->clauses = info->clauses;
+			filter->deparsed = info->clauses;
+			filter->hashclauses = info->hashclauses;
+			filter->hashoperators = info->hashoperators;
+			filter->hashcollations = info->hashcollations;
+			filter->searcharray = info->searcharray;
+			filter->deparsed = info->deparsed;
+
+			filter->subplan = create_plan_recurse(root, info->subpath,
+									 CP_SMALL_TLIST);
+
+			scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
+		}
 	}
 
 	return scan_plan;

@@ -1606,8 +1606,14 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	 *
 	 * XXX This is a bit weird, there needs to be a better way to track
 	 * what's evaluated where.
+	 *
+	 * XXX Ideally we'd prefer exact/range filers, but we can push bloom
+	 * too (but we should check the remote server version and/if it has
+	 * the pg_bloom_filter function installed).
 	 */
-	ExecBuildFilters((ScanState *) node, node->ss.ps.state);
+	ExecBuildFilters((ScanState *) node, node->ss.ps.state,
+					 (HashFilterExact | HashFilterRange | HashFilterBloom));
+
 	// fsstate->filters = node->ss.ss_Filters;
 	// node->ss.ss_Filters = NIL;
 }

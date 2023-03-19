@@ -330,6 +330,7 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	keys = indexstate->biss_ScanKeys;
 
 	/* build pushed-down filters */
+	/* FIXME make sure we only build filters of the correct type */
 	ExecBuildFilters((ScanState *) indexstate, estate);
 
 	elog(WARNING, "indexstate->ss.ss_Filters = %p", indexstate->ss.ss_Filters);
@@ -346,6 +347,18 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	memcpy(keys, indexstate->biss_ScanKeys, sizeof(ScanKeyData) * indexstate->biss_NumScanKeys);
 	numkeys = indexstate->biss_NumScanKeys;
 
+	/*
+	 * XXX Not sure what to do about range filters with multi-range conditions.
+	 * At the moment we just derive a single [min,max] range, but it'd be nice
+	 * to allow more complex conditions without having to build BitmapOr, which
+	 * does not quite work because (a) we don't know how many ranges there'll be
+	 * during planning, and (b) we don't want to scan the index multiple times
+	 * only to build the bitmap. For btree that may not be an issue, assuming
+	 * the conditions allow quickly determining which part of the index to scan,
+	 * but for BRIN that's an issue as it requires scanning the whole index
+	 * repeatedly. That's kinda the point of the patch adding SK_SEARCHARRAY
+	 * handling for BRIN (cheaper to deserialize once and match all scan keys).
+	 */
 	foreach (lc, indexstate->ss.ss_Filters)
 	{
 		HashFilterState	   *filter = (HashFilterState *) lfirst(lc);

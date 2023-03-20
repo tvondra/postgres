@@ -1715,7 +1715,7 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   SK_SEARCHARRAY,	// flags
-							   1,	// FIXME attnum
+							   filter->filter->attnum,	// FIXME attnum
 							   BTEqualStrategyNumber,
 							   filter->types[0],	// subtype
 							   filter->collations[0],	// collation
@@ -1746,7 +1746,7 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
-							   1,	// FIXME attnum
+							   filter->filter->attnum,	// FIXME attnum
 							   BTGreaterEqualStrategyNumber,
 							   filter->types[0],		// subtype
 							   filter->collations[0],	// collation
@@ -1755,7 +1755,7 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
-							   1,	// FIXME attnum
+							   filter->filter->attnum,	// FIXME attnum
 							   BTLessEqualStrategyNumber,
 							   filter->types[0],		// subtype
 							   filter->collations[0],	// collation
@@ -1783,7 +1783,7 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
-							   1,	// FIXME index attnum
+							   filter->filter->attnum,	// FIXME index attnum
 							   BTGreaterEqualStrategyNumber,
 							   filter->types[0],		// subtype
 							   filter->collations[0],	// collation
@@ -1792,7 +1792,7 @@ ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
-							   1,	// FIXME index attnum
+							   filter->filter->attnum,	// FIXME index attnum
 							   BTLessEqualStrategyNumber,
 							   filter->types[0],		// subtype
 							   filter->collations[0],	// collation

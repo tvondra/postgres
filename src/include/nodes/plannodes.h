@@ -1230,6 +1230,7 @@ typedef struct HashFilter
 	List	   *hashoperators;
 	List	   *hashcollations;
 	bool		searcharray;
+	AttrNumber	attnum;
 
 	/* subplan evaluated to build the filter */
 	Plan	   *subplan;

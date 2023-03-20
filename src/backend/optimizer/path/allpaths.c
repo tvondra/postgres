@@ -898,7 +898,8 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 
 static HashFilterInfo *
 hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
-				   Oid type, Oid collation, bool searcharray, Path *subpath)
+				   AttrNumber attnum, Oid type, Oid collation,
+				   bool searcharray, Path *subpath)
 {
 	TypeCacheEntry *entry;
 	HashFilterInfo *filter = makeNode(HashFilterInfo);
@@ -916,11 +917,20 @@ hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
 	filter->hashcollations = lappend_oid(NIL, collation);
 
 	filter->searcharray = searcharray;
+	filter->attnum = attnum;
 
 	filter->subpath = subpath;
 
 	return filter;
 }
+
+typedef struct FilterClause
+{
+	Node   *local_var;
+	Node   *remote_var;
+	Oid		collation;
+	AttrNumber	attnum;	/* index attnum */
+} FilterClause;
 
 /*
  * set_plain_rel_pathlist_filters
@@ -950,10 +960,15 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 	if (required_outer)
 		return;
 
-	/* inspect eclass joins to derive filters */
+	/*
+	 * inspect eclass joins to derive filters
+	 *
+	 * XXX We should inspect other join types (non-EC joins) too.
+	 */
 	if (rel->has_eclass_joins)
 	{
 		ListCell *lc;
+		List *filter_clauses = NIL;
 
 		foreach(lc, root->eq_classes)
 		{
@@ -975,7 +990,19 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				if (var->varno == rel->relid)
 					local_var = var;
 				else
+				{
+					RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+
+					if (!rel2)
+						continue;
+
+					Assert(rel2->reloptkind == RELOPT_BASEREL);
+
+					if (!rel2->baserestrictinfo)
+						continue;
+
 					remote_vars = lappend(remote_vars, var);
+				}
 			}
 
 			if (!local_var)
@@ -984,198 +1011,282 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			foreach (lc2, remote_vars)
 			{
 				Var *var = (Var *) lfirst(lc2);
-				HashFilterInfo *filter;
-				Path *path;
 
-				RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+				FilterClause *clause = (FilterClause *) palloc(sizeof(FilterClause));
 
-Assert(rel2->reloptkind == RELOPT_BASEREL);
+				clause->local_var = (Node *) local_var;
+				clause->remote_var = (Node *) var;
+				clause->collation = ec->ec_collation;
 
-				if (!rel2->baserestrictinfo)
-					continue;
+				filter_clauses = lappend(filter_clauses, clause);
+			}
+		}
 
-				/*
-				 * ignore parameterized paths for now
-				 *
-				 * Without this, some queries fail because of infinite recursion.
-				 * For example '\d relname' does that. Apparently the cheapest_total_path
-				 * may "silently" change to a different path (e.g. from SeqScan to
-				 * a NestLoop), which in turn may reference a path that alredy has
-				 * a hash filter. And it's possible we now build a patch that is
-				 * later (in this loop) used picked as cheapest for another filter.
-				 * That on it's own shouldn't cause an infinite loop, but it seems
-				 * something in the planner decides to "alter" the existing path,
-				 * rewriting it from SeqScan to NestLoop. Reparameterezition?
-				 *
-				 * XXX Actually, I'm not sure this check is/was correct - it seems
-				 * we should be checking param_info? Anyway, I saw the paths change
-				 * (same pointer, different path later).
-				 */
-				// if (rel2->cheapest_total_path->parent->ppilist != NULL)
-				//	continue;
+		/* haven't manaded to build any filters, so bail out */
+		if (!filter_clauses)
+			return;
 
-				/*
-				 * FIXME probably need to restrict which filter types we can build
-				 * (so that we can push derive conditions suitable for e.g. bitmap
-				 * index scans)
-				 *
-				 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
-				 * because then it'd might be referenced from two places, and we'd do
-				 * some actions twice (e.g. for indexscans we call
-				 * fix_indexqual_references which tweaks some of the path fields).
-				 *
-				 * XXX Maybe we could copy the path somehow? Or maybe we should create a
-				 * separate RelOptInfo for the filter? Or rather planning the filter
-				 * as a subquery would solve this, probably (and also would allow more
-				 * complicated filters with joins).
-				 *
-				 * XXX For now we just build a new seqscan. Seems trivial.
-				 *
-				 * XXX Perhaps we could build the filter in a different ways too, not just
-				 * by processing all the tuples. For example, to build the range filter,
-				 * it would be enough to determine the matching min/max, just like we do
-				 * with MinMax paths for aggregates.
-				 */
-				filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
-											var->vartype, ec->ec_collation,
+		/*
+		 * Now that we've collected all the conditions from EC joins, it's time
+		 * to actually build some paths. First, let's build the simplest path
+		 * possible - sequential scan with filters for all the rels.
+		 *
+		 * XXX Maybe we should consider an index-only scan too?
+		 *
+		 * XXX We still keep just one condition per filter, but that can/should
+		 * be relaxed - if there are multiple conditions, we'll end up doing
+		 * multiple seqscans of rel2.
+		 */
+		{
+			HashFilterInfo *filter;
+			Path *path;
+			ListCell *lc2;
+
+			/*
+			 * ignore parameterized paths for now
+			 *
+			 * Without this, some queries fail because of infinite recursion.
+			 * For example '\d relname' does that. Apparently the cheapest_total_path
+			 * may "silently" change to a different path (e.g. from SeqScan to
+			 * a NestLoop), which in turn may reference a path that alredy has
+			 * a hash filter. And it's possible we now build a patch that is
+			 * later (in this loop) used picked as cheapest for another filter.
+			 * That on it's own shouldn't cause an infinite loop, but it seems
+			 * something in the planner decides to "alter" the existing path,
+			 * rewriting it from SeqScan to NestLoop. Reparameterezition?
+			 *
+			 * XXX Actually, I'm not sure this check is/was correct - it seems
+			 * we should be checking param_info? Anyway, I saw the paths change
+			 * (same pointer, different path later).
+			 */
+			// if (rel2->cheapest_total_path->parent->ppilist != NULL)
+			//	continue;
+
+			/*
+			 * FIXME probably need to restrict which filter types we can build
+			 * (so that we can push derive conditions suitable for e.g. bitmap
+			 * index scans)
+			 *
+			 * XXX We can't use an existing path (e.g. rel2->cheapest_total_path),
+			 * because then it'd might be referenced from two places, and we'd do
+			 * some actions twice (e.g. for indexscans we call
+			 * fix_indexqual_references which tweaks some of the path fields).
+			 *
+			 * XXX Maybe we could copy the path somehow? Or maybe we should create a
+			 * separate RelOptInfo for the filter? Or rather planning the filter
+			 * as a subquery would solve this, probably (and also would allow more
+			 * complicated filters with joins).
+			 *
+			 * XXX For now we just build a new seqscan. Seems trivial.
+			 *
+			 * XXX Perhaps we could build the filter in a different ways too, not just
+			 * by processing all the tuples. For example, to build the range filter,
+			 * it would be enough to determine the matching min/max, just like we do
+			 * with MinMax paths for aggregates.
+			 */
+
+			/*
+			 * FIXME check cost of the path and see if adding the filter could
+			 * possibly make it cheaper, based on filter selectivity estimate
+			 * etc.
+			 *
+			 * seqscan cost reduction > filter subpath cost
+			 */
+			path = create_seqscan_path(root, rel, required_outer, 0);
+
+			foreach (lc2, filter_clauses)
+			{
+				FilterClause *clause = (FilterClause *) lfirst(lc2);
+				Var *local_var = (Var *) clause->local_var;
+				Var *remote_var = (Var *) clause->remote_var;
+
+				RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+				filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+											InvalidAttrNumber, local_var->vartype, clause->collation,
 											false,
 											create_seqscan_path(root, rel2, required_outer, 0));
 
-				/*
-				 * FIXME check cost of the path and see if adding the filter could
-				 * possibly make it cheaper, based on filter selectivity estimate
-				 * etc.
-				 *
-				 * seqscan cost reduction > filter subpath cost
-				 */
-				path = create_seqscan_path(root, rel, required_outer, 0);
-
-				/*
-				 * XXX cut the cost in half, needs to be improved (consider the
-				 * filter selectivity)
-				 */
-				path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / 2;
-
 				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
+			}
 
-				add_path(rel, path);
+			/*
+			 * XXX cut the cost in half, needs to be improved (consider the
+			 * filter selectivity)
+			 */
+			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / (1 + list_length(path->filters));
 
-				/* consider other types of paths, e.g. index-based */
-				foreach(lc, rel->indexlist)
+			add_path(rel, path);
+		}
+
+		/*
+		 * now also build some index paths
+		 *
+		 * We match as many clauses to each index as possible, to allow index
+		 * scan to derive conditions from the filter.
+		 */
+
+		/* consider other types of paths, e.g. index-based */
+		foreach(lc, rel->indexlist)
+		{
+			IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+			Relids		outer_relids;
+			double		loop_count;
+			List	   *index_clauses[INDEX_MAX_KEYS];
+			ListCell   *lc2;
+			HashFilterInfo *filter;
+			bool		matches = false;
+
+			memset(index_clauses, 0, INDEX_MAX_KEYS * sizeof(List *));
+
+			/* Protect limited-size array in IndexClauseSets */
+			Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
+
+			/* FIXME this should do all the business with matching
+			 * clauses to indexes etc. we'd do in create_index_paths,
+			 * but for simplicily of the PoC we just check if the
+			 * index is on the varattno. */
+			foreach (lc2, filter_clauses)
+			{
+				FilterClause   *clause = (FilterClause *) lfirst(lc2);
+				Var			   *var = (Var *) clause->local_var;
+
+				for (int i = 0; i < index->nkeycolumns; i++)
 				{
-					bool			matches = false;
-					IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
-					Relids		outer_relids;
-					double		loop_count;
-
-					/* Protect limited-size array in IndexClauseSets */
-					Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
-
-					/* FIXME this should do all the business with matching
-					 * clauses to indexes etc. we'd do in create_index_paths,
-					 * but for simplicily of the PoC we just check if the
-					 * index is on the varattno. */
-
-					for (int i = 0; i < index->nkeycolumns; i++)
+					if (index->indexkeys[i] == var->varattno)
 					{
-						if (index->indexkeys[i] == local_var->varattno)
-						{
-							matches = true;
-							break;
-						}
-					}
+						index_clauses[i] = lappend(index_clauses[i], clause);
 
-					if (!matches)
-						continue;
+						/* remember we matched at least one clause to the index */
+						matches = true;
 
-					/* copied from build_index_paths */
-					outer_relids = bms_copy(rel->lateral_relids);
-					loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
-
-					/* */
-					if (index->amhasgettuple)
-					{
-						IndexPath	 *ipath;
-
-						/* create a new filter */
-						filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
-													var->vartype, ec->ec_collation,
-													index->amsearcharray,
-													create_seqscan_path(root, rel2, required_outer, 0));
-
-						ipath = create_index_path(root, index,
-												  NIL, // index_clauses,
-												  NIL, // orderbyclauses,
-												  NIL, // orderbyclausecols,
-												  NIL, // useful_pathkeys,
-												  ForwardScanDirection,
-												  false, // index_only_scan,
-												  outer_relids,
-												  loop_count,
-												  false);
-
-						ipath->path.filters = lcons(filter, ipath->path.filters);
-
-						/* FIXME proper costing */
-						ipath->path.startup_cost /= 10;
-						ipath->path.total_cost /= 10;
-
-						add_path(rel, (Path *) ipath);
-					}
-
-					if (index->amhasgetbitmap)
-					{
-						IndexPath	 *ipath;
-						BitmapHeapPath *bpath;
-
-						/* create a new filter */
-						filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
-													var->vartype, ec->ec_collation,
-													index->amsearcharray,
-													create_seqscan_path(root, rel2, required_outer, 0));
-
-						ipath = create_index_path(root, index,
-												  NIL, // index_clauses,
-												  NIL, // orderbyclauses,
-												  NIL, // orderbyclausecols,
-												  NIL, // useful_pathkeys,
-												  ForwardScanDirection,
-												  false, // index_only_scan,
-												  outer_relids,
-												  loop_count,
-												  false);
-
-						ipath->path.filters = lcons(filter, ipath->path.filters);
-
-						/* FIXME proper costing */
-						ipath->path.startup_cost /= 10;
-						ipath->path.total_cost /= 10;
-
-						/*
-						 * XXX Maybe we should build/attach another copy of the
-						 * filter to the heap scan node. The bitmap filter may
-						 * be lossy and the point is to reduce the number of
-						 * tuples we return. Currently we'd build the filter
-						 * twice (so double the cost) but maybe we could have
-						 * just one copy with multiple references. Considering
-						 * we now have a separate subplan (instead of just
-						 * piggy-backing on a Hash node), we have good control
-						 * over when the filter is built etc. (which is an issue
-						 * for Hash, where this is managed by the hashjoin node).
-						 */
-						bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
-														rel->lateral_relids, 1.0, 0);
-
-						/* FIXME proper costing */
-						bpath->path.startup_cost /= 10;
-						bpath->path.total_cost /= 10;
-
-						add_path(rel, (Path *) bpath);
+						/* continue with the next filter clause */
+						break;
 					}
 				}
 			}
+
+			/* no filter clauses for this index */
+			if (!matches)
+				continue;
+
+			/* copied from build_index_paths */
+			outer_relids = bms_copy(rel->lateral_relids);
+			loop_count = 1; // get_loop_count(root, rel->relid, outer_relids);
+
+			/* */
+			if (index->amhasgettuple)
+			{
+				IndexPath	 *ipath;
+
+				ipath = create_index_path(root, index,
+										  NIL, // index_clauses,
+										  NIL, // orderbyclauses,
+										  NIL, // orderbyclausecols,
+										  NIL, // useful_pathkeys,
+										  ForwardScanDirection,
+										  false, // index_only_scan,
+										  outer_relids,
+										  loop_count,
+										  false);
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					foreach (lc2, index_clauses[i])
+					{
+						FilterClause *clause = (FilterClause *) lfirst(lc2);
+						Var *local_var = (Var *) clause->local_var;
+						Var *remote_var = (Var *) clause->remote_var;
+						AttrNumber attnum = (i+1);
+
+						RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+													attnum, local_var->vartype, clause->collation, 
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
+
+						ipath->path.filters = lappend(ipath->path.filters, filter);
+					}
+				}
+
+				Assert(ipath->path.filters);
+
+				/* FIXME proper costing */
+				ipath->path.startup_cost /= 10;
+				ipath->path.total_cost /= 10;
+
+				add_path(rel, (Path *) ipath);
+			}
+
+			if (index->amhasgetbitmap)
+			{
+				IndexPath	 *ipath;
+				BitmapHeapPath *bpath;
+
+				ipath = create_index_path(root, index,
+										  NIL, // index_clauses,
+										  NIL, // orderbyclauses,
+										  NIL, // orderbyclausecols,
+										  NIL, // useful_pathkeys,
+										  ForwardScanDirection,
+										  false, // index_only_scan,
+										  outer_relids,
+										  loop_count,
+										  false);
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					foreach (lc2, index_clauses[i])
+					{
+						FilterClause *clause = (FilterClause *) lfirst(lc2);
+						Var *local_var = (Var *) clause->local_var;
+						Var *remote_var = (Var *) clause->remote_var;
+						AttrNumber attnum = (i+1);
+
+						RelOptInfo *rel2 = root->simple_rel_array[remote_var->varno];
+
+						/* create a new filter */
+						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
+													attnum, local_var->vartype, clause->collation,
+													index->amsearcharray,
+													create_seqscan_path(root, rel2, required_outer, 0));
+
+						ipath->path.filters = lappend(ipath->path.filters, filter);
+					}
+				}
+
+				Assert(ipath->path.filters);
+
+				/* FIXME proper costing */
+				ipath->path.startup_cost /= 10;
+				ipath->path.total_cost /= 10;
+
+				/*
+				 * XXX Maybe we should build/attach another copy of the
+				 * filter to the heap scan node. The bitmap filter may
+				 * be lossy and the point is to reduce the number of
+				 * tuples we return. Currently we'd build the filter
+				 * twice (so double the cost) but maybe we could have
+				 * just one copy with multiple references. Considering
+				 * we now have a separate subplan (instead of just
+				 * piggy-backing on a Hash node), we have good control
+				 * over when the filter is built etc. (which is an issue
+				 * for Hash, where this is managed by the hashjoin node).
+				 */
+				bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
+												rel->lateral_relids, 1.0, 0);
+
+				/* FIXME proper costing */
+				bpath->path.startup_cost /= 10;
+				bpath->path.total_cost /= 10;
+
+				add_path(rel, (Path *) bpath);
+			}
 		}
+
 	}
 
 	/* Consider sequential scan */
@@ -1426,7 +1537,7 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 					 * with MinMax paths for aggregates.
 					 */
 					filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
-												var->vartype, ec->ec_collation,
+												InvalidAttrNumber, var->vartype, ec->ec_collation,
 												false,
 												create_seqscan_path(root, rel2, required_outer, 0));
 

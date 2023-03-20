@@ -123,7 +123,6 @@ static PathClauseUsage *classify_index_clause_usage(Path *path,
 													List **clauselist);
 static void find_indexpath_quals(Path *bitmapqual, List **quals, List **preds);
 static int	find_list_position(Node *node, List **nodelist);
-static bool check_index_only(RelOptInfo *rel, IndexOptInfo *index);
 static double get_loop_count(PlannerInfo *root, Index cur_relid, Relids outer_relids);
 static double adjust_rowcount_for_semijoins(PlannerInfo *root,
 											Index cur_relid,
@@ -1774,7 +1773,7 @@ find_list_position(Node *node, List **nodelist)
  * check_index_only
  *		Determine whether an index-only scan is possible for this index.
  */
-static bool
+bool
 check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 {
 	bool		result;

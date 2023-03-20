@@ -1041,6 +1041,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			HashFilterInfo *filter;
 			Path *path;
 			ListCell *lc2;
+			double		coeff = 1.0;
 
 			/*
 			 * ignore parameterized paths for now
@@ -1109,13 +1110,33 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
+
+				/*
+				 * calculate selectivity for this particular filter
+				 *
+				 * FIXME This needs to somehow consider how much the filter
+				 * reduces the matches, beyond the regular join clauses. So
+				 * we need to somehow estimate how much the other conditions
+				 * (e.g. at the baserel level) reduce the match probability.
+				 * Not sure how to do that easily, so let's just assume 10%
+				 * for now, which is fairly conservative.
+				 *
+				 * For now we only handle a special case when joining to a base
+				 * relations, because in that case we can easily compare the
+				 * estimated rows for a path and the relation tuples, to
+				 * calculate the filter selectivity.
+				 *
+				 * XXX In principle we'd probably want to calculate joinrel
+				 * selectivity without the baserel restrictinfos?
+				 */
+				coeff *= rel2->rows / rel2->tuples;
 			}
 
 			/*
 			 * XXX cut the cost in half, needs to be improved (consider the
 			 * filter selectivity)
 			 */
-			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) / (1 + list_length(path->filters));
+			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) * sqrt(coeff);
 
 			add_path(rel, path);
 		}
@@ -1179,6 +1200,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			if (index->amhasgettuple)
 			{
 				IndexPath	 *ipath;
+				double		coeff = 1.0;
 
 				ipath = create_index_path(root, index,
 										  NIL, // index_clauses,
@@ -1186,7 +1208,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 										  NIL, // orderbyclausecols,
 										  NIL, // useful_pathkeys,
 										  ForwardScanDirection,
-										  false, // index_only_scan,
+										  check_index_only(rel, index), // index_only_scan,
 										  outer_relids,
 										  loop_count,
 										  false);
@@ -1209,14 +1231,34 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 													create_seqscan_path(root, rel2, required_outer, 0));
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
+
+						/*
+						 * calculate selectivity for this particular filter
+						 *
+						 * FIXME This needs to somehow consider how much the filter
+						 * reduces the matches, beyond the regular join clauses. So
+						 * we need to somehow estimate how much the other conditions
+						 * (e.g. at the baserel level) reduce the match probability.
+						 * Not sure how to do that easily, so let's just assume 10%
+						 * for now, which is fairly conservative.
+						 *
+						 * For now we only handle a special case when joining to a base
+						 * relations, because in that case we can easily compare the
+						 * estimated rows for a path and the relation tuples, to
+						 * calculate the filter selectivity.
+						 *
+						 * XXX In principle we'd probably want to calculate joinrel
+						 * selectivity without the baserel restrictinfos?
+						 */
+						coeff *= rel2->rows / rel2->tuples;
 					}
 				}
 
 				Assert(ipath->path.filters);
 
 				/* FIXME proper costing */
-				ipath->path.startup_cost /= 10;
-				ipath->path.total_cost /= 10;
+				// ipath->path.startup_cost;
+				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
 
 				add_path(rel, (Path *) ipath);
 			}
@@ -1225,6 +1267,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			{
 				IndexPath	 *ipath;
 				BitmapHeapPath *bpath;
+				double		coeff = 1.0;
 
 				ipath = create_index_path(root, index,
 										  NIL, // index_clauses,
@@ -1255,14 +1298,34 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 													create_seqscan_path(root, rel2, required_outer, 0));
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
+
+						/*
+						 * calculate selectivity for this particular filter
+						 *
+						 * FIXME This needs to somehow consider how much the filter
+						 * reduces the matches, beyond the regular join clauses. So
+						 * we need to somehow estimate how much the other conditions
+						 * (e.g. at the baserel level) reduce the match probability.
+						 * Not sure how to do that easily, so let's just assume 10%
+						 * for now, which is fairly conservative.
+						 *
+						 * For now we only handle a special case when joining to a base
+						 * relations, because in that case we can easily compare the
+						 * estimated rows for a path and the relation tuples, to
+						 * calculate the filter selectivity.
+						 *
+						 * XXX In principle we'd probably want to calculate joinrel
+						 * selectivity without the baserel restrictinfos?
+						 */
+						coeff *= rel2->rows / rel2->tuples;
 					}
 				}
 
 				Assert(ipath->path.filters);
 
 				/* FIXME proper costing */
-				ipath->path.startup_cost /= 10;
-				ipath->path.total_cost /= 10;
+				// ipath->path.startup_cost;
+				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
 
 				/*
 				 * XXX Maybe we should build/attach another copy of the
@@ -1280,8 +1343,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 												rel->lateral_relids, 1.0, 0);
 
 				/* FIXME proper costing */
-				bpath->path.startup_cost /= 10;
-				bpath->path.total_cost /= 10;
+				// bpath->path.startup_cost /= 10;
+				// bpath->path.total_cost /= 10;
 
 				add_path(rel, (Path *) bpath);
 			}

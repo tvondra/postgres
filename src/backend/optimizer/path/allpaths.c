@@ -898,7 +898,7 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 
 static HashFilterInfo *
 hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
-				   bool searcharray, Oid type, Oid collation, Path *subpath)
+				   Oid type, Oid collation, bool searcharray, Path *subpath)
 {
 	TypeCacheEntry *entry;
 	HashFilterInfo *filter = makeNode(HashFilterInfo);

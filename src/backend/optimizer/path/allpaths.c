@@ -1136,7 +1136,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * XXX cut the cost in half, needs to be improved (consider the
 			 * filter selectivity)
 			 */
-			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) * sqrt(coeff);
+			coeff *= filter_seqscan_cost;
+			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) * coeff;
 
 			add_path(rel, path);
 		}
@@ -1258,6 +1259,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				/* FIXME proper costing */
 				// ipath->path.startup_cost;
+				coeff *= filter_indexscan_cost;
 				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
 
 				add_path(rel, (Path *) ipath);
@@ -1325,6 +1327,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				/* FIXME proper costing */
 				// ipath->path.startup_cost;
+				coeff *= filter_bitmapscan_cost;
 				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
 
 				/*
@@ -1342,6 +1345,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
 												rel->lateral_relids, 1.0, 0);
 
+				coeff *= filter_bitmapscan_cost;
+				bpath->path.total_cost = bpath->path.startup_cost + (bpath->path.total_cost - bpath->path.startup_cost) * coeff;
 				/* FIXME proper costing */
 				// bpath->path.startup_cost /= 10;
 				// bpath->path.total_cost /= 10;

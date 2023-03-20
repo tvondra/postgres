@@ -529,6 +529,10 @@ int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
 int			tcp_user_timeout;
 
+double		filter_seqscan_cost = 1.0;
+double		filter_indexscan_cost = 1.0;
+double		filter_bitmapscan_cost = 1.0;
+
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
  * being set to zero (meaning never renegotiate) for backward compatibility.
@@ -3754,6 +3758,36 @@ struct config_real ConfigureNamesReal[] =
 		},
 		&log_xact_sample_rate,
 		0.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_seqscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of seqscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_seqscan_cost,
+		1.0, 0.0, 1000000.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_indexscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of indexscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_indexscan_cost,
+		1.0, 0.0, 1000000.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"filter_bitmapscan_cost", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("modify cost of indexscan with derived filters"),
+			gettext_noop("Use a value between 0.0 (to make cheaper) and 1000000.0 (more expensive)")
+		},
+		&filter_bitmapscan_cost,
+		1.0, 0.0, 1000000.0,
 		NULL, NULL, NULL
 	},
 

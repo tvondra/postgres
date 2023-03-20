@@ -1137,7 +1137,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * filter selectivity)
 			 */
 			coeff *= filter_seqscan_cost;
-			path->total_cost = path->startup_cost + (path->total_cost - path->startup_cost) * coeff;
+			path->total_cost = Max(path->startup_cost + 0.9 * (path->total_cost - path->startup_cost),
+								   path->total_cost - (1 - coeff) * rel->tuples * cpu_operator_cost);
 
 			add_path(rel, path);
 		}

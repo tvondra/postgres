@@ -241,6 +241,14 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	indexstate->ss.ss_currentScanDesc = NULL;
 
 	/*
+	 * If there are any filter pushed down to this node, initialize them too
+	 * (both subplan and the expressions).
+	 */
+	indexstate->ss.ss_Filters
+		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
+								   estate, eflags);
+
+	/*
 	 * Miscellaneous initialization
 	 *
 	 * We do not need a standard exprcontext for this node, though we may
@@ -308,14 +316,6 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	{
 		indexstate->biss_RuntimeContext = NULL;
 	}
-
-	/*
-	 * If there are any filter pushed down to this node, initialize them too
-	 * (both subplan and the expressions).
-	 */
-	indexstate->ss.ss_Filters
-		= ExecInitFilters((PlanState *) indexstate, node->scan.filters,
-								   estate, eflags);
 
 	/*
 	 * build pushed-down filters

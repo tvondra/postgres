@@ -961,6 +961,13 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 		return;
 
 	/*
+	 * FIXME we should limit building these paths only when the cheapest
+	 * path for "rel" is sufficiently expensive, just like we do for "jit"
+	 * for example. If it only costs 10, it's pointless to do stuff like
+	 * this.
+	 */
+
+	/*
 	 * inspect eclass joins to derive filters
 	 *
 	 * XXX We should inspect other join types (non-EC joins) too.
@@ -1084,6 +1091,46 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * by processing all the tuples. For example, to build the range filter,
 			 * it would be enough to determine the matching min/max, just like we do
 			 * with MinMax paths for aggregates.
+			 *
+			 * XXX I wonder if we could derive the filter values for estimation in
+			 * different ways? Either for estimation, or to calculate values for
+			 * the scan (without having to scan the whole relation).
+			 *
+			 * For the estimation, we don't need the exact value - we might inspect
+			 * some multi-column indexes (especially BRIN minmax) to determine how
+			 * a range for one attribute maps to the other (typically PK). For the
+			 * dimension we have conditions on "b" (non-PK), and we need to know
+			 * what range of PK column it matches (which is what matters for the
+			 * filter applied on the linked table).
+			 *
+			 * If we have a BRIN index, we can simply check all ranges matching
+			 * the "b" condition, and then combine the ranges on "PK" into a new
+			 * range. And then use that to calculate selectivity on the other
+			 * table (the one we're actually querying). We could either ignore
+			 * the non-summarized ranges, or read the tuples (hopefully there's
+			 * going to be very few such ranges).
+			 *
+			 * get_actual_variable_range() does something similar for individual
+			 * columns (not for mapping ranges from one column to another one).
+			 *
+			 * We could even aggregate this into a min/max histogram in pg_stats,
+			 * that is for each bin on "b" we'd track min/max for PK column.
+			 *
+			 * I'm not sure it's doable for other index types (like btree), as
+			 * it would require scanning much larger part of the index. But maybe
+			 * for estimation it'd be enough to just sample/stratify the index?
+			 * That is, sample some part of it? Still fairly expensive to be done
+			 * in the planning phase, though. We had a lot of issues with
+			 * get_actual_variable_range() in this regard.
+			 *
+			 * But maybe we could also derive the range for the actual filter?
+			 * That would mean we don't have to scan the whole table at all.
+			 * In this case the range must be "accurate" (i.e. we must not omit
+			 * any values, although we could make it larger, as in the "range"
+			 * filter). We could either do this based on a BRIN index (but this
+			 * time we'd definitely have to read the tuples from un-summarized
+			 * ranges). Or maybe we could have a small "range" index mapping
+			 * ranges - specialized AM, unusable for any other queries.
 			 */
 
 			/*
@@ -1272,6 +1319,11 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				BitmapHeapPath *bpath;
 				double		coeff = 1.0;
 
+				/*
+				 * XXX We should collect all the index scans paths created above,
+				 * and then consider building a BitmapAnd paths, just like what
+				 * indxpath.c does (call choose_bitmap_and etc.).
+				 */
 				ipath = create_index_path(root, index,
 										  NIL, // index_clauses,
 										  NIL, // orderbyclauses,

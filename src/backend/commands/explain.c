@@ -1813,7 +1813,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_BitmapHeapScan:
 			show_scan_qual(((BitmapHeapScan *) plan)->bitmapqualorig,
 						   "Recheck Cond", planstate, ancestors, es);
-			show_scan_derived_qual("Derived Index Cond",
+			show_scan_derived_qual("Derived Filter",
 								   (Scan *) plan, planstate, ancestors, es);
 			if (((BitmapHeapScan *) plan)->bitmapqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
@@ -1838,6 +1838,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WorkTableScan:
 		case T_SubqueryScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Filter",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
@@ -1968,6 +1970,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_ForeignScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Filter",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);

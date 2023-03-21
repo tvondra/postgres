@@ -78,6 +78,9 @@ static void show_qual(List *qual, const char *qlabel,
 static void show_scan_qual(List *qual, const char *qlabel,
 						   PlanState *planstate, List *ancestors,
 						   ExplainState *es);
+static void show_scan_derived_qual(const char *qlabel,
+								   Scan *plan, PlanState *planstate, List *ancestors,
+								   ExplainState *es);
 static void show_upper_qual(List *qual, const char *qlabel,
 							PlanState *planstate, List *ancestors,
 							ExplainState *es);
@@ -1768,6 +1771,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IndexScan:
 			show_scan_qual(((IndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((IndexScan *) plan)->indexqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -1782,6 +1787,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IndexOnlyScan:
 			show_scan_qual(((IndexOnlyScan *) plan)->indexqual,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((IndexOnlyScan *) plan)->recheckqual)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -1799,11 +1806,15 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_BitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			show_scan_filters((Scan *) plan, planstate, ancestors, es);
 			break;
 		case T_BitmapHeapScan:
 			show_scan_qual(((BitmapHeapScan *) plan)->bitmapqualorig,
 						   "Recheck Cond", planstate, ancestors, es);
+			show_scan_derived_qual("Derived Index Cond",
+								   (Scan *) plan, planstate, ancestors, es);
 			if (((BitmapHeapScan *) plan)->bitmapqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);
@@ -3879,6 +3890,76 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 		/* FIXME show additional info about the filters */
 		ExplainPropertyInteger("Scan Filters", NULL,
 							   list_length(plan->filters), es);
+	}
+}
+
+/*
+ * show_scan_filters
+ *		Show filters attached to a Scan node (if any).
+ *
+ * XXX It's a bit annoying we show exactly the same information for both the
+ * filter and then also the reference.
+ */
+static void
+show_scan_derived_qual(const char *qlabel,
+					   Scan *plan, PlanState *planstate, List *ancestors,
+					   ExplainState *es)
+{
+	if (!es->filters)
+		return;
+
+	if (!plan->filters)
+		return;
+
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		ListCell *lc1;
+		ListCell *lc2;
+
+		forboth (lc1, plan->filters, lc2, ((ScanState *) planstate)->ss_Filters)
+		{
+			HashFilter *filter = (HashFilter *) lfirst(lc1);
+			HashFilterState *state = (HashFilterState *) lfirst(lc2);
+
+			List	   *context;
+			char	   *exprstr;
+			bool		useprefix;
+
+			if (state->skip)
+				continue;
+
+			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
+
+			/* Set up deparsing context */
+			context = set_deparse_context_plan(es->deparse_cxt,
+											   planstate->plan,
+											   ancestors);
+
+			/*
+			 * Deparse the expression
+			 *
+			 * XXX we can't deparse hash clauses - there are OUTER_VAR references,
+			 * which causes failures because the filter subplan is not a regular
+			 * outer subplan (at least that's my understanding of the failures).
+			 */
+			exprstr = deparse_expression((Node *) filter->clauses, context, useprefix, false);
+
+			ExplainIndentText(es);
+
+			switch (state->filter_type)
+			{
+				case HashFilterExact:
+					appendStringInfo(es->str, "%s: %s IN (...)\n", qlabel, exprstr);
+					break;
+				case HashFilterRange:
+					appendStringInfo(es->str, "%s: (%s >= A) AND (%s <= B) \n", qlabel, exprstr, exprstr);
+					break;
+			}
+		}
+	}
+	else
+	{
+		// FIXME info on derived keys for non-text output
 	}
 }
 

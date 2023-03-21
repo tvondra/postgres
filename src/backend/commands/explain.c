@@ -3956,7 +3956,10 @@ show_scan_derived_qual(const char *qlabel,
 					appendStringInfo(es->str, "%s: %s IN (...)\n", qlabel, exprstr);
 					break;
 				case HashFilterRange:
-					appendStringInfo(es->str, "%s: (%s >= A) AND (%s <= B) \n", qlabel, exprstr, exprstr);
+					appendStringInfo(es->str, "%s: (%s >= A) AND (%s <= B)\n", qlabel, exprstr, exprstr);
+					break;
+				case HashFilterBloom:
+					appendStringInfo(es->str, "%s: (%s IN BLOOM X)\n", qlabel, exprstr);
 					break;
 			}
 		}

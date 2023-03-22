@@ -1664,6 +1664,10 @@ ExecFiltersCountScanKeys(HashFilterState *filter)
 	return 0;
 }
 
+/*
+ * XXX This may be wrong if there already are some scan keys - the scan keys
+ * need to be ordered by attnum.
+ */
 static void
 ExecFiltersAddScanKeys(HashFilterState *filter, ScanKeyData *keys)
 {

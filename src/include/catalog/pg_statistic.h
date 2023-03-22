@@ -90,18 +90,20 @@ CATALOG(pg_statistic,2619,StatisticRelationId)
 	int16		stakind3;
 	int16		stakind4;
 	int16		stakind5;
+	int16		stakind6;
 
 	Oid			staop1 BKI_LOOKUP_OPT(pg_operator);
 	Oid			staop2 BKI_LOOKUP_OPT(pg_operator);
 	Oid			staop3 BKI_LOOKUP_OPT(pg_operator);
 	Oid			staop4 BKI_LOOKUP_OPT(pg_operator);
-	Oid			staop5 BKI_LOOKUP_OPT(pg_operator);
+	Oid			staop6 BKI_LOOKUP_OPT(pg_operator);
 
 	Oid			stacoll1 BKI_LOOKUP_OPT(pg_collation);
 	Oid			stacoll2 BKI_LOOKUP_OPT(pg_collation);
 	Oid			stacoll3 BKI_LOOKUP_OPT(pg_collation);
 	Oid			stacoll4 BKI_LOOKUP_OPT(pg_collation);
 	Oid			stacoll5 BKI_LOOKUP_OPT(pg_collation);
+	Oid			stacoll6 BKI_LOOKUP_OPT(pg_collation);
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	float4		stanumbers1[1];
@@ -109,6 +111,7 @@ CATALOG(pg_statistic,2619,StatisticRelationId)
 	float4		stanumbers3[1];
 	float4		stanumbers4[1];
 	float4		stanumbers5[1];
+	float4		stanumbers6[1];
 
 	/*
 	 * Values in these arrays are values of the column's data type, or of some
@@ -121,10 +124,11 @@ CATALOG(pg_statistic,2619,StatisticRelationId)
 	anyarray	stavalues3;
 	anyarray	stavalues4;
 	anyarray	stavalues5;
+	anyarray	stavalues6;
 #endif
 } FormData_pg_statistic;
 
-#define STATISTIC_NUM_SLOTS  5
+#define STATISTIC_NUM_SLOTS  6
 
 
 /* ----------------
@@ -276,6 +280,9 @@ DECLARE_FOREIGN_KEY((starelid, staattnum), pg_attribute, (attrelid, attnum));
  * bounds.  Only non-NULL, non-empty ranges are included.
  */
 #define STATISTIC_KIND_BOUNDS_HISTOGRAM  7
+
+
+#define STATISTIC_KIND_RANGE_MAP  8
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

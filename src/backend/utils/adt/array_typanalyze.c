@@ -80,7 +80,7 @@ typedef struct
 	int			frequency;		/* Number of arrays seen with this count */
 } DECountItem;
 
-static void compute_array_stats(VacAttrStats *stats,
+static void compute_array_stats(VacAttrStats *stats, VacAttrStats *pkstats,
 								AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
 static void prune_element_hashtable(HTAB *elements_tab, int b_current);
 static uint32 element_hash(const void *key, Size keysize);
@@ -213,7 +213,8 @@ array_typanalyze(PG_FUNCTION_ARGS)
  * We divide the raw counts by nonnull_cnt to get those figures.
  */
 static void
-compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
+compute_array_stats(VacAttrStats *stats, VacAttrStats *pkstats,
+					AnalyzeAttrFetchFunc fetchfunc,
 					int samplerows, double totalrows)
 {
 	ArrayAnalyzeExtraData *extra_data;
@@ -247,7 +248,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 	 * temporarily install that.
 	 */
 	stats->extra_data = extra_data->std_extra_data;
-	extra_data->std_compute_stats(stats, fetchfunc, samplerows, totalrows);
+	extra_data->std_compute_stats(stats, NULL, fetchfunc, samplerows, totalrows);
 	stats->extra_data = extra_data;
 
 	/*

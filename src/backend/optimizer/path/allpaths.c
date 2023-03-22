@@ -1355,6 +1355,21 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * and we could just read them directly instead. Using the BRIN is
 			 * mostly just optimization for large tables.
 			 *
+			 * In fact, we probably need a sufficient number of page ranges to
+			 * derive filter that reasonably filters rows of the other table.
+			 * Even assuming perfect ordering for BRIN and ideal correlation
+			 * (both "x" and "y" correlated with physical location), the number
+			 * of page ranges determines how strict the derived filter can be.
+			 * Imagine the table only has 1 page range. Then we can't restrict
+			 * "y" at all, because the min/max will match everything. With 2
+			 * page ranges, the best filter on "y" can be ~50%, no matter how
+			 * strict the condition on "x" is. In principle, given an index
+			 * with "K" page ranges, the best derived restriction on "y" will
+			 * have 1/K selectivity. So maybe this is what we should consider
+			 * when deciding whether to scan the whole dimension or just read
+			 * the BRIN index - if the index has too few page ranges, read the
+			 * table instead (which however depends on pages_per_range option).
+			 *
 			 * get_actual_variable_range() does something similar for individual
 			 * columns (not for mapping ranges from one column to another one).
 			 *

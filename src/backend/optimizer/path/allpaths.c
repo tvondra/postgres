@@ -18,8 +18,15 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/brin.h"
+#include "access/brin_internal.h"
+#include "access/brin_revmap.h"
+#include "access/genam.h"
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "access/tsmapi.h"
+#include "catalog/index.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
@@ -50,7 +57,10 @@
 #include "partitioning/partprune.h"
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
+#include "storage/bufmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
 
@@ -932,6 +942,227 @@ typedef struct FilterClause
 	AttrNumber	attnum;	/* index attnum */
 } FilterClause;
 
+static void
+estimate_variable_range(RelOptInfo *rel, Var *var, Datum *minval, Datum *maxval)
+{
+	ListCell   *lc;
+	bool		range_set = false;
+
+	*minval = 0;
+	*maxval = 0;
+
+	foreach (lc, rel->indexlist)
+	{
+		ListCell	   *lc2;
+		IndexOptInfo   *index = (IndexOptInfo *) lfirst(lc);
+		Relation		indexRel = index_open(index->indexoid, AccessShareLock);
+
+		/* BRIN indexes only for now */
+		if (indexRel->rd_rel->relam == BRIN_AM_OID)
+		{
+			BrinDesc	   *bdesc;
+			BrinRevmap	   *revmap;
+			AttrNumber		keyattno = InvalidAttrNumber;
+			BlockNumber		pagesPerRange;
+			BlockNumber		heapBlk;
+			Oid				heapOid;
+			Relation		heapRel;
+			BlockNumber		nblocks;
+			BrinMemTuple   *dtup;
+
+			for (int i = 0; i < index->nkeycolumns; i++)
+			{
+				if (index->indexkeys[i] == var->varattno)
+				{
+					keyattno = (i + 1);
+					break;
+				}
+			}
+
+			/* index is not on the join attribute */
+			if (keyattno == InvalidAttrNumber)
+				goto cleanup;
+
+			/* build stuff we need for scanning the BRIN index */
+			bdesc = brin_build_desc(indexRel);
+			revmap = brinRevmapInitialize(indexRel, &pagesPerRange,
+										  GetActiveSnapshot());
+
+			/* allocate an initial in-memory tuple, out of the per-range memcxt */
+			dtup = brin_new_memtuple(bdesc);
+
+			/* size of the underlying table */
+			heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+			heapRel = table_open(heapOid, AccessShareLock);
+			nblocks = RelationGetNumberOfBlocks(heapRel);
+			table_close(heapRel, AccessShareLock);
+
+			/* FIXME should check opclass (only works for minmax) */
+
+			/* now try matching rel->baserestrictinfo */
+			foreach (lc2, rel->baserestrictinfo)
+			{
+				RestrictInfo   *rinfo = (RestrictInfo *) lfirst(lc2);
+				OpExpr		   *clause = (OpExpr *) rinfo->clause;
+				Node		   *leftop,
+							   *rightop;
+				Oid				opno;
+				FmgrInfo	   *tmp;
+				FmgrInfo		consistentFn;
+				Oid				collation;
+				AttrNumber		key2attno = InvalidAttrNumber;
+				ScanKeyData		key;
+				Buffer			buf = InvalidBuffer;
+
+				Oid				opfamily;	/* opfamily of index column */
+				int				op_strategy;	/* operator's strategy number */
+				Oid				op_lefttype;	/* operator's declared input types */
+				Oid				op_righttype;
+
+				bool			clause_range_set = false;
+				Datum			clause_minval;
+				Datum			clause_maxval;
+
+				if (!is_opclause(clause))
+					continue;
+
+				if (list_length(clause->args) != 2)
+					continue;
+
+				leftop = get_leftop(clause);
+				rightop = get_rightop(clause);
+				opno = clause->opno;
+				collation = clause->inputcollid;
+
+				/* assume leftop is Var, rightop is Const */
+				if (!IsA(leftop, Var))
+					continue;
+
+				if (!IsA(rightop, Const))
+					continue;
+
+				for (int i = 0; i < index->nkeycolumns; i++)
+				{
+					Var *var2 = (Var *) leftop;
+
+					if (index->indexkeys[i] == var2->varattno)
+					{
+						key2attno = (i + 1);
+						break;
+					}
+				}
+
+				/* didn't match the */
+				if (key2attno == InvalidAttrNumber)
+					continue;
+
+				opfamily = indexRel->rd_opfamily[key2attno - 1];
+
+				get_op_opfamily_properties(opno, opfamily, false,
+									   &op_strategy,
+									   &op_lefttype,
+									   &op_righttype);
+
+				/*
+				 * initialize the scan key's fields appropriately
+				 */
+				ScanKeyEntryInitialize(&key,
+									   0,	/* flags */
+									   key2attno,	/* attribute number to scan */
+									   op_strategy, /* op's strategy */
+									   op_righttype,	/* strategy subtype */
+									   clause->inputcollid,	/* collation */
+									   clause->opfuncid,	/* reg proc to use */
+									   ((Const *) rightop)->constvalue);	/* constant */
+
+				/* get consistent function for the restriction attribute */
+				tmp = index_getprocinfo(indexRel, key2attno,
+										BRIN_PROCNUM_CONSISTENT);
+				fmgr_info_copy(&consistentFn, tmp,
+							   CurrentMemoryContext);
+
+				for (heapBlk = 0; heapBlk < nblocks; heapBlk += pagesPerRange)
+				{
+					BrinTuple  *tup;
+					BrinValues *bval;
+					OffsetNumber off;
+					BrinTuple  *btup = NULL;
+					Size		btupsz = 0;
+					Size		size;
+					bool		gottuple = false;
+					Datum		match;
+
+					tup = brinGetTupleForHeapBlock(revmap, heapBlk, &buf,
+							   &off, &size, BUFFER_LOCK_SHARE,
+							   GetActiveSnapshot());
+
+					if (tup)
+					{
+						gottuple = true;
+						btup = brin_copy_tuple(tup, size, btup, &btupsz);
+						LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+					}
+
+					/* FIXME - no BRIN tuple, we just ignore that now but maybe
+					 * we should instead read the tuples from it */
+					if (!gottuple)
+						continue;
+
+					dtup = brin_deform_tuple(bdesc, btup, dtup);
+					bval = &dtup->bt_columns[key2attno - 1];
+
+					/* check the scan key */
+					match = FunctionCall3Coll(&consistentFn,
+											  collation,
+											  PointerGetDatum(bdesc),
+											  PointerGetDatum(bval),
+											  PointerGetDatum(&key));
+
+					/*
+					 * FIXME assumes minmax index with int values, needs to check
+					 * the opclass and use type-specific comparators.
+					 */
+					if (DatumGetBool(match))
+					{
+						bval = &dtup->bt_columns[keyattno - 1];
+						if (!clause_range_set)
+						{
+							clause_minval = bval->bv_values[0];
+							clause_maxval = bval->bv_values[1];
+							clause_range_set = true;
+							continue;
+						}
+
+						clause_minval = Min(clause_minval, bval->bv_values[0]);
+						clause_maxval = Max(clause_maxval, bval->bv_values[1]);
+					}
+				}
+
+				if (buf != InvalidBuffer)
+					ReleaseBuffer(buf);
+
+				if (!range_set)
+				{
+					*minval = clause_minval;
+					*maxval = clause_maxval;
+					range_set = true;
+				}
+				else
+				{
+					/* clauses restrict the total range */
+					*minval = Max(*minval, clause_minval);
+					*maxval = Min(*maxval, clause_maxval);
+				}
+			}
+
+			brinRevmapTerminate(revmap);
+		}
+
+cleanup:
+		index_close(indexRel, AccessShareLock);
+	}
+}
+
 /*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
@@ -1110,6 +1341,20 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * the non-summarized ranges, or read the tuples (hopefully there's
 			 * going to be very few such ranges).
 			 *
+			 * It's not all that different from bitmap index scan on the index,
+			 * except that we don't read the actual heap tuples - we just read
+			 * the summaries and process those. However, this only works for
+			 * sufficiently large "dimension" tables with enough BRIN ranges.
+			 * If it's tiny (perhaps just a single BRIN range), this does not
+			 * really provide any information about how the restriction applies
+			 * to the other (large) table. That can be improved by making the
+			 * BRIN ranges smaller (perhaps just a single page), fillfactor can
+			 * be set to 10% (essentially artificially inflating the table so
+			 * that each BRIN page range represents fewer actual tuples). But
+			 * maybe this is pointless - this is an issue only for tiny tables,
+			 * and we could just read them directly instead. Using the BRIN is
+			 * mostly just optimization for large tables.
+			 *
 			 * get_actual_variable_range() does something similar for individual
 			 * columns (not for mapping ranges from one column to another one).
 			 *
@@ -1159,6 +1404,99 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				path->filters = lcons(filter, path->filters);
 
 				/*
+				 * Calculate the derived range and estimate selectivity for it as
+				 * a range clause.
+				 *
+				 * XXX We can only estimate stuff, because the actual query might
+				 * run with a different snapshot (so calculating actual filter
+				 * values would need to happen in execution phase), perhaps as
+				 * runtime keys.
+				 *
+				 * XXX This only really estimates the range, which may not match
+				 * "exact" mode of the filter, but in that case we can either treat
+				 * it as a "worst case" estimate (i.e. defensive), or optionally
+				 * we'd have to actually run the query (might be fine for tiny
+				 * dimension tables). Or perhaps do some correction (e.g. we
+				 * should know how many rows we are expected to get from the
+				 * dimension table, we can compare it with how many ranges are
+				 * matched by the derived range, and then apply
+				 *
+				 *    (expected rows) / (rows matching range)
+				 *
+				 * as a correction to the selectivity. That assumes some level
+				 * of homogeneity, but that seems reasonable.
+				 *
+				 * XXX I wonder if we could also look at multi-column MCV on the
+				 * tables, but that seems useless - we won't have this on the
+				 * small table (considering the join key is likely a primary key,
+				 * so entries involving it are unique and won't make it into MCV).
+				 * And on the large table we won't be able to apply the filter.
+				 *
+				 * This is where join statistics would be a huge benefit.
+				 */
+				{
+					Datum		minval,
+								maxval;
+					Selectivity	s1, s2;
+					Expr	   *clause;
+					TypeCacheEntry *entry;
+					Oid			ge_opr,
+								le_opr;
+					Const	   *cst;
+
+					int16		typlen;
+					bool		typbyval;
+					char		typalign;
+
+					get_typlenbyvalalign(local_var->vartype, &typlen, &typbyval, &typalign);
+
+					entry = lookup_type_cache(local_var->vartype,
+												 TYPECACHE_BTREE_OPFAMILY);
+
+					ge_opr = get_opfamily_member(entry->btree_opf,
+												 entry->btree_opintype,
+												 entry->btree_opintype,
+												 BTGreaterEqualStrategyNumber);
+
+					le_opr = get_opfamily_member(entry->btree_opf,
+												 entry->btree_opintype,
+												 entry->btree_opintype,
+												 BTLessEqualStrategyNumber);
+
+					estimate_variable_range(rel2, remote_var, &minval, &maxval);
+
+
+					cst = makeConst(local_var->vartype, local_var->vartypmod,
+									local_var->varcollid, typlen, minval,
+									false, typbyval);
+
+					clause = make_opclause(ge_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
+										   local_var->varcollid, local_var->varcollid);
+
+					s1 = clause_selectivity_ext(root, (Node *) clause, 0, JOIN_INNER, NULL, false);
+
+
+					cst = makeConst(local_var->vartype, local_var->vartypmod,
+									local_var->varcollid, typlen, maxval,
+									false, typbyval);
+
+					clause = make_opclause(le_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
+										   local_var->varcollid, local_var->varcollid);
+
+					s2 = clause_selectivity_ext(root, (Node *) clause, 0, JOIN_INNER, NULL, false);
+
+					/*
+					 * XXX The range selectivity should broadly match the rows/tuples
+					 * estimate calculated a bit later, but it's closer to what
+					 * range filters do. Also, we could compare it to BRIN index
+					 * statistics (in a separate patch), to better estimate how many
+					 * page ranges would need to be read from disk.
+					 */
+					elog(WARNING, "filter %p minval %ld maxval %ld selectivity %f %f => %f",
+						 filter, minval, maxval, s1, s2, (s1 + s2 - 1.0));
+				}
+
+				/*
 				 * calculate selectivity for this particular filter
 				 *
 				 * FIXME This needs to somehow consider how much the filter
@@ -1177,6 +1515,9 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				 * selectivity without the baserel restrictinfos?
 				 */
 				coeff *= rel2->rows / rel2->tuples;
+
+				elog(WARNING, "filter %p => %f",
+					 filter, (rel2->rows / rel2->tuples));
 			}
 
 			/*

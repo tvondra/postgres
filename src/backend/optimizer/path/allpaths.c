@@ -1376,6 +1376,26 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * time we'd definitely have to read the tuples from un-summarized
 			 * ranges). Or maybe we could have a small "range" index mapping
 			 * ranges - specialized AM, unusable for any other queries.
+			 *
+			 * For example, the special index type on columns (x,y) would build
+			 * a number of bins on (x) and for each bin it'd track min(y), max(y).
+			 * So similar to BRIN minmax, but somewhat aggregated - we don't need
+			 * to determine which page ranges match, only map ranges on "x" to
+			 * ranges on "y". The problem however would be maintaining the index
+			 * when the two columns are often updated - so the "y" value either
+			 * moves to a different "x" bin, or changes the min/max value in the
+			 * current bin. In both cases the mapping gets less accurate, and we
+			 * would get worse and worse estimates, similar to degrated BRIN.
+			 * It's only overestimates, though, which seems safer. But the only
+			 * way to fix this index seems rebuilding it from scratch. Maybe we
+			 * could maintain it per-segment, and only rebuild those segments.
+			 * And maybe merge the per-segment indexes, to get a complete index.
+			 * We could also track number of modifications, and trigger rebuild
+			 * based on that.
+			 *
+			 * Also, we would need to store the individual bins, so that inserts
+			 * do not block on a single lock. Similar to how BRIN is split into
+			 * page-range summaries.
 			 */
 
 			/*

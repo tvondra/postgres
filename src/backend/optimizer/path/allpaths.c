@@ -28,8 +28,10 @@
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_statistic.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -61,6 +63,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 
@@ -1164,6 +1167,155 @@ cleanup:
 }
 
 /*
+ * FIXME should do the same security checks as examine_simple_variable()
+ */
+static void
+estimate_variable_range_2(PlannerInfo *root, RelOptInfo *rel, Var *var, Datum *minval, Datum *maxval)
+{
+	RangeTblEntry  *rte = root->simple_rte_array[rel->relid];
+	ListCell	   *lc;
+	Bitmapset	   *pkatts;
+	Oid				pkoid;
+
+	float4			minfrac = 0.0;
+	float4			maxfrac = 1.0;
+
+	*minval = 0;
+	*maxval = 0;
+
+	/* FIXME check Var is actually PK of the relation, if not ignore this */
+
+	foreach (lc, rel->baserestrictinfo)
+	{
+		RestrictInfo   *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr		   *clause = (OpExpr *) rinfo->clause;
+		Node		   *leftop,
+					   *rightop;
+		Oid				opno;
+		Oid				collation;
+		Datum			constval;
+
+		HeapTuple		statsTuple;
+		AttStatsSlot	sslot;
+
+		if (!is_opclause(clause))
+			continue;
+
+		if (list_length(clause->args) != 2)
+			continue;
+
+		leftop = get_leftop(clause);
+		rightop = get_rightop(clause);
+		opno = clause->opno;
+		collation = clause->inputcollid;
+		constval = ((Const *) rightop)->constvalue;
+
+		/* assume leftop is Var, rightop is Const */
+		if (!IsA(leftop, Var))
+			continue;
+
+		if (!IsA(rightop, Const))
+			continue;
+
+		statsTuple = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(rte->relid),
+									 Int16GetDatum(((Var *) leftop)->varattno),
+									 BoolGetDatum(rte->inh));
+
+		if (!HeapTupleIsValid(statsTuple))
+			return;
+
+		if (get_attstatsslot(&sslot, statsTuple,
+							 STATISTIC_KIND_RANGE_MAP, InvalidOid,
+							 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+		{
+			FmgrInfo	opproc;
+			bool		ltcmp;
+
+			int			lobound = 0;	/* first possible slot to search */
+			int			hibound = sslot.nvalues-1;	/* last+1 slot to search */
+
+			float4		column_minfrac;
+			float4		column_maxfrac;
+
+			fmgr_info(get_opcode(opno), &opproc);
+
+			for (int i = 0; i < sslot.nvalues; i++)
+			{
+				ltcmp = DatumGetBool(FunctionCall2Coll(&opproc,
+													   collation,
+													   sslot.values[i],
+													   constval));
+
+				if (ltcmp)
+				{
+					lobound = i;
+					break;
+				}
+			}
+
+			for (int i = (sslot.nvalues - 1); i >= 0; i--)
+			{
+				ltcmp = DatumGetBool(FunctionCall2Coll(&opproc,
+													   collation,
+													   sslot.values[i],
+													   constval));
+
+				if (ltcmp)
+					break;
+
+				hibound = (i-1);
+			}
+
+			column_minfrac = 1.0;
+			column_maxfrac = 0.0;
+
+			for (int i = lobound; i <= hibound-1; i++)
+			{
+				column_minfrac = Min(column_minfrac, sslot.numbers[2*i]);
+				column_maxfrac = Max(column_maxfrac, sslot.numbers[2*i+1]);
+			}
+
+			minfrac = Max(minfrac, column_minfrac);
+			maxfrac = Min(maxfrac, column_maxfrac);
+
+			elog(WARNING, "minfrac %f maxfrac %f", minfrac, maxfrac);
+		}
+
+		ReleaseSysCache(statsTuple);
+	}
+
+	pkatts = get_primary_key_attnos(rte->relid, true, &pkoid);
+
+	if (bms_num_members(pkatts) != 1)
+		return;
+
+	{
+		HeapTuple		statsTuple;
+		AttStatsSlot	sslot;
+		AttrNumber		pkattno = bms_singleton_member(pkatts) + FirstLowInvalidHeapAttributeNumber;
+
+		statsTuple = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(rte->relid),
+									 Int16GetDatum(pkattno),
+									 BoolGetDatum(rte->inh));
+
+		if (!HeapTupleIsValid(statsTuple))
+			return;
+
+		if (get_attstatsslot(&sslot, statsTuple,
+							 STATISTIC_KIND_HISTOGRAM, InvalidOid,
+							 ATTSTATSSLOT_VALUES))
+		{
+			*minval = sslot.values[(int)ceil(sslot.nvalues * minfrac)];
+			*maxval = sslot.values[(int)ceil(sslot.nvalues * maxfrac)];
+		}
+
+		ReleaseSysCache(statsTuple);
+	}
+}
+
+/*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
  *
@@ -1529,6 +1681,9 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					 */
 					elog(WARNING, "filter %p minval %ld maxval %ld selectivity %f %f => %f",
 						 filter, minval, maxval, s1, s2, (s1 + s2 - 1.0));
+
+					estimate_variable_range_2(root, rel2, remote_var, &minval, &maxval);
+					elog(WARNING, "minval %ld maxval %ld", minval, maxval);
 				}
 
 				/*

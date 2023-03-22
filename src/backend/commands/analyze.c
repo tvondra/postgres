@@ -30,6 +30,7 @@
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
@@ -561,9 +562,20 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			VacAttrStats *stats = vacattrstats[i];
 			AttributeOpts *aopt;
 
+			Oid				pkoid;
+			Bitmapset	   *pkatts = get_primary_key_attnos(RelationGetRelid(onerel), true, &pkoid);
+			VacAttrStats   *pkstats = NULL;
+
+			if (bms_num_members(pkatts) == 1)
+			{
+				AttrNumber	pkattno = bms_singleton_member(pkatts) + FirstLowInvalidHeapAttributeNumber;
+				pkstats = vacattrstats[pkattno-1];
+			}
+
 			stats->rows = rows;
 			stats->tupDesc = onerel->rd_att;
 			stats->compute_stats(stats,
+								 pkstats,
 								 std_fetch_func,
 								 numrows,
 								 totalrows);
@@ -966,6 +978,7 @@ compute_index_stats(Relation onerel, double totalrows,
 				stats->exprnulls = exprnulls + i;
 				stats->rowstride = attr_cnt;
 				stats->compute_stats(stats,
+									 NULL,
 									 ind_fetch_func,
 									 numindexrows,
 									 totalindexrows);
@@ -1830,14 +1843,17 @@ typedef struct
 
 
 static void compute_trivial_stats(VacAttrStatsP stats,
+								  VacAttrStatsP pkstats,
 								  AnalyzeAttrFetchFunc fetchfunc,
 								  int samplerows,
 								  double totalrows);
 static void compute_distinct_stats(VacAttrStatsP stats,
+								   VacAttrStatsP pkstats,
 								   AnalyzeAttrFetchFunc fetchfunc,
 								   int samplerows,
 								   double totalrows);
 static void compute_scalar_stats(VacAttrStatsP stats,
+								 VacAttrStatsP pkstats,
 								 AnalyzeAttrFetchFunc fetchfunc,
 								 int samplerows,
 								 double totalrows);
@@ -1849,7 +1865,8 @@ static int	analyze_mcv_list(int *mcv_counts,
 							 double stanullfrac,
 							 int samplerows,
 							 double totalrows);
-
+static int	compare_ranges_1(const void *a, const void *b, void *arg);
+static int	compare_ranges_2(const void *a, const void *b, void *arg);
 
 /*
  * std_typanalyze -- the default type-specific typanalyze function
@@ -1936,6 +1953,7 @@ std_typanalyze(VacAttrStats *stats)
  */
 static void
 compute_trivial_stats(VacAttrStatsP stats,
+					  VacAttrStatsP pkstats,
 					  AnalyzeAttrFetchFunc fetchfunc,
 					  int samplerows,
 					  double totalrows)
@@ -2026,6 +2044,7 @@ compute_trivial_stats(VacAttrStatsP stats,
  */
 static void
 compute_distinct_stats(VacAttrStatsP stats,
+					   VacAttrStatsP pkstats,
 					   AnalyzeAttrFetchFunc fetchfunc,
 					   int samplerows,
 					   double totalrows)
@@ -2369,6 +2388,7 @@ compute_distinct_stats(VacAttrStatsP stats,
  */
 static void
 compute_scalar_stats(VacAttrStatsP stats,
+					 VacAttrStatsP pkstats,
 					 AnalyzeAttrFetchFunc fetchfunc,
 					 int samplerows,
 					 double totalrows)
@@ -2857,6 +2877,121 @@ compute_scalar_stats(VacAttrStatsP stats,
 			stats->numnumbers[slot_idx] = 1;
 			slot_idx++;
 		}
+
+		/* calculate stats for deriving range on PK column (if there's PK column) */
+		if (pkstats && (pkstats != stats))
+		{
+			int			nrows = 0;
+			Datum	   *values = palloc(sizeof(Datum) * samplerows * 2);
+			SortSupportData	ssup[2];
+			StdAnalyzeData *mystats;
+
+			int			nranges;
+			double		rows_per_range;
+			Datum	   *values_x;
+			float4	   *values_y;
+			MemoryContext	old_context;
+
+			memset(&ssup, 0, sizeof(ssup));
+
+			ssup[0].ssup_cxt = CurrentMemoryContext;
+			ssup[0].ssup_collation = stats->attrcollid;
+			ssup[0].ssup_nulls_first = false;
+			ssup[0].abbreviate = false;
+
+			mystats = (StdAnalyzeData *) stats->extra_data;
+			PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup[0]);
+
+			ssup[1].ssup_cxt = CurrentMemoryContext;
+			ssup[1].ssup_collation = pkstats->attrcollid;
+			ssup[1].ssup_nulls_first = false;
+			ssup[1].abbreviate = false;
+
+			mystats = (StdAnalyzeData *) pkstats->extra_data;
+			PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup[1]);
+
+#define VALUE_X(values, idx)		(values)[2 * (idx)]
+#define VALUE_Y(values, idx)		(values)[2 * (idx) + 1]
+
+			nrows = 0;
+			for (int i = 0; i < samplerows; i++)
+			{
+				bool	isnull;
+				values[2*nrows] = fetchfunc(stats, i, &isnull);
+
+				/* FIXME do something about NULL values (ignore for now) */
+				if (isnull)
+					continue;
+
+				values[2*nrows + 1] = fetchfunc(pkstats, i, &isnull);
+				nrows++;
+			}
+
+			/* Sort the collected values by the PK value */
+			qsort_interruptible(values, nrows, (2 * sizeof(Datum)),
+								compare_ranges_2, &ssup[1]);
+
+			/*
+			 * replace the PK value by the index (when sorted by PK)
+			 *
+			 * XXX This is fine, because for PK we'll only have a histogram, so
+			 * mapping it back to column values (or approximating it) should be
+			 * quite possible.
+			 */
+			for (int i = 0; i < nrows; i++)
+				values[2*i + 1] = Float4GetDatum((float4) (i + 1.0) / nrows);
+
+			/* now sort it by the analyzed column */
+			qsort_interruptible(values, nrows, (2 * sizeof(Datum)),
+								compare_ranges_1, &ssup[0]);
+
+			nranges = default_statistics_target;
+			rows_per_range = (double) nrows / nranges;
+
+			old_context = MemoryContextSwitchTo(stats->anl_context);
+
+			values_x = (Datum *) palloc(sizeof(Datum) * (nranges + 1));
+			values_y = (float4 *) palloc(sizeof(float4) * nranges * 2);
+
+			MemoryContextSwitchTo(old_context);
+
+			values_x[0] = VALUE_X(values, 0);
+
+			for (int i = 0; i < nranges; i++)
+			{
+				int		first_row = (int) ceil(i * rows_per_range);
+				int		last_row = (int) ceil((i + 1) * rows_per_range);
+
+				/* don't overflow */
+				last_row = Min((nrows - 1), last_row);
+
+				values_x[i+1] = values[2*last_row];
+
+				values_y[2*i] = DatumGetFloat4(VALUE_Y(values, first_row));
+				values_y[2*i+1] = values_y[2*i];
+
+				for (int j = first_row; j <= last_row; j++)
+				{
+					float4	y;
+
+					y = DatumGetFloat4(VALUE_Y(values, j));
+
+					values_y[2*i] = Min(values_y[2*i], y);
+
+					values_y[2*i+1] = Max(values_y[2*i+1], y);
+				}
+			}
+
+			stats->stakind[slot_idx] = STATISTIC_KIND_RANGE_MAP;
+			stats->staop[slot_idx] = mystats->eqopr;
+			stats->stacoll[slot_idx] = stats->attrcollid;
+			stats->stanumbers[slot_idx] = values_y;
+			stats->numnumbers[slot_idx] = (nranges * 2);
+			stats->stavalues[slot_idx] = values_x;
+			stats->numvalues[slot_idx] = (nranges + 1);
+			slot_idx++;
+
+		}
 	}
 	else if (nonnull_cnt > 0)
 	{
@@ -2922,6 +3057,28 @@ compare_scalars(const void *a, const void *b, void *arg)
 	 * For equal datums, sort by tupno
 	 */
 	return ta - tb;
+}
+
+static int
+compare_ranges_1(const void *a, const void *b, void *arg)
+{
+	Datum  *da = (Datum *) a;
+	Datum  *db = (Datum *) b;
+
+	SortSupport	ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da[0], false, db[0], false, ssup);
+}
+
+static int
+compare_ranges_2(const void *a, const void *b, void *arg)
+{
+	Datum  *da = (Datum *) a;
+	Datum  *db = (Datum *) b;
+
+	SortSupport	ssup = (SortSupport) arg;
+
+	return ApplySortComparator(da[1], false, db[1], false, ssup);
 }
 
 /*

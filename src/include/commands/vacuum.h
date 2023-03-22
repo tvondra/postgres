@@ -108,6 +108,7 @@ typedef Datum (*AnalyzeAttrFetchFunc) (VacAttrStatsP stats, int rownum,
 									   bool *isNull);
 
 typedef void (*AnalyzeAttrComputeStatsFunc) (VacAttrStatsP stats,
+											 VacAttrStatsP pkstats,
 											 AnalyzeAttrFetchFunc fetchfunc,
 											 int samplerows,
 											 double totalrows);

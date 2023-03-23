@@ -112,8 +112,6 @@ static List *build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 								List *clauses, List *other_clauses);
 static List *generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
 									  List *clauses, List *other_clauses);
-static Path *choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel,
-							   List *paths);
 static int	path_usage_comparator(const void *a, const void *b);
 static Cost bitmap_scan_cost_est(PlannerInfo *root, RelOptInfo *rel,
 								 Path *ipath);
@@ -1330,7 +1328,7 @@ generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
  * The result is either a single one of the inputs, or a BitmapAndPath
  * combining multiple inputs.
  */
-static Path *
+Path *
 choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 {
 	int			npaths = list_length(paths);

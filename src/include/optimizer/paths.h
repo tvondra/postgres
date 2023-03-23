@@ -86,6 +86,8 @@ extern bool match_index_to_operand(Node *operand, int indexcol,
 								   IndexOptInfo *index);
 extern void check_index_predicates(PlannerInfo *root, RelOptInfo *rel);
 extern bool check_index_only(RelOptInfo *rel, IndexOptInfo *index);
+extern Path *choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel,
+							   List *paths);
 
 /*
  * tidpath.h

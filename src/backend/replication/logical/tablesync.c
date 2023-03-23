@@ -1291,6 +1291,22 @@ copy_sequence(Relation rel)
 
 	fetch_sequence_data(lrel.nspname, lrel.relname, &last_value, &log_cnt, &is_called);
 
+	/*
+	 * Logical replication of sequences is based on decoding WAL records,
+	 * describing the "next" state of the sequence, a the current state
+	 * in the relfilenode is yet to reach. But that's what we read during
+	 * the initial sync, so we need to reconstruct the WAL record when we
+	 * started this batch of values.
+	 *
+	 * Otherwise we might get duplicate values (on subscriber) if we failed
+	 * over right after the sync.
+	 */
+	if (is_called)
+	{
+		last_value += log_cnt;
+		log_cnt = 0;
+	}
+
 	/* tablesync sets the sequences in non-transactional way */
 	SetSequence(RelationGetRelid(rel), false, last_value, log_cnt, is_called);
 

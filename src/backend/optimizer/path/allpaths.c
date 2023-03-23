@@ -943,6 +943,7 @@ typedef struct FilterClause
 	Node   *remote_var;
 	Oid		collation;
 	AttrNumber	attnum;	/* index attnum */
+	Selectivity selectivity;
 } FilterClause;
 
 static void
@@ -1359,6 +1360,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 	{
 		ListCell *lc;
 		List *filter_clauses = NIL;
+		List	   *bitpaths = NIL;
 
 		foreach(lc, root->eq_classes)
 		{
@@ -1407,6 +1409,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				clause->local_var = (Node *) local_var;
 				clause->remote_var = (Node *) var;
 				clause->collation = ec->ec_collation;
+				clause->selectivity = 1.0;
 
 				filter_clauses = lappend(filter_clauses, clause);
 			}
@@ -1563,6 +1566,12 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * Also, we would need to store the individual bins, so that inserts
 			 * do not block on a single lock. Similar to how BRIN is split into
 			 * page-range summaries.
+			 *
+			 * XXX I wonder if it'd be better to actually add the derived filters
+			 * as regular baserestrictinfo, so that we'd have them for costing
+			 * purposes etc. While now we add them later, which seems to be quite
+			 * confusing because some paths don't consider those filters while
+			 * others do.
 			 */
 
 			/*
@@ -1625,7 +1634,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					Datum		minval,
 								maxval;
 					Selectivity	s1, s2;
-					Expr	   *clause;
+					Expr	   *clause2;
 					TypeCacheEntry *entry;
 					Oid			ge_opr,
 								le_opr;
@@ -1657,20 +1666,20 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 									local_var->varcollid, typlen, minval,
 									false, typbyval);
 
-					clause = make_opclause(ge_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
+					clause2 = make_opclause(ge_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
 										   local_var->varcollid, local_var->varcollid);
 
-					s1 = clause_selectivity_ext(root, (Node *) clause, 0, JOIN_INNER, NULL, false);
+					s1 = clause_selectivity_ext(root, (Node *) clause2, 0, JOIN_INNER, NULL, false);
 
 
 					cst = makeConst(local_var->vartype, local_var->vartypmod,
 									local_var->varcollid, typlen, maxval,
 									false, typbyval);
 
-					clause = make_opclause(le_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
+					clause2 = make_opclause(le_opr, BOOLOID, false, (Expr *) local_var, (Expr *) cst,
 										   local_var->varcollid, local_var->varcollid);
 
-					s2 = clause_selectivity_ext(root, (Node *) clause, 0, JOIN_INNER, NULL, false);
+					s2 = clause_selectivity_ext(root, (Node *) clause2, 0, JOIN_INNER, NULL, false);
 
 					/*
 					 * XXX The range selectivity should broadly match the rows/tuples
@@ -1681,6 +1690,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					 */
 					elog(WARNING, "filter %p minval %ld maxval %ld selectivity %f %f => %f",
 						 filter, minval, maxval, s1, s2, (s1 + s2 - 1.0));
+
+					// clause->selectivity = (s1 + s2 - 1.0);
 
 					estimate_variable_range_2(root, rel2, remote_var, &minval, &maxval);
 					elog(WARNING, "minval %ld maxval %ld", minval, maxval);
@@ -1706,6 +1717,8 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				 */
 				coeff *= rel2->rows / rel2->tuples;
 
+				clause->selectivity = (rel2->rows / rel2->tuples);
+
 				elog(WARNING, "filter %p => %f",
 					 filter, (rel2->rows / rel2->tuples));
 			}
@@ -1714,9 +1727,13 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			 * XXX cut the cost in half, needs to be improved (consider the
 			 * filter selectivity)
 			 */
-			coeff *= filter_seqscan_cost;
-			path->total_cost = Max(path->startup_cost + 0.9 * (path->total_cost - path->startup_cost),
-								   path->total_cost - (1 - coeff) * rel->tuples * cpu_operator_cost);
+			cost_seqscan_adjust_filters(path, root, rel, path->param_info, coeff);
+
+			/*
+			 * Maybe adjust path cost through GUC, mostly for development
+			 * purposes.
+			 */
+			adjust_path_cost(path, filter_seqscan_cost);
 
 			add_path(rel, path);
 		}
@@ -1836,10 +1853,19 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				Assert(ipath->path.filters);
 
-				/* FIXME proper costing */
-				// ipath->path.startup_cost;
-				coeff *= filter_indexscan_cost;
-				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
+				/*
+				 * adjust the index cost to somewhat reflect derived filters
+				 *
+				 * FIXME This is really rudimentary cost adjustment, needs to be
+				 * made more accurate, refactor it a bit etc.
+				 */
+				cost_index_adjust_filters(ipath, root, loop_count, false, coeff);
+
+				/*
+				 * Maybe adjust path cost through GUC, mostly for development
+				 * purposes.
+				 */
+				adjust_path_cost((Path *) ipath, filter_indexscan_cost);
 
 				add_path(rel, (Path *) ipath);
 			}
@@ -1847,7 +1873,6 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 			if (index->amhasgetbitmap)
 			{
 				IndexPath	 *ipath;
-				BitmapHeapPath *bpath;
 				double		coeff = 1.0;
 
 				/*
@@ -1909,36 +1934,66 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				Assert(ipath->path.filters);
 
-				/* FIXME proper costing */
-				// ipath->path.startup_cost;
-				coeff *= filter_bitmapscan_cost;
-				ipath->path.total_cost = ipath->path.startup_cost + (ipath->path.total_cost - ipath->path.startup_cost) * coeff;
+				/*
+				 * adjust the index cost to somewhat reflect derived filters
+				 *
+				 * FIXME This is really rudimentary cost adjustment, needs to be
+				 * made more accurate, refactor it a bit etc.
+				 */
+				cost_index_adjust_filters(ipath, root, loop_count, false, coeff);
 
 				/*
-				 * XXX Maybe we should build/attach another copy of the
-				 * filter to the heap scan node. The bitmap filter may
-				 * be lossy and the point is to reduce the number of
-				 * tuples we return. Currently we'd build the filter
-				 * twice (so double the cost) but maybe we could have
-				 * just one copy with multiple references. Considering
-				 * we now have a separate subplan (instead of just
-				 * piggy-backing on a Hash node), we have good control
-				 * over when the filter is built etc. (which is an issue
-				 * for Hash, where this is managed by the hashjoin node).
+				 * Maybe adjust path cost through GUC, mostly for development
+				 * purposes.
 				 */
-				bpath = create_bitmap_heap_path(root, rel, (Path *) ipath,
-												rel->lateral_relids, 1.0, 0);
+				adjust_path_cost((Path *) ipath, filter_bitmapscan_cost);
 
-				coeff *= filter_bitmapscan_cost;
-				bpath->path.total_cost = bpath->path.startup_cost + (bpath->path.total_cost - bpath->path.startup_cost) * coeff;
-				/* FIXME proper costing */
-				// bpath->path.startup_cost /= 10;
-				// bpath->path.total_cost /= 10;
-
-				add_path(rel, (Path *) bpath);
+				bitpaths = lappend(bitpaths, ipath);
 			}
 		}
 
+		if (bitpaths)
+		{
+			// Path	   *bitmapqual = choose_bitmap_and(root, rel, bitpaths);
+			Path *bitmapqual;
+			BitmapHeapPath *bpath;
+
+			if (list_length(bitpaths) == 1)
+				bitmapqual = linitial(bitpaths);
+			else
+				bitmapqual = (Path *) create_bitmap_and_path(root, rel, bitpaths);
+
+			/*
+			 * XXX Maybe we should build/attach another copy of the
+			 * filter to the heap scan node. The bitmap filter may
+			 * be lossy and the point is to reduce the number of
+			 * tuples we return. Currently we'd build the filter
+			 * twice (so double the cost) but maybe we could have
+			 * just one copy with multiple references. Considering
+			 * we now have a separate subplan (instead of just
+			 * piggy-backing on a Hash node), we have good control
+			 * over when the filter is built etc. (which is an issue
+			 * for Hash, where this is managed by the hashjoin node).
+			 */
+			bpath = create_bitmap_heap_path(root, rel, bitmapqual,
+											rel->lateral_relids, 1.0, 0);
+
+			/*
+			 * XXX We don't adjust the bitmap heap scan cost for derived
+			 * filters, because the filters are pushed to index scan level,
+			 * so that should be sufficient. Maybe if we add filters to
+			 * the heap scan (e.g. because index range filters may not
+			 * filter all rows), this would need to be revisited.
+			 */
+
+			/*
+			 * We still allow adjusting the cost through GUC, mostly for
+			 * development purposes.
+			 */
+			adjust_path_cost((Path *) bpath, filter_bitmapscan_cost);
+
+			add_path(rel, (Path *) bpath);
+		}
 	}
 
 	/* Consider sequential scan */

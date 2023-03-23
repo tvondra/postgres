@@ -323,6 +323,29 @@ cost_seqscan(Path *path, PlannerInfo *root,
 	path->total_cost = startup_cost + cpu_run_cost + disk_run_cost;
 }
 
+void
+cost_seqscan_adjust_filters(Path *path, PlannerInfo *root,
+							RelOptInfo *baserel, ParamPathInfo *param_info,
+							Selectivity filter_selectivity)
+{
+	Cost	cost_reduction;
+
+	/*
+	 * Make the seqscan look a bit cheaper - we're reducing the number of
+	 * rows produced by the scan, so we'll do fewer operations later (e.g.
+	 * lookups in other tables), and we want to reflect that. We still need
+	 * to scan the whole table, we're not reducing this part (other scan
+	 * types do that using indexes) and we don't want to interfere with
+	 * that. So we reduce the amount of work a bit, but not more than 10%.
+	 */
+	cost_reduction = (1 - filter_selectivity) * baserel->tuples * cpu_operator_cost;
+
+	cost_reduction = Min(cost_reduction,
+						 0.1 * (path->total_cost - path->startup_cost));
+
+	path->total_cost = path->total_cost - cost_reduction;
+}
+
 /*
  * cost_samplescan
  *	  Determines and returns the cost of scanning a relation using sampling.
@@ -791,6 +814,59 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 
 	path->path.startup_cost = startup_cost;
 	path->path.total_cost = startup_cost + run_cost;
+}
+
+/*
+ * cost_index_adjust_filters
+ *	  Adjust costing of an index path to somewhat reflect derived filters.
+ *
+ * A simplified version of cost_index, making the path cheaper to reflect
+ * selectivity of derived filters. Probably needs more work, at the moment
+ * it simply tweaks the run_cost based on selectivity, and a couple other
+ * trivial things.
+ */
+void
+cost_index_adjust_filters(IndexPath *path, PlannerInfo *root, double loop_count,
+						  bool partial_path, Selectivity filter_selectivity)
+{
+	IndexOptInfo *index = path->indexinfo;
+	RelOptInfo *baserel = index->rel;
+	double		rows = Min(1000, baserel->rows * path->indexselectivity);
+
+	/* Should only be applied to base relations */
+	Assert(IsA(baserel, RelOptInfo) &&
+		   IsA(index, IndexOptInfo));
+	Assert(baserel->relid > 0);
+	Assert(baserel->rtekind == RTE_RELATION);
+
+	path->path.rows *= filter_selectivity;
+
+	/*
+	 * Save amcostestimate's results for possible use in bitmap scan planning.
+	 * We don't bother to save indexStartupCost or indexCorrelation, because a
+	 * bitmap scan doesn't care about either.
+	 */
+	path->indextotalcost *= filter_selectivity;
+	path->indexselectivity *= filter_selectivity;
+
+	path->path.startup_cost *= filter_selectivity;
+	path->path.total_cost *= filter_selectivity;
+
+	/*
+	 * but add a little bit of CPU to reflect the filter evaluation on the
+	 * rows filtered by the pre-existing index conditions.
+	 */
+	path->path.total_cost += (rows * cpu_operator_cost);
+}
+
+/*
+ * Used only to penalize (or prefer) certain path types.
+ */
+void
+adjust_path_cost(Path *path, double cost_coefficient)
+{
+	path->startup_cost *= cost_coefficient;
+	path->total_cost *= cost_coefficient;
 }
 
 /*

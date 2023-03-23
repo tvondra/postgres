@@ -212,4 +212,11 @@ extern PathTarget *set_pathtarget_cost_width(PlannerInfo *root, PathTarget *targ
 extern double compute_bitmap_pages(PlannerInfo *root, RelOptInfo *baserel,
 								   Path *bitmapqual, int loop_count, Cost *cost, double *tuple);
 
+extern void cost_seqscan_adjust_filters(Path *path, PlannerInfo *root,
+										RelOptInfo *baserel, ParamPathInfo *param_info,
+										Selectivity filter_selectivity);
+extern void cost_index_adjust_filters(IndexPath *path, PlannerInfo *root, double loop_count,
+									  bool partial_path, Selectivity filter_selectivity);
+extern void adjust_path_cost(Path *path, double cost_coefficient);
+
 #endif							/* COST_H */

@@ -2028,6 +2028,25 @@ pg_sequence_last_value(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 }
 
+Datum
+pg_sequence_lock_for_sync(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	seqrel;
+
+	seqrel = relation_open(relid, RowExclusiveLock);
+
+	if (seqrel->rd_rel->relkind != RELKIND_SEQUENCE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a sequence",
+						RelationGetRelationName(seqrel))));
+
+	/* close the relation, but keep the lock */
+	relation_close(seqrel, NoLock);
+
+	PG_RETURN_VOID();
+}
 
 void
 seq_redo(XLogReaderState *record)

@@ -60,6 +60,7 @@
 #include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -1363,6 +1364,208 @@ estimate_range_selectivity(PlannerInfo *root, Var *var, Datum minval, Datum maxv
 }
 
 /*
+ * FIXME should do the same security checks as examine_simple_variable()
+ */
+static bool
+estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var, Datum *minval, Datum *maxval)
+{
+	RangeTblEntry  *rte = root->simple_rte_array[rel->relid];
+	ListCell	   *lc;
+	Bitmapset	   *pkatts;
+	Oid				pkoid;
+
+	float4			frac_min = 0.0;
+	float4			frac_max = 1.0;
+
+	*minval = 0;
+	*maxval = 0;
+
+	/* FIXME check Var is actually PK of the relation, if not ignore this */
+
+	foreach (lc, rel->baserestrictinfo)
+	{
+		RestrictInfo   *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr		   *clause = (OpExpr *) rinfo->clause;
+		Node		   *leftop,
+					   *rightop;
+		Oid				opno;
+		Oid				collation;
+		Datum			constval;
+		RegProcedure	oprrest;
+
+		Var			   *var;
+		Const		   *cst;
+
+		HeapTuple		statsTuple;
+		AttStatsSlot	sslot;
+
+		bool			varonleft;
+		bool			isgt;
+
+		if (!is_opclause(clause))
+			continue;
+
+		if (list_length(clause->args) != 2)
+			continue;
+
+		leftop = get_leftop(clause);
+		rightop = get_rightop(clause);
+		opno = clause->opno;
+		oprrest = get_oprrest(opno);
+		collation = clause->inputcollid;
+
+		/*
+		 * assume leftop is Var, rightop is Const
+		 *
+		 * XXX Seems overly restrictive, we need to accept a wider range of
+		 * clause types. Although, if we're mapping it to statistics ...
+		 * We should map it to columns and expressions with statistics on
+		 * them (expression indexes, extended stats).
+		 */
+		if (!IsA(leftop, Var))
+			continue;
+
+		if (!IsA(rightop, Const))
+			continue;
+
+		var = (Var *) leftop;
+		cst = (Const *) rightop;
+		constval = cst->constvalue;
+
+		/* XXX relax this assumption */
+		varonleft = true;
+
+		/*
+		 * Determine the selectivity estimator (implies how we should walk
+		 * the histogram).
+		 */
+		switch (oprrest)
+		{
+			case F_SCALARLTSEL:
+			case F_SCALARLESEL:
+				isgt = false;
+				break;
+
+			case F_SCALARGTSEL:
+			case F_SCALARGESEL:
+				isgt = true;
+				break;
+
+			default:
+				/* can't estimate generic expressions */
+				continue;
+		}
+
+		/* try to lookup the statistics for the attnum */
+		statsTuple = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(rte->relid),
+									 Int16GetDatum(var->varattno),
+									 BoolGetDatum(rte->inh));
+
+		/* didn't find any statistics, try the next restriction */
+		if (!HeapTupleIsValid(statsTuple))
+			continue;
+
+		/* see if we have a range map statistics for the attribute */
+		if (get_attstatsslot(&sslot, statsTuple,
+							 STATISTIC_KIND_RANGE_MAP, InvalidOid,
+							 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+		{
+			FmgrInfo	opproc;
+
+			int			lobound = 0;	/* first possible slot to search */
+			int			hibound = sslot.nvalues-1;	/* last+1 slot to search */
+
+			float4		column_minfrac;
+			float4		column_maxfrac;
+
+			fmgr_info(get_opcode(opno), &opproc);
+
+			/* lookup first bin matching the condition */
+			for (int i = 0; i < sslot.nvalues; i++)
+			{
+				bool	r;
+
+				/* XXX assumes varonleft=true */
+				r = DatumGetBool(FunctionCall2Coll(&opproc,
+												   collation,
+												   sslot.values[i],
+												   constval));
+
+				if (r)
+				{
+					lobound = i;
+					break;
+				}
+			}
+
+			/* determine last bin matching the condition */
+			for (int i = (sslot.nvalues - 1); i >= 0; i--)
+			{
+				bool	r;
+
+				r = DatumGetBool(FunctionCall2Coll(&opproc,
+												   collation,
+												   sslot.values[i],
+												   constval));
+
+				if (r)
+					break;
+
+				hibound = i;
+			}
+
+			column_minfrac = 1.0;
+			column_maxfrac = 0.0;
+
+			for (int i = lobound; i < hibound; i++)
+			{
+				Assert(2*i < sslot.nnumbers);
+				Assert(2*i + 1 < sslot.nnumbers);
+				column_minfrac = Min(column_minfrac, sslot.numbers[2*i]);
+				column_maxfrac = Max(column_maxfrac, sslot.numbers[2*i+1]);
+			}
+
+			frac_min = Max(frac_min, column_minfrac);
+			frac_max = Min(frac_max, column_maxfrac);
+		}
+
+		ReleaseSysCache(statsTuple);
+	}
+
+	pkatts = get_primary_key_attnos(rte->relid, true, &pkoid);
+
+	if (bms_num_members(pkatts) != 1)
+		return false;
+
+	{
+		HeapTuple		statsTuple;
+		AttStatsSlot	sslot;
+		AttrNumber		pkattno = bms_singleton_member(pkatts) + FirstLowInvalidHeapAttributeNumber;
+
+		statsTuple = SearchSysCache3(STATRELATTINH,
+									 ObjectIdGetDatum(rte->relid),
+									 Int16GetDatum(pkattno),
+									 BoolGetDatum(rte->inh));
+
+		if (!HeapTupleIsValid(statsTuple))
+			return false;
+
+		if (get_attstatsslot(&sslot, statsTuple,
+							 STATISTIC_KIND_HISTOGRAM, InvalidOid,
+							 ATTSTATSSLOT_VALUES))
+		{
+			*minval = sslot.values[(int) floor(sslot.nvalues * frac_min)];
+			*maxval = sslot.values[(int) floor(sslot.nvalues * frac_max)];
+		}
+
+		ReleaseSysCache(statsTuple);
+	}
+
+	return true;
+}
+
+/*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
  *
@@ -1701,8 +1904,18 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 							 minval, maxval, s);
 					}
 
-					estimate_variable_range_2(root, rel2, remote_var, &minval, &maxval);
-					elog(WARNING, "minval %ld maxval %ld", minval, maxval);
+					/*
+					 * Now try to estimate the range selectivity from cross-attribute
+					 * range map.
+					 */
+					if (estimate_variable_range_from_stats(root, rel2, remote_var, &minval, &maxval))
+					{
+						Selectivity s
+							= estimate_range_selectivity(root, local_var, minval, maxval);
+
+						elog(WARNING, "range selectivity (from stats) %ld %ld => %f",
+							 minval, maxval, s);
+					}
 				}
 
 				/*

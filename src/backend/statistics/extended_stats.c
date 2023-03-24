@@ -2244,6 +2244,7 @@ compute_expr_stats(Relation onerel, double totalrows,
 			stats->exprnulls = exprnulls;
 			stats->rowstride = 1;
 			stats->compute_stats(stats,
+								 NULL,
 								 expr_fetch_func,
 								 tcnt,
 								 tcnt);

@@ -946,6 +946,422 @@ typedef struct FilterClause
 	Selectivity selectivity;
 } FilterClause;
 
+static AttrNumber
+match_var_to_index(IndexOptInfo *index, Var *var)
+{
+	AttrNumber attnum = InvalidAttrNumber;
+
+	for (int i = 0; i < index->nkeycolumns; i++)
+	{
+		if (index->indexkeys[i] == var->varattno)
+		{
+			attnum = (i + 1);
+			break;
+		}
+	}
+
+	return attnum;
+}
+
+static int
+match_restrictions_to_index(IndexOptInfo *index, Relation indexRel, List *restrictions,
+							AttrNumber *attnums, ScanKeyData *keys, FmgrInfo *funcs)
+{
+	ListCell   *lc;
+	int			nkeys = 0;
+
+	foreach (lc, restrictions)
+	{
+		RestrictInfo   *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr		   *clause;
+		Node		   *leftop,
+					   *rightop;
+
+		Var			   *var;
+		Const		   *cst;
+
+		Oid				opno;
+		Oid				opfamily;	/* opfamily of index column */
+		int				op_strategy;	/* operator's strategy number */
+		Oid				op_lefttype;	/* operator's declared input types */
+		Oid				op_righttype;
+
+		FmgrInfo	   *tmp;
+
+		Assert(IsA(rinfo, RestrictInfo));
+
+		clause = (OpExpr *) rinfo->clause;
+
+		if (!is_opclause(clause))
+			continue;
+
+		if (list_length(clause->args) != 2)
+			continue;
+
+		leftop = get_leftop(clause);
+		rightop = get_rightop(clause);
+		opno = clause->opno;
+
+		/*
+		 * XXX Very strict, we only accept (Var op Const) for now, this needs
+		 * to be relaxed to handle clauses similar to what BRIN does.
+		 */
+		if (!IsA(leftop, Var))
+			continue;
+
+		if (!IsA(rightop, Const))
+			continue;
+
+		var = (Var *) leftop;
+		cst = (Const *) rightop;
+
+		/* Match the variable to the index. */
+		attnums[nkeys] = InvalidAttrNumber;
+
+		for (int i = 0; i < index->nkeycolumns; i++)
+		{
+			if (index->indexkeys[i] == var->varattno)
+			{
+				attnums[nkeys] = (i + 1);
+				break;
+			}
+		}
+
+		/* no match, ignore the restriction */
+		if (attnums[nkeys] == InvalidAttrNumber)
+			continue;
+
+		opfamily = indexRel->rd_opfamily[attnums[nkeys] - 1];
+
+		get_op_opfamily_properties(opno, opfamily, false,
+								   &op_strategy,
+								   &op_lefttype,
+								   &op_righttype);
+
+		/*
+		 * initialize the scan key's fields appropriately
+		 */
+		ScanKeyEntryInitialize(&keys[nkeys],
+							   0,				/* flags */
+							   attnums[nkeys],	/* index attribute number to scan */
+							   op_strategy, /* op's strategy */
+							   op_righttype,	/* strategy subtype */
+							   clause->inputcollid,	/* collation */
+							   clause->opfuncid,	/* reg proc to use */
+							   cst->constvalue);	/* constant */
+
+		/* get consistent function for the restriction attribute */
+		tmp = index_getprocinfo(indexRel, attnums[nkeys],
+								BRIN_PROCNUM_CONSISTENT);
+		fmgr_info_copy(&funcs[nkeys], tmp,
+					   CurrentMemoryContext);
+
+		nkeys++;
+	}
+
+	return nkeys;
+}
+
+/*
+ * estimate_variable_range_from_brin
+ *		Estimate the range of the variable using other restrictions on the rel.
+ *
+ * This walks BRIN indexes on the relation, and checks those defined on the
+ * variable and other variables restricted by conditions on the relation.
+ *
+ * For each such index we walk all the ranges, and calculate the min/max for
+ * ranges consistent with the restriction. And then intesect all those ranges
+ * to calculate the narrowest range.
+ *
+ * Returns true if a range was calculated (and the boundary values are passed
+ * through minval/maxval arguments). When a range could not be calculated
+ * (e.g. when there are no BRIN indexes) returns false.
+ *
+ * XXX This only works for "range" BRIN indexes (minmax and minmax-multi).
+ *
+ * XXX In principle the restrictions can be on arbitrary BRIN opclass - we
+ * only need to check if the page range is consistent with the condition or
+ * not, after all.
+ *
+ * XXX The opclass for the "target" column (identified by Var) could be any
+ * summary that allows "union" and "intersect" operations (so easy for box
+ * types, geometries, ...). But we typically don't join on those.
+ *
+ * XXX Should this also track if there are NULL values? Again, irrelevant
+ * for joins, I think.
+ */
+static bool
+estimate_variable_range_from_brin(RelOptInfo *rel, Var *var,
+								  Datum *minval, Datum *maxval)
+{
+	ListCell   *lc;
+
+	/* Did we set the output range? */
+	bool		range_set = false;
+
+	/* If there are no restrictions on the relation, bail out. */
+	if (!rel->baserestrictinfo)
+		return false;
+
+	/* walk all indexes */
+	foreach (lc, rel->indexlist)
+	{
+		IndexOptInfo   *index = (IndexOptInfo *) lfirst(lc);
+		Relation		indexRel;
+		AttrNumber		varattno;
+		int				nkeys;
+
+		AttrNumber	   *attnums;
+		FmgrInfo	   *funcs;
+		ScanKeyData	   *keys;
+
+		Oid				heapOid;
+		Relation		heapRel;
+		BlockNumber		nblocks;
+
+		/*
+		 * We need at least two columns in the index, to map restrictions
+		 * from one attribute to the other.
+		 */
+		if (index->nkeycolumns < 2)
+			continue;
+
+		indexRel = index_open(index->indexoid, AccessShareLock);
+
+		/*
+		 * BRIN indexes only for now
+		 *
+		 * FIXME This needs to restrict the opclass, perhaps by requiring an
+		 * optional support procedure calculating "range" from page range
+		 * summaries. Or at least a flag.
+		 */
+		if (indexRel->rd_rel->relam != BRIN_AM_OID)
+			goto cleanup;
+
+		/*
+		 * Check if the index is defined on the column we want to restrict.
+		 * If not, the we can skip inspecting the index.
+		 */
+		if ((varattno = match_var_to_index(index, var)) == InvalidAttrNumber)
+			goto cleanup;
+
+		/*
+		 * Size the arrays large enough as if every restriction happens to
+		 * be a scan key.
+		 */
+		attnums = (AttrNumber *) palloc(sizeof(AttrNumber) * list_length(rel->baserestrictinfo));
+		funcs = (FmgrInfo *) palloc(sizeof(FmgrInfo) * list_length(rel->baserestrictinfo));
+		keys = (ScanKeyData *) palloc(sizeof(ScanKeyData) * list_length(rel->baserestrictinfo));
+
+		/*
+		 * Now try matching restrictions to the index - if there are none,
+		 * skip the index.
+		 */
+		nkeys = match_restrictions_to_index(index, indexRel, rel->baserestrictinfo,
+											attnums, keys, funcs);
+		if (nkeys == 0)
+			goto cleanup;
+
+		/* determine size of the underlying table, so that we can scan ranges */
+		heapOid = IndexGetRelation(RelationGetRelid(indexRel), false);
+		heapRel = table_open(heapOid, AccessShareLock);
+		nblocks = RelationGetNumberOfBlocks(heapRel);
+		table_close(heapRel, AccessShareLock);
+
+		{
+			BrinDesc	   *bdesc;
+			BrinRevmap	   *revmap;
+			BlockNumber		pagesPerRange;
+			BlockNumber		heapBlk;
+			BrinMemTuple   *dtup;
+			Buffer			buf = InvalidBuffer;
+
+			bool			index_range_set = false;
+			Datum			index_minval,
+							index_maxval;
+
+			/* build stuff we need for scanning the BRIN index */
+			bdesc = brin_build_desc(indexRel);
+			revmap = brinRevmapInitialize(indexRel, &pagesPerRange,
+										  GetActiveSnapshot());
+
+			/* allocate an initial in-memory tuple, out of the per-range memcxt */
+			dtup = brin_new_memtuple(bdesc);
+
+			/* scan the ranges, and for each page range check all scan keys */
+			for (heapBlk = 0; heapBlk < nblocks; heapBlk += pagesPerRange)
+			{
+				BrinTuple  *tup;
+				BrinValues *bval;
+				OffsetNumber off;
+				BrinTuple  *btup = NULL;
+				Size		btupsz = 0;
+				Size		size;
+				bool		gottuple = false;
+				bool		matches = true;
+
+				tup = brinGetTupleForHeapBlock(revmap, heapBlk, &buf,
+						   &off, &size, BUFFER_LOCK_SHARE,
+						   GetActiveSnapshot());
+
+				if (tup)
+				{
+					gottuple = true;
+					btup = brin_copy_tuple(tup, size, btup, &btupsz);
+					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				}
+
+				/* FIXME - no BRIN tuple, we just ignore that now but maybe
+				 * we should instead read the tuples from it */
+				if (!gottuple)
+					continue;
+
+				dtup = brin_deform_tuple(bdesc, btup, dtup);
+
+				for (int k = 0; k < nkeys; k++)
+				{
+					ScanKey		key = &keys[k];
+					Datum		match;
+
+					bval = &dtup->bt_columns[attnums[k] - 1];
+
+					/*
+					 * check the scan key
+					 *
+					 * FIXME needs to support both signatures of the consistent
+					 * function (with 3 and 4 arguments).
+					 */
+					match = FunctionCall3Coll(&funcs[k],
+											  key->sk_collation,
+											  PointerGetDatum(bdesc),
+											  PointerGetDatum(bval),
+											  PointerGetDatum(key));
+
+					/* Did we find a mismatching scan key? */
+					if (!DatumGetBool(match))
+					{
+						matches = false;
+						break;
+					}
+				}
+
+				/*
+				 * If the range matches all scan keys, add the range for the
+				 * variable we're trying to restrict.
+				 *
+				 * FIXME This assumes minmax index with int values, needs to check
+				 * the opclass and use type-specific comparators.
+				 */
+				if (matches)
+				{
+					bval = &dtup->bt_columns[varattno - 1];
+					if (!index_range_set)
+					{
+						index_minval = bval->bv_values[0];
+						index_maxval = bval->bv_values[1];
+						index_range_set = true;
+						continue;
+					}
+
+					index_minval = Min(index_minval, bval->bv_values[0]);
+					index_maxval = Max(index_maxval, bval->bv_values[1]);
+				}
+			}
+
+
+			if (buf != InvalidBuffer)
+				ReleaseBuffer(buf);
+
+			if (!index_range_set)
+			{
+				/*
+				 * XXX It might be useful to indicate we eliminated all ranges,
+				 * because that's a good indication the mapped range is empty.
+				 * By just returning false we discard this information and fall
+				 * back to the default estimation (which ultimately returns
+				 * DEFAULT_RANGE_INEQ_SEL, i.e. 0.005).
+				 */
+				elog(WARNING, "no matching ranges, likely empty range ...");
+			}
+			else if (!range_set)
+			{
+				*minval = index_minval;
+				*maxval = index_maxval;
+				range_set = true;
+			}
+			else
+			{
+				/* clauses restrict the total range */
+				*minval = Max(*minval, index_minval);
+				*maxval = Min(*maxval, index_maxval);
+			}
+
+			brinRevmapTerminate(revmap);
+		}
+
+cleanup:
+		index_close(indexRel, AccessShareLock);
+	}
+
+	return range_set;
+}
+
+static Selectivity
+estimate_range_selectivity(PlannerInfo *root, Var *var, Datum minval, Datum maxval)
+{
+	TypeCacheEntry *entry;
+	Expr	   *clause;
+	List	   *clauses = NIL;
+	Oid			opr;
+	Const	   *cst;
+
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+
+	Assert(IsA(var, Var));
+
+	/* construct a range using the default btree opfamily for the type */
+
+	get_typlenbyvalalign(var->vartype, &typlen, &typbyval, &typalign);
+
+	entry = lookup_type_cache(var->vartype,
+							  TYPECACHE_BTREE_OPFAMILY);
+
+	/* Var >= minval */
+
+	opr = get_opfamily_member(entry->btree_opf,
+							  entry->btree_opintype,
+							  entry->btree_opintype,
+							  BTGreaterEqualStrategyNumber);
+
+	cst = makeConst(var->vartype, var->vartypmod, var->varcollid,
+					typlen, minval, false, typbyval);
+
+	clause = make_opclause(opr, BOOLOID, false, (Expr *) var, (Expr *) cst,
+						   var->varcollid, var->varcollid);
+
+	clauses = lappend(clauses, clause);
+
+	/* Var <= maxval */
+
+	opr = get_opfamily_member(entry->btree_opf,
+							  entry->btree_opintype,
+							  entry->btree_opintype,
+							  BTLessEqualStrategyNumber);
+
+	cst = makeConst(var->vartype, var->vartypmod, var->varcollid,
+					typlen, maxval, false, typbyval);
+
+	clause = make_opclause(opr, BOOLOID, false, (Expr *) var, (Expr *) cst,
+						   var->varcollid, var->varcollid);
+
+	clauses = lappend(clauses, clause);
+
+
+	return clauselist_selectivity(root, clauses, 0, JOIN_INNER, NULL);
+}
+
 /*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
@@ -1228,6 +1644,66 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
+
+				/*
+				 * Calculate the derived range and estimate selectivity for it as
+				 * a range clause.
+				 *
+				 * XXX We can only estimate stuff, because the actual query might
+				 * run with a different snapshot (so calculating actual filter
+				 * values would need to happen in execution phase), perhaps as
+				 * runtime keys.
+				 *
+				 * XXX This only really estimates the range, which may not match
+				 * "exact" mode of the filter, but in that case we can either treat
+				 * it as a "worst case" estimate (i.e. defensive), or optionally
+				 * we'd have to actually run the query (might be fine for tiny
+				 * dimension tables). Or perhaps do some correction (e.g. we
+				 * should know how many rows we are expected to get from the
+				 * dimension table, we can compare it with how many ranges are
+				 * matched by the derived range, and then apply
+				 *
+				 *    (expected rows) / (rows matching range)
+				 *
+				 * as a correction to the selectivity. That assumes some level
+				 * of homogeneity, but that seems reasonable.
+				 *
+				 * XXX I wonder if we could also look at multi-column MCV on the
+				 * tables, but that seems useless - we won't have this on the
+				 * small table (considering the join key is likely a primary key,
+				 * so entries involving it are unique and won't make it into MCV).
+				 * And on the large table we won't be able to apply the filter.
+				 *
+				 * This is where join statistics would be a huge benefit.
+				 */
+				{
+					Datum		minval,
+								maxval;
+
+					/*
+					 * Try deducing a range on the join column from BRIN indexes
+					 * on the dimension table, and if that works then estimate
+					 * selectivity for the range when applied on the first (main)
+					 * relation.
+					 *
+					 * XXX The range selectivity should broadly match the rows/tuples
+					 * estimate calculated a bit later, but it's closer to what
+					 * range filters do. Also, we could compare it to BRIN index
+					 * statistics (in a separate patch), to better estimate how many
+					 * page ranges would need to be read from disk.
+					 */
+					if (estimate_variable_range_from_brin(rel2, remote_var, &minval, &maxval))
+					{
+						Selectivity s
+							= estimate_range_selectivity(root, local_var, minval, maxval);
+
+						elog(WARNING, "range selectivity (from BRIN) %ld %ld => %f",
+							 minval, maxval, s);
+					}
+
+					estimate_variable_range_2(root, rel2, remote_var, &minval, &maxval);
+					elog(WARNING, "minval %ld maxval %ld", minval, maxval);
+				}
 
 				/*
 				 * calculate selectivity for this particular filter

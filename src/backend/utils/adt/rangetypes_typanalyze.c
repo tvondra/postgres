@@ -35,7 +35,7 @@
 
 static int	float8_qsort_cmp(const void *a1, const void *a2, void *arg);
 static int	range_bound_qsort_cmp(const void *a1, const void *a2, void *arg);
-static void compute_range_stats(VacAttrStats *stats,
+static void compute_range_stats(VacAttrStats *stats, VacAttrStats *pkstats,
 								AnalyzeAttrFetchFunc fetchfunc, int samplerows,
 								double totalrows);
 
@@ -124,7 +124,7 @@ range_bound_qsort_cmp(const void *a1, const void *a2, void *arg)
  * compute_range_stats() -- compute statistics for a range column
  */
 static void
-compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
+compute_range_stats(VacAttrStats *stats, VacAttrStats *pkstats, AnalyzeAttrFetchFunc fetchfunc,
 					int samplerows, double totalrows)
 {
 	TypeCacheEntry *typcache = (TypeCacheEntry *) stats->extra_data;

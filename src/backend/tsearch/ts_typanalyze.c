@@ -38,6 +38,7 @@ typedef struct
 } TrackItem;
 
 static void compute_tsvector_stats(VacAttrStats *stats,
+								   VacAttrStats *pkstats,
 								   AnalyzeAttrFetchFunc fetchfunc,
 								   int samplerows,
 								   double totalrows);
@@ -141,6 +142,7 @@ ts_typanalyze(PG_FUNCTION_ARGS)
  */
 static void
 compute_tsvector_stats(VacAttrStats *stats,
+					   VacAttrStats *pkstats,
 					   AnalyzeAttrFetchFunc fetchfunc,
 					   int samplerows,
 					   double totalrows)

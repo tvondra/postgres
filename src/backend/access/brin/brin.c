@@ -2181,6 +2181,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	if (!state)
 		return;
 
+	/* XXX maybe we should sort the ranges by rangeStart? */
 	for (i = 1; i <= brinshared->last_worker_id; i++)
 	{
 		BufFile	   *f;

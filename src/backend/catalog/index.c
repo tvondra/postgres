@@ -2976,7 +2976,7 @@ index_build(Relation heapRelation,
 	Assert(PointerIsValid(indexRelation->rd_indam));
 	Assert(PointerIsValid(indexRelation->rd_indam->ambuild));
 	Assert(PointerIsValid(indexRelation->rd_indam->ambuildempty));
-elog(WARNING, "parallel = %d", parallel);
+
 	/*
 	 * Determine worker process details for parallel CREATE INDEX.  Currently,
 	 * only btree has support for parallel builds.
@@ -3001,7 +3001,7 @@ elog(WARNING, "parallel = %d", parallel);
 								 RelationGetRelationName(indexRelation),
 								 RelationGetRelationName(heapRelation),
 								 indexInfo->ii_ParallelWorkers)));
-elog(WARNING, "indexInfo->ii_ParallelWorkers = %d", indexInfo->ii_ParallelWorkers);
+
 	/*
 	 * Switch to the table owner's userid, so that any index functions are run
 	 * as that user.  Also lock down security-restricted operations and

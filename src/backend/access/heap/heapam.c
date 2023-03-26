@@ -2979,12 +2979,9 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * have no provision for broadcasting it to them.
 	 */
 	if (IsInParallelMode())
-	{
-		Assert(false);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
-	}
 
 	/*
 	 * Fetch the list of attributes to be checked for various operations.
@@ -5848,12 +5845,9 @@ heap_inplace_update(Relation relation, HeapTuple tuple)
 	 * clear that it would be useful, anyway.
 	 */
 	if (IsInParallelMode())
-	{
-		Assert(false);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
-	}
 
 	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&(tuple->t_self)));
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);

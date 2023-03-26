@@ -6736,7 +6736,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	 */
 	parallel_workers = compute_parallel_worker(rel, heap_blocks, -1,
 											   max_parallel_maintenance_workers);
-elog(WARNING, "parallel_workers = %d", parallel_workers);
+
 	/*
 	 * Cap workers based on available maintenance_work_mem as needed.
 	 *

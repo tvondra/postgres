@@ -2360,7 +2360,13 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 
 		/*
 		 * FIXME maybe acquire larger chunks of data, not individual ranges
-		 * (especially with pages_per_range=1)
+		 * (especially with pages_per_range=1). Something like
+		 * 
+		 *    Min(128, state->bs_pagesPerRange)
+		 *
+		 * could work, I guess. Not sure where's the sweet spot. Maybe tie
+		 * this to the prefetching too, by effective_io_concurrency (or
+		 * rather the maintenance_effective_io_concucrrency)?
 		 */
 		SpinLockAcquire(&brinshared->mutex);
 		startBlock = brinshared->next_range;
@@ -2384,6 +2390,12 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 		/* start tidscan to read the relevant part of the table */
 		scan = table_beginscan_tidrange(heap, SnapshotAny,	// FIXME which snapshot to use?
 										&mintid, &maxtid);
+
+#ifdef USE_PREFETCH
+		/* do prefetching (this prefetches the whole range. not sure that's good) */
+		for (BlockNumber blkno = startBlock; blkno < startBlock + state->bs_pagesPerRange; blkno++)
+			PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, blkno);
+#endif
 
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   brinbuildCallbackParallel, state, scan);

@@ -172,6 +172,7 @@ static void terminate_brin_buildstate(BrinBuildState *state);
 static void brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 						  bool include_partial, double *numSummarized, double *numExisting);
 static void form_and_insert_tuple(BrinBuildState *state);
+static void form_and_spill_tuple(BrinBuildState *state);
 static void union_tuples(BrinDesc *bdesc, BrinMemTuple *a,
 						 BrinTuple *b);
 static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
@@ -945,8 +946,7 @@ brinbuildCallbackParallel(Relation index,
 				   state->bs_currRangeStart + state->bs_pagesPerRange));
 
 		/* create the index tuple and insert it */
-		// form_and_insert_tuple(state);
-		elog(WARNING, "inserting BRIN tuple for range %u", state->bs_currRangeStart);
+		form_and_spill_tuple(state);
 
 		/* set state to correspond to the next range */
 		state->bs_currRangeStart += state->bs_pagesPerRange;
@@ -1749,6 +1749,27 @@ form_and_insert_tuple(BrinBuildState *state)
 }
 
 /*
+ * Given a deformed tuple in the build state, convert it into the on-disk
+ * format and write it to a temporary file (leader will insert it into the
+ * index later).
+ */
+static void
+form_and_spill_tuple(BrinBuildState *state)
+{
+	BrinTuple  *tup;
+	Size		size;
+
+	tup = brin_form_tuple(state->bs_bdesc, state->bs_currRangeStart,
+						  state->bs_dtuple, &size);
+
+	elog(WARNING, "spilling tuple for range %u size %lu", state->bs_currRangeStart, size);
+
+	state->bs_numtuples++;
+
+	pfree(tup);
+}
+
+/*
  * Given two deformed tuples, adjust the first one so that it's consistent
  * with the summary values in both.
  */
@@ -2171,7 +2192,7 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 {
 	BrinLeader *brinleader = buildstate->bs_leader;
 	int			sortmem;
-Assert(false);
+
 	/*
 	 * Might as well use reliable figure when doling out maintenance_work_mem
 	 * (when requested number of workers were not launched, this will be

@@ -2228,7 +2228,6 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 		char		name[MAXPGPATH];
 		int64		fsize;
 		int64		fpos = 0;
-		int64		ntuples = 0;
 
 		snprintf(name, MAXPGPATH, "tuples.%d", i);
 
@@ -2256,8 +2255,6 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 						  &state->bs_currentInsertBuf, rangeStart, tup, size);
 
 			fpos += sizeof(Size) + sizeof(BlockNumber) + size;
-
-			ntuples++;
 		}
 
 		BufFileClose(f);
@@ -2352,26 +2349,27 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 	/* Get chunks of the table, do TID Scans and build the ranges */
 	while (true)
 	{
+		TableScanDesc	scan;
 		BlockNumber		startBlock,
-						lastBlock;
+						lastBlock,
+						chunkBlocks;
 		ItemPointerData	mintid,
 						maxtid;
-		TableScanDesc scan;
 
 		/*
-		 * FIXME maybe acquire larger chunks of data, not individual ranges
-		 * (especially with pages_per_range=1). Something like
-		 * 
-		 *    Min(128, state->bs_pagesPerRange)
+		 * Acquire larger chunks of data - this matters especially for low
+		 * pages_per_range settings (e.g. set to 1). Otherwise there would
+		 * be a lot of trashing and overhead with multiple workers.
 		 *
-		 * could work, I guess. Not sure where's the sweet spot. Maybe tie
-		 * this to the prefetching too, by effective_io_concurrency (or
-		 * rather the maintenance_effective_io_concucrrency)?
+		 * Not sure where's the sweet spot. Maybe tie this to the prefetching
+		 * too (maintenance_effective_io_concucrrency)?
 		 */
+		chunkBlocks = Max(128, state->bs_pagesPerRange);
+
 		SpinLockAcquire(&brinshared->mutex);
 		startBlock = brinshared->next_range;
 		lastBlock = brinshared->last_range;
-		brinshared->next_range += state->bs_pagesPerRange;
+		brinshared->next_range += chunkBlocks;
 		SpinLockRelease(&brinshared->mutex);
 
 		state->bs_currRangeStart = startBlock;
@@ -2384,7 +2382,7 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
 
 		ItemPointerSet(&mintid, startBlock, 0);
-		ItemPointerSet(&maxtid, startBlock + (state->bs_pagesPerRange - 1),
+		ItemPointerSet(&maxtid, startBlock + (chunkBlocks - 1),
 					   MaxHeapTuplesPerPage);
 
 		/* start tidscan to read the relevant part of the table */
@@ -2393,7 +2391,7 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 
 #ifdef USE_PREFETCH
 		/* do prefetching (this prefetches the whole range. not sure that's good) */
-		for (BlockNumber blkno = startBlock; blkno < startBlock + state->bs_pagesPerRange; blkno++)
+		for (BlockNumber blkno = startBlock; blkno < startBlock + chunkBlocks; blkno++)
 			PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, blkno);
 #endif
 

@@ -51,8 +51,7 @@
 
 /*
  * Status for index builds performed in parallel.  This is allocated in a
- * dynamic shared memory segment.  Note that there is a separate tuplesort TOC
- * entry, private to tuplesort.c but allocated by this module on its behalf.
+ * dynamic shared memory segment.
  */
 typedef struct BrinShared
 {
@@ -82,6 +81,12 @@ typedef struct BrinShared
 	slock_t		mutex;
 
 	/*
+	 * 
+	 */
+	BlockNumber	next_range;
+	BlockNumber	last_range;
+
+	/*
 	 * Mutable state that is maintained by workers, and reported back to
 	 * leader at end of parallel scan.
 	 *
@@ -94,12 +99,6 @@ typedef struct BrinShared
 	int			nparticipantsdone;
 	double		reltuples;
 	double		indtuples;
-
-	/*
-	 * ParallelTableScanDescData data follows. Can't directly embed here, as
-	 * implementations of the parallel table scan desc interface might need
-	 * stronger alignment.
-	 */
 } BrinShared;
 
 /*
@@ -185,8 +184,9 @@ static void _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Rela
 static void _brin_end_parallel(BrinLeader *btleader);
 static Size _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static void _brin_leader_participate_as_worker(BrinBuildState *buildstate,
-											   Relation index);
-static void _brin_parallel_scan_and_build(BrinShared *brinshared, Relation index,
+											   Relation heap, Relation index);
+static void _brin_parallel_scan_and_build(BrinShared *brinshared,
+										  Relation heap, Relation index,
 										  int sortmem, bool progress);
 
 /*
@@ -917,6 +917,49 @@ brinbuildCallback(Relation index,
 							   values, isnull);
 }
 
+static void
+brinbuildCallbackParallel(Relation index,
+						  ItemPointer tid,
+						  Datum *values,
+						  bool *isnull,
+						  bool tupleIsAlive,
+						  void *brstate)
+{
+	BrinBuildState *state = (BrinBuildState *) brstate;
+	BlockNumber thisblock;
+
+	thisblock = ItemPointerGetBlockNumber(tid);
+
+	/*
+	 * If we're in a block that belongs to a future range, summarize what
+	 * we've got and start afresh.  Note the scan might have skipped many
+	 * pages, if they were devoid of live tuples; make sure to insert index
+	 * tuples for those too.
+	 */
+	while (thisblock > state->bs_currRangeStart + state->bs_pagesPerRange - 1)
+	{
+
+		BRIN_elog((DEBUG2,
+				   "brinbuildCallback: completed a range: %u--%u",
+				   state->bs_currRangeStart,
+				   state->bs_currRangeStart + state->bs_pagesPerRange));
+
+		/* create the index tuple and insert it */
+		// form_and_insert_tuple(state);
+		elog(WARNING, "inserting BRIN tuple for range %u", state->bs_currRangeStart);
+
+		/* set state to correspond to the next range */
+		state->bs_currRangeStart += state->bs_pagesPerRange;
+
+		/* re-initialize state for it */
+		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
+	}
+
+	/* Accumulate the current tuple into the running state */
+	(void) add_values_to_range(index, state->bs_bdesc, state->bs_dtuple,
+							   values, isnull);
+}
+
 /*
  * brinbuild() -- build a new BRIN index.
  */
@@ -989,11 +1032,11 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Now scan the relation.  No syncscan allowed here because we want the
 	 * heap blocks in physical order.
 	 */
-	reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
-									   brinbuildCallback, (void *) state, NULL);
+	// reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
+	//								   brinbuildCallback, (void *) state, NULL);
 
 	/* process the final batch */
-	form_and_insert_tuple(state);
+	// form_and_insert_tuple(state);
 
 	if (state->bs_leader)
 		_brin_end_parallel(state->bs_leader);
@@ -2011,10 +2054,15 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	brinshared->isconcurrent = isconcurrent;
 	ConditionVariableInit(&brinshared->workersdonecv);
 	SpinLockInit(&brinshared->mutex);
+
 	/* Initialize mutable state */
 	brinshared->nparticipantsdone = 0;
 	brinshared->reltuples = 0.0;
 	brinshared->indtuples = 0.0;
+
+	/* Track work assigned to workers etc. */
+	brinshared->next_range = 0;
+	brinshared->last_range = RelationGetNumberOfBlocks(heap);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -2067,13 +2115,9 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	/* Save leader state now that it's clear build will be parallel */
 	buildstate->bs_leader = brinleader;
 
-	elog(WARNING, "A buildstate->bs_leader = %p", buildstate->bs_leader);
-
 	/* Join heap scan ourselves */
 	if (leaderparticipates)
-		_brin_leader_participate_as_worker(buildstate, index);
-
-	elog(WARNING, "B buildstate->bs_leader = %p", buildstate->bs_leader);
+		_brin_leader_participate_as_worker(buildstate, heap, index);
 
 	/*
 	 * Caller needs to wait for all launched workers when we return.  Make
@@ -2123,11 +2167,11 @@ _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot)
  * Within leader, participate as a parallel worker.
  */
 static void
-_brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation index)
+_brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Relation index)
 {
 	BrinLeader *brinleader = buildstate->bs_leader;
 	int			sortmem;
-
+Assert(false);
 	/*
 	 * Might as well use reliable figure when doling out maintenance_work_mem
 	 * (when requested number of workers were not launched, this will be
@@ -2136,7 +2180,7 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation index)
 	sortmem = maintenance_work_mem / brinleader->nparticipantworkers;
 
 	/* Perform work common to all participants */
-	_brin_parallel_scan_and_build(brinleader->brinshared, index, sortmem, true);
+	_brin_parallel_scan_and_build(brinleader->brinshared, heap, index, sortmem, true);
 
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
@@ -2160,12 +2204,14 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation index)
  * When this returns, workers are done, and need only release resources.
  */
 static void
-_brin_parallel_scan_and_build(BrinShared *brinshared, Relation index, int sortmem, bool progress)
+_brin_parallel_scan_and_build(BrinShared *brinshared,
+							  Relation heap, Relation index, int sortmem,
+							  bool progress)
 {
-	BrinBuildState buildstate;
-	TableScanDesc scan;
+	BrinBuildState *buildstate;
 	double		reltuples;
 	IndexInfo  *indexInfo;
+	BlockNumber	pagesPerRange = 128;	// FIXME
 
 	/* Fill in buildstate for brinbuildCallback() */
 	// buildstate.isunique = btshared->isunique;
@@ -2175,15 +2221,49 @@ _brin_parallel_scan_and_build(BrinShared *brinshared, Relation index, int sortme
 	// buildstate.spool = btspool;
 	// buildstate.spool2 = btspool2;
 	// buildstate.indtuples = 0;
-	buildstate.bs_leader = NULL;
+	// buildstate.bs_leader = NULL;
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = brinshared->isconcurrent;
 
-	/* FIXME start tidscan or something like that */
-	// scan = table_beginscan_parallel(btspool->heap,
-	// 								ParallelTableScanFromBTShared(btshared));
+	buildstate = initialize_brin_buildstate(index, NULL, pagesPerRange);
+
+	/* Get chunks of the table, do TID Scans and build the ranges */
+	while (true)
+	{
+		BlockNumber		startBlock,
+						lastBlock;
+		ItemPointerData	mintid,
+						maxtid;
+		TableScanDesc scan;
+
+		/*
+		 * FIXME maybe acquire larger chunks of data, not individual ranges
+		 * (especially with pages_per_range=1)
+		 */
+		SpinLockAcquire(&brinshared->mutex);
+		startBlock = brinshared->next_range;
+		lastBlock = brinshared->last_range;
+		brinshared->next_range += buildstate->bs_pagesPerRange;
+		SpinLockRelease(&brinshared->mutex);
+
+		buildstate->bs_currRangeStart = startBlock;
+
+		if (startBlock > lastBlock)
+			break;
+
+		ItemPointerSet(&mintid, startBlock, 0);
+		ItemPointerSet(&maxtid, startBlock + buildstate->bs_pagesPerRange,
+					   MaxHeapTuplesPerPage);
+
+		/* start tidscan to read the relevant part of the table */
+		scan = table_beginscan_tidrange(heap, SnapshotAny,	// FIXME which snapshot to use?
+										&mintid, &maxtid);
+
+		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
+										   brinbuildCallbackParallel, buildstate, scan);
+	}
 
 	/* Execute this worker's part of the sort */
 	// if (progress)
@@ -2197,7 +2277,7 @@ _brin_parallel_scan_and_build(BrinShared *brinshared, Relation index, int sortme
 	SpinLockAcquire(&brinshared->mutex);
 	brinshared->nparticipantsdone++;
 	brinshared->reltuples += reltuples;
-	brinshared->indtuples += buildstate.bs_numtuples;
+	brinshared->indtuples += buildstate->bs_numtuples;
 	SpinLockRelease(&brinshared->mutex);
 
 	/* Notify leader */
@@ -2258,16 +2338,12 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	heapRel = table_open(brinshared->heaprelid, heapLockmode);
 	indexRel = index_open(brinshared->indexrelid, indexLockmode);
 
-	/* Look up shared state private to tuplesort.c */
-	// sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
-	// tuplesort_attach_shared(sharedsort, seg);
-
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
 	/* FIXME tie this to number of participants, somehow */
 	sortmem = maintenance_work_mem / 2;
-	_brin_parallel_scan_and_build(brinshared, indexRel, sortmem, false);
+	_brin_parallel_scan_and_build(brinshared, heapRel, indexRel, sortmem, false);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

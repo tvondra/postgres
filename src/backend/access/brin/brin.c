@@ -2181,7 +2181,14 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	if (!state)
 		return;
 
-	/* XXX maybe we should sort the ranges by rangeStart? */
+	/*
+	 * XXX maybe we should sort the ranges by rangeStart? That'd give us index
+	 * that is cheaper to walk sequentially, because we'd not have any page
+	 * misses (mostly getting data from the same page as before). Although the
+	 * index should be pretty small in general, and thus cached. OTOH each
+	 * worker should produce tuples in the right order, so we could just merge
+	 * sort them.
+	 */
 	for (i = 1; i <= brinshared->last_worker_id; i++)
 	{
 		BufFile	   *f;

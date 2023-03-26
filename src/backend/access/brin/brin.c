@@ -64,6 +64,7 @@ typedef struct BrinShared
 	Oid			heaprelid;
 	Oid			indexrelid;
 	bool		isconcurrent;
+	BlockNumber	pagesPerRange;
 
 	/*
 	 * workersdonecv is used to monitor the progress of workers.  All parallel
@@ -192,7 +193,8 @@ static void _brin_end_parallel(BrinLeader *btleader, BrinBuildState *state);
 static Size _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static void _brin_leader_participate_as_worker(BrinBuildState *buildstate,
 											   Relation heap, Relation index);
-static void _brin_parallel_scan_and_build(BrinShared *brinshared,
+static void _brin_parallel_scan_and_build(BrinBuildState *buildstate,
+										  BrinShared *brinshared,
 										  Relation heap, Relation index,
 										  int sortmem, bool progress);
 
@@ -2091,6 +2093,7 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	brinshared->heaprelid = RelationGetRelid(heap);
 	brinshared->indexrelid = RelationGetRelid(index);
 	brinshared->isconcurrent = isconcurrent;
+	brinshared->pagesPerRange = buildstate->bs_pagesPerRange;
 	ConditionVariableInit(&brinshared->workersdonecv);
 	SpinLockInit(&brinshared->mutex);
 
@@ -2273,7 +2276,14 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 	sortmem = maintenance_work_mem / brinleader->nparticipantworkers;
 
 	/* Perform work common to all participants */
-	_brin_parallel_scan_and_build(brinleader->brinshared, heap, index, sortmem, true);
+	_brin_parallel_scan_and_build(buildstate, brinleader->brinshared,
+								  heap, index, sortmem, true);
+
+	/* insert the last range */
+	form_and_spill_tuple(buildstate);
+
+	BufFileClose(buildstate->bs_file);
+	buildstate->bs_file = NULL;
 
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
@@ -2297,39 +2307,25 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
  * When this returns, workers are done, and need only release resources.
  */
 static void
-_brin_parallel_scan_and_build(BrinShared *brinshared,
+_brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 							  Relation heap, Relation index, int sortmem,
 							  bool progress)
 {
-	BrinBuildState *buildstate;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-	BlockNumber	pagesPerRange = 128;	// FIXME
 	char		name[MAXPGPATH];
-
-	/* Fill in buildstate for brinbuildCallback() */
-	// buildstate.isunique = btshared->isunique;
-	// buildstate.nulls_not_distinct = btshared->nulls_not_distinct;
-	// buildstate.havedead = false;
-	// buildstate.heap = btspool->heap;
-	// buildstate.spool = btspool;
-	// buildstate.spool2 = btspool2;
-	// buildstate.indtuples = 0;
-	// buildstate.bs_leader = NULL;
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = brinshared->isconcurrent;
 
-	buildstate = initialize_brin_buildstate(index, NULL, pagesPerRange);
-
 	SpinLockAcquire(&brinshared->mutex);
-	buildstate->bs_worker_id = (++brinshared->last_worker_id);
+	state->bs_worker_id = (++brinshared->last_worker_id);
 	SpinLockRelease(&brinshared->mutex);
 
-	snprintf(name, MAXPGPATH, "tuples.%d", buildstate->bs_worker_id);
+	snprintf(name, MAXPGPATH, "tuples.%d", state->bs_worker_id);
 
-	buildstate->bs_file = BufFileCreateFileSet(&brinshared->fileset.fs, name);
+	state->bs_file = BufFileCreateFileSet(&brinshared->fileset.fs, name);
 
 	/* Get chunks of the table, do TID Scans and build the ranges */
 	while (true)
@@ -2347,17 +2343,20 @@ _brin_parallel_scan_and_build(BrinShared *brinshared,
 		SpinLockAcquire(&brinshared->mutex);
 		startBlock = brinshared->next_range;
 		lastBlock = brinshared->last_range;
-		brinshared->next_range += buildstate->bs_pagesPerRange;
+		brinshared->next_range += state->bs_pagesPerRange;
 		SpinLockRelease(&brinshared->mutex);
 
-		buildstate->bs_currRangeStart = startBlock;
+		state->bs_currRangeStart = startBlock;
 
 		/* did we reach the end of the heap relation? */
 		if (startBlock > lastBlock)
 			break;
 
+		/* re-initialize state for it */
+		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
+
 		ItemPointerSet(&mintid, startBlock, 0);
-		ItemPointerSet(&maxtid, startBlock + buildstate->bs_pagesPerRange,
+		ItemPointerSet(&maxtid, startBlock + (state->bs_pagesPerRange - 1),
 					   MaxHeapTuplesPerPage);
 
 		/* start tidscan to read the relevant part of the table */
@@ -2365,11 +2364,13 @@ _brin_parallel_scan_and_build(BrinShared *brinshared,
 										&mintid, &maxtid);
 
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-										   brinbuildCallbackParallel, buildstate, scan);
-	}
+										   brinbuildCallbackParallel, state, scan);
 
-	BufFileClose(buildstate->bs_file);
-	buildstate->bs_file = NULL;
+		form_and_spill_tuple(state);
+
+		/* set state to correspond to the next range */
+		state->bs_currRangeStart = InvalidBlockNumber;
+	}
 
 	/* Execute this worker's part of the sort */
 	// if (progress)
@@ -2383,7 +2384,7 @@ _brin_parallel_scan_and_build(BrinShared *brinshared,
 	SpinLockAcquire(&brinshared->mutex);
 	brinshared->nparticipantsdone++;
 	brinshared->reltuples += reltuples;
-	brinshared->indtuples += buildstate->bs_numtuples;
+	brinshared->indtuples += state->bs_numtuples;
 	SpinLockRelease(&brinshared->mutex);
 
 	/* Notify leader */
@@ -2398,6 +2399,7 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
 	BrinShared *brinshared;
+	BrinBuildState *buildstate;
 	Relation	heapRel;
 	Relation	indexRel;
 	LOCKMODE	heapLockmode;
@@ -2444,6 +2446,8 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	heapRel = table_open(brinshared->heaprelid, heapLockmode);
 	indexRel = index_open(brinshared->indexrelid, indexLockmode);
 
+	buildstate = initialize_brin_buildstate(indexRel, NULL, brinshared->pagesPerRange);
+
 	/* Attach to the shared fileset. */
 	SharedFileSetAttach(&brinshared->fileset, seg);
 
@@ -2452,10 +2456,14 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	/* FIXME tie this to number of participants, somehow */
 	sortmem = maintenance_work_mem / 2;
-	_brin_parallel_scan_and_build(brinshared, heapRel, indexRel, sortmem, false);
+	_brin_parallel_scan_and_build(buildstate, brinshared,
+								  heapRel, indexRel, sortmem, false);
 
-	// FIXME needs to insert the last range, just like we do for the serial
-	// build with form_and_insert_tuple()
+	/* insert the last range */
+	form_and_spill_tuple(buildstate);
+
+	BufFileClose(buildstate->bs_file);
+	buildstate->bs_file = NULL;
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

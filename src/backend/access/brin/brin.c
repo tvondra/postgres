@@ -57,9 +57,9 @@
 typedef struct BrinShared
 {
 	/*
-	 * These fields are not modified during the sort.  They primarily exist
-	 * for the benefit of worker processes that need to create BTSpool state
-	 * corresponding to that used by the leader.
+	 * These fields are not modified during the build.  They primarily exist for
+	 * the benefit of worker processes that need to create state corresponding
+	 * to that used by the leader.
 	 */
 	Oid			heaprelid;
 	Oid			indexrelid;
@@ -69,8 +69,8 @@ typedef struct BrinShared
 	/*
 	 * workersdonecv is used to monitor the progress of workers.  All parallel
 	 * participants must indicate that they are done before leader can use
-	 * mutable state that workers maintain during scan (and before leader can
-	 * proceed to tuplesort_performsort()).
+	 * results built by the workers (and before leader can write the data into
+	 * the index).
 	 */
 	ConditionVariable workersdonecv;
 
@@ -80,7 +80,7 @@ typedef struct BrinShared
 	/*
 	 * mutex protects all fields before heapdesc.
 	 *
-	 * These fields contain status information of interest to B-Tree index
+	 * These fields contain status information of interest to BRIN index
 	 * builds that must work just the same when an index is built in parallel.
 	 */
 	slock_t		mutex;
@@ -94,7 +94,7 @@ typedef struct BrinShared
 
 	/*
 	 * Mutable state that is maintained by workers, and reported back to
-	 * leader at end of parallel scan.
+	 * leader at end of the scans.
 	 *
 	 * nparticipantsdone is number of worker processes finished.
 	 *
@@ -127,7 +127,7 @@ typedef struct BrinLeader
 	 * Leader process convenience pointers to shared state (leader avoids TOC
 	 * lookups).
 	 *
-	 * btshared is the shared state for entire build.  snapshot is the snapshot
+	 * brinshared is the shared state for entire build.  snapshot is the snapshot
 	 * used by the scan iff an MVCC snapshot is required.
 	 */
 	BrinShared	   *brinshared;
@@ -188,6 +188,7 @@ static bool add_values_to_range(Relation idxRel, BrinDesc *bdesc,
 								BrinMemTuple *dtup, Datum *values, bool *nulls);
 static bool check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys);
 
+/* parallel index builds */
 static void _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 								 bool isconcurrent, int request);
 static void _brin_end_parallel(BrinLeader *btleader, BrinBuildState *state);
@@ -927,6 +928,12 @@ brinbuildCallback(Relation index,
 							   values, isnull);
 }
 
+/*
+ * A version of the callback, used by parallel index builds. The main difference
+ * is that instead of writing the BRIN tuples into the index, we write them into
+ * a temporary file, and leave the insertion up to the leader (which may reorder
+ * them a bit etc.).
+ */
 static void
 brinbuildCallbackParallel(Relation index,
 						  ItemPointer tid,
@@ -954,9 +961,8 @@ brinbuildCallbackParallel(Relation index,
 				   state->bs_currRangeStart,
 				   state->bs_currRangeStart + state->bs_pagesPerRange));
 
-		/* create the index tuple and insert it */
+		/* create the index tuple and write it into the temporary file */
 		form_and_spill_tuple(state);
-		state->bs_numtuples++;
 
 		/* set state to correspond to the next range */
 		state->bs_currRangeStart += state->bs_pagesPerRange;
@@ -1031,7 +1037,14 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	revmap = brinRevmapInitialize(index, &pagesPerRange, NULL);
 	state = initialize_brin_buildstate(index, revmap, pagesPerRange);
 
-	/* Attempt to launch parallel worker scan when required */
+	/*
+	 * Attempt to launch parallel worker scan when required
+	 *
+	 * XXX plan_create_index_workers makes the number of workers dependent on
+	 * maintenance_work_mem, requiring 32MB for each worker. That makes sense
+	 * for btree, but not for BRIN, which can do away with much less memory.
+	 * So maybe make that somehow less strict, optionally?
+	 */
 	if (indexInfo->ii_ParallelWorkers > 0)
 		_brin_begin_parallel(state, heap, index, indexInfo->ii_Concurrent,
 							 indexInfo->ii_ParallelWorkers);
@@ -1049,7 +1062,6 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* process the final batch */
 		form_and_insert_tuple(state);
-		state->bs_numtuples++;
 
 		/* track the number of relation tuples */
 		state->bs_reltuples = reltuples;
@@ -2027,7 +2039,7 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 #endif
 
 	/*
-	 * Enter parallel mode, and create context for parallel build of btree
+	 * Enter parallel mode, and create context for parallel build of brin
 	 * index
 	 */
 	EnterParallelMode();
@@ -2048,8 +2060,7 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 		snapshot = RegisterSnapshot(GetTransactionSnapshot());
 
 	/*
-	 * Estimate size for our own PARALLEL_KEY_BRIN_SHARED workspace, and
-	 * PARALLEL_KEY_TUPLESORT tuplesort workspace
+	 * Estimate size for our own PARALLEL_KEY_BRIN_SHARED workspace.
 	 */
 	estbrinshared = _brin_parallel_estimate_shared(heap, snapshot);
 	shm_toc_estimate_chunk(&pcxt->estimator, estbrinshared);
@@ -2202,6 +2213,14 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	 * index should be pretty small in general, and thus cached. OTOH each
 	 * worker should produce tuples in the right order, so we could just merge
 	 * sort them.
+	 *
+	 * XXX Alternatively, we could arrange the build so that the workers read
+	 * a continuous chunk of the table. For example, with K workers we might
+	 * leave the first 1/K to the first worker, then 1/K to the second etc.
+	 * The we would not need to reorder anything, we would just read the
+	 * results for all workers.
+	 *
+	 * XXX That's also mean we don't do many small TID scans, as now.
 	 */
 	for (i = 1; i <= brinshared->last_worker_id; i++)
 	{
@@ -2260,7 +2279,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 
 /*
  * Returns size of shared memory required to store state for a parallel
- * btree index build based on the snapshot its parallel scan will use.
+ * brin index build based on the snapshot its parallel scan will use.
  */
 static Size
 _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot)
@@ -2295,14 +2314,6 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 
 	BufFileClose(buildstate->bs_file);
 	buildstate->bs_file = NULL;
-
-#ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
-	{
-		ShowUsage("BTREE BUILD (Leader Partial Spool) STATISTICS");
-		ResetUsage();
-	}
-#endif							/* BTREE_BUILD_STATS */
 }
 
 /*
@@ -2379,7 +2390,6 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 
 		/* spill the last tuple */
 		form_and_spill_tuple(state);
-		state->bs_numtuples++;
 
 		state->bs_reltuples += reltuples;
 
@@ -2416,11 +2426,6 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
 	int			sortmem;
-
-#ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
-		ResetUsage();
-#endif							/* BTREE_BUILD_STATS */
 
 	/*
 	 * The only possible status flag that can be set to the parallel worker is
@@ -2479,14 +2484,6 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	walusage = shm_toc_lookup(toc, PARALLEL_KEY_WAL_USAGE, false);
 	InstrEndParallelQuery(&bufferusage[ParallelWorkerNumber],
 						  &walusage[ParallelWorkerNumber]);
-
-#ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
-	{
-		ShowUsage("BTREE BUILD (Worker Partial Spool) STATISTICS");
-		ResetUsage();
-	}
-#endif							/* BTREE_BUILD_STATS */
 
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);

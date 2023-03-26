@@ -144,6 +144,7 @@ typedef struct BrinBuildState
 {
 	Relation	bs_irel;
 	int			bs_numtuples;
+	int			bs_reltuples;
 	Buffer		bs_currentInsertBuf;
 	BlockNumber bs_pagesPerRange;
 	BlockNumber bs_currRangeStart;
@@ -955,6 +956,7 @@ brinbuildCallbackParallel(Relation index,
 
 		/* create the index tuple and insert it */
 		form_and_spill_tuple(state);
+		state->bs_numtuples++;
 
 		/* set state to correspond to the next range */
 		state->bs_currRangeStart += state->bs_pagesPerRange;
@@ -1040,7 +1042,6 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 */
 
 	/* no parallel index build, just do the usual thing */
-	reltuples = 1000; // FIXME
 	if (state->bs_leader == NULL)
 	{
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
@@ -1048,6 +1049,10 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* process the final batch */
 		form_and_insert_tuple(state);
+		state->bs_numtuples++;
+
+		/* track the number of relation tuples */
+		state->bs_reltuples = reltuples;
 	}
 
 	/*
@@ -1059,6 +1064,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* release resources */
 	idxtuples = state->bs_numtuples;
+	reltuples = state->bs_reltuples;
 	brinRevmapTerminate(state->bs_rmAccess);
 	terminate_brin_buildstate(state);
 
@@ -1464,6 +1470,7 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 
 	state->bs_irel = idxRel;
 	state->bs_numtuples = 0;
+	state->bs_reltuples = 0;
 	state->bs_currentInsertBuf = InvalidBuffer;
 	state->bs_pagesPerRange = pagesPerRange;
 	state->bs_currRangeStart = 0;
@@ -2184,6 +2191,10 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	if (!state)
 		return;
 
+	/* copy the data into leader state (we have to wait for the workers ) */
+	state->bs_reltuples = brinshared->reltuples;
+	state->bs_numtuples = brinshared->indtuples;
+
 	/*
 	 * XXX maybe we should sort the ranges by rangeStart? That'd give us index
 	 * that is cheaper to walk sequentially, because we'd not have any page
@@ -2366,24 +2377,22 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   brinbuildCallbackParallel, state, scan);
 
+		/* spill the last tuple */
 		form_and_spill_tuple(state);
+		state->bs_numtuples++;
 
-		/* set state to correspond to the next range */
+		state->bs_reltuples += reltuples;
+
+		/* set state to invalid range */
 		state->bs_currRangeStart = InvalidBlockNumber;
 	}
 
-	/* Execute this worker's part of the sort */
-	// if (progress)
-	//	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
-	//								 PROGRESS_BTREE_PHASE_PERFORMSORT_1);
-	reltuples = 100.0;
 	/*
-	 * Done.  Record ambuild statistics, and whether we encountered a broken
-	 * HOT chain.
+	 * Done.  Record ambuild statistics.
 	 */
 	SpinLockAcquire(&brinshared->mutex);
 	brinshared->nparticipantsdone++;
-	brinshared->reltuples += reltuples;
+	brinshared->reltuples += state->bs_reltuples;
 	brinshared->indtuples += state->bs_numtuples;
 	SpinLockRelease(&brinshared->mutex);
 

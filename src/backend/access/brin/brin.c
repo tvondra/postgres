@@ -2367,6 +2367,8 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 		 *
 		 * Not sure where's the sweet spot. Maybe tie this to the prefetching
 		 * too (maintenance_effective_io_concucrrency)?
+		 *
+		 * FIXME The chunkBlocks needs to be a multiple of bs_pagesPerRange.
 		 */
 		chunkBlocks = Max(128, state->bs_pagesPerRange);
 

@@ -2221,6 +2221,10 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	 * results for all workers.
 	 *
 	 * XXX That's also mean we don't do many small TID scans, as now.
+	 *
+	 * The problem is we don't know how many workers will be started while
+	 * determining this, but maybe we could postpone that decision somehow?
+	 * We'd have to wait for all the launched workers to attach, I guess.
 	 */
 	for (i = 1; i <= brinshared->last_worker_id; i++)
 	{

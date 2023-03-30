@@ -34,6 +34,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/toasting.h"
@@ -59,6 +60,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
+#include "utils/typcache.h"
 
 /*
  * This struct is used to pass around the information on tables to be
@@ -73,10 +75,15 @@ typedef struct
 
 
 static void cluster_multiple_rels(List *rtcs, ClusterParams *params);
-static void rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose);
+static void rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose,
+							 int numSortKeys, AttrNumber *sortKeys,
+							 Oid *sortOperators, Oid *sortCollations,
+							 bool *nullsFirstFlags);
 static void copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 							bool verbose, bool *pSwapToastByContent,
-							TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
+							TransactionId *pFreezeXid, MultiXactId *pCutoffMulti,
+							int numSortKeys, AttrNumber *sortKeys, Oid *sortOperators,
+							Oid *sortCollations, bool *nullsFirstFlags);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 static List *get_tables_to_cluster_partitioned(MemoryContext cluster_context,
 											   Oid indexOid);
@@ -117,6 +124,12 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 	Oid			indexOid = InvalidOid;
 	MemoryContext cluster_context;
 	List	   *rtcs;
+
+	int		numSortKeys = 0;
+	AttrNumber *sortKeys;
+	Oid	   *sortOperators;
+	Oid	   *sortCollations;
+	bool   *nullsFirstFlags;
 
 	/* Parse option list */
 	foreach(lc, stmt->params)
@@ -161,7 +174,58 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot cluster temporary tables of other sessions")));
 
-		if (stmt->indexname == NULL)
+		if (stmt->columns != NIL)
+		{
+			ListCell   *lc;
+			int			idx;
+
+			numSortKeys = list_length(stmt->columns);
+			sortKeys = (AttrNumber *) palloc(sizeof(AttrNumber) * numSortKeys);
+			sortOperators = (Oid *) palloc(sizeof(Oid) * numSortKeys);
+			sortCollations = (Oid *) palloc(sizeof(Oid) * numSortKeys);
+			nullsFirstFlags = (bool *) palloc(sizeof(bool) * numSortKeys);
+
+			/*
+			 * XXX Pretty sure we already have a way to represent list of columns
+			 * for ORDER BY, or something else we might use here. I don't feel
+			 * like exploring that at the moment, so simple/ugly solution.
+			 *
+			 * XXX I don't think we should support arbitrary expressions, just
+			 * plain column references.
+			 *
+			 * XXX Should offer the options we have for SortBy in gram.y, for now
+			 * just lookup the default btree ordering etc.
+			 *
+			 * XXX Check duplicate columns.
+			 */
+			idx = 0;
+			foreach (lc, stmt->columns)
+			{
+				char *colname = lfirst(lc);
+				AttrNumber attnum = get_attnum(RelationGetRelid(rel), colname);
+				Oid	atttypid;
+				TypeCacheEntry *entry;
+
+				if (!AttrNumberIsForUserDefinedAttr(attnum))
+					elog(ERROR, "incorrect attribute");
+
+				atttypid = get_atttype(RelationGetRelid(rel), attnum);
+
+				entry = lookup_type_cache(atttypid, TYPECACHE_LT_OPR);
+
+				sortKeys[idx] = attnum;
+				sortOperators[idx] = entry->lt_opr;
+				sortCollations[idx] = DEFAULT_COLLATION_OID;
+				nullsFirstFlags[idx] = false;
+
+				elog(WARNING, "sort key %d %d %d %d",
+					 sortKeys[idx], sortOperators[idx],
+					 sortCollations[idx], nullsFirstFlags[idx]);
+
+				idx++;
+			}
+		}
+		else if (stmt->indexname == NULL)
 		{
 			ListCell   *index;
 
@@ -201,7 +265,7 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 			table_close(rel, NoLock);
 
 			/* Do the job. */
-			cluster_rel(tableOid, indexOid, &params);
+			cluster_rel(tableOid, indexOid, &params, numSortKeys, sortKeys, sortOperators, sortCollations, nullsFirstFlags);
 
 			return;
 		}
@@ -286,7 +350,7 @@ cluster_multiple_rels(List *rtcs, ClusterParams *params)
 		PushActiveSnapshot(GetTransactionSnapshot());
 
 		/* Do the job. */
-		cluster_rel(rtc->tableOid, rtc->indexOid, params);
+		cluster_rel(rtc->tableOid, rtc->indexOid, params, 0, NULL, NULL, NULL, NULL);
 
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -311,7 +375,9 @@ cluster_multiple_rels(List *rtcs, ClusterParams *params)
  * and error messages should refer to the operation as VACUUM not CLUSTER.
  */
 void
-cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
+cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params, int numSortKeys,
+			AttrNumber *sortKeys, Oid *sortOperators, Oid *sortCollations,
+			bool *nullsFirstFlags)
 {
 	Relation	OldHeap;
 	Oid			save_userid;
@@ -476,7 +542,8 @@ cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
 	TransferPredicateLocksToHeapRelation(OldHeap);
 
 	/* rebuild_relation does all the dirty work */
-	rebuild_relation(OldHeap, indexOid, verbose);
+	rebuild_relation(OldHeap, indexOid, verbose,
+					 numSortKeys, sortKeys, sortOperators, sortCollations, nullsFirstFlags);
 
 	/* NB: rebuild_relation does table_close() on OldHeap */
 
@@ -632,7 +699,8 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
  * NB: this routine closes OldHeap at the right time; caller should not.
  */
 static void
-rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
+rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose, int numSortKeys,
+			AttrNumber *sortKeys, Oid *sortOperators, Oid *sortCollations, bool *nullsFirstFlags)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
 	Oid			accessMethod = OldHeap->rd_rel->relam;
@@ -663,7 +731,9 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 
 	/* Copy the heap data into the new table in the desired order */
 	copy_table_data(OIDNewHeap, tableOid, indexOid, verbose,
-					&swap_toast_by_content, &frozenXid, &cutoffMulti);
+					&swap_toast_by_content, &frozenXid, &cutoffMulti,
+					numSortKeys, sortKeys, sortOperators, sortCollations,
+					nullsFirstFlags);
 
 	/*
 	 * Swap the physical files of the target and transient tables, then
@@ -815,7 +885,8 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 static void
 copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				bool *pSwapToastByContent, TransactionId *pFreezeXid,
-				MultiXactId *pCutoffMulti)
+				MultiXactId *pCutoffMulti, int numSortKeys, AttrNumber *sortKeys,
+				Oid *sortOperators, Oid *sortCollations, bool *nullsFirstFlags)
 {
 	Relation	NewHeap,
 				OldHeap,
@@ -943,6 +1014,8 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 */
 	if (OldIndex != NULL && OldIndex->rd_rel->relam == BTREE_AM_OID)
 		use_sort = plan_cluster_use_sort(OIDOldHeap, OIDOldIndex);
+	else if (numSortKeys > 0)
+		use_sort = true;
 	else
 		use_sort = false;
 
@@ -976,7 +1049,9 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 									cutoffs.OldestXmin, &cutoffs.FreezeLimit,
 									&cutoffs.MultiXactCutoff,
 									&num_tuples, &tups_vacuumed,
-									&tups_recently_dead);
+									&tups_recently_dead,
+									numSortKeys, sortKeys, sortOperators,
+									sortCollations, nullsFirstFlags);
 
 	/* return selected values to caller, get set as relfrozenxid/minmxid */
 	*pFreezeXid = cutoffs.FreezeLimit;

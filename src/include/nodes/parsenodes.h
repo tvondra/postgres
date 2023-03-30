@@ -3652,6 +3652,7 @@ typedef struct ClusterStmt
 	NodeTag		type;
 	RangeVar   *relation;		/* relation being indexed, or NULL if all */
 	char	   *indexname;		/* original index defined */
+	List	   *columns;		/* list of column names */
 	List	   *params;			/* list of DefElem nodes */
 } ClusterStmt;
 

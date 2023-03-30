@@ -946,6 +946,8 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	else
 		use_sort = false;
 
+	elog(WARNING, "use_sort = %d", use_sort);
+
 	/* Log what we're doing */
 	if (OldIndex != NULL && !use_sort)
 		ereport(elevel,

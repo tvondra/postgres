@@ -23,6 +23,7 @@
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/multixact.h"
+#include "access/parallel.h"
 #include "access/rewriteheap.h"
 #include "access/syncscan.h"
 #include "access/tableam.h"
@@ -42,6 +43,7 @@
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
+#include "tcop/tcopprot.h"		/* pgrminclude ignore */
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
@@ -62,6 +64,134 @@ static bool SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 static BlockNumber heapam_scan_get_blocks_done(HeapScanDesc hscan);
 
 static const TableAmRoutine heapam_methods;
+
+
+
+/* Magic numbers for parallel state sharing */
+#define PARALLEL_KEY_CLUSTER_SHARED		UINT64CONST(0xA000000000000001)
+#define PARALLEL_KEY_TUPLESORT			UINT64CONST(0xA000000000000002)
+#define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xA000000000000004)
+#define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xA000000000000005)
+#define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xA000000000000006)
+
+/*
+ * Status for cluster performed in parallel.  This is allocated in a
+ * dynamic shared memory segment.
+ */
+typedef struct ClusterShared
+{
+	/*
+	 * These fields are not modified during the build.  They primarily exist for
+	 * the benefit of worker processes that need to create state corresponding
+	 * to that used by the leader.
+	 */
+	Oid				heaprelid;
+	Oid				indexrelid;
+	TransactionId	oldestXmin;
+	TransactionId	xidCutoff;
+	TransactionId	multiCutoff;
+	int				scantuplesortstates;
+
+	/*
+	 * workersdonecv is used to monitor the progress of workers.  All parallel
+	 * participants must indicate that they are done before leader can use
+	 * results built by the workers (and before leader can write the data into
+	 * the index).
+	 */
+	ConditionVariable workersdonecv;
+
+	/*
+	 * mutex protects all fields before heapdesc.
+	 *
+	 * These fields contain status information of interest to BRIN index
+	 * builds that must work just the same when an index is built in parallel.
+	 */
+	slock_t		mutex;
+
+	/*
+	 * 
+	 */
+	int			last_worker_id;
+	BlockNumber	next_range;
+	BlockNumber	last_range;
+
+	/*
+	 * Mutable state that is maintained by workers, and reported back to
+	 * leader at end of the scans.
+	 *
+	 * nparticipantsdone is number of worker processes finished.
+	 *
+	 * reltuples is the total number of input heap tuples.
+	 *
+	 * indtuples is the total number of tuples that made it into the index.
+	 */
+	int			nparticipantsdone;
+	double		reltuples;
+} ClusterShared;
+
+/*
+ * Status for leader in parallel cluster.
+ */
+typedef struct ClusterLeader
+{
+	/* parallel context itself */
+	ParallelContext *pcxt;
+
+	/*
+	 * nparticipantworkers is the exact number of worker processes successfully
+	 * launched, plus one leader process if it participates as a worker (only
+	 * DISABLE_LEADER_PARTICIPATION builds avoid leader participating as a
+	 * worker).
+	 */
+	int			nparticipantworkers;
+
+	/*
+	 * Leader process convenience pointers to shared state (leader avoids TOC
+	 * lookups).
+	 *
+	 * culstershared is the shared state for entire build.  snapshot is the snapshot
+	 * used by the scan iff an MVCC snapshot is required.
+	 */
+	ClusterShared  *clustershared;
+	Sharedsort	   *sharedsort;
+	Snapshot		snapshot;
+	WalUsage	   *walusage;
+	BufferUsage    *bufferusage;
+} ClusterLeader;
+
+/*
+ * We use a ClusterState during initial construction of a BRIN index.
+ * The running state is kept in a BrinMemTuple.
+ */
+typedef struct ClusterState
+{
+	Relation		cs_heap;
+	Relation		cs_index;
+	double			cs_reltuples;
+
+	TransactionId	cs_oldestXmin;
+	TransactionId	cs_xidCutoff;
+	TransactionId	cs_multiCutoff;
+
+	/*
+	 * cs_leader is only present when a parallel cluster is performed,
+	 * and only in the leader process. (Actually, only the leader has a
+	 * ClusterState.)
+	 */
+	ClusterLeader *cs_leader;
+	int			cs_worker_id;
+} ClusterState;
+
+static void _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int request);
+static void _cluster_end_parallel(ClusterLeader *leader, ClusterState *state);
+static Size _cluster_parallel_estimate_shared(Relation heap, Snapshot snapshot);
+static void _cluster_leader_participate_as_worker(ClusterState *state,
+												  Relation heap);
+static void _cluster_parallel_scan_and_sort(ClusterState *state,
+											ClusterShared *clustershared,
+											Sharedsort *sharedsort,
+											Relation heap, int sortmem);
+
 
 
 /* ------------------------------------------------------------------------
@@ -802,6 +932,9 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	bool	   *isnull;
 	BufferHeapTupleTableSlot *hslot;
 	BlockNumber prev_cblock = InvalidBlockNumber;
+	ClusterState *cs;
+
+	elog(WARNING, "rewrite start");
 
 	/* Remember if it's a system catalog */
 	is_system_catalog = IsSystemRelation(OldHeap);
@@ -821,6 +954,59 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, *xid_cutoff,
 								 *multi_cutoff);
 
+	/* */
+	cs = palloc0(sizeof(ClusterState));
+
+	cs->cs_heap = OldHeap;
+	cs->cs_index = OldIndex;
+	cs->cs_oldestXmin = OldestXmin;
+	cs->cs_xidCutoff = *xid_cutoff;	// XXX can we do this?
+	cs->cs_multiCutoff = *multi_cutoff;
+
+	/*
+	 * Should not use max_parallel_maintenance_workers directly, but something
+	 * that considers table size etc.
+	 *
+	 * XXX We only do this with sort mode, not for index-based sort.
+	 */
+	if (use_sort && max_parallel_maintenance_workers > 0)
+		_cluster_begin_parallel(cs, OldHeap, OldIndex, max_parallel_maintenance_workers);
+
+	/*
+	 * If parallel build requested and at least one worker process was
+	 * successfully launched, set up coordination state
+	 */
+	if (cs->cs_leader)
+	{
+		SortCoordinate	coordinate;
+		Tuplesortstate *tss;
+
+		WaitForParallelWorkersToFinish(cs->cs_leader->pcxt);
+
+		coordinate = (SortCoordinate) palloc0(sizeof(SortCoordinateData));
+		coordinate->isWorker = false;
+		coordinate->nParticipants =
+			cs->cs_leader->nparticipantworkers;
+		coordinate->sharedsort = cs->cs_leader->sharedsort;
+
+		tss = tuplesort_begin_cluster(oldTupDesc, OldIndex,
+									  maintenance_work_mem,
+									  coordinate, TUPLESORT_NONE);
+		// tuplesort_performsort(tss);
+		// tuplesort_end(tss);
+		tuplesort = tss;
+
+		goto output;
+
+		elog(WARNING, "parallel done");
+	}
+
+	/*
+	 * In parallel mode, wait for workers to complete, and then read
+	 * the tuples from the temporary files and insert them into the index.
+	 */
+	// if (cs->cs_leader)
+	//	_cluster_end_parallel(cs->cs_leader, cs);
 
 	/* Set up sorting if wanted */
 	if (use_sort)
@@ -1039,7 +1225,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		table_endscan(tableScan);
 	if (slot)
 		ExecDropSingleTupleTableSlot(slot);
-
+output:
 	/*
 	 * In scan-and-sort mode, complete the sort, then read out all live tuples
 	 * from the tuplestore and write them to the new relation.
@@ -1084,9 +1270,14 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	/* Write out any remaining tuples, and fsync if needed */
 	end_heap_rewrite(rwstate);
 
+	if (cs->cs_leader)
+		_cluster_end_parallel(cs->cs_leader, cs);
+
 	/* Clean up */
 	pfree(values);
 	pfree(isnull);
+
+	elog(WARNING, "rewrite done");
 }
 
 static bool
@@ -2701,4 +2892,492 @@ Datum
 heap_tableam_handler(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_POINTER(&heapam_methods);
+}
+
+
+
+static void
+_cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int request)
+{
+	ParallelContext *pcxt;
+	Snapshot	snapshot;
+	Size		estclustershared;
+	Size		estsort;
+	ClusterShared  *clustershared;
+	Sharedsort 	   *sharedsort;
+	ClusterLeader  *clusterleader = (ClusterLeader *) palloc0(sizeof(ClusterLeader));
+	bool		leaderparticipates = true;
+	int			scantuplesortstates;
+	int			querylen;
+	WalUsage   *walusage;
+	BufferUsage *bufferusage;
+
+#ifdef DISABLE_LEADER_PARTICIPATION
+	leaderparticipates = false;
+#endif
+
+	/*
+	 * Enter parallel mode, and create context for parallel cluster.
+	 */
+	EnterParallelMode();
+	Assert(request > 0);
+	pcxt = CreateParallelContext("postgres", "_cluster_parallel_build_main",
+								 request);
+
+	scantuplesortstates = leaderparticipates ? request + 1 : request;
+
+	/* XXX correct snapshot? */
+	snapshot = SnapshotAny;
+
+	/*
+	 * Estimate size for our own PARALLEL_KEY_BRIN_SHARED workspace.
+	 */
+	estclustershared = _cluster_parallel_estimate_shared(heap, snapshot);
+	shm_toc_estimate_chunk(&pcxt->estimator, estclustershared);
+	estsort = tuplesort_estimate_shared(scantuplesortstates);
+	shm_toc_estimate_chunk(&pcxt->estimator, estsort);
+
+	shm_toc_estimate_keys(&pcxt->estimator, 2);
+
+	/*
+	 * Estimate space for WalUsage and BufferUsage -- PARALLEL_KEY_WAL_USAGE
+	 * and PARALLEL_KEY_BUFFER_USAGE.
+	 *
+	 * If there are no extensions loaded that care, we could skip this.  We
+	 * have no way of knowing whether anyone's looking at pgWalUsage or
+	 * pgBufferUsage, so do it unconditionally.
+	 */
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   mul_size(sizeof(WalUsage), pcxt->nworkers));
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   mul_size(sizeof(BufferUsage), pcxt->nworkers));
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+
+	/* Finally, estimate PARALLEL_KEY_QUERY_TEXT space */
+	if (debug_query_string)
+	{
+		querylen = strlen(debug_query_string);
+		shm_toc_estimate_chunk(&pcxt->estimator, querylen + 1);
+		shm_toc_estimate_keys(&pcxt->estimator, 1);
+	}
+	else
+		querylen = 0;			/* keep compiler quiet */
+
+	/* Everyone's had a chance to ask for space, so now create the DSM */
+	InitializeParallelDSM(pcxt);
+
+	/* If no DSM segment was available, back out (do serial build) */
+	if (pcxt->seg == NULL)
+	{
+		if (IsMVCCSnapshot(snapshot))
+			UnregisterSnapshot(snapshot);
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return;
+	}
+
+	/* Store shared build state, for which we reserved space */
+	clustershared = (ClusterShared *) shm_toc_allocate(pcxt->toc, estclustershared);
+	/* Initialize immutable state */
+	clustershared->heaprelid = RelationGetRelid(heap);
+	clustershared->indexrelid = RelationGetRelid(index);
+	clustershared->scantuplesortstates = scantuplesortstates;
+
+	clustershared->oldestXmin = state->cs_oldestXmin;
+	clustershared->xidCutoff = state->cs_xidCutoff;
+	clustershared->multiCutoff = state->cs_multiCutoff;
+
+	ConditionVariableInit(&clustershared->workersdonecv);
+	SpinLockInit(&clustershared->mutex);
+
+	/* Initialize mutable state */
+	clustershared->nparticipantsdone = 0;
+	clustershared->reltuples = 0.0;
+
+	/* Track work assigned to workers etc. */
+	clustershared->last_worker_id = 0;
+	clustershared->next_range = 0;
+	clustershared->last_range = RelationGetNumberOfBlocks(heap);
+
+	/*
+	 * Store shared tuplesort-private state, for which we reserved space.
+	 * Then, initialize opaque state using tuplesort routine.
+	 */
+	sharedsort = (Sharedsort *) shm_toc_allocate(pcxt->toc, estsort);
+	tuplesort_initialize_shared(sharedsort, scantuplesortstates,
+								pcxt->seg);
+elog(WARNING, "initialized shared at %p for %d", sharedsort, scantuplesortstates);
+elog(WARNING, "leader = %p", clusterleader);
+	/*
+	 * Store shared tuplesort-private state, for which we reserved space.
+	 * Then, initialize opaque state using tuplesort routine.
+	 */
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_CLUSTER_SHARED, clustershared);
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_TUPLESORT, sharedsort);
+
+	/* Store query string for workers */
+	if (debug_query_string)
+	{
+		char	   *sharedquery;
+
+		sharedquery = (char *) shm_toc_allocate(pcxt->toc, querylen + 1);
+		memcpy(sharedquery, debug_query_string, querylen + 1);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, sharedquery);
+	}
+
+	/*
+	 * Allocate space for each worker's WalUsage and BufferUsage; no need to
+	 * initialize.
+	 */
+	walusage = shm_toc_allocate(pcxt->toc,
+								mul_size(sizeof(WalUsage), pcxt->nworkers));
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_WAL_USAGE, walusage);
+	bufferusage = shm_toc_allocate(pcxt->toc,
+								   mul_size(sizeof(BufferUsage), pcxt->nworkers));
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_BUFFER_USAGE, bufferusage);
+
+	/* Launch workers, saving status for leader/caller */
+	LaunchParallelWorkers(pcxt);
+	clusterleader->pcxt = pcxt;
+	clusterleader->nparticipantworkers = pcxt->nworkers_launched;
+	if (leaderparticipates)
+		clusterleader->nparticipantworkers++;
+	clusterleader->clustershared = clustershared;
+	clusterleader->sharedsort = sharedsort;
+	clusterleader->snapshot = snapshot;
+
+	/* If no workers were successfully launched, back out (do serial build) */
+	if (pcxt->nworkers_launched == 0)
+	{
+		_cluster_end_parallel(clusterleader, NULL);
+		return;
+	}
+
+	/* Save leader state now that it's clear build will be parallel */
+	state->cs_leader = clusterleader;
+
+	/* Join heap scan ourselves */
+	if (leaderparticipates)
+		_cluster_leader_participate_as_worker(state, heap);
+
+	/*
+	 * Caller needs to wait for all launched workers when we return.  Make
+	 * sure that the failure-to-start case will not hang forever.
+	 */
+	WaitForParallelWorkersToAttach(pcxt);
+}
+
+/*
+ * Shut down workers, destroy parallel context, and end parallel mode.
+ */
+static void
+_cluster_end_parallel(ClusterLeader *clusterleader, ClusterState *state)
+{
+	ClusterShared *clustershared = clusterleader->clustershared;
+
+	/* Shutdown worker processes */
+	WaitForParallelWorkersToFinish(clusterleader->pcxt);
+elog(WARNING, "workers finished");
+	if (!state)
+		return;
+
+	/* copy the data into leader state (we have to wait for the workers ) */
+	state->cs_reltuples = clustershared->reltuples;
+
+	/* XXX do some work here? */
+
+	/* Free last reference to MVCC snapshot, if one was used */
+	if (IsMVCCSnapshot(clusterleader->snapshot))
+		UnregisterSnapshot(clusterleader->snapshot);
+	DestroyParallelContext(clusterleader->pcxt);
+	ExitParallelMode();
+}
+
+/*
+ * Returns size of shared memory required to store state for a parallel
+ * cluster based on the snapshot its parallel scan will use.
+ *
+ * XXX we don't do parallelscan, so this seems wrong (unnecessarily large)
+ */
+static Size
+_cluster_parallel_estimate_shared(Relation heap, Snapshot snapshot)
+{
+	/* c.f. shm_toc_allocate as to why BUFFERALIGN is used */
+	return add_size(BUFFERALIGN(sizeof(ClusterShared)),
+					table_parallelscan_estimate(heap, snapshot));
+}
+
+/*
+ * Within leader, participate as a parallel worker.
+ */
+static void
+_cluster_leader_participate_as_worker(ClusterState *state, Relation heap)
+{
+	ClusterLeader *clusterleader = state->cs_leader;
+	int			sortmem;
+
+	/*
+	 * Might as well use reliable figure when doling out maintenance_work_mem
+	 * (when requested number of workers were not launched, this will be
+	 * somewhat higher than it is for other workers).
+	 */
+	sortmem = maintenance_work_mem / clusterleader->nparticipantworkers;
+
+	/* Perform work common to all participants */
+	_cluster_parallel_scan_and_sort(state, clusterleader->clustershared,
+									clusterleader->sharedsort, heap, sortmem);
+}
+
+/*
+ * Perform a worker's portion of a parallel sort.
+ *
+ * This generates a tuplesort for passed btspool, and a second tuplesort
+ * state if a second btspool is need (i.e. for unique index builds).  All
+ * other spool fields should already be set when this is called.
+ *
+ * sortmem is the amount of working memory to use within each worker,
+ * expressed in KBs.
+ *
+ * When this returns, workers are done, and need only release resources.
+ */
+static void
+_cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershared,
+								Sharedsort *sharedsort, Relation heap, int sortmem)
+{
+	SortCoordinate coordinate;
+	TableScanDesc scan;
+	double		reltuples;
+	Tuplesortstate *tuplesort;
+	TupleTableSlot *slot;
+	BufferHeapTupleTableSlot *hslot;
+	bool			is_system_catalog = IsSystemRelation(state->cs_heap);
+
+	elog(WARNING, "sharedsort = %p", sharedsort);
+
+	/* Initialize local tuplesort coordination state */
+	coordinate = palloc0(sizeof(SortCoordinateData));
+	coordinate->isWorker = true;
+	coordinate->nParticipants = -1;
+	coordinate->sharedsort = sharedsort;
+
+	/* Begin "partial" tuplesort */
+	tuplesort = tuplesort_begin_cluster(RelationGetDescr(state->cs_heap),
+										state->cs_index,
+										sortmem, coordinate,
+										TUPLESORT_NONE);
+
+	// FIXME do the work here
+
+	slot = table_slot_create(state->cs_heap, NULL);
+	hslot = (BufferHeapTupleTableSlot *) slot;
+
+	while (true)
+	{
+		TableScanDesc	scan;
+		BlockNumber		startBlock,
+						lastBlock,
+						chunkBlocks;
+		ItemPointerData	mintid,
+						maxtid;
+
+		chunkBlocks = 128;	/* 1MB */
+
+		SpinLockAcquire(&clustershared->mutex);
+		startBlock = clustershared->next_range;
+		lastBlock = clustershared->last_range;
+		clustershared->next_range += chunkBlocks;
+		SpinLockRelease(&clustershared->mutex);
+
+		if (startBlock > lastBlock)
+			break;
+
+		ItemPointerSet(&mintid, startBlock, 0);
+		ItemPointerSet(&maxtid, startBlock + (chunkBlocks - 1),
+					   MaxHeapTuplesPerPage);
+
+		/* start tidscan to read the relevant part of the table */
+		scan = table_beginscan_tidrange(heap, SnapshotAny,	// FIXME which snapshot to use?
+										&mintid, &maxtid);
+
+		/*
+		 * Scan through the OldHeap, either in OldIndex order or sequentially;
+		 * copy each tuple into the NewHeap, or transiently to the tuplesort
+		 * module.  Note that we don't bother sorting dead tuples (they won't get
+		 * to the new table anyway).
+		 */
+		for (;;)
+		{
+			HeapTuple	tuple;
+			Buffer		buf;
+			bool		isdead;
+
+			CHECK_FOR_INTERRUPTS();
+
+			if (!table_scan_getnextslot(scan, ForwardScanDirection, slot))
+				break;
+
+			tuple = ExecFetchSlotHeapTuple(slot, false, NULL);
+			buf = hslot->buffer;
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+			switch (HeapTupleSatisfiesVacuum(tuple, state->cs_oldestXmin, buf))
+			{
+				case HEAPTUPLE_DEAD:
+					/* Definitely dead */
+					isdead = true;
+					break;
+				case HEAPTUPLE_RECENTLY_DEAD:
+					/* fall through */
+				case HEAPTUPLE_LIVE:
+					/* Live or recently dead, must copy it */
+					isdead = false;
+					break;
+				case HEAPTUPLE_INSERT_IN_PROGRESS:
+
+					/*
+					 * Since we hold exclusive lock on the relation, normally the
+					 * only way to see this is if it was inserted earlier in our
+					 * own transaction.  However, it can happen in system
+					 * catalogs, since we tend to release write lock before commit
+					 * there.  Give a warning if neither case applies; but in any
+					 * case we had better copy it.
+					 */
+					if (!is_system_catalog &&
+						!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tuple->t_data)))
+						elog(WARNING, "concurrent insert in progress within table \"%s\"",
+							 RelationGetRelationName(state->cs_heap));
+					/* treat as live */
+					isdead = false;
+					break;
+				case HEAPTUPLE_DELETE_IN_PROGRESS:
+
+					/*
+					 * Similar situation to INSERT_IN_PROGRESS case.
+					 */
+					if (!is_system_catalog &&
+						!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tuple->t_data)))
+						elog(WARNING, "concurrent delete in progress within table \"%s\"",
+							 RelationGetRelationName(state->cs_heap));
+					/* treat as recently dead */
+					isdead = false;
+					break;
+				default:
+					elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result");
+					isdead = false; /* keep compiler quiet */
+					break;
+			}
+
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+			if (isdead)
+			{
+				// *tups_vacuumed += 1;
+				// /* heap rewrite module still needs to see it... */
+				// if (rewrite_heap_dead_tuple(rwstate, tuple))
+				// {
+				// 	/* A previous recently-dead tuple is now known dead */
+				// 	*tups_vacuumed += 1;
+				// 	*tups_recently_dead -= 1;
+				// }
+				continue;
+			}
+
+			tuplesort_putheaptuple(tuplesort, tuple);
+		}
+
+		table_endscan(scan);
+	}
+
+	/* We can end tuplesorts immediately */
+	tuplesort_performsort(tuplesort);
+	tuplesort_end(tuplesort);
+
+	/*
+	 * Done.
+	 */
+	SpinLockAcquire(&clustershared->mutex);
+	clustershared->nparticipantsdone++;
+	clustershared->reltuples += reltuples;
+	SpinLockRelease(&clustershared->mutex);
+
+	/* Notify leader */
+	ConditionVariableSignal(&clustershared->workersdonecv);
+
+	ExecDropSingleTupleTableSlot(slot);
+}
+
+/*
+ * Perform work within a launched parallel process.
+ */
+void
+_cluster_parallel_build_main(dsm_segment *seg, shm_toc *toc)
+{
+	char	   *sharedquery;
+	ClusterShared *clustershared;
+	ClusterState *clusterstate;
+	Relation	heapRel;
+	Relation	indexRel;
+	LOCKMODE	heapLockmode;
+	LOCKMODE	indexLockmode;
+	int			sortmem;
+	Sharedsort *sharedsort;
+	WalUsage   *walusage;
+	BufferUsage *bufferusage;
+
+	/*
+	 * The only possible status flag that can be set to the parallel worker is
+	 * PROC_IN_SAFE_IC.
+	 */
+	Assert((MyProc->statusFlags == 0) ||
+		   (MyProc->statusFlags == PROC_IN_SAFE_IC));
+
+	/* Set debug_query_string for individual workers first */
+	sharedquery = shm_toc_lookup(toc, PARALLEL_KEY_QUERY_TEXT, true);
+	debug_query_string = sharedquery;
+
+	/* Report the query string from leader */
+	pgstat_report_activity(STATE_RUNNING, debug_query_string);
+
+	/* Look up brin shared state */
+	clustershared = shm_toc_lookup(toc, PARALLEL_KEY_CLUSTER_SHARED, false);
+
+	/* FIXME Open relations using lock modes known to be obtained by cluster.c */
+	heapLockmode = ShareUpdateExclusiveLock;
+	indexLockmode = RowExclusiveLock;
+
+	/* Open relations within worker */
+	heapRel = table_open(clustershared->heaprelid, heapLockmode);
+	indexRel = index_open(clustershared->indexrelid, indexLockmode);
+
+	/* */
+	clusterstate = palloc0(sizeof(ClusterState));
+
+	clusterstate->cs_heap = heapRel;
+	clusterstate->cs_index = indexRel;
+	clusterstate->cs_oldestXmin = clustershared->oldestXmin;
+	clusterstate->cs_xidCutoff = clustershared->xidCutoff;
+	clusterstate->cs_multiCutoff = clustershared->multiCutoff;
+
+	/* Look up shared state private to tuplesort.c */
+	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
+	tuplesort_attach_shared(sharedsort, seg);
+
+	/* Prepare to track buffer usage during parallel execution */
+	InstrStartParallelQuery();
+
+	/* FIXME tie this to number of participants, somehow */
+	sortmem = maintenance_work_mem / 2;
+	_cluster_parallel_scan_and_sort(clusterstate, clustershared, sharedsort,
+									heapRel, sortmem);
+
+	/* Report WAL/buffer usage during parallel execution */
+	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);
+	walusage = shm_toc_lookup(toc, PARALLEL_KEY_WAL_USAGE, false);
+	InstrEndParallelQuery(&bufferusage[ParallelWorkerNumber],
+						  &walusage[ParallelWorkerNumber]);
+
+	index_close(indexRel, indexLockmode);
+	table_close(heapRel, heapLockmode);
 }

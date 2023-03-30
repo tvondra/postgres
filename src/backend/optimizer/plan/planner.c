@@ -6610,7 +6610,8 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 									  NIL, NIL, NIL, NIL,
 									  ForwardScanDirection, false,
 									  NULL, 1.0, false);
-
+elog(WARNING, "seqScanAndSortPath.total_cost = %f  indexScanPath->path.total_cost = %f",
+seqScanAndSortPath.total_cost, indexScanPath->path.total_cost);
 	return (seqScanAndSortPath.total_cost < indexScanPath->path.total_cost);
 }
 

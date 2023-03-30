@@ -3119,7 +3119,7 @@ leader_takeover_tapes(Tuplesortstate *state)
 	SpinLockRelease(&shared->mutex);
 
 	if (nParticipants != workersFinished)
-		elog(ERROR, "cannot take over tapes before all workers finish");
+		elog(ERROR, "cannot take over tapes before all workers finish (%d != %d)", nParticipants, workersFinished);
 
 	/*
 	 * Create the tapeset from worker tapes, including a leader-owned tape at

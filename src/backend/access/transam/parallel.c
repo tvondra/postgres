@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/session.h"
@@ -143,6 +144,9 @@ static const struct
 	},
 	{
 		"_bt_parallel_build_main", _bt_parallel_build_main
+	},
+	{
+		"_cluster_parallel_build_main", _cluster_parallel_build_main
 	},
 	{
 		"parallel_vacuum_main", parallel_vacuum_main

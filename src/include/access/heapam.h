@@ -329,4 +329,6 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
 extern void HeapCheckForSerializableConflictOut(bool visible, Relation relation, HeapTuple tuple,
 												Buffer buffer, Snapshot snapshot);
 
+extern void _cluster_parallel_build_main(dsm_segment *seg, shm_toc *toc);
+
 #endif							/* HEAPAM_H */

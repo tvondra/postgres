@@ -41,6 +41,8 @@ static void removeabbrev_heap(Tuplesortstate *state, SortTuple *stups,
 							  int count);
 static void removeabbrev_cluster(Tuplesortstate *state, SortTuple *stups,
 								 int count);
+static void removeabbrev_cluster_sort(Tuplesortstate *state, SortTuple *stups,
+									  int count);
 static void removeabbrev_index(Tuplesortstate *state, SortTuple *stups,
 							   int count);
 static void removeabbrev_datum(Tuplesortstate *state, SortTuple *stups,
@@ -53,10 +55,16 @@ static void readtup_heap(Tuplesortstate *state, SortTuple *stup,
 						 LogicalTape *tape, unsigned int len);
 static int	comparetup_cluster(const SortTuple *a, const SortTuple *b,
 							   Tuplesortstate *state);
+static int	comparetup_cluster_sort(const SortTuple *a, const SortTuple *b,
+									Tuplesortstate *state);
 static void writetup_cluster(Tuplesortstate *state, LogicalTape *tape,
 							 SortTuple *stup);
+static void writetup_cluster_sort(Tuplesortstate *state, LogicalTape *tape,
+								  SortTuple *stup);
 static void readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 							LogicalTape *tape, unsigned int tuplen);
+static void readtup_cluster_sort(Tuplesortstate *state, SortTuple *stup,
+								 LogicalTape *tape, unsigned int tuplen);
 static int	comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 								   Tuplesortstate *state);
 static int	comparetup_index_hash(const SortTuple *a, const SortTuple *b,
@@ -72,6 +80,7 @@ static void writetup_datum(Tuplesortstate *state, LogicalTape *tape,
 static void readtup_datum(Tuplesortstate *state, SortTuple *stup,
 						  LogicalTape *tape, unsigned int len);
 static void freestate_cluster(Tuplesortstate *state);
+static void freestate_cluster_sort(Tuplesortstate *state);
 
 /*
  * Data struture pointed by "TuplesortPublic.arg" for the CLUSTER case.  Set by
@@ -84,6 +93,15 @@ typedef struct
 	IndexInfo  *indexInfo;		/* info about index being used for reference */
 	EState	   *estate;			/* for evaluating index expressions */
 } TuplesortClusterArg;
+
+
+typedef struct
+{
+	TupleDesc	tupDesc;
+
+	IndexInfo  *indexInfo;		/* info about index being used for reference */
+	EState	   *estate;			/* for evaluating index expressions */
+} TuplesortClusterSortArg;
 
 /*
  * Data struture pointed by "TuplesortPublic.arg" for the IndexTuple case.
@@ -307,6 +325,82 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 	}
 
 	pfree(indexScanKey);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return state;
+}
+
+Tuplesortstate *
+tuplesort_begin_cluster_sort(TupleDesc tupDesc,
+							 int nkeys, AttrNumber *attNums,
+							 Oid *sortOperators, Oid *sortCollations,
+							 bool *nullsFirstFlags,
+							 int workMem,
+							 SortCoordinate coordinate, int sortopt)
+{
+	Tuplesortstate *state = tuplesort_begin_common(workMem, coordinate,
+												   sortopt);
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	MemoryContext oldcontext;
+	int			i;
+
+	oldcontext = MemoryContextSwitchTo(base->maincontext);
+
+	Assert(nkeys > 0);
+
+#ifdef TRACE_SORT
+	if (trace_sort)
+		elog(LOG,
+			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
+			 nkeys, workMem, sortopt & TUPLESORT_RANDOMACCESS ? 't' : 'f');
+#endif
+
+	base->nKeys = nkeys;
+
+	TRACE_POSTGRESQL_SORT_START(HEAP_SORT,
+								false,	/* no unique check */
+								nkeys,
+								workMem,
+								sortopt & TUPLESORT_RANDOMACCESS,
+								PARALLEL_SORT(coordinate));
+
+	base->removeabbrev = removeabbrev_cluster_sort;
+	base->comparetup = comparetup_cluster_sort;
+	base->writetup = writetup_cluster_sort;
+	base->readtup = readtup_cluster_sort;
+	base->freestate = freestate_cluster_sort;
+	base->haveDatum1 = true;
+	base->arg = tupDesc;		/* assume we need not copy tupDesc */
+
+	/* Prepare SortSupport data for each column */
+	base->sortKeys = (SortSupport) palloc0(nkeys * sizeof(SortSupportData));
+
+	for (i = 0; i < nkeys; i++)
+	{
+		SortSupport sortKey = base->sortKeys + i;
+
+		Assert(attNums[i] != 0);
+		Assert(sortOperators[i] != 0);
+
+		sortKey->ssup_cxt = CurrentMemoryContext;
+		sortKey->ssup_collation = sortCollations[i];
+		sortKey->ssup_nulls_first = nullsFirstFlags[i];
+		sortKey->ssup_attno = attNums[i];
+		/* Convey if abbreviation optimization is applicable in principle */
+		sortKey->abbreviate = (i == 0 && base->haveDatum1);
+
+		PrepareSortSupportFromOrderingOp(sortOperators[i], sortKey);
+	}
+
+	/*
+	 * The "onlyKey" optimization cannot be used with abbreviated keys, since
+	 * tie-breaker comparisons may be required.  Typically, the optimization
+	 * is only of value to pass-by-value types anyway, whereas abbreviated
+	 * keys are typically only of value to pass-by-reference types.
+	 */
+	if (nkeys == 1 && !base->sortKeys->abbrev_converter)
+		base->onlyKey = base->sortKeys;
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -653,6 +747,39 @@ tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup)
 								   arg->tupDesc,
 								   &stup.isnull1);
 	}
+
+	tuplesort_puttuple_common(state, &stup,
+							  base->haveDatum1 &&
+							  base->sortKeys->abbrev_converter &&
+							  !stup.isnull1);
+
+	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Accept one tuple while collecting input data for sort.
+ *
+ * Note that the input data is always copied; the caller need not save it.
+ */
+void
+tuplesort_putheaptuple_sort(Tuplesortstate *state, HeapTuple tup)
+{
+	SortTuple	stup;
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	MemoryContext oldcontext = MemoryContextSwitchTo(base->tuplecontext);
+
+	/* copy the tuple into sort storage */
+	tup = heap_copytuple(tup);
+	stup.tuple = (void *) tup;
+
+	/*
+	 * set up first-column key value, and potentially abbreviate, if it's a
+	 * simple column
+	 */
+	stup.datum1 = heap_getattr(tup,
+							   base->sortKeys[0].ssup_attno,
+							   (TupleDesc) base->arg,
+							   &stup.isnull1);
 
 	tuplesort_puttuple_common(state, &stup,
 							  base->haveDatum1 &&
@@ -1231,6 +1358,144 @@ freestate_cluster(Tuplesortstate *state)
 		ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
 		FreeExecutorState(arg->estate);
 	}
+}
+
+
+/*
+ * Routines specialized for the CLUSTER+SORT case (HeapTuple data, with
+ * comparisons per a btree index definition)
+ */
+
+static void
+removeabbrev_cluster_sort(Tuplesortstate *state, SortTuple *stups, int count)
+{
+	int			i;
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+
+	for (i = 0; i < count; i++)
+	{
+		HeapTuple	tup;
+
+		tup = (HeapTuple) stups[i].tuple;
+		stups[i].datum1 = heap_getattr(tup,
+									   base->sortKeys[0].ssup_attno,
+									   (TupleDesc) base->arg,
+									   &stups[i].isnull1);
+	}
+}
+
+static int
+comparetup_cluster_sort(const SortTuple *a, const SortTuple *b,
+						Tuplesortstate *state)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	SortSupport sortKey = base->sortKeys;
+	HeapTuple	ltup;
+	HeapTuple	rtup;
+	TupleDesc	tupDesc;
+	int			nkey;
+	int32		compare;
+	Datum		datum1,
+				datum2;
+	bool		isnull1,
+				isnull2;
+
+	/* Compare the leading sort key, if it's simple */
+	compare = ApplySortComparator(a->datum1, a->isnull1,
+								  b->datum1, b->isnull1,
+								  sortKey);
+
+	if (compare != 0)
+		return compare;
+
+	/* Be prepared to compare additional sort keys */
+	ltup = (HeapTuple) a->tuple;
+	rtup = (HeapTuple) b->tuple;
+	tupDesc = (TupleDesc) base->arg;
+
+	if (sortKey->abbrev_converter)
+	{
+		AttrNumber	attno = sortKey->ssup_attno;
+
+		datum1 = heap_getattr(ltup, attno, tupDesc, &isnull1);
+		datum2 = heap_getattr(rtup, attno, tupDesc, &isnull2);
+
+		compare = ApplySortAbbrevFullComparator(datum1, isnull1,
+												datum2, isnull2,
+												sortKey);
+		if (compare != 0)
+			return compare;
+	}
+
+	/* Compare additional columns the hard way */
+	sortKey++;
+	for (nkey = 1; nkey < base->nKeys; nkey++, sortKey++)
+	{
+		AttrNumber	attno = sortKey->ssup_attno;
+
+		datum1 = heap_getattr(ltup, attno, tupDesc, &isnull1);
+		datum2 = heap_getattr(rtup, attno, tupDesc, &isnull2);
+
+		compare = ApplySortComparator(datum1, isnull1,
+									  datum2, isnull2,
+									  sortKey);
+		if (compare != 0)
+			return compare;
+	}
+
+	return 0;
+}
+
+static void
+writetup_cluster_sort(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	HeapTuple	tuple = (HeapTuple) stup->tuple;
+	unsigned int tuplen = tuple->t_len + sizeof(ItemPointerData) + sizeof(int);
+
+	/* We need to store t_self, but not other fields of HeapTupleData */
+	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
+	LogicalTapeWrite(tape, &tuple->t_self, sizeof(ItemPointerData));
+	LogicalTapeWrite(tape, tuple->t_data, tuple->t_len);
+	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
+		LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
+}
+
+static void
+readtup_cluster_sort(Tuplesortstate *state, SortTuple *stup,
+					 LogicalTape *tape, unsigned int tuplen)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	unsigned int t_len = tuplen - sizeof(ItemPointerData) - sizeof(int);
+	HeapTuple	tuple = (HeapTuple) tuplesort_readtup_alloc(state,
+															t_len + HEAPTUPLESIZE);
+
+	/* Reconstruct the HeapTupleData header */
+	tuple->t_data = (HeapTupleHeader) ((char *) tuple + HEAPTUPLESIZE);
+	tuple->t_len = t_len;
+	LogicalTapeReadExact(tape, &tuple->t_self, sizeof(ItemPointerData));
+	/* We don't currently bother to reconstruct t_tableOid */
+	tuple->t_tableOid = InvalidOid;
+	/* Read in the tuple body */
+	LogicalTapeReadExact(tape, tuple->t_data, tuple->t_len);
+	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
+		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
+	stup->tuple = (void *) tuple;
+	/* set up first-column key value, if it's a simple column */
+	stup->datum1 = heap_getattr(tuple,
+								base->sortKeys[0].ssup_attno,
+								(TupleDesc) base->arg,
+								&stup->isnull1);
+}
+
+static void
+freestate_cluster_sort(Tuplesortstate *state)
+{
+	// TuplesortPublic *base = TuplesortstateGetPublic(state);
+
+	/* Free any execution state created for CLUSTER case */
+	/* XXX none, but if we add cluster by expressions, that would be
+	 * necessary, so leave it here for now ... */
 }
 
 /*

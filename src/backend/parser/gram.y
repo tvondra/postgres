@@ -390,7 +390,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_inline_handler opt_validator validator_clause
-				opt_collate
+				opt_collate cluster_order_specification
 
 %type <range>	qualified_name insert_target OptConstrFromTable
 
@@ -429,7 +429,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				oper_argtypes RuleActionList RuleActionMulti
 				opt_column_list columnList opt_name_list
 				sort_clause opt_sort_clause sortby_list index_params
-				stats_params
+				stats_params cluster_sortby_list
 				opt_include opt_c_include index_including_params
 				name_list role_list from_clause from_list opt_array_bounds
 				qualified_name_list any_name any_name_list type_name_list
@@ -11588,7 +11588,9 @@ CreateConversionStmt:
  *
  *		QUERY:
  *				CLUSTER [VERBOSE] <qualified_name> [ USING <index_name> ]
+ *				CLUSTER [VERBOSE] <qualified_name> [ BY <column list> ]
  *				CLUSTER [ (options) ] <qualified_name> [ USING <index_name> ]
+ *				CLUSTER [ (options) ] <qualified_name> [ BY <column list> ]
  *				CLUSTER [VERBOSE]
  *				CLUSTER [VERBOSE] <index_name> ON <qualified_name> (for pre-8.3)
  *
@@ -11601,6 +11603,20 @@ ClusterStmt:
 
 					n->relation = $3;
 					n->indexname = $4;
+					n->columns = NIL;
+					n->params = NIL;
+					if ($2)
+						n->params = lappend(n->params, makeDefElem("verbose", NULL, @2));
+					$$ = (Node *) n;
+				}
+
+			| CLUSTER opt_verbose qualified_name cluster_order_specification
+				{
+					ClusterStmt *n = makeNode(ClusterStmt);
+
+					n->relation = $3;
+					n->indexname = NULL;
+					n->columns = $4;
 					n->params = NIL;
 					if ($2)
 						n->params = lappend(n->params, makeDefElem("verbose", NULL, @2));
@@ -11613,6 +11629,18 @@ ClusterStmt:
 
 					n->relation = $5;
 					n->indexname = $6;
+					n->columns = NIL;
+					n->params = $3;
+					$$ = (Node *) n;
+				}
+
+			| CLUSTER '(' utility_option_list ')' qualified_name cluster_order_specification
+				{
+					ClusterStmt *n = makeNode(ClusterStmt);
+
+					n->relation = $5;
+					n->indexname = NULL;
+					n->columns = $6;
 					n->params = $3;
 					$$ = (Node *) n;
 				}
@@ -11622,6 +11650,7 @@ ClusterStmt:
 
 					n->relation = NULL;
 					n->indexname = NULL;
+					n->columns = NIL;
 					n->params = NIL;
 					if ($2)
 						n->params = lappend(n->params, makeDefElem("verbose", NULL, @2));
@@ -11634,6 +11663,7 @@ ClusterStmt:
 
 					n->relation = $5;
 					n->indexname = $3;
+					n->columns = NIL;
 					n->params = NIL;
 					if ($2)
 						n->params = lappend(n->params, makeDefElem("verbose", NULL, @2));
@@ -11644,6 +11674,15 @@ ClusterStmt:
 cluster_index_specification:
 			USING name				{ $$ = $2; }
 			| /*EMPTY*/				{ $$ = NULL; }
+		;
+
+cluster_order_specification:
+			BY cluster_sortby_list		{ $$ = $2; }
+		;
+
+cluster_sortby_list:
+			ColId								{ $$ = list_make1($1); }
+			| cluster_sortby_list ',' ColId		{ $$ = lappend($1, $3); }
 		;
 
 

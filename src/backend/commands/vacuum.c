@@ -2213,7 +2213,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 				cluster_params.options |= CLUOPT_VERBOSE;
 
 			/* VACUUM FULL is now a variant of CLUSTER; see cluster.c */
-			cluster_rel(relid, InvalidOid, &cluster_params);
+			cluster_rel(relid, InvalidOid, &cluster_params,
+						0, NULL, NULL, NULL, NULL);
 		}
 		else
 			table_relation_vacuum(rel, params, bstrategy);

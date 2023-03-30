@@ -404,6 +404,13 @@ extern Tuplesortstate *tuplesort_begin_cluster(TupleDesc tupDesc,
 											   int workMem,
 											   SortCoordinate coordinate,
 											   int sortopt);
+extern Tuplesortstate *tuplesort_begin_cluster_sort(TupleDesc tupDesc,
+													int nkeys, AttrNumber *attNums,
+													Oid *sortOperators, Oid *sortCollations,
+													bool *nullsFirstFlags,
+													int workMem,
+													SortCoordinate coordinate,
+													int sortopt);
 extern Tuplesortstate *tuplesort_begin_index_btree(Relation heapRel,
 												   Relation indexRel,
 												   bool enforceUnique,
@@ -430,6 +437,7 @@ extern Tuplesortstate *tuplesort_begin_datum(Oid datumType,
 extern void tuplesort_puttupleslot(Tuplesortstate *state,
 								   TupleTableSlot *slot);
 extern void tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup);
+extern void tuplesort_putheaptuple_sort(Tuplesortstate *state, HeapTuple tup);
 extern void tuplesort_putindextuplevalues(Tuplesortstate *state,
 										  Relation rel, ItemPointer self,
 										  Datum *values, bool *isnull);

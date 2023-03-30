@@ -32,7 +32,9 @@ typedef struct ClusterParams
 } ClusterParams;
 
 extern void cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel);
-extern void cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params);
+extern void cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params,
+						int numSortKeys, AttrNumber *sortKeys, Oid *sortOperators,
+						Oid *sortCollations, bool *nullsFirstFlags);
 extern void check_index_is_clusterable(Relation OldHeap, Oid indexOid,
 									   LOCKMODE lockmode);
 extern void mark_index_clustered(Relation rel, Oid indexOid, bool is_internal);

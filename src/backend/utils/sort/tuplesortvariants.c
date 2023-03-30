@@ -368,6 +368,7 @@ tuplesort_begin_cluster_sort(TupleDesc tupDesc,
 	base->comparetup = comparetup_cluster_sort;
 	base->writetup = writetup_cluster_sort;
 	base->readtup = readtup_cluster_sort;
+	base->freestate = freestate_cluster_sort;
 	base->haveDatum1 = true;
 	base->arg = tupDesc;		/* assume we need not copy tupDesc */
 

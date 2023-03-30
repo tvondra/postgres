@@ -116,7 +116,8 @@ typedef struct ClusterShared
 	slock_t		mutex;
 
 	/*
-	 * 
+	 * XXX This should probably just do a regular parallel scan, we don't need
+	 * to assign block ranges to workers.
 	 */
 	int			last_worker_id;
 	BlockNumber	next_range;

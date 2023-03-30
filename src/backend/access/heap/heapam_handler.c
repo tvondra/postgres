@@ -86,6 +86,13 @@ typedef struct ClusterShared
 	TransactionId	multiCutoff;
 	int				scantuplesortstates;
 
+	int				numSortKeys;
+	/* XXX lazy hack to not have to size dynamically, works for PoC */
+	AttrNumber		sortKeys[INDEX_MAX_KEYS];
+	Oid				sortOperators[INDEX_MAX_KEYS];
+	Oid				sortCollations[INDEX_MAX_KEYS];
+	bool			nullsFirstFlags[INDEX_MAX_KEYS];
+
 	/*
 	 * workersdonecv is used to monitor the progress of workers.  All parallel
 	 * participants must indicate that they are done before leader can use
@@ -193,7 +200,10 @@ typedef struct ClusterState
 	int			cs_worker_id;
 } ClusterState;
 
-static void _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int request);
+static void _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index,
+									int numSortKeys, AttrNumber *sortKeys,
+									Oid *sortOperators, Oid *sortCollations,
+									bool *nullsFirstFlags, int request);
 static void _cluster_end_parallel(ClusterLeader *leader, ClusterState *state);
 static Size _cluster_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static void _cluster_leader_participate_as_worker(ClusterState *state,
@@ -842,7 +852,10 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 								 MultiXactId *multi_cutoff,
 								 double *num_tuples,
 								 double *tups_vacuumed,
-								 double *tups_recently_dead)
+								 double *tups_recently_dead,
+								 int numSortKeys, AttrNumber *sortKeys,
+								 Oid *sortOperators, Oid *sortCollations,
+								 bool *nullsFirstFlags)
 {
 	RewriteState rwstate;
 	IndexScanDesc indexScan;
@@ -894,7 +907,9 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	 * XXX We only do this with sort mode, not for index-based sort.
 	 */
 	if (use_sort && max_parallel_maintenance_workers > 0)
-		_cluster_begin_parallel(cs, OldHeap, OldIndex, max_parallel_maintenance_workers);
+		_cluster_begin_parallel(cs, OldHeap, OldIndex, numSortKeys, sortKeys,
+								sortOperators, sortCollations, nullsFirstFlags,
+								max_parallel_maintenance_workers);
 
 	/*
 	 * If parallel build requested and at least one worker process was
@@ -913,9 +928,21 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 			cs->cs_leader->nparticipantworkers;
 		coordinate->sharedsort = cs->cs_leader->sharedsort;
 
-		tss = tuplesort_begin_cluster(oldTupDesc, OldIndex, NewHeap,
-									  maintenance_work_mem,
-									  coordinate, TUPLESORT_NONE);
+		if (cs->cs_index)
+			tss = tuplesort_begin_cluster(oldTupDesc, OldIndex, NewHeap,
+										  maintenance_work_mem,
+										  coordinate, TUPLESORT_NONE);
+		else
+			tss = tuplesort_begin_cluster_sort(oldTupDesc,
+											   numSortKeys,
+											   sortKeys,
+											   sortOperators,
+											   sortCollations,
+											   nullsFirstFlags,
+											   maintenance_work_mem,
+											   coordinate,
+											   TUPLESORT_NONE);
+
 		// tuplesort_performsort(tss);
 		// tuplesort_end(tss);
 		tuplesort = tss;
@@ -937,9 +964,22 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	 * _bt_log_reuse_page() (which should not be called from this code path).
 	 */
 	if (use_sort)
-		tuplesort = tuplesort_begin_cluster(oldTupDesc, OldIndex, NewHeap,
-											maintenance_work_mem,
-											NULL, TUPLESORT_NONE);
+	{
+		if (OldIndex)
+			tuplesort = tuplesort_begin_cluster(oldTupDesc, OldIndex, NewHeap,
+												maintenance_work_mem,
+												NULL, TUPLESORT_NONE);
+		else
+			tuplesort = tuplesort_begin_cluster_sort(oldTupDesc,
+													 numSortKeys,
+													 sortKeys,
+													 sortOperators,
+													 sortCollations,
+													 nullsFirstFlags,
+													 maintenance_work_mem,
+													 NULL,
+													 TUPLESORT_NONE);
+	}
 	else
 		tuplesort = NULL;
 
@@ -1116,7 +1156,10 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		*num_tuples += 1;
 		if (tuplesort != NULL)
 		{
-			tuplesort_putheaptuple(tuplesort, tuple);
+			if (OldIndex)
+				tuplesort_putheaptuple(tuplesort, tuple);
+			else
+				tuplesort_putheaptuple_sort(tuplesort, tuple);
 
 			/*
 			 * In scan-and-sort mode, report increase in number of tuples
@@ -2828,7 +2871,10 @@ heap_tableam_handler(PG_FUNCTION_ARGS)
 
 
 static void
-_cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int request)
+_cluster_begin_parallel(ClusterState *state, Relation heap, Relation index,
+						int numSortKeys, AttrNumber *sortKeys, Oid *sortOperators,
+						Oid *sortCollations, bool *nullsFirstFlags,
+						int request)
 {
 	ParallelContext *pcxt;
 	Snapshot	snapshot;
@@ -2912,12 +2958,24 @@ _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int 
 	clustershared = (ClusterShared *) shm_toc_allocate(pcxt->toc, estclustershared);
 	/* Initialize immutable state */
 	clustershared->heaprelid = RelationGetRelid(heap);
-	clustershared->indexrelid = RelationGetRelid(index);
+
+	if (index)
+		clustershared->indexrelid = RelationGetRelid(index);
+	else
+		clustershared->indexrelid = InvalidOid;
+
 	clustershared->scantuplesortstates = scantuplesortstates;
 
 	clustershared->oldestXmin = state->cs_oldestXmin;
 	clustershared->xidCutoff = state->cs_xidCutoff;
 	clustershared->multiCutoff = state->cs_multiCutoff;
+
+	/* CLUSTER t BY column */
+	clustershared->numSortKeys = numSortKeys;
+	memcpy(clustershared->sortKeys, sortKeys, sizeof(AttrNumber) * numSortKeys);
+	memcpy(clustershared->sortOperators, sortOperators, sizeof(Oid) * numSortKeys);
+	memcpy(clustershared->sortCollations, sortCollations, sizeof(Oid) * numSortKeys);
+	memcpy(clustershared->nullsFirstFlags, nullsFirstFlags, sizeof(bool) * numSortKeys);
 
 	ConditionVariableInit(&clustershared->workersdonecv);
 	SpinLockInit(&clustershared->mutex);
@@ -3101,10 +3159,20 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 	coordinate->sharedsort = sharedsort;
 
 	/* Begin "partial" tuplesort */
-	tuplesort = tuplesort_begin_cluster(RelationGetDescr(state->cs_heap),
-										state->cs_index, state->cs_heap,
-										sortmem, coordinate,
-										TUPLESORT_NONE);
+	if (state->cs_index)
+		tuplesort = tuplesort_begin_cluster(RelationGetDescr(state->cs_heap),
+											state->cs_index, state->cs_heap,
+											sortmem, coordinate,
+											TUPLESORT_NONE);
+	else
+		tuplesort = tuplesort_begin_cluster_sort(RelationGetDescr(state->cs_heap),
+												 clustershared->numSortKeys,
+												 clustershared->sortKeys,
+												 clustershared->sortOperators,
+												 clustershared->sortCollations,
+												 clustershared->nullsFirstFlags,
+												 sortmem, coordinate,
+												 TUPLESORT_NONE);
 
 	slot = table_slot_create(state->cs_heap, NULL);
 	hslot = (BufferHeapTupleTableSlot *) slot;
@@ -3201,7 +3269,12 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 
 		num_tuples += 1;
 
-		tuplesort_putheaptuple(tuplesort, tuple);
+		// tuplesort_puttupleslot(tuplesort, slot);
+		/* XXX I wonder why the cluster did this before */
+		if (state->cs_index)
+			tuplesort_putheaptuple(tuplesort, tuple);
+		else
+			tuplesort_putheaptuple_sort(tuplesort, tuple);
 	}
 
 	table_endscan(scan);
@@ -3277,7 +3350,11 @@ _cluster_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	/* Open relations within worker */
 	heapRel = table_open(clustershared->heaprelid, heapLockmode);
-	indexRel = index_open(clustershared->indexrelid, indexLockmode);
+
+	if (clustershared->indexrelid != InvalidOid)
+		indexRel = index_open(clustershared->indexrelid, indexLockmode);
+	else
+		indexRel = NULL;
 
 	/* */
 	clusterstate = palloc0(sizeof(ClusterState));
@@ -3306,6 +3383,8 @@ _cluster_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	InstrEndParallelQuery(&bufferusage[ParallelWorkerNumber],
 						  &walusage[ParallelWorkerNumber]);
 
-	index_close(indexRel, indexLockmode);
+	if (indexRel)
+		index_close(indexRel, indexLockmode);
+
 	table_close(heapRel, heapLockmode);
 }

@@ -626,7 +626,12 @@ typedef struct TableAmRoutine
 											  MultiXactId *multi_cutoff,
 											  double *num_tuples,
 											  double *tups_vacuumed,
-											  double *tups_recently_dead);
+											  double *tups_recently_dead,
+											  int numSortKeys,
+											  AttrNumber *sortKeys,
+											  Oid *sortOperators,
+											  Oid *sortCollations,
+											  bool *nullsFirstFlags);
 
 	/*
 	 * React to VACUUM command on the relation. The VACUUM can be triggered by
@@ -1678,13 +1683,20 @@ table_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 								MultiXactId *multi_cutoff,
 								double *num_tuples,
 								double *tups_vacuumed,
-								double *tups_recently_dead)
+								double *tups_recently_dead,
+								int numSortKeys,
+								AttrNumber *sortKeys,
+								Oid *sortOperators,
+								Oid *sortCollations,
+								bool *nullsFirstFlags)
 {
 	OldTable->rd_tableam->relation_copy_for_cluster(OldTable, NewTable, OldIndex,
 													use_sort, OldestXmin,
 													xid_cutoff, multi_cutoff,
 													num_tuples, tups_vacuumed,
-													tups_recently_dead);
+													tups_recently_dead,
+													numSortKeys, sortKeys, sortOperators,
+													sortCollations, nullsFirstFlags);
 }
 
 /*

@@ -113,6 +113,13 @@ typedef struct ClusterShared
 	int			last_worker_id;
 
 	/*
+	 * Used to acquire chunks of the table by workers, using TID scan, something
+	 * like a parallel scan, but implemented on our own.
+	 */
+	BlockNumber	next_range;
+	BlockNumber	last_range;
+
+	/*
 	 * Mutable state that is maintained by workers, and reported back to
 	 * leader at end of the scans.
 	 *
@@ -128,21 +135,7 @@ typedef struct ClusterShared
 	double		tups_vacuumed;
 	double		tups_recently_dead;
 
-	/*
-	 * ParallelTableScanDescData data follows. Can't directly embed here, as
-	 * implementations of the parallel table scan desc interface might need
-	 * stronger alignment.
-	 */
 } ClusterShared;
-
-/*
- * Return pointer to a ClusterShared's parallel table scan.
- *
- * c.f. shm_toc_allocate as to why BUFFERALIGN is used, rather than just
- * MAXALIGN.
- */
-#define ParallelTableScanFromClusterShared(shared) \
-	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(ClusterShared)))
 
 /*
  * Status for leader in parallel cluster.
@@ -2990,9 +2983,9 @@ _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index,
 	/* Track work assigned to workers etc. */
 	clustershared->last_worker_id = 0;
 
-	table_parallelscan_initialize(heap,
-								  ParallelTableScanFromClusterShared(clustershared),
-								  snapshot, InvalidBlockNumber);
+	/* Schedule processing of the whole table. */
+	clustershared->next_range = 0;
+	clustershared->last_range = RelationGetNumberOfBlocks(heap);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -3092,15 +3085,12 @@ _cluster_end_parallel(ClusterLeader *clusterleader, ClusterState *state)
 /*
  * Returns size of shared memory required to store state for a parallel
  * cluster based on the snapshot its parallel scan will use.
- *
- * XXX we don't do parallelscan, so this seems wrong (unnecessarily large)
  */
 static Size
 _cluster_parallel_estimate_shared(Relation heap, Snapshot snapshot)
 {
 	/* c.f. shm_toc_allocate as to why BUFFERALIGN is used */
-	return add_size(BUFFERALIGN(sizeof(ClusterShared)),
-					table_parallelscan_estimate(heap, snapshot));
+	return (BUFFERALIGN(sizeof(ClusterShared)));
 }
 
 /*
@@ -3141,12 +3131,12 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 								Sharedsort *sharedsort, Relation heap, int sortmem)
 {
 	SortCoordinate coordinate;
-	TableScanDesc scan;
 	Tuplesortstate *tuplesort;
 	TupleTableSlot *slot;
 	BufferHeapTupleTableSlot *hslot;
 	bool			is_system_catalog = IsSystemRelation(state->cs_heap);
 	int				ntuples = 0;
+	int				nscans = 0;
 
 	double			num_tuples = 0;
 	double			tups_vacuumed = 0;
@@ -3177,108 +3167,135 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 	slot = table_slot_create(state->cs_heap, NULL);
 	hslot = (BufferHeapTupleTableSlot *) slot;
 
-	scan = table_beginscan_parallel(state->cs_heap,
-									ParallelTableScanFromClusterShared(clustershared));
-
-	/*
-	 * Scan through the OldHeap, either in OldIndex order or sequentially;
-	 * copy each tuple into the NewHeap, or transiently to the tuplesort
-	 * module.  Note that we don't bother sorting dead tuples (they won't get
-	 * to the new table anyway).
-	 */
-	for (;;)
+	while (true)
 	{
-		HeapTuple	tuple;
-		Buffer		buf;
-		bool		isdead;
+		TableScanDesc	scan;
+		BlockNumber		startBlock,
+						lastBlock,
+						chunkBlocks;
+		ItemPointerData	mintid,
+						maxtid;
 
-		CHECK_FOR_INTERRUPTS();
+		chunkBlocks = 128;	/* 1MB */
 
-		if (!table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		SpinLockAcquire(&clustershared->mutex);
+		startBlock = clustershared->next_range;
+		lastBlock = clustershared->last_range;
+		clustershared->next_range += chunkBlocks;
+		SpinLockRelease(&clustershared->mutex);
+
+		if (startBlock > lastBlock)
 			break;
 
-		ntuples++;
+		nscans++;
 
-		tuple = ExecFetchSlotHeapTuple(slot, false, NULL);
-		buf = hslot->buffer;
+		ItemPointerSet(&mintid, startBlock, 0);
+		ItemPointerSet(&maxtid, startBlock + (chunkBlocks - 1),
+					   MaxHeapTuplesPerPage);
 
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		/* start tidscan to read the relevant part of the table */
+		scan = table_beginscan_tidrange(heap, SnapshotAny,	// FIXME which snapshot to use?
+										&mintid, &maxtid);
 
-		switch (HeapTupleSatisfiesVacuum(tuple, state->cs_oldestXmin, buf))
+		/*
+		 * Scan through the OldHeap, either in OldIndex order or sequentially;
+		 * copy each tuple into the NewHeap, or transiently to the tuplesort
+		 * module.  Note that we don't bother sorting dead tuples (they won't get
+		 * to the new table anyway).
+		 */
+		for (;;)
 		{
-			case HEAPTUPLE_DEAD:
-				/* Definitely dead */
-				isdead = true;
-				break;
-			case HEAPTUPLE_RECENTLY_DEAD:
-				/* fall through */
-			case HEAPTUPLE_LIVE:
-				/* Live or recently dead, must copy it */
-				isdead = false;
-				break;
-			case HEAPTUPLE_INSERT_IN_PROGRESS:
+			HeapTuple	tuple;
+			Buffer		buf;
+			bool		isdead;
 
-				/*
-				 * Since we hold exclusive lock on the relation, normally the
-				 * only way to see this is if it was inserted earlier in our
-				 * own transaction.  However, it can happen in system
-				 * catalogs, since we tend to release write lock before commit
-				 * there.  Give a warning if neither case applies; but in any
-				 * case we had better copy it.
-				 */
-				if (!is_system_catalog &&
-					!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tuple->t_data)))
-					elog(WARNING, "concurrent insert in progress within table \"%s\"",
-						 RelationGetRelationName(state->cs_heap));
-				/* treat as live */
-				isdead = false;
-				break;
-			case HEAPTUPLE_DELETE_IN_PROGRESS:
+			CHECK_FOR_INTERRUPTS();
 
-				/*
-				 * Similar situation to INSERT_IN_PROGRESS case.
-				 */
-				if (!is_system_catalog &&
-					!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tuple->t_data)))
-					elog(WARNING, "concurrent delete in progress within table \"%s\"",
-						 RelationGetRelationName(state->cs_heap));
-				/* treat as recently dead */
-				isdead = false;
+			if (!table_scan_getnextslot(scan, ForwardScanDirection, slot))
 				break;
-			default:
-				elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result");
-				isdead = false; /* keep compiler quiet */
-				break;
+
+			ntuples++;
+
+			tuple = ExecFetchSlotHeapTuple(slot, false, NULL);
+			buf = hslot->buffer;
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+			switch (HeapTupleSatisfiesVacuum(tuple, state->cs_oldestXmin, buf))
+			{
+				case HEAPTUPLE_DEAD:
+					/* Definitely dead */
+					isdead = true;
+					break;
+				case HEAPTUPLE_RECENTLY_DEAD:
+					/* fall through */
+				case HEAPTUPLE_LIVE:
+					/* Live or recently dead, must copy it */
+					isdead = false;
+					break;
+				case HEAPTUPLE_INSERT_IN_PROGRESS:
+
+					/*
+					 * Since we hold exclusive lock on the relation, normally the
+					 * only way to see this is if it was inserted earlier in our
+					 * own transaction.  However, it can happen in system
+					 * catalogs, since we tend to release write lock before commit
+					 * there.  Give a warning if neither case applies; but in any
+					 * case we had better copy it.
+					 */
+					if (!is_system_catalog &&
+						!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tuple->t_data)))
+						elog(WARNING, "concurrent insert in progress within table \"%s\"",
+							 RelationGetRelationName(state->cs_heap));
+					/* treat as live */
+					isdead = false;
+					break;
+				case HEAPTUPLE_DELETE_IN_PROGRESS:
+
+					/*
+					 * Similar situation to INSERT_IN_PROGRESS case.
+					 */
+					if (!is_system_catalog &&
+						!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tuple->t_data)))
+						elog(WARNING, "concurrent delete in progress within table \"%s\"",
+							 RelationGetRelationName(state->cs_heap));
+					/* treat as recently dead */
+					isdead = false;
+					break;
+				default:
+					elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result");
+					isdead = false; /* keep compiler quiet */
+					break;
+			}
+
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+			if (isdead)
+			{
+				tups_vacuumed += 1;
+				// /* heap rewrite module still needs to see it... */
+				// FIXME
+				// if (rewrite_heap_dead_tuple(rwstate, tuple))
+				// {
+				// 	/* A previous recently-dead tuple is now known dead */
+				// 	*tups_vacuumed += 1;
+				// 	*tups_recently_dead -= 1;
+				// }
+				continue;
+			}
+
+			num_tuples += 1;
+
+			// tuplesort_puttupleslot(tuplesort, slot);
+			/* XXX I wonder why the cluster did this before */
+			if (state->cs_index)
+				tuplesort_putheaptuple(tuplesort, tuple);
+			else
+				tuplesort_putheaptuple_sort(tuplesort, tuple);
 		}
 
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
-		if (isdead)
-		{
-			tups_vacuumed += 1;
-			// /* heap rewrite module still needs to see it... */
-			// FIXME
-			// if (rewrite_heap_dead_tuple(rwstate, tuple))
-			// {
-			// 	/* A previous recently-dead tuple is now known dead */
-			// 	*tups_vacuumed += 1;
-			// 	*tups_recently_dead -= 1;
-			// }
-			continue;
-		}
-
-		num_tuples += 1;
-
-		// tuplesort_puttupleslot(tuplesort, slot);
-		/* XXX I wonder why the cluster did this before */
-		if (state->cs_index)
-			tuplesort_putheaptuple(tuplesort, tuple);
-		else
-			tuplesort_putheaptuple_sort(tuplesort, tuple);
+		table_endscan(scan);
 	}
-
-	table_endscan(scan);
-
 
 	/* We can end tuplesorts immediately */
 	tuplesort_performsort(tuplesort);
@@ -3288,7 +3305,7 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 		TuplesortInstrumentation stats;
 		memset(&stats, 0, sizeof(TuplesortInstrumentation));
 		tuplesort_get_stats(tuplesort, &stats);
-		elog(DEBUG1, "tuples %d  space used %ld", ntuples, stats.spaceUsed);
+		elog(DEBUG1, "scans %d  tuples %d  space used %ld", nscans, ntuples, stats.spaceUsed);
 	}
 
 	tuplesort_end(tuplesort);

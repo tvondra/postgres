@@ -1527,7 +1527,6 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	if (get_rel_relkind(RelationGetRelid(rel)) == RELKIND_SEQUENCE)
 	{
 		StringInfoData	cmd;
-		Oid				lockRow[] = {VOIDOID};
 
 		initStringInfo(&cmd);
 
@@ -1535,13 +1534,13 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 		 * XXX maybe this should do fetch_remote_table_info and use the relation
 		 * and namespace names from the result?
 		 */
-		appendStringInfo(&cmd, "SELECT pg_catalog.pg_sequence_lock_for_sync('%s')",
+		appendStringInfo(&cmd, "LOCK %s IN ROW EXCLUSIVE MODE",
 						 quote_qualified_identifier(get_namespace_name(RelationGetNamespace(rel)),
 													RelationGetRelationName(rel)));
-		elog(LOG, "locking: %s", cmd.data);
-		res = walrcv_exec(LogRepWorkerWalRcvConn,
-						  cmd.data, 1, lockRow);
-		if (res->status != WALRCV_OK_TUPLES)
+
+		res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data, 0, NULL);
+
+		if (res->status != WALRCV_OK_COMMAND)
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("sequence copy failed to lock on publisher: %s",

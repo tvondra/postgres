@@ -12072,8 +12072,4 @@
   proname => 'any_value_transfn', prorettype => 'anyelement',
   proargtypes => 'anyelement anyelement', prosrc => 'any_value_transfn' },
 
-{ oid => '8003', descr => 'lock sequence for logical replication sync',
-  proname => 'pg_sequence_lock_for_sync', prorettype => 'void',
-  proargtypes => 'regclass', prosrc => 'pg_sequence_lock_for_sync' },
-
 ]

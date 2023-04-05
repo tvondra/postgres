@@ -4713,7 +4713,7 @@ ApplyWorkerMain(Datum main_arg)
 
 	server_version = walrcv_server_version(LogRepWorkerWalRcvConn);
 	options.proto.logical.proto_version =
-		server_version >= 160000 ? LOGICALREP_PROTO_STREAM_PARALLEL_VERSION_NUM :
+		server_version >= 160000 ? LOGICALREP_PROTO_SEQUENCES_VERSION_NUM :
 		server_version >= 150000 ? LOGICALREP_PROTO_TWOPHASE_VERSION_NUM :
 		server_version >= 140000 ? LOGICALREP_PROTO_STREAM_VERSION_NUM :
 		LOGICALREP_PROTO_VERSION_NUM;
@@ -4743,8 +4743,20 @@ ApplyWorkerMain(Datum main_arg)
 		MyLogicalRepWorker->parallel_apply = false;
 	}
 
+	options.proto.logical.sequences = false;
 	options.proto.logical.twophase = false;
 	options.proto.logical.origin = pstrdup(MySubscription->origin);
+
+	/*
+	 * Assign the appropriate option value for sequence decoding option according
+	 * to the 'sequences' mode and the publisher's ability to support that mode.
+	 *
+	 * XXX Isn't this redundant with the version check in libpqwalreceiver.c, using
+	 * PQserverVersion(conn->streamConn)?
+	 */
+	if (server_version >= 160000 &&
+		MySubscription->sequences)
+		options.proto.logical.sequences = true;
 
 	if (!am_tablesync_worker())
 	{

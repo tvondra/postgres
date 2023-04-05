@@ -1357,6 +1357,21 @@ sequence_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	RepOriginId origin_id = XLogRecGetOrigin(r);
 	bool		transactional;
 
+	/*
+	 * ignore sequences when not requested
+	 *
+	 * XXX Maybe we should differentiate between "callbacks not defined" or
+	 * "subscriber disabled sequence replication" and "subscriber does not
+	 * know about sequence replication" (e.g. old subscriber version).
+	 *
+	 * For the first two it'd be fine to bail out here, but for the last it
+	 * might be better to continue and error out only when the sequence
+	 * would be replicated (e.g. as part of the publication). We don't know
+	 * that here, unfortunately.
+	 */
+	if (!ctx->sequences)
+		return;
+
 	/* only decode changes flagged with XLOG_SEQ_LOG */
 	if (info != XLOG_SEQ_LOG)
 		elog(ERROR, "unexpected RM_SEQ_ID record type: %u", info);

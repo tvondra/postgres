@@ -135,6 +135,12 @@ $node_publisher->safe_psql(
 	COMMIT;
 ));
 
+# Refresh publication after sequence is added to publication
+$result = $node_subscriber->safe_psql(
+	'postgres', qq(
+	ALTER SUBSCRIPTION seq_sub REFRESH PUBLICATION
+));
+
 $node_publisher->wait_for_catchup('seq_sub');
 
 # Wait for sync of the second sequence we just added to finish

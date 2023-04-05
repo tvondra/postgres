@@ -298,6 +298,20 @@ StartupDecodingContext(List *output_plugin_options,
 	 */
 	ctx->reorder->update_progress_txn = update_progress_txn_cb_wrapper;
 
+	/*
+	 * To support logical decoding of sequences, we require the sequence
+	 * callback. We decide it here, but only check it later in the wrappers.
+	 *
+	 * XXX Isn't it wrong to define only one of those callbacks? Say we
+	 * only define the stream_sequence_cb() - that may get strange results
+	 * depending on what gets streamed. Either none or both?
+	 *
+	 * XXX Shouldn't sequence be defined at slot creation time, similar
+	 * to two_phase? Probably not.
+	 */
+	ctx->sequences = ((ctx->callbacks.sequence_cb != NULL) ||
+					  (ctx->callbacks.stream_sequence_cb != NULL));
+
 	ctx->out = makeStringInfo();
 	ctx->prepare_write = prepare_write;
 	ctx->write = do_write;
@@ -592,6 +606,16 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 	if (ctx->callbacks.startup_cb != NULL)
 		startup_cb_wrapper(ctx, &ctx->options, false);
 	MemoryContextSwitchTo(old_context);
+
+	/*
+	 * We allow decoding of sequences when the option is given at the streaming
+	 * start, provided the plugin supports all the callbacks for two-phase.
+	 *
+	 * XXX Similar behavior to the two-phase block below.
+	 *
+	 * XXX Shouldn't this error out if the callbacks are not defined?
+	 */
+	ctx->sequences &= ctx->sequences_opt_given;
 
 	/*
 	 * We allow decoding of prepared transactions when the two_phase is

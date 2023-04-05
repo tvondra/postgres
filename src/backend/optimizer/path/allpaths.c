@@ -1566,6 +1566,72 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 }
 
 /*
+ * Find the cheapest path to build the filter. We want cheapest_total_path
+ * but we can't just grab the one we have already built in "rel" because
+ * those paths might end up being used by some other part of the plan (and
+ * having two references might mess things up, I think).
+ *
+ * Instead, we build new paths - we simply create seqscan, and then ask to
+ * create index paths again. To create new paths and not mess with the
+ * existing ones, we create a "fake" RelOptInfo as a copy of the relation
+ * we're interested in.
+ *
+ * XXX This does the trick, but it has a couple issues. Firstly, if there
+ * are some alternative paths besides seqscan and index paths built by
+ * create_index_paths, we will miss them.
+ *
+ * XXX Secondly, it only works for plain relations, not for more complex
+ * filters that need to join multiple tables (e.g. in snowflake schemas).
+ * That would require running planner on a smaller subquery, I think. I
+ * tried doing what preprocess_minmax_aggregates/build_minmax_path do for
+ * MinMax paths, but it's trickier than it seems because it expects to
+ * happen before the "main" query_planner() gets executed (but here we're
+ * already running that). So we'd need to do this earlier too, or maybe
+ * just run an entirely independent planning.
+ *
+ * XXX There's also the issue that the filter query may contain filters
+ * too, so it may be kinda recursive. But that should be fine, the number
+ * of "possible" filters would quickly decrease.
+ */
+static Path *
+cheapest_filter_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer,
+					 int parallel_workers)
+{
+	RelOptInfo	rel_tmp;
+	RelOptInfo	*tmp = &rel_tmp;
+	Path *path;
+	double	loop_count = 1.0;
+
+	memcpy(tmp, rel, sizeof(RelOptInfo));
+
+	tmp->pathlist = NIL;
+	tmp->partial_pathlist = NIL;
+
+	tmp->cheapest_startup_path = NULL;
+	tmp->cheapest_total_path = NULL;
+	tmp->cheapest_unique_path = NULL;
+	tmp->cheapest_parameterized_paths = NIL;
+
+	/* keep cheap-startup-cost paths? */
+	tmp->consider_startup = false;
+	tmp->consider_param_startup = false;
+	tmp->consider_parallel = false;
+	tmp->consider_partitionwise_join = false;
+
+	add_path(tmp, create_seqscan_path(root, tmp, required_outer, 0));
+
+	create_index_paths(root, tmp);
+
+	set_cheapest(tmp);
+
+	path = (tmp)->cheapest_total_path;
+
+	path->parent = rel;
+
+	return path;
+}
+
+/*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
  *
@@ -1843,7 +1909,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 											InvalidAttrNumber, local_var->vartype, clause->collation,
 											false,
-											create_seqscan_path(root, rel2, required_outer, 0));
+											cheapest_filter_path(root, rel2, required_outer, 0));
 
 				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
@@ -2053,7 +2119,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 													attnum, local_var->vartype, clause->collation,
 													index->amsearcharray,
-													create_seqscan_path(root, rel2, required_outer, 0));
+													cheapest_filter_path(root, rel2, required_outer, 0));
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
 
@@ -2134,7 +2200,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 													attnum, local_var->vartype, clause->collation,
 													index->amsearcharray,
-													create_seqscan_path(root, rel2, required_outer, 0));
+													cheapest_filter_path(root, rel2, required_outer, 0));
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
 
@@ -2474,7 +2540,7 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 					filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
 												InvalidAttrNumber, var->vartype, ec->ec_collation,
 												false,
-												create_seqscan_path(root, rel2, required_outer, 0));
+												cheapest_filter_path(root, rel2, required_outer, 0));
 
 					/*
 					 * XXX cut the cost in half, needs to be improved (consider the

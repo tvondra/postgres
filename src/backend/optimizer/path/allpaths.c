@@ -1592,6 +1592,22 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
  * XXX There's also the issue that the filter query may contain filters
  * too, so it may be kinda recursive. But that should be fine, the number
  * of "possible" filters would quickly decrease.
+ *
+ * XXX This is somewhat incorrect, causing issues e.g. with "\d table" in
+ * psql. AFAICS the issue is we may end up with two paths pointing at the
+ * same RelOptInfo (thus sharing info like restriction clauses etc.) and
+ * createplan.c thus ends up descending to those nodes twice while fixing
+ * attnum references etc. So the second round fails with
+ *
+ *    ERROR:  index key does not match expected index column
+ *
+ * in fix_indexqual_operand(). I've tried to build a "local" RelOptInfo
+ * for this, but than doesn't quite work as a lot of places reference the
+ * rel for a path (as path->parent). The right way to fix this is likely
+ * creating the RelOptInfo sometime earlier, along with the other rels.
+ * Alternatively, we might do a completely separate planning here. Maybe
+ * as a workaround build a SQL query and plan that? Might be easier than
+ * constructing all the planner info manually.
  */
 static Path *
 cheapest_filter_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer,

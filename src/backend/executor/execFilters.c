@@ -7,6 +7,9 @@
  * IDENTIFICATION
  *	  src/backend/executor/execFilters.c
  *
+ *
+ * FIXME Create a separate memory context for each filter, to make the
+ * memory usage easier to understand.
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -713,6 +716,8 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 		}
 	}
 
+	pfree(ranges);
+
 	Assert(filter->nallocated >= filter->nvalues);
 
 	if (filter->nvalues < filter->nallocated)
@@ -755,7 +760,10 @@ ExecFilterAddRange(FilterState *filter, bool keep_nulls, ExprContext *econtext)
 	}
 
 	if (!ExecFilterGetValues(filter, econtext, keep_nulls, entry))
+	{
+		pfree(entry);
 		return false;
+	}
 
 	values = (Datum *) filter->data;
 
@@ -1309,7 +1317,10 @@ ExecFilterContainsRange(FilterState *filter, ExprContext *econtext)
 
 	/* reject NULL values */
 	if (!ExecScanGetFilterGetValues(filter, econtext, false, entry))
+	{
+		pfree(entry);
 		return false;
+	}
 
 	/* TODO use binary search to check ranges */
 	for (int i = 0; i < filter->nranges; i++)
@@ -1804,8 +1815,6 @@ ExecFiltersAddScanKeys(FilterState *filter, ScanKeyData *keys)
 							   filter->collations[0],	// collation
 							   get_opcode(le_opr),		// int4le
 							   values[filter->nvalues - 1]);
-
-		filter->skip = false;
 	}
 	else if (filter->filter_type == FilterTypeRange)
 	{
@@ -1841,9 +1850,10 @@ ExecFiltersAddScanKeys(FilterState *filter, ScanKeyData *keys)
 							   filter->collations[0],	// collation
 							   get_opcode(le_opr),		// int4le
 							   maxval);
-
-		filter->skip = false;
 	}
+
+	/* skip the filter (maybe we should override it in some cases) */
+	filter->skip = true;
 }
 
 static int

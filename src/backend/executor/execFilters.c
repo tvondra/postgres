@@ -216,7 +216,37 @@ typedef struct FilterRange
 {
 	Datum	start;
 	Datum	end;
+	bool	is_point;	/* point has (start == end) */
+	bool	removed;		/* should be removed / compacted (by merging with
+							 * the preceding range) ? */
+	int		merged_into;	/* with which range to merge */
 } FilterRange;
+
+typedef struct RangeDistance
+{
+	int		index;		/* distance is between (index-1) and index */
+	double	distance;	/* distance */
+	int		random;		/* to randomize ordering of equal distances */
+} RangeDistance;
+
+static int
+filter_distance_comparator(const void *a, const void *b)
+{
+	RangeDistance *da = (RangeDistance *) a;
+	RangeDistance *db = (RangeDistance *) b;
+
+	if (da->distance < db->distance)
+		return -1;
+	else if (da->distance > db->distance)
+		return 1;
+
+	if (da->random < db->random)
+		return -1;
+	else if (da->random > db->random)
+		return 1;
+
+	return 0;
+}
 
 /*
  * Simple comparator of Datum arrays.
@@ -462,6 +492,8 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 
 		ranges[rangeidx].start = values[2*i];
 		ranges[rangeidx].end = values[2*i + 1];
+		ranges[rangeidx].is_point = false;
+		ranges[rangeidx].removed = false;
 		rangeidx++;
 		Assert((2*i + 1) < filter->nvalues);
 	}
@@ -472,6 +504,8 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 
 		ranges[rangeidx].start = values[i];
 		ranges[rangeidx].end = values[i];
+		ranges[rangeidx].is_point = true;
+		ranges[rangeidx].removed = false;
 		rangeidx++;
 		Assert(i < filter->nvalues);
 	}
@@ -502,6 +536,7 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 		if (ranges_overlap(&ranges[rangeidx], &ranges[i], cxt))
 		{
 			ranges[rangeidx].end = Max(ranges[rangeidx].end, ranges[i].end);
+			ranges[rangeidx].is_point = false;
 			continue;
 		}
 
@@ -534,6 +569,7 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 			if (ranges_contiguous(filter, &ranges[rangeidx], &ranges[i]))
 			{
 				ranges[rangeidx].end = ranges[i].end;
+				ranges[rangeidx].is_point = false;
 				continue;
 			}
 
@@ -562,47 +598,81 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 	 * we need to be careful about collapsed ranges, because joining two
 	 * such ranges does not reduce anything).
 	 */
-	while (reduce && (nranges > 1))
+	if (reduce && (nranges > 1))
 	{
+		int		idx;
 		int		nvalues = 0;
-		int		mindist;
-		int		minidx;
+		RangeDistance	*distances;
+
+		distances = (RangeDistance *) palloc(sizeof(RangeDistance) * (nranges - 1));
 
 		/* count how many filter entries we have to store */
 		for (int i = 0; i < nranges; i++)
 		{
-			if (filter_value_comparator(&ranges[i].start, &ranges[i].end, cxt) != 0)
-				nvalues += 2;
-			else
-				nvalues += 1;
-		}
-
-		/* did we reduce the filter enough */
-		if (nvalues <= filter->nvalues * 0.75)
-			break;
-
-		/*
-		 * find the minimum distance between ranges
-		 *
-		 * XXX If there are multiple gaps of the ssme length, this just uses
-		 * the first one. Maybe we should randomize that somehow? Or maybe we
-		 * should combine all of them?
-		 */
-		minidx = 1;
-		mindist = ranges[1].end - ranges[0].start;
-
-		for (int i = 2; i < nranges; i++)
-		{
-			if (ranges[i].end - ranges[i-1].start < mindist)
+			if (i > 0)
 			{
-				mindist = ranges[i].end - ranges[i-1].start;
-				minidx = i;
+				distances[i-1].index = i;
+				distances[i-1].distance = (ranges[i].start - ranges[i-1].end);
+				distances[i-1].random = rand();
 			}
+
+			nvalues += (ranges[i].is_point) ? 1 : 2;
 		}
 
-		ranges[minidx-1].end = ranges[minidx].end;
-		memmove(&ranges[minidx], &ranges[minidx+1], sizeof(FilterRange) * (nranges - (minidx + 1)));
-		nranges--;
+		elog(WARNING, "ranges %d values %d", nranges, nvalues);
+
+		/* did we already reduce the filter enough */
+		if (nvalues > filter->nvalues * 0.75)
+		{
+			/* sort distances from smallest */
+			pg_qsort(distances, (nranges - 1), sizeof(RangeDistance),
+					 filter_distance_comparator);
+
+			for (int i = 0; i < (nranges - 1); i++)
+			{
+				/* which range to merge into the preceding one */
+				int		idx1 = distances[i].index;
+
+				/*
+				 * Which range to merge into? start with immediately preceding
+				 * one, but it might be already merged so lookup recursively.
+				 */
+				int		idx2 = (distances[i].index - 1);
+
+				while (ranges[idx2].removed)
+				{
+					Assert(idx2 > ranges[idx2].merged_into);
+					idx2 = ranges[idx2].merged_into;
+				}
+
+				Assert(idx2 < idx1);
+
+				nvalues -= (ranges[idx1].is_point) ? 1 : 2;
+				nvalues -= (ranges[idx2].is_point) ? 1 : 2;
+
+				ranges[idx1].removed = true;
+				ranges[idx1].merged_into = idx2;
+
+				ranges[idx2].end = ranges[idx1].end;
+				ranges[idx2].is_point = false;
+
+				if (nvalues <= filter->nvalues * 0.75)
+					break;
+			}
+
+			idx = 0;
+			for (int i = 0; i < nranges; i++)
+			{
+				if (ranges[i].removed)
+					continue;
+
+				ranges[idx++] = ranges[i];
+			}
+
+			nranges = idx;
+		}
+
+		pfree(distances);
 	}
 
 	/*

@@ -2951,9 +2951,11 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 		filter->hashcollations = info->hashcollations;
 		filter->searcharray = info->searcharray;
 		filter->attnum = info->attnum;
+		filter->restrictions = info->restrictions;
+		filter->relid = info->relid;
 
-		filter->subplan = create_plan_recurse(root, info->subpath,
-								 			  CP_SMALL_TLIST);
+//		filter->subplan = create_plan_recurse(root, info->subpath,
+//								 			  CP_SMALL_TLIST);
 
 		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
 	}
@@ -3228,9 +3230,11 @@ create_indexscan_plan(PlannerInfo *root,
 		filter->hashcollations = info->hashcollations;
 		filter->searcharray = info->searcharray;
 		filter->attnum = info->attnum;
+		filter->restrictions = info->restrictions;
+		filter->relid = info->relid;
 
-		filter->subplan = create_plan_recurse(root, info->subpath,
-									 		  CP_SMALL_TLIST);
+//		filter->subplan = create_plan_recurse(root, info->subpath,
+//									 		  CP_SMALL_TLIST);
 
 		scan_plan->filters = lappend(scan_plan->filters, filter);
 	}
@@ -3369,9 +3373,11 @@ create_bitmap_scan_plan(PlannerInfo *root,
 		filter->hashcollations = info->hashcollations;
 		filter->searcharray = info->searcharray;
 		filter->attnum = info->attnum;
+		filter->restrictions = info->restrictions;
+		filter->relid = info->relid;
 
-		filter->subplan = create_plan_recurse(root, info->subpath,
-									 		  CP_SMALL_TLIST);
+//		filter->subplan = create_plan_recurse(root, info->subpath,
+//									 		  CP_SMALL_TLIST);
 
 		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
 	}
@@ -4355,9 +4361,11 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 		filter->hashcollations = info->hashcollations;
 		filter->searcharray = info->searcharray;
 		filter->attnum = info->attnum;
+		filter->restrictions = info->restrictions;
+		filter->relid = info->relid;
 
-		filter->subplan = create_plan_recurse(root, info->subpath,
-									 		  CP_SMALL_TLIST);
+//		filter->subplan = create_plan_recurse(root, info->subpath,
+//									 		  CP_SMALL_TLIST);
 
 		scan_plan->scan.filters = lappend(scan_plan->scan.filters, filter);
 	}

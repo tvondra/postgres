@@ -18,6 +18,7 @@
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "executor/hashjoin.h"
+#include "executor/spi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/planmain.h"
@@ -26,6 +27,7 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/ruleutils.h"
 #include "utils/typcache.h"
 #include <math.h>
 
@@ -127,6 +129,85 @@ ExecFilterGetHashValue(FilterState *filter,
 	return true;
 }
 
+static bool
+ExecFilterGetHashValueX(FilterState *filter,
+						ExprContext *econtext,
+						Datum *values,
+						bool *isnull,
+						bool keep_nulls,
+						uint32 *hashvalue)
+{
+	uint32		hashkey = 0;
+	FmgrInfo   *hashfunctions;
+	MemoryContext oldContext;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	hashfunctions = filter->hashfunctions;
+
+	for (int i = 0; i < list_length(filter->hashclauses); i++)
+	{
+		Datum		keyval;
+		bool		isNull;
+
+		/* combine successive hashkeys by rotating */
+		hashkey = pg_rotate_left32(hashkey, 1);
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = values[i];
+		isNull = isnull[i];
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;	/* cannot match */
+			}
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+
+			/*
+			 * XXX Ignore if any of the values is NULL. At the moment we only
+			 * have a single-key filters, but this should apply even to multiple
+			 * keys I think.
+			 */
+			MemoryContextSwitchTo(oldContext);
+			return false;	/* cannot match */
+		}
+		else
+		{
+			/* Compute the hash function */
+			hashkey ^= DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
+		}
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	*hashvalue = hashkey;
+	return true;
+}
+
 /*
  * ExecFilterGetValues
  *		Extract values from the tuple.
@@ -201,6 +282,87 @@ ExecFilterGetValues(FilterState *filter,
 		}
 
 		i++;
+	}
+
+	MemoryContextSwitchTo(oldContext);
+
+	return true;
+}
+
+
+
+/*
+ * ExecFilterGetValues
+ *		Extract values from the tuple.
+ *
+ * Pretty much exactly the same as ExecFilterGetHashValue, but it returns
+ * the values instead of hashing them.
+ */
+static bool
+ExecFilterGetValuesX(FilterState *filter,
+						   ExprContext *econtext,
+						   Datum *values,
+						   bool *isnull,
+						   bool keep_nulls,
+						   Datum *entry)
+{
+	MemoryContext oldContext;
+
+	/*
+	 * We reset the eval context each time to reclaim any memory leaked in the
+	 * hashkey expressions.
+	 */
+	ResetExprContext(econtext);
+
+	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	for (int i = 0; i < list_length(filter->hashclauses); i++)
+	{
+		Datum		keyval;
+		bool		isNull;
+
+		/*
+		 * Get the join attribute value of the tuple
+		 */
+		keyval = values[i];
+		isNull = isnull[i];
+
+		/*
+		 * If the attribute is NULL, and the join operator is strict, then
+		 * this tuple cannot pass the join qual so we can reject it
+		 * immediately (unless we're scanning the outside of an outer join, in
+		 * which case we must not reject it).  Otherwise we act like the
+		 * hashcode of NULL is zero (this will support operators that act like
+		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
+		 * the hash support function as strict even if the operator is not.
+		 *
+		 * Note: currently, all hashjoinable operators must be strict since
+		 * the hash index AM assumes that.  However, it takes so little extra
+		 * code here to allow non-strict that we may as well do it.
+		 */
+		if (isNull)
+		{
+			if (filter->hashStrict[i] && !keep_nulls)
+			{
+				MemoryContextSwitchTo(oldContext);
+				return false;
+			}
+
+			/* FIXME handle NULLs correctly, instead of just ignoring them */
+			MemoryContextSwitchTo(oldContext);
+			return false;
+
+			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
+		}
+		else
+		{
+			int16	typlen;
+			bool	typbyval;
+			char	typalign;
+			get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
+
+			entry[i] = datumCopy(keyval, typbyval, typlen);
+		}
 	}
 
 	MemoryContextSwitchTo(oldContext);
@@ -786,6 +948,65 @@ ExecFilterAddRange(FilterState *filter, bool keep_nulls, ExprContext *econtext)
 }
 
 /*
+ * ExecFilterAddRange
+ *		Add values to a range filter.
+ *
+ * If there's not enough space for the new value, combine the values into
+ * fewer ranges. We combine ranges that overlap or are contiguous, and then
+ * we combine closest ranges.
+ */
+static bool
+ExecFilterAddRangeX(FilterState *filter, ExprContext *econtext, bool keep_nulls, Datum *values, bool *isnull)
+{
+	int		entrylen = list_length(filter->hashclauses);
+	Datum  *entry;
+	Datum  *tmp;
+
+	Assert(filter->filter_type == FilterTypeRange);
+
+	entry = palloc(sizeof(Datum) * entrylen);
+
+	/* consider enlarging the filter as long as needed */
+	while (filter->nallocated - filter->nvalues < entrylen)
+	{
+		/* FIXME handle nicely */
+		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
+		{
+			ExecFilterCompactRange(filter, true);
+			continue;
+		}
+
+		filter->nallocated *= 2;
+		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
+	}
+
+	if (!ExecFilterGetValuesX(filter, econtext, values, isnull, keep_nulls, entry))
+	{
+		pfree(entry);
+		return false;
+	}
+
+	tmp = (Datum *) filter->data;
+
+	for (int i = 0; i < entrylen; i++)
+	{
+		int16	typlen;
+		bool	typbyval;
+		char	typalign;
+
+		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
+
+		Assert(filter->nvalues < filter->nallocated);
+
+		tmp[filter->nvalues++] = datumCopy(entry[i], typbyval, typlen);
+	}
+
+	pfree(entry);
+
+	return true;
+}
+
+/*
  * ExecFilterFinalizeRange
  *		Combine filter represented as ranges.
  *
@@ -854,6 +1075,42 @@ ExecFilterAddExact(FilterState *filter, bool keep_nulls, ExprContext *econtext)
 
 	values = (Datum *) filter->data;
 	memcpy(&values[filter->nvalues], entry, entrylen * sizeof(Datum));
+
+	pfree(entry);
+
+	filter->nvalues++;
+
+	return true;
+}
+
+/* FIXME deduplicate the values first */
+static bool
+ExecFilterAddExactX(FilterState *filter, bool keep_nulls, ExprContext *econtext, Datum *values, bool *isnull)
+{
+	int		entrylen = list_length(filter->hashclauses);
+	Datum  *entry;
+	Datum  *tmp;
+
+	Assert(filter->filter_type == FilterTypeExact);
+
+	entry = palloc(sizeof(Datum) * entrylen);
+
+	/* consider enlarging the filter as long as needed */
+	while (filter->nallocated - filter->nvalues < entrylen)
+	{
+		/* FIXME handle nicely */
+		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
+			elog(ERROR, "filter exceeds work_mem");
+
+		filter->nallocated *= 2;
+		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
+	}
+
+	/* now we know there's enough space, so add the entry */
+	ExecFilterGetValuesX(filter, econtext, values, isnull, keep_nulls, entry);
+
+	tmp = (Datum *) filter->data;
+	memcpy(&tmp[filter->nvalues], entry, entrylen * sizeof(Datum));
 
 	pfree(entry);
 
@@ -1051,6 +1308,73 @@ ExecFilterAddValue(FilterState *filter, ExprContext *econtext)
 	{
 		uint32	hash = 0;
 		ExecFilterGetHashValue(filter, econtext, filter->keepNulls, &hash);
+		ExecFilterAddHash(filter, filter->keepNulls, econtext, hash);
+		filter->nvalues++;
+	}
+}
+
+/*
+ * ExecFilterAddValue
+ *		Add a value to a filter (of any type).
+ */
+static void
+ExecFilterAddValueX(FilterState *filter, ExprContext *econtext, Datum *values, bool *isnull)
+{
+	/* second pass through the node init */
+	if (filter->built)
+		return;
+
+	if (filter->filter_type == FilterTypeRange)
+	{
+		ExecFilterAddRangeX(filter, econtext, filter->keepNulls, values, isnull);
+		return;
+	}
+
+	/* filter tracking exact values */
+	if (filter->filter_type == FilterTypeExact)
+	{
+		int		i,
+				nvalues;
+		char   *data;
+		MemoryContext oldcxt;
+
+		Size	entrylen = sizeof(Datum) * list_length(filter->hashclauses);
+
+		/* if adding value worker, we're done */
+		if (ExecFilterAddExactX(filter, filter->keepNulls, econtext, values, isnull))
+			return;
+
+		nvalues = filter->nvalues;
+		data = filter->data;
+
+		oldcxt = MemoryContextSwitchTo(filter->filterCxt);
+
+		filter->data = palloc0(filter->nbits/8 + 10);
+		filter->filter_type = FilterTypeBloom;
+		filter->nvalues = 0;
+
+		MemoryContextSwitchTo(oldcxt);
+
+		for (i = 0; i < nvalues; i++)
+		{
+			uint32	hashvalue = 0;
+			Datum  *values = (Datum *) (data + i * entrylen);
+
+			/*
+			 * XXX We ignore nulls when adding data to the filter, so we
+			 * don't need to worry about them here either.
+			 */
+			ExecFilterGetHashValue2(filter, econtext, values, false, &hashvalue);
+			ExecFilterAddHash(filter, false, econtext, hashvalue);
+		}
+	}
+
+	Assert(filter->filter_type != FilterTypeExact);
+
+	if (filter->filter_type == FilterTypeBloom)
+	{
+		uint32	hash = 0;
+		ExecFilterGetHashValueX(filter, econtext, values, isnull, filter->keepNulls, &hash);
 		ExecFilterAddHash(filter, filter->keepNulls, econtext, hash);
 		filter->nvalues++;
 	}
@@ -1385,11 +1709,11 @@ ExecFilterInit(PlanState *planstate, Filter *filter,
 			   *hc,
 			   *hk;
 	qsort_cxt  *cxt;
-	Plan	   *subplan = filter->subplan;
+	// Plan	   *subplan = filter->subplan;
 
 	FilterState *state = makeNode(FilterState);
 
-	state->planstate = ExecInitNode(filter->subplan, estate, eflags);
+	// state->planstate = ExecInitNode(filter->subplan, estate, eflags);
 
 	/*
 	 * Start the filter in exact mode, we'll switch to Bloom if we fill it.
@@ -1473,7 +1797,8 @@ ExecFilterInit(PlanState *planstate, Filter *filter,
 		p = 0.01;	/* 1% false positive */
 
 		/* 1000 seems like a reasonable lower bound */
-		n = Max(1000, subplan->plan_rows);	/* assume unique values */
+		// n = Max(1000, subplan->plan_rows);	/* assume unique values */
+		n = 1000;
 
 		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
 		k = round((m / n) * log(2));
@@ -1514,6 +1839,65 @@ ExecFilterInit(PlanState *planstate, Filter *filter,
 											 "hash filter context",
 											 ALLOCSET_DEFAULT_SIZES);
 
+	{
+		ListCell   *lc2;
+		List	   *context;
+		RangeTblEntry *rte = exec_rt_fetch(filter->relid, estate);
+		Oid			relid = rte->relid;
+		bool		first;
+		StringInfoData query;
+
+		context = deparse_context_for("tmp", rte->relid);
+
+		initStringInfo(&query);
+
+		appendStringInfoString(&query, "SELECT ");
+
+		/* deparse the filter value expression */
+		first = true;
+		foreach (lc2, filter->hashclauses)
+		{
+			char *str;
+			Node *clause = (Node *) lfirst(lc2);
+
+			str = deparse_expression(clause, context, false, false);
+
+			if (!first)
+				appendStringInfoString(&query, ", ");
+
+			appendStringInfoString(&query, str);
+
+			first = false;
+		}
+
+		appendStringInfoString(&query, " FROM ");
+
+		appendStringInfoString(&query,
+							   quote_qualified_identifier(get_namespace_name(get_rel_namespace(relid)),
+														  get_rel_name(relid)));
+
+
+		first = true;
+		foreach (lc2, filter->restrictions)
+		{
+			char *str;
+			Node *clause = (Node *) lfirst(lc2);
+
+			str = deparse_expression(clause, context, false, false);
+
+			if (first)
+				appendStringInfoString(&query, " WHERE ");
+			else
+				appendStringInfoString(&query, " AND ");
+
+			appendStringInfoString(&query, str);
+
+			first = false;
+		}
+
+		state->query = pstrdup(query.data);
+	}
+
 	return state;
 }
 
@@ -1552,42 +1936,42 @@ ExecEndFilters(List *filters)
 static void
 ExecBuildFilter(FilterState *filter, EState *estate, int types)
 {
-	PlanState  *subplan = filter->planstate;
-	TupleTableSlot *slot;
 	ExprContext *econtext;
+	Filter *f = filter->filter;
+
+	Datum  *values;
+	bool   *isnull;
 
 	/* if filter is already built, we're done */
 	if (filter->built)
 		return;
 
+	values = (Datum *) palloc(sizeof(Datum) * list_length(f->clauses));
+	isnull = (bool *) palloc(sizeof(bool) * list_length(f->clauses));
+
 	/* create expression context */
 	econtext = CreateExprContext(estate);
 
-	/*
-	 * Get all tuples from the node below the Hash node and insert into the
-	 * hash table (or temp files).
-	 */
-	for (;;)
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	/* should use SPI_cursor_open instead */
+	if (SPI_execute(filter->query, true, 0) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_execute failed");
+
+	for (uint64 i = 0; i < SPI_processed; i++)
 	{
-		slot = ExecProcNode(subplan);
-		if (TupIsNull(slot))
-			break;
+		HeapTuple	tuple = SPI_tuptable->vals[i];
+		TupleDesc	tupdesc = SPI_tuptable->tupdesc;
 
-		/*
-		 * We have to compute the hash value from a subplan (fix_scan_filters
-		 * translates hash expressions to subplan as OUTER_VAR, so fill the
-		 * outer slot here).
-		 */
-		econtext->ecxt_outertuple = slot;
+		for (int j = 0; j < list_length(f->clauses); j++)
+			values[j] = heap_getattr(tuple, j+1, tupdesc, &isnull[j]);
 
-		/*
-		 * add the tuple to all hash pushed-down filters
-		 *
-		 * XXX maybe pointless to do unless after the hash is built (when
-		 * we can decide if the filter is useful).
-		 */
-		ExecFilterAddValue(filter, econtext);
+		ExecFilterAddValueX(filter, econtext, values, isnull);
 	}
+
+	if (SPI_finish() != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed");
 
 	ExecFilterFinalize(filter);
 }

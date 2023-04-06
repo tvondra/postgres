@@ -2134,6 +2134,47 @@ fix_alternative_subplan(PlannerInfo *root, AlternativeSubPlan *asplan,
 	return (Node *) bestplan;
 }
 
+typedef struct fix_filter_expr_context
+{
+} fix_filter_expr_context;
+
+/*
+ * fix_windowagg_condition_expr_mutator
+ *		Mutator function for replacing WindowFuncs with the corresponding Var
+ *		in the targetlist which references that WindowFunc.
+ */
+static Node *
+fix_filter_expr_mutator(Node *node,
+					    fix_filter_expr_context *context)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, Var))
+	{
+		Var	   *var = (Var *) node;
+
+		var->varno = 1;
+		var->varnosyn = 1;
+
+		return (Node *) var;
+	}
+
+	return expression_tree_mutator(node,
+								   fix_filter_expr_mutator,
+								   (void *) context);
+}
+
+static List *
+fix_filter_expr(PlannerInfo *root,
+				List *conditions)
+{
+	fix_filter_expr_context context;
+
+	return (List *) fix_filter_expr_mutator((Node *) conditions,
+											 &context);
+}
+
 /*
  * fix_scan_filters
  *		Fix references in expressions in filters pushed-down to scan node.
@@ -2148,24 +2189,20 @@ fix_scan_filters(PlannerInfo *root, Plan *plan, int rtoffset)
 	foreach(lc, splan->filters)
 	{
 		Filter *filter = (Filter *) lfirst(lc);
+
 		filter->clauses = fix_scan_list(root, filter->clauses,
 										rtoffset, NUM_EXEC_QUAL(plan));
-
+/*
+		filter->restrictions = fix_scan_list(root, filter->restrictions,
+										rtoffset, NUM_EXEC_QUAL(plan));
+*/
 		/*
-		 * XXX Not sure this is correct, but it seems to work. We need to
-		 * translate the hashkey expressions to the subplan results.
+		 * FIXME This is almost certainly wrong - it just sets varnos for all
+		 * vars to 1, to point to the scan relation. Surely there's a better
+		 * way to do that, but this works for now.
 		 */
-		filter->hashclauses = (List *) fix_upper_expr(root,
-									(Node *) filter->hashclauses,
-									build_tlist_index(filter->subplan->targetlist),
-									OUTER_VAR,
-									rtoffset,
-									NRM_EQUAL,
-									NUM_EXEC_QUAL(plan));
-
-		filter->subplan = set_plan_refs(root,
-										filter->subplan,
-										rtoffset);
+		filter->hashclauses = fix_filter_expr(root, filter->hashclauses);
+		filter->restrictions = fix_filter_expr(root, filter->restrictions);
 	}
 
 	return splan->filters;

@@ -32,6 +32,7 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic.h"
+#include "executor/spi.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -63,6 +64,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -913,10 +915,12 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 static FilterInfo *
 hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
 				   AttrNumber attnum, Oid type, Oid collation,
-				   bool searcharray, Path *subpath)
+				   bool searcharray, RelOptInfo *rel)
 {
 	TypeCacheEntry *entry;
 	FilterInfo *filter = makeNode(FilterInfo);
+
+	ListCell *lc;
 
 	filter->filterId = ++(root->glob->lastFilterId);
 
@@ -933,7 +937,31 @@ hash_filter_create(PlannerInfo *root, Node *local_expr, Node *remote_expr,
 	filter->searcharray = searcharray;
 	filter->attnum = attnum;
 
-	filter->subpath = subpath;
+	filter->relid = rel->relid;
+
+	/*
+	 * Get total cardinality and cost estimate for the filter. We'll run the
+	 * query using SPI, but we can assume the cost is about the same.
+	 *
+	 * XXX Maybe we should add a bit more for the CPU work with SPI?
+	 */
+	filter->cost = rel->cheapest_total_path->total_cost;
+	filter->rows = rel->cheapest_total_path->rows;
+
+	/*
+	 * Copy the baserel restrictinfos to the filter, so that other places
+	 * don't mess with it (setrefs etc.).
+	 *
+	 * XXX Is this really needed?
+	 */
+	filter->restrictions = NIL;
+	foreach (lc, rel->baserestrictinfo)
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+		filter->restrictions = lappend(filter->restrictions,
+									   copyObject(rinfo->clause));
+	}
 
 	return filter;
 }
@@ -1609,43 +1637,11 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
  * as a workaround build a SQL query and plan that? Might be easier than
  * constructing all the planner info manually.
  */
-static Path *
-cheapest_filter_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer,
-					 int parallel_workers)
-{
-	RelOptInfo	rel_tmp;
-	RelOptInfo	*tmp = &rel_tmp;
-	Path *path;
-	double	loop_count = 1.0;
-
-	memcpy(tmp, rel, sizeof(RelOptInfo));
-
-	tmp->pathlist = NIL;
-	tmp->partial_pathlist = NIL;
-
-	tmp->cheapest_startup_path = NULL;
-	tmp->cheapest_total_path = NULL;
-	tmp->cheapest_unique_path = NULL;
-	tmp->cheapest_parameterized_paths = NIL;
-
-	/* keep cheap-startup-cost paths? */
-	tmp->consider_startup = false;
-	tmp->consider_param_startup = false;
-	tmp->consider_parallel = false;
-	tmp->consider_partitionwise_join = false;
-
-	add_path(tmp, create_seqscan_path(root, tmp, required_outer, 0));
-
-	create_index_paths(root, tmp);
-
-	set_cheapest(tmp);
-
-	path = (tmp)->cheapest_total_path;
-
-	path->parent = rel;
-
-	return path;
-}
+// static Path *
+// cheapest_filter_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer,
+// 					 int parallel_workers)
+// {
+// }
 
 /*
  * set_plain_rel_pathlist_filters
@@ -1924,8 +1920,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 											InvalidAttrNumber, local_var->vartype, clause->collation,
-											false,
-											cheapest_filter_path(root, rel2, required_outer, 0));
+											false, rel2);
 
 				/* attach the filter (with the subpath) */
 				path->filters = lcons(filter, path->filters);
@@ -2134,8 +2129,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						/* create a new filter */
 						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 													attnum, local_var->vartype, clause->collation,
-													index->amsearcharray,
-													cheapest_filter_path(root, rel2, required_outer, 0));
+													index->amsearcharray, rel2);
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
 
@@ -2215,8 +2209,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						/* create a new filter */
 						filter = hash_filter_create(root, (Node *) local_var, (Node *) remote_var,
 													attnum, local_var->vartype, clause->collation,
-													index->amsearcharray,
-													cheapest_filter_path(root, rel2, required_outer, 0));
+													index->amsearcharray, rel2);
 
 						ipath->path.filters = lappend(ipath->path.filters, filter);
 
@@ -2555,8 +2548,7 @@ Assert(rel2->reloptkind == RELOPT_BASEREL);
 					 */
 					filter = hash_filter_create(root, (Node *) local_var, (Node *) var,
 												InvalidAttrNumber, var->vartype, ec->ec_collation,
-												false,
-												cheapest_filter_path(root, rel2, required_outer, 0));
+												false, rel2);
 
 					/*
 					 * XXX cut the cost in half, needs to be improved (consider the

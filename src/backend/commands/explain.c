@@ -3897,8 +3897,8 @@ show_scan_filters(Scan *plan, PlanState *planstate, List *ancestors, ExplainStat
 
 			ancestors = lcons(plan, ancestors);
 
-			ExplainNode(state->planstate, ancestors,
-					"Filter", label.data, es);
+			ExplainPropertyText("Filter", label.data, es);
+			ExplainPropertyText("  Query", state->query, es);
 
 			ancestors = list_delete_first(ancestors);
 		}
@@ -3943,8 +3943,8 @@ show_scan_derived_qual(const char *qlabel,
 			char	   *exprstr;
 			bool		useprefix;
 
-			if (state->skip)
-				continue;
+			// if (state->skip)
+			// 	continue;
 
 			useprefix = (IsA(planstate->plan, SubqueryScan) || es->verbose);
 

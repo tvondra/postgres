@@ -1214,6 +1214,7 @@ typedef struct Filter
 
 	/* ID for filter (unique within the planner run) */
 	Index		filterId;
+	Index		relid;
 
 	/* expressions evaluated against the filter */
 	Selectivity	selectivity;
@@ -1230,7 +1231,7 @@ typedef struct Filter
 	AttrNumber	attnum;
 
 	/* subplan evaluated to build the filter */
-	Plan	   *subplan;
+	List	   *restrictions;
 
 } Filter;
 

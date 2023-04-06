@@ -3383,6 +3383,11 @@ typedef struct FilterInfo
 	/* ID for filter (unique within the planner run) */
 	Index		filterId;
 
+	/* */
+	Index		relid;		/* rangetable index */
+	Cost		cost;
+	double		rows;
+
 	/* expressions for the scan node (the filter is pushed to) */
 	List	   *clauses;
 	List	   *deparsed;
@@ -3394,8 +3399,8 @@ typedef struct FilterInfo
 	bool		searcharray;
 	AttrNumber	attnum;
 
-	/* subplan evaluated to build the filter */
-	Path	   *subpath;
+	/* the rel used as source of the data for filter */
+	List	   *restrictions;
 
 } FilterInfo;
 

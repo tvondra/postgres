@@ -7447,7 +7447,10 @@ resolve_special_varno(Node *node, deparse_context *context,
 		return;
 	}
 	else if (var->varno < 1 || var->varno > list_length(dpns->rtable))
+	{
+		elog(WARNING, "list_length(dpns->rtable) = %d", list_length(dpns->rtable));
 		elog(ERROR, "bogus varno: %d", var->varno);
+	}
 
 	/* Not special.  Just invoke the callback. */
 	(*callback) (node, context, callback_arg);

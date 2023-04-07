@@ -624,6 +624,7 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 	int				rangeidx;
 	qsort_cxt	   *cxt;
 	int				nvalues_orig PG_USED_FOR_ASSERTS_ONLY;
+	MemoryContext	oldCtx;
 
 	Assert(filter->filter_type == FilterTypeRange);
 
@@ -632,6 +633,8 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 
 	if (filter->nvalues < 1)
 		return;
+
+	oldCtx = MemoryContextSwitchTo(filter->buildCtx);
 
 	// dump_filter(filter);
 
@@ -886,6 +889,11 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
 	{
 		memset(&values[filter->nvalues], 0x7f, sizeof(Datum) * (filter->nallocated - filter->nvalues));
 	}
+
+	MemoryContextSwitchTo(oldCtx);
+	MemoryContextReset(filter->buildCtx);
+
+	MemoryContextStats(TopMemoryContext);
 }
 
 /*
@@ -1938,6 +1946,8 @@ ExecBuildFilter(FilterState *filter, EState *estate, int types)
 {
 	ExprContext *econtext;
 	Filter *f = filter->filter;
+	SPIPlanPtr	spiPlan;
+	Portal		spiPortal;
 
 	Datum  *values;
 	bool   *isnull;
@@ -1945,6 +1955,10 @@ ExecBuildFilter(FilterState *filter, EState *estate, int types)
 	/* if filter is already built, we're done */
 	if (filter->built)
 		return;
+
+	filter->buildCtx = AllocSetContextCreate(CurrentMemoryContext,
+											 "filter build context",
+											 ALLOCSET_DEFAULT_SIZES);
 
 	values = (Datum *) palloc(sizeof(Datum) * list_length(f->clauses));
 	isnull = (bool *) palloc(sizeof(bool) * list_length(f->clauses));
@@ -1955,25 +1969,44 @@ ExecBuildFilter(FilterState *filter, EState *estate, int types)
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
 
-	/* should use SPI_cursor_open instead */
-	if (SPI_execute(filter->query, true, 0) != SPI_OK_SELECT)
-		elog(ERROR, "SPI_execute failed");
+	spiPlan = SPI_prepare(filter->query, 0, NULL);
+	if (spiPlan == NULL)
+		elog(ERROR, "SPI_prepare failed");
 
-	for (uint64 i = 0; i < SPI_processed; i++)
+	spiPortal = SPI_cursor_open(NULL, spiPlan, NULL, NULL, true);
+
+	while (true)
 	{
-		HeapTuple	tuple = SPI_tuptable->vals[i];
-		TupleDesc	tupdesc = SPI_tuptable->tupdesc;
+		SPI_cursor_fetch(spiPortal, true, 100);
 
-		for (int j = 0; j < list_length(f->clauses); j++)
-			values[j] = heap_getattr(tuple, j+1, tupdesc, &isnull[j]);
+		if (SPI_processed == 0)
+		{
+			SPI_cursor_close(spiPortal);
+			break;
+		}
 
-		ExecFilterAddValueX(filter, econtext, values, isnull);
+		for (uint64 i = 0; i < SPI_processed; i++)
+		{
+			HeapTuple	tuple = SPI_tuptable->vals[i];
+			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
+
+			for (int j = 0; j < list_length(f->clauses); j++)
+				values[j] = heap_getattr(tuple, j+1, tupdesc, &isnull[j]);
+
+			ExecFilterAddValueX(filter, econtext, values, isnull);
+
+			SPI_freetuple(tuple);
+		}
+
+		SPI_freetuptable(SPI_tuptable);
 	}
 
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
 
 	ExecFilterFinalize(filter);
+
+	MemoryContextDelete(filter->buildCtx);
 }
 
 void

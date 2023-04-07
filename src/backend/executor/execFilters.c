@@ -1806,7 +1806,7 @@ ExecFilterInit(PlanState *planstate, Filter *filter,
 
 		/* 1000 seems like a reasonable lower bound */
 		// n = Max(1000, subplan->plan_rows);	/* assume unique values */
-		n = 1000;
+		n = Max(1000, filter->rows);
 
 		m = ceil((n * log(p)) / log(1 / pow(2, log(2))));
 		k = round((m / n) * log(2));

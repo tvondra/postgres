@@ -1233,6 +1233,9 @@ typedef struct Filter
 	/* subplan evaluated to build the filter */
 	List	   *restrictions;
 
+	/* estimated number of elements in filter */
+	double		rows;
+
 } Filter;
 
 /* ----------------

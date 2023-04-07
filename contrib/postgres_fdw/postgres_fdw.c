@@ -4016,6 +4016,8 @@ create_cursor(ForeignScanState *node)
 			state->skip = true;
 		}
 
+		/* XXX skip all filters locally for now */
+		state->skip = true;
 		is_first = false;
 	}
 

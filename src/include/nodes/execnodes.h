@@ -2704,6 +2704,7 @@ typedef struct FilterState
 	/* data of the filter (raw values or bitmap) */
 	char	   *data;
 
+	MemoryContext buildCtx;
 	char	   *query;
 
 } FilterState;

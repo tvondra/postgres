@@ -2953,6 +2953,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 		filter->attnum = info->attnum;
 		filter->restrictions = info->restrictions;
 		filter->relid = info->relid;
+		filter->rows = info->rows;
 
 //		filter->subplan = create_plan_recurse(root, info->subpath,
 //								 			  CP_SMALL_TLIST);
@@ -3232,6 +3233,7 @@ create_indexscan_plan(PlannerInfo *root,
 		filter->attnum = info->attnum;
 		filter->restrictions = info->restrictions;
 		filter->relid = info->relid;
+		filter->rows = info->rows;
 
 //		filter->subplan = create_plan_recurse(root, info->subpath,
 //									 		  CP_SMALL_TLIST);
@@ -3375,6 +3377,7 @@ create_bitmap_scan_plan(PlannerInfo *root,
 		filter->attnum = info->attnum;
 		filter->restrictions = info->restrictions;
 		filter->relid = info->relid;
+		filter->rows = info->rows;
 
 //		filter->subplan = create_plan_recurse(root, info->subpath,
 //									 		  CP_SMALL_TLIST);
@@ -4363,6 +4366,7 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 		filter->attnum = info->attnum;
 		filter->restrictions = info->restrictions;
 		filter->relid = info->relid;
+		filter->rows = info->rows;
 
 //		filter->subplan = create_plan_recurse(root, info->subpath,
 //									 		  CP_SMALL_TLIST);

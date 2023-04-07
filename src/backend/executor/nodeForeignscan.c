@@ -281,8 +281,9 @@ ExecInitForeignScan(ForeignScan *node, EState *estate, int eflags)
 	 * too (but we should check the remote server version and/if it has
 	 * the pg_bloom_filter function installed).
 	 */
-	ExecBuildFilters((ScanState *) scanstate, scanstate->ss.ps.state,
-					 (FilterTypeExact | FilterTypeRange | FilterTypeBloom));
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		ExecBuildFilters((ScanState *) scanstate, scanstate->ss.ps.state,
+						 (FilterTypeExact | FilterTypeRange | FilterTypeBloom));
 
 	/*
 	 * Tell the FDW to initialize the scan.

@@ -2945,7 +2945,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 
 		filter->filterId = info->filterId;
 		filter->clauses = info->clauses;
-		filter->deparsed = info->clauses;
+		filter->deparsed = info->deparsed;
 		filter->hashclauses = info->hashclauses;
 		filter->hashoperators = info->hashoperators;
 		filter->hashcollations = info->hashcollations;
@@ -3224,7 +3224,7 @@ create_indexscan_plan(PlannerInfo *root,
 
 		filter->filterId = info->filterId;
 		filter->clauses = info->clauses;
-		filter->deparsed = info->clauses;
+		filter->deparsed = info->deparsed;
 		filter->hashclauses = info->hashclauses;
 		filter->hashoperators = info->hashoperators;
 		filter->hashcollations = info->hashcollations;
@@ -3367,7 +3367,7 @@ create_bitmap_scan_plan(PlannerInfo *root,
 
 		filter->filterId = info->filterId;
 		filter->clauses = info->clauses;
-		filter->deparsed = info->clauses;
+		filter->deparsed = info->deparsed;
 		filter->hashclauses = info->hashclauses;
 		filter->hashoperators = info->hashoperators;
 		filter->hashcollations = info->hashcollations;
@@ -4355,7 +4355,7 @@ create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 
 		filter->filterId = info->filterId;
 		filter->clauses = info->clauses;
-		filter->deparsed = info->clauses;
+		filter->deparsed = info->deparsed;
 		filter->hashclauses = info->hashclauses;
 		filter->hashoperators = info->hashoperators;
 		filter->hashcollations = info->hashcollations;

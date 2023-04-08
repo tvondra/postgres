@@ -85,12 +85,8 @@ typedef struct BrinShared
 	 */
 	slock_t		mutex;
 
-	/*
-	 * 
-	 */
+	/* XXX Probably not needed. Identifies the worker. */
 	int			last_worker_id;
-	BlockNumber	next_range;
-	BlockNumber	last_range;
 
 	/*
 	 * Mutable state that is maintained by workers, and reported back to
@@ -105,7 +101,22 @@ typedef struct BrinShared
 	int			nparticipantsdone;
 	double		reltuples;
 	double		indtuples;
+
+	/*
+	 * ParallelTableScanDescData data follows. Can't directly embed here, as
+	 * implementations of the parallel table scan desc interface might need
+	 * stronger alignment.
+	 */
 } BrinShared;
+
+/*
+ * Return pointer to a BrinShared's parallel table scan.
+ *
+ * c.f. shm_toc_allocate as to why BUFFERALIGN is used, rather than just
+ * MAXALIGN.
+ */
+#define ParallelTableScanFromBrinShared(shared) \
+	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(BrinShared)))
 
 /*
  * Status for leader in parallel index build.
@@ -975,8 +986,20 @@ brinbuildCallbackParallel(Relation index,
 		/* create the index tuple and write it into the temporary file */
 		form_and_spill_tuple(state);
 
-		/* set state to correspond to the next range */
-		state->bs_currRangeStart += state->bs_pagesPerRange;
+		/*
+		 * set state to correspond to the next range
+		 *
+		 * XXX This has the issue that it skips ranges summarized by other
+		 * workers, but it also skips empty ranges that should have been
+		 * summarized. We'd need to either make the workers aware which
+		 * chunk they are actually processing (which is currently known
+		 * only in the ParallelBlockTableScan bit). Or we could ignore it
+		 * here, and then decide it while "merging" results from workers
+		 * (if there's no entry for the range, it had to be empty so we
+		 * just add an empty one).
+		 */
+		while (thisblock > state->bs_currRangeStart + state->bs_pagesPerRange - 1)
+			state->bs_currRangeStart += state->bs_pagesPerRange;
 
 		/* re-initialize state for it */
 		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
@@ -2243,8 +2266,10 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 
 	/* Track work assigned to workers etc. */
 	brinshared->last_worker_id = 0;
-	brinshared->next_range = 0;
-	brinshared->last_range = RelationGetNumberOfBlocks(heap);
+
+	table_parallelscan_initialize(heap,
+								  ParallelTableScanFromBrinShared(brinshared),
+								  snapshot, brinshared->pagesPerRange);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -2452,6 +2477,7 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 							  Relation heap, Relation index, int sortmem,
 							  bool progress)
 {
+	TableScanDesc	scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
 	char		name[MAXPGPATH];
@@ -2468,68 +2494,16 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinShared *brinshared,
 
 	state->bs_file = BufFileCreateFileSet(&brinshared->fileset.fs, name);
 
-	/* Get chunks of the table, do TID Scans and build the ranges */
-	while (true)
-	{
-		TableScanDesc	scan;
-		BlockNumber		startBlock,
-						lastBlock,
-						chunkBlocks;
-		ItemPointerData	mintid,
-						maxtid;
+	scan = table_beginscan_parallel(heap,
+									ParallelTableScanFromBrinShared(brinshared));
 
-		/*
-		 * Acquire larger chunks of data - this matters especially for low
-		 * pages_per_range settings (e.g. set to 1). Otherwise there would
-		 * be a lot of trashing and overhead with multiple workers.
-		 *
-		 * Not sure where's the sweet spot. Maybe tie this to the prefetching
-		 * too (maintenance_effective_io_concucrrency)?
-		 *
-		 * FIXME The chunkBlocks needs to be a multiple of bs_pagesPerRange.
-		 */
-		chunkBlocks = Max(128, state->bs_pagesPerRange);
+	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
+									   brinbuildCallbackParallel, state, scan);
 
-		SpinLockAcquire(&brinshared->mutex);
-		startBlock = brinshared->next_range;
-		lastBlock = brinshared->last_range;
-		brinshared->next_range += chunkBlocks;
-		SpinLockRelease(&brinshared->mutex);
+	/* spill the last tuple */
+	form_and_spill_tuple(state);
 
-		state->bs_currRangeStart = startBlock;
-
-		/* did we reach the end of the heap relation? */
-		if (startBlock > lastBlock)
-			break;
-
-		/* re-initialize state for it */
-		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
-
-		ItemPointerSet(&mintid, startBlock, 0);
-		ItemPointerSet(&maxtid, startBlock + (chunkBlocks - 1),
-					   MaxHeapTuplesPerPage);
-
-		/* start tidscan to read the relevant part of the table */
-		scan = table_beginscan_tidrange(heap, SnapshotAny,	// FIXME which snapshot to use?
-										&mintid, &maxtid);
-
-#ifdef USE_PREFETCH
-		/* do prefetching (this prefetches the whole range. not sure that's good) */
-		for (BlockNumber blkno = startBlock; blkno < startBlock + chunkBlocks; blkno++)
-			PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, blkno);
-#endif
-
-		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-										   brinbuildCallbackParallel, state, scan);
-
-		/* spill the last tuple */
-		form_and_spill_tuple(state);
-
-		state->bs_reltuples += reltuples;
-
-		/* set state to invalid range */
-		state->bs_currRangeStart = InvalidBlockNumber;
-	}
+	state->bs_reltuples += reltuples;
 
 	/*
 	 * Done.  Record ambuild statistics.

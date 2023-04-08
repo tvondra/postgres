@@ -907,7 +907,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 			cs->cs_leader->nparticipantworkers;
 		coordinate->sharedsort = cs->cs_leader->sharedsort;
 
-		tss = tuplesort_begin_cluster(oldTupDesc, OldIndex,
+		tss = tuplesort_begin_cluster(oldTupDesc, OldIndex, NewHeap,
 									  maintenance_work_mem,
 									  coordinate, TUPLESORT_NONE);
 		// tuplesort_performsort(tss);
@@ -2919,7 +2919,7 @@ _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int 
 
 	table_parallelscan_initialize(heap,
 								  ParallelTableScanFromClusterShared(clustershared),
-								  snapshot);
+								  snapshot, InvalidBlockNumber);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -3082,7 +3082,7 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 
 	/* Begin "partial" tuplesort */
 	tuplesort = tuplesort_begin_cluster(RelationGetDescr(state->cs_heap),
-										state->cs_index,
+										state->cs_index, state->cs_heap,
 										sortmem, coordinate,
 										TUPLESORT_NONE);
 

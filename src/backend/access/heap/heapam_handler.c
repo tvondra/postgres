@@ -116,7 +116,10 @@ typedef struct ClusterShared
 	 * indtuples is the total number of tuples that made it into the index.
 	 */
 	int			nparticipantsdone;
-	double		reltuples;
+
+	double		num_tuples;
+	double		tups_vacuumed;
+	double		tups_recently_dead;
 
 	/*
 	 * ParallelTableScanDescData data follows. Can't directly embed here, as
@@ -172,11 +175,14 @@ typedef struct ClusterState
 {
 	Relation		cs_heap;
 	Relation		cs_index;
-	double			cs_reltuples;
 
 	TransactionId	cs_oldestXmin;
 	TransactionId	cs_xidCutoff;
 	TransactionId	cs_multiCutoff;
+
+	double			cs_num_tuples;
+	double			cs_tups_vacuumed;
+	double			cs_tups_recently_dead;
 
 	/*
 	 * cs_leader is only present when a parallel cluster is performed,
@@ -1192,7 +1198,13 @@ output:
 	end_heap_rewrite(rwstate);
 
 	if (cs->cs_leader)
+	{
 		_cluster_end_parallel(cs->cs_leader, cs);
+
+		*num_tuples = cs->cs_num_tuples;
+		*tups_vacuumed = cs->cs_tups_vacuumed;
+		*tups_recently_dead = cs->cs_tups_recently_dead;
+	}
 
 	/* Clean up */
 	pfree(values);
@@ -2912,7 +2924,10 @@ _cluster_begin_parallel(ClusterState *state, Relation heap, Relation index, int 
 
 	/* Initialize mutable state */
 	clustershared->nparticipantsdone = 0;
-	clustershared->reltuples = 0.0;
+
+	clustershared->num_tuples = 0.0;
+	clustershared->tups_vacuumed = 0.0;
+	clustershared->tups_recently_dead = 0.0;
 
 	/* Track work assigned to workers etc. */
 	clustershared->last_worker_id = 0;
@@ -3003,7 +3018,9 @@ _cluster_end_parallel(ClusterLeader *clusterleader, ClusterState *state)
 		return;
 
 	/* copy the data into leader state (we have to wait for the workers ) */
-	state->cs_reltuples = clustershared->reltuples;
+	state->cs_num_tuples = clustershared->num_tuples;
+	state->cs_tups_vacuumed = clustershared->tups_vacuumed;
+	state->cs_tups_recently_dead = clustershared->tups_recently_dead;
 
 	/* XXX do some work here? */
 
@@ -3067,12 +3084,15 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 {
 	SortCoordinate coordinate;
 	TableScanDesc scan;
-	double		reltuples;
 	Tuplesortstate *tuplesort;
 	TupleTableSlot *slot;
 	BufferHeapTupleTableSlot *hslot;
 	bool			is_system_catalog = IsSystemRelation(state->cs_heap);
 	int				ntuples = 0;
+
+	double			num_tuples = 0;
+	double			tups_vacuumed = 0;
+	double			tups_recently_dead = 0;
 
 	/* Initialize local tuplesort coordination state */
 	coordinate = palloc0(sizeof(SortCoordinateData));
@@ -3167,8 +3187,9 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 
 		if (isdead)
 		{
-			// *tups_vacuumed += 1;
+			tups_vacuumed += 1;
 			// /* heap rewrite module still needs to see it... */
+			// FIXME
 			// if (rewrite_heap_dead_tuple(rwstate, tuple))
 			// {
 			// 	/* A previous recently-dead tuple is now known dead */
@@ -3177,6 +3198,8 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 			// }
 			continue;
 		}
+
+		num_tuples += 1;
 
 		tuplesort_putheaptuple(tuplesort, tuple);
 	}
@@ -3192,7 +3215,7 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 		TuplesortInstrumentation stats;
 		memset(&stats, 0, sizeof(TuplesortInstrumentation));
 		tuplesort_get_stats(tuplesort, &stats);
-		elog(WARNING, "tuples %d  space used %ld", ntuples, stats.spaceUsed);
+		elog(DEBUG1, "tuples %d  space used %ld", ntuples, stats.spaceUsed);
 	}
 
 	tuplesort_end(tuplesort);
@@ -3202,7 +3225,9 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 	 */
 	SpinLockAcquire(&clustershared->mutex);
 	clustershared->nparticipantsdone++;
-	clustershared->reltuples += reltuples;
+	clustershared->num_tuples += num_tuples;
+	clustershared->tups_vacuumed += tups_vacuumed;
+	clustershared->tups_recently_dead += tups_recently_dead;
 	SpinLockRelease(&clustershared->mutex);
 
 	/* Notify leader */

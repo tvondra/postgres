@@ -150,6 +150,8 @@ IndexNext(IndexScanState *node)
 		/*
 		 * If there are index clauses, try to evaluate the filter on the index
 		 * tuple first, and only when it fails try the index tuple.
+		 *
+		 * https://www.postgresql.org/message-id/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU%3D%40yamlcoder.me
 		 */
 		if (node->indexfilters != NULL)
 		{

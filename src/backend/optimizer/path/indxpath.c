@@ -966,19 +966,23 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	index_filters = NIL;
-	for (indexcol = 0; indexcol < index->ncolumns; indexcol++)
+
+	if (filters)
 	{
-		ListCell   *lc;
-
-		foreach(lc, filters->indexclauses[indexcol])
+		for (indexcol = 0; indexcol < index->ncolumns; indexcol++)
 		{
-			IndexClause *iclause = (IndexClause *) lfirst(lc);
-			RestrictInfo *rinfo = iclause->rinfo;
+			ListCell   *lc;
 
-			/* OK to include this clause (as a filter) */
-			index_filters = lappend(index_filters, iclause);
-			outer_relids = bms_add_members(outer_relids,
-										   rinfo->clause_relids);
+			foreach(lc, filters->indexclauses[indexcol])
+			{
+				IndexClause *iclause = (IndexClause *) lfirst(lc);
+				RestrictInfo *rinfo = iclause->rinfo;
+
+				/* OK to include this clause (as a filter) */
+				index_filters = lappend(index_filters, iclause);
+				outer_relids = bms_add_members(outer_relids,
+											   rinfo->clause_relids);
+			}
 		}
 	}
 

@@ -143,6 +143,8 @@ IndexNext(IndexScanState *node)
 	 */
 	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 	{
+		bool	filter_checked = false;
+
 		CHECK_FOR_INTERRUPTS();
 
 		/*
@@ -159,6 +161,21 @@ IndexNext(IndexScanState *node)
 							   ItemPointerGetBlockNumber(tid),
 							   &node->iss_VMBuffer))
 			{
+				/*
+				 * Only MVCC snapshots are supported here, so there should be no
+				 * need to keep following the HOT chain once a visible entry has
+				 * been found.  If we did want to allow that, we'd need to keep
+				 * more state to remember not to call index_getnext_tid next time.
+				 *
+				 * XXX Is there a place where we can decide whether to consider
+				 * this optimization, based on which type of snapshot we're going
+				 * to use? And disable it for non-MVCC ones? That'd mean this
+				 * error can't really happen here. Or how can we even get this
+				 * error now?
+				 */
+				if (scandesc->xs_heap_continue)
+					elog(ERROR, "non-MVCC snapshots are not supported with index filters");
+
 				/*
 				 * Fill the scan tuple slot with data from the index.  This might be
 				 * provided in either HeapTuple or IndexTuple format.  Conceivably an
@@ -185,13 +202,41 @@ IndexNext(IndexScanState *node)
 				/* run the expressions */
 				econtext->ecxt_scantuple = node->iss_IndexSlot;
 
+				/* check the filters pushed to the index-tuple level */
 				if (!ExecQual(node->indexfilters, econtext))
+				{
+					InstrCountFiltered2(node, 1);
 					continue;
+				}
+
+				/* remember we already checked the filter */
+				filter_checked = true;
 			}
 		}
 
+		/*
+		 * If we got this far, we did what we could with just the index tuple,
+		 * including maybe evaluating a filter on the index tuple etc. So it's
+		 * time to fetch the heap tuple, and then do more work on that.
+		 */
+		// InstrCountTuples2(node, 1);
 		if (!index_fetch_heap(scandesc, slot))
 			break;
+
+		/*
+		 * If we didn't manage to check the filter on the index tuple (because
+		 * of the page not being all-visible, etc.), do that now on the heap
+		 * tuple.
+		 */
+		if (!filter_checked)
+		{
+			econtext->ecxt_scantuple = slot;
+			if (!ExecQual(node->indexfiltersorig, econtext))
+			{
+				InstrCountFiltered2(node, 1);
+				continue;
+			}
+		}
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using

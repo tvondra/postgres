@@ -607,6 +607,37 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	/* estimate number of main-table tuples fetched */
 	tuples_fetched = clamp_row_est(indexSelectivity * baserel->tuples);
 
+	/*
+	 * If some filters can be evaluated on the index tuple, account for that.
+	 * We need to scan all tuples from pages that are not all-visible, and
+	 * for the remaining tuples we fetch those not eliminated by the filter.
+	 *
+	 * XXX Does this need to worry about path->path.param_info?
+	 *
+	 * XXX All of this seems overly manual / ad-hoc, surely there's a place
+	 * where we already do this in a more elegant manner?
+	 */
+	if (path->indexfilters != NIL)
+	{
+		List *filters = NIL;
+		ListCell *lc;
+		Selectivity sel;
+
+		/* Collect clauses we expect to be evaluated on index tuples. */
+		foreach (lc, path->indexfilters)
+		{
+			IndexClause *iclause = (IndexClause *) lfirst(lc);
+			filters = lappend(filters, iclause->rinfo->clause);
+		}
+
+		sel = clauselist_selectivity(root, filters, baserel->relid,
+									 JOIN_INNER, NULL);
+
+		tuples_fetched *= (1.0 - baserel->allvisfrac) + (baserel->allvisfrac) * sel;
+
+		tuples_fetched = clamp_row_est(tuples_fetched);
+	}
+
 	/* fetch estimated page costs for tablespace containing table */
 	get_tablespace_page_costs(baserel->reltablespace,
 							  &spc_random_page_cost,

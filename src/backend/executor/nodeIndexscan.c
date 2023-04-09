@@ -90,7 +90,6 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
-	ItemPointer tid;
 
 	/*
 	 * extract necessary information from index scan node
@@ -140,89 +139,121 @@ IndexNext(IndexScanState *node)
 
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
+	 *
+	 * XXX maybe we should invent something like index_getnext_tid/index_getnext_slot
+	 * that would allow doing this in a more readable / coherent way.
 	 */
-	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
+	while (true)
 	{
-		bool	filter_checked = false;
+		bool	has_index_tuple = false;
+		bool	filter_checked;
+		ItemPointer tid;
 
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * If there are index clauses, try to evaluate the filter on the index
-		 * tuple first, and only when it fails try the index tuple.
-		 *
-		 * https://www.postgresql.org/message-id/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU%3D%40yamlcoder.me
+		 * XXX code from index_getnext_slot(), but we need to inject stuff between
+		 * the index_getnext_tid() and index_fetch_heap(), so we do it here
 		 */
-		if (node->indexfilters != NULL)
+		for (;;)
 		{
+			filter_checked = false;
+
+			if (!scandesc->xs_heap_continue)
+			{
+				/* Time to fetch the next TID from the index */
+				tid = index_getnext_tid(scandesc, direction);
+
+				/* If we're out of index entries, we're done */
+				if (tid == NULL)
+					break;
+
+				Assert(ItemPointerEquals(tid, &scandesc->xs_heaptid));
+			}
+
 			/*
-			 * XXX see nodeIndexonlyscan.c, but inverse - we only do this when
-			 * we can check some filters on the index tuple.
+			 * If there are index clauses, try to evaluate the filter on the index
+			 * tuple first, and only when it fails try the index tuple.
+			 *
+			 * https://www.postgresql.org/message-id/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU%3D%40yamlcoder.me
 			 */
-			if (VM_ALL_VISIBLE(scandesc->heapRelation,
-							   ItemPointerGetBlockNumber(tid),
-							   &node->iss_VMBuffer))
+			if (node->indexfilters != NULL)
 			{
 				/*
-				 * Only MVCC snapshots are supported here, so there should be no
-				 * need to keep following the HOT chain once a visible entry has
-				 * been found.  If we did want to allow that, we'd need to keep
-				 * more state to remember not to call index_getnext_tid next time.
-				 *
-				 * XXX Is there a place where we can decide whether to consider
-				 * this optimization, based on which type of snapshot we're going
-				 * to use? And disable it for non-MVCC ones? That'd mean this
-				 * error can't really happen here. Or how can we even get this
-				 * error now?
+				 * XXX see nodeIndexonlyscan.c, but inverse - we only do this when
+				 * we can check some filters on the index tuple.
 				 */
-				if (scandesc->xs_heap_continue)
-					elog(ERROR, "non-MVCC snapshots are not supported with index filters");
-
-				/*
-				 * Fill the scan tuple slot with data from the index.  This might be
-				 * provided in either HeapTuple or IndexTuple format.  Conceivably an
-				 * index AM might fill both fields, in which case we prefer the heap
-				 * format, since it's probably a bit cheaper to fill a slot from.
-				 */
-				if (scandesc->xs_hitup)
+				if (VM_ALL_VISIBLE(scandesc->heapRelation,
+								   ItemPointerGetBlockNumber(tid),
+								   &node->iss_VMBuffer))
 				{
 					/*
-					 * We don't take the trouble to verify that the provided tuple has
-					 * exactly the slot's format, but it seems worth doing a quick
-					 * check on the number of fields.
+					 * Only MVCC snapshots are supported here, so there should be no
+					 * need to keep following the HOT chain once a visible entry has
+					 * been found.  If we did want to allow that, we'd need to keep
+					 * more state to remember not to call index_getnext_tid next time.
+					 *
+					 * XXX Is there a place where we can decide whether to consider
+					 * this optimization, based on which type of snapshot we're going
+					 * to use? And disable it for non-MVCC ones? That'd mean this
+					 * error can't really happen here. Or how can we even get this
+					 * error now?
 					 */
-					Assert(slot->tts_tupleDescriptor->natts ==
-						   scandesc->xs_hitupdesc->natts);
-					ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+					if (scandesc->xs_heap_continue)
+						elog(ERROR, "non-MVCC snapshots are not supported with index filters");
+
+					/*
+					 * Fill the scan tuple slot with data from the index.  This might be
+					 * provided in either HeapTuple or IndexTuple format.  Conceivably an
+					 * index AM might fill both fields, in which case we prefer the heap
+					 * format, since it's probably a bit cheaper to fill a slot from.
+					 */
+					if (scandesc->xs_hitup)
+					{
+						/*
+						 * We don't take the trouble to verify that the provided tuple has
+						 * exactly the slot's format, but it seems worth doing a quick
+						 * check on the number of fields.
+						 */
+						Assert(slot->tts_tupleDescriptor->natts ==
+							   scandesc->xs_hitupdesc->natts);
+						ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+					}
+					else if (scandesc->xs_itup)
+						StoreIndexTuple(node->iss_IndexSlot, scandesc->xs_itup,
+										scandesc->xs_itupdesc);
+					else
+						elog(ERROR, "no data returned for index-only scan");
+
+					/* run the expressions */
+					econtext->ecxt_scantuple = node->iss_IndexSlot;
+
+					/* check the filters pushed to the index-tuple level */
+					if (!ExecQual(node->indexfilters, econtext))
+					{
+						InstrCountFiltered2(node, 1);
+						continue;
+					}
+
+					/* remember we already checked the filter */
+					filter_checked = true;
 				}
-				else if (scandesc->xs_itup)
-					StoreIndexTuple(node->iss_IndexSlot, scandesc->xs_itup,
-									scandesc->xs_itupdesc);
-				else
-					elog(ERROR, "no data returned for index-only scan");
+			}
 
-				/* run the expressions */
-				econtext->ecxt_scantuple = node->iss_IndexSlot;
-
-				/* check the filters pushed to the index-tuple level */
-				if (!ExecQual(node->indexfilters, econtext))
-				{
-					InstrCountFiltered2(node, 1);
-					continue;
-				}
-
-				/* remember we already checked the filter */
-				filter_checked = true;
+			/*
+			 * Fetch the next (or only) visible heap tuple for this index entry.
+			 * If we don't find anything, loop around and grab the next TID from
+			 * the index.
+			 */
+			Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
+			if (index_fetch_heap(scandesc, slot))
+			{
+				has_index_tuple = true;
+				break;
 			}
 		}
 
-		/*
-		 * If we got this far, we did what we could with just the index tuple,
-		 * including maybe evaluating a filter on the index tuple etc. So it's
-		 * time to fetch the heap tuple, and then do more work on that.
-		 */
-		// InstrCountTuples2(node, 1);
-		if (!index_fetch_heap(scandesc, slot))
+		if (!has_index_tuple)
 			break;
 
 		/*

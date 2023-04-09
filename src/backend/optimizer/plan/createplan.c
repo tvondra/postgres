@@ -166,6 +166,9 @@ static Node *replace_nestloop_params_mutator(Node *node, PlannerInfo *root);
 static void fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
 									 List **stripped_indexquals_p,
 									 List **fixed_indexquals_p);
+static void fix_indexfilter_references(PlannerInfo *root, IndexPath *index_path,
+									 List **stripped_indexfilters_p,
+									 List **fixed_indexfilters_p);
 static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path);
 static Node *fix_indexqual_clause(PlannerInfo *root,
 								  IndexOptInfo *index, int indexcol,
@@ -182,6 +185,7 @@ static SampleScan *make_samplescan(List *qptlist, List *qpqual, Index scanrelid,
 								   TableSampleClause *tsc);
 static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
 								 Oid indexid, List *indexqual, List *indexqualorig,
+								 List *indexfilters, List *indexfiltersorig,
 								 List *indexorderby, List *indexorderbyorig,
 								 List *indexorderbyops,
 								 ScanDirection indexscandir);
@@ -2993,13 +2997,16 @@ create_indexscan_plan(PlannerInfo *root,
 {
 	Scan	   *scan_plan;
 	List	   *indexclauses = best_path->indexclauses;
+//	List	   *indexfilters = best_path->indexfilters;
 	List	   *indexorderbys = best_path->indexorderbys;
 	Index		baserelid = best_path->path.parent->relid;
 	IndexOptInfo *indexinfo = best_path->indexinfo;
 	Oid			indexoid = indexinfo->indexoid;
 	List	   *qpqual;
 	List	   *stripped_indexquals;
+	List	   *stripped_indexfilters;
 	List	   *fixed_indexquals;
+	List	   *fixed_indexfilters;
 	List	   *fixed_indexorderbys;
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
@@ -3020,6 +3027,16 @@ create_indexscan_plan(PlannerInfo *root,
 	fix_indexqual_references(root, best_path,
 							 &stripped_indexquals,
 							 &fixed_indexquals);
+
+	/*
+	 * Extract the index qual expressions (stripped of RestrictInfos) from the
+	 * IndexClauses list, and prepare a copy with index Vars substituted for
+	 * table Vars.  (This step also does replace_nestloop_params on the
+	 * fixed_indexquals.)
+	 */
+	fix_indexfilter_references(root, best_path,
+							   &stripped_indexfilters,
+							   &fixed_indexfilters);
 
 	/*
 	 * Likewise fix up index attr references in the ORDER BY expressions.
@@ -3063,6 +3080,8 @@ create_indexscan_plan(PlannerInfo *root,
 			continue;			/* we may drop pseudoconstants here */
 		if (is_redundant_with_indexclauses(rinfo, indexclauses))
 			continue;			/* dup or derived from same EquivalenceClass */
+//		if (is_redundant_with_indexclauses(rinfo, indexfilters))
+//			continue;			/* dup or derived from same EquivalenceClass */
 		if (!contain_mutable_functions((Node *) rinfo->clause) &&
 			predicate_implied_by(list_make1(rinfo->clause), stripped_indexquals,
 								 false))
@@ -3089,6 +3108,8 @@ create_indexscan_plan(PlannerInfo *root,
 	{
 		stripped_indexquals = (List *)
 			replace_nestloop_params(root, (Node *) stripped_indexquals);
+		stripped_indexfilters = (List *)
+			replace_nestloop_params(root, (Node *) stripped_indexfilters);
 		qpqual = (List *)
 			replace_nestloop_params(root, (Node *) qpqual);
 		indexorderbys = (List *)
@@ -3165,6 +3186,8 @@ create_indexscan_plan(PlannerInfo *root,
 											indexoid,
 											fixed_indexquals,
 											stripped_indexquals,
+											fixed_indexfilters,
+											stripped_indexfilters,
 											fixed_indexorderbys,
 											indexorderbys,
 											indexorderbyops,
@@ -5009,6 +5032,39 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
 	*fixed_indexquals_p = fixed_indexquals;
 }
 
+static void
+fix_indexfilter_references(PlannerInfo *root, IndexPath *index_path,
+						 List **stripped_indexfilters_p, List **fixed_indexfilters_p)
+{
+	IndexOptInfo *index = index_path->indexinfo;
+	List	   *stripped_indexfilters;
+	List	   *fixed_indexfilters;
+	ListCell   *lc;
+
+	stripped_indexfilters = fixed_indexfilters = NIL;
+
+	foreach(lc, index_path->indexfilters)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+		int			indexcol = iclause->indexcol;
+		ListCell   *lc2;
+
+		foreach(lc2, iclause->indexquals)
+		{
+			RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
+			Node	   *clause = (Node *) rinfo->clause;
+
+			stripped_indexfilters = lappend(stripped_indexfilters, clause);
+			clause = fix_indexqual_clause(root, index, indexcol,
+										  clause, iclause->indexcols);
+			fixed_indexfilters = lappend(fixed_indexfilters, clause);
+		}
+	}
+
+	*stripped_indexfilters_p = stripped_indexfilters;
+	*fixed_indexfilters_p = fixed_indexfilters;
+}
+
 /*
  * fix_indexorderby_references
  *	  Adjust indexorderby clauses to the form the executor's index
@@ -5505,6 +5561,8 @@ make_indexscan(List *qptlist,
 			   Oid indexid,
 			   List *indexqual,
 			   List *indexqualorig,
+			   List *indexfilters,
+			   List *indexfiltersorig,
 			   List *indexorderby,
 			   List *indexorderbyorig,
 			   List *indexorderbyops,
@@ -5521,6 +5579,8 @@ make_indexscan(List *qptlist,
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
+	node->indexfilters = indexfilters;
+	node->indexfiltersorig = indexfiltersorig;
 	node->indexorderby = indexorderby;
 	node->indexorderbyorig = indexorderbyorig;
 	node->indexorderbyops = indexorderbyops;

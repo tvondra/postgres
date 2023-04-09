@@ -32,6 +32,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/visibilitymap.h"
 #include "catalog/pg_am.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexscan.h"
@@ -70,6 +71,10 @@ static void reorderqueue_push(IndexScanState *node, TupleTableSlot *slot,
 static HeapTuple reorderqueue_pop(IndexScanState *node);
 
 
+static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
+							TupleDesc itupdesc);
+
+
 /* ----------------------------------------------------------------
  *		IndexNext
  *
@@ -85,6 +90,7 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
+	ItemPointer tid;
 
 	/*
 	 * extract necessary information from index scan node
@@ -115,6 +121,13 @@ IndexNext(IndexScanState *node)
 
 		node->iss_ScanDesc = scandesc;
 
+		/* Set it up for index-only scan */
+		if (node->indexfilters != NULL)
+		{
+			node->iss_ScanDesc->xs_want_itup = true;
+			node->iss_VMBuffer = InvalidBuffer;
+		}
+
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
 		 * pass the scankeys to the index AM.
@@ -128,9 +141,57 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot))
+	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * If there are index clauses, try to evaluate the filter on the index
+		 * tuple first, and only when it fails try the index tuple.
+		 */
+		if (node->indexfilters != NULL)
+		{
+			/*
+			 * XXX see nodeIndexonlyscan.c, but inverse - we only do this when
+			 * we can check some filters on the index tuple.
+			 */
+			if (VM_ALL_VISIBLE(scandesc->heapRelation,
+							   ItemPointerGetBlockNumber(tid),
+							   &node->iss_VMBuffer))
+			{
+				/*
+				 * Fill the scan tuple slot with data from the index.  This might be
+				 * provided in either HeapTuple or IndexTuple format.  Conceivably an
+				 * index AM might fill both fields, in which case we prefer the heap
+				 * format, since it's probably a bit cheaper to fill a slot from.
+				 */
+				if (scandesc->xs_hitup)
+				{
+					/*
+					 * We don't take the trouble to verify that the provided tuple has
+					 * exactly the slot's format, but it seems worth doing a quick
+					 * check on the number of fields.
+					 */
+					Assert(slot->tts_tupleDescriptor->natts ==
+						   scandesc->xs_hitupdesc->natts);
+					ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+				}
+				else if (scandesc->xs_itup)
+					StoreIndexTuple(node->iss_IndexSlot, scandesc->xs_itup,
+									scandesc->xs_itupdesc);
+				else
+					elog(ERROR, "no data returned for index-only scan");
+
+				/* run the expressions */
+				econtext->ecxt_scantuple = node->iss_IndexSlot;
+
+				if (!ExecQual(node->indexfilters, econtext))
+					continue;
+			}
+		}
+
+		if (!index_fetch_heap(scandesc, slot))
+			break;
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -794,6 +855,16 @@ ExecEndIndexScan(IndexScanState *node)
 	indexRelationDesc = node->iss_RelationDesc;
 	indexScanDesc = node->iss_ScanDesc;
 
+	/* Release VM buffer pin, if any. */
+	if (node->iss_VMBuffer != InvalidBuffer)
+	{
+		ReleaseBuffer(node->iss_VMBuffer);
+		node->iss_VMBuffer = InvalidBuffer;
+	}
+
+	if (node->iss_IndexSlot != NULL)
+		ExecDropSingleTupleTableSlot(node->iss_IndexSlot);
+
 	/*
 	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
 	 */
@@ -956,6 +1027,10 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
 	indexstate->indexqualorig =
 		ExecInitQual(node->indexqualorig, (PlanState *) indexstate);
+	indexstate->indexfilters =
+		ExecInitQual(node->indexfilters, (PlanState *) indexstate);
+	indexstate->indexfiltersorig =
+		ExecInitQual(node->indexfiltersorig, (PlanState *) indexstate);
 	indexstate->indexorderbyorig =
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 
@@ -970,6 +1045,10 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	/* Open the index relation. */
 	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
 	indexstate->iss_RelationDesc = index_open(node->indexid, lockmode);
+
+	indexstate->iss_IndexSlot
+		= MakeSingleTupleTableSlot(RelationGetDescr(indexstate->iss_RelationDesc),
+								   &TTSOpsVirtual);
 
 	/*
 	 * Initialize index-specific scan state
@@ -991,6 +1070,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 						   &indexstate->iss_NumRuntimeKeys,
 						   NULL,	/* no ArrayKeys */
 						   NULL);
+
+	/*
+	 * build the index filter from the index qualification
+	 *
+	 * XXX We probably don't need to build scan keys for filter clauses. Or
+	 * should we have something like ExecIndexBuildScanKeys()?
+	 */
 
 	/*
 	 * any ORDER BY exprs have to be turned into scankeys in the same way
@@ -1743,4 +1829,28 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 		index_rescan(node->iss_ScanDesc,
 					 node->iss_ScanKeys, node->iss_NumScanKeys,
 					 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
+}
+
+/*
+ * StoreIndexTuple
+ *		Fill the slot with data from the index tuple.
+ *
+ * At some point this might be generally-useful functionality, but
+ * right now we don't need it elsewhere.
+ */
+static void
+StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc)
+{
+	/*
+	 * Note: we must use the tupdesc supplied by the AM in index_deform_tuple,
+	 * not the slot's tupdesc, in case the latter has different datatypes
+	 * (this happens for btree name_ops in particular).  They'd better have
+	 * the same number of columns though, as well as being datatype-compatible
+	 * which is something we can't so easily check.
+	 */
+	Assert(slot->tts_tupleDescriptor->natts == itupdesc->natts);
+
+	ExecClearTuple(slot);
+	index_deform_tuple(itup, itupdesc, slot->tts_values, slot->tts_isnull);
+	ExecStoreVirtualTuple(slot);
 }

@@ -101,9 +101,11 @@ static bool eclass_already_used(EquivalenceClass *parent_ec, Relids oldrelids,
 								List *indexjoinclauses);
 static void get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 							IndexOptInfo *index, IndexClauseSet *clauses,
-							List **bitindexpaths);
+							IndexClauseSet *filters, List **bitindexpaths);
 static List *build_index_paths(PlannerInfo *root, RelOptInfo *rel,
-							   IndexOptInfo *index, IndexClauseSet *clauses,
+							   IndexOptInfo *index,
+							   IndexClauseSet *clauses,
+							   IndexClauseSet *filters,
 							   bool useful_predicate,
 							   ScanTypeControl scantype,
 							   bool *skip_nonnative_saop,
@@ -132,7 +134,8 @@ static double adjust_rowcount_for_semijoins(PlannerInfo *root,
 static double approximate_joinrel_size(PlannerInfo *root, Relids relids);
 static void match_restriction_clauses_to_index(PlannerInfo *root,
 											   IndexOptInfo *index,
-											   IndexClauseSet *clauseset);
+											   IndexClauseSet *clauseset,
+											   IndexClauseSet *filterset);
 static void match_join_clauses_to_index(PlannerInfo *root,
 										RelOptInfo *rel, IndexOptInfo *index,
 										IndexClauseSet *clauseset,
@@ -143,12 +146,18 @@ static void match_eclass_clauses_to_index(PlannerInfo *root,
 static void match_clauses_to_index(PlannerInfo *root,
 								   List *clauses,
 								   IndexOptInfo *index,
-								   IndexClauseSet *clauseset);
+								   IndexClauseSet *clauseset,
+								   IndexClauseSet *filterset);
 static void match_clause_to_index(PlannerInfo *root,
 								  RestrictInfo *rinfo,
 								  IndexOptInfo *index,
-								  IndexClauseSet *clauseset);
+								  IndexClauseSet *clauseset,
+								  IndexClauseSet *filterset);
 static IndexClause *match_clause_to_indexcol(PlannerInfo *root,
+											 RestrictInfo *rinfo,
+											 int indexcol,
+											 IndexOptInfo *index);
+static IndexClause *match_filter_to_indexcol(PlannerInfo *root,
 											 RestrictInfo *rinfo,
 											 int indexcol,
 											 IndexOptInfo *index);
@@ -160,6 +169,10 @@ static IndexClause *match_opclause_to_indexcol(PlannerInfo *root,
 											   RestrictInfo *rinfo,
 											   int indexcol,
 											   IndexOptInfo *index);
+static IndexClause *match_opclause_to_indexcol_filter(PlannerInfo *root,
+													  RestrictInfo *rinfo,
+													  int indexcol,
+													  IndexOptInfo *index);
 static IndexClause *match_funcclause_to_indexcol(PlannerInfo *root,
 												 RestrictInfo *rinfo,
 												 int indexcol,
@@ -239,6 +252,7 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	List	   *bitjoinpaths;
 	List	   *joinorclauses;
 	IndexClauseSet rclauseset;
+	IndexClauseSet rfilterset;
 	IndexClauseSet jclauseset;
 	IndexClauseSet eclauseset;
 	ListCell   *lc;
@@ -270,14 +284,15 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 		 * Identify the restriction clauses that can match the index.
 		 */
 		MemSet(&rclauseset, 0, sizeof(rclauseset));
-		match_restriction_clauses_to_index(root, index, &rclauseset);
+		MemSet(&rfilterset, 0, sizeof(rfilterset));
+		match_restriction_clauses_to_index(root, index, &rclauseset, &rfilterset);
 
 		/*
 		 * Build index paths from the restriction clauses.  These will be
 		 * non-parameterized paths.  Plain paths go directly to add_path(),
 		 * bitmap paths are added to bitindexpaths to be handled below.
 		 */
-		get_index_paths(root, rel, index, &rclauseset,
+		get_index_paths(root, rel, index, &rclauseset, &rfilterset,
 						&bitindexpaths);
 
 		/*
@@ -662,7 +677,7 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	Assert(clauseset.nonempty);
 
 	/* Build index path(s) using the collected set of clauses */
-	get_index_paths(root, rel, index, &clauseset, bitindexpaths);
+	get_index_paths(root, rel, index, &clauseset, NULL, bitindexpaths);
 
 	/*
 	 * Remember we considered paths for this set of relids.
@@ -712,7 +727,7 @@ eclass_already_used(EquivalenceClass *parent_ec, Relids oldrelids,
 static void
 get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				IndexOptInfo *index, IndexClauseSet *clauses,
-				List **bitindexpaths)
+				IndexClauseSet *filters, List **bitindexpaths)
 {
 	List	   *indexpaths;
 	bool		skip_nonnative_saop = false;
@@ -726,7 +741,7 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * paths if possible).
 	 */
 	indexpaths = build_index_paths(root, rel,
-								   index, clauses,
+								   index, clauses, filters,
 								   index->predOK,
 								   ST_ANYSCAN,
 								   &skip_nonnative_saop,
@@ -741,7 +756,7 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		indexpaths = list_concat(indexpaths,
 								 build_index_paths(root, rel,
-												   index, clauses,
+												   index, clauses, filters,
 												   index->predOK,
 												   ST_ANYSCAN,
 												   &skip_nonnative_saop,
@@ -781,7 +796,7 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	if (skip_nonnative_saop)
 	{
 		indexpaths = build_index_paths(root, rel,
-									   index, clauses,
+									   index, clauses, filters,
 									   false,
 									   ST_BITMAPSCAN,
 									   NULL,
@@ -833,7 +848,9 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
  */
 static List *
 build_index_paths(PlannerInfo *root, RelOptInfo *rel,
-				  IndexOptInfo *index, IndexClauseSet *clauses,
+				  IndexOptInfo *index,
+				  IndexClauseSet *clauses,
+				  IndexClauseSet *filters,
 				  bool useful_predicate,
 				  ScanTypeControl scantype,
 				  bool *skip_nonnative_saop,
@@ -842,6 +859,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	List	   *result = NIL;
 	IndexPath  *ipath;
 	List	   *index_clauses;
+	List	   *index_filters;
 	Relids		outer_relids;
 	double		loop_count;
 	List	   *orderbyclauses;
@@ -947,6 +965,23 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			return NIL;
 	}
 
+	index_filters = NIL;
+	for (indexcol = 0; indexcol < index->ncolumns; indexcol++)
+	{
+		ListCell   *lc;
+
+		foreach(lc, filters->indexclauses[indexcol])
+		{
+			IndexClause *iclause = (IndexClause *) lfirst(lc);
+			RestrictInfo *rinfo = iclause->rinfo;
+
+			/* OK to include this clause (as a filter) */
+			index_filters = lappend(index_filters, iclause);
+			outer_relids = bms_add_members(outer_relids,
+										   rinfo->clause_relids);
+		}
+	}
+
 	/* We do not want the index's rel itself listed in outer_relids */
 	outer_relids = bms_del_member(outer_relids, rel->relid);
 
@@ -1009,6 +1044,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		ipath = create_index_path(root, index,
 								  index_clauses,
+								  index_filters,
 								  orderbyclauses,
 								  orderbyclausecols,
 								  useful_pathkeys,
@@ -1029,6 +1065,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		{
 			ipath = create_index_path(root, index,
 									  index_clauses,
+									  index_filters,
 									  orderbyclauses,
 									  orderbyclausecols,
 									  useful_pathkeys,
@@ -1062,6 +1099,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		{
 			ipath = create_index_path(root, index,
 									  index_clauses,
+									  index_filters,
 									  NIL,
 									  NIL,
 									  useful_pathkeys,
@@ -1079,6 +1117,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			{
 				ipath = create_index_path(root, index,
 										  index_clauses,
+										  index_filters,
 										  NIL,
 										  NIL,
 										  useful_pathkeys,
@@ -1141,6 +1180,7 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 	{
 		IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
 		IndexClauseSet clauseset;
+		IndexClauseSet filterset;
 		List	   *indexpaths;
 		bool		useful_predicate;
 
@@ -1185,11 +1225,14 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 		 * Identify the restriction clauses that can match the index.
 		 */
 		MemSet(&clauseset, 0, sizeof(clauseset));
-		match_clauses_to_index(root, clauses, index, &clauseset);
+		MemSet(&filterset, 0, sizeof(filterset));
+		match_clauses_to_index(root, clauses, index, &clauseset, &filterset);
 
 		/*
 		 * If no matches so far, and the index predicate isn't useful, we
 		 * don't want it.
+		 *
+		 * XXX Maybe this should check the filterset too?
 		 */
 		if (!clauseset.nonempty && !useful_predicate)
 			continue;
@@ -1197,13 +1240,13 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 		/*
 		 * Add "other" restriction clauses to the clauseset.
 		 */
-		match_clauses_to_index(root, other_clauses, index, &clauseset);
+		match_clauses_to_index(root, other_clauses, index, &clauseset, &filterset);
 
 		/*
 		 * Construct paths if possible.
 		 */
 		indexpaths = build_index_paths(root, rel,
-									   index, &clauseset,
+									   index, &clauseset, &filterset,
 									   useful_predicate,
 									   ST_BITMAPSCAN,
 									   NULL,
@@ -2015,10 +2058,11 @@ approximate_joinrel_size(PlannerInfo *root, Relids relids)
 static void
 match_restriction_clauses_to_index(PlannerInfo *root,
 								   IndexOptInfo *index,
-								   IndexClauseSet *clauseset)
+								   IndexClauseSet *clauseset,
+								   IndexClauseSet *filterset)
 {
 	/* We can ignore clauses that are implied by the index predicate */
-	match_clauses_to_index(root, index->indrestrictinfo, index, clauseset);
+	match_clauses_to_index(root, index->indrestrictinfo, index, clauseset, filterset);
 }
 
 /*
@@ -2026,6 +2070,8 @@ match_restriction_clauses_to_index(PlannerInfo *root,
  *	  Identify join clauses for the rel that match the index.
  *	  Matching clauses are added to *clauseset.
  *	  Also, add any potentially usable join OR clauses to *joinorclauses.
+ *
+ * FIXME Maybe this should fill the filterset too?
  */
 static void
 match_join_clauses_to_index(PlannerInfo *root,
@@ -2048,7 +2094,7 @@ match_join_clauses_to_index(PlannerInfo *root,
 		if (restriction_is_or_clause(rinfo))
 			*joinorclauses = lappend(*joinorclauses, rinfo);
 		else
-			match_clause_to_index(root, rinfo, index, clauseset);
+			match_clause_to_index(root, rinfo, index, clauseset, NULL);
 	}
 }
 
@@ -2056,6 +2102,8 @@ match_join_clauses_to_index(PlannerInfo *root,
  * match_eclass_clauses_to_index
  *	  Identify EquivalenceClass join clauses for the rel that match the index.
  *	  Matching clauses are added to *clauseset.
+ *
+ * XXX Maybe this should fill the filterset too?
  */
 static void
 match_eclass_clauses_to_index(PlannerInfo *root, IndexOptInfo *index,
@@ -2086,7 +2134,7 @@ match_eclass_clauses_to_index(PlannerInfo *root, IndexOptInfo *index,
 		 * since for non-btree indexes the EC's equality operators might not
 		 * be in the index opclass (cf ec_member_matches_indexcol).
 		 */
-		match_clauses_to_index(root, clauses, index, clauseset);
+		match_clauses_to_index(root, clauses, index, clauseset, NULL);
 	}
 }
 
@@ -2099,7 +2147,8 @@ static void
 match_clauses_to_index(PlannerInfo *root,
 					   List *clauses,
 					   IndexOptInfo *index,
-					   IndexClauseSet *clauseset)
+					   IndexClauseSet *clauseset,
+					   IndexClauseSet *filterset)
 {
 	ListCell   *lc;
 
@@ -2107,7 +2156,7 @@ match_clauses_to_index(PlannerInfo *root,
 	{
 		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
 
-		match_clause_to_index(root, rinfo, index, clauseset);
+		match_clause_to_index(root, rinfo, index, clauseset, filterset);
 	}
 }
 
@@ -2132,7 +2181,8 @@ static void
 match_clause_to_index(PlannerInfo *root,
 					  RestrictInfo *rinfo,
 					  IndexOptInfo *index,
-					  IndexClauseSet *clauseset)
+					  IndexClauseSet *clauseset,
+					  IndexClauseSet *filterset)
 {
 	int			indexcol;
 
@@ -2178,6 +2228,41 @@ match_clause_to_index(PlannerInfo *root,
 			clauseset->indexclauses[indexcol] =
 				lappend(clauseset->indexclauses[indexcol], iclause);
 			clauseset->nonempty = true;
+			return;
+		}
+	}
+
+	/* if filterset is NULL, we're done */
+	if (!filterset)
+		return;
+
+	/* OK, check each index key column for a match */
+	for (indexcol = index->nkeycolumns; indexcol < index->ncolumns; indexcol++)
+	{
+		IndexClause *iclause;
+		ListCell   *lc;
+
+		/* Ignore duplicates */
+		foreach(lc, filterset->indexclauses[indexcol])
+		{
+			iclause = (IndexClause *) lfirst(lc);
+
+			if (iclause->rinfo == rinfo)
+				return;
+		}
+
+		/* OK, try to match the clause to the index column */
+		// FIXME
+		iclause = match_filter_to_indexcol(root,
+										   rinfo,
+										   indexcol,
+										   index);
+		if (iclause)
+		{
+			/* Success, so record it */
+			filterset->indexclauses[indexcol] =
+				lappend(filterset->indexclauses[indexcol], iclause);
+			filterset->nonempty = true;
 			return;
 		}
 	}
@@ -2313,6 +2398,70 @@ match_clause_to_indexcol(PlannerInfo *root,
 		}
 	}
 
+	return NULL;
+}
+
+static IndexClause *
+match_filter_to_indexcol(PlannerInfo *root,
+						 RestrictInfo *rinfo,
+						 int indexcol,
+						 IndexOptInfo *index)
+{
+	Expr	   *clause = rinfo->clause;
+
+	Assert(indexcol < index->ncolumns);
+
+	/*
+	 * Historically this code has coped with NULL clauses.  That's probably
+	 * not possible anymore, but we might as well continue to cope.
+	 */
+	if (clause == NULL)
+		return NULL;
+
+	/*
+	 * Clause must be an opclause, funcclause, ScalarArrayOpExpr, or
+	 * RowCompareExpr.  Or, if the index supports it, we can handle IS
+	 * NULL/NOT NULL clauses.
+	 */
+	if (IsA(clause, OpExpr))
+	{
+		/*
+		 * XXX maybe this should simply check if the clause only refers
+		 * to index attributes, not the exact clause?
+		 */
+		return match_opclause_to_indexcol_filter(root, rinfo, indexcol, index);
+	}
+
+/*
+	else if (IsA(clause, FuncExpr))
+	{
+		return match_funcclause_to_indexcol(root, rinfo, indexcol, index);
+	}
+	else if (IsA(clause, ScalarArrayOpExpr))
+	{
+		return match_saopclause_to_indexcol(root, rinfo, indexcol, index);
+	}
+	else if (IsA(clause, RowCompareExpr))
+	{
+		return match_rowcompare_to_indexcol(root, rinfo, indexcol, index);
+	}
+	else if (index->amsearchnulls && IsA(clause, NullTest))
+	{
+		NullTest   *nt = (NullTest *) clause;
+
+		if (!nt->argisrow &&
+			match_index_to_operand((Node *) nt->arg, indexcol, index))
+		{
+			iclause = makeNode(IndexClause);
+			iclause->rinfo = rinfo;
+			iclause->indexquals = list_make1(rinfo);
+			iclause->lossy = false;
+			iclause->indexcol = indexcol;
+			iclause->indexcols = NIL;
+			return iclause;
+		}
+	}
+*/
 	return NULL;
 }
 
@@ -2545,6 +2694,83 @@ match_opclause_to_indexcol(PlannerInfo *root,
 											 1, /* indexarg on right */
 											 indexcol,
 											 index);
+	}
+
+	return NULL;
+}
+
+/*
+ * match_opclause_to_indexcol()
+ *	  Handles the OpExpr case for match_clause_to_indexcol(),
+ *	  which see for comments.
+ */
+static IndexClause *
+match_opclause_to_indexcol_filter(PlannerInfo *root,
+								  RestrictInfo *rinfo,
+								  int indexcol,
+								  IndexOptInfo *index)
+{
+	IndexClause *iclause;
+	OpExpr	   *clause = (OpExpr *) rinfo->clause;
+	Node	   *leftop,
+			   *rightop;
+	Oid			expr_op;
+	Index		index_relid;
+
+	/*
+	 * Only binary operators need apply.  (In theory, a planner support
+	 * function could do something with a unary operator, but it seems
+	 * unlikely to be worth the cycles to check.)
+	 */
+	if (list_length(clause->args) != 2)
+		return NULL;
+
+	expr_op = clause->opno;
+	leftop = (Node *) linitial(clause->args);
+	rightop = (Node *) lsecond(clause->args);
+
+	index_relid = index->rel->relid;
+
+	/*
+	 * Check for clauses of the form: (indexkey operator constant) or
+	 * (constant operator indexkey).  See match_clause_to_indexcol's notes
+	 * about const-ness.
+	 *
+	 * Note that we don't ask the support function about clauses that don't
+	 * have one of these forms.  Again, in principle it might be possible to
+	 * do something, but it seems unlikely to be worth the cycles to check.
+	 */
+	if (match_index_to_operand(leftop, indexcol, index) &&
+		!bms_is_member(index_relid, rinfo->right_relids) &&
+		!contain_volatile_functions(rightop))
+	{
+		iclause = makeNode(IndexClause);
+		iclause->rinfo = rinfo;
+		iclause->indexquals = list_make1(rinfo);
+		iclause->lossy = false;
+		iclause->indexcol = indexcol;
+		iclause->indexcols = NIL;
+		return iclause;
+	}
+
+	if (match_index_to_operand(rightop, indexcol, index) &&
+		!bms_is_member(index_relid, rinfo->left_relids) &&
+		!contain_volatile_functions(leftop))
+	{
+		RestrictInfo *commrinfo;
+		Oid			comm_op = get_commutator(expr_op);
+
+		/* Build a commuted OpExpr and RestrictInfo */
+		commrinfo = commute_restrictinfo(rinfo, comm_op);
+
+		/* Make an IndexClause showing that as a derived qual */
+		iclause = makeNode(IndexClause);
+		iclause->rinfo = rinfo;
+		iclause->indexquals = list_make1(commrinfo);
+		iclause->lossy = false;
+		iclause->indexcol = indexcol;
+		iclause->indexcols = NIL;
+		return iclause;
 	}
 
 	return NULL;

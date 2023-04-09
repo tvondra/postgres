@@ -173,6 +173,9 @@ static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_pat
 static Node *fix_indexqual_clause(PlannerInfo *root,
 								  IndexOptInfo *index, int indexcol,
 								  Node *clause, List *indexcolnos);
+static Node *fix_indexfilter_clause(PlannerInfo *root,
+									IndexOptInfo *index,
+									Node *clause);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
 static List *get_switched_clauses(List *clauses, Relids outerrelids);
 static List *order_qual_clauses(PlannerInfo *root, List *clauses);
@@ -5045,20 +5048,12 @@ fix_indexfilter_references(PlannerInfo *root, IndexPath *index_path,
 
 	foreach(lc, index_path->indexfilters)
 	{
-		IndexClause *iclause = lfirst_node(IndexClause, lc);
-		int			indexcol = iclause->indexcol;
-		ListCell   *lc2;
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
+		Node	   *clause = (Node *) rinfo->clause;
 
-		foreach(lc2, iclause->indexquals)
-		{
-			RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
-			Node	   *clause = (Node *) rinfo->clause;
-
-			stripped_indexfilters = lappend(stripped_indexfilters, clause);
-			clause = fix_indexqual_clause(root, index, indexcol,
-										  clause, iclause->indexcols);
-			fixed_indexfilters = lappend(fixed_indexfilters, clause);
-		}
+		stripped_indexfilters = lappend(stripped_indexfilters, clause);
+		clause = fix_indexfilter_clause(root, index, clause);
+		fixed_indexfilters = lappend(fixed_indexfilters, clause);
 	}
 
 	*stripped_indexfilters_p = stripped_indexfilters;
@@ -5161,6 +5156,90 @@ fix_indexqual_clause(PlannerInfo *root, IndexOptInfo *index, int indexcol,
 			 (int) nodeTag(clause));
 
 	return clause;
+}
+
+typedef struct
+{
+	PlannerInfo	   *root;
+	IndexOptInfo   *index;
+} fix_indexfilter_context;
+
+static Node *
+fix_indexfilter_mutator(Node *node, fix_indexfilter_context *context)
+{
+	IndexOptInfo *index = context->index;
+
+	if (node == NULL)
+		return NULL;
+
+	/*
+	 * Remove any binary-compatible relabeling of the indexkey
+	 */
+	if (IsA(node, RelabelType))
+		node = (Node *) ((RelabelType *) node)->arg;
+
+	/* It's a simple index column */
+	if (IsA(node, Var) &&
+		((Var *) node)->varno == index->rel->relid)
+	{
+		Var		   *result;
+		Var *var = (Var *) node;
+		AttrNumber	attnum = InvalidAttrNumber;
+
+		for (int i = 0; i < index->ncolumns; i++)
+		{
+			if (index->indexkeys[i] == var->varattno)
+			{
+				attnum = (i + 1);
+				break;
+			}
+		}
+		
+		Assert(attnum != InvalidAttrNumber);
+
+		result = (Var *) copyObject(node);
+		result->varno = INDEX_VAR;
+		result->varattno = attnum;
+
+		return (Node *) result;
+	}
+
+	return expression_tree_mutator(node, fix_indexfilter_mutator,
+								   (void *) context);
+}
+
+/*
+ * fix_indexfilter_clause
+ *	  Convert a single indexqual clause to the form needed by the executor.
+ *
+ * We replace nestloop params here, and replace the index key variables
+ * or expressions by index Var nodes.
+ *
+ * XXX I'm not sure why this is done this early in createplan.c and not later
+ * in setrefs.c, which is where these things generally happen.
+ *
+ * XXX I'm also not sure why fix_indexqual_operand() doesn't use tree walker,
+ * but instead does all this manually. Is there a reason, or was this just
+ * simpler, considering how restricted the regular index clauses are? Or
+ * did it just precede the walker infrastructure, perhaps?
+ */
+static Node *
+fix_indexfilter_clause(PlannerInfo *root, IndexOptInfo *index, Node *clause)
+{
+	fix_indexfilter_context context;
+
+	/*
+	 * Replace any outer-relation variables with nestloop params.
+	 *
+	 * This also makes a copy of the clause, so it's safe to modify it
+	 * in-place below.
+	 */
+	clause = replace_nestloop_params(root, clause);
+
+	context.root = root;
+	context.index = index;
+
+	return fix_indexfilter_mutator(clause, &context);
 }
 
 /*

@@ -135,6 +135,7 @@ int			max_parallel_workers_per_gather = 2;
 bool		enable_seqscan = true;
 bool		enable_indexscan = true;
 bool		enable_indexonlyscan = true;
+bool		enable_indexonlyfilter = true;
 bool		enable_bitmapscan = true;
 bool		enable_tidscan = true;
 bool		enable_sort = true;
@@ -619,18 +620,9 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	 */
 	if (path->indexfilters != NIL)
 	{
-		List *filters = NIL;
-		ListCell *lc;
 		Selectivity sel;
 
-		/* Collect clauses we expect to be evaluated on index tuples. */
-		foreach (lc, path->indexfilters)
-		{
-			IndexClause *iclause = (IndexClause *) lfirst(lc);
-			filters = lappend(filters, iclause->rinfo->clause);
-		}
-
-		sel = clauselist_selectivity(root, filters, baserel->relid,
+		sel = clauselist_selectivity(root, path->indexfilters, baserel->relid,
 									 JOIN_INNER, NULL);
 
 		tuples_fetched *= (1.0 - baserel->allvisfrac) + (baserel->allvisfrac) * sel;

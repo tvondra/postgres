@@ -124,6 +124,17 @@ typedef struct HashScanPosData
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
 
+	/*
+	 * Prefetching of heap pages.
+	 *
+	 * XXX We need to disable this in some cases (e.g. when using index-only
+	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
+	 * only pages that are not all-visible, that'd be even better.
+	 */
+	int			prefetchIndex;	/* how far we already prefetched */
+	int			prefetchTarget;	/* how far we should be prefetching */
+	int			prefetchMaxTarget;	/* maximum prefetching distance */
+
 	HashScanPosItem items[MaxIndexTuplesPerPage];	/* MUST BE LAST */
 } HashScanPosData;
 
@@ -150,6 +161,9 @@ typedef struct HashScanPosData
 		(scanpos).firstItem = 0; \
 		(scanpos).lastItem = 0; \
 		(scanpos).itemIndex = 0; \
+		(scanpos).prefetchIndex = 0; \
+		(scanpos).prefetchTarget = 0; \
+		(scanpos).prefetchMaxTarget = 0;	/* XXX should we reset if before rescans? */ \
 	} while (0)
 
 /*

@@ -2528,12 +2528,21 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 	so->markItemIndex = -1;		/* ditto */
 }
 
+/*
+ * Do prefetching, and gradually increase the prefetch distance.
+ *
+ * XXX This is limited to a single index page (because that's where we get
+ * currPos.items from). But index tuples are typically very small, so there
+ * should be quite a bit of stuff to prefetch (especially with deduplicated
+ * indexes, etc.). Does not seem worth reworking the index access to allow
+ * more aggressive prefetching, it's best effort.
+ */
 static void
 _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 {
 	/* maybe increase the prefetch distance, gradually */
 	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
-									 effective_io_concurrency);
+									 so->currPos.prefetchMaxTarget);
 
 	if (ScanDirectionIsForward(dir))
 	{

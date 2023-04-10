@@ -32,6 +32,8 @@ typedef void (*storeRes_func) (SpGistScanOpaque so, ItemPointer heapPtr,
 							   SpGistLeafTuple leafTuple, bool recheck,
 							   bool recheckDistances, double *distances);
 
+static void _spgist_prefetch(IndexScanDesc scan, ScanDirection dir, SpGistScanOpaque so);
+
 /*
  * Pairing heap comparison function for the SpGistSearchItem queue.
  * KNN-searches currently only support NULLS LAST.  So, preserve this logic
@@ -191,6 +193,7 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 			pfree(so->reconTups[i]);
 	}
 	so->iPtr = so->nPtrs = 0;
+	so->prefetchIndex = 0;
 }
 
 /*
@@ -370,6 +373,8 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch)
 				   CurrentMemoryContext);
 
 	so->indexCollation = rel->rd_indcollation[0];
+
+	so->prefetchMaxTarget = prefetch;
 
 	scan->opaque = so;
 
@@ -1047,7 +1052,12 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				index_store_float8_orderby_distances(scan, so->orderByTypes,
 													 so->distances[so->iPtr],
 													 so->recheckDistances[so->iPtr]);
+
 			so->iPtr++;
+
+			/* prefetch additional tuples */
+			_spgist_prefetch(scan, dir, so);
+
 			return true;
 		}
 
@@ -1070,6 +1080,7 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				pfree(so->reconTups[i]);
 		}
 		so->iPtr = so->nPtrs = 0;
+		so->prefetchIndex = 0;
 
 		spgWalk(scan->indexRelation, so, false, storeGettuple,
 				scan->xs_snapshot);
@@ -1094,4 +1105,60 @@ spgcanreturn(Relation index, int attno)
 	cache = spgGetCache(index);
 
 	return cache->config.canReturnData;
+}
+
+/*
+ * Do prefetching, and gradually increase the prefetch distance.
+ *
+ * XXX This is limited to a single index page (because that's where we get
+ * currPos.items from). But index tuples are typically very small, so there
+ * should be quite a bit of stuff to prefetch (especially with deduplicated
+ * indexes, etc.). Does not seem worth reworking the index access to allow
+ * more aggressive prefetching, it's best effort.
+ */
+static void
+_spgist_prefetch(IndexScanDesc scan, ScanDirection dir, SpGistScanOpaque so)
+{
+	/*
+	 * No heap relation means bitmap index scan, which does prefetching at
+	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
+	 * without the heap)
+	 */
+	if (!scan->heapRelation)
+		return;
+
+	/* maybe increase the prefetch distance, gradually */
+	so->prefetchTarget = Min(so->prefetchTarget + 1,
+							 so->prefetchMaxTarget);
+
+	if (ScanDirectionIsForward(dir))
+	{
+		int	startIndex = so->prefetchIndex;
+		int	endIndex = Min(so->iPtr + so->prefetchTarget, so->nPtrs);
+
+		for (int i = startIndex; i < endIndex; i++)
+		{
+			ItemPointerData tid = so->heapPtrs[i];
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->prefetchIndex = endIndex;
+	}
+	else  /* XXX is this actually needed? can spgist do backwards scans? */
+	{
+		int	startIndex = so->prefetchIndex;
+		int	endIndex = Max(so->iPtr - so->prefetchTarget, 0);
+
+		for (int i = startIndex; i > endIndex; i--)
+		{
+			ItemPointerData tid = so->heapPtrs[i];
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->prefetchIndex = endIndex;
+	}
 }

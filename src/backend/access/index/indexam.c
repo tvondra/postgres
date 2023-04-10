@@ -233,7 +233,7 @@ index_beginscan(Relation heapRelation,
 	 * the number of requests.
 	 */
 	if (prefetch_io)
-		max_prefetch = get_tablespace_maintenance_io_concurrency(heapRelation->rd_rel->reltablespace);
+		max_prefetch = get_tablespace_io_concurrency(heapRelation->rd_rel->reltablespace);
 
 	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false, max_prefetch);
 

@@ -2533,7 +2533,7 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 		int	endIndex = Min(so->currPos.itemIndex + so->currPos.prefetchTarget,
 						   so->currPos.lastItem);
 
-		for (int i = startIndex; i <= endIndex; i++)
+		for (int i = startIndex; i < endIndex; i++)
 		{
 			ItemPointerData tid = so->currPos.items[i].heapTid;
 			BlockNumber block = ItemPointerGetBlockNumber(&tid);
@@ -2549,7 +2549,7 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 		int	endIndex = Max(so->currPos.itemIndex - so->currPos.prefetchTarget,
 						   so->currPos.firstItem);
 
-		for (int i = startIndex; i >= endIndex; i--)
+		for (int i = startIndex; i > endIndex; i--)
 		{
 			ItemPointerData tid = so->currPos.items[i].heapTid;
 			BlockNumber block = ItemPointerGetBlockNumber(&tid);

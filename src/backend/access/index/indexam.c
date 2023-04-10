@@ -59,8 +59,10 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
+#include "utils/spccache.h"
 #include "utils/syscache.h"
 
 
@@ -106,7 +108,8 @@ do { \
 
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
-											  ParallelIndexScanDesc pscan, bool temp_snap);
+											  ParallelIndexScanDesc pscan, bool temp_snap,
+											  int prefetch);
 
 
 /* ----------------------------------------------------------------
@@ -200,18 +203,39 @@ index_insert(Relation indexRelation,
  * index_beginscan - start a scan of an index with amgettuple
  *
  * Caller must be holding suitable locks on the heap and the index.
+ *
+ * prefetch_io determines if prefetching is requested for this index scan. We
+ * need to be able to disable this for two reasons. Firstly, we don't want to
+ * do prefetching for IOS (where we hope most of the heap pages won't be really
+ * needed. Secondly, we must prevent infinite loop when determining prefetch
+ * value for the tablespace - the get_tablespace_io_concurrency() does an
+ * index scan internally, which would result in infinite loop. So we simply
+ * disable prefetching in systable_beginscan().
+ *
+ * XXX Maybe we should do prefetching even for catalogs, but then disable it
+ * when accessing TableSpaceRelationId. We still need the ability to disable
+ * this and catalogs are expected to be tiny, so prefetching is unlikely to
+ * make a difference.
  */
 IndexScanDesc
 index_beginscan(Relation heapRelation,
 				Relation indexRelation,
 				Snapshot snapshot,
-				int nkeys, int norderbys)
+				int nkeys, int norderbys, bool prefetch_io)
 {
 	IndexScanDesc scan;
+	int				max_prefetch = 0;
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false);
+	/*
+	 * If prefetching (of table pages) is enabled for this index, determine
+	 * the number of requests.
+	 */
+	if (prefetch_io)
+		max_prefetch = get_tablespace_maintenance_io_concurrency(heapRelation->rd_rel->reltablespace);
+
+	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false, max_prefetch);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -241,7 +265,7 @@ index_beginscan_bitmap(Relation indexRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false);
+	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false, 0);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -258,7 +282,8 @@ index_beginscan_bitmap(Relation indexRelation,
 static IndexScanDesc
 index_beginscan_internal(Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
-						 ParallelIndexScanDesc pscan, bool temp_snap)
+						 ParallelIndexScanDesc pscan, bool temp_snap,
+						 int prefetch)
 {
 	IndexScanDesc scan;
 
@@ -277,7 +302,7 @@ index_beginscan_internal(Relation indexRelation,
 	 * Tell the AM to open a scan.
 	 */
 	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys,
-												norderbys);
+												norderbys, prefetch);
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
@@ -487,19 +512,43 @@ index_parallelrescan(IndexScanDesc scan)
  * index_beginscan_parallel - join parallel index scan
  *
  * Caller must be holding suitable locks on the heap and the index.
+ *
+ * prefetch_io determines if prefetching is requested for this index scan. We
+ * need to be able to disable this for two reasons. Firstly, we don't want to
+ * do prefetching for IOS (where we hope most of the heap pages won't be really
+ * needed. Secondly, we must prevent infinite loop when determining prefetch
+ * value for the tablespace - the get_tablespace_io_concurrency() does an
+ * index scan internally, which would result in infinite loop. So we simply
+ * disable prefetching in systable_beginscan().
+ *
+ * XXX Maybe we should do prefetching even for catalogs, but then disable it
+ * when accessing TableSpaceRelationId. We still need the ability to disable
+ * this and catalogs are expected to be tiny, so prefetching is unlikely to
+ * make a difference.
  */
 IndexScanDesc
 index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
-						 int norderbys, ParallelIndexScanDesc pscan)
+						 int norderbys, ParallelIndexScanDesc pscan,
+						 bool prefetch_io)
 {
 	Snapshot	snapshot;
 	IndexScanDesc scan;
+	int				max_prefetch = 0;
+
+	/*
+	 * If prefetching (of table pages) is enabled for this index, determine
+	 * the number of requests.
+	 *
+	 * XXX Should we reduce this in the parallel case, somehow?
+	 */
+	if (prefetch_io)
+		max_prefetch = get_tablespace_io_concurrency(heaprel->rd_rel->reltablespace);
 
 	Assert(RelationGetRelid(heaprel) == pscan->ps_relid);
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true);
+									pscan, true, max_prefetch);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set

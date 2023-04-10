@@ -301,7 +301,7 @@ spgPrepareScanKeys(IndexScanDesc scan)
 }
 
 IndexScanDesc
-spgbeginscan(Relation rel, int keysz, int orderbysz)
+spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch)
 {
 	IndexScanDesc scan;
 	SpGistScanOpaque so;

@@ -342,7 +342,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
-btbeginscan(Relation rel, int nkeys, int norderbys)
+btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
 {
 	IndexScanDesc scan;
 	BTScanOpaque so;
@@ -370,18 +370,9 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
-	/*
-	 * XXX Do we need to do something for so->markPos?
-	 *
-	 * XXX We can't call get_tablespace_maintenance_io_concurrency here, because
-	 * that'd cause infinite loop (it does index scan internally). We probably 
-	 * could work around by that by determining the value outside here (say, in
-	 * nodeIndexscan etc.), but for now we just use effective_io_concurrency.
-	 * We might disable prefetching for scans started in systable_beginscan(),
-	 * for example, that'd break the cycle.
-	 */
+	/* XXX Do we need to do something for so->markPos? */
 	so->currPos.prefetchTarget = 0;
-	so->currPos.prefetchMaxTarget = effective_io_concurrency;
+	so->currPos.prefetchMaxTarget = prefetch;
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not

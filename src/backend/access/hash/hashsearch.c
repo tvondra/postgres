@@ -29,6 +29,7 @@ static inline void _hash_saveitem(HashScanOpaque so, int itemIndex,
 								  OffsetNumber offnum, IndexTuple itup);
 static void _hash_readnext(IndexScanDesc scan, Buffer *bufp,
 						   Page *pagep, HashPageOpaque *opaquep);
+static void _hash_prefetch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so);
 
 /*
  *	_hash_next() -- Get the next item in a scan.
@@ -120,6 +121,8 @@ _hash_next(IndexScanDesc scan, ScanDirection dir)
 	/* OK, itemIndex says what to return */
 	currItem = &so->currPos.items[so->currPos.itemIndex];
 	scan->xs_heaptid = currItem->heapTid;
+
+	_hash_prefetch(scan, dir, so);
 
 	return true;
 }
@@ -434,6 +437,8 @@ _hash_first(IndexScanDesc scan, ScanDirection dir)
 	currItem = &so->currPos.items[so->currPos.itemIndex];
 	scan->xs_heaptid = currItem->heapTid;
 
+	_hash_prefetch(scan, dir, so);
+
 	/* if we're here, _hash_readpage found a valid tuples */
 	return true;
 }
@@ -526,6 +531,7 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.firstItem = 0;
 		so->currPos.lastItem = itemIndex - 1;
 		so->currPos.itemIndex = 0;
+		so->currPos.prefetchIndex = 0;
 	}
 	else
 	{
@@ -579,6 +585,7 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.firstItem = itemIndex;
 		so->currPos.lastItem = MaxIndexTuplesPerPage - 1;
 		so->currPos.itemIndex = MaxIndexTuplesPerPage - 1;
+		so->currPos.prefetchIndex = so->currPos.itemIndex;
 	}
 
 	if (so->currPos.buf == so->hashso_bucket_buf ||
@@ -597,6 +604,9 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 	}
 
 	Assert(so->currPos.firstItem <= so->currPos.lastItem);
+
+	_hash_prefetch(scan, dir, so);
+
 	return true;
 }
 
@@ -718,4 +728,56 @@ _hash_saveitem(HashScanOpaque so, int itemIndex,
 
 	currItem->heapTid = itup->t_tid;
 	currItem->indexOffset = offnum;
+}
+
+
+
+/*
+ * Do prefetching, and gradually increase the prefetch distance.
+ *
+ * XXX This is limited to a single index page (because that's where we get
+ * currPos.items from). But index tuples are typically very small, so there
+ * should be quite a bit of stuff to prefetch (especially with deduplicated
+ * indexes, etc.). Does not seem worth reworking the index access to allow
+ * more aggressive prefetching, it's best effort.
+ */
+static void
+_hash_prefetch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so)
+{
+	/* maybe increase the prefetch distance, gradually */
+	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
+									 so->currPos.prefetchMaxTarget);
+
+	if (ScanDirectionIsForward(dir))
+	{
+		int	startIndex = so->currPos.prefetchIndex;
+		int	endIndex = Min(so->currPos.itemIndex + so->currPos.prefetchTarget,
+						   so->currPos.lastItem);
+
+		for (int i = startIndex; i <= endIndex; i++)
+		{
+			ItemPointerData tid = so->currPos.items[i].heapTid;
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->currPos.prefetchIndex = endIndex;
+	}
+	else
+	{
+		int	startIndex = so->currPos.prefetchIndex;
+		int	endIndex = Max(so->currPos.itemIndex - so->currPos.prefetchTarget,
+						   so->currPos.firstItem);
+
+		for (int i = startIndex; i >= endIndex; i--)
+		{
+			ItemPointerData tid = so->currPos.items[i].heapTid;
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->currPos.prefetchIndex = endIndex;
+	}
 }

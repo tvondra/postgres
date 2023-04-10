@@ -37,6 +37,7 @@
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
+#include "utils/spccache.h"
 
 
 /*
@@ -368,6 +369,10 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
+
+	/* XXX Do we need to do something for so->markPos? */
+	so->currPos.prefetchTarget = 0;
+	so->currPos.prefetchMaxTarget = get_tablespace_maintenance_io_concurrency(rel->rd_rel->reltablespace);
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not

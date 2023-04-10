@@ -162,8 +162,7 @@ typedef struct HashScanPosData
 		(scanpos).lastItem = 0; \
 		(scanpos).itemIndex = 0; \
 		(scanpos).prefetchIndex = 0; \
-		(scanpos).prefetchTarget = 0; \
-		(scanpos).prefetchMaxTarget = 0;	/* XXX should we reset if before rescans? */ \
+		(scanpos).prefetchTarget = 0;	/* XXX should we reset if before rescans? */ \
 	} while (0)
 
 /*

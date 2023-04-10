@@ -383,6 +383,19 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;
 	so->numKilled = 0;
 
+	/*
+	 * XXX Do we need to do something for so->markPos?
+	 *
+	 * XXX We can't call get_tablespace_maintenance_io_concurrency here, because
+	 * that'd cause infinite loop (it does index scan internally). We probably 
+	 * could work around by that by determining the value outside here (say, in
+	 * nodeIndexscan etc.), but for now we just use effective_io_concurrency.
+	 * We might disable prefetching for scans started in systable_beginscan(),
+	 * for example, that'd break the cycle.
+	 */
+	so->currPos.prefetchTarget = 0;
+	so->currPos.prefetchMaxTarget = effective_io_concurrency;
+
 	scan->opaque = so;
 
 	return scan;

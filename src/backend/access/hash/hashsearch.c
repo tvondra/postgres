@@ -754,7 +754,7 @@ _hash_prefetch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so)
 		int	endIndex = Min(so->currPos.itemIndex + so->currPos.prefetchTarget,
 						   so->currPos.lastItem);
 
-		for (int i = startIndex; i <= endIndex; i++)
+		for (int i = startIndex; i < endIndex; i++)
 		{
 			ItemPointerData tid = so->currPos.items[i].heapTid;
 			BlockNumber block = ItemPointerGetBlockNumber(&tid);
@@ -770,7 +770,7 @@ _hash_prefetch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so)
 		int	endIndex = Max(so->currPos.itemIndex - so->currPos.prefetchTarget,
 						   so->currPos.firstItem);
 
-		for (int i = startIndex; i >= endIndex; i--)
+		for (int i = startIndex; i > endIndex; i--)
 		{
 			ItemPointerData tid = so->currPos.items[i].heapTid;
 			BlockNumber block = ItemPointerGetBlockNumber(&tid);

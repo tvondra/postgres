@@ -236,6 +236,17 @@ typedef struct SpGistScanOpaqueData
 	IndexOrderByDistance *distances[MaxIndexTuplesPerPage];
 
 	/*
+	 * Prefetching of heap pages.
+	 *
+	 * XXX We need to disable this in some cases (e.g. when using index-only
+	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
+	 * only pages that are not all-visible, that'd be even better.
+	 */
+	int			prefetchIndex;	/* how far we already prefetched */
+	int			prefetchTarget;	/* how far we should be prefetching */
+	int			prefetchMaxTarget;	/* maximum prefetching distance */
+
+	/*
 	 * Note: using MaxIndexTuplesPerPage above is a bit hokey since
 	 * SpGistLeafTuples aren't exactly IndexTuples; however, they are larger,
 	 * so this is safe.

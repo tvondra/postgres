@@ -2544,6 +2544,10 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 	 * No heap relation means bitmap index scan, which does prefetching at
 	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
 	 * without the heap)
+	 *
+	 * XXX But in this case we should have prefetchMaxTarget=0, because in
+	 * index_bebinscan_bitmap() we disable prefetching. So maybe we should
+	 * just check that.
 	 */
 	if (!scan->heapRelation)
 		return;

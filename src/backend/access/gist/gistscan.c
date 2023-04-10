@@ -111,6 +111,11 @@ gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch)
 	so->curBlkno = InvalidBlockNumber;
 	so->curPageLSN = InvalidXLogRecPtr;
 
+	/* reset prefetching info */
+	so->prefetchIndex = 0;
+	so->prefetchTarget = 0;
+	so->prefetchMaxTarget = prefetch;
+
 	scan->opaque = so;
 
 	/*

@@ -987,6 +987,16 @@ typedef struct BTScanPosData
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
 
+	/*
+	 * Prefetching of heap pages.
+	 *
+	 * XXX We need to disable this in some cases (e.g. when using index-only
+	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
+	 * only pages that are not all-visible, that'd be even better.
+	 */
+	int			prefetchIndex;	/* how far we already prefetched */
+	int			prefetchTarget;	/* how far we should be prefetching */
+
 	BTScanPosItem items[MaxTIDsPerBTreePage];	/* MUST BE LAST */
 } BTScanPosData;
 
@@ -1022,6 +1032,7 @@ typedef BTScanPosData *BTScanPos;
 		(scanpos).buf = InvalidBuffer; \
 		(scanpos).lsn = InvalidXLogRecPtr; \
 		(scanpos).nextTupleOffset = 0; \
+		(scanpos).prefetchTarget = 0; \
 	} while (0)
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */

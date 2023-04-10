@@ -46,7 +46,7 @@ static bool _bt_parallel_readpage(IndexScanDesc scan, BlockNumber blkno,
 static Buffer _bt_walk_left(Relation rel, Buffer buf, Snapshot snapshot);
 static bool _bt_endpoint(IndexScanDesc scan, ScanDirection dir);
 static inline void _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir);
-
+static void _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so);
 
 /*
  *	_bt_drop_lock_and_maybe_pin()
@@ -1468,6 +1468,8 @@ readcomplete:
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
+	_bt_prefetch(scan, dir, so);
+
 	return true;
 }
 
@@ -1517,6 +1519,8 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_heaptid = currItem->heapTid;
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+	_bt_prefetch(scan, dir, so);
 
 	return true;
 }
@@ -1695,6 +1699,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = 0;
 		so->currPos.lastItem = itemIndex - 1;
 		so->currPos.itemIndex = 0;
+		so->currPos.prefetchIndex = 0;
 	}
 	else
 	{
@@ -1790,7 +1795,10 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = itemIndex;
 		so->currPos.lastItem = MaxTIDsPerBTreePage - 1;
 		so->currPos.itemIndex = MaxTIDsPerBTreePage - 1;
+		so->currPos.prefetchIndex = so->currPos.itemIndex;
 	}
+
+	_bt_prefetch(scan, dir, so);
 
 	return (so->currPos.firstItem <= so->currPos.lastItem);
 }
@@ -2493,6 +2501,8 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
+	_bt_prefetch(scan, dir, so);
+
 	return true;
 }
 
@@ -2516,4 +2526,45 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 	}
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
+}
+
+static void
+_bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
+{
+	/* maybe increase the prefetch distance, gradually */
+	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
+									 effective_io_concurrency);
+
+	if (ScanDirectionIsForward(dir))
+	{
+		int	startIndex = so->currPos.prefetchIndex;
+		int	endIndex = Min(so->currPos.itemIndex + so->currPos.prefetchTarget,
+						   so->currPos.lastItem);
+
+		for (int i = startIndex; i <= endIndex; i++)
+		{
+			ItemPointerData tid = so->currPos.items[i].heapTid;
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->currPos.prefetchIndex = endIndex;
+	}
+	else
+	{
+		int	startIndex = so->currPos.prefetchIndex;
+		int	endIndex = Max(so->currPos.itemIndex - so->currPos.prefetchTarget,
+						   so->currPos.firstItem);
+
+		for (int i = startIndex; i >= endIndex; i--)
+		{
+			ItemPointerData tid = so->currPos.items[i].heapTid;
+			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		so->currPos.prefetchIndex = endIndex;
+	}
 }

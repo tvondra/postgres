@@ -744,6 +744,14 @@ _hash_saveitem(HashScanOpaque so, int itemIndex,
 static void
 _hash_prefetch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so)
 {
+	/*
+	 * No heap relation means bitmap index scan, which does prefetching at
+	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
+	 * without the heap)
+	 */
+	if (!scan->heapRelation)
+		return;
+
 	/* maybe increase the prefetch distance, gradually */
 	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
 									 so->currPos.prefetchMaxTarget);

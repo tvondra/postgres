@@ -2540,6 +2540,14 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 static void
 _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 {
+	/*
+	 * No heap relation means bitmap index scan, which does prefetching at
+	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
+	 * without the heap)
+	 */
+	if (!scan->heapRelation)
+		return;
+
 	/* maybe increase the prefetch distance, gradually */
 	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
 									 so->currPos.prefetchMaxTarget);

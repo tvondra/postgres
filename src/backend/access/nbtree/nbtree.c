@@ -371,7 +371,7 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
 	so->numKilled = 0;
 
 	/* XXX Do we need to do something for so->markPos? */
-	so->currPos.prefetchTarget = 0;
+	so->currPos.prefetchTarget = -3;
 	so->currPos.prefetchMaxTarget = prefetch;
 
 	/*
@@ -501,6 +501,7 @@ btmarkpos(IndexScanDesc scan)
 	 * before we leave the page, we don't have to do that work.
 	 */
 	if (BTScanPosIsValid(so->currPos))
+	{
 		so->markItemIndex = so->currPos.itemIndex;
 	else
 	{

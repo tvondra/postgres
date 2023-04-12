@@ -1034,7 +1034,7 @@ typedef BTScanPosData *BTScanPos;
 		(scanpos).lsn = InvalidXLogRecPtr; \
 		(scanpos).nextTupleOffset = 0; \
 		(scanpos).prefetchIndex = 0; \
-		(scanpos).prefetchTarget = 0; /* XXX should we reset if before rescans? */ \
+		(scanpos).prefetchTarget = -3; /* XXX should we reset if before rescans? */ \
 	} while (0)
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */

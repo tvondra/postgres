@@ -2606,7 +2606,9 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 			 *
 			 * XXX The solution here is pretty trivial - we just check the
 			 * immediately preceding block. We could check a longer history, or
-			 * maybe maintain some "already prefetched" struct (small array).
+			 * maybe maintain some "already prefetched" struct (small LRU array
+			 * of last prefetched blocks - say 8 blocks or so - would work fine,
+			 * I think).
 			 */
 			if (i > 0)
 			{

@@ -2536,6 +2536,25 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
  * should be quite a bit of stuff to prefetch (especially with deduplicated
  * indexes, etc.). Does not seem worth reworking the index access to allow
  * more aggressive prefetching, it's best effort.
+ *
+ * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
+ * prefetching does not cause significant regressions (e.g. for nestloop
+ * with inner index scan). We could track number of index pages visited
+ * and index tuples returned, to calculate avg tuples / page, and then
+ * use that to limit prefetching after switching to a new page (instead
+ * of just using prefetchMaxTarget, which can get much larger).
+ *
+ * XXX The prefetching may interfere with the patch allowing us to evaluate
+ * conditions on the index tuple, in which case we may not need the heap
+ * tuple. Maybe if there's such filter, we should prefetch only pages that
+ * are not all-visible (and the same idea would also work for IOS), but
+ * it also makes the indexing a bit "aware" of the visibility stuff (which
+ * seems a bit wrong). Also, maybe we should consider the filter selectivity
+ * (if the index-only filter is expected to eliminate only few rows, then
+ * the vm check is pointless). Maybe this could/should be auto-tuning too,
+ * i.e. we could track how many heap tuples were needed after all, and then
+ * we would consider this when deciding whether to prefetch all-visible
+ * pages or not (matters only for regular index scans, not IOS).
  */
 static void
 _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
@@ -2556,6 +2575,9 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
 									 so->currPos.prefetchMaxTarget);
 
+	/*
+	 * Did we reach the point to start prefetching? If not, we're done.
+	 */
 	if (so->currPos.prefetchTarget <= 0)
 		return;
 

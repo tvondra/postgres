@@ -501,7 +501,6 @@ btmarkpos(IndexScanDesc scan)
 	 * before we leave the page, we don't have to do that work.
 	 */
 	if (BTScanPosIsValid(so->currPos))
-	{
 		so->markItemIndex = so->currPos.itemIndex;
 	else
 	{

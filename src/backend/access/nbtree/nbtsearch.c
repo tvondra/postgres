@@ -2567,8 +2567,33 @@ _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
 
 		for (int i = startIndex; i <= endIndex; i++)
 		{
+			BlockNumber prevblock;
 			ItemPointerData tid = so->currPos.items[i].heapTid;
 			BlockNumber block = ItemPointerGetBlockNumber(&tid);
+
+			/*
+			 * Do not prefetch the same block over and over again,
+			 *
+			 * This happens e.g. for clustered or naturally correlated indexes
+			 * (fkey to a sequence ID). It's not expensive (the block is in page
+			 * cache already, so no I/O), but it's not free either.
+			 *
+			 * XXX We can't just check blocks between startIndex and endIndex,
+			 * because at some point (after the pefetch target gets ramped up)
+			 * it's going to be just a single block.
+			 *
+			 * XXX The solution here is pretty trivial - we just check the
+			 * immediately preceding block. We could check a longer history, or
+			 * maybe maintain some "already prefetched" struct (small array).
+			 */
+			if (i > 0)
+			{
+				tid = so->currPos.items[i - 1].heapTid;
+				prevblock = ItemPointerGetBlockNumber(&tid);
+			}
+
+			if (prevblock == block)
+				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 		}

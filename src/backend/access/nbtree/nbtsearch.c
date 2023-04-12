@@ -2544,6 +2544,11 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
  * use that to limit prefetching after switching to a new page (instead
  * of just using prefetchMaxTarget, which can get much larger).
  *
+ * XXX Obviously, another option is to use the planner estimates - we know
+ * how many rows we're expected to fetch (on average, assuming the estimates
+ * are reasonably accurate), so why not to use that. And maybe combine it
+ * with the auto-tuning based on runtime statistics, described above.
+ *
  * XXX The prefetching may interfere with the patch allowing us to evaluate
  * conditions on the index tuple, in which case we may not need the heap
  * tuple. Maybe if there's such filter, we should prefetch only pages that

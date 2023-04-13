@@ -26,8 +26,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-static void _gist_prefetch(IndexScanDesc scan, ScanDirection dir, GISTScanOpaque so);
-
 /*
  * gistkillitems() -- set LP_DEAD state for items an indexscan caller has
  * told us were killed.
@@ -399,7 +397,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	}
 
 	so->nPageData = so->curPageData = 0;
-	so->prefetchIndex = 0;
+	index_prefetch_reset(scan, ForwardScanDirection, 0);	// FIXME direction
 	scan->xs_hitup = NULL;		/* might point into pageDataCxt */
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
@@ -633,7 +631,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 		so->firstCall = false;
 		so->curPageData = so->nPageData = 0;
-		so->prefetchIndex = 0;
+		index_prefetch_reset(scan, ForwardScanDirection, 0); // FIXME direction
 		scan->xs_hitup = NULL;
 		if (so->pageDataCxt)
 			MemoryContextReset(so->pageDataCxt);
@@ -683,7 +681,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 				so->curPageData++;
 
-				_gist_prefetch(scan, dir, so);
+				index_prefetch(scan, ForwardScanDirection);
 
 				return true;
 			}
@@ -761,7 +759,7 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 	/* Begin the scan by processing the root page */
 	so->curPageData = so->nPageData = 0;
-	so->prefetchIndex = 0;
+	index_prefetch_reset(scan, ForwardScanDirection, 0);
 	scan->xs_hitup = NULL;
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
@@ -807,61 +805,4 @@ gistcanreturn(Relation index, int attno)
 		return true;
 	else
 		return false;
-}
-
-
-/*
- * Do prefetching, and gradually increase the prefetch distance.
- *
- * XXX This is limited to a single index page (because that's where we get
- * currPos.items from). But index tuples are typically very small, so there
- * should be quite a bit of stuff to prefetch (especially with deduplicated
- * indexes, etc.). Does not seem worth reworking the index access to allow
- * more aggressive prefetching, it's best effort.
- */
-static void
-_gist_prefetch(IndexScanDesc scan, ScanDirection dir, GISTScanOpaque so)
-{
-	/*
-	 * No heap relation means bitmap index scan, which does prefetching at
-	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
-	 * without the heap)
-	 */
-	if (!scan->heapRelation)
-		return;
-
-	/* maybe increase the prefetch distance, gradually */
-	so->prefetchTarget = Min(so->prefetchTarget + 1,
-							 so->prefetchMaxTarget);
-
-	if (ScanDirectionIsForward(dir))
-	{
-		int	startIndex = so->prefetchIndex;
-		int	endIndex = Min(so->curPageData + so->prefetchTarget, so->nPageData);
-
-		for (int i = startIndex; i < endIndex; i++)
-		{
-			ItemPointerData tid = so->pageData[i].heapPtr;
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->prefetchIndex = endIndex;
-	}
-	else  /* XXX is this actually needed? can gist do backwards scans? */
-	{
-		int	startIndex = so->prefetchIndex;
-		int	endIndex = Max(so->curPageData - so->prefetchTarget, 0);
-
-		for (int i = startIndex; i > endIndex; i--)
-		{
-			ItemPointerData tid = so->pageData[i].heapPtr;
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->prefetchIndex = endIndex;
-	}
 }

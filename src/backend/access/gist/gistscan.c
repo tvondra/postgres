@@ -22,6 +22,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+static void gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static BlockNumber gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 /*
  * Pairing heap comparison function for the GISTSearchItem queue
@@ -111,10 +113,27 @@ gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch)
 	so->curBlkno = InvalidBlockNumber;
 	so->curPageLSN = InvalidXLogRecPtr;
 
-	/* reset prefetching info */
-	so->prefetchIndex = 0;
-	so->prefetchTarget = 0;
-	so->prefetchMaxTarget = prefetch;
+	/*
+	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
+	 * the callacks, so that needs to happen here ...
+	 *
+	 * XXX Do we need to do something for so->markPos?
+	 */
+	if (prefetch > 0)
+	{
+		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
+
+		prefetcher->prefetchIndex = -1;
+		prefetcher->prefetchTarget = -3;
+		prefetcher->prefetchMaxTarget = prefetch;
+
+		/* callbacks */
+		prefetcher->get_block = gist_prefetch_getblock;
+		prefetcher->get_range = gist_prefetch_getrange;
+		prefetcher->reset = NULL;
+
+		scan->xs_prefetch = prefetcher;
+	}
 
 	scan->opaque = so;
 
@@ -360,4 +379,39 @@ gistendscan(IndexScanDesc scan)
 	 * as well as the queueCxt if there is a separate context for it.
 	 */
 	freeGISTstate(so->giststate);
+}
+
+static void
+gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+{
+	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
+
+	if (ScanDirectionIsForward(dir))
+	{
+		/* Did we already process the item or is it invalid? */
+		*start = so->curPageData;
+		*end = so->nPageData;
+	}
+	else
+	{
+		*start = 0;
+		*end = so->curPageData;
+	}
+}
+
+static BlockNumber
+gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
+{
+	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
+	ItemPointer		tid;
+
+	if ((index < so->curPageData) || (index > so->nPageData))
+		return InvalidBlockNumber;
+
+	/* get the tuple ID and extract the block number */
+	tid = &so->pageData[index].heapPtr;
+
+	Assert(ItemPointerIsValid(tid));
+
+	return ItemPointerGetBlockNumber(tid);
 }

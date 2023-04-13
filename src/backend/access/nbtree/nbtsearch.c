@@ -46,7 +46,6 @@ static bool _bt_parallel_readpage(IndexScanDesc scan, BlockNumber blkno,
 static Buffer _bt_walk_left(Relation rel, Buffer buf, Snapshot snapshot);
 static bool _bt_endpoint(IndexScanDesc scan, ScanDirection dir);
 static inline void _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir);
-static void _bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so);
 
 /*
  *	_bt_drop_lock_and_maybe_pin()
@@ -1406,6 +1405,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 			 */
 			_bt_parallel_done(scan);
 			BTScanPosInvalidate(so->currPos);
+			index_prefetch_reset(scan, dir, -1);
 			return false;
 		}
 	}
@@ -1468,7 +1468,7 @@ readcomplete:
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
-	_bt_prefetch(scan, dir, so);
+	index_prefetch(scan, dir);
 
 	return true;
 }
@@ -1520,7 +1520,7 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
-	_bt_prefetch(scan, dir, so);
+	index_prefetch(scan, dir);
 
 	return true;
 }
@@ -1699,7 +1699,8 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = 0;
 		so->currPos.lastItem = itemIndex - 1;
 		so->currPos.itemIndex = 0;
-		so->currPos.prefetchIndex = 0;
+
+		index_prefetch_reset(scan, dir, so->currPos.itemIndex);
 	}
 	else
 	{
@@ -1795,10 +1796,11 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = itemIndex;
 		so->currPos.lastItem = MaxTIDsPerBTreePage - 1;
 		so->currPos.itemIndex = MaxTIDsPerBTreePage - 1;
-		so->currPos.prefetchIndex = so->currPos.itemIndex;
+
+		index_prefetch_reset(scan, dir, so->currPos.itemIndex);
 	}
 
-	_bt_prefetch(scan, dir, so);
+	index_prefetch(scan, dir);
 
 	return (so->currPos.firstItem <= so->currPos.lastItem);
 }
@@ -1947,6 +1949,7 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 				/* release the previous buffer, if pinned */
 				BTScanPosUnpinIfPinned(so->currPos);
 				BTScanPosInvalidate(so->currPos);
+				index_prefetch_reset(scan, dir, -1);
 				return false;
 			}
 		}
@@ -1978,6 +1981,7 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 			if (!status)
 			{
 				BTScanPosInvalidate(so->currPos);
+				index_prefetch_reset(scan, dir, -1);
 				return false;
 			}
 		}
@@ -2030,6 +2034,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 			{
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
+				index_prefetch_reset(scan, dir, -1);
 				return false;
 			}
 			/* check for interrupts while we're not holding any buffer lock */
@@ -2062,6 +2067,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				if (!status)
 				{
 					BTScanPosInvalidate(so->currPos);
+					index_prefetch_reset(scan, dir, -1);
 					return false;
 				}
 			}
@@ -2119,6 +2125,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				_bt_relbuf(rel, so->currPos.buf);
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
+				index_prefetch_reset(scan, dir, -1);
 				return false;
 			}
 
@@ -2131,6 +2138,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 			{
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
+				index_prefetch_reset(scan, dir, -1);
 				return false;
 			}
 
@@ -2169,6 +2177,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				if (!status)
 				{
 					BTScanPosInvalidate(so->currPos);
+					index_prefetch_reset(scan, dir, -1);
 					return false;
 				}
 				so->currPos.buf = _bt_getbuf(rel, blkno, BT_READ);
@@ -2444,6 +2453,7 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 		 */
 		PredicateLockRelation(rel, scan->xs_snapshot);
 		BTScanPosInvalidate(so->currPos);
+		index_prefetch_reset(scan, dir, -1);
 		return false;
 	}
 
@@ -2501,7 +2511,7 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
-	_bt_prefetch(scan, dir, so);
+	index_prefetch(scan, dir);
 
 	return true;
 }
@@ -2526,123 +2536,4 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 	}
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
-}
-
-/*
- * Do prefetching, and gradually increase the prefetch distance.
- *
- * XXX This is limited to a single index page (because that's where we get
- * currPos.items from). But index tuples are typically very small, so there
- * should be quite a bit of stuff to prefetch (especially with deduplicated
- * indexes, etc.). Does not seem worth reworking the index access to allow
- * more aggressive prefetching, it's best effort.
- *
- * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
- * prefetching does not cause significant regressions (e.g. for nestloop
- * with inner index scan). We could track number of index pages visited
- * and index tuples returned, to calculate avg tuples / page, and then
- * use that to limit prefetching after switching to a new page (instead
- * of just using prefetchMaxTarget, which can get much larger).
- *
- * XXX Obviously, another option is to use the planner estimates - we know
- * how many rows we're expected to fetch (on average, assuming the estimates
- * are reasonably accurate), so why not to use that. And maybe combine it
- * with the auto-tuning based on runtime statistics, described above.
- *
- * XXX The prefetching may interfere with the patch allowing us to evaluate
- * conditions on the index tuple, in which case we may not need the heap
- * tuple. Maybe if there's such filter, we should prefetch only pages that
- * are not all-visible (and the same idea would also work for IOS), but
- * it also makes the indexing a bit "aware" of the visibility stuff (which
- * seems a bit wrong). Also, maybe we should consider the filter selectivity
- * (if the index-only filter is expected to eliminate only few rows, then
- * the vm check is pointless). Maybe this could/should be auto-tuning too,
- * i.e. we could track how many heap tuples were needed after all, and then
- * we would consider this when deciding whether to prefetch all-visible
- * pages or not (matters only for regular index scans, not IOS).
- */
-static void
-_bt_prefetch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so)
-{
-	/*
-	 * No heap relation means bitmap index scan, which does prefetching at
-	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
-	 * without the heap)
-	 *
-	 * XXX But in this case we should have prefetchMaxTarget=0, because in
-	 * index_bebinscan_bitmap() we disable prefetching. So maybe we should
-	 * just check that.
-	 */
-	if (!scan->heapRelation)
-		return;
-
-	/* maybe increase the prefetch distance, gradually */
-	so->currPos.prefetchTarget = Min(so->currPos.prefetchTarget + 1,
-									 so->currPos.prefetchMaxTarget);
-
-	/*
-	 * Did we reach the point to start prefetching? If not, we're done.
-	 */
-	if (so->currPos.prefetchTarget <= 0)
-		return;
-
-	if (ScanDirectionIsForward(dir))
-	{
-		int	startIndex = Max(so->currPos.itemIndex, so->currPos.prefetchIndex + 1);
-		int	endIndex = Min(so->currPos.itemIndex + so->currPos.prefetchTarget,
-						   so->currPos.lastItem);
-
-		for (int i = startIndex; i <= endIndex; i++)
-		{
-			BlockNumber prevblock;
-			ItemPointerData tid = so->currPos.items[i].heapTid;
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			/*
-			 * Do not prefetch the same block over and over again,
-			 *
-			 * This happens e.g. for clustered or naturally correlated indexes
-			 * (fkey to a sequence ID). It's not expensive (the block is in page
-			 * cache already, so no I/O), but it's not free either.
-			 *
-			 * XXX We can't just check blocks between startIndex and endIndex,
-			 * because at some point (after the pefetch target gets ramped up)
-			 * it's going to be just a single block.
-			 *
-			 * XXX The solution here is pretty trivial - we just check the
-			 * immediately preceding block. We could check a longer history, or
-			 * maybe maintain some "already prefetched" struct (small LRU array
-			 * of last prefetched blocks - say 8 blocks or so - would work fine,
-			 * I think).
-			 */
-			if (i > 0)
-			{
-				tid = so->currPos.items[i - 1].heapTid;
-				prevblock = ItemPointerGetBlockNumber(&tid);
-			}
-
-			if (prevblock == block)
-				continue;
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->currPos.prefetchIndex = endIndex;
-	}
-	else
-	{
-		int	startIndex = Min(so->currPos.itemIndex, so->currPos.prefetchIndex - 1);
-		int	endIndex = Max(so->currPos.itemIndex - so->currPos.prefetchTarget,
-						   so->currPos.firstItem);
-
-		for (int i = startIndex; i >= endIndex; i--)
-		{
-			ItemPointerData tid = so->currPos.items[i].heapTid;
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->currPos.prefetchIndex = endIndex;
-	}
 }

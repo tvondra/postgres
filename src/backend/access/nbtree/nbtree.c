@@ -88,6 +88,8 @@ static BTVacuumPosting btreevacuumposting(BTVacState *vstate,
 										  OffsetNumber updatedoffset,
 										  int *nremaining);
 
+static void _bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static BlockNumber _bt_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 /*
  * Btree handler function: return IndexAmRoutine with access method parameters
@@ -370,9 +372,27 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
-	/* XXX Do we need to do something for so->markPos? */
-	so->currPos.prefetchTarget = -3;
-	so->currPos.prefetchMaxTarget = prefetch;
+	/*
+	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
+	 * the callacks, so that needs to happen here ...
+	 *
+	 * XXX Do we need to do something for so->markPos?
+	 */
+	if (prefetch > 0)
+	{
+		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
+
+		prefetcher->prefetchIndex = -1;
+		prefetcher->prefetchTarget = -3;
+		prefetcher->prefetchMaxTarget = prefetch;
+
+		/* callbacks */
+		prefetcher->get_block = _bt_prefetch_getblock;
+		prefetcher->get_range = _bt_prefetch_getrange;
+		prefetcher->reset = NULL;
+
+		scan->xs_prefetch = prefetcher;
+	}
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
@@ -1427,4 +1447,39 @@ bool
 btcanreturn(Relation index, int attno)
 {
 	return true;
+}
+
+static void
+_bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+{
+	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
+
+	if (ScanDirectionIsForward(dir))
+	{
+		/* Did we already process the item or is it invalid? */
+		*start = so->currPos.itemIndex;
+		*end = so->currPos.lastItem;
+	}
+	else
+	{
+		*start = so->currPos.firstItem;
+		*end = so->currPos.itemIndex;
+	}
+}
+
+static BlockNumber
+_bt_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
+{
+	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
+	ItemPointer		tid;
+
+	if ((index < so->currPos.firstItem) || (index > so->currPos.lastItem))
+		return InvalidBlockNumber;
+
+	/* get the tuple ID and extract the block number */
+	tid = &so->currPos.items[index].heapTid;
+
+	Assert(ItemPointerIsValid(tid));
+
+	return ItemPointerGetBlockNumber(tid);
 }

@@ -32,7 +32,9 @@ typedef void (*storeRes_func) (SpGistScanOpaque so, ItemPointer heapPtr,
 							   SpGistLeafTuple leafTuple, bool recheck,
 							   bool recheckDistances, double *distances);
 
-static void _spgist_prefetch(IndexScanDesc scan, ScanDirection dir, SpGistScanOpaque so);
+static void spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static BlockNumber spgist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
+
 
 /*
  * Pairing heap comparison function for the SpGistSearchItem queue.
@@ -193,7 +195,6 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 			pfree(so->reconTups[i]);
 	}
 	so->iPtr = so->nPtrs = 0;
-	so->prefetchIndex = 0;
 }
 
 /*
@@ -374,7 +375,27 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch)
 
 	so->indexCollation = rel->rd_indcollation[0];
 
-	so->prefetchMaxTarget = prefetch;
+	/*
+	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
+	 * the callacks, so that needs to happen here ...
+	 *
+	 * XXX Do we need to do something for so->markPos?
+	 */
+	if (prefetch > 0)
+	{
+		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
+
+		prefetcher->prefetchIndex = -1;
+		prefetcher->prefetchTarget = -3;
+		prefetcher->prefetchMaxTarget = prefetch;
+
+		/* callbacks */
+		prefetcher->get_block = spgist_prefetch_getblock;
+		prefetcher->get_range = spgist_prefetch_getrange;
+		prefetcher->reset = NULL;
+
+		scan->xs_prefetch = prefetcher;
+	}
 
 	scan->opaque = so;
 
@@ -425,6 +446,8 @@ spgrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	/* set up starting queue entries */
 	resetSpGistScanOpaque(so);
+
+	index_prefetch_reset(scan, ForwardScanDirection, 0);
 
 	/* count an indexscan for stats */
 	pgstat_count_index_scan(scan->indexRelation);
@@ -1056,7 +1079,7 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 			so->iPtr++;
 
 			/* prefetch additional tuples */
-			_spgist_prefetch(scan, dir, so);
+			index_prefetch(scan, dir);
 
 			return true;
 		}
@@ -1080,7 +1103,8 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				pfree(so->reconTups[i]);
 		}
 		so->iPtr = so->nPtrs = 0;
-		so->prefetchIndex = 0;
+
+		index_prefetch_reset(scan, ForwardScanDirection, 0);
 
 		spgWalk(scan->indexRelation, so, false, storeGettuple,
 				scan->xs_snapshot);
@@ -1107,58 +1131,37 @@ spgcanreturn(Relation index, int attno)
 	return cache->config.canReturnData;
 }
 
-/*
- * Do prefetching, and gradually increase the prefetch distance.
- *
- * XXX This is limited to a single index page (because that's where we get
- * currPos.items from). But index tuples are typically very small, so there
- * should be quite a bit of stuff to prefetch (especially with deduplicated
- * indexes, etc.). Does not seem worth reworking the index access to allow
- * more aggressive prefetching, it's best effort.
- */
 static void
-_spgist_prefetch(IndexScanDesc scan, ScanDirection dir, SpGistScanOpaque so)
+spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
 {
-	/*
-	 * No heap relation means bitmap index scan, which does prefetching at
-	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
-	 * without the heap)
-	 */
-	if (!scan->heapRelation)
-		return;
-
-	/* maybe increase the prefetch distance, gradually */
-	so->prefetchTarget = Min(so->prefetchTarget + 1,
-							 so->prefetchMaxTarget);
+	SpGistScanOpaque	so = (SpGistScanOpaque) scan->opaque;
 
 	if (ScanDirectionIsForward(dir))
 	{
-		int	startIndex = so->prefetchIndex;
-		int	endIndex = Min(so->iPtr + so->prefetchTarget, so->nPtrs);
-
-		for (int i = startIndex; i < endIndex; i++)
-		{
-			ItemPointerData tid = so->heapPtrs[i];
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->prefetchIndex = endIndex;
+		/* Did we already process the item or is it invalid? */
+		*start = so->iPtr;
+		*end = so->nPtrs;
 	}
-	else  /* XXX is this actually needed? can spgist do backwards scans? */
+	else
 	{
-		int	startIndex = so->prefetchIndex;
-		int	endIndex = Max(so->iPtr - so->prefetchTarget, 0);
-
-		for (int i = startIndex; i > endIndex; i--)
-		{
-			ItemPointerData tid = so->heapPtrs[i];
-			BlockNumber block = ItemPointerGetBlockNumber(&tid);
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		}
-
-		so->prefetchIndex = endIndex;
+		*start = 0;
+		*end = so->iPtr;
 	}
+}
+
+static BlockNumber
+spgist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
+{
+	SpGistScanOpaque	so = (SpGistScanOpaque) scan->opaque;
+	ItemPointer		tid;
+
+	if ((index < so->iPtr) || (index > so->nPtrs))
+		return InvalidBlockNumber;
+
+	/* get the tuple ID and extract the block number */
+	tid = &so->heapPtrs[index];
+
+	Assert(ItemPointerIsValid(tid));
+
+	return ItemPointerGetBlockNumber(tid);
 }

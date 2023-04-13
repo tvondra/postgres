@@ -1037,3 +1037,195 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 
 	return build_local_reloptions(&relopts, attoptions, validate);
 }
+
+
+
+/*
+ * Do prefetching, and gradually increase the prefetch distance.
+ *
+ * XXX This is limited to a single index page (because that's where we get
+ * currPos.items from). But index tuples are typically very small, so there
+ * should be quite a bit of stuff to prefetch (especially with deduplicated
+ * indexes, etc.). Does not seem worth reworking the index access to allow
+ * more aggressive prefetching, it's best effort.
+ *
+ * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
+ * prefetching does not cause significant regressions (e.g. for nestloop
+ * with inner index scan). We could track number of index pages visited
+ * and index tuples returned, to calculate avg tuples / page, and then
+ * use that to limit prefetching after switching to a new page (instead
+ * of just using prefetchMaxTarget, which can get much larger).
+ *
+ * XXX Obviously, another option is to use the planner estimates - we know
+ * how many rows we're expected to fetch (on average, assuming the estimates
+ * are reasonably accurate), so why not to use that. And maybe combine it
+ * with the auto-tuning based on runtime statistics, described above.
+ *
+ * XXX The prefetching may interfere with the patch allowing us to evaluate
+ * conditions on the index tuple, in which case we may not need the heap
+ * tuple. Maybe if there's such filter, we should prefetch only pages that
+ * are not all-visible (and the same idea would also work for IOS), but
+ * it also makes the indexing a bit "aware" of the visibility stuff (which
+ * seems a bit wrong). Also, maybe we should consider the filter selectivity
+ * (if the index-only filter is expected to eliminate only few rows, then
+ * the vm check is pointless). Maybe this could/should be auto-tuning too,
+ * i.e. we could track how many heap tuples were needed after all, and then
+ * we would consider this when deciding whether to prefetch all-visible
+ * pages or not (matters only for regular index scans, not IOS).
+ */
+void
+index_prefetch(IndexScanDesc scan, ScanDirection dir)
+{
+	IndexPrefetch	prefetch = scan->xs_prefetch;
+
+	/*
+	 * No heap relation means bitmap index scan, which does prefetching at
+	 * the bitmap heap scan, so no prefetch here (we can't do it anyway,
+	 * without the heap)
+	 *
+	 * XXX But in this case we should have prefetchMaxTarget=0, because in
+	 * index_bebinscan_bitmap() we disable prefetching. So maybe we should
+	 * just check that.
+	 */
+	if (!prefetch)
+		return;
+
+	/* was it initialized correctly? */
+	Assert(prefetch->prefetchIndex != -1);
+
+	/*
+	 * If we got here, prefetching is enabled and it's a node that supports
+	 * prefetching (i.e. it can't be a bitmap index scan).
+	 */
+	Assert(scan->heapRelation);
+
+	/* gradually increase the prefetch distance */
+	prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
+								   prefetch->prefetchMaxTarget);
+
+	/*
+	 * Did we already reach the point to actually start prefetching? If not,
+	 * we're done. We'll try again for the next index tuple.
+	 */
+	if (prefetch->prefetchTarget <= 0)
+		return;
+
+	if (ScanDirectionIsForward(dir))
+	{
+		int		startIndex,
+				endIndex;
+
+		/* get indexes of unprocessed index entries */
+		prefetch->get_range(scan, dir, &startIndex, &endIndex);
+
+		/*
+		 * Adjust the range, based on what we already prefetched, and also
+		 * based on the prefetch target.
+		 *
+		 * XXX We need to adjust the end index first, because it depends on
+		 * the actual position, before we consider how far we prefetched.
+		 */
+		endIndex = Min(endIndex, startIndex + prefetch->prefetchTarget);
+		startIndex = Max(startIndex, prefetch->prefetchIndex + 1);
+
+		for (int i = startIndex; i <= endIndex; i++)
+		{
+			BlockNumber	block;
+			BlockNumber	prevblock = InvalidBlockNumber;
+
+			block = prefetch->get_block(scan, dir, i);
+
+			/*
+			 * Do not prefetch the same block over and over again,
+			 *
+			 * This happens e.g. for clustered or naturally correlated indexes
+			 * (fkey to a sequence ID). It's not expensive (the block is in page
+			 * cache already, so no I/O), but it's not free either.
+			 *
+			 * XXX We can't just check blocks between startIndex and endIndex,
+			 * because at some point (after the pefetch target gets ramped up)
+			 * it's going to be just a single block.
+			 *
+			 * XXX The solution here is pretty trivial - we just check the
+			 * immediately preceding block. We could check a longer history, or
+			 * maybe maintain some "already prefetched" struct (small LRU array
+			 * of last prefetched blocks - say 8 blocks or so - would work fine,
+			 * I think).
+			 */
+			if (i > 0)
+				prevblock = prefetch->get_block(scan, dir, i - 1);
+
+			if (prevblock == block)
+				continue;
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		prefetch->prefetchIndex = endIndex;
+	}
+	else
+	{
+		int		startIndex,
+				endIndex;
+
+		/* get indexes of unprocessed index entries */
+		prefetch->get_range(scan, dir, &startIndex, &endIndex);
+
+		/*
+		 * Adjust the range, based on what we already prefetched, and also
+		 * based on the prefetch target.
+		 *
+		 * XXX We need to adjust the start index first, because it depends on
+		 * the actual position, before we consider how far we prefetched (which
+		 * for backwards scans is (end index).
+		 */
+		startIndex = Max(startIndex, endIndex - prefetch->prefetchTarget);
+		endIndex = Min(endIndex, prefetch->prefetchIndex - 1);
+
+		for (int i = endIndex; i >= startIndex; i--)
+		{
+			BlockNumber	block;
+			BlockNumber	prevblock = InvalidBlockNumber;
+
+			block = prefetch->get_block(scan, dir, i);
+
+			/*
+			 * Do not prefetch the same block over and over again,
+			 *
+			 * This happens e.g. for clustered or naturally correlated indexes
+			 * (fkey to a sequence ID). It's not expensive (the block is in page
+			 * cache already, so no I/O), but it's not free either.
+			 *
+			 * XXX We can't just check blocks between startIndex and endIndex,
+			 * because at some point (after the pefetch target gets ramped up)
+			 * it's going to be just a single block.
+			 *
+			 * XXX The solution here is pretty trivial - we just check the
+			 * immediately preceding block. We could check a longer history, or
+			 * maybe maintain some "already prefetched" struct (small LRU array
+			 * of last prefetched blocks - say 8 blocks or so - would work fine,
+			 * I think).
+			 */
+			if (i > 0) // FIXME doesn't quite work for backwards scans, we need to check
+					   // index of last item, but we'll check this differently anyway
+					   // (small array, or something)
+				prevblock = prefetch->get_block(scan, dir, i + 1);
+
+			if (prevblock == block)
+				continue;
+
+			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		}
+
+		prefetch->prefetchIndex = startIndex;
+	}
+}
+
+void
+index_prefetch_reset(IndexScanDesc scan, ScanDirection dir, int index)
+{
+	IndexPrefetch	prefetch = scan->xs_prefetch;
+
+	prefetch->prefetchIndex = index;
+	prefetch->prefetchTarget = -3;
+}

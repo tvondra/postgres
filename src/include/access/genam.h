@@ -232,4 +232,42 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
+
+
+
+void index_prefetch(IndexScanDesc scandesc, ScanDirection direction);
+void index_prefetch_reset(IndexScanDesc scandesc, ScanDirection direction, int index);
+
+/*
+ * XXX not sure it's the right place to define these callbacks etc.
+ */
+typedef void (*prefetcher_getrange_function) (IndexScanDesc scandesc,
+													 ScanDirection direction,
+													 int *start, int *end);
+
+typedef BlockNumber (*prefetcher_getblock_function) (IndexScanDesc scandesc,
+													 ScanDirection direction,
+													 int index);
+
+typedef BlockNumber (*prefetcher_reset_function) (IndexScanDesc scandesc,
+												  ScanDirection direction,
+												  int index);
+
+typedef struct IndexPrefetchData
+{
+	/*
+	 * XXX We need to disable this in some cases (e.g. when using index-only
+	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
+	 * only pages that are not all-visible, that'd be even better.
+	 */
+	int			prefetchIndex;	/* how far we already prefetched */
+	int			prefetchTarget;	/* how far we should be prefetching */
+	int			prefetchMaxTarget;	/* maximum prefetching distance */
+
+	prefetcher_getblock_function	get_block;
+	prefetcher_getrange_function	get_range;
+	prefetcher_reset_function		reset;
+
+} IndexPrefetchData;
+
 #endif							/* GENAM_H */

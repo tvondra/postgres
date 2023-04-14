@@ -264,6 +264,14 @@ typedef struct IndexPrefetchData
 	int			prefetchTarget;	/* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 
+	/*
+	 * a small LRU cache of recently prefetched blocks
+	 *
+	 * XXX needs to be tiny, to make the (frequent) searches very cheap
+	 */
+	BlockNumber	cacheBlocks[8];
+	int			cacheIndex;
+
 	prefetcher_getblock_function	get_block;
 	prefetcher_getrange_function	get_range;
 	prefetcher_reset_function		reset;

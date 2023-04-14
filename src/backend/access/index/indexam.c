@@ -1159,6 +1159,7 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+				pgBufferUsage.blks_prefetches++;
 		}
 
 		prefetch->prefetchIndex = endIndex;
@@ -1215,6 +1216,7 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+			pgBufferUsage.blks_prefetches++;
 		}
 
 		prefetch->prefetchIndex = startIndex;
@@ -1225,6 +1227,12 @@ void
 index_prefetch_reset(IndexScanDesc scan, ScanDirection dir, int index)
 {
 	IndexPrefetch	prefetch = scan->xs_prefetch;
+
+	if (!prefetch)
+		return;
+
+	if (index != -1)
+		pgBufferUsage.blks_prefetch_rounds++;
 
 	prefetch->prefetchIndex = index;
 	prefetch->prefetchTarget = -3;

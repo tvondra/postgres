@@ -1130,8 +1130,8 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 
 		for (int i = startIndex; i <= endIndex; i++)
 		{
+			bool		recently_prefetched = false;
 			BlockNumber	block;
-			BlockNumber	prevblock = InvalidBlockNumber;
 
 			block = prefetch->get_block(scan, dir, i);
 
@@ -1152,14 +1152,24 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			 * of last prefetched blocks - say 8 blocks or so - would work fine,
 			 * I think).
 			 */
-			if (i > 0)
-				prevblock = prefetch->get_block(scan, dir, i - 1);
+			for (int j = 0; j < 8; j++)
+			{
+				/* the cached block might be InvalidBlockNumber, but that's fine */
+				if (prefetch->cacheBlocks[j] == block)
+				{
+					recently_prefetched = true;
+					break;
+				}
+			}
 
-			if (prevblock == block)
+			if (recently_prefetched)
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-				pgBufferUsage.blks_prefetches++;
+			pgBufferUsage.blks_prefetches++;
+
+			prefetch->cacheBlocks[prefetch->cacheIndex] = block;
+			prefetch->cacheIndex = (prefetch->cacheIndex + 1) % 8;
 		}
 
 		prefetch->prefetchIndex = endIndex;
@@ -1185,8 +1195,8 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 
 		for (int i = endIndex; i >= startIndex; i--)
 		{
+			bool		recently_prefetched = false;
 			BlockNumber	block;
-			BlockNumber	prevblock = InvalidBlockNumber;
 
 			block = prefetch->get_block(scan, dir, i);
 
@@ -1207,16 +1217,24 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			 * of last prefetched blocks - say 8 blocks or so - would work fine,
 			 * I think).
 			 */
-			if (i > 0) // FIXME doesn't quite work for backwards scans, we need to check
-					   // index of last item, but we'll check this differently anyway
-					   // (small array, or something)
-				prevblock = prefetch->get_block(scan, dir, i + 1);
+			for (int j = 0; j < 8; j++)
+			{
+				/* the cached block might be InvalidBlockNumber, but that's fine */
+				if (prefetch->cacheBlocks[j] == block)
+				{
+					recently_prefetched = true;
+					break;
+				}
+			}
 
-			if (prevblock == block)
+			if (recently_prefetched)
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 			pgBufferUsage.blks_prefetches++;
+
+			prefetch->cacheBlocks[prefetch->cacheIndex] = block;
+			prefetch->cacheIndex = (prefetch->cacheIndex + 1) % 8;
 		}
 
 		prefetch->prefetchIndex = startIndex;

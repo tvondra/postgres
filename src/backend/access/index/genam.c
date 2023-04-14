@@ -126,6 +126,9 @@ RelationGetIndexScan(Relation indexRelation, int nkeys, int norderbys)
 	scan->xs_hitup = NULL;
 	scan->xs_hitupdesc = NULL;
 
+	/* set in each AM when applicable */
+	scan->xs_prefetch = NULL;
+
 	return scan;
 }
 

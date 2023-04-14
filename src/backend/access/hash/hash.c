@@ -400,6 +400,9 @@ hashbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
 		prefetcher->prefetchTarget = -3;
 		prefetcher->prefetchMaxTarget = prefetch;
 
+		prefetcher->cacheIndex = 0;
+		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
+
 		/* callbacks */
 		prefetcher->get_block = _hash_prefetch_getblock;
 		prefetcher->get_range = _hash_prefetch_getrange;

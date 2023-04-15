@@ -324,7 +324,7 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
  * holding lock on index, it's not necessary to recompute it during brinrescan.
  */
 IndexScanDesc
-brinbeginscan(Relation r, int nkeys, int norderbys, int prefetch)
+brinbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
 {
 	IndexScanDesc scan;
 	BrinOpaque *opaque;

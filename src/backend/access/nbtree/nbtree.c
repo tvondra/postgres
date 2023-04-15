@@ -344,7 +344,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
-btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
+btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
 {
 	IndexScanDesc scan;
 	BTScanOpaque so;
@@ -378,13 +378,14 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch)
 	 *
 	 * XXX Do we need to do something for so->markPos?
 	 */
-	if (prefetch > 0)
+	if (prefetch_maximum > 0)
 	{
 		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
 
 		prefetcher->prefetchIndex = -1;
 		prefetcher->prefetchTarget = -3;
-		prefetcher->prefetchMaxTarget = prefetch;
+		prefetcher->prefetchMaxTarget = prefetch_maximum;
+		prefetcher->prefetchReset = prefetch_reset;
 
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);

@@ -161,7 +161,8 @@ typedef void (*amadjustmembers_function) (Oid opfamilyoid,
 typedef IndexScanDesc (*ambeginscan_function) (Relation indexRelation,
 											   int nkeys,
 											   int norderbys,
-											   int prefetch);
+											   int prefetch_maximum,
+											   int prefetch_reset);
 
 /* (re)start index scan */
 typedef void (*amrescan_function) (IndexScanDesc scan,

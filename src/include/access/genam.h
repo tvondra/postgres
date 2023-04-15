@@ -153,7 +153,8 @@ extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Relation indexRelation,
 									 Snapshot snapshot,
 									 int nkeys, int norderbys,
-									 int prefetch_target);
+									 int prefetch_target,
+									 int prefetch_reset);
 extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											int nkeys);
@@ -171,7 +172,8 @@ extern void index_parallelrescan(IndexScanDesc scan);
 extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  Relation indexrel, int nkeys, int norderbys,
 											  ParallelIndexScanDesc pscan,
-											  int prefetch_target);
+											  int prefetch_target,
+											  int prefetch_reset);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
 struct TupleTableSlot;
@@ -263,6 +265,7 @@ typedef struct IndexPrefetchData
 	int			prefetchIndex;	/* how far we already prefetched */
 	int			prefetchTarget;	/* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
+	int			prefetchReset;	/* reset to this distance on rescan */
 
 	/*
 	 * a small LRU cache of recently prefetched blocks

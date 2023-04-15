@@ -445,7 +445,7 @@ systable_beginscan(Relation heapRelation,
 
 		/* no index prefetch for system catalogs */
 		sysscan->iscan = index_beginscan(heapRelation, irel,
-										 snapshot, nkeys, 0, 0);
+										 snapshot, nkeys, 0, 0, 0);
 		index_rescan(sysscan->iscan, key, nkeys, NULL, 0);
 		sysscan->scan = NULL;
 	}
@@ -702,7 +702,7 @@ systable_beginscan_ordered(Relation heapRelation,
 
 	/* no index prefetch for system catalogs */
 	sysscan->iscan = index_beginscan(heapRelation, indexRelation,
-									 snapshot, nkeys, 0, 0);
+									 snapshot, nkeys, 0, 0, 0);
 	index_rescan(sysscan->iscan, key, nkeys, NULL, 0);
 	sysscan->scan = NULL;
 

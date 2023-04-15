@@ -764,7 +764,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		tableScan = NULL;
 		heapScan = NULL;
 		indexScan = index_beginscan(OldHeap, OldIndex, SnapshotAny, 0, 0,
-									prefetch_target);
+									prefetch_target, prefetch_target);
 		index_rescan(indexScan, NULL, 0, NULL, 0);
 	}
 	else

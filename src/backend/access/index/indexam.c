@@ -108,7 +108,7 @@ do { \
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap,
-											  int prefetch_target);
+											  int prefetch_target, int prefetch_reset);
 
 
 /* ----------------------------------------------------------------
@@ -223,14 +223,15 @@ IndexScanDesc
 index_beginscan(Relation heapRelation,
 				Relation indexRelation,
 				Snapshot snapshot,
-				int nkeys, int norderbys, int prefetch_target)
+				int nkeys, int norderbys,
+				int prefetch_target, int prefetch_reset)
 {
 	IndexScanDesc scan;
 
 	Assert(snapshot != InvalidSnapshot);
 
 	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false,
-									prefetch_target);
+									prefetch_target, prefetch_reset);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -260,7 +261,8 @@ index_beginscan_bitmap(Relation indexRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false, 0);
+	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false,
+									0, 0); /* no prefetch */
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -278,7 +280,7 @@ static IndexScanDesc
 index_beginscan_internal(Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
 						 ParallelIndexScanDesc pscan, bool temp_snap,
-						 int prefetch_target)
+						 int prefetch_target, int prefetch_reset)
 {
 	IndexScanDesc scan;
 
@@ -296,8 +298,8 @@ index_beginscan_internal(Relation indexRelation,
 	/*
 	 * Tell the AM to open a scan.
 	 */
-	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys,
-												norderbys, prefetch_target);
+	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys, norderbys,
+												prefetch_target, prefetch_reset);
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
@@ -337,6 +339,16 @@ index_rescan(IndexScanDesc scan,
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
+
+	/* If we're prefetching for this index, maybe reset some of the state. */
+	if (scan->xs_prefetch != NULL)
+	{
+		IndexPrefetch prefetcher = scan->xs_prefetch;
+
+		prefetcher->prefetchIndex = -1;
+		prefetcher->prefetchTarget = Min(prefetcher->prefetchTarget,
+										 prefetcher->prefetchReset);
+	}
 }
 
 /* ----------------
@@ -513,7 +525,7 @@ index_parallelrescan(IndexScanDesc scan)
 IndexScanDesc
 index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 						 int norderbys, ParallelIndexScanDesc pscan,
-						 int prefetch_target)
+						 int prefetch_target, int prefetch_reset)
 {
 	Snapshot	snapshot;
 	IndexScanDesc scan;
@@ -522,7 +534,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true, prefetch_target);
+									pscan, true, prefetch_target, prefetch_reset);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set

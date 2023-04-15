@@ -44,6 +44,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/spccache.h"
 
 /*
  * When an ordering operator is used, tuples fetched from the index that
@@ -90,6 +91,7 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
+	Relation heapRel = node->ss.ss_currentRelation;
 
 	/*
 	 * extract necessary information from index scan node
@@ -108,6 +110,15 @@ IndexNext(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
+		int	prefetch_target;
+
+		/*
+		 * Determine number of heap pages to prefetch for this index. This is
+		 * essentially just effective_io_concurrency for the table (or the
+		 * tablespace it's in).
+		 */
+		prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
+
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
@@ -117,7 +128,7 @@ IndexNext(IndexScanState *node)
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys,
-								   true);
+								   prefetch_target);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -1844,6 +1855,18 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelIndexScanDesc piscan;
+	Relation	heapRel;
+	int			prefetch_target;
+
+	/*
+	 * Determine number of heap pages to prefetch for this index. This is
+	 * essentially just effective_io_concurrency for the table (or the
+	 * tablespace it's in).
+	 *
+	 * XXX Maybe reduce the value with parallel workers?
+	 */
+	heapRel = node->ss.ss_currentRelation;
+	prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
 
 	piscan = shm_toc_allocate(pcxt->toc, node->iss_PscanLen);
 	index_parallelscan_initialize(node->ss.ss_currentRelation,
@@ -1857,7 +1880,7 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan,
-								 true);
+								 prefetch_target);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
@@ -1893,6 +1916,11 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 							  ParallelWorkerContext *pwcxt)
 {
 	ParallelIndexScanDesc piscan;
+	Relation	heapRel;
+	int			prefetch_target;
+
+	heapRel = node->ss.ss_currentRelation;
+	prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
 
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->iss_ScanDesc =
@@ -1901,7 +1929,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan,
-								 true);
+								 prefetch_target);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

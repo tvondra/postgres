@@ -1143,7 +1143,7 @@ spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int 
 	{
 		/* Did we already process the item or is it invalid? */
 		*start = so->iPtr;
-		*end = so->nPtrs;
+		*end = (so->nPtrs - 1);
 	}
 	else
 	{
@@ -1158,7 +1158,7 @@ spgist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
 	SpGistScanOpaque	so = (SpGistScanOpaque) scan->opaque;
 	ItemPointer		tid;
 
-	if ((index < so->iPtr) || (index > so->nPtrs))
+	if ((index < so->iPtr) || (index >= so->nPtrs))
 		return InvalidBlockNumber;
 
 	/* get the tuple ID and extract the block number */

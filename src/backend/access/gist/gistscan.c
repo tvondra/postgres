@@ -393,7 +393,7 @@ gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *e
 	{
 		/* Did we already process the item or is it invalid? */
 		*start = so->curPageData;
-		*end = so->nPageData;
+		*end = (so->nPageData - 1);
 	}
 	else
 	{
@@ -408,7 +408,7 @@ gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
 	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
 	ItemPointer		tid;
 
-	if ((index < so->curPageData) || (index > so->nPageData))
+	if ((index < so->curPageData) || (index >= so->nPageData))
 		return InvalidBlockNumber;
 
 	/* get the tuple ID and extract the block number */

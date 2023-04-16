@@ -32,7 +32,7 @@ typedef void (*storeRes_func) (SpGistScanOpaque so, ItemPointer heapPtr,
 							   SpGistLeafTuple leafTuple, bool recheck,
 							   bool recheckDistances, double *distances);
 
-static void spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static void spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
 static BlockNumber spgist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 
@@ -195,6 +195,7 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 			pfree(so->reconTups[i]);
 	}
 	so->iPtr = so->nPtrs = 0;
+	so->didReset = true;
 }
 
 /*
@@ -390,8 +391,6 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch_maximum, int p
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
 
-		prefetcher->isValid = false;
-
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
 
@@ -451,8 +450,6 @@ spgrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	/* set up starting queue entries */
 	resetSpGistScanOpaque(so);
-
-	index_prefetch_reset(scan);
 
 	/* count an indexscan for stats */
 	pgstat_count_index_scan(scan->indexRelation);
@@ -1108,11 +1105,10 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				pfree(so->reconTups[i]);
 		}
 		so->iPtr = so->nPtrs = 0;
+		so->didReset = true;
 
 		spgWalk(scan->indexRelation, so, false, storeGettuple,
 				scan->xs_snapshot);
-
-		index_prefetch_reset(scan);
 
 		if (so->nPtrs == 0)
 			break;				/* must have completed scan */
@@ -1137,9 +1133,13 @@ spgcanreturn(Relation index, int attno)
 }
 
 static void
-spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+spgist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
 {
 	SpGistScanOpaque	so = (SpGistScanOpaque) scan->opaque;
+
+	/* did we rebuild the array of tuple pointers? */
+	*reset = so->didReset;
+	so->didReset = false;
 
 	if (ScanDirectionIsForward(dir))
 	{

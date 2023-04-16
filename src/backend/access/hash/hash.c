@@ -48,7 +48,7 @@ static void hashbuildCallback(Relation index,
 							  bool tupleIsAlive,
 							  void *state);
 
-static void _hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static void _hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
 static BlockNumber _hash_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 
@@ -400,8 +400,6 @@ hashbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int 
 		prefetcher->prefetchTarget = -3;
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
-
-		prefetcher->isValid = false;
 
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
@@ -950,9 +948,13 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 }
 
 static void
-_hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+_hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
 {
 	HashScanOpaque	so = (HashScanOpaque) scan->opaque;
+
+	/* did we rebuild the array of tuple pointers? */
+	*reset = so->currPos.didReset;
+	so->currPos.didReset = false;
 
 	if (ScanDirectionIsForward(dir))
 	{

@@ -1405,7 +1405,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 			 */
 			_bt_parallel_done(scan);
 			BTScanPosInvalidate(so->currPos);
-			index_prefetch_reset(scan, dir, -1);
+			index_prefetch_reset(scan);
 			return false;
 		}
 	}
@@ -1468,8 +1468,6 @@ readcomplete:
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
-	index_prefetch(scan, dir);
-
 	return true;
 }
 
@@ -1519,8 +1517,6 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_heaptid = currItem->heapTid;
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
-
-	index_prefetch(scan, dir);
 
 	return true;
 }
@@ -1699,8 +1695,6 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = 0;
 		so->currPos.lastItem = itemIndex - 1;
 		so->currPos.itemIndex = 0;
-
-		index_prefetch_reset(scan, dir, so->currPos.itemIndex);
 	}
 	else
 	{
@@ -1796,11 +1790,9 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		so->currPos.firstItem = itemIndex;
 		so->currPos.lastItem = MaxTIDsPerBTreePage - 1;
 		so->currPos.itemIndex = MaxTIDsPerBTreePage - 1;
-
-		index_prefetch_reset(scan, dir, so->currPos.itemIndex);
 	}
 
-	index_prefetch(scan, dir);
+	index_prefetch_reset(scan);
 
 	return (so->currPos.firstItem <= so->currPos.lastItem);
 }
@@ -1949,7 +1941,7 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 				/* release the previous buffer, if pinned */
 				BTScanPosUnpinIfPinned(so->currPos);
 				BTScanPosInvalidate(so->currPos);
-				index_prefetch_reset(scan, dir, -1);
+				index_prefetch_reset(scan);
 				return false;
 			}
 		}
@@ -1981,7 +1973,7 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 			if (!status)
 			{
 				BTScanPosInvalidate(so->currPos);
-				index_prefetch_reset(scan, dir, -1);
+				index_prefetch_reset(scan);
 				return false;
 			}
 		}
@@ -2034,7 +2026,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 			{
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
-				index_prefetch_reset(scan, dir, -1);
+				index_prefetch_reset(scan);
 				return false;
 			}
 			/* check for interrupts while we're not holding any buffer lock */
@@ -2067,7 +2059,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				if (!status)
 				{
 					BTScanPosInvalidate(so->currPos);
-					index_prefetch_reset(scan, dir, -1);
+					index_prefetch_reset(scan);
 					return false;
 				}
 			}
@@ -2125,7 +2117,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				_bt_relbuf(rel, so->currPos.buf);
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
-				index_prefetch_reset(scan, dir, -1);
+				index_prefetch_reset(scan);
 				return false;
 			}
 
@@ -2138,7 +2130,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 			{
 				_bt_parallel_done(scan);
 				BTScanPosInvalidate(so->currPos);
-				index_prefetch_reset(scan, dir, -1);
+				index_prefetch_reset(scan);
 				return false;
 			}
 
@@ -2177,7 +2169,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				if (!status)
 				{
 					BTScanPosInvalidate(so->currPos);
-					index_prefetch_reset(scan, dir, -1);
+					index_prefetch_reset(scan);
 					return false;
 				}
 				so->currPos.buf = _bt_getbuf(rel, blkno, BT_READ);
@@ -2453,7 +2445,7 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 		 */
 		PredicateLockRelation(rel, scan->xs_snapshot);
 		BTScanPosInvalidate(so->currPos);
-		index_prefetch_reset(scan, dir, -1);
+		index_prefetch_reset(scan);
 		return false;
 	}
 
@@ -2510,8 +2502,6 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_heaptid = currItem->heapTid;
 	if (scan->xs_want_itup)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
-
-	index_prefetch(scan, dir);
 
 	return true;
 }

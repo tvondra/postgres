@@ -387,13 +387,14 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int pr
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
 
+		prefetcher->isValid = false;
+
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
 
 		/* callbacks */
 		prefetcher->get_block = _bt_prefetch_getblock;
 		prefetcher->get_range = _bt_prefetch_getrange;
-		prefetcher->reset = NULL;
 
 		scan->xs_prefetch = prefetcher;
 	}

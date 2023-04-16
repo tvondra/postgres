@@ -114,7 +114,7 @@ _hash_next(IndexScanDesc scan, ScanDirection dir)
 	{
 		_hash_dropscanbuf(rel, so);
 		HashScanPosInvalidate(so->currPos);
-		index_prefetch_reset(scan, dir, -1);
+		index_prefetch_reset(scan);
 		return false;
 	}
 
@@ -531,7 +531,6 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.firstItem = 0;
 		so->currPos.lastItem = itemIndex - 1;
 		so->currPos.itemIndex = 0;
-		index_prefetch_reset(scan, dir, 0);
 	}
 	else
 	{
@@ -585,7 +584,6 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.firstItem = itemIndex;
 		so->currPos.lastItem = MaxIndexTuplesPerPage - 1;
 		so->currPos.itemIndex = MaxIndexTuplesPerPage - 1;
-		index_prefetch_reset(scan, dir, so->currPos.itemIndex);
 	}
 
 	if (so->currPos.buf == so->hashso_bucket_buf ||
@@ -603,9 +601,9 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.buf = InvalidBuffer;
 	}
 
-	Assert(so->currPos.firstItem <= so->currPos.lastItem);
+	index_prefetch_reset(scan);
 
-	index_prefetch(scan, dir);
+	Assert(so->currPos.firstItem <= so->currPos.lastItem);
 
 	return true;
 }

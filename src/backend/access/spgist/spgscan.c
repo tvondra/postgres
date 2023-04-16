@@ -390,13 +390,14 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch_maximum, int p
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
 
+		prefetcher->isValid = false;
+
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
 
 		/* callbacks */
 		prefetcher->get_block = spgist_prefetch_getblock;
 		prefetcher->get_range = spgist_prefetch_getrange;
-		prefetcher->reset = NULL;
 
 		scan->xs_prefetch = prefetcher;
 	}
@@ -451,7 +452,7 @@ spgrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	/* set up starting queue entries */
 	resetSpGistScanOpaque(so);
 
-	index_prefetch_reset(scan, ForwardScanDirection, 0);
+	index_prefetch_reset(scan);
 
 	/* count an indexscan for stats */
 	pgstat_count_index_scan(scan->indexRelation);
@@ -1108,10 +1109,10 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 		so->iPtr = so->nPtrs = 0;
 
-		index_prefetch_reset(scan, ForwardScanDirection, 0);
-
 		spgWalk(scan->indexRelation, so, false, storeGettuple,
 				scan->xs_snapshot);
+
+		index_prefetch_reset(scan);
 
 		if (so->nPtrs == 0)
 			break;				/* must have completed scan */

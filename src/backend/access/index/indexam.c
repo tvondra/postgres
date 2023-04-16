@@ -592,6 +592,9 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
+	/* do index prefetching, if needed */
+	index_prefetch(scan, direction);
+
 	/* Return the TID of the tuple we found. */
 	return &scan->xs_heaptid;
 }
@@ -1058,6 +1061,9 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * i.e. we could track how many heap tuples were needed after all, and then
  * we would consider this when deciding whether to prefetch all-visible
  * pages or not (matters only for regular index scans, not IOS).
+ *
+ * XXX Maybe we could/should also prefetch the next index block, e.g. stored
+ * in BTScanPosData.nextPage.
  */
 void
 index_prefetch(IndexScanDesc scan, ScanDirection dir)
@@ -1077,7 +1083,7 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 		return;
 
 	/* was it initialized correctly? */
-	Assert(prefetch->prefetchIndex != -1);
+	// Assert(prefetch->prefetchIndex != -1);
 
 	/*
 	 * If we got here, prefetching is enabled and it's a node that supports
@@ -1096,13 +1102,29 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 	if (prefetch->prefetchTarget <= 0)
 		return;
 
+	/*
+	 * XXX I think we don't need to worry about direction here, that's handled
+	 * by how the AMs build the curPos etc. (see nbtsearch.c)
+	 */
 	if (ScanDirectionIsForward(dir))
 	{
-		int		startIndex,
-				endIndex;
+		int			startIndex,
+					endIndex;
 
 		/* get indexes of unprocessed index entries */
 		prefetch->get_range(scan, dir, &startIndex, &endIndex);
+
+		/*
+		 * Did we switch to a different index block? if yes, reset relevant
+		 * info so that we start prefetching from scratch.
+		 */
+		if (!prefetch->isValid)
+		{
+			prefetch->isValid = true;
+			prefetch->prefetchTarget = prefetch->prefetchReset;
+			prefetch->prefetchIndex = startIndex; /* maybe -1 instead? */
+			pgBufferUsage.blks_prefetch_rounds++;
+		}
 
 		/*
 		 * Adjust the range, based on what we already prefetched, and also
@@ -1228,16 +1250,14 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 }
 
 void
-index_prefetch_reset(IndexScanDesc scan, ScanDirection dir, int index)
+index_prefetch_reset(IndexScanDesc scan)
 {
 	IndexPrefetch	prefetch = scan->xs_prefetch;
 
 	if (!prefetch)
 		return;
 
-	if (index != -1)
-		pgBufferUsage.blks_prefetch_rounds++;
-
-	prefetch->prefetchIndex = index;
+	prefetch->prefetchIndex = -1;
 	prefetch->prefetchTarget = -3;
+	prefetch->isValid = false;
 }

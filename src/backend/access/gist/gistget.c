@@ -397,7 +397,6 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	}
 
 	so->nPageData = so->curPageData = 0;
-	index_prefetch_reset(scan, ForwardScanDirection, 0);	// FIXME direction
 	scan->xs_hitup = NULL;		/* might point into pageDataCxt */
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
@@ -530,6 +529,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	}
 
 	UnlockReleaseBuffer(buffer);
+
+	index_prefetch_reset(scan);
 }
 
 /*
@@ -631,7 +632,6 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 		so->firstCall = false;
 		so->curPageData = so->nPageData = 0;
-		index_prefetch_reset(scan, ForwardScanDirection, 0); // FIXME direction
 		scan->xs_hitup = NULL;
 		if (so->pageDataCxt)
 			MemoryContextReset(so->pageDataCxt);
@@ -759,7 +759,6 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 	/* Begin the scan by processing the root page */
 	so->curPageData = so->nPageData = 0;
-	index_prefetch_reset(scan, ForwardScanDirection, 0);
 	scan->xs_hitup = NULL;
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);

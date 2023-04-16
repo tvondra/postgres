@@ -231,6 +231,7 @@ typedef struct SpGistScanOpaqueData
 	bool		recheckDistances[MaxIndexTuplesPerPage];	/* distance recheck
 															 * flags */
 	HeapTuple	reconTups[MaxIndexTuplesPerPage];	/* reconstructed tuples */
+	bool		didReset;		/* */
 
 	/* distances (for recheck) */
 	IndexOrderByDistance *distances[MaxIndexTuplesPerPage];

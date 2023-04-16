@@ -88,7 +88,7 @@ static BTVacuumPosting btreevacuumposting(BTVacState *vstate,
 										  OffsetNumber updatedoffset,
 										  int *nremaining);
 
-static void _bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static void _bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
 static BlockNumber _bt_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 /*
@@ -386,8 +386,6 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int pr
 		prefetcher->prefetchTarget = -3;
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
-
-		prefetcher->isValid = false;
 
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
@@ -1455,9 +1453,13 @@ btcanreturn(Relation index, int attno)
 }
 
 static void
-_bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+_bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
 {
 	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
+
+	/* did we rebuild the array of tuple pointers? */
+	*reset = so->currPos.didReset;
+	so->currPos.didReset = false;
 
 	if (ScanDirectionIsForward(dir))
 	{

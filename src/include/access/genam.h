@@ -236,16 +236,15 @@ extern void systable_endscan_ordered(SysScanDesc sysscan);
 
 
 
-
 void index_prefetch(IndexScanDesc scandesc, ScanDirection direction);
-void index_prefetch_reset(IndexScanDesc scandesc);
 
 /*
  * XXX not sure it's the right place to define these callbacks etc.
  */
 typedef void (*prefetcher_getrange_function) (IndexScanDesc scandesc,
-													 ScanDirection direction,
-													 int *start, int *end);
+											  ScanDirection direction,
+											  int *start, int *end,
+											  bool *reset);
 
 typedef BlockNumber (*prefetcher_getblock_function) (IndexScanDesc scandesc,
 													 ScanDirection direction,
@@ -262,8 +261,6 @@ typedef struct IndexPrefetchData
 	int			prefetchTarget;	/* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 	int			prefetchReset;	/* reset to this distance on rescan */
-
-	bool		isValid;
 
 	/*
 	 * a small LRU cache of recently prefetched blocks

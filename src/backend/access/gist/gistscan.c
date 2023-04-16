@@ -22,7 +22,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-static void gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end);
+static void gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
 static BlockNumber gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
 
 /*
@@ -127,8 +127,6 @@ gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int pr
 		prefetcher->prefetchTarget = -3;
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
-
-		prefetcher->isValid = false;
 
 		prefetcher->cacheIndex = 0;
 		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
@@ -387,9 +385,13 @@ gistendscan(IndexScanDesc scan)
 }
 
 static void
-gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end)
+gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
 {
 	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
+
+	/* did we rebuild the array of tuple pointers? */
+	*reset = so->didReset;
+	so->didReset = false;
 
 	if (ScanDirectionIsForward(dir))
 	{

@@ -1108,19 +1108,19 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (ScanDirectionIsForward(dir))
 	{
+		bool		reset;
 		int			startIndex,
 					endIndex;
 
 		/* get indexes of unprocessed index entries */
-		prefetch->get_range(scan, dir, &startIndex, &endIndex);
+		prefetch->get_range(scan, dir, &startIndex, &endIndex, &reset);
 
 		/*
 		 * Did we switch to a different index block? if yes, reset relevant
 		 * info so that we start prefetching from scratch.
 		 */
-		if (!prefetch->isValid)
+		if (reset)
 		{
-			prefetch->isValid = true;
 			prefetch->prefetchTarget = prefetch->prefetchReset;
 			prefetch->prefetchIndex = startIndex; /* maybe -1 instead? */
 			pgBufferUsage.blks_prefetch_rounds++;
@@ -1184,11 +1184,14 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 	}
 	else
 	{
+		bool	reset;
 		int		startIndex,
 				endIndex;
 
 		/* get indexes of unprocessed index entries */
-		prefetch->get_range(scan, dir, &startIndex, &endIndex);
+		prefetch->get_range(scan, dir, &startIndex, &endIndex, &reset);
+
+		/* FIXME handle the reset flag */
 
 		/*
 		 * Adjust the range, based on what we already prefetched, and also
@@ -1247,17 +1250,4 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 
 		prefetch->prefetchIndex = startIndex;
 	}
-}
-
-void
-index_prefetch_reset(IndexScanDesc scan)
-{
-	IndexPrefetch	prefetch = scan->xs_prefetch;
-
-	if (!prefetch)
-		return;
-
-	prefetch->prefetchIndex = -1;
-	prefetch->prefetchTarget = -3;
-	prefetch->isValid = false;
 }

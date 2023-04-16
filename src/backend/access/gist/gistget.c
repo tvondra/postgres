@@ -530,7 +530,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 	UnlockReleaseBuffer(buffer);
 
-	index_prefetch_reset(scan);
+	so->didReset = true;
 }
 
 /*

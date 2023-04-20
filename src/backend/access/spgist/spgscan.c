@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "access/relscan.h"
 #include "access/spgist_private.h"
 #include "miscadmin.h"
@@ -483,6 +484,8 @@ spgendscan(IndexScanDesc scan)
 		pfree(scan->xs_orderbynulls);
 	}
 
+	relation_close(so->state.heap, NoLock);
+
 	pfree(so);
 }
 
@@ -613,6 +616,13 @@ spgLeafTest(SpGistScanOpaque so, SpGistSearchItem *item,
 														recheckDistances,
 														isnull,
 														distances);
+
+			// FIXME prefetch here? or in storeGettuple?
+			{
+				BlockNumber block = ItemPointerGetBlockNumber(&leafTuple->heapPtr);
+
+				PrefetchBuffer(so->state.heap, MAIN_FORKNUM, block);
+			}
 
 			spgAddSearchItemToQueue(so, heapItem);
 

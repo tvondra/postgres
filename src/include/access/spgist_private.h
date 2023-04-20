@@ -144,7 +144,7 @@ typedef struct SpGistTypeDesc
 typedef struct SpGistState
 {
 	Relation	index;			/* index we're working with */
-
+	Relation	heap;			/* heap the index is defined on */
 	spgConfigOut config;		/* filled in by opclass config method */
 
 	SpGistTypeDesc attType;		/* type of values to be indexed/restored */

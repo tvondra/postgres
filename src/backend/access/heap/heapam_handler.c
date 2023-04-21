@@ -3305,7 +3305,7 @@ _cluster_parallel_scan_and_sort(ClusterState *state, ClusterShared *clustershare
 		TuplesortInstrumentation stats;
 		memset(&stats, 0, sizeof(TuplesortInstrumentation));
 		tuplesort_get_stats(tuplesort, &stats);
-		elog(DEBUG1, "scans %d  tuples %d  space used %ld", nscans, ntuples, stats.spaceUsed);
+		elog(DEBUG1, "scans %d  tuples %d  space used " INT64_FORMAT, nscans, ntuples, stats.spaceUsed);
 	}
 
 	tuplesort_end(tuplesort);

@@ -126,10 +126,10 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 	List	   *rtcs;
 
 	int		numSortKeys = 0;
-	AttrNumber *sortKeys;
-	Oid	   *sortOperators;
-	Oid	   *sortCollations;
-	bool   *nullsFirstFlags;
+	AttrNumber *sortKeys = NULL;
+	Oid	   *sortOperators = NULL;
+	Oid	   *sortCollations = NULL;
+	bool   *nullsFirstFlags = NULL;
 
 	/* Parse option list */
 	foreach(lc, stmt->params)
@@ -176,7 +176,6 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 
 		if (stmt->columns != NIL)
 		{
-			ListCell   *lc;
 			int			idx;
 
 			numSortKeys = list_length(stmt->columns);

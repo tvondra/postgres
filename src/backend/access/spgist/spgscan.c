@@ -322,6 +322,8 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch_maximum, int p
 		so->keyData = NULL;
 	initSpGistState(&so->state, scan->indexRelation);
 
+	so->state.heap = relation_open(scan->indexRelation->rd_index->indrelid, NoLock);
+
 	so->tempCxt = AllocSetContextCreate(CurrentMemoryContext,
 										"SP-GiST search temporary context",
 										ALLOCSET_DEFAULT_SIZES);

@@ -335,7 +335,8 @@ initSpGistState(SpGistState *state, Relation index)
 
 	state->index = index;
 
-	state->heap = relation_open(index->rd_index->indrelid, NoLock);
+	/* we'll initialize the reference in spgbeginscan */
+	state->heap = NULL;
 
 	/* Get cached static information about index */
 	cache = spgGetCache(index);

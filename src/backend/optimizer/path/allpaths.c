@@ -1404,6 +1404,7 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 
 	float4			frac_min = 0.0;
 	float4			frac_max = 1.0;
+	bool			found_range_map = false;
 
 	*minval = 0;
 	*maxval = 0;
@@ -1556,10 +1557,15 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 
 			frac_min = Max(frac_min, column_minfrac);
 			frac_max = Min(frac_max, column_maxfrac);
+
+			found_range_map = true;
 		}
 
 		ReleaseSysCache(statsTuple);
 	}
+
+	if (!found_range_map)
+		return false;
 
 	pkatts = get_primary_key_attnos(rte->relid, true, &pkoid);
 
@@ -1715,7 +1721,9 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					if (!rel2)
 						continue;
 
-					Assert(rel2->reloptkind == RELOPT_BASEREL);
+					/* XXX maybe we could allow filters on other types of rels? */
+					if (rel2->reloptkind != RELOPT_BASEREL)
+						continue;
 
 					if (!rel2->baserestrictinfo)
 						continue;

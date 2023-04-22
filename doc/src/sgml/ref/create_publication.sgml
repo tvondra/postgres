@@ -124,7 +124,7 @@ CREATE PUBLICATION <replaceable class="parameter">name</replaceable>
     </listitem>
    </varlistentry>
 
-   <varlistentry>
+   <varlistentry id="sql-createpublication-for-sequence">
     <term><literal>FOR SEQUENCE</literal></term>
     <listitem>
      <para>

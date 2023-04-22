@@ -1778,6 +1778,10 @@ filter_derive_minmax_range(FilterState *filter, Datum *minval, Datum *maxval)
 int
 ExecFiltersCountScanKeys(FilterState *filter)
 {
+	/* empty filter -> no scan keys */
+	if (filter->nvalues == 0)
+		return 0;
+
 	/* column IN (...) */
 	if (filter->filter_type == FilterTypeExact)
 		return (filter->filter->searcharray) ? 1 : 2;
@@ -1836,11 +1840,25 @@ ExecFiltersAddScanKeys(FilterState *filter, ScanKeyData *keys)
 									 typentry->btree_opintype,
 									 BTEqualStrategyNumber);
 
+		/*
+		 * If the filter is empty (i.e. when the function returns false), the
+		 * filter is empty / has no data - that means nothing can match. We
+		 * should add some "false" scan key, or even better just terminate the
+		 * scan entirely. In any case, we should not be adding any scan keys.
+		 *
+		 * XXX Make sure to handle empry filter correctly and terminate scan.
+		 */
+		if (filter->nvalues == 0)
+			return;
+
 		get_typlenbyvalalign(filter->types[0], &typlen, &typbyval, &typalign);
 
-
+		// FIXME if the filter is empty, we need to add a single "false"
+		// scan key, or something like that
 		ret = construct_array((Datum *) filter->data, filter->nvalues, filter->types[0],
 							  typlen, typbyval, typalign);
+
+		Assert(ExecFiltersCountScanKeys(filter) == 1);
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   SK_SEARCHARRAY,	// flags
@@ -1870,8 +1888,18 @@ ExecFiltersAddScanKeys(FilterState *filter, ScanKeyData *keys)
 		 * FIXME If index supports SK_SEARCHARRAY, build a single scankey
 		 * with the exact values as an array.
 		 */
+		Assert(ExecFiltersCountScanKeys(filter) == 2);
 
-		filter_derive_minmax_range(filter, &minval, &maxval);
+		/*
+		 * If the filter is empty (i.e. when the function returns false), the
+		 * filter is empty / has no data - that means nothing can match. We
+		 * should add some "false" scan key, or even better just terminate the
+		 * scan entirely. In any case, we should not be adding any scan keys.
+		 *
+		 * XXX Make sure to handle empry filter correctly and terminate scan.
+		 */
+		if (!filter_derive_minmax_range(filter, &minval, &maxval))
+			return;
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags
@@ -1906,7 +1934,18 @@ ExecFiltersAddScanKeys(FilterState *filter, ScanKeyData *keys)
 									 typentry->btree_opintype,
 									 BTLessEqualStrategyNumber);
 
-		filter_derive_minmax_range(filter, &minval, &maxval);
+		/*
+		 * If the filter is empty (i.e. when the function returns false), the
+		 * filter is empty / has no data - that means nothing can match. We
+		 * should add some "false" scan key, or even better just terminate the
+		 * scan entirely. In any case, we should not be adding any scan keys.
+		 *
+		 * XXX Make sure to handle empry filter correctly and terminate scan.
+		 */
+		if (!filter_derive_minmax_range(filter, &minval, &maxval))
+			return;
+
+		Assert(ExecFiltersCountScanKeys(filter) == 2);
 
 		ScanKeyEntryInitialize(&keys[idx++],
 							   0,	// flags

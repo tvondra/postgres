@@ -1427,8 +1427,8 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 		HeapTuple		statsTuple;
 		AttStatsSlot	sslot;
 
-		bool			varonleft;
-		bool			isgt;
+		// bool			varonleft;
+		// bool			isgt;
 
 		if (!is_opclause(clause))
 			continue;
@@ -1461,7 +1461,7 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 		constval = cst->constvalue;
 
 		/* XXX relax this assumption */
-		varonleft = true;
+		// varonleft = true;
 
 		/*
 		 * Determine the selectivity estimator (implies how we should walk
@@ -1471,12 +1471,12 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 		{
 			case F_SCALARLTSEL:
 			case F_SCALARLESEL:
-				isgt = false;
+				// isgt = false;
 				break;
 
 			case F_SCALARGTSEL:
 			case F_SCALARGESEL:
-				isgt = true;
+				// isgt = true;
 				break;
 
 			default:

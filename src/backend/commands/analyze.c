@@ -2917,7 +2917,6 @@ compute_scalar_stats(VacAttrStatsP stats,
 			int			nrows = 0;
 			Datum	   *values = palloc(sizeof(Datum) * samplerows * 2);
 			SortSupportData	ssup[2];
-			StdAnalyzeData *mystats;
 
 			int			nranges;
 			double		rows_per_range;
@@ -2947,7 +2946,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 #define VALUE_Y(values, idx)		(values)[2 * (idx) + 1]
 
 			nrows = 0;
-			for (int i = 0; i < samplerows; i++)
+			for (i = 0; i < samplerows; i++)
 			{
 				bool	isnull;
 				values[2*nrows] = fetchfunc(stats, i, &isnull);
@@ -2971,7 +2970,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 			 * mapping it back to column values (or approximating it) should be
 			 * quite possible.
 			 */
-			for (int i = 0; i < nrows; i++)
+			for (i = 0; i < nrows; i++)
 				values[2*i + 1] = Float4GetDatum((float4) (i + 1.0) / nrows);
 
 			/* now sort it by the analyzed column */
@@ -2990,7 +2989,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 
 			values_x[0] = VALUE_X(values, 0);
 
-			for (int i = 0; i < nranges; i++)
+			for (i = 0; i < nranges; i++)
 			{
 				int		first_row = (int) ceil(i * rows_per_range);
 				int		last_row = (int) ceil((i + 1) * rows_per_range);

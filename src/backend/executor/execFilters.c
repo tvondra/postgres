@@ -49,87 +49,6 @@
  * match).
  */
 static bool
-ExecFilterGetHashValue(FilterState *filter,
-					 ExprContext *econtext,
-					 bool keep_nulls,
-					 uint32 *hashvalue)
-{
-	uint32		hashkey = 0;
-	FmgrInfo   *hashfunctions;
-	ListCell   *hk;
-	int			i = 0;
-	MemoryContext oldContext;
-
-	/*
-	 * We reset the eval context each time to reclaim any memory leaked in the
-	 * hashkey expressions.
-	 */
-	ResetExprContext(econtext);
-
-	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
-
-	hashfunctions = filter->hashfunctions;
-
-	foreach(hk, filter->hashclauses)
-	{
-		ExprState  *keyexpr = (ExprState *) lfirst(hk);
-		Datum		keyval;
-		bool		isNull;
-
-		/* combine successive hashkeys by rotating */
-		hashkey = pg_rotate_left32(hashkey, 1);
-
-		/*
-		 * Get the join attribute value of the tuple
-		 */
-		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-
-		/*
-		 * If the attribute is NULL, and the join operator is strict, then
-		 * this tuple cannot pass the join qual so we can reject it
-		 * immediately (unless we're scanning the outside of an outer join, in
-		 * which case we must not reject it).  Otherwise we act like the
-		 * hashcode of NULL is zero (this will support operators that act like
-		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
-		 * the hash support function as strict even if the operator is not.
-		 *
-		 * Note: currently, all hashjoinable operators must be strict since
-		 * the hash index AM assumes that.  However, it takes so little extra
-		 * code here to allow non-strict that we may as well do it.
-		 */
-		if (isNull)
-		{
-			if (filter->hashStrict[i] && !keep_nulls)
-			{
-				MemoryContextSwitchTo(oldContext);
-				return false;	/* cannot match */
-			}
-			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
-
-			/*
-			 * XXX Ignore if any of the values is NULL. At the moment we only
-			 * have a single-key filters, but this should apply even to multiple
-			 * keys I think.
-			 */
-			MemoryContextSwitchTo(oldContext);
-			return false;	/* cannot match */
-		}
-		else
-		{
-			/* Compute the hash function */
-			hashkey ^= DatumGetUInt32(FunctionCall1Coll(&hashfunctions[i], filter->collations[i], keyval));
-		}
-
-		i++;
-	}
-
-	MemoryContextSwitchTo(oldContext);
-
-	*hashvalue = hashkey;
-	return true;
-}
-
-static bool
 ExecFilterGetHashValueX(FilterState *filter,
 						ExprContext *econtext,
 						Datum *values,
@@ -207,89 +126,6 @@ ExecFilterGetHashValueX(FilterState *filter,
 	*hashvalue = hashkey;
 	return true;
 }
-
-/*
- * ExecFilterGetValues
- *		Extract values from the tuple.
- *
- * Pretty much exactly the same as ExecFilterGetHashValue, but it returns
- * the values instead of hashing them.
- */
-static bool
-ExecFilterGetValues(FilterState *filter,
-						   ExprContext *econtext,
-						   bool keep_nulls,
-						   Datum *values)
-{
-	ListCell   *hk;
-	int			i = 0;
-	MemoryContext oldContext;
-
-	/*
-	 * We reset the eval context each time to reclaim any memory leaked in the
-	 * hashkey expressions.
-	 */
-	ResetExprContext(econtext);
-
-	oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
-
-	foreach(hk, filter->hashclauses)
-	{
-		ExprState  *keyexpr = (ExprState *) lfirst(hk);
-		Datum		keyval;
-		bool		isNull;
-
-		/*
-		 * Get the join attribute value of the tuple
-		 */
-		keyval = ExecEvalExpr(keyexpr, econtext, &isNull);
-
-		/*
-		 * If the attribute is NULL, and the join operator is strict, then
-		 * this tuple cannot pass the join qual so we can reject it
-		 * immediately (unless we're scanning the outside of an outer join, in
-		 * which case we must not reject it).  Otherwise we act like the
-		 * hashcode of NULL is zero (this will support operators that act like
-		 * IS NOT DISTINCT, though not any more-random behavior).  We treat
-		 * the hash support function as strict even if the operator is not.
-		 *
-		 * Note: currently, all hashjoinable operators must be strict since
-		 * the hash index AM assumes that.  However, it takes so little extra
-		 * code here to allow non-strict that we may as well do it.
-		 */
-		if (isNull)
-		{
-			if (filter->hashStrict[i] && !keep_nulls)
-			{
-				MemoryContextSwitchTo(oldContext);
-				return false;
-			}
-
-			/* FIXME handle NULLs correctly, instead of just ignoring them */
-			MemoryContextSwitchTo(oldContext);
-			return false;
-
-			/* else, leave hashkey unmodified, equivalent to hashcode 0 */
-		}
-		else
-		{
-			int16	typlen;
-			bool	typbyval;
-			char	typalign;
-			get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
-
-			values[i] = datumCopy(keyval, typbyval, typlen);
-		}
-
-		i++;
-	}
-
-	MemoryContextSwitchTo(oldContext);
-
-	return true;
-}
-
-
 
 /*
  * ExecFilterGetValues
@@ -439,25 +275,7 @@ filter_value_comparator(const void *a, const void *b, void *c)
 
 /*
  * FilterRange comparator. It compares by start, then by end.
- *
- * FIXME This needs to use a comparator for the particular data type, instead of
- * just comparing the Datum values.
  */
-static int
-filter_range_cmp(const void *a, const void *b, qsort_cxt *cxt)
-{
-	int				r;
-	FilterRange	   *ra = (FilterRange *) a;
-	FilterRange	   *rb = (FilterRange *) b;
-
-	r = filter_value_comparator(&ra->start, &rb->start, cxt);
-	if (r != 0)
-		return r;
-
-	return filter_value_comparator(&ra->end, &rb->end, cxt);
-}
-
-/* FIXME Isn't this really just what filter_range_cmp already does? */
 static int
 filter_range_comparator(const void *a, const void *b, void *c)
 {
@@ -557,6 +375,7 @@ ranges_contiguous(FilterState *filter, FilterRange *ra, FilterRange *rb)
 	return false;
 }
 
+#ifdef NOT_USED
 static void
 dump_filter(FilterState *filter)
 {
@@ -607,6 +426,7 @@ dump_ranges(FilterState *filter, FilterRange *ranges, int nranges)
 		elog(WARNING, "range %d => %s %s", i, DatumGetPointer(start), DatumGetPointer(end));
 	}
 }
+#endif
 
 /*
  * ExecFilterCompactRange
@@ -905,65 +725,6 @@ ExecFilterCompactRange(FilterState *filter, bool reduce)
  * we combine closest ranges.
  */
 static bool
-ExecFilterAddRange(FilterState *filter, bool keep_nulls, ExprContext *econtext)
-{
-	int		entrylen = list_length(filter->hashclauses);
-	Datum  *entry;
-	Datum  *values;
-
-	Assert(filter->filter_type == FilterTypeRange);
-
-	entry = palloc(sizeof(Datum) * entrylen);
-
-	/* consider enlarging the filter as long as needed */
-	while (filter->nallocated - filter->nvalues < entrylen)
-	{
-		/* FIXME handle nicely */
-		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
-		{
-			ExecFilterCompactRange(filter, true);
-			continue;
-		}
-
-		filter->nallocated *= 2;
-		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
-	}
-
-	if (!ExecFilterGetValues(filter, econtext, keep_nulls, entry))
-	{
-		pfree(entry);
-		return false;
-	}
-
-	values = (Datum *) filter->data;
-
-	for (int i = 0; i < entrylen; i++)
-	{
-		int16	typlen;
-		bool	typbyval;
-		char	typalign;
-
-		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
-
-		Assert(filter->nvalues < filter->nallocated);
-
-		values[filter->nvalues++] = datumCopy(entry[i], typbyval, typlen);
-	}
-
-	pfree(entry);
-
-	return true;
-}
-
-/*
- * ExecFilterAddRange
- *		Add values to a range filter.
- *
- * If there's not enough space for the new value, combine the values into
- * fewer ranges. We combine ranges that overlap or are contiguous, and then
- * we combine closest ranges.
- */
-static bool
 ExecFilterAddRangeX(FilterState *filter, ExprContext *econtext, bool keep_nulls, Datum *values, bool *isnull)
 {
 	int		entrylen = list_length(filter->hashclauses);
@@ -1053,42 +814,6 @@ ExecFilterFinalizeExact(FilterState *filter)
 	qsort_arg(values, filter->nvalues, entrylen, filter_value_comparator, cxt);
 
 	/* FIXME deduplicate values */
-}
-
-/* FIXME deduplicate the values first */
-static bool
-ExecFilterAddExact(FilterState *filter, bool keep_nulls, ExprContext *econtext)
-{
-	int		entrylen = list_length(filter->hashclauses);
-	Datum  *entry;
-	Datum  *values;
-
-	Assert(filter->filter_type == FilterTypeExact);
-
-	entry = palloc(sizeof(Datum) * entrylen);
-
-	/* consider enlarging the filter as long as needed */
-	while (filter->nallocated - filter->nvalues < entrylen)
-	{
-		/* FIXME handle nicely */
-		if (filter->nallocated * sizeof(Datum) * 2 > work_mem * 1024L)
-			elog(ERROR, "filter exceeds work_mem");
-
-		filter->nallocated *= 2;
-		filter->data = repalloc(filter->data, filter->nallocated * sizeof(Datum));
-	}
-
-	/* now we know there's enough space, so add the entry */
-	ExecFilterGetValues(filter, econtext, keep_nulls, entry);
-
-	values = (Datum *) filter->data;
-	memcpy(&values[filter->nvalues], entry, entrylen * sizeof(Datum));
-
-	pfree(entry);
-
-	filter->nvalues++;
-
-	return true;
 }
 
 /* FIXME deduplicate the values first */
@@ -1252,73 +977,6 @@ ExecFilterGetHashValue2(FilterState *filter,
 
 	*hashvalue = hashkey;
 	return true;
-}
-
-/*
- * ExecFilterAddValue
- *		Add a value to a filter (of any type).
- */
-static void
-ExecFilterAddValue(FilterState *filter, ExprContext *econtext)
-{
-	/* second pass through the node init */
-	if (filter->built)
-		return;
-
-	if (filter->filter_type == FilterTypeRange)
-	{
-		ExecFilterAddRange(filter, filter->keepNulls, econtext);
-		return;
-	}
-
-	/* filter tracking exact values */
-	if (filter->filter_type == FilterTypeExact)
-	{
-		int		i,
-				nvalues;
-		char   *data;
-		MemoryContext oldcxt;
-
-		Size	entrylen = sizeof(Datum) * list_length(filter->hashclauses);
-
-		/* if adding value worker, we're done */
-		if (ExecFilterAddExact(filter, filter->keepNulls, econtext))
-			return;
-
-		nvalues = filter->nvalues;
-		data = filter->data;
-
-		oldcxt = MemoryContextSwitchTo(filter->filterCxt);
-
-		filter->data = palloc0(filter->nbits/8 + 10);
-		filter->filter_type = FilterTypeBloom;
-		filter->nvalues = 0;
-
-		MemoryContextSwitchTo(oldcxt);
-
-		for (i = 0; i < nvalues; i++)
-		{
-			uint32	hashvalue = 0;
-			Datum  *values = (Datum *) (data + i * entrylen);
-
-			/*
-			 * XXX We ignore nulls when adding data to the filter, so we
-			 * don't need to worry about them here either.
-			 */
-			ExecFilterGetHashValue2(filter, econtext, values, false, &hashvalue);
-			ExecFilterAddHash(filter, false, econtext, hashvalue);
-		}
-	}
-
-	Assert(filter->filter_type != FilterTypeExact);
-
-	if (filter->filter_type == FilterTypeBloom)
-	{
-		uint32	hash = 0;
-		ExecFilterGetHashValue(filter, econtext, filter->keepNulls, &hash);
-		ExecFilterAddHash(filter, filter->keepNulls, econtext, hash);
-		filter->nvalues++;
-	}
 }
 
 /*

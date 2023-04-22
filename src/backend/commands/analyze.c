@@ -2379,29 +2379,36 @@ compute_distinct_stats(VacAttrStatsP stats,
 	/* We don't need to bother cleaning up any of our temporary palloc's */
 }
 
+typedef struct RangeMapEntry
+{
+	Datum	value;
+	Datum	pkvalue;
+	float4	pkindex;
+} RangeMapEntry;
 
 
 static int
-compare_ranges_1(const void *a, const void *b, void *arg)
+compare_entries_by_value(const void *a, const void *b, void *arg)
 {
-	Datum  *da = (Datum *) a;
-	Datum  *db = (Datum *) b;
+	RangeMapEntry  *ra = (RangeMapEntry  *) a;
+	RangeMapEntry  *rb = (RangeMapEntry  *) b;
 
 	SortSupport	ssup = (SortSupport) arg;
 
-	return ApplySortComparator(da[0], false, db[0], false, ssup);
+	return ApplySortComparator(ra->value, false, rb->value, false, ssup);
 }
 
 static int
-compare_ranges_2(const void *a, const void *b, void *arg)
+compare_entries_by_pkvalue(const void *a, const void *b, void *arg)
 {
-	Datum  *da = (Datum *) a;
-	Datum  *db = (Datum *) b;
+	RangeMapEntry  *ra = (RangeMapEntry  *) a;
+	RangeMapEntry  *rb = (RangeMapEntry  *) b;
 
 	SortSupport	ssup = (SortSupport) arg;
 
-	return ApplySortComparator(da[1], false, db[1], false, ssup);
+	return ApplySortComparator(ra->pkvalue, false, rb->pkvalue, false, ssup);
 }
+
 
 /*
  *	compute_scalar_stats() -- compute column statistics
@@ -2914,15 +2921,10 @@ compute_scalar_stats(VacAttrStatsP stats,
 		 */
 		if (pkstats && (pkstats != stats))
 		{
-			int			nrows = 0;
-			Datum	   *values = palloc(sizeof(Datum) * samplerows * 2);
-			SortSupportData	ssup[2];
+			int				nentries = 0;
+			RangeMapEntry  *entries = palloc(sizeof(RangeMapEntry) * samplerows);
 
-			int			nranges;
-			double		rows_per_range;
-			Datum	   *values_x;
-			float4	   *values_y;
-			MemoryContext	old_context;
+			SortSupportData	ssup[2];
 
 			memset(&ssup, 0, sizeof(ssup));
 
@@ -2942,87 +2944,109 @@ compute_scalar_stats(VacAttrStatsP stats,
 			mystats = (StdAnalyzeData *) pkstats->extra_data;
 			PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup[1]);
 
-#define VALUE_X(values, idx)		(values)[2 * (idx)]
-#define VALUE_Y(values, idx)		(values)[2 * (idx) + 1]
-
-			nrows = 0;
+			nentries = 0;
 			for (i = 0; i < samplerows; i++)
 			{
 				bool	isnull;
-				values[2*nrows] = fetchfunc(stats, i, &isnull);
+				entries[nentries].value = fetchfunc(stats, i, &isnull);
 
 				/* FIXME do something about NULL values (ignore for now) */
 				if (isnull)
 					continue;
 
-				values[2*nrows + 1] = fetchfunc(pkstats, i, &isnull);
-				nrows++;
+				entries[nentries].pkvalue = fetchfunc(pkstats, i, &isnull);
+				nentries++;
 			}
 
-			/* Sort the collected values by the PK value */
-			qsort_interruptible(values, nrows, (2 * sizeof(Datum)),
-								compare_ranges_2, &ssup[1]);
-
-			/*
-			 * replace the PK value by the index (when sorted by PK)
-			 *
-			 * XXX This is fine, because for PK we'll only have a histogram, so
-			 * mapping it back to column values (or approximating it) should be
-			 * quite possible.
-			 */
-			for (i = 0; i < nrows; i++)
-				values[2*i + 1] = Float4GetDatum((float4) (i + 1.0) / nrows);
-
-			/* now sort it by the analyzed column */
-			qsort_interruptible(values, nrows, (2 * sizeof(Datum)),
-								compare_ranges_1, &ssup[0]);
-
-			nranges = default_statistics_target;
-			rows_per_range = (double) nrows / nranges;
-
-			old_context = MemoryContextSwitchTo(stats->anl_context);
-
-			values_x = (Datum *) palloc(sizeof(Datum) * (nranges + 1));
-			values_y = (float4 *) palloc(sizeof(float4) * nranges * 2);
-
-			MemoryContextSwitchTo(old_context);
-
-			values_x[0] = VALUE_X(values, 0);
-
-			for (i = 0; i < nranges; i++)
+			if (nentries > 0)
 			{
-				int		first_row = (int) ceil(i * rows_per_range);
-				int		last_row = (int) ceil((i + 1) * rows_per_range);
+				int			nranges;
+				int			rows_per_range;
+				Datum	   *values_x;
+				float4	   *values_y;
+				MemoryContext	old_context;
+				int			next;
 
-				/* don't overflow */
-				last_row = Min((nrows - 1), last_row);
+				/* Sort the collected values by the PK value */
+				qsort_interruptible(entries, nentries, sizeof(RangeMapEntry),
+									compare_entries_by_pkvalue, &ssup[1]);
 
-				values_x[i+1] = values[2*last_row];
+				/*
+				 * calculate the PK index as fraction (when sorted by PK)
+				 *
+				 * XXX This is fine, because for PK we'll only have a histogram, so
+				 * mapping it back to column values (or approximating it) should be
+				 * quite possible.
+				 */
+				for (i = 0; i < nentries; i++)
+					entries[i].pkindex = (float4) i / nentries;
 
-				values_y[2*i] = DatumGetFloat4(VALUE_Y(values, first_row));
-				values_y[2*i+1] = values_y[2*i];
+				/* now sort it by the analyzed column */
+				qsort_interruptible(entries, nentries, sizeof(RangeMapEntry),
+									compare_entries_by_value, &ssup[0]);
 
-				for (int j = first_row; j <= last_row; j++)
+				nranges = default_statistics_target;
+				rows_per_range = (int) ceil((double) nentries / nranges);
+
+				Assert(nranges * rows_per_range >= nentries);
+				Assert(nranges > 0);
+
+				old_context = MemoryContextSwitchTo(stats->anl_context);
+
+				values_x = (Datum *) palloc(sizeof(Datum) * (nranges + 1));
+				values_y = (float4 *) palloc(sizeof(float4) * nranges * 2);
+
+				MemoryContextSwitchTo(old_context);
+
+				next = 0;
+				nranges = 0;
+
+				while (true)
 				{
-					float4	y;
+					int		first = next;
 
-					y = DatumGetFloat4(VALUE_Y(values, j));
+					/* make sure not to overflow the entries */
+					int		last = Min(first + rows_per_range, nentries - 1);
 
-					values_y[2*i] = Min(values_y[2*i], y);
+					/* did we cover all the rows? */
+					if (first > nentries - 1)
+						break;
 
-					values_y[2*i+1] = Max(values_y[2*i+1], y);
+					Assert(first < nentries);
+					Assert(first <= last);
+
+					next = first + rows_per_range;
+
+					/* set the X range */
+					values_x[nranges] = entries[first].value;
+					values_x[nranges + 1] = entries[last].value;
+
+					values_y[2 * nranges] = entries[first].pkindex;
+					values_y[2 * nranges + 1] = entries[first].pkindex;
+
+					for (int j = first; j <= last; j++)
+					{
+						Assert((j >= 0) && (j < nentries));
+
+						values_y[2 * nranges] = Min(values_y[2 * nranges],
+													entries[j].pkindex);
+
+						values_y[2 * nranges + 1] = Max(values_y[2 * nranges + 1],
+														entries[j].pkindex);
+					}
+
+					nranges++;
 				}
+
+				stats->stakind[slot_idx] = STATISTIC_KIND_RANGE_MAP;
+				stats->staop[slot_idx] = mystats->eqopr;
+				stats->stacoll[slot_idx] = stats->attrcollid;
+				stats->stanumbers[slot_idx] = values_y;
+				stats->numnumbers[slot_idx] = (nranges * 2);
+				stats->stavalues[slot_idx] = values_x;
+				stats->numvalues[slot_idx] = (nranges + 1);
+				slot_idx++;
 			}
-
-			stats->stakind[slot_idx] = STATISTIC_KIND_RANGE_MAP;
-			stats->staop[slot_idx] = mystats->eqopr;
-			stats->stacoll[slot_idx] = stats->attrcollid;
-			stats->stanumbers[slot_idx] = values_y;
-			stats->numnumbers[slot_idx] = (nranges * 2);
-			stats->stavalues[slot_idx] = values_x;
-			stats->numvalues[slot_idx] = (nranges + 1);
-			slot_idx++;
-
 		}
 	}
 	else if (nonnull_cnt > 0)

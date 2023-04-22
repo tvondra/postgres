@@ -178,7 +178,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	data->include_xids = true;
 	data->include_timestamp = false;
 	data->skip_empty_xacts = false;
-	data->include_sequences = true;
+	data->include_sequences = false;
 	data->only_local = false;
 
 	ctx->output_plugin_private = data;
@@ -275,7 +275,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		{
 
 			if (elem->arg == NULL)
-				data->include_sequences = false;
+				continue;
 			else if (!parse_bool(strVal(elem->arg), &data->include_sequences))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -291,6 +291,9 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 							elem->arg ? strVal(elem->arg) : "(null)")));
 		}
 	}
+
+	if (data->include_sequences)
+		ctx->sequences_opt_given = true;
 
 	ctx->streaming &= enable_streaming;
 }

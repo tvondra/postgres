@@ -1985,7 +1985,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						Selectivity s
 							= estimate_range_selectivity(root, local_var, minval, maxval);
 
-						elog(WARNING, "range selectivity (from BRIN) %ld %ld => %f",
+						elog(DEBUG1, "range selectivity (from BRIN) %ld %ld => %f",
 							 minval, maxval, s);
 					}
 
@@ -1998,7 +1998,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 						Selectivity s
 							= estimate_range_selectivity(root, local_var, minval, maxval);
 
-						elog(WARNING, "range selectivity (from stats) %ld %ld => %f",
+						elog(DEBUG1, "range selectivity (from stats) %ld %ld => %f",
 							 minval, maxval, s);
 					}
 				}
@@ -2025,7 +2025,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 				clause->selectivity = (rel2->rows / rel2->tuples);
 
-				elog(WARNING, "filter %p => %f",
+				elog(DEBUG1, "filter %p => %f",
 					 filter, (rel2->rows / rel2->tuples));
 			}
 

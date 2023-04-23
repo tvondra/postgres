@@ -730,6 +730,7 @@ ExecFilterAddRangeX(FilterState *filter, ExprContext *econtext, bool keep_nulls,
 	int		entrylen = list_length(filter->hashclauses);
 	Datum  *entry;
 	Datum  *tmp;
+	MemoryContext	oldctx;
 
 	Assert(filter->filter_type == FilterTypeRange);
 
@@ -757,6 +758,9 @@ ExecFilterAddRangeX(FilterState *filter, ExprContext *econtext, bool keep_nulls,
 
 	tmp = (Datum *) filter->data;
 
+	/* make sure the data is copied into the right context */
+	oldctx = MemoryContextSwitchTo(filter->filterCxt);
+
 	for (int i = 0; i < entrylen; i++)
 	{
 		int16	typlen;
@@ -769,6 +773,8 @@ ExecFilterAddRangeX(FilterState *filter, ExprContext *econtext, bool keep_nulls,
 
 		tmp[filter->nvalues++] = datumCopy(entry[i], typbyval, typlen);
 	}
+
+	MemoryContextSwitchTo(oldctx);
 
 	pfree(entry);
 
@@ -824,6 +830,8 @@ ExecFilterAddExactX(FilterState *filter, bool keep_nulls, ExprContext *econtext,
 	Datum  *entry;
 	Datum  *tmp;
 
+	MemoryContext	oldcxt;
+
 	Assert(filter->filter_type == FilterTypeExact);
 
 	entry = palloc(sizeof(Datum) * entrylen);
@@ -842,6 +850,24 @@ ExecFilterAddExactX(FilterState *filter, bool keep_nulls, ExprContext *econtext,
 	/* now we know there's enough space, so add the entry */
 	ExecFilterGetValuesX(filter, econtext, values, isnull, keep_nulls, entry);
 
+	/* make sure the data is copied into the right context */
+	oldcxt = MemoryContextSwitchTo(filter->filterCxt);
+
+	/* copy the values into the right context */
+	for (int i = 0; i < entrylen; i++)
+	{
+		int16	typlen;
+		bool	typbyval;
+		char	typalign;
+
+		get_typlenbyvalalign(filter->types[i], &typlen, &typbyval, &typalign);
+
+		entry[i] = datumCopy(entry[i], typbyval, typlen);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+
+	/*  */
 	tmp = (Datum *) filter->data;
 	memcpy(&tmp[filter->nvalues], entry, entrylen * sizeof(Datum));
 

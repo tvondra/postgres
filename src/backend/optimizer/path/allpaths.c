@@ -1650,6 +1650,38 @@ estimate_variable_range_from_stats(PlannerInfo *root, RelOptInfo *rel, Var *var,
 // }
 
 /*
+ */
+static bool
+contains_params(List *clauses)
+{
+	ListCell *lc;
+
+	foreach (lc, clauses)
+	{
+		RestrictInfo  *rinfo = (RestrictInfo *) lfirst(lc);
+		if (pull_paramids(rinfo->clause) != NULL)
+			return true;
+	}
+
+	return false;
+}
+
+static bool
+is_leakproof(List *clauses)
+{
+	ListCell *lc;
+
+	foreach (lc, clauses)
+	{
+		RestrictInfo  *rinfo = (RestrictInfo *) lfirst(lc);
+		if (!rinfo->leakproof)
+			return false;
+	}
+
+	return true;
+}
+
+/*
  * set_plain_rel_pathlist_filters
  *	  Build access paths for a plain relation (no subquery, no inheritance)
  *
@@ -1736,6 +1768,36 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					/* ignore functions etc. */
 					rte = root->simple_rte_array[rel2->relid];
 					if (rte->rtekind != RTE_RELATION)
+						continue;
+
+					/*
+					 * ignore restrictions that reference parameters
+					 *
+					 * XXX This just disables the whole filter, but maybe we should
+					 * just skip the parameterized restrictions?
+					 */
+					if (contains_params(rel2->baserestrictinfo))
+						continue;
+
+					/*
+					 * ignore non-leakproof restrictions
+					 *
+					 * XXX I'm not sure this is actually necessary - in principle
+					 * we should still evaluate this correctly, even when executed
+					 * for the filter.
+					 *
+					 * XXX Disabled primarily to reduce the number of failures in
+					 * regression tests.
+					 */
+					if (!is_leakproof(rel->baserestrictinfo))
+						continue;
+
+					/*
+					 * skip volatile clauses too - we may end up with different
+					 * results when executed for the filter and then for the
+					 * actual node
+					 */
+					if (contain_volatile_functions(rel->baserestrictinfo))
 						continue;
 
 					remote_vars = lappend(remote_vars, var);

@@ -1717,6 +1717,7 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 				else
 				{
 					RelOptInfo *rel2 = root->simple_rel_array[var->varno];
+					RangeTblEntry *rte;
 
 					if (!rel2)
 						continue;
@@ -1730,6 +1731,11 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 
 					/* has parameters / lateral references? */
 					if (rel2->lateral_relids != NULL || rel2->ppilist != NIL)
+						continue;
+
+					/* ignore functions etc. */
+					rte = root->simple_rte_array[rel2->relid];
+					if (rte->rtekind != RTE_RELATION)
 						continue;
 
 					remote_vars = lappend(remote_vars, var);

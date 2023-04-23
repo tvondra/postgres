@@ -1728,6 +1728,10 @@ set_plain_rel_pathlist_filters(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry
 					if (!rel2->baserestrictinfo)
 						continue;
 
+					/* has parameters / lateral references? */
+					if (rel2->lateral_relids != NULL || rel2->ppilist != NIL)
+						continue;
+
 					remote_vars = lappend(remote_vars, var);
 				}
 			}

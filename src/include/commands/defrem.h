@@ -81,7 +81,9 @@ extern void RemoveOperatorById(Oid operOid);
 extern ObjectAddress AlterOperator(AlterOperatorStmt *stmt);
 
 /* commands/statscmds.c */
-extern ObjectAddress CreateStatistics(CreateStatsStmt *stmt);
+extern ObjectAddress CreateStatistics(CreateStatsStmt *stmt,
+									  const char *queryString,
+									  int stmt_location, int stmt_len);
 extern ObjectAddress AlterStatistics(AlterStatsStmt *stmt);
 extern void RemoveStatisticsById(Oid statsOid);
 extern void RemoveStatisticsDataById(Oid statsOid, bool inh);

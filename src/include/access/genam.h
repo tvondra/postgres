@@ -250,6 +250,32 @@ typedef BlockNumber (*prefetcher_getblock_function) (IndexScanDesc scandesc,
 													 ScanDirection direction,
 													 int index);
 
+/*
+ * Cache of recently prefetched blocks, organized as a hash table of
+ * small LRU caches. Doesn't need to be perfectly accurate, but we
+ * aim to make false positives/negatives reasonably low.
+ */
+typedef struct PrefetchCacheEntry {
+	BlockNumber		block;
+	uint64			request;
+} PrefetchCacheEntry;
+
+/*
+ * Size of the cache of recently prefetched blocks - shouldn't be too
+ * small or too large. 1024 seems about right, it covers ~8MB of data.
+ * It's somewhat arbitrary, there's no particular formula saying it
+ * should not be higher/lower.
+ *
+ * The cache is structured as an array of small LRU caches, so the total
+ * size needs to be a multiple of LRU size. The LRU should be tiny to
+ * keep linear search cheap enough.
+ *
+ * XXX Maybe we could consider effective_cache_size or something?
+ */
+#define		PREFETCH_LRU_SIZE		8
+#define		PREFETCH_LRU_COUNT		128
+#define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
+
 typedef struct IndexPrefetchData
 {
 	/*
@@ -262,16 +288,15 @@ typedef struct IndexPrefetchData
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 	int			prefetchReset;	/* reset to this distance on rescan */
 
-	/*
-	 * a small LRU cache of recently prefetched blocks
-	 *
-	 * XXX needs to be tiny, to make the (frequent) searches very cheap
-	 */
-	BlockNumber	cacheBlocks[8];
-	int			cacheIndex;
-
 	prefetcher_getblock_function	get_block;
 	prefetcher_getrange_function	get_range;
+
+	/*
+	 * Cache of recently prefetched blocks, organized as a hash table of
+	 * small LRU caches.
+	 */
+	uint64				prefetchReqNumber;
+	PrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
 
 } IndexPrefetchData;
 

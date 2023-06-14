@@ -128,9 +128,6 @@ gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int pr
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
 
-		prefetcher->cacheIndex = 0;
-		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
-
 		/* callbacks */
 		prefetcher->get_block = gist_prefetch_getblock;
 		prefetcher->get_range = gist_prefetch_getrange;

@@ -394,9 +394,6 @@ spgbeginscan(Relation rel, int keysz, int orderbysz, int prefetch_maximum, int p
 		prefetcher->prefetchMaxTarget = prefetch_maximum;
 		prefetcher->prefetchReset = prefetch_reset;
 
-		prefetcher->cacheIndex = 0;
-		memset(prefetcher->cacheBlocks, 0, sizeof(BlockNumber) * 8);
-
 		/* callbacks */
 		prefetcher->get_block = spgist_prefetch_getblock;
 		prefetcher->get_range = spgist_prefetch_getrange;

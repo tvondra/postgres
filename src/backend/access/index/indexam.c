@@ -54,6 +54,7 @@
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
+#include "common/hashfn.h"
 #include "nodes/makefuncs.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
@@ -1027,7 +1028,110 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 	return build_local_reloptions(&relopts, attoptions, validate);
 }
 
+/*
+ * index_prefetch_add_cache
+ *		Add a block to the cache, return true if it was recently prefetched.
+ *
+ * When checking a block, we need to check if it was recently prefetched,
+ * where recently means within PREFETCH_CACHE_SIZE requests. This check
+ * needs to be very cheap, even with fairly large caches (hundreds of
+ * entries). The cache does not need to be perfect, we can accept false
+ * positives/negatives, as long as the rate is reasonably low. We also
+ * need to expire entries, so that only "recent" requests are remembered.
+ *
+ * A queue would allow expiring the requests, but checking if a block was
+ * prefetched would be expensive (linear search for longer queues). Another
+ * option would be a hash table, but that has issues with expiring entries
+ * cheaply (which usually degrades the hash table).
+ *
+ * So we use a cache that is organized as multiple small LRU caches. Each
+ * block is mapped to a particular LRU by hashing (so it's a bit like a
+ * hash table), and each LRU is tiny (e.g. 8 entries). The LRU only keeps
+ * the most recent requests (for that particular LRU).
+ *
+ * This allows quick searches and expiration, with false negatives (when
+ * a particular LRU has too many collisions).
+ *
+ * For example, imagine 128 LRU caches, each with 8 entries - that's 1024
+ * prefetch request in total.
+ *
+ * The recency is determined using a prefetch counter, incremented every
+ * time we end up prefetching a block. The counter is uint64, so it should
+ * not wrap (125 zebibytes, would take ~4 million years at 1GB/s).
+ *
+ * To check if a block was prefetched recently, we calculate hash(block),
+ * and then linearly search if the tiny LRU has entry for the same block
+ * and request less than PREFETCH_CACHE_SIZE ago.
+ *
+ * At the same time, we either update the entry (for the same block) if
+ * found, or replace the oldest/empty entry.
+ *
+ * If the block was not recently prefetched (i.e. we want to prefetch it),
+ * we increment the counter.
+ */
+static bool
+index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
+{
+	PrefetchCacheEntry *entry;
 
+	/* calculate which LRU to use */
+	int			lru = hash_uint32(block) % PREFETCH_LRU_COUNT;
+
+	/* entry to (maybe) use for this block request */
+	uint64		oldestRequest = PG_UINT64_MAX;
+	int			oldestIndex = -1;
+
+	/* see if we already have prefetched this block (linear search of LRU) */
+	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
+	{
+		entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + i];
+
+		/* Is this the oldest prefetch request in this LRU? */
+		if (entry->request < oldestRequest)
+		{
+			oldestRequest = entry->request;
+			oldestIndex = i;
+		}
+
+		/* Request numbers are positive, so 0 means "unused". */
+		if (entry->request == 0)
+			continue;
+
+		/* Is this entry for the same block as the current request? */
+		if (entry->block == block)
+		{
+			bool	prefetched;
+
+			/*
+			 * Is the old request sufficiently recent? If yes, we treat the
+			 * block as already prefetched.
+			 *
+			 * XXX We do add the cache size to the request in order not to
+			 * have issues with uint64 underflows.
+			 */
+			prefetched = (entry->request + PREFETCH_CACHE_SIZE >= prefetch->prefetchReqNumber);
+
+			/* Update the request number. */
+			entry->request = ++prefetch->prefetchReqNumber;
+
+			return prefetched;
+		}
+	}
+
+	/*
+	 * We didn't find the block in the LRU, so store it either in an empty
+	 * entry, or in the "oldest" prefetch request in this LRU.
+	 */
+	Assert((oldestIndex >= 0) && (oldestIndex < PREFETCH_LRU_SIZE));
+
+	entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + oldestIndex];
+
+	entry->block = block;
+	entry->request = ++prefetch->prefetchReqNumber;
+
+	/* not in the prefetch cache */
+	return false;
+}
 
 /*
  * Do prefetching, and gradually increase the prefetch distance.
@@ -1138,7 +1242,6 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 
 		for (int i = startIndex; i <= endIndex; i++)
 		{
-			bool		recently_prefetched = false;
 			BlockNumber	block;
 
 			block = prefetch->get_block(scan, dir, i);
@@ -1149,35 +1252,12 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			 * This happens e.g. for clustered or naturally correlated indexes
 			 * (fkey to a sequence ID). It's not expensive (the block is in page
 			 * cache already, so no I/O), but it's not free either.
-			 *
-			 * XXX We can't just check blocks between startIndex and endIndex,
-			 * because at some point (after the pefetch target gets ramped up)
-			 * it's going to be just a single block.
-			 *
-			 * XXX The solution here is pretty trivial - we just check the
-			 * immediately preceding block. We could check a longer history, or
-			 * maybe maintain some "already prefetched" struct (small LRU array
-			 * of last prefetched blocks - say 8 blocks or so - would work fine,
-			 * I think).
 			 */
-			for (int j = 0; j < 8; j++)
-			{
-				/* the cached block might be InvalidBlockNumber, but that's fine */
-				if (prefetch->cacheBlocks[j] == block)
-				{
-					recently_prefetched = true;
-					break;
-				}
-			}
-
-			if (recently_prefetched)
+			if (index_prefetch_add_cache(prefetch, block))
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 			pgBufferUsage.blks_prefetches++;
-
-			prefetch->cacheBlocks[prefetch->cacheIndex] = block;
-			prefetch->cacheIndex = (prefetch->cacheIndex + 1) % 8;
 		}
 
 		prefetch->prefetchIndex = endIndex;
@@ -1206,7 +1286,6 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 
 		for (int i = endIndex; i >= startIndex; i--)
 		{
-			bool		recently_prefetched = false;
 			BlockNumber	block;
 
 			block = prefetch->get_block(scan, dir, i);
@@ -1217,35 +1296,12 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			 * This happens e.g. for clustered or naturally correlated indexes
 			 * (fkey to a sequence ID). It's not expensive (the block is in page
 			 * cache already, so no I/O), but it's not free either.
-			 *
-			 * XXX We can't just check blocks between startIndex and endIndex,
-			 * because at some point (after the pefetch target gets ramped up)
-			 * it's going to be just a single block.
-			 *
-			 * XXX The solution here is pretty trivial - we just check the
-			 * immediately preceding block. We could check a longer history, or
-			 * maybe maintain some "already prefetched" struct (small LRU array
-			 * of last prefetched blocks - say 8 blocks or so - would work fine,
-			 * I think).
 			 */
-			for (int j = 0; j < 8; j++)
-			{
-				/* the cached block might be InvalidBlockNumber, but that's fine */
-				if (prefetch->cacheBlocks[j] == block)
-				{
-					recently_prefetched = true;
-					break;
-				}
-			}
-
-			if (recently_prefetched)
+			if (index_prefetch_add_cache(prefetch, block))
 				continue;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 			pgBufferUsage.blks_prefetches++;
-
-			prefetch->cacheBlocks[prefetch->cacheIndex] = block;
-			prefetch->cacheIndex = (prefetch->cacheIndex + 1) % 8;
 		}
 
 		prefetch->prefetchIndex = startIndex;

@@ -276,6 +276,12 @@ typedef struct PrefetchCacheEntry {
 #define		PREFETCH_LRU_COUNT		128
 #define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
 
+/*
+ * Used to detect sequential patterns (and disable prefetching).
+ */
+#define		PREFETCH_QUEUE_SIZE				8
+#define		PREFETCH_SEQ_PATTERN_BLOCKS		4
+
 typedef struct IndexPrefetchData
 {
 	/*
@@ -290,6 +296,16 @@ typedef struct IndexPrefetchData
 
 	prefetcher_getblock_function	get_block;
 	prefetcher_getrange_function	get_range;
+
+	uint64		prefetchAll;
+	uint64		prefetchCount;
+
+	/*
+	 * Tiny queue of most recently prefetched blocks, used first for cheap
+	 * checks and also to identify (and ignore) sequential prefetches.
+	 */
+	uint64		queueIndex;
+	BlockNumber	queueItems[PREFETCH_QUEUE_SIZE];
 
 	/*
 	 * Cache of recently prefetched blocks, organized as a hash table of

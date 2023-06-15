@@ -378,6 +378,16 @@ index_endscan(IndexScanDesc scan)
 	if (scan->xs_temp_snap)
 		UnregisterSnapshot(scan->xs_snapshot);
 
+	/* If prefetching enabled, log prefetch stats. */
+	if (scan->xs_prefetch)
+	{
+		IndexPrefetch prefetch = scan->xs_prefetch;
+
+		elog(LOG, "index prefetch stats: requests %lu prefetches %lu (%f)",
+			 prefetch->prefetchAll, prefetch->prefetchCount,
+			 prefetch->prefetchCount * 100.0 / prefetch->prefetchAll);
+	}
+
 	/* Release the scan data structure itself */
 	IndexScanEnd(scan);
 }
@@ -1029,6 +1039,57 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 }
 
 /*
+ * Add the block to the tiny top-level queue (LRU), and check if the block
+ * is in a sequential pattern.
+ */
+static bool
+index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
+{
+	bool	is_sequential = true;
+	int		idx;
+
+	/* no requests */
+	if (prefetch->queueIndex == 0)
+	{
+		idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
+		prefetch->queueItems[idx] = block;
+		return false;
+	}
+
+	/* same as immediately preceding block? */
+	idx = (prefetch->queueIndex - 1) % PREFETCH_QUEUE_SIZE;
+	if (prefetch->queueItems[idx] == block)
+		return true;
+
+	idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
+	prefetch->queueItems[idx] = block;
+
+	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
+	{
+		/* not enough requests */
+		if (prefetch->queueIndex < i)
+		{
+			is_sequential = false;
+			break;
+		}
+
+		/*
+		 * -1, because we've already advanced the index, so it points to
+		 * the next slot at this point
+		 */
+		idx = (prefetch->queueIndex - i - 1) % PREFETCH_QUEUE_SIZE;
+
+		if ((block - i) != prefetch->queueItems[idx])
+		{
+			is_sequential = false;
+			break;
+		}
+	}
+
+	return is_sequential;
+}
+
+/*
  * index_prefetch_add_cache
  *		Add a block to the cache, return true if it was recently prefetched.
  *
@@ -1080,6 +1141,19 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
 	/* entry to (maybe) use for this block request */
 	uint64		oldestRequest = PG_UINT64_MAX;
 	int			oldestIndex = -1;
+
+	/*
+	 * First add the block to the (tiny) top-level LRU cache and see if it's
+	 * part of a sequential pattern. In this case we just ignore the block
+	 * and don't prefetch it - we expect read-ahead to do a better job.
+	 *
+	 * XXX Maybe we should still add the block to the later cache, in case
+	 * we happen to access it later? That might help if we first scan a lot
+	 * of the table sequentially, and then randomly. Not sure that's very
+	 * likely with index access, though.
+	 */
+	if (index_prefetch_is_sequential(prefetch, block))
+		return true;
 
 	/* see if we already have prefetched this block (linear search of LRU) */
 	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
@@ -1206,6 +1280,8 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 	if (prefetch->prefetchTarget <= 0)
 		return;
 
+	prefetch->prefetchAll++;
+
 	/*
 	 * XXX I think we don't need to worry about direction here, that's handled
 	 * by how the AMs build the curPos etc. (see nbtsearch.c)
@@ -1256,6 +1332,8 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			if (index_prefetch_add_cache(prefetch, block))
 				continue;
 
+			prefetch->prefetchCount++;
+
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 			pgBufferUsage.blks_prefetches++;
 		}
@@ -1299,6 +1377,8 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 			 */
 			if (index_prefetch_add_cache(prefetch, block))
 				continue;
+
+			prefetch->prefetchCount++;
 
 			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 			pgBufferUsage.blks_prefetches++;

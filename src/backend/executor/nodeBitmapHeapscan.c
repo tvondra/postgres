@@ -41,6 +41,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
+#include "common/hashfn.h"
 #include "executor/execdebug.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "miscadmin.h"
@@ -61,6 +62,8 @@ static inline void BitmapPrefetch(BitmapHeapScanState *node,
 								  TableScanDesc scan);
 static bool BitmapShouldInitializeSharedState(ParallelBitmapHeapState *pstate);
 
+static bool
+index_prefetch_add_cache(BitmapPrefetchCache *prefetch, BlockNumber block);
 
 /* ----------------------------------------------------------------
  *		BitmapHeapNext
@@ -125,6 +128,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 				node->prefetch_iterator = tbm_begin_iterate(tbm);
 				node->prefetch_pages = 0;
 				node->prefetch_target = -1;
+				node->prefetch_cache = palloc0(sizeof(BitmapPrefetchCache));
 			}
 #endif							/* USE_PREFETCH */
 		}
@@ -469,6 +473,7 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 	if (pstate == NULL)
 	{
 		TBMIterator *prefetch_iterator = node->prefetch_iterator;
+		BitmapPrefetchCache *prefetch_cache = node->prefetch_cache;
 
 		if (prefetch_iterator)
 		{
@@ -504,7 +509,19 @@ BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 											 &node->pvmbuffer));
 
 				if (!skip_fetch)
+				{
+					skip_fetch = index_prefetch_add_cache(prefetch_cache,
+														  tbmpre->blockno);
+
+					if (skip_fetch)
+						elog(LOG, "SKIP %u already prefetched", tbmpre->blockno);
+				}
+
+				if (!skip_fetch)
+				{
 					PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, tbmpre->blockno);
+					elog(LOG, "PREFETCH %u", tbmpre->blockno);
+				}
 			}
 		}
 
@@ -951,4 +968,139 @@ ExecBitmapHeapInitializeWorker(BitmapHeapScanState *node,
 
 	snapshot = RestoreSnapshot(pstate->phs_snapshot_data);
 	table_scan_update_snapshot(node->ss.ss_currentScanDesc, snapshot);
+}
+
+
+
+
+/*
+ * Add the block to the tiny top-level queue (LRU), and check if the block
+ * is in a sequential pattern.
+ */
+static bool
+index_prefetch_is_sequential(BitmapPrefetchCache *prefetch, BlockNumber block)
+{
+	bool	is_sequential = true;
+	int		idx;
+
+	/* no requests */
+	if (prefetch->queueIndex == 0)
+	{
+		idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
+		prefetch->queueItems[idx] = block;
+		return false;
+	}
+
+	/* same as immediately preceding block? */
+	idx = (prefetch->queueIndex - 1) % PREFETCH_QUEUE_SIZE;
+	if (prefetch->queueItems[idx] == block)
+		return true;
+
+	idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
+	prefetch->queueItems[idx] = block;
+
+	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
+	{
+		/* not enough requests */
+		if (prefetch->queueIndex < i)
+		{
+			is_sequential = false;
+			break;
+		}
+
+		/*
+		 * -1, because we've already advanced the index, so it points to
+		 * the next slot at this point
+		 */
+		idx = (prefetch->queueIndex - i - 1) % PREFETCH_QUEUE_SIZE;
+
+		if ((block - i) != prefetch->queueItems[idx])
+		{
+			is_sequential = false;
+			break;
+		}
+	}
+
+	return is_sequential;
+}
+
+
+static bool
+index_prefetch_add_cache(BitmapPrefetchCache *prefetch, BlockNumber block)
+{
+	BitmapPrefetchCacheEntry *entry;
+
+	/* calculate which LRU to use */
+	int			lru = hash_uint32(block) % PREFETCH_LRU_COUNT;
+
+	/* entry to (maybe) use for this block request */
+	uint64		oldestRequest = PG_UINT64_MAX;
+	int			oldestIndex = -1;
+
+	/*
+	 * First add the block to the (tiny) top-level LRU cache and see if it's
+	 * part of a sequential pattern. In this case we just ignore the block
+	 * and don't prefetch it - we expect read-ahead to do a better job.
+	 *
+	 * XXX Maybe we should still add the block to the later cache, in case
+	 * we happen to access it later? That might help if we first scan a lot
+	 * of the table sequentially, and then randomly. Not sure that's very
+	 * likely with index access, though.
+	 */
+	if (index_prefetch_is_sequential(prefetch, block))
+	{
+		elog(LOG, "%u skip sequential", block);
+		return true;
+	}
+
+	/* see if we already have prefetched this block (linear search of LRU) */
+	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
+	{
+		entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + i];
+
+		/* Is this the oldest prefetch request in this LRU? */
+		if (entry->request < oldestRequest)
+		{
+			oldestRequest = entry->request;
+			oldestIndex = i;
+		}
+
+		/* Request numbers are positive, so 0 means "unused". */
+		if (entry->request == 0)
+			continue;
+
+		/* Is this entry for the same block as the current request? */
+		if (entry->block == block)
+		{
+			bool	prefetched;
+
+			/*
+			 * Is the old request sufficiently recent? If yes, we treat the
+			 * block as already prefetched.
+			 *
+			 * XXX We do add the cache size to the request in order not to
+			 * have issues with uint64 underflows.
+			 */
+			prefetched = (entry->request + PREFETCH_CACHE_SIZE >= prefetch->prefetchReqNumber);
+
+			/* Update the request number. */
+			entry->request = ++prefetch->prefetchReqNumber;
+
+			return prefetched;
+		}
+	}
+
+	/*
+	 * We didn't find the block in the LRU, so store it either in an empty
+	 * entry, or in the "oldest" prefetch request in this LRU.
+	 */
+	Assert((oldestIndex >= 0) && (oldestIndex < PREFETCH_LRU_SIZE));
+
+	entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + oldestIndex];
+
+	entry->block = block;
+	entry->request = ++prefetch->prefetchReqNumber;
+
+	/* not in the prefetch cache */
+	return false;
 }

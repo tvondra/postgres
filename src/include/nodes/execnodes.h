@@ -1698,6 +1698,26 @@ typedef struct ParallelBitmapHeapState
 	char		phs_snapshot_data[FLEXIBLE_ARRAY_MEMBER];
 } ParallelBitmapHeapState;
 
+#define		PREFETCH_LRU_SIZE		8
+#define		PREFETCH_LRU_COUNT		128
+#define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
+#define		PREFETCH_QUEUE_SIZE				8
+#define		PREFETCH_SEQ_PATTERN_BLOCKS		4
+
+typedef struct BitmapPrefetchCacheEntry {
+	BlockNumber		block;
+	uint64			request;
+} BitmapPrefetchCacheEntry;
+
+typedef struct BitmapPrefetchCache
+{
+	uint64				queueIndex;
+	BlockNumber			queueItems[PREFETCH_QUEUE_SIZE];
+
+	uint64				prefetchReqNumber;
+	BitmapPrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
+} BitmapPrefetchCache;
+
 /* ----------------
  *	 BitmapHeapScanState information
  *
@@ -1739,6 +1759,7 @@ typedef struct BitmapHeapScanState
 	int			prefetch_pages;
 	int			prefetch_target;
 	int			prefetch_maximum;
+	BitmapPrefetchCache	  *prefetch_cache;
 	Size		pscan_len;
 	bool		initialized;
 	TBMSharedIterator *shared_tbmiterator;

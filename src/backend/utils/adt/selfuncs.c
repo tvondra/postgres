@@ -147,13 +147,15 @@ get_relation_stats_hook_type get_relation_stats_hook = NULL;
 get_index_stats_hook_type get_index_stats_hook = NULL;
 
 static double eqsel_internal(PG_FUNCTION_ARGS, bool negate);
-static double eqjoinsel_inner(Oid opfuncoid, Oid collation,
+static double eqjoinsel_inner(Oid opfuncoid, Oid opfuncoid2, Oid collation,
 							  VariableStatData *vardata1, VariableStatData *vardata2,
 							  double nd1, double nd2,
 							  bool isdefault1, bool isdefault2,
 							  AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+							  AttStatsSlot *sslot3, AttStatsSlot *sslot4,
 							  Form_pg_statistic stats1, Form_pg_statistic stats2,
-							  bool have_mcvs1, bool have_mcvs2);
+							  bool have_mcvs1, bool have_mcvs2,
+							  bool have_hist1, bool have_hist2);
 static double eqjoinsel_semi(Oid opfuncoid, Oid collation,
 							 VariableStatData *vardata1, VariableStatData *vardata2,
 							 double nd1, double nd2,
@@ -2256,13 +2258,18 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	bool		isdefault1;
 	bool		isdefault2;
 	Oid			opfuncoid;
+	Oid			opfuncoid2;
 	AttStatsSlot sslot1;
 	AttStatsSlot sslot2;
+	AttStatsSlot sslot3;
+	AttStatsSlot sslot4;
 	Form_pg_statistic stats1 = NULL;
 	Form_pg_statistic stats2 = NULL;
 	bool		have_mcvs1 = false;
 	bool		have_mcvs2 = false;
-	bool		get_mcv_stats;
+	bool		have_hist1 = false;
+	bool		have_hist2 = false;
+	bool		get_stats;
 	bool		join_is_reversed;
 	RelOptInfo *inner_rel;
 
@@ -2274,52 +2281,125 @@ eqjoinsel(PG_FUNCTION_ARGS)
 
 	opfuncoid = get_opcode(operator);
 
+	/*
+	 * We need inequality to compare the histograms.
+	 *
+	 * XXX Not sure how to get from the equality operator to the correct
+	 * inequality for the relevant data types. Maybe there's a better way
+	 * than get_op_btree_interpretation()?
+	 *
+	 * XXX Assumes we're in a btree opclass, and that the operator comparing
+	 * the types exists. Not sure we can rely on that?
+	 */
+	{
+		Oid		operator2;
+		Oid		opfamily = InvalidOid;
+		Oid		lefttype,
+				righttype;
+		List   *list;
+		ListCell *lc;
+
+		op_input_types(operator, &lefttype, &righttype);
+
+		list = get_op_btree_interpretation(operator);
+
+		/*
+		 * XXX What if the operator is in multiple opfamilies? In principle
+		 * it's probably OK to get an operator from any of them (they need
+		 * to be compatible), but maybe the inequality is only in one of the
+		 * opfamilies - this just grabs the first with the right types, but
+		 * perhaps it's in some later one?
+		 *
+		 * XXX Maybe this should not be restricted to btree opfamilies?
+		 */
+		foreach (lc, list)
+		{
+			OpBtreeInterpretation *tmp = (OpBtreeInterpretation *) lfirst(lc);
+
+			/*
+			 * Break if we find an entry with the right types.
+			 *
+			 * XXX Maybe check that the opfamily has operator for the right
+			 * strategy (instead of doing that later). There may be multiple
+			 * families, operator may be in a later one (probably?).
+			 */
+			if ((tmp->oplefttype == lefttype) && (tmp->oprighttype == righttype))
+			{
+				opfamily = tmp->opfamily_id;
+				break;
+			}
+		}
+
+		if (!OidIsValid(opfamily))
+			elog(ERROR, "invalid opfamily");
+
+		operator2 = get_opfamily_member(opfamily, lefttype, righttype,
+										BTLessStrategyNumber);
+
+		if (!OidIsValid(operator2))
+			elog(ERROR, "invalid operator2");
+
+		opfuncoid2 = get_opcode(operator2);
+	}
+
 	memset(&sslot1, 0, sizeof(sslot1));
 	memset(&sslot2, 0, sizeof(sslot2));
 
 	/*
 	 * There is no use in fetching one side's MCVs if we lack MCVs for the
 	 * other side, so do a quick check to verify that both stats exist.
+	 *
+	 * XXX It makes sense to get the MCVs even for just one side, as we
+	 * then can compare it to histogram on the other side to find entries
+	 * that can't possibly match.
 	 */
-	get_mcv_stats = (HeapTupleIsValid(vardata1.statsTuple) &&
-					 HeapTupleIsValid(vardata2.statsTuple) &&
-					 get_attstatsslot(&sslot1, vardata1.statsTuple,
-									  STATISTIC_KIND_MCV, InvalidOid,
-									  0) &&
-					 get_attstatsslot(&sslot2, vardata2.statsTuple,
-									  STATISTIC_KIND_MCV, InvalidOid,
-									  0));
+	get_stats = (HeapTupleIsValid(vardata1.statsTuple) &&
+				 HeapTupleIsValid(vardata2.statsTuple));
 
 	if (HeapTupleIsValid(vardata1.statsTuple))
 	{
 		/* note we allow use of nullfrac regardless of security check */
 		stats1 = (Form_pg_statistic) GETSTRUCT(vardata1.statsTuple);
-		if (get_mcv_stats &&
+		if (get_stats &&
 			statistic_proc_security_check(&vardata1, opfuncoid))
+		{
 			have_mcvs1 = get_attstatsslot(&sslot1, vardata1.statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+
+			have_hist1 = get_attstatsslot(&sslot3, vardata1.statsTuple,
+										  STATISTIC_KIND_HISTOGRAM, InvalidOid,
+										  ATTSTATSSLOT_VALUES);
+		}
 	}
 
 	if (HeapTupleIsValid(vardata2.statsTuple))
 	{
 		/* note we allow use of nullfrac regardless of security check */
 		stats2 = (Form_pg_statistic) GETSTRUCT(vardata2.statsTuple);
-		if (get_mcv_stats &&
+		if (get_stats &&
 			statistic_proc_security_check(&vardata2, opfuncoid))
+		{
 			have_mcvs2 = get_attstatsslot(&sslot2, vardata2.statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
+
+			have_hist2 = get_attstatsslot(&sslot4, vardata2.statsTuple,
+										  STATISTIC_KIND_HISTOGRAM, InvalidOid,
+										  ATTSTATSSLOT_VALUES);
+		}
 	}
 
 	/* We need to compute the inner-join selectivity in all cases */
-	selec_inner = eqjoinsel_inner(opfuncoid, collation,
+	selec_inner = eqjoinsel_inner(opfuncoid, opfuncoid2, collation,
 								  &vardata1, &vardata2,
 								  nd1, nd2,
 								  isdefault1, isdefault2,
 								  &sslot1, &sslot2,
+								  &sslot3, &sslot4,
 								  stats1, stats2,
-								  have_mcvs1, have_mcvs2);
+								  have_mcvs1, have_mcvs2,
+								  have_hist1, have_hist2);
 
 	switch (sjinfo->jointype)
 	{
@@ -2394,6 +2474,95 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((float8) selec);
 }
 
+
+static double
+histogram_fraction(Oid opfuncoid, Oid collation,
+				   AttStatsSlot *histogram,
+				   Datum minval, Datum maxval,
+				   double *ndistinct)
+{
+	LOCAL_FCINFO(fcinfo, 2);
+
+	FmgrInfo	ltproc;
+	Datum		fresult;
+	int			start,
+				end;
+	double		frac;
+
+	fmgr_info(opfuncoid, &ltproc);
+
+	InitFunctionCallInfoData(*fcinfo, &ltproc, 2, collation,
+							 NULL, NULL);
+
+	fcinfo->args[0].isnull = false;
+	fcinfo->args[1].isnull = false;
+
+	/* is the whole histogram is below minval? */
+	fcinfo->args[0].value = histogram->values[histogram->nvalues - 1];
+	fcinfo->args[1].value = minval;
+	fcinfo->isnull = false;
+
+	fresult = FunctionCallInvoke(fcinfo);
+
+	/* no overlap */
+	if (!fcinfo->isnull && DatumGetBool(fresult))
+		return 0.0;
+
+	/* is the whole histogram above maxval? */
+	fcinfo->args[0].value = maxval;
+	fcinfo->args[1].value = histogram->values[0];
+	fcinfo->isnull = false;
+
+	fresult = FunctionCallInvoke(fcinfo);
+
+	if (!fcinfo->isnull && DatumGetBool(fresult))
+		return 0.0;
+
+	/* find the first histogram entry above minval */
+	start = -1;
+
+	for (int i = 0; i < histogram->nvalues; i++)
+	{
+		fcinfo->args[0].value = minval;
+		fcinfo->args[1].value = histogram->values[i];
+		fcinfo->isnull = false;
+
+		fresult = FunctionCallInvoke(fcinfo);
+
+		if (!fcinfo->isnull && DatumGetBool(fresult))
+		{
+			start = i;
+			break;
+		}
+	}
+
+	/* find the last histogram entry before maxval */
+	end = -1;
+
+	for (int i = histogram->nvalues; i >= 0; i--)
+	{
+		fcinfo->args[0].value = histogram->values[i];
+		fcinfo->args[1].value = maxval;
+		fcinfo->isnull = false;
+
+		fresult = FunctionCallInvoke(fcinfo);
+
+		if (!fcinfo->isnull && DatumGetBool(fresult))
+		{
+			end = i;
+			break;
+		}
+	}
+
+	/* fraction of histogram falling in between [minval,maxval] */
+	frac = (end - start) * 1.0 / (histogram->nvalues);
+
+	/* estimate the number of ndistinct values in the matched part */
+	*ndistinct *= frac;
+
+	return frac;
+}
+
 /*
  * eqjoinsel_inner --- eqjoinsel for normal inner join
  *
@@ -2401,13 +2570,15 @@ eqjoinsel(PG_FUNCTION_ARGS)
  * that it's worth trying to distinguish them here.
  */
 static double
-eqjoinsel_inner(Oid opfuncoid, Oid collation,
+eqjoinsel_inner(Oid opfuncoid, Oid opfuncoid2, Oid collation,
 				VariableStatData *vardata1, VariableStatData *vardata2,
 				double nd1, double nd2,
 				bool isdefault1, bool isdefault2,
 				AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+				AttStatsSlot *sslot3, AttStatsSlot *sslot4,
 				Form_pg_statistic stats1, Form_pg_statistic stats2,
-				bool have_mcvs1, bool have_mcvs2)
+				bool have_mcvs1, bool have_mcvs2,
+				bool have_hist1, bool have_hist2)
 {
 	double		selec;
 
@@ -2581,6 +2752,36 @@ eqjoinsel_inner(Oid opfuncoid, Oid collation,
 		double		nullfrac2 = stats2 ? stats2->stanullfrac : 0.0;
 
 		selec = (1.0 - nullfrac1) * (1.0 - nullfrac2);
+
+		/*
+		 * If we have two histograms, calculate the overlap (as a fraction
+		 * of the product of the intervals). So if 1/2 of one histogram is
+		 * in the other, and 1/3 of the second histogram is in the other,
+		 * this is 1/6 of the product. This also adjusts the ndistinct
+		 * estimates accordingly (assuming uniform distribution).
+		 *
+		 * XXX Maybe we should not rely on the histograms only, because
+		 * those may be a bit stale. Perhaps we should get the actual
+		 * variable range (get_actual_variable_range), and use at least
+		 * one bin (1/100) of the histogram as a match?
+		 */
+		if (have_hist1 && have_hist2)
+		{
+			Selectivity	overlap = 1.0;
+
+			overlap *= histogram_fraction(opfuncoid2, collation, sslot3,
+										  sslot4->values[0],
+										  sslot4->values[sslot4->nvalues - 1],
+										  &nd1);
+
+			overlap *= histogram_fraction(opfuncoid2, collation, sslot4,
+										  sslot3->values[0],
+										  sslot3->values[sslot3->nvalues - 1],
+										  &nd2);
+
+			selec *= overlap;
+		}
+
 		if (nd1 > nd2)
 			selec /= nd1;
 		else

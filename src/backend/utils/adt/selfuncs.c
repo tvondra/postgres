@@ -154,6 +154,13 @@ static double eqjoinsel_inner(Oid opfuncoid, Oid collation,
 							  AttStatsSlot *sslot1, AttStatsSlot *sslot2,
 							  Form_pg_statistic stats1, Form_pg_statistic stats2,
 							  bool have_mcvs1, bool have_mcvs2);
+static double eqjoinsel_unmatch_left(Oid opfuncoid, Oid collation,
+									 VariableStatData *vardata1, VariableStatData *vardata2,
+									 double nd1, double nd2,
+									 bool isdefault1, bool isdefault2,
+									 AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+									 Form_pg_statistic stats1, Form_pg_statistic stats2,
+									 bool have_mcvs1, bool have_mcvs2);
 static double eqjoinsel_semi(Oid opfuncoid, Oid collation,
 							 VariableStatData *vardata1, VariableStatData *vardata2,
 							 double nd1, double nd2,
@@ -1710,6 +1717,9 @@ nulltestsel(PlannerInfo *root, NullTestType nulltesttype, Node *arg,
 		stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
 		freq_null = stats->stanullfrac;
 
+		if (sjinfo)
+			freq_null = freq_null + sjinfo->unmatched_frac - freq_null * sjinfo->unmatched_frac;
+
 		switch (nulltesttype)
 		{
 			case IS_NULL:
@@ -2249,6 +2259,7 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	Oid			collation = PG_GET_COLLATION();
 	double		selec;
 	double		selec_inner;
+	double		unmatched_frac;
 	VariableStatData vardata1;
 	VariableStatData vardata2;
 	double		nd1;
@@ -2320,6 +2331,26 @@ eqjoinsel(PG_FUNCTION_ARGS)
 								  &sslot1, &sslot2,
 								  stats1, stats2,
 								  have_mcvs1, have_mcvs2);
+
+	/*
+	 * calculate fraction of right without of matching row on left
+	 *
+	 * FIXME Should be restricted to JOIN_LEFT, we should have similar logic
+	 * for JOIN_FULL.
+	 *
+	 * XXX Probably should calculate unmatched as fraction of the join result,
+	 * not of the relation on the right (because the matched part can have more
+	 * matches per row and thus grow). Not sure. Depends on how it's used later.
+	 */
+	unmatched_frac = eqjoinsel_unmatch_left(opfuncoid, collation,
+											&vardata1, &vardata2,
+											nd1, nd2,
+											isdefault1, isdefault2,
+											&sslot1, &sslot2,
+											stats1, stats2,
+											have_mcvs1, have_mcvs2);
+
+	sjinfo->unmatched_frac = unmatched_frac;
 
 	switch (sjinfo->jointype)
 	{
@@ -2588,6 +2619,117 @@ eqjoinsel_inner(Oid opfuncoid, Oid collation,
 	}
 
 	return selec;
+}
+
+/*
+ * eqjoinsel_unmatch_left
+ *
+ * XXX Mostly copy paste of eqjoinsel_inner, but calculates unmatched fraction
+ * of the relation on the left. See eqjoinsel_inner for more comments.
+ *
+ * XXX Maybe we could/should integrate this into eqjoinsel_inner, so that we
+ * don't have to walk the MCV lists twice?
+ */
+static double
+eqjoinsel_unmatch_left(Oid opfuncoid, Oid collation,
+					   VariableStatData *vardata1, VariableStatData *vardata2,
+					   double nd1, double nd2,
+					   bool isdefault1, bool isdefault2,
+					   AttStatsSlot *sslot1, AttStatsSlot *sslot2,
+					   Form_pg_statistic stats1, Form_pg_statistic stats2,
+					   bool have_mcvs1, bool have_mcvs2)
+{
+	double		unmatchfreq;
+
+	if (have_mcvs1 && have_mcvs2)
+	{
+		LOCAL_FCINFO(fcinfo, 2);
+		FmgrInfo	eqproc;
+		bool	   *hasmatch1;
+		bool	   *hasmatch2;
+		double		matchprodfreq,
+					matchfreq1,
+					unmatchfreq1;
+		int			i,
+					nmatches;
+
+		fmgr_info(opfuncoid, &eqproc);
+
+		/*
+		 * Save a few cycles by setting up the fcinfo struct just once. Using
+		 * FunctionCallInvoke directly also avoids failure if the eqproc
+		 * returns NULL, though really equality functions should never do
+		 * that.
+		 */
+		InitFunctionCallInfoData(*fcinfo, &eqproc, 2, collation,
+								 NULL, NULL);
+		fcinfo->args[0].isnull = false;
+		fcinfo->args[1].isnull = false;
+
+		hasmatch1 = (bool *) palloc0(sslot1->nvalues * sizeof(bool));
+		hasmatch2 = (bool *) palloc0(sslot2->nvalues * sizeof(bool));
+
+		/*
+		 * Note we assume that each MCV will match at most one member of the
+		 * other MCV list.  If the operator isn't really equality, there could
+		 * be multiple matches --- but we don't look for them, both for speed
+		 * and because the math wouldn't add up...
+		 */
+		matchprodfreq = 0.0;
+		nmatches = 0;
+		for (i = 0; i < sslot1->nvalues; i++)
+		{
+			int			j;
+
+			fcinfo->args[0].value = sslot1->values[i];
+
+			for (j = 0; j < sslot2->nvalues; j++)
+			{
+				Datum		fresult;
+
+				if (hasmatch2[j])
+					continue;
+				fcinfo->args[1].value = sslot2->values[j];
+				fcinfo->isnull = false;
+				fresult = FunctionCallInvoke(fcinfo);
+				if (!fcinfo->isnull && DatumGetBool(fresult))
+				{
+					hasmatch1[i] = hasmatch2[j] = true;
+					matchprodfreq += sslot1->numbers[i] * sslot2->numbers[j];
+					nmatches++;
+					break;
+				}
+			}
+		}
+		CLAMP_PROBABILITY(matchprodfreq);
+		/* Sum up frequencies of matched and unmatched MCVs */
+		matchfreq1 = unmatchfreq1 = 0.0;
+		for (i = 0; i < sslot1->nvalues; i++)
+		{
+			if (hasmatch1[i])
+				matchfreq1 += sslot1->numbers[i];
+			else
+				unmatchfreq1 += sslot1->numbers[i];
+		}
+		CLAMP_PROBABILITY(matchfreq1);
+		CLAMP_PROBABILITY(unmatchfreq1);
+
+		unmatchfreq = unmatchfreq1;
+	}
+	else
+	{
+		/*
+		 * XXX Should this look at nullfrac on either side? Probably depends on
+		 * if we're calculating fraction of NULLs or fraction of unmatched rows.
+		 */
+		// unmatchfreq = (1.0 - nullfrac1) * (1.0 - nullfrac2);
+		if (nd1 > nd2)
+			unmatchfreq = (nd1 - nd2) * 1.0 / nd1;
+		else
+			unmatchfreq = (nd2 - nd1) * 1.0 / nd2;
+	}
+
+	return unmatchfreq;
 }
 
 /*

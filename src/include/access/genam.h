@@ -312,6 +312,11 @@ typedef struct IndexPrefetchData
 	/*
 	 * A couple of last prefetched blocks, used to check for certain access
 	 * pattern and skip prefetching - e.g. for sequential access).
+	 *
+	 * XXX Separate from the main queue, because we only want to compare the
+	 * block numbers, not the whole TID. In sequential access it's likely we
+	 * read many items from each page, and we don't want to check many items
+	 * (as that is much more expensive).
 	 */
 	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
 	uint64			blockIndex;	/* index in the block (points to the first

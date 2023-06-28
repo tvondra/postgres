@@ -2477,6 +2477,9 @@ eqjoinsel(PG_FUNCTION_ARGS)
 /*
  * histogram_fraction_between
  *		Calculates fraction of histogram contained between minval/maxval.
+ *
+ * FIXME Gets somewhat confused about the order of arguments vs. types (opfuncoid
+ * may have different types on each side, but this code ignores it).
  */
 static double
 histogram_fraction_between(Oid opfuncoid, Oid collation,
@@ -2526,13 +2529,13 @@ histogram_fraction_between(Oid opfuncoid, Oid collation,
 
 	for (int i = 0; i < histogram->nvalues; i++)
 	{
-		fcinfo->args[0].value = minval;
-		fcinfo->args[1].value = histogram->values[i];
+		fcinfo->args[0].value = histogram->values[i];
+		fcinfo->args[1].value = minval;
 		fcinfo->isnull = false;
 
 		fresult = FunctionCallInvoke(fcinfo);
 
-		if (!fcinfo->isnull && DatumGetBool(fresult))
+		if (!fcinfo->isnull && !DatumGetBool(fresult))
 		{
 			start = i;
 			break;
@@ -2544,13 +2547,13 @@ histogram_fraction_between(Oid opfuncoid, Oid collation,
 
 	for (int i = histogram->nvalues; i >= 0; i--)
 	{
-		fcinfo->args[0].value = histogram->values[i];
-		fcinfo->args[1].value = maxval;
+		fcinfo->args[0].value = maxval;
+		fcinfo->args[1].value = histogram->values[i];
 		fcinfo->isnull = false;
 
 		fresult = FunctionCallInvoke(fcinfo);
 
-		if (!fcinfo->isnull && DatumGetBool(fresult))
+		if (!fcinfo->isnull && !DatumGetBool(fresult))
 		{
 			end = i;
 			break;
@@ -2558,7 +2561,7 @@ histogram_fraction_between(Oid opfuncoid, Oid collation,
 	}
 
 	/* fraction of histogram falling in between [minval,maxval] */
-	frac = (end - start) * 1.0 / (histogram->nvalues);
+	frac = (end - start) * 1.0 / (histogram->nvalues - 1);
 
 	/* estimate the number of ndistinct values in the matched part */
 	*ndistinct *= frac;
@@ -2797,9 +2800,9 @@ eqjoinsel_inner(Oid opfuncoid, Oid opfuncoid2, Oid collation,
 				matchfreq1 = 0.0,
 				matchfreq2 = 0.0,
 				unmatchfreq1 = 0.0,
-				unmatchfreq2 = 0.0;
-	double		otherfreq1,
-				otherfreq2;
+				unmatchfreq2 = 0.0,
+				otherfreq1 = 1.0,
+				otherfreq2 = 1.0;
 
 	/* cross-matched MCV elements */
 	bool	   *matched1 = NULL,
@@ -2813,9 +2816,8 @@ eqjoinsel_inner(Oid opfuncoid, Oid opfuncoid2, Oid collation,
 		double f = mcv_fraction_between(opfuncoid2, collation,
 					 sslot1, sslot4->values[0], sslot4->values[sslot4->nvalues - 1],
 					 histsel, &nmatches);
-		elog(WARNING, "f = %f  nmatched = %f", f, nmatches);
 	}
-elog(WARNING, "have_mcvs1 %d have_mcvs2 %d", have_mcvs1, have_mcvs2);
+
 	/* */
 	if (have_mcvs1 && have_mcvs2)
 	{
@@ -2824,31 +2826,47 @@ elog(WARNING, "have_mcvs1 %d have_mcvs2 %d", have_mcvs1, have_mcvs2);
 							  sslot1, sslot2,
 							  &matched1, &matched2);
 
-		elog(WARNING, "mcvsel = %f", mcvsel);
 		selec += mcvsel;
 	}
 
 	/* should also tweak "remaining" ndistinct */
 	if (have_mcvs1)
+	{
 		mcvfreq1 = mcv_summary(sslot1, matched1, &matchfreq1, &unmatchfreq1, &nd1);
+		otherfreq1 = (1.0 - stats1->stanullfrac - matchfreq1 - unmatchfreq1);
+	}
 
 	if (have_mcvs2)
+	{
 		mcvfreq2 = mcv_summary(sslot2, matched2, &matchfreq2, &unmatchfreq2, &nd2);
+		otherfreq2 = (1.0 - stats2->stanullfrac - matchfreq2 - unmatchfreq2);
+	}
 
-	elog(WARNING, "MCV1 total sel %f matched %f unmatched %f", mcvfreq1, matchfreq1, unmatchfreq1);
-	elog(WARNING, "MCV2 total sel %f matched %f unmatched %f", mcvfreq2, matchfreq2, unmatchfreq2);
+	/* now cross-check MCV and histogram in both directions */
+	if (have_mcvs1 && have_hist2)
+	{
+		elog(LOG, "ZZZ");
+	}
 
-	elog(WARNING, "have_hist1 %d have_hist2 %d", have_hist1, have_hist2);
+	if (have_mcvs2 && have_hist1)
+	{
+		elog(LOG, "YYY");
+	}
 
+	/* now cross-check histograms */
 	if (have_hist1 && have_hist2)
 	{
 		double x;
-		elog(WARNING, "cross-match histograms nd1 %f nd2 %f", nd1, nd2);
 		x = histograms_overlap(opfuncoid2, collation, sslot3, sslot4, &nd1, &nd2);
 		x = x * (1.0 - mcvfreq1) *  (1.0 - mcvfreq2) / Max(nd1, nd2);
-		elog(WARNING, "x = %f", x);
 		selec += x;
 	}
+
+	/*
+	 * finally, if we still have some unestimated fraction (e.g. if there's no histogram),
+	 * account for that bit too (but only if there's such remainder on both sides)
+	 */
+
 
 	return selec;
 }

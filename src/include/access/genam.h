@@ -295,21 +295,27 @@ typedef struct IndexPrefetchData
 	/* runtime statistics */
 	uint64		countAll;		/* all prefetch requests */
 	uint64		countPrefetch;	/* actual prefetches */
+	uint64		countSkipSequential;
+	uint64		countSkipCached;
 
 	/*
-	 * Queue of TIDs to prefetch, along with a small history of recently
-	 * prefetched TIDs (which is used to check for certain access pattern
-	 * and skip prefetching - e.g. for sequential access).
+	 * Queue of TIDs to prefetch.
+	 *
+	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
+	 * than dynamically adjusting for custom values.
 	 */
+	ItemPointerData	queueItems[MAX_IO_CONCURRENCY];
 	uint64			queueIndex;	/* next TID to prefetch */
 	uint64			queueStart;	/* first valid TID in queue */
 	uint64			queueEnd;	/* first invalid (empty) TID in queue */
 
 	/*
-	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
-	 * than dynamically adjusting for custom values.
+	 * A couple of last prefetched blocks, used to check for certain access
+	 * pattern and skip prefetching - e.g. for sequential access).
 	 */
-	ItemPointerData	queueItems[MAX_IO_CONCURRENCY + PREFETCH_QUEUE_HISTORY];
+	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
+	uint64			blockIndex;	/* index in the block (points to the first
+								 * empty entry)*/
 
 	/*
 	 * Cache of recently prefetched blocks, organized as a hash table of
@@ -320,12 +326,11 @@ typedef struct IndexPrefetchData
 
 } IndexPrefetchData;
 
-#define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY + PREFETCH_QUEUE_HISTORY))
+#define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY))
 #define PREFETCH_QUEUE_EMPTY(p)	((p)->queueEnd == (p)->queueIndex)
-#define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
-#define PREFETCH_DISABLED(p)	((!p) || ((p)->prefetchMaxTarget == 0))
 #define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
-#define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p))
 #define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
+#define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
+#define PREFETCH_BLOCK_INDEX(v)	((v) % PREFETCH_QUEUE_HISTORY)
 
 #endif							/* GENAM_H */

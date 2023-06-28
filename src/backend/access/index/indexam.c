@@ -404,9 +404,10 @@ index_endscan(IndexScanDesc scan)
 	{
 		IndexPrefetch prefetch = scan->xs_prefetch;
 
-		elog(LOG, "index prefetch stats: requests %lu prefetches %lu (%f)",
+		elog(LOG, "index prefetch stats: requests %lu prefetches %lu (%f) skip cached %lu sequential %lu",
 			 prefetch->countAll, prefetch->countPrefetch,
-			 prefetch->countPrefetch * 100.0 / prefetch->countAll);
+			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
+			 prefetch->countSkipCached, prefetch->countSkipSequential);
 	}
 
 	/* Release the scan data structure itself */
@@ -695,7 +696,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 	for (;;)
 	{
 		/* with prefetching enabled, accumulate enough TIDs into the prefetch */
-		if (PREFETCH_ACTIVE(prefetch))
+		if (PREFETCH_ENABLED(prefetch))
 		{
 			/* 
 			 * incrementally ramp up prefetch distance
@@ -735,7 +736,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 
 		if (!scan->xs_heap_continue)
 		{
-			if (PREFETCH_ACTIVE(prefetch))
+			if (PREFETCH_ENABLED(prefetch))
 			{
 				/* prefetching enabled, but reached the end and queue empty */
 				if (PREFETCH_DONE(prefetch))
@@ -1119,27 +1120,37 @@ index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
 {
 	int		idx;
 
-	/* empty queue */
-	if (prefetch->queueIndex == 0)
+	/* If the queue is empty, just store the block and we're done. */
+	if (prefetch->blockIndex == 0)
+	{
+		prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex)] = block;
+		prefetch->blockIndex++;
 		return false;
+	}
 
-	/* same as immediately preceding block? */
-	idx = PREFETCH_QUEUE_INDEX(prefetch->queueIndex - 1);
-	if (ItemPointerGetBlockNumber(&prefetch->queueItems[idx]) == block)
+	/*
+	 * Otherwise, check if it's the same as the immediately preceding block (we
+	 * don't want to prefetch the same block over and over.)
+	 */
+	if (prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex - 1)] == block)
 		return true;
+
+	/* Not the same block, so add it to the queue. */
+	prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex)] = block;
+	prefetch->blockIndex++;
 
 	/* check sequential patter a couple requests back */
 	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
 	{
 		/* not enough requests to confirm a sequential pattern */
-		if (prefetch->queueIndex < i)
+		if (prefetch->blockIndex < i)
 			return false;
 
-		/*
-		 */
-		idx = PREFETCH_QUEUE_INDEX(prefetch->queueIndex - i);
+		/* index of the already requested buffer */
+		idx = PREFETCH_BLOCK_INDEX(prefetch->blockIndex - i);
 
-		if (ItemPointerGetBlockNumber(&prefetch->queueItems[idx]) != (block - i))
+		/*  */
+		if (prefetch->blockItems[idx] != (block - i))
 			return false;
 	}
 
@@ -1210,7 +1221,10 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
 	 * likely with index access, though.
 	 */
 	if (index_prefetch_is_sequential(prefetch, block))
+	{
+		prefetch->countSkipSequential++;
 		return true;
+	}
 
 	/* see if we already have prefetched this block (linear search of LRU) */
 	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
@@ -1244,6 +1258,8 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
 
 			/* Update the request number. */
 			entry->request = ++prefetch->prefetchReqNumber;
+
+			prefetch->countSkipCached += (prefetched) ? 1 : 0;
 
 			return prefetched;
 		}

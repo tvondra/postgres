@@ -384,7 +384,7 @@ typedef struct GinScanOpaqueData
 
 typedef GinScanOpaqueData *GinScanOpaque;
 
-extern IndexScanDesc ginbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset);
+extern IndexScanDesc ginbeginscan(Relation rel, int nkeys, int norderbys);
 extern void ginendscan(IndexScanDesc scan);
 extern void ginrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 					  ScanKey orderbys, int norderbys);

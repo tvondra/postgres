@@ -22,9 +22,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-static void gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
-static BlockNumber gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
-
 /*
  * Pairing heap comparison function for the GISTSearchItem queue
  */
@@ -73,7 +70,7 @@ pairingheap_GISTSearchItem_cmp(const pairingheap_node *a, const pairingheap_node
  */
 
 IndexScanDesc
-gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
+gistbeginscan(Relation r, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	GISTSTATE  *giststate;
@@ -112,28 +109,6 @@ gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int pr
 	so->numKilled = 0;
 	so->curBlkno = InvalidBlockNumber;
 	so->curPageLSN = InvalidXLogRecPtr;
-
-	/*
-	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
-	 * the callacks, so that needs to happen here ...
-	 *
-	 * XXX Do we need to do something for so->markPos?
-	 */
-	if (prefetch_maximum > 0)
-	{
-		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
-
-		prefetcher->prefetchIndex = -1;
-		prefetcher->prefetchTarget = -3;
-		prefetcher->prefetchMaxTarget = prefetch_maximum;
-		prefetcher->prefetchReset = prefetch_reset;
-
-		/* callbacks */
-		prefetcher->get_block = gist_prefetch_getblock;
-		prefetcher->get_range = gist_prefetch_getrange;
-
-		scan->xs_prefetch = prefetcher;
-	}
 
 	scan->opaque = so;
 
@@ -379,43 +354,4 @@ gistendscan(IndexScanDesc scan)
 	 * as well as the queueCxt if there is a separate context for it.
 	 */
 	freeGISTstate(so->giststate);
-}
-
-static void
-gist_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
-{
-	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
-
-	/* did we rebuild the array of tuple pointers? */
-	*reset = so->didReset;
-	so->didReset = false;
-
-	if (ScanDirectionIsForward(dir))
-	{
-		/* Did we already process the item or is it invalid? */
-		*start = so->curPageData;
-		*end = (so->nPageData - 1);
-	}
-	else
-	{
-		*start = 0;
-		*end = so->curPageData;
-	}
-}
-
-static BlockNumber
-gist_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
-{
-	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
-	ItemPointer		tid;
-
-	if ((index < so->curPageData) || (index >= so->nPageData))
-		return InvalidBlockNumber;
-
-	/* get the tuple ID and extract the block number */
-	tid = &so->pageData[index].heapPtr;
-
-	Assert(ItemPointerIsValid(tid));
-
-	return ItemPointerGetBlockNumber(tid);
 }

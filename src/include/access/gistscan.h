@@ -16,7 +16,7 @@
 
 #include "access/amapi.h"
 
-extern IndexScanDesc gistbeginscan(Relation r, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset);
+extern IndexScanDesc gistbeginscan(Relation r, int nkeys, int norderbys);
 extern void gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 					   ScanKey orderbys, int norderbys);
 extern void gistendscan(IndexScanDesc scan);

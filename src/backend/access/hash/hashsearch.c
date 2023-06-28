@@ -434,8 +434,6 @@ _hash_first(IndexScanDesc scan, ScanDirection dir)
 	currItem = &so->currPos.items[so->currPos.itemIndex];
 	scan->xs_heaptid = currItem->heapTid;
 
-	index_prefetch(scan, dir);
-
 	/* if we're here, _hash_readpage found a valid tuples */
 	return true;
 }

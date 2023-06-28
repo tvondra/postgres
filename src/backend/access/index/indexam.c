@@ -111,6 +111,8 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  ParallelIndexScanDesc pscan, bool temp_snap,
 											  int prefetch_target, int prefetch_reset);
 
+static void do_prefetch(IndexScanDesc scan, ItemPointer tid);
+
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -299,11 +301,26 @@ index_beginscan_internal(Relation indexRelation,
 	/*
 	 * Tell the AM to open a scan.
 	 */
-	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys, norderbys,
-												prefetch_target, prefetch_reset);
+	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys, norderbys);
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
+
+	/* with prefetching enabled, initialize the necessary state */
+	if (prefetch_target > 0)
+	{
+		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
+
+		prefetcher->queueIndex = 0;
+		prefetcher->queueStart = 0;
+		prefetcher->queueEnd = 0;
+
+		prefetcher->prefetchTarget = 0;
+		prefetcher->prefetchMaxTarget = prefetch_target;
+		prefetcher->prefetchReset = prefetch_reset;
+
+		scan->xs_prefetch = prefetcher;
+	}
 
 	return scan;
 }
@@ -346,7 +363,10 @@ index_rescan(IndexScanDesc scan,
 	{
 		IndexPrefetch prefetcher = scan->xs_prefetch;
 
-		prefetcher->prefetchIndex = -1;
+		prefetcher->queueStart = 0;
+		prefetcher->queueEnd = 0;
+		prefetcher->queueIndex = 0;
+	
 		prefetcher->prefetchTarget = Min(prefetcher->prefetchTarget,
 										 prefetcher->prefetchReset);
 	}
@@ -384,8 +404,8 @@ index_endscan(IndexScanDesc scan)
 		IndexPrefetch prefetch = scan->xs_prefetch;
 
 		elog(LOG, "index prefetch stats: requests %lu prefetches %lu (%f)",
-			 prefetch->prefetchAll, prefetch->prefetchCount,
-			 prefetch->prefetchCount * 100.0 / prefetch->prefetchAll);
+			 prefetch->countAll, prefetch->countPrefetch,
+			 prefetch->countPrefetch * 100.0 / prefetch->countAll);
 	}
 
 	/* Release the scan data structure itself */
@@ -603,9 +623,6 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
-	/* do index prefetching, if needed */
-	index_prefetch(scan, direction);
-
 	/* Return the TID of the tuple we found. */
 	return &scan->xs_heaptid;
 }
@@ -672,20 +689,75 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 bool
 index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
+	IndexPrefetch	prefetch = scan->xs_prefetch;
+
 	for (;;)
 	{
+		/* with prefetching enabled, accumulate enough TIDs into the prefetch */
+		if (PREFETCH_ACTIVE(prefetch))
+		{
+			/* 
+			 * incrementally ramp up prefetch distance
+			 *
+			 * XXX Intentionally done as first, so that with prefetching there's
+			 * always at least one item in the queue.
+			 */
+			prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
+										prefetch->prefetchMaxTarget);
+
+			/*
+			 * get more TID while there is empty space in the queue (considering
+			 * current prefetch target
+			 */
+			while (!PREFETCH_FULL(prefetch))
+			{
+				ItemPointer tid;
+
+				/* Time to fetch the next TID from the index */
+				tid = index_getnext_tid(scan, direction);
+
+				/* If we're out of index entries, we're done */
+				if (tid == NULL)
+				{
+					prefetch->prefetchDone = true;
+					break;
+				}
+
+				Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+		
+				prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)] = *tid;
+				prefetch->queueEnd++;
+
+				do_prefetch(scan, tid);
+			}
+		}
+
 		if (!scan->xs_heap_continue)
 		{
-			ItemPointer tid;
+			if (PREFETCH_ACTIVE(prefetch))
+			{
+				/* prefetching enabled, but reached the end and queue empty */
+				if (PREFETCH_DONE(prefetch))
+					break;
 
-			/* Time to fetch the next TID from the index */
-			tid = index_getnext_tid(scan, direction);
+				scan->xs_heaptid = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)];
+				prefetch->queueIndex++;
+			}
 
-			/* If we're out of index entries, we're done */
-			if (tid == NULL)
-				break;
+			/* not prefetching, just do the regular work  */
+			{
+				ItemPointer tid;
 
-			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+				/* Time to fetch the next TID from the index */
+				tid = index_getnext_tid(scan, direction);
+
+				/* If we're out of index entries, we're done */
+				if (tid == NULL)
+					break;
+
+				Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+			}
+
 		}
 
 		/*
@@ -1045,48 +1117,33 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 static bool
 index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
 {
-	bool	is_sequential = true;
 	int		idx;
 
-	/* no requests */
+	/* empty queue */
 	if (prefetch->queueIndex == 0)
-	{
-		idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
-		prefetch->queueItems[idx] = block;
 		return false;
-	}
 
 	/* same as immediately preceding block? */
-	idx = (prefetch->queueIndex - 1) % PREFETCH_QUEUE_SIZE;
-	if (prefetch->queueItems[idx] == block)
+	idx = PREFETCH_QUEUE_INDEX(prefetch->queueIndex - 1);
+	if (ItemPointerGetBlockNumber(&prefetch->queueItems[idx]) == block)
 		return true;
 
-	idx = (prefetch->queueIndex++) % PREFETCH_QUEUE_SIZE;
-	prefetch->queueItems[idx] = block;
-
+	/* check sequential patter a couple requests back */
 	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
 	{
-		/* not enough requests */
+		/* not enough requests to confirm a sequential pattern */
 		if (prefetch->queueIndex < i)
-		{
-			is_sequential = false;
-			break;
-		}
+			return false;
 
 		/*
-		 * -1, because we've already advanced the index, so it points to
-		 * the next slot at this point
 		 */
-		idx = (prefetch->queueIndex - i - 1) % PREFETCH_QUEUE_SIZE;
+		idx = PREFETCH_QUEUE_INDEX(prefetch->queueIndex - i);
 
-		if ((block - i) != prefetch->queueItems[idx])
-		{
-			is_sequential = false;
-			break;
-		}
+		if (ItemPointerGetBlockNumber(&prefetch->queueItems[idx]) != (block - i))
+			return false;
 	}
 
-	return is_sequential;
+	return true;
 }
 
 /*
@@ -1243,10 +1300,11 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
  * XXX Maybe we could/should also prefetch the next index block, e.g. stored
  * in BTScanPosData.nextPage.
  */
-void
-index_prefetch(IndexScanDesc scan, ScanDirection dir)
+static void
+do_prefetch(IndexScanDesc scan, ItemPointer tid)
 {
 	IndexPrefetch	prefetch = scan->xs_prefetch;
+	BlockNumber	block;
 
 	/*
 	 * No heap relation means bitmap index scan, which does prefetching at
@@ -1269,121 +1327,22 @@ index_prefetch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	Assert(scan->heapRelation);
 
-	/* gradually increase the prefetch distance */
-	prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
-								   prefetch->prefetchMaxTarget);
+	prefetch->countAll++;
 
+	block = ItemPointerGetBlockNumber(tid);
+elog(LOG, "prefetching block %u", block);
 	/*
-	 * Did we already reach the point to actually start prefetching? If not,
-	 * we're done. We'll try again for the next index tuple.
+	 * Do not prefetch the same block over and over again,
+	 *
+	 * This happens e.g. for clustered or naturally correlated indexes
+	 * (fkey to a sequence ID). It's not expensive (the block is in page
+	 * cache already, so no I/O), but it's not free either.
 	 */
-	if (prefetch->prefetchTarget <= 0)
-		return;
-
-	prefetch->prefetchAll++;
-
-	/*
-	 * XXX I think we don't need to worry about direction here, that's handled
-	 * by how the AMs build the curPos etc. (see nbtsearch.c)
-	 */
-	if (ScanDirectionIsForward(dir))
+	if (!index_prefetch_add_cache(prefetch, block))
 	{
-		bool		reset;
-		int			startIndex,
-					endIndex;
+		prefetch->countPrefetch++;
 
-		/* get indexes of unprocessed index entries */
-		prefetch->get_range(scan, dir, &startIndex, &endIndex, &reset);
-
-		/*
-		 * Did we switch to a different index block? if yes, reset relevant
-		 * info so that we start prefetching from scratch.
-		 */
-		if (reset)
-		{
-			prefetch->prefetchTarget = prefetch->prefetchReset;
-			prefetch->prefetchIndex = startIndex; /* maybe -1 instead? */
-			pgBufferUsage.blks_prefetch_rounds++;
-		}
-
-		/*
-		 * Adjust the range, based on what we already prefetched, and also
-		 * based on the prefetch target.
-		 *
-		 * XXX We need to adjust the end index first, because it depends on
-		 * the actual position, before we consider how far we prefetched.
-		 */
-		endIndex = Min(endIndex, startIndex + prefetch->prefetchTarget);
-		startIndex = Max(startIndex, prefetch->prefetchIndex + 1);
-
-		for (int i = startIndex; i <= endIndex; i++)
-		{
-			BlockNumber	block;
-
-			block = prefetch->get_block(scan, dir, i);
-
-			/*
-			 * Do not prefetch the same block over and over again,
-			 *
-			 * This happens e.g. for clustered or naturally correlated indexes
-			 * (fkey to a sequence ID). It's not expensive (the block is in page
-			 * cache already, so no I/O), but it's not free either.
-			 */
-			if (index_prefetch_add_cache(prefetch, block))
-				continue;
-
-			prefetch->prefetchCount++;
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-			pgBufferUsage.blks_prefetches++;
-		}
-
-		prefetch->prefetchIndex = endIndex;
-	}
-	else
-	{
-		bool	reset;
-		int		startIndex,
-				endIndex;
-
-		/* get indexes of unprocessed index entries */
-		prefetch->get_range(scan, dir, &startIndex, &endIndex, &reset);
-
-		/* FIXME handle the reset flag */
-
-		/*
-		 * Adjust the range, based on what we already prefetched, and also
-		 * based on the prefetch target.
-		 *
-		 * XXX We need to adjust the start index first, because it depends on
-		 * the actual position, before we consider how far we prefetched (which
-		 * for backwards scans is (end index).
-		 */
-		startIndex = Max(startIndex, endIndex - prefetch->prefetchTarget);
-		endIndex = Min(endIndex, prefetch->prefetchIndex - 1);
-
-		for (int i = endIndex; i >= startIndex; i--)
-		{
-			BlockNumber	block;
-
-			block = prefetch->get_block(scan, dir, i);
-
-			/*
-			 * Do not prefetch the same block over and over again,
-			 *
-			 * This happens e.g. for clustered or naturally correlated indexes
-			 * (fkey to a sequence ID). It's not expensive (the block is in page
-			 * cache already, so no I/O), but it's not free either.
-			 */
-			if (index_prefetch_add_cache(prefetch, block))
-				continue;
-
-			prefetch->prefetchCount++;
-
-			PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-			pgBufferUsage.blks_prefetches++;
-		}
-
-		prefetch->prefetchIndex = startIndex;
+		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+		pgBufferUsage.blks_prefetches++;
 	}
 }

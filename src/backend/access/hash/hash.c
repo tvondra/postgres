@@ -48,9 +48,6 @@ static void hashbuildCallback(Relation index,
 							  bool tupleIsAlive,
 							  void *state);
 
-static void _hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
-static BlockNumber _hash_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
-
 
 /*
  * Hash handler function: return IndexAmRoutine with access method parameters
@@ -365,7 +362,7 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	hashbeginscan() -- start a scan on a hash index
  */
 IndexScanDesc
-hashbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
+hashbeginscan(Relation rel, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	HashScanOpaque so;
@@ -385,28 +382,6 @@ hashbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int 
 
 	so->killedItems = NULL;
 	so->numKilled = 0;
-
-	/*
-	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
-	 * the callacks, so that needs to happen here ...
-	 *
-	 * XXX Do we need to do something for so->markPos?
-	 */
-	if (prefetch_maximum > 0)
-	{
-		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
-
-		prefetcher->prefetchIndex = -1;
-		prefetcher->prefetchTarget = -3;
-		prefetcher->prefetchMaxTarget = prefetch_maximum;
-		prefetcher->prefetchReset = prefetch_reset;
-
-		/* callbacks */
-		prefetcher->get_block = _hash_prefetch_getblock;
-		prefetcher->get_range = _hash_prefetch_getrange;
-
-		scan->xs_prefetch = prefetcher;
-	}
 
 	scan->opaque = so;
 
@@ -942,43 +917,4 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 							bstrategy);
 	else
 		LockBuffer(bucket_buf, BUFFER_LOCK_UNLOCK);
-}
-
-static void
-_hash_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
-{
-	HashScanOpaque	so = (HashScanOpaque) scan->opaque;
-
-	/* did we rebuild the array of tuple pointers? */
-	*reset = so->currPos.didReset;
-	so->currPos.didReset = false;
-
-	if (ScanDirectionIsForward(dir))
-	{
-		/* Did we already process the item or is it invalid? */
-		*start = so->currPos.itemIndex;
-		*end = so->currPos.lastItem;
-	}
-	else
-	{
-		*start = so->currPos.firstItem;
-		*end = so->currPos.itemIndex;
-	}
-}
-
-static BlockNumber
-_hash_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
-{
-	HashScanOpaque	so = (HashScanOpaque) scan->opaque;
-	ItemPointer		tid;
-
-	if ((index < so->currPos.firstItem) || (index > so->currPos.lastItem))
-		return InvalidBlockNumber;
-
-	/* get the tuple ID and extract the block number */
-	tid = &so->currPos.items[index].heapTid;
-
-	Assert(ItemPointerIsValid(tid));
-
-	return ItemPointerGetBlockNumber(tid);
 }

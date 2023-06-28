@@ -88,9 +88,6 @@ static BTVacuumPosting btreevacuumposting(BTVacState *vstate,
 										  OffsetNumber updatedoffset,
 										  int *nremaining);
 
-static void _bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset);
-static BlockNumber _bt_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index);
-
 /*
  * Btree handler function: return IndexAmRoutine with access method parameters
  * and callbacks.
@@ -344,7 +341,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
-btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
+btbeginscan(Relation rel, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BTScanOpaque so;
@@ -371,28 +368,6 @@ btbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int pr
 
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
-
-	/*
-	 * XXX maybe should happen in RelationGetIndexScan? But we need to define
-	 * the callacks, so that needs to happen here ...
-	 *
-	 * XXX Do we need to do something for so->markPos?
-	 */
-	if (prefetch_maximum > 0)
-	{
-		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
-
-		prefetcher->prefetchIndex = -1;
-		prefetcher->prefetchTarget = -3;
-		prefetcher->prefetchMaxTarget = prefetch_maximum;
-		prefetcher->prefetchReset = prefetch_reset;
-
-		/* callbacks */
-		prefetcher->get_block = _bt_prefetch_getblock;
-		prefetcher->get_range = _bt_prefetch_getrange;
-
-		scan->xs_prefetch = prefetcher;
-	}
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
@@ -1447,43 +1422,4 @@ bool
 btcanreturn(Relation index, int attno)
 {
 	return true;
-}
-
-static void
-_bt_prefetch_getrange(IndexScanDesc scan, ScanDirection dir, int *start, int *end, bool *reset)
-{
-	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
-
-	/* did we rebuild the array of tuple pointers? */
-	*reset = so->currPos.didReset;
-	so->currPos.didReset = false;
-
-	if (ScanDirectionIsForward(dir))
-	{
-		/* Did we already process the item or is it invalid? */
-		*start = so->currPos.itemIndex;
-		*end = so->currPos.lastItem;
-	}
-	else
-	{
-		*start = so->currPos.firstItem;
-		*end = so->currPos.itemIndex;
-	}
-}
-
-static BlockNumber
-_bt_prefetch_getblock(IndexScanDesc scan, ScanDirection dir, int index)
-{
-	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
-	ItemPointer		tid;
-
-	if ((index < so->currPos.firstItem) || (index > so->currPos.lastItem))
-		return InvalidBlockNumber;
-
-	/* get the tuple ID and extract the block number */
-	tid = &so->currPos.items[index].heapTid;
-
-	Assert(ItemPointerIsValid(tid));
-
-	return ItemPointerGetBlockNumber(tid);
 }

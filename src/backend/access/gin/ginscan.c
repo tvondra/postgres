@@ -22,7 +22,7 @@
 
 
 IndexScanDesc
-ginbeginscan(Relation rel, int nkeys, int norderbys, int prefetch_maximum, int prefetch_reset)
+ginbeginscan(Relation rel, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	GinScanOpaque so;

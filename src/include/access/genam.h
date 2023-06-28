@@ -17,6 +17,7 @@
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "nodes/tidbitmap.h"
+#include "storage/bufmgr.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
@@ -279,8 +280,9 @@ typedef struct PrefetchCacheEntry {
 /*
  * Used to detect sequential patterns (and disable prefetching).
  */
-#define		PREFETCH_QUEUE_SIZE				8
+#define		PREFETCH_QUEUE_HISTORY			8
 #define		PREFETCH_SEQ_PATTERN_BLOCKS		4
+
 
 typedef struct IndexPrefetchData
 {
@@ -289,23 +291,29 @@ typedef struct IndexPrefetchData
 	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
 	 * only pages that are not all-visible, that'd be even better.
 	 */
-	int			prefetchIndex;	/* how far we already prefetched */
 	int			prefetchTarget;	/* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 	int			prefetchReset;	/* reset to this distance on rescan */
+	bool		prefetchDone;	/* did we get all TIDs from the index? */
 
-	prefetcher_getblock_function	get_block;
-	prefetcher_getrange_function	get_range;
-
-	uint64		prefetchAll;
-	uint64		prefetchCount;
+	/* runtime statistics */
+	uint64		countAll;		/* all prefetch requests */
+	uint64		countPrefetch;	/* actual prefetches */
 
 	/*
-	 * Tiny queue of most recently prefetched blocks, used first for cheap
-	 * checks and also to identify (and ignore) sequential prefetches.
+	 * Queue of TIDs to prefetch, along with a small history of recently
+	 * prefetched TIDs (which is used to check for certain access pattern
+	 * and skip prefetching - e.g. for sequential access).
 	 */
-	uint64		queueIndex;
-	BlockNumber	queueItems[PREFETCH_QUEUE_SIZE];
+	uint64			queueIndex;	/* next TID to prefetch */
+	uint64			queueStart;	/* first valid TID in queue */
+	uint64			queueEnd;	/* first invalid (empty) TID in queue */
+
+	/*
+	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
+	 * than dynamically adjusting for custom values.
+	 */
+	ItemPointerData	queueItems[MAX_IO_CONCURRENCY + PREFETCH_QUEUE_HISTORY];
 
 	/*
 	 * Cache of recently prefetched blocks, organized as a hash table of
@@ -315,5 +323,13 @@ typedef struct IndexPrefetchData
 	PrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
 
 } IndexPrefetchData;
+
+#define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY + PREFETCH_QUEUE_HISTORY))
+#define PREFETCH_QUEUE_EMPTY(p)	((p)->queueEnd == (p)->queueIndex)
+#define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
+#define PREFETCH_DISABLED(p)	((!p) || ((p)->prefetchMaxTarget == 0))
+#define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
+#define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p) && !PREFETCH_DONE(p))
+#define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
 
 #endif							/* GENAM_H */

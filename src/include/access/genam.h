@@ -329,7 +329,7 @@ typedef struct IndexPrefetchData
 #define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
 #define PREFETCH_DISABLED(p)	((!p) || ((p)->prefetchMaxTarget == 0))
 #define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
-#define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p) && !PREFETCH_DONE(p))
+#define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p))
 #define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
 
 #endif							/* GENAM_H */

@@ -366,6 +366,7 @@ index_rescan(IndexScanDesc scan,
 		prefetcher->queueStart = 0;
 		prefetcher->queueEnd = 0;
 		prefetcher->queueIndex = 0;
+		prefetcher->prefetchDone = false;
 	
 		prefetcher->prefetchTarget = Min(prefetcher->prefetchTarget,
 										 prefetcher->prefetchReset);
@@ -724,7 +725,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 				}
 
 				Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
-		
+
 				prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)] = *tid;
 				prefetch->queueEnd++;
 
@@ -743,8 +744,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 				scan->xs_heaptid = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)];
 				prefetch->queueIndex++;
 			}
-
-			/* not prefetching, just do the regular work  */
+			else	/* not prefetching, just do the regular work  */
 			{
 				ItemPointer tid;
 
@@ -1330,7 +1330,7 @@ do_prefetch(IndexScanDesc scan, ItemPointer tid)
 	prefetch->countAll++;
 
 	block = ItemPointerGetBlockNumber(tid);
-elog(LOG, "prefetching block %u", block);
+
 	/*
 	 * Do not prefetch the same block over and over again,
 	 *

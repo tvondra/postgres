@@ -2577,7 +2577,7 @@ static double
 mcv_fraction_between(Oid opfuncoid, Oid collation,
 					 AttStatsSlot *mcv,
 					 Datum minval, Datum maxval,
-					 double histsel, double *nmatches)
+					 double histsel, int *nmatches)
 {
 	LOCAL_FCINFO(fcinfo, 2);
 
@@ -2644,9 +2644,7 @@ mcvs_overlap(Oid opfuncoid, Oid collation,
 				unmatchfreq1,
 				unmatchfreq2,
 				otherfreq1,
-				otherfreq2,
-				totalsel1,
-				totalsel2;
+				otherfreq2;
 	int			i,
 				nmatches;
 
@@ -2737,7 +2735,7 @@ mcvs_overlap(Oid opfuncoid, Oid collation,
 }
 
 static double
-mcv_summary(AttStatsSlot *slot, bool *matched, double *matchfreq, double *unmatchfreq, double *nd)
+mcv_summary(AttStatsSlot *slot, bool *matched, double *matchfreq, double *unmatchfreq, int *nmatches)
 {
 	*matchfreq = *unmatchfreq = 0.0;
 
@@ -2746,7 +2744,7 @@ mcv_summary(AttStatsSlot *slot, bool *matched, double *matchfreq, double *unmatc
 		if (matched && matched[i])
 		{
 			*matchfreq += slot->numbers[i];
-			*nd = (*nd - 1);
+			*nmatches = (*nmatches + 1);
 		}
 		else
 			*unmatchfreq += slot->numbers[i];
@@ -2794,79 +2792,160 @@ eqjoinsel_inner(Oid opfuncoid, Oid opfuncoid2, Oid collation,
 				bool have_hist1, bool have_hist2)
 {
 	double		selec = 0.0;
-	double		mcvsel;
 	double		mcvfreq1 = 0.0,
 				mcvfreq2 = 0.0,
 				matchfreq1 = 0.0,
 				matchfreq2 = 0.0,
 				unmatchfreq1 = 0.0,
-				unmatchfreq2 = 0.0,
-				otherfreq1 = 1.0,
-				otherfreq2 = 1.0;
+				unmatchfreq2 = 0.0;
 
-	/* cross-matched MCV elements */
+	/*
+	 * Data not represented by the MCV lists (so covered either by histogram or
+	 * no explicit statistics).
+	 */
+	double		otherfreq1,
+				otherfreq2,
+				othernd1,
+				othernd2;
+
+	/* bitmap of MCV elements matched either to the MCV or histogram */
 	bool	   *matched1 = NULL,
 			   *matched2 = NULL;
+	int			nmatches1,
+				nmatches2;
 
-	if (have_mcvs1 && have_hist2)
-	{
-		double	nmatches;
-		double	histsel = 1.0 / nd2;
-
-		double f = mcv_fraction_between(opfuncoid2, collation,
-					 sslot1, sslot4->values[0], sslot4->values[sslot4->nvalues - 1],
-					 histsel, &nmatches);
-	}
-
-	/* */
+	/*
+	 * We have most-common-value lists for both relations.  Run through
+	 * the lists to see which MCVs actually join to each other with the
+	 * given operator.  This allows us to determine the exact join
+	 * selectivity for the portion of the relations represented by the MCV
+	 * lists.  We still have to estimate for the remaining population, but
+	 * in a skewed distribution this gives us a big leg up in accuracy.
+	 * For motivation see the analysis in Y. Ioannidis and S.
+	 * Christodoulakis, "On the propagation of errors in the size of join
+	 * results", Technical Report 1018, Computer Science Dept., University
+	 * of Wisconsin, Madison, March 1991 (available from ftp.cs.wisc.edu).
+	 */
 	if (have_mcvs1 && have_mcvs2)
 	{
-		mcvsel = mcvs_overlap(opfuncoid, collation,
+		selec += mcvs_overlap(opfuncoid, collation,
 							  stats1, stats2,
 							  sslot1, sslot2,
 							  &matched1, &matched2);
-
-		selec += mcvsel;
 	}
 
-	/* should also tweak "remaining" ndistinct */
+	/*
+	 * Calculate statistics for both MCV lists - what part of the data it
+	 * represents, what part was (not) matched, and so on. It aso adjusts
+	 * the ndistinct estimate.
+	 */
+	otherfreq1 = 1.0;
+	otherfreq2 = 1.0;
+	othernd1 = nd1;
+	othernd2 = nd2;
+
 	if (have_mcvs1)
 	{
-		mcvfreq1 = mcv_summary(sslot1, matched1, &matchfreq1, &unmatchfreq1, &nd1);
-		otherfreq1 = (1.0 - stats1->stanullfrac - matchfreq1 - unmatchfreq1);
+		mcvfreq1 = mcv_summary(sslot1, matched1, &matchfreq1, &unmatchfreq1,
+							   &nmatches1);
+
+		/* fraction of relation not represented by the MCV list */
+		otherfreq1 = (1.0 - stats1->stanullfrac - mcvfreq1);
+		othernd1 = nd1 - sslot2->nvalues;
 	}
 
 	if (have_mcvs2)
 	{
-		mcvfreq2 = mcv_summary(sslot2, matched2, &matchfreq2, &unmatchfreq2, &nd2);
-		otherfreq2 = (1.0 - stats2->stanullfrac - matchfreq2 - unmatchfreq2);
+		mcvfreq2 = mcv_summary(sslot2, matched2, &matchfreq2, &unmatchfreq2,
+							   &nmatches2);
+
+		/* fraction of relation not represented by the MCV list */
+		otherfreq2 = (1.0 - stats2->stanullfrac - mcvfreq2);
+		othernd2 = nd2 - sslot2->nvalues;
 	}
 
-	/* now cross-check MCV and histogram in both directions */
+	/* XXX maybe we should just CLAMP_PROBABILITY the values ... */
+	Assert(otherfreq1 >= 0);
+	Assert(otherfreq2 >= 0);
+	Assert(othernd1 >= 0);
+	Assert(othernd2 >= 0);
+
+	/*
+	 * Now that we processed MCVs, we shall try doing the same thing with MCV and
+	 * histograms.
+	 *
+	 * XXX Can it be that the MCV has more items than the histogram represents?
+	 * Say for example the MCV has 100 items, but the histogram only has 10 bins
+	 * for 20 items (could happen with non-default statistics target). That'd
+	 * mean we can match only a couple of the MCV items, and we should correct
+	 * the result to account for that (instead of just assuming everything can
+	 * match). Something like
+	 *
+	 *    sel = sel * Max(1.0, hist distinct / MCV matches)
+	 *
+	 * could work, probably.
+	 */
 	if (have_mcvs1 && have_hist2)
 	{
-		elog(LOG, "ZZZ");
+		int		nmatches;
+		double	histsel = (otherfreq2 / othernd2);
+
+		double f = mcv_fraction_between(opfuncoid2, collation,
+					 sslot1, sslot4->values[0], sslot4->values[sslot4->nvalues - 1],
+					 histsel, &nmatches);
+
+		Assert(nd2 >= nmatches);
+
+		/* remove matched distincts from the histogram */
+		othernd2 -= nmatches;
+		otherfreq2 -= (nmatches * histsel);
+
+		elog(WARNING, "ZZZ %f matches %d", f, nmatches);
+
+		selec += f;
 	}
 
 	if (have_mcvs2 && have_hist1)
 	{
-		elog(LOG, "YYY");
+		int		nmatches;
+		double	histsel = (otherfreq1 / nd1);
+
+		double f = mcv_fraction_between(opfuncoid2, collation,
+					 sslot2, sslot3->values[0], sslot3->values[sslot3->nvalues - 1],
+					 histsel, &nmatches);
+
+		Assert(nd1 >= nmatches);
+
+		/* remove matched distincts from the histogram */
+		othernd1 -= nmatches;
+		otherfreq1 -= (nmatches * histsel);
+
+		elog(WARNING, "YYY %f matches %d", f, nmatches);
+
+		selec += f;
 	}
 
 	/* now cross-check histograms */
 	if (have_hist1 && have_hist2)
 	{
-		double x;
-		x = histograms_overlap(opfuncoid2, collation, sslot3, sslot4, &nd1, &nd2);
-		x = x * (1.0 - mcvfreq1) *  (1.0 - mcvfreq2) / Max(nd1, nd2);
+		double x = histograms_overlap(opfuncoid2, collation, sslot3, sslot4,
+									  &othernd1, &othernd2);
+
+		x = x * otherfreq1 *  otherfreq2 / Max(othernd1, othernd2);
 		selec += x;
+
+		othernd1 = 0.0;
+		othernd2 = 0.0;
 	}
 
 	/*
 	 * finally, if we still have some unestimated fraction (e.g. if there's no histogram),
 	 * account for that bit too (but only if there's such remainder on both sides)
 	 */
-
+	if ((othernd1 > 0) && (othernd1 > 0))
+	{
+		elog(WARNING, "othernd1 = %f  othernd2 = %f", othernd1, othernd2);
+	}
 
 	return selec;
 }

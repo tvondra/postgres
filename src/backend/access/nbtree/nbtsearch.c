@@ -47,6 +47,7 @@ static Buffer _bt_walk_left(Relation rel, Buffer buf, Snapshot snapshot);
 static bool _bt_endpoint(IndexScanDesc scan, ScanDirection dir);
 static inline void _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir);
 
+
 /*
  *	_bt_drop_lock_and_maybe_pin()
  *
@@ -1556,12 +1557,6 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	 * used here; this function is what makes it good for currPos.
 	 */
 	Assert(BufferIsValid(so->currPos.buf));
-
-	/*
-	 * Mark the currPos as reset before loading the next chunk of pointers, to
-	 * restart the preretching.
-	 */
-	so->currPos.didReset = true;
 
 	page = BufferGetPage(so->currPos.buf);
 	opaque = BTPageGetOpaque(page);

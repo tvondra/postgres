@@ -17,7 +17,6 @@
 
 #include "access/amvalidate.h"
 #include "access/htup_details.h"
-#include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/spgist_private.h"
 #include "access/toast_compression.h"
@@ -334,9 +333,6 @@ initSpGistState(SpGistState *state, Relation index)
 	SpGistCache *cache;
 
 	state->index = index;
-
-	/* we'll initialize the reference in spgbeginscan */
-	state->heap = NULL;
 
 	/* Get cached static information about index */
 	cache = spgGetCache(index);

@@ -235,10 +235,6 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
-
-
-void index_prefetch(IndexScanDesc scandesc, ScanDirection direction);
-
 /*
  * XXX not sure it's the right place to define these callbacks etc.
  */

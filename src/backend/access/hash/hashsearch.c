@@ -467,7 +467,6 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 
 	so->currPos.buf = buf;
 	so->currPos.currPage = BufferGetBlockNumber(buf);
-	so->currPos.didReset = true;
 
 	if (ScanDirectionIsForward(dir))
 	{
@@ -598,7 +597,6 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 	}
 
 	Assert(so->currPos.firstItem <= so->currPos.lastItem);
-
 	return true;
 }
 

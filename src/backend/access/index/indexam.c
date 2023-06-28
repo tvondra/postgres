@@ -111,7 +111,7 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  ParallelIndexScanDesc pscan, bool temp_snap,
 											  int prefetch_target, int prefetch_reset);
 
-static void do_prefetch(IndexScanDesc scan, ItemPointer tid);
+static void index_prefetch(IndexScanDesc scan, ItemPointer tid);
 
 
 /* ----------------------------------------------------------------
@@ -729,7 +729,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 				prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)] = *tid;
 				prefetch->queueEnd++;
 
-				do_prefetch(scan, tid);
+				index_prefetch(scan, tid);
 			}
 		}
 
@@ -1301,7 +1301,7 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
  * in BTScanPosData.nextPage.
  */
 static void
-do_prefetch(IndexScanDesc scan, ItemPointer tid)
+index_prefetch(IndexScanDesc scan, ItemPointer tid)
 {
 	IndexPrefetch	prefetch = scan->xs_prefetch;
 	BlockNumber	block;

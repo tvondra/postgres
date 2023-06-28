@@ -37,7 +37,6 @@
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
-#include "utils/spccache.h"
 
 
 /*
@@ -87,6 +86,7 @@ static BTVacuumPosting btreevacuumposting(BTVacState *vstate,
 										  IndexTuple posting,
 										  OffsetNumber updatedoffset,
 										  int *nremaining);
+
 
 /*
  * Btree handler function: return IndexAmRoutine with access method parameters

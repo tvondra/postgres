@@ -193,7 +193,7 @@ extern bool blinsert(Relation index, Datum *values, bool *isnull,
 					 IndexUniqueCheck checkUnique,
 					 bool indexUnchanged,
 					 struct IndexInfo *indexInfo);
-extern IndexScanDesc blbeginscan(Relation r, int nkeys, int norderbys, int prefetch, int prefetch_reset);
+extern IndexScanDesc blbeginscan(Relation r, int nkeys, int norderbys);
 extern int64 blgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void blrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 					 ScanKey orderbys, int norderbys);

@@ -25,7 +25,7 @@
  * Begin scan of bloom index.
  */
 IndexScanDesc
-blbeginscan(Relation r, int nkeys, int norderbys, int prefetch_target, int prefetch_reset)
+blbeginscan(Relation r, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BloomScanOpaque so;

@@ -16,7 +16,6 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/relation.h"
 #include "access/relscan.h"
 #include "access/spgist_private.h"
 #include "miscadmin.h"
@@ -32,7 +31,6 @@ typedef void (*storeRes_func) (SpGistScanOpaque so, ItemPointer heapPtr,
 							   Datum leafValue, bool isNull,
 							   SpGistLeafTuple leafTuple, bool recheck,
 							   bool recheckDistances, double *distances);
-
 
 /*
  * Pairing heap comparison function for the SpGistSearchItem queue.
@@ -193,7 +191,6 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 			pfree(so->reconTups[i]);
 	}
 	so->iPtr = so->nPtrs = 0;
-	so->didReset = true;
 }
 
 /*
@@ -318,8 +315,6 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 	else
 		so->keyData = NULL;
 	initSpGistState(&so->state, scan->indexRelation);
-
-	so->state.heap = relation_open(scan->indexRelation->rd_index->indrelid, NoLock);
 
 	so->tempCxt = AllocSetContextCreate(CurrentMemoryContext,
 										"SP-GiST search temporary context",
@@ -458,8 +453,6 @@ spgendscan(IndexScanDesc scan)
 		pfree(scan->xs_orderbynulls);
 	}
 
-	relation_close(so->state.heap, NoLock);
-
 	pfree(so);
 }
 
@@ -590,13 +583,6 @@ spgLeafTest(SpGistScanOpaque so, SpGistSearchItem *item,
 														recheckDistances,
 														isnull,
 														distances);
-
-			// FIXME prefetch here? or in storeGettuple?
-			{
-				BlockNumber block = ItemPointerGetBlockNumber(&leafTuple->heapPtr);
-
-				PrefetchBuffer(so->state.heap, MAIN_FORKNUM, block);
-			}
 
 			spgAddSearchItemToQueue(so, heapItem);
 
@@ -1061,9 +1047,7 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				index_store_float8_orderby_distances(scan, so->orderByTypes,
 													 so->distances[so->iPtr],
 													 so->recheckDistances[so->iPtr]);
-
 			so->iPtr++;
-
 			return true;
 		}
 
@@ -1086,7 +1070,6 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 				pfree(so->reconTups[i]);
 		}
 		so->iPtr = so->nPtrs = 0;
-		so->didReset = true;
 
 		spgWalk(scan->indexRelation, so, false, storeGettuple,
 				scan->xs_snapshot);

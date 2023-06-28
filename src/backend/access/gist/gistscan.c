@@ -22,6 +22,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+
 /*
  * Pairing heap comparison function for the GISTSearchItem queue
  */

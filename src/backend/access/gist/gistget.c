@@ -493,15 +493,11 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 			if (GistPageIsLeaf(page))
 			{
-				BlockNumber		block = ItemPointerGetBlockNumber(&it->t_tid);
-
 				/* Creating heap-tuple GISTSearchItem */
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
 				item->data.heap.recheckDistances = recheck_distances;
-
-				PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 
 				/*
 				 * In an index-only scan, also fetch the data from the tuple.
@@ -533,8 +529,6 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	}
 
 	UnlockReleaseBuffer(buffer);
-
-	so->didReset = true;
 }
 
 /*

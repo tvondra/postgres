@@ -987,9 +987,6 @@ typedef struct BTScanPosData
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
 
-	/* Did the position reset/rebuilt since the last time we checked it? */
-	bool		didReset;
-
 	BTScanPosItem items[MaxTIDsPerBTreePage];	/* MUST BE LAST */
 } BTScanPosData;
 
@@ -1025,7 +1022,6 @@ typedef BTScanPosData *BTScanPos;
 		(scanpos).buf = InvalidBuffer; \
 		(scanpos).lsn = InvalidXLogRecPtr; \
 		(scanpos).nextTupleOffset = 0; \
-		(scanpos).didReset = true; \
 	} while (0)
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */

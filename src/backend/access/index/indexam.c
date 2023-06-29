@@ -696,7 +696,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 	for (;;)
 	{
 		/* with prefetching enabled, accumulate enough TIDs into the prefetch */
-		if (PREFETCH_ENABLED(prefetch))
+		if (PREFETCH_ACTIVE(prefetch))
 		{
 			/* 
 			 * incrementally ramp up prefetch distance
@@ -1146,8 +1146,11 @@ index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
 		if (prefetch->blockIndex < i)
 			return false;
 
-		/* index of the already requested buffer */
-		idx = PREFETCH_BLOCK_INDEX(prefetch->blockIndex - i);
+		/*
+		 * index of the already requested buffer (-1 because we already
+		 * incremented the index when adding the block to the queue)
+		 */
+		idx = PREFETCH_BLOCK_INDEX(prefetch->blockIndex - i - 1);
 
 		/*  */
 		if (prefetch->blockItems[idx] != (block - i))

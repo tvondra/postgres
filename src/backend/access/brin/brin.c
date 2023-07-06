@@ -2412,6 +2412,9 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	BrinTuple  *btup;
 	Size		tuplen;
 	BrinShared *brinshared = brinleader->brinshared;
+	BlockNumber	prevblkno = InvalidBlockNumber;
+	BrinTuple  *emptyTuple = NULL;
+	Size		emptySize;
 
 	/* Shutdown worker processes */
 	WaitForParallelWorkersToFinish(brinleader->pcxt);
@@ -2427,19 +2430,56 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 
 	/*
 	 * Read the BRIN tuples from the shared tuplesort, sorted by block number.
-	 * That gives us a clean index that is cheaper to scan, thanks to mostly
+	 * That probably gives us an index that is cheaper to scan, thanks to mostly
 	 * getting data from the same index page as before.
 	 *
-	 * XXX There's one issue, and that's empty ranges - the parallel workers
-	 * are not putting those into the tuplesort (see form_and_spill_tuple),
-	 * so we'll just not have those in the index. We could either accept that
-	 * (on the assumption that there should not be many empty ranges), or we
-	 * could fill them from here.
+	 * FIXME This probably needs some memory management fixes - we're reading
+	 * tuples from the tuplesort, we're allocating an emty tuple, and so on.
+	 * Probably better to release this memory.
+	 *
+	 * XXX We can't quite free the BrinTuple, though, because that's a field
+	 * in BrinSortTuple.
 	 */
 	while ((btup = tuplesort_getbrintuple(state->bs_spool_out->sortstate, &tuplen, true)) != NULL)
 	{
+		/*
+		 * We should not get two summaries for the same range. The workers
+		 * are producing ranges for non-overlapping sections of the table.
+		 */
+		Assert(btup->bt_blkno != prevblkno);
+
+		/* Ranges should be multiples of pages_per_range for the index. */
+		Assert(btup->bt_blkno % brinshared->pagesPerRange == 0);
+
+		/* Fill empty ranges for all ranges missing in the tuplesort. */
+		prevblkno = (prevblkno == InvalidBlockNumber) ? 0 : prevblkno;
+		while (prevblkno + state->bs_pagesPerRange < btup->bt_blkno)
+		{
+			/* the missing range */
+			prevblkno += state->bs_pagesPerRange;
+
+			/* Did we already build the empty range? If not, do it now. */
+			if (emptyTuple == NULL)
+			{
+				BrinMemTuple *dtuple = brin_new_memtuple(state->bs_bdesc);
+
+				emptyTuple = brin_form_tuple(state->bs_bdesc, prevblkno, dtuple, &emptySize);
+			}
+			else
+			{
+				/* we already have am "empty range" tuple, just set the block */
+				emptyTuple->bt_blkno = prevblkno;
+			}
+
+			brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
+						  &state->bs_currentInsertBuf,
+						  emptyTuple->bt_blkno, emptyTuple, emptySize);
+		}
+
 		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
 					  &state->bs_currentInsertBuf, btup->bt_blkno, btup, tuplen);
+
+		prevblkno = btup->bt_blkno;
 	}
 
 	tuplesort_end(state->bs_spool_out->sortstate);

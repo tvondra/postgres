@@ -1664,14 +1664,6 @@ comparetup_index_brin(const SortTuple *a, const SortTuple *b,
 	tuple1 = &((BrinSortTuple *) a)->tuple;
 	tuple2 = &((BrinSortTuple *) b)->tuple;
 
-	/*
-	 * workers should not have overlapping data
-	 *
-	 * XXX Not sure we should have the assert here. Maybe doing this in brin.c
-	 * when reading the output would be more appropriate.
-	 */
-	Assert(tuple1->bt_blkno != tuple2->bt_blkno);
-
 	if (tuple1->bt_blkno > tuple2->bt_blkno)
 		return 1;
 	else if (tuple1->bt_blkno < tuple2->bt_blkno)

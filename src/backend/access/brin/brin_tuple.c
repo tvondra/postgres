@@ -118,7 +118,7 @@ brin_form_tuple(BrinDesc *brdesc, BlockNumber blkno, BrinMemTuple *tuple,
 #endif
 
 	Assert(brdesc->bd_totalstored > 0);
-
+elog(LOG, "brin_form_tuple block %u empty %d", blkno, tuple->bt_empty_range);
 	values = (Datum *) palloc(sizeof(Datum) * brdesc->bd_totalstored);
 	nulls = (bool *) palloc0(sizeof(bool) * brdesc->bd_totalstored);
 	phony_nullbitmap = (bits8 *)

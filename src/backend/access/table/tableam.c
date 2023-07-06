@@ -476,7 +476,7 @@ table_block_parallelscan_startblock_init(Relation rel,
 	{
 		/* nearest (smaller) multiple of chunk_factor */
 		pbscanwork->phsw_chunk_size
-			*= (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
+			= pbscan->phs_chunk_factor * (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
 
 		/* but at least one chunk_factor */
 		pbscanwork->phsw_chunk_size = Max(pbscanwork->phsw_chunk_size,
@@ -607,7 +607,7 @@ table_block_parallelscan_nextpage(Relation rel,
 		{
 			/* nearest (smaller) multiple of chunk_factor */
 			pbscanwork->phsw_chunk_size
-				*= (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
+				= pbscan->phs_chunk_factor * (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
 
 			/* but at least one chunk_factor */
 			pbscanwork->phsw_chunk_size = Max(pbscanwork->phsw_chunk_size,

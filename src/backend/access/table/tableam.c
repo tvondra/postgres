@@ -467,6 +467,9 @@ table_block_parallelscan_startblock_init(Relation rel,
 	/*
 	 * If the chunk size factor is set, we need to make sure the chunk size is
 	 * a multiple of that value.
+	 *
+	 * XXX This may override PARALLEL_SEQSCAN_MAX_CHUNK_SIZE, in case pages_per_range
+	 * is a larger value.
 	 */
 	if (pbscan->phs_chunk_factor != InvalidBlockNumber)
 	{
@@ -590,6 +593,18 @@ table_block_parallelscan_nextpage(Relation rel,
 			pbscanwork->phsw_nallocated > pbscan->phs_nblocks -
 			(pbscanwork->phsw_chunk_size * PARALLEL_SEQSCAN_RAMPDOWN_CHUNKS))
 			pbscanwork->phsw_chunk_size >>= 1;
+
+		/*
+		 * But don't go below the requested chunk factor, and also keep
+		 * it a multiple of the chunk factor.
+		 *
+		 * XXX Maybe do it only during the rampdown.
+		 */
+		{
+			int	nchunks = (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
+
+			pbscanwork->phsw_chunk_size = Max(1, nchunks) * pbscan->phs_chunk_factor;
+		}
 
 		nallocated = pbscanwork->phsw_nallocated =
 			pg_atomic_fetch_add_u64(&pbscan->phs_nallocated,

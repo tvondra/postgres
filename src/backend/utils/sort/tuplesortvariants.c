@@ -1643,8 +1643,6 @@ readtup_index(Tuplesortstate *state, SortTuple *stup,
 static void
 removeabbrev_index_brin(Tuplesortstate *state, SortTuple *stups, int count)
 {
-	// TuplesortPublic *base = TuplesortstateGetPublic(state);
-	// TuplesortIndexBrinArg *arg = (TuplesortIndexBrinArg *) base->arg;
 	int			i;
 
 	for (i = 0; i < count; i++)
@@ -1662,13 +1660,16 @@ comparetup_index_brin(const SortTuple *a, const SortTuple *b,
 {
 	BrinTuple  *tuple1;
 	BrinTuple  *tuple2;
-	// TuplesortPublic *base = TuplesortstateGetPublic(state);
-	// TuplesortIndexBrinArg *arg = (TuplesortIndexBrinArg *) base->arg;
 
 	tuple1 = &((BrinSortTuple *) a)->tuple;
 	tuple2 = &((BrinSortTuple *) b)->tuple;
 
-	/* workers should not have overlapping data */
+	/*
+	 * workers should not have overlapping data
+	 *
+	 * XXX Not sure we should have the assert here. Maybe doing this in brin.c
+	 * when reading the output would be more appropriate.
+	 */
 	Assert(tuple1->bt_blkno != tuple2->bt_blkno);
 
 	if (tuple1->bt_blkno > tuple2->bt_blkno)

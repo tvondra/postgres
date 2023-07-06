@@ -466,16 +466,21 @@ table_block_parallelscan_startblock_init(Relation rel,
 
 	/*
 	 * If the chunk size factor is set, we need to make sure the chunk size is
-	 * a multiple of that value.
+	 * a multiple of that value. We round the chunk size to the nearest chunk
+	 * factor multiple, at least one chunk_factor.
 	 *
-	 * XXX This may override PARALLEL_SEQSCAN_MAX_CHUNK_SIZE, in case pages_per_range
-	 * is a larger value.
+	 * XXX Note this may override PARALLEL_SEQSCAN_MAX_CHUNK_SIZE, in case the
+	 * chunk factor (e.g. BRIN pages_per_range) is larger.
 	 */
 	if (pbscan->phs_chunk_factor != InvalidBlockNumber)
 	{
-		int		nchunks = (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
+		/* nearest (smaller) multiple of chunk_factor */
+		pbscanwork->phsw_chunk_size
+			*= (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
 
-		pbscanwork->phsw_chunk_size = Max(1, nchunks) * pbscan->phs_chunk_factor;
+		/* but at least one chunk_factor */
+		pbscanwork->phsw_chunk_size = Max(pbscanwork->phsw_chunk_size,
+										  pbscan->phs_chunk_factor);
 	}
 
 retry:
@@ -595,15 +600,18 @@ table_block_parallelscan_nextpage(Relation rel,
 			pbscanwork->phsw_chunk_size >>= 1;
 
 		/*
-		 * But don't go below the requested chunk factor, and also keep
-		 * it a multiple of the chunk factor.
-		 *
-		 * XXX Maybe do it only during the rampdown.
+		 * We need to make sure the new chunk_size is still a suitable multiple
+		 * of chunk_factor.
 		 */
+		if (pbscan->phs_chunk_factor != InvalidBlockNumber)
 		{
-			int	nchunks = (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
+			/* nearest (smaller) multiple of chunk_factor */
+			pbscanwork->phsw_chunk_size
+				*= (pbscanwork->phsw_chunk_size / pbscan->phs_chunk_factor);
 
-			pbscanwork->phsw_chunk_size = Max(1, nchunks) * pbscan->phs_chunk_factor;
+			/* but at least one chunk_factor */
+			pbscanwork->phsw_chunk_size = Max(pbscanwork->phsw_chunk_size,
+											  pbscan->phs_chunk_factor);
 		}
 
 		nallocated = pbscanwork->phsw_nallocated =

@@ -93,9 +93,6 @@ typedef struct BrinShared
 	 */
 	slock_t		mutex;
 
-	/* XXX Probably not needed. Identifies the worker. */
-	int			last_worker_id;
-
 	/*
 	 * Mutable state that is maintained by workers, and reported back to
 	 * leader at end of the scans.
@@ -966,8 +963,9 @@ brinbuildCallback(Relation index,
 /*
  * A version of the callback, used by parallel index builds. The main difference
  * is that instead of writing the BRIN tuples into the index, we write them into
- * a temporary file, and leave the insertion up to the leader (which may reorder
- * them a bit etc.).
+ * a shared tuplestore file, and leave the insertion up to the leader (which may
+ * reorder them a bit etc.). The callback also does not generate empty ranges,
+ * those may be added by the leader when merging results from workers.
  */
 static void
 brinbuildCallbackParallel(Relation index,
@@ -1879,8 +1877,8 @@ form_and_insert_tuple(BrinBuildState *state)
 
 /*
  * Given a deformed tuple in the build state, convert it into the on-disk
- * format and write it to a temporary file (leader will insert it into the
- * index later).
+ * format and write it to a (shared) tuplestore (the leader will insert it
+ * into the index later).
  */
 static void
 form_and_spill_tuple(BrinBuildState *state)
@@ -1895,7 +1893,7 @@ form_and_spill_tuple(BrinBuildState *state)
 	tup = brin_form_tuple(state->bs_bdesc, state->bs_currRangeStart,
 						  state->bs_dtuple, &size);
 
-	/* XXX write the tuple to the tuplesort */
+	/* write the BRIN tuple to the tuplesort */
 	tuplesort_putbrintuple(state->bs_spool->sortstate, tup, size);
 
 	state->bs_numtuples++;
@@ -2331,9 +2329,6 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	brinshared->reltuples = 0.0;
 	brinshared->indtuples = 0.0;
 
-	/* Track work assigned to workers etc. */
-	brinshared->last_worker_id = 0;
-
 	table_parallelscan_initialize(heap,
 								  ParallelTableScanFromBrinShared(brinshared),
 								  snapshot, brinshared->pagesPerRange);
@@ -2431,24 +2426,15 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	tuplesort_performsort(state->bs_spool_out->sortstate);
 
 	/*
-	 * XXX maybe we should sort the ranges by rangeStart? That'd give us index
-	 * that is cheaper to walk sequentially, because we'd not have any page
-	 * misses (mostly getting data from the same page as before). Although the
-	 * index should be pretty small in general, and thus cached. OTOH each
-	 * worker should produce tuples in the right order, so we could just merge
-	 * sort them.
+	 * Read the BRIN tuples from the shared tuplesort, sorted by block number.
+	 * That gives us a clean index that is cheaper to scan, thanks to mostly
+	 * getting data from the same index page as before.
 	 *
-	 * XXX Alternatively, we could arrange the build so that the workers read
-	 * a continuous chunk of the table. For example, with K workers we might
-	 * leave the first 1/K to the first worker, then 1/K to the second etc.
-	 * The we would not need to reorder anything, we would just read the
-	 * results for all workers.
-	 *
-	 * XXX That's also mean we don't do many small TID scans, as now.
-	 *
-	 * The problem is we don't know how many workers will be started while
-	 * determining this, but maybe we could postpone that decision somehow?
-	 * We'd have to wait for all the launched workers to attach, I guess.
+	 * XXX There's one issue, and that's empty ranges - the parallel workers
+	 * are not putting those into the tuplesort (see form_and_spill_tuple),
+	 * so we'll just not have those in the index. We could either accept that
+	 * (on the assumption that there should not be many empty ranges), or we
+	 * could fill them from here.
 	 */
 	while ((btup = tuplesort_getbrintuple(state->bs_spool_out->sortstate, &tuplen, true)) != NULL)
 	{
@@ -2508,12 +2494,6 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 	/* Perform work common to all participants */
 	_brin_parallel_scan_and_build(buildstate, buildstate->bs_spool, brinleader->brinshared,
 								  brinleader->sharedsort, heap, index, sortmem, true);
-
-	/* insert the last range */
-	// form_and_spill_tuple(buildstate);
-
-	// BufFileClose(buildstate->bs_file);
-	// buildstate->bs_file = NULL;
 }
 
 /*
@@ -2538,7 +2518,6 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinSpool *brinspool,
 	TableScanDesc	scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-	char		name[MAXPGPATH];
 
 	/* Initialize local tuplesort coordination state */
 	coordinate = palloc0(sizeof(SortCoordinateData));
@@ -2556,14 +2535,6 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinSpool *brinspool,
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = brinshared->isconcurrent;
 
-	SpinLockAcquire(&brinshared->mutex);
-	state->bs_worker_id = (++brinshared->last_worker_id);
-	SpinLockRelease(&brinshared->mutex);
-
-	snprintf(name, MAXPGPATH, "tuples.%d", state->bs_worker_id);
-
-//	state->bs_file = BufFileCreateFileSet(&brinshared->fileset.fs, name);
-
 	scan = table_beginscan_parallel(heap,
 									ParallelTableScanFromBrinShared(brinshared));
 
@@ -2573,7 +2544,7 @@ _brin_parallel_scan_and_build(BrinBuildState *state, BrinSpool *brinspool,
 	/* insert the last item */
 	form_and_spill_tuple(state);
 
-	/*  */
+	/* sort the BRIN ranges built by this worker */
 	tuplesort_performsort(brinspool->sortstate);
 
 	state->bs_reltuples += reltuples;
@@ -2655,24 +2626,19 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
 	tuplesort_attach_shared(sharedsort, seg);
 
-	/* Attach to the shared fileset. */
-	// SharedFileSetAttach(&brinshared->fileset, seg);
-
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
-	/* FIXME tie this to number of participants, somehow */
-	sortmem = maintenance_work_mem / 2;
+	/*
+	 * Might as well use reliable figure when doling out maintenance_work_mem
+	 * (when requested number of workers were not launched, this will be
+	 * somewhat higher than it is for other workers).
+	 */
+	sortmem = maintenance_work_mem / brinshared->scantuplesortstates;
 
 	_brin_parallel_scan_and_build(buildstate, buildstate->bs_spool,
 								  brinshared, sharedsort,
 								  heapRel, indexRel, sortmem, false);
-
-	/* insert the last range */
-	// form_and_spill_tuple(buildstate);
-
-	// BufFileClose(buildstate->bs_file);
-	// buildstate->bs_file = NULL;
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

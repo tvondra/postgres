@@ -149,16 +149,20 @@ typedef struct
 	int			datumTypeLen;
 } TuplesortDatumArg;
 
-
 /*
- * Can't compute length of BrinTuple easily, so let's just store it with the
- * actual tuple.
+ * Computing BrinTuple size with only the tuple is difficult, so we want to track
+ * the length for r referenced by SortTuple. That's what BrinSortTuple is meant
+ * to do - it's essentially a BrinTuple prefixed by length. We only write the
+ * BrinTuple to the logtapes, though.
  */
 typedef struct BrinSortTuple
 {
 	Size		tuplen;
 	BrinTuple	tuple;
 } BrinSortTuple;
+
+/* Size of the BrinSortTuple, given length of the BrinTuple. */
+#define BRINSORTTUPLE_SIZE(len)		(offsetof(BrinSortTuple, tuple) + (len))
 
 
 Tuplesortstate *
@@ -775,10 +779,8 @@ tuplesort_putbrintuple(Tuplesortstate *state, BrinTuple *tuple, Size size)
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	MemoryContext oldcontext = MemoryContextSwitchTo(base->tuplecontext);
 
-	elog(LOG, "tuplesort_putbrintuple %ld block %u", size, tuple->bt_blkno);
-
-	// TuplesortIndexBrinArg *arg = (TuplesortIndexBrinArg *) base->arg;
-	bstup = palloc(offsetof(BrinSortTuple, tuple) + size);
+	/* allocate space for the whole BRIN sort tuple */
+	bstup = palloc(BRINSORTTUPLE_SIZE(size));
 	stup.tuple = bstup;
 
 	bstup->tuplen = size;
@@ -1685,8 +1687,6 @@ writetup_index_brin(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
 	BrinSortTuple  *tuple = (BrinSortTuple *) stup->tuple;
 	unsigned int	tuplen = tuple->tuplen;
 
-// elog(LOG, "writetup_index_brin tape %p len %ld block %u", tape, tuplen, tuple->tuple.bt_blkno);
-
 	tuplen = tuplen + sizeof(tuplen);
 	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
 	LogicalTapeWrite(tape, &tuple->tuple, tuple->tuplen);
@@ -1699,12 +1699,15 @@ readtup_index_brin(Tuplesortstate *state, SortTuple *stup,
 				   LogicalTape *tape, unsigned int len)
 {
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
-	// TuplesortIndexBrinArg *arg = (TuplesortIndexBrinArg *) base->arg;
 	unsigned int tuplen = len - sizeof(unsigned int);
 
+	/*
+	 * Allocate space for the BRIN sort tuple, which is BrinTuple with an
+	 * extra length field.
+	 */
 	BrinSortTuple *tuple
 		= (BrinSortTuple *) tuplesort_readtup_alloc(state,
-								offsetof(BrinSortTuple, tuple) + tuplen);
+													BRINSORTTUPLE_SIZE(tuplen));
 
 	tuple->tuplen = tuplen;
 
@@ -1712,10 +1715,9 @@ readtup_index_brin(Tuplesortstate *state, SortTuple *stup,
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
 	stup->tuple = (void *) tuple;
-	/* set up first-column key value */
-	stup->datum1 = tuple->tuple.bt_blkno;
 
-elog(LOG, "readtup_index_brin tape %p len %ld (%ld) block %u", tape, tuplen, len, tuple->tuple.bt_blkno);
+	/* set up first-column key value, which is block number */
+	stup->datum1 = tuple->tuple.bt_blkno;
 }
 
 /*

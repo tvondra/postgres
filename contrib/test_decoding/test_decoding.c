@@ -29,6 +29,7 @@ typedef struct
 	MemoryContext context;
 	bool		include_xids;
 	bool		include_timestamp;
+	bool		include_sequences;
 	bool		skip_empty_xacts;
 	bool		only_local;
 } TestDecodingData;
@@ -169,7 +170,6 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	ListCell   *option;
 	TestDecodingData *data;
 	bool		enable_streaming = false;
-	bool		enable_sequences = false;
 
 	data = palloc0(sizeof(TestDecodingData));
 	data->context = AllocSetContextCreate(ctx->context,
@@ -179,6 +179,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	data->include_timestamp = false;
 	data->skip_empty_xacts = false;
 	data->only_local = false;
+	data->include_sequences = false;
 
 	ctx->output_plugin_private = data;
 
@@ -272,10 +273,9 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 		else if (strcmp(elem->defname, "include-sequences") == 0)
 		{
-
 			if (elem->arg == NULL)
-				continue;
-			else if (!parse_bool(strVal(elem->arg), &enable_sequences))
+				data->include_sequences = true;
+			else if (!parse_bool(strVal(elem->arg), &data->include_sequences))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("could not parse value \"%s\" for parameter \"%s\"",
@@ -291,11 +291,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 	}
 
-	/* remember the user explicitly requested sequences, otherwise the */
-	ctx->sequences_opt_given = enable_sequences;
-
 	ctx->streaming &= enable_streaming;
-	ctx->sequences &= enable_sequences;
 }
 
 /* cleanup this plugin's resources */
@@ -797,6 +793,9 @@ pg_decode_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	TestDecodingData *data = ctx->output_plugin_private;
 	TestDecodingTxnData *txndata = txn->output_plugin_private;
 
+	if (!data->include_sequences)
+		return;
+
 	/* output BEGIN if we haven't yet, but only for the transactional case */
 	if (transactional)
 	{
@@ -1024,6 +1023,9 @@ pg_decode_stream_sequence(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 {
 	TestDecodingData *data = ctx->output_plugin_private;
 	TestDecodingTxnData *txndata = txn->output_plugin_private;
+
+	if (!data->include_sequences)
+		return;
 
 	/* output BEGIN if we haven't yet, but only for the transactional case */
 	if (transactional)

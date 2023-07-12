@@ -4741,20 +4741,8 @@ ApplyWorkerMain(Datum main_arg)
 		MyLogicalRepWorker->parallel_apply = false;
 	}
 
-	options.proto.logical.sequences = false;
 	options.proto.logical.twophase = false;
 	options.proto.logical.origin = pstrdup(MySubscription->origin);
-
-	/*
-	 * Assign the appropriate option value for sequence decoding option according
-	 * to the 'sequences' mode and the publisher's ability to support that mode.
-	 *
-	 * XXX Isn't this redundant with the version check in libpqwalreceiver.c, using
-	 * PQserverVersion(conn->streamConn)?
-	 */
-	if (server_version >= 170000 &&
-		MySubscription->sequences)
-		options.proto.logical.sequences = true;
 
 	if (!am_tablesync_worker())
 	{

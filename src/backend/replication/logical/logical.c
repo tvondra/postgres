@@ -606,18 +606,6 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 	MemoryContextSwitchTo(old_context);
 
 	/*
-	 * We allow decoding of sequences when the option is given at the streaming
-	 * start, provided the plugin supports all the callbacks for two-phase.
-	 *
-	 * XXX Similar behavior to the two-phase block below.
-	 *
-	 * XXX Shouldn't this error out if the callbacks are not defined? That is,
-	 * if the client requests sequences for pluging that does not support
-	 * sequences, maybe we should error-out instead of silently ignoring it.
-	 */
-	ctx->sequences &= ctx->sequences_opt_given;
-
-	/*
 	 * We allow decoding of prepared transactions when the two_phase is
 	 * enabled at the time of slot creation, or when the two_phase option is
 	 * given at the streaming start, provided the plugin supports all the

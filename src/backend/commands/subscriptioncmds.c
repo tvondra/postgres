@@ -71,7 +71,6 @@
 #define SUBOPT_RUN_AS_OWNER			0x00001000
 #define SUBOPT_LSN					0x00002000
 #define SUBOPT_ORIGIN				0x00004000
-#define SUBOPT_SEQUENCES			0x00004000
 
 /* check if the 'val' has 'bits' set */
 #define IsSet(val, bits)  (((val) & (bits)) == (bits))
@@ -93,7 +92,6 @@ typedef struct SubOpts
 	bool		binary;
 	char		streaming;
 	bool		twophase;
-	bool		sequences;
 	bool		disableonerr;
 	bool		passwordrequired;
 	bool		runasowner;
@@ -148,8 +146,6 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 		opts->refresh = true;
 	if (IsSet(supported_opts, SUBOPT_BINARY))
 		opts->binary = false;
-	if (IsSet(supported_opts, SUBOPT_SEQUENCES))
-		opts->sequences = true;
 	if (IsSet(supported_opts, SUBOPT_STREAMING))
 		opts->streaming = LOGICALREP_STREAM_OFF;
 	if (IsSet(supported_opts, SUBOPT_TWOPHASE_COMMIT))
@@ -259,15 +255,6 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 
 			opts->specified_opts |= SUBOPT_STREAMING;
 			opts->streaming = defGetStreamingMode(defel);
-		}
-		else if (IsSet(supported_opts, SUBOPT_SEQUENCES) &&
-				 strcmp(defel->defname, "sequences") == 0)
-		{
-			if (IsSet(opts->specified_opts, SUBOPT_SEQUENCES))
-				errorConflictingDefElem(defel, pstate);
-
-			opts->specified_opts |= SUBOPT_SEQUENCES;
-			opts->sequences = defGetBoolean(defel);
 		}
 		else if (strcmp(defel->defname, "two_phase") == 0)
 		{
@@ -605,7 +592,7 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 					  SUBOPT_SYNCHRONOUS_COMMIT | SUBOPT_BINARY |
 					  SUBOPT_STREAMING | SUBOPT_TWOPHASE_COMMIT |
 					  SUBOPT_DISABLE_ON_ERR | SUBOPT_PASSWORD_REQUIRED |
-					  SUBOPT_RUN_AS_OWNER | SUBOPT_ORIGIN | SUBOPT_SEQUENCES);
+					  SUBOPT_RUN_AS_OWNER | SUBOPT_ORIGIN);
 	parse_subscription_options(pstate, stmt->options, supported_opts, &opts);
 
 	/*
@@ -704,7 +691,6 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(opts.enabled);
 	values[Anum_pg_subscription_subbinary - 1] = BoolGetDatum(opts.binary);
 	values[Anum_pg_subscription_substream - 1] = CharGetDatum(opts.streaming);
-	values[Anum_pg_subscription_subsequences - 1] = CharGetDatum(opts.sequences);
 	values[Anum_pg_subscription_subtwophasestate - 1] =
 		CharGetDatum(opts.twophase ?
 					 LOGICALREP_TWOPHASE_STATE_PENDING :
@@ -1192,13 +1178,6 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					values[Anum_pg_subscription_subbinary - 1] =
 						BoolGetDatum(opts.binary);
 					replaces[Anum_pg_subscription_subbinary - 1] = true;
-				}
-
-				if (IsSet(opts.specified_opts, SUBOPT_SEQUENCES))
-				{
-					values[Anum_pg_subscription_subsequences - 1] =
-						BoolGetDatum(opts.sequences);
-					replaces[Anum_pg_subscription_subsequences - 1] = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_STREAMING))

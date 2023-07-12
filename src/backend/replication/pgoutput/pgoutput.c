@@ -290,7 +290,6 @@ parse_output_parameters(List *options, PGOutputData *data)
 	bool		publication_names_given = false;
 	bool		binary_option_given = false;
 	bool		messages_option_given = false;
-	bool		sequences_option_given = false;
 	bool		streaming_given = false;
 	bool		two_phase_option_given = false;
 	bool		origin_option_given = false;
@@ -299,7 +298,6 @@ parse_output_parameters(List *options, PGOutputData *data)
 	data->streaming = LOGICALREP_STREAM_OFF;
 	data->messages = false;
 	data->two_phase = false;
-	data->sequences = false;
 
 	foreach(lc, options)
 	{
@@ -367,16 +365,6 @@ parse_output_parameters(List *options, PGOutputData *data)
 			messages_option_given = true;
 
 			data->messages = defGetBoolean(defel);
-		}
-		else if (strcmp(defel->defname, "sequences") == 0)
-		{
-			if (sequences_option_given)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-			sequences_option_given = true;
-
-			data->sequences = defGetBoolean(defel);
 		}
 		else if (strcmp(defel->defname, "streaming") == 0)
 		{
@@ -521,27 +509,6 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 					 errmsg("two-phase commit requested, but not supported by output plugin")));
 		else
 			ctx->twophase_opt_given = true;
-
-		/*
-		 * Here, we just check whether the sequences decoding option is passed
-		 * by plugin and decide whether to enable it at later point of time. It
-		 * remains enabled if the previous start-up has done so. But we only
-		 * allow the option to be passed in with sufficient version of the
-		 * protocol, and when the output plugin supports it.
-		 */
-		if (!data->sequences)
-			ctx->sequences_opt_given = false;
-		else if (data->protocol_version < LOGICALREP_PROTO_SEQUENCES_VERSION_NUM)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("requested proto_version=%d does not support sequences, need %d or higher",
-							data->protocol_version, LOGICALREP_PROTO_SEQUENCES_VERSION_NUM)));
-		else if (!ctx->sequences)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("sequences requested, but not supported by output plugin")));
-		else
-			ctx->sequences_opt_given = true;
 
 		/* Init publication state. */
 		data->publications = NIL;
@@ -1716,11 +1683,17 @@ pgoutput_sequence(LogicalDecodingContext *ctx,
 	TransactionId xid = InvalidTransactionId;
 	RelationSyncEntry *relentry;
 
-	if (!data->sequences)
-		return;
-
 	if (!is_publishable_relation(relation))
 		return;
+
+	/*
+	 * If the negotiated protocol version does not support sequences, yet we
+	 * found a sequence in the publication, error out.
+	 */
+	if (data->protocol_version < LOGICALREP_PROTO_SEQUENCES_VERSION_NUM)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				errmsg("protocol version does not support sequence replication")));
 
 	/*
 	 * Remember the xid for the message in streaming mode. See

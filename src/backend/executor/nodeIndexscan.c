@@ -147,7 +147,6 @@ IndexNext(IndexScanState *node)
 	{
 		bool	has_index_tuple = false;
 		bool	filter_checked;
-		ItemPointer tid;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -161,6 +160,8 @@ IndexNext(IndexScanState *node)
 
 			if (!scandesc->xs_heap_continue)
 			{
+				ItemPointer tid;
+
 				/* Time to fetch the next TID from the index */
 				tid = index_getnext_tid(scandesc, direction);
 
@@ -171,6 +172,9 @@ IndexNext(IndexScanState *node)
 				Assert(ItemPointerEquals(tid, &scandesc->xs_heaptid));
 			}
 
+			/* Make sure we have a valid item pointer. */
+			Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
+
 			/*
 			 * If there are index clauses, try to evaluate the filter on the index
 			 * tuple first, and only when it fails try the index tuple.
@@ -179,6 +183,8 @@ IndexNext(IndexScanState *node)
 			 */
 			if (node->indexfilters != NULL)
 			{
+				ItemPointer tid = &scandesc->xs_heaptid;
+
 				/*
 				 * XXX see nodeIndexonlyscan.c, but inverse - we only do this when
 				 * we can check some filters on the index tuple.
@@ -245,7 +251,6 @@ IndexNext(IndexScanState *node)
 			 * If we don't find anything, loop around and grab the next TID from
 			 * the index.
 			 */
-			Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
 			if (index_fetch_heap(scandesc, slot))
 			{
 				has_index_tuple = true;

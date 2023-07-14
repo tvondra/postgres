@@ -404,10 +404,12 @@ index_endscan(IndexScanDesc scan)
 	{
 		IndexPrefetch prefetch = scan->xs_prefetch;
 
-		elog(LOG, "index prefetch stats: requests %lu prefetches %lu (%f) skip cached %lu sequential %lu",
-			 prefetch->countAll, prefetch->countPrefetch,
+		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
+			 prefetch->countAll,
+			 prefetch->countPrefetch,
 			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
-			 prefetch->countSkipCached, prefetch->countSkipSequential);
+			 prefetch->countSkipCached,
+			 prefetch->countSkipSequential);
 	}
 
 	/* Release the scan data structure itself */

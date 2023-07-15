@@ -33,6 +33,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexscan.h"
@@ -231,7 +232,20 @@ IndexNext(IndexScanState *node)
 					else
 						elog(ERROR, "no data returned for index-only scan");
 
-					/* run the expressions */
+					/* run the expressions
+					 *
+					 * XXX This does not work, because for some indexes the index key type
+					 * may differ from the table attribute type. This happens when the
+					 * (pg_opclass.opcintype != opckeytype). There's about 10 such built-in
+					 * opclasses, e.g. name_ops creates cstring on name columns. A good
+					 * example is pg_namespace.nspname, with the index on nspname causing
+					 * trouble for \dT.
+					 *
+					 * One option would be to tweak the type for the Var, but I'm not sure
+					 * that's actually correct. Surely some of the types may not be binary
+					 * compatible (e.g. jsonb_ops has opcintype=jsonb and opckeytype=text).
+					 * So maybe we should just disable index-only filters for such cases.
+					 */
 					econtext->ecxt_scantuple = node->iss_IndexSlot;
 
 					/* check the filters pushed to the index-tuple level */
@@ -1129,9 +1143,47 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
 	indexstate->iss_RelationDesc = index_open(node->indexid, lockmode);
 
-	indexstate->iss_IndexSlot
-		= MakeSingleTupleTableSlot(RelationGetDescr(indexstate->iss_RelationDesc),
-								   &TTSOpsVirtual);
+	/*
+	 * We need another slot, for when we need to evaluate index-only filters.
+	 * This slot uses a descriptor that is almost like a the index descriptor,
+	 * but except that we need to tweak types for attributes where the opclass
+	 * changes the type (because opcintype != opckeytype). A prime example of
+	 * such opclass is name_ops, which indexes "name" as "cstring".
+	 */
+	{
+		TupleDesc tableDesc = RelationGetDescr(currentRelation);
+		TupleDesc indexDesc = CreateTupleDescCopy(RelationGetDescr(indexstate->iss_RelationDesc));
+		IndexInfo *iinfo = BuildIndexInfo(indexstate->iss_RelationDesc);
+
+		for (int i = 0; i < iinfo->ii_NumIndexAttrs; i++)
+		{
+			AttrNumber attnum = iinfo->ii_IndexAttrNumbers[i];
+			Form_pg_attribute indexAtt = TupleDescAttr(indexDesc, i);
+
+			/*
+			 * ignore expressions
+			 *
+			 * XXX Actually, are we matching expressions to the index? Probably
+			 * not, and we should, but it might make things more complex because
+			 * then we can't have the same lists of expressions for table/index.
+			 * The table has to reference columns, index can replace parts with
+			 * references to index expressions.
+			 *
+			 * XXX Is this even safe? What if the opcintype and opckeytype are
+			 * not binary compatible?
+			 */
+			if (attnum > 0)
+			{
+				Form_pg_attribute tableAtt = TupleDescAttr(tableDesc, attnum - 1);
+
+				if (tableAtt->atttypid != indexAtt->atttypid)
+					indexAtt->atttypid = tableAtt->atttypid;
+			}
+		}
+
+		indexstate->iss_IndexSlot
+			= MakeSingleTupleTableSlot(indexDesc, &TTSOpsVirtual);
+	}
 
 	/*
 	 * Initialize index-specific scan state

@@ -73,7 +73,8 @@ static HeapTuple reorderqueue_pop(IndexScanState *node);
 
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
 							TupleDesc itupdesc, IndexInfo *iinfo);
-
+static void StoreHeapTuple(TupleTableSlot *slot, HeapTuple tup,
+						   TupleDesc tupdesc, IndexInfo *iinfo);
 
 /* ----------------------------------------------------------------
  *		IndexNext
@@ -216,18 +217,8 @@ IndexNext(IndexScanState *node)
 					 */
 					if (scandesc->xs_hitup)
 					{
-						/*
-						 * We don't take the trouble to verify that the provided tuple has
-						 * exactly the slot's format, but it seems worth doing a quick
-						 * check on the number of fields.
-						 *
-						 * FIXME This is probably broken, because nodeIndexonlyscan (where
-						 * this is copied from) the two slots are the same. But here that's
-						 * not the case, the index and scan slots are different.
-						 */
-						Assert(slot->tts_tupleDescriptor->natts ==
-							   scandesc->xs_hitupdesc->natts);
-						ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+						StoreHeapTuple(node->iss_TableSlot, scandesc->xs_hitup,
+									   scandesc->xs_hitupdesc, node->iss_IndexInfo);
 					}
 					else if (scandesc->xs_itup)
 						StoreIndexTuple(node->iss_TableSlot, scandesc->xs_itup,
@@ -1963,6 +1954,49 @@ StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc, Index
 			slot->tts_values[attnum - 1] = values[i];
 		}
 	}
+
+	pfree(values);
+	pfree(isnull);
+
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * StoreHeapTuple
+ *		Fill the slot with data from the heap tuple (from the index).
+ *
+ * At some point this might be generally-useful functionality, but
+ * right now we don't need it elsewhere.
+ */
+static void
+StoreHeapTuple(TupleTableSlot *slot, HeapTuple tup, TupleDesc tupdesc, IndexInfo *iinfo)
+{
+	bool   *isnull;
+	Datum  *values;
+
+	isnull = palloc0(tupdesc->natts * sizeof(bool));
+	values = palloc0(tupdesc->natts * sizeof(Datum));
+
+	/* expand the index tuple */
+	heap_deform_tuple(tup, tupdesc, values, isnull);
+
+	/* now fill the values from the index tuple into the table slot */
+	ExecClearTuple(slot);
+
+	for (int i = 0; i < iinfo->ii_NumIndexAttrs; i++)
+	{
+		AttrNumber	attnum = iinfo->ii_IndexAttrNumbers[i];
+
+		/* skip expressions */
+		if (attnum > 0)
+		{
+			slot->tts_isnull[attnum - 1] = isnull[i];
+			slot->tts_values[attnum - 1] = values[i];
+		}
+	}
+
+	pfree(values);
+	pfree(isnull);
 
 	ExecStoreVirtualTuple(slot);
 }

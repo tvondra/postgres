@@ -5030,6 +5030,15 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
 	*fixed_indexquals_p = fixed_indexquals;
 }
 
+/*
+ * fix_indexfilter_references
+ *	  Adjust indexfilter clauses to the form the executor's indexfilter
+ *	  machinery needs.
+ *
+ * XXX This does pretty much exactly what fix_indexqual_references does, except
+ * that it doesn't switch the Vars to point to the index attnum (we'll expand
+ * the index tuple into the heap tuple and run the expression on that).
+ */
 static void
 fix_indexfilter_references(PlannerInfo *root, IndexPath *index_path,
 						 List **stripped_indexfilters_p, List **fixed_indexfilters_p)
@@ -5153,88 +5162,23 @@ fix_indexqual_clause(PlannerInfo *root, IndexOptInfo *index, int indexcol,
 	return clause;
 }
 
-typedef struct
-{
-	PlannerInfo	   *root;
-	IndexOptInfo   *index;
-} fix_indexfilter_context;
-
-static Node *
-fix_indexfilter_mutator(Node *node, fix_indexfilter_context *context)
-{
-	IndexOptInfo *index = context->index;
-
-	if (node == NULL)
-		return NULL;
-
-	/*
-	 * Remove any binary-compatible relabeling of the indexkey
-	 */
-	if (IsA(node, RelabelType))
-		node = (Node *) ((RelabelType *) node)->arg;
-
-	/* It's a simple index column */
-	if (IsA(node, Var) &&
-		((Var *) node)->varno == index->rel->relid)
-	{
-		Var		   *result;
-		Var *var = (Var *) node;
-		AttrNumber	attnum = InvalidAttrNumber;
-
-		for (int i = 0; i < index->ncolumns; i++)
-		{
-			if (index->indexkeys[i] == var->varattno)
-			{
-				attnum = (i + 1);
-				break;
-			}
-		}
-		
-		Assert(attnum != InvalidAttrNumber);
-
-		result = (Var *) copyObject(node);
-		result->varno = INDEX_VAR;
-		result->varattno = attnum;
-
-		return (Node *) result;
-	}
-
-	return expression_tree_mutator(node, fix_indexfilter_mutator,
-								   (void *) context);
-}
-
 /*
  * fix_indexfilter_clause
  *	  Convert a single indexqual clause to the form needed by the executor.
  *
- * We replace nestloop params here, and replace the index key variables
- * or expressions by index Var nodes.
- *
- * XXX I'm not sure why this is done this early in createplan.c and not later
- * in setrefs.c, which is where these things generally happen.
- *
- * XXX I'm also not sure why fix_indexqual_operand() doesn't use tree walker,
- * but instead does all this manually. Is there a reason, or was this just
- * simpler, considering how restricted the regular index clauses are? Or
- * did it just precede the walker infrastructure, perhaps?
+ * We only replace nestloop params here. The Vars are left pointing to the
+ * table varno.
  */
 static Node *
 fix_indexfilter_clause(PlannerInfo *root, IndexOptInfo *index, Node *clause)
 {
-	fix_indexfilter_context context;
-
 	/*
 	 * Replace any outer-relation variables with nestloop params.
 	 *
 	 * This also makes a copy of the clause, so it's safe to modify it
-	 * in-place below.
+	 * in-place below (not done, actually).
 	 */
-	clause = replace_nestloop_params(root, clause);
-
-	context.root = root;
-	context.index = index;
-
-	return fix_indexfilter_mutator(clause, &context);
+	return replace_nestloop_params(root, clause);
 }
 
 /*

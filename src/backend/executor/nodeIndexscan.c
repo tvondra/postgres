@@ -73,7 +73,7 @@ static HeapTuple reorderqueue_pop(IndexScanState *node);
 
 
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
-							TupleDesc itupdesc);
+							TupleDesc itupdesc, IndexInfo *iinfo);
 
 
 /* ----------------------------------------------------------------
@@ -227,8 +227,8 @@ IndexNext(IndexScanState *node)
 						ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
 					}
 					else if (scandesc->xs_itup)
-						StoreIndexTuple(node->iss_IndexSlot, scandesc->xs_itup,
-										scandesc->xs_itupdesc);
+						StoreIndexTuple(node->iss_TableSlot, scandesc->xs_itup,
+										scandesc->xs_itupdesc, node->iss_IndexInfo);
 					else
 						elog(ERROR, "no data returned for index-only scan");
 
@@ -246,7 +246,7 @@ IndexNext(IndexScanState *node)
 					 * compatible (e.g. jsonb_ops has opcintype=jsonb and opckeytype=text).
 					 * So maybe we should just disable index-only filters for such cases.
 					 */
-					econtext->ecxt_scantuple = node->iss_IndexSlot;
+					econtext->ecxt_scantuple = node->iss_TableSlot;
 
 					/* check the filters pushed to the index-tuple level */
 					if (!ExecQual(node->indexfilters, econtext))
@@ -959,8 +959,8 @@ ExecEndIndexScan(IndexScanState *node)
 		node->iss_VMBuffer = InvalidBuffer;
 	}
 
-	if (node->iss_IndexSlot != NULL)
-		ExecDropSingleTupleTableSlot(node->iss_IndexSlot);
+//	if (node->iss_TableSlot != NULL)
+//		ExecDropSingleTupleTableSlot(node->iss_TableSlot);
 
 	/*
 	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
@@ -1143,47 +1143,60 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
 	indexstate->iss_RelationDesc = index_open(node->indexid, lockmode);
 
+//	/*
+//	 * We need another slot, for when we need to evaluate index-only filters.
+//	 * This slot uses a descriptor that is almost like a the index descriptor,
+//	 * but except that we need to tweak types for attributes where the opclass
+//	 * changes the type (because opcintype != opckeytype). A prime example of
+//	 * such opclass is name_ops, which indexes "name" as "cstring".
+//	 */
+//	{
+//		TupleDesc tableDesc = RelationGetDescr(currentRelation);
+//		TupleDesc indexDesc = CreateTupleDescCopy(RelationGetDescr(indexstate->iss_RelationDesc));
+//		IndexInfo *iinfo = BuildIndexInfo(indexstate->iss_RelationDesc);
+//
+//		for (int i = 0; i < iinfo->ii_NumIndexAttrs; i++)
+//		{
+//			AttrNumber attnum = iinfo->ii_IndexAttrNumbers[i];
+//			Form_pg_attribute indexAtt = TupleDescAttr(indexDesc, i);
+//
+//			/*
+//			 * ignore expressions
+//			 *
+//			 * XXX Actually, are we matching expressions to the index? Probably
+//			 * not, and we should, but it might make things more complex because
+//			 * then we can't have the same lists of expressions for table/index.
+//			 * The table has to reference columns, index can replace parts with
+//			 * references to index expressions.
+//			 *
+//			 * XXX Is this even safe? What if the opcintype and opckeytype are
+//			 * not binary compatible?
+//			 */
+//			if (attnum > 0)
+//			{
+//				Form_pg_attribute tableAtt = TupleDescAttr(tableDesc, attnum - 1);
+//
+//				if (tableAtt->atttypid != indexAtt->atttypid)
+//					indexAtt->atttypid = tableAtt->atttypid;
+//			}
+//		}
+//
+//		indexstate->iss_IndexSlot
+//			= MakeSingleTupleTableSlot(indexDesc, &TTSOpsVirtual);
+//	}
+
 	/*
-	 * We need another slot, for when we need to evaluate index-only filters.
-	 * This slot uses a descriptor that is almost like a the index descriptor,
-	 * but except that we need to tweak types for attributes where the opclass
-	 * changes the type (because opcintype != opckeytype). A prime example of
-	 * such opclass is name_ops, which indexes "name" as "cstring".
+	 * We need another slot, in a format that's suitable for the table AM, for
+	 * when we need to evaluate index-only filter on data from index tuple.
+	 *
+	 * XXX Maybe this could use the scan tuple slot?
 	 */
-	{
-		TupleDesc tableDesc = RelationGetDescr(currentRelation);
-		TupleDesc indexDesc = CreateTupleDescCopy(RelationGetDescr(indexstate->iss_RelationDesc));
-		IndexInfo *iinfo = BuildIndexInfo(indexstate->iss_RelationDesc);
+	indexstate->iss_TableSlot =
+		ExecAllocTableSlot(&estate->es_tupleTable,
+						   RelationGetDescr(currentRelation),
+						   table_slot_callbacks(currentRelation));
 
-		for (int i = 0; i < iinfo->ii_NumIndexAttrs; i++)
-		{
-			AttrNumber attnum = iinfo->ii_IndexAttrNumbers[i];
-			Form_pg_attribute indexAtt = TupleDescAttr(indexDesc, i);
-
-			/*
-			 * ignore expressions
-			 *
-			 * XXX Actually, are we matching expressions to the index? Probably
-			 * not, and we should, but it might make things more complex because
-			 * then we can't have the same lists of expressions for table/index.
-			 * The table has to reference columns, index can replace parts with
-			 * references to index expressions.
-			 *
-			 * XXX Is this even safe? What if the opcintype and opckeytype are
-			 * not binary compatible?
-			 */
-			if (attnum > 0)
-			{
-				Form_pg_attribute tableAtt = TupleDescAttr(tableDesc, attnum - 1);
-
-				if (tableAtt->atttypid != indexAtt->atttypid)
-					indexAtt->atttypid = tableAtt->atttypid;
-			}
-		}
-
-		indexstate->iss_IndexSlot
-			= MakeSingleTupleTableSlot(indexDesc, &TTSOpsVirtual);
-	}
+	indexstate->iss_IndexInfo = BuildIndexInfo(indexstate->iss_RelationDesc);
 
 	/*
 	 * Initialize index-specific scan state
@@ -1974,8 +1987,11 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
  * right now we don't need it elsewhere.
  */
 static void
-StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc)
+StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc, IndexInfo *iinfo)
 {
+	bool   *isnull;
+	Datum  *values;
+
 	/*
 	 * Note: we must use the tupdesc supplied by the AM in index_deform_tuple,
 	 * not the slot's tupdesc, in case the latter has different datatypes
@@ -1983,9 +1999,28 @@ StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc)
 	 * the same number of columns though, as well as being datatype-compatible
 	 * which is something we can't so easily check.
 	 */
-	Assert(slot->tts_tupleDescriptor->natts == itupdesc->natts);
+	// Assert(slot->tts_tupleDescriptor->natts == itupdesc->natts);
 
+	isnull = palloc0(itupdesc->natts * sizeof(bool));
+	values = palloc0(itupdesc->natts * sizeof(Datum));
+
+	/* expand the index tuple */
+	index_deform_tuple(itup, itupdesc, values, isnull);
+
+	/* now fill the values from the index tuple into the table slot */
 	ExecClearTuple(slot);
-	index_deform_tuple(itup, itupdesc, slot->tts_values, slot->tts_isnull);
+
+	for (int i = 0; i < iinfo->ii_NumIndexAttrs; i++)
+	{
+		AttrNumber	attnum = iinfo->ii_IndexAttrNumbers[i];
+
+		/* skip expressions */
+		if (attnum > 0)
+		{
+			slot->tts_isnull[attnum - 1] = isnull[i];
+			slot->tts_values[attnum - 1] = values[i];
+		}
+	}
+
 	ExecStoreVirtualTuple(slot);
 }

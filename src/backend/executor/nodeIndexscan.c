@@ -220,6 +220,10 @@ IndexNext(IndexScanState *node)
 						 * We don't take the trouble to verify that the provided tuple has
 						 * exactly the slot's format, but it seems worth doing a quick
 						 * check on the number of fields.
+						 *
+						 * FIXME This is probably broken, because nodeIndexonlyscan (where
+						 * this is copied from) the two slots are the same. But here that's
+						 * not the case, the index and scan slots are different.
 						 */
 						Assert(slot->tts_tupleDescriptor->natts ==
 							   scandesc->xs_hitupdesc->natts);

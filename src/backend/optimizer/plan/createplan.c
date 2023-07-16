@@ -2995,7 +2995,6 @@ create_indexscan_plan(PlannerInfo *root,
 {
 	Scan	   *scan_plan;
 	List	   *indexclauses = best_path->indexclauses;
-//	List	   *indexfilters = best_path->indexfilters;
 	List	   *indexorderbys = best_path->indexorderbys;
 	Index		baserelid = best_path->path.parent->relid;
 	IndexOptInfo *indexinfo = best_path->indexinfo;
@@ -3078,8 +3077,6 @@ create_indexscan_plan(PlannerInfo *root,
 			continue;			/* we may drop pseudoconstants here */
 		if (is_redundant_with_indexclauses(rinfo, indexclauses))
 			continue;			/* dup or derived from same EquivalenceClass */
-//		if (is_redundant_with_indexclauses(rinfo, indexfilters))
-//			continue;			/* dup or derived from same EquivalenceClass */
 		if (!contain_mutable_functions((Node *) rinfo->clause) &&
 			predicate_implied_by(list_make1(rinfo->clause), stripped_indexquals,
 								 false))
@@ -5035,9 +5032,9 @@ fix_indexqual_references(PlannerInfo *root, IndexPath *index_path,
  *	  Adjust indexfilter clauses to the form the executor's indexfilter
  *	  machinery needs.
  *
- * XXX This does pretty much exactly what fix_indexqual_references does, except
- * that it doesn't switch the Vars to point to the index attnum (we'll expand
- * the index tuple into the heap tuple and run the expression on that).
+ * XXX This does similar stuff to fix_indexqual_references does, except that it
+ * doesn't switch the Vars to point to the index attnum (we'll expand the index
+ * tuple into the heap tuple and run the expression on that).
  */
 static void
 fix_indexfilter_references(PlannerInfo *root, IndexPath *index_path,

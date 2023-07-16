@@ -963,8 +963,11 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			return NIL;
 	}
 
+	/*
+	 * If we have index-only filters, combine the clauses into a simple list and
+	 * add the relids to outer relids.
+	 */
 	index_filters = NIL;
-
 	if (filters)
 	{
 		ListCell   *lc;

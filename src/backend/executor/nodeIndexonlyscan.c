@@ -43,7 +43,7 @@
 #include "storage/predicate.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-
+#include "utils/spccache.h"
 
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
@@ -65,6 +65,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
 	ItemPointer tid;
+	Relation	heapRel = node->ss.ss_currentRelation;
 
 	/*
 	 * extract necessary information from index scan node
@@ -83,6 +84,23 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 	if (scandesc == NULL)
 	{
+		int			prefetch_max;
+
+		/*
+		 * Determine number of heap pages to prefetch for this index. This is
+		 * essentially just effective_io_concurrency for the table (or the
+		 * tablespace it's in).
+		 *
+		 * XXX Should this also look at plan.plan_rows and maybe cap the target
+		 * to that? Pointless to prefetch more than we expect to use. Or maybe
+		 * just reset to that value during prefetching, after reading the next
+		 * index page (or rather after rescan)?
+		 *
+		 * XXX Maybe reduce the value with parallel workers?
+		 */
+		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+						   node->ss.ps.plan->plan_rows);
+
 		/*
 		 * We reach here if the index only scan is not parallel, or if we're
 		 * serially executing an index only scan that was planned to be
@@ -100,7 +118,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   estate->es_snapshot,
 								   node->ioss_NumScanKeys,
 								   node->ioss_NumOrderByKeys,
-								   0);	/* no prefetching for IOS */
+								   prefetch_max);
 
 		node->ioss_ScanDesc = scandesc;
 
@@ -124,7 +142,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
+	while ((tid = index_getnext_tid_prefetch(scandesc, direction)) != NULL)
 	{
 		bool		tuple_from_heap = false;
 
@@ -654,6 +672,24 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelIndexScanDesc piscan;
+	Relation	heapRel = node->ss.ss_currentRelation;
+	int			prefetch_max;
+
+	/*
+	 * Determine number of heap pages to prefetch for this index. This is
+	 * essentially just effective_io_concurrency for the table (or the
+	 * tablespace it's in).
+	 *
+	 * XXX Should this also look at plan.plan_rows and maybe cap the target
+	 * to that? Pointless to prefetch more than we expect to use. Or maybe
+	 * just reset to that value during prefetching, after reading the next
+	 * index page (or rather after rescan)?
+	 *
+	 * XXX Maybe reduce the value with parallel workers?
+	 */
+
+	prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+					   node->ss.ps.plan->plan_rows);
 
 	piscan = shm_toc_allocate(pcxt->toc, node->ioss_PscanLen);
 	index_parallelscan_initialize(node->ss.ss_currentRelation,
@@ -667,7 +703,7 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 								 node->ioss_NumScanKeys,
 								 node->ioss_NumOrderByKeys,
 								 piscan,
-								 0);	/* no prefetching for IOS */
+								 prefetch_max);
 	node->ioss_ScanDesc->xs_want_itup = true;
 	node->ioss_VMBuffer = InvalidBuffer;
 
@@ -705,6 +741,23 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								  ParallelWorkerContext *pwcxt)
 {
 	ParallelIndexScanDesc piscan;
+	Relation	heapRel = node->ss.ss_currentRelation;
+	int			prefetch_max;
+
+	/*
+	 * Determine number of heap pages to prefetch for this index. This is
+	 * essentially just effective_io_concurrency for the table (or the
+	 * tablespace it's in).
+	 *
+	 * XXX Should this also look at plan.plan_rows and maybe cap the target
+	 * to that? Pointless to prefetch more than we expect to use. Or maybe
+	 * just reset to that value during prefetching, after reading the next
+	 * index page (or rather after rescan)?
+	 *
+	 * XXX Maybe reduce the value with parallel workers?
+	 */
+	prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+					   node->ss.ps.plan->plan_rows);
 
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ioss_ScanDesc =
@@ -713,7 +766,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								 node->ioss_NumScanKeys,
 								 node->ioss_NumOrderByKeys,
 								 piscan,
-								 0);	/* no prefetching for IOS */
+								 prefetch_max);
 	node->ioss_ScanDesc->xs_want_itup = true;
 
 	/*

@@ -49,6 +49,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/transam.h"
+#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "catalog/index.h"
 #include "catalog/pg_amproc.h"
@@ -111,7 +112,7 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  ParallelIndexScanDesc pscan, bool temp_snap,
 											  int prefetch_max);
 
-static void index_prefetch(IndexScanDesc scan, ItemPointer tid);
+static void index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible);
 
 
 /* ----------------------------------------------------------------
@@ -755,7 +756,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 				 * FIXME For IOS, this should prefetch only pages that are not
 				 * fully visible.
 				 */
-				index_prefetch(scan, tid);
+				index_prefetch(scan, tid, false);
 			}
 		}
 
@@ -1439,7 +1440,7 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
  * in BTScanPosData.nextPage.
  */
 static void
-index_prefetch(IndexScanDesc scan, ItemPointer tid)
+index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 {
 	IndexPrefetch prefetch = scan->xs_prefetch;
 	BlockNumber block;
@@ -1462,9 +1463,35 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid)
 	 */
 	Assert(scan->heapRelation);
 
-	prefetch->countAll++;
-
 	block = ItemPointerGetBlockNumber(tid);
+
+	/*
+	 * When prefetching for IOS, we want to only prefetch pages that are not
+	 * marked as all-visible (because not fetching all-visible pages is the
+	 * point of IOS).
+	 *
+	 * XXX This is not great, because it releases the VM buffer for each TID
+	 * we consider to prefetch. We should reuse that somehow, similar to the
+	 * actual IOS code. Ideally, we should use the same ioss_VMBuffer (if
+	 * we can propagate it here). Or at least do it for a bulk of prefetches,
+	 * although that's not very useful - after the ramp-up we will prefetch
+	 * the pages one by one anyway.
+	 */
+	if (skip_all_visible)
+	{
+		bool	all_visible;
+		Buffer	vmbuffer = InvalidBuffer;
+
+		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+									 block,
+									 &vmbuffer);
+
+		if (vmbuffer != InvalidBuffer)
+			ReleaseBuffer(vmbuffer);
+
+		if (all_visible)
+			return;
+	}
 
 	/*
 	 * Do not prefetch the same block over and over again,
@@ -1480,4 +1507,107 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid)
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 		pgBufferUsage.blks_prefetches++;
 	}
+
+	prefetch->countAll++;
+}
+
+/* ----------------
+ * index_getnext_tid_prefetch - get the next TID from a scan
+ *
+ * The result is the next TID satisfying the scan keys,
+ * or NULL if no more matching tuples exist.
+ *
+ * FIXME not sure this handles xs_heapfetch correctly.
+ * ----------------
+ */
+ItemPointer
+index_getnext_tid_prefetch(IndexScanDesc scan, ScanDirection direction)
+{
+	IndexPrefetch prefetch = scan->xs_prefetch; /* for convenience */
+
+	/*
+	 * If the prefetching is still active (i.e. enabled and we still
+	 * haven't finished reading TIDs from the scan), read enough TIDs into
+	 * the queue until we hit the current target.
+	 */
+	if (PREFETCH_ACTIVE(prefetch))
+	{
+		/*
+		 * Ramp up the prefetch distance incrementally.
+		 *
+		 * Intentionally done as first, before reading the TIDs into the
+		 * queue, so that there's always at least one item. Otherwise we
+		 * might get into a situation where we start with target=0 and no
+		 * TIDs loaded.
+		 */
+		prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
+									   prefetch->prefetchMaxTarget);
+
+		/*
+		 * Now read TIDs from the index until the queue is full (with
+		 * respect to the current prefetch target).
+		 */
+		while (!PREFETCH_FULL(prefetch))
+		{
+			ItemPointer tid;
+
+			/* Time to fetch the next TID from the index */
+			tid = index_getnext_tid(scan, direction);
+
+			/*
+			 * If we're out of index entries, we're done (and we mark the
+			 * the prefetcher as inactive).
+			 */
+			if (tid == NULL)
+			{
+				prefetch->prefetchDone = true;
+				break;
+			}
+
+			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+
+			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)] = *tid;
+			prefetch->queueEnd++;
+
+			/*
+			 * Issue the actuall prefetch requests for the new TID.
+			 *
+			 * XXX index_getnext_tid_prefetch is only called for IOS (for now),
+			 * so skip prefetching of all-visible pages.
+			 */
+			index_prefetch(scan, tid, true);
+		}
+	}
+
+	/*
+	 * With prefetching enabled (even if we already finished reading
+	 * all TIDs from the index scan), we need to return a TID from the
+	 * queue. Otherwise, we just get the next TID from the scan
+	 * directly.
+	 */
+	if (PREFETCH_ENABLED(prefetch))
+	{
+		/* Did we reach the end of the scan and the queue is empty? */
+		if (PREFETCH_DONE(prefetch))
+			return NULL;
+
+		scan->xs_heaptid = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)];
+		prefetch->queueIndex++;
+	}
+	else				/* not prefetching, just do the regular work  */
+	{
+		ItemPointer tid;
+
+		/* Time to fetch the next TID from the index */
+		tid = index_getnext_tid(scan, direction);
+
+		/* If we're out of index entries, we're done */
+		if (tid == NULL)
+			return NULL;
+
+		Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+	}
+
+	/* Return the TID of the tuple we found. */
+	return &scan->xs_heaptid;
 }

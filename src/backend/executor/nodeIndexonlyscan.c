@@ -100,7 +100,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   estate->es_snapshot,
 								   node->ioss_NumScanKeys,
 								   node->ioss_NumOrderByKeys,
-								   0, 0);	/* no index prefetch for IOS */
+								   0);	/* no prefetching for IOS */
 
 		node->ioss_ScanDesc = scandesc;
 
@@ -667,7 +667,7 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 								 node->ioss_NumScanKeys,
 								 node->ioss_NumOrderByKeys,
 								 piscan,
-								 0, 0);	/* no index prefetch for IOS */
+								 0);	/* no prefetching for IOS */
 	node->ioss_ScanDesc->xs_want_itup = true;
 	node->ioss_VMBuffer = InvalidBuffer;
 
@@ -713,7 +713,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								 node->ioss_NumScanKeys,
 								 node->ioss_NumOrderByKeys,
 								 piscan,
-								 0, 0);	/* no index prefetch for IOS */
+								 0);	/* no prefetching for IOS */
 	node->ioss_ScanDesc->xs_want_itup = true;
 
 	/*

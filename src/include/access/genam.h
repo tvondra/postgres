@@ -154,8 +154,7 @@ extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Relation indexRelation,
 									 Snapshot snapshot,
 									 int nkeys, int norderbys,
-									 int prefetch_target,
-									 int prefetch_reset);
+									 int prefetch_max);
 extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											int nkeys);
@@ -173,8 +172,7 @@ extern void index_parallelrescan(IndexScanDesc scan);
 extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  Relation indexrel, int nkeys, int norderbys,
 											  ParallelIndexScanDesc pscan,
-											  int prefetch_target,
-											  int prefetch_reset);
+											  int prefetch_max);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
 struct TupleTableSlot;

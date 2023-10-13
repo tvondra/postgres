@@ -107,7 +107,7 @@ typedef struct IndexFetchTableData
 } IndexFetchTableData;
 
 /*
- * Forward declaration, defined in genam.h.
+ * Forward declarations, defined in genam.h.
  */
 typedef struct IndexPrefetchData IndexPrefetchData;
 typedef struct IndexPrefetchData *IndexPrefetch;
@@ -168,7 +168,7 @@ typedef struct IndexScanDescData
 	bool	   *xs_orderbynulls;
 	bool		xs_recheckorderby;
 
-	/* prefetching state (or NULL if disabled) */
+	/* prefetching state (or NULL if disabled for this scan) */
 	IndexPrefetchData *xs_prefetch;
 
 	/* parallel index scan information, in shared memory */

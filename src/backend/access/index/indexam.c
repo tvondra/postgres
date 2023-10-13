@@ -109,7 +109,7 @@ do { \
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap,
-											  int prefetch_target, int prefetch_reset);
+											  int prefetch_max);
 
 static void index_prefetch(IndexScanDesc scan, ItemPointer tid);
 
@@ -206,13 +206,10 @@ index_insert(Relation indexRelation,
  *
  * Caller must be holding suitable locks on the heap and the index.
  *
- * prefetch_target determines if prefetching is requested for this index scan,
+ * prefetch_max determines if prefetching is requested for this index scan,
  * and how far ahead we want to prefetch
  *
- * prefetch_reset specifies the prefetch distance to start with on rescans (so
- * that we don't ramp-up to prefetch_target and use that forever)
- *
- * Setting prefetch_target to 0 disables prefetching for the index scan. We do
+ * Setting prefetch_max to 0 disables prefetching for the index scan. We do
  * this for two reasons - for scans on system catalogs, and/or for cases where
  * prefetching is expected to be pointless (like IOS).
  *
@@ -236,14 +233,14 @@ index_beginscan(Relation heapRelation,
 				Relation indexRelation,
 				Snapshot snapshot,
 				int nkeys, int norderbys,
-				int prefetch_target, int prefetch_reset)
+				int prefetch_max)
 {
 	IndexScanDesc scan;
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false,
-									prefetch_target, prefetch_reset);
+	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot,
+									NULL, false, prefetch_max);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -273,12 +270,8 @@ index_beginscan_bitmap(Relation indexRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	/*
-	 * No prefetch for bitmap index scans. In this case prefetching happens at
-	 * the heapscan level.
-	 */
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false,
-									0, 0);
+	/* No prefetch in bitmap scans, prefetch is done by the heap scan. */
+	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false, 0);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -296,7 +289,7 @@ static IndexScanDesc
 index_beginscan_internal(Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
 						 ParallelIndexScanDesc pscan, bool temp_snap,
-						 int prefetch_target, int prefetch_reset)
+						 int prefetch_max)
 {
 	IndexScanDesc scan;
 
@@ -321,7 +314,7 @@ index_beginscan_internal(Relation indexRelation,
 	scan->xs_temp_snap = temp_snap;
 
 	/* With prefetching requested, initialize the prefetcher state. */
-	if (prefetch_target > 0)
+	if (prefetch_max > 0)
 	{
 		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
 
@@ -330,8 +323,7 @@ index_beginscan_internal(Relation indexRelation,
 		prefetcher->queueEnd = 0;
 
 		prefetcher->prefetchTarget = 0;
-		prefetcher->prefetchMaxTarget = prefetch_target;
-		prefetcher->prefetchReset = prefetch_reset;
+		prefetcher->prefetchMaxTarget = prefetch_max;
 
 		scan->xs_prefetch = prefetcher;
 	}
@@ -382,8 +374,8 @@ index_rescan(IndexScanDesc scan,
 		prefetcher->queueIndex = 0;
 		prefetcher->prefetchDone = false;
 
-		prefetcher->prefetchTarget = Min(prefetcher->prefetchTarget,
-										 prefetcher->prefetchReset);
+		/* restart the incremental ramp-up */
+		prefetcher->prefetchTarget = 0;
 	}
 }
 
@@ -576,7 +568,7 @@ index_parallelrescan(IndexScanDesc scan)
 IndexScanDesc
 index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 						 int norderbys, ParallelIndexScanDesc pscan,
-						 int prefetch_target, int prefetch_reset)
+						 int prefetch_max)
 {
 	Snapshot	snapshot;
 	IndexScanDesc scan;
@@ -585,7 +577,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true, prefetch_target, prefetch_reset);
+									pscan, true, prefetch_max);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set

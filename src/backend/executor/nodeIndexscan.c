@@ -105,12 +105,11 @@ IndexNext(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
-		int	prefetch_target;
-		int	prefetch_reset;
+		int	prefetch_max;
 
 		/*
-		 * Determine number of heap pages to prefetch for this index. This is
-		 * essentially just effective_io_concurrency for the table (or the
+		 * Determine number of heap pages to prefetch for this index scan. This
+		 * is essentially just effective_io_concurrency for the table (or the
 		 * tablespace it's in).
 		 *
 		 * XXX Should this also look at plan.plan_rows and maybe cap the target
@@ -118,8 +117,8 @@ IndexNext(IndexScanState *node)
 		 * just reset to that value during prefetching, after reading the next
 		 * index page (or rather after rescan)?
 		 */
-		prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
-		prefetch_reset = Min(prefetch_target, node->ss.ps.plan->plan_rows);
+		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+						   node->ss.ps.plan->plan_rows);
 
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
@@ -130,8 +129,7 @@ IndexNext(IndexScanState *node)
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys,
-								   prefetch_target,
-								   prefetch_reset);
+								   prefetch_max);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -197,6 +195,7 @@ IndexNextWithReorder(IndexScanState *node)
 	Datum	   *lastfetched_vals;
 	bool	   *lastfetched_nulls;
 	int			cmp;
+	Relation	heapRel = node->ss.ss_currentRelation;
 
 	estate = node->ss.ps.state;
 
@@ -218,9 +217,7 @@ IndexNextWithReorder(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
-		Relation heapRel = node->ss.ss_currentRelation;
-		int	prefetch_target;
-		int	prefetch_reset;
+		int	prefetch_max;
 
 		/*
 		 * Determine number of heap pages to prefetch for this index. This is
@@ -232,8 +229,8 @@ IndexNextWithReorder(IndexScanState *node)
 		 * just reset to that value during prefetching, after reading the next
 		 * index page (or rather after rescan)?
 		 */
-		prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
-		prefetch_reset = Min(prefetch_target, node->ss.ps.plan->plan_rows);
+		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+						   node->ss.ps.plan->plan_rows);
 
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
@@ -244,8 +241,7 @@ IndexNextWithReorder(IndexScanState *node)
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys,
-								   prefetch_target,
-								   prefetch_reset);
+								   prefetch_max);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -1701,9 +1697,8 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelIndexScanDesc piscan;
-	Relation	heapRel;
-	int			prefetch_target;
-	int			prefetch_reset;
+	Relation	heapRel = node->ss.ss_currentRelation;
+	int			prefetch_max;
 
 	/*
 	 * Determine number of heap pages to prefetch for this index. This is
@@ -1717,10 +1712,9 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 	 *
 	 * XXX Maybe reduce the value with parallel workers?
 	 */
-	heapRel = node->ss.ss_currentRelation;
 
-	prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
-	prefetch_reset = Min(prefetch_target, node->ss.ps.plan->plan_rows);
+	prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+					   node->ss.ps.plan->plan_rows);
 
 	piscan = shm_toc_allocate(pcxt->toc, node->iss_PscanLen);
 	index_parallelscan_initialize(node->ss.ss_currentRelation,
@@ -1734,8 +1728,7 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan,
-								 prefetch_target,
-								 prefetch_reset);
+								 prefetch_max);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
@@ -1771,9 +1764,8 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 							  ParallelWorkerContext *pwcxt)
 {
 	ParallelIndexScanDesc piscan;
-	Relation	heapRel;
-	int			prefetch_target;
-	int			prefetch_reset;
+	Relation	heapRel = node->ss.ss_currentRelation;
+	int			prefetch_max;
 
 	/*
 	 * Determine number of heap pages to prefetch for this index. This is
@@ -1787,10 +1779,8 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	 *
 	 * XXX Maybe reduce the value with parallel workers?
 	 */
-	heapRel = node->ss.ss_currentRelation;
-
-	prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);
-	prefetch_reset = Min(prefetch_target, node->ss.ps.plan->plan_rows);
+	prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+					   node->ss.ps.plan->plan_rows);
 
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->iss_ScanDesc =
@@ -1799,8 +1789,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan,
-								 prefetch_target,
-								 prefetch_reset);
+								 prefetch_max);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

@@ -677,6 +677,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 					scan->xs_hitup = so->pageData[so->curPageData].recontup;
 
 				so->curPageData++;
+
 				return true;
 			}
 

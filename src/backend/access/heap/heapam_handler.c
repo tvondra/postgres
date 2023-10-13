@@ -750,6 +750,11 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		int64		ci_val[2];
 		int			prefetch_target;
 
+		/*
+		 * Get the prefetch target for the old tablespace (which is what we'll
+		 * read using the index). We'll use it as a reset value too, although
+		 * there should be no rescans for CLUSTER etc.
+		 */
 		prefetch_target = get_tablespace_io_concurrency(OldHeap->rd_rel->reltablespace);
 
 		/* Set phase and OIDOldIndex to columns */

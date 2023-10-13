@@ -236,18 +236,6 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
 /*
- * XXX not sure it's the right place to define these callbacks etc.
- */
-typedef void (*prefetcher_getrange_function) (IndexScanDesc scandesc,
-											  ScanDirection direction,
-											  int *start, int *end,
-											  bool *reset);
-
-typedef BlockNumber (*prefetcher_getblock_function) (IndexScanDesc scandesc,
-													 ScanDirection direction,
-													 int index);
-
-/*
  * Cache of recently prefetched blocks, organized as a hash table of
  * small LRU caches. Doesn't need to be perfectly accurate, but we
  * aim to make false positives/negatives reasonably low.

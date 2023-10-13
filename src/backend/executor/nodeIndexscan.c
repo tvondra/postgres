@@ -1710,6 +1710,11 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 	 * essentially just effective_io_concurrency for the table (or the
 	 * tablespace it's in).
 	 *
+	 * XXX Should this also look at plan.plan_rows and maybe cap the target
+	 * to that? Pointless to prefetch more than we expect to use. Or maybe
+	 * just reset to that value during prefetching, after reading the next
+	 * index page (or rather after rescan)?
+	 *
 	 * XXX Maybe reduce the value with parallel workers?
 	 */
 	heapRel = node->ss.ss_currentRelation;
@@ -1770,6 +1775,18 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	int			prefetch_target;
 	int			prefetch_reset;
 
+	/*
+	 * Determine number of heap pages to prefetch for this index. This is
+	 * essentially just effective_io_concurrency for the table (or the
+	 * tablespace it's in).
+	 *
+	 * XXX Should this also look at plan.plan_rows and maybe cap the target
+	 * to that? Pointless to prefetch more than we expect to use. Or maybe
+	 * just reset to that value during prefetching, after reading the next
+	 * index page (or rather after rescan)?
+	 *
+	 * XXX Maybe reduce the value with parallel workers?
+	 */
 	heapRel = node->ss.ss_currentRelation;
 
 	prefetch_target = get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace);

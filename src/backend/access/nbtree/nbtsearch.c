@@ -215,6 +215,14 @@ _bt_prefetch(Relation rel, Relation heaprel, BTInsertState insertstate)
 	if (!BufferIsValid(buffer))
 		return;
 
+	/* if heigh is not at least 1, there are no leaf pages */
+	if (_bt_getrootheight(rel) < 1)
+	{
+		/* make sure to release the buffer */
+		_bt_relbuf(rel, buffer);
+		return;
+	}
+
 	/* Loop iterates once per level descended in the tree */
 	for (;;)
 	{

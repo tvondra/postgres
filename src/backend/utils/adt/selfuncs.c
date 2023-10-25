@@ -100,6 +100,7 @@
 #include "access/brin.h"
 #include "access/brin_page.h"
 #include "access/gin.h"
+#include "access/nbtree.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
@@ -306,6 +307,43 @@ var_eq_const(VariableStatData *vardata, Oid oproid, Oid collation,
 	 */
 	if (constisnull)
 		return 0.0;
+
+	/*
+	 * Try deducing stats from index(es).
+	 */
+	if ((vardata->rel != NULL) &&
+		IsA(vardata->var, Var))
+	{
+		RelOptInfo *rel = vardata->rel;
+		List	   *indexinfos = rel->indexlist;
+		ListCell   *lc;
+		Var		   *var = (Var *) vardata->var;
+
+		foreach(lc, indexinfos)
+		{
+			Relation		rel;
+			IndexOptInfo   *index = (IndexOptInfo *) lfirst(lc);
+
+			/* only btree indexes allow estimation */
+			if (index->relam != BTREE_AM_OID)
+				continue;
+
+			/* skip multi-column indexes for now */
+			if (index->nkeycolumns != 1)
+				continue;
+
+			/* skip indexes on a different column */
+			if (index->indexkeys[0] != var->varattno)
+				continue;
+
+			rel = index_open(index->indexoid, AccessShareLock);
+
+			elog(LOG, "index = %p", index);
+			elog(LOG, "selectivity = %f", btestimate(rel, var->varattno, constval));
+
+			index_close(rel, AccessShareLock);
+		}
+	}
 
 	/*
 	 * Grab the nullfrac for use below.  Note we allow use of nullfrac

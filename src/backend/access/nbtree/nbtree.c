@@ -18,6 +18,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
 #include "access/relscan.h"
@@ -37,7 +39,6 @@
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
-
 
 /*
  * BTPARALLEL_NOT_INITIALIZED indicates that the scan has not started.
@@ -1426,4 +1427,136 @@ bool
 btcanreturn(Relation index, int attno)
 {
 	return true;
+}
+
+Selectivity
+btestimate(Relation index, int sk_attno, Datum sk_argument)
+{
+	BTScanInsertData inskey;
+	BTStack		stack_start,
+				stack_end,
+				stack;
+	BTStack		start[32],
+				end[32];
+	int			nstart,
+				nend;
+	int			keysCount = 1;
+	bool		nextkey = false;
+	Buffer		buf = InvalidBuffer;
+	FmgrInfo   *procinfo;
+	double		fanout;
+	double		leaves;
+	double		tuples_per_leaf;
+
+	/* Initialize remaining insertion scan key fields */
+	_bt_metaversion(index, &inskey.heapkeyspace, &inskey.allequalimage);
+	inskey.anynullkeys = false; /* unused */
+	inskey.nextkey = nextkey;
+	inskey.pivotsearch = false;
+	inskey.scantid = NULL;
+	inskey.keysz = keysCount;
+
+	procinfo = index_getprocinfo(index, sk_attno, BTORDER_PROC);
+
+	ScanKeyEntryInitializeWithInfo(&inskey.scankeys[0],
+								   0, /* sk_flags */
+								   sk_attno,
+								   BTGreaterStrategyNumber,
+								   InvalidOid, /* sk_subtype */
+								   InvalidOid, /* sk_collation */
+								   procinfo,
+								   sk_argument);
+
+	/*
+	 * Use the manufactured insertion scan key to descend the tree and
+	 * position ourselves on the target leaf page.
+	 */
+	stack_start = _bt_search(index, NULL, &inskey, &buf, BT_READ);
+
+	if (BufferIsValid(buf))
+	{
+		_bt_unlockbuf(index, buf);
+		ReleaseBuffer(buf);
+		buf = InvalidBuffer;
+	}
+
+	inskey.nextkey = true;
+
+	ScanKeyEntryInitializeWithInfo(&inskey.scankeys[0],
+								   0, /* sk_flags */
+								   sk_attno,
+								   BTGreaterStrategyNumber,
+								   InvalidOid, /* sk_subtype */
+								   InvalidOid, /* sk_collation */
+								   procinfo,
+								   sk_argument);
+
+	stack_end = _bt_search(index, NULL, &inskey, &buf, BT_READ);
+
+	if (BufferIsValid(buf))
+	{
+		_bt_unlockbuf(index, buf);
+		ReleaseBuffer(buf);
+		buf = InvalidBuffer;
+	}
+
+	stack = stack_start;
+	nstart = 0;
+	while (stack)
+	{
+		start[nstart++] = stack;
+		stack = stack->bts_parent;
+	}
+
+	stack = stack_end;
+	nend = 0;
+	while (stack)
+	{
+		end[nend++] = stack;
+		stack = stack->bts_parent;
+	}
+
+	/* XXX What if the two stacks have different height? */
+	elog(WARNING, "start %d end %d", nstart, nend);
+
+	/* XXX Number of tuples per leaf page. Assumes all pages are leaf. */
+	leaves = index->rd_rel->relpages;
+	tuples_per_leaf = index->rd_rel->reltuples / leaves;
+
+	/* XXX 1/2 because of half-empty pages, but maybe that's bogus? */
+	fanout = exp(log(index->rd_rel->relpages) / Max(nstart, nend)) / 2.0;
+
+	elog(WARNING, "fanout %f", fanout);
+
+	for (int i = 0; (i < nend) && (i < nstart); i++)
+	{
+		elog(WARNING, "start %u/%d end %u/%d", 
+			 start[nstart - 1 - i]->bts_blkno, start[nstart - 1 - i]->bts_offset,
+			 end[nend - 1 - i]->bts_blkno, end[nend - 1 - i]->bts_offset);
+
+		/* only the offset should be different */
+		Assert(start[nstart - 1 - i]->bts_blkno == end[nend - 1 - i]->bts_blkno);
+
+		if ((i+1 < nend) && (i+1 < nstart))
+			leaves = leaves / fanout;
+		else
+			leaves = 1;
+
+		elog(WARNING, "leaves %f", leaves);
+
+		if (start[nstart - 1 - i]->bts_offset != end[nend - 1 - i]->bts_offset)
+		{
+			/* XXX add 0.5 because we assume only half of a partial leaf page matches */
+			leaves *= (end[nend - 1 - i]->bts_offset - start[nstart - 1 - i]->bts_offset + 0.5);
+			break;
+		}
+	}
+
+	/* don't need to keep the stacks ... */
+	_bt_freestack(stack_start);
+	_bt_freestack(stack_end);
+
+	elog(WARNING, "select = %f", tuples_per_leaf * leaves);
+
+	return tuples_per_leaf * leaves / index->rd_rel->reltuples;
 }

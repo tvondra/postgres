@@ -1298,4 +1298,6 @@ extern IndexBuildResult *btbuild(Relation heap, Relation index,
 								 struct IndexInfo *indexInfo);
 extern void _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc);
 
+Selectivity btestimate(Relation index, int attno, Datum value);
+
 #endif							/* NBTREE_H */

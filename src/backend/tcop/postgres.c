@@ -3459,6 +3459,9 @@ ProcessInterrupts(void)
 
 	if (ParallelApplyMessagePending)
 		HandleParallelApplyMessages();
+
+	if (XLogDelayPending)
+		HandleXLogDelayPending();
 }
 
 /*

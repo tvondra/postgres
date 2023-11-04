@@ -3752,6 +3752,9 @@ show_wal_usage(ExplainState *es, const WalUsage *usage)
 			if (usage->wal_bytes > 0)
 				appendStringInfo(es->str, " bytes=" UINT64_FORMAT,
 								 usage->wal_bytes);
+			if (usage->wal_throttled > 0)
+				appendStringInfo(es->str, " throttled=%lld",
+								 (long long) usage->wal_throttled);
 			appendStringInfoChar(es->str, '\n');
 		}
 	}
@@ -3763,6 +3766,8 @@ show_wal_usage(ExplainState *es, const WalUsage *usage)
 							   usage->wal_fpi, es);
 		ExplainPropertyUInteger("WAL Bytes", NULL,
 								usage->wal_bytes, es);
+		ExplainPropertyUInteger("WAL Throttled", NULL,
+								usage->wal_throttled, es);
 	}
 }
 

@@ -53,6 +53,7 @@ typedef struct WalUsage
 	int64		wal_records;	/* # of WAL records produced */
 	int64		wal_fpi;		/* # of WAL full page images produced */
 	uint64		wal_bytes;		/* size of WAL records produced */
+	int64		wal_throttled;		/* # of times WAL throttling was engaged*/
 } WalUsage;
 
 /* Flag bits included in InstrAlloc's instrument_options bitmask */

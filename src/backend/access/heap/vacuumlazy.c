@@ -762,10 +762,15 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 							 (long long) PageMissOp,
 							 (long long) PageDirtyOp);
 			appendStringInfo(&buf,
-							 _("WAL usage: %lld records, %lld full page images, %llu bytes\n"),
+							 _("WAL usage: %lld records, %lld full page images, %llu bytes"),
 							 (long long) walusage.wal_records,
 							 (long long) walusage.wal_fpi,
 							 (unsigned long long) walusage.wal_bytes);
+			if(walusage.wal_throttled > 0)
+				appendStringInfo(&buf, _("%lld times throttled"), (long long) walusage.wal_throttled);
+			else
+				appendStringInfo(&buf, _("\n"));
+
 			appendStringInfo(&buf, _("system usage: %s"), pg_rusage_show(&ru0));
 
 			ereport(verbose ? INFO : LOG,

@@ -235,7 +235,7 @@ typedef struct PgStat_TableXactStatus
  * ------------------------------------------------------------
  */
 
-#define PGSTAT_FILE_FORMAT_ID	0x01A5BCAC
+#define PGSTAT_FILE_FORMAT_ID	0x0907AFBD
 
 typedef struct PgStat_ArchiverStats
 {
@@ -435,6 +435,7 @@ typedef struct PgStat_WalStats
 	PgStat_Counter wal_sync;
 	PgStat_Counter wal_write_time;
 	PgStat_Counter wal_sync_time;
+	PgStat_Counter wal_throttled; /* how many times backend was throttled */
 	TimestampTz stat_reset_timestamp;
 } PgStat_WalStats;
 

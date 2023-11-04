@@ -1,4 +1,5 @@
 /*-------------------------------------------------------------------------
+
  *
  * xlog.c
  *		PostgreSQL write-ahead log manager
@@ -73,6 +74,7 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
+#include "portability/instr_time.h"
 #include "port/atomics.h"
 #include "port/pg_iovec.h"
 #include "postmaster/bgwriter.h"
@@ -82,6 +84,7 @@
 #include "replication/origin.h"
 #include "replication/slot.h"
 #include "replication/snapbuild.h"
+#include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -107,6 +110,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+
 
 extern uint32 bootstrap_data_checksum_version;
 
@@ -138,6 +142,7 @@ int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;
 bool		track_wal_io_timing = false;
+int		synchronous_commit_wal_throttle_threshold = 0; /* kb */
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -252,10 +257,14 @@ static int	LocalXLogInsertAllowed = -1;
  * parallel backends may have written WAL records at later LSNs than the value
  * stored here.  The parallel leader advances its own copy, when necessary,
  * in WaitForParallelWorkersToFinish.
+ *
+ * XactLastThrottledRecEnd points to the last XLOG record that should be throttled
+ * as the additional WAL records could be generated before processing interrupts.
  */
 XLogRecPtr	ProcLastRecPtr = InvalidXLogRecPtr;
 XLogRecPtr	XactLastRecEnd = InvalidXLogRecPtr;
 XLogRecPtr	XactLastCommitEnd = InvalidXLogRecPtr;
+static XLogRecPtr	XactLastThrottledRecEnd = InvalidXLogRecPtr;
 
 /*
  * RedoRecPtr is this backend's local copy of the REDO record pointer
@@ -647,6 +656,8 @@ static bool holdingAllLocks = false;
 #ifdef WAL_DEBUG
 static MemoryContext walDebugCxt = NULL;
 #endif
+
+uint32	backendWalInserted = 0;
 
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,
 										XLogRecPtr EndOfLog,
@@ -1073,6 +1084,24 @@ XLogInsertRecord(XLogRecData *rdata,
 		pgWalUsage.wal_bytes += rechdr->xl_tot_len;
 		pgWalUsage.wal_records++;
 		pgWalUsage.wal_fpi += num_fpi;
+
+		/* WAL throttling: we can slow down (some) backends generating a lot of WAL
+		 * in syncrep scenario by waiting for standby confirmation. This allows
+		 * prioritzation of other backends over this backend in bandwidth constrained
+		 * WAN scenarios. Such throttled down backends are going to be visible with
+		 * "SyncRepThrottled" wait event.
+		 */
+		backendWalInserted += rechdr->xl_tot_len;
+		if ((synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY ||
+			synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
+			synchronous_commit_wal_throttle_threshold > 0 &&
+			backendWalInserted > synchronous_commit_wal_throttle_threshold * 1024L)
+		{
+			XactLastThrottledRecEnd = XactLastRecEnd;
+			InterruptPending = true;
+			XLogDelayPending = true;
+			pgWalUsage.wal_throttled++;
+		}
 	}
 
 	return EndPos;
@@ -2625,6 +2654,9 @@ XLogFlush(XLogRecPtr record)
 		UpdateMinRecoveryPoint(record, false);
 		return;
 	}
+
+	/* reset WAL throttling bytes counter */
+	backendWalInserted = 0;
 
 	/* Quick exit if already known flushed */
 	if (record <= LogwrtResult.Flush)
@@ -9127,4 +9159,27 @@ SetWalWriterSleeping(bool sleeping)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+
+/*
+ * Called from ProcessMessageInterrupts() to avoid waiting while
+ * being in critical section. Performing those directly from XLogInsertRecord()
+ * would cause locks to be held for longer duration.
+ */
+void
+HandleXLogDelayPending()
+{
+	/* flush only up to the last fully filled page to avoid repeating flushing
+	 * of the same page multiple times */
+	XLogRecPtr 	LastFullyWrittenXLogPage = XactLastThrottledRecEnd -
+		(XactLastThrottledRecEnd % XLOG_BLCKSZ);
+
+	Assert(synchronous_commit_wal_throttle_threshold > 0);
+	Assert(backendWalInserted > synchronous_commit_wal_throttle_threshold * 1024L);
+	Assert(XactLastThrottledRecEnd != InvalidXLogRecPtr);
+
+	XLogFlush(LastFullyWrittenXLogPage);
+	SyncRepWaitForLSN(LastFullyWrittenXLogPage, false);
+	XLogDelayPending = false;
 }

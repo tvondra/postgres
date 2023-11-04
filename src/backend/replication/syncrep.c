@@ -144,8 +144,11 @@ static bool SyncRepQueueIsOrderedByLSN(int mode);
  * represents a commit record.  If it doesn't, then we wait only for the WAL
  * to be flushed if synchronous_commit is set to the higher level of
  * remote_apply, because only commit records provide apply feedback.
+ *
+ * This may be called either when waiting for PREPARE/COMMIT, of because of WAL
+ * throttling (in which case the flag XLogDelayPending is set to true). We use
+ * different wait events for these cases.
  */
-
 void
 SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 {
@@ -231,7 +234,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 	for (;;)
 	{
 		int			rc;
-		uint32			wait_event;
+		uint32		wait_event;
 
 		/* Must reset the latch before testing state. */
 		ResetLatch(MyLatch);
@@ -285,18 +288,21 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 			break;
 		}
 
-		/* XLogDelayPending flag that is used here is being reset afterwards in
-		 * in HandleXLogDelayPending()
+		/*
+		 * XLogDelayPending means this syncrep wait happens because of WAL
+		 * throttling. The flag is reset in HandleXLogDelayPending() later.
 		 */
-		if(XLogDelayPending == true)
+		if(XLogDelayPending)
 			wait_event = WAIT_EVENT_SYNC_REP_THROTTLED;
 		else
 			wait_event = WAIT_EVENT_SYNC_REP;
+
 		/*
 		 * Wait on latch.  Any condition that should wake us up will set the
 		 * latch, so no need for timeout.
 		 */
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1, wait_event);
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1,
+					   wait_event);
 
 		/*
 		 * If the postmaster dies, we'll probably never get an acknowledgment,

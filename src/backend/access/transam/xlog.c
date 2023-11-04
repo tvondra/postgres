@@ -1,5 +1,4 @@
 /*-------------------------------------------------------------------------
-
  *
  * xlog.c
  *		PostgreSQL write-ahead log manager
@@ -111,7 +110,6 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
-
 extern uint32 bootstrap_data_checksum_version;
 
 /* timeline ID to be used when bootstrapping */
@@ -142,7 +140,7 @@ int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;
 bool		track_wal_io_timing = false;
-int		synchronous_commit_wal_throttle_threshold = 0; /* kb */
+int			wal_throttle_threshold = 0;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -260,6 +258,8 @@ static int	LocalXLogInsertAllowed = -1;
  *
  * XactLastThrottledRecEnd points to the last XLOG record that should be throttled
  * as the additional WAL records could be generated before processing interrupts.
+ *
+ * XXX I'm not sure I understand what "record to be throttled" means?
  */
 XLogRecPtr	ProcLastRecPtr = InvalidXLogRecPtr;
 XLogRecPtr	XactLastRecEnd = InvalidXLogRecPtr;
@@ -657,6 +657,12 @@ static bool holdingAllLocks = false;
 static MemoryContext walDebugCxt = NULL;
 #endif
 
+/*
+ * Amount of WAL inserted in this backend since eithe the transaction
+ * start or throttle point (where we reset the counter to 0).
+ *
+ * XXX Not sure it should refer to "backend", it's really about xact, no?
+ */
 uint32	backendWalInserted = 0;
 
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,
@@ -1085,17 +1091,33 @@ XLogInsertRecord(XLogRecData *rdata,
 		pgWalUsage.wal_records++;
 		pgWalUsage.wal_fpi += num_fpi;
 
-		/* WAL throttling: we can slow down (some) backends generating a lot of WAL
-		 * in syncrep scenario by waiting for standby confirmation. This allows
-		 * prioritzation of other backends over this backend in bandwidth constrained
-		 * WAN scenarios. Such throttled down backends are going to be visible with
-		 * "SyncRepThrottled" wait event.
+		/*
+		 * Decide if we need to throttle this backend, so that it does not write
+		 * WAL too fast, causing lag against the sync standby (which in turn
+		 * increases latency for standby confirmations). We may be holding locks
+		 * and blocking interrupts here, so we only make the decision, but the
+		 * wait (for sync standby confirmation) happens elsewhere.
+		 *
+		 * The throttling is applied only to large transactions (producing more
+		 * than wal_throttle_threshold kilobytes of WAL). Throttled backends
+		 * can be identified by a new wait event SYNC_REP_THROTTLED.
+		 *
+		 * Small transactions (by amount of produced WAL) are still subject to
+		 * the sync replication, so the same wait happens at commit time.
+		 *
+		 * XXX Not sure this is the right place for a comment explaining how the
+		 * throttling works. This place is way too low level, and rather far from
+		 * the place where the wait actually happens.
+		 *
+		 * XXX Should this be done even if XLogDelayPending is already set? Maybe
+		 * that should only update XactLastThrottledRecEnd, withoug incrementing
+		 * the pgWalUsage.wal_throttled counter?
 		 */
 		backendWalInserted += rechdr->xl_tot_len;
-		if ((synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY ||
-			synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
-			synchronous_commit_wal_throttle_threshold > 0 &&
-			backendWalInserted > synchronous_commit_wal_throttle_threshold * 1024L)
+
+		if ((synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
+			(wal_throttle_threshold > 0) &&
+			(backendWalInserted >= wal_throttle_threshold * 1024L))
 		{
 			XactLastThrottledRecEnd = XactLastRecEnd;
 			InterruptPending = true;
@@ -2655,7 +2677,22 @@ XLogFlush(XLogRecPtr record)
 		return;
 	}
 
-	/* reset WAL throttling bytes counter */
+	/*
+	 * Reset WAL throttling bytes counter.
+	 *
+	 * XXX I think this is somewhat wrong. The LSN we want to flush may be
+	 * somewhere in the past, before some (most) of the generated WAL. For
+	 * example assume the backend just wrote 1MB, but then we ask for flush
+	 * with a position 1MB back. Most of the generated WAL is likely after
+	 * the flushed LSN, yet we're setting this to 0. (I don't know how common
+	 * such situation is, probably not very.)
+	 *
+	 * I don't think we can / should track amount of WAL for arbitrary LSN
+	 * values, but maybe we should track the last flush LSN position, and
+	 * then linearly approximate the WAL.
+	 *
+	 * XXX For the approximation we should probably use LogwrtResult.Flush.
+	 */
 	backendWalInserted = 0;
 
 	/* Quick exit if already known flushed */
@@ -9161,25 +9198,41 @@ SetWalWriterSleeping(bool sleeping)
 	SpinLockRelease(&XLogCtl->info_lck);
 }
 
-
 /*
- * Called from ProcessMessageInterrupts() to avoid waiting while
- * being in critical section. Performing those directly from XLogInsertRecord()
- * would cause locks to be held for longer duration.
+ * HandleXLogDelayPending
+ *		Throttle backends generating large amounts of WAL.
+ *
+ * The throttling is implemented by waiting for a sync replica confirmation for
+ * a convenient LSN position. In particular, we do not wait for the current LSN,
+ * which may be in a partially filled WAL page (and we don't want to write this
+ * one out - we'd have to write it out again, causing write amplification).
+ * Instead, we move back to the last fully WAL page.
+ *
+ * Called from ProcessMessageInterrupts() to avoid syncrep waits in XLogInsert(),
+ * which happens in critical section and with blocked interrupts (so it would be
+ * impossible to cancel the wait if it gets stuck). Also, there may be locks held
+ * and we don't want to hold them longer just because of the wait.
+ *
+ * XXX Andres suggested we actually go back a couple pages, to increase the
+ * probability the LSN was already flushed (obviously, this depends on how much
+ * lag we allow).
+ *
+ * XXX Not sure why we use XactLastThrottledRecEnd and not simply XLogRecEnd?
  */
 void
 HandleXLogDelayPending()
 {
-	/* flush only up to the last fully filled page to avoid repeating flushing
-	 * of the same page multiple times */
-	XLogRecPtr 	LastFullyWrittenXLogPage = XactLastThrottledRecEnd -
-		(XactLastThrottledRecEnd % XLOG_BLCKSZ);
+	XLogRecPtr 	lsn;
 
-	Assert(synchronous_commit_wal_throttle_threshold > 0);
-	Assert(backendWalInserted > synchronous_commit_wal_throttle_threshold * 1024L);
+	/* calculate last fully filled page */
+	lsn = XactLastThrottledRecEnd - (XactLastThrottledRecEnd % XLOG_BLCKSZ);
+
+	Assert(wal_throttle_threshold > 0);
+	Assert(backendWalInserted >= wal_throttle_threshold * 1024L);
 	Assert(XactLastThrottledRecEnd != InvalidXLogRecPtr);
 
-	XLogFlush(LastFullyWrittenXLogPage);
-	SyncRepWaitForLSN(LastFullyWrittenXLogPage, false);
+	XLogFlush(lsn);
+	SyncRepWaitForLSN(lsn, false);
+
 	XLogDelayPending = false;
 }

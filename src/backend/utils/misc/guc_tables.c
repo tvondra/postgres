@@ -2883,13 +2883,13 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"synchronous_commit_wal_throttle_threshold", PGC_USERSET, REPLICATION_SENDING,
+		{"wal_throttle_after", PGC_USERSET, REPLICATION_SENDING,
 			gettext_noop("Sets the maximum amount of WAL in kilobytes a backend generates "
-						"which it waits for synchronous commit confiration even without commit"),
+						 " before waiting for sync standby, to limit the replication lag."),
 			NULL,
 			GUC_UNIT_KB
 		},
-		&synchronous_commit_wal_throttle_threshold,
+		&wal_throttle_threshold,
 		0, 0, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},

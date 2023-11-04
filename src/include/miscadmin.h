@@ -95,7 +95,7 @@ extern PGDLLIMPORT volatile sig_atomic_t IdleSessionTimeoutPending;
 extern PGDLLIMPORT volatile sig_atomic_t ProcSignalBarrierPending;
 extern PGDLLIMPORT volatile sig_atomic_t LogMemoryContextPending;
 extern PGDLLIMPORT volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
-/* this doesn't need to be volatile sig_atomic_t as it set in XLogInsertRecord() */
+/* doesn't need to be volatile sig_atomic_t as it's not set by signal handler */
 extern PGDLLIMPORT bool XLogDelayPending;
 
 extern PGDLLIMPORT volatile sig_atomic_t CheckClientConnectionPending;

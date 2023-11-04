@@ -767,7 +767,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 							 (long long) walusage.wal_fpi,
 							 (unsigned long long) walusage.wal_bytes);
 			if(walusage.wal_throttled > 0)
-				appendStringInfo(&buf, _("%lld times throttled"), (long long) walusage.wal_throttled);
+				appendStringInfo(&buf, _("%lld times throttled\n"), (long long) walusage.wal_throttled);
 			else
 				appendStringInfo(&buf, _("\n"));
 

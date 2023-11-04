@@ -54,7 +54,7 @@ extern PGDLLIMPORT char *wal_consistency_checking_string;
 extern PGDLLIMPORT bool log_checkpoints;
 extern PGDLLIMPORT bool track_wal_io_timing;
 extern PGDLLIMPORT int wal_decode_buffer_size;
-extern PGDLLIMPORT int synchronous_commit_wal_throttle_threshold;
+extern PGDLLIMPORT int wal_throttle_threshold;
 extern PGDLLIMPORT uint32 backendWalInserted;
 
 extern PGDLLIMPORT int CheckPointSegments;

@@ -100,7 +100,7 @@ struct BufFile
 	 * XXX Should ideally us PGIOAlignedBlock, but might need a way to avoid
 	 * wasting per-file alignment padding when some users create many files.
 	 */
-	PGAlignedBlock buffer;
+	PGAlignedBlock *buffer;
 };
 
 static BufFile *makeBufFileCommon(int nfiles);
@@ -127,6 +127,9 @@ makeBufFileCommon(int nfiles)
 	file->curOffset = 0;
 	file->pos = 0;
 	file->nbytes = 0;
+
+	/* don't allocate the buffer by default */
+	file->buffer = NULL;
 
 	return file;
 }
@@ -455,11 +458,16 @@ BufFileLoadBuffer(BufFile *file)
 		INSTR_TIME_SET_ZERO(io_start);
 
 	/*
+	 * Make sure there's a valid buffer (in case we closed it earlier).
+	 */
+	BufFileAllocBuffer(file);
+
+	/*
 	 * Read whatever we can get, up to a full bufferload.
 	 */
 	file->nbytes = FileRead(thisfile,
-							file->buffer.data,
-							sizeof(file->buffer),
+							file->buffer->data,
+							sizeof(file->buffer->data),	/* FIXME not sure this is correct, maybe use BLCKSZ? */
 							file->curOffset,
 							WAIT_EVENT_BUFFILE_READ);
 	if (file->nbytes < 0)
@@ -534,8 +542,19 @@ BufFileDumpBuffer(BufFile *file)
 		else
 			INSTR_TIME_SET_ZERO(io_start);
 
+		/*
+		 * Make sure there's a valid buffer (in case we closed it earlier).
+		 *
+		 * We might have written it out earlier, but we haven't updated the
+		 * offset etc. So we need to do that now.
+		 *
+		 * XXX We might also just update the offset/dirty flag, instead of
+		 * reading the data only to write it out immediately.
+		 */
+		BufFileAllocBuffer(file);
+
 		bytestowrite = FileWrite(thisfile,
-								 file->buffer.data + wpos,
+								 file->buffer->data + wpos,
 								 bytestowrite,
 								 file->curOffset,
 								 WAIT_EVENT_BUFFILE_WRITE);
@@ -598,6 +617,14 @@ BufFileReadCommon(BufFile *file, void *ptr, size_t size, bool exact, bool eofOK)
 
 	BufFileFlush(file);
 
+	/*
+	 * Make sure there's a valid buffer (in case we closed it earlier).
+	 *
+	 * It might have been allocated by BufFileFlush(), but we can't rely
+	 * on that (it might have been not dirty).
+	 */
+	BufFileAllocBuffer(file);
+
 	while (size > 0)
 	{
 		if (file->pos >= file->nbytes)
@@ -616,7 +643,7 @@ BufFileReadCommon(BufFile *file, void *ptr, size_t size, bool exact, bool eofOK)
 			nthistime = size;
 		Assert(nthistime > 0);
 
-		memcpy(ptr, file->buffer.data + file->pos, nthistime);
+		memcpy(ptr, file->buffer->data + file->pos, nthistime);
 
 		file->pos += nthistime;
 		ptr = (char *) ptr + nthistime;
@@ -679,6 +706,11 @@ BufFileWrite(BufFile *file, const void *ptr, size_t size)
 
 	Assert(!file->readOnly);
 
+	/*
+	 * Make sure there's a valid buffer (in case we closed it earlier).
+	 */
+	BufFileAllocBuffer(file);
+
 	while (size > 0)
 	{
 		if (file->pos >= BLCKSZ)
@@ -700,7 +732,7 @@ BufFileWrite(BufFile *file, const void *ptr, size_t size)
 			nthistime = size;
 		Assert(nthistime > 0);
 
-		memcpy(file->buffer.data + file->pos, ptr, nthistime);
+		memcpy(file->buffer->data + file->pos, ptr, nthistime);
 
 		file->dirty = true;
 		file->pos += nthistime;
@@ -1036,4 +1068,143 @@ BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset)
 		file->nbytes = 0;
 	}
 	/* Nothing to do, if the truncate point is beyond current file. */
+}
+
+void
+BufFileAllocBuffer(BufFile *file)
+{
+	File		thisfile;
+
+	/* buffer already exists, bail out */
+	if (file->buffer != NULL)
+		return;
+
+	file->buffer = palloc(sizeof(PGAlignedBlock));
+
+	/* release/alloc should not have changed the file */
+	thisfile = file->files[file->curFile];
+
+	/*
+	 * If the buffer is supposed to contain some data, load them now. We need
+	 * to get exactly the right amount od data.
+	 */
+	if (file->nbytes > 0)
+	{
+		int	nread = FileRead(thisfile,
+							 file->buffer->data,
+							 file->nbytes,
+							 file->curOffset,
+							 WAIT_EVENT_BUFFILE_READ);
+
+		ereport(ERROR,
+				errcode_for_file_access(),
+				file->name ?
+				errmsg("could not read from file set \"%s\": read only %d of %d bytes",
+					   file->name, nread, file->nbytes) :
+				errmsg("could not read from temporary file: read only %d of %d bytes",
+					   nread, file->nbytes));
+	}
+}
+
+void
+BufFileFreeBuffer(BufFile *file)
+{
+	/*
+	 * If the file is dirty, we need to write out the data to the current file
+	 * offset. But we don't want to move the offset or reset the dirty flag,
+	 * we need to remember those.
+	 *
+	 * XXX This is almost BufFileDumpBuffer, except that it's a bit shorter,
+	 * and we keep the various flags.
+	 */
+	if (file->dirty)
+	{
+		int			wpos = 0;
+		int			bytestowrite;
+		File		thisfile;
+		off_t		curOffset = file->curOffset;
+
+		/*
+		 * Unlike BufFileLoadBuffer, we must dump the whole buffer even if it
+		 * crosses a component-file boundary; so we need a loop.
+		 */
+		while (wpos < file->nbytes)
+		{
+			off_t		availbytes;
+			instr_time	io_start;
+			instr_time	io_time;
+
+			/*
+			 * Advance to next component file if necessary and possible.
+			 */
+			if (file->curOffset >= MAX_PHYSICAL_FILESIZE)
+			{
+				while (file->curFile + 1 >= file->numFiles)
+					extendBufFile(file);
+				file->curFile++;
+				file->curOffset = 0;
+			}
+
+			/*
+			 * Determine how much we need to write into this file.
+			 */
+			bytestowrite = file->nbytes - wpos;
+			availbytes = MAX_PHYSICAL_FILESIZE - file->curOffset;
+
+			if ((off_t) bytestowrite > availbytes)
+				bytestowrite = (int) availbytes;
+
+			thisfile = file->files[file->curFile];
+
+			if (track_io_timing)
+				INSTR_TIME_SET_CURRENT(io_start);
+			else
+				INSTR_TIME_SET_ZERO(io_start);
+
+			/*
+			 * Make sure there's a valid buffer (in case we closed it earlier).
+			 *
+			 * We might have written it out earlier, but we haven't updated the
+			 * offset etc. So we need to do that now.
+			 *
+			 * XXX We might also just update the offset/dirty flag, instead of
+			 * reading the data only to write it out immediately.
+			 */
+			BufFileAllocBuffer(file);
+
+			bytestowrite = FileWrite(thisfile,
+									 file->buffer->data + wpos,
+									 bytestowrite,
+									 file->curOffset,
+									 WAIT_EVENT_BUFFILE_WRITE);
+			if (bytestowrite <= 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not write to file \"%s\": %m",
+								FilePathName(thisfile))));
+
+			if (track_io_timing)
+			{
+				INSTR_TIME_SET_CURRENT(io_time);
+				INSTR_TIME_ACCUM_DIFF(pgBufferUsage.temp_blk_write_time, io_time, io_start);
+			}
+
+			file->curOffset += bytestowrite;
+			wpos += bytestowrite;
+
+			pgBufferUsage.temp_blks_written++;
+		}
+
+		/* keep the original offset */
+		file->curOffset = curOffset;
+	}
+
+	pfree(file->buffer);
+	file->buffer = NULL;
+}
+
+bool
+BufFileHasBuffer(BufFile *file)
+{
+	return (file->buffer != NULL);
 }

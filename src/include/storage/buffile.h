@@ -56,4 +56,8 @@ extern void BufFileDeleteFileSet(FileSet *fileset, const char *name,
 								 bool missing_ok);
 extern void BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset);
 
+extern void BufFileAllocBuffer(BufFile *file);
+extern void BufFileFreeBuffer(BufFile *file);
+extern bool BufFileHasBuffer(BufFile *file);
+
 #endif							/* BUFFILE_H */

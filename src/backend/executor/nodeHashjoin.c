@@ -488,6 +488,18 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 					MinimalTuple mintuple = ExecFetchSlotMinimalTuple(outerTupleSlot,
 																	  &shouldFree);
 
+					/* memory accounting, have to check before */
+					if ((hashtable->outerBatchFile[batchno] == NULL) ||
+						(!BufFileHasBuffer(hashtable->outerBatchFile[batchno])))
+					{
+						hashtable->outerBatchSpace += BLCKSZ;
+						hashtable->outerBatchSpacePeak = Max(hashtable->outerBatchSpacePeak,
+															 hashtable->outerBatchSpace);
+						elog(DEBUG1, "outerBatchSpace = %zu  outerBatchSpacePeak = %zu",
+							 hashtable->outerBatchSpace,
+							 hashtable->outerBatchSpacePeak);
+					}
+
 					/*
 					 * Need to postpone this outer tuple to a later batch.
 					 * Save it in the corresponding outer-batch file.
@@ -500,6 +512,23 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 
 					if (shouldFree)
 						heap_free_minimal_tuple(mintuple);
+
+#ifdef BUFFILE_MEM_LIMIT
+					/*
+					 * now check if we exceeded the allowed space, we limit it by
+					 * work_mem too (a big ugly, but ...)
+					 */
+					if (hashtable->outerBatchSpace > work_mem * 1024L)
+					{
+						
+						for (int i = 1; i < hashtable->nbatch; i++)
+						{
+							if (hashtable->outerBatchFile[i])
+								BufFileFreeBuffer(hashtable->outerBatchFile[i]);
+						}
+						hashtable->outerBatchSpace = 0;
+					}
+#endif
 
 					/* Loop around, staying in HJ_NEED_NEW_OUTER state */
 					continue;

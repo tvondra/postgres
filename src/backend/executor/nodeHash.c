@@ -516,6 +516,11 @@ ExecHashTableCreate(HashState *state, List *hashOperators, List *hashCollations,
 	hashtable->area = state->ps.state->es_query_dsa;
 	hashtable->batches = NULL;
 
+	hashtable->innerBatchSpace = 0;
+	hashtable->innerBatchSpacePeak = 0;
+	hashtable->outerBatchSpace = 0;
+	hashtable->outerBatchSpacePeak = 0;
+
 #ifdef HJDEBUG
 	printf("Hashjoin %p: initial nbatch = %d, nbuckets = %d\n",
 		   hashtable, nbatch, nbuckets);
@@ -1028,6 +1033,19 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 			{
 				/* dump it out */
 				Assert(batchno > curbatch);
+
+				/* memory accounting, have to check before */
+				if ((hashtable->innerBatchFile[batchno] == NULL) ||
+					(!BufFileHasBuffer(hashtable->innerBatchFile[batchno])))
+				{
+					hashtable->innerBatchSpace += BLCKSZ;
+					hashtable->innerBatchSpacePeak = Max(hashtable->innerBatchSpacePeak,
+														 hashtable->innerBatchSpace);
+					elog(DEBUG1, "innerBatchSpace = %zu  innerBatchSpacePeak = %zu",
+						 hashtable->innerBatchSpace,
+						 hashtable->innerBatchSpacePeak);
+				}
+
 				ExecHashJoinSaveTuple(HJTUPLE_MINTUPLE(hashTuple),
 									  hashTuple->hashvalue,
 									  &hashtable->innerBatchFile[batchno],
@@ -1035,6 +1053,24 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 
 				hashtable->spaceUsed -= hashTupleSize;
 				nfreed++;
+
+#ifdef BUFFILE_MEM_LIMIT
+				/*
+				 * now check if we exceeded the allowed space, we limit it by
+				 * work_mem too (a big ugly, but ...)
+				 */
+				if (hashtable->innerBatchSpace > work_mem * 1024L)
+				{
+					
+					for (int i = 1; i < hashtable->nbatch; i++)
+					{
+						if (hashtable->innerBatchFile[i])
+							BufFileFreeBuffer(hashtable->innerBatchFile[i]);
+					}
+
+					hashtable->innerBatchSpace = 0;
+				}
+#endif
 			}
 
 			/* next tuple in this chunk */
@@ -1684,6 +1720,18 @@ ExecHashTableInsert(HashJoinTable hashtable,
 	}
 	else
 	{
+		/* memory accounting, have to check before */
+		if ((hashtable->innerBatchFile[batchno] == NULL) ||
+			(!BufFileHasBuffer(hashtable->innerBatchFile[batchno])))
+		{
+			hashtable->innerBatchSpace += BLCKSZ;
+			hashtable->innerBatchSpacePeak = Max(hashtable->innerBatchSpacePeak,
+												 hashtable->innerBatchSpace);
+			elog(DEBUG1, "innerBatchSpace = %zu  innerBatchSpacePeak = %zu",
+				 hashtable->innerBatchSpace,
+				 hashtable->innerBatchSpacePeak);
+		}
+
 		/*
 		 * put the tuple into a temp file for later batches
 		 */
@@ -1692,6 +1740,23 @@ ExecHashTableInsert(HashJoinTable hashtable,
 							  hashvalue,
 							  &hashtable->innerBatchFile[batchno],
 							  hashtable);
+
+#ifdef BUFFILE_MEM_LIMIT
+		/*
+		 * now check if we exceeded the allowed space, we limit it by
+		 * work_mem too (a big ugly, but ...)
+		 */
+		if (hashtable->innerBatchSpace > work_mem * 1024L)
+		{
+			
+			for (int i = 1; i < hashtable->nbatch; i++)
+			{
+				if (hashtable->innerBatchFile[i])
+					BufFileFreeBuffer(hashtable->innerBatchFile[i]);
+			}
+			hashtable->innerBatchSpace = 0;
+		}
+#endif
 	}
 
 	if (shouldFree)
@@ -2669,6 +2734,18 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 		}
 		else
 		{
+			/* memory accounting, have to check before */
+			if ((hashtable->innerBatchFile[batchno] == NULL) ||
+				(!BufFileHasBuffer(hashtable->innerBatchFile[batchno])))
+			{
+				hashtable->innerBatchSpace += BLCKSZ;
+				hashtable->innerBatchSpacePeak = Max(hashtable->innerBatchSpacePeak,
+													 hashtable->innerBatchSpace);
+				elog(DEBUG1, "innerBatchSpace = %zu  innerBatchSpacePeak = %zu",
+					 hashtable->innerBatchSpace,
+					 hashtable->innerBatchSpacePeak);
+			}
+
 			/* Put the tuple into a temp file for later batches */
 			Assert(batchno > hashtable->curbatch);
 			ExecHashJoinSaveTuple(tuple, hashvalue,
@@ -2677,6 +2754,23 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 			pfree(hashTuple);
 			hashtable->spaceUsed -= tupleSize;
 			hashtable->spaceUsedSkew -= tupleSize;
+
+#ifdef BUFFILE_MEM_LIMIT
+			/*
+			 * now check if we exceeded the allowed space, we limit it by
+			 * work_mem too (a big ugly, but ...)
+			 */
+			if (hashtable->innerBatchSpace > work_mem * 1024L)
+			{
+				
+				for (int i = 1; i < hashtable->nbatch; i++)
+				{
+					if (hashtable->innerBatchFile[i])
+						BufFileFreeBuffer(hashtable->innerBatchFile[i]);
+				}
+				hashtable->innerBatchSpace = 0;
+			}
+#endif
 		}
 
 		hashTuple = nextHashTuple;

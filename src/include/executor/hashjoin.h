@@ -295,6 +295,8 @@ typedef struct ParallelHashJoinState
 #define PHJ_GROW_BUCKETS_REINSERT		2
 #define PHJ_GROW_BUCKETS_PHASE(n)		((n) % 3)	/* circular phases */
 
+#define BUFFILE_MEM_LIMIT
+
 typedef struct HashJoinTableData
 {
 	int			nbuckets;		/* # buckets in the in-memory hash table */
@@ -372,6 +374,13 @@ typedef struct HashJoinTableData
 	ParallelHashJoinState *parallel_state;
 	ParallelHashJoinBatchAccessor *batches;
 	dsa_pointer current_chunk_shared;
+
+	/* batchfile space accounting */
+	Size		innerBatchSpace;
+	Size		innerBatchSpacePeak;
+	Size		outerBatchSpace;
+	Size		outerBatchSpacePeak;
+
 } HashJoinTableData;
 
 #endif							/* HASHJOIN_H */

@@ -1096,13 +1096,16 @@ BufFileAllocBuffer(BufFile *file)
 							 file->curOffset,
 							 WAIT_EVENT_BUFFILE_READ);
 
-		ereport(ERROR,
-				errcode_for_file_access(),
-				file->name ?
-				errmsg("could not read from file set \"%s\": read only %d of %d bytes",
-					   file->name, nread, file->nbytes) :
-				errmsg("could not read from temporary file: read only %d of %d bytes",
-					   nread, file->nbytes));
+		if (nread != file->nbytes)
+		{
+			ereport(ERROR,
+					errcode_for_file_access(),
+					file->name ?
+					errmsg("could not read from file set \"%s\": read only %d of %d bytes",
+						   file->name, nread, file->nbytes) :
+					errmsg("could not read from temporary file: read only %d of %d bytes",
+						   nread, file->nbytes));
+		}
 	}
 }
 

@@ -2139,6 +2139,9 @@ StartTransaction(void)
 	 */
 	s->state = TRANS_INPROGRESS;
 
+	/* reset limits for WAL throttling */
+	ResetXLogThrottling();
+
 	ShowTransactionState("StartTransaction");
 }
 

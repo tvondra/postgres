@@ -140,7 +140,16 @@ int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;
 bool		track_wal_io_timing = false;
-int			wal_throttle_threshold = 0;
+
+/* user-settable parameters for WAL throttling */
+int			wal_write_after = 0;
+int			wal_flush_after_local = 0;
+int			wal_flush_after_remote = 0;
+
+/* auto-adjusted version of the throttling parameters */
+int			wal_write_after_current = 0;
+int			wal_flush_after_local_current = 0;
+int			wal_flush_after_remote_current = 0;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -255,16 +264,10 @@ static int	LocalXLogInsertAllowed = -1;
  * parallel backends may have written WAL records at later LSNs than the value
  * stored here.  The parallel leader advances its own copy, when necessary,
  * in WaitForParallelWorkersToFinish.
- *
- * XactLastThrottledRecEnd points to the last XLOG record that should be throttled
- * as the additional WAL records could be generated before processing interrupts.
- *
- * XXX I'm not sure I understand what "record to be throttled" means?
  */
 XLogRecPtr	ProcLastRecPtr = InvalidXLogRecPtr;
 XLogRecPtr	XactLastRecEnd = InvalidXLogRecPtr;
 XLogRecPtr	XactLastCommitEnd = InvalidXLogRecPtr;
-static XLogRecPtr	XactLastThrottledRecEnd = InvalidXLogRecPtr;
 
 /*
  * RedoRecPtr is this backend's local copy of the REDO record pointer
@@ -663,7 +666,8 @@ static MemoryContext walDebugCxt = NULL;
  *
  * XXX Not sure it should refer to "backend", it's really about xact, no?
  */
-uint32	backendWalInserted = 0;
+uint32		backendWalInserted = 0;
+XLogRecPtr	backendLastFlushPtr = InvalidXLogRecPtr;
 
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,
 										XLogRecPtr EndOfLog,
@@ -1094,16 +1098,47 @@ XLogInsertRecord(XLogRecData *rdata,
 		/*
 		 * Decide if we need to throttle this backend, so that it does not write
 		 * WAL too fast, causing lag against the sync standby (which in turn
-		 * increases latency for standby confirmations). We may be holding locks
-		 * and blocking interrupts here, so we only make the decision, but the
-		 * wait (for sync standby confirmation) happens elsewhere.
+		 * increases latency both for local commits and for standby confirmations).
+		 * We may be holding locks and blocking interrupts here, so we only make
+		 * the decisions here, but the wait (for sync standby confirmation)
+		 * happens elsewhere in processing interrupts.
 		 *
-		 * The throttling is applied only to large transactions (producing more
-		 * than wal_throttle_threshold kilobytes of WAL). Throttled backends
-		 * can be identified by a new wait event SYNC_REP_THROTTLED.
+		 * This is somewhat similar to what walwriter does, except that walwriter
+		 * is driven by time (not by amount of WAL written), and does not throttle
+		 * the backends (in a way, the intention is to do exactly the opposite by
+		 * taking away the responsibility for writing WAL from backends).
+		 *
+		 * We may decide to do one or more of these things:
+		 *
+		 * - write the WAL locally (in the background, no throttle)
+		 * - flush the WAL locally (throttle, if synchronous_commit == local)
+		 * - wait for sync replica (throttle, if synchronous_commit != local)
+		 *
+		 * The first point (driven by wal_write_after) is meant to start writing
+		 * WAL to disk early, so that the subsequent flush is faster. This does
+		 * not do any flushes, it merely writes WAL data to page cache.
+		 *
+		 * The second point (driven by wal_flush_after_local) forces the backend
+		 * to actually flush WAL to disk, to reduce the amount of unflushed WAL.
+		 * This is a synchronous operation, and is applied only to transactions
+		 * that generate enough WAL (e.g. 256kB). The goal is to limit impact of
+		 * large transactions (producing a lot of WAL) on small OLTP ones.
+		 *
+		 * The third point (driven by wal_flush_after_remote) is similar, except
+		 * that it throttles based on confirmations from a sync replica.
+		 *
+		 * The throttling is applied only to large transactions, and the backends
+		 * affected by the throttling can be identified by a new wait event
+		 * SYNC_REP_THROTTLED.
 		 *
 		 * Small transactions (by amount of produced WAL) are still subject to
 		 * the sync replication, so the same wait happens at commit time.
+		 *
+		 * All of those thresholds are auto-tuned, i.e. the value is adjusted
+		 * based on concurrent activity. All the large transactions need to
+		 * share the WAL budgets, somehow. We do that by adjusting the value
+		 * by observing the distance since the last write/flush, and comparing
+		 * it to the current limit.
 		 *
 		 * XXX Not sure this is the right place for a comment explaining how the
 		 * throttling works. This place is way too low level, and rather far from
@@ -1112,14 +1147,47 @@ XLogInsertRecord(XLogRecData *rdata,
 		 * XXX Should this be done even if XLogDelayPending is already set? Maybe
 		 * that should only update XactLastThrottledRecEnd, withoug incrementing
 		 * the pgWalUsage.wal_throttled counter?
+		 *
+		 * XXX Maybe the different cases should have separate wait events?
+		 *
+		 * XXX Note that for the remote WAL, we need to also enforce the local
+		 * flush throttling, because we only send data to replica after it was
+		 * flushed locally.
+		 *
+		 * XXX I guess to make this work well, we should ensure
+		 * (wal_write_after < wal_flush_after_local < wal_flush_after_remove)
 		 */
 		backendWalInserted += rechdr->xl_tot_len;
 
-		if ((synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
-			(wal_throttle_threshold > 0) &&
-			(backendWalInserted >= wal_throttle_threshold * 1024L))
+		/*
+		 * Should we issue the WAL write to local disk (without a flush)?
+		 */
+		if ((wal_write_after_current > 0) &&
+			(backendWalInserted >= wal_write_after_current * 1024L))
 		{
-			XactLastThrottledRecEnd = XactLastRecEnd;
+			InterruptPending = true;
+			XLogDelayPending = true;
+		}
+
+		/*
+		 * Should we flush the WAL to local disk?
+		 */
+		else if ((synchronous_commit >= SYNCHRONOUS_COMMIT_LOCAL_FLUSH) &&
+			(wal_flush_after_local_current > 0) &&
+			(backendWalInserted >= wal_flush_after_local_current * 1024L))
+		{
+			InterruptPending = true;
+			XLogDelayPending = true;
+			pgWalUsage.wal_throttled++;
+		}
+
+		/*
+		 * Should we flush the WAL to sync replica?
+		 */
+		else if ((synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
+			(wal_flush_after_remote_current > 0) &&
+			(backendWalInserted >= wal_flush_after_remote_current * 1024L))
+		{
 			InterruptPending = true;
 			XLogDelayPending = true;
 			pgWalUsage.wal_throttled++;
@@ -2694,6 +2762,7 @@ XLogFlush(XLogRecPtr record)
 	 * XXX For the approximation we should probably use LogwrtResult.Flush.
 	 */
 	backendWalInserted = 0;
+	backendLastFlushPtr = record;
 
 	/* Quick exit if already known flushed */
 	if (record <= LogwrtResult.Flush)
@@ -9220,19 +9289,211 @@ SetWalWriterSleeping(bool sleeping)
  * XXX Not sure why we use XactLastThrottledRecEnd and not simply XLogRecEnd?
  */
 void
-HandleXLogDelayPending()
+HandleXLogDelayPending(void)
 {
-	XLogRecPtr 	lsn;
+	/* need to remember the values, because XLogFlush may reset them */
+	uint32		wal_inserted = backendWalInserted;
+	XLogRecPtr	last_flush_lsn = backendLastFlushPtr;
+	XLogRecPtr	flush_lsn = InvalidXLogRecPtr;
 
-	/* calculate last fully filled page */
-	lsn = XactLastThrottledRecEnd - (XactLastThrottledRecEnd % XLOG_BLCKSZ);
+	/* make sure we're not in recovery - timeline could change, etc. */
+	Assert(!InRecovery);
 
-	Assert(wal_throttle_threshold > 0);
-	Assert(backendWalInserted >= wal_throttle_threshold * 1024L);
-	Assert(XactLastThrottledRecEnd != InvalidXLogRecPtr);
+	/*
+	 * read LogwrtResult and update local state
+	 *
+	 * XXX Maybe we should use the cached local LogwrtResult copy to determine if
+	 * we need to a write/flush? That wouldn't require a spinlock, and in the worst
+	 * case we'd see a bit stale values and perhaps issue a write/flush early.
+	 * However, we shouldn't to this throttling very often, so seems fine.
+	 */
+	SpinLockAcquire(&XLogCtl->info_lck);
+	LogwrtResult = XLogCtl->LogwrtResult;
+	SpinLockRelease(&XLogCtl->info_lck);
 
-	XLogFlush(lsn);
-	SyncRepWaitForLSN(lsn, false);
+	/*
+	 * First decide if we need to issue a write to local WAL. We assume this LSN
+	 * will be ahead of LSN for either flush (local or remote), so let's do this
+	 * first.
+	 */
+	if ((wal_write_after_current > 0) &&
+		(wal_inserted >= wal_write_after_current * 1024L))
+	{
+		/*
+		 * We want to keep write lag below wal_write_after_current, but we don't
+		 * want to write partial pages (because of write amplification).
+		 */
+		XLogRecPtr 	lsn = XactLastRecEnd - wal_write_after_current * 1024L;
+
+		/* truncate to the last full page */
+		lsn = lsn - (lsn % XLOG_BLCKSZ);
+
+		/* Do the WAL write unless someone already issued the write earlier. */
+		if (lsn > LogwrtResult.Write)
+		{
+			/*
+			 * Before actually performing the write, wait for all in-flight
+			 * insertions to the pages we're about to write to finish.
+			 */
+			lsn = WaitXLogInsertionsToFinish(lsn);
+
+			LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
+
+			LogwrtResult = XLogCtl->LogwrtResult;
+			if (LogwrtResult.Write >= lsn)
+			{
+				/* OK, someone wrote it already */
+				LWLockRelease(WALWriteLock);
+			}
+			else
+			{
+				XLogwrtRqst WriteRqst;
+
+				/* Have to write it ourselves */
+				TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_START();
+				WriteRqst.Write = lsn;
+				WriteRqst.Flush = 0;
+				XLogWrite(WriteRqst, XLogCtl->InsertTimeLineID, false);
+				LWLockRelease(WALWriteLock);
+				PendingWalStats.wal_buffers_full++;		// FIXME
+				TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_DONE();
+			}
+		}
+	}
+
+	/* Now consider if we should do a local flush. */
+	if ((synchronous_commit >= SYNCHRONOUS_COMMIT_LOCAL_FLUSH) &&
+		(wal_flush_after_local_current > 0) &&
+		(wal_inserted >= wal_flush_after_local_current * 1024L))
+	{
+		/* flush lag should be less than wal_flush_after_local_current (kB) */
+		XLogRecPtr 	lsn = XactLastRecEnd - wal_flush_after_local_current * 1024L;
+
+		/* truncate to the last full */
+		lsn = lsn - (lsn % XLOG_BLCKSZ);
+
+		/* do the flush (will reset backendWalInserted etc.) */
+		XLogFlush(lsn);
+
+		/* remember the LSN of this flush */
+		flush_lsn = lsn;
+	}
+
+	/*
+	 * Finally, decide if we should wait for confirmation from a sync replica.
+	 */
+	if ((synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_WRITE) &&
+		(wal_flush_after_remote_current > 0) &&
+		(wal_inserted >= wal_flush_after_remote_current * 1024L))
+	{
+		/* sync flush lag should be less than wal_flush_after_remote_current (kB) */
+		XLogRecPtr 	lsn = XactLastRecEnd - wal_flush_after_remote_current * 1024L;
+
+		/* truncate to the last full page */
+		lsn = lsn - (lsn % XLOG_BLCKSZ);
+
+		SyncRepWaitForLSN(lsn, false);
+	}
+
+	/*
+	 * Now adjust the thresholds based on the distance since the last flush in this
+	 * backend, and the fraction of WAL this backend was responsible for.
+	 */
+	if (flush_lsn != InvalidXLogRecPtr)
+	{
+		/* Fraction of WAL between the flushes was produced by this backend. */
+		double wal_fraction = (double) wal_inserted / (flush_lsn - last_flush_lsn);
+
+		double	sum = 0;
+		int		cnt = 0;
+
+		/*
+		 * If the fraction is sufficiently far from 1.0 or close to it, we adjust
+		 * the limits to get close to the "ideal" value based on the fraction. We
+		 * don't immediately switch to the new value, but instead change the values
+		 * gradually by halving/doubling the previous value.
+		 *
+		 * The fraction is guaranteed to be less than 1.0, so we halve the limit
+		 * for low values below 0.5, double the limit for values above 0.9, and
+		 * do nothing for values in between.
+		 *
+		 * We calculate the desired values for each enabled limit (skip those set
+		 * to 0), and then use the average fraction to maintain the proportion.
+		 */
+
+		if (wal_fraction < 0.5)
+		{
+			wal_write_after_current /= 2;
+			wal_flush_after_local_current /= 2;
+			wal_flush_after_remote_current /= 2;
+		}
+		else if (wal_fraction > 0.9)
+		{
+			wal_write_after_current *= 2;
+			wal_flush_after_local_current *= 2;
+			wal_flush_after_remote_current *= 2;
+		}
+
+
+		/* clamp to correct range */
+
+		wal_write_after_current
+			= Min(wal_write_after, Max(1, wal_write_after_current));
+
+		wal_flush_after_local_current
+			= Min(wal_flush_after_local, Max(1, wal_flush_after_local_current));
+
+		wal_flush_after_remote_current
+			= Min(wal_flush_after_remote, Max(1, wal_flush_after_remote_current));
+
+
+		/* calculate the average fraction */
+
+		if (wal_write_after > 0)
+		{
+			sum += (double) wal_write_after_current / wal_write_after;
+			cnt += 1;
+		}
+
+		if (wal_flush_after_local > 0)
+		{
+			sum += (double) wal_flush_after_local_current / wal_flush_after_local;
+			cnt += 1;
+		}
+
+		if (wal_flush_after_remote > 0)
+		{
+			sum += (double) wal_flush_after_remote_current / wal_flush_after_remote;
+			cnt += 1;
+		}
+
+		Assert(cnt > 0);
+
+		/* apply the average fraction */
+
+		wal_write_after_current = wal_write_after * (sum / cnt);
+		wal_flush_after_local_current = wal_flush_after_local * (sum / cnt);
+		wal_flush_after_remote_current = wal_flush_after_remote * (sum / cnt);
+
+		/* clamp to accepted ranges */
+
+		wal_write_after_current
+			= Min(wal_write_after, Max(1, wal_write_after_current));
+
+		wal_flush_after_local_current
+			= Min(wal_flush_after_local, Max(1, wal_flush_after_local_current));
+
+		wal_flush_after_remote_current
+			= Min(wal_flush_after_remote, Max(1, wal_flush_after_remote_current));
+	}
 
 	XLogDelayPending = false;
+}
+
+void
+ResetXLogThrottling(void)
+{
+	wal_write_after_current = wal_write_after;
+	wal_flush_after_local_current = wal_flush_after_local;
+	wal_flush_after_remote_current = wal_flush_after_remote;
 }

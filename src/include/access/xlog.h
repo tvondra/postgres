@@ -54,7 +54,9 @@ extern PGDLLIMPORT char *wal_consistency_checking_string;
 extern PGDLLIMPORT bool log_checkpoints;
 extern PGDLLIMPORT bool track_wal_io_timing;
 extern PGDLLIMPORT int wal_decode_buffer_size;
-extern PGDLLIMPORT int wal_throttle_threshold;
+extern PGDLLIMPORT int wal_write_after;
+extern PGDLLIMPORT int wal_flush_after_local;
+extern PGDLLIMPORT int wal_flush_after_remote;
 extern PGDLLIMPORT uint32 backendWalInserted;
 
 extern PGDLLIMPORT int CheckPointSegments;
@@ -253,6 +255,8 @@ extern XLogRecPtr GetLastImportantRecPtr(void);
 
 extern void SetWalWriterSleeping(bool sleeping);
 extern void HandleXLogDelayPending(void);
+extern void HandleXLogDelayPending(void);
+extern void ResetXLogThrottling(void);
 
 /*
  * Routines used by xlogrecovery.c to call back into xlog.c during recovery.

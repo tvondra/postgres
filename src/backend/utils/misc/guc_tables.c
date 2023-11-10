@@ -2883,13 +2883,37 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"wal_throttle_after", PGC_USERSET, REPLICATION_SENDING,
+		{"wal_write_after", PGC_USERSET, REPLICATION_SENDING,
 			gettext_noop("Sets the maximum amount of WAL in kilobytes a backend generates "
 						 " before waiting for sync standby, to limit the replication lag."),
 			NULL,
 			GUC_UNIT_KB
 		},
-		&wal_throttle_threshold,
+		&wal_write_after,
+		0, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_flush_after_local", PGC_USERSET, REPLICATION_SENDING,
+			gettext_noop("Sets the maximum amount of WAL in kilobytes a backend generates "
+						 " before waiting for sync standby, to limit the replication lag."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&wal_flush_after_local,
+		0, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_flush_after_remote", PGC_USERSET, REPLICATION_SENDING,
+			gettext_noop("Sets the maximum amount of WAL in kilobytes a backend generates "
+						 " before waiting for sync standby, to limit the replication lag."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&wal_flush_after_remote,
 		0, 0, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},

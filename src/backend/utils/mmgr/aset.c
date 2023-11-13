@@ -134,13 +134,12 @@ mmap_alloc(Size len)
 
 	if (len != MMAP_BLOCK_SIZE)
 	{
+/*
 		if (mmap_cache_hits + mmap_cache_misses > 10000)
 		{
 			elog(LOG, "mmap: block %ld request %ld", MMAP_BLOCK_SIZE, len);
-			if (len == 28672)
-				abort();
 		}
-
+*/
 		mmap_cache_miss_size++;
 	}
 	else if (mmap_cache_free_index == 0)

@@ -43,6 +43,8 @@
  *
  *-------------------------------------------------------------------------
  */
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "postgres.h"
 
@@ -103,6 +105,9 @@
 
 #define ALLOC_BLOCKHDRSZ	MAXALIGN(sizeof(AllocBlockData))
 #define ALLOC_CHUNKHDRSZ	sizeof(MemoryChunk)
+
+static void *mmap_cache[256];
+static int mmap_free_index = 0;
 
 typedef struct AllocBlockData *AllocBlock;	/* forward reference */
 
@@ -354,6 +359,7 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	Size		firstBlockSize;
 	AllocSet	set;
 	AllocBlock	block;
+	size_t		mem_page_size;
 
 	/* ensure MemoryChunk's size is properly maxaligned */
 	StaticAssertDecl(ALLOC_CHUNKHDRSZ == MAXALIGN(ALLOC_CHUNKHDRSZ),
@@ -361,6 +367,30 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	/* check we have enough space to store the freelist link */
 	StaticAssertDecl(sizeof(AllocFreeListLink) <= (1 << ALLOC_MINBITS),
 					 "sizeof(AllocFreeListLink) larger than minimum allocation size");
+
+	/* make the sizes multiples of page size */
+	mem_page_size = sysconf(_SC_PAGE_SIZE);
+
+	if (minContextSize % mem_page_size != 0)
+		minContextSize = minContextSize - (minContextSize % mem_page_size) + mem_page_size;
+
+	if (initBlockSize % mem_page_size != 0)
+		initBlockSize = initBlockSize - (initBlockSize % mem_page_size) + mem_page_size;
+
+	if (maxBlockSize % mem_page_size != 0)
+		maxBlockSize = maxBlockSize - (maxBlockSize % mem_page_size) + mem_page_size;
+
+	// minContextSize = Min(minContextSize, 8 * 1024L * 1024L);
+	// initBlockSize = Max(initBlockSize, 8 * 1024L * 1024L);
+	// maxBlockSize = Max(maxBlockSize, 8 * 1024L * 1024L);
+
+	// minContextSize = mem_page_size;
+	// initBlockSize = mem_page_size;
+	// maxBlockSize = mem_page_size;
+
+	minContextSize = 1024L * 1024L;
+	initBlockSize = mem_page_size;
+	maxBlockSize = mem_page_size;
 
 	/*
 	 * First, validate allocation parameters.  Once these were regular runtime
@@ -437,13 +467,15 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	else
 		firstBlockSize = Max(firstBlockSize, initBlockSize);
 
+// printf("mmap %ld %ld A\n", firstBlockSize, sysconf(_SC_PAGE_SIZE));
 	/*
 	 * Allocate the initial block.  Unlike other aset.c blocks, it starts with
 	 * the context header and its block header follows that.
 	 */
-	set = (AllocSet) malloc(firstBlockSize);
-	if (set == NULL)
+	set = (AllocSet) mmap(NULL, firstBlockSize, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+	if (set == MAP_FAILED)
 	{
+//		printf("MAP_FAILED\n");
 		if (TopMemoryContext)
 			MemoryContextStats(TopMemoryContext);
 		ereport(ERROR,
@@ -579,13 +611,17 @@ AllocSetReset(MemoryContext context)
 		}
 		else
 		{
+			size_t blocklen = block->endptr - (char *) block;
 			/* Normal case, release the block */
 			context->mem_allocated -= block->endptr - ((char *) block);
 
 #ifdef CLOBBER_FREED_MEMORY
 			wipe_mem(block, block->freeptr - ((char *) block));
 #endif
-			free(block);
+			if (munmap(block, blocklen) != 0)
+			{
+				elog(ERROR, "munmap failed %lu A", blocklen);
+			}
 		}
 		block = next;
 	}
@@ -649,7 +685,8 @@ AllocSetDelete(MemoryContext context)
 				freelist->num_free--;
 
 				/* All that remains is to free the header/initial block */
-				free(oldset);
+				if (munmap(oldset, oldset->initBlockSize) != 0)
+					elog(ERROR, "munmap failed %u B", oldset->initBlockSize);
 			}
 			Assert(freelist->num_free == 0);
 		}
@@ -666,6 +703,7 @@ AllocSetDelete(MemoryContext context)
 	while (block != NULL)
 	{
 		AllocBlock	next = block->next;
+		size_t		blocklen = block->endptr - (char *) block;
 
 		if (!IsKeeperBlock(set, block))
 			context->mem_allocated -= block->endptr - ((char *) block);
@@ -675,7 +713,8 @@ AllocSetDelete(MemoryContext context)
 #endif
 
 		if (!IsKeeperBlock(set, block))
-			free(block);
+			if (munmap(block, blocklen) != 0)
+				elog(ERROR, "munmap failed %lu C", blocklen);
 
 		block = next;
 	}
@@ -683,7 +722,8 @@ AllocSetDelete(MemoryContext context)
 	Assert(context->mem_allocated == keepersize);
 
 	/* Finally, free the context header, including the keeper block */
-	free(set);
+	if (munmap(set, set->initBlockSize) != 0)
+		elog(ERROR, "munmap failed %u D", set->initBlockSize);
 }
 
 /*
@@ -723,11 +763,14 @@ AllocSetAlloc(MemoryContext context, Size size)
 #else
 		chunk_size = MAXALIGN(size);
 #endif
-
 		blksize = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
-		block = (AllocBlock) malloc(blksize);
-		if (block == NULL)
+// printf("mmap %lu\n", blksize);
+		block = (AllocBlock) mmap(NULL, blksize, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+		if (block == MAP_FAILED)
+		{
+			// printf("MAP_FAILED\n");
 			return NULL;
+		}
 
 		context->mem_allocated += blksize;
 
@@ -923,24 +966,29 @@ AllocSetAlloc(MemoryContext context, Size size)
 		required_size = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		while (blksize < required_size)
 			blksize <<= 1;
-
+// printf("mmap %lu\n", blksize);
 		/* Try to allocate it */
-		block = (AllocBlock) malloc(blksize);
+		block = (AllocBlock) mmap(NULL, blksize, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
 
 		/*
 		 * We could be asking for pretty big blocks here, so cope if malloc
 		 * fails.  But give up if there's less than 1 MB or so available...
 		 */
-		while (block == NULL && blksize > 1024 * 1024)
+		while (block == MAP_FAILED && blksize > 1024 * 1024)
 		{
+			// printf("MAP_FAILED\n");
 			blksize >>= 1;
 			if (blksize < required_size)
 				break;
-			block = (AllocBlock) malloc(blksize);
+// printf("mmap\n");
+			block = (AllocBlock) mmap(NULL, blksize, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
 		}
 
-		if (block == NULL)
+		if (block == MAP_FAILED)
+		{
+			printf("MAP_FAILED\n");
 			return NULL;
+		}
 
 		context->mem_allocated += blksize;
 
@@ -1009,6 +1057,8 @@ AllocSetFree(void *pointer)
 
 	if (MemoryChunkIsExternal(chunk))
 	{
+		size_t blocklen;
+
 		/* Release single-chunk block. */
 		AllocBlock	block = ExternalChunkGetBlock(chunk);
 
@@ -1041,10 +1091,13 @@ AllocSetFree(void *pointer)
 
 		set->header.mem_allocated -= block->endptr - ((char *) block);
 
+		blocklen = block->endptr - (char *) block;
+
 #ifdef CLOBBER_FREED_MEMORY
 		wipe_mem(block, block->freeptr - ((char *) block));
 #endif
-		free(block);
+		if (munmap(block, blocklen) != 0)
+			elog(ERROR, "munmap failed %lu E", blocklen);
 	}
 	else
 	{
@@ -1127,6 +1180,7 @@ AllocSetRealloc(void *pointer, Size size)
 		Size		chksize;
 		Size		blksize;
 		Size		oldblksize;
+		AllocBlock	newblock;
 
 		block = ExternalChunkGetBlock(chunk);
 
@@ -1160,7 +1214,22 @@ AllocSetRealloc(void *pointer, Size size)
 		blksize = chksize + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		oldblksize = block->endptr - ((char *) block);
 
-		block = (AllocBlock) realloc(block, blksize);
+		newblock = (AllocBlock) mmap(NULL, blksize, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+
+		/*
+		 * FIXME Probably not quite correct, needs to deal with valgrind stuff (mark
+		 * parts as access/noaccess).
+		 */
+		if (blksize >= oldblksize)
+			memcpy(newblock, block, oldblksize);
+		else
+			memcpy(newblock, block, blksize);
+
+		if (munmap(block, oldblksize) != 0)
+			elog(ERROR, "munmap failed %lu F", oldblksize);
+
+		block = newblock;
+
 		if (block == NULL)
 		{
 			/* Disallow access to the chunk header. */

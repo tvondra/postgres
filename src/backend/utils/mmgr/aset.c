@@ -126,11 +126,11 @@ mmap_alloc(Size len)
 
 	len = MMAP_ALIGN_SIZE(len);
 
-	if ((mmap_cache_hits + mmap_cache_misses) % 10000 == 9999)
-	{
-		elog(LOG, "mmap: hits %d misses %d pct %.2f", mmap_cache_hits, mmap_cache_misses, mmap_cache_hits * 100.0 / (mmap_cache_hits + mmap_cache_misses));
-		elog(LOG, "mmap: empty %d size %d", mmap_cache_miss_empty, mmap_cache_miss_size);
-	}
+//	if ((mmap_cache_hits + mmap_cache_misses) % 10000 == 9999)
+//	{
+//		elog(LOG, "mmap: hits %d misses %d pct %.2f", mmap_cache_hits, mmap_cache_misses, mmap_cache_hits * 100.0 / (mmap_cache_hits + mmap_cache_misses));
+//		elog(LOG, "mmap: empty %d size %d", mmap_cache_miss_empty, mmap_cache_miss_size);
+//	}
 
 	if (len != MMAP_BLOCK_SIZE)
 	{

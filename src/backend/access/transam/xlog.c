@@ -9331,6 +9331,8 @@ HandleXLogDelayPending(void)
 		/* Do the WAL write unless someone already issued the write earlier. */
 		if (lsn > LogwrtResult.Write)
 		{
+			START_CRIT_SECTION();
+
 			/*
 			 * Before actually performing the write, wait for all in-flight
 			 * insertions to the pages we're about to write to finish.
@@ -9358,6 +9360,8 @@ HandleXLogDelayPending(void)
 				PendingWalStats.wal_buffers_full++;		// FIXME
 				TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_DONE();
 			}
+
+			END_CRIT_SECTION();
 		}
 	}
 

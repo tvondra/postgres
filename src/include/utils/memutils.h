@@ -177,7 +177,7 @@ extern MemoryContext GenerationContextCreate(MemoryContext parent,
  * Few callers should be interested in this, but tuplesort/tuplestore need
  * to know it.
  */
-#define ALLOCSET_SEPARATE_THRESHOLD  8192
+#define ALLOCSET_SEPARATE_THRESHOLD  262144
 
 #define SLAB_DEFAULT_BLOCK_SIZE		(8 * 1024)
 #define SLAB_LARGE_BLOCK_SIZE		(8 * 1024 * 1024)

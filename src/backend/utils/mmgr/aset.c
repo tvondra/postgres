@@ -83,7 +83,7 @@
  */
 
 #define ALLOC_MINBITS		3	/* smallest chunk size is 8 bytes */
-#define ALLOCSET_NUM_FREELISTS	11
+#define ALLOCSET_NUM_FREELISTS	16
 #define ALLOC_CHUNK_LIMIT	(1 << (ALLOCSET_NUM_FREELISTS-1+ALLOC_MINBITS))
 /* Size of largest chunk that we use a fixed size for */
 #define ALLOC_CHUNK_FRACTION	4
@@ -110,6 +110,14 @@
 #define MMAP_PAGE_SIZE		sysconf(_SC_PAGE_SIZE)
 #define MMAP_ALIGN_SIZE(s)	(((s) % MMAP_PAGE_SIZE == 0) ? (s) : (s) - (s) % MMAP_PAGE_SIZE + MMAP_PAGE_SIZE)
 
+#define	MMAP_CACHE_SIZE		256
+
+static int   mmap_cache_free_index = 0;
+static void *mmap_cache[MMAP_CACHE_SIZE];
+static int   mmap_cache_hits = 0;
+static int   mmap_cache_misses = 0;
+static int   mmap_cache_miss_size = 0;
+static int   mmap_cache_miss_empty = 0;
 
 static void *
 mmap_alloc(Size len)
@@ -117,6 +125,33 @@ mmap_alloc(Size len)
 	void *r;
 
 	len = MMAP_ALIGN_SIZE(len);
+
+	if ((mmap_cache_hits + mmap_cache_misses) % 10000 == 9999)
+	{
+		elog(LOG, "mmap: hits %d misses %d pct %.2f", mmap_cache_hits, mmap_cache_misses, mmap_cache_hits * 100.0 / (mmap_cache_hits + mmap_cache_misses));
+		elog(LOG, "mmap: empty %d size %d", mmap_cache_miss_empty, mmap_cache_miss_size);
+	}
+
+	if (len != MMAP_BLOCK_SIZE)
+	{
+		if (mmap_cache_hits + mmap_cache_misses > 10000)
+		{
+			elog(LOG, "mmap: block %ld request %ld", MMAP_BLOCK_SIZE, len);
+			if (len == 28672)
+				abort();
+		}
+
+		mmap_cache_miss_size++;
+	}
+	else if (mmap_cache_free_index == 0)
+		mmap_cache_miss_empty++;
+	else
+	{
+		mmap_cache_hits++;
+		return mmap_cache[--mmap_cache_free_index];
+	}
+
+	mmap_cache_misses++;
 
 	r = mmap(NULL, len, (PROT_READ | PROT_WRITE), (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
 
@@ -129,6 +164,13 @@ mmap_alloc(Size len)
 static void
 mmap_free(void *ptr, Size len)
 {
+	if ((len == MMAP_BLOCK_SIZE) &&
+		(mmap_cache_free_index < MMAP_CACHE_SIZE))
+	{
+		mmap_cache[mmap_cache_free_index++] = ptr;
+		return;
+	}
+	
 	if (munmap(ptr, len) != 0)
 		elog(ERROR, "munmap failed");
 }

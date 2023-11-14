@@ -315,6 +315,7 @@ index_beginscan_internal(Relation indexRelation,
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
+	scan->indexonly = false;
 
 	/* With prefetching requested, initialize the prefetcher state. */
 	if (prefetch_max > 0)
@@ -1516,7 +1517,7 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction)
 			 * XXX index_getnext_tid_prefetch is only called for IOS (for now),
 			 * so skip prefetching of all-visible pages.
 			 */
-			index_prefetch(scan, tid, true);
+			index_prefetch(scan, tid, scan->indexonly);
 		}
 	}
 }

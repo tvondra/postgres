@@ -120,6 +120,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   node->ioss_NumOrderByKeys,
 								   prefetch_max);
 
+		/*
+		 * Remember this is index-only scan, because of prefetching. Not the most
+		 * elegant way to pass this info.
+		 */
+		scandesc->indexonly = true;
+
 		node->ioss_ScanDesc = scandesc;
 
 

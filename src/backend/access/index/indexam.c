@@ -318,7 +318,8 @@ index_beginscan_internal(Relation indexRelation,
 	scan->indexonly = false;
 
 	/* With prefetching requested, initialize the prefetcher state. */
-	if (prefetch_max > 0)
+	if ((prefetch_max > 0) &&
+		(io_direct_flags & IO_DIRECT_DATA) == 0)	/* no prefetching for direct I/O */
 	{
 		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
 
@@ -1375,6 +1376,7 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 {
 	IndexPrefetch prefetch = scan->xs_prefetch;
 	BlockNumber block;
+	PrefetchBufferResult result;
 
 	/*
 	 * No heap relation means bitmap index scan, which does prefetching at the
@@ -1424,6 +1426,10 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 			return;
 	}
 
+	prefetch->countAll++;
+
+	result = PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+
 	/*
 	 * Do not prefetch the same block over and over again,
 	 *
@@ -1431,15 +1437,11 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 	 * to a sequence ID). It's not expensive (the block is in page cache
 	 * already, so no I/O), but it's not free either.
 	 */
-	if (!index_prefetch_add_cache(prefetch, block))
+	if (result.initiated_io)
 	{
 		prefetch->countPrefetch++;
-
-		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 		pgBufferUsage.blks_prefetches++;
 	}
-
-	prefetch->countAll++;
 }
 
 /* ----------------

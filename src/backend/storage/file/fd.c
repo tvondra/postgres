@@ -2120,8 +2120,6 @@ FileCached(File file, off_t offset, off_t amount, uint32 wait_event_info)
 	readlen = preadv2(VfdCache[file].fd, iov, 1, offset, RWF_NOWAIT);
 	pgstat_report_wait_end();
 
-	elog(LOG, "FileCached %d", (readlen == amount));
-
 	return (readlen == amount);
 #else
 	Assert(FileIsValid(file));

@@ -120,6 +120,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   node->ioss_NumOrderByKeys,
 								   prefetch_max);
 
+		/*
+		 * Remember this is index-only scan, because of prefetching. Not the most
+		 * elegant way to pass this info.
+		 */
+		scandesc->indexonly = true;
+
 		node->ioss_ScanDesc = scandesc;
 
 
@@ -142,7 +148,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tid = index_getnext_tid_prefetch(scandesc, direction)) != NULL)
+	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 	{
 		bool		tuple_from_heap = false;
 

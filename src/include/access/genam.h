@@ -235,38 +235,6 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
-/*
- * Cache of recently prefetched blocks, organized as a hash table of
- * small LRU caches. Doesn't need to be perfectly accurate, but we
- * aim to make false positives/negatives reasonably low.
- */
-typedef struct PrefetchCacheEntry {
-	BlockNumber		block;
-	uint64			request;
-} PrefetchCacheEntry;
-
-/*
- * Size of the cache of recently prefetched blocks - shouldn't be too
- * small or too large. 1024 seems about right, it covers ~8MB of data.
- * It's somewhat arbitrary, there's no particular formula saying it
- * should not be higher/lower.
- *
- * The cache is structured as an array of small LRU caches, so the total
- * size needs to be a multiple of LRU size. The LRU should be tiny to
- * keep linear search cheap enough.
- *
- * XXX Maybe we could consider effective_cache_size or something?
- */
-#define		PREFETCH_LRU_SIZE		8
-#define		PREFETCH_LRU_COUNT		128
-#define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
-
-/*
- * Used to detect sequential patterns (and disable prefetching).
- */
-#define		PREFETCH_QUEUE_HISTORY			8
-#define		PREFETCH_SEQ_PATTERN_BLOCKS		4
-
 
 typedef struct IndexPrefetchData
 {
@@ -296,27 +264,6 @@ typedef struct IndexPrefetchData
 	uint64			queueIndex;	/* next TID to prefetch */
 	uint64			queueStart;	/* first valid TID in queue */
 	uint64			queueEnd;	/* first invalid (empty) TID in queue */
-
-	/*
-	 * A couple of last prefetched blocks, used to check for certain access
-	 * pattern and skip prefetching - e.g. for sequential access).
-	 *
-	 * XXX Separate from the main queue, because we only want to compare the
-	 * block numbers, not the whole TID. In sequential access it's likely we
-	 * read many items from each page, and we don't want to check many items
-	 * (as that is much more expensive).
-	 */
-	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
-	uint64			blockIndex;	/* index in the block (points to the first
-								 * empty entry)*/
-
-	/*
-	 * Cache of recently prefetched blocks, organized as a hash table of
-	 * small LRU caches.
-	 */
-	uint64				prefetchReqNumber;
-	PrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
-
 } IndexPrefetchData;
 
 #define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY))

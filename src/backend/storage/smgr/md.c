@@ -737,6 +737,33 @@ mdprefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
 }
 
 /*
+ * mdcached() -- Check if the whole block is already available in page cache.
+ */
+bool
+mdcached(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
+{
+#ifdef USE_PREFETCH
+	off_t		seekpos;
+	MdfdVec    *v;
+
+	Assert((io_direct_flags & IO_DIRECT_DATA) == 0);
+
+	v = _mdfd_getseg(reln, forknum, blocknum, false,
+					 InRecovery ? EXTENSION_RETURN_NULL : EXTENSION_FAIL);
+	if (v == NULL)
+		return false;
+
+	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) RELSEG_SIZE));
+
+	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
+
+	(void) FileCached(v->mdfd_vfd, seekpos, BLCKSZ, WAIT_EVENT_DATA_FILE_PREFETCH);
+#endif							/* USE_PREFETCH */
+
+	return true;
+}
+
+/*
  * mdread() -- Read the specified block from a relation.
  */
 void

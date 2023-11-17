@@ -792,7 +792,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 		if (indexScan != NULL)
 		{
-			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot))
+			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot, NULL))
 				break;
 
 			/* Since we used no scan keys, should never need to recheck */

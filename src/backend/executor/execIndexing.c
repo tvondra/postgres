@@ -777,7 +777,11 @@ retry:
 	index_scan = index_beginscan(heap, index, &DirtySnapshot, indnkeyatts, 0);
 	index_rescan(index_scan, scankeys, indnkeyatts, NULL, 0);
 
-	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
+	/*
+	 * XXX Would be nice to also benefit from prefetching here. All we need to
+	 * do is instantiate the prefetcher, I guess.
+	 */
+	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot, NULL))
 	{
 		TransactionId xwait;
 		XLTW_Oper	reason_wait;

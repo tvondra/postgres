@@ -509,7 +509,7 @@ systable_getnext(SysScanDesc sysscan)
 
 	if (sysscan->irel)
 	{
-		if (index_getnext_slot(sysscan->iscan, ForwardScanDirection, sysscan->slot))
+		if (index_getnext_slot(sysscan->iscan, ForwardScanDirection, sysscan->slot, NULL))
 		{
 			bool		shouldFree;
 
@@ -713,7 +713,7 @@ systable_getnext_ordered(SysScanDesc sysscan, ScanDirection direction)
 	HeapTuple	htup = NULL;
 
 	Assert(sysscan->irel);
-	if (index_getnext_slot(sysscan->iscan, direction, sysscan->slot))
+	if (index_getnext_slot(sysscan->iscan, direction, sysscan->slot, NULL))
 		htup = ExecFetchSlotHeapTuple(sysscan->slot, false, NULL);
 
 	/* See notes in systable_getnext */

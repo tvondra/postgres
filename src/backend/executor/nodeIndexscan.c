@@ -43,6 +43,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/spccache.h"
 
 /*
  * When an ordering operator is used, tuples fetched from the index that
@@ -85,6 +86,7 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
+	IndexPrefetch  *prefetch;
 
 	/*
 	 * extract necessary information from index scan node
@@ -98,6 +100,7 @@ IndexNext(IndexScanState *node)
 	direction = ScanDirectionCombine(estate->es_direction,
 									 ((IndexScan *) node->ss.ps.plan)->indexorderdir);
 	scandesc = node->iss_ScanDesc;
+	prefetch = node->iss_prefetch;
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
@@ -128,7 +131,7 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot))
+	while (index_getnext_slot(scandesc, direction, slot, prefetch))
 	{
 		CHECK_FOR_INTERRUPTS();
 
@@ -177,6 +180,7 @@ IndexNextWithReorder(IndexScanState *node)
 	Datum	   *lastfetched_vals;
 	bool	   *lastfetched_nulls;
 	int			cmp;
+	IndexPrefetch *prefetch;
 
 	estate = node->ss.ps.state;
 
@@ -193,6 +197,7 @@ IndexNextWithReorder(IndexScanState *node)
 	Assert(ScanDirectionIsForward(estate->es_direction));
 
 	scandesc = node->iss_ScanDesc;
+	prefetch = node->iss_prefetch;
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
@@ -259,7 +264,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 * Fetch next tuple from the index.
 		 */
 next_indextuple:
-		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot))
+		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot, prefetch))
 		{
 			/*
 			 * No more tuples from the index.  But we still need to drain any
@@ -588,6 +593,16 @@ ExecReScanIndexScan(IndexScanState *node)
 					 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	node->iss_ReachedEnd = false;
 
+	/* also reset the prefetcher, so that we start from scratch */
+	if (node->iss_prefetch)
+	{
+		IndexPrefetch *prefetch = node->iss_prefetch;
+
+		prefetch->queueIndex = 0;
+		prefetch->queueStart = 0;
+		prefetch->queueEnd = 0;
+	}
+
 	ExecScanReScan(&node->ss);
 }
 
@@ -793,6 +808,19 @@ ExecEndIndexScan(IndexScanState *node)
 	 */
 	indexRelationDesc = node->iss_RelationDesc;
 	indexScanDesc = node->iss_ScanDesc;
+
+	/* XXX nothing to free, but print some debug info */
+	if (node->iss_prefetch)
+	{
+		IndexPrefetch *prefetch = node->iss_prefetch;
+
+		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
+			 prefetch->countAll,
+			 prefetch->countPrefetch,
+			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
+			 prefetch->countSkipCached,
+			 prefetch->countSkipSequential);
+	}
 
 	/*
 	 * close the index relation (no-op if we didn't open it)
@@ -1064,6 +1092,45 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	else
 	{
 		indexstate->iss_RuntimeContext = NULL;
+	}
+
+	/*
+	 * Also initialize index prefetcher.
+	 *
+	 * XXX No prefetching for direct I/O.
+	 */
+	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
+	{
+		int	prefetch_max;
+		Relation    heapRel = indexstate->ss.ss_currentRelation;
+
+		/*
+		 * Determine number of heap pages to prefetch for this index scan. This
+		 * is essentially just effective_io_concurrency for the table (or the
+		 * tablespace it's in).
+		 *
+		 * XXX Should this also look at plan.plan_rows and maybe cap the target
+		 * to that? Pointless to prefetch more than we expect to use. Or maybe
+		 * just reset to that value during prefetching, after reading the next
+		 * index page (or rather after rescan)?
+		 */
+		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
+						   indexstate->ss.ps.plan->plan_rows);
+
+		if (prefetch_max > 0)
+		{
+			IndexPrefetch *prefetch = palloc0(sizeof(IndexPrefetch));
+
+			prefetch->queueIndex = 0;
+			prefetch->queueStart = 0;
+			prefetch->queueEnd = 0;
+
+			prefetch->prefetchTarget = 0;
+			prefetch->prefetchMaxTarget = prefetch_max;
+			prefetch->vmBuffer = InvalidBuffer;
+
+			indexstate->iss_prefetch = prefetch;
+		}
 	}
 
 	/*

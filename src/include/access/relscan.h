@@ -135,6 +135,7 @@ typedef struct IndexScanDescData
 	bool		ignore_killed_tuples;	/* do not return killed entries */
 	bool		xactStartedInRecovery;	/* prevents killing/seeing killed
 										 * tuples */
+	bool		indexonly;			/* is this index-only scan? */
 
 	/* index access method's private state */
 	void	   *opaque;			/* access-method-specific info */

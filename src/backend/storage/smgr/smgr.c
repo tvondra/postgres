@@ -55,6 +55,8 @@ typedef struct f_smgr
 									BlockNumber blocknum, int nblocks, bool skipFsync);
 	bool		(*smgr_prefetch) (SMgrRelation reln, ForkNumber forknum,
 								  BlockNumber blocknum);
+	bool		(*smgr_cached) (SMgrRelation reln, ForkNumber forknum,
+								BlockNumber blocknum);
 	void		(*smgr_read) (SMgrRelation reln, ForkNumber forknum,
 							  BlockNumber blocknum, void *buffer);
 	void		(*smgr_write) (SMgrRelation reln, ForkNumber forknum,
@@ -80,6 +82,7 @@ static const f_smgr smgrsw[] = {
 		.smgr_extend = mdextend,
 		.smgr_zeroextend = mdzeroextend,
 		.smgr_prefetch = mdprefetch,
+		.smgr_cached = mdcached,
 		.smgr_read = mdread,
 		.smgr_write = mdwrite,
 		.smgr_writeback = mdwriteback,

@@ -1083,6 +1083,125 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 }
 
 /*
+ * index_prefetch_is_sequential
+ *		Track the block number and check if the I/O pattern is sequential,
+ *		or if the same block was just prefetched.
+ *
+ * Prefetching is cheap, but for some access patterns the benefits are small
+ * compared to the extra overhead. In particular, for sequential access the
+ * read-ahead performed by the OS is very effective/efficient. Doing more
+ * prefetching is just increasing the costs.
+ *
+ * This tries to identify simple sequential patterns, so that we can skip
+ * the prefetching request. This is implemented by having a small queue
+ * of block numbers, and checking it before prefetching another block.
+ *
+ * We look at the preceding PREFETCH_SEQ_PATTERN_BLOCKS blocks, and see if
+ * they are sequential. We also check if the block is the same as the last
+ * request (which is not sequential).
+ *
+ * Note that the main prefetch queue is not really useful for this, as it
+ * stores TIDs while we care about block numbers. Consider a sorted table,
+ * with a perfectly sequential pattern when accessed through an index. Each
+ * heap page may have dozens of TIDs, but we need to check block numbers.
+ * We could keep enough TIDs to cover enough blocks, but then we also need
+ * to walk those when checking the pattern (in hot path).
+ *
+ * So instead, we maintain a small separate queue of block numbers, and we use
+ * this instead.
+ *
+ * Returns true if the block is in a sequential pattern (and so should not be
+ * prefetched), or false (not sequential, should be prefetched).
+ *
+ * XXX The name is a bit misleading, as it also adds the block number to the
+ * block queue and checks if the block is the same as the last one (which
+ * does not require a sequential pattern).
+ */
+static bool
+index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
+{
+	int			idx;
+
+	/*
+	 * If the block queue is empty, just store the block and we're done (it's
+	 * neither a sequential pattern, neither recently prefetched block).
+	 */
+	if (prefetch->blockIndex == 0)
+	{
+		prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex)] = block;
+		prefetch->blockIndex++;
+		return false;
+	}
+
+	/*
+	 * Check if it's the same as the immediately preceding block. We don't
+	 * want to prefetch the same block over and over (which would happen for
+	 * well correlated indexes).
+	 *
+	 * In principle we could rely on index_prefetch_add_cache doing this using
+	 * the full cache, but this check is much cheaper and we need to look at
+	 * the preceding block anyway, so we just do it.
+	 *
+	 * XXX Notice we haven't added the block to the block queue yet, and there
+	 * is a preceding block (i.e. blockIndex-1 is valid).
+	 */
+	if (prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex - 1)] == block)
+		return true;
+
+	/*
+	 * Add the block number to the queue.
+	 *
+	 * We do this before checking if the pattern, because we want to know
+	 * about the block even if we end up skipping the prefetch. Otherwise we'd
+	 * not be able to detect longer sequential pattens - we'd skip one block
+	 * but then fail to skip the next couple blocks even in a perfect
+	 * sequential pattern. This ocillation might even prevent the OS
+	 * read-ahead from kicking in.
+	 */
+	prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex)] = block;
+	prefetch->blockIndex++;
+
+	/*
+	 * Check if the last couple blocks are in a sequential pattern. We look
+	 * for a sequential pattern of PREFETCH_SEQ_PATTERN_BLOCKS (4 by default),
+	 * so we look for patterns of 5 pages (40kB) including the new block.
+	 *
+	 * XXX Perhaps this should be tied to effective_io_concurrency somehow?
+	 *
+	 * XXX Could it be harmful that we read the queue backwards? Maybe memory
+	 * prefetching works better for the forward direction?
+	 */
+	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
+	{
+		/*
+		 * Are there enough requests to confirm a sequential pattern? We only
+		 * consider something to be sequential after finding a sequence of
+		 * PREFETCH_SEQ_PATTERN_BLOCKS blocks.
+		 *
+		 * FIXME Better to move this outside the loop.
+		 */
+		if (prefetch->blockIndex < i)
+			return false;
+
+		/*
+		 * Calculate index of the earlier block (we need to do -1 as we
+		 * already incremented the index when adding the new block to the
+		 * queue).
+		 */
+		idx = PREFETCH_BLOCK_INDEX(prefetch->blockIndex - i - 1);
+
+		/*
+		 * For a sequential pattern, blocks "k" step ago needs to have block
+		 * number by "k" smaller compared to the current block.
+		 */
+		if (prefetch->blockItems[idx] != (block - i))
+			return false;
+	}
+
+	return true;
+}
+
+/*
  * index_prefetch
  *		Prefetch the TID, unless it's sequential or recently prefetched.
  *
@@ -1172,8 +1291,26 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 			return;
 	}
 
+	/*
+	 * Now also check if the blocks to prefetch are in a sequential pattern.
+	 * We do it here because we need to do this check before PrefetchBuffer
+	 * initiates the prefetch, and we it can't do this easily (as it doesn't
+	 * know in what context it's called in). So we do it here.
+	 *
+	 * We use a tiny LRU cache and see if the blocks follow a sequential
+	 * pattern - if it's the same as the previous block, or if the last
+	 * couple blocks are a continguous sequence, we don't prefetch it.
+	 */
+	if (index_prefetch_is_sequential(prefetch, block))
+	{
+		prefetch->countSkipSequential++;
+		return;
+	}
+
+	/* XXX shouldn't this be before the VM / sequenqial check? */
 	prefetch->countAll++;
 
+	/* OK, try prefetching the block. */
 	result = PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
 
 	/*

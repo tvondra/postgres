@@ -412,6 +412,18 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		node->ioss_VMBuffer = InvalidBuffer;
 	}
 
+	/* Release VM buffer pin from prefetcher, if any. */
+	if (indexScanDesc && indexScanDesc->xs_prefetch)
+	{
+		IndexPrefetch indexPrefetch = indexScanDesc->xs_prefetch;
+
+		if (indexPrefetch->vmBuffer != InvalidBuffer)
+		{
+			ReleaseBuffer(indexPrefetch->vmBuffer);
+			indexPrefetch->vmBuffer = InvalidBuffer;
+		}
+	}
+
 	/*
 	 * close the index relation (no-op if we didn't open it)
 	 */

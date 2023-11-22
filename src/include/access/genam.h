@@ -270,6 +270,9 @@ typedef struct IndexPrefetchData
 	uint64		countSkipSequential;
 	uint64		countSkipCached;
 
+	/* used when prefetching index-only scans */
+	Buffer		vmBuffer;
+
 	/*
 	 * Queue of TIDs to prefetch.
 	 *

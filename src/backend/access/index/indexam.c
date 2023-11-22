@@ -336,6 +336,7 @@ index_beginscan_internal(Relation indexRelation,
 
 		prefetcher->prefetchTarget = 0;
 		prefetcher->prefetchMaxTarget = prefetch_max;
+		prefetcher->vmBuffer = InvalidBuffer;
 
 		scan->xs_prefetch = prefetcher;
 	}
@@ -1278,14 +1279,10 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible)
 	if (skip_all_visible)
 	{
 		bool	all_visible;
-		Buffer	vmbuffer = InvalidBuffer;
 
 		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
 									 block,
-									 &vmbuffer);
-
-		if (vmbuffer != InvalidBuffer)
-			ReleaseBuffer(vmbuffer);
+									 &prefetch->vmBuffer);
 
 		if (all_visible)
 			return;

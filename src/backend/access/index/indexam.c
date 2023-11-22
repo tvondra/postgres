@@ -317,7 +317,13 @@ index_beginscan_internal(Relation indexRelation,
 	scan->xs_temp_snap = temp_snap;
 	scan->indexonly = false;
 
-	/* With prefetching requested, initialize the prefetcher state. */
+	/* With prefetching requested, initialize the prefetcher state.
+	 *
+	 * FIXME This should really be in the IndexScanState, not IndexScanDesc
+	 * (certainly the queues etc). But index_getnext_tid only gets the scan
+	 * descriptor, so how else would we pass it? Seems like a sign of wrong
+	 * layer doing the prefetching.
+	 */
 	if ((prefetch_max > 0) &&
 		(io_direct_flags & IO_DIRECT_DATA) == 0)	/* no prefetching for direct I/O */
 	{

@@ -66,6 +66,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	TupleTableSlot *slot;
 	ItemPointer tid;
 	Relation	heapRel = node->ss.ss_currentRelation;
+	bool		all_visible;
 
 	/*
 	 * extract necessary information from index scan node
@@ -148,7 +149,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
+	while ((tid = index_getnext_tid_vm(scandesc, direction, &all_visible)) != NULL)
 	{
 		bool		tuple_from_heap = false;
 
@@ -187,8 +188,11 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 *
 		 * It's worth going through this complexity to avoid needing to lock
 		 * the VM buffer, which could cause significant contention.
+		 *
+		 * XXX Skip if we already know the page is all visible from prefetcher.
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
+		if (!all_visible &&
+			!VM_ALL_VISIBLE(scandesc->heapRelation,
 							ItemPointerGetBlockNumber(tid),
 							&node->ioss_VMBuffer))
 		{

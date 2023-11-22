@@ -175,8 +175,9 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  int prefetch_max);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
-extern ItemPointer index_getnext_tid_prefetch(IndexScanDesc scan,
-											  ScanDirection direction);
+extern ItemPointer index_getnext_tid_vm(IndexScanDesc scan,
+										ScanDirection direction,
+										bool *all_visible);
 struct TupleTableSlot;
 extern bool index_fetch_heap(IndexScanDesc scan, struct TupleTableSlot *slot);
 extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
@@ -267,6 +268,11 @@ typedef struct PrefetchCacheEntry {
 #define		PREFETCH_QUEUE_HISTORY			8
 #define		PREFETCH_SEQ_PATTERN_BLOCKS		4
 
+typedef struct PrefetchEntry
+{
+	ItemPointerData		tid;
+	bool				all_visible;
+} PrefetchEntry;
 
 typedef struct IndexPrefetchData
 {
@@ -295,7 +301,7 @@ typedef struct IndexPrefetchData
 	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
 	 * than dynamically adjusting for custom values.
 	 */
-	ItemPointerData	queueItems[MAX_IO_CONCURRENCY];
+	PrefetchEntry	queueItems[MAX_IO_CONCURRENCY];
 	uint64			queueIndex;	/* next TID to prefetch */
 	uint64			queueStart;	/* first valid TID in queue */
 	uint64			queueEnd;	/* first invalid (empty) TID in queue */

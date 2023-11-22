@@ -398,18 +398,27 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 {
 	Relation	indexRelationDesc;
 	IndexScanDesc indexScanDesc;
+	IndexPrefetch indexPrefetch;
 
 	/*
 	 * extract information from the node
 	 */
 	indexRelationDesc = node->ioss_RelationDesc;
 	indexScanDesc = node->ioss_ScanDesc;
+	indexPrefetch = indexScanDesc->xs_prefetch;
 
 	/* Release VM buffer pin, if any. */
 	if (node->ioss_VMBuffer != InvalidBuffer)
 	{
 		ReleaseBuffer(node->ioss_VMBuffer);
 		node->ioss_VMBuffer = InvalidBuffer;
+	}
+
+	/* Release VM buffer pin from prefetcher, if any. */
+	if (indexPrefetch && (indexPrefetch->vmBuffer != InvalidBuffer))
+	{
+		ReleaseBuffer(indexPrefetch->vmBuffer);
+		indexPrefetch->vmBuffer = InvalidBuffer;
 	}
 
 	/*

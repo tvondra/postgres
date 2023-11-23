@@ -1378,6 +1378,29 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
  *
  * XXX Maybe we could/should also prefetch the next index block, e.g. stored
  * in BTScanPosData.nextPage.
+ *
+ * XXX Could we tune the cache size based on execution statistics? We have
+ * a cache of limited size (PREFETCH_CACHE_SIZE = 1024 by default), but
+ * how do we know it's the right size? Ideally, we'd have a cache large
+ * enough to track actually cached blocks. If the OS caches 10240 pages,
+ * then we may do 90% of prefetch requests unnecessarily. Or maybe there's
+ * a lot of contention, blocks are evicted quickly, and 90% of the blocks
+ * in the cache are not actually cached anymore? But we do have a concept
+ * of sequential request ID (PrefetchCacheEntry->request), which gives us
+ * information about "age" of the last prefetch. Now it's used only when
+ * evicting entries (to keep the more recent one), but maybe we could also
+ * use it when deciding if the page is cached. Right now any block that's
+ * in the cache is considered cached and not prefetched, but maybe we could
+ * have "max age", and tune it based on feedback from reading the blocks
+ * later. For example, if we find the block in cache and decide not to
+ * prefetch it, but then later find we have to do I/O, it means our cache
+ * is too large. And we could "reduce" the maximum age (measured from the
+ * current prefetchReqNumber value), so that only more recent blocks would
+ * be considered cached. Not sure about the opposite direction, where we
+ * decide to prefetch a block - AFAIK we don't have a way to determine if
+ * I/O was needed or not in this case (so we can't increase the max age).
+ * But maybe we could di that somehow speculatively, i.e. increase the
+ * value once in a while, and see what happens.
  */
 static void
 index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible, bool *all_visible)

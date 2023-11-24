@@ -78,7 +78,6 @@
 #include <sys/resource.h>		/* for getrlimit */
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/uio.h>
 #ifndef WIN32
 #include <sys/mman.h>
 #endif
@@ -2081,45 +2080,6 @@ retry:
 #else
 	Assert(FileIsValid(file));
 	return 0;
-#endif
-}
-
-/*
- * FileCached - check if a given range of the file is in page cache.
- *
- * XXX relies on preadv2, probably needs to be checked by configure
- */
-bool
-FileCached(File file, off_t offset, off_t amount, uint32 wait_event_info)
-{
-#if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_WILLNEED)
-	int			returnCode;
-	size_t		readlen;
-	char		buffer[BLCKSZ];
-	struct iovec	iov[1];
-
-	Assert(FileIsValid(file));
-
-	DO_DB(elog(LOG, "FilePrefetch: %d (%s) " INT64_FORMAT " " INT64_FORMAT,
-			   file, VfdCache[file].fileName,
-			   (int64) offset, (int64) amount));
-
-	returnCode = FileAccess(file);
-	if (returnCode < 0)
-		return false;
-
-	/* XXX not sure if this ensures proper buffer alignment */
-	iov[0].iov_base = &buffer;
-	iov[0].iov_len = amount;
-
-	pgstat_report_wait_start(wait_event_info);
-	readlen = preadv2(VfdCache[file].fd, iov, 1, offset, RWF_NOWAIT);
-	pgstat_report_wait_end();
-
-	return (readlen == amount);
-#else
-	Assert(FileIsValid(file));
-	return false;
 #endif
 }
 

@@ -247,7 +247,23 @@ typedef struct PrefetchCacheEntry {
 } PrefetchCacheEntry;
 
 /*
- * Used to detect sequential patterns (to not prefetch in this case).
+ * Size of the cache of recently prefetched blocks - shouldn't be too
+ * small or too large. 1024 seems about right, it covers ~8MB of data.
+ * It's somewhat arbitrary, there's no particular formula saying it
+ * should not be higher/lower.
+ *
+ * The cache is structured as an array of small LRU caches, so the total
+ * size needs to be a multiple of LRU size. The LRU should be tiny to
+ * keep linear search cheap enough.
+ *
+ * XXX Maybe we could consider effective_cache_size or something?
+ */
+#define		PREFETCH_LRU_SIZE		8
+#define		PREFETCH_LRU_COUNT		128
+#define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
+
+/*
+ * Used to detect sequential patterns (and disable prefetching).
  */
 #define		PREFETCH_QUEUE_HISTORY			8
 #define		PREFETCH_SEQ_PATTERN_BLOCKS		4
@@ -302,6 +318,13 @@ typedef struct IndexPrefetchData
 	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
 	uint64			blockIndex;	/* index in the block (points to the first
 								 * empty entry)*/
+
+	/*
+	 * Cache of recently prefetched blocks, organized as a hash table of
+	 * small LRU caches.
+	 */
+	uint64				prefetchReqNumber;
+	PrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
 
 } IndexPrefetchData;
 

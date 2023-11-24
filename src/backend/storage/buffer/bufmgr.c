@@ -567,20 +567,8 @@ PrefetchSharedBuffer(SMgrRelation smgr_reln,
 		/*
 		 * Try to initiate an asynchronous read.  This returns false in
 		 * recovery if the relation file doesn't exist.
-		 *
-		 * But first check if the block is already present in page cache.
-		 *
-		 * FIXME This breaks prefetch from recovery. Apparently that expects
-		 * the prefetch to initiate the I/O, otherwise it fails with. But
-		 * XLogPrefetcherNextBlock checks initiated_io, and may fail with:
-		 *
-		 * FATAL:  could not prefetch relation 1663/16384/16401 block 83758
-		 *
-		 * So maybe just fake the initiated_io=true in this case? Or not do
-		 * this when in recovery.
 		 */
 		if ((io_direct_flags & IO_DIRECT_DATA) == 0 &&
-			!smgrcached(smgr_reln, forkNum, blockNum) &&
 			smgrprefetch(smgr_reln, forkNum, blockNum))
 		{
 			result.initiated_io = true;

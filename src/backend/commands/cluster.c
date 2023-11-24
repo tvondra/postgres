@@ -1470,6 +1470,32 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	/* Zero out possible results from swapped_relation_files */
 	memset(mapped_tables, 0, sizeof(mapped_tables));
 
+	/* build the visibility map on the new heap */
+	{
+		VacuumParams			vacuum_params;
+		BufferAccessStrategy	bstrategy;
+		Relation				rel = relation_open(OIDNewHeap, NoLock);
+
+		memset(&vacuum_params, 0, sizeof(VacuumParams));
+		vacuum_params.options |= VACOPT_PROCESS_MAIN;
+		vacuum_params.options |= VACOPT_VACUUM;
+
+		bstrategy = GetAccessStrategyWithSize(BAS_VACUUM, VacuumBufferUsageLimit);
+
+		// XXX don't use CurrentMemoryContext
+		// doesn't work, there's in_vacuum static flag
+		// vacuum(list_make1(vrel), &vacuum_params, bstrategy,
+		//	   CurrentMemoryContext, true);
+
+		// is static, so either make it public or use vacuum()
+		// vacuum_rel(OIDNewHeap, NULL, &vacuum_params, bstrategy);
+
+		// probably should not call heap AM directly?
+		heap_vacuum_rel(rel, &vacuum_params, bstrategy);
+
+		relation_close(rel, NoLock);
+	}
+
 	/*
 	 * Swap the contents of the heap relations (including any toast tables).
 	 * Also set old heap's relfrozenxid to frozenXid.

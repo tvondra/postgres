@@ -1947,7 +1947,7 @@ vac_truncate_clog(TransactionId frozenXID,
  *
  *		At entry and exit, we are not inside a transaction.
  */
-static bool
+bool
 vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		   BufferAccessStrategy bstrategy)
 {

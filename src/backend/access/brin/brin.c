@@ -221,6 +221,8 @@ static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
 static bool add_values_to_range(Relation idxRel, BrinDesc *bdesc,
 								BrinMemTuple *dtup, const Datum *values, const bool *nulls);
 static bool check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys);
+static BrinTuple *brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
+										BrinTuple *emptyTuple, Size *emptySize);
 
 /* parallel index builds */
 static void _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
@@ -2619,17 +2621,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 			prevblkno += state->bs_pagesPerRange;
 
 			/* Did we already build the empty range? If not, do it now. */
-			if (emptyTuple == NULL)
-			{
-				BrinMemTuple *dtuple = brin_new_memtuple(state->bs_bdesc);
-
-				emptyTuple = brin_form_tuple(state->bs_bdesc, prevblkno, dtuple, &emptySize);
-			}
-			else
-			{
-				/* we already have am "empty range" tuple, just set the block */
-				emptyTuple->bt_blkno = prevblkno;
-			}
+			emptyTuple = brin_init_empty_tuple(state, prevblkno, emptyTuple, &emptySize);
 
 			brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
 						  &state->bs_currentInsertBuf,
@@ -2641,32 +2633,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 
 	tuplesort_end(spool->sortstate);
 
-	/* Fill empty ranges at the end, for all ranges missing in the tuplesort. */
-	prevblkno = (prevblkno == InvalidBlockNumber) ? 0 : prevblkno;
-	while (prevblkno + state->bs_pagesPerRange < memtuple->bt_blkno)
-	{
-		/* the missing range */
-		prevblkno += state->bs_pagesPerRange;
-
-		/* Did we already build the empty range? If not, do it now. */
-		if (emptyTuple == NULL)
-		{
-			BrinMemTuple *dtuple = brin_new_memtuple(state->bs_bdesc);
-
-			emptyTuple = brin_form_tuple(state->bs_bdesc, prevblkno, dtuple, &emptySize);
-		}
-		else
-		{
-			/* we already have am "empty range" tuple, just set the block */
-			emptyTuple->bt_blkno = prevblkno;
-		}
-
-		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
-					  &state->bs_currentInsertBuf,
-					  emptyTuple->bt_blkno, emptyTuple, emptySize);
-	}
-
-	/* Fill the BRIN tuple for the last page range. */
+	/* Fill the BRIN tuple for the last page range with data. */
 	if (prevblkno != InvalidBlockNumber)
 	{
 		BrinTuple  *tmp;
@@ -2682,7 +2649,32 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	}
 
 	/*
-	 * Switch back to the originam memory context, and destroy the one we
+	 * Fill empty ranges at the end, for all ranges missing in the tuplesort.
+	 *
+	 * Starting from here, prevblkno is the to-be-inserted range's start block
+	 * number. Note that we don't fill in the relation's last page range.
+	 */
+	if (prevblkno == InvalidBlockNumber)
+		prevblkno = 0;
+	else
+		prevblkno += state->bs_pagesPerRange;
+
+	while (prevblkno + state->bs_pagesPerRange < state->bs_tablePages)
+	{
+		/* Did we already build the empty range? If not, do it now. */
+		emptyTuple = brin_init_empty_tuple(state, prevblkno, emptyTuple, &emptySize);
+
+		/* Insert the missing range */
+		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
+					  &state->bs_currentInsertBuf,
+					  emptyTuple->bt_blkno, emptyTuple, emptySize);
+
+		/* ... and update to the next range's block number */
+		prevblkno += state->bs_pagesPerRange;
+	}
+
+	/*
+	 * Switch back to the original memory context, and destroy the one we
 	 * created to isolate the union_tuple calls.
 	 */
 	MemoryContextSwitchTo(oldCxt);
@@ -2896,4 +2888,32 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);
+}
+
+/*
+ * brin_init_empty_tuple
+ *		Maybe initialize a BRIN tuple representing empty range.
+ *
+ * If emptyTuple is NULL, initializes new tuple representing empty range at
+ * block blkno. Otherwise the tuple is reused, and only the bt_blkno field
+ * is updated.
+ */
+static BrinTuple *
+brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
+					  BrinTuple *emptyTuple, Size *emptySize)
+{
+	/* Did we already build the empty range? If not, do it now. */
+	if (emptyTuple == NULL)
+	{
+		BrinMemTuple *dtuple = brin_new_memtuple(state->bs_bdesc);
+
+		emptyTuple = brin_form_tuple(state->bs_bdesc, blkno, dtuple, emptySize);
+	}
+	else
+	{
+		/* we already have an "empty range" tuple, just set the block */
+		emptyTuple->bt_blkno = blkno;
+	}
+
+	return emptyTuple;
 }

@@ -2506,8 +2506,12 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	/* Shutdown worker processes */
 	WaitForParallelWorkersToFinish(brinleader->pcxt);
 
+	/*
+	 * If we didn't actually launch workers, we still have to make sure to exit
+	 * parallel mode.
+	 */
 	if (!state)
-		return;
+		goto cleanup;
 
 	/* copy the data into leader state (we have to wait for the workers ) */
 	state->bs_reltuples = brinshared->reltuples;
@@ -2690,6 +2694,8 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	 */
 	for (i = 0; i < brinleader->pcxt->nworkers_launched; i++)
 		InstrAccumParallelQuery(&brinleader->bufferusage[i], &brinleader->walusage[i]);
+
+cleanup:
 
 	/* Free last reference to MVCC snapshot, if one was used */
 	if (IsMVCCSnapshot(brinleader->snapshot))

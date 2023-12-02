@@ -165,7 +165,7 @@ typedef struct BrinBuildState
 	double		bs_numtuples;
 	double		bs_reltuples;
 	Buffer		bs_currentInsertBuf;
-	BlockNumber	bs_tablePages;
+	BlockNumber	bs_maxRangeStart;
 	BlockNumber bs_pagesPerRange;
 	BlockNumber bs_currRangeStart;
 	BrinRevmap *bs_rmAccess;
@@ -223,6 +223,10 @@ static bool add_values_to_range(Relation idxRel, BrinDesc *bdesc,
 static bool check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys);
 static BrinTuple *brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
 										BrinTuple *emptyTuple, Size *emptySize);
+static void brin_fill_empty_ranges(BrinBuildState *state,
+								   BlockNumber prevRange, BlockNumber maxRange,
+								   BrinTuple **emptyTuple, Size *emptySize);
+static BlockNumber brin_next_range(BrinBuildState *state, BlockNumber blkno);
 
 /* parallel index builds */
 static void _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
@@ -1087,8 +1091,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	BrinRevmap *revmap;
 	BrinBuildState *state;
 	Buffer		meta;
-	BlockNumber pagesPerRange,
-				tablePages;
+	BlockNumber pagesPerRange;
 
 	/*
 	 * We expect to be called exactly once for any index relation.
@@ -1135,8 +1138,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Initialize our state, including the deformed tuple state.
 	 */
 	revmap = brinRevmapInitialize(index, &pagesPerRange);
-	tablePages = RelationGetNumberOfBlocks(heap);
-	state = initialize_brin_buildstate(index, revmap, pagesPerRange, tablePages);
+	state = initialize_brin_buildstate(index, revmap, pagesPerRange,
+									   RelationGetNumberOfBlocks(heap));
 
 	state->bs_spool = (BrinSpool *) palloc0(sizeof(BrinSpool));
 	state->bs_spool->heap = heap;
@@ -1207,14 +1210,19 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 	else						/* no parallel index build */
 	{
+		BrinTuple  *emptyTuple = NULL;
+		Size		emptySize;
+
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
 										   brinbuildCallback, (void *) state, NULL);
 
-		/* process the final batch */
+		/* process the final batch
+		 *
+		 * XXX Note this does not update state->bs_currRangeStart, i.e.
+		 * it stays set to the last range added to the index.
+		 */
 		form_and_insert_tuple(state);
 
-		/* XXX shouldn't this happen in the brinbuildCallback? */
-		state->bs_currRangeStart += state->bs_pagesPerRange;
 		/*
 		 * Backfill the final ranges with empty data.
 		 *
@@ -1222,14 +1230,10 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 * index is built on stupid index quals like WHERE (nonnull_column IS
 		 * NULL).
 		 */
-		while (state->bs_currRangeStart + state->bs_pagesPerRange - 1 < state->bs_tablePages)
-		{
-			brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
-
-			form_and_insert_tuple(state);
-
-			state->bs_currRangeStart += state->bs_pagesPerRange;
-		}
+		brin_fill_empty_ranges(state,
+							   state->bs_currRangeStart,
+							   state->bs_maxRangeStart,
+							   &emptyTuple, &emptySize);
 
 		/* track the number of relation tuples */
 		state->bs_reltuples = reltuples;
@@ -1660,7 +1664,6 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	state->bs_reltuples = 0;
 	state->bs_currentInsertBuf = InvalidBuffer;
 	state->bs_pagesPerRange = pagesPerRange;
-	state->bs_tablePages = tablePages;
 	state->bs_currRangeStart = 0;
 	state->bs_rmAccess = revmap;
 	state->bs_bdesc = brin_build_desc(idxRel);
@@ -1668,6 +1671,19 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	state->bs_leader = NULL;
 	state->bs_worker_id = 0;
 	state->bs_spool = NULL;
+
+	/*
+	 * Calculate the start of the last page range. Page numbers are 0-based,
+	 * so to get the index of the last page we need to subtract one. Then the
+	 * integer division gives us the proper 0-based range index.
+	 */
+	state->bs_maxRangeStart = ((tablePages - 1) / pagesPerRange) * pagesPerRange;
+
+	/*
+	 * But, we actually need the start of the next range, or InvalidBlockNumber
+	 * if it would overflow.
+	 */
+	state->bs_maxRangeStart = brin_next_range(state, state->bs_maxRangeStart);
 
 	return state;
 }
@@ -2614,19 +2630,8 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 		}
 
 		/* Fill empty ranges for all ranges missing in the tuplesort. */
-		prevblkno = (prevblkno == InvalidBlockNumber) ? 0 : prevblkno;
-		while (prevblkno + state->bs_pagesPerRange < btup->bt_blkno)
-		{
-			/* the missing range */
-			prevblkno += state->bs_pagesPerRange;
-
-			/* Did we already build the empty range? If not, do it now. */
-			emptyTuple = brin_init_empty_tuple(state, prevblkno, emptyTuple, &emptySize);
-
-			brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
-						  &state->bs_currentInsertBuf,
-						  emptyTuple->bt_blkno, emptyTuple, emptySize);
-		}
+		brin_fill_empty_ranges(state, prevblkno, btup->bt_blkno,
+							   &emptyTuple, &emptySize);
 
 		prevblkno = btup->bt_blkno;
 	}
@@ -2648,30 +2653,9 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 		pfree(tmp);
 	}
 
-	/*
-	 * Fill empty ranges at the end, for all ranges missing in the tuplesort.
-	 *
-	 * Starting from here, prevblkno is the to-be-inserted range's start block
-	 * number. Note that we don't fill in the relation's last page range.
-	 */
-	if (prevblkno == InvalidBlockNumber)
-		prevblkno = 0;
-	else
-		prevblkno += state->bs_pagesPerRange;
-
-	while (prevblkno + state->bs_pagesPerRange < state->bs_tablePages)
-	{
-		/* Did we already build the empty range? If not, do it now. */
-		emptyTuple = brin_init_empty_tuple(state, prevblkno, emptyTuple, &emptySize);
-
-		/* Insert the missing range */
-		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
-					  &state->bs_currentInsertBuf,
-					  emptyTuple->bt_blkno, emptyTuple, emptySize);
-
-		/* ... and update to the next range's block number */
-		prevblkno += state->bs_pagesPerRange;
-	}
+	/* Fill empty ranges at the end, for all ranges missing in the tuplesort. */
+	brin_fill_empty_ranges(state, prevblkno, state->bs_maxRangeStart,
+						   &emptyTuple, &emptySize);
 
 	/*
 	 * Switch back to the original memory context, and destroy the one we
@@ -2916,4 +2900,63 @@ brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
 	}
 
 	return emptyTuple;
+}
+
+/*
+ * brin_fill_empty_ranges
+ *		Add BRIN index tuples representing empty page ranges.
+ *
+ * prevRange/nextRange determine the for which page ranges to add the empty
+ * summaries, and both are exclusive. That is, only ranges starting at blkno
+ * for which (prevRange < blkno < nextRange) will be added to the index.
+ *
+ * Both values may be InvalidBlockNumber. For prevRange this means there is
+ * no previous range, so the first range inserted should be for blkno=0. When
+ * nextRange is InvalidBlockNumber, it means the table is large enough for
+ * the blkno to overflow.
+ *
+ * The empty tuple is built only once when needed, and then kept and reused
+ * for all future calls.
+ */
+static void
+brin_fill_empty_ranges(BrinBuildState *state,
+					   BlockNumber prevRange, BlockNumber maxRange,
+					   BrinTuple **emptyTuple, Size *emptySize)
+{
+	BlockNumber	blkno;
+
+	/*
+	 * If we already summarized some ranges, we need to start with the next one.
+	 * Otherwise we need to start from the first range of the table.
+	 */
+	blkno = (prevRange == InvalidBlockNumber) ? 0 : brin_next_range(state, prevRange);
+
+	/*
+	 * Generate empty ranges until we hit the next non-empty range or summarize
+	 * the last range of the table.
+	 */
+	while (blkno < maxRange)
+	{
+		/* Did we already build the empty tuple? If not, do it now. */
+		*emptyTuple = brin_init_empty_tuple(state, blkno, *emptyTuple, emptySize);
+
+		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
+					  &state->bs_currentInsertBuf,
+					  (*emptyTuple)->bt_blkno, *emptyTuple, *emptySize);
+
+		/* try next page range */
+		blkno = brin_next_range(state, blkno);
+	}
+}
+
+static BlockNumber
+brin_next_range(BrinBuildState *state, BlockNumber blkno)
+{
+	BlockNumber	ret = (blkno + state->bs_pagesPerRange);
+
+	/* overflow */
+	if (ret < blkno)
+		ret = InvalidBlockNumber;
+
+	return ret;
 }

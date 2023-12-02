@@ -51,6 +51,7 @@ typedef struct BrinBuildState
 	Relation	bs_irel;
 	int			bs_numtuples;
 	Buffer		bs_currentInsertBuf;
+	BlockNumber	bs_tablePages;
 	BlockNumber bs_pagesPerRange;
 	BlockNumber bs_currRangeStart;
 	BrinRevmap *bs_rmAccess;
@@ -82,7 +83,9 @@ typedef struct BrinOpaque
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
 
 static BrinBuildState *initialize_brin_buildstate(Relation idxRel,
-												  BrinRevmap *revmap, BlockNumber pagesPerRange);
+												  BrinRevmap *revmap,
+												  BlockNumber pagesPerRange,
+												  BlockNumber tablePages);
 static BrinInsertState *initialize_brin_insertstate(Relation idxRel, IndexInfo *indexInfo);
 static void terminate_brin_buildstate(BrinBuildState *state);
 static void brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
@@ -886,7 +889,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	BrinRevmap *revmap;
 	BrinBuildState *state;
 	Buffer		meta;
-	BlockNumber pagesPerRange;
+	BlockNumber pagesPerRange,
+				tablePages;
 
 	/*
 	 * We expect to be called exactly once for any index relation.
@@ -933,7 +937,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Initialize our state, including the deformed tuple state.
 	 */
 	revmap = brinRevmapInitialize(index, &pagesPerRange);
-	state = initialize_brin_buildstate(index, revmap, pagesPerRange);
+	tablePages = RelationGetNumberOfBlocks(heap);
+	state = initialize_brin_buildstate(index, revmap, pagesPerRange, tablePages);
 
 	/*
 	 * Now scan the relation.  No syncscan allowed here because we want the
@@ -944,6 +949,24 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* process the final batch */
 	form_and_insert_tuple(state);
+
+	/* XXX shouldn't this happen in the brinbuildCallback? */
+	state->bs_currRangeStart += state->bs_pagesPerRange;
+	/*
+	 * Backfill the final ranges with empty data.
+	 *
+	 * This saves us from doing what amounts to full table scans when the
+	 * index is built on stupid index quals like WHERE (nonnull_column IS
+	 * NULL).
+	 */
+	while (state->bs_currRangeStart + state->bs_pagesPerRange - 1 < state->bs_tablePages)
+	{
+		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
+
+		form_and_insert_tuple(state);
+
+		state->bs_currRangeStart += state->bs_pagesPerRange;
+	}
 
 	/* release resources */
 	idxtuples = state->bs_numtuples;
@@ -1358,7 +1381,7 @@ brinGetStats(Relation index, BrinStatsData *stats)
  */
 static BrinBuildState *
 initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
-						   BlockNumber pagesPerRange)
+						   BlockNumber pagesPerRange, BlockNumber tablePages)
 {
 	BrinBuildState *state;
 
@@ -1368,6 +1391,7 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	state->bs_numtuples = 0;
 	state->bs_currentInsertBuf = InvalidBuffer;
 	state->bs_pagesPerRange = pagesPerRange;
+	state->bs_tablePages = tablePages;
 	state->bs_currRangeStart = 0;
 	state->bs_rmAccess = revmap;
 	state->bs_bdesc = brin_build_desc(idxRel);
@@ -1612,7 +1636,8 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 				/* first time through */
 				Assert(!indexInfo);
 				state = initialize_brin_buildstate(index, revmap,
-												   pagesPerRange);
+												   pagesPerRange,
+												   InvalidBlockNumber);
 				indexInfo = BuildIndexInfo(index);
 			}
 			summarize_range(indexInfo, state, heapRel, startBlk, heapNumBlocks);

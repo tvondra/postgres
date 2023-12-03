@@ -172,6 +172,10 @@ typedef struct BrinBuildState
 	BrinDesc   *bs_bdesc;
 	BrinMemTuple *bs_dtuple;
 
+	BrinTuple  *bs_emptyTuple;
+	Size		bs_emptyTupleLen;
+	MemoryContext bs_context;
+
 	/*
 	 * bs_leader is only present when a parallel index build is performed, and
 	 * only in the leader process. (Actually, only the leader process has a
@@ -221,11 +225,8 @@ static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
 static bool add_values_to_range(Relation idxRel, BrinDesc *bdesc,
 								BrinMemTuple *dtup, const Datum *values, const bool *nulls);
 static bool check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys);
-static BrinTuple *brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
-										BrinTuple *emptyTuple, Size *emptySize);
 static void brin_fill_empty_ranges(BrinBuildState *state,
-								   BlockNumber prevRange, BlockNumber maxRange,
-								   BrinTuple **emptyTuple, Size *emptySize);
+								   BlockNumber prevRange, BlockNumber maxRange);
 static BlockNumber brin_next_range(BrinBuildState *state, BlockNumber blkno);
 
 /* parallel index builds */
@@ -1210,9 +1211,6 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 	else						/* no parallel index build */
 	{
-		BrinTuple  *emptyTuple = NULL;
-		Size		emptySize;
-
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
 										   brinbuildCallback, (void *) state, NULL);
 
@@ -1232,8 +1230,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 		brin_fill_empty_ranges(state,
 							   state->bs_currRangeStart,
-							   state->bs_maxRangeStart,
-							   &emptyTuple, &emptySize);
+							   state->bs_maxRangeStart);
 
 		/* track the number of relation tuples */
 		state->bs_reltuples = reltuples;
@@ -1671,6 +1668,9 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	state->bs_leader = NULL;
 	state->bs_worker_id = 0;
 	state->bs_spool = NULL;
+	state->bs_context = CurrentMemoryContext;
+	state->bs_emptyTuple = NULL;
+	state->bs_emptyTupleLen = 0;
 
 	/*
 	 * Calculate the start of the last page range. Page numbers are 0-based,
@@ -2515,8 +2515,6 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	Size		tuplen;
 	BrinShared *brinshared = brinleader->brinshared;
 	BlockNumber prevblkno = InvalidBlockNumber;
-	BrinTuple  *emptyTuple = NULL;
-	Size		emptySize;
 	BrinSpool  *spool;
 	MemoryContext rangeCxt,
 				oldCxt;
@@ -2630,8 +2628,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 		}
 
 		/* Fill empty ranges for all ranges missing in the tuplesort. */
-		brin_fill_empty_ranges(state, prevblkno, btup->bt_blkno,
-							   &emptyTuple, &emptySize);
+		brin_fill_empty_ranges(state, prevblkno, btup->bt_blkno);
 
 		prevblkno = btup->bt_blkno;
 	}
@@ -2654,8 +2651,7 @@ _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state)
 	}
 
 	/* Fill empty ranges at the end, for all ranges missing in the tuplesort. */
-	brin_fill_empty_ranges(state, prevblkno, state->bs_maxRangeStart,
-						   &emptyTuple, &emptySize);
+	brin_fill_empty_ranges(state, prevblkno, state->bs_maxRangeStart);
 
 	/*
 	 * Switch back to the original memory context, and destroy the one we
@@ -2875,31 +2871,38 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 }
 
 /*
- * brin_init_empty_tuple
+ * brin_build_empty_tuple
  *		Maybe initialize a BRIN tuple representing empty range.
  *
  * If emptyTuple is NULL, initializes new tuple representing empty range at
  * block blkno. Otherwise the tuple is reused, and only the bt_blkno field
  * is updated.
  */
-static BrinTuple *
-brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
-					  BrinTuple *emptyTuple, Size *emptySize)
+static void
+brin_build_empty_tuple(BrinBuildState *state, BlockNumber blkno)
 {
 	/* Did we already build the empty range? If not, do it now. */
-	if (emptyTuple == NULL)
+	if (state->bs_emptyTuple == NULL)
 	{
-		BrinMemTuple *dtuple = brin_new_memtuple(state->bs_bdesc);
+		MemoryContext	oldcxt;
+		BrinMemTuple   *dtuple = brin_new_memtuple(state->bs_bdesc);
 
-		emptyTuple = brin_form_tuple(state->bs_bdesc, blkno, dtuple, emptySize);
+		/*
+		 * Make sure to allocate the tuple in context that lasts for the
+		 * whole index build.
+		 */
+		oldcxt = MemoryContextSwitchTo(state->bs_context);
+
+		state->bs_emptyTuple = brin_form_tuple(state->bs_bdesc, blkno, dtuple,
+											   &state->bs_emptyTupleLen);
+
+		MemoryContextSwitchTo(oldcxt);
 	}
 	else
 	{
 		/* we already have an "empty range" tuple, just set the block */
-		emptyTuple->bt_blkno = blkno;
+		state->bs_emptyTuple->bt_blkno = blkno;
 	}
-
-	return emptyTuple;
 }
 
 /*
@@ -2920,8 +2923,7 @@ brin_init_empty_tuple(BrinBuildState *state, BlockNumber blkno,
  */
 static void
 brin_fill_empty_ranges(BrinBuildState *state,
-					   BlockNumber prevRange, BlockNumber maxRange,
-					   BrinTuple **emptyTuple, Size *emptySize)
+					   BlockNumber prevRange, BlockNumber maxRange)
 {
 	BlockNumber	blkno;
 
@@ -2938,11 +2940,11 @@ brin_fill_empty_ranges(BrinBuildState *state,
 	while (blkno < maxRange)
 	{
 		/* Did we already build the empty tuple? If not, do it now. */
-		*emptyTuple = brin_init_empty_tuple(state, blkno, *emptyTuple, emptySize);
+		brin_build_empty_tuple(state, blkno);
 
 		brin_doinsert(state->bs_irel, state->bs_pagesPerRange, state->bs_rmAccess,
 					  &state->bs_currentInsertBuf,
-					  (*emptyTuple)->bt_blkno, *emptyTuple, *emptySize);
+					  blkno, state->bs_emptyTuple, state->bs_emptyTupleLen);
 
 		/* try next page range */
 		blkno = brin_next_range(state, blkno);

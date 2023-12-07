@@ -1677,13 +1677,16 @@ initialize_brin_buildstate(Relation idxRel, BrinRevmap *revmap,
 	 * so to get the index of the last page we need to subtract one. Then the
 	 * integer division gives us the proper 0-based range index.
 	 */
-	state->bs_maxRangeStart = ((tablePages - 1) / pagesPerRange) * pagesPerRange;
+	if (tablePages > 0)
+		state->bs_maxRangeStart = ((tablePages - 1) / pagesPerRange) * pagesPerRange;
+	else
+		state->bs_maxRangeStart = 0;
 
 	/*
 	 * But, we actually need the start of the next range, or InvalidBlockNumber
 	 * if it would overflow.
 	 */
-	state->bs_maxRangeStart = brin_next_range(state, state->bs_maxRangeStart);
+	state->bs_maxRangeStart += state->bs_pagesPerRange;
 
 	return state;
 }

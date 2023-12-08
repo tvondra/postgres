@@ -204,21 +204,21 @@ RelationFindReplTupleByIndex(Relation rel, Oid idxoid,
 	/* Build scan key. */
 	skey_attoff = build_replindex_scan_key(skey, rel, idxrel, searchslot);
 
-	/* Start an index scan.
-	 *
-	 * XXX Should this do index prefetching? We're looking for a single tuple,
-	 * probably using a PK / UNIQUE index, so does not seem worth it. If we
-	 * reconsider this, calclate prefetch_target like in nodeIndexscan.
-	 */
-	scan = index_beginscan(rel, idxrel, &snap, skey_attoff, 0, 0);
+	/* Start an index scan. */
+	scan = index_beginscan(rel, idxrel, &snap, skey_attoff, 0);
 
 retry:
 	found = false;
 
 	index_rescan(scan, skey, skey_attoff, NULL, 0);
 
-	/* Try to find the tuple */
-	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
+	/*
+	 * Try to find the tuple
+	 *
+	 * XXX Would be nice to also benefit from prefetching here. All we need to
+	 * do is instantiate the prefetcher, I guess.
+	 */
+	while (index_getnext_slot(scan, ForwardScanDirection, outslot, NULL))
 	{
 		/*
 		 * Avoid expensive equality check if the index is primary key or

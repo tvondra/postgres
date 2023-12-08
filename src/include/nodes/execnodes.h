@@ -1529,6 +1529,7 @@ typedef struct
 	bool	   *elem_nulls;		/* array of num_elems is-null flags */
 } IndexArrayKeyInfo;
 
+
 /* ----------------
  *	 IndexScanState information
  *
@@ -1580,6 +1581,8 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+
+	IndexPrefetch *iss_prefetch;
 } IndexScanState;
 
 /* ----------------
@@ -1618,6 +1621,7 @@ typedef struct IndexOnlyScanState
 	TupleTableSlot *ioss_TableSlot;
 	Buffer		ioss_VMBuffer;
 	Size		ioss_PscanLen;
+	IndexPrefetch *ioss_prefetch;
 } IndexOnlyScanState;
 
 /* ----------------

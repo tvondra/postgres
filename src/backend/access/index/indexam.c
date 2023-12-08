@@ -109,12 +109,14 @@ do { \
 
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
-											  ParallelIndexScanDesc pscan, bool temp_snap,
-											  int prefetch_max);
+											  ParallelIndexScanDesc pscan, bool temp_snap);
 
-static void index_prefetch_tids(IndexScanDesc scan, ScanDirection direction);
-static ItemPointer index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction, bool *all_visible);
-static void index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible, bool *all_visible);
+static void index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
+								IndexPrefetch *prefetch);
+static ItemPointer index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
+										  IndexPrefetch *prefetch, bool *all_visible);
+static void index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
+						   ItemPointer tid, bool skip_all_visible, bool *all_visible);
 
 
 /* ----------------------------------------------------------------
@@ -223,42 +225,18 @@ index_insert_cleanup(Relation indexRelation,
  * index_beginscan - start a scan of an index with amgettuple
  *
  * Caller must be holding suitable locks on the heap and the index.
- *
- * prefetch_max determines if prefetching is requested for this index scan,
- * and how far ahead we want to prefetch
- *
- * Setting prefetch_max to 0 disables prefetching for the index scan. We do
- * this for two reasons - for scans on system catalogs, and/or for cases where
- * prefetching is expected to be pointless (like IOS).
- *
- * For system catalogs, we usually either scan by a PK value, or we we expect
- * only few rows (or rather we don't know how many rows to expect). Also, we
- * need to prevent infinite in the get_tablespace_io_concurrency() call - it
- * does an index scan internally. So we simply disable prefetching for system
- * catalogs. We could deal with this by picking a conservative static target
- * (e.g. effective_io_concurrency, capped to something), but places that are
- * performance sensitive likely use syscache anyway, and catalogs tend to be
- * very small and hot. So we don't bother.
- *
- * For IOS, we expect to not need most heap pages (that's the whole point of
- * IOS, actually), and prefetching them might lead to a lot of wasted I/O.
- *
- * XXX Not sure the infinite loop can still happen, now that the target lookup
- * moved to callers of index_beginscan.
  */
 IndexScanDesc
 index_beginscan(Relation heapRelation,
 				Relation indexRelation,
 				Snapshot snapshot,
-				int nkeys, int norderbys,
-				int prefetch_max)
+				int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot,
-									NULL, false, prefetch_max);
+	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -288,8 +266,7 @@ index_beginscan_bitmap(Relation indexRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	/* No prefetch in bitmap scans, prefetch is done by the heap scan. */
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false, 0);
+	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -306,8 +283,7 @@ index_beginscan_bitmap(Relation indexRelation,
 static IndexScanDesc
 index_beginscan_internal(Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
-						 ParallelIndexScanDesc pscan, bool temp_snap,
-						 int prefetch_max)
+						 ParallelIndexScanDesc pscan, bool temp_snap)
 {
 	IndexScanDesc scan;
 
@@ -330,31 +306,6 @@ index_beginscan_internal(Relation indexRelation,
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
-	scan->indexonly = false;
-
-	/*
-	 * With prefetching requested, initialize the prefetcher state.
-	 *
-	 * FIXME This should really be in the IndexScanState, not IndexScanDesc
-	 * (certainly the queues etc). But index_getnext_tid only gets the scan
-	 * descriptor, so how else would we pass it? Seems like a sign of wrong
-	 * layer doing the prefetching.
-	 */
-	if ((prefetch_max > 0) &&
-		(io_direct_flags & IO_DIRECT_DATA) == 0)	/* no prefetching for direct I/O */
-	{
-		IndexPrefetch prefetcher = palloc0(sizeof(IndexPrefetchData));
-
-		prefetcher->queueIndex = 0;
-		prefetcher->queueStart = 0;
-		prefetcher->queueEnd = 0;
-
-		prefetcher->prefetchTarget = 0;
-		prefetcher->prefetchMaxTarget = prefetch_max;
-		prefetcher->vmBuffer = InvalidBuffer;
-
-		scan->xs_prefetch = prefetcher;
-	}
 
 	return scan;
 }
@@ -391,20 +342,6 @@ index_rescan(IndexScanDesc scan,
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
-
-	/* If we're prefetching for this index, maybe reset some of the state. */
-	if (scan->xs_prefetch != NULL)
-	{
-		IndexPrefetch prefetcher = scan->xs_prefetch;
-
-		prefetcher->queueStart = 0;
-		prefetcher->queueEnd = 0;
-		prefetcher->queueIndex = 0;
-		prefetcher->prefetchDone = false;
-
-		/* restart the incremental ramp-up */
-		prefetcher->prefetchTarget = 0;
-	}
 }
 
 /* ----------------
@@ -432,23 +369,6 @@ index_endscan(IndexScanDesc scan)
 
 	if (scan->xs_temp_snap)
 		UnregisterSnapshot(scan->xs_snapshot);
-
-	/*
-	 * If prefetching was enabled for this scan, log prefetch stats.
-	 *
-	 * FIXME This should really go to EXPLAIN ANALYZE instead.
-	 */
-	if (scan->xs_prefetch)
-	{
-		IndexPrefetch prefetch = scan->xs_prefetch;
-
-		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
-			 prefetch->countAll,
-			 prefetch->countPrefetch,
-			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
-			 prefetch->countSkipCached,
-			 prefetch->countSkipSequential);
-	}
 
 	/* Release the scan data structure itself */
 	IndexScanEnd(scan);
@@ -595,8 +515,7 @@ index_parallelrescan(IndexScanDesc scan)
  */
 IndexScanDesc
 index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
-						 int norderbys, ParallelIndexScanDesc pscan,
-						 int prefetch_max)
+						 int norderbys, ParallelIndexScanDesc pscan)
 {
 	Snapshot	snapshot;
 	IndexScanDesc scan;
@@ -605,7 +524,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true, prefetch_max);
+									pscan, true);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -727,12 +646,13 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
  * ----------------
  */
 bool
-index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot,
+				   IndexPrefetch *prefetch)
 {
 	for (;;)
 	{
 		/* Do prefetching (if requested/enabled). */
-		index_prefetch_tids(scan, direction);
+		index_prefetch_tids(scan, direction, prefetch);
 
 		if (!scan->xs_heap_continue)
 		{
@@ -740,7 +660,7 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 			bool		all_visible;
 
 			/* Time to fetch the next TID from the index */
-			tid = index_prefetch_get_tid(scan, direction, &all_visible);
+			tid = index_prefetch_get_tid(scan, direction, prefetch, &all_visible);
 
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
@@ -1135,7 +1055,7 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * does not require a sequential pattern).
  */
 static bool
-index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
+index_prefetch_is_sequential(IndexPrefetch *prefetch, BlockNumber block)
 {
 	int			idx;
 
@@ -1270,9 +1190,9 @@ index_prefetch_is_sequential(IndexPrefetch prefetch, BlockNumber block)
  * what index_prefetch_is_sequential does.
  */
 static bool
-index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
+index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
 {
-	PrefetchCacheEntry *entry;
+	IndexPrefetchCacheEntry *entry;
 
 	/* map the block number the the LRU */
 	int			lru = hash_uint32(block) % PREFETCH_LRU_COUNT;
@@ -1419,9 +1339,9 @@ index_prefetch_add_cache(IndexPrefetch prefetch, BlockNumber block)
  * value once in a while, and see what happens.
  */
 static void
-index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible, bool *all_visible)
+index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
+			   ItemPointer tid, bool skip_all_visible, bool *all_visible)
 {
-	IndexPrefetch prefetch = scan->xs_prefetch;
 	BlockNumber block;
 
 	/* by default not all visible (or we didn't check) */
@@ -1502,33 +1422,33 @@ index_prefetch(IndexScanDesc scan, ItemPointer tid, bool skip_all_visible, bool 
  * ----------------
  */
 ItemPointer
-index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
+index_getnext_tid(IndexScanDesc scan, ScanDirection direction,
+				  IndexPrefetch *prefetch)
 {
 	bool		all_visible;	/* ignored */
 
 	/* Do prefetching (if requested/enabled). */
-	index_prefetch_tids(scan, direction);
+	index_prefetch_tids(scan, direction, prefetch);
 
 	/* Read the TID from the queue (or directly from the index). */
-	return index_prefetch_get_tid(scan, direction, &all_visible);
+	return index_prefetch_get_tid(scan, direction, prefetch, &all_visible);
 }
 
 ItemPointer
-index_getnext_tid_vm(IndexScanDesc scan, ScanDirection direction, bool *all_visible)
+index_getnext_tid_vm(IndexScanDesc scan, ScanDirection direction,
+					 IndexPrefetch *prefetch, bool *all_visible)
 {
 	/* Do prefetching (if requested/enabled). */
-	index_prefetch_tids(scan, direction);
+	index_prefetch_tids(scan, direction, prefetch);
 
 	/* Read the TID from the queue (or directly from the index). */
-	return index_prefetch_get_tid(scan, direction, all_visible);
+	return index_prefetch_get_tid(scan, direction, prefetch, all_visible);
 }
 
 static void
-index_prefetch_tids(IndexScanDesc scan, ScanDirection direction)
+index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
+					IndexPrefetch *prefetch)
 {
-	/* for convenience */
-	IndexPrefetch prefetch = scan->xs_prefetch;
-
 	/*
 	 * If the prefetching is still active (i.e. enabled and we still
 	 * haven't finished reading TIDs from the scan), read enough TIDs into
@@ -1577,7 +1497,7 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction)
 			 * XXX index_getnext_tid_prefetch is only called for IOS (for now),
 			 * so skip prefetching of all-visible pages.
 			 */
-			index_prefetch(scan, tid, scan->indexonly, &all_visible);
+			index_prefetch(scan, prefetch, tid, prefetch->indexonly, &all_visible);
 
 			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)].tid = *tid;
 			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)].all_visible = all_visible;
@@ -1587,11 +1507,9 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction)
 }
 
 static ItemPointer
-index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction, bool *all_visible)
+index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
+					   IndexPrefetch *prefetch, bool *all_visible)
 {
-	/* for convenience */
-	IndexPrefetch prefetch = scan->xs_prefetch;
-
 	/*
 	 * With prefetching enabled (even if we already finished reading
 	 * all TIDs from the index scan), we need to return a TID from the

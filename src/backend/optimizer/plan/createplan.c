@@ -188,7 +188,8 @@ static SampleScan *make_samplescan(List *qptlist, List *qpqual, Index scanrelid,
 								   TableSampleClause *tsc);
 static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
 								 Oid indexid, List *indexqual, List *indexqualorig,
-								 List *indexfilters, List *indexfiltersorig,
+								 List *indexfilter, List *indexfilterorig,
+								 List *indexfilterqual,
 								 List *indexorderby, List *indexorderbyorig,
 								 List *indexorderbyops,
 								 ScanDirection indexscandir);
@@ -3014,6 +3015,7 @@ create_indexscan_plan(PlannerInfo *root,
 {
 	Scan	   *scan_plan;
 	List	   *indexclauses = best_path->indexclauses;
+	List	   *indexfilters = best_path->indexfilters;
 	List	   *indexorderbys = best_path->indexorderbys;
 	Index		baserelid = best_path->path.parent->relid;
 	IndexOptInfo *indexinfo = best_path->indexinfo;
@@ -3026,6 +3028,7 @@ create_indexscan_plan(PlannerInfo *root,
 	List	   *fixed_indexorderbys;
 	List	   *indexorderbyops = NIL;
 	ListCell   *l;
+	List	   *filterqual;
 
 	/* it should be a base rel... */
 	Assert(baserelid > 0);
@@ -3101,10 +3104,25 @@ create_indexscan_plan(PlannerInfo *root,
 								 false))
 			continue;			/* provably implied by indexquals */
 		qpqual = lappend(qpqual, rinfo);
+
+		/*
+		 * Maybe add it to the non-index quals, i.e. those that need to be
+		 * evaluated on the heap tuple. But only if we decided to not evaluate
+		 * it on the index directly.
+		 *
+		 * XXX is_redundant_with_indexclauses is checking equivalence class,
+		 * which seems a bit strange for arbitrary expressions. Maybe we should
+		 * do the comparison in a different way?
+		 */
+		if (is_redundant_with_indexclauses(rinfo, indexfilters))
+			continue;
+
+		filterqual = lappend(filterqual, rinfo);
+
 	}
 
 	/* Sort clauses into best execution order */
-	qpqual = order_qual_clauses(root, qpqual);
+	qpqual = order_qual_clauses(root, qpqual);	/* XXX */
 
 	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
 	qpqual = extract_actual_clauses(qpqual, false);
@@ -3202,6 +3220,7 @@ create_indexscan_plan(PlannerInfo *root,
 											stripped_indexquals,
 											fixed_indexfilters,
 											stripped_indexfilters,
+											filterqual,	/* non-index quals */
 											fixed_indexorderbys,
 											indexorderbys,
 											indexorderbyops,
@@ -5597,6 +5616,7 @@ make_indexscan(List *qptlist,
 			   List *indexqualorig,
 			   List *indexfilters,
 			   List *indexfiltersorig,
+			   List *indexfilterqual,
 			   List *indexorderby,
 			   List *indexorderbyorig,
 			   List *indexorderbyops,
@@ -5613,8 +5633,8 @@ make_indexscan(List *qptlist,
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
-	node->indexfilters = indexfilters;
-	node->indexfiltersorig = indexfiltersorig;
+	node->indexfilter = indexfilters;
+	node->indexfilterorig = indexfiltersorig;
 	node->indexorderby = indexorderby;
 	node->indexorderbyorig = indexorderbyorig;
 	node->indexorderbyops = indexorderbyops;

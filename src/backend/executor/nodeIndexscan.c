@@ -122,7 +122,7 @@ IndexNext(IndexScanState *node)
 		node->iss_ScanDesc = scandesc;
 
 		/* Set it up for index-only filters, if there are any. */
-		if (node->indexfilters != NULL)
+		if (node->indexfilter != NULL)
 		{
 			node->iss_ScanDesc->xs_want_itup = true;
 			node->iss_VMBuffer = InvalidBuffer;
@@ -182,7 +182,7 @@ IndexNext(IndexScanState *node)
 			 *
 			 * https://www.postgresql.org/message-id/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU%3D%40yamlcoder.me
 			 */
-			if (node->indexfilters != NULL)
+			if (node->indexfilter != NULL)
 			{
 				ItemPointer tid = &scandesc->xs_heaptid;
 
@@ -243,7 +243,7 @@ IndexNext(IndexScanState *node)
 					econtext->ecxt_scantuple = node->iss_TableSlot;
 
 					/* check the filters pushed to the index-tuple level */
-					if (!ExecQual(node->indexfilters, econtext))
+					if (!ExecQual(node->indexfilter, econtext))
 					{
 						InstrCountFiltered2(node, 1);
 						continue;
@@ -277,7 +277,7 @@ IndexNext(IndexScanState *node)
 		if (!filter_checked)
 		{
 			econtext->ecxt_scantuple = slot;
-			if (!ExecQual(node->indexfiltersorig, econtext))
+			if (!ExecQual(node->indexfilterorig, econtext))
 			{
 				InstrCountFiltered2(node, 1);
 				continue;
@@ -1099,10 +1099,10 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
 	indexstate->indexqualorig =
 		ExecInitQual(node->indexqualorig, (PlanState *) indexstate);
-	indexstate->indexfilters =
-		ExecInitQual(node->indexfilters, (PlanState *) indexstate);
-	indexstate->indexfiltersorig =
-		ExecInitQual(node->indexfiltersorig, (PlanState *) indexstate);
+	indexstate->indexfilter =
+		ExecInitQual(node->indexfilter, (PlanState *) indexstate);
+	indexstate->indexfilterorig =
+		ExecInitQual(node->indexfilterorig, (PlanState *) indexstate);
 	indexstate->indexorderbyorig =
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 

@@ -1786,7 +1786,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IndexScan:
 			show_scan_qual(((IndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
-			show_scan_qual(((IndexScan *) plan)->indexfiltersorig,
+			show_scan_qual(((IndexScan *) plan)->indexfilterorig,
 						   "Index Filter", planstate, ancestors, es);
 			if (((IndexScan *) plan)->indexqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,

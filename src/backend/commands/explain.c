@@ -1788,6 +1788,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 						   "Index Cond", planstate, ancestors, es);
 			show_scan_qual(((IndexScan *) plan)->indexfilterorig,
 						   "Index Filter", planstate, ancestors, es);
+			show_scan_qual(((IndexScan *) plan)->indexfilterqual,
+						   "Index Filter (non-index)", planstate, ancestors, es);
 			if (((IndexScan *) plan)->indexqualorig)
 				show_instrumentation_count("Rows Removed by Index Recheck", 2,
 										   planstate, es);

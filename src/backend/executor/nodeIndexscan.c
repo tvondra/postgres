@@ -1103,6 +1103,8 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitQual(node->indexfilter, (PlanState *) indexstate);
 	indexstate->indexfilterorig =
 		ExecInitQual(node->indexfilterorig, (PlanState *) indexstate);
+	indexstate->indexfilterqual =
+		ExecInitQual(node->indexfilterqual, (PlanState *) indexstate);
 	indexstate->indexorderbyorig =
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 

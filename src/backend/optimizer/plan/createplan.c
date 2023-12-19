@@ -3091,6 +3091,7 @@ create_indexscan_plan(PlannerInfo *root,
 	 * extract_nonindex_conditions() in costsize.c.
 	 */
 	qpqual = NIL;
+	filterqual = NIL;
 	foreach(l, scan_clauses)
 	{
 		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
@@ -3109,16 +3110,11 @@ create_indexscan_plan(PlannerInfo *root,
 		 * Maybe add it to the non-index quals, i.e. those that need to be
 		 * evaluated on the heap tuple. But only if we decided to not evaluate
 		 * it on the index directly.
-		 *
-		 * XXX is_redundant_with_indexclauses is checking equivalence class,
-		 * which seems a bit strange for arbitrary expressions. Maybe we should
-		 * do the comparison in a different way?
 		 */
-		if (is_redundant_with_indexclauses(rinfo, indexfilters))
+		if (list_member_ptr(indexfilters, rinfo))
 			continue;
 
 		filterqual = lappend(filterqual, rinfo);
-
 	}
 
 	/* Sort clauses into best execution order */
@@ -3126,6 +3122,16 @@ create_indexscan_plan(PlannerInfo *root,
 
 	/* Reduce RestrictInfo list to bare expressions; ignore pseudoconstants */
 	qpqual = extract_actual_clauses(qpqual, false);
+
+	/*
+	 * Do the same cost reordering and reduction with non-index filters.
+	 *
+	 * XXX This is a bit strange/wrong, because it happens after we already
+	 * split the clauses into index and non-index part. So if we want to look
+	 * at the cost and stop pushing stuff down, this is probably too late.
+	 */
+	filterqual = order_qual_clauses(root, filterqual);
+	filterqual = extract_actual_clauses(filterqual, false);
 
 	/*
 	 * We have to replace any outer-relation variables with nestloop params in
@@ -3144,6 +3150,8 @@ create_indexscan_plan(PlannerInfo *root,
 			replace_nestloop_params(root, (Node *) stripped_indexfilters);
 		qpqual = (List *)
 			replace_nestloop_params(root, (Node *) qpqual);
+		filterqual = (List *)
+			replace_nestloop_params(root, (Node *) filterqual);
 		indexorderbys = (List *)
 			replace_nestloop_params(root, (Node *) indexorderbys);
 	}
@@ -5614,8 +5622,8 @@ make_indexscan(List *qptlist,
 			   Oid indexid,
 			   List *indexqual,
 			   List *indexqualorig,
-			   List *indexfilters,
-			   List *indexfiltersorig,
+			   List *indexfilter,
+			   List *indexfilterorig,
 			   List *indexfilterqual,
 			   List *indexorderby,
 			   List *indexorderbyorig,
@@ -5633,8 +5641,9 @@ make_indexscan(List *qptlist,
 	node->indexid = indexid;
 	node->indexqual = indexqual;
 	node->indexqualorig = indexqualorig;
-	node->indexfilter = indexfilters;
-	node->indexfilterorig = indexfiltersorig;
+	node->indexfilter = indexfilter;
+	node->indexfilterorig = indexfilterorig;
+	node->indexfilterqual = indexfilterqual;
 	node->indexorderby = indexorderby;
 	node->indexorderbyorig = indexorderbyorig;
 	node->indexorderbyops = indexorderbyops;

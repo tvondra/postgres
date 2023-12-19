@@ -1911,7 +1911,7 @@ check_index_filter(RelOptInfo *rel, IndexOptInfo *index, Node *clause)
 	Bitmapset  *index_canreturn_attrs = NULL;
 	int			i;
 
-	/* Index-only scans must be enabled */
+	/* Index-only filters must be enabled */
 	if (!enable_indexonlyfilter)
 		return false;
 

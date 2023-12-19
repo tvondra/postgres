@@ -51,7 +51,8 @@ typedef enum
 /* Data structure for collecting qual clauses that match an index */
 typedef struct
 {
-	bool		nonempty;		/* True if lists are not all empty */
+	bool		nonempty;		/* True if lists are not all empty (does not
+								 * consider the indexfilters list). */
 	/* Lists of IndexClause nodes, one list per index column */
 	List	   *indexclauses[INDEX_MAX_KEYS];
 	List	   *indexfilters;
@@ -957,6 +958,9 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	/*
 	 * If we have index-only filters, combine the clauses into a simple list and
 	 * add the relids to outer relids.
+	 *
+	 * XXX Shouldn't we try to order the clauses in some particular order, say by
+	 * procost / selectivity? It's difficult, though.
 	 */
 	index_filters = NIL;
 	if (clauses->indexfilters)
@@ -1228,7 +1232,8 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 		 * If no matches so far, and the index predicate isn't useful, we
 		 * don't want it.
 		 *
-		 * XXX Maybe this should check the index filters too?
+		 * XXX Maybe this should check the index filters too? nonempty=true only
+		 * deals with index clauses, it does not consider filters.
 		 */
 		if (!clauseset.nonempty && !useful_predicate)
 			continue;
@@ -1889,6 +1894,14 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 /*
  * check_index_filter
  *		Determine whether a clause can be executed directly on the index tuple.
+ *
+ * This checks the clause references only columns that can be returned by the
+ * index, same as in index-only scan.
+ *
+ * XXX It's a bit annoying we build the bitmap from index columns over and over,
+ * so if there are multiple clauses to check, we will do that multiple times.
+ * However, it's not that expensive, there usually are only few such clauses, so
+ * it doesn't seem worth worrying about.
  */
 static bool
 check_index_filter(RelOptInfo *rel, IndexOptInfo *index, Node *clause)
@@ -2431,12 +2444,18 @@ match_filter_to_index(PlannerInfo *root,
 	/*
 	 * Historically this code has coped with NULL clauses.  That's probably
 	 * not possible anymore, but we might as well continue to cope.
+	 *
+	 * XXX This code is new, the comment comes from match_clause_to_indexcol.
+	 * Not sure if we need to handle NULL clauses here. Maybe not.
 	 */
 	if (clause == NULL)
 		return NULL;
 
 	/*
 	 * Can the clause be evaluated only using the index tuple?
+	 *
+	 * XXX Maybe we should just do the check_index_filter here, if it's the only
+	 * thing we need to do. There's no point in having yet another function.
 	 */
 	if (!check_index_filter(index->rel, index, (Node *) rinfo->clause))
 		return NULL;

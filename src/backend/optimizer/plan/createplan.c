@@ -3045,7 +3045,7 @@ create_indexscan_plan(PlannerInfo *root,
 							 &fixed_indexquals);
 
 	/*
-	 * Extract the index qual expressions (stripped of RestrictInfos) from the
+	 * Extract the index filter expressions (stripped of RestrictInfos) from the
 	 * IndexClauses list, and prepare a copy with index Vars substituted for
 	 * table Vars.  (This step also does replace_nestloop_params on the
 	 * fixed_indexquals.)

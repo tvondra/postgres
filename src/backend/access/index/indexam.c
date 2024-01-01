@@ -1515,7 +1515,9 @@ index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
 
 		/* Time to fetch the next TID from the index */
 		tid = index_getnext_tid_internal(scan, direction);
-		*data = NULL;
+
+		if (data)
+			*data = NULL;
 
 		/* If we're out of index entries, we're done */
 		if (tid == NULL)

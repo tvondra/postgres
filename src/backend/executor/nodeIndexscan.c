@@ -43,7 +43,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/spccache.h"
 
 /*
  * When an ordering operator is used, tuples fetched from the index that
@@ -70,6 +69,9 @@ static void reorderqueue_push(IndexScanState *node, TupleTableSlot *slot,
 							  Datum *orderbyvals, bool *orderbynulls);
 static HeapTuple reorderqueue_pop(IndexScanState *node);
 
+static IndexPrefetchEntry *IndexScanPrefetchNext(IndexScanDesc scan,
+												 IndexPrefetch *prefetch,
+												 ScanDirection direction);
 
 /* ----------------------------------------------------------------
  *		IndexNext
@@ -87,6 +89,7 @@ IndexNext(IndexScanState *node)
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
 	IndexPrefetch  *prefetch;
+	IndexPrefetchEntry  *entry;
 
 	/*
 	 * extract necessary information from index scan node
@@ -131,9 +134,18 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot, prefetch))
+	while ((entry = IndexPrefetchNext(scandesc, prefetch, direction)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Fetch the next (or only) visible heap tuple for this index entry.
+		 * If we don't find anything, loop around and grab the next TID from
+		 * the index.
+		 */
+		Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
+		if (!index_fetch_heap(scandesc, slot))
+			continue;
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -180,7 +192,6 @@ IndexNextWithReorder(IndexScanState *node)
 	Datum	   *lastfetched_vals;
 	bool	   *lastfetched_nulls;
 	int			cmp;
-	IndexPrefetch *prefetch;
 
 	estate = node->ss.ps.state;
 
@@ -197,7 +208,6 @@ IndexNextWithReorder(IndexScanState *node)
 	Assert(ScanDirectionIsForward(estate->es_direction));
 
 	scandesc = node->iss_ScanDesc;
-	prefetch = node->iss_prefetch;
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
@@ -264,7 +274,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 * Fetch next tuple from the index.
 		 */
 next_indextuple:
-		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot, prefetch))
+		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot))
 		{
 			/*
 			 * No more tuples from the index.  But we still need to drain any
@@ -601,6 +611,9 @@ ExecReScanIndexScan(IndexScanState *node)
 		prefetch->queueIndex = 0;
 		prefetch->queueStart = 0;
 		prefetch->queueEnd = 0;
+
+		prefetch->prefetchDone = false;
+		prefetch->prefetchTarget = 0;
 	}
 
 	ExecScanReScan(&node->ss);
@@ -917,6 +930,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	IndexScanState *indexstate;
 	Relation	currentRelation;
 	LOCKMODE	lockmode;
+	int			prefetch_max;
 
 	/*
 	 * create state structure
@@ -1095,43 +1109,33 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * Also initialize index prefetcher.
+	 * Also initialize index prefetcher. We do this even when prefetching is
+	 * not done (see index_heap_prefetch_calculate_target), because the
+	 * prefetcher is used for all index reads.
 	 *
-	 * XXX No prefetching for direct I/O.
+	 * We reach here if the index only scan is not parallel, or if we're
+	 * serially executing an index only scan that was planned to be
+	 * parallel.
+	 *
+	 * XXX Maybe we should enable prefetching, but prefetch only pages that
+	 * are not all-visible (but checking that from the index code seems like
+	 * a violation of layering etc).
+	 *
+	 * XXX This might lead to IOS being slower than plain index scan, if the
+	 * table has a lot of pages that need recheck.
+	 *
+	 * Remember this is index-only scan, because of prefetching. Not the most
+	 * elegant way to pass this info.
+	 *
+	 * XXX Maybe rename the object to "index reader" or something?
 	 */
-	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
-	{
-		int	prefetch_max;
-		Relation    heapRel = indexstate->ss.ss_currentRelation;
+	prefetch_max = index_heap_prefetch_target(indexstate->ss.ss_currentRelation,
+											  indexstate->ss.ps.plan->plan_rows,
+											  node->allow_prefetch);
 
-		/*
-		 * Determine number of heap pages to prefetch for this index scan. This
-		 * is essentially just effective_io_concurrency for the table (or the
-		 * tablespace it's in).
-		 *
-		 * XXX Should this also look at plan.plan_rows and maybe cap the target
-		 * to that? Pointless to prefetch more than we expect to use. Or maybe
-		 * just reset to that value during prefetching, after reading the next
-		 * index page (or rather after rescan)?
-		 */
-		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
-						   indexstate->ss.ps.plan->plan_rows);
-
-		if (prefetch_max > 0)
-		{
-			IndexPrefetch *prefetch = palloc0(sizeof(IndexPrefetch));
-
-			prefetch->queueIndex = 0;
-			prefetch->queueStart = 0;
-			prefetch->queueEnd = 0;
-
-			prefetch->prefetchTarget = 0;
-			prefetch->prefetchMaxTarget = prefetch_max;
-			prefetch->vmBuffer = InvalidBuffer;
-
-			indexstate->iss_prefetch = prefetch;
-		}
-	}
+	indexstate->iss_prefetch = IndexPrefetchAlloc(IndexScanPrefetchNext,
+												  prefetch_max,
+												  NULL);
 
 	/*
 	 * all done.
@@ -1794,4 +1798,27 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 		index_rescan(node->iss_ScanDesc,
 					 node->iss_ScanKeys, node->iss_NumScanKeys,
 					 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
+}
+
+/*
+ * XXX not sure this correctly handles xs_heap_continue - see index_getnext_slot,
+ * maybe nodeIndexscan needs to do something more to handle this?
+ */
+static IndexPrefetchEntry *
+IndexScanPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+{
+	IndexPrefetchEntry *entry = NULL;
+	ItemPointer			tid;
+
+	if ((tid = index_getnext_tid(scan, direction)) != NULL)
+	{
+		entry = palloc0(sizeof(IndexPrefetchEntry));
+
+		entry->tid = *tid;
+
+		/* prefetch always */
+		entry->prefetch = true;
+	}
+
+	return entry;
 }

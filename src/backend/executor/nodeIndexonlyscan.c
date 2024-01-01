@@ -367,6 +367,9 @@ ExecReScanIndexOnlyScan(IndexOnlyScanState *node)
 		prefetch->queueIndex = 0;
 		prefetch->queueStart = 0;
 		prefetch->queueEnd = 0;
+
+		prefetch->prefetchDone = false;
+		prefetch->prefetchTarget = 0;
 	}
 
 	ExecScanReScan(&node->ss);

@@ -166,8 +166,26 @@ typedef struct IndexPrefetchCacheEntry {
 typedef struct IndexPrefetchEntry
 {
 	ItemPointerData		tid;
-	bool				all_visible;
+
+	/*
+	 * If a callback is specified, it may store per-tid information. The
+	 * data has to be a single palloc-ed piece of data, so that it can
+	 * be easily pfreed.
+	 *
+	 * XXX We could relax this by providing another cleanup callback, but
+	 * that seems unnecessarily complex - we expect the information to be
+	 * very simple, like bool flags or something. Easy to do in a simple
+	 * struct, and perhaps even reuse without pfree/palloc.
+	 */
+	void			    *callback_data;
 } IndexPrefetchEntry;
+
+/* needs to be before IndexPrefetchCallback typedef */
+struct IndexPrefetch;
+
+
+typedef bool (*IndexPrefetchCallback) (IndexScanDesc scan, struct IndexPrefetch *prefetch,
+									   IndexPrefetchEntry *entry);
 
 typedef struct IndexPrefetch
 {
@@ -187,9 +205,17 @@ typedef struct IndexPrefetch
 	uint64		countSkipSequential;
 	uint64		countSkipCached;
 
-	/* used when prefetching index-only scans */
-	bool		indexonly;
-	Buffer		vmBuffer;
+	/*
+	 * Callback to customize the prefetch (decide which block need to be
+	 * prefetched, etc.)
+	 */
+	IndexPrefetchCallback	prefetch_callback;
+
+	/*
+	 * If a callback is specified, it may store per-prefetch (for all TIDs)
+	 * data - for example VM buffer kept during IOS. See IndexPrefetchEntry.
+	 */
+	void	   *callback_data;
 
 	/*
 	 * Queue of TIDs to prefetch.
@@ -279,11 +305,12 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  ParallelIndexScanDesc pscan);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction,
-									 IndexPrefetch *prefetch);
+									 IndexPrefetch *prefetch,
+									 void **prefetch_data);
 extern ItemPointer index_getnext_tid_vm(IndexScanDesc scan,
 										ScanDirection direction,
 										IndexPrefetch *prefetch,
-										bool *all_visible);
+										void **prefetch_data);
 struct TupleTableSlot;
 extern bool index_fetch_heap(IndexScanDesc scan, struct TupleTableSlot *slot);
 extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,

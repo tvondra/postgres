@@ -1130,7 +1130,6 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 
 			prefetch->prefetchTarget = 0;
 			prefetch->prefetchMaxTarget = prefetch_max;
-			prefetch->vmBuffer = InvalidBuffer;
 
 			indexstate->iss_prefetch = prefetch;
 		}

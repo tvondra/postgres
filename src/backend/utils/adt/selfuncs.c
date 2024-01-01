@@ -6297,7 +6297,7 @@ get_actual_variable_endpoint(Relation heapRel,
 	index_rescan(index_scan, scankeys, 1, NULL, 0);
 
 	/* Fetch first/next tuple in specified direction */
-	while ((tid = index_getnext_tid(index_scan, indexscandir, NULL)) != NULL)
+	while ((tid = index_getnext_tid(index_scan, indexscandir, NULL, NULL)) != NULL)
 	{
 		BlockNumber block = ItemPointerGetBlockNumber(tid);
 

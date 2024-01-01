@@ -48,7 +48,8 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
 							TupleDesc itupdesc);
-
+static bool IndexOnlyPrefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
+							  IndexPrefetchEntry *entry);
 
 /* ----------------------------------------------------------------
  *		IndexOnlyNext
@@ -66,7 +67,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	TupleTableSlot *slot;
 	ItemPointer tid;
 	IndexPrefetch  *prefetch;
-	bool			all_visible;
+	bool		   *all_visible = NULL;
 
 	/*
 	 * extract necessary information from index scan node
@@ -119,7 +120,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tid = index_getnext_tid_vm(scandesc, direction, prefetch, &all_visible)) != NULL)
+	while ((tid = index_getnext_tid(scandesc, direction,
+									prefetch, (void **) &all_visible)) != NULL)
 	{
 		bool		tuple_from_heap = false;
 
@@ -161,7 +163,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 *
 		 * XXX Skip if we already know the page is all visible from prefetcher.
 		 */
-		if (!all_visible &&
+		if (!(all_visible && *all_visible) &&
 			!VM_ALL_VISIBLE(scandesc->heapRelation,
 							ItemPointerGetBlockNumber(tid),
 							&node->ioss_VMBuffer))
@@ -404,6 +406,8 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 	{
 		IndexPrefetch *prefetch = node->ioss_prefetch;
 
+		Buffer *buffer = (Buffer *) prefetch->callback_data;
+
 		/* XXX some debug info */
 		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
 			 prefetch->countAll,
@@ -412,10 +416,10 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 			 prefetch->countSkipCached,
 			 prefetch->countSkipSequential);
 
-		if (prefetch->vmBuffer != InvalidBuffer)
+		if (*buffer != InvalidBuffer)
 		{
-			ReleaseBuffer(prefetch->vmBuffer);
-			prefetch->vmBuffer = InvalidBuffer;
+			ReleaseBuffer(*buffer);
+			*buffer = InvalidBuffer;
 		}
 	}
 
@@ -693,8 +697,13 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 
 			prefetch->prefetchTarget = 0;
 			prefetch->prefetchMaxTarget = prefetch_max;
-			prefetch->vmBuffer = InvalidBuffer;
-			prefetch->indexonly = true;
+
+			/*
+			 * Customize the prefetch to also check visibility map and keep
+			 * the result so that IOS does not need to repeat it.
+			 */
+			prefetch->prefetch_callback = IndexOnlyPrefetch;
+			prefetch->callback_data = palloc0(sizeof(Buffer));
 
 			indexstate->ioss_prefetch = prefetch;
 		}
@@ -810,4 +819,39 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 		index_rescan(node->ioss_ScanDesc,
 					 node->ioss_ScanKeys, node->ioss_NumScanKeys,
 					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
+}
+
+/*
+ * When prefetching for IOS, we want to only prefetch pages that are not
+ * marked as all-visible (because not fetching all-visible pages is the
+ * point of IOS).
+ *
+ * XXX This is not great, because it releases the VM buffer for each TID
+ * we consider to prefetch. We should reuse that somehow, similar to the
+ * actual IOS code. Ideally, we should use the same ioss_VMBuffer (if
+ * we can propagate it here). Or at least do it for a bulk of prefetches,
+ * although that's not very useful - after the ramp-up we will prefetch
+ * the pages one by one anyway.
+ *
+ * XXX Ideally we'd also propagate this to the executor, so that the
+ * nodeIndexonlyscan.c doesn't need to repeat the same VM check (which
+ * is measurable). But the index_getnext_tid() is not really well
+ * suited for that, so the API needs a change.s
+ */
+static bool
+IndexOnlyPrefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
+				  IndexPrefetchEntry *entry)
+{
+	BlockNumber	blkno = ItemPointerGetBlockNumber(&entry->tid);
+
+	bool	all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+										 blkno,
+										 (Buffer *) prefetch->callback_data);
+
+	/* store the all_visible flag in the private part of the entry */
+	entry->callback_data = palloc(sizeof(bool));
+	*(bool *) entry->callback_data = all_visible;
+
+	/* prefetch only if not all visible */
+	return (!all_visible);
 }

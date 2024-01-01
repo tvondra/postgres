@@ -114,9 +114,9 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 static void index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
 								IndexPrefetch *prefetch);
 static ItemPointer index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
-										  IndexPrefetch *prefetch, bool *all_visible);
-static void index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
-						   ItemPointer tid, bool skip_all_visible, bool *all_visible);
+										  IndexPrefetch *prefetch, void **data);
+static void index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch,
+									 IndexPrefetchEntry *entry);
 
 
 /* ----------------------------------------------------------------
@@ -643,6 +643,10 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
  * Note: caller must check scan->xs_recheck, and perform rechecking of the
  * scan keys if required.  We do not do that here because we don't have
  * enough information to do it efficiently in the general case.
+ *
+ * FIXME maybe this should get prefetch_data too? It gets prefetch, so why not
+ * the other argument too? It's not useful for IOS, but it seems a bit weird
+ * that the API is not symmetrical for tid/slot.
  * ----------------
  */
 bool
@@ -657,10 +661,9 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 		if (!scan->xs_heap_continue)
 		{
 			ItemPointer	tid;
-			bool		all_visible;
 
 			/* Time to fetch the next TID from the index */
-			tid = index_prefetch_get_tid(scan, direction, prefetch, &all_visible);
+			tid = index_prefetch_get_tid(scan, direction, prefetch, NULL);
 
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
@@ -1339,13 +1342,10 @@ index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
  * value once in a while, and see what happens.
  */
 static void
-index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
-			   ItemPointer tid, bool skip_all_visible, bool *all_visible)
+index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch,
+						 IndexPrefetchEntry *entry)
 {
-	BlockNumber block;
-
-	/* by default not all visible (or we didn't check) */
-	*all_visible = false;
+	BlockNumber block = ItemPointerGetBlockNumber(&entry->tid);
 
 	/*
 	 * No heap relation means bitmap index scan, which does prefetching at the
@@ -1365,34 +1365,14 @@ index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
 	 */
 	Assert(scan->heapRelation);
 
-	block = ItemPointerGetBlockNumber(tid);
-
 	/*
-	 * When prefetching for IOS, we want to only prefetch pages that are not
-	 * marked as all-visible (because not fetching all-visible pages is the
-	 * point of IOS).
-	 *
-	 * XXX This is not great, because it releases the VM buffer for each TID
-	 * we consider to prefetch. We should reuse that somehow, similar to the
-	 * actual IOS code. Ideally, we should use the same ioss_VMBuffer (if
-	 * we can propagate it here). Or at least do it for a bulk of prefetches,
-	 * although that's not very useful - after the ramp-up we will prefetch
-	 * the pages one by one anyway.
-	 *
-	 * XXX Ideally we'd also propagate this to the executor, so that the
-	 * nodeIndexonlyscan.c doesn't need to repeat the same VM check (which
-	 * is measurable). But the index_getnext_tid() is not really well
-	 * suited for that, so the API needs a change.s
+	 * If prefetch_callback is specified, it's up to it to decide if prefetch
+	 * is needed, and also maybe do other things. For example, IOS may need to
+	 * check visibility map, and then also store the vm check result etc.
 	 */
-	if (skip_all_visible)
-	{
-		*all_visible = VM_ALL_VISIBLE(scan->heapRelation,
-									  block,
-									  &prefetch->vmBuffer);
-
-		if (*all_visible)
-			return;
-	}
+	if (prefetch->prefetch_callback &&
+		!prefetch->prefetch_callback(scan, prefetch, entry))
+		return;
 
 	/*
 	 * Do not prefetch the same block over and over again,
@@ -1423,26 +1403,24 @@ index_prefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
  */
 ItemPointer
 index_getnext_tid(IndexScanDesc scan, ScanDirection direction,
-				  IndexPrefetch *prefetch)
+				  IndexPrefetch *prefetch, void **prefetch_data)
 {
-	bool		all_visible;	/* ignored */
-
 	/* Do prefetching (if requested/enabled). */
 	index_prefetch_tids(scan, direction, prefetch);
 
 	/* Read the TID from the queue (or directly from the index). */
-	return index_prefetch_get_tid(scan, direction, prefetch, &all_visible);
+	return index_prefetch_get_tid(scan, direction, prefetch, NULL);
 }
 
 ItemPointer
 index_getnext_tid_vm(IndexScanDesc scan, ScanDirection direction,
-					 IndexPrefetch *prefetch, bool *all_visible)
+					 IndexPrefetch *prefetch, void **prefetch_data)
 {
 	/* Do prefetching (if requested/enabled). */
 	index_prefetch_tids(scan, direction, prefetch);
 
 	/* Read the TID from the queue (or directly from the index). */
-	return index_prefetch_get_tid(scan, direction, prefetch, all_visible);
+	return index_prefetch_get_tid(scan, direction, prefetch, prefetch_data);
 }
 
 static void
@@ -1474,7 +1452,7 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
 		while (!PREFETCH_FULL(prefetch))
 		{
 			ItemPointer tid;
-			bool		all_visible;
+			IndexPrefetchEntry *entry;
 
 			/* Time to fetch the next TID from the index */
 			tid = index_getnext_tid_internal(scan, direction);
@@ -1497,10 +1475,12 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
 			 * XXX index_getnext_tid_prefetch is only called for IOS (for now),
 			 * so skip prefetching of all-visible pages.
 			 */
-			index_prefetch(scan, prefetch, tid, prefetch->indexonly, &all_visible);
+			entry = &prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)];
 
-			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)].tid = *tid;
-			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd)].all_visible = all_visible;
+			entry->tid = *tid;
+
+			index_prefetch_heap_page(scan, prefetch, entry);
+
 			prefetch->queueEnd++;
 		}
 	}
@@ -1508,7 +1488,7 @@ index_prefetch_tids(IndexScanDesc scan, ScanDirection direction,
 
 static ItemPointer
 index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
-					   IndexPrefetch *prefetch, bool *all_visible)
+					   IndexPrefetch *prefetch, void **data)
 {
 	/*
 	 * With prefetching enabled (even if we already finished reading
@@ -1523,7 +1503,10 @@ index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
 			return NULL;
 
 		scan->xs_heaptid = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)].tid;
-		*all_visible = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)].all_visible;
+
+		if (data)
+			*data = prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueIndex)].callback_data;
+
 		prefetch->queueIndex++;
 	}
 	else				/* not prefetching, just do the regular work  */
@@ -1532,7 +1515,7 @@ index_prefetch_get_tid(IndexScanDesc scan, ScanDirection direction,
 
 		/* Time to fetch the next TID from the index */
 		tid = index_getnext_tid_internal(scan, direction);
-		*all_visible = false;
+		*data = NULL;
 
 		/* If we're out of index entries, we're done */
 		if (tid == NULL)

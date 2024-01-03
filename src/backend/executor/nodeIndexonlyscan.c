@@ -48,8 +48,9 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
 							TupleDesc itupdesc);
-static bool IndexOnlyPrefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
-							  IndexPrefetchEntry *entry);
+static IndexPrefetchEntry *IndexOnlyPrefetchNext(IndexScanDesc scan,
+												 IndexPrefetch *prefetch,
+												 ScanDirection direction);
 
 /* ----------------------------------------------------------------
  *		IndexOnlyNext
@@ -67,7 +68,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	TupleTableSlot *slot;
 	ItemPointer tid;
 	IndexPrefetch  *prefetch;
-	bool		   *all_visible = NULL;
+	IndexPrefetchEntry *entry;
 
 	/*
 	 * extract necessary information from index scan node
@@ -77,6 +78,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * Determine which direction to scan the index in based on the plan's scan
 	 * direction and the current direction of execution.
+	 *
+	 * XXX Could this be an issue for the prefetching? What if we prefetch something
+	 * but the direction changes before we get to the read? If that could happen,
+	 * maybe we should discard the prefetched data and go back? But can we even
+	 * do that, if we already fetched some TIDs from the index? I don't think
+	 * indexorderdir can't change, but es_direction maybe can?
 	 */
 	direction = ScanDirectionCombine(estate->es_direction,
 									 ((IndexOnlyScan *) node->ss.ps.plan)->indexorderdir);
@@ -120,10 +127,14 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tid = index_getnext_tid(scandesc, direction,
-									prefetch, (void **) &all_visible)) != NULL)
+	while ((entry = IndexPrefetchNext(scandesc, prefetch, direction)) != NULL)
 	{
+		bool	   *all_visible = NULL;
 		bool		tuple_from_heap = false;
+
+		/* unpack the entry */
+		tid = &entry->tid;
+		all_visible = (bool *) entry->data;	/* result of visibility check */
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -406,7 +417,7 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 	{
 		IndexPrefetch *prefetch = node->ioss_prefetch;
 
-		Buffer *buffer = (Buffer *) prefetch->callback_data;
+		Buffer *buffer = (Buffer *) prefetch->data;
 
 		/* XXX some debug info */
 		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
@@ -687,26 +698,9 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 		 * Remember this is index-only scan, because of prefetching. Not the most
 		 * elegant way to pass this info.
 		 */
-		if (prefetch_max > 0)
-		{
-			IndexPrefetch *prefetch = palloc0(sizeof(IndexPrefetch));
-
-			prefetch->queueIndex = 0;
-			prefetch->queueStart = 0;
-			prefetch->queueEnd = 0;
-
-			prefetch->prefetchTarget = 0;
-			prefetch->prefetchMaxTarget = prefetch_max;
-
-			/*
-			 * Customize the prefetch to also check visibility map and keep
-			 * the result so that IOS does not need to repeat it.
-			 */
-			prefetch->prefetch_callback = IndexOnlyPrefetch;
-			prefetch->callback_data = palloc0(sizeof(Buffer));
-
-			indexstate->ioss_prefetch = prefetch;
-		}
+		indexstate->ioss_prefetch = IndexPrefetchAlloc(IndexOnlyPrefetchNext,
+													   prefetch_max,
+													   palloc0(sizeof(Buffer)));
 	}
 
 	/*
@@ -838,20 +832,31 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
  * is measurable). But the index_getnext_tid() is not really well
  * suited for that, so the API needs a change.s
  */
-static bool
-IndexOnlyPrefetch(IndexScanDesc scan, IndexPrefetch *prefetch,
-				  IndexPrefetchEntry *entry)
+static IndexPrefetchEntry *
+IndexOnlyPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
-	BlockNumber	blkno = ItemPointerGetBlockNumber(&entry->tid);
+	IndexPrefetchEntry *entry = NULL;
+	ItemPointer			tid;
 
-	bool	all_visible = VM_ALL_VISIBLE(scan->heapRelation,
-										 blkno,
-										 (Buffer *) prefetch->callback_data);
+	if ((tid = index_getnext_tid(scan, direction)) != NULL)
+	{
+		BlockNumber	blkno = ItemPointerGetBlockNumber(tid);
 
-	/* store the all_visible flag in the private part of the entry */
-	entry->callback_data = palloc(sizeof(bool));
-	*(bool *) entry->callback_data = all_visible;
+		bool	all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+											 blkno,
+											 (Buffer *) prefetch->data);
 
-	/* prefetch only if not all visible */
-	return (!all_visible);
+		entry = palloc0(sizeof(IndexPrefetchEntry));
+
+		entry->tid = *tid;
+
+		/* prefetch only if not all visible */
+		entry->prefetch = !all_visible;
+
+		/* store the all_visible flag in the private part of the entry */
+		entry->data = palloc(sizeof(bool));
+		*(bool *) entry->data = all_visible;
+	}
+
+	return entry;
 }

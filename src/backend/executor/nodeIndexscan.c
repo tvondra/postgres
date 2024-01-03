@@ -70,6 +70,9 @@ static void reorderqueue_push(IndexScanState *node, TupleTableSlot *slot,
 							  Datum *orderbyvals, bool *orderbynulls);
 static HeapTuple reorderqueue_pop(IndexScanState *node);
 
+static IndexPrefetchEntry *IndexScanPrefetchNext(IndexScanDesc scan,
+												 IndexPrefetch *prefetch,
+												 ScanDirection direction);
 
 /* ----------------------------------------------------------------
  *		IndexNext
@@ -87,6 +90,7 @@ IndexNext(IndexScanState *node)
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
 	IndexPrefetch  *prefetch;
+	IndexPrefetchEntry  *entry;
 
 	/*
 	 * extract necessary information from index scan node
@@ -131,9 +135,18 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot, prefetch))
+	while ((entry = IndexPrefetchNext(scandesc, prefetch, direction)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Fetch the next (or only) visible heap tuple for this index entry.
+		 * If we don't find anything, loop around and grab the next TID from
+		 * the index.
+		 */
+		Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
+		if (!index_fetch_heap(scandesc, slot))
+			continue;
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -180,7 +193,6 @@ IndexNextWithReorder(IndexScanState *node)
 	Datum	   *lastfetched_vals;
 	bool	   *lastfetched_nulls;
 	int			cmp;
-	IndexPrefetch *prefetch;
 
 	estate = node->ss.ps.state;
 
@@ -197,7 +209,6 @@ IndexNextWithReorder(IndexScanState *node)
 	Assert(ScanDirectionIsForward(estate->es_direction));
 
 	scandesc = node->iss_ScanDesc;
-	prefetch = node->iss_prefetch;
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
@@ -264,7 +275,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 * Fetch next tuple from the index.
 		 */
 next_indextuple:
-		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot, prefetch))
+		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot))
 		{
 			/*
 			 * No more tuples from the index.  But we still need to drain any
@@ -1120,19 +1131,9 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		prefetch_max = Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
 						   indexstate->ss.ps.plan->plan_rows);
 
-		if (prefetch_max > 0)
-		{
-			IndexPrefetch *prefetch = palloc0(sizeof(IndexPrefetch));
-
-			prefetch->queueIndex = 0;
-			prefetch->queueStart = 0;
-			prefetch->queueEnd = 0;
-
-			prefetch->prefetchTarget = 0;
-			prefetch->prefetchMaxTarget = prefetch_max;
-
-			indexstate->iss_prefetch = prefetch;
-		}
+		indexstate->iss_prefetch = IndexPrefetchAlloc(IndexScanPrefetchNext,
+													  prefetch_max,
+													  NULL);
 	}
 
 	/*
@@ -1796,4 +1797,27 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 		index_rescan(node->iss_ScanDesc,
 					 node->iss_ScanKeys, node->iss_NumScanKeys,
 					 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
+}
+
+/*
+ * XXX not sure this correctly handles xs_heap_continue - see index_getnext_slot,
+ * maybe nodeIndexscan needs to do something more to handle this?
+ */
+static IndexPrefetchEntry *
+IndexScanPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+{
+	IndexPrefetchEntry *entry = NULL;
+	ItemPointer			tid;
+
+	if ((tid = index_getnext_tid(scan, direction)) != NULL)
+	{
+		entry = palloc0(sizeof(IndexPrefetchEntry));
+
+		entry->tid = *tid;
+
+		/* prefetch always */
+		entry->prefetch = true;
+	}
+
+	return entry;
 }

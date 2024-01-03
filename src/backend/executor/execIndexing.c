@@ -781,7 +781,7 @@ retry:
 	 * XXX Would be nice to also benefit from prefetching here. All we need to
 	 * do is instantiate the prefetcher, I guess.
 	 */
-	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot, NULL))
+	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
 	{
 		TransactionId xwait;
 		XLTW_Oper	reason_wait;

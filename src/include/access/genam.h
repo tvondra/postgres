@@ -159,6 +159,8 @@ typedef struct IndexPrefetchCacheEntry {
 
 /*
  * Used to detect sequential patterns (and disable prefetching).
+ *
+ * XXX seems strange to have two separate values
  */
 #define		PREFETCH_QUEUE_HISTORY			8
 #define		PREFETCH_SEQ_PATTERN_BLOCKS		4
@@ -166,6 +168,9 @@ typedef struct IndexPrefetchCacheEntry {
 typedef struct IndexPrefetchEntry
 {
 	ItemPointerData		tid;
+
+	/* should we prefetch heap page for this TID? */
+	bool				prefetch;
 
 	/*
 	 * If a callback is specified, it may store per-tid information. The
@@ -177,15 +182,23 @@ typedef struct IndexPrefetchEntry
 	 * very simple, like bool flags or something. Easy to do in a simple
 	 * struct, and perhaps even reuse without pfree/palloc.
 	 */
-	void			    *callback_data;
+	void			    *data;
 } IndexPrefetchEntry;
 
 /* needs to be before IndexPrefetchCallback typedef */
-struct IndexPrefetch;
+typedef struct IndexPrefetch IndexPrefetch;
 
-
-typedef bool (*IndexPrefetchCallback) (IndexScanDesc scan, struct IndexPrefetch *prefetch,
-									   IndexPrefetchEntry *entry);
+/*
+ * custom callback, allowing the user code to determine which TID to read
+ *
+ * If there is no TID to prefetch, the return value is expected to be NULL.
+ *
+ * Otherwise the "tid" field is expected to contain the TID to prefetch, and
+ * "data" may be set to custom information the callback needs to pass outside.
+ */
+typedef IndexPrefetchEntry *(*IndexPrefetchNextCB) (IndexScanDesc scan,
+													IndexPrefetch *state,
+													ScanDirection direction);
 
 typedef struct IndexPrefetch
 {
@@ -206,16 +219,17 @@ typedef struct IndexPrefetch
 	uint64		countSkipCached;
 
 	/*
+	 * If a callback is specified, it may store global state (for all TIDs).
+	 * For example VM buffer may be kept during IOS. This is similar to the
+	 * data field in IndexPrefetchEntry, but that's per-TID.
+	 */
+	void	   *data;
+
+	/*
 	 * Callback to customize the prefetch (decide which block need to be
 	 * prefetched, etc.)
 	 */
-	IndexPrefetchCallback	prefetch_callback;
-
-	/*
-	 * If a callback is specified, it may store per-prefetch (for all TIDs)
-	 * data - for example VM buffer kept during IOS. See IndexPrefetchEntry.
-	 */
-	void	   *callback_data;
+	IndexPrefetchNextCB	next_cb;
 
 	/*
 	 * Queue of TIDs to prefetch.
@@ -250,11 +264,18 @@ typedef struct IndexPrefetch
 
 } IndexPrefetch;
 
+IndexPrefetch *IndexPrefetchAlloc(IndexPrefetchNextCB next_cb,
+								  int prefetch_max, void *data);
+
+IndexPrefetchEntry *IndexPrefetchNext(IndexScanDesc scan, IndexPrefetch *state, ScanDirection direction);
+
 #define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY))
 #define PREFETCH_QUEUE_EMPTY(p)	((p)->queueEnd == (p)->queueIndex)
 #define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
 #define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
 #define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
+
+/* XXX easy to confuse with PREFETCH_ACTIVE */
 #define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p) && !(p)->prefetchDone)
 #define PREFETCH_BLOCK_INDEX(v)	((v) % PREFETCH_QUEUE_HISTORY)
 
@@ -304,18 +325,11 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  Relation indexrel, int nkeys, int norderbys,
 											  ParallelIndexScanDesc pscan);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
-									 ScanDirection direction,
-									 IndexPrefetch *prefetch,
-									 void **prefetch_data);
-extern ItemPointer index_getnext_tid_vm(IndexScanDesc scan,
-										ScanDirection direction,
-										IndexPrefetch *prefetch,
-										void **prefetch_data);
+									 ScanDirection direction);
 struct TupleTableSlot;
 extern bool index_fetch_heap(IndexScanDesc scan, struct TupleTableSlot *slot);
 extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
-							   struct TupleTableSlot *slot,
-							   IndexPrefetch *prefetch);
+							   struct TupleTableSlot *slot);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,

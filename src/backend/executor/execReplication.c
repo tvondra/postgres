@@ -218,7 +218,7 @@ retry:
 	 * XXX Would be nice to also benefit from prefetching here. All we need to
 	 * do is instantiate the prefetcher, I guess.
 	 */
-	while (index_getnext_slot(scan, ForwardScanDirection, outslot, NULL))
+	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
 		/*
 		 * Avoid expensive equality check if the index is primary key or

@@ -1112,6 +1112,11 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * Also initialize index prefetcher.
 	 *
 	 * XXX No prefetching for direct I/O.
+	 *
+	 * XXX This seems wrong. Firstly, we're now doing all index reads through
+	 * the IndexPrefetch thing, so we need to instantiate it always. Secondly,
+	 * shouldn't we do pprefetching even for direct I/O? We're only pretend
+	 * doing it now, but ultimately it's going to be useful.
 	 */
 	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
 	{
@@ -1133,7 +1138,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 
 		indexstate->iss_prefetch = IndexPrefetchAlloc(IndexScanPrefetchNext,
 													  prefetch_max,
-													  NULL);
+													  NULL);	/* no data */
 	}
 
 	/*

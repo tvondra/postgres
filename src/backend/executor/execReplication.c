@@ -212,12 +212,7 @@ retry:
 
 	index_rescan(scan, skey, skey_attoff, NULL, 0);
 
-	/*
-	 * Try to find the tuple
-	 *
-	 * XXX Would be nice to also benefit from prefetching here. All we need to
-	 * do is instantiate the prefetcher, I guess.
-	 */
+	/* Try to find the tuple */
 	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
 		/*

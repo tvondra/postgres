@@ -662,6 +662,11 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 * Also initialize index prefetcher.
 	 *
 	 * XXX No prefetching for direct I/O.
+	 *
+	 * XXX This seems wrong. Firstly, we're now doing all index reads through
+	 * the IndexPrefetch thing, so we need to instantiate it always. Secondly,
+	 * shouldn't we do pprefetching even for direct I/O? We're only pretend
+	 * doing it now, but ultimately it's going to be useful.
 	 */
 	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
 	{
@@ -820,17 +825,10 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
  * marked as all-visible (because not fetching all-visible pages is the
  * point of IOS).
  *
- * XXX This is not great, because it releases the VM buffer for each TID
- * we consider to prefetch. We should reuse that somehow, similar to the
- * actual IOS code. Ideally, we should use the same ioss_VMBuffer (if
- * we can propagate it here). Or at least do it for a bulk of prefetches,
- * although that's not very useful - after the ramp-up we will prefetch
- * the pages one by one anyway.
- *
- * XXX Ideally we'd also propagate this to the executor, so that the
- * nodeIndexonlyscan.c doesn't need to repeat the same VM check (which
- * is measurable). But the index_getnext_tid() is not really well
- * suited for that, so the API needs a change.s
+ * The buffer used by the VM_ALL_VISIBLE() check is reused, similarly to
+ * ioss_VMBuffer (maybe we could/should use it here too?). We also keep
+ * the result of the all_visible flag, so that the main loop does not to
+ * do it again.
  */
 static IndexPrefetchEntry *
 IndexOnlyPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)

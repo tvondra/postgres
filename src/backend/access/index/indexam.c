@@ -49,7 +49,6 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/transam.h"
-#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "catalog/index.h"
 #include "catalog/pg_amproc.h"
@@ -111,10 +110,16 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
 
-static void index_prefetch_tids(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction);
-static IndexPrefetchEntry *index_prefetch_get_entry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction);
-static void index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefetchEntry *entry);
-
+/* index prefetching of heap pages */
+static void index_prefetch_tids(IndexScanDesc scan,
+								IndexPrefetch *prefetch,
+								ScanDirection direction);
+static IndexPrefetchEntry *index_prefetch_get_entry(IndexScanDesc scan,
+												    IndexPrefetch *prefetch,
+													ScanDirection direction);
+static void index_prefetch_heap_page(IndexScanDesc scan,
+									 IndexPrefetch *prefetch,
+									 IndexPrefetchEntry *entry);
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -641,9 +646,8 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
  * scan keys if required.  We do not do that here because we don't have
  * enough information to do it efficiently in the general case.
  *
- * FIXME maybe this should get prefetch_data too? It gets prefetch, so why not
- * the other argument too? It's not useful for IOS, but it seems a bit weird
- * that the API is not symmetrical for tid/slot.
+ * XXX This does not support prefetching of heap pages. When such prefetching is
+ * desirable, use index_getnext_tid().
  * ----------------
  */
 bool

@@ -129,7 +129,7 @@ typedef struct IndexOrderByDistance
 	bool		isnull;
 } IndexOrderByDistance;
 
-
+/* index prefetching - probably should be somewhere else, outside indexam */
 
 /*
  * Cache of recently prefetched blocks, organized as a hash table of

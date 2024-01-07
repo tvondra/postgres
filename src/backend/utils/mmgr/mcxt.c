@@ -1640,3 +1640,154 @@ pchomp(const char *in)
 		n--;
 	return pnstrdup(in, n);
 }
+
+#define MEMPOOL_MIN_BLOCK	1024L
+#define MEMPOOL_MAX_BLOCK	(8*1024L*1024L)
+#define MEMPOOL_SIZES		14	/* 1kB -> 1MB */
+#define MEMPOOL_SLOTS		1024	/* blocks to keep for each size */
+
+typedef struct MemPoolEntry
+{
+	int	count;
+	void   *ptr;
+	struct MemPoolEntry *next;
+} MemPoolEntry;
+
+typedef struct MemPool
+{
+	MemPoolEntry   *cache[MEMPOOL_SIZES];
+	MemPoolEntry	entries[MEMPOOL_SIZES * MEMPOOL_SLOTS];
+	MemPoolEntry   *free;
+	int64 hit;
+	int64 miss;
+} MemPool;
+
+static MemPool *pool = NULL;
+
+static void
+MemoryPoolInit(void)
+{
+	/* already initialized? */
+	if (pool)
+		return;
+
+	pool = malloc(sizeof(MemPool));
+	memset(pool, 0, sizeof(MemPool));
+
+	/* everything is free initially */
+	pool->free = &pool->entries[0];
+
+	for (int i = 0; i < MEMPOOL_SIZES * MEMPOOL_SLOTS; i++)
+	{
+		if (i < (MEMPOOL_SIZES * MEMPOOL_SLOTS - 1))
+			pool->entries[i].next = &pool->entries[i+1];
+		else
+			pool->entries[i].next = NULL;
+	}
+}
+
+static int
+MemoryPoolIndex(Size size)
+{
+	int		idx = 0;
+	Size	block_size = MEMPOOL_MIN_BLOCK;
+
+	/* is size possibly in cache? */
+	if (size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK)
+	{
+		// printf("MemoryPoolIndex %lu => %d\n", size, -1);
+		return -1;
+	}
+
+	/* calculate where to maybe cache the entry */
+	while (block_size <= MEMPOOL_MAX_BLOCK)
+	{
+		if (size == block_size)
+			return idx;
+
+		idx += 1;
+		block_size *= 2;
+	}
+//printf("MemoryPoolIndex %lu => %d\n", size, -1);
+	/* not found after all */
+	return -1;
+}
+
+void *
+MemoryPoolAlloc(Size size)
+{
+	int	idx;
+
+	MemoryPoolInit();
+
+	if ((pool->hit + pool->miss) % 10000 == 0)
+	{
+		printf("%d mempool hit %lu miss %lu (%f)\n", getpid(), pool->hit, pool->miss, pool->hit * 100.0 / (pool->hit + pool->miss));
+	}
+
+	idx = MemoryPoolIndex(size);
+
+	if (idx >= 0)
+	{
+		if (pool->cache[idx] != NULL)
+		{
+			MemPoolEntry *entry = pool->cache[idx];
+			void *ptr = entry->ptr;
+
+			pool->cache[idx] = entry->next;
+
+			entry->next = pool->free;
+			entry->ptr = NULL;
+
+			pool->free = entry;
+
+			// printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
+
+			pool->hit++;
+
+			return ptr;
+		}
+
+		// printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
+	}
+	pool->miss++;
+//printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
+	return malloc(size);
+}
+
+void
+MemoryPoolFree(void *pointer, Size size)
+{
+	int idx = 0;
+
+	MemoryPoolInit();
+
+	/* calculate where to maybe cache the entry */
+	idx = MemoryPoolIndex(size);
+
+	if (idx >= 0)
+	{
+		if (pool->free)
+		{
+			MemPoolEntry *entry;
+
+			entry = pool->free;
+			pool->free = entry->next;
+
+			entry->next = pool->cache[idx];
+			pool->cache[idx] = entry;
+
+			entry->ptr = pointer;
+
+			// printf("%d MemoryPoolFree %lu => %d ADD\n", getpid(), size, idx);
+
+			return;
+		}
+
+		// printf("%d MemoryPoolFree %lu => %d FULL\n", getpid(), size, idx);
+	}
+
+	// printf("%d MemoryPoolFree %lu FULL\n", getpid(), size);
+
+	free(pointer);
+}

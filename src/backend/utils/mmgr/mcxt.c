@@ -1640,3 +1640,1067 @@ pchomp(const char *in)
 		n--;
 	return pnstrdup(in, n);
 }
+
+/*
+ * Memory Pools
+ *
+ * Contexts may get memory either directly from the OS (libc) through malloc
+ * calls, but that has non-trivial overhead, depending on the allocation size
+ * and so on. And we tend to allocate fairly large amounts of memory, because
+ * contexts allocate blocks (starting with 1kB, quickly growing by doubling).
+ * A lot of hot paths also allocate pieces of memory exceeding the size limit
+ * and being allocated as a separate block.
+ *
+ * The contexts may cache the memory by keeping chunks, but it's limited to a
+ * single memory context (as AllocSet freelist), and only for the lifetime of
+ * a particular context instance. When the memory is reset/deleted, all the
+ * blocks are freed and retuned to the OS (libc).
+ *
+ * There's a rudimentary cache of memory contexts blocks, but this only keeps
+ * the keeper blocks, not any other blocks that may be needed.
+ *
+ * Memory pools are attempt to improve this by establishing a cache of blocks
+ * shared by all the memory contexts. A memory pool allocates blocks larger
+ * than 1kB, with doubling (1kB, 2kB, 4kB, ...). All the allocations come
+ * from memory contexts, and are either regular blocks (also starting at 1kB)
+ * or oversized chunks (a couple kB or larger). This means the lower limit
+ * is reasonable - there should be no smaller allocations.
+ *
+ * There's no explicit upper size limit - whatever could be used by palloc()
+ * can be requested from the pool. However, only blocks up to 8MB may be
+ * cached by the pool - larger allocations are not kept after pfree().
+ *
+ * To make the reuse possible, the blocks are grouped into size clasess the
+ * same way AllocSet uses for chunks. There are 14 size classes, starting
+ * at 1kB and ending at 8MB.
+ *
+ * This "rouding" applies even to oversized chunks. So e.g. allocating 27kB
+ * will allocate a 32kB block. This wastes memory, but it means the block
+ * may be reused by "regular" allocations. The amount of wasted memory could
+ * be reduced by using size classes with smaller steps, but that reduces the
+ * likelihood of reusing the block.
+ */
+
+
+#define MEMPOOL_MIN_BLOCK	1024L				/* smallest cached block */
+#define MEMPOOL_MAX_BLOCK	(8*1024L*1024L)		/* largest cached block */
+#define MEMPOOL_SIZES		14					/* 1kB -> 8MB */
+
+/*
+ * Maximum amount of memory to keep in cache for all size buckets. Sets a
+ * safety limit limit set on the blocks kept in the *cached* part of the
+ * pool. Each bucket starts with the same amount of memory (1/14 of this)
+ * and then we adapt the cache depending on cache hits/misses.
+ */
+#define MEMPOOL_SIZE_MAX	(128*1024L*1024L)
+
+/*
+ * Maximum number of blocks kept for the whole memory pool. This is used
+ * only to allocate the entries, so we assume all are in the smallest size
+ * bucket.
+ */
+#define MEMPOOL_MAX_BLOCKS	(MEMPOOL_SIZE_MAX / MEMPOOL_MIN_BLOCK)
+
+/*
+ * How often to rebalance the memory pool buckets (number of allocations).
+ * This is a tradeoff between the pool being adaptive and more overhead.
+ */
+#define	MEMPOOL_REBALANCE_DISTANCE		25000
+
+/*
+ * To enable debug logging for the memory pool code, build with -DMEMPOOL_DEBUG.
+ */
+#ifdef MEMPOOL_DEBUG
+
+#undef MEMPOOL_DEBUG
+#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
+#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+
+#else
+
+#define MEMPOOL_DEBUG(...)
+#define MEMPOOL_RANDOMIZE(ptr, size)
+
+#endif	/* MEMPOOL_DEBUG */
+
+
+/*
+ * Entries for a simple linked list of blocks to reuse.
+ */
+typedef struct MemPoolEntry
+{
+	void   *ptr;	/* allocated block (NULL in empty entries) */
+	struct	MemPoolEntry *next;
+} MemPoolEntry;
+
+/*
+ * Information about allocations of blocks of a certain size. We track the number
+ * of currently cached blocks, and also the number of allocated blocks (still
+ * used by the memory context).
+ *
+ * maxcached is the maximum number of free blocks to keep in the cache
+ *
+ * maxallocated is the maximum number of concurrently allocated blocks (from the
+ * point of the memory context)
+ */
+typedef struct MemPoolBucket
+{
+	int				nhits;			/* allocation cache hits */
+	int				nmisses;		/* allocation cache misses */
+	int				nallocated;		/* number of currently allocated blocks */
+	int				maxallocated;	/* max number of allocated blocks */
+	int				ncached;		/* number of free blocks (entry list) */
+	int				maxcached;		/* max number of free blocks to cache */
+	MemPoolEntry   *entry;
+} MemPoolBucket;
+
+/*
+ * MemPool - memory pool, caching allocations between memory contexts
+ *
+ * cache - stores free-d blocks that may be reused for future allocations,
+ * each slot is a list of MemPoolEntry elements using the "entries"
+ *
+ * entries - pre-allocated entries for the freelists, used by cache lists
+ *
+ * freelist - list of free cache entries (not used by the cache lists)
+ *
+ * The meaning of the freelist is somewhat inverse - when a block is freed
+ * by the memory context above, we need to add it to the cache. To do that
+ * we get an entry from the freelist, and add it to the cache. So free-ing
+ * a block removes an entry from the mempool freelist.
+ */
+typedef struct MemPool
+{
+	/* LIFO cache of free-d blocks of eligible sizes (1kB - 1MB, doubled) */
+	MemPoolBucket	cache[MEMPOOL_SIZES];
+
+	/* pre-allocated entries for cache of free-d blocks */
+	MemPoolEntry	entries[MEMPOOL_SIZES * MEMPOOL_MAX_BLOCKS];
+
+	/* head of freelist (entries from the array) */
+	MemPoolEntry   *freelist;
+
+	/* memory limit / accounting */
+	int64 mem_allowed;
+	int64 mem_allocated;
+	int64 mem_cached;
+	int64 num_requests;
+} MemPool;
+
+static MemPool *pool = NULL;
+
+static void
+AssertCheckMemPool(MemPool *p)
+{
+#ifdef ASSERT_CHECKING
+	int	nused = 0;
+	int	nfree = 0;
+	int64	mem_cached = 0;
+	Size	block_size = MEMPOOL_MIN_BLOCK;
+
+	Assert(p->mem_allocated >= 0);
+	Assert(p->mem_cached >= 0);
+
+	/* count the elements in the various cache buckets */
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		int	count = 0;
+
+		Assert(p->cache[i].ncached >= 0);
+		Assert(p->cache[i].ncached <= p->cache[i].maxcached);
+
+		entry = p->cache[i].entry;
+
+		while (entry)
+		{
+			Assert(entry->ptr);
+
+			entry = entry->next;
+			count++;
+		}
+
+		Assert(count == p->cache[i].ncached);
+
+		nused += count;
+		mem_cached += (count * block_size);
+
+		block_size *= 2;
+	}
+
+	/* now count the elements in the freelist */
+	entry = p->freelist;
+	while (entry)
+	{
+		nfree++;
+		entry = entry->next;
+	}
+
+	Assert(nfree + nused == MEMPOOL_SIZES * MEMPOOL_MAX_BLOCKS);
+	Assert(mem_cached == p->mem_cached);
+#endif
+}
+
+static void MemoryPoolRebalanceBuckets(void);
+static void MemoryPoolEnforceSizeLimit(Size request_size, int index);
+
+/*
+ * MemoryPoolInit
+ *		initialize the global memory pool
+ *
+ * Initialize the overall memory pool structure, and also link all entries
+ * into a freelist.
+ */
+static void
+MemoryPoolInit(void)
+{
+	Size	size = MEMPOOL_MIN_BLOCK;
+
+	/* bail out if already initialized */
+	if (pool)
+		return;
+
+	/* allocate the basic structure */
+	pool = malloc(sizeof(MemPool));
+	memset(pool, 0, sizeof(MemPool));
+
+	/* initialize the frelist - put all entries to the list */
+	pool->freelist = &pool->entries[0];
+
+	for (int i = 0; i < (MEMPOOL_SIZES * MEMPOOL_MAX_BLOCKS - 1); i++)
+	{
+		if (i < (MEMPOOL_SIZES * MEMPOOL_MAX_BLOCKS - 1))
+			pool->entries[i].next = &pool->entries[i+1];
+		else
+			pool->entries[i].next = NULL;
+	}
+
+	/* set default maximum counts of entries for each size class */
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->cache[i].maxcached = (MEMPOOL_SIZE_MAX / MEMPOOL_SIZES / size);
+		size *= 2;
+	}
+
+	AssertCheckMemPool(pool);
+}
+
+/*
+ * MemoryPoolEntrySize
+ *		calculate the size of the block to allocate for a given request size
+ *
+ * The request sizes are grouped into pow(2,n) classes, starting at 1kB and
+ * ending at 8MB. Which means there are 14 size classes.
+ */
+static Size
+MemoryPoolEntrySize(Size size)
+{
+	Size	result;
+
+	/*
+	 * We shouldn't really get many malloc() for such small elements through
+	 * memory contexts, so just use the smallest block.
+	 */
+	if (size < MEMPOOL_MIN_BLOCK)
+		return MEMPOOL_MIN_BLOCK;
+
+	/*
+	 * We can get various large allocations - we don't want to cache those,
+	 * not waste space on doubling them, so just allocate them directly.
+	 * Maybe the limit should be separate/lower, like 1MB.
+	 */
+	if (size > MEMPOOL_MAX_BLOCK)
+		return size;
+
+	/*
+	 * Otherwise just calculate the first block larger than the request.
+	 *
+	 * XXX Maybe there's a better way to calculate this? The number of loops
+	 * should be very low, though (less than MEMPOOL_SIZES, i.e. 14).
+	 */
+	result = MEMPOOL_MIN_BLOCK;
+	while (size > result)
+		result *= 2;
+
+	MEMPOOL_DEBUG("%d MempoolEntrySize %lu => %lu\n", getpid(), size, result);
+
+	/* the block size has to be sufficient for the requested size */
+	Assert(size <= result);
+
+	return result;
+}
+
+/*
+ * MemoryPoolEntryIndex
+ *		Calculate the cache index for a given entry size.
+ *
+ * XXX Always called right after MemoryPoolEntrySize, so maybe it should be
+ * merged into a single function, so that the loop happens only once.
+ */
+static int
+MemoryPoolEntryIndex(Size size)
+{
+	int		blockIndex = 0;
+	Size	blockSize = MEMPOOL_MIN_BLOCK;
+
+	/* is size possibly in cache? */
+	if (size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK)
+		return -1;
+
+	/* calculate where to maybe cache the entry */
+	while (blockSize <= MEMPOOL_MAX_BLOCK)
+	{
+		Assert(size >= blockSize);
+
+		if (size == blockSize)
+		{
+			Assert(blockIndex < MEMPOOL_SIZES);
+			return blockIndex;
+		}
+
+		blockIndex++;
+		blockSize *= 2;
+	}
+
+	/* not eligible for caching after all */
+	return -1;
+}
+
+/*
+ * Check that the entry size is valid and matches the class index - if smaller
+ * than 8MB, it needs to be in one of the valid classes.
+ */
+static void
+AssertCheckEntrySize(Size size, int cacheIndex)
+{
+#ifdef USE_ASSERT_CHECKING
+	int	blockSize = MEMPOOL_MIN_BLOCK;
+	int	blockIndex = 0;
+
+	Assert(cacheIndex >= -1 && cacheIndex < MEMPOOL_SIZES);
+
+	/* all sizes in the valid range should be in one of the slots */
+	if (cacheIndex == -1)
+		Assert(size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK);
+	else
+	{
+		/* calculate the block size / index for the given size */
+		while (size > blockSize)
+		{
+			blockSize *= 2;
+			blockIndex++;
+		}
+
+		Assert(size == blockSize);
+		Assert(cacheIndex == blockIndex);
+	}
+#endif
+}
+
+/*
+ * MemoryPoolAlloc
+ *		Allocate a block from the memory pool.
+ *
+ * The block may come either from cache - if available - or from malloc().
+ */
+void *
+MemoryPoolAlloc(Size size)
+{
+	int	index;
+	void *ptr;
+
+	MemoryPoolInit();
+
+	pool->num_requests++;
+
+	MemoryPoolRebalanceBuckets();
+
+	/* maybe override the requested size */
+	size = MemoryPoolEntrySize(size);
+	index = MemoryPoolEntryIndex(size);
+
+	/* cross-check the size and index */
+	AssertCheckEntrySize(size, index);
+
+	/* try to enforce the memory limit */
+	MemoryPoolEnforceSizeLimit(size, index);
+
+	/* Is the block eligible to be in the cache? Or is it too large/small? */
+	if (index >= 0)
+	{
+		MemPoolEntry *entry = pool->cache[index].entry;
+
+		/*
+		 * update the number of allocated chunks, and the high watermark
+		 *
+		 * We do this even if there's no entry in the cache.
+		 */
+		pool->cache[index].nallocated++;
+		pool->cache[index].maxallocated = Max(pool->cache[index].nallocated,
+											  pool->cache[index].maxallocated);
+
+		/*
+		 * If we have a cached block for this size, we're done. Remove it
+		 * from the cache and return the entry to the freelist.
+		 */
+		if (entry != NULL)
+		{
+			/* remember the pointer (we'll reset the entry) */
+			ptr = entry->ptr;
+			entry->ptr = NULL;
+
+			/* remove the entry from the cache */
+			pool->cache[index].entry = entry->next;
+			pool->cache[index].ncached--;
+
+			/* return the entry to the freelist */
+			entry->next = pool->freelist;
+			pool->freelist = entry;
+
+			MEMPOOL_RANDOMIZE(ptr, size);
+			MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p HIT\n", getpid(), size, index, ptr);
+
+			/* update memory accounting */
+			Assert(pool->mem_cached >= size);
+
+			pool->mem_cached -= size;
+			pool->mem_allocated += size;
+
+			pool->cache[index].nhits++;
+
+			AssertCheckMemPool(pool);
+
+			return ptr;
+		}
+
+		pool->cache[index].nmisses++;
+	}
+
+	/*
+	 * Either too small/large for the cache, or there's no available block of
+	 * the right size.
+	 */
+	ptr = malloc(size);
+
+	MEMPOOL_RANDOMIZE(ptr, size);
+	MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p MISS\n", getpid(), size, index, ptr);
+
+	/* update memory accounting */
+	pool->mem_allocated += size;
+
+	/* maybe we should track the number of over-sized allocations too? */
+	// pool->cache_misses++;
+
+	AssertCheckMemPool(pool);
+
+	return ptr;
+}
+
+/*
+ * MemoryPoolShouldCache
+ *		Should we put the entry into cache at the given index?
+ */
+static bool
+MemoryPoolShouldCache(Size size, int index)
+{
+	MemPoolBucket  *entry = &pool->cache[index];
+
+	/* not in any pool bucket */
+	if (index == -1)
+		return false;
+
+	/*
+	 * Bail out if no freelist entries.
+	 *
+	 * XXX This shouldn't be possible, as we size the freeslist as if all classes
+	 * could have the maximum number of entries (but the actual number grops to
+	 * 1/2 with each size class).
+	 */
+	if (!pool->freelist)
+		return false;
+
+	/* Memory limit is set, and we'd exceed it? Don't cache. */
+	if ((pool->mem_allowed > 0) &&
+		(pool->mem_allocated + pool->mem_cached + size > pool->mem_allowed))
+		return false;
+
+	/* Did we already reach the maximum size of the size class? */
+	return (entry->ncached < entry->maxcached);
+}
+
+/*
+ * MemoryPoolFree
+ *		Free a block, maybe add it to the memory pool cache.
+ */
+void
+MemoryPoolFree(void *pointer, Size size)
+{
+	int	index = 0;
+
+	MemoryPoolInit();
+
+	/*
+	 * Override the requested size (provided by the memory context), calculate
+	 * the appropriate size class index.
+	 */
+	size = MemoryPoolEntrySize(size);
+	index = MemoryPoolEntryIndex(size);
+
+	AssertCheckEntrySize(size, index);
+
+	/* check that we've correctly accounted for this block during allocation */
+	Assert(pool->mem_allocated >= size);
+
+	/*
+	 * update the number of allocated blocks (if eligible for cache)
+	 *
+	 * XXX Needs to happen even if we don't add the block to the cache.
+	 */
+	if (index != -1)
+		pool->cache[index].nallocated--;
+
+	/*
+	 * Should we cache this entry? Do we have entries for the freelist, and
+	 * do we have free space in the size class / memory pool as a whole?
+	 */
+	if (MemoryPoolShouldCache(size, index))
+	{
+		MemPoolEntry *entry;
+
+		entry = pool->freelist;
+		pool->freelist = entry->next;
+
+		/* add the entry to the cache, update number of entries in this bucket */
+		entry->next = pool->cache[index].entry;
+		pool->cache[index].entry = entry;
+		pool->cache[index].ncached++;
+
+		entry->ptr = pointer;
+
+		MEMPOOL_RANDOMIZE(pointer, size);
+		MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d %p ADD\n", getpid(), size, index, pointer);
+
+		/* update accounting */
+		pool->mem_cached += size;
+		pool->mem_allocated -= size;
+
+		AssertCheckMemPool(pool);
+
+		return;
+	}
+
+	MEMPOOL_RANDOMIZE(pointer, size);
+	MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d FULL\n", getpid(), size, index);
+
+	/* update accounting */
+	pool->mem_allocated -= size;
+
+	AssertCheckMemPool(pool);
+
+	free(pointer);
+}
+
+/*
+ * MemoryPoolRealloc
+ *		reallocate a previously allocated block
+ *
+ * XXX Maybe this should use the cache too. Right now we just call realloc()
+ * after updating the cache counters. And maybe it should enforce the memory
+ * limit, just like we do in MemoryPoolAlloc().
+ */
+void *
+MemoryPoolRealloc(void *pointer, Size oldsize, Size newsize)
+{
+	void *ptr;
+
+	int		oldindex,
+			newindex;
+
+	MemoryPoolInit();
+
+	oldsize = MemoryPoolEntrySize(oldsize);
+	newsize = MemoryPoolEntrySize(newsize);
+
+	/* XXX Maybe if (oldsize >= newsize) we don't need to do anything? */
+
+	oldindex = MemoryPoolEntryIndex(oldsize);
+	newindex = MemoryPoolEntryIndex(newsize);
+
+	if (oldindex != -1)
+		pool->cache[oldindex].nallocated--;
+
+	if (newindex != -1)
+	{
+		pool->cache[newindex].nallocated++;
+		pool->cache[newindex].maxallocated = Max(pool->cache[newindex].nallocated,
+												 pool->cache[newindex].maxallocated);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolRealloc old %lu => %p\n", getpid(), oldsize, pointer);
+
+	ptr = realloc(pointer, newsize);
+
+	MEMPOOL_DEBUG("%d MemoryPoolRealloc new %lu => %p\n", getpid(), newsize, ptr);
+
+	/* update accounting */
+	Assert(pool->mem_allocated >= oldsize);
+
+	pool->mem_allocated -= oldsize;
+	pool->mem_allocated += newsize;
+
+	AssertCheckMemPool(pool);
+
+	return ptr;
+}
+
+/*
+ * MemoryPoolRebalanceBuckets
+ *		Rebalance the cache capacity for difference size classes.
+ *
+ * The goal of the rebalance is to adapt the cache capacity to changes in the
+ * workload - release blocks of sizes that are no longer needed, allow caching
+ * for new block sizes etc.
+ *
+ * The rebalance happens every MEMPOOL_REBALANCE_DISTANCE allocations - it needs
+ * to happen often enough to adapt to the workload changes, but not too often
+ * to cause significant overhead. The distance also needs to be sufficient to
+ * have a reasonable representation of the allocations.
+ *
+ * The rebalance happens in three phases:
+ *
+ * 1) shrink oversized buckets (maxallocated < maxcached)
+ *
+ * 2) enlarge undersized buckets (maxcached < maxallocated)
+ *
+ * 3) distribute remaining capacity (if any) uniformly
+ *
+ * The reduction in (1) is gradual, i.e. instead of setting maxcached to the
+ * maxallocated value (which may be seen as the minimum capacity needed), we
+ * only go halfway there. The intent is to dampen the transition in case the
+ * current counter is not entirely representative.
+ *
+ * The bucket enlarging in step (2) is proportional to the number of misses
+ * for each bucket (with respect to the total number of misses in the buckets
+ * that are too small). We however don't oversize the bucket - we assign at
+ * most (maxallocated - maxcached) entries, not more in this step.
+ *
+ * Finally, we simply take the remaining unallocated/unassigned memory (up to
+ * MEMPOOL_SIZE_MAX), and distribute it to all the buckets uniformly. That is,
+ * each bucket gets the same amount (rounded to entries of appropriate size).
+ *
+ * XXX Maybe we should have a parameter for the dampening factor in (1), and
+ * not just use 0.5. For example, maybe 0.75 would be better?
+ *
+ * XXX This assumes misses for different buckets are equally expensive, but
+ * that may not be the case. It's likely a miss is proportional to the size
+ * of the block, so maybe we should consider that and use the size as weight
+ * for the cache miss.
+ */
+static void
+MemoryPoolRebalanceBuckets(void)
+{
+	Size	block_size;
+	int64	redistribute_bytes;
+	int64	assigned_bytes = 0;
+	int64	num_total_misses = 0;
+
+	/* only do this once every MEMPOOL_REBALANCE_DISTANCE allocations */
+	if (pool->num_requests < MEMPOOL_REBALANCE_DISTANCE)
+		return;
+
+#ifdef MEMPOOL_DEBUG
+	/* print info about the cache and individual size buckets before the rebalance */
+	MEMPOOL_DEBUG("%d mempool rebalance requests %ld allowed %ld allocated %ld cached %ld\n",
+				  getpid(), pool->num_requests,
+				  pool->mem_allowed, pool->mem_allocated, pool->mem_cached);
+
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		MEMPOOL_DEBUG("%d mempool rebalance bucket %d hit %d miss %d (%.1f%%) maxcached %d cached %d maxallocated %d allocated %d\n",
+					  getpid(), i, pool->cache[i].nhits, pool->cache[i].nmisses,
+					  pool->cache[i].nhits * 100.0 / Max(1, pool->cache[i].nhits + pool->cache[i].nmisses),
+					  pool->cache[i].maxcached, pool->cache[i].ncached,
+					  pool->cache[i].maxallocated, pool->cache[i].nallocated);
+	}
+#endif
+
+	/*
+	 * Are there buckets with cache that is unnecessarily large? That is, with
+	 * (ncached + nallocated > maxallocated). If yes, we release half of that
+	 * and put that into a budget that we can redistribute.
+	 *
+	 * XXX We release half to somewhat dampen the changes over time.
+	 */
+	block_size = MEMPOOL_MIN_BLOCK;
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		/*
+		 * If the cache is large enough to serve all allocations, try making it
+		 * a bit smaller and cut half the extra space (and maybe also free the
+		 * unnecessary blocks).
+		 */
+		if (pool->cache[i].maxcached > pool->cache[i].maxallocated)
+		{
+			int	nentries;
+
+			pool->cache[i].maxcached
+				= (pool->cache[i].maxcached + pool->cache[i].maxallocated) / 2;
+
+			nentries = (pool->cache[i].ncached + pool->cache[i].nallocated);
+			nentries -= pool->cache[i].maxcached;
+
+			/* release enough entries from the cache */
+			while (nentries > 0)
+			{
+				MemPoolEntry *entry = pool->cache[i].entry;
+
+				pool->cache[i].entry = entry->next;
+				pool->cache[i].ncached--;
+
+				free(entry->ptr);
+				entry->ptr = NULL;
+
+				/* add the entry to the freelist */
+				entry->next = pool->freelist;
+				pool->freelist = entry;
+
+				Assert(pool->mem_cached >= block_size);
+
+				/* update accounting */
+				pool->mem_cached -= block_size;
+
+				nentries--;
+			}
+		}
+
+		/* remember how many misses we saw in the undersized buckets */
+		num_total_misses += pool->cache[i].nmisses;
+
+		/* remember how much space we already allocated to this bucket */
+		assigned_bytes += (pool->cache[i].maxcached * block_size);
+
+		/* double the block size */
+		block_size = (block_size << 1);
+	}
+
+	/*
+	 * How much memory we can redistribute? Start with the memory limit,
+	 * and subtract the space currently allocated and assigned to cache.
+	 */
+	redistribute_bytes = Max(pool->mem_allowed, MEMPOOL_SIZE_MAX);
+	redistribute_bytes -= (pool->mem_allocated);
+	redistribute_bytes -= assigned_bytes;
+
+	/*
+	 * Make sure it's not negative (might happen if there's a lot of
+	 * allocated memory).
+	 */
+	redistribute_bytes = Max(0, redistribute_bytes);
+
+	MEMPOOL_DEBUG("%d mempool rebalance can redistribute %ld bytes, allocated %ld bytes, assigned %ld bytes, total misses %ld\n",
+				  getpid(), redistribute_bytes, pool->mem_allocated, assigned_bytes, num_total_misses);
+
+	/*
+	 * Redistribute the memory based on the number of misses, and reset the
+	 * various counters, so that the next round begins afresh.
+	 */
+	if (redistribute_bytes > 0)
+	{
+		block_size = MEMPOOL_MIN_BLOCK;
+		for (int i = 0; i < MEMPOOL_SIZES; i++)
+		{
+			int64	nbytes;
+			int		nentries;
+
+			/* Are we missing entries in cache for this slot? */
+			if (pool->cache[i].maxcached < pool->cache[i].maxallocated)
+			{
+				int nmissing = (pool->cache[i].maxallocated - pool->cache[i].maxcached);
+
+				/*
+				 * How many entries we can add to this size bucket, based on the number
+				 * of cache misses?
+				 */
+				nbytes = redistribute_bytes * pool->cache[i].nmisses / Max(1, num_total_misses);
+				nentries = (nbytes / block_size);
+
+				/* But don't add more than we need. */
+				nentries = Min(nentries, nmissing);
+
+				pool->cache[i].maxcached += nentries;
+				assigned_bytes += nentries * block_size;
+			}
+
+			/* double the block size */
+			block_size = (block_size << 1);
+		}
+	}
+
+	MEMPOOL_DEBUG("%d mempool rebalance done allocated %ld bytes, assigned %ld bytes\n",
+				  getpid(), pool->mem_allocated, assigned_bytes);
+
+	/*
+	 * If we still have some memory, redistribute it uniformly.
+	 */
+	redistribute_bytes = Max(pool->mem_allowed, MEMPOOL_SIZE_MAX);
+	redistribute_bytes -= (pool->mem_allocated);
+	redistribute_bytes -= assigned_bytes;
+
+	/*
+	 * Make sure it's not negative (might happen if there's a lot of
+	 * allocated memory).
+	 */
+	redistribute_bytes = Max(0, redistribute_bytes);
+
+	MEMPOOL_DEBUG("%d mempool rebalance remaining bytes %ld, allocated %ld bytes, assigned %ld bytes\n",
+				  getpid(), redistribute_bytes, pool->mem_allocated, assigned_bytes);
+
+	block_size = MEMPOOL_MIN_BLOCK;
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		int	nentries = (redistribute_bytes / MEMPOOL_SIZES / block_size);
+
+		pool->cache[i].maxcached += nentries;
+
+		/* also reset the various counters */
+		pool->cache[i].maxallocated = pool->cache[i].nallocated;
+		pool->cache[i].nhits = 0;
+		pool->cache[i].nmisses = 0;
+
+		/* double the block size */
+		block_size = (block_size << 1);
+	}
+
+	MEMPOOL_DEBUG("%d mempool rebalance done\n", getpid());
+
+#ifdef MEMPOOL_DEBUG
+	/* print some info about cache hit ratio, but only once in a while */
+	block_size = MEMPOOL_MIN_BLOCK;
+	assigned_bytes = 0;
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		MEMPOOL_DEBUG("%d mempool rebalance bucket %d maxcached %d cached %d maxallocated %d allocated %d\n",
+					  getpid(), i,
+					  pool->cache[i].maxcached, pool->cache[i].ncached,
+					  pool->cache[i].maxallocated, pool->cache[i].nallocated);
+
+		assigned_bytes += (pool->cache[i].maxcached * block_size);
+
+		/* double the block size */
+		block_size = (block_size << 1);
+	}
+	MEMPOOL_DEBUG("%d mempool rebalance allocated %ld assigned %ld (total %ld kB)\n",
+				  getpid(), pool->mem_allocated, assigned_bytes,
+				  (pool->mem_allocated + assigned_bytes) / 1024L);
+#endif
+
+	/* start new rebalance period */
+	pool->num_requests = 0;
+}
+
+/*
+ * MemoryPoolEnforceMaxCounts
+ *		
+ *
+ */
+static void
+MemoryPoolEnforceMaxCounts(void)
+{
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		while (pool->cache[i].entry)
+		{
+			MemPoolEntry *entry = pool->cache[i].entry;
+
+			/* we're within the limit, bail out */
+			if (pool->cache[i].ncached <= pool->cache[i].maxcached)
+				break;
+
+			pool->cache[i].entry = entry->next;
+			pool->cache[i].ncached--;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->freelist;
+			pool->freelist = entry;
+
+			Assert(pool->mem_cached >= block_size);
+
+			/* update accounting */
+			pool->mem_cached -= block_size;
+		}
+
+		/* double the block size */
+		block_size = (block_size << 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMaxCounts allocated %ld cached %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached);
+
+	AssertCheckMemPool(pool);
+}
+
+/*
+ * MemoryPoolEnforceSizeLimit
+ *		Release cached blocks to allow allocating a block of a given size.
+ *
+ * If actually freeing blocks is needed, we free more of them, so that we don't
+ * need to do that too often. We free at least 2x the amount of space we need,
+ * or 25% of the limit, whichever is larger.
+ *
+ * We free memory from the largest blocks, because that's likely to free memory
+ * the fastest. And we don't alocate those very often.
+ *
+ * XXX Maybe we should free memory in the smaller classes too, so that we don't
+ * end up keeping many unnecessary old blocks, while trashing the large class.
+ */
+static void
+MemoryPoolEnforceSizeLimit(Size request_size, int index)
+{
+	int64	threshold,
+			needtofree;
+
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* no memory limit set */
+	if (pool->mem_allowed == 0)
+		return;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/*
+	 * With the new request, would we exceed the memory limit? we need
+	 * to count both the allocated and cached memory.
+	 *
+	 * XXX In principle the block may be already available in cache, in which
+	 * case we don't need to add it to the allocated + cached figure.
+	 */
+	if (pool->mem_allocated + pool->mem_cached + request_size <= pool->mem_allowed)
+		return;
+
+	/*
+	 * How much we need to release? we don't want to allocate just enough
+	 * for the one request, but a bit more, to prevent trashing.
+	 */
+	threshold = Min(Max(0, pool->mem_allowed - 2 * request_size),
+					pool->mem_allowed * 0.75);
+
+	Assert((threshold >= 0) && (threshold < pool->mem_allowed));
+
+	/*
+	 * How much we need to free, to get under the theshold? Can't free more
+	 * than we have in the cache, though.
+	 *
+	 * XXX One we free at least this amount of memory, we're done.
+	 */
+	needtofree = (pool->mem_allocated + pool->mem_cached + request_size) - threshold;
+	needtofree = Min(needtofree, pool->mem_cached);
+
+	MEMPOOL_DEBUG("%d MemoryPoolMaybeShrink total %ld cached %ld threshold %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated + pool->mem_cached, pool->mem_cached, threshold, needtofree);
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		/* did we free enough memory? */
+		if (needtofree <= 0)
+			break;
+
+		while (pool->cache[i].entry)
+		{
+			MemPoolEntry *entry = pool->cache[i].entry;
+
+			pool->cache[i].entry = entry->next;
+			pool->cache[i].ncached--;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->freelist;
+			pool->freelist = entry;
+
+			needtofree -= block_size;
+
+			/* did we free enough memory? */
+			if (needtofree <= 0)
+				break;
+		}
+
+		block_size = (block_size >> 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMemoryLimit allocated %ld cached %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached, needtofree);
+
+	AssertCheckMemPool(pool);
+}
+
+/*
+ * MemoryPoolSetSizeLimit
+ *		Set size limit for the memory pool.
+ */
+void
+MemoryPoolSetSizeLimit(int64 size)
+{
+	Size	blksize = MEMPOOL_MIN_BLOCK;
+	Size	maxsize;
+
+	Assert(pool);
+	Assert(size >= 0);
+
+	pool->mem_allowed = size;
+
+	/* also update the max number of entries for each class size */
+
+	if (size > 0)
+		maxsize = size / MEMPOOL_SIZES;
+	else
+		maxsize = MEMPOOL_SIZE_MAX;
+
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->cache[i].maxcached = (maxsize / blksize);
+		blksize *= 2;
+	}
+
+	/* enforce the updated maxcached limit */
+	MemoryPoolEnforceMaxCounts();
+
+	/* also enforce the general memory limit  */
+	MemoryPoolEnforceSizeLimit(0, -1);
+}
+
+/*
+ * MemoryPoolGetSizeAndCounts
+ *		
+ */
+void
+MemoryPoolGetSizeAndCounts(int64 *mem_allowed, int64 *mem_allocated, int64 *mem_cached,
+						   int64 *cache_hits, int64 *cache_misses)
+{
+	Assert(pool);
+
+	*mem_allowed = pool->mem_allowed;
+	*mem_allocated = pool->mem_allocated;
+	*mem_cached = pool->mem_cached;
+
+	*cache_hits = 0;
+	*cache_misses = 0;
+
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		*cache_hits += pool->cache[i].nhits;
+		*cache_misses += pool->cache[i].nmisses;
+	}
+}

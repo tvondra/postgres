@@ -441,7 +441,7 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	 * Allocate the initial block.  Unlike other aset.c blocks, it starts with
 	 * the context header and its block header follows that.
 	 */
-	set = (AllocSet) malloc(firstBlockSize);
+	set = (AllocSet) MemoryPoolAlloc(firstBlockSize);
 	if (set == NULL)
 	{
 		if (TopMemoryContext)
@@ -579,13 +579,15 @@ AllocSetReset(MemoryContext context)
 		}
 		else
 		{
+			Size size = block->endptr - ((char *) block);
+
 			/* Normal case, release the block */
 			context->mem_allocated -= block->endptr - ((char *) block);
 
 #ifdef CLOBBER_FREED_MEMORY
 			wipe_mem(block, block->freeptr - ((char *) block));
 #endif
-			free(block);
+			MemoryPoolFree(block, size);
 		}
 		block = next;
 	}
@@ -649,7 +651,7 @@ AllocSetDelete(MemoryContext context)
 				freelist->num_free--;
 
 				/* All that remains is to free the header/initial block */
-				free(oldset);
+				MemoryPoolFree(oldset, keepersize);
 			}
 			Assert(freelist->num_free == 0);
 		}
@@ -666,6 +668,7 @@ AllocSetDelete(MemoryContext context)
 	while (block != NULL)
 	{
 		AllocBlock	next = block->next;
+		Size size = block->endptr - ((char *) block);
 
 		if (!IsKeeperBlock(set, block))
 			context->mem_allocated -= block->endptr - ((char *) block);
@@ -675,7 +678,9 @@ AllocSetDelete(MemoryContext context)
 #endif
 
 		if (!IsKeeperBlock(set, block))
-			free(block);
+		{
+			MemoryPoolFree(block, size);
+		}
 
 		block = next;
 	}
@@ -683,7 +688,7 @@ AllocSetDelete(MemoryContext context)
 	Assert(context->mem_allocated == keepersize);
 
 	/* Finally, free the context header, including the keeper block */
-	free(set);
+	MemoryPoolFree(set, keepersize);
 }
 
 /*
@@ -725,7 +730,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 #endif
 
 		blksize = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
-		block = (AllocBlock) malloc(blksize);
+		block = (AllocBlock) MemoryPoolAlloc(blksize);
 		if (block == NULL)
 			return NULL;
 
@@ -925,7 +930,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 			blksize <<= 1;
 
 		/* Try to allocate it */
-		block = (AllocBlock) malloc(blksize);
+		block = (AllocBlock) MemoryPoolAlloc(blksize);
 
 		/*
 		 * We could be asking for pretty big blocks here, so cope if malloc
@@ -936,7 +941,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 			blksize >>= 1;
 			if (blksize < required_size)
 				break;
-			block = (AllocBlock) malloc(blksize);
+			block = (AllocBlock) MemoryPoolAlloc(blksize);
 		}
 
 		if (block == NULL)
@@ -1011,6 +1016,7 @@ AllocSetFree(void *pointer)
 	{
 		/* Release single-chunk block. */
 		AllocBlock	block = ExternalChunkGetBlock(chunk);
+		Size size = block->endptr - ((char *) block);
 
 		/*
 		 * Try to verify that we have a sane block pointer: the block header
@@ -1044,7 +1050,7 @@ AllocSetFree(void *pointer)
 #ifdef CLOBBER_FREED_MEMORY
 		wipe_mem(block, block->freeptr - ((char *) block));
 #endif
-		free(block);
+		MemoryPoolFree(block, size);
 	}
 	else
 	{
@@ -1160,7 +1166,7 @@ AllocSetRealloc(void *pointer, Size size)
 		blksize = chksize + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		oldblksize = block->endptr - ((char *) block);
 
-		block = (AllocBlock) realloc(block, blksize);
+		block = (AllocBlock) MemoryPoolRealloc(block, oldblksize, blksize);
 		if (block == NULL)
 		{
 			/* Disallow access to the chunk header. */

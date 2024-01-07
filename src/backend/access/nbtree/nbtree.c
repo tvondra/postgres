@@ -361,7 +361,10 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	BTScanPosInvalidate(so->currPos);
 	BTScanPosInvalidate(so->markPos);
 	if (scan->numberOfKeys > 0)
+	{
+		// elog(LOG, "btbeginscan alloc B %ld", scan->numberOfKeys * sizeof(ScanKeyData));
 		so->keyData = (ScanKey) palloc(scan->numberOfKeys * sizeof(ScanKeyData));
+	}
 	else
 		so->keyData = NULL;
 

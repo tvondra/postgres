@@ -2408,6 +2408,8 @@ retry:
 off_t
 FileSize(File file)
 {
+	struct stat	statbuf;
+
 	Assert(FileIsValid(file));
 
 	DO_DB(elog(LOG, "FileSize %d (%s)",
@@ -2419,7 +2421,12 @@ FileSize(File file)
 			return (off_t) -1;
 	}
 
-	return lseek(VfdCache[file].fd, 0, SEEK_END);
+	if (fstat(VfdCache[file].fd, &statbuf) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("fstat failed")));
+
+	return statbuf.st_size;
 }
 
 int

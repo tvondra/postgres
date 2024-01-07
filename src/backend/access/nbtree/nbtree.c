@@ -357,11 +357,15 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan = RelationGetIndexScan(rel, nkeys, norderbys);
 
 	/* allocate private workspace */
-	so = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
+	// elog(LOG, "btbeginscan alloc A %ld", sizeof(BTScanOpaqueData));
+	so = (BTScanOpaque) palloc(1024L*1024 - 48); // sizeof(BTScanOpaqueData));
 	BTScanPosInvalidate(so->currPos);
 	BTScanPosInvalidate(so->markPos);
 	if (scan->numberOfKeys > 0)
+	{
+		// elog(LOG, "btbeginscan alloc B %ld", scan->numberOfKeys * sizeof(ScanKeyData));
 		so->keyData = (ScanKey) palloc(scan->numberOfKeys * sizeof(ScanKeyData));
+	}
 	else
 		so->keyData = NULL;
 

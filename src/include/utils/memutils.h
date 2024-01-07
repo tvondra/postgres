@@ -179,4 +179,7 @@ extern MemoryContext GenerationContextCreate(MemoryContext parent,
 #define SLAB_DEFAULT_BLOCK_SIZE		(8 * 1024)
 #define SLAB_LARGE_BLOCK_SIZE		(8 * 1024 * 1024)
 
+extern void *MemoryPoolAlloc(Size size);
+extern void MemoryPoolFree(void *pointer, Size size);
+
 #endif							/* MEMUTILS_H */

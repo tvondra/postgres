@@ -1722,7 +1722,7 @@ MemoryPoolAlloc(Size size)
 
 	if ((pool->hit + pool->miss) % 10000 == 0)
 	{
-		printf("%d mempool hit %lu miss %lu (%f)\n", getpid(), pool->hit, pool->miss, pool->hit * 100.0 / (pool->hit + pool->miss));
+		// printf("%d mempool hit %lu miss %lu (%f)\n", getpid(), pool->hit, pool->miss, pool->hit * 100.0 / (pool->hit + pool->miss));
 	}
 
 	idx = MemoryPoolIndex(size);

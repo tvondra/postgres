@@ -357,15 +357,18 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan = RelationGetIndexScan(rel, nkeys, norderbys);
 
 	/* allocate private workspace */
-	// elog(LOG, "btbeginscan alloc A %ld", sizeof(BTScanOpaqueData));
-	so = (BTScanOpaque) palloc(1024L*1024 - 48); // sizeof(BTScanOpaqueData));
+	so = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
+
+	so->currPos.nitems = 512;
+	so->currPos.items = palloc(sizeof(BTScanPosItem) * 512);
+
+	so->markPos.nitems = 512;
+	so->markPos.items = palloc(sizeof(BTScanPosItem) * 512);
+
 	BTScanPosInvalidate(so->currPos);
 	BTScanPosInvalidate(so->markPos);
 	if (scan->numberOfKeys > 0)
-	{
-		// elog(LOG, "btbeginscan alloc B %ld", scan->numberOfKeys * sizeof(ScanKeyData));
 		so->keyData = (ScanKey) palloc(scan->numberOfKeys * sizeof(ScanKeyData));
-	}
 	else
 		so->keyData = NULL;
 
@@ -561,9 +564,13 @@ btrestrpos(IndexScanDesc scan)
 			/* bump pin on mark buffer for assignment to current buffer */
 			if (BTScanPosIsPinned(so->markPos))
 				IncrBufferRefCount(so->markPos.buf);
+
+			elog(ERROR, "FIXME");
+/*
 			memcpy(&so->currPos, &so->markPos,
 				   offsetof(BTScanPosData, items[1]) +
 				   so->markPos.lastItem * sizeof(BTScanPosItem));
+*/
 			if (so->currTuples)
 				memcpy(so->currTuples, so->markTuples,
 					   so->markPos.nextTupleOffset);

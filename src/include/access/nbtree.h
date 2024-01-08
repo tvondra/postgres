@@ -982,7 +982,8 @@ typedef struct BTScanPosData
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
 
-	BTScanPosItem items[MaxTIDsPerBTreePage];	/* MUST BE LAST */
+	int			nitems;
+	BTScanPosItem *items;	/* MUST BE LAST */
 } BTScanPosData;
 
 typedef BTScanPosData *BTScanPos;

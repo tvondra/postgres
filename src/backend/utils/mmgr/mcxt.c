@@ -1646,10 +1646,18 @@ pchomp(const char *in)
 #define MEMPOOL_SIZES		14	/* 1kB -> 8MB */
 #define MEMPOOL_SLOTS		1024	/* blocks to keep for each size */
 
-//#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
-//#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+#ifdef MEMPOOL_DEBUG
+
+#undef MEMPOOL_DEBUG
+#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
+#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+
+#else
+
 #define MEMPOOL_DEBUG(...)
 #define MEMPOOL_RANDOMIZE(ptr, size)
+
+#endif
 
 /* entries for a simple linked list */
 typedef struct MemPoolEntry
@@ -1678,6 +1686,9 @@ typedef struct MemPool
 	/* usage statistics */
 	int64 cache_hit;
 	int64 cache_miss;
+
+	Size  mem_allocated;
+	Size  mem_cached;
 } MemPool;
 
 static MemPool *pool = NULL;
@@ -1816,6 +1827,9 @@ MemoryPoolAlloc(Size size)
 			MEMPOOL_DEBUG("%d mempool hit %lu miss %lu (%f)\n",
 						  getpid(), pool->cache_hit, pool->cache_miss,
 						  pool->cache_hit * 100.0 / (pool->cache_hit + pool->cache_miss));
+
+			MEMPOOL_DEBUG("%d mempool allocated %lu cached %lu\n",
+						  getpid(), pool->mem_allocated, pool->mem_cached);
 		}
 	}
 #endif
@@ -1850,6 +1864,12 @@ MemoryPoolAlloc(Size size)
 
 			pool->cache_hit++;
 
+			/* update memory accounting */
+			Assert(pool->mem_cached >= size);
+
+			pool->mem_cached -= size;
+			pool->mem_allocated += size;
+
 			MEMPOOL_RANDOMIZE(ptr, size);
 			MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p HIT\n", getpid(), size, idx, ptr);
 
@@ -1864,6 +1884,9 @@ MemoryPoolAlloc(Size size)
 	MEMPOOL_RANDOMIZE(ptr, size);
 	MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p MISS\n", getpid(), size, idx, ptr);
 
+	/* update memory accounting */
+	pool->mem_allocated += size;
+
 	return ptr;
 }
 
@@ -1874,6 +1897,7 @@ MemoryPoolRealloc(void *pointer, Size oldsize, Size newsize)
 
 	MemoryPoolInit();
 
+	oldsize = MemoryPoolEntrySize(oldsize);
 	newsize = MemoryPoolEntrySize(newsize);
 
 	MEMPOOL_DEBUG("%d MemoryPoolRealloc old %lu => %p\n", getpid(), oldsize, pointer);
@@ -1881,6 +1905,10 @@ MemoryPoolRealloc(void *pointer, Size oldsize, Size newsize)
 	ptr = realloc(pointer, newsize);
 
 	MEMPOOL_DEBUG("%d MemoryPoolRealloc new %lu => %p\n", getpid(), newsize, ptr);
+
+	/* update accounting */
+	pool->mem_allocated -= oldsize;
+	pool->mem_allocated += newsize;
 
 	return ptr;
 }
@@ -1915,6 +1943,10 @@ MemoryPoolFree(void *pointer, Size size)
 
 			entry->ptr = pointer;
 
+			/* update accounting */
+			pool->mem_cached += size;
+			pool->mem_allocated -= size;
+
 			MEMPOOL_RANDOMIZE(pointer, size);
 			MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d %p ADD\n", getpid(), size, idx, pointer);
 
@@ -1924,6 +1956,9 @@ MemoryPoolFree(void *pointer, Size size)
 
 	MEMPOOL_RANDOMIZE(pointer, size);
 	MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d FULL\n", getpid(), size, idx);
+
+	/* update accounting */
+	pool->mem_allocated -= size;
 
 	free(pointer);
 }

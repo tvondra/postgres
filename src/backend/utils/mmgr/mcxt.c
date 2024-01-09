@@ -1753,15 +1753,17 @@ AssertCheckEntrySize(Size size, int idx)
 	/* all sizes in the valid range should be in one of the slots */
 	if (idx == -1)
 		Assert(size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK);
-
-	while (size > block_size)
+	else
 	{
-		block_size *= 2;
-		block_index++;
-	}
+		while (size > block_size)
+		{
+			block_size *= 2;
+			block_index++;
+		}
 
-	Assert(size == block_size);
-	Assert(idx == block_index);
+		Assert(size == block_size);
+		Assert(idx == block_index);
+	}
 #endif
 }
 

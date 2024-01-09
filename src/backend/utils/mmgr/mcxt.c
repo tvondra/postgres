@@ -1687,11 +1687,14 @@ typedef struct MemPool
 	int64 cache_hit;
 	int64 cache_miss;
 
-	Size  mem_allocated;
-	Size  mem_cached;
+	int64 mem_allowed;
+	int64 mem_allocated;
+	int64 mem_cached;
 } MemPool;
 
 static MemPool *pool = NULL;
+
+static void MemoryPoolMaybeShrink(Size size);
 
 /* initialize the mempool */
 static void
@@ -1824,12 +1827,13 @@ MemoryPoolAlloc(Size size)
 
 		if ((cnt > 0) && (cnt % 10000 == 0))
 		{
+			
 			MEMPOOL_DEBUG("%d mempool hit %lu miss %lu (%f)\n",
 						  getpid(), pool->cache_hit, pool->cache_miss,
 						  pool->cache_hit * 100.0 / (pool->cache_hit + pool->cache_miss));
 
-			MEMPOOL_DEBUG("%d mempool allocated %lu cached %lu\n",
-						  getpid(), pool->mem_allocated, pool->mem_cached);
+			MEMPOOL_DEBUG("%d mempool allowed %ld allocated %ld cached %ld\n",
+						  getpid(), pool->mem_allowed, pool->mem_allocated, pool->mem_cached);
 		}
 	}
 #endif
@@ -1839,6 +1843,9 @@ MemoryPoolAlloc(Size size)
 	idx = MemoryPoolIndex(size);
 
 	AssertCheckEntrySize(size, idx);
+
+	/* maybe size */
+	MemoryPoolMaybeShrink(size);
 
 	/* Is it even eligible to be in the cache? */
 	if (idx >= 0)
@@ -1931,7 +1938,13 @@ MemoryPoolFree(void *pointer, Size size)
 	/* Is it even eligible to be in the cache? */
 	if (idx >= 0)
 	{
-		if (pool->free)
+		/*
+		 * Do we have entries on the freelist? Can we keep the memory, or did
+		 * we reach the memory limit?
+		 */
+		if (pool->free &&
+			((pool->mem_allowed == 0) ||
+			 (pool->mem_allocated + pool->mem_cached <= pool->mem_allowed)))
 		{
 			MemPoolEntry *entry;
 
@@ -1961,4 +1974,81 @@ MemoryPoolFree(void *pointer, Size size)
 	pool->mem_allocated -= size;
 
 	free(pointer);
+}
+
+static void
+MemoryPoolMaybeShrink(Size size)
+{
+	int64	threshold,
+			needtofree;
+
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* no memory limit set */
+	if (pool->mem_allowed == 0)
+		return;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/*
+	 * With the new request, would we exceed the memory limit? we need
+	 * to count both the allocated and cached memory.
+	 */
+	if (pool->mem_allocated + pool->mem_cached + size <= pool->mem_allowed)
+		return;
+
+	/*
+	 * How much we need to release? we don't want to allocate just enough
+	 * for the one request, but a bit more, to prevent trashing.
+	 */
+	threshold = Min(Max(0, pool->mem_allowed - 2 * size),
+					pool->mem_allowed * 0.75);
+
+	/*
+	 * How much we need to free, to get under the memory limit? Can't free
+	 * more than we have in the cache, though.
+	 */
+	needtofree = (pool->mem_allocated + pool->mem_cached + size) - threshold;
+	needtofree = Min(needtofree, pool->mem_cached);
+
+	MEMPOOL_DEBUG("%d MemoryPoolMaybeShrink total %ld cached %ld threshold %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated + pool->mem_cached, pool->mem_cached, threshold, needtofree);
+
+	Assert(threshold >= 0);
+	Assert(threshold < (pool->mem_allocated + pool->mem_cached + size));
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		/* did we free enough memory? */
+		if (needtofree <= 0)
+			break;
+
+		while (pool->cache[i])
+		{
+			MemPoolEntry *entry = pool->cache[i];
+
+			pool->cache[i] = entry->next;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->free;
+			pool->free = entry;
+
+			needtofree -= block_size;
+
+			/* did we free enough memory? */
+			if (needtofree <= 0)
+				break;
+		}
+
+		block_size = (block_size >> 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolMaybeRelease allocated %ld cached %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached, needtofree);
 }

@@ -1646,8 +1646,10 @@ pchomp(const char *in)
 #define MEMPOOL_SIZES		14	/* 1kB -> 8MB */
 #define MEMPOOL_SLOTS		1024	/* blocks to keep for each size */
 
-#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
-#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+//#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
+//#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+#define MEMPOOL_DEBUG(...)
+#define MEMPOOL_RANDOMIZE(ptr, size)
 
 /* entries for a simple linked list */
 typedef struct MemPoolEntry

@@ -357,8 +357,7 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan = RelationGetIndexScan(rel, nkeys, norderbys);
 
 	/* allocate private workspace */
-	// elog(LOG, "btbeginscan alloc A %ld", sizeof(BTScanOpaqueData));
-	so = (BTScanOpaque) palloc(1024L*1024 - 48); // sizeof(BTScanOpaqueData));
+	so = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
 	BTScanPosInvalidate(so->currPos);
 	BTScanPosInvalidate(so->markPos);
 	if (scan->numberOfKeys > 0)

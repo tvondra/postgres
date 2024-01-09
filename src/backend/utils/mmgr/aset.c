@@ -1166,7 +1166,7 @@ AllocSetRealloc(void *pointer, Size size)
 		blksize = chksize + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		oldblksize = block->endptr - ((char *) block);
 
-		block = (AllocBlock) realloc(block, blksize);
+		block = (AllocBlock) MemoryPoolRealloc(block, oldblksize, blksize);
 		if (block == NULL)
 		{
 			/* Disallow access to the chunk header. */

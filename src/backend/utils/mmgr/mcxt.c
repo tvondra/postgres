@@ -1643,38 +1643,89 @@ pchomp(const char *in)
 
 #define MEMPOOL_MIN_BLOCK	1024L
 #define MEMPOOL_MAX_BLOCK	(8*1024L*1024L)
-#define MEMPOOL_SIZES		14	/* 1kB -> 1MB */
+#define MEMPOOL_SIZES		14	/* 1kB -> 8MB */
 #define MEMPOOL_SLOTS		1024	/* blocks to keep for each size */
 
+/* max amount of memory to keep in single slot */
+#define MEMPOOL_SIZE_MAX	(8*1024L*1024L)
+
+#ifdef MEMPOOL_DEBUG
+
+#undef MEMPOOL_DEBUG
+#define	MEMPOOL_RANDOMIZE(ptr, size)	memset((ptr), 0x7f, (size))
+#define MEMPOOL_DEBUG(...)	fprintf (stderr, __VA_ARGS__)
+
+#else
+
+#define MEMPOOL_DEBUG(...)
+#define MEMPOOL_RANDOMIZE(ptr, size)
+
+#endif
+
+/* entries for a simple linked list */
 typedef struct MemPoolEntry
 {
-	int	count;
-	void   *ptr;
-	struct MemPoolEntry *next;
+	int		count;	/* number of entries on this freelist */
+	void   *ptr;	/* allocated block (NULL in empty entries) */
+	struct	MemPoolEntry *next;
 } MemPoolEntry;
 
+/*
+ * The meaning of the freelist is somewhat inverse - when a block of freed,
+ * we need to add it to the cache. Hence we get an entry from the freelist,
+ * and add it to the cache. So a free-d block removes and entry from the
+ * mempool freelist.
+ */
 typedef struct MemPool
 {
+	/* LIFO cache of free-d blocks of eligible sizes (1kB - 1MB, doubled) */
 	MemPoolEntry   *cache[MEMPOOL_SIZES];
+
+	/* pre-allocated entries for cache of free-d blocks */
 	MemPoolEntry	entries[MEMPOOL_SIZES * MEMPOOL_SLOTS];
+
+	/* maximum number of entries in this size class */
+	int				maxentries[MEMPOOL_SIZES];
+
+	/* head of freelist (entries from the array) */
 	MemPoolEntry   *free;
-	int64 hit;
-	int64 miss;
+
+	/* usage statistics */
+	int64 cache_hit;
+	int64 cache_miss;
+
+	/* memory limits */
+	int64 mem_allowed;
+	int64 mem_allocated;
+	int64 mem_cached;
 } MemPool;
 
 static MemPool *pool = NULL;
 
 static void
+AssertCheckMemPool(void)
+{
+#ifdef ASSERT_CHECKING
+#endif
+}
+
+static void MemoryPoolEnforceSizeLimit(Size request_size);
+
+/* initialize the mempool */
+static void
 MemoryPoolInit(void)
 {
-	/* already initialized? */
+	Size	size = MEMPOOL_MIN_BLOCK;
+
+	/* bail out if already initialized */
 	if (pool)
 		return;
 
+	/* allocate the basic structure */
 	pool = malloc(sizeof(MemPool));
 	memset(pool, 0, sizeof(MemPool));
 
-	/* everything is free initially */
+	/* put all the entries to the freelist */
 	pool->free = &pool->entries[0];
 
 	for (int i = 0; i < MEMPOOL_SIZES * MEMPOOL_SLOTS; i++)
@@ -1684,6 +1735,76 @@ MemoryPoolInit(void)
 		else
 			pool->entries[i].next = NULL;
 	}
+
+	/* set default maximum counts of entries */
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->maxentries[i] = (MEMPOOL_SIZE_MAX / size);
+		size *= 2;
+	}
+}
+ 
+static Size
+MemoryPoolEntrySize(Size size)
+{
+	Size	result;
+
+	/*
+	 * We shouldn't really get many malloc() for such small elements through
+	 * memory contexts, so just use the smallest block.
+	 */
+	if (size < MEMPOOL_MIN_BLOCK)
+		return MEMPOOL_MIN_BLOCK;
+
+	/*
+	 * We can get various large allocations - we don't want to cache those,
+	 * not waste space on doubling them, so just allocate them directly.
+	 * Maybe the limit should be separate/lower, like 1MB.
+	 */
+	if (size > MEMPOOL_MAX_BLOCK)
+		return size;
+
+	/*
+	 * Otherwise just calculate the first block larger than the request.
+	 *
+	 * XXX Maybe there's a better way to calculate this? The number of loops
+	 * should be very low, though (less than MEMPOOL_SIZES, i.e. 14).
+	 */
+	result = MEMPOOL_MIN_BLOCK;
+	while (size > result)
+		result *= 2;
+
+	MEMPOOL_DEBUG("%d MempoolEntrySize %lu => %lu\n", getpid(), size, result);
+
+	Assert(size <= result);
+
+	return result;
+}
+
+static void
+AssertCheckEntrySize(Size size, int idx)
+{
+#ifdef USE_ASSERT_CHECKING
+	int	block_size = MEMPOOL_MIN_BLOCK;
+	int	block_index = 0;
+
+	Assert(idx >= -1 && idx < MEMPOOL_SIZES);
+
+	/* all sizes in the valid range should be in one of the slots */
+	if (idx == -1)
+		Assert(size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK);
+	else
+	{
+		while (size > block_size)
+		{
+			block_size *= 2;
+			block_index++;
+		}
+
+		Assert(size == block_size);
+		Assert(idx == block_index);
+	}
+#endif
 }
 
 static int
@@ -1694,22 +1815,24 @@ MemoryPoolIndex(Size size)
 
 	/* is size possibly in cache? */
 	if (size < MEMPOOL_MIN_BLOCK || size > MEMPOOL_MAX_BLOCK)
-	{
-		// printf("MemoryPoolIndex %lu => %d\n", size, -1);
 		return -1;
-	}
 
 	/* calculate where to maybe cache the entry */
 	while (block_size <= MEMPOOL_MAX_BLOCK)
 	{
+		Assert(size >= block_size);
+
 		if (size == block_size)
+		{
+			Assert(idx < MEMPOOL_SIZES);
 			return idx;
+		}
 
 		idx += 1;
 		block_size *= 2;
 	}
-//printf("MemoryPoolIndex %lu => %d\n", size, -1);
-	/* not found after all */
+
+	/* not eligible for caching after all */
 	return -1;
 }
 
@@ -1717,42 +1840,132 @@ void *
 MemoryPoolAlloc(Size size)
 {
 	int	idx;
+	void *ptr;
 
 	MemoryPoolInit();
-/*
-	if ((pool->hit + pool->miss) % 10000 == 0)
+
+#ifdef MEMPOOL_DEBUG
+	/* print some info about cache hit ratio, but only once in a while */
 	{
-		printf("%d mempool hit %lu miss %lu (%f)\n", getpid(), pool->hit, pool->miss, pool->hit * 100.0 / (pool->hit + pool->miss));
+		int64 cnt = pool->cache_hit + pool->cache_miss;
+
+		if ((cnt > 0) && (cnt % 10000 == 0))
+		{
+			
+			MEMPOOL_DEBUG("%d mempool hit %lu miss %lu (%f)\n",
+						  getpid(), pool->cache_hit, pool->cache_miss,
+						  pool->cache_hit * 100.0 / (pool->cache_hit + pool->cache_miss));
+
+			MEMPOOL_DEBUG("%d mempool allowed %ld allocated %ld cached %ld\n",
+						  getpid(), pool->mem_allowed, pool->mem_allocated, pool->mem_cached);
+		}
 	}
-*/
+#endif
+
+	/* maybe override the requested size */
+	size = MemoryPoolEntrySize(size);
 	idx = MemoryPoolIndex(size);
 
+	AssertCheckEntrySize(size, idx);
+
+	/* maybe size */
+	MemoryPoolEnforceSizeLimit(size);
+
+	/* Is it even eligible to be in the cache? */
 	if (idx >= 0)
 	{
-		if (pool->cache[idx] != NULL)
+		MemPoolEntry *entry = pool->cache[idx];
+
+		/*
+		 * If we have a cached block for this size, we're done. Remove if
+		 * from the cache and return the entry to the freelist.
+		 */
+		if (entry != NULL)
 		{
-			MemPoolEntry *entry = pool->cache[idx];
-			void *ptr = entry->ptr;
-
-			pool->cache[idx] = entry->next;
-
-			entry->next = pool->free;
+			/* remember the pointer (we'll reset the entry) */
+			ptr = entry->ptr;
 			entry->ptr = NULL;
 
+			/* remove the entry from the cache */
+			pool->cache[idx] = entry->next;
+
+			/* return the entry to the freelist */
+			entry->next = pool->free;
 			pool->free = entry;
 
-			// printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
+			pool->cache_hit++;
 
-			pool->hit++;
+			/* update memory accounting */
+			Assert(pool->mem_cached >= size);
+
+			pool->mem_cached -= size;
+			pool->mem_allocated += size;
+
+			MEMPOOL_RANDOMIZE(ptr, size);
+			MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p HIT\n", getpid(), size, idx, ptr);
 
 			return ptr;
 		}
-
-		// printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
 	}
-	pool->miss++;
-//printf("%d MemoryPoolAlloc %lu => %d MISS\n", getpid(), size, idx);
-	return malloc(size);
+
+	pool->cache_miss++;
+
+	ptr = malloc(size);
+
+	MEMPOOL_RANDOMIZE(ptr, size);
+	MEMPOOL_DEBUG("%d MemoryPoolAlloc %lu => %d %p MISS\n", getpid(), size, idx, ptr);
+
+	/* update memory accounting */
+	pool->mem_allocated += size;
+
+	return ptr;
+}
+
+void *
+MemoryPoolRealloc(void *pointer, Size oldsize, Size newsize)
+{
+	void *ptr;
+
+	MemoryPoolInit();
+
+	oldsize = MemoryPoolEntrySize(oldsize);
+	newsize = MemoryPoolEntrySize(newsize);
+
+	MEMPOOL_DEBUG("%d MemoryPoolRealloc old %lu => %p\n", getpid(), oldsize, pointer);
+
+	ptr = realloc(pointer, newsize);
+
+	MEMPOOL_DEBUG("%d MemoryPoolRealloc new %lu => %p\n", getpid(), newsize, ptr);
+
+	/* update accounting */
+	pool->mem_allocated -= oldsize;
+	pool->mem_allocated += newsize;
+
+	return ptr;
+}
+
+/**/
+static bool
+MemoryPoolShouldCache(int index)
+{
+	MemPoolEntry   *entry = pool->cache[index];
+	int				nentries;
+	int				maxentries;
+
+	/* Bail out if no freelist entries. */
+	if (!pool->free)
+		return false;
+
+	/* Memory limit set, and we've already reached it. */
+	if ((pool->mem_allowed > 0) &&
+		(pool->mem_allocated + pool->mem_cached > pool->mem_allowed))
+		return false;
+
+	/* Is there enough space in this slot? */
+	nentries = (entry != NULL) ? entry->count : 0;
+	maxentries = pool->maxentries[index];
+
+	return (nentries < maxentries);
 }
 
 void
@@ -1762,12 +1975,22 @@ MemoryPoolFree(void *pointer, Size size)
 
 	MemoryPoolInit();
 
+	/* maybe override the requested size */
+	size = MemoryPoolEntrySize(size);
+
 	/* calculate where to maybe cache the entry */
 	idx = MemoryPoolIndex(size);
 
+	AssertCheckEntrySize(size, idx);
+
+	/* Is it even eligible to be in the cache? */
 	if (idx >= 0)
 	{
-		if (pool->free)
+		/*
+		 * Do we have entries on the freelist for the given size? Can we
+		 * keep the memory, or did we reach the memory limit?
+		 */
+		if (MemoryPoolShouldCache(idx))
 		{
 			MemPoolEntry *entry;
 
@@ -1779,15 +2002,183 @@ MemoryPoolFree(void *pointer, Size size)
 
 			entry->ptr = pointer;
 
-			// printf("%d MemoryPoolFree %lu => %d ADD\n", getpid(), size, idx);
+			/* update number of entries in this list */
+			entry->count = (entry->next) ? (entry->next->count + 1) : 1;
+
+			/* update accounting */
+			pool->mem_cached += size;
+			pool->mem_allocated -= size;
+
+			MEMPOOL_RANDOMIZE(pointer, size);
+			MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d %p ADD\n", getpid(), size, idx, pointer);
 
 			return;
 		}
-
-		// printf("%d MemoryPoolFree %lu => %d FULL\n", getpid(), size, idx);
 	}
 
-	// printf("%d MemoryPoolFree %lu FULL\n", getpid(), size);
+	MEMPOOL_RANDOMIZE(pointer, size);
+	MEMPOOL_DEBUG("%d MemoryPoolFree %lu => %d FULL\n", getpid(), size, idx);
+
+	/* update accounting */
+	pool->mem_allocated -= size;
 
 	free(pointer);
+}
+
+static void
+MemoryPoolEnforceMaxEntries(void)
+{
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		while (pool->cache[i])
+		{
+			MemPoolEntry *entry = pool->cache[i];
+
+			/* we're within the limit, bail out */
+			if (entry->count <= pool->maxentries[i])
+				break;
+
+			pool->cache[i] = entry->next;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->free;
+			pool->free = entry;
+		}
+
+		block_size = (block_size >> 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMaxEntries allocated %ld cached %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached);
+}
+
+static void
+MemoryPoolEnforceSizeLimit(Size request_size)
+{
+	int64	threshold,
+			needtofree;
+
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* no memory limit set */
+	if (pool->mem_allowed == 0)
+		return;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/*
+	 * With the new request, would we exceed the memory limit? we need
+	 * to count both the allocated and cached memory.
+	 */
+	if (pool->mem_allocated + pool->mem_cached + request_size <= pool->mem_allowed)
+		return;
+
+	/*
+	 * How much we need to release? we don't want to allocate just enough
+	 * for the one request, but a bit more, to prevent trashing.
+	 */
+	threshold = Min(Max(0, pool->mem_allowed - 2 * request_size),
+					pool->mem_allowed * 0.75);
+
+	/*
+	 * How much we need to free, to get under the memory limit? Can't free
+	 * more than we have in the cache, though.
+	 */
+	needtofree = (pool->mem_allocated + pool->mem_cached + request_size) - threshold;
+	needtofree = Min(needtofree, pool->mem_cached);
+
+	MEMPOOL_DEBUG("%d MemoryPoolMaybeShrink total %ld cached %ld threshold %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated + pool->mem_cached, pool->mem_cached, threshold, needtofree);
+
+	Assert(threshold >= 0);
+	Assert(threshold < (pool->mem_allocated + pool->mem_cached + request_size));
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		/* did we free enough memory? */
+		if (needtofree <= 0)
+			break;
+
+		while (pool->cache[i])
+		{
+			MemPoolEntry *entry = pool->cache[i];
+
+			pool->cache[i] = entry->next;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->free;
+			pool->free = entry;
+
+			needtofree -= block_size;
+
+			/* did we free enough memory? */
+			if (needtofree <= 0)
+				break;
+		}
+
+		block_size = (block_size >> 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMemoryLimit allocated %ld cached %ld needtofree %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached, needtofree);
+}
+
+void
+MemoryPoolSetSizeLimit(int64 size)
+{
+	Size	blksize = MEMPOOL_MIN_BLOCK;
+	Size	maxsize;
+
+	Assert(pool);
+
+	pool->mem_allowed = size;
+
+	/* also update the max number of entries for each class size */
+
+	if (size > 0)
+		maxsize = size / MEMPOOL_SIZES;
+	else
+		maxsize = MEMPOOL_SIZE_MAX;
+
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->maxentries[i] = (maxsize / blksize);
+		blksize *= 2;
+	}
+
+	/* enforce the updated maxentries limit */
+	MemoryPoolEnforceMaxEntries();
+
+	/* also enforce the general memory limit  */
+	MemoryPoolEnforceSizeLimit(0);
+}
+
+void
+MemoryPoolGetSizeAndCounts(int64 *mem_allowed, int64 *mem_allocated, int64 *mem_cached,
+						   int64 *cache_hits, int64 *cache_misses)
+{
+	Assert(pool);
+
+	*mem_allowed = pool->mem_allowed;
+	*mem_allocated = pool->mem_allocated;
+	*mem_cached = pool->mem_cached;
+
+	*cache_hits = pool->cache_hit;
+	*cache_misses = pool->cache_miss;
 }

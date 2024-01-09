@@ -180,6 +180,12 @@ extern MemoryContext GenerationContextCreate(MemoryContext parent,
 #define SLAB_LARGE_BLOCK_SIZE		(8 * 1024 * 1024)
 
 extern void *MemoryPoolAlloc(Size size);
+extern void *MemoryPoolRealloc(void *pointer, Size oldsize, Size size);
 extern void MemoryPoolFree(void *pointer, Size size);
+
+extern void MemoryPoolSetSizeLimit(int64 size);
+extern void MemoryPoolGetSizeAndCounts(int64 *mem_limit,
+									   int64 *mem_allocated, int64 *mem_cached,
+									   int64 *cache_hits, int64 *cache_misses);
 
 #endif							/* MEMUTILS_H */

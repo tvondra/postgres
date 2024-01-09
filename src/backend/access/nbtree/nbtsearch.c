@@ -1962,13 +1962,9 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 		/* bump pin on current buffer for assignment to mark buffer */
 		if (BTScanPosIsPinned(so->currPos))
 			IncrBufferRefCount(so->currPos.buf);
-
-		elog(ERROR, "FIXME");
-/*
 		memcpy(&so->markPos, &so->currPos,
 			   offsetof(BTScanPosData, items[1]) +
 			   so->currPos.lastItem * sizeof(BTScanPosItem));
-*/
 		if (so->markTuples)
 			memcpy(so->markTuples, so->currTuples,
 				   so->currPos.nextTupleOffset);

@@ -681,7 +681,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 */
 	prefetch_max = index_heap_prefetch_target(indexstate->ss.ss_currentRelation,
 											  indexstate->ss.ps.plan->plan_rows,
-											  node->allow_prefetch);
+											  estate->es_use_prefetching);
 
 	indexstate->ioss_prefetch = IndexPrefetchAlloc(IndexOnlyPrefetchNext,
 												   prefetch_max,

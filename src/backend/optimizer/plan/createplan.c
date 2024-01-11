@@ -184,15 +184,13 @@ static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
 								 Oid indexid, List *indexqual, List *indexqualorig,
 								 List *indexorderby, List *indexorderbyorig,
 								 List *indexorderbyops,
-								 ScanDirection indexscandir,
-								 bool allow_prefetch);
+								 ScanDirection indexscandir);
 static IndexOnlyScan *make_indexonlyscan(List *qptlist, List *qpqual,
 										 Index scanrelid, Oid indexid,
 										 List *indexqual, List *recheckqual,
 										 List *indexorderby,
 										 List *indextlist,
-										 ScanDirection indexscandir,
-										 bool allow_prefetch);
+										 ScanDirection indexscandir);
 static BitmapIndexScan *make_bitmap_indexscan(Index scanrelid, Oid indexid,
 											  List *indexqual,
 											  List *indexqualorig);
@@ -3163,13 +3161,6 @@ create_indexscan_plan(PlannerInfo *root,
 		}
 	}
 
-	/*
-	 * XXX Only allow index prefetching when parallelModeOK=true. This is a bit
-	 * of a misuse of the flag, but we need to disable prefetching for cursors
-	 * (which might change direction), and parallelModeOK does that. But maybe
-	 * we might (or should) have a separate flag.
-	 */
-
 	/* Finally ready to build the plan node */
 	if (indexonly)
 		scan_plan = (Scan *) make_indexonlyscan(tlist,
@@ -3180,8 +3171,7 @@ create_indexscan_plan(PlannerInfo *root,
 												stripped_indexquals,
 												fixed_indexorderbys,
 												indexinfo->indextlist,
-												best_path->indexscandir,
-												root->glob->parallelModeOK);
+												best_path->indexscandir);
 	else
 		scan_plan = (Scan *) make_indexscan(tlist,
 											qpqual,
@@ -3192,8 +3182,7 @@ create_indexscan_plan(PlannerInfo *root,
 											fixed_indexorderbys,
 											indexorderbys,
 											indexorderbyops,
-											best_path->indexscandir,
-											root->glob->parallelModeOK);
+											best_path->indexscandir);
 
 	copy_generic_path_info(&scan_plan->plan, &best_path->path);
 
@@ -5533,8 +5522,7 @@ make_indexscan(List *qptlist,
 			   List *indexorderby,
 			   List *indexorderbyorig,
 			   List *indexorderbyops,
-			   ScanDirection indexscandir,
-			   bool allow_prefetch)
+			   ScanDirection indexscandir)
 {
 	IndexScan  *node = makeNode(IndexScan);
 	Plan	   *plan = &node->scan.plan;
@@ -5551,7 +5539,6 @@ make_indexscan(List *qptlist,
 	node->indexorderbyorig = indexorderbyorig;
 	node->indexorderbyops = indexorderbyops;
 	node->indexorderdir = indexscandir;
-	node->allow_prefetch = allow_prefetch;
 
 	return node;
 }
@@ -5565,8 +5552,7 @@ make_indexonlyscan(List *qptlist,
 				   List *recheckqual,
 				   List *indexorderby,
 				   List *indextlist,
-				   ScanDirection indexscandir,
-				   bool allow_prefetch)
+				   ScanDirection indexscandir)
 {
 	IndexOnlyScan *node = makeNode(IndexOnlyScan);
 	Plan	   *plan = &node->scan.plan;
@@ -5582,7 +5568,6 @@ make_indexonlyscan(List *qptlist,
 	node->indexorderby = indexorderby;
 	node->indextlist = indextlist;
 	node->indexorderdir = indexscandir;
-	node->allow_prefetch = allow_prefetch;
 
 	return node;
 }

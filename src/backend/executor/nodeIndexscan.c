@@ -1131,7 +1131,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 */
 	prefetch_max = index_heap_prefetch_target(indexstate->ss.ss_currentRelation,
 											  indexstate->ss.ps.plan->plan_rows,
-											  node->allow_prefetch);
+											  estate->es_use_prefetching);
 
 	indexstate->iss_prefetch = IndexPrefetchAlloc(IndexScanPrefetchNext,
 												  prefetch_max,

@@ -1646,6 +1646,12 @@ ExecutePlan(EState *estate,
 	estate->es_direction = direction;
 
 	/*
+	 * Enable prefetching is the plan is executed exactly once.  We need to
+	 * disable prefetching for cursors (which might change direction).
+	 */
+	estate->es_use_prefetching = execute_once;
+
+	/*
 	 * If the plan might potentially be executed multiple times, we must force
 	 * it to run without parallelism, because we might exit early.
 	 */

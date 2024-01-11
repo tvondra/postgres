@@ -36,6 +36,7 @@
 #include "access/tupdesc.h"
 #include "access/visibilitymap.h"
 #include "executor/execdebug.h"
+#include "executor/executor.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
@@ -48,8 +49,10 @@ static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
 							TupleDesc itupdesc);
 static IndexPrefetchEntry *IndexOnlyPrefetchNext(IndexScanDesc scan,
-												 IndexPrefetch *prefetch,
-												 ScanDirection direction);
+												 ScanDirection direction,
+												 void *data);
+static void IndexOnlyPrefetchCleanup(IndexScanDesc scan,
+									 void *data);
 
 /* ----------------------------------------------------------------
  *		IndexOnlyNext
@@ -372,17 +375,7 @@ ExecReScanIndexOnlyScan(IndexOnlyScanState *node)
 					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
 
 	/* also reset the prefetcher, so that we start from scratch */
-	if (node->ioss_prefetch)
-	{
-		IndexPrefetch *prefetch = node->ioss_prefetch;
-
-		prefetch->queueIndex = 0;
-		prefetch->queueStart = 0;
-		prefetch->queueEnd = 0;
-
-		prefetch->prefetchDone = false;
-		prefetch->prefetchTarget = 0;
-	}
+	IndexPrefetchReset(node->ioss_ScanDesc, node->ioss_prefetch);
 
 	ExecScanReScan(&node->ss);
 }
@@ -411,27 +404,11 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		node->ioss_VMBuffer = InvalidBuffer;
 	}
 
+	/* XXX Print some debug stats. Should be removed. */
+	IndexPrefetchStats(indexScanDesc, node->ioss_prefetch);
+
 	/* Release VM buffer pin from prefetcher, if any. */
-	if (node->ioss_prefetch)
-	{
-		IndexPrefetch *prefetch = node->ioss_prefetch;
-
-		Buffer *buffer = (Buffer *) prefetch->data;
-
-		/* XXX some debug info */
-		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
-			 prefetch->countAll,
-			 prefetch->countPrefetch,
-			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
-			 prefetch->countSkipCached,
-			 prefetch->countSkipSequential);
-
-		if (*buffer != InvalidBuffer)
-		{
-			ReleaseBuffer(*buffer);
-			*buffer = InvalidBuffer;
-		}
-	}
+	IndexPrefetchEnd(indexScanDesc, node->ioss_prefetch);
 
 	/*
 	 * close the index relation (no-op if we didn't open it)
@@ -684,6 +661,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 											  estate->es_use_prefetching);
 
 	indexstate->ioss_prefetch = IndexPrefetchAlloc(IndexOnlyPrefetchNext,
+												   IndexOnlyPrefetchCleanup,
 												   prefetch_max,
 												   palloc0(sizeof(Buffer)));
 
@@ -810,10 +788,12 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
  * do it again.
  */
 static IndexPrefetchEntry *
-IndexOnlyPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+IndexOnlyPrefetchNext(IndexScanDesc scan, ScanDirection direction, void *data)
 {
 	IndexPrefetchEntry *entry = NULL;
 	ItemPointer			tid;
+
+	Assert(data);
 
 	if ((tid = index_getnext_tid(scan, direction)) != NULL)
 	{
@@ -821,7 +801,7 @@ IndexOnlyPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection
 
 		bool	all_visible = VM_ALL_VISIBLE(scan->heapRelation,
 											 blkno,
-											 (Buffer *) prefetch->data);
+											 (Buffer *) data);
 
 		entry = palloc0(sizeof(IndexPrefetchEntry));
 
@@ -836,4 +816,18 @@ IndexOnlyPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection
 	}
 
 	return entry;
+}
+
+static void
+IndexOnlyPrefetchCleanup(IndexScanDesc scan, void *data)
+{
+	Buffer *buffer = (Buffer *) data;
+
+	Assert(data);
+
+	if (*buffer != InvalidBuffer)
+	{
+		ReleaseBuffer(*buffer);
+		*buffer = InvalidBuffer;
+	}
 }

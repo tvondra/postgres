@@ -1530,6 +1530,8 @@ typedef struct
 	bool	   *elem_nulls;		/* array of num_elems is-null flags */
 } IndexArrayKeyInfo;
 
+/* needs to be before IndexPrefetchCallback typedef */
+typedef struct IndexPrefetch IndexPrefetch;
 
 /* ----------------
  *	 IndexScanState information

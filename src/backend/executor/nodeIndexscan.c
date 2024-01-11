@@ -34,6 +34,7 @@
 #include "access/tableam.h"
 #include "catalog/pg_am.h"
 #include "executor/execdebug.h"
+#include "executor/executor.h"
 #include "executor/nodeIndexscan.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
@@ -70,8 +71,8 @@ static void reorderqueue_push(IndexScanState *node, TupleTableSlot *slot,
 static HeapTuple reorderqueue_pop(IndexScanState *node);
 
 static IndexPrefetchEntry *IndexScanPrefetchNext(IndexScanDesc scan,
-												 IndexPrefetch *prefetch,
-												 ScanDirection direction);
+												 ScanDirection direction,
+												 void *data);
 
 /* ----------------------------------------------------------------
  *		IndexNext
@@ -604,17 +605,7 @@ ExecReScanIndexScan(IndexScanState *node)
 	node->iss_ReachedEnd = false;
 
 	/* also reset the prefetcher, so that we start from scratch */
-	if (node->iss_prefetch)
-	{
-		IndexPrefetch *prefetch = node->iss_prefetch;
-
-		prefetch->queueIndex = 0;
-		prefetch->queueStart = 0;
-		prefetch->queueEnd = 0;
-
-		prefetch->prefetchDone = false;
-		prefetch->prefetchTarget = 0;
-	}
+	IndexPrefetchReset(node->iss_ScanDesc, node->iss_prefetch);
 
 	ExecScanReScan(&node->ss);
 }
@@ -822,18 +813,8 @@ ExecEndIndexScan(IndexScanState *node)
 	indexRelationDesc = node->iss_RelationDesc;
 	indexScanDesc = node->iss_ScanDesc;
 
-	/* XXX nothing to free, but print some debug info */
-	if (node->iss_prefetch)
-	{
-		IndexPrefetch *prefetch = node->iss_prefetch;
-
-		elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
-			 prefetch->countAll,
-			 prefetch->countPrefetch,
-			 prefetch->countPrefetch * 100.0 / prefetch->countAll,
-			 prefetch->countSkipCached,
-			 prefetch->countSkipSequential);
-	}
+	/* XXX Print some debug stats. Should be removed. */
+	IndexPrefetchStats(indexScanDesc, node->iss_prefetch);
 
 	/*
 	 * close the index relation (no-op if we didn't open it)
@@ -1134,6 +1115,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 											  estate->es_use_prefetching);
 
 	indexstate->iss_prefetch = IndexPrefetchAlloc(IndexScanPrefetchNext,
+												  NULL, /* no extra cleanup */
 												  prefetch_max,
 												  NULL);
 
@@ -1805,7 +1787,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
  * maybe nodeIndexscan needs to do something more to handle this?
  */
 static IndexPrefetchEntry *
-IndexScanPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+IndexScanPrefetchNext(IndexScanDesc scan, ScanDirection direction, void *data)
 {
 	IndexPrefetchEntry *entry = NULL;
 	ItemPointer			tid;

@@ -1,98 +1,45 @@
 /*-------------------------------------------------------------------------
  *
  * execPrefetch.c
- *	  routines for inserting index tuples and enforcing unique and
- *	  exclusion constraints.
+ *	  routines for prefetching heap pages for index scans.
  *
- * ExecInsertIndexTuples() is the main entry point.  It's called after
- * inserting a tuple to the heap, and it inserts corresponding index tuples
- * into all indexes.  At the same time, it enforces any unique and
- * exclusion constraints:
+ * The IndexPrefetch node represents an "index prefetcher" which reads TIDs
+ * from an index scan, and prefetches the referenced heap pages. The basic
+ * API consists of these methods:
  *
- * Unique Indexes
- * --------------
+ *	IndexPrefetchAlloc - allocate IndexPrefetch with custom callbacks
+ *	IndexPrefetchNext - read next TID from the index scan, do prefetches
+ *	IndexPrefetchReset - reset state of the prefetcher (for rescans)
+ *	IndexPrefetchEnd - release resources held by the prefetcher
  *
- * Enforcing a unique constraint is straightforward.  When the index AM
- * inserts the tuple to the index, it also checks that there are no
- * conflicting tuples in the index already.  It does so atomically, so that
- * even if two backends try to insert the same key concurrently, only one
- * of them will succeed.  All the logic to ensure atomicity, and to wait
- * for in-progress transactions to finish, is handled by the index AM.
+ * When allocating a prefetcher, the caller can supply two custom callbacks:
  *
- * If a unique constraint is deferred, we request the index AM to not
- * throw an error if a conflict is found.  Instead, we make note that there
- * was a conflict and return the list of indexes with conflicts to the
- * caller.  The caller must re-check them later, by calling index_insert()
- * with the UNIQUE_CHECK_EXISTING option.
+ *	IndexPrefetchNextCB - reads the next TID from the index scan (required)
+ *	IndexPrefetchCleanupCB - release private prefetch data (optional)
  *
- * Exclusion Constraints
- * ---------------------
+ * These callbacks allow customizing the behavior for different types of
+ * index scans - for exampel index-only scans may inspect visibility map,
+ * and adjust prefetches based on that.
  *
- * Exclusion constraints are different from unique indexes in that when the
- * tuple is inserted to the index, the index AM does not check for
- * duplicate keys at the same time.  After the insertion, we perform a
- * separate scan on the index to check for conflicting tuples, and if one
- * is found, we throw an error and the transaction is aborted.  If the
- * conflicting tuple's inserter or deleter is in-progress, we wait for it
- * to finish first.
  *
- * There is a chance of deadlock, if two backends insert a tuple at the
- * same time, and then perform the scan to check for conflicts.  They will
- * find each other's tuple, and both try to wait for each other.  The
- * deadlock detector will detect that, and abort one of the transactions.
- * That's fairly harmless, as one of them was bound to abort with a
- * "duplicate key error" anyway, although you get a different error
- * message.
+ * TID queue
+ * ---------
  *
- * If an exclusion constraint is deferred, we still perform the conflict
- * checking scan immediately after inserting the index tuple.  But instead
- * of throwing an error if a conflict is found, we return that information
- * to the caller.  The caller must re-check them later by calling
- * check_exclusion_constraint().
  *
- * Speculative insertion
- * ---------------------
+ * pattern detection
+ * -----------------
  *
- * Speculative insertion is a two-phase mechanism used to implement
- * INSERT ... ON CONFLICT DO UPDATE/NOTHING.  The tuple is first inserted
- * to the heap and update the indexes as usual, but if a constraint is
- * violated, we can still back out the insertion without aborting the whole
- * transaction.  In an INSERT ... ON CONFLICT statement, if a conflict is
- * detected, the inserted tuple is backed out and the ON CONFLICT action is
- * executed instead.
  *
- * Insertion to a unique index works as usual: the index AM checks for
- * duplicate keys atomically with the insertion.  But instead of throwing
- * an error on a conflict, the speculatively inserted heap tuple is backed
- * out.
+ * cache of recent prefetches
+ * --------------------------
+ * * Cache of recently prefetched blocks, organized as a hash table of
+ * small LRU caches. Doesn't need to be perfectly accurate, but we
+ * aim to make false positives/negatives reasonably low.
  *
- * Exclusion constraints are slightly more complicated.  As mentioned
- * earlier, there is a risk of deadlock when two backends insert the same
- * key concurrently.  That was not a problem for regular insertions, when
- * one of the transactions has to be aborted anyway, but with a speculative
- * insertion we cannot let a deadlock happen, because we only want to back
- * out the speculatively inserted tuple on conflict, not abort the whole
- * transaction.
  *
- * When a backend detects that the speculative insertion conflicts with
- * another in-progress tuple, it has two options:
- *
- * 1. back out the speculatively inserted tuple, then wait for the other
- *	  transaction, and retry. Or,
- * 2. wait for the other transaction, with the speculatively inserted tuple
- *	  still in place.
- *
- * If two backends insert at the same time, and both try to wait for each
- * other, they will deadlock.  So option 2 is not acceptable.  Option 1
- * avoids the deadlock, but it is prone to a livelock instead.  Both
- * transactions will wake up immediately as the other transaction backs
- * out.  Then they both retry, and conflict with each other again, lather,
- * rinse, repeat.
- *
- * To avoid the livelock, one of the backends must back out first, and then
- * wait, while the other one waits without backing out.  It doesn't matter
- * which one backs out, so we employ an arbitrary rule that the transaction
- * with the higher XID backs out.
+ * prefetch request number
+ * -----------------------
+ * used to determine how long ago the block was prefetched
  *
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -117,84 +64,114 @@
 #include "storage/bufmgr.h"
 #include "utils/spccache.h"
 
-/* index prefetching - probably should be somewhere else, outside indexam */
 
 /*
- * Cache of recently prefetched blocks, organized as a hash table of
- * small LRU caches. Doesn't need to be perfectly accurate, but we
- * aim to make false positives/negatives reasonably low.
+ * An entry representing a recently prefetched block. For each block we know
+ * the request number, assigned sequentially, allowing us to decide how old
+ * the request is.
+ *
+ * XXX Is it enough to keep the request as uint32? This way we can prefetch
+ * 32TB of data, and this allows us to fit the whole entry into 64B, i.e.
+ * one cacheline. Which seems like a good thing.
+ *
+ * XXX If we're extra careful / paranoid about uint32, we could reset the
+ * cache once the request wraps around.
  */
 typedef struct IndexPrefetchCacheEntry {
 	BlockNumber		block;
-	uint64			request;
+	uint32			request;
 } IndexPrefetchCacheEntry;
 
 /*
- * Size of the cache of recently prefetched blocks - shouldn't be too
- * small or too large. 1024 seems about right, it covers ~8MB of data.
- * It's somewhat arbitrary, there's no particular formula saying it
- * should not be higher/lower.
+ * Size of the cache of recently prefetched blocks - shouldn't be too small or
+ * too large. 1024 entries seems about right, it covers ~8MB of data. This is
+ * rather arbitrary - there's no formula that'd tell us what the optimal size
+ * is, and we can't even tune it based on runtime (as it depends on what the
+ * other backends do too).
  *
- * The cache is structured as an array of small LRU caches, so the total
- * size needs to be a multiple of LRU size. The LRU should be tiny to
- * keep linear search cheap enough.
+ * A value too small would mean we may issue unnecessary prefetches for pages
+ * that have already been prefetched recently (and are still in page cache),
+ * incurring costs for unnecessary fadvise() calls.
  *
- * XXX Maybe we could consider effective_cache_size or something?
+ * A value too large would mean we do not issue prefetches for pages that have
+ * already been evicted from memory (both shared buffers and page cache).
+ *
+ * Note however that PrefetchBuffer() checks shared buffers before doing the
+ * fadvise call, which somewhat limits the risk of a small cache - the page
+ * would have to get evicted from shared buffers not yet from page cache.
+ * Also, the cost of not issuing a fadvise call (and doing synchronous I/O
+ * later) is much higher than the unnecessary fadvise call. For these reasons
+ * it's better to keep the cache fairly small.
+ * 
+ *
+ * The cache is structured as an array of small LRU caches - you may also
+ * imagine it as a hash table of LRU caches. To remember a prefetched block,
+ * the block number mapped to a LRU using by hashing. And then in each LRU
+ * we organize the entries by age (per request number) - in particular, the
+ * age determines which entry gets evicted after the LRU gets full.
+ *
+ * The LRU needs to be small enough to be searched linearly. At the same
+ * time it needs to be sufficiently large to handle collisions when several
+ * hot blocks get mapped to the same LRU. For example, if the LRU was only
+ * a single entry, and there were two hot blocks mapped to it, that would
+ * often give incorrect answer.
+ *
+ * The 8 entries per LRU seems about right - it's small enough for linear
+ * search to work well, but large enough to be adaptive. It's not very
+ * likely for 9+ busy blocks (out of 1000 recent requests) to map to the
+ * same LRU. Assuming reasonable hash function.
+ *
+ * XXX Maybe we could consider effective_cache_size when sizing the cache?
+ * Not to size the cache for that, ofc, but maybe as a guidance of how many
+ * heap pages it might keep. Maybe just a fraction fraction of the value,
+ * say Max(8MB, effective_cache_size / max_connections) or something.
  */
-#define		PREFETCH_LRU_SIZE		8
-#define		PREFETCH_LRU_COUNT		128
+#define		PREFETCH_LRU_SIZE		8		/* slots in one LRU */
+#define		PREFETCH_LRU_COUNT		128		/* number of LRUs */
 #define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
 
 /*
- * Used to detect sequential patterns (and disable prefetching).
- *
- * XXX seems strange to have two separate values
+ * Size of small sequential queue of most recently prefetched blocks, used
+ * to check if the block is exactly the same as the immediately preceding
+ * one (in which case prefetching is not needed), and if the blocks are a
+ * sequential pattern (in which case the kernel read-ahead is likely going
+ * to be more efficient, and we don't want to interfere with it).
  */
-#define		PREFETCH_QUEUE_HISTORY			8
-#define		PREFETCH_SEQ_PATTERN_BLOCKS		4
+#define		PREFETCH_QUEUE_HISTORY	8
 
+/*
+ * An index prefetcher, which maintains a queue of TIDs from an index, and
+ * issues prefetches (if deemed beneficial and supported by the OS).
+ */
 typedef struct IndexPrefetch
 {
-	/*
-	 * XXX We need to disable this in some cases (e.g. when using index-only
-	 * scans, we don't want to prefetch pages). Or maybe we should prefetch
-	 * only pages that are not all-visible, that'd be even better.
-	 */
 	int			prefetchTarget;	/* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 	int			prefetchReset;	/* reset to this distance on rescan */
 	bool		prefetchDone;	/* did we get all TIDs from the index? */
 
-	/* runtime statistics */
-	uint64		countAll;		/* all prefetch requests */
-	uint64		countPrefetch;	/* actual prefetches */
-	uint64		countSkipSequential;
-	uint64		countSkipCached;
-
-	/*
-	 * If a callback is specified, it may store global state (for all TIDs).
-	 * For example VM buffer may be kept during IOS. This is similar to the
-	 * data field in IndexPrefetchEntry, but that's per-TID.
-	 */
-	void	   *data;
-
-	/*
-	 * Callback to customize the prefetch (decide which block need to be
-	 * prefetched, etc.)
-	 */
-	IndexPrefetchNextCB		next_cb;
-	IndexPrefetchCleanupCB	cleanup_cb;
+	/* runtime statistics, displayed in EXPLAIN etc. */
+	uint32		countAll;		/* all prefetch requests (including skipped) */
+	uint32		countPrefetch;	/* initicated prefetches (PrefetchBuffer calls) */
+	uint32		countSkipSequential;	/* skipped as sequential pattern */
+	uint32		countSkipCached;		/* skipped as recently prefetched */
 
 	/*
 	 * Queue of TIDs to prefetch.
 	 *
 	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
-	 * than dynamically adjusting for custom values.
+	 * than dynamically adjusting for custom values. However, 1000 entries means
+	 * ~16kB, which means an oversized chunk, and thus always a malloc() call.
+	 * However, we already have the prefetchCache, which is also large enough
+	 * to cause this :-(
+	 *
+	 * XXX However what about the case without prefetching? In that case it
+	 * would be nice to lower the malloc overhead, maybe?
 	 */
 	IndexPrefetchEntry	queueItems[MAX_IO_CONCURRENCY];
-	uint64			queueIndex;	/* next TID to prefetch */
-	uint64			queueStart;	/* first valid TID in queue */
-	uint64			queueEnd;	/* first invalid (empty) TID in queue */
+	uint32			queueIndex;	/* next TID to prefetch */
+	uint32			queueStart;	/* first valid TID in queue */
+	uint32			queueEnd;	/* first invalid (empty) TID in queue */
 
 	/*
 	 * A couple of last prefetched blocks, used to check for certain access
@@ -206,68 +183,88 @@ typedef struct IndexPrefetch
 	 * (as that is much more expensive).
 	 */
 	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
-	uint64			blockIndex;	/* index in the block (points to the first
+	uint32			blockIndex;	/* index in the block (points to the first
 								 * empty entry)*/
 
 	/*
 	 * Cache of recently prefetched blocks, organized as a hash table of
 	 * small LRU caches.
 	 */
-	uint64				prefetchReqNumber;
+	uint32					prefetchRequest;
 	IndexPrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
 
+
+	/*
+	 * Callback to customize the prefetch (decide which block need to be
+	 * prefetched, etc.)
+	 */
+	IndexPrefetchNextCB		next_cb;		/* read next TID */
+	IndexPrefetchCleanupCB	cleanup_cb;		/* cleanup data */
+
+	/*
+	 * If a callback is specified, it may store global state (for all TIDs).
+	 * For example VM buffer may be kept during IOS. This is similar to the
+	 * data field in IndexPrefetchEntry, but that's per-TID.
+	 */
+	void	   *data;
 } IndexPrefetch;
 
+/* small sequential queue of recent blocks */
+#define PREFETCH_BLOCK_INDEX(v)	((v) % PREFETCH_QUEUE_HISTORY)
 
+/* access to the main hybrid cache (hash of LRUs) */
+#define PREFETCH_LRU_ENTRY(p, lru, idx)	\
+	&((p)->prefetchCache[(lru) * PREFETCH_LRU_SIZE + (idx)])
+
+/* access to queue of TIDs (up to MAX_IO_CONCURRENCY elements) */
 #define PREFETCH_QUEUE_INDEX(a)	((a) % (MAX_IO_CONCURRENCY))
 #define PREFETCH_QUEUE_EMPTY(p)	((p)->queueEnd == (p)->queueIndex)
+
+/*
+ * macros to deal with prefetcher state
+ *
+ * FIXME may need rethinking, easy to confuse PREFETCH_ENABLED/PREFETCH_ACTIVE
+ */
 #define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
 #define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
 #define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
-
-/* XXX easy to confuse with PREFETCH_ACTIVE */
 #define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p) && !(p)->prefetchDone)
-#define PREFETCH_BLOCK_INDEX(v)	((v) % PREFETCH_QUEUE_HISTORY)
 
-int index_heap_prefetch_target(Relation heapRel, double plan_rows, bool allow_prefetch);
 
 /*
- * index_prefetch_is_sequential
+ * IndexPrefetchBlockIsSequential
  *		Track the block number and check if the I/O pattern is sequential,
- *		or if the same block was just prefetched.
+ *		or if the block is the same as the immediately preceding one.
  *
- * Prefetching is cheap, but for some access patterns the benefits are small
- * compared to the extra overhead. In particular, for sequential access the
- * read-ahead performed by the OS is very effective/efficient. Doing more
- * prefetching is just increasing the costs.
+ * This also updates the small sequential cache of blocks.
  *
- * This tries to identify simple sequential patterns, so that we can skip
- * the prefetching request. This is implemented by having a small queue
- * of block numbers, and checking it before prefetching another block.
+ * The prefetching overhead is fairly low, but for some access patterns the
+ * benefits are small compared to the extra overhead, or the prefetching may
+ * even be harmful. In particular, for sequential access the read-ahead
+ * performed by the OS is very effective/efficient and our prefetching may
+ * be pointless or (worse) even interfere with it.
  *
- * We look at the preceding PREFETCH_SEQ_PATTERN_BLOCKS blocks, and see if
- * they are sequential. We also check if the block is the same as the last
- * request (which is not sequential).
+ * This identifies simple sequential patterns, using a tiny queue of recently
+ * prefetched block numbers (PREFETCH_QUEUE_HISTORY blocks). It also checks
+ * if the block is exactly the same as any of the blocks in the queue (the
+ * main cache has block too, but checking the tiny cache is likely cheaper).
  *
- * Note that the main prefetch queue is not really useful for this, as it
- * stores TIDs while we care about block numbers. Consider a sorted table,
- * with a perfectly sequential pattern when accessed through an index. Each
- * heap page may have dozens of TIDs, but we need to check block numbers.
- * We could keep enough TIDs to cover enough blocks, but then we also need
- * to walk those when checking the pattern (in hot path).
+ * The the main prefetch queue is not really useful for this, as it stores
+ * full TIDs, but while we only care about block numbers. Consider a nicely
+ * clustered table, with a perfectly sequential pattern when accessed through
+ * an index. Each heap page may have dozens of TIDs, filling the prefetch
+ * queue. But we need to compare block numbers - those may either not be
+ * in the queue anymore, or we have to walk many TIDs (making it expensive,
+ * and we're in hot path).
  *
- * So instead, we maintain a small separate queue of block numbers, and we use
- * this instead.
+ * So a tiny queue of just block numbers seems like a better option.
  *
- * Returns true if the block is in a sequential pattern (and so should not be
- * prefetched), or false (not sequential, should be prefetched).
- *
- * XXX The name is a bit misleading, as it also adds the block number to the
- * block queue and checks if the block is the same as the last one (which
- * does not require a sequential pattern).
+ * Returns true if the block is in a sequential pattern or was prefetched
+ * recently (and so should not be prefetched this time), or false (in which
+ * case it should be prefetched).
  */
 static bool
-index_prefetch_is_sequential(IndexPrefetch *prefetch, BlockNumber block)
+IndexPrefetchBlockIsSequential(IndexPrefetch *prefetch, BlockNumber block)
 {
 	int			idx;
 
@@ -287,7 +284,7 @@ index_prefetch_is_sequential(IndexPrefetch *prefetch, BlockNumber block)
 	 * want to prefetch the same block over and over (which would happen for
 	 * well correlated indexes).
 	 *
-	 * In principle we could rely on index_prefetch_add_cache doing this using
+	 * In principle we could rely on IndexPrefetchIsCached doing this using
 	 * the full cache, but this check is much cheaper and we need to look at
 	 * the preceding block anyway, so we just do it.
 	 *
@@ -298,44 +295,40 @@ index_prefetch_is_sequential(IndexPrefetch *prefetch, BlockNumber block)
 		return true;
 
 	/*
-	 * Add the block number to the queue.
+	 * Add the block number to the small queue.
 	 *
-	 * We do this before checking if the pattern, because we want to know
-	 * about the block even if we end up skipping the prefetch. Otherwise we'd
-	 * not be able to detect longer sequential pattens - we'd skip one block
-	 * but then fail to skip the next couple blocks even in a perfect
-	 * sequential pattern. This ocillation might even prevent the OS
-	 * read-ahead from kicking in.
+	 * Done before checking if the pattern is sequential, because we want to
+	 * know about the block later, even if we end up skipping the prefetch.
+	 * Otherwise we'd not be able to detect longer sequential pattens - we'd
+	 * skip one block and then fail to skip the next couple blocks even in a
+	 * perfectly sequential pattern. And this ocillation might even prevent
+	 * the OS read-ahead from kicking in.
 	 */
 	prefetch->blockItems[PREFETCH_BLOCK_INDEX(prefetch->blockIndex)] = block;
 	prefetch->blockIndex++;
 
 	/*
+	 * Are there enough requests to confirm a sequential pattern? We only
+	 * consider something to be sequential after finding a sequence of
+	 * PREFETCH_QUEUE_HISTORY blocks.
+	 */
+	if (prefetch->blockIndex < PREFETCH_QUEUE_HISTORY)
+		return false;
+
+	/*
 	 * Check if the last couple blocks are in a sequential pattern. We look
-	 * for a sequential pattern of PREFETCH_SEQ_PATTERN_BLOCKS (4 by default),
-	 * so we look for patterns of 5 pages (40kB) including the new block.
-	 *
-	 * XXX Perhaps this should be tied to effective_io_concurrency somehow?
+	 * for a sequential pattern of PREFETCH_QUEUE_HISTORY (8 by default),
+	 * so we look for patterns of 8 pages (64kB) including the new block.
 	 *
 	 * XXX Could it be harmful that we read the queue backwards? Maybe memory
 	 * prefetching works better for the forward direction?
 	 */
-	for (int i = 1; i < PREFETCH_SEQ_PATTERN_BLOCKS; i++)
+	for (int i = 1; i < PREFETCH_QUEUE_HISTORY; i++)
 	{
 		/*
-		 * Are there enough requests to confirm a sequential pattern? We only
-		 * consider something to be sequential after finding a sequence of
-		 * PREFETCH_SEQ_PATTERN_BLOCKS blocks.
-		 *
-		 * FIXME Better to move this outside the loop.
-		 */
-		if (prefetch->blockIndex < i)
-			return false;
-
-		/*
 		 * Calculate index of the earlier block (we need to do -1 as we
-		 * already incremented the index when adding the new block to the
-		 * queue).
+		 * already incremented the index after adding the new block to the
+		 * queue). So (blockIndex-1) is the new block.
 		 */
 		idx = PREFETCH_BLOCK_INDEX(prefetch->blockIndex - i - 1);
 
@@ -345,111 +338,127 @@ index_prefetch_is_sequential(IndexPrefetch *prefetch, BlockNumber block)
 		 */
 		if (prefetch->blockItems[idx] != (block - i))
 			return false;
+
+		/* Don't prefetch if the block happens to be the same. */
+		if (prefetch->blockItems[idx] == block)
+			return false;
 	}
 
+	/* not sequential, not recently prefetched */
 	return true;
 }
 
 /*
- * index_prefetch_add_cache
- *		Add a block to the cache, check if it was recently prefetched.
+ * IndexPrefetchIsCached
+ *		Check if the block was prefetched recently, and update the cache.
  *
  * We don't want to prefetch blocks that we already prefetched recently. It's
- * cheap but not free, and the overhead may have measurable impact.
+ * cheap but not free, and the overhead may be quite significant.
  *
- * This check needs to be very cheap, even with fairly large caches (hundreds
- * of entries, see PREFETCH_CACHE_SIZE).
+ * We want to remember which blocks were prefetched recently, so that we can
+ * skip repeated prefetches. We also need to eventually forget these blocks
+ * as they may get evicted from memory (particularly page cache, which is
+ * outside our control).
  *
- * A simple queue would allow expiring the requests, but checking if it
- * contains a particular block prefetched would be expensive (linear search).
- * Another option would be a simple hash table, which has fast lookup but
- * does not allow expiring entries cheaply.
+ * A simple queue is not a viable option - it would allow expiring requests
+ * based on age, but it's very expensive to check (as it requires linear
+ * search, and we need fairly large number of entries). Hash table does not
+ * work because it does not allow expiring entries by age.
  *
- * The cache does not need to be perfect, we can accept false
- * positives/negatives, as long as the rate is reasonably low. We also need
- * to expire entries, so that only "recent" requests are remembered.
+ * The cache does not need to be perfect - false positives/negatives are
+ * both acceptable, as long as the rate is reasonably low.
  *
  * We use a hybrid cache that is organized as many small LRU caches. Each
  * block is mapped to a particular LRU by hashing (so it's a bit like a
- * hash table). The LRU caches are tiny (e.g. 8 entries), and the expiration
- * happens at the level of a single LRU (by tracking only the 8 most recent requests).
+ * hash table of LRUs). The LRU caches are tiny (e.g. 8 entries), and the
+ * expiration happens at the level of a single LRU (using age determined
+ * by sequential request number).
  *
- * This allows quick searches and expiration, but with false negatives (when a
- * particular LRU has too many collisions, we may evict entries that are more
- * recent than some other LRU).
+ * This allows quick searches and expiration, with false negatives (when a
+ * particular LRU has too many collisions with hot blocks, we may end up
+ * evicting entries that are more recent than some other LRU).
  *
  * For example, imagine 128 LRU caches, each with 8 entries - that's 1024
- * prefetch request in total (these are the default parameters.)
+ * request in total (these are the default parameters.) representing about
+ * 8MB of data.
  *
- * The recency is determined using a prefetch counter, incremented every
- * time we end up prefetching a block. The counter is uint64, so it should
- * not wrap (125 zebibytes, would take ~4 million years at 1GB/s).
+ * If we want to check if a block was recently prefetched, we calculate
+ * (hash(blkno) % 128) and search only LRU at this index, using a linear
+ * search. If we want to add the block to the cache, we find either an
+ * empty slot or the "oldest" entry in the LRU, and store the block in it.
+ * If the block is already in the LRU, we only update the request number.
  *
- * To check if a block was prefetched recently, we calculate hash(block),
- * and then linearly search if the tiny LRU has entry for the same block
- * and request less than PREFETCH_CACHE_SIZE ago.
+ * The request age is determined using a prefetch counter, incremented every
+ * time we end up prefetching a block. The counter is uint32, so it should
+ * not wrap (we'd have to prefetch 32TB).
  *
- * At the same time, we either update the entry (for the queried block) if
- * found, or replace the oldest/empty entry.
- *
- * If the block was not recently prefetched (i.e. we want to prefetch it),
- * we increment the counter.
+ * If the request number is not less than PREFETCH_CACHE_SIZE ago, it's
+ * considered "recently prefetched". That is, the maximum age is the same
+ * as the total capacity of the cache.
  *
  * Returns true if the block was recently prefetched (and thus we don't
  * need to prefetch it again), or false (should do a prefetch).
  *
  * XXX It's a bit confusing these return values are inverse compared to
- * what index_prefetch_is_sequential does.
+ * what IndexPrefetchBlockIsSequential does.
+ *
+ * XXX Should we increase the prefetch counter even if we determine the
+ * entry was recently prefetched? Then we might skip some request numbers
+ * (there's be no entry with them).
  */
 static bool
-index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
+IndexPrefetchIsCached(IndexPrefetch *prefetch, BlockNumber block)
 {
 	IndexPrefetchCacheEntry *entry;
 
 	/* map the block number the the LRU */
-	int			lru = hash_uint32(block) % PREFETCH_LRU_COUNT;
+	int			lru;
 
 	/* age/index of the oldest entry in the LRU, to maybe use */
 	uint64		oldestRequest = PG_UINT64_MAX;
 	int			oldestIndex = -1;
 
 	/*
-	 * First add the block to the (tiny) top-level LRU cache and see if it's
-	 * part of a sequential pattern. In this case we just ignore the block and
-	 * don't prefetch it - we expect read-ahead to do a better job.
+	 * First add the block to the (tiny) queue and see if it's part of a
+	 * sequential pattern. In this case we just ignore the block and don't
+	 * prefetch it - we expect OS read-ahead to do a better job.
 	 *
-	 * XXX Maybe we should still add the block to the hybrid cache, in case we
-	 * happen to access it later? That might help if we first scan a lot of
-	 * the table sequentially, and then randomly. Not sure that's very likely
-	 * with index access, though.
+	 * XXX Maybe we should still add the block to the main cache, in case we
+	 * happen to access it later. That might help if we happen to scan a lot
+	 * of the table sequentially, and then randomly. Not sure that's very
+	 * likely with index access, though.
 	 */
-	if (index_prefetch_is_sequential(prefetch, block))
+	if (IndexPrefetchBlockIsSequential(prefetch, block))
 	{
 		prefetch->countSkipSequential++;
 		return true;
 	}
 
+	/* Which LRU does this block belong to? */
+	lru = hash_uint32(block) % PREFETCH_LRU_COUNT;
+
 	/*
-	 * See if we recently prefetched this block - we simply scan the LRU
-	 * linearly. While doing that, we also track the oldest entry, so that we
-	 * know where to put the block if we don't find a matching entry.
+	 * Did we prefetch this block recently? Scan the LRU linearly, and while
+	 * doing that, track the oldest (or empty) entry, so that we know where
+	 * to put the block if we don't find a match.
 	 */
 	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
 	{
-		entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + i];
+		entry = PREFETCH_LRU_ENTRY(prefetch, lru, i);
 
-		/* Is this the oldest prefetch request in this LRU? */
+		/*
+		 * Is this the oldest prefetch request in this LRU?
+		 *
+		 * Notice that request is uint32, so an empty entry (with request=0)
+		 * is automatically oldest one.
+		 */
 		if (entry->request < oldestRequest)
 		{
 			oldestRequest = entry->request;
 			oldestIndex = i;
 		}
 
-		/*
-		 * If the entry is unused (identified by request being set to 0),
-		 * we're done. Notice the field is uint64, so empty entry is
-		 * guaranteed to be the oldest one.
-		 */
+		/* Skip unused entries. */
 		if (entry->request == 0)
 			continue;
 
@@ -463,38 +472,40 @@ index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
 			 * block as already prefetched.
 			 *
 			 * XXX We do add the cache size to the request in order not to
-			 * have issues with uint64 underflows.
+			 * have issues with underflows.
+			 *
+			 * XXX Check done before updating the prefetch request.
 			 */
-			prefetched = ((entry->request + PREFETCH_CACHE_SIZE) >= prefetch->prefetchReqNumber);
-
-			/* Update the request number. */
-			entry->request = ++prefetch->prefetchReqNumber;
+			prefetched = ((entry->request + PREFETCH_CACHE_SIZE) >= prefetch->prefetchRequest);
 
 			prefetch->countSkipCached += (prefetched) ? 1 : 0;
+
+			/* Update the request number. */
+			entry->request = ++prefetch->prefetchRequest;
 
 			return prefetched;
 		}
 	}
 
 	/*
-	 * We didn't find the block in the LRU, so store it either in an empty
-	 * entry, or in the "oldest" prefetch request in this LRU.
+	 * We didn't find the block in the LRU, so store it the "oldest" prefetch
+	 * request in this LRU (which might be an empty entry).
 	 */
 	Assert((oldestIndex >= 0) && (oldestIndex < PREFETCH_LRU_SIZE));
 
-	/* FIXME do a nice macro */
-	entry = &prefetch->prefetchCache[lru * PREFETCH_LRU_SIZE + oldestIndex];
+	entry = PREFETCH_LRU_ENTRY(prefetch, lru, oldestIndex);
 
 	entry->block = block;
-	entry->request = ++prefetch->prefetchReqNumber;
+	entry->request = ++prefetch->prefetchRequest;
 
 	/* not in the prefetch cache */
 	return false;
 }
 
 /*
- * index_prefetch
- *		Prefetch the TID, unless it's sequential or recently prefetched.
+ * IndexPrefetchHeapPage
+ *		Prefetch a heap page for the TID, unless it's sequential or was
+ *		recently prefetched.
  *
  * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
  * prefetching does not cause significant regressions (e.g. for nestloop
@@ -543,7 +554,7 @@ index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
  * later. For example, if we find the block in cache and decide not to
  * prefetch it, but then later find we have to do I/O, it means our cache
  * is too large. And we could "reduce" the maximum age (measured from the
- * current prefetchReqNumber value), so that only more recent blocks would
+ * current prefetchRequest value), so that only more recent blocks would
  * be considered cached. Not sure about the opposite direction, where we
  * decide to prefetch a block - AFAIK we don't have a way to determine if
  * I/O was needed or not in this case (so we can't increase the max age).
@@ -551,7 +562,7 @@ index_prefetch_add_cache(IndexPrefetch *prefetch, BlockNumber block)
  * value once in a while, and see what happens.
  */
 static void
-index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefetchEntry *entry)
+IndexPrefetchHeapPage(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefetchEntry *entry)
 {
 	BlockNumber block = ItemPointerGetBlockNumber(&entry->tid);
 
@@ -561,7 +572,7 @@ index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefe
 	 * the heap)
 	 *
 	 * XXX But in this case we should have prefetchMaxTarget=0, because in
-	 * index_bebinscan_bitmap() we disable prefetching. So maybe we should
+	 * index_beginscan_bitmap() we disable prefetching. So maybe we should
 	 * just check that.
 	 *
 	 * XXX Comment/check seems obsolete.
@@ -584,7 +595,7 @@ index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefe
 	 * to a sequence ID). It's not expensive (the block is in page cache
 	 * already, so no I/O), but it's not free either.
 	 */
-	if (!index_prefetch_add_cache(prefetch, block))
+	if (!IndexPrefetchIsCached(prefetch, block))
 	{
 		prefetch->countPrefetch++;
 
@@ -596,11 +607,11 @@ index_prefetch_heap_page(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefe
 }
 
 /*
- * index_prefetch_tids
+ * IndexPrefetchTIDs
  *		Fill the prefetch queue and issue necessary prefetch requests.
  */
 static void
-index_prefetch_tids(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+IndexPrefetchTIDs(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
 	/*
 	 * If the prefetching is still active (i.e. enabled and we still
@@ -643,13 +654,13 @@ index_prefetch_tids(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection d
 
 			/* issue the prefetch request? */
 			if (entry->prefetch)
-				index_prefetch_heap_page(scan, prefetch, entry);
+				IndexPrefetchHeapPage(scan, prefetch, entry);
 		}
 	}
 }
 
 /*
- * index_prefetch_get_entry
+ * IndexPrefetchNextEntry
  *		Get the next entry from the prefetch queue (or from the index directly).
  *
  * If prefetching is enabled, get next entry from the prefetch queue (unless
@@ -663,7 +674,7 @@ index_prefetch_tids(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection d
  * XXX If xs_heap_continue=true, we need to return the last TID.
  */
 static IndexPrefetchEntry *
-index_prefetch_get_entry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+IndexPrefetchNextEntry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
 	IndexPrefetchEntry *entry = NULL;
 
@@ -711,7 +722,7 @@ index_prefetch_get_entry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirect
 }
 
 int
-index_heap_prefetch_target(Relation heapRel, double plan_rows, bool allow_prefetch)
+IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool allow_prefetch)
 {
 	/*
 	 * XXX No prefetching for direct I/O.
@@ -771,10 +782,10 @@ IndexPrefetchEntry *
 IndexPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
 	/* Do prefetching (if requested/enabled). */
-	index_prefetch_tids(scan, prefetch, direction);
+	IndexPrefetchTIDs(scan, prefetch, direction);
 
 	/* Read the TID from the queue (or directly from the index). */
-	return index_prefetch_get_entry(scan, prefetch, direction);
+	return IndexPrefetchNextEntry(scan, prefetch, direction);
 }
 
 void
@@ -798,7 +809,7 @@ IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state)
 	if (!state)
 		return;
 
-	elog(LOG, "index prefetch stats: requests " UINT64_FORMAT " prefetches " UINT64_FORMAT " (%f) skip cached " UINT64_FORMAT " sequential " UINT64_FORMAT,
+	elog(LOG, "index prefetch stats: requests %u prefetches %u (%f) skip cached %u sequential %u",
 		 state->countAll,
 		 state->countPrefetch,
 		 state->countPrefetch * 100.0 / state->countAll,

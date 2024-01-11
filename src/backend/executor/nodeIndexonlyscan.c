@@ -656,7 +656,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 *
 	 * XXX Maybe rename the object to "index reader" or something?
 	 */
-	prefetch_max = index_heap_prefetch_target(indexstate->ss.ss_currentRelation,
+	prefetch_max = IndexPrefetchComputeTarget(indexstate->ss.ss_currentRelation,
 											  indexstate->ss.ps.plan->plan_rows,
 											  estate->es_use_prefetching);
 

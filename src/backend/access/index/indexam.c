@@ -54,16 +54,13 @@
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
-#include "common/hashfn.h"
 #include "nodes/makefuncs.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
-#include "utils/spccache.h"
 #include "utils/syscache.h"
 
 
@@ -110,6 +107,7 @@ do { \
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
+
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -635,9 +633,6 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
  * Note: caller must check scan->xs_recheck, and perform rechecking of the
  * scan keys if required.  We do not do that here because we don't have
  * enough information to do it efficiently in the general case.
- *
- * XXX This does not support prefetching of heap pages. When such prefetching is
- * desirable, use index_getnext_tid().
  * ----------------
  */
 bool

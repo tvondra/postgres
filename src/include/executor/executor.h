@@ -727,6 +727,6 @@ void IndexPrefetchReset(IndexScanDesc scan, IndexPrefetch *state);
 void IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state);
 void IndexPrefetchEnd(IndexScanDesc scan, IndexPrefetch *state);
 
-int index_heap_prefetch_target(Relation heapRel, double plan_rows, bool allow_prefetch);
+int IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool allow_prefetch);
 
 #endif							/* EXECUTOR_H  */

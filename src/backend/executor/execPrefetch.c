@@ -42,6 +42,60 @@
  * used to determine how long ago the block was prefetched
  *
  *
+ * this does nothing to prefetch internal index pages
+ *
+ * auto-tuning / self-adjustment
+ * -----------------------------
+ *
+ *
+ * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
+ * prefetching does not cause significant regressions (e.g. for nestloop
+ * with inner index scan). We could track number of rescans and number of
+ * items (TIDs) actually returned from the scan. Then we could calculate
+ * rows / rescan and adjust the prefetch target accordingly. That'd help
+ * with cases when a scan matches only very few rows, far less than the
+ * prefetchTarget, because the unnecessary prefetches are wasted I/O.
+ * Imagine a LIMIT on top of index scan, or something like that.
+ *
+ * XXX The prefetching may interfere with the patch allowing us to evaluate
+ * conditions on the index tuple, in which case we may not need the heap
+ * tuple. Maybe if there's such filter, we should prefetch only pages that
+ * are not all-visible (and the same idea would also work for IOS), but
+ * it also makes the indexing a bit "aware" of the visibility stuff (which
+ * seems a somewhat wrong). Also, maybe we should consider the filter selectivity
+ * (if the index-only filter is expected to eliminate only few rows, then
+ * the vm check is pointless). Maybe this could/should be auto-tuning too,
+ * i.e. we could track how many heap tuples were needed after all, and then
+ * we would consider this when deciding whether to prefetch all-visible
+ * pages or not (matters only for regular index scans, not IOS).
+ *
+ * XXX Maybe we could/should also prefetch the next index block, e.g. stored
+ * in BTScanPosData.nextPage.
+ *
+ * XXX Could we tune the cache size based on execution statistics? We have
+ * a cache of limited size (PREFETCH_CACHE_SIZE = 1024 by default), but
+ * how do we know it's the right size? Ideally, we'd have a cache large
+ * enough to track actually cached blocks. If the OS caches 10240 pages,
+ * then we may do 90% of prefetch requests unnecessarily. Or maybe there's
+ * a lot of contention, blocks are evicted quickly, and 90% of the blocks
+ * in the cache are not actually cached anymore? But we do have a concept
+ * of sequential request ID (PrefetchCacheEntry->request), which gives us
+ * information about "age" of the last prefetch. Now it's used only when
+ * evicting entries (to keep the more recent one), but maybe we could also
+ * use it when deciding if the page is cached. Right now any block that's
+ * in the cache is considered cached and not prefetched, but maybe we could
+ * have "max age", and tune it based on feedback from reading the blocks
+ * later. For example, if we find the block in cache and decide not to
+ * prefetch it, but then later find we have to do I/O, it means our cache
+ * is too large. And we could "reduce" the maximum age (measured from the
+ * current prefetchRequest value), so that only more recent blocks would
+ * be considered cached. Not sure about the opposite direction, where we
+ * decide to prefetch a block - AFAIK we don't have a way to determine if
+ * I/O was needed or not in this case (so we can't increase the max age).
+ * But maybe we could di that somehow speculatively, i.e. increase the
+ * value once in a while, and see what happens.
+ *
+ *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -225,7 +279,7 @@ typedef struct IndexPrefetch
  * FIXME may need rethinking, easy to confuse PREFETCH_ENABLED/PREFETCH_ACTIVE
  */
 #define PREFETCH_ENABLED(p)		((p) && ((p)->prefetchMaxTarget > 0))
-#define PREFETCH_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
+#define PREFETCH_QUEUE_FULL(p)		((p)->queueEnd - (p)->queueIndex == (p)->prefetchTarget)
 #define PREFETCH_DONE(p)		((p) && ((p)->prefetchDone && PREFETCH_QUEUE_EMPTY(p)))
 #define PREFETCH_ACTIVE(p)		(PREFETCH_ENABLED(p) && !(p)->prefetchDone)
 
@@ -505,156 +559,90 @@ IndexPrefetchIsCached(IndexPrefetch *prefetch, BlockNumber block)
  * IndexPrefetchHeapPage
  *		Prefetch a heap page for the TID, unless it's sequential or was
  *		recently prefetched.
- *
- * XXX Some ideas how to auto-tune the prefetching, so that unnecessary
- * prefetching does not cause significant regressions (e.g. for nestloop
- * with inner index scan). We could track number of rescans and number of
- * items (TIDs) actually returned from the scan. Then we could calculate
- * rows / rescan and use that to clamp prefetch target.
- *
- * That'd help with cases when a scan matches only very few rows, far less
- * than the prefetchTarget, because the unnecessary prefetches are wasted
- * I/O. Imagine a LIMIT on top of index scan, or something like that.
- *
- * Another option is to use the planner estimates - we know how many rows we're
- * expecting to fetch (on average, assuming the estimates are reasonably
- * accurate), so why not to use that?
- *
- * Of course, we could/should combine these two approaches.
- *
- * XXX The prefetching may interfere with the patch allowing us to evaluate
- * conditions on the index tuple, in which case we may not need the heap
- * tuple. Maybe if there's such filter, we should prefetch only pages that
- * are not all-visible (and the same idea would also work for IOS), but
- * it also makes the indexing a bit "aware" of the visibility stuff (which
- * seems a somewhat wrong). Also, maybe we should consider the filter selectivity
- * (if the index-only filter is expected to eliminate only few rows, then
- * the vm check is pointless). Maybe this could/should be auto-tuning too,
- * i.e. we could track how many heap tuples were needed after all, and then
- * we would consider this when deciding whether to prefetch all-visible
- * pages or not (matters only for regular index scans, not IOS).
- *
- * XXX Maybe we could/should also prefetch the next index block, e.g. stored
- * in BTScanPosData.nextPage.
- *
- * XXX Could we tune the cache size based on execution statistics? We have
- * a cache of limited size (PREFETCH_CACHE_SIZE = 1024 by default), but
- * how do we know it's the right size? Ideally, we'd have a cache large
- * enough to track actually cached blocks. If the OS caches 10240 pages,
- * then we may do 90% of prefetch requests unnecessarily. Or maybe there's
- * a lot of contention, blocks are evicted quickly, and 90% of the blocks
- * in the cache are not actually cached anymore? But we do have a concept
- * of sequential request ID (PrefetchCacheEntry->request), which gives us
- * information about "age" of the last prefetch. Now it's used only when
- * evicting entries (to keep the more recent one), but maybe we could also
- * use it when deciding if the page is cached. Right now any block that's
- * in the cache is considered cached and not prefetched, but maybe we could
- * have "max age", and tune it based on feedback from reading the blocks
- * later. For example, if we find the block in cache and decide not to
- * prefetch it, but then later find we have to do I/O, it means our cache
- * is too large. And we could "reduce" the maximum age (measured from the
- * current prefetchRequest value), so that only more recent blocks would
- * be considered cached. Not sure about the opposite direction, where we
- * decide to prefetch a block - AFAIK we don't have a way to determine if
- * I/O was needed or not in this case (so we can't increase the max age).
- * But maybe we could di that somehow speculatively, i.e. increase the
- * value once in a while, and see what happens.
  */
 static void
 IndexPrefetchHeapPage(IndexScanDesc scan, IndexPrefetch *prefetch, IndexPrefetchEntry *entry)
 {
 	BlockNumber block = ItemPointerGetBlockNumber(&entry->tid);
 
-	/*
-	 * No heap relation means bitmap index scan, which does prefetching at the
-	 * bitmap heap scan, so no prefetch here (we can't do it anyway, without
-	 * the heap)
-	 *
-	 * XXX But in this case we should have prefetchMaxTarget=0, because in
-	 * index_beginscan_bitmap() we disable prefetching. So maybe we should
-	 * just check that.
-	 *
-	 * XXX Comment/check seems obsolete.
-	 */
-	if (!prefetch)
-		return;
+	prefetch->countAll++;
 
 	/*
-	 * If we got here, prefetching is enabled and it's a node that supports
-	 * prefetching (i.e. it can't be a bitmap index scan).
-	 *
-	 * XXX Comment/check seems obsolete.
-	 */
-	Assert(scan->heapRelation);
-
-	/*
-	 * Do not prefetch the same block over and over again,
+	 * Do not prefetch the same block over and over again, if it's probably
+	 * still in memory (page cache).
 	 *
 	 * This happens e.g. for clustered or naturally correlated indexes (fkey
 	 * to a sequence ID). It's not expensive (the block is in page cache
 	 * already, so no I/O), but it's not free either.
+	 *
+	 * If we make a mistake and prefetch a buffer that's still in our shared
+	 * buffers, PrefetchBuffer will take care of that. If it's in page cache,
+	 * we'll issue an unnecessary prefetch. There's not much we can do about
+	 * that, unfortunately.
+	 *
+	 * XXX Maybe we could check PrefetchBufferResult and adjust countPrefetch
+	 * based on that?
 	 */
-	if (!IndexPrefetchIsCached(prefetch, block))
-	{
-		prefetch->countPrefetch++;
+	if (IndexPrefetchIsCached(prefetch, block))
+		return;
 
-		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
-		pgBufferUsage.blks_prefetches++;
-	}
+	prefetch->countPrefetch++;
 
-	prefetch->countAll++;
+	PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM, block);
+	pgBufferUsage.blks_prefetches++;
 }
 
 /*
- * IndexPrefetchTIDs
+ * IndexPrefetchFillQueue
  *		Fill the prefetch queue and issue necessary prefetch requests.
+ *
+ * If the prefetching is still active (enabled, not reached end of scan), read
+ * TIDs into the queue until we hit the current target.
+ *
+ * This also ramps-up the prefetch target from 0 to prefetch_max, determined
+ * when allocating the prefetcher.
  */
 static void
-IndexPrefetchTIDs(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
+IndexPrefetchFillQueue(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
+	/* When inactive (not enabled or end of scan reached), we're done. */
+	if (!PREFETCH_ACTIVE(prefetch))
+		return;
+
 	/*
-	 * If the prefetching is still active (i.e. enabled and we still
-	 * haven't finished reading TIDs from the scan), read enough TIDs into
-	 * the queue until we hit the current target.
+	 * Ramp up the prefetch distance incrementally.
+	 *
+	 * Intentionally done as first, before reading the TIDs into the queue, so
+	 * that there's always at least one item. Otherwise we might get into a
+	 * situation where we start with target=0 and no TIDs loaded.
 	 */
-	if (PREFETCH_ACTIVE(prefetch))
+	prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
+								   prefetch->prefetchMaxTarget);
+
+	/*
+	 * Read TIDs from the index until the queue is full (with respect to the
+	 * current prefetch target).
+	 */
+	while (!PREFETCH_QUEUE_FULL(prefetch))
 	{
-		/*
-		 * Ramp up the prefetch distance incrementally.
-		 *
-		 * Intentionally done as first, before reading the TIDs into the
-		 * queue, so that there's always at least one item. Otherwise we
-		 * might get into a situation where we start with target=0 and no
-		 * TIDs loaded.
-		 */
-		prefetch->prefetchTarget = Min(prefetch->prefetchTarget + 1,
-									   prefetch->prefetchMaxTarget);
+		IndexPrefetchEntry *entry
+			= prefetch->next_cb(scan, direction, prefetch->data);
 
-		/*
-		 * Now read TIDs from the index until the queue is full (with
-		 * respect to the current prefetch target).
-		 */
-		while (!PREFETCH_FULL(prefetch))
+		/* no more entries in this index scan */
+		if (entry == NULL)
 		{
-			IndexPrefetchEntry *entry
-				= prefetch->next_cb(scan, direction, prefetch->data);
-
-			/* no more entries in this index scan */
-			if (entry == NULL)
-			{
-				prefetch->prefetchDone = true;
-				return;
-			}
-
-			Assert(ItemPointerEquals(&entry->tid, &scan->xs_heaptid));
-
-			/* store the entry and then maybe issue the prefetch request */
-			prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd++)] = *entry;
-
-			/* issue the prefetch request? */
-			if (entry->prefetch)
-				IndexPrefetchHeapPage(scan, prefetch, entry);
+			prefetch->prefetchDone = true;
+			return;
 		}
+
+		Assert(ItemPointerEquals(&entry->tid, &scan->xs_heaptid));
+
+		/* store the entry and then maybe issue the prefetch request */
+		prefetch->queueItems[PREFETCH_QUEUE_INDEX(prefetch->queueEnd++)] = *entry;
+
+		/* issue the prefetch request? */
+		if (entry->prefetch)
+			IndexPrefetchHeapPage(scan, prefetch, entry);
 	}
 }
 
@@ -720,8 +708,24 @@ IndexPrefetchNextEntry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirectio
 	return entry;
 }
 
+/*
+ * IndexPrefetchComputeTarget
+ *		Calculate prefetch distance for the given heap relation.
+ *
+ * We disable prefetching when using direct I/O (when there's no page cache
+ * to prefetch into), and scans where the prefetch distance may change (e.g.
+ * for scrollable cursors).
+ *
+ * In regular cases we look at effective_io_concurrency for the tablepace
+ * (of the heap, not the index), and cap it with plan_rows.
+ *
+ * XXX We cap the target to plan_rows, becausse it's pointless to prefetch
+ * more than we expect to use.
+ *
+ * XXX Maybe we should reduce the value with parallel workers?
+ */
 int
-IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool allow_prefetch)
+IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool prefetch)
 {
 	/*
 	 * XXX No prefetching for direct I/O.
@@ -733,31 +737,40 @@ IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool allow_prefet
 	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
 		return 0;
 
-	/* disable prefetching for cursors etc. */
-	if (!allow_prefetch)
+	/* disable prefetching (for cursors etc.) */
+	if (!prefetch)
 		return 0;
 
-	/*
-	 * Determine number of heap pages to prefetch for this index. This is
-	 * essentially just effective_io_concurrency for the table (or the
-	 * tablespace it's in).
-	 *
-	 * XXX Should this also look at plan.plan_rows and maybe cap the target
-	 * to that? Pointless to prefetch more than we expect to use. Or maybe
-	 * just reset to that value during prefetching, after reading the next
-	 * index page (or rather after rescan)?
-	 *
-	 * XXX Maybe reduce the value with parallel workers?
-	 */
+	/* regular case, look at tablespace effective_io_concurrency */
 	return Min(get_tablespace_io_concurrency(heapRel->rd_rel->reltablespace),
 			   plan_rows);
 }
 
+/*
+ * IndexPrefetchAlloc
+ *		Allocate the index prefetcher.
+ *
+ * The behavior is customized by two callbacks - next_cb, which generates TID
+ * values to put into the prefetch queue, and (optional) cleanup_cb which
+ * releases resources at the end.
+ *
+ * prefetch_max specifies the maximum prefetch distance, i.e. how many TIDs
+ * ahead to keep in the prefetch queue. prefetch_max=0 means prefetching is
+ * disabled.
+ *
+ * data may point to a custom data, associated with the prefetcher.
+ */
 IndexPrefetch *
 IndexPrefetchAlloc(IndexPrefetchNextCB next_cb, IndexPrefetchCleanupCB cleanup_cb,
 				   int prefetch_max, void *data)
 {
 	IndexPrefetch *prefetch = palloc0(sizeof(IndexPrefetch));
+
+	/* the next_cb callback is required */
+	Assert(next_cb);
+
+	/* valid prefetch distance */
+	Assert((prefetch_max >= 0) && (prefetch_max <= MAX_IO_CONCURRENCY));
 
 	prefetch->queueIndex = 0;
 	prefetch->queueStart = 0;
@@ -777,16 +790,35 @@ IndexPrefetchAlloc(IndexPrefetchNextCB next_cb, IndexPrefetchCleanupCB cleanup_c
 	return prefetch;
 }
 
+/*
+ * IndexPrefetchNext
+ *		Read the next entry from the prefetch queue.
+ *
+ * Returns the next TID in the prefetch queue (which might have been prefetched
+ * sometime in the past). If needed, it adds more entries to the queue and does
+ * the prefetching for them.
+ *
+ * Returns IndexPrefetchEntry with the TID and optional data associated with
+ * the TID in the next_cb callback.
+ */
 IndexPrefetchEntry *
 IndexPrefetchNext(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirection direction)
 {
 	/* Do prefetching (if requested/enabled). */
-	IndexPrefetchTIDs(scan, prefetch, direction);
+	IndexPrefetchFillQueue(scan, prefetch, direction);
 
 	/* Read the TID from the queue (or directly from the index). */
 	return IndexPrefetchNextEntry(scan, prefetch, direction);
 }
 
+/*
+ * IndexPrefetchReset
+ *		Reset the prefetch TID, restart the prefetching.
+ *
+ * Useful during rescans etc. This also resets the prefetch target, so that
+ * each rescan does the initial prefetch ramp-up from target=0 to maximum
+ * prefetch distance.
+ */
 void
 IndexPrefetchReset(IndexScanDesc scan, IndexPrefetch *state)
 {
@@ -801,7 +833,12 @@ IndexPrefetchReset(IndexScanDesc scan, IndexPrefetch *state)
 	state->prefetchTarget = 0;
 }
 
-/* XXX print some debug info */
+/*
+ * IndexPrefetchStats
+ *		Log basic runtime debug stats of the prefetcher.
+ *
+ * FIXME Should be only in debug builds, or something like that.
+ */
 void
 IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state)
 {
@@ -816,6 +853,20 @@ IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state)
 		 state->countSkipSequential);
 }
 
+/*
+ * IndexPrefetchEnd
+ *		Release resources associated with the prefetcher.
+ *
+ * This is primarily about the private data the caller might have allocated
+ * in the next_cb, and stored in the data field. We don't know what the
+ * data might contain (e.g. buffers etc.), requiring additional cleanup, so
+ * we call another custom callback.
+ *
+ * Needs to be called at the end of the executor node.
+ *
+ * XXX Maybe if there's no callback, we should just pfree the data? Does
+ * not seem very useful, though.
+ */
 void
 IndexPrefetchEnd(IndexScanDesc scan, IndexPrefetch *state)
 {

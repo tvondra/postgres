@@ -734,7 +734,7 @@ IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool prefetch)
 	 * pretend doing it now, ofc, because we'd not do posix_fadvise(), but
 	 * once the code starts loading into shared buffers, that'd work.
 	 */
-	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
+	if ((io_direct_flags & IO_DIRECT_DATA) != 0)
 		return 0;
 
 	/* disable prefetching (for cursors etc.) */

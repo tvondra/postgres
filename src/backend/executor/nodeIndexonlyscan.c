@@ -97,6 +97,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 	if (scandesc == NULL)
 	{
+		int	prefetch_max;
+
 		/*
 		 * We reach here if the index only scan is not parallel, or if we're
 		 * serially executing an index only scan that was planned to be
@@ -125,6 +127,35 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_NumScanKeys,
 						 node->ioss_OrderByKeys,
 						 node->ioss_NumOrderByKeys);
+
+		/*
+		 * Also initialize index prefetcher. We do this even when prefetching is
+		 * not done (see index_heap_prefetch_calculate_target), because the
+		 * prefetcher is used for all index reads.
+		 *
+		 * We reach here if the index only scan is not parallel, or if we're
+		 * serially executing an index only scan that was planned to be parallel.
+		 *
+		 * XXX Maybe we should enable prefetching, but prefetch only pages that
+		 * are not all-visible (but checking that from the index code seems like a
+		 * violation of layering etc).
+		 *
+		 * XXX This might lead to IOS being slower than plain index scan, if the
+		 * table has a lot of pages that need recheck.
+		 *
+		 * Remember this is index-only scan, because of prefetching. Not the most
+		 * elegant way to pass this info.
+		 *
+		 * XXX Maybe rename the object to "index reader" or something?
+		 */
+		prefetch_max = IndexPrefetchComputeTarget(node->ss.ss_currentRelation,
+												  node->ss.ps.plan->plan_rows,
+												  estate->es_use_prefetching);
+
+		node->ioss_prefetch = IndexPrefetchAlloc(IndexOnlyPrefetchNext,
+												 IndexOnlyPrefetchCleanup,
+												 prefetch_max,
+												 palloc0(sizeof(Buffer)));
 	}
 
 	/*
@@ -508,7 +539,6 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	Relation	currentRelation;
 	LOCKMODE	lockmode;
 	TupleDesc	tupDesc;
-	int			prefetch_max;
 
 	/*
 	 * create state structure
@@ -636,35 +666,6 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	{
 		indexstate->ioss_RuntimeContext = NULL;
 	}
-
-	/*
-	 * Also initialize index prefetcher. We do this even when prefetching is
-	 * not done (see index_heap_prefetch_calculate_target), because the
-	 * prefetcher is used for all index reads.
-	 *
-	 * We reach here if the index only scan is not parallel, or if we're
-	 * serially executing an index only scan that was planned to be parallel.
-	 *
-	 * XXX Maybe we should enable prefetching, but prefetch only pages that
-	 * are not all-visible (but checking that from the index code seems like a
-	 * violation of layering etc).
-	 *
-	 * XXX This might lead to IOS being slower than plain index scan, if the
-	 * table has a lot of pages that need recheck.
-	 *
-	 * Remember this is index-only scan, because of prefetching. Not the most
-	 * elegant way to pass this info.
-	 *
-	 * XXX Maybe rename the object to "index reader" or something?
-	 */
-	prefetch_max = IndexPrefetchComputeTarget(indexstate->ss.ss_currentRelation,
-											  indexstate->ss.ps.plan->plan_rows,
-											  estate->es_use_prefetching);
-
-	indexstate->ioss_prefetch = IndexPrefetchAlloc(IndexOnlyPrefetchNext,
-												   IndexOnlyPrefetchCleanup,
-												   prefetch_max,
-												   palloc0(sizeof(Buffer)));
 
 	/*
 	 * all done.

@@ -102,7 +102,6 @@ typedef struct IndexPrefetchCacheEntry {
  * Also, the cost of not issuing a fadvise call (and doing synchronous I/O
  * later) is much higher than the unnecessary fadvise call. For these reasons
  * it's better to keep the cache fairly small.
- * 
  *
  * The cache is structured as an array of small LRU caches - you may also
  * imagine it as a hash table of LRU caches. To remember a prefetched block,

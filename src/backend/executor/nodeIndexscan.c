@@ -89,8 +89,8 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	TupleTableSlot *slot;
-	IndexPrefetch  *prefetch;
-	IndexPrefetchEntry  *entry;
+	IndexPrefetch *prefetch;
+	IndexPrefetchEntry *entry;
 
 	/*
 	 * extract necessary information from index scan node
@@ -1095,12 +1095,11 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * prefetcher is used for all index reads.
 	 *
 	 * We reach here if the index only scan is not parallel, or if we're
-	 * serially executing an index only scan that was planned to be
-	 * parallel.
+	 * serially executing an index only scan that was planned to be parallel.
 	 *
 	 * XXX Maybe we should enable prefetching, but prefetch only pages that
-	 * are not all-visible (but checking that from the index code seems like
-	 * a violation of layering etc).
+	 * are not all-visible (but checking that from the index code seems like a
+	 * violation of layering etc).
 	 *
 	 * XXX This might lead to IOS being slower than plain index scan, if the
 	 * table has a lot of pages that need recheck.
@@ -1790,7 +1789,7 @@ static IndexPrefetchEntry *
 IndexScanPrefetchNext(IndexScanDesc scan, ScanDirection direction, void *data)
 {
 	IndexPrefetchEntry *entry = NULL;
-	ItemPointer			tid;
+	ItemPointer tid;
 
 	if ((tid = index_getnext_tid(scan, direction)) != NULL)
 	{

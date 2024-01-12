@@ -683,22 +683,22 @@ extern ResultRelInfo *ExecLookupResultRelByOid(ModifyTableState *node,
 
 typedef struct IndexPrefetchEntry
 {
-	ItemPointerData		tid;
+	ItemPointerData tid;
 
 	/* should we prefetch heap page for this TID? */
-	bool				prefetch;
+	bool		prefetch;
 
 	/*
-	 * If a callback is specified, it may store per-tid information. The
-	 * data has to be a single palloc-ed piece of data, so that it can
-	 * be easily pfreed.
+	 * If a callback is specified, it may store per-tid information. The data
+	 * has to be a single palloc-ed piece of data, so that it can be easily
+	 * pfreed.
 	 *
-	 * XXX We could relax this by providing another cleanup callback, but
-	 * that seems unnecessarily complex - we expect the information to be
-	 * very simple, like bool flags or something. Easy to do in a simple
-	 * struct, and perhaps even reuse without pfree/palloc.
+	 * XXX We could relax this by providing another cleanup callback, but that
+	 * seems unnecessarily complex - we expect the information to be very
+	 * simple, like bool flags or something. Easy to do in a simple struct,
+	 * and perhaps even reuse without pfree/palloc.
 	 */
-	void			    *data;
+	void	   *data;
 } IndexPrefetchEntry;
 
 /*
@@ -723,10 +723,10 @@ IndexPrefetch *IndexPrefetchAlloc(IndexPrefetchNextCB next_cb,
 IndexPrefetchEntry *IndexPrefetchNext(IndexScanDesc scan, IndexPrefetch *state,
 									  ScanDirection direction);
 
-void IndexPrefetchReset(IndexScanDesc scan, IndexPrefetch *state);
-void IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state);
-void IndexPrefetchEnd(IndexScanDesc scan, IndexPrefetch *state);
+extern void IndexPrefetchReset(IndexScanDesc scan, IndexPrefetch *state);
+extern void IndexPrefetchStats(IndexScanDesc scan, IndexPrefetch *state);
+extern void IndexPrefetchEnd(IndexScanDesc scan, IndexPrefetch *state);
 
-int IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool allow_prefetch);
+extern int	IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool prefetch);
 
 #endif							/* EXECUTOR_H  */

@@ -131,9 +131,10 @@
  * XXX If we're extra careful / paranoid about uint32, we could reset the
  * cache once the request wraps around.
  */
-typedef struct IndexPrefetchCacheEntry {
-	BlockNumber		block;
-	uint32			request;
+typedef struct IndexPrefetchCacheEntry
+{
+	BlockNumber block;
+	uint32		request;
 } IndexPrefetchCacheEntry;
 
 /*
@@ -179,8 +180,8 @@ typedef struct IndexPrefetchCacheEntry {
  * heap pages it might keep. Maybe just a fraction fraction of the value,
  * say Max(8MB, effective_cache_size / max_connections) or something.
  */
-#define		PREFETCH_LRU_SIZE		8		/* slots in one LRU */
-#define		PREFETCH_LRU_COUNT		128		/* number of LRUs */
+#define		PREFETCH_LRU_SIZE		8	/* slots in one LRU */
+#define		PREFETCH_LRU_COUNT		128 /* number of LRUs */
 #define		PREFETCH_CACHE_SIZE		(PREFETCH_LRU_SIZE * PREFETCH_LRU_COUNT)
 
 /*
@@ -198,33 +199,33 @@ typedef struct IndexPrefetchCacheEntry {
  */
 typedef struct IndexPrefetch
 {
-	int			prefetchTarget;	/* how far we should be prefetching */
+	int			prefetchTarget; /* how far we should be prefetching */
 	int			prefetchMaxTarget;	/* maximum prefetching distance */
 	int			prefetchReset;	/* reset to this distance on rescan */
 	bool		prefetchDone;	/* did we get all TIDs from the index? */
 
 	/* runtime statistics, displayed in EXPLAIN etc. */
 	uint32		countAll;		/* all prefetch requests (including skipped) */
-	uint32		countPrefetch;	/* initicated prefetches (PrefetchBuffer calls) */
+	uint32		countPrefetch;	/* PrefetchBuffer calls */
 	uint32		countSkipSequential;	/* skipped as sequential pattern */
-	uint32		countSkipCached;		/* skipped as recently prefetched */
+	uint32		countSkipCached;	/* skipped as recently prefetched */
 
 	/*
 	 * Queue of TIDs to prefetch.
 	 *
 	 * XXX Sizing for MAX_IO_CONCURRENCY may be overkill, but it seems simpler
-	 * than dynamically adjusting for custom values. However, 1000 entries means
-	 * ~16kB, which means an oversized chunk, and thus always a malloc() call.
-	 * However, we already have the prefetchCache, which is also large enough
-	 * to cause this :-(
+	 * than dynamically adjusting for custom values. However, 1000 entries
+	 * means ~16kB, which means an oversized chunk, and thus always a malloc()
+	 * call. However, we already have the prefetchCache, which is also large
+	 * enough to cause this :-(
 	 *
 	 * XXX However what about the case without prefetching? In that case it
 	 * would be nice to lower the malloc overhead, maybe?
 	 */
-	IndexPrefetchEntry	queueItems[MAX_IO_CONCURRENCY];
-	uint32			queueIndex;	/* next TID to prefetch */
-	uint32			queueStart;	/* first valid TID in queue */
-	uint32			queueEnd;	/* first invalid (empty) TID in queue */
+	IndexPrefetchEntry queueItems[MAX_IO_CONCURRENCY];
+	uint32		queueIndex;		/* next TID to prefetch */
+	uint32		queueStart;		/* first valid TID in queue */
+	uint32		queueEnd;		/* first invalid (empty) TID in queue */
 
 	/*
 	 * A couple of last prefetched blocks, used to check for certain access
@@ -235,24 +236,24 @@ typedef struct IndexPrefetch
 	 * read many items from each page, and we don't want to check many items
 	 * (as that is much more expensive).
 	 */
-	BlockNumber		blockItems[PREFETCH_QUEUE_HISTORY];
-	uint32			blockIndex;	/* index in the block (points to the first
-								 * empty entry)*/
+	BlockNumber blockItems[PREFETCH_QUEUE_HISTORY];
+	uint32		blockIndex;		/* index in the block (points to the first
+								 * empty entry) */
 
 	/*
-	 * Cache of recently prefetched blocks, organized as a hash table of
-	 * small LRU caches.
+	 * Cache of recently prefetched blocks, organized as a hash table of small
+	 * LRU caches.
 	 */
-	uint32					prefetchRequest;
-	IndexPrefetchCacheEntry	prefetchCache[PREFETCH_CACHE_SIZE];
+	uint32		prefetchRequest;
+	IndexPrefetchCacheEntry prefetchCache[PREFETCH_CACHE_SIZE];
 
 
 	/*
 	 * Callback to customize the prefetch (decide which block need to be
 	 * prefetched, etc.)
 	 */
-	IndexPrefetchNextCB		next_cb;		/* read next TID */
-	IndexPrefetchCleanupCB	cleanup_cb;		/* cleanup data */
+	IndexPrefetchNextCB next_cb;	/* read next TID */
+	IndexPrefetchCleanupCB cleanup_cb;	/* cleanup data */
 
 	/*
 	 * If a callback is specified, it may store global state (for all TIDs).
@@ -370,8 +371,8 @@ IndexPrefetchBlockIsSequential(IndexPrefetch *prefetch, BlockNumber block)
 
 	/*
 	 * Check if the last couple blocks are in a sequential pattern. We look
-	 * for a sequential pattern of PREFETCH_QUEUE_HISTORY (8 by default),
-	 * so we look for patterns of 8 pages (64kB) including the new block.
+	 * for a sequential pattern of PREFETCH_QUEUE_HISTORY (8 by default), so
+	 * we look for patterns of 8 pages (64kB) including the new block.
 	 *
 	 * XXX Could it be harmful that we read the queue backwards? Maybe memory
 	 * prefetching works better for the forward direction?
@@ -492,8 +493,8 @@ IndexPrefetchIsCached(IndexPrefetch *prefetch, BlockNumber block)
 
 	/*
 	 * Did we prefetch this block recently? Scan the LRU linearly, and while
-	 * doing that, track the oldest (or empty) entry, so that we know where
-	 * to put the block if we don't find a match.
+	 * doing that, track the oldest (or empty) entry, so that we know where to
+	 * put the block if we don't find a match.
 	 */
 	for (int i = 0; i < PREFETCH_LRU_SIZE; i++)
 	{
@@ -626,7 +627,7 @@ IndexPrefetchFillQueue(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirectio
 	while (!PREFETCH_QUEUE_FULL(prefetch))
 	{
 		IndexPrefetchEntry *entry
-			= prefetch->next_cb(scan, direction, prefetch->data);
+		= prefetch->next_cb(scan, direction, prefetch->data);
 
 		/* no more entries in this index scan */
 		if (entry == NULL)
@@ -666,10 +667,9 @@ IndexPrefetchNextEntry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirectio
 	IndexPrefetchEntry *entry = NULL;
 
 	/*
-	 * With prefetching enabled (even if we already finished reading
-	 * all TIDs from the index scan), we need to return a TID from the
-	 * queue. Otherwise, we just get the next TID from the scan
-	 * directly.
+	 * With prefetching enabled (even if we already finished reading all TIDs
+	 * from the index scan), we need to return a TID from the queue.
+	 * Otherwise, we just get the next TID from the scan directly.
 	 */
 	if (PREFETCH_ENABLED(prefetch))
 	{
@@ -686,7 +686,7 @@ IndexPrefetchNextEntry(IndexScanDesc scan, IndexPrefetch *prefetch, ScanDirectio
 
 		scan->xs_heaptid = entry->tid;
 	}
-	else				/* not prefetching, just do the regular work  */
+	else						/* not prefetching, just do the regular work  */
 	{
 		ItemPointer tid;
 
@@ -730,9 +730,9 @@ IndexPrefetchComputeTarget(Relation heapRel, double plan_rows, bool prefetch)
 	/*
 	 * XXX No prefetching for direct I/O.
 	 *
-	 * XXX Shouldn't we do prefetching even for direct I/O? We would only pretend
-	 * doing it now, ofc, because we'd not do posix_fadvise(), but once the code
-	 * starts loading into shared buffers, that'd work.
+	 * XXX Shouldn't we do prefetching even for direct I/O? We would only
+	 * pretend doing it now, ofc, because we'd not do posix_fadvise(), but
+	 * once the code starts loading into shared buffers, that'd work.
 	 */
 	if ((io_direct_flags & IO_DIRECT_DATA) == 0)
 		return 0;
@@ -780,8 +780,8 @@ IndexPrefetchAlloc(IndexPrefetchNextCB next_cb, IndexPrefetchCleanupCB cleanup_c
 	prefetch->prefetchMaxTarget = prefetch_max;
 
 	/*
-	 * Customize the prefetch to also check visibility map and keep
-	 * the result so that IOS does not need to repeat it.
+	 * Customize the prefetch to also check visibility map and keep the result
+	 * so that IOS does not need to repeat it.
 	 */
 	prefetch->next_cb = next_cb;
 	prefetch->cleanup_cb = cleanup_cb;

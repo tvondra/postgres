@@ -1646,14 +1646,14 @@ ExecutePlan(EState *estate,
 	estate->es_direction = direction;
 
 	/*
-	 * Enable prefetching only if the plan is executed exactly once. We need to
-	 * disable prefetching for cases when the scan direction may change (e.g.
-	 * for scrollable cursors).
+	 * Enable prefetching only if the plan is executed exactly once. We need
+	 * to disable prefetching for cases when the scan direction may change
+	 * (e.g. for scrollable cursors).
 	 *
 	 * XXX It might be possible to improve the prefetching code to handle this
 	 * by "walking back" the TID queue, but it's not clear if it's worth it.
-	 * And if there pauses in between the fetches, the prefetched pages may get
-	 * evicted, wasting the prefetch effort.
+	 * And if there pauses in between the fetches, the prefetched pages may
+	 * get evicted, wasting the prefetch effort.
 	 */
 	estate->es_use_prefetching = execute_once;
 

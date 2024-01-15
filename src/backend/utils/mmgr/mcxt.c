@@ -1701,7 +1701,14 @@ typedef struct MemPool
 
 static MemPool *pool = NULL;
 
-static void MemoryPoolMaybeShrink(Size size);
+static void
+AssertCheckMemPool(void)
+{
+#ifdef ASSERT_CHECKING
+#endif
+}
+
+static void MemoryPoolEnforceSizeLimit(Size request_size);
 
 /* initialize the mempool */
 static void
@@ -1861,7 +1868,7 @@ MemoryPoolAlloc(Size size)
 	AssertCheckEntrySize(size, idx);
 
 	/* maybe size */
-	MemoryPoolMaybeShrink(size);
+	MemoryPoolEnforceSizeLimit(size);
 
 	/* Is it even eligible to be in the cache? */
 	if (idx >= 0)
@@ -2018,7 +2025,44 @@ MemoryPoolFree(void *pointer, Size size)
 }
 
 static void
-MemoryPoolMaybeShrink(Size size)
+MemoryPoolEnforceMaxEntries(void)
+{
+	Size	block_size = MEMPOOL_MAX_BLOCK;
+
+	/* nothing cached, so can't release anything */
+	if (pool->mem_cached == 0)
+		return;
+
+	/* Is it even eligible to be in the cache? */
+	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
+	{
+		while (pool->cache[i])
+		{
+			MemPoolEntry *entry = pool->cache[i];
+
+			/* we're within the limit, bail out */
+			if (entry->count <= pool->maxentries[i])
+				break;
+
+			pool->cache[i] = entry->next;
+
+			free(entry->ptr);
+			entry->ptr = NULL;
+
+			/* add the entry to the freelist */
+			entry->next = pool->free;
+			pool->free = entry;
+		}
+
+		block_size = (block_size >> 1);
+	}
+
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMaxEntries allocated %ld cached %ld\n",
+				  getpid(), pool->mem_allocated, pool->mem_cached);
+}
+
+static void
+MemoryPoolEnforceSizeLimit(Size request_size)
 {
 	int64	threshold,
 			needtofree;
@@ -2037,28 +2081,28 @@ MemoryPoolMaybeShrink(Size size)
 	 * With the new request, would we exceed the memory limit? we need
 	 * to count both the allocated and cached memory.
 	 */
-	if (pool->mem_allocated + pool->mem_cached + size <= pool->mem_allowed)
+	if (pool->mem_allocated + pool->mem_cached + request_size <= pool->mem_allowed)
 		return;
 
 	/*
 	 * How much we need to release? we don't want to allocate just enough
 	 * for the one request, but a bit more, to prevent trashing.
 	 */
-	threshold = Min(Max(0, pool->mem_allowed - 2 * size),
+	threshold = Min(Max(0, pool->mem_allowed - 2 * request_size),
 					pool->mem_allowed * 0.75);
 
 	/*
 	 * How much we need to free, to get under the memory limit? Can't free
 	 * more than we have in the cache, though.
 	 */
-	needtofree = (pool->mem_allocated + pool->mem_cached + size) - threshold;
+	needtofree = (pool->mem_allocated + pool->mem_cached + request_size) - threshold;
 	needtofree = Min(needtofree, pool->mem_cached);
 
 	MEMPOOL_DEBUG("%d MemoryPoolMaybeShrink total %ld cached %ld threshold %ld needtofree %ld\n",
 				  getpid(), pool->mem_allocated + pool->mem_cached, pool->mem_cached, threshold, needtofree);
 
 	Assert(threshold >= 0);
-	Assert(threshold < (pool->mem_allocated + pool->mem_cached + size));
+	Assert(threshold < (pool->mem_allocated + pool->mem_cached + request_size));
 
 	/* Is it even eligible to be in the cache? */
 	for (int i = MEMPOOL_SIZES - 1; i >= 0; i--)
@@ -2090,6 +2134,50 @@ MemoryPoolMaybeShrink(Size size)
 		block_size = (block_size >> 1);
 	}
 
-	MEMPOOL_DEBUG("%d MemoryPoolMaybeRelease allocated %ld cached %ld needtofree %ld\n",
+	MEMPOOL_DEBUG("%d MemoryPoolEnforceMemoryLimit allocated %ld cached %ld needtofree %ld\n",
 				  getpid(), pool->mem_allocated, pool->mem_cached, needtofree);
+}
+
+void
+MemoryPoolSetSizeLimit(int64 size)
+{
+	Size	blksize = MEMPOOL_MIN_BLOCK;
+	Size	maxsize;
+
+	Assert(pool);
+
+	pool->mem_allowed = size;
+
+	/* also update the max number of entries for each class size */
+
+	if (size > 0)
+		maxsize = size / MEMPOOL_SIZES;
+	else
+		maxsize = MEMPOOL_SIZE_MAX;
+
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->maxentries[i] = (maxsize / blksize);
+		blksize *= 2;
+	}
+
+	/* enforce the updated maxentries limit */
+	MemoryPoolEnforceMaxEntries();
+
+	/* also enforce the general memory limit  */
+	MemoryPoolEnforceSizeLimit(0);
+}
+
+void
+MemoryPoolGetSizeAndCounts(int64 *mem_allowed, int64 *mem_allocated, int64 *mem_cached,
+						   int64 *cache_hits, int64 *cache_misses)
+{
+	Assert(pool);
+
+	*mem_allowed = pool->mem_allowed;
+	*mem_allocated = pool->mem_allocated;
+	*mem_cached = pool->mem_cached;
+
+	*cache_hits = pool->cache_hit;
+	*cache_misses = pool->cache_miss;
 }

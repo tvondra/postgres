@@ -1646,6 +1646,9 @@ pchomp(const char *in)
 #define MEMPOOL_SIZES		14	/* 1kB -> 8MB */
 #define MEMPOOL_SLOTS		1024	/* blocks to keep for each size */
 
+/* max amount of memory to keep in single slot */
+#define MEMPOOL_SIZE_MAX	(8*1024L*1024L)
+
 #ifdef MEMPOOL_DEBUG
 
 #undef MEMPOOL_DEBUG
@@ -1662,6 +1665,7 @@ pchomp(const char *in)
 /* entries for a simple linked list */
 typedef struct MemPoolEntry
 {
+	int		count;	/* number of entries on this freelist */
 	void   *ptr;	/* allocated block (NULL in empty entries) */
 	struct	MemPoolEntry *next;
 } MemPoolEntry;
@@ -1679,6 +1683,9 @@ typedef struct MemPool
 
 	/* pre-allocated entries for cache of free-d blocks */
 	MemPoolEntry	entries[MEMPOOL_SIZES * MEMPOOL_SLOTS];
+
+	/* maximum number of entries in this size class */
+	int				maxentries[MEMPOOL_SIZES];
 
 	/* head of freelist (entries from the array) */
 	MemPoolEntry   *free;
@@ -1700,6 +1707,8 @@ static void MemoryPoolMaybeShrink(Size size);
 static void
 MemoryPoolInit(void)
 {
+	Size	size = MEMPOOL_MIN_BLOCK;
+
 	/* bail out if already initialized */
 	if (pool)
 		return;
@@ -1717,6 +1726,13 @@ MemoryPoolInit(void)
 			pool->entries[i].next = &pool->entries[i+1];
 		else
 			pool->entries[i].next = NULL;
+	}
+
+	/* set default maximum counts of entries */
+	for (int i = 0; i < MEMPOOL_SIZES; i++)
+	{
+		pool->maxentries[i] = (MEMPOOL_SIZE_MAX / size);
+		size *= 2;
 	}
 }
  
@@ -1920,6 +1936,30 @@ MemoryPoolRealloc(void *pointer, Size oldsize, Size newsize)
 	return ptr;
 }
 
+/**/
+static bool
+MemoryPoolShouldCache(int index)
+{
+	MemPoolEntry   *entry = pool->cache[index];
+	int				nentries;
+	int				maxentries;
+
+	/* Bail out if no freelist entries. */
+	if (!pool->free)
+		return false;
+
+	/* Memory limit set, and we've already reached it. */
+	if ((pool->mem_allowed > 0) &&
+		(pool->mem_allocated + pool->mem_cached > pool->mem_allowed))
+		return false;
+
+	/* Is there enough space in this slot? */
+	nentries = (entry != NULL) ? entry->count : 0;
+	maxentries = pool->maxentries[index];
+
+	return (nentries < maxentries);
+}
+
 void
 MemoryPoolFree(void *pointer, Size size)
 {
@@ -1939,12 +1979,10 @@ MemoryPoolFree(void *pointer, Size size)
 	if (idx >= 0)
 	{
 		/*
-		 * Do we have entries on the freelist? Can we keep the memory, or did
-		 * we reach the memory limit?
+		 * Do we have entries on the freelist for the given size? Can we
+		 * keep the memory, or did we reach the memory limit?
 		 */
-		if (pool->free &&
-			((pool->mem_allowed == 0) ||
-			 (pool->mem_allocated + pool->mem_cached <= pool->mem_allowed)))
+		if (MemoryPoolShouldCache(idx))
 		{
 			MemPoolEntry *entry;
 
@@ -1955,6 +1993,9 @@ MemoryPoolFree(void *pointer, Size size)
 			pool->cache[idx] = entry;
 
 			entry->ptr = pointer;
+
+			/* update number of entries in this list */
+			entry->count = (entry->next) ? (entry->next->count + 1) : 1;
 
 			/* update accounting */
 			pool->mem_cached += size;

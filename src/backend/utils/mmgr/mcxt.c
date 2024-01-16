@@ -1694,6 +1694,7 @@ typedef struct MemPool
 	int64 cache_hit;
 	int64 cache_miss;
 
+	/* memory limits */
 	int64 mem_allowed;
 	int64 mem_allocated;
 	int64 mem_cached;

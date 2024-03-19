@@ -108,7 +108,8 @@ reconstruct_from_incremental_file(char *input_filename,
 								  uint8 **checksum_payload,
 								  bool debug,
 								  bool dry_run,
-								  int prefetch_target)
+								  int prefetch_target,
+								  CopyMethod copy_method)
 {
 	rfile	  **source;
 	rfile	   *latest_source = NULL;
@@ -337,7 +338,7 @@ reconstruct_from_incremental_file(char *input_filename,
 	 */
 	if (copy_source != NULL)
 		copy_file(copy_source->filename, output_filename,
-				  &checksum_ctx, dry_run);
+				  &checksum_ctx, dry_run, copy_method);
 	else
 	{
 		write_reconstructed_file(input_filename, output_filename,

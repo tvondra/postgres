@@ -29,6 +29,7 @@ extern void reconstruct_from_incremental_file(char *input_filename,
 											  uint8 **checksum_payload,
 											  bool debug,
 											  bool dry_run,
-											  int prefetch_target);
+											  int prefetch_target,
+											  CopyMethod copy_method);
 
 #endif

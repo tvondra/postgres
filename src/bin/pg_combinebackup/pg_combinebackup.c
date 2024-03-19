@@ -73,6 +73,7 @@ typedef struct cb_options
 	bool		no_manifest;
 	int			prefetch_target;
 	DataDirSyncMethod sync_method;
+	CopyMethod	copy_method;
 } cb_options;
 
 /*
@@ -134,6 +135,8 @@ main(int argc, char *argv[])
 		{"no-manifest", no_argument, NULL, 2},
 		{"sync-method", required_argument, NULL, 3},
 		{"prefetch", no_argument, NULL, 4},
+		{"clone", no_argument, NULL, 5},
+		{"copy-file-range", no_argument, NULL, 6},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -161,6 +164,7 @@ main(int argc, char *argv[])
 	memset(&opt, 0, sizeof(opt));
 	opt.manifest_checksums = CHECKSUM_TYPE_CRC32C;
 	opt.sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
+	opt.copy_method = COPY_METHOD_COPY;
 
 	/* process command-line options */
 	while ((c = getopt_long(argc, argv, "dnNPo:T:",
@@ -199,6 +203,12 @@ main(int argc, char *argv[])
 				break;
 			case 4:
 				opt.prefetch_target = PREFETCH_TARGET;
+				break;
+			case 5:
+				opt.copy_method = COPY_METHOD_CLONE;
+				break;
+			case 6:
+				opt.copy_method = COPY_METHOD_COPY_FILE_RANGE;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -704,6 +714,8 @@ help(const char *progname)
 			 "                            use algorithm for manifest checksums\n"));
 	printf(_("      --no-manifest         suppress generation of backup manifest\n"));
 	printf(_("      --sync-method=METHOD  set method for syncing files to disk\n"));
+	printf(_("      --clone               clone (reflink) instead of copying files\n"));
+	printf(_("      --copy-file-range     copy using copy_file_range() syscall\n"));
 	printf(_("  -?, --help                show this help, then exit\n"));
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
@@ -946,7 +958,8 @@ process_directory_recursively(Oid tsoid,
 											  &checksum_payload,
 											  opt->debug,
 											  opt->dry_run,
-											  opt->prefetch_target);
+											  opt->prefetch_target,
+											  opt->copy_method);
 		}
 		else
 		{
@@ -1002,7 +1015,8 @@ process_directory_recursively(Oid tsoid,
 
 			/* Actually copy the file. */
 			snprintf(ofullpath, MAXPGPATH, "%s/%s", ofulldir, de->d_name);
-			copy_file(ifullpath, ofullpath, &checksum_ctx, opt->dry_run);
+			copy_file(ifullpath, ofullpath, &checksum_ctx, opt->dry_run,
+					  opt->copy_method);
 
 			/*
 			 * If copy_file() performed a checksum calculation for us, then

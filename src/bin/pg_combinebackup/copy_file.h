@@ -15,6 +15,7 @@
 #include "common/checksum_helper.h"
 #include "common/file_utils.h"
 
+/* XXX do we even want this? how does pg_upgrade to this? */
 typedef enum CopyFileMethod
 {
 	PG_COPYFILE_FALLBACK = 0x1,

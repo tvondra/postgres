@@ -99,10 +99,15 @@ static void cleanup_directories_atexit(void);
 static void create_output_directory(char *dirname, cb_options *opt);
 static void help(const char *progname);
 static bool parse_oid(char *s, Oid *result);
-static void process_directory_recursively(
-										  Oid tsoid, char *input_directory, char *output_directory,
-										  char *relative_path, int n_prior_backups, char **prior_backup_dirs,
-										  manifest_data **manifests, manifest_writer *mwriter, cb_options *opt);
+static void process_directory_recursively(Oid tsoid,
+										  char *input_directory,
+										  char *output_directory,
+										  char *relative_path,
+										  int n_prior_backups,
+										  char **prior_backup_dirs,
+										  manifest_data **manifests,
+										  manifest_writer *mwriter,
+										  cb_options *opt);
 static int	read_pg_version_file(char *directory);
 static void remember_to_cleanup_directory(char *target_path, bool rmtopdir);
 static void reset_directory_cleanup_list(void);
@@ -156,8 +161,8 @@ main(int argc, char *argv[])
 	opt.copy_method = 0;
 
 	/* process command-line options */
-	while ((c = getopt_long(argc, argv, "dnNPo:T:", long_options, &optindex)) !=
-		   -1)
+	while ((c = getopt_long(argc, argv, "dnNPo:T:",
+							long_options, &optindex)) != -1)
 	{
 		switch (c)
 		{
@@ -178,8 +183,10 @@ main(int argc, char *argv[])
 				add_tablespace_mapping(&opt, optarg);
 				break;
 			case 1:
-				if (!pg_checksum_parse_type(optarg, &opt.manifest_checksums))
-					pg_fatal("unrecognized checksum algorithm: \"%s\"", optarg);
+				if (!pg_checksum_parse_type(optarg,
+											&opt.manifest_checksums))
+					pg_fatal("unrecognized checksum algorithm: \"%s\"",
+							 optarg);
 				break;
 			case 2:
 				opt.no_manifest = true;
@@ -295,8 +302,7 @@ main(int argc, char *argv[])
 		 * won't have the WAL ranges for the resulting manifest.
 		 */
 		if (manifests[n_prior_backups] == NULL)
-			pg_fatal("can't generate a manifest because no manifest is available for "
-					 "the final input backup");
+			pg_fatal("can't generate a manifest because no manifest is available for the final input backup");
 	}
 	else
 		mwriter = NULL;
@@ -308,15 +314,15 @@ main(int argc, char *argv[])
 	{
 		pg_log_debug("generating \"%s/backup_label\"", opt.output);
 		last_backup_label->cursor = 0;
-		write_backup_label(opt.output, last_backup_label, opt.manifest_checksums,
-						   mwriter);
+		write_backup_label(opt.output, last_backup_label,
+						   opt.manifest_checksums, mwriter);
 	}
 
 	/* Process everything that's not part of a user-defined tablespace. */
 	pg_log_debug("processing backup directory \"%s\"", last_input_dir);
-	process_directory_recursively(InvalidOid, last_input_dir, opt.output, NULL,
-								  n_prior_backups, prior_backup_dirs, manifests,
-								  mwriter, &opt);
+	process_directory_recursively(InvalidOid, last_input_dir, opt.output,
+								  NULL, n_prior_backups, prior_backup_dirs,
+								  manifests, mwriter, &opt);
 
 	/* Process user-defined tablespaces. */
 	for (ts = tablespaces; ts != NULL; ts = ts->next)
@@ -332,15 +338,16 @@ main(int argc, char *argv[])
 		{
 			char		linkpath[MAXPGPATH];
 
-			snprintf(linkpath, MAXPGPATH, "%s/pg_tblspc/%u", opt.output, ts->oid);
+			snprintf(linkpath, MAXPGPATH, "%s/pg_tblspc/%u", opt.output,
+					 ts->oid);
 
 			if (opt.dry_run)
 				pg_log_debug("would create symbolic link from \"%s\" to \"%s\"",
 							 linkpath, ts->new_dir);
 			else
 			{
-				pg_log_debug("creating symbolic link from \"%s\" to \"%s\"", linkpath,
-							 ts->new_dir);
+				pg_log_debug("creating symbolic link from \"%s\" to \"%s\"",
+							 linkpath, ts->new_dir);
 				if (symlink(ts->new_dir, linkpath) != 0)
 					pg_fatal("could not create symbolic link from \"%s\" to \"%s\": %m",
 							 linkpath, ts->new_dir);
@@ -354,19 +361,21 @@ main(int argc, char *argv[])
 			{
 				pg_log_debug("creating directory \"%s\"", ts->new_dir);
 				if (pg_mkdir_p(ts->new_dir, pg_dir_create_mode) == -1)
-					pg_fatal("could not create directory \"%s\": %m", ts->new_dir);
+					pg_fatal("could not create directory \"%s\": %m",
+							 ts->new_dir);
 			}
 		}
 
 		/* OK, now handle the directory contents. */
-		process_directory_recursively(ts->oid, ts->old_dir, ts->new_dir, NULL,
-									  n_prior_backups, prior_backup_dirs, manifests,
-									  mwriter, &opt);
+		process_directory_recursively(ts->oid, ts->old_dir, ts->new_dir,
+									  NULL, n_prior_backups, prior_backup_dirs,
+									  manifests, mwriter, &opt);
 	}
 
 	/* Finalize the backup_manifest, if we're generating one. */
 	if (mwriter != NULL)
-		finalize_manifest(mwriter, manifests[n_prior_backups]->first_wal_range);
+		finalize_manifest(mwriter,
+						  manifests[n_prior_backups]->first_wal_range);
 
 	/* fsync that output directory unless we've been told not to do so */
 	if (!opt.no_sync)
@@ -422,9 +431,7 @@ add_tablespace_mapping(cb_options *opt, char *arg)
 			*dst_ptr++ = *arg_ptr;
 	}
 	if (!tsmap->old_dir[0] || !tsmap->new_dir[0])
-		pg_fatal(
-				 "invalid tablespace mapping format \"%s\", must be \"OLDDIR=NEWDIR\"",
-				 arg);
+		pg_fatal("invalid tablespace mapping format \"%s\", must be \"OLDDIR=NEWDIR\"", arg);
 
 	/*
 	 * All tablespaces are created with absolute directories, so specifying a
@@ -496,8 +503,8 @@ check_backup_label_files(int n_backups, char **backup_dirs)
 			pg_fatal("could not close \"%s\": %m", pathbuf);
 
 		/* Parse the file contents. */
-		parse_backup_label(pathbuf, buf, &start_tli, &start_lsn, &previous_tli,
-						   &previous_lsn);
+		parse_backup_label(pathbuf, buf, &start_tli, &start_lsn,
+						   &previous_tli, &previous_lsn);
 
 		/*
 		 * Sanity checks.
@@ -508,19 +515,18 @@ check_backup_label_files(int n_backups, char **backup_dirs)
 		 * we don't have that information.
 		 */
 		if (i > 0 && previous_tli == 0)
-			pg_fatal("backup at \"%s\" is a full backup, but only the first backup "
-					 "should be a full backup",
+			pg_fatal("backup at \"%s\" is a full backup, but only the first backup should be a full backup",
 					 backup_dirs[i]);
 		if (i == 0 && previous_tli != 0)
-			pg_fatal("backup at \"%s\" is an incremental backup, but the first "
-					 "backup should be a full backup",
+			pg_fatal("backup at \"%s\" is an incremental backup, but the first backup should be a full backup",
 					 backup_dirs[i]);
 		if (i < n_backups - 1 && start_tli != check_tli)
 			pg_fatal("backup at \"%s\" starts on timeline %u, but expected %u",
 					 backup_dirs[i], start_tli, check_tli);
 		if (i < n_backups - 1 && start_lsn != check_lsn)
 			pg_fatal("backup at \"%s\" starts at LSN %X/%X, but expected %X/%X",
-					 backup_dirs[i], LSN_FORMAT_ARGS(start_lsn),
+					 backup_dirs[i],
+					 LSN_FORMAT_ARGS(start_lsn),
 					 LSN_FORMAT_ARGS(check_lsn));
 		check_tli = previous_tli;
 		check_lsn = previous_lsn;
@@ -572,7 +578,8 @@ check_control_files(int n_backups, char **backup_dirs)
 
 		/* Can't interpret control file if not current version. */
 		if (control_file->pg_control_version != PG_CONTROL_VERSION)
-			pg_fatal("%s: unexpected control file version", controlpath);
+			pg_fatal("%s: unexpected control file version",
+					 controlpath);
 
 		/* System identifiers should all match. */
 		if (i == n_backups - 1)
@@ -698,23 +705,16 @@ help(const char *progname)
 	printf(_("\nOptions:\n"));
 	printf(_("  -d, --debug               generate lots of debugging output\n"));
 	printf(_("  -n, --dry-run             don't actually do anything\n"));
-	printf(_("  -N, --no-sync             do not wait for changes to be written "
-			 "safely to disk\n"));
+	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("  -o, --output              output directory\n"));
-	printf(_(
-			 "  -T, --tablespace-mapping=OLDDIR=NEWDIR\n"
+	printf(_("  -T, --tablespace-mapping=OLDDIR=NEWDIR\n"
 			 "                            relocate tablespace in OLDDIR to NEWDIR\n"));
-	printf(
-		   _("      --manifest-checksums=SHA{224,256,384,512}|CRC32C|NONE\n"
+	printf(_("      --manifest-checksums=SHA{224,256,384,512}|CRC32C|NONE\n"
 			 "                            use algorithm for manifest checksums\n"));
-	printf(_(
-			 "      --no-manifest         suppress generation of backup manifest\n"));
-	printf(
-		   _("      --sync-method=METHOD  set method for syncing files to disk\n"));
-	printf(_("      --clone               clone (reflink) instead of copying "
-			 "files\n"));
-	printf(
-		   _("      --copy-file-range     copy using copy_file_range() syscall\n"));
+	printf(_("      --no-manifest         suppress generation of backup manifest\n"));
+	printf(_("      --sync-method=METHOD  set method for syncing files to disk\n"));
+	printf(_("      --clone               clone (reflink) instead of copying files\n"));
+	printf(_("      --copy-file-range     copy using copy_file_range() syscall\n"));
 	printf(_("  -?, --help                show this help, then exit\n"));
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
@@ -761,10 +761,15 @@ parse_oid(char *s, Oid *result)
  * the locations of those previous backups.
  */
 static void
-process_directory_recursively(
-							  Oid tsoid, char *input_directory, char *output_directory,
-							  char *relative_path, int n_prior_backups, char **prior_backup_dirs,
-							  manifest_data **manifests, manifest_writer *mwriter, cb_options *opt)
+process_directory_recursively(Oid tsoid,
+							  char *input_directory,
+							  char *output_directory,
+							  char *relative_path,
+							  int n_prior_backups,
+							  char **prior_backup_dirs,
+							  manifest_data **manifests,
+							  manifest_writer *mwriter,
+							  cb_options *opt)
 {
 	char		ifulldir[MAXPGPATH];
 	char		ofulldir[MAXPGPATH];
@@ -817,11 +822,13 @@ process_directory_recursively(
 	}
 	else
 	{
-		snprintf(ifulldir, MAXPGPATH, "%s/%s", input_directory, relative_path);
-		snprintf(ofulldir, MAXPGPATH, "%s/%s", output_directory, relative_path);
+		snprintf(ifulldir, MAXPGPATH, "%s/%s", input_directory,
+				 relative_path);
+		snprintf(ofulldir, MAXPGPATH, "%s/%s", output_directory,
+				 relative_path);
 		if (OidIsValid(tsoid))
-			snprintf(manifest_prefix, MAXPGPATH, "pg_tblspc/%u/%s/", tsoid,
-					 relative_path);
+			snprintf(manifest_prefix, MAXPGPATH, "pg_tblspc/%u/%s/",
+					 tsoid, relative_path);
 		else
 			snprintf(manifest_prefix, MAXPGPATH, "%s/", relative_path);
 	}
@@ -857,7 +864,8 @@ process_directory_recursively(
 		pg_checksum_context checksum_ctx;
 
 		/* Ignore "." and ".." entries. */
-		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+		if (strcmp(de->d_name, ".") == 0 ||
+			strcmp(de->d_name, "..") == 0)
 			continue;
 
 		/* Construct input path. */
@@ -893,9 +901,11 @@ process_directory_recursively(
 						 de->d_name);
 
 			/* And recurse. */
-			process_directory_recursively(tsoid, input_directory, output_directory,
-										  new_relative_path, n_prior_backups,
-										  prior_backup_dirs, manifests, mwriter, opt);
+			process_directory_recursively(tsoid,
+										  input_directory, output_directory,
+										  new_relative_path,
+										  n_prior_backups, prior_backup_dirs,
+										  manifests, mwriter, opt);
 			continue;
 		}
 
@@ -913,37 +923,47 @@ process_directory_recursively(
 		 * Skip the backup_label and backup_manifest files; they require
 		 * special handling and are handled elsewhere.
 		 */
-		if (relative_path == NULL && (strcmp(de->d_name, "backup_label") == 0 ||
-									  strcmp(de->d_name, "backup_manifest") == 0))
+		if (relative_path == NULL &&
+			(strcmp(de->d_name, "backup_label") == 0 ||
+			 strcmp(de->d_name, "backup_manifest") == 0))
 			continue;
 
 		/*
 		 * If it's an incremental file, hand it off to the reconstruction
 		 * code, which will figure out what to do.
 		 */
-		if (strncmp(de->d_name, INCREMENTAL_PREFIX, INCREMENTAL_PREFIX_LENGTH) ==
-			0)
+		if (strncmp(de->d_name, INCREMENTAL_PREFIX,
+					INCREMENTAL_PREFIX_LENGTH) == 0)
 		{
 			/* Output path should not include "INCREMENTAL." prefix. */
 			snprintf(ofullpath, MAXPGPATH, "%s/%s", ofulldir,
 					 de->d_name + INCREMENTAL_PREFIX_LENGTH);
+
 
 			/* Manifest path likewise omits incremental prefix. */
 			snprintf(manifest_path, MAXPGPATH, "%s%s", manifest_prefix,
 					 de->d_name + INCREMENTAL_PREFIX_LENGTH);
 
 			/* Reconstruction logic will do the rest. */
-			reconstruct_from_incremental_file(
-											  ifullpath, ofullpath, relative_path,
-											  de->d_name + INCREMENTAL_PREFIX_LENGTH, n_prior_backups,
-											  prior_backup_dirs, manifests, manifest_path, checksum_type,
-											  &checksum_length, &checksum_payload, opt->debug, opt->dry_run,
+			reconstruct_from_incremental_file(ifullpath, ofullpath,
+											  relative_path,
+											  de->d_name + INCREMENTAL_PREFIX_LENGTH,
+											  n_prior_backups,
+											  prior_backup_dirs,
+											  manifests,
+											  manifest_path,
+											  checksum_type,
+											  &checksum_length,
+											  &checksum_payload,
+											  opt->debug,
+											  opt->dry_run,
 											  opt->copy_method);
 		}
 		else
 		{
 			/* Construct the path that the backup_manifest will use. */
-			snprintf(manifest_path, MAXPGPATH, "%s%s", manifest_prefix, de->d_name);
+			snprintf(manifest_path, MAXPGPATH, "%s%s", manifest_prefix,
+					 de->d_name);
 
 			/*
 			 * It's not an incremental file, so we need to copy the entire
@@ -953,11 +973,13 @@ process_directory_recursively(
 			 * backup_manifest for the final input directory, we can save some
 			 * work by reusing that checksum instead of computing a new one.
 			 */
-			if (checksum_type != CHECKSUM_TYPE_NONE && latest_manifest != NULL)
+			if (checksum_type != CHECKSUM_TYPE_NONE &&
+				latest_manifest != NULL)
 			{
 				manifest_file *mfile;
 
-				mfile = manifest_files_lookup(latest_manifest->files, manifest_path);
+				mfile = manifest_files_lookup(latest_manifest->files,
+											  manifest_path);
 				if (mfile == NULL)
 				{
 					char	   *bmpath;
@@ -966,9 +988,10 @@ process_directory_recursively(
 					 * The directory is out of sync with the backup_manifest,
 					 * so emit a warning.
 					 */
-					bmpath = psprintf("%s/%s", input_directory, "backup_manifest");
-					pg_log_warning("\"%s\" contains no entry for \"%s\"", bmpath,
-								   manifest_path);
+					bmpath = psprintf("%s/%s", input_directory,
+									  "backup_manifest");
+					pg_log_warning("\"%s\" contains no entry for \"%s\"",
+								   bmpath, manifest_path);
 					pfree(bmpath);
 				}
 				else if (mfile->checksum_type == checksum_type)
@@ -1001,7 +1024,8 @@ process_directory_recursively(
 			if (checksum_ctx.type != CHECKSUM_TYPE_NONE && !opt->dry_run)
 			{
 				checksum_payload = pg_malloc(PG_CHECKSUM_MAX_LENGTH);
-				checksum_length = pg_checksum_final(&checksum_ctx, checksum_payload);
+				checksum_length = pg_checksum_final(&checksum_ctx,
+													checksum_payload);
 			}
 		}
 
@@ -1027,8 +1051,10 @@ process_directory_recursively(
 				pg_fatal("could not stat file \"%s\": %m", ofullpath);
 
 			/* OK, now do the work. */
-			add_file_to_manifest(mwriter, manifest_path, sb.st_size, sb.st_mtime,
-								 checksum_type, checksum_length, checksum_payload);
+			add_file_to_manifest(mwriter, manifest_path,
+								 sb.st_size, sb.st_mtime,
+								 checksum_type, checksum_length,
+								 checksum_payload);
 		}
 
 		/* Avoid leaking memory. */
@@ -1136,8 +1162,7 @@ reset_directory_cleanup_list(void)
  * final backup in the backup chain.
  */
 static cb_tablespace *
-scan_for_existing_tablespaces(char *pathname,
-							  cb_options *opt)
+scan_for_existing_tablespaces(char *pathname, cb_options *opt)
 {
 	char		pg_tblspc[MAXPGPATH];
 	DIR		   *dir;
@@ -1170,8 +1195,7 @@ scan_for_existing_tablespaces(char *pathname,
 		/* Ignore any file name that doesn't look like a proper OID. */
 		if (!parse_oid(de->d_name, &oid))
 		{
-			pg_log_debug(
-						 "skipping \"%s\" because the filename is not a legal tablespace OID",
+			pg_log_debug("skipping \"%s\" because the filename is not a legal tablespace OID",
 						 tblspcdir);
 			continue;
 		}
@@ -1182,8 +1206,7 @@ scan_for_existing_tablespaces(char *pathname,
 			exit(1);
 		if (type != PGFILETYPE_LNK && type != PGFILETYPE_DIR)
 		{
-			pg_log_debug("skipping \"%s\" because it is neither a symbolic link nor "
-						 "a directory",
+			pg_log_debug("skipping \"%s\" because it is neither a symbolic link nor a directory",
 						 tblspcdir);
 			continue;
 		}
@@ -1203,7 +1226,8 @@ scan_for_existing_tablespaces(char *pathname,
 			/* Read the link target. */
 			link_length = readlink(tblspcdir, link_target, sizeof(link_target));
 			if (link_length < 0)
-				pg_fatal("could not read symbolic link \"%s\": %m", tblspcdir);
+				pg_fatal("could not read symbolic link \"%s\": %m",
+						 tblspcdir);
 			if (link_length >= sizeof(link_target))
 				pg_fatal("symbolic link \"%s\" is too long", tblspcdir);
 			link_target[link_length] = '\0';
@@ -1230,7 +1254,8 @@ scan_for_existing_tablespaces(char *pathname,
 
 			/* Every non-in-place tablespace must be mapped. */
 			if (tsmap == NULL)
-				pg_fatal("tablespace at \"%s\" has no tablespace mapping", link_target);
+				pg_fatal("tablespace at \"%s\" has no tablespace mapping",
+						 link_target);
 		}
 		else
 		{

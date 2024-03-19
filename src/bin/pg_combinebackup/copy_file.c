@@ -77,6 +77,8 @@ opt_errinfo(const char *addon_errmsg)
 		return "";
 
 	strcpy(buf, " ");
+
+	/* XXX isn't this broken? this returns pointer to local variable */
 	return strncat(buf, addon_errmsg, sizeof(buf) - 2);
 }
 
@@ -93,6 +95,7 @@ pg_copyfile(const char *src, const char *dest, const char *addon_errmsg,
 	int			dest_fd;
 	uint8	   *buffer;
 
+	/* XXX where does the 50 blocks come from? larger/smaller? */
 	/* copy in fairly large chunks for best efficiency */
 	const int	buffer_size = 50 * BLCKSZ;
 

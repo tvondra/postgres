@@ -46,16 +46,20 @@ typedef struct rfile
 	off_t		highest_offset_read;
 } rfile;
 
-static void debug_reconstruction(int n_source, rfile **sources, bool dry_run);
+static void debug_reconstruction(int n_source,
+								 rfile **sources,
+								 bool dry_run);
 static unsigned find_reconstructed_block_length(rfile *s);
 static rfile *make_incremental_rfile(char *filename);
 static rfile *make_rfile(char *filename, bool missing_ok);
 static void write_reconstructed_file(char *input_filename,
 									 char *output_filename,
-									 unsigned block_length, rfile **sourcemap,
+									 unsigned block_length,
+									 rfile **sourcemap,
 									 off_t *offsetmap,
 									 pg_checksum_context *checksum_ctx,
-									 bool debug, bool dry_run);
+									 bool debug,
+									 bool dry_run);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
 
 /*
@@ -74,12 +78,19 @@ static void read_bytes(rfile *rf, void *buffer, unsigned length);
  * an array of pathnames where those backups can be found.
  */
 void
-reconstruct_from_incremental_file(
-								  char *input_filename, char *output_filename, char *relative_path,
-								  char *bare_file_name, int n_prior_backups, char **prior_backup_dirs,
-								  manifest_data **manifests, char *manifest_path,
-								  pg_checksum_type checksum_type, int *checksum_length,
-								  uint8 **checksum_payload, bool debug, bool dry_run,
+reconstruct_from_incremental_file(char *input_filename,
+								  char *output_filename,
+								  char *relative_path,
+								  char *bare_file_name,
+								  int n_prior_backups,
+								  char **prior_backup_dirs,
+								  manifest_data **manifests,
+								  char *manifest_path,
+								  pg_checksum_type checksum_type,
+								  int *checksum_length,
+								  uint8 **checksum_payload,
+								  bool debug,
+								  bool dry_run,
 								  CopyFileMethod copy_method)
 {
 	rfile	  **source;
@@ -157,8 +168,8 @@ reconstruct_from_incremental_file(
 		 * Look for the full file in the previous backup. If not found, then
 		 * look for an incremental file instead.
 		 */
-		snprintf(source_filename, MAXPGPATH, "%s/%s/%s", prior_backup_dirs[sidx],
-				 relative_path, bare_file_name);
+		snprintf(source_filename, MAXPGPATH, "%s/%s/%s",
+				 prior_backup_dirs[sidx], relative_path, bare_file_name);
 		if ((s = make_rfile(source_filename, true)) == NULL)
 		{
 			snprintf(source_filename, MAXPGPATH, "%s/%s/INCREMENTAL.%s",
@@ -221,7 +232,8 @@ reconstruct_from_incremental_file(
 			{
 				uint64		expected_length;
 
-				expected_length = (uint64) latest_source->truncation_block_length;
+				expected_length =
+					(uint64) latest_source->truncation_block_length;
 				expected_length *= BLCKSZ;
 				if (expected_length == sb.st_size)
 				{
@@ -242,7 +254,8 @@ reconstruct_from_incremental_file(
 		{
 			BlockNumber b = s->relative_block_numbers[i];
 
-			if (b < latest_source->truncation_block_length && sourcemap[b] == NULL)
+			if (b < latest_source->truncation_block_length &&
+				sourcemap[b] == NULL)
 			{
 				sourcemap[b] = s;
 				offsetmap[b] = s->header_length + (i * BLCKSZ);
@@ -271,16 +284,16 @@ reconstruct_from_incremental_file(
 									  manifest_path);
 		if (mfile == NULL)
 		{
-			char	   *path =
-				psprintf("%s/backup_manifest", prior_backup_dirs[copy_source_index]);
+			char	   *path = psprintf("%s/backup_manifest",
+										prior_backup_dirs[copy_source_index]);
 
 			/*
 			 * The directory is out of sync with the backup_manifest, so emit
 			 * a warning.
 			 */
-			/*- translator: the first %s is a backup manifest file, the second is a
-	         * file absent therein */
-			pg_log_warning("\"%s\" contains no entry for \"%s\"", path,
+			/*- translator: the first %s is a backup manifest file, the second is a file absent therein */
+			pg_log_warning("\"%s\" contains no entry for \"%s\"",
+						   path,
 						   manifest_path);
 			pfree(path);
 		}
@@ -288,7 +301,8 @@ reconstruct_from_incremental_file(
 		{
 			*checksum_length = mfile->checksum_length;
 			*checksum_payload = pg_malloc(*checksum_length);
-			memcpy(*checksum_payload, mfile->checksum_payload, *checksum_length);
+			memcpy(*checksum_payload, mfile->checksum_payload,
+				   *checksum_length);
 			checksum_type = CHECKSUM_TYPE_NONE;
 		}
 	}
@@ -305,13 +319,13 @@ reconstruct_from_incremental_file(
 	 * Otherwise, reconstruct.
 	 */
 	if (copy_source != NULL)
-		copy_file(copy_source->filename, output_filename, &checksum_ctx, dry_run,
-				  copy_method);
+		copy_file(copy_source->filename, output_filename,
+				  &checksum_ctx, dry_run, copy_method);
 	else
 	{
-		write_reconstructed_file(input_filename, output_filename, block_length,
-								 sourcemap, offsetmap, &checksum_ctx, debug,
-								 dry_run);
+		write_reconstructed_file(input_filename, output_filename,
+								 block_length, sourcemap, offsetmap,
+								 &checksum_ctx, debug, dry_run);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -319,7 +333,8 @@ reconstruct_from_incremental_file(
 	if (checksum_type != CHECKSUM_TYPE_NONE)
 	{
 		*checksum_payload = pg_malloc(PG_CHECKSUM_MAX_LENGTH);
-		*checksum_length = pg_checksum_final(&checksum_ctx, *checksum_payload);
+		*checksum_length = pg_checksum_final(&checksum_ctx,
+											 *checksum_payload);
 	}
 
 	/*
@@ -364,11 +379,11 @@ debug_reconstruction(int n_source, rfile **sources, bool dry_run)
 
 		/* Debug logging. */
 		if (dry_run)
-			pg_log_debug("would have read %u blocks from \"%s\"", s->num_blocks_read,
-						 s->filename);
+			pg_log_debug("would have read %u blocks from \"%s\"",
+						 s->num_blocks_read, s->filename);
 		else
-			pg_log_debug("read %u blocks from \"%s\"", s->num_blocks_read,
-						 s->filename);
+			pg_log_debug("read %u blocks from \"%s\"",
+						 s->num_blocks_read, s->filename);
 
 		/*
 		 * In dry-run mode, we don't actually try to read data from the file,
@@ -387,7 +402,8 @@ debug_reconstruction(int n_source, rfile **sources, bool dry_run)
 				pg_fatal("could not stat \"%s\": %m", s->filename);
 			if (sb.st_size < s->highest_offset_read)
 				pg_fatal("file \"%s\" is too short: expected %llu, found %llu",
-						 s->filename, (unsigned long long) s->highest_offset_read,
+						 s->filename,
+						 (unsigned long long) s->highest_offset_read,
 						 (unsigned long long) sb.st_size);
 		}
 	}
@@ -440,8 +456,7 @@ make_incremental_rfile(char *filename)
 	read_bytes(rf, &rf->truncation_block_length,
 			   sizeof(rf->truncation_block_length));
 	if (rf->truncation_block_length > RELSEG_SIZE)
-		pg_fatal("file \"%s\" has truncation block length %u in excess of segment "
-				 "size %u",
+		pg_fatal("file \"%s\" has truncation block length %u in excess of segment size %u",
 				 filename, rf->truncation_block_length, RELSEG_SIZE);
 
 	/* Read block numbers if there are any. */
@@ -508,10 +523,12 @@ read_bytes(rfile *rf, void *buffer, unsigned length)
 static void
 write_reconstructed_file(char *input_filename,
 						 char *output_filename,
-						 unsigned block_length, rfile **sourcemap,
+						 unsigned block_length,
+						 rfile **sourcemap,
 						 off_t *offsetmap,
 						 pg_checksum_context *checksum_ctx,
-						 bool debug, bool dry_run)
+						 bool debug,
+						 bool dry_run)
 {
 	int			wfd = -1;
 	unsigned	i;
@@ -554,8 +571,8 @@ write_reconstructed_file(char *input_filename,
 				if (current_block == start_of_range)
 					appendStringInfo(&debug_buf, " %u:zero", current_block);
 				else
-					appendStringInfo(&debug_buf, " %u-%u:zero", start_of_range,
-									 current_block);
+					appendStringInfo(&debug_buf, " %u-%u:zero",
+									 start_of_range, current_block);
 			}
 			else
 			{
@@ -587,7 +604,8 @@ write_reconstructed_file(char *input_filename,
 
 	/* Open the output file, except in dry_run mode. */
 	if (!dry_run &&
-		(wfd = open(output_filename, O_RDWR | PG_BINARY | O_CREAT | O_EXCL,
+		(wfd = open(output_filename,
+					O_RDWR | PG_BINARY | O_CREAT | O_EXCL,
 					pg_file_create_mode)) < 0)
 		pg_fatal("could not open file \"%s\": %m", output_filename);
 
@@ -604,8 +622,8 @@ write_reconstructed_file(char *input_filename,
 		else
 		{
 			s->num_blocks_read++;
-			s->highest_offset_read =
-				Max(s->highest_offset_read, offsetmap[i] + BLCKSZ);
+			s->highest_offset_read = Max(s->highest_offset_read,
+										 offsetmap[i] + BLCKSZ);
 		}
 
 		/* Skip the rest of this in dry-run mode. */
@@ -632,9 +650,9 @@ write_reconstructed_file(char *input_filename,
 				if (rb < 0)
 					pg_fatal("could not read file \"%s\": %m", s->filename);
 				else
-					pg_fatal("could not read file \"%s\": read only %d of %d bytes at "
-							 "offset %llu",
-							 s->filename, rb, BLCKSZ, (unsigned long long) offsetmap[i]);
+					pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
+							 s->filename, rb, BLCKSZ,
+							 (unsigned long long) offsetmap[i]);
 			}
 		}
 
@@ -650,7 +668,8 @@ write_reconstructed_file(char *input_filename,
 
 		/* Update the checksum computation. */
 		if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
-			pg_fatal("could not update checksum of file \"%s\"", output_filename);
+			pg_fatal("could not update checksum of file \"%s\"",
+					 output_filename);
 	}
 
 	/* Debugging output. */

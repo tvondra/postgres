@@ -13,21 +13,17 @@
 #ifndef RECONSTRUCT_H
 #define RECONSTRUCT_H
 
+#include "c.h"
 #include "common/checksum_helper.h"
+#include "common/file_utils.h"
 #include "load_manifest.h"
 
-extern void reconstruct_from_incremental_file(char *input_filename,
-											  char *output_filename,
-											  char *relative_path,
-											  char *bare_file_name,
-											  int n_prior_backups,
-											  char **prior_backup_dirs,
-											  manifest_data **manifests,
-											  char *manifest_path,
-											  pg_checksum_type checksum_type,
-											  int *checksum_length,
-											  uint8 **checksum_payload,
-											  bool debug,
-											  bool dry_run);
+extern void reconstruct_from_incremental_file(
+											  char *input_filename, char *output_filename, char *relative_path,
+											  char *bare_file_name, int n_prior_backups, char **prior_backup_dirs,
+											  manifest_data **manifests, char *manifest_path,
+											  pg_checksum_type checksum_type, int *checksum_length,
+											  uint8 **checksum_payload, bool debug, bool dry_run,
+											  CopyFileMethod copy_method);
 
 #endif

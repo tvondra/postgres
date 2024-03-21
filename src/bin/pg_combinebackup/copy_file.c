@@ -10,21 +10,24 @@
  */
 #include "postgres_fe.h"
 
+#ifdef HAVE_COPYFILE_H
+#include <copyfile.h>
+#endif
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "common/file_perm.h"
-#include "common/file_utils.h"
 #include "common/logging.h"
 #include "copy_file.h"
 
-static void pg_copyfile(const char *src, const char *dest, const char *addon_errmsg,
-						pg_checksum_context *ctx);
+static void copy_file_blocks(const char *src, const char *dst,
+							 pg_checksum_context *checksum_ctx);
 
-static void pg_copyfile_offload(const char *src, const char *dest,
-								const char *addon_errmsg, CopyFileMethod flags);
+static void clone_file(const char *src, const char *dst);
+
+static void copy_file_by_range(const char *src, const char *dst);
 
 #ifdef WIN32
 static void copy_file_copyfile(const char *src, const char *dst);
@@ -38,7 +41,7 @@ static void copy_file_copyfile(const char *src, const char *dst);
 void
 copy_file(const char *src, const char *dst,
 		  pg_checksum_context *checksum_ctx, bool dry_run,
-		  CopyFileMethod copy_strategy)
+		  CopyMode copy_mode)
 {
 	/*
 	 * In dry-run mode, we don't actually copy anything, nor do we read any
@@ -52,191 +55,186 @@ copy_file(const char *src, const char *dst,
 			pg_fatal("could not open \"%s\": %m", src);
 		if (close(fd) < 0)
 			pg_fatal("could not close \"%s\": %m", src);
-
-		return;
 	}
 
 	/*
 	 * If we don't need to compute a checksum, then we can use any special
 	 * operating system primitives that we know about to copy the file; this
 	 * may be quicker than a naive block copy.
+	 *
+	 * On the other hand, if we need to compute a checksum, but the user
+	 * requested a special copy method that does not support this, report
+	 * this and fail.
+	 *
+	 * XXX Why do do this only for WIN32 and not for the other systems? Are
+	 * there some reliability concerns/issues?
+	 *
+	 * XXX Maybe this should simply fall back to the basic copy method, and
+	 * not fail the whole command?
 	 */
-	if (checksum_ctx->type == CHECKSUM_TYPE_NONE && copy_strategy != 0)
-		pg_copyfile_offload(src, dst, NULL, copy_strategy);
-	else
-		pg_copyfile(src, dst, NULL, checksum_ctx);
-}
+	if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
+	{
+#ifdef WIN32
+		copy_method = COPY_MODE_COPYFILE;
+#endif
+	}
+	else if (checksum_ctx->type != CHECKSUM_TYPE_NONE &&
+			 copy_mode != COPY_MODE_COPY)
+	{
+		pg_fatal("copy method does not support checksums");
+	}
 
-/* Helper function to optionally prepend error string */
-static inline char *
-opt_errinfo(const char *addon_errmsg)
-{
-	char		buf[128];
 
-	if (addon_errmsg == NULL)
-		return "";
-
-	strcpy(buf, " ");
-
-	/* XXX isn't this broken? this returns pointer to local variable */
-	return strncat(buf, addon_errmsg, sizeof(buf) - 2);
+	if (dry_run)
+	{
+		switch (copy_mode)
+		{
+			case COPY_MODE_CLONE:
+				pg_log_debug("would copy \"%s\" to \"%s\" (clone)", src, dst);
+				break;
+			case COPY_MODE_COPY:
+				pg_log_debug("would copy \"%s\" to \"%s\"", src, dst);
+				break;
+			case COPY_MODE_COPY_FILE_RANGE:
+				pg_log_debug("would copy \"%s\" to \"%s\" (copy_file_range)",
+							 src, dst);
+#ifdef WIN32
+			case COPY_MODE_COPYFILE:
+				pg_log_debug("would copy \"%s\" to \"%s\" (copyfile)",
+							 src, dst);
+				break;
+#endif
+		}
+	}
+	else 
+	{
+		switch (copy_mode)
+		{
+			case COPY_MODE_CLONE:
+				clone_file(src, dst);
+				break;
+			case COPY_MODE_COPY:
+				copy_file_blocks(src, dst, checksum_ctx);
+				break;
+			case COPY_MODE_COPY_FILE_RANGE:
+				copy_file_by_range(src, dst);
+				break;
+#ifdef WIN32
+			case COPY_MODE_COPYFILE:
+				copy_file_copyfile(src, dst);
+				break;
+#endif
+		}
+	}
 }
 
 /*
- * Copies a relation file from src to dest. addon_errmsg is an optional
- * addon error message (can be NULL or include schema/relName)
+ * Copy a file block by block, and optionally compute a checksum as we go.
  */
 static void
-pg_copyfile(const char *src, const char *dest, const char *addon_errmsg,
-			pg_checksum_context *ctx)
+copy_file_blocks(const char *src, const char *dst,
+				 pg_checksum_context *checksum_ctx)
 {
-#ifndef WIN32
 	int			src_fd;
 	int			dest_fd;
 	uint8	   *buffer;
-
-	/* XXX where does the 50 blocks come from? larger/smaller? */
-	/* copy in fairly large chunks for best efficiency */
 	const int	buffer_size = 50 * BLCKSZ;
+	ssize_t		rb;
+	unsigned	offset = 0;
 
 	if ((src_fd = open(src, O_RDONLY | PG_BINARY, 0)) < 0)
-		pg_fatal("error while copying%s: could not open file \"%s\": %s",
-				 opt_errinfo(addon_errmsg), src, strerror(errno));
+		pg_fatal("could not open file \"%s\": %m", src);
 
-	if ((dest_fd = open(dest, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+	if ((dest_fd = open(dst, O_WRONLY | O_CREAT | O_EXCL | PG_BINARY,
 						pg_file_create_mode)) < 0)
-		pg_fatal("error while copying%s: could not create file \"%s\": %s",
-				 opt_errinfo(addon_errmsg), dest, strerror(errno));
+		pg_fatal("could not open file \"%s\": %m", dst);
 
 	buffer = pg_malloc(buffer_size);
 
-	/* perform data copying i.e read src source, write to destination */
-	while (true)
+	while ((rb = read(src_fd, buffer, buffer_size)) > 0)
 	{
-		ssize_t		nbytes = read(src_fd, buffer, buffer_size);
+		ssize_t		wb;
 
-		if (nbytes < 0)
-			pg_fatal("error while copying%s: could not read file "
-					 "\"%s\": %s",
-					 opt_errinfo(addon_errmsg), src, strerror(errno));
-
-		if (nbytes == 0)
-			break;
-
-		errno = 0;
-		if (write(dest_fd, buffer, nbytes) != nbytes)
+		if ((wb = write(dest_fd, buffer, rb)) != rb)
 		{
-			/*
-			 * if write didn't set errno, assume problem is no disk space
-			 */
-			if (errno == 0)
-				errno = ENOSPC;
-			pg_fatal("error while copying%s: could not write file \"%s\": %s",
-					 opt_errinfo(addon_errmsg), dest, strerror(errno));
+			if (wb < 0)
+				pg_fatal("could not write file \"%s\": %m", dst);
+			else
+				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes at offset %u",
+						 dst, (int) wb, (int) rb, offset);
 		}
 
-		if (pg_checksum_update(ctx, buffer, nbytes) < 0)
-			pg_fatal("could not calculate checksum of file \"%s\"", dest);
+		if (pg_checksum_update(checksum_ctx, buffer, rb) < 0)
+			pg_fatal("could not update checksum of file \"%s\"", dst);
+
+		offset += rb;
 	}
+
+	if (rb < 0)
+		pg_fatal("could not read file \"%s\": %m", dst);
 
 	pg_free(buffer);
 	close(src_fd);
 	close(dest_fd);
-
-#else							/* WIN32 */
-	if (CopyFile(src, dest, true) == 0)
-	{
-		_dosmaperr(GetLastError());
-		pg_fatal("error while copying%s (\"%s\" to \"%s\"): %s", addon_errmsg,
-				 opt_errinfo(addon_errmsg), src, dest, strerror(errno));
-	}
-#endif							/* WIN32 */
 }
 
-/*
- * pg_copyfile_offload()
- *
- * Clones/reflinks a relation file from src to dest using variety of methods
- *
- * addon_errmsg can be used to pass additional information in case of errors.
- * flags, see PG_COPYFILE_* enum in file_utils.h
- */
 static void
-pg_copyfile_offload(const char *src, const char *dest,
-					const char *addon_errmsg, CopyFileMethod flags)
+clone_file(const char *src, const char *dest)
 {
-
-#ifdef WIN32
-	/* on WIN32 we ignore flags, we have no other choice */
-	if (CopyFile(src, dest, true) == 0)
-	{
-		_dosmaperr(GetLastError());
-		pg_fatal("error while copying%s (\"%s\" to \"%s\"): %s", addon_errmsg,
-				 opt_errinfo(addon_errmsg), src, dest, strerror(errno));
-	}
-#elif defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE)
-	/* on MacOS we ignore flags, we have no other choice */
+#if defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE)
 	if (copyfile(src, dest, NULL, COPYFILE_CLONE_FORCE) < 0)
-		pg_fatal("error while cloning%s: (\"%s\" to \"%s\"): %s",
-				 opt_errinfo(addon_errmsg), src, dest, strerror(errno));
-
-#elif defined(HAVE_COPY_FILE_RANGE) || defined(FICLONE)
-	int			src_fd;
-	int			dest_fd;
-	ssize_t		nbytes;
-
-	if ((src_fd = open(src, O_RDONLY | PG_BINARY, 0)) < 0)
-		pg_fatal("error while copying%s: could not open file \"%s\": %s",
-				 opt_errinfo(addon_errmsg), src, strerror(errno));
-
-	if ((dest_fd = open(dest, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
-						pg_file_create_mode)) < 0)
-		pg_fatal("error while copying%s: could not create file \"%s\": %s",
-				 opt_errinfo(addon_errmsg), dest, strerror(errno));
-
-	if (flags & PG_COPYFILE_COPY_FILE_RANGE)
+		pg_fatal("error while cloning file \"%s\" to \"%s\": %m", src, dest);
+#elif defined(__linux__) && defined(FICLONE)
 	{
-#ifdef HAVE_COPY_FILE_RANGE
-		do
-		{
-			nbytes = copy_file_range(src_fd, NULL, dest_fd, NULL, SSIZE_MAX, 0);
-			if (nbytes < 0 && errno != EINTR)
-				pg_fatal("error while copying%s: could not copy_file_range()"
-						 "from \"%s\" to \"%s\": %s",
-						 opt_errinfo(addon_errmsg), src, dest, strerror(errno));
-		} while (nbytes > 0);
-#else
-		pg_fatal("copy file accelaration via copy_file_range() is not supported on "
-				 "this platform");
-#endif
-	}
-	else if (flags & PG_COPYFILE_IOCTL_FICLONE)
-	{
-#if defined(__linux__) && defined(FICLONE)
+		if ((src_fd = open(src, O_RDONLY | PG_BINARY, 0)) < 0)
+			pg_fatal("could not open file \"%s\": %m", src);
+
+		if ((dest_fd = open(dest, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+							pg_file_create_mode)) < 0)
+			pg_fatal("could not create file \"%s\": %m", dest);
+
 		if (ioctl(dest_fd, FICLONE, src_fd) < 0)
 		{
 			int			save_errno = errno;
 
 			unlink(dest);
 
-			pg_fatal("error while cloning%s: (\"%s\" to \"%s\"): %s",
-					 opt_errinfo(addon_errmsg), src, dest, strerror(save_errno));
+			pg_fatal("error while cloning file \"%s\" to \"%s\": %s",
+					 src, dest);
 		}
-#else
-		pg_fatal("clone file accelaration via ioctl(FICLONE) is not supported on "
-				 "this platform");
-#endif
 	}
+#else
+	pg_fatal("file cloning not supported on this platform");
+#endif
+}
+
+static void
+copy_file_by_range(const char *src, const char *dest)
+{
+#if defined(HAVE_COPY_FILE_RANGE)
+	int			src_fd;
+	int			dest_fd;
+	ssize_t		nbytes;
+
+	if ((src_fd = open(src, O_RDONLY | PG_BINARY, 0)) < 0)
+		pg_fatal("could not open file \"%s\": %m", src);
+
+	if ((dest_fd = open(dest, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+						pg_file_create_mode)) < 0)
+		pg_fatal("could not create file \"%s\": %m", dest);
+
+	do
+	{
+		nbytes = copy_file_range(src_fd, NULL, dest_fd, NULL, SSIZE_MAX, 0);
+		if (nbytes < 0)
+			pg_fatal("error while copying file range from \"%s\" to \"%s\": %m",
+					 src, dest);
+	} while (nbytes > 0);
 
 	close(src_fd);
 	close(dest_fd);
-
 #else
-	if (flags & PG_COPYFILE_FALLBACK)
-		pg_copyfile(src, dest, addon_errmsg);
-	else
-		pg_fatal("none of the copy file acceleration methods are supported on this "
-				 "platform");
+	pg_fatal("copy_file_range not supported on this platform");
 #endif
 }
 

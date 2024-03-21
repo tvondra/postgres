@@ -15,18 +15,21 @@
 #include "common/checksum_helper.h"
 #include "common/file_utils.h"
 
-/* XXX do we even want this? how does pg_upgrade to this? */
-typedef enum CopyFileMethod
+/*
+ * Enumeration to denote copy modes
+ */
+typedef enum CopyMode
 {
-	PG_COPYFILE_FALLBACK = 0x1,
-	PG_COPYFILE_IOCTL_FICLONE = 0x2,	/* Linux */
-	PG_COPYFILE_COPY_FILE_RANGE = 0x4,	/* FreeBSD & Linux >= 4.5 */
-	PG_COPYFILE_COPYFILE_CLONE_FORCE = 0x8	/* MacOS */
-} CopyFileMethod;
-#define PG_COPYFILE_ANY_WITH_FALLBACK (2 << 4) - 1
+	COPY_MODE_CLONE,
+	COPY_MODE_COPY,
+	COPY_MODE_COPY_FILE_RANGE,
+#ifdef WIN32
+	COPY_MODE_COPYFILE,
+#endif
+} CopyMode;
 
 extern void copy_file(const char *src, const char *dst,
 					  pg_checksum_context *checksum_ctx, bool dry_run,
-					  CopyFileMethod copy_strategy);
+					  CopyMode copy_mode);
 
 #endif							/* COPY_FILE_H */

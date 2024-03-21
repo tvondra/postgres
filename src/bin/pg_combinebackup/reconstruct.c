@@ -91,7 +91,7 @@ reconstruct_from_incremental_file(char *input_filename,
 								  uint8 **checksum_payload,
 								  bool debug,
 								  bool dry_run,
-								  CopyFileMethod copy_method)
+								  CopyMode copy_method)
 {
 	rfile	  **source;
 	rfile	   *latest_source = NULL;

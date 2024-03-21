@@ -69,7 +69,7 @@ typedef struct cb_options
 	pg_checksum_type manifest_checksums;
 	bool		no_manifest;
 	DataDirSyncMethod sync_method;
-	CopyFileMethod copy_method;
+	CopyMode	copy_method;
 } cb_options;
 
 /*
@@ -158,7 +158,7 @@ main(int argc, char *argv[])
 	memset(&opt, 0, sizeof(opt));
 	opt.manifest_checksums = CHECKSUM_TYPE_CRC32C;
 	opt.sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
-	opt.copy_method = 0;
+	opt.copy_method = COPY_MODE_COPY;
 
 	/* process command-line options */
 	while ((c = getopt_long(argc, argv, "dnNPo:T:",
@@ -196,10 +196,10 @@ main(int argc, char *argv[])
 					exit(1);
 				break;
 			case 4:
-				opt.copy_method = PG_COPYFILE_IOCTL_FICLONE;
+				opt.copy_method = COPY_MODE_CLONE;
 				break;
 			case 5:
-				opt.copy_method = PG_COPYFILE_COPY_FILE_RANGE;
+				opt.copy_method = COPY_MODE_COPY_FILE_RANGE;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -226,7 +226,7 @@ main(int argc, char *argv[])
 	 * We cannot provide file copy/clone offload in case when we need to
 	 * calculate checksums
 	 */
-	if (opt.copy_method != 0 && opt.manifest_checksums != CHECKSUM_TYPE_NONE)
+	if (opt.copy_method != COPY_MODE_COPY && opt.manifest_checksums != CHECKSUM_TYPE_NONE)
 		pg_fatal("unable to use accelerated copy when manifest checksums "
 				 "are to be calculated. Use --no-manifest");
 

@@ -25,7 +25,7 @@
 static void copy_file_blocks(const char *src, const char *dst,
 							 pg_checksum_context *checksum_ctx);
 
-static void clone_file(const char *src, const char *dst);
+static void copy_file_clone(const char *src, const char *dst);
 
 static void copy_file_by_range(const char *src, const char *dst);
 
@@ -78,9 +78,9 @@ copy_file(const char *src, const char *dst,
 		copy_method = COPY_MODE_COPYFILE;
 #endif
 	}
-	else if (checksum_ctx->type != CHECKSUM_TYPE_NONE &&
-			 copy_mode != COPY_MODE_COPY)
+	else if (copy_mode != COPY_MODE_COPY)
 	{
+		/* XXX maybe silently fall back to simple copy? */
 		pg_fatal("copy method does not support checksums");
 	}
 
@@ -106,12 +106,12 @@ copy_file(const char *src, const char *dst,
 #endif
 		}
 	}
-	else 
+	else
 	{
 		switch (copy_mode)
 		{
 			case COPY_MODE_CLONE:
-				clone_file(src, dst);
+				copy_file_clone(src, dst);
 				break;
 			case COPY_MODE_COPY:
 				copy_file_blocks(src, dst, checksum_ctx);
@@ -179,7 +179,7 @@ copy_file_blocks(const char *src, const char *dst,
 }
 
 static void
-clone_file(const char *src, const char *dest)
+copy_file_clone(const char *src, const char *dest)
 {
 #if defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE)
 	if (copyfile(src, dest, NULL, COPYFILE_CLONE_FORCE) < 0)
@@ -238,6 +238,7 @@ copy_file_by_range(const char *src, const char *dest)
 #endif
 }
 
+/* XXX maybe this should do the check internally, same as the other functions? */
 #ifdef WIN32
 static void
 copy_file_copyfile(const char *src, const char *dst)

@@ -59,7 +59,8 @@ static void write_reconstructed_file(char *input_filename,
 									 off_t *offsetmap,
 									 pg_checksum_context *checksum_ctx,
 									 bool debug,
-									 bool dry_run);
+									 bool dry_run,
+									 CopyMethod copy_method);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
 
 /*
@@ -325,7 +326,8 @@ reconstruct_from_incremental_file(char *input_filename,
 	{
 		write_reconstructed_file(input_filename, output_filename,
 								 block_length, sourcemap, offsetmap,
-								 &checksum_ctx, debug, dry_run);
+								 &checksum_ctx, debug, dry_run,
+								 copy_method);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -536,7 +538,8 @@ write_reconstructed_file(char *input_filename,
 						 off_t *offsetmap,
 						 pg_checksum_context *checksum_ctx,
 						 bool debug,
-						 bool dry_run)
+						 bool dry_run,
+						 CopyMethod copy_method)
 {
 	int			wfd = -1;
 	unsigned	i;
@@ -624,6 +627,9 @@ write_reconstructed_file(char *input_filename,
 		rfile	   *s = sourcemap[i];
 		int			wb;
 
+		bool		skip_page_read = false;
+		bool		use_copy_range = false;
+
 		/* Update accounting information. */
 		if (s == NULL)
 			++zero_blocks;
@@ -638,6 +644,25 @@ write_reconstructed_file(char *input_filename,
 		if (dry_run)
 			continue;
 
+		/*
+		 * Do we need to actually read the souce block?
+		 *
+		 * We only need to read the block if we are to perform plain copy or
+		 * calculate the checksum. If the user requested copy_file_range, we
+		 * may be able to skip reading the block.
+		 */
+		skip_page_read = ((copy_method == COPY_METHOD_COPY_FILE_RANGE) &&
+						  (checksum_ctx->type == CHECKSUM_TYPE_NONE));
+
+		/*
+		 * Should we copy the block using copy_file_range?
+		 *
+		 * We can do that if the user requested that, and the block is not
+		 * going to be zero-filled.
+		 */
+		use_copy_range = ((copy_method == COPY_METHOD_COPY_FILE_RANGE) &&
+						  (s != NULL));
+
 		/* Read or zero-fill the block as appropriate. */
 		if (s == NULL)
 		{
@@ -647,7 +672,7 @@ write_reconstructed_file(char *input_filename,
 			 */
 			memset(buffer, 0, BLCKSZ);
 		}
-		else
+		else if (!skip_page_read)
 		{
 			int			rb;
 
@@ -664,17 +689,39 @@ write_reconstructed_file(char *input_filename,
 			}
 		}
 
-		/* Write out the block. */
-		if ((wb = write(wfd, buffer, BLCKSZ)) != BLCKSZ)
+		/*
+		 * If possible, copy the block using copy_file_range. If not possible
+		 * (not requested/supported, or the block is zero-filled), fallback to
+		 * the regular write.
+		 */
+		if (use_copy_range)
 		{
+			wb = copy_file_range(s->fd, &offsetmap[i], wfd, NULL, BLCKSZ, 0);
+
 			if (wb < 0)
-				pg_fatal("could not write file \"%s\": %m", output_filename);
-			else
+				pg_fatal("error while copying file range from \"%s\" to \"%s\": %m",
+						 input_filename, output_filename);
+			else if (wb != BLCKSZ)
 				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
 						 output_filename, wb, BLCKSZ);
 		}
+		else
+		{
+			/* Write out the block. */
+			if ((wb = write(wfd, buffer, BLCKSZ)) != BLCKSZ)
+			{
+				if (wb < 0)
+					pg_fatal("could not write file \"%s\": %m", output_filename);
+				else
+					pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+							 output_filename, wb, BLCKSZ);
+			}
+		}
 
-		/* Update the checksum computation. */
+		/*
+		 * Update the checksum computation (we must have read the page if we're
+		 * to calculate the checksum).
+		 */
 		if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
 			pg_fatal("could not update checksum of file \"%s\"",
 					 output_filename);

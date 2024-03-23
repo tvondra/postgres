@@ -60,7 +60,8 @@ static void write_reconstructed_file(char *input_filename,
 									 pg_checksum_context *checksum_ctx,
 									 bool debug,
 									 bool dry_run,
-									 int prefetch_target);
+									 int prefetch_target,
+									 CopyMethod copy_method);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
 
 typedef struct prefetch_state
@@ -344,7 +345,8 @@ reconstruct_from_incremental_file(char *input_filename,
 		write_reconstructed_file(input_filename, output_filename,
 								 block_length, sourcemap, offsetmap,
 								 &checksum_ctx, debug, dry_run,
-								 prefetch_target);
+								 prefetch_target,
+								 copy_method);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -555,7 +557,8 @@ write_reconstructed_file(char *input_filename,
 						 pg_checksum_context *checksum_ctx,
 						 bool debug,
 						 bool dry_run,
-						 int prefetch_target)
+						 int prefetch_target,
+						 CopyMethod copy_method)
 {
 	int			wfd = -1;
 	unsigned	i;
@@ -660,6 +663,30 @@ write_reconstructed_file(char *input_filename,
 		/* Skip the rest of this in dry-run mode. */
 		if (dry_run)
 			continue;
+
+		/*
+		 * If requested, copy the block using copy_file_range.
+		 *
+		 * We can'd do this if the block needs to be zero-filled or when we
+		 * need to update checksum.
+		 */
+		if ((copy_method == COPY_METHOD_COPY_FILE_RANGE) &&
+			(s != NULL) && (checksum_ctx->type == CHECKSUM_TYPE_NONE))
+		{
+#if defined(HAVE_COPY_FILE_RANGE)
+			wb = copy_file_range(s->fd, &offsetmap[i], wfd, NULL, BLCKSZ, 0);
+
+			if (wb < 0)
+				pg_fatal("error while copying file range from \"%s\" to \"%s\": %m",
+						 input_filename, output_filename);
+			else if (wb != BLCKSZ)
+				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+						 output_filename, wb, BLCKSZ);
+#else
+			pg_fatal("copy_file_range not supported on this platform");
+#endif
+			continue;
+		}
 
 		/* Read or zero-fill the block as appropriate. */
 		if (s == NULL)

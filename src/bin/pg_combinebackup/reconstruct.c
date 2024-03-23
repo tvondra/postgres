@@ -59,8 +59,13 @@ static void write_reconstructed_file(char *input_filename,
 									 off_t *offsetmap,
 									 pg_checksum_context *checksum_ctx,
 									 bool debug,
-									 bool dry_run);
+									 bool dry_run,
+									 CopyMethod copy_method);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
+static void write_block(int wfd, char *output_filename,
+						uint8 *buffer,
+						pg_checksum_context *checksum_ctx);
+static void read_block(rfile *s, off_t off, uint8 *buffer);
 
 /*
  * Reconstruct a full file from an incremental file and a chain of prior
@@ -325,7 +330,8 @@ reconstruct_from_incremental_file(char *input_filename,
 	{
 		write_reconstructed_file(input_filename, output_filename,
 								 block_length, sourcemap, offsetmap,
-								 &checksum_ctx, debug, dry_run);
+								 &checksum_ctx, debug, dry_run,
+								 copy_method);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -536,7 +542,8 @@ write_reconstructed_file(char *input_filename,
 						 off_t *offsetmap,
 						 pg_checksum_context *checksum_ctx,
 						 bool debug,
-						 bool dry_run)
+						 bool dry_run,
+						 CopyMethod copy_method)
 {
 	int			wfd = -1;
 	unsigned	i;
@@ -646,38 +653,49 @@ write_reconstructed_file(char *input_filename,
 			 * uninitialized block, so just zero-fill it.
 			 */
 			memset(buffer, 0, BLCKSZ);
-		}
-		else
-		{
-			int			rb;
 
-			/* Read the block from the correct source, except if dry-run. */
-			rb = pg_pread(s->fd, buffer, BLCKSZ, offsetmap[i]);
-			if (rb != BLCKSZ)
-			{
-				if (rb < 0)
-					pg_fatal("could not read file \"%s\": %m", s->filename);
-				else
-					pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
-							 s->filename, rb, BLCKSZ,
-							 (unsigned long long) offsetmap[i]);
-			}
+			/* Write out the block, update checksum if needed. */
+			write_block(wfd, output_filename, buffer, checksum_ctx);
+
+			continue;
 		}
 
-		/* Write out the block. */
-		if ((wb = write(wfd, buffer, BLCKSZ)) != BLCKSZ)
+		/* copy the block using either read/write or copy_file_range */
+		if (copy_method != COPY_METHOD_COPY_FILE_RANGE)
 		{
+			/*
+			 * Read the block from the correct source file, and then write
+			 * it out, possibly with checksum update.
+			 */
+			read_block(s, offsetmap[i], buffer);
+			write_block(wfd, output_filename, buffer, checksum_ctx);
+		}
+		else	/* use copy_file_range */
+		{
+			/* copy_file_range modifies the passed offset, so make a copy */
+			off_t	off = offsetmap[i];
+
+			wb = copy_file_range(s->fd, &off, wfd, NULL, BLCKSZ, 0);
+
 			if (wb < 0)
-				pg_fatal("could not write file \"%s\": %m", output_filename);
-			else
+				pg_fatal("error while copying file range from \"%s\" to \"%s\": %m",
+						 input_filename, output_filename);
+			else if (wb != BLCKSZ)
 				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
 						 output_filename, wb, BLCKSZ);
-		}
 
-		/* Update the checksum computation. */
-		if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
-			pg_fatal("could not update checksum of file \"%s\"",
-					 output_filename);
+			/* when checksum calculation not needed, we're done */
+			if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
+				continue;
+
+			/* read the block and update the checksum */
+			read_block(s, offsetmap[i], buffer);
+
+			/* Update the checksum computation. */
+			if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
+				pg_fatal("could not update checksum of file \"%s\"",
+						 output_filename);
+		}
 	}
 
 	/* Debugging output. */
@@ -692,4 +710,43 @@ write_reconstructed_file(char *input_filename,
 	/* Close the output file. */
 	if (wfd >= 0 && close(wfd) != 0)
 		pg_fatal("could not close \"%s\": %m", output_filename);
+}
+
+static void
+write_block(int fd, char *output_filename,
+			uint8 *buffer, pg_checksum_context *checksum_ctx)
+{
+	int	wb;
+
+	if ((wb = write(fd, buffer, BLCKSZ)) != BLCKSZ)
+	{
+		if (wb < 0)
+			pg_fatal("could not write file \"%s\": %m", output_filename);
+		else
+			pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+					 output_filename, wb, BLCKSZ);
+	}
+
+	/* Update the checksum computation. */
+	if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
+		pg_fatal("could not update checksum of file \"%s\"",
+				 output_filename);
+}
+
+static void
+read_block(rfile *s, off_t off, uint8 *buffer)
+{
+	int			rb;
+
+	/* Read the block from the correct source, except if dry-run. */
+	rb = pg_pread(s->fd, buffer, BLCKSZ, off);
+	if (rb != BLCKSZ)
+	{
+		if (rb < 0)
+			pg_fatal("could not read file \"%s\": %m", s->filename);
+		else
+			pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
+					 s->filename, rb, BLCKSZ,
+					 (unsigned long long) off);
+	}
 }

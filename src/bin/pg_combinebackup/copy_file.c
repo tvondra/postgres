@@ -25,12 +25,15 @@
 static void copy_file_blocks(const char *src, const char *dst,
 							 pg_checksum_context *checksum_ctx);
 
-static void copy_file_clone(const char *src, const char *dst);
+static void copy_file_clone(const char *src, const char *dst,
+							pg_checksum_context *checksum_ctx);
 
-static void copy_file_by_range(const char *src, const char *dst);
+static void copy_file_by_range(const char *src, const char *dst,
+							   pg_checksum_context *checksum_ctx);
 
 #ifdef WIN32
-static void copy_file_copyfile(const char *src, const char *dst);
+static void copy_file_copyfile(const char *src, const char *dst,
+							   pg_checksum_context *checksum_ctx);
 #endif
 
 /*
@@ -44,7 +47,8 @@ copy_file(const char *src, const char *dst,
 		  CopyMethod copy_method)
 {
 	char   *strategy_name = NULL;
-	void	(*strategy_implementation) (const char *, const char *) = NULL;
+	void	(*strategy_implementation) (const char *, const char *,
+										pg_checksum_context *checksum_ctx) = NULL;
 
 	/*
 	 * In dry-run mode, we don't actually copy anything, nor do we read any
@@ -60,29 +64,8 @@ copy_file(const char *src, const char *dst,
 			pg_fatal("could not close \"%s\": %m", src);
 	}
 
-	/*
-	 * If we need to compute a checksum, but the user perhaps requested
-	 * a special copy method that does not support this, fallback to the
-	 * default block-by-block copy. We don't want to fail if just one of
-	 * many files requires checksum, etc.
-	 *
-	 * If we don't need to compute a checksum, then we can use any special
-	 * operating system primitives that we know about to copy the file; this
-	 * may be quicker than a naive block copy. We only do this for WIN32.
-	 * On other operating systems the user has to explicitly specify one of
-	 * the available primitives - there may be multiple, we don't know which
-	 * are reliable/preferred.
-	 */
-	if (checksum_ctx->type != CHECKSUM_TYPE_NONE)
-	{
-		/* fallback to block-by-block copy */
-		copy_method = COPY_METHOD_COPY;
-	}
 #ifdef WIN32
-	else
-	{
-		copy_method = COPY_METHOD_COPYFILE;
-	}
+	copy_method = COPY_METHOD_COPYFILE;
 #endif
 
 	/* Determine the name of the copy strategy for use in log messages. */
@@ -94,6 +77,7 @@ copy_file(const char *src, const char *dst,
 			break;
 		case COPY_METHOD_COPY:
 			/* leave NULL for simple block-by-block copy */
+			strategy_implementation = copy_file_blocks;
 			break;
 		case COPY_METHOD_COPY_FILE_RANGE:
 			strategy_name = "copy_file_range";
@@ -119,23 +103,53 @@ copy_file(const char *src, const char *dst,
 	else
 	{
 		if (strategy_name)
-		{
 			pg_log_debug("copying \"%s\" to \"%s\" using strategy %s",
 						 src, dst, strategy_name);
-			strategy_implementation(src, dst);
-		}
+		else if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
+			pg_log_debug("copying \"%s\" to \"%s\"",
+						 src, dst);
 		else
-		{
-			if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
-				pg_log_debug("copying \"%s\" to \"%s\"",
-							 src, dst);
-			else
-				pg_log_debug("copying \"%s\" to \"%s\" and checksumming with %s",
-							 src, dst, pg_checksum_type_name(checksum_ctx->type));
+			pg_log_debug("copying \"%s\" to \"%s\" and checksumming with %s",
+						 src, dst, pg_checksum_type_name(checksum_ctx->type));
 
-			copy_file_blocks(src, dst, checksum_ctx);
-		}
+		strategy_implementation(src, dst, checksum_ctx);
 	}
+}
+
+/*
+ * Calculate checksum for src file.
+ */
+static void
+checksum_file(const char *src, pg_checksum_context *checksum_ctx)
+{
+	int			src_fd;
+	uint8	   *buffer;
+	const int	buffer_size = 50 * BLCKSZ;
+	ssize_t		rb;
+	unsigned	offset = 0;
+
+	/* bail out if no checksum needed */
+	if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
+		return;
+
+	if ((src_fd = open(src, O_RDONLY | PG_BINARY, 0)) < 0)
+		pg_fatal("could not open file \"%s\": %m", src);
+
+	buffer = pg_malloc(buffer_size);
+
+	while ((rb = read(src_fd, buffer, buffer_size)) > 0)
+	{
+		if (pg_checksum_update(checksum_ctx, buffer, rb) < 0)
+			pg_fatal("could not update checksum of file \"%s\"", src);
+
+		offset += rb;
+	}
+
+	if (rb < 0)
+		pg_fatal("could not read file \"%s\": %m", src);
+
+	pg_free(buffer);
+	close(src_fd);
 }
 
 /*
@@ -193,7 +207,8 @@ copy_file_blocks(const char *src, const char *dst,
  *		Clones/reflinks a file from src to dest.
  */
 static void
-copy_file_clone(const char *src, const char *dest)
+copy_file_clone(const char *src, const char *dest,
+				pg_checksum_context *checksum_ctx)
 {
 #if defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE)
 	if (copyfile(src, dest, NULL, COPYFILE_CLONE_FORCE) < 0)
@@ -220,6 +235,9 @@ copy_file_clone(const char *src, const char *dest)
 #else
 	pg_fatal("file cloning not supported on this platform");
 #endif
+
+	/* if needed, calculate checksum of the file */
+	checksum_file(src, checksum_ctx);
 }
 
 /*
@@ -227,7 +245,8 @@ copy_file_clone(const char *src, const char *dest)
  *		Copies a file from src to dest using copy_file_range system call.
  */
 static void
-copy_file_by_range(const char *src, const char *dest)
+copy_file_by_range(const char *src, const char *dest,
+				   pg_checksum_context *checksum_ctx)
 {
 #if defined(HAVE_COPY_FILE_RANGE)
 	int			src_fd;
@@ -254,16 +273,23 @@ copy_file_by_range(const char *src, const char *dest)
 #else
 	pg_fatal("copy_file_range not supported on this platform");
 #endif
+
+	/* if needed, calculate checksum of the file */
+	checksum_file(src, checksum_ctx);
 }
 
 #ifdef WIN32
 static void
-copy_file_copyfile(const char *src, const char *dst)
+copy_file_copyfile(const char *src, const char *dst,
+				   pg_checksum_context *checksum_ctx)
 {
 	if (CopyFile(src, dst, true) == 0)
 	{
 		_dosmaperr(GetLastError());
 		pg_fatal("could not copy \"%s\" to \"%s\": %m", src, dst);
 	}
+
+	/* if needed, calculate checksum of the file */
+	checksum_file(src, checksum_ctx);
 }
 #endif							/* WIN32 */

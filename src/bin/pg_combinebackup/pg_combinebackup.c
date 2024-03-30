@@ -231,6 +231,35 @@ main(int argc, char *argv[])
 	if (opt.no_manifest)
 		opt.manifest_checksums = CHECKSUM_TYPE_NONE;
 
+	/* Check that the platform supports the requested copy method. */
+	if (opt.copy_method == COPY_METHOD_CLONE)
+	{
+#if (defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE)) || \
+	(defined(__linux__) && defined(FICLONE))
+
+		if (opt.dry_run)
+			pg_log_debug("would use cloning to copy files");
+		else
+			pg_log_debug("will use cloning to copy files");
+
+#else
+		pg_fatal("file cloning not supported on this platform");
+#endif
+	}
+	else if (opt.copy_method == COPY_METHOD_COPY_FILE_RANGE)
+	{
+#if defined(HAVE_COPY_FILE_RANGE)
+
+		if (opt.dry_run)
+			pg_log_debug("would use copy_file_range to copy blocks");
+		else
+			pg_log_debug("will use copy_file_range to copy blocks");
+
+#else
+		pg_fatal("copy_file_range not supported on this platform");
+#endif
+	}
+
 	/* Read the server version from the final backup. */
 	version = read_pg_version_file(argv[argc - 1]);
 

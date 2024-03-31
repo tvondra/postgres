@@ -35,6 +35,9 @@
 #define INCREMENTAL_PREFIX			"INCREMENTAL."
 #define INCREMENTAL_PREFIX_LENGTH	(sizeof(INCREMENTAL_PREFIX) - 1)
 
+/* Default prefetch target 1MB (for 8K blocks). */
+#define	PREFETCH_TARGET	128
+
 /*
  * Tracking for directories that need to be removed, or have their contents
  * removed, if the operation fails.
@@ -68,6 +71,7 @@ typedef struct cb_options
 	cb_tablespace_mapping *tsmappings;
 	pg_checksum_type manifest_checksums;
 	bool		no_manifest;
+	int			prefetch_target;
 	DataDirSyncMethod sync_method;
 } cb_options;
 
@@ -129,6 +133,7 @@ main(int argc, char *argv[])
 		{"manifest-checksums", required_argument, NULL, 1},
 		{"no-manifest", no_argument, NULL, 2},
 		{"sync-method", required_argument, NULL, 3},
+		{"prefetch", no_argument, NULL, 4},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -191,6 +196,9 @@ main(int argc, char *argv[])
 			case 3:
 				if (!parse_sync_method(optarg, &opt.sync_method))
 					exit(1);
+				break;
+			case 4:
+				opt.prefetch_target = PREFETCH_TARGET;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -937,7 +945,8 @@ process_directory_recursively(Oid tsoid,
 											  &checksum_length,
 											  &checksum_payload,
 											  opt->debug,
-											  opt->dry_run);
+											  opt->dry_run,
+											  opt->prefetch_target);
 		}
 		else
 		{

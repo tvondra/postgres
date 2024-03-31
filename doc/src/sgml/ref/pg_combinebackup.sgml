@@ -186,6 +186,17 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>--prefetch</option></term>
+      <listitem>
+       <para>
+        Enable asynchronous prefetching of blocks. If this option is not
+        specified, it's up to the operating system to prefetch data based
+        on access pattern.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
        <term><option>-V</option></term>
        <term><option>--version</option></term>
        <listitem>

@@ -1623,6 +1623,8 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	{
 		unsigned	magic = INCREMENTAL_MAGIC;
 		size_t		header_bytes_done = 0;
+		char		padding[BLCKSZ];
+		size_t		paddinglen;
 
 		/* Emit header data. */
 		push_to_sink(sink, &checksum_ctx, &header_bytes_done,
@@ -1634,6 +1636,15 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 		push_to_sink(sink, &checksum_ctx, &header_bytes_done,
 					 incremental_blocks,
 					 sizeof(BlockNumber) * num_incremental_blocks);
+
+		/* Add padding to align header to a multiple of BLCKSZ. */
+		paddinglen = (BLCKSZ - (header_bytes_done % BLCKSZ));
+
+		memset(padding, 0, paddinglen);
+		bytes_done += paddinglen;
+
+		push_to_sink(sink, &checksum_ctx, &header_bytes_done,
+					 padding, paddinglen);
 
 		/* Flush out any data still in the buffer so it's again empty. */
 		if (header_bytes_done > 0)
@@ -1747,6 +1758,12 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 		/* Update block number and # of bytes done for next loop iteration. */
 		blkno += cnt / BLCKSZ;
 		bytes_done += cnt;
+
+		/*
+		 * Make sure the alignment of blocks contents in incremental files is
+		 * correct (header is a multiple of BLCKSZ, blocks are BLCKSZ too).
+		 */
+		Assert(!((incremental_blocks != NULL) && (bytes_done % BLCKSZ != 0)));
 
 		/* Archive the data we just read. */
 		bbsink_archive_contents(sink, cnt);

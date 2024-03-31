@@ -901,6 +901,34 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 	/* Send it incrementally. */
 	return BACK_UP_FILE_INCREMENTALLY;
 }
+ 
+/*
+ * Compute the size for a header of an incremental file containing a given
+ * number of blocks. The header is rounded to a multiple of BLCKSZ.
+ */
+extern size_t
+GetIncrementalHeaderSize(unsigned num_blocks_required)
+{
+	size_t		result;
+
+	/* Make sure we're not going to overflow. */
+	Assert(num_blocks_required <= RELSEG_SIZE);
+
+	/*
+	 * Three four byte quantities (magic number, truncation block length,
+	 * block count) followed by block numbers.
+	 */
+	result = 3 * sizeof(uint32) + (sizeof(BlockNumber) * num_blocks_required);
+
+	/*
+	 * Round the header size to a multiple of BLCKSZ - when not a multiple
+	 * of BLCKSZ, add the missing fraction of a block.
+	 */
+	if (result % BLCKSZ != 0)
+		result += BLCKSZ - (result % BLCKSZ);
+
+	return result;
+}
 
 /*
  * Compute the size for an incremental file containing a given number of blocks.
@@ -914,11 +942,12 @@ GetIncrementalFileSize(unsigned num_blocks_required)
 	Assert(num_blocks_required <= RELSEG_SIZE);
 
 	/*
-	 * Three four byte quantities (magic number, truncation block length,
-	 * block count) followed by block numbers followed by block contents.
+	 * Header with three four byte quantities (magic number, truncation block
+	 * length, block count) followed by block numbers, rounded to a multiple
+	 * of BLCKSZ, followed by block contents.
 	 */
-	result = 3 * sizeof(uint32);
-	result += (BLCKSZ + sizeof(BlockNumber)) * num_blocks_required;
+	result = GetIncrementalHeaderSize(num_blocks_required);
+	result += BLCKSZ * num_blocks_required;
 
 	return result;
 }

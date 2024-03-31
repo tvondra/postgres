@@ -60,8 +60,27 @@ static void write_reconstructed_file(char *input_filename,
 									 pg_checksum_context *checksum_ctx,
 									 bool debug,
 									 bool dry_run,
-									 CopyMethod copy_method);
+									 CopyMethod copy_method,
+									 int prefetch_target);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
+
+typedef struct prefetch_state
+{
+	unsigned	current_block;
+	int	current_distance;
+	int	max_distance;
+
+	/* prefetch statistics - number of prefetched blocks */
+	unsigned	prefetch_blocks;
+} prefetch_state;
+
+static void prefetch_init(prefetch_state *state,
+						  int prefetch_target);
+static void prefetch_blocks(prefetch_state *state,
+							unsigned block,
+							unsigned block_length,
+							rfile **sourcemap,
+							off_t *offsetmap);
 
 /*
  * Reconstruct a full file from an incremental file and a chain of prior
@@ -92,7 +111,8 @@ reconstruct_from_incremental_file(char *input_filename,
 								  uint8 **checksum_payload,
 								  bool debug,
 								  bool dry_run,
-								  CopyMethod copy_method)
+								  CopyMethod copy_method,
+								  int prefetch_target)
 {
 	rfile	  **source;
 	rfile	   *latest_source = NULL;
@@ -327,7 +347,7 @@ reconstruct_from_incremental_file(char *input_filename,
 		write_reconstructed_file(input_filename, output_filename,
 								 block_length, sourcemap, offsetmap,
 								 &checksum_ctx, debug, dry_run,
-								 copy_method);
+								 copy_method, prefetch_target);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -539,11 +559,16 @@ write_reconstructed_file(char *input_filename,
 						 pg_checksum_context *checksum_ctx,
 						 bool debug,
 						 bool dry_run,
-						 CopyMethod copy_method)
+						 CopyMethod copy_method,
+						 int prefetch_target)
 {
 	int			wfd = -1;
 	unsigned	i;
 	unsigned	zero_blocks = 0;
+	prefetch_state	prefetch;
+
+	/* initialize the block prefetcher */
+	prefetch_init(&prefetch, prefetch_target);
 
 	/* Debugging output. */
 	if (debug)
@@ -676,6 +701,9 @@ write_reconstructed_file(char *input_filename,
 		{
 			int			rb;
 
+			/* do prefetching if enabled */
+			prefetch_blocks(&prefetch, i, block_length, sourcemap, offsetmap);
+
 			/* Read the block from the correct source, except if dry-run. */
 			rb = pg_pread(s->fd, buffer, BLCKSZ, offsetmap[i]);
 			if (rb != BLCKSZ)
@@ -736,7 +764,56 @@ write_reconstructed_file(char *input_filename,
 			pg_log_debug("zero-filled %u blocks", zero_blocks);
 	}
 
+	if (prefetch.prefetch_blocks > 0)
+	{
+		/* print how many blocks we prefetched / skipped */
+		pg_log_debug("prefetch blocks %u (%u skipped)",
+					 prefetch.prefetch_blocks,
+					 (block_length - prefetch.prefetch_blocks));
+	}
+
 	/* Close the output file. */
 	if (wfd >= 0 && close(wfd) != 0)
 		pg_fatal("could not close \"%s\": %m", output_filename);
+}
+
+static void
+prefetch_init(prefetch_state *state, int prefetch_target)
+{
+	state->current_block = 0;
+	state->current_distance = 0;
+	state->max_distance = prefetch_target;
+	state->prefetch_blocks = 0;
+}
+
+static void
+prefetch_blocks(prefetch_state *state, unsigned block,
+				unsigned block_length, rfile **sourcemap, off_t* offsetmap)
+{
+#ifdef USE_PREFETCH
+	unsigned	max_block;
+
+	if (state->max_distance == 0)
+		return;
+
+	state->current_distance = Min(state->current_distance + 1,
+								  state->max_distance);
+
+	max_block = Min(block_length, block + state->current_distance);
+
+	while (state->current_block < max_block)
+	{
+		rfile  *f = sourcemap[state->current_block];
+		off_t	off = offsetmap[state->current_block];
+
+		state->current_block++;
+
+		if (f == NULL)
+			continue;
+
+		state->prefetch_blocks += 1;
+
+		posix_fadvise(f->fd, off, BLCKSZ, POSIX_FADV_WILLNEED);
+	}
+#endif
 }

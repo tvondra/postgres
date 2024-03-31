@@ -60,12 +60,34 @@ static void write_reconstructed_file(char *input_filename,
 									 pg_checksum_context *checksum_ctx,
 									 bool debug,
 									 bool dry_run,
-									 CopyMethod copy_method);
+									 CopyMethod copy_method,
+									 int prefetch_target);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
 static void write_block(int wfd, char *output_filename,
 						uint8 *buffer,
 						pg_checksum_context *checksum_ctx);
 static void read_block(rfile *s, off_t off, uint8 *buffer);
+
+/*
+ * state of the asynchronous prefetcher
+ */
+typedef struct prefetch_state
+{
+	unsigned	next_block;			/* block to prefetch next */
+	int			prefetch_distance;	/* current distance (<= target) */
+	int			prefetch_target;	/* target distance */
+
+	/* prefetch statistics - number of prefetched blocks */
+	unsigned	prefetch_blocks;
+} prefetch_state;
+
+static void prefetch_init(prefetch_state *state,
+						  int prefetch_target);
+static void prefetch_blocks(prefetch_state *state,
+							unsigned block,
+							unsigned block_length,
+							rfile **sourcemap,
+							off_t *offsetmap);
 
 /*
  * Reconstruct a full file from an incremental file and a chain of prior
@@ -96,7 +118,8 @@ reconstruct_from_incremental_file(char *input_filename,
 								  uint8 **checksum_payload,
 								  bool debug,
 								  bool dry_run,
-								  CopyMethod copy_method)
+								  CopyMethod copy_method,
+								  int prefetch_target)
 {
 	rfile	  **source;
 	rfile	   *latest_source = NULL;
@@ -331,7 +354,7 @@ reconstruct_from_incremental_file(char *input_filename,
 		write_reconstructed_file(input_filename, output_filename,
 								 block_length, sourcemap, offsetmap,
 								 &checksum_ctx, debug, dry_run,
-								 copy_method);
+								 copy_method, prefetch_target);
 		debug_reconstruction(n_prior_backups + 1, source, dry_run);
 	}
 
@@ -543,11 +566,16 @@ write_reconstructed_file(char *input_filename,
 						 pg_checksum_context *checksum_ctx,
 						 bool debug,
 						 bool dry_run,
-						 CopyMethod copy_method)
+						 CopyMethod copy_method,
+						 int prefetch_target)
 {
 	int			wfd = -1;
 	unsigned	i;
 	unsigned	zero_blocks = 0;
+	prefetch_state	prefetch;
+
+	/* initialize the block prefetcher */
+	prefetch_init(&prefetch, prefetch_target);
 
 	/* Debugging output. */
 	if (debug)
@@ -645,6 +673,9 @@ write_reconstructed_file(char *input_filename,
 		if (dry_run)
 			continue;
 
+		/* do prefetching if enabled */
+		prefetch_blocks(&prefetch, i, block_length, sourcemap, offsetmap);
+
 		/* Read or zero-fill the block as appropriate. */
 		if (s == NULL)
 		{
@@ -715,6 +746,14 @@ write_reconstructed_file(char *input_filename,
 			pg_log_debug("zero-filled %u blocks", zero_blocks);
 	}
 
+	if (prefetch.prefetch_blocks > 0)
+	{
+		/* print how many blocks we prefetched / skipped */
+		pg_log_debug("prefetch blocks %u (%u skipped)",
+					 prefetch.prefetch_blocks,
+					 (block_length - prefetch.prefetch_blocks));
+	}
+
 	/* Close the output file. */
 	if (wfd >= 0 && close(wfd) != 0)
 		pg_fatal("could not close \"%s\": %m", output_filename);
@@ -757,4 +796,95 @@ read_block(rfile *s, off_t off, uint8 *buffer)
 					 s->filename, rb, BLCKSZ,
 					 (unsigned long long) off);
 	}
+}
+
+/*
+ * prefetch_init
+ *		Initializes state of the prefetcher.
+ *
+ * Initialize state of the prefetcher, to start with the first block and maximum
+ * prefetch distance (prefetch_target=0 means prefetching disabled). The actual
+ * prefetch distance will gradually increase, until it reaches the target.
+ */
+static void
+prefetch_init(prefetch_state *state, int prefetch_target)
+{
+	Assert(prefetch_target >= 0);
+
+	state->next_block = 0;
+	state->prefetch_distance = 0;
+	state->prefetch_target = prefetch_target;
+	state->prefetch_blocks = 0;
+}
+
+/*
+ * prefetch_blocks
+ *		Perform asynchronous prefetching of blocks to be reconstructed next.
+ *
+ * Initiates asynchronous prefetch of to be reconstructed blocks.
+ *
+ * current_block - The block to be reconstructed in the current loop, right
+ * after the prefetching. This means we're potentially prefetching blocks
+ * in the range [current_block+1, current_block+current_dinstance], with
+ * both values inclusive.
+ *
+ * block_length - Number of blocks to reconstruct, also length of sourcemap
+ * and offsetmap arrays.
+ */
+static void
+prefetch_blocks(prefetch_state *state, unsigned current_block,
+				unsigned block_length, rfile **sourcemap, off_t* offsetmap)
+{
+#ifdef USE_PREFETCH
+	unsigned	max_block;
+
+	/* bail out if prefetching not enabled */
+	if (state->prefetch_target == 0)
+		return;
+
+	/* bail out if we've already prefetched the last block */
+	if (state->next_block == block_length)
+		return;
+
+	/* gradually increase prefetch distance until the target */
+	state->prefetch_distance = Min(state->prefetch_distance + 1,
+								   state->prefetch_target);
+
+	/*
+	 * Where should we start prefetching? We don't want to prefetch blocks
+	 * that we've already prefetched, that's pointless. And we also don't
+	 * want to prefetch the block we're just about to read. This can't
+	 * overflow because we know (current_block < block_length).
+	 */
+	state->next_block = Max(state->next_block, current_block + 1);
+
+	/*
+	 * How far to prefetch? Calculate the first block to not prefetch, i.e.
+	 * right after [current_block + current_distance]. It's possible the
+	 * second part overflows and wraps around, but in that case we just
+	 * don't prefetch a couple pages at the end.
+	 *
+	 * XXX But this also shouldn't be possible, thanks to the check of
+	 * (next_block == block_length) at the very beginning.
+	 */
+	max_block = Min(block_length, current_block + state->prefetch_distance + 1);
+
+	while (state->next_block < max_block)
+	{
+		rfile  *f = sourcemap[state->next_block];
+		off_t	off = offsetmap[state->next_block];
+
+		state->next_block++;
+
+		if (f == NULL)
+			continue;
+
+		state->prefetch_blocks += 1;
+
+		/* We ignore errors because this is only a hint.*/
+		(void) posix_fadvise(f->fd, off, BLCKSZ, POSIX_FADV_WILLNEED);
+	}
+
+	Assert(state->next_block <= block_length);
+#endif
 }

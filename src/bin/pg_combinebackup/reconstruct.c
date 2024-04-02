@@ -63,6 +63,10 @@ static void write_reconstructed_file(char *input_filename,
 									 int prefetch_target,
 									 CopyMethod copy_method);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
+static void write_blocks(int wfd, char *output_filename,
+						 uint8 *buffer, int nblocks,
+						 pg_checksum_context *checksum_ctx);
+static void read_blocks(rfile *s, off_t off, uint8 *buffer, int nblocks);
 
 typedef struct prefetch_state
 {
@@ -647,31 +651,31 @@ write_reconstructed_file(char *input_filename,
 	next_idx = 0;
 	while (next_idx < block_length)
 	{
-		uint8		buffer[BLCKSZ];
-		int			start_idx = next_idx;
+#define	BLOCK_COUNT(first, last)	((last) - (first) + 1)
+#define	BATCH_SIZE		128			/* 1MB */
+		uint8		buffer[BATCH_SIZE * BLCKSZ];
+		int			first_idx = next_idx;
 		int			last_idx = next_idx;
-		rfile	   *s = sourcemap[start_idx];
+		rfile	   *s = sourcemap[first_idx];
 		int			wb;
 		int			nblocks;
 
-		bool		skip_page_read = false;
-		bool		use_copy_range = false;
-
 		/*
-		 * find the last block to use from the same source file, but don't
-		 * work with more than 128 blocks (1MB) at a time
-		 *
-		 * XXX not sure if the second condition is 100% correct, but it gets
-		 * capped a couple lines later so ok
+		 * Determine the range of blocks coming from the same source file,
+		 * but not more than BLOCK_COUNT (1MB) at a time. The range starts
+		 * at first_idx, ends with last_idx (both are inclusive).
 		 */
-		while ((last_idx + 1 < block_length) &&
-			   (sourcemap[start_idx] == sourcemap[last_idx+1]) &&
-			   (last_idx - start_idx <= 128))
+		while ((last_idx + 1 < block_length) &&			/* valid block */
+			   (sourcemap[last_idx+1] == s) &&			/* same file */
+			   (BLOCK_COUNT(first_idx, last_idx) < BATCH_SIZE))	/* 1MB */
 			last_idx += 1;
 
-		/* how many blocks in this chunk, and set start of the next loop */
-		nblocks = Min(128, last_idx - start_idx + 1);
+		/* Calculate batch size, set start of the next loop. */
+		nblocks = BLOCK_COUNT(first_idx, last_idx);
 		next_idx += nblocks;
+
+		Assert(nblocks <= BATCH_SIZE);
+		Assert(next_idx == (last_idx + 1));
 
 		/* Update accounting information. */
 		if (s == NULL)
@@ -687,25 +691,6 @@ write_reconstructed_file(char *input_filename,
 		if (dry_run)
 			continue;
 
-		/*
-		 * Do we need to actually read the souce block?
-		 *
-		 * We only need to read the block if we are to perform plain copy or
-		 * calculate the checksum. If the user requested copy_file_range, we
-		 * may be able to skip reading the block.
-		 */
-		skip_page_read = ((copy_method == COPY_METHOD_COPY_FILE_RANGE) &&
-						  (checksum_ctx->type == CHECKSUM_TYPE_NONE));
-
-		/*
-		 * Should we copy the block using copy_file_range?
-		 *
-		 * We can do that if the user requested that, and the block is not
-		 * going to be zero-filled.
-		 */
-		use_copy_range = ((copy_method == COPY_METHOD_COPY_FILE_RANGE) &&
-						  (s != NULL));
-
 		/* Read or zero-fill the block as appropriate. */
 		if (s == NULL)
 		{
@@ -713,28 +698,13 @@ write_reconstructed_file(char *input_filename,
 			 * New block not mentioned in the WAL summary. Should have been an
 			 * uninitialized block, so just zero-fill it.
 			 */
-			memset(buffer, 0, BLCKSZ);
+			memset(buffer, 0, (nblocks * BLCKSZ));
 
 			/* do prefetching if enabled */
 			prefetch_blocks(&prefetch, last_idx, block_length, sourcemap, offsetmap);
 
-			for (int j = 0; j < nblocks; j++)
-			{
-				/* Write out the block. */
-				if ((wb = write(wfd, buffer, BLCKSZ)) != BLCKSZ)
-				{
-					if (wb < 0)
-						pg_fatal("could not write file \"%s\": %m", output_filename);
-					else
-						pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
-								 output_filename, wb, BLCKSZ);
-				}
-
-				/* Update the checksum computation. */
-				if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
-					pg_fatal("could not update checksum of file \"%s\"",
-							 output_filename);
-			}
+			/* Write out the block(s). */
+			write_blocks(wfd, output_filename, buffer, nblocks, checksum_ctx);
 
 			continue;
 		}
@@ -743,44 +713,19 @@ write_reconstructed_file(char *input_filename,
 		prefetch_blocks(&prefetch, last_idx, block_length, sourcemap, offsetmap);
 
 		/* now copy the blocks using either read/write or copy_file_range */
-		if (!use_copy_range)
+		if (copy_method != COPY_METHOD_COPY_FILE_RANGE)
 		{
-			for (int j = 0; j < nblocks; j++)
-			{
-				int			rb;
-
-				/* Read the block from the correct source, except if dry-run. */
-				rb = pg_pread(s->fd, buffer, BLCKSZ, offsetmap[start_idx + j]);
-				if (rb != BLCKSZ)
-				{
-					if (rb < 0)
-						pg_fatal("could not read file \"%s\": %m", s->filename);
-					else
-						pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
-								 s->filename, rb, BLCKSZ,
-								 (unsigned long long) offsetmap[start_idx + j]);
-				}
-
-				/* Write out the block. */
-				if ((wb = write(wfd, buffer, BLCKSZ)) != BLCKSZ)
-				{
-					if (wb < 0)
-						pg_fatal("could not write file \"%s\": %m", output_filename);
-					else
-						pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
-								 output_filename, wb, BLCKSZ);
-				}
-
-				/* Update the checksum computation. */
-				if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
-					pg_fatal("could not update checksum of file \"%s\"",
-							 output_filename);
-			}
+			/*
+			 * Read the batch of blocks from the correct source file, and
+			 * then write them out, possibly with checksum update.
+			 */
+			read_blocks(s, offsetmap[first_idx], buffer, nblocks);
+			write_blocks(wfd, output_filename, buffer, nblocks, checksum_ctx);
 		}
 		else	/* use copy_file_range */
 		{
 			/* copy_file_range modifies the passed offset, so make a copy */
-			off_t	off = offsetmap[start_idx];
+			off_t	off = offsetmap[first_idx];
 
 			wb = copy_file_range(s->fd, &off, wfd, NULL, BLCKSZ * nblocks, 0);
 
@@ -791,30 +736,17 @@ write_reconstructed_file(char *input_filename,
 				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
 						 output_filename, wb, nblocks * BLCKSZ);
 
-			if (skip_page_read)
+			/* when checksum calculation not needed, we're done */
+			if (checksum_ctx->type == CHECKSUM_TYPE_NONE)
 				continue;
 
-			for (int j = 0; j < nblocks; j++)
-			{
-				int			rb;
+			/* read the batch of blocks */
+			read_blocks(s, offsetmap[first_idx], buffer, nblocks);
 
-				/* Read the block from the correct source, except if dry-run. */
-				rb = pg_pread(s->fd, buffer, BLCKSZ, offsetmap[start_idx + j]);
-				if (rb != BLCKSZ)
-				{
-					if (rb < 0)
-						pg_fatal("could not read file \"%s\": %m", s->filename);
-					else
-						pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
-								 s->filename, rb, BLCKSZ,
-								 (unsigned long long) offsetmap[start_idx + j]);
-				}
-
-				/* Update the checksum computation. */
-				if (pg_checksum_update(checksum_ctx, buffer, BLCKSZ) < 0)
-					pg_fatal("could not update checksum of file \"%s\"",
-							 output_filename);
-			}
+			/* Update the checksum computation. */
+			if (pg_checksum_update(checksum_ctx, buffer, (nblocks * BLCKSZ)) < 0)
+				pg_fatal("could not update checksum of file \"%s\"",
+						 output_filename);
 		}
 	}
 
@@ -868,4 +800,43 @@ prefetch_blocks(prefetch_state *state, unsigned block,
 		 posix_fadvise(f->fd, off, BLCKSZ, POSIX_FADV_WILLNEED);
 	}
 #endif
+}
+
+static void
+write_blocks(int fd, char *output_filename,
+			 uint8 *buffer, int nblocks, pg_checksum_context *checksum_ctx)
+{
+	int	wb;
+
+	if ((wb = write(fd, buffer, nblocks * BLCKSZ)) != (nblocks * BLCKSZ))
+	{
+		if (wb < 0)
+			pg_fatal("could not write file \"%s\": %m", output_filename);
+		else
+			pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+					 output_filename, wb, (nblocks * BLCKSZ));
+	}
+
+	/* Update the checksum computation. */
+	if (pg_checksum_update(checksum_ctx, buffer, (nblocks * BLCKSZ)) < 0)
+		pg_fatal("could not update checksum of file \"%s\"",
+				 output_filename);
+}
+
+static void
+read_blocks(rfile *s, off_t off, uint8 *buffer, int nblocks)
+{
+	int			rb;
+
+	/* Read the block from the correct source, except if dry-run. */
+	rb = pg_pread(s->fd, buffer, (nblocks * BLCKSZ), off);
+	if (rb != (nblocks * BLCKSZ))
+	{
+		if (rb < 0)
+			pg_fatal("could not read file \"%s\": %m", s->filename);
+		else
+			pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
+					 s->filename, rb, (nblocks * BLCKSZ),
+					 (unsigned long long) off);
+	}
 }

@@ -70,11 +70,12 @@ static void read_blocks(rfile *s, off_t off, uint8 *buffer, int nblocks);
 
 typedef struct prefetch_state
 {
-	unsigned	current_block;
+	unsigned	next_block;	/* next block to maybe prefetch */
 	int	current_distance;
 	int	max_distance;
 
-	/* prefetch statistics - number of prefetched blocks */
+	/* prefetch statistics - number of requests and prefetched blocks */
+	unsigned	prefetch_count;
 	unsigned	prefetch_blocks;
 } prefetch_state;
 
@@ -761,8 +762,8 @@ write_reconstructed_file(char *input_filename,
 	if (prefetch.prefetch_blocks > 0)
 	{
 		/* print how many blocks we prefetched / skipped */
-		pg_log_debug("prefetch blocks %u (%u skipped)",
-					 prefetch.prefetch_blocks,
+		pg_log_debug("prefetch requests %u blocks %u (%u skipped)",
+					 prefetch.prefetch_count, prefetch.prefetch_blocks,
 					 (block_length - prefetch.prefetch_blocks));
 	}
 
@@ -813,9 +814,10 @@ read_blocks(rfile *s, off_t off, uint8 *buffer, int nblocks)
 static void
 prefetch_init(prefetch_state *state, int prefetch_target)
 {
-	state->current_block = 0;
-	state->current_distance = 0;
+	state->next_block = 0;	/* maybe prefetch first block */
+	state->current_distance = 128;
 	state->max_distance = prefetch_target;
+	state->prefetch_count = 0;
 	state->prefetch_blocks = 0;
 }
 
@@ -824,29 +826,53 @@ prefetch_blocks(prefetch_state *state, unsigned block,
 				unsigned block_length, rfile **sourcemap, off_t* offsetmap)
 {
 #ifdef USE_PREFETCH
+	/* end of prefetch range (first block to not prefetch) */
 	unsigned	max_block;
 
+	/* first block of range to prefetch */
+	unsigned	next_block;
+
+	/* bail out if prefetch disabled */
 	if (state->max_distance == 0)
 		return;
 
+	/* gradually increase the prefetch distance, up to maximum */
 	state->current_distance = Min(state->current_distance + 1,
 								  state->max_distance);
 
+	/* first block to not prefetch */
 	max_block = Min(block_length, block + state->current_distance);
 
-	while (state->current_block < max_block)
-	{
-		rfile  *f = sourcemap[state->current_block];
-		off_t	off = offsetmap[state->current_block];
+	/* start with the first not yet prefetched block */
+	next_block = Max(block, state->next_block);
 
-		state->current_block++;
+	/* prefetch ranges of blocks */
+	while (next_block < max_block)
+	{
+		/* range to prefetch in this round */
+		int			nblocks = 0;
+		unsigned	first_block = next_block;
+
+		rfile  *f = sourcemap[first_block];
+		off_t	off = offsetmap[first_block];
+
+		while ((sourcemap[first_block + nblocks] == f) &&
+			   (first_block + nblocks < max_block))
+			nblocks++;
+
+		Assert(nblocks <= 128);
+
+		/* remember how far we prefetched, even for f=NULL */
+		next_block = first_block + nblocks;
+		state->next_block = next_block;
 
 		if (f == NULL)
 			continue;
 
-		state->prefetch_blocks += 1;
+		state->prefetch_blocks += nblocks;
+		state->prefetch_count += 1;
 
-		posix_fadvise(f->fd, off, BLCKSZ, POSIX_FADV_WILLNEED);
+		posix_fadvise(f->fd, off, (nblocks * BLCKSZ), POSIX_FADV_WILLNEED);
 	}
 #endif
 }

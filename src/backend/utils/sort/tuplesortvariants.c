@@ -580,6 +580,16 @@ tuplesort_begin_index_brin(int workMem,
 	return state;
 }
 
+
+Tuplesortstate *
+tuplesort_begin_index_gin(Relation heapRel, Relation indexRel,
+						  int workMem, SortCoordinate coordinate,
+						  int sortopt)
+{
+	elog(ERROR, "fixme: implement");
+	return NULL;
+}
+
 Tuplesortstate *
 tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 					  bool nullsFirstFlag, int workMem,
@@ -987,6 +997,22 @@ tuplesort_getbrintuple(Tuplesortstate *state, Size *len, bool forward)
 	*len = btup->tuplen;
 
 	return &btup->tuple;
+}
+
+char *
+tuplesort_getgintuple(Tuplesortstate *state, Size *len, bool forward)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	MemoryContext oldcontext = MemoryContextSwitchTo(base->sortcontext);
+	SortTuple	stup;
+
+	if (!tuplesort_gettuple_common(state, forward, &stup))
+		stup.tuple = NULL;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	// FIXME
+	return NULL;
 }
 
 /*

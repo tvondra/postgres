@@ -20,6 +20,7 @@
 #include "postgres.h"
 
 #include "access/brin_tuple.h"
+#include "access/gin_tuple.h"
 #include "access/hash.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
@@ -176,17 +177,13 @@ typedef struct BrinSortTuple
  */
 typedef struct GinSortTuple
 {
-	Size			tuplen;		/* total tuple length */
-	Size			keylen;		/* bytes in data for key value */
-	int				typlen;		/* typlen for key */
-	OffsetNumber	attrnum;
-	signed char		category;	/* category: normal or NULL? */
-	char			data[FLEXIBLE_ARRAY_MEMBER];
+	Size			tuplen;
+	GinTuple		tuple;
 } GinSortTuple;
 
 /* Size of the GinSortTuple, given length of the key and number of items. */
-#define GINSORTTUPLE_SIZE(keylen, nitems)	\
-	(offsetof(GinSortTuple, data) + (keylen) + sizeof(ItemPointerData) * (nitems))
+#define GINSORTTUPLE_SIZE(len)		(offsetof(GinSortTuple, tuple) + (len))
+
 
 Tuplesortstate *
 tuplesort_begin_heap(TupleDesc tupDesc,
@@ -871,44 +868,18 @@ tuplesort_putbrintuple(Tuplesortstate *state, BrinTuple *tuple, Size size)
 }
 
 void
-tuplesort_putgintuple(Tuplesortstate *state,
-					  OffsetNumber attrnum, signed char category,
-					  Datum key, int typlen,
-					  ItemPointerData *items, uint32 nitems)
+tuplesort_putgintuple(Tuplesortstate *state, GinTuple *tup, Size size)
 {
 	SortTuple	stup;
 	GinSortTuple *gstup;
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	MemoryContext oldcontext = MemoryContextSwitchTo(base->tuplecontext);
-	int			keylen;
 	Size		tuplen;
 
-	if (typlen > 0)
-		keylen = typlen;
-	else if (typlen == -1)
-		keylen = VARSIZE_ANY(key);
-	else if (typlen == -2)
-		keylen = strlen(DatumGetPointer(key));
-	else
-		elog(ERROR, "invalid typlen");
+	gstup = palloc(GINSORTTUPLE_SIZE(size));
 
-	/* duple length */
-	tuplen = GINSORTTUPLE_SIZE(keylen, nitems);
-
-	/* allocate space for the whole BRIN sort tuple */
-	gstup = palloc(tuplen);
-
-	gstup->tuplen = tuplen;
-	gstup->attrnum = attrnum;
-	gstup->category = category;
-	gstup->keylen = keylen;
-	gstup->typlen = typlen;
-
-	/* FIXME alignment */
-	if (typlen > 0)
-		memcpy(gstup->data, &key, keylen);
-	else if ((typlen == -1) || (typlen == -2))
-		memcpy(gstup->data, DatumGetPointer(key), keylen);
+	gstup->tuplen = size;
+	memcpy(&gstup->tuple, tup, size);
 
 	stup.tuple = gstup;
 	stup.datum1 = (Datum) 0;
@@ -916,7 +887,7 @@ tuplesort_putgintuple(Tuplesortstate *state,
 
 	/* GetMemoryChunkSpace is not supported for bump contexts */
 	if (TupleSortUseBumpTupleCxt(base->sortopt))
-		tuplen = MAXALIGN(tuplen);
+		tuplen = MAXALIGN(size);
 	else
 		tuplen = GetMemoryChunkSpace(gstup);
 
@@ -1100,20 +1071,27 @@ tuplesort_getbrintuple(Tuplesortstate *state, Size *len, bool forward)
 	return &btup->tuple;
 }
 
-char *
+GinTuple *
 tuplesort_getgintuple(Tuplesortstate *state, Size *len, bool forward)
 {
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	MemoryContext oldcontext = MemoryContextSwitchTo(base->sortcontext);
 	SortTuple	stup;
+	GinSortTuple *gtup;
 
 	if (!tuplesort_gettuple_common(state, forward, &stup))
 		stup.tuple = NULL;
 
 	MemoryContextSwitchTo(oldcontext);
 
-	// FIXME
-	return NULL;
+	if (!stup.tuple)
+		return false;
+
+	gtup = (GinSortTuple *) stup.tuple;
+
+	*len = gtup->tuplen;
+
+	return &gtup->tuple;
 }
 
 /*
@@ -1912,46 +1890,18 @@ readtup_index_brin(Tuplesortstate *state, SortTuple *stup,
 static void
 removeabbrev_index_gin(Tuplesortstate *state, SortTuple *stups, int count)
 {
-	elog(ERROR, "removeabbrev_index_gin: not implemented");
+	Assert(false);
+	elog(ERROR, "removeabbrev_index_gin not implemented");
 }
 
 static int
 comparetup_index_gin(const SortTuple *a, const SortTuple *b,
-					 Tuplesortstate *state)
+					  Tuplesortstate *state)
 {
-	GinSortTuple *ga = (GinSortTuple *) a->tuple;
-	GinSortTuple *gb = (GinSortTuple *) b->tuple;
-
-	int			r;
-	int			len;
-
 	Assert(!TuplesortstateGetPublic(state)->haveDatum1);
 
-	/* first which attribute is indexed */
-
-	if (ga->attrnum > gb->attrnum)
-		return 1;
-
-	if (ga->attrnum < gb->attrnum)
-		return -1;
-
-	/* then common part of the key */
-
-	len = Min(ga->keylen, gb->keylen);
-
-	r = memcmp(ga->data, gb->data, len);
-	if (r != 0)
-		return r;
-
-	/* finaly length of the key */
-	if (ga->keylen < gb->keylen)
-		return 1;
-
-	if (ga->keylen > gb->keylen)
-		return -1;
-
-	/* entries may be for the same key */
-	return 0;
+	return compare_gin_tuples((GinTuple *) a->tuple,
+							  (GinTuple *) b->tuple);
 }
 
 static void
@@ -1963,7 +1913,7 @@ writetup_index_gin(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
 
 	tuplen = tuplen + sizeof(tuplen);
 	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
-	LogicalTapeWrite(tape, tuple, tuple->tuplen);
+	LogicalTapeWrite(tape, &tuple->tuple, tuple->tuplen);
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
 }
@@ -1980,14 +1930,17 @@ readtup_index_gin(Tuplesortstate *state, SortTuple *stup,
 	 * Allocate space for the BRIN sort tuple, which is BrinTuple with an
 	 * extra length field.
 	 */
-	tuple = (GinSortTuple *) tuplesort_readtup_alloc(state, tuplen);
+	tuple = (GinSortTuple *) tuplesort_readtup_alloc(state,
+													 GINSORTTUPLE_SIZE(tuplen));
 
-	LogicalTapeReadExact(tape, tuple, tuplen);
+	tuple->tuplen = tuplen;
+
+	LogicalTapeReadExact(tape, &tuple->tuple, tuplen);
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
 	stup->tuple = (void *) tuple;
 
-	/* set up first-column key value, which is block number */
+	/* no abbreviations (FIXME maybe use attrnum for this?) */
 	stup->datum1 = (Datum) 0;
 }
 

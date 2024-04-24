@@ -1381,13 +1381,13 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	}
 	else if (typlen == -1)
 	{
-		memcpy(ptr, DatumGetPointer(key), VARSIZE_ANY(DatumGetPointer(key)));
-		ptr += VARSIZE_ANY(DatumGetPointer(key));
+		memcpy(ptr, DatumGetPointer(key), keylen);
+		ptr += keylen;
 	}
 	else if (typlen == -2)
 	{
-		memcpy(ptr, DatumGetPointer(key), strlen(DatumGetPointer(key)) + 1);
-		ptr += strlen(DatumGetPointer(key)) + 1;
+		memcpy(ptr, DatumGetPointer(key), keylen);
+		ptr += keylen;
 	}
 
 	/* copy the TIDs */
@@ -1401,14 +1401,14 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 static Datum
 parse_gin_tuple(GinTuple *a, ItemPointerData **items)
 {
-	Datum	value;
+	Datum	key;
 
 	if (items)
 		*items = (ItemPointerData *) ((char *) a->data + a->keylen);
 
 	if (a->typlen > 0)
 	{
-		memcpy(&value, a->data, a->typlen);
+		memcpy(&key, a->data, a->typlen);
 		return value;
 	}
 

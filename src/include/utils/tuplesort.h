@@ -443,6 +443,9 @@ extern Tuplesortstate *tuplesort_begin_index_gist(Relation heapRel,
 												  int sortopt);
 extern Tuplesortstate *tuplesort_begin_index_brin(int workMem, SortCoordinate coordinate,
 												  int sortopt);
+extern Tuplesortstate *tuplesort_begin_index_gin(Relation heapRel, Relation indexRel,
+												 int workMem, SortCoordinate coordinate,
+												 int sortopt);
 extern Tuplesortstate *tuplesort_begin_datum(Oid datumType,
 											 Oid sortOperator, Oid sortCollation,
 											 bool nullsFirstFlag,
@@ -465,6 +468,8 @@ extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward);
 extern IndexTuple tuplesort_getindextuple(Tuplesortstate *state, bool forward);
 extern BrinTuple *tuplesort_getbrintuple(Tuplesortstate *state, Size *len,
 										 bool forward);
+extern char *tuplesort_getgintuple(Tuplesortstate *state, Size *len,
+										bool forward);
 extern bool tuplesort_getdatum(Tuplesortstate *state, bool forward, bool copy,
 							   Datum *val, bool *isNull, Datum *abbrev);
 

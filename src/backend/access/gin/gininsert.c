@@ -504,7 +504,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 								   key, typlen,
 								   list, nlist, &len);
 
-			elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, text_to_cstring(DatumGetPointer(key)), typlen, nlist);
+			elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
 		}
@@ -1347,7 +1347,9 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	Size		tuplen;
 	int			keylen;
 
-	if (typlen > 0)
+	if (category != GIN_CAT_NORM_KEY)
+		keylen = 0;
+	else if (typlen > 0)
 		keylen = typlen;
 	else if (typlen == -1)
 		keylen = VARSIZE_ANY(key);
@@ -1374,6 +1376,10 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	 * FIXME do we need to care about alignment? probably not, but we need
 	 * to care about copying the right part of Datum (little/big endian).
 	 */
+	if (category != GIN_CAT_NORM_KEY)
+	{
+		// do nothing
+	}
 	if (typlen > 0)
 	{
 		memcpy(ptr, &key, keylen);
@@ -1406,10 +1412,13 @@ parse_gin_tuple(GinTuple *a, ItemPointerData **items)
 	if (items)
 		*items = (ItemPointerData *) ((char *) a->data + a->keylen);
 
+	if (a->category != GIN_CAT_NORM_KEY)
+		return (Datum) 0;
+
 	if (a->typlen > 0)
 	{
 		memcpy(&key, a->data, a->typlen);
-		return value;
+		return key;
 	}
 
 	return PointerGetDatum(a->data);
@@ -1427,21 +1436,31 @@ compare_gin_tuples(GinTuple *a, GinTuple *b)
 	if (a->attrnum > b->attrnum)
 		return 1;
 
-	keya = parse_gin_tuple(a, NULL);
-	keyb = parse_gin_tuple(b, NULL);
+	if (a->category < b->category)
+		return -1;
 
-	if (a->typlen > 0)
-		return memcmp(&keya, &keyb, a->keylen);
+	if (a->category > b->category)
+		return 1;
 
-	if (a->typlen < 0)
+	if ((a->category == GIN_CAT_NORM_KEY) &&
+		(b->category == GIN_CAT_NORM_KEY))
 	{
-		if (a->keylen < b->keylen)
-			return -1;
+		keya = parse_gin_tuple(a, NULL);
+		keyb = parse_gin_tuple(b, NULL);
 
-		if (a->keylen > b->keylen)
-			return 1;
+		if (a->typlen > 0)
+			return memcmp(&keya, &keyb, a->keylen);
 
-		return memcmp(&keya, &keyb, a->keylen);
+		if (a->typlen < 0)
+		{
+			if (a->keylen < b->keylen)
+				return -1;
+
+			if (a->keylen > b->keylen)
+				return 1;
+
+			return memcmp(&keya, &keyb, a->keylen);
+		}
 	}
 
 	return 0;

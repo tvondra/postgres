@@ -17,6 +17,7 @@ typedef struct GinTuple
 	int				typlen;		/* typlen for key */
 	OffsetNumber	attrnum;
 	signed char		category;	/* category: normal or NULL? */
+	int				nitems;
 	char			data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;
 

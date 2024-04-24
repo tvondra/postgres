@@ -29,6 +29,7 @@
 #include "tcop/tcopprot.h"		/* pgrminclude ignore */
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/builtins.h"
 
 
 /* Magic numbers for parallel state sharing */
@@ -480,19 +481,30 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		uint32		nlist;
 		OffsetNumber attnum;
 
+		elog(LOG, "ginBuildCallbackParallel: dumping entries into tuplesort");
+
 		ginBeginBAScan(&buildstate->accum);
 		while ((list = ginGetBAEntry(&buildstate->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
 			GinTuple   *gtup;
 			Size		len;
+			int			typlen;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
+			/*
+			 * FIXME this works for gin/tsvector_ops, which stores keys as text,
+			 * but we need to find opckeytype somehow, and get typlen for that.
+			 */
+			typlen = -1;
+
 			gtup = build_gin_tuple(attnum, category,
-								   key, sizeof(Datum),	/* FIXME correct typlen */
+								   key, typlen,
 								   list, nlist, &len);
+
+			elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, text_to_cstring(DatumGetPointer(key)), typlen, nlist);
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
 		}
@@ -566,7 +578,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	buildstate.accum.ginstate = &buildstate.ginstate;
 	ginInitBA(&buildstate.accum);
-
+elog(WARNING, "indexInfo->ii_ParallelWorkers = %d", indexInfo->ii_ParallelWorkers);
 	/*
 	 * Attempt to launch parallel worker scan when required
 	 *
@@ -1119,7 +1131,8 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / ginleader->nparticipanttuplesorts;
+	// FIXME sortmem = maintenance_work_mem / ginleader->nparticipanttuplesorts;
+	sortmem = 1024L * 1024L;
 
 	/* Perform work common to all participants */
 	_gin_parallel_scan_and_build(buildstate, ginleader->ginshared,
@@ -1305,7 +1318,8 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
+	// FIXME sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
+	sortmem = 1024L * 1024L;
 
 	_gin_parallel_scan_and_build(&buildstate, ginshared, sharedsort,
 								 heapRel, indexRel, sortmem, false);
@@ -1328,6 +1342,7 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 				Size *len)
 {
 	GinTuple   *tuple;
+	char	   *ptr;
 
 	Size		tuplen;
 	int			keylen;
@@ -1337,7 +1352,7 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	else if (typlen == -1)
 		keylen = VARSIZE_ANY(key);
 	else if (typlen == -2)
-		keylen = strlen(DatumGetPointer(key));
+		keylen = strlen(DatumGetPointer(key)) + 1;
 	else
 		elog(ERROR, "invalid typlen");
 
@@ -1351,24 +1366,83 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	tuple->category = category;
 	tuple->keylen = keylen;
 	tuple->typlen = typlen;
+	tuple->nitems = nitems;
+
+	ptr = (char *) tuple->data;
 
 	/*
 	 * FIXME do we need to care about alignment? probably not, but we need
 	 * to care about copying the right part of Datum (little/big endian).
 	 */
 	if (typlen > 0)
-		memcpy(tuple->data, &key, keylen);
-	else if ((typlen == -1) || (typlen == -2))
-		memcpy(tuple->data, DatumGetPointer(key), keylen);
+	{
+		memcpy(ptr, &key, keylen);
+		ptr += keylen;
+	}
+	else if (typlen == -1)
+	{
+		memcpy(ptr, DatumGetPointer(key), VARSIZE_ANY(DatumGetPointer(key)));
+		ptr += VARSIZE_ANY(DatumGetPointer(key));
+	}
+	else if (typlen == -2)
+	{
+		memcpy(ptr, DatumGetPointer(key), strlen(DatumGetPointer(key)) + 1);
+		ptr += strlen(DatumGetPointer(key)) + 1;
+	}
+
+	/* copy the TIDs */
+	memcpy(ptr, items, sizeof(ItemPointerData) * nitems);
 
 	*len = tuplen;
 
 	return tuple;
 }
 
+static Datum
+parse_gin_tuple(GinTuple *a, ItemPointerData **items)
+{
+	Datum	value;
+
+	if (items)
+		*items = (ItemPointerData *) ((char *) a->data + a->keylen);
+
+	if (a->typlen > 0)
+	{
+		memcpy(&value, a->data, a->typlen);
+		return value;
+	}
+
+	return PointerGetDatum(a->data);
+}
+
 int
 compare_gin_tuples(GinTuple *a, GinTuple *b)
 {
-	/* FIXME */
+	Datum	keya,
+			keyb;
+
+	if (a->attrnum < b->attrnum)
+		return -1;
+
+	if (a->attrnum > b->attrnum)
+		return 1;
+
+	keya = parse_gin_tuple(a, NULL);
+	keyb = parse_gin_tuple(b, NULL);
+
+	if (a->typlen > 0)
+		return memcmp(&keya, &keyb, a->keylen);
+
+	if (a->typlen < 0)
+	{
+		if (a->keylen < b->keylen)
+			return -1;
+
+		if (a->keylen > b->keylen)
+			return 1;
+
+		return memcmp(&keya, &keyb, a->keylen);
+	}
+
 	return 0;
 }

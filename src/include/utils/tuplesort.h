@@ -22,6 +22,7 @@
 #define TUPLESORT_H
 
 #include "access/brin_tuple.h"
+#include "access/gin_tuple.h"
 #include "access/itup.h"
 #include "executor/tuptable.h"
 #include "storage/dsm.h"
@@ -458,10 +459,7 @@ extern void tuplesort_putindextuplevalues(Tuplesortstate *state,
 										  Relation rel, ItemPointer self,
 										  const Datum *values, const bool *isnull);
 extern void tuplesort_putbrintuple(Tuplesortstate *state, BrinTuple *tup, Size len);
-extern void tuplesort_putgintuple(Tuplesortstate *state,
-								  OffsetNumber attrnum, signed char category,
-								  Datum key, int typlen,
-								  ItemPointerData *items, uint32 nitems);
+extern void tuplesort_putgintuple(Tuplesortstate *state, GinTuple *tup, Size len);
 extern void tuplesort_putdatum(Tuplesortstate *state, Datum val,
 							   bool isNull);
 
@@ -471,8 +469,8 @@ extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward);
 extern IndexTuple tuplesort_getindextuple(Tuplesortstate *state, bool forward);
 extern BrinTuple *tuplesort_getbrintuple(Tuplesortstate *state, Size *len,
 										 bool forward);
-extern char *tuplesort_getgintuple(Tuplesortstate *state, Size *len,
-										bool forward);
+extern GinTuple *tuplesort_getgintuple(Tuplesortstate *state, Size *len,
+									   bool forward);
 extern bool tuplesort_getdatum(Tuplesortstate *state, bool forward, bool copy,
 							   Datum *val, bool *isNull, Datum *abbrev);
 

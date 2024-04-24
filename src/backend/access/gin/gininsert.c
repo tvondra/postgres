@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/gin_private.h"
+#include "access/gin_tuple.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
@@ -483,12 +484,17 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		while ((list = ginGetBAEntry(&buildstate->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
+			GinTuple   *gtup;
+			Size		len;
+
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			tuplesort_putgintuple(buildstate->bs_sortstate, attnum, category,
-								  key, sizeof(Datum),	/* FIXME correct typlen */
-								  list, nlist);
+			gtup = build_gin_tuple(attnum, category,
+								   key, sizeof(Datum),	/* FIXME correct typlen */
+								   list, nlist, &len);
+
+			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
 		}
 
 		MemoryContextReset(buildstate->tmpCtx);
@@ -1062,7 +1068,7 @@ _gin_parallel_heapscan(GinBuildState *state)
 static double
 _gin_parallel_merge(GinBuildState *state)
 {
-	char  *btup;	/* FIXME */
+	GinTuple   *gtup;
 	Size		tuplen;
 	double		reltuples;
 
@@ -1077,7 +1083,7 @@ _gin_parallel_merge(GinBuildState *state)
 	 * That probably gives us an index that is cheaper to scan, thanks to
 	 * mostly getting data from the same index page as before.
 	 */
-	while ((btup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
+	while ((gtup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
 		/* FIXME */
 	}
@@ -1174,12 +1180,17 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 		while ((list = ginGetBAEntry(&state->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
+			GinTuple   *gtup;
+			Size		len;
+
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			tuplesort_putgintuple(state->bs_sortstate, attnum, category,
-								  key, sizeof(Datum),	/* FIXME correct typlen */
-								  list, nlist);
+			gtup = build_gin_tuple(attnum, category,
+								   key, sizeof(Datum),	/* FIXME correct typlen */
+								   list, nlist, &len);
+
+			tuplesort_putgintuple(state->bs_sortstate, gtup, len);
 		}
 
 		MemoryContextReset(state->tmpCtx);
@@ -1307,4 +1318,57 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);
+}
+
+
+GinTuple *
+build_gin_tuple(OffsetNumber attrnum, unsigned char category,
+				Datum key, int typlen,
+				ItemPointerData *items, uint32 nitems,
+				Size *len)
+{
+	GinTuple   *tuple;
+
+	Size		tuplen;
+	int			keylen;
+
+	if (typlen > 0)
+		keylen = typlen;
+	else if (typlen == -1)
+		keylen = VARSIZE_ANY(key);
+	else if (typlen == -2)
+		keylen = strlen(DatumGetPointer(key));
+	else
+		elog(ERROR, "invalid typlen");
+
+	/* tuple length */
+	tuplen = offsetof(GinTuple, data) + keylen + sizeof(ItemPointerData) * nitems;
+
+	/* allocate space for the whole BRIN sort tuple */
+	tuple = palloc(tuplen);
+
+	tuple->attrnum = attrnum;
+	tuple->category = category;
+	tuple->keylen = keylen;
+	tuple->typlen = typlen;
+
+	/*
+	 * FIXME do we need to care about alignment? probably not, but we need
+	 * to care about copying the right part of Datum (little/big endian).
+	 */
+	if (typlen > 0)
+		memcpy(tuple->data, &key, keylen);
+	else if ((typlen == -1) || (typlen == -2))
+		memcpy(tuple->data, DatumGetPointer(key), keylen);
+
+	*len = tuplen;
+
+	return tuple;
+}
+
+int
+compare_gin_tuples(GinTuple *a, GinTuple *b)
+{
+	/* FIXME */
+	return 0;
 }

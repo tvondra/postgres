@@ -470,8 +470,8 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		ginHeapTupleBulkInsert(buildstate, (OffsetNumber) (i + 1),
 							   values[i], isnull[i], tid);
 
-	/* If we've maxed out our available memory, dump everything to the index */
-	if (buildstate->accum.allocatedMemory >= (Size) maintenance_work_mem * 1024L)
+	/* If we've maxed out our available memory, dump everything to the tuplesort */
+	if (buildstate->accum.allocatedMemory >= (Size) work_mem * 1024L)
 	{
 		ItemPointerData *list;
 		Datum		key;
@@ -485,8 +485,10 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		{
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
-			ginEntryInsert(&buildstate->ginstate, attnum, key, category,
-						   list, nlist, &buildstate->buildStats);
+
+			tuplesort_putgintuple(buildstate->bs_sortstate, attnum, category,
+								  key, sizeof(Datum),	/* FIXME correct typlen */
+								  list, nlist);
 		}
 
 		MemoryContextReset(buildstate->tmpCtx);
@@ -614,8 +616,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 * factor.
 		 */
 		state->bs_sortstate =
-			tuplesort_begin_index_gin(heap, index,
-									  maintenance_work_mem, coordinate,
+			tuplesort_begin_index_gin(maintenance_work_mem, coordinate,
 									  TUPLESORT_NONE);
 
 		/* scan the relation and merge per-worker results */
@@ -1147,8 +1148,8 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	coordinate->sharedsort = sharedsort;
 
 	/* Begin "partial" tuplesort */
-	state->bs_sortstate = tuplesort_begin_index_brin(sortmem, coordinate,
-													 TUPLESORT_NONE);
+	state->bs_sortstate = tuplesort_begin_index_gin(sortmem, coordinate,
+													TUPLESORT_NONE);
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
@@ -1161,7 +1162,29 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 									   ginBuildCallbackParallel, state, scan);
 
 	/* insert the last item */
-	// FIXME write remaining accumulated entries
+	/* write remaining accumulated entries */
+	{
+		ItemPointerData *list;
+		Datum		key;
+		GinNullCategory category;
+		uint32		nlist;
+		OffsetNumber attnum;
+
+		ginBeginBAScan(&state->accum);
+		while ((list = ginGetBAEntry(&state->accum,
+									 &attnum, &key, &category, &nlist)) != NULL)
+		{
+			/* there could be many entries, so be willing to abort here */
+			CHECK_FOR_INTERRUPTS();
+
+			tuplesort_putgintuple(state->bs_sortstate, attnum, category,
+								  key, sizeof(Datum),	/* FIXME correct typlen */
+								  list, nlist);
+		}
+
+		MemoryContextReset(state->tmpCtx);
+		ginInitBA(&state->accum);
+	}
 
 	/* sort the BRIN ranges built by this worker */
 	tuplesort_performsort(state->bs_sortstate);
@@ -1192,7 +1215,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	char	   *sharedquery;
 	GinShared *ginshared;
 	Sharedsort *sharedsort;
-	GinBuildState *buildstate;
+	GinBuildState	buildstate;
 	Relation	heapRel;
 	Relation	indexRel;
 	LOCKMODE	heapLockmode;
@@ -1234,13 +1257,30 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	heapRel = table_open(ginshared->heaprelid, heapLockmode);
 	indexRel = index_open(ginshared->indexrelid, indexLockmode);
 
-	/* FIXME */
-	buildstate = NULL;
+	/* initialize the GIN build state */
+	initGinState(&buildstate.ginstate, indexRel);
+	buildstate.indtuples = 0;
+	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
+
 	/*
-	initialize_brin_buildstate(indexRel, NULL,
-											ginshared->pagesPerRange,
-											InvalidBlockNumber);
-	*/
+	 * create a temporary memory context that is used to hold data not yet
+	 * dumped out to the index
+	 */
+	buildstate.tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
+											  "Gin build temporary context",
+											  ALLOCSET_DEFAULT_SIZES);
+
+	/*
+	 * create a temporary memory context that is used for calling
+	 * ginExtractEntries(), and can be reset after each tuple
+	 */
+	buildstate.funcCtx = AllocSetContextCreate(CurrentMemoryContext,
+											   "Gin build temporary context for user-defined function",
+											   ALLOCSET_DEFAULT_SIZES);
+
+	buildstate.accum.ginstate = &buildstate.ginstate;
+	ginInitBA(&buildstate.accum);
+
 
 	/* Look up shared state private to tuplesort.c */
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
@@ -1256,7 +1296,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
 
-	_gin_parallel_scan_and_build(buildstate, ginshared, sharedsort,
+	_gin_parallel_scan_and_build(&buildstate, ginshared, sharedsort,
 								 heapRel, indexRel, sortmem, false);
 
 	/* Report WAL/buffer usage during parallel execution */

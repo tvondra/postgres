@@ -891,7 +891,7 @@ tuplesort_putgintuple(Tuplesortstate *state, GinTuple *tup, Size size)
 	else
 		tuplen = GetMemoryChunkSpace(gstup);
 
-	elog(LOG, "tuplesort_putgintuple: tuplesort_puttuple_common %lu", tuplen);
+	// elog(LOG, "tuplesort_putgintuple: tuplesort_puttuple_common %lu", tuplen);
 
 	tuplesort_puttuple_common(state, &stup,
 							  base->sortKeys &&

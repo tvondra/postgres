@@ -481,7 +481,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		uint32		nlist;
 		OffsetNumber attnum;
 
-		elog(LOG, "ginBuildCallbackParallel: dumping entries into tuplesort");
+		// elog(LOG, "ginBuildCallbackParallel: dumping entries into tuplesort");
 
 		ginBeginBAScan(&buildstate->accum);
 		while ((list = ginGetBAEntry(&buildstate->accum,
@@ -504,7 +504,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 								   key, typlen,
 								   list, nlist, &len);
 
-			elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
+			// elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
 		}

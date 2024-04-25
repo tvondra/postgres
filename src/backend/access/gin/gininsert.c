@@ -499,6 +499,10 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 			/*
 			 * FIXME this works for gin/tsvector_ops, which stores keys as text,
 			 * but we need to find opckeytype somehow, and get typlen for that.
+			 *
+			 * XXX See how ConstructTupleDescriptor() in index.c computes the
+			 * keyType. Should be in the index tuple descriptor, accessible
+			 * through attnum.
 			 */
 			typlen = -1;
 
@@ -543,6 +547,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* XXX make sure to initialize, not to trip valgrind */
 	buildstate.bs_numtuples = 0;
 	buildstate.bs_reltuples = 0;
+	buildstate.bs_leader = NULL;
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
 	/* initialize the meta page */
@@ -1109,6 +1114,12 @@ _gin_parallel_merge(GinBuildState *state)
 		OffsetNumber attnum = gtup->attrnum;
 
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * FIXME try to combine entries for the same key and insert it once
+		 * (perhaps with some limit on the number of tids) instead of adding
+		 * then one by one.
+		 */
 
 		key = parse_gin_tuple(gtup, &list);
 		ginEntryInsert(&state->ginstate, attnum, key, category,

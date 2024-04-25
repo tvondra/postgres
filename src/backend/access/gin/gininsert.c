@@ -178,6 +178,8 @@ static void _gin_parallel_scan_and_build(GinBuildState *buildstate,
 										 Relation heap, Relation index,
 										 int sortmem, bool progress);
 
+static Datum parse_gin_tuple(GinTuple *a, ItemPointerData **items);
+
 
 /*
  * Adds array of item pointers to tuple's posting list, or
@@ -1100,7 +1102,17 @@ _gin_parallel_merge(GinBuildState *state)
 	 */
 	while ((gtup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
-		/* FIXME */
+		ItemPointerData *list;
+		Datum		key;
+		GinNullCategory category = gtup->category;
+		uint32		nlist = gtup->nitems;
+		OffsetNumber attnum = gtup->attrnum;
+
+		CHECK_FOR_INTERRUPTS();
+
+		key = parse_gin_tuple(gtup, &list);
+		ginEntryInsert(&state->ginstate, attnum, key, category,
+					   list, nlist, &state->buildStats);
 	}
 
 	tuplesort_end(state->bs_sortstate);

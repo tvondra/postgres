@@ -538,6 +538,9 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	initGinState(&buildstate.ginstate, index);
 	buildstate.indtuples = 0;
+	/* XXX make sure to initialize, not to trip valgrind */
+	buildstate.bs_numtuples = 0;
+	buildstate.bs_reltuples = 0;
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
 	/* initialize the meta page */
@@ -1082,7 +1085,7 @@ _gin_parallel_merge(GinBuildState *state)
 {
 	GinTuple   *gtup;
 	Size		tuplen;
-	double		reltuples;
+	double		reltuples = 0;
 
 	/* wait for workers to scan table and produce partial results */
 	reltuples = _gin_parallel_heapscan(state);

@@ -174,6 +174,9 @@ typedef struct BrinSortTuple
 
 /*
  * GinSortTuple
+ *
+ * FIXME This is pretty useless, we can add the length to GinTuple and use
+ * that directly.
  */
 typedef struct GinSortTuple
 {

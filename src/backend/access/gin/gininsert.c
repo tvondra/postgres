@@ -1362,7 +1362,9 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	tuplen = offsetof(GinTuple, data) + keylen + sizeof(ItemPointerData) * nitems;
 
 	/* allocate space for the whole BRIN sort tuple */
-	tuple = palloc(tuplen);
+	/* FIXME palloc0 to prevent valgrind from complaining about uninitialized
+	 * bytes in writetup_index_gin */
+	tuple = palloc0(tuplen);
 
 	tuple->attrnum = attrnum;
 	tuple->category = category;

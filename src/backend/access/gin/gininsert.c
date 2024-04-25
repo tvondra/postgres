@@ -474,7 +474,32 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		ginHeapTupleBulkInsert(buildstate, (OffsetNumber) (i + 1),
 							   values[i], isnull[i], tid);
 
+	/*
+	 * XXX idea - Instead of writing the entries directly into the shared
+	 * tuplesort, write it into a local one, do the sort in the worker,
+	 * and combine the results. For large tables with many different keys
+	 * that's going to work better than the current approach where we
+	 * don't get many matches in work_mem (maybe this should use 32MB,
+	 * which is what we use when planning, but even that may not be great).
+	 * Which means we are likely to have many entries with a single TID,
+	 * forcing the leader to do a qsort() when merging the data, often
+	 * amounting to ~50% of the serial part. By doing the qsort() in a
+	 * worker, leader then can do a mergesort (likely cheaper). Also, it
+	 * means the amount of data worker->leader is going to be lower thanks
+	 * to deduplication.
+	 *
+	 * Disadvantage: It needs more disk space, possibly up to 2x, because
+	 * each worker creates a tuplestore, then "transforms it" into the shared
+	 * tuplestore (hopefully less data, but not guaranteed).
+	 *
+	 * It's however possible to partition the data into multiple tuplesorts
+	 * per worker (by hashing). We don't need perfect sorting, and we can
+	 * even live with "equal" keys having multiple hashes (if there are
+	 * multiple binary representations of the value).
+	 */
+
 	/* If we've maxed out our available memory, dump everything to the tuplesort */
+	/* XXX probably should use 32MB, not work_mem, as used during planning? */
 	if (buildstate->accum.allocatedMemory >= (Size) work_mem * 1024L)
 	{
 		ItemPointerData *list;

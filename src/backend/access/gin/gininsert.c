@@ -513,6 +513,12 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 			// elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
+
+			/*
+			 * XXX tuplesort_putgintuple copies the tuple, won't be necessary
+			 * after ditching GinSortTuple (probably).
+			 */
+			pfree(gtup);
 		}
 
 		MemoryContextReset(buildstate->tmpCtx);
@@ -1088,6 +1094,9 @@ _gin_parallel_heapscan(GinBuildState *state)
  * ranges without any tuples.
  *
  * Returns the total number of heap tuples scanned.
+ *
+ * FIXME probably should have local memory contexts similar to what
+ * _brin_parallel_merge  does.
  */
 static double
 _gin_parallel_merge(GinBuildState *state)
@@ -1126,6 +1135,8 @@ _gin_parallel_merge(GinBuildState *state)
 		key = parse_gin_tuple(gtup, &list);
 		ginEntryInsert(&state->ginstate, attnum, key, category,
 					   list, nlist, &state->buildStats);
+
+		/* FIXME do we need to free gtup? */
 	}
 
 	tuplesort_end(state->bs_sortstate);
@@ -1223,15 +1234,29 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 		{
 			GinTuple   *gtup;
 			Size		len;
+			int			typlen;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
+			/*
+			 * FIXME this works for gin/tsvector_ops, which stores keys as text,
+			 * but we need to find opckeytype somehow, and get typlen for that.
+			 *
+			 * XXX See how ConstructTupleDescriptor() in index.c computes the
+			 * keyType. Should be in the index tuple descriptor, accessible
+			 * through attnum.
+			 */
+			typlen = -1;
+
 			gtup = build_gin_tuple(attnum, category,
-								   key, sizeof(Datum),	/* FIXME correct typlen */
+								   key, typlen,
 								   list, nlist, &len);
 
 			tuplesort_putgintuple(state->bs_sortstate, gtup, len);
+
+			/* FIXME if removed GinSortTuple, probably won't be needed */
+			pfree(gtup);
 		}
 
 		MemoryContextReset(state->tmpCtx);

@@ -618,7 +618,7 @@ tuplesort_begin_index_gin(int workMem, SortCoordinate coordinate,
 			 sortopt & TUPLESORT_RANDOMACCESS ? 't' : 'f');
 #endif
 
-	base->nKeys = 2;			/* Two sort columns, attrnum and value */
+	base->nKeys = 1;			/* Only the index key */
 
 	base->removeabbrev = removeabbrev_index_gin;
 	base->comparetup = comparetup_index_gin;
@@ -887,7 +887,7 @@ tuplesort_putgintuple(Tuplesortstate *state, GinTuple *tup, Size size)
 
 	/* GetMemoryChunkSpace is not supported for bump contexts */
 	if (TupleSortUseBumpTupleCxt(base->sortopt))
-		tuplen = MAXALIGN(size);
+		tuplen = MAXALIGN(GINSORTTUPLE_SIZE(size));
 	else
 		tuplen = GetMemoryChunkSpace(gstup);
 
@@ -1900,10 +1900,12 @@ static int
 comparetup_index_gin(const SortTuple *a, const SortTuple *b,
 					  Tuplesortstate *state)
 {
+	GinSortTuple *gsa = (GinSortTuple *) a->tuple;
+	GinSortTuple *gsb = (GinSortTuple *) b->tuple;
+
 	Assert(!TuplesortstateGetPublic(state)->haveDatum1);
 
-	return compare_gin_tuples((GinTuple *) a->tuple,
-							  (GinTuple *) b->tuple);
+	return compare_gin_tuples(&gsa->tuple, &gsb->tuple);
 }
 
 static void

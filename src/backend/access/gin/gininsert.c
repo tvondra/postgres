@@ -1084,6 +1084,35 @@ _gin_parallel_heapscan(GinBuildState *state)
 	return state->bs_reltuples;
 }
 
+static bool
+keys_are_equal(OffsetNumber attnum, unsigned char curr_category, Datum curr_key, int curr_keylen,
+			   GinTuple *gtup, Datum key)
+{
+	if (gtup->category != curr_category)
+		return false;
+
+	if (gtup->attrnum != attnum)
+		return false;
+
+	if (gtup->keylen != curr_keylen)
+		return false;
+
+	if (curr_category != GIN_CAT_NORM_KEY)
+		return true;
+
+	// elog(LOG, "keys_are_equal curr %s len %d", text_to_cstring(DatumGetTextPP(curr_key)), curr_keylen);
+	// elog(LOG, "keys_are_equal new %s len %lu", text_to_cstring(DatumGetTextPP(key)), gtup->keylen);
+	// elog(LOG, "res = %d", (memcmp(DatumGetPointer(curr_key), DatumGetPointer(key), curr_keylen) == 0));
+
+	return (memcmp(DatumGetPointer(curr_key), DatumGetPointer(key), curr_keylen) == 0);
+}
+
+static int
+tid_cmp(const void *a, const void *b)
+{
+	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
+}
+
 /*
  * Within leader, wait for end of heap scan and merge per-worker results.
  *
@@ -1105,6 +1134,16 @@ _gin_parallel_merge(GinBuildState *state)
 	Size		tuplen;
 	double		reltuples = 0;
 
+	/* current key */
+	bool		has_key = false;
+	unsigned char curr_attnum;
+	unsigned char curr_category;
+	Datum		curr_key = (Datum) 0;
+	int			curr_keylen;
+	ItemPointerData	*curr_list = NULL;
+	int				curr_nlist = 0;
+	int				curr_maxsize = 0;
+
 	/* wait for workers to scan table and produce partial results */
 	reltuples = _gin_parallel_heapscan(state);
 
@@ -1120,9 +1159,6 @@ _gin_parallel_merge(GinBuildState *state)
 	{
 		ItemPointerData *list;
 		Datum		key;
-		GinNullCategory category = gtup->category;
-		uint32		nlist = gtup->nitems;
-		OffsetNumber attnum = gtup->attrnum;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1133,11 +1169,118 @@ _gin_parallel_merge(GinBuildState *state)
 		 */
 
 		key = parse_gin_tuple(gtup, &list);
-		ginEntryInsert(&state->ginstate, attnum, key, category,
-					   list, nlist, &state->buildStats);
+
+		/* try merging this with the last key */
+		if (!has_key)
+		{
+			/* now remember the new key */
+			curr_category = gtup->category;
+			curr_keylen = gtup->keylen;
+			curr_attnum = gtup->attrnum;
+
+			if (gtup->keylen != 0)
+			{
+				char *ptr = palloc(gtup->keylen);
+				memcpy(ptr, DatumGetPointer(key), gtup->keylen);
+				curr_key = PointerGetDatum(ptr);
+			}
+
+			/* enlarge the TID buffer */
+			if (curr_nlist + gtup->nitems > curr_maxsize)
+			{
+				curr_maxsize = Max(curr_maxsize, 64);
+				while (curr_nlist + gtup->nitems > curr_maxsize)
+					curr_maxsize *= 2;
+
+				if (curr_list == NULL)
+					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
+				else
+					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
+			}
+
+			memcpy(curr_list, list, sizeof(ItemPointerData) * gtup->nitems);
+			curr_nlist = gtup->nitems;
+
+			has_key = true;
+		}
+		else if (keys_are_equal(curr_attnum, curr_category, curr_key, curr_keylen,
+								gtup, key))
+		{
+			/* enlarge the TID buffer */
+			if (curr_nlist + gtup->nitems > curr_maxsize)
+			{
+				curr_maxsize = Max(curr_maxsize, 64);
+				while (curr_nlist + gtup->nitems > curr_maxsize)
+					curr_maxsize *= 2;
+
+				if (curr_list == NULL)
+					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
+				else
+					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
+			}
+
+			/*
+			 * XXX should there be some limit on curr_maxsize? probably yes, to
+			 * respect maintenance_work_mem.
+			 */
+
+			/* add the TIDs at the end */
+			memcpy(&curr_list[curr_nlist], list, sizeof(ItemPointerData) * gtup->nitems);
+			curr_nlist += gtup->nitems;
+
+			continue;
+		}
+		else
+		{
+			/* different keys - flush the current key, remember the current one */
+			Assert(curr_list != NULL);
+			Assert(curr_nlist > 0);
+
+			/* sort the TIDs, dataPlaceToPage prefers to receive tuples in TID order. */
+			pg_qsort(curr_list, curr_nlist, sizeof(ItemPointerData), tid_cmp);
+
+			ginEntryInsert(&state->ginstate, curr_attnum, curr_key, curr_category,
+						   curr_list, curr_nlist, &state->buildStats);
+
+			if (DatumGetPointer(curr_key) != NULL)
+			{
+				pfree(DatumGetPointer(curr_key));
+				curr_key = (Datum) 0;
+			}
+
+			/* now remember the new key */
+			curr_category = gtup->category;
+			curr_keylen = gtup->keylen;
+			curr_attnum = gtup->attrnum;
+
+			if (gtup->keylen != 0)
+			{
+				char *ptr = palloc(gtup->keylen);
+				memcpy(ptr, DatumGetPointer(key), gtup->keylen);
+				curr_key = PointerGetDatum(ptr);
+			}
+
+			/* enlarge the TID buffer */
+			if (curr_nlist + gtup->nitems > curr_maxsize)
+			{
+				curr_maxsize = Max(curr_maxsize, 64);
+				while (curr_nlist + gtup->nitems > curr_maxsize)
+					curr_maxsize *= 2;
+
+				if (curr_list == NULL)
+					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
+				else
+					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
+			}
+
+			memcpy(curr_list, list, sizeof(ItemPointerData) * gtup->nitems);
+			curr_nlist = gtup->nitems;
+		}
 
 		/* FIXME do we need to free gtup? */
 	}
+
+	/* FIXME flush data for the last key */
 
 	tuplesort_end(state->bs_sortstate);
 
@@ -1386,7 +1529,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);
 
-	elog(WARNING, "worker nEntries %lu", buildstate.buildStats.nEntries);
+	// elog(WARNING, "worker nEntries %lu", buildstate.buildStats.nEntries);
 }
 
 
@@ -1516,7 +1659,7 @@ compare_gin_tuples(GinTuple *a, GinTuple *b)
 			if (a->keylen > b->keylen)
 				return 1;
 
-			return memcmp(&keya, &keyb, a->keylen);
+			return memcmp(DatumGetPointer(keya), DatumGetPointer(keyb), a->keylen);
 		}
 	}
 

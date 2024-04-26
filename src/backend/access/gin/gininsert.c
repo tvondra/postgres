@@ -1342,8 +1342,7 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	// FIXME sortmem = maintenance_work_mem / ginleader->nparticipanttuplesorts;
-	sortmem = 1024L * 1024L;
+	sortmem = maintenance_work_mem / ginleader->nparticipanttuplesorts;
 
 	/* Perform work common to all participants */
 	_gin_parallel_scan_and_build(buildstate, ginleader->ginshared,
@@ -1543,8 +1542,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	// FIXME sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
-	sortmem = 1024L * 1024L;
+	sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
 
 	_gin_parallel_scan_and_build(&buildstate, ginshared, sharedsort,
 								 heapRel, indexRel, sortmem, false);

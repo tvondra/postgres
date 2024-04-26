@@ -1203,6 +1203,9 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 		buffer->keylen = tup->keylen;
 		buffer->attnum = tup->attrnum;
 
+		buffer->typlen = tup->typlen;
+		buffer->typbyval = tup->typbyval;
+
 		buffer->key = datumCopy(key, buffer->typbyval, buffer->typlen);
 	}
 
@@ -1703,14 +1706,17 @@ parse_gin_tuple(GinTuple *a, ItemPointerData **items)
 	Datum	key;
 
 	if (items)
-		*items = (ItemPointerData *) ((char *) a->data + a->keylen);
+	{
+		char *ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+		*items = (ItemPointerData *) ptr;
+	}
 
 	if (a->category != GIN_CAT_NORM_KEY)
 		return (Datum) 0;
 
-	if (a->typlen > 0)
+	if (a->typbyval > 0)
 	{
-		memcpy(&key, a->data, a->typlen);
+		memcpy(&key, a->data, a->keylen);
 		return key;
 	}
 

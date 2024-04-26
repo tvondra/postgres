@@ -160,6 +160,7 @@ typedef struct
 	 * build callback etc.
 	 */
 	Tuplesortstate *bs_sortstate;
+	Tuplesortstate *bs_worker_sort;
 } GinBuildState;
 
 
@@ -537,7 +538,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 
 			// elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
 
-			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
+			tuplesort_putgintuple(buildstate->bs_worker_sort, gtup, len);
 
 			/*
 			 * XXX tuplesort_putgintuple copies the tuple, won't be necessary
@@ -1633,7 +1634,6 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-	Tuplesortstate *worker_sort;
 
 	/* Initialize local tuplesort coordination state */
 	coordinate = palloc0(sizeof(SortCoordinateData));
@@ -1646,7 +1646,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 													TUPLESORT_NONE);
 
 	/* Local per-worker sort of raw-data */
-	worker_sort = tuplesort_begin_index_gin(sortmem, NULL, TUPLESORT_NONE);
+	state->bs_worker_sort = tuplesort_begin_index_gin(sortmem, NULL, TUPLESORT_NONE);
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
@@ -1692,7 +1692,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 								   key, typlen,
 								   list, nlist, &len);
 
-			tuplesort_putgintuple(worker_sort, gtup, len);
+			tuplesort_putgintuple(state->bs_worker_sort, gtup, len);
 
 			/* FIXME if removed GinSortTuple, probably won't be needed */
 			pfree(gtup);
@@ -1703,11 +1703,11 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	}
 
 	/* sort the raw per-worker data */
-	tuplesort_performsort(worker_sort);
+	tuplesort_performsort(state->bs_worker_sort);
 
 	/* read the sorted gin data, combine them into larger chunks and place
 	 * them into the shared tuplestore */
-	_gin_process_worker_data(state, worker_sort);
+	_gin_process_worker_data(state, state->bs_worker_sort);
 
 	/* sort the BRIN ranges built by this worker */
 	tuplesort_performsort(state->bs_sortstate);

@@ -14,7 +14,8 @@
 typedef struct GinTuple
 {
 	Size			keylen;		/* bytes in data for key value */
-	int				typlen;		/* typlen for key */
+	int16			typlen;		/* typlen for key */
+	bool			typbyval;	/* typbyval for key */
 	OffsetNumber	attrnum;
 	signed char		category;	/* category: normal or NULL? */
 	int				nitems;
@@ -22,7 +23,7 @@ typedef struct GinTuple
 } GinTuple;
 
 GinTuple *build_gin_tuple(OffsetNumber attnum, unsigned char category,
-						  Datum key, int typlen,
+						  Datum key, int16 typlen, bool typbyval,
 						  ItemPointerData *items, uint32 nitems,
 						  Size *len);
 

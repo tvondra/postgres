@@ -27,6 +27,7 @@
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "tcop/tcopprot.h"		/* pgrminclude ignore */
+#include "utils/datum.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/builtins.h"
@@ -459,7 +460,6 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 	MemoryContextSwitchTo(oldCtx);
 }
 
-// FIXME
 static void
 ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 						 bool *isnull, bool tupleIsAlive, void *state)
@@ -511,43 +511,33 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		GinNullCategory category;
 		uint32		nlist;
 		OffsetNumber attnum;
-
-		// elog(LOG, "ginBuildCallbackParallel: dumping entries into tuplesort");
+		TupleDesc	tdesc = RelationGetDescr(index);
 
 		ginBeginBAScan(&buildstate->accum);
 		while ((list = ginGetBAEntry(&buildstate->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
-			GinTuple   *gtup;
-			Size		len;
-			int			typlen;
+			/* information about the key */
+			Form_pg_attribute	attr = TupleDescAttr(tdesc, (attnum - 1));
+
+			/* GIN tuple and tuple length */
+			GinTuple   *tup;
+			Size		tuplen;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			/*
-			 * FIXME this works for gin/tsvector_ops, which stores keys as text,
-			 * but we need to find opckeytype somehow, and get typlen for that.
-			 *
-			 * XXX See how ConstructTupleDescriptor() in index.c computes the
-			 * keyType. Should be in the index tuple descriptor, accessible
-			 * through attnum.
-			 */
-			typlen = -1;
+			tup = build_gin_tuple(attnum, category,
+								  key, attr->attlen, attr->attbyval,
+								  list, nlist, &tuplen);
 
-			gtup = build_gin_tuple(attnum, category,
-								   key, typlen,
-								   list, nlist, &len);
-
-			// elog(LOG, "ginBuildCallbackParallel: gin tuple %lu (key '%s' typlen %d nitems %d)", len, (key) ? text_to_cstring(DatumGetTextPP(key)) : "", typlen, nlist);
-
-			tuplesort_putgintuple(buildstate->bs_sortstate, gtup, len);
+			tuplesort_putgintuple(buildstate->bs_sortstate, tup, tuplen);
 
 			/*
 			 * XXX tuplesort_putgintuple copies the tuple, won't be necessary
 			 * after ditching GinSortTuple (probably).
 			 */
-			pfree(gtup);
+			pfree(tup);
 		}
 
 		MemoryContextReset(buildstate->tmpCtx);
@@ -1131,9 +1121,15 @@ typedef struct GinBuffer
 	GinNullCategory	category;
 	Datum			key;		/* 0 if no key (and keylen == 0) */
 	Size			keylen;		/* number of bytes (not typlen) */
-	ItemPointerData	*items;
+
+	/* type info */
+	int16			typlen;
+	bool			typbyval;
+
+	/* array of TID values */
 	int				nitems;
 	int				maxitems;
+	ItemPointerData	*items;
 } GinBuffer;
 
 static GinBuffer *
@@ -1175,7 +1171,16 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 	if (buffer->category != GIN_CAT_NORM_KEY)
 		return true;
 
-	/* FIXME this needs to consider typlen (memcmp only works for by-ref types) */
+	/*
+	 * Compare the key value, depending on the type information.
+	 *
+	 * XXX Not sure this works correctly for byval types that don't need the
+	 * whole Datum. What if there is garbage in the padding bytes?
+	 */
+	if (buffer->typbyval)
+		return (buffer->key == *(Datum *) tup->data);
+
+	/* byref values simply uses memcmp for comparison */
 	return (memcmp(tup->data, DatumGetPointer(buffer->key), buffer->keylen) == 0);
 }
 
@@ -1194,13 +1199,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 		buffer->keylen = tup->keylen;
 		buffer->attnum = tup->attrnum;
 
-		/* XXX switch to datumCopy(), do the right thing for typlen */
-		if (tup->keylen != 0)
-		{
-			char *ptr = palloc(tup->keylen);
-			memcpy(ptr, DatumGetPointer(key), tup->keylen);
-			buffer->key = PointerGetDatum(ptr);
-		}
+		buffer->key = datumCopy(key, buffer->typbyval, buffer->typlen);
 	}
 
 	/* enlarge the TID buffer, if needed */
@@ -1243,19 +1242,22 @@ GinBufferReset(GinBuffer *buffer)
 {
 	Assert(!GinBufferIsEmpty(buffer));
 
-	/* FIXME release byref values, do nothing for by-val ones */
-	if (DatumGetPointer(buffer->key) != NULL)
-	{
+	/* release byref values, do nothing for by-val ones */
+	if (!buffer->typbyval)
 		pfree(DatumGetPointer(buffer->key));
-		buffer->key = (Datum) 0;
-	}
+
+	/* XXX not really needed, but easier to trigger NULL deref etc. */
+	buffer->key = (Datum) 0;
 
 	buffer->attnum = 0;
 	buffer->category = 0;
 	buffer->keylen = 0;
 	buffer->nitems = 0;
 
-	/* XXX probably should do something with extremely large array of items? */
+	buffer->typlen = 0;
+	buffer->typbyval = 0;
+
+	/* XXX should do something with extremely large array of items? */
 }
 
 /*
@@ -1443,30 +1445,23 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 		GinNullCategory category;
 		uint32		nlist;
 		OffsetNumber attnum;
+		TupleDesc	tdesc = RelationGetDescr(index);
 
 		ginBeginBAScan(&state->accum);
 		while ((list = ginGetBAEntry(&state->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
+			/* information about the key */
+			Form_pg_attribute	attr = TupleDescAttr(tdesc, (attnum - 1));
+
 			GinTuple   *gtup;
 			Size		len;
-			int			typlen;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			/*
-			 * FIXME this works for gin/tsvector_ops, which stores keys as text,
-			 * but we need to find opckeytype somehow, and get typlen for that.
-			 *
-			 * XXX See how ConstructTupleDescriptor() in index.c computes the
-			 * keyType. Should be in the index tuple descriptor, accessible
-			 * through attnum.
-			 */
-			typlen = -1;
-
 			gtup = build_gin_tuple(attnum, category,
-								   key, typlen,
+								   key, attr->attlen, attr->attbyval,
 								   list, nlist, &len);
 
 			tuplesort_putgintuple(state->bs_sortstate, gtup, len);
@@ -1607,7 +1602,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 GinTuple *
 build_gin_tuple(OffsetNumber attrnum, unsigned char category,
-				Datum key, int typlen,
+				Datum key, int16 typlen, bool typbyval,
 				ItemPointerData *items, uint32 nitems,
 				Size *len)
 {
@@ -1617,8 +1612,20 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	Size		tuplen;
 	int			keylen;
 
+	/*
+	 * Calculate how long is the key value. Only keys with GIN_CAT_NORM_KEY
+	 * have actual non-empty key. We include varlena headers and \0 bytes
+	 * for strings, to make it easier to access the data in-line.
+	 *
+	 * For byval types we simply copy the whole Datum. We could store just
+	 * the necessary bytes, but this is simpler to work with and not worth
+	 * the extra complexity. Moreover we still need to do the MAXALIGN to
+	 * allow direct access to items pointers.
+	 */
 	if (category != GIN_CAT_NORM_KEY)
 		keylen = 0;
+	else if (typbyval)
+		keylen = sizeof(Datum);
 	else if (typlen > 0)
 		keylen = typlen;
 	else if (typlen == -1)
@@ -1628,50 +1635,60 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 	else
 		elog(ERROR, "invalid typlen");
 
-	/* tuple length */
-	tuplen = offsetof(GinTuple, data) + keylen + sizeof(ItemPointerData) * nitems;
+	/*
+	 * Determine GIN tuple length with all the data included. Be careful
+	 * about alignment, to allow direct access to item pointers.
+	 */
+	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) +
+					  (sizeof(ItemPointerData) * nitems);
 
-	/* allocate space for the whole BRIN sort tuple */
-	/* FIXME palloc0 to prevent valgrind from complaining about uninitialized
-	 * bytes in writetup_index_gin */
+	*len = tuplen;
+
+	/*
+	 * allocate space for the whole GIN tuple
+	 *
+	 * XXX palloc0 so that valgrind does not complain about uninitialized
+	 * bytes in writetup_index_gin, likely because of padding
+	 */
 	tuple = palloc0(tuplen);
 
 	tuple->attrnum = attrnum;
 	tuple->category = category;
 	tuple->keylen = keylen;
-	tuple->typlen = typlen;
 	tuple->nitems = nitems;
 
-	ptr = (char *) tuple->data;
+	/* key type info */
+	tuple->typlen = typlen;
+	tuple->typbyval = typbyval;
 
 	/*
-	 * FIXME do we need to care about alignment? probably not, but we need
-	 * to care about copying the right part of Datum (little/big endian).
+	 * Copy the key and items into the tuple. First the key value, which we
+	 * can simply copy right at the beginning of the data array.
 	 */
-	if (category != GIN_CAT_NORM_KEY)
+	if (category == GIN_CAT_NORM_KEY)
 	{
-		// do nothing
-	}
-	if (typlen > 0)
-	{
-		memcpy(ptr, &key, keylen);
-		ptr += keylen;
-	}
-	else if (typlen == -1)
-	{
-		memcpy(ptr, DatumGetPointer(key), keylen);
-		ptr += keylen;
-	}
-	else if (typlen == -2)
-	{
-		memcpy(ptr, DatumGetPointer(key), keylen);
-		ptr += keylen;
+		if (typbyval)
+		{
+			memcpy(tuple->data, &key, sizeof(Datum));
+		}
+		else if (typlen > 0)	/* byref, fixed length */
+		{
+			memcpy(tuple->data, &key, typlen);
+		}
+		else if (typlen == -1)
+		{
+			memcpy(tuple->data, DatumGetPointer(key), keylen);
+		}
+		else if (typlen == -2)
+		{
+			memcpy(tuple->data, DatumGetPointer(key), keylen);
+		}
 	}
 
-	/* copy the TIDs */
+	/* finally, copy the TIDs into the array */
+	ptr = (char *) tuple  + MAXALIGN(offsetof(GinTuple, data) + keylen);
+
 	memcpy(ptr, items, sizeof(ItemPointerData) * nitems);
-
-	*len = tuplen;
 
 	return tuple;
 }

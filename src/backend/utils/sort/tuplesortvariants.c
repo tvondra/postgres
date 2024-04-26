@@ -1908,7 +1908,7 @@ comparetup_index_gin(const SortTuple *a, const SortTuple *b,
 
 	Assert(!TuplesortstateGetPublic(state)->haveDatum1);
 
-	return compare_gin_tuples(&gsa->tuple, &gsb->tuple);
+	return _gin_compare_tuples(&gsa->tuple, &gsb->tuple);
 }
 
 static void

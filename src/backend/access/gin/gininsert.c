@@ -179,7 +179,7 @@ static void _gin_parallel_scan_and_build(GinBuildState *buildstate,
 										 Relation heap, Relation index,
 										 int sortmem, bool progress);
 
-static Datum parse_gin_tuple(GinTuple *a, ItemPointerData **items);
+static Datum _gin_parse_tuple(GinTuple *a, ItemPointerData **items);
 
 
 /*
@@ -527,9 +527,9 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			tup = build_gin_tuple(attnum, category,
-								  key, attr->attlen, attr->attbyval,
-								  list, nlist, &tuplen);
+			tup = _gin_build_tuple(attnum, category,
+								   key, attr->attlen, attr->attbyval,
+								   list, nlist, &tuplen);
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, tup, tuplen);
 
@@ -1221,7 +1221,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 
 	AssertCheckGinBuffer(buffer);
 
-	key = parse_gin_tuple(tup, &items);
+	key = _gin_parse_tuple(tup, &items);
 
 	/* if the buffer is empty, set the fields (and copy the key) */
 	if (GinBufferIsEmpty(buffer))
@@ -1495,20 +1495,20 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 			/* information about the key */
 			Form_pg_attribute	attr = TupleDescAttr(tdesc, (attnum - 1));
 
-			GinTuple   *gtup;
+			GinTuple   *tup;
 			Size		len;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			gtup = build_gin_tuple(attnum, category,
+			tup = _gin_build_tuple(attnum, category,
 								   key, attr->attlen, attr->attbyval,
 								   list, nlist, &len);
 
-			tuplesort_putgintuple(state->bs_sortstate, gtup, len);
+			tuplesort_putgintuple(state->bs_sortstate, tup, len);
 
 			/* FIXME if removed GinSortTuple, probably won't be needed */
-			pfree(gtup);
+			pfree(tup);
 		}
 
 		MemoryContextReset(state->tmpCtx);
@@ -1640,10 +1640,10 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 
 GinTuple *
-build_gin_tuple(OffsetNumber attrnum, unsigned char category,
-				Datum key, int16 typlen, bool typbyval,
-				ItemPointerData *items, uint32 nitems,
-				Size *len)
+_gin_build_tuple(OffsetNumber attrnum, unsigned char category,
+				 Datum key, int16 typlen, bool typbyval,
+				 ItemPointerData *items, uint32 nitems,
+				 Size *len)
 {
 	GinTuple   *tuple;
 	char	   *ptr;
@@ -1733,7 +1733,7 @@ build_gin_tuple(OffsetNumber attrnum, unsigned char category,
 }
 
 static Datum
-parse_gin_tuple(GinTuple *a, ItemPointerData **items)
+_gin_parse_tuple(GinTuple *a, ItemPointerData **items)
 {
 	Datum	key;
 
@@ -1756,7 +1756,7 @@ parse_gin_tuple(GinTuple *a, ItemPointerData **items)
 }
 
 int
-compare_gin_tuples(GinTuple *a, GinTuple *b)
+_gin_compare_tuples(GinTuple *a, GinTuple *b)
 {
 	Datum	keya,
 			keyb;
@@ -1776,8 +1776,8 @@ compare_gin_tuples(GinTuple *a, GinTuple *b)
 	if ((a->category == GIN_CAT_NORM_KEY) &&
 		(b->category == GIN_CAT_NORM_KEY))
 	{
-		keya = parse_gin_tuple(a, NULL);
-		keyb = parse_gin_tuple(b, NULL);
+		keya = _gin_parse_tuple(a, NULL);
+		keyb = _gin_parse_tuple(b, NULL);
 
 		if (a->typlen > 0)
 			return memcmp(&keya, &keyb, a->keylen);

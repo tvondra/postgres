@@ -1133,6 +1133,7 @@ keys_are_equal(OffsetNumber attnum, unsigned char curr_category, Datum curr_key,
 	return (memcmp(DatumGetPointer(curr_key), DatumGetPointer(key), curr_keylen) == 0);
 }
 
+/* FIXME maybe use ginMergeItemPointers instead */
 static int
 mergesort(ItemPointerData *a, int na, ItemPointerData *b, int nb)
 {

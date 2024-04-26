@@ -613,7 +613,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	buildstate.accum.ginstate = &buildstate.ginstate;
 	ginInitBA(&buildstate.accum);
-elog(WARNING, "indexInfo->ii_ParallelWorkers = %d", indexInfo->ii_ParallelWorkers);
+
 	/*
 	 * Attempt to launch parallel worker scan when required
 	 *
@@ -703,8 +703,6 @@ elog(WARNING, "indexInfo->ii_ParallelWorkers = %d", indexInfo->ii_ParallelWorker
 
 	MemoryContextDelete(buildstate.funcCtx);
 	MemoryContextDelete(buildstate.tmpCtx);
-
-	elog(WARNING, "nEntries = %lu", buildstate.buildStats.nEntries);
 
 	/*
 	 * Update metapage stats
@@ -1638,8 +1636,6 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);
-
-	// elog(WARNING, "worker nEntries %lu", buildstate.buildStats.nEntries);
 }
 
 

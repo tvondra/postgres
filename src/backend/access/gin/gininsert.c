@@ -1132,6 +1132,31 @@ typedef struct GinBuffer
 	ItemPointerData	*items;
 } GinBuffer;
 
+/* XXX should do more checks */
+static void
+AssertCheckGinBuffer(GinBuffer *buffer)
+{
+#ifdef USE_ASSERT_CHECKING
+	Assert(buffer->nitems <= buffer->maxitems);
+#endif
+}
+
+static void
+AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
+{
+#ifdef USE_ASSERT_CHECKING
+	for (int i = 0; i < nitems; i++)
+	{
+		Assert(ItemPointerIsValid(&items[i]));
+
+		if ((i == 0) || !sorted)
+			continue;
+
+		Assert(ItemPointerCompare(&items[i-1], &items[i]) < 0);
+	}
+#endif
+}
+
 static GinBuffer *
 GinBufferInit(void)
 {
@@ -1155,6 +1180,8 @@ GinBufferIsEmpty(GinBuffer *buffer)
 static bool
 GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 {
+	AssertCheckGinBuffer(buffer);
+
 	if (tup->attrnum != buffer->attnum)
 		return false;
 
@@ -1193,6 +1220,8 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 {
 	ItemPointerData *items;
 	Datum key;
+
+	AssertCheckGinBuffer(buffer);
 
 	key = parse_gin_tuple(tup, &items);
 
@@ -1234,16 +1263,20 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	/* copy the new TIDs into the buffer */
 	memcpy(&buffer->items[buffer->nitems], items, sizeof(ItemPointerData) * tup->nitems);
 	buffer->nitems += tup->nitems;
+
+	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 }
 
 static void
 GinBufferSortItems(GinBuffer *buffer)
 {
-	/* we should not have entries with no TIDs */
+	/* we should not have a buffer with no TIDs to sort */
 	Assert(buffer->items != NULL);
 	Assert(buffer->nitems > 0);
 
 	pg_qsort(buffer->items, buffer->nitems, sizeof(ItemPointerData), tid_cmp);
+
+	AssertCheckItemPointers(buffer->items, buffer->nitems, true);
 }
 
 /* XXX probably would be better to have a memory context for the buffer */
@@ -1271,7 +1304,7 @@ GinBufferReset(GinBuffer *buffer)
 }
 
 /*
- * FIXME maybe check size of the TID arrays, and return false if it's too
+ * XXX Maybe check size of the TID arrays, and return false if it's too
  * large (more thant maintenance_work_mem or something?).
  */
 static bool

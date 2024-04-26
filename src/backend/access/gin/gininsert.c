@@ -1475,6 +1475,14 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			/*
 			 * Buffer is not empty and it's storing a different key - flush the data
 			 * into the insert, and start a new entry for current GinTuple.
+			 *
+			 * XXX We could reduce the amount of data generated here by compressing
+			 * the TID data - this should be highly compressible, and we already have
+			 * ginCompressPostingList for this purpose. The compression might need
+			 * to split the array into multiple segments, but even then it should
+			 * be a win, I think. But needs some experiments, it'd be silly to do
+			 * the compression and move some of the CPU costs back to the leader,
+			 * negating the benefit of combining in workers.
 			 */
 			GinBufferSortItems(buffer);
 

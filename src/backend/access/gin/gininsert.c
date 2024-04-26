@@ -1206,7 +1206,10 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 		buffer->typlen = tup->typlen;
 		buffer->typbyval = tup->typbyval;
 
-		buffer->key = datumCopy(key, buffer->typbyval, buffer->typlen);
+		if (tup->category == GIN_CAT_NORM_KEY)
+			buffer->key = datumCopy(key, buffer->typbyval, buffer->typlen);
+		else
+			buffer->key = (Datum) 0;
 	}
 
 	/* enlarge the TID buffer, if needed */
@@ -1250,7 +1253,7 @@ GinBufferReset(GinBuffer *buffer)
 	Assert(!GinBufferIsEmpty(buffer));
 
 	/* release byref values, do nothing for by-val ones */
-	if (!buffer->typbyval)
+	if ((buffer->category == GIN_CAT_NORM_KEY) && !buffer->typbyval)
 		pfree(DatumGetPointer(buffer->key));
 
 	/* XXX not really needed, but easier to trigger NULL deref etc. */

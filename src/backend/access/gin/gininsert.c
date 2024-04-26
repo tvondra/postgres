@@ -1122,7 +1122,6 @@ typedef struct GinBuffer
 
 	/* array of TID values */
 	int				nitems;
-	int				maxitems;
 	ItemPointerData	*items;
 } GinBuffer;
 
@@ -1131,7 +1130,6 @@ static void
 AssertCheckGinBuffer(GinBuffer *buffer)
 {
 #ifdef USE_ASSERT_CHECKING
-	Assert(buffer->nitems <= buffer->maxitems);
 #endif
 }
 
@@ -1210,79 +1208,6 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 }
 
 static void
-GinBufferMergeSort(GinBuffer *buffer, ItemPointerData *items, int nitems)
-{
-	int ia,
-		ib,
-		na,
-		nb;
-
-	ItemPointerData	   *a,
-					   *b;
-
-	Assert(buffer->maxitems >= buffer->nitems + nitems);
-	Assert(nitems > 0);
-
-	AssertCheckItemPointers(items, nitems, true);
-
-	/* buffer starts empty */
-	if (buffer->nitems == 0)
-	{
-		memcpy(buffer->items, items, nitems * sizeof(ItemPointerData));
-		buffer->nitems = nitems;
-		return;
-	}
-
-	AssertCheckItemPointers(buffer->items, buffer->nitems, true);
-
-	a = palloc(sizeof(ItemPointerData) * buffer->nitems);
-	b = items;
-
-	na = buffer->nitems;
-	nb = nitems;
-
-	/* make a copy of original data, we'll put results back into the array */
-	memcpy(a, buffer->items, sizeof(ItemPointerData) * buffer->nitems);
-
-	buffer->nitems = ia = ib = 0;
-
-	while (true)
-	{
-		int r;
-
-		Assert((ia < na) && (ib < nb));
-
-		r = ItemPointerCompare(&a[ia], &b[ib]);
-
-		/* We shouldn't see the same TID twice for the same key. */
-		Assert(r != 0);
-
-		buffer->items[buffer->nitems++] = (r < 0) ? a[ia++] : b[ib++];
-
-		/* if we reached end of one input, copy the rest of the other, and
-		 * then we're done */
-		if (ia == na)
-		{
-			memcpy(&buffer->items[buffer->nitems], &b[ib], (nb - ib) * sizeof(ItemPointerData));
-			buffer->nitems += (nb - ib);
-			break;
-		}
-		else if (ib == nb)
-		{
-			memcpy(&buffer->items[buffer->nitems], &a[ia], (na - ia) * sizeof(ItemPointerData));
-			buffer->nitems += (na - ia);
-			break;
-		}
-	}
-
-	Assert(buffer->nitems == na + nb);
-
-	AssertCheckItemPointers(buffer->items, buffer->nitems, true);
-
-	pfree(a);
-}
-
-static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 {
 	ItemPointerData *items;
@@ -1308,27 +1233,20 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = (Datum) 0;
 	}
 
-	/* enlarge the TID buffer, if needed */
-	if (buffer->nitems + tup->nitems > buffer->maxitems)
-	{
-		/* 64 seems like a good init value */
-		buffer->maxitems = Max(buffer->maxitems, 64);
-
-		while (buffer->nitems + tup->nitems > buffer->maxitems)
-			buffer->maxitems *= 2;
-
-		if (buffer->items == NULL)
-			buffer->items = palloc(buffer->maxitems * sizeof(ItemPointerData));
-		else
-			buffer->items = repalloc(buffer->items,
-									 buffer->maxitems * sizeof(ItemPointerData));
-	}
-
-	/* now we should be guaranteed to have enough space for all the TIDs */
-	Assert(buffer->nitems + tup->nitems <= buffer->maxitems);
-
 	/* copy the new TIDs into the buffer, combine using merge-sort */
-	GinBufferMergeSort(buffer, items, tup->nitems);
+	{
+		int			nnew;
+		ItemPointer	new;
+
+		new = ginMergeItemPointers(buffer->items, buffer->nitems,
+								   items, tup->nitems, &nnew);
+
+		if (buffer->items)
+			pfree(buffer->items);
+
+		buffer->items = new;
+		buffer->nitems = nnew;
+	}
 
 	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 }

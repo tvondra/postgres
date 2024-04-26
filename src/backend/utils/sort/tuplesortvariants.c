@@ -172,21 +172,6 @@ typedef struct BrinSortTuple
 /* Size of the BrinSortTuple, given length of the BrinTuple. */
 #define BRINSORTTUPLE_SIZE(len)		(offsetof(BrinSortTuple, tuple) + (len))
 
-/*
- * GinSortTuple
- *
- * FIXME This is pretty useless, we can add the length to GinTuple and use
- * that directly.
- */
-typedef struct GinSortTuple
-{
-	Size			tuplen;
-	GinTuple		tuple;
-} GinSortTuple;
-
-/* Size of the GinSortTuple, given length of the key and number of items. */
-#define GINSORTTUPLE_SIZE(len)		(offsetof(GinSortTuple, tuple) + (len))
-
 
 Tuplesortstate *
 tuplesort_begin_heap(TupleDesc tupDesc,
@@ -874,27 +859,24 @@ void
 tuplesort_putgintuple(Tuplesortstate *state, GinTuple *tup, Size size)
 {
 	SortTuple	stup;
-	GinSortTuple *gstup;
+	GinTuple   *ctup;
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	MemoryContext oldcontext = MemoryContextSwitchTo(base->tuplecontext);
 	Size		tuplen;
 
-	gstup = palloc(GINSORTTUPLE_SIZE(size));
+	/* copy the GinTuple into the right memory context */
+	ctup = palloc(size);
+	memcpy(ctup, tup, size);
 
-	gstup->tuplen = size;
-	memcpy(&gstup->tuple, tup, size);
-
-	stup.tuple = gstup;
+	stup.tuple = ctup;
 	stup.datum1 = (Datum) 0;
 	stup.isnull1 = false;
 
 	/* GetMemoryChunkSpace is not supported for bump contexts */
 	if (TupleSortUseBumpTupleCxt(base->sortopt))
-		tuplen = MAXALIGN(GINSORTTUPLE_SIZE(size));
+		tuplen = MAXALIGN(size);
 	else
-		tuplen = GetMemoryChunkSpace(gstup);
-
-	// elog(LOG, "tuplesort_putgintuple: tuplesort_puttuple_common %lu", tuplen);
+		tuplen = GetMemoryChunkSpace(ctup);
 
 	tuplesort_puttuple_common(state, &stup,
 							  base->sortKeys &&
@@ -1082,7 +1064,7 @@ tuplesort_getgintuple(Tuplesortstate *state, Size *len, bool forward)
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	MemoryContext oldcontext = MemoryContextSwitchTo(base->sortcontext);
 	SortTuple	stup;
-	GinSortTuple *gtup;
+	GinTuple   *tup;
 
 	if (!tuplesort_gettuple_common(state, forward, &stup))
 		stup.tuple = NULL;
@@ -1092,11 +1074,11 @@ tuplesort_getgintuple(Tuplesortstate *state, Size *len, bool forward)
 	if (!stup.tuple)
 		return false;
 
-	gtup = (GinSortTuple *) stup.tuple;
+	tup = (GinTuple *) stup.tuple;
 
-	*len = gtup->tuplen;
+	*len = tup->tuplen;
 
-	return &gtup->tuple;
+	return	tup;
 }
 
 /*
@@ -1901,26 +1883,24 @@ removeabbrev_index_gin(Tuplesortstate *state, SortTuple *stups, int count)
 
 static int
 comparetup_index_gin(const SortTuple *a, const SortTuple *b,
-					  Tuplesortstate *state)
+					 Tuplesortstate *state)
 {
-	GinSortTuple *gsa = (GinSortTuple *) a->tuple;
-	GinSortTuple *gsb = (GinSortTuple *) b->tuple;
-
 	Assert(!TuplesortstateGetPublic(state)->haveDatum1);
 
-	return _gin_compare_tuples(&gsa->tuple, &gsb->tuple);
+	return _gin_compare_tuples((GinTuple *) a->tuple,
+							   (GinTuple *) b->tuple);
 }
 
 static void
 writetup_index_gin(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
 {
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
-	GinSortTuple *tuple = (GinSortTuple *) stup->tuple;
+	GinTuple *tuple = (GinTuple *) stup->tuple;
 	unsigned int tuplen = tuple->tuplen;
 
 	tuplen = tuplen + sizeof(tuplen);
 	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
-	LogicalTapeWrite(tape, &tuple->tuple, tuple->tuplen);
+	LogicalTapeWrite(tape, tuple, tuple->tuplen);
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
 }
@@ -1929,7 +1909,7 @@ static void
 readtup_index_gin(Tuplesortstate *state, SortTuple *stup,
 				  LogicalTape *tape, unsigned int len)
 {
-	GinSortTuple *tuple;
+	GinTuple *tuple;
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	unsigned int tuplen = len - sizeof(unsigned int);
 
@@ -1937,12 +1917,11 @@ readtup_index_gin(Tuplesortstate *state, SortTuple *stup,
 	 * Allocate space for the BRIN sort tuple, which is BrinTuple with an
 	 * extra length field.
 	 */
-	tuple = (GinSortTuple *) tuplesort_readtup_alloc(state,
-													 GINSORTTUPLE_SIZE(tuplen));
+	tuple = (GinTuple *) tuplesort_readtup_alloc(state, tuplen);
 
 	tuple->tuplen = tuplen;
 
-	LogicalTapeReadExact(tape, &tuple->tuple, tuplen);
+	LogicalTapeReadExact(tape, tuple, tuplen);
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
 	stup->tuple = (void *) tuple;

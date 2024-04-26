@@ -533,10 +533,6 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 
 			tuplesort_putgintuple(buildstate->bs_sortstate, tup, tuplen);
 
-			/*
-			 * XXX tuplesort_putgintuple copies the tuple, won't be necessary
-			 * after ditching GinSortTuple (probably).
-			 */
 			pfree(tup);
 		}
 
@@ -1333,7 +1329,7 @@ GinBufferCanAddKey(GinBuffer *buffer, GinTuple *tup)
 static double
 _gin_parallel_merge(GinBuildState *state)
 {
-	GinTuple   *gtup;
+	GinTuple   *tup;
 	Size		tuplen;
 	double		reltuples = 0;
 	GinBuffer  *buffer;
@@ -1357,7 +1353,7 @@ _gin_parallel_merge(GinBuildState *state)
 	 * TIDs for the same key as possible, and then insert that at once. This way
 	 * we don't need to decompress/recompress the posting lists, etc.
 	 */
-	while ((gtup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
+	while ((tup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
 
@@ -1366,7 +1362,7 @@ _gin_parallel_merge(GinBuildState *state)
 		 * and we're done. If it's a different key (or maybe too much data)
 		 * flush the current contents into the index first.
 		 */
-		if (!GinBufferCanAddKey(buffer, gtup))
+		if (!GinBufferCanAddKey(buffer, tup))
 		{
 			/*
 			 * Buffer is not empty and it's storing a different key - flush the data
@@ -1383,7 +1379,7 @@ _gin_parallel_merge(GinBuildState *state)
 		}
 
 		/* now remember the new key */
-		GinBufferStoreTuple(buffer, gtup);
+		GinBufferStoreTuple(buffer, tup);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */
@@ -1507,7 +1503,6 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 
 			tuplesort_putgintuple(state->bs_sortstate, tup, len);
 
-			/* FIXME if removed GinSortTuple, probably won't be needed */
 			pfree(tup);
 		}
 
@@ -1691,6 +1686,7 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	 */
 	tuple = palloc0(tuplen);
 
+	tuple->tuplen = tuplen;
 	tuple->attrnum = attrnum;
 	tuple->category = category;
 	tuple->keylen = keylen;

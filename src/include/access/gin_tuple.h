@@ -13,12 +13,13 @@
 
 typedef struct GinTuple
 {
+	Size			tuplen;		/* length of the whole tuple */
 	Size			keylen;		/* bytes in data for key value */
 	int16			typlen;		/* typlen for key */
 	bool			typbyval;	/* typbyval for key */
 	OffsetNumber	attrnum;
 	signed char		category;	/* category: normal or NULL? */
-	int				nitems;
+	int				nitems;		/* number of TIDs in the data */
 	char			data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;
 

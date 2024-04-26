@@ -1155,10 +1155,14 @@ GinBufferIsEmpty(GinBuffer *buffer)
 static bool
 GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 {
-	if (tup->category != buffer->category)
+	if (tup->attrnum != buffer->attnum)
 		return false;
 
-	if (tup->attrnum != buffer->attnum)
+	/* same attribute should have the same type info */
+	Assert(tup->typbyval == buffer->typbyval);
+	Assert(tup->typlen == buffer->typlen);
+
+	if (tup->category != buffer->category)
 		return false;
 
 	if (tup->keylen != buffer->keylen)

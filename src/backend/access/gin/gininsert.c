@@ -496,6 +496,10 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	 * per worker (by hashing). We don't need perfect sorting, and we can
 	 * even live with "equal" keys having multiple hashes (if there are
 	 * multiple binary representations of the value).
+	 *
+	 * XXX see the gin-parallel-merge-sort branch for WIP implementation
+	 * of this. It does help, reduces the "serial" part, but the qsort
+	 * has to happen in the parallel part (to some extent).
 	 */
 
 	/* If we've maxed out our available memory, dump everything to the tuplesort */

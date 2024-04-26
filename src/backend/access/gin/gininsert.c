@@ -890,7 +890,7 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 #endif
 
 	/*
-	 * Enter parallel mode, and create context for parallel build of brin
+	 * Enter parallel mode, and create context for parallel build of gin
 	 * index
 	 */
 	EnterParallelMode();
@@ -1113,33 +1113,164 @@ _gin_parallel_heapscan(GinBuildState *state)
 	return state->bs_reltuples;
 }
 
-static bool
-keys_are_equal(OffsetNumber attnum, unsigned char curr_category, Datum curr_key, int curr_keylen,
-			   GinTuple *gtup, Datum key)
-{
-	if (gtup->category != curr_category)
-		return false;
-
-	if (gtup->attrnum != attnum)
-		return false;
-
-	if (gtup->keylen != curr_keylen)
-		return false;
-
-	if (curr_category != GIN_CAT_NORM_KEY)
-		return true;
-
-	// elog(LOG, "keys_are_equal curr %s len %d", text_to_cstring(DatumGetTextPP(curr_key)), curr_keylen);
-	// elog(LOG, "keys_are_equal new %s len %lu", text_to_cstring(DatumGetTextPP(key)), gtup->keylen);
-	// elog(LOG, "res = %d", (memcmp(DatumGetPointer(curr_key), DatumGetPointer(key), curr_keylen) == 0));
-
-	return (memcmp(DatumGetPointer(curr_key), DatumGetPointer(key), curr_keylen) == 0);
-}
-
 static int
 tid_cmp(const void *a, const void *b)
 {
 	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
+}
+
+/*
+ * State used to combine accumulate TIDs from multiple GinTuples for the same
+ * key value.
+ *
+ * XXX Similar purpose to BuildAccumulator, but much simpler.
+ */
+typedef struct GinBuffer
+{
+	OffsetNumber	attnum;		
+	GinNullCategory	category;
+	Datum			key;		/* 0 if no key (and keylen == 0) */
+	Size			keylen;		/* number of bytes (not typlen) */
+	ItemPointerData	*items;
+	int				nitems;
+	int				maxitems;
+} GinBuffer;
+
+static GinBuffer *
+GinBufferInit(void)
+{
+	return palloc0(sizeof(GinBuffer));
+}
+
+static bool
+GinBufferIsEmpty(GinBuffer *buffer)
+{
+	return (buffer->nitems == 0);
+}
+
+/*
+ * Compare if the tuple matches the already accumulated data. Compare
+ * scalar fields first, before the actual key.
+ *
+ * XXX The key is compared using memcmp, which means that if a key has
+ * multiple binary representations, we may end up treating them as
+ * different here. But that's OK, the index will merge them anyway.
+ */
+static bool
+GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
+{
+	if (tup->category != buffer->category)
+		return false;
+
+	if (tup->attrnum != buffer->attnum)
+		return false;
+
+	if (tup->keylen != buffer->keylen)
+		return false;
+
+	/*
+	 * For NULL/empty keys, this means equality, for normal keys we need to
+	 * compare the actual key value.
+	 */
+	if (buffer->category != GIN_CAT_NORM_KEY)
+		return true;
+
+	/* FIXME this needs to consider typlen (memcmp only works for by-ref types) */
+	return (memcmp(tup->data, DatumGetPointer(buffer->key), buffer->keylen) == 0);
+}
+
+static void
+GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
+{
+	ItemPointerData *items;
+	Datum key;
+
+	key = parse_gin_tuple(tup, &items);
+
+	/* if the buffer is empty, set the fields (and copy the key) */
+	if (GinBufferIsEmpty(buffer))
+	{
+		buffer->category = tup->category;
+		buffer->keylen = tup->keylen;
+		buffer->attnum = tup->attrnum;
+
+		/* XXX switch to datumCopy(), do the right thing for typlen */
+		if (tup->keylen != 0)
+		{
+			char *ptr = palloc(tup->keylen);
+			memcpy(ptr, DatumGetPointer(key), tup->keylen);
+			buffer->key = PointerGetDatum(ptr);
+		}
+	}
+
+	/* enlarge the TID buffer, if needed */
+	if (buffer->nitems + tup->nitems > buffer->maxitems)
+	{
+		/* 64 seems like a good init value */
+		buffer->maxitems = Max(buffer->maxitems, 64);
+
+		while (buffer->nitems + tup->nitems > buffer->maxitems)
+			buffer->maxitems *= 2;
+
+		if (buffer->items == NULL)
+			buffer->items = palloc(buffer->maxitems * sizeof(ItemPointerData));
+		else
+			buffer->items = repalloc(buffer->items,
+									 buffer->maxitems * sizeof(ItemPointerData));
+	}
+
+	/* now we should be guaranteed to have enough space for all the TIDs */
+	Assert(buffer->nitems + tup->nitems <= buffer->maxitems);
+
+	/* copy the new TIDs into the buffer */
+	memcpy(&buffer->items[buffer->nitems], items, sizeof(ItemPointerData) * tup->nitems);
+	buffer->nitems += tup->nitems;
+}
+
+static void
+GinBufferSortItems(GinBuffer *buffer)
+{
+	/* we should not have entries with no TIDs */
+	Assert(buffer->items != NULL);
+	Assert(buffer->nitems > 0);
+
+	pg_qsort(buffer->items, buffer->nitems, sizeof(ItemPointerData), tid_cmp);
+}
+
+/* XXX probably would be better to have a memory context for the buffer */
+static void
+GinBufferReset(GinBuffer *buffer)
+{
+	Assert(!GinBufferIsEmpty(buffer));
+
+	/* FIXME release byref values, do nothing for by-val ones */
+	if (DatumGetPointer(buffer->key) != NULL)
+	{
+		pfree(DatumGetPointer(buffer->key));
+		buffer->key = (Datum) 0;
+	}
+
+	buffer->attnum = 0;
+	buffer->category = 0;
+	buffer->keylen = 0;
+	buffer->nitems = 0;
+
+	/* XXX probably should do something with extremely large array of items? */
+}
+
+/*
+ * FIXME maybe check size of the TID arrays, and return false if it's too
+ * large (more thant maintenance_work_mem or something?).
+ */
+static bool
+GinBufferCanAddKey(GinBuffer *buffer, GinTuple *tup)
+{
+	/* empty buffer can accept data for any key */
+	if (GinBufferIsEmpty(buffer))
+		return true;
+
+	/* otherwise just data for the same key */
+	return GinBufferKeyEquals(buffer, tup);
 }
 
 /*
@@ -1162,16 +1293,7 @@ _gin_parallel_merge(GinBuildState *state)
 	GinTuple   *gtup;
 	Size		tuplen;
 	double		reltuples = 0;
-
-	/* current key */
-	bool		has_key = false;
-	unsigned char curr_attnum;
-	unsigned char curr_category;
-	Datum		curr_key = (Datum) 0;
-	int			curr_keylen;
-	ItemPointerData	*curr_list = NULL;
-	int				curr_nlist = 0;
-	int				curr_maxsize = 0;
+	GinBuffer  *buffer;
 
 	/* wait for workers to scan table and produce partial results */
 	reltuples = _gin_parallel_heapscan(state);
@@ -1179,137 +1301,60 @@ _gin_parallel_merge(GinBuildState *state)
 	/* do the actual sort in the leader */
 	tuplesort_performsort(state->bs_sortstate);
 
+	/* initialize buffer to combine entries for the same key */
+	buffer = GinBufferInit();
+
 	/*
-	 * Read the BRIN tuples from the shared tuplesort, sorted by block number.
-	 * That probably gives us an index that is cheaper to scan, thanks to
-	 * mostly getting data from the same index page as before.
+	 * Read the GIN tuples from the shared tuplesort, sorted by category and key.
+	 * That probably gives us order matching how data is organized in the index.
+	 *
+	 * XXX Maybe we should sort by key first, then by category?
+	 *
+	 * We don't insert the GIN tuples right away, but instead accumulate as many
+	 * TIDs for the same key as possible, and then insert that at once. This way
+	 * we don't need to decompress/recompress the posting lists, etc.
 	 */
 	while ((gtup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
-		ItemPointerData *list;
-		Datum		key;
-
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * FIXME try to combine entries for the same key and insert it once
-		 * (perhaps with some limit on the number of tids) instead of adding
-		 * then one by one.
+		 * If the buffer can accept the new GIN tuple, just store it there
+		 * and we're done. If it's a different key (or maybe too much data)
+		 * flush the current contents into the index first.
 		 */
-
-		key = parse_gin_tuple(gtup, &list);
-
-		/* try merging this with the last key */
-		if (!has_key)
+		if (!GinBufferCanAddKey(buffer, gtup))
 		{
-			/* now remember the new key */
-			curr_category = gtup->category;
-			curr_keylen = gtup->keylen;
-			curr_attnum = gtup->attrnum;
-
-			if (gtup->keylen != 0)
-			{
-				char *ptr = palloc(gtup->keylen);
-				memcpy(ptr, DatumGetPointer(key), gtup->keylen);
-				curr_key = PointerGetDatum(ptr);
-			}
-
-			/* enlarge the TID buffer */
-			if (curr_nlist + gtup->nitems > curr_maxsize)
-			{
-				curr_maxsize = Max(curr_maxsize, 64);
-				while (curr_nlist + gtup->nitems > curr_maxsize)
-					curr_maxsize *= 2;
-
-				if (curr_list == NULL)
-					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
-				else
-					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
-			}
-
-			memcpy(curr_list, list, sizeof(ItemPointerData) * gtup->nitems);
-			curr_nlist = gtup->nitems;
-
-			has_key = true;
-		}
-		else if (keys_are_equal(curr_attnum, curr_category, curr_key, curr_keylen,
-								gtup, key))
-		{
-			/* enlarge the TID buffer */
-			if (curr_nlist + gtup->nitems > curr_maxsize)
-			{
-				curr_maxsize = Max(curr_maxsize, 64);
-				while (curr_nlist + gtup->nitems > curr_maxsize)
-					curr_maxsize *= 2;
-
-				if (curr_list == NULL)
-					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
-				else
-					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
-			}
-
 			/*
-			 * XXX should there be some limit on curr_maxsize? probably yes, to
-			 * respect maintenance_work_mem.
+			 * Buffer is not empty and it's storing a different key - flush the data
+			 * into the insert, and start a new entry for current GinTuple.
 			 */
+			GinBufferSortItems(buffer);
 
-			/* add the TIDs at the end */
-			memcpy(&curr_list[curr_nlist], list, sizeof(ItemPointerData) * gtup->nitems);
-			curr_nlist += gtup->nitems;
+			ginEntryInsert(&state->ginstate,
+						   buffer->attnum, buffer->key, buffer->category,
+						   buffer->items, buffer->nitems, &state->buildStats);
 
-			continue;
-		}
-		else
-		{
-			/* different keys - flush the current key, remember the current one */
-			Assert(curr_list != NULL);
-			Assert(curr_nlist > 0);
-
-			/* sort the TIDs, dataPlaceToPage prefers to receive tuples in TID order. */
-			pg_qsort(curr_list, curr_nlist, sizeof(ItemPointerData), tid_cmp);
-
-			ginEntryInsert(&state->ginstate, curr_attnum, curr_key, curr_category,
-						   curr_list, curr_nlist, &state->buildStats);
-
-			if (DatumGetPointer(curr_key) != NULL)
-			{
-				pfree(DatumGetPointer(curr_key));
-				curr_key = (Datum) 0;
-			}
-
-			/* now remember the new key */
-			curr_category = gtup->category;
-			curr_keylen = gtup->keylen;
-			curr_attnum = gtup->attrnum;
-
-			if (gtup->keylen != 0)
-			{
-				char *ptr = palloc(gtup->keylen);
-				memcpy(ptr, DatumGetPointer(key), gtup->keylen);
-				curr_key = PointerGetDatum(ptr);
-			}
-
-			/* enlarge the TID buffer */
-			if (curr_nlist + gtup->nitems > curr_maxsize)
-			{
-				curr_maxsize = Max(curr_maxsize, 64);
-				while (curr_nlist + gtup->nitems > curr_maxsize)
-					curr_maxsize *= 2;
-
-				if (curr_list == NULL)
-					curr_list = palloc(curr_maxsize * sizeof(ItemPointerData));
-				else
-					curr_list = repalloc(curr_list, curr_maxsize * sizeof(ItemPointerData));
-			}
-
-			memcpy(curr_list, list, sizeof(ItemPointerData) * gtup->nitems);
-			curr_nlist = gtup->nitems;
+			/* discard the existing data */
+			GinBufferReset(buffer);
 		}
 
-		/* FIXME do we need to free gtup? */
+		/* now remember the new key */
+		GinBufferStoreTuple(buffer, gtup);
 	}
 
-	/* FIXME flush data for the last key */
+	/* flush data remaining in the buffer (for the last key) */
+	if (!GinBufferIsEmpty(buffer))
+	{
+		GinBufferSortItems(buffer);
+
+		ginEntryInsert(&state->ginstate,
+					   buffer->attnum, buffer->key, buffer->category,
+					   buffer->items, buffer->nitems, &state->buildStats);
+
+		/* discard the existing data */
+		GinBufferReset(buffer);
+	}
 
 	tuplesort_end(state->bs_sortstate);
 

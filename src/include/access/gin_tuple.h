@@ -10,7 +10,12 @@
 #ifndef GIN_TUPLE_
 #define GIN_TUPLE_
 
-
+/*
+ * FIXME Each worker sees tuples in CTID order, so if we track the first
+ * TID and compare that when combining results in the worker, we would not
+ * need to sort in workers. We'd still need the mergesort in the leader,
+ * but that's much cheaper.
+ */
 typedef struct GinTuple
 {
 	Size			tuplen;		/* length of the whole tuple */
@@ -19,6 +24,7 @@ typedef struct GinTuple
 	bool			typbyval;	/* typbyval for key */
 	OffsetNumber	attrnum;
 	signed char		category;	/* category: normal or NULL? */
+	ItemPointerData	first;		/* first TID in the array */
 	int				nitems;		/* number of TIDs in the data */
 	char			data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;

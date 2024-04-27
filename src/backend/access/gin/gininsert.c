@@ -1307,6 +1307,20 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 		buffer->nitems += tup->nitems;
 		buffer->items = palloc(sizeof(ItemPointerData) * buffer->nitems);
 
+		/*
+		 * FIXME Unfortunately this does not work, because parallel scans do
+		 * require sync_scan=true, which means the scan can start at a random
+		 * block and not block 0. Which means at some point it wraps around
+		 * and get TIDs from beginning of the table. Which means it does not
+		 * come before or after the other arrays but overlaps. But we can
+		 * detect that (compare the first/last item to determine if there's
+		 * an overlap) and force a mergesort in that case. This means it
+		 * should be extremely rare, because only the one list that wraps
+		 * around should need this.
+		 *
+		 * XXX Another option would be to allow disabling sync_scans for
+		 * parallel scans, but that's far out of scope of this patch.
+		 */
 		if (ItemPointerCompare(&old[0], &items[0]) < 0)
 		{
 			memcpy(buffer->items, old, sizeof(ItemPointerData) * nold);

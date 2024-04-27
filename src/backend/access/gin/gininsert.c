@@ -461,6 +461,12 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 	MemoryContextSwitchTo(oldCtx);
 }
 
+static Size size_original_1 = 0;
+static Size size_compressed_1 = 0;
+
+int	ntup_original_1 = 0;
+int	ntup_compressed_1 = 0;
+
 static void
 ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 						 bool *isnull, bool tupleIsAlive, void *state)
@@ -524,15 +530,52 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 			/* GIN tuple and tuple length */
 			GinTuple   *tup;
 			Size		tuplen;
+			Size		nloops = 0;
 
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
+
+			/* see how much smaller is compressed TID */
+			{
+				int		nstart = 0;
+				Size	nbytes = 0;
+
+				ntup_original_1++;
+
+				/* repeat while there are tids to compress */
+				while (nstart < nlist)
+				{
+					GinPostingList *plist;
+					int				nwritten;
+
+					plist = ginCompressPostingList((&list[nstart]),
+												   (nlist - nstart),
+												   UINT16_MAX,
+												   &nwritten);
+
+					nstart += nwritten;
+					nbytes += plist->nbytes;
+					nloops++;
+					ntup_compressed_1++;
+
+					pfree(plist);
+
+					Assert(nstart <= nlist);
+				}
+
+				size_compressed_1 += nbytes;
+				size_original_1 += sizeof(ItemPointerData) * nlist;
+			}
 
 			tup = _gin_build_tuple(attnum, category,
 								   key, attr->attlen, attr->attbyval,
 								   list, nlist, &tuplen);
 
 			tuplesort_putgintuple(buildstate->bs_worker_sort, tup, tuplen);
+
+			/* */
+			size_original_1 += offsetof(GinTuple,data) + tup->keylen;
+			size_compressed_1 += (offsetof(GinTuple,data) + tup->keylen) * nloops;
 
 			pfree(tup);
 		}
@@ -1469,6 +1512,11 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	GinTuple   *tup;
 	Size		tuplen;
 
+	Size		size_original = 0;
+	Size		size_compressed = 0;
+	int			ntup_original = 0;
+	int			ntup_compressed = 0;
+
 	GinBuffer	*buffer;
 
 	/* initialize buffer to combine entries for the same key */
@@ -1493,18 +1541,63 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		{
 			GinTuple   *ntup;
 			Size		ntuplen;
+			int			nlists = 0;
 
 			/*
 			 * Buffer is not empty and it's storing a different key - flush the data
 			 * into the insert, and start a new entry for current GinTuple.
+			 *
+			 * XXX We could reduce the amount of data generated here by compressing
+			 * the TID data - this should be highly compressible, and we already have
+			 * ginCompressPostingList for this purpose. The compression might need
+			 * to split the array into multiple segments, but even then it should
+			 * be a win, I think. But needs some experiments, it'd be silly to do
+			 * the compression and move some of the CPU costs back to the leader,
+			 * negating the benefit of combining in workers.
 			 */
 			AssertCheckItemPointers(buffer, true);
+
+			/* see how much smaller is compressed TID */
+			{
+				int		nstart = 0;
+				Size	nbytes = 0;
+
+				ntup_original++;
+
+				/* repeat while there are tids to compress */
+				while (nstart < buffer->nitems)
+				{
+					GinPostingList *list;
+					int				nwritten;
+
+					list = ginCompressPostingList((&buffer->items[nstart]),
+												  (buffer->nitems - nstart),
+												  UINT16_MAX,
+												  &nwritten);
+
+					nstart += nwritten;
+					nbytes += list->nbytes;
+					nlists++;
+					ntup_compressed++;
+
+					pfree(list);
+
+					Assert(nstart <= buffer->nitems);
+				}
+
+				size_compressed += nbytes;
+				size_original += sizeof(ItemPointerData) * buffer->nitems;
+			}
 
 			ntup = _gin_build_tuple(buffer->attnum, buffer->category,
 								    buffer->key, buffer->typlen, buffer->typbyval,
 								    buffer->items, buffer->nitems, &ntuplen);
 
 			tuplesort_putgintuple(state->bs_sortstate, ntup, ntuplen);
+
+			/* */
+			size_original += offsetof(GinTuple,data) + ntup->keylen;
+			size_compressed += (offsetof(GinTuple,data) + ntup->keylen) * nlists;
 
 			pfree(ntup);
 
@@ -1541,6 +1634,10 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 	/* relase all the memory */
 	GinBufferFree(buffer);
+
+	elog(LOG, "_gin_process_worker_data original %lu (%d) compressed %lu (%d) ratio %.2f",
+		 size_original, ntup_original, size_compressed, ntup_compressed,
+		 (100.0 * size_compressed / size_original));
 
 	tuplesort_end(worker_sort);
 }
@@ -1625,6 +1722,11 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 		MemoryContextReset(state->tmpCtx);
 		ginInitBA(&state->accum);
 	}
+
+	elog(LOG, "A _gin_process_worker_data original %lu (%d) compressed %lu (%d) ratio %.2f",
+		 size_original_1, ntup_original_1, size_compressed_1, ntup_compressed_1,
+		 (100.0 * size_compressed_1 / size_original_1));
+
  
 	/* sort the raw per-worker data */
 	tuplesort_performsort(state->bs_worker_sort);

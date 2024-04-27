@@ -1350,6 +1350,11 @@ GinBufferReset(GinBuffer *buffer)
 	buffer->typlen = 0;
 	buffer->typbyval = 0;
 
+	if (buffer->items)
+	{
+		pfree(buffer->items);
+		buffer->items = NULL;
+	}
 	/* XXX should do something with extremely large array of items? */
 }
 

@@ -10,7 +10,12 @@
 #ifndef GIN_TUPLE_
 #define GIN_TUPLE_
 
-
+/*
+ * FIXME Each worker sees tuples in CTID order, so if we track the first
+ * TID and compare that when combining results in the worker, we would not
+ * need the pg_qsort() call. We'd still need the mergesort in the leader,
+ * but that's much cheaper.
+ */
 typedef struct GinTuple
 {
 	Size			tuplen;		/* length of the whole tuple */

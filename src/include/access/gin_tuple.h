@@ -24,6 +24,7 @@ typedef struct GinTuple
 	bool			typbyval;	/* typbyval for key */
 	OffsetNumber	attrnum;
 	signed char		category;	/* category: normal or NULL? */
+	ItemPointerData	first;		/* first TID in the array */
 	int				nitems;		/* number of TIDs in the data */
 	char			data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;

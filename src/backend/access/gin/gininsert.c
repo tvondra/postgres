@@ -1333,6 +1333,8 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 			 */
 			memcpy(buffer->items, old, sizeof(ItemPointerData) * nold);
 			memcpy(&buffer->items[nold], items, sizeof(ItemPointerData) * tup->nitems);
+
+			AssertCheckItemPointers(buffer, true);
 		}
 		else
 		{
@@ -1344,22 +1346,21 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 			 *
 			 * We expect the first list to be very wide, and fully contain the
 			 * second list. We know the first TIDs are in the right order (thanks
-			 * to the sost), but we check the top TID too.
+			 * to the sort), but we check the top TID too.
 			 */
 			Assert(ItemPointerCompare(&old[nold - 1], &items[tup->nitems - 1]) > 0);
 
-			new = ginMergeItemPointers(buffer->items, buffer->nitems,
-									   items, tup->nitems, &nnew);
+			new = ginMergeItemPointers(old, nold, items, tup->nitems, &nnew);
 
 			/* XXX current buffer->items will be freed later */
 
 			buffer->items = new;
 			buffer->nitems = nnew;
+
+			AssertCheckItemPointers(buffer, true);
 		}
 
 		pfree(old);
-
-		AssertCheckItemPointers(buffer, true);
 	}
 }
 

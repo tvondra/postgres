@@ -1307,39 +1307,59 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 		buffer->nitems += tup->nitems;
 		buffer->items = palloc(sizeof(ItemPointerData) * buffer->nitems);
 
+		/* The tuples should be sorted by first TID in the array. */
+		Assert(ItemPointerCompare(&old[0], &items[0]) < 0);
+
 		/*
-		 * FIXME Unfortunately this does not work, because parallel scans do
-		 * require sync_scan=true, which means the scan can start at a random
-		 * block and not block 0. Which means at some point it wraps around
-		 * and get TIDs from beginning of the table. Which means it does not
-		 * come before or after the other arrays but overlaps. But we can
-		 * detect that (compare the first/last item to determine if there's
-		 * an overlap) and force a mergesort in that case. This means it
-		 * should be extremely rare, because only the one list that wraps
-		 * around should need this.
+		 * Parallel scans do require sync_scan=true, which means the scan
+		 * can start at a random block and wrap around start processing TIDs
+		 * from the beginning of the table. If this happens, the list will
+		 * be very wide, with very low and high TIDs, and will overlap with
+		 * the other list (more precisely, it'll "contain" it as a range).
+		 *
+		 * If this happens, we need to do merge sort. Luckily, it's going
+		 * to be rare - there should be only a single such list for each
+		 * key value.
 		 *
 		 * XXX Another option would be to allow disabling sync_scans for
 		 * parallel scans, but that's far out of scope of this patch.
 		 */
-		if (ItemPointerCompare(&old[0], &items[0]) < 0)
+		if (ItemPointerCompare(&old[nold - 1], &items[0]) < 0)
 		{
+			/*
+			 * Non-overlapping lists, can simply concatenate. We know the
+			 * new tuple is always the second, thanks to sorting tuples by
+			 * the first TID value.
+			 */
 			memcpy(buffer->items, old, sizeof(ItemPointerData) * nold);
 			memcpy(&buffer->items[nold], items, sizeof(ItemPointerData) * tup->nitems);
 		}
 		else
 		{
+			int			nnew;
+			ItemPointer	new;
+
 			/*
-			 * FIXME I guess this should not happen. Either we get the TIDs
-			 * in ascending order (in a worker), or we request merge sort
-			 * (in the leader).
+			 * Overlapping list, do a merge sort.
+			 *
+			 * We expect the first list to be very wide, and fully contain the
+			 * second list. We know the first TIDs are in the right order (thanks
+			 * to the sost), but we check the top TID too.
 			 */
-			memcpy(buffer->items, items, sizeof(ItemPointerData) * tup->nitems);
-			memcpy(&buffer->items[tup->nitems], old, sizeof(ItemPointerData) * nold);
+			Assert(ItemPointerCompare(&old[nold - 1], &items[tup->nitems - 1]) > 0);
+
+			new = ginMergeItemPointers(buffer->items, buffer->nitems,
+									   items, tup->nitems, &nnew);
+
+			/* XXX current buffer->items will be freed later */
+
+			buffer->items = new;
+			buffer->nitems = nnew;
 		}
 
-		AssertCheckItemPointers(buffer, true);
-
 		pfree(old);
+
+		AssertCheckItemPointers(buffer, true);
 	}
 }
 

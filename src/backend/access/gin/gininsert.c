@@ -1214,28 +1214,22 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  * Otherwise data from the tuple (the TID list) is added to the TID data in
  * the buffer, either by simply appending the TIDs or doing merge sort.
  *
- * With merge_sort we force using a mergesort to combine the lists, This is
- * done in the leader which combines data from workers, where we need to
- * assume/expect frequent overlaps.
- *
  * The data (for the same key) is expected to be processed sorted by first
- * TID. But this does not guarantee the lists do not overlap.
+ * TID. But this does not guarantee the lists do not overlap, especially in
+ * the leader, because the workers process interleaving data. But even in
+ * a single worker, lists can overlap - parallel scans require sync-scans,
+ * and if the scan starts somewhere in the table and then wraps around, it
+ * may contain very wide lists (in terms of TID range).
  *
- * Within a single worker we expect mostly non-overlapping lists, but it's
- * not guaranteed. Parallel scans require sync-scans, which may result in
- * overlapping lists (see comment in the function). We detect such case and
- * do a proper mergesort in this case.
+ * But the ginMergeItemPointers() is already smart about detecting cases
+ * where it can simply concatenate the lists, and when full mergesort is
+ * needed. And does the right thing.
  *
- * XXX Do we actually need the merge_sort flag? Probably not, we could use
- * the same logic to detect overlaps even in the leader. The workers might
- * produce non-overlapping lists, in which case the mergesort is not needed.
- *
- * FIXME In fact ginMergeItemPointers() is already smart about detecting cases
- * where it can simply append one list after the other, making this extra
- * complexity unnecessary.
+ * By keeping the first TID in the GinTuple and sorting by that, we make
+ * it more likely the lists won't overlap very often.
  */
 static void
-GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
+GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 {
 	ItemPointerData *items;
 	Datum key;
@@ -1260,8 +1254,12 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 			buffer->key = (Datum) 0;
 	}
 
-	/* copy the new TIDs into the buffer, combine using merge-sort */
-	if (merge_sort)
+	/*
+	 * Copy the new TIDs into the buffer, combine with existing data (if any)
+	 * using merge-sort. The mergesort is already smart about cases where it
+	 * can simply concatenate the two lists, and when it actually needs to
+	 * merge the data in an expensive way.
+	 */
 	{
 		int			nnew;
 		ItemPointer	new;
@@ -1276,77 +1274,6 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool merge_sort)
 		buffer->nitems = nnew;
 
 		AssertCheckItemPointers(buffer, true);
-	}
-	else if (buffer->nitems == 0)
-	{
-		buffer->items = palloc(sizeof(ItemPointerData) * tup->nitems);
-		buffer->nitems = tup->nitems;
-		memcpy(buffer->items, items, sizeof(ItemPointerData) * tup->nitems);
-
-		AssertCheckItemPointers(buffer, true);
-	}
-	else
-	{
-		ItemPointerData *old = buffer->items;
-		int nold = buffer->nitems;
-
-		buffer->nitems += tup->nitems;
-		buffer->items = palloc(sizeof(ItemPointerData) * buffer->nitems);
-
-		/* The tuples should be sorted by first TID in the array. */
-		Assert(ItemPointerCompare(&old[0], &items[0]) < 0);
-
-		/*
-		 * Parallel scans do require sync_scan=true, which means the scan
-		 * can start at a random block and wrap around start processing TIDs
-		 * from the beginning of the table. If this happens, the list will
-		 * be very wide, with very low and high TIDs, and will overlap with
-		 * the other list (more precisely, it'll "contain" it as a range).
-		 *
-		 * If this happens, we need to do merge sort. Luckily, it's going
-		 * to be rare - there should be only a single such list for each
-		 * key value.
-		 *
-		 * XXX Another option would be to allow disabling sync_scans for
-		 * parallel scans, but that's far out of scope of this patch.
-		 */
-		if (ItemPointerCompare(&old[nold - 1], &items[0]) < 0)
-		{
-			/*
-			 * Non-overlapping lists, can simply concatenate. We know the
-			 * new tuple is always the second, thanks to sorting tuples by
-			 * the first TID value.
-			 */
-			memcpy(buffer->items, old, sizeof(ItemPointerData) * nold);
-			memcpy(&buffer->items[nold], items, sizeof(ItemPointerData) * tup->nitems);
-
-			AssertCheckItemPointers(buffer, true);
-		}
-		else
-		{
-			int			nnew;
-			ItemPointer	new;
-
-			/*
-			 * Overlapping list, do a merge sort.
-			 *
-			 * We expect the first list to be very wide, and fully contain the
-			 * second list. We know the first TIDs are in the right order (thanks
-			 * to the sort), but we check the top TID too.
-			 */
-			Assert(ItemPointerCompare(&old[nold - 1], &items[tup->nitems - 1]) > 0);
-
-			new = ginMergeItemPointers(old, nold, items, tup->nitems, &nnew);
-
-			/* XXX current buffer->items will be freed later */
-
-			buffer->items = new;
-			buffer->nitems = nnew;
-
-			AssertCheckItemPointers(buffer, true);
-		}
-
-		pfree(old);
 	}
 }
 
@@ -1477,10 +1404,9 @@ _gin_parallel_merge(GinBuildState *state)
 
 		/*
 		 * Remember data for the current tuple (either remember the new key,
-		 * or append if to the existing data). Force merge sort, the workers
-		 * might have produced overlapping lists.
+		 * or append if to the existing data).
 		 */
-		GinBufferStoreTuple(buffer, tup, true);
+		GinBufferStoreTuple(buffer, tup);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */
@@ -1588,11 +1514,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 		/*
 		 * Remember data for the current tuple (either remember the new key,
-		 * or append if to the existing data). We're processing data for a
-		 * single worker, so we expect the TIDs to arrive in the right order,
-		 * so no sort needed.
+		 * or append if to the existing data).
 		 */
-		GinBufferStoreTuple(buffer, tup, false);
+		GinBufferStoreTuple(buffer, tup);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */

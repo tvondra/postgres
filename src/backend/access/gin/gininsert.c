@@ -180,7 +180,8 @@ static void _gin_parallel_scan_and_build(GinBuildState *buildstate,
 										 Relation heap, Relation index,
 										 int sortmem, bool progress);
 
-static Datum _gin_parse_tuple(GinTuple *a, ItemPointerData **items);
+static Datum _gin_parse_tuple_key(GinTuple *a);
+static ItemPointer _gin_parse_tuple_items(GinTuple *a);
 
 
 /*
@@ -1236,7 +1237,8 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 
 	AssertCheckGinBuffer(buffer);
 
-	key = _gin_parse_tuple(tup, &items);
+	key = _gin_parse_tuple_key(tup);
+	items = _gin_parse_tuple_items(tup);
 
 	/* if the buffer is empty, set the fields (and copy the key) */
 	if (GinBufferIsEmpty(buffer))
@@ -1275,6 +1277,8 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 
 		AssertCheckItemPointers(buffer, true);
 	}
+
+	pfree(items);
 }
 
 /* XXX probably would be better to have a memory context for the buffer */
@@ -1764,6 +1768,12 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	table_close(heapRel, heapLockmode);
 }
 
+typedef struct
+{
+	dlist_node	node;			/* linked list pointers */
+	GinPostingList *seg;
+} SegmentInfo;
+
 
 GinTuple *
 _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
@@ -1776,6 +1786,11 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 
 	Size		tuplen;
 	int			keylen;
+
+	dlist_mutable_iter	iter;
+	dlist_head	segments;
+	int			ncompressed;
+	Size		compresslen;
 
 	/*
 	 * Calculate how long is the key value. Only keys with GIN_CAT_NORM_KEY
@@ -1800,12 +1815,32 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	else
 		elog(ERROR, "invalid typlen");
 
+	/* compress the item pointers */
+	ncompressed = 0;
+	compresslen = 0;
+	dlist_init(&segments);
+
+	while (ncompressed < nitems)
+	{
+		int	cnt;
+		SegmentInfo *seginfo = palloc(sizeof(SegmentInfo));
+
+		seginfo->seg = ginCompressPostingList(&items[ncompressed],
+											  (nitems - ncompressed),
+											  UINT16_MAX,
+											  &cnt);
+
+		ncompressed += cnt;
+		compresslen += SizeOfGinPostingList(seginfo->seg);
+
+		dlist_push_tail(&segments, &seginfo->node);
+	}
+
 	/*
 	 * Determine GIN tuple length with all the data included. Be careful
 	 * about alignment, to allow direct access to item pointers.
 	 */
-	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) +
-					  (sizeof(ItemPointerData) * nitems);
+	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) + compresslen;
 
 	*len = tuplen;
 
@@ -1855,21 +1890,28 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	/* finally, copy the TIDs into the array */
 	ptr = (char *) tuple  + MAXALIGN(offsetof(GinTuple, data) + keylen);
 
-	memcpy(ptr, items, sizeof(ItemPointerData) * nitems);
+	/* copy in the compressed data */
+	dlist_foreach_modify(iter, &segments)
+	{
+		SegmentInfo *seginfo = dlist_container(SegmentInfo, node, iter.cur);
+
+		memcpy(ptr, seginfo->seg, SizeOfGinPostingList(seginfo->seg));
+
+		ptr += SizeOfGinPostingList(seginfo->seg);
+
+		dlist_delete(&seginfo->node);
+
+		pfree(seginfo->seg);
+		pfree(seginfo);
+	}
 
 	return tuple;
 }
 
 static Datum
-_gin_parse_tuple(GinTuple *a, ItemPointerData **items)
+_gin_parse_tuple_key(GinTuple *a)
 {
 	Datum	key;
-
-	if (items)
-	{
-		char *ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
-		*items = (ItemPointerData *) ptr;
-	}
 
 	if (a->category != GIN_CAT_NORM_KEY)
 		return (Datum) 0;
@@ -1881,6 +1923,24 @@ _gin_parse_tuple(GinTuple *a, ItemPointerData **items)
 	}
 
 	return PointerGetDatum(a->data);
+}
+
+static ItemPointer
+_gin_parse_tuple_items(GinTuple *a)
+{
+	int		len;
+	char   *ptr;
+	int		ndecoded;
+	ItemPointer		items;
+
+	len = a->tuplen - MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+	ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+
+	items = ginPostingListDecodeAllSegments((GinPostingList *) ptr, len, &ndecoded);
+
+	Assert(ndecoded == a->nitems);
+
+	return (ItemPointer) items;
 }
 
 int
@@ -1904,8 +1964,8 @@ _gin_compare_tuples(GinTuple *a, GinTuple *b)
 	if ((a->category == GIN_CAT_NORM_KEY) &&
 		(b->category == GIN_CAT_NORM_KEY))
 	{
-		keya = _gin_parse_tuple(a, NULL);
-		keyb = _gin_parse_tuple(b, NULL);
+		keya = _gin_parse_tuple_key(a);
+		keyb = _gin_parse_tuple_key(b);
 
 		/*
 		 * works for both byval and byref types with fixed lenght, because

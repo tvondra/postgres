@@ -30,11 +30,6 @@ typedef struct GinTuple
 	char			data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;
 
-extern GinTuple *_gin_build_tuple(OffsetNumber attnum, unsigned char category,
-								  Datum key, int16 typlen, bool typbyval,
-								  ItemPointerData *items, uint32 nitems,
-								  Size *len);
-
 extern int _gin_compare_tuples(GinTuple *a, GinTuple *b);
 
 #endif							/* GIN_TUPLE_H */

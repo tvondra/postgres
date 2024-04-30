@@ -1121,6 +1121,7 @@ typedef struct GinBuffer
 	bool			typbyval;
 
 	/* array of TID values */
+	int				maxitems;
 	int				nitems;
 	ItemPointerData	*items;
 } GinBuffer;
@@ -1154,9 +1155,14 @@ AssertCheckItemPointers(GinBuffer *buffer, bool sorted)
 }
 
 static GinBuffer *
-GinBufferInit(void)
+GinBufferInit(Size maxMemory)
 {
-	return palloc0(sizeof(GinBuffer));
+	GinBuffer *buffer = (GinBuffer *) palloc0(sizeof(GinBuffer));
+
+	/* how many items can we fit into the memory limit */
+	buffer->maxitems = (maxMemory * 1024L) / sizeof(ItemPointerData);
+
+	return buffer;
 }
 
 static bool
@@ -1175,6 +1181,9 @@ GinBufferIsEmpty(GinBuffer *buffer)
  * XXX The key is compared using memcmp, which means that if a key has
  * multiple binary representations, we may end up treating them as
  * different here. But that's OK, the index will merge them anyway.
+ *
+ * XXX The name is a bit misleading, as it now checks also the memory
+ * limit, not just the key.
  */
 static bool
 GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup, bool append_only)
@@ -1192,6 +1201,10 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup, bool append_only)
 		return false;
 
 	if (tup->keylen != buffer->keylen)
+		return false;
+
+	/* enforce memory limit */
+	if ((buffer->nitems + tup->nitems) > buffer->maxitems)
 		return false;
 
 	/*
@@ -1263,6 +1276,11 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup, bool append_only)
  * "compressed" until we actually need to combine it with another one.
  * We'll probably need to keep both first/last TID in the list, to allow
  * quick detection of overlaps in GinBufferKeyEquals.
+ *
+ * XXX With the memory limit enforced by GinBufferKeyEquals, we could
+ * allocate the buffer once and then keep it without palloc/pfree. That
+ * won't help for the mergesort case, but the append cases could simply
+ * copy the data in.
  */
 static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool append_only)
@@ -1271,6 +1289,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool append_only)
 	Datum key;
 
 	AssertCheckGinBuffer(buffer);
+	Assert((buffer->nitems + tup->nitems) <= buffer->maxitems);
 
 	key = _gin_parse_tuple_key(tup);
 	items = _gin_parse_tuple_items(tup);
@@ -1426,8 +1445,13 @@ _gin_parallel_merge(GinBuildState *state)
 	/* do the actual sort in the leader */
 	tuplesort_performsort(state->bs_sortstate);
 
-	/* initialize buffer to combine entries for the same key */
-	buffer = GinBufferInit();
+	/*
+	 * Initialize buffer to combine entries for the same key.
+	 *
+	 * The leader is allowed to use the whole maintenance_work_mem buffer
+	 * to combine data. The parallel workers already completed.
+	 */
+	buffer = GinBufferInit(maintenance_work_mem);
 
 	/*
 	 * Read the GIN tuples from the shared tuplesort, sorted by category and key.
@@ -1533,8 +1557,14 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 	GinBuffer	*buffer;
 
-	/* initialize buffer to combine entries for the same key */
-	buffer = GinBufferInit();
+	/*
+	 * Initialize buffer to combine entries for the same key.
+	 *
+	 * The workers are limited to the same amount of memory as during the
+	 * sort in ginBuildCallbackParallel. But this probably should be the
+	 * 32MB used during planning, just like there.
+	 */
+	buffer = GinBufferInit(work_mem);
 
 	/*
 	 * Read the BRIN tuples from the shared tuplesort, sorted by block number.

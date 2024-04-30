@@ -1169,12 +1169,15 @@ GinBufferIsEmpty(GinBuffer *buffer)
  * Compare if the tuple matches the already accumulated data. Compare
  * scalar fields first, before the actual key.
  *
+ * append_only - solution to wrap-around during sync scans, to prevent
+ * very high number of mergesorts
+ *
  * XXX The key is compared using memcmp, which means that if a key has
  * multiple binary representations, we may end up treating them as
  * different here. But that's OK, the index will merge them anyway.
  */
 static bool
-GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
+GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup, bool append_only)
 {
 	AssertCheckGinBuffer(buffer);
 
@@ -1206,6 +1209,10 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 	 */
 	if (buffer->typbyval)
 		return (buffer->key == *(Datum *) tup->data);
+
+	/* If the TID list can't be simply appended, bail out. */
+	if (append_only && ItemPointerCompare(&buffer->items[buffer->nitems], &tup->first) > 0)
+		return false;
 
 	/* byref values simply uses memcmp for comparison */
 	return (memcmp(tup->data, DatumGetPointer(buffer->key), buffer->keylen) == 0);
@@ -1251,7 +1258,7 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  * most once per key.
  */
 static void
-GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
+GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup, bool append_only)
 {
 	ItemPointerData *items;
 	Datum key;
@@ -1283,6 +1290,29 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	 * can simply concatenate the two lists, and when it actually needs to
 	 * merge the data in an expensive way.
 	 */
+	if (append_only)
+	{
+		if (buffer->items == NULL)
+		{
+			buffer->items = palloc(sizeof(ItemPointerData) * tup->nitems);
+			memcpy(buffer->items, items, (sizeof(ItemPointerData) * tup->nitems));
+			buffer->nitems = tup->nitems;
+		}
+		else
+		{
+			/*
+			 * In append-only mode, the lists are second list is expected to
+			 * be after the first one.
+			 */
+			Assert(ItemPointerCompare(&buffer->items[buffer->nitems-1], &items[0]) < 0);
+
+			buffer->items = repalloc(buffer->items,
+									 sizeof(ItemPointerData) * (buffer->nitems + tup->nitems));
+			memcpy(&buffer->items[buffer->nitems], items, sizeof(ItemPointerData) * tup->nitems);
+			buffer->nitems += tup->nitems;
+		}
+	}
+	else
 	{
 		int			nnew;
 		ItemPointer	new;
@@ -1351,14 +1381,14 @@ GinBufferFree(GinBuffer *buffer)
  * large (more thant maintenance_work_mem or something?).
  */
 static bool
-GinBufferCanAddKey(GinBuffer *buffer, GinTuple *tup)
+GinBufferCanAddKey(GinBuffer *buffer, GinTuple *tup, bool append_only)
 {
 	/* empty buffer can accept data for any key */
 	if (GinBufferIsEmpty(buffer))
 		return true;
 
 	/* otherwise just data for the same key */
-	return GinBufferKeyEquals(buffer, tup);
+	return GinBufferKeyEquals(buffer, tup, append_only);
 }
 
 /*
@@ -1411,7 +1441,7 @@ _gin_parallel_merge(GinBuildState *state)
 		 * and we're done. If it's a different key (or maybe too much data)
 		 * flush the current contents into the index first.
 		 */
-		if (!GinBufferCanAddKey(buffer, tup))
+		if (!GinBufferCanAddKey(buffer, tup, false))
 		{
 			/*
 			 * Buffer is not empty and it's storing a different key - flush the data
@@ -1431,7 +1461,7 @@ _gin_parallel_merge(GinBuildState *state)
 		 * Remember data for the current tuple (either remember the new key,
 		 * or append if to the existing data).
 		 */
-		GinBufferStoreTuple(buffer, tup);
+		GinBufferStoreTuple(buffer, tup, false);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */
@@ -1514,7 +1544,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		 * and we're done. If it's a different key (or maybe too much data)
 		 * flush the current contents into the index first.
 		 */
-		if (!GinBufferCanAddKey(buffer, tup))
+		if (!GinBufferCanAddKey(buffer, tup, true))
 		{
 			GinTuple   *ntup;
 			Size		ntuplen;
@@ -1549,7 +1579,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		 * Remember data for the current tuple (either remember the new key,
 		 * or append if to the existing data).
 		 */
-		GinBufferStoreTuple(buffer, tup);
+		GinBufferStoreTuple(buffer, tup, true);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */

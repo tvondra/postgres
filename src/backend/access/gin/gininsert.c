@@ -1259,6 +1259,13 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  * once, so there's going to be only such wide list, and it'll be sorted
  * first (because it has the lowest TID for the key). So we'd do this at
  * most once per key.
+ *
+ * XXX It's a bit inefficient that when there's only a single tuple for
+ * a given key, we still re-compress the TID list. Which is not super
+ * expensive, but it's not free either. Maybe we could keep the list
+ * "compressed" until we actually need to combine it with another one.
+ * We'll probably need to keep both first/last TID in the list, to allow
+ * quick detection of overlaps in GinBufferKeyEquals.
  */
 static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)

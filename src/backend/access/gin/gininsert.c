@@ -1159,8 +1159,17 @@ GinBufferInit(Size maxMemory)
 {
 	GinBuffer *buffer = (GinBuffer *) palloc0(sizeof(GinBuffer));
 
-	/* how many items can we fit into the memory limit */
-	buffer->maxitems = (maxMemory * 1024L) / sizeof(ItemPointerData);
+	/*
+	 * How many items can we fit into the memory limit? 64kB seems more than
+	 * enough and we don't want a limit that's too high. OTOH maybe this should
+	 * be tied to maintenance_work_mem or something like that?
+	 *
+	 * XXX This is not enough to prevent repeated merges after a wraparound,
+	 * but it should be enough to make the merges cheap because it quickly
+	 * finds reaches the end of the second list and can just memcpy the rest
+	 * without walking it item by item.
+	 */
+	buffer->maxitems = (64 * 1024L) / sizeof(ItemPointerData);
 
 	return buffer;
 }
@@ -1200,10 +1209,6 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 	if (tup->keylen != buffer->keylen)
 		return false;
 
-	/* enforce memory limit */
-	if ((buffer->nitems + tup->nitems) > buffer->maxitems)
-		return false;
-
 	/*
 	 * For NULL/empty keys, this means equality, for normal keys we need to
 	 * compare the actual key value.
@@ -1222,6 +1227,71 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 
 	/* byref values simply uses memcmp for comparison */
 	return (memcmp(tup->data, DatumGetPointer(buffer->key), buffer->keylen) == 0);
+}
+
+/*
+ * GinBufferShouldTrim
+ *		Should we trim the list of item pointers?
+ *
+ * By trimming we understand writing out and removing the tuple IDs that
+ * we know can't change by future merges. We can deduce the TID up to which
+ * this is guaranteed from the "first" TID in each GIN tuple, which provides
+ * a "horizon" (for a given key) thanks to the sort.
+ *
+ * We don't want to do this too often - compressing longer TID lists is more
+ * efficient. But we also don't want to accumulate too many TIDs, for two
+ * reasons. First, it consumes memory and we might exceed maintenance_work_mem
+ * (or whatever limit applies), even if that's unlikely because TIDs are very
+ * small so we can fit a lot of them. Second, and more importantly, long TID
+ * lists are an issue if the scan wraps around, because a key may get a very
+ * wide list (with min/max TID for that key), forcing "full" mergesorts for
+ * every list merged into it (instead of the efficient append).
+ *
+ * So we look at two things when deciding if to trim - if the resulting list
+ * (after adding TIDs from the new tuple) would be too long, and if there is
+ * enough TIDs to trim (with values less than "first" TID from the new tuple),
+ * we do the trim. By enough we mean at least 128 TIDs (mostly an arbitrary
+ * number).
+ *
+ * XXX This does help for the wrap around case, because the "wide" TID list
+ * is essentially two ranges - one at the beginning of the table, one at the
+ * end. And all the other ranges (from GIN tuples) come in between, and also
+ * do not overlap. So by trimming up to the range we're about to add, this
+ * guarantees we'll be able to "concatenate" the two lists cheaply.
+ */
+static bool
+GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup, int *ntrim)
+{
+	*ntrim = 0;
+
+	/* empty list - nothing to trim */
+	if (buffer->nitems == 0)
+		return false;
+
+	Assert(ItemPointerCompare(&buffer->items[buffer->nitems-1], &tup->first) != 0);
+
+	/*
+	 * Likewise, no point in truncating if the lists are not long enough and
+	 * do not overlap (due to wrap around during sync scan).
+	 */
+	if (((buffer->nitems + tup->nitems) < buffer->maxitems) &&
+		(ItemPointerCompare(&buffer->items[buffer->nitems-1], &tup->first) < 0))
+		return false;
+
+	for (int i = 0; i < buffer->nitems; i++)
+	{
+		if (ItemPointerCompare(&buffer->items[i], &tup->first) > 0)
+			break;
+
+		*ntrim = (i + 1);
+	}
+
+	/*
+	 * Don't trim too often. When trimming we write data into index, and
+	 * we don't want to do that too often. So just do it after we have
+	 * at least 128 items to flush (mostly an arbitrary number).
+	 */
+	return (*ntrim > 128);
 }
 
 /*
@@ -1282,7 +1352,6 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	Datum key;
 
 	AssertCheckGinBuffer(buffer);
-	Assert((buffer->nitems + tup->nitems) <= buffer->maxitems);
 
 	key = _gin_parse_tuple_key(tup);
 	items = _gin_parse_tuple_items(tup);
@@ -1355,6 +1424,17 @@ GinBufferReset(GinBuffer *buffer)
 		buffer->items = NULL;
 	}
 	/* XXX should do something with extremely large array of items? */
+}
+
+static void
+GinBufferTrim(GinBuffer *buffer, int ntrim)
+{
+	Assert(buffer->nitems >= ntrim);
+
+	buffer->nitems -= ntrim;
+
+	memmove(&buffer->items[0], &buffer->items[ntrim],
+			sizeof(ItemPointerData) * buffer->nitems);
 }
 
 /* XXX probably would be better to have a memory context for the buffer */
@@ -1435,6 +1515,8 @@ _gin_parallel_merge(GinBuildState *state)
 	 */
 	while ((tup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
+		int		ntrim;
+
 		CHECK_FOR_INTERRUPTS();
 
 		/*
@@ -1456,6 +1538,25 @@ _gin_parallel_merge(GinBuildState *state)
 
 			/* discard the existing data */
 			GinBufferReset(buffer);
+		}
+		else if (GinBufferShouldTrim(buffer, tup, &ntrim))
+		{
+			Assert(ntrim > 0);
+
+			state->buildStats.nTrims++;
+
+			/*
+			 * Buffer is not empty and it's storing a different key - flush the data
+			 * into the insert, and start a new entry for current GinTuple.
+			 */
+			AssertCheckItemPointers(buffer, true);
+
+			ginEntryInsert(&state->ginstate,
+						   buffer->attnum, buffer->key, buffer->category,
+						   buffer->items, ntrim, &state->buildStats);
+
+			/* truncate a couple initial TID */
+			GinBufferTrim(buffer, ntrim);
 		}
 
 		/*
@@ -1480,6 +1581,8 @@ _gin_parallel_merge(GinBuildState *state)
 
 	/* relase all the memory */
 	GinBufferFree(buffer);
+
+	elog(LOG, "_gin_parallel_merge ntrims %ld", state->buildStats.nTrims);
 
 	tuplesort_end(state->bs_sortstate);
 
@@ -1543,6 +1646,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	 */
 	while ((tup = tuplesort_getgintuple(worker_sort, &tuplen, true)) != NULL)
 	{
+		int		ntrim;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1571,8 +1675,8 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			AssertCheckItemPointers(buffer, true);
 
 			ntup = _gin_build_tuple(state, buffer->attnum, buffer->category,
-								    buffer->key, buffer->typlen, buffer->typbyval,
-								    buffer->items, buffer->nitems, &ntuplen);
+									buffer->key, buffer->typlen, buffer->typbyval,
+									buffer->items, buffer->nitems, &ntuplen);
 
 			tuplesort_putgintuple(state->bs_sortstate, ntup, ntuplen);
 
@@ -1580,6 +1684,32 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 			/* discard the existing data */
 			GinBufferReset(buffer);
+		}
+		else if (GinBufferShouldTrim(buffer, tup, &ntrim))
+		{
+			GinTuple   *ntup;
+			Size		ntuplen;
+
+			state->buildStats.nTrims++;
+
+			Assert(ntrim > 0);
+
+			/*
+			 * Buffer is not empty and it's storing a different key - flush the data
+			 * into the insert, and start a new entry for current GinTuple.
+			 */
+			AssertCheckItemPointers(buffer, true);
+
+			ntup = _gin_build_tuple(state, buffer->attnum, buffer->category,
+									buffer->key, buffer->typlen, buffer->typbyval,
+									buffer->items, ntrim, &ntuplen);
+
+			tuplesort_putgintuple(state->bs_sortstate, ntup, ntuplen);
+
+			pfree(ntup);
+
+			/* truncate a couple initial TID */
+			GinBufferTrim(buffer, ntrim);
 		}
 
 		/*
@@ -1616,6 +1746,8 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	elog(LOG, "_gin_process_worker_data raw %lu compressed %lu ratio %.2f%%",
 		state->buildStats.sizeRaw, state->buildStats.sizeCompressed,
 		(100.0 * state->buildStats.sizeCompressed) / state->buildStats.sizeRaw);
+
+	elog(LOG, "_gin_process_worker_data trims %ld", state->buildStats.nTrims);
 
 	tuplesort_end(worker_sort);
 }

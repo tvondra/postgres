@@ -1395,10 +1395,10 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 								   (buffer->nitems - buffer->nfrozen),	/* num of unfrozen */
 								   items, tup->nitems, &nnew);
 
-		Assert(nnew == (buffer->nitems - buffer->nfrozen));
+		Assert(nnew == (tup->nitems + (buffer->nitems - buffer->nfrozen)));
 
 		memcpy(&buffer->items[buffer->nfrozen], new,
-			   (buffer->nitems - buffer->nfrozen) * sizeof(ItemPointerData));
+			   nnew * sizeof(ItemPointerData));
 
 		pfree(new);
 
@@ -1443,7 +1443,7 @@ GinBufferReset(GinBuffer *buffer)
 static void
 GinBufferTrim(GinBuffer *buffer)
 {
-	Assert((buffer->c > 0) && (buffer->nfrozen <= buffer->nitems));
+	Assert((buffer->nfrozen > 0) && (buffer->nfrozen <= buffer->nitems));
 
 	memmove(&buffer->items[0], &buffer->items[buffer->nfrozen],
 			sizeof(ItemPointerData) * (buffer->nitems - buffer->nfrozen));

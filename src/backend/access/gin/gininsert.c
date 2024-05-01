@@ -1259,6 +1259,21 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  * end. And all the other ranges (from GIN tuples) come in between, and also
  * do not overlap. So by trimming up to the range we're about to add, this
  * guarantees we'll be able to "concatenate" the two lists cheaply.
+ *
+ * XXX Is it possible that we significantly exceed the memory limit? To
+ * some extent yes - we allow the workers to accumulate up to work_mem of
+ * data, and in an extreme case all of that can be a TID list for a single
+ * key. And most of that can be in the tail of the TID list before the scan
+ * wrapped over. So we can have up to nworker * work_mem of this data.
+ *
+ * XXX Could we detect the wrap around while combining the results in a
+ * worker? I mean, we could emit two tuples - one up to the maximum TID
+ * from the last processed tuple, and then one for the remaining TIDs,
+ * which would "split" the wraparound tuple into two "narrow" ones,
+ * instead of one "wide" one. But this probably only works for workers,
+ * where all ranges are non-overlapping / sequential, except for the one
+ * range that overlaps. But in leader many ranges overlap, and the first
+ * and last TID are not quite correlated.
  */
 static bool
 GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup)

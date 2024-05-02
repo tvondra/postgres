@@ -1350,6 +1350,13 @@ GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup)
  * without palloc/pfree. That won't help when just calling the mergesort,
  * as that does palloc internally, but if we detected the append case,
  * we could do without it. Not sure how much overhead it is, though.
+ *
+ * XXX It's a bit inefficient that when there's only a single tuple for
+ * a given key, we still re-compress the TID list. Which is not super
+ * expensive, but it's not free either. Maybe we could keep the list
+ * "compressed" until we actually need to combine it with another one.
+ * We'll probably need to keep both first/last TID in the list, to allow
+ * quick detection of overlaps in GinBufferKeyEquals.
  */
 static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)

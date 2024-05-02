@@ -142,6 +142,7 @@ typedef struct
 	MemoryContext tmpCtx;
 	MemoryContext funcCtx;
 	BuildAccumulator accum;
+	ItemPointerData tid;
 
 	/* FIXME likely duplicate with indtuples */
 	double		bs_numtuples;
@@ -475,6 +476,47 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 }
 
 static void
+ginFlushBuildState(GinBuildState *buildstate, Relation index)
+{
+	ItemPointerData *list;
+	Datum		key;
+	GinNullCategory category;
+	uint32		nlist;
+	OffsetNumber attnum;
+	TupleDesc	tdesc = RelationGetDescr(index);
+
+	ginBeginBAScan(&buildstate->accum);
+	while ((list = ginGetBAEntry(&buildstate->accum,
+								 &attnum, &key, &category, &nlist)) != NULL)
+	{
+		/* information about the key */
+		Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
+
+		/* GIN tuple and tuple length */
+		GinTuple   *tup;
+		Size		tuplen;
+
+		/* there could be many entries, so be willing to abort here */
+		CHECK_FOR_INTERRUPTS();
+
+		tup = _gin_build_tuple(buildstate, attnum, category,
+							   key, attr->attlen, attr->attbyval,
+							   list, nlist, &tuplen);
+
+		tuplesort_putgintuple(buildstate->bs_worker_sort, tup, tuplen);
+
+		pfree(tup);
+	}
+
+	MemoryContextReset(buildstate->tmpCtx);
+	ginInitBA(&buildstate->accum);
+}
+
+/*
+ * FIXME Another way to deal with the wrap around of sync scans would be to
+ * detect when tid wraps around and just flush the state.
+ */
+static void
 ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 						 bool *isnull, bool tupleIsAlive, void *state)
 {
@@ -483,6 +525,16 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	int			i;
 
 	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
+
+	/* flush contents before wrapping around */
+	if (ItemPointerCompare(tid, &buildstate->tid) < 0)
+	{
+		elog(LOG, "calling ginFlushBuildState");
+		ginFlushBuildState(buildstate, index);
+	}
+
+	/* remember the TID we're about to process */
+	memcpy(&buildstate->tid, tid, sizeof(ItemPointerData));
 
 	for (i = 0; i < buildstate->ginstate.origTupdesc->natts; i++)
 		ginHeapTupleBulkInsert(buildstate, (OffsetNumber) (i + 1),
@@ -518,40 +570,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	 * XXX probably should use 32MB, not work_mem, as used during planning?
 	 */
 	if (buildstate->accum.allocatedMemory >= (Size) work_mem * 1024L)
-	{
-		ItemPointerData *list;
-		Datum		key;
-		GinNullCategory category;
-		uint32		nlist;
-		OffsetNumber attnum;
-		TupleDesc	tdesc = RelationGetDescr(index);
-
-		ginBeginBAScan(&buildstate->accum);
-		while ((list = ginGetBAEntry(&buildstate->accum,
-									 &attnum, &key, &category, &nlist)) != NULL)
-		{
-			/* information about the key */
-			Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
-
-			/* GIN tuple and tuple length */
-			GinTuple   *tup;
-			Size		tuplen;
-
-			/* there could be many entries, so be willing to abort here */
-			CHECK_FOR_INTERRUPTS();
-
-			tup = _gin_build_tuple(buildstate, attnum, category,
-								   key, attr->attlen, attr->attbyval,
-								   list, nlist, &tuplen);
-
-			tuplesort_putgintuple(buildstate->bs_worker_sort, tup, tuplen);
-
-			pfree(tup);
-		}
-
-		MemoryContextReset(buildstate->tmpCtx);
-		ginInitBA(&buildstate->accum);
-	}
+		ginFlushBuildState(buildstate, index);
 
 	MemoryContextSwitchTo(oldCtx);
 }
@@ -587,6 +606,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.bs_numtuples = 0;
 	buildstate.bs_reltuples = 0;
 	buildstate.bs_leader = NULL;
+	memset(&buildstate.tid, 0, sizeof(ItemPointerData));
 
 	/* initialize the meta page */
 	MetaBuffer = GinNewBuffer(index);
@@ -2007,6 +2027,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	buildstate.indtuples = 0;
 	/* XXX shouldn't this initialize the other fiedls, like ginbuild()? */
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
+	memset(&buildstate.tid, 0, sizeof(ItemPointerData));
 
 	/*
 	 * create a temporary memory context that is used to hold data not yet

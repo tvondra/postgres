@@ -2213,7 +2213,7 @@ _gin_build_tuple(GinBuildState *state,
 		}
 		else if (typlen > 0)	/* byref, fixed length */
 		{
-			memcpy(tuple->data, &key, typlen);
+			memcpy(tuple->data, DatumGetPointer(key), typlen);
 		}
 		else if (typlen == -1)
 		{

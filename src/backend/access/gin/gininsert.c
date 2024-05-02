@@ -1819,7 +1819,7 @@ typedef struct
 {
 	dlist_node	node;			/* linked list pointers */
 	GinPostingList *seg;
-} SegmentInfo;
+} GinSegmentInfo;
 
 /*
  * _gin_build_tuple
@@ -1851,7 +1851,7 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	Size		tuplen;
 	int			keylen;
 
-	dlist_mutable_iter	iter;
+	dlist_mutable_iter iter;
 	dlist_head	segments;
 	int			ncompressed;
 	Size		compresslen;
@@ -1887,8 +1887,8 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	/* generate compressed segments of TID list chunks */
 	while (ncompressed < nitems)
 	{
-		int	cnt;
-		SegmentInfo *seginfo = palloc(sizeof(SegmentInfo));
+		int			cnt;
+		GinSegmentInfo *seginfo = palloc(sizeof(GinSegmentInfo));
 
 		seginfo->seg = ginCompressPostingList(&items[ncompressed],
 											  (nitems - ncompressed),
@@ -1902,9 +1902,9 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	}
 
 	/*
-	 * Determine GIN tuple length with all the data included. Be careful
-	 * about alignment, to allow direct access to compressed segments (those
-	 * require SHORTALIGN, but we do MAXALING anyway).
+	 * Determine GIN tuple length with all the data included. Be careful about
+	 * alignment, to allow direct access to compressed segments (those require
+	 * SHORTALIGN, but we do MAXALING anyway).
 	 */
 	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) + compresslen;
 
@@ -1959,7 +1959,7 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	/* copy in the compressed data, and free the segments */
 	dlist_foreach_modify(iter, &segments)
 	{
-		SegmentInfo *seginfo = dlist_container(SegmentInfo, node, iter.cur);
+		GinSegmentInfo *seginfo = dlist_container(GinSegmentInfo, node, iter.cur);
 
 		memcpy(ptr, seginfo->seg, SizeOfGinPostingList(seginfo->seg));
 
@@ -2009,10 +2009,10 @@ _gin_parse_tuple_key(GinTuple *a)
 static ItemPointer
 _gin_parse_tuple_items(GinTuple *a)
 {
-	int		len;
-	char   *ptr;
-	int		ndecoded;
-	ItemPointer		items;
+	int			len;
+	char	   *ptr;
+	int			ndecoded;
+	ItemPointer items;
 
 	len = a->tuplen - MAXALIGN(offsetof(GinTuple, data) + a->keylen);
 	ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);

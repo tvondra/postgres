@@ -2272,7 +2272,7 @@ _gin_parse_tuple_key(GinTuple *a)
 	if (a->category != GIN_CAT_NORM_KEY)
 		return (Datum) 0;
 
-	if (a->typbyval > 0)
+	if (a->typbyval)
 	{
 		memcpy(&key, a->data, a->keylen);
 		return key;
@@ -2350,15 +2350,14 @@ _gin_compare_tuples(GinTuple *a, GinTuple *b)
 		 * works for both byval and byref types with fixed lenght, because for
 		 * byval we set keylen to sizeof(Datum)
 		 */
-		if (a->typlen > 0)
+		if (a->typbyval)
 		{
 			int			r = memcmp(&keya, &keyb, a->keylen);
 
 			/* if the key is the same, consider the first TID in the array */
 			return (r != 0) ? r : ItemPointerCompare(&a->first, &b->first);
 		}
-
-		if (a->typlen < 0)
+		else
 		{
 			int			r;
 

@@ -30,10 +30,6 @@ typedef struct GinTuple
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 } GinTuple;
 
-<<<<<<< HEAD
 extern int	_gin_compare_tuples(GinTuple *a, GinTuple *b);
-=======
-extern int _gin_compare_tuples(GinTuple *a, GinTuple *b);
->>>>>>> dd3435665bf (Collect and print compression stats)
 
 #endif							/* GIN_TUPLE_H */

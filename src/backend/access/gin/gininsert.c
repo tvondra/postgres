@@ -1131,12 +1131,12 @@ typedef struct GinBuffer
 	bool		typbyval;
 
 	/* Number of TIDs to collect before attempt to write some out. */
-	int				maxitems;
+	int			maxitems;
 
 	/* array of TID values */
-	int				nitems;
-	int				nfrozen;
-	ItemPointerData	*items;
+	int			nitems;
+	int			nfrozen;
+	ItemPointerData *items;
 } GinBuffer;
 
 /* XXX should do more checks */
@@ -1170,12 +1170,12 @@ AssertCheckItemPointers(GinBuffer *buffer, bool sorted)
 static GinBuffer *
 GinBufferInit(void)
 {
-	GinBuffer *buffer = (GinBuffer *) palloc0(sizeof(GinBuffer));
+	GinBuffer  *buffer = (GinBuffer *) palloc0(sizeof(GinBuffer));
 
 	/*
 	 * How many items can we fit into the memory limit? 64kB seems more than
-	 * enough and we don't want a limit that's too high. OTOH maybe this should
-	 * be tied to maintenance_work_mem or something like that?
+	 * enough and we don't want a limit that's too high. OTOH maybe this
+	 * should be tied to maintenance_work_mem or something like that?
 	 *
 	 * XXX This is not enough to prevent repeated merges after a wraparound,
 	 * but it should be enough to make the merges cheap because it quickly
@@ -1281,8 +1281,8 @@ GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup)
 		return false;
 
 	/*
-	 * OK, we have enough frozen TIDs to flush, and we have hit the
-	 * memory limit, so it's time to write it out.
+	 * OK, we have enough frozen TIDs to flush, and we have hit the memory
+	 * limit, so it's time to write it out.
 	 */
 	return true;
 }
@@ -1367,12 +1367,12 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 
 	/*
 	 * Try freeze TIDs at the beginning of the list, i.e. exclude them from
-	 * the mergesort. We can do that with TIDs before the first TID in the
-	 * new tuple we're about to add into the buffer.
+	 * the mergesort. We can do that with TIDs before the first TID in the new
+	 * tuple we're about to add into the buffer.
 	 *
 	 * We do this incrementally when adding data into the in-memory buffer,
-	 * and not later (e.g. when hitting a memory limit), because it allows
-	 * us to skip the frozen data during the mergesort, making it cheaper.
+	 * and not later (e.g. when hitting a memory limit), because it allows us
+	 * to skip the frozen data during the mergesort, making it cheaper.
 	 */
 
 	/*
@@ -1424,12 +1424,12 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 		 * still pass 0 as number of elements in that array though.
 		 */
 		if (buffer->items == NULL)
-			buffer->items = palloc((buffer->nitems  + tup->nitems) * sizeof(ItemPointerData));
+			buffer->items = palloc((buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
 		else
 			buffer->items = repalloc(buffer->items,
-									 (buffer->nitems  + tup->nitems) * sizeof(ItemPointerData));
+									 (buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
 
-		new = ginMergeItemPointers(&buffer->items[buffer->nfrozen],	/* first unfronzen */
+		new = ginMergeItemPointers(&buffer->items[buffer->nfrozen], /* first unfronzen */
 								   (buffer->nitems - buffer->nfrozen),	/* num of unfrozen */
 								   items, tup->nitems, &nnew);
 
@@ -1557,8 +1557,8 @@ _gin_parallel_merge(GinBuildState *state)
 	/*
 	 * Initialize buffer to combine entries for the same key.
 	 *
-	 * The leader is allowed to use the whole maintenance_work_mem buffer
-	 * to combine data. The parallel workers already completed.
+	 * The leader is allowed to use the whole maintenance_work_mem buffer to
+	 * combine data. The parallel workers already completed.
 	 */
 	buffer = GinBufferInit();
 
@@ -1602,9 +1602,9 @@ _gin_parallel_merge(GinBuildState *state)
 		/*
 		 * We're about to add a GIN tuple to the buffer - check the memory
 		 * limit first, and maybe write out some of the data into the index
-		 * first, if needed (and possible). We only flush the part of the
-		 * TID list that we know won't change, and only if there's enough
-		 * data for compression to work well.
+		 * first, if needed (and possible). We only flush the part of the TID
+		 * list that we know won't change, and only if there's enough data for
+		 * compression to work well.
 		 *
 		 * XXX The buffer may also be empty, but in that case we skip this.
 		 */
@@ -1615,8 +1615,9 @@ _gin_parallel_merge(GinBuildState *state)
 			state->buildStats.nTrims++;
 
 			/*
-			 * Buffer is not empty and it's storing a different key - flush the data
-			 * into the insert, and start a new entry for current GinTuple.
+			 * Buffer is not empty and it's storing a different key - flush
+			 * the data into the insert, and start a new entry for current
+			 * GinTuple.
 			 */
 			AssertCheckItemPointers(buffer, true);
 
@@ -1716,9 +1717,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	/*
 	 * Initialize buffer to combine entries for the same key.
 	 *
-	 * The workers are limited to the same amount of memory as during the
-	 * sort in ginBuildCallbackParallel. But this probably should be the
-	 * 32MB used during planning, just like there.
+	 * The workers are limited to the same amount of memory as during the sort
+	 * in ginBuildCallbackParallel. But this probably should be the 32MB used
+	 * during planning, just like there.
 	 */
 	buffer = GinBufferInit();
 
@@ -1775,9 +1776,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		/*
 		 * We're about to add a GIN tuple to the buffer - check the memory
 		 * limit first, and maybe write out some of the data into the index
-		 * first, if needed (and possible). We only flush the part of the
-		 * TID list that we know won't change, and only if there's enough
-		 * data for compression to work well.
+		 * first, if needed (and possible). We only flush the part of the TID
+		 * list that we know won't change, and only if there's enough data for
+		 * compression to work well.
 		 *
 		 * XXX The buffer may also be empty, but in that case we skip this.
 		 */
@@ -1791,8 +1792,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			state->buildStats.nTrims++;
 
 			/*
-			 * Buffer is not empty and it's storing a different key - flush the data
-			 * into the insert, and start a new entry for current GinTuple.
+			 * Buffer is not empty and it's storing a different key - flush
+			 * the data into the insert, and start a new entry for current
+			 * GinTuple.
 			 */
 			AssertCheckItemPointers(buffer, true);
 

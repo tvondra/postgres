@@ -1078,7 +1078,7 @@ tuplesort_getgintuple(Tuplesortstate *state, Size *len, bool forward)
 
 	*len = tup->tuplen;
 
-	return	tup;
+	return tup;
 }
 
 /*
@@ -1895,7 +1895,7 @@ static void
 writetup_index_gin(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
 {
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
-	GinTuple *tuple = (GinTuple *) stup->tuple;
+	GinTuple   *tuple = (GinTuple *) stup->tuple;
 	unsigned int tuplen = tuple->tuplen;
 
 	tuplen = tuplen + sizeof(tuplen);
@@ -1909,7 +1909,7 @@ static void
 readtup_index_gin(Tuplesortstate *state, SortTuple *stup,
 				  LogicalTape *tape, unsigned int len)
 {
-	GinTuple *tuple;
+	GinTuple   *tuple;
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	unsigned int tuplen = len - sizeof(unsigned int);
 

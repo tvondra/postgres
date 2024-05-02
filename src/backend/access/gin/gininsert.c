@@ -67,8 +67,8 @@ typedef struct GinShared
 	/*
 	 * mutex protects all fields before heapdesc.
 	 *
-	 * These fields contain status information of interest to GIN index
-	 * builds that must work just the same when an index is built in parallel.
+	 * These fields contain status information of interest to GIN index builds
+	 * that must work just the same when an index is built in parallel.
 	 */
 	slock_t		mutex;
 
@@ -479,30 +479,30 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 
 	/*
 	 * XXX idea - Instead of writing the entries directly into the shared
-	 * tuplesort, write it into a local one, do the sort in the worker,
-	 * and combine the results. For large tables with many different keys
-	 * that's going to work better than the current approach where we
-	 * don't get many matches in work_mem (maybe this should use 32MB,
-	 * which is what we use when planning, but even that may not be great).
-	 * Which means we are likely to have many entries with a single TID,
-	 * forcing the leader to do a qsort() when merging the data, often
-	 * amounting to ~50% of the serial part. By doing the qsort() in a
-	 * worker, leader then can do a mergesort (likely cheaper). Also, it
-	 * means the amount of data worker->leader is going to be lower thanks
-	 * to deduplication.
+	 * tuplesort, write it into a local one, do the sort in the worker, and
+	 * combine the results. For large tables with many different keys that's
+	 * going to work better than the current approach where we don't get many
+	 * matches in work_mem (maybe this should use 32MB, which is what we use
+	 * when planning, but even that may not be great). Which means we are
+	 * likely to have many entries with a single TID, forcing the leader to do
+	 * a qsort() when merging the data, often amounting to ~50% of the serial
+	 * part. By doing the qsort() in a worker, leader then can do a mergesort
+	 * (likely cheaper). Also, it means the amount of data worker->leader is
+	 * going to be lower thanks to deduplication.
 	 *
-	 * Disadvantage: It needs more disk space, possibly up to 2x, because
-	 * each worker creates a tuplestore, then "transforms it" into the shared
+	 * Disadvantage: It needs more disk space, possibly up to 2x, because each
+	 * worker creates a tuplestore, then "transforms it" into the shared
 	 * tuplestore (hopefully less data, but not guaranteed).
 	 *
 	 * It's however possible to partition the data into multiple tuplesorts
-	 * per worker (by hashing). We don't need perfect sorting, and we can
-	 * even live with "equal" keys having multiple hashes (if there are
-	 * multiple binary representations of the value).
+	 * per worker (by hashing). We don't need perfect sorting, and we can even
+	 * live with "equal" keys having multiple hashes (if there are multiple
+	 * binary representations of the value).
 	 */
 
 	/*
-	 * If we've maxed out our available memory, dump everything to the tuplesort
+	 * If we've maxed out our available memory, dump everything to the
+	 * tuplesort
 	 *
 	 * XXX probably should use 32MB, not work_mem, as used during planning?
 	 */
@@ -520,7 +520,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
 			/* information about the key */
-			Form_pg_attribute	attr = TupleDescAttr(tdesc, (attnum - 1));
+			Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
 
 			/* GIN tuple and tuple length */
 			GinTuple   *tup;
@@ -682,8 +682,8 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	else						/* no parallel index build */
 	{
 		/*
-		 * Do the heap scan.  We disallow sync scan here because dataPlaceToPage
-		 * prefers to receive tuples in TID order.
+		 * Do the heap scan.  We disallow sync scan here because
+		 * dataPlaceToPage prefers to receive tuples in TID order.
 		 */
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
 										   ginBuildCallback, (void *) &buildstate,
@@ -880,8 +880,7 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 #endif
 
 	/*
-	 * Enter parallel mode, and create context for parallel build of gin
-	 * index
+	 * Enter parallel mode, and create context for parallel build of gin index
 	 */
 	EnterParallelMode();
 	Assert(request > 0);
@@ -1117,19 +1116,19 @@ tid_cmp(const void *a, const void *b)
  */
 typedef struct GinBuffer
 {
-	OffsetNumber	attnum;
-	GinNullCategory	category;
-	Datum			key;		/* 0 if no key (and keylen == 0) */
-	Size			keylen;		/* number of bytes (not typlen) */
+	OffsetNumber attnum;
+	GinNullCategory category;
+	Datum		key;			/* 0 if no key (and keylen == 0) */
+	Size		keylen;			/* number of bytes (not typlen) */
 
 	/* type info */
-	int16			typlen;
-	bool			typbyval;
+	int16		typlen;
+	bool		typbyval;
 
 	/* array of TID values */
-	int				nitems;
-	int				maxitems;
-	ItemPointerData	*items;
+	int			nitems;
+	int			maxitems;
+	ItemPointerData *items;
 } GinBuffer;
 
 /* XXX should do more checks */
@@ -1152,7 +1151,7 @@ AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
 		if ((i == 0) || !sorted)
 			continue;
 
-		Assert(ItemPointerCompare(&items[i-1], &items[i]) < 0);
+		Assert(ItemPointerCompare(&items[i - 1], &items[i]) < 0);
 	}
 #endif
 }
@@ -1219,7 +1218,7 @@ static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 {
 	ItemPointerData *items;
-	Datum key;
+	Datum		key;
 
 	AssertCheckGinBuffer(buffer);
 
@@ -1350,29 +1349,31 @@ _gin_parallel_merge(GinBuildState *state)
 	buffer = GinBufferInit();
 
 	/*
-	 * Read the GIN tuples from the shared tuplesort, sorted by category and key.
-	 * That probably gives us order matching how data is organized in the index.
+	 * Read the GIN tuples from the shared tuplesort, sorted by category and
+	 * key. That probably gives us order matching how data is organized in the
+	 * index.
 	 *
 	 * XXX Maybe we should sort by key first, then by category?
 	 *
-	 * We don't insert the GIN tuples right away, but instead accumulate as many
-	 * TIDs for the same key as possible, and then insert that at once. This way
-	 * we don't need to decompress/recompress the posting lists, etc.
+	 * We don't insert the GIN tuples right away, but instead accumulate as
+	 * many TIDs for the same key as possible, and then insert that at once.
+	 * This way we don't need to decompress/recompress the posting lists, etc.
 	 */
 	while ((tup = tuplesort_getgintuple(state->bs_sortstate, &tuplen, true)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * If the buffer can accept the new GIN tuple, just store it there
-		 * and we're done. If it's a different key (or maybe too much data)
-		 * flush the current contents into the index first.
+		 * If the buffer can accept the new GIN tuple, just store it there and
+		 * we're done. If it's a different key (or maybe too much data) flush
+		 * the current contents into the index first.
 		 */
 		if (!GinBufferCanAddKey(buffer, tup))
 		{
 			/*
-			 * Buffer is not empty and it's storing a different key - flush the data
-			 * into the insert, and start a new entry for current GinTuple.
+			 * Buffer is not empty and it's storing a different key - flush
+			 * the data into the insert, and start a new entry for current
+			 * GinTuple.
 			 */
 			GinBufferSortItems(buffer);
 
@@ -1424,7 +1425,7 @@ _gin_parallel_estimate_shared(Relation heap, Snapshot snapshot)
 static void
 _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Relation index)
 {
-	GinLeader *ginleader = buildstate->bs_leader;
+	GinLeader  *ginleader = buildstate->bs_leader;
 	int			sortmem;
 
 	/*
@@ -1495,7 +1496,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
 			/* information about the key */
-			Form_pg_attribute	attr = TupleDescAttr(tdesc, (attnum - 1));
+			Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
 
 			GinTuple   *tup;
 			Size		len;
@@ -1543,9 +1544,9 @@ void
 _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
-	GinShared *ginshared;
+	GinShared  *ginshared;
 	Sharedsort *sharedsort;
-	GinBuildState	buildstate;
+	GinBuildState buildstate;
 	Relation	heapRel;
 	Relation	indexRel;
 	LOCKMODE	heapLockmode;
@@ -1666,13 +1667,13 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 
 	/*
 	 * Calculate how long is the key value. Only keys with GIN_CAT_NORM_KEY
-	 * have actual non-empty key. We include varlena headers and \0 bytes
-	 * for strings, to make it easier to access the data in-line.
+	 * have actual non-empty key. We include varlena headers and \0 bytes for
+	 * strings, to make it easier to access the data in-line.
 	 *
-	 * For byval types we simply copy the whole Datum. We could store just
-	 * the necessary bytes, but this is simpler to work with and not worth
-	 * the extra complexity. Moreover we still need to do the MAXALIGN to
-	 * allow direct access to items pointers.
+	 * For byval types we simply copy the whole Datum. We could store just the
+	 * necessary bytes, but this is simpler to work with and not worth the
+	 * extra complexity. Moreover we still need to do the MAXALIGN to allow
+	 * direct access to items pointers.
 	 */
 	if (category != GIN_CAT_NORM_KEY)
 		keylen = 0;
@@ -1688,11 +1689,11 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 		elog(ERROR, "invalid typlen");
 
 	/*
-	 * Determine GIN tuple length with all the data included. Be careful
-	 * about alignment, to allow direct access to item pointers.
+	 * Determine GIN tuple length with all the data included. Be careful about
+	 * alignment, to allow direct access to item pointers.
 	 */
 	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) +
-					  (sizeof(ItemPointerData) * nitems);
+		(sizeof(ItemPointerData) * nitems);
 
 	*len = tuplen;
 
@@ -1739,7 +1740,7 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	}
 
 	/* finally, copy the TIDs into the array */
-	ptr = (char *) tuple  + MAXALIGN(offsetof(GinTuple, data) + keylen);
+	ptr = (char *) tuple + MAXALIGN(offsetof(GinTuple, data) + keylen);
 
 	memcpy(ptr, items, sizeof(ItemPointerData) * nitems);
 
@@ -1763,11 +1764,12 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 static Datum
 _gin_parse_tuple(GinTuple *a, ItemPointerData **items)
 {
-	Datum	key;
+	Datum		key;
 
 	if (items)
 	{
-		char *ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+		char	   *ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+
 		*items = (ItemPointerData *) ptr;
 	}
 
@@ -1799,8 +1801,8 @@ _gin_parse_tuple(GinTuple *a, ItemPointerData **items)
 int
 _gin_compare_tuples(GinTuple *a, GinTuple *b)
 {
-	Datum	keya,
-			keyb;
+	Datum		keya,
+				keyb;
 
 	if (a->attrnum < b->attrnum)
 		return -1;

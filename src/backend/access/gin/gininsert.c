@@ -190,7 +190,8 @@ static void _gin_parallel_scan_and_build(GinBuildState *buildstate,
 static ItemPointer _gin_parse_tuple_items(GinTuple *a);
 static Datum _gin_parse_tuple_key(GinTuple *a);
 
-static GinTuple *_gin_build_tuple(OffsetNumber attrnum, unsigned char category,
+static GinTuple *_gin_build_tuple(GinBuildState *state,
+								  OffsetNumber attrnum, unsigned char category,
 								  Datum key, int16 typlen, bool typbyval,
 								  ItemPointerData *items, uint32 nitems,
 								  Size *len);
@@ -539,7 +540,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			tup = _gin_build_tuple(attnum, category,
+			tup = _gin_build_tuple(buildstate, attnum, category,
 								   key, attr->attlen, attr->attbyval,
 								   list, nlist, &tuplen);
 
@@ -1530,6 +1531,15 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	/* sort the raw per-worker data */
 	tuplesort_performsort(state->bs_worker_sort);
 
+	/* print some basic info */
+	elog(LOG, "_gin_parallel_scan_and_build raw %lu compressed %lu ratio %.2f%%",
+		 state->buildStats.sizeRaw, state->buildStats.sizeCompressed,
+		 (100.0 * state->buildStats.sizeCompressed) / state->buildStats.sizeRaw);
+
+	/* reset before the second phase */
+	state->buildStats.sizeCompressed = 0;
+	state->buildStats.sizeRaw = 0;
+
 	/*
 	 * Read the GIN tuples from the shared tuplesort, sorted by the key, and
 	 * merge them into larger chunks for the leader to combine.
@@ -1556,7 +1566,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			 */
 			AssertCheckItemPointers(buffer, true);
 
-			ntup = _gin_build_tuple(buffer->attnum, buffer->category,
+			ntup = _gin_build_tuple(state, buffer->attnum, buffer->category,
 									buffer->key, buffer->typlen, buffer->typbyval,
 									buffer->items, buffer->nitems, &ntuplen);
 
@@ -1583,7 +1593,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 		AssertCheckItemPointers(buffer, true);
 
-		ntup = _gin_build_tuple(buffer->attnum, buffer->category,
+		ntup = _gin_build_tuple(state, buffer->attnum, buffer->category,
 								buffer->key, buffer->typlen, buffer->typbyval,
 								buffer->items, buffer->nitems, &ntuplen);
 
@@ -1597,6 +1607,11 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 
 	/* relase all the memory */
 	GinBufferFree(buffer);
+
+	/* print some basic info */
+	elog(LOG, "_gin_process_worker_data raw %lu compressed %lu ratio %.2f%%",
+		 state->buildStats.sizeRaw, state->buildStats.sizeCompressed,
+		 (100.0 * state->buildStats.sizeCompressed) / state->buildStats.sizeRaw);
 
 	tuplesort_end(worker_sort);
 }
@@ -1669,7 +1684,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 			/* there could be many entries, so be willing to abort here */
 			CHECK_FOR_INTERRUPTS();
 
-			tup = _gin_build_tuple(attnum, category,
+			tup = _gin_build_tuple(state, attnum, category,
 								   key, attr->attlen, attr->attbyval,
 								   list, nlist, &len);
 
@@ -1763,6 +1778,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	/* initialize the GIN build state */
 	initGinState(&buildstate.ginstate, indexRel);
 	buildstate.indtuples = 0;
+	/* XXX shouldn't this initialize the other fiedls, like ginbuild()? */
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
 	/*
@@ -1840,7 +1856,8 @@ typedef struct
  * of that into the GIN tuple.
  */
 static GinTuple *
-_gin_build_tuple(OffsetNumber attrnum, unsigned char category,
+_gin_build_tuple(GinBuildState *state,
+				 OffsetNumber attrnum, unsigned char category,
 				 Datum key, int16 typlen, bool typbyval,
 				 ItemPointerData *items, uint32 nitems,
 				 Size *len)
@@ -1970,6 +1987,13 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 		pfree(seginfo->seg);
 		pfree(seginfo);
 	}
+
+	/* how large would the tuple be without compression? */
+	state->buildStats.sizeRaw += MAXALIGN(offsetof(GinTuple, data) + keylen) +
+		nitems * sizeof(ItemPointerData);
+
+	/* compressed size */
+	state->buildStats.sizeCompressed += tuplen;
 
 	return tuple;
 }

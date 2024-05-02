@@ -180,7 +180,10 @@ static void _gin_parallel_scan_and_build(GinBuildState *buildstate,
 										 int sortmem, bool progress);
 
 static Datum _gin_parse_tuple(GinTuple *a, ItemPointerData **items);
-
+static GinTuple *_gin_build_tuple(OffsetNumber attrnum, unsigned char category,
+								  Datum key, int16 typlen, bool typbyval,
+								  ItemPointerData *items, uint32 nitems,
+								  Size *len);
 
 /*
  * Adds array of item pointers to tuple's posting list, or
@@ -1649,7 +1652,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
  * worth it - it's a tiny fraction of the data, and we need to MAXALIGN the
  * start of the TID list anyway. So we wouldn't save anything.
  */
-GinTuple *
+static GinTuple *
 _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 				 Datum key, int16 typlen, bool typbyval,
 				 ItemPointerData *items, uint32 nitems,

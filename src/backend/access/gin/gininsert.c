@@ -1672,7 +1672,7 @@ _gin_parallel_merge(GinBuildState *state)
 	/* relase all the memory */
 	GinBufferFree(buffer);
 
-	elog(LOG, "_gin_parallel_merge ntrims %ld", state->buildStats.nTrims);
+	elog(LOG, "_gin_parallel_merge ntrims " INT64_FORMAT, state->buildStats.nTrims);
 
 	tuplesort_end(state->bs_sortstate);
 
@@ -1747,7 +1747,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	tuplesort_performsort(state->bs_worker_sort);
 
 	/* print some basic info */
-	elog(LOG, "_gin_parallel_scan_and_build raw %lu compressed %lu ratio %.2f%%",
+	elog(LOG, "_gin_parallel_scan_and_build raw %zu compressed %zu ratio %.2f%%",
 		 state->buildStats.sizeRaw, state->buildStats.sizeCompressed,
 		 (100.0 * state->buildStats.sizeCompressed) / state->buildStats.sizeRaw);
 
@@ -1861,11 +1861,11 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	GinBufferFree(buffer);
 
 	/* print some basic info */
-	elog(LOG, "_gin_process_worker_data raw %lu compressed %lu ratio %.2f%%",
+	elog(LOG, "_gin_process_worker_data raw %zu compressed %zu ratio %.2f%%",
 		 state->buildStats.sizeRaw, state->buildStats.sizeCompressed,
 		 (100.0 * state->buildStats.sizeCompressed) / state->buildStats.sizeRaw);
 
-	elog(LOG, "_gin_process_worker_data trims %ld", state->buildStats.nTrims);
+	elog(LOG, "_gin_process_worker_data trims " INT64_FORMAT, state->buildStats.nTrims);
 
 	tuplesort_end(worker_sort);
 }

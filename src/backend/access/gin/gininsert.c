@@ -1134,8 +1134,8 @@ typedef struct GinBuffer
 	bool		typbyval;
 
 	/* array of TID values */
-	int				nitems;
-	ItemPointerData	*items;
+	int			nitems;
+	ItemPointerData *items;
 } GinBuffer;
 
 /* XXX should do more checks */
@@ -1249,7 +1249,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	/* copy the new TIDs into the buffer, combine using merge-sort */
 	{
 		int			nnew;
-		ItemPointer	new;
+		ItemPointer new;
 
 		new = ginMergeItemPointers(buffer->items, buffer->nitems,
 								   items, tup->nitems, &nnew);
@@ -1478,7 +1478,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	GinTuple   *tup;
 	Size		tuplen;
 
-	GinBuffer	*buffer;
+	GinBuffer  *buffer;
 
 	/* initialize buffer to combine entries for the same key */
 	buffer = GinBufferInit();
@@ -1496,9 +1496,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * If the buffer can accept the new GIN tuple, just store it there
-		 * and we're done. If it's a different key (or maybe too much data)
-		 * flush the current contents into the index first.
+		 * If the buffer can accept the new GIN tuple, just store it there and
+		 * we're done. If it's a different key (or maybe too much data) flush
+		 * the current contents into the index first.
 		 */
 		if (!GinBufferCanAddKey(buffer, tup))
 		{
@@ -1506,8 +1506,9 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			Size		ntuplen;
 
 			/*
-			 * Buffer is not empty and it's storing a different key - flush the data
-			 * into the insert, and start a new entry for current GinTuple.
+			 * Buffer is not empty and it's storing a different key - flush
+			 * the data into the insert, and start a new entry for current
+			 * GinTuple.
 			 */
 			GinBufferSortItems(buffer);
 

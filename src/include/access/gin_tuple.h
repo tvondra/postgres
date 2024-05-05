@@ -10,6 +10,8 @@
 #ifndef GIN_TUPLE_
 #define GIN_TUPLE_
 
+#include "storage/itemptr.h"
+
 /*
  * Each worker sees tuples in CTID order, so if we track the first TID and
  * compare that when combining results in the worker, we would not need to

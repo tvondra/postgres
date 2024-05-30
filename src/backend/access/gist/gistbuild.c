@@ -215,6 +215,7 @@ typedef struct
 	 * and only in the leader process. (Actually, only the leader process has
 	 * a GISTBuildState.)
 	 */
+	bool		is_parallel;
 	GISTLeader *gist_leader;
 
 	/*
@@ -335,6 +336,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.giststate = initGISTstate(index);
 
 	/* assume serial build */
+	buildstate.is_parallel = false;
 	buildstate.gist_leader = NULL;
 
 	/*
@@ -1041,7 +1043,7 @@ gistBuildCallback(Relation index,
 		 * locked, we call gistdoinsert directly.
 		 */
 		gistdoinsert(index, itup, buildstate->freespace,
-					 buildstate->giststate, buildstate->heaprel, true);
+					 buildstate->giststate, buildstate->heaprel, true, false);
 	}
 
 	MemoryContextSwitchTo(oldCtx);
@@ -1135,7 +1137,7 @@ gistBuildParallelCallback(Relation index,
 		 * to the GiST index.
 		 */
 		gistdoinsert(index, itup, buildstate->freespace,
-					 buildstate->giststate, buildstate->heaprel, true);
+					 buildstate->giststate, buildstate->heaprel, true, true);
 	}
 
 	MemoryContextSwitchTo(oldCtx);
@@ -1342,7 +1344,8 @@ gistbufferinginserttuples(GISTBuildState *buildstate, Buffer buffer, int level,
 							   InvalidBuffer,
 							   &splitinfo,
 							   false,
-							   buildstate->heaprel, true);
+							   buildstate->heaprel, true,
+							   buildstate->is_parallel);
 
 	/*
 	 * If this is a root split, update the root path item kept in memory. This
@@ -2021,6 +2024,7 @@ _gist_begin_parallel(GISTBuildState *buildstate, Relation heap, Relation index,
 	}
 
 	/* Save leader state now that it's clear build will be parallel */
+	buildstate->is_parallel = true;
 	buildstate->gist_leader = gistleader;
 
 	/* Join heap scan ourselves */
@@ -2247,6 +2251,7 @@ _gist_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	buildstate.sortstate = NULL;
 	buildstate.giststate = initGISTstate(indexRel);
 
+	buildstate.is_parallel = true;
 	buildstate.gist_leader = NULL;
 
 	/*

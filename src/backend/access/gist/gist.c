@@ -182,7 +182,7 @@ gistinsert(Relation r, Datum *values, bool *isnull,
 						 values, isnull, true /* size is currently bogus */ );
 	itup->t_tid = *ht_ctid;
 
-	gistdoinsert(r, itup, 0, giststate, heapRel, false);
+	gistdoinsert(r, itup, 0, giststate, heapRel, false, false);
 
 	/* cleanup */
 	MemoryContextSwitchTo(oldCxt);
@@ -230,7 +230,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				List **splitinfo,
 				bool markfollowright,
 				Relation heapRel,
-				bool is_build)
+				bool is_build,
+				bool is_parallel)
 {
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
 	Page		page = BufferGetPage(buffer);
@@ -503,7 +504,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * we don't need to be able to detect concurrent splits yet.)
 		 */
 		if (is_build)
-			recptr = gistGetFakeLSN(rel);
+		{
+			if (is_parallel)
+				recptr = gistGetFakeLSN(rel, is_parallel);
+			else
+				recptr = GistBuildLSN;
+		}
 		else
 		{
 			if (RelationNeedsWAL(rel))
@@ -511,7 +517,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 									   dist, oldrlink, oldnsn, leftchildbuf,
 									   markfollowright);
 			else
-				recptr = gistGetFakeLSN(rel);
+				recptr = gistGetFakeLSN(rel, false);
 		}
 
 		for (ptr = dist; ptr; ptr = ptr->next)
@@ -570,7 +576,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			MarkBufferDirty(leftchildbuf);
 
 		if (is_build)
-			recptr = gistGetFakeLSN(rel);
+		{
+			if (is_parallel)
+				recptr = gistGetFakeLSN(rel, is_parallel);
+			else
+				recptr = GistBuildLSN;
+		}
 		else
 		{
 			if (RelationNeedsWAL(rel))
@@ -589,7 +600,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 										leftchildbuf);
 			}
 			else
-				recptr = gistGetFakeLSN(rel);
+				recptr = gistGetFakeLSN(rel, false);
 		}
 		PageSetLSN(page, recptr);
 
@@ -632,7 +643,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
  */
 void
 gistdoinsert(Relation r, IndexTuple itup, Size freespace,
-			 GISTSTATE *giststate, Relation heapRel, bool is_build)
+			 GISTSTATE *giststate, Relation heapRel, bool is_build,
+			 bool is_parallel)
 {
 	ItemId		iid;
 	IndexTuple	idxtuple;
@@ -646,6 +658,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 	state.r = r;
 	state.heapRel = heapRel;
 	state.is_build = is_build;
+	state.is_parallel = is_parallel;
 
 	/* Start from the root */
 	firststack.blkno = GIST_ROOT_BLKNO;
@@ -1303,7 +1316,8 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 							   &splitinfo,
 							   true,
 							   state->heapRel,
-							   state->is_build);
+							   state->is_build,
+							   state->is_parallel);
 
 	/*
 	 * Before recursing up in case the page was split, release locks on the
@@ -1722,7 +1736,7 @@ gistprunepage(Relation rel, Page page, Buffer buffer, Relation heapRel)
 			PageSetLSN(page, recptr);
 		}
 		else
-			PageSetLSN(page, gistGetFakeLSN(rel));
+			PageSetLSN(page, gistGetFakeLSN(rel, false));
 
 		END_CRIT_SECTION();
 	}

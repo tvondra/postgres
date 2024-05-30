@@ -474,6 +474,17 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 			reltuples = _gist_parallel_heapscan(&buildstate);
 
 			_gist_end_parallel(buildstate.gist_leader, &buildstate);
+
+			/*
+			 * We didn't write WAL records as we built the index, so if WAL-logging is
+			 * required, write all pages to the WAL now.
+			 */
+			if (RelationNeedsWAL(index))
+			{
+				log_newpage_range(index, MAIN_FORKNUM,
+								  0, RelationGetNumberOfBlocks(index),
+								  true);
+			}
 		}
 		else
 		{
@@ -1108,7 +1119,7 @@ gistBuildParallelCallback(Relation index,
 	 * to the GiST index.
 	 */
 	gistdoinsert(index, itup, buildstate->freespace,
-				 buildstate->giststate, buildstate->heaprel, false);
+				 buildstate->giststate, buildstate->heaprel, true);
 
 	MemoryContextSwitchTo(oldCtx);
 	MemoryContextReset(buildstate->giststate->tempCxt);
@@ -2111,17 +2122,6 @@ _gist_parallel_scan_and_build(GISTBuildState *state,
 		elog(DEBUG1, "all tuples processed, emptying buffers");
 		gistEmptyAllBuffers(state);
 		gistFreeBuildBuffers(state->gfbb);
-	}
-
-	/*
-	 * We didn't write WAL records as we built the index, so if WAL-logging is
-	 * required, write all pages to the WAL now.
-	 */
-	if (RelationNeedsWAL(index))
-	{
-		log_newpage_range(index, MAIN_FORKNUM,
-						  0, RelationGetNumberOfBlocks(index),
-						  true);
 	}
 
 	/* okay, all heap tuples are indexed */

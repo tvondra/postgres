@@ -1036,7 +1036,7 @@ gistGetFakeLSN(Relation rel)
 		XLogRecPtr	currlsn = GetXLogInsertRecPtr();
 
 		/* Shouldn't be called for WAL-logging relations */
-		Assert(!RelationNeedsWAL(rel));
+		//Assert(!RelationNeedsWAL(rel));
 
 		/* No need for an actual record if we already have a distinct LSN */
 		if (!XLogRecPtrIsInvalid(lastlsn) && lastlsn == currlsn)

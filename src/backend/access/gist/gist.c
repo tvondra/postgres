@@ -503,7 +503,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * we don't need to be able to detect concurrent splits yet.)
 		 */
 		if (is_build)
-			recptr = GistBuildLSN;
+			recptr = gistGetFakeLSN(rel);
 		else
 		{
 			if (RelationNeedsWAL(rel))
@@ -570,7 +570,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			MarkBufferDirty(leftchildbuf);
 
 		if (is_build)
-			recptr = GistBuildLSN;
+			recptr = gistGetFakeLSN(rel);
 		else
 		{
 			if (RelationNeedsWAL(rel))

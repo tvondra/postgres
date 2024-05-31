@@ -1037,7 +1037,8 @@ gistGetFakeLSN(Relation rel, bool is_parallel)
 
 		/*
 		 * Shouldn't be called for WAL-logging relations, but parallell
-		 * builds are an exception.
+		 * builds are an exception - we need the fake LSN to detect
+		 * concurrent changes.
 		 */
 		Assert(is_parallel || !RelationNeedsWAL(rel));
 

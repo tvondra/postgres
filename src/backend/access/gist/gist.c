@@ -502,6 +502,9 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * smaller than any real or fake unlogged LSN that might be generated
 		 * later. (There can't be any concurrent scans during index build, so
 		 * we don't need to be able to detect concurrent splits yet.)
+		 *
+		 * However, with a parallel index build, we need to assign valid LSN,
+		 * as it's used to detect concurrent index modifications.
 		 */
 		if (is_build)
 		{

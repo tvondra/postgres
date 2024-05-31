@@ -1114,63 +1114,14 @@ gistBuildParallelCallback(Relation index,
 	buildstate->indtuplesSize += IndexTupleSize(itup);
 
 	/*
-	 * XXX In buffering builds, the tempCxt is also reset down inside
-	 * gistProcessEmptyingQueue().  This is not great because it risks
-	 * confusion and possible use of dangling pointers (for example, itup
-	 * might be already freed when control returns here).  It's generally
-	 * better that a memory context be "owned" by only one function.  However,
-	 * currently this isn't causing issues so it doesn't seem worth the amount
-	 * of refactoring that would be needed to avoid it.
+	 * There's no buffers (yet). Since we already have the index relation
+	 * locked, we call gistdoinsert directly.
 	 */
-	if (buildstate->buildMode == GIST_BUFFERING_ACTIVE)
-	{
-		/* We have buffers, so use them. */
-		gistBufferingBuildInsert(buildstate, itup);
-	}
-	else
-	{
-		/*
-		 * There's no buffers (yet). Since we already have the index relation
-		 * locked, we call gistdoinsert directly.
-		 */
-		gistdoinsert(index, itup, buildstate->freespace,
-					 buildstate->giststate, buildstate->heaprel, true, true);
-	}
+	gistdoinsert(index, itup, buildstate->freespace,
+				 buildstate->giststate, buildstate->heaprel, true, true);
 
 	MemoryContextSwitchTo(oldCtx);
 	MemoryContextReset(buildstate->giststate->tempCxt);
-
-	if (buildstate->buildMode == GIST_BUFFERING_ACTIVE &&
-		buildstate->indtuples % BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET == 0)
-	{
-		/* Adjust the target buffer size now */
-		buildstate->gfbb->pagesPerBuffer =
-			calculatePagesPerBuffer(buildstate, buildstate->gfbb->levelStep);
-	}
-
-	/*
-	 * In 'auto' mode, check if the index has grown too large to fit in cache,
-	 * and switch to buffering mode if it has.
-	 *
-	 * To avoid excessive calls to smgrnblocks(), only check this every
-	 * BUFFERING_MODE_SWITCH_CHECK_STEP index tuples.
-	 *
-	 * In 'stats' state, switch as soon as we have seen enough tuples to have
-	 * some idea of the average tuple size.
-	 */
-	if ((buildstate->buildMode == GIST_BUFFERING_AUTO &&
-		 buildstate->indtuples % BUFFERING_MODE_SWITCH_CHECK_STEP == 0 &&
-		 effective_cache_size < smgrnblocks(RelationGetSmgr(index),
-											MAIN_FORKNUM)) ||
-		(buildstate->buildMode == GIST_BUFFERING_STATS &&
-		 buildstate->indtuples >= BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET))
-	{
-		/*
-		 * Index doesn't fit in effective cache anymore. Try to switch to
-		 * buffering build mode.
-		 */
-		gistInitBuffering(buildstate);
-	}
 }
 
 /*

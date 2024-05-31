@@ -1132,9 +1132,6 @@ gistBuildParallelCallback(Relation index,
 		/*
 		 * There's no buffers (yet). Since we already have the index relation
 		 * locked, we call gistdoinsert directly.
-		 *
-		 * FIXME Without is_build=false we get failues due concurrent changes
-		 * to the GiST index.
 		 */
 		gistdoinsert(index, itup, buildstate->freespace,
 					 buildstate->giststate, buildstate->heaprel, true, true);

@@ -1,5 +1,5 @@
 -- Generic extended statistics support
-
+SET log_error_verbosity = verbose;
 --
 -- Note: tables for which we check estimated row counts should be created
 -- with autovacuum_enabled = off, so that we don't have unstable results

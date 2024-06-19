@@ -1022,11 +1022,13 @@ GinBtreeData
 GinBtreeDataLeafInsertData
 GinBtreeEntryInsertData
 GinBtreeStack
+GinBuffer
 GinBuildState
 GinChkVal
 GinEntries
 GinEntryAccumulator
 GinIndexStat
+GinLeader
 GinMetaPageData
 GinNullCategory
 GinOptions
@@ -1039,9 +1041,11 @@ GinScanEntry
 GinScanKey
 GinScanOpaque
 GinScanOpaqueData
+GinShared
 GinState
 GinStatsData
 GinTernaryValue
+GinTuple
 GinTupleCollector
 GinVacuumState
 GistBuildMode

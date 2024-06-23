@@ -1199,9 +1199,9 @@ AssertCheckGinBuffer(GinBuffer *buffer)
 	/*
 	 * we don't know if the TID array is expected to be sorted or not
 	 *
-	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
-	 * XXX actually with the mergesort in GinBufferStoreTuple, we
-	 * should not need 'false' here. See AssertCheckItemPointers.
+	 * XXX maybe we can pass that to AssertCheckGinBuffer() call? XXX actually
+	 * with the mergesort in GinBufferStoreTuple, we should not need 'false'
+	 * here. See AssertCheckItemPointers.
 	 */
 	AssertCheckItemPointers(buffer, false);
 #endif

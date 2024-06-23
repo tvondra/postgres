@@ -476,34 +476,8 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 }
 
 /*
- * ginBuildCallbackParallel
- *		Callback for the parallel index build.
- *
- * This is very similar to the serial build callback ginBuildCallback,
- * except that instead of writing the accumulated entries into the index,
- * we write them into a tuplesort that is then processed by the leader.
- *
- * Instead of writing the entries directly into the shared tuplesort, write
- * them into a local one (in each worker), do a sort in the worker, combine
- * the results, and only then write the results into the shared tuplesort.
- * For large tables with many different keys that's going to work better
- * than the current approach where we don't get many matches in work_mem
- * (maybe this should use 32MB, which is what we use when planning, but
- * even that may not be sufficient). Which means we would end up with many
- * entries with a small number of TIDs, forcing the leader to merge the data,
- * often amounting to ~50% of the serial part. By doing the first sort in
- * workers, this work is parallelized and the leader does fewer merges with
- * longer TID lists, which is much cheaper and more efficient. Also, the
- * amount of data sent from workers to the leader gets be lower.
- *
- * The disadvantage is increased disk space usage, possibly up to 2x, if
- * no entries get combined at the worker level.
- *
- * XXX It would be possible to partition the data into multiple tuplesorts
- * per worker (by hashing) - we don't need the data produced by workers
- * to be perfectly sorted, and we could even live with multiple entries
- * for the same key (in case it has multiple binary representations with
- * distinct hash values).
+ * ginFlushBuildState
+ *		Write all data from BuildAccumulator into the tuplesort.
  */
 static void
 ginFlushBuildState(GinBuildState *buildstate, Relation index)
@@ -543,10 +517,39 @@ ginFlushBuildState(GinBuildState *buildstate, Relation index)
 }
 
 /*
+ * ginBuildCallbackParallel
+ *		Callback for the parallel index build.
+ *
+ * This is very similar to the serial build callback ginBuildCallback,
+ * except that instead of writing the accumulated entries into the index,
+ * we write them into a tuplesort that is then processed by the leader.
+ *
+ * Instead of writing the entries directly into the shared tuplesort, write
+ * them into a local one (in each worker), do a sort in the worker, combine
+ * the results, and only then write the results into the shared tuplesort.
+ * For large tables with many different keys that's going to work better
+ * than the current approach where we don't get many matches in work_mem
+ * (maybe this should use 32MB, which is what we use when planning, but
+ * even that may not be sufficient). Which means we would end up with many
+ * entries with a small number of TIDs, forcing the leader to merge the data,
+ * often amounting to ~50% of the serial part. By doing the first sort in
+ * workers, this work is parallelized and the leader does fewer merges with
+ * longer TID lists, which is much cheaper and more efficient. Also, the
+ * amount of data sent from workers to the leader gets be lower.
+ *
+ * The disadvantage is increased disk space usage, possibly up to 2x, if
+ * no entries get combined at the worker level.
+ *
  * To detect a wraparound (which can happen with sync scans), we remember the
  * last TID seen by each worker - if the next TID seen by the worker is lower,
  * the scan must have wrapped around. We handle that by flushing the current
  * buildstate to the tuplesort, so that we don't end up with wide TID lists.
+ *
+ * XXX It would be possible to partition the data into multiple tuplesorts
+ * per worker (by hashing) - we don't need the data produced by workers
+ * to be perfectly sorted, and we could even live with multiple entries
+ * for the same key (in case it has multiple binary representations with
+ * distinct hash values).
  */
 static void
 ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
@@ -558,7 +561,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 
 	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
 
-	/* scan wrapped around - flush accumulated entries */
+	/* scan wrapped around - flush accumulated entries and start anew */
 	if (ItemPointerCompare(tid, &buildstate->tid) < 0)
 	{
 		elog(LOG, "calling ginFlushBuildState");
@@ -1986,39 +1989,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 									   ginBuildCallbackParallel, state, scan);
 
 	/* write remaining accumulated entries */
-	{
-		ItemPointerData *list;
-		Datum		key;
-		GinNullCategory category;
-		uint32		nlist;
-		OffsetNumber attnum;
-		TupleDesc	tdesc = RelationGetDescr(index);
-
-		ginBeginBAScan(&state->accum);
-		while ((list = ginGetBAEntry(&state->accum,
-									 &attnum, &key, &category, &nlist)) != NULL)
-		{
-			/* information about the key */
-			Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
-
-			GinTuple   *tup;
-			Size		len;
-
-			/* there could be many entries, so be willing to abort here */
-			CHECK_FOR_INTERRUPTS();
-
-			tup = _gin_build_tuple(state, attnum, category,
-								   key, attr->attlen, attr->attbyval,
-								   list, nlist, &len);
-
-			tuplesort_putgintuple(state->bs_worker_sort, tup, len);
-
-			pfree(tup);
-		}
-
-		MemoryContextReset(state->tmpCtx);
-		ginInitBA(&state->accum);
-	}
+	ginFlushBuildState(state, index);
 
 	/*
 	 * Do the first phase of in-worker processing - sort the data produced by

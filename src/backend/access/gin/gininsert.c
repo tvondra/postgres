@@ -1160,6 +1160,10 @@ typedef struct GinBuffer
 /*
  * Check that TID array contains valid values, and that it's sorted (if we
  * expect it to be).
+ *
+ * XXX At this point there are no places where "sorted=false" should be
+ * necessary, because we always use merge-sort to combine the old and new
+ * TID list. So maybe we should get rid of the argument entirely.
  */
 static void
 AssertCheckItemPointers(GinBuffer *buffer, bool sorted)
@@ -1193,6 +1197,8 @@ AssertCheckGinBuffer(GinBuffer *buffer)
 	 * we don't know if the TID array is expected to be sorted or not
 	 *
 	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
+	 * XXX actually with the mergesort in GinBufferStoreTuple, we
+	 * should not need 'false' here. See AssertCheckItemPointers.
 	 */
 	AssertCheckItemPointers(buffer, false);
 #endif
@@ -1299,22 +1305,21 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  *		Add data (especially TID list) from a GIN tuple to the buffer.
  *
  * The buffer is expected to be empty (in which case it's initialized), or
- * having the same key. The TID values from the tuple are simply combined
- * with the stored values using a merge sort.
+ * having the same key. The TID values from the tuple are combined with the
+ * stored values using a merge sort.
  *
- * The data (for the same key) is expected to be processed sorted by first
- * TID. But this does not guarantee the lists do not overlap, especially in
- * the leader, because the workers process interleaving data. But even in
- * a single worker, lists can overlap - parallel scans require sync-scans,
- * and if the scan starts somewhere in the table and then wraps around, it
- * may contain very wide lists (in terms of TID range).
+ * The tuples (for the same key) is expected to be sorted by first TID. But
+ * this does not guarantee the lists do not overlap, especially in the leader,
+ * because the workers process interleaving data. But even in a single worker,
+ * lists can overlap - parallel scans require sync-scans, and if a scan wraps,
+ * obe of the lists may be very wide (in terms of TID range).
  *
- * But the ginMergeItemPointers() is already smart about detecting cases
- * where it can simply concatenate the lists, and when full mergesort is
- * needed. And does the right thing.
+ * But the ginMergeItemPointers() is already smart about detecting cases when
+ * it can simply concatenate the lists, and when full mergesort is needed. And
+ * does the right thing.
  *
- * By keeping the first TID in the GinTuple and sorting by that, we make
- * it more likely the lists won't overlap very often.
+ * By keeping the first TID in the GinTuple and sorting by that, we make it
+ * more likely the lists won't overlap very often.
  *
  * XXX How frequent can the overlaps be? If the scan does not wrap around,
  * there should be no overlapping lists, and thus no mergesort. After a
@@ -1350,13 +1355,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = (Datum) 0;
 	}
 
-	/*
-	 * add the new TIDs into the buffer, combine using merge-sort
-	 *
-	 * The mergesort is already smart about cases where it can simply
-	 * concatenate the two lists, and when it actually needs to merge the data
-	 * in an expensive way.
-	 */
+	/* add the new TIDs into the buffer, combine using merge-sort */
 	{
 		int			nnew;
 		ItemPointer new;

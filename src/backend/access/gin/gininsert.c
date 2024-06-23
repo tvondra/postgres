@@ -1227,14 +1227,14 @@ GinBufferInit(Relation index)
 	TupleDesc	desc = RelationGetDescr(index);
 
 	/*
-	 * How many items can we fit into the memory limit? 64kB seems more than
-	 * enough and we don't want a limit that's too high. OTOH maybe this
+	 * How many items can we fit into the memory limit? We don't want to end
+	 * with too many TIDs. and 64kB seems more than enough. But maybe this
 	 * should be tied to maintenance_work_mem or something like that?
 	 *
-	 * XXX This is not enough to prevent repeated merges after a wraparound,
-	 * but it should be enough to make the merges cheap because it quickly
-	 * reaches the end of the second list and can just memcpy the rest without
-	 * walking it item by item.
+	 * XXX This is not enough to prevent repeated merges after a wraparound
+	 * of the parallel scan, but it should be enough to make the merges cheap
+	 * because it quickly reaches the end of the second list and can just
+	 * memcpy the rest without walking it item by item.
 	 */
 	buffer->maxitems = (64 * 1024L) / sizeof(ItemPointerData);
 
@@ -1558,8 +1558,6 @@ GinBufferTrim(GinBuffer *buffer)
 /*
  * GinBufferFree
  *		Release memory associated with the GinBuffer (including TID array).
- *
- * XXX Might be easier if they had a memory context for the buffer.
  */
 static void
 GinBufferFree(GinBuffer *buffer)

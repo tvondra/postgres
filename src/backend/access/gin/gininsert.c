@@ -163,10 +163,10 @@ typedef struct
 	Tuplesortstate *bs_sortstate;
 
 	/*
-	 * The sortstate is used only within a worker for the first merge pass
-	 * that happens in the worker. In principle it doesn't need to be part of
-	 * the build state and we could pass it around directly, but it's more
-	 * convenient this way.
+	 * The sortstate used only within a single worker for the first merge pass
+	 * happenning there. In principle it doesn't need to be part of the build
+	 * state and we could pass it around directly, but it's more convenient
+	 * this way. And it's part of the build state, after all.
 	 */
 	Tuplesortstate *bs_worker_sort;
 } GinBuildState;
@@ -1153,7 +1153,7 @@ typedef struct GinBuffer
 
 	/* array of TID values */
 	int			nitems;
-	SortSupport	ssup;			/* for sorting/comparing keys */
+	SortSupport ssup;			/* for sorting/comparing keys */
 	ItemPointerData *items;
 } GinBuffer;
 
@@ -1326,7 +1326,7 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = (Datum) 0;
 	}
 
-	/* copy the new TIDs into the buffer, combine using merge-sort */
+	/* add the new TIDs into the buffer, combine using merge-sort */
 	{
 		int			nnew;
 		ItemPointer new;
@@ -1577,9 +1577,9 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
  *		First phase of the key merging, happening in the worker.
  *
  * Depending on the number of distinct keys, the TID lists produced by the
- * callback may be very short. But combining many tiny lists is expensive,
- * so we try to do as much as possible in the workers and only then pass the
- * results to the leader.
+ * callback may be very short (due to frequent evictions in the callback).
+ * But combining many tiny lists is expensive, so we try to do as much as
+ * possible in the workers and only then pass the results to the leader.
  *
  * We read the tuples sorted by the key, and merge them into larger lists.
  * At the moment there's no memory limit, so this will just produce one

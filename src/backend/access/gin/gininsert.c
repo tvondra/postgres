@@ -464,6 +464,13 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 }
 
 /*
+ * ginBuildCallbackParallel
+ *		Callback for the parallel index build.
+ *
+ * This is very similar to the serial build callback ginBuildCallback,
+ * except that instead of writing the accumulated entries into the index,
+ * we write them into a tuplesort that is then processed by the leader.
+ *
  * XXX Instead of writing the entries directly into the shared tuplesort,
  * we might write them into a local one, do a sort in the worker, combine
  * the results, and only then write the results into the shared tuplesort.
@@ -506,8 +513,12 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	 *
 	 * XXX It might seem this should set the memory limit to 32MB, same as
 	 * what plan_create_index_workers() uses to calculate the number of
-	 * parallel workers, but that's the limit for tuplesort. So it's better to
-	 * keep using work_mem here.
+	 * parallel workers, but that's the limit for tuplesort. So it seems
+	 * better to keep using work_mem here.
+	 *
+	 * XXX But maybe we should calculate this as a per-worker fraction of
+	 * maintenance_work_mem. It's weird to use work_mem here, in a clearly
+	 * maintenance command.
 	 */
 	if (buildstate->accum.allocatedMemory >= (Size) work_mem * 1024L)
 	{
@@ -522,10 +533,10 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 		while ((list = ginGetBAEntry(&buildstate->accum,
 									 &attnum, &key, &category, &nlist)) != NULL)
 		{
-			/* information about the key */
+			/* information about the index key */
 			Form_pg_attribute attr = TupleDescAttr(tdesc, (attnum - 1));
 
-			/* GIN tuple and tuple length */
+			/* GIN tuple and tuple length that we'll use for tuplesort */
 			GinTuple   *tup;
 			Size		tuplen;
 
@@ -680,7 +691,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 									  maintenance_work_mem, coordinate,
 									  TUPLESORT_NONE);
 
-		/* scan the relation and merge per-worker results */
+		/* scan the relation in parallel and merge per-worker results */
 		reltuples = _gin_parallel_merge(state);
 
 		_gin_end_parallel(state->bs_leader, state);
@@ -1108,18 +1119,18 @@ _gin_parallel_heapscan(GinBuildState *state)
 	return state->bs_reltuples;
 }
 
-static int
-tid_cmp(const void *a, const void *b)
-{
-	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
-}
-
 /*
- * Buffer used to accumulate TIDs from multiple GinTuples for the same key.
+ * Buffer used to accumulate TIDs from multiple GinTuples for the same key
+ * (we read these from the tuplesort, sorted by the key).
  *
  * This is similar to BuildAccumulator in that it's used to collect TIDs
  * in memory before inserting them into the index, but it's much simpler
  * as it only deals with a single index key at a time.
+ *
+ * XXX The TID values in the "items" array are not guaranteed to be sorted,
+ * we have to sort them explicitly. This is due to parallel scans being
+ * synchronized (and thus may wrap around), and when combininng values from
+ * multiple workers.
  */
 typedef struct GinBuffer
 {
@@ -1135,19 +1146,33 @@ typedef struct GinBuffer
 	/* array of TID values */
 	int			nitems;
 	int			maxitems;
-	SortSupport	ssup;
+	SortSupport	ssup;			/* for sorting/comparing keys */
 	ItemPointerData *items;
 } GinBuffer;
 
-/* XXX should do more checks */
+/* basic GinBuffer checks */
 static void
 AssertCheckGinBuffer(GinBuffer *buffer)
 {
 #ifdef USE_ASSERT_CHECKING
 	Assert(buffer->nitems <= buffer->maxitems);
+
+	/* if we have any items, the array must exist */
+	Assert(!((buffer->nitems > 0) && (buffer->items == NULL)));
+
+	/*
+	 * we don't know if the TID array is expected to be sorted or not
+	 *
+	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
+	 */
+	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 #endif
 }
 
+/*
+ * Check that TID array contains valid values, and that it's sorted (if we
+ * expect it to be).
+ */
 static void
 AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
 {
@@ -1164,6 +1189,13 @@ AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
 #endif
 }
 
+/*
+ * Initialize the buffer used to accumulate TID for a single key at a time
+ * (we process the data sorted), so we know when we received all data for
+ * a given key.
+ *
+ * Initializes sort support procedures for all index attributes.
+ */
 static GinBuffer *
 GinBufferInit(Relation index)
 {
@@ -1176,11 +1208,17 @@ GinBufferInit(Relation index)
 
 	buffer->ssup = palloc0(sizeof(SortSupportData) * nKeys);
 
+	/*
+	 * Lookup ordering operator for the index key data type, and initialize
+	 * the sort support function.
+	 */
 	for (i = 0; i < nKeys; i++)
 	{
 		SortSupport			sortKey = &buffer->ssup[i];
 		Form_pg_attribute	att = TupleDescAttr(desc, i);
 		TypeCacheEntry	   *typentry;
+
+		typentry = lookup_type_cache(att->atttypid, TYPECACHE_LT_OPR);
 
 		sortKey->ssup_cxt = CurrentMemoryContext;
 		sortKey->ssup_collation = index->rd_indcollation[i];
@@ -1190,19 +1228,13 @@ GinBufferInit(Relation index)
 
 		Assert(sortKey->ssup_attno != 0);
 
-		/*
-		 * Look for a ordering for the index key data type, and then the
-		 * sort support function.
-		 *
-		 * XXX does this use the right opckeytype/opcintype for GIN?
-		 */
-		typentry = lookup_type_cache(att->atttypid, TYPECACHE_LT_OPR);
 		PrepareSortSupportFromOrderingOp(typentry->lt_opr, sortKey);
 	}
 
 	return buffer;
 }
 
+/* Is the buffer empty, i.e. has no TID values in the array? */
 static bool
 GinBufferIsEmpty(GinBuffer *buffer)
 {
@@ -1210,12 +1242,10 @@ GinBufferIsEmpty(GinBuffer *buffer)
 }
 
 /*
- * Compare if the tuple matches the already accumulated data. Compare
- * scalar fields first, before the actual key.
+ * Compare if the tuple matches the already accumulated data in the GIN
+ * buffer. Compare scalar fields first, before the actual key.
  *
- * XXX The key is compared using memcmp, which means that if a key has
- * multiple binary representations, we may end up treating them as
- * different here. But that's OK, the index will merge them anyway.
+ * Returns true if the key matches, and the TID belonds to the buffer.
  */
 static bool
 GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
@@ -1255,6 +1285,21 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 	return (r == 0);
 }
 
+/*
+ * GinBufferStoreTuple
+ *		Add data (especially TID list) from a GIN tuple to the buffer.
+ *
+ * The buffer is expected to be empty (in which case it's initialized), or
+ * having the same key. The TID values from the tuple are simply appended
+ * to the array, without sorting.
+ *
+ * XXX We expect the tuples to contain sorted TID lists, so maybe we should
+ * check that's true with an assert. And we could also check if the values
+ * are already in sorted order, in which case we can skip the sort later.
+ * But it seems like a waste of time, because it won't be unnecessary after
+ * switching to mergesort in a later patch, and also because it's reasonable
+ * to expect the arrays to overlap.
+ */
 static void
 GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 {
@@ -1304,9 +1349,21 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	memcpy(&buffer->items[buffer->nitems], items, sizeof(ItemPointerData) * tup->nitems);
 	buffer->nitems += tup->nitems;
 
+	/* we simply append the TID values, so don't check sorting */
 	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 }
 
+/* TID comparator for qsort */
+static int
+tid_cmp(const void *a, const void *b)
+{
+	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
+}
+
+/*
+ * GinBufferSortItems
+ *		Sort the TID values stored in the TID buffer.
+ */
 static void
 GinBufferSortItems(GinBuffer *buffer)
 {
@@ -1319,7 +1376,17 @@ GinBufferSortItems(GinBuffer *buffer)
 	AssertCheckItemPointers(buffer->items, buffer->nitems, true);
 }
 
-/* XXX Might be better to have a separate memory context for the buffer. */
+/*
+ * GinBufferReset
+ *		Reset the buffer into a state as if it contains no data.
+ *
+ * XXX Should we do something if the array of TIDs gets too large? It may
+ * grow too much, and we'll not free it until the worker finishes building.
+ * But it's better to not let the array grow arbitrarily large, and enforce
+ * work_mem as memory limit by flushing the buffer into the tuplestore.
+ *
+ * XXX Might be better to have a separate memory context for the buffer.
+ */
 static void
 GinBufferReset(GinBuffer *buffer)
 {
@@ -1342,17 +1409,14 @@ GinBufferReset(GinBuffer *buffer)
 
 	buffer->typlen = 0;
 	buffer->typbyval = 0;
-
-	/*
-	 * XXX Should we do something if the array of TIDs gets too large? It may
-	 * grow too much, and we'll not free it until the worker finishes
-	 * building. But it's better to not let the array grow arbitrarily large,
-	 * and enforce work_mem as memory limit by flushing the buffer into the
-	 * tuplestore.
-	 */
 }
 
 /*
+ * GinBufferCanAddKey
+ *		Check if a given GIN tuple can be added to the current buffer.
+ *
+ * Returns true if the buffer is either empty or for the same index key.
+ *
  * XXX This could / should also enforce a memory limit by checking the size of
  * the TID array, and returning false if it's too large (more thant work_mem,
  * for example).
@@ -1535,7 +1599,6 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, progress,
 									   ginBuildCallbackParallel, state, scan);
 
-	/* insert the last item */
 	/* write remaining accumulated entries */
 	{
 		ItemPointerData *list;

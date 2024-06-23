@@ -13,6 +13,7 @@
 #include "storage/itemptr.h"
 #include "utils/sortsupport.h"
 
+/* XXX do we still need all the fields now that we use SortSupport? */
 typedef struct GinTuple
 {
 	Size		tuplen;			/* length of the whole tuple */

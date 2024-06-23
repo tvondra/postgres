@@ -1162,17 +1162,21 @@ typedef struct GinBuffer
  * expect it to be).
  */
 static void
-AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
+AssertCheckItemPointers(GinBuffer *buffer, bool sorted)
 {
 #ifdef USE_ASSERT_CHECKING
-	for (int i = 0; i < nitems; i++)
+	/* we should not have a buffer with no TIDs to sort */
+	Assert(buffer->items != NULL);
+	Assert(buffer->nitems > 0);
+
+	for (int i = 0; i < buffer->nitems; i++)
 	{
-		Assert(ItemPointerIsValid(&items[i]));
+		Assert(ItemPointerIsValid(&buffer->items[i]));
 
 		if ((i == 0) || !sorted)
 			continue;
 
-		Assert(ItemPointerCompare(&items[i - 1], &items[i]) < 0);
+		Assert(ItemPointerCompare(&buffer->items[i - 1], &buffer->items[i]) < 0);
 	}
 #endif
 }
@@ -1190,7 +1194,7 @@ AssertCheckGinBuffer(GinBuffer *buffer)
 	 *
 	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
 	 */
-	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
+	AssertCheckItemPointers(buffer, false);
 #endif
 }
 
@@ -1295,8 +1299,27 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  *		Add data (especially TID list) from a GIN tuple to the buffer.
  *
  * The buffer is expected to be empty (in which case it's initialized), or
- * having the same key. The TID values from the tuple are simply appended
- * to the array, without sorting.
+ * having the same key. The TID values from the tuple are simply combined
+ * with the stored values using a merge sort.
+ *
+ * The data (for the same key) is expected to be processed sorted by first
+ * TID. But this does not guarantee the lists do not overlap, especially in
+ * the leader, because the workers process interleaving data. But even in
+ * a single worker, lists can overlap - parallel scans require sync-scans,
+ * and if the scan starts somewhere in the table and then wraps around, it
+ * may contain very wide lists (in terms of TID range).
+ *
+ * But the ginMergeItemPointers() is already smart about detecting cases
+ * where it can simply concatenate the lists, and when full mergesort is
+ * needed. And does the right thing.
+ *
+ * By keeping the first TID in the GinTuple and sorting by that, we make
+ * it more likely the lists won't overlap very often.
+ *
+ * XXX How frequent can the overlaps be? If the scan does not wrap around,
+ * there should be no overlapping lists, and thus no mergesort. After a
+ * wraparound, there probably can be many - the one list will be very wide,
+ * with a very low and high TID, and all other lists will overlap with it.
  *
  * XXX We expect the tuples to contain sorted TID lists, so maybe we should
  * check that's true with an assert.
@@ -1327,7 +1350,13 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = (Datum) 0;
 	}
 
-	/* add the new TIDs into the buffer, combine using merge-sort */
+	/*
+	 * add the new TIDs into the buffer, combine using merge-sort
+	 *
+	 * The mergesort is already smart about cases where it can simply
+	 * concatenate the two lists, and when it actually needs to merge the data
+	 * in an expensive way.
+	 */
 	{
 		int			nnew;
 		ItemPointer new;
@@ -1342,33 +1371,9 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 
 		buffer->items = new;
 		buffer->nitems = nnew;
+
+		AssertCheckItemPointers(buffer, true);
 	}
-
-	/* we simply append the TID values, so don't check sorting */
-	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
-}
-
-/* TID comparator for qsort */
-static int
-tid_cmp(const void *a, const void *b)
-{
-	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
-}
-
-/*
- * GinBufferSortItems
- *		Sort the TID values stored in the TID buffer.
- */
-static void
-GinBufferSortItems(GinBuffer *buffer)
-{
-	/* we should not have a buffer with no TIDs to sort */
-	Assert(buffer->items != NULL);
-	Assert(buffer->nitems > 0);
-
-	pg_qsort(buffer->items, buffer->nitems, sizeof(ItemPointerData), tid_cmp);
-
-	AssertCheckItemPointers(buffer->items, buffer->nitems, true);
 }
 
 /*
@@ -1505,7 +1510,7 @@ _gin_parallel_merge(GinBuildState *state)
 			 * the data into the insert, and start a new entry for current
 			 * GinTuple.
 			 */
-			AssertCheckItemPointers(buffer->items, buffer->nitems, true);
+			AssertCheckItemPointers(buffer, true);
 
 			ginEntryInsert(&state->ginstate,
 						   buffer->attnum, buffer->key, buffer->category,
@@ -1515,14 +1520,17 @@ _gin_parallel_merge(GinBuildState *state)
 			GinBufferReset(buffer);
 		}
 
-		/* now remember the new key */
+		/*
+		 * Remember data for the current tuple (either remember the new key,
+		 * or append if to the existing data).
+		 */
 		GinBufferStoreTuple(buffer, tup);
 	}
 
 	/* flush data remaining in the buffer (for the last key) */
 	if (!GinBufferIsEmpty(buffer))
 	{
-		AssertCheckItemPointers(buffer->items, buffer->nitems, true);
+		AssertCheckItemPointers(buffer, true);
 
 		ginEntryInsert(&state->ginstate,
 					   buffer->attnum, buffer->key, buffer->category,
@@ -1625,7 +1633,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			 * the data into the insert, and start a new entry for current
 			 * GinTuple.
 			 */
-			GinBufferSortItems(buffer);
+			AssertCheckItemPointers(buffer, true);
 
 			ntup = _gin_build_tuple(buffer->attnum, buffer->category,
 									buffer->key, buffer->typlen, buffer->typbyval,
@@ -1639,7 +1647,10 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 			GinBufferReset(buffer);
 		}
 
-		/* now remember the new key */
+		/*
+		 * Remember data for the current tuple (either remember the new key,
+		 * or append if to the existing data).
+		 */
 		GinBufferStoreTuple(buffer, tup);
 	}
 
@@ -1649,7 +1660,7 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 		GinTuple   *ntup;
 		Size		ntuplen;
 
-		GinBufferSortItems(buffer);
+		AssertCheckItemPointers(buffer, true);
 
 		ntup = _gin_build_tuple(buffer->attnum, buffer->category,
 								buffer->key, buffer->typlen, buffer->typbyval,
@@ -1954,6 +1965,7 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	tuple->category = category;
 	tuple->keylen = keylen;
 	tuple->nitems = nitems;
+	tuple->first = items[0];
 
 	/* key type info */
 	tuple->typlen = typlen;
@@ -2037,6 +2049,12 @@ _gin_parse_tuple(GinTuple *a, ItemPointerData **items)
  * compared last. The comparisons are done using type-specific sort support
  * functions.
  *
+ * If the key value matches, we compare the first TID value in the TID list,
+ * which means the tuples are merged in an order in which they are most
+ * likely to be simply concatenated. (This "first" TID will also allow us
+ * to determine a point up to which the list is fully determined and can be
+ * written into the index to enforce a memory limit etc.)
+ *
  * XXX We might try using memcmp(), based on the assumption that if we get
  * two keys that are two different representations of a logically equal
  * value, it'll get merged by the index build. But it's not clear that's
@@ -2049,6 +2067,7 @@ _gin_parse_tuple(GinTuple *a, ItemPointerData **items)
 int
 _gin_compare_tuples(GinTuple *a, GinTuple *b, SortSupport ssup)
 {
+	int			r;
 	Datum		keya,
 				keyb;
 
@@ -2070,10 +2089,13 @@ _gin_compare_tuples(GinTuple *a, GinTuple *b, SortSupport ssup)
 		keya = _gin_parse_tuple(a, NULL);
 		keyb = _gin_parse_tuple(b, NULL);
 
-		return ApplySortComparator(keya, false,
-								   keyb, false,
-								   &ssup[a->attrnum - 1]);
+		r = ApplySortComparator(keya, false,
+								keyb, false,
+								&ssup[a->attrnum - 1]);
+
+		/* if the key is the same, consider the first TID in the array */
+		return (r != 0) ? r : ItemPointerCompare(&a->first, &b->first);
 	}
 
-	return 0;
+	return ItemPointerCompare(&a->first, &b->first);
 }

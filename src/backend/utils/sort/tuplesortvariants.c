@@ -616,9 +616,9 @@ tuplesort_begin_index_gin(Relation heapRel,
 #endif
 
 	/*
-	 * Multi-column GIN indexes expand the row into a separate index entry
-	 * for attribute, and that's what we write into the tuplesort. But we
-	 * still need to initialize sortsupport for all the attributes.
+	 * Multi-column GIN indexes expand the row into a separate index entry for
+	 * attribute, and that's what we write into the tuplesort. But we still
+	 * need to initialize sortsupport for all the attributes.
 	 */
 	base->nKeys = IndexRelationGetNumberOfKeyAttributes(indexRel);
 
@@ -629,8 +629,8 @@ tuplesort_begin_index_gin(Relation heapRel,
 	for (i = 0; i < base->nKeys; i++)
 	{
 		SortSupport sortKey = base->sortKeys + i;
-		Form_pg_attribute	att = TupleDescAttr(desc, i);
-		TypeCacheEntry	   *typentry;
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+		TypeCacheEntry *typentry;
 
 		sortKey->ssup_cxt = CurrentMemoryContext;
 		sortKey->ssup_collation = indexRel->rd_indcollation[i];
@@ -641,8 +641,8 @@ tuplesort_begin_index_gin(Relation heapRel,
 		Assert(sortKey->ssup_attno != 0);
 
 		/*
-		 * Look for a ordering for the index key data type, and then the
-		 * sort support function.
+		 * Look for a ordering for the index key data type, and then the sort
+		 * support function.
 		 *
 		 * XXX does this use the right opckeytype/opcintype for GIN?
 		 */

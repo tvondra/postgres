@@ -1146,7 +1146,7 @@ typedef struct GinBuffer
 	/* array of TID values */
 	int			nitems;
 	int			maxitems;
-	SortSupport	ssup;			/* for sorting/comparing keys */
+	SortSupport ssup;			/* for sorting/comparing keys */
 	ItemPointerData *items;
 } GinBuffer;
 
@@ -1214,9 +1214,9 @@ GinBufferInit(Relation index)
 	 */
 	for (i = 0; i < nKeys; i++)
 	{
-		SortSupport			sortKey = &buffer->ssup[i];
-		Form_pg_attribute	att = TupleDescAttr(desc, i);
-		TypeCacheEntry	   *typentry;
+		SortSupport sortKey = &buffer->ssup[i];
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+		TypeCacheEntry *typentry;
 
 		typentry = lookup_type_cache(att->atttypid, TYPECACHE_LT_OPR);
 
@@ -1250,8 +1250,8 @@ GinBufferIsEmpty(GinBuffer *buffer)
 static bool
 GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 {
-	int		r;
-	Datum	tupkey;
+	int			r;
+	Datum		tupkey;
 
 	AssertCheckGinBuffer(buffer);
 

@@ -474,7 +474,7 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
  * many entries with a small number of TIDs, forcing the leader to merge
  * the data, often amounting to ~50% of the serial part. By doing the
  * first sort workers, the leader then could do fewer merges with longer
- * TID lists, which is much cheaprr. Also, the amount of data sent from
+ * TID lists, which is much cheaper. Also, the amount of data sent from
  * workers to the leader woiuld be lower.
  *
  * The disadvantage is increased disk space usage, possibly up to 2x, if

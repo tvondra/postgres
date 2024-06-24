@@ -1150,25 +1150,6 @@ typedef struct GinBuffer
 	ItemPointerData *items;
 } GinBuffer;
 
-/* basic GinBuffer checks */
-static void
-AssertCheckGinBuffer(GinBuffer *buffer)
-{
-#ifdef USE_ASSERT_CHECKING
-	Assert(buffer->nitems <= buffer->maxitems);
-
-	/* if we have any items, the array must exist */
-	Assert(!((buffer->nitems > 0) && (buffer->items == NULL)));
-
-	/*
-	 * we don't know if the TID array is expected to be sorted or not
-	 *
-	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
-	 */
-	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
-#endif
-}
-
 /*
  * Check that TID array contains valid values, and that it's sorted (if we
  * expect it to be).
@@ -1186,6 +1167,25 @@ AssertCheckItemPointers(ItemPointerData *items, int nitems, bool sorted)
 
 		Assert(ItemPointerCompare(&items[i - 1], &items[i]) < 0);
 	}
+#endif
+}
+
+/* basic GinBuffer checks */
+static void
+AssertCheckGinBuffer(GinBuffer *buffer)
+{
+#ifdef USE_ASSERT_CHECKING
+	Assert(buffer->nitems <= buffer->maxitems);
+
+	/* if we have any items, the array must exist */
+	Assert(!((buffer->nitems > 0) && (buffer->items == NULL)));
+
+	/*
+	 * we don't know if the TID array is expected to be sorted or not
+	 *
+	 * XXX maybe we can pass that to AssertCheckGinBuffer() call?
+	 */
+	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 #endif
 }
 

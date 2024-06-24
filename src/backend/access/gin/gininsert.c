@@ -1192,6 +1192,7 @@ AssertCheckGinBuffer(GinBuffer *buffer)
 	 */
 	AssertCheckItemPointers(buffer->items, buffer->nitems, false);
 #endif
+}
 
 /*
  * Initialize the buffer used to accumulate TID for a single key at a time

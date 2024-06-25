@@ -18,6 +18,7 @@
 #include "access/gist_private.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "commands/progress.h"
 #include "common/pg_prng.h"
 #include "storage/indexfsm.h"
 #include "utils/float.h"
@@ -1004,6 +1005,27 @@ gistproperty(Oid index_oid, int attno,
 	*isnull = false;
 
 	return true;
+}
+
+/*
+ *	gistbuildphasename() -- Return name of index build phase.
+ */
+char *
+gistbuildphasename(int64 phasenum)
+{
+	switch (phasenum)
+	{
+		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
+			return "initializing";
+		case PROGRESS_GIST_PHASE_INDEXBUILD_TABLESCAN:
+			return "scanning table";
+		case PROGRESS_GIST_PHASE_PERFORMSORT:
+			return "sorting tuples";
+		case PROGRESS_GIST_PHASE_LEAF_LOAD:
+			return "loading tuples in tree";
+		default:
+			return NULL;
+	}
 }
 
 /*

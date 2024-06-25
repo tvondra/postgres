@@ -93,7 +93,7 @@ gisthandler(PG_FUNCTION_ARGS)
 	amroutine->amcostestimate = gistcostestimate;
 	amroutine->amoptions = gistoptions;
 	amroutine->amproperty = gistproperty;
-	amroutine->ambuildphasename = NULL;
+	amroutine->ambuildphasename = gistbuildphasename;
 	amroutine->amvalidate = gistvalidate;
 	amroutine->amadjustmembers = gistadjustmembers;
 	amroutine->ambeginscan = gistbeginscan;

@@ -40,6 +40,7 @@
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
@@ -414,6 +415,10 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	{
 		SortCoordinate coordinate = NULL;
 
+		/* Report table scan phase started */
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIST_PHASE_INDEXBUILD_TABLESCAN);
+
 		/*
 		 * Attempt to launch parallel worker scan when required
 		 *
@@ -476,9 +481,33 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 			reltuples = _gist_parallel_heapscan(&buildstate);
 
 		/*
+		 * Set the progress target for the next phase.  Reset the block number
+		 * values set by table_index_build_scan
+		 */
+		{
+			const int	progress_index[] = {
+				PROGRESS_CREATEIDX_TUPLES_TOTAL,
+				PROGRESS_SCAN_BLOCKS_TOTAL,
+				PROGRESS_SCAN_BLOCKS_DONE
+			};
+			const int64 progress_vals[] = {
+				buildstate.indtuples,
+				0, 0
+			};
+
+			pgstat_progress_update_multi_param(3, progress_index, progress_vals);
+		}
+
+		/*
 		 * Perform the sort and build index pages.
 		 */
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIST_PHASE_PERFORMSORT);
+
 		tuplesort_performsort(buildstate.sortstate);
+
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIST_PHASE_LEAF_LOAD);
 
 		gist_indexsortbuild(&buildstate);
 
@@ -647,6 +676,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	IndexTuple	itup;
 	GistSortedBuildLevelState *levelstate;
 	BulkWriteBuffer rootbuf;
+	int64		tuples_done = 0;
 
 	/* Reserve block 0 for the root page */
 	state->pages_allocated = 1;
@@ -666,6 +696,10 @@ gist_indexsortbuild(GISTBuildState *state)
 	{
 		gist_indexsortbuild_levelstate_add(state, levelstate, itup);
 		MemoryContextReset(state->giststate->tempCxt);
+
+		/* Report progress */
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
+									 ++tuples_done);
 	}
 
 	/*

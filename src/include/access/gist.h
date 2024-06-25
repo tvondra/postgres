@@ -51,6 +51,12 @@
 #define F_HAS_GARBAGE		(1 << 4)	/* some tuples on the page are dead,
 										 * but not deleted yet */
 
+
+/* PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE is 1 (see progress.h) */
+#define PROGRESS_GIST_PHASE_INDEXBUILD_TABLESCAN		2
+#define PROGRESS_GIST_PHASE_PERFORMSORT					3
+#define PROGRESS_GIST_PHASE_LEAF_LOAD					4
+
 /*
  * NSN (node sequence number) is a special-purpose LSN which is stored on each
  * index page in GISTPageOpaqueData and updated only during page splits.  By

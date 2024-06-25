@@ -2544,7 +2544,6 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-	MemoryContext oldcxt = CurrentMemoryContext;
 
 	/* Initialize local tuplesort coordination state */
 	coordinate = palloc0(sizeof(SortCoordinateData));
@@ -2552,9 +2551,7 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	coordinate->nParticipants = -1;
 	coordinate->sharedsort = sharedsort;
 
-	/*
-	 * Sort all data, build the index from bottom up.
-	 */
+	/* Begin "partial" tuplesort */
 	state->sortstate = tuplesort_begin_index_gist(heap,
 												  index,
 												  maintenance_work_mem,
@@ -2578,12 +2575,6 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	/* Execute this worker's part of the sort */
 	tuplesort_performsort(state->sortstate);
 
-	/* okay, all heap tuples are indexed */
-	MemoryContextSwitchTo(oldcxt);
-	MemoryContextDelete(state->giststate->tempCxt);
-
-	/* FIXME Do we need to do something else with active buffering? */
-
 	/*
 	 * Done.  Record ambuild statistics.
 	 */
@@ -2596,6 +2587,7 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	/* Notify leader */
 	ConditionVariableSignal(&gistshared->workersdonecv);
 
+	/* We can end tuplesort immediately */
 	tuplesort_end(state->sortstate);
 }
 

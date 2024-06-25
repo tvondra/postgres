@@ -2478,6 +2478,7 @@ _gist_begin_parallel_sorted(GISTBuildState *buildstate,
 	if (leaderparticipates)
 		gistleader->nparticipants++;
 	gistleader->gistshared = gistshared;
+	gistleader->sharedsort = sharedsort;
 	gistleader->snapshot = snapshot;
 	gistleader->walusage = walusage;
 	gistleader->bufferusage = bufferusage;
@@ -2606,6 +2607,7 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
 	GISTShared *gistshared;
+	Sharedsort *sharedsort;
 	GISTBuildState buildstate;
 	Relation	heapRel;
 	Relation	indexRel;
@@ -2670,6 +2672,10 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 	buildstate.indtuples = 0;
 	buildstate.indtuplesSize = 0;
 
+	/* Look up shared state private to tuplesort.c */
+	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
+	tuplesort_attach_shared(sharedsort, seg);
+
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
@@ -2680,8 +2686,8 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	workmem = maintenance_work_mem / gistshared->nparticipants;
 
-	_gist_parallel_scan_and_build(&buildstate, gistshared,
-								  heapRel, indexRel, workmem, false);
+	_gist_parallel_scan_and_sort(&buildstate, gistshared, sharedsort,
+								 heapRel, indexRel, workmem, false);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

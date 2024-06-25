@@ -148,6 +148,9 @@ static const struct
 		"_brin_parallel_build_main", _brin_parallel_build_main
 	},
 	{
+		"_gist_parallel_sorted_build_main", _gist_parallel_sorted_build_main
+	},
+	{
 		"_gist_parallel_build_main", _gist_parallel_build_main
 	},
 	{

@@ -572,6 +572,8 @@ extern void gistRelocateBuildBuffersOnSplit(GISTBuildBuffers *gfbb,
 											List *splitinfo);
 extern void gistUnloadNodeBuffers(GISTBuildBuffers *gfbb);
 
+extern void _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc);
+
 extern void _gist_parallel_build_main(dsm_segment *seg, shm_toc *toc);
 
 #endif							/* GIST_PRIVATE_H */

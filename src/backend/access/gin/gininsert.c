@@ -1207,8 +1207,7 @@ AssertCheckItemPointers(GinBuffer *buffer, bool sorted)
 {
 #ifdef USE_ASSERT_CHECKING
 	/* we should not have a buffer with no TIDs to sort */
-	Assert(buffer->items != NULL);
-	Assert(buffer->nitems > 0);
+	Assert(!(sorted && (buffer->nitems == 0)));
 
 	for (int i = 0; i < buffer->nitems; i++)
 	{

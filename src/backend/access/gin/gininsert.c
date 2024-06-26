@@ -88,6 +88,9 @@ typedef struct GinShared
 	double		reltuples;
 	double		indtuples;
 
+	/* index entries from workers */
+	int64		numentries;
+
 	/*
 	 * ParallelTableScanDescData data follows. Can't directly embed here, as
 	 * implementations of the parallel table scan desc interface might need
@@ -140,6 +143,7 @@ typedef struct
 {
 	GinState	ginstate;
 	double		indtuples;
+	double		numentries;
 	GinStatsData buildStats;
 	MemoryContext tmpCtx;
 	MemoryContext funcCtx;
@@ -149,6 +153,7 @@ typedef struct
 	/* FIXME likely duplicate with indtuples */
 	double		bs_numtuples;
 	double		bs_reltuples;
+	int64		bs_numentries;
 
 	/*
 	 * bs_leader is only present when a parallel index build is performed, and
@@ -617,6 +622,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	initGinState(&buildstate.ginstate, index);
 	buildstate.indtuples = 0;
+	buildstate.numentries = 0;
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
 	/*
@@ -626,6 +632,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 */
 	buildstate.bs_numtuples = 0;
 	buildstate.bs_reltuples = 0;
+	buildstate.bs_numentries = 0;
 	buildstate.bs_leader = NULL;
 	memset(&buildstate.tid, 0, sizeof(ItemPointerData));
 
@@ -1022,6 +1029,7 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 	ginshared->nparticipantsdone = 0;
 	ginshared->reltuples = 0.0;
 	ginshared->indtuples = 0.0;
+	ginshared->numentries = 0.0;
 
 	table_parallelscan_initialize(heap,
 								  ParallelTableScanFromGinShared(ginshared),
@@ -1145,6 +1153,7 @@ _gin_parallel_heapscan(GinBuildState *state)
 			/* copy the data into leader state */
 			state->bs_reltuples = ginshared->reltuples;
 			state->bs_numtuples = ginshared->indtuples;
+			state->bs_numentries = ginshared->numentries;
 
 			SpinLockRelease(&ginshared->mutex);
 			break;
@@ -1660,7 +1669,7 @@ _gin_parallel_merge(GinBuildState *state)
 			PROGRESS_SCAN_BLOCKS_DONE
 		};
 		const int64 progress_vals[] = {
-			state->indtuples,
+			state->bs_numentries,
 			0, 0
 		};
 
@@ -1702,6 +1711,10 @@ _gin_parallel_merge(GinBuildState *state)
 	{
 		CHECK_FOR_INTERRUPTS();
 
+		/* Report progress */
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
+									 ++tuples_done);
+
 		/*
 		 * If the buffer can accept the new GIN tuple, just store it there and
 		 * we're done. If it's a different key (or maybe too much data) flush
@@ -1722,10 +1735,6 @@ _gin_parallel_merge(GinBuildState *state)
 
 			/* discard the existing data */
 			GinBufferReset(buffer);
-
-			/* Report progress */
-			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
-										 ++tuples_done);
 		}
 
 		/*
@@ -1754,10 +1763,6 @@ _gin_parallel_merge(GinBuildState *state)
 
 			/* truncate the data we've just discarded */
 			GinBufferTrim(buffer);
-
-			/* Report progress */
-			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
-										 ++tuples_done);
 		}
 
 		/*
@@ -1913,6 +1918,8 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort,
 
 			/* discard the existing data */
 			GinBufferReset(buffer);
+
+			state->bs_numentries++;
 		}
 
 		/*
@@ -1948,6 +1955,8 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort,
 
 			/* truncate the data we've just discarded */
 			GinBufferTrim(buffer);
+
+			state->bs_numentries++;
 		}
 
 		/*
@@ -1975,6 +1984,8 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort,
 
 		/* discard the existing data */
 		GinBufferReset(buffer);
+
+		state->bs_numentries++;
 	}
 
 	/* relase all the memory */
@@ -2064,6 +2075,7 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	ginshared->nparticipantsdone++;
 	ginshared->reltuples += state->bs_reltuples;
 	ginshared->indtuples += state->bs_numtuples;
+	ginshared->numentries += state->bs_numentries;
 	SpinLockRelease(&ginshared->mutex);
 
 	/* Notify leader */
@@ -2126,6 +2138,8 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	/* initialize the GIN build state */
 	initGinState(&buildstate.ginstate, indexRel);
 	buildstate.indtuples = 0;
+	buildstate.numentries = 0;
+	buildstate.bs_numentries = 0;
 	/* XXX Shouldn't this initialize the other fields too, like ginbuild()? */
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 	memset(&buildstate.tid, 0, sizeof(ItemPointerData));

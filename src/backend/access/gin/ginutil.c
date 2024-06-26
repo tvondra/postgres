@@ -20,6 +20,7 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
@@ -71,7 +72,7 @@ ginhandler(PG_FUNCTION_ARGS)
 	amroutine->amcostestimate = gincostestimate;
 	amroutine->amoptions = ginoptions;
 	amroutine->amproperty = NULL;
-	amroutine->ambuildphasename = NULL;
+	amroutine->ambuildphasename = ginbuildphasename;
 	amroutine->amvalidate = ginvalidate;
 	amroutine->amadjustmembers = ginadjustmembers;
 	amroutine->ambeginscan = ginbeginscan;
@@ -611,6 +612,31 @@ ginoptions(Datum reloptions, bool validate)
 									  RELOPT_KIND_GIN,
 									  sizeof(GinOptions),
 									  tab, lengthof(tab));
+}
+
+/*
+ *	ginbuildphasename() -- Return name of index build phase.
+ */
+char *
+ginbuildphasename(int64 phasenum)
+{
+	switch (phasenum)
+	{
+		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
+			return "initializing";
+		case PROGRESS_GIN_PHASE_INDEXBUILD_TABLESCAN:
+			return "scanning table";
+		case PROGRESS_GIN_PHASE_PERFORMSORT_1:
+			return "sorting tuples";
+		case PROGRESS_GIN_PHASE_MERGE:
+			return "merging tuples";
+		case PROGRESS_GIN_PHASE_PERFORMSORT_2:
+			return "sorting merged tuples";
+		case PROGRESS_GIN_PHASE_LEAF_LOAD:
+			return "loading tuples in tree";
+		default:
+			return NULL;
+	}
 }
 
 /*

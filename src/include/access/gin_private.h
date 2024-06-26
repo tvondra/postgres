@@ -91,6 +91,7 @@ typedef struct GinState
 
 /* ginutil.c */
 extern bytea *ginoptions(Datum reloptions, bool validate);
+extern char *ginbuildphasename(int64 phasenum);
 extern void initGinState(GinState *state, Relation index);
 extern Buffer GinNewBuffer(Relation index);
 extern void GinInitBuffer(Buffer b, uint32 f);
@@ -494,5 +495,16 @@ ginCompareItemPointers(ItemPointer a, ItemPointer b)
 }
 
 extern int	ginTraverseLock(Buffer buffer, bool searchMode);
+
+/*
+ * Constant definition for progress reporting.  Phase numbers must match
+ * btbuildphasename.
+ */
+/* PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE is 1 (see progress.h) */
+#define PROGRESS_GIN_PHASE_INDEXBUILD_TABLESCAN		2
+#define PROGRESS_GIN_PHASE_PERFORMSORT_1				3
+#define PROGRESS_GIN_PHASE_MERGE						4
+#define PROGRESS_GIN_PHASE_PERFORMSORT_2				5
+#define PROGRESS_GIN_PHASE_LEAF_LOAD					6
 
 #endif							/* GIN_PRIVATE_H */

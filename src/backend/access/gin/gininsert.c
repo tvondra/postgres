@@ -20,6 +20,7 @@
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
@@ -666,6 +667,10 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	buildstate.accum.ginstate = &buildstate.ginstate;
 	ginInitBA(&buildstate.accum);
+
+	/* Report table scan phase started */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+								 PROGRESS_GIN_PHASE_INDEXBUILD_TABLESCAN);
 
 	/*
 	 * Attempt to launch parallel worker scan when required
@@ -1640,12 +1645,38 @@ _gin_parallel_merge(GinBuildState *state)
 	Size		tuplen;
 	double		reltuples = 0;
 	GinBuffer  *buffer;
+	int64		tuples_done = 0;
 
 	/* wait for workers to scan table and produce partial results */
 	reltuples = _gin_parallel_heapscan(state);
 
+	/*
+	 * Set the progress target for the next phase.  Reset the block number
+	 * values set by table_index_build_scan
+	 */
+	{
+		const int	progress_index[] = {
+			PROGRESS_CREATEIDX_TUPLES_TOTAL,
+			PROGRESS_SCAN_BLOCKS_TOTAL,
+			PROGRESS_SCAN_BLOCKS_DONE
+		};
+		const int64 progress_vals[] = {
+			state->indtuples,
+			0, 0
+		};
+
+		pgstat_progress_update_multi_param(3, progress_index, progress_vals);
+	}
+
+	/* Execute the sort */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+								 PROGRESS_GIN_PHASE_PERFORMSORT_2);
+
 	/* do the actual sort in the leader */
 	tuplesort_performsort(state->bs_sortstate);
+
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+								 PROGRESS_GIN_PHASE_LEAF_LOAD);
 
 	/*
 	 * Initialize buffer to combine entries for the same key.
@@ -1692,6 +1723,10 @@ _gin_parallel_merge(GinBuildState *state)
 
 			/* discard the existing data */
 			GinBufferReset(buffer);
+
+			/* Report progress */
+			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
+										 ++tuples_done);
 		}
 
 		/*
@@ -1720,6 +1755,10 @@ _gin_parallel_merge(GinBuildState *state)
 
 			/* truncate the data we've just discarded */
 			GinBufferTrim(buffer);
+
+			/* Report progress */
+			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE,
+										 ++tuples_done);
 		}
 
 		/*
@@ -1800,7 +1839,8 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
  * do a very limited number of mergesorts, which is good.
  */
 static void
-_gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
+_gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort,
+						 bool progress)
 {
 	GinTuple   *tup;
 	Size		tuplen;
@@ -1816,6 +1856,11 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	 */
 	buffer = GinBufferInit(state->ginstate.index);
 
+	/* Execute the first in-worker sort (in leader only) */
+	if (progress)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIN_PHASE_PERFORMSORT_1);
+
 	/* sort the raw per-worker data */
 	tuplesort_performsort(state->bs_worker_sort);
 
@@ -1827,6 +1872,11 @@ _gin_process_worker_data(GinBuildState *state, Tuplesortstate *worker_sort)
 	/* reset before the second phase */
 	state->buildStats.sizeCompressed = 0;
 	state->buildStats.sizeRaw = 0;
+
+	/* Do the partial merge of data for this worker. */
+	if (progress)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIN_PHASE_MERGE);
 
 	/*
 	 * Read the GIN tuples from the shared tuplesort, sorted by the key, and
@@ -1996,7 +2046,12 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	 * the callback, and combine them into much larger chunks and place that
 	 * into the shared tuplestore for leader to process.
 	 */
-	_gin_process_worker_data(state, state->bs_worker_sort);
+	_gin_process_worker_data(state, state->bs_worker_sort, progress);
+
+	/* Execute the first in-worker sort (in leader only) */
+	if (progress)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
+									 PROGRESS_GIN_PHASE_PERFORMSORT_2);
 
 	/* sort the GIN tuples built by this worker */
 	tuplesort_performsort(state->bs_sortstate);

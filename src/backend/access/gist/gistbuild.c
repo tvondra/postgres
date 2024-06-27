@@ -185,7 +185,6 @@ typedef struct GISTLeader
 	 * snapshot used by the scan iff an MVCC snapshot is required.
 	 */
 	GISTShared *gistshared;
-	Sharedsort *sharedsort;
 	Snapshot	snapshot;
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
@@ -316,7 +315,6 @@ static void _gist_parallel_scan_and_build(GISTBuildState *buildstate,
 										  int workmem, bool progress);
 static void _gist_parallel_scan_and_sort(GISTBuildState *state,
 										 GISTShared *gistshared,
-										 Sharedsort *sharedsort,
 										 Relation heap, Relation index,
 										 int workmem, bool progress);
 
@@ -413,7 +411,28 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	if (buildstate.buildMode == GIST_SORTED_BUILD)
 	{
-		SortCoordinate coordinate = NULL;
+		/*
+		 * Initialize an empty index and insert all tuples, possibly using
+		 * buffers on intermediate levels.
+		 */
+		Buffer		buffer;
+		Page		page;
+
+		/* initialize the root page */
+		buffer = gistNewBuffer(index, heap);
+		Assert(BufferGetBlockNumber(buffer) == GIST_ROOT_BLKNO);
+		page = BufferGetPage(buffer);
+
+		START_CRIT_SECTION();
+
+		GISTInitBuffer(buffer, F_LEAF);
+
+		MarkBufferDirty(buffer);
+		PageSetLSN(page, GistBuildLSN);
+
+		UnlockReleaseBuffer(buffer);
+
+		END_CRIT_SECTION();
 
 		/* Report table scan phase started */
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
@@ -431,19 +450,6 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 			_gist_begin_parallel_sorted(&buildstate, heap,
 										index, indexInfo->ii_Concurrent,
 										indexInfo->ii_ParallelWorkers);
-
-		/*
-		 * If parallel build requested and at least one worker process was
-		 * successfully launched, set up coordination state
-		 */
-		if (buildstate.gist_leader)
-		{
-			coordinate = (SortCoordinate) palloc0(sizeof(SortCoordinateData));
-			coordinate->isWorker = false;
-			coordinate->nParticipants =
-				buildstate.gist_leader->nparticipants;
-			coordinate->sharedsort = buildstate.gist_leader->sharedsort;
-		}
 
 		/*
 		 * Begin serial/leader tuplesort.
@@ -469,7 +475,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		buildstate.sortstate = tuplesort_begin_index_gist(heap,
 														  index,
 														  maintenance_work_mem,
-														  coordinate,
+														  NULL,
 														  TUPLESORT_NONE);
 
 		/* Fill spool using either serial or parallel heap scan */
@@ -504,14 +510,11 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_PERFORMSORT);
 
-		tuplesort_performsort(buildstate.sortstate);
-
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_LEAF_LOAD);
 
-		gist_indexsortbuild(&buildstate);
-
-		tuplesort_end(buildstate.sortstate);
+		if (false)
+			gist_indexsortbuild(&buildstate);
 
 		if (buildstate.gist_leader)
 			_gist_end_parallel(buildstate.gist_leader, &buildstate);
@@ -2512,7 +2515,7 @@ _gist_begin_parallel_sorted(GISTBuildState *buildstate,
 	if (leaderparticipates)
 		gistleader->nparticipants++;
 	gistleader->gistshared = gistshared;
-	gistleader->sharedsort = sharedsort;
+	// gistleader->sharedsort = sharedsort;
 	gistleader->snapshot = snapshot;
 	gistleader->walusage = walusage;
 	gistleader->bufferusage = bufferusage;
@@ -2559,7 +2562,6 @@ _gist_leader_participate_as_worker_sorted(GISTBuildState *buildstate,
 	/* Perform work common to all participants */
 	_gist_parallel_scan_and_sort(buildstate,
 								 gistleader->gistshared,
-								 gistleader->sharedsort,
 								 heap, index, workmem, true);
 }
 
@@ -2570,26 +2572,20 @@ _gist_leader_participate_as_worker_sorted(GISTBuildState *buildstate,
  */
 static void
 _gist_parallel_scan_and_sort(GISTBuildState *state,
-							 GISTShared *gistshared, Sharedsort *sharedsort,
+							 GISTShared *gistshared,
 							 Relation heap, Relation index,
 							 int workmem, bool progress)
 {
-	SortCoordinate coordinate;
 	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-
-	/* Initialize local tuplesort coordination state */
-	coordinate = palloc0(sizeof(SortCoordinateData));
-	coordinate->isWorker = true;
-	coordinate->nParticipants = -1;
-	coordinate->sharedsort = sharedsort;
+	IndexTuple	itup;
 
 	/* Begin "partial" tuplesort */
 	state->sortstate = tuplesort_begin_index_gist(heap,
 												  index,
 												  maintenance_work_mem,
-												  coordinate,
+												  NULL,
 												  TUPLESORT_NONE);
 
 	/* Join parallel scan */
@@ -2608,6 +2604,30 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 
 	/* Execute this worker's part of the sort */
 	tuplesort_performsort(state->sortstate);
+
+	/*
+	 * Fill index pages with tuples in the sorted order.
+	 */
+	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
+	{
+		MemoryContext oldCtx;
+
+		/* Update tuple count and total size. */
+		state->indtuples += 1;
+		state->indtuplesSize += IndexTupleSize(itup);
+
+		oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
+
+		/*
+		 * There's no buffers (yet). Since we already have the index relation
+		 * locked, we call gistdoinsert directly.
+		 */
+		gistdoinsert(index, itup, state->freespace,
+					 state->giststate, state->heaprel, true, true);
+
+		MemoryContextSwitchTo(oldCtx);
+		MemoryContextReset(state->giststate->tempCxt);
+	}
 
 	/*
 	 * Done.  Record ambuild statistics.
@@ -2712,7 +2732,7 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	workmem = maintenance_work_mem / gistshared->nparticipants;
 
-	_gist_parallel_scan_and_sort(&buildstate, gistshared, sharedsort,
+	_gist_parallel_scan_and_sort(&buildstate, gistshared,
 								 heapRel, indexRel, workmem, false);
 
 	/* Report WAL/buffer usage during parallel execution */

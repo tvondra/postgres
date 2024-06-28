@@ -513,8 +513,12 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_LEAF_LOAD);
 
-		if (false)
+		if (!buildstate.gist_leader)
+		{
+			tuplesort_performsort(buildstate.sortstate);
 			gist_indexsortbuild(&buildstate);
+			tuplesort_end(buildstate.sortstate);
+		}
 
 		if (buildstate.gist_leader)
 			_gist_end_parallel(buildstate.gist_leader, &buildstate);
@@ -2581,12 +2585,15 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	IndexInfo  *indexInfo;
 	IndexTuple	itup;
 
+	int64		skiptuples;
+	int64		indextuple;
+
 	/* Begin "partial" tuplesort */
 	state->sortstate = tuplesort_begin_index_gist(heap,
 												  index,
 												  maintenance_work_mem,
 												  NULL,
-												  TUPLESORT_NONE);
+												  TUPLESORT_RANDOMACCESS);
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
@@ -2605,15 +2612,50 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 	/* Execute this worker's part of the sort */
 	tuplesort_performsort(state->sortstate);
 
+	/* how many tuples to skip on the first pass? */
+	skiptuples = state->indtuples * (ParallelWorkerNumber + 1) / gistshared->nparticipants;
+
+elog(WARNING, "skiptuples %ld %ld %d %d", state->indtuples, skiptuples, ParallelWorkerNumber, gistshared->nparticipants);
 	/*
 	 * Fill index pages with tuples in the sorted order.
 	 */
+	indextuple = 0;
 	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
 	{
 		MemoryContext oldCtx;
 
+		indextuple++;
+		if (indextuple <= skiptuples)
+			continue;
+
 		/* Update tuple count and total size. */
-		state->indtuples += 1;
+		state->indtuplesSize += IndexTupleSize(itup);
+
+		oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
+
+		/*
+		 * There's no buffers (yet). Since we already have the index relation
+		 * locked, we call gistdoinsert directly.
+		 */
+		gistdoinsert(index, itup, state->freespace,
+					 state->giststate, state->heaprel, true, true);
+
+		MemoryContextSwitchTo(oldCtx);
+		MemoryContextReset(state->giststate->tempCxt);
+	}
+
+	tuplesort_rescan(state->sortstate);
+
+	indextuple = 0;
+	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
+	{
+		MemoryContext oldCtx;
+
+		indextuple++;
+		if (indextuple > skiptuples)
+			break;
+
+		/* Update tuple count and total size. */
 		state->indtuplesSize += IndexTupleSize(itup);
 
 		oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);

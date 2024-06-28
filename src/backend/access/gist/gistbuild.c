@@ -2815,7 +2815,7 @@ _gist_partition_sorted_data(GISTBuildState *state)
 	int64		worker_tuples = (state->indtuples / shared->nparticipants) + 1;
 	int64		remaining = worker_tuples;
 
-	elog(WARNING, "worker_tuples = %ld", worker_tuples);
+	elog(LOG, "partitioning data, worker_tuples = %ld", worker_tuples);
 
 	/* Allocate BufFiles, one for each participants. */
 	files = palloc0_array(BufFile *, shared->nparticipants);
@@ -2826,7 +2826,7 @@ _gist_partition_sorted_data(GISTBuildState *state)
 		sprintf(fname, "worker-%d", i);
 
 		files[i] = BufFileCreateFileSet(&shared->fileset.fs, fname);
-		elog(WARNING, "opened %d fname = '%s'", i, fname);
+		elog(LOG, "opened %d fname = '%s'", i, fname);
 	}
 
 	fileidx = 0;

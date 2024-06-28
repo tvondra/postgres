@@ -46,6 +46,7 @@
 #include "nodes/execnodes.h"
 #include "pgstat.h"
 #include "optimizer/optimizer.h"
+#include "storage/barrier.h"
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 #include "tcop/tcopprot.h"		/* pgrminclude ignore */
@@ -70,6 +71,12 @@
  * buffering mode.
  */
 #define BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET 4096
+
+/* The phases for sorted builds, used by build_barrier. */
+#define GIST_BUILD_INIT					0
+#define GIST_BUILD_SCAN					1
+#define GIST_BUILD_PARTITION			2
+
 
 /*
  * Strategy used to build the index. It can change between the
@@ -142,6 +149,9 @@ typedef struct GISTShared
 	double		reltuples;
 	double		indtuples;
 
+	Barrier		build_barrier;
+	SharedFileSet fileset;		/* space for shared temporary files */
+
 	/*
 	 * ParallelTableScanDescData data follows. Can't directly embed here, as
 	 * implementations of the parallel table scan desc interface might need
@@ -185,6 +195,7 @@ typedef struct GISTLeader
 	 * snapshot used by the scan iff an MVCC snapshot is required.
 	 */
 	GISTShared *gistshared;
+	Sharedsort *sharedsort;
 	Snapshot	snapshot;
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
@@ -315,8 +326,14 @@ static void _gist_parallel_scan_and_build(GISTBuildState *buildstate,
 										  int workmem, bool progress);
 static void _gist_parallel_scan_and_sort(GISTBuildState *state,
 										 GISTShared *gistshared,
+										 Sharedsort *sharedsort,
 										 Relation heap, Relation index,
 										 int workmem, bool progress);
+static void _gist_partition_sorted_data(GISTBuildState *state);
+static void _gist_parallel_insert(GISTBuildState *state,
+								  GISTShared *gistshared,
+								  Relation heap, Relation index,
+								  bool progress);
 
 /*
  * Main entry point to GiST index build.
@@ -411,6 +428,8 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	if (buildstate.buildMode == GIST_SORTED_BUILD)
 	{
+		SortCoordinate coordinate = NULL;
+
 		/*
 		 * Initialize an empty index and insert all tuples, possibly using
 		 * buffers on intermediate levels.
@@ -452,6 +471,19 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 										indexInfo->ii_ParallelWorkers);
 
 		/*
+		 * If parallel build requested and at least one worker process was
+		 * successfully launched, set up coordination state
+		 */
+		if (buildstate.gist_leader)
+		{
+			coordinate = (SortCoordinate) palloc0(sizeof(SortCoordinateData));
+			coordinate->isWorker = false;
+			coordinate->nParticipants =
+				buildstate.gist_leader->nparticipants;
+			coordinate->sharedsort = buildstate.gist_leader->sharedsort;
+		}
+
+		/*
 		 * Begin serial/leader tuplesort.
 		 *
 		 * In cases where parallelism is involved, the leader receives the same
@@ -475,7 +507,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		buildstate.sortstate = tuplesort_begin_index_gist(heap,
 														  index,
 														  maintenance_work_mem,
-														  NULL,
+														  coordinate,
 														  TUPLESORT_NONE);
 
 		/* Fill spool using either serial or parallel heap scan */
@@ -510,15 +542,20 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_PERFORMSORT);
 
+		tuplesort_performsort(buildstate.sortstate);
+
+		/* partition the sorted data */
+		_gist_partition_sorted_data(&buildstate);
+
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_LEAF_LOAD);
 
 		if (!buildstate.gist_leader)
 		{
-			tuplesort_performsort(buildstate.sortstate);
 			gist_indexsortbuild(&buildstate);
-			tuplesort_end(buildstate.sortstate);
 		}
+
+		tuplesort_end(buildstate.sortstate);
 
 		if (buildstate.gist_leader)
 			_gist_end_parallel(buildstate.gist_leader, &buildstate);
@@ -2475,6 +2512,12 @@ _gist_begin_parallel_sorted(GISTBuildState *buildstate,
 	gistshared->reltuples = 0.0;
 	gistshared->indtuples = 0.0;
 
+	/* used to wait for data to insert */
+	BarrierInit(&gistshared->build_barrier, nparticipants);
+
+	/* Set up the space we'll use for shared temporary files. */
+	SharedFileSetInit(&gistshared->fileset, pcxt->seg);
+
 	table_parallelscan_initialize(heap,
 								  ParallelTableScanFromGistShared(gistshared),
 								  snapshot);
@@ -2519,7 +2562,7 @@ _gist_begin_parallel_sorted(GISTBuildState *buildstate,
 	if (leaderparticipates)
 		gistleader->nparticipants++;
 	gistleader->gistshared = gistshared;
-	// gistleader->sharedsort = sharedsort;
+	gistleader->sharedsort = sharedsort;
 	gistleader->snapshot = snapshot;
 	gistleader->walusage = walusage;
 	gistleader->bufferusage = bufferusage;
@@ -2544,6 +2587,11 @@ _gist_begin_parallel_sorted(GISTBuildState *buildstate,
 	 * sure that the failure-to-start case will not hang forever.
 	 */
 	WaitForParallelWorkersToAttach(pcxt);
+
+	/* wait for workers to read the data and add them to tuplesort */
+	if (BarrierArriveAndWait(&gistshared->build_barrier,
+							 WAIT_EVENT_GIST_BUILD_SCAN))
+		elog(LOG, "data scanned, leader continues");
 }
 
 /*
@@ -2566,7 +2614,9 @@ _gist_leader_participate_as_worker_sorted(GISTBuildState *buildstate,
 	/* Perform work common to all participants */
 	_gist_parallel_scan_and_sort(buildstate,
 								 gistleader->gistshared,
+								 gistleader->sharedsort,
 								 heap, index, workmem, true);
+								 
 }
 
 /*
@@ -2576,24 +2626,27 @@ _gist_leader_participate_as_worker_sorted(GISTBuildState *buildstate,
  */
 static void
 _gist_parallel_scan_and_sort(GISTBuildState *state,
-							 GISTShared *gistshared,
+							 GISTShared *gistshared, Sharedsort *sharedsort,
 							 Relation heap, Relation index,
 							 int workmem, bool progress)
 {
+	SortCoordinate coordinate;
 	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-	IndexTuple	itup;
 
-	int64		skiptuples;
-	int64		indextuple;
+	/* Initialize local tuplesort coordination state */
+	coordinate = palloc0(sizeof(SortCoordinateData));
+	coordinate->isWorker = true;
+	coordinate->nParticipants = -1;
+	coordinate->sharedsort = sharedsort;
 
 	/* Begin "partial" tuplesort */
 	state->sortstate = tuplesort_begin_index_gist(heap,
 												  index,
 												  maintenance_work_mem,
-												  NULL,
-												  TUPLESORT_RANDOMACCESS);
+												  coordinate,
+												  TUPLESORT_NONE);
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);
@@ -2611,65 +2664,6 @@ _gist_parallel_scan_and_sort(GISTBuildState *state,
 
 	/* Execute this worker's part of the sort */
 	tuplesort_performsort(state->sortstate);
-
-	/* how many tuples to skip on the first pass? */
-	skiptuples = state->indtuples * (ParallelWorkerNumber + 1) / gistshared->nparticipants;
-
-elog(WARNING, "skiptuples %ld %ld %d %d", state->indtuples, skiptuples, ParallelWorkerNumber, gistshared->nparticipants);
-	/*
-	 * Fill index pages with tuples in the sorted order.
-	 */
-	indextuple = 0;
-	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
-	{
-		MemoryContext oldCtx;
-
-		indextuple++;
-		if (indextuple <= skiptuples)
-			continue;
-
-		/* Update tuple count and total size. */
-		state->indtuplesSize += IndexTupleSize(itup);
-
-		oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
-
-		/*
-		 * There's no buffers (yet). Since we already have the index relation
-		 * locked, we call gistdoinsert directly.
-		 */
-		gistdoinsert(index, itup, state->freespace,
-					 state->giststate, state->heaprel, true, true);
-
-		MemoryContextSwitchTo(oldCtx);
-		MemoryContextReset(state->giststate->tempCxt);
-	}
-
-	tuplesort_rescan(state->sortstate);
-
-	indextuple = 0;
-	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
-	{
-		MemoryContext oldCtx;
-
-		indextuple++;
-		if (indextuple > skiptuples)
-			break;
-
-		/* Update tuple count and total size. */
-		state->indtuplesSize += IndexTupleSize(itup);
-
-		oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
-
-		/*
-		 * There's no buffers (yet). Since we already have the index relation
-		 * locked, we call gistdoinsert directly.
-		 */
-		gistdoinsert(index, itup, state->freespace,
-					 state->giststate, state->heaprel, true, true);
-
-		MemoryContextSwitchTo(oldCtx);
-		MemoryContextReset(state->giststate->tempCxt);
-	}
 
 	/*
 	 * Done.  Record ambuild statistics.
@@ -2764,6 +2758,9 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
 	tuplesort_attach_shared(sharedsort, seg);
 
+	/* attach to the fileset too */
+	SharedFileSetAttach(&gistshared->fileset, seg);
+
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
@@ -2774,8 +2771,22 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	workmem = maintenance_work_mem / gistshared->nparticipants;
 
-	_gist_parallel_scan_and_sort(&buildstate, gistshared,
+	_gist_parallel_scan_and_sort(&buildstate, gistshared, sharedsort,
 								 heapRel, indexRel, workmem, false);
+
+	/* wait for workers to read the data and add them to tuplesort */
+	if (BarrierArriveAndWait(&gistshared->build_barrier,
+							 WAIT_EVENT_GIST_BUILD_SCAN))
+		elog(LOG, "data scanned workers, leader continues");
+
+	/* leader sorts and partitions the data */
+
+	/* wait for the leader to partition the data */
+	if (BarrierArriveAndWait(&gistshared->build_barrier,
+							 WAIT_EVENT_GIST_BUILD_PARTITION))
+		elog(LOG, "data partitioned by leader, worker continues");
+
+	_gist_parallel_insert(&buildstate, gistshared, heapRel, indexRel, false);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);
@@ -2785,4 +2796,102 @@ _gist_parallel_sorted_build_main(dsm_segment *seg, shm_toc *toc)
 
 	index_close(indexRel, indexLockmode);
 	table_close(heapRel, heapLockmode);
+}
+
+static void
+_gist_partition_sorted_data(GISTBuildState *state)
+{
+	IndexTuple	itup;
+	GISTShared *shared = state->gist_leader->gistshared;
+	BufFile	  **files;
+	int			fileidx;
+
+	/* how many tuples per workers */
+	int64		worker_tuples = (state->indtuples / shared->nparticipants) + 1;
+	int64		remaining = worker_tuples;
+
+	elog(WARNING, "worker_tuples = %ld", worker_tuples);
+
+	/* Allocate BufFiles, one for each participants. */
+	files = palloc0_array(BufFile *, shared->nparticipants);
+
+	for (int i = 0; i < shared->nparticipants; i++)
+	{
+		char	fname[128];
+		sprintf(fname, "worker-%d", i);
+
+		files[i] = BufFileCreateFileSet(&shared->fileset.fs, fname);
+		elog(WARNING, "opened %d fname = '%s'", i, fname);
+	}
+
+	fileidx = 0;
+	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
+	{
+		int64			len = IndexTupleSize(itup);
+
+		BufFileWrite(files[fileidx], &len, sizeof(len));
+		BufFileWrite(files[fileidx], itup, len);
+
+		remaining -= 1;
+
+		/* move to the next file */
+		if (remaining == 0)
+		{
+			remaining = worker_tuples;
+			fileidx++;
+		}
+	}
+
+	/* close the files */
+	for (int i = 0; i < shared->nparticipants; i++)
+	{
+		BufFileClose(files[i]);
+	}
+
+	/* wait for the leader to partition the data */
+	if (BarrierArriveAndWait(&shared->build_barrier,
+							 WAIT_EVENT_GIST_BUILD_PARTITION))
+		elog(LOG, "data partitioned, leader continues");
+}
+
+static void
+_gist_parallel_insert(GISTBuildState *state, GISTShared *gistshared,
+					  Relation heap, Relation index, bool progress)
+{
+	BufFile *file;
+	char	fname[128];
+	char   *buff;
+	IndexTuple	itup;
+
+	sprintf(fname, "worker-%d", ParallelWorkerNumber);
+
+	file = BufFileOpenFileSet(&gistshared->fileset.fs, fname, O_RDONLY, false);
+
+	/* FIXME hardcoded 1MB, needs to be dynamic */
+	buff = palloc(1024L * 1024L);
+	itup = (IndexTuple) buff;
+
+	while (true)
+	{
+		int64		len;
+		size_t		ret;
+
+		ret = BufFileRead(file, &len, sizeof(len));
+
+		if (ret == 0)
+			break;
+		if (ret != sizeof(len))
+			elog(ERROR, "incorrect data %zu %ld", ret, sizeof(len));
+
+		BufFileReadExact(file, itup, len);
+
+		/*
+		* There's no buffers (yet). Since we already have the index relation
+		* locked, we call gistdoinsert directly.
+		*/
+		gistdoinsert(index, itup, state->freespace,
+					 state->giststate, state->heaprel, true, true);
+	}
+
+	BufFileClose(file);
 }

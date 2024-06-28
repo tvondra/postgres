@@ -544,15 +544,20 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		tuplesort_performsort(buildstate.sortstate);
 
-		/* partition the sorted data */
-		_gist_partition_sorted_data(&buildstate);
-
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 									 PROGRESS_GIST_PHASE_LEAF_LOAD);
 
 		if (!buildstate.gist_leader)
 		{
 			gist_indexsortbuild(&buildstate);
+		}
+		else
+		{
+			/* partition the sorted data */
+			_gist_partition_sorted_data(&buildstate);
+
+			_gist_parallel_insert(&buildstate, buildstate.gist_leader->gistshared,
+								  heap, index, true);
 		}
 
 		tuplesort_end(buildstate.sortstate);
@@ -2862,14 +2867,17 @@ _gist_parallel_insert(GISTBuildState *state, GISTShared *gistshared,
 	char	fname[128];
 	char   *buff;
 	IndexTuple	itup;
+	int64	ntuples = 0;
 
-	sprintf(fname, "worker-%d", ParallelWorkerNumber);
+	sprintf(fname, "worker-%d", ParallelWorkerNumber + 1);
 
 	file = BufFileOpenFileSet(&gistshared->fileset.fs, fname, O_RDONLY, false);
 
 	/* FIXME hardcoded 1MB, needs to be dynamic */
 	buff = palloc(1024L * 1024L);
 	itup = (IndexTuple) buff;
+
+	elog(LOG, "starting to insert tuples");
 
 	while (true)
 	{
@@ -2891,7 +2899,14 @@ _gist_parallel_insert(GISTBuildState *state, GISTShared *gistshared,
 		*/
 		gistdoinsert(index, itup, state->freespace,
 					 state->giststate, state->heaprel, true, true);
+
+		ntuples++;
+
+		if (ntuples % 100000 == 0)
+			elog(LOG, "inserted %ld tuples", ntuples);
 	}
 
 	BufFileClose(file);
+
+	elog(LOG, "inserted %ld tuples", ntuples);
 }

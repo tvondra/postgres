@@ -1555,7 +1555,8 @@ GinBufferMergeTuple(GinBuffer *buffer, GinTuple *tup)
 	 * when merging non-overlapping lists, e.g. in each parallel worker.
 	 */
 	if ((buffer->nitems > 0) &&
-		(ItemPointerCompare(&buffer->items[buffer->nitems - 1], &tup->first) == 0))
+		(ItemPointerCompare(&buffer->items[buffer->nitems - 1],
+							GinTupleGetFirst(tup)) == 0))
 		buffer->nfrozen = buffer->nitems;
 
 	/*
@@ -1572,7 +1573,8 @@ GinBufferMergeTuple(GinBuffer *buffer, GinTuple *tup)
 	for (int i = buffer->nfrozen; i < buffer->nitems; i++)
 	{
 		/* Is the TID after the first TID of the new tuple? Can't freeze. */
-		if (ItemPointerCompare(&buffer->items[i], &tup->first) > 0)
+		if (ItemPointerCompare(&buffer->items[i],
+							   GinTupleGetFirst(tup)) > 0)
 			break;
 
 		buffer->nfrozen++;
@@ -2181,7 +2183,7 @@ _gin_build_tuple(GinBuildState *state,
 	 * alignment, to allow direct access to compressed segments (those require
 	 * SHORTALIGN, but we do MAXALING anyway).
 	 */
-	tuplen = MAXALIGN(offsetof(GinTuple, data) + keylen) + compresslen;
+	tuplen = SHORTALIGN(offsetof(GinTuple, data) + keylen) + compresslen;
 
 	/*
 	 * Allocate space for the whole GIN tuple.
@@ -2196,7 +2198,6 @@ _gin_build_tuple(GinBuildState *state,
 	tuple->category = category;
 	tuple->keylen = keylen;
 	tuple->nitems = nitems;
-	tuple->first = items[0];
 
 	/* key type info */
 	tuple->typlen = typlen;
@@ -2227,7 +2228,7 @@ _gin_build_tuple(GinBuildState *state,
 	}
 
 	/* finally, copy the TIDs into the array */
-	ptr = (char *) tuple + MAXALIGN(offsetof(GinTuple, data) + keylen);
+	ptr = (char *) tuple + SHORTALIGN(offsetof(GinTuple, data) + keylen);
 
 	/* copy in the compressed data, and free the segments */
 	dlist_foreach_modify(iter, &segments)
@@ -2297,8 +2298,8 @@ _gin_parse_tuple_items(GinTuple *a)
 	int			ndecoded;
 	ItemPointer items;
 
-	len = a->tuplen - MAXALIGN(offsetof(GinTuple, data) + a->keylen);
-	ptr = (char *) a + MAXALIGN(offsetof(GinTuple, data) + a->keylen);
+	len = a->tuplen - SHORTALIGN(offsetof(GinTuple, data) + a->keylen);
+	ptr = (char *) a + SHORTALIGN(offsetof(GinTuple, data) + a->keylen);
 
 	items = ginPostingListDecodeAllSegments((GinPostingList *) ptr, len, &ndecoded);
 
@@ -2359,8 +2360,10 @@ _gin_compare_tuples(GinTuple *a, GinTuple *b, SortSupport ssup)
 								&ssup[a->attrnum - 1]);
 
 		/* if the key is the same, consider the first TID in the array */
-		return (r != 0) ? r : ItemPointerCompare(&a->first, &b->first);
+		return (r != 0) ? r : ItemPointerCompare(GinTupleGetFirst(a),
+												 GinTupleGetFirst(b));
 	}
 
-	return ItemPointerCompare(&a->first, &b->first);
+	return ItemPointerCompare(GinTupleGetFirst(a),
+							  GinTupleGetFirst(b));
 }

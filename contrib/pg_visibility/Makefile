@@ -7,7 +7,7 @@ OBJS = \
 
 EXTENSION = pg_visibility
 DATA = pg_visibility--1.1.sql pg_visibility--1.1--1.2.sql \
-	pg_visibility--1.0--1.1.sql
+	pg_visibility--1.2--1.3.sql pg_visibility--1.0--1.1.sql
 PGFILEDESC = "pg_visibility - page visibility information"
 
 REGRESS = pg_visibility

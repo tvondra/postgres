@@ -16,12 +16,14 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_type.h"
 #include "catalog/storage_xlog.h"
+#include "common/pg_prng.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
+#include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -41,8 +43,24 @@ typedef struct corrupt_items
 	ItemPointer tids;
 } corrupt_items;
 
+typedef struct block_info
+{
+	BlockNumber blkno;
+	XLogRecPtr	lsn;
+	bool		all_visible;
+	bool		all_frozen;
+} block_info;
+
+typedef struct block_sample
+{
+	int	next;
+	int	count;
+	block_info blocks[FLEXIBLE_ARRAY_MEMBER];
+} block_sample;
+
 PG_FUNCTION_INFO_V1(pg_visibility_map);
 PG_FUNCTION_INFO_V1(pg_visibility_map_rel);
+PG_FUNCTION_INFO_V1(pg_visibility_map_sample);
 PG_FUNCTION_INFO_V1(pg_visibility);
 PG_FUNCTION_INFO_V1(pg_visibility_rel);
 PG_FUNCTION_INFO_V1(pg_visibility_map_summary);
@@ -51,7 +69,11 @@ PG_FUNCTION_INFO_V1(pg_check_visible);
 PG_FUNCTION_INFO_V1(pg_truncate_visibility_map);
 
 static TupleDesc pg_visibility_tupdesc(bool include_blkno, bool include_pd);
+static TupleDesc pg_visibility_sample_tupdesc(void);
 static vbits *collect_visibility_data(Oid relid, bool include_pd);
+static block_sample *sample_visibility_data(Oid relid, bool include_pd, int nblocks,
+											bool use_all_frozen, bool all_frozen,
+											bool use_all_visible, bool all_visible);
 static corrupt_items *collect_corrupt_items(Oid relid, bool all_visible,
 											bool all_frozen);
 static void record_corrupt_item(corrupt_items *items, ItemPointer tid);
@@ -194,6 +216,83 @@ pg_visibility_map_rel(PG_FUNCTION_ARGS)
 		values[1] = BoolGetDatum((info->bits[info->next] & (1 << 0)) != 0);
 		values[2] = BoolGetDatum((info->bits[info->next] & (1 << 1)) != 0);
 		info->next++;
+
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+
+	SRF_RETURN_DONE(funcctx);
+}
+
+/*
+ * Visibility map information for every block in a relation.
+ */
+Datum
+pg_visibility_map_sample(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	block_sample	   *sample;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		Oid			relid = PG_GETARG_OID(0);
+
+		/* number of blocks to sample */
+		int			nblocks = PG_GETARG_INT32(1);
+
+		bool		use_all_frozen,
+					use_all_visible,
+					all_frozen,
+					all_visible;
+
+		MemoryContext oldcontext;
+
+		/* no filtering by default */
+		use_all_visible = false;
+		use_all_frozen = false;
+
+		/* maybe filter by all_visible */
+		if (!PG_ARGISNULL(2))
+		{
+			use_all_visible = true;
+			all_visible = PG_GETARG_BOOL(2);
+		}
+
+		/* maybe filter by all_frozen */
+		if (!PG_ARGISNULL(3))
+		{
+			use_all_frozen = true;
+			all_frozen = PG_GETARG_BOOL(3);
+		}
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		funcctx->tuple_desc = pg_visibility_sample_tupdesc();
+
+		/* collect_visibility_data will verify the relkind */
+		funcctx->user_fctx = sample_visibility_data(relid, false, nblocks,
+													use_all_visible, all_visible,
+													use_all_frozen, all_frozen);
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	sample = (block_sample *) funcctx->user_fctx;
+
+	if (sample->next < sample->count)
+	{
+		Datum		values[4];
+		bool		nulls[4] = {0};
+		HeapTuple	tuple;
+		block_info *block;
+
+		block = &sample->blocks[sample->next];
+		values[0] = Int64GetDatum(block->blkno);
+		values[1] = BoolGetDatum(block->all_visible);
+		values[2] = BoolGetDatum(block->all_frozen);
+		values[3] = LSNGetDatum(block->lsn);
+		sample->next++;
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -464,6 +563,27 @@ pg_visibility_tupdesc(bool include_blkno, bool include_pd)
 }
 
 /*
+ * Helper function to construct whichever TupleDesc we need for a particular
+ * call.
+ */
+static TupleDesc
+pg_visibility_sample_tupdesc(void)
+{
+	TupleDesc	tupdesc;
+	AttrNumber	maxattr = 4;
+	AttrNumber	a = 0;
+
+	tupdesc = CreateTemplateTupleDesc(maxattr);
+	TupleDescInitEntry(tupdesc, ++a, "blkno", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++a, "all_visible", BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++a, "all_frozen", BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++a, "lsn", PG_LSNOID, -1, 0);
+	Assert(a == maxattr);
+
+	return BlessTupleDesc(tupdesc);
+}
+
+/*
  * Collect visibility data about a relation.
  *
  * Checks relkind of relid and will throw an error if the relation does not
@@ -531,6 +651,146 @@ collect_visibility_data(Oid relid, bool include_pd)
 	relation_close(rel, AccessShareLock);
 
 	return info;
+}
+
+static block_sample *
+sample_visibility_data(Oid relid, bool include_pd, int nblocks_sample,
+					   bool use_all_visible, bool all_visible,
+					   bool use_all_frozen, bool all_frozen)
+{
+	Relation	rel;
+	BlockNumber nblocks;
+	block_info *sample;
+	block_sample *result;
+	int			nsampled;
+	double		samplefreq = 1.0;
+	BlockNumber blkno;
+	Buffer		vmbuffer = InvalidBuffer;
+
+	rel = relation_open(relid, AccessShareLock);
+
+	/* Only some relkinds have a visibility map */
+	check_relation_relkind(rel);
+
+	nblocks = RelationGetNumberOfBlocks(rel);
+
+	sample = palloc0(sizeof(block_info) * 2 * nblocks_sample);
+	nsampled = 0;
+
+	for (blkno = 0; blkno < nblocks; ++blkno)
+	{
+		int32		mapbits;
+
+		/* target block */
+		block_info *block = &sample[nsampled];
+
+		block->all_visible = false;
+		block->all_frozen = false;
+
+		/* Make sure we are interruptible. */
+		CHECK_FOR_INTERRUPTS();
+
+		/* Get map info. */
+		mapbits = (int32) visibilitymap_get_status(rel, blkno, &vmbuffer);
+
+		/* not all visible, skip if requested sample for all-visible */
+		if ((mapbits & VISIBILITYMAP_ALL_VISIBLE) != 0)
+			block->all_visible = true;
+
+		/* frozen, skip if requested sample for not-frozen */
+		if ((mapbits & VISIBILITYMAP_ALL_FROZEN) != 0)
+			block->all_frozen = true;
+
+		if (use_all_visible && (block->all_visible != all_visible))
+			continue;
+
+		if (use_all_frozen && (block->all_frozen != all_frozen))
+			continue;
+
+		/* shall we sample this block? */
+		if (pg_prng_double(&pg_global_prng_state) >= samplefreq)
+			continue;
+
+		/* add the block to the sample */
+		block->blkno = blkno;
+		nsampled++;
+
+		/*
+		 * if the sample buffer if full, cut it in half, randomly
+		 *
+		 * XXX: repeat until we actually reduce the size
+		 */
+		while (nsampled == 2 * nblocks_sample)
+		{
+			int n = 0;
+
+			/* sample everything with 50% chance */
+			for (int i = 0; i < nsampled; i++)
+			{
+				if (pg_prng_double(&pg_global_prng_state) < 0.5)
+					continue;
+
+				sample[n++] = sample[i];
+			}
+
+			nsampled = n;
+
+			/* also cut the sampling frequency in half, but only once */
+			if (nsampled != 2 * nblocks_sample)
+				samplefreq /= 2;
+		}
+	}
+
+	/* Clean up. */
+	if (vmbuffer != InvalidBuffer)
+		ReleaseBuffer(vmbuffer);
+	relation_close(rel, AccessShareLock);
+
+	/* final sample reduction, if needed */
+	while (nsampled > nblocks_sample)
+	{
+		int n = 0;
+		double freq = (1.0 * nblocks_sample) / nsampled;
+
+		/* sample everything with 50% chance */
+		for (int i = 0; i < nsampled; i++)
+		{
+			if (pg_prng_double(&pg_global_prng_state) > freq)
+				continue;
+
+			sample[n++] = sample[i];
+		}
+
+		nsampled = n;
+	}
+
+	/*
+	 * Page-level data requires reading every block, so do that only once we
+	 * have the final sample. Use a buffer access strategy, too, to prevent
+	 * cache-trashing.
+	 */
+	for (int i = 0; i < nsampled; i++)
+	{
+		Buffer		buffer;
+		Page		page;
+		BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
+
+		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, sample[i].blkno, RBM_NORMAL,
+									bstrategy);
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+		page = BufferGetPage(buffer);
+		sample[i].lsn = PageGetLSN(page);
+
+		UnlockReleaseBuffer(buffer);
+	}
+
+	result = palloc0(offsetof(block_sample, blocks) + sizeof(block_info) * nsampled);
+
+	result->count = nsampled;
+	memcpy(result->blocks, sample, sizeof(block_info) * nsampled);
+
+	return result;
 }
 
 /*

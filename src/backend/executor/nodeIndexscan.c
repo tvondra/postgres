@@ -1775,7 +1775,8 @@ ExecPrefetchIndexScan(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
-	/* XXX This should probably prefetch only a limited number of tuples for
+	/*
+	 * XXX This should probably prefetch only a limited number of tuples for
 	 * each key, not all of them - the index can easily have millions of them
 	 * for some keys. And prefetching more of those items would be subject
 	 * to the "regular" index prefetching, if ever implemented.

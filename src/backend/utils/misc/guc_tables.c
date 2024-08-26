@@ -886,7 +886,7 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_nestloop_prefetch,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{

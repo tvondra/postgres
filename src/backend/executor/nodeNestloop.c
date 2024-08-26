@@ -176,15 +176,13 @@ ExecNestLoop(PlanState *pstate)
 							Assert(IsA(nlp->paramval, Var));
 							Assert(nlp->paramval->varno == OUTER_VAR);
 							Assert(nlp->paramval->varattno > 0);
-							prm->value = slot_getattr(outerTupleSlot,
+							prm->value = slot_getattr(node->nl_PrefetchSlots[node->nl_PrefetchUsed],
 													  nlp->paramval->varattno,
 													  &(prm->isnull));
 							/* Flag parameter value as changed */
 							innerPlan->chgParam = bms_add_member(innerPlan->chgParam,
 																 paramno);
 						}
-
-						Assert(node->nl_PrefetchSlots[node->nl_PrefetchUsed]->tts_nvalid > 0);
 
 						/*
 						 * now prefetch the inner plan
@@ -210,7 +208,6 @@ ExecNestLoop(PlanState *pstate)
 
 				/* get the next slot from the queue */
 				outerTupleSlot = node->nl_PrefetchSlots[node->nl_PrefetchNext++];
-				Assert(outerTupleSlot->tts_nvalid > 0);
 			}
 
 			ENL1_printf("saving new outer tuple information");
@@ -518,4 +515,9 @@ ExecReScanNestLoop(NestLoopState *node)
 
 	node->nl_NeedNewOuter = true;
 	node->nl_MatchedOuter = false;
+
+	/* reset the prefetch batch too */
+	node->nl_PrefetchNext = 0;
+	node->nl_PrefetchUsed = 0;
+	node->nl_PrefetchDone = false;
 }

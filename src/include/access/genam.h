@@ -188,6 +188,7 @@ extern bool index_getnext_batch_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
+extern void index_getnext_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

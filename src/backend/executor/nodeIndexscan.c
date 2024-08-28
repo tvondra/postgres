@@ -188,7 +188,10 @@ new_batch:
 
 	/* batch is empty, try reading the next batch of tuples */
 	if (index_getnext_batch(scandesc, direction) != NULL)
+	{
+		index_getnext_batch_prefetch(scandesc, direction);
 		goto new_batch;
+	}
 
 	return NULL;
 }

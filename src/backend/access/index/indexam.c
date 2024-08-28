@@ -25,7 +25,9 @@
  *		index_parallelrescan  - (re)start a parallel scan of an index
  *		index_beginscan_parallel - join parallel index scan
  *		index_getnext_tid	- get the next TID from a scan
- *		index_getnext_tid_batch	- get the next batch of TIDs from a scan
+ *		index_getnext_batch	- get the next batch of TIDs from a scan
+ *		index_getnext_batch_tid	- get the next TIDs from a batch
+ *		index_getnext_batch_slot	- get the next tuple from a batch
  *		index_fetch_heap		- get the scan's next heap tuple
  *		index_getnext_slot	- get the next tuple from a scan
  *		index_getbitmap - get all tuples from a scan
@@ -616,7 +618,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 }
 
 /* ----------------
- * index_getnext_tid_batch - get the next batch of TIDs from a scan
+ * index_getnext_batch - get the next batch of TIDs from a scan
  *
  * The result is an array of TIDs satisfying the scan keys,
  * or NULL if no more matching tuples exist. The number of
@@ -632,7 +634,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * ----------------
  */
 ItemPointer
-index_getnext_tid_batch(IndexScanDesc scan, ScanDirection direction)
+index_getnext_batch(IndexScanDesc scan, ScanDirection direction)
 {
 	bool		found;
 
@@ -676,6 +678,66 @@ index_getnext_tid_batch(IndexScanDesc scan, ScanDirection direction)
 
 	/* Return the batch of TIDs we found. */
 	return scan->xs_heaptids;
+}
+
+/* ----------------
+ * index_getnext_batch_tid - get the next TID from the current batch
+ *
+ * XXX This only sets xs_heaptid.
+ *
+ * XXX This does not set xs_itup, which might be an issue for the IOS.
+ * Maybe we should include that in the batch too.
+ * ----------------
+ */
+ItemPointer
+index_getnext_batch_tid(IndexScanDesc scan, ScanDirection direction)
+{
+	/* no batch, or no more TIDs in the batch */
+	if (scan->xs_curridx >= scan->xs_nheaptids)
+		return NULL;
+
+	/* next TID from the batch */
+	scan->xs_heaptid = scan->xs_heaptids[scan->xs_curridx++];
+
+	return &scan->xs_heaptid;
+}
+
+/* ----------------
+ *		index_getnext_batch_slot - get the next tuple from a scan batch
+ *
+ * XXX See index_getnext_slot comments.
+ * ----------------
+ */
+bool
+index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+{
+	for (;;)
+	{
+		if (!scan->xs_heap_continue)
+		{
+			ItemPointer tid;
+
+			/* Time to fetch the next TID from the index */
+			tid = index_getnext_batch_tid(scan, direction);
+
+			/* If we're out of index entries, we're done */
+			if (tid == NULL)
+				break;
+
+			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
+		}
+
+		/*
+		 * Fetch the next (or only) visible heap tuple for this index entry.
+		 * If we don't find anything, loop around and grab the next TID from
+		 * the index.
+		 */
+		Assert(ItemPointerIsValid(&scan->xs_heaptid));
+		if (index_fetch_heap(scan, slot))
+			return true;
+	}
+
+	return false;
 }
 
 /* ----------------

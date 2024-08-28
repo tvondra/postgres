@@ -1528,6 +1528,366 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
+ *	_bt_first_batch() -- Find the first batch in a scan.
+ *
+ * A batch variant of _bt_first(). Most of the comments for that function
+ * apply here too.
+ *
+ * XXX This only populates the batch, it does not set any other fields like
+ * scan->xs_heaptid or scan->xs_itup. That happens in getnext_tid() calls.
+ *
+ * XXX I'm not sure it works to mix batched and non-batches calls, e.g. get
+ * a TID and then a batch of TIDs. It probably should work as long as we
+ * update itemIndex correctly, but we need to be careful about killed items
+ * (right now the two places use different ways to communicate which items
+ * should be killed).
+ */
+bool
+_bt_first_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* start a new batch */
+	index_batch_reset(scan, dir);
+
+	/*
+	 * Reset the batch size to the initial size.
+	 *
+	 * FIXME should be done in indexam.c probably, at the beginning of each
+	 * index rescan?
+	 */
+	scan->xs_batch.currSize = scan->xs_batch.initSize;
+
+	/* we haven't visited any leaf pages yet, so proceed to reading one */
+	if (_bt_first(scan, dir))
+	{
+		/* range of the leaf to copy into the batch */
+		int			start,
+					end;
+
+		/* determine which part of the leaf page to extract */
+		if (ScanDirectionIsForward(dir))
+		{
+			start = so->currPos.firstItem;
+			end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
+			so->currPos.itemIndex = (end + 1);
+		}
+		else
+		{
+			end = so->currPos.lastItem;
+			start = Max(end - (scan->xs_batch.currSize - 1),
+						so->currPos.firstItem);
+			so->currPos.itemIndex = (start - 1);
+		}
+
+		/*
+		 * We're reading the first batch, and there should always be at least
+		 * one item (otherwise _bt_first would return false). So we should
+		 * never get into situation with empty start/end range. In the worst
+		 * case, there is just a single item, in which case (start == end).
+		 */
+		Assert(start <= end);
+
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
+
+		/* The range of items should fit into the current batch size. */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
+
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
+
+		/*
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
+		 */
+		while (start <= end)
+		{
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
+
+			if (scan->xs_want_itup)
+				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+			/* try to add it to batch, if there's space */
+			if (!index_batch_add(scan, currItem->heapTid, itup))
+				break;
+
+			start++;
+		}
+
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
+		if (ScanDirectionIsForward(dir))
+			scan->xs_batch.currIndex = -1;
+		else
+			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
+
+		/* shouldn't be possible to end here with an empty batch */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ *	_bt_next_batch() -- Get the next batch of items in a scan.
+ *
+ * A batch variant of _bt_next(). Most of the comments for that function
+ * apply here too.
+ *
+ * We should only get here only when the current batch has no more items
+ * in the given direction. We don't get here with empty batches, that's
+ * handled by _bt_fist_batch().
+ *
+ * XXX See also the comments at _bt_first_batch() about returning a single
+ * batch for the page, etc.
+ *
+ * FIXME There's a lot of redundant (almost the same) code here - handling
+ * the current and new leaf page is very similar, and it's also similar to
+ * _bt_first_batch(). We should try to reduce this a bit.
+ */
+bool
+_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	int			start,
+				end;
+
+	/* should be valid items (with respect to the leaf page) */
+	Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+	Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+	Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
+
+	/*
+	 * Try to increase the size of the batch. Intentionally done before trying
+	 * to read items from the current page, so that the increased batch
+	 * applies to that too.
+	 *
+	 * FIXME Should be done in indexam.c probably? FIXME Maybe it should grow
+	 * faster? This is what bitmap scans do.
+	 */
+	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
+								  scan->xs_batch.maxSize);
+
+	/*
+	 * Check if we still have some items on the current leaf page. If yes,
+	 * load them into a batch and return.
+	 *
+	 * XXX try combining that with the next block, the inner while loop is
+	 * exactly the same.
+	 */
+	if (ScanDirectionIsForward(dir))
+	{
+		start = scan->xs_batch.lastIndex + 1;
+		end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
+		so->currPos.itemIndex = (end + 1);
+	}
+	else
+	{
+		end = scan->xs_batch.firstIndex - 1;
+		start = Max(end - (scan->xs_batch.currSize - 1),
+					so->currPos.firstItem);
+		so->currPos.itemIndex = (start - 1);
+	}
+
+	/*
+	 * reset the batch before loading new data
+	 *
+	 * XXX needs to happen after we calculate the start/end above, as it
+	 * resets some of the fields needed by the calculation.
+	 */
+	index_batch_reset(scan, dir);
+
+	/*
+	 * We have more items on the current leaf page.
+	 */
+	if (start <= end)
+	{
+		/* update the "window" the batch represents */
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
+
+		/* should fit into the current batch */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
+
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
+
+		/*
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
+		 */
+		while (start <= end)
+		{
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
+
+			if (scan->xs_want_itup)
+				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+			/* try to add it to batch, if there's space */
+			if (!index_batch_add(scan, currItem->heapTid, itup))
+				break;
+
+			start++;
+		}
+
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
+		if (ScanDirectionIsForward(dir))
+			scan->xs_batch.currIndex = -1;
+		else
+			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
+
+		/* shouldn't be possible to end here with an empty batch */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		return true;
+	}
+
+	/*
+	 * We've consumed all items from the current leaf page, so try reading the
+	 * next one, and process it.
+	 */
+	if (_bt_next(scan, dir))
+	{
+		/*
+		 * Check if we still have some items on the current leaf page. If yes,
+		 * load them into a batch and return.
+		 *
+		 * XXX try combining that with the next block, the inner while loop is
+		 * exactly the same.
+		 */
+		if (ScanDirectionIsForward(dir))
+		{
+			start = so->currPos.firstItem;
+			end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
+			so->currPos.itemIndex = (end + 1);
+		}
+		else
+		{
+			end = so->currPos.lastItem;
+			start = Max(end - (scan->xs_batch.currSize - 1),
+						so->currPos.firstItem);
+			so->currPos.itemIndex = (start - 1);
+		}
+
+		/* update the "window" the batch represents */
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
+
+		/* should fit into the current batch */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
+
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
+
+		/*
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
+		 */
+		while (start <= end)
+		{
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
+
+			if (scan->xs_want_itup)
+				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+			/* try to add it to batch, if there's space */
+			if (!index_batch_add(scan, currItem->heapTid, itup))
+				break;
+
+			start++;
+		}
+
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
+		if (ScanDirectionIsForward(dir))
+			scan->xs_batch.currIndex = -1;
+		else
+			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
+
+		/* shouldn't be possible to end here with an empty batch */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ *	_bt_kill_batch() -- remember the items-to-be-killed from the current batch
+ *
+ * We simply translate the bitmap into the "regular" killedItems array, and let
+ * that to drive which items are killed.
+ */
+void
+_bt_kill_batch(IndexScanDesc scan)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
+	{
+		/* Skip batch items not marked as killed. */
+		if (!scan->xs_batch.killedItems[i])
+			continue;
+
+		/*
+		 * Yes, remember it for later. (We'll deal with all such tuples at
+		 * once right before leaving the index page.)  The test for numKilled
+		 * overrun is not just paranoia: if the caller reverses direction in
+		 * the indexscan then the same item might get entered multiple times.
+		 * It's not worth trying to optimize that, so we don't detect it, but
+		 * instead just forget any excess entries.
+		 */
+		if (so->killedItems == NULL)
+			so->killedItems = (int *)
+				palloc(MaxTIDsPerBTreePage * sizeof(int));
+		if (so->numKilled < MaxTIDsPerBTreePage)
+			so->killedItems[so->numKilled++] = (scan->xs_batch.firstIndex + i);
+	}
+}
+
+/*
  *	_bt_readpage() -- Load data from current index page into so->currPos
  *
  * Caller must have pinned and read-locked so->currPos.buf; the buffer's state
@@ -2047,6 +2407,9 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	bool		status;
 
 	Assert(BTScanPosIsValid(so->currPos));
+
+	/* Transfer killed items from the batch to the regular array. */
+	_bt_kill_batch(scan);
 
 	/* Before leaving current page, deal with any killed items */
 	if (so->numKilled > 0)

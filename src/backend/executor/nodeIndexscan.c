@@ -38,6 +38,7 @@
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/cost.h"
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -122,31 +123,89 @@ IndexNext(IndexScanState *node)
 			index_rescan(scandesc,
 						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
+
+		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*
-	 * ok, now that we have what we need, fetch the next tuple.
+	 * If the batching is disabled by a GUC, or if it's not supported by the
+	 * index AM, do the original approach.
+	 *
+	 * XXX Maybe we should enable batching based on the plan too, so that we
+	 * don't do batching when it's probably useless (e.g. semijoins or queries
+	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
+	 * with small batches) will handle that well enough.
+	 *
+	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
+	 * call either the original code without batching, or the new batching
+	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot))
+	if (!(enable_indexscan_batching &&
+		  index_batch_supported(scandesc, direction) &&
+		  node->iss_CanBatch))
 	{
-		CHECK_FOR_INTERRUPTS();
-
 		/*
-		 * If the index was lossy, we have to recheck the index quals using
-		 * the fetched tuple.
+		 * ok, now that we have what we need, fetch the next tuple.
 		 */
-		if (scandesc->xs_recheck)
+		while (index_getnext_slot(scandesc, direction, slot))
 		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
+			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals
+			 * using the fetched tuple.
+			 */
+			if (scandesc->xs_recheck)
 			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				continue;
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->indexqualorig, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
 			}
+
+			return slot;
+		}
+	}
+	else
+	{
+new_batch:
+		/* do we have TIDs in the current batch */
+		while (index_batch_getnext_slot(scandesc, direction, slot))
+		{
+			CHECK_FOR_INTERRUPTS();
+
+			/* first, take care of prefetching further items */
+			index_batch_prefetch(scandesc, direction, NULL, NULL);
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals
+			 * using the fetched tuple.
+			 */
+			if (scandesc->xs_recheck)
+			{
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->indexqualorig, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
+			}
+
+			return slot;
 		}
 
-		return slot;
+		/* batch is empty, try reading the next batch of tuples */
+		if (index_batch_getnext(scandesc, direction))
+		{
+			index_batch_prefetch(scandesc, direction, NULL, NULL);
+			goto new_batch;
+		}
+
+		return NULL;
 	}
 
 	/*
@@ -943,6 +1002,16 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
 
 	/*
+	 * Can't do batching (and thus prefetching) when the plan requires mark
+	 * and restore. There's an issue with translating the mark/restore
+	 * positions between the batch in scan descriptor and the original
+	 * position recognized in the index AM.
+	 *
+	 * XXX Hopefully just a temporary limitation?
+	 */
+	indexstate->iss_CanBatch = !(eflags & EXEC_FLAG_MARK);
+
+	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
 	 * here.  This allows an index-advisor plugin to EXPLAIN a plan containing
 	 * references to nonexistent indexes.
@@ -1678,6 +1747,14 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 piscan);
 
 	/*
+	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * not, but then we need to be careful not to call index_batch_getnext_tid
+	 * (which now can happen, because we'll call IndexOnlyNext even for
+	 * parallel plans).
+	 */
+	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
+
+	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
 	 */
@@ -1719,6 +1796,14 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan);
+
+	/*
+	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * not, but then we need to be careful not to call index_batch_getnext_tid
+	 * (which now can happen, because we'll call IndexOnlyNext even for
+	 * parallel plans).
+	 */
+	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

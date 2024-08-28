@@ -49,7 +49,13 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(IndexOnlyScanState *node, TupleTableSlot *slot,
 							IndexTuple itup, TupleDesc itupdesc);
+static bool ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
+							   void *data, int index);
 
+/* values stored in ios_prefetch_block in the batch cache */
+#define		IOS_UNKNOWN_VISIBILITY		0	/* XXX default value */
+#define		IOS_ALL_VISIBLE				1
+#define		IOS_NOT_ALL_VISIBLE			2
 
 /* ----------------------------------------------------------------
  *		IndexOnlyNext
@@ -112,142 +118,363 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_NumScanKeys,
 						 node->ioss_OrderByKeys,
 						 node->ioss_NumOrderByKeys);
+
+		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*
-	 * OK, now that we have what we need, fetch the next tuple.
+	 * If the batching is disabled by a GUC, or if it's not supported by the
+	 * index AM, do the original approach.
+	 *
+	 * XXX Maybe we should enable batching based on the plan too, so that we
+	 * don't do batching when it's probably useless (e.g. semijoins or queries
+	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
+	 * with small batches) will handle that well enough.
+	 *
+	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
+	 * call either the original code without batching, or the new batching
+	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
-	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
+	if (!(enable_indexscan_batching &&
+		  index_batch_supported(scandesc, direction) &&
+		  node->ioss_CanBatch))
 	{
-		bool		tuple_from_heap = false;
-
-		CHECK_FOR_INTERRUPTS();
-
 		/*
-		 * We can skip the heap fetch if the TID references a heap page on
-		 * which all tuples are known visible to everybody.  In any case,
-		 * we'll use the index tuple not the heap tuple as the data source.
-		 *
-		 * Note on Memory Ordering Effects: visibilitymap_get_status does not
-		 * lock the visibility map buffer, and therefore the result we read
-		 * here could be slightly stale.  However, it can't be stale enough to
-		 * matter.
-		 *
-		 * We need to detect clearing a VM bit due to an insert right away,
-		 * because the tuple is present in the index page but not visible. The
-		 * reading of the TID by this scan (using a shared lock on the index
-		 * buffer) is serialized with the insert of the TID into the index
-		 * (using an exclusive lock on the index buffer). Because the VM bit
-		 * is cleared before updating the index, and locking/unlocking of the
-		 * index page acts as a full memory barrier, we are sure to see the
-		 * cleared bit if we see a recently-inserted TID.
-		 *
-		 * Deletes do not update the index page (only VACUUM will clear out
-		 * the TID), so the clearing of the VM bit by a delete is not
-		 * serialized with this test below, and we may see a value that is
-		 * significantly stale. However, we don't care about the delete right
-		 * away, because the tuple is still visible until the deleting
-		 * transaction commits or the statement ends (if it's our
-		 * transaction). In either case, the lock on the VM buffer will have
-		 * been released (acting as a write barrier) after clearing the bit.
-		 * And for us to have a snapshot that includes the deleting
-		 * transaction (making the tuple invisible), we must have acquired
-		 * ProcArrayLock after that time, acting as a read barrier.
-		 *
-		 * It's worth going through this complexity to avoid needing to lock
-		 * the VM buffer, which could cause significant contention.
+		 * OK, now that we have what we need, fetch the next tuple.
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
-							ItemPointerGetBlockNumber(tid),
-							&node->ioss_VMBuffer))
+		while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 		{
-			/*
-			 * Rats, we have to visit the heap to check visibility.
-			 */
-			InstrCountTuples2(node, 1);
-			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
-				continue;		/* no visible tuple, try next index entry */
+			bool		tuple_from_heap = false;
 
-			ExecClearTuple(node->ioss_TableSlot);
+			CHECK_FOR_INTERRUPTS();
 
 			/*
-			 * Only MVCC snapshots are supported here, so there should be no
-			 * need to keep following the HOT chain once a visible entry has
-			 * been found.  If we did want to allow that, we'd need to keep
-			 * more state to remember not to call index_getnext_tid next time.
+			 * We can skip the heap fetch if the TID references a heap page on
+			 * which all tuples are known visible to everybody.  In any case,
+			 * we'll use the index tuple not the heap tuple as the data
+			 * source.
+			 *
+			 * Note on Memory Ordering Effects: visibilitymap_get_status does
+			 * not lock the visibility map buffer, and therefore the result we
+			 * read here could be slightly stale.  However, it can't be stale
+			 * enough to matter.
+			 *
+			 * We need to detect clearing a VM bit due to an insert right
+			 * away, because the tuple is present in the index page but not
+			 * visible. The reading of the TID by this scan (using a shared
+			 * lock on the index buffer) is serialized with the insert of the
+			 * TID into the index (using an exclusive lock on the index
+			 * buffer). Because the VM bit is cleared before updating the
+			 * index, and locking/unlocking of the index page acts as a full
+			 * memory barrier, we are sure to see the cleared bit if we see a
+			 * recently-inserted TID.
+			 *
+			 * Deletes do not update the index page (only VACUUM will clear
+			 * out the TID), so the clearing of the VM bit by a delete is not
+			 * serialized with this test below, and we may see a value that is
+			 * significantly stale. However, we don't care about the delete
+			 * right away, because the tuple is still visible until the
+			 * deleting transaction commits or the statement ends (if it's our
+			 * transaction). In either case, the lock on the VM buffer will
+			 * have been released (acting as a write barrier) after clearing
+			 * the bit. And for us to have a snapshot that includes the
+			 * deleting transaction (making the tuple invisible), we must have
+			 * acquired ProcArrayLock after that time, acting as a read
+			 * barrier.
+			 *
+			 * It's worth going through this complexity to avoid needing to
+			 * lock the VM buffer, which could cause significant contention.
 			 */
-			if (scandesc->xs_heap_continue)
-				elog(ERROR, "non-MVCC snapshots are not supported in index-only scans");
-
-			/*
-			 * Note: at this point we are holding a pin on the heap page, as
-			 * recorded in scandesc->xs_cbuf.  We could release that pin now,
-			 * but it's not clear whether it's a win to do so.  The next index
-			 * entry might require a visit to the same heap page.
-			 */
-
-			tuple_from_heap = true;
-		}
-
-		/*
-		 * Fill the scan tuple slot with data from the index.  This might be
-		 * provided in either HeapTuple or IndexTuple format.  Conceivably an
-		 * index AM might fill both fields, in which case we prefer the heap
-		 * format, since it's probably a bit cheaper to fill a slot from.
-		 */
-		if (scandesc->xs_hitup)
-		{
-			/*
-			 * We don't take the trouble to verify that the provided tuple has
-			 * exactly the slot's format, but it seems worth doing a quick
-			 * check on the number of fields.
-			 */
-			Assert(slot->tts_tupleDescriptor->natts ==
-				   scandesc->xs_hitupdesc->natts);
-			ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
-		}
-		else if (scandesc->xs_itup)
-			StoreIndexTuple(node, slot, scandesc->xs_itup, scandesc->xs_itupdesc);
-		else
-			elog(ERROR, "no data returned for index-only scan");
-
-		/*
-		 * If the index was lossy, we have to recheck the index quals.
-		 */
-		if (scandesc->xs_recheck)
-		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->recheckqual, econtext))
+			if (!VM_ALL_VISIBLE(scandesc->heapRelation,
+								ItemPointerGetBlockNumber(tid),
+								&node->ioss_VMBuffer))
 			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				continue;
+				/*
+				 * Rats, we have to visit the heap to check visibility.
+				 */
+				InstrCountTuples2(node, 1);
+				if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
+					continue;	/* no visible tuple, try next index entry */
+
+				ExecClearTuple(node->ioss_TableSlot);
+
+				/*
+				 * Only MVCC snapshots are supported here, so there should be
+				 * no need to keep following the HOT chain once a visible
+				 * entry has been found.  If we did want to allow that, we'd
+				 * need to keep more state to remember not to call
+				 * index_getnext_tid next time.
+				 */
+				if (scandesc->xs_heap_continue)
+					elog(ERROR, "non-MVCC snapshots are not supported in index-only scans");
+
+				/*
+				 * Note: at this point we are holding a pin on the heap page,
+				 * as recorded in scandesc->xs_cbuf.  We could release that
+				 * pin now, but it's not clear whether it's a win to do so.
+				 * The next index entry might require a visit to the same heap
+				 * page.
+				 */
+
+				tuple_from_heap = true;
 			}
+
+			/*
+			 * Fill the scan tuple slot with data from the index.  This might
+			 * be provided in either HeapTuple or IndexTuple format.
+			 * Conceivably an index AM might fill both fields, in which case
+			 * we prefer the heap format, since it's probably a bit cheaper to
+			 * fill a slot from.
+			 */
+			if (scandesc->xs_hitup)
+			{
+				/*
+				 * We don't take the trouble to verify that the provided tuple
+				 * has exactly the slot's format, but it seems worth doing a
+				 * quick check on the number of fields.
+				 */
+				Assert(slot->tts_tupleDescriptor->natts ==
+					   scandesc->xs_hitupdesc->natts);
+				ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+			}
+			else if (scandesc->xs_itup)
+				StoreIndexTuple(node, slot, scandesc->xs_itup, scandesc->xs_itupdesc);
+			else
+				elog(ERROR, "no data returned for index-only scan");
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals.
+			 */
+			if (scandesc->xs_recheck)
+			{
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->recheckqual, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
+			}
+
+			/*
+			 * We don't currently support rechecking ORDER BY distances.  (In
+			 * principle, if the index can support retrieval of the originally
+			 * indexed value, it should be able to produce an exact distance
+			 * calculation too.  So it's not clear that adding code here for
+			 * recheck/re-sort would be worth the trouble.  But we should at
+			 * least throw an error if someone tries it.)
+			 */
+			if (scandesc->numberOfOrderBys > 0 && scandesc->xs_recheckorderby)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("lossy distance functions are not supported in index-only scans")));
+
+			/*
+			 * If we didn't access the heap, then we'll need to take a
+			 * predicate lock explicitly, as if we had.  For now we do that at
+			 * page level.
+			 */
+			if (!tuple_from_heap)
+				PredicateLockPage(scandesc->heapRelation,
+								  ItemPointerGetBlockNumber(tid),
+								  estate->es_snapshot);
+
+			return slot;
+		}
+	}
+	else
+	{
+new_batch:
+		/* do we have TIDs in the current batch */
+		while ((tid = index_batch_getnext_tid(scandesc, direction)) != NULL)
+		{
+			bool		all_visible;
+			bool		tuple_from_heap = false;
+
+			CHECK_FOR_INTERRUPTS();
+
+			/* Is the index of the current item valid for the batch? */
+			Assert((scandesc->xs_batch.currIndex >= 0) &&
+				   (scandesc->xs_batch.currIndex < scandesc->xs_batch.nheaptids));
+
+			/* Prefetch some of the following items in the batch. */
+			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
+
+			/*
+			 * Reuse the previously determined page visibility info, or
+			 * calculate it now. If we decided not to prefetch the block, the
+			 * page has to be all-visible.
+			 *
+			 * XXX It's a bir weird we use the visibility to decide if we
+			 * should skip prefetching the block, and then deduce the
+			 * visibility from that. Maybe we could/should have a more direct
+			 * way?
+			 */
+			all_visible = !ios_prefetch_block(scandesc, direction, node,
+											  scandesc->xs_batch.currIndex);
+
+			/*
+			 * We can skip the heap fetch if the TID references a heap page on
+			 * which all tuples are known visible to everybody.  In any case,
+			 * we'll use the index tuple not the heap tuple as the data
+			 * source.
+			 *
+			 * Note on Memory Ordering Effects: visibilitymap_get_status does
+			 * not lock the visibility map buffer, and therefore the result we
+			 * read here could be slightly stale.  However, it can't be stale
+			 * enough to matter.
+			 *
+			 * We need to detect clearing a VM bit due to an insert right
+			 * away, because the tuple is present in the index page but not
+			 * visible. The reading of the TID by this scan (using a shared
+			 * lock on the index buffer) is serialized with the insert of the
+			 * TID into the index (using an exclusive lock on the index
+			 * buffer). Because the VM bit is cleared before updating the
+			 * index, and locking/unlocking of the index page acts as a full
+			 * memory barrier, we are sure to see the cleared bit if we see a
+			 * recently-inserted TID.
+			 *
+			 * Deletes do not update the index page (only VACUUM will clear
+			 * out the TID), so the clearing of the VM bit by a delete is not
+			 * serialized with this test below, and we may see a value that is
+			 * significantly stale. However, we don't care about the delete
+			 * right away, because the tuple is still visible until the
+			 * deleting transaction commits or the statement ends (if it's our
+			 * transaction). In either case, the lock on the VM buffer will
+			 * have been released (acting as a write barrier) after clearing
+			 * the bit. And for us to have a snapshot that includes the
+			 * deleting transaction (making the tuple invisible), we must have
+			 * acquired ProcArrayLock after that time, acting as a read
+			 * barrier.
+			 *
+			 * It's worth going through this complexity to avoid needing to
+			 * lock the VM buffer, which could cause significant contention.
+			 */
+			if (!all_visible)
+			{
+				/*
+				 * Rats, we have to visit the heap to check visibility.
+				 */
+				InstrCountTuples2(node, 1);
+				if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
+				{
+					/*
+					 * If we haven't found any visible tuple for the TID,
+					 * chances are all versions are dead and may kill it from
+					 * the index. If so, flag it in the kill bitmap - we'll
+					 * translate it to indexes later.
+					 *
+					 * XXX With the firstIndex/lastIndex it would not be too
+					 * hard to do the translation here. But do we want to? How
+					 * much is that considered an internal detail of the AM?
+					 *
+					 * FIXME Maybe we could/should make this part of
+					 * index_fetch_heap, so that we don't have to do this
+					 * after each call?
+					 */
+					if (scandesc->kill_prior_tuple)
+					{
+						scandesc->xs_batch.killedItems[scandesc->xs_batch.currIndex] = true;
+						scandesc->kill_prior_tuple = false;
+					}
+
+					continue;	/* no visible tuple, try next index entry */
+				}
+
+				ExecClearTuple(node->ioss_TableSlot);
+
+				/*
+				 * Only MVCC snapshots are supported here, so there should be
+				 * no need to keep following the HOT chain once a visible
+				 * entry has been found.  If we did want to allow that, we'd
+				 * need to keep more state to remember not to call
+				 * index_getnext_tid next time.
+				 */
+				if (scandesc->xs_heap_continue)
+					elog(ERROR, "non-MVCC snapshots are not supported in index-only scans");
+
+				/*
+				 * Note: at this point we are holding a pin on the heap page,
+				 * as recorded in scandesc->xs_cbuf.  We could release that
+				 * pin now, but it's not clear whether it's a win to do so.
+				 * The next index entry might require a visit to the same heap
+				 * page.
+				 */
+
+				tuple_from_heap = true;
+			}
+
+			/*
+			 * Fill the scan tuple slot with data from the index.  This might
+			 * be provided in either HeapTuple or IndexTuple format.
+			 * Conceivably an index AM might fill both fields, in which case
+			 * we prefer the heap format, since it's probably a bit cheaper to
+			 * fill a slot from.
+			 */
+			if (scandesc->xs_hitup)
+			{
+				/*
+				 * We don't take the trouble to verify that the provided tuple
+				 * has exactly the slot's format, but it seems worth doing a
+				 * quick check on the number of fields.
+				 */
+				Assert(slot->tts_tupleDescriptor->natts ==
+					   scandesc->xs_hitupdesc->natts);
+				ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
+			}
+			else if (scandesc->xs_itup)
+				StoreIndexTuple(node, slot, scandesc->xs_itup, scandesc->xs_itupdesc);
+			else
+				elog(ERROR, "no data returned for index-only scan");
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals.
+			 */
+			if (scandesc->xs_recheck)
+			{
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->recheckqual, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
+			}
+
+			/*
+			 * We don't currently support rechecking ORDER BY distances.  (In
+			 * principle, if the index can support retrieval of the originally
+			 * indexed value, it should be able to produce an exact distance
+			 * calculation too.  So it's not clear that adding code here for
+			 * recheck/re-sort would be worth the trouble.  But we should at
+			 * least throw an error if someone tries it.)
+			 */
+			if (scandesc->numberOfOrderBys > 0 && scandesc->xs_recheckorderby)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("lossy distance functions are not supported in index-only scans")));
+
+			/*
+			 * If we didn't access the heap, then we'll need to take a
+			 * predicate lock explicitly, as if we had.  For now we do that at
+			 * page level.
+			 */
+			if (!tuple_from_heap)
+				PredicateLockPage(scandesc->heapRelation,
+								  ItemPointerGetBlockNumber(tid),
+								  estate->es_snapshot);
+
+			return slot;
 		}
 
-		/*
-		 * We don't currently support rechecking ORDER BY distances.  (In
-		 * principle, if the index can support retrieval of the originally
-		 * indexed value, it should be able to produce an exact distance
-		 * calculation too.  So it's not clear that adding code here for
-		 * recheck/re-sort would be worth the trouble.  But we should at least
-		 * throw an error if someone tries it.)
-		 */
-		if (scandesc->numberOfOrderBys > 0 && scandesc->xs_recheckorderby)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("lossy distance functions are not supported in index-only scans")));
+		/* batch is empty, try reading the next batch of tuples */
+		if (index_batch_getnext(scandesc, direction))
+		{
+			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
+			goto new_batch;
+		}
 
-		/*
-		 * If we didn't access the heap, then we'll need to take a predicate
-		 * lock explicitly, as if we had.  For now we do that at page level.
-		 */
-		if (!tuple_from_heap)
-			PredicateLockPage(scandesc->heapRelation,
-							  ItemPointerGetBlockNumber(tid),
-							  estate->es_snapshot);
-
-		return slot;
+		return NULL;
 	}
 
 	/*
@@ -575,6 +802,16 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 		ExecInitQual(node->recheckqual, (PlanState *) indexstate);
 
 	/*
+	 * Can't do batching (and thus prefetching) when the plan requires mark
+	 * and restore. There's an issue with translating the mark/restore
+	 * positions between the batch in scan descriptor and the original
+	 * position recognized in the index AM.
+	 *
+	 * XXX Hopefully just a temporary limitation?
+	 */
+	indexstate->ioss_CanBatch = !(eflags & EXEC_FLAG_MARK);
+
+	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
 	 * here.  This allows an index-advisor plugin to EXPLAIN a plan containing
 	 * references to nonexistent indexes.
@@ -745,6 +982,14 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 	node->ioss_VMBuffer = InvalidBuffer;
 
 	/*
+	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * not, but then we need to be careful not to call index_batch_getnext_tid
+	 * (which now can happen, because we'll call IndexOnlyNext even for
+	 * parallel plans).
+	 */
+	index_batch_init(node->ioss_ScanDesc, ForwardScanDirection);
+
+	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
 	 */
@@ -788,6 +1033,9 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								 piscan);
 	node->ioss_ScanDesc->xs_want_itup = true;
 
+	/* XXX do we actually want prefetching for parallel index scans? */
+	index_batch_init(node->ioss_ScanDesc, ForwardScanDirection);
+
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
@@ -796,4 +1044,36 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 		index_rescan(node->ioss_ScanDesc,
 					 node->ioss_ScanKeys, node->ioss_NumScanKeys,
 					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
+}
+
+/*
+ * ios_prefetch_block
+ *		Callback to only prefetch blocks that are not all-visible.
+ *
+ * We don't want to inspect the visibility map repeatedly, so the result of
+ * VM_ALL_VISIBLE is stored in the batch private data. The values are set
+ * to 0 by default, so we use two constants to remember if all-visible or
+ * not all-visible.
+ */
+static bool
+ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
+				   void *arg, int index)
+{
+	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
+
+	if (scan->xs_batch.privateData[index] == IOS_UNKNOWN_VISIBILITY)
+	{
+		bool		all_visible;
+		ItemPointer tid = &scan->xs_batch.heaptids[index];
+
+		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+									 ItemPointerGetBlockNumber(tid),
+									 &node->ioss_VMBuffer);
+
+		scan->xs_batch.privateData[index]
+			= all_visible ? IOS_ALL_VISIBLE : IOS_NOT_ALL_VISIBLE;
+	}
+
+	/* prefetch only blocks that are not all-visible */
+	return (scan->xs_batch.privateData[index] == IOS_NOT_ALL_VISIBLE);
 }

@@ -14,6 +14,7 @@
 #ifndef GENAM_H
 #define GENAM_H
 
+#include "access/itup.h"
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "nodes/tidbitmap.h"
@@ -132,6 +133,8 @@ typedef struct IndexOrderByDistance
  * generalized index_ interface routines (in indexam.c)
  */
 
+extern PGDLLIMPORT bool enable_indexscan_batching;
+
 /*
  * IndexScanIsValid
  *		True iff the index scan is valid.
@@ -181,6 +184,27 @@ extern bool index_fetch_heap(IndexScanDesc scan, struct TupleTableSlot *slot);
 extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 							   struct TupleTableSlot *slot);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
+
+extern bool index_batch_getnext(IndexScanDesc scan,
+								ScanDirection direction);
+extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
+										   ScanDirection direction);
+extern bool index_batch_getnext_slot(IndexScanDesc scan,
+									 ScanDirection direction,
+									 struct TupleTableSlot *slot);
+extern bool index_batch_supported(IndexScanDesc scan, ScanDirection direction);
+extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
+extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
+extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
+
+/*
+ * Typedef for callback function to determine if an item in index scan should
+ * be prefetched.
+ */
+typedef bool (*index_prefetch_callback) (IndexScanDesc scan, ScanDirection direction,
+										 void *arg, int index);
+extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
+								 index_prefetch_callback callback, void *arg);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

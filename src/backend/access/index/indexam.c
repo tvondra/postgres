@@ -28,6 +28,7 @@
  *		index_getnext_batch	- get the next batch of TIDs from a scan
  *		index_getnext_batch_tid	- get the next TIDs from a batch
  *		index_getnext_batch_slot	- get the next tuple from a batch
+ *		index_getnext_batch_prefetch	- prefetch heap pages for batch
  *		index_fetch_heap		- get the scan's next heap tuple
  *		index_getnext_slot	- get the next tuple from a scan
  *		index_getbitmap - get all tuples from a scan
@@ -738,6 +739,25 @@ index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 	}
 
 	return false;
+}
+
+
+
+/* ----------------
+ *		index_getnext_batch_prefetch - prefetch pages for TIDs in current batch
+ *
+ * XXX We should probably prefetch somewhat more incrementally, not all TIDs
+ * in the batch. Especially when reading all TIDs from a leaf page at once.
+ *
+ * XXX Should respect effective_io_concurrency, I guess.
+ * ----------------
+ */
+void
+index_getnext_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
+{
+	for (int i = 0; i < scan->xs_nheaptids; i++)
+		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
+					   ItemPointerGetBlockNumber(&scan->xs_heaptids[i]));
 }
 
 /* ----------------

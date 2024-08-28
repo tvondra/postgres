@@ -44,7 +44,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-
+/* read batches of TIDs? */
 bool		enable_indexscan_batching = false;
 
 /*
@@ -128,6 +128,10 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
+/*
+ * XXX Right now driven by GUC, but I guess we might want to enable this
+ * based on the plan. Say, not for LIMIT 1 queries, etc.
+ */
 if (!enable_indexscan_batching)
 {
 	/*

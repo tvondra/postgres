@@ -285,7 +285,7 @@ btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
 		else
 		{
 			/*
-			 * Check to see if we should kill the previously-fetched tuples.
+			 * Check to see if we should kill tuples from the previous batch.
 			 */
 			_bt_kill_batch(scan, dir);
 

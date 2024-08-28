@@ -367,6 +367,7 @@ index_rescan(IndexScanDesc scan,
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
+	/* reset the TID batch too */
 	scan->xs_nheaptids = 0;
 	scan->xs_curridx = 0;
 
@@ -615,10 +616,19 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 }
 
 /* ----------------
- * index_getnext_tid - get the next TID from a scan
+ * index_getnext_tid_batch - get the next batch of TIDs from a scan
  *
- * The result is the next TID satisfying the scan keys,
- * or NULL if no more matching tuples exist.
+ * The result is an array of TIDs satisfying the scan keys,
+ * or NULL if no more matching tuples exist. The number of
+ * elements is returned in xs_nheaptids.
+ *
+ * XXX This does not set xs_heaptid/xs_itup/xs_hitup, that's up to the
+ * caller to set those fields. Seems weird, maybe we should set it to
+ * the first TID, and then have a function to "proceed" to the next
+ * batch item?
+ *
+ * XXX This does not set xs_itup, which might be an issue for the IOS.
+ * Maybe we should include that in the batch too.
  * ----------------
  */
 ItemPointer
@@ -634,7 +644,7 @@ index_getnext_tid_batch(IndexScanDesc scan, ScanDirection direction)
 
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
-	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
+	 * keys, and puts the TIDs into scan->xs_heaptids.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
 	 * pay no attention to those fields here.
 	 */
@@ -644,6 +654,7 @@ index_getnext_tid_batch(IndexScanDesc scan, ScanDirection direction)
 	scan->kill_prior_tuple = false;
 	scan->xs_heap_continue = false;
 
+	/* We're starting to process a new batch. */
 	scan->xs_curridx = 0;
 
 	/* If we're out of index entries, we're done */

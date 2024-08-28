@@ -1527,6 +1527,27 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	return true;
 }
 
+/*
+ *	_bt_first_batch() -- Find the first batch in a scan.
+ *
+ * A batch variant of _bt_first(). Most of the comments for that function
+ * apply here too.
+ *
+ * XXX This does not set scan->xs_heaptid and scan->xs_itup, it's up to the
+ * caller to do that. Probably needs improvements to make this convenient.
+ *
+ * XXX At the moment we always return a single batch for all matching items on
+ * the page, and leave it up to the caller to process them in suitable chunks
+ * (e.g. to prefetch the right distance). In the future we might limit the
+ * size of a batch, e.g. so that we don't do too much work for LIMIT 1. We
+ * might start with small batches (1 TID) and grow them over time.
+ *
+ * XXX I'm not sure it works to mix batched and non-batches calls, e.g. get
+ * a TID and then a batch of TIDs. It probably should work as long as we
+ * update itemIndex correctly, but we need to be careful about killed items
+ * (right now the two places use different ways to communicate which items
+ * should be killed).
+ */
 bool
 _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 {
@@ -1536,13 +1557,17 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	{
 		int idx = 0;
 
-		/* FIXME preallocate once for MaxTIDsPerBTreePage? */
+		/*
+		 * FIXME preallocate once for MaxTIDsPerBTreePage? but wouldn't that
+		 * need to happen in the memory context for the scan (like scandesc)?
+		 */
 		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
 		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
+		/* XXX could be a smaller bitmap? */
 		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
 		scan->xs_curridx = 0;
 
-		/* FIXME properly consider dir */
+		/* FIXME properly consider scan direction */
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
 
@@ -1554,6 +1579,54 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	return false;
 }
 
+/*
+ *	_bt_next_batch() -- Get the next batch of items in a scan.
+ *
+ * A batch variant of _bt_next(). Most of the comments for that function
+ * apply here too.
+ *
+ * XXX See also the comments at _bt_first_batch() about returning a single
+ * batch for the page, etc.
+ */
+bool
+_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	pfree(scan->xs_heaptids);
+	pfree(scan->xs_killed);
+
+	if (_bt_next(scan, dir))
+	{
+		int idx = 0;
+
+		/*
+		 * FIXME preallocate once for MaxTIDsPerBTreePage? but wouldn't that
+		 * need to happen in the memory context for the scan (like scandesc)?
+		 */
+		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
+		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
+		/* XXX could be a smaller bitmap? */
+		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
+		scan->xs_curridx = 0;
+
+		/* FIXME properly consider scan direction */
+		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+
+		so->currPos.itemIndex = so->currPos.lastItem;
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ *	_bt_kill_batch() -- remember the items-to-be-killed from the current batch
+ *
+ * We simply translate the bitmap into the regular killedItems array.
+ */
 void
 _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 {
@@ -1573,36 +1646,6 @@ _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 		if (so->numKilled < MaxTIDsPerBTreePage)
 			so->killedItems[so->numKilled++] = (so->currPos.firstItem + i);
 	}
-}
-
-bool
-_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
-{
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-
-	pfree(scan->xs_heaptids);
-	pfree(scan->xs_killed);
-
-	if (_bt_next(scan, dir))
-	{
-		int idx = 0;
-
-		/* FIXME preallocate once for MaxTIDsPerBTreePage? */
-		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
-		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
-		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
-		scan->xs_curridx = 0;
-
-		/* FIXME properly consider dir */
-		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
-
-		so->currPos.itemIndex = so->currPos.lastItem;
-
-		return true;
-	}
-
-	return false;
 }
 
 /*

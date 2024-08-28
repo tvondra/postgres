@@ -38,10 +38,14 @@
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/cost.h"
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+
+
+bool		enable_indexscan_batching = false;
 
 /*
  * When an ordering operator is used, tuples fetched from the index that
@@ -124,6 +128,8 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
+if (!enable_indexscan_batching)
+{
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
@@ -148,6 +154,32 @@ IndexNext(IndexScanState *node)
 
 		return slot;
 	}
+}
+else
+{
+
+retry:
+	/* do we have TIDs in the current batch */
+	if (scandesc->xs_curridx < scandesc->xs_nheaptids)
+	{
+		scandesc->xs_heaptid = scandesc->xs_heaptids[scandesc->xs_curridx++];
+
+		/*
+		 * Fetch the next (or only) visible heap tuple for this index entry.
+		 * If we don't find anything, loop around and grab the next TID from
+		 * the index.
+		 */
+		Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
+		if (index_fetch_heap(scandesc, slot))
+			return slot;
+	}
+
+	/* batch is empty, try reading the next batch of tuples */
+	if (index_getnext_tid_batch(scandesc, direction) != NULL)
+		goto retry;
+
+	return NULL;
+}
 
 	/*
 	 * if we get here it means the index scan failed so we are at the end of

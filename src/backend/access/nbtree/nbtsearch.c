@@ -1527,6 +1527,84 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	return true;
 }
 
+bool
+_bt_first_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	if (_bt_first(scan, dir))
+	{
+		int idx = 0;
+
+		/* FIXME preallocate once for MaxTIDsPerBTreePage? */
+		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
+		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
+		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
+		scan->xs_curridx = 0;
+
+		/* FIXME properly consider dir */
+		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+
+		so->currPos.itemIndex = so->currPos.lastItem;
+
+		return true;
+	}
+
+	return false;
+}
+
+void
+_bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	Assert(so->numKilled == 0);
+
+	for (int i = 0; i < scan->xs_nheaptids; i++)
+	{
+		if (!scan->xs_killed[i])
+			continue;
+
+		if (so->killedItems == NULL)
+			so->killedItems = (int *)
+				palloc(MaxTIDsPerBTreePage * sizeof(int));
+
+		if (so->numKilled < MaxTIDsPerBTreePage)
+			so->killedItems[so->numKilled++] = (so->currPos.firstItem + i);
+	}
+}
+
+bool
+_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	pfree(scan->xs_heaptids);
+	pfree(scan->xs_killed);
+
+	if (_bt_next(scan, dir))
+	{
+		int idx = 0;
+
+		/* FIXME preallocate once for MaxTIDsPerBTreePage? */
+		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
+		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
+		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
+		scan->xs_curridx = 0;
+
+		/* FIXME properly consider dir */
+		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+
+		so->currPos.itemIndex = so->currPos.lastItem;
+
+		return true;
+	}
+
+	return false;
+}
+
 /*
  *	_bt_readpage() -- Load data from current index page into so->currPos
  *

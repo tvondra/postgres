@@ -141,6 +141,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->ambeginscan = btbeginscan;
 	amroutine->amrescan = btrescan;
 	amroutine->amgettuple = btgettuple;
+	amroutine->amgettuplebatch = btgettuplebatch;
 	amroutine->amgetbitmap = btgetbitmap;
 	amroutine->amendscan = btendscan;
 	amroutine->ammarkpos = btmarkpos;
@@ -248,6 +249,50 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 			 * Now continue the scan.
 			 */
 			res = _bt_next(scan, dir);
+		}
+
+		/* If we have a tuple, return it ... */
+		if (res)
+			break;
+		/* ... otherwise see if we need another primitive index scan */
+	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
+
+	return res;
+}
+
+/*
+ *	btgettuplebatch() -- Get the next batch of tuples in the scan.
+ */
+bool
+btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	bool		res;
+
+	/* btree indexes are never lossy */
+	scan->xs_recheck = false;
+
+	/* Each loop iteration performs another primitive index scan */
+	do
+	{
+		/*
+		 * If we've already initialized this scan, we can just advance it in
+		 * the appropriate direction.  If we haven't done so yet, we call
+		 * _bt_first() to get the first item in the scan.
+		 */
+		if (!BTScanPosIsValid(so->currPos))
+			res = _bt_first_batch(scan, dir);
+		else
+		{
+			/*
+			 * Check to see if we should kill the previously-fetched tuples.
+			 */
+			_bt_kill_batch(scan, dir);
+
+			/*
+			 * Now continue the scan.
+			 */
+			res = _bt_next_batch(scan, dir);
 		}
 
 		/* If we have a tuple, return it ... */

@@ -735,7 +735,20 @@ index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 		 */
 		Assert(ItemPointerIsValid(&scan->xs_heaptid));
 		if (index_fetch_heap(scan, slot))
+		{
+			/*
+			 * If we decided to kill prior tuple in index_fetch_heap(), track
+			 * it for the batch, and then reset the flag, so that we don't
+			 * accidentally use that to kill something we shouldn't.
+			 */
+			if (scan->kill_prior_tuple)
+			{
+				scan->xs_killed[scan->xs_curridx - 1] = true;
+				scan->kill_prior_tuple = false;
+			}
+
 			return true;
+		}
 	}
 
 	return false;

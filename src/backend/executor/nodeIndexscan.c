@@ -162,25 +162,33 @@ if (!enable_indexscan_batching)
 else
 {
 
-retry:
+new_batch:
 	/* do we have TIDs in the current batch */
-	if (scandesc->xs_curridx < scandesc->xs_nheaptids)
+	while (index_getnext_batch_slot(scandesc, direction, slot))
 	{
-		scandesc->xs_heaptid = scandesc->xs_heaptids[scandesc->xs_curridx++];
+		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * Fetch the next (or only) visible heap tuple for this index entry.
-		 * If we don't find anything, loop around and grab the next TID from
-		 * the index.
+		 * If the index was lossy, we have to recheck the index quals using
+		 * the fetched tuple.
 		 */
-		Assert(ItemPointerIsValid(&scandesc->xs_heaptid));
-		if (index_fetch_heap(scandesc, slot))
-			return slot;
+		if (scandesc->xs_recheck)
+		{
+			econtext->ecxt_scantuple = slot;
+			if (!ExecQualAndReset(node->indexqualorig, econtext))
+			{
+				/* Fails recheck, so drop it and loop back for another */
+				InstrCountFiltered2(node, 1);
+				continue;
+			}
+		}
+
+		return slot;
 	}
 
 	/* batch is empty, try reading the next batch of tuples */
-	if (index_getnext_tid_batch(scandesc, direction) != NULL)
-		goto retry;
+	if (index_getnext_batch(scandesc, direction) != NULL)
+		goto new_batch;
 
 	return NULL;
 }

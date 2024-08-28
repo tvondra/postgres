@@ -25,6 +25,7 @@
  *		index_parallelrescan  - (re)start a parallel scan of an index
  *		index_beginscan_parallel - join parallel index scan
  *		index_getnext_tid	- get the next TID from a scan
+ *		index_getnext_tid_batch	- get the next batch of TIDs from a scan
  *		index_fetch_heap		- get the scan's next heap tuple
  *		index_getnext_slot	- get the next tuple from a scan
  *		index_getbitmap - get all tuples from a scan
@@ -366,6 +367,9 @@ index_rescan(IndexScanDesc scan,
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
+	scan->xs_nheaptids = 0;
+	scan->xs_curridx = 0;
+
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
 }
@@ -608,6 +612,59 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	/* Return the TID of the tuple we found. */
 	return &scan->xs_heaptid;
+}
+
+/* ----------------
+ * index_getnext_tid - get the next TID from a scan
+ *
+ * The result is the next TID satisfying the scan keys,
+ * or NULL if no more matching tuples exist.
+ * ----------------
+ */
+ItemPointer
+index_getnext_tid_batch(IndexScanDesc scan, ScanDirection direction)
+{
+	bool		found;
+
+	SCAN_CHECKS;
+	CHECK_SCAN_PROCEDURE(amgettuple);
+
+	/* XXX: we should assert that a snapshot is pushed or registered */
+	Assert(TransactionIdIsValid(RecentXmin));
+
+	/*
+	 * The AM's amgettuple proc finds the next index entry matching the scan
+	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
+	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
+	 * pay no attention to those fields here.
+	 */
+	found = scan->indexRelation->rd_indam->amgettuplebatch(scan, direction);
+
+	/* Reset kill flag immediately for safety */
+	scan->kill_prior_tuple = false;
+	scan->xs_heap_continue = false;
+
+	scan->xs_curridx = 0;
+
+	/* If we're out of index entries, we're done */
+	if (!found)
+	{
+		/* release resources (like buffer pins) from table accesses */
+		if (scan->xs_heapfetch)
+			table_index_fetch_reset(scan->xs_heapfetch);
+
+		return NULL;
+	}
+
+#ifdef USE_ASSERT_CHECKING
+	for (int i = 0; i < scan->xs_nheaptids; i++)
+		Assert(ItemPointerIsValid(&scan->xs_heaptids[i]));
+#endif
+
+	pgstat_count_index_tuples(scan->indexRelation, scan->xs_nheaptids);
+
+	/* Return the batch of TIDs we found. */
+	return scan->xs_heaptids;
 }
 
 /* ----------------

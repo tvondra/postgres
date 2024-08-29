@@ -159,6 +159,11 @@ typedef struct IndexScanDescData
 		int					initSize;
 		int					currSize;
 
+		/* batch prefetching */
+		int					prefetchTarget;		/* current prefetch distance */
+		int					prefetchMaximum;	/* maximum prefetch distance */
+		int					prefetchIndex;		/* next item to prefetch */
+
 		/* batch contents (TIDs, index tuples, kill bitmap, ...) */
 		int					nheaptids;		/* number of TIDs in the batch */
 		int					currIndex;		/* index of the current item */

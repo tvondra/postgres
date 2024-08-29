@@ -1567,11 +1567,24 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
 		scan->xs_curridx = 0;
 
-		/* FIXME properly consider scan direction */
-		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+		/*
+		 * Advance to next tuple on current page; or if there's no more, try to
+		 * step to the next page with data.
+		 */
+		if (ScanDirectionIsForward(dir))
+		{
+			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
 
-		so->currPos.itemIndex = so->currPos.lastItem;
+			so->currPos.itemIndex = so->currPos.lastItem;
+		}
+		else
+		{
+			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
+				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+
+			so->currPos.itemIndex = so->currPos.firstItem;
+		}
 
 		return true;
 	}
@@ -1610,11 +1623,24 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
 		scan->xs_curridx = 0;
 
-		/* FIXME properly consider scan direction */
-		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+		/*
+		 * Advance to next tuple on current page; or if there's no more, try to
+		 * step to the next page with data.
+		 */
+		if (ScanDirectionIsForward(dir))
+		{
+			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
 
-		so->currPos.itemIndex = so->currPos.lastItem;
+			so->currPos.itemIndex = so->currPos.lastItem;
+		}
+		else
+		{
+			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
+				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+
+			so->currPos.itemIndex = so->currPos.firstItem;
+		}
 
 		return true;
 	}

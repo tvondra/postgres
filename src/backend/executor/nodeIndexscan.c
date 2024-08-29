@@ -123,6 +123,8 @@ IndexNext(IndexScanState *node)
 			index_rescan(scandesc,
 						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
+
+		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*

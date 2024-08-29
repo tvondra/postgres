@@ -343,11 +343,9 @@ index_beginscan_internal(Relation indexRelation,
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
 
-	/* Initialize information for batched index scans */
+	/* no batching unless explicitly enabled */
 	scan->xs_batch.heaptids = NULL;
-	scan->xs_batch.itups = NULL;
-	scan->xs_batch.killedItems = NULL;
-	scan->xs_batch.privateData = NULL;
+	scan->xs_batch.nheaptids = 0;
 
 	return scan;
 }
@@ -656,10 +654,13 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	bool		found;
 
 	SCAN_CHECKS;
-	CHECK_SCAN_PROCEDURE(amgettuple);
+	CHECK_SCAN_PROCEDURE(amgettuplebatch);
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
+
+	Assert(scan->xs_batch.nheaptids <= scan->xs_batch.maxSize);
+	Assert(scan->xs_batch.nheaptids >= 0);
 
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
@@ -693,6 +694,9 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	pgstat_count_index_tuples(scan->indexRelation, scan->xs_batch.nheaptids);
 
+	Assert(scan->xs_batch.nheaptids <= scan->xs_batch.maxSize);
+	Assert(scan->xs_batch.nheaptids >= 0);
+
 	/* Return the batch of TIDs we found. */
 	return scan->xs_batch.heaptids;
 }
@@ -709,8 +713,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	Assert(scan->xs_batch.nheaptids <= scan->xs_batch.maxSize);
+	Assert(scan->xs_batch.nheaptids >= 0);
+
 	/* batch not initialized yet */
 	if (scan->xs_batch.heaptids == NULL)
+		return NULL;
+
+	if (scan->xs_batch.nheaptids == 0)
 		return NULL;
 
 	/* no more TIDs in the batch */
@@ -737,6 +747,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 bool
 index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
+	Assert(scan->xs_batch.nheaptids <= scan->xs_batch.maxSize);
+	Assert(scan->xs_batch.nheaptids >= 0);
+
 	for (;;)
 	{
 		if (!scan->xs_heap_continue)
@@ -850,6 +863,9 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	if (!index_batch_supported(scan, direction))
 		return;
 
+	/**/
+	scan->xs_batch.currIndex = -1;
+
 	/*
 	 * Set some reasonable batch size defaults.
 	 *
@@ -867,6 +883,7 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch.prefetchIndex = 0;
 
 	/* Preallocate the largest allowed array of TIDs. */
+	scan->xs_batch.nheaptids = 0;
 	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
 
 	if (scan->xs_want_itup)

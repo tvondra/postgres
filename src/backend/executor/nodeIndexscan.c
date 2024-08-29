@@ -175,7 +175,7 @@ new_batch:
 			CHECK_FOR_INTERRUPTS();
 
 			/* first, take care of prefetching further items */
-			index_batch_prefetch(scandesc, direction);
+			index_batch_prefetch(scandesc, direction, NULL, NULL);
 
 			/*
 			 * If the index was lossy, we have to recheck the index quals using
@@ -198,7 +198,7 @@ new_batch:
 		/* batch is empty, try reading the next batch of tuples */
 		if (index_batch_getnext(scandesc, direction) != NULL)
 		{
-			index_batch_prefetch(scandesc, direction);
+			index_batch_prefetch(scandesc, direction, NULL, NULL);
 			goto new_batch;
 		}
 

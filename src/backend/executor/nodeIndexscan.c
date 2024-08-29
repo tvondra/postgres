@@ -125,76 +125,85 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
-/*
- * XXX Right now driven by GUC, but I guess we might want to enable this
- * based on the plan. Say, not for LIMIT 1 queries, etc.
- */
-if (!enable_indexscan_batching || !index_batch_supported(scandesc, direction))
-{
 	/*
-	 * ok, now that we have what we need, fetch the next tuple.
+	 * If the batching is disabled by a GUC, or if it's not supported by the
+	 * index AM, do the original approach.
+	 *
+	 * XXX Maybe we should enable batching based on the plan too, so that we
+	 * don't do batching when it's probably useless (e.g. semijoins or queries
+	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
+	 * with small batches) will handle that well enough.
+	 *
+	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
+	 * call either the original code without batching, or the new batching
+	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
-	while (index_getnext_slot(scandesc, direction, slot))
+	if (!(enable_indexscan_batching &&
+		  index_batch_supported(scandesc, direction)))
 	{
-		CHECK_FOR_INTERRUPTS();
-
 		/*
-		 * If the index was lossy, we have to recheck the index quals using
-		 * the fetched tuple.
+		 * ok, now that we have what we need, fetch the next tuple.
 		 */
-		if (scandesc->xs_recheck)
+		while (index_getnext_slot(scandesc, direction, slot))
 		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
+			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals using
+			 * the fetched tuple.
+			 */
+			if (scandesc->xs_recheck)
 			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				continue;
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->indexqualorig, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
 			}
+
+			return slot;
 		}
-
-		return slot;
 	}
-}
-else
-{
-
+	else
+	{
 new_batch:
-	/* do we have TIDs in the current batch */
-	while (index_batch_getnext_slot(scandesc, direction, slot))
-	{
-		CHECK_FOR_INTERRUPTS();
-
-		/* first, take care of prefetching further items */
-		index_batch_prefetch(scandesc, direction);
-
-		/*
-		 * If the index was lossy, we have to recheck the index quals using
-		 * the fetched tuple.
-		 */
-		if (scandesc->xs_recheck)
+		/* do we have TIDs in the current batch */
+		while (index_batch_getnext_slot(scandesc, direction, slot))
 		{
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
+			CHECK_FOR_INTERRUPTS();
+
+			/* first, take care of prefetching further items */
+			index_batch_prefetch(scandesc, direction);
+
+			/*
+			 * If the index was lossy, we have to recheck the index quals using
+			 * the fetched tuple.
+			 */
+			if (scandesc->xs_recheck)
 			{
-				/* Fails recheck, so drop it and loop back for another */
-				InstrCountFiltered2(node, 1);
-				continue;
+				econtext->ecxt_scantuple = slot;
+				if (!ExecQualAndReset(node->indexqualorig, econtext))
+				{
+					/* Fails recheck, so drop it and loop back for another */
+					InstrCountFiltered2(node, 1);
+					continue;
+				}
 			}
+
+			return slot;
 		}
 
-		return slot;
-	}
+		/* batch is empty, try reading the next batch of tuples */
+		if (index_batch_getnext(scandesc, direction) != NULL)
+		{
+			index_batch_prefetch(scandesc, direction);
+			goto new_batch;
+		}
 
-	/* batch is empty, try reading the next batch of tuples */
-	if (index_batch_getnext(scandesc, direction) != NULL)
-	{
-		index_batch_prefetch(scandesc, direction);
-		goto new_batch;
+		return NULL;
 	}
-
-	return NULL;
-}
 
 	/*
 	 * if we get here it means the index scan failed so we are at the end of

@@ -1565,14 +1565,14 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		if (ScanDirectionIsForward(dir))
 		{
 			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
+				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.lastItem;
 		}
 		else
 		{
 			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
+				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.firstItem;
 		}
@@ -1597,8 +1597,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	pfree(scan->xs_heaptids);
-	pfree(scan->xs_killed);
+	pfree(scan->xs_batch.heaptids);
+	pfree(scan->xs_batch.killedItems);
 
 	if (_bt_next(scan, dir))
 	{
@@ -1612,14 +1612,14 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		if (ScanDirectionIsForward(dir))
 		{
 			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
+				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.lastItem;
 		}
 		else
 		{
 			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
+				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.firstItem;
 		}
@@ -1642,9 +1642,9 @@ _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(so->numKilled == 0);
 
-	for (int i = 0; i < scan->xs_nheaptids; i++)
+	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
 	{
-		if (!scan->xs_killed[i])
+		if (!scan->xs_batch.killedItems[i])
 			continue;
 
 		if (so->killedItems == NULL)

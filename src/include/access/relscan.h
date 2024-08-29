@@ -151,11 +151,14 @@ typedef struct IndexScanDescData
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
-	/* batched scan */
-	int				xs_nheaptids;		/* number of TIDs in the batch */
-	ItemPointerData *xs_heaptids;		/* batch of TIDs */
-	int				xs_curridx;
-	bool		    *xs_killed;			/* which items should be killed */
+	/* Data about the current TID batch returned by the index AM. */
+	struct
+	{
+		int					nheaptids;		/* number of TIDs in the batch */
+		int					currIndex;		/* index of the current item */
+		ItemPointerData	   *heaptids;		/* TIDs in the batch */
+		bool			   *killedItems;	/* bitmap of tuples to kill */
+	} xs_batch;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

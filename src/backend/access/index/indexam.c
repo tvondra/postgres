@@ -841,6 +841,9 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 bool
 index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 {
+	if (scan->xs_batch.nheaptids >= 4)
+		return false;
+
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
 
 	if (scan->xs_want_itup)

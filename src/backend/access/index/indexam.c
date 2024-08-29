@@ -284,12 +284,6 @@ index_beginscan(Relation heapRelation,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
 
-	/* batching disabled by default */
-	scan->xs_batch.heaptids = NULL;
-	scan->xs_batch.itups = NULL;
-	scan->xs_batch.killedItems = NULL;
-	scan->xs_batch.privateData = NULL;
-
 	return scan;
 }
 
@@ -348,6 +342,12 @@ index_beginscan_internal(Relation indexRelation,
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
+
+	/* Initialize information for batched index scans */
+	scan->xs_batch.heaptids = NULL;
+	scan->xs_batch.itups = NULL;
+	scan->xs_batch.killedItems = NULL;
+	scan->xs_batch.privateData = NULL;
 
 	return scan;
 }
@@ -912,6 +912,9 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 bool
 index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 {
+	Assert(scan->xs_batch.nheaptids >= 0);
+	Assert(scan->xs_batch.nheaptids <= scan->xs_batch.currSize);
+
 	/* don't grow the batch beyond the current size */
 	if (scan->xs_batch.nheaptids >= scan->xs_batch.currSize)
 		return false;

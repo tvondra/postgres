@@ -49,7 +49,6 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
-#include "access/nbtree.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"

@@ -118,6 +118,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_NumScanKeys,
 						 node->ioss_OrderByKeys,
 						 node->ioss_NumOrderByKeys);
+
+		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*

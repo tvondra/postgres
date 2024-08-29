@@ -133,6 +133,8 @@ typedef struct IndexOrderByDistance
  * generalized index_ interface routines (in indexam.c)
  */
 
+extern PGDLLIMPORT bool enable_indexscan_batching;
+
 /*
  * IndexScanIsValid
  *		True iff the index scan is valid.

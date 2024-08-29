@@ -805,17 +805,27 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	if (!index_batch_supported(scan, direction))
 		return;
 
+	/*
+	 * Set some reasonable batch size defaults.
+	 *
+	 * XXX Maybe should depend on prefetch distance, or something like that?
+	 * The initSize will affect how far ahead we can prefetch.
+	 */
+	scan->xs_batch.maxSize = 64;
+	scan->xs_batch.initSize = 8;
+	scan->xs_batch.currSize = scan->xs_batch.initSize;
+
 	/* Preallocate the largest allowed array of TIDs. */
-	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * MaxTIDsPerBTreePage);
+	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
 
 	if (scan->xs_want_itup)
-		scan->xs_batch.itups = palloc(sizeof(IndexTuple) * MaxTIDsPerBTreePage);
+		scan->xs_batch.itups = palloc(sizeof(IndexTuple) * scan->xs_batch.maxSize);
 
 	/*
 	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
 	 * not a bool. This is easier / more convenient to manipulate, though.
 	 */
-	scan->xs_batch.killedItems = (bool *) palloc0(sizeof(bool) * MaxTIDsPerBTreePage);
+	scan->xs_batch.killedItems = (bool *) palloc0(sizeof(bool) * scan->xs_batch.maxSize);
 }
 
 /*
@@ -841,7 +851,8 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 bool
 index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 {
-	if (scan->xs_batch.nheaptids >= 4)
+	/* don't grow the batch beyond the current size */
+	if (scan->xs_batch.nheaptids >= scan->xs_batch.currSize)
 		return false;
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;

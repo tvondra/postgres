@@ -154,6 +154,12 @@ typedef struct IndexScanDescData
 	/* Data about the current TID batch returned by the index AM. */
 	struct
 	{
+		/* batch size - maximum, initial, current (with ramp up) */
+		int					maxSize;
+		int					initSize;
+		int					currSize;
+
+		/* batch contents (TIDs, index tuples, kill bitmap, ...) */
 		int					nheaptids;		/* number of TIDs in the batch */
 		int					currIndex;		/* index of the current item */
 		ItemPointerData	   *heaptids;		/* TIDs in the batch */

@@ -1556,6 +1556,13 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	/* start a new batch */
 	index_batch_reset(scan, dir);
 
+	/*
+	 * Reset the batch size to the initial size.
+	 *
+	 * FIXME should be done in indexam.c probably?
+	 */
+	scan->xs_batch.currSize = scan->xs_batch.initSize;
+
 	/* we haven't visited any leaf pages yet, so proceed to reading one */
 	if (_bt_first(scan, dir))
 	{
@@ -1610,6 +1617,15 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	/* start a new batch */
 	index_batch_reset(scan, dir);
+
+	/*
+	 * Try to increase the size of the batch.
+	 *
+	 * FIXME should be done in indexam.c probably?
+	 * FIXME maybe it should grow faster?
+	 */
+	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
+								  scan->xs_batch.maxSize);
 
 	/*
 	 * Check if we still have some items on the current leaf page. If yes,

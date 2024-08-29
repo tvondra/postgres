@@ -14,6 +14,7 @@
 #ifndef GENAM_H
 #define GENAM_H
 
+#include "access/itup.h"
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "nodes/tidbitmap.h"
@@ -193,6 +194,7 @@ extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_supported(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
+extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

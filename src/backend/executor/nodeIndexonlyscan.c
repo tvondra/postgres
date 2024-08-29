@@ -52,6 +52,7 @@ static void StoreIndexTuple(IndexOnlyScanState *node, TupleTableSlot *slot,
 static bool ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
 							   void *data, int index);
 
+/* values stored in ios_prefetch_block in the batch cache */
 #define		IOS_UNKNOWN_VISIBILITY		0		/* XXX default value */
 #define		IOS_ALL_VISIBLE				1
 #define		IOS_NOT_ALL_VISIBLE			2
@@ -282,16 +283,24 @@ new_batch:
 
 			CHECK_FOR_INTERRUPTS();
 
-			/* first, take care of prefetching further items */
+			/* Is the index of the current item valid for the batch? */
+			Assert((scandesc->xs_batch.currIndex >= 0) &&
+				   (scandesc->xs_batch.currIndex < scandesc->xs_batch.nheaptids));
+
+			/* Prefetch some of the following items in the batch. */
 			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
 
 			/*
-			 * We skipped prefetch is the block was all-visible.
+			 * Reuse the previously determined page visibility info, or calculate
+			 * it now. If we decided not to prefetch the block, the page has to be
+			 * all-visible.
 			 *
-			 * XXX Annoying we have to subtract 1 from "currIdx".
+			 * XXX It's a bir weird we use the visibility to decide if we should
+			 * skip prefetching the block, and then deduce the visibility from
+			 * that. Maybe we could/should have a more direct way?
 			 */
 			all_visible = !ios_prefetch_block(scandesc, direction, node,
-											  (scandesc->xs_batch.currIndex - 1));
+											  scandesc->xs_batch.currIndex);
 
 			/*
 			 * We can skip the heap fetch if the TID references a heap page on
@@ -976,6 +985,13 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
 }
 
+/*
+ * ios_prefetch_block
+ *		Callback to only prefetch blocks that are not all-visible.
+ *
+ * We don't want to inspect the visibility map repeatedly, so the result is
+ * stored in the privateData of the batch for reuse.
+ */
 static bool
 ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
 				   void *arg, int index)

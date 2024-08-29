@@ -36,8 +36,10 @@
  *		index_batch_getnext	- get the next batch of TIDs from a scan
  *		index_batch_getnext_tid	- get the next TIDs from a batch
  *		index_batch_getnext_slot	- get the next tuple from a batch
- *		index_batch_prefetch	- prefetch heap pages for batch
+ *		index_batch_prefetch	- prefetch heap pages for a batch
  *		index_batch_supported	- does the AM support/allow batching?
+ *		index_batch_init	- initialize the TID batch arrays
+ *		index_batch_reset	- reset the TID batch (before next batch)
  *
  * NOTES
  *		This file contains the index_ routines which used
@@ -64,7 +66,7 @@
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 
-/* read batches of TIDs? */
+/* enable reading larger batches of TIDs from the index */
 bool		enable_indexscan_batching = false;
 
 /* ----------------------------------------------------------------
@@ -282,7 +284,7 @@ index_beginscan(Relation heapRelation,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
 
-	/* no batching by default */
+	/* batching disabled by default */
 	scan->xs_batch.heaptids = NULL;
 	scan->xs_batch.itups = NULL;
 	scan->xs_batch.killedItems = NULL;
@@ -380,10 +382,13 @@ index_rescan(IndexScanDesc scan,
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
-	/* reset the TID batch too */
-	scan->xs_batch.nheaptids = 0;
-	scan->xs_batch.currIndex = -1;
-	scan->xs_batch.prefetchIndex = 0;
+	/* Reset the TID batch counters, if enabled. */
+	if (scan->xs_batch.heaptids != NULL)
+	{
+		scan->xs_batch.nheaptids = 0;
+		scan->xs_batch.currIndex = -1;
+		scan->xs_batch.prefetchIndex = 0;
+	}
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -827,9 +832,8 @@ index_batch_supported(IndexScanDesc scan, ScanDirection direction)
 }
 
 /*
- * FIXME Using MaxTIDsPerBTreePage is not quiet correct here, it should
- * not be tied to a particular index AM. There should be some upper limit
- * on how large the batch can be, likely smaller.
+ * index_batch_init
+ *		Initialize various fields / arrays needed by batching.
  */
 void
 index_batch_init(IndexScanDesc scan, ScanDirection direction)
@@ -878,7 +882,8 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 }
 
 /*
- * Reset the batch before reading the next chunk of data.
+ * index_batch_reset
+ *		Reset the batch before reading the next chunk of data.
  */
 void
 index_batch_reset(IndexScanDesc scan, ScanDirection direction)
@@ -892,7 +897,13 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 }
 
 /*
- * Add a TID item to the batch.
+ * index_batch_add
+ *		Add an item to the batch.
+ *
+ * The item is always a TID, and then also IndexTuple if requested (for IOS).
+ *
+ * Returns true when adding the item was successful, or false when the batch
+ * is full (and the item should be added to the next batch).
  */
 bool
 index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)

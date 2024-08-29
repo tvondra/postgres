@@ -1553,12 +1553,12 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
+	/* start a new batch */
+	index_batch_reset(scan, dir);
+
 	/* we haven't visited any leaf pages yet, so proceed to reading one */
 	if (_bt_first(scan, dir))
 	{
-		/* start a new batch */
-		index_batch_reset(scan, dir);
-
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
 		 * step to the next page with data.
@@ -1581,6 +1581,9 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 			else
 				so->currPos.itemIndex--;
 		}
+
+		/* can we end up with empty batch? shouldn't be possible, IMO */
+		Assert(scan->xs_batch.nheaptids > 0);
 
 		return true;
 	}
@@ -1605,12 +1608,19 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	pfree(scan->xs_batch.heaptids);
 	pfree(scan->xs_batch.killedItems);
 
-	/* read the next leaf page, and add items to the batch */
-	if (_bt_next(scan, dir))
-	{
-		/* start a new batch */
-		index_batch_reset(scan, dir);
+	/* start a new batch */
+	index_batch_reset(scan, dir);
 
+	/*
+	 * Check if we still have some items on the current leaf page. If yes,
+	 * load them into a batch and return.
+	 *
+	 * XXX try combining that with the next block, the inner while loop is
+	 * exactly the same.
+	 */
+	if ((so->currPos.itemIndex > so->currPos.firstItem) &&
+		(so->currPos.itemIndex < so->currPos.lastItem))
+	{
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
 		 * step to the next page with data.
@@ -1633,6 +1643,41 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 			else
 				so->currPos.itemIndex--;
 		}
+
+		/* can we end up with empty batch? shouldn't be possible, IMO */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		return true;
+	}
+
+	/* read the next leaf page, and add items to the batch */
+	if (_bt_next(scan, dir))
+	{
+		/*
+		 * Advance to next tuple on current page; or if there's no more, try to
+		 * step to the next page with data.
+		 */
+		while ((so->currPos.itemIndex >= so->currPos.firstItem) &&
+			   (so->currPos.itemIndex <= so->currPos.lastItem))
+		{
+			BTScanPosItem  *currItem = &so->currPos.items[so->currPos.itemIndex];
+			IndexTuple		itup = NULL;
+
+			if (scan->xs_want_itup)
+				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+			/* try to add it to batch, if there's space */
+			if (!index_batch_add(scan, currItem->heapTid, itup))
+				break;
+
+			if (ScanDirectionIsForward(dir))
+				so->currPos.itemIndex++;
+			else
+				so->currPos.itemIndex--;
+		}
+
+		/* can we end up with empty batch? shouldn't be possible, IMO */
+		Assert(scan->xs_batch.nheaptids > 0);
 
 		return true;
 	}

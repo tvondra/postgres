@@ -1555,17 +1555,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 
 	if (_bt_first(scan, dir))
 	{
-		int idx = 0;
-
-		/*
-		 * FIXME preallocate once for MaxTIDsPerBTreePage? but wouldn't that
-		 * need to happen in the memory context for the scan (like scandesc)?
-		 */
-		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
-		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
-		/* XXX could be a smaller bitmap? */
-		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
-		scan->xs_curridx = 0;
+		/* start a new batch */
+		index_batch_reset(scan, dir);
 
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
@@ -1574,14 +1565,14 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		if (ScanDirectionIsForward(dir))
 		{
 			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.lastItem;
 		}
 		else
 		{
 			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.firstItem;
 		}
@@ -1611,17 +1602,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	if (_bt_next(scan, dir))
 	{
-		int idx = 0;
-
-		/*
-		 * FIXME preallocate once for MaxTIDsPerBTreePage? but wouldn't that
-		 * need to happen in the memory context for the scan (like scandesc)?
-		 */
-		scan->xs_nheaptids = (so->currPos.lastItem - so->currPos.firstItem + 1);
-		scan->xs_heaptids = (ItemPointer) palloc0(sizeof(ItemPointerData) * scan->xs_nheaptids);
-		/* XXX could be a smaller bitmap? */
-		scan->xs_killed = (bool *) palloc0(sizeof(bool) * scan->xs_nheaptids);
-		scan->xs_curridx = 0;
+		/* start a new batch */
+		index_batch_reset(scan, dir);
 
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
@@ -1630,14 +1612,14 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		if (ScanDirectionIsForward(dir))
 		{
 			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.lastItem;
 		}
 		else
 		{
 			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_heaptids[idx++] = so->currPos.items[i].heapTid;
+				scan->xs_heaptids[scan->xs_nheaptids++] = so->currPos.items[i].heapTid;
 
 			so->currPos.itemIndex = so->currPos.firstItem;
 		}

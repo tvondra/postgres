@@ -176,19 +176,23 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  ParallelIndexScanDesc pscan);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
-extern ItemPointer index_getnext_batch(IndexScanDesc scan,
-									   ScanDirection direction);
-extern ItemPointer index_getnext_batch_tid(IndexScanDesc scan,
-										   ScanDirection direction);
 struct TupleTableSlot;
 extern bool index_fetch_heap(IndexScanDesc scan, struct TupleTableSlot *slot);
 extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 							   struct TupleTableSlot *slot);
-extern bool index_getnext_batch_slot(IndexScanDesc scan,
+extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
+
+extern ItemPointer index_batch_getnext(IndexScanDesc scan,
+									   ScanDirection direction);
+extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
+										   ScanDirection direction);
+extern bool index_batch_getnext_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
-extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
-extern void index_getnext_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
+extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
+extern bool index_batch_supported(IndexScanDesc scan, ScanDirection direction);
+extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
+extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

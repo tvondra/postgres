@@ -132,7 +132,7 @@ IndexNext(IndexScanState *node)
  * XXX Right now driven by GUC, but I guess we might want to enable this
  * based on the plan. Say, not for LIMIT 1 queries, etc.
  */
-if (!enable_indexscan_batching)
+if (!enable_indexscan_batching || !index_batch_supported(scandesc, direction))
 {
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
@@ -164,7 +164,7 @@ else
 
 new_batch:
 	/* do we have TIDs in the current batch */
-	while (index_getnext_batch_slot(scandesc, direction, slot))
+	while (index_batch_getnext_slot(scandesc, direction, slot))
 	{
 		CHECK_FOR_INTERRUPTS();
 
@@ -187,9 +187,9 @@ new_batch:
 	}
 
 	/* batch is empty, try reading the next batch of tuples */
-	if (index_getnext_batch(scandesc, direction) != NULL)
+	if (index_batch_getnext(scandesc, direction) != NULL)
 	{
-		index_getnext_batch_prefetch(scandesc, direction);
+		index_batch_prefetch(scandesc, direction);
 		goto new_batch;
 	}
 

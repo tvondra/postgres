@@ -25,10 +25,6 @@
  *		index_parallelrescan  - (re)start a parallel scan of an index
  *		index_beginscan_parallel - join parallel index scan
  *		index_getnext_tid	- get the next TID from a scan
- *		index_getnext_batch	- get the next batch of TIDs from a scan
- *		index_getnext_batch_tid	- get the next TIDs from a batch
- *		index_getnext_batch_slot	- get the next tuple from a batch
- *		index_getnext_batch_prefetch	- prefetch heap pages for batch
  *		index_fetch_heap		- get the scan's next heap tuple
  *		index_getnext_slot	- get the next tuple from a scan
  *		index_getbitmap - get all tuples from a scan
@@ -37,6 +33,11 @@
  *		index_can_return	- does index support index-only scans?
  *		index_getprocid - get a support procedure OID
  *		index_getprocinfo - get a support procedure's lookup info
+ *		index_batch_getnext	- get the next batch of TIDs from a scan
+ *		index_batch_getnext_tid	- get the next TIDs from a batch
+ *		index_batch_getnext_slot	- get the next tuple from a batch
+ *		index_batch_prefetch	- prefetch heap pages for batch
+ *		index_batch_supported	- does the AM support/allow batching?
  *
  * NOTES
  *		This file contains the index_ routines which used
@@ -48,6 +49,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/nbtree.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -277,6 +279,10 @@ index_beginscan(Relation heapRelation,
 
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
+
+	/* no batching by default */
+	scan->xs_heaptids = NULL;
+	scan->xs_killed = NULL;
 
 	return scan;
 }
@@ -619,7 +625,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 }
 
 /* ----------------
- * index_getnext_batch - get the next batch of TIDs from a scan
+ * index_batch_getnext - get the next batch of TIDs from a scan
  *
  * The result is an array of TIDs satisfying the scan keys,
  * or NULL if no more matching tuples exist. The number of
@@ -635,7 +641,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * ----------------
  */
 ItemPointer
-index_getnext_batch(IndexScanDesc scan, ScanDirection direction)
+index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
 	bool		found;
 
@@ -691,7 +697,7 @@ index_getnext_batch(IndexScanDesc scan, ScanDirection direction)
  * ----------------
  */
 ItemPointer
-index_getnext_batch_tid(IndexScanDesc scan, ScanDirection direction)
+index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	/* no batch, or no more TIDs in the batch */
 	if (scan->xs_curridx >= scan->xs_nheaptids)
@@ -710,7 +716,7 @@ index_getnext_batch_tid(IndexScanDesc scan, ScanDirection direction)
  * ----------------
  */
 bool
-index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
 	for (;;)
 	{
@@ -719,7 +725,7 @@ index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 			ItemPointer tid;
 
 			/* Time to fetch the next TID from the index */
-			tid = index_getnext_batch_tid(scan, direction);
+			tid = index_batch_getnext_tid(scan, direction);
 
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
@@ -766,11 +772,59 @@ index_getnext_batch_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
  * ----------------
  */
 void
-index_getnext_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
+index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 {
 	for (int i = 0; i < scan->xs_nheaptids; i++)
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
 					   ItemPointerGetBlockNumber(&scan->xs_heaptids[i]));
+}
+
+bool
+index_batch_supported(IndexScanDesc scan, ScanDirection direction)
+{
+	return (scan->indexRelation->rd_indam->amgettuplebatch != NULL);
+}
+
+/*
+ * FIXME Using MaxTIDsPerBTreePage is not quiet correct here, it should
+ * not be tied to a particular index AM. There should be some upper limit
+ * on how large the batch can be, likely smaller.
+ */
+void
+index_batch_init(IndexScanDesc scan, ScanDirection direction)
+{
+	/* bail out if already initialized */
+	if (scan->xs_heaptids != NULL)
+		return;
+
+	/* init batching info, but only if batch supported */
+	if (!index_batch_supported(scan, direction))
+		return;
+
+	/* Preallocate the largest allowed array of TIDs. */
+	scan->xs_heaptids = palloc(sizeof(ItemPointerData) * MaxTIDsPerBTreePage);
+
+	/*
+	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
+	 * not a bool. This is easier / more convenient to manipulate, though.
+	 */
+	scan->xs_killed = (bool *) palloc0(sizeof(bool) * MaxTIDsPerBTreePage);
+}
+
+/*
+ * Reset the batch before reading the next chunk of data.
+ */
+void
+index_batch_reset(IndexScanDesc scan, ScanDirection direction)
+{
+	/* maybe initialize */
+	index_batch_init(scan, direction);
+
+	if (scan->xs_nheaptids > 0)
+		memset(scan->xs_killed, 0, sizeof(bool) * scan->xs_nheaptids);
+
+	scan->xs_nheaptids = 0;
+	scan->xs_curridx = 0;
 }
 
 /* ----------------

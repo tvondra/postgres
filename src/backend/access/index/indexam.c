@@ -286,6 +286,7 @@ index_beginscan(Relation heapRelation,
 	scan->xs_batch.heaptids = NULL;
 	scan->xs_batch.itups = NULL;
 	scan->xs_batch.killedItems = NULL;
+	scan->xs_batch.privateData = NULL;
 
 	return scan;
 }
@@ -381,7 +382,7 @@ index_rescan(IndexScanDesc scan,
 
 	/* reset the TID batch too */
 	scan->xs_batch.nheaptids = 0;
-	scan->xs_batch.currIndex = 0;
+	scan->xs_batch.currIndex = -1;
 	scan->xs_batch.prefetchIndex = 0;
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
@@ -668,7 +669,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_heap_continue = false;
 
 	/* We're starting to process a new batch. */
-	scan->xs_batch.currIndex = 0;
+	scan->xs_batch.currIndex = -1;
 
 	/* If we're out of index entries, we're done */
 	if (!found)
@@ -704,15 +705,16 @@ ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	/* no batch, or no more TIDs in the batch */
-	if (scan->xs_batch.currIndex >= scan->xs_batch.nheaptids)
+	if ((scan->xs_batch.currIndex + 1) == scan->xs_batch.nheaptids)
 		return NULL;
+
+	/* move to the next batch item */
+	scan->xs_batch.currIndex++;
 
 	/* next TID from the batch, optionally also the IndexTuple */
 	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex];
 	if (scan->xs_want_itup)
 		scan->xs_itup = scan->xs_batch.itups[scan->xs_batch.currIndex];
-
-	scan->xs_batch.currIndex++;
 
 	return &scan->xs_heaptid;
 }
@@ -742,6 +744,10 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
 		}
 
+		/* Is the currIndex value a valid index into the batch? */
+		Assert((scan->xs_batch.currIndex >= 0) &&
+			   (scan->xs_batch.currIndex < scan->xs_batch.nheaptids));
+
 		/*
 		 * Fetch the next (or only) visible heap tuple for this index entry.
 		 * If we don't find anything, loop around and grab the next TID from
@@ -758,7 +764,7 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 			if (scan->kill_prior_tuple)
 			{
 				Assert(false);
-				scan->xs_batch.killedItems[scan->xs_batch.currIndex - 1] = true;
+				scan->xs_batch.killedItems[scan->xs_batch.currIndex] = true;
 				scan->kill_prior_tuple = false;
 			}
 
@@ -781,7 +787,8 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
  * ----------------
  */
 void
-index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
+index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
+					 index_prefetch_callback prefetch_callback, void *arg)
 {
 	/* where should we start to prefetch? */
 	int		prefetchStart = Max(scan->xs_batch.currIndex,
@@ -797,8 +804,14 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 
 	/* finally, do the prefetching */
 	for (int i = prefetchStart; i < prefetchEnd; i++)
+	{
+		/* skip block if the provided callback says so */
+		if (prefetch_callback && !prefetch_callback(scan, direction, arg, i))
+			continue;
+
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
 					   ItemPointerGetBlockNumber(&scan->xs_batch.heaptids[i]));
+	}
 
 	/* remember how far we prefetched / where to start the next prefetch */
 	scan->xs_batch.prefetchIndex = prefetchEnd;
@@ -856,6 +869,12 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	 * not a bool. This is easier / more convenient to manipulate, though.
 	 */
 	scan->xs_batch.killedItems = (bool *) palloc0(sizeof(bool) * scan->xs_batch.maxSize);
+
+	/*
+	 * XXX Maybe allocate only when actually needed? Also, shouldn't we have
+	 * a memory context for the private data?
+	 */
+	scan->xs_batch.privateData = (Datum *) palloc0(sizeof(Datum) * scan->xs_batch.maxSize);
 }
 
 /*
@@ -868,7 +887,7 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 	index_batch_init(scan, direction);
 
 	scan->xs_batch.nheaptids = 0;
-	scan->xs_batch.currIndex = 0;
+	scan->xs_batch.currIndex = -1;
 	scan->xs_batch.prefetchIndex = 0;
 }
 
@@ -884,6 +903,7 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
 	scan->xs_batch.killedItems[scan->xs_batch.nheaptids] = false;
+	scan->xs_batch.privateData[scan->xs_batch.nheaptids] = (Datum) 0;
 
 	if (scan->xs_want_itup)
 		scan->xs_batch.itups[scan->xs_batch.nheaptids] = itup;

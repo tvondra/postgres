@@ -192,11 +192,14 @@ extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 extern bool index_batch_getnext_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
-extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_supported(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
+
+typedef bool (*index_prefetch_callback) (IndexScanDesc scan, ScanDirection direction, void *arg, int index);
+extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
+								 index_prefetch_callback callback, void *arg);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

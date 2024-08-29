@@ -1564,17 +1564,29 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		if (ScanDirectionIsForward(dir))
 		{
-			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
+			while (so->currPos.itemIndex <= so->currPos.lastItem)
+			{
+				int batchidx = (scan->xs_batch.nheaptids++);
+				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex++];
 
-			so->currPos.itemIndex = so->currPos.lastItem;
+				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+
+				if (scan->xs_want_itup)
+					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+			}
 		}
 		else
 		{
-			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
+			while (so->currPos.itemIndex >= so->currPos.firstItem)
+			{
+				int batchidx = (scan->xs_batch.nheaptids++);
+				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex--];
 
-			so->currPos.itemIndex = so->currPos.firstItem;
+				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+
+				if (scan->xs_want_itup)
+					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+			}
 		}
 
 		return true;
@@ -1611,17 +1623,29 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		if (ScanDirectionIsForward(dir))
 		{
-			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
+			while (so->currPos.itemIndex <= so->currPos.lastItem)
+			{
+				int batchidx = (scan->xs_batch.nheaptids++);
+				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex++];
 
-			so->currPos.itemIndex = so->currPos.lastItem;
+				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+
+				if (scan->xs_want_itup)
+					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+			}
 		}
 		else
 		{
-			for (int i = so->currPos.lastItem; i >= so->currPos.firstItem; i--)
-				scan->xs_batch.heaptids[scan->xs_batch.nheaptids++] = so->currPos.items[i].heapTid;
+			while (so->currPos.itemIndex >= so->currPos.firstItem)
+			{
+				int batchidx = (scan->xs_batch.nheaptids++);
+				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex--];
 
-			so->currPos.itemIndex = so->currPos.firstItem;
+				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+
+				if (scan->xs_want_itup)
+					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+			}
 		}
 
 		return true;

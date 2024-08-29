@@ -157,6 +157,7 @@ typedef struct IndexScanDescData
 		int					nheaptids;		/* number of TIDs in the batch */
 		int					currIndex;		/* index of the current item */
 		ItemPointerData	   *heaptids;		/* TIDs in the batch */
+		IndexTuple		   *itups;			/* IndexTuples, if requested */
 		bool			   *killedItems;	/* bitmap of tuples to kill */
 	} xs_batch;
 

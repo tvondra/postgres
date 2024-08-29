@@ -282,6 +282,7 @@ index_beginscan(Relation heapRelation,
 
 	/* no batching by default */
 	scan->xs_batch.heaptids = NULL;
+	scan->xs_batch.itups = NULL;
 	scan->xs_batch.killedItems = NULL;
 
 	return scan;
@@ -807,6 +808,9 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	/* Preallocate the largest allowed array of TIDs. */
 	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * MaxTIDsPerBTreePage);
 
+	if (scan->xs_want_itup)
+		scan->xs_batch.itups = palloc(sizeof(IndexTuple) * MaxTIDsPerBTreePage);
+
 	/*
 	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
 	 * not a bool. This is easier / more convenient to manipulate, though.
@@ -823,6 +827,7 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 	/* maybe initialize */
 	index_batch_init(scan, direction);
 
+	/* reset the kill bitmap, everything else will be set when adding items */
 	if (scan->xs_batch.nheaptids > 0)
 		memset(scan->xs_batch.killedItems, 0, sizeof(bool) * scan->xs_batch.nheaptids);
 

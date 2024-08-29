@@ -61,6 +61,7 @@
 #include "storage/predicate.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
+#include "utils/spccache.h"
 #include "utils/syscache.h"
 
 
@@ -379,6 +380,7 @@ index_rescan(IndexScanDesc scan,
 	/* reset the TID batch too */
 	scan->xs_batch.nheaptids = 0;
 	scan->xs_batch.currIndex = 0;
+	scan->xs_batch.prefetchIndex = 0;
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -774,9 +776,25 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 void
 index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 {
-	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
+	/* where should we start to prefetch? */
+	int		prefetchStart = Max(scan->xs_batch.currIndex,
+								scan->xs_batch.prefetchIndex);
+
+	/* where should we stop prefetching? */
+	int		prefetchEnd = Min(scan->xs_batch.currIndex + scan->xs_batch.prefetchTarget,
+							  scan->xs_batch.nheaptids);
+
+	/* increase the prefetch distance */
+	scan->xs_batch.prefetchTarget = Min(scan->xs_batch.prefetchTarget + 1,
+										scan->xs_batch.prefetchMaximum);
+
+	/* finally, do the prefetching */
+	for (int i = prefetchStart; i < prefetchEnd; i++)
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
 					   ItemPointerGetBlockNumber(&scan->xs_batch.heaptids[i]));
+
+	/* remember how far we prefetched / where to start the next prefetch */
+	scan->xs_batch.prefetchIndex = prefetchEnd;
 }
 
 /*
@@ -814,6 +832,12 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch.initSize = 8;
 	scan->xs_batch.currSize = scan->xs_batch.initSize;
 
+	/* initialize prefetching info */
+	scan->xs_batch.prefetchMaximum =
+		get_tablespace_io_concurrency(scan->heapRelation->rd_rel->reltablespace);
+	scan->xs_batch.prefetchTarget = 0;
+	scan->xs_batch.prefetchIndex = 0;
+
 	/* Preallocate the largest allowed array of TIDs. */
 	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
 
@@ -842,6 +866,7 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 
 	scan->xs_batch.nheaptids = 0;
 	scan->xs_batch.currIndex = 0;
+	scan->xs_batch.prefetchIndex = 0;
 }
 
 /*
@@ -855,6 +880,7 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 		return false;
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
+	scan->xs_batch.killedItems[scan->xs_batch.nheaptids] = false;
 
 	if (scan->xs_want_itup)
 		scan->xs_batch.itups[scan->xs_batch.nheaptids] = itup;

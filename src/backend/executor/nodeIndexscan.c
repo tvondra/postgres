@@ -168,6 +168,9 @@ new_batch:
 	{
 		CHECK_FOR_INTERRUPTS();
 
+		/* first, take care of prefetching further items */
+		index_batch_prefetch(scandesc, direction);
+
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
 		 * the fetched tuple.

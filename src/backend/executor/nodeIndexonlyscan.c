@@ -276,6 +276,9 @@ new_batch:
 
 			CHECK_FOR_INTERRUPTS();
 
+			/* first, take care of prefetching further items */
+			index_batch_prefetch(scandesc, direction);
+
 			/*
 			 * We can skip the heap fetch if the TID references a heap page on
 			 * which all tuples are known visible to everybody.  In any case,

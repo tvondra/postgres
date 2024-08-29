@@ -64,6 +64,8 @@
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 
+/* read batches of TIDs? */
+bool		enable_indexscan_batching = false;
 
 /* ----------------------------------------------------------------
  *					macros used in index_ routines
@@ -705,8 +707,12 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	if (scan->xs_batch.currIndex >= scan->xs_batch.nheaptids)
 		return NULL;
 
-	/* next TID from the batch */
-	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex++];
+	/* next TID from the batch, optionally also the IndexTuple */
+	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex];
+	if (scan->xs_want_itup)
+		scan->xs_itup = scan->xs_batch.itups[scan->xs_batch.currIndex];
+
+	scan->xs_batch.currIndex++;
 
 	return &scan->xs_heaptid;
 }
@@ -751,6 +757,7 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 			 */
 			if (scan->kill_prior_tuple)
 			{
+				Assert(false);
 				scan->xs_batch.killedItems[scan->xs_batch.currIndex - 1] = true;
 				scan->kill_prior_tuple = false;
 			}

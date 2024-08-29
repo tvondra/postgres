@@ -1723,7 +1723,10 @@ _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 				palloc(MaxTIDsPerBTreePage * sizeof(int));
 
 		if (so->numKilled < MaxTIDsPerBTreePage)
+		{
+			Assert(false);
 			so->killedItems[so->numKilled++] = (so->currPos.firstItem + i);
+		}
 	}
 }
 

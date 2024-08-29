@@ -44,9 +44,6 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-/* read batches of TIDs? */
-bool		enable_indexscan_batching = false;
-
 /*
  * When an ordering operator is used, tuples fetched from the index that
  * need to be reordered are queued in a pairing heap, as ReorderTuples.

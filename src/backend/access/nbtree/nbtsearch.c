@@ -1533,14 +1533,8 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
  * A batch variant of _bt_first(). Most of the comments for that function
  * apply here too.
  *
- * XXX This does not set scan->xs_heaptid and scan->xs_itup, it's up to the
- * caller to do that. Probably needs improvements to make this convenient.
- *
- * XXX At the moment we always return a single batch for all matching items on
- * the page, and leave it up to the caller to process them in suitable chunks
- * (e.g. to prefetch the right distance). In the future we might limit the
- * size of a batch, e.g. so that we don't do too much work for LIMIT 1. We
- * might start with small batches (1 TID) and grow them over time.
+ * XXX This only populates the batch, it does not set any other fields like
+ * scan->xs_heaptid or scan->xs_itup. That happens in getnext_tid() calls.
  *
  * XXX I'm not sure it works to mix batched and non-batches calls, e.g. get
  * a TID and then a batch of TIDs. It probably should work as long as we
@@ -1559,7 +1553,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	/*
 	 * Reset the batch size to the initial size.
 	 *
-	 * FIXME should be done in indexam.c probably?
+	 * FIXME should be done in indexam.c probably, at the beginning of each
+	 * index rescan?
 	 */
 	scan->xs_batch.currSize = scan->xs_batch.initSize;
 
@@ -1704,24 +1699,32 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 /*
  *	_bt_kill_batch() -- remember the items-to-be-killed from the current batch
  *
- * We simply translate the bitmap into the regular killedItems array.
+ * We simply translate the bitmap into the "regular" killedItems array, and let
+ * that to drive which items are killed.
  */
 void
 _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	Assert(so->numKilled == 0);
-
 	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
 	{
+		/* Skip batch items not marked as killed. */
 		if (!scan->xs_batch.killedItems[i])
 			continue;
 
+		/*
+		 * Yes, remember it for later. (We'll deal with all such
+		 * tuples at once right before leaving the index page.)  The
+		 * test for numKilled overrun is not just paranoia: if the
+		 * caller reverses direction in the indexscan then the same
+		 * item might get entered multiple times. It's not worth
+		 * trying to optimize that, so we don't detect it, but instead
+		 * just forget any excess entries.
+		 */
 		if (so->killedItems == NULL)
 			so->killedItems = (int *)
 				palloc(MaxTIDsPerBTreePage * sizeof(int));
-
 		if (so->numKilled < MaxTIDsPerBTreePage)
 		{
 			Assert(false);

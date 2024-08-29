@@ -835,6 +835,22 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch.currIndex = 0;
 }
 
+/*
+ * Add a TID item to the batch.
+ */
+bool
+index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
+{
+	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
+
+	if (scan->xs_want_itup)
+		scan->xs_batch.itups[scan->xs_batch.nheaptids] = itup;
+
+	scan->xs_batch.nheaptids++;
+
+	return true;
+}
+
 /* ----------------
  *		index_fetch_heap - get the scan's next heap tuple
  *

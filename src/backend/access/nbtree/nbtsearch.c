@@ -1566,26 +1566,34 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		{
 			while (so->currPos.itemIndex <= so->currPos.lastItem)
 			{
-				int batchidx = (scan->xs_batch.nheaptids++);
-				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex++];
-
-				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+				BTScanPosItem  *currItem = &so->currPos.items[so->currPos.itemIndex];
+				IndexTuple		itup = NULL;
 
 				if (scan->xs_want_itup)
-					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+					itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+				/* try to add it to batch, if there's space */
+				if (!index_batch_add(scan, currItem->heapTid, itup))
+					break;
+
+				so->currPos.itemIndex++;
 			}
 		}
 		else
 		{
 			while (so->currPos.itemIndex >= so->currPos.firstItem)
 			{
-				int batchidx = (scan->xs_batch.nheaptids++);
-				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex--];
-
-				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+				BTScanPosItem  *currItem = &so->currPos.items[so->currPos.itemIndex];
+				IndexTuple		itup = NULL;
 
 				if (scan->xs_want_itup)
-					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+					itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+				/* try to add it to batch, if there's space */
+				if (!index_batch_add(scan, currItem->heapTid, itup))
+					break;
+
+				so->currPos.itemIndex--;
 			}
 		}
 
@@ -1625,26 +1633,34 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		{
 			while (so->currPos.itemIndex <= so->currPos.lastItem)
 			{
-				int batchidx = (scan->xs_batch.nheaptids++);
-				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex++];
-
-				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+				BTScanPosItem  *currItem = &so->currPos.items[so->currPos.itemIndex];
+				IndexTuple		itup = NULL;
 
 				if (scan->xs_want_itup)
-					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+					itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+				/* try to add it to batch, if there's space */
+				if (!index_batch_add(scan, currItem->heapTid, itup))
+					break;
+
+				so->currPos.itemIndex++;
 			}
 		}
 		else
 		{
 			while (so->currPos.itemIndex >= so->currPos.firstItem)
 			{
-				int batchidx = (scan->xs_batch.nheaptids++);
-				BTScanPosItem *currItem = &so->currPos.items[so->currPos.itemIndex--];
-
-				scan->xs_batch.heaptids[batchidx] = currItem->heapTid;
+				BTScanPosItem  *currItem = &so->currPos.items[so->currPos.itemIndex];
+				IndexTuple		itup = NULL;
 
 				if (scan->xs_want_itup)
-					scan->xs_batch.itups[batchidx] = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+					itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+				/* try to add it to batch, if there's space */
+				if (!index_batch_add(scan, currItem->heapTid, itup))
+					break;
+
+				so->currPos.itemIndex--;
 			}
 		}
 

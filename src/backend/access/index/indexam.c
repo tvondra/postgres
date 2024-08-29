@@ -709,7 +709,11 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
-	/* no batch, or no more TIDs in the batch */
+	/* batch not initialized yet */
+	if (scan->xs_batch.heaptids == NULL)
+		return NULL;
+
+	/* no more TIDs in the batch */
 	if ((scan->xs_batch.currIndex + 1) == scan->xs_batch.nheaptids)
 		return NULL;
 

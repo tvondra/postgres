@@ -281,8 +281,8 @@ index_beginscan(Relation heapRelation,
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
 
 	/* no batching by default */
-	scan->xs_heaptids = NULL;
-	scan->xs_killed = NULL;
+	scan->xs_batch.heaptids = NULL;
+	scan->xs_batch.killedItems = NULL;
 
 	return scan;
 }
@@ -377,8 +377,8 @@ index_rescan(IndexScanDesc scan,
 	scan->xs_heap_continue = false;
 
 	/* reset the TID batch too */
-	scan->xs_nheaptids = 0;
-	scan->xs_curridx = 0;
+	scan->xs_batch.nheaptids = 0;
+	scan->xs_batch.currIndex = 0;
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -629,7 +629,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  *
  * The result is an array of TIDs satisfying the scan keys,
  * or NULL if no more matching tuples exist. The number of
- * elements is returned in xs_nheaptids.
+ * elements is returned in xs_batch.nheaptids.
  *
  * XXX This does not set xs_heaptid/xs_itup/xs_hitup, that's up to the
  * caller to set those fields. Seems weird, maybe we should set it to
@@ -653,7 +653,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
-	 * keys, and puts the TIDs into scan->xs_heaptids.  It should also set
+	 * keys, and puts the TIDs into scan->xs_batch.heaptids.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
 	 * pay no attention to those fields here.
 	 */
@@ -664,7 +664,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_heap_continue = false;
 
 	/* We're starting to process a new batch. */
-	scan->xs_curridx = 0;
+	scan->xs_batch.currIndex = 0;
 
 	/* If we're out of index entries, we're done */
 	if (!found)
@@ -677,14 +677,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	}
 
 #ifdef USE_ASSERT_CHECKING
-	for (int i = 0; i < scan->xs_nheaptids; i++)
-		Assert(ItemPointerIsValid(&scan->xs_heaptids[i]));
+	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
+		Assert(ItemPointerIsValid(&scan->xs_batch.heaptids[i]));
 #endif
 
-	pgstat_count_index_tuples(scan->indexRelation, scan->xs_nheaptids);
+	pgstat_count_index_tuples(scan->indexRelation, scan->xs_batch.nheaptids);
 
 	/* Return the batch of TIDs we found. */
-	return scan->xs_heaptids;
+	return scan->xs_batch.heaptids;
 }
 
 /* ----------------
@@ -700,11 +700,11 @@ ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	/* no batch, or no more TIDs in the batch */
-	if (scan->xs_curridx >= scan->xs_nheaptids)
+	if (scan->xs_batch.currIndex >= scan->xs_batch.nheaptids)
 		return NULL;
 
 	/* next TID from the batch */
-	scan->xs_heaptid = scan->xs_heaptids[scan->xs_curridx++];
+	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex++];
 
 	return &scan->xs_heaptid;
 }
@@ -749,7 +749,7 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 			 */
 			if (scan->kill_prior_tuple)
 			{
-				scan->xs_killed[scan->xs_curridx - 1] = true;
+				scan->xs_batch.killedItems[scan->xs_batch.currIndex - 1] = true;
 				scan->kill_prior_tuple = false;
 			}
 
@@ -774,11 +774,14 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 void
 index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 {
-	for (int i = 0; i < scan->xs_nheaptids; i++)
+	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
-					   ItemPointerGetBlockNumber(&scan->xs_heaptids[i]));
+					   ItemPointerGetBlockNumber(&scan->xs_batch.heaptids[i]));
 }
 
+/*
+ * Does the access method support batching?
+ */
 bool
 index_batch_supported(IndexScanDesc scan, ScanDirection direction)
 {
@@ -794,7 +797,7 @@ void
 index_batch_init(IndexScanDesc scan, ScanDirection direction)
 {
 	/* bail out if already initialized */
-	if (scan->xs_heaptids != NULL)
+	if (scan->xs_batch.heaptids != NULL)
 		return;
 
 	/* init batching info, but only if batch supported */
@@ -802,13 +805,13 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 		return;
 
 	/* Preallocate the largest allowed array of TIDs. */
-	scan->xs_heaptids = palloc(sizeof(ItemPointerData) * MaxTIDsPerBTreePage);
+	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * MaxTIDsPerBTreePage);
 
 	/*
 	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
 	 * not a bool. This is easier / more convenient to manipulate, though.
 	 */
-	scan->xs_killed = (bool *) palloc0(sizeof(bool) * MaxTIDsPerBTreePage);
+	scan->xs_batch.killedItems = (bool *) palloc0(sizeof(bool) * MaxTIDsPerBTreePage);
 }
 
 /*
@@ -820,11 +823,11 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 	/* maybe initialize */
 	index_batch_init(scan, direction);
 
-	if (scan->xs_nheaptids > 0)
-		memset(scan->xs_killed, 0, sizeof(bool) * scan->xs_nheaptids);
+	if (scan->xs_batch.nheaptids > 0)
+		memset(scan->xs_batch.killedItems, 0, sizeof(bool) * scan->xs_batch.nheaptids);
 
-	scan->xs_nheaptids = 0;
-	scan->xs_curridx = 0;
+	scan->xs_batch.nheaptids = 0;
+	scan->xs_batch.currIndex = 0;
 }
 
 /* ----------------

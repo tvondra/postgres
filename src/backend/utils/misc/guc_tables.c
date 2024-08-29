@@ -796,7 +796,7 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_indexscan_batching,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{

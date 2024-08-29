@@ -860,10 +860,6 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 	/* maybe initialize */
 	index_batch_init(scan, direction);
 
-	/* reset the kill bitmap, everything else will be set when adding items */
-	if (scan->xs_batch.nheaptids > 0)
-		memset(scan->xs_batch.killedItems, 0, sizeof(bool) * scan->xs_batch.nheaptids);
-
 	scan->xs_batch.nheaptids = 0;
 	scan->xs_batch.currIndex = 0;
 	scan->xs_batch.prefetchIndex = 0;

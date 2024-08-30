@@ -1567,18 +1567,28 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		/* determine which part of the leaf page to extract */
 		if (ScanDirectionIsForward(dir))
 		{
-			start = so->currPos.itemIndex;
-			end = Min(so->currPos.itemIndex + scan->xs_batch.currSize - 1,
-					  so->currPos.lastItem);
+			start = so->currPos.firstItem;
+			end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
 			so->currPos.itemIndex = (end + 1);
 		}
 		else
 		{
-			start = Max(so->currPos.itemIndex - scan->xs_batch.currSize + 1,
+			end = so->currPos.lastItem;
+			start = Max(end - (scan->xs_batch.currSize - 1),
 						so->currPos.firstItem);
-			end = so->currPos.itemIndex;
 			so->currPos.itemIndex = (start - 1);
 		}
+
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
+
+		/* should fit into the current batch */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
+
+		/* should be valid items */
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 		elog(LOG, "_bt_first_batch start %d end %d", start, end);
 
@@ -1597,6 +1607,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 			/* try to add it to batch, if there's space */
 			if (!index_batch_add(scan, currItem->heapTid, itup))
 				break;
+
+			elog(LOG, "added item");
 
 			start++;
 		}
@@ -1633,6 +1645,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
+	elog(LOG, "_bt_next_batch first %d last %d current %d", so->currPos.firstItem, so->currPos.lastItem, so->currPos.itemIndex);
+
 	/*
 	 * Try to increase the size of the batch.
 	 *
@@ -1641,6 +1655,9 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
 								  scan->xs_batch.maxSize);
+
+	Assert(scan->xs_batch.firstIndex <= MaxTIDsPerBTreePage);
+	Assert(scan->xs_batch.lastIndex <= MaxTIDsPerBTreePage);
 
 	/*
 	 * Check if we still have some items on the current leaf page. If yes,
@@ -1651,16 +1668,15 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (ScanDirectionIsForward(dir))
 	{
-		elog(LOG, "forward");
-		start = so->currPos.itemIndex;
-		end = Min(start + scan->xs_batch.currSize - 1, so->currPos.lastItem);
+		start = scan->xs_batch.lastIndex + 1;
+		end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
 		so->currPos.itemIndex = (end + 1);
 	}
 	else
 	{
-		elog(LOG, "backwards ntids %d idx %d", scan->xs_batch.nheaptids, scan->xs_batch.currIndex);
-		end = so->currPos.itemIndex - scan->xs_batch.nheaptids - 1;
-		start = Max(end - scan->xs_batch.currSize + 1, so->currPos.firstItem);
+		end = scan->xs_batch.firstIndex - 1;
+		start = Max(end - (scan->xs_batch.currSize - 1),
+					so->currPos.firstItem);
 		so->currPos.itemIndex = (start - 1);
 	}
 
@@ -1674,67 +1690,19 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	index_batch_reset(scan, dir);
 
-	/*
-	 * Advance to next tuple on current page; or if there's no more, try to
-	 * step to the next page with data.
-	 */
-	while (start <= end)
+	if (start <= end)
 	{
-		BTScanPosItem  *currItem = &so->currPos.items[start];
-		IndexTuple		itup = NULL;
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
 
-		if (scan->xs_want_itup)
-			itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+		/* should fit into the current batch */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
 
-		/* try to add it to batch, if there's space */
-		if (!index_batch_add(scan, currItem->heapTid, itup))
-			break;
+		/* should be valid items */
+		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
-		start++;
-
-		/* can we end up with empty batch? shouldn't be possible, IMO */
-		Assert(scan->xs_batch.nheaptids > 0);
-	}
-
-	/* finally set the starting point */
-	if (ScanDirectionIsForward(dir))
-		scan->xs_batch.currIndex = -1;
-	else
-		scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
-
-	/* did we get some items in the existing leaft page? */
-	if (scan->xs_batch.nheaptids)
-	{
-		elog(LOG, "done");
-		return true;
-	}
-
-	/* read the next leaf page, and add items to the batch */
-	if (_bt_next(scan, dir))
-	{
-		/*
-		 * Check if we still have some items on the current leaf page. If yes,
-		 * load them into a batch and return.
-		 *
-		 * XXX try combining that with the next block, the inner while loop is
-		 * exactly the same.
-		 */
-		if (ScanDirectionIsForward(dir))
-		{
-			start = so->currPos.itemIndex;
-			end = Min(so->currPos.itemIndex + scan->xs_batch.currSize - 1,
-					  so->currPos.lastItem);
-			so->currPos.itemIndex = (end + 1);
-		}
-		else
-		{
-			start = Max(so->currPos.itemIndex - scan->xs_batch.currSize + 1,
-						so->currPos.firstItem);
-			end = so->currPos.itemIndex;
-			so->currPos.itemIndex = (start - 1);
-		}
-
-		elog(LOG, "_bt_next_batch start %d end %d", start, end);
+		elog(LOG, "_bt_first_batch start %d end %d", start, end);
 
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
@@ -1751,6 +1719,80 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 			/* try to add it to batch, if there's space */
 			if (!index_batch_add(scan, currItem->heapTid, itup))
 				break;
+
+			start++;
+
+			elog(LOG, "added item");
+		}
+
+		/* can we end up with empty batch? shouldn't be possible, IMO */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		/* finally set the starting point */
+		if (ScanDirectionIsForward(dir))
+			scan->xs_batch.currIndex = -1;
+		else
+			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
+
+		/* did we get some items in the existing leaft page? */
+		Assert(scan->xs_batch.nheaptids > 0);
+
+		return true;
+	}
+
+	/* read the next leaf page, and add items to the batch */
+	if (_bt_next(scan, dir))
+	{
+		/*
+		 * Check if we still have some items on the current leaf page. If yes,
+		 * load them into a batch and return.
+		 *
+		 * XXX try combining that with the next block, the inner while loop is
+		 * exactly the same.
+		 */
+		if (ScanDirectionIsForward(dir))
+		{
+			start = so->currPos.firstItem;
+			end = Min(start + (scan->xs_batch.currSize - 1), so->currPos.lastItem);
+			so->currPos.itemIndex = (end + 1);
+		}
+		else
+		{
+			end = so->currPos.lastItem;
+			start = Max(end - (scan->xs_batch.currSize - 1),
+						so->currPos.firstItem);
+			so->currPos.itemIndex = (start - 1);
+		}
+
+		scan->xs_batch.firstIndex = start;
+		scan->xs_batch.lastIndex = end;
+
+		/* should fit into the current batch */
+		Assert((end - start + 1) <= scan->xs_batch.currSize);
+
+		/* should be valid items */
+		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
+		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
+
+		elog(LOG, "_bt_first_batch start %d end %d", start, end);
+
+		/*
+		 * Advance to next tuple on current page; or if there's no more, try to
+		 * step to the next page with data.
+		 */
+		while (start <= end)
+		{
+			BTScanPosItem  *currItem = &so->currPos.items[start];
+			IndexTuple		itup = NULL;
+
+			if (scan->xs_want_itup)
+				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+			/* try to add it to batch, if there's space */
+			if (!index_batch_add(scan, currItem->heapTid, itup))
+				break;
+
+			elog(LOG, "added item");
 
 			start++;
 		}

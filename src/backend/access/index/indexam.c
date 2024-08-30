@@ -51,6 +51,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/nbtree.h"		/* XXX MaxTIDsPerBTreePage */
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -153,6 +154,11 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 	Assert((scan->xs_batch.prefetchIndex >= -1) &&
 		   (scan->xs_batch.prefetchIndex <= scan->xs_batch.nheaptids));
+
+	Assert((scan->xs_batch.firstIndex >= -1) &&
+		   (scan->xs_batch.firstIndex <= MaxTIDsPerBTreePage));
+	Assert((scan->xs_batch.lastIndex >= -1) &&
+		   (scan->xs_batch.lastIndex <= MaxTIDsPerBTreePage));
 }
 
 #define	INDEX_BATCH_IS_FULL(scan)	\
@@ -990,6 +996,9 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	/* init batching info, but only if batch supported */
 	if (!index_batch_supported(scan, direction))
 		return;
+
+	scan->xs_batch.firstIndex = -1;
+	scan->xs_batch.lastIndex = -1;
 
 	/*
 	 * Set some reasonable batch size defaults.

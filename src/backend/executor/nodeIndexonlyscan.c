@@ -136,7 +136,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
 	if (!(enable_indexscan_batching &&
-		  index_batch_supported(scandesc, direction)))
+		  index_batch_supported(scandesc, direction) &&
+		  node->ioss_CanBatch))
 	{
 		/*
 		 * OK, now that we have what we need, fetch the next tuple.
@@ -764,6 +765,16 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
 	indexstate->recheckqual =
 		ExecInitQual(node->recheckqual, (PlanState *) indexstate);
+
+	/*
+	 * Can't do batching (and thus prefetching) when the plan requires mark
+	 * and restore. There's an issue with translating the mark/restore
+	 * positions between the batch in scan descriptor and the original
+	 * position recognized in the index AM.
+	 *
+	 * XXX Hopefully just a temporary limitation?
+	 */
+	indexstate->ioss_CanBatch = !(eflags & EXEC_FLAG_MARK);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

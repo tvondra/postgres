@@ -141,7 +141,8 @@ IndexNext(IndexScanState *node)
 	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
 	if (!(enable_indexscan_batching &&
-		  index_batch_supported(scandesc, direction)))
+		  index_batch_supported(scandesc, direction) &&
+		  node->iss_CanBatch))
 	{
 		/*
 		 * ok, now that we have what we need, fetch the next tuple.
@@ -999,6 +1000,16 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 		ExecInitQual(node->indexqualorig, (PlanState *) indexstate);
 	indexstate->indexorderbyorig =
 		ExecInitExprList(node->indexorderbyorig, (PlanState *) indexstate);
+
+	/*
+	 * Can't do batching (and thus prefetching) when the plan requires mark
+	 * and restore. There's an issue with translating the mark/restore
+	 * positions between the batch in scan descriptor and the original
+	 * position recognized in the index AM.
+	 *
+	 * XXX Hopefully just a temporary limitation?
+	 */
+	indexstate->iss_CanBatch = !(eflags & EXEC_FLAG_MARK);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

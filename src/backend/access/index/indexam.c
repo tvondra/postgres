@@ -953,6 +953,8 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch.nheaptids = 0;
 	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
 
+	elog(LOG, "heaptids %lu", (sizeof(ItemPointerData) * scan->xs_batch.maxSize));
+
 	if (scan->xs_want_itup)
 		scan->xs_batch.itups = palloc(sizeof(IndexTuple) * scan->xs_batch.maxSize);
 
@@ -1007,6 +1009,9 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 	/* there must be space for at least one entry */
 	Assert(scan->xs_batch.nheaptids < scan->xs_batch.currSize);
 	Assert(scan->xs_batch.nheaptids >= 0);
+
+	elog(LOG, "scan->xs_batch.nheaptids = %d", scan->xs_batch.nheaptids);
+	elog(LOG, "tid = (%u, %d)", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
 	scan->xs_batch.killedItems[scan->xs_batch.nheaptids] = false;

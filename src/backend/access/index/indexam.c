@@ -816,8 +816,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	else
 		scan->xs_batch.currIndex--;
 
-	elog(LOG, "scan->xs_batch.currIndex = %d", scan->xs_batch.currIndex);
-
 	/* next TID from the batch, optionally also the IndexTuple */
 	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex];
 	if (scan->xs_want_itup)
@@ -865,22 +863,28 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTable
 		Assert(ItemPointerIsValid(&scan->xs_heaptid));
 		if (index_fetch_heap(scan, slot))
 		{
-			/*
-			 * If we decided to kill prior tuple in index_fetch_heap(), track
-			 * it for the batch, and then reset the flag, so that we don't
-			 * accidentally use that to kill something we shouldn't.
-			 */
-			if (scan->kill_prior_tuple)
-			{
-				Assert(false);
-				scan->xs_batch.killedItems[scan->xs_batch.currIndex] = true;
-				scan->kill_prior_tuple = false;
-			}
+			/* If we found a visible tuple, we shouldn't kill it. */
+			Assert(!scan->kill_prior_tuple);
 
 			/* comprehensive checks of batching info */
 			AssertCheckBatchInfo(scan);
 
 			return true;
+		}
+
+		/*
+		 * If we haven't found any tuples, chances are all versions are dead
+		 * and we should kill it from the index. If so, flag it in the kill
+		 * bitmap - we'll translate it to indexes later.
+		 *
+		 * XXX Actually, with the firstIndex/lastIndex it would not be too
+		 * hard to do the translation here. But do we want to? How much is
+		 * that considered an internal detail of the AM?
+		 */
+		if (scan->kill_prior_tuple)
+		{
+			scan->xs_batch.killedItems[scan->xs_batch.currIndex] = true;
+			scan->kill_prior_tuple = false;
 		}
 	}
 

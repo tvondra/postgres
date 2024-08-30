@@ -134,7 +134,7 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 	Assert((scan->xs_batch.initSize >= 0) &&
 		   (scan->xs_batch.initSize <= scan->xs_batch.currSize) &&
 		   (scan->xs_batch.currSize <= scan->xs_batch.maxSize) &&
-		   (scan->xs_batch.maxSize <= 256));	/* arbitrary limit */
+		   (scan->xs_batch.maxSize <= 1024));	/* arbitrary limit */
 
 	/* Is the number of in the batch TIDs in a valid range? */
 	Assert((scan->xs_batch.nheaptids >= 0) &&
@@ -153,6 +153,14 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 	Assert((scan->xs_batch.prefetchIndex >= 0) &&
 		   (scan->xs_batch.prefetchIndex <= scan->xs_batch.nheaptids));
+
+	for (int i = 0; i < scan->xs_batch.maxSize; i++)
+	{
+		ItemPointerData tid;
+		elog(LOG, "%d", i);
+		tid = scan->xs_batch.heaptids[i];
+		elog(LOG, "(%u,%u,%u)", tid.ip_blkid.bi_hi, tid.ip_blkid.bi_lo, tid.ip_posid);
+	}
 }
 
 #define	INDEX_BATCH_IS_FULL(scan)	\
@@ -951,9 +959,7 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 
 	/* Preallocate the largest allowed array of TIDs. */
 	scan->xs_batch.nheaptids = 0;
-	scan->xs_batch.heaptids = palloc(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
-
-	elog(LOG, "heaptids %lu", (sizeof(ItemPointerData) * scan->xs_batch.maxSize));
+	scan->xs_batch.heaptids = palloc0(sizeof(ItemPointerData) * scan->xs_batch.maxSize);
 
 	if (scan->xs_want_itup)
 		scan->xs_batch.itups = palloc(sizeof(IndexTuple) * scan->xs_batch.maxSize);
@@ -1010,8 +1016,8 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 	Assert(scan->xs_batch.nheaptids < scan->xs_batch.currSize);
 	Assert(scan->xs_batch.nheaptids >= 0);
 
-	elog(LOG, "scan->xs_batch.nheaptids = %d", scan->xs_batch.nheaptids);
-	elog(LOG, "tid = (%u, %d)", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
+	elog(WARNING, "scan->xs_batch.nheaptids = %d", scan->xs_batch.nheaptids);
+	elog(WARNING, "tid = (%u, %d)", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
 	scan->xs_batch.killedItems[scan->xs_batch.nheaptids] = false;

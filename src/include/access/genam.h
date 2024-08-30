@@ -197,7 +197,8 @@ extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
 
-typedef bool (*index_prefetch_callback) (IndexScanDesc scan, ScanDirection direction, void *arg, int index);
+typedef bool (*index_prefetch_callback) (IndexScanDesc scan, ScanDirection direction,
+										 void *arg, int index);
 extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 								 index_prefetch_callback callback, void *arg);
 

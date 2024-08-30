@@ -1561,6 +1561,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	/* we haven't visited any leaf pages yet, so proceed to reading one */
 	if (_bt_first(scan, dir))
 	{
+		/* range of the leaf to copy into the batch */
 		int		start,
 				end;
 
@@ -1579,22 +1580,34 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 			so->currPos.itemIndex = (start - 1);
 		}
 
+		/*
+		 * We're reading the first batch, and there should always be at least one
+		 * item (otherwise _bt_first would return false). So we should never get
+		 * into situation with empty start/end range. In the worst case, there is
+		 * just a single item, in which case (start == end).
+		 */
+		Assert(start <= end);
+
 		scan->xs_batch.firstIndex = start;
 		scan->xs_batch.lastIndex = end;
 
-		/* should fit into the current batch */
+		/* The range of items should fit into the current batch size. */
 		Assert((end - start + 1) <= scan->xs_batch.currSize);
 
-		/* should be valid items */
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
 		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
-		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
-		elog(LOG, "_bt_first_batch start %d end %d", start, end);
-
 		/*
-		 * Advance to next tuple on current page; or if there's no more, try to
-		 * step to the next page with data.
+		 * Walk through the range of index tuples, copy them into the batch. If
+		 * requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
 		 */
 		while (start <= end)
 		{
@@ -1608,18 +1621,20 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 			if (!index_batch_add(scan, currItem->heapTid, itup))
 				break;
 
-			elog(LOG, "added item");
-
 			start++;
 		}
 
-		/* finally set the starting point */
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
 		if (ScanDirectionIsForward(dir))
 			scan->xs_batch.currIndex = -1;
 		else
 			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
 
-		/* can we end up with empty batch? shouldn't be possible, IMO */
+		/* shouldn't be possible to end here with an empty batch */
 		Assert(scan->xs_batch.nheaptids > 0);
 
 		return true;
@@ -1634,30 +1649,40 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
  * A batch variant of _bt_next(). Most of the comments for that function
  * apply here too.
  *
+ * We should only get here only when the current batch has no more items
+ * in the given direction. We don't get here with empty batches, that's
+ * handled by _bt_fist_batch().
+ *
  * XXX See also the comments at _bt_first_batch() about returning a single
  * batch for the page, etc.
+ *
+ * FIXME There's a lot of redundant (almost the same) code here - handling
+ * the current and new leaf page is very similar, and it's also similar to
+ * _bt_first_batch(). We should try to reduce this a bit.
  */
 bool
 _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
 	int		start,
 			end;
 
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-
-	elog(LOG, "_bt_next_batch first %d last %d current %d", so->currPos.firstItem, so->currPos.lastItem, so->currPos.itemIndex);
+	/* should be valid items (with respect to the leaf page) */
+	Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+	Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
+	Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 	/*
-	 * Try to increase the size of the batch.
+	 * Try to increase the size of the batch. Intentionally done before
+	 * trying to read items from the current page, so that the increased
+	 * batch applies to that too.
 	 *
-	 * FIXME should be done in indexam.c probably?
-	 * FIXME maybe it should grow faster?
+	 * FIXME Should be done in indexam.c probably?
+	 * FIXME Maybe it should grow faster? This is what bitmap scans do.
 	 */
 	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
 								  scan->xs_batch.maxSize);
-
-	Assert(scan->xs_batch.firstIndex <= MaxTIDsPerBTreePage);
-	Assert(scan->xs_batch.lastIndex <= MaxTIDsPerBTreePage);
 
 	/*
 	 * Check if we still have some items on the current leaf page. If yes,
@@ -1680,33 +1705,40 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		so->currPos.itemIndex = (start - 1);
 	}
 
-	elog(LOG, "_bt_next_batch start %d end %d current %d", start, end, so->currPos.itemIndex);
-
 	/*
-	 * start a new batch
+	 * reset the batch before loading new data
 	 *
 	 * XXX needs to happen after we calculate the start/end above, as it
 	 * resets some of the fields needed by the calculation.
 	 */
 	index_batch_reset(scan, dir);
 
+	/*
+	 * We have more items on the current leaf page.
+	 */
 	if (start <= end)
 	{
+		/* update the "window" the batch represents */
 		scan->xs_batch.firstIndex = start;
 		scan->xs_batch.lastIndex = end;
 
 		/* should fit into the current batch */
 		Assert((end - start + 1) <= scan->xs_batch.currSize);
 
-		/* should be valid items */
-		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
-		elog(LOG, "_bt_first_batch start %d end %d", start, end);
-
 		/*
-		 * Advance to next tuple on current page; or if there's no more, try to
-		 * step to the next page with data.
+		 * Walk through the range of index tuples, copy them into the batch. If
+		 * requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
 		 */
 		while (start <= end)
 		{
@@ -1721,26 +1753,28 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 				break;
 
 			start++;
-
-			elog(LOG, "added item");
 		}
 
-		/* can we end up with empty batch? shouldn't be possible, IMO */
-		Assert(scan->xs_batch.nheaptids > 0);
-
-		/* finally set the starting point */
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
 		if (ScanDirectionIsForward(dir))
 			scan->xs_batch.currIndex = -1;
 		else
 			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
 
-		/* did we get some items in the existing leaft page? */
+		/* shouldn't be possible to end here with an empty batch */
 		Assert(scan->xs_batch.nheaptids > 0);
 
 		return true;
 	}
 
-	/* read the next leaf page, and add items to the batch */
+	/*
+	 * We've consumed all items from the current leaf page, so try reading the
+	 * next one, and process it.
+	 */
 	if (_bt_next(scan, dir))
 	{
 		/*
@@ -1764,21 +1798,27 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 			so->currPos.itemIndex = (start - 1);
 		}
 
+		/* update the "window" the batch represents */
 		scan->xs_batch.firstIndex = start;
 		scan->xs_batch.lastIndex = end;
 
 		/* should fit into the current batch */
 		Assert((end - start + 1) <= scan->xs_batch.currSize);
 
-		/* should be valid items */
-		Assert(scan->xs_batch.firstIndex >= so->currPos.firstItem);
+		/* should be valid items (with respect to the leaf page) */
+		Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
+		Assert(scan->xs_batch.firstIndex <= scan->xs_batch.lastIndex);
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
-		elog(LOG, "_bt_first_batch start %d end %d", start, end);
-
 		/*
-		 * Advance to next tuple on current page; or if there's no more, try to
-		 * step to the next page with data.
+		 * Walk through the range of index tuples, copy them into the batch. If
+		 * requested, set the index tuple too.
+		 *
+		 * We don't know if the batch is full already - we just try to add it,
+		 * and bail out if it fails.
+		 *
+		 * FIXME This seems wrong, actually. We use currSize when calculating
+		 * the start/end range, so the add should always succeed.
 		 */
 		while (start <= end)
 		{
@@ -1792,18 +1832,20 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 			if (!index_batch_add(scan, currItem->heapTid, itup))
 				break;
 
-			elog(LOG, "added item");
-
 			start++;
 		}
 
-		/* finally set the starting point */
+		/*
+		 * set the starting point
+		 *
+		 * XXX might be better done in indexam.c
+		 */
 		if (ScanDirectionIsForward(dir))
 			scan->xs_batch.currIndex = -1;
 		else
 			scan->xs_batch.currIndex = scan->xs_batch.nheaptids;
 
-		/* can we end up with empty batch? shouldn't be possible, IMO */
+		/* shouldn't be possible to end here with an empty batch */
 		Assert(scan->xs_batch.nheaptids > 0);
 
 		return true;

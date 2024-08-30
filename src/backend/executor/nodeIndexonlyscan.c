@@ -430,8 +430,6 @@ new_batch:
 			return slot;
 		}
 
-		elog(LOG, "index_batch_getnext");
-
 		/* batch is empty, try reading the next batch of tuples */
 		if (index_batch_getnext(scandesc, direction))
 		{

@@ -262,6 +262,8 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 
 /*
  *	btgettuplebatch() -- Get the next batch of tuples in the scan.
+ *
+ * XXX Pretty much like btgettuple(), but for batches of tuples.
  */
 bool
 btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
@@ -409,7 +411,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))
 	{
-		/* Transfer killed items from the bacth to the regular array. */
+		/* Transfer killed items from the batch to the regular array. */
 		_bt_kill_batch(scan);
 
 		/* Before leaving current page, deal with any killed items */
@@ -469,7 +471,7 @@ btendscan(IndexScanDesc scan)
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))
 	{
-		/* Transfer killed items from the bacth to the regular array. */
+		/* Transfer killed items from the batch to the regular array. */
 		_bt_kill_batch(scan);
 
 		/* Before leaving current page, deal with any killed items */
@@ -552,7 +554,7 @@ btrestrpos(IndexScanDesc scan)
 		 */
 		if (BTScanPosIsValid(so->currPos))
 		{
-			/* Transfer killed items from the bacth to the regular array. */
+			/* Transfer killed items from the batch to the regular array. */
 			_bt_kill_batch(scan);
 
 			/* Before leaving current page, deal with any killed items */

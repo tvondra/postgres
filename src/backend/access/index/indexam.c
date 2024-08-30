@@ -810,6 +810,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	else
 		scan->xs_batch.currIndex--;
 
+	elog(LOG, "scan->xs_batch.currIndex = %d", scan->xs_batch.currIndex);
+
 	/* next TID from the batch, optionally also the IndexTuple */
 	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex];
 	if (scan->xs_want_itup)

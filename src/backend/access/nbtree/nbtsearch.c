@@ -1633,9 +1633,6 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	/* start a new batch */
-	index_batch_reset(scan, dir);
-
 	/*
 	 * Try to increase the size of the batch.
 	 *
@@ -1644,7 +1641,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
 								  scan->xs_batch.maxSize);
-elog(LOG, "_bt_next_batch first %d last %d current %d", so->currPos.firstItem, so->currPos.lastItem, so->currPos.itemIndex);
+
 	/*
 	 * Check if we still have some items on the current leaf page. If yes,
 	 * load them into a batch and return.
@@ -1656,19 +1653,27 @@ elog(LOG, "_bt_next_batch first %d last %d current %d", so->currPos.firstItem, s
 	{
 		elog(LOG, "forward");
 		start = so->currPos.itemIndex;
-		end = Min(so->currPos.itemIndex + scan->xs_batch.currSize - 1,
-				  so->currPos.lastItem);
+		end = Min(start + scan->xs_batch.currSize - 1, so->currPos.lastItem);
 		so->currPos.itemIndex = (end + 1);
 	}
 	else
 	{
-		elog(LOG, "backward");
-		start = Max(so->currPos.itemIndex - scan->xs_batch.currSize + 1,
-					so->currPos.firstItem);
-		end = so->currPos.itemIndex;
+		elog(LOG, "backwards ntids %d idx %d", scan->xs_batch.nheaptids, scan->xs_batch.currIndex);
+		end = so->currPos.itemIndex - scan->xs_batch.nheaptids - 1;
+		start = Max(end - scan->xs_batch.currSize + 1, so->currPos.firstItem);
 		so->currPos.itemIndex = (start - 1);
 	}
-elog(LOG, "_bt_next_batch start %d end %d current %d", start, end, so->currPos.itemIndex);
+
+	elog(LOG, "_bt_next_batch start %d end %d current %d", start, end, so->currPos.itemIndex);
+
+	/*
+	 * start a new batch
+	 *
+	 * XXX needs to happen after we calculate the start/end above, as it
+	 * resets some of the fields needed by the calculation.
+	 */
+	index_batch_reset(scan, dir);
+
 	/*
 	 * Advance to next tuple on current page; or if there's no more, try to
 	 * step to the next page with data.
@@ -1700,15 +1705,13 @@ elog(LOG, "_bt_next_batch start %d end %d current %d", start, end, so->currPos.i
 	/* did we get some items in the existing leaft page? */
 	if (scan->xs_batch.nheaptids)
 	{
-		elog(LOG, "_bt_next_batch RETURN");
+		elog(LOG, "done");
 		return true;
 	}
 
 	/* read the next leaf page, and add items to the batch */
 	if (_bt_next(scan, dir))
 	{
-		elog(LOG, "_bt_next_batch first %d last %d", so->currPos.firstItem, so->currPos.lastItem);
-
 		/*
 		 * Check if we still have some items on the current leaf page. If yes,
 		 * load them into a batch and return.
@@ -1730,7 +1733,9 @@ elog(LOG, "_bt_next_batch start %d end %d current %d", start, end, so->currPos.i
 			end = so->currPos.itemIndex;
 			so->currPos.itemIndex = (start - 1);
 		}
-elog(LOG, "_bt_next_batch start %d end %d", start, end);
+
+		elog(LOG, "_bt_next_batch start %d end %d", start, end);
+
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to
 		 * step to the next page with data.

@@ -435,6 +435,8 @@ index_rescan(IndexScanDesc scan,
 		scan->xs_batch.prefetchIndex = 0;
 	}
 
+	index_batch_reset(scan, ForwardScanDirection);
+
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
 }
@@ -511,6 +513,9 @@ index_restrpos(IndexScanDesc scan)
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
+
+	/* also reset index batch */
+	index_batch_reset(scan, ForwardScanDirection);
 
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 }
@@ -771,12 +776,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	/* comprehensive checks of batching info */
+	AssertCheckBatchInfo(scan);
+
 	/* Bail out if he batch is empty of all TIDs were processed. */
 	if (INDEX_BATCH_IS_EMPTY(scan) || INDEX_BATCH_IS_PROCESSED(scan))
 		return NULL;
-
-	/* comprehensive checks of batching info */
-	AssertCheckBatchInfo(scan);
 
 	/*
 	 * Move to the next batch item - we know it's not empty and there

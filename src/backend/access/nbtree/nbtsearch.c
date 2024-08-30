@@ -2409,6 +2409,9 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(BTScanPosIsValid(so->currPos));
 
+	/* Transfer killed items from the batch to the regular array. */
+	_bt_kill_batch(scan);
+
 	/* Before leaving current page, deal with any killed items */
 	if (so->numKilled > 0)
 		_bt_killitems(scan);

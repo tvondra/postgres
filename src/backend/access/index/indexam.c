@@ -141,17 +141,17 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 		   (scan->xs_batch.nheaptids <= scan->xs_batch.maxSize));
 
 	/*
-	 * The current item must be either -1 (before first getnext), or
-	 * within the valid range.
+	 * The current item must be between -1 and nheaptids. Those two extreme
+	 * values are starting points for forward/backward scans.
 	 */
 	Assert((scan->xs_batch.currIndex >= -1) &&
-		   (scan->xs_batch.currIndex < scan->xs_batch.nheaptids));
+		   (scan->xs_batch.currIndex <= scan->xs_batch.nheaptids));
 
 	/* check prefetch data */
 	Assert((scan->xs_batch.prefetchTarget >= 0) &&
 		   (scan->xs_batch.prefetchTarget <= scan->xs_batch.prefetchMaximum));
 
-	Assert((scan->xs_batch.prefetchIndex >= 0) &&
+	Assert((scan->xs_batch.prefetchIndex >= -1) &&
 		   (scan->xs_batch.prefetchIndex <= scan->xs_batch.nheaptids));
 }
 
@@ -161,9 +161,14 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 #define	INDEX_BATCH_IS_EMPTY(scan)	\
 	((scan)->xs_batch.nheaptids == 0)
 
-#define	INDEX_BATCH_IS_PROCESSED(scan)	\
-	((scan)->xs_batch.nheaptids == ((scan)->xs_batch.currIndex + 1))
-
+/*
+ * Did we process all items? For forward scan it means the index points to the
+ * last item, for backward scans it has to point to the first one..
+ */
+#define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
+	(ScanDirectionIsForward(direction) ? \
+		((scan)->xs_batch.nheaptids == ((scan)->xs_batch.currIndex + 1)) : \
+		((scan)->xs_batch.currIndex == 0))
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -715,15 +720,16 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	AssertCheckBatchInfo(scan);
 
 	/*
-	 * We read the next batch either when we haven't read anything yet (the
-	 * current batch is empty), or after we processed everything (in which
-	 * case currIndex points to the last item in the bacth).
+	 * We're reading the next batch, which means this is the first batch we're
+	 * reading (no TIDs read so far), or we processed everything (in which
+	 * case currIndex points to the last item in the batch, per direction).
 	 *
 	 * XXX We could probably do with just the second check, but it's more
 	 * clear this way.
 	 */
 	Assert((scan->xs_batch.nheaptids == 0) ||
-		   (scan->xs_batch.currIndex + 1) == scan->xs_batch.nheaptids);
+		   ((ScanDirectionIsForward(direction)) && ((scan->xs_batch.currIndex + 1) == scan->xs_batch.nheaptids)) ||
+		   ((!ScanDirectionIsForward(direction)) && (scan->xs_batch.currIndex == 0)));
 
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
@@ -737,8 +743,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->kill_prior_tuple = false;
 	scan->xs_heap_continue = false;
 
-	/* We're starting to process a new batch. */
-	scan->xs_batch.currIndex = -1;
+	/* FIXME maybe set the starting point here, not in _bt_first_batch etc. */
+	scan->xs_batch.prefetchIndex = scan->xs_batch.currIndex;
 
 	/* If we're out of index entries, we're done */
 	if (!found)
@@ -751,6 +757,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	}
 
 #ifdef USE_ASSERT_CHECKING
+	if (ScanDirectionIsForward(direction))
+		Assert(scan->xs_batch.currIndex <= (scan->xs_batch.nheaptids - 1));
+
+	if (!ScanDirectionIsForward(direction))
+		Assert(scan->xs_batch.currIndex >= 0);
+
 	for (int i = 0; i < scan->xs_batch.nheaptids; i++)
 		Assert(ItemPointerIsValid(&scan->xs_batch.heaptids[i]));
 #endif
@@ -780,14 +792,23 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	AssertCheckBatchInfo(scan);
 
 	/* Bail out if he batch is empty of all TIDs were processed. */
-	if (INDEX_BATCH_IS_EMPTY(scan) || INDEX_BATCH_IS_PROCESSED(scan))
+	if (INDEX_BATCH_IS_EMPTY(scan) || INDEX_BATCH_IS_PROCESSED(scan, direction))
 		return NULL;
+
+	if (ScanDirectionIsForward(direction))
+		Assert(scan->xs_batch.currIndex <= (scan->xs_batch.nheaptids - 1));
+
+	if (!ScanDirectionIsForward(direction))
+		Assert(scan->xs_batch.currIndex >= 0);
 
 	/*
 	 * Move to the next batch item - we know it's not empty and there
 	 * are items to process, so this is valid.
 	 */
-	scan->xs_batch.currIndex++;
+	if (ScanDirectionIsForward(direction))
+		scan->xs_batch.currIndex++;
+	else
+		scan->xs_batch.currIndex--;
 
 	/* next TID from the batch, optionally also the IndexTuple */
 	scan->xs_heaptid = scan->xs_batch.heaptids[scan->xs_batch.currIndex];
@@ -876,24 +897,60 @@ void
 index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 					 index_prefetch_callback prefetch_callback, void *arg)
 {
-	/* Where should we start to prefetch? */
-	int		prefetchStart = Max(scan->xs_batch.currIndex,
-								scan->xs_batch.prefetchIndex);
+	int		prefetchStart,
+			prefetchEnd;
 
-	/*
-	 * Where should we stop prefetching? this is the first item that we
-	 * do NOT prefetch, i.e. it can be the first item after the batch.
-	 */
-	int		prefetchEnd = Min((scan->xs_batch.currIndex + 1) + scan->xs_batch.prefetchTarget,
-							  scan->xs_batch.nheaptids);
+	if (ScanDirectionIsForward(direction))
+	{
+		/* Where should we start to prefetch? */
+		prefetchStart = Max(scan->xs_batch.currIndex,
+							scan->xs_batch.prefetchIndex);
+
+		/*
+		 * Where should we stop prefetching? this is the first item that we
+		 * do NOT prefetch, i.e. it can be the first item after the batch.
+		 */
+		prefetchEnd = Min((scan->xs_batch.currIndex + 1) + scan->xs_batch.prefetchTarget,
+						  scan->xs_batch.nheaptids);
+
+		/* FIXME should calculate in a way to make this unnecessary */
+		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids-1), 0);
+		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids-1), 0);
+
+		/* remember how far we prefetched / where to start the next prefetch */
+		scan->xs_batch.prefetchIndex = prefetchEnd;
+	}
+	else
+	{
+		/* Where should we start to prefetch? */
+		prefetchEnd = Min(scan->xs_batch.currIndex,
+						  scan->xs_batch.prefetchIndex);
+
+		/*
+		 * Where should we stop prefetching? this is the first item that we
+		 * do NOT prefetch, i.e. it can be the first item after the batch.
+		 */
+		prefetchStart = Max((scan->xs_batch.currIndex - 1) - scan->xs_batch.prefetchTarget,
+							-1);
+
+		/* FIXME should calculate in a way to make this unnecessary */
+		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids-1), 0);
+		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids-1), 0);
+
+		/* remember how far we prefetched / where to start the next prefetch */
+		scan->xs_batch.prefetchIndex = prefetchStart;
+	}
 
 	/* we shouldn't get inverted prefetch range */
 	Assert(prefetchStart <= prefetchEnd);
 
-	/* Increase the prefetch distance, but not beyond prefetchMaximum. */
+	/*
+	 * Increase the prefetch distance, but not beyond prefetchMaximum. We
+	 * intentionally do this after calculating start/end, so that we start
+	 * actually prefetching only after the first item.
+	 */
 	scan->xs_batch.prefetchTarget = Min(scan->xs_batch.prefetchTarget + 1,
 										scan->xs_batch.prefetchMaximum);
-
 
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
@@ -908,9 +965,6 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
 					   ItemPointerGetBlockNumber(&scan->xs_batch.heaptids[i]));
 	}
-
-	/* remember how far we prefetched / where to start the next prefetch */
-	scan->xs_batch.prefetchIndex = prefetchEnd;
 
 	AssertCheckBatchInfo(scan);
 }
@@ -986,8 +1040,8 @@ index_batch_reset(IndexScanDesc scan, ScanDirection direction)
 {
 	/* maybe initialize */
 	scan->xs_batch.nheaptids = 0;
-	scan->xs_batch.currIndex = -1;
 	scan->xs_batch.prefetchIndex = 0;
+	scan->xs_batch.currIndex = -1;
 }
 
 /*

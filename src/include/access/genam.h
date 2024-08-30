@@ -185,8 +185,8 @@ extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 							   struct TupleTableSlot *slot);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 
-extern ItemPointer index_batch_getnext(IndexScanDesc scan,
-									   ScanDirection direction);
+extern bool index_batch_getnext(IndexScanDesc scan,
+								ScanDirection direction);
 extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
 extern bool index_batch_getnext_slot(IndexScanDesc scan,

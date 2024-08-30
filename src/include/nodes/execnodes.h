@@ -1671,6 +1671,10 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+
+	/* Is batching/prefetching enabled? */
+	bool		iss_CanBatch;
+
 } IndexScanState;
 
 /* ----------------
@@ -1713,6 +1717,9 @@ typedef struct IndexOnlyScanState
 	Size		ioss_PscanLen;
 	AttrNumber *ioss_NameCStringAttNums;
 	int			ioss_NameCStringCount;
+
+	/* Is batching/prefetching enabled? */
+	bool		ioss_CanBatch;
 } IndexOnlyScanState;
 
 /* ----------------

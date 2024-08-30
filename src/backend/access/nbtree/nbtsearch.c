@@ -1626,8 +1626,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 * XXX try combining that with the next block, the inner while loop is
 	 * exactly the same.
 	 */
-	if ((so->currPos.itemIndex > so->currPos.firstItem) &&
-		(so->currPos.itemIndex < so->currPos.lastItem))
+	if ((so->currPos.itemIndex >= so->currPos.firstItem) &&
+		(so->currPos.itemIndex <= so->currPos.lastItem))
 	{
 		/*
 		 * Advance to next tuple on current page; or if there's no more, try to

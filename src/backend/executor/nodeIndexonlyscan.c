@@ -430,7 +430,7 @@ new_batch:
 		}
 
 		/* batch is empty, try reading the next batch of tuples */
-		if (index_batch_getnext(scandesc, direction) != NULL)
+		if (index_batch_getnext(scandesc, direction))
 		{
 			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
 			goto new_batch;

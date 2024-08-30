@@ -164,9 +164,9 @@ typedef struct IndexScanDescData
 		int					prefetchMaximum;	/* maximum prefetch distance */
 		int					prefetchIndex;		/* next item to prefetch */
 
-		/* range of original leaf page indexes we have copied into the batch */
-		// int					firstIndex;
-		// int					lastIndex;
+		/* range of leaf page items copied into the current batch */
+		int					firstIndex;
+		int					lastIndex;
 
 		/* batch contents (TIDs, index tuples, kill bitmap, ...) */
 		int					nheaptids;		/* number of TIDs in the batch */

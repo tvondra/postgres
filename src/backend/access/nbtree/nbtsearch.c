@@ -1819,7 +1819,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
  * that to drive which items are killed.
  */
 void
-_bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
+_bt_kill_batch(IndexScanDesc scan)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
@@ -1842,10 +1842,7 @@ _bt_kill_batch(IndexScanDesc scan, ScanDirection dir)
 			so->killedItems = (int *)
 				palloc(MaxTIDsPerBTreePage * sizeof(int));
 		if (so->numKilled < MaxTIDsPerBTreePage)
-		{
-			Assert(false);
-			so->killedItems[so->numKilled++] = (so->currPos.firstItem + i);
-		}
+			so->killedItems[so->numKilled++] = (scan->xs_batch.firstIndex + i);
 	}
 }
 

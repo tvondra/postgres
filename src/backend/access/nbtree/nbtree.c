@@ -287,7 +287,7 @@ btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
 			/*
 			 * Check to see if we should kill tuples from the previous batch.
 			 */
-			_bt_kill_batch(scan, dir);
+			_bt_kill_batch(scan);
 
 			/*
 			 * Now continue the scan.
@@ -409,6 +409,9 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))
 	{
+		/* Transfer killed items from the bacth to the regular array. */
+		_bt_kill_batch(scan);
+
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
@@ -466,6 +469,9 @@ btendscan(IndexScanDesc scan)
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))
 	{
+		/* Transfer killed items from the bacth to the regular array. */
+		_bt_kill_batch(scan);
+
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
@@ -546,6 +552,9 @@ btrestrpos(IndexScanDesc scan)
 		 */
 		if (BTScanPosIsValid(so->currPos))
 		{
+			/* Transfer killed items from the bacth to the regular array. */
+			_bt_kill_batch(scan);
+
 			/* Before leaving current page, deal with any killed items */
 			if (so->numKilled > 0)
 				_bt_killitems(scan);

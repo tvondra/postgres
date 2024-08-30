@@ -1607,9 +1607,6 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	pfree(scan->xs_batch.heaptids);
-	pfree(scan->xs_batch.killedItems);
-
 	/* start a new batch */
 	index_batch_reset(scan, dir);
 

@@ -153,14 +153,6 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 	Assert((scan->xs_batch.prefetchIndex >= 0) &&
 		   (scan->xs_batch.prefetchIndex <= scan->xs_batch.nheaptids));
-
-	for (int i = 0; i < scan->xs_batch.maxSize; i++)
-	{
-		ItemPointerData tid;
-		elog(LOG, "%d", i);
-		tid = scan->xs_batch.heaptids[i];
-		elog(LOG, "(%u,%u,%u)", tid.ip_blkid.bi_hi, tid.ip_blkid.bi_lo, tid.ip_posid);
-	}
 }
 
 #define	INDEX_BATCH_IS_FULL(scan)	\
@@ -1015,9 +1007,6 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 	/* there must be space for at least one entry */
 	Assert(scan->xs_batch.nheaptids < scan->xs_batch.currSize);
 	Assert(scan->xs_batch.nheaptids >= 0);
-
-	elog(WARNING, "scan->xs_batch.nheaptids = %d", scan->xs_batch.nheaptids);
-	elog(WARNING, "tid = (%u, %d)", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
 
 	scan->xs_batch.heaptids[scan->xs_batch.nheaptids] = tid;
 	scan->xs_batch.killedItems[scan->xs_batch.nheaptids] = false;

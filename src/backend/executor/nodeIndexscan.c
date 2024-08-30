@@ -1736,6 +1736,14 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 piscan);
 
 	/*
+	 * XXX do we actually want prefetching for parallel index scans?
+	 * Maybe not, but then we need to be careful not to call
+	 * index_batch_getnext_tid (which now can happen, because we'll
+	 * call IndexOnlyNext even for parallel plans).
+	 */
+	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
+
+	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
 	 */
@@ -1777,6 +1785,14 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 node->iss_NumScanKeys,
 								 node->iss_NumOrderByKeys,
 								 piscan);
+
+	/*
+	 * XXX do we actually want prefetching for parallel index scans?
+	 * Maybe not, but then we need to be careful not to call
+	 * index_batch_getnext_tid (which now can happen, because we'll
+	 * call IndexOnlyNext even for parallel plans).
+	 */
+	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

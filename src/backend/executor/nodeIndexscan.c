@@ -152,8 +152,8 @@ IndexNext(IndexScanState *node)
 			CHECK_FOR_INTERRUPTS();
 
 			/*
-			 * If the index was lossy, we have to recheck the index quals using
-			 * the fetched tuple.
+			 * If the index was lossy, we have to recheck the index quals
+			 * using the fetched tuple.
 			 */
 			if (scandesc->xs_recheck)
 			{
@@ -181,8 +181,8 @@ new_batch:
 			index_batch_prefetch(scandesc, direction, NULL, NULL);
 
 			/*
-			 * If the index was lossy, we have to recheck the index quals using
-			 * the fetched tuple.
+			 * If the index was lossy, we have to recheck the index quals
+			 * using the fetched tuple.
 			 */
 			if (scandesc->xs_recheck)
 			{
@@ -1747,10 +1747,10 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 piscan);
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans?
-	 * Maybe not, but then we need to be careful not to call
-	 * index_batch_getnext_tid (which now can happen, because we'll
-	 * call IndexOnlyNext even for parallel plans).
+	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * not, but then we need to be careful not to call index_batch_getnext_tid
+	 * (which now can happen, because we'll call IndexOnlyNext even for
+	 * parallel plans).
 	 */
 	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
 
@@ -1798,10 +1798,10 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 piscan);
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans?
-	 * Maybe not, but then we need to be careful not to call
-	 * index_batch_getnext_tid (which now can happen, because we'll
-	 * call IndexOnlyNext even for parallel plans).
+	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * not, but then we need to be careful not to call index_batch_getnext_tid
+	 * (which now can happen, because we'll call IndexOnlyNext even for
+	 * parallel plans).
 	 */
 	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
 

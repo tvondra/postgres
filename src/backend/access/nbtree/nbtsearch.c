@@ -1562,8 +1562,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	if (_bt_first(scan, dir))
 	{
 		/* range of the leaf to copy into the batch */
-		int		start,
-				end;
+		int			start,
+					end;
 
 		/* determine which part of the leaf page to extract */
 		if (ScanDirectionIsForward(dir))
@@ -1581,10 +1581,10 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		}
 
 		/*
-		 * We're reading the first batch, and there should always be at least one
-		 * item (otherwise _bt_first would return false). So we should never get
-		 * into situation with empty start/end range. In the worst case, there is
-		 * just a single item, in which case (start == end).
+		 * We're reading the first batch, and there should always be at least
+		 * one item (otherwise _bt_first would return false). So we should
+		 * never get into situation with empty start/end range. In the worst
+		 * case, there is just a single item, in which case (start == end).
 		 */
 		Assert(start <= end);
 
@@ -1600,8 +1600,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 		/*
-		 * Walk through the range of index tuples, copy them into the batch. If
-		 * requested, set the index tuple too.
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
 		 *
 		 * We don't know if the batch is full already - we just try to add it,
 		 * and bail out if it fails.
@@ -1611,8 +1611,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		while (start <= end)
 		{
-			BTScanPosItem  *currItem = &so->currPos.items[start];
-			IndexTuple		itup = NULL;
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
 
 			if (scan->xs_want_itup)
 				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
@@ -1665,8 +1665,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	int		start,
-			end;
+	int			start,
+				end;
 
 	/* should be valid items (with respect to the leaf page) */
 	Assert(so->currPos.firstItem <= scan->xs_batch.firstIndex);
@@ -1674,12 +1674,12 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 	/*
-	 * Try to increase the size of the batch. Intentionally done before
-	 * trying to read items from the current page, so that the increased
-	 * batch applies to that too.
+	 * Try to increase the size of the batch. Intentionally done before trying
+	 * to read items from the current page, so that the increased batch
+	 * applies to that too.
 	 *
-	 * FIXME Should be done in indexam.c probably?
-	 * FIXME Maybe it should grow faster? This is what bitmap scans do.
+	 * FIXME Should be done in indexam.c probably? FIXME Maybe it should grow
+	 * faster? This is what bitmap scans do.
 	 */
 	scan->xs_batch.currSize = Min(scan->xs_batch.currSize + 1,
 								  scan->xs_batch.maxSize);
@@ -1731,8 +1731,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 		/*
-		 * Walk through the range of index tuples, copy them into the batch. If
-		 * requested, set the index tuple too.
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
 		 *
 		 * We don't know if the batch is full already - we just try to add it,
 		 * and bail out if it fails.
@@ -1742,8 +1742,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		while (start <= end)
 		{
-			BTScanPosItem  *currItem = &so->currPos.items[start];
-			IndexTuple		itup = NULL;
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
 
 			if (scan->xs_want_itup)
 				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
@@ -1811,8 +1811,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		Assert(scan->xs_batch.lastIndex <= so->currPos.lastItem);
 
 		/*
-		 * Walk through the range of index tuples, copy them into the batch. If
-		 * requested, set the index tuple too.
+		 * Walk through the range of index tuples, copy them into the batch.
+		 * If requested, set the index tuple too.
 		 *
 		 * We don't know if the batch is full already - we just try to add it,
 		 * and bail out if it fails.
@@ -1822,8 +1822,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		while (start <= end)
 		{
-			BTScanPosItem  *currItem = &so->currPos.items[start];
-			IndexTuple		itup = NULL;
+			BTScanPosItem *currItem = &so->currPos.items[start];
+			IndexTuple	itup = NULL;
 
 			if (scan->xs_want_itup)
 				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
@@ -1872,13 +1872,12 @@ _bt_kill_batch(IndexScanDesc scan)
 			continue;
 
 		/*
-		 * Yes, remember it for later. (We'll deal with all such
-		 * tuples at once right before leaving the index page.)  The
-		 * test for numKilled overrun is not just paranoia: if the
-		 * caller reverses direction in the indexscan then the same
-		 * item might get entered multiple times. It's not worth
-		 * trying to optimize that, so we don't detect it, but instead
-		 * just forget any excess entries.
+		 * Yes, remember it for later. (We'll deal with all such tuples at
+		 * once right before leaving the index page.)  The test for numKilled
+		 * overrun is not just paranoia: if the caller reverses direction in
+		 * the indexscan then the same item might get entered multiple times.
+		 * It's not worth trying to optimize that, so we don't detect it, but
+		 * instead just forget any excess entries.
 		 */
 		if (so->killedItems == NULL)
 			so->killedItems = (int *)

@@ -155,27 +155,27 @@ typedef struct IndexScanDescData
 	struct
 	{
 		/* batch size - maximum, initial, current (with ramp up) */
-		int					maxSize;
-		int					initSize;
-		int					currSize;
+		int			maxSize;
+		int			initSize;
+		int			currSize;
 
 		/* batch prefetching */
-		int					prefetchTarget;		/* current prefetch distance */
-		int					prefetchMaximum;	/* maximum prefetch distance */
-		int					prefetchIndex;		/* next item to prefetch */
+		int			prefetchTarget; /* current prefetch distance */
+		int			prefetchMaximum;	/* maximum prefetch distance */
+		int			prefetchIndex;	/* next item to prefetch */
 
 		/* range of leaf page items copied into the current batch */
-		int					firstIndex;
-		int					lastIndex;
+		int			firstIndex;
+		int			lastIndex;
 
 		/* batch contents (TIDs, index tuples, kill bitmap, ...) */
-		int					nheaptids;		/* number of TIDs in the batch */
-		int					currIndex;		/* index of the current item */
-		ItemPointerData	   *heaptids;		/* TIDs in the batch */
-		IndexTuple		   *itups;			/* IndexTuples, if requested */
-		bool			   *killedItems;	/* bitmap of tuples to kill */
-		Datum			   *privateData;	/* private data for batch */
-	} xs_batch;
+		int			nheaptids;	/* number of TIDs in the batch */
+		int			currIndex;	/* index of the current item */
+		ItemPointerData *heaptids;	/* TIDs in the batch */
+		IndexTuple *itups;		/* IndexTuples, if requested */
+		bool	   *killedItems;	/* bitmap of tuples to kill */
+		Datum	   *privateData;	/* private data for batch */
+	}			xs_batch;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

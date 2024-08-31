@@ -388,9 +388,9 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 
 	/*
-	 * Reset the batch, to make it look empty. This needs to happen after
-	 * the amrestrpos() call, in case the AM needs some of the batch info
-	 * (e.g. to properly transfer the killed tuples).
+	 * Reset the batch, to make it look empty. This needs to happen after the
+	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
+	 * properly transfer the killed tuples).
 	 */
 	index_batch_reset(scan, ForwardScanDirection);
 }
@@ -471,9 +471,9 @@ index_restrpos(IndexScanDesc scan)
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 
 	/*
-	 * Reset the batch, to make it look empty. This needs to happen after
-	 * the amrestrpos() call, in case the AM needs some of the batch info
-	 * (e.g. to properly transfer the killed tuples).
+	 * Reset the batch, to make it look empty. This needs to happen after the
+	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
+	 * properly transfer the killed tuples).
 	 */
 	index_batch_reset(scan, ForwardScanDirection);
 }
@@ -1296,9 +1296,10 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	/*
 	 * The AM's amgettuplebatch proc loads a chunk of TIDs matching the scan
-	 * keys, and puts the TIDs into scan->xs_batch.heaptids.  It should also set
-	 * scan->xs_recheck and possibly scan->xs_batch.itups/scan->xs_batch.hitups,
-	 * though we pay no attention to those fields here.
+	 * keys, and puts the TIDs into scan->xs_batch.heaptids.  It should also
+	 * set scan->xs_recheck and possibly
+	 * scan->xs_batch.itups/scan->xs_batch.hitups, though we pay no attention
+	 * to those fields here.
 	 *
 	 * FIXME At the moment this does nothing with hitup. Needs to be fixed?
 	 */
@@ -1324,8 +1325,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	pgstat_count_index_tuples(scan->indexRelation, scan->xs_batch.nheaptids);
 
 	/*
-	 * Set the prefetch index to the first item in the loaded batch (we
-	 * expect the index AM to set that).
+	 * Set the prefetch index to the first item in the loaded batch (we expect
+	 * the index AM to set that).
 	 *
 	 * FIXME Maybe set the currIndex here, not in the index AM. It seems much
 	 * more like indexam.c responsibility rather than something every index AM
@@ -1439,12 +1440,12 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 
 		/*
 		 * If we haven't found any visible tuple for the TID, chances are all
-		 * versions are dead and may kill it from the index. If so, flag it
-		 * in the kill bitmap - we'll translate it to indexes later.
+		 * versions are dead and may kill it from the index. If so, flag it in
+		 * the kill bitmap - we'll translate it to indexes later.
 		 *
-		 * XXX With the firstIndex/lastIndex it would not be too hard to do the
-		 * translation here. But do we want to? How much is that considered an
-		 * internal detail of the AM?
+		 * XXX With the firstIndex/lastIndex it would not be too hard to do
+		 * the translation here. But do we want to? How much is that
+		 * considered an internal detail of the AM?
 		 *
 		 * XXX Maybe we should integrate this into index_fetch_heap(), so that
 		 * we don't need to do it after each call? Seems easy to ferget/miss.
@@ -1452,11 +1453,11 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		if (scan->kill_prior_tuple)
 		{
 			/*
-			 * FIXME This is not great, because we'll have to walk through
-			 * the whole bitmap later, to maybe add killed tuples to the
-			 * regular array. Might be costly for large batches. Maybe it'd
-			 * be better to do what btree does and stash the indexes
-			 * (just some limited number).
+			 * FIXME This is not great, because we'll have to walk through the
+			 * whole bitmap later, to maybe add killed tuples to the regular
+			 * array. Might be costly for large batches. Maybe it'd be better
+			 * to do what btree does and stash the indexes (just some limited
+			 * number).
 			 */
 			scan->xs_batch.killedItems[scan->xs_batch.currIndex] = true;
 			scan->kill_prior_tuple = false;
@@ -1494,8 +1495,8 @@ void
 index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 					 index_prefetch_callback prefetch_callback, void *arg)
 {
-	int		prefetchStart,
-			prefetchEnd;
+	int			prefetchStart,
+				prefetchEnd;
 
 	if (ScanDirectionIsForward(direction))
 	{
@@ -1504,15 +1505,15 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 							scan->xs_batch.prefetchIndex);
 
 		/*
-		 * Where should we stop prefetching? this is the first item that we
-		 * do NOT prefetch, i.e. it can be the first item after the batch.
+		 * Where should we stop prefetching? this is the first item that we do
+		 * NOT prefetch, i.e. it can be the first item after the batch.
 		 */
 		prefetchEnd = Min((scan->xs_batch.currIndex + 1) + scan->xs_batch.prefetchTarget,
 						  scan->xs_batch.nheaptids);
 
 		/* FIXME should calculate in a way to make this unnecessary */
-		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids-1), 0);
-		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids-1), 0);
+		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids - 1), 0);
+		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids - 1), 0);
 
 		/* remember how far we prefetched / where to start the next prefetch */
 		scan->xs_batch.prefetchIndex = prefetchEnd;
@@ -1524,15 +1525,15 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 						  scan->xs_batch.prefetchIndex);
 
 		/*
-		 * Where should we stop prefetching? this is the first item that we
-		 * do NOT prefetch, i.e. it can be the first item after the batch.
+		 * Where should we stop prefetching? this is the first item that we do
+		 * NOT prefetch, i.e. it can be the first item after the batch.
 		 */
 		prefetchStart = Max((scan->xs_batch.currIndex - 1) - scan->xs_batch.prefetchTarget,
 							-1);
 
 		/* FIXME should calculate in a way to make this unnecessary */
-		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids-1), 0);
-		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids-1), 0);
+		prefetchStart = Max(Min(prefetchStart, scan->xs_batch.nheaptids - 1), 0);
+		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch.nheaptids - 1), 0);
 
 		/* remember how far we prefetched / where to start the next prefetch */
 		scan->xs_batch.prefetchIndex = prefetchStart;
@@ -1624,8 +1625,8 @@ index_batch_init(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch.killedItems = (bool *) palloc0(sizeof(bool) * scan->xs_batch.maxSize);
 
 	/*
-	 * XXX Maybe allocate only when actually needed? Also, shouldn't we have
-	 * a memory context for the private data?
+	 * XXX Maybe allocate only when actually needed? Also, shouldn't we have a
+	 * memory context for the private data?
 	 */
 	scan->xs_batch.privateData = (Datum *) palloc0(sizeof(Datum) * scan->xs_batch.maxSize);
 

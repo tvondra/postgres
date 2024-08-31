@@ -890,6 +890,13 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		 */
 		if (scan->kill_prior_tuple)
 		{
+			/*
+			 * FIXME This is not great, because we'll have to walk through
+			 * the whole bitmap later, to maybe add killed tuples to the
+			 * regular array. Might be costly for large batches. Maybe it'd
+			 * be better to do what btree does and stash the indexes
+			 * (just some limited number).
+			 */
 			scan->xs_batch.killedItems[scan->xs_batch.currIndex] = true;
 			scan->kill_prior_tuple = false;
 		}

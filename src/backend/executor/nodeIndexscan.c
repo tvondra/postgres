@@ -111,7 +111,8 @@ IndexNext(IndexScanState *node)
 								   node->iss_RelationDesc,
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+								   node->iss_NumOrderByKeys,
+								   node->iss_CanBatch);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -123,8 +124,6 @@ IndexNext(IndexScanState *node)
 			index_rescan(scandesc,
 						 node->iss_ScanKeys, node->iss_NumScanKeys,
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
-
-		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*
@@ -140,9 +139,7 @@ IndexNext(IndexScanState *node)
 	 * call either the original code without batching, or the new batching
 	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
-	if (!(enable_indexscan_batching &&
-		  index_batch_supported(scandesc, direction) &&
-		  node->iss_CanBatch))
+	if (scandesc->xs_batch == NULL)
 	{
 		/*
 		 * ok, now that we have what we need, fetch the next tuple.
@@ -264,7 +261,8 @@ IndexNextWithReorder(IndexScanState *node)
 								   node->iss_RelationDesc,
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+								   node->iss_NumOrderByKeys,
+								   false);	/* XXX should use batching? */
 
 		node->iss_ScanDesc = scandesc;
 
@@ -1739,12 +1737,6 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								  estate->es_snapshot,
 								  piscan);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, piscan);
-	node->iss_ScanDesc =
-		index_beginscan_parallel(node->ss.ss_currentRelation,
-								 node->iss_RelationDesc,
-								 node->iss_NumScanKeys,
-								 node->iss_NumOrderByKeys,
-								 piscan);
 
 	/*
 	 * XXX do we actually want prefetching for parallel index scans? Maybe
@@ -1752,7 +1744,13 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 	 * (which now can happen, because we'll call IndexOnlyNext even for
 	 * parallel plans).
 	 */
-	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
+	node->iss_ScanDesc =
+		index_beginscan_parallel(node->ss.ss_currentRelation,
+								 node->iss_RelationDesc,
+								 node->iss_NumScanKeys,
+								 node->iss_NumOrderByKeys,
+								 piscan,
+								 node->iss_CanBatch);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
@@ -1790,12 +1788,6 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	ParallelIndexScanDesc piscan;
 
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
-	node->iss_ScanDesc =
-		index_beginscan_parallel(node->ss.ss_currentRelation,
-								 node->iss_RelationDesc,
-								 node->iss_NumScanKeys,
-								 node->iss_NumOrderByKeys,
-								 piscan);
 
 	/*
 	 * XXX do we actually want prefetching for parallel index scans? Maybe
@@ -1803,7 +1795,13 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	 * (which now can happen, because we'll call IndexOnlyNext even for
 	 * parallel plans).
 	 */
-	index_batch_init(node->iss_ScanDesc, ForwardScanDirection);
+	node->iss_ScanDesc =
+		index_beginscan_parallel(node->ss.ss_currentRelation,
+								 node->iss_RelationDesc,
+								 node->iss_NumScanKeys,
+								 node->iss_NumOrderByKeys,
+								 piscan,
+								 node->iss_CanBatch);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

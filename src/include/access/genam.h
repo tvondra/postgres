@@ -89,6 +89,7 @@ typedef bool (*IndexBulkDeleteCallback) (ItemPointer itemptr, void *state);
 
 /* struct definitions appear in relscan.h */
 typedef struct IndexScanDescData *IndexScanDesc;
+typedef struct IndexScanBatchData *IndexScanBatch;
 typedef struct SysScanDescData *SysScanDesc;
 
 typedef struct ParallelIndexScanDescData *ParallelIndexScanDesc;
@@ -158,7 +159,8 @@ extern void index_insert_cleanup(Relation indexRelation,
 extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Relation indexRelation,
 									 Snapshot snapshot,
-									 int nkeys, int norderbys);
+									 int nkeys, int norderbys,
+									 bool enable_batching);
 extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											int nkeys);
@@ -176,7 +178,8 @@ extern void index_parallelscan_initialize(Relation heapRelation,
 extern void index_parallelrescan(IndexScanDesc scan);
 extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  Relation indexrel, int nkeys, int norderbys,
-											  ParallelIndexScanDesc pscan);
+											  ParallelIndexScanDesc pscan,
+											  bool enable_batching);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
 struct TupleTableSlot;
@@ -192,8 +195,6 @@ extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 extern bool index_batch_getnext_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
-extern bool index_batch_supported(IndexScanDesc scan, ScanDirection direction);
-extern void index_batch_init(IndexScanDesc scan, ScanDirection direction);
 extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
 

@@ -107,6 +107,46 @@ typedef struct IndexFetchTableData
 } IndexFetchTableData;
 
 /*
+ * Data about the current TID batch returned by the index AM.
+ *
+ * XXX Maybe this should be a separate struct instead, and the scan
+ * descriptor would have only a pointer, initialized only when the
+ * batching is actually used?
+ *
+ * XXX It's not quite clear which part of this is managed by indexam and
+ * what's up to the actual index AM implementation. Needs some clearer
+ * boundaries.
+ *
+ * XXX Should we have a pointer for optional state managed by the AM? Some
+ * custom AMs may need more per-batch information, not just the fields we
+ * have here.
+ */
+typedef struct IndexScanBatchData
+{
+	/* batch size - maximum, initial, current (with ramp up) */
+	int			maxSize;
+	int			initSize;
+	int			currSize;
+
+	/* batch prefetching */
+	int			prefetchTarget; /* current prefetch distance */
+	int			prefetchMaximum;	/* maximum prefetch distance */
+	int			prefetchIndex;	/* next item to prefetch */
+
+	/* range of leaf page items copied into the current batch */
+	int			firstIndex;
+	int			lastIndex;
+
+	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
+	int			nheaptids;	/* number of TIDs in the batch */
+	int			currIndex;	/* index of the current item */
+	ItemPointerData *heaptids;	/* TIDs in the batch */
+	IndexTuple *itups;		/* IndexTuples, if requested */
+	bool	   *killedItems;	/* bitmap of tuples to kill */
+	Datum	   *privateData;	/* private data for batch */
+} IndexScanBatchData;
+
+/*
  * We use the same IndexScanDescData structure for both amgettuple-based
  * and amgetbitmap-based index scans.  Some fields are only relevant in
  * amgettuple-based scans.
@@ -151,45 +191,8 @@ typedef struct IndexScanDescData
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
-	/*
-	 * Data about the current TID batch returned by the index AM.
-	 *
-	 * XXX Maybe this should be a separate struct instead, and the scan
-	 * descriptor would have only a pointer, initialized only when the
-	 * batching is actually used?
-	 *
-	 * XXX It's not quite clear which part of this is managed by indexam and
-	 * what's up to the actual index AM implementation. Needs some clearer
-	 * boundaries.
-	 *
-	 * XXX Should we have a pointer for optional state managed by the AM? Some
-	 * custom AMs may need more per-batch information, not just the fields we
-	 * have here.
-	 */
-	struct
-	{
-		/* batch size - maximum, initial, current (with ramp up) */
-		int			maxSize;
-		int			initSize;
-		int			currSize;
-
-		/* batch prefetching */
-		int			prefetchTarget; /* current prefetch distance */
-		int			prefetchMaximum;	/* maximum prefetch distance */
-		int			prefetchIndex;	/* next item to prefetch */
-
-		/* range of leaf page items copied into the current batch */
-		int			firstIndex;
-		int			lastIndex;
-
-		/* batch contents (TIDs, index tuples, kill bitmap, ...) */
-		int			nheaptids;	/* number of TIDs in the batch */
-		int			currIndex;	/* index of the current item */
-		ItemPointerData *heaptids;	/* TIDs in the batch */
-		IndexTuple *itups;		/* IndexTuples, if requested */
-		bool	   *killedItems;	/* bitmap of tuples to kill */
-		Datum	   *privateData;	/* private data for batch */
-	}			xs_batch;
+	/* Information used by batched index scans. */
+	IndexScanBatchData *xs_batch;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

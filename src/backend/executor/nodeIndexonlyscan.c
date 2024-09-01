@@ -99,10 +99,10 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   node->ioss_RelationDesc,
 								   estate->es_snapshot,
 								   node->ioss_NumScanKeys,
-								   node->ioss_NumOrderByKeys);
+								   node->ioss_NumOrderByKeys,
+								   node->ioss_CanBatch);
 
 		node->ioss_ScanDesc = scandesc;
-
 
 		/* Set it up for index-only scan */
 		node->ioss_ScanDesc->xs_want_itup = true;
@@ -118,8 +118,6 @@ IndexOnlyNext(IndexOnlyScanState *node)
 						 node->ioss_NumScanKeys,
 						 node->ioss_OrderByKeys,
 						 node->ioss_NumOrderByKeys);
-
-		index_batch_init(scandesc, ForwardScanDirection);
 	}
 
 	/*
@@ -135,9 +133,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	 * call either the original code without batching, or the new batching
 	 * code if supported/enabled. It's not great to have duplicated code.
 	 */
-	if (!(enable_indexscan_batching &&
-		  index_batch_supported(scandesc, direction) &&
-		  node->ioss_CanBatch))
+	if (scandesc->xs_batch == NULL)
 	{
 		/*
 		 * OK, now that we have what we need, fetch the next tuple.
@@ -294,8 +290,8 @@ new_batch:
 			CHECK_FOR_INTERRUPTS();
 
 			/* Is the index of the current item valid for the batch? */
-			Assert((scandesc->xs_batch.currIndex >= 0) &&
-				   (scandesc->xs_batch.currIndex < scandesc->xs_batch.nheaptids));
+			Assert((scandesc->xs_batch->currIndex >= 0) &&
+				   (scandesc->xs_batch->currIndex < scandesc->xs_batch->nheaptids));
 
 			/* Prefetch some of the following items in the batch. */
 			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
@@ -311,7 +307,7 @@ new_batch:
 			 * way?
 			 */
 			all_visible = !ios_prefetch_block(scandesc, direction, node,
-											  scandesc->xs_batch.currIndex);
+											  scandesc->xs_batch->currIndex);
 
 			/*
 			 * We can skip the heap fetch if the TID references a heap page on
@@ -374,7 +370,7 @@ new_batch:
 					 */
 					if (scandesc->kill_prior_tuple)
 					{
-						scandesc->xs_batch.killedItems[scandesc->xs_batch.currIndex] = true;
+						scandesc->xs_batch->killedItems[scandesc->xs_batch->currIndex] = true;
 						scandesc->kill_prior_tuple = false;
 					}
 
@@ -972,14 +968,6 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 								  estate->es_snapshot,
 								  piscan);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, piscan);
-	node->ioss_ScanDesc =
-		index_beginscan_parallel(node->ss.ss_currentRelation,
-								 node->ioss_RelationDesc,
-								 node->ioss_NumScanKeys,
-								 node->ioss_NumOrderByKeys,
-								 piscan);
-	node->ioss_ScanDesc->xs_want_itup = true;
-	node->ioss_VMBuffer = InvalidBuffer;
 
 	/*
 	 * XXX do we actually want prefetching for parallel index scans? Maybe
@@ -987,7 +975,15 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 	 * (which now can happen, because we'll call IndexOnlyNext even for
 	 * parallel plans).
 	 */
-	index_batch_init(node->ioss_ScanDesc, ForwardScanDirection);
+	node->ioss_ScanDesc =
+		index_beginscan_parallel(node->ss.ss_currentRelation,
+								 node->ioss_RelationDesc,
+								 node->ioss_NumScanKeys,
+								 node->ioss_NumOrderByKeys,
+								 piscan,
+								 node->ioss_CanBatch);
+	node->ioss_ScanDesc->xs_want_itup = true;
+	node->ioss_VMBuffer = InvalidBuffer;
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
@@ -1025,16 +1021,16 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 	ParallelIndexScanDesc piscan;
 
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+
+	/* XXX do we actually want prefetching for parallel index scans? */
 	node->ioss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,
 								 node->ioss_RelationDesc,
 								 node->ioss_NumScanKeys,
 								 node->ioss_NumOrderByKeys,
-								 piscan);
+								 piscan,
+								 node->ioss_CanBatch);
 	node->ioss_ScanDesc->xs_want_itup = true;
-
-	/* XXX do we actually want prefetching for parallel index scans? */
-	index_batch_init(node->ioss_ScanDesc, ForwardScanDirection);
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
@@ -1061,19 +1057,19 @@ ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
 {
 	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
 
-	if (scan->xs_batch.privateData[index] == IOS_UNKNOWN_VISIBILITY)
+	if (scan->xs_batch->privateData[index] == IOS_UNKNOWN_VISIBILITY)
 	{
 		bool		all_visible;
-		ItemPointer tid = &scan->xs_batch.heaptids[index];
+		ItemPointer tid = &scan->xs_batch->heaptids[index];
 
 		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
 									 ItemPointerGetBlockNumber(tid),
 									 &node->ioss_VMBuffer);
 
-		scan->xs_batch.privateData[index]
+		scan->xs_batch->privateData[index]
 			= all_visible ? IOS_ALL_VISIBLE : IOS_NOT_ALL_VISIBLE;
 	}
 
 	/* prefetch only blocks that are not all-visible */
-	return (scan->xs_batch.privateData[index] == IOS_NOT_ALL_VISIBLE);
+	return (scan->xs_batch->privateData[index] == IOS_NOT_ALL_VISIBLE);
 }

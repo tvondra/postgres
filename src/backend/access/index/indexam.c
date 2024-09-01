@@ -290,6 +290,10 @@ index_beginscan(Relation heapRelation,
 	/*
 	 * If explicitly requested and supported by both the index AM and the
 	 * plan, initialize batching info.
+	 *
+	 * XXX We do this after ambeginscan(), which means the AM can't init
+	 * the private data in there (it doesn't even know if batching will
+	 * be used at that point).
 	 */
 	if ((indexRelation->rd_indam->amgettuplebatch != NULL) &&
 		enable_batching &&
@@ -1247,11 +1251,13 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 	/*
 	 * XXX Not quite correct to use MaxTIDsPerBTreePage, which is btree
 	 * specific. Also we probably don't want to depend on AMs like this.
+	 *
+	 * XXX Moved into BTScanOpaqueData.
 	 */
-	Assert((scan->xs_batch->firstIndex >= -1) &&
-		   (scan->xs_batch->firstIndex <= MaxTIDsPerBTreePage));
-	Assert((scan->xs_batch->lastIndex >= -1) &&
-		   (scan->xs_batch->lastIndex <= MaxTIDsPerBTreePage));
+//	Assert((scan->xs_batch->firstIndex >= -1) &&
+//		   (scan->xs_batch->firstIndex <= MaxTIDsPerBTreePage));
+//	Assert((scan->xs_batch->lastIndex >= -1) &&
+//		   (scan->xs_batch->lastIndex <= MaxTIDsPerBTreePage));
 
 	for (int i = 0; i < scan->xs_batch->nheaptids; i++)
 		Assert(ItemPointerIsValid(&scan->xs_batch->heaptids[i]));
@@ -1609,9 +1615,6 @@ index_batch_init(IndexScanDesc scan)
 	Assert(scan->indexRelation->rd_indam->amgettuplebatch != NULL);
 
 	scan->xs_batch = palloc0(sizeof(IndexScanBatchData));
-
-	scan->xs_batch->firstIndex = -1;
-	scan->xs_batch->lastIndex = -1;
 
 	/*
 	 * Set some reasonable batch size defaults.

@@ -1057,6 +1057,13 @@ typedef struct BTScanOpaqueData
 	int			numKilled;		/* number of currently stored items */
 
 	/*
+	 * Current range of items in a batch (if used). These are indexes into
+	 * the array of items.
+	 */
+	int			batchFirstIndex;
+	int			batchLastIndex;
+
+	/*
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
 	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.

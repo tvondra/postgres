@@ -370,8 +370,11 @@ new_batch:
 					 */
 					if (scandesc->kill_prior_tuple)
 					{
-						scandesc->xs_batch->killedItems[scandesc->xs_batch->currIndex] = true;
 						scandesc->kill_prior_tuple = false;
+
+						if (scandesc->xs_batch->nKilledItems < scandesc->xs_batch->maxSize)
+							scandesc->xs_batch->killedItems[scandesc->xs_batch->nKilledItems++]
+								= scandesc->xs_batch->currIndex;
 					}
 
 					continue;	/* no visible tuple, try next index entry */

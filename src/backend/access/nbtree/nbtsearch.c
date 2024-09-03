@@ -1622,18 +1622,6 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	so->batch.firstIndex = -1;
 	so->batch.lastIndex = -1;
 
-	/*
-	 * Mark the batch as empty.
-	 *
-	 * XXX We can't do that in index AM before calling XXX getbatch(),
-	 * because the AM may need to process some of the data (e.g. transfer
-	 * killed tuples).
-	 *
-	 * XXX Maybe another sign the killed tuples should be tracked in some
-	 * different way (not as bitmap, which requires knowing nheaptids).
-	 */
-	scan->xs_batch->nheaptids = 0;
-
 	/* we haven't visited any leaf pages yet, so proceed to reading one */
 	if (_bt_first(scan, dir))
 	{
@@ -1721,15 +1709,6 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	/*
-	 * Mark the batch as empty.
-	 *
-	 * XXX We can't do that in index AM before calling XXX getbatch(),
-	 * because the AM may need to process some of the data (e.g. transfer
-	 * killed tuples).
-	 */
-	scan->xs_batch->nheaptids = 0;
-
-	/*
 	 * We have more items on the current leaf page.
 	 */
 	if (start <= end)
@@ -1788,14 +1767,13 @@ _bt_kill_batch(IndexScanDesc scan)
 	if (!scan->xs_batch)
 		return;
 
-	for (int i = 0; i < scan->xs_batch->nheaptids; i++)
+	for (int i = 0; i < scan->xs_batch->nKilledItems; i++)
 	{
-		/* make sure we have a valid index (in the current leaf page) */
-		Assert(so->batch.firstIndex + i <= so->batch.lastIndex);
+		int	index = (so->batch.firstIndex + scan->xs_batch->killedItems[i]);
 
-		/* Skip batch items not marked as killed. */
-		if (!scan->xs_batch->killedItems[i])
-			continue;
+		/* make sure we have a valid index (in the current leaf page) */
+		Assert((so->batch.firstIndex <= index) &&
+			   (index <= so->batch.lastIndex));
 
 		/*
 		 * Yes, remember it for later. (We'll deal with all such tuples at
@@ -1809,8 +1787,11 @@ _bt_kill_batch(IndexScanDesc scan)
 			so->killedItems = (int *)
 				palloc(MaxTIDsPerBTreePage * sizeof(int));
 		if (so->numKilled < MaxTIDsPerBTreePage)
-			so->killedItems[so->numKilled++] = (so->batch.firstIndex + i);
+			so->killedItems[so->numKilled++] = index;
 	}
+
+	/* now reset the number of killed items */
+	scan->xs_batch->nKilledItems = 0;
 }
 
 /*

@@ -1323,6 +1323,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 */
 	scan->xs_batch->currIndex = -1;
 	scan->xs_batch->prefetchIndex = 0;
+	scan->xs_batch->nheaptids = 0;
 
 	/*
 	 * The AM's amgetbatch proc loads a chunk of TIDs matching the scan
@@ -1490,6 +1491,8 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		 */
 		if (scan->kill_prior_tuple)
 		{
+			scan->kill_prior_tuple = false;
+
 			/*
 			 * FIXME This is not great, because we'll have to walk through the
 			 * whole bitmap later, to maybe add killed tuples to the regular
@@ -1497,8 +1500,9 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			 * to do what btree does and stash the indexes (just some limited
 			 * number).
 			 */
-			scan->xs_batch->killedItems[scan->xs_batch->currIndex] = true;
-			scan->kill_prior_tuple = false;
+			if (scan->xs_batch->nKilledItems < scan->xs_batch->maxSize)
+				scan->xs_batch->killedItems[scan->xs_batch->nKilledItems++]
+					= scan->xs_batch->currIndex;
 		}
 	}
 
@@ -1660,8 +1664,11 @@ index_batch_init(IndexScanDesc scan)
 	/*
 	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
 	 * not a bool. This is easier / more convenient to manipulate, though.
+	 *
+	 * XXX Maybe should allow more items thant the max batch size?
 	 */
-	scan->xs_batch->killedItems = (bool *) palloc0(sizeof(bool) * scan->xs_batch->maxSize);
+	scan->xs_batch->nKilledItems = 0;
+	scan->xs_batch->killedItems = (int *) palloc0(sizeof(int) * scan->xs_batch->maxSize);
 
 	/*
 	 * XXX Maybe allocate only when actually needed? Also, shouldn't we have a
@@ -1721,7 +1728,6 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 	Assert(scan->xs_batch->nheaptids >= 0);
 
 	scan->xs_batch->heaptids[scan->xs_batch->nheaptids] = tid;
-	scan->xs_batch->killedItems[scan->xs_batch->nheaptids] = false;
 	scan->xs_batch->privateData[scan->xs_batch->nheaptids] = (Datum) 0;
 
 	if (scan->xs_want_itup)

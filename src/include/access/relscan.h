@@ -134,12 +134,15 @@ typedef struct IndexScanBatchData
 	int			prefetchIndex;	/* next item to prefetch */
 
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
-	int			nheaptids;	/* number of TIDs in the batch */
 	int			currIndex;	/* index of the current item */
+	int			nheaptids;	/* number of TIDs in the batch */
 	ItemPointerData *heaptids;	/* TIDs in the batch */
 	IndexTuple *itups;		/* IndexTuples, if requested */
-	bool	   *killedItems;	/* bitmap of tuples to kill */
 	Datum	   *privateData;	/* private data for batch */
+
+	/* list of killed items */
+	int			nKilledItems;	/* number of killedItems elements */
+	int		   *killedItems;	/* list of indexes to kill */
 } IndexScanBatchData;
 
 /*

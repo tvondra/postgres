@@ -1352,6 +1352,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 */
 	scan->xs_batch->prefetchIndex = scan->xs_batch->currIndex;
 
+	/*
+	 * Try to increase the size of the batch. Intentionally done after the AM
+	 * call, so that the new value applies to the next batch. Otherwise we
+	 * would always skip the initial batch size.
+	 */
+	scan->xs_batch->currSize = Min(scan->xs_batch->currSize + 1,
+								   scan->xs_batch->maxSize);
+
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
 

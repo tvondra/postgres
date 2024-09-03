@@ -141,7 +141,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->ambeginscan = btbeginscan;
 	amroutine->amrescan = btrescan;
 	amroutine->amgettuple = btgettuple;
-	amroutine->amgettuplebatch = btgettuplebatch;
+	amroutine->amgetbatch = btgetbatch;
 	amroutine->amgetbitmap = btgetbitmap;
 	amroutine->amendscan = btendscan;
 	amroutine->ammarkpos = btmarkpos;
@@ -261,12 +261,12 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
- *	btgettuplebatch() -- Get the next batch of tuples in the scan.
+ *	btgetbatch() -- Get the next batch of tuples in the scan.
  *
  * XXX Pretty much like btgettuple(), but for batches of tuples.
  */
 bool
-btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
+btgetbatch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	bool		res;

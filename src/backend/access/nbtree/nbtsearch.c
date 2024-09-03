@@ -1625,7 +1625,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	/*
 	 * Mark the batch as empty.
 	 *
-	 * XXX We can't do that in index AM before calling XXX gettuplebatch(),
+	 * XXX We can't do that in index AM before calling XXX getbatch(),
 	 * because the AM may need to process some of the data (e.g. transfer
 	 * killed tuples).
 	 *
@@ -1723,7 +1723,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	/*
 	 * Mark the batch as empty.
 	 *
-	 * XXX We can't do that in index AM before calling XXX gettuplebatch(),
+	 * XXX We can't do that in index AM before calling XXX getbatch(),
 	 * because the AM may need to process some of the data (e.g. transfer
 	 * killed tuples).
 	 */

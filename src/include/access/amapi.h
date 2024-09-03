@@ -178,8 +178,8 @@ typedef bool (*amgettuple_function) (IndexScanDesc scan,
 									 ScanDirection direction);
 
 /* next batch of valid tuples */
-typedef bool (*amgettuplebatch_function) (IndexScanDesc scan,
-										  ScanDirection direction);
+typedef bool (*amgetbatch_function) (IndexScanDesc scan,
+									 ScanDirection direction);
 
 /* fetch all valid tuples */
 typedef int64 (*amgetbitmap_function) (IndexScanDesc scan,
@@ -284,7 +284,7 @@ typedef struct IndexAmRoutine
 	ambeginscan_function ambeginscan;
 	amrescan_function amrescan;
 	amgettuple_function amgettuple; /* can be NULL */
-	amgettuplebatch_function amgettuplebatch;	/* can be NULL */
+	amgetbatch_function amgetbatch;	/* can be NULL */
 	amgetbitmap_function amgetbitmap;	/* can be NULL */
 	amendscan_function amendscan;
 	ammarkpos_function ammarkpos;	/* can be NULL */

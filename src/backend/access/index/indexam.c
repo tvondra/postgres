@@ -294,7 +294,7 @@ index_beginscan(Relation heapRelation,
 	 * the private data in there (it doesn't even know if batching will
 	 * be used at that point).
 	 */
-	if ((indexRelation->rd_indam->amgettuplebatch != NULL) &&
+	if ((indexRelation->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
 		enable_indexscan_batching)
 	{
@@ -611,7 +611,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	 * If explicitly requested and supported by both the index AM and the
 	 * plan, initialize batching info.
 	 */
-	if ((indexrel->rd_indam->amgettuplebatch != NULL) &&
+	if ((indexrel->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
 		enable_indexscan_batching)
 	{
@@ -1109,7 +1109,7 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * -----------------
  *
  * This requires some level of cooperation from the index AM - the index
- * needs to implement an optional callbacl amgettuplebatch() which fills
+ * needs to implement an optional callbacl amgetbatch() which fills
  * data into the batch (in the scan descriptor).
  *
  * The index AM also needs to ensure it can perform all optimizations for
@@ -1296,7 +1296,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	bool		found;
 
 	SCAN_CHECKS;
-	CHECK_SCAN_PROCEDURE(amgettuplebatch);
+	CHECK_SCAN_PROCEDURE(amgetbatch);
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
@@ -1314,7 +1314,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	/*
 	 * Reset the current/prefetch positions in the batch.
 	 *
-	 * XXX Done before calling amgettuplebatch(), so that it sees the index
+	 * XXX Done before calling amgetbatch(), so that it sees the index
 	 * as invalid.
 	 *
 	 * XXX Intentionally does not reset the nheaptids, because the AM does
@@ -1325,7 +1325,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch->prefetchIndex = 0;
 
 	/*
-	 * The AM's amgettuplebatch proc loads a chunk of TIDs matching the scan
+	 * The AM's amgetbatch proc loads a chunk of TIDs matching the scan
 	 * keys, and puts the TIDs into scan->xs_batch->heaptids.  It should also
 	 * set scan->xs_recheck and possibly
 	 * scan->xs_batch->itups/scan->xs_batch->hitups, though we pay no attention
@@ -1333,7 +1333,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 *
 	 * FIXME At the moment this does nothing with hitup. Needs to be fixed?
 	 */
-	found = scan->indexRelation->rd_indam->amgettuplebatch(scan, direction);
+	found = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
 
 	/* Reset kill flag immediately for safety */
 	scan->kill_prior_tuple = false;
@@ -1623,7 +1623,7 @@ static void
 index_batch_init(IndexScanDesc scan)
 {
 	/* init batching info, but only if batch supported */
-	Assert(scan->indexRelation->rd_indam->amgettuplebatch != NULL);
+	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
 
 	scan->xs_batch = palloc0(sizeof(IndexScanBatchData));
 

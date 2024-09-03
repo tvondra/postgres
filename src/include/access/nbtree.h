@@ -1183,7 +1183,7 @@ extern IndexScanDesc btbeginscan(Relation rel, int nkeys, int norderbys);
 extern Size btestimateparallelscan(int nkeys, int norderbys);
 extern void btinitparallelscan(void *target);
 extern bool btgettuple(IndexScanDesc scan, ScanDirection dir);
-extern bool btgettuplebatch(IndexScanDesc scan, ScanDirection dir);
+extern bool btgetbatch(IndexScanDesc scan, ScanDirection dir);
 extern int64 btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 					 ScanKey orderbys, int norderbys);

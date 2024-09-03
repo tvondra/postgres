@@ -1618,6 +1618,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
+	Assert(scan->xs_batch->nheaptids == 0);
+
 	/*
 	 * Mark the batch as empty.
 	 *
@@ -1689,6 +1691,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	int			start,
 				end;
+
+	Assert(scan->xs_batch->nheaptids == 0);
 
 	AssertCheckBTBatchInfo(so);
 

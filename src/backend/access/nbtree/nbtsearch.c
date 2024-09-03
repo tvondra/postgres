@@ -1527,6 +1527,69 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	return true;
 }
 
+
+static void
+_bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
+			   int start, int end)
+{
+	/*
+	 * We're reading the first batch, and there should always be at least
+	 * one item (otherwise _bt_first would return false). So we should
+	 * never get into situation with empty start/end range. In the worst
+	 * case, there is just a single item, in which case (start == end).
+	 */
+	Assert(start <= end);
+
+	so->batch.firstIndex = start;
+	so->batch.lastIndex = end;
+
+	/* The range of items should fit into the current batch size. */
+	Assert((end - start + 1) <= scan->xs_batch->currSize);
+
+	/* should be valid items (with respect to the current leaf page) */
+	Assert(so->currPos.firstItem <= so->batch.firstIndex);
+	Assert(so->batch.firstIndex <= so->batch.lastIndex);
+	Assert(so->batch.lastIndex <= so->currPos.lastItem);
+
+	/*
+	 * Walk through the range of index tuples, copy them into the batch.
+	 * If requested, set the index tuple too.
+	 *
+	 * We don't know if the batch is full already - we just try to add it,
+	 * and bail out if it fails.
+	 *
+	 * FIXME This seems wrong, actually. We use currSize when calculating
+	 * the start/end range, so the add should always succeed.
+	 */
+	while (start <= end)
+	{
+		BTScanPosItem *currItem = &so->currPos.items[start];
+		IndexTuple	itup = NULL;
+
+		if (scan->xs_want_itup)
+			itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
+
+		/* try to add it to batch, if there's space */
+		if (!index_batch_add(scan, currItem->heapTid, itup))
+			break;
+
+		start++;
+	}
+
+	/*
+	 * set the starting point
+	 *
+	 * XXX might be better done in indexam.c
+	 */
+	if (ScanDirectionIsForward(dir))
+		scan->xs_batch->currIndex = -1;
+	else
+		scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
+
+	/* shouldn't be possible to end here with an empty batch */
+	Assert(scan->xs_batch->nheaptids > 0);
+}
+
 /*
  *	_bt_first_batch() -- Find the first batch in a scan.
  *
@@ -1594,61 +1657,11 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		}
 
 		/*
-		 * We're reading the first batch, and there should always be at least
-		 * one item (otherwise _bt_first would return false). So we should
-		 * never get into situation with empty start/end range. In the worst
-		 * case, there is just a single item, in which case (start == end).
+		 * Copy the selected range of items into the batch, set the batch
+		 * current index properly (before first / after last item, depending
+		 * on scan direction.
 		 */
-		Assert(start <= end);
-
-		so->batch.firstIndex = start;
-		so->batch.lastIndex = end;
-
-		/* The range of items should fit into the current batch size. */
-		Assert((end - start + 1) <= scan->xs_batch->currSize);
-
-		/* should be valid items (with respect to the current leaf page) */
-		Assert(so->currPos.firstItem <= so->batch.firstIndex);
-		Assert(so->batch.firstIndex <= so->batch.lastIndex);
-		Assert(so->batch.lastIndex <= so->currPos.lastItem);
-
-		/*
-		 * Walk through the range of index tuples, copy them into the batch.
-		 * If requested, set the index tuple too.
-		 *
-		 * We don't know if the batch is full already - we just try to add it,
-		 * and bail out if it fails.
-		 *
-		 * FIXME This seems wrong, actually. We use currSize when calculating
-		 * the start/end range, so the add should always succeed.
-		 */
-		while (start <= end)
-		{
-			BTScanPosItem *currItem = &so->currPos.items[start];
-			IndexTuple	itup = NULL;
-
-			if (scan->xs_want_itup)
-				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
-
-			/* try to add it to batch, if there's space */
-			if (!index_batch_add(scan, currItem->heapTid, itup))
-				break;
-
-			start++;
-		}
-
-		/*
-		 * set the starting point
-		 *
-		 * XXX might be better done in indexam.c
-		 */
-		if (ScanDirectionIsForward(dir))
-			scan->xs_batch->currIndex = -1;
-		else
-			scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
-
-		/* shouldn't be possible to end here with an empty batch */
-		Assert(scan->xs_batch->nheaptids > 0);
+		_bt_copy_batch(scan, dir, so, start, end);
 
 		return true;
 	}
@@ -1721,56 +1734,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (start <= end)
 	{
-		/* update the "window" the batch represents */
-		so->batch.firstIndex = start;
-		so->batch.lastIndex = end;
-
-		/* should fit into the current batch */
-		Assert((end - start + 1) <= scan->xs_batch->currSize);
-
-		/* should be valid items (with respect to the current leaf page) */
-		Assert(so->currPos.firstItem <= so->batch.firstIndex);
-		Assert(so->batch.firstIndex <= so->batch.lastIndex);
-		Assert(so->batch.lastIndex <= so->currPos.lastItem);
-
-		/*
-		 * Walk through the range of index tuples, copy them into the batch.
-		 * If requested, set the index tuple too.
-		 *
-		 * We don't know if the batch is full already - we just try to add it,
-		 * and bail out if it fails.
-		 *
-		 * FIXME This seems wrong, actually. We use currSize when calculating
-		 * the start/end range, so the add should always succeed.
-		 */
-		while (start <= end)
-		{
-			BTScanPosItem *currItem = &so->currPos.items[start];
-			IndexTuple	itup = NULL;
-
-			if (scan->xs_want_itup)
-				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
-
-			/* try to add it to batch, if there's space */
-			if (!index_batch_add(scan, currItem->heapTid, itup))
-				break;
-
-			start++;
-		}
-
-		/*
-		 * set the starting point
-		 *
-		 * XXX might be better done in indexam.c
-		 */
-		if (ScanDirectionIsForward(dir))
-			scan->xs_batch->currIndex = -1;
-		else
-			scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
-
-		/* shouldn't be possible to end here with an empty batch */
-		Assert(scan->xs_batch->nheaptids > 0);
-
+		_bt_copy_batch(scan, dir, so, start, end);
 		return true;
 	}
 
@@ -1801,55 +1765,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 			so->currPos.itemIndex = (start - 1);
 		}
 
-		/* update the "window" the batch represents */
-		so->batch.firstIndex = start;
-		so->batch.lastIndex = end;
-
-		/* should fit into the current batch */
-		Assert((end - start + 1) <= scan->xs_batch->currSize);
-
-		/* should be valid items (with respect to the current leaf page) */
-		Assert(so->currPos.firstItem <= so->batch.firstIndex);
-		Assert(so->batch.firstIndex <= so->batch.lastIndex);
-		Assert(so->batch.lastIndex <= so->currPos.lastItem);
-
-		/*
-		 * Walk through the range of index tuples, copy them into the batch.
-		 * If requested, set the index tuple too.
-		 *
-		 * We don't know if the batch is full already - we just try to add it,
-		 * and bail out if it fails.
-		 *
-		 * FIXME This seems wrong, actually. We use currSize when calculating
-		 * the start/end range, so the add should always succeed.
-		 */
-		while (start <= end)
-		{
-			BTScanPosItem *currItem = &so->currPos.items[start];
-			IndexTuple	itup = NULL;
-
-			if (scan->xs_want_itup)
-				itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
-
-			/* try to add it to batch, if there's space */
-			if (!index_batch_add(scan, currItem->heapTid, itup))
-				break;
-
-			start++;
-		}
-
-		/*
-		 * set the starting point
-		 *
-		 * XXX might be better done in indexam.c
-		 */
-		if (ScanDirectionIsForward(dir))
-			scan->xs_batch->currIndex = -1;
-		else
-			scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
-
-		/* shouldn't be possible to end here with an empty batch */
-		Assert(scan->xs_batch->nheaptids > 0);
+		_bt_copy_batch(scan, dir, so, start, end);
 
 		return true;
 	}

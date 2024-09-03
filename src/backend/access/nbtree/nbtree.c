@@ -300,6 +300,7 @@ btgettuplebatch(IndexScanDesc scan, ScanDirection dir)
 		/* If we have a tuple, return it ... */
 		if (res)
 			break;
+
 		/* ... otherwise see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
 
@@ -386,8 +387,8 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->numKilled = 0;
 
 	/* batch range, disabled by default */
-	so->batchFirstIndex = -1;
-	so->batchLastIndex = -1;
+	so->batch.firstIndex = -1;
+	so->batch.lastIndex = -1;
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
@@ -462,6 +463,10 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 				scan->numberOfKeys * sizeof(ScanKeyData));
 	so->numberOfKeys = 0;		/* until _bt_preprocess_keys sets it */
 	so->numArrayKeys = 0;		/* ditto */
+
+	/* Reset the batch (even if not batched scan) */
+	so->batch.firstIndex = -1;
+	so->batch.lastIndex = -1;
 }
 
 /*

@@ -1547,7 +1547,22 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	/* start a new batch */
+	/*
+	 * Mark the batch as empty.
+	 *
+	 * This might seems a bit strange, because surely the batch should be
+	 * empty before reading the first batch. So why not an assert? But we
+	 * can get here in different ways - not just after beginscan/rescan,
+	 * but also when iterating over ScalarArrayOps - in which case we'll
+	 * see the last batch of the preceding scan.
+	 */
+	so->batch.firstIndex = -1;
+	so->batch.lastIndex = -1;
+
+	/* start a new batch
+	 *
+	 * XXX move to indexam, reset it's part of the information
+	 */
 	index_batch_reset(scan, dir);
 
 	/*
@@ -1588,16 +1603,16 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		 */
 		Assert(start <= end);
 
-		so->batchFirstIndex = start;
-		so->batchLastIndex = end;
+		so->batch.firstIndex = start;
+		so->batch.lastIndex = end;
 
 		/* The range of items should fit into the current batch size. */
 		Assert((end - start + 1) <= scan->xs_batch->currSize);
 
-		/* should be valid items (with respect to the leaf page) */
-		Assert(so->currPos.firstItem <= so->batchLastIndex);
-		Assert(so->batchFirstIndex <= so->batchLastIndex);
-		Assert(so->batchLastIndex <= so->currPos.lastItem);
+		/* should be valid items (with respect to the current leaf page) */
+		Assert(so->currPos.firstItem <= so->batch.firstIndex);
+		Assert(so->batch.firstIndex <= so->batch.lastIndex);
+		Assert(so->batch.lastIndex <= so->currPos.lastItem);
 
 		/*
 		 * Walk through the range of index tuples, copy them into the batch.
@@ -1668,10 +1683,10 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	int			start,
 				end;
 
-	/* should be valid items (with respect to the leaf page) */
-	Assert(so->currPos.firstItem <= so->batchFirstIndex);
-	Assert(so->batchFirstIndex <= so->batchLastIndex);
-	Assert(so->batchLastIndex <= so->currPos.lastItem);
+	/* should be valid items (with respect to the current leaf page) */
+	Assert(so->currPos.firstItem <= so->batch.firstIndex);
+	Assert(so->batch.firstIndex <= so->batch.lastIndex);
+	Assert(so->batch.lastIndex <= so->currPos.lastItem);
 
 	/*
 	 * Try to increase the size of the batch. Intentionally done before trying
@@ -1693,13 +1708,13 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (ScanDirectionIsForward(dir))
 	{
-		start = so->batchLastIndex + 1;
+		start = so->batch.lastIndex + 1;
 		end = Min(start + (scan->xs_batch->currSize - 1), so->currPos.lastItem);
 		so->currPos.itemIndex = (end + 1);
 	}
 	else
 	{
-		end = so->batchFirstIndex - 1;
+		end = so->batch.firstIndex - 1;
 		start = Max(end - (scan->xs_batch->currSize - 1),
 					so->currPos.firstItem);
 		so->currPos.itemIndex = (start - 1);
@@ -1710,6 +1725,8 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 *
 	 * XXX needs to happen after we calculate the start/end above, as it
 	 * resets some of the fields needed by the calculation.
+	 *
+	 * XXX Move to indexam, the information is managed by that code
 	 */
 	index_batch_reset(scan, dir);
 
@@ -1719,16 +1736,16 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	if (start <= end)
 	{
 		/* update the "window" the batch represents */
-		so->batchFirstIndex = start;
-		so->batchLastIndex = end;
+		so->batch.firstIndex = start;
+		so->batch.lastIndex = end;
 
 		/* should fit into the current batch */
 		Assert((end - start + 1) <= scan->xs_batch->currSize);
 
-		/* should be valid items (with respect to the leaf page) */
-		Assert(so->currPos.firstItem <= so->batchFirstIndex);
-		Assert(so->batchFirstIndex <= so->batchLastIndex);
-		Assert(so->batchLastIndex <= so->currPos.lastItem);
+		/* should be valid items (with respect to the current leaf page) */
+		Assert(so->currPos.firstItem <= so->batch.firstIndex);
+		Assert(so->batch.firstIndex <= so->batch.lastIndex);
+		Assert(so->batch.lastIndex <= so->currPos.lastItem);
 
 		/*
 		 * Walk through the range of index tuples, copy them into the batch.
@@ -1799,16 +1816,16 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 		}
 
 		/* update the "window" the batch represents */
-		so->batchFirstIndex = start;
-		so->batchLastIndex = end;
+		so->batch.firstIndex = start;
+		so->batch.lastIndex = end;
 
 		/* should fit into the current batch */
 		Assert((end - start + 1) <= scan->xs_batch->currSize);
 
-		/* should be valid items (with respect to the leaf page) */
-		Assert(so->currPos.firstItem <= so->batchFirstIndex);
-		Assert(so->batchFirstIndex <= so->batchLastIndex);
-		Assert(so->batchLastIndex <= so->currPos.lastItem);
+		/* should be valid items (with respect to the current leaf page) */
+		Assert(so->currPos.firstItem <= so->batch.firstIndex);
+		Assert(so->batch.firstIndex <= so->batch.lastIndex);
+		Assert(so->batch.lastIndex <= so->currPos.lastItem);
 
 		/*
 		 * Walk through the range of index tuples, copy them into the batch.
@@ -1871,6 +1888,9 @@ _bt_kill_batch(IndexScanDesc scan)
 
 	for (int i = 0; i < scan->xs_batch->nheaptids; i++)
 	{
+		/* make sure we have a valid index (in the current leaf page) */
+		Assert(so->batch.firstIndex + i <= so->batch.lastIndex);
+
 		/* Skip batch items not marked as killed. */
 		if (!scan->xs_batch->killedItems[i])
 			continue;
@@ -1887,7 +1907,7 @@ _bt_kill_batch(IndexScanDesc scan)
 			so->killedItems = (int *)
 				palloc(MaxTIDsPerBTreePage * sizeof(int));
 		if (so->numKilled < MaxTIDsPerBTreePage)
-			so->killedItems[so->numKilled++] = (so->batchFirstIndex + i);
+			so->killedItems[so->numKilled++] = (so->batch.firstIndex + i);
 	}
 }
 

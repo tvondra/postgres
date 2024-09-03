@@ -51,7 +51,6 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
-#include "access/nbtree.h"		/* XXX MaxTIDsPerBTreePage */
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -1247,17 +1246,6 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 	Assert((scan->xs_batch->prefetchIndex >= -1) &&
 		   (scan->xs_batch->prefetchIndex <= scan->xs_batch->nheaptids));
-
-	/*
-	 * XXX Not quite correct to use MaxTIDsPerBTreePage, which is btree
-	 * specific. Also we probably don't want to depend on AMs like this.
-	 *
-	 * XXX Moved into BTScanOpaqueData.
-	 */
-//	Assert((scan->xs_batch->firstIndex >= -1) &&
-//		   (scan->xs_batch->firstIndex <= MaxTIDsPerBTreePage));
-//	Assert((scan->xs_batch->lastIndex >= -1) &&
-//		   (scan->xs_batch->lastIndex <= MaxTIDsPerBTreePage));
 
 	for (int i = 0; i < scan->xs_batch->nheaptids; i++)
 		Assert(ItemPointerIsValid(&scan->xs_batch->heaptids[i]));

@@ -1037,6 +1037,14 @@ typedef struct BTArrayKeyInfo
 	Datum	   *elem_values;	/* array of num_elems Datums */
 } BTArrayKeyInfo;
 
+/* Information about the current batch (in batched index scans) */
+typedef struct BTBatchInfo
+{
+	/* Current range of items in a batch (if used). */
+	int			firstIndex;
+	int			lastIndex;
+} BTBatchInfo;
+
 typedef struct BTScanOpaqueData
 {
 	/* these fields are set by _bt_preprocess_keys(): */
@@ -1056,12 +1064,8 @@ typedef struct BTScanOpaqueData
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
 
-	/*
-	 * Current range of items in a batch (if used). These are indexes into
-	 * the array of items.
-	 */
-	int			batchFirstIndex;
-	int			batchLastIndex;
+	/* info about current batch */
+	BTBatchInfo	batch;
 
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage

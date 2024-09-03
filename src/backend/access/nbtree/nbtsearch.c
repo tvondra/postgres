@@ -1529,6 +1529,17 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 
 
 static void
+AssertCheckBTBatchInfo(BTScanOpaque so)
+{
+#ifdef USE_ASSERT_CHECKING
+	/* should be valid items (with respect to the current leaf page) */
+	Assert(so->currPos.firstItem <= so->batch.firstIndex);
+	Assert(so->batch.firstIndex <= so->batch.lastIndex);
+	Assert(so->batch.lastIndex <= so->currPos.lastItem);
+#endif
+}
+
+static void
 _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
 			   int start, int end)
 {
@@ -1540,16 +1551,13 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
 	 */
 	Assert(start <= end);
 
-	so->batch.firstIndex = start;
-	so->batch.lastIndex = end;
-
 	/* The range of items should fit into the current batch size. */
 	Assert((end - start + 1) <= scan->xs_batch->currSize);
 
-	/* should be valid items (with respect to the current leaf page) */
-	Assert(so->currPos.firstItem <= so->batch.firstIndex);
-	Assert(so->batch.firstIndex <= so->batch.lastIndex);
-	Assert(so->batch.lastIndex <= so->currPos.lastItem);
+	so->batch.firstIndex = start;
+	so->batch.lastIndex = end;
+
+	AssertCheckBTBatchInfo(so);
 
 	/*
 	 * Walk through the range of index tuples, copy them into the batch.
@@ -1682,10 +1690,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	int			start,
 				end;
 
-	/* should be valid items (with respect to the current leaf page) */
-	Assert(so->currPos.firstItem <= so->batch.firstIndex);
-	Assert(so->batch.firstIndex <= so->batch.lastIndex);
-	Assert(so->batch.lastIndex <= so->currPos.lastItem);
+	AssertCheckBTBatchInfo(so);
 
 	/*
 	 * Check if we still have some items on the current leaf page. If yes,

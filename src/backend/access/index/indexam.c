@@ -404,7 +404,7 @@ index_rescan(IndexScanDesc scan,
 	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
 	 * properly transfer the killed tuples).
 	 */
-	index_batch_reset(scan, ForwardScanDirection);
+	// index_batch_reset(scan, ForwardScanDirection);
 }
 
 /* ----------------
@@ -487,7 +487,7 @@ index_restrpos(IndexScanDesc scan)
 	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
 	 * properly transfer the killed tuples).
 	 */
-	index_batch_reset(scan, ForwardScanDirection);
+	// index_batch_reset(scan, ForwardScanDirection);
 }
 
 /*
@@ -1308,6 +1308,15 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * (in the given direction).
 	 */
 	Assert(!INDEX_BATCH_HAS_ITEMS(scan, direction));
+
+	/*
+	 * Reset the current/prefetch positions in the batch.
+	 *
+	 * XXX Done before calling amgettuplebatch(), so that it sees the index
+	 * as invalid.
+	 */
+	scan->xs_batch->currIndex = -1;
+	scan->xs_batch->prefetchIndex = 0;
 
 	/*
 	 * The AM's amgettuplebatch proc loads a chunk of TIDs matching the scan

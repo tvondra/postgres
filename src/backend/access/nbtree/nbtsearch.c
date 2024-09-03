@@ -1559,11 +1559,17 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	so->batch.firstIndex = -1;
 	so->batch.lastIndex = -1;
 
-	/* start a new batch
+	/*
+	 * Mark the batch as empty.
 	 *
-	 * XXX move to indexam, reset it's part of the information
+	 * XXX We can't do that in index AM before calling XXX gettuplebatch(),
+	 * because the AM may need to process some of the data (e.g. transfer
+	 * killed tuples).
+	 *
+	 * XXX Maybe another sign the killed tuples should be tracked in some
+	 * different way (not as bitmap, which requires knowing nheaptids).
 	 */
-	index_batch_reset(scan, dir);
+	scan->xs_batch->nheaptids = 0;
 
 	/* we haven't visited any leaf pages yet, so proceed to reading one */
 	if (_bt_first(scan, dir))
@@ -1702,14 +1708,13 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	/*
-	 * reset the batch before loading new data
+	 * Mark the batch as empty.
 	 *
-	 * XXX needs to happen after we calculate the start/end above, as it
-	 * resets some of the fields needed by the calculation.
-	 *
-	 * XXX Move to indexam, the information is managed by that code
+	 * XXX We can't do that in index AM before calling XXX gettuplebatch(),
+	 * because the AM may need to process some of the data (e.g. transfer
+	 * killed tuples).
 	 */
-	index_batch_reset(scan, dir);
+	scan->xs_batch->nheaptids = 0;
 
 	/*
 	 * We have more items on the current leaf page.

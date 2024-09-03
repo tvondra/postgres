@@ -38,7 +38,6 @@
  *		index_batch_getnext_slot	- get the next tuple from a batch
  *		index_batch_prefetch	- prefetch heap pages for a batch
  *		index_batch_supported	- does the AM support/allow batching?
- *		index_batch_reset	- reset the TID batch (before next batch)
  *		index_batch_add		- add an item (TID, itup) to the batch
  *
  * NOTES
@@ -119,6 +118,7 @@ static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
 static inline void validate_relation_kind(Relation r);
 static void index_batch_init(IndexScanDesc scan);
+static void index_batch_reset(IndexScanDesc scan);
 
 
 /* ----------------------------------------------------------------
@@ -400,11 +400,12 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 
 	/*
-	 * Reset the batch, to make it look empty. This needs to happen after the
-	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
-	 * properly transfer the killed tuples).
+	 * Reset the batch, to make it look empty.
+	 *
+	 * Done after the amrescan() call, in case the AM needs some of the
+	 * batch info (e.g. to properly transfer the killed tuples).
 	 */
-	// index_batch_reset(scan, ForwardScanDirection);
+	index_batch_reset(scan);
 }
 
 /* ----------------
@@ -483,11 +484,12 @@ index_restrpos(IndexScanDesc scan)
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 
 	/*
-	 * Reset the batch, to make it look empty. This needs to happen after the
-	 * amrestrpos() call, in case the AM needs some of the batch info (e.g. to
-	 * properly transfer the killed tuples).
+	 * Reset the batch, to make it look empty.
+	 *
+	 * Done after the amrestrpos() call, in case the AM needs some of the
+	 * batch info (e.g. to properly transfer the killed tuples).
 	 */
-	// index_batch_reset(scan, ForwardScanDirection);
+	index_batch_reset(scan);
 }
 
 /*
@@ -1314,6 +1316,10 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 *
 	 * XXX Done before calling amgettuplebatch(), so that it sees the index
 	 * as invalid.
+	 *
+	 * XXX Intentionally does not reset the nheaptids, because the AM does
+	 * rely on that when processing killed tuples. Maybe store the killed
+	 * tuples differently?
 	 */
 	scan->xs_batch->currIndex = -1;
 	scan->xs_batch->prefetchIndex = 0;
@@ -1674,8 +1680,8 @@ index_batch_init(IndexScanDesc scan)
  * FIXME Another bit in need of cleanup. The currIndex default (-1) is not quite
  * correct, because for backwards scans is wrong.
  */
-void
-index_batch_reset(IndexScanDesc scan, ScanDirection direction)
+static void
+index_batch_reset(IndexScanDesc scan)
 {
 	/* bail out if batching not enabled */
 	if (!scan->xs_batch)

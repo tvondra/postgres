@@ -195,7 +195,6 @@ extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 extern bool index_batch_getnext_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
-extern void index_batch_reset(IndexScanDesc scan, ScanDirection direction);
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
 
 /*

@@ -1007,7 +1007,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 *
 	 * XXX Hopefully just a temporary limitation?
 	 */
-	indexstate->iss_CanBatch = !(eflags & EXEC_FLAG_MARK);
+	indexstate->iss_CanBatch = true; // !(eflags & EXEC_FLAG_MARK);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

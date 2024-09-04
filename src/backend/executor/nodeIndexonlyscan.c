@@ -808,7 +808,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 *
 	 * XXX Hopefully just a temporary limitation?
 	 */
-	indexstate->ioss_CanBatch = !(eflags & EXEC_FLAG_MARK);
+	indexstate->ioss_CanBatch = true; // !(eflags & EXEC_FLAG_MARK);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop

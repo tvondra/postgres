@@ -484,12 +484,9 @@ index_restrpos(IndexScanDesc scan)
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 
 	/*
-	 * Reset the batch, to make it look empty.
-	 *
-	 * Done after the amrestrpos() call, in case the AM needs some of the
-	 * batch info (e.g. to properly transfer the killed tuples).
+	 * Don't reset the batch here - amrestrpos has already loaded the new
+	 * batch if needed.
 	 */
-	index_batch_reset(scan);
 }
 
 /*
@@ -1275,7 +1272,7 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 /* Does the batch items in the requested direction? */
 #define INDEX_BATCH_HAS_ITEMS(scan, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && !INDEX_BATCH_IS_PROCESSED(scan, direction))
+	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
 
 
 /* ----------------
@@ -1411,8 +1408,16 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/*
 	 * Advance to the next batch item - we know it's not empty and there are
 	 * items to process, so this is valid.
+	 *
+	 * But don't advance if this is the first getnext_tid() call after a call
+	 * to amrestrpos(). We're already starting at the correct item, advancing
+	 * would skip it.
+	 *
+	 * XXX The "restored" flag is a bit weird. Can we do this without it?
 	 */
-	if (ScanDirectionIsForward(direction))
+	if (scan->xs_batch->restored)
+		scan->xs_batch->restored = false;
+	else if (ScanDirectionIsForward(direction))
 		scan->xs_batch->currIndex++;
 	else
 		scan->xs_batch->currIndex--;
@@ -1705,6 +1710,7 @@ index_batch_reset(IndexScanDesc scan)
 	scan->xs_batch->nheaptids = 0;
 	scan->xs_batch->prefetchIndex = 0;
 	scan->xs_batch->currIndex = -1;
+	scan->xs_batch->restored = false;
 }
 
 /*

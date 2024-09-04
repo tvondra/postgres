@@ -1595,8 +1595,16 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 		scan->xs_batch->prefetchIndex = prefetchStart;
 	}
 
-	/* we shouldn't get inverted prefetch range */
-	Assert(prefetchStart <= prefetchEnd);
+	/*
+	 * It's possible we get inverted prefetch range after a restrpos() call,
+	 * because we intentionally don't reset the prefetchIndex - we don't want
+	 * to prefetch pages over and over in this case. We'll do nothing in
+	 * that case, except for the AssertCheckBatchInfo().
+	 *
+	 * FIXME I suspect this actually does not work correctly if we change
+	 * the direction, because the prefetchIndex will flip between two
+	 * extremes thanks to the Min/Max.
+	 */
 
 	/*
 	 * Increase the prefetch distance, but not beyond prefetchMaximum. We

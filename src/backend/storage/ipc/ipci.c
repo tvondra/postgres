@@ -156,6 +156,8 @@ CalculateShmemSize(int *num_semaphores)
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);
 
+	elog(LOG, "CalculateShmemSize %lu", size);
+
 	/* might as well round it off to a multiple of a typical page size */
 	size = add_size(size, 8192 - (size % 8192));
 

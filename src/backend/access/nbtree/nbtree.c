@@ -593,6 +593,7 @@ btrestrpos(IndexScanDesc scan)
 							  start + (scan->xs_batch->currSize - 1));
 
 				Assert(start <= end);
+				Assert((end - start + 1) <= scan->xs_batch->currSize);
 
 				/* make it look empty */
 				scan->xs_batch->nheaptids = 0;
@@ -617,12 +618,6 @@ btrestrpos(IndexScanDesc scan)
 	}
 	else
 	{
-		/*
-		 * FIXME Restoring position on a different page does not work with
-		 * batching yet. Needs a fix.
-		 */
-		Assert(scan->xs_batch == NULL);
-
 		/*
 		 * The scan moved to a new page after last mark or restore, and we are
 		 * now restoring to the marked page.  We aren't holding any read
@@ -656,6 +651,42 @@ btrestrpos(IndexScanDesc scan)
 			{
 				_bt_start_array_keys(scan, so->currPos.dir);
 				so->needPrimScan = false;
+			}
+
+			/*
+			 * The current batch is definitely wrong, as it's from the wrong
+			 * page, so empty it and load from scratch using the item index.
+			 *
+			 * Pretty much what index_batch_reset() does.
+			 */
+			if (scan->xs_batch != NULL)
+			{
+				int start = Max(so->currPos.firstItem,
+								so->currPos.itemIndex - (scan->xs_batch->currSize / 2));
+				int end = Min(so->currPos.lastItem,
+							  start + (scan->xs_batch->currSize - 1));
+
+				Assert(start <= end);
+				Assert((end - start + 1) <= scan->xs_batch->currSize);
+
+				/* make it look empty */
+				scan->xs_batch->nheaptids = 0;
+				scan->xs_batch->prefetchIndex = -1;
+
+				/* XXX the scan direction is bogus */
+				_bt_copy_batch(scan, ForwardScanDirection, so, start, end);
+
+				/*
+				 * Set the batch index to the "correct" position in the batch, even
+				 * if we haven't re-loaded it from the page. Also remember we just
+				 * did this, so that the next call to index_batch_getnext_tid() does
+				 * not advance it again.
+				 *
+				 * XXX This is a bit weird. There should be a way to not need the
+				 * "restored" flag I think.
+				 */
+				scan->xs_batch->currIndex = (so->currPos.itemIndex - so->batch.firstIndex);
+				scan->xs_batch->restored = true;
 			}
 		}
 		else

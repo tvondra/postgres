@@ -1272,7 +1272,7 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 
 /* Does the batch items in the requested direction? */
 #define INDEX_BATCH_HAS_ITEMS(scan, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && !INDEX_BATCH_IS_PROCESSED(scan, direction))
+	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
 
 
 /* ----------------

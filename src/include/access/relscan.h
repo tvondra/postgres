@@ -131,6 +131,8 @@ typedef struct IndexScanBatchData
 	/* memory context for per-batch data */
 	MemoryContext	ctx;
 
+	bool		restored;
+
 	/* batch prefetching */
 	int			prefetchTarget; /* current prefetch distance */
 	int			prefetchMaximum;	/* maximum prefetch distance */

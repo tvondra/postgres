@@ -1539,7 +1539,7 @@ AssertCheckBTBatchInfo(BTScanOpaque so)
 #endif
 }
 
-static void
+void
 _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
 			   int start, int end)
 {

@@ -1518,7 +1518,7 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 }
 
 /* ----------------
- *		index_getnext_batch_prefetch - prefetch pages for TIDs in current batch
+ *		index_batch_prefetch - prefetch pages for TIDs in current batch
  *
  * The prefetch distance is increased gradually, similar to what we do for
  * bitmap heap scans. We start from distance 0 (no prefetch), and then in each

@@ -1129,13 +1129,14 @@ _spgist_copy_batch(IndexScanDesc scan, SpGistScanOpaque so,
 	 */
 	while (start <= end)
 	{
-		// bool recheck = so->recheck[start];
-		// HeapTuple htup = so->reconTups[start];
+		bool recheck = so->recheck[start];
+		HeapTuple htup = NULL;
 
-		/* FIXME pass the recheck and htup flags too */
+		if (so->want_itup)
+			htup = so->reconTups[start];
 
 		/* try to add it to batch, if there's space */
-		if (!index_batch_add(scan, so->heapPtrs[start], NULL))
+		if (!index_batch_add(scan, so->heapPtrs[start], recheck, NULL, htup))
 			break;
 
 		start++;

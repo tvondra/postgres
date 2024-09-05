@@ -140,6 +140,8 @@ typedef struct IndexScanBatchData
 	int			nheaptids;	/* number of TIDs in the batch */
 	ItemPointerData *heaptids;	/* TIDs in the batch */
 	IndexTuple *itups;		/* IndexTuples, if requested */
+	HeapTuple  *htups;		/* HeapTuples, if requested */
+	bool	   *recheck;	/* recheck flags */
 	Datum	   *privateData;	/* private data for batch */
 
 	/* list of killed items */

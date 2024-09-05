@@ -1425,7 +1425,12 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* next TID from the batch, optionally also the IndexTuple */
 	scan->xs_heaptid = scan->xs_batch->heaptids[scan->xs_batch->currIndex];
 	if (scan->xs_want_itup)
+	{
 		scan->xs_itup = scan->xs_batch->itups[scan->xs_batch->currIndex];
+		scan->xs_hitup = scan->xs_batch->htups[scan->xs_batch->currIndex];
+	}
+
+	scan->xs_recheck = scan->xs_batch->recheck[scan->xs_batch->currIndex];
 
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
@@ -1673,6 +1678,9 @@ index_batch_init(IndexScanDesc scan)
 	 * could (or should) allocate lazily.
 	 */
 	scan->xs_batch->itups = palloc(sizeof(IndexTuple) * scan->xs_batch->maxSize);
+	scan->xs_batch->htups = palloc(sizeof(HeapTuple) * scan->xs_batch->maxSize);
+
+	scan->xs_batch->recheck = palloc(sizeof(bool) * scan->xs_batch->maxSize);
 
 	/*
 	 * XXX Maybe use a more compact bitmap? We need just one bit per element,
@@ -1724,7 +1732,8 @@ index_batch_reset(IndexScanDesc scan)
  * is full (and the item should be added to the next batch).
  */
 bool
-index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
+index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool recheck,
+				IndexTuple itup, HeapTuple htup)
 {
 	/* comprehensive checks on the batch info */
 	AssertCheckBatchInfo(scan);
@@ -1745,7 +1754,12 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup)
 	scan->xs_batch->privateData[scan->xs_batch->nheaptids] = (Datum) 0;
 
 	if (scan->xs_want_itup)
+	{
 		scan->xs_batch->itups[scan->xs_batch->nheaptids] = itup;
+		scan->xs_batch->htups[scan->xs_batch->nheaptids] = htup;
+	}
+
+	scan->xs_batch->recheck[scan->xs_batch->nheaptids] = recheck;
 
 	scan->xs_batch->nheaptids++;
 

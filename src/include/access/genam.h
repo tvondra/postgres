@@ -195,7 +195,8 @@ extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 extern bool index_batch_getnext_slot(IndexScanDesc scan,
 									 ScanDirection direction,
 									 struct TupleTableSlot *slot);
-extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, IndexTuple itup);
+extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool recheck,
+							IndexTuple itup, HeapTuple htup);
 
 /*
  * Typedef for callback function to determine if an item in index scan should

@@ -1032,8 +1032,13 @@ _gist_copy_batch(IndexScanDesc scan, GISTScanOpaque so,
 	{
 		GISTSearchHeapItem *item = &so->pageData[start];
 
+		HeapTuple htup = NULL;
+
+		if (scan->xs_want_itup)
+			htup = item->recontup;
+
 		/* try to add it to batch, if there's space */
-		if (!index_batch_add(scan, item->heapPtr, NULL))
+		if (!index_batch_add(scan, item->heapPtr, item->recheck, NULL, htup))
 			break;
 
 		start++;

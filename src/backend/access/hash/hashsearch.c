@@ -977,7 +977,7 @@ _hash_copy_batch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so,
 		HashScanPosItem *currItem = &so->currPos.items[start];
 
 		/* try to add it to batch, if there's space */
-		if (!index_batch_add(scan, currItem->heapTid, NULL))
+		if (!index_batch_add(scan, currItem->heapTid, false, NULL, NULL))
 			break;
 
 		start++;

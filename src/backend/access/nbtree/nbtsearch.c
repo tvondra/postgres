@@ -1578,7 +1578,7 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
 			itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 
 		/* try to add it to batch, if there's space */
-		if (!index_batch_add(scan, currItem->heapTid, itup))
+		if (!index_batch_add(scan, currItem->heapTid, scan->xs_recheck, itup, NULL))
 			break;
 
 		start++;

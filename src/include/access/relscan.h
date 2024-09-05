@@ -144,6 +144,10 @@ typedef struct IndexScanBatchData
 	bool	   *recheck;	/* recheck flags */
 	Datum	   *privateData;	/* private data for batch */
 
+	/* xs_orderbyvals / xs_orderbynulls */
+	Datum	   *orderbyvals;
+	bool	   *orderbynulls;
+
 	/* list of killed items */
 	int			nKilledItems;	/* number of killedItems elements */
 	int		   *killedItems;	/* list of indexes to kill */

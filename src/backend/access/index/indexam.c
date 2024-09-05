@@ -1432,6 +1432,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	scan->xs_recheck = scan->xs_batch->recheck[scan->xs_batch->currIndex];
 
+	if (scan->numberOfOrderBys > 0)
+	{
+		int idx = scan->numberOfOrderBys * scan->xs_batch->currIndex;
+		scan->xs_orderbyvals = &scan->xs_batch->orderbyvals[idx];
+		scan->xs_orderbynulls = &scan->xs_batch->orderbynulls[idx];
+	}
+
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
 
@@ -1697,6 +1704,19 @@ index_batch_init(IndexScanDesc scan)
 	 */
 	scan->xs_batch->privateData = (Datum *) palloc0(sizeof(Datum) * scan->xs_batch->maxSize);
 
+	if (scan->numberOfOrderBys > 0)
+	{
+		int cnt = (scan->xs_batch->maxSize * scan->numberOfOrderBys);
+
+		scan->xs_batch->orderbyvals = (Datum *) palloc0(sizeof(Datum) * cnt);
+		scan->xs_batch->orderbynulls = (bool *) palloc0(sizeof(Datum) * cnt);
+	}
+	else
+	{
+		scan->xs_batch->orderbyvals = NULL;
+		scan->xs_batch->orderbynulls = NULL;
+	}
+
 	/* comprehensive checks */
 	AssertCheckBatchInfo(scan);
 }
@@ -1760,6 +1780,14 @@ index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool recheck,
 	}
 
 	scan->xs_batch->recheck[scan->xs_batch->nheaptids] = recheck;
+
+	if (scan->numberOfOrderBys > 0)
+	{
+		int	idx = scan->xs_batch->nheaptids * scan->numberOfOrderBys;
+
+		memcpy(&scan->xs_batch->orderbyvals[idx], scan->xs_orderbyvals, sizeof(Datum) * scan->numberOfOrderBys);
+		memcpy(&scan->xs_batch->orderbynulls[idx], scan->xs_orderbynulls, sizeof(bool) * scan->numberOfOrderBys);
+	}
 
 	scan->xs_batch->nheaptids++;
 

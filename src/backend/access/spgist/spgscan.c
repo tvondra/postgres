@@ -1135,6 +1135,11 @@ _spgist_copy_batch(IndexScanDesc scan, SpGistScanOpaque so,
 		if (so->want_itup)
 			htup = so->reconTups[start];
 
+		if (so->numberOfOrderBys > 0)
+			index_store_float8_orderby_distances(scan, so->orderByTypes,
+												 so->distances[so->iPtr],
+												 so->recheckDistances[so->iPtr]);
+
 		/* try to add it to batch, if there's space */
 		if (!index_batch_add(scan, so->heapPtrs[start], recheck, NULL, htup))
 			break;
@@ -1164,9 +1169,6 @@ spggetbatch(IndexScanDesc scan, ScanDirection dir)
 
 	/* Copy want_itup to *so so we don't need to pass it around separately */
 	so->want_itup = scan->xs_want_itup;
-
-	/* XXX not sure if we can do this with batching, probably not? */
-	Assert(so->numberOfOrderBys == 0);
 
 	for (;;)
 	{

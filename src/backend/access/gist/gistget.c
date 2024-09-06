@@ -795,15 +795,18 @@ gistgetbatch(IndexScanDesc scan, ScanDirection dir)
 		while (nitems < scan->xs_batch->currSize)
 		{
 			HeapTuple	htup;
+			MemoryContext oldctx;
 
 			if (!getNextNearest(scan))
 				break;
 
 			/*
-			 * FIXME We need to copy the tuple, as it may go away when reading
-			 * the next one. But this is a memory leak, so fix that somehow.
+			 * We need to copy the tuple into the batch, as it may go away
+			 * when reading the next one.
 			 */
+			oldctx = MemoryContextSwitchTo(scan->xs_batch->ctx);
 			htup = heap_copytuple(scan->xs_hitup);
+			MemoryContextSwitchTo(oldctx)
 
 			index_batch_add(scan, scan->xs_heaptid, scan->xs_recheck, NULL, htup);
 

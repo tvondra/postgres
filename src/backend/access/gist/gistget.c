@@ -801,11 +801,16 @@ gistgetbatch(IndexScanDesc scan, ScanDirection dir)
 				break;
 
 			/*
-			 * We need to copy the tuple into the batch, as it may go away
-			 * when reading the next one.
+			 * We need to copy the tuple into the batch context, as it may go
+			 * away on the next getNextNearest call. Free the original tuple,
+			 * otherwise we'd leak the last tuple in the batch.
 			 */
 			oldctx = MemoryContextSwitchTo(scan->xs_batch->ctx);
 			htup = heap_copytuple(scan->xs_hitup);
+
+			pfree(scan->xs_hitup);
+			scan->xs_hitup = NULL;
+
 			MemoryContextSwitchTo(oldctx);
 
 			index_batch_add(scan, scan->xs_heaptid, scan->xs_recheck, NULL, htup);

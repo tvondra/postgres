@@ -806,7 +806,7 @@ gistgetbatch(IndexScanDesc scan, ScanDirection dir)
 			 */
 			oldctx = MemoryContextSwitchTo(scan->xs_batch->ctx);
 			htup = heap_copytuple(scan->xs_hitup);
-			MemoryContextSwitchTo(oldctx)
+			MemoryContextSwitchTo(oldctx);
 
 			index_batch_add(scan, scan->xs_heaptid, scan->xs_recheck, NULL, htup);
 

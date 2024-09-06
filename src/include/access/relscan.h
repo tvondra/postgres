@@ -128,6 +128,9 @@ typedef struct IndexScanBatchData
 	int			initSize;
 	int			currSize;
 
+	/* memory context for per-batch data */
+	MemoryContext	ctx;
+
 	/* batch prefetching */
 	int			prefetchTarget; /* current prefetch distance */
 	int			prefetchMaximum;	/* maximum prefetch distance */

@@ -1326,6 +1326,11 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch->nheaptids = 0;
 
 	/*
+	 * Also reset any memory possibly allocated in the batch by AM.
+	 */
+	MemoryContextReset(scan->xs_batch->ctx);
+
+	/*
 	 * The AM's amgetbatch proc loads a chunk of TIDs matching the scan
 	 * keys, and puts the TIDs into scan->xs_batch->heaptids.  It should also
 	 * set scan->xs_recheck and possibly
@@ -1711,6 +1716,10 @@ index_batch_init(IndexScanDesc scan)
 		scan->xs_batch->orderbyvals = NULL;
 		scan->xs_batch->orderbynulls = NULL;
 	}
+
+	scan->xs_batch = AllocSetContextCreate(CurrentMemoryContext,
+										   "indexscan batch context",
+										   ALLOCSET_DEFAULT_SIZES);
 
 	/* comprehensive checks */
 	AssertCheckBatchInfo(scan);

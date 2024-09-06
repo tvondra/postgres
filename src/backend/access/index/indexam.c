@@ -60,6 +60,7 @@
 #include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/memutils.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/spccache.h"
@@ -1717,9 +1718,9 @@ index_batch_init(IndexScanDesc scan)
 		scan->xs_batch->orderbynulls = NULL;
 	}
 
-	scan->xs_batch = AllocSetContextCreate(CurrentMemoryContext,
-										   "indexscan batch context",
-										   ALLOCSET_DEFAULT_SIZES);
+	scan->xs_batch->ctx = AllocSetContextCreate(CurrentMemoryContext,
+												"indexscan batch context",
+												ALLOCSET_DEFAULT_SIZES);
 
 	/* comprehensive checks */
 	AssertCheckBatchInfo(scan);

@@ -789,11 +789,29 @@ gistgetbatch(IndexScanDesc scan, ScanDirection dir)
 
 	if (scan->numberOfOrderBys > 0)
 	{
-		/* XXX not sure if we can do this with batching, probably not? */
-		Assert(false);
+		int		nitems = 0;
 
 		/* Must fetch tuples in strict distance order */
-		return getNextNearest(scan);
+		while (nitems < scan->xs_batch->currSize)
+		{
+			HeapTuple	htup;
+
+			if (!getNextNearest(scan))
+				break;
+
+			/*
+			 * FIXME We need to copy the tuple, as it may go away when reading
+			 * the next one. But this is a memory leak, so fix that somehow.
+			 */
+			htup = heap_copytuple(scan->xs_hitup);
+
+			index_batch_add(scan, scan->xs_heaptid, scan->xs_recheck, NULL, htup);
+
+			nitems++;
+		}
+
+		/* did we find more tuples? */
+		return (scan->xs_batch->nheaptids > 0);
 	}
 	else
 	{

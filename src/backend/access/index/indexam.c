@@ -1324,6 +1324,18 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch->nheaptids = 0;
 
 	/*
+	 * XXX Make sure to reset the tuples, because the AM may do something
+	 * with them later (e.g. release them, as getNextNearest in gist),
+	 * but we may release them by the MemoryContextReset() call.
+	 *
+	 * This might break the AM if it relies on them pointing to the last
+	 * tuple, but at least it has the chance to do the right thing by
+	 * checking if the pointer is NULL.
+	 */
+	scan->xs_itup = NULL;
+	scan->xs_hitup = NULL;
+
+	/*
 	 * Also reset any memory possibly allocated in the batch by AM.
 	 */
 	MemoryContextReset(scan->xs_batch->ctx);

@@ -497,16 +497,9 @@ index_restrpos(IndexScanDesc scan)
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 
 	/*
-	 * Reset the batch, to make it look empty.
-	 *
-	 * Done after the amrescan() call, in case the AM needs some of the batch
-	 * info (e.g. to properly transfer the killed tuples).
-	 *
-	 * XXX This is a bit misleading, because index_batch_reset does not reset
-	 * the killed tuples. So if that's the only justification, we could have
-	 * done it before the call.
+	 * Don't reset the batch here - amrestrpos should have has already loaded
+	 * the new batch, so don't throw that away.
 	 */
-	index_batch_reset(scan);
 }
 
 /*
@@ -1372,9 +1365,17 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 		((scan)->xs_batch->nheaptids == ((scan)->xs_batch->currIndex + 1)) : \
 		((scan)->xs_batch->currIndex == 0))
 
-/* Does the batch items in the requested direction? */
+/*
+ * Does the batch items in the requested direction? The batch must be non-empty
+ * and we should not have reached the end of the batch (in the direction).
+ * Also, if we just restored the position after mark/restore, there should be
+ * at least one item to process (we won't advance  on the next call).
+ *
+ * XXX This is a bit confusing / ugly, probably should rethink how we track
+ * empty batches, and how we handle not advancing after a restore.
+ */
 #define INDEX_BATCH_HAS_ITEMS(scan, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && !INDEX_BATCH_IS_PROCESSED(scan, direction))
+	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
 
 
 /* ----------------
@@ -1527,8 +1528,17 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/*
 	 * Advance to the next batch item - we know it's not empty and there are
 	 * items to process, so this is valid.
+	 *
+	 * However, don't advance if this is the first getnext_tid() call after
+	 * amrestrpos(). That sets the position on the correct item, and advancing
+	 * here would skip it.
+	 *
+	 * XXX The "restored" flag is a bit weird. Can we do this without it? May
+	 * need to rethink when/how we advance the batch index. Not sure.
 	 */
-	if (ScanDirectionIsForward(direction))
+	if (scan->xs_batch->restored)
+		scan->xs_batch->restored = false;
+	else if (ScanDirectionIsForward(direction))
 		scan->xs_batch->currIndex++;
 	else
 		scan->xs_batch->currIndex--;
@@ -1784,6 +1794,7 @@ index_batch_reset(IndexScanDesc scan)
 	scan->xs_batch->nheaptids = 0;
 	scan->xs_batch->prefetchIndex = 0;
 	scan->xs_batch->currIndex = -1;
+	scan->xs_batch->restored = false;
 }
 
 /*

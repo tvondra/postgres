@@ -166,8 +166,13 @@ typedef struct TwoPhaseLockRecord
  * might be higher than the real number if another backend has transferred
  * our locks to the primary lock table, but it can never be lower than the
  * real value, since only we can acquire locks on our own behalf.
+ *
+ * XXX Allocate a static array of the maximum size. We could have a pointer
+ * and then allocate just the right size to save a couple kB, but that does
+ * not seem worth the extra complexity of having to initialize it etc. This
+ * way it gets initialized automaticaly.
  */
-static int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND];
+static int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
 
 /*
  * Flag to indicate if the relation extension lock is held by this backend.
@@ -185,6 +190,17 @@ static int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND];
 static bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
 
 /*
+ * Number of fast-path locks per backend - size of the arrays in PGPROC.
+ * This is set only once during start, before initializing shared memory,
+ * and remains constant after that.
+ *
+ * We set the limit based on max_locks_per_transaction GUC, because that's
+ * the best information about expected number of locks per backend we have.
+ * See InitializeFastPathLocks for details.
+ */
+int			FastPathLockGroupsPerBackend = 0;
+
+/*
  * Macros to calculate the group and index for a relation.
  *
  * The formula is a simple hash function, designed to spread the OIDs a bit,
@@ -195,11 +211,11 @@ static bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
  * small enough to not cause overflows (in 64-bit).
  */
 #define FAST_PATH_LOCK_REL_GROUP(rel) \
-	(((uint64) (rel) * 49157) % FP_LOCK_GROUPS_PER_BACKEND)
+	(((uint64) (rel) * 49157) % FastPathLockGroupsPerBackend)
 
 /* Calculate index in the whole per-backend array of lock slots. */
 #define FP_LOCK_SLOT_INDEX(group, index) \
-	(AssertMacro(((group) >= 0) && ((group) < FP_LOCK_GROUPS_PER_BACKEND)), \
+	(AssertMacro(((group) >= 0) && ((group) < FastPathLockGroupsPerBackend)), \
 	 AssertMacro(((index) >= 0) && ((index) < FP_LOCK_SLOTS_PER_GROUP)), \
 	 ((group) * FP_LOCK_SLOTS_PER_GROUP + (index)))
 
@@ -2973,9 +2989,6 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	int			fast_count = 0;
 	uint32		group;
 
-	/* fast-path group the lock belongs to */
-	group = FAST_PATH_LOCK_REL_GROUP(locktag->locktag_field2);
-
 	if (lockmethodid <= 0 || lockmethodid >= lengthof(LockMethods))
 		elog(ERROR, "unrecognized lock method: %d", lockmethodid);
 	lockMethodTable = LockMethods[lockmethodid];
@@ -3004,6 +3017,9 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	hashcode = LockTagHashCode(locktag);
 	partitionLock = LockHashPartitionLock(hashcode);
 	conflictMask = lockMethodTable->conflictTab[lockmode];
+
+	/* fast-path group the lock belongs to */
+	group = FAST_PATH_LOCK_REL_GROUP(locktag->locktag_field2);
 
 	/*
 	 * Fast path locks might not have been entered in the primary lock table.

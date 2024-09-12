@@ -4166,6 +4166,9 @@ PostgresSingleUserMain(int argc, char *argv[],
 	/* Initialize MaxBackends */
 	InitializeMaxBackends();
 
+	/* Initialize size of fast-path lock cache. */
+	InitializeFastPathLocks();
+
 	/*
 	 * Give preloaded libraries a chance to request additional shared memory.
 	 */

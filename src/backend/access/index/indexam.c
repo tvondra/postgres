@@ -666,6 +666,53 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * When using batching (which may be disabled for various reasons (e.g.
+	 * through a GUC, the index AM not supporting it) do the old approach.
+	 *
+	 * XXX Maybe we should enable batching based on the plan too, so that we
+	 * don't do batching when it's probably useless (e.g. semijoins or queries
+	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
+	 * with small batches) will handle that well enough.
+	 *
+	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
+	 * call either the original code without batching, or the new batching
+	 * code if supported/enabled. It's not great to have duplicated code.
+	 */
+	if (scan->xs_batch != NULL)
+	{
+batch_loaded:
+		/* Try getting a TID from the current batch (if we have one). */
+		while (index_batch_getnext_tid(scan, direction) != NULL)
+		{
+			/*
+			 * We've successfully loaded a TID from the batch, so issue
+			 * prefetches for future TIDs if needed.
+			 */
+			index_batch_prefetch(scan, direction);
+
+			return &scan->xs_heaptid;
+		}
+
+		/*
+		 * We either don't have any batch yet, or we've already processed
+		 * all items from the current batch. Try loading the next one.
+		 *
+		 * If we succeed, issue prefetches (using the current prefetch
+		 * distance without ramp up), and then go back to returning the
+		 * TIDs from the batch.
+		 *
+		 * XXX Maybe do this as a simple while/for loop without the goto.
+		 */
+		if (index_batch_getnext(scan, direction))
+		{
+			index_batch_prefetch(scan, direction);
+			goto batch_loaded;
+		}
+
+		return NULL;
+	}
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -756,55 +803,6 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 bool
 index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
-	/*
-	 * When using batching (which may be disabled for various reasons (e.g.
-	 * through a GUC, the index AM not supporting it) do the old approach.
-	 *
-	 * XXX Maybe we should enable batching based on the plan too, so that we
-	 * don't do batching when it's probably useless (e.g. semijoins or queries
-	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
-	 * with small batches) will handle that well enough.
-	 *
-	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
-	 * call either the original code without batching, or the new batching
-	 * code if supported/enabled. It's not great to have duplicated code.
-	 */
-	if (scan->xs_batch != NULL)
-	{
-batch_loaded:
-		/* Try getting a slot from the current batch (if we have one). */
-		while (index_batch_getnext_slot(scan, direction, slot))
-		{
-			/*
-			 * We've successfully loaded tuple from the batch, so issue
-			 * prefetches for future slots if needed.
-			 */
-			index_batch_prefetch(scan, direction, NULL, NULL);
-
-			return true;
-		}
-
-		/*
-		 * We either don't have any batch yet, or we've already processed
-		 * all items from the current batch. Try loading the next one.
-		 *
-		 * If we succeed, issue prefetches (using the current prefetch
-		 * distance without ramp up), and then go back to returning the
-		 * slots from the batch.
-		 */
-		if (index_batch_getnext(scan, direction))
-		{
-			index_batch_prefetch(scan, direction, NULL, NULL);
-			goto batch_loaded;
-		}
-
-		/* There's nothing in the batch (and neither a next batch). */
-		return false;
-	}
-
-	/*
-	 * The regular non-batched version.
-	 */
 	for (;;)
 	{
 		if (!scan->xs_heap_continue)
@@ -1674,11 +1672,13 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
  * ----------------
  */
 void
-index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
-					 index_prefetch_callback prefetch_callback, void *arg)
+index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 {
 	int			prefetchStart,
 				prefetchEnd;
+
+	IndexPrefetchCallback	prefetch_callback = scan->xs_batch->prefetchCallback;
+	void *arg = scan->xs_batch->prefetchArgument;
 
 	if (ScanDirectionIsForward(direction))
 	{
@@ -1747,7 +1747,7 @@ index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
 	for (int i = prefetchStart; i < prefetchEnd; i++)
 	{
 		/* skip block if the provided callback says so */
-		if (prefetch_callback && !prefetch_callback(scan, direction, arg, i))
+		if (prefetch_callback && !prefetch_callback(scan, arg, i))
 			continue;
 
 		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,

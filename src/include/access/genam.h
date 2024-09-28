@@ -202,10 +202,7 @@ extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool rechec
  * Typedef for callback function to determine if an item in index scan should
  * be prefetched.
  */
-typedef bool (*index_prefetch_callback) (IndexScanDesc scan, ScanDirection direction,
-										 void *arg, int index);
-extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction,
-								 index_prefetch_callback callback, void *arg);
+extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

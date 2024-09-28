@@ -1619,11 +1619,11 @@ InitializeGUCOptionsFromEnvironment(void)
 			GucSource	source;
 			char		limbuf[16];
 
-			if (new_limit < 2048)
+			if (new_limit < 32768)
 				source = PGC_S_ENV_VAR;
 			else
 			{
-				new_limit = 2048;
+				new_limit = 32768;
 				source = PGC_S_DYNAMIC_DEFAULT;
 			}
 			snprintf(limbuf, sizeof(limbuf), "%ld", new_limit);

@@ -49,8 +49,7 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(IndexOnlyScanState *node, TupleTableSlot *slot,
 							IndexTuple itup, TupleDesc itupdesc);
-static bool ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
-							   void *data, int index);
+static bool ios_prefetch_block(IndexScanDesc scan, void *data, int index);
 
 /* values stored in ios_prefetch_block in the batch cache */
 #define		IOS_UNKNOWN_VISIBILITY		0	/* XXX default value */
@@ -107,6 +106,13 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		/* Set it up for index-only scan */
 		node->ioss_ScanDesc->xs_want_itup = true;
 		node->ioss_VMBuffer = InvalidBuffer;
+
+		/* Also set the prefetch callback info, if baching enabled. */
+		if (scandesc->xs_batch != NULL)
+		{
+			scandesc->xs_batch->prefetchCallback = ios_prefetch_block;
+			scandesc->xs_batch->prefetchArgument = (void *) node;
+		}
 
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
@@ -294,7 +300,7 @@ new_batch:
 				   (scandesc->xs_batch->currIndex < scandesc->xs_batch->nheaptids));
 
 			/* Prefetch some of the following items in the batch. */
-			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
+			index_batch_prefetch(scandesc, direction);
 
 			/*
 			 * Reuse the previously determined page visibility info, or
@@ -306,7 +312,7 @@ new_batch:
 			 * visibility from that. Maybe we could/should have a more direct
 			 * way?
 			 */
-			all_visible = !ios_prefetch_block(scandesc, direction, node,
+			all_visible = !ios_prefetch_block(scandesc, node,
 											  scandesc->xs_batch->currIndex);
 
 			/*
@@ -469,7 +475,7 @@ new_batch:
 		/* batch is empty, try reading the next batch of tuples */
 		if (index_batch_getnext(scandesc, direction))
 		{
-			index_batch_prefetch(scandesc, direction, ios_prefetch_block, node);
+			index_batch_prefetch(scandesc, direction);
 			goto new_batch;
 		}
 
@@ -1055,8 +1061,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
  * not all-visible.
  */
 static bool
-ios_prefetch_block(IndexScanDesc scan, ScanDirection direction,
-				   void *arg, int index)
+ios_prefetch_block(IndexScanDesc scan, void *arg, int index)
 {
 	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
 

@@ -756,6 +756,55 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 bool
 index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
+	/*
+	 * When using batching (which may be disabled for various reasons (e.g.
+	 * through a GUC, the index AM not supporting it) do the old approach.
+	 *
+	 * XXX Maybe we should enable batching based on the plan too, so that we
+	 * don't do batching when it's probably useless (e.g. semijoins or queries
+	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
+	 * with small batches) will handle that well enough.
+	 *
+	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
+	 * call either the original code without batching, or the new batching
+	 * code if supported/enabled. It's not great to have duplicated code.
+	 */
+	if (scan->xs_batch != NULL)
+	{
+batch_loaded:
+		/* Try getting a slot from the current batch (if we have one). */
+		while (index_batch_getnext_slot(scan, direction, slot))
+		{
+			/*
+			 * We've successfully loaded tuple from the batch, so issue
+			 * prefetches for future slots if needed.
+			 */
+			index_batch_prefetch(scan, direction, NULL, NULL);
+
+			return true;
+		}
+
+		/*
+		 * We either don't have any batch yet, or we've already processed
+		 * all items from the current batch. Try loading the next one.
+		 *
+		 * If we succeed, issue prefetches (using the current prefetch
+		 * distance without ramp up), and then go back to returning the
+		 * slots from the batch.
+		 */
+		if (index_batch_getnext(scan, direction))
+		{
+			index_batch_prefetch(scan, direction, NULL, NULL);
+			goto batch_loaded;
+		}
+
+		/* There's nothing in the batch (and neither a next batch). */
+		return false;
+	}
+
+	/*
+	 * The regular non-batched version.
+	 */
 	for (;;)
 	{
 		if (!scan->xs_heap_continue)

@@ -780,7 +780,19 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	 * RelationGetIndexScan().
 	 */
 	if (!scan->xactStartedInRecovery)
-		scan->kill_prior_tuple = all_dead;
+	{
+		if (scan->xs_batch == NULL)
+		{
+			scan->kill_prior_tuple = all_dead;
+		}
+		else if (all_dead)
+		{
+			/* batch case - record the killed tuple in the batch */
+			if (scan->xs_batch->nKilledItems < scan->xs_batch->maxSize)
+				scan->xs_batch->killedItems[scan->xs_batch->nKilledItems++]
+					= scan->xs_batch->currIndex;
+		}
+	}
 
 	return found;
 }

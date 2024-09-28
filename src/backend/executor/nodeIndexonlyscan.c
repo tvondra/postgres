@@ -359,32 +359,7 @@ new_batch:
 				 */
 				InstrCountTuples2(node, 1);
 				if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
-				{
-					/*
-					 * If we haven't found any visible tuple for the TID,
-					 * chances are all versions are dead and may kill it from
-					 * the index. If so, flag it in the kill bitmap - we'll
-					 * translate it to indexes later.
-					 *
-					 * XXX With the firstIndex/lastIndex it would not be too
-					 * hard to do the translation here. But do we want to? How
-					 * much is that considered an internal detail of the AM?
-					 *
-					 * FIXME Maybe we could/should make this part of
-					 * index_fetch_heap, so that we don't have to do this
-					 * after each call?
-					 */
-					if (scandesc->kill_prior_tuple)
-					{
-						scandesc->kill_prior_tuple = false;
-
-						if (scandesc->xs_batch->nKilledItems < scandesc->xs_batch->maxSize)
-							scandesc->xs_batch->killedItems[scandesc->xs_batch->nKilledItems++]
-								= scandesc->xs_batch->currIndex;
-					}
-
 					continue;	/* no visible tuple, try next index entry */
-				}
 
 				ExecClearTuple(node->ioss_TableSlot);
 

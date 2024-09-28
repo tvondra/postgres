@@ -1650,6 +1650,7 @@ typedef struct
  *		OrderByTypByVals   is the datatype of order by expression pass-by-value?
  *		OrderByTypLens	   typlens of the datatypes of order by expressions
  *		PscanLen		   size of parallel index scan descriptor
+ *		CanBatch		   batching (and prefetching) enabled
  * ----------------
  */
 typedef struct IndexScanState
@@ -1677,6 +1678,10 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+
+	/* batching/prefetching enabled? */
+	bool		iss_CanBatch;
+
 } IndexScanState;
 
 /* ----------------
@@ -1698,6 +1703,7 @@ typedef struct IndexScanState
  *		PscanLen		   size of parallel index-only scan descriptor
  *		NameCStringAttNums attnums of name typed columns to pad to NAMEDATALEN
  *		NameCStringCount   number of elements in the NameCStringAttNums array
+ *		CanBatch		   batching (and prefetching) enabled
  * ----------------
  */
 typedef struct IndexOnlyScanState
@@ -1719,6 +1725,7 @@ typedef struct IndexOnlyScanState
 	Size		ioss_PscanLen;
 	AttrNumber *ioss_NameCStringAttNums;
 	int			ioss_NameCStringCount;
+	bool		ioss_CanBatch;
 } IndexOnlyScanState;
 
 /* ----------------

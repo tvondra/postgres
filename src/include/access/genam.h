@@ -188,21 +188,9 @@ extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 							   struct TupleTableSlot *slot);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 
-extern bool index_batch_getnext(IndexScanDesc scan,
-								ScanDirection direction);
-extern ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
-										   ScanDirection direction);
-extern bool index_batch_getnext_slot(IndexScanDesc scan,
-									 ScanDirection direction,
-									 struct TupleTableSlot *slot);
+/* index batching/prefetching */
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool recheck,
 							IndexTuple itup, HeapTuple htup);
-
-/*
- * Typedef for callback function to determine if an item in index scan should
- * be prefetched.
- */
-extern void index_batch_prefetch(IndexScanDesc scan, ScanDirection direction);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

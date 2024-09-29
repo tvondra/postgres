@@ -173,7 +173,10 @@ typedef struct IndexScanDescData
 	struct ParallelIndexScanDescData *parallel_scan;
 }			IndexScanDescData;
 
-
+/*
+ * Typedef for callback function to determine if an item in index scan should
+ * be prefetched.
+ */
 typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan,
 									   void *arg, int index);
 

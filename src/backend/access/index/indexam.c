@@ -33,12 +33,7 @@
  *		index_can_return	- does index support index-only scans?
  *		index_getprocid - get a support procedure OID
  *		index_getprocinfo - get a support procedure's lookup info
- *		index_batch_getnext	- get the next batch of TIDs from a scan
- *		index_batch_getnext_tid	- get the next TIDs from a batch
- *		index_batch_getnext_slot	- get the next tuple from a batch
- *		index_batch_prefetch	- prefetch heap pages for a batch
- *		index_batch_supported	- does the AM support/allow batching?
- *		index_batch_add		- add an item (TID, itup) to the batch
+  *		index_batch_add		- add an item (TID, itup) to the batch
  *
  * NOTES
  *		This file contains the index_ routines which used
@@ -122,7 +117,12 @@ static inline void validate_relation_kind(Relation r);
 /* index batching */
 static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan);
-
+static bool index_batch_getnext(IndexScanDesc scan,
+								ScanDirection direction);
+static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
+										   ScanDirection direction);
+static void index_batch_prefetch(IndexScanDesc scan,
+								 ScanDirection direction);
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -1389,7 +1389,7 @@ AssertCheckBatchInfo(IndexScanDesc scan)
  * responsibility of the following index_batch_getnext_tid() calls.
  * ----------------
  */
-bool
+static bool
 index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
 	bool		found;
@@ -1511,7 +1511,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
  * FIXME Should this set xs_hitup?
  * ----------------
  */
-ItemPointer
+static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	/* comprehensive checks of batching info */
@@ -1570,90 +1570,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 }
 
 /* ----------------
- * index_getnext_batch_slot - get the next tuple from a scan batch
- *
- * Same calling convention as index_getnext_slot(), except that NULL means
- * no more items only in the current batch, there may be more batches.
- *
- * XXX See index_getnext_slot comments.
- * ----------------
- */
-bool
-index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
-						 TupleTableSlot *slot)
-{
-	/* comprehensive checks of batching info */
-	AssertCheckBatchInfo(scan);
-
-	for (;;)
-	{
-		if (!scan->xs_heap_continue)
-		{
-			ItemPointer tid;
-
-			/* Time to fetch the next TID from the index */
-			tid = index_batch_getnext_tid(scan, direction);
-
-			/* If we're out of index entries, we're done */
-			if (tid == NULL)
-				break;
-
-			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
-		}
-
-		/*
-		 * Fetch the next (or only) visible heap tuple for this index entry.
-		 * If we don't find anything, loop around and grab the next TID from
-		 * the index.
-		 */
-		Assert(ItemPointerIsValid(&scan->xs_heaptid));
-		if (index_fetch_heap(scan, slot))
-		{
-			/* If we found a visible tuple, we shouldn't kill it. */
-			Assert(!scan->kill_prior_tuple);
-
-			/* comprehensive checks of batching info */
-			AssertCheckBatchInfo(scan);
-
-			return true;
-		}
-
-		/*
-		 * If we haven't found any visible tuple for the TID, chances are all
-		 * versions are dead and may kill it from the index. If so, flag it in
-		 * the kill bitmap - we'll translate it to indexes later.
-		 *
-		 * XXX With the firstIndex/lastIndex it would not be too hard to do
-		 * the translation here. But do we want to? How much is that
-		 * considered an internal detail of the AM?
-		 *
-		 * XXX Maybe we should integrate this into index_fetch_heap(), so that
-		 * we don't need to do it after each call? Seems easy to ferget/miss.
-		 */
-		if (scan->kill_prior_tuple)
-		{
-			scan->kill_prior_tuple = false;
-
-			/*
-			 * FIXME This is not great, because we'll have to walk through the
-			 * whole bitmap later, to maybe add killed tuples to the regular
-			 * array. Might be costly for large batches. Maybe it'd be better
-			 * to do what btree does and stash the indexes (just some limited
-			 * number).
-			 */
-			if (scan->xs_batch->nKilledItems < scan->xs_batch->maxSize)
-				scan->xs_batch->killedItems[scan->xs_batch->nKilledItems++]
-					= scan->xs_batch->currIndex;
-		}
-	}
-
-	/* comprehensive checks of batching info */
-	AssertCheckBatchInfo(scan);
-
-	return false;
-}
-
-/* ----------------
  *		index_batch_prefetch - prefetch pages for TIDs in current batch
  *
  * The prefetch distance is increased gradually, similar to what we do for
@@ -1683,7 +1599,7 @@ index_batch_getnext_slot(IndexScanDesc scan, ScanDirection direction,
  * XXX Maybe wrap this in ifdef USE_PREFETCH?
  * ----------------
  */
-void
+static void
 index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
 {
 	int			prefetchStart,

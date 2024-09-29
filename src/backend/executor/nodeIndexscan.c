@@ -38,7 +38,6 @@
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/cost.h"
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -134,8 +133,8 @@ IndexNext(IndexScanState *node)
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * If the index was lossy, we have to recheck the index quals
-		 * using the fetched tuple.
+		 * If the index was lossy, we have to recheck the index quals using
+		 * the fetched tuple.
 		 */
 		if (scandesc->xs_recheck)
 		{
@@ -202,13 +201,15 @@ IndexNextWithReorder(IndexScanState *node)
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
+		 *
+		 * XXX Should we use batching here? And can we with reordering?
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
 								   estate->es_snapshot,
 								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys,
-								   false);	/* XXX should use batching? */
+								   false);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -952,6 +953,10 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * position recognized in the index AM.
 	 *
 	 * XXX Hopefully just a temporary limitation?
+	 *
+	 * XXX Maybe this should check if the index AM supports batching, or even
+	 * call something like "amcanbatch" (does not exist yet). Or check the
+	 * enable_indexscan_batching GUC? Now we check the GUC in index_beginscan.
 	 */
 	indexstate->iss_CanBatch = !(eflags & EXEC_FLAG_MARK);
 
@@ -1685,10 +1690,7 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, piscan);
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans? Maybe
-	 * not, but then we need to be careful not to call index_batch_getnext_tid
-	 * (which now can happen, because we'll call IndexOnlyNext even for
-	 * parallel plans).
+	 * XXX do we actually want prefetching for parallel index scans?
 	 */
 	node->iss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,
@@ -1736,10 +1738,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans? Maybe
-	 * not, but then we need to be careful not to call index_batch_getnext_tid
-	 * (which now can happen, because we'll call IndexOnlyNext even for
-	 * parallel plans).
+	 * XXX do we actually want prefetching for parallel index scans?
 	 */
 	node->iss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,

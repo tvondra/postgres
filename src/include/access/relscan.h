@@ -220,6 +220,12 @@ typedef struct IndexScanBatchData
 	/* memory context for per-batch data */
 	MemoryContext ctx;
 
+	/*
+	 * Was this batch just restored by restrpos? if yes, we don't advance on
+	 * the first iteration.
+	 */
+	bool		restored;
+
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
 	int			currIndex;		/* index of the current item */
 	int			nheaptids;		/* number of TIDs in the batch */

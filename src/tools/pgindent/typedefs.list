@@ -195,6 +195,7 @@ BOOL
 BOOLEAN
 BOX
 BTArrayKeyInfo
+BTBatchInfo
 BTBuildState
 BTCallbackState
 BTCycleId

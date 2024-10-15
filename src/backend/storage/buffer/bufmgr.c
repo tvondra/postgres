@@ -6527,6 +6527,8 @@ EvictUnpinnedBufferInternal(BufferDesc *desc, bool *buffer_flushed)
 	/* This will return false if it becomes dirty or someone else pins it. */
 	result = InvalidateVictimBuffer(desc);
 
+	StrategyFreeBuffer(desc);
+
 	UnpinBuffer(desc);
 
 	return result;

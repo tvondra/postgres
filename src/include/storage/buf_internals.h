@@ -260,14 +260,15 @@ typedef struct BufferDesc
 	BufferTag	tag;			/* ID of page contained in buffer */
 	int			buf_id;			/* buffer's index number (from 0) */
 
-	/* state of the tag, containing flags, refcount and usagecount */
-	pg_atomic_uint32 state;
-
 	int			wait_backend_pgprocno;	/* backend of pin-count waiter */
 	int			freeNext;		/* link in freelist chain */
 
 	PgAioWaitRef io_wref;		/* set iff AIO is in progress */
-	LWLock		content_lock;	/* to lock access to buffer contents */
+
+	/* state of the tag, containing flags, refcount and usagecount */
+	pg_atomic_uint32 __attribute__((aligned(64))) state;
+
+	LWLock		 __attribute__((aligned(64))) content_lock;	/* to lock access to buffer contents */
 } BufferDesc;
 
 /*
@@ -290,7 +291,7 @@ typedef struct BufferDesc
  * platform with either 32 or 128 byte line sizes, it's good to align to
  * boundaries and avoid false sharing.
  */
-#define BUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 64 : 1)
+#define BUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 192 : 1)
 
 typedef union BufferDescPadded
 {
@@ -320,6 +321,7 @@ typedef struct WritebackContext
 	/* pending requests */
 	PendingWriteback pending_writebacks[WRITEBACK_MAX_PENDING_FLUSHES];
 } WritebackContext;
+
 
 /* in buf_init.c */
 extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;

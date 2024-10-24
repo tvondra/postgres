@@ -32,11 +32,20 @@
 
 typedef struct BufFile BufFile;
 
+typedef enum
+{
+	TEMP_NONE_COMPRESSION,
+	TEMP_LZ4_COMPRESSION
+} TempCompression;
+
+extern PGDLLIMPORT int default_temp_file_compression;
+
+
 /*
  * prototypes for functions in buffile.c
  */
 
-extern BufFile *BufFileCreateTemp(bool interXact);
+extern BufFile *BufFileCreateTemp(bool interXact, bool compress);
 extern void BufFileClose(BufFile *file);
 extern pg_nodiscard size_t BufFileRead(BufFile *file, void *ptr, size_t size);
 extern void BufFileReadExact(BufFile *file, void *ptr, size_t size);

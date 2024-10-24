@@ -73,6 +73,7 @@
 #include "replication/syncrep.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/buffile.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
 #include "storage/predicate.h"
@@ -451,6 +452,14 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 	{"pglz", TOAST_PGLZ_COMPRESSION, false},
 #ifdef  USE_LZ4
 	{"lz4", TOAST_LZ4_COMPRESSION, false},
+#endif
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry default_temp_file_compression_options[] = {
+	{"no", TEMP_NONE_COMPRESSION, false},
+#ifdef  USE_LZ4
+	{"lz4", TEMP_LZ4_COMPRESSION, false},
 #endif
 	{NULL, 0, false}
 };
@@ -4864,6 +4873,17 @@ struct config_enum ConfigureNamesEnum[] =
 		&default_toast_compression,
 		TOAST_PGLZ_COMPRESSION,
 		default_toast_compression_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"default_temp_file_compression", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the default compression method for compressible values."),
+			NULL
+		},
+		&default_temp_file_compression,
+		TEMP_NONE_COMPRESSION,
+		default_temp_file_compression_options,
 		NULL, NULL, NULL
 	},
 

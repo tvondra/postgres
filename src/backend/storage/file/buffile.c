@@ -54,6 +54,16 @@
 #include "storage/fd.h"
 #include "utils/resowner.h"
 
+#ifdef USE_LZ4
+#include <lz4.h>
+#endif
+
+#define NO_LZ4_SUPPORT() \
+	ereport(ERROR, \
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
+			 errmsg("compression method lz4 not supported"), \
+			 errdetail("This functionality requires the server to be built with lz4 support.")))
+
 /*
  * We break BufFiles into gigabyte-sized segments, regardless of RELSEG_SIZE.
  * The reason is that we'd like large BufFiles to be spread across multiple
@@ -61,6 +71,8 @@
  */
 #define MAX_PHYSICAL_FILESIZE	0x40000000
 #define BUFFILE_SEG_SIZE		(MAX_PHYSICAL_FILESIZE / BLCKSZ)
+
+int default_temp_file_compression = TEMP_NONE_COMPRESSION;
 
 /*
  * This data structure represents a buffered file that consists of one or
@@ -95,7 +107,7 @@ struct BufFile
 	off_t		curOffset;		/* offset part of current pos */
 	int			pos;			/* next read/write position in buffer */
 	int			nbytes;			/* total # of valid bytes in buffer */
-
+	bool			compress; /* We want to use lz4 compression */
 	/*
 	 * XXX Should ideally us PGIOAlignedBlock, but might need a way to avoid
 	 * wasting per-file alignment padding when some users create many files.
@@ -127,6 +139,7 @@ makeBufFileCommon(int nfiles)
 	file->curOffset = 0;
 	file->pos = 0;
 	file->nbytes = 0;
+	file->compress = false;
 
 	return file;
 }
@@ -190,7 +203,7 @@ extendBufFile(BufFile *file)
  * transaction boundaries.
  */
 BufFile *
-BufFileCreateTemp(bool interXact)
+BufFileCreateTemp(bool interXact, bool compress)
 {
 	BufFile    *file;
 	File		pfile;
@@ -211,7 +224,12 @@ BufFileCreateTemp(bool interXact)
 
 	file = makeBufFile(pfile);
 	file->isInterXact = interXact;
-
+	if (default_temp_file_compression != TEMP_NONE_COMPRESSION )
+#ifdef USE_LZ4
+		file->compress = compress;
+#else
+		NO_LZ4_SUPPORT();
+#endif
 	return file;
 }
 
@@ -274,6 +292,7 @@ BufFileCreateFileSet(FileSet *fileset, const char *name)
 	file->files = (File *) palloc(sizeof(File));
 	file->files[0] = MakeNewFileSetSegment(file, 0);
 	file->readOnly = false;
+
 
 	return file;
 }
@@ -436,6 +455,7 @@ BufFileLoadBuffer(BufFile *file)
 	File		thisfile;
 	instr_time	io_start;
 	instr_time	io_time;
+	int toRead;
 
 	/*
 	 * Advance to next component file if necessary and possible.
@@ -454,6 +474,8 @@ BufFileLoadBuffer(BufFile *file)
 	else
 		INSTR_TIME_SET_ZERO(io_start);
 
+	if (!file->compress) {
+
 	/*
 	 * Read whatever we can get, up to a full bufferload.
 	 */
@@ -462,6 +484,46 @@ BufFileLoadBuffer(BufFile *file)
 							sizeof(file->buffer),
 							file->curOffset,
 							WAIT_EVENT_BUFFILE_READ);
+	} else {
+	/*
+	 * Read compressed data, curOffset differs with pos
+	 * It reads less data than it returns to caller
+	 * So the curOffset must be advanced here based on compressed size
+	 */
+		file->nbytes = FileRead(thisfile,
+							&toRead,
+							sizeof(toRead),
+							file->curOffset,
+							WAIT_EVENT_BUFFILE_READ);
+		/* if not EOF let's continue */
+		if (file->nbytes > 0){
+			char * cData;
+			int readFromFile;
+
+			file->curOffset+=sizeof(toRead);
+
+			cData = palloc(toRead);
+
+			file->nbytes = readFromFile = FileRead(thisfile,
+							cData,
+							toRead,
+							file->curOffset,
+							WAIT_EVENT_BUFFILE_READ);
+
+			file->nbytes = LZ4_decompress_safe(cData,
+				file->buffer.data,toRead,sizeof(file->buffer));
+
+			pfree(cData);
+
+			if (file->nbytes < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg_internal("compressed lz4 data is corrupt")));
+			else
+				file->curOffset += readFromFile;
+		}
+
+	}
 	if (file->nbytes < 0)
 	{
 		file->nbytes = 0;
@@ -496,6 +558,42 @@ BufFileDumpBuffer(BufFile *file)
 	int			wpos = 0;
 	int			bytestowrite;
 	File		thisfile;
+
+
+	/* Save nbytes value because the size changes due to compression */
+	int nbytesOriginal = file->nbytes;
+
+	bool compression = false;
+
+	char * DataToWrite;
+	DataToWrite = file->buffer.data;
+
+	/*
+	 * Prepare compressed data to write
+	 * size of compressed block needs to be added at the beggining of the
+	 * compressed data
+	 */
+
+
+	if (file->compress && wpos < file->nbytes) {
+		int cBufferSize = LZ4_compressBound(file->nbytes);
+		/* variables used for compression */
+		char * cData;
+		int cSize;
+
+		compression = true;
+		cData = palloc(cBufferSize + sizeof(int));
+		cSize = LZ4_compress_default(file->buffer.data,
+				cData + sizeof(int),file->nbytes, cBufferSize);
+
+		/* Write size of compressed block in frot of compressed data
+		 * It's used to determine amount of data to read within
+		 * decompression process
+		 */
+		memcpy(cData,&cSize,sizeof(int));
+		file->nbytes=cSize + sizeof(int);
+		DataToWrite = cData;
+	}
 
 	/*
 	 * Unlike BufFileLoadBuffer, we must dump the whole buffer even if it
@@ -535,7 +633,7 @@ BufFileDumpBuffer(BufFile *file)
 			INSTR_TIME_SET_ZERO(io_start);
 
 		bytestowrite = FileWrite(thisfile,
-								 file->buffer.data + wpos,
+								 DataToWrite + wpos,
 								 bytestowrite,
 								 file->curOffset,
 								 WAIT_EVENT_BUFFILE_WRITE);
@@ -564,7 +662,19 @@ BufFileDumpBuffer(BufFile *file)
 	 * logical file position, ie, original value + pos, in case that is less
 	 * (as could happen due to a small backwards seek in a dirty buffer!)
 	 */
-	file->curOffset -= (file->nbytes - file->pos);
+
+
+	if (!file->compress)
+		file->curOffset -= (file->nbytes - file->pos);
+	else
+		if (nbytesOriginal - file->pos != 0)
+			/* curOffset must be corrected also if compression is
+			 * enabled, nbytes was changed by compression but we
+			 * have to use the original value of nbytes
+			 */
+			file->curOffset-=bytestowrite;
+
+
 	if (file->curOffset < 0)	/* handle possible segment crossing */
 	{
 		file->curFile--;
@@ -577,6 +687,9 @@ BufFileDumpBuffer(BufFile *file)
 	 */
 	file->pos = 0;
 	file->nbytes = 0;
+
+	if (compression)
+		pfree(DataToWrite);
 }
 
 /*
@@ -603,7 +716,12 @@ BufFileReadCommon(BufFile *file, void *ptr, size_t size, bool exact, bool eofOK)
 		if (file->pos >= file->nbytes)
 		{
 			/* Try to load more data into buffer. */
-			file->curOffset += file->pos;
+			if (!file->compress)
+				/* curOffset is moved within BufFileLoadBuffer
+				 * because stored data size differs from loaded/
+				 * decompressed size
+				 * */
+				file->curOffset += file->pos;
 			file->pos = 0;
 			file->nbytes = 0;
 			BufFileLoadBuffer(file);

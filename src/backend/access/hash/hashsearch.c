@@ -983,16 +983,6 @@ _hash_copy_batch(IndexScanDesc scan, ScanDirection dir, HashScanOpaque so,
 		start++;
 	}
 
-	/*
-	 * set the starting point
-	 *
-	 * XXX might be better done in indexam.c
-	 */
-	if (ScanDirectionIsForward(dir))
-		scan->xs_batch->currIndex = -1;
-	else
-		scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
-
 	/* shouldn't be possible to end here with an empty batch */
 	Assert(scan->xs_batch->nheaptids > 0);
 }

@@ -532,10 +532,10 @@ btmarkpos(IndexScanDesc scan)
 	if (scan->xs_batch)
 	{
 		/* the index should be valid in the batch */
-		Assert(scan->xs_batch->currIndex >= 0);
-		Assert(scan->xs_batch->currIndex < scan->xs_batch->nheaptids);
+		Assert(scan->xs_batch->readPos.index >= 0);
+		Assert(scan->xs_batch->readPos.index < scan->xs_batch->nheaptids);
 
-		so->currPos.itemIndex = so->batch.firstIndex + scan->xs_batch->currIndex;
+		so->currPos.itemIndex = so->batch.firstIndex + scan->xs_batch->readPos.index;
 	}
 
 	/*
@@ -602,7 +602,6 @@ btrestrpos(IndexScanDesc scan)
 
 				/* make it look empty */
 				scan->xs_batch->nheaptids = 0;
-				scan->xs_batch->prefetchIndex = -1;
 
 				/*
 				 * XXX the scan direction is bogus / not important. It affects
@@ -621,8 +620,9 @@ btrestrpos(IndexScanDesc scan)
 			 * XXX This is a bit weird. There should be a way to not need the
 			 * "restored" flag I think.
 			 */
-			scan->xs_batch->currIndex = (so->currPos.itemIndex - so->batch.firstIndex);
-			scan->xs_batch->restored = true;
+			index_batch_reset_positions(scan,
+										(so->currPos.itemIndex - so->batch.firstIndex),
+										true);
 		}
 	}
 	else
@@ -683,7 +683,6 @@ btrestrpos(IndexScanDesc scan)
 
 				/* make it look empty */
 				scan->xs_batch->nheaptids = 0;
-				scan->xs_batch->prefetchIndex = -1;
 
 				/* XXX the scan direction is bogus */
 				_bt_copy_batch(scan, ForwardScanDirection, so, start, end);
@@ -697,8 +696,9 @@ btrestrpos(IndexScanDesc scan)
 				 * XXX This is a bit weird. There should be a way to not need
 				 * the "restored" flag I think.
 				 */
-				scan->xs_batch->currIndex = (so->currPos.itemIndex - so->batch.firstIndex);
-				scan->xs_batch->restored = true;
+				index_batch_reset_positions(scan,
+											(so->currPos.itemIndex - so->batch.firstIndex),
+											true);
 			}
 		}
 		else

@@ -191,6 +191,7 @@ extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 /* index batching/prefetching */
 extern bool index_batch_add(IndexScanDesc scan, ItemPointerData tid, bool recheck,
 							IndexTuple itup, HeapTuple htup);
+extern void index_batch_reset_positions(IndexScanDesc scan, int index, bool restored);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *istat,

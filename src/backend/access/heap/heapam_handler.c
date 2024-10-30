@@ -75,11 +75,12 @@ heapam_slot_callbacks(Relation relation)
  */
 
 static IndexFetchTableData *
-heapam_index_fetch_begin(Relation rel)
+heapam_index_fetch_begin(Relation rel, ReadStream *rs)
 {
 	IndexFetchHeapData *hscan = palloc0(sizeof(IndexFetchHeapData));
 
 	hscan->xs_base.rel = rel;
+	hscan->xs_base.rs = rs;
 	hscan->xs_cbuf = InvalidBuffer;
 
 	return &hscan->xs_base;
@@ -126,15 +127,38 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/* Switch to correct buffer if we don't have it already */
 		Buffer		prev_buf = hscan->xs_cbuf;
 
-		hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
-											  hscan->xs_base.rel,
-											  ItemPointerGetBlockNumber(tid));
+		/*
+		 * XXX it's a bit weird just read buffers, expecting them to match
+		 * the TID we've put into the queue earlier from the callback.
+		 */
+		if (scan->rs)
+			hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
+		else
+			hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
+												  hscan->xs_base.rel,
+												  ItemPointerGetBlockNumber(tid));
+
+		//elog(WARNING, "BufferGetBlockNumber(hscan->xs_cbuf) = %u", BufferGetBlockNumber(hscan->xs_cbuf));
+		//elog(WARNING, "ItemPointerGetBlockNumber(tid) = %u", ItemPointerGetBlockNumber(tid));
+
+		/* crosscheck: Did we get the expected block number? */
+		Assert(BufferIsValid(hscan->xs_cbuf));
+		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
 
 		/*
 		 * Prune page, but only if we weren't already on this page
 		 */
 		if (prev_buf != hscan->xs_cbuf)
+		{
 			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
+		}
+
+		/* FIXME not sure this is really needed, or maybe this is not the
+		 * right place to do this */
+		if (scan->rs && (prev_buf != InvalidBuffer))
+		{
+			ReleaseBuffer(prev_buf);
+		}
 	}
 
 	/* Obtain share-lock on the buffer so we can examine visibility */

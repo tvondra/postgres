@@ -145,9 +145,10 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
+			int	lastIndex = scandesc->xs_batch->readPos.index;
+
 			/* Is the index of the current item valid for the batch? */
-			Assert((scandesc->xs_batch->currIndex >= 0) &&
-				   (scandesc->xs_batch->currIndex < scandesc->xs_batch->nheaptids));
+			Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));
 
 			/*
 			 * Reuse the previously determined page visibility info, or
@@ -159,8 +160,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * visibility from that. Maybe we could/should have a more direct
 			 * way?
 			 */
-			all_visible = !ios_prefetch_block(scandesc, node,
-											  scandesc->xs_batch->currIndex);
+			all_visible = !ios_prefetch_block(scandesc, node, lastIndex);
 		}
 
 		/*

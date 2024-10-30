@@ -16,8 +16,10 @@
 
 #include "access/htup_details.h"
 #include "access/itup.h"
+#include "access/sdir.h"
 #include "port/atomics.h"
 #include "storage/buf.h"
+#include "storage/read_stream.h"
 #include "storage/relfilelocator.h"
 #include "storage/spin.h"
 #include "utils/relcache.h"
@@ -127,6 +129,7 @@ typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
 typedef struct IndexFetchTableData
 {
 	Relation	rel;
+	ReadStream *rs;
 } IndexFetchTableData;
 
 /* Forward declaration, the prefetch callback needs IndexScanDescData. */
@@ -202,6 +205,12 @@ typedef struct IndexScanDescData
 typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan,
 									   void *arg, int index);
 
+typedef struct IndexScanBatchPos {
+	int		index;			/* index into the batch items */
+	bool	restored;		/* Was this restored by restrpos? If yes, don't
+							 * advance on the first access. */
+} IndexScanBatchPos;
+
 /*
  * Data about the current TID batch returned by the index AM.
  *
@@ -227,28 +236,29 @@ typedef struct IndexScanBatchData
 	/* memory context for per-batch data */
 	MemoryContext ctx;
 
-	/*
-	 * Was this batch just restored by restrpos? if yes, we don't advance on
-	 * the first iteration.
-	 */
-	bool		restored;
-
-	/* batch prefetching */
-	int			prefetchTarget; /* current prefetch distance */
-	int			prefetchMaximum;	/* maximum prefetch distance */
-	int			prefetchIndex;	/* next item to prefetch */
+	/* most recent direction of the scan */
+	ScanDirection dir;
 
 	IndexPrefetchCallback	prefetchCallback;
 	void				   *prefetchArgument;
 
+	/*
+	 * Was this batch just restored by restrpos? If yes, we don't advance on
+	 * the first iteration.
+	 */
+	bool		resetIndexes;
+
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
-	int			currIndex;		/* index of the current item */
 	int			nheaptids;		/* number of TIDs in the batch */
 	ItemPointerData *heaptids;	/* TIDs in the batch */
 	IndexTuple *itups;			/* IndexTuples, if requested */
 	HeapTuple  *htups;			/* HeapTuples, if requested */
 	bool	   *recheck;		/* recheck flags */
 	Datum	   *privateData;	/* private data for batch */
+
+	/* current position in the batch */
+	IndexScanBatchPos	readPos;	/* used by executor */
+	IndexScanBatchPos	streamPos;	/* used by read stream */
 
 	/* xs_orderbyvals / xs_orderbynulls */
 	Datum	   *orderbyvals;

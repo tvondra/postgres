@@ -55,6 +55,7 @@
 #include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/read_stream.h"
 #include "utils/memutils.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
@@ -123,6 +124,40 @@ static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
 static void index_batch_prefetch(IndexScanDesc scan,
 								 ScanDirection direction);
+
+
+
+/* Is the batch full (TIDs up to capacity)? */
+#define	INDEX_BATCH_IS_FULL(scan)	\
+	((scan)->xs_batch->nheaptids == (scan)->xs_batch->currSize)
+
+/* Is the batch empty (no TIDs)? */
+#define	INDEX_BATCH_IS_EMPTY(scan)	\
+	((scan)->xs_batch->nheaptids == 0)
+
+/*
+ * Did we process all items? For forward scan it means the index points to the
+ * last item, for backward scans it has to point to the first one.
+ *
+ * This does not cover empty batches properly, because of backward scans.
+ */
+#define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
+	(ScanDirectionIsForward(direction) ? \
+		((scan)->xs_batch->nheaptids == ((scan)->xs_batch->currIndex + 1)) : \
+		((scan)->xs_batch->currIndex == 0))
+
+/*
+ * Does the batch items in the requested direction? The batch must be non-empty
+ * and we should not have reached the end of the batch (in the direction).
+ * Also, if we just restored the position after mark/restore, there should be
+ * at least one item to process (we won't advance  on the next call).
+ *
+ * XXX This is a bit confusing / ugly, probably should rethink how we track
+ * empty batches, and how we handle not advancing after a restore.
+ */
+#define INDEX_BATCH_HAS_ITEMS(scan, direction) \
+	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
+
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -262,6 +297,50 @@ index_insert_cleanup(Relation indexRelation,
 }
 
 /*
+ * FIXME What should this do about change in scan direction? How would this
+ * even learn about it? I guess it just has to reset the stream somehow.
+ * Maybe we need to remember the *current* scan direction, and check that
+ * it didn't change.
+ */
+static BlockNumber
+index_scan_stream_read_next(ReadStream *stream,
+							void *callback_private_data,
+							void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	ItemPointer		tid;
+
+	/* FIXME hardcoded direction - wrong */
+	ScanDirection	direction = ForwardScanDirection;
+
+	/*
+	 * FIXME What should we do without batching? not use streams? For now
+	 * just bail out, but that's wrong - we need this to work for all cases.
+	 * But with regular index scans we can't prefetch more than a single
+	 * TID ahead, so maybe that's what we should do here?
+	 */
+	if (!scan->xs_batch)
+		return InvalidBlockNumber;
+
+	if (!INDEX_BATCH_HAS_ITEMS(scan, direction))
+		return InvalidBlockNumber;
+
+	/*
+	 * same logic as in index_batch_getnext_tid
+	 */
+	if (scan->xs_batch->restored)
+		scan->xs_batch->restored = false;
+	else if (ScanDirectionIsForward(direction))
+		scan->xs_batch->currIndex++;
+	else
+		scan->xs_batch->currIndex--;
+
+	tid = &scan->xs_batch->heaptids[scan->xs_batch->currIndex];
+
+	return ItemPointerGetBlockNumber(tid);
+}
+
+/*
  * index_beginscan - start a scan of an index with amgettuple
  *
  * Caller must be holding suitable locks on the heap and the index.
@@ -273,6 +352,7 @@ index_beginscan(Relation heapRelation,
 				int nkeys, int norderbys,
 				bool enable_batching)
 {
+	ReadStream   *rs;
 	IndexScanDesc scan;
 
 	Assert(snapshot != InvalidSnapshot);
@@ -286,8 +366,17 @@ index_beginscan(Relation heapRelation,
 	scan->heapRelation = heapRelation;
 	scan->xs_snapshot = snapshot;
 
+	/* initialize stream */
+	rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+									NULL,
+									heapRelation,
+									MAIN_FORKNUM,
+									index_scan_stream_read_next,
+									scan,
+									0);
+
 	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
+	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, rs);
 
 	/*
 	 * If explicitly requested and supported by both the index AM and the
@@ -617,7 +706,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	scan->xs_snapshot = snapshot;
 
 	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heaprel);
+	scan->xs_heapfetch = table_index_fetch_begin(heaprel, NULL);	/* FIXME */
 
 	/*
 	 * If explicitly requested and supported by both the index AM and the
@@ -1343,38 +1432,6 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 #endif
 }
 
-/* Is the batch full (TIDs up to capacity)? */
-#define	INDEX_BATCH_IS_FULL(scan)	\
-	((scan)->xs_batch->nheaptids == (scan)->xs_batch->currSize)
-
-/* Is the batch empty (no TIDs)? */
-#define	INDEX_BATCH_IS_EMPTY(scan)	\
-	((scan)->xs_batch->nheaptids == 0)
-
-/*
- * Did we process all items? For forward scan it means the index points to the
- * last item, for backward scans it has to point to the first one.
- *
- * This does not cover empty batches properly, because of backward scans.
- */
-#define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
-	(ScanDirectionIsForward(direction) ? \
-		((scan)->xs_batch->nheaptids == ((scan)->xs_batch->currIndex + 1)) : \
-		((scan)->xs_batch->currIndex == 0))
-
-/*
- * Does the batch items in the requested direction? The batch must be non-empty
- * and we should not have reached the end of the batch (in the direction).
- * Also, if we just restored the position after mark/restore, there should be
- * at least one item to process (we won't advance  on the next call).
- *
- * XXX This is a bit confusing / ugly, probably should rethink how we track
- * empty batches, and how we handle not advancing after a restore.
- */
-#define INDEX_BATCH_HAS_ITEMS(scan, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
-
-
 /* ----------------
  *		index_batch_getnext - get the next batch of TIDs from a scan
  *
@@ -1492,6 +1549,9 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
+
+	/* reset the read stream so that we read the next batch */
+	read_stream_reset(scan->xs_heapfetch->rs);
 
 	/* Return the batch of TIDs we found. */
 	return true;

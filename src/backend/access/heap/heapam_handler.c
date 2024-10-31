@@ -150,11 +150,13 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		if (prev_buf != hscan->xs_cbuf)
 		{
 			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
+		}
 
-			/* FIXME not sure this is really needed, or maybe this is not the
-			 * right place to do this */
-			if (scan->rs && (prev_buf != InvalidBuffer))
-				ReleaseBuffer(prev_buf);
+		/* FIXME not sure this is really needed, or maybe this is not the
+		 * right place to do this */
+		if (scan->rs && (prev_buf != InvalidBuffer))
+		{
+			ReleaseBuffer(prev_buf);
 		}
 	}
 

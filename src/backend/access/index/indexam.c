@@ -723,6 +723,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 {
 	Snapshot	snapshot;
 	IndexScanDesc scan;
+	ReadStream   *rs = NULL;
 
 	Assert(RelFileLocatorEquals(heaprel->rd_locator, pscan->ps_locator));
 	Assert(RelFileLocatorEquals(indexrel->rd_locator, pscan->ps_indexlocator));
@@ -738,9 +739,6 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 	 */
 	scan->heapRelation = heaprel;
 	scan->xs_snapshot = snapshot;
-
-	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heaprel, NULL);	/* FIXME */
 
 	/*
 	 * If explicitly requested and supported by both the index AM and the
@@ -758,7 +756,19 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 		enable_indexscan_batching)
 	{
 		index_batch_init(scan);
+
+		/* initialize stream */
+		rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+										NULL,
+										heaprel,
+										MAIN_FORKNUM,
+										index_scan_stream_read_next,
+										scan,
+										0);
 	}
+
+	/* prepare to fetch index matches from table */
+	scan->xs_heapfetch = table_index_fetch_begin(heaprel, rs);
 
 	return scan;
 }
@@ -1584,7 +1594,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
-	elog(WARNING, "loaded batch of %d items", scan->xs_batch->nheaptids);
+	// elog(WARNING, "loaded batch of %d items", scan->xs_batch->nheaptids);
 
 	/* Return the batch of TIDs we found. */
 	return true;
@@ -1623,9 +1633,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 */
 	if (!INDEX_BATCH_HAS_ITEMS(scan, direction))
 	{
-		elog(WARNING, "no more items %d %d",
-			 scan->xs_batch->currIndex,
-			 scan->xs_batch->nheaptids);
+		//elog(WARNING, "no more items %d %d",
+		//	 scan->xs_batch->currIndex,
+		//	 scan->xs_batch->nheaptids);
 		return NULL;
 	}
 

@@ -140,7 +140,7 @@ static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
  */
 #define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
 	(ScanDirectionIsForward(direction) ? \
-		((scan)->xs_batch->nheaptids == ((scan)->xs_batch->currIndex + 1)) : \
+		((scan)->xs_batch->nheaptids == (scan)->xs_batch->currIndex) : \
 		((scan)->xs_batch->currIndex == 0))
 
 /*
@@ -351,6 +351,10 @@ index_scan_stream_read_next(ReadStream *stream,
 	else
 		scan->xs_batch->prefetchIndex--;
 
+	//elog(WARNING, "index_scan_stream_read_next %d => (%u, %u)",
+	//	 index, ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]),
+	//	 ItemPointerGetOffsetNumber(&scan->xs_batch->heaptids[index]));
+
 	/* FIXME Can we store the TID into the per_buffer_data, for cross
 	 * checking we read the right buffer? */
 
@@ -535,6 +539,8 @@ index_rescan(IndexScanDesc scan,
 /* ----------------
  *		index_endscan - end a scan
  * ----------------
+ *
+ * FIXME should also release the index batch?
  */
 void
 index_endscan(IndexScanDesc scan)
@@ -545,6 +551,12 @@ index_endscan(IndexScanDesc scan)
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
 	{
+		// elog(WARNING, "terminating read_stream %p", scan->xs_heapfetch->rs);
+		if (scan->xs_heapfetch->rs)
+		{
+			read_stream_end(scan->xs_heapfetch->rs);
+		}
+
 		table_index_fetch_end(scan->xs_heapfetch);
 		scan->xs_heapfetch = NULL;
 	}
@@ -916,6 +928,10 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
 				break;
+
+		//elog(WARNING, "index_getnext_slot (%u, %u)",
+		//	 ItemPointerGetBlockNumber(tid),
+		//	 ItemPointerGetOffsetNumber(tid));
 
 			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
 		}
@@ -1548,6 +1564,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		scan->xs_batch->prefetchIndex = (scan->xs_batch->nheaptids - 1);
 	}
 
+	scan->xs_batch->resetIndexes = false;
+
 	/*
 	 * Try to increase the size of the batch. Intentionally done after the AM
 	 * call, so that the new value applies to the next batch. Otherwise we
@@ -1561,6 +1579,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	/* reset the read stream so that we read the next batch */
 	read_stream_reset(scan->xs_heapfetch->rs);
+
+	/* Release resources (like buffer pins) from table accesses */
+	if (scan->xs_heapfetch)
+		table_index_fetch_reset(scan->xs_heapfetch);
+
+	elog(WARNING, "loaded batch of %d items", scan->xs_batch->nheaptids);
 
 	/* Return the batch of TIDs we found. */
 	return true;
@@ -1581,30 +1605,43 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	int		index;
+
 	/* comprehensive checks of batching info */
 	AssertCheckBatchInfo(scan);
+
+	/* shouldn't get here without batching */
+	Assert(scan->xs_batch);
+
+	/* We should have handled change of scan direction sometime earlier. */
+	scan->xs_batch->dir = direction;
+	Assert(scan->xs_batch->dir == direction);
 
 	/*
 	 * Bail out if he batch does not have more items in the requested directio
 	 * (either empty or everthing processed).
 	 */
 	if (!INDEX_BATCH_HAS_ITEMS(scan, direction))
+	{
+		elog(WARNING, "no more items %d %d",
+			 scan->xs_batch->currIndex,
+			 scan->xs_batch->nheaptids);
 		return NULL;
+	}
 
 	/*
-	 * Advance to the next batch item - we know it's not empty and there are
-	 * items to process, so this is valid.
-	 *
-	 * However, don't advance if this is the first getnext_tid() call after
-	 * amrestrpos(). That sets the position on the correct item, and advancing
-	 * here would skip it.
-	 *
-	 * XXX The "restored" flag is a bit weird. Can we do this without it? May
-	 * need to rethink when/how we advance the batch index. Not sure.
+	 * We should also never get here without having all the positions set
+	 * up properly (either after mark/restore, change of direction, etc).
 	 */
-	if (scan->xs_batch->restored)
-		scan->xs_batch->restored = false;
-	else if (ScanDirectionIsForward(direction))
+	Assert(!scan->xs_batch->resetIndexes);
+
+	/* Index of the next item to pass to the read stream. */
+	index = scan->xs_batch->currIndex;
+
+	/* FIXME may need to do something about mark/restore */
+
+	/* Advance the index to the item we need to in the next round. */
+	if (ScanDirectionIsForward(direction))
 		scan->xs_batch->currIndex++;
 	else
 		scan->xs_batch->currIndex--;
@@ -1618,14 +1655,14 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * XXX Do we need to reset the itups/htups array between batches? Doesn't
 	 * seem necessary, but maybe we could get bogus data?
 	 */
-	scan->xs_heaptid = scan->xs_batch->heaptids[scan->xs_batch->currIndex];
+	scan->xs_heaptid = scan->xs_batch->heaptids[index];
 	if (scan->xs_want_itup)
 	{
-		scan->xs_itup = scan->xs_batch->itups[scan->xs_batch->currIndex];
-		scan->xs_hitup = scan->xs_batch->htups[scan->xs_batch->currIndex];
+		scan->xs_itup = scan->xs_batch->itups[index];
+		scan->xs_hitup = scan->xs_batch->htups[index];
 	}
 
-	scan->xs_recheck = scan->xs_batch->recheck[scan->xs_batch->currIndex];
+	scan->xs_recheck = scan->xs_batch->recheck[index];
 
 	/*
 	 * If there are order-by clauses, point to the appropriate chunk in the
@@ -1633,7 +1670,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 */
 	if (scan->numberOfOrderBys > 0)
 	{
-		int			idx = scan->numberOfOrderBys * scan->xs_batch->currIndex;
+		int			idx = scan->numberOfOrderBys * index;
 
 		scan->xs_orderbyvals = &scan->xs_batch->orderbyvals[idx];
 		scan->xs_orderbynulls = &scan->xs_batch->orderbynulls[idx];
@@ -1677,6 +1714,12 @@ index_batch_init(IndexScanDesc scan)
 	/* make sure to reset prefetch/current indexes */
 	scan->xs_batch->resetIndexes = true;
 	scan->xs_batch->restored = false;
+
+	/*
+	 * FIXME set later, when we actually know it. Or shall we assume most
+	 * scans are (or at lest start) forward?
+	 */
+	scan->xs_batch->dir = ForwardScanDirection;
 
 	/* Preallocate the largest allowed array of TIDs. */
 	scan->xs_batch->nheaptids = 0;

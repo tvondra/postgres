@@ -138,6 +138,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 												  hscan->xs_base.rel,
 												  ItemPointerGetBlockNumber(tid));
 
+		//elog(WARNING, "BufferGetBlockNumber(hscan->xs_cbuf) = %u", BufferGetBlockNumber(hscan->xs_cbuf));
+		//elog(WARNING, "ItemPointerGetBlockNumber(tid) = %u", ItemPointerGetBlockNumber(tid));
+
 		/* crosscheck: Did we get the expected block number? */
 		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
 
@@ -145,7 +148,14 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		 * Prune page, but only if we weren't already on this page
 		 */
 		if (prev_buf != hscan->xs_cbuf)
+		{
 			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
+
+			/* FIXME not sure this is really needed, or maybe this is not the
+			 * right place to do this */
+			if (scan->rs && (prev_buf != InvalidBuffer))
+				ReleaseBuffer(prev_buf);
+		}
 	}
 
 	/* Obtain share-lock on the buffer so we can examine visibility */

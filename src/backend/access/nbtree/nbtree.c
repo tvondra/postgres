@@ -602,7 +602,6 @@ btrestrpos(IndexScanDesc scan)
 
 				/* make it look empty */
 				scan->xs_batch->nheaptids = 0;
-				scan->xs_batch->prefetchIndex = -1;
 
 				/*
 				 * XXX the scan direction is bogus / not important. It affects
@@ -683,7 +682,6 @@ btrestrpos(IndexScanDesc scan)
 
 				/* make it look empty */
 				scan->xs_batch->nheaptids = 0;
-				scan->xs_batch->prefetchIndex = -1;
 
 				/* XXX the scan direction is bogus */
 				_bt_copy_batch(scan, ForwardScanDirection, so, start, end);

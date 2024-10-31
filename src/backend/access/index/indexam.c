@@ -122,9 +122,6 @@ static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
-static void index_batch_prefetch(IndexScanDesc scan,
-								 ScanDirection direction);
-
 
 
 /* Is the batch full (TIDs up to capacity)? */
@@ -307,37 +304,57 @@ index_scan_stream_read_next(ReadStream *stream,
 							void *callback_private_data,
 							void *per_buffer_data)
 {
+	int				index;
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
-	ItemPointer		tid;
-
-	/* FIXME hardcoded direction - wrong */
-	ScanDirection	direction = ForwardScanDirection;
 
 	/*
 	 * FIXME What should we do without batching? not use streams? For now
 	 * just bail out, but that's wrong - we need this to work for all cases.
 	 * But with regular index scans we can't prefetch more than a single
 	 * TID ahead, so maybe that's what we should do here?
+	 *
+	 * XXX Currently we should not get here without batching, we fall back
+	 * to the regular buffer reads (not using stream read API) in that case.
 	 */
+	Assert(scan->xs_batch);
+
 	if (!scan->xs_batch)
 		return InvalidBlockNumber;
 
-	if (!INDEX_BATCH_HAS_ITEMS(scan, direction))
-		return InvalidBlockNumber;
+	/*
+	 * We shouldn't ever get here with empty batches. In that case we bail
+	 * out after index_batch_getnext(), if it finds nothing.
+	 */
+	Assert(!INDEX_BATCH_IS_EMPTY(scan));
 
 	/*
-	 * same logic as in index_batch_getnext_tid
+	 * We should also never get here without having all the positions set
+	 * up properly (either after mark/restore, change of direction, etc).
 	 */
-	if (scan->xs_batch->restored)
-		scan->xs_batch->restored = false;
-	else if (ScanDirectionIsForward(direction))
-		scan->xs_batch->currIndex++;
+	Assert(!scan->xs_batch->resetIndexes);
+
+	/*
+	 * FIXME invoke the prefetch callback in batch to determine if we should
+	 * actually read this block or not (matters for index-only scans).
+	 */
+
+	/* Index of the next item to pass to the read stream. */
+	index = scan->xs_batch->prefetchIndex;
+
+	/* Did we run out of items in the current batch? */
+	if ((index < 0) || (index >= scan->xs_batch->nheaptids))
+		return InvalidBlockNumber;
+
+	/* Advance the index to the item we need to in the next round. */
+	if (ScanDirectionIsForward(scan->xs_batch->dir))
+		scan->xs_batch->prefetchIndex++;
 	else
-		scan->xs_batch->currIndex--;
+		scan->xs_batch->prefetchIndex--;
 
-	tid = &scan->xs_batch->heaptids[scan->xs_batch->currIndex];
+	/* FIXME Can we store the TID into the per_buffer_data, for cross
+	 * checking we read the right buffer? */
 
-	return ItemPointerGetBlockNumber(tid);
+	return ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]);
 }
 
 /*
@@ -352,7 +369,7 @@ index_beginscan(Relation heapRelation,
 				int nkeys, int norderbys,
 				bool enable_batching)
 {
-	ReadStream   *rs;
+	ReadStream   *rs = NULL;
 	IndexScanDesc scan;
 
 	Assert(snapshot != InvalidSnapshot);
@@ -366,18 +383,6 @@ index_beginscan(Relation heapRelation,
 	scan->heapRelation = heapRelation;
 	scan->xs_snapshot = snapshot;
 
-	/* initialize stream */
-	rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
-									NULL,
-									heapRelation,
-									MAIN_FORKNUM,
-									index_scan_stream_read_next,
-									scan,
-									0);
-
-	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, rs);
-
 	/*
 	 * If explicitly requested and supported by both the index AM and the
 	 * plan, initialize batching info.
@@ -388,13 +393,30 @@ index_beginscan(Relation heapRelation,
 	 *
 	 * XXX Maybe we should have a separate "amcanbatch" call, to let the AM
 	 * decide if batching is supported depending on the scan details.
+	 *
+	 * XXX Do this before initializing xs_heapfetch. We only use stream read
+	 * API with batching enabled (so not with systable scans). But maybe we
+	 * should change that, and just use different callbacks (or something
+	 * like that)?
 	 */
 	if ((indexRelation->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
 		enable_indexscan_batching)
 	{
 		index_batch_init(scan);
+
+		/* initialize stream */
+		rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+										NULL,
+										heapRelation,
+										MAIN_FORKNUM,
+										index_scan_stream_read_next,
+										scan,
+										0);
 	}
+
+	/* prepare to fetch index matches from table */
+	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, rs);
 
 	return scan;
 }
@@ -765,31 +787,16 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 batch_loaded:
 		/* Try getting a TID from the current batch (if we have one). */
 		while (index_batch_getnext_tid(scan, direction) != NULL)
-		{
-			/*
-			 * We've successfully loaded a TID from the batch, so issue
-			 * prefetches for future TIDs if needed.
-			 */
-			index_batch_prefetch(scan, direction);
-
 			return &scan->xs_heaptid;
-		}
 
 		/*
 		 * We either don't have any batch yet, or we've already processed
 		 * all items from the current batch. Try loading the next one.
 		 *
-		 * If we succeed, issue prefetches (using the current prefetch
-		 * distance without ramp up), and then go back to returning the
-		 * TIDs from the batch.
-		 *
 		 * XXX Maybe do this as a simple while/for loop without the goto.
 		 */
 		if (index_batch_getnext(scan, direction))
-		{
-			index_batch_prefetch(scan, direction);
 			goto batch_loaded;
-		}
 
 		return NULL;
 	}
@@ -1420,10 +1427,6 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 	Assert((scan->xs_batch->currIndex >= -1) &&
 		   (scan->xs_batch->currIndex <= scan->xs_batch->nheaptids));
 
-	/* check prefetch data */
-	Assert((scan->xs_batch->prefetchTarget >= 0) &&
-		   (scan->xs_batch->prefetchTarget <= scan->xs_batch->prefetchMaximum));
-
 	Assert((scan->xs_batch->prefetchIndex >= -1) &&
 		   (scan->xs_batch->prefetchIndex <= scan->xs_batch->nheaptids));
 
@@ -1527,17 +1530,23 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	pgstat_count_index_tuples(scan->indexRelation, scan->xs_batch->nheaptids);
 
 	/*
-	 * Set the prefetch index to the first item in the loaded batch (we expect
-	 * the index AM to set that).
+	 * Remember the direction.
 	 *
-	 * FIXME Maybe set the currIndex here, not in the index AM. It seems much
-	 * more like indexam.c responsibility rather than something every index AM
-	 * should be doing (in _bt_first_batch etc.).
-	 *
-	 * FIXME It's a bit unclear who (indexam.c or the index AM) is responsible
-	 * for setting which fields. This needs clarification.
+	 * FIXME also check it later, it may happen to change for each call
 	 */
-	scan->xs_batch->prefetchIndex = scan->xs_batch->currIndex;
+	scan->xs_batch->dir = direction;
+
+	/* Set both indexes to the first item in the loaded batch. */
+	if (ScanDirectionIsForward(direction))
+	{
+		scan->xs_batch->currIndex = 0;
+		scan->xs_batch->prefetchIndex = 0;
+	}
+	else
+	{
+		scan->xs_batch->currIndex = (scan->xs_batch->nheaptids - 1);
+		scan->xs_batch->prefetchIndex = (scan->xs_batch->nheaptids - 1);
+	}
 
 	/*
 	 * Try to increase the size of the batch. Intentionally done after the AM
@@ -1636,120 +1645,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	return &scan->xs_heaptid;
 }
 
-/* ----------------
- *		index_batch_prefetch - prefetch pages for TIDs in current batch
- *
- * The prefetch distance is increased gradually, similar to what we do for
- * bitmap heap scans. We start from distance 0 (no prefetch), and then in each
- * iteration increment the distance up to prefetchMaximum.
- *
- * The prefetch distance is reset (to 0) only on rescans, not between batches.
- *
- * It's possible to provide an index_prefetch_callback callback, to affect
- * which items need to be prefetched. With prefetch_callback=NULL, all
- * items are prefetched. With the callback provided, the item is prefetched
- * iff the callback and returns true.
- *
- * The "arg" argument is used to pass a state for the plan node invoking the
- * function, and is then passed to the callback. This means the callback is
- * specific to the plan state.
- *
- * XXX the prefetchMaximum depends on effective_io_concurrency, and also on
- * tablespace options.
- *
- * XXX For accesses that change scan direction, we may do a lot of unnecessary
- * prefetching (because we will re-issue prefetches for what we recently read).
- * I'm not sure if there's a simple way to track what was already prefetched.
- * Maybe we could count how far we got (in the forward direction), keep that
- * as a watermark, and never prefetch again below it.
- *
- * XXX Maybe wrap this in ifdef USE_PREFETCH?
- * ----------------
- */
-static void
-index_batch_prefetch(IndexScanDesc scan, ScanDirection direction)
-{
-	int			prefetchStart,
-				prefetchEnd;
-
-	IndexPrefetchCallback	prefetch_callback = scan->xs_batch->prefetchCallback;
-	void *arg = scan->xs_batch->prefetchArgument;
-
-	if (ScanDirectionIsForward(direction))
-	{
-		/* Where should we start to prefetch? */
-		prefetchStart = Max(scan->xs_batch->currIndex,
-							scan->xs_batch->prefetchIndex);
-
-		/*
-		 * Where should we stop prefetching? this is the first item that we do
-		 * NOT prefetch, i.e. it can be the first item after the batch.
-		 */
-		prefetchEnd = Min((scan->xs_batch->currIndex + 1) + scan->xs_batch->prefetchTarget,
-						  scan->xs_batch->nheaptids);
-
-		/* FIXME should calculate in a way to make this unnecessary */
-		prefetchStart = Max(Min(prefetchStart, scan->xs_batch->nheaptids - 1), 0);
-		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch->nheaptids - 1), 0);
-
-		/* remember how far we prefetched / where to start the next prefetch */
-		scan->xs_batch->prefetchIndex = prefetchEnd;
-	}
-	else
-	{
-		/* Where should we start to prefetch? */
-		prefetchEnd = Min(scan->xs_batch->currIndex,
-						  scan->xs_batch->prefetchIndex);
-
-		/*
-		 * Where should we stop prefetching? this is the first item that we do
-		 * NOT prefetch, i.e. it can be the first item after the batch.
-		 */
-		prefetchStart = Max((scan->xs_batch->currIndex - 1) - scan->xs_batch->prefetchTarget,
-							-1);
-
-		/* FIXME should calculate in a way to make this unnecessary */
-		prefetchStart = Max(Min(prefetchStart, scan->xs_batch->nheaptids - 1), 0);
-		prefetchEnd = Max(Min(prefetchEnd, scan->xs_batch->nheaptids - 1), 0);
-
-		/* remember how far we prefetched / where to start the next prefetch */
-		scan->xs_batch->prefetchIndex = prefetchStart;
-	}
-
-	/*
-	 * It's possible we get inverted prefetch range after a restrpos() call,
-	 * because we intentionally don't reset the prefetchIndex - we don't want
-	 * to prefetch pages over and over in this case. We'll do nothing in that
-	 * case, except for the AssertCheckBatchInfo().
-	 *
-	 * FIXME I suspect this actually does not work correctly if we change the
-	 * direction, because the prefetchIndex will flip between two extremes
-	 * thanks to the Min/Max.
-	 */
-
-	/*
-	 * Increase the prefetch distance, but not beyond prefetchMaximum. We
-	 * intentionally do this after calculating start/end, so that we start
-	 * actually prefetching only after the first item.
-	 */
-	scan->xs_batch->prefetchTarget = Min(scan->xs_batch->prefetchTarget + 1,
-										 scan->xs_batch->prefetchMaximum);
-
-	/* comprehensive checks of batching info */
-	AssertCheckBatchInfo(scan);
-
-	/* finally, do the actual prefetching */
-	for (int i = prefetchStart; i < prefetchEnd; i++)
-	{
-		/* skip block if the provided callback says so */
-		if (prefetch_callback && !prefetch_callback(scan, arg, i))
-			continue;
-
-		PrefetchBuffer(scan->heapRelation, MAIN_FORKNUM,
-					   ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[i]));
-	}
-}
-
 /*
  * index_batch_init
  *		Initialize various fields / arrays needed by batching.
@@ -1775,14 +1670,13 @@ index_batch_init(IndexScanDesc scan)
 	scan->xs_batch->initSize = 8;
 	scan->xs_batch->currSize = scan->xs_batch->initSize;
 
-	/* initialize prefetching info */
-	scan->xs_batch->prefetchMaximum =
-		get_tablespace_io_concurrency(scan->heapRelation->rd_rel->reltablespace);
-	scan->xs_batch->prefetchTarget = 0;
-	scan->xs_batch->prefetchIndex = 0;
+	/* initialize prefetching info to some bogus values */
+	scan->xs_batch->prefetchIndex = 0xFFFFFFFF;
+	scan->xs_batch->currIndex = 0xFFFFFFFF;
 
-	/* */
-	scan->xs_batch->currIndex = -1;
+	/* make sure to reset prefetch/current indexes */
+	scan->xs_batch->resetIndexes = true;
+	scan->xs_batch->restored = false;
 
 	/* Preallocate the largest allowed array of TIDs. */
 	scan->xs_batch->nheaptids = 0;

@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/itup.h"
+#include "access/sdir.h"
 #include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/read_stream.h"
@@ -229,28 +230,30 @@ typedef struct IndexScanBatchData
 	/* memory context for per-batch data */
 	MemoryContext ctx;
 
-	/*
-	 * Was this batch just restored by restrpos? if yes, we don't advance on
-	 * the first iteration.
-	 */
-	bool		restored;
-
-	/* batch prefetching */
-	int			prefetchTarget; /* current prefetch distance */
-	int			prefetchMaximum;	/* maximum prefetch distance */
-	int			prefetchIndex;	/* next item to prefetch */
+	/* most recent direction of the scan */
+	ScanDirection dir;
 
 	IndexPrefetchCallback	prefetchCallback;
 	void				   *prefetchArgument;
 
+	/*
+	 * Was this batch just restored by restrpos? If yes, we don't advance on
+	 * the first iteration.
+	 */
+	bool		restored;
+	bool		resetIndexes;
+
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
-	int			currIndex;		/* index of the current item */
 	int			nheaptids;		/* number of TIDs in the batch */
 	ItemPointerData *heaptids;	/* TIDs in the batch */
 	IndexTuple *itups;			/* IndexTuples, if requested */
 	HeapTuple  *htups;			/* HeapTuples, if requested */
 	bool	   *recheck;		/* recheck flags */
 	Datum	   *privateData;	/* private data for batch */
+
+	/* current position in the batch */
+	int			currIndex;		/* index of the current item */
+	int			prefetchIndex;	/* next item to pass to the stream */
 
 	/* xs_orderbyvals / xs_orderbynulls */
 	Datum	   *orderbyvals;

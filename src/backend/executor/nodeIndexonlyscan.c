@@ -205,6 +205,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 */
 		if (!all_visible)
 		{
+			elog(WARNING, "fetching heap page");
 			/*
 			 * Rats, we have to visit the heap to check visibility.
 			 */

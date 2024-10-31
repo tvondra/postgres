@@ -306,7 +306,7 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	int				index;
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
-
+elog(WARNING, "ZZZ");
 	/*
 	 * FIXME What should we do without batching? not use streams? For now
 	 * just bail out, but that's wrong - we need this to work for all cases.
@@ -338,25 +338,47 @@ index_scan_stream_read_next(ReadStream *stream,
 	 * actually read this block or not (matters for index-only scans).
 	 */
 
-	/* Index of the next item to pass to the read stream. */
-	index = scan->xs_batch->prefetchIndex;
+	while (true)
+	{
+		/* Index of the next item to pass to the read stream. */
+		index = scan->xs_batch->prefetchIndex;
 
-	/* Did we run out of items in the current batch? */
-	if ((index < 0) || (index >= scan->xs_batch->nheaptids))
-		return InvalidBlockNumber;
+		/* Did we run out of items in the current batch? */
+		if ((index < 0) || (index >= scan->xs_batch->nheaptids))
+			return InvalidBlockNumber;
 
-	/* Advance the index to the item we need to in the next round. */
-	if (ScanDirectionIsForward(scan->xs_batch->dir))
-		scan->xs_batch->prefetchIndex++;
-	else
-		scan->xs_batch->prefetchIndex--;
+		/* Advance the index to the item we need to in the next round. */
+		if (ScanDirectionIsForward(scan->xs_batch->dir))
+			scan->xs_batch->prefetchIndex++;
+		else
+			scan->xs_batch->prefetchIndex--;
 
-	//elog(WARNING, "index_scan_stream_read_next %d => (%u, %u)",
-	//	 index, ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]),
-	//	 ItemPointerGetOffsetNumber(&scan->xs_batch->heaptids[index]));
+		elog(WARNING, "scan->xs_batch->prefetchCallback = %p", scan->xs_batch->prefetchCallback);
 
-	/* FIXME Can we store the TID into the per_buffer_data, for cross
-	 * checking we read the right buffer? */
+		/* if defined, call the batch callback */
+		if (scan->xs_batch->prefetchCallback)
+		{
+			bool prefetch
+				= scan->xs_batch->prefetchCallback(scan,
+												   scan->xs_batch->prefetchArgument,
+												   index);
+			if (!prefetch)
+			{
+				elog(WARNING, "skipping");
+				continue;
+			}
+			else
+				elog(WARNING, "prefetching %d", index);
+		}
+
+		//elog(WARNING, "index_scan_stream_read_next %d => (%u, %u)",
+		//	 index, ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]),
+		//	 ItemPointerGetOffsetNumber(&scan->xs_batch->heaptids[index]));
+
+		/* FIXME Can we store the TID into the per_buffer_data, for cross
+		 * checking we read the right buffer? */
+		break;
+	}
 
 	return ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]);
 }

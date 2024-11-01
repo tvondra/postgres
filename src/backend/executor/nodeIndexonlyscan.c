@@ -145,7 +145,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
-			int	lastIndex = scandesc->xs_batch->currIndex;
+			int	lastIndex = scandesc->xs_batch->readPos.index;
 
 			/* Is the index of the current item valid for the batch? */
 			Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));

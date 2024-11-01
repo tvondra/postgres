@@ -141,8 +141,15 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		//elog(WARNING, "BufferGetBlockNumber(hscan->xs_cbuf) = %u", BufferGetBlockNumber(hscan->xs_cbuf));
 		//elog(WARNING, "ItemPointerGetBlockNumber(tid) = %u", ItemPointerGetBlockNumber(tid));
 
-		/* crosscheck: Did we get the expected block number? */
-		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
+		if (BufferIsValid(hscan->xs_cbuf))
+		{
+			elog(LOG, "%p buffer %u block %u tid (%u,%u)", hscan,
+				 hscan->xs_cbuf, BufferGetBlockNumber(hscan->xs_cbuf),
+				 ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
+
+			/* crosscheck: Did we get the expected block number? */
+			Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
+		}
 
 		/*
 		 * Prune page, but only if we weren't already on this page

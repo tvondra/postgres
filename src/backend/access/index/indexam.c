@@ -122,6 +122,10 @@ static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
+static int index_batch_pos_advance(IndexScanBatchPos *pos,
+								   ScanDirection dir);
+static void index_batch_pos_reset(IndexScanBatchPos *pos,
+								  int index, bool restored);
 
 
 /* Is the batch full (TIDs up to capacity)? */
@@ -138,10 +142,10 @@ static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
  *
  * This does not cover empty batches properly, because of backward scans.
  */
-#define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
+#define	INDEX_BATCH_IS_PROCESSED(scan, pos, direction)	\
 	(ScanDirectionIsForward(direction) ? \
-		((scan)->xs_batch->nheaptids == (scan)->xs_batch->currIndex) : \
-		((scan)->xs_batch->currIndex == -1))
+		((scan)->xs_batch->nheaptids == (pos)->index) : \
+		((pos)->index == -1))
 
 /*
  * Does the batch items in the requested direction? The batch must be non-empty
@@ -152,8 +156,8 @@ static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
  * XXX This is a bit confusing / ugly, probably should rethink how we track
  * empty batches, and how we handle not advancing after a restore.
  */
-#define INDEX_BATCH_HAS_ITEMS(scan, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED(scan, direction) || scan->xs_batch->restored))
+#define INDEX_BATCH_HAS_ITEMS(scan, pos, direction) \
+	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED((scan), (pos), (direction)) || (pos)->restored))
 
 
 /* ----------------------------------------------------------------
@@ -305,14 +309,43 @@ index_batch_reset_indexes(IndexScanDesc scan)
 	/* set the indexes into "starting" position depending on direction */
 	if (ScanDirectionIsForward(scan->xs_batch->dir))
 	{
-		scan->xs_batch->currIndex = -1;
-		scan->xs_batch->prefetchIndex = -1;
+		index_batch_pos_reset(&scan->xs_batch->readPos, -1, false);
+		index_batch_pos_reset(&scan->xs_batch->streamPos, -1, false);
 	}
 	else
 	{
-		scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
-		scan->xs_batch->prefetchIndex = scan->xs_batch->nheaptids;
+		index_batch_pos_reset(&scan->xs_batch->readPos, scan->xs_batch->nheaptids, false);
+		index_batch_pos_reset(&scan->xs_batch->streamPos, scan->xs_batch->nheaptids, false);
 	}
+}
+
+static int
+index_batch_pos_advance(IndexScanBatchPos *pos, ScanDirection dir)
+{
+	if (pos->restored)
+	{
+		pos->restored = false;
+		return pos->index;
+	}
+
+	if (ScanDirectionIsForward(dir))
+		return ++pos->index;
+	else
+		return --pos->index;
+}
+
+static void
+index_batch_pos_reset(IndexScanBatchPos *pos, int index, bool restored)
+{
+	pos->index = index;
+	pos->restored = restored;
+}
+
+void
+index_batch_reset_positions(IndexScanDesc scan, int index, bool restored)
+{
+	index_batch_pos_reset(&scan->xs_batch->readPos, index, restored);
+	index_batch_pos_reset(&scan->xs_batch->streamPos, index, restored);
 }
 
 /*
@@ -353,7 +386,7 @@ index_scan_stream_read_next(ReadStream *stream,
 	 * It shouldn't be possible to have both the resetIndexes and restored
 	 * flags set at the same time.
 	 */
-	Assert(!(scan->xs_batch->resetIndexes && scan->xs_batch->restored));
+	Assert(!(scan->xs_batch->resetIndexes && scan->xs_batch->readPos.restored));
 
 	/* Maybe reset indexes. */
 	index_batch_reset_indexes(scan);
@@ -375,14 +408,9 @@ index_scan_stream_read_next(ReadStream *stream,
 	 */
 	while (true)
 	{
-		/* Advance the prefetch index to the item we need to in the next round. */
-		if (ScanDirectionIsForward(scan->xs_batch->dir))
-			scan->xs_batch->prefetchIndex++;
-		else
-			scan->xs_batch->prefetchIndex--;
-
-		/* Index of the next item to pass to the read stream. */
-		index = scan->xs_batch->prefetchIndex;
+		/* Advance the stream index as needed. */
+		index = index_batch_pos_advance(&scan->xs_batch->streamPos,
+										scan->xs_batch->dir);
 
 		/* Did we run out of items in the current batch? */
 		if ((index < 0) || (index >= scan->xs_batch->nheaptids))
@@ -682,6 +710,18 @@ index_restrpos(IndexScanDesc scan)
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
+	/*
+	 * Reset the current/prefetch positions in the batch.
+	 *
+	 * XXX Done before calling amgetbatch(), so that it sees the index as
+	 * invalid, batch as empty, and can add items.
+	 */
+	scan->xs_batch->readPos.index = -1;
+	scan->xs_batch->streamPos.index = -1;
+
+	/* XXX don't reset nheaptids here, it confused amrestrpos (which seems
+	 * a bit weird, it shouldn't be the case I think) */
+
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 
 	/*
@@ -976,7 +1016,7 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 			/* batch case - record the killed tuple in the batch */
 			if (scan->xs_batch->nKilledItems < scan->xs_batch->maxSize)
 				scan->xs_batch->killedItems[scan->xs_batch->nKilledItems++]
-					= scan->xs_batch->currIndex;
+					= scan->xs_batch->readPos.index;
 		}
 	}
 
@@ -1521,11 +1561,11 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 	 * The current item must be between -1 and nheaptids. Those two extreme
 	 * values are starting points for forward/backward scans.
 	 */
-	Assert((scan->xs_batch->currIndex >= -1) &&
-		   (scan->xs_batch->currIndex <= scan->xs_batch->nheaptids));
+	Assert((scan->xs_batch->readPos.index >= -1) &&
+		   (scan->xs_batch->readPos.index <= scan->xs_batch->nheaptids));
 
-	Assert((scan->xs_batch->prefetchIndex >= -1) &&
-		   (scan->xs_batch->prefetchIndex <= scan->xs_batch->nheaptids));
+	Assert((scan->xs_batch->streamPos.index >= -1) &&
+		   (scan->xs_batch->streamPos.index <= scan->xs_batch->nheaptids));
 
 	for (int i = 0; i < scan->xs_batch->nheaptids; i++)
 		Assert(ItemPointerIsValid(&scan->xs_batch->heaptids[i]));
@@ -1563,20 +1603,16 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * one. The current batch has to be either empty or we ran out of items
 	 * (in the given direction).
 	 */
-	Assert(!INDEX_BATCH_HAS_ITEMS(scan, direction));
+	Assert(!INDEX_BATCH_HAS_ITEMS(scan, &scan->xs_batch->readPos, direction));
 
 	/*
 	 * Reset the current/prefetch positions in the batch.
 	 *
 	 * XXX Done before calling amgetbatch(), so that it sees the index as
 	 * invalid, batch as empty, and can add items.
-	 *
-	 * XXX Intentionally does not reset the nheaptids, because the AM does
-	 * rely on that when processing killed tuples. Maybe store the killed
-	 * tuples differently?
 	 */
-	scan->xs_batch->currIndex = -1;
-	scan->xs_batch->prefetchIndex = 0;
+	scan->xs_batch->readPos.index = -1;
+	scan->xs_batch->streamPos.index = -1;
 	scan->xs_batch->nheaptids = 0;
 
 	/*
@@ -1626,8 +1662,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		return false;
 	}
 
+	/* reset positions */
+	if (ScanDirectionIsForward(direction))
+		index_batch_reset_positions(scan, -1, false);
+	else
+		index_batch_reset_positions(scan, scan->xs_batch->nheaptids, false);
+
 	/* We should have a non-empty batch with items. */
-	Assert(INDEX_BATCH_HAS_ITEMS(scan, direction));
+	Assert(INDEX_BATCH_HAS_ITEMS(scan, &scan->xs_batch->readPos, direction));
 
 	pgstat_count_index_tuples(scan->indexRelation, scan->xs_batch->nheaptids);
 
@@ -1702,18 +1744,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 */
 	Assert(!scan->xs_batch->resetIndexes);
 
-	/* FIXME may need to do something about mark/restore */
-
 	/* Advance the index to the item we need to in the next round. */
-	if (scan->xs_batch->restored)
-		scan->xs_batch->restored = false;
-	else if (ScanDirectionIsForward(direction))
-		scan->xs_batch->currIndex++;
-	else
-		scan->xs_batch->currIndex--;
-
-	/* Index of the next item to read from the batch. */
-	index = scan->xs_batch->currIndex;
+	index = index_batch_pos_advance(&scan->xs_batch->readPos, direction);
 
 	/* Did we run out of items in the current batch? */
 	if ((index < 0) || (index >= scan->xs_batch->nheaptids))
@@ -1781,12 +1813,14 @@ index_batch_init(IndexScanDesc scan)
 	scan->xs_batch->currSize = scan->xs_batch->initSize;
 
 	/* initialize prefetching info to some bogus values */
-	scan->xs_batch->prefetchIndex = 0xFFFFFFFF;
-	scan->xs_batch->currIndex = 0xFFFFFFFF;
+	index_batch_pos_reset(&scan->xs_batch->readPos, -1, false);
+	index_batch_pos_reset(&scan->xs_batch->streamPos, -1, false);
 
-	/* make sure to reset prefetch/current indexes */
+	/*
+	 * Make sure to reset prefetch/current indexes before using them later.
+	 * We can't do that now because we don't know the direction.
+	 */
 	scan->xs_batch->resetIndexes = true;
-	scan->xs_batch->restored = false;
 
 	/*
 	 * FIXME set later, when we actually know it. Or shall we assume most
@@ -1859,10 +1893,9 @@ index_batch_reset(IndexScanDesc scan)
 		return;
 
 	scan->xs_batch->nheaptids = 0;
-	scan->xs_batch->prefetchIndex = -1;
-	scan->xs_batch->currIndex = -1;
+	index_batch_pos_reset(&scan->xs_batch->readPos, -1, false);
+	index_batch_pos_reset(&scan->xs_batch->streamPos, -1, false);
 	scan->xs_batch->resetIndexes = true;
-	scan->xs_batch->restored = false;
 }
 
 /*

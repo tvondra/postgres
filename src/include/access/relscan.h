@@ -205,6 +205,12 @@ typedef struct IndexScanDescData
 typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan,
 									   void *arg, int index);
 
+typedef struct IndexScanBatchPos {
+	int		index;			/* index into the batch items */
+	bool	restored;		/* Was this restored by restrpos? If yes, don't
+							 * advance on the first access. */
+} IndexScanBatchPos;
+
 /*
  * Data about the current TID batch returned by the index AM.
  *
@@ -240,7 +246,6 @@ typedef struct IndexScanBatchData
 	 * Was this batch just restored by restrpos? If yes, we don't advance on
 	 * the first iteration.
 	 */
-	bool		restored;
 	bool		resetIndexes;
 
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
@@ -252,8 +257,8 @@ typedef struct IndexScanBatchData
 	Datum	   *privateData;	/* private data for batch */
 
 	/* current position in the batch */
-	int			currIndex;		/* index of the current item */
-	int			prefetchIndex;	/* next item to pass to the stream */
+	IndexScanBatchPos	readPos;	/* used by executor */
+	IndexScanBatchPos	streamPos;	/* used by read stream */
 
 	/* xs_orderbyvals / xs_orderbynulls */
 	Datum	   *orderbyvals;

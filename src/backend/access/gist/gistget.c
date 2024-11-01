@@ -1084,13 +1084,6 @@ _gist_copy_batch(IndexScanDesc scan, GISTScanOpaque so,
 		start++;
 	}
 
-	/*
-	 * set the starting point
-	 *
-	 * XXX might be better done in indexam.c
-	 */
-	scan->xs_batch->currIndex = -1;
-
 	/* shouldn't be possible to end here with an empty batch */
 	Assert(scan->xs_batch->nheaptids > 0);
 }

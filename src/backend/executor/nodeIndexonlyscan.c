@@ -145,13 +145,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
-			int	lastIndex;
-
-			/* XXX this is certainly not the proper place to do these calculations */
-			if (ScanDirectionIsForward(direction))
-				lastIndex = (scandesc->xs_batch->currIndex - 1);
-			else
-				lastIndex = (scandesc->xs_batch->currIndex + 1);
+			int	lastIndex = scandesc->xs_batch->currIndex;
 
 			/* Is the index of the current item valid for the batch? */
 			Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));

@@ -293,6 +293,28 @@ index_insert_cleanup(Relation indexRelation,
 		indexRelation->rd_indam->aminsertcleanup(indexRelation, indexInfo);
 }
 
+static void
+index_batch_reset_indexes(IndexScanDesc scan)
+{
+	/* bail out if no index needed */
+	if (!scan->xs_batch->resetIndexes)
+		return;
+
+	scan->xs_batch->resetIndexes = false;
+
+	/* set the indexes into "starting" position depending on direction */
+	if (ScanDirectionIsForward(scan->xs_batch->dir))
+	{
+		scan->xs_batch->currIndex = -1;
+		scan->xs_batch->prefetchIndex = -1;
+	}
+	else
+	{
+		scan->xs_batch->currIndex = scan->xs_batch->nheaptids;
+		scan->xs_batch->prefetchIndex = scan->xs_batch->nheaptids;
+	}
+}
+
 /*
  * FIXME What should this do about change in scan direction? How would this
  * even learn about it? I guess it just has to reset the stream somehow.
@@ -306,7 +328,7 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	int				index;
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
-elog(WARNING, "ZZZ");
+
 	/*
 	 * FIXME What should we do without batching? not use streams? For now
 	 * just bail out, but that's wrong - we need this to work for all cases.
@@ -328,18 +350,37 @@ elog(WARNING, "ZZZ");
 	Assert(!INDEX_BATCH_IS_EMPTY(scan));
 
 	/*
+	 * It shouldn't be possible to have both the resetIndexes and restored
+	 * flags set at the same time.
+	 */
+	Assert(!(scan->xs_batch->resetIndexes && scan->xs_batch->restored));
+
+	/* Maybe reset indexes. */
+	index_batch_reset_indexes(scan);
+
+	/*
 	 * We should also never get here without having all the positions set
 	 * up properly (either after mark/restore, change of direction, etc).
 	 */
 	Assert(!scan->xs_batch->resetIndexes);
 
 	/*
-	 * FIXME invoke the prefetch callback in batch to determine if we should
-	 * actually read this block or not (matters for index-only scans).
+	 * Find the next block to pass to the read stream. With the callback
+	 * we may skip some of the items, so do a loop until we find one or
+	 * until we run out of items.
+	 *
+	 * XXX It's a bit unfortunate that we may need to visit a lot of the
+	 * items, which may be expensive (e.g. for IOS we need to check the
+	 * visibility map). But that's why we grow the batch size gradually.
 	 */
-
 	while (true)
 	{
+		/* Advance the prefetch index to the item we need to in the next round. */
+		if (ScanDirectionIsForward(scan->xs_batch->dir))
+			scan->xs_batch->prefetchIndex++;
+		else
+			scan->xs_batch->prefetchIndex--;
+
 		/* Index of the next item to pass to the read stream. */
 		index = scan->xs_batch->prefetchIndex;
 
@@ -347,38 +388,31 @@ elog(WARNING, "ZZZ");
 		if ((index < 0) || (index >= scan->xs_batch->nheaptids))
 			return InvalidBlockNumber;
 
-		/* Advance the index to the item we need to in the next round. */
-		if (ScanDirectionIsForward(scan->xs_batch->dir))
-			scan->xs_batch->prefetchIndex++;
-		else
-			scan->xs_batch->prefetchIndex--;
-
-		elog(WARNING, "scan->xs_batch->prefetchCallback = %p", scan->xs_batch->prefetchCallback);
-
-		/* if defined, call the batch callback */
-		if (scan->xs_batch->prefetchCallback)
+		/*
+		 * If defined, invoke the prefetch callback to determine if we should
+		 * actually pass this block to the read stream (e.g. to prefetch).
+		 * For example index-only scans use this to skip all-visible pages.
+		 */
+		if (scan->xs_batch->prefetchCallback &&
+			!scan->xs_batch->prefetchCallback(scan,
+											  scan->xs_batch->prefetchArgument,
+											  index))
 		{
-			bool prefetch
-				= scan->xs_batch->prefetchCallback(scan,
-												   scan->xs_batch->prefetchArgument,
-												   index);
-			if (!prefetch)
-			{
-				elog(WARNING, "skipping");
-				continue;
-			}
-			else
-				elog(WARNING, "prefetching %d", index);
+			/*
+			 * We don't need to prefetch this item, but we need to return
+			 * something valid (otherwise the stream will think we're at
+			 * the end). So we keep looking for the next item in the batch.
+			 */
+			continue;
 		}
 
-		//elog(WARNING, "index_scan_stream_read_next %d => (%u, %u)",
-		//	 index, ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]),
-		//	 ItemPointerGetOffsetNumber(&scan->xs_batch->heaptids[index]));
-
-		/* FIXME Can we store the TID into the per_buffer_data, for cross
-		 * checking we read the right buffer? */
 		break;
 	}
+
+	/*
+	 * FIXME Could we store the TID into the per_buffer_data, for cross
+	 * checking we read the right buffer?
+	 */
 
 	return ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]);
 }
@@ -573,7 +607,6 @@ index_endscan(IndexScanDesc scan)
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
 	{
-		// elog(WARNING, "terminating read_stream %p", scan->xs_heapfetch->rs);
 		if (scan->xs_heapfetch->rs)
 		{
 			read_stream_end(scan->xs_heapfetch->rs);
@@ -960,10 +993,6 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
 				break;
-
-		//elog(WARNING, "index_getnext_slot (%u, %u)",
-		//	 ItemPointerGetBlockNumber(tid),
-		//	 ItemPointerGetOffsetNumber(tid));
 
 			Assert(ItemPointerEquals(tid, &scan->xs_heaptid));
 		}
@@ -1583,20 +1612,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * FIXME also check it later, it may happen to change for each call
 	 */
 	scan->xs_batch->dir = direction;
-
-	/* Set both indexes to the first item in the loaded batch. */
-	if (ScanDirectionIsForward(direction))
-	{
-		scan->xs_batch->currIndex = 0;
-		scan->xs_batch->prefetchIndex = 0;
-	}
-	else
-	{
-		scan->xs_batch->currIndex = (scan->xs_batch->nheaptids - 1);
-		scan->xs_batch->prefetchIndex = (scan->xs_batch->nheaptids - 1);
-	}
-
-	scan->xs_batch->resetIndexes = false;
+	scan->xs_batch->resetIndexes = true;
 
 	/*
 	 * Try to increase the size of the batch. Intentionally done after the AM
@@ -1615,8 +1631,6 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
-
-	// elog(WARNING, "loaded batch of %d items", scan->xs_batch->nheaptids);
 
 	/* Return the batch of TIDs we found. */
 	return true;
@@ -1649,26 +1663,14 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_batch->dir = direction;
 	Assert(scan->xs_batch->dir == direction);
 
-	/*
-	 * Bail out if he batch does not have more items in the requested directio
-	 * (either empty or everthing processed).
-	 */
-	if (!INDEX_BATCH_HAS_ITEMS(scan, direction))
-	{
-		//elog(WARNING, "no more items %d %d",
-		//	 scan->xs_batch->currIndex,
-		//	 scan->xs_batch->nheaptids);
-		return NULL;
-	}
+	/* reset indexes if needed */
+	index_batch_reset_indexes(scan);
 
 	/*
 	 * We should also never get here without having all the positions set
 	 * up properly (either after mark/restore, change of direction, etc).
 	 */
 	Assert(!scan->xs_batch->resetIndexes);
-
-	/* Index of the next item to pass to the read stream. */
-	index = scan->xs_batch->currIndex;
 
 	/* FIXME may need to do something about mark/restore */
 
@@ -1677,6 +1679,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		scan->xs_batch->currIndex++;
 	else
 		scan->xs_batch->currIndex--;
+
+	/* Index of the next item to read from the batch. */
+	index = scan->xs_batch->currIndex;
+
+	/* Did we run out of items in the current batch? */
+	if ((index < 0) || (index >= scan->xs_batch->nheaptids))
+		return NULL;
 
 	/*
 	 * Next TID from the batch, optionally also the IndexTuple/HeapTuple.

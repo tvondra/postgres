@@ -306,6 +306,12 @@ index_batch_reset_indexes(IndexScanDesc scan)
 
 	scan->xs_batch->resetIndexes = false;
 
+	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+	}
+
 	/* set the indexes into "starting" position depending on direction */
 	if (ScanDirectionIsForward(scan->xs_batch->dir))
 	{
@@ -1732,11 +1738,18 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(scan->xs_batch);
 
 	/* We should have handled change of scan direction sometime earlier. */
-	scan->xs_batch->dir = direction;
-	Assert(scan->xs_batch->dir == direction);
+	if (scan->xs_batch->dir != direction)
+	{
+		/* FIXME this is wrong, we need to keep the current index, but
+		 * reset the stream position */
+		scan->xs_batch->dir = direction;
+		scan->xs_batch->resetIndexes = true;
+	}
 
 	/* reset indexes if needed */
 	index_batch_reset_indexes(scan);
+
+	Assert(scan->xs_batch->dir == direction);
 
 	/*
 	 * We should also never get here without having all the positions set

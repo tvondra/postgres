@@ -141,7 +141,7 @@ static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 #define	INDEX_BATCH_IS_PROCESSED(scan, direction)	\
 	(ScanDirectionIsForward(direction) ? \
 		((scan)->xs_batch->nheaptids == (scan)->xs_batch->currIndex) : \
-		((scan)->xs_batch->currIndex == 0))
+		((scan)->xs_batch->currIndex == -1))
 
 /*
  * Does the batch items in the requested direction? The batch must be non-empty
@@ -571,7 +571,12 @@ index_rescan(IndexScanDesc scan,
 
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+
 		table_index_fetch_reset(scan->xs_heapfetch);
+	}
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
@@ -667,7 +672,12 @@ index_restrpos(IndexScanDesc scan)
 
 	/* release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+
 		table_index_fetch_reset(scan->xs_heapfetch);
+	}
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
@@ -676,7 +686,7 @@ index_restrpos(IndexScanDesc scan)
 
 	/*
 	 * Don't reset the batch here - amrestrpos should have has already loaded
-	 * the new batch, so don't throw that away.
+	 * the new batch and set the curr/prefetch indexes, so don't throw that away.
 	 */
 }
 
@@ -759,7 +769,12 @@ index_parallelrescan(IndexScanDesc scan)
 	SCAN_CHECKS;
 
 	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+
 		table_index_fetch_reset(scan->xs_heapfetch);
+	}
 
 	/* amparallelrescan is optional; assume no-op if not provided by AM */
 	if (scan->indexRelation->rd_indam->amparallelrescan != NULL)
@@ -895,7 +910,12 @@ batch_loaded:
 	{
 		/* release resources (like buffer pins) from table accesses */
 		if (scan->xs_heapfetch)
+		{
+			if (scan->xs_heapfetch->rs)
+				read_stream_reset(scan->xs_heapfetch->rs);
+
 			table_index_fetch_reset(scan->xs_heapfetch);
+		}
 
 		return NULL;
 	}
@@ -1596,7 +1616,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	{
 		/* release resources (like buffer pins) from table accesses */
 		if (scan->xs_heapfetch)
+		{
+			if (scan->xs_heapfetch->rs)
+				read_stream_reset(scan->xs_heapfetch->rs);
+
 			table_index_fetch_reset(scan->xs_heapfetch);
+		}
 
 		return false;
 	}
@@ -1630,7 +1655,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+
 		table_index_fetch_reset(scan->xs_heapfetch);
+	}
 
 	/* Return the batch of TIDs we found. */
 	return true;
@@ -1675,7 +1705,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* FIXME may need to do something about mark/restore */
 
 	/* Advance the index to the item we need to in the next round. */
-	if (ScanDirectionIsForward(direction))
+	if (scan->xs_batch->restored)
+		scan->xs_batch->restored = false;
+	else if (ScanDirectionIsForward(direction))
 		scan->xs_batch->currIndex++;
 	else
 		scan->xs_batch->currIndex--;
@@ -1827,8 +1859,9 @@ index_batch_reset(IndexScanDesc scan)
 		return;
 
 	scan->xs_batch->nheaptids = 0;
-	scan->xs_batch->prefetchIndex = 0;
+	scan->xs_batch->prefetchIndex = -1;
 	scan->xs_batch->currIndex = -1;
+	scan->xs_batch->resetIndexes = true;
 	scan->xs_batch->restored = false;
 }
 

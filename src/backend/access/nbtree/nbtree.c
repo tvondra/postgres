@@ -621,6 +621,7 @@ btrestrpos(IndexScanDesc scan)
 			 * "restored" flag I think.
 			 */
 			scan->xs_batch->currIndex = (so->currPos.itemIndex - so->batch.firstIndex);
+			scan->xs_batch->prefetchIndex = scan->xs_batch->currIndex;
 			scan->xs_batch->restored = true;
 		}
 	}
@@ -696,6 +697,7 @@ btrestrpos(IndexScanDesc scan)
 				 * the "restored" flag I think.
 				 */
 				scan->xs_batch->currIndex = (so->currPos.itemIndex - so->batch.firstIndex);
+				scan->xs_batch->prefetchIndex = scan->xs_batch->currIndex;
 				scan->xs_batch->restored = true;
 			}
 		}

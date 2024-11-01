@@ -1740,10 +1740,14 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* We should have handled change of scan direction sometime earlier. */
 	if (scan->xs_batch->dir != direction)
 	{
-		/* FIXME this is wrong, we need to keep the current index, but
-		 * reset the stream position */
 		scan->xs_batch->dir = direction;
-		scan->xs_batch->resetIndexes = true;
+		scan->xs_batch->streamPos.index = scan->xs_batch->readPos.index;
+
+		if (scan->xs_heapfetch)
+		{
+			if (scan->xs_heapfetch->rs)
+				read_stream_reset(scan->xs_heapfetch->rs);
+		}
 	}
 
 	/* reset indexes if needed */
@@ -1756,6 +1760,18 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * up properly (either after mark/restore, change of direction, etc).
 	 */
 	Assert(!scan->xs_batch->resetIndexes);
+
+	/*
+	 * Don't continue/advance indexes, if the batch is empty, otherwise
+	 * we'd advance to bogus index values e.g. after changing the scan
+	 * direction.
+	 *
+	 * FIXME Not sure this is the right place to do this decision. It seems
+	 * weird we reset the direction first, etc. and only then realize the
+	 * batch is actually empty.
+	 */
+	if (scan->xs_batch->nheaptids == 0)
+		return NULL;
 
 	/* Advance the index to the item we need to in the next round. */
 	index = index_batch_pos_advance(&scan->xs_batch->readPos, direction);

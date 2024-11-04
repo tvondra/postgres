@@ -122,10 +122,10 @@ static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
-static int index_batch_pos_advance(IndexScanBatchPos *pos,
-								   ScanDirection dir);
-static void index_batch_pos_reset(IndexScanBatchPos *pos,
-								  int index, bool restored);
+
+static BlockNumber index_scan_stream_read_next(ReadStream *stream,
+											   void *callback_private_data,
+											   void *per_buffer_data);
 
 
 /* Is the batch full (TIDs up to capacity)? */
@@ -137,8 +137,9 @@ static void index_batch_pos_reset(IndexScanBatchPos *pos,
 	((scan)->xs_batch->nheaptids == 0)
 
 /*
- * Did we process all items? For forward scan it means the index points to the
- * last item, for backward scans it has to point to the first one.
+ * Did we process all items? Or can we move to the next item in the requested
+ * direction? For forward scan this means the index points to the last item,
+ * for backward scans it has to point to the first one.
  *
  * This does not cover empty batches properly, because of backward scans.
  */
@@ -148,16 +149,20 @@ static void index_batch_pos_reset(IndexScanBatchPos *pos,
 		((pos)->index == -1))
 
 /*
- * Does the batch items in the requested direction? The batch must be non-empty
- * and we should not have reached the end of the batch (in the direction).
- * Also, if we just restored the position after mark/restore, there should be
- * at least one item to process (we won't advance  on the next call).
+ * Does the batch have items in the requested direction? The batch must be
+ * non-empty, and we should not have reached the end of the batch (in the
+ * direction).
+ *
+ * However, if we just restored the position after mark/restore, there should
+ * be at least one item to process (as we won't advance on the next call).
  *
  * XXX This is a bit confusing / ugly, probably should rethink how we track
  * empty batches, and how we handle not advancing after a restore.
  */
 #define INDEX_BATCH_HAS_ITEMS(scan, pos, direction) \
-	(!INDEX_BATCH_IS_EMPTY(scan) && (!INDEX_BATCH_IS_PROCESSED((scan), (pos), (direction)) || (pos)->restored))
+	(!INDEX_BATCH_IS_EMPTY(scan) && \
+		(!INDEX_BATCH_IS_PROCESSED((scan), (pos), (direction)) || \
+		(pos)->restored))
 
 
 /* ----------------------------------------------------------------
@@ -295,160 +300,6 @@ index_insert_cleanup(Relation indexRelation,
 
 	if (indexRelation->rd_indam->aminsertcleanup)
 		indexRelation->rd_indam->aminsertcleanup(indexRelation, indexInfo);
-}
-
-static void
-index_batch_reset_indexes(IndexScanDesc scan)
-{
-	/* bail out if no index needed */
-	if (!scan->xs_batch->resetIndexes)
-		return;
-
-	scan->xs_batch->resetIndexes = false;
-
-	if (scan->xs_heapfetch)
-	{
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-	}
-
-	/* set the indexes into "starting" position depending on direction */
-	if (ScanDirectionIsForward(scan->xs_batch->dir))
-	{
-		index_batch_pos_reset(&scan->xs_batch->readPos, -1, false);
-		index_batch_pos_reset(&scan->xs_batch->streamPos, -1, false);
-	}
-	else
-	{
-		index_batch_pos_reset(&scan->xs_batch->readPos, scan->xs_batch->nheaptids, false);
-		index_batch_pos_reset(&scan->xs_batch->streamPos, scan->xs_batch->nheaptids, false);
-	}
-}
-
-static int
-index_batch_pos_advance(IndexScanBatchPos *pos, ScanDirection dir)
-{
-	if (pos->restored)
-	{
-		pos->restored = false;
-		return pos->index;
-	}
-
-	if (ScanDirectionIsForward(dir))
-		return ++pos->index;
-	else
-		return --pos->index;
-}
-
-static void
-index_batch_pos_reset(IndexScanBatchPos *pos, int index, bool restored)
-{
-	pos->index = index;
-	pos->restored = restored;
-}
-
-void
-index_batch_reset_positions(IndexScanDesc scan, int index, bool restored)
-{
-	index_batch_pos_reset(&scan->xs_batch->readPos, index, restored);
-	index_batch_pos_reset(&scan->xs_batch->streamPos, index, restored);
-}
-
-/*
- * FIXME What should this do about change in scan direction? How would this
- * even learn about it? I guess it just has to reset the stream somehow.
- * Maybe we need to remember the *current* scan direction, and check that
- * it didn't change.
- */
-static BlockNumber
-index_scan_stream_read_next(ReadStream *stream,
-							void *callback_private_data,
-							void *per_buffer_data)
-{
-	int				index;
-	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
-
-	/*
-	 * FIXME What should we do without batching? not use streams? For now
-	 * just bail out, but that's wrong - we need this to work for all cases.
-	 * But with regular index scans we can't prefetch more than a single
-	 * TID ahead, so maybe that's what we should do here?
-	 *
-	 * XXX Currently we should not get here without batching, we fall back
-	 * to the regular buffer reads (not using stream read API) in that case.
-	 */
-	Assert(scan->xs_batch);
-
-	if (!scan->xs_batch)
-		return InvalidBlockNumber;
-
-	/*
-	 * We shouldn't ever get here with empty batches. In that case we bail
-	 * out after index_batch_getnext(), if it finds nothing.
-	 */
-	Assert(!INDEX_BATCH_IS_EMPTY(scan));
-
-	/*
-	 * It shouldn't be possible to have both the resetIndexes and restored
-	 * flags set at the same time.
-	 */
-	Assert(!(scan->xs_batch->resetIndexes && scan->xs_batch->readPos.restored));
-
-	/* Maybe reset indexes. */
-	index_batch_reset_indexes(scan);
-
-	/*
-	 * We should also never get here without having all the positions set
-	 * up properly (either after mark/restore, change of direction, etc).
-	 */
-	Assert(!scan->xs_batch->resetIndexes);
-
-	/*
-	 * Find the next block to pass to the read stream. With the callback
-	 * we may skip some of the items, so do a loop until we find one or
-	 * until we run out of items.
-	 *
-	 * XXX It's a bit unfortunate that we may need to visit a lot of the
-	 * items, which may be expensive (e.g. for IOS we need to check the
-	 * visibility map). But that's why we grow the batch size gradually.
-	 */
-	while (true)
-	{
-		/* Advance the stream index as needed. */
-		index = index_batch_pos_advance(&scan->xs_batch->streamPos,
-										scan->xs_batch->dir);
-
-		/* Did we run out of items in the current batch? */
-		if ((index < 0) || (index >= scan->xs_batch->nheaptids))
-			return InvalidBlockNumber;
-
-		/*
-		 * If defined, invoke the prefetch callback to determine if we should
-		 * actually pass this block to the read stream (e.g. to prefetch).
-		 * For example index-only scans use this to skip all-visible pages.
-		 */
-		if (scan->xs_batch->prefetchCallback &&
-			!scan->xs_batch->prefetchCallback(scan,
-											  scan->xs_batch->prefetchArgument,
-											  index))
-		{
-			/*
-			 * We don't need to prefetch this item, but we need to return
-			 * something valid (otherwise the stream will think we're at
-			 * the end). So we keep looking for the next item in the batch.
-			 */
-			continue;
-		}
-
-		break;
-	}
-
-	/*
-	 * FIXME Could we store the TID into the per_buffer_data, for cross
-	 * checking we read the right buffer?
-	 */
-
-	return ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]);
 }
 
 /*
@@ -719,8 +570,10 @@ index_restrpos(IndexScanDesc scan)
 	/*
 	 * Reset the current/prefetch positions in the batch.
 	 *
-	 * XXX Done before calling amgetbatch(), so that it sees the index as
+	 * XXX Done before calling amgetbatch(), so that it sees the indexes as
 	 * invalid, batch as empty, and can add items.
+	 *
+	 * XXX This is a bit weird/fragile.
 	 */
 	scan->xs_batch->readPos.index = -1;
 	scan->xs_batch->streamPos.index = -1;
@@ -1578,6 +1431,261 @@ AssertCheckBatchInfo(IndexScanDesc scan)
 #endif
 }
 
+/*
+ * index_batch_pos_advance
+ *		Advance the position to the next item, depending on scan direction.
+ *
+ * XXX We expect to only do this when the advance is possible/valid.
+ *
+ * XXX Would be nice to have an assert that the final position is valid,
+ * but that requires knowing nheaptids.
+ */
+static int
+index_batch_pos_advance(IndexScanBatchPos *pos, ScanDirection dir)
+{
+	if (pos->restored)
+	{
+		pos->restored = false;
+		return pos->index;
+	}
+
+	/*
+	 * We update the index "before" to move to the next item, because that
+	 * makes scan direction changes simpler to handle (we don't need to undo
+	 * the last update).
+	 */
+	if (ScanDirectionIsForward(dir))
+		return ++pos->index;
+	else
+		return --pos->index;
+}
+
+/*
+ * index_batch_pos_reset
+ *		Reset the position to the index, maybe disable update on first advance.
+ *
+ * Index specifies the item index. The 'restored' flag may be used to disable
+ * updating the index on the first advance. This is needed after mark/restore,
+ * because we restore to the item we're expected to return next, so we must
+ * not skip it.
+ *
+ * XXX Would be nice to have an assert that the final position is valid,
+ * but that requires knowing nheaptids.
+ */
+static void
+index_batch_pos_reset(IndexScanBatchPos *pos, int index, bool restored)
+{
+	pos->index = index;
+	pos->restored = restored;
+}
+
+/*
+ * index_batch_reset_positions
+ *		Reset both bach positions - both the processing and stream
+ *
+ * XXX Would be nice to check the stream position is always "ahead" of the
+ * read position. That requires knowing the direction.
+ */
+void
+index_batch_reset_positions(IndexScanDesc scan, int index, bool restored)
+{
+	index_batch_pos_reset(&scan->xs_batch->readPos, index, restored);
+	index_batch_pos_reset(&scan->xs_batch->streamPos, index, restored);
+}
+
+/*
+ * index_batch_reset_indexes
+ *		reset batch indexes (read/stream) for a given scan direction
+ *
+ * After loading a new batch, we need to set both indexes, so that we
+ * advance to the first item on the next call. This depends on the scan
+ * direction - for forward scans we want to proceed to the first item
+ * (with index 0), so we set -1. For backward scans we want to proceed
+ * to the last item (with index (nheaptids-1)), so we set nheaptids.
+ *
+ * XXX It's legal to call lthis with resetIndexes=false, but in that case
+ * the function does nothing.
+ */
+static void
+index_batch_reset_indexes(IndexScanDesc scan)
+{
+	/* bail out if no index needed */
+	if (!scan->xs_batch->resetIndexes)
+		return;
+
+	/*
+	 * Reset the read stream too, if we have one.
+	 *
+	 * XXX Not sure if this is the right place to do this. It does not hurt,
+	 * we really want to start with a new stream. But maybe it'd be more
+	 * logical to reset the stream from the caller, not from here.
+	 */
+	if (scan->xs_heapfetch)
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+	}
+
+	/* set indexes into "starting" position depending on scan direction */
+	if (ScanDirectionIsForward(scan->xs_batch->dir))
+	{
+		index_batch_pos_reset(&scan->xs_batch->readPos, -1, false);
+		index_batch_pos_reset(&scan->xs_batch->streamPos, -1, false);
+	}
+	else
+	{
+		index_batch_pos_reset(&scan->xs_batch->readPos,
+							  scan->xs_batch->nheaptids, false);
+		index_batch_pos_reset(&scan->xs_batch->streamPos,
+							  scan->xs_batch->nheaptids, false);
+	}
+
+	scan->xs_batch->resetIndexes = false;
+}
+
+/*
+ * index_scan_stream_read_next
+ *		return the next block to pass to the read stream
+ *
+ * This assumes the "current" scan direction, requested by the caller. If
+ * that changes before consuming all buffers, we'll reset the stream and
+ * start from scratch. Which may seem inefficient, but it's no worse than
+ * what we do now, and it's not a very common case.
+ *
+ * The scan direction change is checked / handled elsewhere.
+ */
+static BlockNumber
+index_scan_stream_read_next(ReadStream *stream,
+							void *callback_private_data,
+							void *per_buffer_data)
+{
+	int				index;
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+
+	/*
+	 * XXX What should we do without batching? Currently we should not get
+	 * here without batching, because we fall back to the regular buffer
+	 * reads (without stream read API) in that case. But is that what we
+	 * want to do in the future?
+	 *
+	 * Maybe the right solution would be to just use read stream API, but
+	 * only read the one block ahead, because we can't know more than that.
+	 */
+	Assert(scan->xs_batch);
+
+	if (!scan->xs_batch)	/* can't happen right now */
+		elog(ERROR, "index_scan_stream_read_next calleld without batching");
+
+	/*
+	 * We shouldn't ever get here with an empty batch. In that case we bail
+	 * out after index_batch_getnext(), if it finds nothing.
+	 */
+	Assert(!INDEX_BATCH_IS_EMPTY(scan));
+
+	/*
+	 * It shouldn't be possible to have both the resetIndexes and restored
+	 * flags set at the same time.
+	 *
+	 * XXX Add this check to AssertCheckBatchInfo().
+	 */
+	Assert(!(scan->xs_batch->resetIndexes && scan->xs_batch->readPos.restored));
+
+	/*
+	 * Maybe reset indexes, if requested.
+	 *
+	 * XXX Shouldn't this happen right after loading the next batch, or after
+	 * checking the scan direction? Then we should not need to care about
+	 * resetIndexes here.
+	 */
+	index_batch_reset_indexes(scan);
+
+	/*
+	 * Find the next block to pass to the read stream. With the callback we
+	 * may end up skipping some of the items, so do a loop until we find one
+	 * or until we run out of items.
+	 *
+	 * XXX It's a bit unfortunate that we may need to visit many items (if
+	 * the callback returns false for many before), as that may be expensive.
+	 * For example for IOS we need to check the visibility map, which is not
+	 * free (although not too expensive either). But that's one of the resons
+	 * why we grow the batch size gradually.
+	 *
+	 * XXX Do the while loop based on "has items", so that we can do
+	 * AssertCheckValidItem() on the result.
+	 */
+	while (true)
+	{
+		/* Advance the stream index as needed. */
+		index = index_batch_pos_advance(&scan->xs_batch->streamPos,
+										scan->xs_batch->dir);
+
+		/* Did we run out of items in the current batch? */
+		if ((index < 0) || (index >= scan->xs_batch->nheaptids))
+			return InvalidBlockNumber;
+
+		/*
+		 * If defined, invoke the prefetch callback to determine if we should
+		 * actually pass this block to the read stream (e.g. to prefetch).
+		 * For example index-only scans use this to skip all-visible pages.
+		 */
+		if (scan->xs_batch->prefetchCallback &&
+			!scan->xs_batch->prefetchCallback(scan,
+											  scan->xs_batch->prefetchArgument,
+											  index))
+		{
+			/*
+			 * We don't need to prefetch this item, but we need to return
+			 * something valid (otherwise the stream will think we're at
+			 * the end). So we keep looking for the next item in the batch.
+			 */
+			continue;
+		}
+
+		break;
+	}
+
+	/*
+	 * FIXME Maybe we should store the TID into the per_buffer_data, so that
+	 * we can cross check we got the right buffer later? It seems quite
+	 * fragile and easy to break the exact sequence in some way. We could
+	 * return a different block which happens to have the right item IDs.
+	 */
+
+	return ItemPointerGetBlockNumber(&scan->xs_batch->heaptids[index]);
+}
+
+/* XXX isn't this pretty much the same as index_batch_reset? */
+static void
+index_batch_empty(IndexScanDesc scan)
+{
+	/*
+	 * Reset the current/prefetch positions in the batch.
+	 *
+	 * XXX Done before calling amgetbatch(), so that it sees the index as
+	 * invalid, batch as empty, and can add items.
+	 */
+	scan->xs_batch->readPos.index = -1;
+	scan->xs_batch->streamPos.index = -1;
+	scan->xs_batch->nheaptids = 0;
+
+	/*
+	 * Reset the memory context with all per-batch data, allocated by the AM.
+	 * This might be tuples, or anything else the AM needs.
+	 *
+	 * XXX Make sure to reset the tuples, because the AM may do something with
+	 * them later (e.g. release them, as getNextNearest in gist), but we may
+	 * release them by the MemoryContextReset() call.
+	 *
+	 * This might break the AM if it relies on them pointing to the last
+	 * tuple, but at least it has the chance to do the right thing by checking
+	 * if the pointer is NULL.
+	 */
+	scan->xs_itup = NULL;
+	scan->xs_hitup = NULL;
+
+	MemoryContextReset(scan->xs_batch->ctx);
+}
+
 /* ----------------
  *		index_batch_getnext - get the next batch of TIDs from a scan
  *
@@ -1608,35 +1716,17 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * We never read a new batch before we run out of items in the current
 	 * one. The current batch has to be either empty or we ran out of items
 	 * (in the given direction).
+	 *
+	 * XXX We may abandon a batch because of a rescan, but that counts as
+	 * a new scan (and we reset the batch anyway).
 	 */
 	Assert(!INDEX_BATCH_HAS_ITEMS(scan, &scan->xs_batch->readPos, direction));
 
 	/*
-	 * Reset the current/prefetch positions in the batch.
-	 *
-	 * XXX Done before calling amgetbatch(), so that it sees the index as
-	 * invalid, batch as empty, and can add items.
+	 * Reset the batch info empty state, before calling amgetbatch(), so that
+	 * the index AM sees it as ready for new data.
 	 */
-	scan->xs_batch->readPos.index = -1;
-	scan->xs_batch->streamPos.index = -1;
-	scan->xs_batch->nheaptids = 0;
-
-	/*
-	 * Reset the memory context with all per-batch data, allocated by the AM.
-	 * This might be tuples, or anything else the AM needs.
-	 *
-	 * XXX Make sure to reset the tuples, because the AM may do something with
-	 * them later (e.g. release them, as getNextNearest in gist), but we may
-	 * release them by the MemoryContextReset() call.
-	 *
-	 * This might break the AM if it relies on them pointing to the last
-	 * tuple, but at least it has the chance to do the right thing by checking
-	 * if the pointer is NULL.
-	 */
-	scan->xs_itup = NULL;
-	scan->xs_hitup = NULL;
-
-	MemoryContextReset(scan->xs_batch->ctx);
+	index_batch_empty(scan);
 
 	/*
 	 * The AM's amgetbatch proc loads a chunk of TIDs matching the scan keys,
@@ -1653,7 +1743,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->kill_prior_tuple = false;
 	scan->xs_heap_continue = false;
 
-	/* If we're out of index entries, we're done */
+	/*
+	 * If we're out of index entries, we're done
+	 *
+	 * XXX Is this the right place to release resources unrelated to the
+	 * batching? Maybe that should happen sometime higher / in the caller?
+	 */
 	if (!found)
 	{
 		/* release resources (like buffer pins) from table accesses */
@@ -1701,7 +1796,12 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	/* reset the read stream so that we read the next batch */
 	read_stream_reset(scan->xs_heapfetch->rs);
 
-	/* Release resources (like buffer pins) from table accesses */
+	/*
+	 * Release resources (like buffer pins) from table accesses
+	 *
+	 * XXX Not sure this is needed, I might have added it while chasing
+	 * some resource leaks.
+	 */
 	if (scan->xs_heapfetch)
 	{
 		if (scan->xs_heapfetch->rs)
@@ -1731,11 +1831,11 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	int		index;
 
-	/* comprehensive checks of batching info */
-	AssertCheckBatchInfo(scan);
-
 	/* shouldn't get here without batching */
 	Assert(scan->xs_batch);
+
+	/* comprehensive checks of batching info */
+	AssertCheckBatchInfo(scan);
 
 	/* We should have handled change of scan direction sometime earlier. */
 	if (scan->xs_batch->dir != direction)
@@ -1754,12 +1854,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	index_batch_reset_indexes(scan);
 
 	Assert(scan->xs_batch->dir == direction);
-
-	/*
-	 * We should also never get here without having all the positions set
-	 * up properly (either after mark/restore, change of direction, etc).
-	 */
-	Assert(!scan->xs_batch->resetIndexes);
 
 	/*
 	 * Don't continue/advance indexes, if the batch is empty, otherwise
@@ -1913,6 +2007,9 @@ index_batch_init(IndexScanDesc scan)
  *
  * FIXME Another bit in need of cleanup. The currIndex default (-1) is not quite
  * correct, because for backwards scans is wrong.
+ *
+ * XXX Isn't this the same as index_batch_empty?
+ * XXX Should this reset the batch memory context, xs_itup, xs_hitup, etc?
  */
 static void
 index_batch_reset(IndexScanDesc scan)

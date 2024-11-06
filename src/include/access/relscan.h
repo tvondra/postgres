@@ -196,13 +196,6 @@ typedef struct IndexScanDescData
 }			IndexScanDescData;
 
 /*
- * Typedef for callback function to determine if an item in index scan should
- * be prefetched.
- */
-typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan,
-									   void *arg, int index);
-
-/*
  * Data about the current TID batch returned by the index AM.
  *
  * XXX Maybe this should be a separate struct instead, and the scan
@@ -226,14 +219,6 @@ typedef struct IndexScanBatchData
 
 	/* memory context for per-batch data */
 	MemoryContext ctx;
-
-	/* batch prefetching */
-	int			prefetchTarget; /* current prefetch distance */
-	int			prefetchMaximum;	/* maximum prefetch distance */
-	int			prefetchIndex;	/* next item to prefetch */
-
-	IndexPrefetchCallback	prefetchCallback;
-	void				   *prefetchArgument;
 
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
 	int			currIndex;		/* index of the current item */

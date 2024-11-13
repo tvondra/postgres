@@ -297,6 +297,7 @@ typedef struct IndexAmRoutine
 	amrescan_function amrescan;
 	amgettuple_function amgettuple; /* can be NULL */
 	amgetbatch_function amgetbatch; /* can be NULL */
+	amfreebatch_function amfreebatch; /* can be NULL */
 	amgetbitmap_function amgetbitmap;	/* can be NULL */
 	amendscan_function amendscan;
 	ammarkpos_function ammarkpos;	/* can be NULL */

@@ -1271,12 +1271,12 @@ extern OffsetNumber _bt_binsrch_insert(Relation rel, BTInsertState insertstate);
 extern int32 _bt_compare(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum);
 extern bool _bt_first(IndexScanDesc scan, ScanDirection dir);
 extern bool _bt_next(IndexScanDesc scan, ScanDirection dir);
-extern bool _bt_first_batch(IndexScanDesc scan, ScanDirection dir);
-extern bool _bt_next_batch(IndexScanDesc scan, ScanDirection dir);
-extern void _bt_kill_batch(IndexScanDesc scan);
 extern Buffer _bt_get_endpoint(Relation rel, uint32 level, bool rightmost);
-extern void _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so,
-						   int start, int end);
+
+extern IndexScanBatch _bt_first_batch(IndexScanDesc scan, ScanDirection dir);
+extern IndexScanBatch _bt_next_batch(IndexScanDesc scan, ScanDirection dir);
+extern IndexScanBatch _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so);
+extern void _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch);
 
 /*
  * prototypes for functions in nbtutils.c

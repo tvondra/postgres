@@ -142,6 +142,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amrescan = btrescan;
 	amroutine->amgettuple = btgettuple;
 	amroutine->amgetbatch = btgetbatch;
+	amroutine->amfreebatch = btfreebatch;
 	amroutine->amgetbitmap = btgetbitmap;
 	amroutine->amendscan = btendscan;
 	amroutine->ammarkpos = btmarkpos;

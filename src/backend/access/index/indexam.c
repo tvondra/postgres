@@ -846,10 +846,6 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	bool		all_dead = false;
 	bool		found;
 
-	elog(WARNING, "index_fetch_heap (%u,%u)",
-		 ItemPointerGetBlockNumber(&scan->xs_heaptid),
-		 ItemPointerGetOffsetNumber(&scan->xs_heaptid));
-
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
 									&scan->xs_heap_continue, &all_dead);
@@ -1626,12 +1622,6 @@ index_scan_stream_read_next(ReadStream *stream,
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer tid = &batch->items[pos->index].heapTid;
-
-			elog(WARNING, "index_scan_stream_read_next: index %d tid (%u,%u)",
-					pos->index,
-					ItemPointerGetBlockNumber(tid),
-					ItemPointerGetOffsetNumber(tid));
-
 			return ItemPointerGetBlockNumber(tid);
 		}
 
@@ -1801,20 +1791,19 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		return NULL;
 
 	/*
-	 * FIXME _bt_returnitem tweaks xs_heaptid, so undo that, otherwise a
-	 * scan interleaved with read stream ops (prefetch might break this).
-	 * Ultimately we should not call _bt_returnitem at all, just functions
-	 * like _bt_steppage etc.
+	 * FIXME btgetbatch calls _bt_returnitem, which however sets xs_heaptid,
+	 * and so would interfere with index scans (because this may get executed
+	 * from the read_stream_next_buffer callback during the scan (fetching
+	 * heap tuples in heapam_index_fetch_tuple). Ultimately we should not do
+	 * _bt_returnitem at all, just functions like _bt_steppage etc. while
+	 * loading the next batch.
 	 */
 	tid = scan->xs_heaptid;
 
 	if ((batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction)) != NULL)
 	{
-		// INDEX_SCAN_BATCH(scan, scan->xs_batch->numBatches) = batch;
-		scan->xs_batch->batches[scan->xs_batch->numBatches % scan->xs_batch->maxBatches] = batch;
+		INDEX_SCAN_BATCH(scan, scan->xs_batch->numBatches) = batch;
 		scan->xs_batch->numBatches++;
-		elog(WARNING, "index_batch_getnext: batch %p [%d,%d]",
-			 batch, batch->firstItem, batch->lastItem);
 	}
 
 	/* XXX see FIXME above */
@@ -1850,24 +1839,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		if (index_batch_pos_advance(scan, pos, direction))
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
-
-			elog(WARNING, "index_batch_getnext_tid: index %d tid (%u,%u)",
-					pos->index,
-					ItemPointerGetBlockNumber(&batch->items[pos->index].heapTid),
-					ItemPointerGetOffsetNumber(&batch->items[pos->index].heapTid));
-
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
-
-			elog(WARNING, "index_batch_getnext_tid: B index %d tid (%u,%u)",
-					pos->index,
-					ItemPointerGetBlockNumber(&batch->items[pos->index].heapTid),
-					ItemPointerGetOffsetNumber(&batch->items[pos->index].heapTid));
-
-			elog(WARNING, "index_batch_getnext_tid: C index %d tid (%u,%u)",
-					pos->index,
-					ItemPointerGetBlockNumber(&scan->xs_heaptid),
-					ItemPointerGetOffsetNumber(&scan->xs_heaptid));
-
 			return &scan->xs_heaptid;
 		}
 

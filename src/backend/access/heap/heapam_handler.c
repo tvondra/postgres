@@ -121,10 +121,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
-	elog(WARNING, "heapam_index_fetch_tuple (%u,%u)",
-		 ItemPointerGetBlockNumber(tid),
-		 ItemPointerGetOffsetNumber(tid));
-
 	/* We can skip the buffer-switching logic if we're in mid-HOT chain. */
 	if (!*call_again)
 	{
@@ -136,15 +132,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		 * the TID we've put into the queue earlier from the callback.
 		 */
 		if (scan->rs)
-		{
-			elog(WARNING, "heapam_index_fetch_tuple B (%u,%u)",
-				ItemPointerGetBlockNumber(tid),
-				ItemPointerGetOffsetNumber(tid));
 			hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
-			elog(WARNING, "heapam_index_fetch_tuple C (%u,%u)",
-				ItemPointerGetBlockNumber(tid),
-				ItemPointerGetOffsetNumber(tid));
-		}
 		else
 			hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
 												  hscan->xs_base.rel,
@@ -152,8 +140,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 
 		//elog(WARNING, "BufferGetBlockNumber(hscan->xs_cbuf) = %u", BufferGetBlockNumber(hscan->xs_cbuf));
 		//elog(WARNING, "ItemPointerGetBlockNumber(tid) = %u", ItemPointerGetBlockNumber(tid));
-
-		elog(WARNING, "BufferGetBlockNumber(hscan->xs_cbuf) %u  ItemPointerGetBlockNumber(tid) %u", BufferGetBlockNumber(hscan->xs_cbuf), ItemPointerGetBlockNumber(tid));
 
 		/* crosscheck: Did we get the expected block number? */
 		Assert(BufferIsValid(hscan->xs_cbuf));

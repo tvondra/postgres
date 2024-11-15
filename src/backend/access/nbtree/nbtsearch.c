@@ -1554,7 +1554,10 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	batch->currTuples = NULL;			/* tuple storage for currPos */
 
-	/* XXX maybe don't size to MaxTIDsPerBTreePage? */
+	/*
+	 * XXX Maybe don't size to MaxTIDsPerBTreePage? We don't reuse batches
+	 * (unlike currPos), so we can size it for just what we need.
+	 */
 	batch->items = palloc(sizeof(IndexScanBatchPosItem) * MaxTIDsPerBTreePage);
 
 	/* copy the populated part of the items array */

@@ -1571,12 +1571,26 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
 
-	elog(WARNING, "index_scan_stream_read_next: scan->xs_batch: %p num %d", scan->xs_batch, scan->xs_batch->numBatches);
+	elog(WARNING, "index_scan_stream_read_next: batch: %p batches %d", scan->xs_batch, scan->xs_batch->numBatches);
+
+	if (scan->xs_batch->numBatches == 0)
+		return InvalidBlockNumber;
+
+	if (scan->xs_batch->streamPos.batch == -1)
+	{
+		scan->xs_batch->streamPos.batch = 0;
+		scan->xs_batch->streamPos.index = 0;
+	}
+	else
+	{
+		scan->xs_batch->streamPos.index++;
+	}
 
 	/* can we proceed to the next item, or do we need to load a new batch? */
 	if (scan->xs_batch->streamPos.batch < scan->xs_batch->numBatches)
 	{
 		IndexScanBatchData *batch = scan->xs_batch->batches[scan->xs_batch->streamPos.batch];
+		elog(WARNING, "index_scan_stream_read_next: index %d", scan->xs_batch->streamPos.index);
 		return ItemPointerGetBlockNumber(&batch->items[scan->xs_batch->streamPos.index].heapTid);
 	}
 
@@ -1867,17 +1881,21 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	if (scan->xs_batch->numBatches == 0)
 		return NULL;
 
-	if (scan->xs_batch->streamPos.batch == -1)
+	if (scan->xs_batch->readPos.batch == -1)
 	{
-		scan->xs_batch->streamPos.batch = 0;
-		scan->xs_batch->streamPos.index = 0;
+		scan->xs_batch->readPos.batch = 0;
+		scan->xs_batch->readPos.index = 0;
+	}
+	else
+	{
+		scan->xs_batch->readPos.index++;
 	}
 
 	/* can we proceed to the next item, or do we need to load a new batch? */
 	if (scan->xs_batch->streamPos.batch < scan->xs_batch->numBatches)
 	{
-		IndexScanBatchData *batch = scan->xs_batch->batches[scan->xs_batch->streamPos.batch];
-		scan->xs_heaptid = batch->items[scan->xs_batch->streamPos.index].heapTid;
+		IndexScanBatchData *batch = scan->xs_batch->batches[scan->xs_batch->readPos.batch];
+		scan->xs_heaptid = batch->items[scan->xs_batch->readPos.index].heapTid;
 		return &scan->xs_heaptid;
 	}
 

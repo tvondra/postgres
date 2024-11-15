@@ -224,7 +224,9 @@ typedef struct IndexScanBatchPos {
 	int			index;
 } IndexScanBatchPos;
 
-typedef struct IndexScanBatchInfo {
+typedef struct IndexScanBatchInfo
+{
+		bool	finished;		/* did we read the last batch? */
 		int		maxBatches;		/* size of the batches array */
 		int		numBatches;		/* number of loaded batches */
 		int		firstBatch;		/* first valid batch */

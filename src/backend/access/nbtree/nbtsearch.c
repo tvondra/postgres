@@ -1639,19 +1639,17 @@ IndexScanBatch
 _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	/*
-	 * We've consumed all items from the current leaf page, so try reading the
-	 * next one, and process it.
+	 * Advance to next tuple on current page; or if there's no more, try to
+	 * step to the next page with data.
 	 */
-	if (_bt_next(scan, dir))
-	{
-		/*
-		 * FIXME same comment about about _bt_next loading data into currPos
-		 * as for _bt_first_batch above.
-		 */
-		return _bt_copy_batch(scan, dir);
-	}
+	if (!_bt_steppage(scan, dir))
+		return NULL;
 
-	return NULL;
+	/*
+	 * FIXME same comment about about _bt_next loading data into currPos
+	 * as for _bt_first_batch above.
+	 */
+	return _bt_copy_batch(scan, dir);
 }
 
 /*

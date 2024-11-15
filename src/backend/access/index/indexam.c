@@ -127,6 +127,10 @@ static BlockNumber index_scan_stream_read_next(ReadStream *stream,
 											   void *callback_private_data,
 											   void *per_buffer_data);
 
+static bool index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
+									ScanDirection dir);
+static void index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos);
+
 
 /* Is the batch full (TIDs up to capacity)? */
 /* #define	INDEX_BATCH_IS_FULL(scan)	\
@@ -576,8 +580,8 @@ index_restrpos(IndexScanDesc scan)
 	 *
 	 * XXX This is a bit weird/fragile.
 	 */
-	scan->xs_batch->readPos.index = -1;
-	scan->xs_batch->streamPos.index = -1;
+	index_batch_pos_reset(scan, &scan->xs_batch->readPos);
+	index_batch_pos_reset(scan, &scan->xs_batch->streamPos);
 
 	/* XXX don't reset nheaptids here, it confused amrestrpos (which seems
 	 * a bit weird, it shouldn't be the case I think) */
@@ -1523,12 +1527,12 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
  * XXX Would be nice to have an assert that the final position is valid,
  * but that requires knowing nheaptids.
  */
-//static void
-//index_batch_pos_reset(IndexScanBatchPos *pos, int index, bool restored)
-//{
-//	pos->index = index;
-//	pos->restored = restored;
-//}
+static void
+index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos)
+{
+	pos->batch = -1;
+	pos->index = -1;
+}
 
 /*
  * index_batch_reset_positions
@@ -1791,6 +1795,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		return NULL;
 
 	/*
+	 * Did we already read the last batch for this scan? We may read the
+	 * batches in two places, so we need to remember that, otherwise the
+	 * retry restarts the scan.
+	 */
+	if (scan->xs_batch->finished)
+		return NULL;
+
+	/*
 	 * FIXME btgetbatch calls _bt_returnitem, which however sets xs_heaptid,
 	 * and so would interfere with index scans (because this may get executed
 	 * from the read_stream_next_buffer callback during the scan (fetching
@@ -1800,11 +1812,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 */
 	tid = scan->xs_heaptid;
 
-	if ((batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction)) != NULL)
+	batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
+	if (batch != NULL)
 	{
 		INDEX_SCAN_BATCH(scan, scan->xs_batch->numBatches) = batch;
 		scan->xs_batch->numBatches++;
 	}
+	else
+		scan->xs_batch->finished = true;
 
 	/* XXX see FIXME above */
 	scan->xs_heaptid = tid;

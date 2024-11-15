@@ -786,6 +786,8 @@ batch_loaded:
 		 * all items from the current batch. Try loading the next one.
 		 *
 		 * XXX Maybe do this as a simple while/for loop without the goto.
+		 *
+		 * XXX Should probably happen in index_batch_getnext_tid.
 		 */
 		if (index_batch_getnext(scan, direction))
 			goto batch_loaded;

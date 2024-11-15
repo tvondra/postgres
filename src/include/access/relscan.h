@@ -148,6 +148,9 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
  * Data about one batch of items returned by the index AM. This is similar
  * to the AM-specific "opaque" structs, used by each AM to track items
  * loaded from one leaf page, but generalized for all AMs.
+ *
+ * XXX Not sure which of there fields are 100% needed for all index AMs,
+ * most of this comes from nbtree.
  */
 typedef struct IndexScanBatchData
 {
@@ -181,6 +184,9 @@ typedef struct IndexScanBatchData
 	 * array back-to-front, so we start at the last slot and fill downwards.
 	 * Hence we need both a first-valid-entry and a last-valid-entry counter.
 	 * itemIndex is a cursor showing which entry was last returned to caller.
+	 *
+	 * XXX Do we need all these indexes, or would it be enough to have just
+	 * 0-indexed array with only itemIndex?
 	 */
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */

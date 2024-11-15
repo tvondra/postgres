@@ -143,7 +143,6 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amgettuple = btgettuple;
 	amroutine->amgetbatch = btgetbatch;
 	amroutine->amfreebatch = btfreebatch;
-	amroutine->amfreebatch = btfreebatch;
 	amroutine->amgetbitmap = btgetbitmap;
 	amroutine->amendscan = btendscan;
 	amroutine->ammarkpos = btmarkpos;
@@ -283,6 +282,9 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 * If we've already initialized this scan, we can just advance it in
 		 * the appropriate direction.  If we haven't done so yet, we call
 		 * _bt_first() to get the first item in the scan.
+		 *
+		 * XXX This probably should not rely on so->currPos, because the
+		 * batching may not populate that at all. Add a new flag?
 		 */
 		if (!BTScanPosIsValid(so->currPos))
 			res = _bt_first_batch(scan, dir);

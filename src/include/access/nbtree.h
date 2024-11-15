@@ -1275,7 +1275,6 @@ extern Buffer _bt_get_endpoint(Relation rel, uint32 level, bool rightmost);
 
 extern IndexScanBatch _bt_first_batch(IndexScanDesc scan, ScanDirection dir);
 extern IndexScanBatch _bt_next_batch(IndexScanDesc scan, ScanDirection dir);
-extern IndexScanBatch _bt_copy_batch(IndexScanDesc scan, ScanDirection dir, BTScanOpaque so);
 extern void _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch);
 
 /*

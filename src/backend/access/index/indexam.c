@@ -1567,6 +1567,17 @@ index_scan_stream_read_next(ReadStream *stream,
 							void *callback_private_data,
 							void *per_buffer_data)
 {
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+
+	elog(WARNING, "index_scan_stream_read_next: scan->xs_batch: %p num %d", scan->xs_batch, scan->xs_batch->numBatches);
+
+	/* can we proceed to the next item, or do we need to load a new batch? */
+	if (scan->xs_batch->streamPos.batch < scan->xs_batch->numBatches)
+	{
+		IndexScanBatchData *batch = scan->xs_batch->batches[scan->xs_batch->streamPos.batch];
+		return ItemPointerGetBlockNumber(&batch->items[scan->xs_batch->streamPos.index].heapTid);
+	}
+
 //	int				index;
 //	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
 //
@@ -1710,17 +1721,21 @@ index_scan_stream_read_next(ReadStream *stream,
 static bool
 index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
-//	bool		found;
-//
-//	SCAN_CHECKS;
-//	CHECK_SCAN_PROCEDURE(amgetbatch);
-//
-//	/* XXX: we should assert that a snapshot is pushed or registered */
-//	Assert(TransactionIdIsValid(RecentXmin));
-//
-//	/* comprehensive checks of batching info */
-//	AssertCheckBatchInfo(scan);
-//
+	IndexScanBatchData *batch;;
+
+	SCAN_CHECKS;
+	CHECK_SCAN_PROCEDURE(amgetbatch);
+
+	/* XXX: we should assert that a snapshot is pushed or registered */
+	Assert(TransactionIdIsValid(RecentXmin));
+
+	/* FIXME don't overflow the array, should resize the array instead */
+	if (scan->xs_batch->numBatches == scan->xs_batch->maxBatches)
+		return NULL;
+
+	/* comprehensive checks of batching info */
+	// AssertCheckBatchInfo(scan);
+
 //	/*
 //	 * We never read a new batch before we run out of items in the current
 //	 * one. The current batch has to be either empty or we ran out of items
@@ -1746,7 +1761,11 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 //	 *
 //	 * FIXME At the moment this does nothing with hitup. Needs to be fixed?
 //	 */
-//	found = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
+	batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
+
+	scan->xs_batch->batches[scan->xs_batch->numBatches++] = batch;
+
+	elog(WARNING, "index_batch_getnext batch %p", batch);
 //
 //	/* Reset kill flag immediately for safety */
 //	scan->kill_prior_tuple = false;
@@ -1821,7 +1840,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 //
 //	/* Return the batch of TIDs we found. */
 //	return true;
-	return false;
+	return (batch != NULL);
 }
 
 /* ----------------
@@ -1839,6 +1858,28 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	Assert(scan->xs_batch != NULL);
+
+	elog(WARNING, "index_batch_getnext_tid: scan->xs_batch: %p num %d", scan->xs_batch, scan->xs_batch->numBatches);
+
+	if (scan->xs_batch->numBatches == 0)
+		return NULL;
+
+	if (scan->xs_batch->streamPos.batch == -1)
+	{
+		scan->xs_batch->streamPos.batch = 0;
+		scan->xs_batch->streamPos.index = 0;
+	}
+
+	/* can we proceed to the next item, or do we need to load a new batch? */
+	if (scan->xs_batch->streamPos.batch < scan->xs_batch->numBatches)
+	{
+		IndexScanBatchData *batch = scan->xs_batch->batches[scan->xs_batch->streamPos.batch];
+		scan->xs_heaptid = batch->items[scan->xs_batch->streamPos.index].heapTid;
+		return &scan->xs_heaptid;
+	}
+
+
 //	int		index;
 //
 //	/* shouldn't get here without batching */
@@ -1931,11 +1972,27 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 static void
 index_batch_init(IndexScanDesc scan)
 {
-//	/* init batching info, but only if batch supported */
-//	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
-//
-//	scan->xs_batch = palloc0(sizeof(IndexScanBatchData));
-//
+	elog(WARNING, "index_batch_init");
+
+	/* init batching info, but only if batch supported */
+	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
+	Assert(scan->indexRelation->rd_indam->amfreebatch != NULL);
+
+	scan->xs_batch = palloc0(sizeof(IndexScanBatchInfo));
+
+	scan->xs_batch->maxBatches = 16;	/* size of the batches array */
+	scan->xs_batch->numBatches = 0;		/* number of loaded batches */
+	scan->xs_batch->firstBatch = -1;	/* first valid batch */
+
+	/* positions in the queue of batches */
+	scan->xs_batch->readPos.batch = -1;	/* read position */
+	scan->xs_batch->readPos.index = -1;
+
+	scan->xs_batch->streamPos.batch = -1;	/* prefetch position (for read stream API) */
+	scan->xs_batch->streamPos.index = -1;
+
+	scan->xs_batch->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batch->maxBatches);
+
 //	/*
 //	 * Set some reasonable batch size defaults.
 //	 *

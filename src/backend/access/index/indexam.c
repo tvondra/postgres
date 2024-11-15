@@ -846,6 +846,10 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	bool		all_dead = false;
 	bool		found;
 
+	elog(WARNING, "index_fetch_heap (%u,%u)",
+		 ItemPointerGetBlockNumber(&scan->xs_heaptid),
+		 ItemPointerGetOffsetNumber(&scan->xs_heaptid));
+
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
 									&scan->xs_heap_continue, &all_dead);
@@ -1389,6 +1393,9 @@ AssertCheckBatchPosValid(IndexScanDesc scan, int batch, int index)
 	return;
 }
 
+#define INDEX_SCAN_BATCH(scan, idx)	\
+		((scan)->xs_batch->batches[(idx) % (scan)->xs_batch->maxBatches])
+
 /*
  * Comprehensive check of various invariants on the index batch. Makes sure
  * the indexes are set as expected, the buffer size is within limits, and
@@ -1477,7 +1484,7 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 		 * Can we advance to the next item in the current batch, or
 		 * maybe to the next (already loaded) batch?
 		 */
-		batch = scan->xs_batch->batches[pos->batch];
+		batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
 		Assert(batch != NULL);
 
@@ -1610,8 +1617,6 @@ index_scan_stream_read_next(ReadStream *stream,
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
 	IndexScanBatchPos *pos = &scan->xs_batch->streamPos;
 
-	elog(WARNING, "index_scan_stream_read_next: batch: %p batches %d", scan->xs_batch, scan->xs_batch->numBatches);
-
 	/* XXX this loop shouldn't happen more than twice */
 	while (true)
 	{
@@ -1619,7 +1624,7 @@ index_scan_stream_read_next(ReadStream *stream,
 		/* FIXME use correct direction */
 		if (index_batch_pos_advance(scan, pos, ForwardScanDirection))
 		{
-			IndexScanBatchData *batch = scan->xs_batch->batches[pos->batch];
+			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer tid = &batch->items[pos->index].heapTid;
 
 			elog(WARNING, "index_scan_stream_read_next: index %d tid (%u,%u)",
@@ -1783,6 +1788,7 @@ static bool
 index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
 	IndexScanBatchData *batch;
+	ItemPointerData		tid;
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
@@ -1794,12 +1800,25 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	if (scan->xs_batch->numBatches == scan->xs_batch->maxBatches)
 		return NULL;
 
+	/*
+	 * FIXME _bt_returnitem tweaks xs_heaptid, so undo that, otherwise a
+	 * scan interleaved with read stream ops (prefetch might break this).
+	 * Ultimately we should not call _bt_returnitem at all, just functions
+	 * like _bt_steppage etc.
+	 */
+	tid = scan->xs_heaptid;
+
 	if ((batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction)) != NULL)
 	{
-		scan->xs_batch->batches[scan->xs_batch->numBatches++] = batch;
+		// INDEX_SCAN_BATCH(scan, scan->xs_batch->numBatches) = batch;
+		scan->xs_batch->batches[scan->xs_batch->numBatches % scan->xs_batch->maxBatches] = batch;
+		scan->xs_batch->numBatches++;
 		elog(WARNING, "index_batch_getnext: batch %p [%d,%d]",
 			 batch, batch->firstItem, batch->lastItem);
 	}
+
+	/* XXX see FIXME above */
+	scan->xs_heaptid = tid;
 
 	return (batch != NULL);
 }
@@ -1830,7 +1849,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		/* try to load batch, or return the next item */
 		if (index_batch_pos_advance(scan, pos, direction))
 		{
-			IndexScanBatchData *batch = scan->xs_batch->batches[pos->batch];
+			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
 			elog(WARNING, "index_batch_getnext_tid: index %d tid (%u,%u)",
 					pos->index,
@@ -1838,6 +1857,17 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 					ItemPointerGetOffsetNumber(&batch->items[pos->index].heapTid));
 
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
+
+			elog(WARNING, "index_batch_getnext_tid: B index %d tid (%u,%u)",
+					pos->index,
+					ItemPointerGetBlockNumber(&batch->items[pos->index].heapTid),
+					ItemPointerGetOffsetNumber(&batch->items[pos->index].heapTid));
+
+			elog(WARNING, "index_batch_getnext_tid: C index %d tid (%u,%u)",
+					pos->index,
+					ItemPointerGetBlockNumber(&scan->xs_heaptid),
+					ItemPointerGetOffsetNumber(&scan->xs_heaptid));
+
 			return &scan->xs_heaptid;
 		}
 

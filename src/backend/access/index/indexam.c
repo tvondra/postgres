@@ -1850,7 +1850,12 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* XXX this loop shouldn't happen more than twice */
 	while (true)
 	{
-		/* try to load batch, or return the next item */
+		/* try to load batch, or return the next item
+		 *
+		 * FIXME If we andvance read position to the next batch, we should
+		 * release the previous batch. Or maybe we could keep it in case the
+		 * scan direction changes, but not more than maxBatches?
+		 */
 		if (index_batch_pos_advance(scan, pos, direction))
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
@@ -1881,14 +1886,20 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 static void
 index_batch_init(IndexScanDesc scan)
 {
-	elog(WARNING, "index_batch_init");
-
 	/* init batching info, but only if batch supported */
 	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
 	Assert(scan->indexRelation->rd_indam->amfreebatch != NULL);
 
 	scan->xs_batch = palloc0(sizeof(IndexScanBatchInfo));
 
+	/*
+	 * XXX What's the maximum number of batches we might need? Presumably
+	 * it's related to effective_io_concurrency - the extreme case would
+	 * be one tuple per index page, which could need many batches (if we
+	 * keep one batch per index leaf page - maybe we shouldn't?). For most
+	 * indexes we'll need far fewer pages/batches, but we may need to
+	 * resize the queue accordingly.
+	 */
 	scan->xs_batch->maxBatches = 16;	/* size of the batches array */
 	scan->xs_batch->numBatches = 0;		/* number of loaded batches */
 	scan->xs_batch->firstBatch = -1;	/* first valid batch */

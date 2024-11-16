@@ -264,7 +264,7 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 /*
  *	btgetbatch() -- Get the next batch of tuples in the scan.
  *
- * XXX Pretty much like btgettuple(), but for batches of tuples.
+ * XXX Simplified version of btgettuple(), but for batches of tuples.
  */
 IndexScanBatch
 btgetbatch(IndexScanDesc scan, ScanDirection dir)
@@ -546,12 +546,16 @@ btendscan(IndexScanDesc scan)
 /*
  *	btmarkpos() -- save current scan position
  *
- * With batching, all the interesting markpos() stuff happens in indexam.c.
+ * With batching, all the interesting markpos() stuff happens in indexam.c. We
+ * should not even get here.
  */
 void
 btmarkpos(IndexScanDesc scan)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* with batching, mark/restore is handled in indexam */
+	Assert(scan->xs_batches == NULL);
 
 	/* There may be an old mark with a pin (but no lock). */
 	BTScanPosUnpinIfPinned(so->markPos);
@@ -574,12 +578,16 @@ btmarkpos(IndexScanDesc scan)
 /*
  *	btrestrpos() -- restore scan to last saved position
  *
- * With batching, all the interesting restrpos() stuff happens in indexam.c.
+ * With batching, all the interesting restrpos() stuff happens in indexam.c. We
+ * should not even get here.
  */
 void
 btrestrpos(IndexScanDesc scan)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* with batching, mark/restore is handled in indexam */
+	Assert(scan->xs_batches == NULL);
 
 	if (so->markItemIndex >= 0)
 	{

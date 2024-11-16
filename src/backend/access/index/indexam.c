@@ -55,10 +55,8 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/read_stream.h"
-#include "utils/memutils.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
-#include "utils/spccache.h"
 #include "utils/syscache.h"
 
 /* enable reading batches / prefetching of TIDs from the index */
@@ -117,6 +115,7 @@ static inline void validate_relation_kind(Relation r);
 /* index batching */
 static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan);
+static void index_batch_end(IndexScanDesc scan);
 static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
 static void index_batch_free(IndexScanDesc scan, IndexScanBatch batch);
@@ -424,37 +423,24 @@ index_rescan(IndexScanDesc scan,
 
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
-	{
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-
 		table_index_fetch_reset(scan->xs_heapfetch);
-	}
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
-	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
-											orderbys, norderbys);
-
 	/*
-	 * Reset the batch, to make it look empty.
-	 *
-	 * Done after the amrescan() call, in case the AM needs some of the batch
-	 * info (e.g. to properly transfer the killed tuples).
-	 *
-	 * XXX This is a bit misleading, because index_batch_reset does not reset
-	 * the killed tuples. So if that's the only justification, we could have
-	 * done it before the call.
+	 * Reset the batching, to make it look like there are no batches. Do this
+	 * before calling amrescan, so that it can reinitialize everything.
 	 */
 	index_batch_reset(scan);
+
+	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
+											orderbys, norderbys);
 }
 
 /* ----------------
  *		index_endscan - end a scan
  * ----------------
- *
- * FIXME should also release the index batch?
  */
 void
 index_endscan(IndexScanDesc scan)
@@ -465,14 +451,12 @@ index_endscan(IndexScanDesc scan)
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
 	{
-		if (scan->xs_heapfetch->rs)
-		{
-			read_stream_end(scan->xs_heapfetch->rs);
-		}
-
 		table_index_fetch_end(scan->xs_heapfetch);
 		scan->xs_heapfetch = NULL;
 	}
+
+	/* Cleanup batching, so that the AM can release pins and so on. */
+	index_batch_end(scan);
 
 	/* End the AM's scan */
 	scan->indexRelation->rd_indam->amendscan(scan);
@@ -497,7 +481,14 @@ index_markpos(IndexScanDesc scan)
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(ammarkpos);
 
-	scan->indexRelation->rd_indam->ammarkpos(scan);
+	/*
+	 * Without batching, just use the ammarkpos() callback. With batching
+	 * everything is handled at this layer, without AM.
+	 */
+	if (scan->xs_batches == NULL)
+		scan->indexRelation->rd_indam->ammarkpos(scan);
+	else
+		elog(WARNING, "FIXME index_markpos does not support batching yet");
 }
 
 /* ----------------
@@ -525,36 +516,19 @@ index_restrpos(IndexScanDesc scan)
 
 	/* release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
-	{
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-
 		table_index_fetch_reset(scan->xs_heapfetch);
-	}
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
 	/*
-	 * Reset the current/prefetch positions in the batch.
-	 *
-	 * XXX Done before calling amgetbatch(), so that it sees the indexes as
-	 * invalid, batch as empty, and can add items.
-	 *
-	 * XXX This is a bit weird/fragile.
+	 * Without batching, just use the amrestrpos() callback. With batching
+	 * everything is handled at this layer, without AM.
 	 */
-	index_batch_pos_reset(scan, &scan->xs_batches->readPos);
-	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
-
-	/* XXX don't reset nheaptids here, it confused amrestrpos (which seems
-	 * a bit weird, it shouldn't be the case I think) */
-
-	scan->indexRelation->rd_indam->amrestrpos(scan);
-
-	/*
-	 * Don't reset the batch here - amrestrpos should have has already loaded
-	 * the new batch and set the curr/prefetch indexes, so don't throw that away.
-	 */
+	if (scan->xs_batches == NULL)
+		scan->indexRelation->rd_indam->amrestrpos(scan);
+	else
+		elog(WARNING, "FIXME index_restrpos does not support batching yet");
 }
 
 /*
@@ -636,16 +610,15 @@ index_parallelrescan(IndexScanDesc scan)
 	SCAN_CHECKS;
 
 	if (scan->xs_heapfetch)
-	{
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-
 		table_index_fetch_reset(scan->xs_heapfetch);
-	}
 
 	/* amparallelrescan is optional; assume no-op if not provided by AM */
 	if (scan->indexRelation->rd_indam->amparallelrescan != NULL)
 		scan->indexRelation->rd_indam->amparallelrescan(scan);
+
+	/* FIXME This probably needs to reset the batching, just like index_rescan()? */
+	if (scan->xs_batches != NULL)
+		elog(WARNING, "FIXME index_parallelrescan does not support batching yet");
 }
 
 /*
@@ -763,12 +736,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	{
 		/* release resources (like buffer pins) from table accesses */
 		if (scan->xs_heapfetch)
-		{
-			if (scan->xs_heapfetch->rs)
-				read_stream_reset(scan->xs_heapfetch->rs);
-
 			table_index_fetch_reset(scan->xs_heapfetch);
-		}
 
 		return NULL;
 	}
@@ -1741,16 +1709,32 @@ index_batch_init(IndexScanDesc scan)
 static void
 index_batch_reset(IndexScanDesc scan)
 {
+	IndexScanBatches *batches = scan->xs_batches;
+
 	/* bail out if batching not enabled */
-	if (!scan->xs_batches)
+	if (!batches)
 		return;
 
-	/* FIXME release all currently loaded batches */
+	/* With batching enabled, we should have a read stream. Reset it. */
+	Assert(scan->xs_heapfetch->rs);
+	read_stream_reset(scan->xs_heapfetch->rs);
 
-	/* FIXME reset all the IndexScanBatches fields */
+	/* release all currently loaded batches */
+	for (int i = batches->firstBatch; i < batches->firstBatch + batches->numBatches; i++)
+	{
+		IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, i);
+		index_batch_free(scan, batch);
+	}
 
-	index_batch_pos_reset(scan, &scan->xs_batches->readPos);
-	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
+	/* reset relevant IndexScanBatches fields */
+	batches->maxBatches = 16;	/* size of the batches array */
+	batches->numBatches = 0;	/* number of loaded batches */
+	batches->firstBatch = -1;	/* first batch */
+
+	index_batch_pos_reset(scan, &batches->readPos);
+	index_batch_pos_reset(scan, &batches->streamPos);
+
+	AssertCheckBatches(scan);
 }
 
 static void
@@ -1769,4 +1753,11 @@ index_batch_free(IndexScanDesc scan, IndexScanBatch batch)
 	AssertCheckBatch(scan, batch);
 
 	scan->indexRelation->rd_indam->amfreebatch(scan, batch);
+}
+
+/* */
+static void
+index_batch_end(IndexScanDesc scan)
+{
+	index_batch_reset(scan);
 }

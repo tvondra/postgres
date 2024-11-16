@@ -1585,6 +1585,10 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
  * update itemIndex correctly, but we need to be careful about killed items
  * (right now the two places use different ways to communicate which items
  * should be killed).
+ *
+ * XXX We probably should not rely on _bt_first/_bt_steppage, because that
+ * very much relies on currPos, and it's just laziness to rely on that. For
+ * batching we probably need something else anyway.
  */
 IndexScanBatch
 _bt_first_batch(IndexScanDesc scan, ScanDirection dir)

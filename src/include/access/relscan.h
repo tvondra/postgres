@@ -154,6 +154,13 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
  */
 typedef struct IndexScanBatchData
 {
+	/*
+	 * XXX some of these fields (anything that's AM-specific and needed only
+	 * internally to proceed to the next page) should be moved to a private
+	 * struct (like the ScanOpaque structs for "normal" scans). Not every
+	 * AM needs to track the page numbers, moveLeft/right flags, etc.
+	 */
+
 	Buffer		buf;			/* currPage buf (invalid means unpinned) */
 
 	/* page details as of the saved position's call to _bt_readpage */

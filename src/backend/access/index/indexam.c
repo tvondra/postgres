@@ -1385,6 +1385,12 @@ AssertCheckBatches(IndexScanDesc scan)
 	 * FIXME The 128 value is an arbitrary safety limit for development,
 	 * but it might be exceeded in some strange cases (with a single index
 	 * tuple per leaf page, etc.)
+	 *
+	 * XXX Maybe we should have a way to limit how far the read stream can
+	 * prefetch, because that's what determines how many batches we may
+	 * need. Either when creating the read stream (but there doesn't seem
+	 * to be an argument for that), or by returning a special "retry"
+	 * result (InvalidBlockNumber means 'end of stream').
 	 */
 	Assert((batches->maxBatches > 0) && (batches->maxBatches < 128));
 
@@ -1645,10 +1651,24 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
 
 			/*
-			 * FIXME If we advanced to the next batch, maybe release the batch
-			 * we no longer need? We can only do that for readPos. Or maybe
-			 * we should do that in index_batch_getnext only if needed?
+			 * If we advanced to the next batch, release the batch we no
+			 * longer need. The positions is the "read" position, and we
+			 * can compare it to firstBatch.
+			 *
+			 * XXX Maybe we should do that in index_batch_getnext instead,
+			 * and only when needed / under memory pressure?
 			 */
+			if (pos->batch != scan->xs_batches->firstBatch)
+			{
+				batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
+
+				index_batch_free(scan, batch);
+
+				scan->xs_batches->firstBatch++;
+
+				/* we can't skip any batches */
+				Assert(scan->xs_batches->firstBatch == pos->batch);
+			}
 
 			return &scan->xs_heaptid;
 		}

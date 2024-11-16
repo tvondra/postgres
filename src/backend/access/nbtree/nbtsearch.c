@@ -1489,18 +1489,6 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 	return true;
 }
 
-
-//static void
-//AssertCheckBTBatchInfo(BTScanOpaque so)
-//{
-#ifdef USE_ASSERT_CHECKING
-	/* should be valid items (with respect to the current leaf page) */
-//	Assert(so->currPos.firstItem <= so->batch.firstIndex);
-//	Assert(so->batch.firstIndex <= so->batch.lastIndex);
-//	Assert(so->batch.lastIndex <= so->currPos.lastItem);
-#endif
-//}
-
 /*
  * _bt_copy_batch
  *		Copy a section of the leaf page into the batch.
@@ -1510,8 +1498,6 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	batch = NULL;
-
-	// AssertCheckBTBatchInfo(so);
 
 	/* we should only get here for pages with at least some items */
 	Assert(so->currPos.firstItem != so->currPos.lastItem);
@@ -1664,37 +1650,18 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 void
 _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
-//	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-//
-//	/* bail out if batching not enabled */
-//	if (!scan->xs_batch)
-//		return;
-//
-//	for (int i = 0; i < scan->xs_batch->nKilledItems; i++)
-//	{
-//		int			index = (so->batch.firstIndex + scan->xs_batch->killedItems[i]);
-//
-//		/* make sure we have a valid index (in the current leaf page) */
-//		Assert((so->batch.firstIndex <= index) &&
-//			   (index <= so->batch.lastIndex));
-//
-//		/*
-//		 * Yes, remember it for later. (We'll deal with all such tuples at
-//		 * once right before leaving the index page.)  The test for numKilled
-//		 * overrun is not just paranoia: if the caller reverses direction in
-//		 * the indexscan then the same item might get entered multiple times.
-//		 * It's not worth trying to optimize that, so we don't detect it, but
-//		 * instead just forget any excess entries.
-//		 */
-//		if (so->killedItems == NULL)
-//			so->killedItems = (int *)
-//				palloc(MaxTIDsPerBTreePage * sizeof(int));
-//		if (so->numKilled < MaxTIDsPerBTreePage)
-//			so->killedItems[so->numKilled++] = index;
-//	}
-//
-//	/* now reset the number of killed items */
-//	scan->xs_batch->nKilledItems = 0;
+	/* we should only get here for scans with batching */
+	Assert(scan->xs_batches);
+
+	/* bail out if the batch has no killed items */
+	if (batch->numKilled == 0)
+		return;
+
+	/*
+	 * XXX Now what? we don't have the currPos around anymore, so we should
+	 * load that, and apply the killed items to that, somehow?
+	 */
+	elog(WARNING, "FIXME: _bt_kill_batch not implemented");
 }
 
 /*

@@ -319,7 +319,31 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 	 */
 	_bt_kill_batch(scan, batch);
 
-	// FIXME free all the stuff
+	/* free all the stuff that might be allocated */
+
+	if (batch->items)
+		pfree(batch->items);
+
+	if (batch->itups)
+		pfree(batch->itups);
+
+	if (batch->htups)
+		pfree(batch->htups);
+
+	if (batch->recheck)
+		pfree(batch->recheck);
+
+	if (batch->privateData)
+		pfree(batch->privateData);
+
+	if (batch->orderbyvals)
+		pfree(batch->orderbyvals);
+
+	if (batch->orderbynulls)
+		pfree(batch->orderbynulls);
+
+	/* and finally free the batch itself */
+	pfree(batch);
 
 	return;
 }

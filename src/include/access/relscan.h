@@ -151,13 +151,16 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
  *
  * XXX Not sure which of there fields are 100% needed for all index AMs,
  * most of this comes from nbtree.
+ *
+ * XXX Mostly a copy of BTScanPosData, but other AMs may need different (or
+ * only some of those) fields.
  */
 typedef struct IndexScanBatchData
 {
 	/*
 	 * XXX some of these fields (anything that's AM-specific and needed only
 	 * internally to proceed to the next page) should be moved to a private
-	 * struct (like the ScanOpaque structs for "normal" scans). Not every
+	 * struct (like the ScanPosData structs for "normal" scans). Not every
 	 * AM needs to track the page numbers, moveLeft/right flags, etc.
 	 */
 

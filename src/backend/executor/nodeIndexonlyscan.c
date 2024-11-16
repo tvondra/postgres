@@ -137,7 +137,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		CHECK_FOR_INTERRUPTS();
 
 		/* */
-		if (scandesc->xs_batch == NULL)
+		if (scandesc->xs_batches == NULL)
 		{
 			all_visible = VM_ALL_VISIBLE(scandesc->heapRelation,
 						  ItemPointerGetBlockNumber(tid),
@@ -145,7 +145,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
-			int	lastIndex = scandesc->xs_batch->readPos.index;
+			int	lastIndex = scandesc->xs_batches->readPos.index;
 
 			/* Is the index of the current item valid for the batch? */
 			// Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));

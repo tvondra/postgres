@@ -224,23 +224,42 @@ typedef struct IndexScanBatchPos {
 	int			index;
 } IndexScanBatchPos;
 
-typedef struct IndexScanBatchInfo
+/*
+ * Queue
+ */
+typedef struct IndexScanBatches
 {
-		bool	finished;		/* did we read the last batch? */
+		/*
+		 * Did we read the last batch? The batches may be loaded from
+		 * multiple places, and we need to remember when we fail to load
+		 * the next batch in a given scan (which means "no more batches").
+		 * amgetbatch may restart the scan on the get call, so we need to
+		 * remember it's over.
+		 */
+		bool	finished;
+
+		/* positions in the queue of batches (batch + item) */
+		IndexScanBatchPos		readPos;	/* read position */
+		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
+
+		/*
+		 * Array of batches returned by the AM. The array has a capacity
+		 * (but can be resized if needed). The firstBatch is an index of the
+		 * first batch, but needs to be translated by (modulo maxBatches)
+		 * into index in the batches array.
+		 *
+		 * FIXME Maybe these fields should be uint32, or something like that?
+		 */
 		int		maxBatches;		/* size of the batches array */
 		int		numBatches;		/* number of loaded batches */
 		int		firstBatch;		/* first valid batch */
-
-		/* positions in the queue of batches */
-		IndexScanBatchPos		readPos;	/* read position */
-		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
 
 		IndexScanBatchData **batches;
 
 		/* FIXME add callback to skip prefetching in IOS etc. */
 		// IndexPrefetchCallback	prefetchCallback;
 		// void				   *prefetchArgument;
-} IndexScanBatchInfo;
+} IndexScanBatches;
 
 /*
  * We use the same IndexScanDescData structure for both amgettuple-based
@@ -291,7 +310,7 @@ typedef struct IndexScanDescData
 	 * Batches index scan keep a list of batches loaded from the index in
 	 * a circular buffer.
 	 */
-	IndexScanBatchInfo *xs_batch;
+	IndexScanBatches *xs_batches;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

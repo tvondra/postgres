@@ -119,7 +119,7 @@ static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan);
 static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
-static void index_batch_free(IndexScanDesc scan, IndexScanBatch *batch);
+static void index_batch_free(IndexScanDesc scan, IndexScanBatch batch);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
 
@@ -1341,6 +1341,9 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * position, using the private information (about items in the batch).
  */
 
+#define INDEX_SCAN_BATCH(scan, idx)	\
+		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
+
 static void
 AssertCheckBatchPosValid(IndexScanDesc scan, IndexScanBatchPos *pos)
 {
@@ -1353,8 +1356,17 @@ AssertCheckBatchPosValid(IndexScanDesc scan, IndexScanBatchPos *pos)
 #endif
 }
 
-#define INDEX_SCAN_BATCH(scan, idx)	\
-		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
+/*
+ * check a single batch is valid
+ */
+static void
+AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch)
+{
+#ifdef USE_ASSERT_CHECKING
+	Assert(batch->firstItem <= batch->lastItem);
+	Assert(batch->items != NULL);
+#endif
+}
 
 /*
  * Comprehensive check of various invariants on the index batch. Makes sure
@@ -1727,12 +1739,12 @@ index_batch_kill_item(IndexScanDesc scan)
 }
 
 static void
-index_batch_free(IndexScanDesc scan, IndexScanBatch *batch)
+index_batch_free(IndexScanDesc scan, IndexScanBatch batch)
 {
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amfreebatch);
 
-	AssertCheckBatch(batch);
+	AssertCheckBatch(scan, batch);
 
 	scan->indexRelation->rd_indam->amfreebatch(scan, batch);
 }

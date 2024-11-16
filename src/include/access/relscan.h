@@ -241,6 +241,7 @@ typedef struct IndexScanBatches
 		/* positions in the queue of batches (batch + item) */
 		IndexScanBatchPos		readPos;	/* read position */
 		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
+		IndexScanBatchPos		markPos;	/* mark/restore position */
 
 		/*
 		 * Array of batches returned by the AM. The array has a capacity

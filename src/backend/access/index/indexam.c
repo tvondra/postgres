@@ -131,6 +131,10 @@ static bool index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 static void index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos);
 static void index_batch_kill_item(IndexScanDesc scan);
 
+static void AssertCheckBatchPosValid(IndexScanDesc scan, IndexScanBatchPos *pos);
+static void AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch);
+static void AssertCheckBatches(IndexScanDesc scan);
+
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -488,7 +492,14 @@ index_markpos(IndexScanDesc scan)
 	if (scan->xs_batches == NULL)
 		scan->indexRelation->rd_indam->ammarkpos(scan);
 	else
-		elog(WARNING, "FIXME index_markpos does not support batching yet");
+	{
+		IndexScanBatches  *batches = scan->xs_batches;
+
+		/* just copy the read position (which has to be valid) */
+		batches->markPos = batches->readPos;
+
+		AssertCheckBatchPosValid(scan, &batches->markPos);
+	}
 }
 
 /* ----------------
@@ -1632,6 +1643,11 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			{
 				batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
 
+				/*
+				 * FIXME needs to be careful about markPos - we should not free
+				 * a batch markPos points to (just like nbtree). Maybe we can
+				 * keep the batch aside too?
+				 */
 				index_batch_free(scan, batch);
 
 				scan->xs_batches->firstBatch++;
@@ -1692,6 +1708,7 @@ index_batch_init(IndexScanDesc scan)
 	/* positions in the queue of batches */
 	index_batch_pos_reset(scan, &scan->xs_batches->readPos);
 	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
+	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
 	scan->xs_batches->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batches->maxBatches);
 }
@@ -1733,6 +1750,7 @@ index_batch_reset(IndexScanDesc scan)
 
 	index_batch_pos_reset(scan, &batches->readPos);
 	index_batch_pos_reset(scan, &batches->streamPos);
+	index_batch_pos_reset(scan, &batches->markPos);
 
 	AssertCheckBatches(scan);
 }
@@ -1742,6 +1760,8 @@ index_batch_kill_item(IndexScanDesc scan)
 {
 	/* FIXME mark item at current readPos as deleted */
 	AssertCheckBatchPosValid(scan, &scan->xs_batches->readPos);
+
+	elog(WARNING, "FIXME index_batch_kill_item not implemented");
 }
 
 static void

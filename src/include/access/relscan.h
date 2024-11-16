@@ -196,9 +196,6 @@ typedef struct IndexScanBatchData
 	int		   *killedItems;	/* indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
 
-	/* the marked itemIndex in this batch */
-	int			markItemIndex;	/* itemIndex, or -1 if not valid */
-
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
@@ -219,7 +216,11 @@ typedef struct IndexScanBatchData
 
 } IndexScanBatchData;
 
-typedef struct IndexScanBatchPos {
+/*
+ * Position in the queue of batches - index of a batch, index of item in a batch.
+ */
+typedef struct IndexScanBatchPos
+{
 	int			batch;
 	int			index;
 } IndexScanBatchPos;

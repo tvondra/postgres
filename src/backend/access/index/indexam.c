@@ -119,6 +119,7 @@ static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan);
 static bool index_batch_getnext(IndexScanDesc scan,
 								ScanDirection direction);
+static void index_batch_free(IndexScanDesc scan, IndexScanBatch *batch);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
 
@@ -1381,6 +1382,8 @@ AssertCheckBatches(IndexScanDesc scan)
 
 	/* The index of the first batch should be valid with (numBatches > 0). */
 	Assert(!((batches->firstBatch < 0) && (batches->numBatches > 0)));
+
+	/* FIXME do checks on all loaded batches */
 #endif
 }
 
@@ -1721,4 +1724,15 @@ index_batch_kill_item(IndexScanDesc scan)
 {
 	/* FIXME mark item at current readPos as deleted */
 	AssertCheckBatchPosValid(scan, &scan->xs_batches->readPos);
+}
+
+static void
+index_batch_free(IndexScanDesc scan, IndexScanBatch *batch)
+{
+	SCAN_CHECKS;
+	CHECK_SCAN_PROCEDURE(amfreebatch);
+
+	AssertCheckBatch(batch);
+
+	scan->indexRelation->rd_indam->amfreebatch(scan, batch);
 }

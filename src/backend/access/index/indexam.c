@@ -1568,9 +1568,11 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
 
-	/* FIXME don't overflow the array, should resize the array instead */
-	if (scan->xs_batches->numBatches == scan->xs_batches->maxBatches)
-		return NULL;
+	/*
+	 * FIXME don't overflow the array, should resize the array instead
+	 * or release batches that are no longer needed.
+	 */
+	Assert(scan->xs_batches->numBatches < scan->xs_batches->maxBatches);
 
 	/*
 	 * Did we already read the last batch for this scan? We may read the

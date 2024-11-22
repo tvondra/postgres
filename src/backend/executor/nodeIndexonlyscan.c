@@ -49,7 +49,7 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(IndexOnlyScanState *node, TupleTableSlot *slot,
 							IndexTuple itup, TupleDesc itupdesc);
-static bool ios_prefetch_block(IndexScanDesc scan, void *data, int index);
+static bool ios_prefetch_block(IndexScanDesc scan, void *data, IndexScanBatchPos *pos);
 
 /* values stored in ios_prefetch_block in the batch cache */
 #define		IOS_UNKNOWN_VISIBILITY		0	/* XXX default value */
@@ -108,11 +108,11 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		node->ioss_VMBuffer = InvalidBuffer;
 
 		/* Also set the prefetch callback info, if baching enabled. */
-		// if (scandesc->xs_batch != NULL)
-		// {
-		// 	scandesc->xs_batch->prefetchCallback = ios_prefetch_block;
-		// 	scandesc->xs_batch->prefetchArgument = (void *) node;
-		// }
+		if (scandesc->xs_batches != NULL)
+		{
+			scandesc->xs_batches->prefetchCallback = ios_prefetch_block;
+			scandesc->xs_batches->prefetchArgument = (void *) node;
+		}
 
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
@@ -145,8 +145,6 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
-			int	lastIndex = scandesc->xs_batches->readPos.index;
-
 			/* Is the index of the current item valid for the batch? */
 			// Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));
 
@@ -160,7 +158,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * visibility from that. Maybe we could/should have a more direct
 			 * way?
 			 */
-			all_visible = !ios_prefetch_block(scandesc, node, lastIndex);
+			all_visible = !ios_prefetch_block(scandesc, node,
+											  &scandesc->xs_batches->readPos);
 		}
 
 		/*
@@ -856,6 +855,10 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
 }
 
+/* FIXME duplicate from indexam.c */
+#define INDEX_SCAN_BATCH(scan, idx)	\
+		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
+
 /*
  * ios_prefetch_block
  *		Callback to only prefetch blocks that are not all-visible.
@@ -866,24 +869,27 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
  * not all-visible.
  */
 static bool
-ios_prefetch_block(IndexScanDesc scan, void *arg, int index)
+ios_prefetch_block(IndexScanDesc scan, void *arg, IndexScanBatchPos *pos)
 {
-//	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
-//
-//	if (scan->xs_batch->privateData[index] == IOS_UNKNOWN_VISIBILITY)
-//	{
-//		bool		all_visible;
-//		ItemPointer tid = &scan->xs_batch->heaptids[index];
-//
-//		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
-//									 ItemPointerGetBlockNumber(tid),
-//									 &node->ioss_VMBuffer);
-//
-//		scan->xs_batch->privateData[index]
-//			= all_visible ? IOS_ALL_VISIBLE : IOS_NOT_ALL_VISIBLE;
-//	}
-//
-//	/* prefetch only blocks that are not all-visible */
-//	return (scan->xs_batch->privateData[index] == IOS_NOT_ALL_VISIBLE);
-	return true;
+	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
+	IndexScanBatch		batch = INDEX_SCAN_BATCH(scan, pos->batch);
+
+	if (batch->privateData == NULL)
+		batch->privateData = palloc0(sizeof(Datum) * (batch->lastItem + 1));
+
+	if (batch->privateData[pos->index] == IOS_UNKNOWN_VISIBILITY)
+	{
+		bool		all_visible;
+		ItemPointer tid = &batch->items[pos->index].heapTid;
+
+		all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+									 ItemPointerGetBlockNumber(tid),
+									 &node->ioss_VMBuffer);
+
+		batch->privateData[pos->index]
+			= all_visible ? IOS_ALL_VISIBLE : IOS_NOT_ALL_VISIBLE;
+	}
+
+	/* prefetch only blocks that are not all-visible */
+	return (batch->privateData[pos->index] == IOS_NOT_ALL_VISIBLE);
 }

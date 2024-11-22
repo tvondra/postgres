@@ -155,7 +155,14 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
  */
 typedef struct IndexScanBatchData
 {
-	/* info for navigating the index (subset of BTScanPosData, etc.) */
+	/*
+	 * AM-specific concept of position within the index, and other stuff
+	 * the AM might need to store for each batch.
+	 *
+	 * XXX maybe "position" is not the best name, it can have other stuff
+	 * the AM needs to keep per-batch (even only for reading the leaf items,
+	 * like nextTupleOffset).
+	 */
 	void   *opaque;
 
 	/*
@@ -180,6 +187,9 @@ typedef struct IndexScanBatchData
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
 	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.
+	 *
+	 * XXX maybe currTuples should be part of the am-specific per-batch state
+	 * stored in "position" field?
 	 */
 	char	   *currTuples;			/* tuple storage for currPos */
 	IndexScanBatchPosItem *items;	/* XXX don't size to MaxTIDsPerBTreePage */
@@ -205,6 +215,9 @@ typedef struct IndexScanBatchPos
 	int			index;
 } IndexScanBatchPos;
 
+typedef struct IndexScanDescData IndexScanDescData;
+typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan, void *arg, IndexScanBatchPos *pos);
+
 /*
  * Queue
  */
@@ -219,10 +232,23 @@ typedef struct IndexScanBatches
 		 */
 		bool	finished;
 
+		/*
+		 * Current scan direction, for the currently loaded batches. This
+		 * is used to load data in the read stream API callback, etc.
+		 *
+		 * XXX May need some work to use already loaded batches after
+		 * change of direction, instead of just throwing everything away.
+		 * May need to reset the stream but keep the batches?
+		 */
+		ScanDirection			direction;
+
 		/* positions in the queue of batches (batch + item) */
 		IndexScanBatchPos		readPos;	/* read position */
 		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
 		IndexScanBatchPos		markPos;	/* mark/restore position */
+
+		IndexScanBatchData	   *markBatch;
+		IndexScanBatchData	   *currentBatch;
 
 		/*
 		 * Array of batches returned by the AM. The array has a capacity
@@ -233,14 +259,14 @@ typedef struct IndexScanBatches
 		 * FIXME Maybe these fields should be uint32, or something like that?
 		 */
 		int		maxBatches;		/* size of the batches array */
-		int		numBatches;		/* number of loaded batches */
-		int		firstBatch;		/* first valid batch */
+		int		firstBatch;		/* first used batch slot */
+		int		nextBatch;		/* next empty batch slot */
 
 		IndexScanBatchData **batches;
 
-		/* FIXME add callback to skip prefetching in IOS etc. */
-		// IndexPrefetchCallback	prefetchCallback;
-		// void				   *prefetchArgument;
+		/* callback to skip prefetching in IOS etc. */
+		IndexPrefetchCallback	prefetchCallback;
+		void				   *prefetchArgument;
 } IndexScanBatches;
 
 /*

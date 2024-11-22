@@ -292,6 +292,10 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	res;
 
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 
@@ -305,8 +309,10 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 *
 		 * XXX This probably should not rely on so->currPos, because the
 		 * batching may not populate that at all. Add a new flag?
+		 *
+		 * FIXME needs to use a "batch" position, not so->currPos
 		 */
-		if (!BTScanPosIsValid(so->currPos))
+		if (scan->xs_batches->currentBatch == NULL)
 			res = _bt_first_batch(scan, dir);
 		else
 		{
@@ -319,6 +325,17 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		/* If we have a tuple, return it ... */
 		if (res)
 			break;
+
+		/* XXX we need to invoke _bt_first_batch on the next iteration, to
+		 * advance SAOP keys etc. But indexam.c already does this, but that's
+		 * only after this returns, so maybe this should do this in some other
+		 * way, not sure who should be responsible for setting currentBatch.
+		 *
+		 * XXX Maybe we don't even need that field? What is a current batch
+		 * anyway? There seem to be at least multiple concepts of "current"
+		 * batch, one for the read stream, another for executor ...
+		 */
+		scan->xs_batches->currentBatch = res;
 
 		/* ... otherwise see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
@@ -334,6 +351,12 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 void
 btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/*
 	 * Check to see if we should kill tuples from the previous batch.
 	 */
@@ -361,6 +384,21 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 
 	if (batch->orderbynulls)
 		pfree(batch->orderbynulls);
+
+	if (batch->currTuples)
+		pfree(batch->currTuples);
+
+	if (batch->opaque)
+	{
+		BTBatchScanPos pos = (BTBatchScanPos) batch->opaque;
+
+		BTBatchScanPosIsValid(*pos);
+		BTBatchScanPosIsPinned(*pos);
+
+		BTBatchScanPosUnpinIfPinned(*pos);
+
+		pfree(batch->opaque);
+	}
 
 	/* and finally free the batch itself */
 	pfree(batch);
@@ -492,6 +530,10 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	so->oppositeDirCheck = false;
 	BTScanPosUnpinIfPinned(so->markPos);
 	BTScanPosInvalidate(so->markPos);
+
+	/* FIXME should be in indexam.c I think */
+	if (scan->xs_batches)
+		scan->xs_batches->currentBatch = NULL;
 
 	/*
 	 * Allocate tuple workspace arrays, if needed for an index-only scan and
@@ -996,6 +1038,151 @@ _bt_parallel_seize(IndexScanDesc scan, BlockNumber *next_scan_page,
 			exit_loop = true;
 		}
 		LWLockRelease(&btscan->btps_lock);
+		if (exit_loop || !status)
+			break;
+		ConditionVariableSleep(&btscan->btps_cv, WAIT_EVENT_BTREE_PAGE);
+	}
+	ConditionVariableCancelSleep();
+
+	/* When the scan has reached the rightmost (or leftmost) page, end it */
+	if (endscan)
+		_bt_parallel_done(scan);
+
+	return status;
+}
+
+/*
+ * _bt_parallel_seize() -- Begin the process of advancing the scan to a new
+ *		page.  Other scans must wait until we call _bt_parallel_release()
+ *		or _bt_parallel_done().
+ *
+ * The return value is true if we successfully seized the scan and false
+ * if we did not.  The latter case occurs when no pages remain, or when
+ * another primitive index scan is scheduled that caller's backend cannot
+ * start just yet (only backends that call from _bt_first are capable of
+ * starting primitive index scans, which they indicate by passing first=true).
+ *
+ * If the return value is true, *next_scan_page returns the next page of the
+ * scan, and *last_curr_page returns the page that *next_scan_page came from.
+ * An invalid *next_scan_page means the scan hasn't yet started, or that
+ * caller needs to start the next primitive index scan (if it's the latter
+ * case we'll set so.needPrimScan).
+ *
+ * Callers should ignore the value of *next_scan_page and *last_curr_page if
+ * the return value is false.
+ */
+bool
+_bt_parallel_seize_batch(IndexScanDesc scan, BTBatchScanPos pos,
+						 BlockNumber *next_scan_page,
+						 BlockNumber *last_curr_page, bool first)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	bool		exit_loop = false,
+				status = true,
+				endscan = false;
+	ParallelIndexScanDesc parallel_scan = scan->parallel_scan;
+	BTParallelScanDesc btscan;
+
+	*next_scan_page = InvalidBlockNumber;
+	*last_curr_page = InvalidBlockNumber;
+
+	/*
+	 * Reset so->currPos, and initialize moreLeft/moreRight such that the next
+	 * call to _bt_readnextpage treats this backend similarly to a serial
+	 * backend that steps from *last_curr_page to *next_scan_page (unless this
+	 * backend's so->currPos is initialized by _bt_readfirstpage before then).
+	 */
+	BTScanPosInvalidate(so->currPos);
+	pos->moreLeft = pos->moreRight = true;
+
+	if (first)
+	{
+		/*
+		 * Initialize array related state when called from _bt_first, assuming
+		 * that this will be the first primitive index scan for the scan
+		 */
+		so->needPrimScan = false;
+		so->scanBehind = false;
+		so->oppositeDirCheck = false;
+	}
+	else
+	{
+		/*
+		 * Don't attempt to seize the scan when it requires another primitive
+		 * index scan, since caller's backend cannot start it right now
+		 */
+		if (so->needPrimScan)
+			return false;
+	}
+
+	btscan = (BTParallelScanDesc) OffsetToPointer(parallel_scan,
+												  parallel_scan->ps_offset);
+
+	while (1)
+	{
+		SpinLockAcquire(&btscan->btps_mutex);
+
+		if (btscan->btps_pageStatus == BTPARALLEL_DONE)
+		{
+			/* We're done with this parallel index scan */
+			status = false;
+		}
+		else if (btscan->btps_pageStatus == BTPARALLEL_IDLE &&
+				 btscan->btps_nextScanPage == P_NONE)
+		{
+			/* End this parallel index scan */
+			status = false;
+			endscan = true;
+		}
+		else if (btscan->btps_pageStatus == BTPARALLEL_NEED_PRIMSCAN)
+		{
+			Assert(so->numArrayKeys);
+
+			if (first)
+			{
+				/* Can start scheduled primitive scan right away, so do so */
+				btscan->btps_pageStatus = BTPARALLEL_ADVANCING;
+				for (int i = 0; i < so->numArrayKeys; i++)
+				{
+					BTArrayKeyInfo *array = &so->arrayKeys[i];
+					ScanKey		skey = &so->keyData[array->scan_key];
+
+					array->cur_elem = btscan->btps_arrElems[i];
+					skey->sk_argument = array->elem_values[array->cur_elem];
+				}
+				exit_loop = true;
+			}
+			else
+			{
+				/*
+				 * Don't attempt to seize the scan when it requires another
+				 * primitive index scan, since caller's backend cannot start
+				 * it right now
+				 */
+				status = false;
+			}
+
+			/*
+			 * Either way, update backend local state to indicate that a
+			 * pending primitive scan is required
+			 */
+			so->needPrimScan = true;
+			so->scanBehind = false;
+			so->oppositeDirCheck = false;
+		}
+		else if (btscan->btps_pageStatus != BTPARALLEL_ADVANCING)
+		{
+			/*
+			 * We have successfully seized control of the scan for the purpose
+			 * of advancing it to a new page!
+			 */
+			btscan->btps_pageStatus = BTPARALLEL_ADVANCING;
+			Assert(btscan->btps_nextScanPage != P_NONE);
+			*next_scan_page = btscan->btps_nextScanPage;
+			*last_curr_page = btscan->btps_lastCurrPage;
+			exit_loop = true;
+		}
+		SpinLockRelease(&btscan->btps_mutex);
 		if (exit_loop || !status)
 			break;
 		ConditionVariableSleep(&btscan->btps_cv, WAIT_EVENT_BTREE_PAGE);

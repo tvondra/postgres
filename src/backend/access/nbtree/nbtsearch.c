@@ -1499,23 +1499,27 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	batch = NULL;
 	BTScanBatch		btbatch = NULL;
+	int				nitems = 0;
 
 	/* we should only get here for pages with at least some items */
 	Assert(so->currPos.firstItem <= so->currPos.lastItem);
 
 	batch = index_batch_alloc(MaxTIDsPerBTreePage);
 
-	batch->firstItem = so->currPos.firstItem;
-	batch->lastItem = so->currPos.lastItem;
-	batch->itemIndex = so->currPos.itemIndex;
+	batch->firstItem = 0;
+	batch->lastItem = 0;
+	batch->itemIndex = 0;
 
 	/* copy the populated part of the items array */
-	for (int i = batch->firstItem; i <= batch->lastItem; i++)
+	for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 	{
-		batch->items[i].heapTid = so->currPos.items[i].heapTid;
-		batch->items[i].indexOffset = so->currPos.items[i].indexOffset;
-		batch->items[i].tupleOffset = so->currPos.items[i].tupleOffset;
+		batch->items[nitems].heapTid = so->currPos.items[i].heapTid;
+		batch->items[nitems].indexOffset = so->currPos.items[i].indexOffset;
+		batch->items[nitems].tupleOffset = so->currPos.items[i].tupleOffset;
+		nitems++;
 	}
+
+	batch->lastItem = (nitems - 1);
 
 	/* now build the btree-specific stuff */
 	btbatch = palloc(sizeof(BTScanBatchData));

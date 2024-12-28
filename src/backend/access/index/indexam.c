@@ -1593,7 +1593,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
 	if (batch != NULL)
 	{
-		INDEX_SCAN_BATCH(scan, scan->xs_batches->numBatches) = batch;
+		/* position of the newly loaded batch */
+		int	batchIndex;
 
 		/* if loading first batch, set the firstBatch index */
 		if (scan->xs_batches->numBatches == 0)
@@ -1601,6 +1602,10 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 			Assert(scan->xs_batches->firstBatch == -1);
 			scan->xs_batches->firstBatch = 0;
 		}
+
+		batchIndex = scan->xs_batches->firstBatch + scan->xs_batches->numBatches;
+
+		INDEX_SCAN_BATCH(scan, batchIndex) = batch;
 
 		scan->xs_batches->numBatches++;
 	}

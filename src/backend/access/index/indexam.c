@@ -1384,6 +1384,25 @@ AssertCheckBatches(IndexScanDesc scan)
 #endif
 }
 
+static void
+index_batch_print(IndexScanDesc scan)
+{
+	IndexScanBatches *batches = scan->xs_batches;
+
+	if (!scan->xs_batches)
+		return;
+
+	elog(WARNING, "index_batch_print: firstBatch %d numBatches %d", batches->firstBatch, batches->numBatches);
+
+	for (int i = 0; i < batches->numBatches; i++)
+	{
+		int	idx = (batches->firstBatch + i);
+		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, idx);
+		elog(WARNING, "index_batch_print: batch %d %p", idx, batch);
+	}
+
+}
+
 /*
  * index_batch_pos_advance
  *		Advance the position to the next item, depending on scan direction.

@@ -107,6 +107,8 @@ do { \
 			 CppAsString(pname), RelationGetRelationName(scan->indexRelation)); \
 } while(0)
 
+#define INDEXAM_DEBUG(...) elog(WARNING, __VA_ARGS__)
+
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
@@ -116,8 +118,7 @@ static inline void validate_relation_kind(Relation r);
 static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan);
 static void index_batch_end(IndexScanDesc scan);
-static bool index_batch_getnext(IndexScanDesc scan,
-								ScanDirection direction);
+static bool index_batch_getnext(IndexScanDesc scan);
 static void index_batch_free(IndexScanDesc scan, IndexScanBatch batch);
 static ItemPointer index_batch_getnext_tid(IndexScanDesc scan,
 										   ScanDirection direction);
@@ -126,8 +127,7 @@ static BlockNumber index_scan_stream_read_next(ReadStream *stream,
 											   void *callback_private_data,
 											   void *per_buffer_data);
 
-static bool index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
-									ScanDirection dir);
+static bool index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos);
 static void index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos);
 static void index_batch_kill_item(IndexScanDesc scan);
 
@@ -1331,7 +1331,7 @@ AssertCheckBatchPosValid(IndexScanDesc scan, IndexScanBatchPos *pos)
 
 	/* make sure the position is valid for currently loaded batches */
 	Assert((pos->batch >= batch->firstBatch) &&
-		   (pos->batch < batch->firstBatch + batch->numBatches));
+		   (pos->batch < batch->nextBatch));
 #endif
 }
 
@@ -1373,32 +1373,31 @@ AssertCheckBatches(IndexScanDesc scan)
 	 */
 	Assert((batches->maxBatches > 0) && (batches->maxBatches < 128));
 
-	/* The number of batches loaded needs to be valid. */
-	Assert((batches->numBatches >= 0) &&
-		   (batches->numBatches <= batches->maxBatches));
-
 	/* The index of the first batch should be valid with (numBatches > 0). */
-	Assert(!((batches->firstBatch < 0) && (batches->numBatches > 0)));
+	Assert((batches->firstBatch >= 0) && (batches->firstBatch <= batches->nextBatch));
+
+	/* The number of batches loaded needs to be valid. */
+	Assert((batches->nextBatch - batches->firstBatch) <= batches->maxBatches);
 
 	/* FIXME do checks on all loaded batches */
 #endif
 }
 
 static void
-index_batch_print(IndexScanDesc scan)
+index_batch_print(const char *label, IndexScanDesc scan)
 {
 	IndexScanBatches *batches = scan->xs_batches;
 
 	if (!scan->xs_batches)
 		return;
 
-	elog(WARNING, "index_batch_print: firstBatch %d numBatches %d", batches->firstBatch, batches->numBatches);
+	INDEXAM_DEBUG("%s: batches firstBatch %d nextBatch %d",
+				  label, batches->firstBatch, batches->nextBatch);
 
-	for (int i = 0; i < batches->numBatches; i++)
+	for (int i = batches->firstBatch; i < batches->nextBatch; i++)
 	{
-		int	idx = (batches->firstBatch + i);
-		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, idx);
-		elog(WARNING, "index_batch_print: batch %d %p", idx, batch);
+		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, i);
+		INDEXAM_DEBUG("%s: batch %d %p", label, i, batch);
 	}
 
 }
@@ -1413,9 +1412,14 @@ index_batch_print(IndexScanDesc scan)
  * but that requires knowing nheaptids.
  */
 static bool
-index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
-						ScanDirection dir)
+index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
 {
+	IndexScanBatchData *batch;
+	ScanDirection	direction = scan->xs_batches->direction;
+
+	/* should know direction by now */
+	Assert(direction != NoMovementScanDirection);
+
 	/*
 	 * Do we already have the next TID in the currently loaded batches?
 	 *
@@ -1426,58 +1430,83 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 	 * We either set need_batch=true, or advance the position to the
 	 * next item to return.
 	 */
-	if (scan->xs_batches->numBatches == 0)
+	if (scan->xs_batches->firstBatch == scan->xs_batches->nextBatch)
 		return false; /* not advanced */
 
+	/*
+	 * After loading the first batch, so move to first item (or last, for
+	 * backwards scans).
+	 */
 	if (pos->batch == -1)
 	{
-		/* after loading the first batch, so move to first item */
+		batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
+
 		pos->batch = 0;
-		pos->index = 0;
+		pos->index = (ScanDirectionIsForward(direction)) ? batch->firstItem : batch->lastItem;
 
 		/* the position has to be valid */
 		AssertCheckBatchPosValid(scan, pos);
+
+		return true;
 	}
-	else
+
+	/* the current position has to be valid */
+	AssertCheckBatchPosValid(scan, pos);
+
+	/*
+	 * Try advancing to the next item in the current batch, or maybe to the
+	 * next batch (if already loaded).
+	 */
+	batch = INDEX_SCAN_BATCH(scan, pos->batch);
+	Assert(batch != NULL);
+
+	/*
+	 * Advance to the next item in the same batch, or to the next
+	 * batch. If not possible, we need to load a new batch.
+	 */
+	if (ScanDirectionIsForward(direction))
 	{
-		IndexScanBatchData *batch;
-
-		/* the position has to be valid */
-		AssertCheckBatchPosValid(scan, pos);
-
-		/*
-		 * Can we advance to the next item in the current batch, or
-		 * maybe to the next (already loaded) batch?
-		 */
-		batch = INDEX_SCAN_BATCH(scan, pos->batch);
-
-		Assert(batch != NULL);
-
-		/*
-		 * Advance to the next item in the same batch, or to the next
-		 * batch. If not possible, we need to load a new batch.
-		 */
 		if (pos->index < batch->lastItem)
 		{
 			pos->index++;
 
 			/* the position has to be valid */
 			AssertCheckBatchPosValid(scan, pos);
+
+			return true;
 		}
-		else if (pos->batch + 1 < scan->xs_batches->numBatches)
+	}
+	else	/* ScanDirectionIsBackward */
+	{
+		if (pos->index > 0)
 		{
-			pos->batch++;
-			pos->index = 0;
+			pos->index--;
 
 			/* the position has to be valid */
 			AssertCheckBatchPosValid(scan, pos);
+
+			return true;
 		}
-		else
-			return false;	/* not advanced */
 	}
 
-	/* advanced to the next (valid) item */
-	return true;
+	/* do we already have a batch loaded? */
+	if (pos->batch + 1 < scan->xs_batches->nextBatch)
+	{
+		pos->batch++;
+
+		batch = INDEX_SCAN_BATCH(scan, pos->batch);
+		Assert(batch != NULL);
+
+		pos->index = (ScanDirectionIsForward(direction)) ? batch->firstItem : batch->lastItem;
+
+		/* the position has to be valid */
+		AssertCheckBatchPosValid(scan, pos);
+
+		return true;
+	}
+
+	/* can't advance */
+	return false;
 }
 
 /*
@@ -1517,13 +1546,17 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
 	IndexScanBatchPos *pos = &scan->xs_batches->streamPos;
+	ScanDirection	direction = scan->xs_batches->direction;
+
+	/* we should have set the direction already */
+	Assert(direction != NoMovementScanDirection);
 
 	/* XXX this loop shouldn't happen more than twice */
 	while (true)
 	{
 		/* try to load batch, or return the next item */
 		/* FIXME use correct direction */
-		if (index_batch_pos_advance(scan, pos, ForwardScanDirection))
+		if (index_batch_pos_advance(scan, pos))
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer tid = &batch->items[pos->index].heapTid;
@@ -1531,8 +1564,7 @@ index_scan_stream_read_next(ReadStream *stream,
 		}
 
 		/* try loading the next batch */
-		/* FIXME use correct scan direction */
-		if (index_batch_getnext(scan, ForwardScanDirection))
+		if (index_batch_getnext(scan))
 			continue;
 
 		/* can't load batch, we're done with this scan */
@@ -1555,10 +1587,11 @@ index_scan_stream_read_next(ReadStream *stream,
  * ----------------
  */
 static bool
-index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
+index_batch_getnext(IndexScanDesc scan)
 {
 	IndexScanBatchData *batch;
 	ItemPointerData		tid;
+	ScanDirection		direction = scan->xs_batches->direction;
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
@@ -1570,7 +1603,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * FIXME don't overflow the array, should resize the array instead
 	 * or release batches that are no longer needed.
 	 */
-	Assert(scan->xs_batches->numBatches < scan->xs_batches->maxBatches);
+	Assert((scan->xs_batches->nextBatch - scan->xs_batches->firstBatch) < scan->xs_batches->maxBatches);
 
 	/*
 	 * Did we already read the last batch for this scan? We may read the
@@ -1579,6 +1612,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 */
 	if (scan->xs_batches->finished)
 		return NULL;
+
+	index_batch_print("index_batch_getnext / start", scan);
 
 	/*
 	 * FIXME btgetbatch calls _bt_returnitem, which however sets xs_heaptid,
@@ -1594,20 +1629,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	if (batch != NULL)
 	{
 		/* position of the newly loaded batch */
-		int	batchIndex;
-
-		/* if loading first batch, set the firstBatch index */
-		if (scan->xs_batches->numBatches == 0)
-		{
-			Assert(scan->xs_batches->firstBatch == -1);
-			scan->xs_batches->firstBatch = 0;
-		}
-
-		batchIndex = scan->xs_batches->firstBatch + scan->xs_batches->numBatches;
+		int	batchIndex = scan->xs_batches->nextBatch;
 
 		INDEX_SCAN_BATCH(scan, batchIndex) = batch;
 
-		scan->xs_batches->numBatches++;
+		scan->xs_batches->nextBatch++;
+
+		INDEXAM_DEBUG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
+					  scan->xs_batches->firstBatch, scan->xs_batches->nextBatch, batch);
 	}
 	else
 		scan->xs_batches->finished = true;
@@ -1616,6 +1645,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	scan->xs_heaptid = tid;
 
 	AssertCheckBatches(scan);
+
+	index_batch_print("index_batch_getnext / end", scan);
 
 	return (batch != NULL);
 }
@@ -1640,6 +1671,12 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* shouldn't get here without batching */
 	Assert(scan->xs_batches != NULL);
 
+	/* FIXME handle change of scan direction (reset stream, ...) */
+	scan->xs_batches->direction = direction;
+
+	INDEXAM_DEBUG("index_batch_getnext_tid pos %d %d direction %d",
+				  pos->batch, pos->index, direction);
+
 	/* XXX this loop shouldn't happen more than twice */
 	/* FIXME maybe have some protection against infinite loops? */
 	while (true)
@@ -1650,10 +1687,16 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * release the previous batch. Or maybe we could keep it in case the
 		 * scan direction changes, but not more than maxBatches?
 		 */
-		if (index_batch_pos_advance(scan, pos, direction))
+		if (index_batch_pos_advance(scan, pos))
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
+
+			INDEXAM_DEBUG("pos batch %p first %d last %d pos %d/%d TID (%u,%u)",
+						  batch, batch->firstItem, batch->lastItem,
+						  pos->batch, pos->index,
+						  ItemPointerGetBlockNumber(&scan->xs_heaptid),
+						  ItemPointerGetOffsetNumber(&scan->xs_heaptid));
 
 			/*
 			 * If we advanced to the next batch, release the batch we no
@@ -1667,15 +1710,24 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			{
 				batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
 
+				INDEXAM_DEBUG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
+							  batch,
+							  scan->xs_batches->firstBatch,
+							  scan->xs_batches->nextBatch);
+
 				/*
 				 * FIXME needs to be careful about markPos - we should not free
 				 * a batch markPos points to (just like nbtree). Maybe we can
 				 * keep the batch aside too?
 				 */
 				index_batch_free(scan, batch);
-
 				scan->xs_batches->firstBatch++;
-				scan->xs_batches->numBatches--;
+
+				INDEXAM_DEBUG("index_batch_getnext_tid batch freed firstBatch %d nextBatch %d",
+							  scan->xs_batches->firstBatch,
+							  scan->xs_batches->nextBatch);
+
+				index_batch_print("index_batch_getnext_tid / free old batch", scan);
 
 				/* we can't skip any batches */
 				Assert(scan->xs_batches->firstBatch == pos->batch);
@@ -1685,8 +1737,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 
 		/* try loading the next batch */
-		if (index_batch_getnext(scan, direction))
+		if (index_batch_getnext(scan))
+		{
+			INDEXAM_DEBUG("loaded next batch");
 			continue;
+		}
+
+		INDEXAM_DEBUG("no more batches to process");
 
 		/* can't load batch, we're done with this scan */
 		return NULL;
@@ -1718,6 +1775,9 @@ index_batch_init(IndexScanDesc scan)
 
 	scan->xs_batches = palloc0(sizeof(IndexScanBatches));
 
+	/* XXX we don't know direction of the scan yet */
+	scan->xs_batches->direction = NoMovementScanDirection;
+
 	/*
 	 * XXX What's the maximum number of batches we might need? Presumably
 	 * it's related to effective_io_concurrency - the extreme case would
@@ -1727,8 +1787,8 @@ index_batch_init(IndexScanDesc scan)
 	 * resize the queue accordingly.
 	 */
 	scan->xs_batches->maxBatches = 16;	/* size of the batches array */
-	scan->xs_batches->numBatches = 0;	/* number of loaded batches */
-	scan->xs_batches->firstBatch = -1;	/* first batch */
+	scan->xs_batches->firstBatch = 0;	/* first batch */
+	scan->xs_batches->nextBatch = 0;	/* first batch is empty */
 
 	/* positions in the queue of batches */
 	index_batch_pos_reset(scan, &scan->xs_batches->readPos);
@@ -1751,29 +1811,32 @@ index_batch_init(IndexScanDesc scan)
 static void
 index_batch_reset(IndexScanDesc scan)
 {
-	int lastBatch;
 	IndexScanBatches *batches = scan->xs_batches;
 
 	/* bail out if batching not enabled */
 	if (!batches)
 		return;
 
+	index_batch_print("index_batch_reset", scan);
+
 	/* With batching enabled, we should have a read stream. Reset it. */
 	Assert(scan->xs_heapfetch);
 	read_stream_reset(scan->xs_heapfetch->rs);
 
 	/* release all currently loaded batches */
-	lastBatch = batches->firstBatch + batches->numBatches;
-	for (int i = batches->firstBatch; i < lastBatch; i++)
+	for (int i = batches->firstBatch; i < batches->nextBatch; i++)
 	{
 		IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, i);
+
+		INDEXAM_DEBUG("freeing batch %d %p", i, batch);
+
 		index_batch_free(scan, batch);
 	}
 
 	/* reset relevant IndexScanBatches fields */
 	batches->maxBatches = 16;	/* size of the batches array */
-	batches->numBatches = 0;	/* number of loaded batches */
-	batches->firstBatch = -1;	/* first batch */
+	batches->firstBatch = 0;	/* first batch */
+	batches->nextBatch = 0;		/* first batch is empty */
 
 	index_batch_pos_reset(scan, &batches->readPos);
 	index_batch_pos_reset(scan, &batches->streamPos);

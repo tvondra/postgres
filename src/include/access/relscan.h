@@ -215,6 +215,16 @@ typedef struct IndexScanBatches
 		 */
 		bool	finished;
 
+		/*
+		 * Current scan direction, for the currently loaded batches. This
+		 * is used to load data in the read stream API callback, etc.
+		 *
+		 * XXX May need some work to use already loaded batches after
+		 * change of direction, instead of just throwing everything away.
+		 * May need to reset the stream but keep the batches?
+		 */
+		ScanDirection			direction;
+
 		/* positions in the queue of batches (batch + item) */
 		IndexScanBatchPos		readPos;	/* read position */
 		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
@@ -229,8 +239,8 @@ typedef struct IndexScanBatches
 		 * FIXME Maybe these fields should be uint32, or something like that?
 		 */
 		int		maxBatches;		/* size of the batches array */
-		int		numBatches;		/* number of loaded batches */
-		int		firstBatch;		/* first valid batch */
+		int		firstBatch;		/* first used batch slot */
+		int		nextBatch;		/* next empty batch slot */
 
 		IndexScanBatchData **batches;
 

@@ -543,7 +543,9 @@ index_restrpos(IndexScanDesc scan)
 	if (scan->xs_batches == NULL)
 		scan->indexRelation->rd_indam->amrestrpos(scan);
 	else
-		elog(WARNING, "FIXME index_restrpos does not support batching yet");
+	{
+		// FIXME index_restrpos does not support batching yet
+	}
 }
 
 /*
@@ -633,7 +635,9 @@ index_parallelrescan(IndexScanDesc scan)
 
 	/* FIXME This probably needs to reset the batching, just like index_rescan()? */
 	if (scan->xs_batches != NULL)
-		elog(WARNING, "FIXME index_parallelrescan does not support batching yet");
+	{
+		// FIXME index_parallelrescan does not support batching yet
+	}
 }
 
 /*
@@ -1856,7 +1860,7 @@ index_batch_kill_item(IndexScanDesc scan)
 	/* FIXME mark item at current readPos as deleted */
 	AssertCheckBatchPosValid(scan, &scan->xs_batches->readPos);
 
-	elog(WARNING, "FIXME index_batch_kill_item not implemented");
+	// FIXME index_batch_kill_item not implemented
 }
 
 static void

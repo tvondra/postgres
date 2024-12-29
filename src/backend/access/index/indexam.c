@@ -1697,6 +1697,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
 
+			/* also update the index tuple  */
+			scan->xs_itup = (IndexTuple) (batch->currTuples + batch->items[pos->index].tupleOffset);
+
 			DEBUG_LOG("pos batch %p first %d last %d pos %d/%d TID (%u,%u)",
 						  batch, batch->firstItem, batch->lastItem,
 						  pos->batch, pos->index,

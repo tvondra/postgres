@@ -1412,9 +1412,6 @@ index_batch_print(const char *label, IndexScanDesc scan)
  *		Advance the position to the next item, depending on scan direction.
  *
  * XXX We expect to only do this when the advance is possible/valid.
- *
- * XXX Would be nice to have an assert that the final position is valid,
- * but that requires knowing nheaptids.
  */
 static bool
 index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)

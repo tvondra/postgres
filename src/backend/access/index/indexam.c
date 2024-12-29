@@ -1851,6 +1851,8 @@ index_batch_reset(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &batches->streamPos);
 	index_batch_pos_reset(scan, &batches->markPos);
 
+	batches->finished = false;
+
 	AssertCheckBatches(scan);
 }
 

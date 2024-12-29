@@ -1497,6 +1497,12 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 	batch->lastItem = 0;
 	batch->itemIndex = 0;
 
+	if (so->currTuples)
+	{
+		batch->currTuples = (char *) palloc(BLCKSZ);
+		memcpy(batch->currTuples, so->currTuples, BLCKSZ);
+	}
+
 	/* copy the populated part of the items array */
 	for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 	{

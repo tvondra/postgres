@@ -1632,7 +1632,7 @@ _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch)
 	 * XXX Now what? we don't have the currPos around anymore, so we should
 	 * load that, and apply the killed items to that, somehow?
 	 */
-	elog(WARNING, "FIXME: _bt_kill_batch not implemented");
+	// FIXME: _bt_kill_batch not implemented
 }
 
 /*

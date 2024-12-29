@@ -107,7 +107,11 @@ do { \
 			 CppAsString(pname), RelationGetRelationName(scan->indexRelation)); \
 } while(0)
 
-#define INDEXAM_DEBUG(...) elog(WARNING, __VA_ARGS__)
+#ifdef INDEXAM_DEBUG
+#define DEBUG_LOG(...) elog(WARNING, __VA_ARGS__)
+#else
+#define DEBUG_LOG(...)
+#endif
 
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
@@ -1386,20 +1390,21 @@ AssertCheckBatches(IndexScanDesc scan)
 static void
 index_batch_print(const char *label, IndexScanDesc scan)
 {
+#ifdef INDEXAM_DEBUG
 	IndexScanBatches *batches = scan->xs_batches;
 
 	if (!scan->xs_batches)
 		return;
 
-	INDEXAM_DEBUG("%s: batches firstBatch %d nextBatch %d",
+	DEBUG_LOG("%s: batches firstBatch %d nextBatch %d",
 				  label, batches->firstBatch, batches->nextBatch);
 
 	for (int i = batches->firstBatch; i < batches->nextBatch; i++)
 	{
 		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, i);
-		INDEXAM_DEBUG("%s: batch %d %p", label, i, batch);
+		DEBUG_LOG("%s: batch %d %p", label, i, batch);
 	}
-
+#endif
 }
 
 /*
@@ -1635,7 +1640,7 @@ index_batch_getnext(IndexScanDesc scan)
 
 		scan->xs_batches->nextBatch++;
 
-		INDEXAM_DEBUG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
+		DEBUG_LOG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
 					  scan->xs_batches->firstBatch, scan->xs_batches->nextBatch, batch);
 	}
 	else
@@ -1674,7 +1679,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* FIXME handle change of scan direction (reset stream, ...) */
 	scan->xs_batches->direction = direction;
 
-	INDEXAM_DEBUG("index_batch_getnext_tid pos %d %d direction %d",
+	DEBUG_LOG("index_batch_getnext_tid pos %d %d direction %d",
 				  pos->batch, pos->index, direction);
 
 	/* XXX this loop shouldn't happen more than twice */
@@ -1692,7 +1697,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			scan->xs_heaptid = batch->items[pos->index].heapTid;
 
-			INDEXAM_DEBUG("pos batch %p first %d last %d pos %d/%d TID (%u,%u)",
+			DEBUG_LOG("pos batch %p first %d last %d pos %d/%d TID (%u,%u)",
 						  batch, batch->firstItem, batch->lastItem,
 						  pos->batch, pos->index,
 						  ItemPointerGetBlockNumber(&scan->xs_heaptid),
@@ -1710,7 +1715,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			{
 				batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
 
-				INDEXAM_DEBUG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
+				DEBUG_LOG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
 							  batch,
 							  scan->xs_batches->firstBatch,
 							  scan->xs_batches->nextBatch);
@@ -1723,7 +1728,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				index_batch_free(scan, batch);
 				scan->xs_batches->firstBatch++;
 
-				INDEXAM_DEBUG("index_batch_getnext_tid batch freed firstBatch %d nextBatch %d",
+				DEBUG_LOG("index_batch_getnext_tid batch freed firstBatch %d nextBatch %d",
 							  scan->xs_batches->firstBatch,
 							  scan->xs_batches->nextBatch);
 
@@ -1739,11 +1744,11 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		/* try loading the next batch */
 		if (index_batch_getnext(scan))
 		{
-			INDEXAM_DEBUG("loaded next batch");
+			DEBUG_LOG("loaded next batch");
 			continue;
 		}
 
-		INDEXAM_DEBUG("no more batches to process");
+		DEBUG_LOG("no more batches to process");
 
 		/* can't load batch, we're done with this scan */
 		return NULL;
@@ -1828,7 +1833,7 @@ index_batch_reset(IndexScanDesc scan)
 	{
 		IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, i);
 
-		INDEXAM_DEBUG("freeing batch %d %p", i, batch);
+		DEBUG_LOG("freeing batch %d %p", i, batch);
 
 		index_batch_free(scan, batch);
 	}

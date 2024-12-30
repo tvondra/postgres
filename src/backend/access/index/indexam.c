@@ -1598,6 +1598,7 @@ index_batch_getnext(IndexScanDesc scan)
 	IndexScanBatchData *batch;
 	ItemPointerData		tid;
 	ScanDirection		direction = scan->xs_batches->direction;
+	IndexTuple			itup;
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
@@ -1630,6 +1631,7 @@ index_batch_getnext(IndexScanDesc scan)
 	 * loading the next batch.
 	 */
 	tid = scan->xs_heaptid;
+	itup = scan->xs_itup;
 
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, direction);
 	if (batch != NULL)
@@ -1649,6 +1651,7 @@ index_batch_getnext(IndexScanDesc scan)
 
 	/* XXX see FIXME above */
 	scan->xs_heaptid = tid;
+	scan->xs_itup = itup;
 
 	AssertCheckBatches(scan);
 

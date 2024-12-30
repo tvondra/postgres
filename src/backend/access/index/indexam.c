@@ -502,6 +502,8 @@ index_markpos(IndexScanDesc scan)
 		/* just copy the read position (which has to be valid) */
 		batches->markPos = batches->readPos;
 
+		elog(ERROR, "index_markpos: batching not supported");
+
 		AssertCheckBatchPosValid(scan, &batches->markPos);
 	}
 }
@@ -544,7 +546,7 @@ index_restrpos(IndexScanDesc scan)
 		scan->indexRelation->rd_indam->amrestrpos(scan);
 	else
 	{
-		// FIXME index_restrpos does not support batching yet
+		elog(ERROR, "index_restrpos: batching not supported");
 	}
 }
 
@@ -636,7 +638,7 @@ index_parallelrescan(IndexScanDesc scan)
 	/* FIXME This probably needs to reset the batching, just like index_rescan()? */
 	if (scan->xs_batches != NULL)
 	{
-		// FIXME index_parallelrescan does not support batching yet
+		elog(ERROR, "index_parallelrescan: batching not supported");
 	}
 }
 

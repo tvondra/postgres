@@ -1557,24 +1557,62 @@ index_scan_stream_read_next(ReadStream *stream,
 	/* we should have set the direction already */
 	Assert(direction != NoMovementScanDirection);
 
+	/*
+	 * The read position should be valid, because we initialize (advance) it
+	 * before maybe attempting to read the heap tuple. And the read position
+	 * always lags behind the "read stream" position, so it can't be invalid
+	 * yet.
+	 */
+	AssertCheckBatchPosValid(scan, &scan->xs_batches->readPos);
+
 	/* XXX this loop shouldn't happen more than twice */
 	while (true)
 	{
-		/* try to load batch, or return the next item */
-		/* FIXME use correct direction */
-		if (index_batch_pos_advance(scan, pos))
+		bool	advanced = false;
+
+		/*
+		 * Try to advance to the next item, and if there's none in the current
+		 * batch then load the next batch.
+		 */
+		if ((pos->batch == -1) && (pos->index == -1))
+		{
+			/*
+			 * No stream position - most likely all the batches until now were skipped
+			 * in an IOS scan, or something like that. In this case just use the read
+			 * position as a starting point.
+			 */
+			*pos = scan->xs_batches->readPos;
+			advanced = true;
+		}
+		else if (index_batch_pos_advance(scan, pos))
+			advanced = true;
+
+		if (advanced)
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer tid = &batch->items[pos->index].heapTid;
+
+			/*
+			 * if there's a prefetch callback, use it to decide if we will
+			 * need to read the block
+			 */
+			if (scan->xs_batches->prefetchCallback &&
+				!scan->xs_batches->prefetchCallback(scan, scan->xs_batches->prefetchArgument, pos))
+			{
+				continue;
+			}
+
 			return ItemPointerGetBlockNumber(tid);
 		}
+
+		/* advanced=false: there are no more items in the current batch */
 
 		/* try loading the next batch */
 		if (index_batch_getnext(scan))
 			continue;
 
 		/* can't load batch, we're done with this scan */
-		return InvalidBlockNumber;
+		break;
 	}
 
 	return InvalidBlockNumber;
@@ -1675,6 +1713,7 @@ index_batch_getnext(IndexScanDesc scan)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	IndexScanBatchPos *spos = &scan->xs_batches->streamPos;
 	IndexScanBatchPos *pos = &scan->xs_batches->readPos;
 
 	/* shouldn't get here without batching */

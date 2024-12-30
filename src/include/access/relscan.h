@@ -201,6 +201,9 @@ typedef struct IndexScanBatchPos
 	int			index;
 } IndexScanBatchPos;
 
+typedef struct IndexScanDescData IndexScanDescData;
+typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan, void *arg, IndexScanBatchPos *pos);
+
 /*
  * Queue
  */
@@ -244,9 +247,9 @@ typedef struct IndexScanBatches
 
 		IndexScanBatchData **batches;
 
-		/* FIXME add callback to skip prefetching in IOS etc. */
-		// IndexPrefetchCallback	prefetchCallback;
-		// void				   *prefetchArgument;
+		/* callback to skip prefetching in IOS etc. */
+		IndexPrefetchCallback	prefetchCallback;
+		void				   *prefetchArgument;
 } IndexScanBatches;
 
 /*

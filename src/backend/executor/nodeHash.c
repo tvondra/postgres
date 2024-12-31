@@ -54,6 +54,9 @@ static void ExecHashSkewTableInsert(HashJoinTable hashtable,
 									uint32 hashvalue,
 									int bucketNumber);
 static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
+static void ExecHashUpdateSpacePeak(HashJoinTable hashtable);
+static bool ExecHashExceededMemoryLimit(HashJoinTable hashtable);
+static void ExecHashAdjustMemoryLimit(HashJoinTable hashtable);
 
 static void *dense_alloc(HashJoinTable hashtable, Size size);
 static HashJoinTuple ExecParallelHashTupleAlloc(HashJoinTable hashtable,
@@ -199,10 +202,8 @@ MultiExecPrivateHash(HashState *node)
 	if (hashtable->nbuckets != hashtable->nbuckets_optimal)
 		ExecHashIncreaseNumBuckets(hashtable);
 
-	/* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
-	if (hashtable->spaceUsed > hashtable->spacePeak)
-		hashtable->spacePeak = hashtable->spaceUsed;
+	/* update info about peak memory usage */
+	ExecHashUpdateSpacePeak(hashtable);
 
 	hashtable->partialTuples = hashtable->totalTuples;
 }
@@ -1036,6 +1037,9 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		   hashtable, nfreed, ninmemory, hashtable->spaceUsed);
 #endif
 
+	/* adjust the memory limit for the new nbatches etc. */
+	ExecHashAdjustMemoryLimit(hashtable);
+
 	/*
 	 * If we dumped out either all or none of the tuples in the table, disable
 	 * further expansion of nbatch.  This situation implies that we have
@@ -1673,11 +1677,12 @@ ExecHashTableInsert(HashJoinTable hashtable,
 
 		/* Account for space used, and back off if we've used too much */
 		hashtable->spaceUsed += hashTupleSize;
-		if (hashtable->spaceUsed > hashtable->spacePeak)
-			hashtable->spacePeak = hashtable->spaceUsed;
-		if (hashtable->spaceUsed +
-			hashtable->nbuckets_optimal * sizeof(HashJoinTuple)
-			> hashtable->spaceAllowed)
+
+		/* update info about peak memory usage */
+		ExecHashUpdateSpacePeak(hashtable);
+
+		/* Should we add more batches, to enforce memory limit? */
+		if (ExecHashExceededMemoryLimit(hashtable))
 			ExecHashIncreaseNumBatches(hashtable);
 	}
 	else
@@ -1841,6 +1846,120 @@ ExecHashGetBucketAndBatch(HashJoinTable hashtable,
 		*bucketno = hashvalue & (nbuckets - 1);
 		*batchno = 0;
 	}
+}
+
+/*
+ * ExecHashUpdateSpacePeak
+ *		Update information about peak memory usage.
+ *
+ * This considers tuples added to the hash table, buckets of the hash table
+ * itself, and also the bufferer batch files on both the inner and outer side.
+ * Each file has a BLCKSZ buffer, so with enough batches this may actually
+ * represent most of the memory used by the hash join node.
+ */
+static void
+ExecHashUpdateSpacePeak(HashJoinTable hashtable)
+{
+	Size	spaceUsed = hashtable->spaceUsed;
+
+	/* buckets of the hash table */
+	spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
+
+	/* buffered batch files (inner + outer), each has a BLCKSZ buffer */
+	spaceUsed += hashtable->nbatch * sizeof(PGAlignedBlock) * 2;
+
+	/* if we exceeded the current peak, remember the new one */
+	if (spaceUsed > hashtable->spacePeak)
+		hashtable->spacePeak = spaceUsed;
+}
+
+/*
+ * ExecHashMemoryLimitExceeded
+ *		Check if the amount of memory used exceeds spaceAllowed.
+ *
+ * Check if the total amount of space used by the hash join exceeds the
+ * current value of spaceAllowed, and we should try to increase the number
+ * of batches.
+ *
+ * We need to consider both the data added to the hash and the hashtable
+ * itself (i.e. buckets), but also the files used for future batches.
+ * Each batch needs a file for inner/outer side, so we need (2*nbatch)
+ * files in total, and each BufFile has a BLCKSZ buffer. If we ignored
+ * the files and simply doubled the number of batches, we could easily
+ * increase the total amount of memory because while we expect to cut the
+ * batch size in half to, doubling the number of batches also doubles the
+ * amount of memory allocated by BufFile.
+ *
+ * That means doubling the number of batches is pointless when
+ *
+ *		(spaceUsed / 2) < 2 * (nbatches * sizeof(BufFile))
+ *
+ * because it would result in allocating more memory than it saves.
+ *
+ * This is a temporary decision - we can't stop adding batches entirely,
+ * just until the hash table grows enough to make it a win again.
+ */
+static bool
+ExecHashExceededMemoryLimit(HashJoinTable hashtable)
+{
+	return (hashtable->spaceUsed +
+			hashtable->nbuckets_optimal * sizeof(HashJoinTuple) +
+			hashtable->nbatch * sizeof(PGAlignedBlock) * 2
+			> hashtable->spaceAllowed);
+}
+
+/*
+ * ExecHashAdjustMemoryLimit
+ *		Adjust the memory limit after increasing the number of batches.
+ *
+ * We can't keep the same spaceAllowed value, because as we keep adding
+ * batches we're guaranteed to exceed the older values simply thanks to
+ * the BufFile allocations.
+ *
+ * Instead, we consider the "break even" threshold for the current number
+ * of batches, add a bit of slack (so that we don't get into a cycle of
+ * incrementing number of batches), and calculate the new limit from that.
+ *
+ * For well estimated cases this should do nothing, as the batches are
+ * expected to account only for a small fraction of work_mem. But if we
+ * significantly underestimate the number of batches, or if one batch
+ * happens to be very large, this will relax the limit a bit.
+ *
+ * This means we won't enforce the work_mem limit strictly - but without
+ * adjusting the limit that wouldn't be the case either, we'd just use
+ * a lot of memory for the BufFiles without accounting for that. This
+ * way we do our best to minimize the amount of memory used.
+ */
+static void
+ExecHashAdjustMemoryLimit(HashJoinTable hashtable)
+{
+	Size	newSpaceAllowed;
+
+	/*
+	 * The next time increasing the number of batches "breaks even" is when
+	 *
+	 * (spaceUsed / 2) == (2 * nbatches * BLCKSZ)
+	 *
+	 * which means
+	 *
+	 * spaceUsed == (4 * nbatches * BLCKSZ)
+	 *
+	 * However, this is a "break even" threshold, when we shrink the hash
+	 * table just enough to compensate the new batches, and we'd hit the
+	 * new threshold almost immediately again. In practice we want to free
+	 * more memory to allow new data before having to increase the number
+	 * of batches again. So we allow 25% more space.
+	 */
+	newSpaceAllowed
+		= 1.25 * (4 * hashtable->nbatch * sizeof(PGAlignedBlock));
+
+	/* but also account for the buckets, and the current batch files */
+	newSpaceAllowed += hashtable->nbuckets_optimal * sizeof(HashJoinTuple);
+	newSpaceAllowed += (2 * hashtable->nbatch * sizeof(PGAlignedBlock));
+
+	/* shouldn't go down, but use Max() to make sure */
+	hashtable->spaceAllowed = Max(hashtable->spaceAllowed,
+								  newSpaceAllowed);
 }
 
 /*
@@ -2349,8 +2468,9 @@ ExecHashBuildSkewHash(HashState *hashstate, HashJoinTable hashtable,
 			+ mcvsToUse * sizeof(int);
 		hashtable->spaceUsedSkew += nbuckets * sizeof(HashSkewBucket *)
 			+ mcvsToUse * sizeof(int);
-		if (hashtable->spaceUsed > hashtable->spacePeak)
-			hashtable->spacePeak = hashtable->spaceUsed;
+
+		/* refresh info about peak memory usage */
+		ExecHashUpdateSpacePeak(hashtable);
 
 		/*
 		 * Create a skew bucket for each MCV hash value.
@@ -2399,8 +2519,9 @@ ExecHashBuildSkewHash(HashState *hashstate, HashJoinTable hashtable,
 			hashtable->nSkewBuckets++;
 			hashtable->spaceUsed += SKEW_BUCKET_OVERHEAD;
 			hashtable->spaceUsedSkew += SKEW_BUCKET_OVERHEAD;
-			if (hashtable->spaceUsed > hashtable->spacePeak)
-				hashtable->spacePeak = hashtable->spaceUsed;
+
+			/* refresh info about peak memory usage */
+			ExecHashUpdateSpacePeak(hashtable);
 		}
 
 		free_attstatsslot(&sslot);
@@ -2489,8 +2610,10 @@ ExecHashSkewTableInsert(HashJoinTable hashtable,
 	/* Account for space used, and back off if we've used too much */
 	hashtable->spaceUsed += hashTupleSize;
 	hashtable->spaceUsedSkew += hashTupleSize;
-	if (hashtable->spaceUsed > hashtable->spacePeak)
-		hashtable->spacePeak = hashtable->spaceUsed;
+
+	/* refresh info about peak memory usage */
+	ExecHashUpdateSpacePeak(hashtable);
+
 	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
 		ExecHashRemoveNextSkewBucket(hashtable);
 

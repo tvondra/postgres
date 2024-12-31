@@ -198,7 +198,7 @@ rollback to settings;
 -- non-parallel
 savepoint settings;
 set local max_parallel_workers_per_gather = 0;
-set local work_mem = '128kB';
+set local work_mem = '512kB';
 set local hash_mem_multiplier = 1.0;
 explain (costs off)
   select count(*) from simple r join simple s using (id);
@@ -232,7 +232,7 @@ rollback to settings;
 -- parallel with parallel-oblivious hash join
 savepoint settings;
 set local max_parallel_workers_per_gather = 2;
-set local work_mem = '128kB';
+set local work_mem = '512kB';
 set local hash_mem_multiplier = 1.0;
 set local enable_parallel_hash = off;
 explain (costs off)

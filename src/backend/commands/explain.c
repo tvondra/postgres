@@ -3466,19 +3466,23 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 								   hinstrument.nbatch, es);
 			ExplainPropertyInteger("Original Hash Batches", NULL,
 								   hinstrument.nbatch_original, es);
+			ExplainPropertyInteger("In-Memory Hash Batches", NULL,
+								   hinstrument.nbatch_original, es);
 			ExplainPropertyUInteger("Peak Memory Usage", "kB",
 									spacePeakKb, es);
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
+				 hinstrument.nbatch_inmemory != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
 		{
 			ExplainIndentText(es);
 			appendStringInfo(es->str,
-							 "Buckets: %d (originally %d)  Batches: %d (originally %d)  Memory Usage: " UINT64_FORMAT "kB\n",
+							 "Buckets: %d (originally %d)  Batches: %d (originally %d, in-memory %d)  Memory Usage: " UINT64_FORMAT "kB\n",
 							 hinstrument.nbuckets,
 							 hinstrument.nbuckets_original,
 							 hinstrument.nbatch,
 							 hinstrument.nbatch_original,
+							 hinstrument.nbatch_inmemory,
 							 spacePeakKb);
 		}
 		else

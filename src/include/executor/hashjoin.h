@@ -320,6 +320,7 @@ typedef struct HashJoinTableData
 	int		   *skewBucketNums; /* array indexes of active skew buckets */
 
 	int			nbatch;			/* number of batches */
+	int			nbatch_inmemory;	/* max number of in-memory batches */
 	int			curbatch;		/* current batch #; 0 during 1st pass */
 
 	int			nbatch_original;	/* nbatch when we started inner scan */
@@ -330,6 +331,9 @@ typedef struct HashJoinTableData
 	double		totalTuples;	/* # tuples obtained from inner plan */
 	double		partialTuples;	/* # tuples obtained from inner plan by me */
 	double		skewTuples;		/* # tuples inserted into skew tuples */
+
+	BufFile	   *innerOverflowFile;	/* temp file for overflow batch batch */
+	BufFile	   *outerOverflowFile;	/* temp file for overflow batch batch */
 
 	/*
 	 * These arrays are allocated for the life of the hash join, but only if

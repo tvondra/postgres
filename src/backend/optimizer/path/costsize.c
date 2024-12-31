@@ -4173,6 +4173,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	int			num_hashclauses = list_length(hashclauses);
 	int			numbuckets;
 	int			numbatches;
+	int			numbatches_inmemory;
 	int			num_skew_mcvs;
 	size_t		space_allowed;	/* unused */
 
@@ -4227,6 +4228,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 							&space_allowed,
 							&numbuckets,
 							&numbatches,
+							&numbatches_inmemory,
 							&num_skew_mcvs);
 
 	/*

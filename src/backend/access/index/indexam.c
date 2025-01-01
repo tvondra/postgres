@@ -1603,6 +1603,13 @@ index_scan_stream_read_next(ReadStream *stream,
 			{
 				continue;
 			}
+
+			/* same block as before, don't need to read it */
+			if (scan->xs_batches->lastBlock == ItemPointerGetBlockNumber(tid))
+				continue;
+
+			scan->xs_batches->lastBlock = ItemPointerGetBlockNumber(tid);
+
 elog(WARNING, "index_scan_stream_read_next %u", ItemPointerGetBlockNumber(tid));
 			return ItemPointerGetBlockNumber(tid);
 		}
@@ -1850,6 +1857,8 @@ index_batch_init(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
+	scan->xs_batches->lastBlock = InvalidBlockNumber;
+
 	scan->xs_batches->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batches->maxBatches);
 }
 
@@ -1898,6 +1907,8 @@ index_batch_reset(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &batches->markPos);
 
 	batches->finished = false;
+
+	batches->lastBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);
 }

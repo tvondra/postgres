@@ -241,6 +241,8 @@ typedef struct IndexScanBatches
 	 */
 	bool		finished;
 
+	BlockNumber	lastBlock;
+
 	/*
 	 * Current scan direction, for the currently loaded batches. This is used
 	 * to load data in the read stream API callback, etc.

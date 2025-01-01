@@ -1972,6 +1972,7 @@ index_batch_init(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
 	scan->xs_batches->currentBatch = NULL;
+	scan->xs_batches->lastBlock = InvalidBlockNumber;
 
 	scan->xs_batches->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batches->maxBatches);
 }
@@ -2053,6 +2054,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	batches->finished = false;
 
 	batches->currentBatch = NULL;
+	batches->lastBlock = InvalidBlockNumber;
 
 	/* XXX this will result in some batches not being freed, we need to
 	 * have a flag that says whether to reset marked pos/batch too (for

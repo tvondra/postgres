@@ -136,6 +136,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	{
 		/* Switch to correct buffer if we don't have it already */
 		Buffer		prev_buf = hscan->xs_cbuf;
+		bool		release_prev = true;
 
 		/*
 		 * XXX It's a bit fragile to just read buffers, scheduled in the past,
@@ -145,7 +146,27 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		 * ways. Maybe we could at least cross-check this?
 		 */
 		if (scan->rs)
-			hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
+		{
+			/*
+			 * Are we requesting the same block as last time? We need to check
+			 * if the previous buffer is pinned and has the right block. If yes,
+			 * don't try reading it from the stream, we haven't even scheduled
+			 * the read in index_scan_stream_read_next().
+			 *
+			 * XXX Maybe we should remember the block in IndexFetchTableData,
+			 * so that we can make the check even cheaper, without looking at
+			 * the buffer descriptor. But that assumes the buffer was not
+			 * unpinned (or repinned) elsewhere, before we got back here. But
+			 * can that even happen? If yes, I guess we shouldn't be releasing
+			 * the prev buffer anyway.
+			 */
+			if (BufferMatches(hscan->xs_cbuf,
+							  hscan->xs_base.rel,
+							  ItemPointerGetBlockNumber(tid)))
+				release_prev = false;
+			else
+				hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
+		}
 		else
 			hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
 												  hscan->xs_base.rel,
@@ -173,7 +194,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		 * The problem is that other place may not really know if the index
 		 * scan uses read stream API.
 		 */
-		if (scan->rs && (prev_buf != InvalidBuffer))
+		if (scan->rs && (prev_buf != InvalidBuffer) && release_prev)
 		{
 			ReleaseBuffer(prev_buf);
 		}

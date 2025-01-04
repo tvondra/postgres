@@ -35,7 +35,15 @@ typedef struct HashFile
 	off_t		off;			/* how far have we written yet */
 } HashFile;
 
-extern void ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
-								  HashFile **fileptr, HashJoinTable hashtable);
+typedef struct HashTuple
+{
+	struct HashTuple	*next;
+	uint32				hashvalue;
+	MinimalTuple		tuple;
+} HashTuple;
+
+extern void ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue, int batchno,
+								  HashFile **fileptr, HashJoinTable hashtable,
+								  bool inner);
 
 #endif							/* NODEHASHJOIN_H */

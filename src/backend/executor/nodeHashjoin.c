@@ -491,9 +491,9 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 					 */
 					Assert(parallel_state == NULL);
 					Assert(batchno > hashtable->curbatch);
-					ExecHashJoinSaveTuple(mintuple, hashvalue,
+					ExecHashJoinSaveTuple(mintuple, hashvalue, batchno,
 										  &hashtable->outerBatchFile[batchno],
-										  hashtable);
+										  hashtable, false);
 
 					if (shouldFree)
 						heap_free_minimal_tuple(mintuple);
@@ -1162,6 +1162,9 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 		hashtable->skewBucketNums = NULL;
 		hashtable->nSkewBuckets = 0;
 		hashtable->spaceUsedSkew = 0;
+
+		/* after the first batch flush buffered tuples for all other batches */
+		ExecHashFlushBuffers(hashtable);
 	}
 
 	/*
@@ -1250,6 +1253,8 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 		 */
 		FileClose(innerFile->vfd);
 		hashtable->innerBatchFile[curbatch] = NULL;
+
+		ExecHashFlushBuffers(hashtable);
 	}
 
 	/*
@@ -1417,10 +1422,63 @@ ExecParallelHashJoinNewBatch(HashJoinState *hjstate)
  * created for the hashtable.
  */
 void
-ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
-					  HashFile **fileptr, HashJoinTable hashtable)
+ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue, int batchno,
+					  HashFile **fileptr, HashJoinTable hashtable,
+					  bool inner)
 {
 	HashFile   *file = *fileptr;
+	HashBuffer *buff;
+
+	if (inner)
+	{
+		if (hashtable->innerBuffer == NULL)
+			ExecHashBufferInit(hashtable, &hashtable->innerBuffer);
+
+		buff = hashtable->innerBuffer;
+	}
+	else
+	{
+		if (hashtable->outerBuffer == NULL)
+			ExecHashBufferInit(hashtable, &hashtable->outerBuffer);
+
+		buff = hashtable->outerBuffer;
+	}
+
+	Assert(buff != NULL);
+
+	buff->clean = false;
+
+	/* if we can't fit the tuple into the buffer, try flushing the buffer
+	 * and retry */
+	if (buff->bytesUsed + tuple->t_len >= buff->bytesAllocated)
+		ExecHashFlushBuffers(hashtable);
+
+	/* Try to add to the buffer first. */
+	if (buff->bytesUsed + tuple->t_len < buff->bytesAllocated)
+	{
+		HashTuple *htup;
+
+		MemoryContext oldctx = MemoryContextSwitchTo(hashtable->spillCxt);
+
+		htup = palloc0(sizeof(HashTuple));
+
+		MemoryContextSwitchTo(oldctx);
+
+		htup->next = buff->batches[batchno];
+		buff->batches[batchno] = htup;
+
+		htup->hashvalue = hashvalue;
+
+		memcpy(buff->data + buff->bytesUsed, tuple, tuple->t_len);
+
+		htup->tuple = (MinimalTuple) (buff->data + buff->bytesUsed);
+		buff->bytesUsed += tuple->t_len;
+
+		return;
+	}
+
+	/* XXX we shouldn't get here with buffering */
+	Assert(false);
 
 	/*
 	 * The batch file is lazily created. If this is the first tuple written to

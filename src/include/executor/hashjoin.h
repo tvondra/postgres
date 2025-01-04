@@ -297,6 +297,8 @@ typedef struct ParallelHashJoinState
 
 /* nodeHashjoin.h */
 typedef struct HashFile HashFile;
+typedef struct HashTuple HashTuple;
+typedef struct HashBuffer HashBuffer;
 
 typedef struct HashJoinTableData
 {
@@ -343,6 +345,10 @@ typedef struct HashJoinTableData
 	 */
 	HashFile  **innerBatchFile; /* buffered virtual temp file per batch */
 	HashFile  **outerBatchFile; /* buffered virtual temp file per batch */
+
+	/* Buffers for writing tuples into the HashFiles. */
+	HashBuffer *innerBuffer;
+	HashBuffer *outerBuffer;
 
 	Size		spaceUsed;		/* memory space currently used by tuples */
 	Size		spaceAllowed;	/* upper limit for space used */

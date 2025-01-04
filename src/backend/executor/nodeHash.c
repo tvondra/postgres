@@ -195,6 +195,9 @@ MultiExecPrivateHash(HashState *node)
 		}
 	}
 
+	/* flush remaining tuples at the end of building the hash */
+	ExecHashFlushBuffers(hashtable);
+
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
 	if (hashtable->nbuckets != hashtable->nbuckets_optimal)
 		ExecHashIncreaseNumBuckets(hashtable);
@@ -512,6 +515,8 @@ ExecHashTableCreate(HashState *state)
 	hashtable->skewTuples = 0;
 	hashtable->innerBatchFile = NULL;
 	hashtable->outerBatchFile = NULL;
+	hashtable->innerBuffer = NULL;
+	hashtable->outerBuffer = NULL;
 	hashtable->spaceUsed = 0;
 	hashtable->spacePeak = 0;
 	hashtable->spaceAllowed = space_allowed;
@@ -947,7 +952,14 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		hashtable->outerBatchFile = repalloc0_array(hashtable->outerBatchFile, HashFile *, oldnbatch, nbatch);
 	}
 
+	/* flush tuples before incrementing number of batches */
+	ExecHashFlushBuffers(hashtable);
+
 	hashtable->nbatch = nbatch;
+
+	/* after increasing the number of batches, resize the buffers too */
+	ExecHashBufferResize(hashtable, hashtable->innerBuffer);
+	ExecHashBufferResize(hashtable, hashtable->outerBuffer);
 
 	/*
 	 * Scan through the existing hash table entries and dump out any that are
@@ -1017,9 +1029,9 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 				/* dump it out */
 				Assert(batchno > curbatch);
 				ExecHashJoinSaveTuple(HJTUPLE_MINTUPLE(hashTuple),
-									  hashTuple->hashvalue,
+									  hashTuple->hashvalue, batchno,
 									  &hashtable->innerBatchFile[batchno],
-									  hashtable);
+									  hashtable, true);
 
 				hashtable->spaceUsed -= hashTupleSize;
 				nfreed++;
@@ -1693,9 +1705,9 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		 */
 		Assert(batchno > hashtable->curbatch);
 		ExecHashJoinSaveTuple(tuple,
-							  hashvalue,
+							  hashvalue, batchno,
 							  &hashtable->innerBatchFile[batchno],
-							  hashtable);
+							  hashtable, true);
 	}
 
 	if (shouldFree)
@@ -2577,9 +2589,9 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 		{
 			/* Put the tuple into a temp file for later batches */
 			Assert(batchno > hashtable->curbatch);
-			ExecHashJoinSaveTuple(tuple, hashvalue,
+			ExecHashJoinSaveTuple(tuple, hashvalue, batchno,
 								  &hashtable->innerBatchFile[batchno],
-								  hashtable);
+								  hashtable, true);
 			pfree(hashTuple);
 			hashtable->spaceUsed -= tupleSize;
 			hashtable->spaceUsedSkew -= tupleSize;
@@ -3501,4 +3513,182 @@ get_hash_memory_limit(void)
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);
 
 	return (size_t) mem_limit;
+}
+
+static void
+ExecHashFileWriteTuple(HashFile *file, uint32 hashvalue, MinimalTuple tuple)
+{
+	FileWrite(file->vfd, &hashvalue, sizeof(uint32), file->off,
+			  WAIT_EVENT_BUFFILE_WRITE);
+	file->off += sizeof(uint32);
+
+	FileWrite(file->vfd, tuple, tuple->t_len, file->off,
+			  WAIT_EVENT_BUFFILE_WRITE);
+	file->off += tuple->t_len;
+}
+
+static HashFile *
+ExecHashCreateFile(HashJoinTable hashtable)
+{
+	HashFile *file;
+	MemoryContext oldctx = MemoryContextSwitchTo(hashtable->spillCxt);
+
+	file = (HashFile *) palloc0(sizeof(HashFile));
+
+	file->vfd = OpenTemporaryFile(false);
+	file->off = 0;
+
+	MemoryContextSwitchTo(oldctx);
+
+	return file;
+}
+
+/*
+ * sort tuples by batch, write to batch files in bulk
+ */
+static void
+ExecHashFlushBuffer(HashJoinTable hashtable, HashBuffer *buffer, HashFile **files)
+{
+	char	buff[BLCKSZ];
+	int		nbytes = 0;
+
+	if (buffer == NULL)
+		return;
+
+	if (buffer->clean)
+		return;
+
+	//elog(WARNING, "ExecHashFlushBuffer %p", buffer);
+	/* combine tuples into the BLCKSZ buffer, then write as one IO */
+	for (int i = 0; i < hashtable->nbatch; i++)
+	{
+		HashTuple	   *htup = buffer->batches[i];
+		HashFile	   *file = files[i];
+		int				nflushed = 0;
+		while (htup)
+		{
+			MinimalTuple	tup = htup->tuple;
+			HashTuple	   *next = htup->next;
+			Size			len = sizeof(uint32) + tup->t_len;
+
+			if (file == NULL)
+			{
+				file = ExecHashCreateFile(hashtable);
+				files[i] = file;
+			}
+
+			/* oversized tuple, don't even try adding to buffer */
+			if (len >= BLCKSZ)
+			{
+				ExecHashFileWriteTuple(file,
+									   htup->hashvalue, htup->tuple);
+				nflushed++;
+				continue;
+			}
+
+			/*
+			 * same batch as previous tuple, not oversized, try adding to
+			 * buffer (if can't fit, flush buffer)
+			 */
+			if (nbytes + len >= BLCKSZ)
+			{
+				Assert(nbytes > 0);
+
+				FileWrite(file->vfd,
+						  buff, nbytes, file->off,
+						  WAIT_EVENT_BUFFILE_WRITE);
+				file->off += nbytes;
+				nbytes = 0;
+			}
+
+			memcpy(&buff[nbytes], &htup->hashvalue, sizeof(uint32));
+			nbytes += sizeof(uint32);
+
+			memcpy(&buff[nbytes], tup, tup->t_len);
+			nbytes += tup->t_len;
+
+			/* process the next tuple in the batch */
+			pfree(htup);
+			htup = next;
+
+			nflushed++;
+		}
+
+		/* previous tuple might have been oversized */
+		if (nbytes > 0)
+		{
+			FileWrite(file->vfd,
+					  buff, nbytes, file->off,
+					  WAIT_EVENT_BUFFILE_WRITE);
+			file->off += nbytes;
+			nbytes = 0;
+		}
+
+		buffer->batches[i] = NULL;
+		//elog(WARNING, "flushed batch %d tuples %d offset %ld", i, nflushed, (file) ? file->off : -1);
+	}
+
+	buffer->bytesUsed = 0;
+	buffer->clean = true;
+}
+
+void
+ExecHashFlushBuffers(HashJoinTable hashtable)
+{
+	ExecHashFlushBuffer(hashtable, hashtable->innerBuffer,
+						hashtable->innerBatchFile);
+
+	ExecHashFlushBuffer(hashtable, hashtable->outerBuffer,
+						hashtable->outerBatchFile);
+}
+
+void
+ExecHashBufferInit(HashJoinTable hashtable, HashBuffer **buff)
+{
+	HashBuffer *tmp;
+
+	MemoryContext oldctx = MemoryContextSwitchTo(hashtable->spillCxt);
+
+	Assert(*buff == NULL);
+
+	/* create the buffer and pass it to the caller */
+	tmp = palloc0(sizeof(HashBuffer));
+	*buff = tmp;
+
+	/*
+	 * XXX Alocate a buffer for copyint the tuples, and then an array of
+	 * linked lists - one list per batch. The number of batches is given,
+	 * but the size of the data buffer is up to us. This hardcodes it to
+	 * work_mem, but at least 8MB, but that needs some improvement.
+	 *
+	 * The buffer needs to be large enough to "combine" multiple tuples for
+	 * each batch - that's the only way to save on I/O. So one way would be
+	 * something like (2 * (avg_tuple_size * nbatches)), to keep at least
+	 * two tuples per batch. With 256k batches (practical maximum with
+	 * reasonable work_mem values), and 128B tuples, that's ~64MB. That's
+	 * not negligible, but it's much less than the 4GB actual BufFiles
+	 * would require.
+	 */
+	tmp->data = palloc0(Max(8192, work_mem) * 1024L);
+	tmp->bytesAllocated = Max(8192, work_mem) * 1024L;
+	tmp->bytesUsed = 0;
+	tmp->clean = true;
+
+	/* linked lists of tuples for each batch */
+	tmp->batches = palloc0_array(HashTuple *, hashtable->nbatch);
+	tmp->nbatch = hashtable->nbatch;
+
+	MemoryContextSwitchTo(oldctx);
+}
+
+void
+ExecHashBufferResize(HashJoinTable hashtable, HashBuffer *buff)
+{
+	if (buff == NULL)
+		return;
+
+	/* should hold multiple tuples from each batch */
+	buff->batches = repalloc0_array(buff->batches, HashTuple *,
+									buff->nbatch, hashtable->nbatch);
+	buff->nbatch = hashtable->nbatch;
 }

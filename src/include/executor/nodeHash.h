@@ -71,5 +71,23 @@ extern void ExecHashRetrieveInstrumentation(HashState *node);
 extern void ExecShutdownHash(HashState *node);
 extern void ExecHashAccumInstrumentation(HashInstrumentation *instrument,
 										 HashJoinTable hashtable);
+extern void ExecHashFlushBuffers(HashJoinTable hashtable);
+
+typedef struct HashTuple HashTuple;
+
+typedef struct HashBuffer
+{
+	char	   *data;
+	Size		bytesAllocated;
+	Size		bytesUsed;
+	bool		clean;
+
+	int			nbatch;
+	HashTuple **batches;
+
+} HashBuffer;
+
+extern void ExecHashBufferInit(HashJoinTable hashtable, HashBuffer **buff);
+extern void ExecHashBufferResize(HashJoinTable hashtable, HashBuffer *buff);
 
 #endif							/* NODEHASH_H */

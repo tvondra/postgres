@@ -196,7 +196,7 @@ static TupleTableSlot *ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 														 HashJoinState *hjstate,
 														 uint32 *hashvalue);
 static TupleTableSlot *ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
-												 BufFile *file,
+												 HashFile *file,
 												 uint32 *hashvalue,
 												 TupleTableSlot *tupleSlot);
 static bool ExecHashJoinNewBatch(HashJoinState *hjstate);
@@ -1030,7 +1030,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 	}
 	else if (curbatch < hashtable->nbatch)
 	{
-		BufFile    *file = hashtable->outerBatchFile[curbatch];
+		HashFile *file = hashtable->outerBatchFile[curbatch];
 
 		/*
 		 * In outer-join cases, we could get here even though the batch file
@@ -1132,7 +1132,7 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 	HashJoinTable hashtable = hjstate->hj_HashTable;
 	int			nbatch;
 	int			curbatch;
-	BufFile    *innerFile;
+	HashFile   *innerFile;
 	TupleTableSlot *slot;
 	uint32		hashvalue;
 
@@ -1146,7 +1146,7 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 		 * away to free disk space.
 		 */
 		if (hashtable->outerBatchFile[curbatch])
-			BufFileClose(hashtable->outerBatchFile[curbatch]);
+			FileClose(hashtable->outerBatchFile[curbatch]->vfd);
 		hashtable->outerBatchFile[curbatch] = NULL;
 	}
 	else						/* we just finished the first batch */
@@ -1202,10 +1202,10 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 		/* We can ignore this batch. */
 		/* Release associated temp files right away. */
 		if (hashtable->innerBatchFile[curbatch])
-			BufFileClose(hashtable->innerBatchFile[curbatch]);
+			FileClose(hashtable->innerBatchFile[curbatch]->vfd);
 		hashtable->innerBatchFile[curbatch] = NULL;
 		if (hashtable->outerBatchFile[curbatch])
-			BufFileClose(hashtable->outerBatchFile[curbatch]);
+			FileClose(hashtable->outerBatchFile[curbatch]->vfd);
 		hashtable->outerBatchFile[curbatch] = NULL;
 		curbatch++;
 	}
@@ -1224,10 +1224,13 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 
 	if (innerFile != NULL)
 	{
+/*
 		if (BufFileSeek(innerFile, 0, 0, SEEK_SET))
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not rewind hash-join temporary file")));
+*/
+		innerFile->off = 0;
 
 		while ((slot = ExecHashJoinGetSavedTuple(hjstate,
 												 innerFile,
@@ -1245,7 +1248,7 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 		 * after we build the hash table, the inner batch file is no longer
 		 * needed
 		 */
-		BufFileClose(innerFile);
+		FileClose(innerFile->vfd);
 		hashtable->innerBatchFile[curbatch] = NULL;
 	}
 
@@ -1254,10 +1257,13 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 	 */
 	if (hashtable->outerBatchFile[curbatch] != NULL)
 	{
+		hashtable->outerBatchFile[curbatch]->off = 0;
+/*
 		if (BufFileSeek(hashtable->outerBatchFile[curbatch], 0, 0, SEEK_SET))
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not rewind hash-join temporary file")));
+*/
 	}
 
 	return true;
@@ -1412,9 +1418,9 @@ ExecParallelHashJoinNewBatch(HashJoinState *hjstate)
  */
 void
 ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
-					  BufFile **fileptr, HashJoinTable hashtable)
+					  HashFile **fileptr, HashJoinTable hashtable)
 {
-	BufFile    *file = *fileptr;
+	HashFile   *file = *fileptr;
 
 	/*
 	 * The batch file is lazily created. If this is the first tuple written to
@@ -1434,14 +1440,25 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
 	{
 		MemoryContext oldctx = MemoryContextSwitchTo(hashtable->spillCxt);
 
-		file = BufFileCreateTemp(false);
+		file = (HashFile *) palloc0(sizeof(HashFile));
+
+		file->vfd = OpenTemporaryFile(false);
+		file->off = 0;
+
+		// RegisterTemporaryFile(file->vfd);
+
 		*fileptr = file;
 
 		MemoryContextSwitchTo(oldctx);
 	}
 
-	BufFileWrite(file, &hashvalue, sizeof(uint32));
-	BufFileWrite(file, tuple, tuple->t_len);
+	FileWrite(file->vfd, &hashvalue, sizeof(uint32), file->off,
+			  WAIT_EVENT_BUFFILE_WRITE);
+	file->off += sizeof(uint32);
+
+	FileWrite(file->vfd, tuple, tuple->t_len, file->off,
+			  WAIT_EVENT_BUFFILE_WRITE);
+	file->off += tuple->t_len;
 }
 
 /*
@@ -1453,7 +1470,7 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
  */
 static TupleTableSlot *
 ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
-						  BufFile *file,
+						  HashFile *file,
 						  uint32 *hashvalue,
 						  TupleTableSlot *tupleSlot)
 {
@@ -1473,18 +1490,24 @@ ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
 	 * we can read them both in one BufFileRead() call without any type
 	 * cheating.
 	 */
-	nread = BufFileReadMaybeEOF(file, header, sizeof(header), true);
+	nread = FileRead(file->vfd, header, sizeof(header), file->off,
+					 WAIT_EVENT_BUFFILE_READ);
 	if (nread == 0)				/* end of file */
 	{
 		ExecClearTuple(tupleSlot);
 		return NULL;
 	}
+	file->off += sizeof(header);
+
 	*hashvalue = header[0];
 	tuple = (MinimalTuple) palloc(header[1]);
 	tuple->t_len = header[1];
-	BufFileReadExact(file,
-					 (char *) tuple + sizeof(uint32),
-					 header[1] - sizeof(uint32));
+
+	nread = FileRead(file->vfd, (char *) tuple + sizeof(uint32),
+					 header[1] - sizeof(uint32), file->off,
+					 WAIT_EVENT_BUFFILE_READ);
+	file->off += header[1] - sizeof(uint32);
+
 	ExecForceStoreMinimalTuple(tuple, tupleSlot, true);
 	return tupleSlot;
 }

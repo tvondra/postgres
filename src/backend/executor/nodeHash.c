@@ -559,8 +559,8 @@ ExecHashTableCreate(HashState *state)
 		 */
 		oldctx = MemoryContextSwitchTo(hashtable->spillCxt);
 
-		hashtable->innerBatchFile = palloc0_array(BufFile *, nbatch);
-		hashtable->outerBatchFile = palloc0_array(BufFile *, nbatch);
+		hashtable->innerBatchFile = palloc0_array(HashFile *, nbatch);
+		hashtable->outerBatchFile = palloc0_array(HashFile *, nbatch);
 
 		MemoryContextSwitchTo(oldctx);
 
@@ -877,9 +877,15 @@ ExecHashTableDestroy(HashJoinTable hashtable)
 		for (i = 1; i < hashtable->nbatch; i++)
 		{
 			if (hashtable->innerBatchFile[i])
-				BufFileClose(hashtable->innerBatchFile[i]);
+			{
+				FileClose(hashtable->innerBatchFile[i]->vfd);
+				hashtable->innerBatchFile[i] = NULL;
+			}
 			if (hashtable->outerBatchFile[i])
-				BufFileClose(hashtable->outerBatchFile[i]);
+			{
+				FileClose(hashtable->outerBatchFile[i]->vfd);
+				hashtable->outerBatchFile[i] = NULL;
+			}
 		}
 	}
 
@@ -926,8 +932,8 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		MemoryContext oldcxt = MemoryContextSwitchTo(hashtable->spillCxt);
 
 		/* we had no file arrays before */
-		hashtable->innerBatchFile = palloc0_array(BufFile *, nbatch);
-		hashtable->outerBatchFile = palloc0_array(BufFile *, nbatch);
+		hashtable->innerBatchFile = palloc0_array(HashFile *, nbatch);
+		hashtable->outerBatchFile = palloc0_array(HashFile *, nbatch);
 
 		MemoryContextSwitchTo(oldcxt);
 
@@ -937,8 +943,8 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	else
 	{
 		/* enlarge arrays and zero out added entries */
-		hashtable->innerBatchFile = repalloc0_array(hashtable->innerBatchFile, BufFile *, oldnbatch, nbatch);
-		hashtable->outerBatchFile = repalloc0_array(hashtable->outerBatchFile, BufFile *, oldnbatch, nbatch);
+		hashtable->innerBatchFile = repalloc0_array(hashtable->innerBatchFile, HashFile *, oldnbatch, nbatch);
+		hashtable->outerBatchFile = repalloc0_array(hashtable->outerBatchFile, HashFile *, oldnbatch, nbatch);
 	}
 
 	hashtable->nbatch = nbatch;

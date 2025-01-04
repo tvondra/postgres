@@ -28,7 +28,14 @@ extern void ExecHashJoinReInitializeDSM(HashJoinState *state, ParallelContext *p
 extern void ExecHashJoinInitializeWorker(HashJoinState *state,
 										 ParallelWorkerContext *pwcxt);
 
+/* FIXME duplicate definition */
+typedef struct HashFile
+{
+	int			vfd;			/* fd of batch file */
+	off_t		off;			/* how far have we written yet */
+} HashFile;
+
 extern void ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
-								  BufFile **fileptr, HashJoinTable hashtable);
+								  HashFile **fileptr, HashJoinTable hashtable);
 
 #endif							/* NODEHASHJOIN_H */

@@ -295,6 +295,9 @@ typedef struct ParallelHashJoinState
 #define PHJ_GROW_BUCKETS_REINSERT		2
 #define PHJ_GROW_BUCKETS_PHASE(n)		((n) % 3)	/* circular phases */
 
+/* nodeHashjoin.h */
+typedef struct HashFile HashFile;
+
 typedef struct HashJoinTableData
 {
 	int			nbuckets;		/* # buckets in the in-memory hash table */
@@ -338,8 +341,8 @@ typedef struct HashJoinTableData
 	 * elements never get used, since we will process rather than dump out any
 	 * tuples of batch zero.
 	 */
-	BufFile   **innerBatchFile; /* buffered virtual temp file per batch */
-	BufFile   **outerBatchFile; /* buffered virtual temp file per batch */
+	HashFile  **innerBatchFile; /* buffered virtual temp file per batch */
+	HashFile  **outerBatchFile; /* buffered virtual temp file per batch */
 
 	Size		spaceUsed;		/* memory space currently used by tuples */
 	Size		spaceAllowed;	/* upper limit for space used */

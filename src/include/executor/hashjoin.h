@@ -71,6 +71,8 @@
  * ----------------------------------------------------------------
  */
 
+extern PGDLLIMPORT bool enable_hashjoin_adjust;
+
 /* these are in nodes/execnodes.h: */
 /* typedef struct HashJoinTupleData *HashJoinTuple; */
 /* typedef struct HashJoinTableData *HashJoinTable; */

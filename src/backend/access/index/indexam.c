@@ -1486,7 +1486,7 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
 	}
 	else	/* ScanDirectionIsBackward */
 	{
-		if (pos->index > 0)
+		if (pos->index > batch->firstItem)
 		{
 			pos->index--;
 
@@ -1587,12 +1587,19 @@ index_scan_stream_read_next(ReadStream *stream,
 			advanced = true;
 		}
 		else if (index_batch_pos_advance(scan, pos))
+		{
 			advanced = true;
+		}
 
 		if (advanced)
 		{
-			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
-			ItemPointer tid = &batch->items[pos->index].heapTid;
+			IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, pos->batch);
+			ItemPointer		tid = &batch->items[pos->index].heapTid;
+
+			DEBUG_LOG("index_scan_stream_read_next: index %d TID (%u,%u)",
+				 pos->index,
+				 ItemPointerGetBlockNumber(tid),
+				 ItemPointerGetOffsetNumber(tid));
 
 			/*
 			 * if there's a prefetch callback, use it to decide if we will
@@ -1601,12 +1608,16 @@ index_scan_stream_read_next(ReadStream *stream,
 			if (scan->xs_batches->prefetchCallback &&
 				!scan->xs_batches->prefetchCallback(scan, scan->xs_batches->prefetchArgument, pos))
 			{
+				DEBUG_LOG("index_scan_stream_read_next: skip block (callback)");
 				continue;
 			}
 
 			/* same block as before, don't need to read it */
 			if (scan->xs_batches->lastBlock == ItemPointerGetBlockNumber(tid))
+			{
+				DEBUG_LOG("index_scan_stream_read_next: skip block (lastBlock)");
 				continue;
+			}
 
 			scan->xs_batches->lastBlock = ItemPointerGetBlockNumber(tid);
 
@@ -1615,7 +1626,10 @@ index_scan_stream_read_next(ReadStream *stream,
 			return ItemPointerGetBlockNumber(tid);
 		}
 
-		/* advanced=false: there are no more items in the current batch */
+		/*
+		 * advanced=false: There are no more items in the current batch, or maybe
+		 * we don't have any batches yet (if is the first time through).
+		 */
 
 		/* try loading the next batch */
 		if (index_batch_getnext(scan))
@@ -1693,6 +1707,17 @@ index_batch_getnext(IndexScanDesc scan)
 
 		scan->xs_batches->nextBatch++;
 
+		/*
+		 * XXX Also remember this batch as a starting point for the next
+		 * time we do amgetbatch() so that we restore BTScanOpaque into the
+		 * right state.
+		 *
+		 * XXX This is an unholy mash of pointers and "positions", with
+		 * readPos and streamPos and now also currentBatch. Needs to get
+		 * cleanup up somehow.
+		 */
+		scan->xs_batches->currentBatch = batch;
+
 		DEBUG_LOG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
 					  scan->xs_batches->firstBatch, scan->xs_batches->nextBatch, batch);
 	}
@@ -1725,7 +1750,6 @@ index_batch_getnext(IndexScanDesc scan)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
-	IndexScanBatchPos *spos = &scan->xs_batches->streamPos;
 	IndexScanBatchPos *pos = &scan->xs_batches->readPos;
 
 	/* shouldn't get here without batching */
@@ -1800,6 +1824,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 
 		/* try loading the next batch */
+		/* FIXME why do we even call index_batch_getnext here? surely that should
+		 * only be done from index_scan_stream_read_next? */
 		if (index_batch_getnext(scan))
 		{
 			DEBUG_LOG("loaded next batch");
@@ -1858,6 +1884,7 @@ index_batch_init(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
+	scan->xs_batches->currentBatch = NULL;
 	scan->xs_batches->lastBlock = InvalidBlockNumber;
 
 	scan->xs_batches->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batches->maxBatches);
@@ -1909,6 +1936,7 @@ index_batch_reset(IndexScanDesc scan)
 
 	batches->finished = false;
 
+	batches->currentBatch = NULL;
 	batches->lastBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);
@@ -1942,7 +1970,7 @@ index_batch_end(IndexScanDesc scan)
 }
 
 IndexScanBatch
-index_batch_alloc(int maxitems)
+index_batch_alloc(int maxitems, bool want_itup)
 {
 	IndexScanBatch	batch = palloc(sizeof(IndexScanBatchData));
 
@@ -1961,12 +1989,14 @@ index_batch_alloc(int maxitems)
 	 * XXX allocate
 	 */
 	batch->currTuples = NULL;			/* tuple storage for currPos */
+	if (want_itup)
+		batch->currTuples = palloc(BLCKSZ);
 
 	/*
 	 * XXX Maybe don't size to MaxTIDsPerBTreePage? We don't reuse batches
 	 * (unlike currPos), so we can size it for just what we need.
 	 */
-	batch->items = palloc(sizeof(IndexScanBatchPosItem) * maxitems);
+	batch->items = palloc0(sizeof(IndexScanBatchPosItem) * maxitems);
 
 	/*
 	 * batch contents (TIDs, index tuples, kill bitmap, ...)
@@ -1981,6 +2011,9 @@ index_batch_alloc(int maxitems)
 	/* xs_orderbyvals / xs_orderbynulls */
 	batch->orderbyvals = NULL;
 	batch->orderbynulls = NULL;
+
+	/* AM-specific per-batch state */
+	batch->opaque = NULL;
 
 	return batch;
 }

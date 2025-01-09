@@ -995,7 +995,10 @@ typedef struct BTScanPosData
 
 typedef BTScanPosData *BTScanPos;
 
-typedef struct BTScanBatchData
+/*
+ * Minimal AM-specific concept of "position" for batching.
+ */
+typedef struct BTBatchScanPosData
 {
 	Buffer		buf;			/* currPage buf (invalid means unpinned) */
 
@@ -1020,9 +1023,9 @@ typedef struct BTScanBatchData
 	 */
 	bool		moreLeft;
 	bool		moreRight;
-} BTScanBatchData;
+} BTBatchScanPosData;
 
-typedef BTScanBatchData *BTScanBatch;
+typedef BTBatchScanPosData *BTBatchScanPos;
 
 #define BTScanPosIsPinned(scanpos) \
 ( \
@@ -1040,7 +1043,6 @@ typedef BTScanBatchData *BTScanBatch;
 		if (BTScanPosIsPinned(scanpos)) \
 			BTScanPosUnpin(scanpos); \
 	} while (0)
-
 #define BTScanPosIsValid(scanpos) \
 ( \
 	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \
@@ -1052,6 +1054,35 @@ typedef BTScanBatchData *BTScanBatch;
 		(scanpos).buf = InvalidBuffer; \
 		(scanpos).currPage = InvalidBlockNumber; \
 	} while (0)
+
+#define BTBatchScanPosIsPinned(scanpos) \
+( \
+	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \
+				!BufferIsValid((scanpos).buf)), \
+	BufferIsValid((scanpos).buf) \
+)
+#define BTBatchScanPosUnpin(scanpos) \
+	do { \
+		ReleaseBuffer((scanpos).buf); \
+		(scanpos).buf = InvalidBuffer; \
+	} while (0)
+#define BTBatchScanPosUnpinIfPinned(scanpos) \
+	do { \
+		if (BTBatchScanPosIsPinned(scanpos)) \
+			BTBatchScanPosUnpin(scanpos); \
+	} while (0)
+#define BTBatchScanPosIsValid(scanpos) \
+( \
+	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \
+				!BufferIsValid((scanpos).buf)), \
+	BlockNumberIsValid((scanpos).currPage) \
+)
+#define BTBatchScanPosInvalidate(scanpos) \
+	do { \
+		(scanpos).buf = InvalidBuffer; \
+		(scanpos).currPage = InvalidBlockNumber; \
+	} while (0)
+
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */
 typedef struct BTArrayKeyInfo

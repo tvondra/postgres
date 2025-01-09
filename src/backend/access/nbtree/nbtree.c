@@ -272,6 +272,10 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	res;
 
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 
@@ -285,8 +289,10 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 *
 		 * XXX This probably should not rely on so->currPos, because the
 		 * batching may not populate that at all. Add a new flag?
+		 *
+		 * FIXME needs to use a "batch" position, not so->currPos
 		 */
-		if (!BTScanPosIsValid(so->currPos))
+		if (scan->xs_batches->currentBatch == NULL)
 			res = _bt_first_batch(scan, dir);
 		else
 		{
@@ -299,6 +305,17 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		/* If we have a tuple, return it ... */
 		if (res)
 			break;
+
+		/* XXX we need to invoke _bt_first_batch on the next iteration, to
+		 * advance SAOP keys etc. But indexam.c already does this, but that's
+		 * only after this returns, so maybe this should do this in some other
+		 * way, not sure who should be responsible for setting currentBatch.
+		 *
+		 * XXX Maybe we don't even need that field? What is a current batch
+		 * anyway? There seem to be at least multiple concepts of "current"
+		 * batch, one for the read stream, another for executor ...
+		 */
+		scan->xs_batches->currentBatch = res;
 
 		/* ... otherwise see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
@@ -314,6 +331,12 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 void
 btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/*
 	 * Check to see if we should kill tuples from the previous batch.
 	 */
@@ -344,6 +367,18 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 
 	if (batch->currTuples)
 		pfree(batch->currTuples);
+
+	if (batch->opaque)
+	{
+		BTBatchScanPos pos = (BTBatchScanPos) batch->opaque;
+
+		BTBatchScanPosIsValid(*pos);
+		BTBatchScanPosIsPinned(*pos);
+
+		BTBatchScanPosUnpinIfPinned(*pos);
+
+		pfree(batch->opaque);
+	}
 
 	/* and finally free the batch itself */
 	pfree(batch);
@@ -474,6 +509,10 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	so->oppositeDirCheck = false;
 	BTScanPosUnpinIfPinned(so->markPos);
 	BTScanPosInvalidate(so->markPos);
+
+	/* FIXME should be in indexam.c I think */
+	if (scan->xs_batches)
+		scan->xs_batches->currentBatch = NULL;
 
 	/*
 	 * Allocate tuple workspace arrays, if needed for an index-only scan and

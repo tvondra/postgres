@@ -810,8 +810,6 @@ read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
 	*strategy = stream->ios[0].op.strategy;
 	b = read_stream_get_block(stream, NULL);
 
-elog(WARNING, "read_stream_next_block %u", b);
-
 	return b;
 }
 
@@ -825,7 +823,7 @@ void
 read_stream_reset(ReadStream *stream)
 {
 	Buffer		buffer;
-elog(WARNING, "read_stream_reset %p", stream);
+
 	/* Stop looking ahead. */
 	stream->distance = 0;
 

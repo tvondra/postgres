@@ -1590,6 +1590,16 @@ IndexScanBatch
 _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	/*
+	 * restore the BTScanOpaque from the current batch
+	 *
+	 * XXX This is pretty ugly/expensive. Ideally we'd have all the fields
+	 * needed to determine "location" in the index (essentially BTScanPosData)
+	 * in the batch, without cloning all the other stuff.
+	 */
+	Assert(scan->xs_batches->currentBatch != NULL);
+	memcpy(scan->opaque, scan->xs_batches->currentBatch->opaque, sizeof(BTScanOpaque));
+
+	/*
 	 * Advance to next tuple on current page; or if there's no more, try to
 	 * step to the next page with data.
 	 */

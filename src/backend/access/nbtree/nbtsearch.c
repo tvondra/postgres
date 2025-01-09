@@ -1485,7 +1485,6 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	batch = NULL;
-	BTScanBatch		btbatch = NULL;
 	int				nitems = 0;
 
 	/* we should only get here for pages with at least some items */
@@ -1514,26 +1513,18 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 
 	batch->lastItem = (nitems - 1);
 
-	/* now build the btree-specific stuff */
-	btbatch = palloc(sizeof(BTScanBatchData));
-	batch->opaque = btbatch;
-
 	/*
-	 * copy stuff from curPos into the batch
+	 * remember the index-specific info
 	 *
-	 * XXX not sure which of this really needs to be in IndexScanBatchData
+	 * XXX Have to copy, because the AM will be updating this in place. This
+	 * can be quite expensive, because of allocation costs (e.g. this ~27kB)
+	 * and thus can't benefit from memory context caching.
+	 *
+	 * XXX Currently allocated so that can be released using a plain pfree()
+	 * call. We'd need a more complex btfreebatch otherwise.
 	 */
-	btbatch->buf = so->currPos.buf;
-	btbatch->currPage = so->currPos.currPage;
-	btbatch->prevPage = so->currPos.prevPage;
-	btbatch->nextPage = so->currPos.nextPage;
-	btbatch->lsn = so->currPos.lsn;
-
-	btbatch->dir = so->currPos.dir;
-
-	btbatch->nextTupleOffset = so->currPos.nextTupleOffset;
-	btbatch->moreLeft = so->currPos.moreLeft;
-	btbatch->moreRight = so->currPos.moreRight;
+	batch->opaque = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
+	memcpy(batch->opaque, so, sizeof(BTScanOpaqueData));
 
 	return batch;
 }

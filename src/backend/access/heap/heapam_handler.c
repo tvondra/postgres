@@ -97,8 +97,6 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 	if (BufferIsValid(hscan->xs_cbuf))
 	{
 		ReleaseBuffer(hscan->xs_cbuf);
-		elog(WARNING, "heapam_index_fetch_reset: scan->rs %p release hscan->xs_cbuf %u : %s",
-			 scan->rs, hscan->xs_cbuf, DebugPrintBufferRefcount(hscan->xs_cbuf));
 		hscan->xs_cbuf = InvalidBuffer;
 	}
 }
@@ -170,9 +168,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 												  hscan->xs_base.rel,
 												  ItemPointerGetBlockNumber(tid));
 
-		elog(WARNING, "heapam_index_fetch_tuple: scan->rs %p prev_buf %u hscan->xs_cbuf %u : %s",
-			 scan->rs, prev_buf, hscan->xs_cbuf, DebugPrintBufferRefcount(hscan->xs_cbuf));
-
 		/*
 		 * Did we read the expected block number (per the TID)? For the regular
 		 * buffer reads this should always match, but with the read stream it
@@ -198,8 +193,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		if (scan->rs && (prev_buf != InvalidBuffer) && release_prev)
 		{
 			ReleaseBuffer(prev_buf);
-			elog(WARNING, "heapam_index_fetch_tuple: hscan->rs %p release prev_buf %u : %s",
-				 scan->rs, prev_buf, DebugPrintBufferRefcount(hscan->xs_cbuf));
 		}
 	}
 

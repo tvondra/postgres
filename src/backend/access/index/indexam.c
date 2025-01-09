@@ -1610,7 +1610,6 @@ index_scan_stream_read_next(ReadStream *stream,
 
 			scan->xs_batches->lastBlock = ItemPointerGetBlockNumber(tid);
 
-elog(WARNING, "index_scan_stream_read_next %u", ItemPointerGetBlockNumber(tid));
 			return ItemPointerGetBlockNumber(tid);
 		}
 
@@ -1623,8 +1622,6 @@ elog(WARNING, "index_scan_stream_read_next %u", ItemPointerGetBlockNumber(tid));
 		/* can't load batch, we're done with this scan */
 		break;
 	}
-
-elog(WARNING, "index_scan_stream_read_next %u", InvalidBlockNumber);
 
 	return InvalidBlockNumber;
 }

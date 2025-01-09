@@ -1591,8 +1591,8 @@ index_scan_stream_read_next(ReadStream *stream,
 
 		if (advanced)
 		{
-			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
-			ItemPointer tid = &batch->items[pos->index].heapTid;
+			IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, pos->batch);
+			ItemPointer		tid = &batch->items[pos->index].heapTid;
 
 			/*
 			 * if there's a prefetch callback, use it to decide if we will
@@ -1613,7 +1613,10 @@ index_scan_stream_read_next(ReadStream *stream,
 			return ItemPointerGetBlockNumber(tid);
 		}
 
-		/* advanced=false: there are no more items in the current batch */
+		/*
+		 * advanced=false: There are no more items in the current batch, or maybe
+		 * we don't have any batches yet (if is the first time through).
+		 */
 
 		/* try loading the next batch */
 		if (index_batch_getnext(scan))
@@ -1688,6 +1691,17 @@ index_batch_getnext(IndexScanDesc scan)
 		INDEX_SCAN_BATCH(scan, batchIndex) = batch;
 
 		scan->xs_batches->nextBatch++;
+
+		/*
+		 * XXX Also remember this batch as a starting point for the next
+		 * time we do amgetbatch() so that we restore BTScanOpaque into the
+		 * right state.
+		 *
+		 * XXX This is an unholy mash of pointers and "positions", with
+		 * readPos and streamPos and now also currentBatch. Needs to get
+		 * cleanup up somehow.
+		 */
+		scan->xs_batches->currentBatch = batch;
 
 		DEBUG_LOG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
 					  scan->xs_batches->firstBatch, scan->xs_batches->nextBatch, batch);
@@ -1854,6 +1868,7 @@ index_batch_init(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
+	scan->xs_batches->currentBatch = NULL;
 	scan->xs_batches->lastBlock = InvalidBlockNumber;
 
 	scan->xs_batches->batches = palloc(sizeof(IndexScanBatchData *) * scan->xs_batches->maxBatches);
@@ -1905,6 +1920,7 @@ index_batch_reset(IndexScanDesc scan)
 
 	batches->finished = false;
 
+	batches->currentBatch = NULL;
 	batches->lastBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);

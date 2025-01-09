@@ -995,35 +995,6 @@ typedef struct BTScanPosData
 
 typedef BTScanPosData *BTScanPos;
 
-typedef struct BTScanBatchData
-{
-	Buffer		buf;			/* currPage buf (invalid means unpinned) */
-
-	/* page details as of the saved position's call to _bt_readpage */
-	BlockNumber currPage;		/* page referenced by items array */
-	BlockNumber prevPage;		/* currPage's left link */
-	BlockNumber nextPage;		/* currPage's right link */
-	XLogRecPtr	lsn;			/* currPage's LSN */
-
-	/* scan direction for the saved position's call to _bt_readpage */
-	ScanDirection dir;
-
-	/*
-	 * If we are doing an index-only scan, nextTupleOffset is the first free
-	 * location in the associated tuple storage workspace.
-	 */
-	int			nextTupleOffset;
-
-	/*
-	 * moreLeft and moreRight track whether we think there may be matching
-	 * index entries to the left and right of the current page, respectively.
-	 */
-	bool		moreLeft;
-	bool		moreRight;
-} BTScanBatchData;
-
-typedef BTScanBatchData *BTScanBatch;
-
 #define BTScanPosIsPinned(scanpos) \
 ( \
 	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \

@@ -1978,5 +1978,8 @@ index_batch_alloc(int maxitems)
 	batch->orderbyvals = NULL;
 	batch->orderbynulls = NULL;
 
+	/* index-specific state */
+	batch->opaque = NULL;
+
 	return batch;
 }

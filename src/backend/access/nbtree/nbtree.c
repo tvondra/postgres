@@ -345,8 +345,8 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 	if (batch->currTuples)
 		pfree(batch->currTuples);
 
-	if (batch->opaque)
-		pfree(batch->opaque);
+	if (batch->position)
+		pfree(batch->position);
 
 	/* and finally free the batch itself */
 	pfree(batch);

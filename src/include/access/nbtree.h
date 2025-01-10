@@ -995,6 +995,38 @@ typedef struct BTScanPosData
 
 typedef BTScanPosData *BTScanPos;
 
+/*
+ * Minimal AM-specific concept of "position" for batching.
+ */
+typedef struct BTBatchScanPosData
+{
+	Buffer		buf;			/* currPage buf (invalid means unpinned) */
+
+	/* page details as of the saved position's call to _bt_readpage */
+	BlockNumber currPage;		/* page referenced by items array */
+	BlockNumber prevPage;		/* currPage's left link */
+	BlockNumber nextPage;		/* currPage's right link */
+	XLogRecPtr	lsn;			/* currPage's LSN */
+
+	/* scan direction for the saved position's call to _bt_readpage */
+	ScanDirection dir;
+
+	/*
+	 * If we are doing an index-only scan, nextTupleOffset is the first free
+	 * location in the associated tuple storage workspace.
+	 */
+	int			nextTupleOffset;
+
+	/*
+	 * moreLeft and moreRight track whether we think there may be matching
+	 * index entries to the left and right of the current page, respectively.
+	 */
+	bool		moreLeft;
+	bool		moreRight;
+} BTBatchScanPosData;
+
+typedef BTBatchScanPosData *BTBatchScanPos;
+
 #define BTScanPosIsPinned(scanpos) \
 ( \
 	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \
@@ -1023,6 +1055,19 @@ typedef BTScanPosData *BTScanPos;
 		(scanpos).buf = InvalidBuffer; \
 		(scanpos).currPage = InvalidBlockNumber; \
 	} while (0)
+
+#define BTBatchScanPosIsValid(scanpos) \
+( \
+	AssertMacro(BlockNumberIsValid((scanpos).currPage) || \
+				!BufferIsValid((scanpos).buf)), \
+	BlockNumberIsValid((scanpos).currPage) \
+)
+#define BTBatchScanPosInvalidate(scanpos) \
+	do { \
+		(scanpos).buf = InvalidBuffer; \
+		(scanpos).currPage = InvalidBlockNumber; \
+	} while (0)
+
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */
 typedef struct BTArrayKeyInfo

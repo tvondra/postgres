@@ -151,8 +151,11 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
  */
 typedef struct IndexScanBatchData
 {
-	/* info for navigating the index (subset of BTScanPosData, etc.) */
-	void   *opaque;
+	/*
+	 * AM-specific concept of position within the index, and other stuff
+	 * the AM might need to store for each batch.
+	 */
+	void   *position;
 
 	/*
 	 * The items array is always ordered in index order (ie, increasing

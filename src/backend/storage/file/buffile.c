@@ -100,7 +100,8 @@ struct BufFile
 	 * XXX Should ideally us PGIOAlignedBlock, but might need a way to avoid
 	 * wasting per-file alignment padding when some users create many files.
 	 */
-	PGAlignedBlock buffer;
+	MemoryContext	bufctx;
+	PGAlignedBlock *buffer;
 };
 
 static BufFile *makeBufFileCommon(int nfiles);
@@ -127,6 +128,9 @@ makeBufFileCommon(int nfiles)
 	file->curOffset = 0;
 	file->pos = 0;
 	file->nbytes = 0;
+
+	file->bufctx = CurrentMemoryContext;
+	file->buffer = NULL;
 
 	return file;
 }
@@ -423,6 +427,33 @@ BufFileClose(BufFile *file)
 	pfree(file);
 }
 
+static void
+BufFileAllocBuffer(BufFile *file)
+{
+	if (file->buffer != NULL)
+		return;
+
+	file->buffer = MemoryContextAlloc(file->bufctx, sizeof(PGAlignedBlock));
+}
+
+void
+BufFileFreeBuffer(BufFile *file)
+{
+	if (file->buffer == NULL)
+		return;
+
+	BufFileFlush(file);
+
+	pfree(file->buffer);
+	file->buffer = NULL;
+}
+
+bool
+BufFileHasBuffer(BufFile *file)
+{
+	return (file->buffer != NULL);
+}
+
 /*
  * BufFileLoadBuffer
  *
@@ -454,11 +485,13 @@ BufFileLoadBuffer(BufFile *file)
 	else
 		INSTR_TIME_SET_ZERO(io_start);
 
+	BufFileAllocBuffer(file);
+
 	/*
 	 * Read whatever we can get, up to a full bufferload.
 	 */
 	file->nbytes = FileRead(thisfile,
-							file->buffer.data,
+							file->buffer->data,
 							sizeof(file->buffer),
 							file->curOffset,
 							WAIT_EVENT_BUFFILE_READ);
@@ -535,7 +568,7 @@ BufFileDumpBuffer(BufFile *file)
 			INSTR_TIME_SET_ZERO(io_start);
 
 		bytestowrite = FileWrite(thisfile,
-								 file->buffer.data + wpos,
+								 file->buffer->data + wpos,
 								 bytestowrite,
 								 file->curOffset,
 								 WAIT_EVENT_BUFFILE_WRITE);
@@ -616,7 +649,7 @@ BufFileReadCommon(BufFile *file, void *ptr, size_t size, bool exact, bool eofOK)
 			nthistime = size;
 		Assert(nthistime > 0);
 
-		memcpy(ptr, file->buffer.data + file->pos, nthistime);
+		memcpy(ptr, file->buffer->data + file->pos, nthistime);
 
 		file->pos += nthistime;
 		ptr = (char *) ptr + nthistime;
@@ -679,6 +712,8 @@ BufFileWrite(BufFile *file, const void *ptr, size_t size)
 
 	Assert(!file->readOnly);
 
+	BufFileAllocBuffer(file);
+
 	while (size > 0)
 	{
 		if (file->pos >= BLCKSZ)
@@ -700,7 +735,7 @@ BufFileWrite(BufFile *file, const void *ptr, size_t size)
 			nthistime = size;
 		Assert(nthistime > 0);
 
-		memcpy(file->buffer.data + file->pos, ptr, nthistime);
+		memcpy(file->buffer->data + file->pos, ptr, nthistime);
 
 		file->dirty = true;
 		file->pos += nthistime;

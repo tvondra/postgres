@@ -510,16 +510,17 @@ ExecHashTableCreate(HashState *state)
 	hashtable->skewBucketLen = 0;
 	hashtable->nSkewBuckets = 0;
 	hashtable->skewBucketNums = NULL;
-	hashtable->nbatch = nbatch;
 	hashtable->curbatch = 0;
 
 	/* limit the number of batches we can populate at once */
 	hashtable->nbatch_maximum = HASHJOIN_BATCHES_PER_PHASE;
+	hashtable->nbatch = Min(nbatch, hashtable->nbatch_maximum);
+	hashtable->curbatch = 0;
 	hashtable->nbatch_original = Min(nbatch, hashtable->nbatch_maximum);
 	hashtable->nbatch_outstart = Min(nbatch, hashtable->nbatch_maximum);
 
 	/* assume we haven't hit the batch count limit */
-	hashtable->tooManyBatches = false;
+	hashtable->tooManyBatches = (nbatch > HASHJOIN_BATCHES_PER_PHASE);
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
 	hashtable->partialTuples = 0;
@@ -1093,9 +1094,6 @@ ExecHashDumpBatchToFile(HashJoinTable hashtable)
 	HashMemoryChunk oldchunks;
 	int			curbatch = hashtable->curbatch;
 
-	elog(WARNING, "ExecHashDumpBatchToFile (start): batch %d nbatch %d",
-		 hashtable->curbatch, hashtable->nbatch);
-
 	memset(hashtable->buckets.unshared, 0,
 		   sizeof(HashJoinTuple) * hashtable->nbuckets);
 	oldchunks = hashtable->chunks;
@@ -1143,9 +1141,6 @@ ExecHashDumpBatchToFile(HashJoinTable hashtable)
 		pfree(oldchunks);
 		oldchunks = nextchunk;
 	}
-
-	elog(WARNING, "ExecHashDumpBatchToFile (end): batch %d nbatch %d",
-		 hashtable->curbatch, hashtable->nbatch);
 }
 
 /*
@@ -1162,9 +1157,6 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 	if (!hashtable->tooManyBatches)
 		return;
 
-	elog(WARNING, "ExecHashHandleTooManyBatches (start): batch %d nbatch %d",
-		 hashtable->curbatch, hashtable->nbatch);
-
 	/* didn't run into the issue, nothing to do */
 	while (hashtable->tooManyBatches)
 	{
@@ -1173,14 +1165,11 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 
 		BufFile *file = hashtable->innerBatchFile[hashtable->curbatch];
 
-		elog(WARNING, "ExecHashHandleTooManyBatches (loop): batch %d nbatch %d",
-			 hashtable->curbatch, hashtable->nbatch);
-
 		Assert(file != NULL);
 
 		/* XXX stupid way to increase number of batches */
 		oldnbatch = hashtable->nbatch;
-		nbatch = Max(hashtable->nbatch, hashtable->nbatch * HASHJOIN_BATCHES_PER_PHASE);
+		nbatch = Max(hashtable->nbatch, hashtable->nbatch * 2);
 
 		hashtable->nbatch = nbatch;
 		hashtable->tooManyBatches = false;
@@ -1197,17 +1186,6 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 		{
 			if (hashtable->innerBatchFile[i] != NULL)
 				BufFileFreeBuffer(hashtable->innerBatchFile[i]);
-		}
-
-		{
-			int nbuffers = 0;
-			for (int i = 0; i < hashtable->nbatch; i++)
-			{
-				BufFile *tmp = hashtable->innerBatchFile[i];
-				if (tmp != NULL)
-					nbuffers += BufFileHasBuffer(tmp) ? 1 : 0;
-			}
-			elog(WARNING, "buffers = %d", nbuffers);
 		}
 
 		BufFileSeek(file, 0, 0, SEEK_SET);
@@ -1256,9 +1234,6 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 		/* close the old batch file */
 		BufFileClose(file);
 	}
-
-	elog(WARNING, "ExecHashHandleTooManyBatches (end): batch %d nbatch %d",
-		 hashtable->curbatch, hashtable->nbatch);
 }
 
 /*
@@ -2719,6 +2694,7 @@ ExecHashSkewTableInsert(HashJoinTable hashtable,
 	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
 		ExecHashRemoveNextSkewBucket(hashtable);
 
+	/* XXX maybe should check nbatch_maximum? */
 	/* Check we are not over the total spaceAllowed, either */
 	if (hashtable->spaceUsed > hashtable->spaceAllowed)
 		ExecHashIncreaseNumBatches(hashtable);

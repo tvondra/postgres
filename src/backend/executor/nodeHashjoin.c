@@ -983,9 +983,6 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 	int		nbatch = hashtable->nbatch;
 	int64	ntuples = 0;
 
-	elog(WARNING, "ExecHashJoinRepartitionBatches (start): batch %d nbatch %d",
-		 hashtable->curbatch, hashtable->nbatch);
-
 	/* fake the value so that we calculate the first phase batch */
 	hashtable->nbatch = HASHJOIN_BATCHES_PER_PHASE;
 
@@ -1065,9 +1062,6 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 
 	/* restore the correct value */
 	hashtable->nbatch = nbatch;
-
-	elog(WARNING, "ExecHashJoinRepartitionBatches (end): batch %d nbatch %d tuples %ld",
-		 hashtable->curbatch, hashtable->nbatch, ntuples);
 }
 
 /*
@@ -1259,10 +1253,6 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 static void
 ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 {
-	return;
-
-	elog(WARNING, "ExecHashJoinFreeBuffers (start): batch %d", hashtable->curbatch);
-
 	if ((!hashtable->innerBatchFile) && (!hashtable->outerBatchFile))
 		return;
 
@@ -1274,8 +1264,6 @@ ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 		if (hashtable->outerBatchFile[i])
 			BufFileFreeBuffer(hashtable->outerBatchFile[i]);
 	}
-
-	elog(WARNING, "ExecHashJoinFreeBuffers (end): batch %d", hashtable->curbatch);
 }
 
 /*
@@ -1563,15 +1551,11 @@ ExecHashCountBuffers(BufFile **files, int nfiles)
 {
 	int cnt = 0;
 
-	elog(WARNING, "ExecHashCountBuffers (start): files %d", nfiles);
-
 	for (int i = 0; i < nfiles; i++)
 	{
 		if (files[i] && BufFileHasBuffer(files[i]))
 			cnt++;
 	}
-
-	elog(WARNING, "ExecHashCountBuffers (end): files %d buffers %d", nfiles, cnt);
 
 	return cnt;
 }
@@ -1621,7 +1605,6 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
 		{
 			int	ninner = ExecHashCountBuffers(hashtable->innerBatchFile, hashtable->nbatch);
 			int	nouter = ExecHashCountBuffers(hashtable->outerBatchFile, hashtable->nbatch);
-
 			elog(WARNING, "curbatch %d  inner %d  outer %d", hashtable->curbatch, ninner, nouter);
 		}
 	}

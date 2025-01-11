@@ -1006,8 +1006,6 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 			uint32		hashvalue;
 			bool		isnull;
 
-			ntuples++;
-
 			/*
 			 * We have to compute the tuple's hash value.
 			 */
@@ -1027,6 +1025,8 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 				int	batchno;
 				bool		shouldFree;
 				MinimalTuple mintuple;
+
+				ntuples++;
 
 				/* remember outer relation is not empty for possible rescan */
 				hjstate->hj_OuterNotEmpty = true;
@@ -1090,7 +1090,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 	HashJoinTable hashtable = hjstate->hj_HashTable;
 	int			curbatch = hashtable->curbatch;
 	TupleTableSlot *slot;
-	bool		tooManyBatches = false;
+	bool		repartitioned = false;
 
 	/*
 	 * If this is the first batch, consider performing the repartitioning. This
@@ -1099,17 +1099,27 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 	 *
 	 * This includes the first batch, which means we then need to read the
 	 * tuples from the file, just like for every other batch.
+	 *
+	 * But do that only once, which we detect by (file == NULL).
 	 */
 	if ((curbatch == 0) &&
-		(hashtable->nbatch > HASHJOIN_BATCHES_PER_PHASE))
+		(hashtable->nbatch > HASHJOIN_BATCHES_PER_PHASE) &&
+		(hashtable->outerBatchFile[0] == NULL))
 	{
-		tooManyBatches = true;
-
 		ExecHashJoinRepartitionBatches(outerNode, hjstate);
-	}
-	
 
-	if (curbatch == 0 && !tooManyBatches)			/* if it is the first pass */
+		/* make sure to reset the first batch to start reading */
+		if (hashtable->outerBatchFile[0])
+			BufFileSeek(hashtable->outerBatchFile[0], 0, 0, SEEK_SET);
+	}
+
+	/*
+	 * We need to know if this is repartitioned even for later tuples in
+	 * the first batch. We detect that by having the batch file.
+	 */
+	repartitioned = (curbatch == 0) && (hashtable->outerBatchFile[0] != NULL);
+
+	if (curbatch == 0 && !repartitioned)			/* if it is the first pass */
 	{
 		/*
 		 * Check to see if first outer tuple was already fetched by
@@ -1249,6 +1259,8 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 static void
 ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 {
+	return;
+
 	elog(WARNING, "ExecHashJoinFreeBuffers (start): batch %d", hashtable->curbatch);
 
 	if ((!hashtable->innerBatchFile) && (!hashtable->outerBatchFile))
@@ -1551,15 +1563,15 @@ ExecHashCountBuffers(BufFile **files, int nfiles)
 {
 	int cnt = 0;
 
-	elog(WARNING, "ExecHashCountBuffers (start)");
+	elog(WARNING, "ExecHashCountBuffers (start): files %d", nfiles);
 
-	for (int i = 0; i < hashtable->nbatch; i++)
+	for (int i = 0; i < nfiles; i++)
 	{
 		if (files[i] && BufFileHasBuffer(files[i]))
 			cnt++;
 	}
 
-	elog(WARNING, "ExecHashCountBuffers (end): %d", cnt);
+	elog(WARNING, "ExecHashCountBuffers (end): files %d buffers %d", nfiles, cnt);
 
 	return cnt;
 }

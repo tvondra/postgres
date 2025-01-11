@@ -1159,6 +1159,9 @@ ExecHashDumpBatchToFile(HashJoinTable hashtable)
 static void
 ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 {
+	if (!hashtable->tooManyBatches)
+		return;
+
 	elog(WARNING, "ExecHashHandleTooManyBatches (start): batch %d nbatch %d",
 		 hashtable->curbatch, hashtable->nbatch);
 

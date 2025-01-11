@@ -1153,6 +1153,22 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 		hashtable->innerBatchFile[hashtable->curbatch] = NULL;
 
 		/* FIXME close/flush all current files (release the buffer) */
+		for (int i = 0; i < oldnbatch; i++)
+		{
+			if (hashtable->innerBatchFile[i] != NULL)
+				BufFileFreeBuffer(hashtable->innerBatchFile[i]);
+		}
+
+		{
+			int nbuffers = 0;
+			for (int i = 0; i < hashtable->nbatch; i++)
+			{
+				BufFile *tmp = hashtable->innerBatchFile[i];
+				if (tmp != NULL)
+					nbuffers += BufFileHasBuffer(tmp) ? 1 : 0;
+			}
+			elog(WARNING, "buffers = %d", nbuffers);
+		}
 
 		BufFileSeek(file, 0, 0, SEEK_SET);
 

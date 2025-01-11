@@ -1230,7 +1230,14 @@ ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 	if (!hashtable->innerBatchFile)
 		return;
 
-	elog(WARNING, "FIXME: release the buffers");
+	for (int i = hashtable->curbatch; i < hashtable->nbatch; i++)
+	{
+		if (hashtable->innerBatchFile[i])
+			BufFileFreeBuffer(hashtable->innerBatchFile[i]);
+
+		if (hashtable->outerBatchFile[i])
+			BufFileFreeBuffer(hashtable->outerBatchFile[i]);
+	}
 }
 
 /*
@@ -1553,6 +1560,26 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
 		*fileptr = file;
 
 		MemoryContextSwitchTo(oldctx);
+
+		if (false)
+		{
+			int	ninner = 0;
+			int	nouter = 0;
+
+			for (int i = 0; i < hashtable->nbatch; i++)
+			{
+				if (hashtable->innerBatchFile[i] &&
+					BufFileHasBuffer(hashtable->innerBatchFile[i]))
+					ninner++;
+
+				if (hashtable->outerBatchFile[i] &&
+					BufFileHasBuffer(hashtable->outerBatchFile[i]))
+					nouter++;
+			}
+			elog(WARNING, "curbatch %d  inner %d  outer %d", hashtable->curbatch, ninner, nouter);
+		}
+		elog(WARNING, "curbatch %d", hashtable->curbatch);
+
 	}
 
 	BufFileWrite(file, &hashvalue, sizeof(uint32));

@@ -197,8 +197,9 @@ MultiExecPrivateHash(HashState *node)
 	}
 
 	/*
-	 * If we had to disable adding more batches during the load, now is
-	 * a good time to do the next phase of adding more batches.
+	 * If we had to disable adding more batches while building the hash, now
+	 * is a good time to do the next phase - release all file buffers and split
+	 * each batch into new batches.
 	 */
 	ExecHashHandleTooManyBatches(hashtable, node->ps.ps_ResultTupleSlot);
 
@@ -512,10 +513,12 @@ ExecHashTableCreate(HashState *state)
 	hashtable->nbatch = nbatch;
 	hashtable->curbatch = 0;
 
+	/* limit the number of batches we can populate at once */
 	hashtable->nbatch_maximum = HASHJOIN_BATCHES_PER_PHASE;
 	hashtable->nbatch_original = Min(nbatch, hashtable->nbatch_maximum);
 	hashtable->nbatch_outstart = Min(nbatch, hashtable->nbatch_maximum);
 
+	/* assume we haven't hit the batch count limit */
 	hashtable->tooManyBatches = false;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
@@ -885,6 +888,7 @@ ExecHashTableDestroy(HashJoinTable hashtable)
 	 */
 	if (hashtable->innerBatchFile != NULL)
 	{
+		/* XXX We might have allocated a file for batch 0, so release it. */
 		for (i = 0; i < hashtable->nbatch; i++)
 		{
 			if (hashtable->innerBatchFile[i])
@@ -916,8 +920,10 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	long		nfreed;
 	HashMemoryChunk oldchunks;
 
-	/* we should never get here after we hit too many batches and switch
-	 * to spilling all data */
+	/*
+	 * We should never get here after hitting too many batches, and switching
+	 * to spilling data for all batches.
+	 */
 	Assert(!hashtable->tooManyBatches);
 
 	/* do nothing if we've decided to shut off growth */
@@ -1069,11 +1075,26 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	}
 }
 
+/*
+ * ExecHashDumpBatchToFile
+ *		Dump the current hash table into a file for the current batch.
+ *
+ * Once we hit the number of batches we're populating, we stop doubling the
+ * number of batches. But we also can't keep the current batch in memory, so
+ * instead we dump the data to file and will read it later after we increase
+ * the number of batches (at which point we won't need to keep the current
+ * batches).
+ *
+ * XXX This is virtually the same thing we do in ExecHashIncreaseNumBatches.
+ */
 static void
 ExecHashDumpBatchToFile(HashJoinTable hashtable)
 {
 	HashMemoryChunk oldchunks;
 	int			curbatch = hashtable->curbatch;
+
+	elog(WARNING, "ExecHashDumpBatchToFile (start): batch %d nbatch %d",
+		 hashtable->curbatch, hashtable->nbatch);
 
 	memset(hashtable->buckets.unshared, 0,
 		   sizeof(HashJoinTuple) * hashtable->nbuckets);
@@ -1122,12 +1143,25 @@ ExecHashDumpBatchToFile(HashJoinTable hashtable)
 		pfree(oldchunks);
 		oldchunks = nextchunk;
 	}
+
+	elog(WARNING, "ExecHashDumpBatchToFile (end): batch %d nbatch %d",
+		 hashtable->curbatch, hashtable->nbatch);
 }
 
-/* XXX this should do a loop, because we can hit the limit again */
+/*
+ * ExecHashHandleTooManyBatches
+ *		Handle the case when we hit the number of batches while building the
+ *		hash table.
+ *
+ * We can hit the situation again (e.g. we need 1M batches, but the limit is
+ * 128, so we go 128 -> 16384 -> 1M).
+ */
 static void
 ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 {
+	elog(WARNING, "ExecHashHandleTooManyBatches (start): batch %d nbatch %d",
+		 hashtable->curbatch, hashtable->nbatch);
+
 	/* didn't run into the issue, nothing to do */
 	while (hashtable->tooManyBatches)
 	{
@@ -1135,6 +1169,9 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 		int			oldnbatch;
 
 		BufFile *file = hashtable->innerBatchFile[hashtable->curbatch];
+
+		elog(WARNING, "ExecHashHandleTooManyBatches (loop): batch %d nbatch %d",
+			 hashtable->curbatch, hashtable->nbatch);
 
 		Assert(file != NULL);
 
@@ -1216,6 +1253,9 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 		/* close the old batch file */
 		BufFileClose(file);
 	}
+
+	elog(WARNING, "ExecHashHandleTooManyBatches (end): batch %d nbatch %d",
+		 hashtable->curbatch, hashtable->nbatch);
 }
 
 /*
@@ -1790,8 +1830,8 @@ ExecHashTableInsert(HashJoinTable hashtable,
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
 	 *
-	 * XXX If we're already in "too many batches" situation, just write
-	 * it directly to the temp file.
+	 * XXX If we are already in "too many batches" situation, just write the
+	 * data directly to the temp file, even for current batch.
 	 */
 	if (batchno == hashtable->curbatch && !hashtable->tooManyBatches)
 	{

@@ -439,6 +439,8 @@ BufFileAllocBuffer(BufFile *file)
 void
 BufFileFreeBuffer(BufFile *file)
 {
+	return;
+
 	if (file->buffer == NULL)
 		return;
 

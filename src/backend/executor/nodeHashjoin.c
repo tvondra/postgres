@@ -963,6 +963,17 @@ ExecEndHashJoin(HashJoinState *node)
 	ExecEndNode(innerPlanState(node));
 }
 
+/*
+ * ExecHashJoinRepartitionBatches
+ *		Build the hashes for the outer side, recursively to not need more than
+ *		HASHJOIN_BATCHES_PER_PHASE batches.
+ *
+ * XXX There's no recursion right now, we just do the first phase and leave
+ * the rest to the regular re-batching. This won't be enough if we need more
+ * than a single repartition cycle.
+ *
+ * XXX Does this need to worry about the skew buckets? Probably yes.
+ */
 static void
 ExecHashJoinRepartitionBatches(PlanState *outerNode,
 							   HashJoinState *hjstate)
@@ -970,6 +981,10 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 	TupleTableSlot *slot;
 	HashJoinTable hashtable = hjstate->hj_HashTable;
 	int		nbatch = hashtable->nbatch;
+	int64	ntuples = 0;
+
+	elog(WARNING, "ExecHashJoinRepartitionBatches (start): batch %d nbatch %d",
+		 hashtable->curbatch, hashtable->nbatch);
 
 	/* fake the value so that we calculate the first phase batch */
 	hashtable->nbatch = HASHJOIN_BATCHES_PER_PHASE;
@@ -990,6 +1005,8 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 		{
 			uint32		hashvalue;
 			bool		isnull;
+
+			ntuples++;
 
 			/*
 			 * We have to compute the tuple's hash value.
@@ -1048,6 +1065,9 @@ ExecHashJoinRepartitionBatches(PlanState *outerNode,
 
 	/* restore the correct value */
 	hashtable->nbatch = nbatch;
+
+	elog(WARNING, "ExecHashJoinRepartitionBatches (end): batch %d nbatch %d tuples %ld",
+		 hashtable->curbatch, hashtable->nbatch, ntuples);
 }
 
 /*
@@ -1073,15 +1093,19 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 	bool		tooManyBatches = false;
 
 	/*
+	 * If this is the first batch, consider performing the repartitioning. This
+	 * will build HASHJOIN_BATCHES_PER_PHASE batches, which then need to be
+	 * rebatched using the regular logic.
+	 *
+	 * This includes the first batch, which means we then need to read the
+	 * tuples from the file, just like for every other batch.
 	 */
-	if ((curbatch == 0) && (hashtable->nbatch > HASHJOIN_BATCHES_PER_PHASE))
+	if ((curbatch == 0) &&
+		(hashtable->nbatch > HASHJOIN_BATCHES_PER_PHASE))
 	{
 		tooManyBatches = true;
 
-		elog(WARNING, "repartitioning outer");
 		ExecHashJoinRepartitionBatches(outerNode, hjstate);
-
-		elog(WARNING, "repartitioned outer");
 	}
 	
 
@@ -1225,9 +1249,9 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 static void
 ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 {
-	elog(WARNING, "ExecHashJoinFreeBuffers batch %d", hashtable->curbatch);
+	elog(WARNING, "ExecHashJoinFreeBuffers (start): batch %d", hashtable->curbatch);
 
-	if (!hashtable->innerBatchFile)
+	if ((!hashtable->innerBatchFile) && (!hashtable->outerBatchFile))
 		return;
 
 	for (int i = hashtable->curbatch; i < hashtable->nbatch; i++)
@@ -1238,6 +1262,8 @@ ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 		if (hashtable->outerBatchFile[i])
 			BufFileFreeBuffer(hashtable->outerBatchFile[i]);
 	}
+
+	elog(WARNING, "ExecHashJoinFreeBuffers (end): batch %d", hashtable->curbatch);
 }
 
 /*
@@ -1520,6 +1546,24 @@ ExecParallelHashJoinNewBatch(HashJoinState *hjstate)
 	return false;
 }
 
+static int
+ExecHashCountBuffers(BufFile **files, int nfiles)
+{
+	int cnt = 0;
+
+	elog(WARNING, "ExecHashCountBuffers (start)");
+
+	for (int i = 0; i < hashtable->nbatch; i++)
+	{
+		if (files[i] && BufFileHasBuffer(files[i]))
+			cnt++;
+	}
+
+	elog(WARNING, "ExecHashCountBuffers (end): %d", cnt);
+
+	return cnt;
+}
+
 /*
  * ExecHashJoinSaveTuple
  *		save a tuple to a batch file.
@@ -1563,23 +1607,11 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
 
 		if (false)
 		{
-			int	ninner = 0;
-			int	nouter = 0;
+			int	ninner = ExecHashCountBuffers(hashtable->innerBatchFile, hashtable->nbatch);
+			int	nouter = ExecHashCountBuffers(hashtable->outerBatchFile, hashtable->nbatch);
 
-			for (int i = 0; i < hashtable->nbatch; i++)
-			{
-				if (hashtable->innerBatchFile[i] &&
-					BufFileHasBuffer(hashtable->innerBatchFile[i]))
-					ninner++;
-
-				if (hashtable->outerBatchFile[i] &&
-					BufFileHasBuffer(hashtable->outerBatchFile[i]))
-					nouter++;
-			}
 			elog(WARNING, "curbatch %d  inner %d  outer %d", hashtable->curbatch, ninner, nouter);
 		}
-		elog(WARNING, "curbatch %d", hashtable->curbatch);
-
 	}
 
 	BufFileWrite(file, &hashvalue, sizeof(uint32));

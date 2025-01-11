@@ -322,9 +322,11 @@ typedef struct HashJoinTableData
 	int			nbatch;			/* number of batches */
 	int			curbatch;		/* current batch #; 0 during 1st pass */
 
+	int			nbatch_maximum;		/* maximum number of batches to create */
 	int			nbatch_original;	/* nbatch when we started inner scan */
 	int			nbatch_outstart;	/* nbatch when we started outer scan */
 
+	bool		tooManyBatches;	/* did we generate too many batches? */
 	bool		growEnabled;	/* flag to shut off nbatch increases */
 
 	double		totalTuples;	/* # tuples obtained from inner plan */
@@ -361,5 +363,8 @@ typedef struct HashJoinTableData
 	ParallelHashJoinBatchAccessor *batches;
 	dsa_pointer current_chunk_shared;
 } HashJoinTableData;
+
+
+#define HASHJOIN_BATCHES_PER_PHASE	128
 
 #endif							/* HASHJOIN_H */

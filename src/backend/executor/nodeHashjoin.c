@@ -963,6 +963,93 @@ ExecEndHashJoin(HashJoinState *node)
 	ExecEndNode(innerPlanState(node));
 }
 
+static void
+ExecHashJoinRepartitionBatches(PlanState *outerNode,
+							   HashJoinState *hjstate)
+{
+	TupleTableSlot *slot;
+	HashJoinTable hashtable = hjstate->hj_HashTable;
+	int		nbatch = hashtable->nbatch;
+
+	/* fake the value so that we calculate the first phase batch */
+	hashtable->nbatch = HASHJOIN_BATCHES_PER_PHASE;
+
+	while (true)
+	{
+		/*
+		 * Check to see if first outer tuple was already fetched by
+		 * ExecHashJoin() and not used yet.
+		 */
+		slot = hjstate->hj_FirstOuterTupleSlot;
+		if (!TupIsNull(slot))
+			hjstate->hj_FirstOuterTupleSlot = NULL;
+		else
+			slot = ExecProcNode(outerNode);
+
+		while (!TupIsNull(slot))
+		{
+			uint32		hashvalue;
+			bool		isnull;
+
+			/*
+			 * We have to compute the tuple's hash value.
+			 */
+			ExprContext *econtext = hjstate->js.ps.ps_ExprContext;
+
+			econtext->ecxt_outertuple = slot;
+
+			ResetExprContext(econtext);
+
+			hashvalue = DatumGetUInt32(ExecEvalExprSwitchContext(hjstate->hj_OuterHash,
+																  econtext,
+																  &isnull));
+
+			if (!isnull)
+			{
+				int	bucketno;
+				int	batchno;
+				bool		shouldFree;
+				MinimalTuple mintuple;
+
+				/* remember outer relation is not empty for possible rescan */
+				hjstate->hj_OuterNotEmpty = true;
+
+				ExecHashGetBucketAndBatch(hashtable, hashvalue,
+										  &bucketno, &batchno);
+
+				/*
+				 * The tuple might not belong to the current batch (where
+				 * "current batch" includes the skew buckets if any).
+				 */
+				mintuple = ExecFetchSlotMinimalTuple(slot, &shouldFree);
+
+				/*
+				 * Need to postpone this outer tuple to a later batch.
+				 * Save it in the corresponding outer-batch file.
+				 */
+				Assert(batchno >= hashtable->curbatch);
+				ExecHashJoinSaveTuple(mintuple, hashvalue,
+									  &hashtable->outerBatchFile[batchno],
+									  hashtable);
+
+				if (shouldFree)
+					heap_free_minimal_tuple(mintuple);
+			}
+
+			/*
+			 * That tuple couldn't match because of a NULL, so discard it and
+			 * continue with the next one.
+			 */
+			slot = ExecProcNode(outerNode);
+		}
+
+		break;
+	}
+
+	/* restore the correct value */
+	hashtable->nbatch = nbatch;
+}
+
 /*
  * ExecHashJoinOuterGetTuple
  *
@@ -983,8 +1070,22 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 	HashJoinTable hashtable = hjstate->hj_HashTable;
 	int			curbatch = hashtable->curbatch;
 	TupleTableSlot *slot;
+	bool		tooManyBatches = false;
 
-	if (curbatch == 0)			/* if it is the first pass */
+	/*
+	 */
+	if ((curbatch == 0) && (hashtable->nbatch > HASHJOIN_BATCHES_PER_PHASE))
+	{
+		tooManyBatches = true;
+
+		elog(WARNING, "repartitioning outer");
+		ExecHashJoinRepartitionBatches(outerNode, hjstate);
+
+		elog(WARNING, "repartitioned outer");
+	}
+	
+
+	if (curbatch == 0 && !tooManyBatches)			/* if it is the first pass */
 	{
 		/*
 		 * Check to see if first outer tuple was already fetched by
@@ -1120,6 +1221,18 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 	return NULL;
 }
 
+/* XXX this is very expensive, we have to walk long arrays often */
+static void
+ExecHashJoinFreeBuffers(HashJoinTable hashtable)
+{
+	elog(WARNING, "ExecHashJoinFreeBuffers batch %d", hashtable->curbatch);
+
+	if (!hashtable->innerBatchFile)
+		return;
+
+	elog(WARNING, "FIXME: release the buffers");
+}
+
 /*
  * ExecHashJoinNewBatch
  *		switch to a new hashjoin batch
@@ -1138,6 +1251,8 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 
 	nbatch = hashtable->nbatch;
 	curbatch = hashtable->curbatch;
+
+	ExecHashJoinFreeBuffers(hashtable);
 
 	if (curbatch > 0)
 	{

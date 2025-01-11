@@ -79,7 +79,8 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 										  size_t size);
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
-
+static void ExecHashDumpBatchToFile(HashJoinTable hashtable);
+static void ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -194,6 +195,12 @@ MultiExecPrivateHash(HashState *node)
 			hashtable->totalTuples += 1;
 		}
 	}
+
+	/*
+	 * If we had to disable adding more batches during the load, now is
+	 * a good time to do the next phase of adding more batches.
+	 */
+	ExecHashHandleTooManyBatches(hashtable, node->ps.ps_ResultTupleSlot);
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
 	if (hashtable->nbuckets != hashtable->nbuckets_optimal)
@@ -504,8 +511,12 @@ ExecHashTableCreate(HashState *state)
 	hashtable->skewBucketNums = NULL;
 	hashtable->nbatch = nbatch;
 	hashtable->curbatch = 0;
-	hashtable->nbatch_original = nbatch;
-	hashtable->nbatch_outstart = nbatch;
+
+	hashtable->nbatch_maximum = HASHJOIN_BATCHES_PER_PHASE;
+	hashtable->nbatch_original = Min(nbatch, hashtable->nbatch_maximum);
+	hashtable->nbatch_outstart = Min(nbatch, hashtable->nbatch_maximum);
+
+	hashtable->tooManyBatches = false;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
 	hashtable->partialTuples = 0;
@@ -874,7 +885,7 @@ ExecHashTableDestroy(HashJoinTable hashtable)
 	 */
 	if (hashtable->innerBatchFile != NULL)
 	{
-		for (i = 1; i < hashtable->nbatch; i++)
+		for (i = 0; i < hashtable->nbatch; i++)
 		{
 			if (hashtable->innerBatchFile[i])
 				BufFileClose(hashtable->innerBatchFile[i]);
@@ -904,6 +915,10 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	long		ninmemory;
 	long		nfreed;
 	HashMemoryChunk oldchunks;
+
+	/* we should never get here after we hit too many batches and switch
+	 * to spilling all data */
+	Assert(!hashtable->tooManyBatches);
 
 	/* do nothing if we've decided to shut off growth */
 	if (!hashtable->growEnabled)
@@ -1051,6 +1066,139 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		printf("Hashjoin %p: disabling further increase of nbatch\n",
 			   hashtable);
 #endif
+	}
+}
+
+static void
+ExecHashDumpBatchToFile(HashJoinTable hashtable)
+{
+	HashMemoryChunk oldchunks;
+	int			curbatch = hashtable->curbatch;
+
+	memset(hashtable->buckets.unshared, 0,
+		   sizeof(HashJoinTuple) * hashtable->nbuckets);
+	oldchunks = hashtable->chunks;
+	hashtable->chunks = NULL;
+
+	/* so, let's scan through the old chunks, and all tuples in each chunk */
+	while (oldchunks != NULL)
+	{
+		HashMemoryChunk nextchunk = oldchunks->next.unshared;
+
+		/* position within the buffer (up to oldchunks->used) */
+		size_t		idx = 0;
+
+		/* process all tuples stored in this chunk (and then free it) */
+		while (idx < oldchunks->used)
+		{
+			HashJoinTuple hashTuple = (HashJoinTuple) (HASH_CHUNK_DATA(oldchunks) + idx);
+			MinimalTuple tuple = HJTUPLE_MINTUPLE(hashTuple);
+			int			hashTupleSize = (HJTUPLE_OVERHEAD + tuple->t_len);
+			int			bucketno;
+			int			batchno;
+
+			ExecHashGetBucketAndBatch(hashtable, hashTuple->hashvalue,
+									  &bucketno, &batchno);
+
+			/* everything belongs to current batch, we're not adding any */
+			Assert(batchno == curbatch);
+
+			/* dump it out */
+			ExecHashJoinSaveTuple(HJTUPLE_MINTUPLE(hashTuple),
+								  hashTuple->hashvalue,
+								  &hashtable->innerBatchFile[batchno],
+								  hashtable);
+
+			hashtable->spaceUsed -= hashTupleSize;
+
+			/* next tuple in this chunk */
+			idx += MAXALIGN(hashTupleSize);
+
+			/* allow this loop to be cancellable */
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		/* we're done with this chunk - free it and proceed to the next one */
+		pfree(oldchunks);
+		oldchunks = nextchunk;
+	}
+}
+
+/* XXX this should do a loop, because we can hit the limit again */
+static void
+ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
+{
+	/* didn't run into the issue, nothing to do */
+	while (hashtable->tooManyBatches)
+	{
+		int			nbatch;
+		int			oldnbatch;
+
+		BufFile *file = hashtable->innerBatchFile[hashtable->curbatch];
+
+		Assert(file != NULL);
+
+		/* XXX stupid way to increase number of batches */
+		oldnbatch = hashtable->nbatch;
+		nbatch = Max(hashtable->nbatch, hashtable->nbatch * HASHJOIN_BATCHES_PER_PHASE);
+
+		hashtable->nbatch = nbatch;
+		hashtable->tooManyBatches = false;
+
+		/* enlarge arrays and zero out added entries */
+		hashtable->innerBatchFile = repalloc0_array(hashtable->innerBatchFile, BufFile *, oldnbatch, nbatch);
+		hashtable->outerBatchFile = repalloc0_array(hashtable->outerBatchFile, BufFile *, oldnbatch, nbatch);
+
+		/* set to NULL, so that we create a new / empty file for this batch */
+		hashtable->innerBatchFile[hashtable->curbatch] = NULL;
+
+		/* FIXME close/flush all current files (release the buffer) */
+
+		BufFileSeek(file, 0, 0, SEEK_SET);
+
+		/* read the current tuples from the batch file, decide what
+		 * to do with them */
+		while (true)
+		{
+			uint32		hashvalue;
+			uint32		header[2];
+			size_t		nread;
+			MinimalTuple tuple;
+
+			/*
+			 * We check for interrupts here because this is typically taken as an
+			 * alternative code path to an ExecProcNode() call, which would include
+			 * such a check.
+			 */
+			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * Since both the hash value and the MinimalTuple length word are uint32,
+			 * we can read them both in one BufFileRead() call without any type
+			 * cheating.
+			 */
+			nread = BufFileReadMaybeEOF(file, header, sizeof(header), true);
+			if (nread == 0)				/* end of file */
+			{
+				ExecClearTuple(slot);
+				break;
+			}
+
+			hashvalue = header[0];
+			tuple = (MinimalTuple) palloc(header[1]);
+			tuple->t_len = header[1];
+
+			BufFileReadExact(file,
+							 (char *) tuple + sizeof(uint32),
+							 header[1] - sizeof(uint32));
+
+			ExecForceStoreMinimalTuple(tuple, slot, true);
+
+			ExecHashTableInsert(hashtable, slot, hashvalue);
+		}
+
+		/* close the old batch file */
+		BufFileClose(file);
 	}
 }
 
@@ -1625,8 +1773,11 @@ ExecHashTableInsert(HashJoinTable hashtable,
 
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
+	 *
+	 * XXX If we're already in "too many batches" situation, just write
+	 * it directly to the temp file.
 	 */
-	if (batchno == hashtable->curbatch)
+	if (batchno == hashtable->curbatch && !hashtable->tooManyBatches)
 	{
 		/*
 		 * put the tuple in hash table
@@ -1678,14 +1829,29 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		if (hashtable->spaceUsed +
 			hashtable->nbuckets_optimal * sizeof(HashJoinTuple)
 			> hashtable->spaceAllowed)
-			ExecHashIncreaseNumBatches(hashtable);
+		{
+			/*
+			 * If we already hit the maximum for this phase, we can't increase
+			 * the number of batches further, so we stop and flush everything
+			 * into the temp file.
+			 */
+			if (hashtable->nbatch == hashtable->nbatch_maximum)
+			{
+				/* write everything from this batch to the temp file */
+				ExecHashDumpBatchToFile(hashtable);
+				hashtable->tooManyBatches = true;
+			}
+			else
+				ExecHashIncreaseNumBatches(hashtable);
+		}
 	}
 	else
 	{
 		/*
 		 * put the tuple into a temp file for later batches
 		 */
-		Assert(batchno > hashtable->curbatch);
+		Assert(batchno > hashtable->curbatch ||
+			   (hashtable->tooManyBatches && batchno == hashtable->curbatch));
 		ExecHashJoinSaveTuple(tuple,
 							  hashvalue,
 							  &hashtable->innerBatchFile[batchno],

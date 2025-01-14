@@ -80,7 +80,8 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 static void ExecHashDumpBatchToFile(HashJoinTable hashtable);
-static void ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot);
+static void ExecHashHandleTooManyBatches(HashJoinTable hashtable,
+										 TupleTableSlot *slot);
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -197,9 +198,13 @@ MultiExecPrivateHash(HashState *node)
 	}
 
 	/*
-	 * If we had to disable adding more batches while building the hash, now
-	 * is a good time to do the next phase - release all file buffers and split
-	 * each batch into new batches.
+	 * If we had to disable adding more batches during the initial pass, now is
+	 * a good time to do the next phase - release all file buffers and split
+	 * each batch into smaller batches until we get the right number of them.
+	 *
+	 * XXX Maybe it'd be better to do this in ExecHashJoinNewBatch wehn we start
+	 * to process a new batch. That'd work for all batches, not just for batch 0
+	 * (which this places does).
 	 */
 	ExecHashHandleTooManyBatches(hashtable, node->ps.ps_ResultTupleSlot);
 
@@ -497,6 +502,10 @@ ExecHashTableCreate(HashState *state)
 	 * already expect to need more than HASHJOIN_BATCHES_PER_PHASE batches,
 	 * and then cap the number of batches to HASHJOIN_BATCHES_PER_PHASE.
 	 */
+	if (nbatch > HASHJOIN_BATCHES_PER_PHASE)
+		elog(WARNING, "ExecHashTableCreate: too many batches (%d > %d)",
+			 nbatch, HASHJOIN_BATCHES_PER_PHASE);
+
 	tooManyBatches = (nbatch > HASHJOIN_BATCHES_PER_PHASE)
 	nbatch = Min(nbatch, HASHJOIN_BATCHES_PER_PHASE);
 
@@ -524,6 +533,7 @@ ExecHashTableCreate(HashState *state)
 	hashtable->curbatch = 0;
 	hashtable->nbatch_original = nbatch;
 	hashtable->nbatch_outstart = nbatch;
+	hashtable->tooManyBatches = tooManyBatches;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
 	hashtable->partialTuples = 0;
@@ -1083,13 +1093,25 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
  * ExecHashDumpBatchToFile
  *		Dump the current hash table into a file for the current batch.
  *
- * Once we hit the number of batches we're populating, we stop doubling the
- * number of batches. But we also can't keep the current batch in memory, so
- * instead we dump the data to file and will read it later after we increase
- * the number of batches (at which point we won't need to keep the current
+ * Once we reach the maximum number of batches we can handle at once, we stop
+ * increasing nbatch. But that was how we (hoped) to keep the hash table size
+ * under control, so we can't just keep adding to the in-memory hash table.
+ * Instead we dump the data to a file (just like any other batch) and will
+ * read it later in a separate phase, after release buffers and increase the
+ * number of batches (at which point we won't need to keep files for current
  * batches).
  *
- * XXX This is virtually the same thing we do in ExecHashIncreaseNumBatches.
+ * This works because with the batch doubling scheme each batch splits into
+ * two - the current batch, and another batch in the "second half" with new
+ * batches. It will never overlap with current batches, so we can just close
+ * those, and we won't need them until it's their turn.
+ *
+ * This also means we can do many doublings at once. If we stop doubling
+ * at 128 batches, and then determine we need 16k batches, we can do that in
+ * a single step, splitting each batch into 128 new batches.
+ *
+ * XXX This is very similar to the code in ExecHashIncreaseNumBatches, except
+ * that we dump everything into a file, instead of keeping 1/2 in memory.
  */
 static void
 ExecHashDumpBatchToFile(HashJoinTable hashtable)
@@ -1170,7 +1192,36 @@ ExecHashHandleTooManyBatches(HashJoinTable hashtable, TupleTableSlot *slot)
 
 		Assert(file != NULL);
 
-		/* XXX stupid way to increase number of batches */
+		/*
+		 * XXX We simply double the number of batches until we get enough
+		 * batches to fit the batch into memory. But this is a bit stupid,
+		 * and also wouldn't quite work for later batches because there we
+		 * need to stop at the correct "global" nbatch count, not when the
+		 * particular batch fits into memory.
+		 *
+		 * It's stupid because we have a lot of information for calculating
+		 * the number of batches (compared to doing that at runtime). We've
+		 * spilled everything into a file, so we know how large the file
+		 * is / how many tuples there are, etc. We could also calculate
+		 * (file_size / work_mem) and use that to decide how many more
+		 * batches we need.
+		 *
+		 * We'd still need the while loop, because there may be skew and
+		 * and we may need to do more splits (could easily happen with
+		 * extreme final nbatch values). E.g. with 1M batches we'd need
+		 * three phases: 128, 128 and 64.
+		 *
+		 * XXX Do we need to worry about nbatch overflows, or exhausting
+		 * all the bits in the hashvalue?
+		 *
+		 * XXX Another thing to consider is disabling growth. Right now
+		 * this code just ignores that, which means it can loop forever,
+		 * because if there's a batch that can't be split (either at all,
+		 * or because we ran of hash bits), we'll just set tooManyBatches
+		 * to true and loop again. AFAIK this is how regular code deals
+		 * with running out of hash bits - the next split leaves all the
+		 * tuples in current batch, and it sets growthEnabled=false.
+		 */
 		oldnbatch = hashtable->nbatch;
 		nbatch = Max(hashtable->nbatch, hashtable->nbatch * 2);
 
@@ -2697,7 +2748,10 @@ ExecHashSkewTableInsert(HashJoinTable hashtable,
 	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
 		ExecHashRemoveNextSkewBucket(hashtable);
 
-	/* XXX maybe should check nbatch_maximum? */
+	/*
+	 * XXX This should probably check nbatch_maximum and not increase nbatch,
+	 * similar to ExecHashTableInsert.
+	 */
 	/* Check we are not over the total spaceAllowed, either */
 	if (hashtable->spaceUsed > hashtable->spaceAllowed)
 		ExecHashIncreaseNumBatches(hashtable);

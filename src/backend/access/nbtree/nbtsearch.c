@@ -56,7 +56,7 @@ static inline void _bt_savepostingitem_batch(IndexScanBatch batch, int itemIndex
 									   ItemPointer heapTid, int tupleOffset);
 static inline void _bt_returnitem(IndexScanDesc scan, BTScanOpaque so);
 static bool _bt_steppage(IndexScanDesc scan, ScanDirection dir);
-static IndexScanBatch _bt_steppage_batch(IndexScanDesc scan, IndexScanBatch batch,
+static IndexScanBatch _bt_steppage_batch(IndexScanDesc scan, BTBatchScanPos pos,
 										 ScanDirection dir);
 static bool _bt_readfirstpage(IndexScanDesc scan, OffsetNumber offnum,
 							  ScanDirection dir);
@@ -65,7 +65,7 @@ static IndexScanBatch _bt_readfirstpage_batch(IndexScanDesc scan, OffsetNumber o
 static bool _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 							 BlockNumber lastcurrblkno, ScanDirection dir,
 							 bool seized);
-static IndexScanBatch _bt_readnextpage_batch(IndexScanDesc scan, IndexScanBatch batch,
+static IndexScanBatch _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos,
 											 BlockNumber blkno, BlockNumber lastcurrblkno,
 											 ScanDirection dir, bool seized);
 static Buffer _bt_lock_and_validate_left(Relation rel, BlockNumber *blkno,
@@ -2163,7 +2163,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	/*
 	 * Advance to next page, load the data into the index batch.
 	 */
-	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch, dir);
+	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch->position, dir);
 }
 
 /*
@@ -3241,10 +3241,9 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
  *	a batching version of _bt_steppage(), ignoring irrelevant bits
  */
 static IndexScanBatch
-_bt_steppage_batch(IndexScanDesc scan, IndexScanBatch batch, ScanDirection dir)
+_bt_steppage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	BTBatchScanPos pos = (BTBatchScanPos) batch->position;
 	BlockNumber blkno,
 				lastcurrblkno;
 
@@ -3296,7 +3295,7 @@ _bt_steppage_batch(IndexScanDesc scan, IndexScanBatch batch, ScanDirection dir)
 	if (pos->dir != dir)
 		so->needPrimScan = false;
 
-	return _bt_readnextpage_batch(scan, batch, blkno, lastcurrblkno, dir, false);
+	return _bt_readnextpage_batch(scan, pos, blkno, lastcurrblkno, dir, false);
 }
 
 /*
@@ -3429,7 +3428,7 @@ _bt_readfirstpage_batch(IndexScanDesc scan, OffsetNumber offnum, ScanDirection d
 	_bt_unlockbuf(scan->indexRelation, pos.buf);
 
 	/* Call _bt_readnextpage using its _bt_steppage wrapper function */
-	return _bt_steppage_batch(scan, pos, dir);
+	return _bt_steppage_batch(scan, &pos, dir);
 }
 
 /*
@@ -3577,11 +3576,10 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 }
 
 static IndexScanBatch
-_bt_readnextpage_batch(IndexScanDesc scan, IndexScanBatch batch, BlockNumber blkno,
+_bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno,
 					   BlockNumber lastcurrblkno, ScanDirection dir, bool seized)
 {
 	Relation	rel = scan->indexRelation;
-	BTBatchScanPos pos = (BTBatchScanPos) batch->position;
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
 	BTBatchScanPosData	newpos;

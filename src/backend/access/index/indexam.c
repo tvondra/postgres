@@ -1594,6 +1594,11 @@ index_scan_stream_read_next(ReadStream *stream,
 			IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer		tid = &batch->items[pos->index].heapTid;
 
+			elog(WARNING, "index_scan_stream_read_next: index %d TID (%u,%u)",
+				 pos->index,
+				 ItemPointerGetBlockNumber(tid),
+				 ItemPointerGetOffsetNumber(tid));
+
 			/*
 			 * if there's a prefetch callback, use it to decide if we will
 			 * need to read the block
@@ -1601,12 +1606,16 @@ index_scan_stream_read_next(ReadStream *stream,
 			if (scan->xs_batches->prefetchCallback &&
 				!scan->xs_batches->prefetchCallback(scan, scan->xs_batches->prefetchArgument, pos))
 			{
+				elog(WARNING, "index_scan_stream_read_next: skip block (callback)");
 				continue;
 			}
 
 			/* same block as before, don't need to read it */
 			if (scan->xs_batches->lastBlock == ItemPointerGetBlockNumber(tid))
+			{
+				elog(WARNING, "index_scan_stream_read_next: skip block (lastBlock)");
 				continue;
+			}
 
 			scan->xs_batches->lastBlock = ItemPointerGetBlockNumber(tid);
 
@@ -1978,7 +1987,7 @@ index_batch_alloc(int maxitems)
 	 * XXX Maybe don't size to MaxTIDsPerBTreePage? We don't reuse batches
 	 * (unlike currPos), so we can size it for just what we need.
 	 */
-	batch->items = palloc(sizeof(IndexScanBatchPosItem) * maxitems);
+	batch->items = palloc0(sizeof(IndexScanBatchPosItem) * maxitems);
 
 	/*
 	 * batch contents (TIDs, index tuples, kill bitmap, ...)

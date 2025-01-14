@@ -2621,7 +2621,21 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 				indnatts;
 
 	/* result */
-	IndexScanBatch batch = NULL;
+	// IndexScanBatch batch = ddd;
+	IndexScanBatch batch = index_batch_alloc(MaxTIDsPerBTreePage);
+
+	batch = index_batch_alloc(MaxTIDsPerBTreePage);
+
+	/* bogus values */
+	batch->firstItem = -1;
+	batch->lastItem = -1;
+	batch->itemIndex = -1;
+
+	// if (so->currTuples)
+	// {
+	// 	batch->currTuples = (char *) palloc(BLCKSZ);
+	// 	memcpy(batch->currTuples, so->currTuples, BLCKSZ);
+	// }
 
 	/* save the page/buffer block number, along with its sibling links */
 	page = BufferGetPage(pos->buf);
@@ -2870,9 +2884,9 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 			pos->moreRight = false;
 
 		Assert(itemIndex <= MaxTIDsPerBTreePage);
-		pos->firstItem = 0;
-		pos->lastItem = itemIndex - 1;
-		pos->itemIndex = 0;
+		batch->firstItem = 0;
+		batch->lastItem = itemIndex - 1;
+		batch->itemIndex = 0;
 	}
 	else
 	{
@@ -2994,9 +3008,9 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 			pos->moreLeft = false;
 
 		Assert(itemIndex >= 0);
-		pos->firstItem = itemIndex;
-		pos->lastItem = MaxTIDsPerBTreePage - 1;
-		pos->itemIndex = MaxTIDsPerBTreePage - 1;
+		batch->firstItem = itemIndex;
+		batch->lastItem = MaxTIDsPerBTreePage - 1;
+		batch->itemIndex = MaxTIDsPerBTreePage - 1;
 	}
 
 	// return (pos->firstItem <= pos->lastItem);
@@ -3094,7 +3108,21 @@ static void
 _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 			 OffsetNumber offnum, IndexTuple itup)
 {
-	elog(ERROR, "_bt_saveitem_batch: not implemented");
+	Assert(!BTreeTupleIsPivot(itup) && !BTreeTupleIsPosting(itup));
+
+	elog(WARNING, "_bt_saveitem_batch index %d TID (%u,%u)",
+		 itemIndex,
+		 ItemPointerGetBlockNumber(&itup->t_tid),
+		 ItemPointerGetOffsetNumber(&itup->t_tid));
+
+	/* copy the populated part of the items array */
+	batch->items[itemIndex].heapTid = itup->t_tid;
+	batch->items[itemIndex].indexOffset = offnum;
+
+	/* FIXME see _bt_saveitem */
+	batch->items[itemIndex].tupleOffset = 0;
+
+	elog(WARNING, "_bt_saveitem_batch");
 }
 
 /*
@@ -3421,7 +3449,7 @@ _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber off
 		 * _bt_readpage succeeded.  Drop the lock (and maybe the pin) on
 		 * so->currPos.buf in preparation for btgettuple returning tuples.
 		 */
-		Assert(BTScanPosIsPinned(so->currPos));
+		Assert(BTBatchScanPosIsPinned(*pos));
 		_bt_drop_lock_and_maybe_pin_batch(scan, pos);
 		return batch;
 	}

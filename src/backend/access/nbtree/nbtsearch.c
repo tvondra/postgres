@@ -2769,7 +2769,7 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 					/* Schedule another primitive index scan after all */
 					pos->moreRight = false;
 					so->needPrimScan = true;
-					return false;
+					return NULL;
 				}
 
 				/* Deliberately don't unset scanBehind flag just yet */
@@ -3013,7 +3013,12 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 		batch->itemIndex = MaxTIDsPerBTreePage - 1;
 	}
 
-	// return (pos->firstItem <= pos->lastItem);
+	if (batch->firstItem > batch->lastItem)
+		return NULL;
+
+	batch->position = palloc(sizeof(BTBatchScanPosData));
+	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
+
 	return batch;
 }
 

@@ -1585,9 +1585,13 @@ index_scan_stream_read_next(ReadStream *stream,
 			 */
 			*pos = scan->xs_batches->readPos;
 			advanced = true;
+			elog(WARNING, "advanced 1");
 		}
 		else if (index_batch_pos_advance(scan, pos))
-			advanced = true;
+		{
+			elog(WARNING, "advanced 2");
+			advanced = false;
+		}
 
 		if (advanced)
 		{
@@ -1819,6 +1823,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 
 		/* try loading the next batch */
+		/* FIXME why do we even call index_batch_getnext here? surely that should
+		 * only be done from index_scan_stream_read_next? */
 		if (index_batch_getnext(scan))
 		{
 			DEBUG_LOG("loaded next batch");

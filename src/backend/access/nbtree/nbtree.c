@@ -291,7 +291,7 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 *
 		 * FIXME needs to use a "batch" position, not so->currPos
 		 */
-		if (!BTScanPosIsValid(so->currPos))
+		if (scan->xs_batches->currentBatch == NULL)
 			res = _bt_first_batch(scan, dir);
 		else
 		{

@@ -60,7 +60,8 @@ static IndexScanBatch _bt_steppage_batch(IndexScanDesc scan, BTBatchScanPos pos,
 										 ScanDirection dir);
 static bool _bt_readfirstpage(IndexScanDesc scan, OffsetNumber offnum,
 							  ScanDirection dir);
-static IndexScanBatch _bt_readfirstpage_batch(IndexScanDesc scan, OffsetNumber offnum,
+static IndexScanBatch _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos,
+											  OffsetNumber offnum,
 											  ScanDirection dir);
 static bool _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 							 BlockNumber lastcurrblkno, ScanDirection dir,
@@ -2131,7 +2132,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	 * for the page.  For example, when inskey is both < the leaf page's high
 	 * key and > all of its non-pivot tuples, offnum will be "maxoff + 1".
 	 */
-	return _bt_readfirstpage_batch(scan, offnum, dir);
+	return _bt_readfirstpage_batch(scan, &pos, offnum, dir);
 }
 
 /*
@@ -3093,7 +3094,7 @@ static void
 _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 			 OffsetNumber offnum, IndexTuple itup)
 {
-elog(ERROR, "not implemented");
+	elog(ERROR, "_bt_saveitem_batch: not implemented");
 }
 
 /*
@@ -3110,7 +3111,7 @@ static int
 _bt_setuppostingitems_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offnum,
 					  ItemPointer heapTid, IndexTuple itup)
 {
-elog(ERROR, "not implemented");
+	elog(ERROR, "_bt_setuppostingitems_batch: not implemented");
 }
 
 /*
@@ -3124,7 +3125,7 @@ static inline void
 _bt_savepostingitem_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offnum,
 					ItemPointer heapTid, int tupleOffset)
 {
-elog(ERROR, "not implemented");
+	elog(ERROR, "_bt_savepostingitem_batch: not implemented");
 }
 
 /*
@@ -3378,33 +3379,34 @@ _bt_readfirstpage(IndexScanDesc scan, OffsetNumber offnum, ScanDirection dir)
 }
 
 static IndexScanBatch
-_bt_readfirstpage_batch(IndexScanDesc scan, OffsetNumber offnum, ScanDirection dir)
+_bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber offnum, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	BTBatchScanPosData pos;
 	IndexScanBatch batch;
 
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
+
+	/* copy position info from BTScanOpaque */
 
 	/* Initialize so->currPos for the first page (page in so->currPos.buf) */
 	if (so->needPrimScan)
 	{
 		Assert(so->numArrayKeys);
 
-		pos.moreLeft = true;
-		pos.moreRight = true;
+		pos->moreLeft = true;
+		pos->moreRight = true;
 		so->needPrimScan = false;
 	}
 	else if (ScanDirectionIsForward(dir))
 	{
-		pos.moreLeft = false;
-		pos.moreRight = true;
+		pos->moreLeft = false;
+		pos->moreRight = true;
 	}
 	else
 	{
-		pos.moreLeft = true;
-		pos.moreRight = false;
+		pos->moreLeft = true;
+		pos->moreRight = false;
 	}
 
 	/*
@@ -3413,22 +3415,22 @@ _bt_readfirstpage_batch(IndexScanDesc scan, OffsetNumber offnum, ScanDirection d
 	 * Note that _bt_readpage will finish initializing the so->currPos fields.
 	 * _bt_readpage also releases parallel scan (even when it returns false).
 	 */
-	if ((batch = _bt_readpage_batch(scan, &pos, dir, offnum, true)) != NULL)
+	if ((batch = _bt_readpage_batch(scan, pos, dir, offnum, true)) != NULL)
 	{
 		/*
 		 * _bt_readpage succeeded.  Drop the lock (and maybe the pin) on
 		 * so->currPos.buf in preparation for btgettuple returning tuples.
 		 */
 		Assert(BTScanPosIsPinned(so->currPos));
-		_bt_drop_lock_and_maybe_pin_batch(scan, &pos);
+		_bt_drop_lock_and_maybe_pin_batch(scan, pos);
 		return batch;
 	}
 
 	/* There's no actually-matching data on the page in so->currPos.buf */
-	_bt_unlockbuf(scan->indexRelation, pos.buf);
+	_bt_unlockbuf(scan->indexRelation, pos->buf);
 
 	/* Call _bt_readnextpage using its _bt_steppage wrapper function */
-	return _bt_steppage_batch(scan, &pos, dir);
+	return _bt_steppage_batch(scan, pos, dir);
 }
 
 /*

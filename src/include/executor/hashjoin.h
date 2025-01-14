@@ -364,7 +364,7 @@ typedef struct HashJoinTableData
 	dsa_pointer current_chunk_shared;
 } HashJoinTableData;
 
-
+/* Maximum number of batches to build at once. */
 #define HASHJOIN_BATCHES_PER_PHASE	128
 
 #endif							/* HASHJOIN_H */

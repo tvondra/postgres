@@ -1249,7 +1249,17 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 	return NULL;
 }
 
-/* XXX this is very expensive, we have to walk long arrays often */
+/*
+ * ExecHashJoinFreeBuffers
+ *		Free buffers associated with BufFile, without closing the file.
+ *
+ * XXX This may be quite expensive, because for every batch it walks the arrays
+ * with one entry for each batch. For hash joins with few batches this does not
+ * really matter, but if there are many batches this gets quite expensive.
+ *
+ * However, only a tiny fraction fo the files should have a buffer, so we might
+ * maintain a list of such files, and only loop through these.
+ */
 static void
 ExecHashJoinFreeBuffers(HashJoinTable hashtable)
 {
@@ -1285,6 +1295,10 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 	nbatch = hashtable->nbatch;
 	curbatch = hashtable->curbatch;
 
+	/*
+	 * XXX Do we want to do this for every batch, or only when we hit the case
+	 * with too many batches?
+	 */
 	ExecHashJoinFreeBuffers(hashtable);
 
 	if (curbatch > 0)
@@ -1398,6 +1412,26 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 	}
 
 	/*
+	 * FIXME We need to handle the possibility we need to split the batch into
+	 * too many new batches. Either the batch we started to load happens to be
+	 * unexpectedly large (e.g. due to hash duplicities), or maybe one of the
+	 * preceding batches increased the number of batches (and this batch needs
+	 * to split too much because of that).
+	 *
+	 * XXX For each batch we need to track at which nbatch value we started to
+	 * add tuples to it, and derive the maximum "allowed" nbatch from that. For
+	 * example if we're loading batchno=127, and the hash build started with
+	 * nbatch=128 (or less), then we start with nbatch=128. It's the current
+	 * nbatch value is 32768, then the batch needs to be split into 256 new
+	 * batches, which is higher than the default HASHJOIN_BATCHES_PER_PHASE.
+	 * So we need to do this in phases - first by 128 batches, then 2.
+	 *
+	 * If we started to build the hash with nbatch=2048, this is not a problem,
+	 * because the starting point is 2048 (not 128). And we only need to split
+	 * the batch 8 times to get to 32k batches.
+	 */
+
+	/*
 	 * Rewind outer batch file (if present), so that we can start reading it.
 	 */
 	if (hashtable->outerBatchFile[curbatch] != NULL)
@@ -1406,6 +1440,11 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not rewind hash-join temporary file")));
+
+		/*
+		 * FIXME Similarly to the inner hash, we may need to repartition the
+		 * outer temp file in a way that doesn't use too many files.
+		 */
 	}
 
 	return true;
@@ -1546,20 +1585,6 @@ ExecParallelHashJoinNewBatch(HashJoinState *hjstate)
 	return false;
 }
 
-static int
-ExecHashCountBuffers(BufFile **files, int nfiles)
-{
-	int cnt = 0;
-
-	for (int i = 0; i < nfiles; i++)
-	{
-		if (files[i] && BufFileHasBuffer(files[i]))
-			cnt++;
-	}
-
-	return cnt;
-}
-
 /*
  * ExecHashJoinSaveTuple
  *		save a tuple to a batch file.
@@ -1600,13 +1625,6 @@ ExecHashJoinSaveTuple(MinimalTuple tuple, uint32 hashvalue,
 		*fileptr = file;
 
 		MemoryContextSwitchTo(oldctx);
-
-		if (false)
-		{
-			int	ninner = ExecHashCountBuffers(hashtable->innerBatchFile, hashtable->nbatch);
-			int	nouter = ExecHashCountBuffers(hashtable->outerBatchFile, hashtable->nbatch);
-			elog(WARNING, "curbatch %d  inner %d  outer %d", hashtable->curbatch, ninner, nouter);
-		}
 	}
 
 	BufFileWrite(file, &hashvalue, sizeof(uint32));

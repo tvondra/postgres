@@ -463,6 +463,7 @@ ExecHashTableCreate(HashState *state)
 	int			num_skew_mcvs;
 	int			log2_nbuckets;
 	MemoryContext oldcxt;
+	bool		tooManyBatches;
 
 	/*
 	 * Get information about the size of the relation to be hashed (it's the
@@ -492,6 +493,14 @@ ExecHashTableCreate(HashState *state)
 	Assert(nbuckets == (1 << log2_nbuckets));
 
 	/*
+	 * Limit the number of batches we can build at once. First remember if we
+	 * already expect to need more than HASHJOIN_BATCHES_PER_PHASE batches,
+	 * and then cap the number of batches to HASHJOIN_BATCHES_PER_PHASE.
+	 */
+	tooManyBatches = (nbatch > HASHJOIN_BATCHES_PER_PHASE)
+	nbatch = Min(nbatch, HASHJOIN_BATCHES_PER_PHASE);
+
+	/*
 	 * Initialize the hash table control block.
 	 *
 	 * The hashtable control block is just palloc'd from the executor's
@@ -510,17 +519,11 @@ ExecHashTableCreate(HashState *state)
 	hashtable->skewBucketLen = 0;
 	hashtable->nSkewBuckets = 0;
 	hashtable->skewBucketNums = NULL;
-	hashtable->curbatch = 0;
-
-	/* limit the number of batches we can populate at once */
 	hashtable->nbatch_maximum = HASHJOIN_BATCHES_PER_PHASE;
-	hashtable->nbatch = Min(nbatch, hashtable->nbatch_maximum);
+	hashtable->nbatch = nbatch;
 	hashtable->curbatch = 0;
-	hashtable->nbatch_original = Min(nbatch, hashtable->nbatch_maximum);
-	hashtable->nbatch_outstart = Min(nbatch, hashtable->nbatch_maximum);
-
-	/* assume we haven't hit the batch count limit */
-	hashtable->tooManyBatches = (nbatch > HASHJOIN_BATCHES_PER_PHASE);
+	hashtable->nbatch_original = nbatch;
+	hashtable->nbatch_outstart = nbatch;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
 	hashtable->partialTuples = 0;

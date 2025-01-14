@@ -427,6 +427,10 @@ BufFileClose(BufFile *file)
 	pfree(file);
 }
 
+/*
+ * BufFileAllocBuffer
+ *		Make sure the file has a local buffer allocated.
+ */
 static void
 BufFileAllocBuffer(BufFile *file)
 {
@@ -436,6 +440,10 @@ BufFileAllocBuffer(BufFile *file)
 	file->buffer = MemoryContextAlloc(file->bufctx, sizeof(PGAlignedBlock));
 }
 
+/*
+ * BufFileFreeBuffer
+ *		If the file has a buffer allocated, release it (after flushing).
+ */
 void
 BufFileFreeBuffer(BufFile *file)
 {
@@ -448,6 +456,10 @@ BufFileFreeBuffer(BufFile *file)
 	file->buffer = NULL;
 }
 
+/*
+ * BufFileHasBuffer
+ *		Does the file have a buffer allocated?
+ */
 bool
 BufFileHasBuffer(BufFile *file)
 {
@@ -485,6 +497,7 @@ BufFileLoadBuffer(BufFile *file)
 	else
 		INSTR_TIME_SET_ZERO(io_start);
 
+	/* XXX Shouldn't this need to data into the buffer? */
 	BufFileAllocBuffer(file);
 
 	/*
@@ -712,6 +725,7 @@ BufFileWrite(BufFile *file, const void *ptr, size_t size)
 
 	Assert(!file->readOnly);
 
+	/* XXX Shouldn't this first load data from the file into the buffer? */
 	BufFileAllocBuffer(file);
 
 	while (size > 0)

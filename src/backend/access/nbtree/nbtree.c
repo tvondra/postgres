@@ -288,6 +288,8 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 *
 		 * XXX This probably should not rely on so->currPos, because the
 		 * batching may not populate that at all. Add a new flag?
+		 *
+		 * FIXME needs to use a "batch" position, not so->currPos
 		 */
 		if (!BTScanPosIsValid(so->currPos))
 			res = _bt_first_batch(scan, dir);

@@ -1023,17 +1023,6 @@ typedef struct BTBatchScanPosData
 	 */
 	bool		moreLeft;
 	bool		moreRight;
-
-	/*
-	 * The items array is always ordered in index order (ie, increasing
-	 * indexoffset).  When scanning backwards it is convenient to fill the
-	 * array back-to-front, so we start at the last slot and fill downwards.
-	 * Hence we need both a first-valid-entry and a last-valid-entry counter.
-	 * itemIndex is a cursor showing which entry was last returned to caller.
-	 */
-	int			firstItem;		/* first valid index in items[] */
-	int			lastItem;		/* last valid index in items[] */
-	int			itemIndex;		/* current index in items[] */
 } BTBatchScanPosData;
 
 typedef BTBatchScanPosData *BTBatchScanPos;

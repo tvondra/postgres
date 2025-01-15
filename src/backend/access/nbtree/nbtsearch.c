@@ -3502,12 +3502,21 @@ _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber off
 		 * so->currPos.buf in preparation for btgettuple returning tuples.
 		 */
 		Assert(BTBatchScanPosIsPinned(*pos));
-		_bt_drop_lock_and_maybe_pin_batch(scan, pos);
+		// _bt_drop_lock_and_maybe_pin_batch(scan, pos);
+		// XXX drop just the lock, not the pin, that's up to btfreebatch
+		// without this btfreebatch triggers an assert when unpinning the
+		// buffer, because that checks we're not holding a lock on it
+		_bt_unlockbuf(scan->indexRelation, pos->buf);
 		return batch;
 	}
 
 	/* There's no actually-matching data on the page in so->currPos.buf */
 	_bt_unlockbuf(scan->indexRelation, pos->buf);
+
+	// XXX Not sure we can drop the pin before calling steppage_batch? But
+	// without this, \d+ reports unreleased buffer ...
+	// And the non-batch code doesn't need to do this.
+	ReleaseBuffer(pos->buf);
 
 	/* Call _bt_readnextpage using its _bt_steppage wrapper function */
 	return _bt_steppage_batch(scan, pos, dir);

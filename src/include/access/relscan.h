@@ -154,6 +154,10 @@ typedef struct IndexScanBatchData
 	/*
 	 * AM-specific concept of position within the index, and other stuff
 	 * the AM might need to store for each batch.
+	 *
+	 * XXX maybe "position" is not the best name, it can have other stuff
+	 * the AM needs to keep per-batch (even only for reading the leaf items,
+	 * like nextTupleOffset).
 	 */
 	void   *position;
 
@@ -179,6 +183,9 @@ typedef struct IndexScanBatchData
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
 	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.
+	 *
+	 * XXX maybe currTuples should be part of the am-specific per-batch state
+	 * stored in "position" field?
 	 */
 	char	   *currTuples;			/* tuple storage for currPos */
 	IndexScanBatchPosItem *items;	/* XXX don't size to MaxTIDsPerBTreePage */

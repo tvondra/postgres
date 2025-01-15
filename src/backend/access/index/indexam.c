@@ -1969,7 +1969,7 @@ index_batch_end(IndexScanDesc scan)
 }
 
 IndexScanBatch
-index_batch_alloc(int maxitems)
+index_batch_alloc(int maxitems, bool want_itup)
 {
 	IndexScanBatch	batch = palloc(sizeof(IndexScanBatchData));
 
@@ -1988,6 +1988,8 @@ index_batch_alloc(int maxitems)
 	 * XXX allocate
 	 */
 	batch->currTuples = NULL;			/* tuple storage for currPos */
+	if (want_itup)
+		batch->currTuples = palloc(BLCKSZ);
 
 	/*
 	 * XXX Maybe don't size to MaxTIDsPerBTreePage? We don't reuse batches

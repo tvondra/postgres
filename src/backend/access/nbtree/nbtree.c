@@ -348,7 +348,16 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 		pfree(batch->currTuples);
 
 	if (batch->position)
+	{
+		BTBatchScanPos pos = (BTBatchScanPos) batch->position;
+
+		BTBatchScanPosIsValid(*pos);
+		BTBatchScanPosIsPinned(*pos);
+
+		BTBatchScanPosUnpinIfPinned(*pos);
+
 		pfree(batch->position);
+	}
 
 	/* and finally free the batch itself */
 	pfree(batch);

@@ -1526,7 +1526,7 @@ _bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
 	/* we should only get here for pages with at least some items */
 	Assert(so->currPos.firstItem <= so->currPos.lastItem);
 
-	batch = index_batch_alloc(MaxTIDsPerBTreePage);
+	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 
 	batch->firstItem = 0;
 	batch->lastItem = 0;
@@ -2622,9 +2622,14 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 
 	/* result */
 	// IndexScanBatch batch = ddd;
-	IndexScanBatch batch = index_batch_alloc(MaxTIDsPerBTreePage);
+	IndexScanBatch batch;
 
-	batch = index_batch_alloc(MaxTIDsPerBTreePage);
+	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
+
+	batch->position = palloc(sizeof(BTBatchScanPosData));
+	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
+
+	pos = batch->position;
 
 	/* bogus values */
 	batch->firstItem = -1;
@@ -3016,9 +3021,6 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	if (batch->firstItem > batch->lastItem)
 		return NULL;
 
-	batch->position = palloc(sizeof(BTBatchScanPosData));
-	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
-
 	return batch;
 }
 
@@ -3113,6 +3115,8 @@ static void
 _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 			 OffsetNumber offnum, IndexTuple itup)
 {
+	BTBatchScanPos			pos = (BTBatchScanPos) batch->position;
+
 	Assert(!BTreeTupleIsPivot(itup) && !BTreeTupleIsPosting(itup));
 
 	elog(WARNING, "_bt_saveitem_batch index %d TID (%u,%u)",
@@ -3124,8 +3128,14 @@ _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 	batch->items[itemIndex].heapTid = itup->t_tid;
 	batch->items[itemIndex].indexOffset = offnum;
 
-	/* FIXME see _bt_saveitem */
-	batch->items[itemIndex].tupleOffset = 0;
+	if (batch->currTuples)
+	{
+		Size		itupsz = IndexTupleSize(itup);
+
+		batch->items[itemIndex].tupleOffset = pos->nextTupleOffset;
+		memcpy(batch->currTuples + pos->nextTupleOffset, itup, itupsz);
+		pos->nextTupleOffset += MAXALIGN(itupsz);
+	}
 
 	elog(WARNING, "_bt_saveitem_batch");
 }
@@ -3497,11 +3507,13 @@ _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber off
 	 */
 	if ((batch = _bt_readpage_batch(scan, pos, dir, offnum, true)) != NULL)
 	{
+		pos = (BTBatchScanPos) batch->position;
 		/*
 		 * _bt_readpage succeeded.  Drop the lock (and maybe the pin) on
 		 * so->currPos.buf in preparation for btgettuple returning tuples.
 		 */
 		Assert(BTBatchScanPosIsPinned(*pos));
+
 		// _bt_drop_lock_and_maybe_pin_batch(scan, pos);
 		// XXX drop just the lock, not the pin, that's up to btfreebatch
 		// without this btfreebatch triggers an assert when unpinning the

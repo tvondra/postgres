@@ -1589,8 +1589,8 @@ index_scan_stream_read_next(ReadStream *stream,
 		}
 		else if (index_batch_pos_advance(scan, pos))
 		{
+			advanced = true;
 			elog(WARNING, "advanced 2");
-			advanced = false;
 		}
 
 		if (advanced)

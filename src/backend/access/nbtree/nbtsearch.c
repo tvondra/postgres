@@ -3144,7 +3144,39 @@ static int
 _bt_setuppostingitems_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offnum,
 					  ItemPointer heapTid, IndexTuple itup)
 {
-	elog(ERROR, "_bt_setuppostingitems_batch: not implemented");
+	BTBatchScanPos			pos = (BTBatchScanPos) batch->position;
+	IndexScanBatchPosItem  *item = &batch->items[itemIndex];
+
+	Assert(BTreeTupleIsPosting(itup));
+
+	elog(WARNING, "_bt_setuppostingitems_batch index %d TID (%u,%u)",
+		 itemIndex,
+		 ItemPointerGetBlockNumber(&itup->t_tid),
+		 ItemPointerGetOffsetNumber(&itup->t_tid));
+
+	/* copy the populated part of the items array */
+	item->heapTid = itup->t_tid;
+	item->indexOffset = offnum;
+
+	if (batch->currTuples)
+	{
+		/* Save base IndexTuple (truncate posting list) */
+		IndexTuple	base;
+		Size		itupsz = BTreeTupleGetPostingOffset(itup);
+
+		itupsz = MAXALIGN(itupsz);
+		item->tupleOffset = pos->nextTupleOffset;
+		base = (IndexTuple) (batch->currTuples + pos->nextTupleOffset);
+		memcpy(base, itup, itupsz);
+		/* Defensively reduce work area index tuple header size */
+		base->t_info &= ~INDEX_SIZE_MASK;
+		base->t_info |= itupsz;
+		pos->nextTupleOffset += itupsz;
+
+		return item->tupleOffset;
+	}
+
+	return 0;
 }
 
 /*
@@ -3158,7 +3190,22 @@ static inline void
 _bt_savepostingitem_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offnum,
 					ItemPointer heapTid, int tupleOffset)
 {
-	elog(ERROR, "_bt_savepostingitem_batch: not implemented");
+	IndexScanBatchPosItem  *item = &batch->items[itemIndex];
+
+	elog(WARNING, "_bt_savepostingitem_batch index %d TID (%u,%u)",
+		 itemIndex,
+		 ItemPointerGetBlockNumber(heapTid),
+		 ItemPointerGetOffsetNumber(heapTid));
+
+	item->heapTid = *heapTid;
+	item->indexOffset = offnum;
+
+	/*
+	 * Have index-only scans return the same base IndexTuple for every TID
+	 * that originates from the same posting list
+	 */
+	if (batch->currTuples)
+		item->tupleOffset = tupleOffset;
 }
 
 /*

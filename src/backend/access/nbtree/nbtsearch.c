@@ -2624,12 +2624,14 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	// IndexScanBatch batch = ddd;
 	IndexScanBatch batch;
 
+	// FIXME fake for _bt_checkkeys, needs to be set properly elsewhere (not sure where)
+	so->currPos.dir = ForwardScanDirection;
+
+elog(WARNING, "START: pos->moreRight %d pos->moreLeft %d", pos->moreRight, pos->moreLeft);
+
 	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 
-	batch->position = palloc(sizeof(BTBatchScanPosData));
-	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
-
-	pos = batch->position;
+	batch->position = palloc0(sizeof(BTBatchScanPosData));
 
 	/* bogus values */
 	batch->firstItem = -1;
@@ -3018,8 +3020,12 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 		batch->itemIndex = MaxTIDsPerBTreePage - 1;
 	}
 
+	elog(WARNING, "END: pos->moreRight %d pos->moreLeft %d", pos->moreRight, pos->moreLeft);
+
 	if (batch->firstItem > batch->lastItem)
 		return NULL;
+
+	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
 
 	return batch;
 }
@@ -3685,23 +3691,23 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 	Relation	rel = scan->indexRelation;
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	BTBatchScanPosData	newpos;
+	// BTBatchScanPosData	newpos;
 	IndexScanBatch		newbatch = NULL;
 
 	Assert(pos->currPage == lastcurrblkno || seized);
 	Assert(BTBatchScanPosIsPinned(*pos));
 
 	/* initialize the new position to the old one, we'll modify it */
-	newpos = *pos;
+	// newpos = *pos;
 
 	/*
 	 * Remember that the scan already read lastcurrblkno, a page to the left
 	 * of blkno (or remember reading a page to the right, for backwards scans)
 	 */
 	if (ScanDirectionIsForward(dir))
-		newpos.moreLeft = true;
+		pos->moreLeft = true;
 	else
-		newpos.moreRight = true;
+		pos->moreRight = true;
 
 	for (;;)
 	{
@@ -3710,10 +3716,10 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 
 		if (blkno == P_NONE ||
 			(ScanDirectionIsForward(dir) ?
-			 !newpos.moreRight : !newpos.moreLeft))
+			 !pos->moreRight : !pos->moreLeft))
 		{
 			/* most recent _bt_readpage call (for lastcurrblkno) ended scan */
-			Assert(newpos.currPage == lastcurrblkno && !seized);
+			Assert(pos->currPage == lastcurrblkno && !seized);
 			// BTScanPosInvalidate(so->currPos);
 			_bt_parallel_done(scan);	/* iff !so->needPrimScan */
 			return NULL;
@@ -3734,14 +3740,14 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 		{
 			/* read blkno, but check for interrupts first */
 			CHECK_FOR_INTERRUPTS();
-			newpos.buf = _bt_getbuf(rel, blkno, BT_READ);
+			pos->buf = _bt_getbuf(rel, blkno, BT_READ);
 		}
 		else
 		{
 			/* read blkno, avoiding race (also checks for interrupts) */
-			newpos.buf = _bt_lock_and_validate_left(rel, &blkno,
+			pos->buf = _bt_lock_and_validate_left(rel, &blkno,
 													lastcurrblkno);
-			if (newpos.buf == InvalidBuffer)
+			if (pos->buf == InvalidBuffer)
 			{
 				/* must have been a concurrent deletion of leftmost page */
 				// BTScanPosInvalidate(so->currPos);
@@ -3750,7 +3756,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 			}
 		}
 
-		page = BufferGetPage(newpos.buf);
+		page = BufferGetPage(pos->buf);
 		opaque = BTPageGetOpaque(page);
 		lastcurrblkno = blkno;
 		if (likely(!P_IGNORE(opaque)))
@@ -3759,16 +3765,16 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 			if (ScanDirectionIsForward(dir))
 			{
 				/* note that this will clear moreRight if we can stop */
-				if ((newbatch = _bt_readpage_batch(scan, &newpos, dir, P_FIRSTDATAKEY(opaque), false)) != NULL)
+				if ((newbatch = _bt_readpage_batch(scan, pos, dir, P_FIRSTDATAKEY(opaque), false)) != NULL)
 					break;
-				blkno = newpos.nextPage;
+				blkno = pos->nextPage;
 			}
 			else
 			{
 				/* note that this will clear moreLeft if we can stop */
-				if ((newbatch = _bt_readpage_batch(scan, &newpos, dir, PageGetMaxOffsetNumber(page), false)) != NULL)
+				if ((newbatch = _bt_readpage_batch(scan, pos, dir, PageGetMaxOffsetNumber(page), false)) != NULL)
 					break;
-				blkno = newpos.prevPage;
+				blkno = pos->prevPage;
 			}
 		}
 		else
@@ -3783,7 +3789,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 		}
 
 		/* no matching tuples on this page */
-		_bt_relbuf(rel, newpos.buf);
+		_bt_relbuf(rel, pos->buf);
 		seized = false;			/* released by _bt_readpage (or by us) */
 	}
 

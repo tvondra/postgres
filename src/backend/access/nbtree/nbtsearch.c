@@ -72,6 +72,7 @@ static IndexScanBatch _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos 
 static Buffer _bt_lock_and_validate_left(Relation rel, BlockNumber *blkno,
 										 BlockNumber lastcurrblkno);
 static bool _bt_endpoint(IndexScanDesc scan, ScanDirection dir);
+static IndexScanBatch _bt_endpoint_batch(IndexScanDesc scan, ScanDirection dir);
 
 
 /*
@@ -1850,8 +1851,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (keysz == 0)
 	{
-		elog(ERROR, "not implemented, should have called _bt_endpoint");
-		// return _bt_endpoint(scan, dir);
+		// elog(ERROR, "not implemented, should have called _bt_endpoint");
+		return _bt_endpoint_batch(scan, dir);
 	}
 
 	/*
@@ -4069,4 +4070,76 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 
 	_bt_returnitem(scan, so);
 	return true;
+}
+
+/*
+ *	_bt_endpoint() -- Find the first or last page in the index, and scan
+ * from there to the first key satisfying all the quals.
+ *
+ * This is used by _bt_first() to set up a scan when we've determined
+ * that the scan must start at the beginning or end of the index (for
+ * a forward or backward scan respectively).
+ *
+ * Parallel scan callers must have seized the scan before calling here.
+ * Exit conditions are the same as for _bt_first().
+ */
+static IndexScanBatch
+_bt_endpoint_batch(IndexScanDesc scan, ScanDirection dir)
+{
+	Relation	rel = scan->indexRelation;
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	Page		page;
+	BTPageOpaque opaque;
+	OffsetNumber start;
+	BTBatchScanPosData	pos;
+
+	BTBatchScanPosInvalidate(pos);
+
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!so->needPrimScan);
+
+	/*
+	 * Scan down to the leftmost or rightmost leaf page.  This is a simplified
+	 * version of _bt_search().
+	 */
+	pos.buf = _bt_get_endpoint(rel, 0, ScanDirectionIsBackward(dir));
+
+	if (!BufferIsValid(pos.buf))
+	{
+		/*
+		 * Empty index. Lock the whole relation, as nothing finer to lock
+		 * exists.
+		 */
+		PredicateLockRelation(rel, scan->xs_snapshot);
+		_bt_parallel_done(scan);
+		return false;
+	}
+
+	page = BufferGetPage(pos.buf);
+	opaque = BTPageGetOpaque(page);
+	Assert(P_ISLEAF(opaque));
+
+	if (ScanDirectionIsForward(dir))
+	{
+		/* There could be dead pages to the left, so not this: */
+		/* Assert(P_LEFTMOST(opaque)); */
+
+		start = P_FIRSTDATAKEY(opaque);
+	}
+	else if (ScanDirectionIsBackward(dir))
+	{
+		Assert(P_RIGHTMOST(opaque));
+
+		start = PageGetMaxOffsetNumber(page);
+	}
+	else
+	{
+		elog(ERROR, "invalid scan direction: %d", (int) dir);
+		start = 0;				/* keep compiler quiet */
+	}
+
+	/*
+	 * Now load data from the first page of the scan.
+	 */
+	return _bt_readfirstpage_batch(scan, &pos, start, dir);
 }

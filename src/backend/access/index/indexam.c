@@ -1585,12 +1585,10 @@ index_scan_stream_read_next(ReadStream *stream,
 			 */
 			*pos = scan->xs_batches->readPos;
 			advanced = true;
-			elog(WARNING, "advanced 1");
 		}
 		else if (index_batch_pos_advance(scan, pos))
 		{
 			advanced = true;
-			elog(WARNING, "advanced 2");
 		}
 
 		if (advanced)
@@ -1598,7 +1596,7 @@ index_scan_stream_read_next(ReadStream *stream,
 			IndexScanBatch	batch = INDEX_SCAN_BATCH(scan, pos->batch);
 			ItemPointer		tid = &batch->items[pos->index].heapTid;
 
-			elog(WARNING, "index_scan_stream_read_next: index %d TID (%u,%u)",
+			DEBUG_LOG("index_scan_stream_read_next: index %d TID (%u,%u)",
 				 pos->index,
 				 ItemPointerGetBlockNumber(tid),
 				 ItemPointerGetOffsetNumber(tid));
@@ -1610,14 +1608,14 @@ index_scan_stream_read_next(ReadStream *stream,
 			if (scan->xs_batches->prefetchCallback &&
 				!scan->xs_batches->prefetchCallback(scan, scan->xs_batches->prefetchArgument, pos))
 			{
-				elog(WARNING, "index_scan_stream_read_next: skip block (callback)");
+				DEBUG_LOG("index_scan_stream_read_next: skip block (callback)");
 				continue;
 			}
 
 			/* same block as before, don't need to read it */
 			if (scan->xs_batches->lastBlock == ItemPointerGetBlockNumber(tid))
 			{
-				elog(WARNING, "index_scan_stream_read_next: skip block (lastBlock)");
+				DEBUG_LOG("index_scan_stream_read_next: skip block (lastBlock)");
 				continue;
 			}
 

@@ -2627,10 +2627,9 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	// FIXME fake for _bt_checkkeys, needs to be set properly elsewhere (not sure where)
 	so->currPos.dir = ForwardScanDirection;
 
-elog(WARNING, "START: pos->moreRight %d pos->moreLeft %d", pos->moreRight, pos->moreLeft);
-
 	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 
+	/* FIXME but we don't copy the contents until the end */
 	batch->position = palloc0(sizeof(BTBatchScanPosData));
 
 	/* bogus values */
@@ -3020,8 +3019,6 @@ elog(WARNING, "START: pos->moreRight %d pos->moreLeft %d", pos->moreRight, pos->
 		batch->itemIndex = MaxTIDsPerBTreePage - 1;
 	}
 
-	elog(WARNING, "END: pos->moreRight %d pos->moreLeft %d", pos->moreRight, pos->moreLeft);
-
 	if (batch->firstItem > batch->lastItem)
 		return NULL;
 
@@ -3125,11 +3122,6 @@ _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 
 	Assert(!BTreeTupleIsPivot(itup) && !BTreeTupleIsPosting(itup));
 
-	elog(WARNING, "_bt_saveitem_batch index %d TID (%u,%u)",
-		 itemIndex,
-		 ItemPointerGetBlockNumber(&itup->t_tid),
-		 ItemPointerGetOffsetNumber(&itup->t_tid));
-
 	/* copy the populated part of the items array */
 	batch->items[itemIndex].heapTid = itup->t_tid;
 	batch->items[itemIndex].indexOffset = offnum;
@@ -3142,8 +3134,6 @@ _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 		memcpy(batch->currTuples + pos->nextTupleOffset, itup, itupsz);
 		pos->nextTupleOffset += MAXALIGN(itupsz);
 	}
-
-	elog(WARNING, "_bt_saveitem_batch");
 }
 
 /*
@@ -3164,11 +3154,6 @@ _bt_setuppostingitems_batch(IndexScanBatch batch, int itemIndex, OffsetNumber of
 	IndexScanBatchPosItem  *item = &batch->items[itemIndex];
 
 	Assert(BTreeTupleIsPosting(itup));
-
-	elog(WARNING, "_bt_setuppostingitems_batch index %d TID (%u,%u)",
-		 itemIndex,
-		 ItemPointerGetBlockNumber(&itup->t_tid),
-		 ItemPointerGetOffsetNumber(&itup->t_tid));
 
 	/* copy the populated part of the items array */
 	item->heapTid = itup->t_tid;
@@ -3207,11 +3192,6 @@ _bt_savepostingitem_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offn
 					ItemPointer heapTid, int tupleOffset)
 {
 	IndexScanBatchPosItem  *item = &batch->items[itemIndex];
-
-	elog(WARNING, "_bt_savepostingitem_batch index %d TID (%u,%u)",
-		 itemIndex,
-		 ItemPointerGetBlockNumber(heapTid),
-		 ItemPointerGetOffsetNumber(heapTid));
 
 	item->heapTid = *heapTid;
 	item->indexOffset = offnum;

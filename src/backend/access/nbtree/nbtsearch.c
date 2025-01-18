@@ -2606,7 +2606,8 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	Assert(!BTScanPosIsValid(so->markPos));
 
 	// FIXME fake for _bt_checkkeys, needs to be set properly elsewhere (not sure where)
-	so->currPos.dir = ForwardScanDirection;
+	// XXX we shouldn't be passing this info through currPos but directly, I guess.
+	so->currPos.dir = dir;
 
 	// XXX We can pass the exact number if items from this page, by using maxoff
 	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);

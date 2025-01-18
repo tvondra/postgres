@@ -1598,6 +1598,8 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		Assert(!so->needPrimScan);
 		Assert(blkno != P_NONE);
 
+		elog(ERROR, "FIXME: can't pass pos = NULL with parallel scans");
+
 		return _bt_readnextpage_batch(scan, NULL, blkno, lastcurrblkno, dir, true);
 	}
 

@@ -2102,11 +2102,13 @@ IndexScanBatch
 _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTBatchScanPos pos;
+	BTBatchScanPosData tmp;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));
 	Assert(!BTScanPosIsValid(so->markPos));
-	
+
 	/*
 	 * restore the BTScanOpaque from the current batch
 	 *
@@ -2117,14 +2119,23 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	Assert(scan->xs_batches->currentBatch != NULL);
 	// memcpy(scan->opaque, scan->xs_batches->currentBatch->opaque, sizeof(BTScanOpaque));
 
+	pos = (BTBatchScanPos) scan->xs_batches->currentBatch->opaque;
+
+
+	Assert(BTBatchScanPosIsPinned(*pos));
+
+	memcpy(&tmp, pos, sizeof(tmp));
+
 	/*
 	 * Advance to next page, load the data into the index batch.
 	 *
 	 * FIXME It may not be quite correct to just pass the position from current
 	 * batch, some of the functions scribble over it (e.g. _bt_readpage_batch).
 	 * Maybe we should create a copy, or something?
+	 *
+	 * XXX For now we pass a local copy "tmp".
 	 */
-	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch->opaque, dir);
+	return _bt_steppage_batch(scan, &tmp, dir);
 }
 
 /*
@@ -2597,6 +2608,7 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	// FIXME fake for _bt_checkkeys, needs to be set properly elsewhere (not sure where)
 	so->currPos.dir = ForwardScanDirection;
 
+	// XXX We can pass the exact number if items from this page, by using maxoff
 	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 
 	/* FIXME but we don't copy the contents until the end */
@@ -3766,7 +3778,8 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 	 */
 	Assert(pos->currPage == blkno);
 	Assert(BTBatchScanPosIsPinned(*pos));
-	_bt_drop_lock_and_maybe_pin_batch(scan, pos);
+	// _bt_drop_lock_and_maybe_pin_batch(scan, pos);
+	_bt_unlockbuf(scan->indexRelation, pos->buf);
 
 	return newbatch;
 }

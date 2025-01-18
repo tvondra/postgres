@@ -1486,7 +1486,7 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
 	}
 	else	/* ScanDirectionIsBackward */
 	{
-		if (pos->index > 0)
+		if (pos->index > batch->firstItem)
 		{
 			pos->index--;
 

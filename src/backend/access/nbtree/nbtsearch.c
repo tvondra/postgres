@@ -1512,61 +1512,6 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
- * _bt_copy_batch
- *		Copy a section of the leaf page into the batch.
- */
-static IndexScanBatch
-_bt_copy_batch(IndexScanDesc scan, ScanDirection dir)
-{
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	IndexScanBatch	batch = NULL;
-	int				nitems = 0;
-
-	elog(ERROR, "should not be called");
-
-	/* we should only get here for pages with at least some items */
-	Assert(so->currPos.firstItem <= so->currPos.lastItem);
-
-	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
-
-	batch->firstItem = 0;
-	batch->lastItem = 0;
-	batch->itemIndex = 0;
-
-	if (so->currTuples)
-	{
-		batch->currTuples = (char *) palloc(BLCKSZ);
-		memcpy(batch->currTuples, so->currTuples, BLCKSZ);
-	}
-
-	/* copy the populated part of the items array */
-	for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-	{
-		batch->items[nitems].heapTid = so->currPos.items[i].heapTid;
-		batch->items[nitems].indexOffset = so->currPos.items[i].indexOffset;
-		batch->items[nitems].tupleOffset = so->currPos.items[i].tupleOffset;
-		nitems++;
-	}
-
-	batch->lastItem = (nitems - 1);
-
-	/*
-	 * remember the index-specific info
-	 *
-	 * XXX Have to copy, because the AM will be updating this in place. This
-	 * can be quite expensive, because of allocation costs (e.g. this ~27kB)
-	 * and thus can't benefit from memory context caching.
-	 *
-	 * XXX Currently allocated so that can be released using a plain pfree()
-	 * call. We'd need a more complex btfreebatch otherwise.
-	 */
-	// batch->opaque = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
-	// memcpy(batch->opaque, so, sizeof(BTScanOpaqueData));
-
-	return batch;
-}
-
-/*
  *	_bt_first_batch() -- Load the first batch in a scan.
  *
  * A batch variant of _bt_first(). Most of the comments for that function
@@ -1602,6 +1547,10 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	BTBatchScanPosData	pos;
 
 	BTBatchScanPosInvalidate(pos);
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
 
 	/* FIXME maybe check there's no active batch yet */
 	// Assert(!BTScanPosIsValid(so->currPos));
@@ -2152,6 +2101,12 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 IndexScanBatch
 _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+	
 	/*
 	 * restore the BTScanOpaque from the current batch
 	 *
@@ -2164,6 +2119,10 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 
 	/*
 	 * Advance to next page, load the data into the index batch.
+	 *
+	 * FIXME It may not be quite correct to just pass the position from current
+	 * batch, some of the functions scribble over it (e.g. _bt_readpage_batch).
+	 * Maybe we should create a copy, or something?
 	 */
 	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch->position, dir);
 }
@@ -2177,6 +2136,12 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 void
 _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/* we should only get here for scans with batching */
 	Assert(scan->xs_batches);
 
@@ -2624,6 +2589,10 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	/* result */
 	// IndexScanBatch batch = ddd;
 	IndexScanBatch batch;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
 
 	// FIXME fake for _bt_checkkeys, needs to be set properly elsewhere (not sure where)
 	so->currPos.dir = ForwardScanDirection;
@@ -3325,6 +3294,10 @@ _bt_steppage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 	BlockNumber blkno,
 				lastcurrblkno;
 
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/* Batching has a different concept of position, stored in the batch. */
 	Assert(BTBatchScanPosIsValid(*pos));
 
@@ -3460,6 +3433,10 @@ _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber off
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch batch;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
 
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
@@ -3674,6 +3651,10 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 
 	// BTBatchScanPosData	newpos;
 	IndexScanBatch		newbatch = NULL;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
 
 	Assert(pos->currPage == lastcurrblkno || seized);
 	Assert(BTBatchScanPosIsPinned(*pos));
@@ -4094,6 +4075,10 @@ _bt_endpoint_batch(IndexScanDesc scan, ScanDirection dir)
 	BTBatchScanPosData	pos;
 
 	BTBatchScanPosInvalidate(pos);
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
 
 	Assert(!BTScanPosIsValid(so->currPos));
 	Assert(!so->needPrimScan);

@@ -272,6 +272,10 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch	res;
 
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 
@@ -316,6 +320,12 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 void
 btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 {
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	/* batching does not work with regular scan-level positions */
+	Assert(!BTScanPosIsValid(so->currPos));
+	Assert(!BTScanPosIsValid(so->markPos));
+
 	/*
 	 * Check to see if we should kill tuples from the previous batch.
 	 */

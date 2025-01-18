@@ -309,6 +309,17 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		if (res)
 			break;
 
+		/* XXX we need to invoke _bt_first_batch on the next iteration, to
+		 * advance SAOP keys etc. But indexam.c already does this, but that's
+		 * only after this returns, so maybe this should do this in some other
+		 * way, not sure who should be responsible for setting currentBatch.
+		 *
+		 * XXX Maybe we don't even need that field? What is a current batch
+		 * anyway? There seem to be at least multiple concepts of "current"
+		 * batch, one for the read stream, another for executor ...
+		 */
+		scan->xs_batches->currentBatch = res;
+
 		/* ... otherwise see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
 
@@ -501,6 +512,10 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	so->oppositeDirCheck = false;
 	BTScanPosUnpinIfPinned(so->markPos);
 	BTScanPosInvalidate(so->markPos);
+
+	/* FIXME should be in indexam.c I think */
+	if (scan->xs_batches)
+		scan->xs_batches->currentBatch = NULL;
 
 	/*
 	 * Allocate tuple workspace arrays, if needed for an index-only scan and

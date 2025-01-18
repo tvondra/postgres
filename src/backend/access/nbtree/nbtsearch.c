@@ -2124,7 +2124,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 * batch, some of the functions scribble over it (e.g. _bt_readpage_batch).
 	 * Maybe we should create a copy, or something?
 	 */
-	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch->position, dir);
+	return _bt_steppage_batch(scan, scan->xs_batches->currentBatch->opaque, dir);
 }
 
 /*
@@ -2600,7 +2600,7 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	batch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 
 	/* FIXME but we don't copy the contents until the end */
-	batch->position = palloc0(sizeof(BTBatchScanPosData));
+	batch->opaque = palloc0(sizeof(BTBatchScanPosData));
 
 	/* bogus values */
 	batch->firstItem = -1;
@@ -2992,7 +2992,7 @@ _bt_readpage_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir, Of
 	if (batch->firstItem > batch->lastItem)
 		return NULL;
 
-	memcpy(batch->position, pos, sizeof(BTBatchScanPosData));
+	memcpy(batch->opaque, pos, sizeof(BTBatchScanPosData));
 
 	return batch;
 }
@@ -3088,7 +3088,7 @@ static void
 _bt_saveitem_batch(IndexScanBatch batch, int itemIndex,
 			 OffsetNumber offnum, IndexTuple itup)
 {
-	BTBatchScanPos			pos = (BTBatchScanPos) batch->position;
+	BTBatchScanPos			pos = (BTBatchScanPos) batch->opaque;
 
 	Assert(!BTreeTupleIsPivot(itup) && !BTreeTupleIsPosting(itup));
 
@@ -3120,7 +3120,7 @@ static int
 _bt_setuppostingitems_batch(IndexScanBatch batch, int itemIndex, OffsetNumber offnum,
 					  ItemPointer heapTid, IndexTuple itup)
 {
-	BTBatchScanPos			pos = (BTBatchScanPos) batch->position;
+	BTBatchScanPos			pos = (BTBatchScanPos) batch->opaque;
 	IndexScanBatchPosItem  *item = &batch->items[itemIndex];
 
 	Assert(BTreeTupleIsPosting(itup));
@@ -3471,7 +3471,7 @@ _bt_readfirstpage_batch(IndexScanDesc scan, BTBatchScanPos pos, OffsetNumber off
 	 */
 	if ((batch = _bt_readpage_batch(scan, pos, dir, offnum, true)) != NULL)
 	{
-		pos = (BTBatchScanPos) batch->position;
+		pos = (BTBatchScanPos) batch->opaque;
 		/*
 		 * _bt_readpage succeeded.  Drop the lock (and maybe the pin) on
 		 * so->currPos.buf in preparation for btgettuple returning tuples.
@@ -3758,7 +3758,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 	/* */
 	Assert(newbatch != NULL);
 
-	pos = (BTBatchScanPos) newbatch->position;
+	pos = (BTBatchScanPos) newbatch->opaque;
 
 	/*
 	 * _bt_readpage succeeded.  Drop the lock (and maybe the pin) on

@@ -159,7 +159,7 @@ typedef struct IndexScanBatchData
 	 * the AM needs to keep per-batch (even only for reading the leaf items,
 	 * like nextTupleOffset).
 	 */
-	void   *position;
+	void   *opaque;
 
 	/*
 	 * The items array is always ordered in index order (ie, increasing

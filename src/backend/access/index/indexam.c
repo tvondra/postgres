@@ -1746,7 +1746,6 @@ index_batch_getnext(IndexScanDesc scan)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
-	IndexScanBatchPos *spos = &scan->xs_batches->streamPos;
 	IndexScanBatchPos *pos = &scan->xs_batches->readPos;
 
 	/* shouldn't get here without batching */
@@ -2009,8 +2008,8 @@ index_batch_alloc(int maxitems, bool want_itup)
 	batch->orderbyvals = NULL;
 	batch->orderbynulls = NULL;
 
-	/* index-specific state */
-	batch->position = NULL;
+	/* AM-specific per-batch state */
+	batch->opaque = NULL;
 
 	return batch;
 }

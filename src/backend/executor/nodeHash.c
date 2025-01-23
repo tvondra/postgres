@@ -83,6 +83,9 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 /* enable adaptive adjustment of hashtable size */
 bool	enable_hashjoin_adjust = false;
 
+/* enable soft-disable of nbatch growth */
+bool	enable_hashjoin_growth = false;
+
 /* ----------------------------------------------------------------
  *		ExecHash
  *
@@ -1220,10 +1223,55 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	 * Increasing nbatch will not fix it since there's no way to subdivide the
 	 * group any more finely. We have to just gut it out and hope the server
 	 * has enough RAM.
+	 *
+	 * XXX This logic for hard-disabling nbatch growth assumes that if we're
+	 * unable to split the batch now, we'll be unable to split it forever. That
+	 * works well for "nice" random data sets, but it's not difficult to come
+	 * up with cases where the assumption does not hold.
+	 *
+	 * 1) The hashes may share the same "prefix", but the next bit may be
+	 * random - and doubling the number of batches again would split the batch
+	 * about evenly. This is rather unlikely to happen by chance, of course.
+	 *
+	 * 2) The dataset may be correlated in some way, i.e. produce values with
+	 * one hash value first, before producing other values. This might happen
+	 * for data read from index, etc. If we underestimate the amount of data
+	 * we will need to add to the hash, this may disable nbatch growth while
+	 * still reading the first value, i.e. too soon.
+	 *
+	 * XXX With the "hard disable" this also handles the case when we run out
+	 * of hash bits, because the first doubling after that only has "0" in the
+	 * new bit, which means we get (nfreed == ninmemory) and stop adding more
+	 * batches. But with the soft disable that's no longer the case, and we'd
+	 * try adding more batches after a while. Not sure this a big deal, as the
+	 * memory limit would need to be pretty substantial in that case already
+	 * (assuming we already doubled the limit multiple times). But maybe t
+	 * could be the first time we're hitting this condition? Perhaps the right
+	 * solution is to detect running out of hash bits explicitly, and just do
+	 * a "hard disable" in this case?
+	 *
+	 * XXX This should probably also increase the number of buckets etc.
 	 */
 	if (nfreed == 0 || nfreed == ninmemory)
 	{
-		hashtable->growEnabled = false;
+		/*
+		 * If enable_hashjoin_grow=true, don't disable the growth permanently,
+		 * and instead just increase the limit in the hope that we'll be able
+		 * to split the batches in the future.
+		 *
+		 * XXX Not sure if 2.0 is the optimal growth factor, but it seems quite
+		 * reasonable because it aligns with the expectation that we'll be able
+		 * to split the memory usage in half. It's not perfect, because if we
+		 * add a random bit to the hash, we might split earlier than that.
+		 */
+		if (enable_hashjoin_growth)
+		{
+			/* XXX Do we need to worry about overlowing spaceAllowed? */
+			hashtable->spaceAllowed *= 2.0;
+		}
+		else
+			hashtable->growEnabled = false;
+
 #ifdef HJDEBUG
 		printf("Hashjoin %p: disabling further increase of nbatch\n",
 			   hashtable);

@@ -912,6 +912,16 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_hashjoin_growth", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables growing the hash table memory limit instead of disabling batch increases permanently."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_hashjoin_growth,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_gathermerge", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of gather merge plans."),
 			NULL,

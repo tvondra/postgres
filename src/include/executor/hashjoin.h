@@ -72,6 +72,7 @@
  */
 
 extern PGDLLIMPORT bool enable_hashjoin_adjust;
+extern PGDLLIMPORT bool enable_hashjoin_growth;
 
 /* these are in nodes/execnodes.h: */
 /* typedef struct HashJoinTupleData *HashJoinTuple; */

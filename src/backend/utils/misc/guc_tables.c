@@ -46,6 +46,7 @@
 #include "commands/vacuum.h"
 #include "common/file_utils.h"
 #include "common/scram-common.h"
+#include "executor/hashjoin.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
@@ -898,6 +899,16 @@ struct config_bool ConfigureNamesBool[] =
 		},
 		&enable_hashjoin,
 		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_hashjoin_growth", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables growing the hash table memory limit instead of disabling batch increases permanently."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_hashjoin_growth,
+		false,
 		NULL, NULL, NULL
 	},
 	{

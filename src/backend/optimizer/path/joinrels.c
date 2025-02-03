@@ -224,7 +224,6 @@ join_search_one_level(PlannerInfo *root, int level)
 		foreach(r, joinrels[level - 1])
 		{
 			RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
-
 			make_rels_by_clauseless_joins(root,
 										  old_rel,
 										  joinrels[1]);
@@ -252,6 +251,19 @@ join_search_one_level(PlannerInfo *root, int level)
 			root->join_info_list == NIL &&
 			!root->hasLateralRTEs)
 			elog(ERROR, "failed to build any %d-way joins", level);
+	}
+}
+
+void
+make_rel_by_clause_joins(PlannerInfo *root,
+						 RelOptInfo *old_rel,
+						 RelOptInfo *other_rel)
+{
+	if (!bms_overlap(old_rel->relids, other_rel->relids) &&
+		(have_relevant_joinclause(root, old_rel, other_rel) ||
+		 have_join_order_restriction(root, old_rel, other_rel)))
+	{
+		(void) make_join_rel(root, old_rel, other_rel);
 	}
 }
 
@@ -1962,4 +1974,147 @@ get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
 		*parts1 = lappend(*parts1, child_rel1);
 		*parts2 = lappend(*parts2, child_rel2);
 	}
+}
+
+/*
+ * Try to identify a starjoin in the list of relations. Pick the largest
+ * relation, and the smaller dimensions.
+ *
+ * Happens in two steps. First, we find the largest relation and consider
+ * it to be the "fact" of the star schema. Then we walk the rest of the
+ * relations and check which can be treated as dimensions for the fact.
+ * This is possible only if the relation has join clause only to the fact
+ * and no other relations.
+ *
+ * XXX It can happen the largest table is not the fact, in which case we
+ * should just try the second largest one, etc. Or maybe there are multiple
+ * facts, in which case we detect the should try to build a group for each
+ * fact (fact + dimensions).
+ *
+ * Returns the list of relations to join, in the join order, with the fact
+ * table as the first element, followed by the dimensions.
+ */
+List *
+plan_star_join(PlannerInfo *root, List *rels)
+{
+	ListCell   *lc;
+	RelOptInfo *fact = NULL;
+	List	   *dimensions = NIL;
+
+	/*
+	 * We need at least 3 relations for a star join, to have a chance to
+	 * gain anything by simpler join order planning.
+	 */
+	if (list_length(rels) < 3)
+		return NIL;
+
+	/*
+	 * Find the largest relation, we'll try to use it as "fact" table.
+	 */
+	foreach(lc, rels)
+	{
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+		/* first relation */
+		if (fact == NULL)
+		{
+			fact = rel;
+			continue;
+		}
+
+		/*
+		 * We look at total relation sizes, not the estimated cardinality
+		 * with conditions applied.
+		 */
+		if (fact->tuples < rel->tuples)
+		{
+			fact = rel;
+			continue;
+		}
+	}
+
+	/*
+	 * If the "fact" does not have any join clauses, we're done.
+	 *
+	 * XXX Seems has_join_restriction is not what we want to require for the
+	 * fact table - it checks for restrictions on join order, but that's not
+	 * what we want for the fact. Maybe we should do the exact opposite, i.e.
+	 * require that a fact table does not have that? Although, if we want to
+	 * support multiple "partial star joins" (query on multiple fact tables,
+	 * each with it's own dimensions).
+	 */
+	//if (!has_join_restriction(root, fact))
+	//	return NIL;
+
+	/* the fact must have no restrictions */
+	if (has_join_restriction(root, fact))
+		return NIL;
+
+	/*
+	 * Now go and try to detect dimensions, i.e. relations that have a join
+	 * with the fact table, and no other relations. We will order them by
+	 * selectivity (rows / tuples), because we prefer to reduce the join
+	 * size early.
+	 */
+	foreach(lc, rels)
+	{
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+		/* ignore the fact table */
+		if (rel == fact)
+			continue;
+
+		// elog(WARNING, "> has_join_restriction %d", has_join_restriction(root, rel));
+		// elog(WARNING, "> has_legal_joinclause %d", has_legal_joinclause(root, rel));
+
+		/* ignore rels without any join clause */
+		// if (!has_join_restriction(root, rel))
+		//	continue;
+
+		/*
+		 * XXX Do not allow join restrictions for dimensions either, just like
+		 * for fact, although for dims we should be able to allow this ...
+		 */
+		if (has_join_restriction(root, rel))
+			continue;
+
+		/*
+		 * Must have join clause with the fact table. This is a subset of
+		 * has_legal_joinclause for a single (fact) table. We always look
+		 * at initial rels, so the relids overlap checks are not needed.
+		 */
+		if (have_relevant_joinclause(root, fact, rel))
+		{
+			Relids		joinrelids;
+			SpecialJoinInfo *sjinfo;
+			bool		reversed;
+
+			/* join_is_legal needs relids of the union */
+			joinrelids = bms_union(fact->relids, rel->relids);
+
+			if (join_is_legal(root, fact, rel, joinrelids,
+							  &sjinfo, &reversed))
+			{
+				/* Yes, this will work */
+				// bms_free(joinrelids);
+
+				// FIXME this should also check the rel does not have join
+				// clauses to any other relation;
+				dimensions = lappend(dimensions, rel);
+			}
+
+			bms_free(joinrelids);
+		}
+	}
+
+	/*
+	 * repeat the check we actually found a star join with at least 3 rels
+	 * (so two dimensions)
+	 */
+	if (list_length(dimensions) < 2)
+		return NIL;
+
+	/* FIXME sort the dimensions by selectivity */
+
+	return list_concat(list_make1(fact), dimensions);
 }

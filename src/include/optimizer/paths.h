@@ -21,6 +21,7 @@
  * allpaths.c
  */
 extern PGDLLIMPORT bool enable_geqo;
+extern PGDLLIMPORT bool enable_starjoin;
 extern PGDLLIMPORT int geqo_threshold;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
@@ -111,6 +112,10 @@ extern bool have_dangerous_phv(PlannerInfo *root,
 extern void mark_dummy_rel(RelOptInfo *rel);
 extern void init_dummy_sjinfo(SpecialJoinInfo *sjinfo, Relids left_relids,
 							  Relids right_relids);
+extern List *plan_star_join(PlannerInfo *root, List *rels);
+extern void make_rel_by_clause_joins(PlannerInfo *root,
+									 RelOptInfo *old_rel,
+									 RelOptInfo *other_rel);
 
 /*
  * equivclass.c

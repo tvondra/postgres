@@ -1019,6 +1019,16 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_starjoin", PGC_USERSET, QUERY_TUNING_GEQO,
+			gettext_noop("Enables starjoin optimization."),
+			gettext_noop("This algorithm attempts to do faster planning for star joins."),
+			GUC_EXPLAIN
+		},
+		&enable_starjoin,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		/*
 		 * Not for general use --- used by SET SESSION AUTHORIZATION and SET
 		 * ROLE

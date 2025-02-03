@@ -77,6 +77,7 @@ typedef enum pushdown_safe_type
 
 /* These parameters are set by GUC */
 bool		enable_geqo = false;	/* just in case GUC doesn't set it */
+bool		enable_starjoin = false;
 int			geqo_threshold;
 int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
@@ -3389,6 +3390,114 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 	}
 }
 
+static int
+starjoin_join_search(PlannerInfo *root, List *initial_rels, int level)
+{
+	if (!enable_starjoin)
+		return level;
+
+	{
+		ListCell   *lc;
+		List *rels = plan_star_join(root, initial_rels);
+		RelOptInfo *fact = NULL;
+		RelOptInfo *rel = NULL;
+
+		/*
+		 * add the dimensions one by one, and adjust the start level
+		 *
+		 * XXX The first element is the fact table.
+		 */
+		foreach(lc, rels)
+		{
+			ListCell   *lc2;
+			RelOptInfo *old_rel = NULL;
+
+			rel = lfirst(lc);
+
+			/* us the first element as fact table, jump to the next one,
+			 * which is the first dimension */
+			if (fact == NULL)
+			{
+				fact = rel;
+				continue;
+			}
+
+			/* we're adding join for the first dimension, so set the level */
+			root->join_cur_level = level;
+
+			/*
+			 * XXX Subset of join_search_one_level. The main difference is
+			 * we don't need to walk any of the lower levels, because for
+			 * level=2 we already have the fact table, and for higher
+			 * levels there should be only a single joinrel.
+			 */
+
+			if (level == 2)
+				old_rel = fact;
+			else
+				old_rel = (RelOptInfo *) linitial(root->join_rel_level[level - 1]);
+
+			/* there should be no join relation yet */
+			Assert(root->join_rel_level[level] == NIL);
+
+			make_rel_by_clause_joins(root, old_rel, rel);
+
+			/*
+			 * If everything went fine, we should have exactly one join relation
+			 * for the current level.
+			 *
+			 * XXX This could happen if the current starjoin logic fails to
+			 * consider something that prevents creating the join, e.g. some
+			 * sort of join restriction. Not sure if that should be treated
+			 * as a bug, or something expected (in which case we could just
+			 * fallback to the regular planning).
+			 */
+			Assert(root->join_rel_level[startlev] != NIL);
+			Assert(list_length(root->join_rel_level[startlev]) == 1);
+
+			/* generate/set paths for the join relation we just created */
+
+			/*
+			 * Run generate_partitionwise_join_paths() and
+			 * generate_useful_gather_paths() for each just-processed joinrel.  We
+			 * could not do this earlier because both regular and partial paths
+			 * can get added to a particular joinrel at multiple times within
+			 * join_search_one_level.
+			 *
+			 * After that, we're done creating paths for the joinrel, so run
+			 * set_cheapest().
+			 */
+			foreach(lc2, root->join_rel_level[level])
+			{
+				rel = (RelOptInfo *) lfirst(lc2);
+
+				/* Create paths for partitionwise joins. */
+				generate_partitionwise_join_paths(root, rel);
+
+				/*
+				 * Except for the topmost scan/join rel, consider gathering
+				 * partial paths.  We'll do the same for the topmost scan/join rel
+				 * once we know the final targetlist (see grouping_planner's and
+				 * its call to apply_scanjoin_target_to_paths).
+				 */
+				if (!bms_equal(rel->relids, root->all_query_rels))
+					generate_useful_gather_paths(root, rel, false);
+
+				/* Find and save the cheapest paths for this rel */
+				set_cheapest(rel);
+
+	#ifdef OPTIMIZER_DEBUG
+				pprint(rel);
+	#endif
+			}
+
+			level++;
+		}
+	}
+
+	return level;
+}
+
 /*
  * standard_join_search
  *	  Find possible joinpaths for a query by successively finding ways
@@ -3422,6 +3531,7 @@ RelOptInfo *
 standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
 	int			lev;
+	int			startlev = 2;
 	RelOptInfo *rel;
 
 	/*
@@ -3445,7 +3555,13 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 	root->join_rel_level[1] = initial_rels;
 
-	for (lev = 2; lev <= levels_needed; lev++)
+	/*
+	 * Try simplified planning for starjoin. If it succeeds, we should
+	 * continue at level startlev.
+	 */
+	startlev = starjoin_join_search(root, initial_rels, 2);
+
+	for (lev = startlev; lev <= levels_needed; lev++)
 	{
 		ListCell   *lc;
 

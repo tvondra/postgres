@@ -24,9 +24,19 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+/*
+ * XXX A lot of the new functions are copies of the non-batching version, with
+ * changes to make it work with batching (which means with position provided
+ * by the caller, not from the BTScanOpaque). The duplication is not great,
+ * but it's a bit unclear what to do about it. One option would be to remove
+ * the amgettuple() interface altogether, once the batching API works, but we
+ * may also choose to keep both (e.g. for cases that don't support batching,
+ * like scans of catalogs). In that case we'd need to do some refactoring to
+ * share as much code as possible.
+ */
 
 static void _bt_drop_lock_and_maybe_pin(IndexScanDesc scan, BTScanPos sp);
-static void _bt_drop_lock_and_maybe_pin_batch(IndexScanDesc scan, BTBatchScanPos sp);
+//static void _bt_drop_lock_and_maybe_pin_batch(IndexScanDesc scan, BTBatchScanPos sp);
 static Buffer _bt_moveright(Relation rel, Relation heaprel, BTScanInsert key,
 							Buffer buf, bool forupdate, BTStack stack,
 							int access);
@@ -98,19 +108,19 @@ _bt_drop_lock_and_maybe_pin(IndexScanDesc scan, BTScanPos sp)
 	}
 }
 
-static void
-_bt_drop_lock_and_maybe_pin_batch(IndexScanDesc scan, BTBatchScanPos sp)
-{
-	_bt_unlockbuf(scan->indexRelation, sp->buf);
-
-	if (IsMVCCSnapshot(scan->xs_snapshot) &&
-		RelationNeedsWAL(scan->indexRelation) &&
-		!scan->xs_want_itup)
-	{
-		ReleaseBuffer(sp->buf);
-		sp->buf = InvalidBuffer;
-	}
-}
+//static void
+//_bt_drop_lock_and_maybe_pin_batch(IndexScanDesc scan, BTBatchScanPos sp)
+//{
+//	_bt_unlockbuf(scan->indexRelation, sp->buf);
+//
+///	if (IsMVCCSnapshot(scan->xs_snapshot) &&
+//		RelationNeedsWAL(scan->indexRelation) &&
+//		!scan->xs_want_itup)
+//	{
+//		ReleaseBuffer(sp->buf);
+//		sp->buf = InvalidBuffer;
+//	}
+//}
 
 /*
  *	_bt_search() -- Search the tree for a particular scankey,

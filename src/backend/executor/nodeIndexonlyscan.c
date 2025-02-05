@@ -957,6 +957,15 @@ ExecIndexOnlyScanRetrieveInstrumentation(IndexOnlyScanState *node)
  * VM_ALL_VISIBLE is stored in the batch private data. The values are set
  * to 0 by default, so we use two constants to remember if all-visible or
  * not all-visible.
+ *
+ * However, this is not merely a question of performance. The VM may get
+ * modified during the scan, and we need to make sure the two places (the
+ * read_next callback and the index_fetch_heap here) make the same decision,
+ * otherwise we might get out of sync with the stream. For example, the
+ * callback might find a page is all-visible (and skips reading the block),
+ * and then someone might update the page, resetting the VM bit. If this
+ * place attempts to read the page from the stream, it'll fail because it
+ * will probably receive an entirely different page.
  */
 static bool
 ios_prefetch_block(IndexScanDesc scan, void *arg, IndexScanBatchPos *pos)

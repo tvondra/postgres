@@ -137,24 +137,53 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/*
 		 * XXX It's a bit fragile to just read buffers, scheduled in the past,
 		 * expecting them to match the TID we've put into the queue earlier
-		 * from the callback. If the two streams (when we schedule the block
-		 * read and when we actually need it), it'll just misbehave in strange
-		 * ways. Maybe we could at least cross-check this?
+		 * from the callback. If the two places (one scheduling the blocks to
+		 * read and another one actually consuming them), it'll just misbehave
+		 * in strange ways. Maybe we could at least cross-check this somehow?
 		 */
 		if (scan->rs)
 		{
 			/*
-			 * Are we requesting the same block as last time? We need to check
-			 * if the previous buffer is pinned and has the right block. If yes,
-			 * don't try reading it from the stream, we haven't even scheduled
-			 * the read in index_scan_stream_read_next().
+			 * If we're trying to read the same block as the last time, don't
+			 * try reading it from the stream again, but just return the last
+			 * buffer. We need to check if the previous buffer is still pinned
+			 * and contains the correct block (it might have been unpinned,
+			 * used for a different block, so we need to be careful).
+			 *
+			 * The place scheduling the blocks (index_scan_stream_read_next)
+			 * needs to do the same thing and not schedule the blocks if it
+			 * matches the previous one. Otherwise the stream will get out of
+			 * sync, causing confusion.
+			 *
+			 * This is what ReleaseAndReadBuffer does too, but it does not
+			 * have a queue of requests scheduled from somewhere else, so it
+			 * does not need to worry about that.
 			 *
 			 * XXX Maybe we should remember the block in IndexFetchTableData,
 			 * so that we can make the check even cheaper, without looking at
-			 * the buffer descriptor. But that assumes the buffer was not
+			 * the buffer descriptor? But that assumes the buffer was not
 			 * unpinned (or repinned) elsewhere, before we got back here. But
 			 * can that even happen? If yes, I guess we shouldn't be releasing
 			 * the prev buffer anyway.
+			 *
+			 * XXX This has undesired impact on prefetch distance. The read
+			 * stream schedules reads for a certain number of future blocks,
+			 * but if we skip duplicate blocks, the prefetch distance may get
+			 * unexpectedly large (e.g. for correlated indexes, with long runs
+			 * of TIDs from the same heap page). This may spend a lot of CPU
+			 * time in the index_scan_stream_read_next callback, but more
+			 * importantly it may require reading (and keeping) a lot of leaf
+			 * pages from the index.
+			 *
+			 * XXX What if we pinned the buffer twice (increase the refcount),
+			 * so that if the caller unpins the buffer, we still keep the
+			 * second pin. Wouldn't that mean we don't need to worry about
+			 * the possibility someone loaded another page into the buffer?
+			 *
+			 * XXX We might also keep a longer history of recent blocks, not
+			 * just the immediately preceding one. But that makes it harder,
+			 * because the two places (read_next callback and here) need to
+			 * have a slightly different view.
 			 */
 			if (BufferMatches(hscan->xs_cbuf,
 							  hscan->xs_base.rel,
@@ -169,9 +198,12 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 												  ItemPointerGetBlockNumber(tid));
 
 		/*
-		 * Did we read the expected block number (per the TID)? For the regular
-		 * buffer reads this should always match, but with the read stream it
-		 * might disagree due to a bug elsewhere (happened repeatedly).
+		 * Make sure we loaded the expected block (per the TID).
+		 *
+		 * For the "old" buffer reads this should always match, because it's
+		 * synchronous. But with the read stream it might break due to a bug
+		 * elsewhere (e.g. if the callback scheduling tthe reads and the place
+		 * reading the data disagree).
 		 */
 		Assert(BufferIsValid(hscan->xs_cbuf));
 		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
@@ -183,7 +215,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
 
 		/*
-		 * Release the old buffer, but only when using the read stream.
+		 * Release the old buffer, but only when using the read stream, and
+		 * if we're reading a different block.
 		 *
 		 * FIXME Not sure this is really needed, or maybe this is not the
 		 * right place to do this, and buffers should be released elsewhere.

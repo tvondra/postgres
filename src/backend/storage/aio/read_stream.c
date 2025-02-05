@@ -806,11 +806,8 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 BlockNumber
 read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
 {
-	BlockNumber b;
 	*strategy = stream->ios[0].op.strategy;
-	b = read_stream_get_block(stream, NULL);
-
-	return b;
+	return read_stream_get_block(stream, NULL);
 }
 
 /*

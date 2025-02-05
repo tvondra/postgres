@@ -2625,6 +2625,13 @@ ReleaseAndReadBuffer(Buffer buffer,
 	return ReadBuffer(relation, blockNum);
 }
 
+/*
+ * BufferMatches
+ *		Check if the buffer (still) contains the expected page.
+ *
+ * Check if the buffer contains the expected page. The buffer may be invalid,
+ * or valid and pinned.
+ */
 bool
 BufferMatches(Buffer buffer,
 			  Relation relation,

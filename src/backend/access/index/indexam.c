@@ -305,19 +305,22 @@ index_beginscan(Relation heapRelation,
 
 	/*
 	 * If explicitly requested and supported by both the index AM and the
-	 * plan, initialize batching info.
+	 * plan, initialize batching info. We only use stream read API with
+	 * batching enabled (so not with systable scans). But maybe we should
+	 * change that, and just use different read_next callbacks (or something
+	 * like that)?
 	 *
 	 * XXX We do this after ambeginscan(), which means the AM can't init the
 	 * private data in there (it doesn't even know if batching will be used at
 	 * that point).
 	 *
 	 * XXX Maybe we should have a separate "amcanbatch" call, to let the AM
-	 * decide if batching is supported depending on the scan details.
+	 * decide if batching is supported depending on the scan details. That
+	 * might be needed for certain index AMs, that can do batching only for
+	 * some scans (I'm thinking about GiST/SP-GiST indexes, with ORDER BY).
 	 *
-	 * XXX Do this before initializing xs_heapfetch. We only use stream read
-	 * API with batching enabled (so not with systable scans). But maybe we
-	 * should change that, and just use different callbacks (or something
-	 * like that)?
+	 * XXX Do this before initializing xs_heapfetch, so that we can pass the
+	 * read stream to it.
 	 */
 	if ((indexRelation->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
@@ -437,7 +440,8 @@ index_rescan(IndexScanDesc scan,
 	scan->xs_heap_continue = false;
 
 	/*
-	 * Reset the batching, to make it look like there are no batches. Do this
+	 * Reset the batching. This makes it look like there are no batches,
+	 * discards reads already scheduled to the read stream, etc. We Do this
 	 * before calling amrescan, so that it can reinitialize everything.
 	 */
 	index_batch_reset(scan);
@@ -673,14 +677,25 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel, int nkeys,
 
 	/*
 	 * If explicitly requested and supported by both the index AM and the
-	 * plan, initialize batching info.
+	 * plan, initialize batching info. We only use stream read API with
+	 * batching enabled (so not with systable scans). But maybe we should
+	 * change that, and just use different read_next callbacks (or something
+	 * like that)?
 	 *
 	 * XXX We do this after ambeginscan(), which means the AM can't init the
 	 * private data in there (it doesn't even know if batching will be used at
 	 * that point).
 	 *
 	 * XXX Maybe we should have a separate "amcanbatch" call, to let the AM
-	 * decide if batching is supported depending on the scan details.
+	 * decide if batching is supported depending on the scan details. That
+	 * might be needed for certain index AMs, that can do batching only for
+	 * some scans (I'm thinking about GiST/SP-GiST indexes, with ORDER BY).
+	 *
+	 * XXX Do this before initializing xs_heapfetch, so that we can pass the
+	 * read stream to it.
+	 *
+	 * XXX Pretty duplicate with the code in index_beginscan(), so maybe move
+	 * into a shared function.
 	 */
 	if ((indexrel->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
@@ -723,13 +738,16 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
-	 * When using batching (which may be disabled for various reasons (e.g.
-	 * through a GUC, the index AM not supporting it) do the old approach.
+	 * When using batching (which may be disabled for various reasons - e.g.
+	 * through a GUC, the index AM not supporting it), redirect the code to
+	 * the "batch" variant. If needed (e.g. for the first call) the call may
+	 * read the first batch (leaf page) from the index.
 	 *
 	 * XXX Maybe we should enable batching based on the plan too, so that we
 	 * don't do batching when it's probably useless (e.g. semijoins or queries
 	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
-	 * with small batches) will handle that well enough.
+	 * with small batches) will handle that well enough. This is what the
+	 * amcanbatch() callback would determine.
 	 *
 	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
 	 * call either the original code without batching, or the new batching
@@ -1215,114 +1233,129 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * also allows acting on "future" TIDs - e.g. we can prefetch heap pages
  * that will be needed, etc.
  *
+ * For the purpose of this description, a "batch" is roughly equivalent
+ * to "tuples from a single leaf page". This may not be entirely correct
+ * for some special index AMs (e.g. ordered scans in SP-GiST), but we're
+ * going to focus on BTREE for now.
  *
- * index AM contract
+ *
+ * index AM vs. indexam.c
+ * ----------------------
+ * In the following text "index AM" refers to a specific AM implementation,
+ * e.g. BTREE (code in src/backend/access/nbtree), while indexam.c is the
+ * shared executor level used to interact with indexes.
+ *
+ *
+ * why support batching
+ * --------------------
+ * Why do we want to support batching? The initial motivation was to allow
+ * prefetching. With regular index scans we could prefetch heap TIDs from
+ * a single leaf page, but that's hidden in each AM, and it seems wrong to
+ * do these "heap" prefetches from within the index AM. This is why the
+ * prefetching "abstracts" the idea of a batch, and moves it to the common
+ * indexam.c layer.
+ *
+ * Another reason why prefetching at the AM level is that it can only
+ * prefetch within a single leaf page - so as we're nearing the end of
+ * the page, the prefetch distance drops to 0. Most indexes have many
+ * index items per leaf page, so this is not a fatal issue, but it's not
+ * great either.
+ *
+ *
+ * index AM batching
  * -----------------
+ * The regular (old) index scans access leaf pages one at a time, and
+ * discard the "current leaf" before proceeding to the next one (this
+ * ignores mark/restore, but that's a detail). All this state is stored
+ * at the scan-level (e.g. in BTScanOpaque for BTREE). So there can be
+ * only one leaf page "loaded" into the scan at a time.
  *
- * To support batching, the index AM needs to implement an optional callback
- * amgetbatch() which loads data into the batch (in the scan descriptor).
+ * The batching relaxes this, and allows keeping multiple leaf pages for
+ * a scan at the same time. It's a bit like having multiple "positions"
+ * within the index at the same time.
  *
- * The index AM also needs to ensure it can perform all optimizations for
- * all TIDs in the current batch. A good example of is the kill_prior_tuple
- * optimization - with batching, the index AM may receive the information
- * which tuples are to be killed with a delay - when loading the next
- * batch, when ending/restarting the scan, etc. The AM needs to ensure it
- * can still process such information, to keep the optimization effective.
+ * The batches are kept in the index scan, but not in the "scan opaque"
+ * struct. Instead, there's an array (or queue) of leaf pages, and some
+ * of the information was moved from the scan-level opaque struct to a
+ * new batch-level struct.
  *
- * The AM may also need to keep pins required by the whole batch (not just
- * the last tuple), etc.
+ * This means AM-specific scan-opaque struct gets split and moved into
+ * three places:
  *
- * What this means/requires is very dependent on the index AM, of course.
- * For B-Tree (and most other index AMs), batches spanning multiple leaf
- * pages would be problematic. Such batches would work for basic index
- * scans, but the kill_prior_tuple would be an issue - the AMs keep only
- * a single leaf pinned. We'd either need to keep multiple pins, or allow
- * reading older leaf pages pages (which might have been modified). Index
- * only-scans is challenging too - we keep IndexTuple pointers into the
- * leaf pages, which requires keeping those pins too.
+ * 1) scan-opaque struct - Fields that are truly related to the scan as
+ *    a whole remain in the struct (which is AM-specific, i.e. each AM
+ *    method may keep something different).
  *
- * To solve this, we give the AM some control over batch boundaries. It is
- * up to the index AM to pick which range of index items to load into the
- * batch, and how to ensure all the optimizations are possible, keep pins,
- * and so on. The index AM may use information about the batch (in the
- * scan descriptor, maintained by indexam.c code), and may also keep some
- * private information (in the existing "opaque" scan field).
+ * 2) batch-opaque struct - Fields that are really about individual leaf
+ *    pages are moved to a new batch-level struct. A good example are
+ *    for example the position of the leaf page in the index (current
+ *    page, left/righ pages, etc.).
  *
- * For most index AMs the easiest way is to not load batches spanning
- * multiple leaf pages. This may impact the efficiency, especially for
- * indexes with wide index tuples, as it means batches close to the end
- * of the leaf page may be smaller.
+ * 3) batch struct itself - A big part of the refactoring is introducing
+ *    a common representation of a batch. Until now each AM had it's own
+ *    way of representing tuples from a leaf page, and accessing it
+ *    required going through the AM again. The common representation
+ *    allows accessing the batches through the indexam.c layer, without
+ *    having to go through the AM.
  *
- * Note: There already is a pipeline break for prefetching - as we are
- * getting closer to the end of a batch, we can't prefetch further than
- * that, and the effective prefetch distance drops to 0.
+ * To support batching, the index AM needs to implement two optional
+ * callbacks - amgetbatch() and amfreebatch(), which load data from the
+ * "next" leaf page, and then free it when the batch is no longer needed.
  *
- * The alternative would be to make the index AMs more complex, to keep
- * more leaf pages pinned, etc. The current model does not prohibit the
- * index AMs from implementing that - it's entirely possible to keep the
- * additional information in the "opaque" structure (say, list of pinned
- * pages, and other necessary details).
+ * For now the amgettuple() callback is still required even for AMs that
+ * support batching, so that we can fall-back to the non-batched scan
+ * for cases when we don't allow batching (e.g. scans of system tables)
+ * or when batching is disabled using the enable_indexscan_batching GUC.
  *
- * But that does not seem like a good trade off, as it's subject to
- * "diminishing returns" - we see significant gains initially (with even
- * small batches / prefetch distance), and as the batch grows the gains
- * get smaller and smaller. It does not seem worth the complexity of
- * pinning more pages etc. at least for the first version.
+ * The AM may need to keep pins on the leaf pages. This is considered
+ * the responsibility of the AM, as it's likely dependent on the internal
+ * details of the index AM.
  *
- * To deal with the "prefetch pipeline break", that could be addressed by
- * allowing multiple in-fligt batches - e.g. with prefetch distance 64
- * we might have three batches of 32 items each, to prefetch far ahead.
- * But that's not what this patch does yet.
+ *
+ * For now, each batch is exactly one whole leaf page. We might allow
+ * batches to be smaller or larger, but that doesn't seem very useful.
+ * It would make things more complex, without providing much benefit.
+ * Ultimately it's up to the index AM - it can produce any batches it
+ * wants, as long as it keeps necessary information in the batch-opaque
+ * struct, and handles this in the amgetbatch/amfreebatch callbacks.
  *
  *
  * batch = sliding window
  * ----------------------
- *
- * A good way to visualize a batch is a sliding window over the array
- * of items on a leaf page. In the simplest example (forward scan with no
- * changes of direction), we slice the array into smaller chunks, and
- * then process each of those chunks.
- *
- * The batch size is adaptive - it starts small (only 8 elements) and
- * increases as we read more batches (up to 64 elements). We don't want
- * to regress cases that only need a single item (e.g. LIMIT 1 queries),
- * and loading/copying a lot of data might cause that. So we start small
- * and increase the size - that still improves cases reading a lot of
- * data from the index, without hurting small queries.
- *
- * Note: This gradual ramp up is for batch size, independent of what we
- * do for prefetch. The prefetch distance is gradually increased too, but
- * it's independent / orthogonal to the batch size. The batch size limits
- * how far ahead we can prefetch, of course.
- *
- * Note: The current limits on batch size (initial 8, maximum 64) are
- * quite arbitrary, it just seemed those values are sane. We could adjust
- * the initial size, but I don't think it'd make a fundamental difference.
- * Growing the batches faster/slower has bigger impact.
- *
- * The maximum batch size does not matter much - it's true a btree index can
- * have up to ~1300 items per 8K leaf page, but in most cases the actual
- * number is lower, perhaps ~300. That's not that far from 64.
- *
- * Each batch has a firstIndex/lastIndex to track which part of the leaf
- * page it currently represents.
+ * A good way to visualize batching is a sliding window over the key
+ * space of an index. At any time, we have a "window" representing a
+ * range of the keys, consisting of one or more batches, each with items
+ * from a single leaf page.
  *
  *
- * kill_prior_tuples
- * -----------------
- *
- * If we decide a tuple can be killed, the batch item is marked accordingly,
- * and the flag is reset to false (so that the index AM does not do something
- * silly to a random tuple it thinks is "current").
- *
- * Then the next time the AM decides it's time to kill tuples, the AM needs
- * to look at the batch and consider the tuples marked to be killed. B-Tree
- * simply adds those TIDs to the regular "killItems" array.
+ * prefetching leaf pages
+ * ----------------------
+ * This patch is only about prefetching pages from the indexed relation
+ * (e.g. heap), not about prefetching index leaf pages etc. The read_next
+ * callback does read leaf pages when needed (after reaching the end of
+ * the current batch), but this is synchronous, and the callback will
+ * block until the leaf page is read and returned.
  *
  *
- * mark/restore
- * ------------
+ * gradual ramp up
+ * ---------------
+ * The prefetching is driven by the read_stream API / implementation.
+ * There are no explicit fadvise calls in the index code, that all happens
+ * in the read stream. The read stream does the usual gradual ramp up to
+ * not regress LIMIT 1 queries etc.
  *
+ *
+ * kill_prior_tuples (TODO/FIXME)
+ * ------------------------------
+ * If we decide a tuple should be killed, the same scan flag is used to pass
+ * this information to indexam.c - the item is recorded in the batch, and the
+ * killing is postponed until the batch is freed using amfreebatch(). The scan
+ * flag is reset to false, so that the index AM does not get confused and does
+ * not do something for a different "current" item.
+ *
+ *
+ * mark/restore (TODO/FIXME)
+ * -------------------------
  * With batching, the index AM does not know the the "current" position on
  * the leaf page - we don't propagate this to the index AM while walking
  * items in the batch. To make ammarkpos() work, the index AM can check
@@ -1393,6 +1426,7 @@ AssertCheckBatches(IndexScanDesc scan)
 #endif
 }
 
+/* debug: print info about current batches */
 static void
 index_batch_print(const char *label, IndexScanDesc scan)
 {

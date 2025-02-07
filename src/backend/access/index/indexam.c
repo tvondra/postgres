@@ -44,6 +44,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/nbtree.h"		/* XXX for MaxTIDsPerBTreePage (should remove) */
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -1975,9 +1976,27 @@ index_batch_reset(IndexScanDesc scan)
 static void
 index_batch_kill_item(IndexScanDesc scan)
 {
-	/* FIXME mark item at current readPos as deleted */
-	AssertCheckBatchPosValid(scan, &scan->xs_batches->readPos);
+	IndexScanBatchPos *pos = &scan->xs_batches->readPos;
+	IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
+	/* FIXME mark item at current readPos as deleted */
+	AssertCheckBatchPosValid(scan, pos);
+
+	/*
+	 * XXX Too tied to btree (through MaxTIDsPerBTreePage), we should make
+	 * this AM agnostic. We could maybe even replace this with Bitmapset.
+	 * It might be more expensive if we only kill items at the end of the
+	 * page (in which case we still have to walk the first part to find the
+	 * bits at the end). But given the lower memory usage it still sees
+	 * like a good tradeoff overall.
+	 */
+	if (batch->killedItems == NULL)
+		batch->killedItems = (int *)
+			palloc(MaxTIDsPerBTreePage * sizeof(int));
+	if (batch->numKilled < MaxTIDsPerBTreePage)
+			batch->killedItems[batch->numKilled++] = pos->index;
+
+	elog(WARNING, "index_batch_kill_item (%d,%d)", pos->batch, pos->index);
 	// FIXME index_batch_kill_item not implemented
 }
 

@@ -1996,7 +1996,7 @@ index_batch_kill_item(IndexScanDesc scan)
 	if (batch->numKilled < MaxTIDsPerBTreePage)
 			batch->killedItems[batch->numKilled++] = pos->index;
 
-	elog(WARNING, "index_batch_kill_item (%d,%d)", pos->batch, pos->index);
+	// elog(WARNING, "index_batch_kill_item (%d,%d)", pos->batch, pos->index);
 	// FIXME index_batch_kill_item not implemented
 }
 

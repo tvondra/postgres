@@ -2177,6 +2177,12 @@ _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch)
 	 * load that, and apply the killed items to that, somehow?
 	 */
 	// FIXME: _bt_kill_batch not implemented
+	/*
+	 * XXX maybe we should have a separate callback for this, and call it
+	 * from the indexam.c directly whenever we think it's appropriate?
+	 * And not only from here when freeing the batch?
+	 */
+	_bt_killitems_batch(scan, batch);
 }
 
 /*

@@ -3157,7 +3157,7 @@ _bt_setuppostingitems_batch(IndexScanBatch batch, int itemIndex, OffsetNumber of
 	Assert(BTreeTupleIsPosting(itup));
 
 	/* copy the populated part of the items array */
-	item->heapTid = itup->t_tid;
+	item->heapTid = *heapTid;
 	item->indexOffset = offnum;
 
 	if (batch->currTuples)

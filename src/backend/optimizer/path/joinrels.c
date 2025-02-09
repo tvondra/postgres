@@ -1963,3 +1963,241 @@ get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
 		*parts2 = lappend(*parts2, child_rel2);
 	}
 }
+
+typedef struct JoinReference
+{
+	RelOptInfo *fk_rel;	/* fact rel (side with FK) */
+	RelOptInfo *pk_rel;	/* dimension rel (side with PK) */
+} JoinReference;
+
+List *
+starjoin_join_search(PlannerInfo *root, int levels_needed, List *initial_rels,
+					 List **dims)
+{
+	ListCell *lc;
+	int	njoins = list_length(initial_rels);
+
+	/*
+	 * Preallocate space for the maximum number of references we could
+	 * need. We only allow one outgoing reference per relation, because
+	 * if a relation references multiple tables, it's not a dimension.
+	 * So we can't have more than the number of relations.
+	 */
+	int nrefs = 0;
+	JoinReference *refs = palloc_array(JoinReference, njoins);
+
+	/*
+	 * Consider each combination of rels, check if they join over a FK.
+	 *
+	 * dim - the "dimension" side, i.e. the side with the PK
+	 * fact - the "fact" side, the referencing table (with the FK)
+	 */
+	foreach(lc, initial_rels)
+	{
+		ListCell *lc2;
+		RelOptInfo *dim = (RelOptInfo *) lfirst(lc);
+
+		/*
+		 * The dimension must not have any restrictions, as that would
+		 * reduce the size of the join (and thus might be better to do
+		 * earlier in the plan).
+		 */
+		if (dim->baserestrictinfo != NIL)
+			continue;
+
+		/*
+		 * Ignore rels with join order restrictions for now, we want to
+		 * be able to just move these joins at the end of the join list.
+		 */
+		if (has_join_restriction(root, dim))
+			continue;
+
+		/*
+		 * We should only find a single fact referencing to this dim,
+		 * otherwise don't postpone this join.
+		 *
+		 * XXX we need to consider FKs in both directions, so iterate
+		 * over the whole list again.
+		 */
+		foreach(lc2, initial_rels)
+		{
+			ListCell *lc3;
+			RelOptInfo *fact = (RelOptInfo *) lfirst(lc2);
+			bool		match = true;
+
+			/* but the rels need to be different */
+			if (dim == fact)
+				continue;
+
+			/* XXX should we check has_join_restriction for fact too? */
+
+			/* Is there a join condition between the two tables? */
+
+			/*
+			 * Is there a join clause between the fact and the dimension?
+			 *
+			 * This is a subset of has_legal_joinclause for a single rel.
+			 * We always look at initial rels, so the relids overlap checks
+			 * are not needed.
+			 *
+			 * XXX should this worry about eclass joins?
+			 */
+			if (have_relevant_joinclause(root, fact, dim))
+			{
+				Relids		joinrelids;
+				SpecialJoinInfo *sjinfo;
+				bool		reversed;
+
+				/* join_is_legal needs relids of the union */
+				joinrelids = bms_union(fact->relids, dim->relids);
+
+				if (!join_is_legal(root, fact, dim, joinrelids,
+								&sjinfo, &reversed))
+				{
+					match = false;
+				}
+
+				bms_free(joinrelids);
+			}
+			else
+				match = false;
+
+			/* if ruled out, we're done */
+			if (!match)
+				continue;
+
+			/* Is there a FK linking the tables, in the right direction? */
+			/* We must be sure that each dimension is referenced only once,
+			 * otherwise we'd have dependency join order. And we assume that
+			 * is not happening. */
+			/*
+			 * Also need to make sure there are no cycles, otherwise the
+			 * search for biggest "subgraph" a bit later would be more
+			 * complicated.
+			 */
+
+			/* Consider each FK constraint that is known to match the query */
+			foreach(lc3, root->fkey_list)
+			{
+				ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc3);
+
+				/* XXX this might need to consider LEFT JOINs, NOT NULL on the
+				 * FK side, etc. */
+
+				if (bms_is_member(fkinfo->con_relid, fact->relids) &&
+					bms_is_member(fkinfo->ref_relid, dim->relids))
+				{
+					elog(WARNING, "found fact/dim fkey join");
+					refs[nrefs].fk_rel = fact;
+					refs[nrefs].pk_rel = dim;
+					nrefs++;
+				}
+
+			}
+		}
+	}
+
+	elog(WARNING, "nrefs = %d", nrefs);
+	for (int i = 0; i < nrefs; i++)
+		elog(WARNING, "ref %d: %p => %p", i, refs[i].fk_rel, refs[i].pk_rel);
+
+	/*
+	 * Now that we know all the interesting FK joins, add find the "fact"
+	 * with the highest number of "dimensions". We try each rel, and keep
+	 * the one with the highest dimension count.
+	 *
+	 * XXX This is O(N^2), but we assume there's only a couple FK joins.
+	 *
+	 * We need to split the rels into three groups - fact(s), dimensions
+	 * and the "rest". We can repeat this until "rest" is empty or there
+	 * are no references to consider. Then we return (facts + rest) to be
+	 * passed to the regular join order optimization, and then we append
+	 * the dimensions.
+	 *
+	 * XXX Could we maybe do this by "adding" join restrictions, to ensure
+	 * we consider just a particular join order of the dimensions? Say, by
+	 * making dimensions to require "relids" of the other rels (facts etc.)?
+	 *
+	 * XXX Maybe if we only made them dependent on the "facts" and each other
+	 * (for each "fact"), that would be enough to make this much faster, and
+	 * it'd still consider various join orders? Although, if we exceed the
+	 * join_collapse_limit, we don't optimize across those groups anyway.
+	 */
+	{
+		int ndims_max = 0;
+		RelOptInfo *fact = NULL;
+		List *fact_dims = NIL;
+		List *rels;
+
+		foreach(lc, initial_rels)
+		{
+			int			new_ndims = 0;
+			RelOptInfo *newfact = (RelOptInfo *) lfirst(lc);
+			List	   *next = list_make1(newfact);
+			List	   *newdims = NIL;
+
+			/* dijkstra's algorithm, add the next "layer" of vertices, we start
+			 * with the fact */
+			while (next != NIL)
+			{
+				List *curr = NIL;
+
+				for (int i = 0; i < nrefs; i++)
+				{
+					if (!list_member_ptr(next, refs[i].fk_rel))
+						continue;
+
+					curr = lappend(curr, refs[i].pk_rel);
+					newdims = lappend(newdims, refs[i].pk_rel);
+					new_ndims++;
+				}
+
+				next = curr;
+			}
+
+			elog(WARNING, "new_fact %p new_ndims %d", newfact, new_ndims);
+
+			/* did we find a new "fact"? */
+			if (ndims_max < new_ndims)
+			{
+				fact = newfact;
+				ndims_max = new_ndims;
+				fact_dims = newdims;
+			}
+		}
+
+		elog(WARNING, "fact: %p  dims: %d  ndims: %d", fact, ndims_max, list_length(fact_dims));
+
+		/* XXX maybe repeat this while have some remaining join references? */
+		*dims = fact_dims;
+
+		/* strip everything that's in the dimension list */
+		rels = NIL;
+		foreach(lc, initial_rels)
+		{
+			RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+			if (list_member_ptr(fact_dims, rel))
+				continue;
+
+			rels = lappend(rels, rel);
+		}
+
+		return rels;
+	}
+
+	return NIL;
+}
+
+void
+make_rel_by_clause_joins(PlannerInfo *root,
+						 RelOptInfo *old_rel,
+						 RelOptInfo *other_rel)
+{
+	if (!bms_overlap(old_rel->relids, other_rel->relids) &&
+		(have_relevant_joinclause(root, old_rel, other_rel) ||
+		 have_join_order_restriction(root, old_rel, other_rel)))
+	{
+		(void) make_join_rel(root, old_rel, other_rel);
+	}
+}

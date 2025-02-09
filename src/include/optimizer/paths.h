@@ -53,6 +53,9 @@ extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
 extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 										List *initial_rels);
 
+extern List *starjoin_join_search(PlannerInfo *root, int levels_needed,
+								  List *initial_rels, List **dims);
+
 extern void generate_gather_paths(PlannerInfo *root, RelOptInfo *rel,
 								  bool override_rows);
 extern void generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel,
@@ -111,6 +114,9 @@ extern bool have_dangerous_phv(PlannerInfo *root,
 extern void mark_dummy_rel(RelOptInfo *rel);
 extern void init_dummy_sjinfo(SpecialJoinInfo *sjinfo, Relids left_relids,
 							  Relids right_relids);
+extern void make_rel_by_clause_joins(PlannerInfo *root,
+									 RelOptInfo *old_rel,
+									 RelOptInfo *other_rel);
 
 /*
  * equivclass.c

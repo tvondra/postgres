@@ -3389,6 +3389,81 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 	}
 }
 
+static void
+starjoin_join_dimension(PlannerInfo *root, RelOptInfo *rel, int level)
+{
+	ListCell   *lc;
+	RelOptInfo *toprel;
+
+	/* we're adding join for the first dimension, so set the level */
+	root->join_cur_level = level;
+
+	/*
+	 * XXX Subset of join_search_one_level. The main difference is
+	 * we don't need to walk any of the lower levels, because for
+	 * level=2 we already have the fact table, and for higher
+	 * levels there should be only a single joinrel.
+	 */
+
+	/* there should be only a single rel at the top */
+	Assert(list_length(root->join_rel_level[level - 1]) == 1);
+
+	/* there should be no join relation on the current level yet */
+	Assert(root->join_rel_level[level] == NIL);
+
+	toprel = (RelOptInfo *) linitial(root->join_rel_level[level - 1]);
+
+	make_rel_by_clause_joins(root, toprel, rel);
+
+	/*
+	 * If everything went fine, we should have exactly one join relation
+	 * for the current level.
+	 *
+	 * XXX This could happen if the current starjoin logic fails to
+	 * consider something that prevents creating the join, e.g. some
+	 * sort of join restriction. Not sure if that should be treated
+	 * as a bug, or something expected (in which case we could just
+	 * fallback to the regular planning).
+	 */
+	Assert(root->join_rel_level[level] != NIL);
+	Assert(list_length(root->join_rel_level[level]) == 1);
+
+	/* generate/set paths for the join relation we just created */
+
+	/*
+	 * Run generate_partitionwise_join_paths() and
+	 * generate_useful_gather_paths() for each just-processed joinrel.  We
+	 * could not do this earlier because both regular and partial paths
+	 * can get added to a particular joinrel at multiple times within
+	 * join_search_one_level.
+	 *
+	 * After that, we're done creating paths for the joinrel, so run
+	 * set_cheapest().
+	 */
+	foreach(lc, root->join_rel_level[level])
+	{
+		rel = (RelOptInfo *) lfirst(lc);
+
+		/* Create paths for partitionwise joins. */
+		generate_partitionwise_join_paths(root, rel);
+
+		/*
+		 * Except for the topmost scan/join rel, consider gathering
+		 * partial paths.  We'll do the same for the topmost scan/join rel
+		 * once we know the final targetlist (see grouping_planner's and
+		 * its call to apply_scanjoin_target_to_paths).
+		 */
+		if (!bms_equal(rel->relids, root->all_query_rels))
+			generate_useful_gather_paths(root, rel, false);
+
+		/* Find and save the cheapest paths for this rel */
+		set_cheapest(rel);
+#ifdef OPTIMIZER_DEBUG
+		pprint(rel);
+#endif
+	}
+}
+
 /*
  * standard_join_search
  *	  Find possible joinpaths for a query by successively finding ways
@@ -3423,6 +3498,8 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
 	int			lev;
 	RelOptInfo *rel;
+	List	   *dim_rels = NIL;
+	int levels_needed_old = levels_needed;
 
 	/*
 	 * This function cannot be invoked recursively within any one planning
@@ -3442,6 +3519,16 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * relations.
 	 */
 	root->join_rel_level = (List **) palloc0((levels_needed + 1) * sizeof(List *));
+
+	/* XXX try to detect "dimension joins" in a starjoin */
+	if (true)
+	{
+		initial_rels = starjoin_join_search(root, levels_needed, initial_rels, &dim_rels);
+		levels_needed -= list_length(dim_rels);
+
+		elog(WARNING, "levels_needed_old = %d  levels_needed = %d",
+			 levels_needed_old, levels_needed);
+	}
 
 	root->join_rel_level[1] = initial_rels;
 
@@ -3490,6 +3577,20 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 #endif
 		}
 	}
+
+	/* append the dimensions from star/snowflake join */
+	{
+		ListCell *lc;
+
+		foreach(lc, dim_rels)
+		{
+			rel = (RelOptInfo *) lfirst(lc);
+			levels_needed++;
+			starjoin_join_dimension(root, rel, levels_needed);
+		}
+	}
+
+	Assert(levels_needed == levels_needed_old);
 
 	/*
 	 * We should have a single rel at the final level.

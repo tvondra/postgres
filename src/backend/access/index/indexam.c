@@ -574,7 +574,7 @@ index_restrpos(IndexScanDesc scan)
 	else
 	{
 		IndexScanBatches   *batches = scan->xs_batches;
-		IndexScanBatchPos	pos = batches->markPos;
+		IndexScanBatchPos  *pos = &batches->markPos;
 		IndexScanBatchData *batch = scan->xs_batches->markBatch;
 
 		Assert(batch != NULL);
@@ -587,12 +587,17 @@ index_restrpos(IndexScanDesc scan)
 		index_batch_reset(scan, false);
 
 		/* XXX ugly - we reinstall the batch as the "first and only one" */
-		batches->markPos = pos;
-		batches->readPos = pos;
-		batches->firstBatch = pos.batch;
+		batches->markPos = *pos;
+		batches->readPos = *pos;
+		batches->firstBatch = pos->batch;
 		batches->nextBatch = (batches->firstBatch + 1);
 
 		INDEX_SCAN_BATCH(scan, batches->markPos.batch) = batch;
+
+		/* XXX I really dislike that we have so many definitions of "current"
+		 * batch. We have readPos, streamPos, currentBatch, ... We should make
+		 * that somewhat more consistent. */
+		batches->currentBatch = batch;
 		batches->markBatch = batch; /* also remember this */
 	}
 }

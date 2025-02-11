@@ -141,6 +141,10 @@ static void AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch);
 static void AssertCheckBatches(IndexScanDesc scan);
 
 
+#define INDEX_SCAN_BATCH(scan, idx)	\
+		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
+
+
 /* ----------------------------------------------------------------
  *				   index_ interface functions
  * ----------------------------------------------------------------
@@ -506,8 +510,9 @@ index_markpos(IndexScanDesc scan)
 
 		/* just copy the read position (which has to be valid) */
 		batches->markPos = batches->readPos;
+		batches->markBatch = INDEX_SCAN_BATCH(scan, batches->markPos.batch);
 
-		elog(ERROR, "index_markpos: batching not supported");
+		/* FIXME we need to make sure the batch does not get freed */
 
 		AssertCheckBatchPosValid(scan, &batches->markPos);
 	}
@@ -551,7 +556,27 @@ index_restrpos(IndexScanDesc scan)
 		scan->indexRelation->rd_indam->amrestrpos(scan);
 	else
 	{
-		elog(ERROR, "index_restrpos: batching not supported");
+		IndexScanBatches   *batches = scan->xs_batches;
+		IndexScanBatchPos	pos = batches->markPos;
+		IndexScanBatchData *batch = scan->xs_batches->markBatch;
+
+		Assert(batch != NULL);
+
+		// the pos can be invalid, if we already advanced pas the the marked
+		// batch (and stashed it in markBatch instead of freeing)
+		// AssertCheckBatchPosValid(scan, &pos);
+
+		/* FIXME check the batch was not freed yet */
+		index_batch_reset(scan);
+
+		/* XXX ugly - we reinstall the batch as the "first and only one" */
+		batches->markPos = pos;
+		batches->readPos = pos;
+		batches->firstBatch = pos.batch;
+		batches->nextBatch = (batches->firstBatch + 1);
+
+		INDEX_SCAN_BATCH(scan, batches->markPos.batch) = batch;
+		batches->markBatch = batch; /* also remember this */
 	}
 }
 
@@ -1364,9 +1389,6 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * position, using the private information (about items in the batch).
  */
 
-#define INDEX_SCAN_BATCH(scan, idx)	\
-		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
-
 static void
 AssertCheckBatchPosValid(IndexScanDesc scan, IndexScanBatchPos *pos)
 {
@@ -1970,6 +1992,11 @@ index_batch_reset(IndexScanDesc scan)
 	batches->currentBatch = NULL;
 	batches->lastBlock = InvalidBlockNumber;
 
+	/* XXX this will result in some batches not being freed, we need to
+	 * have a flag that says whether to reset marked pos/batch too (for
+	 * now we remember/restore them in restrpos) */
+	batches->markBatch = NULL;
+
 	AssertCheckBatches(scan);
 }
 
@@ -2007,6 +2034,10 @@ index_batch_free(IndexScanDesc scan, IndexScanBatch batch)
 	CHECK_SCAN_PROCEDURE(amfreebatch);
 
 	AssertCheckBatch(scan, batch);
+
+	/* don't free the batch that is marked */
+	if (batch == scan->xs_batches->markBatch)
+		return;
 
 	scan->indexRelation->rd_indam->amfreebatch(scan, batch);
 }

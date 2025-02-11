@@ -245,7 +245,7 @@ typedef struct IndexScanBatches
 		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
 		IndexScanBatchPos		markPos;	/* mark/restore position */
 
-
+		IndexScanBatchData	   *markBatch;
 		IndexScanBatchData	   *currentBatch;
 
 		/*

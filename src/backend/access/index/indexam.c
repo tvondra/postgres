@@ -121,7 +121,7 @@ static inline void validate_relation_kind(Relation r);
 
 /* index batching */
 static void index_batch_init(IndexScanDesc scan);
-static void index_batch_reset(IndexScanDesc scan);
+static void index_batch_reset(IndexScanDesc scan, bool complete);
 static void index_batch_end(IndexScanDesc scan);
 static bool index_batch_getnext(IndexScanDesc scan);
 static void index_batch_free(IndexScanDesc scan, IndexScanBatch batch);
@@ -449,7 +449,7 @@ index_rescan(IndexScanDesc scan,
 	 * discards reads already scheduled to the read stream, etc. We Do this
 	 * before calling amrescan, so that it can reinitialize everything.
 	 */
-	index_batch_reset(scan);
+	index_batch_reset(scan, true);
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -507,6 +507,23 @@ index_markpos(IndexScanDesc scan)
 	else
 	{
 		IndexScanBatches  *batches = scan->xs_batches;
+		IndexScanBatchPos *pos = &batches->markPos;
+		IndexScanBatchData *batch = batches->markBatch;
+
+		/*
+		 * Free the previous mark batch (if any). We actually free it only
+		 * if the batch is no longer valid (in the current first/next range).
+		 * This means that if we're marking the same batch (different item),
+		 * we don't really do anything.
+		 *
+		 * XXX Should have some macro to check if pos is in queue, etc.
+		 */
+		if ((batch != NULL) &&
+			(pos->batch < batches->firstBatch || pos->batch >= batches->nextBatch))
+		{
+			batches->markBatch = NULL;
+			index_batch_free(scan, batch);
+		}
 
 		/* just copy the read position (which has to be valid) */
 		batches->markPos = batches->readPos;
@@ -567,7 +584,7 @@ index_restrpos(IndexScanDesc scan)
 		// AssertCheckBatchPosValid(scan, &pos);
 
 		/* FIXME check the batch was not freed yet */
-		index_batch_reset(scan);
+		index_batch_reset(scan, false);
 
 		/* XXX ugly - we reinstall the batch as the "first and only one" */
 		batches->markPos = pos;
@@ -1950,11 +1967,13 @@ index_batch_init(IndexScanDesc scan)
  * FIXME Another bit in need of cleanup. The currIndex default (-1) is not quite
  * correct, because for backwards scans is wrong.
  *
+ * complete - true means we reset even marked batch
+ *
  * XXX Isn't this the same as index_batch_empty?
  * XXX Should this reset the batch memory context, xs_itup, xs_hitup, etc?
  */
 static void
-index_batch_reset(IndexScanDesc scan)
+index_batch_reset(IndexScanDesc scan, bool complete)
 {
 	IndexScanBatches *batches = scan->xs_batches;
 
@@ -1967,6 +1986,28 @@ index_batch_reset(IndexScanDesc scan)
 	/* With batching enabled, we should have a read stream. Reset it. */
 	Assert(scan->xs_heapfetch);
 	read_stream_reset(scan->xs_heapfetch->rs);
+
+	/*
+	 * With "complete" reset, make sure to also free the marked batch,
+	 * either by just forgetting it (if it's still in the queue), or by
+	 * explicitly freeing it.
+	 *
+	 * XXX Do this before the loop, so that it calls the amfreebatch().
+	 */
+	if (complete && (batches->markBatch != NULL))
+	{
+		IndexScanBatchPos *pos = &batches->markPos;
+		IndexScanBatch	batch = batches->markBatch;
+
+		/* always reset */
+		batches->markBatch = NULL;
+
+		/* we've already moved past that batch, so free it directly */
+		if (pos->batch < batches->firstBatch || pos->batch >= batches->nextBatch)
+		{
+			index_batch_free(scan, batch);
+		}
+	}
 
 	/* release all currently loaded batches */
 	for (int i = batches->firstBatch; i < batches->nextBatch; i++)
@@ -1985,7 +2026,13 @@ index_batch_reset(IndexScanDesc scan)
 
 	index_batch_pos_reset(scan, &batches->readPos);
 	index_batch_pos_reset(scan, &batches->streamPos);
-	index_batch_pos_reset(scan, &batches->markPos);
+
+	/*
+	 * For a complete reset we've discarded the mark batch above, so forget
+	 * the mark position too.
+	 */
+	if (complete)
+		index_batch_pos_reset(scan, &batches->markPos);
 
 	batches->finished = false;
 
@@ -1995,7 +2042,6 @@ index_batch_reset(IndexScanDesc scan)
 	/* XXX this will result in some batches not being freed, we need to
 	 * have a flag that says whether to reset marked pos/batch too (for
 	 * now we remember/restore them in restrpos) */
-	batches->markBatch = NULL;
 
 	AssertCheckBatches(scan);
 }
@@ -2046,7 +2092,7 @@ index_batch_free(IndexScanDesc scan, IndexScanBatch batch)
 static void
 index_batch_end(IndexScanDesc scan)
 {
-	index_batch_reset(scan);
+	index_batch_reset(scan, true);
 }
 
 IndexScanBatch

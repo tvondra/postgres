@@ -1587,7 +1587,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 	 * will likely release the parallel scan later on.
 	 */
 	if (scan->parallel_scan != NULL &&
-		!_bt_parallel_seize(scan, &blkno, &lastcurrblkno, true))
+		!_bt_parallel_seize_batch(scan, &pos, &blkno, &lastcurrblkno, true))
 		return false;
 
 	/*
@@ -1608,9 +1608,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 		Assert(!so->needPrimScan);
 		Assert(blkno != P_NONE);
 
-		elog(ERROR, "FIXME: can't pass pos = NULL with parallel scans");
-
-		return _bt_readnextpage_batch(scan, NULL, blkno, lastcurrblkno, dir, true);
+		return _bt_readnextpage_batch(scan, &pos, blkno, lastcurrblkno, dir, true);
 	}
 
 	/*
@@ -3688,10 +3686,12 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 	Assert(!BTScanPosIsValid(so->markPos));
 
 	Assert(pos->currPage == lastcurrblkno || seized);
-	Assert(BTBatchScanPosIsPinned(*pos));
+	Assert(BTBatchScanPosIsPinned(*pos) || seized);
 
 	/* initialize the new position to the old one, we'll modify it */
 	// newpos = *pos;
+
+	// pos->moreLeft = pos->moreRight = false;
 
 	/*
 	 * Remember that the scan already read lastcurrblkno, a page to the left
@@ -3713,7 +3713,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 		{
 			/* most recent _bt_readpage call (for lastcurrblkno) ended scan */
 			Assert(pos->currPage == lastcurrblkno && !seized);
-			// BTScanPosInvalidate(so->currPos);
+			BTBatchScanPosInvalidate(*pos);
 			_bt_parallel_done(scan);	/* iff !so->needPrimScan */
 			return NULL;
 		}
@@ -3722,10 +3722,10 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 
 		/* parallel scan must never actually visit so->currPos blkno */
 		if (!seized && scan->parallel_scan != NULL &&
-			!_bt_parallel_seize(scan, &blkno, &lastcurrblkno, false))
+			!_bt_parallel_seize_batch(scan, pos, &blkno, &lastcurrblkno, false))
 		{
 			/* whole scan is now done (or another primitive scan required) */
-			// BTScanPosInvalidate(so->currPos);
+			BTBatchScanPosInvalidate(*pos);
 			return NULL;
 		}
 
@@ -3743,7 +3743,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 			if (pos->buf == InvalidBuffer)
 			{
 				/* must have been a concurrent deletion of leftmost page */
-				// BTScanPosInvalidate(so->currPos);
+				BTBatchScanPosInvalidate(*pos);
 				_bt_parallel_done(scan);
 				return NULL;
 			}

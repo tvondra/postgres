@@ -683,15 +683,16 @@ index_parallelrescan(IndexScanDesc scan)
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
+	/*
+	 * Reset the batching. This makes it look like there are no batches,
+	 * discards reads already scheduled to the read stream, etc. We Do this
+	 * before calling amrescan, so that it can reinitialize everything.
+	 */
+	index_batch_reset(scan, true);
+
 	/* amparallelrescan is optional; assume no-op if not provided by AM */
 	if (scan->indexRelation->rd_indam->amparallelrescan != NULL)
 		scan->indexRelation->rd_indam->amparallelrescan(scan);
-
-	/* FIXME This probably needs to reset the batching, just like index_rescan()? */
-	if (scan->xs_batches != NULL)
-	{
-		elog(ERROR, "index_parallelrescan: batching not supported");
-	}
 }
 
 /*

@@ -3020,6 +3020,7 @@ TuplesortClusterArg
 TuplesortDatumArg
 TuplesortIndexArg
 TuplesortIndexBTreeArg
+TuplesortIndexGinArg
 TuplesortIndexHashArg
 TuplesortInstrumentation
 TuplesortMethod

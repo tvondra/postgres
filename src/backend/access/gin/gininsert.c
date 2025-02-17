@@ -145,6 +145,7 @@ typedef struct
 	MemoryContext funcCtx;
 	BuildAccumulator accum;
 	ItemPointerData tid;
+	int				work_mem;
 
 	/* FIXME likely duplicate with indtuples */
 	double		bs_numtuples;
@@ -576,7 +577,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	 * maintenance_work_mem. It's weird to use work_mem here, in a clearly
 	 * maintenance command.
 	 */
-	if (buildstate->accum.allocatedMemory >= (Size) work_mem * 1024L)
+	if (buildstate->accum.allocatedMemory >= buildstate->work_mem * 1024L)
 		ginFlushBuildState(buildstate, index);
 
 	MemoryContextSwitchTo(oldCtx);
@@ -1766,13 +1767,18 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 
 	/* Begin "partial" tuplesort */
 	state->bs_sortstate = tuplesort_begin_index_gin(heap, index,
-													sortmem, coordinate,
+													(sortmem / 2),
+													coordinate,
 													TUPLESORT_NONE);
 
 	/* Local per-worker sort of raw-data */
 	state->bs_worker_sort = tuplesort_begin_index_gin(heap, index,
-													  sortmem, NULL,
+													  (sortmem / 2),
+													  NULL,
 													  TUPLESORT_NONE);
+
+	/* remember how much space is allowed for the accumulated entries */
+	state->work_mem = (sortmem / 2);
 
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(index);

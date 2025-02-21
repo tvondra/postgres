@@ -68,6 +68,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "port/pg_numa.h"
 #include "storage/lwlock.h"
 #include "storage/pg_shmem.h"
 #include "storage/shmem.h"
@@ -90,6 +91,8 @@ slock_t    *ShmemLock;			/* spinlock for shared memory and LWLock
 
 static HTAB *ShmemIndex = NULL; /* primary index hashtable for shmem */
 
+/* To get reliable results for NUMA inquiry we need to "touch pages" once */
+static bool firstNumaTouch = true;
 
 /*
  *	InitShmemAccess() --- set up basic pointers to shared memory.
@@ -567,6 +570,135 @@ pg_get_shmem_allocations(PG_FUNCTION_ARGS)
 	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 
 	LWLockRelease(ShmemIndexLock);
+
+	return (Datum) 0;
+}
+
+/* SQL SRF showing NUMA memory nodes for allocated shared memory */
+Datum
+pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
+{
+#define PG_GET_SHMEM_NUMA_SIZES_COLS 3
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	HASH_SEQ_STATUS hstat;
+	ShmemIndexEnt *ent;
+	Datum		values[PG_GET_SHMEM_NUMA_SIZES_COLS];
+	bool		nulls[PG_GET_SHMEM_NUMA_SIZES_COLS];
+	Size		os_page_size;
+	void	  **page_ptrs;
+	int		   *pages_status;
+	uint64		shm_total_page_count,
+				shm_ent_page_count,
+				max_nodes;
+	Size	   *nodes;
+
+	InitMaterializedSRF(fcinfo, 0);
+
+	if (pg_numa_init() == -1)
+	{
+		elog(ERROR, "libnuma initialization failed or NUMA is not supported on this platform");
+		return (Datum) 0;
+	}
+	max_nodes = pg_numa_get_max_node();
+	nodes = palloc(sizeof(Size) * (max_nodes + 1));
+
+	/*
+	 * Different database block sizes (4kB, 8kB, ..., 32kB) can be used, while
+	 * the OS may have different memory page sizes.
+	 *
+	 * To correctly map between them, we need to: 1. Determine the OS memory
+	 * page size 2. Calculate how many OS pages are used by all buffer blocks
+	 * 3. Calculate how many OS pages are contained within each database
+	 * block.
+	 *
+	 * This information is needed before calling move_pages() for NUMA memory
+	 * node inquiry.
+	 */
+	os_page_size = pg_numa_get_pagesize();
+
+	/*
+	 * Allocate memory for page pointers and status based on total shared
+	 * memory size. This simplified approach allocates enough space for all
+	 * pages in shared memory rather than calculating the exact requirements
+	 * for each segment.
+	 */
+	shm_total_page_count = ShmemSegHdr->totalsize / os_page_size;
+	page_ptrs = palloc0(sizeof(void *) * shm_total_page_count);
+	pages_status = palloc(sizeof(int) * shm_total_page_count);
+
+	if (firstNumaTouch)
+		elog(DEBUG1, "NUMA: page-faulting shared memory segments for proper NUMA readouts");
+
+	LWLockAcquire(ShmemIndexLock, LW_SHARED);
+
+	hash_seq_init(&hstat, ShmemIndex);
+
+	/* output all allocated entries */
+	memset(nulls, 0, sizeof(nulls));
+	while ((ent = (ShmemIndexEnt *) hash_seq_search(&hstat)) != NULL)
+	{
+		int			i;
+
+		/* Get number of OS aliged pages */
+		shm_ent_page_count = TYPEALIGN(os_page_size, ent->allocated_size) / os_page_size;
+
+		/*
+		 * If we get ever 0xff back from kernel inquiry, then we probably have
+		 * bug in our buffers to OS page mapping code here.
+		 */
+		memset(pages_status, 0xff, sizeof(int) * shm_ent_page_count);
+
+		for (i = 0; i < shm_ent_page_count; i++)
+		{
+			/*
+			 * In order to get reliable results we also need to touch memory
+			 * pages, so that inquiry about NUMA memory node doesn't return -2
+			 * (which indicates unmapped/unallocated pages).
+			 */
+			volatile uint64 touch pg_attribute_unused();
+
+			page_ptrs[i] = (char *) ent->location + (i * os_page_size);
+			if (firstNumaTouch)
+				pg_numa_touch_mem_if_required(touch, page_ptrs[i]);
+
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		if (pg_numa_query_pages(0, shm_ent_page_count, page_ptrs, pages_status) == -1)
+			elog(ERROR, "failed NUMA pages inquiry status: %m");
+
+		memset(nodes, 0, sizeof(Size) * (max_nodes + 1));
+		/* Count number of NUMA nodes used for this shared memory entry */
+		for (i = 0; i < shm_ent_page_count; i++)
+		{
+			int			s = pages_status[i];
+
+			/* Ensure we are adding only valid index to the array */
+			if (s >= 0 && s <= max_nodes)
+				nodes[s]++;
+			else
+				elog(ERROR, "invalid NUMA node id outside of allowed range [0, %ld]: %d", max_nodes, s);
+		}
+
+		for (i = 0; i <= max_nodes; i++)
+		{
+			values[0] = CStringGetTextDatum(ent->key);
+			values[1] = i;
+			values[2] = Int64GetDatum(nodes[i] * os_page_size);
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+								 values, nulls);
+		}
+	}
+
+	/*
+	 * We are ignoring the following memory regions (as compared to
+	 * pg_get_shmem_allocations()): 1. output shared memory allocated but not
+	 * counted via the shmem index 2. output as-of-yet unused shared memory.
+	 */
+
+	LWLockRelease(ShmemIndexLock);
+	firstNumaTouch = false;
 
 	return (Datum) 0;
 }

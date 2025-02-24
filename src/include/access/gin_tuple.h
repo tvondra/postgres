@@ -15,13 +15,7 @@
 #include "utils/sortsupport.h"
 
 /*
- * Each worker sees tuples in CTID order, so if we track the first TID and
- * compare that when combining results in the worker, we would not need to
- * do an expensive sort in workers (the mergesort is already smart about
- * detecting this and just concatenating the lists). We'd still need the
- * full mergesort in the leader, but that's much cheaper.
- *
- * XXX do we still need all the fields now that we use SortSupport?
+ * Data for one key in a GIN index.
  */
 typedef struct GinTuple
 {

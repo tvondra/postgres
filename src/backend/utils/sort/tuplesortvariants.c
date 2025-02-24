@@ -632,8 +632,6 @@ tuplesort_begin_index_gin(Relation heapRel,
 		/*
 		 * Look for a ordering for the index key data type, and then the sort
 		 * support function.
-		 *
-		 * XXX does this use the right opckeytype/opcintype for GIN?
 		 */
 		typentry = lookup_type_cache(att->atttypid, TYPECACHE_LT_OPR);
 		PrepareSortSupportFromOrderingOp(typentry->lt_opr, sortKey);

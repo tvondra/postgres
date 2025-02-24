@@ -145,7 +145,7 @@ typedef struct
 	MemoryContext funcCtx;
 	BuildAccumulator accum;
 	ItemPointerData tid;
-	int				work_mem;
+	int			work_mem;
 
 	/* FIXME likely duplicate with indtuples */
 	double		bs_numtuples;
@@ -566,16 +566,8 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 
 	/*
 	 * If we've maxed out our available memory, dump everything to the
-	 * tuplesort.
-	 *
-	 * XXX It might seem this should set the memory limit to 32MB, same as
-	 * what plan_create_index_workers() uses to calculate the number of
-	 * parallel workers, but that's the limit for tuplesort. So it seems
-	 * better to keep using work_mem here.
-	 *
-	 * XXX But maybe we should calculate this as a per-worker fraction of
-	 * maintenance_work_mem. It's weird to use work_mem here, in a clearly
-	 * maintenance command.
+	 * tuplesort. We use half the per-worker fraction of maintenance_work_mem,
+	 * the other half is used for the tuplesort.
 	 */
 	if (buildstate->accum.allocatedMemory >= buildstate->work_mem * (Size) 1024)
 		ginFlushBuildState(buildstate, index);
@@ -607,11 +599,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.indtuples = 0;
 	memset(&buildstate.buildStats, 0, sizeof(GinStatsData));
 
-	/*
-	 * Initialize all the fields, not to trip valgrind.
-	 *
-	 * XXX Maybe there should be an "init" function for build state?
-	 */
+	/* Initialize fields for parallel build too. */
 	buildstate.bs_numtuples = 0;
 	buildstate.bs_reltuples = 0;
 	buildstate.bs_leader = NULL;
@@ -1195,9 +1183,8 @@ AssertCheckItemPointers(GinBuffer *buffer)
 /*
  * GinBuffer checks
  *
- * XXX Maybe it would be better to have AssertCheckGinBuffer with flags, instead
- * of having to call AssertCheckItemPointers in some places, if we require the
- * items to not be empty?
+ * Make sure the nitems/items fields are consistent (either the array is empty
+ * or not empty, the fields need to agree). If there are items, check ordering.
  */
 static void
 AssertCheckGinBuffer(GinBuffer *buffer)
@@ -1415,11 +1402,6 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 /*
  * GinBufferReset
  *		Reset the buffer into a state as if it contains no data.
- *
- * XXX Should we do something if the array of TIDs gets too large? It may
- * grow too much, and we'll not free it until the worker finishes building.
- * But it's better to not let the array grow arbitrarily large, and enforce
- * work_mem as memory limit by flushing the buffer into the tuplestore.
  */
 static void
 GinBufferReset(GinBuffer *buffer)
@@ -1468,11 +1450,6 @@ GinBufferFree(GinBuffer *buffer)
  *		Check if a given GIN tuple can be added to the current buffer.
  *
  * Returns true if the buffer is either empty or for the same index key.
- *
- * XXX This could / should also enforce a memory limit by checking the size of
- * the TID array, and returning false if it's too large (more thant work_mem,
- * for example). But in the leader we need to be careful not to force flushing
- * data too early, which might break the monotonicity of TID list.
  */
 static bool
 GinBufferCanAddKey(GinBuffer *buffer, GinTuple *tup)
@@ -1987,8 +1964,9 @@ _gin_build_tuple(OffsetNumber attrnum, unsigned char category,
 	/*
 	 * Allocate space for the whole GIN tuple.
 	 *
-	 * XXX palloc0 so that valgrind does not complain about uninitialized
-	 * bytes in writetup_index_gin, likely because of padding
+	 * The palloc0 is needed - writetup_index_gin will write the whole tuple
+	 * to disk, so we need to make sure the padding bytes are defined
+	 * (otherwise valgrind would report this).
 	 */
 	tuple = palloc0(tuplen);
 

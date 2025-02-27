@@ -41,6 +41,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>		/* for getrlimit */
+#include <sys/sysinfo.h>
 
 /* For testing, PGBENCH_USE_SELECT can be defined to force use of that code */
 #if defined(HAVE_PPOLL) && !defined(PGBENCH_USE_SELECT)
@@ -299,6 +300,7 @@ static const char *username = NULL;
 static const char *dbName = NULL;
 static char *logfile_prefix = NULL;
 static const char *progname;
+static bool pin_to_cpu = false;
 
 #define WSEP '@'				/* weight separator */
 
@@ -959,6 +961,7 @@ usage(void)
 		   "  --sampling-rate=NUM      fraction of transactions to log (e.g., 0.01 for 1%%)\n"
 		   "  --show-script=NAME       show builtin script code, then exit\n"
 		   "  --verbose-errors         print messages of all errors\n"
+		   "  --pin-cpus               pin threads and backends to CPU\n"
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
 		   "  -d, --dbname=DBNAME      database name to connect to\n"
@@ -6717,6 +6720,7 @@ main(int argc, char **argv)
 		{"verbose-errors", no_argument, NULL, 15},
 		{"exit-on-abort", no_argument, NULL, 16},
 		{"debug", no_argument, NULL, 17},
+		{"pin-cpus", no_argument, NULL, 18},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -7069,6 +7073,9 @@ main(int argc, char **argv)
 				break;
 			case 17:			/* debug */
 				pg_logging_increase_verbosity();
+				break;
+			case 18:			/* pin CPUs */
+				pin_to_cpu = true;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -7515,6 +7522,49 @@ threadRun(void *arg)
 				pg_fatal("could not create connection for client %d",
 						 state[i].id);
 			}
+		}
+	}
+
+	/* pin the thread and backends for it's connections to the same CPU */
+	if (pin_to_cpu)
+	{
+		cpu_set_t  *cpusetp;
+		size_t		cpusetsize;
+		size_t		nprocs = get_nprocs();
+
+		cpusetp = CPU_ALLOC(nprocs);
+		cpusetsize = CPU_ALLOC_SIZE(nprocs);
+
+		CPU_ZERO_S(cpusetsize, cpusetp);
+		CPU_SET_S((thread->tid % nprocs), cpusetsize, cpusetp);
+
+		if (thread->thread)
+			pthread_setaffinity_np(thread->thread, cpusetsize, cpusetp);
+		else
+			sched_setaffinity(getpid(), cpusetsize, cpusetp);
+
+		/* determine PID of the backend, pin it to the same CPU */
+		for (int i = 0; i < nstate; i++)
+		{
+			char   *pid_str;
+			pid_t	pid;
+
+			PGresult *res = PQexec(state[i].con, "select pg_backend_pid()");
+
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+				pg_fatal("could not determine PID of the backend for client %d",
+						 state[i].id);
+
+			if (PQnfields(res) != 1)
+				pg_fatal("expected a single PID field for client %d", state[i].id);
+
+			if (PQntuples(res) != 1)
+				pg_fatal("expected a single PID row for client %d", state[i].id);
+
+			pid_str = PQgetvalue(res, 0, 0);
+			pid = strtol(pid_str, NULL, 10);
+
+			sched_setaffinity(pid, cpusetsize, cpusetp);
 		}
 	}
 

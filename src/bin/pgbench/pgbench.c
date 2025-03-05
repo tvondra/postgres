@@ -41,6 +41,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>		/* for getrlimit */
+#include <sys/sysinfo.h>
 
 /* For testing, PGBENCH_USE_SELECT can be defined to force use of that code */
 #if defined(HAVE_PPOLL) && !defined(PGBENCH_USE_SELECT)
@@ -608,6 +609,7 @@ typedef struct
 	int			id;				/* client No. */
 	ConnectionStateEnum state;	/* state machine's current state. */
 	ConditionalStack cstack;	/* enclosing conditionals state */
+	int			cpu;			/* cpu to pin (-1 to ignore) */
 
 	/*
 	 * Separate randomness for each client. This is used for random functions
@@ -657,6 +659,7 @@ typedef struct
 	THREAD_T	thread;			/* thread handle */
 	CState	   *state;			/* array of CState */
 	int			nstate;			/* length of state[] */
+	int			cpu;			/* cpu to pin (-1 to ignore) */
 
 	/*
 	 * Separate randomness for each thread. Each thread option uses its own
@@ -825,6 +828,330 @@ static const BuiltinScript builtin_script[] =
 	}
 };
 
+#define CPU_PIN_NONE		0
+#define CPU_PIN_RANDOM		1
+#define CPU_PIN_COLOCATE	2
+
+static int	pin_to_cpu = CPU_PIN_NONE;
+static int	ncpus;
+
+/* tracks number of threads/clients assigned to each CPU */
+typedef struct cpu_count_t
+{
+	int	nthreads;
+	int	nclients;
+} cpu_count_t;
+
+static cpu_count_t *cpu_counts = NULL;
+
+/* used to randomize CPUs when pinning threads/clients */
+typedef struct cpu_random_t
+{
+	int	cpu;
+	int	nthreads;
+	int	nclients;
+	int random;
+} cpu_random_t;
+
+/*
+ * order CPUs by (threads + clients, threads, random)
+ *
+ * We want to start with the least utilized CPU cores (first by both clients
+ * and threads, then by just threads). If both are the same, then randomize.
+ */
+static int
+cpu_thread_cmp(const void *a, const void *b)
+{
+	cpu_random_t *ra = (cpu_random_t *) a;
+	cpu_random_t *rb = (cpu_random_t *) b;
+
+	/* compare by threads+clients */
+	if ((ra->nthreads + ra->nclients) < (rb->nthreads + rb->nclients))
+		return -1;
+	else if ((ra->nthreads + ra->nclients) > (rb->nthreads + rb->nclients))
+		return 1;
+
+	/* compare by threads */
+	if (ra->nthreads < rb->nthreads)
+		return -1;
+	else if (ra->nthreads > rb->nthreads)
+		return 1;
+
+	/* randomize */
+	if (ra->random < rb->random)
+		return -1;
+	else if (ra->random > rb->random)
+		return 1;
+
+	return 0;
+}
+
+/*
+ * order CPUs by (threads + clients, clients, random)
+ *
+ * We want to start with the least utilized CPU cores (first by both clients
+ * and threads, then by just clients). If both are the same, then randomize.
+ */
+static int
+cpu_client_cmp(const void *a, const void *b)
+{
+	cpu_random_t *ra = (cpu_random_t *) a;
+	cpu_random_t *rb = (cpu_random_t *) b;
+
+	/* compare by threads+clients */
+	if ((ra->nthreads + ra->nclients) < (rb->nthreads + rb->nclients))
+		return -1;
+	else if ((ra->nthreads + ra->nclients) > (rb->nthreads + rb->nclients))
+		return 1;
+
+	/* compare by clients */
+	if (ra->nclients < rb->nclients)
+		return -1;
+	else if (ra->nclients > rb->nclients)
+		return 1;
+
+	/* randomize */
+	if (ra->random < rb->random)
+		return -1;
+	else if (ra->random > rb->random)
+		return 1;
+
+	return 0;
+}
+
+/* initialize the CPU counters */
+static void
+cpu_counts_init(void)
+{
+	/* already initialized */
+	if (cpu_counts != NULL)
+		return;
+
+	/* allocate counters */
+	cpu_counts = (cpu_count_t *) pg_malloc(ncpus * sizeof(cpu_count_t));
+
+	/* initialize counters to 0 */
+	for (int i = 0; i < ncpus; i++)
+	{
+		cpu_counts[i].nclients = 0;
+		cpu_counts[i].nthreads = 0;
+	}
+
+	/* initialize the PRGN */
+	srandom(getpid());
+}
+
+/*
+ * get random CPU for a thread
+ */
+static int
+random_cpu_thread(void)
+{
+	int	cpu;
+	cpu_random_t *cpus;
+
+	cpus = (cpu_random_t *) pg_malloc(sizeof(cpu_random_t) * ncpus);
+
+	for (int i = 0; i < ncpus; i++)
+	{
+		cpus[i].cpu = i;
+		cpus[i].nthreads = cpu_counts[i].nthreads;
+		cpus[i].nclients = cpu_counts[i].nclients;
+		cpus[i].random = random();
+	}
+
+	qsort(cpus, ncpus, sizeof(cpu_random_t), cpu_thread_cmp);
+
+	cpu = cpus[0].cpu;
+
+	pg_free(cpus);
+
+	cpu_counts[cpu].nthreads++;
+
+	return cpu;
+}
+
+/*
+ * get random CPU for a client
+ *
+ * skip_cpu determines which CPU to not use, because that's what the thread
+ * is using (and we want to not colocate the two processes)
+ */
+static int
+random_cpu_client(int skip_cpu)
+{
+	int	cpu = -1;
+	cpu_random_t *cpus;
+
+	cpus = (cpu_random_t *) pg_malloc(sizeof(cpu_random_t) * ncpus);
+
+	for (int i = 0; i < ncpus; i++)
+	{
+		cpus[i].cpu = i;
+		cpus[i].nthreads = cpu_counts[i].nthreads;
+		cpus[i].nclients = cpu_counts[i].nclients;
+		cpus[i].random = random();
+	}
+
+	qsort(cpus, ncpus, sizeof(cpu_random_t), cpu_client_cmp);
+
+	/* pick the first CPU, but ignore skip_cpu */
+	for (int i = 0; i < ncpus; i++)
+	{
+		cpu = cpus[i].cpu;
+
+		if (cpu == skip_cpu)
+			continue;
+
+		break;
+	}
+
+	pg_free(cpus);
+
+	cpu_counts[cpu].nclients++;
+
+	return cpu;
+}
+
+static void
+assign_processes_to_cpus(TState *threads, int nthreads)
+{
+	/* nothing assigned to CPUs by default */
+	for (int i = 0; i < nthreads; i++)
+	{
+		threads[i].cpu = -1;
+
+		for (int j = 0; j < threads[i].nstate; j++)
+			threads[i].state[j].cpu = -1;
+	}
+
+	/* without pinning, we're done */
+	if (pin_to_cpu == CPU_PIN_NONE)
+		return;
+
+	ncpus = get_nprocs();
+
+	cpu_counts_init();
+
+	/* first assign threads to CPUs */
+	for (int i = 0; i < nthreads; i++)
+		threads[i].cpu = random_cpu_thread();
+
+	/*
+	 * now assign clients to CPUs
+	 *
+	 * We do this only after assigning all threads, to make the distribution
+	 * more balanced. With randomized strategy we assign only one client per
+	 * thread per round, to make it less likely the client ends up colocated
+	 * with the thread.
+	 */
+	while (true)
+	{
+		/* number of clients assigned in this round */
+		int nassigned = 0;
+
+		for (int i = 0; i < nthreads; i++)
+		{
+			TState	   *thread = &threads[i];
+
+			/* all clients for the thread */
+			for (int j = 0; j < thread->nstate; j++)
+			{
+				if (thread->state[j].cpu == -1)
+				{
+					if (pin_to_cpu == CPU_PIN_COLOCATE)
+					{
+						/* colocation: assign all clients to the same CPU */
+						thread->state[j].cpu = thread->cpu;
+						nassigned++;
+					}
+					else
+					{
+						thread->state[j].cpu = random_cpu_client(thread->cpu);
+						nassigned++;
+
+						/* assign one client per thread */
+						break;
+					}
+				}
+			}
+		}
+
+		/* stop if we haven't found any unassigned clients */
+		if (nassigned == 0)
+			break;
+	}
+
+	/* print info about pinned threads/clients */
+	printf("========== CPU pinning ==========\n");
+
+	for (int i = 0; i < ncpus; i++)
+		printf("CPU %d threads %d clients %d\n", i, cpu_counts[i].nthreads, cpu_counts[i].nclients);
+
+	printf("---------------------------------\n");
+
+	for (int i = 0; i < nthreads; i++)
+	{
+		TState	   *thread = &threads[i];
+
+		printf("thread %d CPU %d\n", thread->tid, thread->cpu);
+
+		for (int j = 0; j < thread->nstate; j++)
+			printf("  client %d CPU %d\n", thread->state[j].id, thread->state[j].cpu);
+	}
+
+	printf("=================================\n");
+
+}
+
+static void
+pin_processes_to_cpus(TState *thread)
+{
+	/* pin the thread and backends for it's connections to the same CPU */
+	if (thread->cpu != -1)
+	{
+		cpu_set_t  *cpusetp;
+		size_t		cpusetsize;
+
+		cpusetp = CPU_ALLOC(ncpus);
+		cpusetsize = CPU_ALLOC_SIZE(ncpus);
+
+		CPU_ZERO_S(cpusetsize, cpusetp);
+		CPU_SET_S(thread->cpu, cpusetsize, cpusetp);
+
+		if (thread->thread)
+			pthread_setaffinity_np(thread->thread, cpusetsize, cpusetp);
+		else
+			sched_setaffinity(getpid(), cpusetsize, cpusetp);
+
+		CPU_FREE(cpusetp);
+	}
+
+	/* determine PID of the backend, pin it to the same CPU */
+	for (int i = 0; i < thread->nstate; i++)
+	{
+		cpu_set_t  *cpusetp;
+		size_t		cpusetsize;
+		pid_t	pid;
+
+		if (thread->state[i].cpu == -1)
+			continue;
+
+		pid = PQbackendPID(thread->state[i].con);
+
+		/* recalculate CPU set (allows randomization) */
+		cpusetp = CPU_ALLOC(ncpus);
+		cpusetsize = CPU_ALLOC_SIZE(ncpus);
+
+		CPU_ZERO_S(cpusetsize, cpusetp);
+		CPU_SET_S(thread->state[i].cpu, cpusetsize, cpusetp);
+
+		sched_setaffinity(pid, cpusetsize, cpusetp);
+
+		CPU_FREE(cpusetp);
+	}
+}
+
 
 /* Function prototypes */
 static void setNullValue(PgBenchValue *pv);
@@ -968,6 +1295,7 @@ usage(void)
 		   "  --sampling-rate=NUM      fraction of transactions to log (e.g., 0.01 for 1%%)\n"
 		   "  --show-script=NAME       show builtin script code, then exit\n"
 		   "  --verbose-errors         print messages of all errors\n"
+		   "  --pin-cpus=TYPE          pin processes to CPU (\"colocate\", \"random\")\n"
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
 		   "  -d, --dbname=DBNAME      database name to connect to\n"
@@ -6779,6 +7107,7 @@ main(int argc, char **argv)
 		{"exit-on-abort", no_argument, NULL, 16},
 		{"debug", no_argument, NULL, 17},
 		{"continue-on-error", no_argument, NULL, 18},
+		{"pin-cpus", required_argument, NULL, 19},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -7136,6 +7465,14 @@ main(int argc, char **argv)
 				benchmarking_option_set = true;
 				continue_on_error = true;
 				break;
+			case 19:			/* pin to CPUs */
+				if (strcmp(optarg, "colocate") == 0)
+						pin_to_cpu = CPU_PIN_COLOCATE;
+				else if (strcmp(optarg, "random") == 0)
+						pin_to_cpu = CPU_PIN_RANDOM;
+				else
+					pg_fatal("invalid pinning mode (--pin-cpus): \"%s\"", optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -7433,6 +7770,9 @@ main(int argc, char **argv)
 		nclients_dealt += thread->nstate;
 	}
 
+	/* assign threads/clients to CPUs if requested */
+	assign_processes_to_cpus(threads, nthreads);
+
 	/* all clients must be assigned to a thread */
 	Assert(nclients_dealt == nclients);
 
@@ -7584,6 +7924,9 @@ threadRun(void *arg)
 			}
 		}
 	}
+
+	/* pin the thread (and clients) to assigned CPUs */
+	pin_processes_to_cpus(thread);
 
 	/* GO */
 	THREAD_BARRIER_WAIT(&barrier);

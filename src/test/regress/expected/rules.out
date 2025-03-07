@@ -2041,6 +2041,34 @@ pg_stat_progress_create_index| SELECT s.pid,
     s.param15 AS partitions_done
    FROM (pg_stat_get_progress_info('CREATE INDEX'::text) s(pid, datid, relid, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13, param14, param15, param16, param17, param18, param19, param20)
      LEFT JOIN pg_database d ON ((s.datid = d.oid)));
+pg_stat_progress_data_checksums| SELECT s.pid,
+    s.datid,
+    d.datname,
+        CASE s.param1
+            WHEN 0 THEN 'enabling'::text
+            WHEN 1 THEN 'disabling'::text
+            WHEN 2 THEN 'waiting'::text
+            WHEN 3 THEN 'waiting on backends'::text
+            WHEN 4 THEN 'waiting on temporary tables'::text
+            WHEN 5 THEN 'done'::text
+            ELSE NULL::text
+        END AS phase,
+        CASE s.param2
+            WHEN '-1'::integer THEN NULL::bigint
+            ELSE s.param2
+        END AS databases_total,
+        CASE s.param3
+            WHEN '-1'::integer THEN NULL::bigint
+            ELSE s.param3
+        END AS relations_total,
+    s.param4 AS databases_processed,
+    s.param5 AS relations_processed,
+    s.param6 AS databases_current,
+    s.param7 AS relation_current,
+    s.param8 AS relation_current_blocks,
+    s.param9 AS relation_current_blocks_processed
+   FROM (pg_stat_get_progress_info('DATACHECKSUMS'::text) s(pid, datid, relid, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13, param14, param15, param16, param17, param18, param19, param20)
+     LEFT JOIN pg_database d ON ((s.datid = d.oid)));
 pg_stat_progress_vacuum| SELECT s.pid,
     s.datid,
     d.datname,

@@ -450,7 +450,7 @@ ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrateg
 		if (abort_requested)
 			return false;
 
-		vacuum_delay_point();
+		vacuum_delay_point(false);
 	}
 
 	pfree(relns);
@@ -753,7 +753,8 @@ DataChecksumsWorkerLauncherMain(Datum arg)
 	BackgroundWorkerInitializeConnectionByOid(InvalidOid, InvalidOid, 0);
 
 	/* Initialize backend status information */
-	pgstat_bestart();
+	// FIXME is this needed? do we need to call the _final part somewhere?
+	// pgstat_bestart_initial();
 
 	enabling_checksums = DataChecksumsWorkerShmem->launch_enable_checksums;
 	DataChecksumsWorkerShmem->launcher_running = true;

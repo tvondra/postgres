@@ -365,6 +365,9 @@ typedef enum BackendType
 	B_WAL_SUMMARIZER,
 	B_WAL_WRITER,
 
+	B_DATACHECKSUMSWORKER_LAUNCHER,
+	B_DATACHECKSUMSWORKER_WORKER,
+
 	/*
 	 * Logger is not connected to shared memory and does not have a PGPROC
 	 * entry.
@@ -389,6 +392,9 @@ extern PGDLLIMPORT BackendType MyBackendType;
 #define AmWalReceiverProcess()		(MyBackendType == B_WAL_RECEIVER)
 #define AmWalSummarizerProcess()	(MyBackendType == B_WAL_SUMMARIZER)
 #define AmWalWriterProcess()		(MyBackendType == B_WAL_WRITER)
+#define AmDataChecksumsWorkerProcess() \
+	(MyBackendType == B_DATACHECKSUMSWORKER_LAUNCHER || \
+	 MyBackendType == B_DATACHECKSUMSWORKER_WORKER)
 
 #define AmSpecialWorkerProcess() \
 	(AmAutoVacuumLauncherProcess() || \
@@ -533,6 +539,10 @@ extern PGDLLIMPORT shmem_request_hook_type shmem_request_hook;
 extern Size EstimateClientConnectionInfoSpace(void);
 extern void SerializeClientConnectionInfo(Size maxsize, char *start_address);
 extern void RestoreClientConnectionInfo(char *conninfo);
+
+extern uint32 GetLocalDataChecksumVersion(void);
+extern uint32 GetCurrentDataChecksumVersion(void);
+extern void InitLocalDataChecksumVersion(void);
 
 /* in executor/nodeHash.c */
 extern size_t get_hash_memory_limit(void);

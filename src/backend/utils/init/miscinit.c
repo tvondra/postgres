@@ -293,6 +293,12 @@ GetBackendTypeDesc(BackendType backendType)
 		case B_CHECKPOINTER:
 			backendDesc = gettext_noop("checkpointer");
 			break;
+		case B_DATACHECKSUMSWORKER_LAUNCHER:
+			backendDesc = "datachecksumsworker launcher";
+			break;
+		case B_DATACHECKSUMSWORKER_WORKER:
+			backendDesc = "datachecksumsworker worker";
+			break;
 		case B_LOGGER:
 			backendDesc = gettext_noop("logger");
 			break;
@@ -892,7 +898,8 @@ InitializeSessionUserIdStandalone(void)
 	 * workers, in slot sync worker and in background workers.
 	 */
 	Assert(!IsUnderPostmaster || AmAutoVacuumWorkerProcess() ||
-		   AmLogicalSlotSyncWorkerProcess() || AmBackgroundWorkerProcess());
+		   AmLogicalSlotSyncWorkerProcess() || AmBackgroundWorkerProcess() ||
+		   AmDataChecksumsWorkerProcess());
 
 	/* call only once */
 	Assert(!OidIsValid(AuthenticatedUserId));

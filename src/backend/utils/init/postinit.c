@@ -753,6 +753,11 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	SharedInvalBackendInit(false);
 
+	/*
+	 * Set up backend local cache of Controldata values.
+	 */
+	InitLocalControldata();
+
 	ProcSignalInit(MyCancelKeyValid, MyCancelKey);
 
 	/*
@@ -883,7 +888,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 					 errhint("You should immediately run CREATE USER \"%s\" SUPERUSER;.",
 							 username != NULL ? username : "postgres")));
 	}
-	else if (AmBackgroundWorkerProcess())
+	else if (AmBackgroundWorkerProcess() || AmDataChecksumsWorkerProcess())
 	{
 		if (username == NULL && !OidIsValid(useroid))
 		{

@@ -205,6 +205,9 @@ static child_process_kind child_process_kinds[] = {
 	[B_WAL_SUMMARIZER] = {"wal_summarizer", WalSummarizerMain, true},
 	[B_WAL_WRITER] = {"wal_writer", WalWriterMain, true},
 
+	[B_DATACHECKSUMSWORKER_LAUNCHER] = {"datachecksum launcher", NULL, false},
+	[B_DATACHECKSUMSWORKER_WORKER] = {"datachecksum worker", NULL, false},
+
 	[B_LOGGER] = {"syslogger", SysLoggerMain, false},
 };
 
@@ -284,6 +287,16 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 			MyClientSocket = palloc(sizeof(ClientSocket));
 			memcpy(MyClientSocket, client_sock, sizeof(ClientSocket));
 		}
+
+		/*
+		 * update the LocalProcessControlFile to match XLogCtl->data_checksum_version
+		 *
+		 * XXX It seems the postmaster (which is what gets forked into the new
+		 * child process) does not absorb the checksum barriers, therefore it
+		 * does not update the value (except after a restart). Not sure if there
+		 * is some sort of race condition.
+		 */
+		InitLocalDataChecksumVersion();
 
 		/*
 		 * Run the appropriate Main function

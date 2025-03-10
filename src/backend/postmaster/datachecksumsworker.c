@@ -802,15 +802,6 @@ again:
 		RESUME_INTERRUPTS();
 
 		/*
-		 * Initialize progress and indicate that we are waiting on the other
-		 * backends to clear the procsignalbarrier.
-		 */
-		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
-									 PROGRESS_DATACHECKSUMS_PHASE_WAITING_BACKENDS);
-
-		/* XXX isn't it weird there's no wait between the phase updates? */
-
-		/*
 		 * Set the state to inprogress-on and wait on the procsignal barrier.
 		 */
 		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
@@ -1083,7 +1074,7 @@ ProcessAllDatabases(bool immediate_checkpoint)
 
 	/*
 	 * When enabling checksums, we have to wait for a checkpoint for the
-	 * checksums to e.
+	 * checksums to change from in-progress to on.
 	 */
 	pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
 								 PROGRESS_DATACHECKSUMS_PHASE_WAITING_CHECKPOINT);

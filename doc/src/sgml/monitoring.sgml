@@ -6876,7 +6876,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <para>
         The total number of databases which will be processed. Only the
         launcher worker has this value set, the other worker processes
-        have this <literal>NULL</literal>.
+        have this set to <literal>NULL</literal>.
        </para>
       </entry>
      </row>
@@ -6889,7 +6889,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <para>
         The number of databases which have been processed. Only the
         launcher worker has this value set, the other worker processes
-        have this <literal>NULL</literal>.
+        have this set to <literal>NULL</literal>.
        </para>
       </entry>
      </row>
@@ -6975,13 +6975,6 @@ FROM pg_stat_get_backend_idset() AS backendid;
       </entry>
      </row>
      <row>
-      <entry><literal>waiting on backends</literal></entry>
-      <entry>
-       The command is currently waiting for backends to acknowledge the data
-       checksum operation.
-      </entry>
-     </row>
-     <row>
       <entry><literal>waiting on temporary tables</literal></entry>
       <entry>
        The command is currently waiting for all temporary tables which existed
@@ -6992,7 +6985,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
       <entry><literal>waiting on checkpoint</literal></entry>
       <entry>
        The command is currently waiting for a checkpoint to update the checksum
-       state at the end.
+       state before finishing.
       </entry>
      </row>
     </tbody>

@@ -2048,10 +2048,9 @@ pg_stat_progress_data_checksums| SELECT s.pid,
             WHEN 0 THEN 'enabling'::text
             WHEN 1 THEN 'disabling'::text
             WHEN 2 THEN 'waiting'::text
-            WHEN 3 THEN 'waiting on backends'::text
-            WHEN 4 THEN 'waiting on temporary tables'::text
-            WHEN 5 THEN 'waiting on checkpoint'::text
-            WHEN 6 THEN 'done'::text
+            WHEN 3 THEN 'waiting on temporary tables'::text
+            WHEN 4 THEN 'waiting on checkpoint'::text
+            WHEN 5 THEN 'done'::text
             ELSE NULL::text
         END AS phase,
         CASE s.param2

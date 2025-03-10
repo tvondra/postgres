@@ -3761,7 +3761,8 @@ sub checksum_enable_offline
 	my ($self) = @_;
 
 	print "### Enabling checksums in \"$self->data_dir\"\n";
-	PostgreSQL::Test::Utils::system_or_bail('pg_checksums', '-D', $self->data_dir, '-e');
+	PostgreSQL::Test::Utils::system_or_bail('pg_checksums', '-D',
+		$self->data_dir, '-e');
 	return;
 }
 
@@ -3778,7 +3779,8 @@ sub checksum_disable_offline
 	my ($self) = @_;
 
 	print "### Disabling checksums in \"$self->data_dir\"\n";
-	PostgreSQL::Test::Utils::system_or_bail('pg_checksums', '-D', $self->data_dir, '-d');
+	PostgreSQL::Test::Utils::system_or_bail('pg_checksums', '-D',
+		$self->data_dir, '-d');
 	return;
 }
 

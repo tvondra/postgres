@@ -921,7 +921,7 @@ ProcessAllDatabases(bool immediate_checkpoint)
 			PROGRESS_DATACHECKSUMS_BLOCKS_DONE,
 		};
 
-		int64	vals[6];
+		int64		vals[6];
 
 		vals[0] = list_length(DatabaseList);
 		vals[1] = 0;
@@ -974,7 +974,8 @@ ProcessAllDatabases(bool immediate_checkpoint)
 			processed_databases++;
 
 			/*
-			 * Update the number of processed databases in the progress report.
+			 * Update the number of processed databases in the progress
+			 * report.
 			 */
 			pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_DBS_DONE,
 										 processed_databases);
@@ -1126,9 +1127,9 @@ DataChecksumsWorkerShmemInit(void)
 		MemSet(DataChecksumsWorkerShmem, 0, DataChecksumsWorkerShmemSize());
 
 		/*
-		 * Even if this is a redundant assignment, we want to be explicit about
-		 * our intent for readability, since we want to be able to query this
-		 * state in case of restartability.
+		 * Even if this is a redundant assignment, we want to be explicit
+		 * about our intent for readability, since we want to be able to query
+		 * this state in case of restartability.
 		 */
 		DataChecksumsWorkerShmem->launch_enable_checksums = false;
 		DataChecksumsWorkerShmem->launcher_running = false;
@@ -1339,7 +1340,7 @@ DataChecksumsWorkerMain(Datum arg)
 			PROGRESS_DATACHECKSUMS_RELS_DONE
 		};
 
-		int64	vals[2];
+		int64		vals[2];
 
 		vals[0] = list_length(RelationList);
 		vals[1] = 0;

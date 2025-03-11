@@ -4927,6 +4927,7 @@ SetDataChecksumsOff(void)
 bool
 AbsorbChecksumsOnInProgressBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOnInProgressBarrier");
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 	return true;
 }
@@ -4934,6 +4935,7 @@ AbsorbChecksumsOnInProgressBarrier(void)
 bool
 AbsorbChecksumsOnBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOnBarrier");
 	Assert(LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_VERSION);
 	return true;
@@ -4942,6 +4944,7 @@ AbsorbChecksumsOnBarrier(void)
 bool
 AbsorbChecksumsOffInProgressBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOffInProgressBarrier");
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 	return true;
 }
@@ -4949,6 +4952,7 @@ AbsorbChecksumsOffInProgressBarrier(void)
 bool
 AbsorbChecksumsOffBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOffBarrier");
 	SetLocalDataChecksumVersion(0);
 	return true;
 }
@@ -4978,6 +4982,7 @@ InitLocalControldata(void)
 void
 SetLocalDataChecksumVersion(uint32 data_checksum_version)
 {
+	elog(LOG, "SetLocalDataChecksumVersion %u", data_checksum_version);
 	LocalDataChecksumVersion = data_checksum_version;
 
 	switch (LocalDataChecksumVersion)
@@ -8126,8 +8131,8 @@ CreateRestartPoint(int flags)
 	lastCheckPoint = XLogCtl->lastCheckPoint;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	elog(LOG, "CreateRestartPoint lastCheckPointRecPtr %X/%X lastCheckPointEndPtr %X/%X",
-		 LSN_FORMAT_ARGS(lastCheckPointRecPtr), LSN_FORMAT_ARGS(lastCheckPointEndPtr));
+	//elog(LOG, "CreateRestartPoint lastCheckPointRecPtr %X/%X lastCheckPointEndPtr %X/%X",
+	//	 LSN_FORMAT_ARGS(lastCheckPointRecPtr), LSN_FORMAT_ARGS(lastCheckPointEndPtr));
 
 	/*
 	 * Check that we're still in recovery mode. It's ok if we exit recovery
@@ -9158,22 +9163,26 @@ xlog_redo(XLogReaderState *record)
 		switch (state.new_checksumtype)
 		{
 			case PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			case PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			case PG_DATA_CHECKSUM_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_ON");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			default:
 				Assert(state.new_checksumtype == 0);
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_OFF");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
 				WaitForProcSignalBarrier(barrier);
 				break;

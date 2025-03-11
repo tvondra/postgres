@@ -62,6 +62,9 @@ typedef struct CheckPoint
 	 * set to InvalidTransactionId.
 	 */
 	TransactionId oldestActiveXid;
+
+	/* data checksums at the time of the checkpoint  */
+	uint32		data_checksum_version;
 } CheckPoint;
 
 /* XLOG info values for XLOG rmgr */
@@ -220,7 +223,7 @@ typedef struct ControlFileData
 	bool		float8ByVal;	/* float8, int8, etc pass-by-value? */
 
 	/* Are data pages protected by checksums? Zero if no checksum version */
-	uint32		data_checksum_version;
+	uint32		data_checksum_version;		/* persistent */
 
 	/*
 	 * True if the default signedness of char is "signed" on a platform where

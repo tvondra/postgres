@@ -4271,6 +4271,8 @@ InitControlFile(uint64 sysidentifier, uint32 data_checksum_version)
 	 * processes get the current value from. (Maybe it should go just there?)
 	 */
 	XLogCtl->data_checksum_version = data_checksum_version;
+
+	elog(LOG, "InitControlFile %p data_checksum_version %u", XLogCtl, ControlFile->data_checksum_version);
 }
 
 static void
@@ -4928,6 +4930,7 @@ SetDataChecksumsOff(void)
 bool
 AbsorbChecksumsOnInProgressBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOnInProgressBarrier");
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 	return true;
 }
@@ -4935,6 +4938,7 @@ AbsorbChecksumsOnInProgressBarrier(void)
 bool
 AbsorbChecksumsOnBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOnBarrier");
 	Assert(LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_VERSION);
 	return true;
@@ -4943,6 +4947,7 @@ AbsorbChecksumsOnBarrier(void)
 bool
 AbsorbChecksumsOffInProgressBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOffInProgressBarrier");
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 	return true;
 }
@@ -4950,6 +4955,7 @@ AbsorbChecksumsOffInProgressBarrier(void)
 bool
 AbsorbChecksumsOffBarrier(void)
 {
+	elog(LOG, "AbsorbChecksumsOffBarrier");
 	SetLocalDataChecksumVersion(0);
 	return true;
 }
@@ -4979,6 +4985,7 @@ InitLocalControldata(void)
 void
 SetLocalDataChecksumVersion(uint32 data_checksum_version)
 {
+	elog(LOG, "SetLocalDataChecksumVersion %u", data_checksum_version);
 	LocalDataChecksumVersion = data_checksum_version;
 
 	switch (LocalDataChecksumVersion)
@@ -5487,6 +5494,9 @@ XLOGShmemInit(void)
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	XLogCtl->WalWriterSleeping = false;
+
+	elog(LOG, "XLogCtl->data_checksum_version %u ControlFile->data_checksum_version %u",
+		 XLogCtl->data_checksum_version, ControlFile->data_checksum_version);
 
 	/* use the checksum info from control file */
 	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
@@ -7512,6 +7522,8 @@ CreateCheckPoint(int flags)
 	 */
 	checkPoint.data_checksum_version = XLogCtl->data_checksum_version;
 
+	elog(WARNING, "CREATECHECKPOINT XLogCtl->data_checksum_version %u", XLogCtl->data_checksum_version);
+
 	if (shutdown)
 	{
 		XLogRecPtr	curInsert = XLogBytePosToRecPtr(Insert->CurrBytePos);
@@ -7767,6 +7779,10 @@ CreateCheckPoint(int flags)
 	ControlFile->minRecoveryPoint = InvalidXLogRecPtr;
 	ControlFile->minRecoveryPointTLI = 0;
 
+	elog(LOG, "CreateCheckPoint data_checksum_version %u %u",
+		 ControlFile->data_checksum_version,
+		 checkPoint.data_checksum_version);
+
 	/* make sure we start with the checksum version as of the checkpoint */
 	ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 
@@ -7916,6 +7932,10 @@ CreateEndOfRecoveryRecord(void)
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	ControlFile->minRecoveryPoint = recptr;
 	ControlFile->minRecoveryPointTLI = xlrec.ThisTimeLineID;
+
+	elog(LOG, "CreateEndOfRecoveryRecord data_checksum_version %u xlog %u",
+		 ControlFile->data_checksum_version,
+		 XLogCtl->data_checksum_version);
 
 	/* start with the latest checksum version (as of the end of recovery) */
 	ControlFile->data_checksum_version = XLogCtl->data_checksum_version;
@@ -8127,6 +8147,9 @@ CreateRestartPoint(int flags)
 	lastCheckPoint = XLogCtl->lastCheckPoint;
 	SpinLockRelease(&XLogCtl->info_lck);
 
+	elog(LOG, "CreateRestartPoint lastCheckPointRecPtr %X/%X lastCheckPointEndPtr %X/%X",
+		 LSN_FORMAT_ARGS(lastCheckPointRecPtr), LSN_FORMAT_ARGS(lastCheckPointEndPtr));
+
 	/*
 	 * Check that we're still in recovery mode. It's ok if we exit recovery
 	 * mode after this check, the restart point is valid anyway.
@@ -8262,6 +8285,10 @@ CreateRestartPoint(int flags)
 			if (flags & CHECKPOINT_IS_SHUTDOWN)
 				ControlFile->state = DB_SHUTDOWNED_IN_RECOVERY;
 		}
+
+		elog(LOG, "CreateRestartPoint data_checksum_version %u %u",
+			 ControlFile->data_checksum_version,
+			 lastCheckPoint.data_checksum_version);
 
 		/* we shall start with the latest checksum version */
 		ControlFile->data_checksum_version = lastCheckPoint.data_checksum_version;
@@ -9125,12 +9152,24 @@ xlog_redo(XLogReaderState *record)
 	{
 		xl_checksum_state state;
 		uint64		barrier;
+		XLogRecPtr	checkpointLsn;
+		uint32		value,
+					value_last;
 
 		memcpy(&state, XLogRecGetData(record), sizeof(xl_checksum_state));
 
 		SpinLockAcquire(&XLogCtl->info_lck);
+		value_last = XLogCtl->data_checksum_version;
 		XLogCtl->data_checksum_version = state.new_checksumtype;
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		checkpointLsn = ControlFile->checkPoint;
+		value = ControlFile->data_checksum_version;
+		LWLockRelease(ControlFileLock);
+
+		elog(LOG, "XLOG_CHECKSUMS xlog_redo %X/%X control checkpoint %X/%X control %u last %u record %u",
+			 LSN_FORMAT_ARGS(lsn), LSN_FORMAT_ARGS(checkpointLsn), value, value_last, state.new_checksumtype);
 
 		/*
 		 * Block on a procsignalbarrier to await all processes having seen the
@@ -9140,22 +9179,26 @@ xlog_redo(XLogReaderState *record)
 		switch (state.new_checksumtype)
 		{
 			case PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			case PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			case PG_DATA_CHECKSUM_VERSION:
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_ON");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
 				WaitForProcSignalBarrier(barrier);
 				break;
 
 			default:
 				Assert(state.new_checksumtype == 0);
+				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_OFF");
 				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
 				WaitForProcSignalBarrier(barrier);
 				break;

@@ -746,12 +746,12 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	SharedInvalBackendInit(false);
 
+	ProcSignalInit(MyCancelKeyValid, MyCancelKey);
+
 	/*
 	 * Set up backend local cache of Controldata values.
 	 */
 	InitLocalControldata();
-
-	ProcSignalInit(MyCancelKeyValid, MyCancelKey);
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need

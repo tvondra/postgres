@@ -661,6 +661,16 @@ static bool updateMinRecoveryPoint = true;
 static uint32 LocalDataChecksumVersion = 0;
 
 /*
+ * Flag to remember if the procsignalbarrier being absorbed for enabling
+ * checksums is the first one or not. The first procsignalbarrier can in rare
+ * circumstances cause a transition from 'on' to 'on' when a new process is
+ * spawned between the update of XLogCtl->data_checksum_version and the
+ * barrier being emitted.  This can only happen on the very first barrier so
+ * mark that with this flag.
+ */
+static bool InitialDataChecksumTransition = true;
+
+/*
  * Variable backing the GUC, keep it in sync with LocalDataChecksumVersion.
  * See SetLocalDataChecksumVersion().
  */
@@ -4935,7 +4945,20 @@ AbsorbChecksumsOnInProgressBarrier(void)
 bool
 AbsorbChecksumsOnBarrier(void)
 {
-	Assert(LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+	/*
+	 * If the process was spawned between updating XLogCtl and emitting the
+	 * barrier it will have seen the updated value, so for the first barrier
+	 * we accept both "on" and "inprogress-on".
+	 */
+	if (InitialDataChecksumTransition)
+	{
+		Assert((LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION) ||
+			   (LocalDataChecksumVersion == PG_DATA_CHECKSUM_VERSION));
+		InitialDataChecksumTransition = false;
+	}
+	else
+		Assert(LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_VERSION);
 	return true;
 }
@@ -5319,6 +5342,7 @@ LocalProcessControlFile(bool reset)
 	Assert(reset || ControlFile == NULL);
 	ControlFile = palloc(sizeof(ControlFileData));
 	ReadControlFile();
+	SetLocalDataChecksumVersion(ControlFile->data_checksum_version);
 }
 
 /*

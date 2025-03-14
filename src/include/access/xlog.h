@@ -243,7 +243,7 @@ extern bool AbsorbChecksumsOffInProgressBarrier(void);
 extern bool AbsorbChecksumsOnBarrier(void);
 extern bool AbsorbChecksumsOffBarrier(void);
 extern const char *show_data_checksums(void);
-extern void InitLocalControldata(void);
+extern void InitLocalDataChecksumVersion(void);
 extern bool GetDefaultCharSignedness(void);
 extern XLogRecPtr GetFakeLSNForUnloggedRel(void);
 extern Size XLOGShmemSize(void);

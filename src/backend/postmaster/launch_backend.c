@@ -286,16 +286,6 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 		}
 
 		/*
-		 * update the LocalProcessControlFile to match XLogCtl->data_checksum_version
-		 *
-		 * XXX It seems the postmaster (which is what gets forked into the new
-		 * child process) does not absorb the checksum barriers, therefore it
-		 * does not update the value (except after a restart). Not sure if there
-		 * is some sort of race condition.
-		 */
-		InitLocalDataChecksumVersion();
-
-		/*
 		 * Run the appropriate Main function
 		 */
 		child_process_kinds[child_type].main_fn(startup_data, startup_data_len);

@@ -542,7 +542,6 @@ extern void RestoreClientConnectionInfo(char *conninfo);
 
 extern uint32 GetLocalDataChecksumVersion(void);
 extern uint32 GetCurrentDataChecksumVersion(void);
-extern void InitLocalDataChecksumVersion(void);
 
 /* in executor/nodeHash.c */
 extern size_t get_hash_memory_limit(void);

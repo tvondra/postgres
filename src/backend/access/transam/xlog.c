@@ -661,12 +661,15 @@ static bool updateMinRecoveryPoint = true;
 static uint32 LocalDataChecksumVersion = 0;
 
 /*
- * Flag to remember if the procsignalbarrier being absorbed for enabling
- * checksums is the first one or not. The first procsignalbarrier can in rare
- * circumstances cause a transition from 'on' to 'on' when a new process is
+ * Flag to remember if the procsignalbarrier being absorbed for checksums
+ * is the first one. The first procsignalbarrier can in rare cases be for
+ * the state we've initialized, i.e. a duplicate. This may happen for any
+ * data_checksum_version value, but for PG_DATA_CHECKSUM_ON_VERSION this
+ * would trigger an assert failure (this is the only transition with an
+ * assert) when processing the barrier. This may happen if the process is
  * spawned between the update of XLogCtl->data_checksum_version and the
- * barrier being emitted.  This can only happen on the very first barrier so
- * mark that with this flag.
+ * barrier being emitted. This can only happen on the very first barrier
+ * so mark that with this flag.
  */
 static bool InitialDataChecksumTransition = true;
 
@@ -4938,6 +4941,7 @@ SetDataChecksumsOff(void)
 bool
 AbsorbChecksumsOnInProgressBarrier(void)
 {
+	/* XXX can't we check we're in OFF or INPROGRESSS_ON? */
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 	return true;
 }
@@ -4950,22 +4954,19 @@ AbsorbChecksumsOnBarrier(void)
 	 * barrier it will have seen the updated value, so for the first barrier
 	 * we accept both "on" and "inprogress-on".
 	 */
-	if (InitialDataChecksumTransition)
-	{
-		Assert((LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION) ||
-			   (LocalDataChecksumVersion == PG_DATA_CHECKSUM_VERSION));
-		InitialDataChecksumTransition = false;
-	}
-	else
-		Assert(LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+	Assert((LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION) ||
+		   (InitialDataChecksumTransition &&
+			(LocalDataChecksumVersion == PG_DATA_CHECKSUM_VERSION)));
 
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_VERSION);
+	InitialDataChecksumTransition = false;
 	return true;
 }
 
 bool
 AbsorbChecksumsOffInProgressBarrier(void)
 {
+	/* XXX can't we check we're in ON or INPROGRESSS_OFF? */
 	SetLocalDataChecksumVersion(PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 	return true;
 }
@@ -4973,6 +4974,7 @@ AbsorbChecksumsOffInProgressBarrier(void)
 bool
 AbsorbChecksumsOffBarrier(void)
 {
+	/* XXX can't we check we're in INPROGRESSS_OFF? */
 	SetLocalDataChecksumVersion(0);
 	return true;
 }
@@ -4986,7 +4988,7 @@ AbsorbChecksumsOffBarrier(void)
  * purpose enough to handle future cases.
  */
 void
-InitLocalControldata(void)
+InitLocalDataChecksumVersion(void)
 {
 	SpinLockAcquire(&XLogCtl->info_lck);
 	SetLocalDataChecksumVersion(XLogCtl->data_checksum_version);
@@ -5022,21 +5024,6 @@ SetLocalDataChecksumVersion(uint32 data_checksum_version)
 			data_checksums = DATA_CHECKSUMS_OFF;
 			break;
 	}
-}
-
-/*
- * Initialize the various data checksum values - GUC, local, ....
- */
-void
-InitLocalDataChecksumVersion(void)
-{
-	uint32	data_checksum_version;
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	data_checksum_version = XLogCtl->data_checksum_version;
-	SpinLockRelease(&XLogCtl->info_lck);
-
-	SetLocalDataChecksumVersion(data_checksum_version);
 }
 
 /*

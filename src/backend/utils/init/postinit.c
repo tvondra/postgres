@@ -749,9 +749,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	ProcSignalInit(MyCancelKeyValid, MyCancelKey);
 
 	/*
-	 * Set up backend local cache of Controldata values.
+	 * Initialize a local cache of the data_checksum_version, to be updated
+	 * by the procsignal-based barriers.
+	 *
+	 * This intentionally happens after initializing the procsignal, otherwise
+	 * we might miss a state change. This means we can get a barrier for the
+	 * state we've just initialized - but it can happen only once.
 	 */
-	InitLocalControldata();
+	InitLocalDataChecksumVersion();
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need

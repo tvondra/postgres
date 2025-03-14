@@ -286,12 +286,21 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 		}
 
 		/*
-		 * update the LocalProcessControlFile to match XLogCtl->data_checksum_version
+		 * Initialize LocalDataChecksumVersion to XLogCtl->data_checksum_version
 		 *
-		 * XXX It seems the postmaster (which is what gets forked into the new
-		 * child process) does not absorb the checksum barriers, therefore it
-		 * does not update the value (except after a restart). Not sure if there
-		 * is some sort of race condition.
+		 * The postmaster (which is what gets forked into the new child process)
+		 * does not handle barriers, therefore it may not have the current value
+		 * of LocalDataChecksumVersion value (it'll have the value read from the
+		 * control file, which may be arbitrarily old).
+		 *
+		 * NB: Even if the postmaster handled barriers, the value might still be
+		 * stale, as it might have changed after this process forked.
+		 *
+		 * XXX Maybe this is the wrong place to do this - it's pointless to init
+		 * the value before ProcSignalInit(), because we might miss a barrier.
+		 * For backends we do that ini InitPostgres(), for other processes maybe
+		 * we should do that in AuxiliaryProcessMainCommon()? That'd probably
+		 * also handle EXEC_BACKEND out of the box.
 		 */
 		InitLocalDataChecksumVersion();
 

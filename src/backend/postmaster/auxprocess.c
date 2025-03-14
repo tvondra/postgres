@@ -68,6 +68,8 @@ AuxiliaryProcessMainCommon(void)
 
 	ProcSignalInit(false, 0);
 
+	/* XXX maybe this would be a better place to init data checksum? */
+
 	/*
 	 * Auxiliary processes don't run transactions, but they may need a
 	 * resource owner anyway to manage buffer pins acquired outside

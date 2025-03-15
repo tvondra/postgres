@@ -242,6 +242,9 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 	if (IsExternalConnectionBackend(child_type))
 		((BackendStartupData *) startup_data)->fork_started = GetCurrentTimestamp();
 
+	elog(LOG, "postmaster_child_launch: LocalDataChecksumVersion %u xlog %u", GetLocalDataChecksumVersion(),
+	GetCurrentDataChecksumVersion());
+
 #ifdef EXEC_BACKEND
 	pid = internal_forkexec(child_process_kinds[child_type].name, child_slot,
 							startup_data, startup_data_len, client_sock);

@@ -553,6 +553,40 @@ ProcessProcSignalBarrier(void)
 
 		PG_TRY();
 		{
+			/* print info about barriers */
+			{
+				uint32	tmp = flags;
+
+				elog(LOG, "ProcessProcSignalBarrier flags %u", tmp);
+
+				while (tmp != 0)
+				{
+					ProcSignalBarrierType type;
+
+					type = (ProcSignalBarrierType) pg_rightmost_one_pos32(tmp);
+					switch (type)
+					{
+						case PROCSIGNAL_BARRIER_SMGRRELEASE:
+							elog(LOG, "PROCSIGNAL_BARRIER_SMGRRELEASE");
+							break;
+						case PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON:
+							elog(LOG, "PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
+							break;
+						case PROCSIGNAL_BARRIER_CHECKSUM_ON:
+							elog(LOG, "PROCSIGNAL_BARRIER_CHECKSUM_ON");
+							break;
+						case PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF:
+							elog(LOG, "PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
+							break;
+						case PROCSIGNAL_BARRIER_CHECKSUM_OFF:
+							elog(LOG, "PROCSIGNAL_BARRIER_CHECKSUM_OFF");
+							break;
+					}
+
+					BARRIER_CLEAR_BIT(tmp, type);
+				}
+			}
+
 			/*
 			 * Process each type of barrier. The barrier-processing functions
 			 * should normally return true, but may return false if the

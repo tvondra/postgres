@@ -22,6 +22,7 @@
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
+#include <execinfo.h>
 
 /* GUC variable */
 bool		ignore_checksum_failure = false;
@@ -136,10 +137,44 @@ PageIsVerifiedExtended(PageData *page, BlockNumber blkno, int flags)
 	if (checksum_failure)
 	{
 		if ((flags & PIV_LOG_WARNING) != 0)
+		{
+			XLogRecPtr	lsn = PageGetLSN(page);
+
 			ereport(WARNING,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("page verification failed, calculated checksum %u but expected %u",
 							checksum, p->pd_checksum)));
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("page verification failed, LSN %X/%X", LSN_FORMAT_ARGS(lsn))));
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("page verification failed, header flags %u lower %u upper %u special %u pagesize_version %u prune_xid %u",
+							p->pd_flags,
+							p->pd_lower,
+							p->pd_upper,
+							p->pd_special,
+							p->pd_pagesize_version,
+							p->pd_prune_xid)));
+
+			{
+#define BT_BUF_SIZE 32
+				int nptrs;
+				void *buffer[BT_BUF_SIZE];
+				char **strings;
+
+				nptrs = backtrace(buffer, BT_BUF_SIZE);
+				strings = backtrace_symbols(buffer, nptrs);
+
+				if (strings != NULL)
+				{
+					for (int i = 0; i < nptrs; i++)
+					{
+						elog(WARNING, "backtrace %d : %s", i, strings[i]);
+					}
+				}
+			}
+		}
 
 		if ((flags & PIV_REPORT_STAT) != 0)
 			pgstat_report_checksum_failure();

@@ -164,6 +164,9 @@ InitPostmasterChild(void)
 				(errcode_for_socket_access(),
 				 errmsg_internal("could not set postmaster death monitoring pipe to FD_CLOEXEC mode: %m")));
 #endif
+
+	elog(LOG, "InitPostmasterChild: LocalDataChecksumVersion %u xlog %u", GetLocalDataChecksumVersion(),
+	GetCurrentDataChecksumVersion());
 }
 
 /*

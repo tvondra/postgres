@@ -68,80 +68,177 @@ PG_FUNCTION_INFO_V1(pg_buffercache_summary);
 PG_FUNCTION_INFO_V1(pg_buffercache_usage_counts);
 PG_FUNCTION_INFO_V1(pg_buffercache_evict);
 
+/*
+ * Helper routine for pg_buffercache_pages() and pg_buffercache_numa_pages().
+ */
+static BufferCachePagesContext *
+pg_buffercache_init_entries(FuncCallContext *funcctx, FunctionCallInfo fcinfo)
+{
+	BufferCachePagesContext *fctx;	/* User function context. */
+	MemoryContext oldcontext;
+	TupleDesc	tupledesc;
+	TupleDesc	expected_tupledesc;
+
+	/* Switch context when allocating stuff to be used in later calls */
+	oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+	/* Create a user function context for cross-call persistence */
+	fctx = (BufferCachePagesContext *) palloc(sizeof(BufferCachePagesContext));
+
+	/*
+	 * To smoothly support upgrades from version 1.0 of this extension
+	 * transparently handle the (non-)existence of the pinning_backends
+	 * column. ee unfortunately have to get the result type for that... - we
+	 * can't use the result type determined by the function definition without
+	 * potentially crashing when somebody uses the old (or even wrong)
+	 * function definition though.
+	 */
+	if (get_call_result_type(fcinfo, NULL, &expected_tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	if (expected_tupledesc->natts < NUM_BUFFERCACHE_PAGES_MIN_ELEM ||
+		expected_tupledesc->natts > NUM_BUFFERCACHE_PAGES_ELEM)
+		elog(ERROR, "incorrect number of output arguments");
+
+	/* Construct a tuple descriptor for the result rows. */
+	tupledesc = CreateTemplateTupleDesc(expected_tupledesc->natts);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 1, "bufferid",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 2, "relfilenode",
+					   OIDOID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 3, "reltablespace",
+					   OIDOID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 4, "reldatabase",
+					   OIDOID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 5, "relforknumber",
+					   INT2OID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 6, "relblocknumber",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 7, "isdirty",
+					   BOOLOID, -1, 0);
+	TupleDescInitEntry(tupledesc, (AttrNumber) 8, "usage_count",
+					   INT2OID, -1, 0);
+
+	if (expected_tupledesc->natts >= NUM_BUFFERCACHE_PAGES_ELEM - 1)
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "pinning_backends",
+						   INT4OID, -1, 0);
+
+	fctx->tupdesc = BlessTupleDesc(tupledesc);
+
+	/* Allocate NBuffers worth of BufferCachePagesRec records. */
+	fctx->record = (BufferCachePagesRec *)
+		MemoryContextAllocHuge(CurrentMemoryContext,
+							   sizeof(BufferCachePagesRec) * NBuffers);
+
+	/* Set max calls and remember the user function context. */
+	funcctx->max_calls = NBuffers;
+	funcctx->user_fctx = fctx;
+
+	/* Return to original context when allocating transient memory */
+	MemoryContextSwitchTo(oldcontext);
+	return fctx;
+}
+
+/*
+ * Helper routine for pg_buffercache_pages() and pg_buffercache_numa_pages().
+ *
+ * Save buffer cache information for a single buffer.
+ */
+static void
+pg_buffercache_save_tuple(int record_id, BufferCachePagesContext *fctx)
+{
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+	BufferCachePagesRec *bufRecord = &(fctx->record[record_id]);
+
+	bufHdr = GetBufferDescriptor(record_id);
+	/* Lock each buffer header before inspecting. */
+	buf_state = LockBufHdr(bufHdr);
+
+	bufRecord->bufferid = BufferDescriptorGetBuffer(bufHdr);
+	bufRecord->relfilenumber = BufTagGetRelNumber(&bufHdr->tag);
+	bufRecord->reltablespace = bufHdr->tag.spcOid;
+	bufRecord->reldatabase = bufHdr->tag.dbOid;
+	bufRecord->forknum = BufTagGetForkNum(&bufHdr->tag);
+	bufRecord->blocknum = bufHdr->tag.blockNum;
+	bufRecord->usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);
+	bufRecord->pinning_backends = BUF_STATE_GET_REFCOUNT(buf_state);
+
+	if (buf_state & BM_DIRTY)
+		bufRecord->isdirty = true;
+	else
+		bufRecord->isdirty = false;
+
+	/* Note if the buffer is valid, and has storage created */
+	if ((buf_state & BM_VALID) && (buf_state & BM_TAG_VALID))
+		bufRecord->isvalid = true;
+	else
+		bufRecord->isvalid = false;
+
+	UnlockBufHdr(bufHdr, buf_state);
+}
+
+/*
+ * Helper routine for pg_buffercache_pages() and pg_buffercache_numa_pages().
+ *
+ * Format and return a tuple for a single buffer cache entry.
+ */
+static Datum
+get_buffercache_tuple(int record_id, BufferCachePagesContext *fctx)
+{
+	Datum		values[NUM_BUFFERCACHE_PAGES_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_PAGES_ELEM];
+	HeapTuple	tuple;
+	BufferCachePagesRec *bufRecord = &(fctx->record[record_id]);
+
+	values[0] = Int32GetDatum(bufRecord->bufferid);
+	memset(nulls, false, NUM_BUFFERCACHE_PAGES_ELEM);
+
+	/*
+	 * Set all fields except the bufferid to null if the buffer is unused or
+	 * not valid.
+	 */
+	if (bufRecord->blocknum == InvalidBlockNumber ||
+		bufRecord->isvalid == false)
+	{
+		int			i;
+
+		for (i = 1; i <= 9; i++)
+			nulls[i] = true;
+	}
+	else
+	{
+		values[1] = ObjectIdGetDatum(bufRecord->relfilenumber);
+		values[2] = ObjectIdGetDatum(bufRecord->reltablespace);
+		values[3] = ObjectIdGetDatum(bufRecord->reldatabase);
+		values[4] = ObjectIdGetDatum(bufRecord->forknum);
+		values[5] = Int64GetDatum((int64) bufRecord->blocknum);
+		values[6] = BoolGetDatum(bufRecord->isdirty);
+		values[7] = Int16GetDatum(bufRecord->usagecount);
+
+		/*
+		 * unused for v1.0 callers, but the array is always long enough
+		 */
+		values[8] = Int32GetDatum(bufRecord->pinning_backends);
+	}
+
+	/* Build and return the tuple. */
+	tuple = heap_form_tuple(fctx->tupdesc, values, nulls);
+	return HeapTupleGetDatum(tuple);
+}
+
 Datum
 pg_buffercache_pages(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
-	Datum		result;
-	MemoryContext oldcontext;
 	BufferCachePagesContext *fctx;	/* User function context. */
-	TupleDesc	tupledesc;
-	TupleDesc	expected_tupledesc;
-	HeapTuple	tuple;
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		int			i;
 
 		funcctx = SRF_FIRSTCALL_INIT();
-
-		/* Switch context when allocating stuff to be used in later calls */
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-		/* Create a user function context for cross-call persistence */
-		fctx = (BufferCachePagesContext *) palloc(sizeof(BufferCachePagesContext));
-
-		/*
-		 * To smoothly support upgrades from version 1.0 of this extension
-		 * transparently handle the (non-)existence of the pinning_backends
-		 * column. We unfortunately have to get the result type for that... -
-		 * we can't use the result type determined by the function definition
-		 * without potentially crashing when somebody uses the old (or even
-		 * wrong) function definition though.
-		 */
-		if (get_call_result_type(fcinfo, NULL, &expected_tupledesc) != TYPEFUNC_COMPOSITE)
-			elog(ERROR, "return type must be a row type");
-
-		if (expected_tupledesc->natts < NUM_BUFFERCACHE_PAGES_MIN_ELEM ||
-			expected_tupledesc->natts > NUM_BUFFERCACHE_PAGES_ELEM)
-			elog(ERROR, "incorrect number of output arguments");
-
-		/* Construct a tuple descriptor for the result rows. */
-		tupledesc = CreateTemplateTupleDesc(expected_tupledesc->natts);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 1, "bufferid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "relfilenode",
-						   OIDOID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "reltablespace",
-						   OIDOID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 4, "reldatabase",
-						   OIDOID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 5, "relforknumber",
-						   INT2OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 6, "relblocknumber",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 7, "isdirty",
-						   BOOLOID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "usage_count",
-						   INT2OID, -1, 0);
-
-		if (expected_tupledesc->natts == NUM_BUFFERCACHE_PAGES_ELEM)
-			TupleDescInitEntry(tupledesc, (AttrNumber) 9, "pinning_backends",
-							   INT4OID, -1, 0);
-
-		fctx->tupdesc = BlessTupleDesc(tupledesc);
-
-		/* Allocate NBuffers worth of BufferCachePagesRec records. */
-		fctx->record = (BufferCachePagesRec *)
-			MemoryContextAllocHuge(CurrentMemoryContext,
-								   sizeof(BufferCachePagesRec) * NBuffers);
-
-		/* Set max calls and remember the user function context. */
-		funcctx->max_calls = NBuffers;
-		funcctx->user_fctx = fctx;
-
-		/* Return to original context when allocating transient memory */
-		MemoryContextSwitchTo(oldcontext);
+		fctx = pg_buffercache_init_entries(funcctx, fcinfo);
 
 		/*
 		 * Scan through all the buffers, saving the relevant fields in the
@@ -152,36 +249,7 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 		 * locks, so the information of each buffer is self-consistent.
 		 */
 		for (i = 0; i < NBuffers; i++)
-		{
-			BufferDesc *bufHdr;
-			uint32		buf_state;
-
-			bufHdr = GetBufferDescriptor(i);
-			/* Lock each buffer header before inspecting. */
-			buf_state = LockBufHdr(bufHdr);
-
-			fctx->record[i].bufferid = BufferDescriptorGetBuffer(bufHdr);
-			fctx->record[i].relfilenumber = BufTagGetRelNumber(&bufHdr->tag);
-			fctx->record[i].reltablespace = bufHdr->tag.spcOid;
-			fctx->record[i].reldatabase = bufHdr->tag.dbOid;
-			fctx->record[i].forknum = BufTagGetForkNum(&bufHdr->tag);
-			fctx->record[i].blocknum = bufHdr->tag.blockNum;
-			fctx->record[i].usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);
-			fctx->record[i].pinning_backends = BUF_STATE_GET_REFCOUNT(buf_state);
-
-			if (buf_state & BM_DIRTY)
-				fctx->record[i].isdirty = true;
-			else
-				fctx->record[i].isdirty = false;
-
-			/* Note if the buffer is valid, and has storage created */
-			if ((buf_state & BM_VALID) && (buf_state & BM_TAG_VALID))
-				fctx->record[i].isvalid = true;
-			else
-				fctx->record[i].isvalid = false;
-
-			UnlockBufHdr(bufHdr, buf_state);
-		}
+			pg_buffercache_save_tuple(i, fctx);
 	}
 
 	funcctx = SRF_PERCALL_SETUP();
@@ -191,59 +259,16 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
+		Datum		result;
 		uint32		i = funcctx->call_cntr;
-		Datum		values[NUM_BUFFERCACHE_PAGES_ELEM];
-		bool		nulls[NUM_BUFFERCACHE_PAGES_ELEM];
 
-		values[0] = Int32GetDatum(fctx->record[i].bufferid);
-		nulls[0] = false;
-
-		/*
-		 * Set all fields except the bufferid to null if the buffer is unused
-		 * or not valid.
-		 */
-		if (fctx->record[i].blocknum == InvalidBlockNumber ||
-			fctx->record[i].isvalid == false)
-		{
-			nulls[1] = true;
-			nulls[2] = true;
-			nulls[3] = true;
-			nulls[4] = true;
-			nulls[5] = true;
-			nulls[6] = true;
-			nulls[7] = true;
-			/* unused for v1.0 callers, but the array is always long enough */
-			nulls[8] = true;
-		}
-		else
-		{
-			values[1] = ObjectIdGetDatum(fctx->record[i].relfilenumber);
-			nulls[1] = false;
-			values[2] = ObjectIdGetDatum(fctx->record[i].reltablespace);
-			nulls[2] = false;
-			values[3] = ObjectIdGetDatum(fctx->record[i].reldatabase);
-			nulls[3] = false;
-			values[4] = ObjectIdGetDatum(fctx->record[i].forknum);
-			nulls[4] = false;
-			values[5] = Int64GetDatum((int64) fctx->record[i].blocknum);
-			nulls[5] = false;
-			values[6] = BoolGetDatum(fctx->record[i].isdirty);
-			nulls[6] = false;
-			values[7] = Int16GetDatum(fctx->record[i].usagecount);
-			nulls[7] = false;
-			/* unused for v1.0 callers, but the array is always long enough */
-			values[8] = Int32GetDatum(fctx->record[i].pinning_backends);
-			nulls[8] = false;
-		}
-
-		/* Build and return the tuple. */
-		tuple = heap_form_tuple(fctx->tupdesc, values, nulls);
-		result = HeapTupleGetDatum(tuple);
-
+		result = get_buffercache_tuple(i, fctx);
 		SRF_RETURN_NEXT(funcctx, result);
 	}
 	else
+	{
 		SRF_RETURN_DONE(funcctx);
+	}
 }
 
 Datum

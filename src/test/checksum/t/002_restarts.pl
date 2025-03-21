@@ -10,8 +10,8 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-# pg_enable_checksums take three params: cost_delay, cost_limit and fast. For
-# testing we always want to override the default value for 'fast' with True
+# pg_enable_data_checksums take three params: cost_delay, cost_limit and fast.
+# For testing we always want to override the default value for 'fast' with True
 # which will cause immediate checkpoints. 0 and 100 are the defaults for
 # cost_delay and cost_limit which are fine to use for testing so let's keep
 # them.

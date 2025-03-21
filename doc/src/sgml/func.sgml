@@ -29910,7 +29910,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         <indexterm>
          <primary>pg_enable_data_checksums</primary>
         </indexterm>
-        <function>pg_enable_data_checksums</function> ( <optional><parameter>cost_delay</parameter> <type>int</type>, <parameter>cost_limit</parameter> <type>int</type></optional> )
+        <function>pg_enable_data_checksums</function> ( <optional><parameter>cost_delay</parameter> <type>int</type>, <parameter>cost_limit</parameter> <type>int</type></optional>, <parameter>fast</parameter> <type>boolean</type></optional> <literal>DEFAULT</literal> <literal>false</literal> )
         <returnvalue>void</returnvalue>
        </para>
        <para>
@@ -29925,6 +29925,12 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         If <parameter>cost_delay</parameter> and <parameter>cost_limit</parameter> are
         specified, the speed of the process is throttled using the same principles as
         <link linkend="runtime-config-resource-vacuum-cost">Cost-based Vacuum Delay</link>.
+       </para>
+       <para>
+        If <parameter>fast</parameter> is set to <literal>true</literal>, the function
+        will request an immediate checkpoint, instead of waiting for a regular one.
+        This is useful in contexts where long waits are not desirable, e.g. during
+        testing.
        </para></entry>
       </row>
 
@@ -29933,7 +29939,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         <indexterm>
          <primary>pg_disable_data_checksums</primary>
         </indexterm>
-        <function>pg_disable_data_checksums</function> ()
+        <function>pg_disable_data_checksums</function> ( <parameter>fast</parameter> <type>boolean</type></optional> <literal>DEFAULT</literal> <literal>false</literal> )
         <returnvalue>void</returnvalue>
        </para>
        <para>
@@ -29944,6 +29950,12 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         changed to <literal>off</literal>.  At this point the data pages will
         still have checksums recorded but they are not updated when pages are
         modified.
+       </para>
+       <para>
+        If <parameter>fast</parameter> is set to <literal>true</literal>, the function
+        will request an immediate checkpoint, instead of waiting for a regular one.
+        This is useful in contexts where long waits are not desirable, e.g. during
+        testing.
        </para></entry>
       </row>
      </tbody>

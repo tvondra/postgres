@@ -4732,6 +4732,14 @@ DataChecksumsOffInProgress(void)
 	return (LocalDataChecksumVersion == PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 }
 
+static void
+RandomSleep(void)
+{
+	/* sleep up to 1000ms */
+	uint32	s = rand() % 1000;
+	pg_usleep(1000L * s);
+}
+
 /*
  * SetDataChecksumsOnInProgress
  *		Sets the data checksum state to "inprogress-on" to enable checksums
@@ -4766,12 +4774,18 @@ SetDataChecksumsOnInProgress(void)
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION;
 	SpinLockRelease(&XLogCtl->info_lck);
 
+	RandomSleep();
+
 	elog(LOG, "SetDataChecksumsOnInProgress XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
 
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
 
+	RandomSleep();
+
 	END_CRIT_SECTION();
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
+
+	RandomSleep();
 
 	/*
 	 * Await state change in all backends to ensure that all backends are in
@@ -4779,6 +4793,8 @@ SetDataChecksumsOnInProgress(void)
 	 * checksums.
 	 */
 	WaitForProcSignalBarrier(barrier);
+
+	RandomSleep();
 
 	/*
 	 * Now that all the processes know about the new value, request a checkpoint,
@@ -4846,6 +4862,8 @@ SetDataChecksumsOn(void)
 
 	SpinLockRelease(&XLogCtl->info_lck);
 
+	RandomSleep();
+
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 	START_CRIT_SECTION();
 
@@ -4857,10 +4875,14 @@ SetDataChecksumsOn(void)
 
 	elog(LOG, "SetDataChecksumsOn XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
 
+	RandomSleep();
+
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
 
 	END_CRIT_SECTION();
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
+
+	RandomSleep();
 
 	/*
 	 * Await state transition of "on" in all backends. When done we know that
@@ -4868,6 +4890,8 @@ SetDataChecksumsOn(void)
 	 * written and verified.
 	 */
 	WaitForProcSignalBarrier(barrier);
+
+	RandomSleep();
 
 	/*
 	 * Force a checkpoint to get everything out to disk. The use of immediate
@@ -4914,6 +4938,8 @@ SetDataChecksumsOff(void)
 		return;
 	}
 
+	RandomSleep();
+
 	/*
 	 * If data checksums are currently enabled we first transition to the
 	 * "inprogress-off" state during which backends continue to write
@@ -4936,17 +4962,22 @@ SetDataChecksumsOff(void)
 
 		elog(LOG, "SetDataChecksumsOff XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
 
+		RandomSleep();
+
 		barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
 
 		END_CRIT_SECTION();
 		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 
+		RandomSleep();
 
 		/*
 		 * Update local state in all backends to ensure that any backend in
 		 * "on" state is changed to "inprogress-off".
 		 */
 		WaitForProcSignalBarrier(barrier);
+
+		RandomSleep();
 
 		/*
 		 * At this point we know that no backends are verifying data checksums
@@ -4979,6 +5010,8 @@ SetDataChecksumsOff(void)
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
 
+	RandomSleep();
+
 	/*
 	 * Ensure that we don't incur a checkpoint during disabling checksums.
 	 */
@@ -4991,12 +5024,18 @@ SetDataChecksumsOff(void)
 	XLogCtl->data_checksum_version = 0;
 	SpinLockRelease(&XLogCtl->info_lck);
 
+	RandomSleep();
+
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
 
 	END_CRIT_SECTION();
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 
+	RandomSleep();
+
 	WaitForProcSignalBarrier(barrier);
+
+	RandomSleep();
 
 	/*
 	 * Force a checkpoint to get everything out to disk. The use of immediate

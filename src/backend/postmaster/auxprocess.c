@@ -67,7 +67,11 @@ AuxiliaryProcessMainCommon(void)
 
 	BaseInit();
 
+	elog(LOG, "AuxiliaryProcessMainCommon: calling ProcSignalInit");
+
 	ProcSignalInit(false, 0);
+
+	elog(LOG, "AuxiliaryProcessMainCommon: ProcSignalInit completed, calling InitLocalDataChecksumVersion");
 
 	/*
 	 * Initialize a local cache of the data_checksum_version, to be updated
@@ -86,6 +90,8 @@ AuxiliaryProcessMainCommon(void)
 	 * stale, as it might have changed after this process forked.
 	 */
 	InitLocalDataChecksumVersion();
+
+	elog(LOG, "AuxiliaryProcessMainCommon: InitLocalDataChecksumVersion completed");
 
 	/*
 	 * Auxiliary processes don't run transactions, but they may need a

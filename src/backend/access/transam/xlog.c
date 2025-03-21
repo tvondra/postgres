@@ -550,9 +550,6 @@ typedef struct XLogCtlData
 	 */
 	XLogRecPtr	lastFpwDisableRecPtr;
 
-	/* last data_checksum_version we've seen */
-	uint32		data_checksum_version;
-
 	slock_t		info_lck;		/* locks shared variables shown above */
 } XLogCtlData;
 
@@ -667,8 +664,8 @@ static uint32 LocalDataChecksumVersion = 0;
  * data_checksum_version value, but for PG_DATA_CHECKSUM_ON_VERSION this
  * would trigger an assert failure (this is the only transition with an
  * assert) when processing the barrier. This may happen if the process is
- * spawned between the update of XLogCtl->data_checksum_version and the
- * barrier being emitted. This can only happen on the very first barrier
+ * spawned between the update of ControlFile->data_checksum_version and
+ * emitting the barrier. This can only happen on the very first barrier
  * so mark that with this flag.
  */
 static bool InitialDataChecksumTransition = true;
@@ -4279,13 +4276,7 @@ InitControlFile(uint64 sysidentifier, uint32 data_checksum_version)
 	ControlFile->track_commit_timestamp = track_commit_timestamp;
 	ControlFile->data_checksum_version = data_checksum_version;
 
-	/*
-	 * Set the data_checksum_version value into XLogCtl, which is where all
-	 * processes get the current value from. (Maybe it should go just there?)
-	 */
-	XLogCtl->data_checksum_version = data_checksum_version;
-
-	elog(LOG, "InitControlFile %p data_checksum_version %u", XLogCtl, ControlFile->data_checksum_version);
+	elog(LOG, "InitControlFile data_checksum_version %u", ControlFile->data_checksum_version);
 }
 
 static void
@@ -4762,11 +4753,11 @@ SetDataChecksumsOnInProgress(void)
 
 	// XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 
-	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION;
-	SpinLockRelease(&XLogCtl->info_lck);
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION;
+	LWLockRelease(ControlFileLock);
 
-	elog(LOG, "SetDataChecksumsOnInProgress XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
+	elog(LOG, "SetDataChecksumsOnInProgress ControlFile->data_checksum_version = %u", ControlFile->data_checksum_version);
 
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
 
@@ -4832,30 +4823,31 @@ SetDataChecksumsOn(void)
 
 	Assert(ControlFile != NULL);
 
-	SpinLockAcquire(&XLogCtl->info_lck);
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 	/*
 	 * The only allowed state transition to "on" is from "inprogress-on" since
 	 * that state ensures that all pages will have data checksums written.
 	 */
-	if (XLogCtl->data_checksum_version != PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
+	if (ControlFile->data_checksum_version != PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
 	{
-		SpinLockRelease(&XLogCtl->info_lck);
+		LWLockRelease(ControlFileLock);
 		elog(ERROR, "checksums not in \"inprogress-on\" mode");
 	}
 
-	SpinLockRelease(&XLogCtl->info_lck);
+	LWLockRelease(ControlFileLock);
 
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 	START_CRIT_SECTION();
 
 	// XLogChecksums(PG_DATA_CHECKSUM_VERSION);
 
-	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_VERSION;
-	SpinLockRelease(&XLogCtl->info_lck);
+	/* FIXME isn't it wrong that we release the lock above, and reacquireit here? */
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	ControlFile->data_checksum_version = PG_DATA_CHECKSUM_VERSION;
+	LWLockRelease(ControlFileLock);
 
-	elog(LOG, "SetDataChecksumsOn XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
+	elog(LOG, "SetDataChecksumsOn data_checksum_version = %u", ControlFile->data_checksum_version);
 
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
 
@@ -4904,13 +4896,13 @@ SetDataChecksumsOff(void)
 
 	Assert(ControlFile);
 
-	SpinLockAcquire(&XLogCtl->info_lck);
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 	/* If data checksums are already disabled there is nothing to do */
-	if (XLogCtl->data_checksum_version == 0)
+	if (ControlFile->data_checksum_version == 0)
 	{
-		elog(LOG, "SetDataChecksumsOff XLogCtl->data_checksum_version = %u (SKIP)", XLogCtl->data_checksum_version);
-		SpinLockRelease(&XLogCtl->info_lck);
+		elog(LOG, "SetDataChecksumsOff data_checksum_version = %u (SKIP)", ControlFile->data_checksum_version);
+		LWLockRelease(ControlFileLock);
 		return;
 	}
 
@@ -4921,20 +4913,20 @@ SetDataChecksumsOff(void)
 	 * "inprogress-off" the next transition to "off" can be performed, after
 	 * which all data checksum processing is disabled.
 	 */
-	if (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
+	if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
 	{
-		SpinLockRelease(&XLogCtl->info_lck);
+		LWLockRelease(ControlFileLock);
 
 		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 		START_CRIT_SECTION();
 
 		// XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION;
-		SpinLockRelease(&XLogCtl->info_lck);
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION;
+		LWLockRelease(ControlFileLock);
 
-		elog(LOG, "SetDataChecksumsOff XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
+		elog(LOG, "SetDataChecksumsOff data_checksum_version = %u", ControlFile->data_checksum_version);
 
 		barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
 
@@ -4966,7 +4958,7 @@ SetDataChecksumsOff(void)
 	}
 	else
 	{
-		elog(LOG, "SetDataChecksumsOff XLogCtl->data_checksum_version = %u (SKIP)", XLogCtl->data_checksum_version);
+		elog(LOG, "SetDataChecksumsOff ControlFile->data_checksum_version = %u (SKIP)", ControlFile->data_checksum_version);
 
 		/*
 		 * Ending up here implies that the checksums state is "inprogress-on"
@@ -4976,7 +4968,7 @@ SetDataChecksumsOff(void)
 		 * XXX Do we know we actually completed switching to inprogress-on or
 		 * inprogress-off, including the checkpoint?
 		 */
-		SpinLockRelease(&XLogCtl->info_lck);
+		LWLockRelease(ControlFileLock);
 	}
 
 	/*
@@ -4987,9 +4979,9 @@ SetDataChecksumsOff(void)
 
 	// XLogChecksums(0);
 
-	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->data_checksum_version = 0;
-	SpinLockRelease(&XLogCtl->info_lck);
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	ControlFile->data_checksum_version = 0;
+	LWLockRelease(ControlFileLock);
 
 	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
 
@@ -5071,10 +5063,11 @@ AbsorbChecksumsOffBarrier(void)
 void
 InitLocalDataChecksumVersion(void)
 {
-	SpinLockAcquire(&XLogCtl->info_lck);
-	SetLocalDataChecksumVersion(XLogCtl->data_checksum_version);
-	SpinLockRelease(&XLogCtl->info_lck);
-	elog(LOG, "InitLocalDataChecksumVersion XLogCtl->data_checksum_version = %u LOCAL %u", XLogCtl->data_checksum_version, LocalDataChecksumVersion);
+	elog(LOG, "InitLocalDataChecksumVersion data_checksum_version = %u LOCAL %u", ControlFile->data_checksum_version, LocalDataChecksumVersion);
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	SetLocalDataChecksumVersion(ControlFile->data_checksum_version);
+	LWLockRelease(ControlFileLock);
+	elog(LOG, "InitLocalDataChecksumVersion data_checksum_version = %u LOCAL %u (AFTER)", ControlFile->data_checksum_version, LocalDataChecksumVersion);
 }
 
 /*
@@ -5125,7 +5118,13 @@ GetLocalDataChecksumVersion(void)
 uint32
 GetCurrentDataChecksumVersion(void)
 {
-	return XLogCtl->data_checksum_version;
+	uint32	data_checksum_version;
+
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	data_checksum_version = ControlFile->data_checksum_version;
+	LWLockRelease(ControlFileLock);
+
+	return data_checksum_version;
 }
 
 /* guc hook */
@@ -5581,17 +5580,6 @@ XLOGShmemInit(void)
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	XLogCtl->WalWriterSleeping = false;
-
-	elog(LOG, "XLogCtl->data_checksum_version %u ControlFile->data_checksum_version %u",
-		 XLogCtl->data_checksum_version, ControlFile->data_checksum_version);
-
-	/* use the checksum info from control file */
-	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
-
-	elog(LOG, "XLogCtl->data_checksum_version %u ControlFile->data_checksum_version %u (UPDATED)",
-		 XLogCtl->data_checksum_version, ControlFile->data_checksum_version);
-
-	SetLocalDataChecksumVersion(XLogCtl->data_checksum_version);
 
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
@@ -6724,7 +6712,7 @@ StartupXLOG(void)
 	 */
 	CompleteCommitTsInitialization();
 
-	elog(LOG, "StartupXLOG XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
+	elog(LOG, "StartupXLOG ControlFile->data_checksum_version = %u", ControlFile->data_checksum_version);
 
 	/*
 	 * If we reach this point with checksums being enabled ("inprogress-on"
@@ -6732,8 +6720,11 @@ StartupXLOG(void)
 	 * process to enable checksums. This is because we cannot launch a dynamic
 	 * background worker directly from here, it has to be launched from a
 	 * regular backend.
+	 *
+	 * XXX are we holding a lock on the ControlFile?
 	 */
-	if (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
+	Assert(LWLockHeldByMe(ControlFileLock));
+	if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
 		ereport(WARNING,
 				(errmsg("data checksums are being enabled, but no worker is running"),
 				 errhint("If checksums were being enabled during shutdown then processing must be manually restarted.")));
@@ -7627,9 +7618,9 @@ CreateCheckPoint(int flags)
 	 * XXX Is it correct to read the value from XLogCtl? Maybe in some cases
 	 * we should update XLogCtl after the checkpoint?
 	 */
-	checkPoint.data_checksum_version = XLogCtl->data_checksum_version;
+	checkPoint.data_checksum_version = ControlFile->data_checksum_version;
 
-	elog(WARNING, "CREATECHECKPOINT XLogCtl->data_checksum_version %u", XLogCtl->data_checksum_version);
+	elog(WARNING, "CREATECHECKPOINT data_checksum_version %u", ControlFile->data_checksum_version);
 
 	if (shutdown)
 	{
@@ -8040,12 +8031,8 @@ CreateEndOfRecoveryRecord(void)
 	ControlFile->minRecoveryPoint = recptr;
 	ControlFile->minRecoveryPointTLI = xlrec.ThisTimeLineID;
 
-	elog(LOG, "CreateEndOfRecoveryRecord data_checksum_version %u xlog %u",
-		 ControlFile->data_checksum_version,
-		 XLogCtl->data_checksum_version);
-
-	/* start with the latest checksum version (as of the end of recovery) */
-	ControlFile->data_checksum_version = XLogCtl->data_checksum_version;
+	elog(LOG, "CreateEndOfRecoveryRecord data_checksum_version %u",
+		 ControlFile->data_checksum_version);
 
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
@@ -9060,24 +9047,16 @@ xlog_redo(XLogReaderState *record)
 		if (ControlFile->data_checksum_version != checkPoint.data_checksum_version)
 		{
 			uint32		old_data_checksum_version_controlfile;
-			uint32		old_data_checksum_version_xlogctl;
 
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 			LWLockRelease(ControlFileLock);
 
-			/* Update shared-memory copy of checkpoint XID/epoch */
-			SpinLockAcquire(&XLogCtl->info_lck);
-			old_data_checksum_version_xlogctl = XLogCtl->data_checksum_version;
-			XLogCtl->data_checksum_version = checkPoint.data_checksum_version;
-			SpinLockRelease(&XLogCtl->info_lck);
-
-			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u xlogctl %u new %u",
+			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u new %u",
 				LSN_FORMAT_ARGS(record->ReadRecPtr),
 				LSN_FORMAT_ARGS(lsn),
 				old_data_checksum_version_controlfile,
-				old_data_checksum_version_xlogctl,
 				checkPoint.data_checksum_version);
 
 			checksumsVersionChanged = true;
@@ -9208,24 +9187,16 @@ xlog_redo(XLogReaderState *record)
 		if (ControlFile->data_checksum_version != checkPoint.data_checksum_version)
 		{
 			uint32	old_data_checksum_version_controlfile;
-			uint32	old_data_checksum_version_xlogctl;
 
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 			LWLockRelease(ControlFileLock);
 
-			/* Update shared-memory copy of checkpoint XID/epoch */
-			SpinLockAcquire(&XLogCtl->info_lck);
-			old_data_checksum_version_xlogctl = XLogCtl->data_checksum_version;
-			XLogCtl->data_checksum_version = checkPoint.data_checksum_version;
-			SpinLockRelease(&XLogCtl->info_lck);
-
-			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u xlogctl %u new %u",
+			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u new %u",
 				LSN_FORMAT_ARGS(record->ReadRecPtr),
 				LSN_FORMAT_ARGS(lsn),
 				old_data_checksum_version_controlfile,
-				old_data_checksum_version_xlogctl,
 				checkPoint.data_checksum_version);
 
 			checksumsVersionChanged = true;

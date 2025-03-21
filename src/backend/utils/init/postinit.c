@@ -753,7 +753,11 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	SharedInvalBackendInit(false);
 
+	elog(LOG, "InitPostgres: calling ProcSignalInit");
+
 	ProcSignalInit(MyCancelKeyValid, MyCancelKey);
+
+	elog(LOG, "InitPostgres: ProcSignalInit completed, calling InitLocalDataChecksumVersion");
 
 	/*
 	 * Initialize a local cache of the data_checksum_version, to be updated
@@ -772,6 +776,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * stale, as it might have changed after this process forked.
 	 */
 	InitLocalDataChecksumVersion();
+
+	elog(LOG, "InitPostgres: InitLocalDataChecksumVersion completed");
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need

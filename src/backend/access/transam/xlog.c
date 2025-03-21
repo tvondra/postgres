@@ -5071,10 +5071,10 @@ AbsorbChecksumsOffBarrier(void)
 void
 InitLocalDataChecksumVersion(void)
 {
-	elog(LOG, "InitLocalDataChecksumVersion XLogCtl->data_checksum_version = %u", XLogCtl->data_checksum_version);
 	SpinLockAcquire(&XLogCtl->info_lck);
 	SetLocalDataChecksumVersion(XLogCtl->data_checksum_version);
 	SpinLockRelease(&XLogCtl->info_lck);
+	elog(LOG, "InitLocalDataChecksumVersion XLogCtl->data_checksum_version = %u LOCAL %u", XLogCtl->data_checksum_version, LocalDataChecksumVersion);
 }
 
 /*

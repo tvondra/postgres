@@ -70,7 +70,8 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 						 "tli %u; prev tli %u; fpw %s; wal_level %s; xid %u:%u; oid %u; multi %u; offset %u; "
 						 "oldest xid %u in DB %u; oldest multi %u in DB %u; "
 						 "oldest/newest commit timestamp xid: %u/%u; "
-						 "oldest running xid %u; %s",
+						 "oldest running xid %u; %s "
+						 "checksum version: %u",
 						 LSN_FORMAT_ARGS(checkpoint->redo),
 						 checkpoint->ThisTimeLineID,
 						 checkpoint->PrevTimeLineID,
@@ -88,7 +89,8 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 						 checkpoint->oldestCommitTsXid,
 						 checkpoint->newestCommitTsXid,
 						 checkpoint->oldestActiveXid,
-						 (info == XLOG_CHECKPOINT_SHUTDOWN) ? "shutdown" : "online");
+						 (info == XLOG_CHECKPOINT_SHUTDOWN) ? "shutdown" : "online",
+						 checkpoint->data_checksum_version);
 	}
 	else if (info == XLOG_NEXTOID)
 	{
@@ -168,6 +170,7 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 		memcpy(&wal_level, rec, sizeof(int));
 		appendStringInfo(buf, "wal_level %s", get_wal_level_string(wal_level));
 	}
+/*
 	else if (info == XLOG_CHECKSUMS)
 	{
 		xl_checksum_state xlrec;
@@ -188,6 +191,7 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfoString(buf, "off");
 		}
 	}
+*/
 }
 
 const char *
@@ -239,9 +243,11 @@ xlog_identify(uint8 info)
 		case XLOG_CHECKPOINT_REDO:
 			id = "CHECKPOINT_REDO";
 			break;
+/*
 		case XLOG_CHECKSUMS:
 			id = "CHECKSUMS";
 			break;
+*/
 	}
 
 	return id;

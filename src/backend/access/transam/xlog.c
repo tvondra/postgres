@@ -9059,14 +9059,26 @@ xlog_redo(XLogReaderState *record)
 		 */
 		if (ControlFile->data_checksum_version != checkPoint.data_checksum_version)
 		{
+			uint32		old_data_checksum_version_controlfile;
+			uint32		old_data_checksum_version_xlogctl;
+
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 			LWLockRelease(ControlFileLock);
 
 			/* Update shared-memory copy of checkpoint XID/epoch */
 			SpinLockAcquire(&XLogCtl->info_lck);
+			old_data_checksum_version_xlogctl = XLogCtl->data_checksum_version;
 			XLogCtl->data_checksum_version = checkPoint.data_checksum_version;
 			SpinLockRelease(&XLogCtl->info_lck);
+
+			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u xlogctl %u new %u",
+				LSN_FORMAT_ARGS(record->ReadRecPtr),
+				LSN_FORMAT_ARGS(lsn),
+				old_data_checksum_version_controlfile,
+				old_data_checksum_version_xlogctl,
+				checkPoint.data_checksum_version);
 
 			checksumsVersionChanged = true;
 		}
@@ -9195,14 +9207,26 @@ xlog_redo(XLogReaderState *record)
 		 */
 		if (ControlFile->data_checksum_version != checkPoint.data_checksum_version)
 		{
+			uint32	old_data_checksum_version_controlfile;
+			uint32	old_data_checksum_version_xlogctl;
+
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 			LWLockRelease(ControlFileLock);
 
 			/* Update shared-memory copy of checkpoint XID/epoch */
 			SpinLockAcquire(&XLogCtl->info_lck);
+			old_data_checksum_version_xlogctl = XLogCtl->data_checksum_version;
 			XLogCtl->data_checksum_version = checkPoint.data_checksum_version;
 			SpinLockRelease(&XLogCtl->info_lck);
+
+			elog(LOG, "xlog_redo XLOG_CHECKPOINT_SHUTDOWN %X/%X %X/%X data_checksum_version controlfile %u xlogctl %u new %u",
+				LSN_FORMAT_ARGS(record->ReadRecPtr),
+				LSN_FORMAT_ARGS(lsn),
+				old_data_checksum_version_controlfile,
+				old_data_checksum_version_xlogctl,
+				checkPoint.data_checksum_version);
 
 			checksumsVersionChanged = true;
 		}

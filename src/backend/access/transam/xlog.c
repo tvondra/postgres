@@ -9122,7 +9122,11 @@ xlog_redo(XLogReaderState *record)
 			checksumsVersionChanged = true;
 		}
 
+		RandomSleep();
+
 		RecoveryRestartPoint(&checkPoint, record);
+
+		RandomSleep();
 
 		if (checksumsVersionChanged)
 		{
@@ -9144,18 +9148,21 @@ xlog_redo(XLogReaderState *record)
 				case PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
 				case PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
 				case PG_DATA_CHECKSUM_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_ON");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
@@ -9163,9 +9170,12 @@ xlog_redo(XLogReaderState *record)
 					Assert(checkPoint.data_checksum_version == 0);
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_OFF");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 			}
+
+			RandomSleep();
 
 			/*
 			 * Force a checkpoint to get everything out to disk. The use of immediate
@@ -9270,7 +9280,11 @@ xlog_redo(XLogReaderState *record)
 			checksumsVersionChanged = true;
 		}
 
+		RandomSleep();
+
 		RecoveryRestartPoint(&checkPoint, record);
+
+		RandomSleep();
 
 		if (checksumsVersionChanged)
 		{
@@ -9292,18 +9306,21 @@ xlog_redo(XLogReaderState *record)
 				case PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
 				case PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
 				case PG_DATA_CHECKSUM_VERSION:
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_ON");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 
@@ -9311,9 +9328,12 @@ xlog_redo(XLogReaderState *record)
 					Assert(checkPoint.data_checksum_version == 0);
 					elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_OFF");
 					barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
+					RandomSleep();
 					WaitForProcSignalBarrier(barrier);
 					break;
 			}
+
+			RandomSleep();
 
 			/*
 			 * Force a checkpoint to get everything out to disk. The use of immediate

@@ -12261,7 +12261,8 @@
   descr => 'disable data checksums',
   proname => 'pg_disable_data_checksums', provolatile => 'v', prorettype => 'void',
   proparallel => 'r',
-  proargtypes => '',
+  proargtypes => 'bool', proallargtypes => '{bool}',
+  proargmodes => '{i}', proargnames => '{fast}',
   prosrc => 'disable_data_checksums' },
 
 { oid => '9257',

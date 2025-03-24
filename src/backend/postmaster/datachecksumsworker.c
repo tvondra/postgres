@@ -733,6 +733,8 @@ WaitForAllTransactionsToFinish(void)
 void
 DataChecksumsWorkerLauncherMain(Datum arg)
 {
+	bool	immediate;
+
 	on_shmem_exit(launcher_exit, 0);
 
 	ereport(DEBUG1,
@@ -768,6 +770,7 @@ DataChecksumsWorkerLauncherMain(Datum arg)
 	DataChecksumsWorkerShmem->cost_delay = DataChecksumsWorkerShmem->launch_cost_delay;
 	DataChecksumsWorkerShmem->cost_limit = DataChecksumsWorkerShmem->launch_cost_limit;
 	DataChecksumsWorkerShmem->immediate_checkpoint = DataChecksumsWorkerShmem->launch_fast;
+	immediate = DataChecksumsWorkerShmem->immediate_checkpoint;
 	LWLockRelease(DataChecksumsWorkerLock);
 
 	/*
@@ -806,7 +809,7 @@ again:
 		 */
 		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
 									 PROGRESS_DATACHECKSUMS_PHASE_ENABLING);
-		SetDataChecksumsOnInProgress();
+		SetDataChecksumsOnInProgress(immediate);
 
 		if (!ProcessAllDatabases(DataChecksumsWorkerShmem->immediate_checkpoint))
 		{
@@ -825,13 +828,13 @@ again:
 					(errmsg("unable to enable data checksums in cluster")));
 		}
 
-		SetDataChecksumsOn();
+		SetDataChecksumsOn(immediate);
 	}
 	else
 	{
 		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
 									 PROGRESS_DATACHECKSUMS_PHASE_DISABLING);
-		SetDataChecksumsOff();
+		SetDataChecksumsOff(immediate);
 	}
 
 done:
@@ -879,6 +882,7 @@ ProcessAllDatabases(bool immediate_checkpoint)
 	HTAB	   *ProcessedDatabases = NULL;
 	HASHCTL		hash_ctl;
 	bool		found_failed = false;
+	bool		immediate;
 	int			flags;
 
 	/* Initialize a hash tracking all processed databases */
@@ -895,6 +899,8 @@ ProcessAllDatabases(bool immediate_checkpoint)
 	 * db.
 	 */
 	DataChecksumsWorkerShmem->process_shared_catalogs = true;
+
+	immediate = DataChecksumsWorkerShmem->immediate_checkpoint;
 
 	/*
 	 * Get a list of all databases to process. This may include databases that
@@ -1067,7 +1073,7 @@ ProcessAllDatabases(bool immediate_checkpoint)
 	if (found_failed)
 	{
 		/* Disable checksums on cluster, because we failed */
-		SetDataChecksumsOff();
+		SetDataChecksumsOff(immediate);
 		ereport(ERROR,
 				(errmsg("data checksums failed to get enabled in all databases, aborting"),
 				 errhint("The server log might have more information on the cause of the error.")));

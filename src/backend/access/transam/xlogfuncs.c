@@ -757,10 +757,13 @@ pg_promote(PG_FUNCTION_ARGS)
 Datum
 disable_data_checksums(PG_FUNCTION_ARGS)
 {
+	bool		fast = PG_GETARG_BOOL(0);
+
 	if (!superuser())
 		ereport(ERROR, errmsg("must be superuser"));
 
-	StartDataChecksumsWorkerLauncher(false, 0, 0, false);
+	StartDataChecksumsWorkerLauncher(false, 0, 0, fast);
+
 	PG_RETURN_VOID();
 }
 

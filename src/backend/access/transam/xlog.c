@@ -4751,13 +4751,10 @@ RandomSleep(void)
  * state transition.
  */
 void
-SetDataChecksumsOnInProgress(void)
+SetDataChecksumsOnInProgress(bool fast)
 {
+	int			flags;
 	uint64		barrier;
-
-	/* XXX force immediate checkpoint */
-	bool	immediate_checkpoint = true;
-	int		flags;
 
 	Assert(ControlFile != NULL);
 
@@ -4821,7 +4818,7 @@ SetDataChecksumsOnInProgress(void)
 	 * in such a way that they can reliably be placed under timeout control.
 	 */
 	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
-	if (immediate_checkpoint)
+	if (fast)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
 
@@ -4886,13 +4883,10 @@ SetDataChecksumsOnInProgress(void)
  * state transition.
  */
 void
-SetDataChecksumsOn(void)
+SetDataChecksumsOn(bool fast)
 {
+	int			flags;
 	uint64		barrier;
-
-	/* XXX force immediate checkpoint */
-	bool	immediate_checkpoint = true;
-	int		flags;
 
 	Assert(ControlFile != NULL);
 
@@ -4961,7 +4955,7 @@ SetDataChecksumsOn(void)
 	 * in such a way that they can reliably be placed under timeout control.
 	 */
 	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
-	if (immediate_checkpoint)
+	if (fast)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
 
@@ -4991,13 +4985,10 @@ SetDataChecksumsOn(void)
  * state transition.
  */
 void
-SetDataChecksumsOff(void)
+SetDataChecksumsOff(bool fast)
 {
+	int			flags;
 	uint64		barrier;
-
-	/* XXX force immediate checkpoint */
-	bool	immediate_checkpoint = true;
-	int		flags;
 
 	Assert(ControlFile);
 
@@ -5073,7 +5064,7 @@ SetDataChecksumsOff(void)
 		 * in such a way that they can reliably be placed under timeout control.
 		 */
 		flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
-		if (immediate_checkpoint)
+		if (fast)
 			flags = flags | CHECKPOINT_IMMEDIATE;
 		RequestCheckpoint(flags);
 
@@ -5147,7 +5138,7 @@ SetDataChecksumsOff(void)
 	 * in such a way that they can reliably be placed under timeout control.
 	 */
 	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
-	if (immediate_checkpoint)
+	if (fast)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
 

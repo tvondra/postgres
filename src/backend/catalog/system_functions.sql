@@ -653,8 +653,13 @@ AS 'pg_stat_reset_slru';
 CREATE OR REPLACE FUNCTION
   pg_enable_data_checksums(cost_delay integer DEFAULT 0,
                            cost_limit integer DEFAULT 100,
-						   fast boolean DEFAULT false)
+                           fast boolean DEFAULT false)
   RETURNS void STRICT VOLATILE LANGUAGE internal AS 'enable_data_checksums'
+  PARALLEL RESTRICTED;
+
+CREATE OR REPLACE FUNCTION
+  pg_disable_data_checksums(fast boolean DEFAULT false)
+  RETURNS void STRICT VOLATILE LANGUAGE internal AS 'disable_data_checksums'
   PARALLEL RESTRICTED;
 
 --
@@ -784,7 +789,7 @@ REVOKE EXECUTE ON FUNCTION pg_ls_replslotdir(text) FROM PUBLIC;
 
 REVOKE EXECUTE ON FUNCTION pg_enable_data_checksums(integer, integer, boolean) FROM public;
 
-REVOKE EXECUTE ON FUNCTION pg_disable_data_checksums() FROM public;
+REVOKE EXECUTE ON FUNCTION pg_disable_data_checksums(boolean) FROM public;
 
 --
 -- We also set up some things as accessible to standard roles.

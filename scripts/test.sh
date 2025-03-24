@@ -277,19 +277,18 @@ function change_checksums()
 	db=$2
 	state=$3
 
+	fast="false"
+	x=$((RANDOM % 2))
+	if [ "$x" == "0" ]; then
+		fast="true"
+	fi
+
 	if [ "$state" == "enable" ]; then
-
-		fast="false"
-		x=$((RANDOM % 2))
-		if [ "$x" == "0" ]; then
-			fast="true"
-		fi
-
 		echo `date` "loop $r enabling checksums fast $fast"
 		psql $db -c "select pg_current_wal_lsn(), pg_enable_data_checksums(fast := $fast)"
 	else
-		echo `date` "loop $r disabling checksums"
-		psql $db -c "select pg_current_wal_lsn(), pg_disable_data_checksums()"
+		echo `date` "loop $r disabling checksums fast $fast"
+		psql $db -c "select pg_current_wal_lsn(), pg_disable_data_checksums(fast := $fast)"
 	fi
 }
 

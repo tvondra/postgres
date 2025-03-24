@@ -5157,12 +5157,13 @@ GetLocalDataChecksumVersion(void)
 uint32
 GetCurrentDataChecksumVersion(void)
 {
-	/* XXX we call this during backend init, before we get a pgproc entry,
-	 * so we can't get a lock ... maybe we need a separate field after all?
-	 * But isn't this a sign we actually need something not protected by a
-	 * LWLock after all? Maybe we really need the XLogCtl ...
-	 */
-	return ControlFile->data_checksum_version;
+	uint32	data_checksum_version;
+
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	data_checksum_version = ControlFile->data_checksum_version;
+	LWLockRelease(ControlFileLock);
+
+	return data_checksum_version;
 }
 
 /* guc hook */
@@ -6761,7 +6762,7 @@ StartupXLOG(void)
 	 *
 	 * XXX are we holding a lock on the ControlFile?
 	 */
-	// Assert(LWLockHeldByMe(ControlFileLock));
+	Assert(LWLockHeldByMe(ControlFileLock));
 	if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
 		ereport(WARNING,
 				(errmsg("data checksums are being enabled, but no worker is running"),

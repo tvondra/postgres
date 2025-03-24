@@ -4764,11 +4764,14 @@ SetDataChecksumsOnInProgress(void)
 	/*
 	 * The state transition is performed in a critical section with
 	 * checkpoints held off to provide crash safety.
+	 *
+	 * XXX I'm not sure I understand what kind of crash safety this provides.
+	 * Would be good to explain what kind of guarantees this actually means.
+	 * See the comment about checkpoint at the end of this function for more
+	 * questions / concerns about this.
 	 */
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 	START_CRIT_SECTION();
-
-	// XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION;
@@ -4791,6 +4794,14 @@ SetDataChecksumsOnInProgress(void)
 	 * Await state change in all backends to ensure that all backends are in
 	 * "inprogress-on". Once done we know that all backends are writing data
 	 * checksums.
+	 *
+	 * XXX What if the process dies / gets terminated while waiting for the
+	 * barriers to be processed (or generally anywhere after existing the
+	 * critical section)? Doesn't that mean we'll not have a durable info
+	 * about the checksums until the next checkpoint, but the processes will
+	 * think we have that? Doesn't that mean the standby won't know about
+	 * this change, and so might fail with checksum errors (maybe not here
+	 * for the inprogress-on state, but while disabling checksums)?
 	 */
 	WaitForProcSignalBarrier(barrier);
 
@@ -4813,6 +4824,43 @@ SetDataChecksumsOnInProgress(void)
 	if (immediate_checkpoint)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
+
+	/*
+	 * XXX Do we have the right data_checksum_version in the control file?
+	 *
+	 * I'm not sure we can rely on the checkpoint to always copy the right flag
+	 * into the ControlFile. I can think of two cases that might violate this:
+	 *
+	 * 1) RequestCheckpoint(CHECKPOINT_WAIT) does not guarantee the checkpoint
+	 * started after we updated the XLogCtl flag, right? Maybe there was already
+	 * a checkpoint in progress, and we just happen to wait for that? Or is this
+	 * a misunderstanding of what RequestCheckpoint(CHECKPOINT_WAIT) does?
+	 *
+	 * 2) Maybe a new checkpoint started, and it copied the right value into
+	 * the control file. But maybe some other session got to update the flag
+	 * again? But that'd be the XLogCtl flag, so maybe the ControlFile is fine.
+	 *
+	 * We use DELAY_CHKPT_START while flipping the XLogCtl flag, but does that
+	 * actually make any difference? What exactly does that handle?
+	 *
+	 * Could we maybe track the "generation" of the data_checksum_version
+	 * value, incremented every time we update the XLogCtl flag, and when
+	 * copying the value in the checkpoint, and then wait until a checkpoint
+	 * flushes the generation we got when setting the XLogCtl flag here?
+	 *
+	 * So we'd (a) set XLogCtl, (b) increment the generation and (c) remember
+	 * the new generation value. A checkpoint would copy the value into control
+	 * file, along with the generation. And we'd wait for checkpoint generation
+	 * to be >= generation from (c).
+	 *
+	 * That would not guarantee the value is the one we expected, but it would
+	 * guarantee we're past it.
+	 */
+#ifdef USE_ASSERT_CHECKING
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	Assert(ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+	LWLockRelease(ControlFileLock);
+#endif
 }
 
 /*
@@ -4862,12 +4910,23 @@ SetDataChecksumsOn(void)
 
 	SpinLockRelease(&XLogCtl->info_lck);
 
+	/*
+	 * XXX Isn't this wrong to release the spinlock, and then reacquire it
+	 * again for the update? What if there are two concurrent sessions calling
+	 * SetDataChecksumsOn() at the same time? Both may get through the check
+	 * above, and get to update the XLogCtl flag and emit the barrier. Won't
+	 * that trigger the assert when absorbing the second barrier, because the
+	 * processes will have already switched to 'on'?
+	 */
+
 	RandomSleep();
 
+	/*
+	 * XXX See the comment in SetDataChecksumsOnInProgress() for concerns
+	 * about guarantees provided by delaying checkpoints.
+	 */
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 	START_CRIT_SECTION();
-
-	// XLogChecksums(PG_DATA_CHECKSUM_VERSION);
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_VERSION;
@@ -4888,6 +4947,9 @@ SetDataChecksumsOn(void)
 	 * Await state transition of "on" in all backends. When done we know that
 	 * data checksums are enabled in all backends and data checksums are both
 	 * written and verified.
+	 *
+	 * XXX See the comment in SetDataChecksumsOnInProgress() about possible
+	 * issues with exits while emitting the barrier.
 	 */
 	WaitForProcSignalBarrier(barrier);
 
@@ -4902,6 +4964,17 @@ SetDataChecksumsOn(void)
 	if (immediate_checkpoint)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
+
+	/*
+	 * XXX Do we have the right data_checksum_version in the control file?
+	 *
+	 * See the comment in SetDataChecksumsOnInProgress().
+	 */
+#ifdef USE_ASSERT_CHECKING
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	Assert(ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+	LWLockRelease(ControlFileLock);
+#endif
 }
 
 /*
@@ -4949,12 +5022,18 @@ SetDataChecksumsOff(void)
 	 */
 	if (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
 	{
+		/*
+		 * XXX Seems wrong to release/acquire the spinlock. See SetDataChecksumsOn
+		 * comment with more details.
+		 */
 		SpinLockRelease(&XLogCtl->info_lck);
 
+		/*
+		 * XXX See the comment in SetDataChecksumsOnInProgress() for questions
+		 * about guarantees provided by delaying checkpoints.
+		 */
 		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 		START_CRIT_SECTION();
-
-		// XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
 
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION;
@@ -4974,6 +5053,9 @@ SetDataChecksumsOff(void)
 		/*
 		 * Update local state in all backends to ensure that any backend in
 		 * "on" state is changed to "inprogress-off".
+		 *
+		 * XXX See the comment in SetDataChecksumsOnInProgress() about possible
+		 * issues with exits while emitting the barrier.
 		 */
 		WaitForProcSignalBarrier(barrier);
 
@@ -4994,6 +5076,18 @@ SetDataChecksumsOff(void)
 		if (immediate_checkpoint)
 			flags = flags | CHECKPOINT_IMMEDIATE;
 		RequestCheckpoint(flags);
+
+		/*
+		 * XXX Do we have the right data_checksum_version in the control file?
+		 *
+		 * See the comment in SetDataChecksumsOnInProgress().
+		 */
+#ifdef USE_ASSERT_CHECKING
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		Assert(ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION);
+		LWLockRelease(ControlFileLock);
+#endif
+
 	}
 	else
 	{
@@ -5005,7 +5099,9 @@ SetDataChecksumsOff(void)
 		 * there.
 		 *
 		 * XXX Do we know we actually completed switching to inprogress-on or
-		 * inprogress-off, including the checkpoint?
+		 * inprogress-off, including the checkpoint? What if that change is
+		 * still in progress, e.g. it's waiting for a checkpoint? We are
+		 * only checking the XLogCtl flag, not what's persisted.
 		 */
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
@@ -5014,11 +5110,12 @@ SetDataChecksumsOff(void)
 
 	/*
 	 * Ensure that we don't incur a checkpoint during disabling checksums.
+	 *
+	 * XXX See the comment in SetDataChecksumsOnInProgress() for concerns
+	 * about guarantees provided by delaying checkpoints.
 	 */
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 	START_CRIT_SECTION();
-
-	// XLogChecksums(0);
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->data_checksum_version = 0;
@@ -5033,6 +5130,13 @@ SetDataChecksumsOff(void)
 
 	RandomSleep();
 
+	/*
+	 * Update local state in all backends to ensure that any backend in
+	 * "inprogress-off" is changed to "off".
+	 *
+	 * XXX See the comment in SetDataChecksumsOnInProgress() about possible
+	 * issues with exits while emitting the barrier.
+	 */
 	WaitForProcSignalBarrier(barrier);
 
 	RandomSleep();
@@ -5046,6 +5150,17 @@ SetDataChecksumsOff(void)
 	if (immediate_checkpoint)
 		flags = flags | CHECKPOINT_IMMEDIATE;
 	RequestCheckpoint(flags);
+
+	/*
+	 * XXX Do we have the right data_checksum_version in the control file?
+	 *
+	 * See the comment in SetDataChecksumsOnInProgress().
+	 */
+#ifdef USE_ASSERT_CHECKING
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	Assert(ControlFile->data_checksum_version == 0);
+	LWLockRelease(ControlFileLock);
+#endif
 }
 
 /*
@@ -7665,6 +7780,12 @@ CreateCheckPoint(int flags)
 	 *
 	 * XXX Is it correct to read the value from XLogCtl? Maybe in some cases
 	 * we should update XLogCtl after the checkpoint?
+	 *
+	 * XXX Or maybe it's too early, and we should do it later, when setting
+	 * the redo pointer? How atomic/consistent do these values need to be?
+	 *
+	 * XXX Are we actually holding a lock on XLogCtl? Probably not, because
+	 * we're acquiring it in about 100 lines. Seems wrong.
 	 */
 	checkPoint.data_checksum_version = XLogCtl->data_checksum_version;
 
@@ -7689,6 +7810,11 @@ CreateCheckPoint(int flags)
 				curInsert += SizeOfXLogShortPHD;
 		}
 		checkPoint.redo = curInsert;
+
+		/*
+		 * XXX Isn't this the point when we should copy data_checksums_version
+		 * from XLogCtl to the checkPoint record, for shutdown checkpoints?
+		 */
 
 		/*
 		 * Here we update the shared RedoRecPtr for future XLogInsert calls;
@@ -7732,6 +7858,9 @@ CreateCheckPoint(int flags)
 		 * shared memory and RedoRecPtr in backend-local memory, but we need
 		 * to copy that into the record that will be inserted when the
 		 * checkpoint is complete.
+		 *
+		 * XXX Isn't this the point when we should copy data_checksums_version
+		 * from XLogCtl to the checkPoint record, for online checkpoints?
 		 */
 		checkPoint.redo = RedoRecPtr;
 	}
@@ -7925,7 +8054,7 @@ CreateCheckPoint(int flags)
 	ControlFile->minRecoveryPoint = InvalidXLogRecPtr;
 	ControlFile->minRecoveryPointTLI = 0;
 
-	elog(LOG, "CreateCheckPoint data_checksum_version %u %u",
+	elog(LOG, "CreateCheckPoint data_checksum_version current %u => new %u",
 		 ControlFile->data_checksum_version,
 		 checkPoint.data_checksum_version);
 

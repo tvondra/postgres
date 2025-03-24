@@ -6877,6 +6877,9 @@ StartupXLOG(void)
 	 * process to enable checksums. This is because we cannot launch a dynamic
 	 * background worker directly from here, it has to be launched from a
 	 * regular backend.
+	 *
+	 * XXX Is it safe to access the data_checksum_version without holding the
+	 * spinlock?
 	 */
 	if (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION)
 		ereport(WARNING,
@@ -6884,31 +6887,18 @@ StartupXLOG(void)
 				 errhint("If checksums were being enabled during shutdown then processing must be manually restarted.")));
 
 	/*
-	 * If data checksums were being disabled when the cluster was shut down,
-	 * we know that we have a state where all backends have stopped validating
-	 * checksums and we can move to off instead of prompting the user to
-	 * perform any action.
+	 * We might have shut down while changing the checksum state, but we can't
+	 * simply proceed to the next stage - even if we were disabling checkpoints.
+	 * We know all local backends have stopped validating checksums, so it'd be
+	 * fine to switch to 'off'.
 	 *
-	 * XXX Is it safe to access the data_checksum_version without holding the
-	 * spinlock?
+	 * But that is not enough for a standby. It would not know to move to the
+	 * "off" state, and it would not create any restart point, so it would
+	 * have issues after a restart, seeing pages with a mix of checksums.
 	 *
-	 * XXX This would be problematic on the standby, without the checkpoint.
-	 * There won't be the checkpoint/restartpoint, which can confuse the
-	 * standby and get it "out of sync" if it restarts and starts from an
-	 * earlier LSN. Seems better to just require the "proper" checkpoint.
+	 * XXX Could it be handled by changing the state in a XLOG_END_OF_RECOVERY
+	 * or XLOG_CHECKPOINT_REDO?
 	 */
-	/*
-	if (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION)
-	{
-		XLogChecksums(0);
-
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->data_checksum_version = 0;
-		SpinLockRelease(&XLogCtl->info_lck);
-
-		elog(LOG, "StartupXLOG XLogCtl->data_checksum_version = %u (UPDATED)", XLogCtl->data_checksum_version);
-	}
-	*/
 
 	/*
 	 * All done with end-of-recovery actions.
@@ -9212,7 +9202,9 @@ xlog_redo(XLogReaderState *record)
 		 * value, and remember we need to create a restart point before we
 		 * continue.
 		 *
-		 * XXX This is a bit annoying, as it pauses replication, right?
+		 * XXX This is a bit annoying, as it pauses replication until the
+		 * checkpoint (or rather restartpoint) completes.
+		 *
 		 * XXX Could someone start a restart point while this is running? Do 
 		 * we need to prevent that?
 		 */
@@ -9221,12 +9213,22 @@ xlog_redo(XLogReaderState *record)
 			uint32		old_data_checksum_version_controlfile;
 			uint32		old_data_checksum_version_xlogctl;
 
+			/*
+			 * XXX Is it correct to update ControlFile->data_checksum_version
+			 * from here, or should we leave that to CreateRestartPoint, just
+			 * like we leave that to CreateCheckPoint()? We need to be careful
+			 * about CreateRestartPoint() not skipping the update, though.
+			 *
+			 * XXX It might be a problem if CreateRestartPoint() skips updating
+			 * ControlFile->data_checksum_version (or even creating the restart
+			 * point). But we already updated it from here, so we won't notice.
+			 */
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 			LWLockRelease(ControlFileLock);
 
-			/* Update shared-memory copy of checkpoint XID/epoch */
+			/* Update the "current" value of data_checksum_version */
 			SpinLockAcquire(&XLogCtl->info_lck);
 			old_data_checksum_version_xlogctl = XLogCtl->data_checksum_version;
 			XLogCtl->data_checksum_version = checkPoint.data_checksum_version;
@@ -9306,6 +9308,17 @@ xlog_redo(XLogReaderState *record)
 			if (immediate_checkpoint)
 				flags = flags | CHECKPOINT_IMMEDIATE;
 			RequestCheckpoint(flags);
+
+			/*
+			 * XXX Did the expected checksum version get persisted to the control file?
+			 *
+			 * see SetDataChecksumsOnInProgress for more
+			 */
+#ifdef USE_ASSERT_CHECKING
+			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+			Assert(ControlFile->data_checksum_version == XLogCtl->data_checksum_version);
+			LWLockRelease(ControlFileLock);
+#endif
 		}
 	}
 	else if (info == XLOG_CHECKPOINT_ONLINE)
@@ -9373,12 +9386,25 @@ xlog_redo(XLogReaderState *record)
 		 * XXX This is a bit annoying, as it pauses replication, right?
 		 * XXX Could someone start a restart point while this is running? Do 
 		 * we need to prevent that?
+		 *
+		 * XXX Could someone start a restart point while this is running? Do 
+		 * we need to prevent that?
 		 */
 		if (ControlFile->data_checksum_version != checkPoint.data_checksum_version)
 		{
 			uint32	old_data_checksum_version_controlfile;
 			uint32	old_data_checksum_version_xlogctl;
 
+			/*
+			 * XXX Is it correct to update ControlFile->data_checksum_version
+			 * from here, or should we leave that to CreateRestartPoint, just
+			 * like we leave that to CreateCheckPoint()? We need to be careful
+			 * about CreateRestartPoint() not skipping the update, though.
+			 *
+			 * XXX It might be a problem if CreateRestartPoint() skips updating
+			 * ControlFile->data_checksum_version (or even creating the restart
+			 * point). But we already updated it from here, so we won't notice.
+			 */
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 			old_data_checksum_version_controlfile = ControlFile->data_checksum_version;
 			ControlFile->data_checksum_version = checkPoint.data_checksum_version;
@@ -9464,6 +9490,17 @@ xlog_redo(XLogReaderState *record)
 			if (immediate_checkpoint)
 				flags = flags | CHECKPOINT_IMMEDIATE;
 			RequestCheckpoint(flags);
+
+			/*
+			 * XXX Did the expected checksum version get persisted to the control file?
+			 *
+			 * see SetDataChecksumsOnInProgress for more
+			 */
+#ifdef USE_ASSERT_CHECKING
+			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+			Assert(ControlFile->data_checksum_version == XLogCtl->data_checksum_version);
+			LWLockRelease(ControlFileLock);
+#endif
 		}
 	}
 	else if (info == XLOG_OVERWRITE_CONTRECORD)
@@ -9632,62 +9669,6 @@ xlog_redo(XLogReaderState *record)
 	{
 		/* nothing to do here, just for informational purposes */
 	}
-//	else if (info == XLOG_CHECKSUMS)
-//	{
-//		xl_checksum_state state;
-//		uint64		barrier;
-//		XLogRecPtr	checkpointLsn;
-//		uint32		value,
-//					value_last;
-//
-//		memcpy(&state, XLogRecGetData(record), sizeof(xl_checksum_state));
-//
-//		SpinLockAcquire(&XLogCtl->info_lck);
-//		value_last = XLogCtl->data_checksum_version;
-//		XLogCtl->data_checksum_version = state.new_checksumtype;
-//		SpinLockRelease(&XLogCtl->info_lck);
-//
-//		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-//		checkpointLsn = ControlFile->checkPoint;
-//		value = ControlFile->data_checksum_version;
-//		LWLockRelease(ControlFileLock);
-//
-//		elog(LOG, "XLOG_CHECKSUMS xlog_redo %X/%X control checkpoint %X/%X control %u last %u record %u",
-//			 LSN_FORMAT_ARGS(lsn), LSN_FORMAT_ARGS(checkpointLsn), value, value_last, state.new_checksumtype);
-//
-//		/*
-//		 * Block on a procsignalbarrier to await all processes having seen the
-//		 * change to checksum status. Once the barrier has been passed we can
-//		 * initiate the corresponding processing.
-//		 */
-//		switch (state.new_checksumtype)
-//		{
-//			case PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION:
-//				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON");
-//				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
-//				WaitForProcSignalBarrier(barrier);
-//				break;
-//
-//			case PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION:
-//				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF");
-//				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
-//				WaitForProcSignalBarrier(barrier);
-//				break;
-//
-//			case PG_DATA_CHECKSUM_VERSION:
-//				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_ON");
-//				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
-//				WaitForProcSignalBarrier(barrier);
-//				break;
-//
-//			default:
-//				Assert(state.new_checksumtype == 0);
-//				elog(LOG, "XLOG_CHECKSUMS emit PROCSIGNAL_BARRIER_CHECKSUM_OFF");
-//				barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
-//				WaitForProcSignalBarrier(barrier);
-//				break;
-//		}
-//	}
 }
 
 /*

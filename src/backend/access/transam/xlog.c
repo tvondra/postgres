@@ -5026,7 +5026,7 @@ SetDataChecksumsOn(bool fast)
 	 */
 #ifdef USE_ASSERT_CHECKING
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-	Assert(ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION);
+	Assert(ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION);
 	LWLockRelease(ControlFileLock);
 #endif
 }

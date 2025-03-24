@@ -28,6 +28,66 @@
  * the current system state, and for starting/stopping backups.
  *
  *
+ * on-line checksum upgrades
+ * -------------------------
+ *
+ * Enabling/disabling checksums in an on-line cluster happens in stages.
+ * Instead of just on/off, the cluster can now be in 4 states:
+ *
+ * - off
+ * - on
+ * - inprogress-on
+ * - inprogress-off
+ *
+ * When enabling checksums, the cluster goes through
+ *
+ *    off -> inprogress-on -> on
+ *
+ * and when disabling checksums, the cluster goes through
+ *
+ *    on -> inprogress-off -> off
+ *
+ * All states except for "off" update checksums when writing pages out.
+ * But only in the "on" state are checksums checked.
+ *
+ * If we wanted to switch directly between on/off, we'd have to pause all
+ * writes for a significant amount of time (while adding checksums to all
+ * pages). The "inprogress" states are used for smooth transition, because
+ * we can do this:
+ *
+ * a) start in "off" state
+ * b) switch to "inprogress-on", wait for all processes to acknowledge
+ * c) add checksums to all pages (using a bgworker)
+ * d) switch to "on", wait for all processes to acknowledge
+ *
+ * Before the final switch to "on", we know all pages have valid checksum,
+ * either thanks to the bgworker or a backend (all backends already update
+ * checksums). Some pages may not have valid checksums, but processes should
+ * not verify them anyway.
+ *
+ * Similarly for disabling checksums, except that we don't need to rewrite
+ * all the pages. We still need to do two phases, because we can't have
+ * a mix of processes with "on" and "off" states. Some would not update
+ * checksums, and others would fail during the verification.
+ *
+ * XXX explain why we need separate XLogCtl and ControlFile flags
+ *
+ * XXX what about "aborts" e.g. on -> inprogress-off -> on? do we in fact
+ * need two inprogress states? how is inprogress-on and inprogress-off
+ * fundamentally different?
+ *
+ *
+ * checksum state durability
+ * -------------------------
+ *
+ * XXX explain how the state is updated (we set XLogCtl flag, then a
+ * checkpoint copies that into ControlFile)
+ *
+ * XXX explain why every state change (not just the final "on") needs
+ * a separate checkpoint, to make the change atomic at recovery (and
+ * also because the standbys would get out of sync otherwise on restart)
+ *
+ *
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -9303,6 +9363,43 @@ xlog_redo(XLogReaderState *record)
 			 * Force a checkpoint to get everything out to disk. The use of immediate
 			 * checkpoints is for running tests, as they would otherwise not execute
 			 * in such a way that they can reliably be placed under timeout control.
+			 *
+			 * XXX We definitely need the barrier wait, but do we actually need to
+			 * force a restartpoint for every checksum change? We probably need when
+			 * disabling, because otherwise this could happen on the standby:
+			 *
+			 * - we have "on" in the control file (so we're verifying checksums)
+			 *
+			 * - we get inprogress-off and then off, we apply some WAL after that
+			 *   and the pages (now without correct checksums) get flushed to disk
+			 *
+			 * - the standby crashes/restarts (with -m immediate) and goes back to
+			 *   a the restartpoint with checksums="on"
+			 *
+			 * - we start applying changes, which requires reading pages from disk,
+			 *   and we're with "on" so we verify checksums, but some of the pages
+			 *   are from the future and thus don't have them, so checksums fail
+			 *
+			 * But when enabling, there doesn't seem to be the same issue. We'd need
+			 * to make sure to not write the new state into the ControlFile too
+			 * early (before everything is on disk), but that's the definition of a
+			 * restart point I think. We need to be careful, because on standby the
+			 * control file is flushed very often (compared to primary).
+			 *
+			 * XXX But even when disabling checksums, maybe we don't need to force
+			 * an immediate restart point with a wait? At least if we already
+			 * flushed everything for the last checksum change? Say we're going
+			 * through enabling checksums, we just got the checkpoint moving the
+			 * state "inprogress-off => off". Let's say there have been multiple
+			 * checkpoints / restart points in between. Do we have to force a
+			 * checkpoint? If the standby crashes, it should not go back before
+			 * the "inprogress-off" state, right? So even during the startup
+			 * it will know to not verify checksums on pages. Thus it should not
+			 * be possible to hit the issue with invalid checksums. We can
+			 * assume the online-checksum patch to be most useful for large
+			 * instances, with a lot of data. So in most cases there should be
+			 * multiple checkpoints since setting to inprogress-off, right?
+			 * Because we write the whole database into WAL, pretty much.
 			 */
 			flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
 			if (immediate_checkpoint)

@@ -1090,6 +1090,11 @@ ProcessAllDatabases(bool immediate_checkpoint)
 	 * Force a checkpoint to get everything out to disk. The use of immediate
 	 * checkpoints is for running tests, as they would otherwise not execute
 	 * in such a way that they can reliably be placed under timeout control.
+	 *
+	 * XXX isn't this checkpoint unnecessary / redundant with the checkpoint
+	 * in SetDataChecksumsOn()? maybe we should have just one of those? Do
+	 * we have the correct checksum value in XLogCtl already, so that the
+	 * checkpoint will copy that into control file?
 	 */
 	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
 	if (immediate_checkpoint)

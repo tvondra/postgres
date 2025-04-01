@@ -134,9 +134,9 @@ PGProcShmemSize(void)
 
 	TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
 
-	size = TotalProcs * sizeof(PGPROC);
-	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->xids));
-	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	size = CACHELINEALIGN(TotalProcs * sizeof(PGPROC));
+	size = add_size(size, CACHELINEALIGN(TotalProcs * sizeof(*ProcGlobal->xids)));
+	size = add_size(size, CACHELINEALIGN(TotalProcs * sizeof(*ProcGlobal->subxidStates)));
 	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->statusFlags));
 
 	return size;
@@ -234,7 +234,7 @@ InitProcGlobal(void)
 	MemSet(ptr, 0, requestSize);
 
 	procs = (PGPROC *) ptr;
-	ptr = (char *) ptr + TotalProcs * sizeof(PGPROC);
+	ptr = (char *) ptr + CACHELINEALIGN(TotalProcs * sizeof(PGPROC));
 
 	ProcGlobal->allProcs = procs;
 	/* XXX allProcCount isn't really all of them; it excludes prepared xacts */
@@ -245,10 +245,10 @@ InitProcGlobal(void)
 	 * PROC_HDR.
 	 */
 	ProcGlobal->xids = (TransactionId *) ptr;
-	ptr = (char *) ptr + (TotalProcs * sizeof(*ProcGlobal->xids));
+	ptr = (char *) ptr + CACHELINEALIGN(TotalProcs * sizeof(*ProcGlobal->xids));
 
 	ProcGlobal->subxidStates = (XidCacheStatus *) ptr;
-	ptr = (char *) ptr + (TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	ptr = (char *) ptr + CACHELINEALIGN(TotalProcs * sizeof(*ProcGlobal->subxidStates));
 
 	ProcGlobal->statusFlags = (uint8 *) ptr;
 	ptr = (char *) ptr + (TotalProcs * sizeof(*ProcGlobal->statusFlags));

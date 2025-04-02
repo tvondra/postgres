@@ -347,8 +347,8 @@ ShmemInitHash(const char *name,		/* table string name for shmem index */
 
 	/* look it up in the shmem index */
 	location = ShmemInitStruct(name,
-							   hash_get_init_size(infoP, hash_flags,
-												  init_size, true),
+							   hash_get_size(infoP, hash_flags,
+											 init_size, true),
 							   &found);
 
 	/*

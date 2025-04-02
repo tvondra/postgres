@@ -260,6 +260,7 @@ static long hash_accesses,
 			hash_expansions;
 #endif
 
+/* access to parts of the hash table, allocated as a single chunk */
 #define	HASH_DIRECTORY_PTR(hashp) \
 	(((char *) (hashp)->hctl) + sizeof(HASHHDR))
 
@@ -290,6 +291,8 @@ static long hash_accesses,
 static void *DynaHashAlloc(Size size);
 static HASHSEGMENT seg_alloc(HTAB *hashp);
 static HASHELEMENT *element_alloc(HTAB *hashp, int nelem);
+static void element_add(HTAB *hashp, HASHELEMENT *firstElement,
+						int nelem, int freelist_idx);
 static bool dir_realloc(HTAB *hashp);
 static bool expand_table(HTAB *hashp);
 static HASHBUCKET get_hash_entry(HTAB *hashp, int freelist_idx);
@@ -304,12 +307,10 @@ static int	next_pow2_int(long num);
 static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
-
 static void compute_buckets_and_segs(long nelem, long num_partitions,
 									 long ssize,
 									 int *nbuckets, int *nsegments);
-static void element_add(HTAB *hashp, HASHELEMENT *firstElement,
-						int nelem, int freelist_idx);
+
 
 /*
  * memory allocation support
@@ -542,14 +543,14 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 	nelem_batch = choose_nelem_alloc(info->entrysize);
 
 	/*
-	 * Calculate the number of elements to allocate
-	 *
-	 * For a shared hash table, preallocate the requested number of elements.
-	 * This reduces problems with run-time out-of-shared-memory conditions.
+	 * Decide whether to pre-allocate elements.
 	 *
 	 * For a private hash table, preallocate the requested number of elements
 	 * if it's less than our chosen nelem_alloc.  This avoids wasting space if
 	 * the caller correctly estimates a small table size.
+	 *
+	 * For a shared hash table, preallocate the requested number of elements.
+	 * This reduces problems with run-time out-of-shared-memory conditions.
 	 */
 	prealloc = (flags & HASH_SHARED_MEM) || (nelem < nelem_batch);
 
@@ -560,7 +561,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 	 */
 	if (!hashp->hctl)
 	{
-		Size		size = hash_get_init_size(info, flags, nelem, prealloc);
+		Size		size = hash_get_size(info, flags, nelem, prealloc);
 
 		hashp->hctl = (HASHHDR *) hashp->alloc(size);
 		if (!hashp->hctl)
@@ -631,8 +632,6 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 					nelem_alloc,
 					nelem_alloc_first;
 		void	   *ptr = NULL;
-		int			nsegs;
-		int			nbuckets;
 
 		/*
 		 * If hash table is partitioned, give each freelist an equal share of
@@ -660,13 +659,9 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 		/*
 		 * Calculate the offset at which to find the first partition of
 		 * elements. We have to skip space for the header, segments and
-		 * buckets. We need to recalculate the number of segments, which we
-		 * don't store anywhere.
+		 * buckets.
 		 */
-		compute_buckets_and_segs(nelem, hctl->num_partitions, hctl->ssize,
-								 &nbuckets, &nsegs);
-
-		ptr = HASH_ELEMENTS_PTR(hashp, nsegs);
+		ptr = HASH_ELEMENTS_PTR(hashp, hctl->nsegs);
 
 		/*
 		 * Assign the correct location of each parition within a pre-allocated
@@ -770,6 +765,11 @@ init_htab(HTAB *hashp, long nelem)
 		for (i = 0; i < NUM_FREELISTS; i++)
 			SpinLockInit(&(hctl->freeList[i].mutex));
 
+	/*
+	 * We've already calculated these parameters when we calculated how much
+	 * space to allocate in hash_get_size(). Be careful to keep these two
+	 * places in sync, so that we get the same parameters.
+	 */
 	compute_buckets_and_segs(nelem, hctl->num_partitions, hctl->ssize,
 							 &nbuckets, &nsegs);
 
@@ -896,7 +896,7 @@ hash_select_dirsize(long num_entries)
 }
 
 /*
- * hash_get_init_size -- determine memory needed for a new dynamic hash table
+ * hash_get_size -- determine memory needed for a new dynamic hash table
  *
  *	info: hash table parameters
  *	flags: bitmask indicating which parameters to take from *info
@@ -913,7 +913,7 @@ hash_select_dirsize(long num_entries)
  * is small (less than nelem_alloc).
  */
 Size
-hash_get_init_size(const HASHCTL *info, int flags, long nelem, bool prealloc)
+hash_get_size(const HASHCTL *info, int flags, long nelem, bool prealloc)
 {
 	int			nbuckets;
 	int			nsegs;

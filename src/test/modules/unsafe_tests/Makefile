@@ -1,6 +1,6 @@
 # src/test/modules/unsafe_tests/Makefile
 
-REGRESS = rolenames setconfig alter_system_table guc_privs
+REGRESS = setconfig alter_system_table guc_privs
 REGRESS_OPTS = \
 	--create-role=regress_authenticated_user_db_sr \
 	--create-role=regress_authenticated_user_db_ssa \

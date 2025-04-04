@@ -340,6 +340,8 @@ BufFile
 Buffer
 BufferAccessStrategy
 BufferAccessStrategyType
+BufferCacheNumaRec
+BufferCacheNumaContext
 BufferCachePagesContext
 BufferCachePagesRec
 BufferDesc

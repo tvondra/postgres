@@ -256,7 +256,7 @@
        <structfield>node_id</structfield> <type>int</type>
       </para>
       <para>
-       ID of NUMA node
+       ID of <acronym>NUMA</acronym> node
       </para></entry>
      </row>
 

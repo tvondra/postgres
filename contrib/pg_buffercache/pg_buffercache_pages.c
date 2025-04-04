@@ -61,13 +61,15 @@ typedef struct
 	BufferCachePagesRec *record;
 } BufferCachePagesContext;
 
-
+/*
+ * Record structure holding the to be exposed cache data.
+ */
 typedef struct
 {
 	uint32		bufferid;
 	int32		numa_page;
 	int32		numa_node;
-}			BufferCacheNumaRec;
+} BufferCacheNumaRec;
 
 /*
  * Function context for data persisting over repeated calls.
@@ -79,7 +81,7 @@ typedef struct
 	int			pages_per_buffer;
 	int			os_page_size;
 	BufferCacheNumaRec *record;
-}			BufferCacheNumaContext;
+} BufferCacheNumaContext;
 
 
 /*
@@ -276,7 +278,15 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 }
 
 /*
- * Inquire about NUMA memory mappings, especially the NUMA node.
+ * Inquire about NUMA memory mappings for shared buffers.
+ *
+ * Returns NUMA node ID for each memory page used by the buffer. Buffers may
+ * be smaller or larger than OS memory pages. For each buffer we return one
+ * entry for each memory page used by the buffer (it fhe buffer is smaller,
+ * it only uses a part of one memory page).
+ *
+ * We expect both sizes (for buffers and memory pages) to be a power-of-2, so
+ * one is always a multiple of the other.
  *
  * In order to get reliable results we also need to touch memory pages, so
  * that the inquiry about NUMA memory node doesn't return -2 (which indicates
@@ -348,11 +358,13 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 		 */
 		os_page_count = NBuffers * Max(1, pages_per_buffer);
 
-		elog(DEBUG1, "NUMA: NBuffers=%d os_page_query_count=" UINT64_FORMAT " os_page_size=%zu buffers_per_page=%d pages_per_buffer=%d",
-			 NBuffers, os_page_count, os_page_size, buffers_per_page, pages_per_buffer);
+		elog(DEBUG1, "NUMA: NBuffers=%d os_page_query_count=" UINT64_FORMAT " "
+			 "os_page_size=%zu buffers_per_page=%d pages_per_buffer=%d",
+			 NBuffers, os_page_count, os_page_size,
+			 buffers_per_page, pages_per_buffer);
 
 
-		/* initialize the multi-call context */
+		/* initialize the multi-call context, load entries about buffers */
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
@@ -400,7 +412,7 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 		MemoryContextSwitchTo(oldcontext);
 
 
-		/* determine the NUMA node for OS pages */
+		/* used to determine the NUMA node for all OS pages at once */
 		os_page_ptrs = palloc0(sizeof(void *) * os_page_count);
 		os_page_status = palloc(sizeof(uint64) * os_page_count);
 

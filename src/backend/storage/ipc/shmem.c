@@ -590,13 +590,11 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 				max_nodes;
 	Size	   *nodes;
 
+	if (pg_numa_init() == -1)
+		elog(ERROR, "libnuma initialization failed or NUMA is not supported on this platform");
+
 	InitMaterializedSRF(fcinfo, 0);
 
-	if (pg_numa_init() == -1)
-	{
-		elog(ERROR, "libnuma initialization failed or NUMA is not supported on this platform");
-		return (Datum) 0;
-	}
 	max_nodes = pg_numa_get_max_node();
 	nodes = palloc(sizeof(Size) * (max_nodes + 1));
 
@@ -619,6 +617,9 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 	 * memory size. This simplified approach allocates enough space for all
 	 * pages in shared memory rather than calculating the exact requirements
 	 * for each segment.
+	 *
+	 * XXX Isn't this wasteful? But there probably is one large segment of
+	 * shared memory, much larger than the rest anyway.
 	 */
 	shm_total_page_count = ShmemSegHdr->totalsize / os_page_size;
 	page_ptrs = palloc0(sizeof(void *) * shm_total_page_count);
@@ -637,8 +638,12 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 	{
 		int			i;
 
+		/* XXX I assume we use TYPEALIGN as a way to round to whole pages.
+		 * It's a bit misleading to call that "aligned", no? */
+
 		/* Get number of OS aliged pages */
-		shm_ent_page_count = TYPEALIGN(os_page_size, ent->allocated_size) / os_page_size;
+		shm_ent_page_count
+			= TYPEALIGN(os_page_size, ent->allocated_size) / os_page_size;
 
 		/*
 		 * If we get ever 0xff back from kernel inquiry, then we probably have
@@ -646,16 +651,20 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 		 */
 		memset(pages_status, 0xff, sizeof(int) * shm_ent_page_count);
 
+		/*
+		 * Setup page_ptrs[] with pointers to all OS pages for this segment,
+		 * and get the NUMA status using pg_numa_query_pages.
+		 *
+		 * In order to get reliable results we also need to touch memory
+		 * pages, so that inquiry about NUMA memory node doesn't return -2
+		 * (ENOENT, which indicates unmapped/unallocated pages).
+		 */
 		for (i = 0; i < shm_ent_page_count; i++)
 		{
-			/*
-			 * In order to get reliable results we also need to touch memory
-			 * pages, so that inquiry about NUMA memory node doesn't return -2
-			 * (which indicates unmapped/unallocated pages).
-			 */
 			volatile uint64 touch pg_attribute_unused();
 
 			page_ptrs[i] = (char *) ent->location + (i * os_page_size);
+
 			if (firstNumaTouch)
 				pg_numa_touch_mem_if_required(touch, page_ptrs[i]);
 
@@ -665,19 +674,27 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 		if (pg_numa_query_pages(0, shm_ent_page_count, page_ptrs, pages_status) == -1)
 			elog(ERROR, "failed NUMA pages inquiry status: %m");
 
-		memset(nodes, 0, sizeof(Size) * (max_nodes + 1));
 		/* Count number of NUMA nodes used for this shared memory entry */
+		memset(nodes, 0, sizeof(Size) * (max_nodes + 1));
+
 		for (i = 0; i < shm_ent_page_count; i++)
 		{
 			int			s = pages_status[i];
 
 			/* Ensure we are adding only valid index to the array */
-			if (s >= 0 && s <= max_nodes)
-				nodes[s]++;
-			else
-				elog(ERROR, "invalid NUMA node id outside of allowed range [0, " UINT64_FORMAT "]: %d", max_nodes, s);
+			if (s < 0 || s > max_nodes)
+			{
+				elog(ERROR, "invalid NUMA node id outside of allowed range "
+							"[0, " UINT64_FORMAT "]: %d", max_nodes, s);
+			}
+
+			nodes[s]++;
 		}
 
+		/*
+		 * Add one entry for each NUMA node, including those without allocated
+		 * memory for this segment.
+		 */
 		for (i = 0; i <= max_nodes; i++)
 		{
 			values[0] = CStringGetTextDatum(ent->key);
@@ -693,6 +710,9 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 	 * We are ignoring the following memory regions (as compared to
 	 * pg_get_shmem_allocations()): 1. output shared memory allocated but not
 	 * counted via the shmem index 2. output as-of-yet unused shared memory.
+	 *
+	 * XXX Not quite sure why this is at the end, and what "output memory"
+	 * refers to.
 	 */
 
 	LWLockRelease(ShmemIndexLock);

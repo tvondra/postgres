@@ -306,64 +306,85 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 	if (SRF_IS_FIRSTCALL())
 	{
 		int			i,
-					j,
 					idx;
 		Size		os_page_size = 0;
 		void	  **os_page_ptrs = NULL;
 		int		   *os_page_status;
 		uint64		os_page_count;
 		int			pages_per_buffer;
-		int			buffers_per_page;
+		int			max_entries;
 		volatile uint64 touch pg_attribute_unused();
-		char	   *startptr = NULL;
+		char	   *startptr,
+				   *endptr;
 
 		if (pg_numa_init() == -1)
 			elog(ERROR, "libnuma initialization failed or NUMA is not supported on this platform");
 
 		/*
-		 * Different database block sizes (4kB, 8kB, ..., 32kB) can be used,
-		 * while the OS may have different memory page sizes.
+		 * The database block size and OS memory page size are unlikely to be
+		 * the same. The block size is 1-32KB, the memory page size depends on
+		 * platform. On x86 it's usually 4KB, on ARM it's 4KB or 64KB, but
+		 * there are also features like THP etc. Moreover, we don't quite know
+		 * how the pages and buffers "align" in memory - the buffers may be
+		 * shifted in some way, using more memory pages than necessary.
 		 *
-		 * To correctly map between them, we need to: 1. Determine the OS
-		 * memory page size 2. Calculate how many OS pages are used by all
-		 * buffer blocks 3. Calculate how many OS pages are contained within
-		 * each database block.
+		 * So we need to be careful about mappping buffers to memory pages. We
+		 * calculate the maximum number of pages a buffer might use, so that
+		 * we allocate enough space for the entries. And then we count the
+		 * actual number of entries as we scan the buffers.
 		 *
 		 * This information is needed before calling move_pages() for NUMA
 		 * node id inquiry.
 		 */
 		os_page_size = pg_numa_get_pagesize();
-		buffers_per_page = os_page_size / BLCKSZ;
-		pages_per_buffer = BLCKSZ / os_page_size;
 
 		/*
 		 * The pages and block size is expected to be 2^k, so one divides the
-		 * other (we don't know in which direction).
+		 * other (we don't know in which direction). This does not say
+		 * anything about relative alignment of pages/buffers.
 		 */
 		Assert((os_page_size % BLCKSZ == 0) || (BLCKSZ % os_page_size == 0));
 
 		/*
-		 * Either both counts are 1 (when the pages have the same size), or
-		 * exacly one of them is zero. Both can't be zero at the same time.
+		 * How many addresses we are going to query? Simply get the page for
+		 * the first buffer, and first page after the last buffer, and count
+		 * the pages from that.
 		 */
-		Assert((buffers_per_page > 0) || (pages_per_buffer > 0));
-		Assert(((buffers_per_page == 1) && (pages_per_buffer == 1)) ||
-			   ((buffers_per_page == 0) || (pages_per_buffer == 0)));
+		startptr = (char *) TYPEALIGN_DOWN(os_page_size,
+										   BufferGetBlock(1));
+		endptr = (char *) TYPEALIGN_DOWN(os_page_size,
+										 (char *) BufferGetBlock(NBuffers) + BLCKSZ);
+		os_page_count = (endptr - startptr) / os_page_size;
+
+		/* Used to determine the NUMA node for all OS pages at once */
+		os_page_ptrs = palloc0(sizeof(void *) * os_page_count);
+		os_page_status = palloc(sizeof(uint64) * os_page_count);
+
+		/* Fill pointers for all the memory pages. */
+		idx = 0;
+		for (char *ptr = startptr; ptr < endptr; ptr += os_page_size)
+		{
+			os_page_ptrs[idx++] = ptr;
+
+			/* Only need to touch memory once per backend process lifetime */
+			if (firstNumaTouch)
+				pg_numa_touch_mem_if_required(touch, ptr);
+		}
+
+		Assert(idx == os_page_count);
+
+		elog(DEBUG1, "NUMA: NBuffers=%d os_page_count=" UINT64_FORMAT " "
+			 "os_page_size=%zu", NBuffers, os_page_count, os_page_size);
 
 		/*
-		 * How many addresses we are going to query (store) depends on the
-		 * relation between BLCKSZ : PAGESIZE. We need at least one status per
-		 * buffer - if the memory page is larger than buffer, we still query
-		 * it for each buffer. With multiple memory pages per buffer, we need
-		 * that many entries.
+		 * If we ever get 0xff back from kernel inquiry, then we probably have
+		 * bug in our buffers to OS page mapping code here.
 		 */
-		os_page_count = NBuffers * Max(1, pages_per_buffer);
+		memset(os_page_status, 0xff, sizeof(int) * os_page_count);
 
-		elog(DEBUG1, "NUMA: NBuffers=%d os_page_query_count=" UINT64_FORMAT " "
-			 "os_page_size=%zu buffers_per_page=%d pages_per_buffer=%d",
-			 NBuffers, os_page_count, os_page_size,
-			 buffers_per_page, pages_per_buffer);
-
+		/* Query NUMA status for all the pointers */
+		if (pg_numa_query_pages(0, os_page_count, os_page_ptrs, os_page_status) == -1)
+			elog(ERROR, "failed NUMA pages inquiry: %m");
 
 		/* Initialize the multi-call context, load entries about buffers */
 
@@ -392,28 +413,23 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 
 		fctx->tupdesc = BlessTupleDesc(tupledesc);
 
-		/* Allocate NBuffers worth of BufferCachePagesRec records. */
+		/*
+		 * Each buffer needs at least one entry, but it might be offset in
+		 * some way, and use one extra entry. So we allocate space for the
+		 * maximum number of entries we might need, and then count the exact
+		 * number as we're walking buffers. That way we can do it in one pass,
+		 * without reallocating memory.
+		 */
+		pages_per_buffer = Max(1, BLCKSZ / os_page_size) + 1;
+		max_entries = NBuffers * pages_per_buffer;
+
+		/* Allocate entries for BufferCachePagesRec records. */
 		fctx->record = (BufferCacheNumaRec *)
 			MemoryContextAllocHuge(CurrentMemoryContext,
-								   sizeof(BufferCacheNumaRec) * os_page_count);
-
-		/* Set max calls and remember the user function context. */
-		funcctx->max_calls = NBuffers;
-		funcctx->user_fctx = fctx;
+								   sizeof(BufferCacheNumaRec) * max_entries);
 
 		/* Return to original context when allocating transient memory */
 		MemoryContextSwitchTo(oldcontext);
-
-
-		/* Used to determine the NUMA node for all OS pages at once */
-		os_page_ptrs = palloc0(sizeof(void *) * os_page_count);
-		os_page_status = palloc(sizeof(uint64) * os_page_count);
-
-		/*
-		 * If we ever get 0xff back from kernel inquiry, then we probably have
-		 * bug in our buffers to OS page mapping code here.
-		 */
-		memset(os_page_status, 0xff, sizeof(int) * os_page_count);
 
 		if (firstNumaTouch)
 			elog(DEBUG1, "NUMA: page-faulting the buffercache for proper NUMA readouts");
@@ -434,9 +450,13 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 		idx = 0;
 		for (i = 0; i < NBuffers; i++)
 		{
+			char	   *buffptr = (char *) BufferGetBlock(i + 1);
 			BufferDesc *bufHdr;
 			uint32		buf_state;
 			uint32		bufferid;
+			int32		ospageid;
+			char	   *startptr_buff,
+					   *endptr_buff;
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -445,58 +465,35 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 			/* Lock each buffer header before inspecting. */
 			buf_state = LockBufHdr(bufHdr);
 			bufferid = BufferDescriptorGetBuffer(bufHdr);
-
 			UnlockBufHdr(bufHdr, buf_state);
 
-			/*
-			 * If we have multiple OS pages per buffer, fill those in too. We
-			 * always want at least one OS page, even if there are multiple
-			 * buffers per page.
-			 *
-			 * Altough we could query just once per each OS page, we do it
-			 * repeatably for each Buffer and hit the same address as
-			 * move_pages(2) requires page aligment. This also simplifies
-			 * retrieval code later on. Also NBuffers starts from 1.
-			 */
-			for (j = 0; j < Max(1, pages_per_buffer); j++)
+			/* start of the first page of this buffer */
+			startptr_buff = (char *) TYPEALIGN_DOWN(os_page_size, buffptr);
+
+			/* start of the page right after this buffer */
+			endptr_buff = (char *) TYPEALIGN_DOWN(os_page_size, buffptr + BLCKSZ);
+
+			/* calculate ID of the first page for this buffer */
+			ospageid = (startptr_buff - startptr) / os_page_size;
+
+			/* Add an entry for each OS page overlapping with this buffer. */
+			for (char *ptr = startptr_buff; ptr < endptr_buff; ptr += os_page_size)
 			{
-				char	   *buffptr = (char *) BufferGetBlock(i + 1);
-
 				fctx->record[idx].bufferid = bufferid;
+				fctx->record[idx].numa_page = ospageid;
+				fctx->record[idx].numa_node = os_page_status[ospageid];
 
-				os_page_ptrs[idx]
-					= (char *) TYPEALIGN_DOWN(os_page_size,
-											  buffptr + (os_page_size * j));
-
-				/* calculate ID of the OS memory page */
-				fctx->record[idx].numa_page
-					= ((char *) os_page_ptrs[idx] - startptr) / os_page_size;
-
-				/* Only need to touch memory once per backend process lifetime */
-				if (firstNumaTouch)
-					pg_numa_touch_mem_if_required(touch,
-												  buffptr + (os_page_size * j));
-
+				/* advance to the next entry/page */
 				++idx;
+				++ospageid;
 			}
-
 		}
 
-		/* We should get exactly the expected number of entrires */
-		Assert(idx == os_page_count);
+		Assert((idx >= os_page_count) && (idx <= max_entries));
 
-		/* Query NUMA status for all the pointers */
-		if (pg_numa_query_pages(0, os_page_count, os_page_ptrs, os_page_status) == -1)
-			elog(ERROR, "failed NUMA pages inquiry: %m");
-
-		/*
-		 * Update the entries with NUMA node ID. The status array is indexed
-		 * the same way as the entry index.
-		 */
-		for (i = 0; i < os_page_count; i++)
-		{
-			fctx->record[i].numa_node = os_page_status[i];
-		}
+		/* Set max calls and remember the user function context. */
+		funcctx->max_calls = idx;
+		funcctx->user_fctx = fctx;
 
 		/* Remember this backend touched the pages */
 		firstNumaTouch = false;

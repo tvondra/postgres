@@ -307,8 +307,8 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 	{
 		int			i,
 					idx;
-		Size		os_page_size = 0;
-		void	  **os_page_ptrs = NULL;
+		Size		os_page_size;
+		void	  **os_page_ptrs;
 		int		   *os_page_status;
 		uint64		os_page_count;
 		int			pages_per_buffer;
@@ -352,8 +352,8 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 		 */
 		startptr = (char *) TYPEALIGN_DOWN(os_page_size,
 										   BufferGetBlock(1));
-		endptr = (char *) TYPEALIGN_DOWN(os_page_size,
-										 (char *) BufferGetBlock(NBuffers) + BLCKSZ);
+		endptr = (char *) TYPEALIGN(os_page_size,
+									(char *) BufferGetBlock(NBuffers) + BLCKSZ);
 		os_page_count = (endptr - startptr) / os_page_size;
 
 		/* Used to determine the NUMA node for all OS pages at once */
@@ -470,8 +470,10 @@ pg_buffercache_numa_pages(PG_FUNCTION_ARGS)
 			/* start of the first page of this buffer */
 			startptr_buff = (char *) TYPEALIGN_DOWN(os_page_size, buffptr);
 
-			/* start of the page right after this buffer */
-			endptr_buff = (char *) TYPEALIGN_DOWN(os_page_size, buffptr + BLCKSZ);
+			/* end of the buffer (no need to align to memory page) */
+			endptr_buff = buffptr + BLCKSZ;
+
+			Assert(startptr_buff < endptr_buff);
 
 			/* calculate ID of the first page for this buffer */
 			page_num = (startptr_buff - startptr) / os_page_size;

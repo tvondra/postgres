@@ -1161,7 +1161,8 @@ build-postgresql:
        <listitem>
         <para>
          Build with libnuma support for basic NUMA support.
-         Only supported on platforms for which the <productname>libnuma</productname> library is implemented.
+         Only supported on platforms for which the <productname>libnuma</productname>
+         library is implemented.
         </para>
        </listitem>
       </varlistentry>
@@ -2660,8 +2661,8 @@ ninja install
       <listitem>
        <para>
         Build with libnuma support for basic NUMA support.
-        Only supported on platforms for which the <productname>libnuma</productname> library is implemented.
-        The default for this option is auto.
+        Only supported on platforms for which the <productname>libnuma</productname>
+        library is implemented. The default for this option is auto.
        </para>
       </listitem>
      </varlistentry>

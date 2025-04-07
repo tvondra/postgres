@@ -575,9 +575,8 @@ pg_get_shmem_allocations(PG_FUNCTION_ARGS)
 /*
  * SQL SRF showing NUMA memory nodes for allocated shared memory
  *
- * Contrary to above one  - pg_get_shmem_allocations() - in this function
- * we don't output information aobut shared anonymous allocations and
- * unused memory.
+ * Compared to pg_get_shmem_allocations(), this function does not return
+ * information about shared anonymous allocations and unused shared memory.
  */
 Datum
 pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
@@ -624,10 +623,12 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 	 * pages in shared memory rather than calculating the exact requirements
 	 * for each segment.
 	 *
-	 * XXX Isn't this wasteful? But there probably is one large segment of
-	 * shared memory, much larger than the rest anyway.
+	 * Add 1, because we don't know how exactly the segments align to OS
+	 * pages, so the allocation might use one more memory page. In practice
+	 * this is not very likely, and moreover we have more entries, each of
+	 * them using only fraction of the total pages.
 	 */
-	shm_total_page_count = ShmemSegHdr->totalsize / os_page_size;
+	shm_total_page_count = (ShmemSegHdr->totalsize / os_page_size) + 1;
 	page_ptrs = palloc0(sizeof(void *) * shm_total_page_count);
 	pages_status = palloc(sizeof(int) * shm_total_page_count);
 
@@ -661,8 +662,8 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 		shm_ent_page_count = total_len / os_page_size;
 
 		/*
-		 * If we get ever 0xff back from kernel inquiry, then we probably have
-		 * bug in our buffers to OS page mapping code here.
+		 * If we ever get 0xff (-1) back from kernel inquiry, then we probably
+		 * have a bug in mapping buffers to OS pages.
 		 */
 		memset(pages_status, 0xff, sizeof(int) * shm_ent_page_count);
 
@@ -720,15 +721,6 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
 								 values, nulls);
 		}
 	}
-
-	/*
-	 * We are ignoring the following memory regions (as compared to
-	 * pg_get_shmem_allocations()): 1. output shared memory allocated but not
-	 * counted via the shmem index 2. output as-of-yet unused shared memory.
-	 *
-	 * XXX Not quite sure why this is at the end, and what "output memory"
-	 * refers to.
-	 */
 
 	LWLockRelease(ShmemIndexLock);
 	firstNumaTouch = false;

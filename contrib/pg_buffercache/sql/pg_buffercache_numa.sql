@@ -3,9 +3,10 @@ SELECT NOT(pg_numa_available()) AS skip_test \gset
 \quit
 \endif
 
-select count(*) = (select setting::bigint
-                   from pg_settings
-                   where name = 'shared_buffers')
+-- We expect at least one entry for each buffer
+select count(*) >= (select setting::bigint
+                    from pg_settings
+                    where name = 'shared_buffers')
 from pg_buffercache_numa;
 
 -- Check that the functions / views can't be accessed by default. To avoid

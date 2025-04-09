@@ -12,17 +12,15 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "c.h"
 
-#include "postgres.h"
 #include <unistd.h>
 
 #ifdef WIN32
 #include <windows.h>
 #endif
 
-#include "miscadmin.h"
 #include "port/pg_numa.h"
-#include "storage/pg_shmem.h"
 
 /*
  * At this point we provide support only for Linux thanks to libnuma, but in

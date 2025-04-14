@@ -2846,7 +2846,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 		if (lock)
 			LWLockAcquire(BufferDescriptorGetContentLock(buf_hdr), LW_EXCLUSIVE);
 
-		TerminateBufferIO(buf_hdr, false, BM_VALID, true, false);
+		TerminateBufferIO(buf_hdr, false, BM_VALID | BM_SUPER, true, false);
 	}
 
 	pgBufferUsage.shared_blks_written += extend_by;
@@ -3066,6 +3066,13 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 		old_buf_state = pg_atomic_read_u32(&buf->state);
 		for (;;)
 		{
+			if (old_buf_state & BM_SUPER)
+			{
+				result = (old_buf_state & BM_VALID) != 0;
+				VALGRIND_MAKE_MEM_DEFINED(BufHdrGetBlock(buf), BLCKSZ);
+				break;
+			}
+
 			if (old_buf_state & BM_LOCKED)
 				old_buf_state = WaitBufHdrUnlocked(buf);
 
@@ -3181,7 +3188,8 @@ PinBuffer_Locked(BufferDesc *buf)
 	 */
 	buf_state = pg_atomic_read_u32(&buf->state);
 	Assert(buf_state & BM_LOCKED);
-	buf_state += BUF_REFCOUNT_ONE;
+	if (!(buf_state & BM_SUPER))
+		buf_state += BUF_REFCOUNT_ONE;
 	UnlockBufHdr(buf, buf_state);
 
 	b = BufferDescriptorGetBuffer(buf);
@@ -3284,6 +3292,12 @@ UnpinBufferNoOwner(BufferDesc *buf)
 		old_buf_state = pg_atomic_read_u32(&buf->state);
 		for (;;)
 		{
+			if (old_buf_state & BM_SUPER)
+			{
+				buf_state = old_buf_state;
+				break;
+			}
+
 			if (old_buf_state & BM_LOCKED)
 				old_buf_state = WaitBufHdrUnlocked(buf);
 
@@ -4483,8 +4497,11 @@ BufferGetLSNAtomic(Buffer buffer)
 
 	bufHdr = GetBufferDescriptor(buffer - 1);
 	buf_state = LockBufHdr(bufHdr);
+	if (0)
+		buf_state = LockBufHdr(bufHdr);
 	lsn = PageGetLSN(page);
-	UnlockBufHdr(bufHdr, buf_state);
+	if (0)
+		UnlockBufHdr(bufHdr, buf_state);
 
 	return lsn;
 }
@@ -5589,9 +5606,15 @@ LockBuffer(Buffer buffer, int mode)
 	buf = GetBufferDescriptor(buffer - 1);
 
 	if (mode == BUFFER_LOCK_UNLOCK)
-		LWLockRelease(BufferDescriptorGetContentLock(buf));
+	{
+		if (!(pg_atomic_read_u32(&buf->state) & BM_SUPER))
+			LWLockRelease(BufferDescriptorGetContentLock(buf));
+	}
 	else if (mode == BUFFER_LOCK_SHARE)
-		LWLockAcquire(BufferDescriptorGetContentLock(buf), LW_SHARED);
+	{
+		if (!(pg_atomic_read_u32(&buf->state) & BM_SUPER))
+			LWLockAcquire(BufferDescriptorGetContentLock(buf), LW_SHARED);
+	}
 	else if (mode == BUFFER_LOCK_EXCLUSIVE)
 		LWLockAcquire(BufferDescriptorGetContentLock(buf), LW_EXCLUSIVE);
 	else
@@ -6594,6 +6617,8 @@ EvictUnpinnedBufferInternal(BufferDesc *desc, bool *buffer_flushed)
 
 	/* This will return false if it becomes dirty or someone else pins it. */
 	result = InvalidateVictimBuffer(desc);
+
+	StrategyFreeBuffer(desc);
 
 	UnpinBuffer(desc);
 

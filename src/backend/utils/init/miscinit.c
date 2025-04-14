@@ -28,6 +28,10 @@
 #include <arpa/inet.h>
 #include <utime.h>
 
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#endif
+
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "catalog/pg_authid.h"
@@ -164,6 +168,8 @@ InitPostmasterChild(void)
 				(errcode_for_socket_access(),
 				 errmsg_internal("could not set postmaster death monitoring pipe to FD_CLOEXEC mode: %m")));
 #endif
+
+	numa_set_localalloc();
 }
 
 /*

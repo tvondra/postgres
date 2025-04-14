@@ -146,6 +146,10 @@ int			max_worker_processes = 8;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
 
+bool		numa_aware = true;
+bool		shared_memory_populate = true;
+bool		partition_freelist = true;
+
 /* GUC parameters for vacuum */
 int			VacuumBufferUsageLimit = 2048;
 

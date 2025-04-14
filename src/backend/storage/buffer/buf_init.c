@@ -15,8 +15,16 @@
 #include "postgres.h"
 
 #include "storage/aio.h"
+
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
+
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/proc.h"
+#include "storage/pg_shmem.h"
 
 BufferDescPadded *BufferDescriptors;
 char	   *BufferBlocks;
@@ -111,6 +119,7 @@ BufferManagerShmemInit(void)
 	else
 	{
 		int			i;
+		uintptr_t	huge_page_sz = huge_page_size * 1024;
 
 		/*
 		 * Initialize all the buffer headers.
@@ -127,17 +136,44 @@ BufferManagerShmemInit(void)
 			buf->buf_id = i;
 
 			pgaio_wref_clear(&buf->io_wref);
-
+#if 0
 			/*
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
 			 */
-			buf->freeNext = i + 1;
-
+			if (numa_aware)
+				buf->freeNext = (i + (huge_page_sz)/BLCKSZ) % NBuffers;
+			else
+				buf->freeNext = (i + 1) % NBuffers;
+#endif
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);
 
 			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
+
+#ifdef USE_LIBNUMA
+			if (0)
+			{
+				int status = 0;
+				int rc;
+				void *pages[1];
+
+				pages[0] = BufferGetBlock(i + 1);
+
+				//memset(pages[0], 0, BLCKSZ);
+				rc = move_pages(0, 1, pages, NULL, &status,
+								0);
+				if (rc != 0)
+					elog(LOG, "page: %d, fail: %d: %m, %p", i + 1, rc,
+						 BufferGetBlock(i + 1));
+				else
+					elog(LOG, "page: %d %p: %d: pageid %zu",
+						 i + 1, BufferGetBlock(i + 1), status,
+						 (uintptr_t) pages[0] / huge_page_sz -
+						 (uintptr_t) BufferBlocks / huge_page_sz
+						);
+			}
+#endif
 		}
 
 		/* Correct last entry of linked list */

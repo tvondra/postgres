@@ -16,7 +16,7 @@
 #include "postgres.h"
 
 
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 #include <numa.h>
 #include <numaif.h>
 #endif
@@ -552,7 +552,7 @@ StrategyShmemSize(void)
 	Size		size = 0;
 
 	/* FIXME */
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 	strategy_ncpus = numa_num_task_cpus();
 	strategy_nnodes = numa_num_task_nodes();
 #else

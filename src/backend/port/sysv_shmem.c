@@ -27,7 +27,7 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 #include <numa.h>
 #endif
 

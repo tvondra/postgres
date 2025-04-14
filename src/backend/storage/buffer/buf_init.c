@@ -16,7 +16,7 @@
 
 #include "storage/aio.h"
 
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 #include <numa.h>
 #include <numaif.h>
 #endif
@@ -151,7 +151,7 @@ BufferManagerShmemInit(void)
 
 			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
 
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 			if (0)
 			{
 				int status = 0;

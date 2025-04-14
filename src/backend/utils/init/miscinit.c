@@ -28,7 +28,7 @@
 #include <arpa/inet.h>
 #include <utime.h>
 
-#ifdef ENABLE_LIBNUMA
+#ifdef USE_LIBNUMA
 #include <numa.h>
 #endif
 

@@ -242,7 +242,7 @@ typedef struct IndexScanBatches
 	bool		finished;
 	bool		reset;
 
-	BlockNumber	lastBlock;
+	BlockNumber lastBlock;
 
 	/*
 	 * Current scan direction, for the currently loaded batches. This is used

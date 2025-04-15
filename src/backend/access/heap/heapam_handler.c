@@ -193,8 +193,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 			 *
 			 * XXX What if we pinned the buffer twice (increase the refcount),
 			 * so that if the caller unpins the buffer, we still keep the
-			 * second pin. Wouldn't that mean we don't need to worry about
-			 * the possibility someone loaded another page into the buffer?
+			 * second pin. Wouldn't that mean we don't need to worry about the
+			 * possibility someone loaded another page into the buffer?
 			 *
 			 * XXX We might also keep a longer history of recent blocks, not
 			 * just the immediately preceding one. But that makes it harder,

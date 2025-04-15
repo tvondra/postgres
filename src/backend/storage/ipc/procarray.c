@@ -47,6 +47,10 @@
 
 #include <signal.h>
 
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#endif
+
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -417,15 +421,15 @@ ProcArrayShmemSize(void)
 void
 ProcArrayShmemInit(void)
 {
+	size_t		sz;
 	bool		found;
 
 	/* Create or attach to the ProcArray shared structure */
+	sz = add_size(offsetof(ProcArrayStruct, pgprocnos),
+				  mul_size(sizeof(int),
+						   PROCARRAY_MAXPROCS));
 	procArray = (ProcArrayStruct *)
-		ShmemInitStruct("Proc Array",
-						add_size(offsetof(ProcArrayStruct, pgprocnos),
-								 mul_size(sizeof(int),
-										  PROCARRAY_MAXPROCS)),
-						&found);
+		ShmemInitStruct("Proc Array", sz, &found);
 
 	if (!found)
 	{
@@ -442,6 +446,17 @@ ProcArrayShmemInit(void)
 		procArray->replication_slot_xmin = InvalidTransactionId;
 		procArray->replication_slot_catalog_xmin = InvalidTransactionId;
 		TransamVariables->xactCompletionCount = 1;
+
+		/*
+		 * XXX the interleaving actually happens in CreateAnonymousSegment, not?
+		 * But that interleaves all shmem segments, and maybe we don't want to
+		 * interleave everything - including ProcArray.
+		 *
+		 * XXX Also, CreateAnonymousSegment uses numa_get_membind(), but this
+		 * uses numa_get_mems_allowed. Not sure if this makes a difference.
+		 */
+		//if (numa_shmem_interleave)
+		//	numa_interleave_memory(procArray, sz, numa_get_mems_allowed());
 	}
 
 	allProcs = ProcGlobal->allProcs;

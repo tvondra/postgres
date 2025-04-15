@@ -49,10 +49,11 @@
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(IndexOnlyScanState *node, TupleTableSlot *slot,
 							IndexTuple itup, TupleDesc itupdesc);
-static bool ios_prefetch_block(IndexScanDesc scan, void *data, IndexScanBatchPos *pos);
+static bool ios_prefetch_block(IndexScanDesc scan, void *data,
+							   IndexScanBatchPos *pos);
 
 /* values stored in ios_prefetch_block in the batch cache */
-#define		IOS_UNKNOWN_VISIBILITY		0	/* XXX default value */
+#define		IOS_UNKNOWN_VISIBILITY		0	/* default value */
 #define		IOS_ALL_VISIBLE				1
 #define		IOS_NOT_ALL_VISIBLE			2
 
@@ -108,7 +109,11 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		node->ioss_ScanDesc->xs_want_itup = true;
 		node->ioss_VMBuffer = InvalidBuffer;
 
-		/* Also set the prefetch callback info, if baching enabled. */
+		/*
+		 * Set the prefetch callback info, if the scan has batching enabled (we
+		 * only know what after index_beginscan, which also checks which
+		 * callbacks are defined for the AM.
+		 */
 		if (scandesc->xs_batches != NULL)
 		{
 			scandesc->xs_batches->prefetchCallback = ios_prefetch_block;
@@ -137,7 +142,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 		CHECK_FOR_INTERRUPTS();
 
-		/* */
+		/*
+		 * Without batching, inspect the VM directly. With batching, we need to
+		 * retrieve the visibility information seen by the read_stream callback
+		 * (or rather by ios_prefetch_block), otherwise the read_stream might
+		 * get out of sync (if the VM got updated since then).
+		 */
 		if (scandesc->xs_batches == NULL)
 		{
 			all_visible = VM_ALL_VISIBLE(scandesc->heapRelation,
@@ -146,18 +156,18 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 		else
 		{
-			/* Is the index of the current item valid for the batch? */
-			// Assert((lastIndex >= 0) && (lastIndex < scandesc->xs_batch->nheaptids));
-
 			/*
 			 * Reuse the previously determined page visibility info, or
 			 * calculate it now. If we decided not to prefetch the block, the
-			 * page has to be all-visible.
+			 * page had to be all-visible at that point. The VM bit might
+			 * have changed since then, but the tuple visibility could not
+			 * have.
 			 *
-			 * XXX It's a bir weird we use the visibility to decide if we
+			 * XXX It's a bit weird we use the visibility to decide if we
 			 * should skip prefetching the block, and then deduce the
-			 * visibility from that. Maybe we could/should have a more direct
-			 * way?
+			 * visibility from that (even if it matches pretty clearly).
+			 * But maybe we could/should have a more direct way to read the
+			 * private state?
 			 */
 			all_visible = !ios_prefetch_block(scandesc, node,
 											  &scandesc->xs_batches->readPos);
@@ -204,7 +214,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 */
 			InstrCountTuples2(node, 1);
 			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
-				continue;	/* no visible tuple, try next index entry */
+				continue;		/* no visible tuple, try next index entry */
 
 			ExecClearTuple(node->ioss_TableSlot);
 
@@ -639,6 +649,11 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 * XXX Maybe this should check if the index AM supports batching, or even
 	 * call something like "amcanbatch" (does not exist yet). Or check the
 	 * enable_indexscan_batching GUC?
+	 *
+	 * XXX For now we only know if the scan gets to use batching after the
+	 * index_beginscan() returns, so maybe this name is a bit misleading. It's
+	 * more about "allow batching". But maybe this field is unnecessary - we
+	 * check all the interesting stuff in index_beginscan() anyway.
 	 */
 	indexstate->ioss_CanBatch = true;
 
@@ -830,10 +845,11 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 	}
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans? Maybe
+	 * XXX Do we actually want prefetching for parallel index scans? Maybe
 	 * not, but then we need to be careful not to call index_batch_getnext_tid
 	 * (which now can happen, because we'll call IndexOnlyNext even for
-	 * parallel plans).
+	 * parallel plans). Although, that should not happen, because we only call
+	 * that with (xs_batches != NULL).
 	 */
 	node->ioss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,
@@ -902,7 +918,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 		return;
 	}
 
-	/* XXX do we actually want prefetching for parallel index scans? */
+	/* XXX Do we actually want prefetching for parallel index scans? */
 	node->ioss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,
 								 node->ioss_RelationDesc,

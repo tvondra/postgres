@@ -413,6 +413,11 @@ typedef struct TableAmRoutine
 	 * structure with additional information.
 	 *
 	 * Tuples for an index scan can then be fetched via index_fetch_tuple.
+	 *
+	 * The ReadStream pointer is optional - NULL means the regular buffer
+	 * reads are used. If a valid ReadStream is provided, the callback
+	 * (generating the blocks to read) and index_fetch_tuple (consuming
+	 * the buffers) need to agree on the exact order.
 	 */
 	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel,
 													  ReadStream *rs);

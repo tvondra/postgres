@@ -283,6 +283,10 @@ index_insert_cleanup(Relation indexRelation,
 /*
  * index_beginscan - start a scan of an index with amgettuple
  *
+ * enable_batching determines whether the scan should try using the batching
+ * interface (amgetbatch/amfreebatch), if supported by the index AM, or the
+ * regular amgettuple interface.
+ *
  * Caller must be holding suitable locks on the heap and the index.
  */
 IndexScanDesc
@@ -315,10 +319,6 @@ index_beginscan(Relation heapRelation,
 	 * change that, and just use different read_next callbacks (or something
 	 * like that)?
 	 *
-	 * XXX We do this after ambeginscan(), which means the AM can't init the
-	 * private data in there (it doesn't even know if batching will be used at
-	 * that point).
-	 *
 	 * XXX Maybe we should have a separate "amcanbatch" call, to let the AM
 	 * decide if batching is supported depending on the scan details. That
 	 * might be needed for certain index AMs, that can do batching only for
@@ -331,6 +331,12 @@ index_beginscan(Relation heapRelation,
 		enable_batching &&
 		enable_indexscan_batching)
 	{
+		/*
+		 * XXX We do this after index_beginscan_internal(), which means we
+		 * can't init the batch state in there (it doesn't even know if batching
+		 * will be used at that point). We can't init the read_stream there,
+		 * because it needs the heapRelation.
+		 */
 		index_batch_init(scan);
 
 		/* initialize stream */
@@ -448,8 +454,14 @@ index_rescan(IndexScanDesc scan,
 
 	/*
 	 * Reset the batching. This makes it look like there are no batches,
-	 * discards reads already scheduled to the read stream, etc. We Do this
-	 * before calling amrescan, so that it can reinitialize everything.
+	 * discards reads already scheduled to the read stream, etc.
+	 *
+	 * XXX We do this before calling amrescan, so that it could reinitialize
+	 * everything (this probably does not matter very much, now that we've
+	 * moved all the batching logic to indexam.c, it was more important when
+	 * the index AM was responsible for more of it).
+	 *
+	 * XXX Maybe this should also happen before table_index_fetch_reset?
 	 */
 	index_batch_reset(scan, true);
 
@@ -502,13 +514,12 @@ index_markpos(IndexScanDesc scan)
 
 	/*
 	 * Without batching, just use the ammarkpos() callback. With batching
-	 * everything is handled at this layer, without AM.
-	 *
-	 * XXX This means the AM either doesn't support batching at all, or
-	 * it was disabled for this scan.
+	 * everything is handled at this layer, without calling the AM.
 	 */
 	if (scan->xs_batches == NULL)
+	{
 		scan->indexRelation->rd_indam->ammarkpos(scan);
+	}
 	else
 	{
 		IndexScanBatches  *batches = scan->xs_batches;
@@ -516,12 +527,12 @@ index_markpos(IndexScanDesc scan)
 		IndexScanBatchData *batch = batches->markBatch;
 
 		/*
-		 * Free the previous mark batch (if any). We actually free it only
-		 * if the batch is no longer valid (in the current first/next range).
-		 * This means that if we're marking the same batch (different item),
-		 * we don't really do anything.
+		 * Free the previous mark batch (if any), but only if the batch is no
+		 * longer valid (in the current first/next range). This means that if
+		 * we're marking the same batch (different item), we don't really do
+		 * anything.
 		 *
-		 * XXX Should have some macro to check if pos is in queue, etc.
+		 * XXX Should have some macro for this check, I guess.
 		 */
 		if ((batch != NULL) &&
 			(pos->batch < batches->firstBatch || pos->batch >= batches->nextBatch))
@@ -534,7 +545,10 @@ index_markpos(IndexScanDesc scan)
 		batches->markPos = batches->readPos;
 		batches->markBatch = INDEX_SCAN_BATCH(scan, batches->markPos.batch);
 
-		/* FIXME we need to make sure the batch does not get freed */
+		/*
+		 * FIXME we need to make sure the batch does not get freed during
+		 * the regular advances.
+		 */
 
 		AssertCheckBatchPosValid(scan, &batches->markPos);
 	}
@@ -572,7 +586,7 @@ index_restrpos(IndexScanDesc scan)
 
 	/*
 	 * Without batching, just use the amrestrpos() callback. With batching
-	 * everything is handled at this layer, without AM.
+	 * everything is handled at this layer, without calling the AM.
 	 */
 	if (scan->xs_batches == NULL)
 		scan->indexRelation->rd_indam->amrestrpos(scan);
@@ -587,13 +601,21 @@ index_restrpos(IndexScanDesc scan)
 		/*
 		 * XXX The pos can be invalid, if we already advanced past the the
 		 * marked batch (and stashed it in markBatch instead of freeing).
+		 * So this assert would be incorrect.
 		 */
 		// AssertCheckBatchPosValid(scan, &pos);
 
-		/* FIXME check the batch was not freed yet */
+		/* FIXME we should still check the batch was not freed yet */
+
+		/*
+		 * Reset the batching state, except for the marked batch, and make
+		 * it look like we have a single batch - the marked one.
+		 *
+		 * XXX This seems a bit ugly / hacky, maybe there's a more elegant way
+		 * to do this?
+		 */
 		index_batch_reset(scan, false);
 
-		/* XXX ugly - we reinstall the batch as the "first and only one" */
 		batches->markPos = *pos;
 		batches->readPos = *pos;
 		batches->firstBatch = pos->batch;
@@ -603,8 +625,10 @@ index_restrpos(IndexScanDesc scan)
 
 		/*
 		 * XXX I really dislike that we have so many definitions of "current"
-		 * batch. We have readPos, streamPos, currentBatch, ... We should make
-		 * that somewhat more consistent.
+		 * batch. We have readPos, streamPos, currentBatch, ... seems very ad
+		 * hoc - I just added a new "current" field when I needed one. We
+		 * should make that somewhat more consistent, or at least explain it
+		 * clearly somewhere.
 		 */
 		batches->currentBatch = batch;
 		batches->markBatch = batch; /* also remember this */
@@ -734,6 +758,11 @@ index_parallelrescan(IndexScanDesc scan)
 	 * Reset the batching. This makes it look like there are no batches,
 	 * discards reads already scheduled to the read stream, etc. We Do this
 	 * before calling amrescan, so that it can reinitialize everything.
+	 *
+	 * XXX We do this before calling amparallelrescan, so that it could
+	 * reinitialize everything (this probably does not matter very much, now
+	 * that we've moved all the batching logic to indexam.c, it was more
+	 * important when the index AM was responsible for more of it).
 	 */
 	index_batch_reset(scan, true);
 
@@ -781,10 +810,6 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	 * change that, and just use different read_next callbacks (or something
 	 * like that)?
 	 *
-	 * XXX We do this after ambeginscan(), which means the AM can't init the
-	 * private data in there (it doesn't even know if batching will be used at
-	 * that point).
-	 *
 	 * XXX Maybe we should have a separate "amcanbatch" call, to let the AM
 	 * decide if batching is supported depending on the scan details. That
 	 * might be needed for certain index AMs, that can do batching only for
@@ -796,16 +821,22 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	 * XXX Pretty duplicate with the code in index_beginscan(), so maybe move
 	 * into a shared function.
 	 */
-	if ((indexrel->rd_indam->amgetbatch != NULL) &&
+	if ((indexRelation->rd_indam->amgetbatch != NULL) &&
 		enable_batching &&
 		enable_indexscan_batching)
 	{
+		/*
+		 * XXX We do this after index_beginscan_internal(), which means we
+		 * can't init the batch state in there (it doesn't even know if batching
+		 * will be used at that point). We can't init the read_stream there,
+		 * because it needs the heapRelation.
+		 */
 		index_batch_init(scan);
 
 		/* initialize stream */
 		rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 										NULL,
-										heaprel,
+										heapRelation,
 										MAIN_FORKNUM,
 										index_scan_stream_read_next,
 										scan,
@@ -840,19 +871,19 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * When using batching (which may be disabled for various reasons - e.g.
 	 * through a GUC, the index AM not supporting it), redirect the code to
 	 * the "batch" variant. If needed (e.g. for the first call) the call may
-	 * read the first batch (leaf page) from the index.
+	 * read the next batch (leaf page) from the index (but that's driven by
+	 * the read stream).
 	 *
 	 * XXX Maybe we should enable batching based on the plan too, so that we
 	 * don't do batching when it's probably useless (e.g. semijoins or queries
-	 * with LIMIT 1 etc.). But maybe the approach with slow ramp-up (starting
-	 * with small batches) will handle that well enough. This is what the
-	 * amcanbatch() callback would determine.
+	 * with LIMIT 1 etc.). The amcanbatch() callback might consider things like
+	 * that, or maybe that should be considered outside AM. However, the slow
+	 * ramp-up (starting with small batches) in read_stream should handle this
+	 * well enough.
 	 *
 	 * XXX Perhaps it'd be possible to do both in index_getnext_slot(), i.e.
 	 * call either the original code without batching, or the new batching
 	 * code if supported/enabled. It's not great to have duplicated code.
-	 *
-	 * XXX If needed, index_batch_getnext_tid loads the batch.
 	 */
 	if (scan->xs_batches != NULL)
 		return index_batch_getnext_tid(scan, direction);
@@ -923,20 +954,19 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	 * amgettuple call, in index_getnext_tid).  We do not do this when in
 	 * recovery because it may violate MVCC to do so.  See comments in
 	 * RelationGetIndexScan().
+	 *
+	 * XXX For scans using batching, record the flag in the batch (we will
+	 * pass it to the AM later, when freeing it). Otherwise just pass it
+	 * to the AM using the kill_prior_tuple field.
 	 */
 	if (!scan->xactStartedInRecovery)
 	{
-		/*
-		 * XXX Without batching, just pass the all_dead flag to the index AM.
-		 * With batching, we track the killed items for each batch.
-		 */
 		if (scan->xs_batches == NULL)
 		{
 			scan->kill_prior_tuple = all_dead;
 		}
 		else if (all_dead)
 		{
-			/* batch case - record the killed tuple in the batch */
 			index_batch_kill_item(scan);
 		}
 	}
@@ -1329,7 +1359,7 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 }
 
 /*
- * INDEX BATCHING AND PREFETCHING
+ * INDEX BATCHING (AND PREFETCHING)
  *
  * Allows reading chunks of items from an index, instead of reading them
  * one by one. This reduces the overhead of accessing index pages, and

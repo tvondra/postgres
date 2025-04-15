@@ -817,10 +817,15 @@ retry:
 	found_self = false;
 
 	/*
-	 * XXX Does not seem useful to do prefetching for checks of constraints.
-	 * We would probably need just the first item anyway.
+	 * It doesn't seem very useful to allow batching/prefetching when checking
+	 * exclusion/uniqueness constraints. We should only find either no or just
+	 * one row, I think.
+	 *
+	 * XXX Maybe there are cases where we could find multiple "candidate" rows,
+	 * e.g. with exclusion constraints? Not sure.
 	 */
-	index_scan = index_beginscan(heap, index, &DirtySnapshot, NULL, indnkeyatts, 0, false);
+	index_scan = index_beginscan(heap, index, &DirtySnapshot, NULL, indnkeyatts, 0,
+								 false);
 	index_rescan(index_scan, scankeys, indnkeyatts, NULL, 0);
 
 	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))

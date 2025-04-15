@@ -203,7 +203,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
 		 *
-		 * XXX Should we use batching here? And can we with reordering?
+		 * XXX Should we use batching here? Does it even work for reordering?
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
@@ -975,6 +975,9 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * XXX Maybe this should check if the index AM supports batching, or even
 	 * call something like "amcanbatch" (does not exist yet). Or check the
 	 * enable_indexscan_batching GUC?
+	 *
+	 * XXX Well, we disable batching for reordering, so maybe we should check
+	 * that here instead? But maybe it's unnecessary limitation?
 	 */
 	indexstate->iss_CanBatch = true;
 
@@ -1733,7 +1736,7 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 	}
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans?
+	 * XXX Do we actually want prefetching for parallel index scans?
 	 */
 	node->iss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,
@@ -1801,7 +1804,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 	}
 
 	/*
-	 * XXX do we actually want prefetching for parallel index scans?
+	 * XXX Do we actually want prefetching for parallel index scans?
 	 */
 	node->iss_ScanDesc =
 		index_beginscan_parallel(node->ss.ss_currentRelation,

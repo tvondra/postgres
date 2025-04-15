@@ -28,6 +28,10 @@
 #include <arpa/inet.h>
 #include <utime.h>
 
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#endif
+
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "catalog/pg_authid.h"
@@ -163,6 +167,15 @@ InitPostmasterChild(void)
 		ereport(FATAL,
 				(errcode_for_socket_access(),
 				 errmsg_internal("could not set postmaster death monitoring pipe to FD_CLOEXEC mode: %m")));
+#endif
+
+#ifdef USE_LIBNUMA
+	/*
+	 * Set the default allocation policy to local node, where the task is
+	 * executing at the time of a page fault.
+	 */
+	if (numa_localalloc)
+		numa_set_localalloc();
 #endif
 }
 

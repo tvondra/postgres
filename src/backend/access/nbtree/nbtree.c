@@ -290,7 +290,7 @@ IndexScanBatch
 btgetbatch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	IndexScanBatch	res;
+	IndexScanBatch res;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));
@@ -326,7 +326,8 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		if (res)
 			break;
 
-		/* XXX we need to invoke _bt_first_batch on the next iteration, to
+		/*
+		 * XXX we need to invoke _bt_first_batch on the next iteration, to
 		 * advance SAOP keys etc. But indexam.c already does this, but that's
 		 * only after this returns, so maybe this should do this in some other
 		 * way, not sure who should be responsible for setting currentBatch.

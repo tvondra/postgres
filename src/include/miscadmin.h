@@ -181,6 +181,7 @@ extern PGDLLIMPORT int max_parallel_workers;
 
 extern PGDLLIMPORT bool numa_aware;
 extern PGDLLIMPORT bool shared_memory_populate;
+extern PGDLLIMPORT bool partition_freelist;
 
 extern PGDLLIMPORT int commit_timestamp_buffers;
 extern PGDLLIMPORT int multixact_member_buffers;

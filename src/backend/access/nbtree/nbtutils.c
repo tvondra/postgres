@@ -3482,13 +3482,13 @@ _bt_killitems(IndexScanDesc scan)
 }
 
 /*
- * _bt_killitems_batch 
+ * _bt_killitems_batch
  *		a variant of _bt_killitems, using the batch-level killedItems
  */
 void
 _bt_killitems_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
-	// BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	/* BTScanOpaque so = (BTScanOpaque) scan->opaque; */
 	BTBatchScanPos pos = (BTBatchScanPos) batch->opaque;
 	Page		page;
 	BTPageOpaque opaque;

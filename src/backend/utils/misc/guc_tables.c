@@ -2128,6 +2128,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_shmem_populate", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("frak."),
+			gettext_noop("bar."),
+		},
+		&numa_shmem_populate,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},

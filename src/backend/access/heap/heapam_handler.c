@@ -138,21 +138,23 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		Buffer		prev_buf = hscan->xs_cbuf;
 
 		/*
-		 * Read the block for the requested TID. With a read stream, simply read
-		 * the next block we queued earlier (from the callback). Otherwise just
-		 * do the regular read using the TID.
+		 * Read the block for the requested TID. With a read stream, simply
+		 * read the next block we queued earlier (from the callback).
+		 * Otherwise just do the regular read using the TID.
 		 *
 		 * XXX It's a bit fragile to just read buffers, expecting the right
-		 * block, which we queued from the callback sometime much earlier. If the
-		 * two streams get out of sync in any way (which can happen easily, due to
-		 * some optimization heuristics), it may misbehave in strange ways.
+		 * block, which we queued from the callback sometime much earlier. If
+		 * the two streams get out of sync in any way (which can happen
+		 * easily, due to some optimization heuristics), it may misbehave in
+		 * strange ways.
 		 *
-		 * XXX We need to support both the old ReadBuffer and ReadStream, as some
-		 * places are unlikely to benefit from a read stream - e.g. because they
-		 * only fetch a single tuple. So better to support this.
+		 * XXX We need to support both the old ReadBuffer and ReadStream, as
+		 * some places are unlikely to benefit from a read stream - e.g.
+		 * because they only fetch a single tuple. So better to support this.
 		 *
-		 * XXX Another reason is that some index AMs may not support the batching
-		 * interface, which is a prerequisite for using read_stream API.
+		 * XXX Another reason is that some index AMs may not support the
+		 * batching interface, which is a prerequisite for using read_stream
+		 * API.
 		 */
 		if (scan->rs)
 			hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
@@ -165,9 +167,10 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		Assert(BufferIsValid(hscan->xs_cbuf));
 
 		/*
-		 * Did we read the expected block number (per the TID)? For the regular
-		 * buffer reads this should always match, but with the read stream it
-		 * might disagree due to a bug elsewhere (happened repeatedly).
+		 * Did we read the expected block number (per the TID)? For the
+		 * regular buffer reads this should always match, but with the read
+		 * stream it might disagree due to a bug elsewhere (happened
+		 * repeatedly).
 		 */
 		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
 
@@ -180,18 +183,18 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/*
 		 * When using the read stream, release the old buffer.
 		 *
-		 * XXX Not sure this is really needed, or maybe this is not the
-		 * right place to do this, and buffers should be released elsewhere.
-		 * The problem is that other place may not really know if the index
-		 * scan uses read stream API.
+		 * XXX Not sure this is really needed, or maybe this is not the right
+		 * place to do this, and buffers should be released elsewhere. The
+		 * problem is that other place may not really know if the index scan
+		 * uses read stream API.
 		 *
-		 * XXX We need to do this, because otherwise the caller would need
-		 * to do different things depending on whether the read_stream was
-		 * used or not. With the read_stream it'd have to also explicitly
-		 * release the buffers, but doing that for every caller seems error
-		 * prone (easy to forget). It's also not clear whether it would
-		 * free the buffer before or after the index_fetch_tuple call (we
-		 * don't know if the buffer changed until *after* the call, etc.).
+		 * XXX We need to do this, because otherwise the caller would need to
+		 * do different things depending on whether the read_stream was used
+		 * or not. With the read_stream it'd have to also explicitly release
+		 * the buffers, but doing that for every caller seems error prone
+		 * (easy to forget). It's also not clear whether it would free the
+		 * buffer before or after the index_fetch_tuple call (we don't know if
+		 * the buffer changed until *after* the call, etc.).
 		 *
 		 * XXX Does this do the right thing when reading the same page? That
 		 * should return the same buffer, so won't we release it prematurely?

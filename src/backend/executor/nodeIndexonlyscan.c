@@ -110,8 +110,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		node->ioss_VMBuffer = InvalidBuffer;
 
 		/*
-		 * Set the prefetch callback info, if the scan has batching enabled (we
-		 * only know what after index_beginscan, which also checks which
+		 * Set the prefetch callback info, if the scan has batching enabled
+		 * (we only know what after index_beginscan, which also checks which
 		 * callbacks are defined for the AM.
 		 */
 		if (scandesc->xs_batches != NULL)
@@ -143,30 +143,30 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * Without batching, inspect the VM directly. With batching, we need to
-		 * retrieve the visibility information seen by the read_stream callback
-		 * (or rather by ios_prefetch_block), otherwise the read_stream might
-		 * get out of sync (if the VM got updated since then).
+		 * Without batching, inspect the VM directly. With batching, we need
+		 * to retrieve the visibility information seen by the read_stream
+		 * callback (or rather by ios_prefetch_block), otherwise the
+		 * read_stream might get out of sync (if the VM got updated since
+		 * then).
 		 */
 		if (scandesc->xs_batches == NULL)
 		{
 			all_visible = VM_ALL_VISIBLE(scandesc->heapRelation,
-						  ItemPointerGetBlockNumber(tid),
-						  &node->ioss_VMBuffer);
+										 ItemPointerGetBlockNumber(tid),
+										 &node->ioss_VMBuffer);
 		}
 		else
 		{
 			/*
 			 * Reuse the previously determined page visibility info, or
 			 * calculate it now. If we decided not to prefetch the block, the
-			 * page had to be all-visible at that point. The VM bit might
-			 * have changed since then, but the tuple visibility could not
-			 * have.
+			 * page had to be all-visible at that point. The VM bit might have
+			 * changed since then, but the tuple visibility could not have.
 			 *
 			 * XXX It's a bit weird we use the visibility to decide if we
 			 * should skip prefetching the block, and then deduce the
-			 * visibility from that (even if it matches pretty clearly).
-			 * But maybe we could/should have a more direct way to read the
+			 * visibility from that (even if it matches pretty clearly). But
+			 * maybe we could/should have a more direct way to read the
 			 * private state?
 			 */
 			all_visible = !ios_prefetch_block(scandesc, node,
@@ -987,7 +987,7 @@ static bool
 ios_prefetch_block(IndexScanDesc scan, void *arg, IndexScanBatchPos *pos)
 {
 	IndexOnlyScanState *node = (IndexOnlyScanState *) arg;
-	IndexScanBatch		batch = INDEX_SCAN_BATCH(scan, pos->batch);
+	IndexScanBatch batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
 	if (batch->privateData == NULL)
 		batch->privateData = palloc0(sizeof(Datum) * (batch->lastItem + 1));

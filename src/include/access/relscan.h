@@ -156,14 +156,14 @@ typedef struct IndexScanBatchPosItem	/* what we remember about each match */
 typedef struct IndexScanBatchData
 {
 	/*
-	 * AM-specific concept of position within the index, and other stuff
-	 * the AM might need to store for each batch.
+	 * AM-specific concept of position within the index, and other stuff the
+	 * AM might need to store for each batch.
 	 *
-	 * XXX maybe "position" is not the best name, it can have other stuff
-	 * the AM needs to keep per-batch (even only for reading the leaf items,
-	 * like nextTupleOffset).
+	 * XXX maybe "position" is not the best name, it can have other stuff the
+	 * AM needs to keep per-batch (even only for reading the leaf items, like
+	 * nextTupleOffset).
 	 */
-	void   *opaque;
+	void	   *opaque;
 
 	/*
 	 * The items array is always ordered in index order (ie, increasing
@@ -191,7 +191,7 @@ typedef struct IndexScanBatchData
 	 * XXX maybe currTuples should be part of the am-specific per-batch state
 	 * stored in "position" field?
 	 */
-	char	   *currTuples;			/* tuple storage for currPos */
+	char	   *currTuples;		/* tuple storage for currPos */
 	IndexScanBatchPosItem *items;	/* XXX don't size to MaxTIDsPerBTreePage */
 
 	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
@@ -216,57 +216,56 @@ typedef struct IndexScanBatchPos
 } IndexScanBatchPos;
 
 typedef struct IndexScanDescData IndexScanDescData;
-typedef bool (*IndexPrefetchCallback) (IndexScanDescData *scan, void *arg, IndexScanBatchPos *pos);
+typedef bool (*IndexPrefetchCallback) (IndexScanDescData * scan, void *arg, IndexScanBatchPos *pos);
 
 /*
  * Queue
  */
 typedef struct IndexScanBatches
 {
-		/*
-		 * Did we read the last batch? The batches may be loaded from
-		 * multiple places, and we need to remember when we fail to load
-		 * the next batch in a given scan (which means "no more batches").
-		 * amgetbatch may restart the scan on the get call, so we need to
-		 * remember it's over.
-		 */
-		bool	finished;
+	/*
+	 * Did we read the last batch? The batches may be loaded from multiple
+	 * places, and we need to remember when we fail to load the next batch in
+	 * a given scan (which means "no more batches"). amgetbatch may restart
+	 * the scan on the get call, so we need to remember it's over.
+	 */
+	bool		finished;
 
-		/*
-		 * Current scan direction, for the currently loaded batches. This
-		 * is used to load data in the read stream API callback, etc.
-		 *
-		 * XXX May need some work to use already loaded batches after
-		 * change of direction, instead of just throwing everything away.
-		 * May need to reset the stream but keep the batches?
-		 */
-		ScanDirection			direction;
+	/*
+	 * Current scan direction, for the currently loaded batches. This is used
+	 * to load data in the read stream API callback, etc.
+	 *
+	 * XXX May need some work to use already loaded batches after change of
+	 * direction, instead of just throwing everything away. May need to reset
+	 * the stream but keep the batches?
+	 */
+	ScanDirection direction;
 
-		/* positions in the queue of batches (batch + item) */
-		IndexScanBatchPos		readPos;	/* read position */
-		IndexScanBatchPos		streamPos;	/* prefetch position (for read stream API) */
-		IndexScanBatchPos		markPos;	/* mark/restore position */
+	/* positions in the queue of batches (batch + item) */
+	IndexScanBatchPos readPos;	/* read position */
+	IndexScanBatchPos streamPos;	/* prefetch position (for read stream API) */
+	IndexScanBatchPos markPos;	/* mark/restore position */
 
-		IndexScanBatchData	   *markBatch;
-		IndexScanBatchData	   *currentBatch;
+	IndexScanBatchData *markBatch;
+	IndexScanBatchData *currentBatch;
 
-		/*
-		 * Array of batches returned by the AM. The array has a capacity
-		 * (but can be resized if needed). The firstBatch is an index of the
-		 * first batch, but needs to be translated by (modulo maxBatches)
-		 * into index in the batches array.
-		 *
-		 * FIXME Maybe these fields should be uint32, or something like that?
-		 */
-		int		maxBatches;		/* size of the batches array */
-		int		firstBatch;		/* first used batch slot */
-		int		nextBatch;		/* next empty batch slot */
+	/*
+	 * Array of batches returned by the AM. The array has a capacity (but can
+	 * be resized if needed). The firstBatch is an index of the first batch,
+	 * but needs to be translated by (modulo maxBatches) into index in the
+	 * batches array.
+	 *
+	 * FIXME Maybe these fields should be uint32, or something like that?
+	 */
+	int			maxBatches;		/* size of the batches array */
+	int			firstBatch;		/* first used batch slot */
+	int			nextBatch;		/* next empty batch slot */
 
-		IndexScanBatchData **batches;
+	IndexScanBatchData **batches;
 
-		/* callback to skip prefetching in IOS etc. */
-		IndexPrefetchCallback	prefetchCallback;
-		void				   *prefetchArgument;
+	/* callback to skip prefetching in IOS etc. */
+	IndexPrefetchCallback prefetchCallback;
+	void	   *prefetchArgument;
 } IndexScanBatches;
 
 /*
@@ -321,8 +320,8 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
 	/*
-	 * Batches index scan keep a list of batches loaded from the index in
-	 * a circular buffer.
+	 * Batches index scan keep a list of batches loaded from the index in a
+	 * circular buffer.
 	 */
 	IndexScanBatches *xs_batches;
 

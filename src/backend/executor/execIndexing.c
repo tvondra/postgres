@@ -821,8 +821,8 @@ retry:
 	 * exclusion/uniqueness constraints. We should only find either no or just
 	 * one row, I think.
 	 *
-	 * XXX Maybe there are cases where we could find multiple "candidate" rows,
-	 * e.g. with exclusion constraints? Not sure.
+	 * XXX Maybe there are cases where we could find multiple "candidate"
+	 * rows, e.g. with exclusion constraints? Not sure.
 	 */
 	index_scan = index_beginscan(heap, index, &DirtySnapshot, NULL, indnkeyatts, 0,
 								 false);

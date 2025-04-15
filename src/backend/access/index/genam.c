@@ -451,11 +451,11 @@ systable_beginscan(Relation heapRelation,
 		 * very much, because we usually need just one row, and even if we
 		 * need multiple rows, they tend to be colocated in heap.
 		 *
-		 * XXX Maybe we could do that, the prefetching only ramps up over
-		 * time anyway? There was a problem with infinite recursion when
-		 * looking up effective_io_concurrency for a tablespace (which may
-		 * do an index scan internally), but the read_stream should care of
-		 * that. Still, we don't expect this to help a lot.
+		 * XXX Maybe we could do that, the prefetching only ramps up over time
+		 * anyway? There was a problem with infinite recursion when looking up
+		 * effective_io_concurrency for a tablespace (which may do an index
+		 * scan internally), but the read_stream should care of that. Still,
+		 * we don't expect this to help a lot.
 		 *
 		 * XXX This also means scans on catalogs won't use read_stream.
 		 */
@@ -721,15 +721,15 @@ systable_beginscan_ordered(Relation heapRelation,
 	}
 
 	/*
-	 * No batching/prefetch for catalogs. We don't expect that to help
-	 * very much, because we usually need just one row, and even if we
-	 * need multiple rows, they tend to be colocated in heap.
+	 * No batching/prefetch for catalogs. We don't expect that to help very
+	 * much, because we usually need just one row, and even if we need
+	 * multiple rows, they tend to be colocated in heap.
 	 *
-	 * XXX Maybe we could do that, the prefetching only ramps up over
-	 * time anyway? There was a problem with infinite recursion when
-	 * looking up effective_io_concurrency for a tablespace (which may
-	 * do an index scan internally), but the read_stream should care of
-	 * that. Still, we don't expect this to help a lot.
+	 * XXX Maybe we could do that, the prefetching only ramps up over time
+	 * anyway? There was a problem with infinite recursion when looking up
+	 * effective_io_concurrency for a tablespace (which may do an index scan
+	 * internally), but the read_stream should care of that. Still, we don't
+	 * expect this to help a lot.
 	 *
 	 * XXX This also means scans on catalogs won't use read_stream.
 	 */

@@ -1260,6 +1260,9 @@ IndexPath
 IndexRuntimeKeyInfo
 IndexScan
 IndexScanBatchData
+IndexScanBatchPos
+IndexScanBatchPosItem
+IndexScanBatches
 IndexScanDesc
 IndexScanInstrumentation
 IndexScanState

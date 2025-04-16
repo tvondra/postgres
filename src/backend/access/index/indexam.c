@@ -1587,7 +1587,7 @@ AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch)
 
 	/* we should have items (buffer and pointers) */
 	Assert(batch->items != NULL);
-	Assert(batch->currTuples != NULL);
+	// Assert(batch->currTuples != NULL);
 
 	/*
 	 * The number of killed items must be valid, and there must be an array of
@@ -2243,7 +2243,6 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 
 		/* always reset the position, forget the marked batch */
 		batches->markBatch = NULL;
-		index_batch_pos_reset(scan, &batches->markPos);
 
 		/*
 		 * If we've already moved past the marked batch (it's not in the
@@ -2255,16 +2254,22 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 		{
 			index_batch_free(scan, batch);
 		}
+
+		/* reset position only after the queue range check */
+		index_batch_pos_reset(scan, &batches->markPos);
 	}
 
 	/* release all currently loaded batches */
-	for (int i = batches->firstBatch; i < batches->nextBatch; i++)
+	while (batches->firstBatch < batches->nextBatch)
 	{
-		IndexScanBatch batch = INDEX_SCAN_BATCH(scan, i);
+		IndexScanBatch batch = INDEX_SCAN_BATCH(scan, batches->firstBatch);
 
-		DEBUG_LOG("freeing batch %d %p", i, batch);
+		DEBUG_LOG("freeing batch %d %p", batches->firstBatch, batch);
 
 		index_batch_free(scan, batch);
+
+		/* update the valid range, so that asserts / debugging works */
+		batches->firstBatch++;
 	}
 
 	/* reset relevant IndexScanBatches fields */

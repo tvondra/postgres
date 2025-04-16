@@ -281,6 +281,10 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 	return res;
 }
 
+/* FIXME duplicate from indexam.c */
+#define INDEX_SCAN_BATCH(scan, idx)	\
+		((scan)->xs_batches->batches[(idx) % (scan)->xs_batches->maxBatches])
+
 /*
  *	btgetbatch() -- Get the next batch of tuples in the scan.
  *
@@ -291,6 +295,7 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch res;
+	BTBatchScanPos pos = NULL;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));
@@ -299,6 +304,12 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 
+	if (scan->xs_batches->firstBatch < scan->xs_batches->nextBatch)
+	{
+		IndexScanBatch batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->nextBatch-1);
+		pos = (BTBatchScanPos) batch->opaque;
+	}
+
 	/* Each loop iteration performs another primitive index scan */
 	do
 	{
@@ -306,23 +317,18 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 * If we've already initialized this scan, we can just advance it in
 		 * the appropriate direction.  If we haven't done so yet, we call
 		 * _bt_first() to get the first item in the scan.
-		 *
-		 * XXX This probably should not rely on so->currPos, because the
-		 * batching may not populate that at all. Add a new flag?
-		 *
-		 * FIXME needs to use a "batch" position, not so->currPos
 		 */
-		if (scan->xs_batches->currentBatch == NULL)
+		if (pos == NULL)
 			res = _bt_first_batch(scan, dir);
 		else
 		{
 			/*
 			 * Now continue the scan.
 			 */
-			res = _bt_next_batch(scan, dir);
+			res = _bt_next_batch(scan, pos, dir);
 		}
 
-		/* If we have a tuple, return it ... */
+		/* If we have a batch, return it ... */
 		if (res)
 			break;
 
@@ -336,7 +342,27 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 		 * anyway? There seem to be at least multiple concepts of "current"
 		 * batch, one for the read stream, another for executor ...
 		 */
-		scan->xs_batches->currentBatch = res;
+		// scan->xs_batches->currentBatch = res;
+
+		/*
+		 * We may do a new scan, depending on what _bt_start_prim_scan says.
+		 * In that case we need to start from scratch, not from the position
+		 * of the last batch. In regular non-batched scans we have currPos,
+		 * because we have just one leaf page for the whole scan, and we
+		 * invalidate it before loading the next one. But with batching that
+		 * doesn't work - we have many leafs, it's not clear which one is
+		 * 'current' (well, it's the last), and we can't invalidate it,
+		 * that's up to amfreebatch(). For now we deduce the position and
+		 * reset it to NULL, to indicate the same thing.
+		 *
+		 * XXX Maybe we should have something like 'currentBatch'? But then
+		 * that probably should be in BTScanOpaque, not in the generic
+		 * indexam.c part? Or it it a sufficiently generic thing? How would
+		 * we keep it in sync with the batch queue? If freeing batches is
+		 * up to indexam, how do we ensure the currentBatch does not point
+		 * to already removed batch?
+		 */
+		pos = NULL;
 
 		/* ... otherwise see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan, dir));
@@ -533,8 +559,8 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	BTScanPosInvalidate(so->markPos);
 
 	/* FIXME should be in indexam.c I think */
-	if (scan->xs_batches)
-		scan->xs_batches->currentBatch = NULL;
+	// if (scan->xs_batches)
+	//	scan->xs_batches->currentBatch = NULL;
 
 	/*
 	 * Allocate tuple workspace arrays, if needed for an index-only scan and

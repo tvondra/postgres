@@ -194,10 +194,20 @@ typedef struct IndexScanBatchData
 	char	   *currTuples;		/* tuple storage for currPos */
 	IndexScanBatchPosItem *items;	/* XXX don't size to MaxTIDsPerBTreePage */
 
-	/* batch contents (TIDs, index tuples, kill bitmap, ...) */
+	/*
+	 * batch contents (TIDs, index tuples, kill bitmap, ...)
+	 *
+	 * XXX Shouldn't this be part of the "IndexScanBatchPosItem" struct? To
+	 * keep everything in one place? Or why should we have separate arrays?
+	 * One advantage is that we don't need to allocate memory for arrays that
+	 * we don't need ... e.g. if we don't need heap tuples, we don't allocate
+	 * that. We couldn't do that with everything in one struct.
+	 */
 	IndexTuple *itups;			/* IndexTuples, if requested */
 	HeapTuple  *htups;			/* HeapTuples, if requested */
 	bool	   *recheck;		/* recheck flags */
+
+	/* XXX why do we need this on top of "opaque" pointer? */
 	Datum	   *privateData;	/* private data for batch */
 
 	/* xs_orderbyvals / xs_orderbynulls */

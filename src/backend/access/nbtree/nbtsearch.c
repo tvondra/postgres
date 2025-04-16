@@ -2293,11 +2293,13 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
  * batch for the page, etc.
  */
 IndexScanBatch
-_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
+_bt_next_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	BTBatchScanPos pos;
+	// BTBatchScanPos pos;
 	BTBatchScanPosData tmp;
+	// IndexScanBatch	batch;
+	// int 			idx;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));
@@ -2310,15 +2312,25 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 * needed to determine "location" in the index (essentially BTScanPosData)
 	 * in the batch, without cloning all the other stuff.
 	 */
-	Assert(scan->xs_batches->currentBatch != NULL);
+	// Assert(scan->xs_batches->currentBatch != NULL);
 
 	/*
-	 * memcpy(scan->opaque, scan->xs_batches->currentBatch->opaque,
-	 * sizeof(BTScanOpaque));
+	 * Use the last batch as the "current" batch. We use the streamPos if
+	 * initialized, or the readPos as a fallback. Alternatively, we could
+	 * simply use the last batch in the queue, i.e. (nextBatch - 1).
+	 *
+	 * Even better, we could pass the "correct" batch from indexam.c, and
+	 * let that figure out which position to move from.
 	 */
+/*
+	idx = scan->xs_batches->streamPos.batch;
+	if (idx == -1)
+		idx = scan->xs_batches->readPos.batch;
 
-	pos = (BTBatchScanPos) scan->xs_batches->currentBatch->opaque;
-
+	batch = INDEX_SCAN_BATCH(scan, idx);
+	Assert(batch != NULL);
+	pos = (BTBatchScanPos) batch->opaque;
+*/
 
 	Assert(BTBatchScanPosIsPinned(*pos));
 

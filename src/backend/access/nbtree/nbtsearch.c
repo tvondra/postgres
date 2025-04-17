@@ -2295,7 +2295,7 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
 IndexScanBatch
 _bt_next_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 {
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
 	// BTBatchScanPos pos;
 	BTBatchScanPosData tmp;
 	// IndexScanBatch	batch;
@@ -2357,7 +2357,7 @@ _bt_next_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 void
 _bt_kill_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));
@@ -3903,7 +3903,7 @@ _bt_readnextpage_batch(IndexScanDesc scan, BTBatchScanPos pos, BlockNumber blkno
 					   BlockNumber lastcurrblkno, ScanDirection dir, bool seized)
 {
 	Relation	rel = scan->indexRelation;
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
 
 	/* BTBatchScanPosData	newpos; */
 	IndexScanBatch newbatch = NULL;
@@ -4327,7 +4327,7 @@ static IndexScanBatch
 _bt_endpoint_batch(IndexScanDesc scan, ScanDirection dir)
 {
 	Relation	rel = scan->indexRelation;
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
 	Page		page;
 	BTPageOpaque opaque;
 	OffsetNumber start;

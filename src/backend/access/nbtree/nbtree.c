@@ -378,7 +378,7 @@ btgetbatch(IndexScanDesc scan, ScanDirection dir)
 void
 btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 {
-	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
 
 	/* batching does not work with regular scan-level positions */
 	Assert(!BTScanPosIsValid(so->currPos));

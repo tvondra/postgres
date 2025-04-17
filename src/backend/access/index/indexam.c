@@ -1541,6 +1541,15 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * returning InvalidBlockNumber. But we could also remember this, and do
  * read_stream_reset() to continue, after consuming all the already scheduled
  * blocks.
+ *
+ * XXX Maybe 64 is too high - it also defines the maximum amount of overhead
+ * allowed. In the worst case, reading a single row might trigger reading this
+ * many leaf pages (e.g. with IOS). Which might be an issue with LIMIT queries,
+ * when we actually won't need most of the leaf pages.
+ *
+ * XXX We could/should use a lower value for testing, to make it more likely
+ * we hit this issue. With 64 the whole check-world passes without hitting
+ * the limit, wo we wouldn't test it's handled correctly.
  */
 #define INDEX_SCAN_MAX_BATCHES	64
 

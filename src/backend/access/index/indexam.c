@@ -2156,8 +2156,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				 */
 				if (scan->xs_batches->streamPos.batch == scan->xs_batches->firstBatch)
 				{
-					scan->xs_batches->streamPos.batch = -1;
-					scan->xs_batches->streamPos.index = -1;
+					index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 				}
 
 				DEBUG_LOG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
@@ -2194,15 +2193,18 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 */
 		if (scan->xs_batches->reset)
 		{
-			DEBUG_LOG("resetting read stream pos %d,%d", scan->xs_batches->readPos.batch, scan->xs_batches->readPos.index);
+			DEBUG_LOG("resetting read stream pos %d,%d",
+					  scan->xs_batches->readPos.batch, scan->xs_batches->readPos.index);
 
 			scan->xs_batches->reset = false;
 
-			/* can't init read stream to readPos yet, because that's still in
-			 * the old batch, so just reset it and we'll set it to readPos
-			 * later */
-			scan->xs_batches->streamPos.batch = -1;
-			scan->xs_batches->streamPos.index = -1;
+			/*
+			 * Need to reset the stream position, it might be too far behind.
+			 * Ultimately we want to set it to readPos, but we can't do that
+			 * yet - readPos still point sat the old batch, so just reset it
+			 * and we'll init it to readPos later in the callback.
+			 */
+			index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 
 			read_stream_reset(scan->xs_heapfetch->rs);
 		}

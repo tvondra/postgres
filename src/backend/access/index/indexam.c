@@ -1836,10 +1836,9 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
 	IndexScanBatchPos *pos = &scan->xs_batches->streamPos;
-	ScanDirection direction = scan->xs_batches->direction;
 
 	/* we should have set the direction already */
-	Assert(direction != NoMovementScanDirection);
+	Assert(scan->xs_batches->direction != NoMovementScanDirection);
 
 	/*
 	 * The read position has to be valid, because we initialize/advance it

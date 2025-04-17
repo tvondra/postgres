@@ -240,6 +240,7 @@ typedef struct IndexScanBatches
 	 * the scan on the get call, so we need to remember it's over.
 	 */
 	bool		finished;
+	bool		reset;
 
 	/*
 	 * Current scan direction, for the currently loaded batches. This is used

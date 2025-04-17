@@ -1965,7 +1965,19 @@ index_batch_getnext(IndexScanDesc scan)
 	 * read_stream_reset.
 	 */
 	if (INDEX_SCAN_BATCH_FULL(scan))
-		elog(ERROR, "index_batch_getnext: ran out of space for batches");
+	{
+		DEBUG_LOG("index_batch_getnext: ran out of space for batches");
+		scan->xs_batches->reset = true;
+	}
+
+	/*
+	 * Did we fill the batch queue, either in this or some earlier call?
+	 * If yes, we have to consume everything from currently loaded batch
+	 * before we reset the stream and continue. It's a bit like 'finished'
+	 * but it's only a temporary pause, not the end of the stream.
+	 */
+	if (scan->xs_batches->reset)
+		return NULL;
 
 	/*
 	 * Did we already read the last batch for this scan?
@@ -2111,6 +2123,34 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
 				Assert(batch != NULL);
 
+				/*
+				 * XXX When advancing readPos, the streamPos may get behind as
+				 * we're only advancing it when actually requesting heap blocks.
+				 * But we may not do that often enough - e.g. IOS may not need
+				 * to access all-visible heap blocks, so the read_next callback
+				 * does not get invoked for a long time. It's possible the
+				 * stream gets so mucu behind the position gets invalid, as we
+				 * already removed the batch. But that means we don't need any
+				 * heap blocks until the current read position - if we did, we
+				 * would not be in this situation (or it's a sign of a bug, as
+				 * those two places are expected to be in sync). So if the
+				 * streamPos still points at the batch we're about to free,
+				 * just reset the position - we'll set it to readPos in the
+				 * read_next callback later.
+				 *
+				 * XXX This can happen after the queue gets full, we "pause"
+				 * the stream, and then reset it to continue. But I think that
+				 * just increases the probability of hitting the issue, it's
+				 * just more chance to to not advance the streamPos, which
+				 * depends on when we try to fetch the first heap block after
+				 * calling read_stream_reset().
+				 */
+				if (scan->xs_batches->streamPos.batch == scan->xs_batches->firstBatch)
+				{
+					scan->xs_batches->streamPos.batch = -1;
+					scan->xs_batches->streamPos.index = -1;
+				}
+
 				DEBUG_LOG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
 						  batch,
 						  scan->xs_batches->firstBatch,
@@ -2136,6 +2176,26 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			}
 
 			return &scan->xs_heaptid;
+		}
+
+		/*
+		 * We failed to advance, i.e. we ran out of currently loaded batches.
+		 * So if we filled the queue, this is a good time to reset the stream
+		 * (before we try loading the next batch).
+		 */
+		if (scan->xs_batches->reset)
+		{
+			DEBUG_LOG("resetting read stream pos %d,%d", scan->xs_batches->readPos.batch, scan->xs_batches->readPos.index);
+
+			scan->xs_batches->reset = false;
+
+			/* can't init read stream to readPos yet, because that's still in
+			 * the old batch, so just reset it and we'll set it to readPos
+			 * later */
+			scan->xs_batches->streamPos.batch = -1;
+			scan->xs_batches->streamPos.index = -1;
+
+			read_stream_reset(scan->xs_heapfetch->rs);
 		}
 
 		/*
@@ -2278,6 +2338,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	batches->nextBatch = 0;		/* first batch is empty */
 
 	batches->finished = false;
+	batches->reset = false;
 	// batches->currentBatch = NULL;
 
 	AssertCheckBatches(scan);

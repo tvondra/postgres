@@ -260,7 +260,7 @@ typedef struct IndexScanBatches
 	IndexScanBatchPos markPos;	/* mark/restore position */
 
 	IndexScanBatchData *markBatch;
-	IndexScanBatchData *currentBatch;
+	// IndexScanBatchData *currentBatch;
 
 	/*
 	 * Array of batches returned by the AM. The array has a capacity (but can

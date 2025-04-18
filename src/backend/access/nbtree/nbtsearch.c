@@ -2293,10 +2293,10 @@ _bt_first_batch(IndexScanDesc scan, ScanDirection dir)
  * batch for the page, etc.
  */
 IndexScanBatch
-_bt_next_batch(IndexScanDesc scan, ScanDirection dir)
+_bt_next_batch(IndexScanDesc scan, BTBatchScanPos pos, ScanDirection dir)
 {
 	BTScanOpaque so PG_USED_FOR_ASSERTS_ONLY = (BTScanOpaque) scan->opaque;
-	BTBatchScanPos pos;
+	// BTBatchScanPos pos;
 	BTBatchScanPosData tmp;
 	// IndexScanBatch	batch;
 	// int 			idx;
@@ -2312,7 +2312,7 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 * needed to determine "location" in the index (essentially BTScanPosData)
 	 * in the batch, without cloning all the other stuff.
 	 */
-	Assert(scan->xs_batches->currentBatch != NULL);
+	// Assert(scan->xs_batches->currentBatch != NULL);
 
 	/*
 	 * Use the last batch as the "current" batch. We use the streamPos if
@@ -2322,9 +2322,6 @@ _bt_next_batch(IndexScanDesc scan, ScanDirection dir)
 	 * Even better, we could pass the "correct" batch from indexam.c, and
 	 * let that figure out which position to move from.
 	 */
-
-	pos = (BTBatchScanPos) scan->xs_batches->currentBatch->opaque;
-
 /*
 	idx = scan->xs_batches->streamPos.batch;
 	if (idx == -1)

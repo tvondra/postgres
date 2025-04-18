@@ -139,9 +139,12 @@ SET enable_bitmapscan = off;
 SET enable_seqscan = off;
 $sql;
 EOF
-
-							h=$(md5sum output | awk '{print $1}')
-
+							# the parallel index scan does not maintain the index order, so sort explicitly
+							if [ "$w" != "0" ]; then
+								h=$(md5sum output | sort | awk '{print $1}')
+							else
+								h=$(md5sum output | awk '{print $1}')
+							fi
 
 							# uncached
 
@@ -239,7 +242,31 @@ SET enable_seqscan = off;
 $sql;
 EOF
 
-							h=$(md5sum output | awk '{print $1}')
+							# the parallel index scan does not maintain the index order, so sort explicitly
+							if [ "$w" != "0" ]; then
+								h=$(md5sum output | sort | awk '{print $1}')
+							else
+								h=$(md5sum output | awk '{print $1}')
+							fi
+
+							# in non-parallel case we can check the ordering
+							if [ "$w" == "0" ]; then
+
+								# hash with SET filtered-out
+								h1=$(grep -v SET output | md5sum | awk '{print $1}')
+
+								# hash with SET filtered-out, and sorted
+								h2=$(grep -v SET output | sort -n | md5sum | awk '{print $1}')
+
+								echo "index-only scan h1 $h1 h2 $h2 $sql"
+
+								if [ "$h1" != "$h2" ]; then
+									echo "ERROR: $sql"
+									echo "h1 $h1 h2 $h2"
+									exit 1
+								fi
+
+							fi
 
 							echo "===== $sql run $r index-only-scan =====" >> explains.log 2>&1
 							cat explain.log  >> explains.log 2>&1

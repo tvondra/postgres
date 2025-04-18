@@ -633,7 +633,7 @@ index_restrpos(IndexScanDesc scan)
 		 * XXX Do we even need currentBatch? It's not accessed anywhere, at
 		 * least not in this patch.
 		 */
-		// batches->currentBatch = batch;
+		batches->currentBatch = batch;
 		batches->markBatch = batch; /* also remember this */
 	}
 }
@@ -2043,7 +2043,7 @@ index_batch_getnext(IndexScanDesc scan)
 		 * XXX Why do we need currentBatch, actually? It doesn't seem to be
 		 * used anywhere, just set ...
 		 */
-		// scan->xs_batches->currentBatch = batch;
+		scan->xs_batches->currentBatch = batch;
 
 		DEBUG_LOG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
 				  scan->xs_batches->firstBatch, scan->xs_batches->nextBatch, batch);
@@ -2276,7 +2276,7 @@ index_batch_init(IndexScanDesc scan)
 	index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
 	index_batch_pos_reset(scan, &scan->xs_batches->markPos);
 
-	// scan->xs_batches->currentBatch = NULL;
+	scan->xs_batches->currentBatch = NULL;
 	scan->xs_batches->lastBlock = InvalidBlockNumber;
 }
 
@@ -2359,7 +2359,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 
 	batches->finished = false;
 	batches->reset = false;
-	// batches->currentBatch = NULL;
+	batches->currentBatch = NULL;
 	batches->lastBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);

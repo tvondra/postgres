@@ -140,3 +140,20 @@ test: fast_default
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
 test: tablespace
+
+# custom tests
+test: benchmark_dynamic_saop_advancement
+
+test: cost_skip_scan
+
+test: dynamic_saop_advancement
+
+test: mdam_paper_table
+
+test: saop_costs
+
+test: skip_scan
+
+test: skipscan_verify_preproc
+
+test: small_dynamic_saop_advancement

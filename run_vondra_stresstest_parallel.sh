@@ -5,8 +5,8 @@
 # exit on error
 set -e
 
-BINDIR=/mnt/nvme/postgresql/patch/install_meson_rc/bin
-DATADIR=/mnt/nvme/postgresql/patch/data
+BINDIR=/home/user/builds/master/bin
+DATADIR=/home/user/tmp/data
 PSQL="$BINDIR/psql --no-psqlrc"
 
 # number of rows to generate
@@ -28,7 +28,10 @@ RUNS=3
 # number of values in the IN() clause
 VALUES="1 2 4 8 16 32 64 128 256 512 1024"
 
-RESULTS=results-$(date +%s).csv
+ts=$(date +%s)
+RESULTS=results-$ts.csv
+RESULTDIR=results-$ts
+mkdir $RESULTDIR
 
 # simple deterministic pseudorandom generator - seed and max are enough
 # to fully determine the result for a particular value
@@ -168,7 +171,8 @@ EOF
 							t=$(grep '^Time:' explain-analyze.log | awk '{print $2}' | tail -n 1)
 
 							SEQ=$((SEQ+1))
-							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-scan not-cached $h $t $is $ios $gather $workers >> $RESULTS
+							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-scan not-cached $h $t $is $ios $gather $workers "$sql" >> $RESULTS
+							cp output $RESULTDIR/$SEQ
 
 							# cached
 
@@ -195,7 +199,8 @@ EOF
 							t=$(grep '^Time:' explain-analyze.log | awk '{print $2}' | tail -n 1)
 
 							SEQ=$((SEQ+1))
-							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-scan cached $h $t $is $ios $gather $workers >> $RESULTS
+							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-scan cached $h $t $is $ios $gather $workers "$sql" >> $RESULTS
+							cp output $RESULTDIR/$SEQ
 
 							# index-only scan
 
@@ -267,7 +272,8 @@ EOF
 							t=$(grep '^Time:' explain-analyze.log | awk '{print $2}' | tail -n 1)
 
 							SEQ=$((SEQ+1))
-							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-only-scan not-cached $h $t $is $ios $gather $workers >> $RESULTS
+							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-only-scan not-cached $h $t $is $ios $gather $workers "$sql" >> $RESULTS
+							cp output $RESULTDIR/$SEQ
 
 							# cached
 
@@ -297,7 +303,8 @@ EOF
 							t=$(grep '^Time:' explain-analyze.log | awk '{print $2}' | tail -n 1)
 
 							SEQ=$((SEQ+1))
-							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-only-scan cached $h $t $is $ios $gather $workers >> $RESULTS
+							echo $SEQ $(date +%s) $r $d $s $v $q $seed $w $z index-only-scan cached $h $t $is $ios $gather $workers "$sql" >> $RESULTS
+							cp output $RESULTDIR/$SEQ
 
 						done
 

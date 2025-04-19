@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for s in perf_validate_int_int perf_validate_int_numeric perf_validate_multirange perf_validate_numeric_int perf_validate_numeric_numeric; do
+for s in perf_validate_int_int perf_validate_int_numeric perf_validate_multirange perf_validate_numeric_int perf_validate_numeric_numeric perf_validation_fat_skinny perf_validation_fat_skinny_backwards; do
 	./run_perf_validation $s.sql > $s.txt 2>&1
 done
 
@@ -9,7 +9,9 @@ done
 export PGPORT=6001
 ./run.sh master 100000 > master-100000.log 2>&1
 ./run.sh master 1000000 > master-1000000.log 2>&1
+./run.sh master 10000000 > master-10000000.log 2>&1
 
 export PGPORT=6002
 ./run.sh patched 100000 > patched-100000.log 2>&1
 ./run.sh patched 1000000 > patched-1000000.log 2>&1
+./run.sh patched 10000000 > patched-10000000.log 2>&1

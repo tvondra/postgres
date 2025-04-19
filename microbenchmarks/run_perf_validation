@@ -1,6 +1,7 @@
 #!/bin/bash
 
-SCRIPT=$1
+RESULTDIR=$1
+SCRIPT=$2
 
 PORT_MASTER=6001
 PORT_PATCHED=6002
@@ -13,9 +14,6 @@ DBNAME="test"
 
 # expected to run from the script directory
 DIR=$(pwd)
-
-RESULTDIR=$(date +%Y%m%d-%H%M%S)
-mkdir $RESULTDIR
 
 if pg_isready -p $PORT_MASTER; then
   dropdb -p $PORT_MASTER --if-exists $DBNAME

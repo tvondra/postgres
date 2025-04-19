@@ -1,10 +1,11 @@
 #!/bin/bash
 
-branch=$1
-nrows=$2
+OUTDIR=$1
+branch=$2
+nrows=$3
 dbname=regression
 
-resultfile="$branch"
+resultfile="$OUTDIR/$branch"
 resultfile+="_$nrows"
 resultfile+="_results.csv"
 
@@ -12,7 +13,6 @@ resultfile+="_results.csv"
 
 rm "$dbname.log"
 rm "$resultfile"
-rm debug.log
 PSQL_PAGER=""
 
 function query_duration() {
@@ -48,7 +48,7 @@ SELECT * FROM ($query OFFSET 0) foo OFFSET 1000000000;
 SELECT extract(epoch from now()), 'end';
 EOF
 
-	cat $dbname.log >> debug.log
+	cat $dbname.log >> $OUTDIR/debug.log
 
 	start=$(grep 'start' $dbname.log | awk '{print $1}')
 	end=$(grep 'end' $dbname.log | awk '{print $1}')
@@ -61,92 +61,119 @@ ndistinct=1
 dropdb --if-exists $dbname
 createdb $dbname
 
+psql $dbname -c "create extension pg_buffercache"
+
 # while /bin/true; do
-for ndistinct_prop in 1 5 100 1000; do
+for fill in 100 10; do
 
-	ndistinct=$(($nrows / $ndistinct_prop))
+	for ndistinct_prop in 1 5 100 1000; do
 
-	if [[ $ndistinct -gt $nrows ]]; then
-	    echo Failed! >&2
-		break
-	fi
+		ndistinct=$(($nrows / $ndistinct_prop))
 
-	for type in int ; do
+		if [[ $ndistinct -gt $nrows ]]; then
+			echo Failed! >&2
+			break
+		fi
 
-		# for data in random sequential cycle correlated; do
-		for data in sequential cycle correlated; do
+		for type in int ; do
 
-      tablename="t"
-      tablename+="$ndistinct_prop"
-      tablename+="_"
-      tablename+="$type"
-      tablename+="_"
-      tablename+="$data"
-			echo "===== NDISTINCT $ndistinct TYPE $type DATA $data ====="
+			# for data in random sequential cycle correlated; do
+			for data in random sequential cycle correlated; do
 
-      psql $dbname -c "drop table if exists $tablename";
+				tablename="t"
+				tablename+="$ndistinct_prop"
+				tablename+="_"
+				tablename+="$type"
+				tablename+="_"
+				tablename+="$data"
+				tablename+="_"
+				tablename+="$fill"
 
-			psql $dbname -c "create unlogged table $tablename (v $type)";
+				echo "===== NDISTINCT $ndistinct TYPE $type DATA $data ====="
 
-			psql $dbname -c "create index on $tablename (v)";
+				psql $dbname -c "drop table if exists $tablename";
 
-			if [ "$data" == "random" ]; then
-				echo  "insert into $tablename select $ndistinct * random() from generate_series(1, $nrows) s(i)"
-        psql $dbname -c "select setseed(0.12345); insert into $tablename select $ndistinct * random() from generate_series(1, $nrows) s(i)"
-			elif [ "$data" == "sequential" ]; then
-				echo "insert into $tablename select i::float * $ndistinct / $nrows from generate_series(1, $nrows) s(i)"
-				psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows from generate_series(1, $nrows) s(i)"
-			elif [ "$data" == "cycle" ]; then
-				echo "insert into $tablename select mod(i,$ndistinct) from generate_series(1, $nrows) s(i)"
-				psql $dbname -c "select setseed(0.12345); insert into $tablename select mod(i,$ndistinct) from generate_series(1, $nrows) s(i)"
-			elif [ "$data" == "correlated" ]; then
-				echo "insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct) from generate_series(1, $nrows) s(i)"
-				psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct) from generate_series(1, $nrows) s(i)"
-			fi
+				psql $dbname -c "create unlogged table $tablename (v $type, x text) with (fillfactor = $fill)";
 
+				psql $dbname -c "create index on $tablename (v)";
 
-      psql $dbname -c "vacuum (analyze,freeze) $tablename";
+				if [ "$data" == "random" ]; then
+					echo  "insert into $tablename select $ndistinct * random() from generate_series(1, $nrows) s(i)"
+					psql $dbname -c "select setseed(0.12345); insert into $tablename select $ndistinct * random(), md5(i::text) from generate_series(1, $nrows) s(i)"
+				elif [ "$data" == "sequential" ]; then
+					echo "insert into $tablename select i::float * $ndistinct / $nrows from generate_series(1, $nrows) s(i)"
+					psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows, md5(i::text) from generate_series(1, $nrows) s(i)"
+				elif [ "$data" == "cycle" ]; then
+					echo "insert into $tablename select mod(i,$ndistinct) from generate_series(1, $nrows) s(i)"
+					psql $dbname -c "select setseed(0.12345); insert into $tablename select mod(i,$ndistinct), md5(i::text) from generate_series(1, $nrows) s(i)"
+				elif [ "$data" == "correlated" ]; then
+					echo "insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct) from generate_series(1, $nrows) s(i)"
+					psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct), md5(i::text) from generate_series(1, $nrows) s(i)"
+				fi
 
-      SEED=42
-      RANDOM=$SEED
+				psql $dbname -c "vacuum (analyze,freeze) $tablename";
 
-			for run in $(seq 1 10); do
+				SEED=42
+				RANDOM=$SEED
 
-				for narray_values in 1 10 100 1000; do
+				for run in $(seq 1 10); do
 
-					for step in 1 5 10; do
+					for scan in indexonlyscan indexscan; do
 
-						if [[ $narray_values -eq 1 && $step -gt 1 ]]; then
-							continue
-						fi
+						for cache in hot cold; do
 
-						range=$((narray_values * step))
+							if [ "$cache" == "hot" ]; then
+								psql $dbname -c "select * from $tablename" > /dev/null 2>&1
+							fi
 
-						if [[ $range -gt $ndistinct ]]; then
-							continue
-						fi
+							for narray_values in 1 10 100 1000; do
 
-						if [[ $ndistinct -gt $range ]]; then
-							value=$((RANDOM % (ndistinct - range)))
-						else
-							value=0
-						fi
+								for step in 1 5 10; do
 
-						values="$value"
+									if [[ $narray_values -eq 1 && $step -gt 1 ]]; then
+										continue
+									fi
 
-						for v in $(seq 1 $((narray_values-1))); do
-							value=$((value + step))
-							values="$values, $value"
-						done
+									range=$((narray_values * step))
 
-						query="select * from $tablename where v = any('{$values}')"
+									if [[ $range -gt $ndistinct ]]; then
+										continue
+									fi
 
-						echo "----- narray_values $narray_values step $step run $run query $query -----"
+									if [[ $ndistinct -gt $range ]]; then
+										value=$((RANDOM % (ndistinct - range)))
+									else
+										value=0
+									fi
 
-						#for scan in indexscan indexonlyscan seqscan bitmapscan; do
-						for scan in indexonlyscan ; do
-							t=$(query_duration $scan "$query")
-							echo "$branch $nrows $ndistinct $type $data $narray_values $step $run $scan $t" >> "$resultfile"
+									values="$value"
+
+									for v in $(seq 1 $((narray_values-1))); do
+										value=$((value + step))
+										values="$values, $value"
+									done
+
+									if [ "$scan" == "indexscan" ]; then
+										query="select * from $tablename where v = any('{$values}')"
+									else
+										query="select v from $tablename where v = any('{$values}')"
+									fi
+
+									echo "----- narray_values $narray_values step $step run $run query $query cache $cache scan $scan -----"
+
+									if [ "$cache" == "cold" ]; then
+										psql $dbname -c "select pg_buffercache_evict_all()"
+										sudo ./drop-caches.sh
+									fi
+
+									#for scan in indexscan indexonlyscan seqscan bitmapscan; do
+									t=$(query_duration $scan "$query")
+									echo "$branch $nrows $fill $ndistinct $type $data $narray_values $step $run $cache $scan $t" >> "$resultfile"
+
+								done
+
+							done
+
 						done
 
 					done

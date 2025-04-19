@@ -29,9 +29,9 @@ if pg_isready -p $PORT_PATCHED; then
   psql $DBNAME -p $PORT_PATCHED -f "$DIR/$SCRIPT" > "$RESULTDIR/output_master_$SCRIPT.txt"
 fi
 
-index_pattern="t_one_.*_idx|t_one_sequential_.*_idx|t_five_.*_idx|t_ten_.*_idx|t_fifteen_.*_idx|t_seventeen_.*_idx|t_twenty_.*_idx|t_twentyfive_.*_idx|t_fifty_.*_idx|t_five_hundred_.*_idx"
-grep -E "$index_pattern"  -A 7 "$RESULTDIR/output_patch_$SCRIPT.txt" | grep -E "Execution|Index [O]|Index Searches" > "/tmp/diff_results_patch_$SCRIPT.txt"
-grep -E "$index_pattern"  -A 7 "$RESULTDIR/output_master_$SCRIPT.txt" | grep -E "Execution|Index [O]" > "/tmp/diff_results_master_$SCRIPT.txt"
+index_pattern="t_one_.*_idx|t_one_sequential_.*_idx|t_five_.*_idx|t_ten_.*_idx|t_fifteen_.*_idx|t_seventeen_.*_idx|t_twenty_.*_idx|t_twentyfive_.*_idx|t_fifty_.*_idx|t_five_hundred_.*_idx|t_idx"
+grep -E "$index_pattern"  -A 9 "$RESULTDIR/output_patch_$SCRIPT.txt" | grep -E "Execution|Index [O]|Index Searches" > "/tmp/diff_results_patch_$SCRIPT.txt"
+grep -E "$index_pattern"  -A 9 "$RESULTDIR/output_master_$SCRIPT.txt" | grep -E "Execution|Index [O]" > "/tmp/diff_results_master_$SCRIPT.txt"
 
 # Extract execution times from both files
 patch_times=$(grep -oP 'Execution Time: \K[0-9\.]+(?= ms)' "/tmp/diff_results_patch_$SCRIPT.txt")

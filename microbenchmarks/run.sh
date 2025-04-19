@@ -3,8 +3,11 @@
 branch=$1
 nrows=$2
 dbname=regression
+
 resultfile="$branch"
+resultfile+="_$nrows"
 resultfile+="_results.csv"
+
 # export PGPORT=5555
 
 rm "$dbname.log"
@@ -54,6 +57,9 @@ EOF
 }
 
 ndistinct=1
+
+dropdb --if-exists $dbname
+createdb $dbname
 
 # while /bin/true; do
 for ndistinct_prop in 1 5 100 1000; do

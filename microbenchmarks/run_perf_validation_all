@@ -1,0 +1,15 @@
+#!/bin/bash
+
+for s in perf_validate_int_int perf_validate_int_numeric perf_validate_multirange perf_validate_numeric_int perf_validate_numeric_numeric; do
+	./run_perf_validation $s.sql > $s.txt 2>&1
+done
+
+./run_multirange_perf_validation > run_multirange_perf_validation.txt 2>&1
+
+export PGPORT=6001
+./run.sh master 100000 > master-100000.log 2>&1
+./run.sh master 1000000 > master-1000000.log 2>&1
+
+export PGPORT=6002
+./run.sh patched 100000 > patched-100000.log 2>&1
+./run.sh patched 1000000 > patched-1000000.log 2>&1

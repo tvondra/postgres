@@ -1,20 +1,55 @@
 #!/bin/bash
 
-OUTDIR=$(date +%Y%m%d-%H%M%S)
-mkdir $OUTDIR
+DATADIR_MASTER=/mnt/raid-nvme/data-master/
+DATADIR_PATCHED=/mnt/raid-nvme/data-patched/
 
-for s in perf_validate_int_int perf_validate_int_numeric perf_validate_numeric_int perf_validate_numeric_numeric perf_validation_improvements perf_validation_fat_skinny perf_validation_fat_skinny_backwards; do
-	./run_perf_validation $OUTDIR $s.sql > $OUTDIR/$s.txt 2>&1
+PORT_MASTER=6001
+PORT_PATCHED=6002
+
+for iom in sync worker io_uring; do
+
+	OUTDIR=$(date +%Y%m%d-%H%M%S)-$iom
+	mkdir $OUTDIR
+
+	echo "io_method = $iom" >> $DATADIR_MASTER/postgresql.conf
+	echo "io_method = $iom" >> $DATADIR_PATCHED/postgresql.conf
+
+	pg_ctl -D $DATADIR_MASTER -l $OUTDIR/pg-master.log restart
+	pg_ctl -D $DATADIR_PATCHED -l $OUTDIR/pg-patched.log restart
+
+	psql -p $PORT_MASTER postgres -c "select * from pg_settings" > $OUTDIR/settings-master.log 2>&1
+	psql -p $PORT_PATCHED postgres -c "select * from pg_settings" > $OUTDIR/settings-patched.log 2>&1
+
+	for s in perf_validate_int_int perf_validate_int_numeric perf_validate_numeric_int perf_validate_numeric_numeric perf_validation_improvements perf_validation_fat_skinny perf_validation_fat_skinny_backwards; do
+		./run_perf_validation $OUTDIR $s.sql $iom > $OUTDIR/$s.txt 2>&1
+	done
+
+	./run_multirange_perf_validation $OUTDIR $iom > $OUTDIR/run_multirange_perf_validation.txt 2>&1
+
 done
-
-./run_multirange_perf_validation $OUTDIR > $OUTDIR/run_multirange_perf_validation.txt 2>&1
 
 for rows in 100000 1000000 10000000 25000000; do
 
-	export PGPORT=6001
-	./run.sh $OUTDIR master $rows > $OUTDIR/master-$rows.log 2>&1
+	for iom in sync worker io_uring; do
 
-	export PGPORT=6002
-	./run.sh $OUTDIR patched $rows > $OUTDIR/patched-$rows.log 2>&1
+		OUTDIR=$(date +%Y%m%d-%H%M%S)-$iom
+		mkdir $OUTDIR
+
+		echo "io_method = $iom" >> $DATADIR_MASTER/postgresql.conf
+		echo "io_method = $iom" >> $DATADIR_PATCHED/postgresql.conf
+
+		pg_ctl -D $DATADIR_MASTER -l $OUTDIR/pg-master.log restart
+		pg_ctl -D $DATADIR_PATCHED -l $OUTDIR/pg-patched.log restart
+
+		psql -p $PORT_MASTER postgres -c "select * from pg_settings" > $OUTDIR/settings-master.log 2>&1
+		psql -p $PORT_PATCHED postgres -c "select * from pg_settings" > $OUTDIR/settings-patched.log 2>&1
+
+		export PGPORT=$PORT_MASTER
+		./run.sh $OUTDIR master $rows $iom > $OUTDIR/master-$rows.log 2>&1
+
+		export PGPORT=$PORT_PATCHED
+		./run.sh $OUTDIR patched $rows $iom > $OUTDIR/patched-$rows.log 2>&1
+
+	done
 
 done

@@ -1,6 +1,7 @@
 #!/bin/bash
 
 RESULTDIR=$1
+IOMETHOD=$2
 
 PORT_MASTER=6001
 PORT_PATCHED=6002
@@ -72,5 +73,7 @@ for i in "${!patch_array[@]}"; do
   echo "Result $((i + 1)), $query" >> "$RESULTDIR/ratio_$SCRIPT.txt"
   echo "  Result $((i + 1)), index = $index_name, nsearches = $index_searches, patch = $patch_time ms, master = $master_time ms, ratio = $ratio" >> "$RESULTDIR/ratio_$SCRIPT.txt"
   echo "" >> "$RESULTDIR/ratio_$SCRIPT.txt"
+
+  echo $IOMETHOD $SCRIPT $((i+1)) $index_name $index_searches $master_time $patch_time $ratio >> $RESULTDIR/ratio_$SCRIPT.csv
 done
 cat "$RESULTDIR/ratio_$SCRIPT.txt"

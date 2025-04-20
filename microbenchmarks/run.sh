@@ -3,16 +3,16 @@
 OUTDIR=$1
 branch=$2
 nrows=$3
-dbname=regression
+IOMETHOD=$4
 
 resultfile="$OUTDIR/$branch"
 resultfile+="_$nrows"
 resultfile+="_results.csv"
 
+DEBUG="$OUTDIR/debug_${branch}_${nrows}.log"
+
 # export PGPORT=5555
 
-rm "$dbname.log"
-rm "$resultfile"
 PSQL_PAGER=""
 
 function query_duration() {
@@ -35,36 +35,36 @@ function query_duration() {
 		indexonlyscan=on
 	fi
 
-	psql --no-psqlrc $dbname > $dbname.log 2>&1 <<EOF
+	psql --no-psqlrc $dbname > tmp.log 2>&1 <<EOF
 SET enable_seqscan=$seqscan;
 SET enable_bitmapscan=$bitmapscan;
 SET enable_indexscan=$indexscan;
 SET enable_indexonlyscan=$indexonlyscan;
 SET max_parallel_workers_per_gather=0;
---select \$foo\$EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM ($query OFFSET 0) foo OFFSET 1000000000;\$foo\$;
-EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM ($query OFFSET 0) foo OFFSET 1000000000;
+EXPLAIN SELECT * FROM ($query OFFSET 0) foo OFFSET 1000000000;
 SELECT extract(epoch from now()), 'start';
 SELECT * FROM ($query OFFSET 0) foo OFFSET 1000000000;
 SELECT extract(epoch from now()), 'end';
 EOF
 
-	cat $dbname.log >> $OUTDIR/debug.log
+	cat tmp.log >> $DEBUG 2>&1
 
-	start=$(grep 'start' $dbname.log | awk '{print $1}')
-	end=$(grep 'end' $dbname.log | awk '{print $1}')
+	start=$(grep 'start' tmp.log | awk '{print $1}')
+	end=$(grep 'end' tmp.log | awk '{print $1}')
 
 	echo "($end - $start) * 1000" | bc
 }
 
 ndistinct=1
 
-dropdb --if-exists $dbname
-createdb $dbname
-
-psql $dbname -c "create extension pg_buffercache"
-
 # while /bin/true; do
 for fill in 100 10; do
+
+	dbname="test_${nrows}_${fill}"
+	dropdb --if-exists $dbname
+	createdb $dbname
+
+	psql $dbname -c "create extension pg_buffercache"
 
 	for ndistinct_prop in 1 5 100 1000; do
 
@@ -86,12 +86,10 @@ for fill in 100 10; do
 				tablename+="$type"
 				tablename+="_"
 				tablename+="$data"
-				tablename+="_"
-				tablename+="$fill"
 
 				echo "===== NDISTINCT $ndistinct TYPE $type DATA $data ====="
 
-				psql $dbname -c "drop table if exists $tablename";
+				#psql $dbname -c "drop table if exists $tablename";
 
 				psql $dbname -c "create unlogged table $tablename (v $type, x text) with (fillfactor = $fill)";
 
@@ -111,7 +109,10 @@ for fill in 100 10; do
 					psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct), md5(i::text) from generate_series(1, $nrows) s(i)"
 				fi
 
+				psql $dbname -c "copy $tablename to stdout" | gzip -c > $OUTDIR/$tablename.$branch.dump.gz
+
 				psql $dbname -c "vacuum (analyze,freeze) $tablename";
+				psql $dbname -c "checkpoint"
 
 				SEED=42
 				RANDOM=$SEED
@@ -120,20 +121,17 @@ for fill in 100 10; do
 
 					for scan in indexonlyscan indexscan; do
 
-						for cache in hot cold; do
+						for narray_values in 1 10 100 1000; do
 
-							if [ "$cache" == "hot" ]; then
-								psql $dbname -c "select * from $tablename" > /dev/null 2>&1
-							fi
+							for step in -1 1 5 10; do
 
-							for narray_values in 1 10 100 1000; do
+								if [[ $narray_values -eq 1 && $step -ne 1 ]]; then
+									continue
+								fi
 
-								for step in 1 5 10; do
-
-									if [[ $narray_values -eq 1 && $step -gt 1 ]]; then
-										continue
-									fi
-
+								if [ "$step" == "-1" ]; then
+									values=$(psql --no-psqlrc $dbname -t -A -c "select string_agg(random(0,${ndistinct})::text,', ') from generate_series(1,${narray_values})")
+								else
 									range=$((narray_values * step))
 
 									if [[ $range -gt $ndistinct ]]; then
@@ -152,25 +150,28 @@ for fill in 100 10; do
 										value=$((value + step))
 										values="$values, $value"
 									done
+								fi
 
-									if [ "$scan" == "indexscan" ]; then
-										query="select * from $tablename where v = any('{$values}')"
-									else
-										query="select v from $tablename where v = any('{$values}')"
-									fi
+								if [ "$scan" == "indexscan" ]; then
+									query="select * from $tablename where v = any('{$values}')"
+								else
+									query="select v from $tablename where v = any('{$values}')"
+								fi
 
-									echo "----- narray_values $narray_values step $step run $run query $query cache $cache scan $scan -----"
+								echo "----- narray_values $narray_values step $step run $run query $query scan $scan -----"
 
-									if [ "$cache" == "cold" ]; then
-										psql $dbname -c "select pg_buffercache_evict_all()"
-										sudo ./drop-caches.sh
-									fi
+								psql $dbname -c "select pg_buffercache_evict_all()"
+								sudo ./drop-caches.sh
 
-									#for scan in indexscan indexonlyscan seqscan bitmapscan; do
-									t=$(query_duration $scan "$query")
-									echo "$branch $nrows $fill $ndistinct $type $data $narray_values $step $run $cache $scan $t" >> "$resultfile"
+								echo "===== $IOMETHOD $branch $nrows $fill $ndistinct $type $data $narray_values $step $run $scan =====" >> $DEBUG 2>&1
 
-								done
+								echo $sql >> $DEBUG 2>&1
+
+								t=$(query_duration $scan "$query")
+								echo "$IOMETHOD $branch $nrows $fill $ndistinct $type $data $narray_values $step $run cold $scan $t" >> "$resultfile"
+
+								t=$(query_duration $scan "$query")
+								echo "$IOMETHOD $branch $nrows $fill $ndistinct $type $data $narray_values $step $run hot $scan $t" >> "$resultfile"
 
 							done
 

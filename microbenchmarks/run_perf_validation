@@ -2,6 +2,7 @@
 
 RESULTDIR=$1
 SCRIPT=$2
+IOMETHOD=$3
 
 PORT_MASTER=6001
 PORT_PATCHED=6002
@@ -72,6 +73,7 @@ for i in "${!patch_array[@]}"; do
 
   ratio=$(echo "scale=4; $patch_time / $master_time" | bc)
   echo "Result $((i + 1)): index = $index_name, nsearches = $index_searches, patch = $patch_time ms, master = $master_time ms, ratio = $ratio" >> "$RESULTDIR/ratio_$SCRIPT.txt"
+  echo $IOMETHOD $SCRIPT $((i+1)) $index_name $index_searches $master_time $patch_time $ratio >> $RESULTDIR/ratio_$SCRIPT.csv
   echo "" >> "$RESULTDIR/ratio_$SCRIPT.txt"
 done
 cat "$RESULTDIR/ratio_$SCRIPT.txt"

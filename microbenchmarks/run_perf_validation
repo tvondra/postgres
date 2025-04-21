@@ -14,18 +14,18 @@ DBNAME="test"
 # ...
 
 # expected to run from the script directory
-DIR=$(pwd)
+DIR=$(pwd)/validate
 
 if pg_isready -p $PORT_MASTER; then
   dropdb -p $PORT_MASTER --if-exists $DBNAME
   createdb -p $PORT_MASTER $DBNAME
-  psql $DBNAME -p $PORT_MASTER -f "$DIR/$SCRIPT" > "$RESULTDIR/output_patch_$SCRIPT.txt"
+  psql $DBNAME -p $PORT_MASTER -f "$DIR/${SCRIPT}.sql" > "$RESULTDIR/output_patch_$SCRIPT.txt"
 fi
 
 if pg_isready -p $PORT_PATCHED; then
   dropdb -p $PORT_PATCHED --if-exists $DBNAME
   createdb -p $PORT_PATCHED $DBNAME
-  psql $DBNAME -p $PORT_PATCHED -f "$DIR/$SCRIPT" > "$RESULTDIR/output_master_$SCRIPT.txt"
+  psql $DBNAME -p $PORT_PATCHED -f "$DIR/${SCRIPT}.sql" > "$RESULTDIR/output_master_$SCRIPT.txt"
 fi
 
 index_pattern="t_one_.*_idx|t_one_sequential_.*_idx|t_five_.*_idx|t_ten_.*_idx|t_fifteen_.*_idx|t_seventeen_.*_idx|t_twenty_.*_idx|t_twentyfive_.*_idx|t_fifty_.*_idx|t_five_hundred_.*_idx|t_idx"

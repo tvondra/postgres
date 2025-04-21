@@ -11,6 +11,8 @@ resultfile+="_results.csv"
 
 DEBUG="$OUTDIR/debug_${branch}_${nrows}.log"
 
+mkdir $OUTDIR/$nrows
+
 # export PGPORT=5555
 
 PSQL_PAGER=""
@@ -109,7 +111,7 @@ for fill in 100 10; do
 					psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct), md5(i::text) from generate_series(1, $nrows) s(i)"
 				fi
 
-				psql $dbname -c "copy $tablename to stdout" | gzip -c -1 > $OUTDIR/$tablename.$branch.dump.gz
+				psql $dbname -c "copy $tablename to stdout" | gzip -c -1 > $OUTDIR/$nrows/$tablename.$branch.dump.gz
 
 				psql $dbname -c "vacuum (analyze,freeze) $tablename";
 				psql $dbname -c "checkpoint"

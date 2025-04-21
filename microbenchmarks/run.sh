@@ -109,7 +109,7 @@ for fill in 100 10; do
 					psql $dbname -c "select setseed(0.12345); insert into $tablename select i::float * $ndistinct / $nrows + random() * sqrt($ndistinct), md5(i::text) from generate_series(1, $nrows) s(i)"
 				fi
 
-				psql $dbname -c "copy $tablename to stdout" | gzip -c > $OUTDIR/$tablename.$branch.dump.gz
+				psql $dbname -c "copy $tablename to stdout" | gzip -c -1 > $OUTDIR/$tablename.$branch.dump.gz
 
 				psql $dbname -c "vacuum (analyze,freeze) $tablename";
 				psql $dbname -c "checkpoint"
@@ -130,6 +130,11 @@ for fill in 100 10; do
 								fi
 
 								if [ "$step" == "-1" ]; then
+
+									if [[ $narray_values -gt $ndistinct ]]; then
+										continue
+									fi
+
 									values=$(psql --no-psqlrc $dbname -t -A -c "select string_agg(random(0,${ndistinct})::text,', ') from generate_series(1,${narray_values})")
 								else
 									range=$((narray_values * step))

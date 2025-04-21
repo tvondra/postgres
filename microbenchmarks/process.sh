@@ -9,9 +9,11 @@ sqlite3 results.db "create table results (iomethod text, branch text, nrows int,
 sqlite3 results.db <<EOF
 .mode csv
 .separator ' '
+.import $DIR/master_25000000_results.csv results
 .import $DIR/master_10000000_results.csv results
 .import $DIR/master_1000000_results.csv results
 .import $DIR/master_100000_results.csv results
+.import $DIR/patched_25000000_results.csv results
 .import $DIR/patched_10000000_results.csv results
 .import $DIR/patched_1000000_results.csv results
 .import $DIR/patched_100000_results.csv results

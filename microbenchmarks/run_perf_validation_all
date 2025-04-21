@@ -24,7 +24,7 @@ for iom in sync worker io_uring; do
 	psql -p $PORT_MASTER postgres -c "select * from pg_settings" > $OUTDIR/validate/$iom/settings-master.log 2>&1
 	psql -p $PORT_PATCHED postgres -c "select * from pg_settings" > $OUTDIR/validate/$iom/settings-patched.log 2>&1
 
-	for s in perf_validate_int_int perf_validate_int_numeric perf_validate_numeric_int perf_validate_numeric_numeric perf_validation_improvements perf_validation_fat_skinny perf_validation_fat_skinny_backwards; do
+	for s in int_int int_numeric numeric_int numeric_numeric improvements fat_skinny fat_skinny_backwards; do
 		./run_perf_validation $OUTDIR/validate/$iom $s $iom > $OUTDIR/validate/$iom/$s.log 2>&1
 	done
 
@@ -48,10 +48,10 @@ for rows in 100000 1000000 10000000; do
 		psql -p $PORT_PATCHED postgres -c "select * from pg_settings" > $OUTDIR/perf/$iom/settings-patched.$rows.log 2>&1
 
 		export PGPORT=$PORT_MASTER
-		./run.sh $OUTDIR/perf/$iom master $rows $iom > $OUTDIR/master.$rows.log 2>&1
+		./run-perf.sh $OUTDIR/perf/$iom master $rows $iom > $OUTDIR/master.$rows.log 2>&1
 
 		export PGPORT=$PORT_PATCHED
-		./run.sh $OUTDIR/perf/$iom patched $rows $iom > $OUTDIR/patched.$rows.log 2>&1
+		./run-perf.sh $OUTDIR/perf/$iom patched $rows $iom > $OUTDIR/patched.$rows.log 2>&1
 
 	done
 

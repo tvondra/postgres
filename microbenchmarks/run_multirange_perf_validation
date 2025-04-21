@@ -7,7 +7,7 @@ PORT_MASTER=6001
 PORT_PATCHED=6002
 
 DBNAME="test"
-SCRIPT="perf_validate_multirange.sql"
+SCRIPT="multirange"
 
 # expected to run from the script directory
 DIR=$(pwd)
@@ -15,13 +15,13 @@ DIR=$(pwd)
 if pg_isready -p $PORT_MASTER; then
   dropdb -p $PORT_MASTER --if-exists $DBNAME
   createdb -p $PORT_MASTER $DBNAME
-  psql $DBNAME -p $PORT_MASTER -f "$DIR/$SCRIPT" > "$RESULTDIR/output_patch_$SCRIPT.txt"
+  psql $DBNAME -p $PORT_MASTER -f "$DIR/validate/${SCRIPT}.sql" > "$RESULTDIR/output_patch_$SCRIPT.txt"
 fi
 
 if pg_isready -p $PORT_PATCHED; then
   dropdb -p $PORT_PATCHED --if-exists $DBNAME
   createdb -p $PORT_PATCHED $DBNAME
-  psql $DBNAME -p $PORT_PATCHED -f "$DIR/$SCRIPT" > "$RESULTDIR/output_master_$SCRIPT.txt"
+  psql $DBNAME -p $PORT_PATCHED -f "$DIR/validate/${SCRIPT}.sql" > "$RESULTDIR/output_master_$SCRIPT.txt"
 fi
 
 index_pattern="test_multirange_idx|test_multirange_allhighcardinality_idx|test_multirange_medcard_idx"

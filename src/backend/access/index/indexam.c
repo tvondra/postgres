@@ -1720,13 +1720,20 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
 	 */
 	if ((pos->batch == -1) && (pos->index == -1))
 	{
-		/* we should have loaded the very first batch */
-		Assert(scan->xs_batches->firstBatch == 0);
+		/*
+		 * we should have loaded the very first batch
+		 *
+		 * XXX Actually, we might have changed the direction of the scan,
+		 * and scanned all the way to the beginning/end. We reset the
+		 * position, but we're not on the first batch - we should have
+		 * only one batch, though.
+		 */
+		// Assert(scan->xs_batches->firstBatch == 0);
 
 		batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->firstBatch);
 		Assert(batch != NULL);
 
-		pos->batch = 0;
+		pos->batch = scan->xs_batches->firstBatch;
 
 		if (ScanDirectionIsForward(direction))
 			pos->index = batch->firstItem;
@@ -2271,6 +2278,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * batches, so we're done.
 	 */
 	DEBUG_LOG("no more batches to process");
+
+	/*
+	 * Reset the position - we must not keep the last valid position, in case
+	 * we change direction of the scan and start scanning again. If we kept
+	 * the position, we'd skip the first item.
+	 */
+	index_batch_pos_reset(scan, pos);
 
 	return NULL;
 }

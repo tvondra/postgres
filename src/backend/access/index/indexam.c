@@ -2093,8 +2093,38 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* read the next TID from the index */
 	pos = &scan->xs_batches->readPos;
 
-	/* FIXME handle change of scan direction (reset stream, ...) */
-	scan->xs_batches->direction = direction;
+	/*
+	 * Handle change of scan direction (reset stream, ...).
+	 *
+	 * Release future batches properly, to make it look like the current batch
+	 * is the last one we loaded. Also reset the stream position, as if we are
+	 * just starting the scan.
+	 */
+	if (scan->xs_batches->direction != direction)
+	{
+		/* release "future" batches in the wrong direction */
+		while (scan->xs_batches->nextBatch > scan->xs_batches->firstBatch + 1)
+		{
+			IndexScanBatch batch;
+			scan->xs_batches->nextBatch--;
+			batch = INDEX_SCAN_BATCH(scan, scan->xs_batches->nextBatch);
+			index_batch_free(scan, batch);
+		}
+
+		/*
+		 * Remember the new direction, and make sure the scan is not marked
+		 * as "finished" (we might have already read the last batch, but now
+		 * we need to start over). Do this before resetting the stream - it
+		 * should not invoke the callback until the first read, but it may
+		 * seem a bit confusing otherwise.
+		 */
+		scan->xs_batches->direction = direction;
+		scan->xs_batches->finished = false;
+		scan->xs_batches->lastBlock = InvalidBlockNumber;
+
+		index_batch_pos_reset(scan, &scan->xs_batches->streamPos);
+		read_stream_reset(scan->xs_heapfetch->rs);
+	}
 
 	DEBUG_LOG("index_batch_getnext_tid pos %d %d direction %d",
 			  pos->batch, pos->index, direction);
@@ -2205,6 +2235,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 					  scan->xs_batches->readPos.batch, scan->xs_batches->readPos.index);
 
 			scan->xs_batches->reset = false;
+			scan->xs_batches->lastBlock = InvalidBlockNumber;
 
 			/*
 			 * Need to reset the stream position, it might be too far behind.

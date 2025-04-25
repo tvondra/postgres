@@ -21,7 +21,9 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/predicate.h"
+#include "utils/datum.h"
 #include "utils/float.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -395,6 +397,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 	}
 
 	so->nPageData = so->curPageData = 0;
+	so->streamPageData = -1;
 	scan->xs_hitup = NULL;		/* might point into pageDataCxt */
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
@@ -460,6 +463,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 			so->pageData[so->nPageData].heapPtr = it->t_tid;
 			so->pageData[so->nPageData].recheck = recheck;
 			so->pageData[so->nPageData].offnum = i;
+			so->pageData[so->nPageData].allVisible = false;
+			so->pageData[so->nPageData].allVisibleSet = false;
 
 			/*
 			 * In an index-only scan, also fetch the data from the tuple.  The
@@ -496,6 +501,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
 				item->data.heap.recheckDistances = recheck_distances;
+				item->data.heap.allVisible = false;
+				item->data.heap.allVisibleSet = false;
 
 				/*
 				 * In an index-only scan, also fetch the data from the tuple.
@@ -589,6 +596,22 @@ getNextNearest(IndexScanDesc scan)
 			/* in an index-only scan, also return the reconstructed tuple. */
 			if (scan->xs_want_itup)
 				scan->xs_hitup = item->data.heap.recontup;
+
+			/*
+			 * If this is index-only scan, determine the VM status, so that
+			 * we can set xs_visible correctly.
+			 */
+			if (scan->xs_want_itup && ! item->data.heap.allVisibleSet)
+			{
+				item->data.heap.allVisibleSet = true;
+				item->data.heap.allVisible
+					= VM_ALL_VISIBLE(scan->heapRelation,
+									 ItemPointerGetBlockNumber(&item->data.heap.heapPtr),
+									 &so->vmBuffer);
+			}
+
+			scan->xs_visible = item->data.heap.allVisible;
+
 			res = true;
 		}
 		else
@@ -603,6 +626,119 @@ getNextNearest(IndexScanDesc scan)
 	} while (!res);
 
 	return res;
+}
+
+/*
+ * A variant of getNextNearest() that stashes the items into a small buffer, so
+ * that the prefetching can work (getNextNearest returns items one by one).
+ *
+ * XXX Uses a small secondary queue, because getNextNearest() may be modifying
+ * the regular pageData[] buffer.
+ */
+static bool
+getNextNearestPrefetch(IndexScanDesc scan)
+{
+	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
+	GISTSearchHeapItem *item;
+
+	/* did we use all items from the queue */
+	if (so->queueItem == so->queueUsed)
+	{
+		/* grow the number of items */
+		int		maxitems = Min(Max(1, 2 * so->queueUsed), 32);
+
+		/* FIXME gradually incresse the number of items, not 32 all the time */
+		maxitems = 32;
+
+		so->queueItem = 0;
+		so->queueUsed = 0;
+
+		while (so->queueUsed < maxitems)
+		{
+			if (!getNextNearest(scan))
+				break;
+
+			item = &so->queueItems[so->queueUsed++];
+
+			item->recheck = scan->xs_recheck;
+			item->heapPtr = scan->xs_heaptid;
+			item->recontup = scan->xs_hitup;
+
+			/*
+			 * FIXME free the memory (for tuples and orderbyvals/orderbynulls)
+			 * it's leaking now.
+			 */
+			item->orderbyvals = palloc0(sizeof(Datum) * scan->numberOfOrderBys);
+			item->orderbynulls = palloc0(sizeof(bool) * scan->numberOfOrderBys);
+
+			/*
+			 * copy the distances - might be float8, which may be byref, so use
+			 * datumCopy, otherwise it gets clobbered by other items
+			 */
+			for (int i = 0; i < scan->numberOfOrderBys; i++)
+			{
+				int16   typlen;
+				bool    typbyval;
+
+				/* don't copy NULL values */
+				if (scan->xs_orderbynulls[i])
+					continue;
+
+				get_typlenbyval(so->orderByTypes[i], &typlen, &typbyval);
+
+				item->orderbyvals[i] = datumCopy(scan->xs_orderbyvals[i],
+												 typbyval, typlen);
+			}
+
+			memcpy(item->orderbynulls,
+				   scan->xs_orderbynulls,
+				   sizeof(bool) * scan->numberOfOrderBys);
+
+			/* reset, so that we don't free it accidentally */
+			scan->xs_hitup = NULL;
+		}
+
+		/* found no new items, we're done */
+		if (so->queueUsed == 0)
+			return false;
+
+		/* restart the stream for the new queue */
+		so->queueStream = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
+		read_stream_reset(scan->xs_rs);
+	}
+
+	/* next item to return */
+	item = &so->queueItems[so->queueItem++];
+
+	scan->xs_heaptid = item->heapPtr;
+	scan->xs_recheck = item->recheck;
+
+	/* here it's fine to copy the datum (even if byref pointers) */
+	memcpy(scan->xs_orderbyvals,
+		   item->orderbyvals,
+		   sizeof(Datum) * scan->numberOfOrderBys);
+
+	memcpy(scan->xs_orderbynulls,
+		   item->orderbynulls,
+		   sizeof(bool) * scan->numberOfOrderBys);
+
+	/* in an index-only scan, also return the reconstructed tuple. */
+	if (scan->xs_want_itup)
+		scan->xs_hitup = item->recontup;
+
+	if (scan->xs_want_itup && ! item->allVisibleSet)
+	{
+		item->allVisibleSet = true;
+		item->allVisible
+			= VM_ALL_VISIBLE(scan->heapRelation,
+							 ItemPointerGetBlockNumber(&item->heapPtr),
+							 &so->vmBuffer);
+	}
+
+	scan->xs_visible = item->allVisible;
+
+	return true;
 }
 
 /*
@@ -642,7 +778,10 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 	if (scan->numberOfOrderBys > 0)
 	{
 		/* Must fetch tuples in strict distance order */
-		return getNextNearest(scan);
+		if (scan->xs_rs)
+			return getNextNearestPrefetch(scan);
+		else
+			return getNextNearest(scan);
 	}
 	else
 	{
@@ -676,6 +815,18 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 				/* in an index-only scan, also return the reconstructed tuple */
 				if (scan->xs_want_itup)
 					scan->xs_hitup = so->pageData[so->curPageData].recontup;
+
+				/* determine VM status, if not done already */
+				if (scan->xs_want_itup && !so->pageData[so->curPageData].allVisibleSet)
+				{
+					so->pageData[so->curPageData].allVisibleSet = true;
+					so->pageData[so->curPageData].allVisible
+						= VM_ALL_VISIBLE(scan->heapRelation,
+										 ItemPointerGetBlockNumber(&scan->xs_heaptid),
+										 &so->vmBuffer);
+				}
+
+				scan->xs_visible = so->pageData[so->curPageData].allVisible;
 
 				so->curPageData++;
 
@@ -734,6 +885,13 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 				pfree(item);
 			} while (so->nPageData == 0);
+
+			if (scan->xs_rs)
+			{
+				so->streamPageData = -1;
+				so->lastBlock = InvalidBlockNumber;
+				read_stream_reset(scan->xs_rs);
+			}
 		}
 	}
 }

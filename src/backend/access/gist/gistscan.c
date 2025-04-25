@@ -309,6 +309,8 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 													 gist_ordered_stream_read_next,
 													 scan,
 													 0);
+		scan->xs_rs_count = 0;
+		scan->xs_rs_distance = 0;
 	}
 
 	return scan;

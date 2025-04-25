@@ -300,6 +300,88 @@ spgPrepareScanKeys(IndexScanDesc scan)
 	}
 }
 
+/*
+ * spg_stream_read_next
+ *		Return the next block to read from the read stream.
+ *
+ * Returns the next block from the current leaf page. The first block is
+ * when accessing the first tuple, after already receiving the TID from the
+ * index (for the item itemIndex points at).
+ *
+ * With index-only scans this skips all-visible pages. The visibility info
+ * is stored, so that we can later pass it to the scan (we must not access
+ * the VM again, the bit might have changes, and the read stream would get
+ * out of sync (we'd get different blocks than we expect expect).
+ *
+ * Returns the block number to get from the read stream. InvalidBlockNumber
+ * means we've ran out of item on the current leaf page - the stream will
+ * end, and we'll need to reset it after reading the next page (or after
+ * changing the scan direction).
+ *
+ * XXX Should skip duplicate blocks (for correlated indexes). But that's
+ * not implemented yet.
+ */
+static BlockNumber
+spg_stream_read_next(ReadStream *stream,
+					 void *callback_private_data,
+					 void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	SpGistScanOpaque so = (SpGistScanOpaque) scan->opaque;
+	BlockNumber		block = InvalidBlockNumber;
+
+	/*
+	 * Is this the first request for the read stream (possibly after a reset)?
+	 * If yes, initialize the stream to the current item (itemIndex).
+	 */
+	if (so->sPtr == -1)
+		so->sPtr = (so->iPtr - 1);
+
+	/*
+	 * Find the next block to read. For plain index scans we will return the
+	 * very next item, but with index-only scans we skip TIDs from all-visible
+	 * pages (because we won't read those).
+	 */
+	while (so->sPtr < so->nPtrs)
+	{
+		ItemPointer		tid;
+
+		tid = &so->heapPtrs[so->sPtr];
+		block = ItemPointerGetBlockNumber(tid);
+
+		/*
+		 * For index-only scans, check the VM and remember the result. If the page
+		 * is all-visible, don't return the block number, try reading the next one.
+		 *
+		 * XXX Maybe this could use the same logic to check for duplicate blocks,
+		 * and reuse the VM result if possible.
+		 */
+		if (scan->xs_want_itup)
+		{
+			if (!so->allVisibleSet[so->sPtr])
+			{
+				so->allVisibleSet[so->sPtr] = true;
+				so->allVisible[so->sPtr] = VM_ALL_VISIBLE(scan->heapRelation,
+														  ItemPointerGetBlockNumber(tid),
+														  &so->vmBuffer);
+			}
+
+			/* don't prefetch this all-visible block, try the next one */
+			if (so->allVisible[so->sPtr])
+				block = InvalidBlockNumber;
+		}
+
+		/* advance to the next item (forward scans only) */
+		so->sPtr++;
+
+		/* Did we find a valid block? If yes, we're done. */
+		if (block != InvalidBlockNumber)
+			break;
+	}
+
+	return block;
+}
+
 IndexScanDesc
 spgbeginscan(Relation rel, int keysz, int orderbysz)
 {
@@ -371,7 +453,22 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 
 	so->indexCollation = rel->rd_indcollation[0];
 
+	/* access to VM for IOS scans (in read_next callback) */
+	so->vmBuffer = InvalidBuffer;
+
 	scan->opaque = so;
+
+	/* initialize the read stream too */
+	if (enable_indexscan_prefetch && heap)
+	{
+		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+												 NULL,
+												 heap,
+												 MAIN_FORKNUM,
+												 spg_stream_read_next,
+												 scan,
+												 0);
+	}
 
 	return scan;
 }
@@ -423,6 +520,13 @@ spgrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	pgstat_count_index_scan(scan->indexRelation);
 	if (scan->instrument)
 		scan->instrument->nsearches++;
+
+	/* reset the stream, so that rescan starts from scratch */
+	if (scan->xs_rs)
+	{
+		so->sPtr = -1;
+		read_stream_reset(scan->xs_rs);
+	}
 }
 
 void
@@ -452,6 +556,15 @@ spgendscan(IndexScanDesc scan)
 		pfree(scan->xs_orderbyvals);
 		pfree(scan->xs_orderbynulls);
 	}
+
+	if (so->vmBuffer != InvalidBuffer)
+	{
+		ReleaseBuffer(so->vmBuffer);
+		so->vmBuffer = InvalidBuffer;
+	}
+
+	if (scan->xs_rs)
+		read_stream_end(scan->xs_rs);
 
 	pfree(so);
 }
@@ -818,9 +931,25 @@ spgWalk(Relation index, SpGistScanOpaque so, bool scanWholeIndex,
 		storeRes_func storeRes)
 {
 	Buffer		buffer = InvalidBuffer;
-	bool		reportedSome = false;
+	int			reportedCount = 0;
 
-	while (scanWholeIndex || !reportedSome)
+	/*
+	 * XXX Read at least 32 items into the queue, to make prefetching work.
+	 *
+	 * XXX We should gradually increase the number of tuples to load, not read
+	 * 32 tuples from the very beginning, similar to how we increase the
+	 * prefetch distance. That might be harmful for queries with LIMIT clause.
+	 *
+	 * XXX Not sure this is quite safe. The the arrays are sized to fit at
+	 * least MaxIndexTuplesPerPage items, but what if there's a page with 31
+	 * items, and then another page with MaxIndexTuplesPerPage? Then we might
+	 * overflow the arrays (in the while loop below), I think.
+	 *
+	 * XXX I wonder if this is actually needed. Maybe it's needed only for
+	 * ordered scans, when we get the items from the pairing heap one by one.
+	 * So maybe we should do this buffering only in that case?
+	 */
+	while (scanWholeIndex || (reportedCount < 32))
 	{
 		SpGistSearchItem *item = spgGetNextQueueItem(so);
 
@@ -838,7 +967,7 @@ redirect:
 			storeRes(so, &item->heapPtr, item->value, item->isNull,
 					 item->leafTuple, item->recheck,
 					 item->recheckDistances, item->distances);
-			reportedSome = true;
+			reportedCount++;
 		}
 		else
 		{
@@ -872,23 +1001,33 @@ redirect:
 
 				if (SpGistBlockIsRoot(blkno))
 				{
+					bool	reportedSome = false;
+
 					/* When root is a leaf, examine all its tuples */
 					for (offset = FirstOffsetNumber; offset <= max; offset++)
 						(void) spgTestLeafTuple(so, item, page, offset,
 												isnull, true,
 												&reportedSome, storeRes);
+
+					if (reportedSome)
+						reportedCount++;
 				}
 				else
 				{
 					/* Normal case: just examine the chain we arrived at */
 					while (offset != InvalidOffsetNumber)
 					{
+						bool	reportedSome = false;
+
 						Assert(offset >= FirstOffsetNumber && offset <= max);
 						offset = spgTestLeafTuple(so, item, page, offset,
 												  isnull, false,
 												  &reportedSome, storeRes);
 						if (offset == SpGistRedirectOffsetNumber)
 							goto redirect;
+
+						if (reportedSome)
+							reportedCount++;
 					}
 				}
 			}
@@ -1042,6 +1181,18 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 			scan->xs_recheck = so->recheck[so->iPtr];
 			scan->xs_hitup = so->reconTups[so->iPtr];
 
+			/* determine and store the VM status, if not done already */
+			if (scan->xs_want_itup && !so->allVisibleSet[so->iPtr])
+			{
+				so->allVisibleSet[so->iPtr] = true;
+				so->allVisible[so->iPtr]
+					= VM_ALL_VISIBLE(scan->heapRelation,
+									 ItemPointerGetBlockNumber(&so->heapPtrs[so->iPtr]),
+									 &so->vmBuffer);
+			}
+
+			scan->xs_visible = so->allVisible[so->iPtr];
+
 			if (so->numberOfOrderBys > 0)
 				index_store_float8_orderby_distances(scan, so->orderByTypes,
 													 so->distances[so->iPtr],
@@ -1074,6 +1225,19 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 
 		if (so->nPtrs == 0)
 			break;				/* must have completed scan */
+
+		/*
+		 * loaded a leaf page worth of tuples, restart stream
+		 *
+		 * XXX with ordered scans we typically get nPtrs=1, which means the
+		 * prefetch can't really benefit anything. Maybe we should queue a
+		 * couple items and then prefetch those?
+		 */
+		if (scan->xs_rs)
+		{
+			so->sPtr = -1;
+			read_stream_reset(scan->xs_rs);
+		}
 	}
 
 	return false;

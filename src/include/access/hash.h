@@ -113,6 +113,9 @@ typedef struct HashScanPosData
 	BlockNumber nextPage;		/* next overflow page */
 	BlockNumber prevPage;		/* prev overflow or bucket page */
 
+	/* scan direction for the saved position's call to _hash_next */
+	ScanDirection dir;
+
 	/*
 	 * The items array is always ordered in index order (ie, increasing
 	 * indexoffset).  When scanning backwards it is convenient to fill the
@@ -123,6 +126,7 @@ typedef struct HashScanPosData
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
+	int			streamIndex;	/* position of the read stream */
 
 	HashScanPosItem items[MaxIndexTuplesPerPage];	/* MUST BE LAST */
 } HashScanPosData;
@@ -150,6 +154,7 @@ typedef struct HashScanPosData
 		(scanpos).firstItem = 0; \
 		(scanpos).lastItem = 0; \
 		(scanpos).itemIndex = 0; \
+		(scanpos).dir = NoMovementScanDirection; \
 	} while (0)
 
 /*
@@ -181,6 +186,9 @@ typedef struct HashScanOpaqueData
 	/* info about killed items if any (killedItems is NULL if never used) */
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
+
+	/* last block returned by the read_next stream callback */
+	BlockNumber	lastBlock;
 
 	/*
 	 * Identify all the matching items on a page and save them in

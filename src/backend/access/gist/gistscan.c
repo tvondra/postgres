@@ -17,6 +17,8 @@
 #include "access/gist_private.h"
 #include "access/gistscan.h"
 #include "access/relscan.h"
+#include "access/table.h"
+#include "optimizer/cost.h"
 #include "utils/float.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -70,6 +72,162 @@ pairingheap_GISTSearchItem_cmp(const pairingheap_node *a, const pairingheap_node
  * Index AM API functions for scanning GiST indexes
  */
 
+/*
+ * gist_stream_read_next
+ *		Return the next block to read from the read stream.
+ *
+ * Returns the next block from the current leaf page. The first block is
+ * when accessing the first tuple, after already receiving the TID from the
+ * index (for the item itemIndex points at).
+ *
+ * With index-only scans this skips all-visible pages. The visibility info
+ * is stored, so that we can later pass it to the scan (we must not access
+ * the VM again, the bit might have changes, and the read stream would get
+ * out of sync (we'd get different blocks than we expect expect).
+ *
+ * Returns the block number to get from the read stream. InvalidBlockNumber
+ * means we've ran out of item on the current leaf page - the stream will
+ * end, and we'll need to reset it after reading the next page (or after
+ * changing the scan direction).
+ *
+ * XXX Should skip duplicate blocks (for correlated indexes). But that's
+ * not implemented yet.
+ */
+static BlockNumber
+gist_stream_read_next(ReadStream *stream,
+					  void *callback_private_data,
+					  void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
+	BlockNumber		block = InvalidBlockNumber;
+
+	/*
+	 * Is this the first request for the read stream (possibly after a reset)?
+	 * If yes, initialize the stream to the current item (itemIndex).
+	 */
+	if (so->streamPageData == (OffsetNumber) - 1)
+		so->streamPageData = (so->curPageData - 1);
+
+	/*
+	 * Find the next block to read. For plain index scans we will return the
+	 * very next item, but with index-only scans we skip TIDs from all-visible
+	 * pages (because we won't read those).
+	 */
+	while (so->streamPageData < so->nPageData)
+	{
+		ItemPointer		tid;
+		GISTSearchHeapItem  *item;
+
+		item = &so->pageData[so->streamPageData];
+
+		tid = &item->heapPtr;
+		block = ItemPointerGetBlockNumber(tid);
+
+		/*
+		 * For index-only scans, check the VM and remember the result. If the page
+		 * is all-visible, don't return the block number, try reading the next one.
+		 *
+		 * XXX Maybe this could use the same logic to check for duplicate blocks,
+		 * and reuse the VM result if possible.
+		 */
+		if (scan->xs_want_itup)
+		{
+			if (!item->allVisibleSet)
+			{
+				item->allVisibleSet = true;
+				item->allVisible = VM_ALL_VISIBLE(scan->heapRelation,
+												  ItemPointerGetBlockNumber(tid),
+												  &so->vmBuffer);
+			}
+
+			/* don't prefetch this all-visible block, try the next one */
+			if (item->allVisible)
+				block = InvalidBlockNumber;
+		}
+
+		/* advance to the next item, assuming the current scan direction */
+		so->streamPageData++;
+
+		/* Did we find a valid block? If yes, we're done. */
+		if (block != InvalidBlockNumber)
+			break;
+	}
+
+	return block;
+}
+
+/*
+ * gist_ordered_stream_read_next
+ *		Return the next block to read from the read stream.
+ *
+ * A variant of gist_stream_read_next for ordered scans, returning items from
+ * a small secondary queue.
+ */
+static BlockNumber
+gist_ordered_stream_read_next(ReadStream *stream,
+							  void *callback_private_data,
+							  void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	GISTScanOpaque	so = (GISTScanOpaque) scan->opaque;
+	BlockNumber		block = InvalidBlockNumber;
+
+	/*
+	 * Is this the first request for the read stream (possibly after a reset)?
+	 * If yes, initialize the stream to the current item (itemIndex).
+	 */
+	if (so->queueStream == - 1)
+		so->queueStream = (so->queueItem - 1);
+
+	/*
+	 * Find the next block to read. For plain index scans we will return the
+	 * very next item, but with index-only scans we skip TIDs from all-visible
+	 * pages (because we won't read those).
+	 */
+	while (so->queueStream < so->queueUsed)
+	{
+		ItemPointer		tid;
+		GISTSearchHeapItem  *item;
+
+		item = &so->queueItems[so->queueStream];
+
+		tid = &item->heapPtr;
+		block = ItemPointerGetBlockNumber(tid);
+
+		/*
+		 * For index-only scans, check the VM and remember the result. If the page
+		 * is all-visible, don't return the block number, try reading the next one.
+		 *
+		 * XXX Maybe this could use the same logic to check for duplicate blocks,
+		 * and reuse the VM result if possible.
+		 */
+		if (scan->xs_want_itup)
+		{
+			if (!item->allVisibleSet)
+			{
+				item->allVisibleSet = true;
+				item->allVisible = VM_ALL_VISIBLE(scan->heapRelation,
+												  ItemPointerGetBlockNumber(tid),
+												  &so->vmBuffer);
+			}
+
+			/* don't prefetch this all-visible block, try the next one */
+			if (item->allVisible)
+				block = InvalidBlockNumber;
+		}
+
+		/* advance to the next item, assuming the current scan direction */
+		so->queueStream++;
+
+		/* Did we find a valid block? If yes, we're done. */
+		if (block != InvalidBlockNumber)
+			break;
+	}
+
+	return block;
+}
+
 IndexScanDesc
 gistbeginscan(Relation r, int nkeys, int norderbys)
 {
@@ -110,6 +268,11 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	so->numKilled = 0;
 	so->curBlkno = InvalidBlockNumber;
 	so->curPageLSN = InvalidXLogRecPtr;
+	so->vmBuffer = InvalidBuffer;
+
+	/* initialize small prefetch queue */
+	so->queueUsed = 0;
+	so->queueItem = 0;
 
 	scan->opaque = so;
 
@@ -119,6 +282,34 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	 */
 
 	MemoryContextSwitchTo(oldCxt);
+
+	/*
+	 * Initialize the read stream to opt-in into prefetching.
+	 *
+	 * XXX See the comments in btbeginscan().
+	 */
+	if (enable_indexscan_prefetch)
+	{
+		/* XXX already locked, but got to close this later */
+		scan->xs_heap = table_open(r->rd_index->indrelid, NoLock);
+
+		if (scan->numberOfOrderBys == 0)
+			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+													 NULL,
+													 scan->xs_heap,
+													 MAIN_FORKNUM,
+													 gist_stream_read_next,
+													 scan,
+													 0);
+		else
+			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+													 NULL,
+													 scan->xs_heap,
+													 MAIN_FORKNUM,
+													 gist_ordered_stream_read_next,
+													 scan,
+													 0);
+	}
 
 	return scan;
 }
@@ -341,6 +532,14 @@ gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 
 	/* any previous xs_hitup will have been pfree'd in context resets above */
 	scan->xs_hitup = NULL;
+
+	/* reset stream */
+	if (scan->xs_rs)
+	{
+		so->streamPageData = -1;
+		read_stream_reset(scan->xs_rs);
+		so->queueItem = so->queueUsed = so->queueStream = 0;
+	}
 }
 
 void
@@ -348,9 +547,22 @@ gistendscan(IndexScanDesc scan)
 {
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
 
+	/* needs to happen before freeGISTstate */
+	if (so->vmBuffer != InvalidBuffer)
+	{
+		ReleaseBuffer(so->vmBuffer);
+		so->vmBuffer = InvalidBuffer;
+	}
+
 	/*
 	 * freeGISTstate is enough to clean up everything made by gistbeginscan,
 	 * as well as the queueCxt if there is a separate context for it.
 	 */
 	freeGISTstate(so->giststate);
+
+	/* reset stream */
+	if (scan->xs_rs)
+		read_stream_end(scan->xs_rs);
+	if (scan->xs_heap)
+		table_close(scan->xs_heap, NoLock);
 }

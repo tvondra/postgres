@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "access/relscan.h"
 #include "catalog/pg_type.h"
 #include "commands/createas.h"
 #include "commands/defrem.h"
@@ -136,6 +137,7 @@ static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
 static void show_indexsearches_info(PlanState *planstate, ExplainState *es);
+static void show_index_prefetch_info(PlanState *planstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
 static void show_instrumentation_count(const char *qlabel, int which,
@@ -1966,6 +1968,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_indexsearches_info(planstate, es);
+			show_index_prefetch_info(planstate, es);
 			break;
 		case T_IndexOnlyScan:
 			show_scan_qual(((IndexOnlyScan *) plan)->indexqual,
@@ -1983,6 +1986,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				ExplainPropertyFloat("Heap Fetches", NULL,
 									 planstate->instrument->ntuples2, 0, es);
 			show_indexsearches_info(planstate, es);
+			show_index_prefetch_info(planstate, es);
 			break;
 		case T_BitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
@@ -3887,6 +3891,58 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 	}
 
 	ExplainPropertyUInteger("Index Searches", NULL, nsearches, es);
+}
+
+
+static void
+show_index_prefetch_info(PlanState *planstate, ExplainState *es)
+{
+	Plan	   *plan = planstate->plan;
+	bool		prefetch = false;
+	float		distance = 0;
+
+	if (!es->analyze)
+		return;
+
+	if (!es->verbose)
+		return;
+
+	/* Initialize counters with stats from the local process first */
+	switch (nodeTag(plan))
+	{
+		case T_IndexScan:
+			{
+				IndexScanState *indexstate = ((IndexScanState *) planstate);
+
+				if (indexstate->iss_ScanDesc)
+				{
+					prefetch = (indexstate->iss_ScanDesc->xs_rs != NULL);
+
+					if (indexstate->iss_ScanDesc->xs_rs)
+						distance = (indexstate->iss_ScanDesc->xs_rs_distance / (float) Max(1, indexstate->iss_ScanDesc->xs_rs_count));
+				}
+				break;
+			}
+		case T_IndexOnlyScan:
+			{
+				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
+
+				if (indexstate->ioss_ScanDesc)
+				{
+					prefetch = (indexstate->ioss_ScanDesc->xs_rs != NULL);
+
+					if (indexstate->ioss_ScanDesc->xs_rs)
+						distance = (indexstate->ioss_ScanDesc->xs_rs_distance / (float) Max(1, indexstate->ioss_ScanDesc->xs_rs_count));
+				}
+				break;
+			}
+		default:
+			break;
+	}
+
+	/* Next get the sum of the counters set within each and every process */
+	ExplainPropertyBool("Index Prefetch", prefetch, es);
+	ExplainPropertyFloat("Index Distance", NULL, distance, 1, es);
 }
 
 /*

@@ -1196,6 +1196,17 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 													 so->distances[so->iPtr],
 													 so->recheckDistances[so->iPtr]);
 			so->iPtr++;
+
+
+	if (scan->xs_rs)
+	{
+		if (so->sPtr != -1)
+		{
+			scan->xs_rs_count++;
+			scan->xs_rs_distance += abs(so->iPtr - so->sPtr);
+		}
+	}
+
 			return true;
 		}
 

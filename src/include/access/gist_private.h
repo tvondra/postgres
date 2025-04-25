@@ -17,6 +17,7 @@
 #include "access/amapi.h"
 #include "access/gist.h"
 #include "access/itup.h"
+#include "access/visibilitymap.h"
 #include "lib/pairingheap.h"
 #include "storage/bufmgr.h"
 #include "storage/buffile.h"
@@ -124,6 +125,10 @@ typedef struct GISTSearchHeapItem
 								 * index-only scans */
 	OffsetNumber offnum;		/* track offset in page to mark tuple as
 								 * LP_DEAD */
+	bool		allVisible;
+	bool		allVisibleSet;
+	Datum	   *orderbyvals;
+	bool	   *orderbynulls;
 } GISTSearchHeapItem;
 
 /* Unvisited item, either index page or heap tuple */
@@ -169,13 +174,24 @@ typedef struct GISTScanOpaqueData
 	int			numKilled;		/* number of currently stored items */
 	BlockNumber curBlkno;		/* current number of block */
 	GistNSN		curPageLSN;		/* pos in the WAL stream when page was read */
+	Buffer		vmBuffer;
 
 	/* In a non-ordered search, returnable heap items are stored here: */
 	GISTSearchHeapItem pageData[BLCKSZ / sizeof(IndexTupleData)];
 	OffsetNumber nPageData;		/* number of valid items in array */
 	OffsetNumber curPageData;	/* next item to return */
+	OffsetNumber streamPageData;	/* next item to queue */
 	MemoryContext pageDataCxt;	/* context holding the fetched tuples, for
 								 * index-only scans */
+
+	/* last block returned by the read_next stream callback */
+	BlockNumber	lastBlock;
+
+	/* queue to allow prefetching with ordered scans */
+	GISTSearchHeapItem	queueItems[32];
+	int					queueItem;
+	int					queueStream;
+	int					queueUsed;
 } GISTScanOpaqueData;
 
 typedef GISTScanOpaqueData *GISTScanOpaque;

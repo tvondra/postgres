@@ -176,7 +176,12 @@ typedef struct IndexScanDescData
 	bool		xs_heap_continue;	/* T if must keep walking, potential
 									 * further results */
 	IndexFetchTableData *xs_heapfetch;
+
 	ReadStream *xs_rs;			/* read_stream (if supported by the AM) */
+
+	/* stats for explain */
+	int			xs_rs_distance;
+	int			xs_rs_count;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 

@@ -79,12 +79,15 @@ heapam_slot_callbacks(Relation relation)
  */
 
 static IndexFetchTableData *
-heapam_index_fetch_begin(Relation rel)
+heapam_index_fetch_begin(Relation rel, ReadStream *rs)
 {
 	IndexFetchHeapData *hscan = palloc0(sizeof(IndexFetchHeapData));
 
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
+
+	/* XXX maybe this should be in IndexFetchHeapData? */
+	hscan->xs_base.rs = rs;
 
 	return &hscan->xs_base;
 }
@@ -130,15 +133,47 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/* Switch to correct buffer if we don't have it already */
 		Buffer		prev_buf = hscan->xs_cbuf;
 
-		hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
-											  hscan->xs_base.rel,
-											  ItemPointerGetBlockNumber(tid));
+		/*
+		 * XXX We should compare the previous/this block, and only do the read
+		 * if the blocks are different (and reuse the buffer otherwise).
+		 */
+
+		/*
+		 * If the scan is using read stream, get the block from it. If not,
+		 * use the regular buffer read.
+		 */
+		if (scan->rs)
+			hscan->xs_cbuf = read_stream_next_buffer(scan->rs, NULL);
+		else
+			hscan->xs_cbuf = ReleaseAndReadBuffer(hscan->xs_cbuf,
+												  hscan->xs_base.rel,
+												  ItemPointerGetBlockNumber(tid));
+
+		/* We should always get a valid buffer for a valid TID. */
+		Assert(BufferIsValid(hscan->xs_cbuf));
+
+		/*
+		 * Did we read the expected block number (per the TID)?
+		 *
+		 * For the regular buffer reads this should always match, but with the
+		 * read stream it might disagree due to a bug / subtle difference in the
+		 * read_next callback.
+		 */
+		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
 
 		/*
 		 * Prune page, but only if we weren't already on this page
 		 */
 		if (prev_buf != hscan->xs_cbuf)
 			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
+
+		/*
+		 * The read stream does not release the buffer, the caller is expected
+		 * to do that (unlike ReleaseAndReadBuffer). So we need to do this,
+		 * otherwise the contract for index_fetch_tuple would change.
+		 */
+		if (scan->rs && (prev_buf != InvalidBuffer))
+			ReleaseBuffer(prev_buf);
 	}
 
 	/* Obtain share-lock on the buffer so we can examine visibility */

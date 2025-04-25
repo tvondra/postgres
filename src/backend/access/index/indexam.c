@@ -104,7 +104,7 @@ do { \
 			 CppAsString(pname), RelationGetRelationName(scan->indexRelation)); \
 } while(0)
 
-static IndexScanDesc index_beginscan_internal(Relation indexRelation,
+static IndexScanDesc index_beginscan_internal(Relation heapRelation, Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
 static inline void validate_relation_kind(Relation r);
@@ -263,7 +263,7 @@ index_beginscan(Relation heapRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot, NULL, false);
+	scan = index_beginscan_internal(heapRelation, indexRelation, nkeys, norderbys, snapshot, NULL, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -274,7 +274,7 @@ index_beginscan(Relation heapRelation,
 	scan->instrument = instrument;
 
 	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
+	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, scan->xs_rs);
 
 	return scan;
 }
@@ -295,7 +295,7 @@ index_beginscan_bitmap(Relation indexRelation,
 
 	Assert(snapshot != InvalidSnapshot);
 
-	scan = index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL, false);
+	scan = index_beginscan_internal(NULL, indexRelation, nkeys, 0, snapshot, NULL, false);
 
 	/*
 	 * Save additional parameters into the scandesc.  Everything else was set
@@ -311,7 +311,7 @@ index_beginscan_bitmap(Relation indexRelation,
  * index_beginscan_internal --- common code for index_beginscan variants
  */
 static IndexScanDesc
-index_beginscan_internal(Relation indexRelation,
+index_beginscan_internal(Relation heapRelation, Relation indexRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
 						 ParallelIndexScanDesc pscan, bool temp_snap)
 {
@@ -331,8 +331,8 @@ index_beginscan_internal(Relation indexRelation,
 	/*
 	 * Tell the AM to open a scan.
 	 */
-	scan = indexRelation->rd_indam->ambeginscan(indexRelation, nkeys,
-												norderbys);
+	scan = indexRelation->rd_indam->ambeginscan(heapRelation, indexRelation,
+												nkeys, norderbys);
 	/* Initialize information for parallel scan. */
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
@@ -593,7 +593,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
-	scan = index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
+	scan = index_beginscan_internal(heaprel, indexrel, nkeys, norderbys, snapshot,
 									pscan, true);
 
 	/*
@@ -605,7 +605,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	scan->instrument = instrument;
 
 	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heaprel);
+	scan->xs_heapfetch = table_index_fetch_begin(heaprel, scan->xs_rs);
 
 	return scan;
 }

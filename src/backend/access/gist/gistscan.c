@@ -71,7 +71,7 @@ pairingheap_GISTSearchItem_cmp(const pairingheap_node *a, const pairingheap_node
  */
 
 IndexScanDesc
-gistbeginscan(Relation r, int nkeys, int norderbys)
+gistbeginscan(Relation h, Relation r, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	GISTSTATE  *giststate;

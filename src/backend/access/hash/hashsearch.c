@@ -55,6 +55,27 @@ _hash_next(IndexScanDesc scan, ScanDirection dir)
 	bool		end_of_scan = false;
 
 	/*
+	 * We need to reset the read stream when the scan direction changes. Hash
+	 * indexes are not ordered, but there's still scrollable cursors, and those
+	 * do have irection. So handle that here, and also remember the direction,
+	 * so that the read_next callback can consider that.
+	 *
+	 * XXX we can't do that in the read_next callback, because we might have
+	 * already hit the end of the stream (returned InvalidBlockNumber), in
+	 * which case the callback won't be called.
+	 */
+	if (so->currPos.dir != dir)
+	{
+		so->currPos.dir = dir;
+
+		if (scan->xs_rs)
+		{
+			so->currPos.streamIndex = -1;
+			read_stream_reset(scan->xs_rs);
+		}
+	}
+
+	/*
 	 * Advance to the next tuple on the current page; or if done, try to read
 	 * data from the next or previous page based on the scan direction. Before
 	 * moving to the next or previous page make sure that we deal with all the
@@ -590,6 +611,20 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 		so->currPos.nextPage = opaque->hasho_nextblkno;
 		_hash_relbuf(rel, so->currPos.buf);
 		so->currPos.buf = InvalidBuffer;
+	}
+
+	/*
+	 * restart the stream for this page
+	 *
+	 * XXX Maybe we should not reset prefetch distance to 0, but start from
+	 * a somewhat higher value. We're merely continuing the same scan as
+	 * before ... maybe reduce it a bit, to not harm LIMIT queries, but not
+	 * reset it all the way to 0.
+	 */
+	if (scan->xs_rs)
+	{
+		so->currPos.streamIndex = - 1;
+		read_stream_reset(scan->xs_rs);
 	}
 
 	Assert(so->currPos.firstItem <= so->currPos.lastItem);

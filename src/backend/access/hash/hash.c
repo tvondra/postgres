@@ -28,6 +28,7 @@
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
+#include "optimizer/cost.h"
 #include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "utils/fmgrprotos.h"
@@ -366,6 +367,71 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	return ntids;
 }
 
+/*
+ * hash_stream_read_next
+ *		Return the next block to read from the read stream.
+ *
+ * Returns the next block from the current leaf page. The first block is
+ * when accessing the first tuple, after already receiving the TID from the
+ * index (for the item itemIndex points at).
+ *
+ * Returns the block number to get from the read stream. InvalidBlockNumber
+ * means we've ran out of item on the current leaf page - the stream will
+ * end, and we'll need to reset it after reading the next page (or after
+ * changing the scan direction).
+ *
+ * XXX Should skip duplicate blocks (for correlated indexes). But that's
+ * not implemented yet.
+ */
+static BlockNumber
+hash_stream_read_next(ReadStream *stream,
+					  void *callback_private_data,
+					  void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	HashScanOpaque	so = (HashScanOpaque) scan->opaque;
+	BlockNumber		block = InvalidBlockNumber;
+
+	/*
+	 * Is this the first request for the read stream (possibly after a reset)?
+	 * If yes, initialize the stream to the current item (itemIndex).
+	 */
+	if (so->currPos.streamIndex == -1)
+		so->currPos.streamIndex = so->currPos.itemIndex;
+
+	/*
+	 * Find the next block to read. For plain index scans we will return the
+	 * very next item, but we might also skip duplicate blocks (in the future).
+	 */
+	while ((so->currPos.streamIndex >= so->currPos.firstItem) &&
+		   (so->currPos.streamIndex <= so->currPos.lastItem))
+	{
+		ItemPointer		tid;
+		HashScanPosItem  *item;
+
+		item = &so->currPos.items[so->currPos.streamIndex];
+
+		tid = &item->heapTid;
+		block = ItemPointerGetBlockNumber(tid);
+
+		/* advance to the next item, depending on scan direction */
+		if (ScanDirectionIsForward(so->currPos.dir))
+		{
+			so->currPos.streamIndex++;
+		}
+		else
+		{
+			so->currPos.streamIndex--;
+		}
+
+		/* Did we find a valid block? If yes, we're done. */
+		if (block != InvalidBlockNumber)
+			break;
+	}
+
+	return block;
+}
+
 
 /*
  *	hashbeginscan() -- start a scan on a hash index
@@ -393,6 +459,18 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 	so->numKilled = 0;
 
 	scan->opaque = so;
+
+	/* initialize the read stream too */
+	if (enable_indexscan_prefetch && heap)
+	{
+		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+												 NULL,
+												 heap,
+												 MAIN_FORKNUM,
+												 hash_stream_read_next,
+												 scan,
+												 0);
+	}
 
 	return scan;
 }
@@ -425,6 +503,13 @@ hashrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	so->hashso_buc_populated = false;
 	so->hashso_buc_split = false;
+
+	/* reset the stream, to start over */
+	if (scan->xs_rs)
+	{
+		so->currPos.streamIndex = -1;
+		read_stream_reset(scan->xs_rs);
+	}
 }
 
 /*
@@ -449,6 +534,10 @@ hashendscan(IndexScanDesc scan)
 		pfree(so->killedItems);
 	pfree(so);
 	scan->opaque = NULL;
+
+	/* terminate read stream */
+	if (scan->xs_rs)
+		read_stream_end(scan->xs_rs);
 }
 
 /*

@@ -830,6 +830,15 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 				so->curPageData++;
 
+				if (scan->xs_rs)
+				{
+					if (so->streamPageData != (OffsetNumber) -1)
+					{
+						scan->xs_rs_count++;
+						scan->xs_rs_distance += abs(so->curPageData - so->streamPageData);
+					}
+				}
+
 				return true;
 			}
 

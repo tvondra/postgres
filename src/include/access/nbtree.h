@@ -957,6 +957,8 @@ typedef struct BTScanPosItem	/* what we remember about each match */
 	ItemPointerData heapTid;	/* TID of referenced heap item */
 	OffsetNumber indexOffset;	/* index item's location within page */
 	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */
+	bool allVisibleSet;			/* did we set the VM flag already? */
+	bool allVisible;			/* VM info (for IOS) */
 } BTScanPosItem;
 
 typedef struct BTScanPosData
@@ -995,6 +997,7 @@ typedef struct BTScanPosData
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* current index in items[] */
+	int			streamIndex;	/* item returned to the read stream */
 
 	BTScanPosItem items[MaxTIDsPerBTreePage];	/* MUST BE LAST */
 } BTScanPosData;
@@ -1067,6 +1070,9 @@ typedef struct BTScanOpaqueData
 	FmgrInfo   *orderProcs;		/* ORDER procs for required equality keys */
 	MemoryContext arrayContext; /* scan-lifespan context for array data */
 
+	/* buffer for accessing VM in index-only scans */
+	Buffer		vmBuffer;
+
 	/* info about killed items if any (killedItems is NULL if never used) */
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
@@ -1088,6 +1094,9 @@ typedef struct BTScanOpaqueData
 	 * markPos.
 	 */
 	int			markItemIndex;	/* itemIndex, or -1 if not valid */
+
+	/* last block returned by the read_next stream callback */
+	BlockNumber		lastBlock;
 
 	/* keep these last in struct for efficiency */
 	BTScanPosData currPos;		/* current position data */

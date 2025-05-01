@@ -333,7 +333,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
-btbeginscan(Relation rel, int nkeys, int norderbys)
+btbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BTScanOpaque so;
@@ -342,7 +342,7 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	Assert(norderbys == 0);
 
 	/* get the scan */
-	scan = RelationGetIndexScan(rel, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* allocate private workspace */
 	so = (BTScanOpaque) palloc(sizeof(BTScanOpaqueData));
@@ -371,7 +371,7 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	 */
 	so->currTuples = so->markTuples = NULL;
 
-	scan->xs_itupdesc = RelationGetDescr(rel);
+	scan->xs_itupdesc = RelationGetDescr(index);
 
 	scan->opaque = so;
 

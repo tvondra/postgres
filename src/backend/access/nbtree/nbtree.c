@@ -21,9 +21,11 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
+#include "access/visibilitymap.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "nodes/execnodes.h"
+#include "optimizer/cost.h"
 #include "pgstat.h"
 #include "storage/bulk_write.h"
 #include "storage/condition_variable.h"
@@ -330,6 +332,100 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 }
 
 /*
+ * bt_stream_read_next
+ *		Return the next block to read from the read stream.
+ *
+ * Returns the next block from the current leaf page. The first block is
+ * when accessing the first tuple, after already receiving the TID from the
+ * index (for the item itemIndex points at).
+ *
+ * With index-only scans this skips all-visible pages. The visibility info
+ * is stored, so that we can later pass it to the scan (we must not access
+ * the VM again, the bit might have changes, and the read stream would get
+ * out of sync (we'd get different blocks than we expect expect).
+ *
+ * Returns the block number to get from the read stream. InvalidBlockNumber
+ * means we've ran out of item on the current leaf page - the stream will
+ * end, and we'll need to reset it after reading the next page (or after
+ * changing the scan direction).
+ *
+ * XXX Should skip duplicate blocks (for correlated indexes). But that's
+ * not implemented yet.
+ */
+static BlockNumber
+bt_stream_read_next(ReadStream *stream,
+					void *callback_private_data,
+					void *per_buffer_data)
+{
+	IndexScanDesc	scan = (IndexScanDesc) callback_private_data;
+	BTScanOpaque	so = (BTScanOpaque) scan->opaque;
+	ScanDirection	dir = so->currPos.dir;
+	BlockNumber		block = InvalidBlockNumber;
+
+	/*
+	 * Is this the first request for the read stream (possibly after a reset)?
+	 * If yes, initialize the stream to the current item (itemIndex).
+	 */
+	if (so->currPos.streamIndex == -1)
+		so->currPos.streamIndex = so->currPos.itemIndex;
+
+	/*
+	 * Find the next block to read. For plain index scans we will return the
+	 * very next item, but with index-only scans we skip TIDs from all-visible
+	 * pages (because we won't read those).
+	 */
+	while ((so->currPos.streamIndex >= so->currPos.firstItem) &&
+		   (so->currPos.streamIndex <= so->currPos.lastItem))
+	{
+		ItemPointer		tid;
+		BTScanPosItem  *item;
+
+		item = &so->currPos.items[so->currPos.streamIndex];
+
+		tid = &item->heapTid;
+		block = ItemPointerGetBlockNumber(tid);
+
+		/*
+		 * For index-only scans, check the VM and remember the result. If the page
+		 * is all-visible, don't return the block number, try reading the next one.
+		 *
+		 * XXX Maybe this could use the same logic to check for duplicate blocks,
+		 * and reuse the VM result if possible.
+		 */
+		if (scan->xs_want_itup)
+		{
+			if (!item->allVisibleSet)
+			{
+				item->allVisibleSet = true;
+				item->allVisible = VM_ALL_VISIBLE(scan->heapRelation,
+												  ItemPointerGetBlockNumber(tid),
+												  &so->vmBuffer);
+			}
+
+			/* don't prefetch this all-visible block, try the next one */
+			if (item->allVisible)
+				block = InvalidBlockNumber;
+		}
+
+		/* advance to the next item, assuming the current scan direction */
+		if (ScanDirectionIsForward(dir))
+		{
+			so->currPos.streamIndex++;
+		}
+		else
+		{
+			so->currPos.streamIndex--;
+		}
+
+		/* Did we find a valid block? If yes, we're done. */
+		if (block != InvalidBlockNumber)
+			break;
+	}
+
+	return block;
+}
+
+/*
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
@@ -364,6 +460,9 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
+	/* buffer for accessing the VM in read_next callback */
+	so->vmBuffer = InvalidBuffer;
+
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
 	 * allocate the tuple workspace arrays until btrescan.  However, we set up
@@ -374,6 +473,21 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan->xs_itupdesc = RelationGetDescr(rel);
 
 	scan->opaque = so;
+
+	/*
+	 * Initialize the read stream too - we create a stream if enabled (by GUC),
+	 * and we got the heap (which e.g. bitmap scans will set to NULL).
+	 */
+	if (enable_indexscan_prefetch && heap)
+	{
+		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
+												 NULL,
+												 heap,
+												 MAIN_FORKNUM,
+												 bt_stream_read_next,
+												 scan,
+												 0);
+	}
 
 	return scan;
 }
@@ -461,6 +575,13 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		memcpy(scan->keyData, scankey, scan->numberOfKeys * sizeof(ScanKeyData));
 	so->numberOfKeys = 0;		/* until _bt_preprocess_keys sets it */
 	so->numArrayKeys = 0;		/* ditto */
+
+	/* reset the read stream, to start over */
+	if (scan->xs_rs)
+	{
+		so->currPos.streamIndex = -1;
+		read_stream_reset(scan->xs_rs);
+	}
 }
 
 /*
@@ -482,6 +603,17 @@ btendscan(IndexScanDesc scan)
 
 	so->markItemIndex = -1;
 	BTScanPosUnpinIfPinned(so->markPos);
+
+	/* release the VM buffer */
+	if (so->vmBuffer != InvalidBuffer)
+	{
+		ReleaseBuffer(so->vmBuffer);
+		so->vmBuffer = InvalidBuffer;
+	}
+
+	/* terminate the read stream */
+	if (scan->xs_rs)
+		read_stream_end(scan->xs_rs);
 
 	/* No need to invalidate positions, the RAM is about to be freed. */
 
@@ -580,6 +712,13 @@ btrestrpos(IndexScanDesc scan)
 		}
 		else
 			BTScanPosInvalidate(so->currPos);
+	}
+
+	/* we're restored the scan position, reset the read stream */
+	if (scan->xs_rs)
+	{
+		so->currPos.streamIndex = -1;
+		read_stream_reset(scan->xs_rs);
 	}
 }
 

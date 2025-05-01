@@ -22,7 +22,7 @@
 
 
 IndexScanDesc
-ginbeginscan(Relation rel, int nkeys, int norderbys)
+ginbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	GinScanOpaque so;
@@ -30,7 +30,7 @@ ginbeginscan(Relation rel, int nkeys, int norderbys)
 	/* no order by operators allowed */
 	Assert(norderbys == 0);
 
-	scan = RelationGetIndexScan(rel, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* allocate private workspace */
 	so = (GinScanOpaque) palloc(sizeof(GinScanOpaqueData));

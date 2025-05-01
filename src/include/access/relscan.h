@@ -19,6 +19,7 @@
 #include "nodes/tidbitmap.h"
 #include "port/atomics.h"
 #include "storage/buf.h"
+#include "storage/read_stream.h"
 #include "storage/relfilelocator.h"
 #include "storage/spin.h"
 #include "utils/relcache.h"
@@ -121,6 +122,7 @@ typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
 typedef struct IndexFetchTableData
 {
 	Relation	rel;
+	ReadStream *rs;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;
@@ -168,11 +170,14 @@ typedef struct IndexScanDescData
 	struct TupleDescData *xs_itupdesc;	/* rowtype descriptor of xs_itup */
 	HeapTuple	xs_hitup;		/* index data returned by AM, as HeapTuple */
 	struct TupleDescData *xs_hitupdesc; /* rowtype descriptor of xs_hitup */
+	bool		xs_visible;		/* heap page is all-visible */
 
 	ItemPointerData xs_heaptid; /* result */
 	bool		xs_heap_continue;	/* T if must keep walking, potential
 									 * further results */
 	IndexFetchTableData *xs_heapfetch;
+	ReadStream *xs_rs;			/* read_stream (if supported by the AM) */
+	Relation	xs_heap;		/* heap used by the read_stream */
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 

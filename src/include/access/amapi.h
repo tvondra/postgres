@@ -181,7 +181,8 @@ typedef void (*amadjustmembers_function) (Oid opfamilyoid,
 										  List *functions);
 
 /* prepare for index scan */
-typedef IndexScanDesc (*ambeginscan_function) (Relation indexRelation,
+typedef IndexScanDesc (*ambeginscan_function) (Relation heapRelation,
+											   Relation indexRelation,
 											   int nkeys,
 											   int norderbys);
 

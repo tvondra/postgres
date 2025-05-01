@@ -413,8 +413,14 @@ typedef struct TableAmRoutine
 	 * structure with additional information.
 	 *
 	 * Tuples for an index scan can then be fetched via index_fetch_tuple.
+	 *
+	 * The 'rs' parameter is the read stream initialized by the AM, in
+	 * which case the read stream has to be used to fetch tuples. If the
+	 * AM does not support read stream, it's set to NULL and the regular
+	 * synchronous API to read buffers shall be used.
 	 */
-	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel);
+	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel,
+													  ReadStream *rs);
 
 	/*
 	 * Reset index fetch. Typically this will release cross index fetch
@@ -1149,9 +1155,9 @@ table_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
  * Tuples for an index scan can then be fetched via table_index_fetch_tuple().
  */
 static inline IndexFetchTableData *
-table_index_fetch_begin(Relation rel)
+table_index_fetch_begin(Relation rel, ReadStream *rs)
 {
-	return rel->rd_tableam->index_fetch_begin(rel);
+	return rel->rd_tableam->index_fetch_begin(rel, rs);
 }
 
 /*

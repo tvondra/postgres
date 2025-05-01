@@ -536,16 +536,16 @@ brininsertcleanup(Relation index, IndexInfo *indexInfo)
  * holding lock on index, it's not necessary to recompute it during brinrescan.
  */
 IndexScanDesc
-brinbeginscan(Relation r, int nkeys, int norderbys)
+brinbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BrinOpaque *opaque;
 
-	scan = RelationGetIndexScan(r, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	opaque = palloc_object(BrinOpaque);
-	opaque->bo_rmAccess = brinRevmapInitialize(r, &opaque->bo_pagesPerRange);
-	opaque->bo_bdesc = brin_build_desc(r);
+	opaque->bo_rmAccess = brinRevmapInitialize(index, &opaque->bo_pagesPerRange);
+	opaque->bo_bdesc = brin_build_desc(index);
 	scan->opaque = opaque;
 
 	return scan;

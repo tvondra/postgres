@@ -657,7 +657,8 @@ amadjustmembers (Oid opfamilyoid,
   <para>
 <programlisting>
 IndexScanDesc
-ambeginscan (Relation indexRelation,
+ambeginscan (Relation heapRelation,
+             Relation indexRelation,
              int nkeys,
              int norderbys);
 </programlisting>
@@ -672,6 +673,38 @@ ambeginscan (Relation indexRelation,
    <function>ambeginscan</function> does little beyond making that call and perhaps
    acquiring locks;
    the interesting parts of index-scan startup are in <function>amrescan</function>.
+  </para>
+
+  <para>
+   The index scan may opt into asynchronous I/O by initializing a <literal>ReadStream</literal>
+   on the provided <literal>heapRelation</literal>, and storing it in <literal>xs_rs</literal>
+   field of the scan descriptor. If the field is left <literal>NULL</literal>, the synchronous
+   buffer API will be used. The <literal>heapRelation</literal> is left <literal>NULL</literal>
+   for bitmaps scans, which access it from a separate node.
+  </para>
+
+  <para>
+    To create the <literal>ReadStream</literal>, the index has to implement a <literal>read_next</literal>
+    callback, returning a sequence of block numbers. The scan has to be split into multiple
+    partial sequences (e.g. one sequence per leaf page), the index has to reset the stream
+    when advancing to the next leaf page.
+  </para>
+
+  <para>
+    If the index supports index-only-scans, it needs to set the <literal>xs_visible</literal>
+    field when returning an item from <literal>amgettuple</literal>. This value has
+    to be determined in the <literal>read_next</literal> callback and remembered,
+    and the callback must not queue all-visible blocks. Otherwise the queued blocks
+    and read blocks might disagree. The VM may be updated at any point, so a block
+    might be queued, but then not read as it's all-visible. Or vice versa. Regular
+    (non-IOS) scans don't need to worry about this.
+  </para>
+
+  <para>
+    The <literal>read_next</literal> callback must not queue runs of the same block.
+    If the block number is the same as the last returned block, it has to be
+    skipped. If the stream is reset (e.g. when advancing to the next leaft
+    page), the last block is forgotten.
   </para>
 
   <para>

@@ -16,7 +16,8 @@
 
 #include "access/amapi.h"
 
-extern IndexScanDesc gistbeginscan(Relation r, int nkeys, int norderbys);
+extern IndexScanDesc gistbeginscan(Relation heap, Relation index,
+								   int nkeys, int norderbys);
 extern void gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 					   ScanKey orderbys, int norderbys);
 extern void gistendscan(IndexScanDesc scan);

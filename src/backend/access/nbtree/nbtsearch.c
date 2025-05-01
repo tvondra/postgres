@@ -17,6 +17,7 @@
 
 #include "access/nbtree.h"
 #include "access/relscan.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -2043,6 +2044,21 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	 */
 	Assert(!pstate.forcenonrequired);
 
+	/*
+	 * Reset the read stream, to restart it for the new page.
+	 *
+	 * XXX Maybe we should not reset prefetch distance to 0, but start from
+	 * a somewhat higher value. We're merely continuing the same scan as
+	 * before ... maybe reduce it a bit, to not harm LIMIT queries, but not
+	 * reset it all the way to 0.
+	 */
+	if (scan->xs_rs)
+	{
+		so->currPos.streamIndex = -1;
+		so->lastBlock = InvalidBlockNumber;
+		read_stream_reset(scan->xs_rs);
+	}
+
 	return (so->currPos.firstItem <= so->currPos.lastItem);
 }
 
@@ -2057,6 +2073,11 @@ _bt_saveitem(BTScanOpaque so, int itemIndex,
 
 	currItem->heapTid = itup->t_tid;
 	currItem->indexOffset = offnum;
+
+	/* initialize visibility flags */
+	currItem->allVisibleSet = false;
+	currItem->allVisible = false;
+
 	if (so->currTuples)
 	{
 		Size		itupsz = IndexTupleSize(itup);
@@ -2087,6 +2108,11 @@ _bt_setuppostingitems(BTScanOpaque so, int itemIndex, OffsetNumber offnum,
 
 	currItem->heapTid = *heapTid;
 	currItem->indexOffset = offnum;
+
+	/* initialize visibility flags */
+	currItem->allVisibleSet = false;
+	currItem->allVisible = false;
+
 	if (so->currTuples)
 	{
 		/* Save base IndexTuple (truncate posting list) */
@@ -2124,6 +2150,10 @@ _bt_savepostingitem(BTScanOpaque so, int itemIndex, OffsetNumber offnum,
 	currItem->heapTid = *heapTid;
 	currItem->indexOffset = offnum;
 
+	/* initialize visibility flags */
+	currItem->allVisibleSet = false;
+	currItem->allVisible = false;
+
 	/*
 	 * Have index-only scans return the same base IndexTuple for every TID
 	 * that originates from the same posting list
@@ -2148,6 +2178,22 @@ _bt_returnitem(IndexScanDesc scan, BTScanOpaque so)
 
 	/* Return next item, per amgettuple contract */
 	scan->xs_heaptid = currItem->heapTid;
+
+	/*
+	 * XXX If this is index-only scan and we haven't checked the VM yet, do
+	 * that now. We need to make sure scan->xs_visible is set correctly even
+	 * if the scan is not using a read stream.
+	 */
+	if (scan->xs_want_itup && !currItem->allVisibleSet)
+	{
+		currItem->allVisibleSet = true;
+		currItem->allVisible
+			= VM_ALL_VISIBLE(scan->heapRelation,
+							 ItemPointerGetBlockNumber(&currItem->heapTid),
+							 &so->vmBuffer);
+	}
+
+	scan->xs_visible = currItem->allVisible;
 	if (so->currTuples)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 }

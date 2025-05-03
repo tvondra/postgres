@@ -169,7 +169,14 @@ InitPostmasterChild(void)
 				 errmsg_internal("could not set postmaster death monitoring pipe to FD_CLOEXEC mode: %m")));
 #endif
 
-	numa_set_localalloc();
+#ifdef USE_LIBNUMA
+	/*
+	 * Set the default allocation policy to local node, where the task is
+	 * executing at the time of a page fault.
+	 */
+	if (numa_localalloc)
+		numa_set_localalloc();
+#endif
 }
 
 /*

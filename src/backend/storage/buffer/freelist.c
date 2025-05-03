@@ -665,7 +665,7 @@ StrategyInitialize(bool init)
 			{
 				belongs_to = 0;
 			}
-			else if (shared_memory_populate)
+			else if (numa_shmem_populate)
 			{
 				rc = move_pages(0, 1, pages, NULL, &status,
 								0);

@@ -15,14 +15,32 @@
  */
 #include "postgres.h"
 
+#include <sched.h>
+
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
+
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/ipc.h"
 #include "storage/proc.h"
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
+
+typedef struct BufferStrategyFreelist
+{
+	int			firstFreeBuffer	__attribute__((aligned(64)));	/* Head of list of unused buffers */
+	slock_t		freelist_lock;
+	uint64		consumed;
+
+	/* FIXME: move lock protecting this into this struct */
+	/* XXX which lock? the spinlock is there already */
+} BufferStrategyFreelist;
 
 /*
  * The shared freelist control information.
@@ -39,8 +57,6 @@ typedef struct
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
 
-	int			firstFreeBuffer;	/* Head of list of unused buffers */
-
 	/*
 	 * Statistics.  These counters should be wide enough that they can't
 	 * overflow during a single bgwriter cycle.
@@ -52,11 +68,17 @@ typedef struct
 	 * Bgworker process to be notified upon activity or -1 if none. See
 	 * StrategyNotifyBgWriter.
 	 */
-	int			bgwprocno;
+	int			__attribute__((aligned(64))) bgwprocno;
+
+	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
 
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
+
+/* XXX shouldn't this be in BufferStrategyControl? */
+static int strategy_nnodes;
+static int strategy_ncpus;
 
 /*
  * Private (non-shared) state for managing a ring of shared buffers to re-use.
@@ -158,6 +180,74 @@ ClockSweepTick(void)
 }
 
 /*
+ * choose_freelist
+ *		Pick the buffer freelist to use, depending on the CPU and NUMA node.
+ *
+ * Without partitioned freelists (numa_partition_freelist=false), there's only
+ * a single freelist, so use that.
+ *
+ * With partitioned freelists, we have multiple ways how to pick the freelist
+ * for the backend:
+ *
+ * - one freelist per CPU, use the freelist for CPU the task executes on
+ *
+ * - one freelist per NUMA node, use the freelist for node task executes on
+ *
+ * - use fixed number of freelists, map processes to lists based on PID
+ *
+ * There may be some other strategies, not sure. The important thing is this
+ * needs to be refrecled during initialization, i.e. we need to create the
+ * right number of lists.
+ */
+static BufferStrategyFreelist *
+choose_freelist(void)
+{
+	unsigned cpu;
+	unsigned node;
+	int rc;
+
+	int freelist_idx;
+
+	/* not partitioned, return the first (and only) freelist */
+	if (!numa_partition_freelist)
+		return &StrategyControl->freelists[0];
+
+	/*
+	 * freelist is partitioned, so determine the CPU/NUMA node, and pick
+	 * a list based on that.
+	 */
+	rc = getcpu(&cpu, &node);
+	if (rc != 0)
+		elog(ERROR, "getcpu failed: %m");
+
+	/*
+	 * FIXME: This doesn't work well if CPUs are excluded from being run
+	 * or offline.
+	 *
+	 * XXX Why doesn't it work? Because if a CPU gets excluded, we forget
+	 * about the buffers and don't use them, or why?
+	 */
+	if (cpu > strategy_ncpus)
+		elog(ERROR, "cpu out of range: %d > %u", cpu, strategy_ncpus);
+	else if (node > strategy_nnodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
+
+	/* One freelist per CPU. */
+	freelist_idx = cpu % strategy_ncpus;
+
+	/* One freelist per NUMA node. */
+	// freelist_idx = cpu % strategy_nnodes;
+
+	/*
+	 * One freelist per CPU, but determined by PID and not by CPU used
+	 * by the current task CPU.
+	 */
+	// freelist_idx = MyProcPid % strategy_ncpus;
+
+	return &StrategyControl->freelists[freelist_idx];
+}
+
+/*
  * have_free_buffer -- a lockless check to see if there is a free buffer in
  *					   buffer pool.
  *
@@ -168,10 +258,13 @@ ClockSweepTick(void)
 bool
 have_free_buffer(void)
 {
-	if (StrategyControl->firstFreeBuffer >= 0)
-		return true;
-	else
-		return false;
+	for (int i = 0; i < strategy_ncpus; i++)
+	{
+		if (StrategyControl->freelists[i].firstFreeBuffer >= 0)
+			return true;
+	}
+
+	return false;
 }
 
 /*
@@ -193,6 +286,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	int			bgwprocno;
 	int			trycounter;
 	uint32		local_buf_state;	/* to avoid repeated (de-)referencing */
+	BufferStrategyFreelist *freelist;
 
 	*from_ring = false;
 
@@ -259,31 +353,35 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 * buffer_strategy_lock not the individual buffer spinlocks, so it's OK to
 	 * manipulate them without holding the spinlock.
 	 */
-	if (StrategyControl->firstFreeBuffer >= 0)
+	freelist = choose_freelist();
+	if (freelist->firstFreeBuffer >= 0)
 	{
 		while (true)
 		{
 			/* Acquire the spinlock to remove element from the freelist */
-			SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+			SpinLockAcquire(&freelist->freelist_lock);
 
-			if (StrategyControl->firstFreeBuffer < 0)
+			if (freelist->firstFreeBuffer < 0)
 			{
-				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+				SpinLockRelease(&freelist->freelist_lock);
 				break;
 			}
 
-			buf = GetBufferDescriptor(StrategyControl->firstFreeBuffer);
+			buf = GetBufferDescriptor(freelist->firstFreeBuffer);
 			Assert(buf->freeNext != FREENEXT_NOT_IN_LIST);
 
 			/* Unconditionally remove buffer from freelist */
-			StrategyControl->firstFreeBuffer = buf->freeNext;
+			freelist->firstFreeBuffer = buf->freeNext;
 			buf->freeNext = FREENEXT_NOT_IN_LIST;
+
+			/* increment number of buffers we consumed from this list */
+			freelist->consumed++;
 
 			/*
 			 * Release the lock so someone else can access the freelist while
 			 * we check out this buffer.
 			 */
-			SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+			SpinLockRelease(&freelist->freelist_lock);
 
 			/*
 			 * If the buffer is pinned or has a nonzero usage_count, we cannot
@@ -352,11 +450,21 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 
 /*
  * StrategyFreeBuffer: put a buffer on the freelist
+ *
+ * This calls choose_freelist() again, and it might return the freelist to a
+ * different freelist than it was taken from (either by a different backend,
+ * or perhaps even the same backend running on a different CPU). Is that good?
+ * Maybe we should try to balance this somehow, e.g. by choosing a random list,
+ * the shortest one, or something like that?
  */
 void
 StrategyFreeBuffer(BufferDesc *buf)
 {
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+	BufferStrategyFreelist *freelist;
+
+	freelist = choose_freelist();
+
+	SpinLockAcquire(&freelist->freelist_lock);
 
 	/*
 	 * It is possible that we are told to put something in the freelist that
@@ -364,11 +472,11 @@ StrategyFreeBuffer(BufferDesc *buf)
 	 */
 	if (buf->freeNext == FREENEXT_NOT_IN_LIST)
 	{
-		buf->freeNext = StrategyControl->firstFreeBuffer;
-		StrategyControl->firstFreeBuffer = buf->buf_id;
+		buf->freeNext = freelist->firstFreeBuffer;
+		freelist->firstFreeBuffer = buf->buf_id;
 	}
 
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+	SpinLockRelease(&freelist->freelist_lock);
 }
 
 /*
@@ -432,6 +540,42 @@ StrategyNotifyBgWriter(int bgwprocno)
 	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
 }
 
+/* prints some debug info / stats about freelists at shutdown */
+static void
+freelist_before_shmem_exit(int code, Datum arg)
+{
+	for (int node = 0; node < strategy_ncpus; node++)
+	{
+		BufferStrategyFreelist *freelist = &StrategyControl->freelists[node];
+		uint64 remain = 0;
+		uint64 actually_free = 0;
+		int cur = freelist->firstFreeBuffer;
+
+		while (cur >= 0)
+		{
+			uint32		local_buf_state;
+			BufferDesc *buf;
+
+			buf = GetBufferDescriptor(cur);
+
+			remain++;
+
+			local_buf_state = LockBufHdr(buf);
+
+			if (!(local_buf_state & BM_TAG_VALID))
+				actually_free++;
+
+			UnlockBufHdr(buf, local_buf_state);
+
+			cur = buf->freeNext;
+		}
+		elog(LOG, "freelist %d, firstF: %d: consumed: %lu, remain: %lu, actually free: %lu",
+			 node,
+			 freelist->firstFreeBuffer,
+			 freelist->consumed,
+			 remain, actually_free);
+	}
+}
 
 /*
  * StrategyShmemSize
@@ -446,11 +590,29 @@ StrategyShmemSize(void)
 {
 	Size		size = 0;
 
+	/* FIXME */
+#ifdef USE_LIBNUMA
+	strategy_ncpus = numa_num_task_cpus();
+	strategy_nnodes = numa_num_task_nodes();
+#else
+	strategy_ncpus = 1;
+	strategy_nnodes = 1;
+#endif
+
+	Assert(strategy_nnodes <= strategy_ncpus);
+
 	/* size of lookup hash table ... see comment in StrategyInitialize */
 	size = add_size(size, BufTableShmemSize(NBuffers + NUM_BUFFER_PARTITIONS));
 
 	/* size of the shared replacement strategy control block */
-	size = add_size(size, MAXALIGN(sizeof(BufferStrategyControl)));
+	size = add_size(size, MAXALIGN(offsetof(BufferStrategyControl, freelists)));
+
+	/*
+	 * Allocate one frelist per CPU. We might use per-node freelists, but the
+	 * assumption is the number of CPUs is less than number of NUMA nodes.
+	 */
+	size = add_size(size, MAXALIGN(mul_size(sizeof(BufferStrategyFreelist),
+											strategy_ncpus)));
 
 	return size;
 }
@@ -466,6 +628,7 @@ void
 StrategyInitialize(bool init)
 {
 	bool		found;
+	int			percpubuffers;
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -484,7 +647,8 @@ StrategyInitialize(bool init)
 	 */
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",
-						sizeof(BufferStrategyControl),
+						offsetof(BufferStrategyControl, freelists) +
+						(sizeof(BufferStrategyFreelist) * strategy_ncpus),
 						&found);
 
 	if (!found)
@@ -494,13 +658,10 @@ StrategyInitialize(bool init)
 		 */
 		Assert(init);
 
-		SpinLockInit(&StrategyControl->buffer_strategy_lock);
+		/* register callback to dump some stats on exit */
+		before_shmem_exit(freelist_before_shmem_exit, 0);
 
-		/*
-		 * Grab the whole linked list of free buffers for our strategy. We
-		 * assume it was previously set up by BufferManagerShmemInit().
-		 */
-		StrategyControl->firstFreeBuffer = 0;
+		SpinLockInit(&StrategyControl->buffer_strategy_lock);
 
 		/* Initialize the clock sweep pointer */
 		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
@@ -511,6 +672,71 @@ StrategyInitialize(bool init)
 
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;
+
+		/* FIXME this is broken, it always partitions into per-cpu lists, even
+		 * if we want per-node partitioning */
+
+		for (int nfreelist = 0; nfreelist < strategy_ncpus; nfreelist++)
+		{
+			BufferStrategyFreelist *freelist = &StrategyControl->freelists[nfreelist];
+
+			freelist->firstFreeBuffer = FREENEXT_END_OF_LIST;
+
+			SpinLockInit(&freelist->freelist_lock);
+		}
+
+		percpubuffers = NBuffers / strategy_ncpus;
+		elog(LOG, "NBuffers: %d, ncpus: %d, divide: %d, remain: %d",
+			 NBuffers, strategy_ncpus, percpubuffers,
+			 NBuffers - (strategy_ncpus * percpubuffers)
+			);
+
+		for (int i = NBuffers - 1; i >= 0; i--)
+		{
+			BufferDesc *buf = GetBufferDescriptor(i);
+			//uintptr_t bufaddr = (uintptr_t) BufferGetBlock(i + 1);
+			BufferStrategyFreelist *freelist;
+			int status = 0;
+			int rc;
+			void *pages[1];
+			int belongs_to;
+
+			pages[0] = BufferGetBlock(i + 1);
+
+			if (!numa_partition_freelist)
+			{
+				belongs_to = 0;
+			}
+			else if (numa_shmem_populate)
+			{
+				rc = move_pages(0, 1, pages, NULL, &status,
+								0);
+				if (rc != 0)
+					elog(LOG, "page: %d, fail: %d: %m, %p", i + 1, rc,
+						 BufferGetBlock(i + 1));
+				else if (status < 0)
+					elog(LOG, "freelist page: %d, couldn't determine: %d", i + 1, status);
+				else if (status >= strategy_ncpus)
+					elog(LOG, "freelist page: %d, too high: %d", i + 1, status);
+
+#if 0
+				belongs_to = status;
+#else
+				belongs_to = status * (strategy_ncpus / strategy_nnodes)
+					+ (i / percpubuffers) % (strategy_ncpus / strategy_nnodes);
+#endif
+			}
+			else
+			{
+				belongs_to = (i / percpubuffers) % strategy_ncpus;
+			}
+
+
+			freelist = &StrategyControl->freelists[belongs_to];
+
+			buf->freeNext = freelist->firstFreeBuffer;
+			freelist->firstFreeBuffer = i;
+		}
 	}
 	else
 		Assert(!init);

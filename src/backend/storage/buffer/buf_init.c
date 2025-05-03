@@ -21,8 +21,15 @@
 
 #include "port/pg_numa.h"
 #include "storage/aio.h"
+
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
+
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/proc.h"
 #include "storage/pg_shmem.h"
 
 BufferDescPadded *BufferDescriptors;
@@ -130,6 +137,7 @@ BufferManagerShmemInit(void)
 	else
 	{
 		int			i;
+		uintptr_t	huge_page_sz = huge_page_size * 1024;
 
 		/*
 		 * Before we start touching the memory, interleave the memory to
@@ -225,17 +233,63 @@ BufferManagerShmemInit(void)
 			buf->buf_id = i;
 
 			pgaio_wref_clear(&buf->io_wref);
-
 			/*
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
+			 *
+			 * XXX We want to point to the next buffer on the same NUMA node.
+			 * With NUMA, the granularity is a memory page, either regular or
+			 * a huge page. This may be smaller/larger than BLCKSZ, and it may
+			 * not align quite right (a buffer may use multiple memory pages,
+			 * even if (BLCKS < page_size). So we need to be careful, even if
+			 * the worst consequence would be lower performance.
 			 */
+#if 0
+			if (numa_shmem_interleave)
+			{
+				/*
+				 * XXX This seems to "interleave" even the freelist, so that
+				 * the different elements come from different NUMA nodes. But
+				 * it's weird, because it'll always be the next node for the
+				 * whole page. So all buffers from memory page 0 (on node A)
+				 * will point at buffers from page 1 (node B). Then B -> C and
+				 * so on. It's not quite balanced, right?
+				 */
+				buf->freeNext = (i + (huge_page_sz)/BLCKSZ) % NBuffers;
+			}
+			else
+				buf->freeNext = (i + 1);
+else
 			buf->freeNext = i + 1;
-
+#endif
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);
 
 			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
+
+#ifdef USE_LIBNUMA
+			if (0)
+			{
+				int status = 0;
+				int rc;
+				void *pages[1];
+
+				pages[0] = BufferGetBlock(i + 1);
+
+				//memset(pages[0], 0, BLCKSZ);
+				rc = move_pages(0, 1, pages, NULL, &status,
+								0);
+				if (rc != 0)
+					elog(LOG, "page: %d, fail: %d: %m, %p", i + 1, rc,
+						 BufferGetBlock(i + 1));
+				else
+					elog(LOG, "page: %d %p: %d: pageid %zu",
+						 i + 1, BufferGetBlock(i + 1), status,
+						 (uintptr_t) pages[0] / huge_page_sz -
+						 (uintptr_t) BufferBlocks / huge_page_sz
+						);
+			}
+#endif
 		}
 
 		/* Correct last entry of linked list */

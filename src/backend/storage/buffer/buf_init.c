@@ -136,15 +136,34 @@ BufferManagerShmemInit(void)
 			buf->buf_id = i;
 
 			pgaio_wref_clear(&buf->io_wref);
-#if 0
 			/*
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
+			 *
+			 * XXX We want to point to the next buffer on the same NUMA node.
+			 * With NUMA, the granularity is a memory page, either regular or
+			 * a huge page. This may be smaller/larger than BLCKSZ, and it may
+			 * not align quite right (a buffer may use multiple memory pages,
+			 * even if (BLCKS < page_size). So we need to be careful, even if
+			 * the worst consequence would be lower performance.
 			 */
-			if (numa_aware)
+#if 0
+			if (numa_shmem_interleave)
+			{
+				/*
+				 * XXX This seems to "interleave" even the freelist, so that
+				 * the different elements come from different NUMA nodes. But
+				 * it's weird, because it'll always be the next node for the
+				 * whole page. So all buffers from memory page 0 (on node A)
+				 * will point at buffers from page 1 (node B). Then B -> C and
+				 * so on. It's not quite balanced, right?
+				 */
 				buf->freeNext = (i + (huge_page_sz)/BLCKSZ) % NBuffers;
+			}
 			else
-				buf->freeNext = (i + 1) % NBuffers;
+				buf->freeNext = (i + 1);
+else
+			buf->freeNext = i + 1;
 #endif
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);

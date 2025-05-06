@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include <sched.h>
+#include <sys/sysinfo.h>
 
 #ifdef USE_LIBNUMA
 #include <numa.h>
@@ -694,44 +695,42 @@ StrategyInitialize(bool init)
 		for (int i = NBuffers - 1; i >= 0; i--)
 		{
 			BufferDesc *buf = GetBufferDescriptor(i);
-			//uintptr_t bufaddr = (uintptr_t) BufferGetBlock(i + 1);
 			BufferStrategyFreelist *freelist;
-			int status = 0;
-			int rc;
-			void *pages[1];
-			int belongs_to;
+			int		belongs_to = 0; /* first freelist by default */
+			void   *ptr;
+			int		status = 0;
 
-			pages[0] = BufferGetBlock(i + 1);
+			/*
+			 * XXX Calling get_nprocs() may not be quite correct, because some
+			 * of the processors may get disabled, etc.
+			 */
+			int		num_cpus = get_nprocs();
 
-			if (!numa_partition_freelist)
+			ptr = BufferGetBlock(i + 1);
+
+			/*
+			 * Split the freelist into partitions, if needed (or just keep the
+			 * freelist we already built in BufferManagerShmemInit().
+			 */
+			if ((numa_partition_freelist == FREELIST_PARTITION_CPU) ||
+				(numa_partition_freelist == FREELIST_PARTITION_PID))
 			{
-				belongs_to = 0;
+				belongs_to = (i % num_cpus);
 			}
-			else if (numa_shmem_populate)
+			else if (numa_partition_freelist == FREELIST_PARTITION_NODE)
 			{
-				rc = move_pages(0, 1, pages, NULL, &status,
-								0);
+				/* we could probably calculate this, without calling move_pages */
+				int	rc = move_pages(0, 1, (void **) &ptr, NULL, &status, 0);
+
 				if (rc != 0)
-					elog(LOG, "page: %d, fail: %d: %m, %p", i + 1, rc,
-						 BufferGetBlock(i + 1));
-				else if (status < 0)
-					elog(LOG, "freelist page: %d, couldn't determine: %d", i + 1, status);
-				else if (status >= strategy_ncpus)
-					elog(LOG, "freelist page: %d, too high: %d", i + 1, status);
+					elog(ERROR, "failed to build freelist: %d", rc);
 
-#if 0
+				Assert(status >= 0);
+
 				belongs_to = status;
-#else
-				belongs_to = status * (strategy_ncpus / strategy_nnodes)
-					+ (i / percpubuffers) % (strategy_ncpus / strategy_nnodes);
-#endif
-			}
-			else
-			{
-				belongs_to = (i / percpubuffers) % strategy_ncpus;
 			}
 
-
+			/* */
 			freelist = &StrategyControl->freelists[belongs_to];
 
 			buf->freeNext = freelist->firstFreeBuffer;

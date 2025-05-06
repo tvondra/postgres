@@ -39,6 +39,8 @@ WritebackContext BackendWritebackContext;
 CkptSortItem *CkptBufferIds;
 
 
+static Size get_memory_page_size(void);
+
 /*
  * Data Structures:
  *		buffers live in a freelist and a lookup data structure.
@@ -91,8 +93,15 @@ BufferManagerShmemInit(void)
 	 * memory page size, so that buffers don't get "split" to multiple
 	 * memory pages unnecessarily.
 	 */
-	Size		mem_page_size = pg_get_shmem_pagesize();
-	Size		buffer_align = Max(mem_page_size, PG_IO_ALIGN_SIZE);
+	Size		mem_page_size;
+	Size		buffer_align;
+
+	if (IsUnderPostmaster)
+		mem_page_size = pg_get_shmem_pagesize();
+	else
+		mem_page_size = get_memory_page_size();
+
+	buffer_align = Max(mem_page_size, PG_IO_ALIGN_SIZE);
 
 	/* one page is a multiple of the other */
 	Assert(((mem_page_size % PG_IO_ALIGN_SIZE) == 0) ||
@@ -137,7 +146,6 @@ BufferManagerShmemInit(void)
 	else
 	{
 		int			i;
-		uintptr_t	huge_page_sz = huge_page_size * 1024;
 
 		/*
 		 * Before we start touching the memory, interleave the memory to
@@ -191,7 +199,7 @@ BufferManagerShmemInit(void)
 				 * next buffer). The buffer should align with the memory page,
 				 * thanks to the buffer_align earlier.
 				 */
-				Assert(buffptr % mem_page_size == 0);
+				Assert((int64) buffptr % mem_page_size == 0);
 
 				tmp = buffptr;
 				while (tmp < buffptr + BLCKSZ)
@@ -233,68 +241,27 @@ BufferManagerShmemInit(void)
 			buf->buf_id = i;
 
 			pgaio_wref_clear(&buf->io_wref);
+
 			/*
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
-			 *
-			 * XXX We want to point to the next buffer on the same NUMA node.
-			 * With NUMA, the granularity is a memory page, either regular or
-			 * a huge page. This may be smaller/larger than BLCKSZ, and it may
-			 * not align quite right (a buffer may use multiple memory pages,
-			 * even if (BLCKS < page_size). So we need to be careful, even if
-			 * the worst consequence would be lower performance.
 			 */
-#if 0
-			if (numa_shmem_interleave)
-			{
-				/*
-				 * XXX This seems to "interleave" even the freelist, so that
-				 * the different elements come from different NUMA nodes. But
-				 * it's weird, because it'll always be the next node for the
-				 * whole page. So all buffers from memory page 0 (on node A)
-				 * will point at buffers from page 1 (node B). Then B -> C and
-				 * so on. It's not quite balanced, right?
-				 */
-				buf->freeNext = (i + (huge_page_sz)/BLCKSZ) % NBuffers;
-			}
-			else
-				buf->freeNext = (i + 1);
-else
 			buf->freeNext = i + 1;
-#endif
+
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);
 
 			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
-
-#ifdef USE_LIBNUMA
-			if (0)
-			{
-				int status = 0;
-				int rc;
-				void *pages[1];
-
-				pages[0] = BufferGetBlock(i + 1);
-
-				//memset(pages[0], 0, BLCKSZ);
-				rc = move_pages(0, 1, pages, NULL, &status,
-								0);
-				if (rc != 0)
-					elog(LOG, "page: %d, fail: %d: %m, %p", i + 1, rc,
-						 BufferGetBlock(i + 1));
-				else
-					elog(LOG, "page: %d %p: %d: pageid %zu",
-						 i + 1, BufferGetBlock(i + 1), status,
-						 (uintptr_t) pages[0] / huge_page_sz -
-						 (uintptr_t) BufferBlocks / huge_page_sz
-						);
-			}
-#endif
 		}
 
 		/* Correct last entry of linked list */
 		GetBufferDescriptor(NBuffers - 1)->freeNext = FREENEXT_END_OF_LIST;
 	}
+
+	/*
+	 * As this point we have all the buffers in a single long freelist. With
+	 * freelist partitioning we rebuild them in StrategyInitialize.
+	 */
 
 	/* Init other shared buffer-management stuff */
 	StrategyInitialize(!foundDescs);
@@ -318,8 +285,6 @@ get_memory_page_size(void)
 #else
 	os_page_size = sysconf(_SC_PAGESIZE);
 #endif
-
-	Assert(IsUnderPostmaster);
 
 	/* assume huge pages get used, unless HUGE_PAGES_OFF */
 	if (huge_pages == HUGE_PAGES_ON || huge_pages == HUGE_PAGES_TRY)

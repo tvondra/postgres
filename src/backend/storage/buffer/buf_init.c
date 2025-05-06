@@ -153,6 +153,7 @@ BufferManagerShmemInit(void)
 		{
 			char   *next_page = NULL;
 			int		node = 0;
+			int		num_nodes = numa_num_configured_nodes();
 			volatile uint64 touch pg_attribute_unused();
 
 			for (i = 0; i < NBuffers; i++)
@@ -193,7 +194,8 @@ BufferManagerShmemInit(void)
 					tmp += mem_page_size;
 				}
 
-				node = (node + 1) % numa_num_configured_nodes();
+				/* we're done with this buffer/page, so advance to next node */
+				node = (node + 1) % num_nodes;
 
 				/* remember the first unmoved page */
 				next_page = tmp;

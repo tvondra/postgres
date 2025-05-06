@@ -305,7 +305,7 @@ static const char *progname;
 #define	CPU_PINNING_RANDOM		1
 #define	CPU_PINNING_COLOCATED	2
 
-static int pinning_mode = CPU_PINNING_NONE;
+static int	pinning_mode = CPU_PINNING_NONE;
 
 #define WSEP '@'				/* weight separator */
 
@@ -874,20 +874,20 @@ static bool socket_has_input(socket_set *sa, int fd, int idx);
  */
 typedef struct cpu_generator_state
 {
-	int		ncpus;		/* number of CPUs available */
-	int		nitems;		/* number of items in the queue */
-	int	   *nthreads;	/* number of threads for each CPU */
-	int	   *nclients;	/* number of processes for each CPU */
-	int	   *items;		/* queue of CPUs to pick from */
-} cpu_generator_state;
+	int			ncpus;			/* number of CPUs available */
+	int			nitems;			/* number of items in the queue */
+	int		   *nthreads;		/* number of threads for each CPU */
+	int		   *nclients;		/* number of processes for each CPU */
+	int		   *items;			/* queue of CPUs to pick from */
+}			cpu_generator_state;
 
 static cpu_generator_state cpu_generator_init(int ncpus);
-static void cpu_generator_refill(cpu_generator_state *state);
-static void cpu_generator_reset(cpu_generator_state *state);
-static int cpu_generator_thread(cpu_generator_state *state);
-static int cpu_generator_client(cpu_generator_state *state, int thread_cpu);
-static void cpu_generator_print(cpu_generator_state *state);
-static bool cpu_generator_check(cpu_generator_state *state);
+static void cpu_generator_refill(cpu_generator_state * state);
+static void cpu_generator_reset(cpu_generator_state * state);
+static int	cpu_generator_thread(cpu_generator_state * state);
+static int	cpu_generator_client(cpu_generator_state * state, int thread_cpu);
+static void cpu_generator_print(cpu_generator_state * state);
+static bool cpu_generator_check(cpu_generator_state * state);
 
 static void reset_pinning(TState *threads, int nthreads);
 
@@ -7422,7 +7422,7 @@ main(int argc, char **argv)
 	/* try to assign threads/clients to CPUs */
 	if (pinning_mode != CPU_PINNING_NONE)
 	{
-		int nprocs = get_nprocs();
+		int			nprocs = get_nprocs();
 		cpu_generator_state state = cpu_generator_init(nprocs);
 
 retry:
@@ -7433,6 +7433,7 @@ retry:
 		for (i = 0; i < nthreads; i++)
 		{
 			TState	   *thread = &threads[i];
+
 			thread->cpu = cpu_generator_thread(&state);
 		}
 
@@ -7444,7 +7445,7 @@ retry:
 		while (true)
 		{
 			/* did we find any unassigned backend? */
-			bool found = false;
+			bool		found = false;
 
 			for (i = 0; i < nthreads; i++)
 			{
@@ -7678,10 +7679,10 @@ threadRun(void *arg)
 		/* determine PID of the backend, pin it to the same CPU */
 		for (int i = 0; i < nstate; i++)
 		{
-			char   *pid_str;
-			pid_t	pid;
+			char	   *pid_str;
+			pid_t		pid;
 
-			PGresult *res = PQexec(state[i].con, "select pg_backend_pid()");
+			PGresult   *res = PQexec(state[i].con, "select pg_backend_pid()");
 
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
 				pg_fatal("could not determine PID of the backend for client %d",
@@ -8184,7 +8185,7 @@ cpu_generator_init(int ncpus)
 {
 	struct timeval tv;
 
-	cpu_generator_state	state;
+	cpu_generator_state state;
 
 	state.ncpus = ncpus;
 
@@ -8207,7 +8208,7 @@ cpu_generator_init(int ncpus)
 }
 
 static void
-cpu_generator_refill(cpu_generator_state *state)
+cpu_generator_refill(cpu_generator_state * state)
 {
 	struct timeval tv;
 
@@ -8223,7 +8224,7 @@ cpu_generator_refill(cpu_generator_state *state)
 }
 
 static void
-cpu_generator_reset(cpu_generator_state *state)
+cpu_generator_reset(cpu_generator_state * state)
 {
 	state->nitems = 0;
 	cpu_generator_refill(state);
@@ -8236,15 +8237,15 @@ cpu_generator_reset(cpu_generator_state *state)
 }
 
 static int
-cpu_generator_thread(cpu_generator_state *state)
+cpu_generator_thread(cpu_generator_state * state)
 {
 	if (state->nitems == 0)
 		cpu_generator_refill(state);
 
 	while (true)
 	{
-		int idx = lrand48() % state->nitems;
-		int cpu = state->items[idx];
+		int			idx = lrand48() % state->nitems;
+		int			cpu = state->items[idx];
 
 		state->items[idx] = state->items[state->nitems - 1];
 		state->nitems--;
@@ -8256,10 +8257,10 @@ cpu_generator_thread(cpu_generator_state *state)
 }
 
 static int
-cpu_generator_client(cpu_generator_state *state, int thread_cpu)
+cpu_generator_client(cpu_generator_state * state, int thread_cpu)
 {
-	int		min_clients;
-	bool	has_valid_cpus = false;
+	int			min_clients;
+	bool		has_valid_cpus = false;
 
 	for (int i = 0; i < state->nitems; i++)
 	{
@@ -8284,8 +8285,8 @@ cpu_generator_client(cpu_generator_state *state, int thread_cpu)
 
 	while (true)
 	{
-		int idx = lrand48() % state->nitems;
-		int cpu = state->items[idx];
+		int			idx = lrand48() % state->nitems;
+		int			cpu = state->items[idx];
 
 		if (cpu == thread_cpu)
 			continue;
@@ -8303,7 +8304,7 @@ cpu_generator_client(cpu_generator_state *state, int thread_cpu)
 }
 
 static void
-cpu_generator_print(cpu_generator_state *state)
+cpu_generator_print(cpu_generator_state * state)
 {
 	for (int i = 0; i < state->ncpus; i++)
 	{
@@ -8312,10 +8313,10 @@ cpu_generator_print(cpu_generator_state *state)
 }
 
 static bool
-cpu_generator_check(cpu_generator_state *state)
+cpu_generator_check(cpu_generator_state * state)
 {
-	int	min_count = INT_MAX,
-		max_count = 0;
+	int			min_count = INT_MAX,
+				max_count = 0;
 
 	for (int i = 0; i < state->ncpus; i++)
 	{

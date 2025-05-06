@@ -178,6 +178,8 @@ extern PGDLLIMPORT int MaxConnections;
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
 
+extern PGDLLIMPORT bool numa_buffers_interleave;
+
 extern PGDLLIMPORT int commit_timestamp_buffers;
 extern PGDLLIMPORT int multixact_member_buffers;
 extern PGDLLIMPORT int multixact_offset_buffers;

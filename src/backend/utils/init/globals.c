@@ -146,11 +146,11 @@ int			max_worker_processes = 8;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
 
-bool		numa_shmem_interleave = true;
-bool		numa_buffers_interleave = true;
-bool		numa_shmem_populate = true;
-bool		numa_localalloc = true;
-bool		numa_partition_freelist = true;
+bool		numa_shmem_interleave = false;
+bool		numa_buffers_interleave = false;
+bool		numa_shmem_populate = false;
+bool		numa_localalloc = false;
+int			numa_partition_freelist = false;
 
 /* GUC parameters for vacuum */
 int			VacuumBufferUsageLimit = 2048;

@@ -491,6 +491,14 @@ static const struct config_enum_entry file_copy_method_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry freelist_partition_options[] = {
+	{"none", FREELIST_PARTITION_NONE, false},
+	{"node", FREELIST_PARTITION_NODE, false},
+	{"cpu", FREELIST_PARTITION_CPU, false},
+	{"pid", FREELIST_PARTITION_PID, false},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -2153,16 +2161,6 @@ struct config_bool ConfigureNamesBool[] =
 			gettext_noop("When enabled, allocate from the node where the task is executing."),
 		},
 		&numa_localalloc,
-		true,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"numa_partition_freelist", PGC_POSTMASTER, DEVELOPER_OPTIONS,
-			gettext_noop("Enables buffer freelists to be partitioned per NUMA node."),
-			gettext_noop("When enabled, we create a separate freelist per NUMA node."),
-		},
-		&numa_partition_freelist,
 		true,
 		NULL, NULL, NULL
 	},
@@ -5312,6 +5310,16 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&file_copy_method,
 		FILE_COPY_METHOD_COPY, file_copy_method_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"numa_partition_freelist", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Enables buffer freelists to be partitioned per NUMA node."),
+			gettext_noop("When enabled, we create a separate freelist per NUMA node."),
+		},
+		&numa_partition_freelist,
+		FREELIST_PARTITION_NONE, freelist_partition_options,
 		NULL, NULL, NULL
 	},
 

@@ -2123,7 +2123,17 @@ struct config_bool ConfigureNamesBool[] =
 			gettext_noop("When enabled, the shared memory segment is interleaved to all NUMA nodes."),
 		},
 		&numa_shmem_interleave,
-		true,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"numa_buffers_interleave", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables NUMA interleaving of shared buffers."),
+			gettext_noop("When enabled, the buffers in shared memory are interleaved to all NUMA nodes."),
+		},
+		&numa_buffers_interleave,
+		false,
 		NULL, NULL, NULL
 	},
 

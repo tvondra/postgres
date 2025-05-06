@@ -19,6 +19,7 @@
 #include <numaif.h>
 #endif
 
+#include "port/pg_numa.h"
 #include "storage/aio.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
@@ -152,6 +153,7 @@ BufferManagerShmemInit(void)
 		{
 			char   *next_page = NULL;
 			int		node = 0;
+			volatile uint64 touch pg_attribute_unused();
 
 			for (i = 0; i < NBuffers; i++)
 			{
@@ -160,8 +162,8 @@ BufferManagerShmemInit(void)
 				char *tmp;
 
 				/*
-				 * Did we already set node for the page backing this buffer?
-				 * Happens if page size > block size.
+				 * Skip buffers we already moved to a NUMA node with the last
+				 * memory page. Happens if page size > block size.
 				 */
 				if (buffptr < next_page)
 					continue;
@@ -178,15 +180,22 @@ BufferManagerShmemInit(void)
 				while (tmp < buffptr + BLCKSZ)
 				{
 					int status;
-					// FIXME set the node
-					numa_move_pages(0, 1, (void **) &tmp, &node, &status, MPOL_MF_MOVE);
+					int r;
+
+					/* move_pages fails for pages not mapped in this process */
+					pg_numa_touch_mem_if_required(touch, tmp);
+
+					r = numa_move_pages(0, 1, (void **) &tmp, &node, &status, 0);
+
+					if (r != 0)
+						elog(WARNING, "failed to move page %p to node %d", tmp, node);
+
 					tmp += mem_page_size;
 				}
 
-				node++;
+				node = (node + 1) % numa_num_configured_nodes();
 
-				node = node % numa_num_configured_nodes();
-
+				/* remember the first unmoved page */
 				next_page = tmp;
 			}
 		}

@@ -2117,6 +2117,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_buffers_interleave", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables NUMA interleaving of shared buffers."),
+			gettext_noop("When enabled, the buffers in shared memory are interleaved to all NUMA nodes."),
+		},
+		&numa_buffers_interleave,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},

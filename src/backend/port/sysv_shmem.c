@@ -606,6 +606,55 @@ CreateAnonymousSegment(Size *size)
 	void	   *ptr = MAP_FAILED;
 	int			mmap_errno = 0;
 
+#if USE_LIBNUMA
+	/*
+	 * If requested to allocate shared memory in NUMA-aware manner, we'll use
+	 * interleaving. To ensure we really get memory from the right node, we
+	 * use strict policy. That means the allocation will fail if the memory
+	 * cannot be allocated on the target node (intead of just falling back to
+	 * other nodes).
+	 *
+	 * With numa_exit_on_error=true, any numa_error() call prints the error
+	 * and terminates the program.
+	 *
+	 * XXX Per the manpage the strict policy doesn't apply to interleave and
+	 * default mode. So is it actually necessary? Or are we planning to
+	 * allocate from NUMA nodes explicitly?
+	 *
+	 * XXX The numa_exit_on_error seems more like a debugging feature, we'd
+	 * probably want something nicer in production.
+	 */
+	if (numa_shmem_interleave)
+	{
+		/* fail if can't allocate on target node */
+		numa_set_strict(false);
+
+		/* exit on error */
+		numa_exit_on_error = true;
+
+		/*
+		 * XXX The bitmask operations are not quite right - it assumes the
+		 * bitmask has only a single unsigned long item, but that is true
+		 * only for systems with up to 64 nodes. Granted, that should be
+		 * enough for a while.
+		 */
+		elog(LOG, "NUMA: task cpus: %u, task nodes: %u, total nodes: %u, home: %d, preferred: %d\n"
+			 "mem allowed: %lx, run mask: %lx, mem bind: %lx",
+			 numa_num_task_cpus(),	/* number of cpus task may run on */
+			 numa_num_task_nodes(),	/* number of nodes for allocations */
+			 numa_num_configured_nodes(),	/* nodes in system */
+			 numa_has_home_node(),	/* can set home/preferred node */
+			 numa_preferred(),		/* preferred node */
+			 *numa_get_mems_allowed()->maskp,	/* get nodes for allocations */
+			 *numa_get_run_node_mask()->maskp,	/* get nodes for execution */
+			 *numa_get_membind()->maskp			/* get nodes for membind */
+			);
+
+		/* XXX needed for the numa_police_memory call later. */
+		// numa_set_interleave_mask(numa_get_membind());
+	}
+#endif
+
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
 	Assert(huge_pages != HUGE_PAGES_ON);
@@ -623,94 +672,12 @@ CreateAnonymousSegment(Size *size)
 		if (allocsize % hugepagesize != 0)
 			allocsize += hugepagesize - (allocsize % hugepagesize);
 
-#if USE_LIBNUMA
-		/*
-		 * If requested to allocate shared memory in NUMA-aware manner, we'll use
-		 * interleaving. To ensure we really get memory from the right node, we
-		 * use strict policy. That means the allocation will fail if the memory
-		 * cannot be allocated on the target node (intead of just falling back to
-		 * other nodes).
-		 *
-		 * With numa_exit_on_error=true, any numa_error() call prints the error
-		 * and terminates the program.
-		 *
-		 * XXX Per the manpage the strict policy doesn't apply to interleave and
-		 * default mode. So is it actually necessary? Or are we planning to
-		 * allocate from NUMA nodes explicitly?
-		 *
-		 * XXX The numa_exit_on_error seems more like a debugging feature, we'd
-		 * probably want something nicer in production.
-		 */
-		if (numa_shmem_interleave)
-		{
-			/* fail if can't allocate on target node */
-			numa_set_strict(false);
-
-			/* exit on error */
-			numa_exit_on_error = true;
-
-			/*
-			 * XXX The bitmask operations are not quite right - it assumes the
-			 * bitmask has only a single unsigned long item, but that is true
-			 * only for systems with up to 64 nodes. Granted, that should be
-			 * enough for a while.
-			 */
-			elog(LOG, "NUMA: task cpus: %u, task nodes: %u, total nodes: %u, home: %d, preferred: %d\n"
-				 "mem allowed: %lx, run mask: %lx, mem bind: %lx",
-				 numa_num_task_cpus(),	/* number of cpus task may run on */
-				 numa_num_task_nodes(),	/* number of nodes for allocations */
-				 numa_num_configured_nodes(),	/* nodes in system */
-				 numa_has_home_node(),	/* can set home/preferred node */
-				 numa_preferred(),		/* preferred node */
-				 *numa_get_mems_allowed()->maskp,	/* get nodes for allocations */
-				 *numa_get_run_node_mask()->maskp,	/* get nodes for execution */
-				 *numa_get_membind()->maskp			/* get nodes for membind */
-				);
-
-			/* XXX needed for the numa_police_memory call later. */
-			// numa_set_interleave_mask(numa_get_membind());
-		}
-#endif
-
 		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
 				   PG_MMAP_FLAGS | mmap_flags, -1, 0);
 		mmap_errno = errno;
 		if (huge_pages == HUGE_PAGES_TRY && ptr == MAP_FAILED)
 			elog(DEBUG1, "mmap(%zu) with MAP_HUGETLB failed, huge pages disabled: %m",
 				 allocsize);
-
-#ifdef USE_LIBNUMA
-		/*
-		 * We've allocated the shared memory, time make sure it's actually
-		 * interleaved on all the allowed NUMA nodes.
-		 *
-		 * XXX numa_interleave_memory expects allocated but not yet faulted in
-		 * memory. The memory should be allocated using mmap/shmat, but not
-		 * yet accessed by the current process. The "strict" mode enabled above
-		 * ensures failure if there are pages in the mapping that do not follow
-		 * the policy.
-		 */
-		if (numa_shmem_interleave)
-		{
-			numa_interleave_memory(ptr, allocsize, numa_get_mems_allowed());
-
-			/*
-			 * XXX Why would we do the following things? Seems like alternative
-			 * approaches to numa_interleave_memory().
-			 *
-			 * numa_police_memory() locates (=moves) memory to use the current
-			 * policy, so numa_set_interleave_mask+numa_police_memory should be
-			 * doing about the same as numa_interleave_memory. but that should
-			 * happen before the allocation, no? Although, that means the time
-			 * of page fault, not mmap().
-			 *
-			 * But numa_no_nodes_ptr means to disable interleaving, so there
-			 * needs to be a an earlier call to numa_set_interleave_mask.
-			 */
-			//numa_police_memory(ptr, allocsize);
-			//numa_set_interleave_mask(numa_no_nodes_ptr);
-		}
-#endif
 	}
 #endif
 
@@ -729,35 +696,8 @@ CreateAnonymousSegment(Size *size)
 		 * to non-huge pages.
 		 */
 		allocsize = *size;
-
-		/*
-		 * XXX The patch only did this for huge pages above. Let's do NUMA for
-		 * regular pages too. Does it make sense, or does it only make sense
-		 * with hugepages? E.g. because hugepages are so efficient no one would
-		 * do this without them?
-		 */
-
-#ifdef USE_LIBNUMA
-		if (numa_shmem_interleave)
-		{
-			/* fail if can't allocate on target node */
-			numa_set_strict(false);
-
-			/* exit on error */
-			numa_exit_on_error = true;
-		}
-#endif
-
 		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
 				   PG_MMAP_FLAGS, -1, 0);
-
-#ifdef USE_LIBNUMA
-		if (numa_shmem_interleave)
-		{
-			numa_interleave_memory(ptr, allocsize, numa_get_mems_allowed());
-		}
-#endif
-
 		mmap_errno = errno;
 	}
 
@@ -775,6 +715,39 @@ CreateAnonymousSegment(Size *size)
 						 "\"max_connections\".",
 						 allocsize) : 0));
 	}
+
+#ifdef USE_LIBNUMA
+	/*
+	 * We've allocated the shared memory, time make sure it's actually
+	 * interleaved on all the allowed NUMA nodes.
+	 *
+	 * XXX numa_interleave_memory expects allocated but not yet faulted in
+	 * memory. The memory should be allocated using mmap/shmat, but not
+	 * yet accessed by the current process. The "strict" mode enabled above
+	 * ensures failure if there are pages in the mapping that do not follow
+	 * the policy.
+	 */
+	if (numa_shmem_interleave)
+	{
+		numa_interleave_memory(ptr, allocsize, numa_get_mems_allowed());
+
+		/*
+		 * XXX Why would we do the following things? Seems like alternative
+		 * approaches to numa_interleave_memory().
+		 *
+		 * numa_police_memory() locates (=moves) memory to use the current
+		 * policy, so numa_set_interleave_mask+numa_police_memory should be
+		 * doing about the same as numa_interleave_memory. but that should
+		 * happen before the allocation, no? Although, that means the time
+		 * of page fault, not mmap().
+		 *
+		 * But numa_no_nodes_ptr means to disable interleaving, so there
+		 * needs to be a an earlier call to numa_set_interleave_mask.
+		 */
+		//numa_police_memory(ptr, allocsize);
+		//numa_set_interleave_mask(numa_no_nodes_ptr);
+	}
+#endif
 
 	*size = allocsize;
 	return ptr;

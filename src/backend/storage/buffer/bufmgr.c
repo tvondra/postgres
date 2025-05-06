@@ -685,6 +685,7 @@ ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockN
 	BufferDesc *bufHdr;
 	BufferTag	tag;
 	uint32		buf_state;
+
 	Assert(BufferIsValid(recent_buffer));
 
 	ResourceOwnerEnlarge(CurrentResourceOwner);

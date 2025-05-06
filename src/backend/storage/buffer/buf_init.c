@@ -14,9 +14,15 @@
  */
 #include "postgres.h"
 
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
+
 #include "storage/aio.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/pg_shmem.h"
 
 BufferDescPadded *BufferDescriptors;
 char	   *BufferBlocks;
@@ -72,6 +78,18 @@ BufferManagerShmemInit(void)
 				foundIOCV,
 				foundBufCkpt;
 
+	/*
+	 * Ensure buffers are properly aligned both for PG_IO_ALIGN_SIZE and
+	 * memory page size, so that buffers don't get "split" to multiple
+	 * memory pages unnecessarily.
+	 */
+	Size		mem_page_size = pg_get_shmem_pagesize();
+	Size		buffer_align = Max(mem_page_size, PG_IO_ALIGN_SIZE);
+
+	/* one page is a multiple of the other */
+	Assert(((mem_page_size % PG_IO_ALIGN_SIZE) == 0) ||
+		   ((PG_IO_ALIGN_SIZE % mem_page_size) == 0));
+
 	/* Align descriptors to a cacheline boundary. */
 	BufferDescriptors = (BufferDescPadded *)
 		ShmemInitStruct("Buffer Descriptors",
@@ -80,9 +98,9 @@ BufferManagerShmemInit(void)
 
 	/* Align buffer pool on IO page size boundary. */
 	BufferBlocks = (char *)
-		TYPEALIGN(PG_IO_ALIGN_SIZE,
+		TYPEALIGN(buffer_align,
 				  ShmemInitStruct("Buffer Blocks",
-								  NBuffers * (Size) BLCKSZ + PG_IO_ALIGN_SIZE,
+								  NBuffers * (Size) BLCKSZ + buffer_align,
 								  &foundBufs));
 
 	/* Align condition variables to cacheline boundary. */
@@ -111,6 +129,67 @@ BufferManagerShmemInit(void)
 	else
 	{
 		int			i;
+
+		/*
+		 * Before we start touching the memory, interleave the memory to
+		 * available NUMA nodes. The regular interleaving may not work as
+		 * the memory page size could be smaller than block size, in which
+		 * case a buffer might get located on multiple NUMA nodes, and we
+		 * don't want that.
+		 *
+		 * With huge pages it'd be less of a problem - some buffers might
+		 * get split on multiple memory pages (and thus NUMA nodes), but
+		 * blocks are much smaller than huge pages so it would be just a
+		 * tiny fraction (might still affect performance, not sure).
+		 *
+		 * We try to be nice and keep buffers on a single NUMA node. To
+		 * ensure it's possible (while still interleaving nodes), we align
+		 * the start of buffers to a memory page. Otherwise we'd align to
+		 * PG_IO_ALIGN_SIZE, and buffers might be still be "shifted" and
+		 * split unnecessarily.
+		 */
+		if (numa_buffers_interleave)
+		{
+			char   *next_page = NULL;
+			int		node = 0;
+
+			for (i = 0; i < NBuffers; i++)
+			{
+				/* pointer to this buffer */
+				char *buffptr = (BufferBlocks + ((Size) (i)) * BLCKSZ);
+				char *tmp;
+
+				/*
+				 * Did we already set node for the page backing this buffer?
+				 * Happens if page size > block size.
+				 */
+				if (buffptr < next_page)
+					continue;
+
+				/*
+				 * Nope, we have the first buffer from the next memory page,
+				 * and we'll set NUMA node for it (and all pages up to the
+				 * next buffer). The buffer should align with the memory page,
+				 * thanks to the buffer_align earlier.
+				 */
+				Assert(buffptr % mem_page_size == 0);
+
+				tmp = buffptr;
+				while (tmp < buffptr + BLCKSZ)
+				{
+					int status;
+					// FIXME set the node
+					numa_move_pages(0, 1, (void **) &tmp, &node, &status, MPOL_MF_MOVE);
+					tmp += mem_page_size;
+				}
+
+				node++;
+
+				node = node % numa_num_configured_nodes();
+
+				next_page = tmp;
+			}
+		}
 
 		/*
 		 * Initialize all the buffer headers.
@@ -152,11 +231,41 @@ BufferManagerShmemInit(void)
 						 &backend_flush_after);
 }
 
+static Size
+get_memory_page_size(void)
+{
+	Size		os_page_size;
+	Size		huge_page_size;
+
+#ifdef WIN32
+	SYSTEM_INFO sysinfo;
+
+	GetSystemInfo(&sysinfo);
+	os_page_size = sysinfo.dwPageSize;
+#else
+	os_page_size = sysconf(_SC_PAGESIZE);
+#endif
+
+	Assert(IsUnderPostmaster);
+
+	/* assume huge pages get used, unless HUGE_PAGES_OFF */
+	if (huge_pages == HUGE_PAGES_ON || huge_pages == HUGE_PAGES_TRY)
+		GetHugePageSize(&huge_page_size, NULL);
+	else
+		huge_page_size = 0;
+
+	return Max(os_page_size, huge_page_size);
+}
+
 /*
  * BufferManagerShmemSize
  *
  * compute the size of shared memory for the buffer pool including
  * data pages, buffer descriptors, hash tables, etc.
+ *
+ * XXX Called before allocation, so we don't know if huge pages get used yet.
+ * So we need to assume huge pages get used, and use get_memory_page_size()
+ * to calculate the largest possible memory page.
  */
 Size
 BufferManagerShmemSize(void)
@@ -169,7 +278,7 @@ BufferManagerShmemSize(void)
 	size = add_size(size, PG_CACHE_LINE_SIZE);
 
 	/* size of data pages, plus alignment padding */
-	size = add_size(size, PG_IO_ALIGN_SIZE);
+	size = add_size(size, get_memory_page_size());
 	size = add_size(size, mul_size(NBuffers, BLCKSZ));
 
 	/* size of stuff controlled by freelist.c */

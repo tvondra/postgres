@@ -638,12 +638,11 @@ CreateAnonymousSegment(Size *size)
 		 * only for systems with up to 64 nodes. Granted, that should be
 		 * enough for a while.
 		 */
-		elog(LOG, "NUMA: task cpus: %u, task nodes: %u, total nodes: %u, home: %d, preferred: %d\n"
+		elog(LOG, "NUMA: task cpus: %u, task nodes: %u, total nodes: %u, preferred: %d\n"
 			 "mem allowed: %lx, run mask: %lx, mem bind: %lx",
 			 numa_num_task_cpus(),	/* number of cpus task may run on */
 			 numa_num_task_nodes(),	/* number of nodes for allocations */
 			 numa_num_configured_nodes(),	/* nodes in system */
-			 numa_has_home_node(),	/* can set home/preferred node */
 			 numa_preferred(),		/* preferred node */
 			 *numa_get_mems_allowed()->maskp,	/* get nodes for allocations */
 			 *numa_get_run_node_mask()->maskp,	/* get nodes for execution */

@@ -210,7 +210,7 @@ choose_freelist(void)
 	int freelist_idx;
 
 	/* not partitioned, return the first (and only) freelist */
-	if (!numa_partition_freelist)
+	if (numa_partition_freelist == FREELIST_PARTITION_NONE)
 		return &StrategyControl->freelists[0];
 
 	/*
@@ -233,17 +233,16 @@ choose_freelist(void)
 	else if (node > strategy_nnodes)
 		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
 
-	/* One freelist per CPU. */
-	freelist_idx = cpu % strategy_ncpus;
-
-	/* One freelist per NUMA node. */
-	// freelist_idx = cpu % strategy_nnodes;
-
 	/*
-	 * One freelist per CPU, but determined by PID and not by CPU used
-	 * by the current task CPU.
+	 * Pick the freelist, based on CPU, NUMA node or process PID. This
+	 * matches how we built the freelists above.
 	 */
-	// freelist_idx = MyProcPid % strategy_ncpus;
+	if (numa_partition_freelist == FREELIST_PARTITION_CPU)
+		freelist_idx = cpu % strategy_ncpus;
+	else if (numa_partition_freelist == FREELIST_PARTITION_NODE)
+		freelist_idx = node % strategy_nnodes;
+	else if (numa_partition_freelist == FREELIST_PARTITION_PID)
+		freelist_idx = MyProcPid % strategy_ncpus;
 
 	return &StrategyControl->freelists[freelist_idx];
 }

@@ -623,6 +623,16 @@ CreateAnonymousSegment(Size *size)
 	 *
 	 * XXX The numa_exit_on_error seems more like a debugging feature, we'd
 	 * probably want something nicer in production.
+	 *
+	 * XXX The trouble with doing the interleaving here is it can't consider
+	 * alignment of elements in the individual pieces. Shared buffers are a
+	 * a good example of this - a buffer may require multiple memory pages
+	 * (either because block is 8KB and page is 4KB, or because the beginning
+	 * of shared buffers does not align with memory page boundary). In which
+	 * case interleaving the pages here (one by one) will mean each buffer
+	 * has pages on multiple NUMA nodes - which is not great, probably? So
+	 * maybe we should do interleaving for the individual chunks of memory,
+	 * reflecting the structure of each chunk.
 	 */
 	if (numa_shmem_interleave)
 	{

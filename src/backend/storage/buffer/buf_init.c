@@ -148,6 +148,14 @@ BufferManagerShmemInit(void)
 		 * the start of buffers to a memory page. Otherwise we'd align to
 		 * PG_IO_ALIGN_SIZE, and buffers might be still be "shifted" and
 		 * split unnecessarily.
+		 *
+		 * XXX Maybe instead of trying to interleave the buffers like this,
+		 * it might be better to simply split the memory into contiguous
+		 * chunks of equal size, and move them to nodes 0, 1, 2, ... So
+		 * a bit like interleaving, but with much larger chunks. That
+		 * would make it easier to calculate the node the buffer belongs
+		 * (or should belong) to. Is there any particular benefit from
+		 * interleaving page by page?
 		 */
 		if (numa_buffers_interleave)
 		{

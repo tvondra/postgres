@@ -404,6 +404,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	}
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
+	/*
+	 * XXX Should we also make this NUMA-aware, to only select buffers from
+	 * the same NUMA node? That'd probably mean we need to make the clock
+	 * sweep NUMA-aware. That would probably mean having multiple clock
+	 * sweeps, each acting on a subset of buffers. But that also means
+	 * each process could "sweep" only a fraction of buffers, even if the
+	 * other buffers are better candidates for eviction.
+	 */
 	trycounter = NBuffers;
 	for (;;)
 	{

@@ -101,6 +101,12 @@ BufferManagerShmemInit(void)
 	else
 		mem_page_size = get_memory_page_size();
 
+	/*
+	 * XXX Maybe with (mem_page_size > PG_IO_ALIGN_SIZE), we don't need to
+	 * align to mem_page_size? Especially for very large huge pages (e.g. 1GB)
+	 * that doesn't seem quite worth it. Maybe we should simply align to
+	 * BLCKSZ, so that buffers don't get split?
+	 */
 	buffer_align = Max(mem_page_size, PG_IO_ALIGN_SIZE);
 
 	/* one page is a multiple of the other */
@@ -108,6 +114,11 @@ BufferManagerShmemInit(void)
 		   ((PG_IO_ALIGN_SIZE % mem_page_size) == 0));
 
 	/* Align descriptors to a cacheline boundary. */
+	/*
+	 * XXX Should we partition buffer descriptors to NUMA nodes too? It would
+	 * need to be partitioned the same way as buffers, i.e. the buffer and
+	 * descriptor should be on the same NUMA node.
+	 */
 	BufferDescriptors = (BufferDescPadded *)
 		ShmemInitStruct("Buffer Descriptors",
 						NBuffers * sizeof(BufferDescPadded),

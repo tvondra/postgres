@@ -35,6 +35,18 @@ CkptSortItem *CkptBufferIds;
 
 static Size get_memory_page_size(void);
 
+static int choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes);
+
+static void pg_numa_interleave_memory(char *startptr, char *endptr,
+									  Size mem_page_size, Size chunk_size,
+									  int num_nodes);
+
+static int buffer_get_numa_node(Buffer buffer);
+
+static int numa_chunk_items = -1;
+static int numa_nodes = -1;
+
+
 /*
  * Data Structures:
  *		buffers live in a freelist and a lookup data structure.
@@ -155,18 +167,6 @@ BufferManagerShmemInit(void)
 	else
 	{
 		int			i;
-		int64		chunk_items;
-
-		chunk_items = Max(mem_page_size / sizeof(BufferDescPadded),
-						 mem_page_size / BLCKSZ);
-
-		/*
-		 * Because BLCKSZ > sizeof(BufferDescPadded), the count is determined
-		 * by sizeof(BufferDescPadded.
-		 */
-		Assert((mem_page_size / sizeof(BufferDescPadded)) % (mem_page_size / BLCKSZ) == 0);
-
-		elog(LOG, "BufferManagerShmemInit chunk items %ld", chunk_items);
 
 		/*
 		 * Before we start touching the memory, interleave the memory to
@@ -199,77 +199,37 @@ BufferManagerShmemInit(void)
 		 */
 		if (numa_buffers_interleave)
 		{
-			int		num_nodes = numa_num_configured_nodes();
-			volatile uint64 touch pg_attribute_unused();
+			char   *startptr,
+				   *endptr;
+			Size	chunk_size;
 
-			char   *first_page = (BufferBlocks + ((Size) 0) * BLCKSZ);
-			char   *stop_page = (BufferBlocks + ((Size) NBuffers) * BLCKSZ);
-			char   *next_page = first_page;
-			Size	chunk_size = (chunk_items * BLCKSZ);
+			numa_nodes = numa_num_configured_nodes();
 
-			while (next_page < stop_page)
-			{
-				int	status;
-				int	r;
-				int	node;
+			numa_chunk_items
+				= choose_chunk_items(NBuffers, mem_page_size, numa_nodes);
 
-				/* what NUMA node does this range belong to? each chunk_size
-				 * of buffers is for the same node, round-robin */
-				node = ((next_page - first_page) / chunk_size) % num_nodes;
+			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_items %d",
+				 numa_nodes, numa_chunk_items);
 
-				/*
-				 * Nope, we have the first buffer from the next memory page,
-				 * and we'll set NUMA node for it (and all pages up to the
-				 * next buffer). The buffer should align with the memory page,
-				 * thanks to the buffer_align earlier.
-				 */
-				Assert((int64) next_page % mem_page_size == 0);
+			/* first map buffers */
+			startptr = (BufferBlocks + ((Size) 0) * BLCKSZ);
+			endptr = (BufferBlocks + ((Size) NBuffers) * BLCKSZ);
+			chunk_size = (numa_chunk_items * BLCKSZ);
 
-				/* move_pages fails for pages not mapped in this process */
-				pg_numa_touch_mem_if_required(touch, next_page);
-
-				r = numa_move_pages(0, 1, (void **) &next_page, &node, &status, 0);
-
-				if (r != 0)
-					elog(WARNING, "failed to move page %p to node %d", next_page, node);
-
-				next_page += mem_page_size;
-			}
+			pg_numa_interleave_memory(startptr, endptr,
+									  mem_page_size,
+									  chunk_size,
+									  numa_nodes);
 
 			/* now do the same for buffer descriptors */
-			first_page = (char *) (BufferDescriptors + ((Size) 0) * sizeof(BufferDescPadded));
-			stop_page = (char *) (BufferDescriptors + ((Size) NBuffers) * sizeof(BufferDescPadded));
-			next_page = first_page;
-			chunk_size = (chunk_items * sizeof(BufferDescPadded));
+			startptr = (char *) (BufferDescriptors + ((Size) 0) * sizeof(BufferDescPadded));
+			endptr = (char *) (BufferDescriptors + ((Size) NBuffers) * sizeof(BufferDescPadded));
+			chunk_size = (numa_chunk_items * sizeof(BufferDescPadded));
 
-			while (next_page < stop_page)
-			{
-				int	status;
-				int	r;
-				int	node;
-
-				/* what NUMA node does this range belong to? each chunk_size
-				 * of buffers is for the same node, round-robin */
-				node = ((next_page - first_page) / chunk_size) % num_nodes;
-
-				/*
-				 * Nope, we have the first buffer from the next memory page,
-				 * and we'll set NUMA node for it (and all pages up to the
-				 * next buffer). The buffer should align with the memory page,
-				 * thanks to the buffer_align earlier.
-				 */
-				Assert((int64) next_page % mem_page_size == 0);
-
-				/* move_pages fails for pages not mapped in this process */
-				pg_numa_touch_mem_if_required(touch, next_page);
-
-				r = numa_move_pages(0, 1, (void **) &next_page, &node, &status, 0);
-
-				if (r != 0)
-					elog(WARNING, "failed to move page %p to node %d", next_page, node);
-
-				next_page += mem_page_size;
-			}
+			pg_numa_interleave_memory(startptr, endptr,
+									  mem_page_size,
+									  chunk_size,
+									  numa_nodes);
 		}
 
 		/*
@@ -285,6 +245,8 @@ BufferManagerShmemInit(void)
 			buf->wait_backend_pgprocno = INVALID_PROC_NUMBER;
 
 			buf->buf_id = i;
+
+			elog(WARNING, "buffer %d node %d", i, buffer_get_numa_node(i));
 
 			pgaio_wref_clear(&buf->io_wref);
 
@@ -384,4 +346,109 @@ BufferManagerShmemSize(void)
 	size = add_size(size, mul_size(NBuffers, sizeof(CkptSortItem)));
 
 	return size;
+}
+
+static void
+pg_numa_interleave_memory(char *startptr, char *endptr,
+						  Size mem_page_size, Size chunk_size,
+						  int num_nodes)
+{
+	volatile uint64 touch pg_attribute_unused();
+	char   *ptr = startptr;
+
+	/*
+	 * FIXME this still works page-by-page, we should use larger chunks.
+	 */
+	while (ptr < endptr)
+	{
+		int	status;
+		int	r;
+		int	node;
+
+		/*
+		 * What NUMA node does this range belong to? Each chunk should go to
+		 * the same NUMA node, in a round-robin manner.
+		 */
+		node = ((ptr - startptr) / chunk_size) % num_nodes;
+
+		/*
+		 * Nope, we have the first buffer from the next memory page,
+		 * and we'll set NUMA node for it (and all pages up to the
+		 * next buffer). The buffer should align with the memory page,
+		 * thanks to the buffer_align earlier.
+		 */
+		Assert((int64) ptr % mem_page_size == 0);
+
+		/* move_pages fails for pages not mapped in this process */
+		pg_numa_touch_mem_if_required(touch, ptr);
+
+		/* now actually move the memory to the correct NUMA node */
+		r = numa_move_pages(0, 1, (void **) &ptr, &node, &status, 0);
+
+		if (r != 0)
+			elog(WARNING, "failed to move page %p to node %d", ptr, node);
+
+		ptr += mem_page_size;
+	}
+
+	/* should have processed all chunks */
+	Assert(ptr == endptr);
+}
+
+static int
+choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes)
+{
+	int	num_items;
+	int	max_items;
+
+	/* make sure the chunks will align nicely */
+	Assert(BLCKSZ % sizeof(BufferDescPadded) == 0);
+	Assert(mem_page_size % sizeof(BufferDescPadded) == 0);
+	Assert(((BLCKSZ % mem_page_size) == 0) || ((mem_page_size % BLCKSZ) == 0));
+
+	/*
+	 * The minimum number of items to fill memory page with descriptors and
+	 * blocks. The NUMA allocates memory in pages, and we need to do that for
+	 * both buffers and descriptors.
+	 *
+	 * In practice the BLCKSZ doesn't really matter, because it's much larger
+	 * than BufferDescPadded, so the result is determined buffer descriptors.
+	 * But it's clearer this way.
+	 */
+	num_items = Max(mem_page_size / sizeof(BufferDescPadded),
+					mem_page_size / BLCKSZ);
+
+	/*
+	 * What's the largest chunk to use? NBuffers/num_nodes is the max we can
+	 * do, larger chunks would result in imbalance (some nodes getting much
+	 * fewer buffers). But we limit that to 1/2, to make it more even. And
+	 * we don't make chunks larger than 1GB.
+	 *
+	 * XXX Some of these limits are a bit arbitrary.
+	 */
+	max_items = Min((NBuffers / num_nodes) / 2,			/* 1/2 of fair share */
+					(1024L * 1024L * 1024L) / BLCKSZ);	/* 1GB of blocks */
+
+	/* Did we already exceed the maximum share? */
+	if (num_items > max_items)
+		elog(WARNING, "choose_chunk_items: chunk items exceeds max (%d > %d)",
+			 num_items, max_items);
+
+	/* grow the chunk size until we hit the limit. */
+	while (2 * num_items <= max_items)
+		num_items *= 2;
+
+	elog(LOG, "choose_chunk_items: chunk items %d", num_items);
+
+	return num_items;
+}
+
+static int
+buffer_get_numa_node(Buffer buffer)
+{
+	/* not NUMA interleaving */
+	if (numa_chunk_items == -1)
+		return -1;
+
+	return (buffer / numa_chunk_items) % numa_nodes;
 }

@@ -222,8 +222,8 @@ BufferManagerShmemInit(void)
 									  numa_nodes);
 
 			/* now do the same for buffer descriptors */
-			startptr = (char *) (BufferDescriptors + ((Size) 0) * sizeof(BufferDescPadded));
-			endptr = (char *) (BufferDescriptors + ((Size) NBuffers) * sizeof(BufferDescPadded));
+			startptr = (char *) BufferDescriptors + ((Size) 0) * sizeof(BufferDescPadded);
+			endptr = (char *) BufferDescriptors + ((Size) NBuffers) * sizeof(BufferDescPadded);
 			chunk_size = (numa_chunk_items * sizeof(BufferDescPadded));
 
 			pg_numa_interleave_memory(startptr, endptr,
@@ -295,7 +295,7 @@ get_memory_page_size(void)
 #endif
 
 	/* assume huge pages get used, unless HUGE_PAGES_OFF */
-	if (huge_pages == HUGE_PAGES_ON || huge_pages == HUGE_PAGES_TRY)
+	if (huge_pages_status == HUGE_PAGES_ON)
 		GetHugePageSize(&huge_page_size, NULL);
 	else
 		huge_page_size = 0;

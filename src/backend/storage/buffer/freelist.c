@@ -726,18 +726,11 @@ StrategyInitialize(bool init)
 			}
 			else if (numa_partition_freelist == FREELIST_PARTITION_NODE)
 			{
-				/* we could probably calculate this, without calling move_pages */
-				int	rc = move_pages(0, 1, (void **) &ptr, NULL, &status, 0);
-
-				if (rc != 0)
-					elog(ERROR, "failed to build freelist: %d", rc);
-
-				Assert(status >= 0);
-
-				belongs_to = status;
+				/* determine NUMA node for buffer */
+				belongs_to = BufferGetNode(i);
 			}
 
-			/* */
+			/* add to the right freelist */
 			freelist = &StrategyControl->freelists[belongs_to];
 
 			buf->freeNext = freelist->firstFreeBuffer;

@@ -29,6 +29,7 @@
  */
 #include "postgres.h"
 
+#include <sched.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -392,6 +393,26 @@ InitProcGlobal(void)
 	{
 		PGPROC	   *proc = &procs[i];
 
+		/* remember NUMA node for the PGPROC (we'll have a list, not index) */
+		if (numa_procs_interleave)
+		{
+			int	r;
+			int	status;
+			int	status2;
+
+			proc->numa_node = (i / numa_chunk_items) % numa_nodes;
+
+			r = numa_move_pages(0, 1, (void **) &proc, NULL, &status, 0);
+			if (r != 0)
+				elog(LOG, "numa_move_pages failed (%d)", r);
+
+			r = numa_move_pages(0, 1, (void **) &proc->fpLockBits, NULL, &status2, 0);
+			if (r != 0)
+				elog(LOG, "numa_move_pages failed (%d)", r);
+
+			elog(LOG, "PGPROC %d node %d fast-path node %d", i, status, status2);
+		}
+
 		if (numa_procs_interleave)
 		{
 			Size		mem_page_size = get_memory_page_size();
@@ -557,7 +578,44 @@ InitProcess(void)
 
 	if (!dlist_is_empty(procgloballist))
 	{
-		MyProc = dlist_container(PGPROC, links, dlist_pop_head_node(procgloballist));
+		/*
+		 * With numa interleaving of PGPROC, try to get a PROC entry from
+		 * the right NUMA node (when the process starts).
+		 *
+		 * XXX The process may move to a different NUMA node later, but
+		 * there's not much we can do about that.
+		 */
+		if (numa_procs_interleave)
+		{
+			dlist_mutable_iter 	iter;
+			unsigned cpu;
+			unsigned node;
+			int rc;
+
+			rc = getcpu(&cpu, &node);
+			if (rc != 0)
+				elog(ERROR, "getcpu failed: %m");
+
+			MyProc = NULL;
+
+			dlist_foreach_modify(iter, procgloballist)
+			{
+				PGPROC *proc;
+
+				proc = dlist_container(PGPROC, links, iter.cur);
+
+				if (proc->numa_node == node)
+				{
+					MyProc = proc;
+					dlist_delete(iter.cur);
+					break;
+				}
+			}
+		}
+
+		if (MyProc == NULL)
+			MyProc = dlist_container(PGPROC, links, dlist_pop_head_node(procgloballist));
+
 		SpinLockRelease(ProcStructLock);
 	}
 	else

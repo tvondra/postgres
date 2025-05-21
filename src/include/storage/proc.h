@@ -320,12 +320,15 @@ struct PGPROC
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
 
+	/* NUMA node */
+	int			numa_node;
+
 	/*
 	 * XXX Ugly way to pad the struct to 1024B, to align it nicely to memory
 	 * pages (and then map pages to NUMA nodes). Not pretty, need a better
 	 * way to do padding.
 	 */
-	char		padding[192];
+	char		padding[188];
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */

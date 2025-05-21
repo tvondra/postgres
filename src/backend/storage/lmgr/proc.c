@@ -103,6 +103,11 @@ static Size get_memory_page_size(void);
 static void pg_numa_interleave_memory(char *startptr, char *endptr,
 									  Size mem_page_size, Size chunk_size,
 									  int num_nodes);
+static void choose_fast_path_chunks(int *chunk_count, int *chunk_items, Size *chunk_size,
+									Size nentries, Size entry_size);
+static int numa_chunk_items = -1;
+static int numa_nodes = -1;
+
 
 /*
  * Report shared-memory space needed by PGPROC.
@@ -141,7 +146,32 @@ FastPathLockShmemSize(void)
 	fpLockBitsSize = MAXALIGN(FastPathLockGroupsPerBackend * sizeof(uint64));
 	fpRelIdSize = MAXALIGN(FastPathLockSlotsPerBackend() * sizeof(Oid));
 
-	size = add_size(size, mul_size(TotalProcs, (fpLockBitsSize + fpRelIdSize)));
+	if (!numa_procs_interleave)
+	{
+		size = add_size(size, mul_size(TotalProcs, (fpLockBitsSize + fpRelIdSize)));
+	}
+	else
+	{
+		/*
+		 * determine the chunk of processes assigned to a single NUMA node
+		 *
+		 * XXX there's a bit of an issue, because with huge_pages=trye we don't
+		 * know the page size until the mmap() call. We may end up with plain
+		 * memory pages, but for the NUMA interleaving we need this when sizing
+		 * the chunks.
+		 */
+		int			chunk_count;
+		int			chunk_items;
+		Size		chunk_size;
+
+		choose_fast_path_chunks(&chunk_count, &chunk_items, &chunk_size,
+								TotalProcs, (fpLockBitsSize + fpRelIdSize));
+
+		size = add_size(size, mul_size(chunk_count, chunk_size));
+
+		elog(WARNING, "FastPathLockShmemSize chunk_items %d chunk_size %lu chunk_count %d size %lu",
+			  chunk_items, chunk_size, chunk_count, size);
+	}
 
 	return size;
 }
@@ -261,14 +291,27 @@ InitProcGlobal(void)
 	/* optionally map PGPROC entries to NUMA nodes */
 	if (numa_procs_interleave)
 	{
+		char   *startptr;
+		char   *endptr;
+		Size	chunk_size;
+
 		Size	mem_page_size = get_memory_page_size();
-		int		numa_nodes = numa_num_configured_nodes();
-		int		numa_chunk_items
+
+		numa_nodes = numa_num_configured_nodes();
+
+		/*
+		 * Each PGPROC is ~1kB, so with 4K memory pages we can easily spread
+		 * it over NUMA nodes, but with huge pages we'd need a lot of entries.
+		 * Not sure what to do about this, except for mandating regular pages
+		 * for this part of shared memory, somehow. But as of now it's one
+		 * huge shmem segment, so we can't really do that.
+		 */
+		numa_chunk_items
 			= choose_chunk_items(TotalProcs, mem_page_size, numa_nodes);
 
-		char   *startptr = (char *) procs;
-		char   *endptr = startptr + (TotalProcs) * sizeof(PGPROC);
-		Size	chunk_size = (numa_chunk_items * sizeof(PGPROC));
+		startptr = (char *) procs;
+		endptr = startptr + (TotalProcs) * sizeof(PGPROC);
+		chunk_size = (numa_chunk_items * sizeof(PGPROC));
 
 		pg_numa_interleave_memory(startptr, endptr,
 								  mem_page_size,
@@ -318,9 +361,56 @@ InitProcGlobal(void)
 	/* For asserts checking we did not overflow. */
 	fpEndPtr = fpPtr + requestSize;
 
+	/* optionally interleave fast-path lock arrays to NUMA nodes */
+	if (numa_procs_interleave)
+	{
+		char   *startptr;
+		char   *endptr;
+
+		Size	mem_page_size = get_memory_page_size();
+		int		chunk_count;
+		int		chunk_items;
+		Size	chunk_size;
+
+		/* XXX shouldn't repeat for every PGPROC, but meh ... */
+		choose_fast_path_chunks(&chunk_count, &chunk_items, &chunk_size,
+								TotalProcs, (fpLockBitsSize + fpRelIdSize));
+
+		numa_nodes = numa_num_configured_nodes();
+
+		startptr = (char *) fpPtr;
+		endptr = startptr + requestSize;
+		chunk_size = (numa_chunk_items * sizeof(PGPROC));
+
+		pg_numa_interleave_memory(startptr, endptr,
+								  mem_page_size,
+								  chunk_size,
+								  numa_nodes);
+	}
+
 	for (i = 0; i < TotalProcs; i++)
 	{
 		PGPROC	   *proc = &procs[i];
+
+		if (numa_procs_interleave)
+		{
+			Size		mem_page_size = get_memory_page_size();
+			int			chunk_count;
+			int			chunk_items;
+			Size		chunk_size;
+
+			/* XXX shouldn't repeat for every PGPROC, but meh ... */
+			choose_fast_path_chunks(&chunk_count, &chunk_items, &chunk_size,
+									TotalProcs, (fpLockBitsSize + fpRelIdSize));
+
+			/* every time we get to a new chunk, adjust the pointer to the
+			 * beginning of the next memory page */
+			if (i % chunk_items == 0)
+			{
+				if ((int64) fpPtr % mem_page_size != 0)
+					fpPtr += (mem_page_size - ((int64) fpPtr % mem_page_size));
+			}
+		}
 
 		/* Common initialization for all PGPROCs, regardless of type. */
 
@@ -2150,11 +2240,18 @@ get_memory_page_size(void)
 	os_page_size = sysconf(_SC_PAGESIZE);
 #endif
 
+	/*
+	 * XXX This is a bit annoying/confusing, because we may get a different
+	 * result depending on when we call it. Before mmap() we don't know if
+	 * the huge pages get used, so we assume they will. And then if we don't
+	 * get huge pages, we'll waste memory etc.
+	 */
+
 	/* assume huge pages get used, unless HUGE_PAGES_OFF */
-	if (huge_pages_status == HUGE_PAGES_ON)
-		GetHugePageSize(&huge_page_size, NULL);
-	else
+	if (huge_pages_status == HUGE_PAGES_OFF)
 		huge_page_size = 0;
+	else
+		GetHugePageSize(&huge_page_size, NULL);
 
 	return Max(os_page_size, huge_page_size);
 }
@@ -2204,4 +2301,26 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 
 	/* should have processed all chunks */
 	Assert(ptr == endptr);
+}
+
+static void
+choose_fast_path_chunks(int *chunk_count, int *chunk_items, Size *chunk_size,
+						Size nentries, Size entry_size)
+{
+	Size	mem_page_size = get_memory_page_size();
+	int		numa_nodes = numa_num_configured_nodes();
+
+	/*
+	 * chunk size needs to be aligned with PGPROC (we want to assign the
+	 * fast-path locks to the same node as the PGPROC entry
+	 */
+	*chunk_items = choose_chunk_items(nentries, mem_page_size, numa_nodes);
+	*chunk_size = (*chunk_items) * entry_size;
+
+	/* round to a multiple of page size */
+	if (*chunk_size % mem_page_size != 0)
+		*chunk_size += mem_page_size - (*chunk_size % mem_page_size);
+
+	/* so how many chunks we need? */
+	*chunk_count = (nentries + (*chunk_items - 1)) / *chunk_items;
 }

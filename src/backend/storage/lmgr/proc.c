@@ -383,6 +383,9 @@ InitProcGlobal(void)
 		endptr = startptr + requestSize;
 		chunk_size = (numa_chunk_items * sizeof(PGPROC));
 
+		elog(LOG, "InitProcGlobal fast-path startptr %p endptr %p mem_page %lu chunk_size %lu numa_nodes %d",
+			 startptr, endptr, mem_page_size, chunk_size, numa_nodes);
+
 		pg_numa_interleave_memory(startptr, endptr,
 								  mem_page_size,
 								  chunk_size,
@@ -396,21 +399,7 @@ InitProcGlobal(void)
 		/* remember NUMA node for the PGPROC (we'll have a list, not index) */
 		if (numa_procs_interleave)
 		{
-			int	r;
-			int	status;
-			int	status2;
-
 			proc->numa_node = (i / numa_chunk_items) % numa_nodes;
-
-			r = numa_move_pages(0, 1, (void **) &proc, NULL, &status, 0);
-			if (r != 0)
-				elog(LOG, "numa_move_pages failed (%d)", r);
-
-			r = numa_move_pages(0, 1, (void **) &proc->fpLockBits, NULL, &status2, 0);
-			if (r != 0)
-				elog(LOG, "numa_move_pages failed (%d)", r);
-
-			elog(LOG, "PGPROC %d node %d fast-path node %d", i, status, status2);
 		}
 
 		if (numa_procs_interleave)
@@ -446,6 +435,23 @@ InitProcGlobal(void)
 		fpPtr += fpRelIdSize;
 
 		Assert(fpPtr <= fpEndPtr);
+
+		if (numa_procs_interleave)
+		{
+			int	r;
+			int	status;
+			int	status2;
+
+			r = numa_move_pages(0, 1, (void **) &proc, NULL, &status, 0);
+			if (r != 0)
+				elog(LOG, "numa_move_pages failed (%d)", r);
+
+			r = numa_move_pages(0, 1, (void **) &proc->fpLockBits, NULL, &status2, 0);
+			if (r != 0)
+				elog(LOG, "numa_move_pages failed (%d)", r);
+
+			elog(LOG, "PGPROC %d node %d %d fast-path node %d", i, proc->numa_node, status, status2);
+		}
 
 		/*
 		 * Set up per-PGPROC semaphore, latch, and fpInfoLock.  Prepared xact

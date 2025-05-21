@@ -41,8 +41,6 @@ static void pg_numa_interleave_memory(char *startptr, char *endptr,
 									  Size mem_page_size, Size chunk_size,
 									  int num_nodes);
 
-static int buffer_get_numa_node(Buffer buffer);
-
 static int numa_chunk_items = -1;
 static int numa_nodes = -1;
 
@@ -246,7 +244,7 @@ BufferManagerShmemInit(void)
 
 			buf->buf_id = i;
 
-			elog(WARNING, "buffer %d node %d", i, buffer_get_numa_node(i));
+			elog(WARNING, "buffer %d node %d", i, BufferGetNode(i));
 
 			pgaio_wref_clear(&buf->io_wref);
 
@@ -443,8 +441,8 @@ choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes)
 	return num_items;
 }
 
-static int
-buffer_get_numa_node(Buffer buffer)
+int
+BufferGetNode(Buffer buffer)
 {
 	/* not NUMA interleaving */
 	if (numa_chunk_items == -1)

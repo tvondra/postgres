@@ -237,12 +237,23 @@ choose_freelist(void)
 	 * Pick the freelist, based on CPU, NUMA node or process PID. This
 	 * matches how we built the freelists above.
 	 */
-	if (numa_partition_freelist == FREELIST_PARTITION_CPU)
-		freelist_idx = cpu % strategy_ncpus;
-	else if (numa_partition_freelist == FREELIST_PARTITION_NODE)
-		freelist_idx = node % strategy_nnodes;
-	else if (numa_partition_freelist == FREELIST_PARTITION_PID)
-		freelist_idx = MyProcPid % strategy_ncpus;
+	switch (numa_partition_freelist)
+	{
+		case FREELIST_PARTITION_CPU:
+			freelist_idx = cpu % strategy_ncpus;
+			break;
+
+		case FREELIST_PARTITION_NODE:
+			freelist_idx = node % strategy_nnodes;
+			break;
+
+		case FREELIST_PARTITION_PID:
+			freelist_idx = MyProcPid % strategy_ncpus;
+			break;
+
+		default:
+			elog(ERROR, "unknown freelist partitioning value");
+	}
 
 	return &StrategyControl->freelists[freelist_idx];
 }
@@ -662,6 +673,12 @@ StrategyInitialize(bool init)
 	if (!found)
 	{
 		/*
+		 * XXX Calling get_nprocs() may not be quite correct, because some
+		 * of the processors may get disabled, etc.
+		 */
+		int		num_cpus = get_nprocs();
+
+		/*
 		 * Only done once, usually in postmaster
 		 */
 		Assert(init);
@@ -704,16 +721,6 @@ StrategyInitialize(bool init)
 			BufferDesc *buf = GetBufferDescriptor(i);
 			BufferStrategyFreelist *freelist;
 			int		belongs_to = 0; /* first freelist by default */
-			void   *ptr;
-			int		status = 0;
-
-			/*
-			 * XXX Calling get_nprocs() may not be quite correct, because some
-			 * of the processors may get disabled, etc.
-			 */
-			int		num_cpus = get_nprocs();
-
-			ptr = BufferGetBlock(i + 1);
 
 			/*
 			 * Split the freelist into partitions, if needed (or just keep the

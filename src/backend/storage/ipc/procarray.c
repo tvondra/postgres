@@ -268,7 +268,7 @@ typedef enum KAXCompressReason
 
 static ProcArrayStruct *procArray;
 
-static PGPROC *allProcs;
+static PGPROC **allProcs;
 
 /*
  * Cache to reduce overhead of repeated calls to TransactionIdIsInProgress()
@@ -502,7 +502,7 @@ ProcArrayAdd(PGPROC *proc)
 		int			this_procno = arrayP->pgprocnos[index];
 
 		Assert(this_procno >= 0 && this_procno < (arrayP->maxProcs + NUM_AUXILIARY_PROCS));
-		Assert(allProcs[this_procno].pgxactoff == index);
+		Assert(allProcs[this_procno]->pgxactoff == index);
 
 		/* If we have found our right position in the array, break */
 		if (this_procno > pgprocno)
@@ -538,9 +538,9 @@ ProcArrayAdd(PGPROC *proc)
 		int			procno = arrayP->pgprocnos[index];
 
 		Assert(procno >= 0 && procno < (arrayP->maxProcs + NUM_AUXILIARY_PROCS));
-		Assert(allProcs[procno].pgxactoff == index - 1);
+		Assert(allProcs[procno]->pgxactoff == index - 1);
 
-		allProcs[procno].pgxactoff = index;
+		allProcs[procno]->pgxactoff = index;
 	}
 
 	/*
@@ -581,7 +581,7 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 	myoff = proc->pgxactoff;
 
 	Assert(myoff >= 0 && myoff < arrayP->numProcs);
-	Assert(ProcGlobal->allProcs[arrayP->pgprocnos[myoff]].pgxactoff == myoff);
+	Assert(ProcGlobal->allProcs[arrayP->pgprocnos[myoff]]->pgxactoff == myoff);
 
 	if (TransactionIdIsValid(latestXid))
 	{
@@ -636,9 +636,9 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 		int			procno = arrayP->pgprocnos[index];
 
 		Assert(procno >= 0 && procno < (arrayP->maxProcs + NUM_AUXILIARY_PROCS));
-		Assert(allProcs[procno].pgxactoff - 1 == index);
+		Assert(allProcs[procno]->pgxactoff - 1 == index);
 
-		allProcs[procno].pgxactoff = index;
+		allProcs[procno]->pgxactoff = index;
 	}
 
 	/*
@@ -860,7 +860,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	/* Walk the list and clear all XIDs. */
 	while (nextidx != INVALID_PROC_NUMBER)
 	{
-		PGPROC	   *nextproc = &allProcs[nextidx];
+		PGPROC	   *nextproc = allProcs[nextidx];
 
 		ProcArrayEndTransactionInternal(nextproc, nextproc->procArrayGroupMemberXid);
 
@@ -880,7 +880,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	 */
 	while (wakeidx != INVALID_PROC_NUMBER)
 	{
-		PGPROC	   *nextproc = &allProcs[wakeidx];
+		PGPROC	   *nextproc = allProcs[wakeidx];
 
 		wakeidx = pg_atomic_read_u32(&nextproc->procArrayGroupNext);
 		pg_atomic_write_u32(&nextproc->procArrayGroupNext, INVALID_PROC_NUMBER);
@@ -1526,7 +1526,7 @@ TransactionIdIsInProgress(TransactionId xid)
 		pxids = other_subxidstates[pgxactoff].count;
 		pg_read_barrier();		/* pairs with barrier in GetNewTransactionId() */
 		pgprocno = arrayP->pgprocnos[pgxactoff];
-		proc = &allProcs[pgprocno];
+		proc = allProcs[pgprocno];
 		for (j = pxids - 1; j >= 0; j--)
 		{
 			/* Fetch xid just once - see GetNewTransactionId */
@@ -1621,7 +1621,6 @@ TransactionIdIsInProgress(TransactionId xid)
 	cachedXidIsNotInProgress = xid;
 	return false;
 }
-
 
 /*
  * Determine XID horizons.
@@ -1740,7 +1739,7 @@ ComputeXidHorizons(ComputeXidHorizonsResult *h)
 	for (int index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 		int8		statusFlags = ProcGlobal->statusFlags[index];
 		TransactionId xid;
 		TransactionId xmin;
@@ -2224,7 +2223,7 @@ GetSnapshotData(Snapshot snapshot)
 			TransactionId xid = UINT32_ACCESS_ONCE(other_xids[pgxactoff]);
 			uint8		statusFlags;
 
-			Assert(allProcs[arrayP->pgprocnos[pgxactoff]].pgxactoff == pgxactoff);
+			Assert(allProcs[arrayP->pgprocnos[pgxactoff]]->pgxactoff == pgxactoff);
 
 			/*
 			 * If the transaction has no XID assigned, we can skip it; it
@@ -2298,7 +2297,7 @@ GetSnapshotData(Snapshot snapshot)
 					if (nsubxids > 0)
 					{
 						int			pgprocno = pgprocnos[pgxactoff];
-						PGPROC	   *proc = &allProcs[pgprocno];
+						PGPROC	   *proc = allProcs[pgprocno];
 
 						pg_read_barrier();	/* pairs with GetNewTransactionId */
 
@@ -2499,7 +2498,7 @@ ProcArrayInstallImportedXmin(TransactionId xmin,
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 		int			statusFlags = ProcGlobal->statusFlags[index];
 		TransactionId xid;
 
@@ -2725,7 +2724,7 @@ GetRunningTransactionData(void)
 		if (TransactionIdPrecedes(xid, oldestDatabaseRunningXid))
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			PGPROC	   *proc = &allProcs[pgprocno];
+			PGPROC	   *proc = allProcs[pgprocno];
 
 			if (proc->databaseId == MyDatabaseId)
 				oldestDatabaseRunningXid = xid;
@@ -2756,7 +2755,7 @@ GetRunningTransactionData(void)
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			PGPROC	   *proc = &allProcs[pgprocno];
+			PGPROC	   *proc = allProcs[pgprocno];
 			int			nsubxids;
 
 			/*
@@ -2858,7 +2857,7 @@ GetOldestActiveTransactionId(bool inCommitOnly, bool allDbs)
 	{
 		TransactionId xid;
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		/* Fetch xid just once - see GetNewTransactionId */
 		xid = UINT32_ACCESS_ONCE(other_xids[index]);
@@ -3020,7 +3019,7 @@ GetVirtualXIDsDelayingChkpt(int *nvxids, int type)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if ((proc->delayChkptFlags & type) != 0)
 		{
@@ -3061,7 +3060,7 @@ HaveVirtualXIDsDelayingChkpt(VirtualTransactionId *vxids, int nvxids, int type)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 		VirtualTransactionId vxid;
 
 		GET_VXID_FROM_PGPROC(vxid, *proc);
@@ -3189,7 +3188,7 @@ BackendPidGetProcWithLock(int pid)
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
-		PGPROC	   *proc = &allProcs[arrayP->pgprocnos[index]];
+		PGPROC	   *proc = allProcs[arrayP->pgprocnos[index]];
 
 		if (proc->pid == pid)
 		{
@@ -3232,7 +3231,7 @@ BackendXidGetPid(TransactionId xid)
 		if (other_xids[index] == xid)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			PGPROC	   *proc = &allProcs[pgprocno];
+			PGPROC	   *proc = allProcs[pgprocno];
 
 			result = proc->pid;
 			break;
@@ -3301,7 +3300,7 @@ GetCurrentVirtualXIDs(TransactionId limitXmin, bool excludeXmin0,
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 		uint8		statusFlags = ProcGlobal->statusFlags[index];
 
 		if (proc == MyProc)
@@ -3403,7 +3402,7 @@ GetConflictingVirtualXIDs(TransactionId limitXmin, Oid dbOid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		/* Exclude prepared transactions */
 		if (proc->pid == 0)
@@ -3468,7 +3467,7 @@ SignalVirtualTransaction(VirtualTransactionId vxid, ProcSignalReason sigmode,
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 		VirtualTransactionId procvxid;
 
 		GET_VXID_FROM_PGPROC(procvxid, *proc);
@@ -3523,7 +3522,7 @@ MinimumActiveBackends(int min)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		/*
 		 * Since we're not holding a lock, need to be prepared to deal with
@@ -3569,7 +3568,7 @@ CountDBBackends(Oid databaseid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3598,7 +3597,7 @@ CountDBConnections(Oid databaseid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3629,7 +3628,7 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if (databaseid == InvalidOid || proc->databaseId == databaseid)
 		{
@@ -3670,7 +3669,7 @@ CountUserBackends(Oid roleid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3733,7 +3732,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			PGPROC	   *proc = &allProcs[pgprocno];
+			PGPROC	   *proc = allProcs[pgprocno];
 			uint8		statusFlags = ProcGlobal->statusFlags[index];
 
 			if (proc->databaseId != databaseId)
@@ -3799,7 +3798,7 @@ TerminateOtherDBBackends(Oid databaseId)
 	for (i = 0; i < procArray->numProcs; i++)
 	{
 		int			pgprocno = arrayP->pgprocnos[i];
-		PGPROC	   *proc = &allProcs[pgprocno];
+		PGPROC	   *proc = allProcs[pgprocno];
 
 		if (proc->databaseId != databaseId)
 			continue;

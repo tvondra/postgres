@@ -907,6 +907,13 @@
   boot_val => 'false',
 },
 
+{ name => 'numa_procs_interleave', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables NUMA interleaving of PGPROC entries.',
+  long_desc => 'When enabled, the PGPROC entries are interleaved to all NUMA nodes.',
+  variable => 'numa_procs_interleave',
+  boot_val => 'false',
+},
+
 { name => 'sync_replication_slots', type => 'bool', context => 'PGC_SIGHUP', group => 'REPLICATION_STANDBY',
   short_desc => 'Enables a physical standby to synchronize logical failover replication slots from the primary server.',
   variable => 'sync_replication_slots',

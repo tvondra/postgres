@@ -491,8 +491,6 @@ buffer_partitions_prepare(void)
 	if (numa_nodes < 1)
 		numa_nodes = 1;
 
-	elog(WARNING, "IsUnderPostmaster %d", IsUnderPostmaster);
-
 	/*
 	 * XXX A bit weird. Do we need to worry about postmaster? Could this even
 	 * run outside postmaster? I don't think so.

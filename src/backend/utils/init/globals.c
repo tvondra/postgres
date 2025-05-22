@@ -148,6 +148,7 @@ int			MaxBackends = 0;
 /* NUMA stuff */
 bool		numa_buffers_interleave = false;
 bool		numa_localalloc = false;
+bool		numa_procs_interleave = false;
 
 /* GUC parameters for vacuum */
 int			VacuumBufferUsageLimit = 2048;

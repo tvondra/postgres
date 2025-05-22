@@ -202,6 +202,8 @@ struct PGPROC
 								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
 
+	int			procnumber;		/* index in ProcGlobal->allProcs */
+
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
 
 	int			pgxactoff;		/* offset into various ProcGlobal->arrays with
@@ -327,6 +329,9 @@ struct PGPROC
 	PGPROC	   *lockGroupLeader;	/* lock group leader, if I'm a member */
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
+
+	/* NUMA node */
+	int			numa_node;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
@@ -391,7 +396,7 @@ extern PGDLLIMPORT PGPROC *MyProc;
 typedef struct PROC_HDR
 {
 	/* Array of PGPROC structures (not including dummies for prepared txns) */
-	PGPROC	   *allProcs;
+	PGPROC	  **allProcs;
 
 	/* Array mirroring PGPROC.xid for each PGPROC currently in the procarray */
 	TransactionId *xids;
@@ -443,8 +448,8 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 /*
  * Accessors for getting PGPROC given a ProcNumber and vice versa.
  */
-#define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
-#define GetNumberFromPGProc(proc) ((proc) - &ProcGlobal->allProcs[0])
+#define GetPGProcByNumber(n) (ProcGlobal->allProcs[(n)])
+#define GetNumberFromPGProc(proc) ((proc)->procnumber)
 
 /*
  * We set aside some extra PGPROC structures for "special worker" processes,

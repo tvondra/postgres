@@ -2132,7 +2132,7 @@ struct config_bool ConfigureNamesBool[] =
 			gettext_noop("When enabled, allocate from the node where the task is executing."),
 		},
 		&numa_localalloc,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 

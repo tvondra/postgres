@@ -2137,6 +2137,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_partition_freelist", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables buffer freelists to be partitioned per NUMA node."),
+			gettext_noop("When enabled, we create a separate freelist per NUMA node."),
+		},
+		&numa_partition_freelist,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},

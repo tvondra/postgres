@@ -289,7 +289,7 @@ PgArchWakeup(void)
 	 * be relaunched shortly and will start archiving.
 	 */
 	if (arch_pgprocno != INVALID_PROC_NUMBER)
-		SetLatch(&ProcGlobal->allProcs[arch_pgprocno].procLatch);
+		SetLatch(&ProcGlobal->allProcs[arch_pgprocno]->procLatch);
 }
 
 

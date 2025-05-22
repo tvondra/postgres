@@ -2844,7 +2844,7 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 	 */
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+		PGPROC	   *proc = ProcGlobal->allProcs[i];
 		uint32		j;
 
 		LWLockAcquire(&proc->fpInfoLock, LW_EXCLUSIVE);
@@ -3103,7 +3103,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 		 */
 		for (i = 0; i < ProcGlobal->allProcCount; i++)
 		{
-			PGPROC	   *proc = &ProcGlobal->allProcs[i];
+			PGPROC	   *proc = ProcGlobal->allProcs[i];
 			uint32		j;
 
 			/* A backend never blocks itself */
@@ -3790,7 +3790,7 @@ GetLockStatusData(void)
 	 */
 	for (i = 0; i < ProcGlobal->allProcCount; ++i)
 	{
-		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+		PGPROC	   *proc = ProcGlobal->allProcs[i];
 
 		/* Skip backends with pid=0, as they don't hold fast-path locks */
 		if (proc->pid == 0)

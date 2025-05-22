@@ -354,13 +354,18 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 	volatile uint64 touch pg_attribute_unused();
 	char   *ptr = startptr;
 
+	/* for efficiency reasons we batch calls to numa_move_pages */
+	void   *ptrs[1024];
+	int	status[1024];
+	int	nodes[1024];
+	int	nptrs = 0;
+	int	maxptrs = 1024;
+
 	/*
 	 * FIXME this still works page-by-page, we should use larger chunks.
 	 */
 	while (ptr < endptr)
 	{
-		int	status;
-		int	r;
 		int	node;
 
 		/*
@@ -380,13 +385,34 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 		/* move_pages fails for pages not mapped in this process */
 		pg_numa_touch_mem_if_required(touch, ptr);
 
-		/* now actually move the memory to the correct NUMA node */
-		r = numa_move_pages(0, 1, (void **) &ptr, &node, &status, 0);
+		ptrs[nptrs] = &ptr;
+		nodes[nptrs] = node;
 
-		if (r != 0)
-			elog(WARNING, "failed to move page %p to node %d", ptr, node);
+		nptrs++;
+
+		/* now actually move the memory to the correct NUMA node */
+		if (nptrs == maxptrs)
+		{
+			int r = numa_move_pages(0, nptrs, ptrs, nodes, status, 0);
+
+			if (r != 0)
+				elog(WARNING, "failed to move page %p res %d", ptr, r);
+
+			nptrs = 0;
+		}
 
 		ptr += mem_page_size;
+	}
+
+	/* there may be a couple pages in the buffer */
+	if (nptrs > 0)
+	{
+		int r = numa_move_pages(0, nptrs, ptrs, nodes, status, 0);
+
+		if (r != 0)
+			elog(WARNING, "failed to move page %p res %d", ptr, r);
+
+		nptrs = 0;
 	}
 
 	/* should have processed all chunks */

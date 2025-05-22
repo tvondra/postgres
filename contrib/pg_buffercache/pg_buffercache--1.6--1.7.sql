@@ -16,7 +16,12 @@ CREATE VIEW pg_buffercache_partitions AS
 	 numa_node integer,			-- NUMA node of the partitioon
 	 num_buffers integer,		-- number of buffers in the partition
 	 first_buffer integer,		-- first buffer of partition
-	 last_buffer integer);		-- last buffer of partition
+	 last_buffer integer,		-- last buffer of partition
+
+	 -- freelists
+	 list_consumed bigint,		-- buffers consumed from a freelist
+	 list_remain bigint,		-- buffers left in a freelist
+	 list_free bigint);			-- number of free buffers
 
 -- Don't want these to be available to public.
 REVOKE ALL ON FUNCTION pg_buffercache_partitions() FROM PUBLIC;

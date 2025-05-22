@@ -77,6 +77,8 @@ struct XidCache
  */
 #define		PROC_XMIN_FLAGS (PROC_IN_VACUUM | PROC_IN_SAFE_IC)
 
+#define		PGPROC_MAX_NUMA_NODES		8
+
 /*
  * We allow a limited number of "weak" relation locks (AccessShareLock,
  * RowShareLock, RowExclusiveLock) to be recorded in the PGPROC structure
@@ -193,6 +195,8 @@ struct PGPROC
 								 * starting our xact, excluding LAZY VACUUM:
 								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
+
+	int			procnumber;		/* process number (index in allProcs) */
 
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
 
@@ -322,19 +326,18 @@ struct PGPROC
 
 	/* NUMA node */
 	int			numa_node;
-
-	/*
-	 * XXX Ugly way to pad the struct to 1024B, to align it nicely to memory
-	 * pages (and then map pages to NUMA nodes). Not pretty, need a better
-	 * way to do padding.
-	 */
-	char		padding[188];
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
 
 
 extern PGDLLIMPORT PGPROC *MyProc;
+
+typedef struct PROC_INDEX
+{
+	int		node;
+	int		entry;
+} PROC_INDEX;
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.
@@ -392,23 +395,32 @@ extern PGDLLIMPORT PGPROC *MyProc;
  */
 typedef struct PROC_HDR
 {
-	/* Array of PGPROC structures (not including dummies for prepared txns) */
-	PGPROC	   *allProcs;
+	/* mapping of processes to partitions */
+	PROC_INDEX *allProcs;
+	int		   *nodeProcs;
 
-	/* Array mirroring PGPROC.xid for each PGPROC currently in the procarray */
-	TransactionId *xids;
+	/* one node partition for NUMA node (plus one partition for aux processes) */
+	struct {
 
-	/*
-	 * Array mirroring PGPROC.subxidStatus for each PGPROC currently in the
-	 * procarray.
-	 */
-	XidCacheStatus *subxidStates;
+		/* Array of PGPROC structures (not including dummies for prepared txns) */
+		PGPROC	   *procs;
 
-	/*
-	 * Array mirroring PGPROC.statusFlags for each PGPROC currently in the
-	 * procarray.
-	 */
-	uint8	   *statusFlags;
+		/* Array mirroring PGPROC.xid for each PGPROC currently in the procarray */
+		TransactionId *xids;
+
+		/*
+		 * Array mirroring PGPROC.subxidStatus for each PGPROC currently in the
+		 * procarray.
+		 */
+		XidCacheStatus *subxidStates;
+
+		/*
+		 * Array mirroring PGPROC.statusFlags for each PGPROC currently in the
+		 * procarray.
+		 */
+		uint8	   *statusFlags;
+
+	} nodes[PGPROC_MAX_NUMA_NODES];
 
 	/* Length of allProcs array */
 	uint32		allProcCount;
@@ -445,8 +457,10 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 /*
  * Accessors for getting PGPROC given a ProcNumber and vice versa.
  */
-#define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
-#define GetNumberFromPGProc(proc) ((proc) - &ProcGlobal->allProcs[0])
+#define GetPGProcNode(n) (ProcGlobal->allProcs[(n)].node)
+#define GetPGProcEntry(n) (ProcGlobal->allProcs[(n)].entry)
+#define GetPGProcByNumber(n) (&ProcGlobal->nodes[GetPGProcNode(n)].procs[GetPGProcEntry(n)])
+#define GetNumberFromPGProc(proc) ((proc)->procnumber)
 
 /*
  * We set aside some extra PGPROC structures for "special worker" processes,

@@ -286,6 +286,14 @@ InitProcGlobal(void)
 
 	MemSet(ptr, 0, requestSize);
 
+	/*
+	 * make sure to align PGPROC array to memory page (it may not be aligned)
+	 *
+	 * XXX the sizing in PGProcShmemSize() needs to account for this.
+	 */
+	if ((int64) ptr % get_memory_page_size() != 0)
+		ptr += get_memory_page_size() - (int64) ptr % get_memory_page_size();
+
 	procs = (PGPROC *) ptr;
 	ptr = (char *) ptr + TotalProcs * sizeof(PGPROC);
 
@@ -359,6 +367,14 @@ InitProcGlobal(void)
 
 	MemSet(fpPtr, 0, requestSize);
 
+	/*
+	 * make sure to align fast-path arrays to memory page (it may not be aligned)
+	 *
+	 * XXX the sizing in FastPathLockShmemSize() needs to account for this.
+	 */
+	if ((int64) fpPtr % get_memory_page_size() != 0)
+		fpPtr += get_memory_page_size() - (int64) fpPtr % get_memory_page_size();
+
 	/* For asserts checking we did not overflow. */
 	fpEndPtr = fpPtr + requestSize;
 
@@ -381,7 +397,6 @@ InitProcGlobal(void)
 
 		startptr = (char *) fpPtr;
 		endptr = startptr + requestSize;
-		chunk_size = (numa_chunk_items * sizeof(PGPROC));
 
 		elog(LOG, "InitProcGlobal fast-path startptr %p endptr %p mem_page %lu chunk_size %lu numa_nodes %d",
 			 startptr, endptr, mem_page_size, chunk_size, numa_nodes);

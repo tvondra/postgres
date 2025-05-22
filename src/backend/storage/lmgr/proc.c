@@ -29,21 +29,29 @@
  */
 #include "postgres.h"
 
+#include <sched.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>
+
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
 
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/pg_numa.h"
 #include "postmaster/autovacuum.h"
 #include "replication/slotsync.h"
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -89,6 +97,12 @@ static void ProcKill(int code, Datum arg);
 static void AuxiliaryProcKill(int code, Datum arg);
 static void CheckDeadLock(void);
 
+/* NUMA */
+static Size get_memory_page_size(void); /* XXX duplicate */
+static void move_to_node(char *startptr, char *endptr,
+						 Size mem_page_size, int node);
+static int	numa_nodes = -1;
+
 
 /*
  * Report shared-memory space needed by PGPROC.
@@ -100,10 +114,39 @@ PGProcShmemSize(void)
 	Size		TotalProcs =
 		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
 
+	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC *)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->xids)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->subxidStates)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->statusFlags)));
+
+	/*
+	 * With NUMA, we allocate the PGPROC array in several chunks. With shared
+	 * buffers we simply manually assign parts of the buffer array to
+	 * different NUMA nodes, and that does the trick. But we can't do that for
+	 * PGPROC, as the number of PGPROC entries is much lower, especially with
+	 * huge pages. We can fit ~2k entries on a 2MB page, and NUMA does stuff
+	 * with page granularity, and the large NUMA systems are likely to use
+	 * huge pages. So with sensible max_connections we would not use more than
+	 * a single page, which means it gets to a single NUMA node.
+	 *
+	 * So we allocate PGPROC not as a single array, but one array per NUMA
+	 * node, and then one array for aux processes (without NUMA node
+	 * assigned). Each array may need up to memory-page-worth of padding,
+	 * worst case. So we just add that - it's a bit wasteful, but good enough
+	 * for PoC.
+	 *
+	 * FIXME Should be conditional, but that was causing problems in bootstrap
+	 * mode. Or maybe it was because the code that allocates stuff later does
+	 * not do that conditionally. Anyway, needs to be fixed.
+	 */
+	/* if (numa_procs_interleave) */
+	{
+		int			num_nodes = numa_num_configured_nodes();
+		Size		mem_page_size = get_memory_page_size();
+
+		size = add_size(size, mul_size((num_nodes + 1), mem_page_size));
+	}
 
 	return size;
 }
@@ -128,6 +171,26 @@ FastPathLockShmemSize(void)
 	fpRelIdSize = MAXALIGN(FastPathLockSlotsPerBackend() * sizeof(Oid));
 
 	size = add_size(size, mul_size(TotalProcs, (fpLockBitsSize + fpRelIdSize)));
+
+	/*
+	 * Same NUMA-padding logic as in PGProcShmemSize, adding a memory page per
+	 * NUMA node - but this way we add two pages per node - one for PGPROC,
+	 * one for fast-path arrays. In theory we could make this work just one
+	 * page per node, by adding fast-path arrays right after PGPROC entries on
+	 * each node. But now we allocate fast-path locks separately - good enough
+	 * for PoC.
+	 *
+	 * FIXME Should be conditional, but that was causing problems in bootstrap
+	 * mode. Or maybe it was because the code that allocates stuff later does
+	 * not do that conditionally. Anyway, needs to be fixed.
+	 */
+	/* if (numa_procs_interleave) */
+	{
+		int			num_nodes = numa_num_configured_nodes();
+		Size		mem_page_size = get_memory_page_size();
+
+		size = add_size(size, mul_size((num_nodes + 1), mem_page_size));
+	}
 
 	return size;
 }
@@ -191,11 +254,13 @@ ProcGlobalSemas(void)
 void
 InitProcGlobal(void)
 {
-	PGPROC	   *procs;
+	PGPROC	  **procs;
 	int			i,
 				j;
 	bool		found;
 	uint32		TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
+	int			procs_total;
+	int			procs_per_node;
 
 	/* Used for setup of per-backend fast-path slots. */
 	char	   *fpPtr,
@@ -204,6 +269,8 @@ InitProcGlobal(void)
 				fpRelIdSize;
 	Size		requestSize;
 	char	   *ptr;
+
+	Size		mem_page_size = get_memory_page_size();
 
 	/* Create the ProcGlobal shared structure */
 	ProcGlobal = (PROC_HDR *)
@@ -224,6 +291,9 @@ InitProcGlobal(void)
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PROC_NUMBER);
 
+	/* one chunk per NUMA node (without NUMA assume 1 node) */
+	numa_nodes = numa_num_configured_nodes();
+
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
 	 * six separate consumers: (1) normal backends, (2) autovacuum workers and
@@ -241,12 +311,97 @@ InitProcGlobal(void)
 
 	MemSet(ptr, 0, requestSize);
 
-	procs = (PGPROC *) ptr;
-	ptr = (char *) ptr + TotalProcs * sizeof(PGPROC);
+	/* allprocs (array of pointers to PGPROC entries) */
+	procs = (PGPROC **) ptr;
+	ptr = (char *) ptr + TotalProcs * sizeof(PGPROC *);
 
 	ProcGlobal->allProcs = procs;
 	/* XXX allProcCount isn't really all of them; it excludes prepared xacts */
 	ProcGlobal->allProcCount = MaxBackends + NUM_AUXILIARY_PROCS;
+
+	/*
+	 * NUMA partitioning
+	 *
+	 * Now build the actual PGPROC arrays, one "chunk" per NUMA node (and one
+	 * extra for auxiliary processes and 2PC transactions, not associated with
+	 * any particular node).
+	 *
+	 * First determine how many "backend" procs to allocate per NUMA node. The
+	 * count may not be exactly divisible, but we mostly ignore that. The last
+	 * node may get somewhat fewer PGPROC entries, but the imbalance ought to
+	 * be pretty small (if MaxBackends >> numa_nodes).
+	 *
+	 * XXX A fairer distribution is possible, but not worth it now.
+	 */
+	procs_per_node = (MaxBackends + (numa_nodes - 1)) / numa_nodes;
+	procs_total = 0;
+
+	/* build PGPROC entries for NUMA nodes */
+	for (i = 0; i < numa_nodes; i++)
+	{
+		PGPROC	   *procs_node;
+
+		/* the last NUMA node may get fewer PGPROC entries, but meh */
+		int			count_node = Min(procs_per_node, MaxBackends - procs_total);
+
+		/* make sure to align the PGPROC array to memory page */
+		ptr = (char *) TYPEALIGN(mem_page_size, ptr);
+
+		/* allocate the PGPROC chunk for this node */
+		procs_node = (PGPROC *) ptr;
+		ptr = (char *) ptr + count_node * sizeof(PGPROC);
+
+		/* don't overflow the allocation */
+		Assert((ptr > (char *) procs) && (ptr <= (char *) procs + requestSize));
+
+		/* add pointers to the PGPROC entries to allProcs */
+		for (j = 0; j < count_node; j++)
+		{
+			procs_node[j].numa_node = i;
+			procs_node[j].procnumber = procs_total;
+
+			ProcGlobal->allProcs[procs_total++] = &procs_node[j];
+		}
+
+		move_to_node((char *) procs_node, ptr, mem_page_size, i);
+	}
+
+	/*
+	 * also build PGPROC entries for auxiliary procs / prepared xacts (we
+	 * don't assign those to any NUMA node)
+	 *
+	 * XXX Mostly duplicate of preceding block, could be reused.
+	 */
+	{
+		PGPROC	   *procs_node;
+		int			count_node = (NUM_AUXILIARY_PROCS + max_prepared_xacts);
+
+		/*
+		 * Make sure to align PGPROC array to memory page (it may not be
+		 * aligned). We won't assign this to any NUMA node, but we still don't
+		 * want it to interfere with the preceding chunk (for the last NUMA
+		 * node).
+		 */
+		ptr = (char *) TYPEALIGN(mem_page_size, ptr);
+
+		procs_node = (PGPROC *) ptr;
+		ptr = (char *) ptr + count_node * sizeof(PGPROC);
+
+		/* don't overflow the allocation */
+		Assert((ptr > (char *) procs) && (ptr <= (char *) procs + requestSize));
+
+		/* now add the PGPROC pointers to allProcs */
+		for (j = 0; j < count_node; j++)
+		{
+			procs_node[j].numa_node = -1;
+			procs_node[j].procnumber = procs_total;
+
+			ProcGlobal->allProcs[procs_total++] = &procs_node[j];
+		}
+	}
+
+	/* we should have allocated the expected number of PGPROC entries */
+	Assert(procs_total == TotalProcs);
 
 	/*
 	 * Allocate arrays mirroring PGPROC fields in a dense manner. See
@@ -254,6 +409,10 @@ InitProcGlobal(void)
 	 *
 	 * XXX: It might make sense to increase padding for these arrays, given
 	 * how hotly they are accessed.
+	 *
+	 * XXX Would it make sense to NUMA-partition these chunks too, somehow?
+	 * But those arrays are tiny, fit into a single memory page, so would need
+	 * to be made more complex. Not sure.
 	 */
 	ProcGlobal->xids = (TransactionId *) ptr;
 	ptr = (char *) ptr + (TotalProcs * sizeof(*ProcGlobal->xids));
@@ -286,23 +445,100 @@ InitProcGlobal(void)
 	/* For asserts checking we did not overflow. */
 	fpEndPtr = fpPtr + requestSize;
 
-	for (i = 0; i < TotalProcs; i++)
-	{
-		PGPROC	   *proc = &procs[i];
+	/* reset the count */
+	procs_total = 0;
 
-		/* Common initialization for all PGPROCs, regardless of type. */
+	/*
+	 * Mimic the same logic as above, but for fast-path locking.
+	 */
+	for (i = 0; i < numa_nodes; i++)
+	{
+		char	   *startptr;
+		char	   *endptr;
+
+		/* the last NUMA node may get fewer PGPROC entries, but meh */
+		int			procs_node = Min(procs_per_node, MaxBackends - procs_total);
+
+		/* align to memory page, to make move_pages possible */
+		fpPtr = (char *) TYPEALIGN(mem_page_size, fpPtr);
+
+		startptr = fpPtr;
+		endptr = fpPtr + procs_node * (fpLockBitsSize + fpRelIdSize);
+
+		move_to_node(startptr, endptr, mem_page_size, i);
 
 		/*
-		 * Set the fast-path lock arrays, and move the pointer. We interleave
-		 * the two arrays, to (hopefully) get some locality for each backend.
+		 * Now point the PGPROC entries to the fast-path arrays, and also
+		 * advance the fpPtr.
 		 */
-		proc->fpLockBits = (uint64 *) fpPtr;
-		fpPtr += fpLockBitsSize;
+		for (j = 0; j < procs_node; j++)
+		{
+			PGPROC	   *proc = ProcGlobal->allProcs[procs_total++];
 
-		proc->fpRelId = (Oid *) fpPtr;
-		fpPtr += fpRelIdSize;
+			/* cross-check we got the expected NUMA node */
+			Assert(proc->numa_node == i);
+			Assert(proc->procnumber == (procs_total - 1));
 
-		Assert(fpPtr <= fpEndPtr);
+			/*
+			 * Set the fast-path lock arrays, and move the pointer. We
+			 * interleave the two arrays, to (hopefully) get some locality for
+			 * each backend.
+			 */
+			proc->fpLockBits = (uint64 *) fpPtr;
+			fpPtr += fpLockBitsSize;
+
+			proc->fpRelId = (Oid *) fpPtr;
+			fpPtr += fpRelIdSize;
+
+			Assert(fpPtr <= fpEndPtr);
+		}
+
+		Assert(fpPtr == endptr);
+	}
+
+	/* auxiliary processes / prepared xacts */
+	{
+		/* the last NUMA node may get fewer PGPROC entries, but meh */
+		int			procs_node = (NUM_AUXILIARY_PROCS + max_prepared_xacts);
+
+		/* align to memory page, to make move_pages possible */
+		fpPtr = (char *) TYPEALIGN(mem_page_size, fpPtr);
+
+		/* now point the PGPROC entries to the fast-path arrays */
+		for (j = 0; j < procs_node; j++)
+		{
+			PGPROC	   *proc = ProcGlobal->allProcs[procs_total++];
+
+			/* cross-check we got PGPROC with no NUMA node assigned */
+			Assert(proc->numa_node == -1);
+			Assert(proc->procnumber == (procs_total - 1));
+
+			/*
+			 * Set the fast-path lock arrays, and move the pointer. We
+			 * interleave the two arrays, to (hopefully) get some locality for
+			 * each backend.
+			 */
+			proc->fpLockBits = (uint64 *) fpPtr;
+			fpPtr += fpLockBitsSize;
+
+			proc->fpRelId = (Oid *) fpPtr;
+			fpPtr += fpRelIdSize;
+
+			Assert(fpPtr <= fpEndPtr);
+		}
+	}
+
+	/* Should have consumed exactly the expected amount of fast-path memory. */
+	Assert(fpPtr <= fpEndPtr);
+
+	/* make sure we allocated the expected number of PGPROC entries */
+	Assert(procs_total == TotalProcs);
+
+	for (i = 0; i < TotalProcs; i++)
+	{
+		PGPROC	   *proc = procs[i];
+
+		Assert(proc->procnumber == i);
 
 		/*
 		 * Set up per-PGPROC semaphore, latch, and fpInfoLock.  Prepared xact
@@ -366,15 +602,12 @@ InitProcGlobal(void)
 		pg_atomic_init_u64(&(proc->waitStart), 0);
 	}
 
-	/* Should have consumed exactly the expected amount of fast-path memory. */
-	Assert(fpPtr == fpEndPtr);
-
 	/*
 	 * Save pointers to the blocks of PGPROC structures reserved for auxiliary
 	 * processes and prepared transactions.
 	 */
-	AuxiliaryProcs = &procs[MaxBackends];
-	PreparedXactProcs = &procs[MaxBackends + NUM_AUXILIARY_PROCS];
+	AuxiliaryProcs = procs[MaxBackends];
+	PreparedXactProcs = procs[MaxBackends + NUM_AUXILIARY_PROCS];
 
 	/* Create ProcStructLock spinlock, too */
 	ProcStructLock = (slock_t *) ShmemInitStruct("ProcStructLock spinlock",
@@ -435,7 +668,45 @@ InitProcess(void)
 
 	if (!dlist_is_empty(procgloballist))
 	{
-		MyProc = dlist_container(PGPROC, links, dlist_pop_head_node(procgloballist));
+		/*
+		 * With numa interleaving of PGPROC, try to get a PROC entry from the
+		 * right NUMA node (when the process starts).
+		 *
+		 * XXX The process may move to a different NUMA node later, but
+		 * there's not much we can do about that.
+		 */
+		if (numa_procs_interleave)
+		{
+			dlist_mutable_iter iter;
+			unsigned	cpu;
+			unsigned	node;
+			int			rc;
+
+			rc = getcpu(&cpu, &node);
+			if (rc != 0)
+				elog(ERROR, "getcpu failed: %m");
+
+			MyProc = NULL;
+
+			dlist_foreach_modify(iter, procgloballist)
+			{
+				PGPROC	   *proc;
+
+				proc = dlist_container(PGPROC, links, iter.cur);
+
+				if (proc->numa_node == node)
+				{
+					MyProc = proc;
+					dlist_delete(iter.cur);
+					break;
+				}
+			}
+		}
+
+		/* didn't find PGPROC from the correct NUMA node, pick any free one */
+		if (MyProc == NULL)
+			MyProc = dlist_container(PGPROC, links, dlist_pop_head_node(procgloballist));
+
 		SpinLockRelease(ProcStructLock);
 	}
 	else
@@ -1988,7 +2259,7 @@ ProcSendSignal(ProcNumber procNumber)
 	if (procNumber < 0 || procNumber >= ProcGlobal->allProcCount)
 		elog(ERROR, "procNumber out of range");
 
-	SetLatch(&ProcGlobal->allProcs[procNumber].procLatch);
+	SetLatch(&ProcGlobal->allProcs[procNumber]->procLatch);
 }
 
 /*
@@ -2062,4 +2333,61 @@ BecomeLockGroupMember(PGPROC *leader, int pid)
 	LWLockRelease(leader_lwlock);
 
 	return ok;
+}
+
+/* copy from buf_init.c */
+static Size
+get_memory_page_size(void)
+{
+	Size		os_page_size;
+	Size		huge_page_size;
+
+#ifdef WIN32
+	SYSTEM_INFO sysinfo;
+
+	GetSystemInfo(&sysinfo);
+	os_page_size = sysinfo.dwPageSize;
+#else
+	os_page_size = sysconf(_SC_PAGESIZE);
+#endif
+
+	/*
+	 * XXX This is a bit annoying/confusing, because we may get a different
+	 * result depending on when we call it. Before mmap() we don't know if the
+	 * huge pages get used, so we assume they will. And then if we don't get
+	 * huge pages, we'll waste memory etc.
+	 */
+
+	/* assume huge pages get used, unless HUGE_PAGES_OFF */
+	if (huge_pages_status == HUGE_PAGES_OFF)
+		huge_page_size = 0;
+	else
+		GetHugePageSize(&huge_page_size, NULL);
+
+	return Max(os_page_size, huge_page_size);
+}
+
+/*
+ * move_to_node
+ *		move all pages in the given range to the requested NUMA node
+ *
+ * XXX This is expected to only process fairly small number of pages, so no
+ * need to do batching etc. Just move pages one by one.
+ */
+static void
+move_to_node(char *startptr, char *endptr, Size mem_page_size, int node)
+{
+	while (startptr < endptr)
+	{
+		int			r,
+					status;
+
+		r = numa_move_pages(0, 1, (void **) &startptr, &node, &status, 0);
+
+		if (r != 0)
+			elog(WARNING, "failed to move page to NUMA node %d (r = %d, status = %d)",
+				 node, r, status);
+
+		startptr += mem_page_size;
+	}
 }

@@ -900,6 +900,13 @@
   boot_val => 'false',
 },
 
+{ name => 'numa_localalloc', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables setting the default allocation policy to local node.',
+  long_desc => 'When enabled, allocate from the node where the task is executing.',
+  variable => 'numa_localalloc',
+  boot_val => 'false',
+},
+
 { name => 'sync_replication_slots', type => 'bool', context => 'PGC_SIGHUP', group => 'REPLICATION_STANDBY',
   short_desc => 'Enables a physical standby to synchronize logical failover replication slots from the primary server.',
   variable => 'sync_replication_slots',

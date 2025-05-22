@@ -2127,6 +2127,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_localalloc", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables setting the default allocation policy to local node."),
+			gettext_noop("When enabled, allocate from the node where the task is executing."),
+		},
+		&numa_localalloc,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},

@@ -147,8 +147,8 @@ int			max_parallel_workers = 8;
 int			MaxBackends = 0;
 
 /* NUMA stuff */
-bool		numa_buffers_interleave = true;
-bool		numa_localalloc = true;
+bool		numa_buffers_interleave = false;
+bool		numa_localalloc = false;
 int			numa_partition_freelist = false;
 bool		numa_procs_interleave = false;
 

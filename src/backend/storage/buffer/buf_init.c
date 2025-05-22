@@ -543,8 +543,8 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 		 * XXX no return value, to make this fail on error, has to use
 		 * numa_set_strict
 		 *
-		 * XXX Should we still touch the memory first, like with numa_move_pages,
-		 * or is that not necessary?
+		 * XXX Should we still touch the memory first, like with
+		 * numa_move_pages, or is that not necessary?
 		 */
 		numa_tonode_memory(ptr, sz, node);
 

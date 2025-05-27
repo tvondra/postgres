@@ -182,6 +182,7 @@ extern PGDLLIMPORT bool numa_buffers_interleave;
 extern PGDLLIMPORT bool numa_localalloc;
 extern PGDLLIMPORT bool numa_partition_freelist;
 extern PGDLLIMPORT bool numa_procs_interleave;
+extern PGDLLIMPORT bool numa_procs_pin;
 
 extern PGDLLIMPORT int commit_timestamp_buffers;
 extern PGDLLIMPORT int multixact_member_buffers;

@@ -150,6 +150,7 @@ bool		numa_buffers_interleave = false;
 bool		numa_localalloc = false;
 bool		numa_partition_freelist = false;
 bool		numa_procs_interleave = false;
+bool		numa_procs_pin = false;
 
 /* GUC parameters for vacuum */
 int			VacuumBufferUsageLimit = 2048;

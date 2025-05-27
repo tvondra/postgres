@@ -2157,6 +2157,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_procs_pin", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables pinning backends to NUMA nodes (matching the PGPROC node)."),
+			gettext_noop("When enabled, sets affinity to CPUs from the same NUMA node."),
+		},
+		&numa_procs_pin,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},

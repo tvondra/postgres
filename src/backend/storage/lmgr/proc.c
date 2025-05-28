@@ -736,7 +736,7 @@ InitProcess(void)
 	 */
 	if (numa_procs_pin && MyProc->numa_node != -1)
 	{
-		struct bitmask cpumask = numa_allocate_cpumask();
+		struct bitmask *cpumask = numa_allocate_cpumask();
 
 		numa_node_to_cpus(MyProc->numa_node, cpumask);
 

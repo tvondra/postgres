@@ -515,7 +515,7 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 		/* move_pages fails for pages not mapped in this process */
 		pg_numa_touch_mem_if_required(touch, ptr);
 
-		ptrs[nptrs] = &ptr;
+		ptrs[nptrs] = ptr;
 		nodes[nptrs] = node;
 
 		nptrs++;

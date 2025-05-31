@@ -41,6 +41,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>		/* for getrlimit */
+#include <sys/sysinfo.h>
 
 /* For testing, PGBENCH_USE_SELECT can be defined to force use of that code */
 #if defined(HAVE_PPOLL) && !defined(PGBENCH_USE_SELECT)
@@ -299,6 +300,12 @@ static const char *username = NULL;
 static const char *dbName = NULL;
 static char *logfile_prefix = NULL;
 static const char *progname;
+
+#define	CPU_PINNING_NONE		0
+#define	CPU_PINNING_RANDOM		1
+#define	CPU_PINNING_COLOCATED	2
+
+static int	pinning_mode = CPU_PINNING_NONE;
 
 #define WSEP '@'				/* weight separator */
 
@@ -639,6 +646,8 @@ typedef struct
 	int64		cnt;			/* client transaction count, for -t; skipped
 								 * and failed transactions are also counted
 								 * here */
+
+	int			cpu;			/* CPU to pin to, -1 = no pinning */
 } CState;
 
 /*
@@ -672,6 +681,8 @@ typedef struct
 
 	StatsData	stats;
 	int64		latency_late;	/* count executed but late transactions */
+
+	int			cpu;			/* CPU to pin to, -1 = no pinning */
 } TState;
 
 /*
@@ -841,6 +852,45 @@ static void add_socket_to_set(socket_set *sa, int fd, int idx);
 static int	wait_on_socket_set(socket_set *sa, int64 usecs);
 static bool socket_has_input(socket_set *sa, int fd, int idx);
 
+/*
+ * random number generator for assigning CPUs to processes/threads
+ *
+ * This is not a simple generator, because we want to keep the outcome
+ * balanced - it's not just about the total number of threads/processes
+ * assigned to each core, because a thread is likely much lighter than a
+ * backend. So we want to distribute each of those uniformly.
+ *
+ * For example, assume we have 2 cores, and want to pin 2 threads and 2
+ * backends. We could pin 2 threads to core 0 and 2 backends to core 1.
+ * But that would not be balanced, because core 1 will have to execute
+ * much more work. Instead, we want to assign 1+1 to each core.
+ *
+ * Another restriction is that we don't want to assign both sides of
+ * a connection to the same core.
+ *
+ * All of that however applies to the 'random' mode. In the 'colocated'
+ * mode, we want to assign both sides of a connection to the same core.
+ * But we still pick the core randomly.
+ */
+typedef struct cpu_generator_state
+{
+	int			ncpus;			/* number of CPUs available */
+	int			nitems;			/* number of items in the queue */
+	int		   *nthreads;		/* number of threads for each CPU */
+	int		   *nclients;		/* number of processes for each CPU */
+	int		   *items;			/* queue of CPUs to pick from */
+}			cpu_generator_state;
+
+static cpu_generator_state cpu_generator_init(int ncpus);
+static void cpu_generator_refill(cpu_generator_state * state);
+static void cpu_generator_reset(cpu_generator_state * state);
+static int	cpu_generator_thread(cpu_generator_state * state);
+static int	cpu_generator_client(cpu_generator_state * state, int thread_cpu);
+static void cpu_generator_print(cpu_generator_state * state);
+static bool cpu_generator_check(cpu_generator_state * state);
+
+static void reset_pinning(TState *threads, int nthreads);
+
 /* callback used to build rows for COPY during data loading */
 typedef void (*initRowMethod) (PQExpBufferData *sql, int64 curr);
 
@@ -959,6 +1009,7 @@ usage(void)
 		   "  --sampling-rate=NUM      fraction of transactions to log (e.g., 0.01 for 1%%)\n"
 		   "  --show-script=NAME       show builtin script code, then exit\n"
 		   "  --verbose-errors         print messages of all errors\n"
+		   "  --pin-cpus MODE          pin threads and backends to CPU (random or colocated)\n"
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
 		   "  -d, --dbname=DBNAME      database name to connect to\n"
@@ -6718,6 +6769,7 @@ main(int argc, char **argv)
 		{"verbose-errors", no_argument, NULL, 15},
 		{"exit-on-abort", no_argument, NULL, 16},
 		{"debug", no_argument, NULL, 17},
+		{"pin-cpus", required_argument, NULL, 18},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -7071,6 +7123,15 @@ main(int argc, char **argv)
 			case 17:			/* debug */
 				pg_logging_increase_verbosity();
 				break;
+			case 18:			/* pin CPUs */
+				if (pg_strcasecmp(optarg, "random") == 0)
+					pinning_mode = CPU_PINNING_RANDOM;
+				else if (pg_strcasecmp(optarg, "colocated") == 0)
+					pinning_mode = CPU_PINNING_COLOCATED;
+				else
+					pg_fatal("invalid pinning method, expecting \"random\" or \"colocated\", got: \"%s\"",
+							 optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -7368,6 +7429,96 @@ main(int argc, char **argv)
 		nclients_dealt += thread->nstate;
 	}
 
+	/* reset the CPU assignment, i.e. no pinning by default */
+	reset_pinning(threads, nthreads);
+
+	/* try to assign threads/clients to CPUs */
+	if (pinning_mode != CPU_PINNING_NONE)
+	{
+		int			nprocs = get_nprocs();
+		cpu_generator_state state = cpu_generator_init(nprocs);
+
+retry:
+		/* start from scratch */
+		cpu_generator_reset(&state);
+
+		/* assign CPU to all threads */
+		for (i = 0; i < nthreads; i++)
+		{
+			TState	   *thread = &threads[i];
+
+			thread->cpu = cpu_generator_thread(&state);
+		}
+
+		/*
+		 * assign CPUs to backends, one at a time (for each thread)
+		 *
+		 * This helps to keep it balanced in the 'random' mode.
+		 */
+		while (true)
+		{
+			/* did we find any unassigned backend? */
+			bool		found = false;
+
+			for (i = 0; i < nthreads; i++)
+			{
+				TState	   *thread = &threads[i];
+
+				for (int j = 0; j < thread->nstate; j++)
+				{
+					/* skip backends with already assigned CPUs */
+					if (thread->state[j].cpu != -1)
+						continue;
+
+					if (pinning_mode == CPU_PINNING_RANDOM)
+						thread->state[j].cpu = cpu_generator_client(&state, thread->cpu);
+					else
+					{
+						state.nclients[thread->cpu]++;
+						thread->state[j].cpu = thread->cpu;
+					}
+
+					/* move to the next thread */
+					found = true;
+					break;
+				}
+			}
+
+			/* if we haven't found any unassigned backend, we're done */
+			if (!found)
+				break;
+		}
+
+		/* validate the assignments don't violate any of the restrictions */
+		if ((pinning_mode == CPU_PINNING_RANDOM) &&
+			!cpu_generator_check(&state))
+		{
+			reset_pinning(threads, nthreads);
+			goto retry;
+		}
+
+		/* print info about CPU assignments */
+		printf("============================\n");
+
+		cpu_generator_print(&state);
+
+		printf("----------------------------\n");
+
+		for (i = 0; i < nthreads; i++)
+		{
+			TState	   *thread = &threads[i];
+
+			printf("thread %d CPU %d\n", i, thread->cpu);
+
+			for (int j = 0; j < thread->nstate; j++)
+			{
+				printf("  client %d CPU %d\n", j, thread->state[j].cpu);
+			}
+		}
+
+		printf("============================\n");
+	}
+
 	/* all clients must be assigned to a thread */
 	Assert(nclients_dealt == nclients);
 
@@ -7517,6 +7668,39 @@ threadRun(void *arg)
 						 state[i].id);
 			}
 		}
+	}
+
+	/* pin the thread and backends for it's connections to the same CPU */
+	if (pinning_mode != CPU_PINNING_NONE)
+	{
+		cpu_set_t  *cpusetp;
+		size_t		cpusetsize;
+		size_t		nprocs = get_nprocs();
+
+		cpusetp = CPU_ALLOC(nprocs);
+		cpusetsize = CPU_ALLOC_SIZE(nprocs);
+
+		CPU_ZERO_S(cpusetsize, cpusetp);
+		CPU_SET_S(thread->cpu, cpusetsize, cpusetp);
+
+		/* thread 0 dess not have an actual pthread */
+		if (thread->thread)
+			pthread_setaffinity_np(thread->thread, cpusetsize, cpusetp);
+		else
+			sched_setaffinity(getpid(), cpusetsize, cpusetp);
+
+		/* determine PID of the backend, pin it to the same CPU */
+		for (int i = 0; i < nstate; i++)
+		{
+			pid_t		pid = PQbackendPID(state[i].con);
+
+			CPU_ZERO_S(cpusetsize, cpusetp);
+			CPU_SET_S(state[i].cpu, cpusetsize, cpusetp);
+
+			sched_setaffinity(pid, cpusetsize, cpusetp);
+		}
+
+		CPU_FREE(cpusetp);
 	}
 
 	/* GO */
@@ -7992,3 +8176,167 @@ socket_has_input(socket_set *sa, int fd, int idx)
 }
 
 #endif							/* POLL_USING_SELECT */
+
+static cpu_generator_state
+cpu_generator_init(int ncpus)
+{
+	struct timeval tv;
+
+	cpu_generator_state state;
+
+	state.ncpus = ncpus;
+
+	state.nthreads = pg_malloc(sizeof(int) * ncpus);
+	state.nclients = pg_malloc(sizeof(int) * ncpus);
+
+	state.nitems = ncpus;
+	state.items = pg_malloc(sizeof(int) * ncpus);
+	for (int i = 0; i < ncpus; i++)
+	{
+		state.nthreads[i] = 0;
+		state.nclients[i] = 0;
+		state.items[i] = i;
+	}
+
+	gettimeofday(&tv, NULL);
+	srand48(tv.tv_usec);
+
+	return state;
+}
+
+static void
+cpu_generator_refill(cpu_generator_state * state)
+{
+	struct timeval tv;
+
+	state->items = pg_realloc(state->items,
+							  (state->nitems + state->ncpus) * sizeof(int));
+
+	gettimeofday(&tv, NULL);
+
+	srand48(tv.tv_usec);
+
+	for (int i = 0; i < state->ncpus; i++)
+		state->items[state->nitems++] = i;
+}
+
+static void
+cpu_generator_reset(cpu_generator_state * state)
+{
+	state->nitems = 0;
+	cpu_generator_refill(state);
+
+	for (int i = 0; i < state->ncpus; i++)
+	{
+		state->nthreads[i] = 0;
+		state->nclients[i] = 0;
+	}
+}
+
+static int
+cpu_generator_thread(cpu_generator_state * state)
+{
+	if (state->nitems == 0)
+		cpu_generator_refill(state);
+
+	while (true)
+	{
+		int			idx = lrand48() % state->nitems;
+		int			cpu = state->items[idx];
+
+		state->items[idx] = state->items[state->nitems - 1];
+		state->nitems--;
+
+		state->nthreads[cpu]++;
+
+		return cpu;
+	}
+}
+
+static int
+cpu_generator_client(cpu_generator_state * state, int thread_cpu)
+{
+	int			min_clients;
+	bool		has_valid_cpus = false;
+
+	for (int i = 0; i < state->nitems; i++)
+	{
+		if (state->items[i] != thread_cpu)
+		{
+			has_valid_cpus = true;
+			break;
+		}
+	}
+
+	if (!has_valid_cpus)
+		cpu_generator_refill(state);
+
+	min_clients = INT_MAX;
+	for (int i = 0; i < state->nitems; i++)
+	{
+		if (state->items[i] == thread_cpu)
+			continue;
+
+		min_clients = Min(min_clients, state->nclients[state->items[i]]);
+	}
+
+	while (true)
+	{
+		int			idx = lrand48() % state->nitems;
+		int			cpu = state->items[idx];
+
+		if (cpu == thread_cpu)
+			continue;
+
+		if (state->nclients[cpu] != min_clients)
+			continue;
+
+		state->items[idx] = state->items[state->nitems - 1];
+		state->nitems--;
+
+		state->nclients[cpu]++;
+
+		return cpu;
+	}
+}
+
+static void
+cpu_generator_print(cpu_generator_state * state)
+{
+	for (int i = 0; i < state->ncpus; i++)
+	{
+		printf("CPU %d threads %d clients %d\n", i, state->nthreads[i], state->nclients[i]);
+	}
+}
+
+static bool
+cpu_generator_check(cpu_generator_state * state)
+{
+	int			min_count = INT_MAX,
+				max_count = 0;
+
+	for (int i = 0; i < state->ncpus; i++)
+	{
+		min_count = Min(min_count, state->nthreads[i] + state->nclients[i]);
+		max_count = Max(max_count, state->nthreads[i] + state->nclients[i]);
+	}
+
+	return (max_count - min_count <= 1);
+}
+
+static void
+reset_pinning(TState *threads, int nthreads)
+{
+	/* reset the CPU assignment, i.e. no pinning by default */
+	for (int i = 0; i < nthreads; i++)
+	{
+		TState	   *thread = &threads[i];
+
+		thread->cpu = -1;
+
+		for (int j = 0; j < thread->nstate; j++)
+		{
+			thread->state[j].cpu = -1;
+		}
+	}
+}

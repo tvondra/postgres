@@ -12,7 +12,10 @@ LANGUAGE C PARALLEL SAFE;
 -- Create a view for convenient access.
 CREATE VIEW pg_buffercache_partitions AS
 	SELECT P.* FROM pg_buffercache_partitions() AS P
-	(partition integer, numa_node integer, num_buffers integer, first_buffer integer, last_buffer integer, buffers_consumed bigint, buffers_remain bigint, buffers_free bigint);
+	(partition integer,
+	 numa_node integer, num_buffers integer, first_buffer integer, last_buffer integer,
+	 buffers_consumed bigint, buffers_remain bigint, buffers_free bigint,
+	 complete_passes bigint, buffer_allocs bigint, next_victim_buffer integer);
 
 -- Don't want these to be available to public.
 REVOKE ALL ON FUNCTION pg_buffercache_partitions() FROM PUBLIC;

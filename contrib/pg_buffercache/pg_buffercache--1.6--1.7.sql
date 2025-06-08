@@ -21,7 +21,13 @@ CREATE VIEW pg_buffercache_partitions AS
 	 -- freelists
 	 list_consumed bigint,		-- buffers consumed from a freelist
 	 list_remain bigint,		-- buffers left in a freelist
-	 list_free bigint);			-- number of free buffers
+	 list_free bigint,			-- number of free buffers
+
+	 -- clocksweep counters
+	 num_passes bigint,			-- clocksweep passes
+	 next_buffer integer,		-- next victim buffer for clocksweep
+	 total_allocs bigint,		-- handled allocs (running total)
+	 num_allocs bigint);		-- handled allocs (current cycle)
 
 -- Don't want these to be available to public.
 REVOKE ALL ON FUNCTION pg_buffercache_partitions() FROM PUBLIC;

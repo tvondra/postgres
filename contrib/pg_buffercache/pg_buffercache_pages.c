@@ -27,7 +27,7 @@
 #define NUM_BUFFERCACHE_EVICT_ALL_ELEM 3
 
 #define NUM_BUFFERCACHE_NUMA_ELEM	3
-#define NUM_BUFFERCACHE_PARTITIONS_ELEM	8
+#define NUM_BUFFERCACHE_PARTITIONS_ELEM	12
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_buffercache",
@@ -818,6 +818,14 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "list_free",
 						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "num_passes",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "next_buffer",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "total_allocs",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "num_allocs",
+						   INT8OID, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
 
@@ -843,6 +851,12 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 					buffers_remain,
 					buffers_free;
 
+		uint64		buffer_total_allocs;
+
+		uint32		complete_passes,
+					next_victim_buffer,
+					buffer_allocs;
+
 		Datum		values[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 		bool		nulls[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 
@@ -850,7 +864,9 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   &first_buffer, &last_buffer);
 
 		FreelistPartitionGetInfo(i, &buffers_consumed, &buffers_remain,
-								 &buffers_free);
+								 &buffers_free,
+								 &complete_passes, &next_victim_buffer,
+								 &buffer_total_allocs, &buffer_allocs);
 
 		values[0] = Int32GetDatum(i);
 		nulls[0] = false;
@@ -875,6 +891,18 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 
 		values[7] = Int64GetDatum(buffers_free);
 		nulls[7] = false;
+
+		values[8] = Int64GetDatum(complete_passes);
+		nulls[8] = false;
+
+		values[9] = Int32GetDatum(next_victim_buffer);
+		nulls[9] = false;
+
+		values[10] = Int64GetDatum(buffer_total_allocs);
+		nulls[10] = false;
+
+		values[11] = Int64GetDatum(buffer_allocs);
+		nulls[11] = false;
 
 		/* Build and return the tuple. */
 		tuple = heap_form_tuple((TupleDesc) funcctx->user_fctx, values, nulls);

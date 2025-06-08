@@ -63,17 +63,27 @@ typedef struct BufferStrategyFreelist
 #define MIN_FREELIST_PARTITIONS		4
 
 /*
- * The shared freelist control information.
+ * Information about one partition of the ClockSweep (on a subset of buffers).
+ *
+ * XXX Should be careful to align this to cachelines, etc.
  */
 typedef struct
 {
 	/* Spinlock: protects the values below */
-	slock_t		buffer_strategy_lock;
+	slock_t		clock_sweep_lock;
+
+	/* range for this clock weep partition */
+	int32		firstBuffer;
+	int32		numBuffers;
 
 	/*
 	 * Clock sweep hand: index of next buffer to consider grabbing. Note that
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
 	 * get an actual buffer, it needs to be used modulo NBuffers.
+	 *
+	 * XXX This is relative to firstBuffer, so needs to be offset properly.
+	 *
+	 * XXX firstBuffer + (nextVictimBuffer % numBuffers)
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
 
@@ -83,6 +93,15 @@ typedef struct
 	 */
 	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
+} ClockSweep;
+
+/*
+ * The shared freelist control information.
+ */
+typedef struct
+{
+	/* Spinlock: protects the values below */
+	slock_t		buffer_strategy_lock;
 
 	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
@@ -98,6 +117,9 @@ typedef struct
 	int			num_nodes;	/* effectively number of NUMA nodes */
 	int			num_partitions;
 	int			num_partitions_per_node;
+
+	/* clocksweep partitions */
+	ClockSweep *sweeps;
 
 	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
@@ -138,6 +160,7 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 									 uint32 *buf_state);
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
+static ClockSweep *ChooseClockSweep(void);
 
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
@@ -149,6 +172,7 @@ static inline uint32
 ClockSweepTick(void)
 {
 	uint32		victim;
+	ClockSweep *sweep = ChooseClockSweep();
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
@@ -156,14 +180,14 @@ ClockSweepTick(void)
 	 * apparent order.
 	 */
 	victim =
-		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+		pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, 1);
 
-	if (victim >= NBuffers)
+	if (victim >= sweep->numBuffers)
 	{
 		uint32		originalVictim = victim;
 
 		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
+		victim = victim % sweep->numBuffers;
 
 		/*
 		 * If we're the one that just caused a wraparound, force
@@ -189,19 +213,23 @@ ClockSweepTick(void)
 				 * could lead to an overflow of nextVictimBuffers, but that's
 				 * highly unlikely and wouldn't be particularly harmful.
 				 */
-				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+				SpinLockAcquire(&sweep->clock_sweep_lock);
 
-				wrapped = expected % NBuffers;
+				wrapped = expected % sweep->numBuffers;
 
-				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
+				success = pg_atomic_compare_exchange_u32(&sweep->nextVictimBuffer,
 														 &expected, wrapped);
 				if (success)
-					StrategyControl->completePasses++;
-				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+					sweep->completePasses++;
+				SpinLockRelease(&sweep->clock_sweep_lock);
 			}
 		}
 	}
-	return victim;
+
+	/* XXX buffer IDs are 1-based, we're calculating 0-based indexes */
+	Assert(BufferIsValid(1 + sweep->firstBuffer + (victim % sweep->numBuffers)));
+
+	return sweep->firstBuffer + victim;
 }
 
 static int
@@ -256,6 +284,28 @@ calculate_partition_index()
 	}
 
 	return index;
+}
+
+/*
+ * ChooseClockSweep
+ *		pick a clocksweep partition based on NUMA node and CPU
+ *
+ * The number of clocksweep partitions may not match the number of NUMA
+ * nodes, but it should not be lower. Each partition should be mapped to
+ * a single NUMA node, but a node may have multiple partitions. If there
+ * are multiple partitions per node (all nodes have the same number of
+ * partitions), we pick the partition using CPU.
+ *
+ * XXX Maybe we should do both the total and "per group" counts a power of
+ * two? That'd allow using shifts instead of divisions in the calculation,
+ * and that's cheaper. But how would that deal with odd number of nodes?
+ */
+static ClockSweep *
+ChooseClockSweep(void)
+{
+	int index = calculate_partition_index();
+
+	return &StrategyControl->sweeps[index];
 }
 
 /*
@@ -373,7 +423,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 * the rate of buffer consumption.  Note that buffers recycled by a
 	 * strategy object are intentionally not counted here.
 	 */
-	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+	pg_atomic_fetch_add_u32(&ChooseClockSweep()->numBufferAllocs, 1);
 
 	/*
 	 * First check, without acquiring the lock, whether there's buffers in the
@@ -444,13 +494,17 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	/*
 	 * Nothing on the freelist, so run the "clock sweep" algorithm
 	 *
-	 * XXX Should we also make this NUMA-aware, to only access buffers from
-	 * the same NUMA node? That'd probably mean we need to make the clock
-	 * sweep NUMA-aware, perhaps by having multiple clock sweeps, each for a
-	 * subset of buffers. But that also means each process could "sweep" only
-	 * a fraction of buffers, even if the other buffers are better candidates
-	 * for eviction. Would that also mean we'd have multiple bgwriters, one
-	 * for each node, or would one bgwriter handle all of that?
+	 * XXX Note that ClockSweepTick() is NUMA-aware, i.e. it only looks at
+	 * buffers from a single partition, aligned with the NUMA node. That
+	 * means it only accesses buffers from the same NUMA node.
+	 *
+	 * XXX That also means each process "sweeps" only a fraction of buffers,
+	 * even if the other buffers are better candidates for eviction. Maybe
+	 * there should be some logic to "steal" buffers from other freelists
+	 * or other nodes?
+	 *
+	 * XXX Would that also mean we'd have multiple bgwriters, one for each
+	 * node, or would one bgwriter handle all of that?
 	 */
 	trycounter = NBuffers;
 	for (;;)
@@ -533,43 +587,85 @@ StrategyFreeBuffer(BufferDesc *buf)
 }
 
 /*
+ * StrategySyncStart -- prepare for sync of all partitions
+ *
+ * Determine the number of clocksweep partitions, and calculate the recent
+ * buffers allocs (as a sum of all the partitions). This allows BgBufferSync
+ * to calculate average number of allocations per partition for the next
+ * sync cycle.
+ *
+ * In addition it returns the count of recent buffer allocs, which is a total
+ * summed from all partitions. The alloc counts are reset after being read,
+ * as the partitions are walked.
+ */
+void
+StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
+{
+	*num_buf_alloc = 0;
+	*num_parts = StrategyControl->num_partitions;
+
+	/*
+	 * We lock the partitions one by one, so not exacly in sync, but that
+	 * should be fine. We're only looking for heuristics anyway.
+	 */
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		SpinLockAcquire(&sweep->clock_sweep_lock);
+		if (num_buf_alloc)
+		{
+			*num_buf_alloc += pg_atomic_exchange_u32(&sweep->numBufferAllocs, 0);
+		}
+		SpinLockRelease(&sweep->clock_sweep_lock);
+	}
+}
+
+/*
  * StrategySyncStart -- tell BgBufferSync where to start syncing
  *
  * The result is the buffer index of the best buffer to sync first.
  * BgBufferSync() will proceed circularly around the buffer array from there.
  *
  * In addition, we return the completed-pass count (which is effectively
- * the higher-order bits of nextVictimBuffer) and the count of recent buffer
- * allocs if non-NULL pointers are passed.  The alloc count is reset after
- * being read.
+ * the higher-order bits of nextVictimBuffer).
+ *
+ * This only considers a single clocksweep partition, as BgBufferSync looks
+ * at them one by one.
  */
 int
-StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
+StrategySyncStart(int partition, uint32 *complete_passes,
+				  int *first_buffer, int *num_buffers)
 {
 	uint32		nextVictimBuffer;
 	int			result;
+	ClockSweep *sweep = &StrategyControl->sweeps[partition];
 
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	result = nextVictimBuffer % NBuffers;
+	Assert((partition >= 0) && (partition < StrategyControl->num_partitions));
+
+	SpinLockAcquire(&sweep->clock_sweep_lock);
+	nextVictimBuffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
+	result = nextVictimBuffer % sweep->numBuffers;
+
+	*first_buffer = sweep->firstBuffer;
+	*num_buffers = sweep->numBuffers;
 
 	if (complete_passes)
 	{
-		*complete_passes = StrategyControl->completePasses;
+		*complete_passes = sweep->completePasses;
 
 		/*
 		 * Additionally add the number of wraparounds that happened before
 		 * completePasses could be incremented. C.f. ClockSweepTick().
 		 */
-		*complete_passes += nextVictimBuffer / NBuffers;
+		*complete_passes += nextVictimBuffer / sweep->numBuffers;
 	}
+	SpinLockRelease(&sweep->clock_sweep_lock);
 
-	if (num_buf_alloc)
-	{
-		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
-	}
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-	return result;
+	/* XXX buffer IDs start at 1, we're calculating 0-based indexes */
+	Assert(BufferIsValid(1 + sweep->firstBuffer + result));
+
+	return sweep->firstBuffer + result;
 }
 
 /*
@@ -657,6 +753,10 @@ StrategyShmemSize(void)
 	size = add_size(size, MAXALIGN(mul_size(sizeof(BufferStrategyFreelist),
 											num_partitions)));
 
+	/* size of clocksweep partitions (at least one per NUMA node) */
+	size = add_size(size, MAXALIGN(mul_size(sizeof(ClockSweep),
+											num_partitions)));
+
 	return size;
 }
 
@@ -675,6 +775,7 @@ StrategyInitialize(bool init)
 	int			num_nodes;
 	int			num_partitions;
 	int			num_partitions_per_node;
+	char	   *ptr;
 
 	/* */
 	BufferPartitionParams(&num_partitions, &num_nodes);
@@ -702,7 +803,8 @@ StrategyInitialize(bool init)
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",
 						MAXALIGN(offsetof(BufferStrategyControl, freelists)) +
-						MAXALIGN(sizeof(BufferStrategyFreelist) * num_partitions),
+						MAXALIGN(sizeof(BufferStrategyFreelist) * num_partitions) +
+						MAXALIGN(sizeof(ClockSweep) * num_partitions),
 						&found);
 
 	if (!found)
@@ -717,12 +819,41 @@ StrategyInitialize(bool init)
 
 		SpinLockInit(&StrategyControl->buffer_strategy_lock);
 
-		/* Initialize the clock sweep pointer */
-		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
+		/* have to point the sweeps array to right after the freelists */
+		ptr = (char *) StrategyControl +
+				MAXALIGN(offsetof(BufferStrategyControl, freelists)) +
+				MAXALIGN(sizeof(BufferStrategyFreelist) * num_partitions);
+		StrategyControl->sweeps = (ClockSweep *) ptr;
 
-		/* Clear statistics */
-		StrategyControl->completePasses = 0;
-		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+		/* Initialize the clock sweep pointers (for all partitions) */
+		for (int i = 0; i < num_partitions; i++)
+		{
+			int		node,
+					num_buffers,
+					first_buffer,
+					last_buffer;
+
+			SpinLockInit(&StrategyControl->sweeps[i].clock_sweep_lock);
+
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
+
+			/* get info about the buffer partition */
+			BufferPartitionGet(i, &node, &num_buffers,
+							   &first_buffer, &last_buffer);
+
+			/*
+			 * FIXME This may not quite right, because if NBuffers is not
+			 * a perfect multiple of numBuffers, the last partition will have
+			 * numBuffers set too high. buf_init handles this by tracking the
+			 * remaining number of buffers, and not overflowing.
+			 */
+			StrategyControl->sweeps[i].numBuffers = num_buffers;
+			StrategyControl->sweeps[i].firstBuffer = first_buffer;
+
+			/* Clear statistics */
+			StrategyControl->sweeps[i].completePasses = 0;
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBufferAllocs, 0);
+		}
 
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;
@@ -770,7 +901,6 @@ StrategyInitialize(bool init)
 				buf->freeNext = freelist->firstFreeBuffer;
 				freelist->firstFreeBuffer = i;
 			}
-
 		}
 	}
 	else

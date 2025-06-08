@@ -260,6 +260,7 @@ static bool use_quiet;			/* quiet logging onto stderr */
 static int	agg_interval;		/* log aggregates instead of individual
 								 * transactions */
 static bool per_script_stats = false;	/* whether to collect stats per script */
+static bool per_thread_stats = false;	/* whether to print stats per thread */
 static int	progress = 0;		/* thread progress report every this seconds */
 static bool progress_timestamp = false; /* progress report with Unix time */
 static int	nclients = 1;		/* number of clients */
@@ -959,6 +960,11 @@ usage(void)
 		   "  --sampling-rate=NUM      fraction of transactions to log (e.g., 0.01 for 1%%)\n"
 		   "  --show-script=NAME       show builtin script code, then exit\n"
 		   "  --verbose-errors         print messages of all errors\n"
+<<<<<<< Updated upstream
+=======
+		   "  --pin-cpus MODE          pin threads and backends to CPU (random or colocated)\n"
+		   "  --thread-stats           print per-thread statistics\n"
+>>>>>>> Stashed changes
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
 		   "  -d, --dbname=DBNAME      database name to connect to\n"
@@ -6385,7 +6391,7 @@ printVersion(PGconn *con)
 
 /* print out results */
 static void
-printResults(StatsData *total,
+printResults(TState *threads, StatsData *total,
 			 pg_time_usec_t total_duration, /* benchmarking time */
 			 pg_time_usec_t conn_total_duration,	/* is_connect */
 			 pg_time_usec_t conn_elapsed_duration,	/* !is_connect */
@@ -6607,6 +6613,47 @@ printResults(StatsData *total,
 			}
 		}
 	}
+
+	/* Report per-thread statistics */
+	if (per_thread_stats)
+	{
+		StatsData	minStats;
+		StatsData	maxStats;
+
+		minStats = threads[0].stats;
+		maxStats = threads[0].stats;
+
+		printf("per-thread statistics\n");
+		for (int i = 0; i < nthreads; i++)
+		{
+			printf("%10d %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 "\n",
+				   i, threads[i].stats.cnt, threads[i].stats.skipped,
+				   threads[i].stats.retries, threads[i].stats.retried,
+				   threads[i].stats.serialization_failures, threads[i].stats.deadlock_failures);
+
+			minStats.cnt = Min(minStats.cnt, threads[i].stats.cnt);
+			minStats.skipped = Min(minStats.skipped, threads[i].stats.skipped);
+			minStats.retries = Min(minStats.retries, threads[i].stats.retries);
+			minStats.retried = Min(minStats.retried, threads[i].stats.retried);
+			minStats.serialization_failures = Min(minStats.serialization_failures, threads[i].stats.serialization_failures);
+			minStats.deadlock_failures = Min(minStats.deadlock_failures, threads[i].stats.deadlock_failures);
+
+			maxStats.cnt = Max(maxStats.cnt, threads[i].stats.cnt);
+			maxStats.skipped = Max(maxStats.skipped, threads[i].stats.skipped);
+			maxStats.retries = Max(maxStats.retries, threads[i].stats.retries);
+			maxStats.retried = Max(maxStats.retried, threads[i].stats.retried);
+			maxStats.serialization_failures = Max(maxStats.serialization_failures, threads[i].stats.serialization_failures);
+			maxStats.deadlock_failures = Max(maxStats.deadlock_failures, threads[i].stats.deadlock_failures);
+		}
+
+		printf("       MIN %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 "\n",
+			   minStats.cnt, minStats.skipped, minStats.retries, minStats.retried,
+			   minStats.serialization_failures, minStats.deadlock_failures);
+
+		printf("       MAX %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 " %10" PRId64 "\n",
+			   maxStats.cnt, maxStats.skipped, maxStats.retries, maxStats.retried,
+			   maxStats.serialization_failures, maxStats.deadlock_failures);
+	}
 }
 
 /*
@@ -6705,6 +6752,11 @@ main(int argc, char **argv)
 		{"verbose-errors", no_argument, NULL, 15},
 		{"exit-on-abort", no_argument, NULL, 16},
 		{"debug", no_argument, NULL, 17},
+<<<<<<< Updated upstream
+=======
+		{"pin-cpus", required_argument, NULL, 18},
+		{"thread-stats", no_argument, NULL, 19},
+>>>>>>> Stashed changes
 		{NULL, 0, NULL, 0}
 	};
 
@@ -7058,6 +7110,21 @@ main(int argc, char **argv)
 			case 17:			/* debug */
 				pg_logging_increase_verbosity();
 				break;
+<<<<<<< Updated upstream
+=======
+			case 18:			/* pin CPUs */
+				if (pg_strcasecmp(optarg, "random") == 0)
+					pinning_mode = CPU_PINNING_RANDOM;
+				else if (pg_strcasecmp(optarg, "colocated") == 0)
+					pinning_mode = CPU_PINNING_COLOCATED;
+				else
+					pg_fatal("invalid pinning method, expecting \"random\" or \"colocated\", got: \"%s\"",
+							 optarg);
+				break;
+			case 19:			/* print per-thread stats */
+				per_thread_stats = true;
+				break;
+>>>>>>> Stashed changes
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -7100,6 +7167,10 @@ main(int argc, char **argv)
 	 */
 	if (nthreads > nclients)
 		nthreads = nclients;
+
+	/* don't show per-thread stats if only thread is used */
+	if (nthreads == 1)
+		per_thread_stats = false;
 
 	/*
 	 * Convert throttle_delay to a per-thread delay time.  Note that this
@@ -7435,7 +7506,7 @@ main(int argc, char **argv)
 	 * here encompasses all transactions so that tps shown is somehow slightly
 	 * underestimated.
 	 */
-	printResults(&stats, pg_time_now() - bench_start, conn_total_duration,
+	printResults(threads, &stats, pg_time_now() - bench_start, conn_total_duration,
 				 bench_start - start_time, latency_late);
 
 	THREAD_BARRIER_DESTROY(&barrier);

@@ -347,6 +347,11 @@ extern int	GetAccessStrategyBufferCount(BufferAccessStrategy strategy);
 extern int	GetAccessStrategyPinLimit(BufferAccessStrategy strategy);
 
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);
+extern void FreelistPartitionGetInfo(int idx,
+									 uint32 *complete_passes,
+									 uint32 *next_victim_buffer,
+									 uint64 *buffer_total_allocs,
+									 uint32 *buffer_allocs);
 
 
 /* inline functions */

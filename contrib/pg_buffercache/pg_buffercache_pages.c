@@ -27,7 +27,7 @@
 #define NUM_BUFFERCACHE_EVICT_ALL_ELEM 3
 
 #define NUM_BUFFERCACHE_NUMA_ELEM	3
-#define NUM_BUFFERCACHE_PARTITIONS_ELEM	8
+#define NUM_BUFFERCACHE_PARTITIONS_ELEM	11
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_buffercache",
@@ -818,6 +818,12 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "buffers_free",
 						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "complete_passes",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "buffer_allocs",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "next_victim_buffer",
+						   INT4OID, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
 
@@ -843,6 +849,10 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 					buffers_remain,
 					buffers_free;
 
+		uint32		complete_passes,
+					buffer_allocs,
+					next_victim_buffer;
+
 		Datum		values[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 		bool		nulls[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 
@@ -850,7 +860,8 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   &first_buffer, &last_buffer);
 
 		FreelistPartitionGetInfo(i, &buffers_consumed, &buffers_remain,
-								 &buffers_free);
+								 &buffers_free, &complete_passes,
+								 &buffer_allocs, &next_victim_buffer);
 
 		values[0] = Int32GetDatum(i);
 		nulls[0] = false;
@@ -875,6 +886,15 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 
 		values[7] = Int64GetDatum(buffers_free);
 		nulls[7] = false;
+
+		values[8] = Int32GetDatum(complete_passes);
+		nulls[8] = false;
+
+		values[9] = Int32GetDatum(buffer_allocs);
+		nulls[9] = false;
+
+		values[10] = Int32GetDatum(next_victim_buffer);
+		nulls[10] = false;
 
 		/* Build and return the tuple. */
 		tuple = heap_form_tuple((TupleDesc) funcctx->user_fctx, values, nulls);

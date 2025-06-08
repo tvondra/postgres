@@ -716,6 +716,17 @@ BufferPartitionGet(int idx, int *node, int *num_buffers,
 	elog(ERROR, "invalid partition index");
 }
 
+/* return parameters before the partitions are initialized (during sizing) */
+void
+BufferPartitionParams(int *num_partitions, int *num_nodes)
+{
+	if (num_partitions)
+		*num_partitions = numa_partitions;
+
+	if (num_nodes)
+		*num_nodes = numa_nodes;
+}
+
 /* XXX the GUC hooks should probably be somewhere else? */
 bool
 check_debug_numa(char **newval, void **extra, GucSource source)

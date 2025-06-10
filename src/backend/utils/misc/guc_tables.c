@@ -79,6 +79,7 @@
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/buf_internals.h"
 #include "storage/copydir.h"
 #include "storage/io_worker.h"
 #include "storage/large_object.h"
@@ -125,6 +126,15 @@ static const struct config_enum_entry bytea_output_options[] = {
 
 StaticAssertDecl(lengthof(bytea_output_options) == (BYTEA_OUTPUT_HEX + 2),
 				 "array length mismatch");
+
+static const struct config_enum_entry clocksweep_partition_options[] = {
+		{"random", CLOCKSWEEP_PARTITION_RANDOM, false},
+		{"round-robin", CLOCKSWEEP_PARTITION_RR, false},
+		{"pid", CLOCKSWEEP_PARTITION_PID, false},
+		{"cpu", CLOCKSWEEP_PARTITION_CPU, false},
+		{"node", CLOCKSWEEP_PARTITION_NODE, false},
+		{NULL, 0, false}
+};
 
 /*
  * We have different sets for client and server message level options because
@@ -5022,6 +5032,17 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&client_min_messages,
 		NOTICE, client_message_level_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"clocksweep_partition", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the message levels that are sent to the client."),
+			gettext_noop("Each level includes all the levels that follow it. The later"
+						 " the level, the fewer messages are sent.")
+		},
+		&clocksweep_partition_strategy,
+		CLOCKSWEEP_PARTITION_RANDOM, clocksweep_partition_options,
 		NULL, NULL, NULL
 	},
 

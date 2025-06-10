@@ -13,6 +13,8 @@
  *
  *-------------------------------------------------------------------------
  */
+#include <sched.h>
+
 #include "postgres.h"
 
 #include "pgstat.h"
@@ -23,24 +25,23 @@
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
-
 /*
- * The shared freelist control information.
+ * XXX maybe have a per-clocksweep spinlock
  */
 typedef struct
 {
-	/* Spinlock: protects the values below */
-	slock_t		buffer_strategy_lock;
+	/* range for this clock weep partition */
+	int32		firstBuffer;
+	int32		numBuffers;
 
 	/*
 	 * Clock sweep hand: index of next buffer to consider grabbing. Note that
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
 	 * get an actual buffer, it needs to be used modulo NBuffers.
+	 *
+	 * XXX firstBuffer + (nextVictimBuffer % numBuffers)
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
-
-	int			firstFreeBuffer;	/* Head of list of unused buffers */
-	int			lastFreeBuffer; /* Tail of list of unused buffers */
 
 	/*
 	 * NOTE: lastFreeBuffer is undefined when firstFreeBuffer is -1 (that is,
@@ -52,7 +53,31 @@ typedef struct
 	 * overflow during a single bgwriter cycle.
 	 */
 	uint32		completePasses; /* Complete cycles of the clock sweep */
+} ClockSweepData;
+
+/*
+ * XXX we don't want too many, makes it harder to balance the partitions (so
+ * that we don't recycle stuff in a single partition)
+ */
+#define NUM_CLOCKSWEEP_PARTITIONS		4
+
+int clocksweep_partition_strategy = CLOCKSWEEP_PARTITION_RANDOM;
+
+/*
+ * The shared freelist control information.
+ */
+typedef struct
+{
+	/* Spinlock: protects the values below */
+	slock_t		buffer_strategy_lock;
+
+	ClockSweepData	sweeps[NUM_CLOCKSWEEP_PARTITIONS];
+
+	int			firstFreeBuffer;	/* Head of list of unused buffers */
+	int			lastFreeBuffer; /* Tail of list of unused buffers */
+
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
+	pg_atomic_uint32 nextPartition;		/* round robin */
 
 	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
@@ -63,6 +88,114 @@ typedef struct
 
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
+
+static ClockSweepData *mySweep = NULL;
+
+static ClockSweepData *
+clocksweep_partition_random(void)
+{
+	if (mySweep == NULL)
+	{
+		uint32	index = (rand() % NUM_CLOCKSWEEP_PARTITIONS);
+
+		mySweep = &StrategyControl->sweeps[index];
+	}
+
+	return mySweep;
+}
+
+static ClockSweepData *
+clocksweep_partition_rr(void)
+{
+	if (mySweep == NULL)
+	{
+		uint32	index = pg_atomic_fetch_add_u32(&StrategyControl->nextPartition, 1);
+
+		index = (index % NUM_CLOCKSWEEP_PARTITIONS);
+
+		mySweep = &StrategyControl->sweeps[index];
+	}
+
+	return mySweep;
+}
+
+static ClockSweepData *
+clocksweep_partition_pid(void)
+{
+	if (mySweep == NULL)
+	{
+		uint32	index = (MyProcPid % NUM_CLOCKSWEEP_PARTITIONS);
+
+		mySweep = &StrategyControl->sweeps[index];
+	}
+
+	return mySweep;
+}
+
+static ClockSweepData *
+clocksweep_partition_cpu(void)
+{
+	if (mySweep == NULL)
+	{
+		uint32	cpu;
+		uint32	index;
+
+		getcpu(&cpu,NULL);
+
+		index = (cpu % NUM_CLOCKSWEEP_PARTITIONS);
+
+		mySweep = &StrategyControl->sweeps[index];
+	}
+
+	return mySweep;
+}
+
+static ClockSweepData *
+clocksweep_partition_node(void)
+{
+	if (mySweep == NULL)
+	{
+		uint32	cpu;
+		uint32	node;
+		uint32	index;
+
+		getcpu(&cpu, &node);
+
+		index = (node % NUM_CLOCKSWEEP_PARTITIONS);
+
+		mySweep = &StrategyControl->sweeps[index];
+	}
+
+	return mySweep;
+}
+
+static ClockSweepData *
+clocksweep_partition(void)
+{
+	if (mySweep != NULL)
+		return mySweep;
+
+	switch (clocksweep_partition_strategy)
+	{
+		case CLOCKSWEEP_PARTITION_RANDOM:
+			return clocksweep_partition_random();
+
+		case CLOCKSWEEP_PARTITION_RR:
+			return clocksweep_partition_rr();
+
+		case CLOCKSWEEP_PARTITION_PID:
+			return clocksweep_partition_pid();
+
+		case CLOCKSWEEP_PARTITION_CPU:
+			return clocksweep_partition_cpu();
+
+		case CLOCKSWEEP_PARTITION_NODE:
+			return clocksweep_partition_node();
+
+		default:
+			elog(ERROR, "unknown clocksweep partitioning");
+	}
+}
 
 /*
  * Private (non-shared) state for managing a ring of shared buffers to re-use.
@@ -108,6 +241,7 @@ static inline uint32
 ClockSweepTick(void)
 {
 	uint32		victim;
+	ClockSweepData *sweep = clocksweep_partition();
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
@@ -115,14 +249,14 @@ ClockSweepTick(void)
 	 * apparent order.
 	 */
 	victim =
-		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+		pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, 1);
 
-	if (victim >= NBuffers)
+	if (victim >= sweep->numBuffers)
 	{
 		uint32		originalVictim = victim;
 
 		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
+		victim = victim % sweep->numBuffers;
 
 		/*
 		 * If we're the one that just caused a wraparound, force
@@ -150,17 +284,21 @@ ClockSweepTick(void)
 				 */
 				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 
-				wrapped = expected % NBuffers;
+				wrapped = expected % sweep->numBuffers;
 
-				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
+				success = pg_atomic_compare_exchange_u32(&sweep->nextVictimBuffer,
 														 &expected, wrapped);
 				if (success)
-					StrategyControl->completePasses++;
+					sweep->completePasses++;
 				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
 			}
 		}
 	}
-	return victim;
+
+	/* XXX buffer IDs are 1-based, we're calculating 0-based indexes */
+	Assert(BufferIsValid(1 + sweep->firstBuffer + (victim % sweep->numBuffers)));
+
+	return sweep->firstBuffer + victim;
 }
 
 /*
@@ -395,20 +533,21 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 {
 	uint32		nextVictimBuffer;
 	int			result;
+	ClockSweepData *sweep = clocksweep_partition();
 
 	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	result = nextVictimBuffer % NBuffers;
+	nextVictimBuffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
+	result = nextVictimBuffer % sweep->numBuffers;
 
 	if (complete_passes)
 	{
-		*complete_passes = StrategyControl->completePasses;
+		*complete_passes = sweep->completePasses;
 
 		/*
 		 * Additionally add the number of wraparounds that happened before
 		 * completePasses could be incremented. C.f. ClockSweepTick().
 		 */
-		*complete_passes += nextVictimBuffer / NBuffers;
+		*complete_passes += nextVictimBuffer / sweep->numBuffers;
 	}
 
 	if (num_buf_alloc)
@@ -416,7 +555,11 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
 	}
 	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-	return result;
+
+	/* XXX buffer IDs start at 1, we're calculating 0-based indexes */
+	Assert(BufferIsValid(1 + sweep->firstBuffer + result));
+
+	return sweep->firstBuffer + result;
 }
 
 /*
@@ -497,6 +640,11 @@ StrategyInitialize(bool init)
 
 	if (!found)
 	{
+		int32	numBuffers = NBuffers / NUM_CLOCKSWEEP_PARTITIONS;
+
+		while (numBuffers * NUM_CLOCKSWEEP_PARTITIONS < NBuffers)
+			numBuffers++;
+
 		/*
 		 * Only done once, usually in postmaster
 		 */
@@ -511,12 +659,23 @@ StrategyInitialize(bool init)
 		StrategyControl->firstFreeBuffer = 0;
 		StrategyControl->lastFreeBuffer = NBuffers - 1;
 
-		/* Initialize the clock sweep pointer */
-		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
+		/* Initialize the clock sweep pointers (for all partitions) */
+		for (int i = 0; i < NUM_CLOCKSWEEP_PARTITIONS; i++)
+		{
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
+
+			StrategyControl->sweeps[i].numBuffers = numBuffers;
+			StrategyControl->sweeps[i].firstBuffer = (numBuffers * i);
+
+			/* Clear statistics */
+			StrategyControl->sweeps[i].completePasses = 0;
+		}
 
 		/* Clear statistics */
-		StrategyControl->completePasses = 0;
 		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+
+		/* counter */
+		pg_atomic_init_u32(&StrategyControl->nextPartition, 0);
 
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;

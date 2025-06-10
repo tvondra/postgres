@@ -403,6 +403,15 @@ extern PGDLLIMPORT CkptSortItem *CkptBufferIds;
 extern PGDLLIMPORT const ResourceOwnerDesc buffer_io_resowner_desc;
 extern PGDLLIMPORT const ResourceOwnerDesc buffer_pin_resowner_desc;
 
+/* GUC for clocksweep partitioning */
+extern PGDLLIMPORT int clocksweep_partition_strategy;
+
+#define CLOCKSWEEP_PARTITION_RANDOM		0
+#define CLOCKSWEEP_PARTITION_RR			1
+#define CLOCKSWEEP_PARTITION_PID		2
+#define CLOCKSWEEP_PARTITION_CPU		3
+#define CLOCKSWEEP_PARTITION_NODE		4
+
 /* Convenience wrappers over ResourceOwnerRemember/Forget */
 static inline void
 ResourceOwnerRememberBuffer(ResourceOwner owner, Buffer buffer)

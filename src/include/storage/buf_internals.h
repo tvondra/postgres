@@ -412,6 +412,8 @@ extern PGDLLIMPORT int clocksweep_partition_strategy;
 #define CLOCKSWEEP_PARTITION_CPU		3
 #define CLOCKSWEEP_PARTITION_NODE		4
 
+Datum pg_stat_clocksweep(PG_FUNCTION_ARGS);
+
 /* Convenience wrappers over ResourceOwnerRemember/Forget */
 static inline void
 ResourceOwnerRememberBuffer(ResourceOwner owner, Buffer buffer)

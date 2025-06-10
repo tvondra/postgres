@@ -650,6 +650,14 @@ LANGUAGE INTERNAL
 CALLED ON NULL INPUT VOLATILE PARALLEL SAFE
 AS 'pg_stat_reset_slru';
 
+CREATE OR REPLACE FUNCTION pg_stat_clocksweep(
+  OUT id INT, OUT first_buffer BIGINT, OUT num_buffers BIGINT,
+  OUT complete_passes BIGINT)
+RETURNS SETOF RECORD
+LANGUAGE INTERNAL
+STABLE ROWS 10
+AS 'pg_stat_clocksweep';
+
 --
 -- The default permissions for functions mean that anyone can execute them.
 -- A number of functions shouldn't be executable by just anyone, but rather

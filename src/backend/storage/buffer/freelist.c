@@ -17,6 +17,7 @@
 
 #include "postgres.h"
 
+#include "funcapi.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
@@ -1014,4 +1015,55 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 	strategy->buffers[strategy->current] = InvalidBuffer;
 
 	return true;
+}
+
+Datum
+pg_stat_clocksweep(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	FuncCallContext *fctx;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext mctx;
+
+		fctx = SRF_FIRSTCALL_INIT();
+		mctx = MemoryContextSwitchTo(fctx->multi_call_memory_ctx);
+
+		/* Build a tuple descriptor for our result type */
+		if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+			elog(ERROR, "return type must be a row type");
+
+		fctx->max_calls = NUM_CLOCKSWEEP_PARTITIONS;
+		fctx->user_fctx = tupdesc;
+
+		MemoryContextSwitchTo(mctx);
+	}
+
+	fctx = SRF_PERCALL_SETUP();
+	tupdesc = fctx->user_fctx;
+
+	if (fctx->call_cntr < fctx->max_calls)
+	{
+		Datum		values[4];
+		bool		nulls[4];
+		HeapTuple	tuple;
+		Datum		result;
+		ClockSweepData *sweep = &StrategyControl->sweeps[fctx->call_cntr];
+
+		memset(nulls, 0, sizeof(nulls));
+
+		values[0] = UInt32GetDatum(fctx->call_cntr);
+		values[1] = UInt64GetDatum(sweep->firstBuffer);
+		values[2] = UInt64GetDatum(sweep->numBuffers);
+		values[3] = UInt64GetDatum(sweep->completePasses);
+
+		/* Build and return the result tuple. */
+		tuple = heap_form_tuple(tupdesc, values, nulls);
+		result = HeapTupleGetDatum(tuple);
+
+		SRF_RETURN_NEXT(fctx, result);
+	}
+	else
+		SRF_RETURN_DONE(fctx);
 }

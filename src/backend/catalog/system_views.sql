@@ -1407,3 +1407,9 @@ REVOKE ALL ON pg_aios FROM PUBLIC;
 GRANT SELECT ON pg_aios TO pg_read_all_stats;
 REVOKE EXECUTE ON FUNCTION pg_get_aios() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pg_get_aios() TO pg_read_all_stats;
+
+CREATE VIEW pg_stat_clocksweep AS SELECT * FROM pg_stat_clocksweep();
+
+GRANT SELECT ON pg_stat_clocksweep TO pg_read_all_stats;
+REVOKE EXECUTE ON FUNCTION pg_stat_clocksweep() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION pg_stat_clocksweep() TO pg_read_all_stats;

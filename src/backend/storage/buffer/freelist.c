@@ -550,8 +550,13 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc, uint32 *num_bu
 {
 	uint32		nextVictimBuffer;
 	int			result;
-	/* always first partition, to not get failures in BgBufferSync, because
-	 * strategy_delta moves backwards */
+	/*
+	 * Always first partition, to not get failures in BgBufferSync, because
+	 * strategy_delta moves backwards.
+	 *
+	 * XXX But this does not seem great, as it will not free buffers in the
+	 * other partitions. So maybe it's not great solution, just a workaround.
+	 */
 	ClockSweepData *sweep = &StrategyControl->sweeps[0];
 
 	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);

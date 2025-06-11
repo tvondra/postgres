@@ -3870,6 +3870,17 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"clocksweep_partition_migrate", PGC_USERSET, CONN_AUTH_AUTH,
+			gettext_noop("Sets the iteration count for SCRAM secret generation."),
+			NULL,
+			GUC_REPORT
+		},
+		&clocksweep_partition_migrate,
+		-1, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL

@@ -63,6 +63,7 @@ typedef struct
 #define NUM_CLOCKSWEEP_PARTITIONS		4
 
 int clocksweep_partition_strategy = CLOCKSWEEP_PARTITION_RANDOM;
+int clocksweep_partition_migrate = -1;
 
 /*
  * The shared freelist control information.
@@ -91,6 +92,7 @@ typedef struct
 static BufferStrategyControl *StrategyControl = NULL;
 
 static ClockSweepData *mySweep = NULL;
+static int clocksweep_partition_requests = 0;
 
 static ClockSweepData *
 clocksweep_partition_random(void)
@@ -99,8 +101,14 @@ clocksweep_partition_random(void)
 	{
 		uint32	index = (rand() % NUM_CLOCKSWEEP_PARTITIONS);
 
+		Assert(index >= 0);
+		Assert(index < NUM_CLOCKSWEEP_PARTITIONS);
+
 		mySweep = &StrategyControl->sweeps[index];
 	}
+
+	Assert(mySweep >= StrategyControl->sweeps);
+	Assert(mySweep < StrategyControl->sweeps + NUM_CLOCKSWEEP_PARTITIONS);
 
 	return mySweep;
 }
@@ -173,6 +181,14 @@ clocksweep_partition_node(void)
 static ClockSweepData *
 clocksweep_partition(void)
 {
+	if (clocksweep_partition_requests == clocksweep_partition_migrate)
+	{
+		mySweep = NULL;
+		clocksweep_partition_requests = 0;
+	}
+
+	clocksweep_partition_requests++;
+
 	if (mySweep != NULL)
 		return mySweep;
 
@@ -530,11 +546,13 @@ StrategyFreeBuffer(BufferDesc *buf)
  * being read.
  */
 int
-StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
+StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc, uint32 *num_buffers)
 {
 	uint32		nextVictimBuffer;
 	int			result;
-	ClockSweepData *sweep = clocksweep_partition();
+	/* always first partition, to not get failures in BgBufferSync, because
+	 * strategy_delta moves backwards */
+	ClockSweepData *sweep = &StrategyControl->sweeps[0];
 
 	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 	nextVictimBuffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
@@ -542,13 +560,34 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 
 	if (complete_passes)
 	{
-		*complete_passes = sweep->completePasses;
+		*complete_passes = 0;
+		*num_buffers = 0;
+
+		for (int i = 0; i < NUM_CLOCKSWEEP_PARTITIONS; i++)
+		{
+			ClockSweepData *s = &StrategyControl->sweeps[i];
+
+			*complete_passes += s->completePasses;
+
+			/*
+			* Additionally add the number of wraparounds that happened before
+			* completePasses could be incremented. C.f. ClockSweepTick().
+			*/
+			*complete_passes += (pg_atomic_read_u32(&sweep->nextVictimBuffer) % s->numBuffers) / s->numBuffers;
+			*num_buffers += s->numBuffers;
+		}
 
 		/*
-		 * Additionally add the number of wraparounds that happened before
-		 * completePasses could be incremented. C.f. ClockSweepTick().
+		 * we should probably normalize this to "global" scans, instead of using
+		 * scans for partitions, but that can also make strategy_delta negative
 		 */
-		*complete_passes += nextVictimBuffer / sweep->numBuffers;
+		// *complete_passes /= NUM_CLOCKSWEEP_PARTITIONS;
+
+		/*
+		 * average buffers per partition, but maybe we should simply return the
+		 * number from partition 0, because that's what bgwriter uses anyway
+		 */
+		*num_buffers /= NUM_CLOCKSWEEP_PARTITIONS;
 	}
 
 	if (num_buf_alloc)

@@ -3628,6 +3628,7 @@ BgBufferSync(WritebackContext *wb_context)
 	int			strategy_buf_id;
 	uint32		strategy_passes;
 	uint32		recent_alloc;
+	uint32		num_buffers;
 
 	/*
 	 * Information saved between calls so we can determine the strategy
@@ -3669,7 +3670,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * Find out where the freelist clock sweep currently is, and how many
 	 * buffer allocations have happened since our last call.
 	 */
-	strategy_buf_id = StrategySyncStart(&strategy_passes, &recent_alloc);
+	strategy_buf_id = StrategySyncStart(&strategy_passes, &recent_alloc, &num_buffers);
 
 	/* Report buffer alloc counts to pgstat */
 	PendingBgWriterStats.buf_alloc += recent_alloc;
@@ -3698,7 +3699,7 @@ BgBufferSync(WritebackContext *wb_context)
 		int32		passes_delta = strategy_passes - prev_strategy_passes;
 
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
-		strategy_delta += (long) passes_delta * NBuffers;
+		strategy_delta += (long) passes_delta * num_buffers;
 
 		Assert(strategy_delta >= 0);
 

@@ -405,6 +405,7 @@ extern PGDLLIMPORT const ResourceOwnerDesc buffer_pin_resowner_desc;
 
 /* GUC for clocksweep partitioning */
 extern PGDLLIMPORT int clocksweep_partition_strategy;
+extern PGDLLIMPORT int clocksweep_partition_migrate;
 
 #define CLOCKSWEEP_PARTITION_RANDOM		0
 #define CLOCKSWEEP_PARTITION_RR			1
@@ -459,7 +460,7 @@ extern void StrategyFreeBuffer(BufferDesc *buf);
 extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
-extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
+extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc, uint32 *num_buffers);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 
 extern Size StrategyShmemSize(void);

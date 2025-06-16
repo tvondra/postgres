@@ -514,9 +514,7 @@ gin_check_parent_keys_consistency(Relation rel,
 		{
 			ItemId		iid = PageGetItemIdCareful(rel, stack->blkno, page, i);
 			IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
-			OffsetNumber attnum = gintuple_get_attrnum(&state, idxtuple);
-			GinNullCategory prev_key_category;
-			Datum		prev_key;
+			OffsetNumber current_attnum = gintuple_get_attrnum(&state, idxtuple);
 			GinNullCategory current_key_category;
 			Datum		current_key;
 
@@ -529,17 +527,23 @@ gin_check_parent_keys_consistency(Relation rel,
 			current_key = gintuple_get_key(&state, idxtuple, &current_key_category);
 
 			/*
-			 * Never check for high key on rightmost inner page, as this key
-			 * is not really stored explicitly.
+			 * Compare the entry to the preceding one.
 			 *
-			 * Also make sure to not compare entries for different attnums,
-			 * which may be stored on the same page.
+			 * Don't check for high key on the rightmost inner page, as this
+			 * key is not really stored explicitly.
+			 *
+			 * The entries may be for different attributes, so make sure to
+			 * use ginCompareAttEntries for comparison.
 			 */
-			if (i != FirstOffsetNumber && !(i == maxoff && rightlink == InvalidBlockNumber && !GinPageIsLeaf(page)))
+			if ((i != FirstOffsetNumber) &&
+				!(i == maxoff && rightlink == InvalidBlockNumber && !GinPageIsLeaf(page)))
 			{
+				Datum		prev_key;
+				GinNullCategory prev_key_category;
+
 				prev_key = gintuple_get_key(&state, prev_tuple, &prev_key_category);
 				if (ginCompareAttEntries(&state, prev_attnum, prev_key,
-										 prev_key_category, attnum,
+										 prev_key_category, current_attnum,
 										 current_key, current_key_category) >= 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -560,7 +564,7 @@ gin_check_parent_keys_consistency(Relation rel,
 														  stack->parenttup,
 														  &parent_key_category);
 
-				if (ginCompareAttEntries(&state, attnum, current_key,
+				if (ginCompareAttEntries(&state, current_attnum, current_key,
 										 current_key_category, parent_key_attnum,
 										 parent_key, parent_key_category) > 0)
 				{
@@ -590,7 +594,7 @@ gin_check_parent_keys_consistency(Relation rel,
 						 * Check if it is properly adjusted. If succeed,
 						 * proceed to the next key.
 						 */
-						if (ginCompareAttEntries(&state, attnum, current_key,
+						if (ginCompareAttEntries(&state, current_attnum, current_key,
 												 current_key_category, parent_key_attnum,
 												 parent_key, parent_key_category) > 0)
 							ereport(ERROR,
@@ -645,7 +649,7 @@ gin_check_parent_keys_consistency(Relation rel,
 			}
 
 			prev_tuple = CopyIndexTuple(idxtuple);
-			prev_attnum = attnum;
+			prev_attnum = current_attnum;
 		}
 
 		LockBuffer(buffer, GIN_UNLOCK);

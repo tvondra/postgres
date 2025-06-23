@@ -34,13 +34,13 @@ CkptSortItem *CkptBufferIds;
 
 
 static Size get_memory_page_size(void);
-static int choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes);
+static int choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes);
 static void pg_numa_interleave_memory(char *startptr, char *endptr,
 									  Size mem_page_size, Size chunk_size,
 									  int num_nodes);
 
 /* number of buffers allocated on the same NUMA node */
-static int numa_chunk_items = -1;
+static int numa_chunk_buffers = -1;
 
 /* number of NUMA nodes (as returned by numa_num_configured_nodes) */
 static int numa_nodes = -1;
@@ -204,10 +204,10 @@ BufferManagerShmemInit(void)
 		 * mapping for each page.
 		 *
 		 * So we always assign a larger contiguous chunk of buffers to the
-		 * same NUMA node, as calculated by choose_chunk_items(). We try
+		 * same NUMA node, as calculated by choose_chunk_buffers(). We try
 		 * to keep the chunks large enough to work both for buffers and
 		 * buffer descriptors, but not too large. See the comments at
-		 * choose_chunk_items() for details.
+		 * choose_chunk_buffers() for details.
 		 *
 		 * Thanks to the earlier alignment (to memory page etc.), we know
 		 * the buffers won't get split, etc.
@@ -224,16 +224,16 @@ BufferManagerShmemInit(void)
 
 			numa_nodes = numa_num_configured_nodes();
 
-			numa_chunk_items
-				= choose_chunk_items(NBuffers, mem_page_size, numa_nodes);
+			numa_chunk_buffers
+				= choose_chunk_buffers(NBuffers, mem_page_size, numa_nodes);
 
-			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_items %d",
-				 numa_nodes, numa_chunk_items);
+			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_buffers %d",
+				 numa_nodes, numa_chunk_buffers);
 
 			/* first map buffers */
 			startptr = BufferBlocks;
 			endptr = startptr + ((Size) NBuffers) * BLCKSZ;
-			chunk_size = (numa_chunk_items * BLCKSZ);
+			chunk_size = (numa_chunk_buffers * BLCKSZ);
 
 			pg_numa_interleave_memory(startptr, endptr,
 									  mem_page_size,
@@ -243,7 +243,7 @@ BufferManagerShmemInit(void)
 			/* now do the same for buffer descriptors */
 			startptr = (char *) BufferDescriptors;
 			endptr = startptr + ((Size) NBuffers) * sizeof(BufferDescPadded);
-			chunk_size = (numa_chunk_items * sizeof(BufferDescPadded));
+			chunk_size = (numa_chunk_buffers * sizeof(BufferDescPadded));
 
 			pg_numa_interleave_memory(startptr, endptr,
 									  mem_page_size,
@@ -380,7 +380,7 @@ BufferManagerShmemSize(void)
 }
 
 /*
- * choose_chunk_items
+ * choose_chunk_buffers
  *		choose the number of buffers allocated to a NUMA node at once
  *
  * We don't map shared buffers to NUMA nodes one by one, but in larger chunks.
@@ -402,7 +402,7 @@ BufferManagerShmemSize(void)
  * So we simply print a warning and that's it.
  */
 static int
-choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes)
+choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
 {
 	int	num_items;
 	int	max_items;
@@ -437,7 +437,7 @@ choose_chunk_items(int NBuffers, Size mem_page_size, int num_nodes)
 
 	/* Did we already exceed the maximum share? */
 	if (num_items > max_items)
-		elog(WARNING, "choose_chunk_items: chunk items exceeds max (%d > %d)",
+		elog(WARNING, "choose_chunk_buffers: chunk items exceeds max (%d > %d)",
 			 num_items, max_items);
 
 	/* grow the chunk size until we hit the limit. */
@@ -454,10 +454,10 @@ int
 BufferGetNode(Buffer buffer)
 {
 	/* not NUMA interleaving */
-	if (numa_chunk_items == -1)
+	if (numa_chunk_buffers == -1)
 		return -1;
 
-	return (buffer / numa_chunk_items) % numa_nodes;
+	return (buffer / numa_chunk_buffers) % numa_nodes;
 }
 
 /* batches for numa_move_pages */

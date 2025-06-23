@@ -386,20 +386,18 @@ BufferManagerShmemSize(void)
  * We don't map shared buffers to NUMA nodes one by one, but in larger chunks.
  * This is both for efficiency reasons (fewer mappings), and also because we
  * want to map buffer descriptors too - and descriptors are much smaller. So
- * we pick a number that's high enough for descriptors, but not too high (now
- * there's a hardcoded limit of 1GB).
+ * we pick a number that's high enough for descriptors to use whole pages.
  *
  * We also want to keep buffers somehow evenly distributed on nodes, with
  * about NBuffers/nodes per node. So we don't use chunks larger than this,
  * to keep it as fair as possible (the chunk size is a possible difference
  * between memory allocated to different NUMA nodes).
  *
- * But it's theoretically possible shared buffers are so small this is not
- * possible (i.e. it's less than chunk_size). But sensible NUMA systems will
- * use a lot of memory, much more than 1GB / node, so this is unlikely. In
- * most cases the chunk size will be 1GB.
+ * It's possible shared buffers are so small this is not possible (i.e.
+ * it's less than chunk_size). But sensible NUMA systems will use a lot
+ * of memory, so this is unlikely.
  *
- * So we simply print a warning and that's it.
+ * We simply print a warning about the misbalance, and that's it.
  */
 static int
 choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
@@ -425,24 +423,45 @@ choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
 					mem_page_size / BLCKSZ);
 
 	/*
-	 * What's the largest chunk to use? NBuffers/num_nodes is the max we can
-	 * do, larger chunks would result in imbalance (some nodes getting much
-	 * fewer buffers). But we limit that to 1/2, to make it more even. And
-	 * we don't make chunks larger than 1GB.
-	 *
-	 * XXX Some of these limits are a bit arbitrary.
+	 * We shouldn't use chunks larger than NBuffers/num_nodes, because with
+	 * larger chunks the last NUMA node would end up with much less memory
+	 * (or no memory at all).
 	 */
-	max_items = Min((NBuffers / num_nodes) / 2,			/* 1/2 of fair share */
-					(1024L * 1024L * 1024L) / BLCKSZ);	/* 1GB of blocks */
+	max_items = (NBuffers / num_nodes);
 
-	/* Did we already exceed the maximum share? */
+	/*
+	 * Did we already exceed the maximum desirable chunk size? That is, will
+	 * the last node get less than one whole chunk (or no memory at all)?
+	 */
 	if (num_items > max_items)
 		elog(WARNING, "choose_chunk_buffers: chunk items exceeds max (%d > %d)",
 			 num_items, max_items);
 
-	/* grow the chunk size until we hit the limit. */
+	/* grow the chunk size until we hit the max limit. */
 	while (2 * num_items <= max_items)
 		num_items *= 2;
+
+	/*
+	 * XXX It's not difficult to construct cases where we end up with not
+	 * quite balanced distribution. For example, with shared_buffers=10GB
+	 * and 4 NUMA nodes, we end up with 2GB chunks, which means the first
+	 * node gets 4GB, and the three other nodes get 2GB each.
+	 *
+	 * We could be smarter, and try to get more balanced distribution. We
+	 * could simply reduce max_items e.g. to
+	 *
+	 *    max_items = (NBuffers / num_nodes) / 4;
+	 *
+	 * in which cases we'd end up with 512MB chunks, and each nodes would
+	 * get the same 2.5GB chunk. It may not always work out this nicely,
+	 * but it's better than with (NBuffers / num_nodes).
+	 *
+	 * Alternatively, we could "backtrack" - try with the large max_items,
+	 * check how balanced it is, and if it's too imbalanced, try with
+	 * a smaller one.
+	 *
+	 * We however want a simple scheme.
+	 */
 
 	return num_items;
 }

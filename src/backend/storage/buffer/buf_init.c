@@ -505,11 +505,8 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 	volatile uint64 touch pg_attribute_unused();
 	char   *ptr = startptr;
 
-	/* batch calls to numa_move_pages for efficiency reasons */
-	void   *ptrs[BUFFERS_NUMA_BATCH];
-	int		status[BUFFERS_NUMA_BATCH];
-	int		nodes[BUFFERS_NUMA_BATCH];
-	int		nptrs = 0;
+	/* chunk size has to be a multiple of memory page */
+	Assert((chunk_size % mem_page_size) == 0);
 
 	/*
 	 * Walk the memory pages in the range, and determine the node for each one.
@@ -517,6 +514,9 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 	 */
 	while (ptr < endptr)
 	{
+		/* We may have an incomplete chunk at the end. */
+		Size	sz = Min(chunk_size, (endptr - ptr));
+
 		/*
 		 * What NUMA node does this range belong to? Each chunk should go to
 		 * the same NUMA node, in a round-robin manner.
@@ -530,38 +530,15 @@ pg_numa_interleave_memory(char *startptr, char *endptr,
 		 * thanks to the buffer_align earlier.
 		 */
 		Assert((int64) ptr % mem_page_size == 0);
+		Assert((sz % mem_page_size) == 0);
 
-		/* move_pages fails for pages not mapped in this process */
-		pg_numa_touch_mem_if_required(touch, ptr);
+		/*
+		 * XXX no return value, to make this fail on error, has to use
+		 * numa_set_strict
+		 */
+		numa_tonode_memory(ptr, sz, node);
 
-		ptrs[nptrs] = ptr;
-		nodes[nptrs] = node;
-
-		nptrs++;
-
-		/* if batch is full actually move the memory to the correct NUMA node */
-		if (nptrs == BUFFERS_NUMA_BATCH)
-		{
-			int r = numa_move_pages(0, nptrs, ptrs, nodes, status, 0);
-
-			if (r != 0)
-				elog(WARNING, "failed to move page %p res %d", ptr, r);
-
-			nptrs = 0;
-		}
-
-		ptr += mem_page_size;
-	}
-
-	/* there may be a couple pages in the buffer */
-	if (nptrs > 0)
-	{
-		int r = numa_move_pages(0, nptrs, ptrs, nodes, status, 0);
-
-		if (r != 0)
-			elog(WARNING, "failed to move page %p res %d", ptr, r);
-
-		nptrs = 0;
+		ptr += sz;
 	}
 
 	/* should have processed all chunks */

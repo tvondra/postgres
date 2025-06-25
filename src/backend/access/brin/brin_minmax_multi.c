@@ -108,13 +108,6 @@
 #define		MINMAX_BUFFER_MAX				8192
 #define		MINMAX_BUFFER_LOAD_FACTOR		0.5
 
-/*
- * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
- * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
- * index's indoption[] array entry for the index attribute.
- */
-#define SK_BRIN_SORTED	0x00010000	/* deconstructed and sorted array */
-
 
 typedef struct MinmaxMultiOpaque
 {
@@ -2640,11 +2633,9 @@ minmax_multi_lower_boundary(Datum *values, int nvalues, Datum minvalue, SortSupp
  *
  * XXX Do we need to remember if the array contained NULL values?
  */
-Datum
-brin_minmax_multi_preprocess(PG_FUNCTION_ARGS)
+static ScanKeyArray *
+brin_minmax_multi_preprocess_array(BrinDesc *bdesc, ScanKey key)
 {
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
-	ScanKey		newkey;
 	ScanKeyArray *scanarray;
 
 	ArrayType  *arrayval;
@@ -2656,6 +2647,7 @@ brin_minmax_multi_preprocess(PG_FUNCTION_ARGS)
 	bool	   *elem_nulls;
 	TypeCacheEntry *type;
 	SortSupportData ssup;
+	MemoryContext oldcxt;
 
 	/* number of non-null elements in the array */
 	int			num_nonnulls;
@@ -2668,17 +2660,22 @@ brin_minmax_multi_preprocess(PG_FUNCTION_ARGS)
 	 * having to do branching.
 	 */
 	if (!(key->sk_flags & SK_SEARCHARRAY))
-		PG_RETURN_POINTER(key);
+		return NULL;
 
 	arrayval = DatumGetArrayTypeP(key->sk_argument);
 
 	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
 						 &elmlen, &elmbyval, &elmalign);
 
+	/* deconstruct into the cache context */
+	oldcxt = MemoryContextSwitchTo(bdesc->bd_keycache_cxt);
+
 	deconstruct_array(arrayval,
 					  ARR_ELEMTYPE(arrayval),
 					  elmlen, elmbyval, elmalign,
 					  &elem_values, &elem_nulls, &num_elems);
+
+	MemoryContextSwitchTo(oldcxt);
 
 	/* eliminate NULL elements */
 	num_nonnulls = 0;
@@ -2720,23 +2717,13 @@ brin_minmax_multi_preprocess(PG_FUNCTION_ARGS)
 						minmax_multi_compare_values, &ssup);
 
 	/* Construct the new scan key, with sorted array as ScanKeyArray. */
-	scanarray = palloc0(sizeof(ScanKeyArray));
+	scanarray = MemoryContextAlloc(bdesc->bd_keycache_cxt,
+								   sizeof(ScanKeyArray));
 	scanarray->typeid = ARR_ELEMTYPE(arrayval);
 	scanarray->nelements = num_elems;
 	scanarray->elements = elem_values;
 
-	newkey = palloc0(sizeof(ScanKeyData));
-
-	ScanKeyEntryInitializeWithInfo(newkey,
-								   (key->sk_flags | SK_BRIN_SORTED),
-								   key->sk_attno,
-								   key->sk_strategy,
-								   key->sk_subtype,
-								   key->sk_collation,
-								   &key->sk_func,
-								   PointerGetDatum(scanarray));
-
-	PG_RETURN_POINTER(newkey);
+	return scanarray;
 }
 
 /*
@@ -2807,9 +2794,19 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 			 * Otherwise we'd have issues with such opclasses because amsearcharray
 			 * is defined at the AM level.
 			 */
-			if (key->sk_flags & SK_BRIN_SORTED)			/* preprocessed array*/
+			if (key->sk_flags & SK_SEARCHARRAY)			/* preprocessed array */
 			{
-				ScanKeyArray *array = (ScanKeyArray *) value;
+				bool			found;
+				ScanKeyArray   *array;
+
+				array = (ScanKeyArray *) brin_key_cache_lookup(bdesc, key, &found);
+
+				/* cached representation of array does not exist, build it now */
+				if (!found)
+				{
+					array = brin_minmax_multi_preprocess_array(bdesc, key);
+					brin_key_cache_store(bdesc, key, PointerGetDatum(array));
+				}
 
 				/* can happen if the IN list contained just NULLs */
 				if (array->nelements == 0)
@@ -2968,113 +2965,6 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 						break;
 				}
 			}
-			else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
-			{
-				ArrayType  *arrayval;
-				int16		elmlen;
-				bool		elmbyval;
-				char		elmalign;
-				int			num_elems;
-				Datum	   *elem_values;
-				bool	   *elem_nulls;
-
-				arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-				get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-									 &elmlen, &elmbyval, &elmalign);
-
-				deconstruct_array(arrayval,
-								  ARR_ELEMTYPE(arrayval),
-								  elmlen, elmbyval, elmalign,
-								  &elem_values, &elem_nulls, &num_elems);
-
-				/* we'll skip NULL elements */
-				for (int i = 0; i < num_elems; i++)
-				{
-					/* skip NULL elements */
-					if (elem_nulls[i])
-						continue;
-
-					switch (key->sk_strategy)
-					{
-						case BTLessStrategyNumber:
-						case BTLessEqualStrategyNumber:
-							finfo = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
-																	   key->sk_strategy);
-							/* first value from the array */
-							matches = DatumGetBool(FunctionCall2Coll(finfo, colloid, minval,
-																	 elem_values[i]));
-							break;
-
-						case BTEqualStrategyNumber:
-							{
-								Datum		compar;
-								FmgrInfo   *cmpFn;
-
-								/* by default this range does not match */
-								matches = false;
-
-								/*
-								 * Otherwise, need to compare the new value with
-								 * boundaries of all the ranges. First check if it's
-								 * less than the absolute minimum, which is the first
-								 * value in the array.
-								 */
-								cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
-																		   BTGreaterStrategyNumber);
-								compar = FunctionCall2Coll(cmpFn, colloid, minval,
-														   elem_values[i]);
-
-								/* smaller than the smallest value in this range */
-								if (DatumGetBool(compar))
-									break;
-
-								cmpFn = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
-																		   BTLessStrategyNumber);
-								compar = FunctionCall2Coll(cmpFn, colloid, maxval,
-														   elem_values[i]);
-
-								/* larger than the largest value in this range */
-								if (DatumGetBool(compar))
-									break;
-
-								/*
-								 * We haven't managed to eliminate this range, so
-								 * consider it matching.
-								 */
-								matches = true;
-
-								break;
-							}
-						case BTGreaterEqualStrategyNumber:
-						case BTGreaterStrategyNumber:
-							finfo = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
-																	   key->sk_strategy);
-							/* last value from the array */
-							matches = DatumGetBool(FunctionCall2Coll(finfo, colloid, maxval,
-																	 elem_values[i]));
-							break;
-
-						default:
-							/* shouldn't happen */
-							elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-							matches = false;
-							break;
-					}
-
-					/* found a consistent value, we're done */
-					if (DatumGetBool(matches))
-						break;
-				}
-
-				/*
-				 * free the arrays
-				 *
-				 * XXX is this necessary?
-				 */
-				pfree(elem_values);
-				pfree(elem_nulls);
-			}
 			else										/* scalar scan key */
 			{
 				switch (key->sk_strategy)
@@ -3181,9 +3071,20 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 			subtype = key->sk_subtype;
 			value = key->sk_argument;
 
-			if (key->sk_flags & SK_BRIN_SORTED)			/* preprocessed array*/
+			if (key->sk_flags & SK_SEARCHARRAY)			/* preprocessed array*/
 			{
-				ScanKeyArray *array = (ScanKeyArray *) value;
+				bool			found;
+				ScanKeyArray   *array;
+
+				array = (ScanKeyArray *) brin_key_cache_lookup(bdesc, key, &found);
+
+				/* cached representation of array does not exist, build it now */
+				/* XXX can we even get found=false here? */
+				if (!found)
+				{
+					array = brin_minmax_multi_preprocess_array(bdesc, key);
+					brin_key_cache_store(bdesc, key, PointerGetDatum(array));
+				}
 
 				/* can happen if the IN list contained just NULLs */
 				if (array->nelements == 0)
@@ -3267,68 +3168,6 @@ brin_minmax_multi_consistent(PG_FUNCTION_ARGS)
 						matches = false;
 						break;
 				}
-			}
-			else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
-			{
-				ArrayType  *arrayval;
-				int16		elmlen;
-				bool		elmbyval;
-				char		elmalign;
-				int			num_elems;
-				Datum	   *elem_values;
-				bool	   *elem_nulls;
-
-				arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-				get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-									 &elmlen, &elmbyval, &elmalign);
-
-				deconstruct_array(arrayval,
-								  ARR_ELEMTYPE(arrayval),
-								  elmlen, elmbyval, elmalign,
-								  &elem_values, &elem_nulls, &num_elems);
-
-				/* we'll skip NULL elements */
-				for (int j = 0; j < num_elems; j++)
-				{
-					/* skip NULL elements */
-					if (elem_nulls[j])
-						continue;
-
-					switch (key->sk_strategy)
-					{
-						case BTLessStrategyNumber:
-						case BTLessEqualStrategyNumber:
-						case BTEqualStrategyNumber:
-						case BTGreaterEqualStrategyNumber:
-						case BTGreaterStrategyNumber:
-
-							finfo = minmax_multi_get_strategy_procinfo(bdesc, attno, subtype,
-																	   key->sk_strategy);
-							matches = DatumGetBool(FunctionCall2Coll(finfo, colloid,
-																	 val, elem_values[j]));
-
-							break;
-
-						default:
-							/* shouldn't happen */
-							elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-							matches = false;
-							break;
-					}
-
-					/* found a consistent value, we're done */
-					if (DatumGetBool(matches))
-						break;
-				}
-
-				/*
-				 * free the arrays
-				 *
-				 * XXX is this necessary?
-				 */
-				pfree(elem_values);
-				pfree(elem_nulls);
 			}
 			else
 			{

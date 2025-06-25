@@ -154,8 +154,6 @@ minmax_compare_values(const void *a, const void *b, void *arg)
  * Deconstructed and sorted scan key array (we might build ArrayType, but then
  * we'd have to deconstruct it over and over for each page range). So we just
  * do it once during preprocessing.
- *
- * XXX We remember the pointer to the scan key, so that we can match it later.
  */
 typedef struct ScanKeyArray {
 	Oid		typeid;
@@ -247,6 +245,7 @@ brin_minmax_preprocess_array(BrinDesc *bdesc, ScanKey key)
 	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
 						 &elmlen, &elmbyval, &elmalign);
 
+	/* deconstruct into the cache context */
 	oldcxt = MemoryContextSwitchTo(bdesc->bd_keycache_cxt);
 
 	deconstruct_array(arrayval,

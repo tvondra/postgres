@@ -8886,9 +8886,6 @@
 { oid => '3386', descr => 'BRIN minmax support',
   proname => 'brin_minmax_union', prorettype => 'bool',
   proargtypes => 'internal internal internal', prosrc => 'brin_minmax_union' },
-{ oid => '9327', descr => 'BRIN minmax support',
-  proname => 'brin_minmax_preprocess', prorettype => 'internal',
-  proargtypes => 'internal internal', prosrc => 'brin_minmax_preprocess' },
 
 # BRIN minmax multi
 { oid => '4616', descr => 'BRIN multi minmax support',

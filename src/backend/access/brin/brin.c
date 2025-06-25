@@ -199,26 +199,12 @@ typedef struct BrinInsertState
 
 /*
  * Struct used as "opaque" during index scans
- *
- * If the operator class preprocesses scan keys, the results are stored in
- * bo_scanKeys. It's up to the operator class to decide which keys are worth
- * preprocessing and which are simply copied.
- *
- * Either no keys are preprocessed (and ten bo_scanKeys is NULL), or all keys
- * have a matching entry in bo_scanKeys (either preprocessed or a pointer to
- * the original key).
  */
 typedef struct BrinOpaque
 {
 	BlockNumber bo_pagesPerRange;
 	BrinRevmap *bo_rmAccess;
 	BrinDesc   *bo_bdesc;
-
-	/* preprocessed scan keys */
-	int			bo_numScanKeys;		/* number of (preprocessed) scan keys */
-	ScanKey	   *bo_scanKeys;		/* modified copy of scan->keyData */
-	MemoryContext bo_scanKeysCxt;	/* scan-lifespan context for key data */
-
 } BrinOpaque;
 
 #define BRIN_ALL_BLOCKRANGES	InvalidBlockNumber
@@ -561,12 +547,6 @@ brinbeginscan(Relation r, int nkeys, int norderbys)
 	opaque = palloc_object(BrinOpaque);
 	opaque->bo_rmAccess = brinRevmapInitialize(r, &opaque->bo_pagesPerRange);
 	opaque->bo_bdesc = brin_build_desc(r);
-
-	/* no keys are preprocessed by default */
-	opaque->bo_numScanKeys = 0;
-	opaque->bo_scanKeys = NULL;
-	opaque->bo_scanKeysCxt = NULL;
-
 	scan->opaque = opaque;
 
 	return scan;
@@ -609,7 +589,6 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	char	   *ptr;
 	Size		len;
 	char	   *tmp PG_USED_FOR_ASSERTS_ONLY;
-	ScanKey	   *scankeys;
 
 	opaque = (BrinOpaque *) scan->opaque;
 	bdesc = opaque->bo_bdesc;
@@ -689,18 +668,10 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	memset(nkeys, 0, sizeof(int) * bdesc->bd_tupdesc->natts);
 	memset(nnullkeys, 0, sizeof(int) * bdesc->bd_tupdesc->natts);
 
-	/* get the preprocessed scan keys (if present) */
-	scankeys = (opaque->bo_scanKeys) ? opaque->bo_scanKeys : &scan->keyData;
-
-	/*
-	 * Preprocess the scan keys - split them into per-attribute arrays.
-	 *
-	 * XXX A bit misleading, as this is a different kind of preprocessing of the
-	 * scan keys.
-	 */
+	/* Preprocess the scan keys - split them into per-attribute arrays. */
 	for (int keyno = 0; keyno < scan->numberOfKeys; keyno++)
 	{
-		ScanKey		key = scankeys[keyno];
+		ScanKey		key = &scan->keyData[keyno];
 		AttrNumber	keyattno = key->sk_attno;
 
 		/*
@@ -989,123 +960,26 @@ void
 brinrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		   ScanKey orderbys, int norderbys)
 {
-	BrinOpaque *bo = (BrinOpaque *) scan->opaque;
-	Relation	idxRel = scan->indexRelation;
-	MemoryContext	oldcxt;
-	bool			preprocess = false;
+	/*
+	 * Other index AMs preprocess the scan keys at this point, or sometime
+	 * early during the scan; this lets them optimize by removing redundant
+	 * keys, or doing early returns when they are impossible to satisfy; see
+	 * _bt_preprocess_keys for an example.  Something like that could be added
+	 * here someday, too.
+	 */
 
 	if (scankey && scan->numberOfKeys > 0)
 		memcpy(scan->keyData, scankey, scan->numberOfKeys * sizeof(ScanKeyData));
 
-	/*
-	 * Use the BRIN_PROCNUM_PREPROCESS procedure (if defined) to preprocess
-	 * the scan keys. The procedure may do anything, as long as the result
-	 * looks like a ScanKey. If there's no procedure, we keep the original
-	 * scan keys.
-	 *
-	 * We only do this if the opclass (or at least one of them, for multi
-	 * column indexes) defines BRIN_PROCNUM_PREPROCESS procedure. If none
-	 * of them does, it's pointless to create the memory context etc.
-	 *
-	 * FIXME Probably needs fixes to handle NULLs correctly.
-	 *
-	 * XXX Maybe we should not ignore IS NULL scan keys? Could it make sense
-	 * to preprocess those in some way?
-	 */
-
-	/*
-	 * Inspect if at least one scankey has BRIN_PROCNUM_PREPROCESS.
-	 *
-	 * Might seem wasteful, as this may require walking the scan keys twice
-	 * (now and then also to do the preprocessing). But we stop on the first
-	 * match and the number of keys should be small. Seems worth it if we
-	 * can skip allocating the context.
-	 */
-	for (int i = 0; i < nscankeys; i++)
+	/* XXX need to reset scratch space with scan key cache */
 	{
-		ScanKey		key = &scan->keyData[i];
-		Oid			procid;
+		BrinOpaque *opaque = scan->opaque;
+		BrinDesc   *bdesc = opaque->bo_bdesc;
 
-		/* skip IS NULL keys - there's nothing to preprocess */
-		if (key->sk_flags & SK_ISNULL)
-			continue;
+		MemoryContextReset(bdesc->bd_keycache_cxt);
 
-		/* fetch key preprocess support procedure if specified */
-		procid = index_getprocid(idxRel, key->sk_attno,
-								 BRIN_PROCNUM_PREPROCESS);
-
-		/* don't look further if we found a preprocess procedure */
-		if (OidIsValid(procid))
-		{
-			preprocess = true;
-			break;
-		}
+		bdesc->bd_keycache = NIL;
 	}
-
-	/* No index attribute has preprocess procedure that we could use. */
-	if (!preprocess)
-		return;
-
-	/*
-	 * Do the actual scan key preprocessing. If this is the first time
-	 * through, we need to create the memory context. Otherwise we need
-	 * to reset it, which throws away previously preprocessed keys.
-	 */
-	if (bo->bo_scanKeysCxt == NULL)
-		bo->bo_scanKeysCxt = AllocSetContextCreate(CurrentMemoryContext,
-												   "BRIN scan keys context",
-												   ALLOCSET_SMALL_SIZES);
-	else
-		MemoryContextReset(bo->bo_scanKeysCxt);
-
-	oldcxt = MemoryContextSwitchTo(bo->bo_scanKeysCxt);
-
-	bo->bo_scanKeys = palloc0(sizeof(ScanKey) * nscankeys);
-
-	for (int i = 0; i < nscankeys; i++)
-	{
-		FmgrInfo   *finfo;
-		ScanKey		key = &scan->keyData[i];
-		Oid			procid;
-		Datum		ret;
-
-		/*
-		 * If the scan argument is NULL, nothing to preprocess.
-		 *
-		 * XXX Maybe we should leave these checks up to the _preprocess
-		 * procedures, in case there's something smart they wan to do?
-		 * But SK_ISNULL is handled by bringetbitmap() so doing it here
-		 * seems reasonable.
-		 */
-		if (key->sk_flags & SK_ISNULL)
-		{
-			bo->bo_scanKeys[i] = key;
-			continue;
-		}
-
-		/* fetch key preprocess support procedure if specified */
-		procid = index_getprocid(idxRel, key->sk_attno,
-								 BRIN_PROCNUM_PREPROCESS);
-
-		/* not specified, just point to the original key */
-		if (!OidIsValid(procid))
-		{
-			bo->bo_scanKeys[i] = key;
-			continue;
-		}
-
-		/* preprocess the scan key and store the result */
-		finfo = index_getprocinfo(idxRel, key->sk_attno,
-								  BRIN_PROCNUM_PREPROCESS);
-
-		ret = FunctionCall2(finfo,
-							PointerGetDatum(bo->bo_bdesc),
-							PointerGetDatum(key));
-
-		bo->bo_scanKeys[i] = (ScanKey) DatumGetPointer(ret);
-	}
-
-	MemoryContextSwitchTo(oldcxt);
 }
 
 /*
@@ -1759,6 +1633,11 @@ brin_build_desc(Relation rel)
 	bdesc->bd_tupdesc = tupdesc;
 	bdesc->bd_disktdesc = NULL; /* generated lazily */
 	bdesc->bd_totalstored = totalstored;
+	bdesc->bd_keycache = NIL;
+
+	bdesc->bd_keycache_cxt = AllocSetContextCreate(cxt,
+								"brin desc keycache cxt",
+								ALLOCSET_SMALL_SIZES);
 
 	for (keyno = 0; keyno < tupdesc->natts; keyno++)
 		bdesc->bd_info[keyno] = opcinfo[keyno];
@@ -3151,4 +3030,42 @@ brin_fill_empty_ranges(BrinBuildState *state,
 		/* try next page range */
 		blkno += state->bs_pagesPerRange;
 	}
+}
+
+Datum
+brin_key_cache_lookup(BrinDesc *bdesc, ScanKey key, bool *found)
+{
+	ListCell *lc;
+
+	*found = false;
+
+	foreach(lc, bdesc->bd_keycache)
+	{
+		BrinKeyCache *cache = (BrinKeyCache *) lfirst(lc);
+
+		if (cache->key == key)
+		{
+			*found = true;
+			return cache->value;
+		}
+	}
+
+	return (Datum) 0;
+}
+
+void
+brin_key_cache_store(BrinDesc *bdesc, ScanKey key, Datum value)
+{
+	BrinKeyCache *cache;
+	MemoryContext	oldcxt;
+
+	oldcxt = MemoryContextSwitchTo(bdesc->bd_keycache_cxt);
+
+	cache = palloc(sizeof(BrinKeyCache));
+	cache->key = key;
+	cache->value = value;
+
+	bdesc->bd_keycache = lappend(bdesc->bd_keycache, cache);
+
+	MemoryContextSwitchTo(oldcxt);
 }

@@ -41,6 +41,12 @@ typedef struct BrinOpcInfo
 #define SizeofBrinOpcInfo(ncols) \
 	(offsetof(BrinOpcInfo, oi_typcache) + sizeof(TypeCacheEntry *) * ncols)
 
+typedef struct BrinKeyCache
+{
+	ScanKey		key;
+	Datum		value;	/* opclass specific cache value */
+} BrinKeyCache;
+
 typedef struct BrinDesc
 {
 	/* Containing memory context */
@@ -58,6 +64,11 @@ typedef struct BrinDesc
 	/* total number of Datum entries that are stored on-disk for all columns */
 	int			bd_totalstored;
 
+ 	/* per-scankey cache (BrinKeyCache elements) */
+ 	/* XXX probably should have a separate memory context, for easy resets? */
+	List		   *bd_keycache;
+	MemoryContext	bd_keycache_cxt;
+
 	/* per-column info; bd_tupdesc->natts entries long */
 	BrinOpcInfo *bd_info[FLEXIBLE_ARRAY_MEMBER];
 } BrinDesc;
@@ -73,7 +84,6 @@ typedef struct BrinDesc
 #define BRIN_PROCNUM_UNION			4
 #define BRIN_MANDATORY_NPROCS		4
 #define BRIN_PROCNUM_OPTIONS 		5	/* optional */
-#define BRIN_PROCNUM_PREPROCESS		7	/* optional */
 /* procedure numbers up to 10 are reserved for BRIN future expansion */
 #define BRIN_FIRST_OPTIONAL_PROCNUM 11
 #define BRIN_LAST_OPTIONAL_PROCNUM	15
@@ -110,6 +120,9 @@ extern IndexBulkDeleteResult *brinbulkdelete(IndexVacuumInfo *info,
 extern IndexBulkDeleteResult *brinvacuumcleanup(IndexVacuumInfo *info,
 												IndexBulkDeleteResult *stats);
 extern bytea *brinoptions(Datum reloptions, bool validate);
+
+extern Datum brin_key_cache_lookup(BrinDesc *bdesc, ScanKey key, bool *found);
+extern void brin_key_cache_store(BrinDesc *bdesc, ScanKey key, Datum value);
 
 /* brin_validate.c */
 extern bool brinvalidate(Oid opclassoid);

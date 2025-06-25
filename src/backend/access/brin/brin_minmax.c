@@ -20,22 +20,17 @@
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/sortsupport.h"
-
-/*
- * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
- * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
- * index's indoption[] array entry for the index attribute.
- */
-#define SK_BRIN_SORTED	0x00010000	/* deconstructed and sorted array */
 
 
 typedef struct MinmaxOpaque
 {
 	Oid			cached_subtype;
 	FmgrInfo	strategy_procinfos[BTMaxStrategyNumber];
+	/* could have a cache here, but difficult to reset on rescans etc. */
 } MinmaxOpaque;
 
 static FmgrInfo *minmax_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno,
@@ -159,6 +154,8 @@ minmax_compare_values(const void *a, const void *b, void *arg)
  * Deconstructed and sorted scan key array (we might build ArrayType, but then
  * we'd have to deconstruct it over and over for each page range). So we just
  * do it once during preprocessing.
+ *
+ * XXX We remember the pointer to the scan key, so that we can match it later.
  */
 typedef struct ScanKeyArray {
 	Oid		typeid;
@@ -217,19 +214,14 @@ minmax_lower_boundary(Datum *values, int nvalues, Datum minvalue, SortSupport ss
 }
 
 /*
- * brin_minmax_preprocess
- *		preprocess scan keys for the minmax opclass
- *
- * For now we just care about SK_SEARCHARRAY keys, which we sort and keep the
- * deconstructed array. All other scan keys are ignored (returned as is).
+ * brin_minmax_preprocess_array
+ *		preprocess SK_SEARCHARRAY scan keys for the minmax opclass
  *
  * XXX Do we need to remember if the array contained NULL values?
  */
-Datum
-brin_minmax_preprocess(PG_FUNCTION_ARGS)
+static ScanKeyArray *
+brin_minmax_preprocess_array(BrinDesc *bdesc, ScanKey key)
 {
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
-	ScanKey		newkey;
 	ScanKeyArray *scanarray;
 
 	ArrayType  *arrayval;
@@ -241,29 +233,28 @@ brin_minmax_preprocess(PG_FUNCTION_ARGS)
 	bool	   *elem_nulls;
 	TypeCacheEntry *type;
 	SortSupportData ssup;
+	MemoryContext	oldcxt;
 
 	/* number of non-null elements in the array */
 	int			num_nonnulls;
 
-	/*
-	 * ignore scalar keys (just return the original scan key)
-	 *
-	 * XXX Maybe we should preprocess scalar keys too, and treat them as arrays
-	 * with a single element. It'd make the consistent function simpler by not
-	 * having to do branching.
-	 */
+	/* ignore non-array keys */
 	if (!(key->sk_flags & SK_SEARCHARRAY))
-		PG_RETURN_POINTER(key);
+		return NULL;
 
 	arrayval = DatumGetArrayTypeP(key->sk_argument);
 
 	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
 						 &elmlen, &elmbyval, &elmalign);
 
+	oldcxt = MemoryContextSwitchTo(bdesc->bd_keycache_cxt);
+
 	deconstruct_array(arrayval,
 					  ARR_ELEMTYPE(arrayval),
 					  elmlen, elmbyval, elmalign,
 					  &elem_values, &elem_nulls, &num_elems);
+
+	MemoryContextSwitchTo(oldcxt);
 
 	/* eliminate NULL elements */
 	num_nonnulls = 0;
@@ -305,23 +296,14 @@ brin_minmax_preprocess(PG_FUNCTION_ARGS)
 						minmax_compare_values, &ssup);
 
 	/* Construct the new scan key, with sorted array as ScanKeyArray. */
-	scanarray = palloc0(sizeof(ScanKeyArray));
+	scanarray = MemoryContextAlloc(bdesc->bd_keycache_cxt,
+								   sizeof(ScanKeyArray));
 	scanarray->typeid = ARR_ELEMTYPE(arrayval);
 	scanarray->nelements = num_elems;
 	scanarray->elements = elem_values;
 
-	newkey = palloc0(sizeof(ScanKeyData));
-
-	ScanKeyEntryInitializeWithInfo(newkey,
-								   (key->sk_flags | SK_BRIN_SORTED),
-								   key->sk_attno,
-								   key->sk_strategy,
-								   key->sk_subtype,
-								   key->sk_collation,
-								   &key->sk_func,
-								   PointerGetDatum(scanarray));
-
-	PG_RETURN_POINTER(newkey);
+	/* return */
+	return scanarray;
 }
 
 
@@ -367,9 +349,19 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 	 * Otherwise we'd have issues with such opclasses because amsearcharray
 	 * is defined at the AM level.
 	 */
-	if (key->sk_flags & SK_BRIN_SORTED)			/* preprocessed array*/
+	if (key->sk_flags & SK_SEARCHARRAY)			/* preprocessed array*/
 	{
-		ScanKeyArray *array = (ScanKeyArray *) value;
+		bool			found;
+		ScanKeyArray   *array;
+
+		array = (ScanKeyArray *) brin_key_cache_lookup(bdesc, key, &found);
+
+		/* cached representation of array does not exist, build it now */
+		if (!found)
+		{
+			array = brin_minmax_preprocess_array(bdesc, key);
+			brin_key_cache_store(bdesc, key, PointerGetDatum(array));
+		}
 
 		/* can happen if the IN list contained just NULLs */
 		if (array->nelements == 0)
@@ -524,88 +516,6 @@ brin_minmax_consistent(PG_FUNCTION_ARGS)
 				matches = 0;
 				break;
 		}
-	}
-	else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
-	{
-		ArrayType  *arrayval;
-		int16		elmlen;
-		bool		elmbyval;
-		char		elmalign;
-		int			num_elems;
-		Datum	   *elem_values;
-		bool	   *elem_nulls;
-
-		arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-							 &elmlen, &elmbyval, &elmalign);
-
-		deconstruct_array(arrayval,
-						  ARR_ELEMTYPE(arrayval),
-						  elmlen, elmbyval, elmalign,
-						  &elem_values, &elem_nulls, &num_elems);
-
-		/* we'll skip NULL elements */
-		for (int i = 0; i < num_elems; i++)
-		{
-			/* skip NULL elements */
-			if (elem_nulls[i])
-				continue;
-
-			switch (key->sk_strategy)
-			{
-				case BTLessStrategyNumber:
-				case BTLessEqualStrategyNumber:
-					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-														 key->sk_strategy);
-					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-												elem_values[i]);
-					break;
-				case BTEqualStrategyNumber:
-
-					/*
-					 * In the equality case (WHERE col = someval), we want to return
-					 * the current page range if the minimum value in the range <=
-					 * scan key, and the maximum value >= scan key.
-					 */
-					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-														 BTLessEqualStrategyNumber);
-					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[0],
-												elem_values[i]);
-					if (!DatumGetBool(matches))
-						break;
-					/* max() >= scankey */
-					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-														 BTGreaterEqualStrategyNumber);
-					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-												elem_values[i]);
-					break;
-				case BTGreaterEqualStrategyNumber:
-				case BTGreaterStrategyNumber:
-					finfo = minmax_get_strategy_procinfo(bdesc, attno, subtype,
-														 key->sk_strategy);
-					matches = FunctionCall2Coll(finfo, colloid, column->bv_values[1],
-												elem_values[i]);
-					break;
-				default:
-					/* shouldn't happen */
-					elog(ERROR, "invalid strategy number %d", key->sk_strategy);
-					matches = 0;
-					break;
-			}
-
-			/* found a consistent value, we're done */
-			if (DatumGetBool(matches))
-				break;
-		}
-
-		/*
-		 * free the arrays
-		 *
-		 * XXX is this necessary?
-		 */
-		pfree(elem_values);
-		pfree(elem_nulls);
 	}
 	else										/* scalar scan key */
 	{

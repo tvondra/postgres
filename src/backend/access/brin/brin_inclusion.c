@@ -74,14 +74,6 @@
 #define INCLUSION_UNMERGEABLE		1
 #define INCLUSION_CONTAINS_EMPTY	2
 
-/*
- * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
- * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
- * index's indoption[] array entry for the index attribute.
- */
-#define SK_BRIN_ARRAY	0x00010000	/* deconstructed array */
-
-
 typedef struct InclusionOpaque
 {
 	FmgrInfo	extra_procinfos[INCLUSION_MAX_PROCNUMS];
@@ -269,11 +261,9 @@ typedef struct ScanKeyArray {
  *
  * XXX Do we need to remember if the array contained NULL values?
  */
-Datum
-brin_inclusion_preprocess(PG_FUNCTION_ARGS)
+static ScanKeyArray *
+brin_inclusion_preprocess_array(BrinDesc *bdesc, ScanKey key)
 {
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
-	ScanKey		newkey;
 	ScanKeyArray *scanarray;
 
 	ArrayType  *arrayval;
@@ -283,6 +273,7 @@ brin_inclusion_preprocess(PG_FUNCTION_ARGS)
 	int			num_elems;
 	Datum	   *elem_values;
 	bool	   *elem_nulls;
+	MemoryContext oldcxt;
 
 	/* number of non-null elements in the array */
 	int			num_nonnulls;
@@ -293,19 +284,26 @@ brin_inclusion_preprocess(PG_FUNCTION_ARGS)
 	 * XXX Maybe we should preprocess scalar keys too, and treat them as arrays
 	 * with a single element. It'd make the consistent function simpler by not
 	 * having to do branching.
+	 *
+	 * XXX We should probably not see keys that are not SK_SEARCHARRAY.
 	 */
 	if (!(key->sk_flags & SK_SEARCHARRAY))
-		PG_RETURN_POINTER(key);
+		return NULL;
 
 	arrayval = DatumGetArrayTypeP(key->sk_argument);
 
 	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
 						 &elmlen, &elmbyval, &elmalign);
 
+	/* deconstruct into the cache context */
+	oldcxt = MemoryContextSwitchTo(bdesc->bd_keycache_cxt);
+
 	deconstruct_array(arrayval,
 					  ARR_ELEMTYPE(arrayval),
 					  elmlen, elmbyval, elmalign,
 					  &elem_values, &elem_nulls, &num_elems);
+
+	MemoryContextSwitchTo(oldcxt);
 
 	/* eliminate NULL elements */
 	num_nonnulls = 0;
@@ -326,23 +324,12 @@ brin_inclusion_preprocess(PG_FUNCTION_ARGS)
 
 	/* FIXME What if num_nonnulls is 0? Can it even happen / get here? */
 
-	scanarray = palloc0(sizeof(ScanKeyArray));
+	scanarray = MemoryContextAlloc(bdesc->bd_keycache_cxt,
+								   sizeof(ScanKeyArray));
 	scanarray->nelements = num_elems;
 	scanarray->elements = elem_values;
 
-	/* Construct the new scan key, with sorted array as ScanKeyArray. */
-	newkey = palloc0(sizeof(ScanKeyData));
-
-	ScanKeyEntryInitializeWithInfo(newkey,
-								   (key->sk_flags | SK_BRIN_ARRAY),
-								   key->sk_attno,
-								   key->sk_strategy,
-								   key->sk_subtype,
-								   key->sk_collation,
-								   &key->sk_func,
-								   PointerGetDatum(scanarray));
-
-	PG_RETURN_POINTER(newkey);
+	return scanarray;
 }
 
 /*
@@ -592,10 +579,20 @@ brin_inclusion_consistent(PG_FUNCTION_ARGS)
 	 * SK_SEARCHARRAY keys we need to deparse the array and loop through
 	 * the values.
 	 */
-	if (key->sk_flags & SK_BRIN_ARRAY)
+	if (key->sk_flags & SK_SEARCHARRAY)
 	{
-		ScanKeyArray *array = (ScanKeyArray *) query;
-		bool		matches = false;
+		bool			matches = false;
+		bool			found;
+		ScanKeyArray   *array;
+
+		array = (ScanKeyArray *) brin_key_cache_lookup(bdesc, key, &found);
+
+		/* cached representation of array does not exist, build it now */
+		if (!found)
+		{
+			array = brin_inclusion_preprocess_array(bdesc, key);
+			brin_key_cache_store(bdesc, key, PointerGetDatum(array));
+		}
 
 		/*
 		 * Loop through all deconstructed array, check the inclusion for
@@ -616,60 +613,6 @@ brin_inclusion_consistent(PG_FUNCTION_ARGS)
 			if (matches)
 				break;
 		}
-
-		/* we could get here for empty array, e.g. with "@> '{}'::point[]" */
-		PG_RETURN_BOOL(matches);
-	}
-	else if (key->sk_flags & SK_SEARCHARRAY)
-	{
-		ArrayType  *arrayval;
-		int16		elmlen;
-		bool		elmbyval;
-		char		elmalign;
-		int			num_elems;
-		Datum	   *elem_values;
-		bool	   *elem_nulls;
-		bool		matches = false;
-
-		arrayval = DatumGetArrayTypeP(key->sk_argument);
-
-		get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-							 &elmlen, &elmbyval, &elmalign);
-
-		deconstruct_array(arrayval,
-						  ARR_ELEMTYPE(arrayval),
-						  elmlen, elmbyval, elmalign,
-						  &elem_values, &elem_nulls, &num_elems);
-
-		/*
-		 * Loop through all deconstructed array, check the inclusion for
-		 * each element.
-		 *
-		 * XXX With empty array (which can happen for IN clause with only
-		 * NULL values), we leave the matches flag set to false.
-		 */
-		for (int i = 0; i < num_elems; i++)
-		{
-			/* skip NULL elements */
-			if (elem_nulls[i])
-				continue;
-
-			matches = brin_inclusion_consistent_value(bdesc, column, attno,
-													  key->sk_strategy,
-													  subtype, colloid,
-													  unionval, elem_values[i]);
-
-			if (matches)
-				break;
-		}
-
-		/*
-		 * free the arrays
-		 *
-		 * XXX is this necessary?
-		 */
-		pfree(elem_values);
-		pfree(elem_nulls);
 
 		/* we could get here for empty array, e.g. with "@> '{}'::point[]" */
 		PG_RETURN_BOOL(matches);

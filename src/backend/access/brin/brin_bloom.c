@@ -154,13 +154,6 @@
 #define		PROCNUM_BASE			11
 
 /*
- * We use some private sk_flags bits in preprocessed scan keys.  We're allowed
- * to use bits 16-31 (see skey.h).  The uppermost bits are copied from the
- * index's indoption[] array entry for the index attribute.
- */
-#define SK_BRIN_HASHES	0x00010000	/* deconstructed array, calculated hashes */
-
-/*
  * Storage type for BRIN's reloptions.
  */
 typedef struct BloomOptions
@@ -621,7 +614,7 @@ typedef struct HashCache {
 } HashCache;
 
 /*
- * brin_bloom_preprocess
+ * brin_bloom_preprocess_array
  *		preprocess scan keys for the bloom opclass
  *
  * For now we just care about SK_SEARCHARRAY keys, for which we precalculate
@@ -629,14 +622,11 @@ typedef struct HashCache {
  *
  * XXX Do we need to remember if the array contained NULL values?
  */
-Datum
-brin_bloom_preprocess(PG_FUNCTION_ARGS)
+static HashCache *
+brin_bloom_preprocess_array(BrinDesc *bdesc, BloomOptions *opts, ScanKey key)
 {
-	BrinDesc   *bdesc = (BrinDesc *) PG_GETARG_POINTER(0);
-	ScanKey		key = (ScanKey) PG_GETARG_POINTER(1);
-	BloomOptions *opts = (BloomOptions *) PG_GET_OPCLASS_OPTIONS();
-	ScanKey		newkey;
-	HashCache  *cache = palloc0(sizeof(HashCache));
+	HashCache  *cache = MemoryContextAllocZero(bdesc->bd_keycache_cxt,
+											   sizeof(HashCache));
 
 	int			nbits;
 	FmgrInfo   *finfo;
@@ -659,8 +649,10 @@ brin_bloom_preprocess(PG_FUNCTION_ARGS)
 		Datum value = key->sk_argument;
 
 		cache->nelements = 1;
-		cache->h1 = (uint64 *) palloc0(sizeof(uint64));
-		cache->h2 = (uint64 *) palloc0(sizeof(uint64));
+		cache->h1 = (uint64 *) MemoryContextAlloc(bdesc->bd_keycache_cxt,
+												  sizeof(uint64));
+		cache->h2 = (uint64 *) MemoryContextAlloc(bdesc->bd_keycache_cxt,
+												  sizeof(uint64));
 
 		hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, key->sk_collation, value));
 
@@ -687,8 +679,10 @@ brin_bloom_preprocess(PG_FUNCTION_ARGS)
 						  elmlen, elmbyval, elmalign,
 						  &elem_values, &elem_nulls, &num_elems);
 
-		cache->h1 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
-		cache->h2 = (uint64 *) palloc0(sizeof(uint64) * num_elems);
+		cache->h1 = (uint64 *) MemoryContextAlloc(bdesc->bd_keycache_cxt,
+												  sizeof(uint64) * num_elems);
+		cache->h2 = (uint64 *) MemoryContextAlloc(bdesc->bd_keycache_cxt,
+												  sizeof(uint64) * num_elems);
 
 		for (int i = 0; i < num_elems; i++)
 		{
@@ -711,19 +705,7 @@ brin_bloom_preprocess(PG_FUNCTION_ARGS)
 		pfree(elem_nulls);
 	}
 
-	/* Construct the new scan key, with the array of hashes in HashCache. */
-	newkey = palloc0(sizeof(ScanKeyData));
-
-	ScanKeyEntryInitializeWithInfo(newkey,
-								   (key->sk_flags | SK_BRIN_HASHES),
-								   key->sk_attno,
-								   key->sk_strategy,
-								   key->sk_subtype,
-								   key->sk_collation,
-								   &key->sk_func,
-								   PointerGetDatum(cache));
-
-	PG_RETURN_POINTER(newkey);
+	return cache;
 }
 
 /*
@@ -784,9 +766,21 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 				 */
 				finfo = bloom_get_procinfo(bdesc, attno, PROCNUM_HASH);
 
-				if (key->sk_flags & SK_BRIN_HASHES)		/* preprocessed keys */
+				if (key->sk_flags & SK_SEARCHARRAY)		/* preprocessed keys */
 				{
-					HashCache  *cache = (HashCache *) value;
+					bool		found;
+					HashCache  *cache;
+
+					cache = (HashCache *) brin_key_cache_lookup(bdesc, key, &found);
+
+					/* cached representation of array does not exist, build it now */
+					if (!found)
+					{
+						BloomOptions *opts = (BloomOptions *) PG_GET_OPCLASS_OPTIONS();
+
+						cache = brin_bloom_preprocess_array(bdesc, opts, key);
+						brin_key_cache_store(bdesc, key, PointerGetDatum(cache));
+					}
 
 					/* assume no match */
 					matches = false;
@@ -812,48 +806,10 @@ brin_bloom_consistent(PG_FUNCTION_ARGS)
 						}
 					}
 				}
-				else if (key->sk_flags & SK_SEARCHARRAY)	/* array without preprocessing */
-				{
-					ArrayType  *arrayval;
-					int16		elmlen;
-					bool		elmbyval;
-					char		elmalign;
-					int			num_elems;
-					Datum	   *elem_values;
-					bool	   *elem_nulls;
-					bool		match = false;
-
-					/* deconstruct the array */
-					arrayval = DatumGetArrayTypeP(value);
-
-					get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-										 &elmlen, &elmbyval, &elmalign);
-
-					deconstruct_array(arrayval,
-									  ARR_ELEMTYPE(arrayval),
-									  elmlen, elmbyval, elmalign,
-									  &elem_values, &elem_nulls, &num_elems);
-
-					/* we'll skip NULL elements */
-					for (int i = 0; i < num_elems; i++)
-					{
-						/* skip NULL elements */
-						if (elem_nulls[i])
-							continue;
-
-						hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, elem_values[i]));
-						match = bloom_contains_value(filter, hashValue);
-
-						/* did we find a match in the array? */
-						if (match)
-							break;
-					}
-
-					matches &= match;
-
-				}
 				else	/* scalar value without preprocessing */
 				{
+					/* XXX we've actually preprocessed even scalar keys, so we could
+					 * use it here */
 					hashValue = DatumGetUInt32(FunctionCall1Coll(finfo, colloid, value));
 					matches &= bloom_contains_value(filter, hashValue);
 				}

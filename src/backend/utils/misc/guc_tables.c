@@ -1037,6 +1037,16 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_starjoin_join_search", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables simplified join order planning for starjoins."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_starjoin_join_search,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "

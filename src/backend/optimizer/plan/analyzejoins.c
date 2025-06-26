@@ -51,6 +51,7 @@ typedef struct
 } SelfJoinCandidate;
 
 bool		enable_self_join_elimination;
+bool		enable_starjoin_join_search;
 
 /* local functions */
 static bool join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo);
@@ -2511,4 +2512,234 @@ remove_useless_self_joins(PlannerInfo *root, List *joinlist)
 	}
 
 	return joinlist;
+}
+
+/*
+ * XXX do we need to worry about inner/outer?
+ *
+ * XXX Do we need to worry about semi/anti? get_foreign_key_join_selectivity
+ * does care about it, and ignores those cases. Maybe we should too?
+ *
+ * XXX Unfortunately this happens too early, before a lot of the information
+ * used by get_foreign_key_join_selectivity is available. In particular, we
+ * don't have restrictinfos matched to the foreign keys, EC join quals
+ * distributed (this does not happen until standard_join_search, at least
+ * in some cases), rel->joininfo, etc. So this forces us to do a lot of
+ * checks on the raw parsed nodes :-(
+ *
+ * XXX Maybe the right solution would be to do this still on the jointree,
+ * somewhere towards the end of query_planner (instead of right at the
+ * beginning, in deconstruct_jointree).
+ */
+static bool
+starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
+{
+	ListCell   *lc;
+
+	/* Consider each FK constraint that is known to match the query */
+	foreach(lc, root->fkey_list)
+	{
+		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+		int			nmatches = 0;
+
+		/* rel is not the referenced table of the FK */
+		if (fkinfo->ref_relid != rel->relid)
+			continue;
+
+		/* Do we have a match for each key of the FK? */
+		/*
+		 * XXX get_foreign_key_join_selectivity checks EquivalenceClasses,
+		 * we should probably do that too.
+		 *
+		 * XXX We should check that all the clauses have the same relation
+		 * on the other side (for multi-column keys). And that there are
+		 * no other join clauses other than those matching the FK.
+		 */
+		for (int i = 0; i < fkinfo->nkeys; i++)
+		{
+			bool		has_matching_clause = false;
+
+			/*
+			 * Is there a clause matching this FK key?
+			 * 
+			 * XXX We need to make sure it's a valid match, e.g. that the
+			 * same referencing table matches all keys in a composite FK,
+			 * and so on.
+			 *
+			 * XXX Do we need to check some relationship to other rels in
+			 * the same jointree item? E.g. the referencing table should
+			 * not be a dimensions we already removed.
+			 *
+			 * XXX There should not be extra join clauses.
+			 *
+			 * XXX Probably need to do more thorough check of the rinfo/EC.
+			 */
+			if ((fkinfo->rinfos[i] != NULL) || (fkinfo->eclass[i] != NULL))
+			{
+				has_matching_clause = true;
+				nmatches++;
+				continue;
+			}
+
+			/* found a FK key without a matching join clause, ignore the FK */
+			if (has_matching_clause)
+				break;
+		}
+
+		/* matched all FK keys */
+		if (nmatches == fkinfo->nkeys)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+/*
+ * XXX maybe should get RelOptInfo, instead of RangeTblRef?
+ */
+static bool
+starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
+{
+	Index			rti = rtr->rtindex;
+	RangeTblEntry  *rte = root->simple_rte_array[rti];
+	RelOptInfo	   *rel = root->simple_rel_array[rti];
+
+	/* XXX hack for PoC - tables named "dim#" are considered dimensions */
+	if (!strncmp(rte->eref->aliasname, "dim", 3) == 0)
+		return false;
+
+	/* only plain relations can be dimensions (we need FK/PK join) */
+	/* XXX should instead check reloptkind != RELOPT_BASEREL ? */
+	if (rte->rtekind != RTE_RELATION)
+		return false;
+
+	/*
+	 * Does it have any conditions/restrictions that may affect the number
+	 * of rows matched? If yes, don't treat as dimension.
+	 *
+	 * Dimensions in a starjoin may have restrictions, but that means it'll
+	 * change cardinality of the joins (reduce it), so it may be better to
+	 * join it early. We leave it to the regular join order planning. The
+	 * expectation is that most dimensions won't have extra restrictions.
+	 *
+	 * XXX Should we check some other fields, like lateral references, and
+	 * so on? Or is that unnecessary? What about eclasses?
+	 */
+	if (rel->baserestrictinfo != NIL)
+		return false;
+
+	/*
+	 * Inspect the clauses in joininfo. A dimension should match only to
+	 * a single relation, and it should match a FK/PK (the dimension should
+	 * be on the PK side).
+	 *
+	 * XXX loosely inspired by get_foreign_key_join_selectivity()
+	 */
+	if (!starjoin_match_to_foreign_key(root, rel))
+		return false;
+
+	/*
+	 * does it have join clause that doesn't match FK/PK? not a dimension
+	 *
+	 * XXX Check there are no other join clauses, beyond those matching the
+	 * foreign key. But how to do that? I'm not sure we have the joininfo
+	 * at this point already? Some stuff gets build only dunring the join
+	 * order search later.
+	 *
+	 * XXX But match_foreign_keys_to_quals() probably needs to be aware of
+	 * all this, so how does it do that?
+	 */
+
+	/*
+	 * FIXME This should probably also call have_relevant_joinclause and
+	 * have_join_order_restriction, to ensure the join order is OK. Or is
+	 * that unnecessary?
+	 */
+
+	return true;
+}
+
+/*
+ * Recursively walk the join tree (represented as nested lists), and consider
+ * splitting the lists to join "dimensions" one by one (to save on the join
+ * order search, which is very expensive for starjoins, which have no clauses
+ * between the dimensions, and thus explores a huge number of orders).
+ */
+List *
+starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
+{
+	ListCell *lc;
+	List *newlist = NIL;
+	List *dimensions = NIL;
+
+	/* Do nothing if starjoin optimzation not enabled, or not applicable. */
+	if (!enable_starjoin_join_search || joinlist == NIL ||
+		(list_length(joinlist) == 1 && !IsA(linitial(joinlist), List)))
+		return joinlist;
+
+	/*
+	 * It seems we might skip this for lists with <= 2 items, but that's not
+	 * the case - we need to descend into the items, which may be long lists
+	 * themselves.
+	 */
+
+	/*
+	 * XXX could we do without constructing a new list if there are no
+	 * dimensions? Or maybe we could modify the list instead (delete cells
+	 * from it, etc.)?
+	 */
+	foreach (lc, joinlist)
+	{
+		Node *item = (Node *) lfirst(lc);
+
+		/* a list needs to be processed recursively */
+		if (IsA(item, List))
+		{
+			newlist = lappend(newlist,
+							  starjoin_adjust_joins(root, (List *) item));
+			continue;
+		}
+
+		/* can this be not true? remove_self_joins_recurse thinks so ... */
+		if (!IsA(item, RangeTblRef))
+		{
+			newlist = lappend(newlist, item);
+			continue;
+		}
+
+		/*
+		 * A single entry, check if it's a dimension - if yes, leave it
+		 * for later, otherwise add it to the new list right away.
+		 */
+
+		/*
+		 * Is this a dimension? It has to be a plain relation, and it has
+		 * to be joined through a clause matching a PK/FK, etc.
+		 *
+		 * XXX We should do this recursively, i.e. allow dimensions to
+		 * reference other dimensions, as in a snowflake schemas.
+		 */
+		if (starjoin_is_dimension(root, (RangeTblRef *) item))
+		{
+			dimensions = lappend(dimensions, item);
+			continue;
+		}
+
+		/* not a dimension, add it to the list directly */
+		newlist = lappend(newlist, item);
+	}
+
+	/* if we found some dimensions, add them to the join tree one by one */
+	if (dimensions != NIL)
+	{
+		foreach (lc, dimensions)
+		{
+			newlist = list_make2(newlist, list_make1(lfirst(lc)));
+		}
+	}
+
+	return newlist;
 }

@@ -283,6 +283,16 @@ query_planner(PlannerInfo *root,
 	distribute_row_identity_vars(root);
 
 	/*
+	 * Try to simplify the join search problem for starjoin-like joins, with
+	 * joins over FK relationships. The dimensions can be joined in almost
+	 * any order, so the join search can be close to factorial complexity.
+	 * But there's not much difference between such join orders, so we just
+	 * leave the dimensions at the end of each group (as determined by the
+	 * join_collapse_limit earlier).
+	 */
+	joinlist = starjoin_adjust_joins(root, joinlist);
+
+	/*
 	 * Ready to do the primary planning.
 	 */
 	final_rel = make_one_rel(root, joinlist);

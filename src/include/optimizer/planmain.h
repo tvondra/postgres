@@ -120,6 +120,7 @@ extern bool innerrel_is_unique_ext(PlannerInfo *root, Relids joinrelids,
 								   JoinType jointype, List *restrictlist,
 								   bool force_cache, List **extra_clauses);
 extern List *remove_useless_self_joins(PlannerInfo *root, List *joinlist);
+extern List *starjoin_adjust_joins(PlannerInfo *root, List *joinlist);
 
 /*
  * prototypes for plan/setrefs.c

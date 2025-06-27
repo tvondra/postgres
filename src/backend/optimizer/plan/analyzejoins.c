@@ -2554,6 +2554,13 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 		 * XXX We should check that all the clauses have the same relation
 		 * on the other side (for multi-column keys). And that there are
 		 * no other join clauses other than those matching the FK.
+		 *
+		 * XXX Do we need to check that the FK side of the join (i.e. the fact
+		 * table) has the columns referenced as NOT NULL? Otherwise we could
+		 * have a FK join that reduces the cardinality, but that was one of
+		 * the reasons we think moving the join is fine (that it doesn't
+		 * change the size). Although, if the join is LEFT JOIN, this should
+		 * not matter - but do we get here with LEFT JOINs?
 		 */
 		for (int i = 0; i < fkinfo->nkeys; i++)
 		{

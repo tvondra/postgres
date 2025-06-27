@@ -34,13 +34,13 @@ CkptSortItem *CkptBufferIds;
 
 
 static Size get_memory_page_size(void);
-static int choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes);
+static int64 choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes);
 static void pg_numa_interleave_memory(char *startptr, char *endptr,
 									  Size mem_page_size, Size chunk_size,
 									  int num_nodes);
 
 /* number of buffers allocated on the same NUMA node */
-static int numa_chunk_buffers = -1;
+static int64 numa_chunk_buffers = -1;
 
 /* number of NUMA nodes (as returned by numa_num_configured_nodes) */
 static int numa_nodes = -1;
@@ -227,7 +227,7 @@ BufferManagerShmemInit(void)
 			numa_chunk_buffers
 				= choose_chunk_buffers(NBuffers, mem_page_size, numa_nodes);
 
-			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_buffers %d",
+			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_buffers %ld",
 				 numa_nodes, numa_chunk_buffers);
 
 			/* first map buffers */
@@ -399,11 +399,11 @@ BufferManagerShmemSize(void)
  *
  * We simply print a warning about the misbalance, and that's it.
  */
-static int
+static int64
 choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
 {
-	int	num_items;
-	int	max_items;
+	int64	num_items;
+	int64	max_items;
 
 	/* make sure the chunks will align nicely */
 	Assert(BLCKSZ % sizeof(BufferDescPadded) == 0);
@@ -434,7 +434,7 @@ choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
 	 * the last node get less than one whole chunk (or no memory at all)?
 	 */
 	if (num_items > max_items)
-		elog(WARNING, "choose_chunk_buffers: chunk items exceeds max (%d > %d)",
+		elog(WARNING, "choose_chunk_buffers: chunk items exceeds max (%ld > %ld)",
 			 num_items, max_items);
 
 	/* grow the chunk size until we hit the max limit. */

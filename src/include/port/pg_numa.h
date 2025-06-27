@@ -29,7 +29,7 @@ extern PGDLLIMPORT int pg_numa_get_max_node(void);
 
 #else
 
-#define pg_numa_touch_mem_if_required(ro_volatile_var, ptr) \
+#define pg_numa_touch_mem_if_required(ptr) \
 	do {} while(0)
 
 #endif

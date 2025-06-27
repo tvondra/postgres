@@ -29,6 +29,19 @@
 #include <numa.h>
 #include <numaif.h>
 
+/*
+ * numa_move_pages() batch size, has to be <= 16 to work around a kernel bug
+ * in do_pages_stat() (chunked by DO_PAGES_STAT_CHUNK_NR). By using the same
+ * batch size, we make it work even on unfixed kernels.
+ *
+ * 64-bit system are not affected by the bug, and so use much larger batches.
+ */
+#if SIZEOF_SIZE_T == 4
+#define NUMA_QUERY_BATCH_SIZE 16
+#else
+#define NUMA_QUERY_BATCH_SIZE 1024
+#endif
+
 /* libnuma requires initialization as per numa(3) on Linux */
 int
 pg_numa_init(void)
@@ -46,7 +59,37 @@ pg_numa_init(void)
 int
 pg_numa_query_pages(int pid, unsigned long count, void **pages, int *status)
 {
-	return numa_move_pages(pid, count, pages, NULL, status, 0);
+	unsigned long	next = 0;
+	int				ret = 0;
+
+	/*
+	 * Batch pointers passed to numa_move_pages to NUMA_QUERY_BATCH_SIZE
+	 * items, to work around a kernel bug in do_pages_stat().
+	 */
+	while (next < count)
+	{
+		unsigned long count_batch = Min(count - next,
+										NUMA_QUERY_BATCH_SIZE);
+
+		/*
+		 * Bail out if any of the batches errors out (ret<0). We ignore
+		 * (ret>0) which is used to return number of nonmigrated pages,
+		 * but we're not migrating any pages here.
+		 */
+		ret = numa_move_pages(pid, count_batch, &pages[next], NULL, &status[next], 0);
+		if (ret < 0)
+		{
+			/* plain error, return as is */
+			return ret;
+		}
+
+		next += count_batch;
+	}
+
+	/* should have consumed the input array exactly */
+	Assert(next == count);
+
+	return 0;
 }
 
 int

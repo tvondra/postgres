@@ -2606,6 +2606,13 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 
 /*
  * XXX maybe should get RelOptInfo, instead of RangeTblRef?
+ *
+ * XXX Could we consider even cases where the dimentions that reduce the
+ * join cardinality, e.g. because there's a where clause on it, or because
+ * it's an INNER join and some of the fact-table rows have NULL? We could
+ * use a simple heuristics of ordering them by the selectivity? So that
+ * we start from the most selective ones (to reduce the join cardinality
+ * sooner)? Not sure how beneficial this would be, though.
  */
 static bool
 starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)

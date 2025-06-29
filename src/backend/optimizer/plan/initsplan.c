@@ -30,7 +30,6 @@
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
 #include "parser/analyze.h"
-#include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -3874,5 +3873,3 @@ check_memoizable(RestrictInfo *restrictinfo)
 	if (OidIsValid(typentry->hash_proc) && OidIsValid(typentry->eq_opr))
 		restrictinfo->right_hasheqoperator = typentry->eq_opr;
 }
-
-

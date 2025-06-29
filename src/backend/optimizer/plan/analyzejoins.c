@@ -2578,7 +2578,7 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 
 			/*
 			 * Is there a clause matching this FK key?
-			 * 
+			 *
 			 * XXX We need to make sure it's a valid match, e.g. that the
 			 * same referencing table matches all keys in a composite FK,
 			 * and so on.

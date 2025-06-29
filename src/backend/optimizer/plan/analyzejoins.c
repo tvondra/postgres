@@ -2515,21 +2515,27 @@ remove_useless_self_joins(PlannerInfo *root, List *joinlist)
 }
 
 /*
- * XXX do we need to worry about inner/outer?
+ * starjoin_match_to_foreign_key
+ *		Try to match a join to a FK constraint.
  *
- * XXX Do we need to worry about semi/anti? get_foreign_key_join_selectivity
- * does care about it, and ignores those cases. Maybe we should too?
+ * For a relation to be a dimension (for the starjoin heuristics), it needs
+ * to be joined through a FK constraint. The dimension is expected to be
+ * on the PK side of the join. The relation must not have any additional
+ * join clauses, beyond those matching the foreign key.
  *
- * XXX Unfortunately this happens too early, before a lot of the information
- * used by get_foreign_key_join_selectivity is available. In particular, we
- * don't have restrictinfos matched to the foreign keys, EC join quals
- * distributed (this does not happen until standard_join_search, at least
- * in some cases), rel->joininfo, etc. So this forces us to do a lot of
- * checks on the raw parsed nodes :-(
+ * We already have a list of relevant foreign keys, and we use that info
+ * for selectivity estimation in get_foreign_key_join_selectivity(). And
+ * we're actually doing something quite similar here.
  *
- * XXX Maybe the right solution would be to do this still on the jointree,
- * somewhere towards the end of query_planner (instead of right at the
- * beginning, in deconstruct_jointree).
+ * XXX Do we need to worry about the join type, e.g. inner/outer joins,
+ * semi/anti? get_foreign_key_join_selectivity() does care about it, and
+ * ignores some of those cases. Maybe we should too?
+ *
+ * XXX Check there are no other join clauses, beyond those matching the
+ * foreign key. But do we already have the joininfo at this point? Some
+ * of this stuff gets build only during the join order search later.
+ * The match_foreign_keys_to_quals() probably needs to be aware of all
+ * this, so how does it do that?
  */
 static bool
 starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
@@ -2546,10 +2552,11 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 		if (fkinfo->ref_relid != rel->relid)
 			continue;
 
-		/* Do we have a match for each key of the FK? */
 		/*
+		 * Do we have a match for each key of the FK?
+		 *
 		 * XXX get_foreign_key_join_selectivity checks EquivalenceClasses,
-		 * we should probably do that too.
+		 * we should probably (definitely) do that here too.
 		 *
 		 * XXX We should check that all the clauses have the same relation
 		 * on the other side (for multi-column keys). And that there are
@@ -2557,10 +2564,13 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 		 *
 		 * XXX Do we need to check that the FK side of the join (i.e. the fact
 		 * table) has the columns referenced as NOT NULL? Otherwise we could
-		 * have a FK join that reduces the cardinality, but that was one of
-		 * the reasons we think moving the join is fine (that it doesn't
-		 * change the size). Although, if the join is LEFT JOIN, this should
-		 * not matter - but do we get here with LEFT JOINs?
+		 * have a FK join that reduces the cardinality, which is one of
+		 * the arguments why it's fine to move the join (that it doesn't
+		 * change the cardinality). But if the join is LEFT JOIN, this
+		 * should be fine too - but do we get here with LEFT JOINs?
+		 *
+		 * XXX Do we need to check if the other side of the FK is in the
+		 * current join list? Maybe it's in some later one?
 		 */
 		for (int i = 0; i < fkinfo->nkeys; i++)
 		{
@@ -2576,10 +2586,6 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 			 * XXX Do we need to check some relationship to other rels in
 			 * the same jointree item? E.g. the referencing table should
 			 * not be a dimensions we already removed.
-			 *
-			 * XXX There should not be extra join clauses.
-			 *
-			 * XXX Probably need to do more thorough check of the rinfo/EC.
 			 */
 			if ((fkinfo->rinfos[i] != NULL) || (fkinfo->eclass[i] != NULL))
 			{
@@ -2605,14 +2611,81 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 
 
 /*
- * XXX maybe should get RelOptInfo, instead of RangeTblRef?
+ * starjoin_is_dimension
+ *		Determine if a range table entry is a dimension in a starjoin.
  *
- * XXX Could we consider even cases where the dimentions that reduce the
- * join cardinality, e.g. because there's a where clause on it, or because
- * it's an INNER join and some of the fact-table rows have NULL? We could
- * use a simple heuristics of ordering them by the selectivity? So that
- * we start from the most selective ones (to reduce the join cardinality
- * sooner)? Not sure how beneficial this would be, though.
+ * To be considered a dimension for the simplified join order search, the
+ * join must not affect the cardinality of the join. We ensure that by
+ * requiring a couple things:
+ *
+ * 1) the join clause has to match a FK (that is, the fact does have at
+ *    most one matching row in the dimension)
+ *
+ * 2) the FK side (the fact table) should be marked as NOT NULL, so that
+ *    we know there's exactly one dimension row for each fact table row
+ *
+ * 3) there must be no additional restrictions on the relation (that
+ *    might eliminate some of the rows, reducing the cardinality)
+ *
+ * XXX The Implementation is incomplete. It probably needs more thought,
+ * considering some join types would allow relaxing some of the checks
+ * (e.g. outer joins may not require checking (2) or possibly even (3),
+ * depending on where the condition is, what varnullingrels it has).
+ *
+ * XXX I wonder if we could handle (3) by ordering the dimensions by the
+ * selectivity of the restriction. There are no join clauses between the
+ * dimensions (ignoring the snowflake joins, but even there the clauses
+ * don't go between branches), so the selectivity could be treated as
+ * a measure of how much it shrinks the join result. So we could just
+ * sort the dimensions by this, starting with the lowest selectivity
+ * (close to 0.0), and ending with dimensions without restrictions (in
+ * which case the selectivity is 1.0).
+ *
+ * XXX If the join in INNER, and the fact side has NULL values in the
+ * join key, we might consider nullfrac as restriction.
+ *
+ * XXX I'm not sure how careful this needs to be about join order
+ * restrictions. Maybe it should call have_relevant_joinclause and
+ * have_join_order_restriction, to ensure the join order is OK?
+ *
+ * The optimizer/README is not very clear about this, but maybe it's
+ * a too specific question. It seems to say the relations in those
+ * lists can be joined in any order (lines 94 and 106). Maybe that's
+ * not what it means, or I'm misunderstanding it.
+ *
+ * It however seems has_join_restrictions() in join_search_one_level()
+ * forces the code to look only at "earlier" rels in the list
+ *
+ *     first_rel = foreach_current_index(r) + 1
+ *
+ * So maybe we just need to stop once we find a rel with a restriction,
+ * as determined byhas_join_restrictions()?
+ *
+ * But there's also join_is_legal() to check legality of joins, with
+ * LEFT/RIGHT joins, and IN/EXISTS clauses. See README line 188. And it
+ * also looks-up the SpecialJoinInfo for the join. So maybe we should
+ * lookup RelOptInfo for both sides of the join, and call join_is_legal
+ * on that? Might be too expensive, though. Maybe do that only when
+ * has_join_restrictions already says yes?
+ *
+ * Maybe we should use has_join_restrictions(), but in a  different way.
+ * We could still treat rels with restrictions as dimensions, and move
+ * that to the separate list (that doesn't change the join order), but
+ * stop once we hit the first non-dimension with a restriction? Because
+ * if any relation after that was a dimention, we wouldn't be able to
+ * move it to the separate list. It'd change the join order in a way
+ * that might violate the restriction. I believe that's the idea behind
+ * first_rel in join_search_one_level(), but maybe not.
+ *
+ * Perhaps have_join_order_restriction and have_relevant_joinclause are
+ * useful for this, rather than has_join_restrictions? We might look at
+ * actual pairs of relations, and/or check there's no join order
+ * restriction with respect to the relations we skipped/moved to the
+ * list of dimension?
+ *
+ * AFAICS it's just the skipping that can break the order restrictions?
+ * Adding something to the list of dimensions keeps the order (at least
+ * with respect to the rels after it).
  */
 static bool
 starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
@@ -2621,13 +2694,9 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	RangeTblEntry  *rte = root->simple_rte_array[rti];
 	RelOptInfo	   *rel = root->simple_rel_array[rti];
 
-	/* XXX hack for PoC - tables named "dim#" are considered dimensions */
-	if (!strncmp(rte->eref->aliasname, "dim", 3) == 0)
-		return false;
-
 	/* only plain relations can be dimensions (we need FK/PK join) */
-	/* XXX should instead check reloptkind != RELOPT_BASEREL ? */
-	if (rte->rtekind != RTE_RELATION)
+	if ((rte->rtekind != RTE_RELATION) ||
+		(rel->reloptkind != RELOPT_BASEREL))
 		return false;
 
 	/*
@@ -2646,9 +2715,9 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 		return false;
 
 	/*
-	 * Inspect the clauses in joininfo. A dimension should match only to
-	 * a single relation, and it should match a FK/PK (the dimension should
-	 * be on the PK side).
+	 * See if the join clause matches a foreign key. It should match a
+	 * single relation on the other side, and the dimension should be on
+	 * the PK side.
 	 *
 	 * XXX loosely inspired by get_foreign_key_join_selectivity()
 	 */
@@ -2656,68 +2725,98 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 		return false;
 
 	/*
-	 * does it have join clause that doesn't match FK/PK? not a dimension
-	 *
-	 * XXX Check there are no other join clauses, beyond those matching the
-	 * foreign key. But how to do that? I'm not sure we have the joininfo
-	 * at this point already? Some stuff gets build only dunring the join
-	 * order search later.
-	 *
-	 * XXX But match_foreign_keys_to_quals() probably needs to be aware of
-	 * all this, so how does it do that?
-	 */
-
-	/*
-	 * FIXME This should probably also call have_relevant_joinclause and
-	 * have_join_order_restriction, to ensure the join order is OK. Or is
-	 * that unnecessary?
-	 *
-	 * XXX Actually, probably not, because join_search_one_level only calls
-	 * this on joinrels, and we're necessarily dealing with baserels. Also,
-	 * the optimizer/README says the relations in those can be joined in
-	 * any order (lines 94 and 106). However, maybe this is not the case,
-	 * the joinrels are simply a name for different "levels" of the join,
-	 * and joinrels[1] is a list of the base rels.
-	 *
-	 * XXX But it seems has_join_restrictions causes us to look only at
-	 * earlier rels, per "first_rel = foreach_current_index(r) + 1;" in
-	 * join_search_one_level. So maybe we just need to stop one we find
-	 * a rel with has_join_restrictions()? Does it work for all levels?
-	 *
-	 * XXX There's also join_is_legal to check legality of joins, with
-	 * LEFT/RIGHT joins, and IN/EXISTS clauses. See README line 188.
-	 *
-	 * XXX join_is_legal also looks-up the SpecialJoinInfo for the join.
-	 * Can we simply lookup RelOptInfo for the two sides of the join, and
-	 * call join_is_legal on it? Likely expensive. Maybe do that only
-	 * when has_join_restrictions says yes? Otherwise not needed.
-	 *
-	 * XXX Although, maybe we need to consider has_join_restrictions, but
-	 * in a slightly different way - we can treat rels with restrictions
-	 * as dimensions, but once we hit any non-dimension with a restriction
-	 * we have to stop. The reason is that if any relation after that was
-	 * a dimention, it'd change the join order in a way that might break
-	 * the join order restriction. I believe that's the idea behind
-	 * first_rel in join_search_one_level().
-	 *
-	 * XXX Maybe have_join_order_restriction/have_relevant_joinclause are
-	 * useful for this, rather than has_join_restrictions? We might look
-	 * at actual pairs of relations? Maybe we should check that there is
-	 * no join order with respect to relations that we skipped?
-	 *
-	 * XXX AFAIK it's just the skipping that can break the order? Adding
-	 * something to the list of dimensions keeps the order with respect
-	 * to the rels after it.
+	 * XXX Maybe some additional checks here ...
 	 */
 
 	return true;
 }
 
 /*
- * Recursively walk the join tree (represented as nested lists), and consider
- * splitting the lists to join "dimensions" one by one (to save on the join
- * order search, which is very expensive for starjoins, which have no clauses
- * between the dimensions, and thus explores a huge number of orders).
+ * starjoin_adjust_joins
+ *		Adjust the jointree for starjoins, to simplify the join order search.
+ *
+ * The join search for starjoin queries is surprisingly expensive, because
+ * there are very few join order restrictions. Consider a starjoin query
+ *
+ *  SELECT * FROM f
+ *     JOIN d1 ON (f.id1 = d1.id)
+ *     JOIN d2 ON (f.id2 = d2.id)
+ *     ...
+ *     JOIN d9 ON (f.id9 = d9.id)
+ *
+ * There are no clauses between the dimension tables (d#), which means those
+ * tables can be joined in almost arbitrary order. This means the standard
+ * join_order_search() would explore a N! possible join orders. It is not
+ * that bad in practice, because we split the problem by from_collapse_limit
+ * into a sequence of smaller problems, but even for the default limit of
+ * 8 relations it's quite expensive. This can be easily demonstrated by
+ * setting from_collapse_limit=1 for example starjoin queries.
+ *
+ * The idea here is to apply a much simpler join order search for this type
+ * of queries, without too much risk of picking a much worse plans. It is
+ * however a trade off between how expensive we allow this to be, and how
+ * good the decisions will be. This can help only starjoins with multiple
+ * dimension tables, and we don't want to harm planning of other queries,
+ * so the basic "query shape" detection needs to be very cheap. And then
+ * it needs to be cheaper than the regular join order search.
+ *
+ * If a perfect check is impossible or too expensive, it's better to end
+ * up with a cheap false negative (i.e. and not use the optimization),
+ * rather than risk regressions in other cases.
+ *
+ * The simplified join order search relies on the fact that if the joins
+ * to dimensions do not alter the cardinality of the join relation, then
+ * the relative order of those joins does not matter. All the possible
+ * orders are guaranteed to perform the same. So we can simply pick one
+ * of those orders, and "hardcode" it in the join tree later passed to the
+ * join_order_search().
+ *
+ * The query may involve joins to additional (non-dimension) tables, and
+ * those may alter cardinality. Some joins may increase it, other joins
+ * may decrease it. In principle, it'd be best to first perform all the
+ * joins that reduce join size, then join all the dimensions, and finally
+ * perform joins that may increase the join size. But this is not done
+ * now, currently we simply apply all the dimensions at the end, hoping
+ * that the earlier joins did not inflate the join too much.
+ *
+ * The definition of a dimension is a bit vague. For our definition see
+ * the comment at starjoin_is_dimension().
+ *
+ * The optimization works by manipulating the joinlist (originally built
+ * by deconstruct_jointree), which decomposed the original jointree into
+ * smaller "problems" depending on join type and join_collapse_limit. We
+ * inspect those smaller lists, and selectively split them into smaller
+ * problems to force a join order. This may effectively undo some of the
+ * merging done by deconstruct_jointree(), which tries to build problems
+ * with up to join_collapse_limit relations.
+ *
+ * For example, imagine a join problem with 8 rels - one fact table and
+ * then 7 dimensions, which we can represent a joinlist with 8 elements.
+ *
+ * (D7, D6, D5, D4, D3, D2, D1, F)
+ *
+ * Assuming all those joins meet the requirements (have a matching FK,
+ * don't affect the join cardinality, ...), then we can split this into
+ *
+ * (D7, (D6, (D5, (D4, (D3, (D2, (D1, F)))))))
+ *
+ * which is a nested joinlist, with only two elements on each level. That
+ * means there's no need for expensive join order search, there's only
+ * one way to join the relations (two, if we consider the relations may
+ * switch sides).
+ *
+ * The joinlist may already be nested, with multiple smaller subproblems.
+ * We look at each individual join problem independently, i.e. we don't
+ * try to merge problems to build join_collapse_limit problems again.
+ * This is partially to keep it cheap/simple, but also so not change
+ * behavior for cases when people use join_collapse_limit to force some
+ * particular join shape.
+ *
+ * XXX A possible improvement is to allow handling snowflake joins, i.e.
+ * recursive dimensions. That would require a somewhat more complicated
+ * processing, because a dimension would be allowed other rels, as long
+ * as those are dimensions too. And we'd need to be more careful about
+ * the order in which join them to the top of the join.
  */
 List *
 starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
@@ -2726,27 +2825,43 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	List *newlist = NIL;
 	List *dimensions = NIL;
 
-	/* Do nothing if starjoin optimzation not enabled, or not applicable. */
+	/*
+	 * Do nothing if starjoin optimization not enabled / not applicable.
+	 *
+	 * XXX It might seems we can skip this for lists with <= 2 items, but
+	 * that does not work, the elements may be nested list, and we need to
+	 * descend into those. So do what remove_useless_self_joins() does, and
+	 * only bail out for the simplest single-relation case (i.e. no joins).
+	 */
 	if (!enable_starjoin_join_search || joinlist == NIL ||
 		(list_length(joinlist) == 1 && !IsA(linitial(joinlist), List)))
 		return joinlist;
 
 	/*
-	 * It seems we might skip this for lists with <= 2 items, but that's not
-	 * the case - we need to descend into the items, which may be long lists
-	 * themselves.
-	 */
-
-	/*
-	 * XXX could we do without constructing a new list if there are no
-	 * dimensions? Or maybe we could modify the list instead (delete cells
-	 * from it, etc.)?
+	 * Process the current join problem - split the elements into dimensions
+	 * and non-dimensions. If there are dimensions, add them back at the end,
+	 * as small single-rel joins.
+	 *
+	 * The list may contain various types of elements. It may contain a list,
+	 * which means it's an independent join search problem and we need to
+	 * process it recursively. Or it may be RangeTblRef, in which case we
+	 * need to check if it's a dimension. Other types of elements are just
+	 * added back to the list as-is.
+	 *
+	 * XXX I think we need to be careful to keep the order of the list (for
+	 * the non-dimension entries). The join_search_one_level() relies on
+	 * that when handling join order restrictions.
+	 *
+	 * XXX It might be better to only create a new list if needed, i.e. once
+	 * we find the first dimension. So that non-starjoin queries don't pay
+	 * for something they don't need. A mutable iterator might be a way, but
+	 * I'm not sure how expensive this really is.
 	 */
 	foreach (lc, joinlist)
 	{
 		Node *item = (Node *) lfirst(lc);
 
-		/* a list needs to be processed recursively */
+		/* a separate join search problem, handle it recursively */
 		if (IsA(item, List))
 		{
 			newlist = lappend(newlist,
@@ -2754,7 +2869,10 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 			continue;
 		}
 
-		/* can this be not true? remove_self_joins_recurse thinks so ... */
+		/*
+		 * Non-RangeTblRef elements can't be considered a dimension (only
+		 * baserels can have FK, etc.), so just add those to the list.
+		 */
 		if (!IsA(item, RangeTblRef))
 		{
 			newlist = lappend(newlist, item);
@@ -2762,16 +2880,9 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 		}
 
 		/*
-		 * A single entry, check if it's a dimension - if yes, leave it
-		 * for later, otherwise add it to the new list right away.
-		 */
-
-		/*
-		 * Is this a dimension? It has to be a plain relation, and it has
-		 * to be joined through a clause matching a PK/FK, etc.
-		 *
-		 * XXX We should do this recursively, i.e. allow dimensions to
-		 * reference other dimensions, as in a snowflake schemas.
+		 * An entry representing a baserel. If it's a dimension, save it in
+		 * a separate list, and we'll add it at the "top" of the join at the
+		 * end. Otherwise add it to the list just like other elements.
 		 */
 		if (starjoin_is_dimension(root, (RangeTblRef *) item))
 		{
@@ -2783,13 +2894,18 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 		newlist = lappend(newlist, item);
 	}
 
-	/* if we found some dimensions, add them to the join tree one by one */
-	if (dimensions != NIL)
+	/*
+	 * If we found some dimensions, add them to the join tree one by one.
+	 * The exact order does not matter, so we add them in the order we
+	 * found them in the original list.
+	 *
+	 * We need to add them by creating smaller 2-element lists, with the
+	 * rest of the list on one side and the dimension on the other. This
+	 * is how we force the explicit join order.
+	 */
+	foreach (lc, dimensions)
 	{
-		foreach (lc, dimensions)
-		{
-			newlist = list_make2(newlist, list_make1(lfirst(lc)));
-		}
+		newlist = list_make2(newlist, list_make1(lfirst(lc)));
 	}
 
 	return newlist;

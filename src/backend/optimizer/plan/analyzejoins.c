@@ -2671,6 +2671,43 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 * FIXME This should probably also call have_relevant_joinclause and
 	 * have_join_order_restriction, to ensure the join order is OK. Or is
 	 * that unnecessary?
+	 *
+	 * XXX Actually, probably not, because join_search_one_level only calls
+	 * this on joinrels, and we're necessarily dealing with baserels. Also,
+	 * the optimizer/README says the relations in those can be joined in
+	 * any order (lines 94 and 106). However, maybe this is not the case,
+	 * the joinrels are simply a name for different "levels" of the join,
+	 * and joinrels[1] is a list of the base rels.
+	 *
+	 * XXX But it seems has_join_restrictions causes us to look only at
+	 * earlier rels, per "first_rel = foreach_current_index(r) + 1;" in
+	 * join_search_one_level. So maybe we just need to stop one we find
+	 * a rel with has_join_restrictions()? Does it work for all levels?
+	 *
+	 * XXX There's also join_is_legal to check legality of joins, with
+	 * LEFT/RIGHT joins, and IN/EXISTS clauses. See README line 188.
+	 *
+	 * XXX join_is_legal also looks-up the SpecialJoinInfo for the join.
+	 * Can we simply lookup RelOptInfo for the two sides of the join, and
+	 * call join_is_legal on it? Likely expensive. Maybe do that only
+	 * when has_join_restrictions says yes? Otherwise not needed.
+	 *
+	 * XXX Although, maybe we need to consider has_join_restrictions, but
+	 * in a slightly different way - we can treat rels with restrictions
+	 * as dimensions, but once we hit any non-dimension with a restriction
+	 * we have to stop. The reason is that if any relation after that was
+	 * a dimention, it'd change the join order in a way that might break
+	 * the join order restriction. I believe that's the idea behind
+	 * first_rel in join_search_one_level().
+	 *
+	 * XXX Maybe have_join_order_restriction/have_relevant_joinclause are
+	 * useful for this, rather than has_join_restrictions? We might look
+	 * at actual pairs of relations? Maybe we should check that there is
+	 * no join order with respect to relations that we skipped?
+	 *
+	 * XXX AFAIK it's just the skipping that can break the order? Adding
+	 * something to the list of dimensions keeps the order with respect
+	 * to the rels after it.
 	 */
 
 	return true;

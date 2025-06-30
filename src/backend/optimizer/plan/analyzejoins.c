@@ -2817,6 +2817,33 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
  * processing, because a dimension would be allowed other rels, as long
  * as those are dimensions too. And we'd need to be more careful about
  * the order in which join them to the top of the join.
+ *
+ * XXX One possible risk is that moving the dimension joins at the very
+ * end may move that after joins that increase the cardinality. Which
+ * may cause a regression. Such joins however don't seem very common, at
+ * least in regular starjoin queries. So maybe we could simply check if
+ * there are any such joins and disable this optimization. Is there a
+ * cheap way to identify that a join increases cardinality?
+ *
+ * XXX Ideally, we'd perform the dimension joins at the place with the
+ * lowest cardinality. Imagine a joinlist
+ *
+ * (D1, D2, A, B, F)
+ *
+ * Where A increases join cardinality, while B does not (possibly even
+ * reduces it). Ideally, we'd do the join like this
+ *
+ * (A, (D2, (D1, (B, F))))
+ *
+ * so D1/D2 get joined at the point of "lowest cardinality". We probably
+ * don't want to do all this cardinality estimation work here, it'd copy
+ * what we already do in the join_order_search(). Perhaps we could invent
+ * a "join item" representing a join to all those dimensions, and pass it
+ * to join_order_search()? And let it pick the right place for it? It'd
+ * always join them in the same order, it'd not reorder them. It would
+ * still do the regular cardinality estimations etc. It would be trivial
+ * to disable the optimization if needed - don't collapse the dimensions
+ * into the new type of join item.
  */
 List *
 starjoin_adjust_joins(PlannerInfo *root, List *joinlist)

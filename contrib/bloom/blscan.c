@@ -25,7 +25,7 @@
  * Begin scan of bloom index.
  */
 IndexScanDesc
-blbeginscan(Relation r, int nkeys, int norderbys)
+blbeginscan(Relation r, Relation i, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BloomScanOpaque so;

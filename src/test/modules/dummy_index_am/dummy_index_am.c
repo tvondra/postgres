@@ -243,7 +243,7 @@ divalidate(Oid opclassoid)
  * Begin scan of index AM.
  */
 static IndexScanDesc
-dibeginscan(Relation r, Relation r, int nkeys, int norderbys)
+dibeginscan(Relation r, Relation i, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 

@@ -16,8 +16,10 @@
 
 #include "access/itup.h"
 #include "access/spgist.h"
+#include "access/visibilitymap.h"
 #include "catalog/pg_am_d.h"
 #include "nodes/tidbitmap.h"
+#include "optimizer/cost.h"
 #include "storage/buf.h"
 #include "utils/geo_decls.h"
 #include "utils/relcache.h"
@@ -226,11 +228,17 @@ typedef struct SpGistScanOpaqueData
 	TupleDesc	reconTupDesc;	/* if so, descriptor for reconstructed tuples */
 	int			nPtrs;			/* number of TIDs found on current page */
 	int			iPtr;			/* index for scanning through same */
+	int			sPtr;			/* index for scanning through same (for stream) */
 	ItemPointerData heapPtrs[MaxIndexTuplesPerPage];	/* TIDs from cur page */
 	bool		recheck[MaxIndexTuplesPerPage]; /* their recheck flags */
 	bool		recheckDistances[MaxIndexTuplesPerPage];	/* distance recheck
 															 * flags */
 	HeapTuple	reconTups[MaxIndexTuplesPerPage];	/* reconstructed tuples */
+
+	/* for IOS */
+	bool		allVisible[MaxIndexTuplesPerPage];
+	bool		allVisibleSet[MaxIndexTuplesPerPage];
+	Buffer		vmBuffer;
 
 	/* distances (for recheck) */
 	IndexOrderByDistance *distances[MaxIndexTuplesPerPage];

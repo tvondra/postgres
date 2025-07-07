@@ -325,6 +325,15 @@ hashgettuple(IndexScanDesc scan, ScanDirection dir)
 		res = _hash_next(scan, dir);
 	}
 
+	if (scan->xs_rs)
+	{
+		if (so->currPos.streamIndex != -1)
+		{
+			scan->xs_rs_count++;
+			scan->xs_rs_distance += (so->currPos.streamIndex - so->currPos.itemIndex);
+		}
+	}
+
 	return res;
 }
 
@@ -463,6 +472,9 @@ hashbeginscan(Relation heap, Relation rel, int nkeys, int norderbys)
 												 hash_stream_read_next,
 												 scan,
 												 0);
+
+		scan->xs_rs_count = 0;
+		scan->xs_rs_distance = 0;
 	}
 
 	return scan;

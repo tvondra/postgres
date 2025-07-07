@@ -468,6 +468,9 @@ spgbeginscan(Relation heap, Relation rel, int keysz, int orderbysz)
 												 spg_stream_read_next,
 												 scan,
 												 0);
+
+		scan->xs_rs_count = 0;
+		scan->xs_rs_distance = 0;
 	}
 
 	return scan;
@@ -1198,6 +1201,17 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 													 so->distances[so->iPtr],
 													 so->recheckDistances[so->iPtr]);
 			so->iPtr++;
+
+
+	if (scan->xs_rs)
+	{
+		if (so->sPtr != -1)
+		{
+			scan->xs_rs_count++;
+			scan->xs_rs_distance += abs(so->iPtr - so->sPtr);
+		}
+	}
+
 			return true;
 		}
 

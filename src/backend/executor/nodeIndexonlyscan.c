@@ -156,10 +156,14 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 *
 		 * It's worth going through this complexity to avoid needing to lock
 		 * the VM buffer, which could cause significant contention.
+		 *
+		 * XXX This expects the index AM to set the xs_visible flag. Maybe we
+		 * should not assume that. The subsequent patches do that for all the
+		 * built in AMs, but until that time it's effectively broken - the AMs
+		 * currently do not set xs_visible. Maybe we should only use this if
+		 * the AM uses ReadStream, and call VM_ALL_VISIBLE otherwise?
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
-							ItemPointerGetBlockNumber(tid),
-							&node->ioss_VMBuffer))
+		if (!scandesc->xs_visible)
 		{
 			/*
 			 * Rats, we have to visit the heap to check visibility.

@@ -364,7 +364,7 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	hashbeginscan() -- start a scan on a hash index
  */
 IndexScanDesc
-hashbeginscan(Relation rel, int nkeys, int norderbys)
+hashbeginscan(Relation heap, Relation rel, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	HashScanOpaque so;

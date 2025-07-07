@@ -527,7 +527,7 @@ brininsertcleanup(Relation index, IndexInfo *indexInfo)
  * holding lock on index, it's not necessary to recompute it during brinrescan.
  */
 IndexScanDesc
-brinbeginscan(Relation r, int nkeys, int norderbys)
+brinbeginscan(Relation h, Relation r, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BrinOpaque *opaque;

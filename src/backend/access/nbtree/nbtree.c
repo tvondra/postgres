@@ -309,7 +309,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *	btbeginscan() -- start a scan on a btree index
  */
 IndexScanDesc
-btbeginscan(Relation rel, int nkeys, int norderbys)
+btbeginscan(Relation heap, Relation rel, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BTScanOpaque so;

@@ -22,6 +22,7 @@
 #include "access/hash_xlog.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "commands/progress.h"
@@ -460,12 +461,18 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 
 	scan->opaque = so;
 
-	/* initialize the read stream too */
-	if (enable_indexscan_prefetch && heap)
+	/*
+	 * Initialize the read stream, to opt-in into prefetching.
+	 *
+	 * XXX See comments in btbeginscan().
+	 */
+	if (enable_indexscan_prefetch)
 	{
+		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
+
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 heap,
+												 scan->xs_heap,
 												 MAIN_FORKNUM,
 												 hash_stream_read_next,
 												 scan,
@@ -538,6 +545,8 @@ hashendscan(IndexScanDesc scan)
 	/* terminate read stream */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
+	if (scan->xs_heap)
+		table_close(scan->xs_heap, NoLock);
 }
 
 /*

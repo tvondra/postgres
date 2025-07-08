@@ -21,6 +21,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
+#include "access/table.h"
 #include "access/visibilitymap.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
@@ -475,14 +476,26 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan->opaque = so;
 
 	/*
-	 * Initialize the read stream too - we create a stream if enabled (by GUC),
-	 * and we got the heap (which e.g. bitmap scans will set to NULL).
+	 * Initialize the read stream too, to opt in into prefetching.
+	 *
+	 * XXX We create a stream depending on the GUC. This means we initialize
+	 * the stream even for bitmap scans, which however never use it. If this
+	 * turns out too expensive / undesirable, we'll need a parameter in the
+	 * ambeginscan() callback. Doesn't seem worth it.
+	 *
+	 * XXX We can't call IndexGetRelation(), that'd be infinite loop.
+	 *
+	 * XXX The table has to be already locked by the query, so NoLock. Too
+	 * bad the heapRelation does not get passed here.
 	 */
-	if (enable_indexscan_prefetch && heap)
+	if (enable_indexscan_prefetch)
 	{
+		/* XXX already locked, but got to close this later */
+		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
+
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 heap,
+												 scan->xs_heap,
 												 MAIN_FORKNUM,
 												 bt_stream_read_next,
 												 scan,
@@ -611,9 +624,16 @@ btendscan(IndexScanDesc scan)
 		so->vmBuffer = InvalidBuffer;
 	}
 
-	/* terminate the read stream */
+	/*
+	 * XXX I wonder if maybe the stream stuff (xs_rs/xs_heap) should be
+	 * managed by the indexam.c layer, not by each index AM.
+	 */
+
+	/* terminate the read stream (and close the heap) */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
+	if (scan->xs_heap)
+		table_close(scan->xs_heap, NoLock);
 
 	/* No need to invalidate positions, the RAM is about to be freed. */
 

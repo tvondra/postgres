@@ -86,7 +86,7 @@ heapam_index_fetch_begin(Relation rel, ReadStream *rs)
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
 
-	/* XXX Maybe this should be in IndexFetchHeapData, not in xs_base? */
+	/* XXX Maybe the stream should be in IndexFetchHeapData instead? */
 	hscan->xs_base.rs = rs;
 
 	return &hscan->xs_base;

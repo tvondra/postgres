@@ -18,6 +18,7 @@
 #include "access/genam.h"
 #include "access/relscan.h"
 #include "access/spgist_private.h"
+#include "access/table.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
@@ -458,12 +459,19 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 
 	scan->opaque = so;
 
-	/* initialize the read stream too */
-	if (enable_indexscan_prefetch && heap)
+	/*
+	 * Initialize the read stream to opt-in into prefetching.
+	 *
+	 * XXX See comments in btbeginscan().
+	 */
+	if (enable_indexscan_prefetch)
 	{
+		/* XXX already locked, but got to close this later */
+		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
+
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 heap,
+												 scan->xs_heap,
 												 MAIN_FORKNUM,
 												 spg_stream_read_next,
 												 scan,
@@ -565,6 +573,8 @@ spgendscan(IndexScanDesc scan)
 
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
+	if (scan->xs_heap)
+		table_close(scan->xs_heap, NoLock);
 
 	pfree(so);
 }

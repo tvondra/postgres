@@ -17,6 +17,7 @@
 #include "access/gist_private.h"
 #include "access/gistscan.h"
 #include "access/relscan.h"
+#include "access/table.h"
 #include "optimizer/cost.h"
 #include "utils/float.h"
 #include "utils/lsyscache.h"
@@ -282,13 +283,20 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 
 	MemoryContextSwitchTo(oldCxt);
 
-	/* initialize the read stream too */
-	if (enable_indexscan_prefetch && h)
+	/*
+	 * Initialize the read stream to opt-in into prefetching.
+	 *
+	 * XXX See the comments in btbeginscan().
+	 */
+	if (enable_indexscan_prefetch)
 	{
+		/* XXX already locked, but got to close this later */
+		scan->xs_heap = table_open(r->rd_index->indrelid, NoLock);
+
 		if (scan->numberOfOrderBys == 0)
 			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 													 NULL,
-													 h,
+													 scan->xs_heap,
 													 MAIN_FORKNUM,
 													 gist_stream_read_next,
 													 scan,
@@ -296,7 +304,7 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 		else
 			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 													 NULL,
-													 h,
+													 scan->xs_heap,
 													 MAIN_FORKNUM,
 													 gist_ordered_stream_read_next,
 													 scan,
@@ -555,4 +563,6 @@ gistendscan(IndexScanDesc scan)
 	/* reset stream */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
+	if (scan->xs_heap)
+		table_close(scan->xs_heap, NoLock);
 }

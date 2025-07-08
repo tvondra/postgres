@@ -177,6 +177,7 @@ typedef struct IndexScanDescData
 									 * further results */
 	IndexFetchTableData *xs_heapfetch;
 	ReadStream *xs_rs;			/* read_stream (if supported by the AM) */
+	Relation	xs_heap;		/* heap used by the read_stream */
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 

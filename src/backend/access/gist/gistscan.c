@@ -288,15 +288,12 @@ gistbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 	 *
 	 * XXX See the comments in btbeginscan().
 	 */
-	if (enable_indexscan_prefetch)
+	if (enable_indexscan_prefetch && heap)
 	{
-		/* XXX already locked, but got to close this later */
-		scan->xs_heap = table_open(r->rd_index->indrelid, NoLock);
-
 		if (scan->numberOfOrderBys == 0)
 			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 													 NULL,
-													 scan->xs_heap,
+													 heap,
 													 MAIN_FORKNUM,
 													 gist_stream_read_next,
 													 scan,
@@ -304,7 +301,7 @@ gistbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 		else
 			scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 													 NULL,
-													 scan->xs_heap,
+													 heap,
 													 MAIN_FORKNUM,
 													 gist_ordered_stream_read_next,
 													 scan,
@@ -565,6 +562,4 @@ gistendscan(IndexScanDesc scan)
 	/* reset stream */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
-	if (scan->xs_heap)
-		table_close(scan->xs_heap, NoLock);
 }

@@ -434,10 +434,17 @@ hash_stream_read_next(ReadStream *stream,
 			so->currPos.streamIndex--;
 		}
 
+		/* don't return the same block twice (and remember this one) */
+		if (so->lastBlock == block)
+			block = InvalidBlockNumber;
+
 		/* Did we find a valid block? If yes, we're done. */
 		if (block != InvalidBlockNumber)
 			break;
 	}
+
+	/* remember the block we're returning */
+	so->lastBlock = block;
 
 	return block;
 }
@@ -469,6 +476,9 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 	so->numKilled = 0;
 
 	scan->opaque = so;
+
+	/* nothing returned */
+	so->lastBlock = InvalidBlockNumber;
 
 	/*
 	 * Initialize the read stream, to opt-in into prefetching.
@@ -527,6 +537,7 @@ hashrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	if (scan->xs_rs)
 	{
 		so->currPos.streamIndex = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 	}
 }

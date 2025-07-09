@@ -187,6 +187,9 @@ typedef struct HashScanOpaqueData
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
 
+	/* last block returned by the read_next stream callback */
+	BlockNumber	lastBlock;
+
 	/*
 	 * Identify all the matching items on a page and save them in
 	 * HashScanPosData

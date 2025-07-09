@@ -71,6 +71,7 @@ _hash_next(IndexScanDesc scan, ScanDirection dir)
 		if (scan->xs_rs)
 		{
 			so->currPos.streamIndex = -1;
+			so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 			read_stream_reset(scan->xs_rs);
 		}
 	}
@@ -624,6 +625,7 @@ _hash_readpage(IndexScanDesc scan, Buffer *bufP, ScanDirection dir)
 	if (scan->xs_rs)
 	{
 		so->currPos.streamIndex = - 1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 	}
 

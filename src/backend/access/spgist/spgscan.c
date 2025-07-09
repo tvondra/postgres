@@ -375,10 +375,17 @@ spg_stream_read_next(ReadStream *stream,
 		/* advance to the next item (forward scans only) */
 		so->sPtr++;
 
+		/* don't return the same block twice (and remember this one) */
+		if (so->lastBlock == block)
+			block = InvalidBlockNumber;
+
 		/* Did we find a valid block? If yes, we're done. */
 		if (block != InvalidBlockNumber)
 			break;
 	}
+
+	/* remember the block we're returning */
+	so->lastBlock = block;
 
 	return block;
 }
@@ -456,6 +463,9 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 
 	/* access to VM for IOS scans (in read_next callback) */
 	so->vmBuffer = InvalidBuffer;
+
+	/* nothing returned */
+	so->lastBlock = InvalidBlockNumber;
 
 	scan->opaque = so;
 
@@ -536,6 +546,7 @@ spgrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	if (scan->xs_rs)
 	{
 		so->sPtr = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 	}
 }
@@ -1260,6 +1271,7 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 		if (scan->xs_rs)
 		{
 			so->sPtr = -1;
+			so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 			read_stream_reset(scan->xs_rs);
 		}
 	}

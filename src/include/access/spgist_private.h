@@ -243,6 +243,9 @@ typedef struct SpGistScanOpaqueData
 	/* distances (for recheck) */
 	IndexOrderByDistance *distances[MaxIndexTuplesPerPage];
 
+	/* last block returned by the read_next stream callback */
+	BlockNumber	lastBlock;
+
 	/*
 	 * Note: using MaxIndexTuplesPerPage above is a bit hokey since
 	 * SpGistLeafTuples aren't exactly IndexTuples; however, they are larger,

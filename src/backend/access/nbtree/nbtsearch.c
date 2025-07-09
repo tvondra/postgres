@@ -2057,6 +2057,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	if (scan->xs_rs)
 	{
 		so->currPos.streamIndex = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 	}
 

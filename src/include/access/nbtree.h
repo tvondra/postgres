@@ -1095,6 +1095,9 @@ typedef struct BTScanOpaqueData
 	 */
 	int			markItemIndex;	/* itemIndex, or -1 if not valid */
 
+	/* last block returned by the read_next stream callback */
+	BlockNumber		lastBlock;
+
 	/* keep these last in struct for efficiency */
 	BTScanPosData currPos;		/* current position data */
 	BTScanPosData markPos;		/* marked position, if any */

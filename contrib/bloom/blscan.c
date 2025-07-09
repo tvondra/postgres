@@ -22,12 +22,12 @@
  * Begin scan of bloom index.
  */
 IndexScanDesc
-blbeginscan(Relation r, int nkeys, int norderbys)
+blbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	BloomScanOpaque so;
 
-	scan = RelationGetIndexScan(r, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	so = (BloomScanOpaque) palloc(sizeof(BloomScanOpaqueData));
 	initBloomState(&so->state, scan->indexRelation);

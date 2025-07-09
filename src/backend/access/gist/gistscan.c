@@ -229,14 +229,14 @@ gist_ordered_stream_read_next(ReadStream *stream,
 }
 
 IndexScanDesc
-gistbeginscan(Relation r, int nkeys, int norderbys)
+gistbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	GISTSTATE  *giststate;
 	GISTScanOpaque so;
 	MemoryContext oldCxt;
 
-	scan = RelationGetIndexScan(r, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* First, set up a GISTSTATE with a scan-lifespan memory context */
 	giststate = initGISTstate(scan->indexRelation);

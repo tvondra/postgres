@@ -447,7 +447,7 @@ hash_stream_read_next(ReadStream *stream,
  *	hashbeginscan() -- start a scan on a hash index
  */
 IndexScanDesc
-hashbeginscan(Relation rel, int nkeys, int norderbys)
+hashbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	HashScanOpaque so;
@@ -455,7 +455,7 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 	/* no order by operators allowed */
 	Assert(norderbys == 0);
 
-	scan = RelationGetIndexScan(rel, nkeys, norderbys);
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	so = (HashScanOpaque) palloc(sizeof(HashScanOpaqueData));
 	HashScanPosInvalidate(so->currPos);

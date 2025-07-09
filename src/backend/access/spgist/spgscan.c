@@ -391,13 +391,13 @@ spg_stream_read_next(ReadStream *stream,
 }
 
 IndexScanDesc
-spgbeginscan(Relation rel, int keysz, int orderbysz)
+spgbeginscan(Relation heap, Relation index, int keysz, int orderbysz)
 {
 	IndexScanDesc scan;
 	SpGistScanOpaque so;
 	int			i;
 
-	scan = RelationGetIndexScan(rel, keysz, orderbysz);
+	scan = RelationGetIndexScan(index, keysz, orderbysz);
 
 	so = (SpGistScanOpaque) palloc0(sizeof(SpGistScanOpaqueData));
 	if (keysz > 0)
@@ -420,7 +420,7 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 	 * most opclasses we can re-use the index reldesc instead of making one.)
 	 */
 	so->reconTupDesc = scan->xs_hitupdesc =
-		getSpGistTupleDesc(rel, &so->state.attType);
+		getSpGistTupleDesc(index, &so->state.attType);
 
 	/* Allocate various arrays needed for order-by scans */
 	if (scan->numberOfOrderBys > 0)
@@ -452,14 +452,14 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 	}
 
 	fmgr_info_copy(&so->innerConsistentFn,
-				   index_getprocinfo(rel, 1, SPGIST_INNER_CONSISTENT_PROC),
+				   index_getprocinfo(index, 1, SPGIST_INNER_CONSISTENT_PROC),
 				   CurrentMemoryContext);
 
 	fmgr_info_copy(&so->leafConsistentFn,
-				   index_getprocinfo(rel, 1, SPGIST_LEAF_CONSISTENT_PROC),
+				   index_getprocinfo(index, 1, SPGIST_LEAF_CONSISTENT_PROC),
 				   CurrentMemoryContext);
 
-	so->indexCollation = rel->rd_indcollation[0];
+	so->indexCollation = index->rd_indcollation[0];
 
 	/* access to VM for IOS scans (in read_next callback) */
 	so->vmBuffer = InvalidBuffer;

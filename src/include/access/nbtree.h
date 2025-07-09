@@ -1197,7 +1197,8 @@ extern bool btinsert(Relation rel, Datum *values, bool *isnull,
 					 IndexUniqueCheck checkUnique,
 					 bool indexUnchanged,
 					 struct IndexInfo *indexInfo);
-extern IndexScanDesc btbeginscan(Relation rel, int nkeys, int norderbys);
+extern IndexScanDesc btbeginscan(Relation heap, Relation index,
+								 int nkeys, int norderbys);
 extern Size btestimateparallelscan(Relation rel, int nkeys, int norderbys);
 extern void btinitparallelscan(void *target);
 extern bool btgettuple(IndexScanDesc scan, ScanDirection dir);

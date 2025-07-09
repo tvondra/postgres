@@ -393,7 +393,8 @@ typedef struct GinScanOpaqueData
 
 typedef GinScanOpaqueData *GinScanOpaque;
 
-extern IndexScanDesc ginbeginscan(Relation rel, int nkeys, int norderbys);
+extern IndexScanDesc ginbeginscan(Relation heap, Relation index,
+								  int nkeys, int norderbys);
 extern void ginendscan(IndexScanDesc scan);
 extern void ginrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 					  ScanKey orderbys, int norderbys);

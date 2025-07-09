@@ -178,7 +178,6 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	ReadStream *xs_rs;			/* read_stream (if supported by the AM) */
-	Relation	xs_heap;		/* heap used by the read_stream */
 
 	/* stats for explain */
 	int			xs_rs_distance;

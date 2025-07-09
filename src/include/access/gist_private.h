@@ -184,7 +184,10 @@ typedef struct GISTScanOpaqueData
 	MemoryContext pageDataCxt;	/* context holding the fetched tuples, for
 								 * index-only scans */
 
-	/*  */
+	/* last block returned by the read_next stream callback */
+	BlockNumber	lastBlock;
+
+	/* queue to allow prefetching with ordered scans */
 	GISTSearchHeapItem	queueItems[32];
 	int					queueItem;
 	int					queueStream;

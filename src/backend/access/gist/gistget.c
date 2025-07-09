@@ -704,6 +704,7 @@ getNextNearestPrefetch(IndexScanDesc scan)
 
 		/* restart the stream for the new queue */
 		so->queueStream = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 	}
 
@@ -897,6 +898,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 			if (scan->xs_rs)
 			{
 				so->streamPageData = -1;
+				so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 				read_stream_reset(scan->xs_rs);
 			}
 		}

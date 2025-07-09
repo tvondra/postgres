@@ -149,10 +149,17 @@ gist_stream_read_next(ReadStream *stream,
 		/* advance to the next item, assuming the current scan direction */
 		so->streamPageData++;
 
+		/* don't return the same block twice (and remember this one) */
+		if (so->lastBlock == block)
+			block = InvalidBlockNumber;
+
 		/* Did we find a valid block? If yes, we're done. */
 		if (block != InvalidBlockNumber)
 			break;
 	}
+
+	/* remember the block we're returning */
+	so->lastBlock = block;
 
 	return block;
 }
@@ -220,10 +227,17 @@ gist_ordered_stream_read_next(ReadStream *stream,
 		/* advance to the next item, assuming the current scan direction */
 		so->queueStream++;
 
+		/* don't return the same block twice (and remember this one) */
+		if (so->lastBlock == block)
+			block = InvalidBlockNumber;
+
 		/* Did we find a valid block? If yes, we're done. */
 		if (block != InvalidBlockNumber)
 			break;
 	}
+
+	/* remember the block we're returning */
+	so->lastBlock = block;
 
 	return block;
 }
@@ -273,6 +287,9 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	/* initialize small prefetch queue */
 	so->queueUsed = 0;
 	so->queueItem = 0;
+
+	/* nothing returned */
+	so->lastBlock = InvalidBlockNumber;
 
 	scan->opaque = so;
 
@@ -539,6 +556,7 @@ gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 	if (scan->xs_rs)
 	{
 		so->streamPageData = -1;
+		so->lastBlock = InvalidBlockNumber; /* XXX needed? */
 		read_stream_reset(scan->xs_rs);
 		so->queueItem = so->queueUsed = so->queueStream = 0;
 	}

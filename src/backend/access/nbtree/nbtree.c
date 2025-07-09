@@ -21,7 +21,6 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
-#include "access/table.h"
 #include "access/visibilitymap.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
@@ -487,24 +486,18 @@ btbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 	/*
 	 * Initialize the read stream too, to opt in into prefetching.
 	 *
-	 * XXX We create a stream depending on the GUC. This means we initialize
-	 * the stream even for bitmap scans, which however never use it. If this
-	 * turns out too expensive / undesirable, we'll need a parameter in the
-	 * ambeginscan() callback. Doesn't seem worth it.
-	 *
-	 * XXX We can't call IndexGetRelation(), that'd be infinite loop.
+	 * XXX We create a stream depending on the GUC, and only if the heap rel
+	 * is provided. This means we don't initialize the stream even for bitmap
+	 * scans, which don't use it.
 	 *
 	 * XXX The table has to be already locked by the query, so NoLock. Too
 	 * bad the heapRelation does not get passed here.
 	 */
-	if (enable_indexscan_prefetch)
+	if (enable_indexscan_prefetch && heap)
 	{
-		/* XXX already locked, but got to close this later */
-		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
-
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 scan->xs_heap,
+												 heap,
 												 MAIN_FORKNUM,
 												 bt_stream_read_next,
 												 scan,
@@ -644,8 +637,6 @@ btendscan(IndexScanDesc scan)
 	/* terminate the read stream (and close the heap) */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
-	if (scan->xs_heap)
-		table_close(scan->xs_heap, NoLock);
 
 	/* No need to invalidate positions, the RAM is about to be freed. */
 

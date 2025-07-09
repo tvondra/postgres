@@ -464,14 +464,11 @@ spgbeginscan(Relation heap, Relation index, int keysz, int orderbysz)
 	 *
 	 * XXX See comments in btbeginscan().
 	 */
-	if (enable_indexscan_prefetch)
+	if (enable_indexscan_prefetch && heap)
 	{
-		/* XXX already locked, but got to close this later */
-		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
-
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 scan->xs_heap,
+												 heap,
 												 MAIN_FORKNUM,
 												 spg_stream_read_next,
 												 scan,
@@ -576,8 +573,6 @@ spgendscan(IndexScanDesc scan)
 
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
-	if (scan->xs_heap)
-		table_close(scan->xs_heap, NoLock);
 
 	pfree(so);
 }

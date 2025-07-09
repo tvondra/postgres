@@ -475,13 +475,11 @@ hashbeginscan(Relation heap, Relation index, int nkeys, int norderbys)
 	 *
 	 * XXX See comments in btbeginscan().
 	 */
-	if (enable_indexscan_prefetch)
+	if (enable_indexscan_prefetch && heap)
 	{
-		scan->xs_heap = table_open(rel->rd_index->indrelid, NoLock);
-
 		scan->xs_rs = read_stream_begin_relation(READ_STREAM_DEFAULT,
 												 NULL,
-												 scan->xs_heap,
+												 heap,
 												 MAIN_FORKNUM,
 												 hash_stream_read_next,
 												 scan,
@@ -557,8 +555,6 @@ hashendscan(IndexScanDesc scan)
 	/* terminate read stream */
 	if (scan->xs_rs)
 		read_stream_end(scan->xs_rs);
-	if (scan->xs_heap)
-		table_close(scan->xs_heap, NoLock);
 }
 
 /*

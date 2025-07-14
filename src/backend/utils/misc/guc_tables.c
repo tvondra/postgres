@@ -491,14 +491,6 @@ static const struct config_enum_entry file_copy_method_options[] = {
 	{NULL, 0, false}
 };
 
-static const struct config_enum_entry freelist_partition_options[] = {
-	{"none", FREELIST_PARTITION_NONE, false},
-	{"node", FREELIST_PARTITION_NODE, false},
-	{"cpu", FREELIST_PARTITION_CPU, false},
-	{"pid", FREELIST_PARTITION_PID, false},
-	{NULL, 0, false}
-};
-
 /*
  * Options for enum values stored in other modules
  */

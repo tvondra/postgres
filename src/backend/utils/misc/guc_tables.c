@@ -2145,6 +2145,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"numa_partition_freelist", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Enables buffer freelists to be partitioned per NUMA node."),
+			gettext_noop("When enabled, we create a separate freelist per NUMA node."),
+		},
+		&numa_partition_freelist,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"sync_replication_slots", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Enables a physical standby to synchronize logical failover replication slots from the primary server."),
 		},
@@ -5289,16 +5299,6 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&file_copy_method,
 		FILE_COPY_METHOD_COPY, file_copy_method_options,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"numa_partition_freelist", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Enables buffer freelists to be partitioned per NUMA node."),
-			gettext_noop("When enabled, we create a separate freelist per NUMA node."),
-		},
-		&numa_partition_freelist,
-		FREELIST_PARTITION_NONE, freelist_partition_options,
 		NULL, NULL, NULL
 	},
 

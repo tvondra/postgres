@@ -728,7 +728,7 @@ StrategyInitialize(bool init)
 
 		elog(LOG, "NBuffers: %d, nodes %d, ncpus: %d, divide: %d, remain: %d",
 			 NBuffers, strategy_nnodes, strategy_ncpus,
-			 buffers_per_node, NBuffers - (strategy_ncpus * buffers_per_node));
+			 buffers_per_node, NBuffers - (strategy_nnodes * buffers_per_node));
 
 		/*
 		 * Walk through the buffers, add them to the correct list. Walk from

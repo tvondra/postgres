@@ -52,10 +52,13 @@ typedef struct BufferStrategyFreelist
 }			BufferStrategyFreelist;
 
 /*
- * XXX maybe have a per-clocksweep spinlock
+ * Information about one partition of the ClockSweep (on a subset of buffers).
  */
 typedef struct
 {
+	/* Spinlock: protects the values below */
+	slock_t		clock_sweep_lock;
+
 	/* range for this clock weep partition */
 	int32		firstBuffer;
 	int32		numBuffers;
@@ -74,7 +77,8 @@ typedef struct
 	 * overflow during a single bgwriter cycle.
 	 */
 	uint32		completePasses; /* Complete cycles of the clock sweep */
-} ClockSweepData;
+	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
+} ClockSweep;
 
 /*
  * XXX we don't want too many, makes it harder to balance the partitions (so
@@ -93,12 +97,6 @@ typedef struct
 	/* Spinlock: protects the values below */
 	slock_t		buffer_strategy_lock;
 
-	ClockSweepData	sweeps[NUM_CLOCKSWEEP_PARTITIONS];
-
-	int			firstFreeBuffer;	/* Head of list of unused buffers */
-
-	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
-
 	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
 	 * StrategyNotifyBgWriter.
@@ -108,6 +106,8 @@ typedef struct
 	 * "consumed"?
 	 */
 	int			__attribute__((aligned(64))) bgwprocno;
+
+	ClockSweep	sweeps[NUM_CLOCKSWEEP_PARTITIONS];
 
 	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
@@ -162,6 +162,7 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 									 uint32 *buf_state);
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
+static ClockSweep *ChooseClockSweep(void);
 
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
@@ -173,14 +174,7 @@ static inline uint32
 ClockSweepTick(void)
 {
 	uint32		victim;
-
-	/*
-	 * XXX Pick clock sweep partition based on PID, should be done based on
-	 * the NUMA node or something like that.
-	 */
-	int			i = MyProcPid % NUM_CLOCKSWEEP_PARTITIONS;
-
-	ClockSweepData *sweep = &StrategyControl->sweeps[i];
+	ClockSweep *sweep = ChooseClockSweep();
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
@@ -221,7 +215,7 @@ ClockSweepTick(void)
 				 * could lead to an overflow of nextVictimBuffers, but that's
 				 * highly unlikely and wouldn't be particularly harmful.
 				 */
-				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+				SpinLockAcquire(&sweep->clock_sweep_lock);
 
 				wrapped = expected % sweep->numBuffers;
 
@@ -229,7 +223,7 @@ ClockSweepTick(void)
 														 &expected, wrapped);
 				if (success)
 					sweep->completePasses++;
-				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+				SpinLockRelease(&sweep->clock_sweep_lock);
 			}
 		}
 	}
@@ -238,6 +232,18 @@ ClockSweepTick(void)
 	Assert(BufferIsValid(1 + sweep->firstBuffer + (victim % sweep->numBuffers)));
 
 	return sweep->firstBuffer + victim;
+}
+
+/*
+ * XXX Pick clock sweep partition based on PID, should be done based on the
+ * NUMA node or something like that.
+ */
+static ClockSweep *
+ChooseClockSweep(void)
+{
+	int			i = MyProcPid % NUM_CLOCKSWEEP_PARTITIONS;
+
+	return &StrategyControl->sweeps[i];
 }
 
 /*
@@ -394,7 +400,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 * the rate of buffer consumption.  Note that buffers recycled by a
 	 * strategy object are intentionally not counted here.
 	 */
-	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+	pg_atomic_fetch_add_u32(&ChooseClockSweep()->numBufferAllocs, 1);
 
 	/*
 	 * First check, without acquiring the lock, whether there's buffers in the
@@ -559,22 +565,27 @@ StrategyFreeBuffer(BufferDesc *buf)
  * the higher-order bits of nextVictimBuffer) and the count of recent buffer
  * allocs if non-NULL pointers are passed.  The alloc count is reset after
  * being read.
+ *
+ * XXX This probably either needs to consider all the clocksweep partitions,
+ * or look at them one by one. It likely needs to get a partition index
+ * (instead of looking at the "current" partition).
+ *
+ * XXX And it probably needs to sum the numBufferAllocs from all partitions,
+ * as the per-partition counts don't quite "match" buffers allocated from
+ * that particular partition, we need the global count and average.
+ *
+ * XXX But we now reset it, and we can't do that if we get partitions one by
+ * one (we'd reset on the first one, then what?). Maybe do that in a separate
+ * call, before doing the partitions?
  */
 int
 StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 {
 	uint32		nextVictimBuffer;
 	int			result;
+	ClockSweep *sweep = ChooseClockSweep();
 
-	/*
-	 * XXX Pick clock sweep partition based on PID, should be done based on
-	 * the NUMA node or something like that.
-	 */
-	int			i = MyProcPid % NUM_CLOCKSWEEP_PARTITIONS;
-
-	ClockSweepData *sweep = &StrategyControl->sweeps[i];
-
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+	SpinLockAcquire(&sweep->clock_sweep_lock);
 	nextVictimBuffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
 	result = nextVictimBuffer % sweep->numBuffers;
 
@@ -591,9 +602,9 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 
 	if (num_buf_alloc)
 	{
-		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
+		*num_buf_alloc = pg_atomic_exchange_u32(&sweep->numBufferAllocs, 0);
 	}
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+	SpinLockRelease(&sweep->clock_sweep_lock);
 
 	/* XXX buffer IDs start at 1, we're calculating 0-based indexes */
 	Assert(BufferIsValid(1 + sweep->firstBuffer + result));
@@ -755,6 +766,8 @@ StrategyInitialize(bool init)
 		/* Initialize the clock sweep pointers (for all partitions) */
 		for (int i = 0; i < NUM_CLOCKSWEEP_PARTITIONS; i++)
 		{
+			SpinLockInit(&StrategyControl->sweeps[i].clock_sweep_lock);
+
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
 
 			StrategyControl->sweeps[i].numBuffers = numBuffers;
@@ -762,10 +775,8 @@ StrategyInitialize(bool init)
 
 			/* Clear statistics */
 			StrategyControl->sweeps[i].completePasses = 0;
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBufferAllocs, 0);
 		}
-
-		/* Clear statistics */
-		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
 
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;

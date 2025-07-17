@@ -891,6 +891,8 @@ StrategyInitialize(bool init)
 		while (numBuffers * num_sweeps < NBuffers)
 			numBuffers++;
 
+		Assert(numBuffers * num_sweeps == NBuffers);
+
 		/*
 		 * Only done once, usually in postmaster
 		 */
@@ -919,6 +921,12 @@ StrategyInitialize(bool init)
 
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
 
+			/*
+			 * XXX this is probably not quite right, because if NBuffers is not
+			 * a perfect multiple of numBuffers, the last partition will have
+			 * numBuffers set too high. The freelists track this by tracking the
+			 * remaining number of buffers.
+			 */
 			StrategyControl->sweeps[i].numBuffers = numBuffers;
 			StrategyControl->sweeps[i].firstBuffer = (numBuffers * i);
 

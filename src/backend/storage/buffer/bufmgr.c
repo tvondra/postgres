@@ -3865,7 +3865,7 @@ BgBufferSync(WritebackContext *wb_context)
 			if (sync_state & BUF_WRITTEN)
 			{
 				reusable_buffers++;
-				if (++num_written >= bgwriter_lru_maxpages)
+				if (++num_written >= (bgwriter_lru_maxpages / num_partitions))
 				{
 					PendingBgWriterStats.maxwritten_clean++;
 					break;

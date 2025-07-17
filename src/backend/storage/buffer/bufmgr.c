@@ -3648,7 +3648,14 @@ BgBufferSync(WritebackContext *wb_context)
 		return true;
 	}
 
-	/* now process the clocksweep partitions, one by one */
+	/*
+	 * now process the clocksweep partitions, one by one, using the same
+	 * cleanup that we used for all buffers
+	 *
+	 * XXX Maybe we should randomize the order of partitions a bit, so that
+	 * we don't start from partition 0 all the time? Perhaps not entirely,
+	 * but at least pick a random starting point?
+	 */
 	for (int partition = 0; partition < num_partitions; partition++)
 	{
 		/* info obtained from freelist.c */

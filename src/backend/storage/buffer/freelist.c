@@ -70,6 +70,8 @@ typedef struct
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
 	 * get an actual buffer, it needs to be used modulo NBuffers.
 	 *
+	 * XXX This is relative to firstBuffer, so needs to be offset properly.
+	 *
 	 * XXX firstBuffer + (nextVictimBuffer % numBuffers)
 	 */
 	pg_atomic_uint32 nextVictimBuffer;
@@ -327,8 +329,6 @@ calculate_partition_index()
  * are multiple partitions per node (all nodes have the same number of
  * partitions), we pick the partition using CPU.
  *
- * XXX We might also use PID instead of CPU, to make it more stable?
- *
  * XXX Maybe we should do both the total and "per group" counts a power of
  * two? That'd allow using shifts instead of divisions in the calculation,
  * and that's cheaper. But how would that deal with odd number of nodes?
@@ -527,13 +527,17 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	/*
 	 * Nothing on the freelist, so run the "clock sweep" algorithm
 	 *
-	 * XXX Should we also make this NUMA-aware, to only access buffers from
-	 * the same NUMA node? That'd probably mean we need to make the clock
-	 * sweep NUMA-aware, perhaps by having multiple clock sweeps, each for a
-	 * subset of buffers. But that also means each process could "sweep" only
-	 * a fraction of buffers, even if the other buffers are better candidates
-	 * for eviction. Would that also mean we'd have multiple bgwriters, one
-	 * for each node, or would one bgwriter handle all of that?
+	 * XXX Note that ClockSweepTick() is NUMA-aware, i.e. it only looks at
+	 * buffers from a single partition, aligned with the NUMA node. That
+	 * means it only accesses buffers from the same NUMA node.
+	 *
+	 * XXX That also means each process "sweeps" only a fraction of buffers,
+	 * even if the other buffers are better candidates for eviction. Maybe
+	 * there should be some logic to "steal" buffers from other freelists
+	 * or other nodes?
+	 *
+	 * XXX Would that also mean we'd have multiple bgwriters, one for each
+	 * node, or would one bgwriter handle all of that?
 	 */
 	trycounter = NBuffers;
 	for (;;)
@@ -594,7 +598,18 @@ StrategyFreeBuffer(BufferDesc *buf)
 {
 	BufferStrategyFreelist *freelist;
 
-	freelist = ChooseFreeList();
+	/*
+	 * We don't want to call ChooseFreeList() again, because we might get a
+	 * completely different freelist - either a different partition in the
+	 * same group, or even a different group if the NUMA node changed. But
+	 * we can calculate the proper freelist from the buffer id.
+	 */
+	int index = (BufferGetNode(buf->buf_id) * StrategyControl->num_partitions_per_group)
+				 + (buf->buf_id % StrategyControl->num_partitions_per_group);
+
+	Assert((index >= 0) && (index < StrategyControl->num_partitions));
+
+	freelist = &StrategyControl->freelists[index];
 
 	SpinLockAcquire(&freelist->freelist_lock);
 
@@ -618,6 +633,10 @@ StrategyFreeBuffer(BufferDesc *buf)
  * buffers allocs (as a sum of all the partitions). This allows BgBufferSync
  * to calculate average number of allocations per partition for the next
  * sync cycle.
+ *
+ * In addition it returns the count of recent buffer allocs, which is a total
+ * summed from all partitions. The alloc counts are reset after being read,
+ * as the partitions are walked.
  */
 void
 StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
@@ -649,21 +668,10 @@ StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
  * BgBufferSync() will proceed circularly around the buffer array from there.
  *
  * In addition, we return the completed-pass count (which is effectively
- * the higher-order bits of nextVictimBuffer) and the count of recent buffer
- * allocs if non-NULL pointers are passed.  The alloc count is reset after
- * being read.
+ * the higher-order bits of nextVictimBuffer).
  *
- * XXX This probably either needs to consider all the clocksweep partitions,
- * or look at them one by one. It likely needs to get a partition index
- * (instead of looking at the "current" partition).
- *
- * XXX And it probably needs to sum the numBufferAllocs from all partitions,
- * as the per-partition counts don't quite "match" buffers allocated from
- * that particular partition, we need the global count and average.
- *
- * XXX But we now reset it, and we can't do that if we get partitions one by
- * one (we'd reset on the first one, then what?). Maybe do that in a separate
- * call, before doing the partitions?
+ * This only considers a single clocksweep partition, as BgBufferSync looks
+ * at them one by one.
  */
 int
 StrategySyncStart(int partition, uint32 *complete_passes,
@@ -789,21 +797,11 @@ StrategyShmemSize(void)
 	/* size of the shared replacement strategy control block */
 	size = add_size(size, MAXALIGN(offsetof(BufferStrategyControl, freelists)));
 
-	/*
-	 * Allocate one frelist per CPU. We might use per-node freelists, but the
-	 * assumption is the number of CPUs is less than number of NUMA nodes.
-	 *
-	 * FIXME This assumes the we have more CPUs than NUMA nodes, which seems
-	 * like a safe assumption. But maybe we should calculate how many elements
-	 * we actually need, depending on the GUC? Not a huge amount of memory.
-	 */
+	/* size of freelist partitions (at least one per NUMA node) */
 	size = add_size(size, MAXALIGN(mul_size(sizeof(BufferStrategyFreelist),
 											num_partitions)));
 
-	/*
-	 * Size the clocksweep partitions. At least one partition per NUMA node,
-	 * but at least MIN_CLOCKSWEEP_PARTITIONS partitions in total.
-	 */
+	/* size of clocksweep partitions (at least one per NUMA node) */
 	size = add_size(size, MAXALIGN(mul_size(sizeof(ClockSweep),
 											num_partitions)));
 
@@ -895,10 +893,10 @@ StrategyInitialize(bool init)
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
 
 			/*
-			 * XXX this is probably not quite right, because if NBuffers is not
+			 * FIXME This may not quite right, because if NBuffers is not
 			 * a perfect multiple of numBuffers, the last partition will have
-			 * numBuffers set too high. The freelists track this by tracking the
-			 * remaining number of buffers.
+			 * numBuffers set too high. buf_init handles this by tracking the
+			 * remaining number of buffers, and not overflowing.
 			 */
 			StrategyControl->sweeps[i].numBuffers = numBuffers;
 			StrategyControl->sweeps[i].firstBuffer = (numBuffers * i);

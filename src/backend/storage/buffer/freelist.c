@@ -53,6 +53,8 @@ typedef struct BufferStrategyFreelist
 
 /*
  * Information about one partition of the ClockSweep (on a subset of buffers).
+ *
+ * XXX Should be careful to align this to cachelines, etc.
  */
 typedef struct
 {
@@ -81,13 +83,17 @@ typedef struct
 } ClockSweep;
 
 /*
- * XXX we don't want too many, makes it harder to balance the partitions (so
- * that we don't recycle stuff in a single partition)
+ * The minimum number of clocksweep partitions. We always want at least this
+ * number of partitions, even on a single NUMA node, as it helps with contention
+ * for buffers. But with multiple NUMA nodes, we want a separate partition per
+ * NUMA node. But we may get more, as we still want at least the minimum.
+ *
+ * With multiple partitions per NUMA node, we pick the partition based on CPU.
  *
  * XXX Should be synchronized with freelist partitions, probably. If we still
  * have freelists.
  */
-#define NUM_CLOCKSWEEP_PARTITIONS		4
+#define MIN_CLOCKSWEEP_PARTITIONS		4
 
 /*
  * The shared freelist control information.
@@ -107,7 +113,15 @@ typedef struct
 	 */
 	int			__attribute__((aligned(64))) bgwprocno;
 
-	ClockSweep	sweeps[NUM_CLOCKSWEEP_PARTITIONS];
+	/*
+	 * clocksweep partitions
+	 *
+	 * XXX Isn't num_sweeps_partitions_groups equal to strategy_nnodes?
+	 */
+	int			num_sweeps_partitions;
+	int			num_sweeps_partitions_groups;
+	int			num_sweeps_partitions_per_group;
+	ClockSweep *sweeps;
 
 	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
@@ -235,15 +249,74 @@ ClockSweepTick(void)
 }
 
 /*
- * XXX Pick clock sweep partition based on PID, should be done based on the
- * NUMA node or something like that.
+ * ChooseClockSweep
+ *		pick a clocksweep partition based on NUMA node and CPU
+ *
+ * The number of clocksweep partitions may not match the number of NUMA
+ * nodes, but it should not be lower. Each partition should be mapped to
+ * a single NUMA node, but a node may have multiple partitions. If there
+ * are multiple partitions per node (all nodes have the same number of
+ * partitions), we pick the partition using CPU.
+ *
+ * XXX We might also use PID instead of CPU, to make it more stable?
+ *
+ * XXX Maybe we should do both the total and "per group" counts a power of
+ * two? That'd allow using shifts instead of divisions in the calculation,
+ * and that's cheaper. But how would that deal with odd number of nodes?
  */
 static ClockSweep *
 ChooseClockSweep(void)
 {
-	int			i = MyProcPid % NUM_CLOCKSWEEP_PARTITIONS;
+	int			rc;
+	unsigned	cpu;
+	unsigned	node;
+	int			index;
 
-	return &StrategyControl->sweeps[i];
+	Assert(StrategyControl->num_sweeps_partitions_groups == strategy_nnodes);
+
+	Assert(StrategyControl->num_sweeps_partitions ==
+		   (strategy_nnodes * StrategyControl->num_sweeps_partitions_per_group));
+
+	/*
+	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
+	 * list based on that.
+	 */
+	rc = getcpu(&cpu, &node);
+	if (rc != 0)
+		elog(ERROR, "getcpu failed: %m");
+
+	/*
+	 * XXX We should't get nodes that we haven't considered while building
+	 * the partitions. Maybe if we allow this (e.g. due to support adjusting
+	 * the NUMA stuff at runtime), we should just do our best to minimize
+	 * the conflicts somehow. But it'll make the mapping harder, so for now
+	 * we ignore it.
+	 */
+	if (node > strategy_nnodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
+
+	/*
+	 * Find the partition. If we have a single partition per node, we can
+	 * calculate the index directly from node. Otherwise we need to do two
+	 * steps, using node and then cpu.
+	 */
+	if (StrategyControl->num_sweeps_partitions_per_group == 1)
+	{
+		index = (node % StrategyControl->num_sweeps_partitions);
+	}
+	else
+	{
+		int		index_group,
+				index_part;
+
+		/* two steps - calculate group from node, partition from cpu */
+		index_group = (node % StrategyControl->num_sweeps_partitions_groups);
+		index_part = (cpu % StrategyControl->num_sweeps_partitions_per_group);
+
+		index = index_group + StrategyControl->num_sweeps_partitions_per_group + index_part;
+	}
+
+	return &StrategyControl->sweeps[index];
 }
 
 /*
@@ -709,6 +782,20 @@ StrategyShmemSize(void)
 	size = add_size(size, MAXALIGN(mul_size(sizeof(BufferStrategyFreelist),
 											strategy_nnodes)));
 
+	/*
+	 * Size the clocksweep partitions. At least one partition per NUMA node,
+	 * but at least MIN_CLOCKSWEEP_PARTITIONS partitions in total.
+	 */
+	{
+		int		num_per_node = 1;
+
+		while (num_per_node * strategy_nnodes < MIN_CLOCKSWEEP_PARTITIONS)
+			num_per_node++;
+
+		size = add_size(size, MAXALIGN(mul_size(sizeof(ClockSweep),
+												strategy_nnodes * num_per_node)));
+	}
+
 	return size;
 }
 
@@ -725,6 +812,9 @@ StrategyInitialize(bool init)
 	bool		found;
 	int			buffers_per_node;
 
+	int			num_sweeps_per_node;
+	int			num_sweeps;
+
 	/*
 	 * Initialize the shared buffer lookup hashtable.
 	 *
@@ -738,19 +828,33 @@ StrategyInitialize(bool init)
 	InitBufTable(NBuffers + NUM_BUFFER_PARTITIONS);
 
 	/*
+	 * XXX repeat the clocksweep sizing from StrategyShmemSize, maybe we should
+	 * add a function for this.
+	 */
+	{
+		num_sweeps_per_node = 1;
+
+		while (num_sweeps_per_node * strategy_nnodes < MIN_CLOCKSWEEP_PARTITIONS)
+			num_sweeps_per_node++;
+
+		num_sweeps = strategy_nnodes * num_sweeps_per_node;
+	}
+
+	/*
 	 * Get or create the shared strategy control block
 	 */
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",
-						offsetof(BufferStrategyControl, freelists) +
-						(sizeof(BufferStrategyFreelist) * strategy_nnodes),
+						MAXALIGN(offsetof(BufferStrategyControl, freelists)) +
+						MAXALIGN(sizeof(BufferStrategyFreelist) * strategy_nnodes) +
+						MAXALIGN(sizeof(ClockSweep) * num_sweeps),
 						&found);
 
 	if (!found)
 	{
-		int32	numBuffers = NBuffers / NUM_CLOCKSWEEP_PARTITIONS;
+		int32	numBuffers = NBuffers / num_sweeps;
 
-		while (numBuffers * NUM_CLOCKSWEEP_PARTITIONS < NBuffers)
+		while (numBuffers * num_sweeps < NBuffers)
 			numBuffers++;
 
 		/*
@@ -763,8 +867,13 @@ StrategyInitialize(bool init)
 
 		SpinLockInit(&StrategyControl->buffer_strategy_lock);
 
+		/* initialize the partitioned clocksweep */
+		StrategyControl->num_sweeps_partitions = num_sweeps;
+		StrategyControl->num_sweeps_partitions_groups = strategy_nnodes;
+		StrategyControl->num_sweeps_partitions_per_group = num_sweeps_per_node;
+
 		/* Initialize the clock sweep pointers (for all partitions) */
-		for (int i = 0; i < NUM_CLOCKSWEEP_PARTITIONS; i++)
+		for (int i = 0; i < num_sweeps; i++)
 		{
 			SpinLockInit(&StrategyControl->sweeps[i].clock_sweep_lock);
 

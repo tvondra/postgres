@@ -52,6 +52,17 @@ typedef struct BufferStrategyFreelist
 }			BufferStrategyFreelist;
 
 /*
+ * The minimum number of partitions we want to have. We want at least this
+ * number of partitions, even on non-NUMA system, as it helps with contention
+ * for buffers. But with multiple NUMA nodes, we want a separate partition per
+ * node. But we may get multiple partitions per node, for low node count.
+ *
+ * With multiple partitions per NUMA node, we pick the partition based on CPU
+ * (or some other parameter).
+ */
+#define MIN_FREELIST_PARTITIONS		4
+
+/*
  * The shared freelist control information.
  */
 typedef struct
@@ -82,6 +93,11 @@ typedef struct
 	 * "consumed"?
 	 */
 	int			__attribute__((aligned(64))) bgwprocno;
+
+	/* info about freelist partitioning */
+	int			num_partitions;
+	int			num_partitions_groups;	/* effectively num of NUMA nodes */
+	int			num_partitions_per_group;
 
 	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
@@ -203,6 +219,77 @@ ClockSweepTick(void)
 }
 
 /*
+ * Size the clocksweep partitions. At least one partition per NUMA node,
+ * but at least MIN_FREELIST_PARTITIONS partitions in total.
+*/
+static int
+calculate_partition_count(int num_nodes)
+{
+	int		num_per_node = 1;
+
+	while (num_per_node * num_nodes < MIN_FREELIST_PARTITIONS)
+		num_per_node++;
+
+	return (num_nodes * num_per_node);
+}
+
+static int
+calculate_partition_index()
+{
+	int			rc;
+	unsigned	cpu;
+	unsigned	node;
+	int			index;
+
+	Assert(StrategyControl->num_partitions_groups == strategy_nnodes);
+
+	Assert(StrategyControl->num_partitions ==
+		   (strategy_nnodes * StrategyControl->num_partitions_per_group));
+
+	/*
+	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
+	 * list based on that.
+	 */
+	rc = getcpu(&cpu, &node);
+	if (rc != 0)
+		elog(ERROR, "getcpu failed: %m");
+
+	/*
+	 * XXX We should't get nodes that we haven't considered while building
+	 * the partitions. Maybe if we allow this (e.g. due to support adjusting
+	 * the NUMA stuff at runtime), we should just do our best to minimize
+	 * the conflicts somehow. But it'll make the mapping harder, so for now
+	 * we ignore it.
+	 */
+	if (node > strategy_nnodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
+
+	/*
+	 * Find the partition. If we have a single partition per node, we can
+	 * calculate the index directly from node. Otherwise we need to do two
+	 * steps, using node and then cpu.
+	 */
+	if (StrategyControl->num_partitions_per_group == 1)
+	{
+		index = (node % StrategyControl->num_partitions);
+	}
+	else
+	{
+		int		index_group,
+				index_part;
+
+		/* two steps - calculate group from node, partition from cpu */
+		index_group = (node % StrategyControl->num_partitions_groups);
+		index_part = (cpu % StrategyControl->num_partitions_per_group);
+
+		index = (index_group * StrategyControl->num_partitions_per_group)
+				+ index_part;
+	}
+
+	return index;
+}
+
+/*
  * ChooseFreeList
  *		Pick the buffer freelist to use, depending on the CPU and NUMA node.
  *
@@ -225,47 +312,8 @@ ClockSweepTick(void)
 static BufferStrategyFreelist *
 ChooseFreeList(void)
 {
-	unsigned	cpu;
-	unsigned	node;
-	int			rc;
-
-	int			freelist_idx;
-
-	/* freelist not partitioned, return the first (and only) freelist */
-	if (!numa_partition_freelist)
-		return &StrategyControl->freelists[0];
-
-	/*
-	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
-	 * list based on that.
-	 */
-	rc = getcpu(&cpu, &node);
-	if (rc != 0)
-		elog(ERROR, "getcpu failed: %m");
-
-	/*
-	 * FIXME This doesn't work well if CPUs are excluded from being run or
-	 * offline. In that case we end up not using some freelists at all, but
-	 * not sure if we need to worry about that. Probably not for now. But
-	 * could that change while the system is running?
-	 *
-	 * XXX Maybe we should somehow detect changes to the list of CPUs, and
-	 * rebuild the lists if that changes? But that seems expensive.
-	 */
-	if (node > strategy_nnodes)
-		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
-
-	/*
-	 * Pick the freelist, based on CPU, NUMA node or process PID. This matches
-	 * how we built the freelists above.
-	 *
-	 * XXX Can we rely on some of the values (especially strategy_nnodes) to
-	 * be a power-of-2? Then we could replace the modulo with a mask, which is
-	 * likely more efficient.
-	 */
-	freelist_idx = node % strategy_nnodes;
-
-	return &StrategyControl->freelists[freelist_idx];
+	int index = calculate_partition_index();
+	return &StrategyControl->freelists[index];
 }
 
 /*
@@ -481,20 +529,24 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 
 /*
  * StrategyFreeBuffer: put a buffer on the freelist
- *
- * XXX This calls ChooseFreeList() again, and it might return the freelist to
- * a different freelist than it was taken from (either by a different backend,
- * or perhaps even the same backend running on a different CPU). Is that good?
- * Maybe we should try to balance this somehow, e.g. by choosing a random list,
- * the shortest one, or something like that? But that breaks the whole idea of
- * having freelists with buffers from a particular NUMA node.
  */
 void
 StrategyFreeBuffer(BufferDesc *buf)
 {
 	BufferStrategyFreelist *freelist;
 
-	freelist = ChooseFreeList();
+	/*
+	 * We don't want to call ChooseFreeList() again, because we might get a
+	 * completely different freelist - either a different partition in the
+	 * same group, or even a different group if the NUMA node changed. But
+	 * we can calculate the proper freelist from the buffer id.
+	 */
+	int index = (BufferGetNode(buf->buf_id) * StrategyControl->num_partitions_per_group)
+				 + (buf->buf_id % StrategyControl->num_partitions_per_group);
+
+	Assert((index >= 0) && (index < StrategyControl->num_partitions));
+
+	freelist = &StrategyControl->freelists[index];
 
 	SpinLockAcquire(&freelist->freelist_lock);
 
@@ -621,6 +673,7 @@ Size
 StrategyShmemSize(void)
 {
 	Size		size = 0;
+	int			num_partitions;
 
 	/* FIXME */
 #ifdef USE_LIBNUMA
@@ -631,22 +684,17 @@ StrategyShmemSize(void)
 	strategy_nnodes = 1;
 #endif
 
+	num_partitions = calculate_partition_count(strategy_nnodes);
+
 	/* size of lookup hash table ... see comment in StrategyInitialize */
 	size = add_size(size, BufTableShmemSize(NBuffers + NUM_BUFFER_PARTITIONS));
 
 	/* size of the shared replacement strategy control block */
 	size = add_size(size, MAXALIGN(offsetof(BufferStrategyControl, freelists)));
 
-	/*
-	 * Allocate one frelist per CPU. We might use per-node freelists, but the
-	 * assumption is the number of CPUs is less than number of NUMA nodes.
-	 *
-	 * FIXME This assumes the we have more CPUs than NUMA nodes, which seems
-	 * like a safe assumption. But maybe we should calculate how many elements
-	 * we actually need, depending on the GUC? Not a huge amount of memory.
-	 */
+	/* size of freelist partitions (at least one per NUMA node) */
 	size = add_size(size, MAXALIGN(mul_size(sizeof(BufferStrategyFreelist),
-											strategy_nnodes)));
+											num_partitions)));
 
 	return size;
 }
@@ -662,7 +710,13 @@ void
 StrategyInitialize(bool init)
 {
 	bool		found;
-	int			buffers_per_node;
+	int			buffers_per_partition;
+
+	int			num_partitions;
+	int			num_partitions_per_group;
+
+	/* */
+	num_partitions = calculate_partition_count(strategy_nnodes);
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -681,12 +735,19 @@ StrategyInitialize(bool init)
 	 */
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",
-						offsetof(BufferStrategyControl, freelists) +
-						(sizeof(BufferStrategyFreelist) * strategy_nnodes),
+						MAXALIGN(offsetof(BufferStrategyControl, freelists)) +
+						MAXALIGN(sizeof(BufferStrategyFreelist) * num_partitions),
 						&found);
 
 	if (!found)
 	{
+		int32	numBuffers = NBuffers / num_partitions;
+
+		while (numBuffers * num_partitions < NBuffers)
+			numBuffers++;
+
+		Assert(numBuffers * num_partitions == NBuffers);
+
 		/*
 		 * Only done once, usually in postmaster
 		 */
@@ -707,12 +768,22 @@ StrategyInitialize(bool init)
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;
 
+		/* always a multiple of NUMA nodes */
+		Assert(num_partitions % strategy_nnodes == 0);
+
+		num_partitions_per_group = (num_partitions / strategy_nnodes);
+
+		/* initialize the partitioned clocksweep */
+		StrategyControl->num_partitions = num_partitions;
+		StrategyControl->num_partitions_groups = strategy_nnodes;
+		StrategyControl->num_partitions_per_group = num_partitions_per_group;
+
 		/*
 		 * Rebuild the freelist - right now all buffers are in one huge list,
 		 * we want to rework that into multiple lists. Start by initializing
 		 * the strategy to have empty lists.
 		 */
-		for (int nfreelist = 0; nfreelist < strategy_nnodes; nfreelist++)
+		for (int nfreelist = 0; nfreelist < num_partitions; nfreelist++)
 		{
 			BufferStrategyFreelist *freelist;
 
@@ -723,12 +794,12 @@ StrategyInitialize(bool init)
 			SpinLockInit(&freelist->freelist_lock);
 		}
 
-		/* buffers per CPU (also used for PID partitioning) */
-		buffers_per_node = (NBuffers / strategy_nnodes);
+		/* buffers per partition */
+		buffers_per_partition = (NBuffers / num_partitions);
 
 		elog(LOG, "NBuffers: %d, nodes %d, ncpus: %d, divide: %d, remain: %d",
 			 NBuffers, strategy_nnodes, strategy_ncpus,
-			 buffers_per_node, NBuffers - (strategy_nnodes * buffers_per_node));
+			 buffers_per_partition, NBuffers - (num_partitions * buffers_per_partition));
 
 		/*
 		 * Walk through the buffers, add them to the correct list. Walk from
@@ -738,18 +809,22 @@ StrategyInitialize(bool init)
 		{
 			BufferDesc *buf = GetBufferDescriptor(i);
 			BufferStrategyFreelist *freelist;
-			int			belongs_to = 0; /* first freelist by default */
+			int			node;
+			int			index;
 
 			/*
 			 * Split the freelist into partitions, if needed (or just keep the
 			 * freelist we already built in BufferManagerShmemInit().
 			 */
 
-			/* determine NUMA node for buffer */
-			belongs_to = BufferGetNode(i);
+			/* determine NUMA node for buffer, this determines the group */
+			node = BufferGetNode(i);
+
+			/* now calculate the actual freelist index */
+			index = node * num_partitions_per_group + (i % num_partitions_per_group);
 
 			/* add to the right freelist */
-			freelist = &StrategyControl->freelists[belongs_to];
+			freelist = &StrategyControl->freelists[index];
 
 			buf->freeNext = freelist->firstFreeBuffer;
 			freelist->firstFreeBuffer = i;

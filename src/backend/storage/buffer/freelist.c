@@ -629,6 +629,36 @@ StrategyFreeBuffer(BufferDesc *buf)
 }
 
 /*
+ * StrategySyncStart -- prepare for sync of all partitions
+ *
+ * Determine the number of clocksweep partitions, and calculate the recent
+ * buffers allocs (as a sum of all the partitions). This allows BgBufferSync
+ * to calculate average number of allocations per partition for the next
+ * sync cycle.
+ */
+void
+StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
+{
+	*num_buf_alloc = 0;
+
+	/*
+	 * We lock the partitions one by one, so not exacly in sync, but that
+	 * should be fine. We're only looking for heuristics anyway.
+	 */
+	for (int i = 0; i < StrategyControl->num_sweeps_partitions; i++)
+	{
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		SpinLockAcquire(&sweep->clock_sweep_lock);
+		if (num_buf_alloc)
+		{
+			*num_buf_alloc += pg_atomic_exchange_u32(&sweep->numBufferAllocs, 0);
+		}
+		SpinLockRelease(&sweep->clock_sweep_lock);
+	}
+}
+
+/*
  * StrategySyncStart -- tell BgBufferSync where to start syncing
  *
  * The result is the buffer index of the best buffer to sync first.
@@ -652,15 +682,21 @@ StrategyFreeBuffer(BufferDesc *buf)
  * call, before doing the partitions?
  */
 int
-StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
+StrategySyncStart(int partition, uint32 *complete_passes,
+				  int *first_buffer, int *num_buffers)
 {
 	uint32		nextVictimBuffer;
 	int			result;
-	ClockSweep *sweep = ChooseClockSweep();
+	ClockSweep *sweep = &StrategyControl->sweeps[partition];
+
+	Assert((partition >= 0) && (partition < StrategyControl->num_sweeps_partitions));
 
 	SpinLockAcquire(&sweep->clock_sweep_lock);
 	nextVictimBuffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
 	result = nextVictimBuffer % sweep->numBuffers;
+
+	*first_buffer = sweep->firstBuffer;
+	*num_buffers = sweep->numBuffers;
 
 	if (complete_passes)
 	{
@@ -671,11 +707,6 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 		 * completePasses could be incremented. C.f. ClockSweepTick().
 		 */
 		*complete_passes += nextVictimBuffer / sweep->numBuffers;
-	}
-
-	if (num_buf_alloc)
-	{
-		*num_buf_alloc = pg_atomic_exchange_u32(&sweep->numBufferAllocs, 0);
 	}
 	SpinLockRelease(&sweep->clock_sweep_lock);
 
@@ -814,6 +845,7 @@ StrategyInitialize(bool init)
 
 	int			num_sweeps_per_node;
 	int			num_sweeps;
+	char	   *ptr;
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -866,6 +898,12 @@ StrategyInitialize(bool init)
 		before_shmem_exit(freelist_before_shmem_exit, 0);
 
 		SpinLockInit(&StrategyControl->buffer_strategy_lock);
+
+		/* have to point the sweeps array to right after the freelists */
+		ptr = (char *) StrategyControl +
+				MAXALIGN(offsetof(BufferStrategyControl, freelists)) +
+				MAXALIGN(sizeof(BufferStrategyFreelist) * strategy_nnodes);
+		StrategyControl->sweeps = (ClockSweep *) ptr;
 
 		/* initialize the partitioned clocksweep */
 		StrategyControl->num_sweeps_partitions = num_sweeps;

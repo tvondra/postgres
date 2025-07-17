@@ -313,7 +313,8 @@ ChooseClockSweep(void)
 		index_group = (node % StrategyControl->num_sweeps_partitions_groups);
 		index_part = (cpu % StrategyControl->num_sweeps_partitions_per_group);
 
-		index = index_group + StrategyControl->num_sweeps_partitions_per_group + index_part;
+		index = (index_group * StrategyControl->num_sweeps_partitions_per_group)
+				+ index_part;
 	}
 
 	return &StrategyControl->sweeps[index];
@@ -640,6 +641,7 @@ void
 StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
 {
 	*num_buf_alloc = 0;
+	*num_parts = StrategyControl->num_sweeps_partitions;
 
 	/*
 	 * We lock the partitions one by one, so not exacly in sync, but that

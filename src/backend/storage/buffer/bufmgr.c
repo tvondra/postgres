@@ -3619,8 +3619,6 @@ bool
 BgBufferSync(WritebackContext *wb_context)
 {
 	/* info obtained from freelist.c */
-	int			strategy_buf_id;
-	uint32		strategy_passes;
 	uint32		recent_alloc;
 	uint32		recent_alloc_partition;
 	int			num_partitions;
@@ -3653,6 +3651,10 @@ BgBufferSync(WritebackContext *wb_context)
 	/* now process the clocksweep partitions, one by one */
 	for (int partition = 0; partition < num_partitions; partition++)
 	{
+		/* info obtained from freelist.c */
+		int			strategy_buf_id;
+		uint32		strategy_passes;
+
 		/* Moving averages of allocation rate and clean-buffer density */
 		static float smoothed_alloc = 0;
 		static float smoothed_density = 10.0;

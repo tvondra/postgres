@@ -95,29 +95,15 @@ typedef struct
 	int			__attribute__((aligned(64))) bgwprocno;
 
 	/* info about freelist partitioning */
+	int			num_nodes;	/* effectively number of NUMA nodes */
 	int			num_partitions;
-	int			num_partitions_groups;	/* effectively num of NUMA nodes */
-	int			num_partitions_per_group;
+	int			num_partitions_per_node;
 
 	BufferStrategyFreelist freelists[FLEXIBLE_ARRAY_MEMBER];
 } BufferStrategyControl;
 
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
-
-/*
- * XXX shouldn't this be in BufferStrategyControl? Probably not, we need to
- * calculate it during sizing, and perhaps it could change before the memory
- * gets allocated (so we need to remember the values).
- *
- * XXX We should probably have a fixed number of partitions, and map the
- * NUMA nodes to them, somehow (i.e. each node would get some subset of
- * partitions). Similar to NUM_LOCK_PARTITIONS.
- *
- * XXX We don't use the ncpus, really.
- */
-static int	strategy_ncpus;
-static int	strategy_nnodes;
 
 /*
  * Private (non-shared) state for managing a ring of shared buffers to re-use.
@@ -218,21 +204,6 @@ ClockSweepTick(void)
 	return victim;
 }
 
-/*
- * Size the clocksweep partitions. At least one partition per NUMA node,
- * but at least MIN_FREELIST_PARTITIONS partitions in total.
-*/
-static int
-calculate_partition_count(int num_nodes)
-{
-	int		num_per_node = 1;
-
-	while (num_per_node * num_nodes < MIN_FREELIST_PARTITIONS)
-		num_per_node++;
-
-	return (num_nodes * num_per_node);
-}
-
 static int
 calculate_partition_index()
 {
@@ -241,10 +212,8 @@ calculate_partition_index()
 	unsigned	node;
 	int			index;
 
-	Assert(StrategyControl->num_partitions_groups == strategy_nnodes);
-
 	Assert(StrategyControl->num_partitions ==
-		   (strategy_nnodes * StrategyControl->num_partitions_per_group));
+		   (StrategyControl->num_nodes * StrategyControl->num_partitions_per_node));
 
 	/*
 	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
@@ -261,15 +230,15 @@ calculate_partition_index()
 	 * the conflicts somehow. But it'll make the mapping harder, so for now
 	 * we ignore it.
 	 */
-	if (node > strategy_nnodes)
-		elog(ERROR, "node out of range: %d > %u", cpu, strategy_nnodes);
+	if (node > StrategyControl->num_nodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, StrategyControl->num_nodes);
 
 	/*
 	 * Find the partition. If we have a single partition per node, we can
 	 * calculate the index directly from node. Otherwise we need to do two
 	 * steps, using node and then cpu.
 	 */
-	if (StrategyControl->num_partitions_per_group == 1)
+	if (StrategyControl->num_partitions_per_node == 1)
 	{
 		index = (node % StrategyControl->num_partitions);
 	}
@@ -279,10 +248,10 @@ calculate_partition_index()
 				index_part;
 
 		/* two steps - calculate group from node, partition from cpu */
-		index_group = (node % StrategyControl->num_partitions_groups);
-		index_part = (cpu % StrategyControl->num_partitions_per_group);
+		index_group = (node % StrategyControl->num_nodes);
+		index_part = (cpu % StrategyControl->num_partitions_per_node);
 
-		index = (index_group * StrategyControl->num_partitions_per_group)
+		index = (index_group * StrategyControl->num_partitions_per_node)
 				+ index_part;
 	}
 
@@ -327,7 +296,7 @@ ChooseFreeList(void)
 bool
 have_free_buffer(void)
 {
-	for (int i = 0; i < strategy_nnodes; i++)
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		if (StrategyControl->freelists[i].firstFreeBuffer >= 0)
 			return true;
@@ -541,8 +510,8 @@ StrategyFreeBuffer(BufferDesc *buf)
 	 * same group, or even a different group if the NUMA node changed. But
 	 * we can calculate the proper freelist from the buffer id.
 	 */
-	int index = (BufferGetNode(buf->buf_id) * StrategyControl->num_partitions_per_group)
-				 + (buf->buf_id % StrategyControl->num_partitions_per_group);
+	int index = (BufferGetNode(buf->buf_id) * StrategyControl->num_partitions_per_node)
+				 + (buf->buf_id % StrategyControl->num_partitions_per_node);
 
 	Assert((index >= 0) && (index < StrategyControl->num_partitions));
 
@@ -628,9 +597,9 @@ StrategyNotifyBgWriter(int bgwprocno)
 static void
 freelist_before_shmem_exit(int code, Datum arg)
 {
-	for (int node = 0; node < strategy_nnodes; node++)
+	for (int p = 0; p < StrategyControl->num_partitions; p++)
 	{
-		BufferStrategyFreelist *freelist = &StrategyControl->freelists[node];
+		BufferStrategyFreelist *freelist = &StrategyControl->freelists[p];
 		uint64		remain = 0;
 		uint64		actually_free = 0;
 		int			cur = freelist->firstFreeBuffer;
@@ -653,8 +622,8 @@ freelist_before_shmem_exit(int code, Datum arg)
 
 			cur = buf->freeNext;
 		}
-		elog(LOG, "freelist %d, firstF: %d: consumed: %lu, remain: %lu, actually free: %lu",
-			 node,
+		elog(LOG, "freelist partition %d, firstF: %d: consumed: %lu, remain: %lu, actually free: %lu",
+			 p,
 			 freelist->firstFreeBuffer,
 			 freelist->consumed,
 			 remain, actually_free);
@@ -674,17 +643,9 @@ StrategyShmemSize(void)
 {
 	Size		size = 0;
 	int			num_partitions;
+	int			num_nodes;
 
-	/* FIXME */
-#ifdef USE_LIBNUMA
-	strategy_ncpus = numa_num_task_cpus();
-	strategy_nnodes = numa_num_task_nodes();
-#else
-	strategy_ncpus = 1;
-	strategy_nnodes = 1;
-#endif
-
-	num_partitions = calculate_partition_count(strategy_nnodes);
+	BufferPartitionParams(&num_partitions, &num_nodes);
 
 	/* size of lookup hash table ... see comment in StrategyInitialize */
 	size = add_size(size, BufTableShmemSize(NBuffers + NUM_BUFFER_PARTITIONS));
@@ -710,13 +671,18 @@ void
 StrategyInitialize(bool init)
 {
 	bool		found;
-	int			buffers_per_partition;
 
+	int			num_nodes;
 	int			num_partitions;
-	int			num_partitions_per_group;
+	int			num_partitions_per_node;
 
 	/* */
-	num_partitions = calculate_partition_count(strategy_nnodes);
+	BufferPartitionParams(&num_partitions, &num_nodes);
+
+	/* always a multiple of NUMA nodes */
+	Assert(num_partitions % num_nodes == 0);
+
+	num_partitions_per_node = (num_partitions / num_nodes);
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -741,13 +707,6 @@ StrategyInitialize(bool init)
 
 	if (!found)
 	{
-		int32	numBuffers = NBuffers / num_partitions;
-
-		while (numBuffers * num_partitions < NBuffers)
-			numBuffers++;
-
-		Assert(numBuffers * num_partitions == NBuffers);
-
 		/*
 		 * Only done once, usually in postmaster
 		 */
@@ -768,15 +727,10 @@ StrategyInitialize(bool init)
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;
 
-		/* always a multiple of NUMA nodes */
-		Assert(num_partitions % strategy_nnodes == 0);
-
-		num_partitions_per_group = (num_partitions / strategy_nnodes);
-
 		/* initialize the partitioned clocksweep */
 		StrategyControl->num_partitions = num_partitions;
-		StrategyControl->num_partitions_groups = strategy_nnodes;
-		StrategyControl->num_partitions_per_group = num_partitions_per_group;
+		StrategyControl->num_nodes = num_nodes;
+		StrategyControl->num_partitions_per_node = num_partitions_per_node;
 
 		/*
 		 * Rebuild the freelist - right now all buffers are in one huge list,
@@ -785,6 +739,11 @@ StrategyInitialize(bool init)
 		 */
 		for (int nfreelist = 0; nfreelist < num_partitions; nfreelist++)
 		{
+			int		node,
+					num_buffers,
+					first_buffer,
+					last_buffer;
+
 			BufferStrategyFreelist *freelist;
 
 			freelist = &StrategyControl->freelists[nfreelist];
@@ -792,42 +751,26 @@ StrategyInitialize(bool init)
 			freelist->firstFreeBuffer = FREENEXT_END_OF_LIST;
 
 			SpinLockInit(&freelist->freelist_lock);
-		}
 
-		/* buffers per partition */
-		buffers_per_partition = (NBuffers / num_partitions);
-
-		elog(LOG, "NBuffers: %d, nodes %d, ncpus: %d, divide: %d, remain: %d",
-			 NBuffers, strategy_nnodes, strategy_ncpus,
-			 buffers_per_partition, NBuffers - (num_partitions * buffers_per_partition));
-
-		/*
-		 * Walk through the buffers, add them to the correct list. Walk from
-		 * the end, because we're adding the buffers to the beginning.
-		 */
-		for (int i = NBuffers - 1; i >= 0; i--)
-		{
-			BufferDesc *buf = GetBufferDescriptor(i);
-			BufferStrategyFreelist *freelist;
-			int			node;
-			int			index;
+			/* get info about the buffer partition */
+			BufferPartitionGet(nfreelist, &node,
+							   &num_buffers, &first_buffer, &last_buffer);
 
 			/*
-			 * Split the freelist into partitions, if needed (or just keep the
-			 * freelist we already built in BufferManagerShmemInit().
+			 * Walk through buffers for each partition, add them to the list.
+			 * Walk from the end, because we're adding the buffers to the
+			 * beginning.
 			 */
 
-			/* determine NUMA node for buffer, this determines the group */
-			node = BufferGetNode(i);
+			for (int i = last_buffer; i >= first_buffer; i--)
+			{
+				BufferDesc *buf = GetBufferDescriptor(i);
 
-			/* now calculate the actual freelist index */
-			index = node * num_partitions_per_group + (i % num_partitions_per_group);
+				/* add to the freelist */
+				buf->freeNext = freelist->firstFreeBuffer;
+				freelist->firstFreeBuffer = i;
+			}
 
-			/* add to the right freelist */
-			freelist = &StrategyControl->freelists[index];
-
-			buf->freeNext = freelist->firstFreeBuffer;
-			freelist->firstFreeBuffer = i;
 		}
 	}
 	else

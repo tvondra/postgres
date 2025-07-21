@@ -93,14 +93,6 @@ typedef enum ExtendBufferedFlags
 	EB_LOCK_TARGET = (1 << 5),
 }			ExtendBufferedFlags;
 
-typedef enum FreelistPartitionMode
-{
-	FREELIST_PARTITION_NONE,
-	FREELIST_PARTITION_NODE,
-	FREELIST_PARTITION_CPU,
-	FREELIST_PARTITION_PID,
-}			FreelistPartitionMode;
-
 /*
  * Some functions identify relations either by relation or smgr +
  * relpersistence.  Used via the BMR_REL()/BMR_SMGR() macros below.  This

@@ -828,9 +828,18 @@ StrategyInitialize(bool init)
 		/* Initialize the clock sweep pointers (for all partitions) */
 		for (int i = 0; i < num_partitions; i++)
 		{
+			int		node,
+					num_buffers,
+					first_buffer,
+					last_buffer;
+
 			SpinLockInit(&StrategyControl->sweeps[i].clock_sweep_lock);
 
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
+
+			/* get info about the buffer partition */
+			BufferPartitionGet(i, &node, &num_buffers,
+							   &first_buffer, &last_buffer);
 
 			/*
 			 * FIXME This may not quite right, because if NBuffers is not
@@ -838,8 +847,8 @@ StrategyInitialize(bool init)
 			 * numBuffers set too high. buf_init handles this by tracking the
 			 * remaining number of buffers, and not overflowing.
 			 */
-			StrategyControl->sweeps[i].numBuffers = numBuffers;
-			StrategyControl->sweeps[i].firstBuffer = (numBuffers * i);
+			StrategyControl->sweeps[i].numBuffers = num_buffers;
+			StrategyControl->sweeps[i].firstBuffer = first_buffer;
 
 			/* Clear statistics */
 			StrategyControl->sweeps[i].completePasses = 0;
@@ -892,7 +901,6 @@ StrategyInitialize(bool init)
 				buf->freeNext = freelist->firstFreeBuffer;
 				freelist->firstFreeBuffer = i;
 			}
-
 		}
 	}
 	else

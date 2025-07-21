@@ -143,6 +143,20 @@ struct ReadBuffersOperation
 
 typedef struct ReadBuffersOperation ReadBuffersOperation;
 
+typedef struct BufferPartition
+{
+	int		numa_node;
+	int		num_buffers;
+	int		first_buffer;
+	int		last_buffer;
+} BufferPartition;
+
+typedef struct BufferPartitions
+{
+	int				npartitions;
+	BufferPartition	partitions[FLEXIBLE_ARRAY_MEMBER];
+} BufferPartitions;
+
 /* forward declared, to avoid having to expose buf_internals.h here */
 struct WritebackContext;
 

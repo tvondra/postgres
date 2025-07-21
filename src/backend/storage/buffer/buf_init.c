@@ -32,18 +32,21 @@ ConditionVariableMinimallyPadded *BufferIOCVArray;
 WritebackContext BackendWritebackContext;
 CkptSortItem *CkptBufferIds;
 
+BufferPartitions *BufferPartitionsArray;
 
 static Size get_memory_page_size(void);
-static int64 choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes);
-static void pg_numa_interleave_memory(char *startptr, char *endptr,
-									  Size mem_page_size, Size chunk_size,
-									  int num_nodes);
+static void buffer_partitions_prepare(void);
+static void buffer_partitions_init(void);
 
 /* number of buffers allocated on the same NUMA node */
 static int64 numa_chunk_buffers = -1;
 
 /* number of NUMA nodes (as returned by numa_num_configured_nodes) */
-static int	numa_nodes = -1;
+static int	numa_nodes = -1;			/* number of nodes when sizing */
+static Size	numa_page_size = 0;			/* page used to size partitions */
+static bool	numa_can_partition = false;	/* can map to NUMA nodes? */
+static int	numa_buffers_per_node = -1;	/* buffers per node */
+static int	numa_partitions = 0;		/* total (multiple of nodes) */
 
 
 /*
@@ -91,7 +94,8 @@ BufferManagerShmemInit(void)
 	bool		foundBufs,
 				foundDescs,
 				foundIOCV,
-				foundBufCkpt;
+				foundBufCkpt,
+				foundParts;
 	Size		mem_page_size;
 	Size		buffer_align;
 
@@ -142,6 +146,13 @@ BufferManagerShmemInit(void)
 	/* one page is a multiple of the other */
 	Assert(((mem_page_size % PG_IO_ALIGN_SIZE) == 0) ||
 		   ((PG_IO_ALIGN_SIZE % mem_page_size) == 0));
+
+	/* allocate the partition registry first */
+	BufferPartitionsArray = (BufferPartitions *)
+		ShmemInitStruct("Buffer Partitions",
+						offsetof(BufferPartitions, partitions) +
+						mul_size(sizeof(BufferPartition), numa_partitions),
+						&foundParts);
 
 	/*
 	 * Align descriptors to a cacheline boundary, and memory page.
@@ -196,61 +207,10 @@ BufferManagerShmemInit(void)
 		int			i;
 
 		/*
-		 * Assign chunks of buffers and buffer descriptors to the available
-		 * NUMA nodes. We can't use the regular interleaving, because with
-		 * regular memory pages (smaller than BLCKSZ) we'd split all buffers
-		 * to multiple NUMA nodes. And we don't want that.
-		 *
-		 * But even with huge pages it seems like a good idea to not have
-		 * mapping for each page.
-		 *
-		 * So we always assign a larger contiguous chunk of buffers to the
-		 * same NUMA node, as calculated by choose_chunk_buffers(). We try to
-		 * keep the chunks large enough to work both for buffers and buffer
-		 * descriptors, but not too large. See the comments at
-		 * choose_chunk_buffers() for details.
-		 *
-		 * Thanks to the earlier alignment (to memory page etc.), we know the
-		 * buffers won't get split, etc.
-		 *
-		 * This also makes it easier / straightforward to calculate which NUMA
-		 * node a buffer belongs to (it's a matter of divide + mod). See
-		 * BufferGetNode().
+		 * Initialize the registry of buffer partitions, and also move the
+		 * memory to different NUMA nodes (if enabled by GUC)
 		 */
-		if (numa_buffers_interleave)
-		{
-			char	   *startptr,
-					   *endptr;
-			Size		chunk_size;
-
-			numa_nodes = numa_num_configured_nodes();
-
-			numa_chunk_buffers
-				= choose_chunk_buffers(NBuffers, mem_page_size, numa_nodes);
-
-			elog(LOG, "BufferManagerShmemInit num_nodes %d chunk_buffers %ld",
-				 numa_nodes, numa_chunk_buffers);
-
-			/* first map buffers */
-			startptr = BufferBlocks;
-			endptr = startptr + ((Size) NBuffers) * BLCKSZ;
-			chunk_size = (numa_chunk_buffers * BLCKSZ);
-
-			pg_numa_interleave_memory(startptr, endptr,
-									  mem_page_size,
-									  chunk_size,
-									  numa_nodes);
-
-			/* now do the same for buffer descriptors */
-			startptr = (char *) BufferDescriptors;
-			endptr = startptr + ((Size) NBuffers) * sizeof(BufferDescPadded);
-			chunk_size = (numa_chunk_buffers * sizeof(BufferDescPadded));
-
-			pg_numa_interleave_memory(startptr, endptr,
-									  mem_page_size,
-									  chunk_size,
-									  numa_nodes);
-		}
+		buffer_partitions_init();
 
 		/*
 		 * Initialize all the buffer headers.
@@ -348,21 +308,17 @@ Size
 BufferManagerShmemSize(void)
 {
 	Size		size = 0;
-	Size		mem_page_size;
 
-	/* XXX why does IsUnderPostmaster matter? */
-	if (IsUnderPostmaster)
-		mem_page_size = pg_get_shmem_pagesize();
-	else
-		mem_page_size = get_memory_page_size();
+	/* calculate partition info for buffers */
+	buffer_partitions_prepare();
 
 	/* size of buffer descriptors */
 	size = add_size(size, mul_size(NBuffers, sizeof(BufferDescPadded)));
 	/* to allow aligning buffer descriptors */
-	size = add_size(size, Max(mem_page_size, PG_IO_ALIGN_SIZE));
+	size = add_size(size, Max(numa_page_size, PG_IO_ALIGN_SIZE));
 
 	/* size of data pages, plus alignment padding */
-	size = add_size(size, Max(mem_page_size, PG_IO_ALIGN_SIZE));
+	size = add_size(size, Max(numa_page_size, PG_IO_ALIGN_SIZE));
 	size = add_size(size, mul_size(NBuffers, BLCKSZ));
 
 	/* size of stuff controlled by freelist.c */
@@ -377,99 +333,11 @@ BufferManagerShmemSize(void)
 	/* size of checkpoint sort array in bufmgr.c */
 	size = add_size(size, mul_size(NBuffers, sizeof(CkptSortItem)));
 
+	/* account for registry of NUMA partitions */
+	size = add_size(size, MAXALIGN(offsetof(BufferPartitions, partitions) +
+							mul_size(sizeof(BufferPartition), numa_partitions)));
+
 	return size;
-}
-
-/*
- * choose_chunk_buffers
- *		choose the number of buffers allocated to a NUMA node at once
- *
- * We don't map shared buffers to NUMA nodes one by one, but in larger chunks.
- * This is both for efficiency reasons (fewer mappings), and also because we
- * want to map buffer descriptors too - and descriptors are much smaller. So
- * we pick a number that's high enough for descriptors to use whole pages.
- *
- * We also want to keep buffers somehow evenly distributed on nodes, with
- * about NBuffers/nodes per node. So we don't use chunks larger than this,
- * to keep it as fair as possible (the chunk size is a possible difference
- * between memory allocated to different NUMA nodes).
- *
- * It's possible shared buffers are so small this is not possible (i.e.
- * it's less than chunk_size). But sensible NUMA systems will use a lot
- * of memory, so this is unlikely.
- *
- * We simply print a warning about the misbalance, and that's it.
- *
- * XXX It'd be good to ensure the chunk size is a power-of-2, because then
- * we could calculate the NUMA node simply by shift/modulo, while now we
- * have to do a division. But we don't know how many buffers and buffer
- * descriptors fits into a memory page. It may not be a power-of-2.
- */
-static int64
-choose_chunk_buffers(int NBuffers, Size mem_page_size, int num_nodes)
-{
-	int64		num_items;
-	int64		max_items;
-
-	/* make sure the chunks will align nicely */
-	Assert(BLCKSZ % sizeof(BufferDescPadded) == 0);
-	Assert(mem_page_size % sizeof(BufferDescPadded) == 0);
-	Assert(((BLCKSZ % mem_page_size) == 0) || ((mem_page_size % BLCKSZ) == 0));
-
-	/*
-	 * The minimum number of items to fill a memory page with descriptors and
-	 * blocks. The NUMA allocates memory in pages, and we need to do that for
-	 * both buffers and descriptors.
-	 *
-	 * In practice the BLCKSZ doesn't really matter, because it's much larger
-	 * than BufferDescPadded, so the result is determined buffer descriptors.
-	 * But it's clearer this way.
-	 */
-	num_items = Max(mem_page_size / sizeof(BufferDescPadded),
-					mem_page_size / BLCKSZ);
-
-	/*
-	 * We shouldn't use chunks larger than NBuffers/num_nodes, because with
-	 * larger chunks the last NUMA node would end up with much less memory (or
-	 * no memory at all).
-	 */
-	max_items = (NBuffers / num_nodes);
-
-	/*
-	 * Did we already exceed the maximum desirable chunk size? That is, will
-	 * the last node get less than one whole chunk (or no memory at all)?
-	 */
-	if (num_items > max_items)
-		elog(WARNING, "choose_chunk_buffers: chunk items exceeds max (%ld > %ld)",
-			 num_items, max_items);
-
-	/* grow the chunk size until we hit the max limit. */
-	while (2 * num_items <= max_items)
-		num_items *= 2;
-
-	/*
-	 * XXX It's not difficult to construct cases where we end up with not
-	 * quite balanced distribution. For example, with shared_buffers=10GB and
-	 * 4 NUMA nodes, we end up with 2GB chunks, which means the first node
-	 * gets 4GB, and the three other nodes get 2GB each.
-	 *
-	 * We could be smarter, and try to get more balanced distribution. We
-	 * could simply reduce max_items e.g. to
-	 *
-	 * max_items = (NBuffers / num_nodes) / 4;
-	 *
-	 * in which cases we'd end up with 512MB chunks, and each nodes would get
-	 * the same 2.5GB chunk. It may not always work out this nicely, but it's
-	 * better than with (NBuffers / num_nodes).
-	 *
-	 * Alternatively, we could "backtrack" - try with the large max_items,
-	 * check how balanced it is, and if it's too imbalanced, try with a
-	 * smaller one.
-	 *
-	 * We however want a simple scheme.
-	 */
-
-	return num_items;
 }
 
 /*
@@ -503,54 +371,401 @@ BufferGetNode(Buffer buffer)
  * XXX The "interleave" name is not quite accurate, I guess.
  */
 static void
-pg_numa_interleave_memory(char *startptr, char *endptr,
-						  Size mem_page_size, Size chunk_size,
-						  int num_nodes)
+pg_numa_move_to_node(char *startptr, char *endptr, int node)
 {
-	volatile uint64 touch pg_attribute_unused();
-	char	   *ptr = startptr;
-
-	/* chunk size has to be a multiple of memory page */
-	Assert((chunk_size % mem_page_size) == 0);
+	Size		mem_page_size;
+	Size		sz;
 
 	/*
-	 * Walk the memory pages in the range, and determine the node for each
-	 * one. We use numa_tonode_memory(), because then we can move a whole
-	 * memory range to the node, we don't need to worry about individual pages
-	 * like with numa_move_pages().
+	 * Get the "actual" memory page size, not the one we used for sizing. We
+	 * might have used huge page for sizing, but only get regular pages when
+	 * allocating, so we must use the smaller pages here.
+	 *
+	 * XXX A bit weird. Do we need to worry about postmaster? Could this even
+	 * run outside postmaster? I don't think so.
 	 */
-	while (ptr < endptr)
+	if (IsUnderPostmaster)
+		mem_page_size = pg_get_shmem_pagesize();
+	else
+		mem_page_size = get_memory_page_size();
+
+	Assert((int64) startptr % mem_page_size == 0);
+
+	sz = (endptr - startptr);
+	numa_tonode_memory(startptr, sz, node);
+}
+
+
+#define MIN_BUFFER_PARTITIONS	4
+
+/*
+ * buffer_partitions_prepare
+ *		Calculate parameters for partitioning buffers.
+ *
+ * We want to split the shared buffers into multiple partitions, of roughly
+ * the same size. This is meant to serve multiple purposes. We want to map
+ * the partitions to different NUMA nodes, to balance memory usage, and
+ * allow partitioning some data structures built on top of buffers, to give
+ * preference to local access (buffers on the same NUMA node). This applies
+ * mostly to freelists and clocksweep.
+ *
+ * We may want to use partitioning even on non-NUMA systems, or when running
+ * on a single NUMA node. Partitioning the freelist/clocksweep is beneficial
+ * even without the NUMA effects.
+ *
+ * So we try to always build at least 4 partitions (MIN_BUFFER_PARTITIONS)
+ * in total, or at least one partition per NUMA node. We always create the
+ * same number of partitions per NUMA node.
+ *
+ * Some examples:
+ *
+ * - non-NUMA system (or 1 NUMA node): 4 partitions for the single node
+ *
+ * - 2 NUMA nodes: 4 partitions, 2 for each node
+ *
+ * - 3 NUMA nodes: 6 partitions, 2 for each node
+ *
+ * - 4+ NUMA nodes: one partition per node
+ *
+ * NUMA works on the memory-page granularity, which determines the smallest
+ * amount of memory we can allocate to single node. This is determined by
+ * how many BufferDescriptors fit onto a single memory page, so this depends
+ * on huge page support. With 2MB huge pages (typical on x86 Linux), this is
+ * 32768 buffers (256MB). With regular 4kB pages, it's 64 buffers (512KB).
+ *
+ * Note: This is determined before the allocation, i.e. we don't know if the
+ * allocation got to use huge pages. So unless huge_pages=off we assume we're
+ * using huge pages.
+ *
+ * This minimal size requirement only matters for the per-node amount of
+ * memory, not for the individual partitions. The partitions for the same
+ * node are a contiguous chunk of memory, which can be split arbitrarily,
+ * it's independent of the NUMA granularity.
+ *
+ * XXX This patch only implements placing the buffers onto different NUMA
+ * nodes. The freelist/clocksweep partitioning is implemented in separate
+ * patches later in the patch series. Those patches however use the same
+ * buffer partition registry, to align the partitions.
+ *
+ *
+ * XXX This needs to consider the minimum chunk size, i.e. we can't split
+ * buffers beyond some point, at some point it gets we run into the size of
+ * buffer descriptors. Not sure if we should give preference to one of these
+ * (probably at least print a warning).
+ *
+ * XXX We want to do this even with numa_buffers_interleave=false, so that the
+ * other patches can do their partitioning. But in that case we don't need to
+ * enforce the min chunk size (probably)?
+ *
+ * XXX We need to only call this once, when sizing the memory. But at that
+ * point we don't know if we get to use huge pages or not (unless when huge
+ * pages are disabled). We'll proceed as if the huge pages were used, and we
+ * may have to use larger partitions. Maybe there's some sort of fallback,
+ * but for now we simply disable the NUMA partitioning - it simply means the
+ * shared buffers are too small.
+ *
+ * XXX We don't need to make each partition a multiple of min_partition_size.
+ * That's something we need to do for a node (because NUMA works at granularity
+ * of pages), but partitions for a single node can split that arbitrarily.
+ * Although keeping the sizes power-of-two would allow calculating everything
+ * as shift/mask, without expensive division/modulo operations.
+ */
+static void
+buffer_partitions_prepare(void)
+{
+	/*
+	 * Minimum number of buffers we can allocate to a NUMA node (determined
+	 * by how many BufferDescriptors fit onto a memory page).
+	 */
+	int		min_node_buffers;
+
+	/*
+	 * Maximum number of nodes we can split shared buffers to, assuming each
+	 * node gets the smallest allocatable chunk (the last node can get a
+	 * smaller amount of memory, not the full chunk).
+	 */
+	int		max_nodes;
+
+	/*
+	 * How many partitions to create per node. Could be more than 1 for small
+	 * number of nodes (of non-NUMA systems).
+	 */
+	int		num_partitions_per_node;
+
+	/* bail out if already initialized (calculate only once) */
+	if (numa_nodes != -1)
+		return;
+
+	/* XXX only gives us the number, the nodes may not be 0, 1, 2, ... */
+	numa_nodes = numa_num_configured_nodes();
+
+	/* XXX can this happen? */
+	if (numa_nodes < 1)
+		numa_nodes = 1;
+
+	elog(WARNING, "IsUnderPostmaster %d", IsUnderPostmaster);
+
+	/*
+	 * XXX A bit weird. Do we need to worry about postmaster? Could this even
+	 * run outside postmaster? I don't think so.
+	 *
+	 * XXX Another issue is we may get different values than when sizing the
+	 * the memory, because at that point we didn't know if we get huge pages,
+	 * so we assumed we will. Shouldn't cause crashes, but we might allocate
+	 * shared memory and then not use some of it (because of the alignment
+	 * that we don't actually need). Not sure about better way, good for now.
+	 */
+	if (IsUnderPostmaster)
+		numa_page_size = pg_get_shmem_pagesize();
+	else
+		numa_page_size = get_memory_page_size();
+
+	/* make sure the chunks will align nicely */
+	Assert(BLCKSZ % sizeof(BufferDescPadded) == 0);
+	Assert(numa_page_size % sizeof(BufferDescPadded) == 0);
+	Assert(((BLCKSZ % numa_page_size) == 0) || ((numa_page_size % BLCKSZ) == 0));
+
+	/*
+	 * The minimum number of buffers we can allocate from a single node, using
+	 * the memory page size (determined by buffer descriptors). NUMA allocates
+	 * memory in pages, and we need to do that for both buffers and descriptors
+	 * at the same time.
+	 *
+	 * In practice the BLCKSZ doesn't really matter, because it's much larger
+	 * than BufferDescPadded, so the result is determined buffer descriptors.
+	 */
+	min_node_buffers = (numa_page_size / sizeof(BufferDescPadded));
+
+	/*
+	 * Maximum number of nodes (each getting min_node_buffers) we can handle
+	 * given the current shared buffers size. The last node is allowed to be
+	 * smaller (half of the other nodes).
+	 */
+	max_nodes = (NBuffers + (min_node_buffers / 2)) / min_node_buffers;
+
+	/*
+	 * Can we actually do NUMA partitioning with these settings? If we can't
+	 * handle the current number of nodes, then no.
+	 *
+	 * XXX This shouldn't be a big issue in practice. NUMA systems typically
+	 * run with large shared buffers, which also makes the imbalance issues
+	 * fairly significant (it's quick to rebalance 128MB, much slower to do
+	 * that for 256GB).
+	 */
+	numa_can_partition = true;	/* assume we can allocate to nodes */
+	if (numa_nodes > max_nodes)
 	{
-		/* We may have an incomplete chunk at the end. */
-		Size		sz = Min(chunk_size, (endptr - ptr));
-
-		/*
-		 * What NUMA node does this range belong to? Each chunk should go to
-		 * the same NUMA node, in a round-robin manner.
-		 */
-		int			node = ((ptr - startptr) / chunk_size) % num_nodes;
-
-		/*
-		 * Nope, we have the first buffer from the next memory page, and we'll
-		 * set NUMA node for it (and all pages up to the next buffer). The
-		 * buffer should align with the memory page, thanks to the
-		 * buffer_align earlier.
-		 */
-		Assert((int64) ptr % mem_page_size == 0);
-		Assert((sz % mem_page_size) == 0);
-
-		/*
-		 * XXX no return value, to make this fail on error, has to use
-		 * numa_set_strict
-		 *
-		 * XXX Should we still touch the memory first, like with numa_move_pages,
-		 * or is that not necessary?
-		 */
-		numa_tonode_memory(ptr, sz, node);
-
-		ptr += sz;
+		elog(WARNING, "shared buffers too small for %d nodes (max nodes %d)",
+			 numa_nodes, max_nodes);
+		numa_can_partition = false;
 	}
 
-	/* should have processed all chunks */
-	Assert(ptr == endptr);
+	/*
+	 * We know we can partition to the desired number of nodes, now it's time
+	 * to figure out how many partitions we need per node. We simply add
+	 * partitions per node until we reach MIN_BUFFER_PARTITIONS.
+	 *
+	 * XXX Maybe we should make sure to keep the actual partition size a
+	 * power of 2, to make the calculations simpler (shift instead of mod).
+	 */
+	num_partitions_per_node = 1;
+
+	while (numa_nodes * num_partitions_per_node < MIN_BUFFER_PARTITIONS)
+		num_partitions_per_node++;
+
+	/* now we know the total number of partitions */
+	numa_partitions = (numa_nodes * num_partitions_per_node);
+
+	/*
+	 * Finally, calculate how many buffers we'll assign to a single NUMA
+	 * node. If we have only a single node, or can't map to that many nodes,
+	 * just take a "fair share" of buffers.
+	 *
+	 * XXX In both cases the last node can get fewer buffers.
+	 */
+	if (!numa_can_partition)
+	{
+		numa_buffers_per_node = (NBuffers + (numa_nodes - 1)) / numa_nodes;
+	}
+	else
+	{
+		numa_buffers_per_node = min_node_buffers;
+		while (numa_buffers_per_node * numa_nodes < NBuffers)
+			numa_buffers_per_node += min_node_buffers;
+
+		/* the last node should get at least some buffers */
+		Assert(NBuffers - (numa_nodes - 1) * numa_buffers_per_node > 0);
+	}
+
+	elog(LOG, "buffers %d partitions %d num_nodes %d per_node %d buffers_per_node %d (min %d)",
+		NBuffers, numa_partitions, numa_nodes, num_partitions_per_node,
+		numa_buffers_per_node, min_node_buffers);
+}
+
+static void
+AssertCheckBufferPartitions(void)
+{
+#ifdef USE_ASSERT_CHECKING
+	for (int i = 0; i < numa_partitions; i++)
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[i];
+
+		/*
+		 * We can get a single-buffer partition, if the sizing forces the last
+		 * partition to be just one buffer. But it's unlikely (and undesirable).
+		 */
+		Assert(part->first_buffer <= part->last_buffer);
+		Assert((part->last_buffer - part->first_buffer + 1) == part->num_buffers);
+
+		/*
+		 * The first partition needs to start on buffer 0. Later partitions
+		 * need to be contiguous, without skipping any buffers.
+		 */
+		if (i == 0)
+		{
+			Assert(part->first_buffer == 0);
+		}
+		else
+		{
+			BufferPartition *prev = &BufferPartitionsArray->partitions[i - 1];
+			Assert((part->first_buffer - 1) == prev->last_buffer);
+		}
+
+		/* the last partition needs to end on buffer (NBuffers - 1) */
+		if (i == (numa_partitions - 1))
+		{
+			Assert(part->last_buffer == (NBuffers - 1));
+		}
+	}
+#endif
+}
+
+static void
+buffer_partitions_init(void)
+{
+	int	remaining_buffers = NBuffers;
+	int	buffer = 0;
+	int	parts_per_node = (numa_partitions / numa_nodes);
+
+	BufferPartitionsArray->npartitions = numa_partitions;
+
+	for (int n = 0; n < numa_nodes; n++)
+	{
+		/* buffers this node should get (last node can get fewer) */
+		int	node_buffers = Min(remaining_buffers, numa_buffers_per_node);
+
+		/* split node buffers netween partitions (last one can get fewer) */
+		int	part_buffers = (node_buffers + (parts_per_node - 1)) / parts_per_node;
+
+		remaining_buffers -= node_buffers;
+
+		Assert((node_buffers > 0) && (node_buffers <= NBuffers));
+		Assert((n >= 0) && (n < numa_nodes));
+
+		for (int p = 0; p < parts_per_node; p++)
+		{
+			int	idx = (n * parts_per_node) + p;
+			BufferPartition *part = &BufferPartitionsArray->partitions[idx];
+			int		num_buffers = Min(node_buffers, part_buffers);
+
+			Assert((idx >= 0) && (idx < numa_partitions));
+			Assert((buffer >= 0) && (buffer < NBuffers));
+			Assert((num_buffers > 0) && (num_buffers <= part_buffers));
+
+			/* XXX we should get the actual node ID from the mask */
+			part->numa_node = n;
+
+			part->num_buffers = num_buffers;
+			part->first_buffer = buffer;
+			part->last_buffer = buffer + (num_buffers - 1);
+
+			elog(LOG, "buffer %d node %d partition %d buffers %d first %d last %d", idx, n, p, num_buffers, buffer, buffer + (num_buffers - 1));
+
+			buffer += num_buffers;
+			node_buffers -= part_buffers;
+		}
+	}
+
+	AssertCheckBufferPartitions();
+
+	/*
+	 * With buffers interleaving disabled (or can't partition, because of
+	 * shared buffers being too small), we're done.
+	 */
+	if (!numa_buffers_interleave || !numa_can_partition)
+		return;
+
+	/*
+	 * Assign chunks of buffers and buffer descriptors to the available
+	 * NUMA nodes. We can't use the regular interleaving, because with
+	 * regular memory pages (smaller than BLCKSZ) we'd split all buffers
+	 * to multiple NUMA nodes. And we don't want that.
+	 *
+	 * But even with huge pages it seems like a good idea to not have
+	 * mapping for each page.
+	 *
+	 * So we always assign a larger contiguous chunk of buffers to the
+	 * same NUMA node, as calculated by choose_chunk_buffers(). We try to
+	 * keep the chunks large enough to work both for buffers and buffer
+	 * descriptors, but not too large. See the comments at
+	 * choose_chunk_buffers() for details.
+	 *
+	 * Thanks to the earlier alignment (to memory page etc.), we know the
+	 * buffers won't get split, etc.
+	 *
+	 * This also makes it easier / straightforward to calculate which NUMA
+	 * node a buffer belongs to (it's a matter of divide + mod). See
+	 * BufferGetNode().
+	 */
+	for (int i = 0; i < numa_partitions; i++)
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[i];
+		char   *startptr,
+			   *endptr;
+
+		/* first map buffers */
+		startptr = BufferBlocks;
+		endptr = startptr + part->num_buffers * BLCKSZ;
+
+		pg_numa_move_to_node(startptr, endptr, part->numa_node);
+
+		/* now do the same for buffer descriptors */
+		startptr = (char *) BufferDescriptors;
+		endptr = startptr + part->num_buffers * sizeof(BufferDescPadded);
+
+		pg_numa_move_to_node(startptr, endptr, part->numa_node);
+	}
+
+}
+
+int
+BufferPartitionCount(void)
+{
+	return BufferPartitionsArray->npartitions;
+}
+
+void
+BufferPartitionGet(int idx, int *node, int *num_buffers,
+				   int *first_buffer, int *last_buffer)
+{
+	if ((idx >= 0) && (idx < BufferPartitionsArray->npartitions))
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[idx];
+
+		*node = part->numa_node;
+		*num_buffers = part->num_buffers;
+		*first_buffer = part->first_buffer;
+		*last_buffer = part->last_buffer;
+
+		return;
+	}
+
+	elog(ERROR, "invalid partition index");
+}
+
+void
+BufferPartitionParams(int *num_partitions, int *num_nodes)
+{
+	*num_partitions = numa_partitions;
+	*num_nodes = numa_nodes;
 }

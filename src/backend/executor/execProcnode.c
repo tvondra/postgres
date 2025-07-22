@@ -309,6 +309,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													estate, eflags);
 			break;
 
+		case T_CustomJoin:
+			result = (PlanState *) ExecInitCustomJoin((CustomJoin *) node,
+													  estate, eflags);
+			break;
+
 			/*
 			 * materialization nodes
 			 */
@@ -680,6 +685,10 @@ ExecEndNode(PlanState *node)
 			ExecEndHashJoin((HashJoinState *) node);
 			break;
 
+		case T_CustomJoinState:
+			ExecEndCustomJoin((CustomJoinState *) node);
+			break;
+
 			/*
 			 * materialization nodes
 			 */
@@ -797,6 +806,9 @@ ExecShutdownNode_walker(PlanState *node, void *context)
 			break;
 		case T_HashJoinState:
 			ExecShutdownHashJoin((HashJoinState *) node);
+			break;
+		case T_CustomJoinState:
+			ExecShutdownCustomJoin((CustomJoinState *) node);
 			break;
 		default:
 			break;

@@ -26,6 +26,14 @@ extern void ExecReScanCustomScan(CustomScanState *node);
 extern void ExecCustomMarkPos(CustomScanState *node);
 extern void ExecCustomRestrPos(CustomScanState *node);
 
+
+extern CustomJoinState *ExecInitCustomJoin(CustomJoin *cscan,
+										   EState *estate, int eflags);
+extern void ExecEndCustomJoin(CustomJoinState *node);
+
+extern void ExecReScanCustomJoin(CustomJoinState *node);
+
+
 /*
  * Parallel execution support
  */
@@ -38,5 +46,17 @@ extern void ExecCustomScanReInitializeDSM(CustomScanState *node,
 extern void ExecCustomScanInitializeWorker(CustomScanState *node,
 										   ParallelWorkerContext *pwcxt);
 extern void ExecShutdownCustomScan(CustomScanState *node);
+
+
+extern void ExecCustomJoinEstimate(CustomJoinState *node,
+								   ParallelContext *pcxt);
+extern void ExecCustomJoinInitializeDSM(CustomJoinState *node,
+										ParallelContext *pcxt);
+extern void ExecCustomJoinReInitializeDSM(CustomJoinState *node,
+										  ParallelContext *pcxt);
+extern void ExecCustomJoinInitializeWorker(CustomJoinState *node,
+										   ParallelWorkerContext *pwcxt);
+extern void ExecShutdownCustomJoin(CustomJoinState *node);
+
 
 #endif							/* NODECUSTOM_H */

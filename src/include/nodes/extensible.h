@@ -121,7 +121,7 @@ typedef struct CustomScanMethods
  * Execution-time methods for a CustomScanState.  This is more complex than
  * what we need for a custom path or scan.
  */
-typedef struct CustomExecMethods
+typedef struct CustomScanExecMethods
 {
 	const char *CustomName;
 
@@ -155,10 +155,66 @@ typedef struct CustomExecMethods
 	void		(*ExplainCustomScan) (CustomScanState *node,
 									  List *ancestors,
 									  ExplainState *es);
-} CustomExecMethods;
+} CustomScanExecMethods;
 
 extern void RegisterCustomScanMethods(const CustomScanMethods *methods);
 extern const CustomScanMethods *GetCustomScanMethods(const char *CustomName,
+													 bool missing_ok);
+
+/*
+ * Custom join.  Here again, there's not much to do: we need to be able to
+ * generate a JoinState corresponding to the join.
+ */
+typedef struct CustomJoinMethods
+{
+	const char *CustomName;
+
+	/* Create execution state (CustomJoinState) from a CustomJoin plan node */
+	Node	   *(*CreateCustomJoinState) (CustomJoin *cscan);
+} CustomJoinMethods;
+
+/*
+ * Execution-time methods for a CustomJoinState.  This is more complex than
+ * what we need for a custom path or scan.
+ */
+typedef struct CustomJoinExecMethods
+{
+	const char *CustomName;
+
+	/* Required executor methods */
+	void		(*BeginCustomJoin) (CustomJoinState *node,
+									EState *estate,
+									int eflags);
+	TupleTableSlot *(*ExecCustomJoin) (CustomJoinState *node);
+	void		(*EndCustomJoin) (CustomJoinState *node);
+	void		(*ReScanCustomJoin) (CustomJoinState *node);
+
+	/* Optional methods: needed if mark/restore is supported */
+	void		(*MarkPosCustomJoin) (CustomJoinState *node);
+	void		(*RestrPosCustomJoin) (CustomJoinState *node);
+
+	/* Optional methods: needed if parallel execution is supported */
+	Size		(*EstimateDSMCustomJoin) (CustomJoinState *node,
+										  ParallelContext *pcxt);
+	void		(*InitializeDSMCustomJoin) (CustomJoinState *node,
+											ParallelContext *pcxt,
+											void *coordinate);
+	void		(*ReInitializeDSMCustomJoin) (CustomJoinState *node,
+											  ParallelContext *pcxt,
+											  void *coordinate);
+	void		(*InitializeWorkerCustomJoin) (CustomJoinState *node,
+											   shm_toc *toc,
+											   void *coordinate);
+	void		(*ShutdownCustomJoin) (CustomJoinState *node);
+
+	/* Optional: print additional information in EXPLAIN */
+	void		(*ExplainCustomJoin) (CustomJoinState *node,
+									  List *ancestors,
+									  ExplainState *es);
+} CustomJoinExecMethods;
+
+extern void RegisterCustomJoinMethods(const CustomJoinMethods *methods);
+extern const CustomJoinMethods *GetCustomJoinMethods(const char *CustomName,
 													 bool missing_ok);
 
 #endif							/* EXTENSIBLE_H */

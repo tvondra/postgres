@@ -2129,7 +2129,7 @@ typedef struct ForeignScanState
  * the BeginCustomScan method.
  * ----------------
  */
-struct CustomExecMethods;
+struct CustomScanExecMethods;
 
 typedef struct CustomScanState
 {
@@ -2274,6 +2274,21 @@ typedef struct HashJoinState
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
 } HashJoinState;
+
+/* ----------------
+ *	 CustomJoinState information
+ *
+ *		CustomJoin nodes are used to execute custom code within executor.
+ *
+ * Core code must avoid assuming that the CustomJoinState is only as large as
+ * the structure declared here; providers are allowed to make it the first
+ * element in a larger structure, and typically would need to do so.  The
+ * struct is actually allocated by the CreateCustomJoinState method associated
+ * with the plan node.  Any additional fields can be initialized there, or in
+ * the BeginCustomJoin method.
+ * ----------------
+ */
+struct CustomJoinExecMethods;
 
 typedef struct CustomJoinState
 {

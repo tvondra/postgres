@@ -118,18 +118,6 @@ typedef struct CustomScanMethods
 } CustomScanMethods;
 
 /*
- * Custom scan.  Here again, there's not much to do: we need to be able to
- * generate a ScanState corresponding to the scan.
- */
-typedef struct CustomJoinMethods
-{
-	const char *CustomName;
-
-	/* Create execution state (CustomJoinState) from a CustomJoin plan node */
-	Node	   *(*CreateCustomJoinState) (CustomJoin *cscan);
-} CustomJoinMethods;
-
-/*
  * Execution-time methods for a CustomScanState.  This is more complex than
  * what we need for a custom path or scan.
  */
@@ -169,8 +157,24 @@ typedef struct CustomScanExecMethods
 									  ExplainState *es);
 } CustomScanExecMethods;
 
+extern void RegisterCustomScanMethods(const CustomScanMethods *methods);
+extern const CustomScanMethods *GetCustomScanMethods(const char *CustomName,
+													 bool missing_ok);
+
 /*
- * Execution-time methods for a CustomScanState.  This is more complex than
+ * Custom join.  Here again, there's not much to do: we need to be able to
+ * generate a JoinState corresponding to the join.
+ */
+typedef struct CustomJoinMethods
+{
+	const char *CustomName;
+
+	/* Create execution state (CustomJoinState) from a CustomJoin plan node */
+	Node	   *(*CreateCustomJoinState) (CustomJoin *cscan);
+} CustomJoinMethods;
+
+/*
+ * Execution-time methods for a CustomJoinState.  This is more complex than
  * what we need for a custom path or scan.
  */
 typedef struct CustomJoinExecMethods
@@ -208,10 +212,6 @@ typedef struct CustomJoinExecMethods
 									  List *ancestors,
 									  ExplainState *es);
 } CustomJoinExecMethods;
-
-extern void RegisterCustomScanMethods(const CustomScanMethods *methods);
-extern const CustomScanMethods *GetCustomScanMethods(const char *CustomName,
-													 bool missing_ok);
 
 extern void RegisterCustomJoinMethods(const CustomJoinMethods *methods);
 extern const CustomJoinMethods *GetCustomJoinMethods(const char *CustomName,

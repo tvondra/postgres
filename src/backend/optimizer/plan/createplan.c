@@ -4392,7 +4392,7 @@ create_customscan_plan(PlannerInfo *root, CustomPath *best_path,
  *
  * Transform a CustomPath into a Plan.
  *
- * XXX likely very incomplete, look at the other join nodes
+ * XXX likely very incomplete, need to look at the other join nodes
  */
 static CustomJoin *
 create_customjoin_plan(PlannerInfo *root, CustomPath *best_path)

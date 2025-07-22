@@ -1227,6 +1227,9 @@ _read${n}(void)
 		}
 		elsif ($t eq 'struct CustomJoinMethods*')
 		{
+			# FIXME it's a bit weird the condition above has both
+			# CustomPathMethods and CustomScanMethods, and this
+			# only has CustomJoinMethods, possibly incomplete
 			print $off q{
 	/* CustomName is a key to lookup CustomJoinMethods */
 	appendStringInfoString(str, " :methods ");

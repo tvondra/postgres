@@ -1532,6 +1532,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				pname = sname;
 			break;
 		case T_CustomJoin:
+			/* XXX jointype switch adds another "Join" (so it's there twice) */
 			sname = "Custom Join";
 			custom_name = ((CustomJoin *) plan)->methods->CustomName;
 			if (custom_name)
@@ -2191,6 +2192,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				if (((CustomJoin *) plan)->join.joinqual)
 					show_instrumentation_count("Rows Removed by Join Filter", 1,
 											   planstate, es);
+
 				show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 				if (plan->qual)
 					show_instrumentation_count("Rows Removed by Filter", 1,

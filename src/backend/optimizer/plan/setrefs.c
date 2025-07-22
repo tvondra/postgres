@@ -2464,7 +2464,7 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 	}
 	else if (IsA(join, CustomJoin))
 	{
-		/* FIXME? */
+		/* FIXME needs to do something more? */
 		set_customjoin_references(root, (CustomJoin *) join, rtoffset);
 	}
 

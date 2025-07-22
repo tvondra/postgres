@@ -1007,6 +1007,18 @@ typedef struct HashJoin
 	List	   *hashkeys;
 } HashJoin;
 
+/* ----------------
+ *	   CustomJoin node
+ *
+ * The comments for ForeignScan's fdw_exprs, fdw_private, fdw_scan_tlist,
+ * and fs_relids fields apply equally to CustomJoin's custom_exprs,
+ * custom_private, custom_join_tlist, and custom_relids fields.
+ *
+ * Note that since Plan trees can be copied, custom join providers *must*
+ * fit all plan data they need into those fields; embedding CustomJoin in
+ * a larger struct will not work.
+ * ----------------
+ */
 struct CustomJoinMethods;
 
 typedef struct CustomJoin

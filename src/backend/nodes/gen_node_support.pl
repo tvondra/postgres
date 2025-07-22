@@ -862,7 +862,8 @@ _equal${n}(const $n *a, const $n *b)
 			print $eff "\tCOMPARE_ARRAY_FIELD($f);\n" unless $equal_ignore;
 		}
 		elsif ($t eq 'struct CustomPathMethods*'
-			|| $t eq 'struct CustomScanMethods*')
+			|| $t eq 'struct CustomScanMethods*'
+			|| $t eq 'struct CustomJoinMethods*')
 		{
 			# Fields of these types are required to be a pointer to a
 			# static table of callback functions.  So we don't copy
@@ -1220,6 +1221,26 @@ _read${n}(void)
 		token = pg_strtok(&length); /* CustomName */
 		custom_name = nullable_string(token, length);
 		methods = GetCustomScanMethods(custom_name, false);
+		local_node->methods = methods;
+	}
+! unless $no_read;
+		}
+		elsif ($t eq 'struct CustomJoinMethods*')
+		{
+			print $off q{
+	/* CustomName is a key to lookup CustomJoinMethods */
+	appendStringInfoString(str, " :methods ");
+	outToken(str, node->methods->CustomName);
+};
+			print $rff q!
+	{
+		/* Lookup CustomJoinMethods by CustomName */
+		char	   *custom_name;
+		const CustomJoinMethods *methods;
+		token = pg_strtok(&length); /* skip methods: */
+		token = pg_strtok(&length); /* CustomName */
+		custom_name = nullable_string(token, length);
+		methods = GetCustomJoinMethods(custom_name, false);
 		local_node->methods = methods;
 	}
 ! unless $no_read;

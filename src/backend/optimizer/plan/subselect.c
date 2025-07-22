@@ -2810,6 +2810,32 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 							  &context);
 			break;
 
+		case T_CustomJoin:
+			/* FIXME needs to worry about joinqual etc? */
+			{
+				CustomJoin *cjoin = (CustomJoin *) plan;
+				ListCell   *lc;
+
+				finalize_primnode((Node *) cjoin->custom_exprs,
+								  &context);
+				/* We assume custom_scan_tlist cannot contain Params */
+				context.paramids =
+					bms_add_members(context.paramids, scan_params);
+
+				/* child nodes if any */
+				foreach(lc, cjoin->custom_plans)
+				{
+					context.paramids =
+						bms_add_members(context.paramids,
+										finalize_plan(root,
+													  (Plan *) lfirst(lc),
+													  gather_param,
+													  valid_params,
+													  scan_params));
+				}
+			}
+			break;
+
 		case T_Hash:
 			finalize_primnode((Node *) ((Hash *) plan)->hashkeys,
 							  &context);

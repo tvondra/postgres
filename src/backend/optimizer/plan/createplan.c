@@ -160,6 +160,8 @@ static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best
 static CustomScan *create_customscan_plan(PlannerInfo *root,
 										  CustomPath *best_path,
 										  List *tlist, List *scan_clauses);
+static CustomJoin *create_customjoin_plan(PlannerInfo *root,
+										  CustomPath *best_path);
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path);
 static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path);
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
@@ -415,6 +417,7 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 		case T_HashJoin:
 		case T_MergeJoin:
 		case T_NestLoop:
+		case T_CustomJoin:
 			plan = create_join_plan(root,
 									(JoinPath *) best_path);
 			break;
@@ -1096,6 +1099,10 @@ create_join_plan(PlannerInfo *root, JoinPath *best_path)
 		case T_NestLoop:
 			plan = (Plan *) create_nestloop_plan(root,
 												 (NestPath *) best_path);
+			break;
+		case T_CustomJoin:
+			plan = (Plan *) create_customjoin_plan(root,
+												   (CustomPath *) best_path);
 			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
@@ -4373,6 +4380,72 @@ create_customscan_plan(PlannerInfo *root, CustomPath *best_path,
 	{
 		cplan->scan.plan.qual = (List *)
 			replace_nestloop_params(root, (Node *) cplan->scan.plan.qual);
+		cplan->custom_exprs = (List *)
+			replace_nestloop_params(root, (Node *) cplan->custom_exprs);
+	}
+
+	return cplan;
+}
+
+/*
+ * create_customjoin_plan
+ *
+ * Transform a CustomPath into a Plan.
+ *
+ * XXX likely very incomplete, look at the other join nodes
+ */
+static CustomJoin *
+create_customjoin_plan(PlannerInfo *root, CustomPath *best_path)
+{
+	CustomJoin *cplan;
+	RelOptInfo *rel = best_path->path.parent;
+	List	   *custom_plans = NIL;
+	ListCell   *lc;
+	List	   *tlist = build_path_tlist(root, &best_path->path);
+	List	   *scan_clauses = NIL;
+
+	/* Recursively transform child paths. */
+	foreach(lc, best_path->custom_paths)
+	{
+		Plan	   *plan = create_plan_recurse(root, (Path *) lfirst(lc),
+											   CP_EXACT_TLIST);
+
+		custom_plans = lappend(custom_plans, plan);
+	}
+
+	/*
+	 * Invoke custom plan provider to create the Plan node represented by the
+	 * CustomPath.
+	 */
+	cplan = castNode(CustomJoin,
+					 best_path->methods->PlanCustomPath(root,
+														rel,
+														best_path,
+														tlist,
+														scan_clauses,
+														custom_plans));
+
+	/*
+	 * Copy cost data from Path to Plan; no need to make custom-plan providers
+	 * do this
+	 */
+	copy_generic_path_info(&cplan->join.plan, &best_path->path);
+
+	/* Likewise, copy the relids that are represented by this custom scan */
+	cplan->custom_relids = best_path->path.parent->relids;
+
+	/*
+	 * Replace any outer-relation variables with nestloop params in the qual
+	 * and custom_exprs expressions.  We do this last so that the custom-plan
+	 * provider doesn't have to be involved.  (Note that parts of custom_exprs
+	 * could have come from join clauses, so doing this beforehand on the
+	 * scan_clauses wouldn't work.)  We assume custom_scan_tlist contains no
+	 * such variables.
+	 */
+	if (best_path->path.param_info)
+	{
+		cplan->join.plan.qual = (List *)
+			replace_nestloop_params(root, (Node *) cplan->join.plan.qual);
 		cplan->custom_exprs = (List *)
 			replace_nestloop_params(root, (Node *) cplan->custom_exprs);
 	}

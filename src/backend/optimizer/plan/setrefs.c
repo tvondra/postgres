@@ -149,6 +149,9 @@ static void set_foreignscan_references(PlannerInfo *root,
 static void set_customscan_references(PlannerInfo *root,
 									  CustomScan *cscan,
 									  int rtoffset);
+static void set_customjoin_references(PlannerInfo *root,
+									  CustomJoin *cjoin,
+									  int rtoffset);
 static Plan *set_append_references(PlannerInfo *root,
 								   Append *aplan,
 								   int rtoffset);
@@ -852,6 +855,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 		case T_NestLoop:
 		case T_MergeJoin:
 		case T_HashJoin:
+		case T_CustomJoin:
 			set_join_references(root, (Join *) plan, rtoffset);
 			break;
 
@@ -1739,6 +1743,41 @@ set_customscan_references(PlannerInfo *root,
 }
 
 /*
+ * set_customscan_references
+ *	   Do set_plan_references processing on a CustomJoin
+ *
+ * FIXME some of this is probably duplicate with set_join_references
+ */
+static void
+set_customjoin_references(PlannerInfo *root,
+						  CustomJoin *cjoin,
+						  int rtoffset)
+{
+	ListCell   *lc;
+
+	if (cjoin->custom_join_tlist != NIL)
+	{
+		/* custom_scan_tlist itself just needs fix_scan_list() adjustments */
+		cjoin->custom_join_tlist =
+			fix_scan_list(root, cjoin->custom_join_tlist,
+						  rtoffset, NUM_EXEC_TLIST((Plan *) cjoin));
+	}
+
+	/* Adjust custom_exprs in the standard way */
+	cjoin->custom_exprs =
+		fix_scan_list(root, cjoin->custom_exprs,
+					  rtoffset, NUM_EXEC_QUAL((Plan *) cjoin));
+
+	/* Adjust child plan-nodes recursively, if needed */
+	foreach(lc, cjoin->custom_plans)
+	{
+		lfirst(lc) = set_plan_refs(root, (Plan *) lfirst(lc), rtoffset);
+	}
+
+	cjoin->custom_relids = offset_relid_set(cjoin->custom_relids, rtoffset);
+}
+
+/*
  * register_partpruneinfo
  *		Subroutine for set_append_references and set_mergeappend_references
  *
@@ -2422,6 +2461,11 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 											   rtoffset,
 											   NRM_EQUAL,
 											   NUM_EXEC_QUAL((Plan *) join));
+	}
+	else if (IsA(join, CustomJoin))
+	{
+		/* FIXME? */
+		set_customjoin_references(root, (CustomJoin *) join, rtoffset);
 	}
 
 	/*

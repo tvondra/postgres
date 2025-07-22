@@ -25,6 +25,7 @@
 
 static HTAB *extensible_node_methods = NULL;
 static HTAB *custom_scan_methods = NULL;
+static HTAB *custom_join_methods = NULL;
 
 typedef struct
 {
@@ -94,6 +95,18 @@ RegisterCustomScanMethods(const CustomScanMethods *methods)
 }
 
 /*
+ * Register a new type of custom join node
+ */
+void
+RegisterCustomJoinMethods(const CustomJoinMethods *methods)
+{
+	RegisterExtensibleNodeEntry(&custom_join_methods,
+								"Custom Join Methods",
+								methods->CustomName,
+								methods);
+}
+
+/*
  * An internal routine to get an ExtensibleNodeEntry by the given identifier
  */
 static const void *
@@ -138,6 +151,18 @@ GetCustomScanMethods(const char *CustomName, bool missing_ok)
 {
 	return (const CustomScanMethods *)
 		GetExtensibleNodeEntry(custom_scan_methods,
+							   CustomName,
+							   missing_ok);
+}
+
+/*
+ * Get the methods for a given name of CustomJoinMethods
+ */
+const CustomJoinMethods *
+GetCustomJoinMethods(const char *CustomName, bool missing_ok)
+{
+	return (const CustomJoinMethods *)
+		GetExtensibleNodeEntry(custom_join_methods,
 							   CustomName,
 							   missing_ok);
 }

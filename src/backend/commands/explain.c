@@ -159,8 +159,10 @@ static void ExplainMemberNodes(PlanState **planstates, int nplans,
 static void ExplainMissingMembers(int nplans, int nchildren, ExplainState *es);
 static void ExplainSubPlans(List *plans, List *ancestors,
 							const char *relationship, ExplainState *es);
-static void ExplainCustomChildren(CustomScanState *css,
-								  List *ancestors, ExplainState *es);
+static void ExplainCustomScanChildren(CustomScanState *css,
+									  List *ancestors, ExplainState *es);
+static void ExplainCustomJoinChildren(CustomJoinState *cjs,
+									  List *ancestors, ExplainState *es);
 static ExplainWorkersState *ExplainCreateWorkersState(int num_workers);
 static void ExplainOpenWorker(int n, ExplainState *es);
 static void ExplainCloseWorker(int n, ExplainState *es);
@@ -1210,6 +1212,10 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 			*rels_used = bms_add_members(*rels_used,
 										 ((CustomScan *) plan)->custom_relids);
 			break;
+		case T_CustomJoin:
+			*rels_used = bms_add_members(*rels_used,
+										 ((CustomJoin *) plan)->custom_relids);
+			break;
 		case T_ModifyTable:
 			*rels_used = bms_add_member(*rels_used,
 										((ModifyTable *) plan)->nominalRelation);
@@ -1297,6 +1303,18 @@ plan_is_disabled(Plan *plan)
 	{
 		ListCell   *lc;
 		CustomScan *cplan = (CustomScan *) plan;
+
+		foreach(lc, cplan->custom_plans)
+		{
+			Plan	   *subplan = lfirst(lc);
+
+			child_disabled_nodes += subplan->disabled_nodes;
+		}
+	}
+	else if (IsA(plan, CustomJoin))
+	{
+		ListCell   *lc;
+		CustomJoin *cplan = (CustomJoin *) plan;
 
 		foreach(lc, cplan->custom_plans)
 		{
@@ -1513,6 +1531,14 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			else
 				pname = sname;
 			break;
+		case T_CustomJoin:
+			sname = "Custom Join";
+			custom_name = ((CustomJoin *) plan)->methods->CustomName;
+			if (custom_name)
+				pname = psprintf("Custom Join (%s)", custom_name);
+			else
+				pname = sname;
+			break;
 		case T_Material:
 			pname = sname = "Materialize";
 			break;
@@ -1712,6 +1738,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_NestLoop:
 		case T_MergeJoin:
 		case T_HashJoin:
+		case T_CustomJoin:
 			{
 				const char *jointype;
 
@@ -2155,6 +2182,24 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					css->methods->ExplainCustomScan(css, ancestors, es);
 			}
 			break;
+		case T_CustomJoin:
+			{
+				CustomJoinState *cjs = (CustomJoinState *) planstate;
+
+				show_upper_qual(((CustomJoin *) plan)->join.joinqual,
+								"Join Filter", planstate, ancestors, es);
+				if (((CustomJoin *) plan)->join.joinqual)
+					show_instrumentation_count("Rows Removed by Join Filter", 1,
+											   planstate, es);
+				show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
+				if (plan->qual)
+					show_instrumentation_count("Rows Removed by Filter", 1,
+											   planstate, es);
+
+				if (cjs->methods->ExplainCustomJoin)
+					cjs->methods->ExplainCustomJoin(cjs, ancestors, es);
+			}
+			break;
 		case T_NestLoop:
 			show_upper_qual(((NestLoop *) plan)->join.joinqual,
 							"Join Filter", planstate, ancestors, es);
@@ -2354,6 +2399,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		IsA(plan, SubqueryScan) ||
 		(IsA(planstate, CustomScanState) &&
 		 ((CustomScanState *) planstate)->custom_ps != NIL) ||
+		(IsA(planstate, CustomJoinState) &&
+		 ((CustomJoinState *) planstate)->custom_ps != NIL) ||
 		planstate->subPlan;
 	if (haschildren)
 	{
@@ -2404,8 +2451,12 @@ ExplainNode(PlanState *planstate, List *ancestors,
 						"Subquery", NULL, es);
 			break;
 		case T_CustomScan:
-			ExplainCustomChildren((CustomScanState *) planstate,
-								  ancestors, es);
+			ExplainCustomScanChildren((CustomScanState *) planstate,
+									  ancestors, es);
+			break;
+		case T_CustomJoin:
+			ExplainCustomJoinChildren((CustomJoinState *) planstate,
+									   ancestors, es);
 			break;
 		default:
 			break;
@@ -4814,13 +4865,27 @@ ExplainSubPlans(List *plans, List *ancestors,
  * Explain a list of children of a CustomScan.
  */
 static void
-ExplainCustomChildren(CustomScanState *css, List *ancestors, ExplainState *es)
+ExplainCustomScanChildren(CustomScanState *css, List *ancestors, ExplainState *es)
 {
 	ListCell   *cell;
 	const char *label =
 		(list_length(css->custom_ps) != 1 ? "children" : "child");
 
 	foreach(cell, css->custom_ps)
+		ExplainNode((PlanState *) lfirst(cell), ancestors, label, NULL, es);
+}
+
+/*
+ * Explain a list of children of a CustomJoin.
+ */
+static void
+ExplainCustomJoinChildren(CustomJoinState *cjs, List *ancestors, ExplainState *es)
+{
+	ListCell   *cell;
+	const char *label =
+		(list_length(cjs->custom_ps) != 1 ? "children" : "child");
+
+	foreach(cell, cjs->custom_ps)
 		ExplainNode((PlanState *) lfirst(cell), ancestors, label, NULL, es);
 }
 

@@ -238,6 +238,10 @@ ExecReScan(PlanState *node)
 			ExecReScanCustomScan((CustomScanState *) node);
 			break;
 
+		case T_CustomJoinState:
+			ExecReScanCustomJoin((CustomJoinState *) node);
+			break;
+
 		case T_NestLoopState:
 			ExecReScanNestLoop((NestLoopState *) node);
 			break;

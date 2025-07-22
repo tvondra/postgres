@@ -2138,7 +2138,7 @@ typedef struct CustomScanState
 								 * nodes/extensible.h */
 	List	   *custom_ps;		/* list of child PlanState nodes, if any */
 	Size		pscan_len;		/* size of parallel coordination information */
-	const struct CustomExecMethods *methods;
+	const struct CustomScanExecMethods *methods;
 	const struct TupleTableSlotOps *slotOps;
 } CustomScanState;
 
@@ -2274,6 +2274,17 @@ typedef struct HashJoinState
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
 } HashJoinState;
+
+typedef struct CustomJoinState
+{
+	JoinState	js;
+	uint32		flags;			/* mask of CUSTOMPATH_* flags, see
+								 * nodes/extensible.h */
+	List	   *custom_ps;		/* list of child PlanState nodes, if any */
+	Size		pscan_len;		/* size of parallel coordination information */
+	const struct CustomJoinExecMethods *methods;
+	const struct TupleTableSlotOps *slotOps;
+} CustomJoinState;
 
 
 /* ----------------------------------------------------------------

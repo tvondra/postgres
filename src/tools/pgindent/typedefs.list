@@ -578,7 +578,11 @@ CteState
 CtlCommand
 CtxtHandle
 CurrentOfExpr
-CustomExecMethods
+CustomJoin
+CustomJoinMethods
+CustomJoinState
+CustomJoinExecMethods
+CustomScanExecMethods
 CustomOutPtrType
 CustomPath
 CustomScan

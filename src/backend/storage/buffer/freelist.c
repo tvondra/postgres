@@ -1108,3 +1108,47 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 
 	return true;
 }
+
+void
+FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actually_free)
+{
+	BufferStrategyFreelist *freelist;
+	int			cur;
+
+	/* stats */
+	uint64		cnt_remain = 0;
+	uint64		cnt_free = 0;
+
+	Assert((idx >= 0) && (idx < StrategyControl->num_partitions));
+
+	freelist = &StrategyControl->freelists[idx];
+
+	/* stat*/
+	SpinLockAcquire(&freelist->freelist_lock);
+
+	*consumed = freelist->consumed;
+
+	cur = freelist->firstFreeBuffer;
+	while (cur >= 0)
+	{
+		uint32		local_buf_state;
+		BufferDesc *buf;
+
+		buf = GetBufferDescriptor(cur);
+
+		cnt_remain++;
+
+		local_buf_state = LockBufHdr(buf);
+
+		if (!(local_buf_state & BM_TAG_VALID))
+			cnt_free++;
+
+		UnlockBufHdr(buf, local_buf_state);
+
+		cur = buf->freeNext;
+	}
+	SpinLockRelease(&freelist->freelist_lock);
+
+	*remain = cnt_remain;
+	*actually_free = cnt_free;
+}

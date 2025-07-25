@@ -622,7 +622,7 @@ freelist_before_shmem_exit(int code, Datum arg)
 
 			cur = buf->freeNext;
 		}
-		elog(LOG, "freelist partition %d, firstF: %d: consumed: %lu, remain: %lu, actually free: %lu",
+		elog(LOG, "NUMA: freelist partition %d, firstF: %d: consumed: %lu, remain: %lu, actually free: %lu",
 			 p,
 			 freelist->firstFreeBuffer,
 			 freelist->consumed,

@@ -158,6 +158,11 @@ PGProcShmemSize(void)
 	 * If PGPROC partitioning is enabled, and we decided it's possible, we
 	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
 	 * processes) to allow proper alignment.
+	 *
+	 * XXX This is a a bit wasteful, because it might actually add pages
+	 * even when not strictly needed (if it's already aligned). And we
+	 * always assume we'll add a whole page, even if the alignment needs
+	 * only less memory.
 	 */
 	if (numa_procs_interleave && numa_can_partition)
 	{
@@ -196,6 +201,11 @@ FastPathLockShmemSize(void)
 	 * If PGPROC partitioning is enabled, and we decided it's possible, we
 	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
 	 * processes) to allow proper alignment.
+	 *
+	 * XXX This is a a bit wasteful, because it might actually add pages
+	 * even when not strictly needed (if it's already aligned). And we
+	 * always assume we'll add a whole page, even if the alignment needs
+	 * only less memory.
 	 */
 	if (numa_procs_interleave && numa_can_partition)
 	{
@@ -497,9 +507,6 @@ InitProcGlobal(void)
 		/* don't overflow the allocation */
 		Assert(fpPtr <= fpEndPtr);
 	}
-
-	/* Should have consumed exactly the expected amount of fast-path memory. */
-	Assert(fpPtr == fpEndPtr);
 
 	for (i = 0; i < TotalProcs; i++)
 	{

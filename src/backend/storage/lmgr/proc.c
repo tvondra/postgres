@@ -2382,10 +2382,10 @@ pgproc_partitions_prepare(void)
 
 	numa_procs_per_node = (MaxBackends + (numa_nodes - 1)) / numa_nodes;
 
-	Assert(numa_nodes * numa_procs_per_node > MaxBackends);
-
 	elog(LOG, "NUMA: pgproc backends %d num_nodes %d per_node %d",
 		 MaxBackends, numa_nodes, numa_procs_per_node);
+
+	Assert(numa_nodes * numa_procs_per_node >= MaxBackends);
 
 	/* success */
 	numa_can_partition = true;

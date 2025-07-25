@@ -113,6 +113,15 @@ static char *fastpath_partition_init(char *ptr, int num_procs,
 									 int allprocs_index, int node,
 									 Size fpLockBitsSize, Size fpRelIdSize);
 
+typedef struct PGProcPartition
+{
+	int		num_procs;
+	int		numa_node;
+	void   *pgproc_ptr;
+	void   *fastpath_ptr;
+} PGProcPartition;
+
+static PGProcPartition *partitions = NULL;
 
 /*
  * Report shared-memory space needed by PGPROC.
@@ -168,6 +177,17 @@ PGProcShmemSize(void)
 	{
 		Assert(numa_nodes > 0);
 		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
+
+		/*
+		 * Also account for a small registry of partitions, a simple array
+		 * of partitions at the beginning.
+		 */
+		size = add_size(size, mul_size((numa_nodes + 1), sizeof(PGProcPartition)));
+	}
+	else
+	{
+		/* otherwise add only a tiny registry, with a single partition */
+		size = add_size(size, sizeof(PGProcPartition));
 	}
 
 	return size;
@@ -352,6 +372,14 @@ InitProcGlobal(void)
 		int		total_procs = 0;
 
 		Assert(numa_procs_per_node > 0);
+		Assert(numa_nodes > 0);
+
+		/*
+		 * Now initialize the PGPROC partition registry with one partitoion
+		 * per NUMA node.
+		 */
+		partitions = (PGProcPartition *) ptr;
+		ptr += (numa_nodes * sizeof(PGProcPartition));
 
 		/* build PGPROC entries for NUMA nodes */
 		for (i = 0; i < numa_nodes; i++)
@@ -361,6 +389,11 @@ InitProcGlobal(void)
 
 			/* make sure to align the PGPROC array to memory page */
 			ptr = (char *) TYPEALIGN(numa_page_size, ptr);
+
+			/* fill in the partition info */
+			partitions[i].num_procs = node_procs;
+			partitions[i].numa_node = i;
+			partitions[i].pgproc_ptr = ptr;
 
 			ptr = pgproc_partition_init(ptr, node_procs, total_procs, i);
 
@@ -381,6 +414,11 @@ InitProcGlobal(void)
 		/* make sure to align the PGPROC array to memory page */
 		ptr = (char *) TYPEALIGN(numa_page_size, ptr);
 
+		/* fill in the partition info */
+		partitions[numa_nodes].num_procs = node_procs;
+		partitions[numa_nodes].numa_node = -1;
+		partitions[numa_nodes].pgproc_ptr = ptr;
+
 		ptr = pgproc_partition_init(ptr, node_procs, total_procs, -1);
 
 		total_procs += node_procs;
@@ -392,8 +430,20 @@ InitProcGlobal(void)
 	}
 	else
 	{
+		/*
+		 * Now initialize the PGPROC partition registry with a single
+		 * partition for all the procs.
+		 */
+		partitions = (PGProcPartition *) ptr;
+		ptr += sizeof(PGProcPartition);
+
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);
+
+		/* fill in the partition info */
+		partitions[0].num_procs = TotalProcs;
+		partitions[0].numa_node = -1;
+		partitions[0].pgproc_ptr = ptr;
 
 		/* don't overflow the allocation */
 		Assert((ptr > (char *) procs) && (ptr <= (char *) procs + requestSize));
@@ -468,6 +518,10 @@ InitProcGlobal(void)
 			/* make sure to align the PGPROC array to memory page */
 			fpPtr = (char *) TYPEALIGN(mem_page_size, fpPtr);
 
+			/* remember this pointer too */
+			partitions[i].fastpath_ptr = fpPtr;
+			Assert(node_procs == partitions[i].num_procs);
+
 			fpPtr = fastpath_partition_init(fpPtr, node_procs, total_procs, i,
 											fpLockBitsSize, fpRelIdSize);
 
@@ -488,6 +542,10 @@ InitProcGlobal(void)
 		/* make sure to align the PGPROC array to memory page */
 		fpPtr = (char *) TYPEALIGN(numa_page_size, fpPtr);
 
+		/* remember this pointer too */
+		partitions[numa_nodes].fastpath_ptr = fpPtr;
+		Assert(node_procs == partitions[numa_nodes].num_procs);
+
 		fpPtr = fastpath_partition_init(fpPtr, node_procs, total_procs, -1,
 										fpLockBitsSize, fpRelIdSize);
 
@@ -500,6 +558,10 @@ InitProcGlobal(void)
 	}
 	else
 	{
+		/* remember this pointer too */
+		partitions[0].fastpath_ptr = fpPtr;
+		Assert(TotalProcs == partitions[0].num_procs);
+
 		/* just treat everything as a single array, with no alignment */
 		fpPtr = fastpath_partition_init(fpPtr, TotalProcs, 0, -1,
 										fpLockBitsSize, fpRelIdSize);
@@ -2505,4 +2567,26 @@ fastpath_partition_init(char *ptr, int num_procs, int allprocs_index, int node,
 	Assert(ptr == endptr);
 
 	return endptr;
+}
+
+int
+ProcPartitionCount(void)
+{
+	if (numa_procs_interleave && numa_can_partition)
+		return (numa_nodes + 1);
+
+	return 1;
+}
+
+void
+ProcPartitionGet(int idx, int *node, int *nprocs, void **procsptr, void **fpptr)
+{
+	PGProcPartition *part = &partitions[idx];
+
+	Assert((idx >= 0) && (idx < ProcPartitionCount()));
+
+	*nprocs = part->num_procs;
+	*procsptr = part->pgproc_ptr;
+	*fpptr = part->fastpath_ptr;
+	*node = part->numa_node;
 }

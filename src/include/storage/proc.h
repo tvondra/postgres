@@ -525,4 +525,7 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
 
+extern int ProcPartitionCount(void);
+extern void ProcPartitionGet(int idx, int *node, int *nprocs, void **procsptr, void **fpptr);
+
 #endif							/* _PROC_H_ */

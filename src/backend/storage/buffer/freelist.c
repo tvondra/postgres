@@ -1240,9 +1240,11 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 }
 
 void
-FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actually_free)
+FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actually_free,
+						 uint32 *complete_passes, uint32 *buffer_allocs, uint32 *next_victim_buffer)
 {
 	BufferStrategyFreelist *freelist;
+	ClockSweep			   *sweep;
 	int			cur;
 
 	/* stats */
@@ -1252,6 +1254,7 @@ FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actu
 	Assert((idx >= 0) && (idx < StrategyControl->num_partitions));
 
 	freelist = &StrategyControl->freelists[idx];
+	sweep = &StrategyControl->sweeps[idx];
 
 	/* stat*/
 	SpinLockAcquire(&freelist->freelist_lock);
@@ -1281,4 +1284,11 @@ FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actu
 
 	*remain = cnt_remain;
 	*actually_free = cnt_free;
+
+	/* get the clocksweep stats too */
+	*complete_passes = sweep->completePasses;
+	*buffer_allocs = pg_atomic_read_u32(&sweep->numBufferAllocs);
+	*next_victim_buffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
+
+	*next_victim_buffer = sweep->firstBuffer + (*next_victim_buffer % sweep->numBuffers);
 }

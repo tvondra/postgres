@@ -125,6 +125,14 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
+	index_get_prefetch_stats(scandesc,
+				 &node->iss_PrefetchAccum,
+				 &node->iss_PrefetchCount,
+				 &node->iss_PrefetchStalls,
+				 &node->iss_ResetCount,
+				 &node->iss_SkipCount,
+				 node->iss_PrefetchHistogram);
+
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
@@ -1087,6 +1095,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	{
 		indexstate->iss_RuntimeContext = NULL;
 	}
+
+	indexstate->iss_PrefetchAccum = 0;
+	indexstate->iss_PrefetchCount = 0;
+	indexstate->iss_PrefetchStalls = 0;
+	indexstate->iss_ResetCount = 0;
+	indexstate->iss_SkipCount = 0;
+	memset(indexstate->iss_PrefetchHistogram, 0, sizeof(indexstate->iss_PrefetchHistogram));
 
 	/*
 	 * all done.

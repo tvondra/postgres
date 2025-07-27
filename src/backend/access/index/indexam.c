@@ -375,6 +375,17 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 }
 
+void
+index_get_prefetch_stats(IndexScanDesc scan, int *accum, int *count, int *stalls, int *resets, int *skips, int *histogram)
+{
+	/* ugly */
+	if (scan->xs_heapfetch->rs != NULL)
+	{
+		read_stream_prefetch_stats(scan->xs_heapfetch->rs,
+					   accum, count, stalls, resets, skips, histogram);
+	}
+}
+
 /* ----------------
  *		index_endscan - end a scan
  * ----------------

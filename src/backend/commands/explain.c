@@ -3898,8 +3898,13 @@ static void
 show_index_prefetch_info(PlanState *planstate, ExplainState *es)
 {
 	Plan	   *plan = planstate->plan;
-	bool		prefetch = false;
-	float		distance = 0;
+
+	int	count = 0,
+		accum = 0,
+		stalls = 0,
+		resets = 0,
+		skips = 0;
+	int    *hist = NULL;
 
 	if (!es->analyze)
 		return;
@@ -3914,35 +3919,46 @@ show_index_prefetch_info(PlanState *planstate, ExplainState *es)
 			{
 				IndexScanState *indexstate = ((IndexScanState *) planstate);
 
-				if (indexstate->iss_ScanDesc)
-				{
-					prefetch = (indexstate->iss_ScanDesc->xs_rs != NULL);
+				count = indexstate->iss_PrefetchCount;
+				accum = indexstate->iss_PrefetchAccum;
+				stalls = indexstate->iss_PrefetchStalls;
+				resets = indexstate->iss_ResetCount;
+				skips = indexstate->iss_SkipCount;
+				hist = indexstate->iss_PrefetchHistogram;
 
-					if (indexstate->iss_ScanDesc->xs_rs)
-						distance = (indexstate->iss_ScanDesc->xs_rs_distance / (float) Max(1, indexstate->iss_ScanDesc->xs_rs_count));
-				}
-				break;
-			}
-		case T_IndexOnlyScan:
-			{
-				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
-
-				if (indexstate->ioss_ScanDesc)
-				{
-					prefetch = (indexstate->ioss_ScanDesc->xs_rs != NULL);
-
-					if (indexstate->ioss_ScanDesc->xs_rs)
-						distance = (indexstate->ioss_ScanDesc->xs_rs_distance / (float) Max(1, indexstate->ioss_ScanDesc->xs_rs_count));
-				}
 				break;
 			}
 		default:
 			break;
 	}
 
-	/* Next get the sum of the counters set within each and every process */
-	ExplainPropertyBool("Index Prefetch", prefetch, es);
-	ExplainPropertyFloat("Index Distance", NULL, distance, 1, es);
+	if (count > 0)
+	{
+		bool first = true;
+
+		ExplainPropertyFloat("Prefetch Distance", NULL, (accum * 1.0 / count), 3, es);
+		ExplainPropertyUInteger("Prefetch Count", NULL, count, es);
+		ExplainPropertyUInteger("Prefetch Stalls", NULL, stalls, es);
+		ExplainPropertyUInteger("Prefetch Skips", NULL, skips, es);
+		ExplainPropertyUInteger("Prefetch Resets", NULL, resets, es);
+
+		ExplainIndentText(es);
+		appendStringInfoString(es->str, "Prefetch Histogram: ");
+		for (int i = 0; i < 16; i++)
+		{
+			if (hist[i] == 0)
+				continue;
+
+			if (!first)
+				appendStringInfoString(es->str, ", ");
+
+			appendStringInfo(es->str, "[%d,%d) => %d", (1 << i), (1 << (i+1)), hist[i]);
+
+			first = false;
+		}
+		appendStringInfoString(es->str, "\n");
+
+	}
 }
 
 /*

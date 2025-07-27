@@ -1722,6 +1722,13 @@ typedef struct IndexScanState
 	IndexScanInstrumentation iss_Instrument;
 	SharedIndexScanInstrumentation *iss_SharedInfo;
 
+	int		iss_PrefetchAccum;
+	int		iss_PrefetchCount;
+	int		iss_PrefetchStalls;
+	int		iss_ResetCount;
+	int		iss_SkipCount;
+	int		iss_PrefetchHistogram[16];
+
 	/* These are needed for re-checking ORDER BY expr ordering */
 	pairingheap *iss_ReorderQueue;
 	bool		iss_ReachedEnd;

@@ -428,7 +428,10 @@ bt_stream_read_next(ReadStream *stream,
 
 		/* don't return the same block twice (and remember this one) */
 		if (so->lastBlock == block)
+		{
+			read_stream_skip_block(stream);
 			block = InvalidBlockNumber;
+		}
 
 		/* Did we find a valid block? If yes, we're done. */
 		if (block != InvalidBlockNumber)

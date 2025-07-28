@@ -17,6 +17,11 @@
 extern PGDLLIMPORT int pg_numa_init(void);
 extern PGDLLIMPORT int pg_numa_query_pages(int pid, unsigned long count, void **pages, int *status);
 extern PGDLLIMPORT int pg_numa_get_max_node(void);
+extern PGDLLIMPORT Size pg_numa_page_size(void);
+
+extern PGDLLIMPORT int numa_flags;
+
+#define		NUMA_BUFFERS		0x01
 
 #ifdef USE_LIBNUMA
 

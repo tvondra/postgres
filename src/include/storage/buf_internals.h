@@ -321,6 +321,7 @@ typedef struct WritebackContext
 
 /* in buf_init.c */
 extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;
+extern PGDLLIMPORT BufferPartitions *BufferPartitionsArray;
 extern PGDLLIMPORT ConditionVariableMinimallyPadded *BufferIOCVArray;
 extern PGDLLIMPORT WritebackContext BackendWritebackContext;
 
@@ -479,5 +480,10 @@ extern void DropRelationLocalBuffers(RelFileLocator rlocator,
 									 BlockNumber *firstDelBlock);
 extern void DropRelationAllLocalBuffers(RelFileLocator rlocator);
 extern void AtEOXact_LocalBuffers(bool isCommit);
+
+extern int	BufferPartitionCount(void);
+extern void BufferPartitionGet(int idx, int *node, int *num_buffers,
+							   int *first_buffer, int *last_buffer);
+extern void BufferPartitionParams(int *num_partitions, int *num_nodes);
 
 #endif							/* BUFMGR_INTERNALS_H */

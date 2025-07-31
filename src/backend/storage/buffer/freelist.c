@@ -61,7 +61,7 @@ typedef struct BufferStrategyFreelist
  * (or some other parameter).
  */
 #define MIN_FREELIST_PARTITIONS		4
-
+#define MAX_FREELIST_PARTITIONS		16
 /*
  * Information about one partition of the ClockSweep (on a subset of buffers).
  *
@@ -93,6 +93,19 @@ typedef struct
 	 */
 	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
+
+	/*
+	 * Weights to balance buffer allocations for all the partitions. Each
+	 * partition gets a vector of weights 0-100, determining what fraction
+	 * of buffers to allocate from that particular. So [75, 15, 5, 5] would
+	 * mean 75% allocations should go from partition 0, 15% from partition
+	 * 1, and 5% from partitions 2&3. Each partition gets a different vector
+	 * of weights.
+	 *
+	 * XXX Allocate a fixed-length array, to simplify working with array of
+	 * the structs, etc.
+	 */
+	uint8		balance[MAX_FREELIST_PARTITIONS];
 } ClockSweep;
 
 /*
@@ -162,6 +175,10 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 static ClockSweep *ChooseClockSweep(void);
 
+/* used to balancing clocksweep partitions */
+static int clocksweep_partition = -1;
+static int clocksweep_count = 0;
+
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
  *
@@ -173,6 +190,8 @@ ClockSweepTick(void)
 {
 	uint32		victim;
 	ClockSweep *sweep = ChooseClockSweep();
+
+	--clocksweep_count;
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
@@ -304,8 +323,27 @@ static ClockSweep *
 ChooseClockSweep(void)
 {
 	int			index = calculate_partition_index();
+	ClockSweep *sweep = &StrategyControl->sweeps[index];
 
-	return &StrategyControl->sweeps[index];
+	/*
+	 * Now we know which sweep balancing weights to use. 
+	 */
+	while (clocksweep_count == 0)
+	{
+		if (clocksweep_partition == -1)
+		{
+			clocksweep_partition = index;
+			clocksweep_count = sweep->balance[clocksweep_partition];
+			continue;
+		}
+
+		clocksweep_partition = (clocksweep_partition + 1) % StrategyControl->num_partitions;
+		clocksweep_count = sweep->balance[clocksweep_partition];
+	}
+
+	Assert((clocksweep_partition >= 0) && (clocksweep_partition < StrategyControl->num_partitions));
+
+	return &StrategyControl->sweeps[clocksweep_partition];
 }
 
 /*
@@ -588,6 +626,133 @@ StrategyFreeBuffer(BufferDesc *buf)
 }
 
 /*
+ * rebalance the allocation weights for all the partitions
+ */
+void
+StrategySyncBalance(void)
+{
+	uint32 *allocs;
+	uint32	total_allocs = 0;
+	uint32	avg_allocs;
+	uint32	delta_allocs = 0;
+
+	allocs = palloc_array(uint32, StrategyControl->num_partitions);
+
+	/*
+	 * We lock the partitions one by one, so not exacly in sync, but that
+	 * should be fine. We're only looking for heuristics anyway.
+	 *
+	 * XXX Does this need to worry about the completePasses too?
+	 */
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		SpinLockAcquire(&sweep->clock_sweep_lock);
+
+		allocs[i] = pg_atomic_read_u32(&sweep->numBufferAllocs);
+		total_allocs += allocs[i];
+
+		SpinLockRelease(&sweep->clock_sweep_lock);
+	}
+
+	/*
+	 * The "fair share" of allocations per partition.
+	 *
+	 * XXX The last partition could be smaller, this should reflect that so
+	 * that it gets fewer allocations. But for now a simple average is OK.
+	 */
+	avg_allocs = (total_allocs / StrategyControl->num_partitions);
+
+	/*
+	 * Do nothing when not enough activity.
+	 *
+	 * XXX The threshold of 100 allocation is pretty arbitrary.
+	 */
+	if (avg_allocs < 100)
+		return;
+
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		if (allocs[i] > avg_allocs)
+			delta_allocs += (allocs[i] - avg_allocs);
+	}
+elog(LOG, "------------------------------------");
+	/*
+	 * Go through the partitions, and compare the allocations to the fair
+	 * share (average). If a partition has fewer allocations, it should
+	 * allocate 100% from itself and don't forward anything to the other
+	 * partitions.
+	 *
+	 * XXX This is not quite right, because it ignores what fraction of
+	 * allocations is *currently* forwarded to the other partitions. It
+	 * may happen that 90% went elsewhere, so if we now direct 100% to
+	 * the partition, it'll be much more than fair share. But after a
+	 * while it should settle.
+	 *
+	 * XXX We should add hysteresis, to "dampen" the changes, and make
+	 * sure it does not oscillate too much.
+	 *
+	 * XXX We could also track more detailed stats, e.g. track how many
+	 * allocations "originating" on this partition were redirected, etc.
+	 *
+	 * XXX Or we could treat this as a matrix equation Ax=b, with [A,b]
+	 * known (weights and allocs), and calculate x.
+	 *
+	 * XXX Ideally, the alternative partitions to use first would be the
+	 * other partitions for the same node (if any).
+	 */
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		SpinLockAcquire(&sweep->clock_sweep_lock);
+
+		/* start from scratch */
+		memset(sweep->balance, 0, sizeof(uint8) * MAX_FREELIST_PARTITIONS);
+
+		/* shift 100% to this partition */
+		if (allocs[i] < avg_allocs)
+		{
+			sweep->balance[i] = 100;
+		}
+		else
+		{
+			/* fraction of the "total" delta */
+			uint32	delta = (allocs[i] - avg_allocs);
+			double	frac = delta * 1.0 / delta_allocs;
+
+			for (int j = 0; j < StrategyControl->num_partitions; j++)
+			{
+				if (i == j)
+					sweep->balance[j] = (100.0 * avg_allocs / allocs[i]);
+				else if (allocs[j] < avg_allocs)
+					sweep->balance[j] = (100.0 * frac * (avg_allocs - allocs[j]) / allocs[i]);
+				/* nothing for partitions with less than avg_allocs */
+			}
+		}
+
+		SpinLockRelease(&sweep->clock_sweep_lock);
+	}
+
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		StringInfoData	str;
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		initStringInfo(&str);
+
+		for (int j = 0; j < StrategyControl->num_partitions; j++)
+		{
+			appendStringInfo(&str, "%d ", sweep->balance[j]);
+		}
+
+		elog(LOG, "sweep %d allocs %d balance %s", i, allocs[i], str.data);
+	}
+	elog(LOG, "------------------------------------");
+}
+
+/*
  * StrategySyncStart -- prepare for sync of all partitions
  *
  * Determine the number of clocksweep partitions, and calculate the recent
@@ -854,6 +1019,18 @@ StrategyInitialize(bool init)
 			/* Clear statistics */
 			StrategyControl->sweeps[i].completePasses = 0;
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBufferAllocs, 0);
+
+			/*
+			 * Initialize the weights - start by allocating 100% buffers from
+			 * the current node / partition.
+			 */
+			for (int j = 0; j < MAX_FREELIST_PARTITIONS; j++)
+			{
+				if (i == j)
+					StrategyControl->sweeps[i].balance[i] = 100;
+				else
+					StrategyControl->sweeps[i].balance[j] = 0;
+			}
 		}
 
 		/* No pending notification */

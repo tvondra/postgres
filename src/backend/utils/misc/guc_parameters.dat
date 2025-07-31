@@ -3214,6 +3214,13 @@
   options => 'default_toast_compression_options',
 },
 
+{ name => 'temp_file_compression', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Sets the default compression method for temporary files.',
+  variable => 'temp_file_compression',
+  boot_val => 'TEMP_NONE_COMPRESSION',
+  options => 'temp_file_compression_options',
+},
+
 { name => 'default_transaction_isolation', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the transaction isolation level of each new transaction.',
   variable => 'DefaultXactIsoLevel',

@@ -182,6 +182,7 @@
 
 #max_notify_queue_pages = 1048576	# limits the number of SLRU pages allocated
 					# for NOTIFY / LISTEN queue
+#temp_file_compression = 'no'		# enables temporary files compression
 
 # - Kernel Resources -
 

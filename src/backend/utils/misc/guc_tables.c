@@ -78,6 +78,7 @@
 #include "replication/syncrep.h"
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
+#include "storage/buffile.h"
 #include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/io_worker.h"
@@ -460,6 +461,18 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 	{"pglz", TOAST_PGLZ_COMPRESSION, false},
 #ifdef  USE_LZ4
 	{"lz4", TOAST_LZ4_COMPRESSION, false},
+#endif
+	{NULL, 0, false}
+};
+
+/*
+ * pglz and zstd support should be added as future enhancement
+ */
+static const struct config_enum_entry temp_file_compression_options[] = {
+	{"no", TEMP_NONE_COMPRESSION, false},
+	{"pglz", TEMP_PGLZ_COMPRESSION, false},
+#ifdef  USE_LZ4
+	{"lz4", TEMP_LZ4_COMPRESSION, false},
 #endif
 	{NULL, 0, false}
 };

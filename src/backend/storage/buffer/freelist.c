@@ -94,6 +94,9 @@ typedef struct
 	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
+	/* Buffers that should have been allocated in this partition (but might have been redirected) */
+	pg_atomic_uint32 numBalanceAllocs;
+
 	/*
 	 * Weights to balance buffer allocations for all the partitions. Each
 	 * partition gets a vector of weights 0-100, determining what fraction
@@ -173,7 +176,7 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 									 uint32 *buf_state);
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
-static ClockSweep *ChooseClockSweep(void);
+static ClockSweep *ChooseClockSweep(bool balance);
 
 /* used to balancing clocksweep partitions */
 static int clocksweep_partition = -1;
@@ -189,9 +192,7 @@ static inline uint32
 ClockSweepTick(void)
 {
 	uint32		victim;
-	ClockSweep *sweep = ChooseClockSweep();
-
-	--clocksweep_count;
+	ClockSweep *sweep = ChooseClockSweep(true);
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
@@ -320,28 +321,34 @@ calculate_partition_index()
  * and that's cheaper. But how would that deal with odd number of nodes?
  */
 static ClockSweep *
-ChooseClockSweep(void)
+ChooseClockSweep(bool balance)
 {
-	int			index = calculate_partition_index();
-	ClockSweep *sweep = &StrategyControl->sweeps[index];
+	if (clocksweep_partition == -1)
+		clocksweep_partition = calculate_partition_index();
 
-	/*
-	 * Now we know which sweep balancing weights to use. 
-	 */
-	while (clocksweep_count == 0)
+	if (balance)
 	{
-		if (clocksweep_partition == -1)
+		/* Determine which sweep balancing weights to use. */
+		int	index = calculate_partition_index();
+		ClockSweep *sweep = &StrategyControl->sweeps[index];
+
+		while (clocksweep_count == 0)
 		{
-			clocksweep_partition = index;
+			clocksweep_partition
+				= (clocksweep_partition + 1) % StrategyControl->num_partitions;
+
 			clocksweep_count = sweep->balance[clocksweep_partition];
-			continue;
 		}
 
-		clocksweep_partition = (clocksweep_partition + 1) % StrategyControl->num_partitions;
-		clocksweep_count = sweep->balance[clocksweep_partition];
-	}
+		/* account for the allocation */
+		--clocksweep_count;
 
-	Assert((clocksweep_partition >= 0) && (clocksweep_partition < StrategyControl->num_partitions));
+		/* account for the alloc in the "target" partition */
+		pg_atomic_fetch_add_u32(&sweep->numBalanceAllocs, 1);
+
+		Assert((clocksweep_partition >= 0) &&
+			   (clocksweep_partition < StrategyControl->num_partitions));
+	}
 
 	return &StrategyControl->sweeps[clocksweep_partition];
 }
@@ -462,7 +469,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 * the rate of buffer consumption.  Note that buffers recycled by a
 	 * strategy object are intentionally not counted here.
 	 */
-	pg_atomic_fetch_add_u32(&ChooseClockSweep()->numBufferAllocs, 1);
+	pg_atomic_fetch_add_u32(&ChooseClockSweep(false)->numBufferAllocs, 1);
 
 	/*
 	 * First check, without acquiring the lock, whether there's buffers in the
@@ -635,6 +642,7 @@ StrategySyncBalance(void)
 	uint32	total_allocs = 0;
 	uint32	avg_allocs;
 	uint32	delta_allocs = 0;
+	uint32	min_allocs, max_allocs;
 
 	allocs = palloc_array(uint32, StrategyControl->num_partitions);
 
@@ -650,10 +658,21 @@ StrategySyncBalance(void)
 
 		SpinLockAcquire(&sweep->clock_sweep_lock);
 
-		allocs[i] = pg_atomic_read_u32(&sweep->numBufferAllocs);
+		allocs[i] = pg_atomic_exchange_u32(&sweep->numBalanceAllocs, 0);
 		total_allocs += allocs[i];
 
 		SpinLockRelease(&sweep->clock_sweep_lock);
+
+		if (i == 0)
+		{
+			min_allocs = allocs[i];
+			max_allocs = allocs[i];
+		}
+		else
+		{
+			min_allocs = Min(min_allocs, allocs[i]);
+			max_allocs = Max(max_allocs, allocs[i]);
+		}
 	}
 
 	/*
@@ -672,12 +691,20 @@ StrategySyncBalance(void)
 	if (avg_allocs < 100)
 		return;
 
+	/*
+	 * Do nothing if not too unbalanced. When withing 25% of the average.
+	 *
+	 * XXX the threshold is arbitrary
+	 */
+	if ((min_allocs >= avg_allocs * 0.75) && (max_allocs < avg_allocs * 1.25))
+		return;
+
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		if (allocs[i] > avg_allocs)
 			delta_allocs += (allocs[i] - avg_allocs);
 	}
-elog(LOG, "------------------------------------");
+
 	/*
 	 * Go through the partitions, and compare the allocations to the fair
 	 * share (average). If a partition has fewer allocations, it should
@@ -735,10 +762,12 @@ elog(LOG, "------------------------------------");
 		SpinLockRelease(&sweep->clock_sweep_lock);
 	}
 
+	elog(LOG, "------------------------------------");
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		StringInfoData	str;
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
+		uint32 part_allocs = pg_atomic_read_u32(&sweep->numBufferAllocs);
 
 		initStringInfo(&str);
 
@@ -747,7 +776,7 @@ elog(LOG, "------------------------------------");
 			appendStringInfo(&str, "%d ", sweep->balance[j]);
 		}
 
-		elog(LOG, "sweep %d allocs %d balance %s", i, allocs[i], str.data);
+		elog(LOG, "sweep %d allocs %d (%d) balance %s", i, allocs[i], part_allocs, str.data);
 	}
 	elog(LOG, "------------------------------------");
 }
@@ -1019,6 +1048,7 @@ StrategyInitialize(bool init)
 			/* Clear statistics */
 			StrategyControl->sweeps[i].completePasses = 0;
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBufferAllocs, 0);
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBalanceAllocs, 0);
 
 			/*
 			 * Initialize the weights - start by allocating 100% buffers from

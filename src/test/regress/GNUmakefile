@@ -94,6 +94,10 @@ installdirs-tests: installdirs
 REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 \
 	$(EXTRA_REGRESS_OPTS)
 
+ifeq ($(with_lz4),yes)
+override EXTRA_TESTS := $(EXTRA_TESTS) join_hash_lz4
+endif
+
 check: all
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 

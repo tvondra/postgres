@@ -15,7 +15,6 @@ test: test_setup
 # The first group of parallel tests
 # ----------
 test: boolean char name varchar text int2 int4 int8 oid float4 float8 bit numeric txid uuid enum money rangetypes pg_lsn regproc
-
 # ----------
 # The second group of parallel tests
 # multirangetypes depends on rangetypes
@@ -140,3 +139,6 @@ test: fast_default
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
 test: tablespace
+
+# this test is equivalent to join_hash test just the compression is enabled
+test: join_hash_pglz

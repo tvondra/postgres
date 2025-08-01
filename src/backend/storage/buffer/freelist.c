@@ -94,8 +94,11 @@ typedef struct
 	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
-	/* Buffers that should have been allocated in this partition (but might have been redirected) */
-	pg_atomic_uint32 numBalanceAllocs;
+	/*
+	 * Buffers that should have been allocated in this partition (but might
+	 * have been redirected to keep allocations balanced).
+	 */
+	pg_atomic_uint32 numRequestedAllocs;
 
 	/*
 	 * Weights to balance buffer allocations for all the partitions. Each
@@ -344,7 +347,7 @@ ChooseClockSweep(bool balance)
 		--clocksweep_count;
 
 		/* account for the alloc in the "target" partition */
-		pg_atomic_fetch_add_u32(&sweep->numBalanceAllocs, 1);
+		pg_atomic_fetch_add_u32(&sweep->numRequestedAllocs, 1);
 
 		Assert((clocksweep_partition >= 0) &&
 			   (clocksweep_partition < StrategyControl->num_partitions));
@@ -633,72 +636,100 @@ StrategyFreeBuffer(BufferDesc *buf)
 }
 
 /*
- * rebalance the allocation weights for all the partitions
+ * StrategySyncBalance
+ *		update partition weights, to balance the buffer allocations
+ *
+ * We want to give preference to allocating buffers on the same NUMA node,
+ * but that might lead to imbalance - a single process would only use a
+ * fraction of shared buffers. We don't want that, we want to utilize the
+ * whole shared buffers. The number of allocations in each partition may
+ * also change over time, so we need to adapt to that.
+ *
+ * To allow this "adaptive balancing", each partition has a set of weights,
+ * determining what fraction of allocations to direct to other partitions.
+ * For simplicity the coefficients are integers 0-100, expressing the
+ * percentage of allocations redirected to that partition.
+ *
+ * Consider for example weights [50, 25, 25, 0] for one of 4 partitions.
+ * This means 50% of allocations will be redirected to partition 0, 25%
+ * to partitions 1 and 2, and no allocations will go to partition 3.
+ *
+ * To calculate these weights, assume we know the number of allocations
+ * requested for each partition in the past interval. We can use this to
+ * calculate weights for the following interval, aiming to allocate the
+ * same (fair share) number of buffers from each partition.
+ *
+ * Note: This is based on number of allocations "originating" in a given
+ * partition. If an allocation is requested in a partition A, it's counted
+ * as allocation for A, even if it gets redirected to some other partition.
+ * The patch addes a new counter to track this.
+ *
+ * The main observation is that partitions get divided into two groups,
+ * depending on whether the number allocations is higher or lower than the
+ * target average. But the "total delta" for these two groups is the
+ * same, i.e. sum(abs(allocs - avg_allocs)) is the same. Therefore, the
+ * task is to "distribute" the excess allocations between the partitions
+ * with not enough allocations.
+ *
+ * Partitions with (nallocs < avg_nallocs) don't redirect any allocations.
+ *
+ * Partitions with (nallocs > avg_nallocs) redirect the extra allocations,
+ * with each target allocation getting a proportional part (with respect
+ * to the total delta).
+ *
+ * XXX In principle we might do without the new "requestedAllocs" counter,
+ * but we'd need to solve the matrix equation Ax=b, with [A,b] known
+ * (weights and allocs), and calculate x (requested allocs). But it's not
+ * quite clear this'd always have a solution.
  */
 void
 StrategySyncBalance(void)
 {
-	uint32 *allocs;
-	uint32	total_allocs = 0;
-	uint32	avg_allocs;
-	uint32	delta_allocs = 0;
-	uint32	min_allocs, max_allocs;
-
-	allocs = palloc_array(uint32, StrategyControl->num_partitions);
+	uint32 *allocs;				/* snapshot of allocs for partitions */
+	uint32	total_allocs = 0,	/* total number of allocations */
+			avg_allocs,			/* average allocations (per partition) */
+			delta_allocs = 0;	/* sum of allocs above average */
 
 	/*
-	 * We lock the partitions one by one, so not exacly in sync, but that
-	 * should be fine. We're only looking for heuristics anyway.
+	 * Collect the number of allocations requested in the past interval.
+	 * While at it, reset the counter to start the new interval.
+	 *
+	 * We lock the partitions one by one, so this is not exactly consistent
+	 * snapshot of the counts, and the resets happen before we update the
+	 * weights too. But we're only looking for heuristics anyway, so this
+	 * should be good enough.
+	 *
+	 * A similar issue applies to the counter reset - we haven't updated
+	 * the weights yet. Should be fine, we'll simply consider this in the
+	 * next balancing cycle.
 	 *
 	 * XXX Does this need to worry about the completePasses too?
 	 */
+	allocs = palloc_array(uint32, StrategyControl->num_partitions);
+
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 
-		SpinLockAcquire(&sweep->clock_sweep_lock);
+		/* no need for a spinlock */
+		allocs[i] = pg_atomic_exchange_u32(&sweep->numRequestedAllocs, 0);
 
-		allocs[i] = pg_atomic_exchange_u32(&sweep->numBalanceAllocs, 0);
 		total_allocs += allocs[i];
-
-		SpinLockRelease(&sweep->clock_sweep_lock);
-
-		if (i == 0)
-		{
-			min_allocs = allocs[i];
-			max_allocs = allocs[i];
-		}
-		else
-		{
-			min_allocs = Min(min_allocs, allocs[i]);
-			max_allocs = Max(max_allocs, allocs[i]);
-		}
 	}
 
 	/*
-	 * The "fair share" of allocations per partition.
+	 * Calculate the "fair share" of allocations per partition.
 	 *
-	 * XXX The last partition could be smaller, this should reflect that so
-	 * that it gets fewer allocations. But for now a simple average is OK.
+	 * XXX The last partition could be smaller, in which case it should be
+	 * expected to handle fewer allocations. So this should be a weighted
+	 * average. But for now a simple average is good enough.
 	 */
 	avg_allocs = (total_allocs / StrategyControl->num_partitions);
 
 	/*
-	 * Do nothing when not enough activity.
-	 *
-	 * XXX The threshold of 100 allocation is pretty arbitrary.
+	 * Calculate the "delta" from balanced state, i.e. how many allocations
+	 * we'd need to redistribute.
 	 */
-	if (avg_allocs < 100)
-		return;
-
-	/*
-	 * Do nothing if not too unbalanced. When withing 25% of the average.
-	 *
-	 * XXX the threshold is arbitrary
-	 */
-	if ((min_allocs >= avg_allocs * 0.75) && (max_allocs < avg_allocs * 1.25))
-		return;
-
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		if (allocs[i] > avg_allocs)
@@ -706,25 +737,48 @@ StrategySyncBalance(void)
 	}
 
 	/*
-	 * Go through the partitions, and compare the allocations to the fair
-	 * share (average). If a partition has fewer allocations, it should
-	 * allocate 100% from itself and don't forward anything to the other
-	 * partitions.
+	 * Skip the rebalancing when there's not enough activity. In this case
+	 * we just keep the current weights.
 	 *
-	 * XXX This is not quite right, because it ignores what fraction of
-	 * allocations is *currently* forwarded to the other partitions. It
-	 * may happen that 90% went elsewhere, so if we now direct 100% to
-	 * the partition, it'll be much more than fair share. But after a
-	 * while it should settle.
+	 * XXX The threshold of 100 allocation is pretty arbitrary.
+	 *
+	 * XXX Maybe a better strategy would be to slowly return to the default
+	 * weights, with each partition allocation only from itself?
+	 *
+	 * XXX Maybe we shouldn't even reset the counters in this case? But it
+	 * should not matter, if the activity is low.
+	 */
+	if (avg_allocs < 100)
+		goto done;
+
+	/*
+	 * Likewise, skip rebalancing if the misbalance is not significant. We
+	 * consider it acceptable if the amount of allocations we'd need to
+	 * redistribute is less than 10% of the average.
+	 *
+	 * XXX Again, these threshold are rather arbitrary.
+	 */
+	if (delta_allocs < (avg_allocs * 0.1))
+		goto done;
+
+	/*
+	 * Got to do the rebalancing. Go through the partitions, and for each
+	 * partition decide if it gets to redirect or receive allocations.
+	 *
+	 * If a partition has fewer than average allocations, it won't redirect
+	 * any allocations to other partitions. So it only has a single non-zero
+	 * weight, and that's for itself.
+	 *
+	 * If a parttion has more than average allocations, it won't receive
+	 * any redirected allocations. Instead, the excess allocations are
+	 * redirected to the other partitions.
+	 *
+	 * The redistribution is "proportional" - if the excess allocations of
+	 * a partition represent 10% of the "delta", then each partition that
+	 * needs more allocations will get 10% of the gap from this one.
 	 *
 	 * XXX We should add hysteresis, to "dampen" the changes, and make
 	 * sure it does not oscillate too much.
-	 *
-	 * XXX We could also track more detailed stats, e.g. track how many
-	 * allocations "originating" on this partition were redirected, etc.
-	 *
-	 * XXX Or we could treat this as a matrix equation Ax=b, with [A,b]
-	 * known (weights and allocs), and calculate x.
 	 *
 	 * XXX Ideally, the alternative partitions to use first would be the
 	 * other partitions for the same node (if any).
@@ -733,35 +787,52 @@ StrategySyncBalance(void)
 	{
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 
+		/* lock, we're going to modify the balance weights */
 		SpinLockAcquire(&sweep->clock_sweep_lock);
 
-		/* start from scratch */
+		/* reset the weights to start from scratch */
 		memset(sweep->balance, 0, sizeof(uint8) * MAX_FREELIST_PARTITIONS);
 
-		/* shift 100% to this partition */
+		/* does this partition has fewer or more than avg_allocs? */
 		if (allocs[i] < avg_allocs)
 		{
+			/* fewer - don't redirect any allocations elsewhere */
 			sweep->balance[i] = 100;
 		}
 		else
 		{
-			/* fraction of the "total" delta */
-			uint32	delta = (allocs[i] - avg_allocs);
-			double	frac = delta * 1.0 / delta_allocs;
+			/*
+			 * more - redistribute the excess allocations
+			 *
+			 * Each "target" partition (with less than avg_allocs) should get
+			 * a fraction proportional to (excess/delta) from this one.
+			 */
 
+			/* fraction of the "total" delta */
+			double	delta_frac = (allocs[i] - avg_allocs) * 1.0 / delta_allocs;
+
+			/* keep just enough allocations to meet the target */
+			sweep->balance[i] = (100.0 * avg_allocs / allocs[i]);
+
+			/* redirect the extra allocations */
 			for (int j = 0; j < StrategyControl->num_partitions; j++)
 			{
-				if (i == j)
-					sweep->balance[j] = (100.0 * avg_allocs / allocs[i]);
-				else if (allocs[j] < avg_allocs)
-					sweep->balance[j] = (100.0 * frac * (avg_allocs - allocs[j]) / allocs[i]);
-				/* nothing for partitions with less than avg_allocs */
+				/* How many allocations to receive from i-th partition? */
+				uint32	receive_allocs = delta_frac * (avg_allocs - allocs[j]);
+
+				/* ignore partitions that don't need additional allocations */
+				if (allocs[j] > avg_allocs)
+					continue;
+
+				/* fraction to redirect */
+				sweep->balance[j] = (100.0 * receive_allocs / allocs[i]);
 			}
 		}
 
 		SpinLockRelease(&sweep->clock_sweep_lock);
 	}
 
+	/* debugging info - final weights */
 	elog(LOG, "------------------------------------");
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
@@ -779,6 +850,9 @@ StrategySyncBalance(void)
 		elog(LOG, "sweep %d allocs %d (%d) balance %s", i, allocs[i], part_allocs, str.data);
 	}
 	elog(LOG, "------------------------------------");
+
+done:
+	pfree(allocs);
 }
 
 /*
@@ -807,6 +881,7 @@ StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc)
 	{
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 
+		/* XXX we don't need the spinlock to read atomics, no? */
 		SpinLockAcquire(&sweep->clock_sweep_lock);
 		if (num_buf_alloc)
 		{
@@ -1048,7 +1123,7 @@ StrategyInitialize(bool init)
 			/* Clear statistics */
 			StrategyControl->sweeps[i].completePasses = 0;
 			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBufferAllocs, 0);
-			pg_atomic_init_u32(&StrategyControl->sweeps[i].numBalanceAllocs, 0);
+			pg_atomic_init_u32(&StrategyControl->sweeps[i].numRequestedAllocs, 0);
 
 			/*
 			 * Initialize the weights - start by allocating 100% buffers from

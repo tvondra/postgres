@@ -733,15 +733,10 @@ StrategySyncBalance(void)
 
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
-		uint32		x;
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 
 		/* no need for a spinlock */
 		allocs[i] = pg_atomic_exchange_u32(&sweep->numRequestedAllocs, 0);
-	
-		x = pg_atomic_read_u32(&sweep->numBufferAllocs);
-
-		elog(LOG, "%d => allocs %u %u", i, allocs[i], x);
 
 		total_allocs += allocs[i];
 	}
@@ -860,25 +855,6 @@ StrategySyncBalance(void)
 
 		SpinLockRelease(&sweep->clock_sweep_lock);
 	}
-
-	/* debugging info - final weights */
-	elog(LOG, "------------------------------------");
-	for (int i = 0; i < StrategyControl->num_partitions; i++)
-	{
-		StringInfoData	str;
-		ClockSweep *sweep = &StrategyControl->sweeps[i];
-		uint32 part_allocs = pg_atomic_read_u32(&sweep->numBufferAllocs);
-
-		initStringInfo(&str);
-
-		for (int j = 0; j < StrategyControl->num_partitions; j++)
-		{
-			appendStringInfo(&str, "%d ", sweep->balance[j]);
-		}
-
-		elog(LOG, "sweep %d allocs %d (%d) balance %s", i, allocs[i], part_allocs, str.data);
-	}
-	elog(LOG, "------------------------------------");
 
 done:
 	pfree(allocs);

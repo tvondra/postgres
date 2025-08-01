@@ -15,8 +15,8 @@ CREATE VIEW pg_buffercache_partitions AS
 	(partition integer,
 	 numa_node integer, num_buffers integer, first_buffer integer, last_buffer integer,
 	 buffers_consumed bigint, buffers_remain bigint, buffers_free bigint,
-	 complete_passes bigint, buffer_req_allocs bigint, buffer_allocs bigint,
-	 next_victim_buffer integer);
+	 complete_passes bigint, buffer_total_allocs bigint, buffer_req_allocs bigint,
+	 buffer_allocs bigint, next_victim_buffer integer);
 
 -- Don't want these to be available to public.
 REVOKE ALL ON FUNCTION pg_buffercache_partitions() FROM PUBLIC;

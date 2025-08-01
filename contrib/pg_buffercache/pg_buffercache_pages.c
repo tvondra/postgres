@@ -28,7 +28,7 @@
 #define NUM_BUFFERCACHE_EVICT_ALL_ELEM 3
 
 #define NUM_BUFFERCACHE_NUMA_ELEM	3
-#define NUM_BUFFERCACHE_PARTITIONS_ELEM	12
+#define NUM_BUFFERCACHE_PARTITIONS_ELEM	13
 #define NUM_BUFFERCACHE_PGPROC_ELEM 5
 
 PG_MODULE_MAGIC_EXT(
@@ -823,11 +823,13 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "complete_passes",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "buffer_req_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "buffer_total_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "buffer_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "buffer_req_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "next_victim_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "buffer_allocs",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 13, "next_victim_buffer",
 						   INT4OID, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
@@ -897,14 +899,17 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 		values[8] = Int32GetDatum(complete_passes);
 		nulls[8] = false;
 
-		values[9] = Int32GetDatum(buffer_req_allocs);
+		values[9] = Int64GetDatum(complete_passes * num_buffers + next_victim_buffer);
 		nulls[9] = false;
 
-		values[10] = Int32GetDatum(buffer_allocs);
+		values[10] = Int64GetDatum(buffer_req_allocs);
 		nulls[10] = false;
 
-		values[11] = Int32GetDatum(next_victim_buffer);
+		values[11] = Int64GetDatum(buffer_allocs);
 		nulls[11] = false;
+
+		values[12] = Int32GetDatum(next_victim_buffer);
+		nulls[12] = false;
 
 		/* Build and return the tuple. */
 		tuple = heap_form_tuple((TupleDesc) funcctx->user_fctx, values, nulls);

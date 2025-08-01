@@ -377,7 +377,7 @@ ChooseClockSweep(bool balance)
 		pg_atomic_fetch_add_u32(&sweep->numRequestedAllocs, 1);
 	}
 
-	return sweep;
+	return &StrategyControl->sweeps[clocksweep_partition];
 }
 
 /*
@@ -733,10 +733,15 @@ StrategySyncBalance(void)
 
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
+		uint32		x;
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 
 		/* no need for a spinlock */
 		allocs[i] = pg_atomic_exchange_u32(&sweep->numRequestedAllocs, 0);
+	
+		x = pg_atomic_read_u32(&sweep->numBufferAllocs);
+
+		elog(LOG, "%d => allocs %u %u", i, allocs[i], x);
 
 		total_allocs += allocs[i];
 	}
@@ -1548,7 +1553,9 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 
 void
 FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actually_free,
-						 uint32 *complete_passes, uint32 *buffer_allocs, uint32 *next_victim_buffer)
+						 uint32 *complete_passes, uint32 *buffer_req_allocs,
+						 uint32 *buffer_allocs,
+						 uint32 *next_victim_buffer)
 {
 	BufferStrategyFreelist *freelist;
 	ClockSweep *sweep;
@@ -1595,6 +1602,7 @@ FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actu
 	/* get the clocksweep stats too */
 	*complete_passes = sweep->completePasses;
 	*buffer_allocs = pg_atomic_read_u32(&sweep->numBufferAllocs);
+	*buffer_req_allocs = pg_atomic_read_u32(&sweep->numRequestedAllocs);
 	*next_victim_buffer = pg_atomic_read_u32(&sweep->nextVictimBuffer);
 
 	*next_victim_buffer = sweep->firstBuffer + (*next_victim_buffer % sweep->numBuffers);

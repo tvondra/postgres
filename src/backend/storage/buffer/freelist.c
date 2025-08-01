@@ -182,6 +182,7 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 static ClockSweep *ChooseClockSweep(bool balance);
 
 /* used to balancing clocksweep partitions */
+static int clocksweep_partition_optimal = -1;
 static int clocksweep_partition = -1;
 static int clocksweep_count = 0;
 
@@ -326,34 +327,57 @@ calculate_partition_index()
 static ClockSweep *
 ChooseClockSweep(bool balance)
 {
-	if (clocksweep_partition == -1)
-		clocksweep_partition = calculate_partition_index();
+	/* What's the "optimal" partition? */
+	int		index = calculate_partition_index();
+	ClockSweep *sweep = &StrategyControl->sweeps[index];
 
+	/*
+	 * Did we migrate to a different core / NUMA node, affecting the
+	 * clocksweep partition we should use? Switch to that partition.
+	 */
+	if (clocksweep_partition_optimal != index)
+	{
+		clocksweep_partition_optimal = index;
+		clocksweep_partition = index;
+		clocksweep_count = sweep->balance[index];
+	}
+
+	/* we should have a valid partition */
+	Assert(clocksweep_partition_optimal != -1);
+	Assert(clocksweep_partition != -1);
+
+	/*
+	 * If rebalancing is enabled, use the weights to redirect the allocations
+	 * to match the desired distribution. We do that by using the partitions
+	 * in a round-robin way, after allocating the "weight" of allocations
+	 * from each partitions.
+	 */
 	if (balance)
 	{
-		/* Determine which sweep balancing weights to use. */
-		int	index = calculate_partition_index();
-		ClockSweep *sweep = &StrategyControl->sweeps[index];
-
+		/*
+		 * Ran out of allocations from the current partition? Move to the
+		 * next partition with non-zero weight, and use the weight as a
+		 * budget for allocations.
+		 */
 		while (clocksweep_count == 0)
 		{
 			clocksweep_partition
 				= (clocksweep_partition + 1) % StrategyControl->num_partitions;
 
+			Assert((clocksweep_partition >= 0) &&
+				   (clocksweep_partition < StrategyControl->num_partitions));
+
 			clocksweep_count = sweep->balance[clocksweep_partition];
 		}
 
-		/* account for the allocation */
+		/* account for the allocation - take it from the budget */
 		--clocksweep_count;
 
-		/* account for the alloc in the "target" partition */
+		/* account for the alloc in the "optimal" (original) partition */
 		pg_atomic_fetch_add_u32(&sweep->numRequestedAllocs, 1);
-
-		Assert((clocksweep_partition >= 0) &&
-			   (clocksweep_partition < StrategyControl->num_partitions));
 	}
 
-	return &StrategyControl->sweeps[clocksweep_partition];
+	return sweep;
 }
 
 /*

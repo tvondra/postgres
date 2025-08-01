@@ -62,6 +62,17 @@ typedef struct BufferStrategyFreelist
  */
 #define MIN_FREELIST_PARTITIONS		4
 #define MAX_FREELIST_PARTITIONS		16
+
+/*
+ * Coefficient used to combine the old and new balance coefficients, using
+ * weighted average. The higher the value, the more the old value affects the
+ * result.
+ *
+ * XXX Doesn't this invalidate the interpretation as a probability to allocate
+ * from a given partition? Does it still sum to 100%?
+ */
+#define CLOCKSWEEP_HISTORY_COEFF	0.5
+
 /*
  * Information about one partition of the ClockSweep (on a subset of buffers).
  *
@@ -810,18 +821,19 @@ StrategySyncBalance(void)
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
+		uint8		balance[MAX_FREELIST_PARTITIONS];
 
 		/* lock, we're going to modify the balance weights */
 		SpinLockAcquire(&sweep->clock_sweep_lock);
 
 		/* reset the weights to start from scratch */
-		memset(sweep->balance, 0, sizeof(uint8) * MAX_FREELIST_PARTITIONS);
+		memset(balance, 0, sizeof(uint8) * MAX_FREELIST_PARTITIONS);
 
 		/* does this partition has fewer or more than avg_allocs? */
 		if (allocs[i] < avg_allocs)
 		{
 			/* fewer - don't redirect any allocations elsewhere */
-			sweep->balance[i] = 100;
+			balance[i] = 100;
 		}
 		else
 		{
@@ -836,7 +848,7 @@ StrategySyncBalance(void)
 			double	delta_frac = (allocs[i] - avg_allocs) * 1.0 / delta_allocs;
 
 			/* keep just enough allocations to meet the target */
-			sweep->balance[i] = (100.0 * avg_allocs / allocs[i]);
+			balance[i] = (100.0 * avg_allocs / allocs[i]);
 
 			/* redirect the extra allocations */
 			for (int j = 0; j < StrategyControl->num_partitions; j++)
@@ -849,8 +861,16 @@ StrategySyncBalance(void)
 					continue;
 
 				/* fraction to redirect */
-				sweep->balance[j] = (100.0 * receive_allocs / allocs[i]);
+				balance[j] = (100.0 * receive_allocs / allocs[i]) + 0.5;
 			}
+		}
+
+		/* combine the old and new weights (hysteresis) */
+		for (int j = 0; j < MAX_FREELIST_PARTITIONS; j++)
+		{
+			sweep->balance[j]
+				= CLOCKSWEEP_HISTORY_COEFF * sweep->balance[j] +
+				  (1.0 - CLOCKSWEEP_HISTORY_COEFF) * balance[j];
 		}
 
 		SpinLockRelease(&sweep->clock_sweep_lock);

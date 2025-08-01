@@ -720,7 +720,9 @@ StrategyFreeBuffer(BufferDesc *buf)
 void
 StrategySyncBalance(void)
 {
-	uint32 *allocs;				/* snapshot of allocs for partitions */
+	/* snapshot of allocs for partitions */
+	uint32	allocs[MAX_FREELIST_PARTITIONS];
+
 	uint32	total_allocs = 0,	/* total number of allocations */
 			avg_allocs,			/* average allocations (per partition) */
 			delta_allocs = 0;	/* sum of allocs above average */
@@ -740,8 +742,6 @@ StrategySyncBalance(void)
 	 *
 	 * XXX Does this need to worry about the completePasses too?
 	 */
-	allocs = palloc_array(uint32, StrategyControl->num_partitions);
-
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
@@ -784,7 +784,7 @@ StrategySyncBalance(void)
 	 * should not matter, if the activity is low.
 	 */
 	if (avg_allocs < 100)
-		goto done;
+		return;
 
 	/*
 	 * Likewise, skip rebalancing if the misbalance is not significant. We
@@ -794,7 +794,7 @@ StrategySyncBalance(void)
 	 * XXX Again, these threshold are rather arbitrary.
 	 */
 	if (delta_allocs < (avg_allocs * 0.1))
-		goto done;
+		return;
 
 	/*
 	 * Got to do the rebalancing. Go through the partitions, and for each
@@ -875,9 +875,6 @@ StrategySyncBalance(void)
 
 		SpinLockRelease(&sweep->clock_sweep_lock);
 	}
-
-done:
-	pfree(allocs);
 }
 
 /*

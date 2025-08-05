@@ -572,6 +572,20 @@ StrategySyncBalance(void)
 			delta_allocs = 0;	/* sum of allocs above average */
 
 	/*
+	 * Size of a partition, used to calculate weighted average (the first
+	 * partition is expected to be the largest one, and so will be counted
+	 * as a "unit" partition with weight 1.0).
+	 */
+	int32	num_buffers = StrategyControl->sweeps[0].numBuffers;
+
+	/*
+	 * Total weight of partitions. If the partitions have the same size,
+	 * the weight should be equal the partition count (modulo rounding
+	 * errors, etc.)
+	 */
+	double	weight = 0.0;
+
+	/*
 	 * Collect the number of allocations requested in the past interval.
 	 * While at it, reset the counter to start the new interval.
 	 *
@@ -597,16 +611,27 @@ StrategySyncBalance(void)
 		pg_atomic_fetch_add_u64(&sweep->numTotalRequestedAllocs, allocs[i]);
 
 		total_allocs += allocs[i];
+
+		/* weight of the partition, relative to the "unit" partition */
+		weight += (sweep->numBuffers * 1.0 / num_buffers);
 	}
 
 	/*
-	 * Calculate the "fair share" of allocations per partition.
+	 * XXX Not sure if the total_weight might exceed num_partitions due to
+	 * rounding errors.
+	 */
+	Assert((weight > 0.0) && (weight <= StrategyControl->num_partitions));
+
+	/*
+	 * Calculate the "fair share" of allocations per partition. This is the
+	 * number of allocations for the "unit" partition with num_buffers, we'll
+	 * need to adjust it using the per-partition weight.
 	 *
 	 * XXX The last partition could be smaller, in which case it should be
 	 * expected to handle fewer allocations. So this should be a weighted
 	 * average. But for now a simple average is good enough.
 	 */
-	avg_allocs = (total_allocs / StrategyControl->num_partitions);
+	avg_allocs = (total_allocs / weight);
 
 	/*
 	 * Calculate the "delta" from balanced state, i.e. how many allocations
@@ -614,8 +639,14 @@ StrategySyncBalance(void)
 	 */
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
 	{
-		if (allocs[i] > avg_allocs)
-			delta_allocs += (allocs[i] - avg_allocs);
+		ClockSweep *sweep = &StrategyControl->sweeps[i];
+
+		/* number of allocations expected for this partition */
+		double	part_weight = (sweep->numBuffers * 1.0 / num_buffers);
+		uint32	part_allocs = avg_allocs * part_weight;
+
+		if (allocs[i] > part_allocs)
+			delta_allocs += (allocs[i] - part_allocs);
 	}
 
 	/*
@@ -678,6 +709,10 @@ StrategySyncBalance(void)
 		ClockSweep *sweep = &StrategyControl->sweeps[i];
 		uint8		balance[MAX_BUFFER_PARTITIONS];
 
+		/* number of allocations expected for this partition */
+		double	part_weight = (sweep->numBuffers * 1.0 / num_buffers);
+		uint32	part_allocs = avg_allocs * part_weight;
+
 		/* lock, we're going to modify the balance weights */
 		SpinLockAcquire(&sweep->clock_sweep_lock);
 
@@ -685,7 +720,7 @@ StrategySyncBalance(void)
 		memset(balance, 0, sizeof(uint8) * MAX_BUFFER_PARTITIONS);
 
 		/* does this partition has fewer or more than avg_allocs? */
-		if (allocs[i] < avg_allocs)
+		if (allocs[i] < part_allocs)
 		{
 			/* fewer - don't redirect any allocations elsewhere */
 			balance[i] = 100;
@@ -699,21 +734,29 @@ StrategySyncBalance(void)
 			 * a fraction proportional to (excess/delta) from this one.
 			 */
 
-			/* fraction of the "total" delta */
-			double	delta_frac = (allocs[i] - avg_allocs) * 1.0 / delta_allocs;
+			/* fraction of the "total" delta represented by "excess" allocations */
+			double	delta_frac = (allocs[i] - part_allocs) * 1.0 / delta_allocs;
 
 			/* keep just enough allocations to meet the target */
-			balance[i] = (100.0 * avg_allocs / allocs[i]);
+			balance[i] = (100.0 * part_allocs / allocs[i]);
 
 			/* redirect the extra allocations */
 			for (int j = 0; j < StrategyControl->num_partitions; j++)
 			{
+				ClockSweep *sweep2 = &StrategyControl->sweeps[j];
+
+				/* number of allocations expected for this partition */
+				double	part_weight_2 = (sweep2->numBuffers * 1.0 / num_buffers);
+				uint32	part_allocs_2 = avg_allocs * part_weight_2;
+
 				/* How many allocations to receive from i-th partition? */
-				uint32	receive_allocs = delta_frac * (avg_allocs - allocs[j]);
+				uint32	receive_allocs = delta_frac * (part_allocs_2 - allocs[j]);
 
 				/* ignore partitions that don't need additional allocations */
-				if (allocs[j] > avg_allocs)
+				if (allocs[j] > part_allocs_2)
 					continue;
+
+				Assert(receive_allocs >= 0);
 
 				/* fraction to redirect */
 				balance[j] = (100.0 * receive_allocs / allocs[i]) + 0.5;

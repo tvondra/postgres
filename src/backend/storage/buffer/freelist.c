@@ -1577,7 +1577,8 @@ void
 FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actually_free,
 						 uint32 *complete_passes, uint32 *next_victim_buffer,
 						 uint64 *buffer_total_allocs, uint32 *buffer_allocs,
-						 uint64 *buffer_total_req_allocs, uint32 *buffer_req_allocs)
+						 uint64 *buffer_total_req_allocs, uint32 *buffer_req_allocs,
+						 int **weights)
 {
 	BufferStrategyFreelist *freelist;
 	ClockSweep *sweep;
@@ -1633,4 +1634,11 @@ FreelistPartitionGetInfo(int idx, uint64 *consumed, uint64 *remain, uint64 *actu
 
 	*buffer_total_req_allocs = pg_atomic_read_u64(&sweep->numTotalRequestedAllocs);
 	*buffer_req_allocs = pg_atomic_read_u32(&sweep->numRequestedAllocs);
+
+	/* return the weights in a newly allocated array */
+	*weights = palloc_array(int, StrategyControl->num_partitions);
+	for (int i = 0; i < StrategyControl->num_partitions; i++)
+	{
+		(*weights)[i] = (int) sweep->balance[i];
+	}
 }

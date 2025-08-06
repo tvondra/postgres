@@ -355,7 +355,8 @@ extern void FreelistPartitionGetInfo(int idx,
 									 uint64 *buffer_total_allocs,
 									 uint32 *buffer_allocs,
 									 uint64 *buffer_total_req_allocs,
-									 uint32 *buffer_req_allocs);
+									 uint32 *buffer_req_allocs,
+									 int **weights);
 
 /* inline functions */
 

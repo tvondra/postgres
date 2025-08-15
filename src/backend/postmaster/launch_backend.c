@@ -205,6 +205,9 @@ static child_process_kind child_process_kinds[] = {
 	[B_WAL_SUMMARIZER] = {"wal_summarizer", WalSummarizerMain, true},
 	[B_WAL_WRITER] = {"wal_writer", WalWriterMain, true},
 
+	[B_DATACHECKSUMSWORKER_LAUNCHER] = {"datachecksum launcher", NULL, false},
+	[B_DATACHECKSUMSWORKER_WORKER] = {"datachecksum worker", NULL, false},
+
 	[B_LOGGER] = {"syslogger", SysLoggerMain, false},
 };
 

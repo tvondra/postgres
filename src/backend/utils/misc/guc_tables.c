@@ -491,6 +491,14 @@ static const struct config_enum_entry file_copy_method_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry data_checksums_options[] = {
+	{"on", PG_DATA_CHECKSUM_VERSION, true},
+	{"off", PG_DATA_CHECKSUM_OFF, true},
+	{"inprogress-on", PG_DATA_CHECKSUM_INPROGRESS_ON_VERSION, true},
+	{"inprogress-off", PG_DATA_CHECKSUM_INPROGRESS_OFF_VERSION, true},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -616,7 +624,6 @@ static int	shared_memory_size_mb;
 static int	shared_memory_size_in_huge_pages;
 static int	wal_block_size;
 static int	num_os_semaphores;
-static bool data_checksums;
 static bool integer_datetimes;
 
 #ifdef USE_ASSERT_CHECKING
@@ -2039,17 +2046,6 @@ struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&quote_all_identifiers,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"data_checksums", PGC_INTERNAL, PRESET_OPTIONS,
-			gettext_noop("Shows whether data checksums are turned on for this cluster."),
-			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_RUNTIME_COMPUTED
-		},
-		&data_checksums,
 		false,
 		NULL, NULL, NULL
 	},
@@ -5488,6 +5484,16 @@ struct config_enum ConfigureNamesEnum[] =
 		&io_method,
 		DEFAULT_IO_METHOD, io_method_options,
 		NULL, assign_io_method, NULL
+	},
+	{
+		{"data_checksums", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Shows whether data checksums are turned on for this cluster."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_RUNTIME_COMPUTED
+		},
+		&data_checksums,
+		PG_DATA_CHECKSUM_OFF, data_checksums_options,
+		NULL, NULL, show_data_checksums
 	},
 
 	/* End-of-list marker */

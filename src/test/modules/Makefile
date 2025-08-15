@@ -17,6 +17,7 @@ SUBDIRS = \
 		  test_aio \
 		  test_binaryheap \
 		  test_bloomfilter \
+		  test_checksums \
 		  test_copy_callbacks \
 		  test_custom_rmgrs \
 		  test_ddl_deparse \

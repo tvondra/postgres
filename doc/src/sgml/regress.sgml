@@ -264,6 +264,18 @@ make check-world PG_TEST_EXTRA='kerberos ldap ssl load_balance libpq_encryption'
    The following values are currently supported:
    <variablelist>
     <varlistentry>
+     <term><literal>checksum_extended</literal></term>
+     <listitem>
+      <para>
+       Runs additional tests for enabling data checksums which inject delays
+       and re-tries in the processing, as well as tests that run pgbench
+       concurrently and randomly restarts the cluster.  Some of these test
+       suites requires injection points enabled in the installation.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
      <term><literal>kerberos</literal></term>
      <listitem>
       <para>

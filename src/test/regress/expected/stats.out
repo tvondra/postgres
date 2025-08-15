@@ -59,6 +59,22 @@ io worker|relation|vacuum
 io worker|temp relation|normal
 io worker|wal|init
 io worker|wal|normal
+datachecksumsworker launcher|relation|bulkread
+datachecksumsworker launcher|relation|bulkwrite
+datachecksumsworker launcher|relation|init
+datachecksumsworker launcher|relation|normal
+datachecksumsworker launcher|relation|vacuum
+datachecksumsworker launcher|temp relation|normal
+datachecksumsworker launcher|wal|init
+datachecksumsworker launcher|wal|normal
+datachecksumsworker worker|relation|bulkread
+datachecksumsworker worker|relation|bulkwrite
+datachecksumsworker worker|relation|init
+datachecksumsworker worker|relation|normal
+datachecksumsworker worker|relation|vacuum
+datachecksumsworker worker|temp relation|normal
+datachecksumsworker worker|wal|init
+datachecksumsworker worker|wal|normal
 slotsync worker|relation|bulkread
 slotsync worker|relation|bulkwrite
 slotsync worker|relation|init
@@ -95,7 +111,7 @@ walsummarizer|wal|init
 walsummarizer|wal|normal
 walwriter|wal|init
 walwriter|wal|normal
-(79 rows)
+(87 rows)
 \a
 -- ensure that both seqscan and indexscan plans are allowed
 SET enable_seqscan TO on;

@@ -26,6 +26,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "postmaster/datachecksumsworker.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
 #include "storage/latch.h"
@@ -747,4 +748,46 @@ pg_promote(PG_FUNCTION_ARGS)
 						   wait_seconds,
 						   wait_seconds)));
 	PG_RETURN_BOOL(false);
+}
+
+/*
+ * Disables data checksums for the cluster, if applicable. Starts a background
+ * worker which turns off the data checksums.
+ */
+Datum
+disable_data_checksums(PG_FUNCTION_ARGS)
+{
+	bool		fast = PG_GETARG_BOOL(0);
+
+	if (!superuser())
+		ereport(ERROR, errmsg("must be superuser"));
+
+	StartDataChecksumsWorkerLauncher(DISABLE_DATACHECKSUMS, 0, 0, fast);
+	PG_RETURN_VOID();
+}
+
+/*
+ * Enables data checksums for the cluster, if applicable.  Supports vacuum-
+ * like cost based throttling to limit system load. Starts a background worker
+ * which updates data checksums on existing data.
+ */
+Datum
+enable_data_checksums(PG_FUNCTION_ARGS)
+{
+	int			cost_delay = PG_GETARG_INT32(0);
+	int			cost_limit = PG_GETARG_INT32(1);
+	bool		fast = PG_GETARG_BOOL(2);
+
+	if (!superuser())
+		ereport(ERROR, errmsg("must be superuser"));
+
+	if (cost_delay < 0)
+		ereport(ERROR, errmsg("cost delay cannot be a negative value"));
+
+	if (cost_limit <= 0)
+		ereport(ERROR, errmsg("cost limit must be greater than zero"));
+
+	StartDataChecksumsWorkerLauncher(ENABLE_DATACHECKSUMS, cost_delay, cost_limit, fast);
+
+	PG_RETURN_VOID();
 }

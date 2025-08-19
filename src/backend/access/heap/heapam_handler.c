@@ -756,12 +756,15 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 */
 			if (scan->xs_want_itup && item->allVisible)
 			{
+				read_stream_skip_block(stream);
 				continue;
 			}
 
 			/* same block as before, don't need to read it */
 			if (batchqueue->currentPrefetchBlock == ItemPointerGetBlockNumber(tid))
 			{
+				/* update count of skipped blocks */
+				read_stream_skip_block(stream);
 				DEBUG_LOG("heapam_getnext_stream: skip block (currentPrefetchBlock)");
 				continue;
 			}

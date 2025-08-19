@@ -453,6 +453,17 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 }
 
+void
+index_get_prefetch_stats(IndexScanDesc scan, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram)
+{
+	/* ugly */
+	if (scan->xs_heapfetch->rs != NULL)
+	{
+		read_stream_prefetch_stats(scan->xs_heapfetch->rs,
+					   accum, count, stalls, resets, skips, ungets, forwarded, histogram);
+	}
+}
+
 /* ----------------
  *		index_endscan - end a scan
  * ----------------
@@ -1880,6 +1891,7 @@ index_scan_stream_read_next(ReadStream *stream,
 			/* same block as before, don't need to read it */
 			if (scan->batchState->lastBlock == ItemPointerGetBlockNumber(tid))
 			{
+				read_stream_skip_block(stream);
 				DEBUG_LOG("index_scan_stream_read_next: skip block (lastBlock)");
 				continue;
 			}

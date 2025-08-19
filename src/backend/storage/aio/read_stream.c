@@ -107,6 +107,15 @@ struct ReadStream
 	bool		advice_enabled;
 	bool		temporary;
 
+	int64		distance_accum;
+	int64		distance_count;
+	int64		distance_stalls;
+	int64		reset_count;
+	int64		skip_count;
+	int64		unget_count;
+	int64		forwarded_count;
+	int64		distance_hist[16];
+
 	/*
 	 * One-block buffer to support 'ungetting' a block number, to resolve flow
 	 * control problems when I/Os are split.
@@ -181,6 +190,29 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
+        if (stream->distance > 1)
+        {
+		int hist_idx = -1;
+
+                stream->distance_accum += stream->distance;
+                stream->distance_count += 1;
+
+		for (int i = 0; i < 16; i++)
+		{
+			if (stream->distance < (1 << i))
+				break;
+
+			hist_idx++;
+		}
+
+		if ((hist_idx >= 0) && (hist_idx < 16))
+			stream->distance_hist[hist_idx]++;
+        }
+        else
+        {
+                stream->distance_stalls += 1;
+        }
+
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
 		stream->buffered_blocknum = InvalidBlockNumber;
@@ -215,6 +247,7 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
 	Assert(stream->buffered_blocknum == InvalidBlockNumber);
 	Assert(blocknum != InvalidBlockNumber);
 	stream->buffered_blocknum = blocknum;
+	stream->unget_count++;
 }
 
 /*
@@ -394,6 +427,8 @@ read_stream_start_pending_read(ReadStream *stream)
 		   stream->buffers[buffer_index + nblocks + forwarded] != InvalidBuffer)
 		forwarded++;
 	stream->forwarded_buffers = forwarded;
+
+	stream->forwarded_count += forwarded;
 
 	/*
 	 * We gave a contiguous range of buffer space to StartReadBuffers(), but
@@ -704,6 +739,15 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
+	stream->distance_accum = 0;
+	stream->distance_count = 0;
+	stream->distance_stalls = 0;
+	stream->reset_count = 0;
+	stream->skip_count = 0;
+	stream->unget_count = 0;
+	stream->forwarded_count = 0;
+	memset(stream->distance_hist, 0, sizeof(stream->distance_hist));
+
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
 	 * reading the whole relation.  This way we start out assuming we'll be
@@ -794,6 +838,17 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 {
 	Buffer		buffer;
 	int16		oldest_buffer_index;
+/*
+	if (stream->distance > 0)
+	{
+		stream->distance_accum += stream->distance;
+		stream->distance_count += 1;
+	}
+	else
+	{
+		stream->distance_stalls += 1;
+	}
+*/
 
 #ifndef READ_STREAM_DISABLE_FAST_PATH
 
@@ -1090,6 +1145,9 @@ read_stream_reset(ReadStream *stream)
 	 */
 	stream->distance = Max(1, stream->distance_old);
 	stream->distance_old = 0;
+
+	/* track the number of resets */
+	stream->reset_count += 1;
 }
 
 /*
@@ -1100,4 +1158,23 @@ read_stream_end(ReadStream *stream)
 {
 	read_stream_reset(stream);
 	pfree(stream);
+}
+
+void
+read_stream_prefetch_stats(ReadStream *stream, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram)
+{
+	*accum = stream->distance_accum;
+	*count = stream->distance_count;
+	*stalls = stream->distance_stalls;
+	*resets = stream->reset_count;
+	*skips = stream->skip_count;
+	*ungets = stream->unget_count;
+	*forwarded = stream->forwarded_count;
+	memcpy(histogram, stream->distance_hist, sizeof(stream->distance_hist));
+}
+
+void
+read_stream_skip_block(ReadStream *stream)
+{
+	stream->skip_count++;
 }

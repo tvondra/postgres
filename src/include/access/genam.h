@@ -229,6 +229,7 @@ extern void index_store_float8_orderby_distances(IndexScanDesc scan,
 extern bytea *index_opclass_options(Relation indrel, AttrNumber attnum,
 									Datum attoptions, bool validate);
 
+extern void index_get_prefetch_stats(IndexScanDesc scan, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram);
 
 /*
  * index access method support routines (in genam.c)

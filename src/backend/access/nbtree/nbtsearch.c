@@ -841,12 +841,9 @@ _bt_compare(Relation rel,
  *		conditions, and the tree ordering.  We find the first item (or,
  *		if backwards scan, the last item) in the tree that satisfies the
  *		qualifications in the scan key.  On success exit, data about the
- *		matching tuple(s) on the page has been loaded into so->currPos.  We'll
- *		drop all locks and hold onto a pin on page's buffer, except during
- *		dropPin scans, when we drop both the lock and the pin.
+ *		matching tuple(s) on the page has been loaded into the returned batch.
  *
- * If there are no matching items in the index, we return false, with no
- * pins or locks held.  so->currPos will remain invalid.
+ * If there are no matching items in the index, we just return NULL.
  *
  * Note that scan->keyData[], and the so->keyData[] scankey built from it,
  * are both search-type scankeys (see nbtree/README for more about this).
@@ -1202,11 +1199,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 		}
 	}
 
-	/*
-	 * Allocate space for first batch
-	 *
-	 * XXX Should we be recyling memory used for prior batches?
-	 */
+	/* Allocate space for first batch */
 	firstbatch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 	firstbatch->pos = palloc(sizeof(BTScanPosData));
 
@@ -1521,7 +1514,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 
 	/*
 	 * Now load data from the first page of the scan (usually the page
-	 * currently in so->currPos.buf).
+	 * currently in firstbatch.buf).
 	 *
 	 * If inskey.nextkey = false and inskey.backward = false, offnum is
 	 * positioned at the first non-pivot tuple >= inskey.scankeys.
@@ -1545,16 +1538,16 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 /*
  *	_bt_next() -- Get the next item in a scan.
  *
- *		On entry, so->currPos describes the current page, which may be pinned
- *		but is not locked, and so->currPos.itemIndex identifies which item was
- *		previously returned.
+ *		On entry, priorbatch describes the batch that was last returned by
+ *		btgetbatch.  We'll use the prior batch's positioning information to
+ *		decide which page to read next.
  *
- *		On success exit, so->currPos is updated as needed, and _bt_returnitem
- *		sets the next item to return to the scan.  so->currPos remains valid.
+ *		On success exit, returns the next batch.  There must be at least one
+ *		matching tuple on any returned batch (else we'd just return NULL).
  *
- *		On failure exit (no more tuples), we invalidate so->currPos.  It'll
- *		still be possible for the scan to return tuples by changing direction,
- *		though we'll need to call _bt_first anew in that other direction.
+ *		On failure exit (no more tuples), we return NULL.  It'll still be
+ *		possible for the scan to return tuples by changing direction, though
+ *		we'll need to call _bt_first anew in that other direction.
  */
 IndexScanBatch
 _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
@@ -1603,15 +1596,15 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 }
 
 /*
- *	_bt_readpage() -- Load data from current index page into so->currPos
+ *	_bt_readpage() -- Load data from current index page into newbatch.
  *
- * Caller must have pinned and read-locked so->currPos.buf; the buffer's state
- * is not changed here.  Also, currPos.moreLeft and moreRight must be valid;
- * they are updated as appropriate.  All other fields of so->currPos are
- * initialized from scratch here.
+ * Caller must have pinned and read-locked newbatch.buf; the buffer's state is
+ * not changed here.  Also, pos.moreLeft and moreRight must be valid; they are
+ * updated as appropriate.  All other fields of newbatch are initialized from
+ * scratch here.
  *
  * We scan the current page starting at offnum and moving in the indicated
- * direction.  All items matching the scan keys are loaded into currPos.items.
+ * direction.  All items matching the scan keys are saved in newbatch.items.
  * moreLeft or moreRight (as appropriate) is cleared if _bt_checkkeys reports
  * that there can be no more matching tuples in the current scan direction
  * (could just be for the current primitive index scan when scan has arrays).
@@ -2023,7 +2016,7 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 	return (newbatch->firstItem <= newbatch->lastItem);
 }
 
-/* Save an index item into so->currPos.items[itemIndex] */
+/* Save an index item into newbatch.items[itemIndex] */
 static void
 _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 			 IndexTuple itup, int *tupleOffset)
@@ -2047,9 +2040,9 @@ _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 /*
  * Setup state to save TIDs/items from a single posting list tuple.
  *
- * Saves an index item into so->currPos.items[itemIndex] for TID that is
- * returned to scan first.  Second or subsequent TIDs for posting list should
- * be saved by calling _bt_savepostingitem().
+ * Saves an index item into newbatch.items[itemIndex] for TID that is returned
+ * to scan first.  Second or subsequent TIDs for posting list should be saved
+ * by calling _bt_savepostingitem().
  *
  * Returns baseOffset, an offset into tuple storage space that main tuple is
  * stored at if needed.
@@ -2088,7 +2081,7 @@ _bt_setuppostingitems(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnu
 }
 
 /*
- * Save an index item into so->currPos.items[itemIndex] for current posting
+ * Save an index item into newbatch.items[itemIndex] for current posting
  * tuple.
  *
  * Assumes that _bt_setuppostingitems() has already been called for current
@@ -2123,13 +2116,11 @@ _bt_savepostingitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
  * the scan on this page by calling _bt_checkkeys against the high key.  See
  * _bt_readpage for full details.
  *
- * On entry, so->currPos must be pinned and locked (so offnum stays valid).
+ * On entry, firstbatch must be pinned and locked (so offnum stays valid).
  * Parallel scan callers must have seized the scan before calling here.
  *
- * On exit, we'll have updated so->currPos and retained locks and pins
+ * On exit, we'll have updated firstbatch and retained locks and pins
  * according to the same rules as those laid out for _bt_readnextpage exit.
- * Like _bt_readnextpage, our return value indicates if there are any matching
- * records in the given direction.
  *
  * We always release the scan for a parallel scan caller, regardless of
  * success or failure; we'll call _bt_parallel_release as soon as possible.
@@ -2144,7 +2135,7 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 				lastcurrblkno;
 	BTScanPos	firstpos = firstbatch->pos;
 
-	/* Initialize so->currPos for the first page (page in so->currPos.buf) */
+	/* Initialize firstbatch's position for the first page */
 	if (so->needPrimScan)
 	{
 		Assert(so->numArrayKeys);
@@ -2191,6 +2182,9 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 
 	Assert(firstpos->dir == dir);
 
+	/* firstbatch will never be returned to scan, so free it outselves */
+	pfree(firstbatch);
+
 	if (blkno == P_NONE ||
 		(ScanDirectionIsForward(dir) ?
 		 !firstpos->moreRight : !firstpos->moreLeft))
@@ -2199,9 +2193,12 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 		 * firstbatch _bt_readpage call ended scan in this direction (though
 		 * if so->needPrimScan was set the scan will continue in _bt_first)
 		 */
+		pfree(firstpos);
 		_bt_parallel_done(scan);
 		return NULL;
 	}
+
+	pfree(firstpos);
 
 	/* parallel scan must seize the scan to get next blkno */
 	if (scan->parallel_scan != NULL &&
@@ -2241,11 +2238,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 	IndexScanBatch newbatch;
 	BTScanPos	newpos;
 
-	/*
-	 * Allocate space for next batch
-	 *
-	 * XXX Should we be recyling memory used for prior batches?
-	 */
+	/* Allocate space for next batch */
 	newbatch = index_batch_alloc(MaxTIDsPerBTreePage, scan->xs_want_itup);
 	newbatch->pos = palloc(sizeof(BTScanPosData));
 	newpos = newbatch->pos;

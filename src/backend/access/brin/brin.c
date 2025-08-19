@@ -296,7 +296,7 @@ brinhandler(PG_FUNCTION_ARGS)
 	amroutine->amgettuple = NULL;
 	amroutine->amgetbitmap = bringetbitmap;
 	amroutine->amendscan = brinendscan;
-	amroutine->amrestrpos = NULL;
+	amroutine->amposreset = NULL;
 	amroutine->amestimateparallelscan = NULL;
 	amroutine->aminitparallelscan = NULL;
 	amroutine->amparallelrescan = NULL;

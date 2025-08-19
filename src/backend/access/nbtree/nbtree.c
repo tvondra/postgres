@@ -163,7 +163,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amfreebatch = btfreebatch;
 	amroutine->amgetbitmap = btgetbitmap;
 	amroutine->amendscan = btendscan;
-	amroutine->amrestrpos = btrestrpos;
+	amroutine->amposreset = btposreset;
 	amroutine->amestimateparallelscan = btestimateparallelscan;
 	amroutine->aminitparallelscan = btinitparallelscan;
 	amroutine->amparallelrescan = btparallelrescan;
@@ -373,7 +373,8 @@ void
 btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 {
 	/*
-	 * Check to see if we should kill tuples from the previous batch.
+	 * Check if there are tuples to kill from this batch (that weren't already
+	 * killed earlier on)
 	 */
 	if (batch->numKilled > 0)
 		_bt_killitems(scan, batch);
@@ -413,10 +414,10 @@ btendscan(IndexScanDesc scan)
 }
 
 /*
- *	btrestrpos() -- prepare for restoring scan using a mark
+ *	btposreset() -- invalidate scan's array keys
  */
 void
-btrestrpos(IndexScanDesc scan, IndexScanBatch markbatch)
+btposreset(IndexScanDesc scan, IndexScanBatch markbatch)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	BTScanPos	pos;
@@ -424,13 +425,29 @@ btrestrpos(IndexScanDesc scan, IndexScanBatch markbatch)
 	if (!so->numArrayKeys)
 		return;
 
+	/*
+	 * Core system is about to restore a mark associated with a previously
+	 * returned batch.  Reset the scan's arrays to make all this safe.
+	 */
 	pos = (BTScanPos) markbatch->pos;
 	_bt_start_array_keys(scan, pos->dir);
-	so->needPrimScan = false;
+
+	/*
+	 * Core system will invalidate all other batches.
+	 *
+	 * Deal with this by unsetting needPrimScan as well as moreRight (or as
+	 * well as moreLeft, when scanning backwards).  That way, the next time
+	 * _bt_next is called it will step to the right (or to the left).  At that
+	 * point _bt_readpage will restore the scan's arrays to elements that
+	 * correctly track the next page's position in the index's key space.
+	 */
 	if (ScanDirectionIsForward(pos->dir))
 		pos->moreRight = true;
 	else
 		pos->moreLeft = true;
+	so->needPrimScan = false;
+	so->scanBehind = false;
+	so->oppositeDirCheck = false;
 }
 
 /*

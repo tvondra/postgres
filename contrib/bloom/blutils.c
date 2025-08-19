@@ -148,7 +148,7 @@ blhandler(PG_FUNCTION_ARGS)
 	amroutine->amgettuple = NULL;
 	amroutine->amgetbitmap = blgetbitmap;
 	amroutine->amendscan = blendscan;
-	amroutine->amrestrpos = NULL;
+	amroutine->amposreset = NULL;
 	amroutine->amestimateparallelscan = NULL;
 	amroutine->aminitparallelscan = NULL;
 	amroutine->amparallelrescan = NULL;

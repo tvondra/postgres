@@ -1265,7 +1265,7 @@ struct IndexOptInfo
 	/* does AM have amgetbitmap interface? */
 	bool		amhasgetbitmap;
 	bool		amcanparallel;
-	/* does AM know how to mark/restore? */
+	/* is AM prepared for us to restore a mark? */
 	bool		amcanmarkpos;
 	/* AM's cost estimator */
 	/* Rather than include amapi.h here, we declare amcostestimate like this */

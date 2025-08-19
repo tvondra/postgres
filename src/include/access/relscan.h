@@ -169,13 +169,14 @@ typedef struct IndexScanBatchData
 
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage
-	 * workspaces for the currPos and markPos respectively.  Each is of size
-	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.
+	 * workspaces for the matching tuples (tuples referenced by items[]). Each
+	 * is of size BLCKSZ, so it can hold as much as a full page's worth of
+	 * tuples.
 	 *
 	 * XXX maybe currTuples should be part of the am-specific per-batch state
 	 * stored in "position" field?
 	 */
-	char	   *currTuples;		/* tuple storage for currPos */
+	char	   *currTuples;		/* tuple storage for items[] */
 
 	/*
 	 * batch contents (TIDs, index tuples, kill bitmap, ...)
@@ -201,7 +202,9 @@ typedef struct IndexScanBatchPos
 } IndexScanBatchPos;
 
 typedef struct IndexScanDescData IndexScanDescData;
-typedef bool (*IndexPrefetchCallback) (IndexScanDescData * scan, void *arg, IndexScanBatchPos *pos);
+typedef bool (*IndexPrefetchCallback) (IndexScanDescData * scan,
+									   void *arg,
+									   IndexScanBatchPos *pos);
 
 /*
  * State used by amgetbatch index AMs, which manage per-page batches of items

@@ -1021,14 +1021,6 @@ _bt_advance_array_keys_increment(IndexScanDesc scan, ScanDirection dir,
 	 * Restore the array keys to the state they were in immediately before we
 	 * were called.  This ensures that the arrays only ever ratchet in the
 	 * current scan direction.
-	 *
-	 * Without this, scans could overlook matching tuples when the scan
-	 * direction gets reversed just before btgettuple runs out of items to
-	 * return, but just after _bt_readpage prepares all the items from the
-	 * scan's final page in so->currPos.  When we're on the final page it is
-	 * typical for so->currPos to get invalidated once btgettuple finally
-	 * returns false, which'll effectively invalidate the scan's array keys.
-	 * That hasn't happened yet, though -- and in general it may never happen.
 	 */
 	_bt_start_array_keys(scan, -dir);
 
@@ -2034,7 +2026,7 @@ new_prim_scan:
 	 * Note: We make a soft assumption that the current scan direction will
 	 * also be used within _bt_next, when it is asked to step off this page.
 	 * It is up to _bt_next to cancel this scheduled primitive index scan
-	 * whenever it steps to a page in the direction opposite currPos.dir.
+	 * whenever it steps to a page in the direction opposite pos->dir.
 	 */
 	pstate->continuescan = false;	/* Tell _bt_readpage we're done... */
 	so->needPrimScan = true;	/* ...but call _bt_first again */
@@ -3234,23 +3226,23 @@ _bt_checkkeys_look_ahead(IndexScanDesc scan, BTReadPageState *pstate,
  * current page and killed tuples thereon (generally, this should only be
  * called if so->numKilled > 0).
  *
- * Caller should not have a lock on the so->currPos page, but must hold a
- * buffer pin when !so->dropPin.  When we return, it still won't be locked.
- * It'll continue to hold whatever pins were held before calling here.
+ * Caller should not have a lock on the batch position's page, but must hold a
+ * buffer pin when !dropPin.  When we return, it still won't be locked.  It'll
+ * continue to hold whatever pins were held before calling here.
  *
  * We match items by heap TID before assuming they are the right ones to set
  * LP_DEAD.  If the scan is one that holds a buffer pin on the target page
  * continuously from initially reading the items until applying this function
- * (if it is a !so->dropPin scan), VACUUM cannot have deleted any items on the
+ * (if it is a !dropPin scan), VACUUM cannot have deleted any items on the
  * page, so the page's TIDs can't have been recycled by now.  There's no risk
  * that we'll confuse a new index tuple that happens to use a recycled TID
  * with a now-removed tuple with the same TID (that used to be on this same
  * page).  We can't rely on that during scans that drop buffer pins eagerly
- * (so->dropPin scans), though, so we must condition setting LP_DEAD bits on
+ * (i.e. dropPin scans), though, so we must condition setting LP_DEAD bits on
  * the page LSN having not changed since back when _bt_readpage saw the page.
  * We totally give up on setting LP_DEAD bits when the page LSN changed.
  *
- * We give up much less often during !so->dropPin scans, but it still happens.
+ * We tend to give up less often during !dropPin scans, but it still happens.
  * We cope with cases where items have moved right due to insertions.  If an
  * item has moved off the current page due to a split, we'll fail to find it
  * and just give up on it.
@@ -3342,7 +3334,7 @@ _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
 				 * correctness.
 				 *
 				 * Note that the page may have been modified in almost any way
-				 * since we first read it (in the !so->dropPin case), so it's
+				 * since we first read it (in the !dropPin case), so it's
 				 * possible that this posting list tuple wasn't a posting list
 				 * tuple when we first encountered its heap TIDs.
 				 */

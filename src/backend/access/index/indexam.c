@@ -448,14 +448,7 @@ index_rescan(IndexScanDesc scan,
 
 	/*
 	 * Reset the batching. This makes it look like there are no batches,
-	 * discards reads already scheduled to the read stream, etc.
-	 *
-	 * XXX We do this before calling amrescan, so that it could reinitialize
-	 * everything (this probably does not matter very much, now that we've
-	 * moved all the batching logic to indexam.c, it was more important when
-	 * the index AM was responsible for more of it).
-	 *
-	 * XXX Maybe this should also happen before table_index_fetch_reset?
+	 * discards reads already scheduled within the read stream, etc.
 	 */
 	index_batch_reset(scan, true);
 
@@ -573,9 +566,17 @@ index_restrpos(IndexScanDesc scan)
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
-	CHECK_SCAN_PROCEDURE(amrestrpos);
+	CHECK_SCAN_PROCEDURE(amposreset);
 
-	/* release resources (like buffer pins) from table accesses */
+	/*
+	 * release resources (like buffer pins) from table accesses
+	 *
+	 * XXX: Currently, the distance is always remembered across any
+	 * read_stream_reset calls (to work around the scan->batchState->reset
+	 * behavior of resetting the stream to deal with running out of batches).
+	 * We probably _should_ be forgetting the distance when we reset the
+	 * stream here (through our table_index_fetch_reset call), though.
+	 */
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
@@ -587,26 +588,14 @@ index_restrpos(IndexScanDesc scan)
 	markBatch = scan->batchState->markBatch;
 
 	/*
-	 * Call amrestrpos to let index AM know that we're doing this (just resets
-	 * scan's array keys currently)
+	 * Call amposreset to let index AM know to invalidate any private state
+	 * that independently tracks the scan's progress
 	 */
-	scan->indexRelation->rd_indam->amrestrpos(scan, markBatch);
-
-	/*
-	 * XXX The pos can be invalid, if we already advanced past the the marked
-	 * batch (and stashed it in markBatch instead of freeing). So this assert
-	 * would be incorrect.
-	 */
-	/* AssertCheckBatchPosValid(scan, &pos); */
-
-	/* FIXME we should still check the batch was not freed yet */
+	scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 
 	/*
 	 * Reset the batching state, except for the marked batch, and make it look
-	 * like we have a single batch - the marked one.
-	 *
-	 * XXX This seems a bit ugly / hacky, maybe there's a more elegant way to
-	 * do this?
+	 * like we have a single batch -- the marked one
 	 */
 	index_batch_reset(scan, false);
 
@@ -616,11 +605,6 @@ index_restrpos(IndexScanDesc scan)
 	batchState->nextBatch = (batchState->firstBatch + 1);
 
 	INDEX_SCAN_BATCH(scan, batchState->markPos.batch) = markBatch;
-
-	/*
-	 * XXX I really dislike that we have so many definitions of "current"
-	 * batch. We have readPos, streamPos, ... seems very ad hoc
-	 */
 	batchState->markBatch = markBatch;	/* also remember this */
 }
 
@@ -989,6 +973,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				Assert(scan->batchState->firstBatch == pos->batch);
 			}
 
+			pgstat_count_index_tuples(scan->indexRelation, 1);
 			return &scan->xs_heaptid;
 		}
 
@@ -1557,10 +1542,6 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
  * allowed. In the worst case, reading a single row might trigger reading this
  * many leaf pages (e.g. with IOS). Which might be an issue with LIMIT queries,
  * when we actually won't need most of the leaf pages.
- *
- * XXX We could/should use a lower value for testing, to make it more likely
- * we hit this issue. With 64 the whole check-world passes without hitting
- * the limit, wo we wouldn't test it's handled correctly.
  */
 #define INDEX_SCAN_MAX_BATCHES	64
 
@@ -1603,7 +1584,6 @@ AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch)
 	/* there must be valid range of items */
 	Assert(batch->firstItem <= batch->lastItem);
 	Assert(batch->firstItem >= 0);
-	Assert(batch->lastItem <= MaxTIDsPerBTreePage); /* XXX tied to BTREE */
 
 	/* we should have items (buffer and pointers) */
 	Assert(batch->items != NULL);
@@ -1613,7 +1593,6 @@ AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch)
 	 * indexes if there are items.
 	 */
 	Assert(batch->numKilled >= 0);
-	Assert(batch->numKilled <= MaxTIDsPerBTreePage);	/* XXX tied to BTREE */
 	Assert(!(batch->numKilled > 0 && batch->killedItems == NULL));
 
 	/* XXX can we check some of the other batch fields? */
@@ -1938,8 +1917,8 @@ index_scan_stream_read_next(ReadStream *stream,
  *
  * Returns true if the batch was loaded successfully, false otherwise.
  *
- * XXX This only loads the TIDs and resets the various batch fields to
- * fresh state. It does not set xs_heaptid/xs_itup/xs_hitup, that's the
+ * This only loads the TIDs and resets the various batch fields to fresh
+ * state. It does not set xs_heaptid/xs_itup/xs_hitup, that's the
  * responsibility of the following index_batch_getnext_tid() calls.
  * ----------------
  */
@@ -2232,11 +2211,11 @@ index_batch_alloc(int maxitems, bool want_itup)
 	batch->numKilled = 0;
 
 	/*
-	 * If we are doing an index-only scan, these are the tuple storage
-	 * workspaces for the currPos and markPos respectively.  Each is of size
-	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.
+	 * If we are doing an index-only scan, we need a tuple storage workspace.
+	 * We allocate BLCKSZ for this, which should always give the index AM
+	 * enough space to fit a full page's worth of tuples.
 	 */
-	batch->currTuples = NULL;	/* tuple storage for currPos */
+	batch->currTuples = NULL;
 	if (want_itup)
 		batch->currTuples = palloc(BLCKSZ);
 

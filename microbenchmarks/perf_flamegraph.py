@@ -10,6 +10,12 @@ import sys
 import time
 
 os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
+os.environ["MALLOPT_TOP_PAD"] = str(64 * 1024 * 1024)
+os.environ["M_TOP_PAD"] = str(64 * 1024 * 1024)
+os.environ["M_MMAP_THRESHOLD"] = str(64 * 1024 * 1024)
+os.environ["M_TRIM_THRESHOLD"] = str(64 * 1024 * 1024)
+os.environ["M_MMAP_MAX"] = str(0)
+os.environ["M_ARENA_TEST"] = str(64)
 
 # --- Configuration ---
 

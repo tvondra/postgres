@@ -42,11 +42,11 @@ PATCH_CONN_DETAILS = {
     "port": 5432
 }
 
-DIFF_FLAMEGRAPH_TITLE="master versus patch"
-
 # The SQL query you want to profile.
-# SQL_QUERY="select * from pgbench_accounts where aid = %s;"
-SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid;"
+# SQL_QUERY="select * from pgbench_accounts where aid = %s"
+SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid"
+
+DIFF_FLAMEGRAPH_TITLE="master versus patch, \"" + SQL_QUERY + "\""
 
 # Number of times to run the query to ensure it's captured by perf.
 # QUERY_REPETITIONS=500_000
@@ -80,7 +80,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
     """Starts, profiles, and stops a PostgreSQL instance."""
     pg_ctl_path = os.path.join(pg_bin_dir, "pg_ctl")
 
-    print(f"--- Profiling {pg_name} ---")
+    print(f"--- Testing {pg_name} ---")
 
     # Ensure server is stopped before we start
     if subprocess.run([pg_ctl_path, "status", "-D", pg_data_dir]).returncode == 0:
@@ -283,6 +283,8 @@ def main():
     clone_flamegraph()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    print(f"--- Profiling \"{SQL_QUERY}\" ---")
+
     stacks_file_master = os.path.join(OUTPUT_DIR, "master.stacks")
     stacks_file_patch = os.path.join(OUTPUT_DIR, "patch.stacks")
     folded_file_master = os.path.join(OUTPUT_DIR, "master.folded")
@@ -319,28 +321,28 @@ def main():
         subprocess.run(
                 [
                     os.path.join(FLAMEGRAPH_DIR, "flamegraph.pl"),
-                    "--title", "master",
+                    "--title", "master, \"" + SQL_QUERY + "\"",
                     "--subtitle", perf_command_master,
                     folded_file_master,
                     ],
                 stdout=f_svg,
                 check=True,
                 )
-    print(f"V1 flame graph created: {svg_file_master}")
+    print(f"master flame graph created: {svg_file_master}")
 
     print("Creating individual flame graph for patch...")
     with open(svg_file_patch, "w") as f_svg:
         subprocess.run(
                 [
                     os.path.join(FLAMEGRAPH_DIR, "flamegraph.pl"),
-                    "--title", "patch",
+                    "--title", "patch, \"" + SQL_QUERY + "\"",
                     "--subtitle", perf_command_patch,
                     folded_file_patch,
                     ],
                 stdout=f_svg,
                 check=True,
                 )
-    print(f"V2 flame graph created: {svg_file_patch}")
+    print(f"patch flame graph created: {svg_file_patch}")
 
     # Create the differential SVG
     print("Creating the differential flame graph...")

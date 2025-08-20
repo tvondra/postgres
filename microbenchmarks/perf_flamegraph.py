@@ -131,12 +131,14 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         with conn.cursor() as cursor:
             # if pg_name == "patch":
             #     cursor.execute("set enable_indexscan_prefetch=off;")
-            cursor.execute("set enable_seqscan=off;")
-            cursor.execute("set enable_indexonlyscan=off;")
             cursor.execute("set enable_bitmapscan=off;")
             cursor.execute("set enable_hashjoin=off;")
+            cursor.execute("set enable_indexonlyscan=off;")
+            cursor.execute("set enable_material=off;")
             cursor.execute("set enable_memoize=off;")
             cursor.execute("set enable_mergejoin=off;")
+            cursor.execute("set enable_seqscan=off;")
+
             cursor.execute("set max_parallel_workers_per_gather = 0;")
             cursor.execute("create extension if not exists pg_prewarm;")
             cursor.execute("select pg_prewarm('pgbench_accounts');")

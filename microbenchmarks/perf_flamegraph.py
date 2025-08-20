@@ -126,7 +126,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 
     # Start the server
     print(f"Starting {pg_name} PostgreSQL server...")
-    log_file = os.path.join(OUTPUT_DIR, f"pg_{os.path.basename(pg_bin_dir)}.log")
+    log_file = os.path.join(OUTPUT_DIR, f"{pg_name}.postgres_log")
 
     # Add port to the options if it's in the connection details
     start_options = f"-p {conn_details['port']}" if 'port' in conn_details else ""
@@ -256,8 +256,9 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             # "-e", "l3_misses",
 
             "-p", str(backend_pid),
+            "-g",
+            # "--call-graph", "dwarf",
             "-o",  OUTPUT_DIR + "/" + pg_name,
-            "-g"
         ]
         perf_process = subprocess.Popen(perf_command)
 
@@ -322,6 +323,11 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 def main():
     """Main execution flow."""
     check_dependencies()
+
+    if os.path.exists(OUTPUT_DIR):
+        print(f"Removing previous output directory: {OUTPUT_DIR}")
+        shutil.rmtree(OUTPUT_DIR)
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print(f"--- Profiling \"{SQL_QUERY}\" ---")

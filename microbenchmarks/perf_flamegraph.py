@@ -230,10 +230,10 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 
         # Execute the query repeatedly in the same connection
         print(f"Executing the SQL query {QUERY_REPETITIONS} times...")
+        random.seed(42)
         start_time = time.time()
         with conn.cursor() as cursor:
             for i in range(QUERY_REPETITIONS):
-                random.seed(42)
                 # cursor.execute(query=SQL_QUERY, params=[random.randint(1,50_00_000)], prepare=True)
                 cursor.execute(query=SQL_QUERY, prepare=True)
         end_time = time.time()

@@ -256,6 +256,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             # "-e", "l3_misses",
 
             "-p", str(backend_pid),
+            "-a",
             "-g",
             # "--call-graph", "dwarf",
             "-o",  OUTPUT_DIR + "/" + pg_name,

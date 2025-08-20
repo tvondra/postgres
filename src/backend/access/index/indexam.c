@@ -2191,7 +2191,7 @@ index_batch_end(IndexScanDesc scan)
 IndexScanBatch
 index_batch_alloc(int maxitems, bool want_itup)
 {
-	IndexScanBatch batch = palloc(sizeof(IndexScanBatchData) +
+	IndexScanBatch batch = palloc(offsetof(IndexScanBatchData, items) +
 								  sizeof(IndexScanBatchPosItem) * maxitems);
 
 	batch->firstItem = -1;

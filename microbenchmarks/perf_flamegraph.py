@@ -86,21 +86,18 @@ PATCH_CONN_DETAILS = {
     "port": 5432
 }
 
-# The SQL query you want to profile.
-# SQL_QUERY="select * from pgbench_accounts where aid = %s"
-SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid"
+SIMPLE_SELECT_PROFILING=False
 
-DIFF_FLAMEGRAPH_TITLE="master versus patch, \"" + SQL_QUERY + "\""
-
-# Number of times to run the query to ensure it's captured by perf.
-# QUERY_REPETITIONS=500_000
-QUERY_REPETITIONS=5
+if SIMPLE_SELECT_PROFILING:
+    SQL_QUERY="select * from pgbench_accounts where aid = %s"
+    QUERY_REPETITIONS=500_000
+    MAX_AID_VAL=50_00_000
+else:
+    SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid"
+    QUERY_REPETITIONS=5
 
 # The frequency of 'perf' sampling.
 PERF_FREQUENCY=9999
-
-# The user that the PostgreSQL server runs as.
-PG_USER = "pg"
 
 # --- Script variables ---
 FLAMEGRAPH_DIR="/home/pg/code/FlameGraph"
@@ -273,8 +270,12 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         start_time = time.time()
         with conn.cursor() as cursor: # type: ignore
             for _ in range(QUERY_REPETITIONS):
-                # cursor.execute(query=SQL_QUERY, params=[random.randint(1,50_00_000)], prepare=True)
-                cursor.execute(query=SQL_QUERY, prepare=True)
+                if SIMPLE_SELECT_PROFILING:
+                    cursor.execute(query=SQL_QUERY,
+                                   params=[random.randint(1, MAX_AID_VAL)],
+                                   prepare=True)
+                else:
+                    cursor.execute(query=SQL_QUERY, prepare=True)
         end_time = time.time()
         print(f"Query loop finished in {end_time - start_time:.2f} seconds.")
 
@@ -387,9 +388,10 @@ def main():
     # Create the differential SVG
     print("Creating the differential flame graph...")
     difffolded_cmd = [os.path.join(FLAMEGRAPH_DIR, "difffolded.pl"), folded_file_master, folded_file_patch]
+
     flamegraph_cmd = [
         os.path.join(FLAMEGRAPH_DIR, "flamegraph.pl"),
-        "--title", DIFF_FLAMEGRAPH_TITLE,
+        "--title", "master versus patch, \"" + SQL_QUERY + "\"",
         "--subtitle", perf_command_master + ", " + perf_command_patch,
     ]
 

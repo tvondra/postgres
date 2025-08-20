@@ -133,8 +133,53 @@ static void AssertCheckBatch(IndexScanDesc scan, IndexScanBatch batch);
 static void AssertCheckBatches(IndexScanDesc scan);
 
 
+/*
+ * Maximum number of batches (leaf pages) we can keep in memory.
+ *
+ * The value 64 value is arbitrary, it's about 1MB of data with 8KB pages. We
+ * should not really need this many batches - we need a certain number of TIDs,
+ * to satisfy the prefetch distance, and there usually are many index tuples
+ * per page. In the worst case we might have one index tuple per leaf page,
+ * but even that may not quite work in some cases.
+ *
+ * But there may be cases when this does not work - some examples:
+ *
+ * a) the index may be bloated, with many pages only have a single index item
+ *
+ * b) the index is correlated, and we skip prefetches of duplicate blocks
+ *
+ * c) we may be doing index-only scan, and we don't prefetch all-visible pages
+ *
+ * So we might need to load huge number of batches before we find the first
+ * block to load from the table. Or enough pages to satisfy the prefetch
+ * distance.
+ *
+ * XXX Currently, once we hit this number of batches, we fail in the stream
+ * callback (or rather in index_batch_getnext), because that's where we load
+ * batches. It'd be nice to "pause" the read stream for a bit instead, but
+ * there's no built-in way to do that. So we can only "stop" the stream by
+ * returning InvalidBlockNumber. But we could also remember this, and do
+ * read_stream_reset() to continue, after consuming all the already scheduled
+ * blocks.
+ *
+ * XXX Maybe 64 is too high - it also defines the maximum amount of overhead
+ * allowed. In the worst case, reading a single row might trigger reading this
+ * many leaf pages (e.g. with IOS). Which might be an issue with LIMIT queries,
+ * when we actually won't need most of the leaf pages.
+ */
+#define INDEX_SCAN_MAX_BATCHES	64
+
+#define INDEX_SCAN_BATCH_COUNT(scan) \
+	((scan)->batchState->nextBatch - (scan)->batchState->firstBatch)
+
+#define INDEX_SCAN_BATCH_LOADED(scan, idx) \
+	((idx) < (scan)->batchState->nextBatch)
+
+#define INDEX_SCAN_BATCH_FULL(scan) \
+	(INDEX_SCAN_BATCH_COUNT(scan) == scan->batchState->maxBatches)
+
 #define INDEX_SCAN_BATCH(scan, idx)	\
-		((scan)->batchState->batches[(idx) % (scan)->batchState->maxBatches])
+		((scan)->batchState->batches[(idx) % INDEX_SCAN_MAX_BATCHES])
 
 #ifdef INDEXAM_DEBUG
 #define DEBUG_LOG(...) elog(AmRegularBackendProcess() ? NOTICE : DEBUG2, __VA_ARGS__)
@@ -1508,51 +1553,6 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 
 	return build_local_reloptions(&relopts, attoptions, validate);
 }
-
-/*
- * Maximum number of batches (leaf pages) we can keep in memory.
- *
- * The value 64 value is arbitrary, it's about 1MB of data with 8KB pages. We
- * should not really need this many batches - we need a certain number of TIDs,
- * to satisfy the prefetch distance, and there usually are many index tuples
- * per page. In the worst case we might have one index tuple per leaf page,
- * but even that may not quite work in some cases.
- *
- * But there may be cases when this does not work - some examples:
- *
- * a) the index may be bloated, with many pages only have a single index item
- *
- * b) the index is correlated, and we skip prefetches of duplicate blocks
- *
- * c) we may be doing index-only scan, and we don't prefetch all-visible pages
- *
- * So we might need to load huge number of batches before we find the first
- * block to load from the table. Or enough pages to satisfy the prefetch
- * distance.
- *
- * XXX Currently, once we hit this number of batches, we fail in the stream
- * callback (or rather in index_batch_getnext), because that's where we load
- * batches. It'd be nice to "pause" the read stream for a bit instead, but
- * there's no built-in way to do that. So we can only "stop" the stream by
- * returning InvalidBlockNumber. But we could also remember this, and do
- * read_stream_reset() to continue, after consuming all the already scheduled
- * blocks.
- *
- * XXX Maybe 64 is too high - it also defines the maximum amount of overhead
- * allowed. In the worst case, reading a single row might trigger reading this
- * many leaf pages (e.g. with IOS). Which might be an issue with LIMIT queries,
- * when we actually won't need most of the leaf pages.
- */
-#define INDEX_SCAN_MAX_BATCHES	64
-
-#define INDEX_SCAN_BATCH_COUNT(scan) \
-	((scan)->batchState->nextBatch - (scan)->batchState->firstBatch)
-
-#define INDEX_SCAN_BATCH_LOADED(scan, idx) \
-	((idx) < (scan)->batchState->nextBatch)
-
-#define INDEX_SCAN_BATCH_FULL(scan) \
-	(INDEX_SCAN_BATCH_COUNT(scan) == scan->batchState->maxBatches)
 
 /*
  * Check that a position (batch,item) is valid with respect to the batches we

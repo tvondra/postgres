@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 
+os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
+
 # --- Configuration ---
 
 # Paths to the PostgreSQL binaries for the two versions you want to compare.
@@ -160,6 +162,55 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             # "-e", "page-faults",
             # "-e", "stalled-cycles-frontend",
             # "-e", "task-clock",
+
+            #### AMD recommended events usable from thread level ###
+
+            # [All L1 Data Cache Accesses. Unit: cpu]
+            # "-e", "all_data_cache_accesses",
+            # [All TLBs Flushed. Unit: cpu]
+            # "-e", "all_tlbs_flushed",
+            # [L1 Data Cache Fills: All. Unit: cpu]
+            # "-e", "l1_data_cache_fills_all",
+            # [L1 Data Cache Fills: From External CCX Cache. Unit: cpu]
+            # "-e", "l1_data_cache_fills_from_external_ccx_cache",
+            # [L1 Data Cache Fills: From Memory. Unit: cpu]
+            # "-e", "l1_data_cache_fills_from_memory",
+            # [L1 Data Cache Fills: From Remote Node.  Unit: cpu]
+            # "-e", "l1_data_cache_fills_from_remote_node",
+            # [L1 Data Cache Fills: From within same CCX.  Unit: cpu]
+            # "-e", "l1_data_cache_fills_from_within_same_ccx",
+            # [L1 DTLB Misses.  Unit: cpu]
+            # "-e", "l1_dtlb_misses",
+            # [L2 Cache Accesses from L1 Data Cache Misses (including prefetch).  Unit: cpu]
+            # "-e", "l2_cache_accesses_from_dc_misses",
+            # [L2 Cache Accesses from L1 Instruction Cache Misses (including prefetch).  Unit: cpu]
+            # "-e", "l2_cache_accesses_from_ic_misses",
+            # [L2 Cache Hits from L1 Data Cache Misses.  Unit: cpu]
+            # "-e", "l2_cache_hits_from_dc_misses",
+            # [L2 Cache Hits from L1 Instruction Cache Misses.  Unit: cpu]
+            # "-e", "l2_cache_hits_from_ic_misses",
+            # [L2 Cache Hits from L2 Cache HWPF.  Unit: cpu]
+            # "-e", "l2_cache_hits_from_l2_hwpf",
+            # [L2 Cache Misses from L1 Data Cache Misses.  Unit: cpu]
+            # "-e", "l2_cache_misses_from_dc_misses",
+            # [L2 Cache Misses from L1 Instruction Cache Misses.  Unit: cpu]
+            # "-e", "l2_cache_misses_from_ic_miss",
+            # [L2 DTLB Misses & Data page walks.  Unit: cpu]
+            # "-e", "l2_dtlb_misses",
+            # [L2 ITLB Misses & Instruction page walks.  Unit: cpu]
+            # "-e", "l2_itlb_misses",
+            # [Macro-ops Retired.  Unit: cpu]
+            # "-e", "macro_ops_retired",
+            # [Mixed SSE/AVX Stalls.  Unit: cpu]
+            # "-e", "sse_avx_stalls",
+
+            #### AMD recommended events unusable from thread level ###
+
+            # [L3 Cache Accesses.  Unit: amd_l3]
+            # "-e", "l3_cache_accesses",
+            # [L3 Misses (includes cacheline state change requests).  Unit: amd_l3]
+            # "-e", "l3_misses",
+
             "-p", str(backend_pid),
             "-o",  OUTPUT_DIR + "/" + pg_name,
             "-g"

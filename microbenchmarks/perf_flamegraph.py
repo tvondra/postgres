@@ -1,13 +1,57 @@
 #!/usr/bin/env python3
 
+"""
+Performance profiling script for PostgreSQL using perf and FlameGraph.
+
+This script automates the process of profiling two different versions of
+PostgreSQL (e.g., 'master' and a 'patched' version) to generate
+differential flame graphs for performance analysis of a specific SQL query.
+
+It performs the following steps:
+1.  Checks for necessary command-line tool dependencies (`perf`, `git`).
+2.  Ensures the FlameGraph repository is available.
+3.  For each PostgreSQL version ('master' and 'patch'):
+    a. Starts the PostgreSQL server.
+    b. Waits for the server to become available.
+    c. Connects to the database and retrieves the backend process PID.
+    d. Prewarms database caches.
+    e. Starts `perf record` to sample the backend process.
+    f. Executes a specified SQL query repeatedly.
+    g. Stops `perf` and the PostgreSQL server.
+    h. Generates a normalized stack trace file.
+4.  Uses the FlameGraph toolkit to:
+    a. Fold the stack traces from both profiling runs.
+    b. Generate individual flame graphs for both versions.
+    c. Generate a differential flame graph comparing the two versions.
+
+Configuration:
+The script requires configuration of paths, connection details, and profiling
+parameters in the "--- Configuration ---" section of the script. This includes:
+- Paths to PostgreSQL binaries and data directories for both versions.
+- Connection details.
+- The SQL query to be profiled.
+- `perf` sampling frequency.
+- Path to the FlameGraph repository.
+
+Output:
+The script creates an 'output_perf_flamegraph' directory (by default)
+containing:
+- Log files for each PostgreSQL server instance.
+- Raw `perf.data` files (named 'master' and 'patch').
+- Collapsed stack files (`.stacks` and `.folded`).
+- Individual SVG flame graphs for each version.
+- A differential SVG flame graph (`diff.svg`).
+"""
+
 import os
-import psycopg
-import shutil
 import random
+import shutil
 import signal
 import subprocess
 import sys
 import time
+
+import psycopg
 
 os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
 os.environ["MALLOPT_TOP_PAD"] = str(64 * 1024 * 1024)
@@ -33,7 +77,7 @@ MASTER_CONN_DETAILS = {
     "dbname": "regression",
     "user": "pg",
     "host": "/tmp",
-    "port": 5555 # IMPORTANT: Ensure the two versions run on different ports
+    "port": 5555
 }
 PATCH_CONN_DETAILS = {
     "dbname": "regression",
@@ -63,18 +107,13 @@ FLAMEGRAPH_DIR="/home/pg/code/FlameGraph"
 OUTPUT_DIR = "output_perf_flamegraph"
 
 def check_dependencies():
-    """Check if required command-line tools are available."""
+    """Check if required tools are available."""
     for cmd in ["perf", "git"]:
         if not shutil.which(cmd):
             print(f"Error: Command '{cmd}' not found. Please install it.")
             sys.exit(1)
-
-def clone_flamegraph():
-    """Clone the FlameGraph repository if it doesn't exist."""
     if not os.path.isdir(FLAMEGRAPH_DIR):
-        raise Exception("no FlameGraph repository")
-    else:
-        print("FlameGraph repository already exists.")
+        raise FileNotFoundError("no FlameGraph repository")
 
 def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file):
     """Starts, profiles, and stops a PostgreSQL instance."""
@@ -83,7 +122,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
     print(f"--- Testing {pg_name} ---")
 
     # Ensure server is stopped before we start
-    if subprocess.run([pg_ctl_path, "status", "-D", pg_data_dir]).returncode == 0:
+    if subprocess.run([pg_ctl_path, "status", "-D", pg_data_dir], check=False).returncode == 0:
         print("Server is already running. Stopping it...")
         subprocess.run([pg_ctl_path, "stop", "-D", pg_data_dir, "-m", "fast"], check=True)
         time.sleep(2)
@@ -127,7 +166,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         backend_pid = conn.info.backend_pid
         print(f"Successfully connected. Backend PID is: {backend_pid}")
 
-        print(f"Prewarming...")
+        print("Prewarming...")
         with conn.cursor() as cursor:
             # if pg_name == "patch":
             #     cursor.execute("set enable_indexscan_prefetch=off;")
@@ -145,7 +184,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             cursor.execute("select pg_prewarm('pgbench_accounts_pkey');")
             cursor.execute("select pg_prewarm('pgbench_branches');")
             cursor.execute("select pg_prewarm('pgbench_branches_pkey');")
-        print(f"Finished prewarming")
+        print("Finished prewarming")
 
         # Start perf in the background, targeting the specific backend PID.
         # It will run until we explicitly stop it.
@@ -232,8 +271,8 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         print(f"Executing the SQL query {QUERY_REPETITIONS} times...")
         random.seed(42)
         start_time = time.time()
-        with conn.cursor() as cursor:
-            for i in range(QUERY_REPETITIONS):
+        with conn.cursor() as cursor: # type: ignore
+            for _ in range(QUERY_REPETITIONS):
                 # cursor.execute(query=SQL_QUERY, params=[random.randint(1,50_00_000)], prepare=True)
                 cursor.execute(query=SQL_QUERY, prepare=True)
         end_time = time.time()
@@ -282,7 +321,6 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 def main():
     """Main execution flow."""
     check_dependencies()
-    clone_flamegraph()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print(f"--- Profiling \"{SQL_QUERY}\" ---")

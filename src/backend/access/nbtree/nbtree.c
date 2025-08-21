@@ -379,21 +379,22 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 	if (batch->numKilled > 0)
 		_bt_killitems(scan, batch);
 
-	if (batch->itemsvisibility)
-		pfree(batch->itemsvisibility);
-
-	if (batch->currTuples)
-		pfree(batch->currTuples);
-
 	if (batch->pos)
 	{
 		if (!scan->batchState || !scan->batchState->dropPin)
 			ReleaseBuffer(batch->buf);
 
 		pfree(batch->pos);
+
+		/* XXX maybe should be done in index_batch_free? */
+		batch->buf = InvalidBuffer;
+		batch->pos = NULL;
 	}
 
-	pfree(batch);
+	/* XXX keep itemsvisibility, killItems and currTuples */
+
+	/* free the batch (or cache it for reuse) */
+	index_batch_release(scan, batch);
 }
 
 /*

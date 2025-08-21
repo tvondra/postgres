@@ -2019,14 +2019,11 @@ index_batch_getnext(IndexScanDesc scan)
 static void
 index_batch_init(IndexScanDesc scan)
 {
-	/* init batching info, assume batching is supported by the AM */
+	/* init batching info */
 	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
 	Assert(scan->indexRelation->rd_indam->amfreebatch != NULL);
 
-	scan->batchState = palloc0(sizeof(IndexScanBatchState));
-
-	/* We don't know direction of the scan yet. */
-	scan->batchState->direction = NoMovementScanDirection;
+	scan->batchState = palloc(sizeof(IndexScanBatchState));
 
 	/*
 	 * Initialize the batch.
@@ -2047,6 +2044,16 @@ index_batch_init(IndexScanDesc scan)
 	scan->batchState->dropPin =
 		(!scan->xs_want_itup && IsMVCCSnapshot(scan->xs_snapshot) &&
 		 RelationNeedsWAL(scan->indexRelation));
+	scan->batchState->finished = false;
+	scan->batchState->reset = false;
+	scan->batchState->lastBlock = InvalidBlockNumber;
+	scan->batchState->direction = NoMovementScanDirection;
+	/* positions in the queue of batches */
+	index_batch_pos_reset(scan, &scan->batchState->readPos);
+	index_batch_pos_reset(scan, &scan->batchState->streamPos);
+	index_batch_pos_reset(scan, &scan->batchState->markPos);
+
+	scan->batchState->markBatch = NULL;
 	scan->batchState->maxBatches = INDEX_SCAN_MAX_BATCHES;
 	scan->batchState->firstBatch = 0;	/* first batch */
 	scan->batchState->nextBatch = 0;	/* first batch is empty */
@@ -2058,12 +2065,8 @@ index_batch_init(IndexScanDesc scan)
 	scan->batchState->batches =
 		palloc(sizeof(IndexScanBatchData *) * scan->batchState->maxBatches);
 
-	/* positions in the queue of batches */
-	index_batch_pos_reset(scan, &scan->batchState->readPos);
-	index_batch_pos_reset(scan, &scan->batchState->streamPos);
-	index_batch_pos_reset(scan, &scan->batchState->markPos);
-
-	scan->batchState->lastBlock = InvalidBlockNumber;
+	scan->batchState->prefetch = NULL;
+	scan->batchState->prefetchArg = NULL;
 }
 
 /*

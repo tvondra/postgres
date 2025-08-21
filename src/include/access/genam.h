@@ -233,7 +233,8 @@ extern void index_store_float8_orderby_distances(IndexScanDesc scan,
 												 bool recheckOrderBy);
 extern bytea *index_opclass_options(Relation indrel, AttrNumber attnum,
 									Datum attoptions, bool validate);
-extern IndexScanBatch index_batch_alloc(int maxitems, bool want_itup);
+extern IndexScanBatch index_batch_alloc(IndexScanDesc scan, int maxitems, bool want_itup);
+extern void index_batch_release(IndexScanDesc scan, IndexScanBatch batch);
 extern void index_batch_unlock(Relation rel, bool dropPin, IndexScanBatch batch);
 
 extern void index_get_prefetch_stats(IndexScanDesc scan, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram);

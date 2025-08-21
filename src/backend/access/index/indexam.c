@@ -56,6 +56,7 @@
 #include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/memdebug.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -2190,6 +2191,26 @@ static void
 index_batch_end(IndexScanDesc scan)
 {
 	index_batch_reset(scan, true);
+
+	if (scan->batchState)
+	{
+		if (scan->batchState->batches)
+			pfree(scan->batchState->batches);
+
+		if (scan->batchState->batchesCache)
+		{
+			for (int i = 0; i < scan->batchState->batchesCacheSize; i++)
+			{
+				if (scan->batchState->batchesCache[i] == NULL)
+					continue;
+
+				pfree(scan->batchState->batchesCache[i]);
+			}
+
+			pfree(scan->batchState->batchesCache);
+		}
+		pfree(scan->batchState);
+	}
 }
 
 /*
@@ -2277,14 +2298,15 @@ index_batch_alloc(IndexScanDesc scan, int maxitems, bool want_itup)
 /*
  * Unlock batch->buf.  If batch scan is dropPin, drop the pin, too.  Dropping
  * the pin prevents VACUUM from blocking on acquiring a cleanup lock.
- *
- * TODO: Restore Valgrind nbtree buffer lock instrumentation.
  */
 void
 index_batch_unlock(Relation rel, bool dropPin, IndexScanBatch batch)
 {
 	if (!dropPin)
 	{
+		if (!RelationUsesLocalBuffers(rel))
+			VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
+
 		/* Just drop the lock (not the pin) */
 		LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
 		return;
@@ -2301,6 +2323,8 @@ index_batch_unlock(Relation rel, bool dropPin, IndexScanBatch batch)
 	Assert(RelationNeedsWAL(rel));
 	batch->lsn = BufferGetLSNAtomic(batch->buf);
 	LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
+	if (!RelationUsesLocalBuffers(rel))
+		VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
 	ReleaseBuffer(batch->buf);
 	batch->buf = InvalidBuffer; /* defensive */
 }

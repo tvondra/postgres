@@ -884,7 +884,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * is the last one we loaded. Also reset the stream position, as if we are
 	 * just starting the scan.
 	 */
-	if (scan->batchState->direction != direction)
+	if (unlikely(scan->batchState->direction != direction))
 	{
 		/* release "future" batches in the wrong direction */
 		while (scan->batchState->nextBatch > scan->batchState->firstBatch + 1)
@@ -979,7 +979,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				 * depends on when we try to fetch the first heap block after
 				 * calling read_stream_reset().
 				 */
-				if (scan->batchState->streamPos.batch == scan->batchState->firstBatch)
+				if (unlikely(scan->batchState->streamPos.batch ==
+							 scan->batchState->firstBatch))
 				{
 					elog(WARNING, "index_batch_pos_reset called early due to scan->batchState->streamPos.batch == scan->batchState->firstBatch");
 					index_batch_pos_reset(scan, &scan->batchState->streamPos);

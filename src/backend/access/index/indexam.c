@@ -2107,7 +2107,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	 *
 	 * XXX Do this before the loop, so that it calls the amfreebatch().
 	 */
-	if (complete && batchState->markBatch != NULL)
+	if (complete && unlikely(batchState->markBatch != NULL))
 	{
 		IndexScanBatchPos *pos = &batchState->markPos;
 		IndexScanBatch batch = batchState->markBatch;
@@ -2142,7 +2142,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	}
 
 	/* reset relevant batch state fields */
-	batchState->maxBatches = INDEX_SCAN_MAX_BATCHES;
+	Assert(batchState->maxBatches == INDEX_SCAN_MAX_BATCHES);
 	batchState->firstBatch = 0; /* first batch */
 	batchState->nextBatch = 0;	/* first batch is empty */
 

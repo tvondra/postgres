@@ -125,7 +125,8 @@ static BlockNumber index_scan_stream_read_next(ReadStream *stream,
 											   void *callback_private_data,
 											   void *per_buffer_data);
 
-static bool index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos);
+static pg_attribute_always_inline bool index_batch_pos_advance(IndexScanDesc scan,
+															   IndexScanBatchPos *pos);
 static void index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos);
 static void index_batch_kill_item(IndexScanDesc scan);
 
@@ -874,9 +875,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* shouldn't get here without batching */
 	AssertCheckBatches(scan);
 
-	/* read the next TID from the index */
-	pos = &scan->batchState->readPos;
-
 	/*
 	 * Handle change of scan direction (reset stream, ...).
 	 *
@@ -911,6 +909,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}
+
+	/* read the next TID from the index */
+	pos = &scan->batchState->readPos;
 
 	DEBUG_LOG("index_batch_getnext_tid pos %d %d direction %d",
 			  pos->batch, pos->index, direction);
@@ -1648,7 +1649,7 @@ AssertCheckBatches(IndexScanDesc scan)
  *
  * The poisition is guaranteed to be valid only after an advance.
  */
-static bool
+static pg_attribute_always_inline bool
 index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
 {
 	IndexScanBatchData *batch;

@@ -126,7 +126,8 @@ static BlockNumber index_scan_stream_read_next(ReadStream *stream,
 											   void *per_buffer_data);
 
 static pg_attribute_always_inline bool index_batch_pos_advance(IndexScanDesc scan,
-															   IndexScanBatchPos *pos);
+															   IndexScanBatchPos *pos,
+															   ScanDirection direction);
 static void index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos);
 static void index_batch_kill_item(IndexScanDesc scan);
 
@@ -941,7 +942,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * If we manage to advance to the next items, return it and we're
 		 * done. Otherwise try loading another batch.
 		 */
-		if (index_batch_pos_advance(scan, pos))
+		if (index_batch_pos_advance(scan, pos, direction))
 		{
 			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
@@ -963,7 +964,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			 * longer need. The positions is the "read" position, and we can
 			 * compare it to firstBatch.
 			 */
-			if (pos->batch != scan->batchState->firstBatch)
+			if (unlikely(pos->batch != scan->batchState->firstBatch))
 			{
 				batch = INDEX_SCAN_BATCH(scan, scan->batchState->firstBatch);
 				Assert(batch != NULL);
@@ -1030,7 +1031,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * So if we filled the queue, this is a good time to reset the stream
 		 * (before we try loading the next batch).
 		 */
-		if (scan->batchState->reset)
+		if (unlikely(scan->batchState->reset))
 		{
 			DEBUG_LOG("resetting read stream pos %d,%d",
 					  scan->batchState->readPos.batch, scan->batchState->readPos.index);
@@ -1660,15 +1661,16 @@ AssertCheckBatches(IndexScanDesc scan)
  * The poisition is guaranteed to be valid only after an advance.
  */
 static pg_attribute_always_inline bool
-index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos)
+index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
+						ScanDirection direction)
 {
 	IndexScanBatchData *batch;
-	ScanDirection direction = scan->batchState->direction;
 
 	/* make sure we have batching initialized and consistent */
 	AssertCheckBatches(scan);
 
 	/* should know direction by now */
+	Assert(direction == scan->batchState->direction);
 	Assert(direction != NoMovementScanDirection);
 
 	/* We can't advance if there are no batches available. */
@@ -1850,7 +1852,7 @@ index_scan_stream_read_next(ReadStream *stream,
 			*pos = scan->batchState->readPos;
 			advanced = true;
 		}
-		else if (index_batch_pos_advance(scan, pos))
+		else if (index_batch_pos_advance(scan, pos, scan->batchState->direction))
 		{
 			advanced = true;
 		}

@@ -94,7 +94,7 @@ if SIMPLE_SELECT_PROFILING:
     MAX_AID_VAL=50_00_000
 else:
     SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid"
-    QUERY_REPETITIONS=5
+    QUERY_REPETITIONS=10
 
 # The frequency of 'perf' sampling.
 PERF_FREQUENCY=9999
@@ -256,7 +256,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             # "-e", "l3_misses",
 
             "-p", str(backend_pid),
-            "-a",
+            # "-a",
             "-g",
             # "--call-graph", "dwarf",
             "-o",  OUTPUT_DIR + "/" + pg_name,
@@ -279,7 +279,8 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
                 else:
                     cursor.execute(query=SQL_QUERY, prepare=True)
         end_time = time.time()
-        print(f"Query loop finished in {end_time - start_time:.2f} seconds.")
+        total_time = end_time - start_time
+        print(f"Query loop finished in \033[1m{total_time:.3f} seconds\033[0m")
 
         # Stop the perf process gracefully by sending SIGINT (like Ctrl+C)
         print("Stopping perf...")
@@ -319,7 +320,7 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         print("----------------------------------------")
 
     # Return string of perf command for flamegraph --subtitle arg
-    return ' '.join(perf_command)
+    return ' '.join(perf_command), total_time
 
 def main():
     """Main execution flow."""
@@ -342,12 +343,14 @@ def main():
     svg_file_patch = os.path.join(OUTPUT_DIR, "patch_flamegraph.svg")
 
     # Profile both PostgreSQL versions
-    perf_command_master = profile_postgres(MASTER_BIN, "master",
-                                           MASTER_DATA_DIR, MASTER_CONN_DETAILS,
-                                           stacks_file_master)
-    perf_command_patch = profile_postgres(PATCH_BIN, "patch",
-                                          PATCH_DATA_DIR, PATCH_CONN_DETAILS,
-                                          stacks_file_patch)
+    perf_command_master, total_time_master = profile_postgres(MASTER_BIN, "master",
+                                                              MASTER_DATA_DIR, MASTER_CONN_DETAILS,
+                                                              stacks_file_master)
+    perf_command_patch, total_time_patch = profile_postgres(PATCH_BIN, "patch",
+                                                            PATCH_DATA_DIR, PATCH_CONN_DETAILS,
+                                                            stacks_file_patch)
+
+    print(f"Patch query loop took \033[1m{total_time_patch/total_time_master:.3f}x\033[0m as long as master")
 
     # --- Generate Flame Graphs ---
     print("--- Generating Flame Graphs ---")

@@ -99,6 +99,9 @@ else:
 # The frequency of 'perf' sampling.
 PERF_FREQUENCY=9999
 
+# Set to False to disable perf profiling and only run the benchmark.
+RUN_PERF = True
+
 # --- Script variables ---
 FLAMEGRAPH_DIR="/home/pg/code/FlameGraph"
 OUTPUT_DIR = "output_perf_flamegraph"
@@ -183,88 +186,89 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             cursor.execute("select pg_prewarm('pgbench_branches_pkey');")
         print("Finished prewarming")
 
-        # Start perf in the background, targeting the specific backend PID.
-        # It will run until we explicitly stop it.
-        print(f"Starting perf on PID {backend_pid}...")
-        perf_command = [
-            "perf", "record",
-            "-F", str(PERF_FREQUENCY),
-            # "-e", "alignment-faults",
-            # "-e", "branch-instructions",
-            # "-e", "branch-misses",
-            # "-e", "branches",
-            # "-e", "cache-misses",
-            # "-e", "cache-references",
-            # "-e", "cgroup-switches",
-            # "-e", "context-switches",
-            # "-e", "cpu-clock",
-            # "-e", "cpu-cycles",
-            # "-e", "cpu-migrations",
-            # "-e", "instructions",
-            # "-e", "major-faults",
-            # "-e", "minor-faults",
-            # "-e", "page-faults",
-            # "-e", "stalled-cycles-frontend",
-            # "-e", "task-clock",
+        perf_process = None
+        perf_command = []
+        if RUN_PERF:
+            print(f"Starting perf on PID {backend_pid}...")
+            perf_command = [
+                "perf", "record",
+                "-F", str(PERF_FREQUENCY),
+                # "-e", "alignment-faults",
+                # "-e", "branch-instructions",
+                # "-e", "branch-misses",
+                # "-e", "branches",
+                # "-e", "cache-misses",
+                # "-e", "cache-references",
+                # "-e", "cgroup-switches",
+                # "-e", "context-switches",
+                # "-e", "cpu-clock",
+                # "-e", "cpu-cycles",
+                # "-e", "cpu-migrations",
+                # "-e", "instructions",
+                # "-e", "major-faults",
+                # "-e", "minor-faults",
+                # "-e", "page-faults",
+                # "-e", "stalled-cycles-frontend",
+                # "-e", "task-clock",
 
-            #### AMD recommended events usable from thread level ###
+                #### AMD recommended events usable from thread level ###
 
-            # [All L1 Data Cache Accesses. Unit: cpu]
-            # "-e", "all_data_cache_accesses",
-            # [All TLBs Flushed. Unit: cpu]
-            # "-e", "all_tlbs_flushed",
-            # [L1 Data Cache Fills: All. Unit: cpu]
-            # "-e", "l1_data_cache_fills_all",
-            # [L1 Data Cache Fills: From External CCX Cache. Unit: cpu]
-            # "-e", "l1_data_cache_fills_from_external_ccx_cache",
-            # [L1 Data Cache Fills: From Memory. Unit: cpu]
-            # "-e", "l1_data_cache_fills_from_memory",
-            # [L1 Data Cache Fills: From Remote Node.  Unit: cpu]
-            # "-e", "l1_data_cache_fills_from_remote_node",
-            # [L1 Data Cache Fills: From within same CCX.  Unit: cpu]
-            # "-e", "l1_data_cache_fills_from_within_same_ccx",
-            # [L1 DTLB Misses.  Unit: cpu]
-            # "-e", "l1_dtlb_misses",
-            # [L2 Cache Accesses from L1 Data Cache Misses (including prefetch).  Unit: cpu]
-            # "-e", "l2_cache_accesses_from_dc_misses",
-            # [L2 Cache Accesses from L1 Instruction Cache Misses (including prefetch).  Unit: cpu]
-            # "-e", "l2_cache_accesses_from_ic_misses",
-            # [L2 Cache Hits from L1 Data Cache Misses.  Unit: cpu]
-            # "-e", "l2_cache_hits_from_dc_misses",
-            # [L2 Cache Hits from L1 Instruction Cache Misses.  Unit: cpu]
-            # "-e", "l2_cache_hits_from_ic_misses",
-            # [L2 Cache Hits from L2 Cache HWPF.  Unit: cpu]
-            # "-e", "l2_cache_hits_from_l2_hwpf",
-            # [L2 Cache Misses from L1 Data Cache Misses.  Unit: cpu]
-            # "-e", "l2_cache_misses_from_dc_misses",
-            # [L2 Cache Misses from L1 Instruction Cache Misses.  Unit: cpu]
-            # "-e", "l2_cache_misses_from_ic_miss",
-            # [L2 DTLB Misses & Data page walks.  Unit: cpu]
-            # "-e", "l2_dtlb_misses",
-            # [L2 ITLB Misses & Instruction page walks.  Unit: cpu]
-            # "-e", "l2_itlb_misses",
-            # [Macro-ops Retired.  Unit: cpu]
-            # "-e", "macro_ops_retired",
-            # [Mixed SSE/AVX Stalls.  Unit: cpu]
-            # "-e", "sse_avx_stalls",
+                # [All L1 Data Cache Accesses. Unit: cpu]
+                # "-e", "all_data_cache_accesses",
+                # [All TLBs Flushed. Unit: cpu]
+                # "-e", "all_tlbs_flushed",
+                # [L1 Data Cache Fills: All. Unit: cpu]
+                # "-e", "l1_data_cache_fills_all",
+                # [L1 Data Cache Fills: From External CCX Cache. Unit: cpu]
+                # "-e", "l1_data_cache_fills_from_external_ccx_cache",
+                # [L1 Data Cache Fills: From Memory. Unit: cpu]
+                # "-e", "l1_data_cache_fills_from_memory",
+                # [L1 Data Cache Fills: From Remote Node.  Unit: cpu]
+                # "-e", "l1_data_cache_fills_from_remote_node",
+                # [L1 Data Cache Fills: From within same CCX.  Unit: cpu]
+                # "-e", "l1_data_cache_fills_from_within_same_ccx",
+                # [L1 DTLB Misses.  Unit: cpu]
+                # "-e", "l1_dtlb_misses",
+                # [L2 Cache Accesses from L1 Data Cache Misses (including prefetch).  Unit: cpu]
+                # "-e", "l2_cache_accesses_from_dc_misses",
+                # [L2 Cache Accesses from L1 Instruction Cache Misses (including prefetch).  Unit: cpu]
+                # "-e", "l2_cache_accesses_from_ic_misses",
+                # [L2 Cache Hits from L1 Data Cache Misses.  Unit: cpu]
+                # "-e", "l2_cache_hits_from_dc_misses",
+                # [L2 Cache Hits from L1 Instruction Cache Misses.  Unit: cpu]
+                # "-e", "l2_cache_hits_from_ic_misses",
+                # [L2 Cache Hits from L2 Cache HWPF.  Unit: cpu]
+                # "-e", "l2_cache_hits_from_l2_hwpf",
+                # [L2 Cache Misses from L1 Data Cache Misses.  Unit: cpu]
+                # "-e", "l2_cache_misses_from_dc_misses",
+                # [L2 Cache Misses from L1 Instruction Cache Misses.  Unit: cpu]
+                # "-e", "l2_cache_misses_from_ic_miss",
+                # [L2 DTLB Misses & Data page walks.  Unit: cpu]
+                # "-e", "l2_dtlb_misses",
+                # [L2 ITLB Misses & Instruction page walks.  Unit: cpu]
+                # "-e", "l2_itlb_misses",
+                # [Macro-ops Retired.  Unit: cpu]
+                # "-e", "macro_ops_retired",
+                # [Mixed SSE/AVX Stalls.  Unit: cpu]
+                # "-e", "sse_avx_stalls",
 
-            #### AMD recommended events unusable from thread level ###
+                #### AMD recommended events unusable from thread level ###
 
-            # [L3 Cache Accesses.  Unit: amd_l3]
-            # "-e", "l3_cache_accesses",
-            # [L3 Misses (includes cacheline state change requests).  Unit: amd_l3]
-            # "-e", "l3_misses",
+                # [L3 Cache Accesses.  Unit: amd_l3]
+                # "-e", "l3_cache_accesses",
+                # [L3 Misses (includes cacheline state change requests).  Unit: amd_l3]
+                # "-e", "l3_misses",
 
-            "-p", str(backend_pid),
-            # "-a",
-            "-g",
-            # "--call-graph", "dwarf",
-            "-o",  OUTPUT_DIR + "/" + pg_name,
-        ]
-        perf_process = subprocess.Popen(perf_command)
+                "-p", str(backend_pid),
+                # "-a",
+                "-g",
+                # "--call-graph", "dwarf",
+                "-o",  OUTPUT_DIR + "/" + pg_name,
+            ]
+            perf_process = subprocess.Popen(perf_command)
 
-        # Give perf a moment to initialize before starting the workload
-        time.sleep(1)
+            # Give perf a moment to initialize before starting the workload
+            time.sleep(1)
 
         # Execute the query repeatedly in the same connection
         print(f"Executing the SQL query {QUERY_REPETITIONS} times...")
@@ -282,34 +286,35 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
         total_time = end_time - start_time
         print(f"Query loop finished in \033[1m{total_time:.3f} seconds\033[0m")
 
-        # Stop the perf process gracefully by sending SIGINT (like Ctrl+C)
-        print("Stopping perf...")
-        perf_process.send_signal(signal.SIGINT)
+        if perf_process:
+            # Stop the perf process gracefully by sending SIGINT (like Ctrl+C)
+            print("Stopping perf...")
+            perf_process.send_signal(signal.SIGINT)
 
-        # Wait for perf to terminate
-        perf_process.wait()
+            # Wait for perf to terminate
+            perf_process.wait()
 
-        # Generate the stack trace file, normalizing the binary path
-        print(f"Generating and normalizing stack trace file: {output_file}")
+            # Generate the stack trace file, normalizing the binary path
+            print(f"Generating and normalizing stack trace file: {output_file}")
 
-        # The sed expression will replace the full, version-specific path
-        # with the generic name 'postgres', allowing difffolded.pl to match symbols.
-        pg_executable_path = os.path.join(pg_bin_dir, "postgres")
-        sed_expression = f"s|{pg_executable_path}|postgres|g"
+            # The sed expression will replace the full, version-specific path
+            # with the generic name 'postgres', allowing difffolded.pl to match symbols.
+            pg_executable_path = os.path.join(pg_bin_dir, "postgres")
+            sed_expression = f"s|{pg_executable_path}|postgres|g"
 
-        perf_script_process = subprocess.Popen(["perf", "script",
-                                                "-i",  OUTPUT_DIR + "/" + pg_name,
-                                                ], stdout=subprocess.PIPE)
+            perf_script_process = subprocess.Popen(["perf", "script",
+                                                    "-i",  OUTPUT_DIR + "/" + pg_name,
+                                                    ], stdout=subprocess.PIPE)
 
-        with open(output_file, "w") as f:
-            sed_process = subprocess.run(
-                ["sed", sed_expression],
-                stdin=perf_script_process.stdout,
-                stdout=f,
-                check=True
-            )
-        perf_script_process.stdout.close()
-        perf_script_process.wait()
+            with open(output_file, "w") as f:
+                sed_process = subprocess.run(
+                    ["sed", sed_expression],
+                    stdin=perf_script_process.stdout,
+                    stdout=f,
+                    check=True
+                )
+            perf_script_process.stdout.close()
+            perf_script_process.wait()
 
     finally:
         # Ensure the connection is closed and the server is stopped
@@ -351,6 +356,10 @@ def main():
                                                             stacks_file_patch)
 
     print(f"Patch query loop took \033[1m{total_time_patch/total_time_master:.3f}x\033[0m as long as master")
+
+    if not RUN_PERF:
+        print("Perf profiling was disabled. Exiting.")
+        return
 
     # --- Generate Flame Graphs ---
     print("--- Generating Flame Graphs ---")

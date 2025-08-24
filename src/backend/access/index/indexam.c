@@ -214,8 +214,8 @@ index_batch_print(const char *label, IndexScanDesc scan)
 		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, i);
 		BTScanPos	pos = (BTScanPos) batch->pos;
 
-		DEBUG_LOG("%s: batch %d currPage %u %p first %d last %d item %d killed %d",
-				  label, i, pos->currPage, batch, batch->firstItem, batch->lastItem,
+		DEBUG_LOG("    batch %d currPage %u %p first %d last %d item %d killed %d",
+				  i, pos->currPage, batch, batch->firstItem, batch->lastItem,
 				  batch->itemIndex, batch->numKilled);
 	}
 #endif

@@ -1037,7 +1037,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			 */
 			index_batch_pos_reset(scan, &scan->batchState->streamPos);
 
-			read_stream_reset(scan->xs_heapfetch->rs);
+			if (scan->xs_heapfetch->rs)
+				read_stream_reset(scan->xs_heapfetch->rs);
 		}
 
 		/*

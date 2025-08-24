@@ -63,6 +63,9 @@ os.environ["M_ARENA_TEST"] = str(64)
 
 # --- Configuration ---
 
+SIMPLE_SELECT_PROFILING=False
+RUN_PERF = False
+
 # Paths to the PostgreSQL binaries for the two versions you want to compare.
 MASTER_BIN="/mnt/nvme/postgresql/master/install_meson_rc/bin"
 PATCH_BIN="/mnt/nvme/postgresql/patch/install_meson_rc/bin"
@@ -86,21 +89,16 @@ PATCH_CONN_DETAILS = {
     "port": 5432
 }
 
-SIMPLE_SELECT_PROFILING=False
-
 if SIMPLE_SELECT_PROFILING:
     SQL_QUERY="select * from pgbench_accounts where aid = %s"
     QUERY_REPETITIONS=500_000
     MAX_AID_VAL=50_00_000
 else:
     SQL_QUERY="select count(*) from pgbench_accounts a join pgbench_branches b on a.bid = b.bid"
-    QUERY_REPETITIONS=10
+    QUERY_REPETITIONS=5
 
 # The frequency of 'perf' sampling.
 PERF_FREQUENCY=9999
-
-# Set to False to disable perf profiling and only run the benchmark.
-RUN_PERF = True
 
 # --- Script variables ---
 FLAMEGRAPH_DIR="/home/pg/code/FlameGraph"
@@ -165,6 +163,15 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 
         backend_pid = conn.info.backend_pid
         print(f"Successfully connected. Backend PID is: {backend_pid}")
+
+        # Pin the backend process to a specific core.
+        # This may require running the script with sufficient privileges (e.g., as root).
+        try:
+            # Pin backend to core 1
+            os.sched_setaffinity(backend_pid, {1})
+            print(f"Pinned backend PID {backend_pid} to CPU 1.")
+        except (AttributeError, PermissionError, OSError) as e:
+            print(f"Warning: Could not set CPU affinity for backend PID {backend_pid}: {e}")
 
         print("Prewarming...")
         with conn.cursor() as cursor:
@@ -267,6 +274,14 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
             ]
             perf_process = subprocess.Popen(perf_command)
 
+            # Pin perf process to a different core to minimize interference.
+            try:
+                # Pin perf to core 2
+                os.sched_setaffinity(perf_process.pid, {2})
+                print(f"Pinned perf PID {perf_process.pid} to CPU 2.")
+            except (AttributeError, PermissionError, OSError) as e:
+                print(f"Warning: Could not set CPU affinity for perf PID {perf_process.pid}: {e}")
+
             # Give perf a moment to initialize before starting the workload
             time.sleep(1)
 
@@ -329,6 +344,16 @@ def profile_postgres(pg_bin_dir, pg_name, pg_data_dir, conn_details, output_file
 
 def main():
     """Main execution flow."""
+    # Pin the script itself to a core to avoid it interfering with the benchmark.
+    # This may require running the script with sufficient privileges (e.g., as root).
+    try:
+        # Pin this script to core 0
+        pid = os.getpid()
+        os.sched_setaffinity(pid, {0})
+        print(f"Pinned this script (PID {pid}) to CPU 0.")
+    except (AttributeError, PermissionError, OSError) as e:
+        print(f"Warning: Could not set CPU affinity for this script: {e}")
+
     check_dependencies()
 
     if os.path.exists(OUTPUT_DIR):

@@ -559,8 +559,8 @@ void
 index_markpos(IndexScanDesc scan)
 {
 	IndexScanBatchState *batchState = scan->batchState;
-	IndexScanBatchPos *pos = &batchState->markPos;
-	IndexScanBatchData *batch = batchState->markBatch;
+	IndexScanBatchPos *markPos = &batchState->markPos;
+	IndexScanBatchData *markBatch = batchState->markBatch;
 
 	SCAN_CHECKS;
 
@@ -572,11 +572,11 @@ index_markpos(IndexScanDesc scan)
 	 *
 	 * XXX Should have some macro for this check, I guess.
 	 */
-	if (batch != NULL && (pos->batch < batchState->firstBatch ||
-						  pos->batch >= batchState->nextBatch))
+	if (markBatch != NULL && (markPos->batch < batchState->firstBatch ||
+							  markPos->batch >= batchState->nextBatch))
 	{
 		batchState->markBatch = NULL;
-		index_batch_free(scan, batch);
+		index_batch_free(scan, markBatch);
 	}
 
 	/* just copy the read position (which has to be valid) */
@@ -882,12 +882,14 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
-	IndexScanBatchPos *pos;
-
-	CHECK_SCAN_PROCEDURE(amgetbatch);
+	IndexScanBatchPos *readPos;
 
 	/* shouldn't get here without batching */
 	AssertCheckBatches(scan);
+
+	/* Initialize direction on first call */
+	if (scan->batchState->direction == NoMovementScanDirection)
+		scan->batchState->direction = direction;
 
 	/*
 	 * Handle change of scan direction (reset stream, ...).
@@ -896,16 +898,16 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * is the last one we loaded. Also reset the stream position, as if we are
 	 * just starting the scan.
 	 */
-	if (unlikely(scan->batchState->direction != direction))
+	else if (unlikely(scan->batchState->direction != direction))
 	{
 		/* release "future" batches in the wrong direction */
 		while (scan->batchState->nextBatch > scan->batchState->firstBatch + 1)
 		{
-			IndexScanBatch batch;
+			IndexScanBatch fbatch;
 
 			scan->batchState->nextBatch--;
-			batch = INDEX_SCAN_BATCH(scan, scan->batchState->nextBatch);
-			index_batch_free(scan, batch);
+			fbatch = INDEX_SCAN_BATCH(scan, scan->batchState->nextBatch);
+			index_batch_free(scan, fbatch);
 		}
 
 		/*
@@ -925,10 +927,10 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	}
 
 	/* read the next TID from the index */
-	pos = &scan->batchState->readPos;
+	readPos = &scan->batchState->readPos;
 
-	DEBUG_LOG("index_batch_getnext_tid pos %d %d direction %d",
-			  pos->batch, pos->index, direction);
+	DEBUG_LOG("index_batch_getnext_tid readPos %d %d direction %d",
+			  readPos->batch, readPos->index, direction);
 
 	/*
 	 * Try advancing the batch position. If that doesn't succeed, it means we
@@ -945,20 +947,20 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * If we manage to advance to the next items, return it and we're
 		 * done. Otherwise try loading another batch.
 		 */
-		if (index_batch_pos_advance(scan, pos, direction))
+		if (index_batch_pos_advance(scan, readPos, direction))
 		{
-			IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
+			IndexScanBatchData *readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
 			/* set the TID / itup for the scan */
-			scan->xs_heaptid = batch->items[pos->index].heapTid;
+			scan->xs_heaptid = readBatch->items[readPos->index].heapTid;
 			if (scan->xs_want_itup)
 				scan->xs_itup =
-					(IndexTuple) (batch->currTuples +
-								  batch->items[pos->index].tupleOffset);
+					(IndexTuple) (readBatch->currTuples +
+								  readBatch->items[readPos->index].tupleOffset);
 
-			DEBUG_LOG("pos batch %p first %d last %d pos %d/%d TID (%u,%u)",
-					  batch, batch->firstItem, batch->lastItem,
-					  pos->batch, pos->index,
+			DEBUG_LOG("readBatch %p first %d last %d readPos %d/%d TID (%u,%u)",
+					  readBatch, readBatch->firstItem, readBatch->lastItem,
+					  readPos->batch, readPos->index,
 					  ItemPointerGetBlockNumber(&scan->xs_heaptid),
 					  ItemPointerGetOffsetNumber(&scan->xs_heaptid));
 
@@ -967,10 +969,11 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			 * longer need. The positions is the "read" position, and we can
 			 * compare it to firstBatch.
 			 */
-			if (unlikely(pos->batch != scan->batchState->firstBatch))
+			if (unlikely(readPos->batch != scan->batchState->firstBatch))
 			{
-				batch = INDEX_SCAN_BATCH(scan, scan->batchState->firstBatch);
-				Assert(batch != NULL);
+				IndexScanBatchData *firstBatch = INDEX_SCAN_BATCH(scan,
+																  scan->batchState->firstBatch);
+				Assert(firstBatch != NULL);
 
 				/*
 				 * XXX When advancing readPos, the streamPos may get behind as
@@ -1001,13 +1004,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 					index_batch_pos_reset(scan, &scan->batchState->streamPos);
 				}
 
-				DEBUG_LOG("index_batch_getnext_tid free batch %p firstBatch %d nextBatch %d",
-						  batch,
+				DEBUG_LOG("index_batch_getnext_tid free firstBatch %p firstBatch %d nextBatch %d",
+						  firstBatch,
 						  scan->batchState->firstBatch,
 						  scan->batchState->nextBatch);
 
-				/* Free the batch (except when it's needed for mark/restore). */
-				index_batch_free(scan, batch);
+				/* Free the old first batch (except when it's markBatch) */
+				index_batch_free(scan, firstBatch);
 
 				/*
 				 * In any case, remove the batch from the regular queue, even
@@ -1022,7 +1025,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				index_batch_print("index_batch_getnext_tid / free old batch", scan);
 
 				/* we can't skip any batches */
-				Assert(scan->batchState->firstBatch == pos->batch);
+				Assert(scan->batchState->firstBatch == readPos->batch);
 			}
 
 			pgstat_count_index_tuples(scan->indexRelation, 1);
@@ -1036,7 +1039,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 */
 		if (unlikely(scan->batchState->reset))
 		{
-			DEBUG_LOG("resetting read stream pos %d,%d",
+			DEBUG_LOG("resetting read stream readPos %d,%d",
 					  scan->batchState->readPos.batch, scan->batchState->readPos.index);
 
 			scan->batchState->reset = false;
@@ -1083,7 +1086,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * we change direction of the scan and start scanning again. If we kept
 	 * the position, we'd skip the first item.
 	 */
-	index_batch_pos_reset(scan, pos);
+	index_batch_pos_reset(scan, readPos);
 
 	return NULL;
 }
@@ -1711,7 +1714,6 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 		else
 			pos->index = batch->lastItem;
 
-		/* the position we just set has to be valid */
 		AssertCheckBatchPosValid(scan, pos);
 
 		return true;
@@ -1731,11 +1733,8 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 
 	if (ScanDirectionIsForward(direction))
 	{
-		if (pos->index < batch->lastItem)
+		if (++pos->index <= batch->lastItem)
 		{
-			pos->index++;
-
-			/* the position has to be valid */
 			AssertCheckBatchPosValid(scan, pos);
 
 			return true;
@@ -1743,11 +1742,8 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 	}
 	else						/* ScanDirectionIsBackward */
 	{
-		if (pos->index > batch->firstItem)
+		if (--pos->index >= batch->firstItem)
 		{
-			pos->index--;
-
-			/* the position has to be valid */
 			AssertCheckBatchPosValid(scan, pos);
 
 			return true;
@@ -1771,7 +1767,6 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 		else
 			pos->index = batch->lastItem;
 
-		/* the position has to be valid */
 		AssertCheckBatchPosValid(scan, pos);
 
 		return true;
@@ -1812,7 +1807,7 @@ index_scan_stream_read_next(ReadStream *stream,
 							void *per_buffer_data)
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
-	IndexScanBatchPos *pos = &scan->batchState->streamPos;
+	IndexScanBatchPos *streamPos = &scan->batchState->streamPos;
 
 	/* we should have set the direction already */
 	Assert(scan->batchState->direction != NoMovementScanDirection);
@@ -1829,17 +1824,14 @@ index_scan_stream_read_next(ReadStream *stream,
 	/*
 	 * Try to advance to the next item, and if there's none in the current
 	 * batch, try loading the next batch.
-	 *
-	 * XXX This loop shouldn't happen more than twice, because if we fail to
-	 * advance the position, we'll try to load the next batch and then in the
-	 * next loop the advance has to succeed.
 	 */
 	while (true)
 	{
 		bool		advanced = false;
 
 		/*
-		 * If the stream position is undefined, just use the read position.
+		 * If the stream position has yet to be initialized, do so using the
+		 * current read position.
 		 *
 		 * It's possible we got here only fairly late in the scan, e.g. if
 		 * many tuples got skipped in the index-only scan, etc. In this case
@@ -1851,12 +1843,14 @@ index_scan_stream_read_next(ReadStream *stream,
 		 * to disable prefetching (effective_io_concurrency=0), in which case
 		 * all batches get loaded in index_batch_getnext_tid.
 		 */
-		if (pos->batch == -1)
+		if (streamPos->batch == -1)
 		{
-			*pos = scan->batchState->readPos;
+			/* Initialize streamPos using current readPos */
+			*streamPos = scan->batchState->readPos;
 			advanced = true;
 		}
-		else if (index_batch_pos_advance(scan, pos, scan->batchState->direction))
+		else if (index_batch_pos_advance(scan, streamPos,
+										 scan->batchState->direction))
 		{
 			advanced = true;
 		}
@@ -1866,11 +1860,11 @@ index_scan_stream_read_next(ReadStream *stream,
 		/* If we advanced the position, return the block for the TID. */
 		if (advanced)
 		{
-			IndexScanBatch batch = INDEX_SCAN_BATCH(scan, pos->batch);
-			ItemPointer tid = &batch->items[pos->index].heapTid;
+			IndexScanBatch streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
+			ItemPointer tid = &streamBatch->items[streamPos->index].heapTid;
 
 			DEBUG_LOG("index_scan_stream_read_next: index %d TID (%u,%u)",
-					  pos->index,
+					  streamPos->index,
 					  ItemPointerGetBlockNumber(tid),
 					  ItemPointerGetOffsetNumber(tid));
 
@@ -1880,7 +1874,7 @@ index_scan_stream_read_next(ReadStream *stream,
 			 */
 			if (scan->batchState->prefetch &&
 				!scan->batchState->prefetch(scan,
-											scan->batchState->prefetchArg, pos))
+											scan->batchState->prefetchArg, streamPos))
 			{
 				DEBUG_LOG("index_scan_stream_read_next: skip block (callback)");
 				continue;
@@ -1907,6 +1901,11 @@ index_scan_stream_read_next(ReadStream *stream,
 		 * work).
 		 *
 		 * If we fail to load the next batch, we're done.
+		 *
+		 * XXX Calling index_batch_getnext shouldn't happen more than twice
+		 * per call here, because if we fail to advance the position, we'll
+		 * try to load the next batch and then in the next loop the advance
+		 * has to succeed.
 		 */
 		if (!index_batch_getnext(scan))
 			break;
@@ -2126,8 +2125,8 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	 */
 	if (complete && unlikely(batchState->markBatch != NULL))
 	{
-		IndexScanBatchPos *pos = &batchState->markPos;
-		IndexScanBatch batch = batchState->markBatch;
+		IndexScanBatchPos *markPos = &batchState->markPos;
+		IndexScanBatch markBatch = batchState->markBatch;
 
 		/* always reset the position, forget the marked batch */
 		batchState->markBatch = NULL;
@@ -2137,9 +2136,9 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 		 * current queue), free it explicitly. Otherwise it'll be in the freed
 		 * later.
 		 */
-		if (pos->batch < batchState->firstBatch ||
-			pos->batch >= batchState->nextBatch)
-			index_batch_free(scan, batch);
+		if (markPos->batch < batchState->firstBatch ||
+			markPos->batch >= batchState->nextBatch)
+			index_batch_free(scan, markBatch);
 
 		/* reset position only after the queue range check */
 		index_batch_pos_reset(scan, &batchState->markPos);
@@ -2173,10 +2172,10 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 static void
 index_batch_kill_item(IndexScanDesc scan)
 {
-	IndexScanBatchPos *pos = &scan->batchState->readPos;
-	IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, pos->batch);
+	IndexScanBatchPos *readPos = &scan->batchState->readPos;
+	IndexScanBatchData *readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
-	AssertCheckBatchPosValid(scan, pos);
+	AssertCheckBatchPosValid(scan, readPos);
 
 	/*
 	 * XXX Maybe we can move the state that indicates if an item has been
@@ -2185,11 +2184,11 @@ index_batch_kill_item(IndexScanDesc scan)
 	 * See:
 	 * https://postgr.es/m/CAH2-WznLN7P0i2-YEnv3QGmeA5AMjdcjkraO_nz3H2Va1V1WOA@mail.gmail.com
 	 */
-	if (batch->killedItems == NULL)
-		batch->killedItems = (int *)
+	if (readBatch->killedItems == NULL)
+		readBatch->killedItems = (int *)
 			palloc(MaxTIDsPerBTreePage * sizeof(int));
-	if (batch->numKilled < MaxTIDsPerBTreePage)
-		batch->killedItems[batch->numKilled++] = pos->index;
+	if (readBatch->numKilled < MaxTIDsPerBTreePage)
+		readBatch->killedItems[readBatch->numKilled++] = readPos->index;
 }
 
 static void

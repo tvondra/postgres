@@ -1,5 +1,6 @@
 -- Tomas' read stream issue
 -- Taken from https://postgr.es/m/8f5d66cf-44e9-40e0-8349-d5590ba8efb4@vondra.me
+drop table if exists t_readstream;
 create unlogged table t_readstream (a bigint, b text) with (fillfactor = 20);
 insert into t_readstream
 select
@@ -23,12 +24,5 @@ from (
 order by
   ((r * 2 + p) + 8 *(random() - 0.5));
 create index idx_readstream on t_readstream(a ASC) with (deduplicate_items=false);
-vacuum freeze ;
-analyze t_readstream;
-explain (analyze, timing off)
-select *
-from t_readstream
-where
-  a between 16150 and 4540437
-order by
-  a asc;
+vacuum (analyze, freeze) t_readstream;
+\echo '#### Now run query-tomas-weird-issue-readstream.sql for query ####'

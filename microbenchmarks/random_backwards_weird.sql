@@ -56,3 +56,4 @@ vacuum freeze;
 analyze;
 checkpoint;
 
+\echo '#### Now run queries_random_backwards_weird.sql for query ####'

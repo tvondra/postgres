@@ -1023,31 +1023,6 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 
 		/*
-		 * We failed to advance, i.e. we ran out of currently loaded batches.
-		 * So if we filled the queue, this is a good time to reset the stream
-		 * (before we try loading the next batch).
-		 */
-		if (unlikely(scan->batchState->reset))
-		{
-			DEBUG_LOG("resetting read stream readPos %d,%d",
-					  scan->batchState->readPos.batch, scan->batchState->readPos.index);
-
-			scan->batchState->reset = false;
-			scan->batchState->lastBlock = InvalidBlockNumber;
-
-			/*
-			 * Need to reset the stream position, it might be too far behind.
-			 * Ultimately we want to set it to readPos, but we can't do that
-			 * yet - readPos still point sat the old batch, so just reset it
-			 * and we'll init it to readPos later in the callback.
-			 */
-			index_batch_pos_reset(scan, &scan->batchState->streamPos);
-
-			if (scan->xs_heapfetch->rs)
-				read_stream_reset(scan->xs_heapfetch->rs);
-		}
-
-		/*
 		 * Failed to advance the read position, so try reading the next batch.
 		 * If this fails, we're done - there's nothing more to load.
 		 *
@@ -1933,44 +1908,34 @@ index_batch_getnext(IndexScanDesc scan)
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
 
-	/*
-	 * If we already used the maximum number of batch slots available, it's
-	 * pointless to try loading another one. This can happen for various
-	 * reasons, e.g. for index-only scans on all-visible table, or skipping
-	 * duplicate blocks on perfectly correlated indexes, etc.
-	 *
-	 * We could enlarge the array to allow more batches, but that's futile, we
-	 * can always construct a case using more memory. Not only it would risk
-	 * OOM, it'd also be inefficient because this happens early in the scan
-	 * (so it'd interfere with LIMIT queries).
-	 */
-	if (INDEX_SCAN_BATCH_FULL(scan))
-	{
-		DEBUG_LOG("index_batch_getnext: ran out of space for batches");
-		scan->batchState->reset = true;
-	}
-
-	/*
-	 * Did we fill the batch queue, either in this or some earlier call? If
-	 * yes, we have to consume everything from currently loaded batch before
-	 * we reset the stream and continue. It's a bit like 'finished' but it's
-	 * only a temporary pause, not the end of the stream.
-	 */
-	if (scan->batchState->reset)
-		return NULL;
-
-	/*
-	 * Did we already read the last batch for this scan?
-	 *
-	 * We may read the batches in two places, so we need to remember that,
-	 * otherwise the retry restarts the scan.
-	 *
-	 * XXX This comment might be obsolete, from before using the read_stream.
-	 *
-	 * XXX Also, maybe we should do this before calling INDEX_SCAN_BATCH_FULL?
-	 */
+	/* Did we already read the last batch for this scan? */
 	if (scan->batchState->finished)
 		return NULL;
+
+	/*
+	 * We failed to advance, i.e. we ran out of currently loaded batches.  So
+	 * if we filled the queue, this is a good time to reset the stream (before
+	 * we try loading the next batch).
+	 */
+	if (unlikely(INDEX_SCAN_BATCH_FULL(scan)))
+	{
+		DEBUG_LOG("resetting read stream readPos %d,%d",
+				  scan->batchState->readPos.batch,
+				  scan->batchState->readPos.index);
+
+		scan->batchState->lastBlock = InvalidBlockNumber;
+
+		/*
+		 * Need to reset the stream position, it might be too far behind.
+		 * Ultimately we want to set it to readPos, but we can't do that yet -
+		 * readPos still point sat the old batch, so just reset it and we'll
+		 * init it to readPos later in the callback.
+		 */
+		index_batch_pos_reset(scan, &scan->batchState->streamPos);
+
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+	}
 
 	index_batch_print("index_batch_getnext / start", scan);
 
@@ -2052,7 +2017,6 @@ index_batch_init(IndexScanDesc scan)
 		(!scan->xs_want_itup && IsMVCCSnapshot(scan->xs_snapshot) &&
 		 RelationNeedsWAL(scan->indexRelation));
 	scan->batchState->finished = false;
-	scan->batchState->reset = false;
 	scan->batchState->lastBlock = InvalidBlockNumber;
 	scan->batchState->direction = NoMovementScanDirection;
 	/* positions in the queue of batches */
@@ -2153,7 +2117,6 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	batchState->nextBatch = 0;	/* first batch is empty */
 
 	batchState->finished = false;
-	batchState->reset = false;
 	batchState->lastBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);

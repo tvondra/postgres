@@ -223,7 +223,6 @@ typedef struct IndexScanBatchState
 	 * the scan on the get call, so we need to remember it's over.
 	 */
 	bool		finished;
-	bool		reset;
 
 	BlockNumber lastBlock;
 

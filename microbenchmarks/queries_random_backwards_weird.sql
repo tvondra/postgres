@@ -3,6 +3,7 @@ create extension if not exists pg_buffercache;
 set enable_bitmapscan=off;
 set enable_seqscan=off;
 set max_parallel_workers_per_gather=0;
+-- set enable_indexscan_prefetch = off;
 
 -- t table (original/sequential)
 select pg_buffercache_evict_relation('t');

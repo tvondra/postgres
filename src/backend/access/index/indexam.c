@@ -118,7 +118,7 @@ static inline void validate_relation_kind(Relation r);
 static void index_batch_init(IndexScanDesc scan);
 static void index_batch_reset(IndexScanDesc scan, bool complete);
 static void index_batch_end(IndexScanDesc scan);
-static bool index_batch_getnext(IndexScanDesc scan);
+static bool index_batch_getnext(IndexScanDesc scan, ScanDirection direction);
 static void index_batch_free(IndexScanDesc scan, IndexScanBatch batch);
 
 static BlockNumber index_scan_stream_read_next(ReadStream *stream,
@@ -1034,7 +1034,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * to prefetching, it's possible to set effective_io_concurrency=0, in
 		 * which case all the batch loads happen from here.
 		 */
-		if (!index_batch_getnext(scan))
+		if (!index_batch_getnext(scan, direction))
 			break;
 
 		DEBUG_LOG("loaded next batch, retry to advance position");
@@ -1763,8 +1763,8 @@ index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos)
  * The position of the read_stream is stored in streamPos, which may be
  * ahead of the current readPos (which is what got consumed by the scan).
  *
- * The scan direction change is checked / handled elsewhere. Here we rely
- * on having the correct value in xs_batches->direction.
+ * The scan direction change is checked / handled elsewhere. Here we rely on
+ * having the correct value in batchState->direction.
  */
 static BlockNumber
 index_scan_stream_read_next(ReadStream *stream,
@@ -1773,9 +1773,7 @@ index_scan_stream_read_next(ReadStream *stream,
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
 	IndexScanBatchPos *streamPos = &scan->batchState->streamPos;
-
-	/* we should have set the direction already */
-	Assert(scan->batchState->direction != NoMovementScanDirection);
+	ScanDirection direction = scan->batchState->direction;
 
 	/*
 	 * The read position has to be valid, because we initialize/advance it
@@ -1784,6 +1782,7 @@ index_scan_stream_read_next(ReadStream *stream,
 	 * time for this callback, we will use the readPos to init streamPos, so
 	 * better check it's valid.
 	 */
+	Assert(direction != NoMovementScanDirection);
 	AssertCheckBatchPosValid(scan, &scan->batchState->readPos);
 
 	/*
@@ -1814,8 +1813,7 @@ index_scan_stream_read_next(ReadStream *stream,
 			*streamPos = scan->batchState->readPos;
 			advanced = true;
 		}
-		else if (index_batch_pos_advance(scan, streamPos,
-										 scan->batchState->direction))
+		else if (index_batch_pos_advance(scan, streamPos, direction))
 		{
 			advanced = true;
 		}
@@ -1872,7 +1870,7 @@ index_scan_stream_read_next(ReadStream *stream,
 		 * try to load the next batch and then in the next loop the advance
 		 * has to succeed.
 		 */
-		if (!index_batch_getnext(scan))
+		if (!index_batch_getnext(scan, direction))
 			break;
 	}
 
@@ -1896,11 +1894,10 @@ index_scan_stream_read_next(ReadStream *stream,
  * ----------------
  */
 static bool
-index_batch_getnext(IndexScanDesc scan)
+index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
 	IndexScanBatch priorbatch = NULL,
 				batch = NULL;
-	ScanDirection direction = scan->batchState->direction;
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);

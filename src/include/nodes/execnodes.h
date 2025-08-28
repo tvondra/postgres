@@ -1726,6 +1726,7 @@ typedef struct IndexScanState
 	int64		iss_SkipCount;
 	int64		iss_UngetCount;
 	int64		iss_ForwardedCount;
+	int64		iss_MergedCount;
 	int64		iss_PrefetchHistogram[16];
 
 	/* These are needed for re-checking ORDER BY expr ordering */

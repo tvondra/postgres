@@ -3922,7 +3922,8 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 		resets = 0,
 		skips = 0,
 		ungets = 0,
-		forwarded = 0;
+		forwarded = 0,
+		merged = 0;
 	int64  *hist = NULL;
 
 	if (!es->analyze)
@@ -3942,6 +3943,7 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 				skips = indexstate->iss_SkipCount;
 				ungets = indexstate->iss_UngetCount;
 				forwarded = indexstate->iss_ForwardedCount;
+				merged = indexstate->iss_MergedCount;
 				hist = indexstate->iss_PrefetchHistogram;
 
 				break;
@@ -3961,6 +3963,7 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 		ExplainPropertyUInteger("Prefetch Resets", NULL, resets, es);
 		ExplainPropertyUInteger("Stream Ungets", NULL, ungets, es);
 		ExplainPropertyUInteger("Stream Forwarded", NULL, forwarded, es);
+		ExplainPropertyUInteger("Stream Merges", NULL, merged, es);
 
 		ExplainIndentText(es);
 		appendStringInfoString(es->str, "Prefetch Histogram: ");

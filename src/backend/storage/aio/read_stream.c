@@ -114,6 +114,7 @@ struct ReadStream
 	int64		skip_count;
 	int64		unget_count;
 	int64		forwarded_count;
+	int64		merge_count;
 	int64		distance_hist[16];
 
 	/*
@@ -190,12 +191,12 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
-        if (stream->distance > 1)
-        {
+	if (stream->distance > 1)
+	{
 		int hist_idx = -1;
 
-                stream->distance_accum += stream->distance;
-                stream->distance_count += 1;
+		stream->distance_accum += stream->distance;
+		stream->distance_count += 1;
 
 		for (int i = 0; i < 16; i++)
 		{
@@ -207,11 +208,11 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 
 		if ((hist_idx >= 0) && (hist_idx < 16))
 			stream->distance_hist[hist_idx]++;
-        }
-        else
-        {
-                stream->distance_stalls += 1;
-        }
+	}
+	else
+	{
+		stream->distance_stalls += 1;
+	}
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -510,6 +511,7 @@ read_stream_look_ahead(ReadStream *stream)
 			stream->pending_read_blocknum + stream->pending_read_nblocks == blocknum)
 		{
 			stream->pending_read_nblocks++;
+			stream->merge_count++;
 			continue;
 		}
 
@@ -746,6 +748,7 @@ read_stream_begin_impl(int flags,
 	stream->skip_count = 0;
 	stream->unget_count = 0;
 	stream->forwarded_count = 0;
+	stream->merge_count = 0;
 	memset(stream->distance_hist, 0, sizeof(stream->distance_hist));
 
 	/*
@@ -838,17 +841,6 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 {
 	Buffer		buffer;
 	int16		oldest_buffer_index;
-/*
-	if (stream->distance > 0)
-	{
-		stream->distance_accum += stream->distance;
-		stream->distance_count += 1;
-	}
-	else
-	{
-		stream->distance_stalls += 1;
-	}
-*/
 
 #ifndef READ_STREAM_DISABLE_FAST_PATH
 
@@ -1161,7 +1153,10 @@ read_stream_end(ReadStream *stream)
 }
 
 void
-read_stream_prefetch_stats(ReadStream *stream, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram)
+read_stream_prefetch_stats(ReadStream *stream, int64 *accum, int64 *count,
+						   int64 *stalls, int64 *resets, int64 *skips,
+						   int64 *ungets, int64 *forwarded, int64 *merged,
+						   int64 *histogram)
 {
 	*accum = stream->distance_accum;
 	*count = stream->distance_count;
@@ -1170,6 +1165,7 @@ read_stream_prefetch_stats(ReadStream *stream, int64 *accum, int64 *count, int64
 	*skips = stream->skip_count;
 	*ungets = stream->unget_count;
 	*forwarded = stream->forwarded_count;
+	*merged = stream->merge_count;
 	memcpy(histogram, stream->distance_hist, sizeof(stream->distance_hist));
 }
 

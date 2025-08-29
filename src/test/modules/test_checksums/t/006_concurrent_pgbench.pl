@@ -27,7 +27,7 @@ my $node_standby_1_loglocation = 0;
 # of tests performed and the wall time taken is non-deterministic as the test
 # performs a lot of randomized actions, but 50 iterations will be a long test
 # run regardless.
-my $TEST_ITERATIONS = 1000;
+my $TEST_ITERATIONS = 2000;
 
 # Variables which record the current state of the cluster
 my $data_checksum_state = 'off';
@@ -122,6 +122,10 @@ sub flip_data_checksums
 			'SELECT dcw_fake_temptable(true);')
 		  if cointoss();
 
+		# log LSN right before we start changing checksums
+		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
+		print (">> LSN before: " . $result . "\n");
+
 		# Ensure that the primary switches to "inprogress-on"
 		enable_data_checksums($node_primary, wait => 'inprogress-on');
 		random_sleep();
@@ -132,7 +136,7 @@ sub flip_data_checksums
 		# Normally it would be "inprogress-on", but it is theoretically
 		# possible for the primary to complete the checksum enabling *and* have
 		# the standby replay that record before we reach the check below.
-		my $result = $node_standby_1->poll_query_until(
+		$result = $node_standby_1->poll_query_until(
 			'postgres',
 			"SELECT setting = 'off' "
 			  . "FROM pg_catalog.pg_settings "
@@ -151,6 +155,11 @@ sub flip_data_checksums
 
 		# Wait for checksums enabled on the primary and standby
 		wait_for_checksum_state($node_primary, 'on');
+
+		# log LSN right after the primary flips checksums to "on"
+		$result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
+		print (">> LSN after: " . $result . "\n");
+
 		random_sleep();
 		wait_for_checksum_state($node_standby_1, 'on');
 
@@ -161,11 +170,21 @@ sub flip_data_checksums
 	elsif ($data_checksum_state eq 'on')
 	{
 		random_sleep();
+
+		# log LSN right before we start changing checksums
+		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
+		print (">> LSN before: " . $result . "\n");
+
 		disable_data_checksums($node_primary);
 		$node_primary->wait_for_catchup($node_standby_1, 'replay');
 
 		# Wait for checksums disabled on the primary and standby
 		wait_for_checksum_state($node_primary, 'off');
+
+		# log LSN right after the primary flips checksums to "off"
+		$result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
+		print (">> LSN after: " . $result . "\n");
+
 		random_sleep();
 		wait_for_checksum_state($node_standby_1, 'off');
 
@@ -328,6 +347,9 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		my $mode = $stop_modes[ int(rand(100)) ];
 		$node_primary->stop($mode);
 		$primary_shutdown_clean = ($mode eq 'fast');
+
+		# print the contents of the control file on the primary
+		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_primary->data_dir ]);
 	}
 
 	random_sleep();
@@ -337,6 +359,9 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		my $mode = $stop_modes[ int(rand(100)) ];
 		$node_standby_1->stop($mode);
 		$standby_shutdown_clean = ($mode eq 'fast');
+
+		# print the contents of the control file on the standby
+		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_standby_1->data_dir ]);
 	}
 }
 

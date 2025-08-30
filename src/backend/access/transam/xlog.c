@@ -4722,9 +4722,10 @@ DataChecksumsOffInProgress(void)
  * state transition.
  */
 void
-SetDataChecksumsOnInProgress(void)
+SetDataChecksumsOnInProgress(bool immediate_checkpoint)
 {
 	uint64		barrier;
+	int			flags;
 
 	Assert(ControlFile != NULL);
 
@@ -4752,6 +4753,16 @@ SetDataChecksumsOnInProgress(void)
 	 * checksums.
 	 */
 	WaitForProcSignalBarrier(barrier);
+
+	/* force checkpoint to persist the current checksum state in control file etc.
+	 *
+	 * XXX is this needed? There's already a checkpoint at the end of
+	 * ProcessAllDatabases, maybe this is redundant?
+	 */
+	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+	if (immediate_checkpoint)
+		flags = flags | CHECKPOINT_FAST;
+	RequestCheckpoint(flags);
 }
 
 /*
@@ -4778,9 +4789,10 @@ SetDataChecksumsOnInProgress(void)
  * state transition.
  */
 void
-SetDataChecksumsOn(void)
+SetDataChecksumsOn(bool immediate_checkpoint)
 {
 	uint64		barrier;
+	int			flags;
 
 	Assert(ControlFile != NULL);
 
@@ -4819,6 +4831,12 @@ SetDataChecksumsOn(void)
 	 * written and verified.
 	 */
 	WaitForProcSignalBarrier(barrier);
+
+	/* XXX is this needed? */
+	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+	if (immediate_checkpoint)
+			flags = flags | CHECKPOINT_FAST;
+	RequestCheckpoint(flags);
 }
 
 /*
@@ -4835,9 +4853,10 @@ SetDataChecksumsOn(void)
  * state transition.
  */
 void
-SetDataChecksumsOff(void)
+SetDataChecksumsOff(bool immediate_checkpoint)
 {
 	uint64		barrier;
+	int			flags;
 
 	Assert(ControlFile);
 
@@ -4880,6 +4899,17 @@ SetDataChecksumsOff(void)
 		 * "on" state is changed to "inprogress-off".
 		 */
 		WaitForProcSignalBarrier(barrier);
+
+		/* force checkpoint to persist the current checksum state in control file etc.
+		 *
+		 * XXX is this safe? What if the crash/shutdown happens while waiting for
+		 * the checkpoint? Also, should we persist the checksum first and only then
+		 * flip the flag in XLogCtl?
+		 */
+		flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+		if (immediate_checkpoint)
+			flags = flags | CHECKPOINT_FAST;
+		RequestCheckpoint(flags);
 
 		/*
 		 * At this point we know that no backends are verifying data checksums

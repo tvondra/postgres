@@ -801,7 +801,7 @@ again:
 		 */
 		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
 									 PROGRESS_DATACHECKSUMS_PHASE_ENABLING);
-		SetDataChecksumsOnInProgress();
+		SetDataChecksumsOnInProgress(DataChecksumsWorkerShmem->immediate_checkpoint);
 
 		/*
 		 * All backends are now in inprogress-on state and are writing data
@@ -828,7 +828,7 @@ again:
 		 * Data checksums have been set on all pages, set the state to on in
 		 * order to instruct backends to validate checksums on reading.
 		 */
-		SetDataChecksumsOn();
+		SetDataChecksumsOn(DataChecksumsWorkerShmem->immediate_checkpoint);
 	}
 	else
 	{
@@ -836,7 +836,7 @@ again:
 
 		pgstat_progress_update_param(PROGRESS_DATACHECKSUMS_PHASE,
 									 PROGRESS_DATACHECKSUMS_PHASE_DISABLING);
-		SetDataChecksumsOff();
+		SetDataChecksumsOff(DataChecksumsWorkerShmem->immediate_checkpoint);
 
 		flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
 		if (DataChecksumsWorkerShmem->immediate_checkpoint)
@@ -1084,7 +1084,7 @@ ProcessAllDatabases(bool immediate_checkpoint)
 	if (found_failed)
 	{
 		/* Disable checksums on cluster, because we failed */
-		SetDataChecksumsOff();
+		SetDataChecksumsOff(DataChecksumsWorkerShmem->immediate_checkpoint);
 		/* Force a checkpoint to make everything consistent */
 		flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
 		if (immediate_checkpoint)

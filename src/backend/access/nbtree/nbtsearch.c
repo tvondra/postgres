@@ -1827,7 +1827,6 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 		Assert(itemIndex <= MaxTIDsPerBTreePage);
 		newbatch->firstItem = 0;
 		newbatch->lastItem = itemIndex - 1;
-		newbatch->itemIndex = 0;
 	}
 	else
 	{
@@ -1996,7 +1995,6 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 		Assert(itemIndex >= 0);
 		newbatch->firstItem = itemIndex;
 		newbatch->lastItem = MaxTIDsPerBTreePage - 1;
-		newbatch->itemIndex = MaxTIDsPerBTreePage - 1;
 	}
 
 	/*

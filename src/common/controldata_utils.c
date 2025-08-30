@@ -280,4 +280,9 @@ update_controlfile(const char *DataDir,
 		pg_fatal("could not close file \"%s\": %m", ControlFilePath);
 #endif
 	}
+
+#ifndef FRONTEND
+	elog(LOG, "update_controlfile ControlFile->data_checksum_version = %d  ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
+#endif
 }

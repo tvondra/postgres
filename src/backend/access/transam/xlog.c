@@ -4382,6 +4382,9 @@ WriteControlFile(void)
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
 						XLOG_CONTROL_FILE)));
+
+	elog(LOG, "WriteControlFile ControlFile->data_checksum_version = %d ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
 }
 
 static void
@@ -4600,6 +4603,9 @@ ReadControlFile(void)
 	elog(LOG, "ReadControlFile checkpoint %X/%08X redo %X/%08X",
 		 LSN_FORMAT_ARGS(ControlFile->checkPoint),
 		 LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo));
+
+	elog(LOG, "ReadControlFile ControlFile->data_checksum_version = %d ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
 }
 
 /*
@@ -5447,6 +5453,9 @@ XLOGShmemInit(void)
 
 	/* Use the checksum info from control file */
 	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
+
+	elog(LOG, "XLOGShmemInit ControlFile->data_checksum_version = %d  ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
 
 	SetLocalDataChecksumVersion(XLogCtl->data_checksum_version);
 
@@ -7217,7 +7226,7 @@ LogCheckpointEnd(bool restartpoint)
 						"%d removed, %d recycled; write=%ld.%03d s, "
 						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
 						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
-						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X",
+						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X, checksums=%d (%d)",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
 						CheckpointStats.ckpt_slru_written,
@@ -7233,7 +7242,9 @@ LogCheckpointEnd(bool restartpoint)
 						(int) (PrevCheckPointDistance / 1024.0),
 						(int) (CheckPointDistanceEstimate / 1024.0),
 						LSN_FORMAT_ARGS(ControlFile->checkPoint),
-						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
+						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo),
+						ControlFile->data_checksum_version,
+						ControlFile->checkPointCopy.data_checksum_version)));
 	else
 		ereport(LOG,
 				(errmsg("checkpoint complete: wrote %d buffers (%.1f%%), "
@@ -7241,7 +7252,7 @@ LogCheckpointEnd(bool restartpoint)
 						"%d removed, %d recycled; write=%ld.%03d s, "
 						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
 						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
-						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X",
+						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X, checksums=%d (%d)",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
 						CheckpointStats.ckpt_slru_written,
@@ -7257,7 +7268,9 @@ LogCheckpointEnd(bool restartpoint)
 						(int) (PrevCheckPointDistance / 1024.0),
 						(int) (CheckPointDistanceEstimate / 1024.0),
 						LSN_FORMAT_ARGS(ControlFile->checkPoint),
-						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
+						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo),
+						ControlFile->data_checksum_version,
+						ControlFile->checkPointCopy.data_checksum_version)));
 }
 
 /*
@@ -7751,6 +7764,9 @@ CreateCheckPoint(int flags)
 	/* make sure we start with the checksum version as of the checkpoint */
 	ControlFile->data_checksum_version = checkPoint.data_checksum_version;
 
+	elog(LOG, "CreateCheckPoint ControlFile->data_checksum_version = %d ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
+
 	/*
 	 * Persist unloggedLSN value. It's reset on crash recovery, so this goes
 	 * unused on non-shutdown checkpoints, but seems useful to store it always
@@ -7899,6 +7915,9 @@ CreateEndOfRecoveryRecord(void)
 
 	/* start with the latest checksum version (as of the end of recovery) */
 	ControlFile->data_checksum_version = XLogCtl->data_checksum_version;
+
+	elog(LOG, "CreateEndOfRecoveryRecord ControlFile->data_checksum_version = %d  ControlFile->checkPointCopy.data_checksum_version = %d",
+		 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
 
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
@@ -8244,6 +8263,9 @@ CreateRestartPoint(int flags)
 
 		/* we shall start with the latest checksum version */
 		ControlFile->data_checksum_version = lastCheckPoint.data_checksum_version;
+
+		elog(LOG, "CreateRestartPoint ControlFile->data_checksum_version = %d  ControlFile->checkPointCopy.data_checksum_version = %d",
+			 ControlFile->data_checksum_version, ControlFile->checkPointCopy.data_checksum_version);
 
 		UpdateControlFile();
 	}
@@ -9102,6 +9124,8 @@ xlog_redo(XLogReaderState *record)
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = state.new_checksumtype;
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		elog(LOG, "xlog_redo XLogCtl->data_checksum_version = %d", XLogCtl->data_checksum_version);
 
 		/*
 		 * Block on a procsignalbarrier to await all processes having seen the

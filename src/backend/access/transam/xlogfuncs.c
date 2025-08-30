@@ -759,6 +759,8 @@ disable_data_checksums(PG_FUNCTION_ARGS)
 {
 	bool		fast = PG_GETARG_BOOL(0);
 
+	elog(LOG, "disable_data_checksums fast %d", fast);
+
 	if (!superuser())
 		ereport(ERROR, errmsg("must be superuser"));
 
@@ -777,6 +779,8 @@ enable_data_checksums(PG_FUNCTION_ARGS)
 	int			cost_delay = PG_GETARG_INT32(0);
 	int			cost_limit = PG_GETARG_INT32(1);
 	bool		fast = PG_GETARG_BOOL(2);
+
+	elog(LOG, "enable_data_checksums cost_delay %d cost_limit %d fast %d", cost_delay, cost_limit, fast);
 
 	if (!superuser())
 		ereport(ERROR, errmsg("must be superuser"));

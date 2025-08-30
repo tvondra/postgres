@@ -274,27 +274,30 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		/* Fetch the first batch */
 		if ((batch = _bt_first(scan, ForwardScanDirection)))
 		{
+			int		itemIndex = 0;
+
 			/* Save first tuple's TID */
-			heapTid = &batch->items[batch->firstItem].heapTid;
+			heapTid = &batch->items[itemIndex].heapTid;
 			tbm_add_tuples(tbm, heapTid, 1, false);
 			ntids++;
 
 			for (;;)
 			{
 				/* Advance to next TID within page-sized batch */
-				if (++batch->itemIndex > batch->lastItem)
+				if (++itemIndex > batch->lastItem)
 				{
 					/* btfreebatch won't be called */
 					ReleaseBuffer(batch->buf);
 
 					/* let _bt_next do the heavy lifting */
+					itemIndex = 0;
 					batch = _bt_next(scan, ForwardScanDirection, batch);
 					if (!batch)
 						break;
 				}
 
 				/* Save tuple ID, and continue scanning */
-				heapTid = &batch->items[batch->itemIndex].heapTid;
+				heapTid = &batch->items[itemIndex].heapTid;
 				tbm_add_tuples(tbm, heapTid, 1, false);
 				ntids++;
 			}

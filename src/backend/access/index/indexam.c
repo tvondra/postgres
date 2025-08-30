@@ -2254,7 +2254,6 @@ index_batch_alloc(IndexScanDesc scan, int maxitems, bool want_itup)
 	/* shared initialization */
 	batch->firstItem = -1;
 	batch->lastItem = -1;
-	batch->itemIndex = -1;
 	batch->killedItems = NULL;
 	batch->numKilled = 0;
 

@@ -151,8 +151,8 @@ PageIsVerified(PageData *page, BlockNumber blkno, int flags, bool *checksum_fail
 		if ((flags & (PIV_LOG_WARNING | PIV_LOG_LOG)) != 0)
 			ereport(flags & PIV_LOG_WARNING ? WARNING : LOG,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("page verification failed, calculated checksum %u but expected %u",
-							checksum, p->pd_checksum)));
+					 errmsg("page verification failed, calculated checksum %u but expected %u (page LSN %X/%08X)",
+							checksum, p->pd_checksum, LSN_FORMAT_ARGS(PageXLogRecPtrGet(p->pd_lsn)))));
 
 		if (header_sane && (flags & PIV_IGNORE_CHECKSUM_FAILURE))
 			return true;

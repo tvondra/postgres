@@ -286,6 +286,11 @@ static XLogRecPtr RedoRecPtr;
  */
 static bool doPageWrites;
 
+/*
+ * Force creating a restart point on the next CHECKPOINT after XLOG_CHECKSUMS.
+ */
+static bool checksumRestartPoint = false;
+
 /*----------
  * Shared-memory data structures for XLOG control
  *
@@ -9151,6 +9156,12 @@ xlog_redo(XLogReaderState *record)
 
 		memcpy(&state, XLogRecGetData(record), sizeof(xl_checksum_state));
 
+		/*
+		 * XXX Could this end up written to the control file prematurely?
+		 * IIRC that happens during checkpoint, so what if that gets triggered
+		 * e.g. because someone runs CHECKPOINT? If we then crash (or something
+		 * like that), could that confuse the instance?
+		 */
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = state.new_checksumtype;
 		SpinLockRelease(&XLogCtl->info_lck);
@@ -9185,6 +9196,30 @@ xlog_redo(XLogReaderState *record)
 				WaitForProcSignalBarrier(barrier);
 				break;
 		}
+
+		/*
+		 * force creating a restart point for the first CHECKPOINT after
+		 * seeing XLOG_CHECKSUMS in WAL
+		 */
+		checksumRestartPoint = true;
+	}
+
+	if (checksumRestartPoint &&
+		(info == XLOG_CHECKPOINT_ONLINE ||
+		 info == XLOG_CHECKPOINT_REDO ||
+		 info == XLOG_CHECKPOINT_SHUTDOWN))
+	{
+		int			flags;
+		bool		immediate_checkpoint = true; /* FIXME */
+
+		elog(LOG, "forcing creation of a restart point after XLOG_CHECKSUMS");
+
+		flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+		if (immediate_checkpoint)
+			flags = flags | CHECKPOINT_FAST;
+		RequestCheckpoint(flags);
+
+		checksumRestartPoint = false;
 	}
 }
 

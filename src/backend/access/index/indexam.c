@@ -1782,8 +1782,9 @@ index_scan_stream_read_next(ReadStream *stream,
 							void *per_buffer_data)
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
-	IndexScanBatchPos *streamPos = &scan->batchState->streamPos;
-	ScanDirection direction = scan->batchState->direction;
+	IndexScanBatchState *batchState = scan->batchState;
+	IndexScanBatchPos *streamPos = &batchState->streamPos;
+	ScanDirection direction = batchState->direction;
 
 	/*
 	 * The read position has to be valid, because we initialize/advance it
@@ -1793,7 +1794,7 @@ index_scan_stream_read_next(ReadStream *stream,
 	 * better check it's valid.
 	 */
 	Assert(direction != NoMovementScanDirection);
-	AssertCheckBatchPosValid(scan, &scan->batchState->readPos);
+	AssertCheckBatchPosValid(scan, &batchState->readPos);
 
 	/*
 	 * Try to advance to the next item, and if there's none in the current
@@ -1820,7 +1821,7 @@ index_scan_stream_read_next(ReadStream *stream,
 		if (streamPos->batch == -1)
 		{
 			/* Initialize streamPos using current readPos */
-			*streamPos = scan->batchState->readPos;
+			*streamPos = batchState->readPos;
 			advanced = true;
 		}
 		else if (index_batch_pos_advance(scan, streamPos, direction))
@@ -1845,23 +1846,22 @@ index_scan_stream_read_next(ReadStream *stream,
 			 * if there's a prefetch callback, use it to decide if we will
 			 * need to read the block
 			 */
-			if (scan->batchState->prefetch &&
-				!scan->batchState->prefetch(scan,
-											scan->batchState->prefetchArg, streamPos))
+			if (batchState->prefetch &&
+				!batchState->prefetch(scan, batchState->prefetchArg, streamPos))
 			{
 				DEBUG_LOG("index_scan_stream_read_next: skip block (callback)");
 				continue;
 			}
 
 			/* same block as before, don't need to read it */
-			if (scan->batchState->lastBlock == ItemPointerGetBlockNumber(tid))
+			if (batchState->lastBlock == ItemPointerGetBlockNumber(tid))
 			{
 				read_stream_skip_block(stream);
 				DEBUG_LOG("index_scan_stream_read_next: skip block (lastBlock)");
 				continue;
 			}
 
-			scan->batchState->lastBlock = ItemPointerGetBlockNumber(tid);
+			batchState->lastBlock = ItemPointerGetBlockNumber(tid);
 
 			return ItemPointerGetBlockNumber(tid);
 		}
@@ -1906,6 +1906,7 @@ index_scan_stream_read_next(ReadStream *stream,
 static bool
 index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 {
+	IndexScanBatchState *batchState = scan->batchState;
 	IndexScanBatch priorbatch = NULL,
 				batch = NULL;
 
@@ -1916,7 +1917,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/* Did we already read the last batch for this scan? */
-	if (scan->batchState->finished)
+	if (batchState->finished)
 		return NULL;
 
 	/*
@@ -1927,10 +1928,9 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	if (unlikely(INDEX_SCAN_BATCH_FULL(scan)))
 	{
 		DEBUG_LOG("resetting read stream readPos %d,%d",
-				  scan->batchState->readPos.batch,
-				  scan->batchState->readPos.index);
+				  batchState->readPos.batch, batchState->readPos.index);
 
-		scan->batchState->lastBlock = InvalidBlockNumber;
+		batchState->lastBlock = InvalidBlockNumber;
 
 		/*
 		 * Need to reset the stream position, it might be too far behind.
@@ -1938,7 +1938,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		 * readPos still point sat the old batch, so just reset it and we'll
 		 * init it to readPos later in the callback.
 		 */
-		index_batch_pos_reset(scan, &scan->batchState->streamPos);
+		index_batch_pos_reset(scan, &batchState->streamPos);
 
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
@@ -1950,8 +1950,8 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * Check if there's an existing batch that amgetbatch has to pick things
 	 * up from
 	 */
-	if (scan->batchState->firstBatch < scan->batchState->nextBatch)
-		priorbatch = INDEX_SCAN_BATCH(scan, scan->batchState->nextBatch - 1);
+	if (batchState->firstBatch < batchState->nextBatch)
+		priorbatch = INDEX_SCAN_BATCH(scan, batchState->nextBatch - 1);
 
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorbatch,
 													  direction);
@@ -1962,14 +1962,14 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		 * Maybe that should be part of the "batch allocation" that happens in
 		 * the AM?
 		 */
-		int			batchIndex = scan->batchState->nextBatch;
+		int			batchIndex = batchState->nextBatch;
 
 		INDEX_SCAN_BATCH(scan, batchIndex) = batch;
 
-		scan->batchState->nextBatch++;
+		batchState->nextBatch++;
 
 		DEBUG_LOG("index_batch_getnext firstBatch %d nextBatch %d batch %p",
-				  scan->batchState->firstBatch, scan->batchState->nextBatch, batch);
+				  batchState->firstBatch, batchState->nextBatch, batch);
 
 		/* Delay initializing stream until reading from scan's second batch */
 		if (priorbatch && !scan->xs_heapfetch->rs && enable_indexscan_prefetch)
@@ -1979,7 +1979,7 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 										   index_scan_stream_read_next, scan, 0);
 	}
 	else
-		scan->batchState->finished = true;
+		batchState->finished = true;
 
 	AssertCheckBatches(scan);
 

@@ -269,6 +269,8 @@ my $standby_shutdown_clean = 0;
 # its order of operations for debugging.
 for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 {
+	note("iteration ", $i, " of ", $TEST_ITERATIONS);
+
 	if (!$node_primary->is_alive)
 	{
 		# If data checksums are enabled, take the opportunity to verify them

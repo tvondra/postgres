@@ -4596,6 +4596,10 @@ ReadControlFile(void)
 		(SizeOfXLogLongPHD - SizeOfXLogShortPHD);
 
 	CalculateCheckpointSegments();
+
+	elog(LOG, "ReadControlFile checkpoint %X/%08X redo %X/%08X",
+		 LSN_FORMAT_ARGS(ControlFile->checkPoint),
+		 LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo));
 }
 
 /*

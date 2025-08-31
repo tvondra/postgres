@@ -271,16 +271,6 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 {
 	if (!$node_primary->is_alive)
 	{
-		# Since the log isn't being written to now, parse the log and check
-		# for instances of checksum verification failures.
-		my $log = PostgreSQL::Test::Utils::slurp_file($node_primary->logfile,
-			$node_primary_loglocation);
-		unlike(
-			$log,
-			qr/page verification failed/,
-			"no checksum validation errors in primary log");
-		$node_primary_loglocation = -s $node_primary->logfile;
-
 		# If data checksums are enabled, take the opportunity to verify them
 		# while the cluster is offline (but only if stopped in a clean way,
 		# not after immediate shutdown)
@@ -292,7 +282,23 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		#  unless $data_checksum_state eq 'off' or !$primary_shutdown_clean;
 
 		random_sleep();
+
+		# start, to do recovery, and stop
 		$node_primary->start;
+		$node_primary->stop('fast');
+
+		# Since the log isn't being written to now, parse the log and check
+		# for instances of checksum verification failures.
+		my $log = PostgreSQL::Test::Utils::slurp_file($node_primary->logfile,
+			$node_primary_loglocation);
+		unlike(
+			$log,
+			qr/page verification failed/,
+			"no checksum validation errors in primary log");
+		$node_primary_loglocation = -s $node_primary->logfile;
+
+		$node_primary->start;
+
 		# Start a pgbench in the background against the primary
 		background_rw_pgbench($node_primary->port, 0, $pgb_primary_stdin,
 			$pgb_primary_stdout, $pgb_primary_stderr);
@@ -300,17 +306,6 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 
 	if (!$node_standby_1->is_alive)
 	{
-		# Since the log isn't being written to now, parse the log and check
-		# for instances of checksum verification failures.
-		my $log =
-		  PostgreSQL::Test::Utils::slurp_file($node_standby_1->logfile,
-			$node_standby_1_loglocation);
-		unlike(
-			$log,
-			qr/page verification failed/,
-			"no checksum validation errors in standby_1 log");
-		$node_standby_1_loglocation = -s $node_standby_1->logfile;
-
 		# If data checksums are enabled, take the opportunity to verify them
 		# while the cluster is offline (but only if stopped in a clean way,
 		# not after immediate shutdown)
@@ -323,6 +318,20 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 
 		random_sleep();
 		$node_standby_1->start;
+		$node_standby_1->stop('fast');
+
+		# Since the log isn't being written to now, parse the log and check
+		# for instances of checksum verification failures.
+		my $log = PostgreSQL::Test::Utils::slurp_file($node_standby_1->logfile,
+			$node_standby_1_loglocation);
+		unlike(
+			$log,
+			qr/page verification failed/,
+			"no checksum validation errors in standby_1 log");
+		$node_standby_1_loglocation = -s $node_standby_1->logfile;
+
+		$node_standby_1->start;
+
 		# Start a select-only pgbench in the background on the standby
 		background_ro_pgbench($node_standby_1->port, 1, $pgb_standby_1_stdin,
 			$pgb_standby_1_stdout, $pgb_standby_1_stderr);
@@ -349,6 +358,7 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		$primary_shutdown_clean = ($mode eq 'fast');
 
 		# print the contents of the control file on the primary
+		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_primary->data_dir);
 		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_primary->data_dir ]);
 	}
 
@@ -361,6 +371,7 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		$standby_shutdown_clean = ($mode eq 'fast');
 
 		# print the contents of the control file on the standby
+		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_standby_1->data_dir);
 		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_standby_1->data_dir ]);
 	}
 }

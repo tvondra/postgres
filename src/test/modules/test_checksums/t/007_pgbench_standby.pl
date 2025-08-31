@@ -359,7 +359,6 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 
 		# print the contents of the control file on the primary
 		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_primary->data_dir);
-		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_primary->data_dir ]);
 
 		# slurp the file after shutdown, so that it doesn't interfere with the recovery
 		my $log = PostgreSQL::Test::Utils::slurp_file($node_primary->logfile,
@@ -381,7 +380,6 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 
 		# print the contents of the control file on the standby
 		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_standby_1->data_dir);
-		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_standby_1->data_dir ]);
 
 		# slurp the file after shutdown, so that it doesn't interfere with the recovery
 		my $log = PostgreSQL::Test::Utils::slurp_file($node_standby_1->logfile,

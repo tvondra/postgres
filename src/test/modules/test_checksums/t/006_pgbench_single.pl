@@ -248,8 +248,6 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 
 		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_primary->data_dir);
 
-		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_primary->data_dir ]);
-
 		my $log = PostgreSQL::Test::Utils::slurp_file($node_primary->logfile,
 			$node_primary_loglocation);
 		unlike(

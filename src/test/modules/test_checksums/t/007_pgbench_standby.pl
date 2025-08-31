@@ -124,7 +124,7 @@ sub flip_data_checksums
 
 		# log LSN right before we start changing checksums
 		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
-		print (">> LSN before: " . $result . "\n");
+		note("LSN before: " . $result . "\n");
 
 		# Ensure that the primary switches to "inprogress-on"
 		enable_data_checksums($node_primary, wait => 'inprogress-on');
@@ -158,7 +158,7 @@ sub flip_data_checksums
 
 		# log LSN right after the primary flips checksums to "on"
 		$result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
-		print (">> LSN after: " . $result . "\n");
+		note("LSN after: " . $result . "\n");
 
 		random_sleep();
 		wait_for_checksum_state($node_standby_1, 'on');
@@ -173,7 +173,7 @@ sub flip_data_checksums
 
 		# log LSN right before we start changing checksums
 		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
-		print (">> LSN before: " . $result . "\n");
+		note("LSN before: " . $result . "\n");
 
 		disable_data_checksums($node_primary);
 		$node_primary->wait_for_catchup($node_standby_1, 'replay');
@@ -183,7 +183,7 @@ sub flip_data_checksums
 
 		# log LSN right after the primary flips checksums to "off"
 		$result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
-		print (">> LSN after: " . $result . "\n");
+		note("LSN after: " . $result . "\n");
 
 		random_sleep();
 		wait_for_checksum_state($node_standby_1, 'off');

@@ -294,7 +294,7 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		unlike(
 			$log,
 			qr/page verification failed/,
-			"no checksum validation errors in primary log");
+			"no checksum validation errors in primary log (during WAL recovery)");
 		$node_primary_loglocation = -s $node_primary->logfile;
 
 		$node_primary->start;
@@ -327,7 +327,7 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		unlike(
 			$log,
 			qr/page verification failed/,
-			"no checksum validation errors in standby_1 log");
+			"no checksum validation errors in standby_1 log (during WAL recovery)");
 		$node_standby_1_loglocation = -s $node_standby_1->logfile;
 
 		$node_standby_1->start;
@@ -360,6 +360,15 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		# print the contents of the control file on the primary
 		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_primary->data_dir);
 		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_primary->data_dir ]);
+
+		# slurp the file after shutdown, so that it doesn't interfere with the recovery
+		my $log = PostgreSQL::Test::Utils::slurp_file($node_primary->logfile,
+			$node_primary_loglocation);
+		unlike(
+			$log,
+			qr/page verification failed/,
+			"no checksum validation errors in primary log (outside WAL recovery)");
+		$node_primary_loglocation = -s $node_primary->logfile;
 	}
 
 	random_sleep();
@@ -373,6 +382,15 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 		# print the contents of the control file on the standby
 		PostgreSQL::Test::Utils::system_log("pg_controldata", $node_standby_1->data_dir);
 		my ($stdout, $stderr) = run_command([ "pg_controldata", $node_standby_1->data_dir ]);
+
+		# slurp the file after shutdown, so that it doesn't interfere with the recovery
+		my $log = PostgreSQL::Test::Utils::slurp_file($node_standby_1->logfile,
+			$node_standby_1_loglocation);
+		unlike(
+			$log,
+			qr/page verification failed/,
+			"no checksum validation errors in standby_1 log (outside WAL recovery)");
+		$node_standby_1_loglocation = -s $node_standby_1->logfile;
 	}
 }
 

@@ -53,6 +53,10 @@ if ($ENV{enable_injection_points} ne 'yes')
 	plan skip_all => 'Injection points not supported by this build';
 }
 
+# determines whether enable_data_checksums/disable_data_checksums forces an
+# immediate checkpoint
+my @flip_modes = ('true', 'false');
+
 # Helper for retrieving a binary value with random distribution for deciding
 # whether to turn things off during testing.
 sub cointoss
@@ -80,8 +84,12 @@ sub background_ro_pgbench
 		$pgbench_standby->finish;
 	}
 
+	my $clients = 1 + int(rand(15));
+
+	PostgreSQL::Test::Utils::system_log('pgbench', '-n', '-p', $port, '-S', '-T', '600', '-c', $clients, 'postgres');
+
 	$pgbench_standby = IPC::Run::start(
-		[ 'pgbench', '-n', '-p', $port, '-S', '-T', '600', '-c', '10', 'postgres' ],
+		[ 'pgbench', '-n', '-p', $port, '-S', '-T', '600', '-c', $clients, 'postgres' ],
 		'<' => '/dev/null',
 		'>' => '/dev/null',
 		'2>' => '/dev/null',
@@ -99,8 +107,12 @@ sub background_rw_pgbench
 		$pgbench_primary->finish;
 	}
 
+	my $clients = 1 + int(rand(15));
+
+	PostgreSQL::Test::Utils::system_log('pgbench', '-p', $port, '-T', '600', '-c', $clients, 'postgres');
+
 	$pgbench_primary = IPC::Run::start(
-		[ 'pgbench', '-p', $port, '-T', '600', '-c', '10', 'postgres' ],
+		[ 'pgbench', '-p', $port, '-T', '600', '-c', $clients, 'postgres' ],
 		'<' => '/dev/null',
 		'>' => '/dev/null',
 		'2>' => '/dev/null',
@@ -126,8 +138,10 @@ sub flip_data_checksums
 		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
 		note("LSN before: " . $result . "\n");
 
+		my $mode = $flip_modes[int(rand(@flip_modes))];
+
 		# Ensure that the primary switches to "inprogress-on"
-		enable_data_checksums($node_primary, wait => 'inprogress-on');
+		enable_data_checksums($node_primary, wait => 'inprogress-on', 'fast' => $mode);
 		random_sleep();
 		# Wait for checksum enable to be replayed
 		$node_primary->wait_for_catchup($node_standby_1, 'replay');
@@ -175,7 +189,9 @@ sub flip_data_checksums
 		my $result = $node_primary->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
 		note("LSN before: " . $result . "\n");
 
-		disable_data_checksums($node_primary);
+		my $mode = $flip_modes[int(rand(@flip_modes))];
+
+		disable_data_checksums($node_primary, 'fast' => $mode);
 		$node_primary->wait_for_catchup($node_standby_1, 'replay');
 
 		# Wait for checksums disabled on the primary and standby
@@ -299,6 +315,13 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 			"no checksum validation errors in primary log (during WAL recovery)");
 		$node_primary_loglocation = -s $node_primary->logfile;
 
+		# randomize the WAL size, to trigger checkpoints less/more often
+		my $sb = 64 + int(rand(960));
+		$node_primary->append_conf(
+			'postgresql.conf', qq[max_wal_size = $sb]);
+
+		note("changing primary max_wal_size to " . $sb);
+
 		$node_primary->start;
 
 		# Start a pgbench in the background against the primary
@@ -331,6 +354,13 @@ for (my $i = 0; $i < $TEST_ITERATIONS; $i++)
 			qr/page verification failed/,
 			"no checksum validation errors in standby_1 log (during WAL recovery)");
 		$node_standby_1_loglocation = -s $node_standby_1->logfile;
+
+		# randomize the WAL size, to trigger checkpoints less/more often
+		my $sb = 64 + int(rand(960));
+		$node_standby_1->append_conf(
+			'postgresql.conf', qq[max_wal_size = $sb]);
+
+		note("changing standby max_wal_size to " . $sb);
 
 		$node_standby_1->start;
 

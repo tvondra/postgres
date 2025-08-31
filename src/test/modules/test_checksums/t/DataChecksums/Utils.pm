@@ -129,6 +129,10 @@ sub enable_data_checksums
 	$params{cost_limit} = 100 unless (defined($params{cost_limit}));
 	$params{fast} = 'true' unless (defined($params{fast}));
 
+	note("enable_data_checksums delay ", $params{cost_delay},
+		 " limit ", $params{cost_limit},
+		 " fast ", $params{fast});
+
 	my $query = <<'EOQ';
 SELECT pg_enable_data_checksums(%s, %s, %s);
 EOQ
@@ -166,6 +170,8 @@ sub disable_data_checksums
 
 	# Set sane defaults for the parameters
 	$params{fast} = 'true' unless (defined($params{fast}));
+
+	note("disable_data_checksums fast ", $params{fast});
 
 	my $query = <<'EOQ';
 SELECT pg_disable_data_checksums(%s);

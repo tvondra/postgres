@@ -872,14 +872,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 static ItemPointer
 index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	IndexScanBatchState *batchState = scan->batchState;
 	IndexScanBatchPos *readPos;
 
 	/* shouldn't get here without batching */
 	AssertCheckBatches(scan);
 
 	/* Initialize direction on first call */
-	if (scan->batchState->direction == NoMovementScanDirection)
-		scan->batchState->direction = direction;
+	if (batchState->direction == NoMovementScanDirection)
+		batchState->direction = direction;
 
 	/*
 	 * Handle change of scan direction (reset stream, ...).
@@ -888,15 +889,15 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * is the last one we loaded. Also reset the stream position, as if we are
 	 * just starting the scan.
 	 */
-	else if (unlikely(scan->batchState->direction != direction))
+	else if (unlikely(batchState->direction != direction))
 	{
 		/* release "future" batches in the wrong direction */
-		while (scan->batchState->nextBatch > scan->batchState->firstBatch + 1)
+		while (batchState->nextBatch > batchState->firstBatch + 1)
 		{
 			IndexScanBatch fbatch;
 
-			scan->batchState->nextBatch--;
-			fbatch = INDEX_SCAN_BATCH(scan, scan->batchState->nextBatch);
+			batchState->nextBatch--;
+			fbatch = INDEX_SCAN_BATCH(scan, batchState->nextBatch);
 			index_batch_free(scan, fbatch);
 		}
 
@@ -907,17 +908,17 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * should not invoke the callback until the first read, but it may
 		 * seem a bit confusing otherwise.
 		 */
-		scan->batchState->direction = direction;
-		scan->batchState->finished = false;
-		scan->batchState->lastBlock = InvalidBlockNumber;
+		batchState->direction = direction;
+		batchState->finished = false;
+		batchState->lastBlock = InvalidBlockNumber;
 
-		index_batch_pos_reset(scan, &scan->batchState->streamPos);
+		index_batch_pos_reset(scan, &batchState->streamPos);
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}
 
 	/* read the next TID from the index */
-	readPos = &scan->batchState->readPos;
+	readPos = &batchState->readPos;
 
 	DEBUG_LOG("index_batch_getnext_tid readPos %d %d direction %d",
 			  readPos->batch, readPos->index, direction);
@@ -959,11 +960,10 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			 * longer need. The positions is the "read" position, and we can
 			 * compare it to firstBatch.
 			 */
-			if (unlikely(readPos->batch != scan->batchState->firstBatch))
+			if (unlikely(readPos->batch != batchState->firstBatch))
 			{
 				IndexScanBatchData *firstBatch = INDEX_SCAN_BATCH(scan,
-																  scan->batchState->firstBatch);
-				Assert(firstBatch != NULL);
+																  batchState->firstBatch);
 
 				/*
 				 * XXX When advancing readPos, the streamPos may get behind as
@@ -987,17 +987,14 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				 * depends on when we try to fetch the first heap block after
 				 * calling read_stream_reset().
 				 */
-				if (unlikely(scan->batchState->streamPos.batch ==
-							 scan->batchState->firstBatch))
+				if (unlikely(batchState->streamPos.batch == batchState->firstBatch))
 				{
 					elog(WARNING, "index_batch_pos_reset called early due to scan->batchState->streamPos.batch == scan->batchState->firstBatch");
-					index_batch_pos_reset(scan, &scan->batchState->streamPos);
+					index_batch_pos_reset(scan, &batchState->streamPos);
 				}
 
 				DEBUG_LOG("index_batch_getnext_tid free firstBatch %p firstBatch %d nextBatch %d",
-						  firstBatch,
-						  scan->batchState->firstBatch,
-						  scan->batchState->nextBatch);
+						  firstBatch, batchState->firstBatch, batchState->nextBatch);
 
 				/* Free the old first batch (except when it's markBatch) */
 				index_batch_free(scan, firstBatch);
@@ -1006,16 +1003,15 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				 * In any case, remove the batch from the regular queue, even
 				 * if we kept it for mar/restore.
 				 */
-				scan->batchState->firstBatch++;
+				batchState->firstBatch++;
 
 				DEBUG_LOG("index_batch_getnext_tid batch freed firstBatch %d nextBatch %d",
-						  scan->batchState->firstBatch,
-						  scan->batchState->nextBatch);
+						  batchState->firstBatch, batchState->nextBatch);
 
 				index_batch_print("index_batch_getnext_tid / free old batch", scan);
 
 				/* we can't skip any batches */
-				Assert(scan->batchState->firstBatch == readPos->batch);
+				Assert(batchState->firstBatch == readPos->batch);
 			}
 
 			pgstat_count_index_tuples(scan->indexRelation, 1);

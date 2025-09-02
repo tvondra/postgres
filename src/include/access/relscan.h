@@ -230,7 +230,18 @@ typedef struct IndexScanBatchState
 	 */
 	bool		disabled;
 
-	BlockNumber lastBlock;
+	/*
+	 * During prefetching, currentPrefetchBlock is the table AM block number
+	 * that was returned by our read stream callback most recently.  Used to
+	 * suppress duplicate successive read stream block requests.
+	 *
+	 * Prefetching can still perform non-successive requests for the same
+	 * block number (in general we're prefetching in exactly the same order
+	 * that the scan will return table AM TIDs in).  We need to avoid
+	 * duplicate successive requests because table AMs expect to be able to
+	 * hang on to buffer pins across table_index_fetch_tuple calls.
+	 */
+	BlockNumber currentPrefetchBlock;
 
 	/*
 	 * Current scan direction, for the currently loaded batches. This is used

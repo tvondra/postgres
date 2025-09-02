@@ -155,9 +155,9 @@ static void AssertCheckBatches(IndexScanDesc scan);
  *    achieving the distance requires too many leaf pages
  *
  * b) correlated index - duplicate blocks are skipped (the callback does not
- *    even return those, thanks to lastBlock optimization), and are mostly
- *    ignored in the distance heuristics (read stream does not even see those
- *    TIDs, and there's no I/O either)
+ *    even return those, thanks to currentPrefetchBlock optimization), and are
+ *    mostly ignored in the distance heuristics (read stream does not even see
+ *    those TIDs, and there's no I/O either)
  *
  * c) index-only scan - the callback skips TIDs from all-visible blocks (not
  *    reading those is the whole point of index-only scans), and so it's
@@ -972,7 +972,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 */
 		batchState->direction = direction;
 		batchState->finished = false;
-		batchState->lastBlock = InvalidBlockNumber;
+		batchState->currentPrefetchBlock = InvalidBlockNumber;
 
 		index_batch_pos_reset(scan, &batchState->streamPos);
 		if (scan->xs_heapfetch->rs)
@@ -1095,7 +1095,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 					  readPos->batch, readPos->index);
 
 			batchState->reset = false;
-			batchState->lastBlock = InvalidBlockNumber;
+			batchState->currentPrefetchBlock = InvalidBlockNumber;
 
 			/*
 			 * Need to reset the stream position, it might be too far behind.
@@ -1915,9 +1915,10 @@ index_scan_stream_read_next(ReadStream *stream,
 	 * (if there are no more items in loaded batches), try loading the next one.
 	 *
 	 * FIXME Unlike index_batch_getnext_tid, this can loop more than twice. If
-	 * many blocks get skipped thanks to lastBlock or all-visibility (per the
-	 * "prefetch" callback), we get to load additional batches. In the worst case
-	 * we hit the INDEX_SCAN_MAX_BATCHES limit and have to "pause" the stream.
+	 * many blocks get skipped due to currentPrefetchBlock or all-visibility
+	 * (per the "prefetch" callback), we get to load additional batches. In
+	 * the worst case we hit the INDEX_SCAN_MAX_BATCHES limit and have to
+	 * "pause" the stream.
 	 */
 	while (true)
 	{
@@ -1955,8 +1956,9 @@ index_scan_stream_read_next(ReadStream *stream,
 		 *
 		 * The block may be "skipped" for two reasons. First, the caller may
 		 * define a "prefetch" callback that tells us to skip items (IOS does
-		 * this to skip all-visible pages). Second, we use lastBlock to skip
-		 * duplicate block numbers (a sequence of TIDS for the same block).
+		 * this to skip all-visible pages). Second, currentPrefetchBlock is
+		 * used to skip duplicate block numbers (a sequence of TIDS for the
+		 * same block).
 		 */
 		if (advanced)
 		{
@@ -1972,8 +1974,9 @@ index_scan_stream_read_next(ReadStream *stream,
 			 * If there's a prefetch callback, use it to decide if we need to
 			 * read the next block.
 			 *
-			 * XXX Maybe we should check lastBlock first, on the assumption that
-			 * it's cheaper than invoking the "prefetch" callback?
+			 * We need to do this before checking currentPrefetchBlock; it's
+			 * essential that the VM cache used by index-only scans is
+			 * intialized here.
 			 */
 			if (batchState->prefetch &&
 				!batchState->prefetch(scan, batchState->prefetchArg, streamPos))
@@ -1983,16 +1986,16 @@ index_scan_stream_read_next(ReadStream *stream,
 			}
 
 			/* same block as before, don't need to read it */
-			if (batchState->lastBlock == ItemPointerGetBlockNumber(tid))
+			if (batchState->currentPrefetchBlock == ItemPointerGetBlockNumber(tid))
 			{
 				read_stream_skip_block(stream);
-				DEBUG_LOG("index_scan_stream_read_next: skip block (lastBlock)");
+				DEBUG_LOG("index_scan_stream_read_next: skip block (currentPrefetchBlock)");
 				continue;
 			}
 
-			batchState->lastBlock = ItemPointerGetBlockNumber(tid);
+			batchState->currentPrefetchBlock = ItemPointerGetBlockNumber(tid);
 
-			return ItemPointerGetBlockNumber(tid);
+			return batchState->currentPrefetchBlock;
 		}
 
 		/*
@@ -2173,7 +2176,7 @@ index_batch_init(IndexScanDesc scan)
 	scan->batchState->finished = false;
 	scan->batchState->reset = false;
 	scan->batchState->disabled = false;
-	scan->batchState->lastBlock = InvalidBlockNumber;
+	scan->batchState->currentPrefetchBlock = InvalidBlockNumber;
 	scan->batchState->direction = NoMovementScanDirection;
 	/* positions in the queue of batches */
 	index_batch_pos_reset(scan, &scan->batchState->readPos);
@@ -2274,7 +2277,7 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 
 	batchState->finished = false;
 	batchState->reset = false;
-	batchState->lastBlock = InvalidBlockNumber;
+	batchState->currentPrefetchBlock = InvalidBlockNumber;
 
 	AssertCheckBatches(scan);
 }

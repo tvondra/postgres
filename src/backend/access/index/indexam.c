@@ -139,50 +139,74 @@ static void AssertCheckBatches(IndexScanDesc scan);
 /*
  * Maximum number of batches (leaf pages) we can keep in memory.
  *
- * The value 64 value is arbitrary, it's about 1MB of data with 8KB pages. We
- * should not really need this many batches - we need a certain number of TIDs,
- * to satisfy the prefetch distance, and there usually are many index tuples
- * per page. In the worst case we might have one index tuple per leaf page,
- * but even that may not quite work in some cases.
+ * The value 64 value is arbitrary, it's about 1MB of data with 8KB pages
+ * (512kB for pages, and then a bit of overhead). We should not really need
+ * this many batches in most cases, though. The read stream looks ahead just
+ * enough to queue enough IOs, adjusting the distance (TIDs, but ultimately
+ * the number of future batches) to meet that.
  *
- * But there may be cases when this does not work - some examples:
- *
- * a) the index may be bloated, with many pages only have a single index item
- *
- * b) the index is correlated, and we skip prefetches of duplicate blocks
- *
- * c) we may be doing index-only scan, and we don't prefetch all-visible pages
- *
- * So we might need to load huge number of batches before we find the first
- * block to load from the table. Or enough pages to satisfy the prefetch
+ * In most cases an index leaf page has many (hundreds) index tuples, and
+ * it's enough to read one or maybe two leaf pages ahead to satisfy the
  * distance.
  *
- * XXX Currently, once we hit this number of batches, we fail in the stream
- * callback (or rather in index_batch_getnext), because that's where we load
- * batches. It'd be nice to "pause" the read stream for a bit instead, but
- * there's no built-in way to do that. So we can only "stop" the stream by
- * returning InvalidBlockNumber. But we could also remember this, and do
- * read_stream_reset() to continue, after consuming all the already scheduled
- * blocks.
+ * But there are cases where this may not quite work, for example:
  *
- * XXX Maybe 64 is too high - it also defines the maximum amount of overhead
+ * a) bloated index - many pages only have a single index item, so that
+ *    achieving the distance requires too many leaf pages
+ *
+ * b) correlated index - duplicate blocks are skipped (the callback does not
+ *    even return those, thanks to lastBlock optimization), and are mostly
+ *    ignored in the distance heuristics (read stream does not even see those
+ *    TIDs, and there's no I/O either)
+ *
+ * c) index-only scan - the callback skips TIDs from all-visible blocks (not
+ *    reading those is the whole point of index-only scans), and so it's
+ *    invisible to the distance / IO heuristics (similarly to duplicates)
+ *
+ * In these cases we might need to read a significant number of batches to
+ * find the first block to return to the read stream. It's not clear if
+ * looking this far ahead is worth it - it's a lot of work / synchronous
+ * I/O, and the query may terminate before reaching those TIDs (e.g. due to
+ * a LIMIT clause).
+ *
+ * Currently, there's no way to "pause" a read stream - stop looking ahead
+ * for a while, but then resume the work when a batch gets freed. To simulate
+ * this, the read stream is terminated (as if there were no more data), and
+ * then reset after draining all the queued blocks in order to resume work.
+ * This works, but it "stalls" the I/O queue. If it happens very often, it
+ * can be a serious performance bottleneck.
+
+ * XXX Maybe 64 is too high? It also defines the maximum amount of overhead
  * allowed. In the worst case, reading a single row might trigger reading this
- * many leaf pages (e.g. with IOS). Which might be an issue with LIMIT queries,
- * when we actually won't need most of the leaf pages.
+ * many leaf pages (e.g. with IOS, if most pages are all-visible). Which might
+ * be an issue with LIMIT queries, when we actually won't get that far.
  */
 #define INDEX_SCAN_MAX_BATCHES	64
 
+/* number of batches currently loaded */
 #define INDEX_SCAN_BATCH_COUNT(scan) \
 	((scan)->batchState->nextBatch - (scan)->batchState->firstBatch)
 
+/* Did we already load batch with the requested index? */
+/* XXX shouldn't this also compare firstBatch? maybe the batch was freed? */
 #define INDEX_SCAN_BATCH_LOADED(scan, idx) \
 	((idx) < (scan)->batchState->nextBatch)
 
+/* Have we loaded the maximum number of batches? */
 #define INDEX_SCAN_BATCH_FULL(scan) \
 	(INDEX_SCAN_BATCH_COUNT(scan) == scan->batchState->maxBatches)
 
+/* Return batch for the provided index. */
+/* XXX Should this have an assert to enforce the batch is loaded? Maybe the
+ * index is too far back, but there happens to be a batch in the right slot?
+ * Could easily happen if we have to keep many batches around.
+ */
 #define INDEX_SCAN_BATCH(scan, idx)	\
 		((scan)->batchState->batches[(idx) % INDEX_SCAN_MAX_BATCHES])
+
+/* Is the position invalid/undefined? */
+#define INDEX_SCAN_POS_INVALID(pos) \
+		(((pos)->batch == -1) && ((pos)->index == -1))
 
 #ifdef INDEXAM_DEBUG
 #define DEBUG_LOG(...) elog(AmRegularBackendProcess() ? NOTICE : DEBUG2, __VA_ARGS__)
@@ -504,18 +528,23 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 }
 
+/*
+ * fetch explain stats from the associated read stream (if any)
+ *
+ * XXX not pretty, but good enough for development
+ */
 void
 index_get_prefetch_stats(IndexScanDesc scan, int64 *accum, int64 *count,
 						 int64 *stalls, int64 *resets, int64 *skips,
 						 int64 *ungets, int64 *forwarded, int64 *merged,
 						 int64 *histogram)
 {
-	/* ugly */
-	if (scan->xs_heapfetch->rs != NULL)
-	{
-		read_stream_prefetch_stats(scan->xs_heapfetch->rs,
-					   accum, count, stalls, resets, skips, ungets, forwarded, merged, histogram);
-	}
+	if (scan->xs_heapfetch->rs == NULL)
+		return;
+
+	read_stream_prefetch_stats(scan->xs_heapfetch->rs,
+							   accum, count, stalls, resets, skips, ungets,
+							   forwarded, merged, histogram);
 }
 
 /* ----------------
@@ -563,6 +592,12 @@ index_markpos(IndexScanDesc scan)
 	IndexScanBatchData *markBatch = batchState->markBatch;
 
 	SCAN_CHECKS;
+
+	/*
+	 * FIXME this should probably check there actually is a batch state.
+	 * For now it works the only AM with mark/restore support is btree,
+	 * and that has batching. But we should not rely on that, right?
+	 */
 
 	/*
 	 * Free the previous mark batch (if any), but only if the batch is no
@@ -634,6 +669,12 @@ index_restrpos(IndexScanDesc scan)
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
 
+	/*
+	 * FIXME this should probably check there actually is a batch state.
+	 * For now it works the only AM with mark/restore support is btree,
+	 * and that has batching. But we should not rely on that, right?
+	 */
+
 	batchState = scan->batchState;
 	markPos = &batchState->markPos;
 	markBatch = scan->batchState->markBatch;
@@ -646,7 +687,7 @@ index_restrpos(IndexScanDesc scan)
 
 	/*
 	 * Reset the batching state, except for the marked batch, and make it look
-	 * like we have a single batch -- the marked one
+	 * like we have a single batch -- the marked one.
 	 */
 	index_batch_reset(scan, false);
 
@@ -780,8 +821,7 @@ index_parallelrescan(IndexScanDesc scan)
 
 	/*
 	 * Reset the batching. This makes it look like there are no batches,
-	 * discards reads already scheduled to the read stream, etc. We Do this
-	 * before calling amrescan, so that it can reinitialize everything.
+	 * discards reads already scheduled to the read stream, etc.
 	 *
 	 * XXX We do this before calling amparallelrescan, so that it could
 	 * reinitialize everything (this probably does not matter very much, now
@@ -868,6 +908,9 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * If we advance to the next batch, we release the previous one (unless it's
  * tracked for mark/restore).
  *
+ * If the scan direction changes, we release all batches except the current
+ * one (per readPos), to make it look it's the only batch we loaded.
+ *
  * Returns the first/next TID, or NULL if no more items.
  *
  * FIXME This only sets xs_heaptid and xs_itup (if requested). Not sure if
@@ -884,6 +927,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	IndexScanBatchState *batchState = scan->batchState;
 	IndexScanBatchPos *readPos;
+	CHECK_SCAN_PROCEDURE(amgetbatch);
 
 	/* shouldn't get here without batching */
 	AssertCheckBatches(scan);
@@ -896,7 +940,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * Handle change of scan direction (reset stream, ...).
 	 *
 	 * Release future batches properly, to make it look like the current batch
-	 * is the last one we loaded. Also reset the stream position, as if we are
+	 * is the only one we loaded. Also reset the stream position, as if we are
 	 * just starting the scan.
 	 */
 	else if (unlikely(batchState->direction != direction))
@@ -927,7 +971,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}
 
-	/* read the next TID from the index */
+	/* shortcut for the read position, for convenience */
 	readPos = &batchState->readPos;
 
 	DEBUG_LOG("index_batch_getnext_tid readPos %d %d direction %d",
@@ -939,8 +983,8 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * loaded. So try loading another batch, and maybe retry.
 	 *
 	 * FIXME This loop shouldn't happen more than twice. Maybe we should have
-	 * some protection against infinite loops? If the advance/getnext
-	 * functions get to disagree?
+	 * some protection against infinite loops? To detect cases when the
+	 * advance/getnext functions get to disagree?
 	 */
 	while (true)
 	{
@@ -996,17 +1040,21 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				 * just more chance to to not advance the streamPos, which
 				 * depends on when we try to fetch the first heap block after
 				 * calling read_stream_reset().
+				 *
+				 * FIXME Simplify/clarify/shorten this comment. Can it actually
+				 * happen, if we never pull from the stream in IOS? We probably
+				 * don't look ahead for the first call.
 				 */
 				if (unlikely(batchState->streamPos.batch == batchState->firstBatch))
 				{
-					elog(WARNING, "index_batch_pos_reset called early due to scan->batchState->streamPos.batch == scan->batchState->firstBatch");
+					DEBUG_LOG("index_batch_pos_reset called early (streamPos.batch == firstBatch)");
 					index_batch_pos_reset(scan, &batchState->streamPos);
 				}
 
 				DEBUG_LOG("index_batch_getnext_tid free firstBatch %p firstBatch %d nextBatch %d",
 						  firstBatch, batchState->firstBatch, batchState->nextBatch);
 
-				/* Free the old first batch (except when it's markBatch) */
+				/* Free the first batch (except when it's markBatch) */
 				index_batch_free(scan, firstBatch);
 
 				/*
@@ -1029,16 +1077,17 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 
 		/*
-		 * Failed to advance the read position, so try reading the next batch.
-		 * If this fails, we're done - there's nothing more to load.
+		 * Failed to advance the read position - we don't have the next batch
+		 * loaded, yet. Try reading the next batch. If this fails, we're done,
+		 * there's no more data in the scan.
 		 *
 		 * Most of the batches should be loaded from read_stream_next_buffer,
 		 * but we need to call index_batch_getnext here too, for two reasons.
 		 * First, the read_stream only gets working after we try fetching the
 		 * first heap tuple, so we need to load the first batch from here.
-		 * Second, while most batches will be preloaded by the stream thank's
-		 * to prefetching, it's possible to set effective_io_concurrency=0, in
-		 * which case all the batch loads happen from here.
+		 * Second, while most batches will be preloaded by the stream thanks
+		 * to prefetching, it's possible to set effective_io_concurrency=0,
+		 * and in that case all the batches get loaded from here.
 		 */
 		if (!index_batch_getnext(scan, direction))
 			break;
@@ -1056,6 +1105,9 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * Reset the position - we must not keep the last valid position, in case
 	 * we change direction of the scan and start scanning again. If we kept
 	 * the position, we'd skip the first item.
+	 *
+	 * XXX This is a bit strange. Do we really need to reset the position after
+	 * returning the last item? I wonder if it means the API is not quite right.
 	 */
 	index_batch_pos_reset(scan, readPos);
 
@@ -1631,12 +1683,19 @@ AssertCheckBatches(IndexScanDesc scan)
  * subsequent batches.
  *
  * If this is the first advance, right after loading the first batch, the
- * position is still be undefined. Otherwise we expect the position to be
+ * position is still undefined. Otherwise we expect the position to be
  * valid.
  *
  * Returns true if the position was advanced, false otherwise.
  *
- * The poisition is guaranteed to be valid only after an advance.
+ * The position is guaranteed to be valid only after a successful advance.
+ * If an advance fails (false returned), the position can be invalid.
+ *
+ * XXX This seems like a good place to enforce some "invariants", e.g.
+ * that the positions are always valid. We should never get here with
+ * invalid position (so probably should be initialized as part of loading
+ * the first batch), and then invalidated if advance fails. Could be tricky
+ * for the stream position, though, because it can get "lag" for IOS etc.
  */
 static pg_attribute_always_inline bool
 index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
@@ -1658,23 +1717,27 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 	/*
 	 * If the position has not been advanced yet, it has to be right after we
 	 * loaded the first batch. In that case just initialize it to the first
-	 * item in the batch (or last item, if it's backwards scaa).
+	 * item in the batch (or last item, if it's a backwards scan).
 	 *
 	 * XXX Maybe we should just explicitly initialize the postition after
 	 * loading the first batch, without having to go through the advance.
-	 *
-	 * XXX Add a macro INDEX_SCAN_POS_DEFINED() or something like this, to
-	 * make this easier to understand.
 	 */
-	if (pos->batch == -1)
+	if (INDEX_SCAN_POS_INVALID(pos))
 	{
 		/*
-		 * we should have loaded the very first batch
+		 * We should have loaded the very first batch, or maybe we have changed
+		 * the direction of the scan after scanning all the way to the end (in
+		 * which case the position is invalid, and we make it look like there is
+		 * just one batch). We should have just one batch, though.
 		 *
-		 * XXX Actually, we might have changed the direction of the scan, and
-		 * scanned all the way to the beginning/end. We reset the position,
-		 * but we're not on the first batch - we should have only one batch,
-		 * though.
+		 * XXX Actually, could there be more batches? Maybe we prefetched more
+		 * batches right away? It doesn't seem to be a substantial invariant.
+		 */
+		Assert(INDEX_SCAN_BATCH_COUNT(scan) == 1);
+
+		/*
+		 * Get the first batch, and initialize the position to the first/last
+		 * item in the batch, depending on the scan direction.
 		 */
 		batch = INDEX_SCAN_BATCH(scan, scan->batchState->firstBatch);
 
@@ -1697,8 +1760,8 @@ index_batch_pos_advance(IndexScanDesc scan, IndexScanBatchPos *pos,
 	AssertCheckBatchPosValid(scan, pos);
 
 	/*
-	 * Advance to the next item in the same batch. If the position is for the
-	 * last item in the batch, try advancing to the next batch (if loaded).
+	 * Advance to the next item in the same batch, if there are more items. If
+	 * we're at the last item, we'll try advancing to the next batch later.
 	 */
 	batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
@@ -1762,15 +1825,33 @@ index_batch_pos_reset(IndexScanDesc scan, IndexScanBatchPos *pos)
  * index_scan_stream_read_next
  *		return the next block to pass to the read stream
  *
- * This assumes the "current" scan direction, requested by the caller. If
- * that changes before consuming all buffers, we'll reset the stream and start
- * from scratch.
+ * This assumes the "current" scan direction, requested by the caller.
  *
- * The position of the read_stream is stored in streamPos, which may be
- * ahead of the current readPos (which is what got consumed by the scan).
+ * If the direction changes before consuming all blocks, we'll reset the stream
+ * and start from scratch. The scan direction change is handled elsewhere. Here
+ * we rely on having the correct value in batchState->direction.
  *
- * The scan direction change is checked / handled elsewhere. Here we rely on
- * having the correct value in batchState->direction.
+ * The position of the read_stream is stored in streamPos, which may be ahead of
+ * the current readPos (which is what got consumed by the scan).
+ *
+ * The streamPos can however also get behind readPos too, when some blocks are
+ * skipped and not returned to the read_stream. An example is an index scan on
+ * a correlated index, with many duplicate blocks are skipped, or an IOS where
+ * all-visible blocks are skipped.
+ *
+ * The first batch is always loaded from index_batch_getnext_tid(). We don't get
+ * here until the first read_stream_next_buffer() call, when pulling the first
+ * heap tuple from the stream. After that, most batches should be loaded by this
+ * callback, driven by the read_stream look-ahead distance. However, with
+ * disabled prefetching (that is, with effective_io_concurrency=0), all batches
+ * will be loaded in index_batch_getnext_tid.
+ *
+ * It's possible we got here only fairly late in the scan, e.g. if many tuples
+ * got skipped in the index-only scan, etc. In this case just use the read
+ * position as a streamPos starting point.
+ *
+ * XXX It seems the readPos/streamPos comments should be placed elsewhere. The
+ * read_stream callback does not seem like the right place.
  */
 static BlockNumber
 index_scan_stream_read_next(ReadStream *stream,
@@ -1782,41 +1863,41 @@ index_scan_stream_read_next(ReadStream *stream,
 	IndexScanBatchPos *streamPos = &batchState->streamPos;
 	ScanDirection direction = batchState->direction;
 
-	/*
-	 * The read position has to be valid, because we initialize/advance it
-	 * before maybe even attempting to read the heap tuple. And it lags behind
-	 * the stream position, so it can't be invalid yet. If this is the first
-	 * time for this callback, we will use the readPos to init streamPos, so
-	 * better check it's valid.
-	 */
+	/* By now we should know the direction of the scan. */
 	Assert(direction != NoMovementScanDirection);
+
+	/*
+	 * The read position (readPos) has to be valid.
+	 *
+	 * We initialize/advance it before even attempting to read the heap tuple,
+	 * and it gets invalidated when we reach the end of the scan (but then we
+	 * don't invoke the callback again).
+	 *
+	 * XXX This applies to the readPos. We'll use streamPos to determine which
+	 * blocks to pass to the stream, and readPos may be used to initialize it.
+	 */
 	AssertCheckBatchPosValid(scan, &batchState->readPos);
 
 	/*
-	 * Try to advance to the next item, and if there's none in the current
-	 * batch, try loading the next batch.
+	 * Try to advance the streamPos to the next item, and if that doesn't succeed
+	 * (if there are no more items in loaded batches), try loading the next one.
+	 *
+	 * FIXME Unlike index_batch_getnext_tid, this can loop more than twice. If
+	 * many blocks get skipped thanks to lastBlock or all-visibility (per the
+	 * "prefetch" callback), we get to load additional batches. In the worst case
+	 * we hit the INDEX_SCAN_MAX_BATCHES limit and have to "pause" the stream.
 	 */
 	while (true)
 	{
 		bool		advanced = false;
 
 		/*
-		 * If the stream position has yet to be initialized, do so using the
-		 * current read position.
-		 *
-		 * It's possible we got here only fairly late in the scan, e.g. if
-		 * many tuples got skipped in the index-only scan, etc. In this case
-		 * just use the read position as a starting point.
-		 *
-		 * The first batch is loaded from index_batch_getnext_tid(), because
-		 * we don't get here until the first index_fetch_heap() call - only
-		 * then can read_stream start loading more batches. It's also possible
-		 * to disable prefetching (effective_io_concurrency=0), in which case
-		 * all batches get loaded in index_batch_getnext_tid.
+		 * If the stream position has not been initialized yet, set it to the
+		 * current read position. This is the item the caller is tring to read,
+		 * so it's what we should return to the stream.
 		 */
-		if (streamPos->batch == -1)
+		if (INDEX_SCAN_POS_INVALID(streamPos))
 		{
-			/* Initialize streamPos using current readPos */
 			*streamPos = batchState->readPos;
 			advanced = true;
 		}
@@ -1825,9 +1906,26 @@ index_scan_stream_read_next(ReadStream *stream,
 			advanced = true;
 		}
 
-		/* FIXME maybe check the streamPos is not behind readPos? */
+		/*
+		 * FIXME Maybe check the streamPos is not behind readPos?
+		 *
+		 * FIXME Actually, could streamPos get stale/lagging behind readPos, and
+		 * if yes how much. Could it get so far behind to not be valid, pointing
+		 * at a freed batch? In that case we can't even advance it, and we should
+		 * just initialize it to readPos. We might do that anyway, I guess, just
+		 * to save on "pointless" advances (it must agree with readPos, we can't
+		 * allow "retroactively" changing the block sequence).
+		 */
 
-		/* If we advanced the position, return the block for the TID. */
+		/*
+		 * If we advanced the position, either return the block for the TID, or
+		 * skip it (and then try advancing again).
+		 *
+		 * The block may be "skipped" for two reasons. First, the caller may
+		 * define a "prefetch" callback that tells us to skip items (IOS does
+		 * this to skip all-visible pages). Second, we use lastBlock to skip
+		 * duplicate block numbers (a sequence of TIDS for the same block).
+		 */
 		if (advanced)
 		{
 			IndexScanBatch streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
@@ -1839,8 +1937,11 @@ index_scan_stream_read_next(ReadStream *stream,
 					  ItemPointerGetOffsetNumber(tid));
 
 			/*
-			 * if there's a prefetch callback, use it to decide if we will
-			 * need to read the block
+			 * If there's a prefetch callback, use it to decide if we need to
+			 * read the next block.
+			 *
+			 * XXX Maybe we should check lastBlock first, on the assumption that
+			 * it's cheaper than invoking the "prefetch" callback?
 			 */
 			if (batchState->prefetch &&
 				!batchState->prefetch(scan, batchState->prefetchArg, streamPos))
@@ -1863,18 +1964,11 @@ index_scan_stream_read_next(ReadStream *stream,
 		}
 
 		/*
-		 * Couldn't advance the position, so either there are no more items in
-		 * the current batch, or maybe we don't have any batches yet (if is
-		 * the first time through). Try loading the next batch - if that
-		 * succeeds, try the advance again (and this time the advance should
-		 * work).
+		 * Couldn't advance the position, no more items in the loaded batches.
+		 * Try loading the next batch - if that succeeds, try advancing again
+		 * (this time the advance should work, but we may skip all the items).
 		 *
 		 * If we fail to load the next batch, we're done.
-		 *
-		 * XXX Calling index_batch_getnext shouldn't happen more than twice
-		 * per call here, because if we fail to advance the position, we'll
-		 * try to load the next batch and then in the next loop the advance
-		 * has to succeed.
 		 */
 		if (!index_batch_getnext(scan, direction))
 			break;
@@ -1887,10 +1981,10 @@ index_scan_stream_read_next(ReadStream *stream,
 /* ----------------
  *		index_batch_getnext - get the next batch of TIDs from a scan
  *
- * Returns true if we managed to read at least some TIDs into the batch, or
- * false if there are no more TIDs in the scan. The batch load may fail for
- * multiple reasons - there really may not be more batches in the scan, or
- * maybe we reached INDEX_SCAN_MAX_BATCHES.
+ * Returns true if we managed to read a batch of TIDs, or false if there are no
+ * more TIDs in the scan. The load may also return false if we used the maximum
+ * number of batches (INDEX_SCAN_MAX_BATCHES), in which case we'll reset the
+ * stream and continue the scan later.
  *
  * Returns true if the batch was loaded successfully, false otherwise.
  *
@@ -1920,6 +2014,11 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 	 * We failed to advance, i.e. we ran out of currently loaded batches.  So
 	 * if we filled the queue, this is a good time to reset the stream (before
 	 * we try loading the next batch).
+	 *
+	 * XXX If we hit INDEX_SCAN_MAX_BATCHES, we terminate the stream, so there
+	 * won't be any more index_scan_stream_read_next calls. Which means the call
+	 * has to come from index_batch_getnext_tid(), i.e. when readPos reaches the
+	 * end of the scan.
 	 */
 	if (unlikely(INDEX_SCAN_BATCH_FULL(scan)))
 	{
@@ -1931,11 +2030,17 @@ index_batch_getnext(IndexScanDesc scan, ScanDirection direction)
 		/*
 		 * Need to reset the stream position, it might be too far behind.
 		 * Ultimately we want to set it to readPos, but we can't do that yet -
-		 * readPos still point sat the old batch, so just reset it and we'll
+		 * readPos still points at the old batch, so just reset it and we'll
 		 * init it to readPos later in the callback.
 		 */
 		index_batch_pos_reset(scan, &batchState->streamPos);
 
+		/*
+		 * FIXME this looks incorrect to me. We're resetting the stream, i.e.
+		 * throwing away all in-progress I/Os etc. We need to wait until all
+		 * those reads are consumed, and only then reset the stream. I guess
+		 * 107080f258d4 should be reverted.
+		 */
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}

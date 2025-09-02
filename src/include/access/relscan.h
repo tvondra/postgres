@@ -215,10 +215,11 @@ typedef struct IndexScanBatchState
 	bool		dropPin;
 
 	/*
-	 * Did we read the last batch? The batches may be loaded from multiple
-	 * places, and we need to remember when we fail to load the next batch in
-	 * a given scan (which means "no more batches"). amgetbatch may restart
-	 * the scan on the get call, so we need to remember it's over.
+	 * Did we read the final batch in this scan direction? The batches may be
+	 * loaded from multiple places, and we need to remember when we fail to
+	 * load the next batch in a given scan (which means "no more batches").
+	 * amgetbatch may restart the scan on the get call, so we need to remember
+	 * it's over.
 	 */
 	bool		finished;
 

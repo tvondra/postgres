@@ -238,9 +238,9 @@ index_batch_print(const char *label, IndexScanDesc scan)
 		IndexScanBatchData *batch = INDEX_SCAN_BATCH(scan, i);
 		BTScanPos	pos = (BTScanPos) batch->pos;
 
-		DEBUG_LOG("    batch %d currPage %u %p first %d last %d item %d killed %d",
+		DEBUG_LOG("    batch %d currPage %u %p first %d last %d killed %d",
 				  i, pos->currPage, batch, batch->firstItem, batch->lastItem,
-				  batch->itemIndex, batch->numKilled);
+				  batch->numKilled);
 	}
 #endif
 }
@@ -1071,13 +1071,13 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * So if we filled the queue, this is a good time to reset the stream
 		 * (before we try loading the next batch).
 		 */
-		if (unlikely(scan->batchState->reset))
+		if (unlikely(batchState->reset))
 		{
 			DEBUG_LOG("resetting read stream readPos %d,%d",
-					  scan->batchState->readPos.batch, scan->batchState->readPos.index);
+					  readPos->batch, readPos->index);
 
-			scan->batchState->reset = false;
-			scan->batchState->lastBlock = InvalidBlockNumber;
+			batchState->reset = false;
+			batchState->lastBlock = InvalidBlockNumber;
 
 			/*
 			 * Need to reset the stream position, it might be too far behind.
@@ -1085,7 +1085,7 @@ index_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			 * yet - readPos still point sat the old batch, so just reset it
 			 * and we'll init it to readPos later in the callback.
 			 */
-			index_batch_pos_reset(scan, &scan->batchState->streamPos);
+			index_batch_pos_reset(scan, &batchState->streamPos);
 
 			if (scan->xs_heapfetch->rs)
 				read_stream_reset(scan->xs_heapfetch->rs);

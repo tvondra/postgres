@@ -2014,35 +2014,42 @@ index_scan_stream_read_next(ReadStream *stream,
 		 * Only consider doing this when we're not on the very first batch,
 		 * when readPos and streamPos share the same batch.
 		 */
-#if 1
-		if (!batchState->finished && !batchState->prefetchingLockedIn &&
-			streamPos->batch > INDEX_SCAN_MIN_DISTANCE_NBATCHES &&
-			batchState->readPos.batch == streamPos->batch)
+		if (!batchState->finished && !batchState->prefetchingLockedIn)
 		{
-			IndexScanBatchPos *readPos = &batchState->readPos;
 			int			indexdiff;
 
-			if (ScanDirectionIsForward(direction))
-				indexdiff = streamPos->index - readPos->index;
-			else
+			if (streamPos->batch <= INDEX_SCAN_MIN_DISTANCE_NBATCHES)
 			{
-				IndexScanBatch readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
-
-				indexdiff = (readPos->index - readBatch->firstItem) -
-					(streamPos->index - readBatch->firstItem);
+				/* Too early to check if prefetching should be disabled */
 			}
-
-			if (indexdiff < INDEX_SCAN_MIN_TUPLE_DISTANCE)
+			else if (batchState->readPos.batch == streamPos->batch)
 			{
-				batchState->disabled = true;
-				return InvalidBlockNumber;
+				IndexScanBatchPos *readPos = &batchState->readPos;
+
+				if (ScanDirectionIsForward(direction))
+					indexdiff = streamPos->index - readPos->index;
+				else
+				{
+					IndexScanBatch readBatch =
+						INDEX_SCAN_BATCH(scan, readPos->batch);
+
+					indexdiff = (readPos->index - readBatch->firstItem) -
+						(streamPos->index - readBatch->firstItem);
+				}
+
+				if (indexdiff < INDEX_SCAN_MIN_TUPLE_DISTANCE)
+				{
+					batchState->disabled = true;
+					return InvalidBlockNumber;
+				}
+				else
+				{
+					batchState->prefetchingLockedIn = true;
+				}
 			}
 			else
-			{
 				batchState->prefetchingLockedIn = true;
-			}
 		}
-#endif
 	}
 
 	/* no more items in this scan */

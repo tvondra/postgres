@@ -184,12 +184,11 @@ static void AssertCheckBatches(IndexScanDesc scan);
 #define INDEX_SCAN_MAX_BATCHES	64
 
 /*
- * Threshold controlling when we cancel use of a read stream to do prefetching
- *
- * XXX This is still literally the first value that I tried.  The heuristics
- * likely need quite a bit more work.
+ * Thresholds controlling when we cancel use of a read stream to do
+ * prefetching
  */
-#define INDEX_SCAN_MIN_TUPLE_DISTANCE	20
+#define INDEX_SCAN_MIN_DISTANCE_NBATCHES	20
+#define INDEX_SCAN_MIN_TUPLE_DISTANCE		7
 
 #define INDEX_SCAN_BATCH_COUNT(scan) \
 	((scan)->batchState->nextBatch - (scan)->batchState->firstBatch)
@@ -2015,7 +2014,9 @@ index_scan_stream_read_next(ReadStream *stream,
 		 * Only consider doing this when we're not on the very first batch,
 		 * when readPos and streamPos share the same batch.
 		 */
-		if (!batchState->finished && streamPos->batch != 0 &&
+#if 1
+		if (!batchState->finished && !batchState->prefetchingLockedIn &&
+			streamPos->batch > INDEX_SCAN_MIN_DISTANCE_NBATCHES &&
 			batchState->readPos.batch == streamPos->batch)
 		{
 			IndexScanBatchPos *readPos = &batchState->readPos;
@@ -2036,7 +2037,12 @@ index_scan_stream_read_next(ReadStream *stream,
 				batchState->disabled = true;
 				return InvalidBlockNumber;
 			}
+			else
+			{
+				batchState->prefetchingLockedIn = true;
+			}
 		}
+#endif
 	}
 
 	/* no more items in this scan */
@@ -2175,6 +2181,7 @@ index_batch_init(IndexScanDesc scan)
 		 RelationNeedsWAL(scan->indexRelation));
 	scan->batchState->finished = false;
 	scan->batchState->reset = false;
+	scan->batchState->prefetchingLockedIn = false;
 	scan->batchState->disabled = false;
 	scan->batchState->currentPrefetchBlock = InvalidBlockNumber;
 	scan->batchState->direction = NoMovementScanDirection;

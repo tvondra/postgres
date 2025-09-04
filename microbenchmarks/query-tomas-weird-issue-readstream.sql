@@ -3,6 +3,7 @@
 create extension if not exists pg_prewarm;
 create extension if not exists pg_buffercache;
 set enable_bitmapscan=off;
+set effective_io_concurrency=1000;
 set enable_seqscan=off;
 set max_parallel_workers_per_gather=0;
 
@@ -57,3 +58,25 @@ select *
 from t_tupdistance_new_regress
 where a between 9401 and 2271544
 order by a desc;
+
+\echo '#### new query that is regressed by tuple distance patch ####'
+\echo '#### set enable_indexscan_prefetch = on ####'
+select pg_buffercache_evict_relation('t_remaining_regression');
+select pg_prewarm('t_remaining_regression_idx');
+\! sudo clear_cache.sh
+set enable_indexscan_prefetch = on;
+explain (analyze, TIMING off, costs off)
+select * from t_remaining_regression
+where a between -2281232 and -19089
+order by a asc;
+
+\echo '#### new query that is regressed by tuple distance patch ####'
+\echo '#### set enable_indexscan_prefetch = off ####'
+select pg_buffercache_evict_relation('t_remaining_regression');
+select pg_prewarm('t_remaining_regression_idx');
+\! sudo clear_cache.sh
+set enable_indexscan_prefetch = off;
+explain (analyze, TIMING off, costs off)
+select * from t_remaining_regression
+where a between -2281232 and -19089
+order by a asc;

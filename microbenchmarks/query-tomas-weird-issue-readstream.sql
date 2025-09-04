@@ -3,7 +3,7 @@
 create extension if not exists pg_prewarm;
 create extension if not exists pg_buffercache;
 set enable_bitmapscan=off;
-set effective_io_concurrency=1000;
+-- set effective_io_concurrency=1000;
 set enable_seqscan=off;
 set max_parallel_workers_per_gather=0;
 

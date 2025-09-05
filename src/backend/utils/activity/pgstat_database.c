@@ -224,6 +224,24 @@ pgstat_report_tempfile(size_t filesize)
  * Notify stats system of a new connection.
  */
 void
+pgstat_report_files(int64 accesses, int64 opens, int64 hits)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	if (!pgstat_track_counts)
+		return;
+
+	dbentry = pgstat_prep_database_pending(MyDatabaseId);
+	dbentry->file_access += accesses;
+	dbentry->file_opens += opens;
+	dbentry->file_hits += hits;
+	elog(LOG, "dbentry->file_access %ld", dbentry->file_access);
+}
+
+/*
+ * Notify stats system of a new connection.
+ */
+void
 pgstat_report_connect(Oid dboid)
 {
 	PgStat_StatDBEntry *dbentry;
@@ -480,6 +498,10 @@ pgstat_database_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 	PGSTAT_ACCUM_DBCOUNT(sessions_killed);
 	PGSTAT_ACCUM_DBCOUNT(parallel_workers_to_launch);
 	PGSTAT_ACCUM_DBCOUNT(parallel_workers_launched);
+
+	PGSTAT_ACCUM_DBCOUNT(file_access);
+	PGSTAT_ACCUM_DBCOUNT(file_opens);
+	PGSTAT_ACCUM_DBCOUNT(file_hits);
 #undef PGSTAT_ACCUM_DBCOUNT
 
 	pgstat_unlock_entry(entry_ref);

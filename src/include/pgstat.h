@@ -373,6 +373,9 @@ typedef struct PgStat_StatDBEntry
 	PgStat_Counter sessions_killed;
 	PgStat_Counter parallel_workers_to_launch;
 	PgStat_Counter parallel_workers_launched;
+	PgStat_Counter file_access;
+	PgStat_Counter file_opens;
+	PgStat_Counter file_hits;
 
 	TimestampTz stat_reset_timestamp;
 } PgStat_StatDBEntry;

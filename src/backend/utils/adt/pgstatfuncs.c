@@ -1100,6 +1100,15 @@ PG_STAT_GET_DBENTRY_INT64(xact_rollback)
 /* pg_stat_get_db_conflict_logicalslot */
 PG_STAT_GET_DBENTRY_INT64(conflict_logicalslot)
 
+/* pg_stat_get_db_file_access */
+PG_STAT_GET_DBENTRY_INT64(file_access)
+
+/* pg_stat_get_db_file_opens */
+PG_STAT_GET_DBENTRY_INT64(file_opens)
+
+/* pg_stat_get_db_file_hits */
+PG_STAT_GET_DBENTRY_INT64(file_hits)
+
 Datum
 pg_stat_get_db_stat_reset_time(PG_FUNCTION_ARGS)
 {

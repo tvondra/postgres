@@ -289,6 +289,14 @@ static Oid *tempTableSpaces = NULL;
 static int	numTempTableSpaces = -1;
 static int	nextTempTableSpace = 0;
 
+typedef struct _vfdStats
+{
+	int64		opens;
+	int64		accesses;
+	int64		hits;
+} vfdStats;
+
+static vfdStats vfdStatsLocal = {0};
 
 /*--------------------
  *
@@ -335,6 +343,7 @@ static int	FileAccess(File file);
 static File OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError);
 static bool reserveAllocatedDesc(void);
 static int	FreeDesc(AllocateDesc *desc);
+static void FileStats(File file);
 
 static void BeforeShmemExit_Files(int code, Datum arg);
 static void CleanupTempFiles(bool isCommit, bool isProcExit);
@@ -1133,6 +1142,8 @@ tryAgain:
 	fd = open(fileName, fileFlags, fileMode);
 #endif
 
+	vfdStatsLocal.opens++;
+
 	if (fd >= 0)
 	{
 #ifdef PG_O_DIRECT_USE_F_NOCACHE
@@ -1501,7 +1512,6 @@ FileAccess(File file)
 	 * Is the file open?  If not, open it and put it at the head of the LRU
 	 * ring (possibly closing the least recently used file to get an FD).
 	 */
-
 	if (FileIsNotOpen(file))
 	{
 		returnValue = LruInsert(file);
@@ -2089,6 +2099,8 @@ FilePrefetch(File file, off_t offset, off_t amount, uint32 wait_event_info)
 	{
 		int			returnCode;
 
+		FileStats(file);
+
 		returnCode = FileAccess(file);
 		if (returnCode < 0)
 			return returnCode;
@@ -2112,6 +2124,8 @@ retry:
 			int			ra_count;	/* size of the read     */
 		}			ra;
 		int			returnCode;
+
+		FileStats(file);
 
 		returnCode = FileAccess(file);
 		if (returnCode < 0)
@@ -2149,6 +2163,8 @@ FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info)
 	if (VfdCache[file].fileFlags & PG_O_DIRECT)
 		return;
 
+	FileStats(file);
+
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
 		return;
@@ -2171,6 +2187,8 @@ FileReadV(File file, const struct iovec *iov, int iovcnt, off_t offset,
 			   file, VfdCache[file].fileName,
 			   (int64) offset,
 			   iovcnt));
+
+	FileStats(file);
 
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
@@ -2229,6 +2247,8 @@ FileStartReadV(PgAioHandle *ioh, File file,
 			   (int64) offset,
 			   iovcnt));
 
+	FileStats(file);
+
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
 		return returnCode;
@@ -2253,6 +2273,8 @@ FileWriteV(File file, const struct iovec *iov, int iovcnt, off_t offset,
 			   file, VfdCache[file].fileName,
 			   (int64) offset,
 			   iovcnt));
+
+	FileStats(file);
 
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
@@ -2355,6 +2377,8 @@ FileSync(File file, uint32 wait_event_info)
 	DO_DB(elog(LOG, "FileSync: %d (%s)",
 			   file, VfdCache[file].fileName));
 
+	FileStats(file);
+
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
 		return returnCode;
@@ -2383,6 +2407,8 @@ FileZero(File file, off_t offset, off_t amount, uint32 wait_event_info)
 	DO_DB(elog(LOG, "FileZero: %d (%s) " INT64_FORMAT " " INT64_FORMAT,
 			   file, VfdCache[file].fileName,
 			   (int64) offset, (int64) amount));
+
+	FileStats(file);
 
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
@@ -2429,6 +2455,8 @@ FileFallocate(File file, off_t offset, off_t amount, uint32 wait_event_info)
 			   file, VfdCache[file].fileName,
 			   (int64) offset, (int64) amount));
 
+	FileStats(file);
+
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
 		return -1;
@@ -2465,6 +2493,8 @@ FileSize(File file)
 	DO_DB(elog(LOG, "FileSize %d (%s)",
 			   file, VfdCache[file].fileName));
 
+	FileStats(file);
+
 	if (FileIsNotOpen(file))
 	{
 		if (FileAccess(file) < 0)
@@ -2483,6 +2513,8 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 
 	DO_DB(elog(LOG, "FileTruncate %d (%s)",
 			   file, VfdCache[file].fileName));
+
+	FileStats(file);
 
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
@@ -2529,6 +2561,8 @@ int
 FileGetRawDesc(File file)
 {
 	int			returnCode;
+
+	FileStats(file);
 
 	returnCode = FileAccess(file);
 	if (returnCode < 0)
@@ -4115,4 +4149,20 @@ static char *
 ResOwnerPrintFile(Datum res)
 {
 	return psprintf("File %d", DatumGetInt32(res));
+}
+
+static void
+FileStats(File file)
+{
+	vfdStatsLocal.accesses++;
+	if (!FileIsNotOpen(file))
+		vfdStatsLocal.hits++;
+
+	if (vfdStatsLocal.accesses >= 1000)
+	{
+		pgstat_report_files(vfdStatsLocal.accesses, vfdStatsLocal.opens, vfdStatsLocal.hits);
+		vfdStatsLocal.accesses = 0;
+		vfdStatsLocal.hits = 0;
+		vfdStatsLocal.opens = 0;
+	}
 }

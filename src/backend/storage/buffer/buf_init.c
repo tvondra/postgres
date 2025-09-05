@@ -19,6 +19,9 @@
 #include <numaif.h>
 #endif
 
+#include <sched.h>
+#include <sys/sysinfo.h>
+
 #include "port/pg_numa.h"
 #include "storage/aio.h"
 #include "storage/buf_internals.h"
@@ -39,12 +42,18 @@ static void buffer_partitions_prepare(void);
 static void buffer_partitions_init(void);
 
 /* number of NUMA nodes (as returned by numa_num_configured_nodes) */
-static int	numa_nodes = -1;	/* number of nodes when sizing */
 static Size numa_page_size = 0; /* page used to size partitions */
 static bool numa_can_partition = false; /* can map to NUMA nodes? */
 static int	numa_buffers_per_node = -1; /* buffers per node */
 static int	numa_partitions = 0;	/* total (multiple of nodes) */
 
+
+/* NUMA registry */
+
+static int num_nodes = -1;
+static int num_cpus = -1;
+
+PGDLLIMPORT NUMARegistry *numaRegistry = NULL;
 
 /*
  * Data Structures:
@@ -481,15 +490,11 @@ buffer_partitions_prepare(void)
 	int			num_partitions_per_node;
 
 	/* bail out if already initialized (calculate only once) */
-	if (numa_nodes != -1)
+	if (numa_partitions != -1)
 		return;
 
-	/* XXX only gives us the number, the nodes may not be 0, 1, 2, ... */
-	numa_nodes = numa_num_configured_nodes();
-
 	/* XXX can this happen? */
-	if (numa_nodes < 1)
-		numa_nodes = 1;
+	Assert(numaRegistry->num_nodes >= 1);
 
 	/*
 	 * XXX A bit weird. Do we need to worry about postmaster? Could this even
@@ -539,10 +544,10 @@ buffer_partitions_prepare(void)
 	 * that for 256GB).
 	 */
 	numa_can_partition = true;	/* assume we can allocate to nodes */
-	if (numa_nodes > max_nodes)
+	if (numaRegistry->num_nodes > max_nodes)
 	{
 		elog(WARNING, "shared buffers too small for %d nodes (max nodes %d)",
-			 numa_nodes, max_nodes);
+			 numaRegistry->num_nodes, max_nodes);
 		numa_can_partition = false;
 	}
 
@@ -556,11 +561,11 @@ buffer_partitions_prepare(void)
 	 */
 	num_partitions_per_node = 1;
 
-	while (numa_nodes * num_partitions_per_node < MIN_BUFFER_PARTITIONS)
+	while (numaRegistry->num_nodes * num_partitions_per_node < MIN_BUFFER_PARTITIONS)
 		num_partitions_per_node++;
 
 	/* now we know the total number of partitions */
-	numa_partitions = (numa_nodes * num_partitions_per_node);
+	numa_partitions = (numaRegistry->num_nodes * num_partitions_per_node);
 
 	/*
 	 * Finally, calculate how many buffers we'll assign to a single NUMA node.
@@ -571,20 +576,20 @@ buffer_partitions_prepare(void)
 	 */
 	if (!numa_can_partition)
 	{
-		numa_buffers_per_node = (NBuffers + (numa_nodes - 1)) / numa_nodes;
+		numa_buffers_per_node = (NBuffers + (numaRegistry->num_nodes - 1)) / numaRegistry->num_nodes;
 	}
 	else
 	{
 		numa_buffers_per_node = min_node_buffers;
-		while (numa_buffers_per_node * numa_nodes < NBuffers)
+		while (numa_buffers_per_node * numaRegistry->num_nodes < NBuffers)
 			numa_buffers_per_node += min_node_buffers;
 
 		/* the last node should get at least some buffers */
-		Assert(NBuffers - (numa_nodes - 1) * numa_buffers_per_node > 0);
+		Assert(NBuffers - (numaRegistry->num_nodes - 1) * numa_buffers_per_node > 0);
 	}
 
 	elog(LOG, "NUMA: buffers %d partitions %d num_nodes %d per_node %d buffers_per_node %d (min %d)",
-		 NBuffers, numa_partitions, numa_nodes, num_partitions_per_node,
+		 NBuffers, numa_partitions, numaRegistry->num_nodes, num_partitions_per_node,
 		 numa_buffers_per_node, min_node_buffers);
 }
 
@@ -639,13 +644,13 @@ buffer_partitions_init(void)
 {
 	int			remaining_buffers = NBuffers;
 	int			buffer = 0;
-	int			parts_per_node = (numa_partitions / numa_nodes);
+	int			parts_per_node = (numa_partitions / numaRegistry->num_nodes);
 	char	   *buffers_ptr,
 			   *descriptors_ptr;
 
 	BufferPartitionsArray->npartitions = numa_partitions;
 
-	for (int n = 0; n < numa_nodes; n++)
+	for (int n = 0; n < numaRegistry->num_nodes; n++)
 	{
 		/* buffers this node should get (last node can get fewer) */
 		int			node_buffers = Min(remaining_buffers, numa_buffers_per_node);
@@ -656,7 +661,7 @@ buffer_partitions_init(void)
 		remaining_buffers -= node_buffers;
 
 		Assert((node_buffers > 0) && (node_buffers <= NBuffers));
-		Assert((n >= 0) && (n < numa_nodes));
+		Assert((n >= 0) && (n < numaRegistry->num_nodes));
 
 		for (int p = 0; p < parts_per_node; p++)
 		{
@@ -777,9 +782,40 @@ BufferPartitionGet(int idx, int *node, int *num_buffers,
 	elog(ERROR, "invalid partition index");
 }
 
-void
-BufferPartitionParams(int *num_partitions, int *num_nodes)
+/* FIXME make this work without NUMA */
+
+Size
+NUMAShmemSize(void)
 {
-	*num_partitions = numa_partitions;
-	*num_nodes = numa_nodes;
+	/* FIXME count only nodes with CPUs, and active CPUs */
+	/* XXX only gives us the number, the nodes may not be 0, 1, 2, ... */
+	num_nodes = numa_num_configured_nodes();
+
+	num_cpus = get_nprocs();	/* XXX maybe use get_nprocs_conf() instead? */
+
+	elog(LOG, "NUMA registry size %ld",
+		 offsetof(NUMARegistry, nodes_cores) + sizeof(bool) * num_nodes * num_cpus);
+
+	return offsetof(NUMARegistry, nodes_cores) + sizeof(bool) * num_nodes * num_cpus;
+}
+
+void
+NUMAShmemInit(void)
+{
+	bool	found = false;
+
+	Assert((num_nodes > 0) && (num_cpus > 0));
+
+	numaRegistry = (NUMARegistry *) ShmemInitStruct("NUMA Registry",
+						offsetof(NUMARegistry, nodes_cores) +
+						sizeof(bool) * num_nodes * num_cpus,
+						&found);
+
+	if (found)
+		return;
+
+	elog(LOG, "NUMA registry nodes %d cpus %d", num_nodes, num_cpus);
+
+	numaRegistry->num_nodes = num_nodes;
+	numaRegistry->num_cpus = num_cpus;
 }

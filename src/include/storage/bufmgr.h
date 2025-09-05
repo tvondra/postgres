@@ -441,6 +441,18 @@ BufferGetPage(Buffer buffer)
 	return (Page) BufferGetBlock(buffer);
 }
 
+typedef struct NUMARegistry
+{
+	int		num_nodes;
+	int		num_cpus;
+	bool	nodes_cores[FLEXIBLE_ARRAY_MEMBER];
+} NUMARegistry;
+
+extern PGDLLIMPORT NUMARegistry *numaRegistry;
+
+extern Size NUMAShmemSize(void);
+extern void NUMAShmemInit(void);
+
 #endif							/* FRONTEND */
 
 #endif							/* BUFMGR_H */

@@ -488,6 +488,5 @@ extern void AtEOXact_LocalBuffers(bool isCommit);
 extern int	BufferPartitionCount(void);
 extern void BufferPartitionGet(int idx, int *node, int *num_buffers,
 							   int *first_buffer, int *last_buffer);
-extern void BufferPartitionParams(int *num_partitions, int *num_nodes);
 
 #endif							/* BUFMGR_INTERNALS_H */

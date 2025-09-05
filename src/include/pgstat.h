@@ -376,6 +376,9 @@ typedef struct PgStat_StatDBEntry
 	PgStat_Counter file_access;
 	PgStat_Counter file_opens;
 	PgStat_Counter file_hits;
+	PgStat_Counter fastpath_acquired;
+	PgStat_Counter fastpath_not_eligible;
+	PgStat_Counter fastpath_not_enough;
 
 	TimestampTz stat_reset_timestamp;
 } PgStat_StatDBEntry;

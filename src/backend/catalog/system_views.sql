@@ -1104,6 +1104,9 @@ CREATE VIEW pg_stat_database AS
             pg_stat_get_db_file_accesses(D.oid) as file_access,
             pg_stat_get_db_file_opens(D.oid) as file_opens,
             pg_stat_get_db_file_hits(D.oid) as file_hit,
+            pg_stat_get_db_fastpath_acquired(D.oid) as fp_acquired,
+            pg_stat_get_db_fastpath_not_eligible(D.oid) as fp_not_eligible,
+            pg_stat_get_db_fastpath_not_enough(D.oid) as fp_not_enough,
             pg_stat_get_db_stat_reset_time(D.oid) AS stats_reset
     FROM (
         SELECT 0 AS oid, NULL::name AS datname

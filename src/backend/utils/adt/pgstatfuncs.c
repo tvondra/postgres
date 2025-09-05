@@ -1109,6 +1109,15 @@ PG_STAT_GET_DBENTRY_INT64(file_opens)
 /* pg_stat_get_db_file_hits */
 PG_STAT_GET_DBENTRY_INT64(file_hits)
 
+/* pg_stat_get_db_fastpath_acquired */
+PG_STAT_GET_DBENTRY_INT64(fastpath_acquired)
+
+/* pg_stat_get_db_fastpath_not_eligible */
+PG_STAT_GET_DBENTRY_INT64(fastpath_not_eligible)
+
+/* pg_stat_get_db_fastpath_not_enough */
+PG_STAT_GET_DBENTRY_INT64(fastpath_not_enough)
+
 Datum
 pg_stat_get_db_stat_reset_time(PG_FUNCTION_ARGS)
 {

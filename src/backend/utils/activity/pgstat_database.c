@@ -235,7 +235,23 @@ pgstat_report_files(int64 accesses, int64 opens, int64 hits)
 	dbentry->file_access += accesses;
 	dbentry->file_opens += opens;
 	dbentry->file_hits += hits;
-	elog(LOG, "dbentry->file_access %ld", dbentry->file_access);
+}
+
+/*
+ * Notify stats system of a fast-path locks.
+ */
+void
+pgstat_report_fastpath_locks(int64 acquired, int64 not_eligible, int64 not_enough)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	if (!pgstat_track_counts)
+		return;
+
+	dbentry = pgstat_prep_database_pending(MyDatabaseId);
+	dbentry->fastpath_acquired += acquired;
+	dbentry->fastpath_not_eligible += not_eligible;
+	dbentry->fastpath_not_enough += not_enough;
 }
 
 /*
@@ -502,6 +518,10 @@ pgstat_database_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 	PGSTAT_ACCUM_DBCOUNT(file_access);
 	PGSTAT_ACCUM_DBCOUNT(file_opens);
 	PGSTAT_ACCUM_DBCOUNT(file_hits);
+
+	PGSTAT_ACCUM_DBCOUNT(fastpath_acquired);
+	PGSTAT_ACCUM_DBCOUNT(fastpath_not_eligible);
+	PGSTAT_ACCUM_DBCOUNT(fastpath_not_enough);
 #undef PGSTAT_ACCUM_DBCOUNT
 
 	pgstat_unlock_entry(entry_ref);

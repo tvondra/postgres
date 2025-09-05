@@ -44,6 +44,7 @@
 #include "storage/procarray.h"
 #include "storage/spin.h"
 #include "storage/standby.h"
+#include "utils/backend_status.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
@@ -311,6 +312,16 @@ typedef struct
 
 static volatile FastPathStrongRelationLockData *FastPathStrongRelationLocks;
 
+/* basic stats about fast-path locks */
+typedef struct FastPathLockStats
+{
+	int64	count_acquired;		/* fast-path lock acquired */
+	int64	count_not_enough;	/* not enough fast-path slots */
+	int64	count_not_eligible;	/* lock is too strong for fast-path */
+	int64	count_promoted;		/* number of locks promoted */
+} FastPathLockStats;
+
+static FastPathLockStats fpLockStats = {0};
 
 /*
  * Pointers to hash tables containing lock state
@@ -429,6 +440,7 @@ static void LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 static void GetSingleProcBlockerStatusData(PGPROC *blocked_proc,
 										   BlockedProcsData *data);
 
+static void maybe_report_lock_stats(void);
 
 /*
  * Initialize the lock manager's shmem data structures.
@@ -1005,6 +1017,10 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		LWLockRelease(&MyProc->fpInfoLock);
 		if (acquired)
 		{
+			fpLockStats.count_acquired++;
+
+			maybe_report_lock_stats();
+
 			/*
 			 * The locallock might contain stale pointers to some old shared
 			 * objects; we MUST reset these to null before considering the
@@ -1015,7 +1031,15 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			GrantLockLocal(locallock, owner);
 			return LOCKACQUIRE_OK;
 		}
+		elog(LOG, "FastPathGrantRelationLock acquired %d", acquired);
 	}
+
+	if (!EligibleForRelationFastPath(locktag, lockmode))
+		fpLockStats.count_not_eligible++;
+	else if (FastPathLocalUseCounts[FAST_PATH_REL_GROUP(locktag->locktag_field2)] >= FP_LOCK_SLOTS_PER_GROUP)
+		fpLockStats.count_not_enough++;
+
+	maybe_report_lock_stats();
 
 	/*
 	 * If this lock could potentially have been taken via the fast-path by
@@ -4882,4 +4906,19 @@ LockWaiterCount(const LOCKTAG *locktag)
 	LWLockRelease(partitionLock);
 
 	return waiters;
+}
+
+static void
+maybe_report_lock_stats(void)
+{
+	if (fpLockStats.count_acquired + fpLockStats.count_not_eligible + fpLockStats.count_not_enough >= 1000)
+	{
+		pgstat_report_fastpath_locks(fpLockStats.count_acquired,
+									 fpLockStats.count_not_eligible,
+									 fpLockStats.count_not_enough);
+
+		fpLockStats.count_acquired = 0;
+		fpLockStats.count_not_eligible = 0;
+		fpLockStats.count_not_enough = 0;
+	}
 }

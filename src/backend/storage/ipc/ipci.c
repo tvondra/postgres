@@ -27,6 +27,7 @@
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/pg_numa.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
@@ -113,6 +114,7 @@ CalculateShmemSize(int *num_semaphores)
 											 sizeof(ShmemIndexEnt)));
 	size = add_size(size, dsm_estimate_size());
 	size = add_size(size, DSMRegistryShmemSize());
+	size = add_size(size, NUMAShmemSize());
 	size = add_size(size, BufferManagerShmemSize());
 	size = add_size(size, LockManagerShmemSize());
 	size = add_size(size, PredicateLockShmemSize());
@@ -290,6 +292,7 @@ CreateOrAttachShmemStructs(void)
 	CommitTsShmemInit();
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
+	NUMAShmemInit();
 	BufferManagerShmemInit();
 
 	/*

@@ -124,7 +124,6 @@ typedef struct
 	//int			__attribute__((aligned(64))) bgwprocno;
 
 	/* info about freelist partitioning */
-	int			num_nodes;		/* effectively number of NUMA nodes */
 	int			num_partitions;
 	int			num_partitions_per_node;
 
@@ -300,7 +299,7 @@ calculate_partition_index(void)
 #endif
 
 	Assert(StrategyControl->num_partitions ==
-		   (StrategyControl->num_nodes * StrategyControl->num_partitions_per_node));
+		   (numaRegistry->num_nodes * StrategyControl->num_partitions_per_node));
 
 	/*
 	 * XXX We should't get nodes that we haven't considered while building the
@@ -309,8 +308,8 @@ calculate_partition_index(void)
 	 * conflicts somehow. But it'll make the mapping harder, so for now we
 	 * ignore it.
 	 */
-	if (node > StrategyControl->num_nodes)
-		elog(ERROR, "node out of range: %d > %u", cpu, StrategyControl->num_nodes);
+	if (node > numaRegistry->num_nodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, numaRegistry->num_nodes);
 
 	/*
 	 * Find the partition. If we have a single partition per node, we can
@@ -328,7 +327,7 @@ calculate_partition_index(void)
 					index_part;
 
 		/* two steps - calculate group from node, partition from cpu */
-		index_group = (node % StrategyControl->num_nodes);
+		index_group = (node % numaRegistry->num_nodes);
 		index_part = (cpu % StrategyControl->num_partitions_per_node);
 
 		index = (index_group * StrategyControl->num_partitions_per_node)
@@ -960,17 +959,15 @@ StrategyInitialize(bool init)
 {
 	bool		found;
 
-	int			num_nodes;
-	int			num_partitions;
+	int			num_partitions = BufferPartitionCount();
 	int			num_partitions_per_node;
 
 	num_partitions = BufferPartitionCount();
-	num_nodes = BufferPartitionNodes();
 
 	/* always a multiple of NUMA nodes */
-	Assert(num_partitions % num_nodes == 0);
+	Assert(num_partitions % numaRegistry->num_nodes == 0);
 
-	num_partitions_per_node = (num_partitions / num_nodes);
+	num_partitions_per_node = (num_partitions / numaRegistry->num_nodes);
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -1052,7 +1049,6 @@ StrategyInitialize(bool init)
 
 		/* initialize the partitioned clocksweep */
 		StrategyControl->num_partitions = num_partitions;
-		StrategyControl->num_nodes = num_nodes;
 		StrategyControl->num_partitions_per_node = num_partitions_per_node;
 	}
 	else

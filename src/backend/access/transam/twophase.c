@@ -281,7 +281,7 @@ TwoPhaseShmemInit(void)
 			TwoPhaseState->freeGXacts = &gxacts[i];
 
 			/* associate it with a PGPROC assigned by InitProcGlobal */
-			gxacts[i].pgprocno = GetNumberFromPGProc(&PreparedXactProcs[i]);
+			gxacts[i].pgprocno = GetNumberFromPGProc(PreparedXactProcs[i]);
 		}
 	}
 	else
@@ -446,6 +446,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, FullTransactionId fxid,
 
 	/* Initialize the PGPROC entry */
 	MemSet(proc, 0, sizeof(PGPROC));
+	proc->procnumber = gxact->pgprocno;
 	dlist_node_init(&proc->links);
 	proc->waitStatus = PROC_WAIT_STATUS_OK;
 	if (LocalTransactionIdIsValid(MyProc->vxid.lxid))

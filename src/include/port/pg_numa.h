@@ -23,6 +23,7 @@ extern PGDLLIMPORT int numa_flags;
 
 #define		NUMA_BUFFERS		0x01
 #define		NUMA_PROCS			0x02
+#define		NUMA_PINNING		0x04
 
 #ifdef USE_LIBNUMA
 

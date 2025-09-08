@@ -779,6 +779,29 @@ InitProcess(void)
 	MyProcNumber = GetNumberFromPGProc(MyProc);
 
 	/*
+	 * Optionally, restrict the process to only run on CPUs from the same NUMA
+	 * as the PGPROC. We do this even if the PGPROC has a different NUMA node,
+	 * but not for PGPROC entries without a node (i.e. aux/2PC entries).
+	 *
+	 * This also means we only do this with numa_procs_interleave, because
+	 * without that we'll have numa_node=-1 for all PGPROC entries.
+	 *
+	 * FIXME add proper error-checking for libnuma functions
+	 */
+#ifdef USE_LIBNUMA
+	if (((numa_flags & NUMA_PINNING) != 0) && MyProc->numa_node != -1)
+	{
+		struct bitmask *cpumask = numa_allocate_cpumask();
+
+		numa_node_to_cpus(MyProc->numa_node, cpumask);
+
+		numa_sched_setaffinity(MyProcPid, cpumask);
+
+		numa_free_cpumask(cpumask);
+	}
+#endif
+
+	/*
 	 * Cross-check that the PGPROC is of the type we expect; if this were not
 	 * the case, it would get returned to the wrong list.
 	 */

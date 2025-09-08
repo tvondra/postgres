@@ -790,6 +790,8 @@ check_debug_numa(char **newval, void **extra, GucSource source)
 			flags |= NUMA_BUFFERS;
 		else if (pg_strcasecmp(item, "procs") == 0)
 			flags |= NUMA_PROCS;
+		else if (pg_strcasecmp(item, "pinning") == 0)
+			flags |= NUMA_PINNING;
 		else
 		{
 			GUC_check_errdetail("Invalid option \"%s\".", item);

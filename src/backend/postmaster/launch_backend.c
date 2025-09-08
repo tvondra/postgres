@@ -106,8 +106,8 @@ typedef struct
 	LWLockPadded *MainLWLockArray;
 	slock_t    *ProcStructLock;
 	PROC_HDR   *ProcGlobal;
-	PGPROC	   *AuxiliaryProcs;
-	PGPROC	   *PreparedXactProcs;
+	PGPROC	   **AuxiliaryProcs;
+	PGPROC	   **PreparedXactProcs;
 	volatile PMSignalData *PMSignalState;
 	ProcSignalHeader *ProcSignal;
 	pid_t		PostmasterPid;

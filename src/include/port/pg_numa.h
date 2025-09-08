@@ -23,6 +23,7 @@ extern PGDLLIMPORT void pg_numa_move_to_node(char *startptr, char *endptr, int n
 extern PGDLLIMPORT int numa_flags;
 
 #define		NUMA_BUFFERS		0x01
+#define		NUMA_PROCS			0x02
 
 #ifdef USE_LIBNUMA
 

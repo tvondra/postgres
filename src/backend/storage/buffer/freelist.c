@@ -279,13 +279,14 @@ calculate_partition_index()
 	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
 	 * list based on that.
 	 */
+#ifdef USE_LIBNUMA
 	cpu = sched_getcpu();
 	if (cpu < 0)
 		elog(ERROR, "sched_getcpu failed: %m");
 
-#ifdef USE_LIBNUMA
 	node = numa_node_of_cpu(cpu);
 #else
+	cpu = MyProcPid;
 	node = 0;
 #endif
 

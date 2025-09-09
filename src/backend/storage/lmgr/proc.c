@@ -434,12 +434,19 @@ InitProcGlobal(void)
 	}
 	else
 	{
+		elog(LOG, "ptr = %p", ptr);
+
 		/*
 		 * Now initialize the PGPROC partition registry with a single
 		 * partition for all the procs.
 		 */
 		partitions = (PGProcPartition *) ptr;
-		ptr += MAXALIGN(sizeof(PGProcPartition));
+		ptr += sizeof(PGProcPartition);
+
+		/* FIXME runtime error: member access within misaligned address 0xf389a754 for type 'struct PGPROC', which requires 8 byte alignment */
+		ptr = (char *) MAXALIGN(ptr);
+
+		elog(LOG, "ptr = %p", ptr);
 
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);
@@ -2525,6 +2532,7 @@ pgproc_partition_init(char *ptr, int num_procs, int allprocs_index, int node)
 	/* add pointers to the PGPROC entries to allProcs */
 	for (int i = 0; i < num_procs; i++)
 	{
+		elog(LOG, "procs_node[%d] %p", i, &procs_node[i]);
 		procs_node[i].numa_node = node;
 		procs_node[i].procnumber = allprocs_index;
 

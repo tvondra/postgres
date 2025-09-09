@@ -322,6 +322,9 @@ InitProcGlobal(void)
 		ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
 	Assert(!found);
 
+	/* XXX call again, EXEC_BACKEND may not see the already computed value */
+	pgproc_partitions_prepare();
+
 	/*
 	 * Initialize the data structures.
 	 */
@@ -2458,7 +2461,7 @@ pgproc_partitions_prepare(void)
 	 * shared memory and then not use some of it (because of the alignment
 	 * that we don't actually need). Not sure about better way, good for now.
 	 */
-	Assert(!IsUnderPostmaster);
+	// Assert(!IsUnderPostmaster);
 
 	numa_page_size = pg_numa_page_size();
 
@@ -2496,7 +2499,7 @@ pg_numa_move_to_node(char *startptr, char *endptr, int node)
 	 * We only expect to do this during startup, when the shared memory is
 	 * being setup.
 	 */
-	Assert(!IsUnderPostmaster);
+	// Assert(!IsUnderPostmaster);
 
 	Assert((int64) startptr % pg_numa_page_size() == 0);
 

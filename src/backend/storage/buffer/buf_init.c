@@ -97,6 +97,9 @@ BufferManagerShmemInit(void)
 	Size		mem_page_size;
 	Size		buffer_align;
 
+	/* XXX call again, EXEC_BACKEND may not see the already computed value */
+	buffer_partitions_prepare();
+
 	/*
 	 * XXX A bit weird. Do we need to worry about postmaster? Could this even
 	 * run outside postmaster? I don't think so.
@@ -107,7 +110,7 @@ BufferManagerShmemInit(void)
 	 * shared memory and then not use some of it (because of the alignment
 	 * that we don't actually need). Not sure about better way, good for now.
 	 */
-	Assert(!IsUnderPostmaster);
+	// Assert(!IsUnderPostmaster);
 
 	mem_page_size = pg_numa_page_size();
 
@@ -325,7 +328,7 @@ pg_numa_move_to_node(char *startptr, char *endptr, int node)
 	 * We only expect to do this during startup, when the shared memory is
 	 * being setup.
 	 */
-	Assert(!IsUnderPostmaster);
+	//Assert(!IsUnderPostmaster);
 
 	Assert((int64) startptr % pg_numa_page_size() == 0);
 

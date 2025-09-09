@@ -203,9 +203,8 @@ ClockSweepTick(void)
 static int
 calculate_partition_index()
 {
-	int			rc;
-	unsigned	cpu;
-	unsigned	node;
+	int			cpu;
+	int			node;
 	int			index;
 
 	Assert(StrategyControl->num_partitions ==
@@ -215,9 +214,15 @@ calculate_partition_index()
 	 * freelist is partitioned, so determine the CPU/NUMA node, and pick a
 	 * list based on that.
 	 */
-	rc = getcpu(&cpu, &node);
-	if (rc != 0)
-		elog(ERROR, "getcpu failed: %m");
+	cpu = sched_getcpu();
+	if (cpu < 0)
+		elog(ERROR, "sched_getcpu failed: %m");
+
+#ifdef USE_LIBNUMA
+	node = numa_node_of_cpu(cpu);
+#else
+	node = 0;
+#endif
 
 	/*
 	 * XXX We should't get nodes that we haven't considered while building the

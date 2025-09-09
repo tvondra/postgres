@@ -715,13 +715,19 @@ InitProcess(void)
 		if ((numa_flags & NUMA_PROCS) != 0)
 		{
 			dlist_mutable_iter iter;
-			unsigned	cpu;
-			unsigned	node;
-			int			rc;
+			int		cpu;
+			int		node;
 
-			rc = getcpu(&cpu, &node);
-			if (rc != 0)
+			cpu = sched_getcpu();
+			if (cpu < 0)
 				elog(ERROR, "getcpu failed: %m");
+
+#ifdef USE_LIBNUMA
+			node = numa_node_of_cpu(cpu);
+#else
+			/* FIXME is defaulting to 0 correct? */
+			node = 0;
+#endif
 
 			MyProc = NULL;
 

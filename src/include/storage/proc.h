@@ -485,7 +485,7 @@ extern PGDLLIMPORT bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT slock_t *ProcStructLock;
-extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
+extern PGDLLIMPORT PGPROC **AuxiliaryProcs;
 #endif
 
 

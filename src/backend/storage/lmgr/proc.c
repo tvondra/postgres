@@ -2455,7 +2455,7 @@ pgproc_partitions_prepare(void)
 
 	numa_procs_per_node = (MaxBackends + (numa_nodes - 1)) / numa_nodes;
 
-	elog(LOG, "NUMA: pgproc backends %d num_nodes %d per_node %d",
+	elog(DEBUG1, "NUMA: pgproc backends %d num_nodes %d per_node %d",
 		 MaxBackends, numa_nodes, numa_procs_per_node);
 
 	Assert(numa_nodes * numa_procs_per_node >= MaxBackends);
@@ -2511,7 +2511,7 @@ pgproc_partition_init(char *ptr, int num_procs, int allprocs_index, int node)
 	/* pointer right after this array */
 	ptr = (char *) ptr + num_procs * sizeof(PGPROC);
 
-	elog(LOG, "NUMA: pgproc_init_partition procs %p endptr %p num_procs %d node %d",
+	elog(DEBUG1, "NUMA: pgproc_init_partition procs %p endptr %p num_procs %d node %d",
 		 procs_node, ptr, num_procs, node);
 
 	/*

@@ -542,7 +542,7 @@ buffer_partitions_prepare(void)
 		Assert(NBuffers - (numa_nodes - 1) * numa_buffers_per_node > 0);
 	}
 
-	elog(LOG, "NUMA: buffers %d partitions %d num_nodes %d per_node %d buffers_per_node %d (min %d)",
+	elog(DEBUG1, "NUMA: buffers %d partitions %d num_nodes %d per_node %d buffers_per_node %d (min %d)",
 		 NBuffers, numa_partitions, numa_nodes, num_partitions_per_node,
 		 numa_buffers_per_node, min_node_buffers);
 }
@@ -637,7 +637,7 @@ buffer_partitions_init(void)
 			part->first_buffer = buffer;
 			part->last_buffer = buffer + (num_buffers - 1);
 
-			elog(LOG, "NUMA: buffer %d node %d partition %d buffers %d first %d last %d", idx, n, p, num_buffers, buffer, buffer + (num_buffers - 1));
+			elog(DEBUG1, "NUMA: buffer %d node %d partition %d buffers %d first %d last %d", idx, n, p, num_buffers, buffer, buffer + (num_buffers - 1));
 
 			buffer += num_buffers;
 			node_buffers -= part_buffers;
@@ -693,7 +693,7 @@ buffer_partitions_init(void)
 		endptr = startptr + ((Size) part->num_buffers * BLCKSZ);
 		buffers_ptr = endptr;	/* start of the next partition */
 
-		elog(LOG, "NUMA: buffer_partitions_init: %d => %d buffers %d start %p end %p (size %ld)",
+		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d buffers %d start %p end %p (size %ld)",
 			 i, part->numa_node, part->num_buffers, startptr, endptr, (endptr - startptr));
 
 		pg_numa_move_to_node(startptr, endptr, part->numa_node);
@@ -703,7 +703,7 @@ buffer_partitions_init(void)
 		endptr = startptr + ((Size) part->num_buffers * sizeof(BufferDescPadded));
 		descriptors_ptr = endptr;
 
-		elog(LOG, "NUMA: buffer_partitions_init: %d => %d descriptors %d start %p end %p (size %ld)",
+		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d descriptors %d start %p end %p (size %ld)",
 			 i, part->numa_node, part->num_buffers, startptr, endptr, (endptr - startptr));
 
 		pg_numa_move_to_node(startptr, endptr, part->numa_node);

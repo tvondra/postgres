@@ -29,7 +29,10 @@
  */
 #include "postgres.h"
 
+#ifdef USE_LIBNUMA
 #include <sched.h>
+#endif
+
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>

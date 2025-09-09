@@ -315,8 +315,6 @@ InitProcGlobal(void)
 	Size		requestSize;
 	char	   *ptr;
 
-	Size		mem_page_size = get_memory_page_size();
-
 	/* Create the ProcGlobal shared structure */
 	ProcGlobal = (PROC_HDR *)
 		ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
@@ -441,7 +439,7 @@ InitProcGlobal(void)
 		 * partition for all the procs.
 		 */
 		partitions = (PGProcPartition *) ptr;
-		ptr += sizeof(PGProcPartition);
+		ptr += MAXALIGN(sizeof(PGProcPartition));
 
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);
@@ -523,7 +521,7 @@ InitProcGlobal(void)
 			node_procs = Min(numa_procs_per_node, MaxBackends - total_procs);
 
 			/* make sure to align the PGPROC array to memory page */
-			fpPtr = (char *) TYPEALIGN(mem_page_size, fpPtr);
+			fpPtr = (char *) TYPEALIGN(numa_page_size, fpPtr);
 
 			/* remember this pointer too */
 			partitions[i].fastpath_ptr = fpPtr;

@@ -693,7 +693,7 @@ buffer_partitions_init(void)
 		endptr = startptr + ((Size) part->num_buffers * BLCKSZ);
 		buffers_ptr = endptr;	/* start of the next partition */
 
-		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d buffers %d start %p end %p (size %ld)",
+		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d buffers %d start %p end %p (size %zd)",
 			 i, part->numa_node, part->num_buffers, startptr, endptr, (endptr - startptr));
 
 		pg_numa_move_to_node(startptr, endptr, part->numa_node);
@@ -703,7 +703,7 @@ buffer_partitions_init(void)
 		endptr = startptr + ((Size) part->num_buffers * sizeof(BufferDescPadded));
 		descriptors_ptr = endptr;
 
-		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d descriptors %d start %p end %p (size %ld)",
+		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => %d descriptors %d start %p end %p (size %zd)",
 			 i, part->numa_node, part->num_buffers, startptr, endptr, (endptr - startptr));
 
 		pg_numa_move_to_node(startptr, endptr, part->numa_node);

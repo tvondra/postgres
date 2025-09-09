@@ -15,7 +15,9 @@
  */
 #include "postgres.h"
 
+#ifdef USE_LIBNUMA
 #include <sched.h>
+#endif
 
 #ifdef USE_LIBNUMA
 #include <numa.h>

@@ -2405,38 +2405,6 @@ BecomeLockGroupMember(PGPROC *leader, int pid)
 	return ok;
 }
 
-/* copy from buf_init.c */
-static Size
-get_memory_page_size(void)
-{
-	Size		os_page_size;
-	Size		huge_page_size;
-
-#ifdef WIN32
-	SYSTEM_INFO sysinfo;
-
-	GetSystemInfo(&sysinfo);
-	os_page_size = sysinfo.dwPageSize;
-#else
-	os_page_size = sysconf(_SC_PAGESIZE);
-#endif
-
-	/*
-	 * XXX This is a bit annoying/confusing, because we may get a different
-	 * result depending on when we call it. Before mmap() we don't know if the
-	 * huge pages get used, so we assume they will. And then if we don't get
-	 * huge pages, we'll waste memory etc.
-	 */
-
-	/* assume huge pages get used, unless HUGE_PAGES_OFF */
-	if (huge_pages_status == HUGE_PAGES_OFF)
-		huge_page_size = 0;
-	else
-		GetHugePageSize(&huge_page_size, NULL);
-
-	return Max(os_page_size, huge_page_size);
-}
-
 /*
  * pgproc_partitions_prepare
  *		Calculate parameters for partitioning buffers.

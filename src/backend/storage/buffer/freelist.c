@@ -83,7 +83,9 @@ typedef struct
 	 * Bgworker process to be notified upon activity or -1 if none. See
 	 * StrategyNotifyBgWriter.
 	 */
-	int			__attribute__((aligned(64))) bgwprocno;
+	int			bgwprocno;
+	// the _attribute_ does not work on Windows, it seems
+	//int			__attribute__((aligned(64))) bgwprocno;
 
 	/* info about freelist partitioning */
 	int			num_nodes;		/* effectively number of NUMA nodes */

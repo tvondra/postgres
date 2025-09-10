@@ -164,35 +164,6 @@ PGProcShmemSize(void)
 	 * XXX It might be more painful with very large huge pages (e.g. 1GB).
 	 */
 
-	/*
-	 * If PGPROC partitioning is enabled, and we decided it's possible, we
-	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
-	 * processes) to allow proper alignment.
-	 *
-	 * XXX This is a a bit wasteful, because it might actually add pages even
-	 * when not strictly needed (if it's already aligned). And we always
-	 * assume we'll add a whole page, even if the alignment needs only less
-	 * memory.
-	 */
-	if (((numa_flags & NUMA_PROCS) != 0) && numa_can_partition)
-	{
-		Assert(numa_nodes > 0);
-		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
-
-		/*
-		 * Also account for a small registry of partitions, a simple array of
-		 * partitions at the beginning.
-		 */
-		size = add_size(size, mul_size((numa_nodes + 1), sizeof(PGProcPartition)));
-		size = add_size(size, 1024);
-	}
-	else
-	{
-		/* otherwise add only a tiny registry, with a single partition */
-		size = add_size(size, sizeof(PGProcPartition));
-		size = add_size(size, 1024);
-	}
-
 	return size;
 }
 
@@ -239,6 +210,41 @@ FastPathLockShmemSize(void)
 	return size;
 }
 
+static Size
+PGProcPartitionsShmemSize(void)
+{
+	Size		size = 0;
+
+	/*
+	 * If PGPROC partitioning is enabled, and we decided it's possible, we
+	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
+	 * processes) to allow proper alignment.
+	 *
+	 * XXX This is a a bit wasteful, because it might actually add pages even
+	 * when not strictly needed (if it's already aligned). And we always
+	 * assume we'll add a whole page, even if the alignment needs only less
+	 * memory.
+	 */
+	if (((numa_flags & NUMA_PROCS) != 0) && numa_can_partition)
+	{
+		Assert(numa_nodes > 0);
+		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
+
+		/*
+		 * Also account for a small registry of partitions, a simple array of
+		 * partitions at the beginning.
+		 */
+		size = add_size(size, mul_size((numa_nodes + 1), sizeof(PGProcPartition)));
+	}
+	else
+	{
+		/* otherwise add only a tiny registry, with a single partition */
+		size = add_size(size, sizeof(PGProcPartition));
+	}
+
+	return size;
+}
+
 /*
  * Report shared-memory space needed by InitProcGlobal.
  */
@@ -256,6 +262,7 @@ ProcGlobalShmemSize(void)
 
 	size = add_size(size, PGProcShmemSize());
 	size = add_size(size, FastPathLockShmemSize());
+	size = add_size(size, PGProcPartitionsShmemSize());
 
 	return size;
 }
@@ -337,6 +344,13 @@ InitProcGlobal(void)
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PROC_NUMBER);
 
+	/* PGPROC partition registry */
+	requestSize = PGProcPartitionsShmemSize();
+
+	ptr = ShmemInitStruct("PGPROC partitions",
+						  requestSize,
+						  &found);
+
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
 	 * six separate consumers: (1) normal backends, (2) autovacuum workers and
@@ -379,13 +393,9 @@ InitProcGlobal(void)
 		Assert(numa_nodes > 0);
 
 		/*
-		 * Now initialize the PGPROC partition registry with one partitoion
-		 * per NUMA node.
+		 * Now initialize the PGPROC partition registry with one partition
+		 * per NUMA node (and then one extra partition for auxiliary procs).
 		 */
-		partitions = (PGProcPartition *) ptr;
-		ptr += (numa_nodes * sizeof(PGProcPartition));
-
-		/* build PGPROC entries for NUMA nodes */
 		for (i = 0; i < numa_nodes; i++)
 		{
 			/* the last NUMA node may get fewer PGPROC entries, but meh */
@@ -434,16 +444,6 @@ InitProcGlobal(void)
 	}
 	else
 	{
-		/*
-		 * Now initialize the PGPROC partition registry with a single
-		 * partition for all the procs.
-		 */
-		partitions = (PGProcPartition *) ptr;
-		ptr += sizeof(PGProcPartition);
-
-		/* FIXME runtime error: member access within misaligned address 0xf389a754 for type 'struct PGPROC', which requires 8 byte alignment */
-		ptr = (void *) CACHELINEALIGN(ptr);
-
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);
 

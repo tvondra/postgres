@@ -184,11 +184,13 @@ PGProcShmemSize(void)
 		 * partitions at the beginning.
 		 */
 		size = add_size(size, mul_size((numa_nodes + 1), sizeof(PGProcPartition)));
+		size = add_size(size, 1024);
 	}
 	else
 	{
 		/* otherwise add only a tiny registry, with a single partition */
 		size = add_size(size, sizeof(PGProcPartition));
+		size = add_size(size, 1024);
 	}
 
 	return size;

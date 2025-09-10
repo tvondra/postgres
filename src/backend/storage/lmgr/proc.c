@@ -107,8 +107,6 @@ static Size numa_page_size = 0; /* page used to size partitions */
 static bool numa_can_partition = false; /* can map to NUMA nodes? */
 static int	numa_procs_per_node = -1;	/* pgprocs per node */
 
-static Size get_memory_page_size(void); /* XXX duplicate with bufi_init.c */
-
 static void pgproc_partitions_prepare(void);
 static char *pgproc_partition_init(char *ptr, int num_procs,
 								   int allprocs_index, int node);
@@ -434,8 +432,6 @@ InitProcGlobal(void)
 	}
 	else
 	{
-		elog(LOG, "ptr = %p", ptr);
-
 		/*
 		 * Now initialize the PGPROC partition registry with a single
 		 * partition for all the procs.
@@ -445,8 +441,6 @@ InitProcGlobal(void)
 
 		/* FIXME runtime error: member access within misaligned address 0xf389a754 for type 'struct PGPROC', which requires 8 byte alignment */
 		ptr = (char *) MAXALIGN(ptr);
-
-		elog(LOG, "ptr = %p", ptr);
 
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);
@@ -2532,7 +2526,6 @@ pgproc_partition_init(char *ptr, int num_procs, int allprocs_index, int node)
 	/* add pointers to the PGPROC entries to allProcs */
 	for (int i = 0; i < num_procs; i++)
 	{
-		elog(LOG, "procs_node[%d] %p", i, &procs_node[i]);
 		procs_node[i].numa_node = node;
 		procs_node[i].procnumber = allprocs_index;
 

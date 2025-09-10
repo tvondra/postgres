@@ -440,7 +440,7 @@ InitProcGlobal(void)
 		ptr += sizeof(PGProcPartition);
 
 		/* FIXME runtime error: member access within misaligned address 0xf389a754 for type 'struct PGPROC', which requires 8 byte alignment */
-		ptr = (char *) MAXALIGN(ptr);
+		ptr = (void *) CACHELINEALIGN(ptr);
 
 		/* just treat everything as a single array, with no alignment */
 		ptr = pgproc_partition_init(ptr, TotalProcs, 0, -1);

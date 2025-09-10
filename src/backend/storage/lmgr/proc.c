@@ -351,6 +351,8 @@ InitProcGlobal(void)
 						  requestSize,
 						  &found);
 
+	partitions = (PGProcPartition *) ptr;
+
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
 	 * six separate consumers: (1) normal backends, (2) autovacuum workers and

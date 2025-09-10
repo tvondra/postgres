@@ -134,7 +134,7 @@ PGProcShmemSize(void)
 	Size		TotalProcs =
 		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
 
-	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC *)));
+	size = add_size(size, CACHELINEALIGN(mul_size(TotalProcs, sizeof(PGPROC *))));
 	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->xids)));
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->subxidStates)));
@@ -372,7 +372,7 @@ InitProcGlobal(void)
 
 	/* allprocs (array of pointers to PGPROC entries) */
 	procs = (PGPROC **) ptr;
-	ptr = (char *) ptr + TotalProcs * sizeof(PGPROC *);
+	ptr = (char *) ptr + CACHELINEALIGN(TotalProcs * sizeof(PGPROC *));
 
 	ProcGlobal->allProcs = procs;
 	/* XXX allProcCount isn't really all of them; it excludes prepared xacts */

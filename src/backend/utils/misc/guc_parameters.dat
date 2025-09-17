@@ -899,6 +899,16 @@
   boot_val => 'true',
 },
 
+{ name => 'debug_numa', type => 'string', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'NUMA-aware partitioning of shared memory.',
+  long_desc => 'An empty string disables NUMA-aware partitioning.',
+  flags => 'GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE',
+  variable => 'debug_numa_string',
+  boot_val => '""',
+  check_hook => 'check_debug_numa',
+  assign_hook => 'assign_debug_numa',
+},
+
 { name => 'sync_replication_slots', type => 'bool', context => 'PGC_SIGHUP', group => 'REPLICATION_STANDBY',
   short_desc => 'Enables a physical standby to synchronize logical failover replication slots from the primary server.',
   variable => 'sync_replication_slots',

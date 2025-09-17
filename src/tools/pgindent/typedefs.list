@@ -346,6 +346,8 @@ BufferDescPadded
 BufferHeapTupleTableSlot
 BufferLookupEnt
 BufferManagerRelation
+BufferPartition
+BufferPartitions
 BufferStrategyControl
 BufferTag
 BufferUsage

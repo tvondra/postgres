@@ -357,6 +357,8 @@ BufferHeapTupleTableSlot
 BufferLockMode
 BufferLookupEnt
 BufferManagerRelation
+BufferPartition
+BufferPartitions
 BufferStrategyControl
 BufferTag
 BufferUsage

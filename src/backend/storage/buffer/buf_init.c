@@ -460,7 +460,7 @@ buffer_partitions_prepare(void)
 	numa_can_partition = true;	/* assume we can allocate to nodes */
 	if (numa_nodes > max_nodes)
 	{
-		elog(WARNING, "shared buffers too small for %d nodes (max nodes %d)",
+		elog(DEBUG1, "shared buffers too small for %d nodes (max nodes %d)",
 			 numa_nodes, max_nodes);
 		numa_can_partition = false;
 	}

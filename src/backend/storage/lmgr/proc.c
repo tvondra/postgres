@@ -141,28 +141,20 @@ PGProcShmemSize(void)
 	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->statusFlags)));
 
 	/*
-	 * To support NUMA partitioning, the PGPROC array will be divided into
-	 * multiple chunks - one per NUMA node, and one extra for auxiliary/2PC
-	 * entries (which are not assigned to any NUMA node).
+	 * If PGPROC partitioning is enabled, and we decided it's possible, we
+	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
+	 * processes) to allow proper alignment.
 	 *
-	 * We can't simply map pages of a single continuous array, because the
-	 * PGPROC entries are very small and too many of them would fit on a
-	 * single page (at least with huge pages). Far more than reasonable values
-	 * of max_connections. So instead we cut the array into separate pieces
-	 * for each node.
-	 *
-	 * Each piece may need up to one memory page of padding, to make it
-	 * aligned with memory page (for NUMA), So we just add a page - it's a bit
-	 * wasteful, but should not matter much - NUMA is meant for large boxes,
-	 * so a couple pages is negligible.
-	 *
-	 * We only do this with NUMA partitioning. With the GUC disabled, or when
-	 * we find we can't do that for some reason, we just allocate the PGPROC
-	 * array as a single chunk. This is determined by the earlier call to
-	 * pgproc_partitions_prepare().
-	 *
-	 * XXX It might be more painful with very large huge pages (e.g. 1GB).
+	 * XXX This is a a bit wasteful, because it might actually add pages even
+	 * when not strictly needed (if it's already aligned). And we always
+	 * assume we'll add a whole page, even if the alignment needs only less
+	 * memory.
 	 */
+	if (((numa_flags & NUMA_PROCS) != 0) && numa_can_partition)
+	{
+		Assert(numa_nodes > 0);
+		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
+	}
 
 	return size;
 }
@@ -210,35 +202,45 @@ FastPathLockShmemSize(void)
 	return size;
 }
 
+/*
+ * To support NUMA partitioning, the PGPROC array will be divided into
+ * multiple chunks - one per NUMA node, and one extra for auxiliary/2PC
+ * entries (which are not assigned to any NUMA node).
+ *
+ * We can't simply map pages of a single continuous array, because the
+ * PGPROC entries are very small and too many of them would fit on a
+ * single page (at least with huge pages). Far more than reasonable values
+ * of max_connections. So instead we cut the array into separate pieces
+ * for each node.
+ *
+ * Each piece may need up to one memory page of padding, to make it
+ * aligned with memory page (for NUMA), So we just add a page - it's a bit
+ * wasteful, but should not matter much - NUMA is meant for large boxes,
+ * so a couple pages is negligible.
+ *
+ * We only do this with NUMA partitioning. With the GUC disabled, or when
+ * we find we can't do that for some reason, we just allocate the PGPROC
+ * array as a single chunk. This is determined by the earlier call to
+ * pgproc_partitions_prepare().
+ *
+ * XXX It might be more painful with very large huge pages (e.g. 1GB).
+ */
 static Size
 PGProcPartitionsShmemSize(void)
 {
 	Size		size = 0;
 
 	/*
-	 * If PGPROC partitioning is enabled, and we decided it's possible, we
-	 * need to add one memory page per NUMA node (and one for auxiliary/2PC
-	 * processes) to allow proper alignment.
-	 *
-	 * XXX This is a a bit wasteful, because it might actually add pages even
-	 * when not strictly needed (if it's already aligned). And we always
-	 * assume we'll add a whole page, even if the alignment needs only less
-	 * memory.
+	 * Account for a small registry of partitions, a simple array of partitions
+	 * at the beginning. Without NUMA partitioning, treat it as if we only had
+	 * a single partition.
 	 */
 	if (((numa_flags & NUMA_PROCS) != 0) && numa_can_partition)
 	{
-		Assert(numa_nodes > 0);
-		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
-
-		/*
-		 * Also account for a small registry of partitions, a simple array of
-		 * partitions at the beginning.
-		 */
 		size = add_size(size, mul_size((numa_nodes + 1), sizeof(PGProcPartition)));
 	}
 	else
 	{
-		/* otherwise add only a tiny registry, with a single partition */
 		size = add_size(size, sizeof(PGProcPartition));
 	}
 

@@ -3,7 +3,7 @@
 
 CREATE TABLE testjsonb (
        j jsonb
-);
+) WITH (fillfactor=10);
 
 \set filename :abs_srcdir '/data/jsonb.data'
 COPY testjsonb FROM :'filename';
@@ -851,7 +851,22 @@ SELECT count(*) FROM testjsonb WHERE j @? '$';
 SELECT count(*) FROM testjsonb WHERE j @? '$.public';
 SELECT count(*) FROM testjsonb WHERE j @? '$.bar';
 
+-- build index using parallelism
+--
+-- Set a couple parameters to force parallel build for small table. There's a
+-- requirement for table size, so disable that. Also, plan_create_index_workers
+-- assumes each worker will use work_mem=32MB for sorting (which works for btree,
+-- but not really for BRIN), so we set maintenance_work_mem for 4 workers.
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '128MB';
+
 CREATE INDEX jidx ON testjsonb USING gin (j);
+
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+
 SET enable_seqscan = off;
 
 SELECT count(*) FROM testjsonb WHERE j @> '{"wait":null}';
@@ -939,7 +954,23 @@ SELECT count(*) FROM testjsonb WHERE j = '{"pos":98, "line":371, "node":"CBA", "
 
 --gin path opclass
 DROP INDEX jidx;
+
+-- build index using parallelism
+--
+-- Set a couple parameters to force parallel build for small table. There's a
+-- requirement for table size, so disable that. Also, plan_create_index_workers
+-- assumes each worker will use work_mem=32MB for sorting (which works for btree,
+-- but not really for BRIN), so we set maintenance_work_mem for 4 workers.
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '128MB';
+
 CREATE INDEX jidx ON testjsonb USING gin (j jsonb_path_ops);
+
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+
 SET enable_seqscan = off;
 
 SELECT count(*) FROM testjsonb WHERE j @> '{"wait":null}';

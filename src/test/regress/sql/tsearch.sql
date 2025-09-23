@@ -46,7 +46,7 @@ WHERE
 CREATE TABLE test_tsvector(
 	t text,
 	a tsvector
-);
+) WITH (fillfactor=10);
 
 \set filename :abs_srcdir '/data/tsearch.data'
 COPY test_tsvector FROM :'filename';
@@ -222,7 +222,21 @@ RESET enable_bitmapscan;
 
 DROP INDEX wowidx;
 
+-- build index using parallelism
+--
+-- Set a couple parameters to force parallel build for small table. There's a
+-- requirement for table size, so disable that. Also, plan_create_index_workers
+-- assumes each worker will use work_mem=32MB for sorting (which works for btree,
+-- but not really for BRIN), so we set maintenance_work_mem for 4 workers.
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '128MB';
+
 CREATE INDEX wowidx ON test_tsvector USING gin (a);
+
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
 
 SET enable_seqscan=OFF;
 -- GIN only supports bitmapscan, so no need to test plain indexscan

@@ -851,59 +851,37 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	/*
 	 * Optimize the total amount of memory consumed by the hash node.
 	 *
-	 * The nbatch calculation above focuses on the size of the in-memory hash
-	 * table, assuming no per-batch overhead. Now adjust the number of batches
-	 * and the size of the hash table to minimize total memory consumed by the
-	 * hash node.
-	 *
-	 * Each batch file has a BLCKSZ buffer, and we may need two files per
-	 * batch (inner and outer side). So with enough batches this can be
-	 * significantly more memory than the hashtable itself.
+	 * The nbatch calculation above focuses on the the in-memory hash table,
+	 * assuming no per-batch overhead. But each batch may have two files, each
+	 * with a BLCKSZ buffer. With enough batches these buffers may use
+	 * significantly more memory than the hash table.
 	 *
 	 * The total memory usage may be expressed by this formula:
 	 *
-	 * (inner_rel_bytes / nbatch) + (2 * nbatch * BLCKSZ) <= hash_table_bytes
+	 * (inner_rel_bytes / nbatch) + (2 * nbatch * BLCKSZ)
 	 *
 	 * where (inner_rel_bytes / nbatch) is the size of the in-memory hash
 	 * table and (2 * nbatch * BLCKSZ) is the amount of memory used by file
-	 * buffers. But for sufficiently large values of inner_rel_bytes value
-	 * there may not be a nbatch value that would make both parts fit into
-	 * hash_table_bytes.
+	 * buffers. We can't optimize both parts at the same time, and for large
+	 * inner_rel_bytes values there may not be a nbatch value that would keep
+	 * memory usage below the memory limit (work_mem * hash_mem_multiplier).
 	 *
-	 * In this case we can't enforce the memory limit - we're going to exceed
-	 * it. We can however minimize the impact and use as little memory as
-	 * possible. (We haven't really enforced it before either, as we simply
-	 * ignored the batch files.)
+	 * In this case we're going to exceed the memory limit no matter what. We
+	 * can at least minimize the impact and minimize the amount of memory
+	 * used. (We haven't enforced it before either, we simply ignored the
+	 * batch files.)
 	 *
-	 * The formula for total memory usage says that given an inner relation of
-	 * size inner_rel_bytes, we may divide it into an arbitrary number of
-	 * batches. This determines both the size of the in-memory hash table and
-	 * the amount of memory needed for batch files. These two terms work in
-	 * opposite ways - when one decreases, the other increases.
-	 *
-	 * For low nbatch values, the hash table takes most of the memory, but at
-	 * some point the batch files start to dominate. If you combine these two
-	 * terms, the memory consumption (for a fixed size of the inner relation)
-	 * has a u-shape, with a minimum at some nbatch value.
-	 *
-	 * Our goal is to find this nbatch value, minimizing the memory usage. We
-	 * calculate the memory usage with half the batches (i.e. nbatch/2), and
-	 * if it's lower than the current memory usage we know it's better to use
-	 * fewer batches. We repeat this until reducing the number of batches does
-	 * not reduce the memory usage - we found the optimum. We know the optimum
-	 * exists, thanks to the u-shape.
+	 * These two terms in the formula work in opposite ways - one decreases,
+	 * the other increases. The plot has a u-shape, with a minimum at some
+	 * nbatch value. We find the minimum by "walking back" - check if using
+	 * (nbatch/2) batches would lower the memory usage. We stop when the
+	 * memory usage would not improve.
 	 *
 	 * We only want to do this when exceeding the memory limit, not every
-	 * time. The goal is not to minimize memory usage in every case, but to
-	 * minimize the memory usage when we can't stay within the memory limit.
-	 *
-	 * For this reason we only consider reducing the number of batches. We
-	 * could try the opposite direction too, but that would save memory only
-	 * when most of the memory is used by the hash table. And the hash table
-	 * was used for the initial sizing, so we shouldn't be exceeding the
-	 * memory limit too much. We might save memory by using more batches, but
-	 * it would result in spilling more batch files, which does not seem like
-	 * a great trade off.
+	 * time. This is why we try only reducing number of batches. We could try
+	 * increasing nbatch too, but what would lower memory usage only with most
+	 * of the memory being used by the hash table. It might even force using
+	 * batching even when not needed. We don't want that.
 	 *
 	 * While growing the hashtable, we also adjust the number of buckets, to
 	 * not have more than one tuple per bucket (load factor 1). We can only do

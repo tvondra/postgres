@@ -930,6 +930,7 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 		 */
 		nbatch /= 2;
 		nbuckets *= 2;
+		hash_table_bytes *= 2;
 
 		*space_allowed = (*space_allowed) * 2;
 	}

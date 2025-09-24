@@ -913,10 +913,12 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	while (nbatch > 0)
 	{
 		/* how much memory are we using with current nbatch value */
-		size_t		current_space = hash_table_bytes + (2 * nbatch * BLCKSZ);
+		size_t		current_space =
+			hash_table_bytes + (2 * nbatch * (size_t) BLCKSZ);
 
 		/* how much memory would we use with half the batches */
-		size_t		new_space = hash_table_bytes * 2 + (nbatch * BLCKSZ);
+		size_t		new_space =
+			hash_table_bytes * 2 + (nbatch * (size_t) BLCKSZ);
 
 		/* If the memory usage would not decrease, we found the optimum. */
 		if (current_space < new_space)
@@ -995,7 +997,7 @@ ExecHashIncreaseBatchSize(HashJoinTable hashtable)
 	 * How much additional memory would doubling nbatch use? Each batch may
 	 * require two buffered files (inner/outer), with a BLCKSZ buffer.
 	 */
-	size_t		batchSpace = (hashtable->nbatch * 2 * BLCKSZ);
+	size_t		batchSpace = (hashtable->nbatch * 2 * (size_t) BLCKSZ);
 
 	/*
 	 * Compare the new space needed for doubling nbatch and for enlarging the

@@ -925,14 +925,50 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 			break;
 
 		/*
-		 * It's better to use half the batches, so do that and adjust the
-		 * nbucket in the opposite direction, and double the allowance.
+		 * Make sure hash_table_bytes doesn't overflow. If it would, stop and
+		 * use the current nbatch value.
+		 */
+		if (hash_table_bytes > SIZE_MAX / 2)
+			break;
+
+		/*
+		 * It's better to use half the batches, so do that, and adjust the
+		 * allowance in the opposite direction. Then adjust the nbuckets to
+		 * reflect the higher allowance, but be careful about overflow.
 		 */
 		nbatch /= 2;
-		nbuckets *= 2;
 		hash_table_bytes *= 2;
-
 		*space_allowed = (*space_allowed) * 2;
+
+		/*
+		 * Adjust nbuckets, with overflow protection.
+		 *
+		 * Recalculate max_pointers, because the earlier value was based on a
+		 * lower hash_table_bytes, before we adjusted that.
+		 *
+		 * XXX Maybe this is too much, and we need to care only about
+		 * MaxAllocSize? Then we'd not need to recalculate this over and over
+		 * in every loop.
+		 *
+		 * XXX An alternative would be to not grow nbuckets, and stick to the
+		 * originally planned value. The cost is we'll increase the load
+		 * factor (tuples per bucket).
+		 */
+		max_pointers = hash_table_bytes / sizeof(HashJoinTuple);
+		max_pointers = Min(max_pointers, MaxAllocSize / sizeof(HashJoinTuple));
+		/* If max_pointers isn't a power of 2, must round it down to one */
+		max_pointers = pg_prevpower2_size_t(max_pointers);
+
+		/* Also ensure we avoid integer overflow in nbatch and nbuckets */
+		/* (this step is redundant given the current value of MaxAllocSize) */
+		max_pointers = Min(max_pointers, INT_MAX / 2 + 1);
+
+		/* don't break, just cap the number of buckets */
+		dbuckets = (double) nbuckets * 2;
+		dbuckets = Min(dbuckets, max_pointers);
+
+		nbuckets = (int) dbuckets;
+		nbuckets = pg_nextpower2_32(nbuckets);
 	}
 
 	Assert(nbuckets > 0);

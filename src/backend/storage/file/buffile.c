@@ -722,7 +722,14 @@ BufFileDumpBuffer(BufFile *file)
 	int			nbytesOriginal = file->nbytes;
 
 	/*
-	 * Compression logic: compress the buffer data if compression is enabled
+	 * Compress the data if requested for this temporary file (and if enabled
+	 * by the temp_file_compression GUC).
+	 *
+	 * The compressed data is written to the one shared compression buffer.
+	 * There's only a single compression operation at any given time, so one
+	 * buffer is enough.
+	 *
+	 * Then we simply point the "DataToWrite" buffer at the compressed buffer.
 	 */
 	if (file->compress)
 	{
@@ -740,8 +747,10 @@ BufFileDumpBuffer(BufFile *file)
 					int			cBufferSize = LZ4_compressBound(file->nbytes);
 
 					/*
-					 * Using stream compression would lead to the slight
-					 * improvement in compression ratio
+					 * XXX We might use lz4 stream compression here. Depending
+					 * on the data, that might improve the compression ratio.
+					 * The length is stored at the beginning, we'll fill it in
+					 * at the end.
 					 */
 					cSize = LZ4_compress_default(file->buffer.data,
 												 cData + sizeof(int), file->nbytes, cBufferSize);
@@ -754,54 +763,36 @@ BufFileDumpBuffer(BufFile *file)
 				break;
 		}
 
-		/* Check if compression was successful */
 		if (cSize <= 0)
 		{
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
-			{
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg_internal("compression failed, compressed size %d, original size %d",
+									 cSize, nbytesOriginal)));
+		}
 
-				int			marker;
-
-				/*
-				 * PGLZ compression failed, store uncompressed data with -1
-				 * marker
-				 */
-				memcpy(cData, &nbytesOriginal, sizeof(int));	/* First field: original
-																 * size */
-				marker = -1;	/* Second field: -1 = uncompressed marker */
-				memcpy(cData + sizeof(int), &marker, sizeof(int));
-				memcpy(cData + 2 * sizeof(int), file->buffer.data, nbytesOriginal);
-				file->nbytes = nbytesOriginal + 2 * sizeof(int);
-				DataToWrite = cData;
-			}
-			else
-			{
-				/* LZ4 compression failed, report error */
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg_internal("LZ4 compression failed: compressed size %d, original size %d",
-										 cSize, nbytesOriginal)));
-			}
+		/*
+		 * Write the compressed length(s) at the beginning of the buffer.
+		 * With lz4 we store just the compressed length, with pglz we store
+		 * both the compressed and raw lengths (because pglz case fails if
+		 * the compressed data would be larger, while lz4 always succeeds).
+		 *
+		 * XXX This seems like an unnecessary consistency. We could write
+		 * both lengths in both cases, to unify the cases. It won't affect
+		 * the efficiency too much, one more int seems negligible when
+		 * compressing BLCKSZ worth of data.
+		 */
+		memcpy(cData, &cSize, sizeof(int));
+		if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
+		{
+			memcpy(cData + sizeof(int), &nbytesOriginal, sizeof(int));
+			file->nbytes = cSize + 2 * sizeof(int);
 		}
 		else
 		{
-			/*
-			 * Write header in front of compressed data LZ4 format:
-			 * [compressed_size:int][compressed_data] PGLZ format:
-			 * [compressed_size:int][original_size:int][compressed_data]
-			 */
-			memcpy(cData, &cSize, sizeof(int));
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
-			{
-				memcpy(cData + sizeof(int), &nbytesOriginal, sizeof(int));
-				file->nbytes = cSize + 2 * sizeof(int);
-			}
-			else
-			{
-				file->nbytes = cSize + sizeof(int);
-			}
-			DataToWrite = cData;
+			file->nbytes = cSize + sizeof(int);
 		}
+		DataToWrite = cData;
 	}
 
 	/*
@@ -874,13 +865,14 @@ BufFileDumpBuffer(BufFile *file)
 	if (!file->compress)
 		file->curOffset -= (file->nbytes - file->pos);
 	else if (nbytesOriginal - file->pos != 0)
-
+	{
 		/*
 		 * curOffset must be corrected also if compression is enabled, nbytes
 		 * was changed by compression but we have to use the original value of
 		 * nbytes
 		 */
 		file->curOffset -= bytestowrite;
+	}
 	if (file->curOffset < 0)	/* handle possible segment crossing */
 	{
 		file->curFile--;

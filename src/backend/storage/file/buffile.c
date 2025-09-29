@@ -589,17 +589,20 @@ BufFileLoadBuffer(BufFile *file)
 						 file->curOffset,
 						 WAIT_EVENT_BUFFILE_READ);
 
-		/* Check if first read succeeded */
-		if (nread != sizeof(nbytes) && nread > 0)
+		/* did we read the length of the next buffer? */
+		if (nread == 0)
 		{
+			/* eof, nothing to do */
+		}
+		else if (nread != sizeof(nbytes))
+		{
+			/* unexpected number of bytes, also covers (nread < 0) */
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not read file \"%s\": %m",
 							FilePathName(thisfile))));
 		}
-
-		/* if not EOF let's continue */
-		if (nread > 0)
+		else
 		{
 			/* A long life buffer limits number of memory allocations */
 			char	   *buff = file->cBuffer;

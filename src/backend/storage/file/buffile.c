@@ -662,6 +662,9 @@ BufFileLoadBuffer(BufFile *file)
 			 * Read compressed data, curOffset differs with pos It reads less
 			 * data than it returns to caller So the curOffset must be
 			 * advanced here based on compressed size
+			 *
+			 * XXX I don't understand what this comment is meant to say. Maybe
+			 * it got broken by the earlier cleanup, not sure.
 			 */
 			nread = FileRead(thisfile,
 							 buff,

@@ -3019,6 +3019,7 @@ Tcl_NotifierProcs
 Tcl_Obj
 Tcl_Size
 Tcl_Time
+TempCompression
 TempNamespaceStatus
 TestDSMRegistryHashEntry
 TestDSMRegistryStruct

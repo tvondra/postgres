@@ -73,7 +73,7 @@
 #define MAX_PHYSICAL_FILESIZE	0x40000000
 #define BUFFILE_SEG_SIZE		(MAX_PHYSICAL_FILESIZE / BLCKSZ)
 
-int temp_file_compression = TEMP_NONE_COMPRESSION;
+int			temp_file_compression = TEMP_NONE_COMPRESSION;
 
 /*
  * This data structure represents a buffered file that consists of one or
@@ -115,9 +115,9 @@ struct BufFile
 	 */
 	PGAlignedBlock buffer;
 
-	bool		compress_tempfile; /* transparent compression mode */
-	bool		compress; /* State of usage file compression */
-	char		*cBuffer; /* compression buffer */
+	bool		compress_tempfile;	/* transparent compression mode */
+	bool		compress;		/* State of usage file compression */
+	char	   *cBuffer;		/* compression buffer */
 };
 
 static BufFile *makeBufFileCommon(int nfiles);
@@ -256,8 +256,8 @@ BufFile *
 BufFileCreateCompressTemp(bool interXact)
 {
 	static char *buff = NULL;
-	static int allocated_for_compression = TEMP_NONE_COMPRESSION;
-	static int allocated_size = 0;
+	static int	allocated_for_compression = TEMP_NONE_COMPRESSION;
+	static int	allocated_size = 0;
 	BufFile    *tmpBufFile = BufFileCreateTemp(interXact, true);
 
 	if (temp_file_compression != TEMP_NONE_COMPRESSION)
@@ -277,10 +277,8 @@ BufFileCreateCompressTemp(bool interXact)
 		}
 
 		/*
-		 * Allocate or reallocate buffer if needed:
-		 * - Buffer is NULL (first time)
-		 * - Compression type changed
-		 * - Current buffer is too small
+		 * Allocate or reallocate buffer if needed: - Buffer is NULL (first
+		 * time) - Compression type changed - Current buffer is too small
 		 */
 		if (buff == NULL ||
 			allocated_for_compression != temp_file_compression ||
@@ -544,8 +542,8 @@ BufFileLoadBuffer(BufFile *file)
 	{
 
 		/*
-		* Read whatever we can get, up to a full bufferload.
-		*/
+		 * Read whatever we can get, up to a full bufferload.
+		 */
 		file->nbytes = FileRead(thisfile,
 								file->buffer.data,
 								sizeof(file->buffer),
@@ -559,20 +557,23 @@ BufFileLoadBuffer(BufFile *file)
 					 errmsg("could not read file \"%s\": %m",
 							FilePathName(thisfile))));
 		}
-	/*
-	 * Read and decompress data from the temporary file
-	 * The first reading loads size of the compressed block
-	 * Second reading loads compressed data
-	 */
-	} else {
-		int nread;
-		int nbytes;
+
+		/*
+		 * Read and decompress data from the temporary file The first reading
+		 * loads size of the compressed block Second reading loads compressed
+		 * data
+		 */
+	}
+	else
+	{
+		int			nread;
+		int			nbytes;
 
 		nread = FileRead(thisfile,
-							&nbytes,
-							sizeof(nbytes),
-							file->curOffset,
-							WAIT_EVENT_BUFFILE_READ);
+						 &nbytes,
+						 sizeof(nbytes),
+						 file->curOffset,
+						 WAIT_EVENT_BUFFILE_READ);
 
 		/* Check if first read succeeded */
 		if (nread != sizeof(nbytes) && nread > 0)
@@ -586,44 +587,51 @@ BufFileLoadBuffer(BufFile *file)
 		if (nread > 0)
 		{
 			/* A long life buffer limits number of memory allocations */
-			char * buff = file->cBuffer;
-			int original_size = 0;
-			int header_advance = sizeof(nbytes);
+			char	   *buff = file->cBuffer;
+			int			original_size = 0;
+			int			header_advance = sizeof(nbytes);
 
 			Assert(file->cBuffer != NULL);
 
 			/* For PGLZ, read additional original size */
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION) {
-				int nread_orig = FileRead(thisfile,
-							&original_size,
-							sizeof(original_size),
-							file->curOffset + sizeof(nbytes),
-							WAIT_EVENT_BUFFILE_READ);
+			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
+			{
+				int			nread_orig = FileRead(thisfile,
+												  &original_size,
+												  sizeof(original_size),
+												  file->curOffset + sizeof(nbytes),
+												  WAIT_EVENT_BUFFILE_READ);
 
 				/* Check if second read succeeded */
-				if (nread_orig != sizeof(original_size) && nread_orig > 0) {
+				if (nread_orig != sizeof(original_size) && nread_orig > 0)
+				{
 					ereport(ERROR,
 							(errcode(ERRCODE_DATA_CORRUPTED),
 							 errmsg_internal("second read is corrupt: expected %d bytes, got %d bytes",
-											 (int)sizeof(original_size), nread_orig)));
+											 (int) sizeof(original_size), nread_orig)));
 				}
 
-				if (nread_orig <= 0) {
+				if (nread_orig <= 0)
+				{
 					file->nbytes = 0;
 					return;
 				}
 
 				/* Check if data is uncompressed (marker = -1) */
-				if (original_size == -1) {
+				if (original_size == -1)
+				{
 
-					int nread_data = 0;
+					int			nread_data = 0;
+
 					/* Uncompressed data: read directly into buffer */
-					file->curOffset += 2 * sizeof(int);  /* Skip both header fields */
+					file->curOffset += 2 * sizeof(int); /* Skip both header
+														 * fields */
 					nread_data = FileRead(thisfile,
-											file->buffer.data,
-											nbytes,  /* nbytes contains original size */
-											file->curOffset,
-											WAIT_EVENT_BUFFILE_READ);
+										  file->buffer.data,
+										  nbytes,	/* nbytes contains
+													 * original size */
+										  file->curOffset,
+										  WAIT_EVENT_BUFFILE_READ);
 					file->nbytes = nread_data;
 					file->curOffset += nread_data;
 					return;
@@ -633,31 +641,31 @@ BufFileLoadBuffer(BufFile *file)
 			}
 
 			/*
-			 * Read compressed data, curOffset differs with pos
-			 * It reads less data than it returns to caller
-			 * So the curOffset must be advanced here based on compressed size
+			 * Read compressed data, curOffset differs with pos It reads less
+			 * data than it returns to caller So the curOffset must be
+			 * advanced here based on compressed size
 			 */
 			file->curOffset += header_advance;
 
 			nread = FileRead(thisfile,
-							buff,
-							nbytes,
-							file->curOffset,
-							WAIT_EVENT_BUFFILE_READ);
+							 buff,
+							 nbytes,
+							 file->curOffset,
+							 WAIT_EVENT_BUFFILE_READ);
 
 			switch (temp_file_compression)
 			{
 				case TEMP_LZ4_COMPRESSION:
 #ifdef USE_LZ4
 					file->nbytes = LZ4_decompress_safe(buff,
-						file->buffer.data,nbytes,sizeof(file->buffer));
+													   file->buffer.data, nbytes, sizeof(file->buffer));
 #endif
 					break;
 
-							case TEMP_PGLZ_COMPRESSION:
-				file->nbytes = pglz_decompress(buff,nbytes,
-					file->buffer.data,original_size,false);
-				break;
+				case TEMP_PGLZ_COMPRESSION:
+					file->nbytes = pglz_decompress(buff, nbytes,
+												   file->buffer.data, original_size, false);
+					break;
 			}
 			file->curOffset += nread;
 
@@ -731,35 +739,49 @@ BufFileDumpBuffer(BufFile *file)
 		}
 
 		/* Check if compression was successful */
-		if (cSize <= 0) {
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION) {
+		if (cSize <= 0)
+		{
+			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
+			{
 
-				int marker;
-				/* PGLZ compression failed, store uncompressed data with -1 marker */
-				memcpy(cData, &nbytesOriginal, sizeof(int));  /* First field: original size */
-				marker = -1;  /* Second field: -1 = uncompressed marker */
+				int			marker;
+
+				/*
+				 * PGLZ compression failed, store uncompressed data with -1
+				 * marker
+				 */
+				memcpy(cData, &nbytesOriginal, sizeof(int));	/* First field: original
+																 * size */
+				marker = -1;	/* Second field: -1 = uncompressed marker */
 				memcpy(cData + sizeof(int), &marker, sizeof(int));
 				memcpy(cData + 2 * sizeof(int), file->buffer.data, nbytesOriginal);
 				file->nbytes = nbytesOriginal + 2 * sizeof(int);
 				DataToWrite = cData;
-			} else {
+			}
+			else
+			{
 				/* LZ4 compression failed, report error */
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg_internal("LZ4 compression failed: compressed size %d, original size %d",
 										 cSize, nbytesOriginal)));
 			}
-		} else {
+		}
+		else
+		{
 			/*
-			 * Write header in front of compressed data
-			 * LZ4 format: [compressed_size:int][compressed_data]
-			 * PGLZ format: [compressed_size:int][original_size:int][compressed_data]
+			 * Write header in front of compressed data LZ4 format:
+			 * [compressed_size:int][compressed_data] PGLZ format:
+			 * [compressed_size:int][original_size:int][compressed_data]
 			 */
 			memcpy(cData, &cSize, sizeof(int));
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION) {
+			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
+			{
 				memcpy(cData + sizeof(int), &nbytesOriginal, sizeof(int));
 				file->nbytes = cSize + 2 * sizeof(int);
-			} else {
+			}
+			else
+			{
 				file->nbytes = cSize + sizeof(int);
 			}
 			DataToWrite = cData;
@@ -836,6 +858,7 @@ BufFileDumpBuffer(BufFile *file)
 	if (!file->compress)
 		file->curOffset -= (file->nbytes - file->pos);
 	else if (nbytesOriginal - file->pos != 0)
+
 		/*
 		 * curOffset must be corrected also if compression is enabled, nbytes
 		 * was changed by compression but we have to use the original value of
@@ -879,11 +902,11 @@ BufFileReadCommon(BufFile *file, void *ptr, size_t size, bool exact, bool eofOK)
 	{
 		if (file->pos >= file->nbytes)
 		{
-			/* Try to load more data into buffer.
+			/*
+			 * Try to load more data into buffer.
 			 *
-			 * curOffset is moved within BufFileLoadBuffer
-			 * because stored data size differs from loaded/
-			 * decompressed size
+			 * curOffset is moved within BufFileLoadBuffer because stored data
+			 * size differs from loaded/ decompressed size
 			 */
 			if (!file->compress)
 				file->curOffset += file->pos;

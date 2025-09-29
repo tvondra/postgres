@@ -206,13 +206,6 @@ extendBufFile(BufFile *file)
  * Note: if interXact is true, the caller had better be calling us in a
  * memory context, and with a resource owner, that will survive across
  * transaction boundaries.
- *
- * If compress is true the temporary files will be compressed before
- * writing on disk.
- *
- * Note: The compression does not support random access. Only the hash joins
- * use it for now. The seek operation other than seek to the beginning of the
- * buffile will corrupt temporary data offsets.
  */
 BufFile *
 BufFileCreateTemp(bool interXact)
@@ -241,9 +234,26 @@ BufFileCreateTemp(bool interXact)
 }
 
 /*
- * Wrapper for BufFileCreateTemp
- * We want to limit the number of memory allocations for the compression buffer,
- * only one buffer for all compression operations is enough
+ * BufFileCreateCompressTemp
+ *		Create a temporary file with transparent compression.
+ *
+ * The temporary files will use compression, depending on the current value of
+ * temp_file_compression GUC.
+ *
+ * Note: Compressed files do not support random access. A seek operation other
+ * than seek to the beginning of the buffile will corrupt data.
+ *
+ * Note: The compression algorithm is determined by temp_file_compression GUC.
+ * If set to "none" (TEMP_NONE_COMPRESSION), the file is not compressed.
+ *
+ * Note: We want to limit the number of memory allocations for the compression
+ * buffer. A single buffer is enough, compression happens block at a time.
+ *
+ * XXX Is the allocation optimization worth it? Do we want to allocate stuff
+ * in TopMemoryContext?
+ *
+ * XXX We should prevent such silent data corruption, by errorr-ing out after
+ * incompatible seek.
  */
 BufFile *
 BufFileCreateCompressTemp(bool interXact)

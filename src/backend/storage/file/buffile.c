@@ -607,9 +607,11 @@ BufFileLoadBuffer(BufFile *file)
 			/* read length of compressed data, read and decompress data */
 			char	   *buff = file->cBuffer;
 			int			original_size = 0;
-			int			header_advance = sizeof(nbytes);
 
 			Assert(file->cBuffer != NULL);
+
+			/* advance past the length field */
+			file->curOffset += sizeof(nbytes);
 
 			/* For PGLZ, read additional original size */
 			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
@@ -617,7 +619,7 @@ BufFileLoadBuffer(BufFile *file)
 				int			nread_orig = FileRead(thisfile,
 												  &original_size,
 												  sizeof(original_size),
-												  file->curOffset + sizeof(nbytes),
+												  file->curOffset,
 												  WAIT_EVENT_BUFFILE_READ);
 
 				/*
@@ -633,28 +635,27 @@ BufFileLoadBuffer(BufFile *file)
 									FilePathName(thisfile))));
 				}
 
+				/* advance past the second length header */
+				file->curOffset += sizeof(original_size);
 
 				/* Check if data is uncompressed (marker = -1) */
 				if (original_size == -1)
 				{
-
-					int			nread_data = 0;
-
-					/* Uncompressed data: read directly into buffer */
-					file->curOffset += 2 * sizeof(int); /* Skip both header
-														 * fields */
-					nread_data = FileRead(thisfile,
-										  file->buffer.data,
-										  nbytes,	/* nbytes contains
+					int nread_data = FileRead(thisfile,
+											  file->buffer.data,
+											  nbytes,	/* nbytes contains
 													 * original size */
-										  file->curOffset,
-										  WAIT_EVENT_BUFFILE_READ);
+											  file->curOffset,
+											  WAIT_EVENT_BUFFILE_READ);
 					file->nbytes = nread_data;
 					file->curOffset += nread_data;
+
+					/*
+					 * FIXME this is wrong, because it skips the track_io_timing
+					 * stuff at the end, etc.
+					 */
 					return;
 				}
-
-				header_advance = 2 * sizeof(int);
 			}
 
 			/*
@@ -662,8 +663,6 @@ BufFileLoadBuffer(BufFile *file)
 			 * data than it returns to caller So the curOffset must be
 			 * advanced here based on compressed size
 			 */
-			file->curOffset += header_advance;
-
 			nread = FileRead(thisfile,
 							 buff,
 							 nbytes,

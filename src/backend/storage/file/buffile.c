@@ -282,13 +282,13 @@ BufFileCreateCompressTemp(bool interXact)
 		 * - Compression type changed
 		 * - Current buffer is too small
 		 */
-		if (buff == NULL || 
+		if (buff == NULL ||
 			allocated_for_compression != temp_file_compression ||
 			allocated_size < size)
 		{
 			if (buff != NULL)
 				pfree(buff);
-			
+
 			/*
 			 * Persistent buffer for all temporary file compressions
 			 */
@@ -573,7 +573,7 @@ BufFileLoadBuffer(BufFile *file)
 							sizeof(nbytes),
 							file->curOffset,
 							WAIT_EVENT_BUFFILE_READ);
-		
+
 		/* Check if first read succeeded */
 		if (nread != sizeof(nbytes) && nread > 0)
 		{
@@ -581,7 +581,7 @@ BufFileLoadBuffer(BufFile *file)
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg_internal("first read is broken")));
 		}
-		
+
 		/* if not EOF let's continue */
 		if (nread > 0)
 		{
@@ -604,8 +604,8 @@ BufFileLoadBuffer(BufFile *file)
 				if (nread_orig != sizeof(original_size) && nread_orig > 0) {
 					ereport(ERROR,
 							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg_internal("second read is corrupt: expected %d bytes, got %d bytes", 
-							 				 (int)sizeof(original_size), nread_orig)));
+							 errmsg_internal("second read is corrupt: expected %d bytes, got %d bytes",
+											 (int)sizeof(original_size), nread_orig)));
 				}
 
 				if (nread_orig <= 0) {
@@ -616,7 +616,7 @@ BufFileLoadBuffer(BufFile *file)
 				/* Check if data is uncompressed (marker = -1) */
 				if (original_size == -1) {
 
-                    int nread_data = 0;
+					int nread_data = 0;
 					/* Uncompressed data: read directly into buffer */
 					file->curOffset += 2 * sizeof(int);  /* Skip both header fields */
 					nread_data = FileRead(thisfile,
@@ -734,7 +734,7 @@ BufFileDumpBuffer(BufFile *file)
 		if (cSize <= 0) {
 			if (temp_file_compression == TEMP_PGLZ_COMPRESSION) {
 
-                int marker;
+				int marker;
 				/* PGLZ compression failed, store uncompressed data with -1 marker */
 				memcpy(cData, &nbytesOriginal, sizeof(int));  /* First field: original size */
 				marker = -1;  /* Second field: -1 = uncompressed marker */
@@ -746,8 +746,8 @@ BufFileDumpBuffer(BufFile *file)
 				/* LZ4 compression failed, report error */
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg_internal("LZ4 compression failed: compressed size %d, original size %d", 
-						 				 cSize, nbytesOriginal)));
+						 errmsg_internal("LZ4 compression failed: compressed size %d, original size %d",
+										 cSize, nbytesOriginal)));
 			}
 		} else {
 			/*

@@ -604,7 +604,7 @@ BufFileLoadBuffer(BufFile *file)
 		}
 		else
 		{
-			/* A long life buffer limits number of memory allocations */
+			/* read length of compressed data, read and decompress data */
 			char	   *buff = file->cBuffer;
 			int			original_size = 0;
 			int			header_advance = sizeof(nbytes);

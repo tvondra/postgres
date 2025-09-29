@@ -115,7 +115,6 @@ struct BufFile
 	 */
 	PGAlignedBlock buffer;
 
-	bool		compress_tempfile;	/* transparent compression mode */
 	bool		compress;		/* State of usage file compression */
 	char	   *cBuffer;		/* compression buffer */
 };
@@ -144,7 +143,6 @@ makeBufFileCommon(int nfiles)
 	file->curOffset = 0;
 	file->pos = 0;
 	file->nbytes = 0;
-	file->compress_tempfile = false;
 	file->compress = false;
 	file->cBuffer = NULL;
 

@@ -215,7 +215,7 @@ extendBufFile(BufFile *file)
  * buffile will corrupt temporary data offsets.
  */
 BufFile *
-BufFileCreateTemp(bool interXact, bool compress)
+BufFileCreateTemp(bool interXact)
 {
 	BufFile    *file;
 	File		pfile;
@@ -237,11 +237,6 @@ BufFileCreateTemp(bool interXact, bool compress)
 	file = makeBufFile(pfile);
 	file->isInterXact = interXact;
 
-	if (temp_file_compression != TEMP_NONE_COMPRESSION)
-	{
-		file->compress = compress;
-	}
-
 	return file;
 }
 
@@ -256,11 +251,13 @@ BufFileCreateCompressTemp(bool interXact)
 	static char *buff = NULL;
 	static int	allocated_for_compression = TEMP_NONE_COMPRESSION;
 	static int	allocated_size = 0;
-	BufFile    *tmpBufFile = BufFileCreateTemp(interXact, true);
+	BufFile    *tmpBufFile = BufFileCreateTemp(interXact);
 
 	if (temp_file_compression != TEMP_NONE_COMPRESSION)
 	{
 		int			size = 0;
+
+		tmpBufFile->compress = true;
 
 		switch (temp_file_compression)
 		{
@@ -292,8 +289,10 @@ BufFileCreateCompressTemp(bool interXact)
 			allocated_for_compression = temp_file_compression;
 			allocated_size = size;
 		}
+
+		tmpBufFile->cBuffer = buff;
 	}
-	tmpBufFile->cBuffer = buff;
+
 	return tmpBufFile;
 }
 

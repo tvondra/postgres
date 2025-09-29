@@ -860,7 +860,7 @@ tuplestore_puttuple_common(Tuplestorestate *state, void *tuple)
 			 */
 			oldcxt = MemoryContextSwitchTo(state->context->parent);
 
-			state->myfile = BufFileCreateTemp(state->interXact, false);
+			state->myfile = BufFileCreateTemp(state->interXact);
 
 			MemoryContextSwitchTo(oldcxt);
 

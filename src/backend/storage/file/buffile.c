@@ -620,20 +620,19 @@ BufFileLoadBuffer(BufFile *file)
 												  file->curOffset + sizeof(nbytes),
 												  WAIT_EVENT_BUFFILE_READ);
 
-				/* Check if second read succeeded */
-				if (nread_orig != sizeof(original_size) && nread_orig > 0)
+				/*
+				 * Did we read the second (raw) length? We should not get an
+				 * EOF here, we've already read the first length.
+				 */
+				if ((nread_orig == 0) || (nread_orig != sizeof(original_size)))
 				{
+					/* also covers (nread_orig < 0) */
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not read file \"%s\": %m",
 									FilePathName(thisfile))));
 				}
 
-				if (nread_orig <= 0)
-				{
-					file->nbytes = 0;
-					return;
-				}
 
 				/* Check if data is uncompressed (marker = -1) */
 				if (original_size == -1)

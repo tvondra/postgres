@@ -261,13 +261,11 @@ BufFileCreateCompressTemp(bool interXact)
 	static char *buff = NULL;
 	static int	allocated_for_compression = TEMP_NONE_COMPRESSION;
 	static int	allocated_size = 0;
-	BufFile    *tmpBufFile = BufFileCreateTemp(interXact);
+	BufFile    *file = BufFileCreateTemp(interXact);
 
 	if (temp_file_compression != TEMP_NONE_COMPRESSION)
 	{
 		int			size = 0;
-
-		tmpBufFile->compress = true;
 
 		switch (temp_file_compression)
 		{
@@ -282,28 +280,40 @@ BufFileCreateCompressTemp(bool interXact)
 		}
 
 		/*
-		 * Allocate or reallocate buffer if needed: - Buffer is NULL (first
-		 * time) - Compression type changed - Current buffer is too small
+		 * Allocate or reallocate buffer if needed - first call, compression
+		 * method changed, or the buffer is too small.
+		 *
+		 * XXX Can the buffer be too small if the method did not change? Does the
+		 * method matter, or just the size?
 		 */
-		if (buff == NULL ||
-			allocated_for_compression != temp_file_compression ||
-			allocated_size < size)
+		if ((buff == NULL) ||
+			(allocated_for_compression != temp_file_compression) ||
+			(allocated_size < size))
 		{
+			/*
+			 * FIXME Isn't this pfree wrong? How do we know the buffer is not
+			 * used by some existing temp file?
+			 */
 			if (buff != NULL)
 				pfree(buff);
 
 			/*
-			 * Persistent buffer for all temporary file compressions
+			 * Persistent buffer for all temporary file compressions.
 			 */
 			buff = MemoryContextAlloc(TopMemoryContext, size);
 			allocated_for_compression = temp_file_compression;
 			allocated_size = size;
 		}
 
-		tmpBufFile->cBuffer = buff;
+		file->compress = true;
+		file->cBuffer = buff;
 	}
 
-	return tmpBufFile;
+	/* compression with buffer, or no compression and no buffer */
+	Assert((!file->compress && file->cBuffer == NULL) ||
+		   (file->compress && file->cBuffer != NULL));
+
+	return file;
 }
 
 /*

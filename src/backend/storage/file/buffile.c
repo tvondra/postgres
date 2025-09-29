@@ -641,6 +641,7 @@ BufFileLoadBuffer(BufFile *file)
 				/* Check if data is uncompressed (marker = -1) */
 				if (original_size == -1)
 				{
+					/* FIXME this is missing error handling */
 					int nread_data = FileRead(thisfile,
 											  file->buffer.data,
 											  nbytes,	/* nbytes contains

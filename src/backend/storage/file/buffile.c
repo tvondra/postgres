@@ -119,6 +119,23 @@ struct BufFile
 	char	   *cBuffer;		/* compression buffer */
 };
 
+/*
+ * Header written right before each chunk of data with compression enabled.
+ * The 'len' is the length of the data buffer written right after the header,
+ * and 'raw_len' is the length of uncompressed data. If the data ends up not
+ * being compressed (e.g. when pglz does not reach the compression ratio),
+ * the raw_len is set to -1 and the len is the raw (uncompressed) length.
+ *
+ * To make things simpler, we write these headers even for mathods that do
+ * not fail (or rather when they fail, it's a proper error). The space for
+ * an extra integer seems negligible.
+ */
+typedef struct CompressHeader
+{
+	int			len;		/* data length (compressed, excluding header) */
+	int			raw_len;	/* raw length (-1: not compressed) */
+} CompressHeader;
+
 static BufFile *makeBufFileCommon(int nfiles);
 static BufFile *makeBufFile(File firstfile);
 static void extendBufFile(BufFile *file);
@@ -271,11 +288,11 @@ BufFileCreateCompressTemp(bool interXact)
 		{
 			case TEMP_LZ4_COMPRESSION:
 #ifdef USE_LZ4
-				size = LZ4_compressBound(BLCKSZ) + sizeof(int);
+				size = LZ4_compressBound(BLCKSZ) + sizeof(CompressHeader);
 #endif
 				break;
 			case TEMP_PGLZ_COMPRESSION:
-				size = pglz_maximum_compressed_size(BLCKSZ, BLCKSZ) + 2 * sizeof(int);
+				size = pglz_maximum_compressed_size(BLCKSZ, BLCKSZ) + sizeof(CompressHeader);
 				break;
 		}
 
@@ -578,14 +595,14 @@ BufFileLoadBuffer(BufFile *file)
 	{
 		/*
 		 * Read and decompress data from a temporary file. We first read the
-		 * length of compressed data, then the compressed data itself.
+		 * header with compressed/raw lengths, and then the compressed data.
 		 */
 		int			nread;
-		int			nbytes;
+		CompressHeader	header;
 
 		nread = FileRead(thisfile,
-						 &nbytes,
-						 sizeof(nbytes),
+						 &header,
+						 sizeof(header),
 						 file->curOffset,
 						 WAIT_EVENT_BUFFILE_READ);
 
@@ -594,7 +611,7 @@ BufFileLoadBuffer(BufFile *file)
 		{
 			/* eof, nothing to do */
 		}
-		else if (nread != sizeof(nbytes))
+		else if (nread != sizeof(header))
 		{
 			/* unexpected number of bytes, also covers (nread < 0) */
 			ereport(ERROR,
@@ -604,97 +621,87 @@ BufFileLoadBuffer(BufFile *file)
 		}
 		else
 		{
-			/* read length of compressed data, read and decompress data */
+			/* read length of compressed data, read (and decompress) data */
 			char	   *buff = file->cBuffer;
-			int			original_size = 0;
 
 			Assert(file->cBuffer != NULL);
 
 			/* advance past the length field */
-			file->curOffset += sizeof(nbytes);
+			file->curOffset += sizeof(header);
 
-			/* For PGLZ, read additional original size */
-			if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
+			/*
+			 * raw_len==-1 means the data was not compressed after all, which
+			 * can happen e.g. for non-compressible data with pglz. In that
+			 * case just copy the data in place. Otherwise do the decompression.
+			 *
+			 * XXX Maybe we should just do the FileRead first, and then either
+			 * decompress or memcpy() for raw_len=-1. That'd be an extra memcpy,
+			 * but it'd make the code simpler (this ways we do the error checks
+			 * twice, for each branch).
+			 */
+			if (header.raw_len == -1)
 			{
-				int			nread_orig = FileRead(thisfile,
-												  &original_size,
-												  sizeof(original_size),
-												  file->curOffset,
-												  WAIT_EVENT_BUFFILE_READ);
-
-				/*
-				 * Did we read the second (raw) length? We should not get an
-				 * EOF here, we've already read the first length.
-				 */
-				if ((nread_orig == 0) || (nread_orig != sizeof(original_size)))
+				nread = FileRead(thisfile,
+								 file->buffer.data,
+								 header.len,
+								 file->curOffset,
+								 WAIT_EVENT_BUFFILE_READ);
+				if (nread != header.len)
 				{
-					/* also covers (nread_orig < 0) */
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not read file \"%s\": %m",
 									FilePathName(thisfile))));
 				}
 
-				/* advance past the second length header */
-				file->curOffset += sizeof(original_size);
-
-				/* Check if data is uncompressed (marker = -1) */
-				if (original_size == -1)
-				{
-					/* FIXME this is missing error handling */
-					int nread_data = FileRead(thisfile,
-											  file->buffer.data,
-											  nbytes,	/* nbytes contains
-													 * original size */
-											  file->curOffset,
-											  WAIT_EVENT_BUFFILE_READ);
-					file->nbytes = nread_data;
-					file->curOffset += nread_data;
-
-					/*
-					 * FIXME this is wrong, because it skips the track_io_timing
-					 * stuff at the end, etc.
-					 */
-					return;
-				}
+				file->nbytes = nread;
+				file->curOffset += nread;
 			}
-
-			/*
-			 * Read compressed data, curOffset differs with pos It reads less
-			 * data than it returns to caller So the curOffset must be
-			 * advanced here based on compressed size
-			 *
-			 * XXX I don't understand what this comment is meant to say. Maybe
-			 * it got broken by the earlier cleanup, not sure.
-			 */
-			nread = FileRead(thisfile,
-							 buff,
-							 nbytes,
-							 file->curOffset,
-							 WAIT_EVENT_BUFFILE_READ);
-
-			switch (temp_file_compression)
+			else
 			{
-				case TEMP_LZ4_COMPRESSION:
+				/*
+				 * Read compressed data into the separate buffer, and then
+				 * decompress into the target file buffer.
+				 */
+				nread = FileRead(thisfile,
+								 buff,
+								 header.len,
+								 file->curOffset,
+								 WAIT_EVENT_BUFFILE_READ);
+				if (nread != header.len)
+				{
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not read file \"%s\": %m",
+									FilePathName(thisfile))));
+				}
+
+				switch (temp_file_compression)
+				{
+					case TEMP_LZ4_COMPRESSION:
 #ifdef USE_LZ4
-					file->nbytes = LZ4_decompress_safe(buff,
-													   file->buffer.data, nbytes, sizeof(file->buffer));
+						file->nbytes = LZ4_decompress_safe(buff,
+														   file->buffer.data, header.len,
+														   sizeof(file->buffer));
 #endif
-					break;
+						break;
 
-				case TEMP_PGLZ_COMPRESSION:
-					file->nbytes = pglz_decompress(buff, nbytes,
-												   file->buffer.data, original_size, false);
-					break;
+					case TEMP_PGLZ_COMPRESSION:
+						file->nbytes = pglz_decompress(buff, header.len,
+													   file->buffer.data, header.raw_len, false);
+						break;
+				}
+				file->curOffset += nread;
+
+				if (file->nbytes < 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg_internal("compressed data is corrupt")));
+
+				/* should have got the expected length */
+				Assert(file->nbytes == header.raw_len);
 			}
-			file->curOffset += nread;
-
-			if (file->nbytes < 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg_internal("compressed lz4 data is corrupt")));
 		}
-
 	}
 
 	if (track_io_timing)
@@ -734,14 +741,22 @@ BufFileDumpBuffer(BufFile *file)
 	 * buffer is enough.
 	 *
 	 * Then we simply point the "DataToWrite" buffer at the compressed buffer.
+	 *
+	 * XXX I'm not 100% happy with all the variables here, there seems to be
+	 * more than necessary.
 	 */
 	if (file->compress)
 	{
 		char	   *cData;
 		int			cSize = 0;
+		CompressHeader	header;
 
 		Assert(file->cBuffer != NULL);
 		cData = file->cBuffer;
+
+		/* initialize the header for compression */
+		header.len = -1;
+		header.raw_len = nbytesOriginal;
 
 		switch (temp_file_compression)
 		{
@@ -757,45 +772,49 @@ BufFileDumpBuffer(BufFile *file)
 					 * at the end.
 					 */
 					cSize = LZ4_compress_default(file->buffer.data,
-												 cData + sizeof(int), file->nbytes, cBufferSize);
+												 cData + sizeof(CompressHeader),
+												 file->nbytes, cBufferSize);
+					if (cSize < 0)
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("compression failed, compressed size %d, original size %d",
+												 cSize, nbytesOriginal)));
+					}
 #endif
 					break;
 				}
 			case TEMP_PGLZ_COMPRESSION:
 				cSize = pglz_compress(file->buffer.data, file->nbytes,
-									  cData + 2 * sizeof(int), PGLZ_strategy_always);
+									  cData + sizeof(CompressHeader),
+									  PGLZ_strategy_always);
+
+				/*
+				 * pglz returns -1 for non-compressible data. In that case
+				 * just copy the raw data into the output buffer.
+				 */
+				if (cSize == -1)
+				{
+					memcpy(cData + sizeof(CompressHeader), file->buffer.data,
+						   header.raw_len);
+
+					cSize = header.raw_len;
+					header.raw_len = -1;
+				}
 				break;
 		}
 
-		if (cSize <= 0)
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg_internal("compression failed, compressed size %d, original size %d",
-									 cSize, nbytesOriginal)));
-		}
+		Assert(cSize != -1);
+		header.len = cSize;
 
 		/*
-		 * Write the compressed length(s) at the beginning of the buffer.
-		 * With lz4 we store just the compressed length, with pglz we store
-		 * both the compressed and raw lengths (because pglz case fails if
-		 * the compressed data would be larger, while lz4 always succeeds).
-		 *
-		 * XXX This seems like an unnecessary consistency. We could write
-		 * both lengths in both cases, to unify the cases. It won't affect
-		 * the efficiency too much, one more int seems negligible when
-		 * compressing BLCKSZ worth of data.
+		 * Write the header with compressed length at the beginning of the
+		 * buffer. We store both the compressed and raw lengths, and use
+		 * raw_len=-1 when the data was not compressed after all.
 		 */
-		memcpy(cData, &cSize, sizeof(int));
-		if (temp_file_compression == TEMP_PGLZ_COMPRESSION)
-		{
-			memcpy(cData + sizeof(int), &nbytesOriginal, sizeof(int));
-			file->nbytes = cSize + 2 * sizeof(int);
-		}
-		else
-		{
-			file->nbytes = cSize + sizeof(int);
-		}
+		memcpy(cData, &header, sizeof(CompressHeader));
+		file->nbytes = header.len + sizeof(CompressHeader);
+
 		DataToWrite = cData;
 	}
 

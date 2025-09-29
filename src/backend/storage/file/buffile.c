@@ -557,7 +557,6 @@ BufFileLoadBuffer(BufFile *file)
 
 	if (!file->compress)
 	{
-
 		/*
 		 * Read whatever we can get, up to a full bufferload.
 		 */
@@ -574,15 +573,13 @@ BufFileLoadBuffer(BufFile *file)
 					 errmsg("could not read file \"%s\": %m",
 							FilePathName(thisfile))));
 		}
-
-		/*
-		 * Read and decompress data from the temporary file The first reading
-		 * loads size of the compressed block Second reading loads compressed
-		 * data
-		 */
 	}
 	else
 	{
+		/*
+		 * Read and decompress data from a temporary file. We first read the
+		 * length of compressed data, then the compressed data itself.
+		 */
 		int			nread;
 		int			nbytes;
 
@@ -596,8 +593,9 @@ BufFileLoadBuffer(BufFile *file)
 		if (nread != sizeof(nbytes) && nread > 0)
 		{
 			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg_internal("first read is broken")));
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m",
+							FilePathName(thisfile))));
 		}
 
 		/* if not EOF let's continue */
@@ -623,9 +621,9 @@ BufFileLoadBuffer(BufFile *file)
 				if (nread_orig != sizeof(original_size) && nread_orig > 0)
 				{
 					ereport(ERROR,
-							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg_internal("second read is corrupt: expected %d bytes, got %d bytes",
-											 (int) sizeof(original_size), nread_orig)));
+							(errcode_for_file_access(),
+							 errmsg("could not read file \"%s\": %m",
+									FilePathName(thisfile))));
 				}
 
 				if (nread_orig <= 0)

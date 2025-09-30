@@ -774,9 +774,10 @@ BufFileDumpBuffer(BufFile *file)
 					 * The length is stored at the beginning, we'll fill it in
 					 * at the end.
 					 */
-					cSize = LZ4_compress_default(file->buffer.data,
-												 cData + sizeof(CompressHeader),
-												 file->nbytes, cBufferSize);
+					cSize = LZ4_compress_fast(file->buffer.data,
+											  cData + sizeof(CompressHeader),
+											  file->nbytes, cBufferSize,
+											  10);	/* somewhat higher value */
 					if (cSize == 0)
 					{
 						ereport(ERROR,

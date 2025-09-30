@@ -777,7 +777,7 @@ BufFileDumpBuffer(BufFile *file)
 					cSize = LZ4_compress_default(file->buffer.data,
 												 cData + sizeof(CompressHeader),
 												 file->nbytes, cBufferSize);
-					if (cSize < 0)
+					if (cSize == 0)
 					{
 						ereport(ERROR,
 								(errcode(ERRCODE_DATA_CORRUPTED),

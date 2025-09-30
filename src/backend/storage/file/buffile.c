@@ -60,10 +60,15 @@
 #include <lz4.h>
 #endif
 
+#ifdef HAVE_LIBZ
+#include <zlib.h>
+#endif
+
 /* Compression types */
 #define TEMP_NONE_COMPRESSION  0
 #define TEMP_PGLZ_COMPRESSION  1
 #define TEMP_LZ4_COMPRESSION   2
+#define TEMP_GZIP_COMPRESSION  3
 
 /*
  * We break BufFiles into gigabyte-sized segments, regardless of RELSEG_SIZE.
@@ -294,6 +299,15 @@ BufFileCreateCompressTemp(bool interXact)
 				size = LZ4_compressBound(BLCKSZ) + sizeof(CompressHeader);
 #endif
 				break;
+
+			case TEMP_GZIP_COMPRESSION:
+				{
+#ifdef HAVE_LIBZ
+					size = compressBound(BLCKSZ) + sizeof(CompressHeader);
+#endif
+					break;
+				}
+
 			case TEMP_PGLZ_COMPRESSION:
 				size = pglz_maximum_compressed_size(BLCKSZ, BLCKSZ) + sizeof(CompressHeader);
 				break;
@@ -689,6 +703,20 @@ BufFileLoadBuffer(BufFile *file)
 #endif
 						break;
 
+					case TEMP_GZIP_COMPRESSION:
+#ifdef HAVE_LIBZ
+						int		ret;
+						size_t	len = sizeof(file->buffer);
+
+						ret = uncompress((uint8 *) file->buffer.data, &len,
+										 (uint8 *) buff, header.len);
+						if (ret != Z_OK)
+							elog(ERROR, "uncompress failed");
+
+						file->nbytes = len;
+#endif
+						break;
+
 					case TEMP_PGLZ_COMPRESSION:
 						file->nbytes = pglz_decompress(buff, header.len,
 													   file->buffer.data, header.raw_len, false);
@@ -785,6 +813,28 @@ BufFileDumpBuffer(BufFile *file)
 								 errmsg_internal("compression failed, compressed size %d, original size %d",
 												 cSize, nbytesOriginal)));
 					}
+#endif
+					break;
+				}
+			case TEMP_GZIP_COMPRESSION:
+				{
+#ifdef HAVE_LIBZ
+					int			ret;
+					size_t		len = compressBound(file->nbytes);
+
+					/* XXX maybe lower level? the default is pretty slow ... */
+					ret = compress2((uint8 *) (cData + sizeof(CompressHeader)), &len,
+									(uint8 *) file->buffer.data, file->nbytes,
+									Z_DEFAULT_COMPRESSION);
+					if (ret != Z_OK)
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("compression failed, compressed size %d, original size %d",
+												 cSize, nbytesOriginal)));
+					}
+
+					cSize = len;
 #endif
 					break;
 				}

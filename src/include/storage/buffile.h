@@ -36,7 +36,8 @@ typedef enum
 {
 	TEMP_NONE_COMPRESSION,
 	TEMP_PGLZ_COMPRESSION,
-	TEMP_LZ4_COMPRESSION
+	TEMP_LZ4_COMPRESSION,
+	TEMP_GZIP_COMPRESSION
 } TempCompression;
 
 extern PGDLLIMPORT int temp_file_compression;

@@ -474,6 +474,9 @@ static const struct config_enum_entry temp_file_compression_options[] = {
 #ifdef  USE_LZ4
 	{"lz4", TEMP_LZ4_COMPRESSION, false},
 #endif
+#ifdef  HAVE_LIBZ
+	{"gzip", TEMP_GZIP_COMPRESSION, false},
+#endif
 	{NULL, 0, false}
 };
 

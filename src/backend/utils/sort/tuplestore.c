@@ -860,7 +860,13 @@ tuplestore_puttuple_common(Tuplestorestate *state, void *tuple)
 			 */
 			oldcxt = MemoryContextSwitchTo(state->context->parent);
 
-			state->myfile = BufFileCreateTemp(state->interXact);
+			/*
+			 * If requested random access, can't compress the temp file.
+			 */
+			if ((state->eflags & EXEC_FLAG_BACKWARD) != 0)
+				state->myfile = BufFileCreateTemp(state->interXact);
+			else
+				state->myfile = BufFileCreateCompressTemp(state->interXact);
 
 			MemoryContextSwitchTo(oldcxt);
 

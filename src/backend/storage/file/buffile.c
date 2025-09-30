@@ -73,6 +73,9 @@
 #define MAX_PHYSICAL_FILESIZE	0x40000000
 #define BUFFILE_SEG_SIZE		(MAX_PHYSICAL_FILESIZE / BLCKSZ)
 
+/*
+ * Optional transparent compression of temporary files. Disaled by default.
+ */
 int			temp_file_compression = TEMP_NONE_COMPRESSION;
 
 /*
@@ -115,7 +118,7 @@ struct BufFile
 	 */
 	PGAlignedBlock buffer;
 
-	bool		compress;		/* State of usage file compression */
+	int			compress;		/* enabled compression for the file */
 	char	   *cBuffer;		/* compression buffer */
 };
 
@@ -160,7 +163,7 @@ makeBufFileCommon(int nfiles)
 	file->curOffset = 0;
 	file->pos = 0;
 	file->nbytes = 0;
-	file->compress = false;
+	file->compress = TEMP_NONE_COMPRESSION;
 	file->cBuffer = NULL;
 
 	return file;
@@ -322,7 +325,7 @@ BufFileCreateCompressTemp(bool interXact)
 			allocated_size = size;
 		}
 
-		file->compress = true;
+		file->compress = temp_file_compression;
 		file->cBuffer = buff;
 	}
 
@@ -572,7 +575,7 @@ BufFileLoadBuffer(BufFile *file)
 	else
 		INSTR_TIME_SET_ZERO(io_start);
 
-	if (!file->compress)
+	if (file->compress == TEMP_NONE_COMPRESSION)
 	{
 		/*
 		 * Read whatever we can get, up to a full bufferload.
@@ -676,7 +679,7 @@ BufFileLoadBuffer(BufFile *file)
 									FilePathName(thisfile))));
 				}
 
-				switch (temp_file_compression)
+				switch (file->compress)
 				{
 					case TEMP_LZ4_COMPRESSION:
 #ifdef USE_LZ4
@@ -745,7 +748,7 @@ BufFileDumpBuffer(BufFile *file)
 	 * XXX I'm not 100% happy with all the variables here, there seems to be
 	 * more than necessary.
 	 */
-	if (file->compress)
+	if (file->compress != TEMP_NONE_COMPRESSION)
 	{
 		char	   *cData;
 		int			cSize = 0;
@@ -758,7 +761,7 @@ BufFileDumpBuffer(BufFile *file)
 		header.len = -1;
 		header.raw_len = nbytesOriginal;
 
-		switch (temp_file_compression)
+		switch (file->compress)
 		{
 			case TEMP_LZ4_COMPRESSION:
 				{

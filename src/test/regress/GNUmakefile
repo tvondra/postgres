@@ -98,6 +98,10 @@ ifeq ($(with_lz4),yes)
 override EXTRA_TESTS := $(EXTRA_TESTS) join_hash_lz4
 endif
 
+ifeq ($(with_zlib),yes)
+override EXTRA_TESTS := $(EXTRA_TESTS) join_hash_gzip
+endif
+
 check: all
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 

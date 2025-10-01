@@ -64,11 +64,16 @@
 #include <zlib.h>
 #endif
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 /* Compression types */
 #define TEMP_NONE_COMPRESSION  0
 #define TEMP_PGLZ_COMPRESSION  1
 #define TEMP_LZ4_COMPRESSION   2
 #define TEMP_GZIP_COMPRESSION  3
+#define TEMP_ZSTD_COMPRESSION  4
 
 /*
  * We break BufFiles into gigabyte-sized segments, regardless of RELSEG_SIZE.
@@ -304,6 +309,14 @@ BufFileCreateCompressTemp(bool interXact)
 				{
 #ifdef HAVE_LIBZ
 					size = compressBound(BLCKSZ) + sizeof(CompressHeader);
+#endif
+					break;
+				}
+
+			case TEMP_ZSTD_COMPRESSION:
+				{
+#ifdef USE_ZSTD
+					size = ZSTD_COMPRESSBOUND(BLCKSZ) + sizeof(CompressHeader);
 #endif
 					break;
 				}
@@ -704,6 +717,7 @@ BufFileLoadBuffer(BufFile *file)
 						break;
 
 					case TEMP_GZIP_COMPRESSION:
+					{
 #ifdef HAVE_LIBZ
 						int		ret;
 						size_t	len = sizeof(file->buffer);
@@ -716,7 +730,21 @@ BufFileLoadBuffer(BufFile *file)
 						file->nbytes = len;
 #endif
 						break;
+					}
+					case TEMP_ZSTD_COMPRESSION:
+					{
+#ifdef USE_ZSTD
+						size_t	ret;
 
+						ret = ZSTD_decompress(file->buffer.data, sizeof(file->buffer),
+											  buff, header.len);
+						if (ZSTD_isError(ret))
+							elog(ERROR, "ZSTD_decompress failed");
+
+						file->nbytes = ret;
+#endif
+						break;
+					}
 					case TEMP_PGLZ_COMPRESSION:
 						file->nbytes = pglz_decompress(buff, header.len,
 													   file->buffer.data, header.raw_len, false);
@@ -835,6 +863,28 @@ BufFileDumpBuffer(BufFile *file)
 					}
 
 					cSize = len;
+#endif
+					break;
+				}
+			case TEMP_ZSTD_COMPRESSION:
+				{
+#ifdef USE_ZSTD
+					size_t		ret;
+					size_t		len = ZSTD_compressBound(file->nbytes);
+
+					/* XXX maybe lower level? the default is pretty slow ... */
+					ret = ZSTD_compress(cData + sizeof(CompressHeader), len,
+										file->buffer.data, file->nbytes,
+										ZSTD_defaultCLevel());
+					if (ZSTD_isError(ret))
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("compression failed, compressed size %d, original size %d",
+												 cSize, nbytesOriginal)));
+					}
+
+					cSize = ret;
 #endif
 					break;
 				}

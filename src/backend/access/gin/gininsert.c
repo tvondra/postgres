@@ -1496,10 +1496,11 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 		 * still pass 0 as number of elements in that array though.
 		 */
 		if (buffer->items == NULL)
-			buffer->items = palloc((buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
+			buffer->items = palloc_extended((buffer->nitems + tup->nitems) * sizeof(ItemPointerData),
+											MCXT_ALLOC_HUGE);
 		else
-			buffer->items = repalloc(buffer->items,
-									 (buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
+			buffer->items = repalloc_huge(buffer->items,
+										  (buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
 
 		new = ginMergeItemPointers(&buffer->items[buffer->nfrozen], /* first unfrozen */
 								   (buffer->nitems - buffer->nfrozen),	/* num of unfrozen */

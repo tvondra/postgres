@@ -381,7 +381,8 @@ ginMergeItemPointers(ItemPointerData *a, uint32 na,
 {
 	ItemPointerData *dst;
 
-	dst = (ItemPointer) palloc((na + nb) * sizeof(ItemPointerData));
+	dst = (ItemPointer) palloc_extended((na + nb) * sizeof(ItemPointerData),
+										MCXT_ALLOC_HUGE);
 
 	/*
 	 * If the argument arrays don't overlap, we can just append them to each

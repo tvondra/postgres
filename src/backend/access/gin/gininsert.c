@@ -1401,6 +1401,48 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
 static bool
 GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup)
 {
+	/*
+	 * Try freeze TIDs at the beginning of the list, i.e. exclude them from
+	 * the mergesort. We can do that with TIDs before the first TID in the new
+	 * tuple we're about to add into the buffer.
+	 *
+	 * We do this incrementally when adding data into the in-memory buffer,
+	 * and not later (e.g. when hitting a memory limit), because it allows us
+	 * to skip the frozen data during the mergesort, making it cheaper.
+	 */
+
+	/*
+	 * Check if the last TID in the current list is frozen. This is the case
+	 * when merging non-overlapping lists, e.g. in each parallel worker.
+	 */
+	if ((buffer->nitems > 0) &&
+		(ItemPointerCompare(&buffer->items[buffer->nitems - 1],
+							GinTupleGetFirst(tup)) == 0))
+		buffer->nfrozen = buffer->nitems;
+
+	/*
+	 * Now find the last TID we know to be frozen, i.e. the last TID right
+	 * before the new GIN tuple.
+	 *
+	 * Start with the first not-yet-frozen tuple, and walk until we find the
+	 * first TID that's higher. If we already know the whole list is frozen
+	 * (i.e. nfrozen == nitems), this does nothing.
+	 *
+	 * XXX This might do a binary search for sufficiently long lists, but it
+	 * does not seem worth the complexity. Overlapping lists should be rare
+	 * common, TID comparisons are cheap, and we should quickly freeze most of
+	 * the list.
+	 */
+	for (int i = buffer->nfrozen; i < buffer->nitems; i++)
+	{
+		/* Is the TID after the first TID of the new tuple? Can't freeze. */
+		if (ItemPointerCompare(&buffer->items[i],
+							   GinTupleGetFirst(tup)) > 0)
+			break;
+
+		buffer->nfrozen++;
+	}
+
 	/* not enough TIDs to trim (1024 is somewhat arbitrary number) */
 	if (buffer->nfrozen < 1024)
 		return false;
@@ -1445,6 +1487,9 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 	ItemPointerData *items;
 	Datum		key;
 
+	int			nnew;
+	ItemPointer new;
+
 	AssertCheckGinBuffer(buffer);
 
 	key = _gin_parse_tuple_key(tup);
@@ -1466,80 +1511,34 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = (Datum) 0;
 	}
 
-	/*
-	 * Try freeze TIDs at the beginning of the list, i.e. exclude them from
-	 * the mergesort. We can do that with TIDs before the first TID in the new
-	 * tuple we're about to add into the buffer.
-	 *
-	 * We do this incrementally when adding data into the in-memory buffer,
-	 * and not later (e.g. when hitting a memory limit), because it allows us
-	 * to skip the frozen data during the mergesort, making it cheaper.
-	 */
-
-	/*
-	 * Check if the last TID in the current list is frozen. This is the case
-	 * when merging non-overlapping lists, e.g. in each parallel worker.
-	 */
-	if ((buffer->nitems > 0) &&
-		(ItemPointerCompare(&buffer->items[buffer->nitems - 1],
-							GinTupleGetFirst(tup)) == 0))
-		buffer->nfrozen = buffer->nitems;
-
-	/*
-	 * Now find the last TID we know to be frozen, i.e. the last TID right
-	 * before the new GIN tuple.
-	 *
-	 * Start with the first not-yet-frozen tuple, and walk until we find the
-	 * first TID that's higher. If we already know the whole list is frozen
-	 * (i.e. nfrozen == nitems), this does nothing.
-	 *
-	 * XXX This might do a binary search for sufficiently long lists, but it
-	 * does not seem worth the complexity. Overlapping lists should be rare
-	 * common, TID comparisons are cheap, and we should quickly freeze most of
-	 * the list.
-	 */
-	for (int i = buffer->nfrozen; i < buffer->nitems; i++)
-	{
-		/* Is the TID after the first TID of the new tuple? Can't freeze. */
-		if (ItemPointerCompare(&buffer->items[i],
-							   GinTupleGetFirst(tup)) > 0)
-			break;
-
-		buffer->nfrozen++;
-	}
-
 	/* add the new TIDs into the buffer, combine using merge-sort */
-	{
-		int			nnew;
-		ItemPointer new;
 
-		/*
-		 * Resize the array - we do this first, because we'll dereference the
-		 * first unfrozen TID, which would fail if the array is NULL. We'll
-		 * still pass 0 as number of elements in that array though.
-		 */
-		if (buffer->items == NULL)
-			buffer->items = palloc_extended((buffer->nitems + tup->nitems) * sizeof(ItemPointerData),
-											MCXT_ALLOC_HUGE);
-		else
-			buffer->items = repalloc_huge(buffer->items,
-										  (buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
+	/*
+	 * Resize the array - we do this first, because we'll dereference the
+	 * first unfrozen TID, which would fail if the array is NULL. We'll still
+	 * pass 0 as number of elements in that array though.
+	 */
+	if (buffer->items == NULL)
+		buffer->items = palloc_extended((buffer->nitems + tup->nitems) * sizeof(ItemPointerData),
+										MCXT_ALLOC_HUGE);
+	else
+		buffer->items = repalloc_huge(buffer->items,
+									  (buffer->nitems + tup->nitems) * sizeof(ItemPointerData));
 
-		new = ginMergeItemPointers(&buffer->items[buffer->nfrozen], /* first unfrozen */
-								   (buffer->nitems - buffer->nfrozen),	/* num of unfrozen */
-								   items, tup->nitems, &nnew);
+	new = ginMergeItemPointers(&buffer->items[buffer->nfrozen], /* first unfrozen */
+							   (buffer->nitems - buffer->nfrozen),	/* num of unfrozen */
+							   items, tup->nitems, &nnew);
 
-		Assert(nnew == (tup->nitems + (buffer->nitems - buffer->nfrozen)));
+	Assert(nnew == (tup->nitems + (buffer->nitems - buffer->nfrozen)));
 
-		memcpy(&buffer->items[buffer->nfrozen], new,
-			   nnew * sizeof(ItemPointerData));
+	memcpy(&buffer->items[buffer->nfrozen], new,
+		   nnew * sizeof(ItemPointerData));
 
-		pfree(new);
+	pfree(new);
 
-		buffer->nitems += tup->nitems;
+	buffer->nitems += tup->nitems;
 
-		AssertCheckItemPointers(buffer);
-	}
+	AssertCheckItemPointers(buffer);
 
 	/* free the decompressed TID list */
 	pfree(items);

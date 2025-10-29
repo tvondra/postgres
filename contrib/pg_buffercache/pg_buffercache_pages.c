@@ -15,6 +15,8 @@
 #include "port/pg_numa.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/rel.h"
 
 
@@ -27,7 +29,7 @@
 #define NUM_BUFFERCACHE_EVICT_ALL_ELEM 3
 
 #define NUM_BUFFERCACHE_NUMA_ELEM	3
-#define NUM_BUFFERCACHE_PARTITIONS_ELEM	8
+#define NUM_BUFFERCACHE_PARTITIONS_ELEM	11
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_buffercache",
@@ -794,6 +796,8 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 
 	if (SRF_IS_FIRSTCALL())
 	{
+		TypeCacheEntry *typentry = lookup_type_cache(INT4OID, 0);
+
 		funcctx = SRF_FIRSTCALL_INIT();
 
 		/* Switch context when allocating stuff to be used in later calls */
@@ -823,6 +827,12 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "num_allocs",
 						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "total_req_allocs",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "num_req_allocs",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "weigths",
+						   typentry->typarray, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
 
@@ -843,11 +853,17 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 					first_buffer,
 					last_buffer;
 
-		uint64		buffer_total_allocs;
+		uint64		buffer_total_allocs,
+					buffer_total_req_allocs;
 
 		uint32		complete_passes,
 					next_victim_buffer,
-					buffer_allocs;
+					buffer_allocs,
+					buffer_req_allocs;
+
+		int		   *weights;
+		Datum	   *dweights;
+		ArrayType  *array;
 
 		Datum		values[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 		bool		nulls[NUM_BUFFERCACHE_PARTITIONS_ELEM];
@@ -856,8 +872,16 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   &first_buffer, &last_buffer);
 
 		ClockSweepPartitionGetInfo(i,
-								   &complete_passes, &next_victim_buffer,
-								   &buffer_total_allocs, &buffer_allocs);
+								 &complete_passes, &next_victim_buffer,
+								 &buffer_total_allocs, &buffer_allocs,
+								 &buffer_total_req_allocs, &buffer_req_allocs,
+								 &weights);
+
+		dweights = palloc_array(Datum, funcctx->max_calls);
+		for (int i = 0; i < funcctx->max_calls; i++)
+			dweights[i] = Int32GetDatum(weights[i]);
+
+		array = construct_array_builtin(dweights, funcctx->max_calls, INT4OID);
 
 		values[0] = Int32GetDatum(i);
 		nulls[0] = false;
@@ -882,6 +906,15 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 
 		values[7] = Int64GetDatum(buffer_allocs);
 		nulls[7] = false;
+
+		values[8] = Int64GetDatum(buffer_total_req_allocs);
+		nulls[8] = false;
+
+		values[9] = Int64GetDatum(buffer_req_allocs);
+		nulls[9] = false;
+
+		values[10] = PointerGetDatum(array);
+		nulls[10] = false;
 
 		/* Build and return the tuple. */
 		tuple = heap_form_tuple((TupleDesc) funcctx->user_fctx, values, nulls);

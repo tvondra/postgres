@@ -275,10 +275,10 @@ typedef struct BufferDesc
  * line sized.
  *
  * XXX: As this is primarily matters in highly concurrent workloads which
- * probably all are 64bit these days, and the space wastage would be a bit
- * more noticeable on 32bit systems, we don't force the stride to be cache
- * line sized on those. If somebody does actual performance testing, we can
- * reevaluate.
+ * probably all are 64bit these days. We force the stride to be cache line
+ * sized even on 32bit systems, where the space wastage is be a bit more
+ * noticeable, to allow partitioning of shared buffers (which requires the
+ * memory page be a multiple of buffer descriptor).
  *
  * Note that local buffer descriptors aren't forced to be aligned - as there's
  * no concurrent access to those it's unlikely to be beneficial.
@@ -288,7 +288,7 @@ typedef struct BufferDesc
  * platform with either 32 or 128 byte line sizes, it's good to align to
  * boundaries and avoid false sharing.
  */
-#define BUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 64 : 1)
+#define BUFFERDESC_PAD_TO_SIZE	64
 
 typedef union BufferDescPadded
 {
@@ -490,8 +490,8 @@ extern void AtEOXact_LocalBuffers(bool isCommit);
 
 extern int	BufferPartitionCount(void);
 extern int	BufferPartitionNodes(void);
-extern void BufferPartitionGet(int idx, int *num_buffers,
+extern void BufferPartitionGet(int idx, int *node, int *num_buffers,
 							   int *first_buffer, int *last_buffer);
-extern void BufferPartitionParams(int *num_partitions);
+extern void BufferPartitionParams(int *num_partitions, int *num_nodes);
 
 #endif							/* BUFMGR_INTERNALS_H */

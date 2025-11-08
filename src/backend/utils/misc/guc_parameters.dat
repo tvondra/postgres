@@ -968,6 +968,13 @@
   boot_val => 'true',
 },
 
+{ name => 'enable_starjoin_join_search', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
+  short_desc => 'Enables simplified join order planning for starjoins.',
+  flags => 'GUC_EXPLAIN',
+  variable => 'enable_starjoin_join_search',
+  boot_val => 'true',
+},
+
 { name => 'enable_tidscan', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
   short_desc => 'Enables the planner\'s use of TID scan plans.',
   flags => 'GUC_EXPLAIN',

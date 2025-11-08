@@ -292,6 +292,13 @@ query_planner(PlannerInfo *root,
 	distribute_row_identity_vars(root);
 
 	/*
+	 * Try to simplify the join search problem for starjoin-like joins. This
+	 * step relies on info about FK relationships, so we can't do it till
+	 * after match_foreign_keys_to_quals().
+	 */
+	joinlist = starjoin_adjust_joins(root, joinlist);
+
+	/*
 	 * Ready to do the primary planning.
 	 */
 	final_rel = make_one_rel(root, joinlist);

@@ -108,6 +108,7 @@ extern RelOptInfo *make_join_rel(PlannerInfo *root,
 extern Relids add_outer_joins_to_relids(PlannerInfo *root, Relids input_relids,
 										SpecialJoinInfo *sjinfo,
 										List **pushed_down_joins);
+extern bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
 extern bool have_join_order_restriction(PlannerInfo *root,
 										RelOptInfo *rel1, RelOptInfo *rel2);
 extern void mark_dummy_rel(RelOptInfo *rel);

@@ -2830,6 +2830,9 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 * want to support snowflake-like schemas, not just plain starjoins. At
 	 * least that's what I assume the join order restrictions is about. Also,
 	 * have_join_order_restriction is already exposed in paths.h, not static.
+	 *
+	 * XXX This is a bit too strict, because it returns "true" for LEFT joins
+	 * with actual dimensions.
 	 */
 	if (has_join_restriction(root, rel))
 		return false;

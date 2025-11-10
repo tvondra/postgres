@@ -2514,39 +2514,58 @@ remove_useless_self_joins(PlannerInfo *root, List *joinlist)
 }
 
 /*
- * XXX Do we need to check that the FK side of the join (i.e. the fact
- * table) has the columns referenced as NOT NULL? Otherwise we could
- * have a FK join that reduces the cardinality, which is one of
- * the arguments why it's fine to move the join (that it doesn't
- * change the cardinality). But if the join is LEFT JOIN, this
- * should be fine too - but do we get here with LEFT JOINs?
+ * starjoin_foreign_key_matched_by_clauses
+ *		Determines if the foreign key is matched by join clauses.
  *
- * XXX Do we need to check if the other side of the FK is in the
- * current join list? Maybe it's in some later one?
+ * Each foreign key attribute must be matched by a join clause. Either by
+ * a simple RestrictInfo, or by an equivalence class (if the relation has
+ * eclass joins).
+ *
+ * Returns true if the foreign key is matched, false otherwise.
+ *
+ * XXX Do we need to check that the FK side of the join (i.e. the fact table)
+ * has the columns referenced as NOT NULL? Otherwise we could have a FK join
+ * that reduces the cardinality, which is one of the arguments why it's fine
+ * to move the join (that it doesn't change the cardinality). But if the join
+ * is LEFT JOIN, this should be fine too - but do we get here with LEFT JOINs?
  */
 static bool
 starjoin_foreign_key_matched_by_clauses(PlannerInfo *root, RelOptInfo *rel,
 										ForeignKeyOptInfo *fkinfo)
 {
-	int		nmatches = 0;
-
 	/* make sure each FK attribute has at least one matching clause */
 	for (int i = 0; i < fkinfo->nkeys; i++)
 	{
+		/* matching rinfo clause or equivalance class */
 		if ((fkinfo->rinfos[i] != NULL) || (fkinfo->eclass[i] != NULL))
 		{
-			nmatches++;
+			/*
+			 * XXX Do we need to inspect the rinfo/eclass further? I don't
+			 * think that's really necessary, we've already inspected it when
+			 * building ForeignKeyOptInfo. So existence should be enough.
+			 */
 			continue;
 		}
 
-		/* found an attribute without a join clause, ignore the FK */
-		break;
+		/* found an attribute without a join clause, ignore this FK */
+		return false;
 	}
 
-	/* If some FK attribute was not covered, try the next FK. */
-	return (nmatches == fkinfo->nkeys);
+	/* all FK attributes had a matching join clause */
+	return true;
 }
 
+/*
+ * starjoin_clauses_matched_by_foreign_key
+ *		Are all join clauses (rinfo or eclass) matched by the foreign key?
+ *
+ * Check if all join clauses for the current relation match the foreign key.
+ * Returns true if that's the case, false otherwise.
+ *
+ * XXX Could we do the check in both directions at once? Essentially, merge
+ * this with starjoin_foreign_key_matched_by_clauses, in a way that would
+ * make it cheaper than two separate functions? I don't think so.
+ */
 static bool
 starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 										ForeignKeyOptInfo *fkinfo)
@@ -2554,59 +2573,69 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 	ListCell   *lc;
 	int			j;
 
-	/* try to find all RestrictInfo clauses in the FK */
+	/* Inspect all simple (RestrictInfo) clauses. */
 	foreach(lc, rel->joininfo)
 	{
-		bool	found = false;
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		bool	matched = false;	/* matched to the foreign key */
 
+		/* Is there a FK attribute referencing this rinfo? */
 		for (int i = 0; i < fkinfo->nkeys; i++)
 		{
 			if (list_member_ptr(fkinfo->rinfos[i], rinfo))
 			{
-				found = true;
+				matched = true;
 				break;
 			}
 		}
 
-		if (!found)
+		/* found a clause not matched for FK */
+		if (!matched)
 			return false;
 	}
 
-	/* if there are no eclass joins, all join clauses are matched */
+	/* If the rel does not have eclass joins, we're done. */
 	if (!rel->has_eclass_joins)
 		return true;
 
-	/* see if all join eclasses (on this relation) match this FK */
+	/*
+	 * There should be joins with clauses in equivalence classes. Walk all
+	 * the eclasses, and try to match them to the foreign key.
+	 */
 	j = -1;
 	while ((j = bms_next_member(rel->eclass_indexes, j)) >= 0)
 	{
-		bool	found = false;
 		EquivalenceClass *ec = (EquivalenceClass *) list_nth(root->eq_classes, j);
+		bool	matched = false;	/* matched to the foreign key */
 
-		/* const or single-member EC won't generate joinclauses */
+		/*
+		 * We're interested in joins, and const or single-member EC won't
+		 * generate join clauses. So skip them now, before walking the FK.
+		 *
+		 * XXX This probably is not enough to identify join eclasses. There
+		 * migth be multiple Vars from the same rel, for example. In which
+		 * case we'd end up with "matched=false" and reject the FK. We should
+		 * check there's a member for each side of the foreign key.
+		 */
 		if (ec->ec_has_const || list_length(ec->ec_members) <= 1)
 			continue;
 
-		/* is the EC matched to the FK? */
+		/* Is there a FK attribute referencing this EC? */
 		for (int i = 0; i < fkinfo->nkeys; i++)
 		{
 			if (fkinfo->eclass[i] == ec)
 			{
-				found = true;
+				matched = true;
 				break;
 			}
 		}
 
-		if (!found)
+		/* found a join eclass not matched by the FK */
+		if (!matched)
 			return false;
-
-		/*
-		 * XXX Does this need to inspect the EC members, similarly to what
-		 * generate_implied_equalities_for_column does?
-		 */
 	}
 
+	/* all the join clauses seem to match (both rinfo and eclass) */
 	return true;
 }
 
@@ -2625,12 +2654,6 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
  * XXX Do we need to worry about the join type, e.g. inner/outer joins,
  * semi/anti? get_foreign_key_join_selectivity() does care about it, and
  * ignores some of those cases. Maybe we should too?
- *
- * XXX Check there are no other join clauses, beyond those matching the
- * foreign key. But do we already have the joininfo at this point? Some
- * of this stuff gets build only during the join order search later.
- * The match_foreign_keys_to_quals() probably needs to be aware of all
- * this, so how does it do that?
  */
 static bool
 starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
@@ -2648,7 +2671,14 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 	{
 		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 
-		/* rel has to be the referenced table (the one with the PK) */
+		/*
+		 * The foreign key is not relevant unless it references the rel on
+		 * the PK side.
+		 *
+		 * XXX If we want to support the "inverse" join (with smaller tables
+		 * referencing the main table) in the future, we'll probably need to
+		 * allow con_relid too.
+		 */
 		if (fkinfo->ref_relid != rel->relid)
 			continue;
 

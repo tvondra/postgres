@@ -2551,7 +2551,8 @@ static bool
 starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 										ForeignKeyOptInfo *fkinfo)
 {
-	ListCell  *lc;
+	ListCell   *lc;
+	int			j;
 
 	/* try to find all RestrictInfo clauses in the FK */
 	foreach(lc, rel->joininfo)
@@ -2576,7 +2577,35 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 	if (!rel->has_eclass_joins)
 		return true;
 
-	
+	/* see if all join eclasses (on this relation) match this FK */
+	j = -1;
+	while ((j = bms_next_member(rel->eclass_indexes, j)) >= 0)
+	{
+		bool	found = false;
+		EquivalenceClass *ec = (EquivalenceClass *) list_nth(root->eq_classes, j);
+
+		/* const or single-member EC won't generate joinclauses */
+		if (ec->ec_has_const || list_length(ec->ec_members) <= 1)
+			continue;
+
+		/* is the EC matched to the FK? */
+		for (int i = 0; i < fkinfo->nkeys; i++)
+		{
+			if (fkinfo->eclass[i] == ec)
+			{
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			return false;
+
+		/*
+		 * XXX Does this need to inspect the EC members, similarly to what
+		 * generate_implied_equalities_for_column does?
+		 */
+	}
 
 	return true;
 }

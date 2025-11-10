@@ -2611,13 +2611,26 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 		/*
 		 * We're interested in joins, and const or single-member EC won't
 		 * generate join clauses. So skip them now, before walking the FK.
+		 * (The latter test covers the volatile case too.)
 		 *
-		 * XXX This probably is not enough to identify join eclasses. There
-		 * migth be multiple Vars from the same rel, for example. In which
-		 * case we'd end up with "matched=false" and reject the FK. We should
-		 * check there's a member for each side of the foreign key.
+		 * XXX Taken from generate_implied_equalities_for_column().
 		 */
 		if (ec->ec_has_const || list_length(ec->ec_members) <= 1)
+			continue;
+
+		/*
+		 * A join EC needs to have multiple relids, so ignore cases with
+		 * only a single relid.
+		 *
+		 * XXX Could there be 0 relids? I don't think so. Or do we need to
+		 * check if (num != 2) instead?
+		 *
+		 * XXX If this simple check is not enough and we need to inspect
+		 * ut we need to inspect the members, we should probably leave this
+		 * after matching to FK attributes, if it doesn't match. The FK
+		 * check is likely cheaper
+		 */
+		if (bms_num_members(ec->ec_relids) == 1)
 			continue;
 
 		/* Is there a FK attribute referencing this EC? */

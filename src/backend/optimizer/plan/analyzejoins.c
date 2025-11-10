@@ -2780,6 +2780,18 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 		return false;
 
 	/*
+	 * Ignore relations with join restrictions. This requires the complete
+	 * join order search, this cheap heuristics is not enough.
+	 *
+	 * XXX Maybe we should use have_join_order_restriction, especially if we
+	 * want to support snowflake-like schemas, not just plain starjoins. At
+	 * least that's what I assume the join order restrictions is about. Also,
+	 * have_join_order_restriction is already exposed in paths.h, not static.
+	 */
+	if (has_join_restriction(root, rel))
+		return false;
+
+	/*
 	 * See if the join clause matches a foreign key. It should match a
 	 * single relation on the other side, and the dimension should be on
 	 * the PK side.

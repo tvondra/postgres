@@ -32,7 +32,6 @@ static void make_rels_by_clause_joins(PlannerInfo *root,
 static void make_rels_by_clauseless_joins(PlannerInfo *root,
 										  RelOptInfo *old_rel,
 										  List *other_rels);
-static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
 static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel);
 static bool restriction_is_constant_false(List *restrictlist,
 										  RelOptInfo *joinrel,
@@ -1363,7 +1362,7 @@ have_join_order_restriction(PlannerInfo *root,
  * say "true" incorrectly.  (Therefore, we don't bother with the relatively
  * expensive has_legal_joinclause test.)
  */
-static bool
+bool
 has_join_restriction(PlannerInfo *root, RelOptInfo *rel)
 {
 	ListCell   *l;

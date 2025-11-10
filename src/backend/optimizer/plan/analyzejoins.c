@@ -2514,13 +2514,80 @@ remove_useless_self_joins(PlannerInfo *root, List *joinlist)
 }
 
 /*
- * starjoin_match_to_foreign_key
- *		Try to match a join to a FK constraint.
+ * XXX Do we need to check that the FK side of the join (i.e. the fact
+ * table) has the columns referenced as NOT NULL? Otherwise we could
+ * have a FK join that reduces the cardinality, which is one of
+ * the arguments why it's fine to move the join (that it doesn't
+ * change the cardinality). But if the join is LEFT JOIN, this
+ * should be fine too - but do we get here with LEFT JOINs?
  *
- * For a relation to be a dimension (for the starjoin heuristics), it needs
- * to be joined through a FK constraint. The dimension is expected to be
- * on the PK side of the join. The relation must not have any additional
- * join clauses, beyond those matching the foreign key.
+ * XXX Do we need to check if the other side of the FK is in the
+ * current join list? Maybe it's in some later one?
+ */
+static bool
+starjoin_foreign_key_matched_by_clauses(PlannerInfo *root, RelOptInfo *rel,
+										ForeignKeyOptInfo *fkinfo)
+{
+	int		nmatches = 0;
+
+	/* make sure each FK attribute has at least one matching clause */
+	for (int i = 0; i < fkinfo->nkeys; i++)
+	{
+		if ((fkinfo->rinfos[i] != NULL) || (fkinfo->eclass[i] != NULL))
+		{
+			nmatches++;
+			continue;
+		}
+
+		/* found an attribute without a join clause, ignore the FK */
+		break;
+	}
+
+	/* If some FK attribute was not covered, try the next FK. */
+	return (nmatches == fkinfo->nkeys);
+}
+
+static bool
+starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
+										ForeignKeyOptInfo *fkinfo)
+{
+	ListCell  *lc;
+
+	/* try to find all RestrictInfo clauses in the FK */
+	foreach(lc, rel->joininfo)
+	{
+		bool	found = false;
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+		for (int i = 0; i < fkinfo->nkeys; i++)
+		{
+			if (list_member_ptr(fkinfo->rinfos[i], rinfo))
+			{
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			return false;
+	}
+
+	/* if there are no eclass joins, all join clauses are matched */
+	if (!rel->has_eclass_joins)
+		return true;
+
+	
+
+	return true;
+}
+
+/*
+ * starjoin_match_to_foreign_key
+ *		Determine if the relation is joined through a FK constraint.
+ *
+ * The relation needs to be joined through a FK constraint, with it being on
+ * the PK side of the join. The FK must be matched completely (no columns
+ * missing in join clauses), and there must be no other join clauses.
  *
  * We already have a list of relevant foreign keys, and we use that info
  * for selectivity estimation in get_foreign_key_join_selectivity(). And
@@ -2541,68 +2608,38 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 {
 	ListCell   *lc;
 
-	/* Consider each FK constraint that is known to match the query */
+	/*
+	 * Check if there's a FK matching the join clauses.
+	 *
+	 * The match needs to be perfect from both sides. All join clauses need
+	 * to match the foreign key, and the whole foreign key needs to have a
+	 * matching clause. There must not be any extra join clauses.
+	 */
 	foreach(lc, root->fkey_list)
 	{
 		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
-		int			nmatches = 0;
 
-		/* rel is not the referenced table of the FK */
+		/* rel has to be the referenced table (the one with the PK) */
 		if (fkinfo->ref_relid != rel->relid)
 			continue;
 
 		/*
-		 * Do we have a match for each key of the FK?
-		 *
-		 * XXX get_foreign_key_join_selectivity checks EquivalenceClasses,
-		 * we should probably (definitely) do that here too.
-		 *
-		 * XXX We should check that all the clauses have the same relation
-		 * on the other side (for multi-column keys). And that there are
-		 * no other join clauses other than those matching the FK.
-		 *
-		 * XXX Do we need to check that the FK side of the join (i.e. the fact
-		 * table) has the columns referenced as NOT NULL? Otherwise we could
-		 * have a FK join that reduces the cardinality, which is one of
-		 * the arguments why it's fine to move the join (that it doesn't
-		 * change the cardinality). But if the join is LEFT JOIN, this
-		 * should be fine too - but do we get here with LEFT JOINs?
-		 *
-		 * XXX Do we need to check if the other side of the FK is in the
-		 * current join list? Maybe it's in some later one?
+		 * First, check that each FK attribute has a matching join clause.
 		 */
-		for (int i = 0; i < fkinfo->nkeys; i++)
-		{
-			bool		has_matching_clause = false;
+		if (!starjoin_foreign_key_matched_by_clauses(root, rel, fkinfo))
+			continue;
 
-			/*
-			 * Is there a clause matching this FK key?
-			 *
-			 * XXX We need to make sure it's a valid match, e.g. that the
-			 * same referencing table matches all keys in a composite FK,
-			 * and so on.
-			 *
-			 * XXX Do we need to check some relationship to other rels in
-			 * the same jointree item? E.g. the referencing table should
-			 * not be a dimensions we already removed.
-			 */
-			if ((fkinfo->rinfos[i] != NULL) || (fkinfo->eclass[i] != NULL))
-			{
-				has_matching_clause = true;
-				nmatches++;
-				continue;
-			}
+		/*
+		 * Each FK attribute has a join clause matching it. What about the
+		 * opposite direction? Do all join clauses match this FK? We need
+		 * to check both joininfo and equivalence classes (if the rel has
+		 * has_eclass_joins=true).
+		 */
+		if (!starjoin_clauses_matched_by_foreign_key(root, rel, fkinfo))
+			continue;
 
-			/* found a FK key without a matching join clause, ignore the FK */
-			if (has_matching_clause)
-				break;
-		}
-
-		/* matched all FK keys */
-		if (nmatches == fkinfo->nkeys)
-		{
-			return true;
-		}
+		/* matched in both directions */
+		return true;
 	}
 
 	return false;
@@ -2717,8 +2754,6 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 * See if the join clause matches a foreign key. It should match a
 	 * single relation on the other side, and the dimension should be on
 	 * the PK side.
-	 *
-	 * XXX loosely inspired by get_foreign_key_join_selectivity()
 	 */
 	if (!starjoin_match_to_foreign_key(root, rel))
 		return false;

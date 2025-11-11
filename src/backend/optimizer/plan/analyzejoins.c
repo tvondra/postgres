@@ -2717,81 +2717,67 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 	return false;
 }
 
-
 /*
  * starjoin_is_dimension
  *		Determine if a range table entry is a dimension in a starjoin.
  *
  * To be considered a dimension for the simplified join order search, the
- * join must not affect the cardinality of the join. We ensure that by
- * requiring a couple things:
+ * relation must be joined in a way that does not affect the cardinality
+ * of the join. And must be possible to postpone the join.
  *
- * 1) the join clause has to match a FK (that is, the fact does have at
- *    most one matching row in the dimension)
+ * We ensure that by checking a couple things:
  *
- * 2) the FK side (the fact table) should be marked as NOT NULL, so that
- *    we know there's exactly one dimension row for each fact table row
+ * 1) The join clause(s) match a single FK. There has to be a single FK,
+ *    with each key covered by a join clause. There must be no extra join
+ *    clauses (which means the rel can be joined to a single other rel).
  *
- * 3) there must be no additional restrictions on the relation (that
- *    might eliminate some of the rows, reducing the cardinality)
+ * 2) The FK side (in the fact table) should be marked as NOT NULL.
  *
- * XXX The Implementation is incomplete. It probably needs more thought,
- * considering some join types would allow relaxing some of the checks
- * (e.g. outer joins may not require checking (2) or possibly even (3),
- * depending on where the condition is, what varnullingrels it has).
+ * 3) There must be no additional restrictions (WHERE conditions etc.).
  *
- * XXX I wonder if we could handle (3) by ordering the dimensions by the
- * selectivity of the restriction. There are no join clauses between the
- * dimensions (ignoring the snowflake joins, but even there the clauses
- * don't go between branches), so the selectivity could be treated as
- * a measure of how much it shrinks the join result. So we could just
- * sort the dimensions by this, starting with the lowest selectivity
- * (close to 0.0), and ending with dimensions without restrictions (in
- * which case the selectivity is 1.0).
+ * 4) The relation must not have a join order restriction, i.e. it has to
+ *    be possible to "postpone" the join.
  *
- * XXX If the join in INNER, and the fact side has NULL values in the
- * join key, we might consider nullfrac as restriction.
+ * These three rules guarantee the join does not alter the cardinality, as
+ * each row in the fact table has exactly one match in the dimension.
  *
- * XXX I'm not sure how careful this needs to be about join order
- * restrictions. Maybe it should call have_relevant_joinclause and
- * have_join_order_restriction, to ensure the join order is OK?
+ * XXX For inner joins this works fine. For outer we may need to be smarter
+ * as outer joins imply ordering restrictions, violating (4) and so don't
+ * allow the simplified planning. I believe it should be possible to still
+ * postpone the join, if we're dealing with the last relation in the list
+ * (because then we're not really changing the order). Or maybe it needs
+ * to check varnullingrels? In any case, we need to keep this cheap,
+ * cheaper than the "full" join planning.
  *
- * The optimizer/README is not very clear about this, but maybe it's
- * a too specific question. It seems to say the relations in those
- * lists can be joined in any order (lines 94 and 106). Maybe that's
- * not what it means, or I'm misunderstanding it.
+ * XXX Could we relax (3) in some way, to allow filters on dimensions? The
+ * joins are independent (there are no clauses between dimensions), so the
+ * per-dimension selectivity could measures how much it "shrinks" the join.
+ * We could order the dimensions so that the most selective (close to 0.0)
+ * are joined first, to reduce the join cardinality soon. This could be
+ * extended with the "cost" of evaluating the join clause, to make the cost
+ * model more correct.
  *
- * It however seems has_join_restrictions() in join_search_one_level()
- * forces the code to look only at "earlier" rels in the list
+ * In snowflake joins this would be more complicated, because dimensions
+ * can join to other (child) dimensions, but even there the clauses don't
+ * go between branches. So even there it should be possible.
  *
- *     first_rel = foreach_current_index(r) + 1
+ * XXX With LEFT joins we could even allow baserestrictinfo on the rel, as
+ * that won't affect the cardinality (if the filter happens before the
+ * join, of course). But such queries are likely rather rare, because why
+ * would you filter before LEFT join?
  *
- * So maybe we just need to stop once we find a rel with a restriction,
- * as determined byhas_join_restrictions()?
+ * XXX Right now this uses has_join_restriction(), but maybe that's a bit
+ * too heavy-handed and have_join_order_restriction would be better? But
+ * that might be too early? Also, have_join_order_restriction is already
+ * exposed in paths.h, not static. Could have_relevant_joinclause help?
  *
- * But there's also join_is_legal() to check legality of joins, with
- * LEFT/RIGHT joins, and IN/EXISTS clauses. See README line 188. And it
- * also looks-up the SpecialJoinInfo for the join. So maybe we should
- * lookup RelOptInfo for both sides of the join, and call join_is_legal
- * on that? Might be too expensive, though. Maybe do that only when
- * has_join_restrictions already says yes?
+ * XXX There's also join_is_legal() to check legality of joins, with
+ * LEFT/RIGHT joins, and IN/EXISTS clauses (see "Join Tree Construction"
+ * in README, circa line 188). It also looks-up the SpecialJoinInfo for
+ * the join. But it's probably too early for join_is_legal(), we don't
+ * have RelOptInfos for joins yet, just base relations.
  *
- * Maybe we should use has_join_restrictions(), but in a  different way.
- * We could still treat rels with restrictions as dimensions, and move
- * that to the separate list (that doesn't change the join order), but
- * stop once we hit the first non-dimension with a restriction? Because
- * if any relation after that was a dimention, we wouldn't be able to
- * move it to the separate list. It'd change the join order in a way
- * that might violate the restriction. I believe that's the idea behind
- * first_rel in join_search_one_level(), but maybe not.
- *
- * Perhaps have_join_order_restriction and have_relevant_joinclause are
- * useful for this, rather than has_join_restrictions? We might look at
- * actual pairs of relations, and/or check there's no join order
- * restriction with respect to the relations we skipped/moved to the
- * list of dimension?
- *
- * AFAICS it's just the skipping that can break the order restrictions?
+ * XXX Is it just the "skipping" that can break the order restrictions?
  * Adding something to the list of dimensions keeps the order (at least
  * with respect to the rels after it).
  */
@@ -2826,16 +2812,8 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 * Ignore relations with join restrictions. This requires the complete
 	 * join order search, this cheap heuristics is not enough.
 	 *
-	 * XXX Maybe we should use have_join_order_restriction, especially if we
-	 * want to support snowflake-like schemas, not just plain starjoins. At
-	 * least that's what I assume the join order restrictions is about. Also,
-	 * have_join_order_restriction is already exposed in paths.h, not static.
-	 *
-	 * XXX This is a bit too strict, because it returns "true" for LEFT joins
-	 * with actual dimensions.
-	 *
-	 * XXX With LEFT joins we could even allow baserestrictinfo on the rel,
-	 * I think. Although such combination are probably rather rare.
+	 * XXX This blocks the simplified planning for LEFT (or OUTER) joins,
+	 * because outer joins imply restrictions.
 	 */
 	if (has_join_restriction(root, rel))
 		return false;
@@ -2860,11 +2838,15 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
  *		Adjust the jointree for starjoins, to simplify the join order search.
  *
  * Try to simplify the join search problem for starjoin-like joins, with
- * joins over FK relationships. The dimensions can be joined in almost
- * any order, which is about the worst case for the standard join order
- * search, and can be close to factorial complexity. But there's not much
- * difference between such join orders, so we just leave the dimensions at
- * the end of each group (as determined by the join_collapse_limit earlier).
+ * joins over FK relationships. The dimensions can be joined in almost any
+ * order, which is about the worst case for the standard join order search,
+ * and can be close to factorial complexity. But all the different orders
+ * are equivalent, so all this work is wasted. So the simplified planning
+ * identifies dimensions, and joins them all at the end of each group (as
+ * determined by the join_collapse_limit earlier).
+ *
+ * Note: The definition of a dimension is a bit vague. See the comment at
+ * starjoin_is_dimension() for our definition.
  *
  * The join search for starjoin queries is surprisingly expensive, because
  * there are very few join order restrictions. Consider a starjoin query
@@ -2878,48 +2860,36 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
  * There are no clauses between the dimension tables (d#), which means those
  * tables can be joined in almost arbitrary order. This means the standard
  * join_order_search() would explore a N! possible join orders. It is not
- * that bad in practice, because we split the problem by from_collapse_limit
- * into a sequence of smaller problems, but even for the default limit of
- * 8 relations it's quite expensive. This can be easily demonstrated by
- * setting from_collapse_limit=1 for example starjoin queries.
+ * that bad in practice, as we split the problem by from_collapse_limit into
+ * a sequence of smaller problems, but even for the default of 8 relations
+ * it's quite expensive. This can be easily demonstrated by setting
+ * join_collapse_limit=1 for starjoin queries.
  *
- * The idea here is to apply a much simpler join order search for this type
- * of queries, without too much risk of picking a much worse plans. It is
+ * We can significantly simplify the join order search for this type of
+ * queries, without too much risk of picking a much worse plans. It is
  * however a trade off between how expensive we allow this to be, and how
  * good the decisions will be. This can help only starjoins with multiple
  * dimension tables, and we don't want to harm planning of other queries,
- * so the basic "query shape" detection needs to be very cheap. And then
- * it needs to be cheaper than the regular join order search.
+ * so the basic "query shape" detection needs to be very cheap.
  *
  * If a perfect check is impossible or too expensive, it's better to end
  * up with a cheap false negative (i.e. and not use the optimization),
- * rather than risk regressions in other cases.
+ * rather than risk regressions in other cases. Otherwise we might just
+ * as well use the regular join order search.
  *
- * The simplified join order search relies on the fact that if the joins
- * to dimensions do not alter the cardinality of the join relation, then
- * the relative order of those joins does not matter. All the possible
- * orders are guaranteed to perform the same. So we can simply pick one
- * of those orders, and "hardcode" it in the join tree later passed to the
- * join_order_search().
+ * The simplified join order search relies leverages the fact that joins
+ * of dimensions do not change the cardinality of the join, which means
+ * the relative order of those joins does not matter. All orders perform
+ * the same - we can pick an arbitrary of those orders, and "hardcode"
+ * it in the join tree before passing it to join_order_search().
  *
- * The query may involve joins to additional (non-dimension) tables, and
- * those may alter cardinality. Some joins may increase it, other joins
- * may decrease it. In principle, it'd be best to first perform all the
- * joins that reduce join size, then join all the dimensions, and finally
- * perform joins that may increase the join size. But this is not done
- * now, currently we simply apply all the dimensions at the end, hoping
- * that the earlier joins did not inflate the join too much.
- *
- * The definition of a dimension is a bit vague. For our definition see
- * the comment at starjoin_is_dimension().
- *
- * The optimization works by manipulating the joinlist (originally built
- * by deconstruct_jointree), which decomposed the original jointree into
- * smaller "problems" depending on join type and join_collapse_limit. We
- * inspect those smaller lists, and selectively split them into smaller
- * problems to force a join order. This may effectively undo some of the
- * merging done by deconstruct_jointree(), which tries to build problems
- * with up to join_collapse_limit relations.
+ * The join order is "hardcoded" by modifying the jointree, undoing some
+ * of the work performed by deconstruct_jointree earlier. That decomposed
+ * the original jointree into smaller "problems" depending on join type,
+ * join_collapse_limit and other details. We inspect those smaller lists,
+ * and selectively split them into smaller problems to force a join order.
+ * This may effectively undo some of the merging, which tries to construct
+ * problems with up to join_collapse_limit relations.
  *
  * For example, imagine a join problem with 8 rels - one fact table and
  * then 7 dimensions, which we can represent a joinlist with 8 elements.
@@ -2936,45 +2906,54 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
  * one way to join the relations (two, if we consider the relations may
  * switch sides).
  *
- * The joinlist may already be nested, with multiple smaller subproblems.
- * We look at each individual join problem independently, i.e. we don't
- * try to merge problems to build join_collapse_limit problems again.
- * This is partially to keep it cheap/simple, but also so not change
- * behavior for cases when people use join_collapse_limit to force some
- * particular join shape.
+ * The joinlist may already be nested, with multiple smaller join problems,
+ * similar to the example. Those are processed independently. We don't try
+ * to merge problems to build join_collapse_limit problems again. This is
+ * partially to keep it cheap/simple, but also so not change behavior for
+ * cases when people use join_collapse_limit to force a particular shape.
  *
- * XXX A possible improvement is to allow handling snowflake joins, i.e.
- * recursive dimensions. That would require a somewhat more complicated
- * processing, because a dimension would be allowed other rels, as long
- * as those are dimensions too. And we'd need to be more careful about
- * the order in which join them to the top of the join.
+ * Note: Ne never move relations between the "smaller problems", so this
+ * restricts what fraction of the join space we explore. So reducing the
+ * join_collapse_limit would improve the starjoin planning, but it may
+ * produce worse plans for other queries.
  *
- * XXX One possible risk is that moving the dimension joins at the very
- * end may move that after joins that increase the cardinality. Which
- * may cause a regression. Such joins however don't seem very common, at
- * least in regular starjoin queries. So maybe we could simply check if
- * there are any such joins and disable this optimization. Is there a
- * cheap way to identify that a join increases cardinality?
- *
- * XXX Ideally, we'd perform the dimension joins at the place with the
- * lowest cardinality. Imagine a joinlist
+ * The query may involve joins to additional (non-dimension) tables, and
+ * those may alter cardinality in either direction. In principle, it'd be
+ * best to first perform all the joins that reduce join size, then join all
+ * the dimensions, and finally perform joins that may increase the join
+ * size. Imagine a joinlist:
  *
  * (D1, D2, A, B, F)
  *
- * Where A increases join cardinality, while B does not (possibly even
- * reduces it). Ideally, we'd do the join like this
+ * with fact F, dimensions D1 and D2, and non-dimensions A and B. If A
+ * increases cardinality, and B does not (or even reduces it), we could
+ * use this join tree:
  *
  * (A, (D2, (D1, (B, F))))
  *
- * so D1/D2 get joined at the point of "lowest cardinality". We probably
- * don't want to do all this cardinality estimation work here, it'd copy
- * what we already do in the join_order_search(). Perhaps we could invent
- * a "join item" representing a join to all those dimensions, and pass it
- * to join_order_search()? And let it pick the right place for it? It'd
- * always join them in the same order, it'd not reorder them. It would
- * still do the regular cardinality estimations etc. It would be trivial
- * to disable the optimization if needed - don't collapse the dimensions
- * into the new type of join item.
+ * For now we simply leave the dimension joins at the end, assuming
+ * that the earlier joins did not inflate the join too much.
+ *
+ * XXX Joins with cardinality increase don't seem very common, at least in
+ * regular starjoin queries. But maybe we could simply check if there are
+ * any such joins and disable this optimization? Is there a cheap way to
+ * identify when a join increases cardinality? I suppose we would need to
+ * calculate selectivity for join clauses? That might be too expensive,
+ * which goes against keeping this join search optimization very cheap.
+ *
+ * XXX A possible improvement would be to allow snowflake joins, i.e.
+ * queries with "recursive" dimensions. That would require a more complex
+ * logic, as a dimension would be allowed to join to other rels, as long
+ * as those are dimensions too. We'd need to be careful about preventing
+ * cycles, and about the order in which we join them.
+ *
+ * XXX Maybe we could invent a "join item" representing the dimensions,
+ * and pass it to join_order_search()? It'd expand the item into individual
+ * joins, and do the regular cardinality estimations etc. But it would
+ * only consider a single join order of the dimension. It would be trivial
+ * to disable the optimization if needed, I think - don't collapse the
+ * dimensions into the "group" join item. It would require changes to
+ * the generic join search, to be aware of the new item type.
  */
 List *
 starjoin_adjust_joins(PlannerInfo *root, List *joinlist)

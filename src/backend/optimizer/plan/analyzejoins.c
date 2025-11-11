@@ -2782,7 +2782,8 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
  * with respect to the rels after it).
  */
 static bool
-starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
+starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr,
+					  bool allow_restrictions)
 {
 	Index		rti = rtr->rtindex;
 	RangeTblEntry *rte = root->simple_rte_array[rti];
@@ -2815,7 +2816,7 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 * XXX This blocks the simplified planning for LEFT (or OUTER) joins,
 	 * because outer joins imply restrictions.
 	 */
-	if (has_join_restriction(root, rel))
+	if (!allow_restrictions && has_join_restriction(root, rel))
 		return false;
 
 	/*
@@ -2961,6 +2962,8 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	List	   *newlist = NIL;
 	List	   *dimensions = NIL;
 	int			nlist = list_length(joinlist);
+	int			nitems;
+	Node	  **items;
 
 	/* Do nothing if starjoin optimization not enabled. */
 	if (!enable_starjoin_join_search)
@@ -2977,6 +2980,15 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	if (joinlist == NIL ||
 		(nlist == 1 && !IsA(linitial(joinlist), List)))
 		return joinlist;
+
+	/* expand the list into an array, to make backwards processing easier */
+	items = palloc_array(Node *, nlist);
+
+	nitems = 0;
+	foreach(lc, joinlist)
+	{
+		items[nitems++] = (Node *) lfirst(lc);
+	}
 
 	/*
 	 * Process the current join problem - split the elements into dimensions
@@ -2998,47 +3010,78 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	 * something they don't need. A mutable iterator might be a way, but I'm
 	 * not sure how expensive this really is.
 	 */
-	foreach(lc, joinlist)
+	for (;;)
 	{
-		Node	   *item = (Node *) lfirst(lc);
+		bool	found = false;	/* found at least one dimension */
+		bool	last = true;	/* is this the current last rel */
 
-		/* a separate join search problem, handle it recursively */
-		if (IsA(item, List))
+		for (int i = (nitems - 1); i >= 0; i--)
 		{
-			newlist = lappend(newlist,
-							  starjoin_adjust_joins(root, (List *) item));
-			continue;
+			Node   *item = items[i];
+
+			/* skip empty items (already moved to dimensions) */
+			if (item == NULL)
+				continue;
+
+			/* do nothing about join subproblems, leave them in place */
+			if (IsA(item, List))
+				continue;
+
+			/*
+			 * If it's not a List, it has to be a RangeTblRef - jinlists can't
+			 * contain any other elements (see make_rel_from_joinlist).
+			 */
+			Assert(IsA(item, RangeTblRef));
+
+			/*
+			 * Is it a dimension?
+			 *
+			 * An entry representing a baserel. If it's a dimension, save it in a
+			 * separate list, and we'll add it at the "top" of the join at the
+			 * end. Otherwise add it to the list just like other elements.
+			 *
+			 * We do this only when the joinlist has at least 3 items. For fewer
+			 * rels the optimization does not matter, there's only a single join
+			 * order anyway. That only skips the optimization on this level - we
+			 * still do the recursion, and that might hit a larger join problem.
+			 *
+			 * XXX We might have a new GUC to customize the cutoff limit, but for
+			 * now it seems good enough to do it whenever applicable. If we find
+			 * it's not worth it for less than N rels, we can add it later.
+			 */
+			if ((nlist >= 3) &&
+				starjoin_is_dimension(root, (RangeTblRef *) item, last))
+			{
+				/* add it to the beginning of the list */
+				dimensions = lcons(item, dimensions);
+				items[i] = NULL;
+				found = true;
+				continue;
+			}
+
+			/*
+			 * Not a dimension. Leave it in the array, but remember the next
+			 * item (backwards) is no longer the last one.
+			 */
+			last = false;
 		}
 
-		/*
-		 * If it's not a List, it has to be a RangeTblRef - jinlists can't
-		 * contain any other elements (see make_rel_from_joinlist).
-		 */
-		Assert(IsA(item, RangeTblRef));
+		/* terminate when a loop finds no dimension */
+		if (!found)
+			break;
+	}
 
-		/*
-		 * An entry representing a baserel. If it's a dimension, save it in a
-		 * separate list, and we'll add it at the "top" of the join at the
-		 * end. Otherwise add it to the list just like other elements.
-		 *
-		 * We do this only when the joinlist has at least 3 items. For fewer
-		 * rels the optimization does not matter, there's only a single join
-		 * order anyway. That only skips the optimization on this level - we
-		 * still do the recursion, and that might hit a larger join problem.
-		 *
-		 * XXX We might have a new GUC to customize the cutoff limit, but for
-		 * now it seems good enough to do it whenever applicable. If we find
-		 * it's not worth it for less than N rels, we can add it later.
-		 */
-		if ((nlist >= 3) &&
-			starjoin_is_dimension(root, (RangeTblRef *) item))
+	/* return the source list if we found no dimensions */
+	if (dimensions == NIL)
+		return joinlist;
+
+	/* Add items remaining in the input array to the newlist. */
+	for (int i = 0; i < nitems; i++)
+	{
+		if (items[i] != NULL)
 		{
-			dimensions = lappend(dimensions, item);
-			continue;
+			newlist = lappend(newlist, items[i]);
 		}
-
-		/* not a dimension, add it to the list directly */
-		newlist = lappend(newlist, item);
 	}
 
 	/*

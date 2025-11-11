@@ -172,7 +172,7 @@ select name, setting from pg_settings where name like 'enable%';
  enable_self_join_elimination   | on
  enable_seqscan                 | on
  enable_sort                    | on
- enable_starjoin_join_search    | off
+ enable_starjoin_join_search    | on
  enable_tidscan                 | on
 (26 rows)
 

@@ -508,7 +508,9 @@ extern BufferDesc *StrategyGetBuffer(BufferAccessStrategy strategy,
 extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
-extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
+extern void StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc);
+extern int	StrategySyncStart(int partition, uint32 *complete_passes,
+							  int *first_buffer, int *num_buffers);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 
 extern Size StrategyShmemSize(void);
@@ -554,5 +556,6 @@ extern int	BufferPartitionCount(void);
 extern int	BufferPartitionNodes(void);
 extern void BufferPartitionGet(int idx, int *num_buffers,
 							   int *first_buffer, int *last_buffer);
+extern void BufferPartitionParams(int *num_partitions);
 
 #endif							/* BUFMGR_INTERNALS_H */

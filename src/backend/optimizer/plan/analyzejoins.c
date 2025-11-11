@@ -2833,6 +2833,9 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 	 *
 	 * XXX This is a bit too strict, because it returns "true" for LEFT joins
 	 * with actual dimensions.
+	 *
+	 * XXX With LEFT joins we could even allow baserestrictinfo on the rel,
+	 * I think. Although such combination are probably rather rare.
 	 */
 	if (has_join_restriction(root, rel))
 		return false;

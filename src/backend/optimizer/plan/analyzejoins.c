@@ -3071,17 +3071,20 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 			break;
 	}
 
-	/* return the source list if we found no dimensions */
-	if (dimensions == NIL)
-		return joinlist;
-
-	/* Add items remaining in the input array to the newlist. */
+	/*
+	 * Add items remaining in the input array to the newlist. We need to do this
+	 * every time, even without dimensions, because we need to recurse to the
+	 * nested join problems.
+	 */
 	for (int i = 0; i < nitems; i++)
 	{
-		if (items[i] != NULL)
-		{
-			newlist = lappend(newlist, items[i]);
-		}
+		if (items[i] == NULL)
+			continue;
+
+		if (IsA(items[i], List))
+			items[i] = (Node *) starjoin_adjust_joins(root, (List *) items[i]);
+
+		newlist = lappend(newlist, items[i]);
 	}
 
 	/*

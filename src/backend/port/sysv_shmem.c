@@ -19,6 +19,7 @@
  */
 #include "postgres.h"
 
+#include <numa.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/file.h>
@@ -604,6 +605,14 @@ CreateAnonymousSegment(Size *size)
 	int			mmap_errno = 0;
 	int			mmap_flags = MAP_SHARED | MAP_ANONYMOUS | MAP_HASSEMAPHORE | MAP_POPULATE;
 
+	/*
+	 * Set the memory policy to interleave to all NUMA nodes before calling
+	 * mmap, in case we use MAP_POPULATE to prefault all the pages.
+	 *
+	 * XXX Probably not needed without that, but also costs nothing.
+	 */
+	numa_set_membind(numa_all_nodes_ptr);
+
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
 	Assert(huge_pages != HUGE_PAGES_ON);
@@ -617,6 +626,9 @@ CreateAnonymousSegment(Size *size)
 		int			huge_mmap_flags;
 
 		GetHugePageSize(&hugepagesize, &huge_mmap_flags);
+
+		// prefault the memory at start?
+		// mmap_flags |= MAP_POPULATE;
 
 		if (allocsize % hugepagesize != 0)
 			allocsize = add_size(allocsize, hugepagesize - (allocsize % hugepagesize));
@@ -664,6 +676,21 @@ CreateAnonymousSegment(Size *size)
 						 "\"max_connections\".",
 						 allocsize) : 0));
 	}
+
+	/* undo the earlier num_set_membind() call. */
+	numa_set_localalloc();
+
+	/*
+	 * Before touching the memory, set the allocation policy, so that
+	 * it gets interleaved by default. We have to do this to distribute
+	 * the memory that's not located explicitly. We need this especially
+	 * with huge pages, where we could run out of huge pages on some
+	 * nodes and crash otherwise.
+	 *
+	 * XXX Probably not needed with MAP_POPULATE, in which case the policy
+	 * was already set by num_set_membind() earlier. But doesn't hurt.
+	 */
+	numa_interleave_memory(ptr, allocsize, numa_all_nodes_ptr);
 
 	*size = allocsize;
 	return ptr;

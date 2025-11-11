@@ -643,6 +643,16 @@
   options => 'debug_logical_replication_streaming_options',
 },
 
+{ name => 'debug_numa', type => 'string', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'NUMA-aware partitioning of shared memory.',
+  long_desc => 'An empty string disables NUMA-aware partitioning.',
+  flags => 'GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE',
+  variable => 'debug_numa_string',
+  boot_val => '""',
+  check_hook => 'check_debug_numa',
+  assign_hook => 'assign_debug_numa',
+},
+
 { name => 'debug_parallel_query', type => 'enum', context => 'PGC_USERSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Forces the planner\'s use parallel query nodes.',
   long_desc => 'This can be useful for testing the parallel query infrastructure by forcing the planner to generate plans that contain nodes that perform tuple communication between workers and the main process.',

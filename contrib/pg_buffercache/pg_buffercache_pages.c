@@ -30,7 +30,7 @@
 #define NUM_BUFFERCACHE_MARK_DIRTY_ALL_ELEM 3
 
 #define NUM_BUFFERCACHE_OS_PAGES_ELEM	3
-#define NUM_BUFFERCACHE_PARTITIONS_ELEM	8
+#define NUM_BUFFERCACHE_PARTITIONS_ELEM	9
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_buffercache",
@@ -981,19 +981,21 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 		tupledesc = CreateTemplateTupleDesc(expected_tupledesc->natts);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 1, "partition",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "num_buffers",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "numa_node",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "first_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "num_buffers",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 4, "last_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 4, "first_buffer",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 5, "num_passes",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 5, "last_buffer",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 6, "num_passes",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 6, "next_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 7, "next_buffer",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 7, "total_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "total_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "num_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "num_allocs",
 						   INT8OID, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
@@ -1011,7 +1013,8 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 	{
 		uint32		i = funcctx->call_cntr;
 
-		int			num_buffers,
+		int			numa_node,
+					num_buffers,
 					first_buffer,
 					last_buffer;
 
@@ -1024,7 +1027,7 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 		Datum		values[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 		bool		nulls[NUM_BUFFERCACHE_PARTITIONS_ELEM];
 
-		BufferPartitionGet(i, &num_buffers,
+		BufferPartitionGet(i, &numa_node, &num_buffers,
 						   &first_buffer, &last_buffer);
 
 		ClockSweepPartitionGetInfo(i,
@@ -1034,26 +1037,29 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 		values[0] = Int32GetDatum(i);
 		nulls[0] = false;
 
-		values[1] = Int32GetDatum(num_buffers);
+		values[1] = Int32GetDatum(numa_node);
 		nulls[1] = false;
 
-		values[2] = Int32GetDatum(first_buffer);
+		values[2] = Int32GetDatum(num_buffers);
 		nulls[2] = false;
 
-		values[3] = Int32GetDatum(last_buffer);
+		values[3] = Int32GetDatum(first_buffer);
 		nulls[3] = false;
 
-		values[4] = Int64GetDatum(complete_passes);
+		values[4] = Int32GetDatum(last_buffer);
 		nulls[4] = false;
 
-		values[5] = Int32GetDatum(next_victim_buffer);
+		values[5] = Int64GetDatum(complete_passes);
 		nulls[5] = false;
 
-		values[6] = Int64GetDatum(buffer_total_allocs);
+		values[6] = Int32GetDatum(next_victim_buffer);
 		nulls[6] = false;
 
-		values[7] = Int64GetDatum(buffer_allocs);
+		values[7] = Int64GetDatum(buffer_total_allocs);
 		nulls[7] = false;
+
+		values[8] = Int64GetDatum(buffer_allocs);
+		nulls[8] = false;
 
 		/* Build and return the tuple. */
 		tuple = heap_form_tuple((TupleDesc) funcctx->user_fctx, values, nulls);

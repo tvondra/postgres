@@ -18,6 +18,9 @@
 
 #include "miscadmin.h"
 #include "port/pg_numa.h"
+#include "storage/pg_shmem.h"
+
+int	numa_flags;
 
 /*
  * At this point we provide support only for Linux thanks to libnuma, but in
@@ -116,6 +119,36 @@ pg_numa_get_max_node(void)
 	return numa_max_node();
 }
 
+/*
+ * pg_numa_move_to_node
+ *		move memory to different NUMA nodes in larger chunks
+ *
+ * startptr - start of the region (should be aligned to page size)
+ * endptr - end of the region (doesn't need to be aligned)
+ * node - node to move the memory to
+ *
+ * The "startptr" is expected to be a multiple of system memory page size, as
+ * determined by pg_numa_page_size.
+ *
+ * XXX We only expect to do this during startup, when the shared memory is
+ * still being setup.
+ */
+void
+pg_numa_move_to_node(char *startptr, char *endptr, int node)
+{
+	Size		sz = (endptr - startptr);
+
+	Assert((int64) startptr % pg_numa_page_size() == 0);
+
+	/*
+	 * numa_tonode_memory does not actually cause a page fault, and thus does
+	 * not locate the memory on the node. So it's fast, at least compared to
+	 * pg_numa_query_pages, and does not make startup longer. But it also
+	 * means the expensive part happen later, on the first access.
+	 */
+	numa_tonode_memory(startptr, sz, node);
+}
+
 #else
 
 /* Empty wrappers */
@@ -138,4 +171,35 @@ pg_numa_get_max_node(void)
 	return 0;
 }
 
+void
+pg_numa_move_to_node(char *startptr, char *endptr, int node)
+{
+	/* we don't expect to ever get here in builds without libnuma */
+	Assert(false);
+}
+
 #endif
+
+Size
+pg_numa_page_size(void)
+{
+	Size		os_page_size;
+	Size		huge_page_size;
+
+#ifdef WIN32
+	SYSTEM_INFO sysinfo;
+
+	GetSystemInfo(&sysinfo);
+	os_page_size = sysinfo.dwPageSize;
+#else
+	os_page_size = sysconf(_SC_PAGESIZE);
+#endif
+
+	/* assume huge pages get used, unless HUGE_PAGES_OFF */
+	if (huge_pages_status != HUGE_PAGES_OFF)
+		GetHugePageSize(&huge_page_size, NULL);
+	else
+		huge_page_size = 0;
+
+	return Max(os_page_size, huge_page_size);
+}

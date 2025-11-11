@@ -2577,7 +2577,7 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 	foreach(lc, rel->joininfo)
 	{
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-		bool	matched = false;	/* matched to the foreign key */
+		bool		matched = false;	/* matched to the foreign key */
 
 		/* Is there a FK attribute referencing this rinfo? */
 		for (int i = 0; i < fkinfo->nkeys; i++)
@@ -2599,14 +2599,14 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 		return true;
 
 	/*
-	 * There should be joins with clauses in equivalence classes. Walk all
-	 * the eclasses, and try to match them to the foreign key.
+	 * There should be joins with clauses in equivalence classes. Walk all the
+	 * eclasses, and try to match them to the foreign key.
 	 */
 	j = -1;
 	while ((j = bms_next_member(rel->eclass_indexes, j)) >= 0)
 	{
 		EquivalenceClass *ec = (EquivalenceClass *) list_nth(root->eq_classes, j);
-		bool	matched = false;	/* matched to the foreign key */
+		bool		matched = false;	/* matched to the foreign key */
 
 		/*
 		 * We're interested in joins, and const or single-member EC won't
@@ -2619,16 +2619,16 @@ starjoin_clauses_matched_by_foreign_key(PlannerInfo *root, RelOptInfo *rel,
 			continue;
 
 		/*
-		 * A join EC needs to have multiple relids, so ignore cases with
-		 * only a single relid.
+		 * A join EC needs to have multiple relids, so ignore cases with only
+		 * a single relid.
 		 *
 		 * XXX Could there be 0 relids? I don't think so. Or do we need to
 		 * check if (num != 2) instead?
 		 *
-		 * XXX If this simple check is not enough and we need to inspect
-		 * ut we need to inspect the members, we should probably leave this
-		 * after matching to FK attributes, if it doesn't match. The FK
-		 * check is likely cheaper
+		 * XXX If this simple check is not enough and we need to inspect ut we
+		 * need to inspect the members, we should probably leave this after
+		 * matching to FK attributes, if it doesn't match. The FK check is
+		 * likely cheaper
 		 */
 		if (bms_num_members(ec->ec_relids) == 1)
 			continue;
@@ -2676,8 +2676,8 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 	/*
 	 * Check if there's a FK matching the join clauses.
 	 *
-	 * The match needs to be perfect from both sides. All join clauses need
-	 * to match the foreign key, and the whole foreign key needs to have a
+	 * The match needs to be perfect from both sides. All join clauses need to
+	 * match the foreign key, and the whole foreign key needs to have a
 	 * matching clause. There must not be any extra join clauses.
 	 */
 	foreach(lc, root->fkey_list)
@@ -2685,8 +2685,8 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
 
 		/*
-		 * The foreign key is not relevant unless it references the rel on
-		 * the PK side.
+		 * The foreign key is not relevant unless it references the rel on the
+		 * PK side.
 		 *
 		 * XXX If we want to support the "inverse" join (with smaller tables
 		 * referencing the main table) in the future, we'll probably need to
@@ -2703,8 +2703,8 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 
 		/*
 		 * Each FK attribute has a join clause matching it. What about the
-		 * opposite direction? Do all join clauses match this FK? We need
-		 * to check both joininfo and equivalence classes (if the rel has
+		 * opposite direction? Do all join clauses match this FK? We need to
+		 * check both joininfo and equivalence classes (if the rel has
 		 * has_eclass_joins=true).
 		 */
 		if (!starjoin_clauses_matched_by_foreign_key(root, rel, fkinfo))
@@ -2784,9 +2784,9 @@ starjoin_match_to_foreign_key(PlannerInfo *root, RelOptInfo *rel)
 static bool
 starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 {
-	Index			rti = rtr->rtindex;
-	RangeTblEntry  *rte = root->simple_rte_array[rti];
-	RelOptInfo	   *rel = root->simple_rel_array[rti];
+	Index		rti = rtr->rtindex;
+	RangeTblEntry *rte = root->simple_rte_array[rti];
+	RelOptInfo *rel = root->simple_rel_array[rti];
 
 	/* only plain relations can be dimensions (we need FK/PK join) */
 	if ((rte->rtekind != RTE_RELATION) ||
@@ -2794,16 +2794,16 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 		return false;
 
 	/*
-	 * Does it have any conditions/restrictions that may affect the number
-	 * of rows matched? If yes, don't treat as dimension.
+	 * Does it have any conditions/restrictions that may affect the number of
+	 * rows matched? If yes, don't treat as dimension.
 	 *
 	 * Dimensions in a starjoin may have restrictions, but that means it'll
 	 * change cardinality of the joins (reduce it), so it may be better to
 	 * join it early. We leave it to the regular join order planning. The
 	 * expectation is that most dimensions won't have extra restrictions.
 	 *
-	 * XXX Should we check some other fields, like lateral references, and
-	 * so on? Or is that unnecessary? What about eclasses?
+	 * XXX Should we check some other fields, like lateral references, and so
+	 * on? Or is that unnecessary? What about eclasses?
 	 */
 	if (rel->baserestrictinfo != NIL)
 		return false;
@@ -2819,9 +2819,8 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 		return false;
 
 	/*
-	 * See if the join clause matches a foreign key. It should match a
-	 * single relation on the other side, and the dimension should be on
-	 * the PK side.
+	 * See if the join clause matches a foreign key. It should match a single
+	 * relation on the other side, and the dimension should be on the PK side.
 	 */
 	if (!starjoin_match_to_foreign_key(root, rel))
 		return false;
@@ -2958,10 +2957,10 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr)
 List *
 starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 {
-	ListCell *lc;
-	List *newlist = NIL;
-	List *dimensions = NIL;
-	int		nlist = list_length(joinlist);
+	ListCell   *lc;
+	List	   *newlist = NIL;
+	List	   *dimensions = NIL;
+	int			nlist = list_length(joinlist);
 
 	/* Do nothing if starjoin optimization not enabled. */
 	if (!enable_starjoin_join_search)
@@ -2970,10 +2969,10 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	/*
 	 * Do nothing if starjoin optimization not applicable.
 	 *
-	 * XXX It might seems we can skip this for lists with <= 2 items, but
-	 * that does not work, the elements may be nested list, and we need to
-	 * descend into those. So do what remove_useless_self_joins() does, and
-	 * only bail out for the simplest single-relation case (i.e. no joins).
+	 * XXX It might seems we can skip this for lists with <= 2 items, but that
+	 * does not work, the elements may be nested list, and we need to descend
+	 * into those. So do what remove_useless_self_joins() does, and only bail
+	 * out for the simplest single-relation case (i.e. no joins).
 	 */
 	if (joinlist == NIL ||
 		(nlist == 1 && !IsA(linitial(joinlist), List)))
@@ -2986,22 +2985,22 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	 *
 	 * The list may contain various types of elements. It may contain a list,
 	 * which means it's an independent join search problem and we need to
-	 * process it recursively. Or it may be RangeTblRef, in which case we
-	 * need to check if it's a dimension. Other types of elements are just
-	 * added back to the list as-is.
+	 * process it recursively. Or it may be RangeTblRef, in which case we need
+	 * to check if it's a dimension. Other types of elements are just added
+	 * back to the list as-is.
 	 *
 	 * XXX I think we need to be careful to keep the order of the list (for
-	 * the non-dimension entries). The join_search_one_level() relies on
-	 * that when handling join order restrictions.
+	 * the non-dimension entries). The join_search_one_level() relies on that
+	 * when handling join order restrictions.
 	 *
 	 * XXX It might be better to only create a new list if needed, i.e. once
-	 * we find the first dimension. So that non-starjoin queries don't pay
-	 * for something they don't need. A mutable iterator might be a way, but
-	 * I'm not sure how expensive this really is.
+	 * we find the first dimension. So that non-starjoin queries don't pay for
+	 * something they don't need. A mutable iterator might be a way, but I'm
+	 * not sure how expensive this really is.
 	 */
-	foreach (lc, joinlist)
+	foreach(lc, joinlist)
 	{
-		Node *item = (Node *) lfirst(lc);
+		Node	   *item = (Node *) lfirst(lc);
 
 		/* a separate join search problem, handle it recursively */
 		if (IsA(item, List))
@@ -3018,8 +3017,8 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 		Assert(IsA(item, RangeTblRef));
 
 		/*
-		 * An entry representing a baserel. If it's a dimension, save it in
-		 * a separate list, and we'll add it at the "top" of the join at the
+		 * An entry representing a baserel. If it's a dimension, save it in a
+		 * separate list, and we'll add it at the "top" of the join at the
 		 * end. Otherwise add it to the list just like other elements.
 		 *
 		 * We do this only when the joinlist has at least 3 items. For fewer
@@ -3043,15 +3042,15 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	}
 
 	/*
-	 * If we found some dimensions, add them to the join tree one by one.
-	 * The exact order does not matter, so we add them in the order we
-	 * found them in the original list.
+	 * If we found some dimensions, add them to the join tree one by one. The
+	 * exact order does not matter, so we add them in the order we found them
+	 * in the original list.
 	 *
 	 * We need to add them by creating smaller 2-element lists, with the rest
-	 * of the list being a sub-problem and then adding the dimension
-	 * table. This is how we force the desired join order.
+	 * of the list being a sub-problem and then adding the dimension table.
+	 * This is how we force the desired join order.
 	 */
-	foreach (lc, dimensions)
+	foreach(lc, dimensions)
 	{
 		newlist = list_make2(newlist, lfirst(lc));
 	}

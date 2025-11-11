@@ -1905,6 +1905,7 @@ PGP_MPI
 PGP_PubKey
 PGP_S2K
 PGPing
+PGProcPartition
 PGQueryClass
 PGRUsage
 PGSemaphore

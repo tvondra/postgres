@@ -202,6 +202,8 @@ struct PGPROC
 								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
 
+	int			procnumber;		/* index in ProcGlobal->allProcs */
+
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
 
 	int			pgxactoff;		/* offset into various ProcGlobal->arrays with
@@ -333,6 +335,9 @@ struct PGPROC
 	PGPROC	   *lockGroupLeader;	/* lock group leader, if I'm a member */
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
+
+	/* NUMA node */
+	int			numa_node;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
@@ -397,7 +402,7 @@ extern PGDLLIMPORT PGPROC *MyProc;
 typedef struct PROC_HDR
 {
 	/* Array of PGPROC structures (not including dummies for prepared txns) */
-	PGPROC	   *allProcs;
+	PGPROC	  **allProcs;
 
 	/* Array mirroring PGPROC.xid for each PGPROC currently in the procarray */
 	TransactionId *xids;
@@ -444,13 +449,13 @@ typedef struct PROC_HDR
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;
 
-extern PGDLLIMPORT PGPROC *PreparedXactProcs;
+extern PGDLLIMPORT PGPROC **PreparedXactProcs;
 
 /*
  * Accessors for getting PGPROC given a ProcNumber and vice versa.
  */
-#define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
-#define GetNumberFromPGProc(proc) ((proc) - &ProcGlobal->allProcs[0])
+#define GetPGProcByNumber(n) (ProcGlobal->allProcs[(n)])
+#define GetNumberFromPGProc(proc) ((proc)->procnumber)
 
 /*
  * We set aside some extra PGPROC structures for "special worker" processes,
@@ -486,7 +491,7 @@ extern PGDLLIMPORT bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT slock_t *ProcStructLock;
-extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
+extern PGDLLIMPORT PGPROC **AuxiliaryProcs;
 #endif
 
 
@@ -525,5 +530,8 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
+
+extern int	ProcPartitionCount(void);
+extern void ProcPartitionGet(int idx, int *node, int *nprocs, void **procsptr, void **fpptr);
 
 #endif							/* _PROC_H_ */

@@ -319,3 +319,11 @@ BufferPartitionGet(int idx, int *num_buffers,
 
 	elog(ERROR, "invalid partition index");
 }
+
+/* return parameters before the partitions are initialized (during sizing) */
+void
+BufferPartitionParams(int *num_partitions)
+{
+	if (num_partitions)
+		*num_partitions = NUM_CLOCK_SWEEP_PARTITIONS;
+}

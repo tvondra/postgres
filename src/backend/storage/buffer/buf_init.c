@@ -823,6 +823,8 @@ check_debug_numa(char **newval, void **extra, GucSource source)
 
 		if (pg_strcasecmp(item, "buffers") == 0)
 			flags |= NUMA_BUFFERS;
+		else if (pg_strcasecmp(item, "procs") == 0)
+			flags |= NUMA_PROCS;
 		else
 		{
 			GUC_check_errdetail("Invalid option \"%s\".", item);

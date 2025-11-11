@@ -424,7 +424,7 @@
 #enable_presorted_aggregate = on
 #enable_seqscan = on
 #enable_sort = on
-enable_starjoin_join_search = off
+#enable_starjoin_join_search = on
 #enable_tidscan = on
 #enable_group_by_reordering = on
 #enable_distinct_reordering = on

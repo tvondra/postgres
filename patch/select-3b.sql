@@ -1,5 +1,5 @@
 --set join_collapse_limit = 1;
-set enable_starjoin_join_search = off;
+set enable_starjoin_join_search = OPT;
 select * from t
     left join dim1 on (dim1.id = id1)
     left join dim2 on (dim2.id = id2)

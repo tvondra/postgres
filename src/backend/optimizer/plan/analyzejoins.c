@@ -2954,6 +2954,28 @@ starjoin_is_dimension(PlannerInfo *root, RangeTblRef *rtr,
  * to disable the optimization if needed, I think - don't collapse the
  * dimensions into the "group" join item. It would require changes to
  * the generic join search, to be aware of the new item type.
+ *
+ * The search for dimensions may perform multiple passes over the list, to
+ * allow treating some rels with restrictions as dimensions. Relations
+ * without restrictions can be moved to an arbitrary place in the join
+ * tree. We leverage that by moving it to the list of dimensions, which
+ * may skip over various other relations.
+ *
+ * Relations with join order do not allow these arbitrary moves. But we can
+ * allow treating them dimensions in some cases. A join restriction does not
+ * imply we can't move the relation at all, otherwise we wouldn't be allowed
+ * to move any relations when there's a single relation with a restriction.
+ * It means we can't change the relative order of restricted relations.
+ *
+ * This means we can treat a relation with a restriction as a dimension,
+ * as long as it's the last in the current joinlist (after some relations
+ * were already moved to list of dimensions).
+ *
+ * To do this we walk the joinlist multiple times, and in each iteration
+ * we try to identify as many dimensions as possible. We walk the list in
+ * reverse, and we add dimensions to the beginning of the list. This way
+ * we preserve the original syntactic join order. If we find no dimensions
+ * in a loop, we're done.
  */
 List *
 starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
@@ -3001,6 +3023,9 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	 * to check if it's a dimension. Other types of elements are just added
 	 * back to the list as-is.
 	 *
+	 * Walk the list backwards, to preserve syntactic join order. This allows
+	 * tracking "last" relation. If we find no dimension, we're done.
+	 *
 	 * XXX I think we need to be careful to keep the order of the list (for
 	 * the non-dimension entries). The join_search_one_level() relies on that
 	 * when handling join order restrictions.
@@ -3012,12 +3037,12 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	 */
 	for (;;)
 	{
-		bool	found = false;	/* found at least one dimension */
-		bool	last = true;	/* is this the current last rel */
+		bool		found = false;	/* found at least one dimension */
+		bool		last = true;	/* is this the current last rel */
 
 		for (int i = (nitems - 1); i >= 0; i--)
 		{
-			Node   *item = items[i];
+			Node	   *item = items[i];
 
 			/* skip empty items (already moved to dimensions) */
 			if (item == NULL)
@@ -3025,7 +3050,11 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 
 			/* do nothing about join subproblems, leave them in place */
 			if (IsA(item, List))
+			{
+				/* XXX do we need to disable "false" for join subtree? */
+				last = false;
 				continue;
+			}
 
 			/*
 			 * If it's not a List, it has to be a RangeTblRef - jinlists can't
@@ -3036,18 +3065,24 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 			/*
 			 * Is it a dimension?
 			 *
-			 * An entry representing a baserel. If it's a dimension, save it in a
-			 * separate list, and we'll add it at the "top" of the join at the
-			 * end. Otherwise add it to the list just like other elements.
+			 * An entry representing a baserel. If it's a dimension, save it
+			 * in a separate list, and we'll add it at the "top" of the join
+			 * at the end. Otherwise add it to the list just like other
+			 * elements.
 			 *
-			 * We do this only when the joinlist has at least 3 items. For fewer
-			 * rels the optimization does not matter, there's only a single join
-			 * order anyway. That only skips the optimization on this level - we
-			 * still do the recursion, and that might hit a larger join problem.
+			 * We do this only when the joinlist has at least 3 items. For
+			 * fewer rels the optimization does not matter, there's only a
+			 * single join order anyway. That only skips the optimization on
+			 * this level - we still do the recursion, and that might hit a
+			 * larger join problem.
 			 *
-			 * XXX We might have a new GUC to customize the cutoff limit, but for
-			 * now it seems good enough to do it whenever applicable. If we find
-			 * it's not worth it for less than N rels, we can add it later.
+			 * XXX If we decide to treat the rel as a dimension, don't update
+			 * the "last" flag. The next relation will be the last one.
+			 *
+			 * XXX We might have a new GUC to customize the cutoff limit, but
+			 * for now it seems good enough to do it whenever applicable. If
+			 * we find it's not worth it for less than N rels, we can add it
+			 * later.
 			 */
 			if ((nlist >= 3) &&
 				starjoin_is_dimension(root, (RangeTblRef *) item, last))
@@ -3062,6 +3097,9 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 			/*
 			 * Not a dimension. Leave it in the array, but remember the next
 			 * item (backwards) is no longer the last one.
+			 *
+			 * XXX Maybe we don't need to reset "last" if the item does not
+			 * have join restrictions?
 			 */
 			last = false;
 		}
@@ -3072,9 +3110,9 @@ starjoin_adjust_joins(PlannerInfo *root, List *joinlist)
 	}
 
 	/*
-	 * Add items remaining in the input array to the newlist. We need to do this
-	 * every time, even without dimensions, because we need to recurse to the
-	 * nested join problems.
+	 * Add items remaining in the input array to the newlist. We need to do
+	 * this every time, even without dimensions, because we need to recurse to
+	 * the nested join problems.
 	 */
 	for (int i = 0; i < nitems; i++)
 	{

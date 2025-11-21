@@ -827,11 +827,11 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "num_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "total_req_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "total_req_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "num_req_allocs",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 10, "num_req_allocs",
 						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "weigths",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 11, "weigths",
 						   typentry->typarray, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);

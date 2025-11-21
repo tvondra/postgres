@@ -809,11 +809,11 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 		tupledesc = CreateTemplateTupleDesc(expected_tupledesc->natts);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 1, "partition",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 1, "num_buffers",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "num_buffers",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "first_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "first_buffer",
 						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "last_buffer",
+		TupleDescInitEntry(tupledesc, (AttrNumber) 4, "last_buffer",
 						   INT4OID, -1, 0);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);

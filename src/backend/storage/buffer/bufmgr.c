@@ -4628,16 +4628,28 @@ BufferIsPermanent(Buffer buffer)
 
 /*
  * BufferGetLSNAtomic
- *		Retrieves the LSN of the buffer atomically using a buffer header lock.
- *		This is necessary for some callers who may not have an exclusive lock
- *		on the buffer.
+ *		Retrieves the LSN of the buffer atomically.
+ *
+ *		On platforms without 8 byte atomic reads/write we need to take a
+ *		header lock. This is necessary for some callers who may not have an
+ *		exclusive lock on the buffer.
  */
 XLogRecPtr
 BufferGetLSNAtomic(Buffer buffer)
 {
+#ifdef PG_HAVE_8BYTE_SINGLE_COPY_ATOMICITY
+	Assert(BufferIsValid(buffer));
+	Assert(BufferIsPinned(buffer));
+
+	return PageGetLSN(BufferGetPage(buffer));
+#else
 	char	   *page = BufferGetPage(buffer);
 	BufferDesc *bufHdr;
 	XLogRecPtr	lsn;
+
+	/* Make sure we've got a real buffer, and that we hold a pin on it. */
+	Assert(BufferIsValid(buffer));
+	Assert(BufferIsPinned(buffer));
 
 	/*
 	 * If we don't need locking for correctness, fastpath out.
@@ -4645,16 +4657,13 @@ BufferGetLSNAtomic(Buffer buffer)
 	if (!XLogHintBitIsNeeded() || BufferIsLocal(buffer))
 		return PageGetLSN(page);
 
-	/* Make sure we've got a real buffer, and that we hold a pin on it. */
-	Assert(BufferIsValid(buffer));
-	Assert(BufferIsPinned(buffer));
-
 	bufHdr = GetBufferDescriptor(buffer - 1);
 	LockBufHdr(bufHdr);
 	lsn = PageGetLSN(page);
 	UnlockBufHdr(bufHdr);
 
 	return lsn;
+#endif
 }
 
 /* ---------------------------------------------------------------------

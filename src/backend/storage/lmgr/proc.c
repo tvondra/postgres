@@ -206,11 +206,14 @@ FastPathLockShmemSize(void)
 	 * when not strictly needed (if it's already aligned). And we always
 	 * assume we'll add a whole page, even if the alignment needs only less
 	 * memory.
+	 *
+	 * XXX We need two extra pages. One for the non-NUMA part (aux processes),
+	 * and one to keep the size of the last chunk aligned too.
 	 */
 	if (((numa_flags & NUMA_PROCS) != 0) && numa_can_partition)
 	{
 		Assert(numa_nodes > 0);
-		size = add_size(size, mul_size((numa_nodes + 1), numa_page_size));
+		size = add_size(size, mul_size((numa_nodes + 2), numa_page_size));
 	}
 
 	return size;
@@ -324,6 +327,7 @@ InitProcGlobal(void)
 
 	/* Used for setup of per-backend fast-path slots. */
 	char	   *fpPtr,
+			   *fpPtrOrig,
 			   *fpEndPtr PG_USED_FOR_ASSERTS_ONLY;
 	Size		fpLockBitsSize,
 				fpRelIdSize;
@@ -507,7 +511,7 @@ InitProcGlobal(void)
 							requestSize,
 							&found);
 
-	MemSet(fpPtr, 0, requestSize);
+	fpPtrOrig = fpPtr;
 
 	/* For asserts checking we did not overflow. */
 	fpEndPtr = fpPtr + requestSize;
@@ -594,6 +598,9 @@ InitProcGlobal(void)
 		/* don't overflow the allocation */
 		Assert(fpPtr <= fpEndPtr);
 	}
+
+	/* zero the memory only after locating the memory to NUMA nodes */
+	MemSet(fpPtrOrig, 0, requestSize);
 
 	for (i = 0; i < TotalProcs; i++)
 	{
@@ -2517,7 +2524,10 @@ fastpath_partition_init(char *ptr, int num_procs, int allprocs_index, int node,
 	 * memory, to make sure it's not mapped to any node yet
 	 */
 	if (node != -1)
+	{
+		endptr = (char *) TYPEALIGN(numa_page_size, endptr);
 		pg_numa_move_to_node(ptr, endptr, node);
+	}
 
 	/*
 	 * Now point the PGPROC entries to the fast-path arrays, and also advance
@@ -2546,7 +2556,8 @@ fastpath_partition_init(char *ptr, int num_procs, int allprocs_index, int node,
 		allprocs_index++;
 	}
 
-	Assert(ptr == endptr);
+	Assert(ptr <= endptr);
+	Assert((node == -1) || (char *) TYPEALIGN(numa_page_size, ptr) == endptr);
 
 	return endptr;
 }

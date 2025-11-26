@@ -271,6 +271,13 @@ BufferManagerShmemSize(void)
 	size = add_size(size, Max(numa_page_size, PG_IO_ALIGN_SIZE));
 	size = add_size(size, mul_size(NBuffers, BLCKSZ));
 
+	/*
+	 * Extra alignment, so that the partitions are whole memory pages (we
+	 * may need to pad the last one, so one page is enough). Without this
+	 * we may get mbind() failures in pg_numa_move_to_node().
+	 */
+	size = add_size(size, Max(numa_page_size, PG_IO_ALIGN_SIZE));
+
 	/* size of stuff controlled by freelist.c */
 	size = add_size(size, StrategyShmemSize());
 
@@ -694,6 +701,15 @@ buffer_partitions_init(void)
 		/* first map buffers */
 		startptr = buffers_ptr;
 		endptr = startptr + ((Size) num_buffers * BLCKSZ);
+
+		/*
+		 * Make sure the partition is a multiple of memory page, so that we
+		 * don't get mbind failures in move_to_node calls. This matters only
+		 * for the last partition, the earlier ones should be always sized
+		 * as multiples of pages.
+		 */
+		endptr = (char *) TYPEALIGN(numa_page_size, endptr);
+
 		buffers_ptr = endptr;	/* start of the next partition */
 
 		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => buffers %d start %p end %p (size %zd)",
@@ -704,6 +720,15 @@ buffer_partitions_init(void)
 		/* now do the same for buffer descriptors */
 		startptr = descriptors_ptr;
 		endptr = startptr + ((Size) num_buffers * sizeof(BufferDescPadded));
+
+		/*
+		 * Make sure the partition is a multiple of memory page, so that we
+		 * don't get mbind failures in move_to_node calls. This matters only
+		 * for the last partition, the earlier ones should be always sized
+		 * as multiples of pages.
+		 */
+		endptr = (char *) TYPEALIGN(numa_page_size, endptr);
+
 		descriptors_ptr = endptr;
 
 		elog(DEBUG1, "NUMA: buffer_partitions_init: %d => descriptors %d start %p end %p (size %zd)",
@@ -713,8 +738,8 @@ buffer_partitions_init(void)
 	}
 
 	/* we should have consumed the arrays exactly */
-	Assert(buffers_ptr == BufferBlocks + (Size) NBuffers * BLCKSZ);
-	Assert(descriptors_ptr == (char *) BufferDescriptors + (Size) NBuffers * sizeof(BufferDescPadded));
+	Assert(buffers_ptr <= (char *) TYPEALIGN(numa_page_size, BufferBlocks + (Size) NBuffers * BLCKSZ));
+	Assert(descriptors_ptr == (char *) TYPEALIGN(numa_page_size, (char *) BufferDescriptors + (Size) NBuffers * sizeof(BufferDescPadded)));
 }
 
 int

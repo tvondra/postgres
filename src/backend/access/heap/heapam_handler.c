@@ -241,38 +241,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	return got_heap_tuple;
 }
 
-static void
-batch_assert_batches_valid(IndexScanDesc scan)
-{
-#ifdef USE_ASSERT_CHECKING
-	BatchQueue *batchqueue = scan->batchqueue;
-
-	/* we should have batches initialized */
-	Assert(batchqueue != NULL);
-
-	/* We should not have too many batches. */
-	Assert(batchqueue->maxBatches > 0 &&
-		   batchqueue->maxBatches <= INDEX_SCAN_MAX_BATCHES);
-
-	/*
-	 * The head/next indexes should define a valid range (in the cyclic
-	 * buffer, and should not overflow maxBatches.
-	 */
-	Assert(batchqueue->headBatch >= 0 &&
-		   batchqueue->headBatch <= batchqueue->nextBatch);
-	Assert(batchqueue->nextBatch - batchqueue->headBatch <=
-		   batchqueue->maxBatches);
-
-	/* Check all current batches */
-	for (int i = batchqueue->headBatch; i < batchqueue->nextBatch; i++)
-	{
-		BatchIndexScan batch = INDEX_SCAN_BATCH(scan, i);
-
-		batch_assert_batch_valid(scan, batch);
-	}
-#endif
-}
-
 /*
  * heap_batch_advance_pos
  *		Advance the position to the next item, depending on scan direction.

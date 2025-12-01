@@ -33,8 +33,6 @@
 #include "pgstat.h"
 #include "utils/memdebug.h"
 
-/* batch debug functions */
-static void batch_assert_batches_valid(IndexScanDesc scan);
 static void batch_debug_print_batches(const char *label, IndexScanDesc scan);
 
 /*
@@ -89,7 +87,6 @@ index_batch_init(IndexScanDesc scan)
 	batch_reset_pos(&scan->batchqueue->streamPos);
 
 	scan->batchqueue->markBatch = NULL;
-	scan->batchqueue->maxBatches = INDEX_SCAN_MAX_BATCHES;
 	scan->batchqueue->headBatch = 0;	/* initial head batch */
 	scan->batchqueue->nextBatch = 0;	/* initial batch starts empty */
 	memset(&scan->batchqueue->cache, 0, sizeof(scan->batchqueue->cache));
@@ -260,7 +257,6 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	}
 
 	/* reset relevant batch state fields */
-	Assert(batchqueue->maxBatches == INDEX_SCAN_MAX_BATCHES);
 	batchqueue->headBatch = 0;	/* initial batch */
 	batchqueue->nextBatch = 0;	/* initial batch is empty */
 
@@ -650,44 +646,6 @@ indexam_util_batch_release(IndexScanDesc scan, BatchIndexScan batch)
 	pfree(batch);
 }
 
-/*
- * Check invariants on current batches
- *
- * Makes sure the indexes are set as expected, the buffer size is within
- * limits, and so on.
- */
-static void
-batch_assert_batches_valid(IndexScanDesc scan)
-{
-#ifdef USE_ASSERT_CHECKING
-	BatchQueue *batchqueue = scan->batchqueue;
-
-	/* we should have batches initialized */
-	Assert(batchqueue != NULL);
-
-	/* We should not have too many batches. */
-	Assert(batchqueue->maxBatches > 0 &&
-		   batchqueue->maxBatches <= INDEX_SCAN_MAX_BATCHES);
-
-	/*
-	 * The head/next indexes should define a valid range (in the cyclic
-	 * buffer, and should not overflow maxBatches.
-	 */
-	Assert(batchqueue->headBatch >= 0 &&
-		   batchqueue->headBatch <= batchqueue->nextBatch);
-	Assert(batchqueue->nextBatch - batchqueue->headBatch <=
-		   batchqueue->maxBatches);
-
-	/* Check all current batches */
-	for (int i = batchqueue->headBatch; i < batchqueue->nextBatch; i++)
-	{
-		BatchIndexScan batch = INDEX_SCAN_BATCH(scan, i);
-
-		batch_assert_batch_valid(scan, batch);
-	}
-#endif
-}
-
 static void
 batch_debug_print_batches(const char *label, IndexScanDesc scan)
 {
@@ -702,9 +660,9 @@ batch_debug_print_batches(const char *label, IndexScanDesc scan)
 	if (IsCatalogRelation(scan->indexRelation))
 		return;
 
-	DEBUG_LOG("%s: batches headBatch %d nextBatch %d maxBatches %d",
+	DEBUG_LOG("%s: batches headBatch %d nextBatch %d",
 			  label,
-			  batchqueue->headBatch, batchqueue->nextBatch, batchqueue->maxBatches);
+			  batchqueue->headBatch, batchqueue->nextBatch);
 
 	for (int i = batchqueue->headBatch; i < batchqueue->nextBatch; i++)
 	{

@@ -245,7 +245,7 @@ typedef struct BatchIndexScanData *BatchIndexScan;
 
 /* Have we loaded the maximum number of batches? */
 #define INDEX_SCAN_BATCH_FULL(scan) \
-	(INDEX_SCAN_BATCH_COUNT(scan) == scan->batchqueue->maxBatches)
+	(INDEX_SCAN_BATCH_COUNT(scan) == INDEX_SCAN_MAX_BATCHES)
 
 /* Return batch for the provided index. */
 #define INDEX_SCAN_BATCH(scan, idx)	\
@@ -328,9 +328,8 @@ typedef struct BatchQueue
 	 * Array of batches returned by the AM. The array has a capacity (but can
 	 * be resized if needed). The headBatch is an index of the batch we're
 	 * currently reading from (this needs to be translated by modulo
-	 * maxBatches into index in the batches array).
+	 * INDEX_SCAN_MAX_BATCHES into index in the batches array).
 	 */
-	int			maxBatches;		/* size of the batches array */
 	int			headBatch;		/* head batch slot */
 	int			nextBatch;		/* next empty batch slot */
 
@@ -461,6 +460,29 @@ batch_assert_batch_valid(IndexScanDescData *scan, BatchIndexScan batch)
 	/* batch must have one or more matching items returned by index AM */
 	Assert(batch->firstItem >= 0 && batch->firstItem <= batch->lastItem);
 	Assert(batch->items != NULL);
+}
+
+static inline void
+batch_assert_batches_valid(IndexScanDescData  *scan)
+{
+#ifdef USE_ASSERT_CHECKING
+	BatchQueue *batchqueue = scan->batchqueue;
+
+	/* we should have batches initialized */
+	Assert(batchqueue != NULL);
+
+	/* The head/next indexes should define a valid range */
+	Assert(batchqueue->headBatch >= 0 &&
+		   batchqueue->headBatch <= batchqueue->nextBatch);
+
+	/* Check all current batches */
+	for (int i = batchqueue->headBatch; i < batchqueue->nextBatch; i++)
+	{
+		BatchIndexScan batch = INDEX_SCAN_BATCH(scan, i);
+
+		batch_assert_batch_valid(scan, batch);
+	}
+#endif
 }
 
 #endif							/* RELSCAN_H */

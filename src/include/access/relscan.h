@@ -262,9 +262,22 @@ typedef struct BatchIndexScanData *BatchIndexScan;
 #endif
 
 /*
- * State used by amgetbatch index AMs to manage a queue of batches of items
- * with matching index tuples.  Also used by indexbatch.c to store information
- * about the progress of an index scan.
+ * State used by table AMs to manage an index scan that uses the amgetbatch
+ * interface.  Scans work with a queue of batches returned by amgetbatch.
+ *
+ * Batches are kept in the order that they were returned in by amgetbatch,
+ * since that is the same order that table_index_getnext_slot will return
+ * matches in.  However, table AMs are free to fetch table tuples in whatever
+ * order is most convenient/efficient -- provided that such reordering cannot
+ * affect the order that table_index_getnext_slot later returns tuples in.
+ *
+ * This data structure also provides table AMs with a way to read ahead of the
+ * current read position by _multiple_ batches/index pages.  The further out
+ * the table AM reads ahead like this, the further it can see into the future.
+ * That way the table AM is able to reorder work as aggressively as desired.
+ * For example, index scans sometimes need to readahead by as many as a few
+ * dozen amgetbatch batches in order to maintain an optimal I/O prefetch
+ * distance (distance for reading table blocks/fetching table tuples).
  */
 typedef struct BatchQueue
 {

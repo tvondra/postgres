@@ -3395,16 +3395,13 @@ _bt_killitems(IndexScanDesc scan, BatchIndexScan batch)
 	BTPageOpaque opaque;
 	OffsetNumber minoff;
 	OffsetNumber maxoff;
-	int			numKilled = batch->numKilled;
 	bool		killedsomething = false;
 	Buffer		buf;
+	int			itemIndex = -1;
 
-	Assert(numKilled > 0);
+	Assert(!bms_is_empty(batch->killedItems));
 	Assert(BlockNumberIsValid(batch->currPage));
 	Assert(scan->heapRelation != NULL); /* can't be a bitmap index scan */
-
-	/* Always invalidate batch->killedItems[] before freeing batch */
-	batch->numKilled = 0;
 
 	if (!scan->batchqueue->dropPin)
 	{
@@ -3440,9 +3437,8 @@ _bt_killitems(IndexScanDesc scan, BatchIndexScan batch)
 	minoff = P_FIRSTDATAKEY(opaque);
 	maxoff = PageGetMaxOffsetNumber(page);
 
-	for (int i = 0; i < numKilled; i++)
+	while ((itemIndex = bms_next_member(batch->killedItems, itemIndex)) >= 0)
 	{
-		int			itemIndex = batch->killedItems[i];
 		BatchMatchingItem *kitem = &batch->items[itemIndex];
 		OffsetNumber offnum = kitem->indexOffset;
 
@@ -3457,7 +3453,6 @@ _bt_killitems(IndexScanDesc scan, BatchIndexScan batch)
 
 			if (BTreeTupleIsPosting(ituple))
 			{
-				int			pi = i + 1;
 				int			nposting = BTreeTupleGetNPosting(ituple);
 				int			j;
 
@@ -3477,6 +3472,7 @@ _bt_killitems(IndexScanDesc scan, BatchIndexScan batch)
 				 */
 				for (j = 0; j < nposting; j++)
 				{
+					int	nextIndex = -1;
 					ItemPointer item = BTreeTupleGetPostingN(ituple, j);
 
 					if (!ItemPointerEquals(item, &kitem->heapTid))
@@ -3504,8 +3500,9 @@ _bt_killitems(IndexScanDesc scan, BatchIndexScan batch)
 					 * kitem is also the last heap TID in the last index tuple
 					 * correctly -- posting tuple still gets killed).
 					 */
-					if (pi < numKilled)
-						kitem = &batch->items[batch->killedItems[pi++]];
+					nextIndex = bms_next_member(batch->killedItems, itemIndex);
+					if (nextIndex >= 0)
+						kitem = &batch->items[nextIndex];
 				}
 
 				/*

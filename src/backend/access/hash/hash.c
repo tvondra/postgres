@@ -389,8 +389,12 @@ hashfreebatch(IndexScanDesc scan, BatchIndexScan batch)
 	 * Check if there are tuples to kill from this batch (that weren't already
 	 * killed earlier on)
 	 */
-	if (batch->numKilled > 0)
+	if (!bms_is_empty(batch->killedItems))
+	{
 		_hash_kill_items(scan, batch);
+		bms_free(batch->killedItems);
+		batch->killedItems = NULL;
+	}
 
 	if (!scan->batchqueue->dropPin)
 	{

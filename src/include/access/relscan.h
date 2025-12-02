@@ -204,8 +204,7 @@ typedef struct BatchIndexScanData
 	int			lastItem;		/* last valid index in items[] */
 
 	/* info about killed items if any (killedItems is NULL if never used) */
-	int		   *killedItems;	/* indexes of killed items */
-	int			numKilled;		/* number of currently stored items */
+	Bitmapset  *killedItems;	/* indexes of killed items */
 
 	/*
 	 * Matching items state for this batch.
@@ -446,13 +445,6 @@ batch_assert_batch_valid(IndexScanDescData *scan, BatchIndexScan batch)
 	/* batch must have one or more matching items returned by index AM */
 	Assert(batch->firstItem >= 0 && batch->firstItem <= batch->lastItem);
 	Assert(batch->items != NULL);
-
-	/*
-	 * The number of killed items must be valid, and there must be an array of
-	 * indexes if there are items.
-	 */
-	Assert(batch->numKilled >= 0);
-	Assert(!(batch->numKilled > 0 && batch->killedItems == NULL));
 }
 
 #endif							/* RELSCAN_H */

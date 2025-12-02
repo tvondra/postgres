@@ -412,11 +412,8 @@ index_batch_kill_item(IndexScanDesc scan)
 
 	batch_assert_pos_valid(scan, readPos);
 
-	if (readBatch->killedItems == NULL)
-		readBatch->killedItems = (int *)
-			palloc(readBatch->maxitems * sizeof(int));
-	if (readBatch->numKilled < readBatch->maxitems)
-		readBatch->killedItems[readBatch->numKilled++] = readPos->item;
+	readBatch->killedItems = bms_add_member(readBatch->killedItems,
+											readPos->item);
 }
 
 /* ----------------
@@ -584,7 +581,6 @@ indexam_util_batch_alloc(IndexScanDesc scan, int maxitems, bool want_itup)
 	batch->buf = InvalidBuffer;
 	batch->firstItem = -1;
 	batch->lastItem = -1;
-	batch->numKilled = 0;
 
 	return batch;
 }
@@ -640,7 +636,7 @@ indexam_util_batch_release(IndexScanDesc scan, BatchIndexScan batch)
 		 * ourselves.  This isn't really expected; it's just defensive.
 		 */
 		if (batch->killedItems)
-			pfree(batch->killedItems);
+			bms_free(batch->killedItems);
 		if (batch->currTuples)
 			pfree(batch->currTuples);
 	}

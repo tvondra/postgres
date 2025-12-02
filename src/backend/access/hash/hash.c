@@ -385,10 +385,6 @@ hashrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 void
 hashfreebatch(IndexScanDesc scan, BatchIndexScan batch)
 {
-	/*
-	 * Check if there are tuples to kill from this batch (that weren't already
-	 * killed earlier on)
-	 */
 	if (!bms_is_empty(batch->killedItems))
 	{
 		_hash_kill_items(scan, batch);

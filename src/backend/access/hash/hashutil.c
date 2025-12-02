@@ -511,7 +511,7 @@ _hash_get_newbucket_from_oldbucket(Relation rel, Bucket old_bucket,
  * told us were killed.
  *
  * The batch parameter contains information about the current page and killed
- * tuples thereon (this should only be called if batch->numKilled > 0).
+ * tuples thereon (this should only be called if batch->killedItems is not empty).
  *
  * Caller should not have a lock on the batch position's page, but must hold a
  * buffer pin when !dropPin.  When we return, it still won't be locked.  It'll
@@ -538,16 +538,11 @@ _hash_kill_items(IndexScanDesc scan, BatchIndexScan batch)
 	HashPageOpaque opaque;
 	OffsetNumber offnum,
 				maxoff;
-	int			numKilled = batch->numKilled;
-	int			i;
+	int			itemIndex = -1;
 	bool		killedsomething = false;
 
-	Assert(numKilled > 0);
-	Assert(batch->killedItems != NULL);
+	Assert(!bms_is_empty(batch->killedItems));
 	Assert(BlockNumberIsValid(batch->currPage));
-
-	/* Always invalidate batch->killedItems[] before freeing batch */
-	batch->numKilled = 0;
 
 	if (!scan->batchqueue->dropPin)
 	{
@@ -583,9 +578,9 @@ _hash_kill_items(IndexScanDesc scan, BatchIndexScan batch)
 	opaque = HashPageGetOpaque(page);
 	maxoff = PageGetMaxOffsetNumber(page);
 
-	for (i = 0; i < numKilled; i++)
+	itemIndex = -1;
+	while ((itemIndex = bms_next_member(batch->killedItems, itemIndex)) >= 0)
 	{
-		int			itemIndex = batch->killedItems[i];
 		BatchMatchingItem *currItem = &batch->items[itemIndex];
 
 		offnum = currItem->indexOffset;

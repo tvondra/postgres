@@ -368,10 +368,6 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 void
 btfreebatch(IndexScanDesc scan, BatchIndexScan batch)
 {
-	/*
-	 * Check if there are tuples to kill from this batch (that weren't already
-	 * killed earlier on)
-	 */
 	if (!bms_is_empty(batch->killedItems))
 	{
 		_bt_killitems(scan, batch);

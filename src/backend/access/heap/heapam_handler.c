@@ -196,6 +196,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		else
 			hscan->xs_cbuf = ReadBuffer(hscan->xs_base.rel, hscan->xs_blk);
 
+		Assert(BufferIsValid(hscan->xs_cbuf));
+		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
+
 		/*
 		 * Prune page when it is pinned for the first time
 		 */
@@ -412,6 +415,7 @@ heap_batch_advance_pos(IndexScanDesc scan, struct BatchQueueItemPos *pos,
 static ItemPointer
 heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
+	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	BatchQueue *batchqueue = scan->batchqueue;
 	BatchQueueItemPos *readPos;
 
@@ -485,6 +489,14 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 			/* set the TID / itup for the scan */
 			scan->xs_heaptid = readBatch->items[readPos->item].heapTid;
+			scan->xs_visible = readBatch->items[readPos->item].visible;
+
+			if (readBatch->items[readPos->item].visible_valid)
+				scan->xs_visible = readBatch->items[readPos->item].visible;
+			else if (scan->xs_want_itup)
+				scan->xs_visible = VM_ALL_VISIBLE(scan->heapRelation,
+												  ItemPointerGetBlockNumber(&scan->xs_heaptid),
+												  &hscan->vmbuf);
 
 			/* xs_hitup is not supported by amgetbatch scans */
 			Assert(!scan->xs_hitup);
@@ -644,6 +656,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 					  void *per_buffer_data)
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
+	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	BatchQueue *batchqueue = scan->batchqueue;
 	BatchQueueItemPos *streamPos = &batchqueue->streamPos;
 	ScanDirection direction = batchqueue->direction;
@@ -718,12 +731,29 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		if (advanced)
 		{
 			BatchIndexScan streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
-			ItemPointer tid = &streamBatch->items[streamPos->item].heapTid;
+			BatchMatchingItem *item = &streamBatch->items[streamPos->item];
+			ItemPointer tid = &item->heapTid;
 
 			DEBUG_LOG("heapam_getnext_stream: item %d, TID (%u,%u)",
 					  streamPos->item,
 					  ItemPointerGetBlockNumber(tid),
 					  ItemPointerGetOffsetNumber(tid));
+
+
+			/*
+			 * For index-only scans, determine if the page is all-visible now. If
+			 * it is, we won't need the block and can skip it too. We need to
+			 * remember the visibility info for later, to not get confused.
+			 */
+			if (scan->xs_want_itup)
+			{
+				item->visible_valid = true;
+				item->visible = VM_ALL_VISIBLE(scan->heapRelation,
+											   ItemPointerGetBlockNumber(tid),
+											   &hscan->vmbuf);
+				if (item->visible)
+					continue;
+			}
 
 			/* same block as before, don't need to read it */
 			if (batchqueue->currentPrefetchBlock == ItemPointerGetBlockNumber(tid))
@@ -884,7 +914,18 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			if (scan->batchqueue != NULL)
 				tid = heapam_batch_getnext_tid(scan, direction);
 			else
+			{
 				tid = index_getnext_tid(scan, direction);
+
+				/*
+				 * make sure to set the xs_visible flag, just like it's
+				 * done in heapam_batch_getnext_tid
+				 */
+				if (scan->xs_want_itup)
+					scan->xs_visible = VM_ALL_VISIBLE(scan->heapRelation,
+													  ItemPointerGetBlockNumber(&scan->xs_heaptid),
+													  &hscan->vmbuf);
+			}
 
 			/* If we're out of index entries, we're done */
 			if (tid == NULL)
@@ -944,9 +985,7 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			 * It's worth going through this complexity to avoid needing to
 			 * lock the VM buffer, which could cause significant contention.
 			 */
-			if (!VM_ALL_VISIBLE(hscan->xs_base.rel,
-								ItemPointerGetBlockNumber(tid),
-								&hscan->vmbuf))
+			if (!scan->xs_visible)
 			{
 				/*
 				 * Rats, we have to visit the heap to check visibility.

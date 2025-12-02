@@ -160,6 +160,8 @@ typedef struct BatchMatchingItem
 	ItemPointerData heapTid;	/* TID of referenced heap item */
 	OffsetNumber indexOffset;	/* index item's location within page */
 	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */
+	bool		visible;		/* visibility (for IOS) */
+	bool		visible_valid;	/* visibility set/valid (for IOS) */
 } BatchMatchingItem;
 
 /*
@@ -381,6 +383,7 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
+	bool		xs_visible;		/* T means the heap page is all-visible */
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

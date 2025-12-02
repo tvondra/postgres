@@ -175,8 +175,6 @@ batch_getnext(IndexScanDesc scan, ScanDirection direction)
 
 		/* Delay initializing stream until reading from scan's second batch */
 		if (priorbatch && !scan->xs_heapfetch->rs && !batchqueue->disabled &&
-			!scan->xs_want_itup &&	/* XXX prefetching disabled for IoS, for
-									 * now */
 			enable_indexscan_prefetch)
 			scan->xs_heapfetch->rs =
 				read_stream_begin_relation(READ_STREAM_DEFAULT, NULL,

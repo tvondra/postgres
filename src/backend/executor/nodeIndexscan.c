@@ -125,16 +125,6 @@ IndexNext(IndexScanState *node)
 						 node->iss_OrderByKeys, node->iss_NumOrderByKeys);
 	}
 
-	index_get_prefetch_stats(scandesc,
-				 &node->iss_PrefetchAccum,
-				 &node->iss_PrefetchCount,
-				 &node->iss_PrefetchStalls,
-				 &node->iss_ResetCount,
-				 &node->iss_SkipCount,
-				 &node->iss_UngetCount,
-				 &node->iss_ForwardedCount,
-				 node->iss_PrefetchHistogram);
-
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
@@ -824,6 +814,18 @@ ExecEndIndexScan(IndexScanState *node)
 		 * which will have a new IndexOnlyScanState and zeroed stats.
 		 */
 		winstrument->nsearches += node->iss_Instrument.nsearches;
+
+		/* Accumulate prefetch info too */
+		winstrument->prefetch_count += node->iss_Instrument.prefetch_count;
+		winstrument->prefetch_accum += node->iss_Instrument.prefetch_accum;
+		winstrument->prefetch_stalls += node->iss_Instrument.prefetch_stalls;
+		winstrument->reset_count += node->iss_Instrument.reset_count;
+		winstrument->skip_count += node->iss_Instrument.skip_count;
+		winstrument->unget_count += node->iss_Instrument.unget_count;
+		winstrument->forwarded_count += node->iss_Instrument.forwarded_count;
+
+		for (int i = 0; i < PREFETCH_HISTOGRAM_SIZE; i++)
+			winstrument->prefetch_histogram[i] += node->iss_Instrument.prefetch_histogram[i];
 	}
 
 	/*
@@ -1097,15 +1099,6 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	{
 		indexstate->iss_RuntimeContext = NULL;
 	}
-
-	indexstate->iss_PrefetchAccum = 0;
-	indexstate->iss_PrefetchCount = 0;
-	indexstate->iss_PrefetchStalls = 0;
-	indexstate->iss_ResetCount = 0;
-	indexstate->iss_SkipCount = 0;
-	indexstate->iss_UngetCount = 0;
-	indexstate->iss_ForwardedCount = 0;
-	memset(indexstate->iss_PrefetchHistogram, 0, sizeof(indexstate->iss_PrefetchHistogram));
 
 	/*
 	 * all done.

@@ -388,14 +388,26 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 }
 
-void
-index_get_prefetch_stats(IndexScanDesc scan, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram)
+/*
+ * index_get_prefetch_stats
+ *		collect prefetch statistics from the read_stream
+ *
+ * Does nothing if the index scan does not use a read_stream / AIO.
+ */
+extern void
+index_get_prefetch_stats(IndexScanDesc scan,
+						 uint64 *prefetch_count, uint64 *prefetch_accum,
+						 uint64 *prefetch_stalls, uint64 *reset_count,
+						 uint64 *skip_count, uint64 *unget_count,
+						 uint64 *forwarded_count, uint64 *histogram)
 {
-	/* ugly */
-	if (scan->xs_heapfetch->rs != NULL)
+	if (scan && scan->xs_heapfetch->rs != NULL)
 	{
 		read_stream_prefetch_stats(scan->xs_heapfetch->rs,
-					   accum, count, stalls, resets, skips, ungets, forwarded, histogram);
+								   prefetch_count, prefetch_accum,
+								   prefetch_stalls, reset_count,
+								   skip_count, unget_count,
+								   forwarded_count, histogram);
 	}
 }
 

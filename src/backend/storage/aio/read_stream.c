@@ -86,6 +86,21 @@ typedef struct InProgressIO
 	ReadBuffersOperation op;
 } InProgressIO;
 
+/* XXX must match the constant in genam.h */
+#define	PREFETCH_HISTOGRAM_SIZE		16
+
+typedef struct ReadStreamStats
+{
+	uint64		count;	/* number of read requests */
+	uint64		accum;	/* accumulated distance (sum for all reads) */
+	int64		nstalls;	/* number of stream stalls */
+	int64		nresets;	/* number of stream resets */
+	int64		nskips;		/* number of skipped blocks */
+	int64		nungets;	/* number of block ungets */
+	int64		nforwards;	/* number of forwarded blocks */
+	int64		histogram[PREFETCH_HISTOGRAM_SIZE];	/* distance histogram */
+} ReadStreamStats;
+
 /*
  * State for managing a stream of reads.
  */
@@ -106,15 +121,7 @@ struct ReadStream
 	bool		batch_mode;		/* READ_STREAM_USE_BATCHING */
 	bool		advice_enabled;
 	bool		temporary;
-
-	int64		distance_accum;
-	int64		distance_count;
-	int64		distance_stalls;
-	int64		reset_count;
-	int64		skip_count;
-	int64		unget_count;
-	int64		forwarded_count;
-	int64		distance_hist[16];
+	ReadStreamStats	stats;
 
 	/*
 	 * One-block buffer to support 'ungetting' a block number, to resolve flow
@@ -181,6 +188,34 @@ block_range_read_stream_cb(ReadStream *stream,
 	return InvalidBlockNumber;
 }
 
+static inline void
+read_stream_update_stats(ReadStream *stream)
+{
+	int hist_idx = -1;
+
+	/* distance=1 means we're not really prefetching, count it as a stall */
+	if (stream->distance == 1)
+	{
+		stream->stats.nstalls += 1;
+		return;
+	}
+
+	/* determine which bucket of the histogram the distance belongs to */
+	for (int i = 0; i < 16; i++)
+	{
+		if (stream->distance < (1 << i))
+			break;
+		hist_idx++;
+	}
+
+	Assert((hist_idx >= 0) && (hist_idx < 16));
+
+	stream->stats.histogram[hist_idx] += 1;
+
+	stream->stats.accum += stream->distance;
+	stream->stats.count += 1;
+}
+
 /*
  * Ask the callback which block it would like us to read next, with a one block
  * buffer in front to allow read_stream_unget_block() to work.
@@ -190,28 +225,7 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
-        if (stream->distance > 1)
-        {
-		int hist_idx = -1;
-
-                stream->distance_accum += stream->distance;
-                stream->distance_count += 1;
-
-		for (int i = 0; i < 16; i++)
-		{
-			if (stream->distance < (1 << i))
-				break;
-
-			hist_idx++;
-		}
-
-		if ((hist_idx >= 0) && (hist_idx < 16))
-			stream->distance_hist[hist_idx]++;
-        }
-        else
-        {
-                stream->distance_stalls += 1;
-        }
+	read_stream_update_stats(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -247,7 +261,8 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
 	Assert(stream->buffered_blocknum == InvalidBlockNumber);
 	Assert(blocknum != InvalidBlockNumber);
 	stream->buffered_blocknum = blocknum;
-	stream->unget_count++;
+
+	stream->stats.nungets++;
 }
 
 /*
@@ -428,8 +443,6 @@ read_stream_start_pending_read(ReadStream *stream)
 		forwarded++;
 	stream->forwarded_buffers = forwarded;
 
-	stream->forwarded_count += forwarded;
-
 	/*
 	 * We gave a contiguous range of buffer space to StartReadBuffers(), but
 	 * we want it to wrap around at queue_size.  Copy overflowing buffers to
@@ -457,6 +470,9 @@ read_stream_start_pending_read(ReadStream *stream)
 	/* Adjust the pending read to cover the remaining portion, if any. */
 	stream->pending_read_blocknum += nblocks;
 	stream->pending_read_nblocks -= nblocks;
+
+	/* Remember the number of forwarded blocks */
+	stream->stats.nforwards += forwarded;
 
 	return true;
 }
@@ -739,14 +755,7 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
-	stream->distance_accum = 0;
-	stream->distance_count = 0;
-	stream->distance_stalls = 0;
-	stream->reset_count = 0;
-	stream->skip_count = 0;
-	stream->unget_count = 0;
-	stream->forwarded_count = 0;
-	memset(stream->distance_hist, 0, sizeof(stream->distance_hist));
+	memset(&stream->stats, 0, sizeof(ReadStreamStats));
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
@@ -1146,8 +1155,8 @@ read_stream_reset(ReadStream *stream)
 	stream->distance = Max(1, stream->distance_old);
 	stream->distance_old = 0;
 
-	/* track the number of resets */
-	stream->reset_count += 1;
+	/* Remember we reset the stream */
+	stream->stats.nresets += 1;
 }
 
 /*
@@ -1160,21 +1169,28 @@ read_stream_end(ReadStream *stream)
 	pfree(stream);
 }
 
+/* Return the stream stats. */
 void
-read_stream_prefetch_stats(ReadStream *stream, int64 *accum, int64 *count, int64 *stalls, int64 *resets, int64 *skips, int64 *ungets, int64 *forwarded, int64 *histogram)
+read_stream_prefetch_stats(ReadStream *stream,
+						   uint64 *prefetch_count, uint64 *prefetch_accum,
+						   uint64 *prefetch_stalls, uint64 *reset_count,
+						   uint64 *skip_count, uint64 *unget_count,
+						   uint64 *forwarded_count, uint64 *histogram)
 {
-	*accum = stream->distance_accum;
-	*count = stream->distance_count;
-	*stalls = stream->distance_stalls;
-	*resets = stream->reset_count;
-	*skips = stream->skip_count;
-	*ungets = stream->unget_count;
-	*forwarded = stream->forwarded_count;
-	memcpy(histogram, stream->distance_hist, sizeof(stream->distance_hist));
+	*prefetch_count = stream->stats.count;
+	*prefetch_accum = stream->stats.accum;
+	*prefetch_stalls = stream->stats.nstalls;
+	*reset_count = stream->stats.nresets;
+	*skip_count = stream->stats.nskips;
+	*unget_count = stream->stats.nungets;
+	*forwarded_count = stream->stats.nforwards;
+
+	for (int i = 0; i < PREFETCH_HISTOGRAM_SIZE; i++)
+		histogram[i] = stream->stats.histogram[i];
 }
 
 void
 read_stream_skip_block(ReadStream *stream)
 {
-	stream->skip_count++;
+	stream->stats.nskips += 1;
 }

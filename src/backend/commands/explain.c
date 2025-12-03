@@ -3920,16 +3920,18 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 static void
 show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 {
-	Plan       *plan = planstate->plan;
+	Plan	   *plan = planstate->plan;
+	IndexScanDesc	scandesc = NULL;
+	SharedIndexScanInstrumentation *SharedInfo = NULL;
 
-	int64	count = 0,
-		accum = 0,
-		stalls = 0,
-		resets = 0,
-		skips = 0,
-		ungets = 0,
-		forwarded = 0;
-	int64  *hist = NULL;
+	uint64	prefetch_count = 0,
+			prefetch_accum = 0,
+			prefetch_stalls = 0,
+			reset_count = 0,
+			skip_count = 0,
+			unget_count = 0,
+			forwarded_count = 0;
+	uint64	hist[PREFETCH_HISTOGRAM_SIZE];
 
 	if (!es->analyze)
 		return;
@@ -3941,32 +3943,66 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 			{
 				IndexScanState *indexstate = ((IndexScanState *) planstate);
 
-				count = indexstate->iss_PrefetchCount;
-				accum = indexstate->iss_PrefetchAccum;
-				stalls = indexstate->iss_PrefetchStalls;
-				resets = indexstate->iss_ResetCount;
-				skips = indexstate->iss_SkipCount;
-				ungets = indexstate->iss_UngetCount;
-				forwarded = indexstate->iss_ForwardedCount;
-				hist = indexstate->iss_PrefetchHistogram;
+				scandesc = indexstate->iss_ScanDesc;
+				SharedInfo = indexstate->iss_SharedInfo;
+				break;
+			}
+		case T_IndexOnlyScan:
+			{
+				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
 
+				scandesc = indexstate->ioss_ScanDesc;
+				SharedInfo = indexstate->ioss_SharedInfo;
 				break;
 			}
 		default:
 			break;
 	}
 
-	if (count > 0)
+	/* collect prefetch statistics from the read stream */
+	index_get_prefetch_stats(scandesc,
+							 &prefetch_count,
+							 &prefetch_accum,
+							 &prefetch_stalls,
+							 &reset_count,
+							 &skip_count,
+							 &unget_count,
+							 &forwarded_count,
+							 hist);
+
+	/* Next get the sum of the counters set within each and every process */
+	if (SharedInfo)
+	{
+		for (int i = 0; i < SharedInfo->num_workers; ++i)
+		{
+			IndexScanInstrumentation *winstrument = &SharedInfo->winstrument[i];
+
+			prefetch_count += winstrument->prefetch_count;
+			prefetch_accum += winstrument->prefetch_accum;
+			prefetch_stalls += winstrument->prefetch_stalls;
+			reset_count += winstrument->reset_count;
+			skip_count += winstrument->skip_count;
+			unget_count += winstrument->unget_count;
+			forwarded_count += winstrument->forwarded_count;
+
+			for (int j = 0; j < PREFETCH_HISTOGRAM_SIZE; j++)
+				hist[j] += winstrument->prefetch_histogram[j];
+		}
+	}
+
+	if (prefetch_count > 0)
 	{
 		bool first = true;
 
-		ExplainPropertyFloat("Prefetch Distance", NULL, (accum * 1.0 / count), 3, es);
-		ExplainPropertyUInteger("Prefetch Count", NULL, count, es);
-		ExplainPropertyUInteger("Prefetch Stalls", NULL, stalls, es);
-		ExplainPropertyUInteger("Prefetch Skips", NULL, skips, es);
-		ExplainPropertyUInteger("Prefetch Resets", NULL, resets, es);
-		ExplainPropertyUInteger("Stream Ungets", NULL, ungets, es);
-		ExplainPropertyUInteger("Stream Forwarded", NULL, forwarded, es);
+		ExplainPropertyFloat("Prefetch Distance", NULL,
+							 (prefetch_accum * 1.0 / prefetch_count), 3, es);
+
+		ExplainPropertyUInteger("Prefetch Count", NULL, prefetch_count, es);
+		ExplainPropertyUInteger("Prefetch Stalls", NULL, prefetch_stalls, es);
+		ExplainPropertyUInteger("Prefetch Skips", NULL, skip_count, es);
+		ExplainPropertyUInteger("Prefetch Resets", NULL, reset_count, es);
+		ExplainPropertyUInteger("Stream Ungets", NULL, unget_count, es);
+		ExplainPropertyUInteger("Stream Forwarded", NULL, forwarded_count, es);
 
 		ExplainIndentText(es);
 		appendStringInfoString(es->str, "Prefetch Histogram: ");
@@ -3983,7 +4019,6 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 			first = false;
 		}
 		appendStringInfoString(es->str, "\n");
-
 	}
 }
 

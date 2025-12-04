@@ -401,6 +401,17 @@ index_get_prefetch_stats(IndexScanDesc scan,
 						 uint64 *skip_count, uint64 *unget_count,
 						 uint64 *forwarded_count, uint64 *histogram)
 {
+	/* reset everything, in case there's no read stream */
+	*prefetch_count = 0;
+	*prefetch_accum = 0;
+	*prefetch_stalls = 0;
+	*reset_count = 0;
+	*skip_count = 0;
+	*unget_count = 0;
+	*forwarded_count = 0;
+
+	memset(histogram, 0, sizeof(uint64) * PREFETCH_HISTOGRAM_SIZE);
+
 	if (scan && scan->xs_heapfetch->rs != NULL)
 	{
 		read_stream_prefetch_stats(scan->xs_heapfetch->rs,

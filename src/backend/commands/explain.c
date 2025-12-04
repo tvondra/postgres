@@ -137,6 +137,8 @@ static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
 static void show_indexsearches_info(PlanState *planstate, ExplainState *es);
 static void show_indexprefetch_info(PlanState *planstate, ExplainState *es);
+static void show_indexprefetch_worker_info(PlanState *planstate, ExplainState *es,
+										   int worker);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
 static void show_instrumentation_count(const char *qlabel, int which,
@@ -2314,6 +2316,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_buffer_usage(es, &instrument->bufusage);
 			if (es->wal)
 				show_wal_usage(es, &instrument->walusage);
+
+			show_indexprefetch_worker_info(planstate, es, n);
+
 			ExplainCloseWorker(n, es);
 		}
 	}
@@ -4015,6 +4020,73 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 				appendStringInfoString(es->str, ", ");
 
 			appendStringInfo(es->str, "[%d,%d) => " INT64_FORMAT, (1 << i), (1 << (i+1)), hist[i]);
+
+			first = false;
+		}
+		appendStringInfoString(es->str, "\n");
+	}
+}
+
+static void
+show_indexprefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
+{
+
+	Plan	   *plan = planstate->plan;
+	SharedIndexScanInstrumentation *SharedInfo = NULL;
+	IndexScanInstrumentation *instrument;
+
+	if (!es->analyze)
+		return;
+
+	/* Initialize counters with stats from the local process first */
+	switch (nodeTag(plan))
+	{
+		case T_IndexScan:
+			{
+				IndexScanState *indexstate = ((IndexScanState *) planstate);
+				SharedInfo = indexstate->iss_SharedInfo;
+				break;
+			}
+		case T_IndexOnlyScan:
+			{
+				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
+				SharedInfo = indexstate->ioss_SharedInfo;
+				break;
+			}
+		default:
+			/* ignore other plans */
+			return;
+	}
+
+	instrument = &SharedInfo->winstrument[worker];
+
+	/* don't print stats if there's nothing to report */
+	if (instrument->prefetch_count > 0)
+	{
+		bool first = true;
+
+		ExplainPropertyFloat("Prefetch Distance", NULL,
+							 (instrument->prefetch_accum * 1.0 / instrument->prefetch_count), 3, es);
+
+		ExplainPropertyUInteger("Prefetch Count", NULL, instrument->prefetch_count, es);
+		ExplainPropertyUInteger("Prefetch Stalls", NULL, instrument->prefetch_stalls, es);
+		ExplainPropertyUInteger("Prefetch Skips", NULL, instrument->skip_count, es);
+		ExplainPropertyUInteger("Prefetch Resets", NULL, instrument->reset_count, es);
+		ExplainPropertyUInteger("Stream Ungets", NULL, instrument->unget_count, es);
+		ExplainPropertyUInteger("Stream Forwarded", NULL, instrument->forwarded_count, es);
+
+		ExplainIndentText(es);
+		appendStringInfoString(es->str, "Prefetch Histogram: ");
+		for (int i = 0; i < 16; i++)
+		{
+			if (instrument->prefetch_histogram[i] == 0)
+				continue;
+
+			if (!first)
+				appendStringInfoString(es->str, ", ");
+
+			appendStringInfo(es->str, "[%d,%d) => " INT64_FORMAT, (1 << i), (1 << (i+1)),
+							 instrument->prefetch_histogram[i]);
 
 			first = false;
 		}

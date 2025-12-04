@@ -354,16 +354,15 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		winstrument->nsearches += node->ioss_Instrument.nsearches;
 
 		/* Accumulate prefetch info too */
-		winstrument->prefetch_count += node->ioss_Instrument.prefetch_count;
-		winstrument->prefetch_accum += node->ioss_Instrument.prefetch_accum;
-		winstrument->prefetch_stalls += node->ioss_Instrument.prefetch_stalls;
-		winstrument->reset_count += node->ioss_Instrument.reset_count;
-		winstrument->skip_count += node->ioss_Instrument.skip_count;
-		winstrument->unget_count += node->ioss_Instrument.unget_count;
-		winstrument->forwarded_count += node->ioss_Instrument.forwarded_count;
-
-		for (int i = 0; i < PREFETCH_HISTOGRAM_SIZE; i++)
-			winstrument->prefetch_histogram[i] += node->ioss_Instrument.prefetch_histogram[i];
+		index_get_prefetch_stats(indexScanDesc,
+								 &winstrument->prefetch_count,
+								 &winstrument->prefetch_accum,
+								 &winstrument->prefetch_stalls,
+								 &winstrument->reset_count,
+								 &winstrument->skip_count,
+								 &winstrument->unget_count,
+								 &winstrument->forwarded_count,
+								 winstrument->prefetch_histogram);
 	}
 
 	/*

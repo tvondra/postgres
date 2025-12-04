@@ -86,9 +86,10 @@ typedef struct InProgressIO
 	ReadBuffersOperation op;
 } InProgressIO;
 
-/* XXX must match the constant in genam.h */
+/* XXX must match the histogram size in genam.h */
 #define	PREFETCH_HISTOGRAM_SIZE		16
 
+/* statistics tracked by the read_stream */
 typedef struct ReadStreamStats
 {
 	uint64		count;	/* number of read requests */
@@ -188,8 +189,19 @@ block_range_read_stream_cb(ReadStream *stream,
 	return InvalidBlockNumber;
 }
 
+/*
+ * read_stream_update_prefetch_stats
+ *		update read_stream stats before a prefetch request
+ *
+ * With (distance == 1) we're not really doing any prefetching, because we'll
+ * need the block immediately. We count that as a stall.
+ *
+ * For (distance > 1) we count the number of prefetch requests and distance
+ * sum, so that we can later calculate average distance. We also keep a small
+ * histogram of distances, with exponentially-sized buckets.
+ */
 static inline void
-read_stream_update_stats(ReadStream *stream)
+read_stream_update_prefetch_stats(ReadStream *stream)
 {
 	int hist_idx = -1;
 
@@ -208,6 +220,7 @@ read_stream_update_stats(ReadStream *stream)
 		hist_idx++;
 	}
 
+	/* we should not see a distance for other buckets */
 	Assert((hist_idx >= 0) && (hist_idx < 16));
 
 	stream->stats.histogram[hist_idx] += 1;
@@ -225,7 +238,7 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
-	read_stream_update_stats(stream);
+	read_stream_update_prefetch_stats(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -262,6 +275,7 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
 	Assert(blocknum != InvalidBlockNumber);
 	stream->buffered_blocknum = blocknum;
 
+	/* remeber we put a block back */
 	stream->stats.nungets++;
 }
 
@@ -471,7 +485,7 @@ read_stream_start_pending_read(ReadStream *stream)
 	stream->pending_read_blocknum += nblocks;
 	stream->pending_read_nblocks -= nblocks;
 
-	/* Remember the number of forwarded blocks */
+	/* remember the number of forwarded blocks */
 	stream->stats.nforwards += forwarded;
 
 	return true;
@@ -755,6 +769,7 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
+	/* zero the stats */
 	memset(&stream->stats, 0, sizeof(ReadStreamStats));
 
 	/*
@@ -847,17 +862,6 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 {
 	Buffer		buffer;
 	int16		oldest_buffer_index;
-/*
-	if (stream->distance > 0)
-	{
-		stream->distance_accum += stream->distance;
-		stream->distance_count += 1;
-	}
-	else
-	{
-		stream->distance_stalls += 1;
-	}
-*/
 
 #ifndef READ_STREAM_DISABLE_FAST_PATH
 
@@ -1169,7 +1173,7 @@ read_stream_end(ReadStream *stream)
 	pfree(stream);
 }
 
-/* Return the stream stats. */
+/* return the prefetch stats for the read_stream */
 void
 read_stream_prefetch_stats(ReadStream *stream,
 						   uint64 *prefetch_count, uint64 *prefetch_accum,
@@ -1189,6 +1193,12 @@ read_stream_prefetch_stats(ReadStream *stream,
 		histogram[i] = stream->stats.histogram[i];
 }
 
+/*
+ * read_stream_skip_block
+ *		update the stats counter of skipped blocks
+ *
+ * Expected to be used from the read_stream next_block callback.
+ */
 void
 read_stream_skip_block(ReadStream *stream)
 {

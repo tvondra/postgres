@@ -2317,6 +2317,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (es->wal)
 				show_wal_usage(es, &instrument->walusage);
 
+			/* show prefetch info for the given worker */
 			show_indexprefetch_worker_info(planstate, es, n);
 
 			ExplainCloseWorker(n, es);
@@ -3922,6 +3923,12 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 	ExplainPropertyUInteger("Index Searches", NULL, nsearches, es);
 }
 
+/*
+ * show_indexprefetch_info
+ *		show info about prefetching
+ *
+ * Shows summary of stats for leader and workers (if any).
+ */
 static void
 show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 {
@@ -3961,7 +3968,8 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 				break;
 			}
 		default:
-			break;
+			/* other nodes don't have prefetch info */
+			return;
 	}
 
 	/* collect prefetch statistics from the read stream */
@@ -3975,7 +3983,7 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 							 &forwarded_count,
 							 hist);
 
-	/* Next get the sum of the counters set within each and every process */
+	/* get the sum of the counters set within each and every process */
 	if (SharedInfo)
 	{
 		for (int i = 0; i < SharedInfo->num_workers; ++i)
@@ -3995,6 +4003,7 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 		}
 	}
 
+	/* don't print anything without prefetching */
 	if (prefetch_count > 0)
 	{
 		bool first = true;
@@ -4031,6 +4040,12 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 	}
 }
 
+/*
+ * show_indexprefetch_worker_info
+ *		show info about prefetching for a single worker
+ *
+ * Shows prefetching stats for a worker with a given index.
+ */
 static void
 show_indexprefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 {
@@ -4062,6 +4077,7 @@ show_indexprefetch_worker_info(PlanState *planstate, ExplainState *es, int worke
 			return;
 	}
 
+	/* get instrumentation for the given worker */
 	instrument = &SharedInfo->winstrument[worker];
 
 	/* don't print stats if there's nothing to report */

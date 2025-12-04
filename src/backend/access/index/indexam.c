@@ -392,7 +392,8 @@ index_rescan(IndexScanDesc scan,
  * index_get_prefetch_stats
  *		collect prefetch statistics from the read_stream
  *
- * Does nothing if the index scan does not use a read_stream / AIO.
+ * If the index scan does not use a read_stream (yet), the counters are
+ * initialized to 0.
  */
 extern void
 index_get_prefetch_stats(IndexScanDesc scan,

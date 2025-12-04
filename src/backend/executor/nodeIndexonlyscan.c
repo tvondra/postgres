@@ -353,7 +353,7 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		 */
 		winstrument->nsearches += node->ioss_Instrument.nsearches;
 
-		/* Accumulate prefetch info too */
+		/* collect prefetch info for this process from the read_stream */
 		index_get_prefetch_stats(indexScanDesc,
 								 &winstrument->prefetch_count,
 								 &winstrument->prefetch_accum,

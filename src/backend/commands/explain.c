@@ -3999,19 +3999,23 @@ show_indexprefetch_info(PlanState *planstate, ExplainState *es)
 	{
 		bool first = true;
 
-		ExplainPropertyFloat("Prefetch Distance", NULL,
-							 (prefetch_accum * 1.0 / prefetch_count), 3, es);
+		ExplainIndentText(es);
+		appendStringInfoString(es->str, "Prefetch:");
 
-		ExplainPropertyUInteger("Prefetch Count", NULL, prefetch_count, es);
-		ExplainPropertyUInteger("Prefetch Stalls", NULL, prefetch_stalls, es);
-		ExplainPropertyUInteger("Prefetch Skips", NULL, skip_count, es);
-		ExplainPropertyUInteger("Prefetch Resets", NULL, reset_count, es);
-		ExplainPropertyUInteger("Stream Ungets", NULL, unget_count, es);
-		ExplainPropertyUInteger("Stream Forwarded", NULL, forwarded_count, es);
+		appendStringInfo(es->str, " distance=%.3f",
+						 (prefetch_accum * 1.0 / prefetch_count));
+		appendStringInfo(es->str, " count=%" PRId64, prefetch_count);
+		appendStringInfo(es->str, " stalls=%" PRId64, prefetch_stalls);
+		appendStringInfo(es->str, " skipped=%" PRId64, skip_count);
+		appendStringInfo(es->str, " resets=%" PRId64, reset_count);
+		appendStringInfo(es->str, " ungets=%" PRId64, unget_count);
+		appendStringInfo(es->str, " forwarded=%" PRId64, forwarded_count);
+
+		appendStringInfoChar(es->str, '\n');
 
 		ExplainIndentText(es);
-		appendStringInfoString(es->str, "Prefetch Histogram: ");
-		for (int i = 0; i < 16; i++)
+		appendStringInfoString(es->str, "          histogram ");
+		for (int i = 0; i < PREFETCH_HISTOGRAM_SIZE; i++)
 		{
 			if (hist[i] == 0)
 				continue;
@@ -4065,19 +4069,23 @@ show_indexprefetch_worker_info(PlanState *planstate, ExplainState *es, int worke
 	{
 		bool first = true;
 
-		ExplainPropertyFloat("Prefetch Distance", NULL,
-							 (instrument->prefetch_accum * 1.0 / instrument->prefetch_count), 3, es);
+		ExplainIndentText(es);
+		appendStringInfoString(es->str, "Prefetch:");
 
-		ExplainPropertyUInteger("Prefetch Count", NULL, instrument->prefetch_count, es);
-		ExplainPropertyUInteger("Prefetch Stalls", NULL, instrument->prefetch_stalls, es);
-		ExplainPropertyUInteger("Prefetch Skips", NULL, instrument->skip_count, es);
-		ExplainPropertyUInteger("Prefetch Resets", NULL, instrument->reset_count, es);
-		ExplainPropertyUInteger("Stream Ungets", NULL, instrument->unget_count, es);
-		ExplainPropertyUInteger("Stream Forwarded", NULL, instrument->forwarded_count, es);
+		appendStringInfo(es->str, " distance=%.3f",
+						 (instrument->prefetch_accum * 1.0 / instrument->prefetch_count));
+		appendStringInfo(es->str, " count=%" PRId64, instrument->prefetch_count);
+		appendStringInfo(es->str, " stalls=%" PRId64, instrument->prefetch_stalls);
+		appendStringInfo(es->str, " skipped=%" PRId64, instrument->skip_count);
+		appendStringInfo(es->str, " resets=%" PRId64, instrument->reset_count);
+		appendStringInfo(es->str, " ungets=%" PRId64, instrument->unget_count);
+		appendStringInfo(es->str, " forwarded=%" PRId64, instrument->forwarded_count);
+
+		appendStringInfoChar(es->str, '\n');
 
 		ExplainIndentText(es);
-		appendStringInfoString(es->str, "Prefetch Histogram: ");
-		for (int i = 0; i < 16; i++)
+		appendStringInfoString(es->str, "          histogram ");
+		for (int i = 0; i < PREFETCH_HISTOGRAM_SIZE; i++)
 		{
 			if (instrument->prefetch_histogram[i] == 0)
 				continue;

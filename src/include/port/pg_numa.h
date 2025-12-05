@@ -18,6 +18,10 @@ extern PGDLLIMPORT int pg_numa_init(void);
 extern PGDLLIMPORT int pg_numa_query_pages(int pid, unsigned long count, void **pages, int *status);
 extern PGDLLIMPORT int pg_numa_get_max_node(void);
 
+extern PGDLLIMPORT void pg_numa_set_interleave(void);
+extern PGDLLIMPORT void pg_numa_set_localalloc(void);
+extern PGDLLIMPORT void pg_numa_interleave_memory(void *ptr, Size size);
+
 #ifdef USE_LIBNUMA
 
 /*

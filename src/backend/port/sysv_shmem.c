@@ -19,6 +19,7 @@
  */
 #include "postgres.h"
 
+#include <numa.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/file.h>
@@ -29,6 +30,7 @@
 
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "port/pg_numa.h"
 #include "portability/mem.h"
 #include "storage/dsm.h"
 #include "storage/fd.h"
@@ -602,6 +604,28 @@ CreateAnonymousSegment(Size *size)
 	void	   *ptr = MAP_FAILED;
 	int			mmap_errno = 0;
 
+	/*
+	 * When asked to use NUMA-interleaving, we need to set the policy before
+	 * touching the memory. By default that'll happen later, when either
+	 * initializing some of the shmem structures (e.g. buffer descriptors), or
+	 * when running queries. In that case it's enough to set the policy after
+	 * the mmap() call, and we don't need to do anything here.
+	 *
+	 * With MAP_POPULATE, the mmap() itself will prefault the pages, so we
+	 * need to set the policy to interleave before the mmap() call, and then
+	 * revert to localalloc (so that private memory is allocated locally).
+	 *
+	 * XXX It probably is not a good idea to enable interleaving with regular
+	 * memory pages, because then each buffer will get split on two nodes, and
+	 * the system won't be able to fix that by migrating one of the pages. But
+	 * we leave that up to the admin, instead of forbidding it.
+	 */
+	if (shared_memory_interleave && shared_memory_populate)
+	{
+		/* set the allocation to interleave on nodes allowed by the cpuset */
+		pg_numa_set_interleave();
+	}
+
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
 	Assert(huge_pages != HUGE_PAGES_ON);
@@ -618,6 +642,10 @@ CreateAnonymousSegment(Size *size)
 
 		if (allocsize % hugepagesize != 0)
 			allocsize += hugepagesize - (allocsize % hugepagesize);
+
+		/* populate the shared memory if requested */
+		if (shared_memory_populate)
+			mmap_flags |= MAP_POPULATE;
 
 		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
 				   PG_MMAP_FLAGS | mmap_flags, -1, 0);
@@ -638,13 +666,19 @@ CreateAnonymousSegment(Size *size)
 
 	if (ptr == MAP_FAILED && huge_pages != HUGE_PAGES_ON)
 	{
+		int			mmap_flags = 0;
+
+		/* populate the shared memory if requested */
+		if (shared_memory_populate)
+			mmap_flags |= MAP_POPULATE;
+
 		/*
 		 * Use the original size, not the rounded-up value, when falling back
 		 * to non-huge pages.
 		 */
 		allocsize = *size;
 		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
-				   PG_MMAP_FLAGS, -1, 0);
+				   PG_MMAP_FLAGS | mmap_flags, -1, 0);
 		mmap_errno = errno;
 	}
 
@@ -661,6 +695,21 @@ CreateAnonymousSegment(Size *size)
 						 "memory usage, perhaps by reducing \"shared_buffers\" or "
 						 "\"max_connections\".",
 						 allocsize) : 0));
+	}
+
+	/*
+	 * With NUMA interleaving, we need to either apply interleaving for the
+	 * shmem segment we just allocated, or reset the memory policy to local
+	 * allocation (when using MAP_POPULATE).
+	 */
+	if (shared_memory_interleave)
+	{
+		if (shared_memory_populate)
+			/* revert back to using the local node */
+			pg_numa_set_localalloc();
+		else
+			/* apply interleaving to the new memory segment */
+			pg_numa_interleave_memory(ptr, allocsize);
 	}
 
 	*size = allocsize;

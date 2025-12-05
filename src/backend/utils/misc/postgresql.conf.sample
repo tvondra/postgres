@@ -152,6 +152,8 @@
                                         #   sysv
                                         #   windows
                                         # (change requires restart)
+#shared_memory_interleave = off         # interleave all memory on available NUMA nodes
+#shared_memory_populate = off           # prefault shared memory on start
 #dynamic_shared_memory_type = posix     # the default is usually the first option
                                         # supported by the operating system:
                                         #   posix

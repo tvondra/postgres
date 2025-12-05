@@ -580,6 +580,8 @@ static int	ssl_renegotiation_limit;
 int			huge_pages = HUGE_PAGES_TRY;
 int			huge_page_size;
 int			huge_pages_status = HUGE_PAGES_UNKNOWN;
+bool		shared_memory_interleave = false;
+bool		shared_memory_populate = false;
 
 /*
  * These variables are all dummies that don't do anything, except in some

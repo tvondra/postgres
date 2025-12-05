@@ -47,6 +47,9 @@ extern PGDLLIMPORT int huge_pages;
 extern PGDLLIMPORT int huge_page_size;
 extern PGDLLIMPORT int huge_pages_status;
 
+extern PGDLLIMPORT bool shared_memory_interleave;
+extern PGDLLIMPORT bool shared_memory_populate;
+
 /* Possible values for huge_pages and huge_pages_status */
 typedef enum
 {

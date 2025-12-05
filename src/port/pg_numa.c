@@ -116,6 +116,33 @@ pg_numa_get_max_node(void)
 	return numa_max_node();
 }
 
+/*
+ * Set allocation memory to interleave on all memory nodes in the cpuset.
+ */
+void
+pg_numa_set_interleave(void)
+{
+	numa_set_membind(numa_get_mems_allowed());
+}
+
+/*
+ * Set allocation memory to localalloc.
+ */
+void
+pg_numa_set_localalloc(void)
+{
+	numa_set_localalloc();
+}
+
+/*
+ * Set policy for memory to interleaving (on all nodes per cpuset).
+ */
+void
+pg_numa_interleave_memory(void *ptr, Size size)
+{
+	numa_interleave_memory(ptr, size, numa_get_mems_allowed());
+}
+
 #else
 
 /* Empty wrappers */
@@ -136,6 +163,21 @@ int
 pg_numa_get_max_node(void)
 {
 	return 0;
+}
+
+void
+pg_numa_set_interleave(void)
+{
+}
+
+void
+pg_numa_set_localalloc(void)
+{
+}
+
+void
+pg_numa_interleave_memory(void *ptr, Size size)
+{
 }
 
 #endif

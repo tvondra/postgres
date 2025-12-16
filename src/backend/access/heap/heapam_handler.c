@@ -380,7 +380,7 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	if (batch->initialized)
 		return;
 
-	/* only do this for index-only scans, leave flags=0 otherwise */
+	/* only do this for index-only scans, otherwise leave allVisible=false */
 	if (!scan->xs_want_itup)
 		return;
 
@@ -398,7 +398,7 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexFetchHeapData *hscan,
 						   &hscan->vmbuf))
 		{
 			/* remember the item is from an all-visible page */
-			item->flags |= BATCH_ITEM_VM_VISIBLE;
+			item->allVisible = true;
 		}
 	}
 
@@ -499,9 +499,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			/* set the TID / itup for the scan */
 			scan->xs_heaptid = readBatch->items[readPos->item].heapTid;
 
-			/* plain index scans will have flags left set to 0 */
-			scan->xs_visible
-				= (readBatch->items[readPos->item].flags & BATCH_ITEM_VM_VISIBLE);
+			/* plain index scans will have allVisible left set to false */
+			scan->xs_visible = readBatch->items[readPos->item].allVisible;
 
 			/* xs_hitup is not supported by amgetbatch scans */
 			Assert(!scan->xs_hitup);
@@ -752,8 +751,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * it is, we won't need the block and can skip it too. We need to
 			 * remember the visibility info for later, to not get confused.
 			 */
-			if (scan->xs_want_itup &&
-				(item->flags & BATCH_ITEM_VM_VISIBLE) != 0)
+			if (scan->xs_want_itup && item->allVisible)
 			{
 				continue;
 			}

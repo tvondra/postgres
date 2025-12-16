@@ -151,9 +151,7 @@ batch_reset_pos(BatchQueueItemPos *pos)
 	pos->item = -1;
 }
 
-
-#define BATCH_ITEM_VM_SET		0x01
-#define BATCH_ITEM_VM_VISIBLE	0x02
+#define BATCH_ITEM_VM_VISIBLE	0x01
 
 /*
  * Matching item returned by amgetbatch (in returned BatchIndexScan) during an
@@ -191,6 +189,12 @@ typedef struct BatchIndexScanData
 
 	/* scan direction when the index page was read */
 	ScanDirection dir;
+
+	/*
+	 * Did we fully initialize this batch? For example, did we resolve VM
+	 * info after advancing to the batch for the first time?
+	 */
+	bool		initialized;
 
 	/*
 	 * moreLeft and moreRight track whether we think there may be matching

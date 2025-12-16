@@ -582,6 +582,7 @@ indexam_util_batch_alloc(IndexScanDesc scan, int maxitems, bool want_itup)
 	batch->firstItem = -1;
 	batch->lastItem = -1;
 	batch->numKilled = 0;
+	batch->initialized = false;
 
 	return batch;
 }

@@ -131,6 +131,11 @@ def parse_arguments():
         help="Run perf profiling (disabled by default)"
     )
     parser.add_argument(
+        "--perfstat",
+        action="store_true",
+        help="Run perf stat instead of perf record (mutually exclusive with --perf)"
+    )
+    parser.add_argument(
         "--benchmark",
         choices=["nestloop", "simple_select"],
         default="nestloop",
@@ -170,6 +175,11 @@ def parse_arguments():
         dest="use_hash_index",
         help="Use a hash index instead of the default B-tree index"
     )
+    parser.add_argument(
+        "--tmpfs-hugepages",
+        action="store_true",
+        help="Copy Postgres binaries to tmpfs with huge=always and use those copies"
+    )
     return parser.parse_args()
 
 def check_dependencies():
@@ -180,6 +190,71 @@ def check_dependencies():
             sys.exit(1)
     if not os.path.isdir(FLAMEGRAPH_DIR):
         raise FileNotFoundError("no FlameGraph repository")
+
+def setup_tmpfs_hugepages():
+    """Create a tmpfs filesystem with huge=always and return the mount point."""
+    tmpfs_mount = "/tmp/pg_tmpfs_hugepages"
+
+    # Create mount point if it doesn't exist
+    os.makedirs(tmpfs_mount, exist_ok=True)
+
+    # Check if already mounted
+    result = subprocess.run(
+        ["mountpoint", "-q", tmpfs_mount],
+        check=False
+    )
+
+    if result.returncode != 0:
+        # Not mounted, so mount it
+        print(f"Mounting tmpfs with huge=always at {tmpfs_mount}...")
+        # Mount tmpfs with huge=always and 2GB size
+        result = subprocess.run(
+            ["sudo", "mount", "-t", "tmpfs", "-o", "huge=always,size=2G", "tmpfs_pg", tmpfs_mount],
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"Error: Failed to mount tmpfs at {tmpfs_mount}")
+            print("Make sure you have sudo privileges")
+            sys.exit(1)
+        print(f"Successfully mounted tmpfs at {tmpfs_mount}")
+    else:
+        print(f"tmpfs already mounted at {tmpfs_mount}")
+
+    return tmpfs_mount
+
+def copy_binaries_to_tmpfs(src_bin_dir, tmpfs_mount, version_name):
+    """Copy PostgreSQL binaries from src_bin_dir to tmpfs and return new bin path."""
+    dest_bin_dir = os.path.join(tmpfs_mount, version_name)
+
+    print(f"Copying {version_name} binaries from {src_bin_dir} to {dest_bin_dir}...")
+
+    # Remove existing directory if it exists
+    if os.path.exists(dest_bin_dir):
+        shutil.rmtree(dest_bin_dir)
+
+    # Copy the entire bin directory
+    shutil.copytree(src_bin_dir, dest_bin_dir, symlinks=True)
+
+    print(f"Successfully copied binaries to {dest_bin_dir}")
+    return dest_bin_dir
+
+def cleanup_tmpfs(tmpfs_mount):
+    """Unmount the tmpfs filesystem."""
+    print(f"Unmounting tmpfs at {tmpfs_mount}...")
+    result = subprocess.run(
+        ["sudo", "umount", tmpfs_mount],
+        check=False
+    )
+    if result.returncode != 0:
+        print(f"Warning: Failed to unmount tmpfs at {tmpfs_mount}")
+    else:
+        print(f"Successfully unmounted tmpfs")
+
+    # Try to remove the mount point directory
+    try:
+        os.rmdir(tmpfs_mount)
+    except OSError:
+        pass
 
 def start_server(pg_bin_dir, pg_name, pg_data_dir, conn_details):
     """Start a PostgreSQL server and wait for it to be ready."""
@@ -369,7 +444,7 @@ def verify_btree_index_exists(pg_name, conn_details):
         print(f"Error verifying B-tree indexes on {pg_name}: {e}")
         sys.exit(1)
 
-def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False):
+def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False):
     """Profiles a PostgreSQL instance (assumes server is already running)."""
     print(f"--- Testing {pg_name} ---")
 
@@ -425,8 +500,26 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
                 cursor.execute(f"select pg_prewarm('{index_name}');")
         print("Finished prewarming")
 
+        # Show EXPLAIN plan before starting the benchmark
+        print("\n--- Query Plan (EXPLAIN) ---")
+        with conn.cursor() as cursor: # type: ignore
+            explain_query = f"EXPLAIN {sql_query}"
+            if max_aid_val is not None:
+                cursor.execute(explain_query, params=[random.randint(1, max_aid_val)], prepare=False)
+            else:
+                cursor.execute(explain_query, prepare=False)
+            for row in cursor.fetchall():
+                print(row[0])
+        print("--- End Query Plan ---\n")
+
+        # Execute the query repeatedly in the same connection
+        print(f"Executing the SQL query {query_repetitions} times...")
+        random.seed(42)
+
+        # Start perf profiling just before the query loop
         perf_process = None
         perf_command = []
+        start_time = time.time()
         if run_perf:
             print(f"Starting perf on PID {backend_pid}...")
             perf_freq = "49999" if highfreq else str(PERF_FREQUENCY)
@@ -523,64 +616,84 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
 
             # Give perf a moment to initialize before starting the workload
             time.sleep(1)
+        elif run_perfstat:
+            print(f"Starting perf stat on CPU core 1...")
+            stat_output_file = OUTPUT_DIR + "/" + pg_name + "_perfstat.txt"
+            perf_command = [
+                "perf", "stat",
+                "-ddd",                     # Very detailed statistics
+                "-C", "1",                  # Monitor CPU core 1 (where backend is pinned)
+                "-o", stat_output_file,     # Output to file
+            ]
+            perf_process = subprocess.Popen(perf_command)
 
-        # Show EXPLAIN plan before starting the benchmark
-        print("\n--- Query Plan (EXPLAIN) ---")
-        with conn.cursor() as cursor: # type: ignore
-            explain_query = f"EXPLAIN {sql_query}"
-            if max_aid_val is not None:
-                cursor.execute(explain_query, params=[random.randint(1, max_aid_val)], prepare=False)
-            else:
-                cursor.execute(explain_query, prepare=False)
-            for row in cursor.fetchall():
-                print(row[0])
-        print("--- End Query Plan ---\n")
+            # Pin perf stat process to different core to minimize interference
+            try:
+                os.sched_setaffinity(perf_process.pid, {2})
+                print(f"Pinned perf stat PID {perf_process.pid} to CPU 2.")
+            except (AttributeError, PermissionError, OSError) as e:
+                print(f"Warning: Could not set CPU affinity for perf stat PID {perf_process.pid}: {e}")
 
-        # Execute the query repeatedly in the same connection
-        print(f"Executing the SQL query {query_repetitions} times...")
-        random.seed(42)
-        start_time = time.time()
+            # Give perf stat a moment to initialize
+            time.sleep(1)
+
         with conn.cursor() as cursor: # type: ignore
-            for _ in range(query_repetitions):
+            # Show per-query timing for small query counts (nestloop benchmark)
+            show_per_query_timing = query_repetitions <= 10
+
+            for i in range(query_repetitions):
+                query_start = time.time()
                 if max_aid_val is not None:
                     cursor.execute(query=sql_query,
                                    params=[random.randint(1, max_aid_val)],
                                    prepare=True)
                 else:
                     cursor.execute(query=sql_query, prepare=True)
+
+                if show_per_query_timing:
+                    query_time = time.time() - query_start
+                    print(f"  Query {i+1}/{query_repetitions}: {query_time:.3f} seconds")
+
         end_time = time.time()
         total_time = end_time - start_time
         print(f"Query loop finished in \033[1m{total_time:.3f} seconds\033[0m")
 
         if perf_process:
             # Stop the perf process gracefully by sending SIGINT (like Ctrl+C)
-            print("Stopping perf...")
+            if run_perf:
+                print("Stopping perf...")
+            else:
+                print("Stopping perf stat...")
             perf_process.send_signal(signal.SIGINT)
 
             # Wait for perf to terminate
             perf_process.wait()
 
-            # Generate the stack trace file, normalizing the binary path
-            print(f"Generating and normalizing stack trace file: {output_file}")
+            if run_perf:
+                # Generate the stack trace file, normalizing the binary path
+                print(f"Generating and normalizing stack trace file: {output_file}")
 
-            # The sed expression will replace the full, version-specific path
-            # with the generic name 'postgres', allowing difffolded.pl to match symbols.
-            pg_executable_path = os.path.join(pg_bin_dir, "postgres")
-            sed_expression = f"s|{pg_executable_path}|postgres|g"
+                # The sed expression will replace the full, version-specific path
+                # with the generic name 'postgres', allowing difffolded.pl to match symbols.
+                pg_executable_path = os.path.join(pg_bin_dir, "postgres")
+                sed_expression = f"s|{pg_executable_path}|postgres|g"
 
-            perf_script_process = subprocess.Popen(["perf", "script",
-                                                    "-i",  OUTPUT_DIR + "/" + pg_name,
-                                                    ], stdout=subprocess.PIPE)
+                perf_script_process = subprocess.Popen(["perf", "script",
+                                                        "-i",  OUTPUT_DIR + "/" + pg_name,
+                                                        ], stdout=subprocess.PIPE)
 
-            with open(output_file, "w") as f:
-                sed_process = subprocess.run(
-                    ["sed", sed_expression],
-                    stdin=perf_script_process.stdout,
-                    stdout=f,
-                    check=True
-                )
-            perf_script_process.stdout.close()
-            perf_script_process.wait()
+                with open(output_file, "w") as f:
+                    sed_process = subprocess.run(
+                        ["sed", sed_expression],
+                        stdin=perf_script_process.stdout,
+                        stdout=f,
+                        check=True
+                    )
+                perf_script_process.stdout.close()
+                perf_script_process.wait()
+            elif run_perfstat:
+                # Don't print here - will be displayed side-by-side in main()
+                pass
 
     finally:
         # Ensure the connection is closed
@@ -591,9 +704,54 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
     # Return string of perf command for flamegraph --subtitle arg
     return ' '.join(perf_command), total_time
 
+def display_perfstat_comparison(master_stat_file, patch_stat_file):
+    """Display perf stat results for master and patch side by side."""
+    print("\n" + "="*120)
+    print("PERF STAT COMPARISON: MASTER vs PATCH")
+    print("="*120 + "\n")
+
+    try:
+        with open(master_stat_file, "r") as f_master:
+            master_lines = f_master.readlines()
+    except FileNotFoundError:
+        print(f"Error: Could not find master perf stat file: {master_stat_file}")
+        return
+
+    try:
+        with open(patch_stat_file, "r") as f_patch:
+            patch_lines = f_patch.readlines()
+    except FileNotFoundError:
+        print(f"Error: Could not find patch perf stat file: {patch_stat_file}")
+        return
+
+    # Print side by side with fixed column width
+    col_width = 58
+    print(f"{'MASTER':<{col_width}} | PATCH")
+    print("-" * col_width + "-+-" + "-" * col_width)
+
+    max_lines = max(len(master_lines), len(patch_lines))
+    for i in range(max_lines):
+        master_line = master_lines[i].rstrip() if i < len(master_lines) else ""
+        patch_line = patch_lines[i].rstrip() if i < len(patch_lines) else ""
+
+        # Truncate lines that are too long
+        if len(master_line) > col_width:
+            master_line = master_line[:col_width-3] + "..."
+        if len(patch_line) > col_width:
+            patch_line = patch_line[:col_width-3] + "..."
+
+        print(f"{master_line:<{col_width}} | {patch_line}")
+
+    print("\n" + "="*120 + "\n")
+
 def main():
     """Main execution flow."""
     args = parse_arguments()
+
+    # Validate that --perf and --perfstat are mutually exclusive
+    if args.perf and args.perfstat:
+        print("Error: --perf and --perfstat cannot be used together")
+        sys.exit(1)
 
     # Validate that --perf-event is only used with --perf
     if args.perf_event and not args.perf:
@@ -621,6 +779,24 @@ def main():
         print(f"Warning: Could not set CPU affinity for this script: {e}")
 
     check_dependencies()
+
+    # Setup tmpfs with hugepages if requested
+    tmpfs_mount = None
+    original_master_bin = MASTER_BIN
+    original_patch_bin = PATCH_BIN
+    master_bin = MASTER_BIN
+    patch_bin = PATCH_BIN
+
+    if args.tmpfs_hugepages:
+        tmpfs_mount = setup_tmpfs_hugepages()
+        master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
+        patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
+        print(f"\nUsing tmpfs binaries:")
+        print(f"  master: {master_bin}")
+        print(f"  patch: {patch_bin}\n")
+    else:
+        master_bin = MASTER_BIN
+        patch_bin = PATCH_BIN
 
     # Get benchmark configuration
     benchmark = BENCHMARKS[args.benchmark]
@@ -659,52 +835,52 @@ def main():
         # Initialize pgbench if requested (must do one at a time due to shared memory constraints)
         if not args.skip_pgbench_init:
             print("--- Initializing pgbench for master ---")
-            start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
-            init_pgbench(MASTER_BIN, MASTER_CONN_DETAILS, args.pgbench_scale, args.use_hash_index)
-            stop_server(MASTER_BIN, MASTER_DATA_DIR)
+            start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+            init_pgbench(master_bin, MASTER_CONN_DETAILS, args.pgbench_scale, args.use_hash_index)
+            stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
             print("--- Initializing pgbench for patch ---")
-            start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
-            init_pgbench(PATCH_BIN, PATCH_CONN_DETAILS, args.pgbench_scale, args.use_hash_index)
-            stop_server(PATCH_BIN, PATCH_DATA_DIR)
+            start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+            init_pgbench(patch_bin, PATCH_CONN_DETAILS, args.pgbench_scale, args.use_hash_index)
+            stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
         else:
             print("Skipping pgbench initialization.")
             # Verify that existing indexes match the requested type
             if args.use_hash_index:
                 print("\n--- Verifying existing hash indexes ---")
-                start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+                start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
                 verify_hash_index_exists("master", MASTER_CONN_DETAILS)
-                stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                stop_server(master_bin, MASTER_DATA_DIR)
                 time.sleep(1)
 
-                start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+                start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
                 verify_hash_index_exists("patch", PATCH_CONN_DETAILS)
-                stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                stop_server(patch_bin, PATCH_DATA_DIR)
                 time.sleep(1)
             else:
                 print("\n--- Verifying existing B-tree indexes ---")
-                start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+                start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
                 verify_btree_index_exists("master", MASTER_CONN_DETAILS)
-                stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                stop_server(master_bin, MASTER_DATA_DIR)
                 time.sleep(1)
 
-                start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+                start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
                 verify_btree_index_exists("patch", PATCH_CONN_DETAILS)
-                stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                stop_server(patch_bin, PATCH_DATA_DIR)
                 time.sleep(1)
 
         # Get row counts from both servers and verify they match
         print("\n--- Verifying pgbench_accounts row counts ---")
-        start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+        start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
         master_row_count = get_pgbench_row_count("master", MASTER_CONN_DETAILS)
-        stop_server(MASTER_BIN, MASTER_DATA_DIR)
+        stop_server(master_bin, MASTER_DATA_DIR)
         time.sleep(1)
 
-        start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+        start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
         patch_row_count = get_pgbench_row_count("patch", PATCH_CONN_DETAILS)
-        stop_server(PATCH_BIN, PATCH_DATA_DIR)
+        stop_server(patch_bin, PATCH_DATA_DIR)
         time.sleep(1)
 
         if master_row_count != patch_row_count:
@@ -720,48 +896,59 @@ def main():
         if args.patch_first:
             # Profile patch first
             print("--- Profiling patch version ---")
-            start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+            start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
-                PATCH_BIN, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan)
-            stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                patch_bin, "patch", PATCH_CONN_DETAILS,
+                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+            stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
 
             # Then profile master
             print("--- Profiling master version ---")
-            start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+            start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
-                MASTER_BIN, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan)
-            stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                master_bin, "master", MASTER_CONN_DETAILS,
+                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+            stop_server(master_bin, MASTER_DATA_DIR)
         else:
             # Profile master first (default)
             print("--- Profiling master version ---")
-            start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+            start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
-                MASTER_BIN, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan)
-            stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                master_bin, "master", MASTER_CONN_DETAILS,
+                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+            stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
             # Then profile patch
             print("--- Profiling patch version ---")
-            start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+            start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
-                PATCH_BIN, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan)
-            stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                patch_bin, "patch", PATCH_CONN_DETAILS,
+                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+            stop_server(patch_bin, PATCH_DATA_DIR)
 
     finally:
         # Always stop both servers
         print("--- Stopping PostgreSQL servers ---")
-        stop_server(MASTER_BIN, MASTER_DATA_DIR)
-        stop_server(PATCH_BIN, PATCH_DATA_DIR)
+        stop_server(master_bin, MASTER_DATA_DIR)
+        stop_server(patch_bin, PATCH_DATA_DIR)
+
+        # Cleanup tmpfs if it was created
+        if tmpfs_mount:
+            cleanup_tmpfs(tmpfs_mount)
 
     print(f"Patch query loop took \033[1m{total_time_patch/total_time_master:.3f}x\033[0m as long as master")
 
-    if not args.perf:
+    if not args.perf and not args.perfstat:
         print("Perf profiling was disabled. Exiting.")
+        return
+    elif args.perfstat:
+        # Display side-by-side comparison of perf stat results
+        master_stat_file = os.path.join(OUTPUT_DIR, "master_perfstat.txt")
+        patch_stat_file = os.path.join(OUTPUT_DIR, "patch_perfstat.txt")
+        display_perfstat_comparison(master_stat_file, patch_stat_file)
+        print("perf stat mode complete. Skipping flamegraph generation.")
         return
 
     # --- Generate Flame Graphs ---

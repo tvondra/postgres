@@ -362,8 +362,6 @@ typedef struct IndexScanDescData
 	struct SnapshotData *xs_snapshot;	/* snapshot to see */
 	int			numberOfKeys;	/* number of index qualifier conditions */
 	int			numberOfOrderBys;	/* number of ordering operators */
-	BatchQueue *batchqueue;		/* amgetbatch related state */
-
 	struct ScanKeyData *keyData;	/* array of index qualifier descriptors */
 	struct ScanKeyData *orderByData;	/* array of ordering op descriptors */
 	bool		xs_want_itup;	/* caller requests index tuples */
@@ -377,6 +375,9 @@ typedef struct IndexScanDescData
 
 	/* index access method's private state */
 	void	   *opaque;			/* access-method-specific info */
+
+	/* table access method's private amgetbatch state */
+	BatchQueue *batchqueue;		/* amgetbatch related state */
 
 	/*
 	 * Instrumentation counters maintained by all index AMs during both

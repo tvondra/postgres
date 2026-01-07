@@ -165,6 +165,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		else
 			hscan->xs_cbuf = ReadBuffer(hscan->xs_base.rel, hscan->xs_blk);
 
+		Assert(BufferIsValid(hscan->xs_cbuf));
+		Assert(BufferGetBlockNumber(hscan->xs_cbuf) == ItemPointerGetBlockNumber(tid));
+
 		/*
 		 * Prune page when it is pinned for the first time
 		 */
@@ -295,8 +298,6 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 
 		/* Delay initializing stream until reading from scan's second batch */
 		if (!scan->xs_heapfetch->rs && !batchqueue->disabled && priorbatch &&
-			!scan->xs_want_itup &&	/* XXX prefetching disabled for IoS, for
-									 * now */
 			enable_indexscan_prefetch)
 			scan->xs_heapfetch->rs =
 				read_stream_begin_relation(READ_STREAM_DEFAULT, NULL,
@@ -434,6 +435,9 @@ nextbatch:
 
 		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
+		/* make sure we have visibility for the whole batch */
+		heap_batch_resolve_visibility(scan, hscan, readBatch);
+
 		if (ScanDirectionIsForward(direction))
 			readPos->item = readBatch->firstItem;
 		else
@@ -465,6 +469,9 @@ nextbatch:
 
 	if ((readBatch = heap_batch_getnext(scan, readBatch, direction)) != NULL)
 	{
+		/* make sure we have visibility for the whole batch */
+		heap_batch_resolve_visibility(scan, hscan, readBatch);
+
 		/* xs_hitup is not supported by amgetbatch scans */
 		Assert(!scan->xs_hitup);
 

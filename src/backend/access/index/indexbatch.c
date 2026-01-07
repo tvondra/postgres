@@ -498,6 +498,7 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 	batch->firstItem = -1;
 	batch->lastItem = -1;
 	batch->numKilled = 0;
+	batch->initialized = false;
 
 	return batch;
 }

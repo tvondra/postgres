@@ -248,7 +248,7 @@ typedef struct BatchIndexScanData *BatchIndexScan;
  * that produce the wrong batch in INDEX_SCAN_BATCH?
  */
 #define INDEX_SCAN_BATCH_LOADED(scan, idx) \
-	((idx) >= 0 && (idx) < (scan)->batchqueue->nextBatch)
+	((idx) >= (scan)->batchqueue->headBatch && (idx) < (scan)->batchqueue->nextBatch)
 
 /* Have we loaded the maximum number of batches? */
 #define INDEX_SCAN_BATCH_FULL(scan) \

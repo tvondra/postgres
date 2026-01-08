@@ -1234,12 +1234,11 @@ table_index_fetch_end(struct IndexFetchTableData *scan)
  * into the provided slot in the case of xs_want_itup=true callers.
  */
 static inline bool
-table_index_getnext_slot(IndexScanDesc idxscan, ScanDirection direction,
+table_index_getnext_slot(IndexScanDesc iscan, ScanDirection direction,
 						 TupleTableSlot *slot)
 {
-	struct IndexFetchTableData *scan = idxscan->xs_heapfetch;
-
-	return scan->rel->rd_tableam->index_getnext_slot(idxscan, direction, slot);
+	return iscan->heapRelation->rd_tableam->index_getnext_slot(iscan,
+															   direction, slot);
 }
 
 /*

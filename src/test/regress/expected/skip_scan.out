@@ -59,8 +59,9 @@ order by 1, 2, 3, 4;
          10059 | btint4skipsupport     | integer_ops   | int4_ops        | integer
          10068 | btint8skipsupport     | integer_ops   | int8_ops        | bigint
          10083 | btoidskipsupport      | oid_ops       | oid_ops         | oid
-         10115 | uuid_skipsupport      | uuid_ops      | uuid_ops        | uuid
-(10 rows)
+         10087 | btoid8skipsupport     | oid8_ops      | oid8_ops        | oid8
+         10119 | uuid_skipsupport      | uuid_ops      | uuid_ops        | uuid
+(11 rows)
 
 set client_min_messages=error;
 drop table if exists fuzz_skip_scan;

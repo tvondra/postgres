@@ -17,6 +17,12 @@ select set_config((select coalesce((select name from pg_settings where name = 'l
  1
 (1 row)
 
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
+ set_config 
+------------
+ off
+(1 row)
+
 -- set skipscan_skipsupport_enabled=false;
 set vacuum_freeze_min_age = 0;
 set cursor_tuple_fraction=1.000;

@@ -242,7 +242,7 @@ btgetbatch(IndexScanDesc scan, BatchIndexScan priorbatch, ScanDirection dir)
 		/*
 		 * If we've already initialized this scan, we can just advance it in
 		 * the appropriate direction.  If we haven't done so yet, we call
-		 * _bt_first() to get the first item in the scan.
+		 * _bt_first() to get the first batch in the scan.
 		 */
 		if (batch == NULL)
 			batch = _bt_first(scan, dir);

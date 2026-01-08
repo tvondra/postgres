@@ -371,6 +371,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	BatchQueue *batchqueue = scan->batchqueue;
 	BatchQueueItemPos *readPos = &batchqueue->readPos;
 	BatchIndexScan readBatch = NULL;
+	BlockNumber currBlock = InvalidBlockNumber;
 
 	/* shouldn't get here without batching */
 	batch_assert_batches_valid(scan);
@@ -390,9 +391,27 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	}
 
 	/*
+	 * Remember the block we returned in the previous call (if any). We will
+	 * need it if we decide to change direction (and reset the stream).
+	 */
+	if (readPos->item != -1)
+	{
+			ItemPointer tid;
+
+			readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
+
+			tid = &readBatch->items[readPos->item].heapTid;
+			currBlock = ItemPointerGetBlockNumber(tid);
+	}
+
+	/*
 	 * Try advancing the batch position. If that doesn't succeed, it means we
 	 * don't have more items in the current batch, and there's no future batch
 	 * loaded. So try loading another batch, and retry if needed.
+	 *
+	 * XXX Isn't it wrong that this happens before checking if the direction
+	 * is the same? Surely that won't reset the stream, and who knows what's
+	 * already queued in it?
 	 */
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch))
 	{
@@ -426,6 +445,12 @@ nextbatch:
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 		batch_reset_pos(&batchqueue->streamPos);
+
+		/*
+		 * If we're changing direction, use the current readPos (from before
+		 * we advanced it) to set currentPrefetchBlock.
+		 */
+		batchqueue->currentPrefetchBlock = currBlock;
 	}
 
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch + 1))
@@ -702,6 +727,14 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		if (INDEX_SCAN_POS_INVALID(streamPos))
 		{
 			*streamPos = batchqueue->readPos;
+
+/* XXX doesn't work, because the buffer may not be pinned anymore (and
+ * BufferIsPinned is not available).
+			if (BufferIsValid(hscan->xs_cbuf))
+				batchqueue->currentPrefetchBlock = BufferGetBlockNumber(hscan->xs_cbuf);
+			else
+				batchqueue->currentPrefetchBlock = InvalidBlockNumber;
+*/
 			advanced = true;
 		}
 		else if (heap_batch_advance_streampos(scan, streamPos, direction))

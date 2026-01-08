@@ -492,6 +492,30 @@ nextbatch:
 		return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
 
+	/*
+	 * We failed to advance, i.e. we ran out of currently loaded batches.
+	 * So if we filled the queue, this is a good time to reset the stream
+	 * (before we try loading the next batch).
+	 *
+	 * XXX Maybe we could do this in heap_batch_getnext?
+	 */
+	if (unlikely(batchqueue->reset))
+	{
+		batchqueue->reset = false;
+		// batchqueue->currentPrefetchBlock = currBlock;
+
+		/*
+		 * Need to reset the stream position, it might be too far behind.
+		 * Ultimately we want to set it to readPos, but we can't do that
+		 * yet - readPos still point sat the old batch, so just reset it
+		 * and we'll init it to readPos later in the callback.
+		 */
+		batch_reset_pos(&batchqueue->streamPos);
+
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+	}
+
 	if ((readBatch = heap_batch_getnext(scan, readBatch, direction)) != NULL)
 	{
 		/* make sure we have visibility for the whole batch */

@@ -127,8 +127,11 @@ def parse_arguments():
     )
     parser.add_argument(
         "--perf",
-        action="store_true",
-        help="Run perf profiling (disabled by default)"
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="EVENT",
+        help="Run perf profiling (disabled by default). Optionally specify event name (e.g., --perf cycles, --perf cache-misses)"
     )
     parser.add_argument(
         "--perfstat",
@@ -140,12 +143,6 @@ def parse_arguments():
         choices=["nestloop", "simple_select"],
         default="nestloop",
         help="Benchmark to run (default: nestloop)"
-    )
-    parser.add_argument(
-        "--perf-event", "--event",
-        type=str,
-        dest="perf_event",
-        help="Perf event to profile (only valid with --perf; default: perf default)"
     )
     parser.add_argument(
         "--patch-first",
@@ -176,9 +173,32 @@ def parse_arguments():
         help="Use a hash index instead of the default B-tree index"
     )
     parser.add_argument(
-        "--tmpfs-hugepages",
+        "--no-tmpfs-hugepages",
         action="store_true",
-        help="Copy Postgres binaries to tmpfs with huge=always and use those copies"
+        help="Disable tmpfs with huge=always (enabled by default)"
+    )
+    parser.add_argument(
+        "--discard-runs",
+        type=int,
+        default=3,
+        help="Number of initial query runs to discard before starting measurement (default: 3)"
+    )
+    parser.add_argument(
+        "--benchmark-cpu",
+        type=int,
+        default=14,
+        help="CPU core to pin PostgreSQL backend to (default: 14, a performance core)"
+    )
+    parser.add_argument(
+        "--perf-cpu",
+        type=int,
+        default=15,
+        help="CPU core to pin perf process to (default: 15)"
+    )
+    parser.add_argument(
+        "--disable-prefetch",
+        action="store_true",
+        help="Disable hardware prefetchers on benchmark CPU during test (requires passwordless sudo for wrmsr)"
     )
     return parser.parse_args()
 
@@ -190,6 +210,104 @@ def check_dependencies():
             sys.exit(1)
     if not os.path.isdir(FLAMEGRAPH_DIR):
         raise FileNotFoundError("no FlameGraph repository")
+
+def disable_prefetchers(cpu_core):
+    """
+    Disable hardware prefetchers on the specified CPU core.
+    Returns the original MSR value so it can be restored later.
+
+    For AMD Zen CPUs, MSR 0xC0011022 [DC Configuration Register] controls prefetchers:
+    - Bit 13 (0x2000): DisHwPf - Disable hardware data prefetcher
+    - Bit 15 (0x8000): DisWcPf - Disable prefetcher for Write Combining stores
+
+    We set bit 13 to disable the main hardware prefetcher.
+
+    Requires passwordless sudo for wrmsr/rdmsr.
+    """
+    MSR_DC_CFG = "0xC0011022"
+    DISABLE_HW_PREFETCH_BIT = 0x2000  # Bit 13
+
+    try:
+        # Read current value
+        result = subprocess.run(
+            ["sudo", "rdmsr", "-p", str(cpu_core), MSR_DC_CFG],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode != 0:
+            print(f"Warning: Could not read prefetcher MSR: {result.stderr}")
+            return None
+
+        original_value_str = result.stdout.strip()
+        original_value = int(original_value_str, 16)
+        print(f"Current DC_CFG MSR value on CPU {cpu_core}: 0x{original_value:x}")
+
+        # Check if hardware prefetcher is currently enabled
+        if original_value & DISABLE_HW_PREFETCH_BIT:
+            print(f"  -> Hardware prefetcher is already DISABLED (bit 13 is set)")
+        else:
+            print(f"  -> Hardware prefetcher is currently ENABLED (bit 13 is clear)")
+
+        # Set bit 13 to disable hardware prefetcher
+        new_value = original_value | DISABLE_HW_PREFETCH_BIT
+
+        result = subprocess.run(
+            ["sudo", "wrmsr", "-p", str(cpu_core), MSR_DC_CFG, f"0x{new_value:x}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode != 0:
+            print(f"Warning: Could not disable prefetchers: {result.stderr}")
+            return None
+
+        # Verify the change
+        result = subprocess.run(
+            ["sudo", "rdmsr", "-p", str(cpu_core), MSR_DC_CFG],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode == 0:
+            verify_value = int(result.stdout.strip(), 16)
+            print(f"Hardware prefetcher disabled on CPU {cpu_core}. New MSR value: 0x{verify_value:x}")
+            if verify_value & DISABLE_HW_PREFETCH_BIT:
+                print(f"  -> Verified: Bit 13 is now SET (prefetcher disabled)")
+            else:
+                print(f"  -> Warning: Bit 13 is still CLEAR (prefetcher may still be enabled!)")
+
+        return original_value_str
+
+    except Exception as e:
+        print(f"Warning: Failed to disable prefetchers: {e}")
+        return None
+
+def restore_prefetchers(cpu_core, original_value):
+    """Restore hardware prefetchers to their original state."""
+    if original_value is None:
+        return
+
+    MSR_HWCR = "0xC0011022"
+
+    try:
+        result = subprocess.run(
+            ["sudo", "wrmsr", "-p", str(cpu_core), MSR_HWCR, f"0x{original_value}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode == 0:
+            print(f"Restored prefetcher MSR on CPU {cpu_core} to original value: 0x{original_value}")
+        else:
+            print(f"Warning: Could not restore prefetchers: {result.stderr}")
+
+    except Exception as e:
+        print(f"Warning: Failed to restore prefetchers: {e}")
 
 def setup_tmpfs_hugepages():
     """Create a tmpfs filesystem with huge=always and return the mount point."""
@@ -207,9 +325,9 @@ def setup_tmpfs_hugepages():
     if result.returncode != 0:
         # Not mounted, so mount it
         print(f"Mounting tmpfs with huge=always at {tmpfs_mount}...")
-        # Mount tmpfs with huge=always and 2GB size
+        # Mount tmpfs with huge=always and 500MB size
         result = subprocess.run(
-            ["sudo", "mount", "-t", "tmpfs", "-o", "huge=always,size=2G", "tmpfs_pg", tmpfs_mount],
+            ["sudo", "mount", "-t", "tmpfs", "-o", "huge=always,size=500M", "tmpfs_pg", tmpfs_mount],
             check=False
         )
         if result.returncode != 0:
@@ -444,7 +562,7 @@ def verify_btree_index_exists(pg_name, conn_details):
         print(f"Error verifying B-tree indexes on {pg_name}: {e}")
         sys.exit(1)
 
-def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False):
+def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False, discard_runs=0, benchmark_cpu=14, perf_cpu=15, disable_prefetch=False):
     """Profiles a PostgreSQL instance (assumes server is already running)."""
     print(f"--- Testing {pg_name} ---")
 
@@ -456,14 +574,58 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         backend_pid = conn.info.backend_pid
         print(f"Successfully connected. Backend PID is: {backend_pid}")
 
-        # Pin the backend process to a specific core.
-        # This may require running the script with sufficient privileges (e.g., as root).
+        # Pin the backend process to a specific core and use RT scheduling to prevent migration.
         try:
-            # Pin backend to core 1
-            os.sched_setaffinity(backend_pid, {1})
-            print(f"Pinned backend PID {backend_pid} to CPU 1.")
-        except (AttributeError, PermissionError, OSError) as e:
-            print(f"Warning: Could not set CPU affinity for backend PID {backend_pid}: {e}")
+            # Pin backend to specified core using taskset (doesn't require root)
+            result = subprocess.run(
+                ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
+            else:
+                print(f"Warning: Could not set CPU affinity: {result.stderr}")
+
+            # Set RT scheduling (SCHED_FIFO) to truly pin and prevent migrations
+            # Use chrt with sudo for RT scheduling (requires passwordless sudo or password entry)
+            result = subprocess.run(
+                ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                print(f"Set backend PID {backend_pid} to SCHED_FIFO priority 1 (prevents CPU migration).")
+
+                # Verify RT scheduling was actually set
+                verify_result = subprocess.run(
+                    ["chrt", "-p", str(backend_pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if verify_result.returncode == 0:
+                    print(f"Verification: {verify_result.stdout.strip()}")
+                else:
+                    print(f"Warning: Could not verify RT scheduling")
+            else:
+                print(f"Warning: Could not set RT scheduling: {result.stderr}")
+                print(f"         Configure passwordless sudo for 'chrt' or run entire script with sudo.")
+        except Exception as e:
+            print(f"Warning: Could not set CPU affinity/RT scheduling for backend PID {backend_pid}: {e}")
+
+        # Disable hardware prefetchers if requested
+        original_prefetch_value = None
+        if disable_prefetch:
+            print(f"\nDisabling hardware prefetchers on CPU {benchmark_cpu}...")
+            original_prefetch_value = disable_prefetchers(benchmark_cpu)
+            if original_prefetch_value is None:
+                print("If you don't have passwordless sudo configured, you can manually:")
+                print(f"  1. Read current value: sudo rdmsr -p {benchmark_cpu} 0xC0011022")
+                print(f"  2. Set bit 13 to disable: sudo wrmsr -p {benchmark_cpu} 0xC0011022 <original_value | 0x2000>")
+                print(f"  3. After benchmark, restore: sudo wrmsr -p {benchmark_cpu} 0xC0011022 <original_value>")
 
         print("Prewarming...")
         with conn.cursor() as cursor:
@@ -513,15 +675,32 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         print("--- End Query Plan ---\n")
 
         # Execute the query repeatedly in the same connection
-        print(f"Executing the SQL query {query_repetitions} times...")
+        total_runs = query_repetitions + discard_runs
+        if discard_runs > 0:
+            print(f"Executing the SQL query {total_runs} times (discarding first {discard_runs} runs)...")
+        else:
+            print(f"Executing the SQL query {query_repetitions} times...")
         random.seed(42)
 
-        # Start perf profiling just before the query loop
+        # Execute discard runs before starting measurement
+        if discard_runs > 0:
+            print(f"Warming up: executing {discard_runs} discard runs...")
+            with conn.cursor() as cursor:  # type: ignore
+                for i in range(discard_runs):
+                    if max_aid_val is not None:
+                        cursor.execute(query=sql_query,
+                                       params=[random.randint(1, max_aid_val)],
+                                       prepare=True)
+                    else:
+                        cursor.execute(query=sql_query, prepare=True)
+            print(f"Warmup complete. Starting measurement...")
+
+        # Start perf profiling just before the measured query loop
         perf_process = None
         perf_command = []
         start_time = time.time()
         if run_perf:
-            print(f"Starting perf on PID {backend_pid}...")
+            print(f"Starting perf on CPU core {benchmark_cpu}...")
             perf_freq = "49999" if highfreq else str(PERF_FREQUENCY)
             perf_command = [
                 "perf", "record",
@@ -532,105 +711,36 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
                 perf_command.extend(["-e", perf_event])
 
             perf_command.extend([
-                # "-e", "alignment-faults",
-                # "-e", "branch-instructions",
-                # "-e", "branch-misses",
-                # "-e", "branches",
-                # "-e", "cache-misses",
-                # "-e", "cache-references",
-                # "-e", "cgroup-switches",
-                # "-e", "context-switches",
-                # "-e", "cpu-clock",
-                # "-e", "cpu-cycles",
-                # "-e", "cpu-migrations",
-                # "-e", "instructions",
-                # "-e", "major-faults",
-                # "-e", "minor-faults",
-                # "-e", "page-faults",
-                # "-e", "stalled-cycles-frontend",
-                # "-e", "task-clock",
-
-                #### AMD recommended events usable from thread level ###
-
-                # [All L1 Data Cache Accesses. Unit: cpu]
-                # "-e", "all_data_cache_accesses",
-                # [All TLBs Flushed. Unit: cpu]
-                # "-e", "all_tlbs_flushed",
-                # [L1 Data Cache Fills: All. Unit: cpu]
-                # "-e", "l1_data_cache_fills_all",
-                # [L1 Data Cache Fills: From External CCX Cache. Unit: cpu]
-                # "-e", "l1_data_cache_fills_from_external_ccx_cache",
-                # [L1 Data Cache Fills: From Memory. Unit: cpu]
-                # "-e", "l1_data_cache_fills_from_memory",
-                # [L1 Data Cache Fills: From Remote Node.  Unit: cpu]
-                # "-e", "l1_data_cache_fills_from_remote_node",
-                # [L1 Data Cache Fills: From within same CCX.  Unit: cpu]
-                # "-e", "l1_data_cache_fills_from_within_same_ccx",
-                # [L1 DTLB Misses.  Unit: cpu]
-                # "-e", "l1_dtlb_misses",
-                # [L2 Cache Accesses from L1 Data Cache Misses (including prefetch).  Unit: cpu]
-                # "-e", "l2_cache_accesses_from_dc_misses",
-                # [L2 Cache Accesses from L1 Instruction Cache Misses (including prefetch).  Unit: cpu]
-                # "-e", "l2_cache_accesses_from_ic_misses",
-                # [L2 Cache Hits from L1 Data Cache Misses.  Unit: cpu]
-                # "-e", "l2_cache_hits_from_dc_misses",
-                # [L2 Cache Hits from L1 Instruction Cache Misses.  Unit: cpu]
-                # "-e", "l2_cache_hits_from_ic_misses",
-                # [L2 Cache Hits from L2 Cache HWPF.  Unit: cpu]
-                # "-e", "l2_cache_hits_from_l2_hwpf",
-                # [L2 Cache Misses from L1 Data Cache Misses.  Unit: cpu]
-                # "-e", "l2_cache_misses_from_dc_misses",
-                # [L2 Cache Misses from L1 Instruction Cache Misses.  Unit: cpu]
-                # "-e", "l2_cache_misses_from_ic_miss",
-                # [L2 DTLB Misses & Data page walks.  Unit: cpu]
-                # "-e", "l2_dtlb_misses",
-                # [L2 ITLB Misses & Instruction page walks.  Unit: cpu]
-                # "-e", "l2_itlb_misses",
-                # [Macro-ops Retired.  Unit: cpu]
-                # "-e", "macro_ops_retired",
-                # [Mixed SSE/AVX Stalls.  Unit: cpu]
-                # "-e", "sse_avx_stalls",
-
-                #### AMD recommended events unusable from thread level ###
-
-                # [L3 Cache Accesses.  Unit: amd_l3]
-                # "-e", "l3_cache_accesses",
-                # [L3 Misses (includes cacheline state change requests).  Unit: amd_l3]
-                # "-e", "l3_misses",
-
-                "-p", str(backend_pid),
-                # "-a",
+                "-C", str(benchmark_cpu),  # Monitor CPU core (works with all event types)
                 "-g",
-                # "--call-graph", "dwarf",
                 "-o",  OUTPUT_DIR + "/" + pg_name,
             ])
             perf_process = subprocess.Popen(perf_command)
 
             # Pin perf process to a different core to minimize interference.
             try:
-                # Pin perf to core 2
-                os.sched_setaffinity(perf_process.pid, {2})
-                print(f"Pinned perf PID {perf_process.pid} to CPU 2.")
+                os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
             except (AttributeError, PermissionError, OSError) as e:
                 print(f"Warning: Could not set CPU affinity for perf PID {perf_process.pid}: {e}")
 
             # Give perf a moment to initialize before starting the workload
             time.sleep(1)
         elif run_perfstat:
-            print(f"Starting perf stat on CPU core 1...")
+            print(f"Starting perf stat on CPU core {benchmark_cpu}...")
             stat_output_file = OUTPUT_DIR + "/" + pg_name + "_perfstat.txt"
             perf_command = [
                 "perf", "stat",
                 "-ddd",                     # Very detailed statistics
-                "-C", "1",                  # Monitor CPU core 1 (where backend is pinned)
+                "-C", str(benchmark_cpu),   # Monitor CPU core where backend is RT-pinned
                 "-o", stat_output_file,     # Output to file
             ]
             perf_process = subprocess.Popen(perf_command)
 
             # Pin perf stat process to different core to minimize interference
             try:
-                os.sched_setaffinity(perf_process.pid, {2})
-                print(f"Pinned perf stat PID {perf_process.pid} to CPU 2.")
+                os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                print(f"Pinned perf stat PID {perf_process.pid} to CPU {perf_cpu}.")
             except (AttributeError, PermissionError, OSError) as e:
                 print(f"Warning: Could not set CPU affinity for perf stat PID {perf_process.pid}: {e}")
 
@@ -696,6 +806,11 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
                 pass
 
     finally:
+        # Restore hardware prefetchers if they were disabled
+        if disable_prefetch and original_prefetch_value is not None:
+            print(f"\nRestoring hardware prefetchers on CPU {benchmark_cpu}...")
+            restore_prefetchers(benchmark_cpu, original_prefetch_value)
+
         # Ensure the connection is closed
         if conn:
             conn.close()
@@ -705,7 +820,9 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
     return ' '.join(perf_command), total_time
 
 def display_perfstat_comparison(master_stat_file, patch_stat_file):
-    """Display perf stat results for master and patch side by side."""
+    """Display perf stat results for master and patch side by side with ratio column."""
+    import re
+
     print("\n" + "="*120)
     print("PERF STAT COMPARISON: MASTER vs PATCH")
     print("="*120 + "\n")
@@ -724,15 +841,77 @@ def display_perfstat_comparison(master_stat_file, patch_stat_file):
         print(f"Error: Could not find patch perf stat file: {patch_stat_file}")
         return
 
-    # Print side by side with fixed column width
+    # Parse metric values from lines
+    # Format: "     26,138,231,122      instructions                     #    3.00  insn per cycle"
+    # We want to extract the number and the metric name
+    metric_pattern = re.compile(r'^\s*([\d,]+)\s+([a-zA-Z0-9-]+)')
+    time_pattern = re.compile(r'^\s*([\d.]+)\s+seconds time elapsed')
+
+    # Build dictionaries of metric_name -> value
+    master_metrics = {}
+    patch_metrics = {}
+
+    for line in master_lines:
+        # Try metric pattern
+        match = metric_pattern.match(line)
+        if match:
+            value_str = match.group(1).replace(',', '')
+            metric_name = match.group(2)
+            master_metrics[metric_name] = float(value_str)
+        else:
+            # Try time elapsed pattern
+            match = time_pattern.match(line)
+            if match:
+                master_metrics['seconds-time-elapsed'] = float(match.group(1))
+
+    for line in patch_lines:
+        # Try metric pattern
+        match = metric_pattern.match(line)
+        if match:
+            value_str = match.group(1).replace(',', '')
+            metric_name = match.group(2)
+            patch_metrics[metric_name] = float(value_str)
+        else:
+            # Try time elapsed pattern
+            match = time_pattern.match(line)
+            if match:
+                patch_metrics['seconds-time-elapsed'] = float(match.group(1))
+
+    # Print side by side with fixed column width plus ratio column
     col_width = 58
-    print(f"{'MASTER':<{col_width}} | PATCH")
-    print("-" * col_width + "-+-" + "-" * col_width)
+    ratio_width = 12
+    print(f"{'MASTER':<{col_width}} | {'PATCH':<{col_width}} | {'RATIO':<{ratio_width}}")
+    print("-" * col_width + "-+-" + "-" * col_width + "-+-" + "-" * ratio_width)
 
     max_lines = max(len(master_lines), len(patch_lines))
     for i in range(max_lines):
         master_line = master_lines[i].rstrip() if i < len(master_lines) else ""
         patch_line = patch_lines[i].rstrip() if i < len(patch_lines) else ""
+
+        # Calculate ratio if this line contains a metric
+        ratio_str = ""
+
+        # Check if master line has a metric
+        match = metric_pattern.match(master_line)
+        if match:
+            metric_name = match.group(2)
+            if metric_name in master_metrics and metric_name in patch_metrics:
+                master_val = master_metrics[metric_name]
+                patch_val = patch_metrics[metric_name]
+                if master_val != 0:
+                    ratio = patch_val / master_val
+                    ratio_str = f"{ratio:.3f}x"
+        else:
+            # Check for time elapsed
+            match = time_pattern.match(master_line)
+            if match:
+                metric_name = 'seconds-time-elapsed'
+                if metric_name in master_metrics and metric_name in patch_metrics:
+                    master_val = master_metrics[metric_name]
+                    patch_val = patch_metrics[metric_name]
+                    if master_val != 0:
+                        ratio = patch_val / master_val
+                        ratio_str = f"{ratio:.3f}x"
 
         # Truncate lines that are too long
         if len(master_line) > col_width:
@@ -740,7 +919,7 @@ def display_perfstat_comparison(master_stat_file, patch_stat_file):
         if len(patch_line) > col_width:
             patch_line = patch_line[:col_width-3] + "..."
 
-        print(f"{master_line:<{col_width}} | {patch_line}")
+        print(f"{master_line:<{col_width}} | {patch_line:<{col_width}} | {ratio_str:<{ratio_width}}")
 
     print("\n" + "="*120 + "\n")
 
@@ -753,10 +932,9 @@ def main():
         print("Error: --perf and --perfstat cannot be used together")
         sys.exit(1)
 
-    # Validate that --perf-event is only used with --perf
-    if args.perf_event and not args.perf:
-        print("Error: --perf-event can only be used with --perf")
-        sys.exit(1)
+    # Extract perf event from args.perf if it's a string, otherwise set to None
+    perf_event = args.perf if isinstance(args.perf, str) else None
+    run_perf = bool(args.perf)  # True if --perf was specified (with or without event)
 
     # Validate that --queries is only used with --benchmark simple_select
     if args.num_queries is not None and args.benchmark != "simple_select":
@@ -787,7 +965,7 @@ def main():
     master_bin = MASTER_BIN
     patch_bin = PATCH_BIN
 
-    if args.tmpfs_hugepages:
+    if not args.no_tmpfs_hugepages:
         tmpfs_mount = setup_tmpfs_hugepages()
         master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
         patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
@@ -795,6 +973,7 @@ def main():
         print(f"  master: {master_bin}")
         print(f"  patch: {patch_bin}\n")
     else:
+        print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
         master_bin = MASTER_BIN
         patch_bin = PATCH_BIN
 
@@ -899,7 +1078,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch)
             stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
 
@@ -908,7 +1087,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch)
             stop_server(master_bin, MASTER_DATA_DIR)
         else:
             # Profile master first (default)
@@ -916,7 +1095,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch)
             stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
@@ -925,7 +1104,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, args.perf, max_aid_val, args.perf_event, args.highfreq, args.index_only_scan, args.perfstat)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch)
             stop_server(patch_bin, PATCH_DATA_DIR)
 
     finally:
@@ -940,7 +1119,7 @@ def main():
 
     print(f"Patch query loop took \033[1m{total_time_patch/total_time_master:.3f}x\033[0m as long as master")
 
-    if not args.perf and not args.perfstat:
+    if not run_perf and not args.perfstat:
         print("Perf profiling was disabled. Exiting.")
         return
     elif args.perfstat:

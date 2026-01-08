@@ -476,7 +476,7 @@ batch_assert_batch_valid(IndexScanDescData *scan, BatchIndexScan batch)
 }
 
 static inline void
-batch_assert_batches_valid(IndexScanDescData  *scan)
+batch_assert_batches_valid(IndexScanDescData *scan)
 {
 #ifdef USE_ASSERT_CHECKING
 	BatchQueue *batchqueue = scan->batchqueue;

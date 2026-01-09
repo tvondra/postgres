@@ -16,7 +16,6 @@ reset client_min_messages;
 -- applied (HACK, just sets commit_siblings instead when we don't have that
 -- patch available):
 select set_config((select coalesce((select name from pg_settings where name = 'log_btree_verbosity'), 'commit_siblings')), '1', false);
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
 
 -- Establish if this server is master or the patch -- want to skip stress
 -- tests if it's the latter
@@ -157,8 +156,6 @@ order by a desc, b desc, c desc, d desc;
 -- Anyway, I fixed that by properly setting the "finished" flag, and also resetting it when the direction changes.
 -- But it all these ad hoc flags feel a bit wonky / loosely defined.
 
--- Enable prefetch when GUC in builds that have the GUC:
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false);
 select
   *
 from
@@ -178,9 +175,6 @@ where
   and c <= 53
   and d = 3515
 order by a, b, c, d;
-
--- Disable prefetch once more:
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
 
 -- Test coverage for _bt_set_startikey IS NOT NULL path:
 /*
@@ -208,7 +202,7 @@ select *
 from fuzz_skip_scan
 where a >= 7 and a <= 7 and b is null
 order by a desc, b desc, c desc, d desc;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select *
 from fuzz_skip_scan
 where a >= 7 and a <= 7 and b is null

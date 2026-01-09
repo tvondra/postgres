@@ -20,12 +20,6 @@ select set_config((select coalesce((select name from pg_settings where name = 'l
  1
 (1 row)
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
- set_config 
-------------
- off
-(1 row)
-
 -- Establish if this server is master or the patch -- want to skip stress
 -- tests if it's the latter
 --
@@ -5581,13 +5575,6 @@ order by a desc, b desc, c desc, d desc;
 --
 -- Anyway, I fixed that by properly setting the "finished" flag, and also resetting it when the direction changes.
 -- But it all these ad hoc flags feel a bit wonky / loosely defined.
--- Enable prefetch when GUC in builds that have the GUC:
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false);
- set_config 
-------------
- on
-(1 row)
-
 select
   *
 from
@@ -5621,13 +5608,6 @@ order by a, b, c, d;
    Index Searches: 185
    Buffers: shared hit=1136
 (4 rows)
-
--- Disable prefetch once more:
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
- set_config 
-------------
- off
-(1 row)
 
 -- Test coverage for _bt_set_startikey IS NOT NULL path:
 /*
@@ -6009,14 +5989,14 @@ order by a desc, b desc, c desc, d desc;
   92380 | 7 |   |   1 | 2608
 (336 rows)
 
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select *
 from fuzz_skip_scan
 where a >= 7 and a <= 7 and b is null
 order by a desc, b desc, c desc, d desc;
-                                                            QUERY PLAN                                                            
-----------------------------------------------------------------------------------------------------------------------------------
- Index Scan Backward using fuzz_skip_scan_abcd on fuzz_skip_scan  (cost=0.42..26.48 rows=4 width=20) (actual rows=336.00 loops=1)
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Index Scan Backward using fuzz_skip_scan_abcd on fuzz_skip_scan (actual rows=336.00 loops=1)
    Index Cond: ((a >= 7) AND (a <= 7) AND (b IS NULL))
    Index Searches: 1
    Buffers: shared hit=341

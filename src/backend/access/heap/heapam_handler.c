@@ -417,6 +417,19 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	{
 		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
+		if (unlikely(batchqueue->direction != direction))
+		{
+			if (scan->xs_heapfetch->rs)
+				read_stream_reset(scan->xs_heapfetch->rs);
+			batch_reset_pos(&batchqueue->streamPos);
+
+			/*
+			 * If we're changing direction, use the current readPos (from before
+			 * we advanced it) to set currentPrefetchBlock.
+			 */
+			batchqueue->currentPrefetchBlock = currBlock;
+		}
+
 		/* make sure we have visibility for the whole batch */
 		heap_batch_resolve_visibility(scan, hscan, readBatch);
 

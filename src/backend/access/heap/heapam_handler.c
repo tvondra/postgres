@@ -396,12 +396,12 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 */
 	if (readPos->item != -1)
 	{
-			ItemPointer tid;
+		ItemPointer tid;
 
-			readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
+		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
-			tid = &readBatch->items[readPos->item].heapTid;
-			currBlock = ItemPointerGetBlockNumber(tid);
+		tid = &readBatch->items[readPos->item].heapTid;
+		currBlock = ItemPointerGetBlockNumber(tid);
 	}
 
 	/*

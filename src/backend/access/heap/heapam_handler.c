@@ -599,6 +599,7 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 							 ScanDirection direction)
 {
 	BatchIndexScan streamBatch;
+	BatchQueueItemPos *readPos PG_USED_FOR_ASSERTS_ONLY = &scan->batchqueue->readPos;
 
 	/* make sure we have batching initialized and consistent */
 	batch_assert_batches_valid(scan);
@@ -624,11 +625,16 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 	 */
 	streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
 
+	Assert(streamBatch->dir == direction);
+
 	if (ScanDirectionIsForward(direction))
 	{
 		if (++streamPos->item <= streamBatch->lastItem)
 		{
 			batch_assert_pos_valid(scan, streamPos);
+
+			Assert(readPos->batch < streamPos->batch ||
+				   readPos->item < streamPos->item);
 
 			return true;
 		}
@@ -638,6 +644,9 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 		if (--streamPos->item >= streamBatch->firstItem)
 		{
 			batch_assert_pos_valid(scan, streamPos);
+
+			Assert(readPos->batch < streamPos->batch ||
+				   readPos->item > streamPos->item);
 
 			return true;
 		}
@@ -713,20 +722,13 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	BatchQueueItemPos *streamPos = &batchqueue->streamPos;
 	ScanDirection direction = batchqueue->direction;
 
-	/* By now we should know the direction of the scan. */
-	Assert(direction != NoMovementScanDirection);
-
 	/*
-	 * The read position (readPos) has to be valid.
-	 *
-	 * We initialize/advance it before even attempting to read the heap tuple,
-	 * and it gets invalidated when we reach the end of the scan (but then we
-	 * don't invoke the callback again).
-	 *
-	 * XXX This applies to the readPos. We'll use streamPos to determine which
-	 * blocks to pass to the stream, and readPos may be used to initialize it.
+	 * readPos must always be valid when we're called.  streamPos might not
+	 * yet be valid, in which case it'll be initialized using readPos.
 	 */
 	batch_assert_pos_valid(scan, &batchqueue->readPos);
+	Assert(direction != NoMovementScanDirection);
+	Assert(!scan->finished);
 
 	/*
 	 * Try to advance the streamPos to the next item, and if that doesn't
@@ -766,17 +768,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			advanced = true;
 		}
 
-		/*
-		 * FIXME Maybe check the streamPos is not behind readPos?
-		 *
-		 * FIXME Actually, could streamPos get stale/lagging behind readPos,
-		 * and if yes how much. Could it get so far behind to not be valid,
-		 * pointing at a freed batch? In that case we can't even advance it,
-		 * and we should just initialize it to readPos. We might do that
-		 * anyway, I guess, just to save on "pointless" advances (it must
-		 * agree with readPos, we can't allow "retroactively" changing the
-		 * block sequence).
-		 */
+		Assert(!advanced ||
+			   INDEX_SCAN_BATCH(scan, streamPos->batch)->dir == direction);
 
 		/*
 		 * If we advanced the position, either return the block for the TID,
@@ -827,9 +820,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			return batchqueue->currentPrefetchBlock;
 		}
 
-		if (scan->finished)
-			break;
-
 		/*
 		 * If we already used the maximum number of batch slots available,
 		 * it's pointless to try loading another one. This can happen for
@@ -848,17 +838,17 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			break;
 		}
 
-		/*
-		 * Couldn't advance the position, no more items in the loaded batches.
-		 * Try loading the next batch - if that succeeds, try advancing again
-		 * (this time the advance should work, but we may skip all the items).
-		 *
-		 * If we fail to load the next batch, we're done.
-		 */
 		if (batchqueue->headBatch < batchqueue->nextBatch)
 			priorbatch = INDEX_SCAN_BATCH(scan, batchqueue->nextBatch - 1);
 		if (!heap_batch_getnext(scan, priorbatch, direction))
+		{
+			/*
+			 * Failed to load next batch, so all the batches that the scan
+			 * will ever require (barring a change in scan direction) are now
+			 * loaded
+			 */
 			break;
+		}
 
 		/*
 		 * Consider disabling prefetching when we can't keep a sufficiently
@@ -867,7 +857,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * Only consider doing this when we're not on the scan's initial
 		 * batch, when readPos and streamPos share the same batch.
 		 */
-		if (!scan->finished && !batchqueue->prefetchingLockedIn)
+		if (!batchqueue->prefetchingLockedIn)
 		{
 			int			itemdiff;
 

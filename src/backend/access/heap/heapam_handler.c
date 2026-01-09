@@ -634,7 +634,8 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 			batch_assert_pos_valid(scan, streamPos);
 
 			Assert(readPos->batch < streamPos->batch ||
-				   readPos->item < streamPos->item);
+				   (readPos->batch == streamPos->batch &&
+					readPos->item < streamPos->item));
 
 			return true;
 		}
@@ -646,7 +647,8 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 			batch_assert_pos_valid(scan, streamPos);
 
 			Assert(readPos->batch < streamPos->batch ||
-				   readPos->item > streamPos->item);
+				   (readPos->batch == streamPos->batch &&
+					readPos->item > streamPos->item));
 
 			return true;
 		}

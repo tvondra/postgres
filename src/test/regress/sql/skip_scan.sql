@@ -146,6 +146,42 @@ where
   c is not null and d >= 8600 and d <= 8640
 order by a desc, b desc, c desc, d desc;
 
+-- 2026-01-09 14:24
+--
+-- With prefetching enabled, this got an assertion failure:
+--
+-- TRAP: failed Assert("ScanDirectionIsForward(dir) ? !(cur->sk_flags & SK_BT_MAXVAL) : !(cur->sk_flags & SK_BT_MINVAL)"), File: "../source/src/backend/access/nbtree/nbtreadpage.c", Line: 1968
+--
+-- Tomas:
+--
+-- Anyway, I fixed that by properly setting the "finished" flag, and also resetting it when the direction changes.
+-- But it all these ad hoc flags feel a bit wonky / loosely defined.
+
+-- Enable prefetch when GUC in builds that have the GUC:
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false);
+select
+  *
+from
+  fuzz_skip_scan
+where
+  c >= 36
+  and c <= 53
+  and d = 3515
+order by a, b, c, d;
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+select
+  *
+from
+  fuzz_skip_scan
+where
+  c >= 36
+  and c <= 53
+  and d = 3515
+order by a, b, c, d;
+
+-- Disable prefetch once more:
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
+
 -- Test coverage for _bt_set_startikey IS NOT NULL path:
 /*
 index 91ff52868..7783fc29f 100644

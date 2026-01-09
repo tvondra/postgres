@@ -5571,6 +5571,64 @@ order by a desc, b desc, c desc, d desc;
    Buffers: shared hit=1321
 (4 rows)
 
+-- 2026-01-09 14:24
+--
+-- With prefetching enabled, this got an assertion failure:
+--
+-- TRAP: failed Assert("ScanDirectionIsForward(dir) ? !(cur->sk_flags & SK_BT_MAXVAL) : !(cur->sk_flags & SK_BT_MINVAL)"), File: "../source/src/backend/access/nbtree/nbtreadpage.c", Line: 1968
+--
+-- Tomas:
+--
+-- Anyway, I fixed that by properly setting the "finished" flag, and also resetting it when the direction changes.
+-- But it all these ad hoc flags feel a bit wonky / loosely defined.
+-- Enable prefetch when GUC in builds that have the GUC:
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false);
+ set_config 
+------------
+ on
+(1 row)
+
+select
+  *
+from
+  fuzz_skip_scan
+where
+  c >= 36
+  and c <= 53
+  and d = 3515
+order by a, b, c, d;
+  id   | a | b  | c  |  d   
+-------+---+----+----+------
+ 98261 | 7 | 10 | 36 | 3515
+ 24904 |   | 18 | 50 | 3515
+ 90470 |   |    | 36 | 3515
+(3 rows)
+
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+select
+  *
+from
+  fuzz_skip_scan
+where
+  c >= 36
+  and c <= 53
+  and d = 3515
+order by a, b, c, d;
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Index Scan using fuzz_skip_scan_abcd on fuzz_skip_scan  (cost=0.42..3556.46 rows=4 width=20) (actual rows=3.00 loops=1)
+   Index Cond: ((c >= 36) AND (c <= 53) AND (d = 3515))
+   Index Searches: 185
+   Buffers: shared hit=1136
+(4 rows)
+
+-- Disable prefetch once more:
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
+ set_config 
+------------
+ off
+(1 row)
+
 -- Test coverage for _bt_set_startikey IS NOT NULL path:
 /*
 index 91ff52868..7783fc29f 100644
@@ -5958,7 +6016,7 @@ where a >= 7 and a <= 7 and b is null
 order by a desc, b desc, c desc, d desc;
                                                             QUERY PLAN                                                            
 ----------------------------------------------------------------------------------------------------------------------------------
- Index Scan Backward using fuzz_skip_scan_abcd on fuzz_skip_scan  (cost=0.42..26.49 rows=4 width=20) (actual rows=336.00 loops=1)
+ Index Scan Backward using fuzz_skip_scan_abcd on fuzz_skip_scan  (cost=0.42..26.48 rows=4 width=20) (actual rows=336.00 loops=1)
    Index Cond: ((a >= 7) AND (a <= 7) AND (b IS NULL))
    Index Searches: 1
    Buffers: shared hit=341

@@ -14,7 +14,6 @@ set client_min_messages=error;
 -- applied (HACK, just sets commit_siblings instead when we don't have that
 -- patch available):
 select set_config((select coalesce((select name from pg_settings where name = 'log_btree_verbosity'), 'commit_siblings')), '1', false);
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
 
 -- set skipscan_skipsupport_enabled=false;
 set vacuum_freeze_min_age = 0;

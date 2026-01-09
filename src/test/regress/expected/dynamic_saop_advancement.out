@@ -19,12 +19,6 @@ select set_config((select coalesce((select name from pg_settings where name = 'l
  1
 (1 row)
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false);
- set_config 
-------------
- off
-(1 row)
-
 -- Establish if this server is master or the patch -- want to skip stress
 -- tests if it's the latter
 --
@@ -691,6 +685,12 @@ where bar = any(array[(select array_agg(i) from a)]);
 (13 rows)
 
 -- Backwards scan (more or less equivalent)
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- LIMIT no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 set enable_sort = off;
 with a as (
   select
@@ -776,6 +776,12 @@ where bar = any(array[(select array_agg(i) from a)]) order by bar desc limit 50 
          Index Searches: 1
          Buffers: shared hit=20
 (10 rows)
+
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- LIMIT no prefetch
+ set_config 
+------------
+ on
+(1 row)
 
 -----------------------------------------------------------------------
 -- "More than one so->numArrayKeys" test case (uses 2 SAOPs/columns) --
@@ -6531,6 +6537,12 @@ order by two, four, twenty limit 20;
          Buffers: shared hit=16
 (6 rows)
 
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- LIMIT no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 -- Even an inequality on two should work, since we can get through non-matches
 -- from the index quickly.
 --
@@ -6580,6 +6592,12 @@ order by two, four, twenty limit 20;
          Index Searches: 3
          Buffers: shared hit=287
 (8 rows)
+
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- LIMIT no prefetch
+ set_config 
+------------
+ on
+(1 row)
 
 -- Same trick should work with interlaced SOAPs and non-SAOPS:
 drop index tenk1_idx_extra_column_in_middle;
@@ -13678,6 +13696,12 @@ and orderid >= 42 and orderid <= 47
 and orderline in (-500,5,7,8,9,500)
 order by district, warehouse, orderid, orderline;
 select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks_hit \gset
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 -- Constants here differ to earlier on:
 fetch forward 10 from default_scroll_cursor;
  district | warehouse | orderid | orderline 
@@ -13868,6 +13892,12 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 (1 row)
 
 /* default_scroll_cursor */ commit;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
+ set_config 
+------------
+ on
+(1 row)
+
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 declare default_scroll_cursor cursor for
 select * from redescend_test
@@ -13893,6 +13923,12 @@ order by district, warehouse, orderid, orderline;
 -- the high key).
 --
 -- Remedy the situation by adding coverage here.
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 begin;
 declare cancel_backwards_prim_scan_changedir cursor for
 select * from redescend_test
@@ -14337,6 +14373,12 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 (1 row)
 
 /* cancel_backwards_prim_scan_changedir */ commit;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
+ set_config 
+------------
+ on
+(1 row)
+
 -- Show EXPLAIN ANALYZE for cursor from transaction block:
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 declare cancel_backwards_prim_scan_changedir cursor for
@@ -14382,6 +14424,12 @@ select count(*) from backup_wrong_tbl;
 (1 row)
 
 vacuum analyze backup_wrong_tbl;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 begin;
 declare back_up_terminate_toplevel_wrong cursor for
 select * from backup_wrong_tbl
@@ -14803,6 +14851,12 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 (1 row)
 
 /* back_up_terminate_toplevel_wrong */ commit;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
+ set_config 
+------------
+ on
+(1 row)
+
 -- Show EXPLAIN ANALYZE for cursor from transaction block:
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 declare back_up_terminate_toplevel_wrong cursor for
@@ -16469,6 +16523,12 @@ where
 -- (March 15) This is like the original cursor, but uses the new query variant
 set work_mem = 64;
 set enable_sort = off;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 begin;
 declare korotkov_scroll_cursor cursor for
 select equal, inequal, nonrequired
@@ -16550,6 +16610,12 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 (1 row)
 
 /* korotkov_scroll_cursor */ commit;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch
+ set_config 
+------------
+ on
+(1 row)
+
 reset work_mem;
 reset enable_sort;
 --------------------------
@@ -17898,6 +17964,12 @@ create index amber_small_idx on amber_small (a, b);
 vacuum analyze amber_small;
 vacuum analyze amber_big;
 -- Original
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 select count(*), small.a small_a
 from
   amber_small small
@@ -17937,6 +18009,12 @@ group by small_a order by small_a;
                Index Searches: 1
                Buffers: shared hit=375
 (14 rows)
+
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
+ set_config 
+------------
+ on
+(1 row)
 
 -- Same again, but this time it's a nestloop join:
 --
@@ -18034,6 +18112,12 @@ where
   bug.x = 1 and
   bug.y = any(array[(select array_agg(i) from generate_series(1370, 1390) i where i % 10 = 0)])
 group by o.a, o.b;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 execute restore_buggy_primscan_qry;
  count | a |  b   
 -------+---+------
@@ -18068,6 +18152,12 @@ execute restore_buggy_primscan_qry;
 (19 rows)
 
 deallocate restore_buggy_primscan_qry;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
+ set_config 
+------------
+ on
+(1 row)
+
 -- (Jun 6 2024)
 --
 -- Same again, but using skip scan this time.
@@ -18081,6 +18171,12 @@ select count(*), o.a, o.b
 where
   bug.y = any(array[(select array_agg(i) from generate_series(1370, 1390) i where i % 10 = 0)])
 group by o.a, o.b;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 execute skip_restore_buggy_primscan_qry;
  count | a |  b   
 -------+---+------
@@ -18113,6 +18209,12 @@ execute skip_restore_buggy_primscan_qry;
                Buffers: shared hit=25
 (18 rows)
 
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
+ set_config 
+------------
+ on
+(1 row)
+
 -- (Jun 6 2024)
 --
 -- Fill with tuples match original "x=1" tuples, but with "x=0" and "x=2"
@@ -18127,6 +18229,12 @@ insert into restore_buggy_primscan_table select 2, x_vals from generate_series(1
 insert into outer_table                  select 2, 1370 from generate_series(1, 9) j;
 insert into restore_buggy_primscan_table select 2, 1371 from generate_series(1, 9) j;
 insert into restore_buggy_primscan_table select 2, 1380 from generate_series(1, 9) j;
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
+ set_config 
+------------
+ off
+(1 row)
+
 execute skip_restore_buggy_primscan_qry;
  count | a |  b   
 -------+---+------
@@ -18164,6 +18272,12 @@ execute skip_restore_buggy_primscan_qry;
                Index Searches: 2
                Buffers: shared hit=62
 (18 rows)
+
+select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
+ set_config 
+------------
+ on
+(1 row)
 
 deallocate skip_restore_buggy_primscan_qry;
 -- (November 30)

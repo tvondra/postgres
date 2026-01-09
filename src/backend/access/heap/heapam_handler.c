@@ -280,6 +280,9 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 	Assert(TransactionIdIsValid(RecentXmin));
 	Assert(!INDEX_SCAN_BATCH_FULL(scan));
 
+	if (scan->finished)
+		return NULL;
+
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorbatch,
 													  direction);
 	if (batch != NULL)
@@ -423,6 +426,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 				read_stream_reset(scan->xs_heapfetch->rs);
 			batch_reset_pos(&batchqueue->streamPos);
 
+			scan->finished = false;
 			/*
 			 * If we're changing direction, use the current readPos (from before
 			 * we advanced it) to set currentPrefetchBlock.
@@ -458,6 +462,8 @@ nextbatch:
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 		batch_reset_pos(&batchqueue->streamPos);
+
+		scan->finished = false;
 
 		/*
 		 * If we're changing direction, use the current readPos (from before
@@ -864,6 +870,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * will ever require (barring a change in scan direction) are now
 			 * loaded
 			 */
+			scan->finished = true;
 			break;
 		}
 

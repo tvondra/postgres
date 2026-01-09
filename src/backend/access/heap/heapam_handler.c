@@ -663,6 +663,8 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 		/* advance to the next batch */
 		streamPos->batch++;
 
+		Assert(readPos->batch < streamPos->batch);
+
 		streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
 
 		if (ScanDirectionIsForward(direction))

@@ -7527,3 +7527,22 @@ EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 select *
 from rowcompare_test
 where (second, third) > (null, 0);
+
+-- reproducer for a crash, triggered by incorrect currentPrefetchBlock when
+-- initializing the stream on the second batch
+create table t_6 (a bigint) with (fillfactor = 56);
+create index on t_6 (a) with (fillfactor = 56, deduplicate_items = off);
+insert into t_6 select (i / 103) from generate_series(1, 1000) s(i) order by i + mod(i::bigint * 35543, 553), md5(i::text);
+begin;
+declare c_6 scroll cursor for select * from t_6 where a in (0,1,2,3,4,5,6,7,8,9) order by a;
+fetch backward 29 from c_6;
+fetch backward 44 from c_6;
+fetch backward 18 from c_6;
+fetch forward 13 from c_6;
+fetch forward 86 from c_6;
+fetch backward 73 from c_6;
+fetch forward 69 from c_6;
+fetch forward 30 from c_6;
+fetch forward 6 from c_6;
+fetch forward 75 from c_6;
+rollback;

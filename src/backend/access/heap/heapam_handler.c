@@ -607,7 +607,9 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 	 * The position is already defined, so we should have some batches loaded
 	 * and the position has to be valid with respect to those.
 	 */
+	Assert(!INDEX_SCAN_POS_INVALID(readPos));
 	Assert(!INDEX_SCAN_POS_INVALID(streamPos));
+	batch_assert_pos_valid(scan, readPos);
 	batch_assert_pos_valid(scan, streamPos);
 
 	/*

@@ -245,6 +245,8 @@ heapam_batch_return_tid(IndexScanDesc scan, BatchIndexScan readBatch,
 {
 	batch_assert_pos_valid(scan, readPos);
 
+	pgstat_count_index_tuples(scan->indexRelation, 1);
+
 	/* set the TID / itup for the scan */
 	scan->xs_heaptid = readBatch->items[readPos->item].heapTid;
 
@@ -440,20 +442,15 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 		if (ScanDirectionIsForward(direction))
 		{
-			if (++readPos->item > readBatch->lastItem)
-				goto nextbatch;
+			if (++readPos->item <= readBatch->lastItem)
+				return heapam_batch_return_tid(scan, readBatch, readPos);
 		}
 		else					/* ScanDirectionIsBackward */
 		{
-			if (--readPos->item < readBatch->firstItem)
-				goto nextbatch;
+			if (--readPos->item >= readBatch->firstItem)
+				return heapam_batch_return_tid(scan, readBatch, readPos);
 		}
-
-		pgstat_count_index_tuples(scan->indexRelation, 1);
-		return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
-
-nextbatch:
 
 	if (unlikely(batchqueue->direction != direction))
 	{
@@ -508,7 +505,6 @@ nextbatch:
 			Assert(batchqueue->headBatch == readPos->batch);
 		}
 
-		pgstat_count_index_tuples(scan->indexRelation, 1);
 		return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
 
@@ -556,7 +552,6 @@ nextbatch:
 			Assert(batchqueue->headBatch == readPos->batch);
 		}
 
-		pgstat_count_index_tuples(scan->indexRelation, 1);
 		return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
 

@@ -7532,6 +7532,9 @@ rollback;
 
 -- dataset that fill the batch queue, forcing stream reset before loading
 -- more batches
+set client_min_messages=error;
+drop table if exists test_stream_reset;
+reset client_min_messages;
 create table test_stream_reset (a bigint, b bigint);
 insert into test_stream_reset select 1, i from generate_series(1,1000000) s(i);
 create index on test_stream_reset (a) with (deduplicate_items=off, fillfactor=10);
@@ -7539,4 +7542,3 @@ analyze test_stream_reset;
 -- evict data, to force look-ahead
 select 1 from pg_buffercache_evict_relation('test_stream_reset');
 select * from (select * from test_stream_reset order by a offset 1000000);
-drop table test_stream_reset;

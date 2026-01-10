@@ -14,7 +14,6 @@ reset client_min_messages;
 -- Set log_btree_verbosity to 1 without depending on having that patch
 -- applied (HACK, just sets commit_siblings instead when we don't have that
 -- patch available):
-select set_config((select coalesce((select name from pg_settings where name = 'log_btree_verbosity'), 'commit_siblings')), '1', false);
 
 -- Establish if this server is master or the patch -- want to skip stress
 -- tests if it's the latter
@@ -284,7 +283,6 @@ select count(*) from skippy_tbl
 where bar = any(array[(select array_agg(i) from a)]);
 
 -- Backwards scan (more or less equivalent)
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- LIMIT no prefetch
 
 set enable_sort = off;
 with a as (
@@ -305,7 +303,6 @@ with a as (
 select * from skippy_tbl
 where bar = any(array[(select array_agg(i) from a)]) order by bar desc limit 50 offset 3000;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- LIMIT no prefetch
 
 -----------------------------------------------------------------------
 -- "More than one so->numArrayKeys" test case (uses 2 SAOPs/columns) --
@@ -2445,7 +2442,6 @@ where
   two in (0, 1) and four = 1 and twenty in (1, 2)
 order by two, four, twenty limit 20;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- LIMIT no prefetch
 -- Even an inequality on two should work, since we can get through non-matches
 -- from the index quickly.
 --
@@ -2460,7 +2456,6 @@ select ctid, thousand from tenk1_dyn_saop
 where
   two != 0 and four in (1, 2) and twenty in (1, 2)
 order by two, four, twenty limit 20;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- LIMIT no prefetch
 
 -- Same trick should work with interlaced SOAPs and non-SAOPS:
 drop index tenk1_idx_extra_column_in_middle;
@@ -4209,7 +4204,6 @@ and orderline in (-500,5,7,8,9,500)
 order by district, warehouse, orderid, orderline;
 select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks_hit \gset
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
 -- Constants here differ to earlier on:
 fetch forward 10 from default_scroll_cursor;
 \set old_blocks_hit :cur_blocks_hit
@@ -4264,7 +4258,6 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 
 /* default_scroll_cursor */ commit;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
 
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 declare default_scroll_cursor cursor for
@@ -4284,7 +4277,6 @@ order by district, warehouse, orderid, orderline;
 -- the high key).
 --
 -- Remedy the situation by adding coverage here.
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
 begin;
 declare cancel_backwards_prim_scan_changedir cursor for
 select * from redescend_test
@@ -4345,7 +4337,6 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 
 /* cancel_backwards_prim_scan_changedir */ commit;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
 
 -- Show EXPLAIN ANALYZE for cursor from transaction block:
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
@@ -4383,7 +4374,6 @@ from
 select count(*) from backup_wrong_tbl;
 vacuum analyze backup_wrong_tbl;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
 begin;
 declare back_up_terminate_toplevel_wrong cursor for
 select * from backup_wrong_tbl
@@ -4438,7 +4428,6 @@ select pg_stat_get_xact_blocks_hit('backup_wrong_idx'::regclass) as cur_blocks_h
 select :cur_blocks_hit - :old_blocks_hit bh;
 
 /* back_up_terminate_toplevel_wrong */ commit;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch again
 
 -- Show EXPLAIN ANALYZE for cursor from transaction block:
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
@@ -5411,7 +5400,6 @@ where
 set work_mem = 64;
 set enable_sort = off;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- cusor no prefetch
 begin;
 declare korotkov_scroll_cursor cursor for
 select equal, inequal, nonrequired
@@ -5451,7 +5439,6 @@ select :cur_blocks_hit - :old_blocks_hit bh;
 
 /* korotkov_scroll_cursor */ commit;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- cusor prefetch
 
 reset work_mem;
 reset enable_sort;
@@ -6077,7 +6064,6 @@ vacuum analyze amber_small;
 vacuum analyze amber_big;
 
 -- Original
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
 select count(*), small.a small_a
 from
   amber_small small
@@ -6095,7 +6081,6 @@ from
     on small.a = big.a and small.b = big.b
 where small.a in (1, 3) and big.a in (1, 3)
 group by small_a order by small_a;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
 
 -- Same again, but this time it's a nestloop join:
 --
@@ -6173,12 +6158,10 @@ where
   bug.y = any(array[(select array_agg(i) from generate_series(1370, 1390) i where i % 10 = 0)])
 group by o.a, o.b;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
 execute restore_buggy_primscan_qry;
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 execute restore_buggy_primscan_qry;
 deallocate restore_buggy_primscan_qry;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
 
 -- (Jun 6 2024)
 --
@@ -6194,11 +6177,9 @@ where
   bug.y = any(array[(select array_agg(i) from generate_series(1370, 1390) i where i % 10 = 0)])
 group by o.a, o.b;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
 execute skip_restore_buggy_primscan_qry;
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 execute skip_restore_buggy_primscan_qry;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
 
 -- (Jun 6 2024)
 --
@@ -6215,11 +6196,9 @@ insert into outer_table                  select 2, 1370 from generate_series(1, 
 insert into restore_buggy_primscan_table select 2, 1371 from generate_series(1, 9) j;
 insert into restore_buggy_primscan_table select 2, 1380 from generate_series(1, 9) j;
 
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'false', false); -- mark/restore no prefetch
 execute skip_restore_buggy_primscan_qry;
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
 execute skip_restore_buggy_primscan_qry;
-select set_config((select coalesce((select name from pg_settings where name = 'enable_indexscan_prefetch'), 'enable_tidscan')), 'true', false); -- mark/restore no prefetch
 
 deallocate skip_restore_buggy_primscan_qry;
 
@@ -7530,6 +7509,9 @@ where (second, third) > (null, 0);
 
 -- reproducer for a crash, triggered by incorrect currentPrefetchBlock when
 -- initializing the stream on the second batch
+set client_min_messages=error;
+drop table if exists t_6;
+reset client_min_messages;
 create table t_6 (a bigint) with (fillfactor = 56);
 create index on t_6 (a) with (fillfactor = 56, deduplicate_items = off);
 insert into t_6 select (i / 103) from generate_series(1, 1000) s(i) order by i + mod(i::bigint * 35543, 553), md5(i::text);

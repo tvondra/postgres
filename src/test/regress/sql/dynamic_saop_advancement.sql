@@ -8,6 +8,7 @@ set client_min_messages=error;
 set vacuum_freeze_min_age = 0;
 set cursor_tuple_fraction=1.000;
 create extension if not exists pageinspect; -- just to have it
+create extension if not exists pg_buffercache; -- to evict data when needed
 -- set statement_timeout='4s';
 reset client_min_messages;
 
@@ -7528,3 +7529,14 @@ fetch forward 30 from c_6;
 fetch forward 6 from c_6;
 fetch forward 75 from c_6;
 rollback;
+
+-- dataset that fill the batch queue, forcing stream reset before loading
+-- more batches
+create table test_stream_reset (a bigint, b bigint);
+insert into test_stream_reset select 1, i from generate_series(1,1000000) s(i);
+create index on test_stream_reset (a) with (deduplicate_items=off, fillfactor=10);
+analyze test_stream_reset;
+-- evict data, to force look-ahead
+select 1 from pg_buffercache_evict_relation('test_stream_reset');
+select * from (select * from test_stream_reset order by a offset 1000000);
+drop table test_stream_reset;

@@ -242,11 +242,6 @@ typedef struct BatchIndexScanData *BatchIndexScan;
 	((scan)->batchqueue->nextBatch - (scan)->batchqueue->headBatch)
 
 /* Did we already load batch with the requested index? */
-/*
- * XXX is't it wrong that this uses 0 to check loaded batches? At some point
- * we'll release the first batch, and batch with idx 0 won't be loaded. Won't
- * that produce the wrong batch in INDEX_SCAN_BATCH?
- */
 #define INDEX_SCAN_BATCH_LOADED(scan, idx) \
 	((idx) >= (scan)->batchqueue->headBatch && (idx) < (scan)->batchqueue->nextBatch)
 

@@ -396,7 +396,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	BatchQueue *batchqueue = scan->batchqueue;
 	BatchQueueItemPos *readPos = &batchqueue->readPos;
 	BatchIndexScan readBatch = NULL;
-	BlockNumber currBlock = InvalidBlockNumber;
 
 	/* shouldn't get here without batching */
 	batch_assert_batches_valid(scan);
@@ -413,20 +412,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 		read_stream_reset(scan->xs_heapfetch->rs);
 		scan->xs_heapfetch->rs = NULL;
-	}
-
-	/*
-	 * Remember the block we returned in the previous call (if any). We will
-	 * need it if we decide to change direction (and reset the stream).
-	 */
-	if (readPos->item != -1)
-	{
-		ItemPointer tid;
-
-		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
-
-		tid = &readBatch->items[readPos->item].heapTid;
-		currBlock = ItemPointerGetBlockNumber(tid);
 	}
 
 	/*
@@ -449,11 +434,12 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			batch_reset_pos(&batchqueue->streamPos);
 
 			scan->finished = false;
+
 			/*
 			 * If we're changing direction, use the current readPos (from before
 			 * we advanced it) to set currentPrefetchBlock.
 			 */
-			batchqueue->currentPrefetchBlock = currBlock;
+			batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 		}
 
 		/* make sure we have visibility for the whole batch */
@@ -491,7 +477,7 @@ nextbatch:
 		 * If we're changing direction, use the current readPos (from before
 		 * we advanced it) to set currentPrefetchBlock.
 		 */
-		batchqueue->currentPrefetchBlock = currBlock;
+		batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 	}
 
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch + 1))
@@ -543,7 +529,6 @@ nextbatch:
 	if (unlikely(batchqueue->reset))
 	{
 		batchqueue->reset = false;
-		// batchqueue->currentPrefetchBlock = currBlock;
 
 		/*
 		 * Need to reset the stream position, it might be too far behind.
@@ -798,14 +783,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		if (INDEX_SCAN_POS_INVALID(streamPos))
 		{
 			*streamPos = batchqueue->readPos;
-
-/* XXX doesn't work, because the buffer may not be pinned anymore (and
- * BufferIsPinned is not available).
-			if (BufferIsValid(hscan->xs_cbuf))
-				batchqueue->currentPrefetchBlock = BufferGetBlockNumber(hscan->xs_cbuf);
-			else
-				batchqueue->currentPrefetchBlock = InvalidBlockNumber;
-*/
 			advanced = true;
 		}
 		else if (heap_batch_advance_streampos(scan, streamPos, direction))

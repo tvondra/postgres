@@ -302,33 +302,11 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 		/* Delay initializing stream until reading from scan's second batch */
 		if (!scan->xs_heapfetch->rs && !batchqueue->disabled && priorbatch &&
 			enable_indexscan_prefetch)
-		{
-			ItemPointer tid;
-
 			scan->xs_heapfetch->rs =
 				read_stream_begin_relation(READ_STREAM_DEFAULT, NULL,
 										   scan->heapRelation, MAIN_FORKNUM,
 										   scan->heapRelation->rd_tableam->index_getnext_stream,
 										   scan, 0);
-
-			batch_assert_pos_valid(scan, &batchqueue->readPos);
-
-			/* also set the prefetch block to the one we just read */
-
-			/* XXX we can't use readPos->item, because we might have already
-			 * advanced it (in the first block), so just grab the first/last
-			 * item, depending on the scan direction */
-			if (ScanDirectionIsForward(direction))
-			{
-				tid = &priorbatch->items[priorbatch->lastItem].heapTid;
-			}
-			else
-			{
-				tid = &priorbatch->items[priorbatch->firstItem].heapTid;
-			}
-
-			batchqueue->currentPrefetchBlock = ItemPointerGetBlockNumber(tid);
-		}
 	}
 
 	batch_assert_batches_valid(scan);

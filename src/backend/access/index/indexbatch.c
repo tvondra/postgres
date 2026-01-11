@@ -189,8 +189,7 @@ index_batch_mark_pos(IndexScanDesc scan)
 	 * to do this in the common case where we mark a position that comes from
 	 * our current readBatch.
 	 */
-	if (markBatch != NULL && (markPos->batch < batchqueue->headBatch ||
-							  markPos->batch >= batchqueue->nextBatch))
+	if (markBatch && !INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
 	{
 		batchqueue->markBatch = NULL;
 		batch_free(scan, markBatch);

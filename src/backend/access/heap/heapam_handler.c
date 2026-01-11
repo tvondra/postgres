@@ -296,6 +296,37 @@ heap_batch_resolve_visibility(IndexScanDesc scan, BatchIndexScan batch)
 	}
 }
 
+/*
+ * heap_batchpos_advance
+ *		Advance batch position to its next item.
+ *
+ * Advance to the next item within batch/pos (or to the previous item, when
+ * scanning backwards).
+ *
+ * Returns true if the position could be advanced.  Returns false when there
+ * are no more items in batch in the given direction.
+ */
+static inline bool
+heap_batchpos_advance(BatchIndexScan batch, BatchQueueItemPos *pos,
+					  ScanDirection direction)
+{
+	Assert(!INDEX_SCAN_POS_INVALID(pos));
+
+	if (ScanDirectionIsForward(direction))
+	{
+		if (++pos->item > batch->lastItem)
+			return false;
+	}
+	else						/* ScanDirectionIsBackward */
+	{
+		if (--pos->item < batch->firstItem)
+			return false;
+	}
+
+	/* Advanced within batch */
+	return true;
+}
+
 /* ----------------
  *		heap_batch_getnext - get the next batch of TIDs from a scan
  *
@@ -429,16 +460,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 		}
 
-		if (ScanDirectionIsForward(direction))
-		{
-			if (++readPos->item <= readBatch->lastItem)
-				return heapam_batch_return_tid(scan, readBatch, readPos);
-		}
-		else					/* ScanDirectionIsBackward */
-		{
-			if (--readPos->item >= readBatch->firstItem)
-				return heapam_batch_return_tid(scan, readBatch, readPos);
-		}
+		if (heap_batchpos_advance(readBatch, readPos, direction))
+			return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
 
 	if (unlikely(batchqueue->direction != direction))
@@ -550,62 +573,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 }
 
 /*
- * heap_batch_advance_streampos
- *		Advance streamPos to the next item during prefetching.
- *
- * Advance to the next item within streamBatch/streamPos (or to the previous
- * item, when scanning backwards).
- *
- * Returns true if the position could be advanced. Returns false when there
- * are no more items in streamBatch.
- */
-static inline bool
-heap_batch_advance_streampos(IndexScanDesc scan, BatchIndexScan streamBatch,
-							 BatchQueueItemPos *streamPos,
-							 ScanDirection direction)
-{
-	BatchQueueItemPos *readPos PG_USED_FOR_ASSERTS_ONLY = &scan->batchqueue->readPos;
-
-	batch_assert_batches_valid(scan);
-	Assert(!INDEX_SCAN_POS_INVALID(readPos));
-	Assert(!INDEX_SCAN_POS_INVALID(streamPos));
-	batch_assert_pos_valid(scan, readPos);
-	batch_assert_pos_valid(scan, streamPos);
-
-	Assert(streamBatch->dir == direction);
-
-	if (ScanDirectionIsForward(direction))
-	{
-		if (++streamPos->item <= streamBatch->lastItem)
-		{
-			batch_assert_pos_valid(scan, streamPos);
-
-			Assert(readPos->batch < streamPos->batch ||
-				   (readPos->batch == streamPos->batch &&
-					readPos->item < streamPos->item));
-
-			return true;
-		}
-	}
-	else						/* ScanDirectionIsBackward */
-	{
-		if (--streamPos->item >= streamBatch->firstItem)
-		{
-			batch_assert_pos_valid(scan, streamPos);
-
-			Assert(readPos->batch < streamPos->batch ||
-				   (readPos->batch == streamPos->batch &&
-					readPos->item > streamPos->item));
-
-			return true;
-		}
-	}
-
-	/* can't advance */
-	return false;
-}
-
-/*
  * Controls when we cancel use of a read stream to do prefetching
  */
 #define INDEX_SCAN_MIN_DISTANCE_NBATCHES	20
@@ -689,8 +656,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 */
 			fromReadPos = false;
 		}
-		else if (!heap_batch_advance_streampos(scan, streamBatch, streamPos,
-											   direction))
+		else if (!heap_batchpos_advance(streamBatch, streamPos, direction))
 		{
 			/*
 			 * We couldn't advance within the same batch, try advancing to the

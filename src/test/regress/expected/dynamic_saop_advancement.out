@@ -21481,3 +21481,3058 @@ select * from (select * from test_stream_reset order by a offset 1000000);
 ---+---
 (0 rows)
 
+-- 2026-01-11 12:33
+--
+-- Hash index hang bug
+--
+set client_min_messages=error;
+drop table if exists t_0;
+reset client_min_messages;
+create table t_0 (a bigint) with (fillfactor = 54);
+create index on t_0 using hash (a) with (fillfactor = 43);
+insert into t_0 select (i / 199) from generate_series(1, 100000) s(i) order by i + mod(i::bigint * 142821, 284), md5(i::text);
+vacuum freeze t_0;
+analyze t_0;
+begin;
+set enable_seqscan = off;
+set enable_bitmapscan = off;
+set cursor_tuple_fraction = 1.0;
+declare c_0 scroll cursor for select * from t_0 where a = 383;
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+ a 
+---
+(0 rows)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch forward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+
+select 1 from pg_buffercache_evict_all();
+ ?column? 
+----------
+        1
+(1 row)
+
+fetch backward from c_0;
+  a  
+-----
+ 383
+(1 row)
+

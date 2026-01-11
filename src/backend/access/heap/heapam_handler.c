@@ -729,7 +729,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 						 * disabled
 						 */
 					}
-					else if (batchqueue->readPos.batch == streamPos->batch)
+					else if (readPos->batch == streamPos->batch)
 					{
 						if (ScanDirectionIsForward(direction))
 							itemdiff = streamPos->item - readPos->item;

@@ -133,15 +133,13 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 		batchqueue->markBatch = NULL;
 
 		/*
-		 * If we've already moved past the marked batch (it's not in the
-		 * current queue), free it explicitly. Otherwise it'll be in the freed
-		 * later.
+		 * If we've already moved past the marked batch (it's not loaded into
+		 * the queue), free it explicitly now.  Otherwise, it'll be freed
+		 * along with the other loaded batches.
 		 */
-		if (markPos->batch < batchqueue->headBatch ||
-			markPos->batch >= batchqueue->nextBatch)
+		if (!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
 			batch_free(scan, markBatch);
 
-		/* reset position only after the queue range check */
 		batch_reset_pos(&batchqueue->markPos);
 	}
 

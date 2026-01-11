@@ -613,6 +613,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 {
 	IndexScanDesc scan = (IndexScanDesc) callback_private_data;
 	BatchQueue *batchqueue = scan->batchqueue;
+	BatchQueueItemPos *readPos = &batchqueue->readPos;
 	BatchQueueItemPos *streamPos = &batchqueue->streamPos;
 	ScanDirection direction = batchqueue->direction;
 	BatchIndexScan streamBatch;
@@ -622,7 +623,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	 * readPos must always be valid when we're called.  streamPos might not
 	 * yet be valid, in which case it'll be initialized using readPos.
 	 */
-	batch_assert_pos_valid(scan, &batchqueue->readPos);
+	batch_assert_pos_valid(scan, readPos);
 	Assert(direction != NoMovementScanDirection);
 	Assert(!scan->finished);
 
@@ -633,7 +634,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * current read position.  This is the item the caller is trying to
 		 * read, so it's what we should return to the stream.
 		 */
-		*streamPos = batchqueue->readPos;
+		*streamPos = *readPos;
 		fromReadPos = true;
 	}
 
@@ -730,8 +731,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 					}
 					else if (batchqueue->readPos.batch == streamPos->batch)
 					{
-						BatchQueueItemPos *readPos = &batchqueue->readPos;
-
 						if (ScanDirectionIsForward(direction))
 							itemdiff = streamPos->item - readPos->item;
 						else
@@ -768,7 +767,15 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		/*
 		 * We advanced the position.  Either return the block for the TID, or
 		 * skip it (and then try advancing again).
-		 *
+		 */
+		Assert(streamBatch->dir == direction);
+		Assert(readPos->batch < streamPos->batch ||
+			   (readPos->batch == streamPos->batch &&
+				ScanDirectionIsForward(direction) ?
+				readPos->item <= streamPos->item :
+				readPos->item >= streamPos->item));
+
+		/*
 		 * The block may be "skipped" for two reasons. First, the caller may
 		 * define a "prefetch" callback that tells us to skip items (IOS does
 		 * this to skip all-visible pages). Second, currentPrefetchBlock is

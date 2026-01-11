@@ -567,7 +567,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * Returns true if the position was advanced, false otherwise.  The position
  * is guaranteed to be valid only after a successful advance.
  */
-static bool
+static inline bool
 heap_batch_advance_streampos(IndexScanDesc scan, BatchIndexScan streamBatch,
 							 BatchQueueItemPos *streamPos,
 							 ScanDirection direction)
@@ -576,14 +576,6 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchIndexScan streamBatch,
 
 	/* make sure we have batching initialized and consistent */
 	batch_assert_batches_valid(scan);
-
-	/* should know direction by now */
-	Assert(direction == scan->batchqueue->direction);
-	Assert(direction != NoMovementScanDirection);
-
-	/* We can't advance if there are no batches available. */
-	if (INDEX_SCAN_BATCH_COUNT(scan) == 0)
-		return false;
 
 	/*
 	 * The position is already defined, so we should have some batches loaded

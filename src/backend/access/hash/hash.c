@@ -291,11 +291,16 @@ hashinsert(Relation rel, Datum *values, bool *isnull,
 BatchIndexScan
 hashgetbatch(IndexScanDesc scan, BatchIndexScan priorbatch, ScanDirection dir)
 {
+	HashScanOpaque so = (HashScanOpaque) scan->opaque;
+	Relation	rel = scan->indexRelation;
+
 	/* Hash indexes are always lossy since we store only the hash code */
 	scan->xs_recheck = true;
 
 	if (priorbatch == NULL)
 	{
+		_hash_dropscanbuf(rel, so);
+
 		/* Initialize the scan, and return first batch of matching items */
 		return _hash_first(scan, dir);
 	}

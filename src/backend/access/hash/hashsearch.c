@@ -60,19 +60,13 @@ _hash_next(IndexScanDesc scan, ScanDirection dir, BatchIndexScan priorbatch)
 	{
 		blkno = priorbatch->nextPage;
 		if (!BlockNumberIsValid(blkno) || !priorbatch->moreRight)
-		{
-			_hash_dropscanbuf(rel, so);
 			return NULL;
-		}
 	}
 	else
 	{
 		blkno = priorbatch->prevPage;
 		if (!BlockNumberIsValid(blkno) || !priorbatch->moreLeft)
-		{
-			_hash_dropscanbuf(rel, so);
 			return NULL;
-		}
 	}
 
 	/* Allocate space for next batch */

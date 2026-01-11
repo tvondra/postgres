@@ -1056,11 +1056,9 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 				/*
 				 * Note: at this point we are holding a pin on the heap page,
 				 * as recorded in IndexFetchHeapData.xs_cbuf.  We could
-				 * release that pin now, but we prefer to hold on to VM pins.
-				 * it's quite possible that the index entry will require a
-				 * visit to the same heap page.  It's even more likely that
-				 * the index entry will force us to perform a lookup that uses
-				 * the same already-pinned VM page.
+				 * release that pin now, but it's not clear whether it's a win
+				 * to do so.  The next index entry might require a visit to
+				 * the same heap page.
 				 */
 			}
 			else

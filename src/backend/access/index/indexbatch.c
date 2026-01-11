@@ -263,7 +263,6 @@ index_batch_restore_pos(IndexScanDesc scan)
 	batchqueue->nextBatch = batchqueue->headBatch = markPos->batch;
 
 	INDEX_SCAN_BATCH_APPEND(scan, markBatch);
-	batchqueue->markBatch = markBatch;
 }
 
 /*

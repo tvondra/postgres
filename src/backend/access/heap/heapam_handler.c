@@ -574,7 +574,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * Returns true if the position was advanced, false otherwise.  The position
  * is guaranteed to be valid only after a successful advance.
  */
-pg_attribute_always_inline
 static bool
 heap_batch_advance_streampos(IndexScanDesc scan, BatchQueueItemPos *streamPos,
 							 ScanDirection direction)

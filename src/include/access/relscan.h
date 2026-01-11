@@ -249,9 +249,21 @@ typedef struct BatchIndexScanData *BatchIndexScan;
 #define INDEX_SCAN_BATCH_FULL(scan) \
 	(INDEX_SCAN_BATCH_COUNT(scan) == INDEX_SCAN_MAX_BATCHES)
 
-/* Return batch for the provided index. */
+/* Return batch for the provided index */
 #define INDEX_SCAN_BATCH(scan, idx)	\
-		((scan)->batchqueue->batches[(idx) % INDEX_SCAN_MAX_BATCHES])
+( \
+	(AssertMacro(INDEX_SCAN_BATCH_LOADED(scan, idx))), \
+	((scan)->batchqueue->batches[(idx) % INDEX_SCAN_MAX_BATCHES]) \
+)
+
+/* Append given batch to scan's batch queue */
+#define INDEX_SCAN_BATCH_APPEND(scan, batch) \
+	do { \
+		BatchQueue *mbatchqueue = (scan)->batchqueue;	\
+		int			nextBatch = mbatchqueue->nextBatch; \
+		mbatchqueue->batches[nextBatch % INDEX_SCAN_MAX_BATCHES] = (batch); \
+		mbatchqueue->nextBatch++; \
+	} while(0)
 
 /* Is the position invalid/undefined? */
 #define INDEX_SCAN_POS_INVALID(pos) \

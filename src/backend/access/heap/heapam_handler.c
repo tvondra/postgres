@@ -225,9 +225,9 @@ heapam_batch_rewind(IndexScanDesc scan, BatchQueue *batchqueue,
 		/* release "later" batches in reverse order */
 		BatchIndexScan fbatch;
 
-		batchqueue->nextBatch--;
-		fbatch = INDEX_SCAN_BATCH(scan, batchqueue->nextBatch);
+		fbatch = INDEX_SCAN_BATCH(scan, batchqueue->nextBatch - 1);
 		batch_free(scan, fbatch);
+		batchqueue->nextBatch--;
 	}
 
 	/*
@@ -331,17 +331,13 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 													  direction);
 	if (batch != NULL)
 	{
-		/* We got the batch from the AM -- add it to our queue */
-		int			batchIndex = batchqueue->nextBatch;
-
+		/* We got the batch from the AM -- append it */
 		Assert(batch->dir == direction);
 
 		/* make sure we have visibility info for the batch if needed */
 		heap_batch_resolve_visibility(scan, batch);
 
-		INDEX_SCAN_BATCH(scan, batchIndex) = batch;
-
-		batchqueue->nextBatch++;
+		INDEX_SCAN_BATCH_APPEND(scan, batch);
 
 		DEBUG_LOG("batch_getnext headBatch %d nextBatch %d batch %p",
 				  batchqueue->headBatch, batchqueue->nextBatch, batch);

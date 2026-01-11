@@ -553,19 +553,11 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * heap_batch_advance_streampos
  *		Advance streamPos to the next item during prefetching.
  *
- * Move to the next item within the batch pointed to by caller's pos.
- * Advances the position to the next item, either in the same batch or the
- * following one (if already available).
+ * Advance to the next item within streamBatch/streamPos (or to the previous
+ * item, when scanning backwards).
  *
- * We can advance only if we already have some batches loaded, and there's
- * either enough items in the current batch, or some more items in the
- * subsequent batches.
- *
- * If this is the first advance (right after loading the initial/head batch),
- * position is still undefined.  Otherwise we expect the position to be valid.
- *
- * Returns true if the position was advanced, false otherwise.  The position
- * is guaranteed to be valid only after a successful advance.
+ * Returns true if the position could be advanced. Returns false when there
+ * are no more items in streamBatch.
  */
 static inline bool
 heap_batch_advance_streampos(IndexScanDesc scan, BatchIndexScan streamBatch,
@@ -574,22 +566,12 @@ heap_batch_advance_streampos(IndexScanDesc scan, BatchIndexScan streamBatch,
 {
 	BatchQueueItemPos *readPos PG_USED_FOR_ASSERTS_ONLY = &scan->batchqueue->readPos;
 
-	/* make sure we have batching initialized and consistent */
 	batch_assert_batches_valid(scan);
-
-	/*
-	 * The position is already defined, so we should have some batches loaded
-	 * and the position has to be valid with respect to those.
-	 */
 	Assert(!INDEX_SCAN_POS_INVALID(readPos));
 	Assert(!INDEX_SCAN_POS_INVALID(streamPos));
 	batch_assert_pos_valid(scan, readPos);
 	batch_assert_pos_valid(scan, streamPos);
 
-	/*
-	 * Advance to the next item in the same batch, if there are more items. If
-	 * we're at the last item, we'll try advancing to the next batch later.
-	 */
 	Assert(streamBatch->dir == direction);
 
 	if (ScanDirectionIsForward(direction))

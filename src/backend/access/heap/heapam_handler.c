@@ -837,9 +837,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				  ItemPointerGetOffsetNumber(tid));
 
 		/*
-		 * For index-only scans, determine if the page is all-visible now. If
-		 * it is, we won't need the block and can skip it too. We need to
-		 * remember the visibility info for later, to not get confused.
+		 * For index-only scans, determine if the page is all-visible now.  If
+		 * it is, we won't need the block and can skip it too.
 		 */
 		if (scan->xs_want_itup && item->allVisible)
 		{

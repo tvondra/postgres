@@ -277,10 +277,6 @@ heap_batch_resolve_visibility(IndexScanDesc scan, BatchIndexScan batch)
 	if (!scan->xs_want_itup)
 		return;
 
-	/* only do this for each batch once */
-	if (batch->initialized)
-		return;
-
 	/*
 	 * Did we just advance to this batch in index-only scan? If yes,
 	 * resolve visibility for the whole batch at once.
@@ -298,9 +294,6 @@ heap_batch_resolve_visibility(IndexScanDesc scan, BatchIndexScan batch)
 			item->allVisible = true;
 		}
 	}
-
-	/* remember we went through the initialization already */
-	batch->initialized = true;
 }
 
 /* ----------------

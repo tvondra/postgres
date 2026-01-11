@@ -186,12 +186,6 @@ typedef struct BatchIndexScanData
 	ScanDirection dir;
 
 	/*
-	 * Did we fully initialize this batch? For example, did we resolve VM
-	 * info after advancing to the batch for the first time?
-	 */
-	bool        initialized;
-
-	/*
 	 * moreLeft and moreRight track whether we think there may be matching
 	 * index entries to the left and right of the current page, respectively
 	 */

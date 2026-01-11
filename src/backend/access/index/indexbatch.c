@@ -185,9 +185,7 @@ index_batch_mark_pos(IndexScanDesc scan)
 
 	/*
 	 * Free the previous mark batch (if any), but only if the batch is no
-	 * longer valid (in the current head/next range).  Note that we don't have
-	 * to do this in the common case where we mark a position that comes from
-	 * our current readBatch.
+	 * longer loaded into the queue
 	 */
 	if (markBatch && !INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
 	{

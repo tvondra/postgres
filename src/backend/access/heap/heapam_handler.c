@@ -327,6 +327,30 @@ heap_batchpos_advance(BatchIndexScan batch, BatchQueueItemPos *pos,
 	return true;
 }
 
+/*
+ * heap_batchpos_newbatch
+ *		Advance batch position start of its new batch.
+ *
+ * Sets the given position to the fist item in the given scan direction (or to
+ * the last item, when scanning backwards).   Also advances/increments batch
+ * offset from position such that it points to newBatchForPos.
+ */
+static inline void
+heap_batchpos_newbatch(BatchIndexScan newBatchForPos, BatchQueueItemPos *pos,
+					   ScanDirection direction)
+{
+	Assert(newBatchForPos->dir == direction);
+
+	/* Next batch successfully loaded */
+	pos->batch++;
+	if (ScanDirectionIsForward(direction))
+		pos->item = newBatchForPos->firstItem;
+	else
+		pos->item = newBatchForPos->lastItem;
+
+	Assert(!INDEX_SCAN_POS_INVALID(pos));
+}
+
 /* ----------------
  *		heap_batch_getnext - get the next batch of TIDs from a scan
  *
@@ -497,14 +521,9 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		return NULL;
 	}
 
-	/* Next readBatch successfully loaded */
-	readPos->batch++;
-	if (ScanDirectionIsForward(direction))
-		readPos->item = readBatch->firstItem;
-	else
-		readPos->item = readBatch->lastItem;
-
-	batch_assert_pos_valid(scan, readPos);
+	/* Position readPos to the start of new readBatch */
+	heap_batchpos_newbatch(readBatch, readPos, direction);
+	Assert(INDEX_SCAN_BATCH(scan, readPos->batch) == readBatch);
 
 	/* Free old head batch as needed */
 	if (readPos->batch != batchqueue->headBatch)
@@ -627,8 +646,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				 * XXX What are the exact circumstances under which we rely on
 				 * this?
 				 */
-				streamPos->batch++;
-				streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch);
+				streamBatch = INDEX_SCAN_BATCH(scan, streamPos->batch + 1);
 			}
 			else
 			{
@@ -663,7 +681,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 					scan->finished = true;
 					break;
 				}
-				streamPos->batch++;
 
 				/*
 				 * Consider disabling prefetching when we can't keep a
@@ -713,11 +730,9 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				}
 			}
 
-			/* Advanced streamBatch.  Finish initializing streamPos */
-			if (ScanDirectionIsForward(direction))
-				streamPos->item = streamBatch->firstItem;
-			else
-				streamPos->item = streamBatch->lastItem;
+			/* Position streamPos to the start of new streamBatch */
+			heap_batchpos_newbatch(streamBatch, streamPos, direction);
+			Assert(INDEX_SCAN_BATCH(scan, streamPos->batch) == streamBatch);
 		}
 
 		/*

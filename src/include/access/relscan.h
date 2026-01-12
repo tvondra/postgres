@@ -451,10 +451,13 @@ batch_assert_pos_valid(IndexScanDescData *scan, BatchQueueItemPos *pos)
 {
 #ifdef USE_ASSERT_CHECKING
 	BatchQueue *batchqueue = scan->batchqueue;
+	BatchIndexScan batch = INDEX_SCAN_BATCH(scan, pos->batch);
 
 	/* make sure the position is valid for currently loaded batches */
 	Assert(pos->batch >= batchqueue->headBatch);
 	Assert(pos->batch < batchqueue->nextBatch);
+	Assert(pos->item >= batch->firstItem);
+	Assert(pos->item <= batch->lastItem);
 #endif
 }
 

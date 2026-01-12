@@ -432,6 +432,21 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}
 
+	if (unlikely(batchqueue->direction != direction))
+	{
+		if (scan->xs_heapfetch->rs)
+			read_stream_reset(scan->xs_heapfetch->rs);
+		batch_reset_pos(&batchqueue->streamPos);
+
+		scan->finished = false;
+
+		/*
+		 * If we're changing direction, use the current readPos (from before
+		 * we advanced it) to set currentPrefetchBlock.
+		 */
+		batchqueue->currentPrefetchBlock = InvalidBlockNumber;
+	}
+
 	/*
 	 * Try advancing the batch position. If that doesn't succeed, it means we
 	 * don't have more items in the current batch, and there's no future batch
@@ -445,21 +460,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	{
 		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
 
-		if (unlikely(batchqueue->direction != direction))
-		{
-			if (scan->xs_heapfetch->rs)
-				read_stream_reset(scan->xs_heapfetch->rs);
-			batch_reset_pos(&batchqueue->streamPos);
-
-			scan->finished = false;
-
-			/*
-			 * If we're changing direction, use the current readPos (from before
-			 * we advanced it) to set currentPrefetchBlock.
-			 */
-			batchqueue->currentPrefetchBlock = InvalidBlockNumber;
-		}
-
 		if (heap_batchpos_advance(readBatch, readPos, direction))
 			return heapam_batch_return_tid(scan, readBatch, readPos);
 	}
@@ -468,18 +468,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	{
 		heapam_batch_rewind(scan, batchqueue, direction);
 		readPos->batch = batchqueue->nextBatch - 1;
-
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-		batch_reset_pos(&batchqueue->streamPos);
-
-		scan->finished = false;
-
-		/*
-		 * If we're changing direction, use the current readPos (from before
-		 * we advanced it) to set currentPrefetchBlock.
-		 */
-		batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 	}
 
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch + 1))

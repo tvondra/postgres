@@ -376,6 +376,9 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 										   scan, 0);
 	}
 
+	/* xs_hitup is not supported by amgetbatch scans */
+	Assert(!scan->xs_hitup);
+
 	batch_assert_batches_valid(scan);
 
 	return batch;
@@ -470,94 +473,59 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		readPos->batch = batchqueue->nextBatch - 1;
 	}
 
+	/*
+	 * Scan run out of items from current readBatch
+	 */
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch + 1))
 	{
-		/* advance to the next batch */
-		readPos->batch++;
-
-		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch);
-
-		if (ScanDirectionIsForward(direction))
-			readPos->item = readBatch->firstItem;
-		else
-			readPos->item = readBatch->lastItem;
-
-		batch_assert_pos_valid(scan, readPos);
-
-		if (readPos->batch != batchqueue->headBatch)
-		{
-			BatchIndexScan headBatch = INDEX_SCAN_BATCH(scan,
-														batchqueue->headBatch);
-
-			/* Free the head batch (except when it's markBatch) */
-			batch_free(scan, headBatch);
-
-			/*
-			 * In any case, remove the batch from the regular queue, even if
-			 * we kept it for mark/restore
-			 */
-			batchqueue->headBatch++;
-
-			/* we can't skip any batches */
-			Assert(batchqueue->headBatch == readPos->batch);
-		}
-
-		return heapam_batch_return_tid(scan, readBatch, readPos);
+		/* Next batch already loaded by heapam_getnext_stream */
+		readBatch = INDEX_SCAN_BATCH(scan, readPos->batch + 1);
 	}
-
-	if ((readBatch = heap_batch_getnext(scan, readBatch, direction)) != NULL)
+	else if ((readBatch = heap_batch_getnext(scan, readBatch, direction)) != NULL)
 	{
-		/* xs_hitup is not supported by amgetbatch scans */
-		Assert(!scan->xs_hitup);
-
-		readPos->batch++;
-
+		/* Called amgetbatch again, which loaded an enqueued new readBatch */
+	}
+	else
+	{
 		/*
-		 * Get the initial batch (which must be the head), and initialize the
-		 * position to the appropriate item for the current scan direction
+		 * There are no more batches to be loaded in the current scan
+		 * direction.  Defensively reset the read position.
 		 */
-		if (ScanDirectionIsForward(direction))
-			readPos->item = readBatch->firstItem;
-		else
-			readPos->item = readBatch->lastItem;
+		batch_reset_pos(readPos);
+		scan->finished = true;
 
-		batch_assert_pos_valid(scan, readPos);
-
-		/*
-		 * If we advanced to the next batch, release the batch we no longer
-		 * need.  The positions is the "read" position, and we can compare it
-		 * to headBatch.
-		 */
-		if (readPos->batch != batchqueue->headBatch)
-		{
-			BatchIndexScan headBatch = INDEX_SCAN_BATCH(scan,
-														batchqueue->headBatch);
-
-			/* Free the head batch (except when it's markBatch) */
-			batch_free(scan, headBatch);
-
-			/*
-			 * In any case, remove the batch from the regular queue, even if
-			 * we kept it for mark/restore
-			 */
-			batchqueue->headBatch++;
-
-			/* we can't skip any batches */
-			Assert(batchqueue->headBatch == readPos->batch);
-		}
-
-		return heapam_batch_return_tid(scan, readBatch, readPos);
+		return NULL;
 	}
 
-	/*
-	 * If we get here, we failed to advance the position and there are no more
-	 * batches to be loaded in the current scan direction.  Defensively reset
-	 * the read position.
-	 */
-	batch_reset_pos(readPos);
-	scan->finished = true;
+	/* Next readBatch successfully loaded */
+	readPos->batch++;
+	if (ScanDirectionIsForward(direction))
+		readPos->item = readBatch->firstItem;
+	else
+		readPos->item = readBatch->lastItem;
 
-	return NULL;
+	batch_assert_pos_valid(scan, readPos);
+
+	/* Free old head batch as needed */
+	if (readPos->batch != batchqueue->headBatch)
+	{
+		BatchIndexScan headBatch = INDEX_SCAN_BATCH(scan,
+													batchqueue->headBatch);
+
+		/* Free the head batch (except when it's markBatch) */
+		batch_free(scan, headBatch);
+
+		/*
+		 * In any case, remove the batch from the regular queue, even if
+		 * we kept it for mark/restore
+		 */
+		batchqueue->headBatch++;
+
+		/* we can't skip any batches */
+		Assert(batchqueue->headBatch == readPos->batch);
+	}
+
+	return heapam_batch_return_tid(scan, readBatch, readPos);
 }
 
 /*

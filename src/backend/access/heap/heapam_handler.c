@@ -298,13 +298,13 @@ heap_batch_resolve_visibility(IndexScanDesc scan, BatchIndexScan batch)
 
 /*
  * heap_batchpos_advance
- *		Advance batch position to its next item.
+ *		Advance position to its next item in the batch.
  *
- * Advance to the next item within batch/pos (or to the previous item, when
- * scanning backwards).
+ * Advance to the next item within the provided batch (or to the previous item,
+ * when scanning backwards).
  *
  * Returns true if the position could be advanced.  Returns false when there
- * are no more items in batch in the given direction.
+ * are no more items in the batch in the given direction.
  */
 static inline bool
 heap_batchpos_advance(BatchIndexScan batch, BatchQueueItemPos *pos,
@@ -382,7 +382,13 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 		/* We got the batch from the AM -- append it */
 		Assert(batch->dir == direction);
 
-		/* make sure we have visibility info for the batch if needed */
+		/*
+		 * Make sure we have visibility info for the batch if needed.
+		 *
+		 * We do this right after reading a batch and not lazily, because we
+		 * read a batch only when we need at least one item from it. So we'll
+		 * need a visibility info too.
+		 */
 		heap_batch_resolve_visibility(scan, batch);
 
 		INDEX_SCAN_BATCH_APPEND(scan, batch);
@@ -393,11 +399,20 @@ heap_batch_getnext(IndexScanDesc scan, BatchIndexScan priorbatch,
 		/* Delay initializing stream until reading from scan's second batch */
 		if (!scan->xs_heapfetch->rs && !batchqueue->disabled && priorbatch &&
 			enable_indexscan_prefetch)
+		{
 			scan->xs_heapfetch->rs =
 				read_stream_begin_relation(READ_STREAM_DEFAULT, NULL,
 										   scan->heapRelation, MAIN_FORKNUM,
 										   scan->heapRelation->rd_tableam->index_getnext_stream,
 										   scan, 0);
+			/*
+			 * Don't bother with setting currentPrefetchBlock to the last block
+			 * returned to the caller (a table access method). The stream will be
+			 * called only on the next distinct block anyway (because we expect
+			 * the TAM to deduplicate the reads), so we can initialize the block
+			 * at that time. So leave it set to InvalidBlockNumber.
+			 */
+		}
 	}
 
 	/* xs_hitup is not supported by amgetbatch scans */
@@ -430,6 +445,9 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* shouldn't get here without batching */
 	batch_assert_batches_valid(scan);
 
+	/* xs_hitup is not supported by amgetbatch scans */
+	Assert(!scan->xs_hitup);
+
 	/* Initialize direction on first call */
 	if (batchqueue->direction == NoMovementScanDirection)
 		batchqueue->direction = direction;
@@ -459,29 +477,40 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			read_stream_reset(scan->xs_heapfetch->rs);
 	}
 
+	/*
+	 * XXX Shouldn't this also update the batchqueue->direction? If we get to
+	 * the next block hangling direction change, then we will remember it
+	 * (because heapam_batch_rewind will store it). But if we return in the
+	 * next block, won't we forget about it?
+	 *
+	 * XXX It's a bit weird we handle the direction change in two places.
+	 * Would be good to explain why that's necessary.
+	 *
+	 * XXX How come this doesn't need to do heapam_batch_rewind too? Could there
+	 * be some future batches already loaded?
+	 */
 	if (unlikely(batchqueue->direction != direction))
 	{
 		if (scan->xs_heapfetch->rs)
 			read_stream_reset(scan->xs_heapfetch->rs);
 		batch_reset_pos(&batchqueue->streamPos);
 
+		/* We may change direction after reading the last batch. */
 		scan->finished = false;
 
 		/*
-		 * If we're changing direction, use the current readPos (from before
-		 * we advanced it) to set currentPrefetchBlock.
+		 * Reset the prefetch block. We don't need to worry about the last
+		 * block returned to the caller, because it'll only call the stream
+		 * on the first mismatching TID. That means using InvalidBlockNumber
+		 * is correct - it won't skip that block.
 		 */
 		batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 	}
 
 	/*
-	 * Try advancing the batch position. If that doesn't succeed, it means we
-	 * don't have more items in the current batch, and there's no future batch
-	 * loaded. So try loading another batch, and retry if needed.
-	 *
-	 * XXX Isn't it wrong that this happens before checking if the direction
-	 * is the same? Surely that won't reset the stream, and who knows what's
-	 * already queued in it?
+	 * Try advancing the position in the current batch. If that doesn't succeed,
+	 * it means we don't have more items in it, and we need to advance to the
+	 * next one (in the new scan direction).
 	 */
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch))
 	{
@@ -493,12 +522,21 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	if (unlikely(batchqueue->direction != direction))
 	{
+		/* XXX shouldn't heapam_batch_rewind update the readPos too? */
 		heapam_batch_rewind(scan, batchqueue, direction);
+		/* XXX It seems a bit weird to update just the batch part of the
+		 * readPos. Doesn't it make it rather wrong, with the item still
+		 * set from the original batch? The next code block sets item too.
+		 * So it seems we're doing this only to "fake" the batch, and then
+		 * the next block will advance batch and reset the item. It's
+		 * confusing, worth documenting. Maybe we should set item=-1?
+		 */
 		readPos->batch = batchqueue->nextBatch - 1;
 	}
 
 	/*
-	 * Scan run out of items from current readBatch
+	 * Scan run out of items from current readBatch, try advancing to the next
+	 * batch. Maybe it's already loaded?
 	 */
 	if (INDEX_SCAN_BATCH_LOADED(scan, readPos->batch + 1))
 	{
@@ -526,8 +564,16 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(INDEX_SCAN_BATCH(scan, readPos->batch) == readBatch);
 
 	/* Free old head batch as needed */
+	/*
+	 * XXX This "head" naming may be a bit misleading, because "head" sometime
+	 * means the newest element (in the head/tail naming). But we use "head"
+	 * to mean "oldest". I just got confused by this right now. But we use
+	 * head/next naming, of course.
+	 */
 	if (readPos->batch != batchqueue->headBatch)
 	{
+		/* XXX I still find the BatchIndexScan name confusing. It suggests it's
+		 * some variant of "Scan", but it's not. */
 		BatchIndexScan headBatch = INDEX_SCAN_BATCH(scan,
 													batchqueue->headBatch);
 
@@ -602,13 +648,13 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	Assert(direction != NoMovementScanDirection);
 	Assert(!scan->finished);
 
+	/*
+	 * If the stream position has not been initialized yet, so set it to the
+	 * current read position.  This is the item the caller is trying to
+	 * read, so it's what we should return to the stream.
+	 */
 	if (INDEX_SCAN_POS_INVALID(streamPos))
 	{
-		/*
-		 * The stream position has not been initialized yet, so set it to the
-		 * current read position.  This is the item the caller is trying to
-		 * read, so it's what we should return to the stream.
-		 */
 		*streamPos = *readPos;
 		fromReadPos = true;
 	}

@@ -461,21 +461,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		read_stream_reset(scan->xs_heapfetch->rs);
 		scan->xs_heapfetch->rs = NULL;
 	}
-	else if (unlikely(batchqueue->reset))
-	{
-		batchqueue->reset = false;
-
-		/*
-		 * Need to reset the stream position, it might be too far behind.
-		 * Ultimately we want to set it to readPos, but we can't do that
-		 * yet - readPos still point sat the old batch, so just reset it
-		 * and we'll init it to readPos later in the callback.
-		 */
-		batch_reset_pos(&batchqueue->streamPos);
-
-		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
-	}
 
 	/*
 	 * XXX Shouldn't this also update the batchqueue->direction? If we get to
@@ -712,8 +697,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				if (INDEX_SCAN_BATCH_FULL(scan))
 				{
 					DEBUG_LOG("batch_getnext: ran out of space for batches");
-					scan->batchqueue->reset = true;
-					break;
+					return read_stream_yield(stream);
 				}
 
 				streamBatch = heap_batch_getnext(scan, streamBatch, direction);

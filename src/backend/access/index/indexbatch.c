@@ -74,7 +74,6 @@ index_batch_init(IndexScanDesc scan)
 		(!scan->xs_want_itup && IsMVCCSnapshot(scan->xs_snapshot) &&
 		 RelationNeedsWAL(scan->indexRelation));
 	scan->finished = false;
-	scan->batchqueue->reset = false;
 	scan->batchqueue->prefetchingLockedIn = false;
 	scan->batchqueue->disabled = false;
 	scan->batchqueue->currentPrefetchBlock = InvalidBlockNumber;
@@ -161,7 +160,6 @@ index_batch_reset(IndexScanDesc scan, bool complete)
 	batchqueue->nextBatch = 0;	/* initial batch is empty */
 
 	scan->finished = false;
-	batchqueue->reset = false;
 	batchqueue->currentPrefetchBlock = InvalidBlockNumber;
 
 	batch_assert_batches_valid(scan);

@@ -289,8 +289,6 @@ typedef struct BatchIndexScanData *BatchIndexScan;
  */
 typedef struct BatchQueue
 {
-	bool		reset;
-
 	/*
 	 * Did we disable prefetching/use of a read stream because it didn't pay
 	 * for itself?

@@ -1150,6 +1150,10 @@ read_stream_yield(ReadStream *stream)
 {
 	read_stream_pause(stream);
 	stream->yielded = true;
+
+	/* Remember we reset the stream */
+	stream->stats.nresets += 1;
+
 	return InvalidBlockNumber;
 }
 

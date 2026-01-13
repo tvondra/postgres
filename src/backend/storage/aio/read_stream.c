@@ -100,11 +100,13 @@ struct ReadStream
 	int16		pinned_buffers;
 	int16		distance;
 	int16		initialized_buffers;
+	int16		resume_distance;
 	int			read_buffers_flags;
 	bool		sync_mode;		/* using io_method=sync */
 	bool		batch_mode;		/* READ_STREAM_USE_BATCHING */
 	bool		advice_enabled;
 	bool		temporary;
+	bool		yielded;
 
 	/*
 	 * One-block buffer to support 'ungetting' a block number, to resolve flow
@@ -463,7 +465,43 @@ read_stream_look_ahead(ReadStream *stream)
 		blocknum = read_stream_get_block(stream, per_buffer_data);
 		if (blocknum == InvalidBlockNumber)
 		{
-			/* End of stream. */
+			/* End of stream? */
+			if (stream->yielded)
+			{
+				/*
+				 * Callback returned read_stream_yield -- so it's not the true
+				 * end of the stream
+				 */
+				if (stream->distance > 0)
+				{
+					/*
+					 * Deferred yield.
+					 *
+					 * Callback yielded while a partial pending read is being
+					 * formed and there are pinned buffers to return.  Clear
+					 * yielded flag and break without setting distance to 0.
+					 * That way the pending read stays as-is and can grow on
+					 * the next look-ahead pass.
+					 */
+					stream->yielded = false;
+				}
+				else
+				{
+					/*
+					 * Accepted yield.
+					 *
+					 * If there's a pending read, start it now to ensure there
+					 * are pinned buffers for the consumer before we yield.
+					 */
+					if (stream->pending_read_nblocks > 0 &&
+						stream->ios_in_progress < stream->max_ios)
+						read_stream_start_pending_read(stream);
+				}
+
+				break;
+			}
+
+			/* End the stream */
 			stream->distance = 0;
 			break;
 		}
@@ -701,6 +739,7 @@ read_stream_begin_impl(int flags,
 	stream->seq_blocknum = InvalidBlockNumber;
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
+	stream->yielded = false;
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
@@ -879,7 +918,15 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 
 		/* End of stream reached?  */
 		if (stream->distance == 0)
-			return InvalidBuffer;
+		{
+			if (!stream->yielded)
+				return InvalidBuffer;
+
+			/* The callback yielded.  Resume. */
+			stream->yielded = false;
+			read_stream_resume(stream);
+			Assert(stream->distance != 0);
+		}
 
 		/*
 		 * The usual order of operations is that we look ahead at the bottom
@@ -1032,6 +1079,62 @@ read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
 {
 	*strategy = stream->ios[0].op.strategy;
 	return read_stream_get_block(stream, NULL);
+}
+
+/*
+ * Temporarily stop consuming block numbers from the block number callback.  If
+ * called inside the block number callback, its return value should be
+ * returned by the callback.
+ */
+BlockNumber
+read_stream_pause(ReadStream *stream)
+{
+	stream->resume_distance = stream->distance;
+	stream->distance = 0;
+	return InvalidBlockNumber;
+}
+
+/*
+ * Resume looking ahead after the block number callback reported end-of-stream.
+ * This is useful for streams of self-referential blocks, after a buffer needed
+ * to be consumed and examined to find more block numbers.
+ */
+void
+read_stream_resume(ReadStream *stream)
+{
+	stream->distance = stream->resume_distance;
+}
+
+/*
+ * Called from inside a block number callback, to return control to the caller
+ * of read_stream_next_buffer() without looking further ahead.  Its return
+ * value should be returned by the callback.  This is equivalent to pausing and
+ * resuming automatically at the next call to read_stream_next_buffer().
+ *
+ * If we're in the middle of forming a combined read that hasn't reached
+ * io_combine_limit yet, and there are already pinned buffers available for the
+ * consumer to process, we defer the yield.  The callback will be invoked again
+ * on the next look-ahead pass, giving the pending read a chance to grow to
+ * full io_combine_limit size.  We still return InvalidBlockNumber to break out
+ * of the current look-ahead loop iteration, but we don't pause the stream
+ * (distance stays > 0), so read_stream_look_ahead() can tell that this was a
+ * deferred yield rather than an accepted yield.
+ */
+BlockNumber
+read_stream_yield(ReadStream *stream)
+{
+	if (stream->pending_read_nblocks > 0 &&
+		stream->pending_read_nblocks < stream->io_combine_limit &&
+		stream->pinned_buffers > 0)
+	{
+		/* Deferred yield: don't pause, let the pending read grow. */
+		stream->yielded = true;
+		return InvalidBlockNumber;
+	}
+
+	read_stream_pause(stream);
+	stream->yielded = true;
+	return InvalidBlockNumber;
 }
 
 /*

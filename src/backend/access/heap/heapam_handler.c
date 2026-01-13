@@ -539,6 +539,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * direction.  Defensively reset the read position.
 		 */
 		batch_reset_pos(readPos);
+		// XXX shouldn't we reset the streamPos too, whenever we reset
+		// the readPos?
 		scan->finished = true;
 
 		return NULL;
@@ -632,6 +634,12 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	batch_assert_pos_valid(scan, readPos);
 	Assert(direction != NoMovementScanDirection);
 	Assert(!scan->finished);
+
+	/* If streamPos not loaded, invalidate it. It can fall behind. */
+	if (!INDEX_SCAN_BATCH_LOADED(scan, streamPos->batch))
+	{
+		batch_reset_pos(streamPos);
+	}
 
 	/*
 	 * If the stream position has not been initialized yet, so set it to the

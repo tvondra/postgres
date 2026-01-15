@@ -535,7 +535,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	BatchRingItemPos *prefetchPos = &batchringbuf->prefetchPos;
 	ScanDirection direction = batchringbuf->direction;
 	IndexScanBatch prefetchBatch;
-	bool		fromReadPos = false;
+	bool		fromScanPos = false;
 
 	/*
 	 * It is possible for the scan's direction to change, but that's handled
@@ -586,7 +586,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	{
 		batchringbuf->currentPrefetchBlock = InvalidBlockNumber;
 		*prefetchPos = *scanPos;
-		fromReadPos = true;
+		fromScanPos = true;
 	}
 
 	prefetchBatch = INDEX_SCAN_BATCH(scan, prefetchPos->batch);
@@ -595,7 +595,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		BatchMatchingItem *item;
 		ItemPointer tid;
 
-		if (fromReadPos)
+		if (fromScanPos)
 		{
 			/*
 			 * Don't increment item when prefetchPos was just initialized
@@ -605,7 +605,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * at the point where it called read_stream_next_buffer for the
 			 * first time during the scan.
 			 */
-			fromReadPos = false;
+			fromScanPos = false;
 		}
 		else if (!index_batchpos_advance(prefetchBatch, prefetchPos, direction))
 		{

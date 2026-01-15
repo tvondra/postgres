@@ -690,17 +690,11 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * it is, we won't need the block and can skip it too.
 		 */
 		if (scan->xs_want_itup && item->allVisible)
-		{
-			read_stream_skip_block(stream);
 			continue;
-		}
 
 		/* same block as before, don't need to read it */
 		if (batchringbuf->currentPrefetchBlock == ItemPointerGetBlockNumber(tid))
-		{
-			read_stream_skip_block(stream);
 			continue;
-		}
 
 		batchringbuf->currentPrefetchBlock = ItemPointerGetBlockNumber(tid);
 

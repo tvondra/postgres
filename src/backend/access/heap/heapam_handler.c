@@ -333,7 +333,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 													  direction);
 	if (batch != NULL)
 	{
-		/* We got the batch from the AM -- append it */
+		/* We got the batch from the AM */
 		Assert(batch->dir == direction);
 
 		if (scan->xs_want_itup)
@@ -345,10 +345,34 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 			heap_batch_resolve_visibility(scan, batch);
 		}
 
+		/*
+		 * drop pin eagerly during dropPin scans, now that we have called
+		 * heap_batch_resolve_visibility for batch where needed
+		 */
+		if (scan->dropPin)
+		{
+			ReleaseBuffer(batch->buf);
+			batch->buf = InvalidBuffer;
+		}
+
+		/* Append batch to the end of ring buffer/write it to buffer index */
 		INDEX_SCAN_BATCH_APPEND(scan, batch);
 
-		/* Delay initializing stream until reading from scan's second batch */
-		if (!scan->xs_heapfetch->rs && priorbatch && enable_indexscan_prefetch)
+		/*
+		 * Delay initializing stream until reading from scan's second batch.
+		 * This heuristic avoids wasting cycles on starting a read stream for
+		 * very selective index scans.  We can likely improve upon this, but
+		 * it works well enough for now.
+		 *
+		 * Also avoid prefetching during !dropPin scans (i.e. during scans
+		 * that use a non-MVCC snapshot).  Such scans have batches that can
+		 * only release their index page when amfreebatch is called.  That
+		 * could have undesirable interactions with pins acquired by the read
+		 * stream, which we aren't prepared to deal with.
+		 */
+		Assert(scan->dropPin == IsMVCCSnapshot(scan->xs_snapshot));
+		if (!scan->xs_heapfetch->rs && scan->dropPin && priorbatch &&
+			enable_indexscan_prefetch)
 		{
 			Assert(INDEX_SCAN_POS_INVALID(&batchringbuf->prefetchPos));
 

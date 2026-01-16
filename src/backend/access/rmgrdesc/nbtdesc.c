@@ -132,6 +132,9 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->last_cleanup_num_delpages);
 				break;
 			}
+		case XLOG_BTREE_ASSIGN_LSN:
+			/* no-op record, nothing to describe */
+			break;
 	}
 }
 
@@ -186,6 +189,9 @@ btree_identify(uint8 info)
 			break;
 		case XLOG_BTREE_META_CLEANUP:
 			id = "META_CLEANUP";
+			break;
+		case XLOG_BTREE_ASSIGN_LSN:
+			id = "ASSIGN_LSN";
 			break;
 	}
 

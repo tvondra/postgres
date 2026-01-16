@@ -235,6 +235,7 @@ _bt_set_cleanup_info(Relation rel, BlockNumber num_delpages)
 	Buffer		metabuf;
 	Page		metapg;
 	BTMetaPageData *metad;
+	XLogRecPtr	recptr;
 
 	/*
 	 * On-disk compatibility note: The btm_last_cleanup_num_delpages metapage
@@ -286,7 +287,6 @@ _bt_set_cleanup_info(Relation rel, BlockNumber num_delpages)
 	if (RelationNeedsWAL(rel))
 	{
 		xl_btree_metadata md;
-		XLogRecPtr	recptr;
 
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, metabuf, REGBUF_WILL_INIT | REGBUF_STANDARD);
@@ -303,9 +303,11 @@ _bt_set_cleanup_info(Relation rel, BlockNumber num_delpages)
 		XLogRegisterBufData(0, &md, sizeof(xl_btree_metadata));
 
 		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_META_CLEANUP);
-
-		PageSetLSN(metapg, recptr);
 	}
+	else
+		recptr = _bt_getfakelsn(rel);
+
+	PageSetLSN(metapg, recptr);
 
 	END_CRIT_SECTION();
 
@@ -351,6 +353,7 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 	BlockNumber rootblkno;
 	uint32		rootlevel;
 	BTMetaPageData *metad;
+	XLogRecPtr	recptr;
 
 	Assert(access == BT_READ || heaprel != NULL);
 
@@ -473,7 +476,6 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 		if (RelationNeedsWAL(rel))
 		{
 			xl_btree_newroot xlrec;
-			XLogRecPtr	recptr;
 			xl_btree_metadata md;
 
 			XLogBeginInsert();
@@ -497,10 +499,12 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 			XLogRegisterData(&xlrec, SizeOfBtreeNewroot);
 
 			recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_NEWROOT);
-
-			PageSetLSN(rootpage, recptr);
-			PageSetLSN(metapg, recptr);
 		}
+		else
+			recptr = _bt_getfakelsn(rel);
+
+		PageSetLSN(rootpage, recptr);
+		PageSetLSN(metapg, recptr);
 
 		END_CRIT_SECTION();
 
@@ -858,6 +862,58 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 }
 
 /*
+ *	_bt_getfakelsn() -- Get a fake LSN for non-permanent relation.
+ *
+ *		Some indexes are not WAL-logged, but we need LSNs to detect concurrent
+ *		page modifications anyway. This function provides a fake sequence of
+ *		LSNs for that purpose.
+ */
+XLogRecPtr
+_bt_getfakelsn(Relation rel)
+{
+	if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+	{
+		/*
+		 * Temporary relations are only accessible in our session, so a simple
+		 * backend-local counter will do.
+		 */
+		static XLogRecPtr counter = FirstNormalUnloggedLSN;
+
+		return counter++;
+	}
+	else if (RelationIsPermanent(rel))
+	{
+		/*
+		 * WAL-logging on this relation will start after commit, so its LSNs
+		 * must be distinct numbers smaller than the LSN at the next commit.
+		 * Emit a dummy WAL record if insert-LSN hasn't advanced after the
+		 * last call.
+		 */
+		static XLogRecPtr lastlsn = InvalidXLogRecPtr;
+		XLogRecPtr	currlsn = GetXLogInsertRecPtr();
+
+		/* Shouldn't be called for WAL-logging relations */
+		Assert(!RelationNeedsWAL(rel));
+
+		/* No need for an actual record if we already have a distinct LSN */
+		if (XLogRecPtrIsValid(lastlsn) && lastlsn == currlsn)
+			currlsn = _bt_xlog_assignlsn();
+
+		lastlsn = currlsn;
+		return currlsn;
+	}
+	else
+	{
+		/*
+		 * Unlogged relations are accessible from other backends, and survive
+		 * (clean) restarts. GetFakeLSNForUnloggedRel() handles that for us.
+		 */
+		Assert(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED);
+		return GetFakeLSNForUnloggedRel();
+	}
+}
+
+/*
  *	_bt_allocbuf() -- Allocate a new block/page.
  *
  * Returns a write-locked buffer containing an unallocated nbtree page.
@@ -1165,6 +1221,7 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 	char	   *updatedbuf = NULL;
 	Size		updatedbuflen = 0;
 	OffsetNumber updatedoffsets[MaxIndexTuplesPerPage];
+	XLogRecPtr	recptr;
 
 	/* Shouldn't be called unless there's something to do */
 	Assert(ndeletable > 0 || nupdatable > 0);
@@ -1229,7 +1286,6 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 	/* XLOG stuff */
 	if (needswal)
 	{
-		XLogRecPtr	recptr;
 		xl_btree_vacuum xlrec_vacuum;
 
 		xlrec_vacuum.ndeleted = ndeletable;
@@ -1251,9 +1307,11 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 		}
 
 		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_VACUUM);
-
-		PageSetLSN(page, recptr);
 	}
+	else
+		recptr = _bt_getfakelsn(rel);
+
+	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
 
@@ -1295,6 +1353,7 @@ _bt_delitems_delete(Relation rel, Buffer buf,
 	char	   *updatedbuf = NULL;
 	Size		updatedbuflen = 0;
 	OffsetNumber updatedoffsets[MaxIndexTuplesPerPage];
+	XLogRecPtr	recptr;
 
 	/* Shouldn't be called unless there's something to do */
 	Assert(ndeletable > 0 || nupdatable > 0);
@@ -1345,7 +1404,6 @@ _bt_delitems_delete(Relation rel, Buffer buf,
 	/* XLOG stuff */
 	if (needswal)
 	{
-		XLogRecPtr	recptr;
 		xl_btree_delete xlrec_delete;
 
 		xlrec_delete.snapshotConflictHorizon = snapshotConflictHorizon;
@@ -1369,9 +1427,11 @@ _bt_delitems_delete(Relation rel, Buffer buf,
 		}
 
 		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_DELETE);
-
-		PageSetLSN(page, recptr);
 	}
+	else
+		recptr = _bt_getfakelsn(rel);
+
+	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
 
@@ -2106,6 +2166,7 @@ _bt_mark_page_halfdead(Relation rel, Relation heaprel, Buffer leafbuf,
 	OffsetNumber nextoffset;
 	IndexTuple	itup;
 	IndexTupleData trunctuple;
+	XLogRecPtr	recptr;
 
 	page = BufferGetPage(leafbuf);
 	opaque = BTPageGetOpaque(page);
@@ -2256,7 +2317,6 @@ _bt_mark_page_halfdead(Relation rel, Relation heaprel, Buffer leafbuf,
 	if (RelationNeedsWAL(rel))
 	{
 		xl_btree_mark_page_halfdead xlrec;
-		XLogRecPtr	recptr;
 
 		xlrec.poffset = poffset;
 		xlrec.leafblk = leafblkno;
@@ -2277,12 +2337,14 @@ _bt_mark_page_halfdead(Relation rel, Relation heaprel, Buffer leafbuf,
 		XLogRegisterData(&xlrec, SizeOfBtreeMarkPageHalfDead);
 
 		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_MARK_PAGE_HALFDEAD);
-
-		page = BufferGetPage(subtreeparent);
-		PageSetLSN(page, recptr);
-		page = BufferGetPage(leafbuf);
-		PageSetLSN(page, recptr);
 	}
+	else
+		recptr = _bt_getfakelsn(rel);
+
+	page = BufferGetPage(subtreeparent);
+	PageSetLSN(page, recptr);
+	page = BufferGetPage(leafbuf);
+	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
 
@@ -2340,6 +2402,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	uint32		targetlevel;
 	IndexTuple	leafhikey;
 	BlockNumber leaftopparent;
+	XLogRecPtr	recptr;
 
 	page = BufferGetPage(leafbuf);
 	opaque = BTPageGetOpaque(page);
@@ -2679,7 +2742,6 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 		xl_btree_unlink_page xlrec;
 		xl_btree_metadata xlmeta;
 		uint8		xlinfo;
-		XLogRecPtr	recptr;
 
 		XLogBeginInsert();
 
@@ -2723,25 +2785,25 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 			xlinfo = XLOG_BTREE_UNLINK_PAGE;
 
 		recptr = XLogInsert(RM_BTREE_ID, xlinfo);
+	}
+	else
+		recptr = _bt_getfakelsn(rel);
 
-		if (BufferIsValid(metabuf))
-		{
-			PageSetLSN(metapg, recptr);
-		}
-		page = BufferGetPage(rbuf);
+	if (BufferIsValid(metabuf))
+		PageSetLSN(metapg, recptr);
+	page = BufferGetPage(rbuf);
+	PageSetLSN(page, recptr);
+	page = BufferGetPage(buf);
+	PageSetLSN(page, recptr);
+	if (BufferIsValid(lbuf))
+	{
+		page = BufferGetPage(lbuf);
 		PageSetLSN(page, recptr);
-		page = BufferGetPage(buf);
+	}
+	if (target != leafblkno)
+	{
+		page = BufferGetPage(leafbuf);
 		PageSetLSN(page, recptr);
-		if (BufferIsValid(lbuf))
-		{
-			page = BufferGetPage(lbuf);
-			PageSetLSN(page, recptr);
-		}
-		if (target != leafblkno)
-		{
-			page = BufferGetPage(leafbuf);
-			PageSetLSN(page, recptr);
-		}
 	}
 
 	END_CRIT_SECTION();

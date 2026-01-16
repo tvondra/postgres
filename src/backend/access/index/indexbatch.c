@@ -54,22 +54,11 @@ index_batchscan_init(IndexScanDesc scan)
 	scan->batchringbuf = palloc_object(BatchRingBuffer);
 
 	/*
-	 * We prefer to eagerly drop leaf page pins before amgetbatch returns.
+	 * We prefer to eagerly drop leaf page pins just after amgetbatch returns.
 	 * This avoids making VACUUM wait to acquire a cleanup lock on the page.
-	 *
-	 * We cannot safely drop leaf page pins during index-only scans due to a
-	 * race condition involving VACUUM setting pages all-visible in the VM.
-	 * It's also unsafe for plain index scans that use a non-MVCC snapshot.
-	 *
-	 * When we drop pins eagerly, the mechanism that marks index tuples as
-	 * LP_DEAD has to deal with concurrent TID recycling races.  The scheme
-	 * used to detect unsafe TID recycling won't work when scanning unlogged
-	 * relations (since it involves saving an affected page's LSN).  Opt out
-	 * of eager pin dropping during unlogged relation scans for now.
+	 * It's unsafe for scans that use a non-MVCC snapshot to do this.
 	 */
-	scan->dropPin =
-		(!scan->xs_want_itup && IsMVCCSnapshot(scan->xs_snapshot) &&
-		 RelationNeedsWAL(scan->indexRelation));
+	scan->dropPin = IsMVCCSnapshot(scan->xs_snapshot);
 	scan->finished = false;
 	scan->batchringbuf->direction = NoMovementScanDirection;
 
@@ -362,12 +351,11 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
  */
 
 /*
- * indexam_util_batch_unlock - unlock batch's buffer lock
+ * indexam_util_batch_unlock - unlock batch's shared buffer lock
  *
  * Unlocks caller's batch->buf in preparation for amgetbatch returning items
- * saved in that batch.  Manages the details of dropping the lock and possibly
- * the pin for index AM caller (dropping the pin prevents VACUUM from blocking
- * on acquiring a cleanup lock, but isn't always safe).
+ * saved in that batch.  Performs extra steps required by amgetbatch callers
+ * in passing.
  *
  * Only call here when a batch has one or more matching items to return using
  * amgetbatch (or for amgetbitmap to load into its bitmap of matching TIDs).
@@ -376,31 +364,19 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
  *
  * Note: It is convenient for index AMs that implement both amgetbitmap and
  * amgetbitmap to consistently use the same batch management approach, since
- * that avoids introducing special cases to lower-level code.  We always drop
- * both the lock and the pin on batch's page on behalf of amgetbitmap callers.
+ * that avoids introducing special cases to lower-level code.  We drop both
+ * the lock and the pin on batch's page on behalf of amgetbitmap callers.
  * Such amgetbitmap callers must be careful to free all batches with matching
  * items once they're done saving the matching TIDs (there will never be any
  * calls to amfreebatch, so amgetbitmap must call indexam_util_batch_release
- * directly, in lieu of a deferred call to amfreebatch from core code).
+ * directly, in lieu of a deferred call to amfreebatch from core code).  We
+ * never drop the pin for an amgetbatch caller, though.
  */
 void
 indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
 {
-	Relation	rel = scan->indexRelation;
-	bool		dropPin = scan->dropPin;
-
 	/* batch must have one or more matching items returned by index AM */
 	Assert(batch->firstItem >= 0 && batch->firstItem <= batch->lastItem);
-
-	if (!dropPin)
-	{
-		if (!RelationUsesLocalBuffers(rel))
-			VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
-
-		/* Just drop the lock (not the pin) */
-		LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
-		return;
-	}
 
 	if (scan->batchringbuf)
 	{
@@ -413,17 +389,30 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
 		 * It'll only be safe to set any index tuple LP_DEAD bits when the
 		 * page LSN hasn't advanced.
 		 */
-		Assert(RelationNeedsWAL(rel));
-		Assert(!scan->xs_want_itup);
 		batch->lsn = BufferGetLSNAtomic(batch->buf);
 	}
 
-	/* Drop both the lock and the pin */
+	/* Drop the lock */
 	LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
-	if (!RelationUsesLocalBuffers(rel))
+
+#ifdef USE_VALGRIND
+	if (!RelationUsesLocalBuffers(scan->indexRelation))
 		VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
-	ReleaseBuffer(batch->buf);
-	batch->buf = InvalidBuffer;
+#endif
+
+	if (!scan->batchringbuf)
+	{
+		/* amgetbitmap (not amgetbatch) caller */
+		Assert(scan->heapRelation == NULL);
+
+		/* drop the pin right away */
+		ReleaseBuffer(batch->buf);
+		batch->buf = InvalidBuffer;
+	}
+	else
+	{
+		/* table AM determines when it'll be safe to drop pins on batches */
+	}
 }
 
 /*

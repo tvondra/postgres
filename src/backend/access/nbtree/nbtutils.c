@@ -164,26 +164,14 @@ _bt_freestack(BTStack stack)
  * The batch parameter contains information about the current page and killed
  * tuples thereon (this should only be called if batch->numKilled > 0).
  *
- * Caller should not have a lock on the batch position's page, but must hold a
- * buffer pin when !dropPin.  When we return, it still won't be locked.  It'll
- * continue to hold whatever pins were held before calling here.
+ * Caller should not have a lock on the batch position's page.  When we
+ * return, it still won't be locked.  It'll continue to hold whatever pins
+ * were held before calling here.
  *
  * We match items by heap TID before assuming they are the right ones to set
- * LP_DEAD.  If the scan is one that holds a buffer pin on the target page
- * continuously from initially reading the items until applying this function
- * (if it is a !dropPin scan), VACUUM cannot have deleted any items on the
- * page, so the page's TIDs can't have been recycled by now.  There's no risk
- * that we'll confuse a new index tuple that happens to use a recycled TID
- * with a now-removed tuple with the same TID (that used to be on this same
- * page).  We can't rely on that during scans that drop buffer pins eagerly
- * (i.e. dropPin scans), though, so we must condition setting LP_DEAD bits on
- * the page LSN having not changed since back when _bt_readpage saw the page.
- * We totally give up on setting LP_DEAD bits when the page LSN changed.
- *
- * We tend to give up less often during !dropPin scans, but it still happens.
- * We cope with cases where items have moved right due to insertions.  If an
- * item has moved off the current page due to a split, we'll fail to find it
- * and just give up on it.
+ * LP_DEAD.  We must condition setting LP_DEAD bits on the page LSN having not
+ * changed since back when _bt_readpage saw the page.  We totally give up on
+ * setting LP_DEAD bits when the page LSN changed.
  */
 void
 _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
@@ -195,38 +183,21 @@ _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
 	OffsetNumber maxoff;
 	bool		killedsomething = false;
 	Buffer		buf;
+	XLogRecPtr	latestlsn;
 
 	Assert(batch->numKilled > 0);
 	Assert(BlockNumberIsValid(batch->currPage));
 	Assert(scan->heapRelation != NULL); /* can't be a bitmap index scan */
 
-	if (!scan->dropPin)
+	buf = _bt_getbuf(rel, batch->currPage, BT_READ);
+
+	latestlsn = BufferGetLSNAtomic(buf);
+	Assert(batch->lsn <= latestlsn);
+	if (batch->lsn != latestlsn)
 	{
-		/*
-		 * We have held the pin on this page since we read the index tuples,
-		 * so all we need to do is lock it.  The pin will have prevented
-		 * concurrent VACUUMs from recycling any of the TIDs on the page.
-		 */
-		buf = batch->buf;
-		_bt_lockbuf(rel, buf, BT_READ);
-	}
-	else
-	{
-		XLogRecPtr	latestlsn;
-
-		Assert(RelationNeedsWAL(rel));
-		buf = _bt_getbuf(rel, batch->currPage, BT_READ);
-
-		latestlsn = BufferGetLSNAtomic(buf);
-		Assert(batch->lsn <= latestlsn);
-		if (batch->lsn != latestlsn)
-		{
-			/* Modified, give up on hinting */
-			_bt_relbuf(rel, buf);
-			return;
-		}
-
-		/* Unmodified, hinting is safe */
+		/* Modified, give up on hinting */
+		_bt_relbuf(rel, buf);
+		return;
 	}
 
 	page = BufferGetPage(buf);
@@ -259,12 +230,6 @@ _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
 				int			nposting = BTreeTupleGetNPosting(ituple);
 				int			j;
 
-				/*
-				 * Note that the page may have been modified in almost any way
-				 * since we first read it (in the !dropPin case), so it's
-				 * possible that this posting list tuple wasn't a posting list
-				 * tuple when we first encountered its heap TIDs.
-				 */
 				for (j = 0; j < nposting; j++)
 				{
 					ItemPointer item = BTreeTupleGetPostingN(ituple, j);
@@ -273,11 +238,9 @@ _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
 						break;	/* out of posting list loop */
 
 					/*
-					 * kitem must have matching offnum when heap TIDs match,
-					 * though only in the common case where the page can't
-					 * have been concurrently modified
+					 * kitem must have matching offnum when heap TIDs match
 					 */
-					Assert(kitem->indexOffset == offnum || !scan->dropPin);
+					Assert(kitem->indexOffset == offnum);
 
 					/*
 					 * Read-ahead to later kitems here.
@@ -344,10 +307,7 @@ _bt_killitems(IndexScanDesc scan, IndexScanBatch batch)
 		MarkBufferDirtyHint(buf, true);
 	}
 
-	if (!scan->dropPin)
-		_bt_unlockbuf(rel, buf);
-	else
-		_bt_relbuf(rel, buf);
+	_bt_relbuf(rel, buf);
 }
 
 

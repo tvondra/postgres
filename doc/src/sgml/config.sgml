@@ -5614,22 +5614,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-indexscan-prefetch" xreflabel="enable_indexscan_prefetch">
-      <term><varname>enable_indexscan_prefetch</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_indexscan_prefetch</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables prefetching for index-scan and index-only-scan
-        plan types.  Prefetching can improve performance by reading table AM
-        pages ahead of when they are needed during index scans.  The default
-        is <literal>on</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-enable-indexonlyscan" xreflabel="enable_indexonlyscan">
       <term><varname>enable_indexonlyscan</varname> (<type>boolean</type>)
       <indexterm>
@@ -5643,6 +5627,22 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         The default is <literal>on</literal>.  The
         <xref linkend="guc-enable-indexscan"/> setting must also be
         enabled to have the query planner consider index-only-scans.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-indexscan-prefetch" xreflabel="enable_indexscan_prefetch">
+      <term><varname>enable_indexscan_prefetch</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_indexscan_prefetch</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables prefetching for index-scan and index-only-scan
+        plan types.  Prefetching can improve performance by reading table AM
+        pages ahead of when they are needed during index scans.  The default
+        is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>

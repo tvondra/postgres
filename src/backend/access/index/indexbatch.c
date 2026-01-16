@@ -272,20 +272,24 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	 */
 	scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 
-	/* Reset the batching state, except for the marked batch */
+	/* Remove all batches from the ring buffer except for the marked batch */
 	index_batchscan_reset(scan, false);
 
 	/*
-	 * Remove all batches from the ring buffer, and "append" markBatch as if
-	 * it was a new batch returned by amgetbatch.
-	 *
+	 * "Append" markBatch, making the ring buffer appear as if it was the
+	 * first batch ever returned by amgetbatch for the scan
+	 */
+	markPos->batch = 0;
+	batchringbuf->scanPos = *markPos;
+	batchringbuf->nextBatch = batchringbuf->headBatch = markPos->batch;
+	INDEX_SCAN_BATCH_APPEND(scan, markBatch);
+	Assert(INDEX_SCAN_BATCH(scan, batchringbuf->scanPos.batch) == markBatch);
+
+	/*
 	 * Note: markBatch.killedItems[] might already contain dead items, and
 	 * might yet have more dead items saved.  tableam_util_free_batch is
 	 * prepared for that.
 	 */
-	batchringbuf->scanPos = *markPos;
-	batchringbuf->nextBatch = batchringbuf->headBatch = markPos->batch;
-	INDEX_SCAN_BATCH_APPEND(scan, markBatch);
 }
 
 /* ----------------------------------------------------------------

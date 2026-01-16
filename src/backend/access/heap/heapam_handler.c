@@ -314,6 +314,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
+	Assert(!batchringbuf->paused);
 
 	/*
 	 * When caller provides a priorbatch it had better be for the last valid

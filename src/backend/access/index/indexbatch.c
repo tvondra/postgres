@@ -99,12 +99,9 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 {
 	BatchRingBuffer *batchringbuf = scan->batchringbuf;
 
-	/* bail out if batching not enabled */
-	if (!batchringbuf)
-		return;
-
 	batch_assert_batches_valid(scan);
 	Assert(scan->xs_heapfetch);
+
 	if (scan->xs_heapfetch->rs)
 		read_stream_reset(scan->xs_heapfetch->rs);
 
@@ -168,9 +165,6 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 void
 index_batchscan_end(IndexScanDesc scan)
 {
-	if (!scan->batchringbuf)
-		return;
-
 	/* Call amfreebatch and all remaining loaded batches (even markBatch) */
 	index_batchscan_reset(scan, true);
 

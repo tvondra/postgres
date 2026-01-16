@@ -390,7 +390,8 @@ index_rescan(IndexScanDesc scan,
 	 */
 	scan->finished = false;
 
-	index_batchscan_reset(scan, true);
+	if (scan->batchringbuf)
+		index_batchscan_reset(scan, true);
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -407,7 +408,8 @@ index_endscan(IndexScanDesc scan)
 	CHECK_SCAN_PROCEDURE(amendscan);
 
 	/* Cleanup batching, so that the AM can release pins and so on. */
-	index_batchscan_end(scan);
+	if (scan->batchringbuf)
+		index_batchscan_end(scan);
 
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
@@ -596,7 +598,8 @@ index_parallelrescan(IndexScanDesc scan)
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
-	index_batchscan_reset(scan, true);
+	if (scan->batchringbuf)
+		index_batchscan_reset(scan, true);
 
 	/* amparallelrescan is optional; assume no-op if not provided by AM */
 	if (scan->indexRelation->rd_indam->amparallelrescan != NULL)

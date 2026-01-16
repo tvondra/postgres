@@ -593,7 +593,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	for (;;)
 	{
 		BatchMatchingItem *item;
-		ItemPointer tid;
+		BlockNumber prefetchBlock;
 
 		if (fromScanPos)
 		{
@@ -663,42 +663,41 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		}
 
 		/*
-		 * We advanced the position.  Either return the block for the TID, or
-		 * skip it (and then try advancing again).
+		 * prefetchPos now points to the next item whose TID's heap block
+		 * number might need to be prefetched
 		 */
+		batch_assert_pos_valid(scan, prefetchPos);
 		Assert(INDEX_SCAN_BATCH(scan, prefetchPos->batch) == prefetchBatch);
 		Assert(prefetchBatch->dir == direction);
-		batch_assert_pos_valid(scan, prefetchPos);
+
+		/* scanPos is always <= prefetchPos when we return */
 		Assert(scanPos->batch < prefetchPos->batch ||
 			   (scanPos->batch == prefetchPos->batch &&
 				ScanDirectionIsForward(direction) ?
 				scanPos->item <= prefetchPos->item :
 				scanPos->item >= prefetchPos->item));
 
-		/*
-		 * The block may be "skipped" for two reasons. First, the caller may
-		 * define a "prefetch" callback that tells us to skip items (IOS does
-		 * this to skip all-visible pages). Second, currentPrefetchBlock is
-		 * used to skip duplicate block numbers (a sequence of TIDS for the
-		 * same block).
-		 */
 		item = &prefetchBatch->items[prefetchPos->item];
-		tid = &item->heapTid;
+		prefetchBlock = ItemPointerGetBlockNumber(&item->heapTid);
 
-		/*
-		 * For index-only scans, determine if the page is all-visible now.  If
-		 * it is, we won't need the block and can skip it too.
-		 */
 		if (scan->xs_want_itup && item->allVisible)
+		{
+			/* item is known to be all-visible; prefetching isn't required */
 			continue;
+		}
 
-		/* same block as before, don't need to read it */
-		if (batchringbuf->currentPrefetchBlock == ItemPointerGetBlockNumber(tid))
+		if (prefetchBlock == batchringbuf->currentPrefetchBlock)
+		{
+			/*
+			 * prefetchBlock matches the last prefetchPos item's TID's heap
+			 * block number; prefetching isn't required
+			 */
 			continue;
+		}
 
-		batchringbuf->currentPrefetchBlock = ItemPointerGetBlockNumber(tid);
-
-		return batchringbuf->currentPrefetchBlock;
+		/* We have a new heap block number to return to read stream */
+		batchringbuf->currentPrefetchBlock = prefetchBlock;
+		return prefetchBlock;
 	}
 
 	/* no more items in this scan */

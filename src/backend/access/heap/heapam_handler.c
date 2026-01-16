@@ -347,8 +347,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		INDEX_SCAN_BATCH_APPEND(scan, batch);
 
 		/* Delay initializing stream until reading from scan's second batch */
-		if (!scan->xs_heapfetch->rs && priorbatch &&
-			enable_indexscan_prefetch)
+		if (!scan->xs_heapfetch->rs && priorbatch && enable_indexscan_prefetch)
 		{
 			Assert(INDEX_SCAN_POS_INVALID(&batchringbuf->prefetchPos));
 
@@ -654,7 +653,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 					 * direction) are now loaded
 					 */
 					scan->finished = true;
-					break;
+					return InvalidBlockNumber;
 				}
 			}
 
@@ -701,7 +700,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		return prefetchBlock;
 	}
 
-	/* no more items in this scan */
 	return InvalidBlockNumber;
 }
 

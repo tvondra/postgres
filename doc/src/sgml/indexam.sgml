@@ -1381,10 +1381,7 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    the pin-holding behavior themselves.  Such index AMs are expected to hold
    onto the leaf page buffer pin for non-MVCC snapshot scans, replicating
    the behavior that the heap table AM would use with
-   <function>amgetbatch</function>.  This assumption is reasonable since
-   <function>amgettuple</function> index AMs are typically used with heapam
-   or another table AM that has similar requirements around buffer pins,
-   <command>VACUUM</command>, and concurrency.
+   <function>amgetbatch</function>.
   </para>
 
   <para>

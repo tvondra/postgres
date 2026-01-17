@@ -888,13 +888,15 @@ amfreebatch (IndexScanDesc scan,
   </para>
 
   <para>
-   <function>amfreebatch</function> frees the buffer pin (if still held) on
-   the batch's associated index page, and frees related memory and resources.
-   The index AM should have already called
-   <function>indexam_util_batch_unlock</function> to release the buffer lock
-   (and possibly the pin) before returning the batch via its
-   <function>amgetbatch</function> routine; if the pin was not released at
-   that time, <function>amfreebatch</function> must release it now.
+   <function>amfreebatch</function> releases the buffer pin on the batch's
+   associated index page (if the table AM has not already released it), and
+   frees related memory and resources.  The index AM should have already
+   called <function>indexam_util_batch_unlock</function> to release the
+   buffer lock before returning the batch via its <function>amgetbatch</function>
+   routine.  The table access method controls when the buffer pin is dropped:
+   for MVCC snapshot scans the pin is dropped eagerly after the batch is
+   returned, while for non-MVCC snapshot scans the pin is retained until
+   <function>amfreebatch</function> is called.
   </para>
 
   <para>
@@ -1307,11 +1309,13 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
      </listitem>
      <listitem>
       <para>
-       An index scan must maintain a pin
-       on the index page holding the item last returned by
-       <function>amgettuple</function>, and <function>ambulkdelete</function> cannot delete
-       entries from pages that are pinned by other backends.  The need
-       for this rule is explained below.
+       For <function>amgettuple</function> scans, the index access method must
+       maintain a pin on the index page holding the item last returned, and
+       <function>ambulkdelete</function> cannot delete entries from pages that
+       are pinned by other backends.  For <function>amgetbatch</function> scans,
+       the table access method controls when pins are dropped (see
+       <xref linkend="index-locking-batches"/>).  The need for this rule is
+       explained below.
       </para>
      </listitem>
     </itemizedlist>
@@ -1355,6 +1359,32 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    In an <function>amgetbitmap</function> index scan, the access method does not
    keep an index pin on any of the returned tuples.  Therefore
    it is only safe to use such scans with MVCC-compliant snapshots.
+  </para>
+
+  <para>
+   The <function>amgetbatch</function> interface provides a different approach:
+   the table access method receives batches of TIDs and controls when index
+   page pins are dropped.  Because <function>amgetbatch</function> reads
+   multiple index leaf pages ahead to facilitate I/O prefetching of table
+   blocks, it cannot practically hold pins on all those pages simultaneously.
+   Therefore, like <function>amgetbitmap</function>, I/O prefetching with
+   <function>amgetbatch</function> is only possible when an MVCC-compliant
+   snapshot is in use.  In practice, the heap table AM (and any table AM
+   with similar concurrency rules) drops pins eagerly for MVCC snapshot scans
+   but retains pins for non-MVCC snapshot scans.  Index access methods that
+   implement <function>amgetbatch</function> do not control when pins are
+   dropped; that decision is delegated to the table AM.
+  </para>
+
+  <para>
+   Index access methods that use <function>amgettuple</function> must implement
+   the pin-holding behavior themselves.  Such index AMs are expected to hold
+   onto the leaf page buffer pin for non-MVCC snapshot scans, replicating
+   the behavior that the heap table AM would use with
+   <function>amgetbatch</function>.  This assumption is reasonable since
+   <function>amgettuple</function> index AMs are typically used with heapam
+   or another table AM that has similar requirements around buffer pins,
+   <command>VACUUM</command>, and concurrency.
   </para>
 
   <para>
@@ -1417,30 +1447,40 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    </para>
 
    <para>
-    Whether a pin should be held when returning a batch is controlled by the
-    <structfield>dropPin</structfield> flag in the <type>BatchRingBuffer</type>
-    structure. When <literal>dropPin</literal> is true, the index access method
-    drops the pin before returning the batch, which avoids blocking
-    <command>VACUUM</command>. When <literal>dropPin</literal> is false, the
-    index access method must hold the pin until the batch is freed via
-    <function>amfreebatch</function>.  The core system sets the
-    <literal>dropPin</literal> flag based on scan type: it is true for
-    MVCC-compliant snapshots on logged relations (unless index-only scans are
-    in use), and false otherwise.
+    Buffer pins on index pages returned by <function>amgetbatch</function> are
+    managed by the table access method, not the index access method.  The
+    table AM decides when it is safe to drop index page pins, based on whether
+    the scan uses an MVCC-compliant snapshot (see
+    <function>IsMVCCSnapshot</function>).  For MVCC snapshot scans, the table AM
+    drops the pin eagerly after processing the batch's visibility information;
+    for non-MVCC snapshot scans, the table AM retains the pin until the batch
+    is freed.  This contrasts with <function>amgettuple</function> scans,
+    where the index access method controls when pins are dropped (see the
+    discussion of index locking earlier in this section).
    </para>
 
    <para>
-    When <literal>dropPin</literal> is true and the index access method is
-    eager about dropping pins, it must save the page's LSN in the batch before
-    returning. Later, when <function>amfreebatch</function> is called and the
-    access method wishes to set <literal>LP_DEAD</literal> bits to mark dead
-    tuples, it must verify that the page's LSN has not changed since the batch
-    was read. If the LSN has changed, the page may have been modified by
-    concurrent activity and it is unsafe to set <literal>LP_DEAD</literal> bits.
-    This LSN-based validation scheme protects against TID recycling races when
-    pins have been dropped.  When <literal>dropPin</literal> is false, the pin
-    prevents unsafe concurrent removal of table TID references by
-    <command>VACUUM</command>, so no LSN check is necessary.
+    The <function>indexam_util_batch_unlock</function> utility function always
+    saves the page's LSN in the batch structure before releasing the buffer lock.
+    Later, when <function>amfreebatch</function> is called and the index access
+    method wishes to set <literal>LP_DEAD</literal> bits to mark dead tuples, it
+    must verify that the page's LSN has not changed since the batch was read.
+    If the LSN has changed, the page may have been modified by concurrent
+    activity and it is unsafe to set <literal>LP_DEAD</literal> bits.  This
+    LSN-based validation scheme protects against TID recycling races when pins
+    have been dropped.
+   </para>
+
+   <para>
+    Index access methods that implement <function>amgetbatch</function> and wish
+    to set <literal>LP_DEAD</literal> bits must support the LSN change detection
+    mechanism.  This implies that the index AM must generate fake LSNs for
+    unlogged and temporary relations, since these relations do not use WAL and
+    would otherwise have no meaningful LSN changes to detect.  B-tree uses
+    <function>_bt_getfakelsn</function> for this purpose; hash uses
+    <function>_hash_getfakelsn</function>.  Third-party index access methods
+    implementing <function>amgetbatch</function> with <literal>LP_DEAD</literal>
+    marking must provide equivalent fake LSN support.
    </para>
 
    <para>
@@ -1448,9 +1488,9 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
     resources:
     <function>indexam_util_batch_alloc</function> allocates a new batch or
     reuses a cached one,
-    <function>indexam_util_batch_unlock</function> drops the lock and
-    conditionally drops the pin on a batch's index page (based on the
-    <literal>dropPin</literal> setting), and
+    <function>indexam_util_batch_unlock</function> releases the buffer lock
+    and saves the page LSN for later <literal>LP_DEAD</literal> validation
+    (for <function>amgetbitmap</function> callers, it also releases the buffer pin), and
     <function>indexam_util_batch_release</function> frees or caches a batch.
     Index access methods should use these utilities rather than managing
     buffers directly.  The <filename>src/backend/access/nbtree/</filename>

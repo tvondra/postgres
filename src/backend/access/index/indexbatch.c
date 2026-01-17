@@ -390,28 +390,30 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
 		 * page LSN hasn't advanced.
 		 */
 		batch->lsn = BufferGetLSNAtomic(batch->buf);
-	}
 
-	/* Drop the lock */
-	LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
+		/* Drop the lock */
+		LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
 
 #ifdef USE_VALGRIND
-	if (!RelationUsesLocalBuffers(scan->indexRelation))
-		VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
+		if (!RelationUsesLocalBuffers(scan->indexRelation))
+			VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
 #endif
 
-	if (!scan->batchringbuf)
-	{
-		/* amgetbitmap (not amgetbatch) caller */
-		Assert(scan->heapRelation == NULL);
-
-		/* drop the pin right away */
-		ReleaseBuffer(batch->buf);
-		batch->buf = InvalidBuffer;
+		/* table AM determines when it'll be safe to drop pins on batches */
 	}
 	else
 	{
-		/* table AM determines when it'll be safe to drop pins on batches */
+		/* amgetbitmap (not amgetbatch) caller */
+		Assert(scan->heapRelation == NULL);
+		/* drop the lock and the pin */
+		LockBuffer(batch->buf, BUFFER_LOCK_UNLOCK);
+
+#ifdef USE_VALGRIND
+		if (!RelationUsesLocalBuffers(scan->indexRelation))
+			VALGRIND_MAKE_MEM_NOACCESS(BufferGetPage(batch->buf), BLCKSZ);
+#endif
+		ReleaseBuffer(batch->buf);
+		batch->buf = InvalidBuffer;
 	}
 }
 

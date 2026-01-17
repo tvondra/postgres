@@ -345,6 +345,9 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 			heap_batch_resolve_visibility(scan, batch);
 		}
 
+		/* Append batch to the end of ring buffer/write it to buffer index */
+		INDEX_SCAN_BATCH_APPEND(scan, batch);
+
 		/*
 		 * drop pin eagerly during dropPin scans, now that we have called
 		 * heap_batch_resolve_visibility for batch where needed
@@ -354,9 +357,6 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 			ReleaseBuffer(batch->buf);
 			batch->buf = InvalidBuffer;
 		}
-
-		/* Append batch to the end of ring buffer/write it to buffer index */
-		INDEX_SCAN_BATCH_APPEND(scan, batch);
 
 		/*
 		 * Delay initializing stream until reading from scan's second batch.

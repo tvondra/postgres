@@ -17,7 +17,9 @@
 #include "access/hash.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
+#include "access/xlog.h"
 #include "port/pg_bitutils.h"
+#include "storage/bufmgr.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -513,21 +515,14 @@ _hash_get_newbucket_from_oldbucket(Relation rel, Bucket old_bucket,
  * The batch parameter contains information about the current page and killed
  * tuples thereon (this should only be called if batch->numKilled > 0).
  *
- * Caller should not have a lock on the batch position's page, but must hold a
- * buffer pin when !dropPin.  When we return, it still won't be locked.  It'll
- * continue to hold whatever pins were held before calling here.
+ * Caller should not have a lock on the batch position's page.  When we
+ * return, it still won't be locked.  It'll continue to hold whatever pins
+ * were held before calling here.
  *
  * We match items by heap TID before assuming they are the right ones to set
- * LP_DEAD.  If the scan is one that holds a buffer pin on the target page
- * continuously from initially reading the items until applying this function
- * (if it is a !dropPin scan), VACUUM cannot have deleted any items on the
- * page, so the page's TIDs can't have been recycled by now.  There's no risk
- * that we'll confuse a new index tuple that happens to use a recycled TID
- * with a now-removed tuple with the same TID (that used to be on this same
- * page).  We can't rely on that during scans that drop buffer pins eagerly
- * (i.e. dropPin scans), though, so we must condition setting LP_DEAD bits on
- * the page LSN having not changed since back when _hash_readpage saw the page.
- * We totally give up on setting LP_DEAD bits when the page LSN changed.
+ * LP_DEAD.  We must condition setting LP_DEAD bits on the page LSN having not
+ * changed since back when _hash_readpage saw the page.  We totally give up on
+ * setting LP_DEAD bits when the page LSN changed.
  */
 void
 _hash_kill_items(IndexScanDesc scan, IndexScanBatch batch)
@@ -539,39 +534,21 @@ _hash_kill_items(IndexScanDesc scan, IndexScanBatch batch)
 	OffsetNumber offnum,
 				maxoff;
 	bool		killedsomething = false;
+	XLogRecPtr	latestlsn;
 
 	Assert(batch->numKilled > 0);
-	Assert(batch->killedItems != NULL);
 	Assert(BlockNumberIsValid(batch->currPage));
 
-	if (!scan->dropPin)
+	buf = _hash_getbuf(rel, batch->currPage, HASH_READ,
+					   LH_BUCKET_PAGE | LH_OVERFLOW_PAGE);
+
+	latestlsn = BufferGetLSNAtomic(buf);
+	Assert(batch->lsn <= latestlsn);
+	if (batch->lsn != latestlsn)
 	{
-		/*
-		 * We have held the pin on this page since we read the index tuples,
-		 * so all we need to do is lock it.  The pin will have prevented
-		 * concurrent VACUUMs from recycling any of the TIDs on the page.
-		 */
-		buf = batch->buf;
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-	}
-	else
-	{
-		XLogRecPtr	latestlsn;
-
-		Assert(RelationNeedsWAL(rel));
-		buf = _hash_getbuf(rel, batch->currPage, HASH_READ,
-						   LH_BUCKET_PAGE | LH_OVERFLOW_PAGE);
-
-		latestlsn = BufferGetLSNAtomic(buf);
-		Assert(batch->lsn <= latestlsn);
-		if (batch->lsn != latestlsn)
-		{
-			/* Modified, give up on hinting */
-			_hash_relbuf(rel, buf);
-			return;
-		}
-
-		/* Unmodified, hinting is safe */
+		/* Modified, give up on hinting */
+		_hash_relbuf(rel, buf);
+		return;
 	}
 
 	page = BufferGetPage(buf);
@@ -616,8 +593,53 @@ _hash_kill_items(IndexScanDesc scan, IndexScanBatch batch)
 		MarkBufferDirtyHint(buf, true);
 	}
 
-	if (!scan->dropPin)
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	_hash_relbuf(rel, buf);
+}
+
+/*
+ * _hash_getfakelsn - generate a fake LSN for unlogged/temp relations.
+ *
+ * This function generates a fake LSN to allow page modification detection for
+ * unlogged and temporary relations that don't use WAL.
+ */
+XLogRecPtr
+_hash_getfakelsn(Relation rel)
+{
+	if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+	{
+		/*
+		 * Temporary relations are only accessible within our session, so a
+		 * simple backend-local counter will do.
+		 */
+		static XLogRecPtr counter = FirstNormalUnloggedLSN;
+
+		return counter++;
+	}
+	else if (RelationIsPermanent(rel))
+	{
+		/*
+		 * Permanent relation, but WAL logging is disabled (e.g., during index
+		 * creation with wal_level=minimal).  Use the current WAL insert
+		 * position, but emit a dummy record if needed to ensure each call
+		 * returns a unique LSN.
+		 */
+		static XLogRecPtr lastlsn = InvalidXLogRecPtr;
+		XLogRecPtr	currlsn = GetXLogInsertRecPtr();
+
+		Assert(!RelationNeedsWAL(rel));
+
+		if (XLogRecPtrIsValid(lastlsn) && lastlsn == currlsn)
+			currlsn = _hash_xlog_assignlsn();
+
+		lastlsn = currlsn;
+		return currlsn;
+	}
 	else
-		_hash_relbuf(rel, buf);
+	{
+		/*
+		 * Unlogged relation.  Use the global fake LSN counter.
+		 */
+		Assert(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED);
+		return GetFakeLSNForUnloggedRel();
+	}
 }

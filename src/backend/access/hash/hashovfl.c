@@ -132,6 +132,7 @@ _hash_addovflpage(Relation rel, Buffer metabuf, Buffer buf, bool retain_pin)
 	uint32		i,
 				j;
 	bool		page_found = false;
+	XLogRecPtr	recptr;
 
 	/*
 	 * Write-lock the tail page.  Here, we need to maintain locking order such
@@ -381,7 +382,6 @@ found:
 	/* XLOG stuff */
 	if (RelationNeedsWAL(rel))
 	{
-		XLogRecPtr	recptr;
 		xl_hash_add_ovfl_page xlrec;
 
 		xlrec.bmpage_found = page_found;
@@ -408,18 +408,20 @@ found:
 		XLogRegisterBufData(4, &metap->hashm_firstfree, sizeof(uint32));
 
 		recptr = XLogInsert(RM_HASH_ID, XLOG_HASH_ADD_OVFL_PAGE);
-
-		PageSetLSN(BufferGetPage(ovflbuf), recptr);
-		PageSetLSN(BufferGetPage(buf), recptr);
-
-		if (BufferIsValid(mapbuf))
-			PageSetLSN(BufferGetPage(mapbuf), recptr);
-
-		if (BufferIsValid(newmapbuf))
-			PageSetLSN(BufferGetPage(newmapbuf), recptr);
-
-		PageSetLSN(BufferGetPage(metabuf), recptr);
 	}
+	else
+		recptr = _hash_getfakelsn(rel);
+
+	PageSetLSN(BufferGetPage(ovflbuf), recptr);
+	PageSetLSN(BufferGetPage(buf), recptr);
+
+	if (BufferIsValid(mapbuf))
+		PageSetLSN(BufferGetPage(mapbuf), recptr);
+
+	if (BufferIsValid(newmapbuf))
+		PageSetLSN(BufferGetPage(newmapbuf), recptr);
+
+	PageSetLSN(BufferGetPage(metabuf), recptr);
 
 	END_CRIT_SECTION();
 
@@ -511,6 +513,7 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	Buffer		prevbuf = InvalidBuffer;
 	Buffer		nextbuf = InvalidBuffer;
 	bool		update_metap = false;
+	XLogRecPtr	recptr;
 
 	/* Get information from the doomed page */
 	_hash_checkpage(rel, ovflbuf, LH_OVERFLOW_PAGE);
@@ -642,94 +645,107 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	}
 
 	/* XLOG stuff */
-	if (RelationNeedsWAL(rel))
 	{
-		xl_hash_squeeze_page xlrec;
-		XLogRecPtr	recptr;
-		int			i;
 		bool		mod_wbuf = false;
+		bool		is_prim_bucket_same_wrt = (wbuf == bucketbuf);
+		bool		is_prev_bucket_same_wrt = (wbuf == prevbuf);
 
-		xlrec.prevblkno = prevblkno;
-		xlrec.nextblkno = nextblkno;
-		xlrec.ntups = nitups;
-		xlrec.is_prim_bucket_same_wrt = (wbuf == bucketbuf);
-		xlrec.is_prev_bucket_same_wrt = (wbuf == prevbuf);
-
-		XLogBeginInsert();
-		XLogRegisterData(&xlrec, SizeOfHashSqueezePage);
-
-		/*
-		 * bucket buffer was not changed, but still needs to be registered to
-		 * ensure that we can acquire a cleanup lock on it during replay.
-		 */
-		if (!xlrec.is_prim_bucket_same_wrt)
+		if (RelationNeedsWAL(rel))
 		{
-			uint8		flags = REGBUF_STANDARD | REGBUF_NO_IMAGE | REGBUF_NO_CHANGE;
+			xl_hash_squeeze_page xlrec;
+			int			i;
 
-			XLogRegisterBuffer(0, bucketbuf, flags);
-		}
+			xlrec.prevblkno = prevblkno;
+			xlrec.nextblkno = nextblkno;
+			xlrec.ntups = nitups;
+			xlrec.is_prim_bucket_same_wrt = is_prim_bucket_same_wrt;
+			xlrec.is_prev_bucket_same_wrt = is_prev_bucket_same_wrt;
 
-		if (xlrec.ntups > 0)
-		{
-			XLogRegisterBuffer(1, wbuf, REGBUF_STANDARD);
-
-			/* Remember that wbuf is modified. */
-			mod_wbuf = true;
-
-			XLogRegisterBufData(1, itup_offsets,
-								nitups * sizeof(OffsetNumber));
-			for (i = 0; i < nitups; i++)
-				XLogRegisterBufData(1, itups[i], tups_size[i]);
-		}
-		else if (xlrec.is_prim_bucket_same_wrt || xlrec.is_prev_bucket_same_wrt)
-		{
-			uint8		wbuf_flags;
+			XLogBeginInsert();
+			XLogRegisterData(&xlrec, SizeOfHashSqueezePage);
 
 			/*
-			 * A write buffer needs to be registered even if no tuples are
-			 * added to it to ensure that we can acquire a cleanup lock on it
-			 * if it is the same as primary bucket buffer or update the
-			 * nextblkno if it is same as the previous bucket buffer.
+			 * bucket buffer was not changed, but still needs to be registered
+			 * to ensure that we can acquire a cleanup lock on it during
+			 * replay.
 			 */
-			Assert(xlrec.ntups == 0);
+			if (!is_prim_bucket_same_wrt)
+			{
+				uint8		flags = REGBUF_STANDARD | REGBUF_NO_IMAGE | REGBUF_NO_CHANGE;
 
-			wbuf_flags = REGBUF_STANDARD;
-			if (!xlrec.is_prev_bucket_same_wrt)
-			{
-				wbuf_flags |= REGBUF_NO_CHANGE;
+				XLogRegisterBuffer(0, bucketbuf, flags);
 			}
-			else
+
+			if (nitups > 0)
 			{
+				XLogRegisterBuffer(1, wbuf, REGBUF_STANDARD);
+
 				/* Remember that wbuf is modified. */
 				mod_wbuf = true;
+
+				XLogRegisterBufData(1, itup_offsets,
+									nitups * sizeof(OffsetNumber));
+				for (i = 0; i < nitups; i++)
+					XLogRegisterBufData(1, itups[i], tups_size[i]);
 			}
-			XLogRegisterBuffer(1, wbuf, wbuf_flags);
+			else if (is_prim_bucket_same_wrt || is_prev_bucket_same_wrt)
+			{
+				uint8		wbuf_flags;
+
+				/*
+				 * A write buffer needs to be registered even if no tuples are
+				 * added to it to ensure that we can acquire a cleanup lock on
+				 * it if it is the same as primary bucket buffer or update the
+				 * nextblkno if it is same as the previous bucket buffer.
+				 */
+				wbuf_flags = REGBUF_STANDARD;
+				if (!is_prev_bucket_same_wrt)
+				{
+					wbuf_flags |= REGBUF_NO_CHANGE;
+				}
+				else
+				{
+					/* Remember that wbuf is modified. */
+					mod_wbuf = true;
+				}
+				XLogRegisterBuffer(1, wbuf, wbuf_flags);
+			}
+
+			XLogRegisterBuffer(2, ovflbuf, REGBUF_STANDARD);
+
+			/*
+			 * If prevpage and the writepage (block in which we are moving
+			 * tuples from overflow) are same, then no need to separately
+			 * register prevpage.  During replay, we can directly update the
+			 * nextblock in writepage.
+			 */
+			if (BufferIsValid(prevbuf) && !is_prev_bucket_same_wrt)
+				XLogRegisterBuffer(3, prevbuf, REGBUF_STANDARD);
+
+			if (BufferIsValid(nextbuf))
+				XLogRegisterBuffer(4, nextbuf, REGBUF_STANDARD);
+
+			XLogRegisterBuffer(5, mapbuf, REGBUF_STANDARD);
+			XLogRegisterBufData(5, &bitmapbit, sizeof(uint32));
+
+			if (update_metap)
+			{
+				XLogRegisterBuffer(6, metabuf, REGBUF_STANDARD);
+				XLogRegisterBufData(6, &metap->hashm_firstfree, sizeof(uint32));
+			}
+
+			recptr = XLogInsert(RM_HASH_ID, XLOG_HASH_SQUEEZE_PAGE);
 		}
-
-		XLogRegisterBuffer(2, ovflbuf, REGBUF_STANDARD);
-
-		/*
-		 * If prevpage and the writepage (block in which we are moving tuples
-		 * from overflow) are same, then no need to separately register
-		 * prevpage.  During replay, we can directly update the nextblock in
-		 * writepage.
-		 */
-		if (BufferIsValid(prevbuf) && !xlrec.is_prev_bucket_same_wrt)
-			XLogRegisterBuffer(3, prevbuf, REGBUF_STANDARD);
-
-		if (BufferIsValid(nextbuf))
-			XLogRegisterBuffer(4, nextbuf, REGBUF_STANDARD);
-
-		XLogRegisterBuffer(5, mapbuf, REGBUF_STANDARD);
-		XLogRegisterBufData(5, &bitmapbit, sizeof(uint32));
-
-		if (update_metap)
+		else
 		{
-			XLogRegisterBuffer(6, metabuf, REGBUF_STANDARD);
-			XLogRegisterBufData(6, &metap->hashm_firstfree, sizeof(uint32));
-		}
+			recptr = _hash_getfakelsn(rel);
 
-		recptr = XLogInsert(RM_HASH_ID, XLOG_HASH_SQUEEZE_PAGE);
+			/* Determine if wbuf is modified (same logic as WAL case) */
+			if (nitups > 0)
+				mod_wbuf = true;
+			else if (is_prev_bucket_same_wrt)
+				mod_wbuf = true;
+		}
 
 		/* Set LSN iff wbuf is modified. */
 		if (mod_wbuf)
@@ -737,7 +753,7 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 
 		PageSetLSN(BufferGetPage(ovflbuf), recptr);
 
-		if (BufferIsValid(prevbuf) && !xlrec.is_prev_bucket_same_wrt)
+		if (BufferIsValid(prevbuf) && !is_prev_bucket_same_wrt)
 			PageSetLSN(BufferGetPage(prevbuf), recptr);
 		if (BufferIsValid(nextbuf))
 			PageSetLSN(BufferGetPage(nextbuf), recptr);
@@ -959,6 +975,8 @@ readpage:
 
 				if (nitups > 0)
 				{
+					XLogRecPtr	recptr;
+
 					Assert(nitups == ndeletable);
 
 					/*
@@ -986,7 +1004,6 @@ readpage:
 					/* XLOG stuff */
 					if (RelationNeedsWAL(rel))
 					{
-						XLogRecPtr	recptr;
 						xl_hash_move_page_contents xlrec;
 
 						xlrec.ntups = nitups;
@@ -1018,10 +1035,12 @@ readpage:
 											ndeletable * sizeof(OffsetNumber));
 
 						recptr = XLogInsert(RM_HASH_ID, XLOG_HASH_MOVE_PAGE_CONTENTS);
-
-						PageSetLSN(BufferGetPage(wbuf), recptr);
-						PageSetLSN(BufferGetPage(rbuf), recptr);
 					}
+					else
+						recptr = _hash_getfakelsn(rel);
+
+					PageSetLSN(BufferGetPage(wbuf), recptr);
+					PageSetLSN(BufferGetPage(rbuf), recptr);
 
 					END_CRIT_SECTION();
 

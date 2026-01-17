@@ -124,6 +124,9 @@ hash_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->isCatalogRel ? 'T' : 'F');
 				break;
 			}
+		case XLOG_HASH_ASSIGN_LSN:
+			/* no-op record, nothing to describe */
+			break;
 	}
 }
 
@@ -172,6 +175,10 @@ hash_identify(uint8 info)
 			break;
 		case XLOG_HASH_VACUUM_ONE_PAGE:
 			id = "VACUUM_ONE_PAGE";
+			break;
+		case XLOG_HASH_ASSIGN_LSN:
+			id = "ASSIGN_LSN";
+			break;
 	}
 
 	return id;

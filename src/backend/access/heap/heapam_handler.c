@@ -716,7 +716,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * prefetchBlock matches the last prefetchPos item's TID's heap
 			 * block number; we must not return the same prefetchBlock twice
 			 * (twice in succession)
- 			 */
+			 */
 			continue;
 		}
 

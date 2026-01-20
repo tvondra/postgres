@@ -453,16 +453,16 @@ index_markpos(IndexScanDesc scan)
 /* ----------------
  *		index_restrpos	- restore a scan position
  *
- * NOTE: this only restores the internal scan state of the index AM.  See
- * comments for ExecRestrPos().
+ * NOTE: this only restores the batch positional state shared by the table and
+ * index AMs.  See comments for ExecRestrPos().
  *
  * NOTE: For heap, in the presence of HOT chains, mark/restore only works
  * correctly if the scan's snapshot is MVCC-safe; that ensures that there's at
  * most one returnable tuple in each HOT chain, and so restoring the prior
- * state at the granularity of the index AM is sufficient.  Since the only
- * current user of mark/restore functionality is nodeMergejoin.c, this
- * effectively means that merge-join plans only work for MVCC snapshots.  This
- * could be fixed if necessary, but for now it seems unimportant.
+ * state at the scan item granularity is sufficient.  Since the only current
+ * user of mark/restore functionality is nodeMergejoin.c, this effectively
+ * means that merge-join plans only work for MVCC snapshots.  This could be
+ * fixed if necessary, but for now it seems unimportant.
  * ----------------
  */
 void

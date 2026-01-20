@@ -179,7 +179,7 @@ hold on to the pin (used when reading from the leaf page) until _after_
 they're done visiting the heap (for TIDs from pinned leaf page) prevents
 concurrent TID recycling.  VACUUM cannot get a conflicting cleanup lock
 until the index scan is totally finished processing its leaf page.
-Note that the table AM determines whether and when index page pins are
+Note that the table AM determines when and where index page pins are
 dropped.  This is required by any index AM that implements the amgetbatch
 interface.  (See also, doc/src/sgml/indexam.sgml).
 

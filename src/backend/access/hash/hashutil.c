@@ -33,7 +33,7 @@ _hash_checkqual(IndexScanDesc scan, IndexTuple itup)
 	/*
 	 * Currently, we can't check any of the scan conditions since we do not
 	 * have the original index entry value to supply to the sk_func. Always
-	 * return true; we expect that hashgettuple already set the recheck flag
+	 * return true; we expect that hashgetbatch already set the recheck flag
 	 * to make the main indexscan code do it.
 	 */
 #ifdef NOT_USED

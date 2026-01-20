@@ -267,8 +267,8 @@ The reader algorithm is:
 	release scan-owned pins (e.g., primary bucket page pin) as needed
 
 Holding the buffer pin on the primary bucket page for the whole scan prevents
-the reader's current-tuple pointer from being invalidated by splits or
-compactions.  (Of course, other buckets can still be split or compacted.)
+the bucket from being reorganized by splits or compactions while the scan is
+in progress.  (Of course, other buckets can still be split or compacted.)
 
 To minimize lock/unlock traffic, hash index scans always search the entire
 hash page to identify all the matching items at once, returning them in

@@ -179,18 +179,20 @@ hold on to the pin (used when reading from the leaf page) until _after_
 they're done visiting the heap (for TIDs from pinned leaf page) prevents
 concurrent TID recycling.  VACUUM cannot get a conflicting cleanup lock
 until the index scan is totally finished processing its leaf page.
+Note that the table AM determines whether and when index page pins are
+dropped.  This is required by any index AM that implements the amgetbatch
+interface.  (See also, doc/src/sgml/indexam.sgml).
 
-This approach is fairly coarse, so we avoid it whenever possible.  In
-practice most index scans won't hold onto their pin, and so won't block
-VACUUM.  These index scans must deal with TID recycling directly, which is
-more complicated and not always possible.  See later section on making
-concurrent TID recycling safe.
+Blocking VACUUM like this can be disruptive, so table AMs avoid it whenever
+possible.  The heap table AM drop leaf page pins right away, except during
+scans that use a non-MVCC snapshot.
 
-Opportunistic index tuple deletion performs almost the same page-level
-modifications while only holding an exclusive lock.  This is safe because
-there is no question of TID recycling taking place later on -- only VACUUM
-can make TIDs recyclable.  See also simple deletion and bottom-up
-deletion, below.
+Opportunistic index tuple deletion performs the same page-level
+modifications as VACUUM, while only holding an exclusive lock.  This is
+safe because there is no question of TID recycling taking place -- only
+VACUUM can make TIDs recyclable.  In other words, VACUUM's cleanup lock
+serves to protect non-MVCC snapshot scans from concurrent TID recycling
+hazards; it doesn't protect the B-Tree structure itself.
 
 Because a pin is not always held, and a page can be split even while
 someone does hold a pin on it, it is possible that an indexscan will
@@ -444,28 +446,23 @@ Making concurrent TID recycling safe
 ------------------------------------
 
 As explained in the earlier section about deleting index tuples during
-VACUUM, we implement a locking protocol that allows individual index scans
-to avoid concurrent TID recycling.  Index scans opt-out (and so drop their
-leaf page pin when visiting the heap) whenever it's safe to do so, though.
-Dropping the pin early is useful because it avoids blocking progress by
-VACUUM.  This is particularly important with index scans used by cursors,
-since idle cursors sometimes stop for relatively long periods of time.  In
-extreme cases, a client application may hold on to an idle cursors for
-hours or even days.  Blocking VACUUM for that long could be disastrous.
+VACUUM, we implement a locking protocol that helps table AMs deal with TID
+recyling hazards during scans that use a non-MVCC snapshot.
 
 Index scans that don't hold on to a buffer pin are protected by holding an
 MVCC snapshot instead.  This more limited interlock prevents wrong answers
 to queries, but it does not prevent concurrent TID recycling itself (only
 holding onto the leaf page pin while accessing the heap ensures that).
+For the most part, it is up to the table AM to deal with concurrent TID
+recyling hazards.  But we still need to directly consider such hazards when
+marking a known-dead index tuple LP_DEAD.
 
-Opportunistic LP_DEAD setting of known-dead index tuples during index scans
-(described in full in simple deletion, below) need to be careful about
-concurrent TID recycling.  We must be avoid LP_DEAD-marking any new index
-tuple that looks like a known-dead index tuple because it happens to share
-the same TID, following concurrent TID recycling.  It's just about possible
-that some other session inserted a new, unrelated index tuple, on the same
-leaf page, which has the same original TID.  It would be totally wrong to
-LP_DEAD-set this new, unrelated index tuple.
+We must avoid LP_DEAD-marking any new index tuple that looks like a
+known-dead index tuple because it happens to share the same TID, following
+concurrent TID recycling.  It's just about possible that some other session
+inserted a new, unrelated index tuple, on the same leaf page, which has the
+same original TID.  It would be totally wrong to LP_DEAD-set this new,
+unrelated index tuple.
 
 We handle this LP_DEAD setting race condition by having all index
 scans conservatively assume that any change to the leaf page at all

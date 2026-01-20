@@ -313,8 +313,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amsearcharray = amroutine->amsearcharray;
 				info->amsearchnulls = amroutine->amsearchnulls;
 				info->amcanparallel = amroutine->amcanparallel;
-				info->amhasgettuple = (amroutine->amgettuple != NULL ||
-									   amroutine->amgetbatch != NULL);
+				info->amhasgetbatch = (amroutine->amgetbatch != NULL ||
+									   amroutine->amgettuple != NULL);
 				info->amhasgetbitmap = amroutine->amgetbitmap != NULL &&
 					relation->rd_tableam->scan_bitmap_next_tuple != NULL;
 				info->amcanmarkpos = amroutine->amposreset != NULL;
@@ -414,7 +414,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amsearcharray = false;
 				info->amsearchnulls = false;
 				info->amcanparallel = false;
-				info->amhasgettuple = false;
+				info->amhasgetbatch = false;
 				info->amhasgetbitmap = false;
 				info->amcanmarkpos = false;
 				info->amcostestimate = NULL;

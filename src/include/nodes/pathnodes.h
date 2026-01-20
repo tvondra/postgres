@@ -1339,8 +1339,8 @@ typedef struct IndexOptInfo
 	bool		amoptionalkey;
 	bool		amsearcharray;
 	bool		amsearchnulls;
-	/* does AM have amgettuple interface? */
-	bool		amhasgettuple;
+	/* does AM have amgetbatch (or gettuple) interface? */
+	bool		amhasgetbatch;
 	/* does AM have amgetbitmap interface? */
 	bool		amhasgetbitmap;
 	bool		amcanparallel;

@@ -1257,7 +1257,8 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    <title>Table AM Considerations for Batch Scanning</title>
 
    <para>
-    This section is primarily relevant to table access method authors.
+    This section is primarily relevant to
+    <link linkend="tableam">table access method</link> authors.
     When an index scan uses the <function>amgetbatch</function> interface,
     the table AM is responsible for managing position state within
     <structfield>scan-&gt;batchringbuf</structfield> and for controlling when

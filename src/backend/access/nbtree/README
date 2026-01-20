@@ -458,30 +458,16 @@ MVCC snapshot instead.  This more limited interlock prevents wrong answers
 to queries, but it does not prevent concurrent TID recycling itself (only
 holding onto the leaf page pin while accessing the heap ensures that).
 
-Index-only scans can never drop their buffer pin, since they are unable to
-tolerate having a referenced TID become recyclable.  Index-only scans
-typically just visit the visibility map (not the heap proper), and so will
-not reliably notice that any stale TID reference (for a TID that pointed
-to a dead-to-all heap item at first) was concurrently marked LP_UNUSED in
-the heap by VACUUM.  This could easily allow VACUUM to set the whole heap
-page to all-visible in the visibility map immediately afterwards.  An MVCC
-snapshot is only sufficient to avoid problems during plain index scans
-because they must access granular visibility information from the heap
-proper.  A plain index scan will even recognize LP_UNUSED items in the
-heap (items that could be recycled but haven't been just yet) as "not
-visible" -- even when the heap page is generally considered all-visible.
-
 Opportunistic LP_DEAD setting of known-dead index tuples during index scans
-(described in full in simple deletion, below) is also more complicated for
-index scans that drop their leaf page pins.  We must be careful to avoid
-LP_DEAD-marking any new index tuple that looks like a known-dead index
-tuple because it happens to share the same TID, following concurrent TID
-recycling.  It's just about possible that some other session inserted a
-new, unrelated index tuple, on the same leaf page, which has the same
-original TID.  It would be totally wrong to LP_DEAD-set this new,
-unrelated index tuple.
+(described in full in simple deletion, below) need to be careful about
+concurrent TID recycling.  We must be avoid LP_DEAD-marking any new index
+tuple that looks like a known-dead index tuple because it happens to share
+the same TID, following concurrent TID recycling.  It's just about possible
+that some other session inserted a new, unrelated index tuple, on the same
+leaf page, which has the same original TID.  It would be totally wrong to
+LP_DEAD-set this new, unrelated index tuple.
 
-We handle this LP_DEAD setting race condition by having affected index
+We handle this LP_DEAD setting race condition by having all index
 scans conservatively assume that any change to the leaf page at all
 implies that it was reached by btbulkdelete in the interim period when no
 buffer pin was held.  This is implemented by not setting any LP_DEAD bits

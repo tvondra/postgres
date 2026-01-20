@@ -447,14 +447,14 @@ Making concurrent TID recycling safe
 
 As explained in the earlier section about deleting index tuples during
 VACUUM, we implement a locking protocol that helps table AMs deal with TID
-recyling hazards during scans that use a non-MVCC snapshot.
+recycling hazards during scans that use a non-MVCC snapshot.
 
 Index scans that don't hold on to a buffer pin are protected by holding an
 MVCC snapshot instead.  This more limited interlock prevents wrong answers
 to queries, but it does not prevent concurrent TID recycling itself (only
 holding onto the leaf page pin while accessing the heap ensures that).
 For the most part, it is up to the table AM to deal with concurrent TID
-recyling hazards.  But we still need to directly consider such hazards when
+recycling hazards.  But we still need to directly consider such hazards when
 marking a known-dead index tuple LP_DEAD.
 
 We must avoid LP_DEAD-marking any new index tuple that looks like a

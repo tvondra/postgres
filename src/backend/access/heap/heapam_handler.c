@@ -272,8 +272,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
  * allowing the read stream to return unexpected heap buffers/pages.
  *
  * Caching visibility information up front avoids that problem.  If a VM bit
- * is concurrently set (or unset), it can't matter, since everybody will have
- * works off of this immutable local cache.
+ * is concurrently set (or unset), it can't matter, since everybody will work
+ * off of this immutable local cache.
  *
  * Note on Memory Ordering Effects
  * -------------------------------

@@ -318,13 +318,12 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	IndexScanBatch batch;
 	int64		ntids = 0;
-	int			itemIndex;
 
 	batch = _hash_first(scan, ForwardScanDirection);
 
 	while (batch != NULL)
 	{
-		for (itemIndex = batch->firstItem;
+		for (int itemIndex = batch->firstItem;
 			 itemIndex <= batch->lastItem;
 			 itemIndex++)
 		{

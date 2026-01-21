@@ -18,13 +18,14 @@ Usage:
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import mean
 
 import psycopg
@@ -62,6 +63,29 @@ OUTPUT_DIR = "prefetch_results"
 
 # CPU pinning settings
 BENCHMARK_CPU = 14
+
+# --- Stress-test query generation probabilities ---
+# These control the likelihood of various query features in randomly generated queries.
+# Tune these to focus on patterns most likely to expose regressions.
+
+STRESS_PROB_LATERAL_JOIN = 0.15        # Use LATERAL subquery (top-N per group)
+STRESS_PROB_ANTI_JOIN = 0.10           # Use NOT EXISTS anti-join
+STRESS_PROB_SEMI_JOIN = 0.15           # Use EXISTS semi-join
+STRESS_PROB_CORRELATED_SUBQUERY = 0.10 # Correlated subquery in SELECT clause
+STRESS_PROB_FILTER_QUAL = 0.25         # Add filter qual that can't use index
+STRESS_PROB_ORDER_BY = 0.70            # Include ORDER BY clause
+STRESS_PROB_LIMIT = 0.50               # Include LIMIT clause (when ORDER BY present)
+STRESS_PROB_AGGREGATE = 0.20           # Use count(*) or sum() aggregate
+STRESS_PROB_INDEX_ONLY = 0.15          # Query only columns in index (index-only scan)
+STRESS_PROB_MULTI_TABLE_JOIN = 0.30    # JOIN to dimension tables
+STRESS_PROB_BACKWARDS_SCAN = 0.10      # Use DESC ordering (backwards index scan)
+STRESS_PROB_IN_LIST = 0.15             # Use IN (...) instead of BETWEEN
+STRESS_PROB_HIGH_SELECTIVITY = 0.30    # Very selective (few rows)
+STRESS_PROB_LOW_SELECTIVITY = 0.20     # Low selectivity (many rows)
+
+# Stress-test configuration
+STRESS_QUERIES_PER_BATCH = 10          # Number of queries to generate per iteration
+STRESS_REGRESSION_THRESHOLD = 1.15     # 15% slower = regression
 
 # --- Query Definitions ---
 
@@ -492,7 +516,478 @@ Examples:
         dest="prefetch_disabled",
         help="Only test patch with prefetching disabled (skip prefetch=on)"
     )
+    parser.add_argument(
+        "--stress-test",
+        action="store_true",
+        dest="stress_test",
+        help="Run stress test mode: randomly generate queries to find regressions"
+    )
     return parser.parse_args()
+
+
+# --- Stress-test query generation ---
+
+def random_date_range():
+    """Generate a random date range within 2023."""
+    # Start date: random day in 2023
+    start_day = random.randint(1, 330)  # Leave room for range
+    start_date = datetime(2023, 1, 1) + timedelta(days=start_day)
+
+    # Determine range size based on selectivity
+    if random.random() < STRESS_PROB_HIGH_SELECTIVITY:
+        # Narrow range: 1-3 days (high selectivity)
+        days = random.randint(1, 3)
+    elif random.random() < STRESS_PROB_LOW_SELECTIVITY:
+        # Wide range: 30-90 days (low selectivity)
+        days = random.randint(30, 90)
+    else:
+        # Medium range: 5-20 days
+        days = random.randint(5, 20)
+
+    end_date = start_date + timedelta(days=days)
+    return start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
+
+
+def random_customer_range():
+    """Generate a random customer_id range."""
+    if random.random() < STRESS_PROB_HIGH_SELECTIVITY:
+        # Single customer or very small range
+        start = random.randint(1, 100000)
+        count = random.randint(1, 5)
+    elif random.random() < STRESS_PROB_LOW_SELECTIVITY:
+        # Large range: 5000-20000 customers
+        start = random.randint(1, 80000)
+        count = random.randint(5000, 20000)
+    else:
+        # Medium range: 100-1000 customers
+        start = random.randint(1, 99000)
+        count = random.randint(100, 1000)
+
+    end = min(start + count, 100000)
+    return start, end
+
+
+def random_product_range():
+    """Generate a random product_id range."""
+    if random.random() < STRESS_PROB_HIGH_SELECTIVITY:
+        start = random.randint(1, 10000)
+        count = random.randint(1, 10)
+    elif random.random() < STRESS_PROB_LOW_SELECTIVITY:
+        start = random.randint(1, 5000)
+        count = random.randint(2000, 5000)
+    else:
+        start = random.randint(1, 9000)
+        count = random.randint(50, 500)
+
+    end = min(start + count, 10000)
+    return start, end
+
+
+def random_in_list(start, end, max_items=10):
+    """Generate a random IN list from a range."""
+    count = min(random.randint(3, max_items), end - start + 1)
+    values = random.sample(range(start, end + 1), count)
+    return ', '.join(str(v) for v in sorted(values))
+
+
+def random_filter_qual(table_alias=""):
+    """Generate a random filter qual that can't use the index."""
+    prefix = f"{table_alias}." if table_alias else ""
+    qual_type = random.choice(['amount_gt', 'amount_between', 'region_in'])
+
+    if qual_type == 'amount_gt':
+        threshold = random.randint(100, 900)
+        return f"{prefix}amount > {threshold}"
+    elif qual_type == 'amount_between':
+        low = random.randint(0, 500)
+        high = low + random.randint(100, 400)
+        return f"{prefix}amount BETWEEN {low} AND {high}"
+    else:  # region_in
+        regions = random.sample(range(1, 21), random.randint(2, 5))
+        return f"{prefix}region_id IN ({', '.join(str(r) for r in regions)})"
+
+
+def random_limit():
+    """Generate a random LIMIT value."""
+    if random.random() < 0.3:
+        return random.randint(1, 10)  # Very small
+    elif random.random() < 0.5:
+        return random.randint(100, 1000)  # Medium
+    else:
+        return random.randint(5000, 50000)  # Large
+
+
+def generate_random_query(query_num):
+    """
+    Generate a random query targeting the prefetch benchmark tables.
+    Returns a query definition dict compatible with the QUERIES format.
+    """
+    # Decide query type based on probabilities
+    # These are mutually exclusive special patterns
+    use_lateral = random.random() < STRESS_PROB_LATERAL_JOIN
+    use_anti_join = not use_lateral and random.random() < STRESS_PROB_ANTI_JOIN
+    use_semi_join = not use_lateral and not use_anti_join and random.random() < STRESS_PROB_SEMI_JOIN
+    use_correlated = not use_lateral and not use_anti_join and not use_semi_join and random.random() < STRESS_PROB_CORRELATED_SUBQUERY
+    use_aggregate = not use_lateral and random.random() < STRESS_PROB_AGGREGATE
+
+    # Independent features
+    use_filter_qual = random.random() < STRESS_PROB_FILTER_QUAL
+    use_order_by = random.random() < STRESS_PROB_ORDER_BY
+    use_limit = use_order_by and random.random() < STRESS_PROB_LIMIT
+    use_backwards = use_order_by and random.random() < STRESS_PROB_BACKWARDS_SCAN
+    use_in_list = random.random() < STRESS_PROB_IN_LIST
+    use_index_only = random.random() < STRESS_PROB_INDEX_ONLY
+    use_multi_join = random.random() < STRESS_PROB_MULTI_TABLE_JOIN
+
+    # Generate date range (used in most queries)
+    date_start, date_end = random_date_range()
+    cust_start, cust_end = random_customer_range()
+    prod_start, prod_end = random_product_range()
+
+    # Build query based on type
+    evict = ["prefetch_orders"]
+    prewarm_indexes = []
+    prewarm_tables = ["prefetch_orders"]
+    query_features = []
+
+    if use_lateral:
+        # LATERAL join: top-N per customer
+        query_features.append("LATERAL")
+        limit_val = random.randint(3, 10)
+        order_dir = "DESC" if use_backwards else ""
+
+        if use_in_list and (cust_end - cust_start) <= 20:
+            cust_cond = f"c.customer_id IN ({random_in_list(cust_start, cust_end)})"
+        else:
+            cust_cond = f"c.customer_id BETWEEN {cust_start} AND {cust_end}"
+
+        inner_filter = ""
+        if use_filter_qual:
+            # Inside LATERAL subquery, prefetch_orders has no alias, so no prefix needed
+            # But avoid region_id which would be ambiguous - use amount only
+            qual_type = random.choice(['amount_gt', 'amount_between'])
+            if qual_type == 'amount_gt':
+                threshold = random.randint(100, 900)
+                inner_filter = f"AND amount > {threshold}"
+            else:
+                low = random.randint(0, 500)
+                high = low + random.randint(100, 400)
+                inner_filter = f"AND amount BETWEEN {low} AND {high}"
+            query_features.append("filter")
+
+        sql = f"""
+            SELECT c.customer_id, o.order_id, o.order_date, o.amount
+            FROM prefetch_customers c,
+            LATERAL (
+                SELECT order_id, order_date, amount
+                FROM prefetch_orders
+                WHERE customer_id = c.customer_id
+                  AND order_date BETWEEN '{date_start}' AND '{date_end}'
+                  {inner_filter}
+                ORDER BY order_date {order_dir}
+                LIMIT {limit_val}
+            ) o
+            WHERE {cust_cond}
+        """
+        evict.append("prefetch_customers")
+        prewarm_indexes = ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"]
+        prewarm_tables.append("prefetch_customers")
+
+    elif use_anti_join:
+        # NOT EXISTS anti-join
+        query_features.append("anti-join")
+
+        if use_in_list and (cust_end - cust_start) <= 20:
+            cust_cond = f"o.customer_id IN ({random_in_list(cust_start, cust_end)})"
+        else:
+            cust_cond = f"o.customer_id BETWEEN {cust_start} AND {cust_end}"
+
+        region_id = random.randint(1, 20)
+
+        select_cols = "o.customer_id, o.order_date" if use_index_only else "o.order_id, o.customer_id, o.amount"
+        if use_index_only:
+            query_features.append("index-only")
+
+        filter_clause = ""
+        if use_filter_qual and not use_index_only:
+            filter_clause = f"AND {random_filter_qual('o')}"
+            query_features.append("filter")
+
+        sql = f"""
+            SELECT {select_cols}
+            FROM prefetch_orders o
+            WHERE o.order_date BETWEEN '{date_start}' AND '{date_end}'
+              AND {cust_cond}
+              AND NOT EXISTS (
+                  SELECT 1 FROM prefetch_customers c
+                  WHERE c.customer_id = o.customer_id
+                    AND c.region_id = {region_id}
+              )
+              {filter_clause}
+        """
+        evict.append("prefetch_customers")
+        prewarm_indexes = ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"]
+        prewarm_tables.append("prefetch_customers")
+
+        if use_order_by:
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n            ORDER BY o.order_date {order_dir}"
+            if use_limit:
+                sql += f"\n            LIMIT {random_limit()}"
+
+    elif use_semi_join:
+        # EXISTS semi-join
+        query_features.append("semi-join")
+
+        region_id = random.randint(1, 20)
+
+        select_cols = "o.customer_id, o.order_date" if use_index_only else "o.order_id, o.customer_id, o.amount"
+        if use_index_only:
+            query_features.append("index-only")
+
+        filter_clause = ""
+        if use_filter_qual and not use_index_only:
+            filter_clause = f"AND {random_filter_qual('o')}"
+            query_features.append("filter")
+
+        sql = f"""
+            SELECT {select_cols}
+            FROM prefetch_orders o
+            WHERE o.order_date BETWEEN '{date_start}' AND '{date_end}'
+              AND EXISTS (
+                  SELECT 1 FROM prefetch_customers c
+                  WHERE c.customer_id = o.customer_id
+                    AND c.region_id = {region_id}
+              )
+              {filter_clause}
+        """
+        evict.append("prefetch_customers")
+        prewarm_indexes = ["prefetch_orders_date_idx", "prefetch_customers_pkey"]
+        prewarm_tables.append("prefetch_customers")
+
+        if use_order_by:
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n            ORDER BY o.order_date {order_dir}"
+            if use_limit:
+                sql += f"\n            LIMIT {random_limit()}"
+
+    elif use_correlated:
+        # Correlated subquery in SELECT
+        query_features.append("correlated")
+
+        if use_in_list and (cust_end - cust_start) <= 20:
+            cust_cond = f"o.customer_id IN ({random_in_list(cust_start, cust_end)})"
+        else:
+            cust_cond = f"o.customer_id BETWEEN {cust_start} AND {cust_end}"
+
+        filter_clause = ""
+        if use_filter_qual:
+            filter_clause = f"AND {random_filter_qual('o')}"
+            query_features.append("filter")
+
+        sql = f"""
+            SELECT o.order_id, o.customer_id, o.amount,
+                   (SELECT c.customer_name FROM prefetch_customers c
+                    WHERE c.customer_id = o.customer_id) as cust_name
+            FROM prefetch_orders o
+            WHERE o.order_date BETWEEN '{date_start}' AND '{date_end}'
+              AND {cust_cond}
+              {filter_clause}
+        """
+        evict.append("prefetch_customers")
+        prewarm_indexes = ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"]
+        prewarm_tables.append("prefetch_customers")
+
+        if use_order_by:
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n            ORDER BY o.order_date {order_dir}"
+            if use_limit:
+                sql += f"\n            LIMIT {random_limit()}"
+
+    elif use_aggregate:
+        # Aggregate query
+        query_features.append("aggregate")
+        agg_type = random.choice(['count', 'sum', 'both'])
+
+        if agg_type == 'count':
+            select_clause = "order_date, count(*) as cnt"
+        elif agg_type == 'sum':
+            select_clause = "order_date, sum(amount) as total"
+        else:
+            select_clause = "order_date, count(*) as cnt, sum(amount) as total"
+
+        filter_clause = ""
+        if use_filter_qual:
+            # No table alias in aggregate query, so no prefix needed
+            # Avoid region_id ambiguity by only using amount
+            qual_type = random.choice(['amount_gt', 'amount_between'])
+            if qual_type == 'amount_gt':
+                threshold = random.randint(100, 900)
+                filter_clause = f"AND amount > {threshold}"
+            else:
+                low = random.randint(0, 500)
+                high = low + random.randint(100, 400)
+                filter_clause = f"AND amount BETWEEN {low} AND {high}"
+            query_features.append("filter")
+
+        sql = f"""
+            SELECT {select_clause}
+            FROM prefetch_orders
+            WHERE order_date BETWEEN '{date_start}' AND '{date_end}'
+              {filter_clause}
+            GROUP BY order_date
+        """
+        prewarm_indexes = ["prefetch_orders_date_idx"]
+
+        if use_order_by:
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n            ORDER BY order_date {order_dir}"
+
+    elif use_multi_join:
+        # Multi-table JOIN
+        query_features.append("JOIN")
+        join_to = random.choice(['customers', 'products', 'both'])
+
+        if use_in_list and (cust_end - cust_start) <= 20:
+            cust_cond = f"o.customer_id IN ({random_in_list(cust_start, cust_end)})"
+        else:
+            cust_cond = f"o.customer_id BETWEEN {cust_start} AND {cust_end}"
+
+        filter_clause = ""
+        if use_filter_qual:
+            filter_clause = f"AND {random_filter_qual('o')}"
+            query_features.append("filter")
+
+        if join_to == 'customers':
+            sql = f"""
+                SELECT o.order_id, c.customer_name, o.amount, o.order_date
+                FROM prefetch_orders o
+                JOIN prefetch_customers c ON c.customer_id = o.customer_id
+                WHERE {cust_cond}
+                  AND o.order_date BETWEEN '{date_start}' AND '{date_end}'
+                  {filter_clause}
+            """
+            evict.append("prefetch_customers")
+            prewarm_indexes = ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"]
+            prewarm_tables.append("prefetch_customers")
+        elif join_to == 'products':
+            sql = f"""
+                SELECT o.order_id, p.product_name, o.amount, o.order_date
+                FROM prefetch_orders o
+                JOIN prefetch_products p ON p.product_id = o.product_id
+                WHERE o.product_id BETWEEN {prod_start} AND {prod_end}
+                  AND o.order_date BETWEEN '{date_start}' AND '{date_end}'
+                  {filter_clause}
+            """
+            evict.append("prefetch_products")
+            prewarm_indexes = ["prefetch_orders_prod_idx", "prefetch_products_pkey"]
+            prewarm_tables.append("prefetch_products")
+        else:  # both
+            query_features.append("multi-JOIN")
+            sql = f"""
+                SELECT o.order_id, c.customer_name, p.product_name, o.amount
+                FROM prefetch_orders o
+                JOIN prefetch_customers c ON c.customer_id = o.customer_id
+                JOIN prefetch_products p ON p.product_id = o.product_id
+                WHERE o.order_date BETWEEN '{date_start}' AND '{date_end}'
+                  AND {cust_cond}
+                  {filter_clause}
+            """
+            evict.extend(["prefetch_customers", "prefetch_products"])
+            prewarm_indexes = ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey", "prefetch_products_pkey"]
+            prewarm_tables.extend(["prefetch_customers", "prefetch_products"])
+
+        if use_order_by:
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n                ORDER BY o.order_date {order_dir}"
+            if use_limit:
+                sql += f"\n                LIMIT {random_limit()}"
+
+    else:
+        # Simple range scan on prefetch_orders
+        query_features.append("range-scan")
+
+        # Choose which index to target
+        index_choice = random.choice(['date', 'cust_date', 'product'])
+
+        if use_index_only:
+            query_features.append("index-only")
+
+        filter_clause = ""
+        if use_filter_qual and not use_index_only:
+            # No table alias in simple range scan, avoid region_id ambiguity
+            qual_type = random.choice(['amount_gt', 'amount_between'])
+            if qual_type == 'amount_gt':
+                threshold = random.randint(100, 900)
+                filter_clause = f"AND amount > {threshold}"
+            else:
+                low = random.randint(0, 500)
+                high = low + random.randint(100, 400)
+                filter_clause = f"AND amount BETWEEN {low} AND {high}"
+            query_features.append("filter")
+
+        if index_choice == 'date':
+            select_cols = "order_date" if use_index_only else "order_id, customer_id, amount"
+            sql = f"""
+                SELECT {select_cols}
+                FROM prefetch_orders
+                WHERE order_date BETWEEN '{date_start}' AND '{date_end}'
+                  {filter_clause}
+            """
+            prewarm_indexes = ["prefetch_orders_date_idx"]
+
+        elif index_choice == 'cust_date':
+            if use_in_list and (cust_end - cust_start) <= 20:
+                cust_cond = f"customer_id IN ({random_in_list(cust_start, cust_end)})"
+            else:
+                cust_cond = f"customer_id BETWEEN {cust_start} AND {cust_end}"
+
+            select_cols = "customer_id, order_date" if use_index_only else "order_id, customer_id, amount"
+            sql = f"""
+                SELECT {select_cols}
+                FROM prefetch_orders
+                WHERE {cust_cond}
+                  AND order_date BETWEEN '{date_start}' AND '{date_end}'
+                  {filter_clause}
+            """
+            prewarm_indexes = ["prefetch_orders_cust_date_idx"]
+
+        else:  # product
+            if use_in_list and (prod_end - prod_start) <= 20:
+                prod_cond = f"product_id IN ({random_in_list(prod_start, prod_end)})"
+            else:
+                prod_cond = f"product_id BETWEEN {prod_start} AND {prod_end}"
+
+            select_cols = "product_id" if use_index_only else "order_id, product_id, amount"
+            sql = f"""
+                SELECT {select_cols}
+                FROM prefetch_orders
+                WHERE {prod_cond}
+                  {filter_clause}
+            """
+            prewarm_indexes = ["prefetch_orders_prod_idx"]
+
+        if use_order_by:
+            order_col = "order_date" if index_choice in ['date', 'cust_date'] else "product_id"
+            order_dir = "DESC" if use_backwards else ""
+            sql = sql.rstrip() + f"\n                ORDER BY {order_col} {order_dir}"
+            if use_limit:
+                sql += f"\n                LIMIT {random_limit()}"
+
+    # Add backwards scan to features if used
+    if use_backwards:
+        query_features.append("backwards")
+
+    # Build name from features
+    name = f"Stress #{query_num}: {', '.join(query_features)}"
+
+    return {
+        "name": name,
+        "sql": sql,
+        "evict": list(set(evict)),  # Remove duplicates
+        "prewarm_indexes": prewarm_indexes,
+        "prewarm_tables": list(set(prewarm_tables)),
+    }
 
 
 def get_git_hash(source_dir):
@@ -1234,9 +1729,315 @@ def run_benchmark(args):
         print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
 
 
+def run_stress_test(args):
+    """Run stress test mode: randomly generate queries to find regressions."""
+    print("=" * 60)
+    print("STRESS TEST MODE")
+    print("=" * 60)
+    print(f"Looking for regressions >= {STRESS_REGRESSION_THRESHOLD:.0%} slower than master")
+    print(f"Generating {STRESS_QUERIES_PER_BATCH} queries per batch")
+    print(f"Mode: {'cached' if args.cached else 'uncached'}")
+    print("=" * 60)
+
+    # Get git hashes
+    master_hash = get_git_hash(MASTER_SOURCE_DIR)
+    patch_hash = get_git_hash(PATCH_SOURCE_DIR)
+    print(f"\nMaster git hash: {master_hash}")
+    print(f"Patch git hash: {patch_hash}")
+
+    # We assume data is already loaded (--skip-load behavior for stress test)
+    # User should run the normal benchmark first to ensure data exists
+
+    iteration = 0
+    total_queries_tested = 0
+
+    try:
+        while True:
+            iteration += 1
+            print(f"\n{'=' * 60}")
+            print(f"ITERATION {iteration}")
+            print(f"{'=' * 60}")
+
+            # Generate batch of random queries
+            queries = []
+            for i in range(STRESS_QUERIES_PER_BATCH):
+                query_num = total_queries_tested + i + 1
+                queries.append((f"S{query_num}", generate_random_query(query_num)))
+
+            # Print generated queries
+            print(f"\nGenerated {len(queries)} queries:")
+            for query_id, query_def in queries:
+                print(f"  {query_id}: {query_def['name']}")
+
+            # Results storage for this batch
+            results = {}
+            for query_id, query_def in queries:
+                results[query_id] = {
+                    "query_def": query_def,
+                    "master": {"times": [], "avg": None, "explain": None},
+                    "patch_off": {"times": [], "avg": None, "explain": None},
+                    "patch_on": {"times": [], "avg": None, "explain": None},
+                }
+
+            # Run all queries on master
+            print(f"\n--- Running on MASTER ---")
+            start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
+            try:
+                master_conn = psycopg.connect(**MASTER_CONN)
+                pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
+                with master_conn.cursor() as cur:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+                    # Stress test GUC settings
+                    cur.execute("SET enable_bitmapscan = off")
+                    cur.execute("SET random_page_cost = 1.1")
+                    cur.execute("SET max_parallel_workers_per_gather = 0")
+
+                for query_id, query_def in queries:
+                    print(f"\n  {query_id}: {query_def['name']}")
+                    # Print query text
+                    for line in query_def['sql'].strip().split('\n'):
+                        print(f"    {line.strip()}")
+                    print(f"  Running...", end=" ", flush=True)
+                    try:
+                        exec_time, explain_output = run_query(
+                            master_conn, query_def, args.cached,
+                            is_master=True, prefetch_setting=None,
+                            benchmark_cpu=args.benchmark_cpu
+                        )
+                        if exec_time is not None:
+                            results[query_id]["master"]["times"].append(exec_time)
+                            results[query_id]["master"]["avg"] = exec_time
+                            results[query_id]["master"]["explain"] = explain_output
+                            print(f"{exec_time:.3f} ms")
+                        else:
+                            print("FAILED - could not extract execution time")
+                            sys.exit(1)
+                    except Exception as e:
+                        print(f"ERROR: {e}")
+                        print("\nGenerated invalid SQL! This is a bug in the query generator.")
+                        print(f"Query: {query_def['sql']}")
+                        sys.exit(1)
+
+                master_conn.close()
+            finally:
+                stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                time.sleep(2)
+
+            # Run all queries on patch
+            print(f"\n--- Running on PATCH ---")
+            start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+            try:
+                patch_conn = psycopg.connect(**PATCH_CONN)
+                pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
+                with patch_conn.cursor() as cur:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+                    # Stress test GUC settings
+                    cur.execute("SET enable_bitmapscan = off")
+                    cur.execute("SET random_page_cost = 1.1")
+                    cur.execute("SET max_parallel_workers_per_gather = 0")
+
+                for query_id, query_def in queries:
+                    master_avg = results[query_id]["master"]["avg"]
+
+                    print(f"\n  {query_id}: {query_def['name']}")
+                    # Print query text
+                    for line in query_def['sql'].strip().split('\n'):
+                        print(f"    {line.strip()}")
+
+                    # Test with prefetch OFF (skip if --prefetch-only)
+                    if not args.prefetch_only:
+                        print(f"  prefetch=off...", end=" ", flush=True)
+                        try:
+                            exec_time, explain_output = run_query(
+                                patch_conn, query_def, args.cached,
+                                is_master=False, prefetch_setting="off",
+                                benchmark_cpu=args.benchmark_cpu
+                            )
+                            if exec_time is not None:
+                                results[query_id]["patch_off"]["times"].append(exec_time)
+                                results[query_id]["patch_off"]["avg"] = exec_time
+                                results[query_id]["patch_off"]["explain"] = explain_output
+                                if master_avg:
+                                    ratio = exec_time / master_avg
+                                    print(f"{exec_time:.3f} ms ({ratio:.3f}x vs master)")
+                                else:
+                                    print(f"{exec_time:.3f} ms")
+                            else:
+                                print("FAILED - could not extract execution time")
+                                sys.exit(1)
+                        except Exception as e:
+                            print(f"ERROR: {e}")
+                            print("\nGenerated invalid SQL! This is a bug in the query generator.")
+                            print(f"Query: {query_def['sql']}")
+                            sys.exit(1)
+
+                    # Test with prefetch ON (skip if --prefetch-disabled)
+                    if not args.prefetch_disabled:
+                        print(f"  prefetch=on...", end=" ", flush=True)
+                        try:
+                            exec_time, explain_output = run_query(
+                                patch_conn, query_def, args.cached,
+                                is_master=False, prefetch_setting="on",
+                                benchmark_cpu=args.benchmark_cpu
+                            )
+                            if exec_time is not None:
+                                results[query_id]["patch_on"]["times"].append(exec_time)
+                                results[query_id]["patch_on"]["avg"] = exec_time
+                                results[query_id]["patch_on"]["explain"] = explain_output
+                                if master_avg:
+                                    ratio = exec_time / master_avg
+                                    print(f"{exec_time:.3f} ms ({ratio:.3f}x vs master)")
+                                else:
+                                    print(f"{exec_time:.3f} ms")
+                            else:
+                                print("FAILED - could not extract execution time")
+                                sys.exit(1)
+                        except Exception as e:
+                            print(f"ERROR: {e}")
+                            print("\nGenerated invalid SQL! This is a bug in the query generator.")
+                            print(f"Query: {query_def['sql']}")
+                            sys.exit(1)
+
+                patch_conn.close()
+            finally:
+                stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                time.sleep(2)
+
+            # Check for regressions
+            print(f"\n--- Checking for regressions ---")
+            regressions_found = []
+
+            for query_id, query_def in queries:
+                r = results[query_id]
+                master_avg = r["master"]["avg"]
+                patch_off_avg = r["patch_off"]["avg"]
+                patch_on_avg = r["patch_on"]["avg"]
+
+                if master_avg is None:
+                    continue
+
+                # Check prefetch=off regression
+                if patch_off_avg is not None:
+                    ratio_off = patch_off_avg / master_avg
+                    if ratio_off >= STRESS_REGRESSION_THRESHOLD:
+                        regressions_found.append({
+                            "query_id": query_id,
+                            "query_def": query_def,
+                            "config": "prefetch=off",
+                            "ratio": ratio_off,
+                            "master_ms": master_avg,
+                            "patch_ms": patch_off_avg,
+                            "patch_on_ms": patch_on_avg,
+                        })
+
+                # Check prefetch=on regression
+                if patch_on_avg is not None:
+                    ratio_on = patch_on_avg / master_avg
+                    if ratio_on >= STRESS_REGRESSION_THRESHOLD:
+                        regressions_found.append({
+                            "query_id": query_id,
+                            "query_def": query_def,
+                            "config": "prefetch=on",
+                            "ratio": ratio_on,
+                            "master_ms": master_avg,
+                            "patch_ms": patch_on_avg,
+                            "patch_off_ms": patch_off_avg,
+                        })
+
+            total_queries_tested += len(queries)
+
+            if regressions_found:
+                # Sort by ratio (worst first)
+                regressions_found.sort(key=lambda x: x["ratio"], reverse=True)
+                worst = regressions_found[0]
+
+                print()
+                print("=" * 60)
+                print("REGRESSION FOUND!")
+                print("=" * 60)
+                pct = (worst["ratio"] - 1) * 100
+                print(f"Patch ({worst['config']}) is {worst['ratio']:.3f}x slower than master ({pct:.1f}% regression)")
+                print()
+                print(f"Master:           {worst['master_ms']:.3f} ms")
+
+                query_def = worst["query_def"]
+                r = results[worst["query_id"]]
+
+                if r["patch_off"]["avg"]:
+                    ratio_off = r["patch_off"]["avg"] / worst["master_ms"]
+                    marker = " <-- REGRESSION" if worst["config"] == "prefetch=off" else ""
+                    print(f"Patch (off):      {r['patch_off']['avg']:.3f} ms ({ratio_off:.3f}x vs master){marker}")
+
+                if r["patch_on"]["avg"]:
+                    ratio_on = r["patch_on"]["avg"] / worst["master_ms"]
+                    marker = " <-- REGRESSION" if worst["config"] == "prefetch=on" else ""
+                    print(f"Patch (on):       {r['patch_on']['avg']:.3f} ms ({ratio_on:.3f}x vs master){marker}")
+
+                # Print EXPLAIN ANALYZE output
+                print()
+                print("EXPLAIN ANALYZE output:")
+                print()
+                if r["master"]["explain"]:
+                    print("  master:")
+                    for line in r["master"]["explain"].split('\n'):
+                        print(f"    {line}")
+                if r["patch_off"]["explain"]:
+                    print()
+                    print("  patch (prefetch=off):")
+                    for line in r["patch_off"]["explain"].split('\n'):
+                        print(f"    {line}")
+                if r["patch_on"]["explain"]:
+                    print()
+                    print("  patch (prefetch=on):")
+                    for line in r["patch_on"]["explain"].split('\n'):
+                        print(f"    {line}")
+
+                # Print query definition ready to add to QUERIES
+                print()
+                print("Add this to QUERIES dict:")
+                print()
+
+                # Format evict list
+                evict_str = ", ".join(f'"{t}"' for t in query_def["evict"])
+                prewarm_idx_str = ", ".join(f'"{i}"' for i in query_def["prewarm_indexes"])
+                prewarm_tbl_str = ", ".join(f'"{t}"' for t in query_def["prewarm_tables"])
+
+                # Clean up SQL formatting
+                sql_lines = query_def["sql"].strip().split('\n')
+                sql_formatted = '\n'.join('            ' + line.strip() for line in sql_lines)
+
+                print(f'    ("STRESS_{total_queries_tested}", {{')
+                print(f'        "name": "{query_def["name"]}",')
+                print(f'        "sql": """')
+                print(sql_formatted)
+                print(f'        """,')
+                print(f'        "evict": [{evict_str}],')
+                print(f'        "prewarm_indexes": [{prewarm_idx_str}],')
+                print(f'        "prewarm_tables": [{prewarm_tbl_str}],')
+                print(f'    }}),')
+                print()
+                print(f"Total queries tested: {total_queries_tested}")
+                print(f"Iterations: {iteration}")
+                return  # Exit on first regression found
+
+            else:
+                print(f"No regressions found in this batch.")
+                print(f"Total queries tested so far: {total_queries_tested}")
+                print("Generating next batch...")
+
+    except KeyboardInterrupt:
+        print(f"\n\nStress test interrupted after {total_queries_tested} queries ({iteration} iterations)")
+        print("No regressions found.")
+
+
 def main():
     args = parse_arguments()
-    run_benchmark(args)
+    if args.stress_test:
+        run_stress_test(args)
+    else:
+        run_benchmark(args)
 
 
 if __name__ == "__main__":

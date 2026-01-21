@@ -93,6 +93,11 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
         "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
     }),
+    # This query favors patch (run time is x0.9 that of master with
+    # prefetching).  But it takes ~15 seconds to run without prefetching,
+    # which is excessive.  It is commented out for now, just to keep the
+    # test runtime manageable.
+    #
     # ("Q3", {
     #     "name": "Multi-JOIN Orders+Customers+Products",
     #     "sql": """
@@ -467,6 +472,25 @@ Examples:
         type=int,
         default=BENCHMARK_CPU,
         help=f"CPU core to pin PostgreSQL backend to (default: {BENCHMARK_CPU})"
+    )
+    parser.add_argument(
+        "--topn",
+        type=int,
+        default=5,
+        help="Number of top improvements/regressions to show (default: 5)"
+    )
+    prefetch_group = parser.add_mutually_exclusive_group()
+    prefetch_group.add_argument(
+        "--prefetch-only",
+        action="store_true",
+        dest="prefetch_only",
+        help="Only test patch with prefetching enabled (skip prefetch=off)"
+    )
+    prefetch_group.add_argument(
+        "--prefetch-disabled",
+        action="store_true",
+        dest="prefetch_disabled",
+        help="Only test patch with prefetching disabled (skip prefetch=on)"
     )
     return parser.parse_args()
 
@@ -847,23 +871,28 @@ def run_benchmark(args):
     print(f"Patch git hash: {patch_hash}")
 
     # Verify/load data on each server (one at a time due to memory constraints)
-    print("\n--- Verifying data on master ---")
-    start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
-    if not verify_data(MASTER_CONN, args.skip_load):
-        print("Loading data on master...")
-        load_data(MASTER_CONN)
-    master_version = get_pg_version(MASTER_CONN)
-    stop_server(MASTER_BIN, MASTER_DATA_DIR)
-    time.sleep(2)
+    # Skip entirely if --skip-load is set
+    if args.skip_load:
+        master_version = None  # Will be fetched during benchmark run
+        patch_version = None
+    else:
+        print("\n--- Verifying data on master ---")
+        start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
+        if not verify_data(MASTER_CONN, args.skip_load):
+            print("Loading data on master...")
+            load_data(MASTER_CONN)
+        master_version = get_pg_version(MASTER_CONN)
+        stop_server(MASTER_BIN, MASTER_DATA_DIR)
+        time.sleep(2)
 
-    print("\n--- Verifying data on patch ---")
-    start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
-    if not verify_data(PATCH_CONN, args.skip_load):
-        print("Loading data on patch...")
-        load_data(PATCH_CONN)
-    patch_version = get_pg_version(PATCH_CONN)
-    stop_server(PATCH_BIN, PATCH_DATA_DIR)
-    time.sleep(2)
+        print("\n--- Verifying data on patch ---")
+        start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+        if not verify_data(PATCH_CONN, args.skip_load):
+            print("Loading data on patch...")
+            load_data(PATCH_CONN)
+        patch_version = get_pg_version(PATCH_CONN)
+        stop_server(PATCH_BIN, PATCH_DATA_DIR)
+        time.sleep(2)
 
     # Results storage
     results = {
@@ -896,6 +925,8 @@ def run_benchmark(args):
     try:
         master_conn = psycopg.connect(**MASTER_CONN)
         pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
+        if master_version is None:
+            master_version = get_pg_version(MASTER_CONN)
         with master_conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
             cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
@@ -930,6 +961,8 @@ def run_benchmark(args):
     try:
         patch_conn = psycopg.connect(**PATCH_CONN)
         pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
+        if patch_version is None:
+            patch_version = get_pg_version(PATCH_CONN)
         with patch_conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
             cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
@@ -937,33 +970,35 @@ def run_benchmark(args):
         for query_id in selected_queries:
             query_def = QUERIES[query_id]
 
-            # Run with prefetch OFF
-            print(f"\n{query_id}: {query_def['name']} (prefetch=off, {args.runs} runs)...")
-            for run in range(args.runs):
-                exec_time, explain_output = run_query(
-                    patch_conn, query_def, args.cached,
-                    is_master=False, prefetch_setting="off",
-                    benchmark_cpu=args.benchmark_cpu
-                )
-                if exec_time is not None:
-                    results["queries"][query_id]["patch_off"]["times"].append(exec_time)
-                    # Save the last run's explain output
-                    results["queries"][query_id]["patch_off"]["explain"] = explain_output
-                    print(f"  Run {run + 1}: {exec_time:.3f} ms")
+            # Run with prefetch OFF (skip if --prefetch-only)
+            if not args.prefetch_only:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=off, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="off",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_off"]["times"].append(exec_time)
+                        # Save the last run's explain output
+                        results["queries"][query_id]["patch_off"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
 
-            # Run with prefetch ON
-            print(f"\n{query_id}: {query_def['name']} (prefetch=on, {args.runs} runs)...")
-            for run in range(args.runs):
-                exec_time, explain_output = run_query(
-                    patch_conn, query_def, args.cached,
-                    is_master=False, prefetch_setting="on",
-                    benchmark_cpu=args.benchmark_cpu
-                )
-                if exec_time is not None:
-                    results["queries"][query_id]["patch_on"]["times"].append(exec_time)
-                    # Save the last run's explain output
-                    results["queries"][query_id]["patch_on"]["explain"] = explain_output
-                    print(f"  Run {run + 1}: {exec_time:.3f} ms")
+            # Run with prefetch ON (skip if --prefetch-disabled)
+            if not args.prefetch_disabled:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=on, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="on",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_on"]["times"].append(exec_time)
+                        # Save the last run's explain output
+                        results["queries"][query_id]["patch_on"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
 
         patch_conn.close()
     finally:
@@ -1011,22 +1046,36 @@ def run_benchmark(args):
                   f"(min={query_results['patch_on']['min']:.3f}, max={query_results['patch_on']['max']:.3f}) "
                   f"[{BOLD}{ratio_on:.3f}x{RESET} vs master]")
 
-        # Print EXPLAIN ANALYZE outputs
+        # Print query text and EXPLAIN ANALYZE outputs
+        # Show prefetch=off only if --prefetch-disabled, otherwise show prefetch=on
+        print()
+        query_sql = QUERIES[query_id]["sql"].strip()
+        print("  Query:")
+        for line in query_sql.split('\n'):
+            print(f"    {line.strip()}")
         print()
         if query_results["master"]["explain"]:
             print("  master EXPLAIN ANALYZE:")
             for line in query_results["master"]["explain"].split('\n'):
                 print(f"    {line}")
-        if query_results["patch_off"]["explain"]:
-            print("  patch (prefetch=off) EXPLAIN ANALYZE:")
-            for line in query_results["patch_off"]["explain"].split('\n'):
-                print(f"    {line}")
-        if query_results["patch_on"]["explain"]:
-            print("  patch (prefetch=on) EXPLAIN ANALYZE:")
-            for line in query_results["patch_on"]["explain"].split('\n'):
-                print(f"    {line}")
+        if args.prefetch_disabled:
+            if query_results["patch_off"]["explain"]:
+                print()
+                print("  patch (prefetch=off) EXPLAIN ANALYZE:")
+                for line in query_results["patch_off"]["explain"].split('\n'):
+                    print(f"    {line}")
+        else:
+            if query_results["patch_on"]["explain"]:
+                print()
+                print("  patch (prefetch=on) EXPLAIN ANALYZE:")
+                for line in query_results["patch_on"]["explain"].split('\n'):
+                    print(f"    {line}")
 
     # Save results
+    # Update versions in case they were fetched during benchmark run (--skip-load)
+    results["master_version"] = master_version
+    results["patch_version"] = patch_version
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_file = os.path.join(OUTPUT_DIR, f"benchmark_{timestamp}.json")
     txt_file = os.path.join(OUTPUT_DIR, f"benchmark_{timestamp}.txt")
@@ -1069,20 +1118,30 @@ def run_benchmark(args):
                         f"(min={qr['patch_on']['min']:.3f}, max={qr['patch_on']['max']:.3f}) "
                         f"[{ratio_on:.3f}x vs master]\n")
 
-            # Write EXPLAIN ANALYZE outputs
+            # Write query text and EXPLAIN ANALYZE outputs
+            # Show prefetch=off only if --prefetch-disabled, otherwise show prefetch=on
+            f.write("\n")
+            query_sql = QUERIES[query_id]["sql"].strip()
+            f.write("  Query:\n")
+            for line in query_sql.split('\n'):
+                f.write(f"    {line.strip()}\n")
             f.write("\n")
             if qr["master"]["explain"]:
                 f.write("  master EXPLAIN ANALYZE:\n")
                 for line in qr["master"]["explain"].split('\n'):
                     f.write(f"    {line}\n")
-            if qr["patch_off"]["explain"]:
-                f.write("  patch (prefetch=off) EXPLAIN ANALYZE:\n")
-                for line in qr["patch_off"]["explain"].split('\n'):
-                    f.write(f"    {line}\n")
-            if qr["patch_on"]["explain"]:
-                f.write("  patch (prefetch=on) EXPLAIN ANALYZE:\n")
-                for line in qr["patch_on"]["explain"].split('\n'):
-                    f.write(f"    {line}\n")
+            if args.prefetch_disabled:
+                if qr["patch_off"]["explain"]:
+                    f.write("\n")
+                    f.write("  patch (prefetch=off) EXPLAIN ANALYZE:\n")
+                    for line in qr["patch_off"]["explain"].split('\n'):
+                        f.write(f"    {line}\n")
+            else:
+                if qr["patch_on"]["explain"]:
+                    f.write("\n")
+                    f.write("  patch (prefetch=on) EXPLAIN ANALYZE:\n")
+                    for line in qr["patch_on"]["explain"].split('\n'):
+                        f.write(f"    {line}\n")
 
     print(f"Results saved to: {txt_file}")
 
@@ -1097,12 +1156,22 @@ def run_benchmark(args):
     patch_duration = patch_end_time - patch_start_time
     total_duration = master_duration + patch_duration
 
+    def format_duration(seconds):
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        if mins == 0:
+            return f"{secs} seconds"
+        elif mins == 1:
+            return f"1 minute {secs} seconds"
+        else:
+            return f"{mins} minutes {secs} seconds"
+
     print(f"\n{'=' * 60}")
     print("BENCHMARK RUN TIMES (excluding data loading)")
     print(f"{'=' * 60}")
-    print(f"  Master:  {master_duration:10.1f} seconds ({master_duration / 60:.1f} minutes)")
-    print(f"  Patch:   {patch_duration:10.1f} seconds ({patch_duration / 60:.1f} minutes)")
-    print(f"  Total:   {total_duration:10.1f} seconds ({total_duration / 60:.1f} minutes)")
+    print(f"  Master:  {master_duration:10.1f} seconds ({format_duration(master_duration)})")
+    print(f"  Patch:   {patch_duration:10.1f} seconds ({format_duration(patch_duration)})")
+    print(f"  Total:   {total_duration:10.1f} seconds ({format_duration(total_duration)})")
 
     # Collect all patch runs with their ratios vs master
     # Each patch configuration (prefetch=off, prefetch=on) is treated independently
@@ -1147,18 +1216,19 @@ def run_benchmark(args):
     BOLD = "\033[1m"
     RESET = "\033[0m"
 
+    topn = args.topn
     print(f"\n{'=' * 60}")
-    print("TOP 5 IMPROVEMENTS vs MASTER")
+    print(f"TOP {topn} IMPROVEMENTS vs MASTER")
     print(f"{'=' * 60}")
-    for entry in sorted_by_ratio[:5]:
+    for entry in sorted_by_ratio[:topn]:
         print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
         print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
 
     print(f"\n{'=' * 60}")
-    print("TOP 5 REGRESSIONS vs MASTER")
+    print(f"TOP {topn} REGRESSIONS vs MASTER")
     print(f"{'=' * 60}")
-    # Take top 5 from the end (highest ratios)
-    regressions = sorted_by_ratio[-5:][::-1]  # Reverse to show worst first
+    # Take top N from the end (highest ratios)
+    regressions = sorted_by_ratio[-topn:][::-1]  # Reverse to show worst first
     for entry in regressions:
         print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
         print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")

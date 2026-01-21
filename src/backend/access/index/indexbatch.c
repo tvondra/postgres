@@ -66,6 +66,12 @@ index_batchscan_init(IndexScanDesc scan)
 	scan->batchringbuf.currentPrefetchBlock = InvalidBlockNumber;
 	scan->batchringbuf.paused = false;
 
+	/*
+	 * Start by resolving visibility for just one item, then gradually
+	 * ramp up the number of items processed.
+	 */
+	scan->batchringbuf.vmItems = 1;
+
 	scan->usebatchring = true;
 }
 
@@ -135,6 +141,9 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	scan->finished = false;
 	batchringbuf->currentPrefetchBlock = InvalidBlockNumber;
 	batchringbuf->paused = false;
+
+	/* reset the visibility check batch size */
+	batchringbuf->vmItems = 1;
 
 	batch_assert_batches_valid(scan);
 }
@@ -327,6 +336,16 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 			  batch_compare_int);
 		batch->numKilled = qunique(batch->killedItems, batch->numKilled,
 								   sizeof(int), batch_compare_int);
+	}
+
+	/*
+	 * In case this is an IOS and we stopped before checking visibility of
+	 * the whole batch.
+	 */
+	if (scan->MVCCScan && BufferIsValid(batch->buf))
+	{
+		ReleaseBuffer(batch->buf);
+		batch->buf = InvalidBuffer;
 	}
 
 	scan->indexRelation->rd_indam->amfreebatch(scan, batch);

@@ -386,6 +386,25 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
         "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
     }),
+    ("A11", {
+        "name": "Merge Anti Join regression",
+        "sql": """
+            SELECT o.customer_id, o.order_date
+            FROM prefetch_orders o
+            WHERE o.order_date BETWEEN '2023-04-16' AND '2023-05-01'
+            AND o.customer_id BETWEEN 46586 AND 47418
+            AND NOT EXISTS (
+            SELECT 1 FROM prefetch_customers c
+            WHERE c.customer_id = o.customer_id
+            AND c.region_id = 14
+            )
+            ORDER BY o.order_date
+            LIMIT 37895
+        """,
+        "evict": ["prefetch_customers", "prefetch_orders"],
+        "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
+        "prewarm_tables": ["prefetch_customers", "prefetch_orders"],
+    }),
 ])
 
 

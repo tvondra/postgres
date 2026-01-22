@@ -331,6 +331,26 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
         "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
     }),
+    ("A8", {
+        "name": "LATERAL regression",
+        "sql": """
+            SELECT c.customer_id, o.order_id, o.order_date, o.amount
+            FROM prefetch_customers c,
+            LATERAL (
+            SELECT order_id, order_date, amount
+            FROM prefetch_orders
+            WHERE customer_id = c.customer_id
+            AND order_date BETWEEN '2023-05-01' AND '2023-05-20'
+
+            ORDER BY order_date
+            LIMIT 3
+            ) o
+            WHERE c.customer_id BETWEEN 42976 AND 43285
+        """,
+        "evict": ["prefetch_orders", "prefetch_customers"],
+        "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
+        "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
+    }),
 ])
 
 

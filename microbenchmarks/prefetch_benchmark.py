@@ -85,8 +85,8 @@ STRESS_PROB_LOW_SELECTIVITY = 0.20     # Low selectivity (many rows)
 
 # Stress-test configuration
 STRESS_QUERIES_PER_BATCH = 10          # Number of queries to generate per iteration
-STRESS_REGRESSION_THRESHOLD = 1.15     # 15% slower = regression
-STRESS_MIN_QUERY_MS = 10.0             # Discard queries slower than this (too noisy)
+STRESS_REGRESSION_THRESHOLD = 1.06     # 6% slower = regression
+STRESS_MIN_QUERY_MS = 4.0             # Discard queries slower than this (too noisy)
 
 # --- Query Definitions ---
 
@@ -1274,12 +1274,26 @@ def clear_os_cache():
 
 def evict_relations(conn, relations):
     """Evict relations from PostgreSQL buffer cache."""
+    max_retries = 3
     with conn.cursor() as cur:
         for rel in relations:
-            try:
-                cur.execute(f"SELECT pg_buffercache_evict_relation('{rel}')")
-            except Exception as e:
-                print(f"Warning: Failed to evict {rel}: {e}")
+            for attempt in range(max_retries):
+                try:
+                    cur.execute(f"SELECT * FROM pg_buffercache_evict_relation('{rel}')")
+                    row = cur.fetchone()
+                    if row:
+                        buffers_evicted, buffers_flushed, buffers_skipped = row
+                        if buffers_skipped > 0:
+                            if attempt < max_retries - 1:
+                                time.sleep(0.1)
+                                continue  # Retry
+                            print(f"Warning: Failed to evict {buffers_skipped} buffers from {rel} "
+                                  f"after {max_retries} attempts "
+                                  f"(evicted={buffers_evicted}, flushed={buffers_flushed})")
+                    break  # Success or no row returned
+                except Exception as e:
+                    print(f"Warning: Failed to evict {rel}: {e}")
+                    break
 
 
 def prewarm_relations(conn, relations):
@@ -2041,14 +2055,72 @@ def run_stress_test(args):
 
             total_queries_tested += len(queries)
 
+            # Verify apparent regressions with retries to filter out spurious failures
+            if regressions_found:
+                print(f"\n--- Verifying {len(regressions_found)} apparent regression(s) with retries ---")
+                confirmed_regressions = []
+
+                start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+                try:
+                    patch_conn = psycopg.connect(**PATCH_CONN)
+                    pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
+                    with patch_conn.cursor() as cur:
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+                        cur.execute("SET enable_bitmapscan = off")
+                        cur.execute("SET random_page_cost = 1.1")
+                        cur.execute("SET max_parallel_workers_per_gather = 0")
+
+                    for reg in regressions_found:
+                        query_def = reg["query_def"]
+                        master_avg = reg["master_ms"]
+                        prefetch_setting = "off" if reg["config"] == "prefetch=off" else "on"
+
+                        print(f"\n  Verifying {reg['query_id']} ({reg['config']}, initial {reg['ratio']:.3f}x)...")
+
+                        regression_confirmed = True
+                        for retry in range(3):
+                            print(f"    Retry {retry + 1}/3: waiting 5 seconds...", end=" ", flush=True)
+                            time.sleep(5)
+
+                            exec_time, _ = run_query(
+                                patch_conn, query_def, args.cached,
+                                is_master=False, prefetch_setting=prefetch_setting,
+                                benchmark_cpu=args.benchmark_cpu
+                            )
+
+                            if exec_time is not None:
+                                ratio = exec_time / master_avg
+                                print(f"{exec_time:.3f} ms ({ratio:.3f}x)")
+
+                                if ratio < STRESS_REGRESSION_THRESHOLD:
+                                    print(f"    Under threshold - spurious failure, discarding")
+                                    regression_confirmed = False
+                                    break
+                            else:
+                                print("FAILED")
+
+                        if regression_confirmed:
+                            print(f"    All retries confirm regression")
+                            confirmed_regressions.append(reg)
+
+                    patch_conn.close()
+                finally:
+                    stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                    time.sleep(2)
+
+                regressions_found = confirmed_regressions
+
             if regressions_found:
                 # Sort by ratio (worst first)
                 regressions_found.sort(key=lambda x: x["ratio"], reverse=True)
                 worst = regressions_found[0]
 
+                failure_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print()
                 print("=" * 60)
                 print("REGRESSION FOUND!")
+                print(f"Time: {failure_time}")
                 print("=" * 60)
                 pct = (worst["ratio"] - 1) * 100
                 print(f"Patch ({worst['config']}) is {worst['ratio']:.3f}x slower than master ({pct:.1f}% regression)")
@@ -2113,7 +2185,7 @@ def run_stress_test(args):
                 print()
                 print(f"Total queries tested: {total_queries_tested}")
                 print(f"Iterations: {iteration}")
-                return  # Exit on first regression found
+                return  # Stop on confirmed regression
 
             else:
                 print(f"No regressions found in this batch.")

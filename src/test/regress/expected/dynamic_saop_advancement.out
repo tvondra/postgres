@@ -12643,7 +12643,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 -- Move back to the start of the key space:
@@ -12682,7 +12682,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 /* default_scroll_cursor */ commit;
@@ -13005,7 +13005,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 -- Move back to the start of the key space:
@@ -13044,7 +13044,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 /* full_scroll_cursor */ commit;
@@ -13585,7 +13585,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 -- Move back to the start of the key space:
@@ -13624,7 +13624,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 /* default_scroll_cursor */ commit;
@@ -13730,7 +13730,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  1
+  3
 (1 row)
 
 fetch backward 5 from default_scroll_cursor;
@@ -13775,7 +13775,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  1
+  3
 (1 row)
 
 -- Move to the end of the key space:
@@ -13814,7 +13814,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  8
 (1 row)
 
 -- Move back to the start of the key space:
@@ -13824,7 +13824,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 25
+ 21
 (1 row)
 
 -- See the first few rows there:
@@ -13853,7 +13853,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  1
+  3
 (1 row)
 
 /* default_scroll_cursor */ commit;
@@ -14880,7 +14880,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 fetch backward 5 from inequalities_orderid;
@@ -14925,7 +14925,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 move forward 10000 in inequalities_orderid;
@@ -14964,7 +14964,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 move backward 10000 in inequalities_orderid;
@@ -15001,7 +15001,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  2
 (1 row)
 
 /* inequalities_orderid */ commit;
@@ -16389,7 +16389,7 @@ select pg_stat_get_xact_blocks_hit('plain_equal_inequal_nonrequired'::regclass) 
 select :cur_blocks_hit - :old_blocks_hit bh; -- 2 index hits
  bh 
 ----
-  0
+  2
 (1 row)
 
 fetch backward 270 from korotkov_scroll_cursor;
@@ -16416,7 +16416,7 @@ select pg_stat_get_xact_blocks_hit('plain_equal_inequal_nonrequired'::regclass) 
 select :cur_blocks_hit - :old_blocks_hit bh; -- 5 index hits (back to where we started)
  bh 
 ----
-  0
+  5
 (1 row)
 
 /* korotkov_scroll_cursor */ commit;
@@ -16535,7 +16535,7 @@ select pg_stat_get_xact_blocks_hit('plain_equal_inequal_nonrequired'::regclass) 
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  0
+  3
 (1 row)
 
 /* korotkov_scroll_cursor */ commit;

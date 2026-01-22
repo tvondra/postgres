@@ -543,6 +543,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * any batches that are loaded after this one.
 		 */
 		heapam_batch_rewind(scan, batchringbuf, direction);
+		scanPos->batch = batchringbuf->nextBatch - 1;
 	}
 
 	/*
@@ -563,6 +564,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * There are no more batches to be loaded in the current scan
 		 * direction
 		 */
+		batch_reset_pos(scanPos);
 		scan->finished = true;
 
 		return NULL;

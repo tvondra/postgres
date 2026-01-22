@@ -351,6 +351,20 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
         "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
     }),
+    ("A9", {
+        "name": "Found a bug in hold-onto-pin-after-all IoS fix",
+        "sql": """
+            SELECT order_date, count(*) as cnt
+            FROM prefetch_orders
+            WHERE order_date BETWEEN '2023-11-21' AND '2023-12-01'
+
+            GROUP BY order_date
+            ORDER BY order_date
+        """,
+        "evict": ["prefetch_orders"],
+        "prewarm_indexes": ["prefetch_orders_date_idx"],
+        "prewarm_tables": ["prefetch_orders"],
+    }),
 ])
 
 

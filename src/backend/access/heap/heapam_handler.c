@@ -446,6 +446,22 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		INDEX_SCAN_BATCH_APPEND(scan, batch);
 
 		/*
+		 * It's now safe to drop the batch's buffer pin, as we've resolved the
+		 * visibility status of all of its items (during index-only scans).
+		 * See heap_batch_resolve_visibility comments for an explanation.
+		 *
+		 * Note: We can't drop the pin here (we delay it until amfreebatch is
+		 * called for the batch) whenever the scan uses a non-MVCC snapshot.
+		 * This is explained fully in doc/src/sgml/indexam.sgml.
+		 */
+		Assert(scan->MVCCScan == IsMVCCSnapshot(scan->xs_snapshot));
+		if (scan->MVCCScan && !scan->xs_want_itup)
+		{
+			ReleaseBuffer(batch->buf);
+			batch->buf = InvalidBuffer;
+		}
+
+		/*
 		 * Delay initializing stream until reading from scan's second batch.
 		 * This heuristic avoids wasting cycles on starting a read stream for
 		 * very selective index scans.  We can likely improve upon this, but

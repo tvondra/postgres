@@ -392,8 +392,12 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		batch->buf = InvalidBuffer;
 	}
 
-	/* Next time check visibility for twice as many items. */
-	batchringbuf->vmItems *= 2;
+	/*
+	 * Next time check visibility for twice as many items. But don't overflow
+	 * the number of items in this batch (and thus don't overflow INT_MAX).
+	 */
+	if (batchringbuf->vmItems < (batch->lastItem - batch->firstItem))
+		batchringbuf->vmItems *= 2;
 }
 
 /* ----------------

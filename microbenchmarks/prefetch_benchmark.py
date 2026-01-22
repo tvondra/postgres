@@ -1908,6 +1908,9 @@ def run_stress_test(args):
                     cur.execute("SET random_page_cost = 1.1")
                     cur.execute("SET max_parallel_workers_per_gather = 0")
 
+                BOLD = "\033[1m"
+                RESET = "\033[0m"
+
                 for query_id, query_def in queries:
                     master_avg = results[query_id]["master"]["avg"]
 
@@ -1931,7 +1934,7 @@ def run_stress_test(args):
                                 results[query_id]["patch_off"]["explain"] = explain_output
                                 if master_avg:
                                     ratio = exec_time / master_avg
-                                    print(f"{exec_time:.3f} ms ({ratio:.3f}x vs master)")
+                                    print(f"{exec_time:.3f} ms ({BOLD}{ratio:.3f}x{RESET} vs master)")
                                 else:
                                     print(f"{exec_time:.3f} ms")
                             else:
@@ -1958,7 +1961,7 @@ def run_stress_test(args):
                                 results[query_id]["patch_on"]["explain"] = explain_output
                                 if master_avg:
                                     ratio = exec_time / master_avg
-                                    print(f"{exec_time:.3f} ms ({ratio:.3f}x vs master)")
+                                    print(f"{exec_time:.3f} ms ({BOLD}{ratio:.3f}x{RESET} vs master)")
                                 else:
                                     print(f"{exec_time:.3f} ms")
                             else:

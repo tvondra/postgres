@@ -86,6 +86,7 @@ STRESS_PROB_LOW_SELECTIVITY = 0.20     # Low selectivity (many rows)
 # Stress-test configuration
 STRESS_QUERIES_PER_BATCH = 10          # Number of queries to generate per iteration
 STRESS_REGRESSION_THRESHOLD = 1.15     # 15% slower = regression
+STRESS_MIN_QUERY_MS = 10.0             # Discard queries slower than this (too noisy)
 
 # --- Query Definitions ---
 
@@ -555,6 +556,14 @@ Examples:
         action="store_true",
         dest="stress_test",
         help="Run stress test mode: randomly generate queries to find regressions"
+    )
+    parser.add_argument(
+        "--min-query-ms",
+        type=float,
+        default=STRESS_MIN_QUERY_MS,
+        dest="min_query_ms",
+        help=f"Minimum query duration in ms for stress test (default: {STRESS_MIN_QUERY_MS}). "
+             "Queries slower than this on master are discarded as too noisy."
     )
     return parser.parse_args()
 
@@ -1737,10 +1746,10 @@ def run_benchmark(args):
                 "patch_ms": patch_on_avg,
             })
 
-    # Sort by ratio: improvements are < 1.0, regressions are > 1.0
-    # Top improvements: lowest ratios (fastest vs master)
-    # Top regressions: highest ratios (slowest vs master)
-    sorted_by_ratio = sorted(all_ratios, key=lambda x: x["ratio"])
+    # Improvements: ratio <= 1.00 (same speed or faster than master)
+    # Regressions: ratio > 1.00 (slower than master)
+    improvements = sorted([e for e in all_ratios if e["ratio"] <= 1.0], key=lambda x: x["ratio"])
+    regressions = sorted([e for e in all_ratios if e["ratio"] > 1.0], key=lambda x: x["ratio"], reverse=True)
 
     BOLD = "\033[1m"
     RESET = "\033[0m"
@@ -1749,18 +1758,22 @@ def run_benchmark(args):
     print(f"\n{'=' * 60}")
     print(f"TOP {topn} IMPROVEMENTS vs MASTER")
     print(f"{'=' * 60}")
-    for entry in sorted_by_ratio[:topn]:
-        print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
-        print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
+    if improvements:
+        for entry in improvements[:topn]:
+            print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
+            print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
+    else:
+        print("  (none)")
 
     print(f"\n{'=' * 60}")
     print(f"TOP {topn} REGRESSIONS vs MASTER")
     print(f"{'=' * 60}")
-    # Take top N from the end (highest ratios)
-    regressions = sorted_by_ratio[-topn:][::-1]  # Reverse to show worst first
-    for entry in regressions:
-        print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
-        print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
+    if regressions:
+        for entry in regressions[:topn]:
+            print(f"  {entry['query_id']} ({entry['config']}): {entry['name']}")
+            print(f"    {BOLD}{entry['ratio']:.3f}x{RESET} - master: {entry['master_ms']:.3f} ms, patch: {entry['patch_ms']:.3f} ms")
+    else:
+        print("  (none)")
 
 
 def run_stress_test(args):
@@ -1770,6 +1783,7 @@ def run_stress_test(args):
     print("=" * 60)
     print(f"Looking for regressions >= {STRESS_REGRESSION_THRESHOLD:.0%} slower than master")
     print(f"Generating {STRESS_QUERIES_PER_BATCH} queries per batch")
+    print(f"Minimum query duration: {args.min_query_ms:.1f} ms")
     print(f"Mode: {'cached' if args.cached else 'uncached'}")
     print("=" * 60)
 
@@ -1813,7 +1827,7 @@ def run_stress_test(args):
                     "patch_on": {"times": [], "avg": None, "explain": None},
                 }
 
-            # Run all queries on master
+            # Run all queries on master, replacing any that are too fast
             print(f"\n--- Running on MASTER ---")
             start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
             try:
@@ -1827,31 +1841,53 @@ def run_stress_test(args):
                     cur.execute("SET random_page_cost = 1.1")
                     cur.execute("SET max_parallel_workers_per_gather = 0")
 
-                for query_id, query_def in queries:
-                    print(f"\n  {query_id}: {query_def['name']}")
-                    # Print query text
-                    for line in query_def['sql'].strip().split('\n'):
-                        print(f"    {line.strip()}")
-                    print(f"  Running...", end=" ", flush=True)
-                    try:
-                        exec_time, explain_output = run_query(
-                            master_conn, query_def, args.cached,
-                            is_master=True, prefetch_setting=None,
-                            benchmark_cpu=args.benchmark_cpu
-                        )
-                        if exec_time is not None:
-                            results[query_id]["master"]["times"].append(exec_time)
-                            results[query_id]["master"]["avg"] = exec_time
-                            results[query_id]["master"]["explain"] = explain_output
-                            print(f"{exec_time:.3f} ms")
-                        else:
-                            print("FAILED - could not extract execution time")
+                # Process each query slot, replacing too-fast queries
+                for i in range(len(queries)):
+                    query_id, query_def = queries[i]
+                    replacement_count = 0
+
+                    while True:
+                        print(f"\n  {query_id}: {query_def['name']}")
+                        # Print query text
+                        for line in query_def['sql'].strip().split('\n'):
+                            print(f"    {line.strip()}")
+                        print(f"  Running...", end=" ", flush=True)
+                        try:
+                            exec_time, explain_output = run_query(
+                                master_conn, query_def, args.cached,
+                                is_master=True, prefetch_setting=None,
+                                benchmark_cpu=args.benchmark_cpu
+                            )
+                            if exec_time is not None:
+                                if exec_time < args.min_query_ms:
+                                    replacement_count += 1
+                                    print(f"{exec_time:.3f} ms (too fast, regenerating...)")
+                                    # Generate a replacement query with same ID
+                                    query_num = int(query_id[1:])  # Extract number from "S123"
+                                    query_def = generate_random_query(query_num + replacement_count * 1000)
+                                    queries[i] = (query_id, query_def)
+                                    # Update results dict for new query
+                                    results[query_id] = {
+                                        "query_def": query_def,
+                                        "master": {"times": [], "avg": None, "explain": None},
+                                        "patch_off": {"times": [], "avg": None, "explain": None},
+                                        "patch_on": {"times": [], "avg": None, "explain": None},
+                                    }
+                                    continue  # Try again with new query
+                                else:
+                                    results[query_id]["master"]["times"].append(exec_time)
+                                    results[query_id]["master"]["avg"] = exec_time
+                                    results[query_id]["master"]["explain"] = explain_output
+                                    print(f"{exec_time:.3f} ms")
+                                    break  # Query is acceptable, move to next slot
+                            else:
+                                print("FAILED - could not extract execution time")
+                                sys.exit(1)
+                        except Exception as e:
+                            print(f"ERROR: {e}")
+                            print("\nGenerated invalid SQL! This is a bug in the query generator.")
+                            print(f"Query: {query_def['sql']}")
                             sys.exit(1)
-                    except Exception as e:
-                        print(f"ERROR: {e}")
-                        print("\nGenerated invalid SQL! This is a bug in the query generator.")
-                        print(f"Query: {query_def['sql']}")
-                        sys.exit(1)
 
                 master_conn.close()
             finally:

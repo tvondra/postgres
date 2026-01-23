@@ -348,15 +348,15 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 
 	for (int i = firstItem; i <= lastItem; i++)
 	{
-		BatchMatchingItem *item = &batch->items[i];
-		ItemPointer tid = &item->heapTid;
+		BatchMatchingItem *mitem = &batch->items[i];
+		ItemPointer tid = &mitem->heapTid;
 
-		item->setVisible = true;
+		mitem->setVisible = true;
 		if (VM_ALL_VISIBLE(scan->heapRelation,
 						   ItemPointerGetBlockNumber(tid),
 						   &hscan->vmbuf))
 		{
-			item->allVisible = true;
+			mitem->allVisible = true;
 		}
 	}
 

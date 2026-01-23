@@ -385,7 +385,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 				   ScanDirection direction)
 {
 	IndexScanBatch batch = NULL;
-	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+	BatchRingBuffer *batchringbuf PG_USED_FOR_ASSERTS_ONLY = &scan->batchringbuf;
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));

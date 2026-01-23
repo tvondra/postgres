@@ -405,6 +405,20 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
         "prewarm_tables": ["prefetch_customers", "prefetch_orders"],
     }),
+    ("A12", {
+        "name": "New index-only scan aggregate regression",
+        "sql": """
+            SELECT order_date, count(*) as cnt
+            FROM prefetch_orders
+            WHERE order_date BETWEEN '2023-02-18' AND '2023-02-28'
+
+            GROUP BY order_date
+            ORDER BY order_date
+        """,
+        "evict": ["prefetch_orders"],
+        "prewarm_indexes": ["prefetch_orders_date_idx"],
+        "prewarm_tables": ["prefetch_orders"],
+    }),
 ])
 
 

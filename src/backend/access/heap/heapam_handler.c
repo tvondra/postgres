@@ -213,27 +213,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	return got_heap_tuple;
 }
 
-static pg_noinline void
-heapam_batch_rewind(IndexScanDesc scan, BatchRingBuffer *batchringbuf,
-					ScanDirection direction)
-{
-	/*
-	 * Handle a change in the scan's direction.
-	 *
-	 * Release future batches properly, to make it look like the current batch
-	 * is the only one we loaded.
-	 */
-	while (INDEX_SCAN_BATCH_COUNT(scan) > 1)
-	{
-		/* release "later" batches in reverse order */
-		IndexScanBatch fbatch;
-
-		fbatch = INDEX_SCAN_BATCH(scan, batchringbuf->nextBatch - 1);
-		tableam_util_free_batch(scan, fbatch);
-		batchringbuf->nextBatch--;
-	}
-}
-
 static inline ItemPointer
 heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 						BatchRingItemPos *scanPos)
@@ -419,22 +398,31 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 	else if (unlikely(priorbatch->dir != direction))
 	{
 		/*
-		 * We detected a change in scan direction across batches.  Eliminate
-		 * any batches that are loaded after this one.
+		 * We detected a change in scan direction across batches.  Prepare
+		 * scan's batchringbuf state for us to get the next batch for the
+		 * opposite scan direction to the one used when priorbatch was
+		 * returned by amgetbatch.
 		 */
-		heapam_batch_rewind(scan, batchringbuf, direction);
-		if (scan->indexRelation->rd_indam->amposreset)
-		{
-			priorbatch->dir = -priorbatch->dir;
-			scan->indexRelation->rd_indam->amposreset(scan, priorbatch);
-		}
+		tableam_util_batch_dirchange(scan);
 		Assert(priorPos->batch == batchringbuf->headBatch);
 	}
 	else if (INDEX_SCAN_BATCH_LOADED(scan, priorPos->batch + 1))
 	{
+		/*
+		 * Next batch already loaded for us.
+		 *
+		 * This is typically due to heapam_getnext_stream caller loading a
+		 * later batch ahead of heapam_batch_getnext_tid caller.  But there
+		 * are also corner cases where heapam_getnext_stream's prefetchPos is
+		 * behind heapam_getnext_stream's scanPos.
+		 */
 		batch = INDEX_SCAN_BATCH(scan, priorPos->batch + 1);
 
-		/* Next batch already loaded by heapam_getnext_stream */
+		/*
+		 * Both batches must have been loaded when moving in same scan
+		 * direction (otherwise tableam_util_batch_dirchange should have been
+		 * called instead of loading this next batch)
+		 */
 		Assert(priorbatch->dir == direction);
 		Assert(batch->dir == direction);
 		return batch;
@@ -567,6 +555,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		batch_reset_pos(&batchringbuf->prefetchPos);
 		batchringbuf->paused = false;
 
+		/* We can never reach here more than once per loaded batch */
 		batchringbuf->direction = direction;
 	}
 

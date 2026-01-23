@@ -281,6 +281,47 @@ index_batchscan_restore_pos(IndexScanDesc scan)
  */
 
 /*
+ * tableam_util_batch_dirchange - handle a change in scan direction across
+ * batch boundary
+ */
+void
+tableam_util_batch_dirchange(IndexScanDesc scan)
+{
+	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+
+	/*
+	 * Handle a change in the scan's direction.
+	 *
+	 * Release future batches properly, to make it look like the current batch
+	 * is the only one we loaded.
+	 */
+	while (INDEX_SCAN_BATCH_COUNT(scan) > 1)
+	{
+		/* release "later" batches in reverse order */
+		IndexScanBatch fbatch = INDEX_SCAN_BATCH(scan,
+												 batchringbuf->nextBatch - 1);
+		tableam_util_free_batch(scan, fbatch);
+		batchringbuf->nextBatch--;
+	}
+
+	/* Only head position's batch is still loaded */
+	Assert(batchringbuf->headBatch == batchringbuf->nextBatch - 1);
+	Assert(batchringbuf->headBatch == batchringbuf->scanPos.batch);
+
+	/*
+	 * Deal with index AM state that independently tracks the progress of the
+	 * scan.
+	 */
+	if (scan->indexRelation->rd_indam->amposreset)
+	{
+		IndexScanBatch head = INDEX_SCAN_BATCH(scan, batchringbuf->headBatch);
+
+		head->dir = -head->dir;
+		scan->indexRelation->rd_indam->amposreset(scan, head);
+	}
+}
+
+/*
  * tableam_util_kill_scanpositem - record that scanPos item is dead
  *
  * Records an offset to the scanBatch item of the currently-read tuple, saving

@@ -265,6 +265,7 @@ extern void index_batchscan_restore_pos(IndexScanDesc scan);
 /*
  * amgetbatch utilities called by table AMs (in indexbatch.c)
  */
+extern void tableam_util_batch_dirchange(IndexScanDesc scan);
 extern void tableam_util_kill_scanpositem(IndexScanDesc scan);
 extern void tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch);
 

@@ -436,6 +436,19 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_date_idx"],
         "prewarm_tables": ["prefetch_orders"],
     }),
+    ("A14", {
+        "name": "Regressed range-scan, index-only",
+        "sql": """
+            SELECT product_id
+            FROM prefetch_orders
+            WHERE product_id BETWEEN 3787 AND 6238
+            ORDER BY product_id
+            LIMIT 49763
+        """,
+        "evict": ["prefetch_orders"],
+        "prewarm_indexes": ["prefetch_orders_prod_idx"],
+        "prewarm_tables": ["prefetch_orders"],
+    }),
 ])
 
 

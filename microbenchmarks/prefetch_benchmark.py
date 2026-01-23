@@ -86,7 +86,7 @@ STRESS_PROB_LOW_SELECTIVITY = 0.20     # Low selectivity (many rows)
 # Stress-test configuration
 STRESS_QUERIES_PER_BATCH = 10          # Number of queries to generate per iteration
 STRESS_REGRESSION_THRESHOLD = 1.06     # 6% slower = regression
-STRESS_MIN_QUERY_MS = 4.0             # Discard queries slower than this (too noisy)
+STRESS_MIN_QUERY_MS = 2.5             # Discard queries slower than this (too noisy)
 
 # --- Query Definitions ---
 
@@ -2276,10 +2276,16 @@ def run_stress_test(args):
 
                         print(f"\n  Verifying {reg['query_id']} ({reg['config']}, initial {reg['ratio']:.3f}x)...")
 
+                        # Exponential backoff: 2 * 1.4^n seconds, 10 retries, ~140 seconds total
+                        RETRY_COUNT = 10
+                        RETRY_BASE = 2.0
+                        RETRY_MULTIPLIER = 1.4
+
                         regression_confirmed = True
-                        for retry in range(3):
-                            print(f"    Retry {retry + 1}/3: waiting 5 seconds...", end=" ", flush=True)
-                            time.sleep(5)
+                        for retry in range(RETRY_COUNT):
+                            delay = RETRY_BASE * (RETRY_MULTIPLIER ** retry)
+                            print(f"    Retry {retry + 1}/{RETRY_COUNT}: waiting {delay:.1f}s...", end=" ", flush=True)
+                            time.sleep(delay)
 
                             exec_time, _ = run_query(
                                 patch_conn, query_def, args.cached,

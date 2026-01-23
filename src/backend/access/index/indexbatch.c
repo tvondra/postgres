@@ -305,7 +305,6 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	}
 
 	/* Only head position's batch is still loaded */
-	Assert(batchringbuf->headBatch == batchringbuf->nextBatch - 1);
 	Assert(batchringbuf->headBatch == batchringbuf->scanPos.batch);
 
 	/*

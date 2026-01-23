@@ -377,7 +377,7 @@ btfreebatch(IndexScanDesc scan, IndexScanBatch batch)
 	if (BufferIsValid(batch->buf))
 	{
 		/* table AM didn't unpin page earlier -- do it now */
-		Assert(!scan->MVCCScan);
+		Assert(!scan->MVCCScan || scan->xs_want_itup);
 
 		ReleaseBuffer(batch->buf);
 		batch->buf = InvalidBuffer;

@@ -337,16 +337,6 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 								   sizeof(int), batch_compare_int);
 	}
 
-	/*
-	 * In case this is an IOS and we stopped before checking visibility of
-	 * the whole batch.
-	 */
-	if (scan->MVCCScan && BufferIsValid(batch->buf))
-	{
-		ReleaseBuffer(batch->buf);
-		batch->buf = InvalidBuffer;
-	}
-
 	scan->indexRelation->rd_indam->amfreebatch(scan, batch);
 }
 

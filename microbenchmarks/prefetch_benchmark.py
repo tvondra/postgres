@@ -1294,6 +1294,169 @@ def load_data(conn_details):
     print("Data loading complete.")
 
 
+# Relations to sync statistics for
+STATS_RELATIONS = [
+    # Tables
+    'prefetch_orders', 'prefetch_customers', 'prefetch_products',
+    'prefetch_sequential', 'prefetch_sparse',
+    # Indexes
+    'prefetch_orders_cust_date_idx', 'prefetch_orders_date_idx',
+    'prefetch_orders_prod_idx', 'prefetch_orders_id_idx',
+    'prefetch_sequential_idx', 'prefetch_sparse_cat_idx',
+    'prefetch_customers_pkey', 'prefetch_products_pkey',
+]
+
+
+def extract_statistics(conn_details):
+    """
+    Extract optimizer statistics from a PostgreSQL database.
+    Returns a dictionary containing relation and attribute stats.
+    """
+    conn = psycopg.connect(**conn_details)
+    stats = {
+        'relation_stats': [],
+        'attribute_stats': []
+    }
+
+    # Extract relation-level stats from pg_class
+    with conn.cursor() as cur:
+        for relname in STATS_RELATIONS:
+            cur.execute("""
+                SELECT c.relname, n.nspname,
+                       c.relpages, c.reltuples,
+                       c.relallvisible, c.relallfrozen
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = %s AND n.nspname = 'public'
+            """, (relname,))
+            row = cur.fetchone()
+            if row:
+                stats['relation_stats'].append({
+                    'relname': row[0],
+                    'schemaname': row[1],
+                    'relpages': row[2],
+                    'reltuples': row[3],
+                    'relallvisible': row[4],
+                    'relallfrozen': row[5],
+                })
+
+    # Extract attribute-level stats from pg_stats
+    with conn.cursor() as cur:
+        for relname in STATS_RELATIONS:
+            cur.execute("""
+                SELECT schemaname, tablename, attname, inherited,
+                       null_frac, avg_width, n_distinct,
+                       most_common_vals::text, most_common_freqs,
+                       histogram_bounds::text, correlation,
+                       most_common_elems::text, most_common_elem_freqs,
+                       elem_count_histogram
+                FROM pg_stats
+                WHERE tablename = %s AND schemaname = 'public'
+            """, (relname,))
+            for row in cur.fetchall():
+                stats['attribute_stats'].append({
+                    'schemaname': row[0],
+                    'tablename': row[1],
+                    'attname': row[2],
+                    'inherited': row[3],
+                    'null_frac': row[4],
+                    'avg_width': row[5],
+                    'n_distinct': row[6],
+                    'most_common_vals': row[7],
+                    'most_common_freqs': list(row[8]) if row[8] else None,
+                    'histogram_bounds': row[9],
+                    'correlation': row[10],
+                    'most_common_elems': row[11],
+                    'most_common_elem_freqs': list(row[12]) if row[12] else None,
+                    'elem_count_histogram': list(row[13]) if row[13] else None,
+                })
+
+    conn.close()
+    print(f"Extracted stats for {len(stats['relation_stats'])} relations, "
+          f"{len(stats['attribute_stats'])} attributes")
+    return stats
+
+
+def _sql_literal(value, type_cast=None):
+    """Convert a Python value to a SQL literal string."""
+    if value is None:
+        return 'NULL' + (f'::{type_cast}' if type_cast else '')
+    elif isinstance(value, bool):
+        return ('true' if value else 'false') + (f'::{type_cast}' if type_cast else '')
+    elif isinstance(value, (int, float)):
+        return str(value) + (f'::{type_cast}' if type_cast else '')
+    elif isinstance(value, list):
+        # Format as PostgreSQL array literal
+        elements = ', '.join(str(v) for v in value)
+        return f"ARRAY[{elements}]" + (f'::{type_cast}' if type_cast else '')
+    else:
+        # String - escape single quotes
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'" + (f'::{type_cast}' if type_cast else '')
+
+
+def restore_statistics(conn_details, stats):
+    """
+    Restore optimizer statistics to a PostgreSQL database.
+    Uses pg_restore_relation_stats and pg_restore_attribute_stats.
+    """
+    conn = psycopg.connect(**conn_details)
+    conn.autocommit = True
+
+    restored_rels = 0
+    restored_attrs = 0
+
+    # Restore relation-level stats
+    with conn.cursor() as cur:
+        for rs in stats['relation_stats']:
+            try:
+                sql = f"""
+                    SELECT pg_restore_relation_stats(
+                        'schemaname', {_sql_literal(rs['schemaname'])},
+                        'relname', {_sql_literal(rs['relname'])},
+                        'relpages', {_sql_literal(rs['relpages'], 'integer')},
+                        'reltuples', {_sql_literal(rs['reltuples'], 'real')},
+                        'relallvisible', {_sql_literal(rs['relallvisible'], 'integer')},
+                        'relallfrozen', {_sql_literal(rs['relallfrozen'], 'integer')}
+                    )
+                """
+                cur.execute(sql)
+                restored_rels += 1
+            except Exception as e:
+                print(f"Warning: Failed to restore relation stats for {rs['relname']}: {e}")
+
+    # Restore attribute-level stats
+    with conn.cursor() as cur:
+        for ats in stats['attribute_stats']:
+            try:
+                sql = f"""
+                    SELECT pg_restore_attribute_stats(
+                        'schemaname', {_sql_literal(ats['schemaname'])},
+                        'relname', {_sql_literal(ats['tablename'])},
+                        'attname', {_sql_literal(ats['attname'])},
+                        'inherited', {_sql_literal(ats['inherited'], 'boolean')},
+                        'null_frac', {_sql_literal(ats['null_frac'], 'real')},
+                        'avg_width', {_sql_literal(ats['avg_width'], 'integer')},
+                        'n_distinct', {_sql_literal(ats['n_distinct'], 'real')},
+                        'most_common_vals', {_sql_literal(ats['most_common_vals'], 'text')},
+                        'most_common_freqs', {_sql_literal(ats['most_common_freqs'], 'real[]')},
+                        'histogram_bounds', {_sql_literal(ats['histogram_bounds'], 'text')},
+                        'correlation', {_sql_literal(ats['correlation'], 'real')},
+                        'most_common_elems', {_sql_literal(ats['most_common_elems'], 'text')},
+                        'most_common_elem_freqs', {_sql_literal(ats['most_common_elem_freqs'], 'real[]')},
+                        'elem_count_histogram', {_sql_literal(ats['elem_count_histogram'], 'real[]')}
+                    )
+                """
+                cur.execute(sql)
+                restored_attrs += 1
+            except Exception as e:
+                print(f"Warning: Failed to restore attribute stats for "
+                      f"{ats['tablename']}.{ats['attname']}: {e}")
+
+    conn.close()
+    print(f"Restored stats for {restored_rels} relations, {restored_attrs} attributes")
+
+
 def clear_os_cache():
     """Clear the OS page cache."""
     result = subprocess.run(
@@ -1486,6 +1649,7 @@ def run_benchmark(args):
         if not verify_data(MASTER_CONN, args.skip_load):
             print("Loading data on master...")
             load_data(MASTER_CONN)
+        master_stats = extract_statistics(MASTER_CONN)
         master_version = get_pg_version(MASTER_CONN)
         stop_server(MASTER_BIN, MASTER_DATA_DIR)
         time.sleep(2)
@@ -1495,6 +1659,7 @@ def run_benchmark(args):
         if not verify_data(PATCH_CONN, args.skip_load):
             print("Loading data on patch...")
             load_data(PATCH_CONN)
+        restore_statistics(PATCH_CONN, master_stats)
         patch_version = get_pg_version(PATCH_CONN)
         stop_server(PATCH_BIN, PATCH_DATA_DIR)
         time.sleep(2)

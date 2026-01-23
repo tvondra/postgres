@@ -288,6 +288,7 @@ void
 tableam_util_batch_dirchange(IndexScanDesc scan)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+	IndexScanBatch head;
 
 	/*
 	 * Handle a change in the scan's direction.
@@ -311,13 +312,10 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	 * Deal with index AM state that independently tracks the progress of the
 	 * scan.
 	 */
+	head = INDEX_SCAN_BATCH(scan, batchringbuf->headBatch);
+	head->dir = -head->dir;
 	if (scan->indexRelation->rd_indam->amposreset)
-	{
-		IndexScanBatch head = INDEX_SCAN_BATCH(scan, batchringbuf->headBatch);
-
-		head->dir = -head->dir;
 		scan->indexRelation->rd_indam->amposreset(scan, head);
-	}
 }
 
 /*

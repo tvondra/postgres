@@ -436,7 +436,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 	Assert(!batchringbuf->paused);
 	Assert(!INDEX_SCAN_BATCH_FULL(scan));
 	Assert(!priorbatch ||
-		   (INDEX_SCAN_BATCH_COUNT(scan) > 0 &&
+		   (INDEX_SCAN_BATCH_COUNT(scan) > 0 && priorbatch->dir == direction &&
 			INDEX_SCAN_BATCH(scan, batchringbuf->nextBatch - 1) == priorbatch));
 
 	if (priorbatch)

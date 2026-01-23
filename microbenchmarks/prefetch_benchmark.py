@@ -406,6 +406,23 @@ QUERIES = OrderedDict([
         "prewarm_tables": ["prefetch_customers", "prefetch_orders"],
     }),
     ("A12", {
+        "name": "Merge Anti Join regression, index-only",
+        "sql": """
+            SELECT o.customer_id, o.order_date
+            FROM prefetch_orders o
+            WHERE o.order_date BETWEEN '2023-10-21' AND '2023-10-23'
+            AND o.customer_id BETWEEN 15454 AND 23078
+            AND NOT EXISTS (
+            SELECT 1 FROM prefetch_customers c
+            WHERE c.customer_id = o.customer_id
+            AND c.region_id = 18
+            )
+        """,
+        "evict": ["prefetch_orders", "prefetch_customers"],
+        "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
+        "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
+    }),
+    ("A13", {
         "name": "New index-only scan aggregate regression",
         "sql": """
             SELECT order_date, count(*) as cnt

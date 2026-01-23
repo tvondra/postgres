@@ -193,6 +193,14 @@ typedef struct IndexScanBatchData
 	ScanDirection dir;
 
 	/*
+	 * knownEndLeft and knownEndRight are used by table AMs to track whether
+	 * there may be matching index entries to the left and right currPage,
+	 * respectively.  This helps them to avoid repeatedly calling amgetbatch.
+	 */
+	bool		knownEndLeft;
+	bool		knownEndRight;
+
+	/*
 	 * moreLeft and moreRight are used by index AMs to track whether there may
 	 * be matching index entries to the left and right currPage, respectively.
 	 *
@@ -203,9 +211,6 @@ typedef struct IndexScanBatchData
 	 */
 	bool		moreLeft;
 	bool		moreRight;
-
-	bool		knownEndLeft;
-	bool		knownEndRight;
 
 	/*
 	 * Matching items state for this batch.  Output by index AM for table AM.

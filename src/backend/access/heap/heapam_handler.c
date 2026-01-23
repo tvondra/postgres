@@ -439,17 +439,18 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		   (INDEX_SCAN_BATCH_COUNT(scan) > 0 && priorbatch->dir == direction &&
 			INDEX_SCAN_BATCH(scan, batchringbuf->nextBatch - 1) == priorbatch));
 
-	if (priorbatch)
-	{
-		if (ScanDirectionIsForward(direction) && priorbatch->knownEndRight)
-			return NULL;
-		if (ScanDirectionIsBackward(direction) && priorbatch->knownEndLeft)
-			return NULL;
-	}
+	/*
+	 * Before we call amgetbatch again, check if priorbatch is already known
+	 * to be the last batch with matching items in this scan direction
+	 */
+	if (priorbatch &&
+		((ScanDirectionIsForward(direction) && priorbatch->knownEndRight) ||
+		 (ScanDirectionIsBackward(direction) && priorbatch->knownEndLeft)))
+		return NULL;
 
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorbatch,
 													  direction);
-	if (batch != NULL)
+	if (batch)
 	{
 		/* We got the batch from the AM */
 		Assert(batch->dir == direction);
@@ -497,13 +498,21 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 										   heapam_getnext_stream, scan, 0);
 		}
 	}
-
-	if (priorbatch && !batch)
+	else
 	{
-		if (ScanDirectionIsForward(direction))
-			priorbatch->knownEndRight = true;
-		else
-			priorbatch->knownEndLeft = true;
+		/* amgetbatch returned NULL */
+		if (priorbatch)
+		{
+			/*
+			 * There are no further matches to be found in the current scan
+			 * direction, following priorbatch.  Remember that priorbatch is
+			 * the last batch with matching items.
+			 */
+			if (ScanDirectionIsForward(direction))
+				priorbatch->knownEndRight = true;
+			else
+				priorbatch->knownEndLeft = true;
+		}
 	}
 
 	/* xs_hitup is not supported by amgetbatch scans */

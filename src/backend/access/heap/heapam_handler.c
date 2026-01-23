@@ -413,8 +413,13 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
+	Assert(batchringbuf->direction == direction);
 
-	if (priorbatch && unlikely(priorbatch->dir != direction))
+	if (!priorbatch)
+	{
+		/* First call for the scan */
+	}
+	else if (unlikely(priorbatch->dir != direction))
 	{
 		/*
 		 * We detected a change in scan direction across batches.  Eliminate

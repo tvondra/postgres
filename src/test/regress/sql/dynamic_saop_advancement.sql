@@ -8706,3 +8706,47 @@ fetch backward 76 from c_23;
 fetch forward 50 from c_23;
 fetch forward 26 from c_23;
 commit;
+
+set client_min_messages=error;
+drop table if exists t_14;
+reset client_min_messages;
+
+create table t_14 (a bigint) with (fillfactor = 10);
+create index on t_14 (a) with (fillfactor = 83, deduplicate_items = off);
+
+insert into t_14
+select (i / 181)
+from generate_series(1, 100000) s(i)
+order by i + mod(i::bigint * 884007, 485), md5(i::text);
+
+vacuum freeze t_14;
+analyze t_14;
+
+begin;
+set enable_seqscan = off;
+set enable_bitmapscan = off;
+set enable_indexonlyscan = on;
+set cursor_tuple_fraction = 1.0;
+declare c_14 scroll cursor for
+  select
+    *
+  from
+    t_14
+  where
+    a in (0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180, 186, 192, 198, 204, 210, 216, 222, 228, 234, 240, 246, 252, 258, 264, 270, 276, 282, 288, 294, 300, 306, 312, 318, 324, 330, 336, 342, 348, 354, 360, 366, 372, 378, 384, 390, 396, 402, 408, 414, 420, 426, 432, 438, 444, 450, 456, 462, 468, 474, 480, 486, 492, 498, 504, 510, 516, 522, 528, 534, 540, 546, 552)
+  order by a asc;
+select 1 from pg_buffercache_evict_all();
+fetch forward 73 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch forward 56 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch forward 43 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch forward 98 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch forward 25 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch forward 83 from c_14;
+select 1 from pg_buffercache_evict_all();
+fetch backward 27 from c_14;
+commit;

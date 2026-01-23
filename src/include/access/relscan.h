@@ -204,6 +204,9 @@ typedef struct IndexScanBatchData
 	bool		moreLeft;
 	bool		moreRight;
 
+	bool		knownEndLeft;
+	bool		knownEndRight;
+
 	/*
 	 * Matching items state for this batch.  Output by index AM for table AM.
 	 *
@@ -382,11 +385,6 @@ typedef struct IndexScanDescData
 										 * tuples */
 	/* Safe to drop index page pins eagerly? */
 	bool		MVCCScan;
-
-	/*
-	 * Did we read the final batch in this scan direction?
-	 */
-	bool		finished;
 
 	/*
 	 * Instrumentation counters maintained by all index AMs during both

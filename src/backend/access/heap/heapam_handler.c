@@ -233,13 +233,7 @@ heapam_batch_rewind(IndexScanDesc scan, BatchRingBuffer *batchringbuf,
 		batchringbuf->nextBatch--;
 	}
 
-	/*
-	 * Remember the new direction, and make sure the scan is not marked as
-	 * "finished" (we might have already read the last batch, but now we need
-	 * to start over).
-	 */
 	batchringbuf->direction = direction;
-	scan->finished = false;
 
 	/* Reset the batch size for visibility checks. */
 	batchringbuf->vmItems = 1;
@@ -432,8 +426,13 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		   (INDEX_SCAN_BATCH_COUNT(scan) > 0 &&
 			INDEX_SCAN_BATCH(scan, batchringbuf->nextBatch - 1) == priorbatch));
 
-	if (scan->finished)
-		return NULL;
+	if (priorbatch)
+	{
+		if (ScanDirectionIsForward(direction) && priorbatch->knownEndRight)
+			return NULL;
+		if (ScanDirectionIsBackward(direction) && priorbatch->knownEndLeft)
+			return NULL;
+	}
 
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorbatch,
 													  direction);
@@ -486,6 +485,14 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		}
 	}
 
+	if (priorbatch && !batch)
+	{
+		if (ScanDirectionIsForward(direction))
+			priorbatch->knownEndRight = true;
+		else
+			priorbatch->knownEndLeft = true;
+	}
+
 	/* xs_hitup is not supported by amgetbatch scans */
 	Assert(!scan->xs_hitup);
 
@@ -536,7 +543,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		batch_reset_pos(&batchringbuf->prefetchPos);
 
 		/* We may change direction after reading the last batch. */
-		scan->finished = false;
 		batchringbuf->paused = false;
 
 		/* Reset the batch size for visibility checks. */
@@ -586,7 +592,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * direction
 		 */
 		batch_reset_pos(scanPos);
-		scan->finished = true;
 
 		return NULL;
 	}
@@ -665,9 +670,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	 */
 	Assert(direction != NoMovementScanDirection);
 	Assert(!batchringbuf->paused);
-
-	if (scan->finished)
-		return InvalidBlockNumber;
 
 	/*
 	 * scanPos must always be valid when we're called -- there has to be at
@@ -773,7 +775,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 					 * scan will ever require (barring a change in scan
 					 * direction) are now loaded
 					 */
-					scan->finished = true;
 					return InvalidBlockNumber;
 				}
 			}

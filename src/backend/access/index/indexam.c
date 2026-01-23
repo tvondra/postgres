@@ -281,7 +281,6 @@ index_beginscan(Relation heapRelation,
 	scan->heapRelation = heapRelation;
 	scan->xs_snapshot = snapshot;
 	scan->MVCCScan = IsMVCCSnapshot(snapshot);
-	scan->finished = false;
 	scan->instrument = instrument;
 	scan->xs_want_itup = xs_want_itup;
 	scan->usebatchring = false;
@@ -319,7 +318,6 @@ index_beginscan_bitmap(Relation indexRelation,
 	 */
 	scan->xs_snapshot = snapshot;
 	scan->MVCCScan = IsMVCCSnapshot(snapshot);
-	scan->finished = false;
 	scan->instrument = instrument;
 
 	return scan;
@@ -387,13 +385,6 @@ index_rescan(IndexScanDesc scan,
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
-
-	/*
-	 * batchringbuf shouldn't be marked finished (must make sure that
-	 * index_batchscan_reset doesn't see this, since if it is then
-	 * indexam_util_batch_release will be affected)
-	 */
-	scan->finished = false;
 
 	if (scan->usebatchring)
 		index_batchscan_reset(scan, true);
@@ -641,7 +632,6 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	scan->heapRelation = heaprel;
 	scan->xs_snapshot = snapshot;
 	scan->MVCCScan = IsMVCCSnapshot(snapshot);
-	scan->finished = false;
 	scan->instrument = instrument;
 	scan->xs_want_itup = xs_want_itup;
 

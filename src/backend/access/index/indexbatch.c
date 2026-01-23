@@ -138,7 +138,6 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	batchringbuf->headBatch = 0;	/* initial batch */
 	batchringbuf->nextBatch = 0;	/* initial batch is empty */
 
-	scan->finished = false;
 	batchringbuf->currentPrefetchBlock = InvalidBlockNumber;
 	batchringbuf->paused = false;
 
@@ -492,6 +491,8 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 	batch->firstItem = -1;
 	batch->lastItem = -1;
 	batch->numKilled = 0;
+	batch->knownEndLeft = false;
+	batch->knownEndRight = false;
 
 	return batch;
 }
@@ -520,7 +521,8 @@ indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)
 		/* amgetbatch scan caller */
 		Assert(scan->heapRelation != NULL);
 
-		if (scan->finished)
+		if (batch->dir == ForwardScanDirection ?
+			batch->knownEndRight : batch->knownEndLeft)
 		{
 			/* Don't bother using cache when scan is ending */
 		}

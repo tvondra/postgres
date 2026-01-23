@@ -232,9 +232,6 @@ heapam_batch_rewind(IndexScanDesc scan, BatchRingBuffer *batchringbuf,
 		tableam_util_free_batch(scan, fbatch);
 		batchringbuf->nextBatch--;
 	}
-
-	/* Reset the batch size for visibility checks. */
-	batchringbuf->vmItems = 1;
 }
 
 static inline ItemPointer
@@ -570,8 +567,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		batch_reset_pos(&batchringbuf->prefetchPos);
 		batchringbuf->paused = false;
 
-		/* Reset the batch size for visibility checks. */
-		batchringbuf->vmItems = 1;
 		batchringbuf->direction = direction;
 	}
 

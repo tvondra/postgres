@@ -233,8 +233,6 @@ heapam_batch_rewind(IndexScanDesc scan, BatchRingBuffer *batchringbuf,
 		batchringbuf->nextBatch--;
 	}
 
-	batchringbuf->direction = direction;
-
 	/* Reset the batch size for visibility checks. */
 	batchringbuf->vmItems = 1;
 }
@@ -407,20 +405,45 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
  */
 static IndexScanBatch
 heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
+				   BatchRingItemPos *priorPos,
 				   ScanDirection direction)
 {
 	IndexScanBatch batch = NULL;
-	BatchRingBuffer *batchringbuf PG_USED_FOR_ASSERTS_ONLY = &scan->batchringbuf;
+	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
-	Assert(!batchringbuf->paused);
+
+	if (priorbatch && unlikely(priorbatch->dir != direction))
+	{
+		/*
+		 * We detected a change in scan direction across batches.  Eliminate
+		 * any batches that are loaded after this one.
+		 */
+		heapam_batch_rewind(scan, batchringbuf, direction);
+		if (scan->indexRelation->rd_indam->amposreset)
+		{
+			priorbatch->dir = -priorbatch->dir;
+			scan->indexRelation->rd_indam->amposreset(scan, priorbatch);
+		}
+		Assert(priorPos->batch == batchringbuf->headBatch);
+	}
+	else if (INDEX_SCAN_BATCH_LOADED(scan, priorPos->batch + 1))
+	{
+		batch = INDEX_SCAN_BATCH(scan, priorPos->batch + 1);
+
+		/* Next batch already loaded by heapam_getnext_stream */
+		Assert(priorbatch->dir == direction);
+		Assert(batch->dir == direction);
+		return batch;
+	}
 
 	/*
 	 * When caller provides a priorbatch it had better be for the last valid
 	 * batch currently in the batch ring buffer (otherwise appending a new
 	 * batch would result batches that aren't in scan order, which is wrong).
 	 */
+	Assert(!batchringbuf->paused);
 	Assert(!INDEX_SCAN_BATCH_FULL(scan));
 	Assert(!priorbatch ||
 		   (INDEX_SCAN_BATCH_COUNT(scan) > 0 &&
@@ -531,22 +554,20 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	else if (unlikely(batchringbuf->direction != direction))
 	{
 		/*
-		 * We detected a change in scan direction.  Reset read stream, since
+		 * We detected a change in scan direction.  Release read stream, since
 		 * we can't rely on scanPos continuing to agree with read stream.
-		 *
-		 * Note: we deliberately delay discarding batches until it's clear
-		 * that this change in direction will continue across batch
-		 * boundaries.
 		 */
 		if (scan->xs_heapfetch->rs)
-			read_stream_reset(scan->xs_heapfetch->rs);
+		{
+			read_stream_end(scan->xs_heapfetch->rs);
+			scan->xs_heapfetch->rs = NULL;
+		}
 		batch_reset_pos(&batchringbuf->prefetchPos);
-
-		/* We may change direction after reading the last batch. */
 		batchringbuf->paused = false;
 
 		/* Reset the batch size for visibility checks. */
 		batchringbuf->vmItems = 1;
+		batchringbuf->direction = direction;
 	}
 
 	/*
@@ -554,8 +575,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * succeed, it means we don't have more items in it, and we need to
 	 * advance to the next one (in the new scan direction).
 	 */
-	if (!INDEX_SCAN_POS_INVALID(scanPos) &&
-		INDEX_SCAN_BATCH_LOADED(scan, scanPos->batch))
+	if (INDEX_SCAN_BATCH_LOADED(scan, scanPos->batch))
 	{
 		scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 
@@ -563,40 +583,25 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			return heapam_batch_return_tid(scan, scanBatch, scanPos);
 	}
 
-	if (unlikely(batchringbuf->direction != direction))
-	{
-		/*
-		 * We detected a change in scan direction across batches.  Eliminate
-		 * any batches that are loaded after this one.
-		 */
-		heapam_batch_rewind(scan, batchringbuf, direction);
-		scanPos->batch = batchringbuf->nextBatch - 1;
-	}
-
 	/*
-	 * Ran out of items from scanBatch.  Try to advance it to next batch.
+	 * Either ran out of items from scanBatch, or the scan is just starting.
+	 * Try to advance scanBatch to the next batch (or get first batch).
 	 */
-	if (INDEX_SCAN_BATCH_LOADED(scan, scanPos->batch + 1))
-	{
-		/* Next batch already loaded by heapam_getnext_stream */
-		scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch + 1);
-	}
-	else if ((scanBatch = heap_batch_getnext(scan, scanBatch, direction)) != NULL)
-	{
-		/* Called amgetbatch again, loading new scanBatch into ring buffer */
-	}
-	else
+	scanBatch = heap_batch_getnext(scan, scanBatch, scanPos, direction);
+
+	if (!scanBatch)
 	{
 		/*
 		 * There are no more batches to be loaded in the current scan
 		 * direction
 		 */
-		batch_reset_pos(scanPos);
-
 		return NULL;
 	}
 
-	/* Position scanPos to the start of new scanBatch */
+	/*
+	 * Advanced scanBatch.  Now position scanPos to the start of new
+	 * scanBatch.
+	 */
 	index_batchpos_newbatch(scanBatch, scanPos, direction);
 	Assert(INDEX_SCAN_BATCH(scan, scanPos->batch) == scanBatch);
 
@@ -734,49 +739,28 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			/*
 			 * Ran out of items from prefetchBatch.  Try to advance it to next
 			 * batch.
+			 *
+			 * If we already used the maximum number of batch slots available,
+			 * it's pointless to try loading another one. This can happen for
+			 * various reasons, e.g. for index-only scans on all-visible
+			 * table, or skipping duplicate blocks on perfectly correlated
+			 * indexes, etc.
 			 */
-			if (INDEX_SCAN_BATCH_LOADED(scan, prefetchPos->batch + 1))
+			if (INDEX_SCAN_BATCH_FULL(scan))
 			{
-				/*
-				 * The next batch was already loaded for us.
-				 *
-				 * Typically, prefetchPos is ahead of scanPos for the entire
-				 * duration of the scan (at least after we're first called).
-				 * However, prefetchPos can sometimes fall behind scanPos.
-				 * That's why we need to handle already-loaded batches here.
-				 *
-				 * This happens when some blocks are skipped and not returned
-				 * to the read_stream.  An example is an index scan on a
-				 * correlated index, with many duplicate blocks are skipped,
-				 * or an IOS where all-visible blocks are skipped.
-				 */
-				prefetchBatch = INDEX_SCAN_BATCH(scan, prefetchPos->batch + 1);
+				batchringbuf->paused = true;
+				return read_stream_pause(stream);
 			}
-			else
+
+			prefetchBatch = heap_batch_getnext(scan, prefetchBatch, prefetchPos, direction);
+			if (!prefetchBatch)
 			{
 				/*
-				 * If we already used the maximum number of batch slots
-				 * available, it's pointless to try loading another one. This
-				 * can happen for various reasons, e.g. for index-only scans
-				 * on all-visible table, or skipping duplicate blocks on
-				 * perfectly correlated indexes, etc.
+				 * Failed to load next batch, so all the batches that the scan
+				 * will ever require (barring a change in scan direction) are
+				 * now loaded
 				 */
-				if (INDEX_SCAN_BATCH_FULL(scan))
-				{
-					batchringbuf->paused = true;
-					return read_stream_pause(stream);
-				}
-
-				prefetchBatch = heap_batch_getnext(scan, prefetchBatch, direction);
-				if (!prefetchBatch)
-				{
-					/*
-					 * Failed to load next batch, so all the batches that the
-					 * scan will ever require (barring a change in scan
-					 * direction) are now loaded
-					 */
-					return InvalidBlockNumber;
-				}
+				return InvalidBlockNumber;
 			}
 
 			/* Position prefetchPos to the start of new prefetchBatch */

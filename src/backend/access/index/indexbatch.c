@@ -192,55 +192,62 @@ void
 index_batchscan_mark_pos(IndexScanDesc scan)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	BatchRingItemPos *markPos = &batchringbuf->markPos;
+	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 	IndexScanBatch markBatch = batchringbuf->markBatch;
+	bool		freeMarkBatch;
 
 	/*
-	 * Free the previous mark batch (if any)
+	 * Free the previous mark batch (if any) -- but only if it isn't our
+	 * scanBatch (defensively make sure that markBatch isn't some later
+	 * still-needed batch, too)
 	 */
 	batchringbuf->markBatch = NULL;
-	if (!markBatch)
+	if (!markBatch || markBatch == scanBatch)
 	{
-		/* Definitely no markBatch to free */
+		/* Definitely no markBatch that we should free now */
+		freeMarkBatch = false;
 	}
-	else if (!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
+	else if (likely(!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch)))
 	{
 		/* Definitely have a no-longer-loaded markBatch to free */
-		tableam_util_free_batch(scan, markBatch);
+		freeMarkBatch = true;
 	}
 	else
 	{
 		/*
-		 * Have a markBatch to free, but we cannot unreservedly trust
-		 * INDEX_SCAN_BATCH_LOADED to indicate that it must be loaded already;
-		 * ring buffer numbers might have wrapped around since markPos.batch
-		 * was initially saved; we don't want to fail to release markBatch due
-		 * to mistaking it for some other loaded batch.
+		 * It looks like markBatch is loaded/still needed within batchringbuf.
 		 *
-		 * Work around this by comparing batch pointers.
+		 * INDEX_SCAN_BATCH_LOADED indicates that markpos->batch is loaded
+		 * already, but we cannot fully trust it here.  It's just about
+		 * possible that markpos->batch falls within a since-recycled range of
+		 * batch offset numbers (following uint8 wraparound).
+		 *
+		 * Make sure that markBatch really is loaded by directly comparing it
+		 * against all loaded batches.  We must not fail to release markBatch
+		 * when we should.  This code path should seldom be reached.
 		 */
-		bool		markBatchLoaded = false;
-
+		freeMarkBatch = false;	/* for now */
 		for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
 		{
 			if (INDEX_SCAN_BATCH(scan, i) == markBatch)
 			{
-				markBatchLoaded = true;
+				freeMarkBatch = true;
 				break;
 			}
 		}
+	}
 
-		if (!markBatchLoaded)
-		{
-			/* Free markBatch, which definitely isn't loaded already */
-			tableam_util_free_batch(scan, markBatch);
-		}
+	if (freeMarkBatch)
+	{
+		/* Free markBatch, since it isn't loaded/needed for batchringbuf */
+		tableam_util_free_batch(scan, markBatch);
 	}
 
 	/* copy the scan's position */
-	batchringbuf->markPos = batchringbuf->scanPos;
-	batchringbuf->markBatch = INDEX_SCAN_BATCH(scan,
-											   batchringbuf->scanPos.batch);
+	batchringbuf->markPos = *scanPos;
+	batchringbuf->markBatch = scanBatch;
 
 	/* scanPos/markPos must be valid */
 	batch_assert_pos_valid(scan, &batchringbuf->markPos);

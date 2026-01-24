@@ -750,3 +750,12 @@ def load_data(conn_details):
 
     conn.close()
     print("Data loading complete.")
+
+
+def extract_execution_time(explain_output):
+    """Extract execution time from EXPLAIN ANALYZE output."""
+    for line in explain_output:
+        match = re.search(r'Execution Time: ([\d.]+) ms', line[0])
+        if match:
+            return float(match.group(1))
+    return None

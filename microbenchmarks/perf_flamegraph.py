@@ -65,6 +65,7 @@ from benchmark_common import (
     clear_os_cache, evict_relations, prewarm_relations,
     set_gucs, reset_gucs,
     setup_tmpfs_hugepages, copy_binaries_to_tmpfs, cleanup_tmpfs,
+    extract_execution_time,
 )
 
 # os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
@@ -1099,20 +1100,28 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         query_repetitions = 5  # Run a few times for flame graph data
         print(f"Executing query {query_repetitions} times for profiling...")
 
-        for i in range(query_repetitions):
-            # Re-prepare cache before each run (except first)
-            if i > 0:
-                prepare_prefetch_cache(conn, query_def, cached_mode)
+        explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) {sql_query}"
+        execution_times = []
 
-            query_start = time.time()
+        for i in range(query_repetitions):
+            # Prepare cache before each run (including first - EXPLAIN ANALYZE above affects cache)
+            prepare_prefetch_cache(conn, query_def, cached_mode)
+
             with conn.cursor() as cursor:
-                cursor.execute(sql_query)
-                # Fetch results to ensure query completes
-                cursor.fetchall()
-            query_time = time.time() - query_start
-            print(f"  Run {i+1}: {query_time*1000:.2f} ms")
+                cursor.execute(explain_sql)
+                result = cursor.fetchall()
+                exec_time = extract_execution_time(result)
+                if exec_time is not None:
+                    execution_times.append(exec_time)
+                    print(f"  Run {i+1}: {exec_time:.2f} ms")
+                else:
+                    print(f"  Run {i+1}: (could not extract time)")
 
         total_time = time.time() - start_time
+        if execution_times:
+            avg_time = sum(execution_times) / len(execution_times)
+            min_time = min(execution_times)
+            print(f"  Average: {avg_time:.2f} ms, Min: {min_time:.2f} ms")
 
         # Stop perf
         if perf_process:

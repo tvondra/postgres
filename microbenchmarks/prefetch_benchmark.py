@@ -452,6 +452,125 @@ QUERIES = OrderedDict([
 ])
 
 
+# --- Readstream Test Queries ---
+# Based on tomas-weird-issue-readstream.sql
+
+READSTREAM_QUERIES = OrderedDict([
+    ("RS1", {
+        "name": "Readstream benefits (forward scan)",
+        "sql": """
+            SELECT * FROM t_readstream
+            WHERE a BETWEEN 16150 AND 4540437
+            ORDER BY a ASC
+        """,
+        "evict": ["t_readstream"],
+        "prewarm_indexes": ["idx_readstream"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RS2", {
+        "name": "Tupdistance regression (backward scan)",
+        "sql": """
+            SELECT * FROM t_tupdistance_new_regress
+            WHERE a BETWEEN 9401 AND 2271544
+            ORDER BY a DESC
+        """,
+        "evict": ["t_tupdistance_new_regress"],
+        "prewarm_indexes": ["t_tupdistance_new_regress_idx"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RS3", {
+        "name": "Remaining regression (forward scan, negative values)",
+        "sql": """
+            SELECT * FROM t_remaining_regression
+            WHERE a BETWEEN -2281232 AND -19089
+            ORDER BY a ASC
+        """,
+        "evict": ["t_remaining_regression"],
+        "prewarm_indexes": ["t_remaining_regression_idx"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+
+# --- Random Backwards Test Queries ---
+# Based on random_backwards_weird.sql
+
+RANDOM_BACKWARDS_QUERIES = OrderedDict([
+    ("RB1", {
+        "name": "Sequential table forward scan",
+        "sql": """
+            SELECT * FROM t
+            WHERE a BETWEEN 16336 AND 49103
+            ORDER BY a
+        """,
+        "evict": ["t"],
+        "prewarm_indexes": ["t_pk"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RB2", {
+        "name": "Sequential table backward scan",
+        "sql": """
+            SELECT * FROM t
+            WHERE a BETWEEN 16336 AND 49103
+            ORDER BY a DESC
+        """,
+        "evict": ["t"],
+        "prewarm_indexes": ["t_pk"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RB3", {
+        "name": "Randomized table forward scan",
+        "sql": """
+            SELECT * FROM t_randomized
+            WHERE a BETWEEN 16336 AND 49103
+            ORDER BY a
+        """,
+        "evict": ["t_randomized"],
+        "prewarm_indexes": ["t_randomized_pk"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RB4", {
+        "name": "Randomized table backward scan",
+        "sql": """
+            SELECT * FROM t_randomized
+            WHERE a BETWEEN 16336 AND 49103
+            ORDER BY a DESC
+        """,
+        "evict": ["t_randomized"],
+        "prewarm_indexes": ["t_randomized_pk"],
+        "prewarm_tables": [],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+
 # --- Data Loading SQL ---
 
 DATA_LOADING_SQL = """
@@ -572,6 +691,175 @@ CHECKPOINT;
 """
 
 
+# --- Readstream Test Data Loading SQL ---
+# Based on tomas-weird-issue-readstream.sql
+
+READSTREAM_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+-- Drop existing tables
+DROP TABLE IF EXISTS t_readstream CASCADE;
+DROP TABLE IF EXISTS t_tupdistance_new_regress CASCADE;
+DROP TABLE IF EXISTS t_remaining_regression CASCADE;
+
+-- Table 1: t_readstream (5M rows x 2 = 10M rows)
+CREATE UNLOGGED TABLE t_readstream (a bigint, b text) WITH (fillfactor = 20);
+SELECT setseed(0.1234567890123456);
+INSERT INTO t_readstream
+SELECT
+  1 * a,
+  b
+FROM (
+  SELECT r, a, b, generate_series(0, 2 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 5000000) s(i)
+      ORDER BY
+        (i + 16 * (random() - 0.5))) foo) bar) baz
+ORDER BY
+  ((r * 2 + p) + 8 * (random() - 0.5));
+CREATE INDEX idx_readstream ON t_readstream(a ASC) WITH (deduplicate_items=false);
+VACUUM (ANALYZE, FREEZE) t_readstream;
+
+-- Table 2: t_tupdistance_new_regress (2.5M rows x 4 = 10M rows)
+CREATE UNLOGGED TABLE t_tupdistance_new_regress (a bigint, b text) WITH (fillfactor = 20);
+SELECT setseed(0.2345678901234567);
+INSERT INTO t_tupdistance_new_regress
+SELECT 1 * a, b
+FROM (
+  SELECT
+    r,
+    a,
+    b,
+    generate_series(0, 4 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 2500000) s(i)
+      ORDER BY
+        (i + 0 * (random() - 0.5))) foo) bar) baz
+ORDER BY
+  ((r * 4 + p) + 8 * (random() - 0.5));
+CREATE INDEX t_tupdistance_new_regress_idx ON t_tupdistance_new_regress(a DESC) WITH (deduplicate_items = false);
+
+-- Table 3: t_remaining_regression (2.5M rows x 4 = 10M rows, negative values)
+CREATE UNLOGGED TABLE t_remaining_regression (a bigint, b text) WITH (fillfactor = 20);
+SELECT setseed(0.8152497610420479);
+INSERT INTO t_remaining_regression SELECT -1 * a, b
+FROM (
+  SELECT r, a, b, generate_series(0, 4 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 2500000) s(i)
+      ORDER BY
+        (i + 0 * (random() - 0.5))) foo) bar) baz
+ORDER BY ((r * 4 + p) + 8 * (random() - 0.5));
+CREATE INDEX t_remaining_regression_idx ON t_remaining_regression(a ASC) WITH (deduplicate_items = false);
+
+VACUUM ANALYZE;
+CHECKPOINT;
+"""
+
+
+# --- Random Backwards Test Data Loading SQL ---
+# Based on random_backwards_weird.sql
+
+RANDOM_BACKWARDS_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+-- Drop existing tables
+DROP TABLE IF EXISTS t CASCADE;
+DROP TABLE IF EXISTS t_randomized CASCADE;
+
+SET synchronize_seqscans = off;
+
+-- Table 1: t (sequential layout, 312500 x 32 = 10M rows)
+CREATE UNLOGGED TABLE t (a bigint, b text) WITH (fillfactor = 20);
+SELECT setseed(0.3456789012345678);
+INSERT INTO t
+SELECT a, b
+FROM (SELECT
+    r,
+    a,
+    b,
+    generate_series(0, 32 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 312500) s(i)
+      ORDER BY
+        (i + 1 * (random() - 0.5))) foo) bar) baz
+ORDER BY ((r * 32 + p) + 8 * (random() - 0.5));
+CREATE INDEX t_pk ON t(a ASC) WITH (deduplicate_items=off);
+
+-- Table 2: t_randomized (clustered by hash for random physical layout)
+CREATE UNLOGGED TABLE t_randomized (a bigint, b text) WITH (fillfactor = 20);
+SELECT setseed(0.4567890123456789);
+INSERT INTO t_randomized
+SELECT a, b
+FROM (SELECT
+    r,
+    a,
+    b,
+    generate_series(0, 32 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 312500) s(i)
+      ORDER BY
+        (i + 1 * (random() - 0.5))) foo) bar) baz
+ORDER BY ((r * 32 + p) + 8 * (random() - 0.5));
+CREATE INDEX t_randomized_pk ON t_randomized(a ASC) WITH (deduplicate_items=off);
+CREATE INDEX randomizer ON t_randomized (hashint8(a));
+CLUSTER t_randomized USING randomizer;
+
+VACUUM FREEZE;
+ANALYZE;
+CHECKPOINT;
+"""
+
+
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -652,6 +940,18 @@ Examples:
         "--no-tmpfs-hugepages",
         action="store_true",
         help="Disable tmpfs with huge=always (enabled by default)"
+    )
+    parser.add_argument(
+        "--readstream-tests",
+        action="store_true",
+        dest="readstream_tests",
+        help="Run readstream benchmark tests (loads data if needed)"
+    )
+    parser.add_argument(
+        "--random-backwards-tests",
+        action="store_true",
+        dest="random_backwards_tests",
+        help="Run random backwards benchmark tests (loads data if needed)"
     )
     return parser.parse_args()
 
@@ -1397,6 +1697,164 @@ def load_data(conn_details):
     print("Data loading complete.")
 
 
+def verify_readstream_data(conn_details):
+    """
+    Verify that readstream test tables exist.
+    Returns True if data is valid, False if reload is needed.
+    """
+    tables = ['t_readstream', 't_tupdistance_new_regress', 't_remaining_regression']
+    try:
+        conn = psycopg.connect(**conn_details)
+        for table in tables:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'r'
+                    )
+                """, (table,))
+                if not cur.fetchone()[0]:
+                    print(f"Table {table} does not exist")
+                    conn.close()
+                    return False
+            print(f"Table {table} exists ✓")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error verifying readstream data: {e}")
+        return False
+
+
+def load_readstream_data(conn_details):
+    """Load readstream benchmark data into the database."""
+    print("\n" + "=" * 50)
+    print("Loading readstream benchmark data...")
+    print("This will take several minutes for 30M rows.")
+    print("=" * 50 + "\n")
+
+    conn = psycopg.connect(**conn_details)
+    conn.autocommit = True
+
+    # Parse SQL into individual statements
+    statements = []
+    current_stmt = []
+    for line in READSTREAM_DATA_SQL.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('--') or not stripped:
+            continue
+        current_stmt.append(line)
+        if stripped.endswith(';'):
+            statements.append('\n'.join(current_stmt))
+            current_stmt = []
+
+    for statement in statements:
+        statement = statement.strip()
+        if not statement:
+            continue
+        try:
+            # Print progress for long operations
+            if 'INSERT INTO t_readstream' in statement:
+                print("Loading t_readstream (10M rows)...")
+            elif 'INSERT INTO t_tupdistance_new_regress' in statement:
+                print("Loading t_tupdistance_new_regress (10M rows)...")
+            elif 'INSERT INTO t_remaining_regression' in statement:
+                print("Loading t_remaining_regression (10M rows)...")
+            elif 'CREATE INDEX' in statement:
+                idx_match = re.search(r'CREATE INDEX (\S+)', statement)
+                idx_name = idx_match.group(1) if idx_match else "index"
+                print(f"Creating index {idx_name}...")
+
+            with conn.cursor() as cur:
+                cur.execute(statement)
+
+        except Exception as e:
+            print(f"Error executing: {statement[:80]}...")
+            print(f"Error: {e}")
+            conn.close()
+            sys.exit(1)
+
+    conn.close()
+    print("Readstream data loading complete.")
+
+
+def verify_random_backwards_data(conn_details):
+    """
+    Verify that random backwards test tables exist.
+    Returns True if data is valid, False if reload is needed.
+    """
+    tables = ['t', 't_randomized']
+    try:
+        conn = psycopg.connect(**conn_details)
+        for table in tables:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'r'
+                    )
+                """, (table,))
+                if not cur.fetchone()[0]:
+                    print(f"Table {table} does not exist")
+                    conn.close()
+                    return False
+            print(f"Table {table} exists ✓")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error verifying random backwards data: {e}")
+        return False
+
+
+def load_random_backwards_data(conn_details):
+    """Load random backwards benchmark data into the database."""
+    print("\n" + "=" * 50)
+    print("Loading random backwards benchmark data...")
+    print("This will take several minutes for 20M rows.")
+    print("=" * 50 + "\n")
+
+    conn = psycopg.connect(**conn_details)
+    conn.autocommit = True
+
+    # Parse SQL into individual statements
+    statements = []
+    current_stmt = []
+    for line in RANDOM_BACKWARDS_DATA_SQL.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('--') or not stripped:
+            continue
+        current_stmt.append(line)
+        if stripped.endswith(';'):
+            statements.append('\n'.join(current_stmt))
+            current_stmt = []
+
+    for statement in statements:
+        statement = statement.strip()
+        if not statement:
+            continue
+        try:
+            # Print progress for long operations
+            if 'INSERT INTO t_randomized' in statement:
+                print("Loading t_randomized (10M rows)...")
+            elif 'INSERT INTO t' in statement and 'INSERT INTO t_randomized' not in statement:
+                print("Loading t (10M rows)...")
+            elif 'CREATE INDEX' in statement:
+                idx_match = re.search(r'CREATE INDEX (\S+)', statement)
+                idx_name = idx_match.group(1) if idx_match else "index"
+                print(f"Creating index {idx_name}...")
+            elif 'CLUSTER' in statement:
+                print("Clustering t_randomized by hash (randomizing physical order)...")
+
+            with conn.cursor() as cur:
+                cur.execute(statement)
+
+        except Exception as e:
+            print(f"Error executing: {statement[:80]}...")
+            print(f"Error: {e}")
+            conn.close()
+            sys.exit(1)
+
+    conn.close()
+    print("Random backwards data loading complete.")
+
+
 # Relations to sync statistics for
 STATS_RELATIONS = [
     # Tables
@@ -2130,6 +2588,454 @@ def run_benchmark(args):
         print("  (none)")
 
 
+def run_readstream_tests(args):
+    """Run readstream benchmark tests."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Setup tmpfs with hugepages if requested
+    tmpfs_mount = None
+    master_bin = MASTER_BIN
+    patch_bin = PATCH_BIN
+
+    if not args.no_tmpfs_hugepages:
+        tmpfs_mount = setup_tmpfs_hugepages()
+        master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
+        patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
+        print(f"\nUsing tmpfs binaries:")
+        print(f"  master: {master_bin}")
+        print(f"  patch: {patch_bin}\n")
+    else:
+        print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
+
+    queries = READSTREAM_QUERIES
+
+    print(f"\n{'=' * 60}")
+    print("Readstream Benchmark Tests")
+    print(f"{'=' * 60}")
+    print(f"Queries: {', '.join(queries.keys())}")
+    print(f"Runs per query: {args.runs}")
+    print(f"{'=' * 60}\n")
+
+    # Get git hashes
+    master_hash = get_git_hash(MASTER_SOURCE_DIR)
+    patch_hash = get_git_hash(PATCH_SOURCE_DIR)
+    print(f"Master git hash: {master_hash}")
+    print(f"Patch git hash: {patch_hash}")
+
+    # Verify/load data on each server
+    print("\n--- Verifying data on master ---")
+    start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
+    if not verify_readstream_data(MASTER_CONN):
+        print("Loading data on master...")
+        load_readstream_data(MASTER_CONN)
+    master_version = get_pg_version(MASTER_CONN)
+    stop_server(master_bin, MASTER_DATA_DIR)
+    time.sleep(2)
+
+    print("\n--- Verifying data on patch ---")
+    start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
+    if not verify_readstream_data(PATCH_CONN):
+        print("Loading data on patch...")
+        load_readstream_data(PATCH_CONN)
+    patch_version = get_pg_version(PATCH_CONN)
+    stop_server(patch_bin, PATCH_DATA_DIR)
+    time.sleep(2)
+
+    # Results storage
+    results = {
+        "timestamp": datetime.now().isoformat(),
+        "master_hash": master_hash,
+        "patch_hash": patch_hash,
+        "master_version": master_version,
+        "patch_version": patch_version,
+        "mode": "readstream",
+        "runs": args.runs,
+        "queries": {},
+    }
+
+    # Initialize query results structure
+    for query_id in queries.keys():
+        query_def = queries[query_id]
+        results["queries"][query_id] = {
+            "name": query_def["name"],
+            "master": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+            "patch_off": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+            "patch_on": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+        }
+
+    # Run all queries on master
+    print(f"\n{'=' * 60}")
+    print("Running all queries on MASTER")
+    print(f"{'=' * 60}")
+    start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
+    try:
+        master_conn = psycopg.connect(**MASTER_CONN)
+        pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
+        with master_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+
+        for query_id in queries.keys():
+            query_def = queries[query_id]
+            print(f"\n{query_id}: {query_def['name']} ({args.runs} runs)...")
+            for run in range(args.runs):
+                exec_time, explain_output = run_query(
+                    master_conn, query_def, args.cached,
+                    is_master=True, prefetch_setting=None,
+                    benchmark_cpu=args.benchmark_cpu
+                )
+                if exec_time is not None:
+                    results["queries"][query_id]["master"]["times"].append(exec_time)
+                    results["queries"][query_id]["master"]["explain"] = explain_output
+                    print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+        master_conn.close()
+    finally:
+        stop_server(master_bin, MASTER_DATA_DIR)
+        time.sleep(2)
+
+    # Run all queries on patch (both prefetch=off and prefetch=on)
+    print(f"\n{'=' * 60}")
+    print("Running all queries on PATCH")
+    print(f"{'=' * 60}")
+    start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
+    try:
+        patch_conn = psycopg.connect(**PATCH_CONN)
+        pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
+        with patch_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+
+        for query_id in queries.keys():
+            query_def = queries[query_id]
+
+            # Run with prefetch OFF
+            if not args.prefetch_only:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=off, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="off",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_off"]["times"].append(exec_time)
+                        results["queries"][query_id]["patch_off"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+            # Run with prefetch ON
+            if not args.prefetch_disabled:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=on, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="on",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_on"]["times"].append(exec_time)
+                        results["queries"][query_id]["patch_on"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+        patch_conn.close()
+    finally:
+        stop_server(patch_bin, PATCH_DATA_DIR)
+        time.sleep(2)
+
+    # Cleanup tmpfs if it was created
+    if tmpfs_mount:
+        cleanup_tmpfs(tmpfs_mount)
+
+    # Calculate statistics and print summaries
+    print(f"\n{'=' * 60}")
+    print("RESULTS SUMMARY")
+    print(f"{'=' * 60}")
+
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    for query_id in queries.keys():
+        query_results = results["queries"][query_id]
+
+        # Calculate statistics
+        for config in ["master", "patch_off", "patch_on"]:
+            times = query_results[config]["times"]
+            if times:
+                query_results[config]["avg"] = mean(times)
+                query_results[config]["min"] = min(times)
+                query_results[config]["max"] = max(times)
+
+        master_avg = query_results["master"]["avg"]
+        patch_off_avg = query_results["patch_off"]["avg"]
+        patch_on_avg = query_results["patch_on"]["avg"]
+
+        print(f"\n{BOLD}{query_id}: {query_results['name']}{RESET}")
+        if master_avg:
+            print(f"  master:               {master_avg:10.3f} ms "
+                  f"(min={query_results['master']['min']:.3f}, max={query_results['master']['max']:.3f})")
+        if patch_off_avg and master_avg:
+            ratio_off = patch_off_avg / master_avg
+            print(f"  patch (prefetch=off): {patch_off_avg:10.3f} ms "
+                  f"(min={query_results['patch_off']['min']:.3f}, max={query_results['patch_off']['max']:.3f}) "
+                  f"[{BOLD}{ratio_off:.3f}x{RESET} vs master]")
+        if patch_on_avg and master_avg:
+            ratio_on = patch_on_avg / master_avg
+            print(f"  patch (prefetch=on):  {patch_on_avg:10.3f} ms "
+                  f"(min={query_results['patch_on']['min']:.3f}, max={query_results['patch_on']['max']:.3f}) "
+                  f"[{BOLD}{ratio_on:.3f}x{RESET} vs master]")
+
+        # Print query text and EXPLAIN ANALYZE outputs
+        print()
+        query_sql = queries[query_id]["sql"].strip()
+        print("  Query:")
+        for line in query_sql.split('\n'):
+            print(f"    {line.strip()}")
+        print()
+        if query_results["master"]["explain"]:
+            print("  master EXPLAIN ANALYZE:")
+            for line in query_results["master"]["explain"].split('\n'):
+                print(f"    {line}")
+        if args.prefetch_disabled:
+            if query_results["patch_off"]["explain"]:
+                print()
+                print("  patch (prefetch=off) EXPLAIN ANALYZE:")
+                for line in query_results["patch_off"]["explain"].split('\n'):
+                    print(f"    {line}")
+        else:
+            if query_results["patch_on"]["explain"]:
+                print()
+                print("  patch (prefetch=on) EXPLAIN ANALYZE:")
+                for line in query_results["patch_on"]["explain"].split('\n'):
+                    print(f"    {line}")
+
+    print(f"\n{'=' * 60}")
+    print("Done.")
+
+
+def run_random_backwards_tests(args):
+    """Run random backwards benchmark tests."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Setup tmpfs with hugepages if requested
+    tmpfs_mount = None
+    master_bin = MASTER_BIN
+    patch_bin = PATCH_BIN
+
+    if not args.no_tmpfs_hugepages:
+        tmpfs_mount = setup_tmpfs_hugepages()
+        master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
+        patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
+        print(f"\nUsing tmpfs binaries:")
+        print(f"  master: {master_bin}")
+        print(f"  patch: {patch_bin}\n")
+    else:
+        print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
+
+    queries = RANDOM_BACKWARDS_QUERIES
+
+    print(f"\n{'=' * 60}")
+    print("Random Backwards Benchmark Tests")
+    print(f"{'=' * 60}")
+    print(f"Queries: {', '.join(queries.keys())}")
+    print(f"Runs per query: {args.runs}")
+    print(f"{'=' * 60}\n")
+
+    # Get git hashes
+    master_hash = get_git_hash(MASTER_SOURCE_DIR)
+    patch_hash = get_git_hash(PATCH_SOURCE_DIR)
+    print(f"Master git hash: {master_hash}")
+    print(f"Patch git hash: {patch_hash}")
+
+    # Verify/load data on each server
+    print("\n--- Verifying data on master ---")
+    start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
+    if not verify_random_backwards_data(MASTER_CONN):
+        print("Loading data on master...")
+        load_random_backwards_data(MASTER_CONN)
+    master_version = get_pg_version(MASTER_CONN)
+    stop_server(master_bin, MASTER_DATA_DIR)
+    time.sleep(2)
+
+    print("\n--- Verifying data on patch ---")
+    start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
+    if not verify_random_backwards_data(PATCH_CONN):
+        print("Loading data on patch...")
+        load_random_backwards_data(PATCH_CONN)
+    patch_version = get_pg_version(PATCH_CONN)
+    stop_server(patch_bin, PATCH_DATA_DIR)
+    time.sleep(2)
+
+    # Results storage
+    results = {
+        "timestamp": datetime.now().isoformat(),
+        "master_hash": master_hash,
+        "patch_hash": patch_hash,
+        "master_version": master_version,
+        "patch_version": patch_version,
+        "mode": "random_backwards",
+        "runs": args.runs,
+        "queries": {},
+    }
+
+    # Initialize query results structure
+    for query_id in queries.keys():
+        query_def = queries[query_id]
+        results["queries"][query_id] = {
+            "name": query_def["name"],
+            "master": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+            "patch_off": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+            "patch_on": {"times": [], "avg": None, "min": None, "max": None, "explain": None},
+        }
+
+    # Run all queries on master
+    print(f"\n{'=' * 60}")
+    print("Running all queries on MASTER")
+    print(f"{'=' * 60}")
+    start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
+    try:
+        master_conn = psycopg.connect(**MASTER_CONN)
+        pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
+        with master_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+
+        for query_id in queries.keys():
+            query_def = queries[query_id]
+            print(f"\n{query_id}: {query_def['name']} ({args.runs} runs)...")
+            for run in range(args.runs):
+                exec_time, explain_output = run_query(
+                    master_conn, query_def, args.cached,
+                    is_master=True, prefetch_setting=None,
+                    benchmark_cpu=args.benchmark_cpu
+                )
+                if exec_time is not None:
+                    results["queries"][query_id]["master"]["times"].append(exec_time)
+                    results["queries"][query_id]["master"]["explain"] = explain_output
+                    print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+        master_conn.close()
+    finally:
+        stop_server(master_bin, MASTER_DATA_DIR)
+        time.sleep(2)
+
+    # Run all queries on patch (both prefetch=off and prefetch=on)
+    print(f"\n{'=' * 60}")
+    print("Running all queries on PATCH")
+    print(f"{'=' * 60}")
+    start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
+    try:
+        patch_conn = psycopg.connect(**PATCH_CONN)
+        pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
+        with patch_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache")
+
+        for query_id in queries.keys():
+            query_def = queries[query_id]
+
+            # Run with prefetch OFF
+            if not args.prefetch_only:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=off, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="off",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_off"]["times"].append(exec_time)
+                        results["queries"][query_id]["patch_off"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+            # Run with prefetch ON
+            if not args.prefetch_disabled:
+                print(f"\n{query_id}: {query_def['name']} (prefetch=on, {args.runs} runs)...")
+                for run in range(args.runs):
+                    exec_time, explain_output = run_query(
+                        patch_conn, query_def, args.cached,
+                        is_master=False, prefetch_setting="on",
+                        benchmark_cpu=args.benchmark_cpu
+                    )
+                    if exec_time is not None:
+                        results["queries"][query_id]["patch_on"]["times"].append(exec_time)
+                        results["queries"][query_id]["patch_on"]["explain"] = explain_output
+                        print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+        patch_conn.close()
+    finally:
+        stop_server(patch_bin, PATCH_DATA_DIR)
+        time.sleep(2)
+
+    # Cleanup tmpfs if it was created
+    if tmpfs_mount:
+        cleanup_tmpfs(tmpfs_mount)
+
+    # Calculate statistics and print summaries
+    print(f"\n{'=' * 60}")
+    print("RESULTS SUMMARY")
+    print(f"{'=' * 60}")
+
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    for query_id in queries.keys():
+        query_results = results["queries"][query_id]
+
+        # Calculate statistics
+        for config in ["master", "patch_off", "patch_on"]:
+            times = query_results[config]["times"]
+            if times:
+                query_results[config]["avg"] = mean(times)
+                query_results[config]["min"] = min(times)
+                query_results[config]["max"] = max(times)
+
+        master_avg = query_results["master"]["avg"]
+        patch_off_avg = query_results["patch_off"]["avg"]
+        patch_on_avg = query_results["patch_on"]["avg"]
+
+        print(f"\n{BOLD}{query_id}: {query_results['name']}{RESET}")
+        if master_avg:
+            print(f"  master:               {master_avg:10.3f} ms "
+                  f"(min={query_results['master']['min']:.3f}, max={query_results['master']['max']:.3f})")
+        if patch_off_avg and master_avg:
+            ratio_off = patch_off_avg / master_avg
+            print(f"  patch (prefetch=off): {patch_off_avg:10.3f} ms "
+                  f"(min={query_results['patch_off']['min']:.3f}, max={query_results['patch_off']['max']:.3f}) "
+                  f"[{BOLD}{ratio_off:.3f}x{RESET} vs master]")
+        if patch_on_avg and master_avg:
+            ratio_on = patch_on_avg / master_avg
+            print(f"  patch (prefetch=on):  {patch_on_avg:10.3f} ms "
+                  f"(min={query_results['patch_on']['min']:.3f}, max={query_results['patch_on']['max']:.3f}) "
+                  f"[{BOLD}{ratio_on:.3f}x{RESET} vs master]")
+
+        # Print query text and EXPLAIN ANALYZE outputs
+        print()
+        query_sql = queries[query_id]["sql"].strip()
+        print("  Query:")
+        for line in query_sql.split('\n'):
+            print(f"    {line.strip()}")
+        print()
+        if query_results["master"]["explain"]:
+            print("  master EXPLAIN ANALYZE:")
+            for line in query_results["master"]["explain"].split('\n'):
+                print(f"    {line}")
+        if args.prefetch_disabled:
+            if query_results["patch_off"]["explain"]:
+                print()
+                print("  patch (prefetch=off) EXPLAIN ANALYZE:")
+                for line in query_results["patch_off"]["explain"].split('\n'):
+                    print(f"    {line}")
+        else:
+            if query_results["patch_on"]["explain"]:
+                print()
+                print("  patch (prefetch=on) EXPLAIN ANALYZE:")
+                for line in query_results["patch_on"]["explain"].split('\n'):
+                    print(f"    {line}")
+
+    print(f"\n{'=' * 60}")
+    print("Done.")
+
+
 def run_stress_test(args):
     """Run stress test mode: randomly generate queries to find regressions."""
     # Setup tmpfs with hugepages if requested
@@ -2546,6 +3452,10 @@ def main():
     args = parse_arguments()
     if args.stress_test:
         run_stress_test(args)
+    elif args.readstream_tests:
+        run_readstream_tests(args)
+    elif args.random_backwards_tests:
+        run_random_backwards_tests(args)
     else:
         run_benchmark(args)
 

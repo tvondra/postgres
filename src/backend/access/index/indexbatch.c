@@ -232,8 +232,8 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		 * when nobody else will later on.
 		 *
 		 * Note: in practice we're very unlikely to end up here.  It is very
-		 * atypical for an index on the inner side of a merge join to hold on
-		 * to a mark (without marking another position) across many batches.
+		 * atypical for an index scan on the inner side of a merge join to
+		 * hold on to a mark that trails the current scanBatch this much.
 		 */
 		freeMarkBatch = true;	/* i.e. INDEX_SCAN_BATCH_LOADED lied to us */
 

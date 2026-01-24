@@ -289,6 +289,18 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 
+	/*
+	 * Restoring a mark always necessitates cancelling refetching.  This is
+	 * similar to handling used by table AMs where the scan direction changes.
+	 */
+	if (scan->xs_heapfetch->rs)
+	{
+		read_stream_end(scan->xs_heapfetch->rs);
+		scan->xs_heapfetch->rs = NULL;
+	}
+	batch_reset_pos(&batchringbuf->prefetchPos);
+	batchringbuf->paused = false;
+
 	if (scanBatch == markBatch)
 	{
 		/*
@@ -297,23 +309,18 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 		 */
 		scanPos->item = markPos->item;
 
-		/*
-		 * But we do still have to reset the read stream.
-		 */
-		if (scan->xs_heapfetch->rs)
-		{
-			read_stream_end(scan->xs_heapfetch->rs);
-			scan->xs_heapfetch->rs = NULL;
-		}
-		batch_reset_pos(&batchringbuf->prefetchPos);
-		batchringbuf->paused = false;
-
 		return;
 	}
 
 	/*
+	 * markBatch is behind scanBatch, and so must not be loaded anymore.  We
+	 * have to deal with restoring the mark the hard way: by invalidating all
+	 * other loaded batches.  This is similar to the case where the scan
+	 * direction changes and the scan actually acrosses batch/index page
+	 * boundaries (see tableam_util_batch_dirchange).
+	 *
 	 * Call amposreset to let index AM know to invalidate any private state
-	 * that independently tracks the scan's progress
+	 * that independently tracks the scan's progress.
 	 */
 	scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 

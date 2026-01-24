@@ -388,7 +388,7 @@ typedef struct IndexScanDescData
 	bool		ignore_killed_tuples;	/* do not return killed entries */
 	bool		xactStartedInRecovery;	/* prevents killing/seeing killed
 										 * tuples */
-	/* Safe to drop index page pins eagerly? */
+	/* xs_snapshot uses an MVCC snapshot? */
 	bool		MVCCScan;
 
 	/*

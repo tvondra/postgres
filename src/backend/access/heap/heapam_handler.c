@@ -465,7 +465,9 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		 *
 		 * Note: We can't drop the pin here (we delay it until amfreebatch is
 		 * called for the batch) whenever the scan uses a non-MVCC snapshot.
-		 * This is explained fully in doc/src/sgml/indexam.sgml.
+		 * Index-only scans may also choose to retain pins in some cases,
+		 * though prefetching requires dropping them to limit buffer pin
+		 * usage.  See doc/src/sgml/indexam.sgml.
 		 */
 		Assert(scan->MVCCScan == IsMVCCSnapshot(scan->xs_snapshot));
 		if (scan->MVCCScan && !scan->xs_want_itup)

@@ -884,9 +884,8 @@ amfreebatch (IndexScanDesc scan,
    This function is called exclusively by table access methods to indicate
    that processing of the batch is complete; it should never be called within
    the index access method itself.  The table access method controls when the
-   buffer pin is dropped: for MVCC snapshot scans the pin is dropped eagerly
-   after the batch is returned, while for non-MVCC snapshot scans the pin is
-   retained until <function>amfreebatch</function> is called.
+   buffer pin is dropped.  When the table AM hasn't already dropped the buffer
+   pin, it is left up to the index AM's <function>amfree</function> routine.
   </para>
 
   <para>
@@ -1298,12 +1297,9 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
 
    <para>
     Buffer pins on index pages returned by <function>amgetbatch</function> are
-    managed by the table AM.  The table AM decides when to drop index page
-    pins based on whether the scan uses an MVCC-compliant snapshot.  For MVCC
-    snapshot scans, pins are dropped eagerly; for non-MVCC snapshot scans,
-    pins are retained until <function>amfreebatch</function> is called.
-    See the <function>amgetbatch</function> and <function>amfreebatch</function>
-    descriptions in <xref linkend="index-functions"/> for details.
+    managed by the table AM.  See the <function>amgetbatch</function> and
+    <function>amfreebatch</function> descriptions in <xref linkend="index-functions"/>
+    for details.
    </para>
 
   </sect2>
@@ -1422,8 +1418,10 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    Therefore, like <function>amgetbitmap</function>, I/O prefetching with
    <function>amgetbatch</function> is only possible when an MVCC-compliant
    snapshot is in use.  In practice, the heap table AM (and any table AM
-   with similar concurrency rules) drops pins eagerly for MVCC snapshot scans
-   but retains pins for non-MVCC snapshot scans.  Index access methods that
+   with similar concurrency rules) usually drops pins eagerly for MVCC
+   snapshot scans, but retains pins for non-MVCC snapshot scans.  Index-only
+   scans may retain pins in some cases, while plain index scans that use an
+   MVCC snapshot always drop their pins eagerly.  Index access methods that
    implement <function>amgetbatch</function> do not control when pins are
    dropped; that decision is delegated to the table AM.
   </para>

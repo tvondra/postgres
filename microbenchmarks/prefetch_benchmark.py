@@ -648,6 +648,11 @@ Examples:
         help=f"Minimum query duration in ms for stress test (default: {STRESS_MIN_QUERY_MS}). "
              "Queries slower than this on master are discarded as too noisy."
     )
+    parser.add_argument(
+        "--no-tmpfs-hugepages",
+        action="store_true",
+        help="Disable tmpfs with huge=always (enabled by default)"
+    )
     return parser.parse_args()
 
 
@@ -1142,6 +1147,74 @@ def get_pg_version(conn_details):
         return version
     except Exception as e:
         return f"error: {e}"
+
+
+def setup_tmpfs_hugepages():
+    """Create a tmpfs filesystem with huge=always and return the mount point."""
+    tmpfs_mount = "/tmp/pg_tmpfs_hugepages"
+
+    # Create mount point if it doesn't exist
+    os.makedirs(tmpfs_mount, exist_ok=True)
+
+    # Check if already mounted
+    result = subprocess.run(
+        ["mountpoint", "-q", tmpfs_mount],
+        check=False
+    )
+
+    if result.returncode != 0:
+        # Not mounted, so mount it
+        print(f"Mounting tmpfs with huge=always at {tmpfs_mount}...")
+        # Mount tmpfs with huge=always and 500MB size
+        result = subprocess.run(
+            ["sudo", "mount", "-t", "tmpfs", "-o", "huge=always,size=500M", "tmpfs_pg", tmpfs_mount],
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"Error: Failed to mount tmpfs at {tmpfs_mount}")
+            print("Make sure you have sudo privileges")
+            sys.exit(1)
+        print(f"Successfully mounted tmpfs at {tmpfs_mount}")
+    else:
+        print(f"tmpfs already mounted at {tmpfs_mount}")
+
+    return tmpfs_mount
+
+
+def copy_binaries_to_tmpfs(src_bin_dir, tmpfs_mount, version_name):
+    """Copy PostgreSQL binaries from src_bin_dir to tmpfs and return new bin path."""
+    dest_bin_dir = os.path.join(tmpfs_mount, version_name)
+
+    print(f"Copying {version_name} binaries from {src_bin_dir} to {dest_bin_dir}...")
+
+    # Remove existing directory if it exists
+    if os.path.exists(dest_bin_dir):
+        shutil.rmtree(dest_bin_dir)
+
+    # Copy the entire bin directory
+    shutil.copytree(src_bin_dir, dest_bin_dir, symlinks=True)
+
+    print(f"Successfully copied binaries to {dest_bin_dir}")
+    return dest_bin_dir
+
+
+def cleanup_tmpfs(tmpfs_mount):
+    """Unmount the tmpfs filesystem."""
+    print(f"Unmounting tmpfs at {tmpfs_mount}...")
+    result = subprocess.run(
+        ["sudo", "umount", tmpfs_mount],
+        check=False
+    )
+    if result.returncode != 0:
+        print(f"Warning: Failed to unmount tmpfs at {tmpfs_mount}")
+    else:
+        print(f"Successfully unmounted tmpfs")
+
+    # Try to remove the mount point directory
+    try:
+        os.rmdir(tmpfs_mount)
+    except OSError:
+        pass
 
 
 def start_server(pg_bin_dir, pg_name, pg_data_dir, conn_details):
@@ -1644,6 +1717,21 @@ def run_benchmark(args):
     """Run the benchmark."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # Setup tmpfs with hugepages if requested
+    tmpfs_mount = None
+    master_bin = MASTER_BIN
+    patch_bin = PATCH_BIN
+
+    if not args.no_tmpfs_hugepages:
+        tmpfs_mount = setup_tmpfs_hugepages()
+        master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
+        patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
+        print(f"\nUsing tmpfs binaries:")
+        print(f"  master: {master_bin}")
+        print(f"  patch: {patch_bin}\n")
+    else:
+        print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
+
     # Parse query selection
     if args.queries:
         selected_queries = [q.strip().upper() for q in args.queries.split(",")]
@@ -1675,23 +1763,23 @@ def run_benchmark(args):
         patch_version = None
     else:
         print("\n--- Verifying data on master ---")
-        start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
+        start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
         if not verify_data(MASTER_CONN, args.skip_load):
             print("Loading data on master...")
             load_data(MASTER_CONN)
         master_stats = extract_statistics(MASTER_CONN)
         master_version = get_pg_version(MASTER_CONN)
-        stop_server(MASTER_BIN, MASTER_DATA_DIR)
+        stop_server(master_bin, MASTER_DATA_DIR)
         time.sleep(2)
 
         print("\n--- Verifying data on patch ---")
-        start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+        start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
         if not verify_data(PATCH_CONN, args.skip_load):
             print("Loading data on patch...")
             load_data(PATCH_CONN)
         restore_statistics(PATCH_CONN, master_stats)
         patch_version = get_pg_version(PATCH_CONN)
-        stop_server(PATCH_BIN, PATCH_DATA_DIR)
+        stop_server(patch_bin, PATCH_DATA_DIR)
         time.sleep(2)
 
     # Results storage
@@ -1721,7 +1809,7 @@ def run_benchmark(args):
     print("Running all queries on MASTER")
     print(f"{'=' * 60}")
     master_start_time = time.time()
-    start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
+    start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
     try:
         master_conn = psycopg.connect(**MASTER_CONN)
         pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
@@ -1748,7 +1836,7 @@ def run_benchmark(args):
 
         master_conn.close()
     finally:
-        stop_server(MASTER_BIN, MASTER_DATA_DIR)
+        stop_server(master_bin, MASTER_DATA_DIR)
         time.sleep(2)
     master_end_time = time.time()
 
@@ -1757,7 +1845,7 @@ def run_benchmark(args):
     print("Running all queries on PATCH")
     print(f"{'=' * 60}")
     patch_start_time = time.time()
-    start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+    start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
     try:
         patch_conn = psycopg.connect(**PATCH_CONN)
         pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
@@ -1802,9 +1890,13 @@ def run_benchmark(args):
 
         patch_conn.close()
     finally:
-        stop_server(PATCH_BIN, PATCH_DATA_DIR)
+        stop_server(patch_bin, PATCH_DATA_DIR)
         time.sleep(2)
     patch_end_time = time.time()
+
+    # Cleanup tmpfs if it was created
+    if tmpfs_mount:
+        cleanup_tmpfs(tmpfs_mount)
 
     # Calculate statistics and print summaries
     print(f"\n{'=' * 60}")
@@ -2040,6 +2132,21 @@ def run_benchmark(args):
 
 def run_stress_test(args):
     """Run stress test mode: randomly generate queries to find regressions."""
+    # Setup tmpfs with hugepages if requested
+    tmpfs_mount = None
+    master_bin = MASTER_BIN
+    patch_bin = PATCH_BIN
+
+    if not args.no_tmpfs_hugepages:
+        tmpfs_mount = setup_tmpfs_hugepages()
+        master_bin = copy_binaries_to_tmpfs(MASTER_BIN, tmpfs_mount, "master")
+        patch_bin = copy_binaries_to_tmpfs(PATCH_BIN, tmpfs_mount, "patch")
+        print(f"\nUsing tmpfs binaries:")
+        print(f"  master: {master_bin}")
+        print(f"  patch: {patch_bin}\n")
+    else:
+        print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
+
     print("=" * 60)
     print("STRESS TEST MODE")
     print("=" * 60)
@@ -2091,7 +2198,7 @@ def run_stress_test(args):
 
             # Run all queries on master, replacing any that are too fast
             print(f"\n--- Running on MASTER ---")
-            start_server(MASTER_BIN, "master", MASTER_DATA_DIR, MASTER_CONN)
+            start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN)
             try:
                 master_conn = psycopg.connect(**MASTER_CONN)
                 pin_backend(master_conn.info.backend_pid, args.benchmark_cpu)
@@ -2153,12 +2260,12 @@ def run_stress_test(args):
 
                 master_conn.close()
             finally:
-                stop_server(MASTER_BIN, MASTER_DATA_DIR)
+                stop_server(master_bin, MASTER_DATA_DIR)
                 time.sleep(2)
 
             # Run all queries on patch
             print(f"\n--- Running on PATCH ---")
-            start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+            start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
             try:
                 patch_conn = psycopg.connect(**PATCH_CONN)
                 pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
@@ -2237,7 +2344,7 @@ def run_stress_test(args):
 
                 patch_conn.close()
             finally:
-                stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                stop_server(patch_bin, PATCH_DATA_DIR)
                 time.sleep(2)
 
             # Check for regressions
@@ -2288,7 +2395,7 @@ def run_stress_test(args):
                 print(f"\n--- Verifying {len(regressions_found)} apparent regression(s) with retries ---")
                 confirmed_regressions = []
 
-                start_server(PATCH_BIN, "patch", PATCH_DATA_DIR, PATCH_CONN)
+                start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN)
                 try:
                     patch_conn = psycopg.connect(**PATCH_CONN)
                     pin_backend(patch_conn.info.backend_pid, args.benchmark_cpu)
@@ -2340,7 +2447,7 @@ def run_stress_test(args):
 
                     patch_conn.close()
                 finally:
-                    stop_server(PATCH_BIN, PATCH_DATA_DIR)
+                    stop_server(patch_bin, PATCH_DATA_DIR)
                     time.sleep(2)
 
                 regressions_found = confirmed_regressions
@@ -2429,6 +2536,10 @@ def run_stress_test(args):
     except KeyboardInterrupt:
         print(f"\n\nStress test interrupted after {total_queries_tested} queries ({iteration} iterations)")
         print("No regressions found.")
+    finally:
+        # Cleanup tmpfs if it was created
+        if tmpfs_mount:
+            cleanup_tmpfs(tmpfs_mount)
 
 
 def main():

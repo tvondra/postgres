@@ -54,6 +54,19 @@ import time
 
 import psycopg
 
+from benchmark_common import (
+    MASTER_BIN, PATCH_BIN,
+    MASTER_DATA_DIR, PATCH_DATA_DIR,
+    MASTER_CONN, PATCH_CONN,
+    QUERIES,
+    DATA_LOADING_SQL,
+    EXPECTED_ORDERS, EXPECTED_CUSTOMERS, EXPECTED_PRODUCTS, ROW_COUNT_TOLERANCE,
+    verify_data, load_data,
+    clear_os_cache, evict_relations, prewarm_relations,
+    set_gucs, reset_gucs,
+    setup_tmpfs_hugepages, copy_binaries_to_tmpfs, cleanup_tmpfs,
+)
+
 # os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
 # os.environ["MALLOPT_TOP_PAD"] = str(64 * 1024 * 1024)
 # os.environ["M_TOP_PAD"] = str(64 * 1024 * 1024)
@@ -64,28 +77,9 @@ import psycopg
 
 # --- Configuration ---
 
-# Paths to the PostgreSQL binaries for the two versions you want to compare.
-MASTER_BIN="/mnt/nvme/postgresql/master/install_meson_rc/bin"
-PATCH_BIN="/mnt/nvme/postgresql/patch/install_meson_rc/bin"
-
-# Data directories for the two PostgreSQL instances.
-MASTER_DATA_DIR="/mnt/nvme/postgresql/master/data"
-PATCH_DATA_DIR="/mnt/nvme/postgresql/patch/data"
-
-# Connection details for the two PostgreSQL instances.
-# Using a dictionary for easier access.
-MASTER_CONN_DETAILS = {
-    "dbname": "regression",
-    "user": "pg",
-    "host": "/tmp",
-    "port": 5555
-}
-PATCH_CONN_DETAILS = {
-    "dbname": "regression",
-    "user": "pg",
-    "host": "/tmp", # Use socket for local connections
-    "port": 5432
-}
+# Use MASTER_CONN and PATCH_CONN from benchmark_common, aliased for compatibility
+MASTER_CONN_DETAILS = MASTER_CONN
+PATCH_CONN_DETAILS = PATCH_CONN
 
 # The frequency of 'perf' sampling.
 PERF_FREQUENCY=9999
@@ -200,6 +194,22 @@ def parse_arguments():
         action="store_true",
         help="Disable hardware prefetchers on benchmark CPU during test (requires passwordless sudo for wrmsr)"
     )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default=None,
+        help="Run a prefetch benchmark query (e.g., Q1, A8). Mutually exclusive with --benchmark."
+    )
+    parser.add_argument(
+        "--cached",
+        action="store_true",
+        help="Run in cached mode (prewarm all relations). Only applicable with --query."
+    )
+    parser.add_argument(
+        "--skip-data-load",
+        action="store_true",
+        help="Skip prefetch benchmark data verification/loading (use with --query)"
+    )
     return parser.parse_args()
 
 def check_dependencies():
@@ -309,70 +319,9 @@ def restore_prefetchers(cpu_core, original_value):
     except Exception as e:
         print(f"Warning: Failed to restore prefetchers: {e}")
 
-def setup_tmpfs_hugepages():
-    """Create a tmpfs filesystem with huge=always and return the mount point."""
-    tmpfs_mount = "/tmp/pg_tmpfs_hugepages"
+# setup_tmpfs_hugepages, copy_binaries_to_tmpfs, cleanup_tmpfs
+# are imported from benchmark_common
 
-    # Create mount point if it doesn't exist
-    os.makedirs(tmpfs_mount, exist_ok=True)
-
-    # Check if already mounted
-    result = subprocess.run(
-        ["mountpoint", "-q", tmpfs_mount],
-        check=False
-    )
-
-    if result.returncode != 0:
-        # Not mounted, so mount it
-        print(f"Mounting tmpfs with huge=always at {tmpfs_mount}...")
-        # Mount tmpfs with huge=always and 500MB size
-        result = subprocess.run(
-            ["sudo", "mount", "-t", "tmpfs", "-o", "huge=always,size=500M", "tmpfs_pg", tmpfs_mount],
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"Error: Failed to mount tmpfs at {tmpfs_mount}")
-            print("Make sure you have sudo privileges")
-            sys.exit(1)
-        print(f"Successfully mounted tmpfs at {tmpfs_mount}")
-    else:
-        print(f"tmpfs already mounted at {tmpfs_mount}")
-
-    return tmpfs_mount
-
-def copy_binaries_to_tmpfs(src_bin_dir, tmpfs_mount, version_name):
-    """Copy PostgreSQL binaries from src_bin_dir to tmpfs and return new bin path."""
-    dest_bin_dir = os.path.join(tmpfs_mount, version_name)
-
-    print(f"Copying {version_name} binaries from {src_bin_dir} to {dest_bin_dir}...")
-
-    # Remove existing directory if it exists
-    if os.path.exists(dest_bin_dir):
-        shutil.rmtree(dest_bin_dir)
-
-    # Copy the entire bin directory
-    shutil.copytree(src_bin_dir, dest_bin_dir, symlinks=True)
-
-    print(f"Successfully copied binaries to {dest_bin_dir}")
-    return dest_bin_dir
-
-def cleanup_tmpfs(tmpfs_mount):
-    """Unmount the tmpfs filesystem."""
-    print(f"Unmounting tmpfs at {tmpfs_mount}...")
-    result = subprocess.run(
-        ["sudo", "umount", tmpfs_mount],
-        check=False
-    )
-    if result.returncode != 0:
-        print(f"Warning: Failed to unmount tmpfs at {tmpfs_mount}")
-    else:
-        print(f"Successfully unmounted tmpfs")
-
-    # Try to remove the mount point directory
-    try:
-        os.rmdir(tmpfs_mount)
-    except OSError:
-        pass
 
 def start_server(pg_bin_dir, pg_name, pg_data_dir, conn_details):
     """Start a PostgreSQL server and wait for it to be ready."""
@@ -923,6 +872,337 @@ def display_perfstat_comparison(master_stat_file, patch_stat_file):
 
     print("\n" + "="*120 + "\n")
 
+
+def prepare_prefetch_cache(conn, query_def, cached_mode):
+    """Prepare cache state for a prefetch benchmark query."""
+    if cached_mode:
+        # Cached mode: prewarm everything (indexes + tables)
+        print("Prewarming indexes and tables (cached mode)...")
+        prewarm_relations(conn, query_def.get("prewarm_indexes", []))
+        prewarm_relations(conn, query_def.get("prewarm_tables", []))
+    else:
+        # Uncached mode: evict heap, prewarm only indexes, clear OS cache
+        print("Evicting relations and clearing OS cache (uncached mode)...")
+        evict_relations(conn, query_def.get("evict", []))
+        prewarm_relations(conn, query_def.get("prewarm_indexes", []))
+        clear_os_cache()
+
+
+def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_event, run_perf):
+    """Profile a prefetch benchmark query and generate flame graphs."""
+    query_id = args.query.upper()
+    query_def = QUERIES[query_id]
+    sql_query = query_def["sql"].strip()
+    cached_mode = args.cached
+
+    print(f"\n{'='*60}")
+    print(f"Profiling prefetch query: {query_id} - {query_def['name']}")
+    print(f"Mode: {'cached' if cached_mode else 'uncached'}")
+    print(f"{'='*60}\n")
+
+    # Create output directory
+    if os.path.exists(OUTPUT_DIR):
+        print(f"Removing previous output directory: {OUTPUT_DIR}")
+        shutil.rmtree(OUTPUT_DIR)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    stacks_file_master = os.path.join(OUTPUT_DIR, "master.stacks")
+    stacks_file_patch = os.path.join(OUTPUT_DIR, "patch.stacks")
+    folded_file_master = os.path.join(OUTPUT_DIR, "master.folded")
+    folded_file_patch = os.path.join(OUTPUT_DIR, "patch.folded")
+    svg_file_diff = os.path.join(OUTPUT_DIR, "diff.svg")
+    svg_file_master = os.path.join(OUTPUT_DIR, "master_flamegraph.svg")
+    svg_file_patch = os.path.join(OUTPUT_DIR, "patch_flamegraph.svg")
+
+    try:
+        # Verify/load data on both servers if needed
+        if not args.skip_data_load:
+            print("\n--- Verifying prefetch benchmark data on master ---")
+            start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+            if not verify_data(MASTER_CONN_DETAILS, skip_load=False):
+                print("Loading data on master (this will take several minutes)...")
+                load_data(MASTER_CONN_DETAILS)
+            stop_server(master_bin, MASTER_DATA_DIR)
+            time.sleep(2)
+
+            print("\n--- Verifying prefetch benchmark data on patch ---")
+            start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+            if not verify_data(PATCH_CONN_DETAILS, skip_load=False):
+                print("Loading data on patch (this will take several minutes)...")
+                load_data(PATCH_CONN_DETAILS)
+            stop_server(patch_bin, PATCH_DATA_DIR)
+            time.sleep(2)
+
+        # Profile master
+        print("\n--- Profiling master version ---")
+        start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
+        perf_command_master, total_time_master = profile_prefetch_query(
+            master_bin, "master", MASTER_CONN_DETAILS,
+            stacks_file_master, sql_query, query_def, cached_mode,
+            is_master=True,
+            run_perf=run_perf, perf_event=perf_event,
+            highfreq=args.highfreq, run_perfstat=args.perfstat,
+            benchmark_cpu=args.benchmark_cpu, perf_cpu=args.perf_cpu,
+            disable_prefetch=args.disable_prefetch
+        )
+        stop_server(master_bin, MASTER_DATA_DIR)
+        time.sleep(2)
+
+        # Profile patch
+        print("\n--- Profiling patch version ---")
+        start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
+        perf_command_patch, total_time_patch = profile_prefetch_query(
+            patch_bin, "patch", PATCH_CONN_DETAILS,
+            stacks_file_patch, sql_query, query_def, cached_mode,
+            is_master=False,
+            run_perf=run_perf, perf_event=perf_event,
+            highfreq=args.highfreq, run_perfstat=args.perfstat,
+            benchmark_cpu=args.benchmark_cpu, perf_cpu=args.perf_cpu,
+            disable_prefetch=args.disable_prefetch
+        )
+        stop_server(patch_bin, PATCH_DATA_DIR)
+
+    finally:
+        # Always stop both servers
+        print("\n--- Stopping PostgreSQL servers ---")
+        stop_server(master_bin, MASTER_DATA_DIR)
+        stop_server(patch_bin, PATCH_DATA_DIR)
+
+        # Cleanup tmpfs if it was created
+        if tmpfs_mount:
+            cleanup_tmpfs(tmpfs_mount)
+
+    print(f"\nPatch query took \033[1m{total_time_patch/total_time_master:.3f}x\033[0m as long as master")
+
+    if not run_perf and not args.perfstat:
+        print("Perf profiling was disabled. Exiting.")
+        return
+    elif args.perfstat:
+        # Show perf stat output comparison
+        master_stat_file = os.path.join(OUTPUT_DIR, "master_perfstat.txt")
+        patch_stat_file = os.path.join(OUTPUT_DIR, "patch_perfstat.txt")
+        print("\n--- Perf Stat Output Comparison ---")
+        display_perfstat_comparison(master_stat_file, patch_stat_file)
+        return
+
+    # Generate flame graphs
+    print("\n--- Generating flame graphs ---")
+    generate_flamegraphs(
+        stacks_file_master, stacks_file_patch,
+        folded_file_master, folded_file_patch,
+        svg_file_master, svg_file_patch, svg_file_diff,
+        sql_query, perf_command_master, perf_command_patch
+    )
+
+    # Display differential flame graph
+    print(f"\nDifferential flame graph saved to: {svg_file_diff}")
+    try:
+        subprocess.run(["imgcat", svg_file_diff], check=False)
+    except FileNotFoundError:
+        print("(imgcat not available for inline display)")
+
+
+def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_query,
+                           query_def, cached_mode, is_master, run_perf, perf_event=None,
+                           highfreq=False, run_perfstat=False,
+                           benchmark_cpu=14, perf_cpu=15, disable_prefetch=False):
+    """Profile a prefetch benchmark query with appropriate cache preparation."""
+    print(f"--- Testing {pg_name} ---")
+
+    conn = None
+    try:
+        # Connect to the database
+        conn = psycopg.connect(**conn_details, prepare_threshold=0)
+        backend_pid = conn.info.backend_pid
+        print(f"Successfully connected. Backend PID is: {backend_pid}")
+
+        # Pin the backend process
+        try:
+            result = subprocess.run(
+                ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
+
+            result = subprocess.run(
+                ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                print(f"Set backend PID {backend_pid} to SCHED_FIFO.")
+        except Exception as e:
+            print(f"Warning: Could not set CPU affinity: {e}")
+
+        # Disable hardware prefetchers if requested
+        original_prefetch_value = None
+        if disable_prefetch:
+            print(f"\nDisabling hardware prefetchers on CPU {benchmark_cpu}...")
+            original_prefetch_value = disable_prefetchers(benchmark_cpu)
+
+        # Prepare cache state
+        with conn.cursor() as cursor:
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm;")
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_buffercache;")
+
+        prepare_prefetch_cache(conn, query_def, cached_mode)
+
+        # Set GUCs for the query
+        gucs = query_def.get("gucs", {})
+        set_gucs(conn, gucs, is_master=is_master, prefetch_setting=None)
+
+        # Handle warmup queries (A3 special case)
+        if query_def.get("warmup_query") and not cached_mode:
+            print("Running warmup queries...")
+            with conn.cursor() as cursor:
+                cursor.execute(sql_query)
+                cursor.execute(sql_query)
+
+        # Show EXPLAIN plan
+        print("\n--- Query Plan (EXPLAIN ANALYZE) ---")
+        with conn.cursor() as cursor:
+            cursor.execute(f"EXPLAIN (ANALYZE, COSTS OFF, TIMING ON) {sql_query}")
+            for row in cursor.fetchall():
+                print(row[0])
+        print("--- End Query Plan ---\n")
+
+        # Start perf profiling
+        perf_process = None
+        perf_command = []
+        start_time = time.time()
+
+        if run_perf:
+            print(f"Starting perf on CPU core {benchmark_cpu}...")
+            perf_freq = "49999" if highfreq else str(PERF_FREQUENCY)
+            perf_command = ["perf", "record", "-F", perf_freq]
+            if perf_event:
+                perf_command.extend(["-e", perf_event])
+            perf_command.extend(["-C", str(benchmark_cpu), "-g", "-o", OUTPUT_DIR + "/" + pg_name])
+            perf_process = subprocess.Popen(perf_command)
+
+            try:
+                os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
+            except (AttributeError, PermissionError, OSError) as e:
+                print(f"Warning: Could not set CPU affinity for perf: {e}")
+
+            time.sleep(1)  # Give perf time to initialize
+
+        elif run_perfstat:
+            print(f"Starting perf stat on CPU core {benchmark_cpu}...")
+            stat_output_file = OUTPUT_DIR + "/" + pg_name + "_perfstat.txt"
+            perf_command = ["perf", "stat", "-ddd", "-C", str(benchmark_cpu), "-o", stat_output_file]
+            perf_process = subprocess.Popen(perf_command)
+            time.sleep(1)
+
+        # Execute the query (run multiple times for better profiling data)
+        query_repetitions = 5  # Run a few times for flame graph data
+        print(f"Executing query {query_repetitions} times for profiling...")
+
+        for i in range(query_repetitions):
+            # Re-prepare cache before each run (except first)
+            if i > 0:
+                prepare_prefetch_cache(conn, query_def, cached_mode)
+
+            query_start = time.time()
+            with conn.cursor() as cursor:
+                cursor.execute(sql_query)
+                # Fetch results to ensure query completes
+                cursor.fetchall()
+            query_time = time.time() - query_start
+            print(f"  Run {i+1}: {query_time*1000:.2f} ms")
+
+        total_time = time.time() - start_time
+
+        # Stop perf
+        if perf_process:
+            print("Stopping perf...")
+            perf_process.send_signal(signal.SIGINT)
+            perf_process.wait(timeout=10)
+
+            # Generate stacks file
+            if run_perf:
+                print("Generating stack trace file...")
+                perf_data_file = OUTPUT_DIR + "/" + pg_name
+                perf_script_cmd = ["perf", "script", "-i", perf_data_file]
+                with open(output_file, "w") as f:
+                    subprocess.run(perf_script_cmd, stdout=f, check=True)
+
+        # Restore hardware prefetchers if they were disabled
+        if original_prefetch_value is not None:
+            restore_prefetchers(benchmark_cpu, original_prefetch_value)
+
+        # Reset GUCs
+        if gucs:
+            reset_gucs(conn, gucs)
+
+        return perf_command, total_time
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def generate_flamegraphs(stacks_file_master, stacks_file_patch,
+                         folded_file_master, folded_file_patch,
+                         svg_file_master, svg_file_patch, svg_file_diff,
+                         sql_query, perf_command_master, perf_command_patch):
+    """Generate individual and differential flame graphs."""
+    STACKCOLLAPSE = os.path.join(FLAMEGRAPH_DIR, "stackcollapse-perf.pl")
+    FLAMEGRAPH = os.path.join(FLAMEGRAPH_DIR, "flamegraph.pl")
+    DIFFFOLDED = os.path.join(FLAMEGRAPH_DIR, "difffolded.pl")
+
+    # Fold master stacks
+    print("Folding master stacks...")
+    with open(folded_file_master, "w") as f:
+        subprocess.run([STACKCOLLAPSE, stacks_file_master], stdout=f, check=True)
+
+    # Fold patch stacks
+    print("Folding patch stacks...")
+    with open(folded_file_patch, "w") as f:
+        subprocess.run([STACKCOLLAPSE, stacks_file_patch], stdout=f, check=True)
+
+    # Generate master flame graph
+    print("Generating master flame graph...")
+    with open(svg_file_master, "w") as f:
+        perf_cmd_str = " ".join(perf_command_master) if perf_command_master else "perf record"
+        subprocess.run([
+            FLAMEGRAPH,
+            "--title", f'master, "{sql_query[:50]}..."',
+            "--subtitle", perf_cmd_str,
+            folded_file_master
+        ], stdout=f, check=True)
+
+    # Generate patch flame graph
+    print("Generating patch flame graph...")
+    with open(svg_file_patch, "w") as f:
+        perf_cmd_str = " ".join(perf_command_patch) if perf_command_patch else "perf record"
+        subprocess.run([
+            FLAMEGRAPH,
+            "--title", f'patch, "{sql_query[:50]}..."',
+            "--subtitle", perf_cmd_str,
+            folded_file_patch
+        ], stdout=f, check=True)
+
+    # Generate differential flame graph
+    print("Generating differential flame graph...")
+    diff_proc = subprocess.run(
+        [DIFFFOLDED, folded_file_master, folded_file_patch],
+        capture_output=True, check=True
+    )
+    with open(svg_file_diff, "w") as f:
+        subprocess.run([
+            FLAMEGRAPH,
+            "--title", f'master versus patch, "{sql_query[:50]}..."',
+            "--negate"
+        ], input=diff_proc.stdout, stdout=f, check=True)
+
+    print(f"\nFlame graphs generated:")
+    print(f"  Master: {svg_file_master}")
+    print(f"  Patch: {svg_file_patch}")
+    print(f"  Diff: {svg_file_diff}")
+
+
 def main():
     """Main execution flow."""
     args = parse_arguments()
@@ -945,6 +1225,22 @@ def main():
     if args.use_hash_index and args.index_only_scan:
         print("Error: --hash and --ios cannot be used together (hash indexes lack support for index-only scans)")
         sys.exit(1)
+
+    # Validate --query and --cached arguments
+    if args.query and args.benchmark != "nestloop":  # nestloop is the default
+        print("Error: --query and --benchmark are mutually exclusive")
+        sys.exit(1)
+
+    if args.cached and not args.query:
+        print("Error: --cached requires --query")
+        sys.exit(1)
+
+    if args.query:
+        query_id = args.query.upper()
+        if query_id not in QUERIES:
+            available = ", ".join(QUERIES.keys())
+            print(f"Error: Unknown query '{args.query}'. Available: {available}")
+            sys.exit(1)
 
     # Pin the script itself to a core to avoid it interfering with the benchmark.
     # This may require running the script with sufficient privileges (e.g., as root).
@@ -976,6 +1272,14 @@ def main():
         print("\nSkipping tmpfs hugepages setup (disabled with --no-tmpfs-hugepages)")
         master_bin = MASTER_BIN
         patch_bin = PATCH_BIN
+
+    # Handle prefetch benchmark query mode
+    if args.query:
+        run_prefetch_query_profiling(
+            args, master_bin, patch_bin, tmpfs_mount,
+            perf_event, run_perf
+        )
+        return
 
     # Get benchmark configuration
     benchmark = BENCHMARKS[args.benchmark]

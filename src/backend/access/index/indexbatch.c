@@ -67,8 +67,8 @@ index_batchscan_init(IndexScanDesc scan)
 	scan->batchringbuf.paused = false;
 
 	/*
-	 * Start by resolving visibility for just one item, then gradually
-	 * ramp up the number of items processed.
+	 * Start by resolving visibility for just one item, then gradually ramp up
+	 * the number of items processed.
 	 */
 	scan->batchringbuf.vmItems = 1;
 

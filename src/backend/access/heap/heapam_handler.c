@@ -605,13 +605,16 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	index_batchpos_newbatch(scanBatch, scanPos, direction);
 	Assert(INDEX_SCAN_BATCH(scan, scanPos->batch) == scanBatch);
 
-	/* Free now-unneeded older batch/prior scanBatch */
-	if (scanPos->batch != batchringbuf->headBatch)
+	/*
+	 * Remove the head batch from the batch ring buffer (unless the head batch
+	 * is also our new scanBatch, which happens on the first call here)
+	 */
+	if (batchringbuf->headBatch != scanPos->batch)
 	{
 		IndexScanBatch headBatch = INDEX_SCAN_BATCH(scan,
 													batchringbuf->headBatch);
 
-		/* Free the obsolescent head batch (unless it is scan's markBatch) */
+		/* Also free obsolescent head batch (unless it is scan's markBatch) */
 		tableam_util_free_batch(scan, headBatch);
 
 		/* Remove the batch from the ring buffer */

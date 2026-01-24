@@ -222,18 +222,20 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		 * INDEX_SCAN_BATCH_LOADED indicates that markpos->batch is loaded
 		 * already, but we cannot fully trust it here.  It's just about
 		 * possible that markpos->batch falls within a since-recycled range of
-		 * batch offset numbers (following uint8 wraparound).
+		 * batch offset numbers (following uint8 overflow).
 		 *
 		 * Make sure that markBatch really is loaded by directly comparing it
 		 * against all loaded batches.  We must not fail to release markBatch
 		 * when we should.  This code path should seldom be reached.
 		 */
-		freeMarkBatch = false;	/* for now */
+		freeMarkBatch = true;	/* i.e. INDEX_SCAN_BATCH_LOADED lied to us */
+
 		for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
 		{
 			if (INDEX_SCAN_BATCH(scan, i) == markBatch)
 			{
-				freeMarkBatch = true;
+				/* INDEX_SCAN_BATCH_LOADED was right/no overflow happened */
+				freeMarkBatch = false;
 				break;
 			}
 		}

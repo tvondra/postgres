@@ -229,14 +229,10 @@ void
 index_batchscan_restore_pos(IndexScanDesc scan)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	BatchRingItemPos *markPos = &batchringbuf->markPos;
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 
-	/*
-	 * XXX Disable this optimization when I/O prefetching is in use, at least
-	 * until the possible interactions with prefetchPos are fully understood.
-	 */
-#if 0
 	if (scanPos->batch == markPos->batch &&
 		scanPos->batch == batchringbuf->headBatch)
 	{
@@ -245,9 +241,19 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 		 * current headBatch is also the batch that we're restoring to
 		 */
 		scanPos->item = markPos->item;
+
+		/*
+		 * But we do still have to reset the read stream.
+		 */
+		if (scan->xs_heapfetch->rs)
+		{
+			read_stream_end(scan->xs_heapfetch->rs);
+			scan->xs_heapfetch->rs = NULL;
+		}
+		batch_reset_pos(&batchringbuf->prefetchPos);
+		batchringbuf->paused = false;
 		return;
 	}
-#endif
 
 	/*
 	 * Call amposreset to let index AM know to invalidate any private state

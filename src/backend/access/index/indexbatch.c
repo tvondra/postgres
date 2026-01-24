@@ -229,7 +229,11 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		 *
 		 * Make sure that markBatch really is loaded by directly comparing it
 		 * against all loaded batches.  We must not fail to release markBatch
-		 * when we should.  This code path should seldom be reached.
+		 * when nobody else will later on.
+		 *
+		 * Note: in practice we're very unlikely to end up here.  It is very
+		 * atypical for an index on the inner side of a merge join to hold on
+		 * to a mark (without marking another position) across many batches.
 		 */
 		freeMarkBatch = true;	/* i.e. INDEX_SCAN_BATCH_LOADED lied to us */
 

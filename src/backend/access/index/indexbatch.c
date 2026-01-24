@@ -343,8 +343,25 @@ index_batchscan_restore_pos(IndexScanDesc scan)
  */
 
 /*
- * tableam_util_batch_dirchange - handle a change in scan direction across
- * batch boundary
+ * tableam_util_batch_dirchange - handle cross-batch change in scan direction
+ *
+ * Called by table AM when its scan changes direction in a way that
+ * necessitates backing the scan up to an index page originally associated
+ * with a now-freed batch.
+ *
+ * When we return, batchringbuf will only contain one batch (the current
+ * headBatch/scanBatch).  Caller can then safely pass this batch to amgetbatch
+ * to determine which batch comes next in the new scan direction.  From that
+ * point on batchringbuf will look as if our new scan direction had been used
+ * from the start.  This approach isn't particularly efficient, but it works
+ * well enough for what ought to be a relatively rare occurrence.
+ *
+ * Caller must have invalidated the scan's read stream before calling here.
+ * That needs to happen as soon as the scan requests a tuple in whatever scan
+ * direction is opposite-to-current.  We only deal with the case where the
+ * scan backs up by enough items to cross a batch boundary (when the scan
+ * resumes scanning in its original direction/ends before crossing a boundary,
+ * there isn't any need to call here).
  */
 void
 tableam_util_batch_dirchange(IndexScanDesc scan)
@@ -353,28 +370,27 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	IndexScanBatch head;
 
 	/*
-	 * Handle a change in the scan's direction.
-	 *
-	 * Release future batches properly, to make it look like the current batch
-	 * is the only one we loaded.
+	 * Release batches starting from the current "tail" batch, working
+	 * backwards until the current head batch (which must also be the current
+	 * scanBatch) is the only batch hasn't been freed
 	 */
 	while (INDEX_SCAN_BATCH_COUNT(scan) > 1)
 	{
-		/* release "later" batches in reverse order */
-		IndexScanBatch fbatch = INDEX_SCAN_BATCH(scan,
-												 batchringbuf->nextBatch - 1);
+		IndexScanBatch tail = INDEX_SCAN_BATCH(scan,
+											   batchringbuf->nextBatch - 1);
 
 		Assert(!batchringbuf->markBatch);
-		tableam_util_free_batch(scan, fbatch);
+		tableam_util_free_batch(scan, tail);
 		batchringbuf->nextBatch--;
 	}
 
-	/* Only head position's batch is still loaded */
+	/* scanBatch is now the only batch still loaded */
 	Assert(batchringbuf->headBatch == batchringbuf->scanPos.batch);
 
 	/*
 	 * Deal with index AM state that independently tracks the progress of the
-	 * scan.
+	 * scan.  Do this by flipping the batch-level scan direction, and then
+	 * calling the index AM's amposreset.
 	 */
 	head = INDEX_SCAN_BATCH(scan, batchringbuf->headBatch);
 	head->dir = -head->dir;

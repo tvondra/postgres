@@ -315,18 +315,26 @@ typedef struct BatchRingBuffer
 	IndexScanBatch markBatch;
 
 	/*
-	 * Array of batches returned by the AM. The array has a capacity (but can
-	 * be resized if needed). The headBatch is an index of the batch we're
-	 * currently reading from (this needs to be translated by modulo
-	 * INDEX_SCAN_MAX_BATCHES into index in the batches array).
+	 * headBatch is an index to the earliest still-valid batch in 'batches'.
+	 * Typically this is also the scan's current scanPos batch (scanBatch).
 	 */
-	uint8		headBatch;		/* head batch slot */
-	uint8		nextBatch;		/* next empty batch slot */
+	uint8		headBatch;
+
+	/*
+	 * nextBatch is an index to the next empty batch slot in 'batches'.  This
+	 * is only actually usable when the scan is !INDEX_SCAN_BATCH_FULL.
+	 */
+	uint8		nextBatch;
 
 	/* Array of pointers to cached recyclable batches */
 	IndexScanBatch cache[INDEX_SCAN_CACHE_BATCHES];
 
-	/* Array of pointers to ring buffer batches */
+	/*
+	 * Array of pointers to ring buffer batches
+	 *
+	 * Note: Must be accessed using the INDEX_SCAN_BATCH* macros, which will
+	 * correctly deal with headBatch/nextBatch overflow.
+	 */
 	IndexScanBatch batches[INDEX_SCAN_MAX_BATCHES];
 
 	/*

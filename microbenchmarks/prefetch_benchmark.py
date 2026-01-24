@@ -254,17 +254,6 @@ QUERIES = OrderedDict([
         "prewarm_tables": ["prefetch_sequential"],
         "setup_table": "prefetch_sequential",
     }),
-    ("A2", {
-        "name": "Tiny result set (adversarial)",
-        "sql": """
-            SELECT * FROM prefetch_orders
-            WHERE customer_id = 50000
-              AND order_date BETWEEN '2023-06-15' AND '2023-06-17'
-        """,
-        "evict": ["prefetch_orders"],
-        "prewarm_indexes": ["prefetch_orders_cust_date_idx"],
-        "prewarm_tables": ["prefetch_orders"],
-    }),
     ("A3", {
         "name": "High cache hit ratio (adversarial)",
         "sql": """

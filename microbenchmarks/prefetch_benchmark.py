@@ -413,8 +413,8 @@ Examples:
     parser.add_argument(
         "--topn",
         type=int,
-        default=5,
-        help="Number of top improvements/regressions to show (default: 5)"
+        default=10,
+        help="Number of top improvements/regressions to show (default: 10)"
     )
     prefetch_group = parser.add_mutually_exclusive_group()
     prefetch_group.add_argument(

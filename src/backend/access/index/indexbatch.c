@@ -87,6 +87,8 @@ void
 index_batchscan_reset(IndexScanDesc scan, bool complete)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
+	IndexScanBatch markBatch = batchringbuf->markBatch;
+	bool		markBatchFreed = false;
 
 	batch_assert_batches_valid(scan);
 	Assert(scan->xs_heapfetch);
@@ -99,39 +101,43 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	batch_reset_pos(&batchringbuf->prefetchPos);
 
 	/*
-	 * With "complete" reset, make sure to also free the marked batch, either
-	 * by just forgetting it (if it's still in the ring buffer), or by
-	 * explicitly freeing it.
+	 * When called with "complete" we must make sure that markBatch is freed,
+	 * and that all markBatch related state is reset
 	 */
-	if (complete && unlikely(batchringbuf->markBatch != NULL))
+	if (complete && unlikely(markBatch != NULL))
 	{
-		BatchRingItemPos *markPos = &batchringbuf->markPos;
-		IndexScanBatch markBatch = batchringbuf->markBatch;
-
-		/* always reset the position, forget the marked batch */
-		batchringbuf->markBatch = NULL;
-
-		/*
-		 * If we've already moved past the marked batch (it's not loaded into
-		 * the ring buffer), free it explicitly now.  Otherwise, it'll be
-		 * freed along with the other loaded batches.
-		 */
-		if (!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
-			tableam_util_free_batch(scan, markBatch);
-
+		/* Get ready to free markBatch */
+		batchringbuf->markBatch = NULL; /* tableam_util_free_batch will test
+										 * this */
 		batch_reset_pos(&batchringbuf->markPos);
 	}
 
-	/* now release all other currently loaded batches */
+	/*
+	 * Release all currently loaded batches, being sure to avoid freeing
+	 * markBatch (unless called with complete, where we're supposed to)
+	 */
 	while (INDEX_SCAN_BATCH_COUNT(scan) > 0)
 	{
 		IndexScanBatch batch = INDEX_SCAN_BATCH(scan,
 												batchringbuf->headBatch);
 
-		tableam_util_free_batch(scan, batch);
+		if (complete || batch != markBatch)
+		{
+			markBatchFreed = (batch == markBatch);
+			tableam_util_free_batch(scan, batch);
+		}
 
 		/* update the valid range, so that asserts / debugging works */
 		batchringbuf->headBatch++;
+	}
+
+	if (complete && markBatch != NULL && !markBatchFreed)
+	{
+		/*
+		 * We didn't free markBatch because it was no longer loaded in ring
+		 * buffer.  Do so now instead.
+		 */
+		tableam_util_free_batch(scan, markBatch);
 	}
 
 	/* reset relevant batch state fields */
@@ -190,19 +196,51 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 
 	/*
-	 * Free the previous mark batch (if any), but only if the batch is no
-	 * longer loaded into the ring buffer
+	 * Free the previous mark batch (if any)
 	 */
-	if (markBatch && !INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
+	batchringbuf->markBatch = NULL;
+	if (!markBatch)
 	{
-		batchringbuf->markBatch = NULL;
+		/* Definitely no markBatch to free */
+	}
+	else if (!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch))
+	{
+		/* Definitely have a no-longer-loaded markBatch to free */
 		tableam_util_free_batch(scan, markBatch);
+	}
+	else
+	{
+		/*
+		 * Have a markBatch to free, but we cannot unreservedly trust
+		 * INDEX_SCAN_BATCH_LOADED to indicate that it must be loaded already;
+		 * ring buffer numbers might have wrapped around since markPos.batch
+		 * was initially saved; we don't want to fail to release markBatch due
+		 * to mistaking it for some other loaded batch.
+		 *
+		 * Work around this by comparing batch pointers.
+		 */
+		bool		markBatchLoaded = false;
+
+		for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
+		{
+			if (INDEX_SCAN_BATCH(scan, i) == markBatch)
+			{
+				markBatchLoaded = true;
+				break;
+			}
+		}
+
+		if (!markBatchLoaded)
+		{
+			/* Free markBatch, which definitely isn't loaded already */
+			tableam_util_free_batch(scan, markBatch);
+		}
 	}
 
 	/* copy the scan's position */
 	batchringbuf->markPos = batchringbuf->scanPos;
 	batchringbuf->markBatch = INDEX_SCAN_BATCH(scan,
-											   batchringbuf->markPos.batch);
+											   batchringbuf->scanPos.batch);
 
 	/* scanPos/markPos must be valid */
 	batch_assert_pos_valid(scan, &batchringbuf->markPos);
@@ -232,9 +270,9 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	BatchRingItemPos *markPos = &batchringbuf->markPos;
 	IndexScanBatch markBatch = batchringbuf->markBatch;
+	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 
-	if (scanPos->batch == markPos->batch &&
-		scanPos->batch == batchringbuf->headBatch)
+	if (scanBatch == markBatch)
 	{
 		/*
 		 * We don't have to discard the scan's state after all, since the
@@ -252,6 +290,7 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 		}
 		batch_reset_pos(&batchringbuf->prefetchPos);
 		batchringbuf->paused = false;
+
 		return;
 	}
 
@@ -296,6 +335,8 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	IndexScanBatch head;
 
+	Assert(!batchringbuf->markBatch);
+
 	/*
 	 * Handle a change in the scan's direction.
 	 *
@@ -307,6 +348,7 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 		/* release "later" batches in reverse order */
 		IndexScanBatch fbatch = INDEX_SCAN_BATCH(scan,
 												 batchringbuf->nextBatch - 1);
+
 		tableam_util_free_batch(scan, fbatch);
 		batchringbuf->nextBatch--;
 	}

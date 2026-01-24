@@ -611,16 +611,11 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		IndexScanBatch headBatch = INDEX_SCAN_BATCH(scan,
 													batchringbuf->headBatch);
 
-		/* Free the head batch (except when it's markBatch) */
+		/* Free the obsolescent head batch (unless it is scan's markBatch) */
 		tableam_util_free_batch(scan, headBatch);
 
-		/*
-		 * In any case, remove the batch from the ring buffer, even if we kept
-		 * it for mark/restore
-		 */
+		/* Remove the batch from the ring buffer */
 		batchringbuf->headBatch++;
-
-		/* we can't skip any batches */
 		Assert(batchringbuf->headBatch == scanPos->batch);
 
 		if (batchringbuf->paused)

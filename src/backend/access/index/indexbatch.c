@@ -106,9 +106,13 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	 */
 	if (complete && unlikely(markBatch != NULL))
 	{
-		/* Get ready to free markBatch */
-		batchringbuf->markBatch = NULL; /* tableam_util_free_batch will test
-										 * this */
+		/*
+		 * We'll free markBatch during this call.
+		 *
+		 * Note: we must set batchringbuf.markBatch to NULL up front like this
+		 * so that tableam_util_free_batch actually frees markBatch later on.
+		 */
+		batchringbuf->markBatch = NULL;
 		batch_reset_pos(&batchringbuf->markPos);
 	}
 
@@ -203,7 +207,6 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	 * scanBatch (defensively make sure that markBatch isn't some later
 	 * still-needed batch, too)
 	 */
-	batchringbuf->markBatch = NULL;
 	if (!markBatch || markBatch == scanBatch)
 	{
 		/* Definitely no markBatch that we should free now */
@@ -244,6 +247,7 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	if (freeMarkBatch)
 	{
 		/* Free markBatch, since it isn't loaded/needed for batchringbuf */
+		batchringbuf->markBatch = NULL; /* else call won't free markBatch */
 		tableam_util_free_batch(scan, markBatch);
 	}
 
@@ -344,8 +348,6 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	IndexScanBatch head;
 
-	Assert(!batchringbuf->markBatch);
-
 	/*
 	 * Handle a change in the scan's direction.
 	 *
@@ -358,6 +360,7 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 		IndexScanBatch fbatch = INDEX_SCAN_BATCH(scan,
 												 batchringbuf->nextBatch - 1);
 
+		Assert(!batchringbuf->markBatch);
 		tableam_util_free_batch(scan, fbatch);
 		batchringbuf->nextBatch--;
 	}
@@ -407,13 +410,17 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
  * resources, and to set LP_DEAD bits on the batch's index page (in index AMs
  * that implement that optimization).  Every amfreebatch routine must recycle
  * the underlying batch memory by passing it to indexam_util_batch_release.
+ *
+ * Note: Calling here when 'batch' is also batchringbuf.markBatch is a no-op.
+ * Callers that don't want this should set batchringbuf.markBatch to NULL
+ * before calling us.
  */
 void
 tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
 	batch_assert_batch_valid(scan, batch);
 
-	/* don't free the batch that is marked */
+	/* don't free caller's batch if it is scan's current markBatch */
 	if (batch == scan->batchringbuf.markBatch)
 		return;
 

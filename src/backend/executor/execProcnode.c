@@ -981,8 +981,8 @@ ExecSetTupleBound(int64 tuples_needed, PlanState *child_node)
 	else if (IsA(child_node, IndexScanState))
 	{
 		/*
-		 * If it is an IndexScan, save the tuples_needed in the state so it can
-		 * be propagated to the IndexScanDesc when the scan is started.
+		 * If it is an IndexScan, save the tuples_needed in the state so it
+		 * can be propagated to the IndexScanDesc when the scan is started.
 		 *
 		 * Note: As with Sort, the index scan node is responsible for reacting
 		 * properly to changes to this parameter.

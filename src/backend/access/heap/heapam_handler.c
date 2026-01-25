@@ -566,7 +566,15 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		batch_reset_pos(&batchringbuf->prefetchPos);
 		batchringbuf->paused = false;
 
-		/* We can never reach here more than once per loaded batch */
+		/*
+		 * Remember new scan direction (we should never reach here more than
+		 * once per loaded batch).
+		 *
+		 * Note: iff the scan _continues_ in this new direction, and actually
+		 * steps off scanBatch to an earlier index page, heap_batch_getnext
+		 * will deal with it.  But that might never happen; the scan might yet
+		 * change direction again (or just end before returning more items).
+		 */
 		batchringbuf->direction = direction;
 	}
 

@@ -533,7 +533,7 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
  * various indexbatch.c utility routines.
  * ----------------
  */
-static ItemPointer
+static inline ItemPointer
 heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;

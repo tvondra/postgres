@@ -975,23 +975,33 @@ amendscan (IndexScanDesc scan);
 void
 amposreset (IndexScanDesc scan);
 </programlisting>
-   Notify index AM that core code will change the scan's position to an item
-   returned as part of an earlier batch.  The index AM must therefore
-   invalidate any state that independently tracks the scan's progress
-   (e.g., array keys used with a ScalarArrayOpExpr qual).  Called by the core
-   system when it is about to restore a mark.
+   Notify the index AM that the table AM is about to change the scan's
+   logical position in a way that requires the index AM to reset any state
+   that independently tracks the scan's progress.  For example, nbtree must
+   reset the array keys used by <literal>ScalarArrayOpExpr</literal> qual
+   evaluation when the scan position changes.  This callback is invoked when
+   the table AM is about to process a batch in a different direction than
+   was used when the batch was originally returned by
+   <function>amgetbatch</function>, and also when a marked scan position is
+   about to be restored.
   </para>
 
   <para>
-   The <function>amposreset</function> function can only be provided if the
+   Index access methods that have private state which must be reset when the
+   scan position changes must provide an <function>amposreset</function>
+   implementation.  Index AMs with no such state may set
+   <structfield>amposreset</structfield> to NULL.
+   The <function>amposreset</function> function can only be provided when the
    access method supports ordered scans through the <function>amgetbatch</function>
-   interface.  If it doesn't, the <structfield>amposreset</structfield> field
-   in its <structname>IndexAmRoutine</structname> struct should be set to
-   NULL.  Index AMs that don't have any private state that might need to be
-   invalidated might still find it useful to provide an empty
-   <structfield>amposreset</structfield> function; if <function>amposreset</function>
-   is set to NULL, the core system will assume that it is unsafe to restore a
-   marked position.
+   interface.
+  </para>
+
+  <para>
+   Mark and restore functionality, which is used by merge joins, is supported
+   by all index access methods that provide the <function>amgetbatch</function>
+   interface.  Restoring a marked position invokes <function>amposreset</function>
+   (when provided) to reset any index AM state that depends on the scan's
+   progress.
   </para>
 
   <para>
@@ -1191,12 +1201,13 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
   </para>
 
   <para>
-   Access methods using the <function>amgetbatch</function> interface may
+   Access methods using the <function>amgetbatch</function> interface
    support <quote>marking</quote> a position in a scan and later returning to
-   the marked position, though this is optional.  When a marked position is
-   restored, the index AM is notified via the <function>amposreset</function>
-   callback so it can invalidate any private state that independently tracks
-   the scan's progress (such as array key state).  See the
+   the marked position.  When a batch is processed in a different direction
+   than it was originally fetched, or when a marked position is restored, the
+   index AM is notified via the <function>amposreset</function> callback (if
+   provided) so it can reset any private state that independently tracks the
+   scan's progress (such as array key state).  See the
    <function>amposreset</function> function description for details.
   </para>
 

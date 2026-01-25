@@ -825,15 +825,16 @@ _bt_compare(Relation rel,
 }
 
 /*
- *	_bt_first() -- Find the first item in a scan.
+ *	_bt_first() -- Find the first batch in a scan.
  *
  *		We need to be clever about the direction of scan, the search
- *		conditions, and the tree ordering.  We find the first item (or,
- *		if backwards scan, the last item) in the tree that satisfies the
- *		qualifications in the scan key.  On success exit, data about the
- *		matching tuple(s) on the page has been loaded into the returned batch.
+ *		conditions, and the tree ordering.  We find the first leaf page (or
+ *		the last leaf page, when scanning backwards) in the tree with at least
+ *		one tuple that satisfies the qualifications in the scan key.  On
+ *		success exit, we return a new batch with that page's matching items.
  *
- * If there are no matching items in the index, we just return NULL.
+ * If there are no matching items in the index (in the given scan direction),
+ * we just return NULL.
  *
  * Note that scan->keyData[], and the so->keyData[] scankey built from it,
  * are both search-type scankeys (see nbtree/README for more about this).
@@ -1534,18 +1535,14 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
- *	_bt_next() -- Get the next item in a scan.
+ *	_bt_next() -- Get the next batch in a scan.
  *
  *		On entry, priorbatch describes the batch that was last returned by
  *		btgetbatch.  We'll use the prior batch's positioning information to
- *		decide which page to read next.
+ *		decide which leaf page to read next.
  *
  *		On success exit, returns the next batch.  There must be at least one
  *		matching tuple on any returned batch (else we'd just return NULL).
- *
- *		On failure exit (no more tuples), we return NULL.  It'll still be
- *		possible for the scan to return tuples by changing direction, though
- *		we'll need to call _bt_first anew in that other direction.
  */
 IndexScanBatch
 _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
@@ -1577,8 +1574,12 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 		 !priorbatch->moreRight : !priorbatch->moreLeft))
 	{
 		/*
-		 * priorbatch _bt_readpage call ended scan in this direction (though
-		 * if so->needPrimScan was set the scan will continue in _bt_first)
+		 * priorbatch's page is known to be the final leaf page with matches
+		 * in this scan direction (its _bt_readpage call figured that out).
+		 *
+		 * Note: if so->needPrimScan is set, then priorbatch's leaf page is
+		 * actually just the final page for the current primitive index scan
+		 * in this scan direction (the scan will continue in _bt_first).
 		 */
 		_bt_parallel_done(scan);
 		return NULL;

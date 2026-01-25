@@ -405,6 +405,8 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		Assert(priorPos == &batchringbuf->scanPos);
 
 		tableam_util_batch_dirchange(scan);
+
+		/* priorpos is now batchringbuf's only batch */
 		Assert(priorPos->batch == batchringbuf->headBatch);
 	}
 	else if (INDEX_SCAN_BATCH_LOADED(scan, priorPos->batch + 1))

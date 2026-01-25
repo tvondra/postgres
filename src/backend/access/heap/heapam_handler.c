@@ -599,10 +599,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	if (!scanBatch)
 	{
-		/*
-		 * There are no more batches to be loaded in the current scan
-		 * direction
-		 */
+		/* we're done; no more batches in the current scan direction */
 		return NULL;
 	}
 

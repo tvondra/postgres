@@ -217,8 +217,6 @@ static inline ItemPointer
 heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 						BatchRingItemPos *scanPos)
 {
-	index_scan_pos_check_against_ringbuf(scan, scanPos);
-
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* set the TID / itup for the scan */
@@ -523,8 +521,6 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 	/* xs_hitup is not supported by amgetbatch scans */
 	Assert(!scan->xs_hitup);
 
-	index_scan_batch_check_all_against_ringbuf(scan);
-
 	return batch;
 }
 
@@ -542,9 +538,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	BatchRingItemPos *scanPos = &batchringbuf->scanPos;
 	IndexScanBatch scanBatch = NULL;
-
-	/* shouldn't get here without batching */
-	index_scan_batch_check_all_against_ringbuf(scan);
 
 	/* xs_hitup is not supported by amgetbatch scans */
 	Assert(!scan->xs_hitup);
@@ -688,7 +681,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	 * valid, in which case it'll be initialized using scanPos.
 	 */
 	Assert(index_scan_batch_count(scan) > 0);
-	index_scan_pos_check_against_ringbuf(scan, scanPos);
 
 	/*
 	 * If prefetchPos has not been initialized yet, that typically indicates
@@ -778,7 +770,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * prefetchPos now points to the next item whose TID's heap block
 		 * number might need to be prefetched
 		 */
-		index_scan_pos_check_against_ringbuf(scan, prefetchPos);
 		Assert(index_scan_batch(scan, prefetchPos->batch) == prefetchBatch);
 		Assert(prefetchBatch->dir == direction);
 

@@ -89,7 +89,6 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 	bool		markBatchFreed = false;
 
-	index_scan_batch_check_all_against_ringbuf(scan);
 	Assert(scan->xs_heapfetch);
 
 	if (scan->xs_heapfetch->rs)
@@ -151,8 +150,6 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 
 	/* reset the visibility check batch size */
 	batchringbuf->vmItems = 1;
-
-	index_scan_batch_check_all_against_ringbuf(scan);
 }
 
 /*
@@ -256,9 +253,6 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	/* copy the scan's position */
 	batchringbuf->markPos = *scanPos;
 	batchringbuf->markBatch = scanBatch;
-
-	/* scanPos/markPos must be valid */
-	index_scan_pos_check_against_ringbuf(scan, &batchringbuf->markPos);
 }
 
 /*
@@ -416,8 +410,6 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 
-	index_scan_pos_check_against_ringbuf(scan, scanPos);
-
 	if (scanBatch->killedItems == NULL)
 		scanBatch->killedItems = palloc_array(int, scan->maxitemsbatch);
 	if (scanBatch->numKilled < scan->maxitemsbatch)
@@ -442,8 +434,6 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
 void
 tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
-	index_scan_batch_check_against_ringbuf(scan, batch);
-
 	/* don't free caller's batch if it is scan's current markBatch */
 	if (batch == scan->batchringbuf.markBatch)
 		return;

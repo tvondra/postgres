@@ -290,8 +290,9 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 
 	/*
-	 * Restoring a mark always necessitates cancelling refetching.  This is
-	 * similar to handling used by table AMs where the scan direction changes.
+	 * Restoring a mark always required stopping prefetching/that we stop
+	 * using scan's read stream.  This is similar to the handling table AMs
+	 * implement to deal with a tuple-level change in the scan's direction.
 	 */
 	if (scan->xs_heapfetch->rs)
 	{
@@ -303,12 +304,10 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 
 	if (scanBatch == markBatch)
 	{
-		/*
-		 * We don't have to discard the scan's state after all, since the
-		 * current headBatch is also the batch that we're restoring to
-		 */
-		scanPos->item = markPos->item;
+		/* markBatch is already scanBatch; needn't change batchringbuf */
+		Assert(scanPos->batch == markPos->batch);
 
+		scanPos->item = markPos->item;
 		return;
 	}
 

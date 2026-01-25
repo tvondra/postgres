@@ -380,9 +380,8 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
  * ----------------
  */
 static IndexScanBatch
-heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
-				   BatchRingItemPos *priorPos,
-				   ScanDirection direction)
+heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
+				   IndexScanBatch priorbatch, BatchRingItemPos *priorPos)
 {
 	IndexScanBatch batch = NULL;
 	BatchRingBuffer *batchringbuf PG_USED_FOR_ASSERTS_ONLY = &scan->batchringbuf;
@@ -403,6 +402,9 @@ heap_batch_getnext(IndexScanDesc scan, IndexScanBatch priorbatch,
 		 * opposite scan direction to the one used when priorbatch was
 		 * returned by amgetbatch.
 		 */
+		Assert(direction == batchringbuf->direction);
+		Assert(priorPos == &batchringbuf->scanPos);
+
 		tableam_util_batch_dirchange(scan);
 		Assert(priorPos->batch == batchringbuf->headBatch);
 	}
@@ -595,7 +597,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * Either ran out of items from scanBatch, or the scan is just starting.
 	 * Try to advance scanBatch to the next batch (or get first batch).
 	 */
-	scanBatch = heap_batch_getnext(scan, scanBatch, scanPos, direction);
+	scanBatch = heap_batch_getnext(scan, direction, scanBatch, scanPos);
 
 	if (!scanBatch)
 	{
@@ -755,7 +757,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				return read_stream_pause(stream);
 			}
 
-			prefetchBatch = heap_batch_getnext(scan, prefetchBatch, prefetchPos, direction);
+			prefetchBatch = heap_batch_getnext(scan, direction,
+											   prefetchBatch, prefetchPos);
 			if (!prefetchBatch)
 			{
 				/*

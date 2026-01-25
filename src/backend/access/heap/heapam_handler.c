@@ -544,6 +544,10 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	/* scan should only be paused when there's no free batch slots */
 	Assert(!batchringbuf->paused || index_scan_batch_full(scan));
+	Assert(!index_scan_pos_is_valid(scanPos) ||
+		   batchringbuf->headBatch == scanPos->batch);
+	Assert(index_scan_pos_is_valid(scanPos) ||
+		   index_scan_batch_count(scan) == 0);
 
 	/* Initialize direction on first call */
 	if (batchringbuf->direction == NoMovementScanDirection)
@@ -620,7 +624,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 		/* Remove the batch from the ring buffer */
 		batchringbuf->headBatch++;
-		Assert(batchringbuf->headBatch == scanPos->batch);
 
 		if (batchringbuf->paused)
 		{
@@ -635,6 +638,14 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 			batchringbuf->paused = false;
 		}
 	}
+
+	/*
+	 * In practice scanBatch will always be the ring buffer's headBatch.
+	 *
+	 * Note: It's possible that prefetchPos still points to a batch that we've
+	 * already freed.  heapam_getnext_stream is prepared to deal with that.
+	 */
+	Assert(batchringbuf->headBatch == scanPos->batch);
 
 	return heapam_batch_return_tid(scan, scanBatch, scanPos);
 }
@@ -705,6 +716,10 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	 * approach to initializing prefetchPos during the scan's first call here.
 	 * In effect, this is an alternative way for prefetchPos to catch up with
 	 * scanPos -- one that doesn't rely on prefetchPos->batch staying around.
+	 *
+	 * Note: This approach is robust against uint8 wraparound of ring buffer
+	 * offsets: prefetchPos->batch cannot possibly fall behind scanPos->batch
+	 * by more than INDEX_SCAN_MAX_BATCHES at any time.  We rely on that here.
 	 */
 	if (!index_scan_pos_is_valid(prefetchPos) ||
 		!index_scan_batch_loaded(scan, prefetchPos->batch))

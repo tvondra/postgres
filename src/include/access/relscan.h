@@ -273,7 +273,7 @@ typedef struct BatchRingBuffer
 
 	/*
 	 * headBatch is an index to the earliest still-valid batch in 'batches'.
-	 * Typically this is also the scan's current scanPos batch (scanBatch).
+	 * In practice this must be the scan's current scanPos batch (scanBatch).
 	 */
 	uint8		headBatch;
 

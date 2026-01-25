@@ -54,10 +54,9 @@ index_batchscan_init(IndexScanDesc scan)
 	/* Tracks scan direction used to return last item */
 	scan->batchringbuf.direction = NoMovementScanDirection;
 
-	/* positions in the ring buffer of batches */
-	batch_reset_pos(&scan->batchringbuf.scanPos);
-	batch_reset_pos(&scan->batchringbuf.markPos);
-	batch_reset_pos(&scan->batchringbuf.prefetchPos);
+	index_scan_pos_invalidate(&scan->batchringbuf.scanPos);
+	index_scan_pos_invalidate(&scan->batchringbuf.markPos);
+	index_scan_pos_invalidate(&scan->batchringbuf.prefetchPos);
 
 	scan->batchringbuf.markBatch = NULL;
 	scan->batchringbuf.headBatch = 0;	/* initial head batch */
@@ -90,15 +89,14 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 	bool		markBatchFreed = false;
 
-	batch_assert_batches_valid(scan);
+	index_scan_batch_check_all_against_ringbuf(scan);
 	Assert(scan->xs_heapfetch);
 
 	if (scan->xs_heapfetch->rs)
 		read_stream_reset(scan->xs_heapfetch->rs);
 
-	/* reset the positions */
-	batch_reset_pos(&batchringbuf->scanPos);
-	batch_reset_pos(&batchringbuf->prefetchPos);
+	index_scan_pos_invalidate(&batchringbuf->scanPos);
+	index_scan_pos_invalidate(&batchringbuf->prefetchPos);
 
 	/*
 	 * When called with "complete" we must make sure that markBatch is freed,
@@ -113,16 +111,16 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 		 * so that tableam_util_free_batch actually frees markBatch later on.
 		 */
 		batchringbuf->markBatch = NULL;
-		batch_reset_pos(&batchringbuf->markPos);
+		index_scan_pos_invalidate(&batchringbuf->markPos);
 	}
 
 	/*
 	 * Release all currently loaded batches, being sure to avoid freeing
 	 * markBatch (unless called with complete, where we're supposed to)
 	 */
-	while (INDEX_SCAN_BATCH_COUNT(scan) > 0)
+	while (index_scan_batch_count(scan) > 0)
 	{
-		IndexScanBatch batch = INDEX_SCAN_BATCH(scan,
+		IndexScanBatch batch = index_scan_batch(scan,
 												batchringbuf->headBatch);
 
 		if (complete || batch != markBatch)
@@ -154,7 +152,7 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	/* reset the visibility check batch size */
 	batchringbuf->vmItems = 1;
 
-	batch_assert_batches_valid(scan);
+	index_scan_batch_check_all_against_ringbuf(scan);
 }
 
 /*
@@ -198,7 +196,7 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	BatchRingItemPos *markPos = &batchringbuf->markPos;
-	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
+	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 	IndexScanBatch markBatch = batchringbuf->markBatch;
 	bool		freeMarkBatch;
 
@@ -212,7 +210,7 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		/* Definitely no markBatch that we should free now */
 		freeMarkBatch = false;
 	}
-	else if (likely(!INDEX_SCAN_BATCH_LOADED(scan, markPos->batch)))
+	else if (likely(!index_scan_batch_loaded(scan, markPos->batch)))
 	{
 		/* Definitely have a no-longer-loaded markBatch to free */
 		freeMarkBatch = true;
@@ -222,7 +220,7 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		/*
 		 * It looks like markBatch is loaded/still needed within batchringbuf.
 		 *
-		 * INDEX_SCAN_BATCH_LOADED indicates that markpos->batch is loaded
+		 * index_scan_batch_loaded indicates that markpos->batch is loaded
 		 * already, but we cannot fully trust it here.  It's just about
 		 * possible that markpos->batch falls within a since-recycled range of
 		 * batch offset numbers (following uint8 overflow).
@@ -235,13 +233,13 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 		 * atypical for an index scan on the inner side of a merge join to
 		 * hold on to a mark that trails the current scanBatch this much.
 		 */
-		freeMarkBatch = true;	/* i.e. INDEX_SCAN_BATCH_LOADED lied to us */
+		freeMarkBatch = true;	/* i.e. index_scan_batch_loaded lied to us */
 
 		for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
 		{
-			if (INDEX_SCAN_BATCH(scan, i) == markBatch)
+			if (index_scan_batch(scan, i) == markBatch)
 			{
-				/* INDEX_SCAN_BATCH_LOADED was right/no overflow happened */
+				/* index_scan_batch_loaded was right/no overflow happened */
 				freeMarkBatch = false;
 				break;
 			}
@@ -260,7 +258,7 @@ index_batchscan_mark_pos(IndexScanDesc scan)
 	batchringbuf->markBatch = scanBatch;
 
 	/* scanPos/markPos must be valid */
-	batch_assert_pos_valid(scan, &batchringbuf->markPos);
+	index_scan_pos_check_against_ringbuf(scan, &batchringbuf->markPos);
 }
 
 /*
@@ -287,7 +285,7 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	BatchRingItemPos *markPos = &batchringbuf->markPos;
 	IndexScanBatch markBatch = batchringbuf->markBatch;
-	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
+	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 
 	/*
 	 * Restoring a mark always required stopping prefetching/that we stop
@@ -299,7 +297,7 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 		read_stream_end(scan->xs_heapfetch->rs);
 		scan->xs_heapfetch->rs = NULL;
 	}
-	batch_reset_pos(&batchringbuf->prefetchPos);
+	index_scan_pos_invalidate(&batchringbuf->prefetchPos);
 	batchringbuf->paused = false;
 
 	if (scanBatch == markBatch)
@@ -333,8 +331,8 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	markPos->batch = 0;
 	batchringbuf->scanPos = *markPos;
 	batchringbuf->nextBatch = batchringbuf->headBatch = markPos->batch;
-	INDEX_SCAN_BATCH_APPEND(scan, markBatch);
-	Assert(INDEX_SCAN_BATCH(scan, batchringbuf->scanPos.batch) == markBatch);
+	index_scan_batch_append(scan, markBatch);
+	Assert(index_scan_batch(scan, batchringbuf->scanPos.batch) == markBatch);
 
 	/*
 	 * Note: markBatch.killedItems[] might already contain dead items, and
@@ -380,9 +378,9 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	 * backwards until the current head batch (which must also be the current
 	 * scanBatch) is the only batch hasn't been freed
 	 */
-	while (INDEX_SCAN_BATCH_COUNT(scan) > 1)
+	while (index_scan_batch_count(scan) > 1)
 	{
-		IndexScanBatch tail = INDEX_SCAN_BATCH(scan,
+		IndexScanBatch tail = index_scan_batch(scan,
 											   batchringbuf->nextBatch - 1);
 
 		Assert(!batchringbuf->markBatch);
@@ -398,7 +396,7 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
 	 * scan.  Do this by flipping the batch-level scan direction, and then
 	 * calling the index AM's amposreset.
 	 */
-	head = INDEX_SCAN_BATCH(scan, batchringbuf->headBatch);
+	head = index_scan_batch(scan, batchringbuf->headBatch);
 	head->dir = -head->dir;
 	if (scan->indexRelation->rd_indam->amposreset)
 		scan->indexRelation->rd_indam->amposreset(scan, head);
@@ -416,9 +414,9 @@ void
 tableam_util_kill_scanpositem(IndexScanDesc scan)
 {
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
-	IndexScanBatch scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
+	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 
-	batch_assert_pos_valid(scan, scanPos);
+	index_scan_pos_check_against_ringbuf(scan, scanPos);
 
 	if (scanBatch->killedItems == NULL)
 		scanBatch->killedItems = palloc_array(int, scan->maxitemsbatch);
@@ -444,7 +442,7 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
 void
 tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 {
-	batch_assert_batch_valid(scan, batch);
+	index_scan_batch_check_against_ringbuf(scan, batch);
 
 	/* don't free caller's batch if it is scan's current markBatch */
 	if (batch == scan->batchringbuf.markBatch)

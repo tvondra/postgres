@@ -141,19 +141,6 @@ typedef struct BatchRingItemPos
 	int			item;
 } BatchRingItemPos;
 
-static inline void
-batch_reset_pos(BatchRingItemPos *pos)
-{
-	/*
-	 * Set batch to max value so that incrementing in index_batchpos_newbatch
-	 * wraps around to 0
-	 */
-	pos->batch = PG_UINT8_MAX;
-
-	/* Set item to -2 to indicate that pos is now invalid */
-	pos->item = -2;
-}
-
 /*
  * Matching item returned by amgetbatch (in returned IndexScanBatch) during an
  * index scan.  Used by table AM to locate relevant matching table tuple.
@@ -253,36 +240,6 @@ typedef struct IndexScanBatchData *IndexScanBatch;
  */
 #define INDEX_SCAN_MAX_BATCHES		64
 #define INDEX_SCAN_CACHE_BATCHES	2
-#define INDEX_SCAN_BATCH_COUNT(scan) \
-	((uint8) ((scan)->batchringbuf.nextBatch - (scan)->batchringbuf.headBatch))
-
-/* Did we already load batch with the requested index? */
-#define INDEX_SCAN_BATCH_LOADED(scan, idx) \
-	((int8) ((idx) - (scan)->batchringbuf.headBatch) >= 0 && \
-	 (int8) ((idx) - (scan)->batchringbuf.nextBatch) < 0)
-
-/* Have we loaded the maximum number of batches? */
-#define INDEX_SCAN_BATCH_FULL(scan) \
-	(INDEX_SCAN_BATCH_COUNT(scan) == INDEX_SCAN_MAX_BATCHES)
-
-/* Return batch for the provided index */
-#define INDEX_SCAN_BATCH(scan, idx)	\
-( \
-	AssertMacro(INDEX_SCAN_BATCH_LOADED(scan, idx)), \
-	((scan)->batchringbuf.batches[(idx) & (INDEX_SCAN_MAX_BATCHES - 1)]) \
-)
-
-/* Append given batch to scan's batch ring buffer */
-#define INDEX_SCAN_BATCH_APPEND(scan, batch) \
-	do { \
-		BatchRingBuffer *mringbuf = &(scan)->batchringbuf;	\
-		uint8			nextBatch = mringbuf->nextBatch; \
-		mringbuf->batches[nextBatch & (INDEX_SCAN_MAX_BATCHES - 1)] = (batch); \
-		mringbuf->nextBatch++; \
-	} while(0)
-
-/* Is the position invalid/undefined? */
-#define INDEX_SCAN_POS_INVALID(pos) ((pos)->item == -2)
 
 /*
  * State used by table AMs to manage an index scan that uses the amgetbatch
@@ -322,7 +279,7 @@ typedef struct BatchRingBuffer
 
 	/*
 	 * nextBatch is an index to the next empty batch slot in 'batches'.  This
-	 * is only actually usable when the scan is !INDEX_SCAN_BATCH_FULL.
+	 * is only actually usable when the scan is !index_scan_batch_full().
 	 */
 	uint8		nextBatch;
 
@@ -332,8 +289,8 @@ typedef struct BatchRingBuffer
 	/*
 	 * Array of pointers to ring buffer batches
 	 *
-	 * Note: Must be accessed using the INDEX_SCAN_BATCH* macros, which will
-	 * correctly deal with headBatch/nextBatch overflow.
+	 * Note: Must be accessed using the index_scan_batch* functions, which
+	 * will correctly deal with headBatch/nextBatch overflow.
 	 */
 	IndexScanBatch batches[INDEX_SCAN_MAX_BATCHES];
 
@@ -466,6 +423,84 @@ typedef struct SysScanDescData
 } SysScanDescData;
 
 /*
+ * Count how many batches are currently loaded in the ring buffer.
+ */
+static inline uint8
+index_scan_batch_count(IndexScanDescData *scan)
+{
+	return (uint8) (scan->batchringbuf.nextBatch -
+					scan->batchringbuf.headBatch);
+}
+
+/*
+ * Did we already load batch with the requested index?
+ */
+static inline bool
+index_scan_batch_loaded(IndexScanDescData *scan, uint8 idx)
+{
+	return (int8) (idx - scan->batchringbuf.headBatch) >= 0 &&
+		(int8) (idx - scan->batchringbuf.nextBatch) < 0;
+}
+
+/*
+ * Have we loaded the maximum number of batches?
+ */
+static inline bool
+index_scan_batch_full(IndexScanDescData *scan)
+{
+	return index_scan_batch_count(scan) == INDEX_SCAN_MAX_BATCHES;
+}
+
+/*
+ * Return batch for the provided index.
+ */
+static inline IndexScanBatch
+index_scan_batch(IndexScanDescData *scan, uint8 idx)
+{
+	Assert(index_scan_batch_loaded(scan, idx));
+
+	return scan->batchringbuf.batches[idx & (INDEX_SCAN_MAX_BATCHES - 1)];
+}
+
+/*
+ * Append given batch to scan's batch ring buffer.
+ */
+static inline void
+index_scan_batch_append(IndexScanDescData *scan, IndexScanBatch batch)
+{
+	BatchRingBuffer *ringbuf = &scan->batchringbuf;
+	uint8		nextBatch = ringbuf->nextBatch;
+
+	ringbuf->batches[nextBatch & (INDEX_SCAN_MAX_BATCHES - 1)] = batch;
+	ringbuf->nextBatch++;
+}
+
+/*
+ * Is the batch position valid?
+ */
+static inline bool
+index_scan_pos_is_valid(BatchRingItemPos *pos)
+{
+	return pos->item != -2;
+}
+
+/*
+ * Invalidate a batch position
+ */
+static inline void
+index_scan_pos_invalidate(BatchRingItemPos *pos)
+{
+	/*
+	 * Set batch to max value so that incrementing in index_batchpos_newbatch
+	 * wraps around to 0
+	 */
+	pos->batch = PG_UINT8_MAX;
+
+	/* Set item to -2 to indicate that pos is now invalid */
+	pos->item = -2;
+}
+
+/*
  * Advance position to its next item in the batch.
  *
  * Advance to the next item within the provided batch (or to the previous item,
@@ -475,10 +510,10 @@ typedef struct SysScanDescData
  * are no more items in the batch in the given direction.
  */
 static inline bool
-index_batchpos_advance(ScanDirection direction,
+index_scan_pos_advance(ScanDirection direction,
 					   IndexScanBatch batch, BatchRingItemPos *pos)
 {
-	Assert(!INDEX_SCAN_POS_INVALID(pos));
+	Assert(index_scan_pos_is_valid(pos));
 
 	if (ScanDirectionIsForward(direction))
 	{
@@ -496,26 +531,26 @@ index_batchpos_advance(ScanDirection direction,
 }
 
 /*
- * Advance batch position start of its new batch.
+ * Advance batch position to the start of its new batch.
  *
  * Sets the given position to the fist item in the given scan direction (or to
  * the last item, when scanning backwards).   Also advances/increments batch
  * offset from position such that it points to newBatchForPos.
  */
 static inline void
-index_batchpos_newbatch(ScanDirection direction,
-						IndexScanBatch newBatchForPos, BatchRingItemPos *pos)
+index_scan_pos_nextbatch(ScanDirection direction,
+						 IndexScanBatch newBatch, BatchRingItemPos *pos)
 {
-	Assert(newBatchForPos->dir == direction);
+	Assert(newBatch->dir == direction);
 
 	/* Next batch successfully loaded */
 	pos->batch++;
 	if (ScanDirectionIsForward(direction))
-		pos->item = newBatchForPos->firstItem;
+		pos->item = newBatch->firstItem;
 	else
-		pos->item = newBatchForPos->lastItem;
+		pos->item = newBatch->lastItem;
 
-	Assert(!INDEX_SCAN_POS_INVALID(pos));
+	Assert(index_scan_pos_is_valid(pos));
 }
 
 /*
@@ -523,11 +558,12 @@ index_batchpos_newbatch(ScanDirection direction,
  * have currently loaded.
  */
 static inline void
-batch_assert_pos_valid(IndexScanDescData *scan, BatchRingItemPos *pos)
+index_scan_pos_check_against_ringbuf(IndexScanDescData *scan,
+									 BatchRingItemPos *pos)
 {
 #ifdef USE_ASSERT_CHECKING
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
-	IndexScanBatch batch = INDEX_SCAN_BATCH(scan, pos->batch);
+	IndexScanBatch batch = index_scan_batch(scan, pos->batch);
 
 	/* make sure the position is valid for currently loaded batches */
 	Assert((int8) (pos->batch - batchringbuf->headBatch) >= 0);
@@ -537,11 +573,9 @@ batch_assert_pos_valid(IndexScanDescData *scan, BatchRingItemPos *pos)
 #endif
 }
 
-/*
- * Check a single batch is valid.
- */
 static inline void
-batch_assert_batch_valid(IndexScanDescData *scan, IndexScanBatch batch)
+index_scan_batch_check_against_ringbuf(IndexScanDescData *scan,
+									   IndexScanBatch batch)
 {
 	/* batch must have one or more matching items returned by index AM */
 	Assert(batch->firstItem >= 0 && batch->firstItem <= batch->lastItem);
@@ -556,11 +590,11 @@ batch_assert_batch_valid(IndexScanDescData *scan, IndexScanBatch batch)
 }
 
 static inline void
-batch_assert_batches_valid(IndexScanDescData *scan)
+index_scan_batch_check_all_against_ringbuf(IndexScanDescData *scan)
 {
 #ifdef USE_ASSERT_CHECKING
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
-	uint8		count = INDEX_SCAN_BATCH_COUNT(scan);
+	uint8		count = index_scan_batch_count(scan);
 
 	/* The count should be within valid range */
 	Assert(count <= INDEX_SCAN_MAX_BATCHES);
@@ -569,9 +603,9 @@ batch_assert_batches_valid(IndexScanDescData *scan)
 	for (uint8 i = 0; i < count; i++)
 	{
 		uint8		idx = batchringbuf->headBatch + i;
-		IndexScanBatch batch = INDEX_SCAN_BATCH(scan, idx);
+		IndexScanBatch batch = index_scan_batch(scan, idx);
 
-		batch_assert_batch_valid(scan, batch);
+		index_scan_batch_check_against_ringbuf(scan, batch);
 	}
 #endif
 }

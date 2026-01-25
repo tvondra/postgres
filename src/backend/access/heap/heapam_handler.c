@@ -388,7 +388,7 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 
 	/* XXX: we should assert that a snapshot is pushed or registered */
 	Assert(TransactionIdIsValid(RecentXmin));
-	Assert(batchringbuf->direction == direction);
+	Assert(direction == batchringbuf->direction);
 
 	if (!priorbatch)
 	{
@@ -402,7 +402,6 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		 * opposite scan direction to the one used when priorbatch was
 		 * returned by amgetbatch.
 		 */
-		Assert(direction == batchringbuf->direction);
 		Assert(priorPos == &batchringbuf->scanPos);
 
 		tableam_util_batch_dirchange(scan);
@@ -589,7 +588,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	{
 		scanBatch = INDEX_SCAN_BATCH(scan, scanPos->batch);
 
-		if (index_batchpos_advance(scanBatch, scanPos, direction))
+		if (index_batchpos_advance(direction, scanBatch, scanPos))
 			return heapam_batch_return_tid(scan, scanBatch, scanPos);
 	}
 
@@ -609,7 +608,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * Advanced scanBatch.  Now position scanPos to the start of new
 	 * scanBatch.
 	 */
-	index_batchpos_newbatch(scanBatch, scanPos, direction);
+	index_batchpos_newbatch(direction, scanBatch, scanPos);
 	Assert(INDEX_SCAN_BATCH(scan, scanPos->batch) == scanBatch);
 
 	/*
@@ -739,7 +738,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 */
 			fromScanPos = false;
 		}
-		else if (!index_batchpos_advance(prefetchBatch, prefetchPos, direction))
+		else if (!index_batchpos_advance(direction, prefetchBatch, prefetchPos))
 		{
 			/*
 			 * Ran out of items from prefetchBatch.  Try to advance it to next
@@ -770,7 +769,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			}
 
 			/* Position prefetchPos to the start of new prefetchBatch */
-			index_batchpos_newbatch(prefetchBatch, prefetchPos, direction);
+			index_batchpos_newbatch(direction, prefetchBatch, prefetchPos);
 		}
 
 		/*

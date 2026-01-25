@@ -475,8 +475,8 @@ typedef struct SysScanDescData
  * are no more items in the batch in the given direction.
  */
 static inline bool
-index_batchpos_advance(IndexScanBatch batch, BatchRingItemPos *pos,
-					   ScanDirection direction)
+index_batchpos_advance(ScanDirection direction,
+					   IndexScanBatch batch, BatchRingItemPos *pos)
 {
 	Assert(!INDEX_SCAN_POS_INVALID(pos));
 
@@ -503,8 +503,8 @@ index_batchpos_advance(IndexScanBatch batch, BatchRingItemPos *pos,
  * offset from position such that it points to newBatchForPos.
  */
 static inline void
-index_batchpos_newbatch(IndexScanBatch newBatchForPos, BatchRingItemPos *pos,
-						ScanDirection direction)
+index_batchpos_newbatch(ScanDirection direction,
+						IndexScanBatch newBatchForPos, BatchRingItemPos *pos)
 {
 	Assert(newBatchForPos->dir == direction);
 

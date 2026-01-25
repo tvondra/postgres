@@ -370,16 +370,21 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
  *		heap_batch_getnext - get the next batch of TIDs from a scan
  *
  * Called when we need to load the next batch of index entries to process in
- * the given direction.
+ * the given direction.  Caller passes us a batch and a batch position, which
+ * has just been used to read all items from the batch in the direction passed
+ * by caller.
  *
  * Returns the next batch to be processed by the index scan, or NULL when
- * there are no more matches in the given scan direction.  Also appends the
- * returned batch to the end of the scan's batch ring buffer.
+ * there are no more matches in the given scan direction.  Does not advance
+ * caller's batch position; that is left up to caller.
+ *
+ * This is also where batches are appended to the scan's ring buffer.  We
+ * don't free any batches here, though; that is also left up to caller.
  * ----------------
  */
 static IndexScanBatch
 heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
-				   IndexScanBatch priorbatch, BatchRingItemPos *priorPos)
+				   IndexScanBatch priorBatch, BatchRingItemPos *pos)
 {
 	IndexScanBatch batch = NULL;
 	BatchRingBuffer *batchringbuf PG_USED_FOR_ASSERTS_ONLY = &scan->batchringbuf;
@@ -388,68 +393,72 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 	Assert(TransactionIdIsValid(RecentXmin));
 	Assert(direction == batchringbuf->direction);
 
-	if (!priorbatch)
+	if (!priorBatch)
 	{
 		/* First call for the scan */
+		Assert(pos == &batchringbuf->scanPos);
 	}
-	else if (unlikely(priorbatch->dir != direction))
+	else if (unlikely(priorBatch->dir != direction))
 	{
 		/*
 		 * We detected a change in scan direction across batches.  Prepare
 		 * scan's batchringbuf state for us to get the next batch for the
-		 * opposite scan direction to the one used when priorbatch was
+		 * opposite scan direction to the one used when priorBatch was
 		 * returned by amgetbatch.
 		 */
-		Assert(priorPos == &batchringbuf->scanPos);
+		Assert(pos == &batchringbuf->scanPos);
 
 		tableam_util_batch_dirchange(scan);
 
-		/* priorpos is now batchringbuf's only batch */
-		Assert(priorPos->batch == batchringbuf->headBatch);
+		/* priorBatch is now batchringbuf's only batch */
+		Assert(pos->batch == batchringbuf->headBatch);
 	}
-	else if (index_scan_batch_loaded(scan, priorPos->batch + 1))
+	else if (index_scan_batch_loaded(scan, pos->batch + 1))
 	{
 		/*
 		 * Next batch already loaded for us.
 		 *
-		 * This is typically due to heapam_getnext_stream caller loading a
-		 * later batch ahead of heapam_batch_getnext_tid caller.  But there
-		 * are also corner cases where heapam_getnext_stream's prefetchPos is
-		 * behind heapam_getnext_stream's scanPos.
+		 * This usually happens when heapam_batch_getnext_tid caller finds
+		 * that heapam_getnext_stream already loaded the next required batch.
+		 * But there are also corner cases where it works the other way around
+		 * (cases where heapam_getnext_stream's prefetchPos is slightly behind
+		 * heapam_getnext_stream's scanPos, and catches up here).
 		 */
-		batch = index_scan_batch(scan, priorPos->batch + 1);
+		batch = index_scan_batch(scan, pos->batch + 1);
 
 		/*
 		 * Both batches must have been loaded when moving in same scan
 		 * direction (otherwise tableam_util_batch_dirchange should have been
 		 * called instead of loading this next batch)
 		 */
-		Assert(priorbatch->dir == direction);
+		Assert(priorBatch->dir == direction);
 		Assert(batch->dir == direction);
 		return batch;
 	}
 
 	/*
-	 * When caller provides a priorbatch it had better be for the last valid
-	 * batch currently in the batch ring buffer (otherwise appending a new
-	 * batch would result batches that aren't in scan order, which is wrong).
+	 * Assert preconditions for calling amgetbatch.
+	 *
+	 * priorBatch had better be for the last valid batch currently in the ring
+	 * buffer (batches must stay in scan order).  If it isn't then we should
+	 * have already returned some existing loaded batch earlier.
 	 */
 	Assert(!batchringbuf->paused);
 	Assert(!index_scan_batch_full(scan));
-	Assert(!priorbatch ||
-		   (index_scan_batch_count(scan) > 0 && priorbatch->dir == direction &&
-			index_scan_batch(scan, batchringbuf->nextBatch - 1) == priorbatch));
+	Assert(!priorBatch ||
+		   (index_scan_batch_count(scan) > 0 && priorBatch->dir == direction &&
+			index_scan_batch(scan, batchringbuf->nextBatch - 1) == priorBatch));
 
 	/*
-	 * Before we call amgetbatch again, check if priorbatch is already known
+	 * Before we call amgetbatch again, check if priorBatch is already known
 	 * to be the last batch with matching items in this scan direction
 	 */
-	if (priorbatch &&
-		((ScanDirectionIsForward(direction) && priorbatch->knownEndRight) ||
-		 (ScanDirectionIsBackward(direction) && priorbatch->knownEndLeft)))
+	if (priorBatch &&
+		((ScanDirectionIsForward(direction) && priorBatch->knownEndRight) ||
+		 (ScanDirectionIsBackward(direction) && priorBatch->knownEndLeft)))
 		return NULL;
 
-	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorbatch,
+	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorBatch,
 													  direction);
 	if (batch)
 	{
@@ -489,7 +498,7 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		 * (read stream handles all pin resource management for us, and knows
 		 * nothing about pins held on index pages/within batches).
 		 */
-		if (!scan->xs_heapfetch->rs && priorbatch && scan->MVCCScan &&
+		if (!scan->xs_heapfetch->rs && priorBatch && scan->MVCCScan &&
 			(scan->tuples_needed == -1 || scan->tuples_needed > 10) &&
 			enable_indexscan_prefetch)
 		{
@@ -504,17 +513,17 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 	else
 	{
 		/* amgetbatch returned NULL */
-		if (priorbatch)
+		if (priorBatch)
 		{
 			/*
 			 * There are no further matches to be found in the current scan
-			 * direction, following priorbatch.  Remember that priorbatch is
+			 * direction, following priorBatch.  Remember that priorBatch is
 			 * the last batch with matching items.
 			 */
 			if (ScanDirectionIsForward(direction))
-				priorbatch->knownEndRight = true;
+				priorBatch->knownEndRight = true;
 			else
-				priorbatch->knownEndLeft = true;
+				priorBatch->knownEndLeft = true;
 		}
 	}
 
@@ -527,9 +536,8 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 /* ----------------
  *		heapam_batch_getnext_tid - get next TID from batch ring buffer
  *
- * This function implements heapam's version of getting the next TID from an
- * index scan that uses the amgetbatch interface.  It is implemented using
- * various indexbatch.c utility routines.
+ * Get the next TID from the scan's batch ring buffer, when moving in the
+ * given scan direction.
  * ----------------
  */
 static inline ItemPointer
@@ -538,9 +546,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	BatchRingItemPos *scanPos = &batchringbuf->scanPos;
 	IndexScanBatch scanBatch = NULL;
-
-	/* xs_hitup is not supported by amgetbatch scans */
-	Assert(!scan->xs_hitup);
 
 	/* scan should only be paused when there's no free batch slots */
 	Assert(!batchringbuf->paused || index_scan_batch_full(scan));
@@ -786,7 +791,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * number might need to be prefetched
 		 */
 		Assert(index_scan_batch(scan, prefetchPos->batch) == prefetchBatch);
-		Assert(prefetchBatch->dir == direction);
 
 		/* scanPos is always <= prefetchPos when we return */
 		Assert((int8) (scanPos->batch - prefetchPos->batch) < 0 ||

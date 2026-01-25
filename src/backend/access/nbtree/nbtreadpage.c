@@ -1028,7 +1028,7 @@ _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 	/* copy the populated part of the items array */
 	newbatch->items[itemIndex].heapTid = itup->t_tid;
 	newbatch->items[itemIndex].indexOffset = offnum;
-	newbatch->items[itemIndex].setVisible = false;
+	newbatch->items[itemIndex].checkedVisible = false;
 	newbatch->items[itemIndex].allVisible = false;
 
 	if (newbatch->currTuples)
@@ -1063,7 +1063,7 @@ _bt_setuppostingitems(IndexScanBatch newbatch, int itemIndex,
 	/* copy the populated part of the items array */
 	item->heapTid = *heapTid;
 	item->indexOffset = offnum;
-	item->setVisible = false;
+	item->checkedVisible = false;
 	item->allVisible = false;
 
 	if (newbatch->currTuples)
@@ -1102,7 +1102,7 @@ _bt_savepostingitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 
 	item->heapTid = *heapTid;
 	item->indexOffset = offnum;
-	item->setVisible = false;
+	item->checkedVisible = false;
 	item->allVisible = false;
 
 	/*

@@ -65,8 +65,6 @@ static BlockNumber heapam_getnext_stream(ReadStream *stream,
 										 void *callback_private_data,
 										 void *per_buffer_data);
 
-static void heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
-										  int item);
 
 /* ------------------------------------------------------------------------
  * Slot related callbacks for heap AM
@@ -213,32 +211,46 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	return got_heap_tuple;
 }
 
-static inline ItemPointer
-heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
-						BatchRingItemPos *scanPos)
-{
-	pgstat_count_index_tuples(scan->indexRelation, 1);
-
-	/* set the TID / itup for the scan */
-	scan->xs_heaptid = scanBatch->items[scanPos->item].heapTid;
-
-	if (scan->xs_want_itup)
-		heap_batch_resolve_visibility(scan, scanBatch, scanPos->item);
-
-	/* plain index scans will have flags left set to 0 */
-	scan->xs_visible = scanBatch->items[scanPos->item].allVisible;
-
-	if (scan->xs_want_itup)
-		scan->xs_itup =
-			(IndexTuple) (scanBatch->currTuples +
-						  scanBatch->items[scanPos->item].tupleOffset);
-
-	return &scan->xs_heaptid;
-}
-
 /*
- * heap_batch_resolve_visibility
- *		Obtain visibility information for every TID from caller's batch.
+ * heapam_batch_resolve_visibility
+ *		Obtain visibility information for a TID from caller's batch.
+ *
+ * Called during index-only scans.  We always check the visibility of caller's
+ * item (an offset into caller's batch->items[] array).  We might also set
+ * visibility info for other items from caller's batch more proactively when
+ * that makes sense.
+ *
+ * We keep two competing considerations in balance when determining whether to
+ * check additional items: the need to keep the cost of visibility map access
+ * under control when most items will never be returned by the scan anyway
+ * (important for inner index scans of anti-joins and semi-joins), and the
+ * need to not hold onto index leaf pages for too long.
+ *
+ * Dropping leaf page pins early
+ * -----------------------------
+ *
+ * In no event will the scan be allowed to hold onto more than one batch's
+ * leaf page pin at a time.  The primary reason for this restriction is to
+ * avoid unintended interactions with the read stream, which has its own
+ * strategy for keeping the number of pins held by the backend under control.
+ *
+ * Once we've resolved visibility for all items in a batch, we can safely drop
+ * its leaf page pin.  This is safe with respect to concurrent VACUUM because
+ * index vacuuming will block on acquiring a conflicting cleanup lock on the
+ * batch's index page due to our holding a pin on that same page.  Copying the
+ * relevant visibility map data into our local cache suffices to prevent unsafe
+ * concurrent TID recycling: if any of these TIDs point to dead heap tuples,
+ * VACUUM cannot possibly return from ambulkdelete and mark the pointed-to
+ * heap pages as all-visible.  VACUUM _can_ do so once we release the batch's
+ * pin, but that's okay; we'll be working off of cached visibility info that
+ * indicates that the dead TIDs are NOT all-visible.
+ *
+ * Note: We cannot drop the pin early when the scan uses a non-MVCC snapshot;
+ * we must delay it until amfreebatch is called for the batch.  This is why we
+ * don't support prefetching during such scans.  See doc/src/sgml/indexam.sgml.
+ *
+ * Read stream agreement
+ * ---------------------
  *
  * heapam_batch_getnext_tid must reliably agree with heapam_getnext_stream
  * about which heap blocks/TIDs will require a heap fetch (and which TIDs
@@ -279,8 +291,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
  * buffer, which could cause significant contention.
  */
 static void
-heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
-							  int item)
+heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
+								int item)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
@@ -288,8 +300,11 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 				lastItem;
 
 	/* Do nothing if we already resolved visibility for the item. */
-	if (batch->items[item].setVisible)
+	if (batch->items[item].checkedVisible)
 		return;
+
+	/* We better still have a pin on batch's index leaf page */
+	Assert(BufferIsValid(batch->buf));
 
 	/* Determine the range of items to set visibility for. */
 	if (ScanDirectionIsForward(batch->dir))
@@ -303,54 +318,28 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		lastItem = item;
 	}
 
-	/*
-	 * Batch's buffer pin (the one held when amgetbatch returned) must still
-	 * be held when we're called.  It'll be released by our caller upon return
-	 * (our caller will definitely do this because index-only scans always use
-	 * an MVCC snapshot).
-	 *
-	 * Index vacuuming will block on acquiring a conflicting cleanup lock on
-	 * batch's index page due to our holding on to a pin on that same page.
-	 * Copying the relevant visibility map data into our local cache suffices
-	 * to prevent unsafe concurrent TID recycling: if any of these TIDs point
-	 * to dead heap tuples, VACUUM cannot possibly return from ambulkdelete
-	 * and mark the pointed-to heap pages as all-visible.  VACUUM _can_ do so
-	 * once our caller releases the batch's pin, but that's okay; we'll be
-	 * working off of cached visibility info that indicates that the dead TIDs
-	 * are NOT all-visible.  The subsequent heap fetches for these dead TIDs
-	 * will indicate that they're not dead-to-all, but that's okay; they won't
-	 * be visible to _our_ MVCC snapshot, so everything works out.
-	 */
-	Assert(BufferIsValid(batch->buf));
-
 	for (int i = firstItem; i <= lastItem; i++)
 	{
 		BatchMatchingItem *mitem = &batch->items[i];
 		ItemPointer tid = &mitem->heapTid;
 
-		mitem->setVisible = true;
-		if (VM_ALL_VISIBLE(scan->heapRelation,
+		mitem->checkedVisible = true;
+		mitem->allVisible =
+			VM_ALL_VISIBLE(scan->heapRelation,
 						   ItemPointerGetBlockNumber(tid),
-						   &hscan->vmbuf))
-		{
-			mitem->allVisible = true;
-		}
+						   &hscan->vmbuf) != 0;
 	}
 
 	/*
 	 * It's now safe to drop the batch's buffer pin, as we've resolved the
-	 * visibility status of all of its items (during index-only scans). See
-	 * heap_batch_resolve_visibility comments for an explanation.
+	 * visibility status of all of its items.
 	 *
 	 * It's enough to check the visibility of the first and last item, as all
 	 * the items in between have to have the visibility set too.
-	 *
-	 * Note: We can't drop the pin here (we delay it until amfreebatch is
-	 * called for the batch) whenever the scan uses a non-MVCC snapshot. This
-	 * is explained fully in doc/src/sgml/indexam.sgml.
 	 */
-	if (batch->items[batch->firstItem].setVisible &&
-		batch->items[batch->lastItem].setVisible)
+	if (batch->items[batch->firstItem].checkedVisible &&
+		batch->items[batch->lastItem].checkedVisible &&
+		scan->MVCCScan)
 	{
 		Assert(BufferIsValid(batch->buf));
 
@@ -366,8 +355,33 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		batchringbuf->vmItems *= 2;
 }
 
+static inline ItemPointer
+heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
+						BatchRingItemPos *scanPos)
+{
+	pgstat_count_index_tuples(scan->indexRelation, 1);
+
+	/* set the TID / itup for the scan */
+	scan->xs_heaptid = scanBatch->items[scanPos->item].heapTid;
+
+	if (scan->xs_want_itup)
+	{
+		heapam_batch_resolve_visibility(scan, scanBatch, scanPos->item);
+
+		/* Set xs_visible for heapam_index_getnext_slot */
+		scan->xs_visible = scanBatch->items[scanPos->item].allVisible;
+	}
+
+	if (scan->xs_want_itup)
+		scan->xs_itup =
+			(IndexTuple) (scanBatch->currTuples +
+						  scanBatch->items[scanPos->item].tupleOffset);
+
+	return &scan->xs_heaptid;
+}
+
 /* ----------------
- *		heap_batch_getnext - get the next batch of TIDs from a scan
+ *		heapam_batch_getnext - get the next batch of TIDs from a scan
  *
  * Called when we need to load the next batch of index entries to process in
  * the given direction.  Caller passes us a batch and a batch position, which
@@ -383,8 +397,8 @@ heap_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
  * ----------------
  */
 static IndexScanBatch
-heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
-				   IndexScanBatch priorBatch, BatchRingItemPos *pos)
+heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
+					 IndexScanBatch priorBatch, BatchRingItemPos *pos)
 {
 	IndexScanBatch batch = NULL;
 	BatchRingBuffer *batchringbuf PG_USED_FOR_ASSERTS_ONLY = &scan->batchringbuf;
@@ -469,15 +483,10 @@ heap_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		index_scan_batch_append(scan, batch);
 
 		/*
-		 * It's now safe to drop the batch's buffer pin, as we've resolved the
-		 * visibility status of all of its items (during index-only scans).
-		 * See heap_batch_resolve_visibility comments for an explanation.
-		 *
-		 * Note: We can't drop the pin here (we delay it until amfreebatch is
-		 * called for the batch) whenever the scan uses a non-MVCC snapshot.
-		 * Index-only scans may also choose to retain pins in some cases,
-		 * though prefetching requires dropping them to limit buffer pin
-		 * usage.  See doc/src/sgml/indexam.sgml.
+		 * Drop batch's leaf page pin for plain index scans.  Index-only scans
+		 * delay dropping the pin until heapam_batch_resolve_visibility has
+		 * cached all visibility info.  See heapam_batch_resolve_visibility
+		 * header comments for a full explanation of early pin dropping.
 		 */
 		Assert(scan->MVCCScan == IsMVCCSnapshot(scan->xs_snapshot));
 		if (scan->MVCCScan && !scan->xs_want_itup)
@@ -576,7 +585,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		 * once per loaded batch).
 		 *
 		 * Note: iff the scan _continues_ in this new direction, and actually
-		 * steps off scanBatch to an earlier index page, heap_batch_getnext
+		 * steps off scanBatch to an earlier index page, heapam_batch_getnext
 		 * will deal with it.  But that might never happen; the scan might yet
 		 * change direction again (or just end before returning more items).
 		 */
@@ -600,7 +609,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	 * Either ran out of items from scanBatch, or the scan is just starting.
 	 * Try to advance scanBatch to the next batch (or get first batch).
 	 */
-	scanBatch = heap_batch_getnext(scan, direction, scanBatch, scanPos);
+	scanBatch = heapam_batch_getnext(scan, direction, scanBatch, scanPos);
 
 	if (!scanBatch)
 	{
@@ -770,8 +779,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				return read_stream_pause(stream);
 			}
 
-			prefetchBatch = heap_batch_getnext(scan, direction,
-											   prefetchBatch, prefetchPos);
+			prefetchBatch = heapam_batch_getnext(scan, direction,
+												 prefetchBatch, prefetchPos);
 			if (!prefetchBatch)
 			{
 				/*
@@ -805,7 +814,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		if (scan->xs_want_itup)
 		{
 			/* make sure we have visibility info for the item */
-			heap_batch_resolve_visibility(scan, prefetchBatch, prefetchPos->item);
+			heapam_batch_resolve_visibility(scan, prefetchBatch,
+											prefetchPos->item);
 
 			/* item is known to be all-visible; prefetching isn't required */
 			if (item->allVisible)

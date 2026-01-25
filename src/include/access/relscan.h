@@ -150,8 +150,8 @@ typedef struct BatchMatchingItem
 	ItemPointerData heapTid;	/* TID of referenced heap item */
 	OffsetNumber indexOffset;	/* index item's location within page */
 	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */
-	bool		setVisible;		/* did we inspect VM for this item? */
-	bool		allVisible;		/* TID points to all-visible page */
+	bool		checkedVisible; /* checked heapTid table block's visibility? */
+	bool		allVisible;		/* table block is known to be all-visible? */
 } BatchMatchingItem;
 
 /*

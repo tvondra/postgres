@@ -8155,12 +8155,12 @@ order by a desc, b desc;
  3 | 0
 (39 rows)
 
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select a, b from multi_test_skip where a in (3,4,5) and b < 1
 order by a desc, b desc;
-                                                              QUERY PLAN                                                              
---------------------------------------------------------------------------------------------------------------------------------------
- Index Only Scan Backward using multi_test_skip_idx on multi_test_skip  (cost=0.28..7.63 rows=39 width=8) (actual rows=39.00 loops=1)
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Index Only Scan Backward using multi_test_skip_idx on multi_test_skip (actual rows=39.00 loops=1)
    Index Cond: ((a = ANY ('{3,4,5}'::integer[])) AND (b < 1))
    Heap Fetches: 0
    Index Searches: 1
@@ -8471,14 +8471,14 @@ order by a desc nulls last, b desc nulls last;
 ---+---+---
 (0 rows)
 
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select a, b, c
 from multi_test_skip
 where b < 1 and c is not null
 order by a desc nulls last, b desc nulls last;
-                                                                          QUERY PLAN                                                                           
----------------------------------------------------------------------------------------------------------------------------------------------------------------
- Index Only Scan Backward using multi_test_skip_idx_nulls_first_nulls_first on multi_test_skip  (cost=0.29..146.41 rows=1 width=12) (actual rows=0.00 loops=1)
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan Backward using multi_test_skip_idx_nulls_first_nulls_first on multi_test_skip (actual rows=0.00 loops=1)
    Index Cond: ((b < 1) AND (c IS NOT NULL))
    Heap Fetches: 0
    Index Searches: 2

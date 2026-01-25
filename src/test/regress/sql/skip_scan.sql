@@ -788,7 +788,7 @@ set enable_indexscan to on;
 -- skip array logic):
 select a, b from multi_test_skip where a in (3,4,5) and b < 1
 order by a desc, b desc;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select a, b from multi_test_skip where a in (3,4,5) and b < 1
 order by a desc, b desc;
 
@@ -912,7 +912,7 @@ select a, b, c
 from multi_test_skip
 where b < 1 and c is not null
 order by a desc nulls last, b desc nulls last;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
 select a, b, c
 from multi_test_skip
 where b < 1 and c is not null

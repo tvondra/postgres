@@ -259,8 +259,7 @@ _hash_readprev(IndexScanDesc scan,
  *		No locks are ever held when we return.
  *
  *		We always retain our own pin on the bucket page.  When we return a
- *		batch with a bucket page, it will retain its own reference pin iff
- *		indexam_util_batch_release determined that table AM requires one.
+ *		batch with a bucket page, it will retain its own reference pin.
  */
 IndexScanBatch
 _hash_first(IndexScanDesc scan, ScanDirection dir)

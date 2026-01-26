@@ -307,7 +307,7 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	 * markBatch is behind scanBatch, and so must not be loaded anymore.  We
 	 * have to deal with restoring the mark the hard way: by invalidating all
 	 * other loaded batches.  This is similar to the case where the scan
-	 * direction changes and the scan actually acrosses batch/index page
+	 * direction changes and the scan actually crosses batch/index page
 	 * boundaries (see tableam_util_batch_dirchange).
 	 *
 	 * Call amposreset to let index AM know to invalidate any private state

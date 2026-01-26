@@ -605,7 +605,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		Assert(batchringbuf->headBatch == scanPos->batch);
 		Assert(index_scan_batch_loaded(scan, scanPos->batch));
 
-		scanBatch = index_scan_batch(scan, batchringbuf->headBatch);
+		scanBatch = index_scan_batch(scan, scanPos->batch);
 
 		if (index_scan_pos_advance(direction, scanBatch, scanPos))
 			return heapam_batch_return_tid(scan, scanBatch, scanPos);

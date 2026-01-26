@@ -134,6 +134,9 @@ typedef struct IndexFetchTableData
  */
 typedef struct BatchRingItemPos
 {
+	/* Position references a valid BatchRingBuffer.batches[] entry? */
+	bool		valid;
+
 	/* BatchRingBuffer.batches[]-wise index to relevant IndexScanBatch */
 	uint8		batch;
 
@@ -481,7 +484,7 @@ index_scan_batch_append(IndexScanDescData *scan, IndexScanBatch batch)
 static inline bool
 index_scan_pos_is_valid(BatchRingItemPos *pos)
 {
-	return pos->item != -2;
+	return pos->valid;
 }
 
 /*
@@ -490,14 +493,10 @@ index_scan_pos_is_valid(BatchRingItemPos *pos)
 static inline void
 index_scan_pos_invalidate(BatchRingItemPos *pos)
 {
-	/*
-	 * Set batch to max value so that incrementing in index_batchpos_newbatch
-	 * wraps around to 0
-	 */
-	pos->batch = PG_UINT8_MAX;
+	pos->valid = false;
 
-	/* Set item to -2 to indicate that pos is now invalid */
-	pos->item = -2;
+	/* index_batchpos_newbatch will wrap batch field later on */
+	pos->batch = PG_UINT8_MAX;
 }
 
 /*
@@ -543,8 +542,13 @@ index_scan_pos_nextbatch(ScanDirection direction,
 {
 	Assert(newBatch->dir == direction);
 
-	/* Next batch successfully loaded */
+	/* Increment batch (often wraps uint8 batch field) */
 	pos->batch++;
+
+	/* Invalid positions made valid here start with batch 0 */
+	Assert(index_scan_pos_is_valid(pos) || pos->batch == 0);
+	pos->valid = true;
+
 	if (ScanDirectionIsForward(direction))
 		pos->item = newBatch->firstItem;
 	else

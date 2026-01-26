@@ -361,21 +361,21 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 {
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
-	/* set the TID / itup for the scan */
-	scan->xs_heaptid = scanBatch->items[scanPos->item].heapTid;
-
 	if (scan->xs_want_itup)
 	{
-		heapam_batch_resolve_visibility(scan, scanBatch, scanPos->item);
+		int			item = scanPos->item;
 
-		/* Set xs_visible for heapam_index_getnext_slot */
-		scan->xs_visible = scanBatch->items[scanPos->item].allVisible;
+		heapam_batch_resolve_visibility(scan, scanBatch, item);
+		scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
+									  scanBatch->items[item].tupleOffset);
 	}
 
-	if (scan->xs_want_itup)
-		scan->xs_itup =
-			(IndexTuple) (scanBatch->currTuples +
-						  scanBatch->items[scanPos->item].tupleOffset);
+	/*
+	 * Set xs_heaptid and xs_visible, which heapam_index_getnext_slot needs
+	 * (xs_visible isn't needed when !xs_want_itup but set it consistently)
+	 */
+	scan->xs_heaptid = scanBatch->items[scanPos->item].heapTid;
+	scan->xs_visible = scanBatch->items[scanPos->item].allVisible;
 
 	return &scan->xs_heaptid;
 }

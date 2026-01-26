@@ -593,12 +593,18 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	}
 
 	/*
-	 * Try advancing the position in the current batch. If that doesn't
-	 * succeed, it means we don't have more items in it, and we need to
-	 * advance to the next one (in the new scan direction).
+	 * Check if there's an existing loaded scanBatch for us to return the next
+	 * matching item's TID/index tuple from
 	 */
-	if (index_scan_batch_loaded(scan, scanPos->batch))
+	if (index_scan_pos_is_valid(scanPos))
 	{
+		/*
+		 * scanPos is valid, so scanBatch must already be loaded in batch ring
+		 * buffer.  We rely on that here (can't do this with prefetchBatch).
+		 */
+		Assert(batchringbuf->headBatch == scanPos->batch);
+		Assert(index_scan_batch_loaded(scan, scanPos->batch));
+
 		scanBatch = index_scan_batch(scan, scanPos->batch);
 
 		if (index_scan_pos_advance(direction, scanBatch, scanPos))
@@ -606,14 +612,20 @@ heapam_batch_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	}
 
 	/*
-	 * Either ran out of items from scanBatch, or the scan is just starting.
-	 * Try to advance scanBatch to the next batch (or get first batch).
+	 * Either ran out of items from our existing scanBatch, or it hasn't been
+	 * loaded yet (because this is the first call here for the entire scan).
+	 * Try to advance scanBatch to the next batch (or get the first batch).
 	 */
 	scanBatch = heapam_batch_getnext(scan, direction, scanBatch, scanPos);
 
 	if (!scanBatch)
 	{
-		/* we're done; no more batches in the current scan direction */
+		/*
+		 * We're done; no more batches in the current scan direction.
+		 *
+		 * Note: scanPos is generally still valid at this point.  The scan
+		 * might still back up in the other direction.
+		 */
 		return NULL;
 	}
 

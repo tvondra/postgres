@@ -142,6 +142,7 @@ typedef struct BatchRingItemPos
 
 	/* IndexScanBatch.items[]-wise index to relevant BatchMatchingItem */
 	int			item;
+
 } BatchRingItemPos;
 
 /*
@@ -494,9 +495,6 @@ static inline void
 index_scan_pos_invalidate(BatchRingItemPos *pos)
 {
 	pos->valid = false;
-
-	/* index_batchpos_newbatch will wrap batch field later on */
-	pos->batch = PG_UINT8_MAX;
 }
 
 /*
@@ -543,18 +541,17 @@ index_scan_pos_nextbatch(ScanDirection direction,
 	Assert(newBatch->dir == direction);
 
 	/* Increment batch (often wraps uint8 batch field) */
-	pos->batch++;
+	if (index_scan_pos_is_valid(pos))
+		pos->batch++;
+	else
+		pos->batch = 0;
 
-	/* Invalid positions made valid here start with batch 0 */
-	Assert(index_scan_pos_is_valid(pos) || pos->batch == 0);
 	pos->valid = true;
 
 	if (ScanDirectionIsForward(direction))
 		pos->item = newBatch->firstItem;
 	else
 		pos->item = newBatch->lastItem;
-
-	Assert(index_scan_pos_is_valid(pos));
 }
 
 #endif							/* RELSCAN_H */

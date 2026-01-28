@@ -254,6 +254,8 @@ typedef struct IndexScanBatchData *IndexScanBatch;
 #define INDEX_SCAN_MAX_BATCHES		128
 #define INDEX_SCAN_CACHE_BATCHES	3
 
+/* #define BATCH_CACHE_DEBUG */
+
 /*
  * State used by table AMs to manage an index scan that uses the amgetbatch
  * interface.  Scans use a ring buffer of batches returned by amgetbatch.
@@ -303,6 +305,16 @@ typedef struct BatchRingBuffer
 
 	/* Array of pointers to ring buffer batches */
 	IndexScanBatch batches[INDEX_SCAN_MAX_BATCHES];
+
+#ifdef BATCH_CACHE_DEBUG
+	/* Batch cache efficiency stats (for debugging/analysis) */
+	uint64		cacheHits;		/* batches reused from cache */
+	uint64		cacheMisses;	/* batches newly allocated */
+	uint64		batchesReturned;	/* total batches returned by amgetbatch */
+	uint64		batchesScanned; /* batches consumed by scanPos */
+	uint64		rescans;		/* number of index_rescan calls */
+	uint8		batchHighWatermark; /* max batches in ring buffer at once */
+#endif
 
 } BatchRingBuffer;
 
@@ -467,6 +479,16 @@ index_scan_batch_append(IndexScanDescData *scan, IndexScanBatch batch)
 
 	ringbuf->batches[nextBatch & (INDEX_SCAN_MAX_BATCHES - 1)] = batch;
 	ringbuf->nextBatch++;
+
+#ifdef BATCH_CACHE_DEBUG
+	ringbuf->batchesReturned++;
+	{
+		uint8		count = index_scan_batch_count(scan);
+
+		if (count > ringbuf->batchHighWatermark)
+			ringbuf->batchHighWatermark = count;
+	}
+#endif
 }
 
 /*

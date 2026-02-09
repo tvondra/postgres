@@ -353,6 +353,8 @@ index_beginscan_internal(Relation indexRelation,
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
 
+	scan->vmcache = NULL;
+
 	return scan;
 }
 

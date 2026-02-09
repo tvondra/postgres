@@ -307,6 +307,16 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	/* We better still have a pin on batch's index page */
 	Assert(BufferIsValid(batch->buf));
 
+	if (scan->vmcache == NULL)
+	{
+		scan->vmcache = palloc_array(IndexVMCacheEntry, 256);
+		for (int i = 0; i < 256; i++)
+		{
+			scan->vmcache[i].block = InvalidBlockNumber;
+			scan->vmcache[i].visible = false;
+		}
+	}
+
 	/* Determine the range of items to set visibility for */
 	if (ScanDirectionIsForward(batch->dir))
 	{
@@ -323,12 +333,24 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	{
 		BatchMatchingItem *mitem = &batch->items[i];
 		ItemPointer tid = &mitem->heapTid;
+		BlockNumber block = ItemPointerGetBlockNumber(tid);
+		int idx = block % 256;
 
 		mitem->checkedVisible = true;
-		mitem->allVisible =
-			VM_ALL_VISIBLE(scan->heapRelation,
-						   ItemPointerGetBlockNumber(tid),
-						   &hscan->vmbuf) != 0;
+
+		if (scan->vmcache[idx].block != InvalidBlockNumber)
+		{
+			mitem->allVisible = scan->vmcache[idx].visible;
+		}
+		else
+		{
+			mitem->allVisible =
+				VM_ALL_VISIBLE(scan->heapRelation,
+							   ItemPointerGetBlockNumber(tid),
+							   &hscan->vmbuf) != 0;
+			scan->vmcache[idx].visible = mitem->allVisible;
+			scan->vmcache[idx].block = block;
+		}
 	}
 
 #ifdef VM_RESOLVE_DEBUG

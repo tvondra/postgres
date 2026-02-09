@@ -321,6 +321,12 @@ typedef struct BatchRingBuffer
 
 struct IndexScanInstrumentation;
 
+typedef struct IndexVMCacheEntry
+{
+	BlockNumber	block;
+	bool		visible;
+} IndexVMCacheEntry;
+
 /*
  * We use the same IndexScanDescData structure for both amgettuple-based
  * and amgetbitmap-based index scans.  Some fields are only relevant in
@@ -381,6 +387,8 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 	bool		xs_visible;		/* T means the heap page is all-visible */
 	uint16		maxitemsbatch;	/* set by ambeginscan when amgetbatch used */
+
+	IndexVMCacheEntry   *vmcache;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

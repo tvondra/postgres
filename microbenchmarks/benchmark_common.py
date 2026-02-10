@@ -750,12 +750,21 @@ def evict_relations(conn, relations):
                     break
 
 
-def prewarm_relations(conn, relations):
-    """Prewarm relations into PostgreSQL buffer cache."""
+def prewarm_relations(conn, relations, include_vm=False, vm_only=False):
+    """Prewarm relations into PostgreSQL buffer cache.
+
+    If include_vm is True, also prewarm the visibility map fork.
+    If vm_only is True, prewarm ONLY the visibility map fork (not main).
+    include_vm should be set for heap relations (tables) but NOT for indexes,
+    which have no VM fork.
+    """
     with conn.cursor() as cur:
         for rel in relations:
             try:
-                cur.execute(f"SELECT pg_prewarm('{rel}')")
+                if not vm_only:
+                    cur.execute(f"SELECT pg_prewarm('{rel}')")
+                if include_vm or vm_only:
+                    cur.execute(f"SELECT pg_prewarm('{rel}', 'buffer', 'vm')")
             except Exception as e:
                 conn.rollback()
                 print(f"Warning: Failed to prewarm {rel}: {e}")

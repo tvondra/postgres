@@ -880,7 +880,7 @@ def prepare_prefetch_cache(conn, query_def, cached_mode):
         # Cached mode: prewarm everything (indexes + tables)
         print("Prewarming indexes and tables (cached mode)...")
         prewarm_relations(conn, query_def.get("prewarm_indexes", []))
-        prewarm_relations(conn, query_def.get("prewarm_tables", []))
+        prewarm_relations(conn, query_def.get("prewarm_tables", []), include_vm=True)
     else:
         # Uncached mode: evict heap, prewarm only indexes, clear OS cache
         print("Evicting relations and clearing OS cache (uncached mode)...")

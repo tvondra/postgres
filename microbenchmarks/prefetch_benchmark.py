@@ -1656,11 +1656,12 @@ def run_query(conn, query_def, cached_mode, is_master, prefetch_setting, benchma
     if cached_mode:
         # Prewarm everything
         prewarm_relations(conn, query_def.get("prewarm_indexes", []))
-        prewarm_relations(conn, query_def.get("prewarm_tables", []))
+        prewarm_relations(conn, query_def.get("prewarm_tables", []), include_vm=True)
     else:
-        # Uncached: evict heap, prewarm indexes, clear OS cache
+        # Uncached: evict heap, prewarm indexes + heap VM, clear OS cache
         evict_relations(conn, query_def.get("evict", []))
         prewarm_relations(conn, query_def.get("prewarm_indexes", []))
+        prewarm_relations(conn, query_def.get("prewarm_tables", []), vm_only=True)
         clear_os_cache()
 
     # Set GUCs

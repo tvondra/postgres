@@ -321,6 +321,8 @@ typedef struct BatchRingBuffer
 
 struct IndexScanInstrumentation;
 
+#define VMCACHE_SIZE	256
+
 typedef struct IndexVMCacheEntry
 {
 	BlockNumber	block;
@@ -388,6 +390,7 @@ typedef struct IndexScanDescData
 	bool		xs_visible;		/* T means the heap page is all-visible */
 	uint16		maxitemsbatch;	/* set by ambeginscan when amgetbatch used */
 
+	/* small cache of visibilitymap status for recent blocks */
 	IndexVMCacheEntry   *vmcache;
 
 	/*

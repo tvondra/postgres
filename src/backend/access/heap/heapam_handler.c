@@ -307,10 +307,20 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	/* We better still have a pin on batch's index page */
 	Assert(BufferIsValid(batch->buf));
 
-	if (scan->vmcache == NULL)
+	/*
+	 * If this is the first item we're evaluating for this batch, make sure the
+	 * visibilitymap cache is initialized. We can't reuse the VM info across
+	 * batches, due to the risk of reusing a TID.
+	 */
+	if (!batch->items[batch->firstItem].checkedVisible &&
+		!batch->items[batch->lastItem].checkedVisible)
 	{
-		scan->vmcache = palloc_array(IndexVMCacheEntry, 256);
-		for (int i = 0; i < 256; i++)
+		/* allocate on first batch */
+		if (scan->vmcache == NULL)
+			scan->vmcache = palloc_array(IndexVMCacheEntry, VMCACHE_SIZE);
+
+		/* mark all entries as not initialized */
+		for (int i = 0; i < VMCACHE_SIZE; i++)
 		{
 			scan->vmcache[i].block = InvalidBlockNumber;
 			scan->vmcache[i].visible = false;
@@ -334,23 +344,25 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		BatchMatchingItem *mitem = &batch->items[i];
 		ItemPointer tid = &mitem->heapTid;
 		BlockNumber block = ItemPointerGetBlockNumber(tid);
-		int idx = block % 256;
 
-		mitem->checkedVisible = true;
+		/*
+		 * XXX Maybe pick sizes so that we can use a mask 0xFF instead of
+		 * modulo, which can be quite expensive?
+		 */
+		IndexVMCacheEntry *entry = &scan->vmcache[(block % VMCACHE_SIZE)];
 
-		if (scan->vmcache[idx].block != InvalidBlockNumber)
+		/* Make sure the cache has the visibility status for this block. */
+		if (entry->block == InvalidBlockNumber)
 		{
-			mitem->allVisible = scan->vmcache[idx].visible;
-		}
-		else
-		{
-			mitem->allVisible =
+			entry->visible =
 				VM_ALL_VISIBLE(scan->heapRelation,
 							   ItemPointerGetBlockNumber(tid),
 							   &hscan->vmbuf) != 0;
-			scan->vmcache[idx].visible = mitem->allVisible;
-			scan->vmcache[idx].block = block;
+			entry->block = block;
 		}
+
+		mitem->checkedVisible = true;
+		mitem->allVisible = entry->visible;
 	}
 
 #ifdef VM_RESOLVE_DEBUG

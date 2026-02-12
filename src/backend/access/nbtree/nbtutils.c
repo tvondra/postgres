@@ -141,23 +141,6 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
 }
 
 /*
- * free a retracement stack made by _bt_search.
- */
-void
-_bt_freestack(BTStack stack)
-{
-	BTStack		ostack;
-
-	while (stack != NULL)
-	{
-		ostack = stack;
-		stack = stack->bts_parent;
-		pfree(ostack);
-	}
-}
-
-
-/*
  * The following routines manage a shared-memory area in which we track
  * assignment of "vacuum cycle IDs" to currently-active btree vacuuming
  * operations.  There is a single counter which increments each time we

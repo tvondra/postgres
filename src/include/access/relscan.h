@@ -529,17 +529,6 @@ index_scan_pos_cmp(BatchRingItemPos *pos1, BatchRingItemPos *pos2,
 }
 
 /*
- * Return the signed distance in batches between two positions.
- *
- * Positive means pos1 is ahead of pos2 by that many batches.
- */
-static inline int8
-index_scan_pos_batch_distance(BatchRingItemPos *pos1, BatchRingItemPos *pos2)
-{
-	return (int8) (pos1->batch - pos2->batch);
-}
-
-/*
  * Advance position to its next item in the batch.
  *
  * Advance to the next item within the provided batch (or to the previous item,

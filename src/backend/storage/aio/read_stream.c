@@ -465,6 +465,32 @@ read_stream_look_ahead(ReadStream *stream)
 		blocknum = read_stream_get_block(stream, per_buffer_data);
 		if (blocknum == InvalidBlockNumber)
 		{
+			if (stream->yielded && stream->distance > 0)
+			{
+				/*
+				 * Deferred yield: the callback yielded while a partial
+				 * pending read is being formed and there are pinned
+				 * buffers to return.  Clear the yielded flag and break
+				 * without setting distance to 0, so the pending read
+				 * stays as-is and can grow on the next look-ahead pass.
+				 */
+				stream->yielded = false;
+				break;
+			}
+
+			if (stream->yielded)
+			{
+				/*
+				 * Accepted yield.  If there's a pending read, start it
+				 * now to ensure there are pinned buffers for the
+				 * consumer before we yield.
+				 */
+				if (stream->pending_read_nblocks > 0 &&
+					stream->ios_in_progress < stream->max_ios)
+					read_stream_start_pending_read(stream);
+				break;
+			}
+
 			/* End of stream. */
 			stream->distance = 0;
 			break;
@@ -1073,10 +1099,28 @@ read_stream_resume(ReadStream *stream)
  * of read_stream_next_buffer() without looking further ahead.  Its return
  * value should be returned by the callback.  This is equivalent to pausing and
  * resuming automatically at the next call to read_stream_next_buffer().
+ *
+ * If we're in the middle of forming a combined read that hasn't reached
+ * io_combine_limit yet, and there are already pinned buffers available for the
+ * consumer to process, we defer the yield.  The callback will be invoked again
+ * on the next look-ahead pass, giving the pending read a chance to grow to
+ * full io_combine_limit size.  We still return InvalidBlockNumber to break out
+ * of the current look-ahead loop iteration, but we don't pause the stream
+ * (distance stays > 0), so read_stream_look_ahead() can tell that this was a
+ * deferred yield rather than an accepted yield.
  */
 BlockNumber
 read_stream_yield(ReadStream *stream)
 {
+	if (stream->pending_read_nblocks > 0 &&
+		stream->pending_read_nblocks < stream->io_combine_limit &&
+		stream->pinned_buffers > 0)
+	{
+		/* Deferred yield: don't pause, let the pending read grow. */
+		stream->yielded = true;
+		return InvalidBlockNumber;
+	}
+
 	read_stream_pause(stream);
 	stream->yielded = true;
 	return InvalidBlockNumber;

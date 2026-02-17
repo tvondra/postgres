@@ -520,8 +520,8 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		}
 
 		/*
-		 * Reset xs_yield_check, to allow heapam_getnext_stream to consider if
-		 * we should yield on our newly acquired batch
+		 * Reset xs_yield_check, to allow heapam_getnext_stream to consider
+		 * yielding when items from this batch are eventually exhausted
 		 */
 		hscan->xs_yield_check = false;
 
@@ -841,78 +841,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		fromScanPos = true;
 	}
 
-	/*
-	 * Consider if we need to yield, if we haven't done so already for this
-	 * prefetchBatch.  When we yield, the scan will return at least one more
-	 * scanPos item, often several more (particularly during scans of indexes
-	 * with high physical/logical correlation, where batches contain groups of
-	 * adjacent items whose TIDs all point to the same heap page).
-	 *
-	 * Prefetching can continue once the scan requests the buffer for the next
-	 * enqueued heap block by calling read_stream_next_buffer.  We weigh the
-	 * need to keep the scan responsive (to avoid senselessly doing a large
-	 * amount of work when we should just return a scanPos tuple immediately)
-	 * against the need for the read stream to maintain its prefetch distance
-	 * (if we pause too much it'll hurt the stream's ability to maintain a
-	 * sufficient prefetch distance when I/O bound).
-	 *
-	 * Keeping the scan responsive is important during index-only scans that
-	 * require only a few heap fetches.  It also matters when allowing the
-	 * scan to return just a few more items has the potential to allow the
-	 * scan to end entirely (e.g., with an ORDER BY ... LIMIT N, or within a
-	 * scan that feeds into a merge join).
-	 */
-	else if (!hscan->xs_yield_check)
-	{
-		int8		batchdistance = index_scan_pos_batch_distance(prefetchPos,
-																  scanPos);
-
-		/*
-		 * We haven't yielded for this prefetchBatch yet. Should we?
-		 *
-		 * During I/O bound scans it's typical for the distance between
-		 * scanPos and prefetchPos to grow rapidly at first, and then
-		 * stabilize at some fixed level for the remainder of the scan.
-		 */
-		hscan->xs_yield_check = true;
-		if (batchdistance == 0)
-		{
-			/*
-			 * Never actually yield when prefetchBatch is also scanBatch.
-			 * Assume that the scan is either already as responsive as can
-			 * reasonably be expected, or that it's still too early to tell.
-			 */
-		}
-		else if (batchdistance <= 2)
-		{
-			/*
-			 * prefetchBatch is ahead of scanBatch, but only by one or two
-			 * batches.  If the read stream is currently using its fast path,
-			 * yield.  This assumes that the risk of calling amgetbatch too
-			 * eagerly now outweighs the risk of yielding noticeably impeding
-			 * read stream's ability to get to an adequate prefetch distance.
-			 */
-			if (read_stream_uses_fast_path(stream))
-				return read_stream_yield(stream);
-
-			/*
-			 * Don't yield yet -- at least not until batchdistance can grow to
-			 * three or more batches.  There's no point in our yielding if
-			 * heapam_index_fetch_tuple will have to wait for the next block.
-			 */
-		}
-		else
-		{
-			/*
-			 * prefetchBatch is ahead of scanBatch by three or more batches,
-			 * so yield unconditionally.  (The risk of yielding impeding read
-			 * stream's ability to maintain an adequate prefetch distance is
-			 * relatively small.)
-			 */
-			return read_stream_yield(stream);
-		}
-	}
-
 	prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
 	for (;;)
 	{
@@ -959,6 +887,55 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				hscan->xs_yield_check = true;	/* skip check on next call
 												 * here */
 				return read_stream_pause(stream);
+			}
+
+			/*
+			 * Consider if we need to yield, if we haven't done so already
+			 * for the current prefetchBatch.  We yield at the natural
+			 * boundary between exhausting one batch's items and loading
+			 * the next, giving the scan a chance to return scanPos items
+			 * and potentially end entirely (e.g., with LIMIT) before we
+			 * eagerly commit to loading another batch.
+			 *
+			 * When we yield, the scan will return at least one more
+			 * scanPos item, often several more (particularly during scans
+			 * of indexes with high physical/logical correlation, where
+			 * batches contain groups of adjacent items whose TIDs all
+			 * point to the same heap page).
+			 *
+			 * Prefetching can continue once the scan requests the buffer
+			 * for the next enqueued heap block by calling
+			 * read_stream_next_buffer.  We weigh the need to keep the
+			 * scan responsive (to avoid senselessly doing a large amount
+			 * of work when we should just return a scanPos tuple
+			 * immediately) against the need for the read stream to
+			 * maintain its prefetch distance (if we pause too much it'll
+			 * hurt the stream's ability to maintain a sufficient prefetch
+			 * distance when I/O bound).
+			 *
+			 * Keeping the scan responsive is important during index-only
+			 * scans that require only a few heap fetches.  It also
+			 * matters when allowing the scan to return just a few more
+			 * items has the potential to allow the scan to end entirely
+			 * (e.g., with an ORDER BY ... LIMIT N, or within a scan that
+			 * feeds into a merge join).
+			 */
+			if (!hscan->xs_yield_check)
+			{
+				hscan->xs_yield_check = true;
+				if (!hscan->xs_rampup_done)
+				{
+					/*
+					 * Never yield during the initial ramp-up phase of the
+					 * scan.  Yielding too early prevents the read stream
+					 * from building up an adequate prefetch distance.
+					 */
+					if (batchringbuf->headBatch >= 4)
+						hscan->xs_rampup_done = true;
+				}
+
+				if (hscan->xs_rampup_done)
+					return read_stream_yield(stream);
 			}
 
 			prefetchBatch = heapam_batch_getnext(scan, xs_read_stream_dir,

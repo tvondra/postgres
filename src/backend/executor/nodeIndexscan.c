@@ -819,6 +819,9 @@ ExecEndIndexScan(IndexScanState *node)
 		 */
 		winstrument->nsearches += node->iss_Instrument->nsearches;
 		Assert(node->iss_Instrument->nheapfetches == 0);
+
+		/* collect prefetch info for this process from the read_stream */
+		winstrument->stream = index_get_prefetch_stats(indexScanDesc);
 	}
 
 	/*

@@ -42,6 +42,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/heapam.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -397,6 +398,29 @@ index_rescan(IndexScanDesc scan,
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
+}
+
+/*
+ * index_get_prefetch_stats
+ *		collect prefetch statistics from the read_stream
+ *
+ * If the index scan does not use a read_stream (yet), the counters are
+ * initialized to 0.
+ */
+extern ReadStreamInstrumentation
+index_get_prefetch_stats(IndexScanDesc scan)
+{
+	ReadStreamInstrumentation	stats;
+
+	if (scan && ((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream != NULL)
+	{
+		return read_stream_prefetch_stats(((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream);
+	}
+
+	/* there's no stream, return zeros */
+	memset(&stats, 0, sizeof(ReadStreamInstrumentation));
+
+	return stats;
 }
 
 /* ----------------

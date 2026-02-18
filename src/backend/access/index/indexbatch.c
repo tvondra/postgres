@@ -701,6 +701,8 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 				if (batch->visInfo)
 					memset(batch->visInfo, 0, scan->maxitemsbatch);
 
+				batch->numKilled = 0;
+
 #ifdef BATCH_CACHE_DEBUG
 				scan->batchringbuf.cacheHits++;
 #endif

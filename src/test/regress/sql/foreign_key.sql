@@ -2498,3 +2498,47 @@ WITH cte AS (
 
 DROP SCHEMA fkpart13 CASCADE;
 RESET search_path;
+
+-- Tests foreign key check fast-path no-cache path.
+CREATE TABLE fp_pk_alter (a int PRIMARY KEY);
+INSERT INTO fp_pk_alter SELECT generate_series(1, 100);
+CREATE TABLE fp_fk_alter (a int);
+INSERT INTO fp_fk_alter SELECT generate_series(1, 100);
+-- Validation path: should succeed
+ALTER TABLE fp_fk_alter ADD FOREIGN KEY (a) REFERENCES fp_pk_alter;
+INSERT INTO fp_fk_alter VALUES (101);  -- should fail (constraint active)
+DROP TABLE fp_fk_alter, fp_pk_alter;
+
+-- Separate test: validation catches existing violation
+CREATE TABLE fp_pk_alter2 (a int PRIMARY KEY);
+INSERT INTO fp_pk_alter2 VALUES (1);
+CREATE TABLE fp_fk_alter2 (a int);
+INSERT INTO fp_fk_alter2 VALUES (1), (200);  -- 200 has no PK match
+ALTER TABLE fp_fk_alter2 ADD FOREIGN KEY (a) REFERENCES fp_pk_alter2;  -- should fail
+DROP TABLE fp_fk_alter2, fp_pk_alter2;
+
+-- Tests that the fast-path handles caching for multiple constraints
+CREATE TABLE fp_pk1 (a int PRIMARY KEY);
+CREATE TABLE fp_pk2 (b int PRIMARY KEY);
+INSERT INTO fp_pk1 VALUES (1);
+INSERT INTO fp_pk2 VALUES (1);
+CREATE TABLE fp_multi_fk (
+    a int REFERENCES fp_pk1,
+    b int REFERENCES fp_pk2
+);
+INSERT INTO fp_multi_fk VALUES (1, 1);  -- two constraints, one batch
+INSERT INTO fp_multi_fk VALUES (1, 2);  -- second constraint fails
+DROP TABLE fp_multi_fk, fp_pk1, fp_pk2;
+
+-- Test that fast-path cache handles deferred constraints and SET CONSTRAINTS IMMEDIATE
+CREATE TABLE fp_pk_defer (a int PRIMARY KEY);
+CREATE TABLE fp_fk_defer (a int REFERENCES fp_pk_defer DEFERRABLE INITIALLY DEFERRED);
+INSERT INTO fp_pk_defer VALUES (1), (2);
+
+BEGIN;
+INSERT INTO fp_fk_defer VALUES (1);
+INSERT INTO fp_fk_defer VALUES (2);
+SET CONSTRAINTS ALL IMMEDIATE;  -- fires batch callback here
+INSERT INTO fp_fk_defer VALUES (3);  -- should fail, also tests that cache was cleaned up
+COMMIT;
+DROP TABLE fp_pk_defer, fp_fk_defer;

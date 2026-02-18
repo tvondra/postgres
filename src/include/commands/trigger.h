@@ -289,4 +289,22 @@ extern void RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel,
 
 extern int	RI_FKey_trigger_type(Oid tgfoid);
 
+/*
+ * Callback type for end-of-trigger-batch notifications.
+ *
+ * Registered via RegisterAfterTriggerBatchCallback().  Invoked when
+ * a batch of after-trigger processing completes:
+ *	- AfterTriggerEndQuery()      (immediate constraints)
+ *	- AfterTriggerFireDeferred()  (deferred constraints at COMMIT)
+ *	- AfterTriggerSetState()      (SET CONSTRAINTS IMMEDIATE)
+ *
+ * The callback list is cleared after each batch.  Callers must
+ * re-register if they need to be called again in a subsequent batch.
+ */
+typedef void (*AfterTriggerBatchCallback) (void *arg);
+
+extern void RegisterAfterTriggerBatchCallback(AfterTriggerBatchCallback callback,
+											  void *arg);
+extern bool AfterTriggerBatchIsActive(void);
+
 #endif							/* TRIGGER_H */

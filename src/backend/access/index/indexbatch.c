@@ -677,9 +677,14 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
  * a batch recycled from the cache managed by indexam_util_batch_release.  See
  * comments above indexam_util_batch_release.
  *
- * Index AMs that use batches should call this from either their amgetbatch or
- * amgetbitmap routines only.  Note in particular that it cannot safely be
- * called from an amkillitemsbatch routine.
+ * Housekeeping fields (buf, knownEndLeft/Right, firstItem, lastItem,
+ * numKilled, killedItems, visInfo, currTuples) are initialized here.  The
+ * caller is responsible for filling in the page-level navigation fields
+ * (currPage, prevPage, nextPage, dir, moreLeft, moreRight) and the matching
+ * items[] array.  Once populated, the caller either passes the batch to
+ * indexam_util_batch_unlock (when it has matches to return from amgetbatch),
+ * or to indexam_util_batch_release (when the page had no matches).  Note
+ * that lsn is set by indexam_util_batch_unlock, not by the caller.
  */
 IndexScanBatch
 indexam_util_batch_alloc(IndexScanDesc scan)
@@ -700,8 +705,6 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 				/* Clear stale visibility info from prior use */
 				if (batch->visInfo)
 					memset(batch->visInfo, 0, scan->maxitemsbatch);
-
-				batch->numKilled = 0;
 
 #ifdef BATCH_CACHE_DEBUG
 				scan->batchringbuf.cacheHits++;

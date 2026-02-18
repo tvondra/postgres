@@ -72,7 +72,6 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
-#include "executor/instrument_node.h"
 #include "storage/aio.h"
 #include "storage/fd.h"
 #include "storage/smgr.h"
@@ -108,7 +107,6 @@ struct ReadStream
 	bool		advice_enabled;
 	bool		temporary;
 	bool		yielded;
-	ReadStreamInstrumentation stats;
 
 	/*
 	 * One-block buffer to support 'ungetting' a block number, to resolve flow
@@ -176,39 +174,6 @@ block_range_read_stream_cb(ReadStream *stream,
 }
 
 /*
- * read_stream_update_prefetch_stats
- *		update read_stream stats before a prefetch request
- *
- * With (distance == 1) we're not really doing any prefetching, because we'll
- * need the block immediately. We count that as a stall.
- *
- * For (distance > 1) we count the number of prefetch requests and distance
- * sum, so that we can later calculate average distance. We also keep a small
- * histogram of distances, with exponentially-sized buckets.
- */
-static inline void
-read_stream_update_prefetch_stats(ReadStream *stream)
-{
-	int			hist_idx = -1;
-
-	/* determine which bucket of the histogram the distance belongs to */
-	for (int i = 0; i < 16; i++)
-	{
-		if (stream->distance < (1 << i))
-			break;
-		hist_idx++;
-	}
-
-	/* we should not see a distance for other buckets */
-	Assert((hist_idx >= 0) && (hist_idx < 16));
-
-	stream->stats.hist_distance[hist_idx] += 1;
-
-	stream->stats.prefetch_accum += stream->distance;
-	stream->stats.prefetch_count += 1;
-}
-
-/*
  * Ask the callback which block it would like us to read next, with a one block
  * buffer in front to allow read_stream_unget_block() to work.
  */
@@ -216,8 +181,6 @@ static inline BlockNumber
 read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
-
-	read_stream_update_prefetch_stats(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -253,9 +216,6 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
 	Assert(stream->buffered_blocknum == InvalidBlockNumber);
 	Assert(blocknum != InvalidBlockNumber);
 	stream->buffered_blocknum = blocknum;
-
-	/* remeber we put a block back */
-	stream->stats.unget_count++;
 }
 
 /*
@@ -408,10 +368,6 @@ read_stream_start_pending_read(ReadStream *stream)
 		/* Look-ahead distance decays, no I/O necessary. */
 		if (stream->distance > 1)
 			stream->distance--;
-
-		/* track info about the I/O */
-		stream->stats.hist_io_size[nblocks] += 1;
-		stream->stats.hist_io_count[stream->ios_in_progress + 1] += 1;
 	}
 	else
 	{
@@ -425,10 +381,6 @@ read_stream_start_pending_read(ReadStream *stream)
 		Assert(stream->ios_in_progress < stream->max_ios);
 		stream->ios_in_progress++;
 		stream->seq_blocknum = stream->pending_read_blocknum + nblocks;
-
-		/* track info about the I/O */
-		stream->stats.hist_io_size[nblocks] += 1;
-		stream->stats.hist_io_count[stream->ios_in_progress] += 1;
 	}
 
 	/*
@@ -471,9 +423,6 @@ read_stream_start_pending_read(ReadStream *stream)
 	/* Adjust the pending read to cover the remaining portion, if any. */
 	stream->pending_read_blocknum += nblocks;
 	stream->pending_read_nblocks -= nblocks;
-
-	/* remember the number of forwarded blocks */
-	stream->stats.forwarded_count += forwarded;
 
 	return true;
 }
@@ -792,9 +741,6 @@ read_stream_begin_impl(int flags,
 	stream->temporary = SmgrIsTemp(smgr);
 	stream->yielded = false;
 
-	/* zero the stats */
-	memset(&stream->stats, 0, sizeof(ReadStreamInstrumentation));
-
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
 	 * reading the whole relation.  This way we start out assuming we'll be
@@ -1020,10 +966,6 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		Assert(stream->ios[io_index].op.buffers ==
 			   &stream->buffers[oldest_buffer_index]);
 
-		/* distance=1 means we're not really prefetching, count it as a stall */
-		if (stream->distance == 1)
-			stream->stats.prefetch_stalls += 1;
-
 		WaitReadBuffers(&stream->ios[io_index].op);
 
 		Assert(stream->ios_in_progress > 0);
@@ -1149,8 +1091,6 @@ read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
 BlockNumber
 read_stream_pause(ReadStream *stream)
 {
-	stream->stats.pause_count += 1;
-
 	stream->resume_distance = stream->distance;
 	stream->distance = 0;
 	return InvalidBlockNumber;
@@ -1196,9 +1136,6 @@ read_stream_yield(ReadStream *stream)
 
 	read_stream_pause(stream);
 	stream->yielded = true;
-
-	stream->stats.yield_count += 1;
-
 	return InvalidBlockNumber;
 }
 
@@ -1248,9 +1185,6 @@ read_stream_reset(ReadStream *stream)
 
 	/* Start off assuming data is cached. */
 	stream->distance = 1;
-
-	/* Remember we reset the stream */
-	stream->stats.reset_count += 1;
 }
 
 /*
@@ -1261,23 +1195,4 @@ read_stream_end(ReadStream *stream)
 {
 	read_stream_reset(stream);
 	pfree(stream);
-}
-
-/* return the prefetch stats for the read_stream */
-ReadStreamInstrumentation
-read_stream_prefetch_stats(ReadStream *stream)
-{
-	return stream->stats;
-}
-
-/*
- * read_stream_skip_block
- *		update the stats counter of skipped blocks
- *
- * Expected to be used from the read_stream next_block callback.
- */
-void
-read_stream_skip_block(ReadStream *stream)
-{
-	stream->stats.skip_count += 1;
 }

@@ -14,7 +14,6 @@
 #ifndef READ_STREAM_H
 #define READ_STREAM_H
 
-#include "executor/instrument_node.h"
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
 
@@ -105,8 +104,5 @@ extern void read_stream_resume(ReadStream *stream);
 extern BlockNumber read_stream_yield(ReadStream *stream);
 extern void read_stream_reset(ReadStream *stream);
 extern void read_stream_end(ReadStream *stream);
-
-extern ReadStreamInstrumentation read_stream_prefetch_stats(ReadStream *stream);
-extern void read_stream_skip_block(ReadStream *stream);
 
 #endif							/* READ_STREAM_H */

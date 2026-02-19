@@ -44,6 +44,7 @@ containing:
 """
 
 import argparse
+from collections import OrderedDict
 import os
 import random
 import shutil
@@ -58,14 +59,30 @@ from benchmark_common import (
     MASTER_BIN, PATCH_BIN,
     MASTER_DATA_DIR, PATCH_DATA_DIR,
     MASTER_CONN, PATCH_CONN,
-    QUERIES,
-    DATA_LOADING_SQL,
-    verify_data, load_data,
     clear_os_cache, evict_relations, prewarm_relations,
     set_gucs, reset_gucs,
     setup_tmpfs_hugepages, copy_binaries_to_tmpfs, cleanup_tmpfs,
     extract_execution_time,
 )
+
+from prefetch_benchmark import BENCHMARK_SUITES
+
+# Build combined query lookup and per-query data functions from
+# BENCHMARK_SUITES (the single source of truth shared with
+# prefetch_benchmark.py and patch_report.py).
+ALL_QUERIES = OrderedDict()
+_QUERY_DATA_FNS = {}   # query_id -> (verify_fn, load_fn)
+
+for _suite in BENCHMARK_SUITES:
+    _verify = _suite["verify_fn"]
+    _load = _suite["load_fn"]
+    for _qid, _qdef in _suite["queries"].items():
+        ALL_QUERIES[_qid] = _qdef
+        _QUERY_DATA_FNS[_qid] = (_verify, _load)
+
+def _get_data_functions(query_id):
+    """Return (verify_fn, load_fn) for the given query ID."""
+    return _QUERY_DATA_FNS[query_id]
 
 # os.environ["MALLOPT_TOP_PAD_"] = str(64 * 1024 * 1024)
 # os.environ["MALLOPT_TOP_PAD"] = str(64 * 1024 * 1024)
@@ -209,6 +226,12 @@ def parse_arguments():
         "--skip-data-load",
         action="store_true",
         help="Skip prefetch benchmark data verification/loading (use with --query)"
+    )
+    parser.add_argument(
+        "--no-pin",
+        action="store_true",
+        dest="no_pin",
+        help="Disable CPU pinning (no taskset, no chrt, no perf -C; uses perf -p PID instead)"
     )
     prefetch_group = parser.add_mutually_exclusive_group()
     prefetch_group.add_argument(
@@ -524,7 +547,7 @@ def verify_btree_index_exists(pg_name, conn_details):
         print(f"Error verifying B-tree indexes on {pg_name}: {e}")
         sys.exit(1)
 
-def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False, discard_runs=0, benchmark_cpu=14, perf_cpu=15, disable_prefetch=False, is_master=False, prefetch_setting=None):
+def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False, discard_runs=0, benchmark_cpu=14, perf_cpu=15, disable_prefetch=False, is_master=False, prefetch_setting=None, no_pin=False):
     """Profiles a PostgreSQL instance (assumes server is already running)."""
     print(f"--- Testing {pg_name} ---")
 
@@ -537,46 +560,49 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         print(f"Successfully connected. Backend PID is: {backend_pid}")
 
         # Pin the backend process to a specific core and use RT scheduling to prevent migration.
-        try:
-            # Pin backend to specified core using taskset (doesn't require root)
-            result = subprocess.run(
-                ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
-            else:
-                print(f"Warning: Could not set CPU affinity: {result.stderr}")
-
-            # Set RT scheduling (SCHED_FIFO) to truly pin and prevent migrations
-            # Use chrt with sudo for RT scheduling (requires passwordless sudo or password entry)
-            result = subprocess.run(
-                ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                print(f"Set backend PID {backend_pid} to SCHED_FIFO priority 1 (prevents CPU migration).")
-
-                # Verify RT scheduling was actually set
-                verify_result = subprocess.run(
-                    ["chrt", "-p", str(backend_pid)],
+        if not no_pin:
+            try:
+                # Pin backend to specified core using taskset (doesn't require root)
+                result = subprocess.run(
+                    ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
                     capture_output=True,
                     text=True,
                     check=False
                 )
-                if verify_result.returncode == 0:
-                    print(f"Verification: {verify_result.stdout.strip()}")
+                if result.returncode == 0:
+                    print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
                 else:
-                    print(f"Warning: Could not verify RT scheduling")
-            else:
-                print(f"Warning: Could not set RT scheduling: {result.stderr}")
-                print(f"         Configure passwordless sudo for 'chrt' or run entire script with sudo.")
-        except Exception as e:
-            print(f"Warning: Could not set CPU affinity/RT scheduling for backend PID {backend_pid}: {e}")
+                    print(f"Warning: Could not set CPU affinity: {result.stderr}")
+
+                # Set RT scheduling (SCHED_FIFO) to truly pin and prevent migrations
+                # Use chrt with sudo for RT scheduling (requires passwordless sudo or password entry)
+                result = subprocess.run(
+                    ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if result.returncode == 0:
+                    print(f"Set backend PID {backend_pid} to SCHED_FIFO priority 1 (prevents CPU migration).")
+
+                    # Verify RT scheduling was actually set
+                    verify_result = subprocess.run(
+                        ["chrt", "-p", str(backend_pid)],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if verify_result.returncode == 0:
+                        print(f"Verification: {verify_result.stdout.strip()}")
+                    else:
+                        print(f"Warning: Could not verify RT scheduling")
+                else:
+                    print(f"Warning: Could not set RT scheduling: {result.stderr}")
+                    print(f"         Configure passwordless sudo for 'chrt' or run entire script with sudo.")
+            except Exception as e:
+                print(f"Warning: Could not set CPU affinity/RT scheduling for backend PID {backend_pid}: {e}")
+        else:
+            print("CPU pinning disabled (--no-pin)")
 
         # Disable hardware prefetchers if requested
         original_prefetch_value = None
@@ -665,7 +691,6 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         perf_command = []
         start_time = time.time()
         if run_perf:
-            print(f"Starting perf on CPU core {benchmark_cpu}...")
             perf_freq = "49999" if highfreq else str(PERF_FREQUENCY)
             perf_command = [
                 "perf", "record",
@@ -675,39 +700,59 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
             if perf_event:
                 perf_command.extend(["-e", perf_event])
 
-            perf_command.extend([
-                "-C", str(benchmark_cpu),  # Monitor CPU core (works with all event types)
-                "-g",
-                "-o",  OUTPUT_DIR + "/" + pg_name,
-            ])
+            if no_pin:
+                print(f"Starting perf on PID {backend_pid}...")
+                perf_command.extend([
+                    "-p", str(backend_pid),
+                    "-g",
+                    "-o",  OUTPUT_DIR + "/" + pg_name,
+                ])
+            else:
+                print(f"Starting perf on CPU core {benchmark_cpu}...")
+                perf_command.extend([
+                    "-C", str(benchmark_cpu),  # Monitor CPU core (works with all event types)
+                    "-g",
+                    "-o",  OUTPUT_DIR + "/" + pg_name,
+                ])
             perf_process = subprocess.Popen(perf_command)
 
             # Pin perf process to a different core to minimize interference.
-            try:
-                os.sched_setaffinity(perf_process.pid, {perf_cpu})
-                print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
-            except (AttributeError, PermissionError, OSError) as e:
-                print(f"Warning: Could not set CPU affinity for perf PID {perf_process.pid}: {e}")
+            if not no_pin:
+                try:
+                    os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                    print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
+                except (AttributeError, PermissionError, OSError) as e:
+                    print(f"Warning: Could not set CPU affinity for perf PID {perf_process.pid}: {e}")
 
             # Give perf a moment to initialize before starting the workload
             time.sleep(1)
         elif run_perfstat:
-            print(f"Starting perf stat on CPU core {benchmark_cpu}...")
             stat_output_file = OUTPUT_DIR + "/" + pg_name + "_perfstat.txt"
-            perf_command = [
-                "perf", "stat",
-                "-ddd",                     # Very detailed statistics
-                "-C", str(benchmark_cpu),   # Monitor CPU core where backend is RT-pinned
-                "-o", stat_output_file,     # Output to file
-            ]
+            if no_pin:
+                print(f"Starting perf stat on PID {backend_pid}...")
+                perf_command = [
+                    "perf", "stat",
+                    "-ddd",                     # Very detailed statistics
+                    "-p", str(backend_pid),     # Monitor backend PID
+                    "-o", stat_output_file,     # Output to file
+                ]
+            else:
+                print(f"Starting perf stat on CPU core {benchmark_cpu}...")
+                perf_command = [
+                    "perf", "stat",
+                    "-ddd",                     # Very detailed statistics
+                    "-C", str(benchmark_cpu),   # Monitor CPU core where backend is RT-pinned
+                    "-o", stat_output_file,     # Output to file
+                ]
             perf_process = subprocess.Popen(perf_command)
 
             # Pin perf stat process to different core to minimize interference
-            try:
-                os.sched_setaffinity(perf_process.pid, {perf_cpu})
-                print(f"Pinned perf stat PID {perf_process.pid} to CPU {perf_cpu}.")
-            except (AttributeError, PermissionError, OSError) as e:
-                print(f"Warning: Could not set CPU affinity for perf stat PID {perf_process.pid}: {e}")
+            if not no_pin:
+                try:
+                    os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                    print(f"Pinned perf stat PID {perf_process.pid} to CPU {perf_cpu}.")
+                except (AttributeError, PermissionError, OSError) as e:
+                    print(f"Warning: Could not set CPU affinity for perf stat PID {perf_process.pid}: {e}")
 
             # Give perf stat a moment to initialize
             time.sleep(1)
@@ -907,9 +952,10 @@ def prepare_prefetch_cache(conn, query_def, cached_mode):
 def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_event, run_perf, prefetch_setting):
     """Profile a prefetch benchmark query and generate flame graphs."""
     query_id = args.query.upper()
-    query_def = QUERIES[query_id]
+    query_def = ALL_QUERIES[query_id]
     sql_query = query_def["sql"].strip()
     cached_mode = args.cached
+    verify_fn, load_fn = _get_data_functions(query_id)
 
     print(f"\n{'='*60}")
     print(f"Profiling prefetch query: {query_id} - {query_def['name']}")
@@ -933,19 +979,19 @@ def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_
     try:
         # Verify/load data on both servers if needed
         if not args.skip_data_load:
-            print("\n--- Verifying prefetch benchmark data on master ---")
+            print("\n--- Verifying benchmark data on master ---")
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
-            if not verify_data(MASTER_CONN_DETAILS, skip_load=False):
+            if not verify_fn(MASTER_CONN_DETAILS):
                 print("Loading data on master (this will take several minutes)...")
-                load_data(MASTER_CONN_DETAILS)
+                load_fn(MASTER_CONN_DETAILS)
             stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
-            print("\n--- Verifying prefetch benchmark data on patch ---")
+            print("\n--- Verifying benchmark data on patch ---")
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
-            if not verify_data(PATCH_CONN_DETAILS, skip_load=False):
+            if not verify_fn(PATCH_CONN_DETAILS):
                 print("Loading data on patch (this will take several minutes)...")
-                load_data(PATCH_CONN_DETAILS)
+                load_fn(PATCH_CONN_DETAILS)
             stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
 
@@ -959,7 +1005,8 @@ def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_
             run_perf=run_perf, perf_event=perf_event,
             highfreq=args.highfreq, run_perfstat=args.perfstat,
             benchmark_cpu=args.benchmark_cpu, perf_cpu=args.perf_cpu,
-            disable_prefetch=args.disable_prefetch
+            disable_prefetch=args.disable_prefetch,
+            no_pin=args.no_pin,
         )
         stop_server(master_bin, MASTER_DATA_DIR)
         time.sleep(2)
@@ -974,7 +1021,8 @@ def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_
             run_perf=run_perf, perf_event=perf_event,
             highfreq=args.highfreq, run_perfstat=args.perfstat,
             benchmark_cpu=args.benchmark_cpu, perf_cpu=args.perf_cpu,
-            disable_prefetch=args.disable_prefetch
+            disable_prefetch=args.disable_prefetch,
+            no_pin=args.no_pin,
         )
         stop_server(patch_bin, PATCH_DATA_DIR)
 
@@ -1011,19 +1059,24 @@ def run_prefetch_query_profiling(args, master_bin, patch_bin, tmpfs_mount, perf_
         sql_query, perf_command_master, perf_command_patch
     )
 
-    # Display differential flame graph
-    print(f"\nDifferential flame graph saved to: {svg_file_diff}")
-    try:
-        subprocess.run(["imgcat", svg_file_diff], check=False)
-    except FileNotFoundError:
-        print("(imgcat not available for inline display)")
+    # Display all generated flame graphs
+    print("\n--- Displaying flame graphs with imgcat ---")
+    for svg_file in [svg_file_master, svg_file_patch, svg_file_diff]:
+        if os.path.exists(svg_file):
+            print(f"Displaying {os.path.basename(svg_file)}...")
+            try:
+                subprocess.run(["imgcat", svg_file], check=False)
+            except FileNotFoundError:
+                print("(imgcat not available for inline display)")
+                break
 
 
 def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_query,
                            query_def, cached_mode, is_master, prefetch_setting=None,
                            run_perf=False, perf_event=None,
                            highfreq=False, run_perfstat=False,
-                           benchmark_cpu=14, perf_cpu=15, disable_prefetch=False):
+                           benchmark_cpu=14, perf_cpu=15, disable_prefetch=False,
+                           no_pin=False):
     """Profile a prefetch benchmark query with appropriate cache preparation."""
     print(f"--- Testing {pg_name} ---")
 
@@ -1035,22 +1088,25 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         print(f"Successfully connected. Backend PID is: {backend_pid}")
 
         # Pin the backend process
-        try:
-            result = subprocess.run(
-                ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0:
-                print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
+        if not no_pin:
+            try:
+                result = subprocess.run(
+                    ["taskset", "-cp", str(benchmark_cpu), str(backend_pid)],
+                    capture_output=True, text=True, check=False
+                )
+                if result.returncode == 0:
+                    print(f"Pinned backend PID {backend_pid} to CPU {benchmark_cpu}.")
 
-            result = subprocess.run(
-                ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0:
-                print(f"Set backend PID {backend_pid} to SCHED_FIFO.")
-        except Exception as e:
-            print(f"Warning: Could not set CPU affinity: {e}")
+                result = subprocess.run(
+                    ["sudo", "chrt", "-f", "-p", "1", str(backend_pid)],
+                    capture_output=True, text=True, check=False
+                )
+                if result.returncode == 0:
+                    print(f"Set backend PID {backend_pid} to SCHED_FIFO.")
+            except Exception as e:
+                print(f"Warning: Could not set CPU affinity: {e}")
+        else:
+            print("CPU pinning disabled (--no-pin)")
 
         # Disable hardware prefetchers if requested
         original_prefetch_value = None
@@ -1090,26 +1146,35 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         start_time = time.time()
 
         if run_perf:
-            print(f"Starting perf on CPU core {benchmark_cpu}...")
             perf_freq = "49999" if highfreq else str(PERF_FREQUENCY)
             perf_command = ["perf", "record", "-F", perf_freq]
             if perf_event:
                 perf_command.extend(["-e", perf_event])
-            perf_command.extend(["-C", str(benchmark_cpu), "-g", "-o", OUTPUT_DIR + "/" + pg_name])
+            if no_pin:
+                print(f"Starting perf on PID {backend_pid}...")
+                perf_command.extend(["-p", str(backend_pid), "-g", "-o", OUTPUT_DIR + "/" + pg_name])
+            else:
+                print(f"Starting perf on CPU core {benchmark_cpu}...")
+                perf_command.extend(["-C", str(benchmark_cpu), "-g", "-o", OUTPUT_DIR + "/" + pg_name])
             perf_process = subprocess.Popen(perf_command)
 
-            try:
-                os.sched_setaffinity(perf_process.pid, {perf_cpu})
-                print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
-            except (AttributeError, PermissionError, OSError) as e:
-                print(f"Warning: Could not set CPU affinity for perf: {e}")
+            if not no_pin:
+                try:
+                    os.sched_setaffinity(perf_process.pid, {perf_cpu})
+                    print(f"Pinned perf PID {perf_process.pid} to CPU {perf_cpu}.")
+                except (AttributeError, PermissionError, OSError) as e:
+                    print(f"Warning: Could not set CPU affinity for perf: {e}")
 
             time.sleep(1)  # Give perf time to initialize
 
         elif run_perfstat:
-            print(f"Starting perf stat on CPU core {benchmark_cpu}...")
             stat_output_file = OUTPUT_DIR + "/" + pg_name + "_perfstat.txt"
-            perf_command = ["perf", "stat", "-ddd", "-C", str(benchmark_cpu), "-o", stat_output_file]
+            if no_pin:
+                print(f"Starting perf stat on PID {backend_pid}...")
+                perf_command = ["perf", "stat", "-ddd", "-p", str(backend_pid), "-o", stat_output_file]
+            else:
+                print(f"Starting perf stat on CPU core {benchmark_cpu}...")
+                perf_command = ["perf", "stat", "-ddd", "-C", str(benchmark_cpu), "-o", stat_output_file]
             perf_process = subprocess.Popen(perf_command)
             time.sleep(1)
 
@@ -1280,20 +1345,19 @@ def main():
 
     if args.query:
         query_id = args.query.upper()
-        if query_id not in QUERIES:
-            available = ", ".join(QUERIES.keys())
+        if query_id not in ALL_QUERIES:
+            available = ", ".join(ALL_QUERIES.keys())
             print(f"Error: Unknown query '{args.query}'. Available: {available}")
             sys.exit(1)
 
     # Pin the script itself to a core to avoid it interfering with the benchmark.
-    # This may require running the script with sufficient privileges (e.g., as root).
-    try:
-        # Pin this script to core 0
-        pid = os.getpid()
-        os.sched_setaffinity(pid, {0})
-        print(f"Pinned this script (PID {pid}) to CPU 0.")
-    except (AttributeError, PermissionError, OSError) as e:
-        print(f"Warning: Could not set CPU affinity for this script: {e}")
+    if not args.no_pin:
+        try:
+            pid = os.getpid()
+            os.sched_setaffinity(pid, {0})
+            print(f"Pinned this script (PID {pid}) to CPU 0.")
+        except (AttributeError, PermissionError, OSError) as e:
+            print(f"Warning: Could not set CPU affinity for this script: {e}")
 
     check_dependencies()
 
@@ -1433,7 +1497,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
             stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
 
@@ -1442,7 +1506,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
             stop_server(master_bin, MASTER_DATA_DIR)
         else:
             # Profile master first (default)
@@ -1450,7 +1514,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
             stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
@@ -1459,7 +1523,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
             stop_server(patch_bin, PATCH_DATA_DIR)
 
     finally:

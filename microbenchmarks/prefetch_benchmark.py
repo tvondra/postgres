@@ -101,7 +101,7 @@ STRESS_MIN_QUERY_MS = 1.5             # Discard queries slower than this (too no
 
 READSTREAM_QUERIES = OrderedDict([
     ("RS1", {
-        "name": "Readstream, hard to fix long standing 10% regression (forward scan)",
+        "name": "Readstream, readahead regression issue (forward scan)",
         "sql": """
             SELECT * FROM t_readstream
             WHERE a BETWEEN 16150 AND 4540437
@@ -116,7 +116,28 @@ READSTREAM_QUERIES = OrderedDict([
         },
     }),
     ("RS2", {
-        "name": "Tupdistance regression (backward scan), long fixed, much faster than master (depends on 'Don't wait for already in-progress IO' patch)",
+        "name": "Readstream regression, no readahead regression issue (backward scan)",
+        "sql": """
+            SELECT * FROM t_readstream
+            WHERE a BETWEEN 16150 AND 4540437
+            ORDER BY a DESC
+        """,
+        "evict": ["t_readstream"],
+        "prewarm_indexes": ["idx_readstream"],
+        "prewarm_tables": ["t_readstream"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+# --- Tupdistance regression queries ---
+# Isolated from readstream suite so each suite loads only its own table.
+
+TUPDISTANCE_QUERIES = OrderedDict([
+    ("TD1", {
+        "name": "Tupdistance regression (backward scan), depends on 'Don't wait for already in-progress IO' patch",
         "sql": """
             SELECT * FROM t_tupdistance_new_regress
             WHERE a BETWEEN 9401 AND 2271544
@@ -130,16 +151,52 @@ READSTREAM_QUERIES = OrderedDict([
             "enable_seqscan": "off",
         },
     }),
-    ("RS3", {
-        "name": "Remaining regression (forward scan, negative values), long fixed, much faster than master (depends on 'Don't wait for already in-progress IO' patch)",
+    ("TD2", {
+        "name": "Tupdistance regression (forward scan)",
         "sql": """
-            SELECT * FROM t_remaining_regression
+            SELECT * FROM t_tupdistance_new_regress
+            WHERE a BETWEEN 9401 AND 2271544
+            ORDER BY a ASC
+        """,
+        "evict": ["t_tupdistance_new_regress"],
+        "prewarm_indexes": ["t_tupdistance_new_regress_idx"],
+        "prewarm_tables": ["t_tupdistance_new_regress"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+# --- Don't-wait regression queries ---
+# Depends on 'Don't wait for already in-progress IO' patch.
+
+DONT_WAIT_QUERIES = OrderedDict([
+    ("DW1", {
+        "name": "Don't-wait regression (forward scan, negative values)",
+        "sql": """
+            SELECT * FROM t_dont_wait
             WHERE a BETWEEN -2281232 AND -19089
             ORDER BY a ASC
         """,
-        "evict": ["t_remaining_regression"],
-        "prewarm_indexes": ["t_remaining_regression_idx"],
-        "prewarm_tables": ["t_remaining_regression"],
+        "evict": ["t_dont_wait"],
+        "prewarm_indexes": ["t_dont_wait_idx"],
+        "prewarm_tables": ["t_dont_wait"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("DW2", {
+        "name": "Don't-wait regression (backward scan, negative values)",
+        "sql": """
+            SELECT * FROM t_dont_wait
+            WHERE a BETWEEN -2281232 AND -19089
+            ORDER BY a DESC
+        """,
+        "evict": ["t_dont_wait"],
+        "prewarm_indexes": ["t_dont_wait_idx"],
+        "prewarm_tables": ["t_dont_wait"],
         "gucs": {
             "enable_bitmapscan": "off",
             "enable_seqscan": "off",
@@ -158,7 +215,7 @@ READSTREAM_QUERIES = OrderedDict([
 
 MUNRO_QUERIES = OrderedDict([
     ("MU1", {
-        "name": "Thomas Munro mid-January regression, forward index scan (relies on adaptive yield)",
+        "name": "Thomas Munro mid-January regression, forward index scan (affected by readahead regression issue)",
         "sql": """
             SELECT a FROM t_munro
             WHERE a BETWEEN 19440 AND 2068015
@@ -174,7 +231,7 @@ MUNRO_QUERIES = OrderedDict([
         },
     }),
     ("MU2", {
-        "name": "Thomas Munro mid-January regression, backward index scan (adaptive yield must not regress)",
+        "name": "Thomas Munro mid-January regression, backward index scan (not affected by readahead regression issue)",
         "sql": """
             SELECT a FROM t_munro
             WHERE a BETWEEN 19440 AND 2068015
@@ -305,12 +362,9 @@ READSTREAM_DATA_SQL = """
 CREATE EXTENSION IF NOT EXISTS pg_prewarm;
 CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 
--- Drop existing tables
 DROP TABLE IF EXISTS t_readstream CASCADE;
-DROP TABLE IF EXISTS t_tupdistance_new_regress CASCADE;
-DROP TABLE IF EXISTS t_remaining_regression CASCADE;
 
--- Table 1: t_readstream (5M rows x 2 = 10M rows)
+-- t_readstream (5M rows x 2 = 10M rows)
 CREATE UNLOGGED TABLE t_readstream (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.1234567890123456);
 INSERT INTO t_readstream
@@ -337,7 +391,18 @@ ORDER BY
 CREATE INDEX idx_readstream ON t_readstream(a ASC) WITH (deduplicate_items=false);
 VACUUM (ANALYZE, FREEZE) t_readstream;
 
--- Table 2: t_tupdistance_new_regress (2.5M rows x 4 = 10M rows)
+CHECKPOINT;
+"""
+
+
+TUPDISTANCE_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+DROP TABLE IF EXISTS t_tupdistance_new_regress CASCADE;
+
+-- t_tupdistance_new_regress (2.5M rows x 4 = 10M rows)
 CREATE UNLOGGED TABLE t_tupdistance_new_regress (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.2345678901234567);
 INSERT INTO t_tupdistance_new_regress
@@ -364,11 +429,24 @@ FROM (
 ORDER BY
   ((r * 4 + p) + 8 * (random() - 0.5));
 CREATE INDEX t_tupdistance_new_regress_idx ON t_tupdistance_new_regress(a DESC) WITH (deduplicate_items = false);
+VACUUM ANALYZE t_tupdistance_new_regress;
 
--- Table 3: t_remaining_regression (2.5M rows x 4 = 10M rows, negative values)
-CREATE UNLOGGED TABLE t_remaining_regression (a bigint, b text) WITH (fillfactor = 20);
+CHECKPOINT;
+"""
+
+
+DONT_WAIT_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+DROP TABLE IF EXISTS t_dont_wait CASCADE;
+
+-- t_dont_wait (2.5M rows x 4 = 10M rows, negative values)
+-- Renamed from t_remaining_regression.
+CREATE UNLOGGED TABLE t_dont_wait (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.8152497610420479);
-INSERT INTO t_remaining_regression SELECT -1 * a, b
+INSERT INTO t_dont_wait SELECT -1 * a, b
 FROM (
   SELECT r, a, b, generate_series(0, 4 - 1) AS p
   FROM (
@@ -385,9 +463,9 @@ FROM (
       ORDER BY
         (i + 0 * (random() - 0.5))) foo) bar) baz
 ORDER BY ((r * 4 + p) + 8 * (random() - 0.5));
-CREATE INDEX t_remaining_regression_idx ON t_remaining_regression(a ASC) WITH (deduplicate_items = false);
+CREATE INDEX t_dont_wait_idx ON t_dont_wait(a ASC) WITH (deduplicate_items = false);
+VACUUM ANALYZE t_dont_wait;
 
-VACUUM ANALYZE;
 CHECKPOINT;
 """
 
@@ -1376,14 +1454,12 @@ def stop_server(pg_bin_dir, pg_data_dir):
 # verify_data and load_data are imported from benchmark_common
 
 
-def verify_readstream_data(conn_details):
+def _verify_unlogged_tables(conn_details, tables, suite_name):
+    """Verify that unlogged tables exist and have data.
+
+    Unlogged tables lose their data after an unclean shutdown, so we check
+    both existence and row count.
     """
-    Verify that readstream test tables exist and have data.
-    Returns True if data is valid, False if reload is needed.
-    Unlogged tables lose their data after an unclean shutdown, so we must
-    check row counts, not just table existence.
-    """
-    tables = ['t_readstream', 't_tupdistance_new_regress', 't_remaining_regression']
     try:
         conn = psycopg.connect(**conn_details)
         for table in tables:
@@ -1397,8 +1473,6 @@ def verify_readstream_data(conn_details):
                     print(f"Table {table} does not exist")
                     conn.close()
                     return False
-                # Check that the unlogged table actually has data (it won't after
-                # an unclean shutdown since unlogged rels are truncated on recovery)
                 cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table} LIMIT 1)")
                 if not cur.fetchone()[0]:
                     print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
@@ -1408,24 +1482,23 @@ def verify_readstream_data(conn_details):
         conn.close()
         return True
     except Exception as e:
-        print(f"Error verifying readstream data: {e}")
+        print(f"Error verifying {suite_name} data: {e}")
         return False
 
 
-def load_readstream_data(conn_details):
-    """Load readstream benchmark data into the database."""
+def _load_sql(conn_details, data_sql, suite_name, row_description):
+    """Execute a data-loading SQL script with progress messages."""
     print("\n" + "=" * 50)
-    print("Loading readstream benchmark data...")
-    print("This will take several minutes for 30M rows.")
+    print(f"Loading {suite_name} benchmark data...")
+    print(f"This will take several minutes for {row_description}.")
     print("=" * 50 + "\n")
 
     conn = psycopg.connect(**conn_details)
     conn.autocommit = True
 
-    # Parse SQL into individual statements
     statements = []
     current_stmt = []
-    for line in READSTREAM_DATA_SQL.split('\n'):
+    for line in data_sql.split('\n'):
         stripped = line.strip()
         if stripped.startswith('--') or not stripped:
             continue
@@ -1439,13 +1512,10 @@ def load_readstream_data(conn_details):
         if not statement:
             continue
         try:
-            # Print progress for long operations
-            if 'INSERT INTO t_readstream' in statement:
-                print("Loading t_readstream (10M rows)...")
-            elif 'INSERT INTO t_tupdistance_new_regress' in statement:
-                print("Loading t_tupdistance_new_regress (10M rows)...")
-            elif 'INSERT INTO t_remaining_regression' in statement:
-                print("Loading t_remaining_regression (10M rows)...")
+            if 'INSERT INTO' in statement:
+                tbl_match = re.search(r'INSERT INTO (\S+)', statement)
+                tbl_name = tbl_match.group(1) if tbl_match else "table"
+                print(f"Loading {tbl_name}...")
             elif 'CREATE INDEX' in statement:
                 idx_match = re.search(r'CREATE INDEX (\S+)', statement)
                 idx_name = idx_match.group(1) if idx_match else "index"
@@ -1461,7 +1531,26 @@ def load_readstream_data(conn_details):
             sys.exit(1)
 
     conn.close()
-    print("Readstream data loading complete.")
+    print(f"{suite_name} data loading complete.")
+
+
+def verify_readstream_data(conn_details):
+    return _verify_unlogged_tables(conn_details, ['t_readstream'], "readstream")
+
+def load_readstream_data(conn_details):
+    _load_sql(conn_details, READSTREAM_DATA_SQL, "readstream", "10M rows")
+
+def verify_tupdistance_data(conn_details):
+    return _verify_unlogged_tables(conn_details, ['t_tupdistance_new_regress'], "tupdistance")
+
+def load_tupdistance_data(conn_details):
+    _load_sql(conn_details, TUPDISTANCE_DATA_SQL, "tupdistance", "10M rows")
+
+def verify_dont_wait_data(conn_details):
+    return _verify_unlogged_tables(conn_details, ['t_dont_wait'], "dont_wait")
+
+def load_dont_wait_data(conn_details):
+    _load_sql(conn_details, DONT_WAIT_DATA_SQL, "dont_wait", "10M rows")
 
 
 def verify_random_backwards_data(conn_details):
@@ -1748,6 +1837,30 @@ BENCHMARK_SUITES = [
         "queries": READSTREAM_QUERIES,
         "verify_fn": verify_readstream_data,
         "load_fn": load_readstream_data,
+        "uncached_runs": 3,
+        "cached_runs": 10,
+    },
+    {
+        "mode_prefix": "tupdistance",
+        "cli_flag": "--tupdistance",
+        "cli_dest": "tupdistance_tests",
+        "help": "Run tupdistance regression benchmark (loads data if needed)",
+        "title": "Tupdistance Regression Benchmark",
+        "queries": TUPDISTANCE_QUERIES,
+        "verify_fn": verify_tupdistance_data,
+        "load_fn": load_tupdistance_data,
+        "uncached_runs": 3,
+        "cached_runs": 10,
+    },
+    {
+        "mode_prefix": "dont_wait",
+        "cli_flag": "--dont-wait",
+        "cli_dest": "dont_wait_tests",
+        "help": "Run don't-wait regression benchmark (loads data if needed)",
+        "title": "Don't-Wait Regression Benchmark",
+        "queries": DONT_WAIT_QUERIES,
+        "verify_fn": verify_dont_wait_data,
+        "load_fn": load_dont_wait_data,
         "uncached_runs": 3,
         "cached_runs": 10,
     },

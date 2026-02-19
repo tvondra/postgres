@@ -602,7 +602,7 @@ CreateAnonymousSegment(Size *size)
 	Size		allocsize = *size;
 	void	   *ptr = MAP_FAILED;
 	int			mmap_errno = 0;
-	int			mmap_flags = MAP_SHARED | MAP_ANONYMOUS | MAP_HASSEMAPHORE;
+	int			mmap_flags = MAP_SHARED | MAP_ANONYMOUS | MAP_HASSEMAPHORE | MAP_POPULATE;
 
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */

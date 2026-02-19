@@ -729,6 +729,7 @@ read_stream_begin_impl(int flags,
 	stream->seq_blocknum = InvalidBlockNumber;
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
+	stream->yielded = false;
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be

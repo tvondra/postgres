@@ -858,6 +858,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * first time during the scan.
 			 */
 			fromScanPos = false;
+			hscan->xs_yield_check = true;
 		}
 		else if (!index_scan_pos_advance(xs_read_stream_dir,
 										 prefetchBatch, prefetchPos))

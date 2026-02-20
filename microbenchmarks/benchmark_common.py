@@ -900,8 +900,6 @@ def setup_tmpfs_hugepages():
     if result.returncode != 0:
         print(f"Error: Failed to mount tmpfs: {result.stderr.strip()}")
         sys.exit(1)
-    if result.stderr:
-        print(result.stderr.strip())
     return result.stdout.strip()
 
 
@@ -914,8 +912,6 @@ def copy_binaries_to_tmpfs(src_bin_dir, tmpfs_mount, version_name):
     if result.returncode != 0:
         print(f"Error: Failed to copy binaries: {result.stderr.strip()}")
         sys.exit(1)
-    if result.stderr:
-        print(result.stderr.strip())
     return result.stdout.strip()
 
 
@@ -1043,8 +1039,8 @@ def verify_data(conn_details, skip_load=False):
                     print(f"Table {table} exists but has 0 rows (data needs to be reloaded)")
                     conn.close()
                     return False
-            print(f"Table {table} exists and has data ✓")
         conn.close()
+        print(f"All tables exist and have data ✓")
         return True
 
     except Exception as e:

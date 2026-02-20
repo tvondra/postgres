@@ -1540,12 +1540,10 @@ def start_server(pg_bin_dir, pg_name, pg_data_dir, conn_details, args):
         sys.exit(1)
 
     # Wait for the server to be ready
-    print(f"Waiting for {pg_name} server to accept connections...")
     for attempt in range(15):
         try:
             conn = psycopg.connect(**conn_details, connect_timeout=2)
             conn.close()
-            print(f"{pg_name} server started successfully.")
             return
         except (psycopg.OperationalError, psycopg.DatabaseError):
             if attempt == 14:
@@ -1587,8 +1585,8 @@ def _verify_unlogged_tables(conn_details, tables, suite_name):
                     print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
                     conn.close()
                     return False
-            print(f"Table {table} exists and has data ✓")
         conn.close()
+        print(f"All tables exist and have data ✓")
         return True
     except Exception as e:
         print(f"Error verifying {suite_name} data: {e}")
@@ -1688,8 +1686,8 @@ def verify_random_backwards_data(conn_details):
                     print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
                     conn.close()
                     return False
-            print(f"Table {table} exists and has data ✓")
         conn.close()
+        print(f"All tables exist and have data ✓")
         return True
     except Exception as e:
         print(f"Error verifying random backwards data: {e}")
@@ -1774,8 +1772,8 @@ def verify_munro_data(conn_details):
                     print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
                     conn.close()
                     return False
-            print(f"Table {table} exists and has data ✓")
         conn.close()
+        print(f"All tables exist and have data ✓")
         return True
     except Exception as e:
         print(f"Error verifying munro data: {e}")
@@ -1856,8 +1854,8 @@ def verify_worker_regress_data(conn_details):
                     print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
                     conn.close()
                     return False
-            print(f"Table {table} exists and has data ✓")
         conn.close()
+        print(f"All tables exist and have data ✓")
         return True
     except Exception as e:
         print(f"Error verifying worker regress data: {e}")
@@ -2413,7 +2411,9 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
     print(f"\n{'=' * 60}")
     print(title)
     print(f"{'=' * 60}")
-    print(f"Mode: {'cached' if args.cached else 'uncached'}")
+    mode_word = ("\033[32m💵  cached\033[0m" if args.cached
+                 else "\033[34m💾  uncached\033[0m")
+    print(f"Mode: {mode_word}")
     print(f"Queries: {', '.join(selected_queries)}")
     print(f"Runs per query: {args.runs}")
     print(f"{'=' * 60}\n")
@@ -2421,9 +2421,10 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
     # Get git hashes
     master_hash = get_git_hash(MASTER_SOURCE_DIR)
     patch_hash = get_git_hash(PATCH_SOURCE_DIR)
-    print(f"Master git hash: {master_hash}")
-    print(f"Patch git hash: {patch_hash}")
-    print_io_settings(args)
+    if not args.terse:
+        print(f"Master git hash: {master_hash}")
+        print(f"Patch git hash: {patch_hash}")
+        print_io_settings(args)
 
     # Verify/load data on each server (one at a time due to memory constraints)
     master_stats = None
@@ -2492,6 +2493,15 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
         "patch_version": patch_version,
         "mode": mode_name,
         "runs": args.runs,
+        "io_settings": {
+            "effective_io_concurrency": args.effective_io_concurrency,
+            "io_combine_limit": args.io_combine_limit,
+            "io_max_combine_limit": args.io_max_combine_limit,
+            "io_max_concurrency": args.io_max_concurrency,
+            "io_workers": args.io_workers,
+            "io_method": args.io_method,
+            "direct_io": getattr(args, "direct_io", False),
+        },
         "queries": {},
         "master_results_from": old_master_file if args.old_master_results else None,
         "master_stats": master_stats,
@@ -2746,7 +2756,8 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
     # Save JSON
     with open(json_file, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults saved to: {json_file}")
+    if not args.terse:
+        print(f"\nResults saved to: {json_file}")
 
     # Save human-readable text
     with open(txt_file, "w") as f:
@@ -2807,7 +2818,8 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                     for line in qr["patch_on"]["explain"].split('\n'):
                         f.write(f"    {line}\n")
 
-    print(f"Results saved to: {txt_file}")
+    if not args.terse:
+        print(f"Results saved to: {txt_file}")
 
     # Update latest symlink
     latest_link = os.path.join(OUTPUT_DIR, "latest.txt")
@@ -2830,12 +2842,13 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
         else:
             return f"{mins} minutes {secs} seconds"
 
-    print(f"\n{'=' * 60}")
-    print("BENCHMARK RUN TIMES (excluding data loading)")
-    print(f"{'=' * 60}")
-    print(f"  Master:  {master_duration:10.1f} seconds ({format_duration(master_duration)})")
-    print(f"  Patch:   {patch_duration:10.1f} seconds ({format_duration(patch_duration)})")
-    print(f"  Total:   {total_duration:10.1f} seconds ({format_duration(total_duration)})")
+    if not args.terse:
+        print(f"\n{'=' * 60}")
+        print("BENCHMARK RUN TIMES (excluding data loading)")
+        print(f"{'=' * 60}")
+        print(f"  Master:  {master_duration:10.1f} seconds ({format_duration(master_duration)})")
+        print(f"  Patch:   {patch_duration:10.1f} seconds ({format_duration(patch_duration)})")
+        print(f"  Total:   {total_duration:10.1f} seconds ({format_duration(total_duration)})")
 
     # Collect all patch runs with their ratios vs master (using min or median as representative)
     # Each patch configuration (prefetch=off, prefetch=on) is treated independently
@@ -2996,7 +3009,9 @@ def run_stress_test(args):
     print(f"Generating {STRESS_QUERIES_PER_BATCH} queries per batch")
     print(f"Runs per query: {stress_runs}" + (" (cached mode)" if stress_runs > 1 else ""))
     print(f"Minimum query duration: {args.min_query_ms:.1f} ms")
-    print(f"Mode: {'cached' if args.cached else 'uncached'}")
+    mode_word = ("\033[32m💵  cached\033[0m" if args.cached
+                 else "\033[34m💾  uncached\033[0m")
+    print(f"Mode: {mode_word}")
     print("=" * 60)
 
     # Get git hashes

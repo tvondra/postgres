@@ -248,18 +248,32 @@ def run_benchmarks(modes, master_mode):
 # ── Report sections ─────────────────────────────────────────────────────
 
 def print_header(results_by_mode):
-    """Print report header with git hashes and timestamp."""
-    # Get hashes from first available result
+    """Print report header with git hashes, IO settings, and timestamp."""
+    # Get hashes and IO settings from first available result
     patch_hash = master_hash = "unknown"
+    io_settings = None
     for data in results_by_mode.values():
         patch_hash = data.get("patch_hash", "unknown")
         master_hash = data.get("master_hash", "unknown")
+        if io_settings is None:
+            io_settings = data.get("io_settings")
         break
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"{'═' * 78}")
     print(f" PATCH PERFORMANCE REPORT")
     print(f" patch {patch_hash} vs master {master_hash}  ·  {now}")
+    if io_settings:
+        print()
+        print(f" PostgreSQL I/O settings:")
+        print(f"   effective_io_concurrency = {io_settings['effective_io_concurrency']}")
+        print(f"   io_combine_limit = {io_settings['io_combine_limit']} (8kB units)")
+        print(f"   io_max_combine_limit = {io_settings['io_max_combine_limit']} (8kB units)")
+        print(f"   io_max_concurrency = {io_settings['io_max_concurrency']}")
+        print(f"   io_workers = {io_settings['io_workers']}")
+        print(f"   io_method = {io_settings['io_method']}")
+        if io_settings.get("direct_io"):
+            print(f"   debug_io_direct = data")
     print(f"{'═' * 78}")
 
 
@@ -410,9 +424,16 @@ def print_distribution(ratios, label):
             ("0.99-1.01", lambda r: 0.99 <= r <= 1.01,     ""),
             ("1.01-1.05", lambda r: 1.01 < r <= 1.05,      RED),
             ("1.05-1.10", lambda r: 1.05 < r <= 1.10,      RED),
-            ("1.10-1.20", lambda r: 1.10 < r <= 1.20,      RED),
-            (">1.20",     lambda r: r > 1.20,              RED),
         ]
+        # Fine-grained 0.05-step buckets from 1.10 upward
+        lo = 1.10
+        while lo < max_r:
+            hi = round(lo + 0.05, 2)
+            buckets.append((f"{lo:.2f}-{hi:.2f}",
+                            lambda r, lo=lo, hi=hi: lo < r <= hi, RED))
+            lo = hi
+        buckets.append((f">{lo:.2f}",
+                        lambda r, lo=lo: r > lo, RED))
     else:
         # Narrow range (cached-like): use tight buckets
         buckets = [

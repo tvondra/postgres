@@ -101,7 +101,7 @@ STRESS_MIN_QUERY_MS = 1.5             # Discard queries slower than this (too no
 
 READSTREAM_QUERIES = OrderedDict([
     ("RS1", {
-        "name": "Readstream, readahead regression issue (forward scan)",
+        "name": "Readstream, readahead regression issue present (forward scan)",
         "sql": """
             SELECT * FROM t_readstream
             WHERE a BETWEEN 16150 AND 4540437
@@ -116,7 +116,7 @@ READSTREAM_QUERIES = OrderedDict([
         },
     }),
     ("RS2", {
-        "name": "Readstream regression, no readahead regression issue (backward scan)",
+        "name": "Readstream, readahead regression issue not present (backward scan)",
         "sql": """
             SELECT * FROM t_readstream
             WHERE a BETWEEN 16150 AND 4540437

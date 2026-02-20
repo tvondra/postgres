@@ -964,7 +964,9 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 			stream->oldest_io_index = 0;
 
 		/* Look-ahead distance ramps up rapidly after we do I/O. */
-		distance = stream->distance * 2 + 1;
+		distance = stream->distance * 2;
+		if (distance && distance < PG_INT16_MAX)
+			distance++;
 		distance = Min(distance, stream->max_pinned_buffers);
 		stream->distance = distance;
 

@@ -287,6 +287,82 @@ WORKER_REGRESS_QUERIES = OrderedDict([
 ])
 
 
+# --- UUID Test Queries ---
+# UUIDv4 primary key table: physical/logical correlation ≈ 0.
+# Since gen_random_uuid() produces uniformly random values, the B-tree
+# index order is entirely uncorrelated with heap tuple order.  Every
+# index scan degenerates into random I/O, making this an ideal workload
+# for measuring index prefetching benefit.
+
+UUID_QUERIES = OrderedDict([
+    ("UU1", {
+        "name": "UUID range scan, ~10% of table (random I/O, forward)",
+        "sql": """
+            SELECT * FROM t_uuid
+            WHERE id >= '10000000-0000-0000-0000-000000000000'::uuid
+              AND id <  '28000000-0000-0000-0000-000000000000'::uuid
+            ORDER BY id ASC
+        """,
+        "evict": ["t_uuid"],
+        "prewarm_indexes": ["t_uuid_pkey"],
+        "prewarm_tables": ["t_uuid"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("UU2", {
+        "name": "UUID range scan, ~10% of table (random I/O, backward)",
+        "sql": """
+            SELECT * FROM t_uuid
+            WHERE id >= '10000000-0000-0000-0000-000000000000'::uuid
+              AND id <  '28000000-0000-0000-0000-000000000000'::uuid
+            ORDER BY id DESC
+        """,
+        "evict": ["t_uuid"],
+        "prewarm_indexes": ["t_uuid_pkey"],
+        "prewarm_tables": ["t_uuid"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("UU3", {
+        "name": "UUID index-only scan, ~10% of table (no heap fetches if all-visible)",
+        "sql": """
+            SELECT id FROM t_uuid
+            WHERE id >= '10000000-0000-0000-0000-000000000000'::uuid
+              AND id <  '28000000-0000-0000-0000-000000000000'::uuid
+            ORDER BY id ASC
+        """,
+        "evict": ["t_uuid"],
+        "prewarm_indexes": ["t_uuid_pkey"],
+        "prewarm_tables": ["t_uuid"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("UU4", {
+        "name": "UUID range scan with filter qual (payload column not in index)",
+        "sql": """
+            SELECT * FROM t_uuid
+            WHERE id >= '10000000-0000-0000-0000-000000000000'::uuid
+              AND id <  '28000000-0000-0000-0000-000000000000'::uuid
+              AND val > 500
+            ORDER BY id ASC
+        """,
+        "evict": ["t_uuid"],
+        "prewarm_indexes": ["t_uuid_pkey"],
+        "prewarm_tables": ["t_uuid"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+
 RANDOM_BACKWARDS_QUERIES = OrderedDict([
     ("RB1", {
         "name": "Sequential table forward scan",
@@ -614,6 +690,39 @@ FROM (
 ORDER BY ((r * 2 + p) + 2 * (random() - 0.5));
 CREATE INDEX idx_worker_regress ON worker_regress(a DESC) WITH (deduplicate_items=false);
 VACUUM ANALYZE worker_regress;
+
+CHECKPOINT;
+"""
+
+
+# --- UUID benchmark data loading SQL ---
+
+UUID_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+DROP TABLE IF EXISTS t_uuid CASCADE;
+
+-- t_uuid: 5M rows with UUIDv4 primary key.
+-- gen_random_uuid() produces uniformly random UUIDs, so the B-tree
+-- index order is completely uncorrelated with heap insertion order
+-- (pg_stats.correlation ≈ 0).  This maximises random I/O during
+-- index scans, which is the ideal scenario for prefetching.
+-- Column "val" is a random integer payload so filter quals can be
+-- tested, and "payload" adds width to force heap fetches.
+CREATE UNLOGGED TABLE t_uuid (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    val integer NOT NULL,
+    payload text NOT NULL
+);
+INSERT INTO t_uuid (id, val, payload)
+SELECT gen_random_uuid(),
+       (random() * 1000)::integer,
+       md5(i::text)
+FROM generate_series(1, 5000000) s(i);
+ALTER TABLE t_uuid ADD CONSTRAINT t_uuid_pkey PRIMARY KEY (id);
+VACUUM (ANALYZE, FREEZE) t_uuid;
 
 CHECKPOINT;
 """
@@ -1803,6 +1912,13 @@ def load_worker_regress_data(conn_details):
     print("Worker regression data loading complete.")
 
 
+def verify_uuid_data(conn_details):
+    return _verify_unlogged_tables(conn_details, ['t_uuid'], "uuid")
+
+def load_uuid_data(conn_details):
+    _load_sql(conn_details, UUID_DATA_SQL, "uuid", "5M rows")
+
+
 # ── Benchmark suite registry ────────────────────────────────────────────
 #
 # Single source of truth for all benchmark suites.  run_all_benchmarks.sh and
@@ -1897,6 +2013,18 @@ BENCHMARK_SUITES = [
         "queries": WORKER_REGRESS_QUERIES,
         "verify_fn": verify_worker_regress_data,
         "load_fn": load_worker_regress_data,
+        "uncached_runs": 3,
+        "cached_runs": 10,
+    },
+    {
+        "mode_prefix": "uuid",
+        "cli_flag": "--uuid",
+        "cli_dest": "uuid_tests",
+        "help": "Run UUID benchmark (UUIDv4 PK, correlation ≈ 0, ideal for prefetching)",
+        "title": "UUID Benchmark (correlation ≈ 0)",
+        "queries": UUID_QUERIES,
+        "verify_fn": verify_uuid_data,
+        "load_fn": load_uuid_data,
         "uncached_runs": 3,
         "cached_runs": 10,
     },

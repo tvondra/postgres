@@ -13814,7 +13814,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  1
+  4
 (1 row)
 
 -- Move back to the start of the key space:
@@ -13824,7 +13824,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 24
+ 21
 (1 row)
 
 -- See the first few rows there:
@@ -14003,7 +14003,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
-  6
+  8
 (1 row)
 
 -- This is the statement that actually cancels a pending primitive index scan
@@ -14048,7 +14048,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 10
+  8
 (1 row)
 
 -- These are for good luck:
@@ -14092,7 +14092,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 10
+  8
 (1 row)
 
 fetch forward  31 from cancel_backwards_prim_scan_changedir;
@@ -14136,7 +14136,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 10
+  8
 (1 row)
 
 fetch backward 32 from cancel_backwards_prim_scan_changedir;
@@ -14227,7 +14227,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 10
+  8
 (1 row)
 
 fetch backward 34 from cancel_backwards_prim_scan_changedir;
@@ -14322,7 +14322,7 @@ select pg_stat_get_xact_blocks_hit('must_not_full_scan'::regclass) as cur_blocks
 select :cur_blocks_hit - :old_blocks_hit bh;
  bh 
 ----
- 10
+  8
 (1 row)
 
 /* cancel_backwards_prim_scan_changedir */ commit;
@@ -17908,10 +17908,10 @@ group by small_a order by small_a;
 ------------------------------------------------------------------------------------------------------------------------------------
  GroupAggregate  (cost=0.43..2625.42 rows=1 width=12) (actual rows=1.00 loops=1)
    Group Key: small.a
-   Buffers: shared hit=412
+   Buffers: shared hit=398
    ->  Merge Join  (cost=0.43..2338.69 rows=57344 width=4) (actual rows=57344.00 loops=1)
          Merge Cond: ((small.a = big.a) AND (small.b = big.b))
-         Buffers: shared hit=412
+         Buffers: shared hit=398
          ->  Index Scan using amber_small_idx on amber_small small  (cost=0.14..7.96 rows=104 width=8) (actual rows=104.00 loops=1)
                Index Cond: (a = ANY ('{1,3}'::integer[]))
                Index Searches: 1
@@ -17919,7 +17919,7 @@ group by small_a order by small_a;
          ->  Index Scan using amber_big_idx on amber_big big  (cost=0.29..315.24 rows=12288 width=8) (actual rows=62457.00 loops=1)
                Index Cond: (a = ANY ('{1,3}'::integer[]))
                Index Searches: 1
-               Buffers: shared hit=410
+               Buffers: shared hit=396
 (14 rows)
 
 -- Same again, but this time it's a nestloop join:

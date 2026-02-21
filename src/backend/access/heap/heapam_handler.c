@@ -297,8 +297,8 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	int			posItem = pos->item;
-	int			firstItem,
-				lastItem;
+	int			firstSetItem,
+				lastSetItem;
 
 	/* Do nothing if we already resolved visibility for the item. */
 	if (batch->visInfo[posItem] & BATCH_VIS_CHECKED)
@@ -314,19 +314,29 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	/* Determine the range of items to set visibility for */
 	if (ScanDirectionIsForward(batch->dir))
 	{
-		firstItem = posItem;
-		lastItem = Min(batch->lastItem, (posItem + hscan->xs_vm_items) - 1);
+		firstSetItem = posItem;
+		lastSetItem = Min(batch->lastItem, (posItem + hscan->xs_vm_items) - 1);
 	}
 	else
 	{
-		lastItem = posItem;
-		firstItem = Max(batch->firstItem, (posItem - hscan->xs_vm_items) + 1);
+		lastSetItem = posItem;
+		firstSetItem = Max(batch->firstItem, (posItem - hscan->xs_vm_items) + 1);
 	}
 
-	for (int i = firstItem; i <= lastItem; i++)
+	/*
+	 * Set visibility info for a range of items in ascending item order.
+	 *
+	 * Arguably, we should use a descending-order version of this loop during
+	 * backwards scans -- that would slightly reduce the number of repeat VM
+	 * buffer accesses in certain cases.  But we're in a hot code path that's
+	 * sensitive to code size increases, so we get by with just this one loop.
+	 */
+	for (int i = firstSetItem; i <= lastSetItem; i++)
 	{
 		ItemPointer tid = &batch->items[i].heapTid;
 		uint8		flags = BATCH_VIS_CHECKED;
+
+		Assert(!(batch->visInfo[i] & BATCH_VIS_CHECKED));
 
 		if (VM_ALL_VISIBLE(scan->heapRelation,
 						   ItemPointerGetBlockNumber(tid),
@@ -358,11 +368,10 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 #endif
 
 	/*
-	 * It's now safe to drop the batch's buffer pin, as we've resolved the
-	 * visibility status of all of its items.
-	 *
-	 * It's enough to check the visibility of the first and last item, as all
-	 * the items in between have to have the visibility set too.
+	 * It's safe to drop the batch's buffer pin as soon as we've resolved the
+	 * visibility status of all of its items.  If we've checked the visibility
+	 * for the batch's first and last matching items already, it follows that
+	 * we must have also done so for all the items in between them.
 	 */
 	if ((batch->visInfo[batch->firstItem] & BATCH_VIS_CHECKED) &&
 		(batch->visInfo[batch->lastItem] & BATCH_VIS_CHECKED) &&

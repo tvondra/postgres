@@ -907,7 +907,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * at the point where it called read_stream_next_buffer for the
 			 * first time during the scan.
 			 */
-			Assert(!hscan->xs_yield_check);
+			Assert(hscan->xs_yield_check);
 			fromScanPos = false;
 		}
 		else if (!index_scan_pos_advance(xs_read_stream_dir,

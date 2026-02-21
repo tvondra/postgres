@@ -255,7 +255,7 @@ extern void systable_inplace_update_cancel(void *state);
  * amgetbatch utilities called by indexam.c (in indexbatch.c)
  */
 extern void index_batchscan_init(IndexScanDesc scan);
-extern void index_batchscan_reset(IndexScanDesc scan, bool complete);
+extern void index_batchscan_reset(IndexScanDesc scan);
 extern void index_batchscan_end(IndexScanDesc scan);
 extern void index_batchscan_mark_pos(IndexScanDesc scan);
 extern void index_batchscan_restore_pos(IndexScanDesc scan);

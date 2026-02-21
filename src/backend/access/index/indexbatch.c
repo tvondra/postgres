@@ -121,14 +121,9 @@ index_batchscan_init(IndexScanDesc scan)
 
 /*
  * Reset state used for a batch index scan
- *
- * Resets all loaded batches in the ring buffer, and resets the scan/prefetch
- * positions to their initial state (or just initializes ring buffer state).
- * When 'complete' is true, also frees the scan's marked batch (if any), which
- * is useful when ending an amgetbatch-based index scan.
  */
 void
-index_batchscan_reset(IndexScanDesc scan, bool complete)
+index_batchscan_reset(IndexScanDesc scan)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	IndexScanBatch markBatch = batchringbuf->markBatch;
@@ -137,61 +132,26 @@ index_batchscan_reset(IndexScanDesc scan, bool complete)
 	Assert(scan->xs_heapfetch);
 
 	batchringbuf->scanPos.valid = false;
+	batchringbuf->markPos.valid = false;
 	batchringbuf->prefetchPos.valid = false;
 
 	/*
-	 * Fast path: no markBatch.
-	 *
-	 * When there's no markBatch we can skip all the markBatch-related checks.
+	 * Ensure tableam_util_free_batch won't skip the old markBatch in the loop
+	 * below
 	 */
-	if (likely(!markBatch))
-	{
-		Assert(!batchringbuf->markPos.valid);
-
-		for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
-		{
-			IndexScanBatch batch = index_scan_batch(scan, i);
-
-			/*
-			 * Inline the batch free/release in the common case where the
-			 * batch's pin has been dropped and there are no killed items
-			 */
-			if (likely(!BufferIsValid(batch->buf) && batch->numKilled == 0))
-				indexam_util_batch_release(scan, batch);
-			else
-				tableam_util_free_batch(scan, batch);
-		}
-		batchringbuf->headBatch = 0;
-		batchringbuf->nextBatch = 0;
-		return;
-	}
-
-	/*
-	 * Slow path: markBatch exists, need careful handling.
-	 *
-	 * When called with "complete" we must make sure that markBatch is freed,
-	 * and that all markBatch related state is reset.
-	 */
-	if (complete)
-	{
-		batchringbuf->markBatch = NULL;
-		batchringbuf->markPos.valid = false;
-	}
+	batchringbuf->markBatch = NULL;
 
 	for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
 	{
 		IndexScanBatch batch = index_scan_batch(scan, i);
 
-		if (complete || batch != markBatch)
-		{
-			if (batch == markBatch)
-				markBatchFreed = true;
+		if (batch == markBatch)
+			markBatchFreed = true;
 
-			tableam_util_free_batch(scan, batch);
-		}
+		tableam_util_free_batch(scan, batch);
 	}
 
-	if (complete && !markBatchFreed)
+	if (!markBatchFreed && unlikely(markBatch))
 		tableam_util_free_batch(scan, markBatch);
 
 	batchringbuf->headBatch = 0;
@@ -209,7 +169,6 @@ index_batchscan_end(IndexScanDesc scan)
 {
 	/* Free all remaining loaded batches (even markBatch) */
 	scan->batchringbuf.done = true;
-	index_batchscan_reset(scan, true);
 
 	for (int i = 0; i < INDEX_SCAN_CACHE_BATCHES; i++)
 	{
@@ -222,6 +181,8 @@ index_batchscan_end(IndexScanDesc scan)
 			pfree(cached->killedItems);
 		pfree(cached);
 	}
+
+	index_batchscan_reset(scan);
 
 #ifdef BATCH_CACHE_DEBUG
 #define BATCH_CACHE_DEBUG_MIN_BATCHES	50
@@ -384,6 +345,7 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 
 	Assert(scan->MVCCScan);
+	Assert(!batchringbuf->done);
 
 	/*
 	 * Restoring a mark always requires stopping prefetching.  This is similar
@@ -392,6 +354,8 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	 * by the caller (via table_index_fetch_reset).
 	 */
 	batchringbuf->prefetchPos.valid = false;
+
+	Assert(markPos->valid);
 
 	if (scanBatch == markBatch)
 	{
@@ -403,31 +367,39 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	}
 
 	/*
-	 * markBatch is behind scanBatch, and so must not be loaded anymore.  We
-	 * have to deal with restoring the mark the hard way: by invalidating all
-	 * other loaded batches.  This is similar to the case where the scan
-	 * direction changes and the scan actually crosses batch/index page
-	 * boundaries (see tableam_util_batch_dirchange).
+	 * markBatch is behind scanBatch, and so must not be saved in ring buffer
+	 * anymore.  We have to deal with restoring the mark the hard way: by
+	 * invalidating all other loaded batches.  This is similar to the case
+	 * where the scan direction changes and the scan actually crosses
+	 * batch/index page boundaries (see tableam_util_batch_dirchange).
 	 *
-	 * Call amposreset to let index AM know to invalidate any private state
-	 * that independently tracks the scan's progress.
+	 * First, free all batches that are still in the ring buffer.
 	 */
-	if (scan->indexRelation->rd_indam->amposreset)
-		scan->indexRelation->rd_indam->amposreset(scan, markBatch);
+	for (uint8 i = batchringbuf->headBatch; i != batchringbuf->nextBatch; i++)
+	{
+		IndexScanBatch batch = index_scan_batch(scan, i);
 
-	/* Remove all batches from the ring buffer except for the marked batch */
-	scan->batchringbuf.done = true;
-	index_batchscan_reset(scan, false);
+		Assert(batch != markBatch);
+
+		tableam_util_free_batch(scan, batch);
+	}
 
 	/*
-	 * "Append" markBatch, making the ring buffer appear as if it was the
-	 * first batch ever returned by amgetbatch for the scan
+	 * Next "append" standalone markBatch, making the ring buffer appear as if
+	 * it was the first batch ever returned by amgetbatch for the scan
 	 */
 	markPos->batch = 0;
 	batchringbuf->scanPos = *markPos;
 	batchringbuf->nextBatch = batchringbuf->headBatch = markPos->batch;
 	index_scan_batch_append(scan, markBatch);
 	Assert(index_scan_batch(scan, batchringbuf->scanPos.batch) == markBatch);
+
+	/*
+	 * Finally, call amposreset to let index AM know to invalidate any private
+	 * state that independently tracks the scan's progress
+	 */
+	if (scan->indexRelation->rd_indam->amposreset)
+		scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 
 	/*
 	 * Note: markBatch.killedItems[] might already contain dead items, and
@@ -589,7 +561,22 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 		scan->indexRelation->rd_indam->amkillitemsbatch(scan, batch);
 	}
 
-	indexam_util_batch_release(scan, batch);
+	/*
+	 * Use cache, just like indexam_util_batch_release does it.
+	 */
+	for (int i = 0; i < INDEX_SCAN_CACHE_BATCHES; i++)
+	{
+		if (scan->batchringbuf.cache[i] == NULL)
+		{
+			/* found empty slot, we're done */
+			scan->batchringbuf.cache[i] = batch;
+			return;
+		}
+	}
+
+	if (batch->killedItems)
+		pfree(batch->killedItems);
+	pfree(batch);
 }
 
 /* ----------------------------------------------------------------

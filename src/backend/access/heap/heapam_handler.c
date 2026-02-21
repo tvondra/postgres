@@ -190,6 +190,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 
 	Assert(BufferIsValid(hscan->xs_cbuf));
 	Assert(BufferGetBlockNumber(hscan->xs_cbuf) == hscan->xs_blk);
+	Assert(hscan->xs_blk == ItemPointerGetBlockNumber(tid));
 
 	/* Obtain share-lock on the buffer so we can examine visibility */
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_SHARE);

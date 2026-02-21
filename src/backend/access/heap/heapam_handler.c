@@ -467,11 +467,20 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		 * Next batch already loaded for us.
 		 *
 		 * This happens whenever heapam_batch_getnext_tid caller finds that
-		 * heapam_getnext_stream already loaded the next required batch
-		 * (heapam_getnext_stream caller can never end up here, since it deals
-		 * with cases where scanPos gets ahead of prefetchPos directly).
+		 * heapam_getnext_stream already loaded the next required batch.
+		 *
+		 * We don't generally expect to end up here with heapam_getnext_stream
+		 * caller (which passes prefetchPos instead of scanPos).  But it's
+		 * just about possible whenever a mark is restored from scanBatch.
+		 * That'll reset the scan's read stream (and invalidate prefetchPos
+		 * along with it), but it _won't_ invalidate any batches that were
+		 * already loaded by heapam_getnext_stream.  The read stream callback
+		 * doesn't perform any redundant amgetbatch calls under this scheme
+		 * (at least not when we restored a mark from the still-current
+		 * scanBatch, allowing index_batchscan_restore_pos to use its happy
+		 * path that avoids discarding useful batches from batchringbuf).
 		 */
-		Assert(pos == &batchringbuf->scanPos);
+		Assert(pos == &batchringbuf->scanPos || batchringbuf->markPos.valid);
 		batch = index_scan_batch(scan, pos->batch + 1);
 
 		Assert(priorBatch->dir == direction);

@@ -465,19 +465,14 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		/*
 		 * Next batch already loaded for us.
 		 *
-		 * This usually happens when heapam_batch_getnext_tid caller finds
-		 * that heapam_getnext_stream already loaded the next required batch.
-		 * But there are also corner cases where it works the other way around
-		 * (cases where heapam_getnext_stream's prefetchPos is slightly behind
-		 * heapam_getnext_stream's scanPos, and catches up here).
+		 * This happens whenever heapam_batch_getnext_tid caller finds that
+		 * heapam_getnext_stream already loaded the next required batch
+		 * (heapam_getnext_stream caller can never end up here, since it deals
+		 * with cases where scanPos gets ahead of prefetchPos directly).
 		 */
+		Assert(pos == &batchringbuf->scanPos);
 		batch = index_scan_batch(scan, pos->batch + 1);
 
-		/*
-		 * Both batches must have been loaded when moving in same scan
-		 * direction (otherwise tableam_util_batch_dirchange should have been
-		 * called instead of loading this next batch)
-		 */
 		Assert(priorBatch->dir == direction);
 		Assert(batch->dir == direction);
 		return batch;

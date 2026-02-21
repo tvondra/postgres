@@ -465,33 +465,43 @@ read_stream_look_ahead(ReadStream *stream)
 		blocknum = read_stream_get_block(stream, per_buffer_data);
 		if (blocknum == InvalidBlockNumber)
 		{
-			if (stream->yielded && stream->distance > 0)
-			{
-				/*
-				 * Deferred yield: the callback yielded while a partial
-				 * pending read is being formed and there are pinned
-				 * buffers to return.  Clear the yielded flag and break
-				 * without setting distance to 0, so the pending read
-				 * stays as-is and can grow on the next look-ahead pass.
-				 */
-				stream->yielded = false;
-				break;
-			}
-
+			/* End of stream? */
 			if (stream->yielded)
 			{
 				/*
-				 * Accepted yield.  If there's a pending read, start it
-				 * now to ensure there are pinned buffers for the
-				 * consumer before we yield.
+				 * Callback returned read_stream_yield -- so it's not the true
+				 * end of the stream
 				 */
-				if (stream->pending_read_nblocks > 0 &&
-					stream->ios_in_progress < stream->max_ios)
-					read_stream_start_pending_read(stream);
+				if (stream->distance > 0)
+				{
+					/*
+					 * Deferred yield.
+					 *
+					 * Callback yielded while a partial pending read is being
+					 * formed and there are pinned buffers to return.  Clear
+					 * yielded flag and break without setting distance to 0.
+					 * That way the pending read stays as-is and can grow on
+					 * the next look-ahead pass.
+					 */
+					stream->yielded = false;
+				}
+				else
+				{
+					/*
+					 * Accepted yield.
+					 *
+					 * If there's a pending read, start it now to ensure there
+					 * are pinned buffers for the consumer before we yield.
+					 */
+					if (stream->pending_read_nblocks > 0 &&
+						stream->ios_in_progress < stream->max_ios)
+						read_stream_start_pending_read(stream);
+				}
+
 				break;
 			}
 
-			/* End of stream. */
+			/* End the stream */
 			stream->distance = 0;
 			break;
 		}

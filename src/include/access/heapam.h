@@ -121,7 +121,7 @@ typedef struct IndexFetchHeapData
 
 	/* For index-only scans that must access the visibility map */
 	Buffer		vmbuf;			/* visibility map buffer */
-	int			xs_vm_items;	/* items to resolve during visibility checks */
+	int			xs_vm_items;	/* # items to resolve visibility info for */
 
 	/* For batch index scans that use read stream for prefetching */
 	ReadStream *xs_read_stream;

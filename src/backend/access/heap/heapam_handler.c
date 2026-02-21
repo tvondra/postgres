@@ -962,11 +962,11 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		 * number might need to be prefetched
 		 */
 		Assert(index_scan_batch(scan, prefetchPos->batch) == prefetchBatch);
+		Assert(prefetchPos->item >= prefetchBatch->firstItem &&
+			   prefetchPos->item <= prefetchBatch->lastItem);
 
 		/* scanPos is always <= prefetchPos when we return */
 		Assert(index_scan_pos_cmp(scanPos, prefetchPos, xs_read_stream_dir) <= 0);
-		Assert(prefetchPos->item >= prefetchBatch->firstItem &&
-			   prefetchPos->item <= prefetchBatch->lastItem);
 
 		item = &prefetchBatch->items[prefetchPos->item];
 		prefetch_block = ItemPointerGetBlockNumber(&item->heapTid);

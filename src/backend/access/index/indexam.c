@@ -441,7 +441,7 @@ void
 index_markpos(IndexScanDesc scan)
 {
 	SCAN_CHECKS;
-	CHECK_SCAN_PROCEDURE(amposreset);
+	CHECK_SCAN_PROCEDURE(amgetbatch);
 
 	/* Only amgetbatch index AMs support mark and restore */
 	index_batchscan_mark_pos(scan);
@@ -469,7 +469,6 @@ index_restrpos(IndexScanDesc scan)
 
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
-	CHECK_SCAN_PROCEDURE(amposreset);
 
 	/* reset read stream and release buffer pins from table accesses */
 	if (scan->xs_heapfetch)

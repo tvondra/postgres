@@ -412,7 +412,8 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 	 * Call amposreset to let index AM know to invalidate any private state
 	 * that independently tracks the scan's progress.
 	 */
-	scan->indexRelation->rd_indam->amposreset(scan, markBatch);
+	if (scan->indexRelation->rd_indam->amposreset)
+		scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 
 	/* Remove all batches from the ring buffer except for the marked batch */
 	scan->batchringbuf.done = true;

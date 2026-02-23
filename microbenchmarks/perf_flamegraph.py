@@ -1126,17 +1126,25 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         gucs = query_def.get("gucs", {})
         set_gucs(conn, gucs, is_master=is_master, prefetch_setting=prefetch_setting)
 
+        # Prepare the query once to avoid planning overhead in timing.
+        # force_generic_plan ensures EXECUTE reuses the cached plan
+        # without per-execution plan cache overhead.
+        stmt_name = "_bench_stmt"
+        with conn.cursor() as cursor:
+            cursor.execute("SET plan_cache_mode = force_generic_plan")
+            cursor.execute(f"PREPARE {stmt_name} AS {sql_query}")
+
         # Handle warmup queries (A3 special case)
         if query_def.get("warmup_query") and not cached_mode:
             print("Running warmup queries...")
             with conn.cursor() as cursor:
-                cursor.execute(sql_query)
-                cursor.execute(sql_query)
+                cursor.execute(f"EXECUTE {stmt_name}")
+                cursor.execute(f"EXECUTE {stmt_name}")
 
         # Show EXPLAIN plan
         print("\n--- Query Plan (EXPLAIN ANALYZE) ---")
         with conn.cursor() as cursor:
-            cursor.execute(f"EXPLAIN (ANALYZE, COSTS OFF, TIMING ON) {sql_query}")
+            cursor.execute(f"EXPLAIN (ANALYZE, COSTS OFF, TIMING ON) EXECUTE {stmt_name}")
             for row in cursor.fetchall():
                 print(row[0])
         print("--- End Query Plan ---\n")
@@ -1183,7 +1191,7 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         query_repetitions = 5  # Run a few times for flame graph data
         print(f"Executing query {query_repetitions} times for profiling...")
 
-        explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SERIALIZE) {sql_query}"
+        explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SERIALIZE) EXECUTE {stmt_name}"
         execution_times = []
 
         for i in range(query_repetitions):
@@ -1225,6 +1233,10 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         # Restore hardware prefetchers if they were disabled
         if original_prefetch_value is not None:
             restore_prefetchers(benchmark_cpu, original_prefetch_value)
+
+        # Deallocate prepared statement
+        with conn.cursor() as cursor:
+            cursor.execute(f"DEALLOCATE {stmt_name}")
 
         # Reset GUCs
         if gucs:

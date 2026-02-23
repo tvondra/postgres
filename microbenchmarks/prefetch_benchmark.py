@@ -2381,9 +2381,33 @@ def pin_backend(pid, cpu, enabled=False):
         print(f"Warning: Could not pin backend: {e}")
 
 
+PREPARED_STMT_NAME = "_bench_stmt"
+
+
+def prepare_query(conn, sql, gucs=None, is_master=False, prefetch_setting=None):
+    """Prepare a query so that subsequent runs avoid planning overhead.
+
+    Planning-relevant GUCs must be active before PREPARE, since a
+    parameter-less prepared statement is planned once at PREPARE time.
+    We also force generic plan mode so EXECUTE reuses the cached plan
+    without per-execution plan cache overhead.
+    """
+    set_gucs(conn, gucs or {}, is_master=is_master, prefetch_setting=prefetch_setting)
+    with conn.cursor() as cur:
+        cur.execute("SET plan_cache_mode = force_generic_plan")
+        cur.execute(f"PREPARE {PREPARED_STMT_NAME} AS {sql.strip()}")
+
+
+def deallocate_query(conn):
+    """Deallocate the prepared benchmark statement."""
+    with conn.cursor() as cur:
+        cur.execute(f"DEALLOCATE {PREPARED_STMT_NAME}")
+
+
 def run_query(conn, query_def, cached_mode, is_master, prefetch_setting, benchmark_cpu, serialize=True, direct_io=False):
     """
     Run a single query with proper cache preparation.
+    The query must already be prepared via prepare_query().
     Returns (execution_time_ms, explain_output_str) tuple.
     """
     # Cache preparation
@@ -2406,13 +2430,13 @@ def run_query(conn, query_def, cached_mode, is_master, prefetch_setting, benchma
     # Special handling for warmup queries (A3)
     if query_def.get("warmup_query") and not cached_mode:
         with conn.cursor() as cur:
-            cur.execute(query_def["sql"])
-            cur.execute(query_def["sql"])
+            cur.execute(f"EXECUTE {PREPARED_STMT_NAME}")
+            cur.execute(f"EXECUTE {PREPARED_STMT_NAME}")
 
-    # Execute with EXPLAIN ANALYZE
-    sql = query_def["sql"].strip()
+    # Execute with EXPLAIN ANALYZE using force_custom_plan to avoid
+    # plan cache artifacts while still skipping full re-planning.
     serialize_opt = ", SERIALIZE" if serialize else ""
-    explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF{serialize_opt}) {sql}"
+    explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF{serialize_opt}) EXECUTE {PREPARED_STMT_NAME}"
 
     with conn.cursor() as cur:
         cur.execute(explain_sql)
@@ -2714,6 +2738,8 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
             for query_id in selected_queries:
                 query_def = queries_dict[query_id]
                 print(f"\n{query_id}: {query_def['name']} ({args.runs} runs)...")
+                prepare_query(master_conn, query_def["sql"],
+                              gucs=query_def.get("gucs", {}), is_master=True)
                 for run in range(args.runs):
                     exec_time, explain_output = run_query(
                         master_conn, query_def, args.cached,
@@ -2727,6 +2753,7 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                         results["queries"][query_id]["master"]["explains"].append(explain_output)
                         if not args.terse:
                             print(f"  Run {run + 1}: {exec_time:.3f} ms")
+                deallocate_query(master_conn)
 
             master_conn.close()
         finally:
@@ -2771,6 +2798,8 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                 continue
 
             query_def = queries_dict[query_id]
+            prepare_query(patch_conn, query_def["sql"],
+                          gucs=query_def.get("gucs", {}), is_master=False)
 
             # Run with prefetch OFF (skip if --prefetch-only)
             if not args.prefetch_only:
@@ -2805,6 +2834,8 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                         results["queries"][query_id]["patch_on"]["explains"].append(explain_output)
                         if not args.terse:
                             print(f"  Run {run + 1}: {exec_time:.3f} ms")
+
+            deallocate_query(patch_conn)
 
         patch_conn.close()
     finally:
@@ -3230,6 +3261,8 @@ def run_stress_test(args):
                             print(f"    {line.strip()}")
                         print(f"  Running...", end=" ", flush=True)
                         try:
+                            prepare_query(master_conn, query_def["sql"],
+                                          gucs=query_def.get("gucs", {}), is_master=True)
                             exec_time, explain_output = run_query(
                                 master_conn, query_def, args.cached,
                                 is_master=True, prefetch_setting=None,
@@ -3238,6 +3271,7 @@ def run_stress_test(args):
                             )
                             if exec_time is not None:
                                 if exec_time < args.min_query_ms:
+                                    deallocate_query(master_conn)
                                     replacement_count += 1
                                     print(f"{exec_time:.3f} ms (too fast, regenerating...)")
                                     # Generate a replacement query with same ID
@@ -3269,6 +3303,7 @@ def run_stress_test(args):
                                             print(f"  Run {extra + 2}: {t:.3f} ms")
                                     results[query_id]["master"]["min"] = get_representative(
                                         results[query_id]["master"]["times"])
+                                    deallocate_query(master_conn)
                                     break  # Query is acceptable, move to next slot
                             else:
                                 print("FAILED - could not extract execution time")
@@ -3308,6 +3343,9 @@ def run_stress_test(args):
                     # Print query text
                     for line in query_def['sql'].strip().split('\n'):
                         print(f"    {line.strip()}")
+
+                    prepare_query(patch_conn, query_def["sql"],
+                                  gucs=query_def.get("gucs", {}), is_master=False)
 
                     # Test with prefetch OFF (skip if --prefetch-only)
                     if not args.prefetch_only:
@@ -3381,6 +3419,8 @@ def run_stress_test(args):
                             print(f"Query: {query_def['sql']}")
                             sys.exit(1)
 
+                    deallocate_query(patch_conn)
+
                 patch_conn.close()
             finally:
                 stop_server(patch_bin, PATCH_DATA_DIR)
@@ -3453,6 +3493,10 @@ def run_stress_test(args):
 
                         print(f"\n  Verifying {reg['query_id']} ({reg['config']}, initial {reg['ratio']:.3f}x)...")
 
+                        prepare_query(patch_conn, query_def["sql"],
+                                      gucs=query_def.get("gucs", {}),
+                                      is_master=False, prefetch_setting=prefetch_setting)
+
                         # Simple retries: 3 attempts with short delay
                         RETRY_COUNT = 3
                         RETRY_DELAY = 1.0
@@ -3488,6 +3532,8 @@ def run_stress_test(args):
                             else:
                                 print("FAILED")
 
+                        deallocate_query(patch_conn)
+
                         if regression_confirmed:
                             print(f"    Retries confirm regression - needs master re-baseline")
                             needs_rebaseline.append(reg)
@@ -3520,6 +3566,8 @@ def run_stress_test(args):
                                 cur.execute("SET random_page_cost = 1.1")
                                 cur.execute("SET max_parallel_workers_per_gather = 0")
 
+                            prepare_query(master_conn, query_def["sql"],
+                                          gucs=query_def.get("gucs", {}), is_master=True)
                             rebaseline_master_times = []
                             for run_i in range(stress_runs):
                                 t, _ = run_query(
@@ -3530,6 +3578,7 @@ def run_stress_test(args):
                                 )
                                 if t is not None:
                                     rebaseline_master_times.append(t)
+                            deallocate_query(master_conn)
                             master_conn.close()
                         finally:
                             stop_server(master_bin, MASTER_DATA_DIR)
@@ -3558,6 +3607,9 @@ def run_stress_test(args):
                                 cur.execute("SET random_page_cost = 1.1")
                                 cur.execute("SET max_parallel_workers_per_gather = 0")
 
+                            prepare_query(patch_conn, query_def["sql"],
+                                          gucs=query_def.get("gucs", {}),
+                                          is_master=False, prefetch_setting=prefetch_setting)
                             rebaseline_patch_times = []
                             for run_i in range(stress_runs):
                                 t, _ = run_query(
@@ -3568,6 +3620,7 @@ def run_stress_test(args):
                                 )
                                 if t is not None:
                                     rebaseline_patch_times.append(t)
+                            deallocate_query(patch_conn)
                             patch_conn.close()
                         finally:
                             stop_server(patch_bin, PATCH_DATA_DIR)

@@ -655,9 +655,10 @@ static inline BufferDesc *BufferAlloc(SMgrRelation smgr,
 static bool AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress);
 static void CheckReadBuffersOperation(ReadBuffersOperation *operation, bool is_complete);
 
-static void ProcessBufferHit(BufferAccessStrategy strategy,
-							 Relation rel, char persistence, SMgrRelation smgr,
-							 ForkNumber forknum, BlockNumber blocknum);
+static inline void ProcessBufferHit(BufferAccessStrategy strategy,
+									Relation rel, char persistence,
+									SMgrRelation smgr, ForkNumber forknum,
+									BlockNumber blocknum);
 static Buffer GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context);
 static void FlushUnlockedBuffer(BufferDesc *buf, SMgrRelation reln,
 								IOObject io_object, IOContext io_context);
@@ -1638,7 +1639,7 @@ CheckReadBuffersOperation(ReadBuffersOperation *operation, bool is_complete)
  * We track various stats related to buffer hits. Because this is done in a
  * few separate places, this helper exists for convenience.
  */
-static void
+static inline void
 ProcessBufferHit(BufferAccessStrategy strategy,
 				 Relation rel, char persistence, SMgrRelation smgr,
 				 ForkNumber forknum, BlockNumber blocknum)

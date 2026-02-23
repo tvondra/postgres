@@ -169,6 +169,7 @@ index_batchscan_end(IndexScanDesc scan)
 {
 	/* Free all remaining loaded batches (even markBatch) */
 	scan->batchringbuf.done = true;
+	index_batchscan_reset(scan);
 
 	for (int i = 0; i < INDEX_SCAN_CACHE_BATCHES; i++)
 	{
@@ -181,8 +182,6 @@ index_batchscan_end(IndexScanDesc scan)
 			pfree(cached->killedItems);
 		pfree(cached);
 	}
-
-	index_batchscan_reset(scan);
 
 #ifdef BATCH_CACHE_DEBUG
 #define BATCH_CACHE_DEBUG_MIN_BATCHES	50

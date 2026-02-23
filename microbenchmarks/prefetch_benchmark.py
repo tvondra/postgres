@@ -287,6 +287,46 @@ WORKER_REGRESS_QUERIES = OrderedDict([
 ])
 
 
+# --- Bookmark index-only-scan regression test queries ---
+# Index-only scan on DESC index with semi-random layout, fillfactor=90.
+# Uses OFFSET 1000000000 trick to force full scan without returning rows.
+# RP1 = backward scan (matches index order, DESC on DESC index).
+# RP2 = forward scan (opposite of index order).
+
+REPRO_QUERIES = OrderedDict([
+    ("RP1", {
+        "name": "Bookmark IOS regression, backward index-only scan (DESC on DESC index)",
+        "sql": """
+            SELECT * FROM (SELECT a FROM bookm_ios
+            WHERE a BETWEEN 12811 AND 1024954
+            ORDER BY a DESC OFFSET 1000000000)
+        """,
+        "evict": ["bookm_ios"],
+        "prewarm_indexes": ["idx_bookm_ios"],
+        "prewarm_tables": ["bookm_ios"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+    ("RP2", {
+        "name": "Bookmark IOS regression, forward index-only scan (ASC on DESC index)",
+        "sql": """
+            SELECT * FROM (SELECT a FROM bookm_ios
+            WHERE a BETWEEN 12811 AND 1024954
+            ORDER BY a ASC OFFSET 1000000000)
+        """,
+        "evict": ["bookm_ios"],
+        "prewarm_indexes": ["idx_bookm_ios"],
+        "prewarm_tables": ["bookm_ios"],
+        "gucs": {
+            "enable_bitmapscan": "off",
+            "enable_seqscan": "off",
+        },
+    }),
+])
+
+
 # --- UUID Test Queries ---
 # UUIDv4 primary key table: physical/logical correlation ≈ 0.
 # Since gen_random_uuid() produces uniformly random values, the B-tree
@@ -690,6 +730,48 @@ FROM (
 ORDER BY ((r * 2 + p) + 2 * (random() - 0.5));
 CREATE INDEX idx_worker_regress ON worker_regress(a DESC) WITH (deduplicate_items=false);
 VACUUM ANALYZE worker_regress;
+
+CHECKPOINT;
+"""
+
+
+# --- Bookmark index-only-scan regression data loading SQL ---
+
+REPRO_DATA_SQL = """
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+CREATE EXTENSION IF NOT EXISTS pg_buffercache;
+
+-- Drop existing table
+DROP TABLE IF EXISTS bookm_ios CASCADE;
+
+-- Table: bookm_ios (1.25M rows x 8 = 10M rows, fillfactor=90)
+CREATE UNLOGGED TABLE bookm_ios (a bigint, b text) WITH (fillfactor = 90, autovacuum_enabled = false);
+SELECT setseed(0.00008086035417);
+INSERT INTO bookm_ios
+SELECT 1 * a, b
+FROM (
+  SELECT r, a, b, generate_series(0, 8 - 1) AS p
+  FROM (
+    SELECT
+      row_number() OVER () AS r,
+      a,
+      b
+    FROM (
+      SELECT
+        i AS a,
+        md5(i::text) AS b
+      FROM
+        generate_series(1, 1250000) s(i)
+      ORDER BY
+        (i + 1 * (random() - 0.5))) foo) bar) baz
+ORDER BY ((r * 8 + p) + 2 * (random() - 0.5));
+CREATE INDEX idx_bookm_ios ON bookm_ios(a DESC);
+VACUUM ANALYZE bookm_ios;
+
+-- Dirty ~0.05% of rows to force heap fetches on index-only scans
+SELECT setseed(0.00008086035417);
+UPDATE bookm_ios SET a = a WHERE random() < 1.0 / 2017.0;
 
 CHECKPOINT;
 """
@@ -1911,6 +1993,60 @@ def load_worker_regress_data(conn_details):
     print("Worker regression data loading complete.")
 
 
+def verify_repro_data(conn_details):
+    return _verify_unlogged_tables(conn_details, ['bookm_ios'], "repro")
+
+
+def load_repro_data(conn_details):
+    """Load bookmark index-only-scan regression benchmark data into the database."""
+    print("\n" + "=" * 50)
+    print("Loading bookmark IOS regression benchmark data...")
+    print("This will take several minutes for 10M rows.")
+    print("=" * 50 + "\n")
+
+    conn = psycopg.connect(**conn_details)
+    conn.autocommit = True
+
+    # Parse SQL into individual statements
+    statements = []
+    current_stmt = []
+    for line in REPRO_DATA_SQL.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('--') or not stripped:
+            continue
+        current_stmt.append(line)
+        if stripped.endswith(';'):
+            statements.append('\n'.join(current_stmt))
+            current_stmt = []
+
+    for statement in statements:
+        statement = statement.strip()
+        if not statement:
+            continue
+        try:
+            # Print progress for long operations
+            if 'INSERT INTO bookm_ios' in statement:
+                print("Loading bookm_ios (10M rows)...")
+            elif 'UPDATE bookm_ios' in statement:
+                print("Dirtying ~0.05% of rows for heap fetches...")
+            elif 'CREATE INDEX' in statement:
+                idx_match = re.search(r'CREATE INDEX (\S+)', statement)
+                idx_name = idx_match.group(1) if idx_match else "index"
+                print(f"Creating index {idx_name}...")
+
+            with conn.cursor() as cur:
+                cur.execute(statement)
+
+        except Exception as e:
+            print(f"Error executing: {statement[:80]}...")
+            print(f"Error: {e}")
+            conn.close()
+            sys.exit(1)
+
+    conn.close()
+    print("Bookmark IOS regression data loading complete.")
+
+
 def verify_uuid_data(conn_details):
     return _verify_unlogged_tables(conn_details, ['t_uuid'], "uuid")
 
@@ -2024,6 +2160,18 @@ BENCHMARK_SUITES = [
         "queries": UUID_QUERIES,
         "verify_fn": verify_uuid_data,
         "load_fn": load_uuid_data,
+        "uncached_runs": 3,
+        "cached_runs": 10,
+    },
+    {
+        "mode_prefix": "repro",
+        "cli_flag": "--bookm",
+        "cli_dest": "bookm_tests",
+        "help": "Run bookmark IOS regression benchmark (index-only scan on DESC index, 10M rows)",
+        "title": "Bookmark Index-Only-Scan Regression Benchmark",
+        "queries": REPRO_QUERIES,
+        "verify_fn": verify_repro_data,
+        "load_fn": load_repro_data,
         "uncached_runs": 3,
         "cached_runs": 10,
     },

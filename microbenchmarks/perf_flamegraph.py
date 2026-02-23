@@ -946,6 +946,7 @@ def prepare_prefetch_cache(conn, query_def, cached_mode):
         print("Evicting relations and clearing OS cache (uncached mode)...")
         evict_relations(conn, query_def.get("evict", []))
         prewarm_relations(conn, query_def.get("prewarm_indexes", []))
+        prewarm_relations(conn, query_def.get("prewarm_tables", []), vm_only=True)
         clear_os_cache()
 
 
@@ -1182,7 +1183,7 @@ def profile_prefetch_query(pg_bin_dir, pg_name, conn_details, output_file, sql_q
         query_repetitions = 5  # Run a few times for flame graph data
         print(f"Executing query {query_repetitions} times for profiling...")
 
-        explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) {sql_query}"
+        explain_sql = f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SERIALIZE) {sql_query}"
         execution_times = []
 
         for i in range(query_repetitions):

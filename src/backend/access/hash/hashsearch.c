@@ -534,7 +534,7 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 	batch->moreLeft = BlockNumberIsValid(batch->prevPage);
 	batch->moreRight = BlockNumberIsValid(batch->nextPage);
 
-	/* Unlock (and likely unpin) buffer, per amgetbatch contract */
+	/* we saved one or more matches in batch.items[] */
 	indexam_util_batch_unlock(scan, batch);
 
 	Assert(batch->firstItem <= batch->lastItem);

@@ -355,11 +355,15 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	}
 
 #ifdef VM_RESOLVE_DEBUG
+	if (posItem != noSetItem)
 	{
-		int			itemsChecked = lastSetItem - firstSetItem + 1;
+		/* Loop visited posItem..noSetItem-step; normalize to low..high */
+		int			firstChecked = Min(posItem, noSetItem - step);
+		int			lastChecked = Max(posItem, noSetItem - step);
+		int			itemsChecked = lastChecked - firstChecked + 1;
 		int			itemsAllVisible = 0;
 
-		for (int j = firstSetItem; j <= lastSetItem; j++)
+		for (int j = firstChecked; j <= lastChecked; j++)
 			if (batch->visInfo[j] & BATCH_VIS_ALL_VISIBLE)
 				itemsAllVisible++;
 

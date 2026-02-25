@@ -422,7 +422,7 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 
 	/* Also set xs_visible, which heapam_index_getnext_slot needs too */
 	scan->xs_visible =
-		(scanBatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE);
+		(scanBatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE) != 0;
 
 	return &scan->xs_heaptid;
 }

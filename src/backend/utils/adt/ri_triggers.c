@@ -2795,7 +2795,7 @@ ri_FastPathCheck(const RI_ConstraintInfo *riinfo,
 	{
 		pk_rel = table_open(riinfo->pk_relid, RowShareLock);
 		idx_rel = index_open(riinfo->conindid, AccessShareLock);
-		scandesc = index_beginscan(pk_rel, idx_rel,
+		scandesc = index_beginscan(pk_rel, idx_rel, false,
 								   snapshot, NULL,
 								   riinfo->nkeys, 0);
 		slot = table_slot_create(pk_rel, NULL);
@@ -2818,7 +2818,7 @@ ri_FastPathCheck(const RI_ConstraintInfo *riinfo,
 
 	index_rescan(scandesc, skey, riinfo->nkeys, NULL, 0);
 
-	if (index_getnext_slot(scandesc, ForwardScanDirection, slot))
+	if (table_index_getnext_slot(scandesc, ForwardScanDirection, slot))
 	{
 		bool		concurrently_updated;
 
@@ -2858,12 +2858,12 @@ ri_FastPathCheck(const RI_ConstraintInfo *riinfo,
 
 		xact_slot = table_slot_create(pk_rel, NULL);
 		xact_scan = index_beginscan(pk_rel,
-									idx_rel,
+									idx_rel, false,
 									xact_snap, NULL,
 									riinfo->nkeys, 0);
 		index_rescan(xact_scan, skey, riinfo->nkeys, NULL, 0);
 
-		if (!index_getnext_slot(xact_scan, ForwardScanDirection, xact_slot))
+		if (!table_index_getnext_slot(xact_scan, ForwardScanDirection, xact_slot))
 			found = false;
 
 		index_endscan(xact_scan);
@@ -3955,7 +3955,7 @@ ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo)
 
 		entry->slot = table_slot_create(entry->pk_rel, NULL);
 
-		entry->scandesc = index_beginscan(entry->pk_rel, entry->idx_rel,
+		entry->scandesc = index_beginscan(entry->pk_rel, entry->idx_rel, false,
 										  entry->snapshot, NULL,
 										  riinfo->nkeys, 0);
 
@@ -4111,7 +4111,7 @@ ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 	 * Walk all matches.  The btree returns them in index order.
 	 * For each match, find which batch item(s) it satisfies.
 	 */
-	while (index_getnext_slot(scandesc, ForwardScanDirection, slot))
+	while (table_index_getnext_slot(scandesc, ForwardScanDirection, slot))
 	{
 		Datum		found_val;
 		bool		found_null;
@@ -4156,11 +4156,11 @@ ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 								   found_val);
 
 			xact_slot = table_slot_create(pk_rel, NULL);
-			xact_scan = index_beginscan(pk_rel, idx_rel,
+			xact_scan = index_beginscan(pk_rel, idx_rel, false,
 										xact_snap, NULL, 1, 0);
 			index_rescan(xact_scan, recheck_skey, 1, NULL, 0);
 
-			if (!index_getnext_slot(xact_scan, ForwardScanDirection,
+			if (!table_index_getnext_slot(xact_scan, ForwardScanDirection,
 									xact_slot))
 			{
 				index_endscan(xact_scan);
@@ -4228,7 +4228,7 @@ ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 
 		index_rescan(scandesc, skey, riinfo->nkeys, NULL, 0);
 
-		if (index_getnext_slot(scandesc, ForwardScanDirection, slot))
+		if (table_index_getnext_slot(scandesc, ForwardScanDirection, slot))
 		{
 			bool	concurrently_updated;
 
@@ -4249,12 +4249,12 @@ ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 			Snapshot	xact_snap = GetTransactionSnapshot();
 
 			xact_slot = table_slot_create(pk_rel, NULL);
-			xact_scan = index_beginscan(pk_rel, idx_rel,
+			xact_scan = index_beginscan(pk_rel, idx_rel, false,
 										xact_snap, NULL,
 										riinfo->nkeys, 0);
 			index_rescan(xact_scan, skey, riinfo->nkeys, NULL, 0);
 
-			if (!index_getnext_slot(xact_scan, ForwardScanDirection,
+			if (!table_index_getnext_slot(xact_scan, ForwardScanDirection,
 									xact_slot))
 				found = false;
 

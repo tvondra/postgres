@@ -609,6 +609,11 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
  *
  * Resets the read stream, since we can't rely on scanPos continuing to agree
  * with the blocks that read stream already consumed using prefetchPos.
+ *
+ * Note: iff the scan _continues_ in this new direction, and actually steps
+ * off scanBatch to an earlier index page, heapam_batch_getnext will deal with
+ * it.  But that might never happen; the scan might yet change direction again
+ * (or just end before returning more items).
  */
 static pg_noinline void
 heapam_dirchange_readstream_reset(IndexFetchHeapData *hscan,
@@ -619,26 +624,11 @@ heapam_dirchange_readstream_reset(IndexFetchHeapData *hscan,
 	batchringbuf->prefetchPos.valid = false;
 	hscan->xs_yield_check = false;
 	hscan->xs_paused = false;
-	hscan->xs_read_stream_dir = NoMovementScanDirection;	/* see note below */
+	hscan->xs_read_stream_dir = direction;
 
 	/* Reset read stream itself */
 	if (hscan->xs_read_stream)
 		read_stream_reset(hscan->xs_read_stream);
-
-	/*
-	 * Finally, remember new scan direction.
-	 *
-	 * Note: we needed to set xs_read_stream_dir to NoMovementScanDirection
-	 * momentarily to avoid spuriously prefetching more blocks from within the
-	 * read stream callback.  Once we return, the read stream can be used to
-	 * fetch blocks in the opposite scan direction.
-	 *
-	 * Note: iff the scan _continues_ in this new direction, and actually
-	 * steps off scanBatch to an earlier index page, heapam_batch_getnext will
-	 * deal with it.  But that might never happen; the scan might yet change
-	 * direction again (or just end before returning more items).
-	 */
-	hscan->xs_read_stream_dir = direction;
 }
 
 /* ----------------
@@ -796,27 +786,15 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	IndexScanBatch prefetchBatch;
 	bool		fromScanPos = false;
 
-	Assert(!hscan->xs_paused);
-
-	if (xs_read_stream_dir == NoMovementScanDirection)
-	{
-		/*
-		 * Called from read_stream_reset or read_stream_end.  Don't return
-		 * additional heap blocks (at least until the scan direction is set to
-		 * ForwardScanDirection/BackwardScanDirection once again).
-		 *
-		 * XXX We only need this handling to work around a bug in the
-		 * read_stream_pause mechanism.
-		 */
-		return InvalidBlockNumber;
-	}
-
 	/*
 	 * scanPos must always be valid when prefetching takes place.  There has
-	 * to be at least one batch, loaded as our scanBatch.
+	 * to be at least one batch, loaded as our scanBatch.  The scan direction
+	 * must be established, too.
 	 */
 	Assert(index_scan_batch_count(scan) > 0);
 	Assert(scanPos->valid);
+	Assert(!hscan->xs_paused);
+	Assert(xs_read_stream_dir != NoMovementScanDirection);
 
 	/*
 	 * prefetchPos might not yet be valid.  It might have also fallen behind

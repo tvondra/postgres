@@ -302,10 +302,6 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 				step;
 	bool		allbatchitemvisible;
 
-	/* Do nothing if we already resolved visibility for the item. */
-	if (batch->visInfo[posItem] & BATCH_VIS_CHECKED)
-		return;
-
 #ifdef VM_RESOLVE_DEBUG
 	scan->batchringbuf.vmResolveCalls++;
 #endif
@@ -416,7 +412,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 	 * Index-only scan -- set visibility info for the current scanPos item
 	 * (plus possibly some additional items in the current scan direction)
 	 */
-	heapam_batch_resolve_visibility(scan, scanBatch, scanPos);
+	if (!(scanBatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
+		heapam_batch_resolve_visibility(scan, scanBatch, scanPos);
 	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
 								  scanBatch->items[scanPos->item].tupleOffset);
 
@@ -792,6 +789,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	 * must be established, too.
 	 */
 	Assert(index_scan_batch_count(scan) > 0);
+	Assert(scan->MVCCScan);
 	Assert(scanPos->valid);
 	Assert(!hscan->xs_paused);
 	Assert(xs_read_stream_dir != NoMovementScanDirection);
@@ -828,6 +826,31 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		hscan->xs_yield_check = true;
 		*prefetchPos = *scanPos;
 		fromScanPos = true;
+
+		/*
+		 * Once prefetching has begun we set the visibility info for each
+		 * batch in one go.  This happens automatically during plain index
+		 * scans, but requires a little extra care during index-only scans.
+		 */
+		if (scan->xs_want_itup)
+		{
+			/*
+			 * Make sure that heapam_batch_resolve_visibility sets all of the
+			 * visibility info for an entire batch in one go from here on.
+			 * That way it'll always release the batch's pin right away.
+			 */
+			hscan->xs_vm_items = scan->maxitemsbatch;
+
+			prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
+			if (BufferIsValid(prefetchBatch->buf))
+			{
+				/* Set visibility info not set through scanBatch */
+				heapam_batch_resolve_visibility(scan, prefetchBatch,
+												prefetchPos);
+			}
+
+			Assert(!BufferIsValid(prefetchBatch->buf));
+		}
 	}
 
 	/*
@@ -938,6 +961,15 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			/* Position prefetchPos to the start of new prefetchBatch */
 			index_scan_pos_nextbatch(xs_read_stream_dir,
 									 prefetchBatch, prefetchPos);
+
+			if (scan->xs_want_itup && BufferIsValid(prefetchBatch->buf))
+			{
+				/* make sure we have visibility info for the entire batch */
+				heapam_batch_resolve_visibility(scan, prefetchBatch,
+												prefetchPos);
+			}
+
+			Assert(!BufferIsValid(prefetchBatch->buf));
 		}
 
 		/*
@@ -947,6 +979,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		Assert(index_scan_batch(scan, prefetchPos->batch) == prefetchBatch);
 		Assert(prefetchPos->item >= prefetchBatch->firstItem &&
 			   prefetchPos->item <= prefetchBatch->lastItem);
+		Assert(!scan->xs_want_itup ||
+			   (prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_CHECKED));
 
 		/* scanPos is always <= prefetchPos when we return */
 		Assert(index_scan_pos_cmp(scanPos, prefetchPos, xs_read_stream_dir) <= 0);
@@ -954,14 +988,11 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		item = &prefetchBatch->items[prefetchPos->item];
 		prefetch_block = ItemPointerGetBlockNumber(&item->heapTid);
 
-		if (scan->xs_want_itup)
+		if (scan->xs_want_itup &&
+			(prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE))
 		{
-			/* make sure we have visibility info for the item */
-			heapam_batch_resolve_visibility(scan, prefetchBatch, prefetchPos);
-
-			/* don't prefetch if item is known to be all-visible */
-			if (prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE)
-				continue;
+			/* item is known to be all-visible -- don't prefetch */
+			continue;
 		}
 
 		if (prefetch_block == hscan->xs_prefetch_block)

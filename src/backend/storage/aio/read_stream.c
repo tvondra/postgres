@@ -1153,6 +1153,7 @@ read_stream_reset(ReadStream *stream)
 
 	/* Stop looking ahead. */
 	stream->distance = 0;
+	stream->yielded = false;
 
 	/* Forget buffered block number and fast path state. */
 	stream->buffered_blocknum = InvalidBlockNumber;

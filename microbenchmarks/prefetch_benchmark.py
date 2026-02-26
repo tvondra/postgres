@@ -481,7 +481,7 @@ CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP TABLE IF EXISTS t_readstream CASCADE;
 
 -- t_readstream (5M rows x 2 = 10M rows)
-CREATE UNLOGGED TABLE t_readstream (a bigint, b text) WITH (fillfactor = 20);
+CREATE TABLE t_readstream (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.1234567890123456);
 INSERT INTO t_readstream
 SELECT
@@ -519,7 +519,7 @@ CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP TABLE IF EXISTS t_tupdistance_new_regress CASCADE;
 
 -- t_tupdistance_new_regress (2.5M rows x 4 = 10M rows)
-CREATE UNLOGGED TABLE t_tupdistance_new_regress (a bigint, b text) WITH (fillfactor = 20);
+CREATE TABLE t_tupdistance_new_regress (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.2345678901234567);
 INSERT INTO t_tupdistance_new_regress
 SELECT 1 * a, b
@@ -560,7 +560,7 @@ DROP TABLE IF EXISTS t_dont_wait CASCADE;
 
 -- t_dont_wait (2.5M rows x 4 = 10M rows, negative values)
 -- Renamed from t_remaining_regression.
-CREATE UNLOGGED TABLE t_dont_wait (a bigint, b text) WITH (fillfactor = 20);
+CREATE TABLE t_dont_wait (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.8152497610420479);
 INSERT INTO t_dont_wait SELECT -1 * a, b
 FROM (
@@ -601,7 +601,7 @@ DROP TABLE IF EXISTS t_randomized CASCADE;
 SET synchronize_seqscans = off;
 
 -- Table 1: t (sequential layout, 312500 x 32 = 10M rows)
-CREATE UNLOGGED TABLE t (a bigint, b text) WITH (fillfactor = 20);
+CREATE TABLE t (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.3456789012345678);
 INSERT INTO t
 SELECT a, b
@@ -627,7 +627,7 @@ ORDER BY ((r * 32 + p) + 8 * (random() - 0.5));
 CREATE INDEX t_pk ON t(a ASC) WITH (deduplicate_items=off);
 
 -- Table 2: t_randomized (clustered by hash for random physical layout)
-CREATE UNLOGGED TABLE t_randomized (a bigint, b text) WITH (fillfactor = 20);
+CREATE TABLE t_randomized (a bigint, b text) WITH (fillfactor = 20);
 SELECT setseed(0.4567890123456789);
 INSERT INTO t_randomized
 SELECT a, b
@@ -671,7 +671,7 @@ CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP TABLE IF EXISTS t_munro CASCADE;
 
 -- Table: t_munro (2.5M rows x 4 = 10M rows, fillfactor=90)
-CREATE UNLOGGED TABLE t_munro (a bigint, b text) WITH (fillfactor = 90, autovacuum_enabled = false);
+CREATE TABLE t_munro (a bigint, b text) WITH (fillfactor = 90, autovacuum_enabled = false);
 INSERT INTO t_munro
 SELECT 1 * a, b
 FROM (
@@ -709,7 +709,7 @@ DROP TABLE IF EXISTS worker_regress CASCADE;
 
 -- Table: worker_regress (5M rows, fillfactor=90)
 SELECT setseed(.00003612716763005780);
-CREATE UNLOGGED TABLE worker_regress (a bigint, b text) WITH (fillfactor = 90, autovacuum_enabled = false);
+CREATE TABLE worker_regress (a bigint, b text) WITH (fillfactor = 90, autovacuum_enabled = false);
 INSERT INTO worker_regress
 SELECT -1 * a, b
 FROM (
@@ -793,7 +793,7 @@ DROP TABLE IF EXISTS t_uuid CASCADE;
 -- index scans, which is the ideal scenario for prefetching.
 -- Column "val" is a deterministic integer payload so filter quals
 -- can be tested, and "payload" adds width to force heap fetches.
-CREATE UNLOGGED TABLE t_uuid (
+CREATE TABLE t_uuid (
     id uuid NOT NULL,
     val integer NOT NULL,
     payload text NOT NULL
@@ -1598,6 +1598,8 @@ def start_server(pg_bin_dir, pg_name, pg_data_dir, conn_details, args):
     # Build PostgreSQL configuration options
     pg_options = [
         "--autovacuum=off",
+        "-c wal_level=minimal",
+        "-c max_wal_senders=0",
         f"-c effective_io_concurrency={args.effective_io_concurrency}",
         f"-c io_combine_limit={args.io_combine_limit}",
         f"-c io_max_combine_limit={args.io_max_combine_limit}",
@@ -1644,12 +1646,8 @@ def stop_server(pg_bin_dir, pg_data_dir):
 # verify_data and load_data are imported from benchmark_common
 
 
-def _verify_unlogged_tables(conn_details, tables, suite_name):
-    """Verify that unlogged tables exist and have data.
-
-    Unlogged tables lose their data after an unclean shutdown, so we check
-    both existence and row count.
-    """
+def _verify_tables(conn_details, tables, suite_name):
+    """Verify that tables exist and have data."""
     try:
         conn = psycopg.connect(**conn_details)
         for table in tables:
@@ -1665,7 +1663,7 @@ def _verify_unlogged_tables(conn_details, tables, suite_name):
                     return False
                 cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table} LIMIT 1)")
                 if not cur.fetchone()[0]:
-                    print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
+                    print(f"Table {table} exists but has 0 rows")
                     conn.close()
                     return False
         conn.close()
@@ -1725,56 +1723,26 @@ def _load_sql(conn_details, data_sql, suite_name, row_description):
 
 
 def verify_readstream_data(conn_details):
-    return _verify_unlogged_tables(conn_details, ['t_readstream'], "readstream")
+    return _verify_tables(conn_details, ['t_readstream'], "readstream")
 
 def load_readstream_data(conn_details):
     _load_sql(conn_details, READSTREAM_DATA_SQL, "readstream", "10M rows")
 
 def verify_tupdistance_data(conn_details):
-    return _verify_unlogged_tables(conn_details, ['t_tupdistance_new_regress'], "tupdistance")
+    return _verify_tables(conn_details, ['t_tupdistance_new_regress'], "tupdistance")
 
 def load_tupdistance_data(conn_details):
     _load_sql(conn_details, TUPDISTANCE_DATA_SQL, "tupdistance", "10M rows")
 
 def verify_dont_wait_data(conn_details):
-    return _verify_unlogged_tables(conn_details, ['t_dont_wait'], "dont_wait")
+    return _verify_tables(conn_details, ['t_dont_wait'], "dont_wait")
 
 def load_dont_wait_data(conn_details):
     _load_sql(conn_details, DONT_WAIT_DATA_SQL, "dont_wait", "10M rows")
 
 
 def verify_random_backwards_data(conn_details):
-    """
-    Verify that random backwards test tables exist and have data.
-    Returns True if data is valid, False if reload is needed.
-    Unlogged tables lose their data after an unclean shutdown, so we must
-    check row counts, not just table existence.
-    """
-    tables = ['t', 't_randomized']
-    try:
-        conn = psycopg.connect(**conn_details)
-        for table in tables:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'r'
-                    )
-                """, (table,))
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} does not exist")
-                    conn.close()
-                    return False
-                cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table} LIMIT 1)")
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
-                    conn.close()
-                    return False
-        conn.close()
-        print(f"All tables exist and have data ✓")
-        return True
-    except Exception as e:
-        print(f"Error verifying random backwards data: {e}")
-        return False
+    return _verify_tables(conn_details, ['t', 't_randomized'], "random_backwards")
 
 
 def load_random_backwards_data(conn_details):
@@ -1830,37 +1798,7 @@ def load_random_backwards_data(conn_details):
 
 
 def verify_munro_data(conn_details):
-    """
-    Verify that Thomas Munro regression test table exists and has data.
-    Returns True if data is valid, False if reload is needed.
-    Unlogged tables lose their data after an unclean shutdown, so we must
-    check row counts, not just table existence.
-    """
-    tables = ['t_munro']
-    try:
-        conn = psycopg.connect(**conn_details)
-        for table in tables:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'r'
-                    )
-                """, (table,))
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} does not exist")
-                    conn.close()
-                    return False
-                cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table} LIMIT 1)")
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
-                    conn.close()
-                    return False
-        conn.close()
-        print(f"All tables exist and have data ✓")
-        return True
-    except Exception as e:
-        print(f"Error verifying munro data: {e}")
-        return False
+    return _verify_tables(conn_details, ['t_munro'], "munro")
 
 
 def load_munro_data(conn_details):
@@ -1912,37 +1850,7 @@ def load_munro_data(conn_details):
 
 
 def verify_worker_regress_data(conn_details):
-    """
-    Verify that worker regression test table exists and has data.
-    Returns True if data is valid, False if reload is needed.
-    Unlogged tables lose their data after an unclean shutdown, so we must
-    check row counts, not just table existence.
-    """
-    tables = ['worker_regress']
-    try:
-        conn = psycopg.connect(**conn_details)
-        for table in tables:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'r'
-                    )
-                """, (table,))
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} does not exist")
-                    conn.close()
-                    return False
-                cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table} LIMIT 1)")
-                if not cur.fetchone()[0]:
-                    print(f"Table {table} exists but has 0 rows (unlogged table was likely reset after crash)")
-                    conn.close()
-                    return False
-        conn.close()
-        print(f"All tables exist and have data ✓")
-        return True
-    except Exception as e:
-        print(f"Error verifying worker regress data: {e}")
-        return False
+    return _verify_tables(conn_details, ['worker_regress'], "worker_regress")
 
 
 def load_worker_regress_data(conn_details):
@@ -1994,7 +1902,7 @@ def load_worker_regress_data(conn_details):
 
 
 def verify_repro_data(conn_details):
-    return _verify_unlogged_tables(conn_details, ['bookm_ios'], "repro")
+    return _verify_tables(conn_details, ['bookm_ios'], "repro")
 
 
 def load_repro_data(conn_details):
@@ -2048,7 +1956,7 @@ def load_repro_data(conn_details):
 
 
 def verify_uuid_data(conn_details):
-    return _verify_unlogged_tables(conn_details, ['t_uuid'], "uuid")
+    return _verify_tables(conn_details, ['t_uuid'], "uuid")
 
 def load_uuid_data(conn_details):
     _load_sql(conn_details, UUID_DATA_SQL, "uuid", "5M rows")

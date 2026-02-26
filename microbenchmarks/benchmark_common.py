@@ -781,7 +781,7 @@ DROP TABLE IF EXISTS prefetch_sequential CASCADE;
 DROP TABLE IF EXISTS prefetch_sparse CASCADE;
 
 -- Main fact table: ~50M rows with low fillfactor
-CREATE UNLOGGED TABLE prefetch_orders (
+CREATE TABLE prefetch_orders (
   order_id bigint,
   customer_id int,
   product_id int,
@@ -791,13 +791,13 @@ CREATE UNLOGGED TABLE prefetch_orders (
 ) WITH (fillfactor = 40);
 
 -- Dimension tables
-CREATE UNLOGGED TABLE prefetch_customers (
+CREATE TABLE prefetch_customers (
   customer_id int PRIMARY KEY,
   region_id int,
   customer_name text
 );
 
-CREATE UNLOGGED TABLE prefetch_products (
+CREATE TABLE prefetch_products (
   product_id int PRIMARY KEY,
   category_id int,
   product_name text
@@ -857,7 +857,7 @@ VACUUM FREEZE ANALYZE prefetch_customers;
 VACUUM FREEZE ANALYZE prefetch_products;
 
 -- Adversarial table: sequential heap access
-CREATE UNLOGGED TABLE prefetch_sequential (
+CREATE TABLE prefetch_sequential (
   id bigint,
   val1 int,
   val2 text
@@ -869,7 +869,7 @@ CREATE INDEX prefetch_sequential_idx ON prefetch_sequential(id);
 VACUUM ANALYZE prefetch_sequential;
 
 -- Adversarial table: sparse (1 TID per block)
-CREATE UNLOGGED TABLE prefetch_sparse (
+CREATE TABLE prefetch_sparse (
   id bigint,
   category int,
   padding text

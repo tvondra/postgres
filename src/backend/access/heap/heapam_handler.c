@@ -828,19 +828,19 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		fromScanPos = true;
 
 		/*
-		 * Once prefetching has begun we set the visibility info for each
-		 * batch in one go.  This happens automatically during plain index
-		 * scans, but requires a little extra care during index-only scans.
+		 * We must avoid holding on to any batch's buffer pin for more than an
+		 * instant, to avoid undesirable interactions with the scan's read
+		 * stream.  Plain index scans always get this behavior automatically.
+		 * Index-only scans are made to drop their buffer pin eagerly through
+		 * a policy of always eagerly setting all the batch item's visibility
+		 * info in one go.
 		 */
 		if (scan->xs_want_itup)
 		{
-			/*
-			 * Make sure that heapam_batch_resolve_visibility sets all of the
-			 * visibility info for an entire batch in one go from here on.
-			 * That way it'll always release the batch's pin right away.
-			 */
+			/* Make heapam_batch_resolve_visibility drop batch pins eagerly */
 			hscan->xs_vm_items = scan->maxitemsbatch;
 
+			/* Make sure that this new prefetchBatch holds no pin */
 			prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
 			if (BufferIsValid(prefetchBatch->buf))
 			{
@@ -849,6 +849,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 												prefetchPos);
 			}
 
+			/* No buffer pin will be kept on any batch from here on */
 			Assert(!BufferIsValid(prefetchBatch->buf));
 		}
 	}
@@ -902,6 +903,14 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 	{
 		BatchMatchingItem *item;
 		BlockNumber prefetch_block;
+
+		/*
+		 * We never call amgetbatch without immediately dropping the batch's
+		 * buffer pin (which requires special care during index-only scans).
+		 * The read stream is sensitive to buffer shortages, so we defensively
+		 * avoid anything that visibly affects the per-backend buffer limit.
+		 */
+		Assert(!BufferIsValid(prefetchBatch->buf));
 
 		if (fromScanPos)
 		{
@@ -969,6 +978,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 												prefetchPos);
 			}
 
+			/* heapam_batch_resolve_visibility must drop buffer pin */
 			Assert(!BufferIsValid(prefetchBatch->buf));
 		}
 

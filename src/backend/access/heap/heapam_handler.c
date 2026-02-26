@@ -409,15 +409,19 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 		return &scan->xs_heaptid;
 
 	/*
-	 * Index-only scan -- set visibility info for the current scanPos item
-	 * (plus possibly some additional items in the current scan direction)
+	 * Index-only scan.
+	 *
+	 * Set visibility info for the current scanPos item (plus possibly some
+	 * additional items in the current scan direction) as needed.
 	 */
 	if (!(scanBatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
 		heapam_batch_resolve_visibility(scan, scanBatch, scanPos);
+
+	/* Also set xs_itup, which heapam_index_getnext_slot needs too */
 	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
 								  scanBatch->items[scanPos->item].tupleOffset);
 
-	/* Also set xs_visible, which heapam_index_getnext_slot needs too */
+	/* Finally, set xs_visible for heapam_index_getnext_slot */
 	scan->xs_visible =
 		(scanBatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE) != 0;
 

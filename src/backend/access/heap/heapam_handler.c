@@ -488,7 +488,6 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 	 * buffer (batches must stay in scan order).  If it isn't then we should
 	 * have already returned some existing loaded batch earlier.
 	 */
-	Assert(!hscan->xs_paused);
 	Assert(!index_scan_batch_full(scan));
 	Assert(!priorBatch ||
 		   (index_scan_batch_count(scan) > 0 && priorBatch->dir == direction &&
@@ -643,8 +642,6 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	BatchRingItemPos *scanPos = &batchringbuf->scanPos;
 	IndexScanBatch scanBatch = NULL;
 
-	/* scan should only be paused when there's no free batch slots */
-	Assert(!hscan->xs_paused || index_scan_batch_full(scan));
 	Assert(!scanPos->valid || batchringbuf->headBatch == scanPos->batch);
 	Assert(scanPos->valid || index_scan_batch_count(scan) == 0);
 

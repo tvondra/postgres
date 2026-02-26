@@ -474,7 +474,7 @@ QUERIES = OrderedDict([
         "prewarm_tables": ["prefetch_orders"],
     }),
     ("A15", {
-        "name": "regressed anti-join, index-only",
+        "name": "regressed anti-join, index-only, relies most on pausing mechanism",
         "sql": """
             SELECT o.customer_id, o.order_date
             FROM prefetch_orders o

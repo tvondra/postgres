@@ -996,15 +996,15 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		/* scanPos is always <= prefetchPos when we return */
 		Assert(index_scan_pos_cmp(scanPos, prefetchPos, xs_read_stream_dir) <= 0);
 
-		item = &prefetchBatch->items[prefetchPos->item];
-		prefetch_block = ItemPointerGetBlockNumber(&item->heapTid);
-
 		if (scan->xs_want_itup &&
 			(prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE))
 		{
 			/* item is known to be all-visible -- don't prefetch */
 			continue;
 		}
+
+		item = &prefetchBatch->items[prefetchPos->item];
+		prefetch_block = ItemPointerGetBlockNumber(&item->heapTid);
 
 		if (prefetch_block == hscan->xs_prefetch_block)
 		{

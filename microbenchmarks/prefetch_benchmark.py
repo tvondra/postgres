@@ -2372,13 +2372,21 @@ def run_query(conn, query_def, cached_mode, is_master, prefetch_setting, benchma
     return exec_time, explain_output
 
 
-def load_most_recent_master_results(mode_name):
+def load_most_recent_master_results(mode_name, needed_queries=None):
     """Load master results from the most recent benchmark JSON file for a given mode.
+
+    Searches result files from newest to oldest.  When *needed_queries* is
+    given, skips files that don't contain master results for at least one of
+    those queries; this avoids picking up a tiny single-query run when a
+    larger earlier run has the data we need.
 
     Args:
         mode_name: The benchmark mode to match (e.g. "benchmark_cached",
                    "readstream_uncached").  Files are matched by their
                    "{mode_name}_" prefix.
+        needed_queries: Optional list of query IDs that the caller wants
+                        master results for.  If provided, the first file
+                        (newest) that contains at least one of them is used.
 
     Returns:
         tuple: (old_results dict, json_file path) or (None, None) if not found
@@ -2399,15 +2407,27 @@ def load_most_recent_master_results(mode_name):
     # Sort by modification time (most recent first)
     json_files.sort(key=os.path.getmtime, reverse=True)
 
-    # Load the most recent one
-    most_recent = json_files[0]
-    try:
-        with open(most_recent, "r") as f:
-            old_results = json.load(f)
-        return old_results, most_recent
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"Warning: Could not load {most_recent}: {e}")
-        return None, None
+    for json_file in json_files[:500]:
+        try:
+            with open(json_file, "r") as f:
+                old_results = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load {json_file}: {e}")
+            continue
+
+        # If caller needs specific queries, check that this file has at least one
+        if needed_queries:
+            old_queries = old_results.get("queries", {})
+            has_any = any(
+                qid in old_queries and old_queries[qid].get("master", {}).get("min") is not None
+                for qid in needed_queries
+            )
+            if not has_any:
+                continue
+
+        return old_results, json_file
+
+    return None, None
 
 
 
@@ -2468,7 +2488,7 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
     old_master_file = None
     old_results = None
     if args.old_master_results:
-        old_results, old_master_file = load_most_recent_master_results(mode_name)
+        old_results, old_master_file = load_most_recent_master_results(mode_name, selected_queries)
         if old_results is None:
             print("No previous master results found, will run master fresh")
             args.old_master_results = False
@@ -2489,7 +2509,11 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                 old_results = None
                 old_master_data = None
                 old_master_file = None
-                selected_queries = list(queries_dict.keys())
+                # Restore the original query selection (don't expand to all queries)
+                if args.queries:
+                    selected_queries = [q.strip().upper() for q in args.queries.split(",")]
+                else:
+                    selected_queries = list(queries_dict.keys())
             else:
                 print(f"\nUsing master results from: {old_master_file}")
                 print(f"  Original master hash: {old_results.get('master_hash', 'unknown')}")

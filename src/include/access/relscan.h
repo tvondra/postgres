@@ -219,9 +219,9 @@ typedef struct IndexScanBatchData
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */
 
-	/* info about killed items if any (killedItems is NULL if never used) */
-	int			numKilled;		/* number of currently stored items */
-	int		   *killedItems;	/* indexes of killed items */
+	/* info about dead items if any (deadItems is NULL if never used) */
+	int			numDead;		/* number of currently stored items */
+	int		   *deadItems;		/* indexes of dead items */
 
 	/*
 	 * If we are doing an index-only scan, this array stores the per-item

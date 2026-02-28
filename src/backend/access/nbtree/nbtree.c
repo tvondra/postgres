@@ -366,7 +366,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 /*
- *	btkillitemsbatch() -- Mark killed items' index tuples LP_DEAD
+ *	btkillitemsbatch() -- Mark dead items' index tuples LP_DEAD
  */
 void
 btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
@@ -381,7 +381,7 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	XLogRecPtr	latestlsn;
 
 	/* Table AM should have already released batch page's pin by now */
-	Assert(batch->numKilled > 0);
+	Assert(batch->numDead > 0);
 	Assert(BlockNumberIsValid(batch->currPage));
 
 	buf = _bt_getbuf(rel, batch->currPage, BT_READ);
@@ -400,16 +400,16 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	minoff = P_FIRSTDATAKEY(opaque);
 	maxoff = PageGetMaxOffsetNumber(page);
 
-	/* Iterate through batch->killedItems[] in leaf page order */
-	for (int i = 0; i < batch->numKilled; i++)
+	/* Iterate through batch->deadItems[] in leaf page order */
+	for (int i = 0; i < batch->numDead; i++)
 	{
-		int			itemIndex = batch->killedItems[i];
+		int			itemIndex = batch->deadItems[i];
 		BatchMatchingItem *kitem = &batch->items[itemIndex];
 		OffsetNumber offnum = kitem->indexOffset;
 
 		Assert(itemIndex >= batch->firstItem && itemIndex <= batch->lastItem);
 		Assert(i == 0 ||
-			   offnum >= batch->items[batch->killedItems[i - 1]].indexOffset);
+			   offnum >= batch->items[batch->deadItems[i - 1]].indexOffset);
 
 		if (offnum < minoff)
 			continue;			/* pure paranoia */
@@ -448,13 +448,13 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 					 * kitem is also the last heap TID in the last index tuple
 					 * correctly -- posting tuple still gets killed).
 					 */
-					if (pi < batch->numKilled)
-						kitem = &batch->items[batch->killedItems[pi++]];
+					if (pi < batch->numDead)
+						kitem = &batch->items[batch->deadItems[pi++]];
 				}
 
 				/*
 				 * Don't bother advancing the outermost loop's int iterator to
-				 * avoid processing killed items that relate to the same
+				 * avoid processing dead items that relate to the same
 				 * offnum/posting list tuple.  This micro-optimization hardly
 				 * seems worth it.  (Further iterations of the outermost loop
 				 * will fail to match on this same posting list's first heap

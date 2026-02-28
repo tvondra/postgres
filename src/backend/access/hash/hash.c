@@ -387,7 +387,7 @@ hashrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 /*
- *	hashkillitemsbatch() -- Mark killed items' index tuples LP_DEAD
+ *	hashkillitemsbatch() -- Mark dead items' index tuples LP_DEAD
  */
 void
 hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
@@ -401,7 +401,7 @@ hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	bool		killedsomething = false;
 	XLogRecPtr	latestlsn;
 
-	Assert(batch->numKilled > 0);
+	Assert(batch->numDead > 0);
 	Assert(BlockNumberIsValid(batch->currPage));
 
 	buf = _hash_getbuf(rel, batch->currPage, HASH_READ,
@@ -420,10 +420,10 @@ hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	opaque = HashPageGetOpaque(page);
 	maxoff = PageGetMaxOffsetNumber(page);
 
-	/* Iterate through batch->killedItems[] in index page order */
-	for (int i = 0; i < batch->numKilled; i++)
+	/* Iterate through batch->deadItems[] in index page order */
+	for (int i = 0; i < batch->numDead; i++)
 	{
-		int			itemIndex = batch->killedItems[i];
+		int			itemIndex = batch->deadItems[i];
 		BatchMatchingItem *currItem = &batch->items[itemIndex];
 
 		offnum = currItem->indexOffset;

@@ -866,7 +866,7 @@ amkillitemsbatch (IndexScanDesc scan,
                   IndexScanBatch batch);
 </programlisting>
    Called by the table AM when it has finished processing a batch that
-   contains killed items, to set <literal>LP_DEAD</literal> bits in the
+   contains dead items, to set <literal>LP_DEAD</literal> bits in the
    batch's index page.  The batch's index page will never be locked or pinned
    when this function is called.
   </para>
@@ -881,12 +881,12 @@ amkillitemsbatch (IndexScanDesc scan,
    The table AM may call
    <function>tableam_util_kill_scanpositem</function> to mark dead items as
    the scan progresses.  If the batch contains any such dead items, the batch's
-   <structfield>killedItems</structfield> array will have been sorted and
+   <structfield>deadItems</structfield> array will have been sorted and
    deduplicated before <function>amkillitemsbatch</function> is called, with
    item offsets appearing in ascending order (that is, in index page order,
    which is also batch order) and no offset appearing more than once.  Index
-   access methods can rely on this ordering when processing killed items: the
-   <structfield>killedItems</structfield> array can be walked in lockstep with
+   access methods can rely on this ordering when processing dead items: the
+   <structfield>deadItems</structfield> array can be walked in lockstep with
    the index page's item pointers, since both are in ascending offset order.
    This also means the table AM need not call
    <function>tableam_util_kill_scanpositem</function> in any particular order.

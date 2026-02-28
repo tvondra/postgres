@@ -203,7 +203,7 @@ typedef IndexScanBatch (*amgetbatch_function) (IndexScanDesc scan,
 											   IndexScanBatch priorbatch,
 											   ScanDirection direction);
 
-/* mark killed items in index page */
+/* mark dead items in index page */
 typedef void (*amkillitemsbatch_function) (IndexScanDesc scan,
 										   IndexScanBatch batch);
 

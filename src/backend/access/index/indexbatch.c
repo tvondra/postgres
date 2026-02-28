@@ -178,8 +178,8 @@ index_batchscan_end(IndexScanDesc scan)
 		if (cached == NULL)
 			continue;
 
-		if (cached->killedItems)
-			pfree(cached->killedItems);
+		if (cached->deadItems)
+			pfree(cached->deadItems);
 		pfree(cached);
 	}
 
@@ -400,9 +400,9 @@ index_batchscan_restore_pos(IndexScanDesc scan)
 		scan->indexRelation->rd_indam->amposreset(scan, markBatch);
 
 	/*
-	 * Note: markBatch.killedItems[] might already contain dead items, and
-	 * might yet have more dead items saved.  tableam_util_free_batch is
-	 * prepared for that.
+	 * Note: markBatch.deadItems[] might already contain dead items, and might
+	 * yet have more dead items saved.  tableam_util_free_batch is prepared
+	 * for that.
 	 */
 }
 
@@ -470,7 +470,7 @@ tableam_util_batch_dirchange(IndexScanDesc scan)
  * Record that scanPos item is dead
  *
  * Records an offset to the current scanBatch/scanPos item, saving it in
- * scanBatch's killedItems array.  The items' index tuples will later be
+ * scanBatch's deadItems array.  The items' index tuples will later be
  * marked LP_DEAD when current scanBatch is freed.
  */
 void
@@ -479,10 +479,10 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
 	BatchRingItemPos *scanPos = &scan->batchringbuf.scanPos;
 	IndexScanBatch scanBatch = index_scan_batch(scan, scanPos->batch);
 
-	if (scanBatch->killedItems == NULL)
-		scanBatch->killedItems = palloc_array(int, scan->maxitemsbatch);
-	if (scanBatch->numKilled < scan->maxitemsbatch)
-		scanBatch->killedItems[scanBatch->numKilled++] = scanPos->item;
+	if (scanBatch->deadItems == NULL)
+		scanBatch->deadItems = palloc_array(int, scan->maxitemsbatch);
+	if (scanBatch->numDead < scan->maxitemsbatch)
+		scanBatch->deadItems[scanBatch->numDead++] = scanPos->item;
 }
 
 /*
@@ -498,7 +498,7 @@ tableam_util_kill_scanpositem(IndexScanDesc scan)
  * the batch, so we may need to release the pin here.  For non-MVCC snapshot
  * scans, the pin is always held until this function releases it.
  *
- * When the batch has dead items (numKilled > 0) and the index AM provides an
+ * When the batch has dead items (numDead > 0) and the index AM provides an
  * amkillitemsbatch callback, we call it to set LP_DEAD bits in the index
  * page.  We always recycle the batch memory via indexam_util_batch_release.
  *
@@ -539,21 +539,21 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 	/*
 	 * Let the index AM set LP_DEAD bits in the index page, if applicable.
 	 *
-	 * batch.killedItems[] is now in whatever order the scan returned items
-	 * in.  We might have even saved the same item/TID twice.
+	 * batch.deadItems[] is now in whatever order the scan returned items in.
+	 * We might have even saved the same item/TID twice.
 	 *
-	 * Sort and unique-ify killedItems[].  That way the index AM can safely
+	 * Sort and unique-ify deadItems[].  That way the index AM can safely
 	 * assume that items will always be in their original index page order.
 	 */
-	if (batch->numKilled > 0 &&
+	if (batch->numDead > 0 &&
 		scan->indexRelation->rd_indam->amkillitemsbatch != NULL)
 	{
-		if (batch->numKilled > 1)
+		if (batch->numDead > 1)
 		{
-			qsort(batch->killedItems, batch->numKilled, sizeof(int),
+			qsort(batch->deadItems, batch->numDead, sizeof(int),
 				  batch_compare_int);
-			batch->numKilled = qunique(batch->killedItems, batch->numKilled,
-									   sizeof(int), batch_compare_int);
+			batch->numDead = qunique(batch->deadItems, batch->numDead,
+									 sizeof(int), batch_compare_int);
 		}
 
 		scan->indexRelation->rd_indam->amkillitemsbatch(scan, batch);
@@ -572,8 +572,8 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 		}
 	}
 
-	if (batch->killedItems)
-		pfree(batch->killedItems);
+	if (batch->deadItems)
+		pfree(batch->deadItems);
 	pfree(batch);
 }
 
@@ -664,7 +664,7 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
  * comments above indexam_util_batch_release.
  *
  * Housekeeping fields (buf, knownEndLeft/Right, firstItem, lastItem,
- * numKilled, killedItems, visInfo, currTuples) are initialized here.  The
+ * numDead, deadItems, visInfo, currTuples) are initialized here.  The
  * caller is responsible for filling in the page-level navigation fields
  * (currPage, prevPage, nextPage, dir, moreLeft, moreRight) and the matching
  * items[] array.  Once populated, the caller either passes the batch to
@@ -735,10 +735,10 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 		}
 
 		/*
-		 * Batches allocate killedItems lazily (though note that cached
-		 * batches keep their killedItems allocation when recycled)
+		 * Batches allocate deadItems lazily (though note that cached batches
+		 * keep their deadItems allocation when recycled)
 		 */
-		batch->killedItems = NULL;
+		batch->deadItems = NULL;
 	}
 
 	/* xs_want_itup scans must get a currTuples space */
@@ -750,7 +750,7 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 	batch->knownEndRight = false;
 	batch->firstItem = -1;
 	batch->lastItem = -1;
-	batch->numKilled = 0;
+	batch->numDead = 0;
 
 	return batch;
 }
@@ -805,14 +805,14 @@ indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)
 		 * Failed to find a free slot for this batch.  We'll just free it
 		 * ourselves.  This isn't really expected; it's just defensive.
 		 */
-		if (batch->killedItems)
-			pfree(batch->killedItems);
+		if (batch->deadItems)
+			pfree(batch->deadItems);
 	}
 	else
 	{
 		/* amgetbitmap scan caller */
 		Assert(scan->heapRelation == NULL);
-		Assert(batch->killedItems == NULL);
+		Assert(batch->deadItems == NULL);
 		Assert(batch->currTuples == NULL);
 	}
 

@@ -551,9 +551,9 @@ XLogSimpleInsertInt64(RmgrId rmid, uint8 info, int64 value)
 /*
  * XLogGetFakeLSN - get a fake LSN for an index page that isn't WAL-logged.
  *
- * Some index AMs (nbtree, hash, GiST) use LSNs to detect concurrent page
- * modifications, but not all index pages are WAL-logged.  This function
- * provides a sequence of fake LSNs for that purpose.
+ * Some index AMs use LSNs to detect concurrent page modifications, but not
+ * all index pages are WAL-logged.  This function provides a sequence of fake
+ * LSNs for that purpose.
  *
  * The behavior depends on the relation's persistence:
  *

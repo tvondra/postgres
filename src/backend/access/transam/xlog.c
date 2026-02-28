@@ -8243,12 +8243,11 @@ XLogRestorePoint(const char *rpName)
 /*
  * Write an empty XLOG record to assign a distinct LSN.
  *
- * This is used by index AMs (nbtree, hash, GiST) when building indexes on
- * permanent relations with wal_level=minimal.  In that scenario, WAL-logging
- * will start after commit, but the index AM needs distinct LSNs to detect
- * concurrent page modifications.  When the current WAL insert position hasn't
- * advanced since the last call, we emit this dummy record to ensure we get a
- * new, distinct LSN.
+ * This is used by some index AMs when building indexes on permanent relations
+ * with wal_level=minimal.  In that scenario, WAL-logging will start after
+ * commit, but the index AM needs distinct LSNs to detect concurrent page
+ * modifications.  When the current WAL insert position hasn't advanced since
+ * the last call, we emit a dummy record to ensure we get a new, distinct LSN.
  */
 XLogRecPtr
 XLogAssignLSN(void)

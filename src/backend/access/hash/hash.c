@@ -328,7 +328,7 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			 itemIndex <= batch->lastItem;
 			 itemIndex++)
 		{
-			tbm_add_tuples(tbm, &batch->items[itemIndex].heapTid, 1, true);
+			tbm_add_tuples(tbm, &batch->items[itemIndex].tableTid, 1, true);
 			ntids++;
 		}
 
@@ -436,7 +436,7 @@ hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 			ItemId		iid = PageGetItemId(page, offnum);
 			IndexTuple	ituple = (IndexTuple) PageGetItem(page, iid);
 
-			if (ItemPointerEquals(&ituple->t_tid, &currItem->heapTid))
+			if (ItemPointerEquals(&ituple->t_tid, &currItem->tableTid))
 			{
 				/* found the item */
 				ItemIdMarkDead(iid);

@@ -267,7 +267,7 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	IndexScanBatch batch;
 	int64		ntids = 0;
-	ItemPointer heapTid;
+	ItemPointer tableTid;
 
 	Assert(scan->heapRelation == NULL);
 
@@ -280,8 +280,8 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			int			itemIndex = 0;
 
 			/* Save first tuple's TID */
-			heapTid = &batch->items[itemIndex].heapTid;
-			tbm_add_tuples(tbm, heapTid, 1, false);
+			tableTid = &batch->items[itemIndex].tableTid;
+			tbm_add_tuples(tbm, tableTid, 1, false);
 			ntids++;
 
 			for (;;)
@@ -296,8 +296,8 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 						break;
 				}
 
-				heapTid = &batch->items[itemIndex].heapTid;
-				tbm_add_tuples(tbm, heapTid, 1, false);
+				tableTid = &batch->items[itemIndex].tableTid;
+				tbm_add_tuples(tbm, tableTid, 1, false);
 				ntids++;
 			}
 		}
@@ -429,7 +429,7 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 				{
 					ItemPointer item = BTreeTupleGetPostingN(ituple, j);
 
-					if (!ItemPointerEquals(item, &kitem->heapTid))
+					if (!ItemPointerEquals(item, &kitem->tableTid))
 						break;	/* out of posting list loop */
 
 					Assert(kitem->indexOffset == offnum);
@@ -464,7 +464,7 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 				if (j == nposting)
 					killtuple = true;
 			}
-			else if (ItemPointerEquals(&ituple->t_tid, &kitem->heapTid))
+			else if (ItemPointerEquals(&ituple->t_tid, &kitem->tableTid))
 				killtuple = true;
 
 			/*

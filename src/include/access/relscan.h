@@ -149,7 +149,7 @@ typedef struct BatchRingItemPos
  */
 typedef struct BatchMatchingItem
 {
-	ItemPointerData heapTid;	/* TID of referenced heap item */
+	ItemPointerData tableTid;	/* TID of referenced table item */
 	OffsetNumber indexOffset;	/* index item's location within page */
 	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */
 } BatchMatchingItem;
@@ -159,7 +159,7 @@ typedef struct BatchMatchingItem
  * array (IndexScanBatchData.visInfo) rather than in BatchMatchingItem to keep
  * the hot items array compact.
  */
-#define BATCH_VIS_CHECKED		0x01	/* heapTid block's VM checked? */
+#define BATCH_VIS_CHECKED		0x01	/* checked item in VM? */
 #define BATCH_VIS_ALL_VISIBLE	0x02	/* block is known all-visible? */
 
 /*

@@ -67,10 +67,10 @@ static bool _bt_oppodir_checkkeys(IndexScanDesc scan, ScanDirection dir,
 static void _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 						 IndexTuple itup, int *tupleOffset);
 static int	_bt_setuppostingitems(IndexScanBatch newbatch, int itemIndex,
-								  OffsetNumber offnum, const ItemPointerData *heapTid,
+								  OffsetNumber offnum, const ItemPointerData *tableTid,
 								  IndexTuple itup, int *tupleOffset);
 static inline void _bt_savepostingitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
-									   ItemPointer heapTid, int baseOffset);
+									   ItemPointer tableTid, int baseOffset);
 static bool _bt_checkkeys(IndexScanDesc scan, BTReadPageState *pstate, bool arrayKeys,
 						  IndexTuple tuple, int tupnatts);
 static bool _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
@@ -1025,7 +1025,7 @@ _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
 {
 	Assert(!BTreeTupleIsPivot(itup) && !BTreeTupleIsPosting(itup));
 
-	newbatch->items[itemIndex].heapTid = itup->t_tid;
+	newbatch->items[itemIndex].tableTid = itup->t_tid;
 	newbatch->items[itemIndex].indexOffset = offnum;
 
 	if (newbatch->currTuples)
@@ -1050,14 +1050,14 @@ _bt_saveitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
  */
 static int
 _bt_setuppostingitems(IndexScanBatch newbatch, int itemIndex,
-					  OffsetNumber offnum, const ItemPointerData *heapTid,
+					  OffsetNumber offnum, const ItemPointerData *tableTid,
 					  IndexTuple itup, int *tupleOffset)
 {
 	BatchMatchingItem *item = &newbatch->items[itemIndex];
 
 	Assert(BTreeTupleIsPosting(itup));
 
-	item->heapTid = *heapTid;
+	item->tableTid = *tableTid;
 	item->indexOffset = offnum;
 
 	if (newbatch->currTuples)
@@ -1090,11 +1090,11 @@ _bt_setuppostingitems(IndexScanBatch newbatch, int itemIndex,
  */
 static inline void
 _bt_savepostingitem(IndexScanBatch newbatch, int itemIndex, OffsetNumber offnum,
-					ItemPointer heapTid, int baseOffset)
+					ItemPointer tableTid, int baseOffset)
 {
 	BatchMatchingItem *item = &newbatch->items[itemIndex];
 
-	item->heapTid = *heapTid;
+	item->tableTid = *tableTid;
 	item->indexOffset = offnum;
 
 	/*

@@ -658,7 +658,7 @@ _hash_saveitem(IndexScanBatch batch, int itemIndex,
 {
 	BatchMatchingItem *currItem = &batch->items[itemIndex];
 
-	currItem->heapTid = itup->t_tid;
+	currItem->tableTid = itup->t_tid;
 	currItem->indexOffset = offnum;
 	currItem->tupleOffset = 0;
 }

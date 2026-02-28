@@ -339,7 +339,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	 */
 	for (int setItem = posItem; setItem != noSetItem; setItem += step)
 	{
-		ItemPointer tid = &batch->items[setItem].heapTid;
+		ItemPointer tid = &batch->items[setItem].tableTid;
 		uint8		flags = BATCH_VIS_CHECKED;
 
 		if (VM_ALL_VISIBLE(scan->heapRelation,
@@ -403,7 +403,7 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* Set xs_heaptid, which heapam_index_getnext_slot will need */
-	scan->xs_heaptid = scanBatch->items[scanPos->item].heapTid;
+	scan->xs_heaptid = scanBatch->items[scanPos->item].tableTid;
 
 	if (!scan->xs_want_itup)
 		return &scan->xs_heaptid;
@@ -1004,7 +1004,7 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		}
 
 		item = &prefetchBatch->items[prefetchPos->item];
-		prefetch_block = ItemPointerGetBlockNumber(&item->heapTid);
+		prefetch_block = ItemPointerGetBlockNumber(&item->tableTid);
 
 		if (prefetch_block == hscan->xs_prefetch_block)
 		{

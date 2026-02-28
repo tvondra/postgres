@@ -841,6 +841,12 @@ ExecShutdownNode_walker(PlanState *node, void *context)
  * Any negative tuples_needed value means "no limit", which should be the
  * default assumption when this is not called at all for a particular node.
  *
+ * Note: for nodes like Sort, tuples_needed is a hard limit -- the node can
+ * stop after producing exactly that many tuples.  For index scans, however,
+ * tuples_needed is only an approximation, because non-index quals may filter
+ * out some tuples.  The actual number of tuples fetched from the index may
+ * need to exceed tuples_needed to satisfy the caller's requirements.
+ *
  * Note: if this is called repeatedly on a plan tree, the exact same set
  * of nodes must be updated with the new limit each time; be careful that
  * only unchanging conditions are tested here.

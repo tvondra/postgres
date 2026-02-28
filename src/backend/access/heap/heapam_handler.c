@@ -301,6 +301,8 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	int			noSetItem,
 				step;
 	bool		allbatchitemvisible;
+	BlockNumber curvmheapblkno = InvalidBlockNumber;
+	uint8		curvmheapblkflags = 0;
 
 #ifdef VM_RESOLVE_DEBUG
 	scan->batchringbuf.vmResolveCalls++;
@@ -340,14 +342,22 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	for (int setItem = posItem; setItem != noSetItem; setItem += step)
 	{
 		ItemPointer tid = &batch->items[setItem].tableTid;
-		uint8		flags = BATCH_VIS_CHECKED;
+		BlockNumber heapblkno = ItemPointerGetBlockNumber(tid);
+		uint8		flags;
 
-		if (VM_ALL_VISIBLE(scan->heapRelation,
-						   ItemPointerGetBlockNumber(tid),
-						   &hscan->vmbuf))
+		if (heapblkno == curvmheapblkno)
+		{
+			/* contiguous heap block -- just reuse last item's flags */
+			batch->visInfo[setItem] = curvmheapblkflags;
+			continue;
+		}
+
+		flags = BATCH_VIS_CHECKED;
+		if (VM_ALL_VISIBLE(scan->heapRelation, heapblkno, &hscan->vmbuf))
 			flags |= BATCH_VIS_ALL_VISIBLE;
 
-		batch->visInfo[setItem] = flags;
+		batch->visInfo[setItem] = curvmheapblkflags = flags;
+		curvmheapblkno = heapblkno;
 	}
 
 #ifdef VM_RESOLVE_DEBUG

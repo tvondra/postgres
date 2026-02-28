@@ -581,7 +581,15 @@ XLogGetFakeLSN(Relation rel)
 
 		return counter++;
 	}
-	else if (RelationIsPermanent(rel))
+	else if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
+	{
+		/*
+		 * Unlogged relations are accessible from other backends, and survive
+		 * (clean) restarts.  GetFakeLSNForUnloggedRel() handles that for us.
+		 */
+		return GetFakeLSNForUnloggedRel();
+	}
+	else
 	{
 		/*
 		 * WAL-logging on this relation will start after commit, so its LSNs
@@ -592,8 +600,8 @@ XLogGetFakeLSN(Relation rel)
 		static XLogRecPtr lastlsn = InvalidXLogRecPtr;
 		XLogRecPtr	currlsn = GetXLogInsertRecPtr();
 
-		/* Shouldn't be called for WAL-logging relations */
 		Assert(!RelationNeedsWAL(rel));
+		Assert(RelationIsPermanent(rel));
 
 		/* No need for an actual record if we already have a distinct LSN */
 		if (XLogRecPtrIsValid(lastlsn) && lastlsn == currlsn)
@@ -601,15 +609,6 @@ XLogGetFakeLSN(Relation rel)
 
 		lastlsn = currlsn;
 		return currlsn;
-	}
-	else
-	{
-		/*
-		 * Unlogged relations are accessible from other backends, and survive
-		 * (clean) restarts.  GetFakeLSNForUnloggedRel() handles that for us.
-		 */
-		Assert(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED);
-		return GetFakeLSNForUnloggedRel();
 	}
 }
 

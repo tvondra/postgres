@@ -763,6 +763,26 @@ QUERIES = OrderedDict([
         "prewarm_indexes": ["prefetch_orders_prod_idx"],
         "prewarm_tables": ["prefetch_orders"],
     }),
+    ("A35", {
+        "name": "Regression when noncached, lateral join with inner plain scan, outer index-only scan",
+        "sql": """
+            SELECT c.customer_id, o.order_id, o.order_date, o.amount
+            FROM prefetch_customers c,
+            LATERAL (
+            SELECT order_id, order_date, amount
+            FROM prefetch_orders
+            WHERE customer_id = c.customer_id
+            AND order_date BETWEEN '2023-04-29' AND '2023-05-15'
+
+            ORDER BY order_date
+            LIMIT 9
+            ) o
+            WHERE c.customer_id BETWEEN 97085 AND 97089
+        """,
+        "evict": ["prefetch_orders", "prefetch_customers"],
+        "prewarm_indexes": ["prefetch_orders_cust_date_idx", "prefetch_customers_pkey"],
+        "prewarm_tables": ["prefetch_orders", "prefetch_customers"],
+    }),
 ])
 
 

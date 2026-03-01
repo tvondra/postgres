@@ -213,7 +213,27 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		*call_again = !IsMVCCSnapshot(snapshot);
 
 		slot->tts_tableOid = RelationGetRelid(scan->rel);
-		ExecStoreBufferHeapTuple(&bslot->base.tupdata, slot, hscan->xs_cbuf);
+
+		/*
+		 * If this is the last TID on the current heap block within the batch,
+		 * transfer our buffer pin to the slot rather than having the slot
+		 * increment the pin count.  This saves a pair of IncrBufferRefCount
+		 * and ReleaseBuffer calls, since the caller would just release its
+		 * pin on xs_cbuf when switching to the next block anyway.
+		 *
+		 * We can only do this when call_again is false, since otherwise the
+		 * caller will need xs_cbuf to remain valid for the next call.
+		 */
+		if (hscan->xs_lastinblock && !*call_again)
+		{
+			ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot,
+										   hscan->xs_cbuf);
+			hscan->xs_cbuf = InvalidBuffer;
+			hscan->xs_blk = InvalidBlockNumber;
+		}
+		else
+			ExecStoreBufferHeapTuple(&bslot->base.tupdata, slot,
+									 hscan->xs_cbuf);
 	}
 	else
 	{
@@ -407,13 +427,49 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 }
 
 static inline ItemPointer
-heapam_batch_return_tid(IndexScanDesc scan, IndexScanBatch scanBatch,
-						BatchRingItemPos *scanPos)
+heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
+						IndexScanBatch scanBatch, BatchRingItemPos *scanPos,
+						ScanDirection direction)
 {
+	int			nextItem;
+	bool		hasNext;
+
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* Set xs_heaptid, which heapam_index_getnext_slot will need */
 	scan->xs_heaptid = scanBatch->items[scanPos->item].tableTid;
+
+	/*
+	 * Determine if the next item in the current scan direction is on a
+	 * different heap block.  When it is, heapam_index_fetch_tuple can
+	 * transfer its buffer pin to the slot instead of incrementing the pin
+	 * count, saving a pair of IncrBufferRefCount/ReleaseBuffer calls.
+	 *
+	 * We must use the actual scan direction (not scanBatch->dir) because a
+	 * scrollable cursor can reverse direction, scanning a batch that was
+	 * loaded in the opposite direction.
+	 *
+	 * We cannot do this for index-only scans because all-visible items are
+	 * skipped by both the scan and the read stream callback.  Skipped items
+	 * can break the block deduplication symmetry between the stream and the
+	 * scan: the stream deduplicates consecutive non-all-visible items by
+	 * block, but after invalidating xs_blk the scan would try to re-fetch a
+	 * block that the stream already returned and deduplicated away.
+	 */
+	if (ScanDirectionIsForward(direction))
+	{
+		nextItem = scanPos->item + 1;
+		hasNext = (nextItem <= scanBatch->lastItem);
+	}
+	else
+	{
+		nextItem = scanPos->item - 1;
+		hasNext = (nextItem >= scanBatch->firstItem);
+	}
+
+	hscan->xs_lastinblock = !scan->xs_want_itup && hasNext &&
+		ItemPointerGetBlockNumber(&scanBatch->items[nextItem].tableTid) !=
+		ItemPointerGetBlockNumber(&scan->xs_heaptid);
 
 	if (!scan->xs_want_itup)
 		return &scan->xs_heaptid;
@@ -680,7 +736,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 		scanBatch = index_scan_batch(scan, scanPos->batch);
 
 		if (index_scan_pos_advance(direction, scanBatch, scanPos))
-			return heapam_batch_return_tid(scan, scanBatch, scanPos);
+			return heapam_batch_return_tid(scan, hscan, scanBatch, scanPos,
+										   direction);
 	}
 
 	/*
@@ -763,7 +820,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	Assert(batchringbuf->headBatch == scanPos->batch);
 	Assert(!hscan->xs_paused);
 
-	return heapam_batch_return_tid(scan, scanBatch, scanPos);
+	return heapam_batch_return_tid(scan, hscan, scanBatch, scanPos,
+								   direction);
 }
 
 /*

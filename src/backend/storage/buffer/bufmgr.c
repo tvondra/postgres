@@ -4296,7 +4296,7 @@ InitBufferManagerAccess(void)
 	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
 	memset(&PrivateRefCountArrayKeys, 0, sizeof(PrivateRefCountArrayKeys));
 
-	PrivateRefCountHash = refcount_create(TopMemoryContext, 64, NULL);
+	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
 
 	/*
 	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at

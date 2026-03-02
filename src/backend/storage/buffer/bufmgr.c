@@ -479,8 +479,14 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 	else
 	{
 		/* move buffer from hashtable into the free array slot */
-		bool		found PG_USED_FOR_ASSERTS_ONLY;
 		PrivateRefCountEntry *free;
+		PrivateRefCountData data;
+
+		/* Save data and delete from hashtable while res is still valid */
+		data = res->data;
+		refcount_delete_item(PrivateRefCountHash, res);
+		Assert(PrivateRefCountOverflowed > 0);
+		PrivateRefCountOverflowed--;
 
 		/* Ensure there's a free array slot */
 		ReservePrivateRefCountEntry();
@@ -493,19 +499,12 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 
 		/* and fill it */
 		free->buffer = buffer;
-		free->data = res->data;
+		free->data = data;
 		PrivateRefCountArrayKeys[ReservedRefCountSlot] = buffer;
 		/* update cache for the next lookup */
 		PrivateRefCountEntryLast = match;
 
 		ReservedRefCountSlot = -1;
-
-
-		/* delete from hashtable */
-		found = refcount_delete(PrivateRefCountHash, buffer);
-		Assert(found);
-		Assert(PrivateRefCountOverflowed > 0);
-		PrivateRefCountOverflowed--;
 
 		return free;
 	}

@@ -99,7 +99,6 @@ struct ReadStream
 	int16		forwarded_buffers;
 	int16		pinned_buffers;
 	int16		distance;
-	int16		distance_decay_holdoff;
 	int16		initialized_buffers;
 	int16		resume_distance;
 	int			read_buffers_flags;
@@ -367,13 +366,8 @@ read_stream_start_pending_read(ReadStream *stream)
 	if (!need_wait)
 	{
 		/* Look-ahead distance decays, no I/O necessary. */
-		if (stream->distance > 1 && stream->ios_in_progress == 0)
-		{
-			if (stream->distance_decay_holdoff == 0)
-				stream->distance--;
-			else
-				stream->distance_decay_holdoff--;
-		}
+		if (stream->distance > 1)
+			stream->distance--;
 	}
 	else
 	{
@@ -746,7 +740,6 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 	stream->yielded = false;
-	stream->distance_decay_holdoff = 0;
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
@@ -981,12 +974,10 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 			stream->oldest_io_index = 0;
 
 		/* Look-ahead distance ramps up rapidly after we do I/O. */
-		distance = stream->distance;
-		if (distance > 0)
-			distance = Max(4, distance * 2);
-
+		distance = stream->distance * 2;
+		if (distance && distance < PG_INT16_MAX)
+			distance++;
 		distance = Min(distance, stream->max_pinned_buffers);
-		stream->distance_decay_holdoff = 32;
 		stream->distance = distance;
 
 		/*

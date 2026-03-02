@@ -170,6 +170,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/* Remember this buffer's block number for next time */
 		hscan->xs_blk = ItemPointerGetBlockNumber(tid);
 
+		ExecClearTuple(slot);
+
 		if (BufferIsValid(hscan->xs_cbuf))
 			ReleaseBuffer(hscan->xs_cbuf);
 

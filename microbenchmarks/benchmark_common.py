@@ -1033,7 +1033,7 @@ def reset_gucs(conn, gucs):
 
 def verify_data(conn_details, skip_load=False):
     """
-    Verify that tables exist and have data.
+    Verify that tables exist, have data, and are fully all-visible.
     Returns True if data is valid, False if reload is needed.
     """
     if skip_load:
@@ -1043,6 +1043,9 @@ def verify_data(conn_details, skip_load=False):
     tables = EXPECTED_TABLES + ['prefetch_sequential', 'prefetch_sparse']
     try:
         conn = psycopg.connect(**conn_details)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_visibility")
         for table in tables:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -1059,8 +1062,23 @@ def verify_data(conn_details, skip_load=False):
                     print(f"Table {table} exists but has 0 rows (data needs to be reloaded)")
                     conn.close()
                     return False
+                cur.execute("""
+                    SELECT c.relpages,
+                           (SELECT all_visible
+                            FROM pg_visibility_map_summary(%s::regclass))
+                    FROM pg_class c
+                    WHERE c.relname = %s AND c.relkind = 'r'
+                """, (table, table))
+                row = cur.fetchone()
+                if row:
+                    relpages, all_visible = row
+                    if relpages != all_visible:
+                        conn.close()
+                        sys.exit(f"ERROR: Table {table}: only {all_visible}/{relpages} "
+                                 f"pages are all-visible (expected all). "
+                                 f"Run VACUUM on the table or reload the data.")
         conn.close()
-        print(f"All tables exist and have data ✓")
+        print(f"All tables exist, have data, and are all-visible ✓")
         return True
 
     except Exception as e:

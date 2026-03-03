@@ -37,7 +37,7 @@ from benchmark_common import (
     MASTER_DATA_DIR, PATCH_DATA_DIR,
     MASTER_SOURCE_DIR, PATCH_SOURCE_DIR,
     MASTER_CONN, PATCH_CONN,
-    DATA_LOADING_SQL,
+    DATA_LOADING_SQL, EXPECTED_TABLES,
     verify_data, load_data,
     clear_os_cache, evict_relations, prewarm_relations,
     set_gucs, reset_gucs,
@@ -1646,10 +1646,14 @@ def stop_server(pg_bin_dir, pg_data_dir):
 # verify_data and load_data are imported from benchmark_common
 
 
-def _verify_tables(conn_details, tables, suite_name):
-    """Verify that tables exist and have data."""
+def _verify_tables(conn_details, tables, suite_name, check_all_visible=True):
+    """Verify that tables exist, have data, and (optionally) are fully all-visible."""
     try:
         conn = psycopg.connect(**conn_details)
+        conn.autocommit = True
+        if check_all_visible:
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_visibility")
         for table in tables:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -1666,12 +1670,71 @@ def _verify_tables(conn_details, tables, suite_name):
                     print(f"Table {table} exists but has 0 rows")
                     conn.close()
                     return False
+                if check_all_visible:
+                    cur.execute("""
+                        SELECT c.relpages,
+                               (SELECT all_visible
+                                FROM pg_visibility_map_summary(%s::regclass))
+                        FROM pg_class c
+                        WHERE c.relname = %s AND c.relkind = 'r'
+                    """, (table, table))
+                    row = cur.fetchone()
+                    if row:
+                        relpages, all_visible = row
+                        if relpages != all_visible:
+                            conn.close()
+                            sys.exit(f"ERROR: Table {table}: only {all_visible}/{relpages} "
+                                     f"pages are all-visible (expected all). "
+                                     f"Run VACUUM on the table or reload the data.")
         conn.close()
-        print(f"All tables exist and have data ✓")
+        if check_all_visible:
+            print(f"All tables exist, have data, and are all-visible ✓")
+        else:
+            print(f"All tables exist and have data ✓")
         return True
     except Exception as e:
         print(f"Error verifying {suite_name} data: {e}")
         return False
+
+
+def _ensure_all_visible_after_load(conn_details, tables):
+    """After loading, verify all pages are all-visible; VACUUM FREEZE if not.
+
+    Disconnects, waits one second, reconnects, then checks the visibility map
+    for each table.  If any page is not all-visible, runs an unqualified
+    VACUUM FREEZE and rechecks.
+    """
+    time.sleep(1)
+    conn = psycopg.connect(**conn_details)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_visibility")
+
+    needs_vacuum = False
+    for table in tables:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.relpages,
+                       (SELECT all_visible
+                        FROM pg_visibility_map_summary(%s::regclass))
+                FROM pg_class c
+                WHERE c.relname = %s AND c.relkind = 'r'
+            """, (table, table))
+            row = cur.fetchone()
+            if row:
+                relpages, all_visible = row
+                if relpages != all_visible:
+                    print(f"Table {table}: {all_visible}/{relpages} pages "
+                          f"all-visible after load")
+                    needs_vacuum = True
+
+    if needs_vacuum:
+        print("Running VACUUM FREEZE to set all pages all-visible...")
+        with conn.cursor() as cur:
+            cur.execute("VACUUM FREEZE")
+        print("VACUUM FREEZE complete.")
+
+    conn.close()
 
 
 def _load_sql(conn_details, data_sql, suite_name, row_description):
@@ -1902,7 +1965,10 @@ def load_worker_regress_data(conn_details):
 
 
 def verify_repro_data(conn_details):
-    return _verify_tables(conn_details, ['bookm_ios'], "repro")
+    # bookm intentionally dirties ~0.05% of rows after VACUUM to force heap
+    # fetches on index-only scans, so not all pages will be all-visible.
+    return _verify_tables(conn_details, ['bookm_ios'], "repro",
+                          check_all_visible=False)
 
 
 def load_repro_data(conn_details):
@@ -1983,6 +2049,7 @@ BENCHMARK_SUITES = [
         "queries": QUERIES,
         "verify_fn": verify_data,
         "load_fn": load_data,
+        "tables": EXPECTED_TABLES + ['prefetch_sequential', 'prefetch_sparse'],
         "uncached_runs": 3,
         "cached_runs": 10,
         "sync_stats": True,
@@ -1996,6 +2063,7 @@ BENCHMARK_SUITES = [
         "queries": READSTREAM_QUERIES,
         "verify_fn": verify_readstream_data,
         "load_fn": load_readstream_data,
+        "tables": ['t_readstream'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2008,6 +2076,7 @@ BENCHMARK_SUITES = [
         "queries": TUPDISTANCE_QUERIES,
         "verify_fn": verify_tupdistance_data,
         "load_fn": load_tupdistance_data,
+        "tables": ['t_tupdistance_new_regress'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2020,6 +2089,7 @@ BENCHMARK_SUITES = [
         "queries": DONT_WAIT_QUERIES,
         "verify_fn": verify_dont_wait_data,
         "load_fn": load_dont_wait_data,
+        "tables": ['t_dont_wait'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2032,6 +2102,7 @@ BENCHMARK_SUITES = [
         "queries": RANDOM_BACKWARDS_QUERIES,
         "verify_fn": verify_random_backwards_data,
         "load_fn": load_random_backwards_data,
+        "tables": ['t', 't_randomized'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2044,6 +2115,7 @@ BENCHMARK_SUITES = [
         "queries": MUNRO_QUERIES,
         "verify_fn": verify_munro_data,
         "load_fn": load_munro_data,
+        "tables": ['t_munro'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2056,6 +2128,7 @@ BENCHMARK_SUITES = [
         "queries": WORKER_REGRESS_QUERIES,
         "verify_fn": verify_worker_regress_data,
         "load_fn": load_worker_regress_data,
+        "tables": ['worker_regress'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2068,6 +2141,7 @@ BENCHMARK_SUITES = [
         "queries": UUID_QUERIES,
         "verify_fn": verify_uuid_data,
         "load_fn": load_uuid_data,
+        "tables": ['t_uuid'],
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2080,6 +2154,8 @@ BENCHMARK_SUITES = [
         "queries": REPRO_QUERIES,
         "verify_fn": verify_repro_data,
         "load_fn": load_repro_data,
+        "tables": ['bookm_ios'],
+        "expect_all_visible": False,
         "uncached_runs": 3,
         "cached_runs": 10,
     },
@@ -2433,7 +2509,8 @@ def load_most_recent_master_results(mode_name, needed_queries=None):
 
 def run_generic_benchmark(args, queries_dict, mode_name, title,
                           verify_func=None, load_func=None,
-                          sync_stats=False):
+                          sync_stats=False, tables=None,
+                          expect_all_visible=True):
     """Run a benchmark suite.
 
     This is the unified benchmark runner used by all benchmark modes
@@ -2452,6 +2529,10 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
         load_func: Function(conn_details) to load data.
         sync_stats: If True, extract optimizer stats from master and restore to patch
                     (only needed for the default benchmark where tables are shared).
+        tables: List of table names belonging to this suite (used to verify
+                all-visible status after loading).
+        expect_all_visible: If True (default), verify all pages are all-visible
+                            after loading and VACUUM FREEZE if not.
     """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -2562,11 +2643,15 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
                 if not verify_func(MASTER_CONN, args.skip_load):
                     print("Loading data on master...")
                     load_func(MASTER_CONN)
+                    if expect_all_visible and tables:
+                        _ensure_all_visible_after_load(MASTER_CONN, tables)
                 master_stats = extract_statistics(MASTER_CONN)
             else:
                 if not verify_func(MASTER_CONN):
                     print("Loading data on master...")
                     load_func(MASTER_CONN)
+                    if expect_all_visible and tables:
+                        _ensure_all_visible_after_load(MASTER_CONN, tables)
             master_version = get_pg_version(MASTER_CONN)
             stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
@@ -2579,11 +2664,15 @@ def run_generic_benchmark(args, queries_dict, mode_name, title,
             if not verify_func(PATCH_CONN, args.skip_load):
                 print("Loading data on patch...")
                 load_func(PATCH_CONN)
+                if expect_all_visible and tables:
+                    _ensure_all_visible_after_load(PATCH_CONN, tables)
             restore_statistics(PATCH_CONN, master_stats)
         else:
             if not verify_func(PATCH_CONN):
                 print("Loading data on patch...")
                 load_func(PATCH_CONN)
+                if expect_all_visible and tables:
+                    _ensure_all_visible_after_load(PATCH_CONN, tables)
         patch_version = get_pg_version(PATCH_CONN)
         stop_server(patch_bin, PATCH_DATA_DIR)
         time.sleep(2)
@@ -3733,7 +3822,9 @@ def main():
                           f"{selected['mode_prefix']}_{cache_tag}",
                           selected["title"],
                           selected["verify_fn"], selected["load_fn"],
-                          sync_stats=selected.get("sync_stats", False))
+                          sync_stats=selected.get("sync_stats", False),
+                          tables=selected.get("tables"),
+                          expect_all_visible=selected.get("expect_all_visible", True))
 
 
 if __name__ == "__main__":

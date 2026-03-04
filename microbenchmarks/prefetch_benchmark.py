@@ -922,8 +922,8 @@ Examples:
     parser.add_argument(
         "--io_combine_limit",
         type=int,
-        default=128,
-        help="Value for io_combine_limit in 8kB units (default: 128 = 1MB)"
+        default=16,
+        help="Value for io_combine_limit in 8kB units (default: 16 = 128KB)"
     )
     parser.add_argument(
         "--io_max_combine_limit",

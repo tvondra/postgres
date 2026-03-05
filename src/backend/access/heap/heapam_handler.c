@@ -39,7 +39,6 @@
 #include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "pgstat.h"
-#include "storage/aio.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/lmgr.h"
@@ -633,7 +632,7 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		if (!hscan->xs_read_stream && priorBatch && scan->MVCCScan &&
 			hscan->xs_blk != InvalidBlockNumber &&	/* for index-only scans */
 			(scan->tuples_needed == -1 || scan->tuples_needed > 20) &&
-			io_method != IOMETHOD_SYNC && enable_indexscan_prefetch)
+			enable_indexscan_prefetch)
 		{
 			Assert(!batchringbuf->prefetchPos.valid);
 

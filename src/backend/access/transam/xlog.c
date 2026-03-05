@@ -2930,7 +2930,7 @@ XLogFlush(XLogRecPtr record)
 	 * force a restart for a bad LSN on a data page.
 	 */
 	if (LogwrtResult.Flush < record)
-		elog(ERROR,
+		elog(PANIC,
 			 "xlog flush request %X/%08X is not satisfied --- flushed only to %X/%08X",
 			 LSN_FORMAT_ARGS(record),
 			 LSN_FORMAT_ARGS(LogwrtResult.Flush));

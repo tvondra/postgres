@@ -390,7 +390,6 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
-	bool		xs_visible;		/* T means the heap page is all-visible */
 	uint16		maxitemsbatch;	/* set by ambeginscan when amgetbatch used */
 
 	/*

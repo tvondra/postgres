@@ -440,7 +440,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 static inline ItemPointer
 heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 						ScanDirection direction, IndexScanBatch scanBatch,
-						BatchRingItemPos *scanPos)
+						BatchRingItemPos *scanPos, bool *all_visible)
 {
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
@@ -499,8 +499,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
 								  scanBatch->items[scanPos->item].tupleOffset);
 
-	/* Finally, set xs_visible for heapam_index_getnext_slot */
-	scan->xs_visible =
+	/* Finally, set all_visible for heapam_index_getnext_slot */
+	*all_visible =
 		(scanBatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE) != 0;
 
 	return &scan->xs_heaptid;
@@ -711,7 +711,7 @@ heapam_dirchange_readstream_reset(IndexFetchHeapData *hscan,
  */
 static pg_attribute_hot ItemPointer
 heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
-						 ScanDirection direction)
+						 ScanDirection direction, bool *all_visible)
 {
 	BatchRingBuffer *batchringbuf = &scan->batchringbuf;
 	BatchRingItemPos *scanPos = &batchringbuf->scanPos;
@@ -742,7 +742,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 
 		if (index_scan_pos_advance(direction, scanBatch, scanPos))
 			return heapam_batch_return_tid(scan, hscan, direction,
-										   scanBatch, scanPos);
+										   scanBatch, scanPos,
+										   all_visible);
 	}
 
 	/*
@@ -825,7 +826,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	Assert(batchringbuf->headBatch == scanPos->batch);
 	Assert(!hscan->xs_paused);
 
-	return heapam_batch_return_tid(scan, hscan, direction, scanBatch, scanPos);
+	return heapam_batch_return_tid(scan, hscan, direction, scanBatch, scanPos,
+								  all_visible);
 }
 
 /*
@@ -1119,6 +1121,7 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	ItemPointer tid = NULL;
+	bool		all_visible = false;
 
 	for (;;)
 	{
@@ -1137,15 +1140,16 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			 * we cannot reorder any work.
 			 */
 			if (scan->usebatchring)
-				tid = heapam_batch_getnext_tid(scan, hscan, direction);
+				tid = heapam_batch_getnext_tid(scan, hscan, direction,
+											   &all_visible);
 			else
 			{
 				tid = index_getnext_tid(scan, direction);
 
 				if (tid != NULL && scan->xs_want_itup)
-					scan->xs_visible = VM_ALL_VISIBLE(scan->heapRelation,
-													  ItemPointerGetBlockNumber(tid),
-													  &hscan->vmbuf);
+					all_visible = VM_ALL_VISIBLE(scan->heapRelation,
+												 ItemPointerGetBlockNumber(tid),
+												 &hscan->vmbuf);
 			}
 
 			/* If we're out of index entries, we're done */
@@ -1175,7 +1179,7 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			 * we'll use the index tuple not the heap tuple as the data
 			 * source.
 			 */
-			if (!scan->xs_visible)
+			if (!all_visible)
 			{
 				/*
 				 * Rats, we have to visit the heap to check visibility.

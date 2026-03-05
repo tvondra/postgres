@@ -429,8 +429,8 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 
 static inline ItemPointer
 heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
-						IndexScanBatch scanBatch, BatchRingItemPos *scanPos,
-						ScanDirection direction)
+						ScanDirection direction, IndexScanBatch scanBatch,
+						BatchRingItemPos *scanPos)
 {
 	int			nextItem;
 	bool		hasNext;
@@ -440,40 +440,41 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	/* Set xs_heaptid, which heapam_index_getnext_slot will need */
 	scan->xs_heaptid = scanBatch->items[scanPos->item].tableTid;
 
-	/*
-	 * Determine if the next item in the current scan direction is on a
-	 * different heap block.  When it is, heapam_index_fetch_tuple can
-	 * transfer its buffer pin to the slot instead of incrementing the pin
-	 * count, saving a pair of IncrBufferRefCount/ReleaseBuffer calls.
-	 *
-	 * We must use the actual scan direction (not scanBatch->dir) because a
-	 * scrollable cursor can reverse direction, scanning a batch that was
-	 * loaded in the opposite direction.
-	 *
-	 * We cannot do this for index-only scans because all-visible items are
-	 * skipped by both the scan and the read stream callback.  Skipped items
-	 * can break the block deduplication symmetry between the stream and the
-	 * scan: the stream deduplicates consecutive non-all-visible items by
-	 * block, but after invalidating xs_blk the scan would try to re-fetch a
-	 * block that the stream already returned and deduplicated away.
-	 */
-	if (ScanDirectionIsForward(direction))
-	{
-		nextItem = scanPos->item + 1;
-		hasNext = (nextItem <= scanBatch->lastItem);
-	}
-	else
-	{
-		nextItem = scanPos->item - 1;
-		hasNext = (nextItem >= scanBatch->firstItem);
-	}
-
-	hscan->xs_lastinblock = !scan->xs_want_itup && hasNext &&
-		ItemPointerGetBlockNumber(&scanBatch->items[nextItem].tableTid) !=
-		ItemPointerGetBlockNumber(&scan->xs_heaptid);
-
 	if (!scan->xs_want_itup)
+	{
+		/*
+		 * Plain index scan.
+		 *
+		 * Determine if the next item in the current scan direction is on a
+		 * different heap block.  When it is, heapam_index_fetch_tuple can
+		 * transfer its buffer pin to the slot instead of incrementing the pin
+		 * count, saving a pair of IncrBufferRefCount/ReleaseBuffer calls.
+		 *
+		 * Note: We cannot do this for index-only scans because all-visible
+		 * items are skipped by both the scan and the read stream callback.
+		 * Skipped items can break the block deduplication symmetry between
+		 * the stream and the scan: the stream deduplicates consecutive
+		 * non-all-visible items by block, but after invalidating xs_blk the
+		 * scan would try to re-fetch a block that the stream already returned
+		 * and deduplicated away.
+		 */
+		if (ScanDirectionIsForward(direction))
+		{
+			nextItem = scanPos->item + 1;
+			hasNext = (nextItem <= scanBatch->lastItem);
+		}
+		else
+		{
+			nextItem = scanPos->item - 1;
+			hasNext = (nextItem >= scanBatch->firstItem);
+		}
+
+		hscan->xs_lastinblock = hasNext &&
+			ItemPointerGetBlockNumber(&scanBatch->items[nextItem].tableTid) !=
+			ItemPointerGetBlockNumber(&scan->xs_heaptid);
+
 		return &scan->xs_heaptid;
+	}
 
 	/*
 	 * Index-only scan.
@@ -678,8 +679,8 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
  */
 static pg_noinline void
 heapam_dirchange_readstream_reset(IndexFetchHeapData *hscan,
-								  BatchRingBuffer *batchringbuf,
-								  ScanDirection direction)
+								  ScanDirection direction,
+								  BatchRingBuffer *batchringbuf)
 {
 	/* Reset read stream state */
 	batchringbuf->prefetchPos.valid = false;
@@ -713,7 +714,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	if (hscan->xs_read_stream_dir == NoMovementScanDirection)
 		hscan->xs_read_stream_dir = direction;	/* first call */
 	else if (unlikely(hscan->xs_read_stream_dir != direction))
-		heapam_dirchange_readstream_reset(hscan, batchringbuf, direction);
+		heapam_dirchange_readstream_reset(hscan, direction, batchringbuf);
 
 	/*
 	 * Check if there's an existing loaded scanBatch for us to return the next
@@ -730,8 +731,8 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 		scanBatch = index_scan_batch(scan, scanPos->batch);
 
 		if (index_scan_pos_advance(direction, scanBatch, scanPos))
-			return heapam_batch_return_tid(scan, hscan, scanBatch, scanPos,
-										   direction);
+			return heapam_batch_return_tid(scan, hscan, direction,
+										   scanBatch, scanPos);
 	}
 
 	/*
@@ -778,7 +779,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 													batchringbuf->headBatch);
 		BatchRingItemPos *prefetchPos = &batchringbuf->prefetchPos;
 
-		/* Also free obsolescent head batch (unless it is scan's markBatch) */
+		/* free obsolescent head batch (unless it is scan's markBatch) */
 		tableam_util_free_batch(scan, headBatch);
 
 		/*
@@ -814,8 +815,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	Assert(batchringbuf->headBatch == scanPos->batch);
 	Assert(!hscan->xs_paused);
 
-	return heapam_batch_return_tid(scan, hscan, scanBatch, scanPos,
-								   direction);
+	return heapam_batch_return_tid(scan, hscan, direction, scanBatch, scanPos);
 }
 
 /*

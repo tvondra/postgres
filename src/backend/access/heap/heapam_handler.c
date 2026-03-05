@@ -168,6 +168,10 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		/* Remember this buffer's block number for next time */
 		hscan->xs_blk = ItemPointerGetBlockNumber(tid);
 
+		/*
+		 * Drop the old slot content's pin on xs_blk (if any) proactively.
+		 * See comments around ExecStorePinnedBufferHeapTuple call below.
+		 */
 		ExecClearTuple(slot);
 
 		if (BufferIsValid(hscan->xs_cbuf))
@@ -230,6 +234,12 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 										   hscan->xs_cbuf);
 			hscan->xs_cbuf = InvalidBuffer;
 			hscan->xs_blk = InvalidBlockNumber;
+
+			/*
+			 * Note: the pin now owned by the slot is expected to be released
+			 * on the next call here, via an explicit ExecClearTuple.  This
+			 * avoids churn in the backend's private refcount cache.
+			 */
 		}
 		else
 			ExecStoreBufferHeapTuple(&bslot->base.tupdata, slot,

@@ -432,9 +432,6 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 						ScanDirection direction, IndexScanBatch scanBatch,
 						BatchRingItemPos *scanPos)
 {
-	int			nextItem;
-	bool		hasNext;
-
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* Set xs_heaptid, which heapam_index_getnext_slot will need */
@@ -442,6 +439,9 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 
 	if (!scan->xs_want_itup)
 	{
+		int			nextItem;
+		bool		hasNext;
+
 		/*
 		 * Plain index scan.
 		 *

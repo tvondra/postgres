@@ -210,11 +210,14 @@ typedef struct IndexScanBatchData
 	/*
 	 * Matching items state for this batch.  Output by index AM for table AM.
 	 *
-	 * The items array is always ordered in index order (ie, increasing
+	 * The items array is always ordered in index order (ie, by increasing
 	 * indexoffset).  When scanning backwards it is convenient for index AMs
-	 * to fill the array back-to-front, so we start at the last slot and fill
-	 * downwards.  Hence they need a first-valid-entry and a last-valid-entry
-	 * counter.
+	 * to fill the array back-to-front, so we start at the last item slot and
+	 * fill downwards.  This is why we need both a first-valid-entry and a
+	 * last-valid-entry counter.
+	 *
+	 * Note: these are signed because it's sometimes convenient to use -1 to
+	 * represent an out-of-bounds space just before firstItem (when it's 0).
 	 */
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */

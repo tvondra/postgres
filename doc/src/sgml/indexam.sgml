@@ -680,9 +680,37 @@ ambeginscan (Relation indexRelation,
    acquiring locks;
    the interesting parts of index-scan startup are in <function>amrescan</function>.
    Index access methods that use the <function>amgetbatch</function> interface
-   must also set <literal>scan-&gt;maxitemsbatch</literal> to the maximum number
-   of items that can appear in a single batch (typically derived from the
-   index page size, e.g., <literal>MaxIndexTuplesPerPage</literal>).
+   must also set the following fields in the scan descriptor:
+   <itemizedlist>
+    <listitem>
+     <para>
+      <literal>scan-&gt;maxitemsbatch</literal>: the maximum number of items
+      that can appear in a single batch (typically derived from the index page
+      size, e.g., <literal>MaxIndexTuplesPerPage</literal>).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>scan-&gt;batch_index_opaque_size</literal>: the
+      <function>MAXALIGN</function>'d size of the index AM's per-batch opaque
+      area.  Each batch allocation reserves this much space immediately before
+      the <structname>IndexScanBatchData</structname> pointer, for use by the
+      index AM to store per-page navigation state (e.g., sibling page links).
+      The index AM should provide an inline accessor function to retrieve a
+      pointer to this area from an <type>IndexScanBatch</type> (for example,
+      B-tree provides <function>bt_batch_data()</function>).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>scan-&gt;batch_tuples_workspace</literal>: the size in bytes
+      of the per-batch tuple storage workspace used for index-only scans
+      (typically <literal>BLCKSZ</literal>), or 0 if the index AM does not
+      support index-only scans.  The workspace is accessible via
+      <structfield>batch-&gt;currTuples</structfield>.
+     </para>
+    </listitem>
+   </itemizedlist>
   </para>
 
   <para>

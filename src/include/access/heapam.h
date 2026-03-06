@@ -141,6 +141,24 @@ typedef struct IndexFetchHeapData
 	/* NB: if xs_cbuf or vmbuf are not InvalidBuffer, we hold a pin */
 } IndexFetchHeapData;
 
+/*
+ * Per-batch data private to the heap table AM.
+ *
+ * Stored at a negative offset from the IndexScanBatch pointer, in the
+ * table AM opaque area of each batch allocation.
+ */
+typedef struct HeapBatchData
+{
+	uint8	   *visInfo;		/* per-item visibility flags, or NULL */
+} HeapBatchData;
+
+/* Access the heap-private per-batch data from an IndexScanBatch pointer */
+static inline HeapBatchData *
+heap_batch_data(IndexScanBatch batch, IndexScanDesc scan)
+{
+	return (HeapBatchData *) ((char *) batch - scan->batch_table_offset);
+}
+
 /* Result codes for HeapTupleSatisfiesVacuum */
 typedef enum
 {

@@ -1550,17 +1550,18 @@ IndexScanBatch
 _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTBatchData *btpriorbatch = bt_batch_data(priorbatch);
 	BlockNumber blkno,
 				lastcurrblkno;
 
-	Assert(BlockNumberIsValid(priorbatch->currPage));
+	Assert(BlockNumberIsValid(btpriorbatch->currPage));
 
 	/* Walk to the next page with data */
 	if (ScanDirectionIsForward(dir))
-		blkno = priorbatch->nextPage;
+		blkno = btpriorbatch->nextPage;
 	else
-		blkno = priorbatch->prevPage;
-	lastcurrblkno = priorbatch->currPage;
+		blkno = btpriorbatch->prevPage;
+	lastcurrblkno = btpriorbatch->currPage;
 
 	/*
 	 * Cancel primitive index scans that were scheduled when priorbatch's call
@@ -1573,7 +1574,7 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 
 	if (blkno == P_NONE ||
 		(ScanDirectionIsForward(dir) ?
-		 !priorbatch->moreRight : !priorbatch->moreLeft))
+		 !btpriorbatch->moreRight : !btpriorbatch->moreLeft))
 	{
 		/*
 		 * priorbatch's page is known to be the final leaf page with matches
@@ -1618,6 +1619,7 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 				  OffsetNumber offnum, ScanDirection dir)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTBatchData *btfirstbatch = bt_batch_data(firstbatch);
 	BlockNumber blkno,
 				lastcurrblkno;
 
@@ -1626,19 +1628,19 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 	{
 		Assert(so->numArrayKeys);
 
-		firstbatch->moreLeft = true;
-		firstbatch->moreRight = true;
+		btfirstbatch->moreLeft = true;
+		btfirstbatch->moreRight = true;
 		so->needPrimScan = false;
 	}
 	else if (ScanDirectionIsForward(dir))
 	{
-		firstbatch->moreLeft = false;
-		firstbatch->moreRight = true;
+		btfirstbatch->moreLeft = false;
+		btfirstbatch->moreRight = true;
 	}
 	else
 	{
-		firstbatch->moreLeft = true;
-		firstbatch->moreRight = false;
+		btfirstbatch->moreLeft = true;
+		btfirstbatch->moreRight = false;
 	}
 
 	/*
@@ -1660,16 +1662,16 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 
 	/* Walk to the next page with data */
 	if (ScanDirectionIsForward(dir))
-		blkno = firstbatch->nextPage;
+		blkno = btfirstbatch->nextPage;
 	else
-		blkno = firstbatch->prevPage;
-	lastcurrblkno = firstbatch->currPage;
+		blkno = btfirstbatch->prevPage;
+	lastcurrblkno = btfirstbatch->currPage;
 
 	Assert(firstbatch->dir == dir);
 
 	if (blkno == P_NONE || scan->xs_read_extremal_only ||
 		(ScanDirectionIsForward(dir) ?
-		 !firstbatch->moreRight : !firstbatch->moreLeft))
+		 !btfirstbatch->moreRight : !btfirstbatch->moreLeft))
 	{
 		/*
 		 * firstbatch _bt_readpage call ended scan in this direction (though
@@ -1720,16 +1722,18 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 {
 	Relation	rel = scan->indexRelation;
 	IndexScanBatch newbatch;
+	BTBatchData *btnewbatch;
 
 	/* Allocate space for next batch */
 	newbatch = indexam_util_batch_alloc(scan);
+	btnewbatch = bt_batch_data(newbatch);
 
 	/*
 	 * newbatch will be the batch for lastcurrblkno, a page to the left of
 	 * blkno (or to the right, when the scan is moving backwards)
 	 */
-	newbatch->moreLeft = true;
-	newbatch->moreRight = true;
+	btnewbatch->moreLeft = true;
+	btnewbatch->moreRight = true;
 
 	for (;;)
 	{
@@ -1770,14 +1774,14 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 				if (_bt_readpage(scan, newbatch, dir,
 								 P_FIRSTDATAKEY(opaque), firstpage))
 					break;
-				blkno = newbatch->nextPage;
+				blkno = btnewbatch->nextPage;
 			}
 			else
 			{
 				if (_bt_readpage(scan, newbatch, dir,
 								 PageGetMaxOffsetNumber(page), firstpage))
 					break;
-				blkno = newbatch->prevPage;
+				blkno = btnewbatch->prevPage;
 			}
 		}
 		else
@@ -1798,7 +1802,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		/* Continue the scan in this direction? */
 		if (blkno == P_NONE || scan->xs_read_extremal_only ||
 			(ScanDirectionIsForward(dir) ?
-			 !newbatch->moreRight : !newbatch->moreLeft))
+			 !btnewbatch->moreRight : !btnewbatch->moreLeft))
 		{
 			/*
 			 * blkno _bt_readpage call ended scan in this direction (though if
@@ -1821,7 +1825,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 	}
 
 	/* _bt_readpage saved one or more matches in newbatch.items[] */
-	Assert(newbatch->currPage == blkno);
+	Assert(btnewbatch->currPage == blkno);
 	indexam_util_batch_unlock(scan, newbatch);
 
 	return newbatch;

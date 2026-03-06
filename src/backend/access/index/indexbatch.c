@@ -180,7 +180,7 @@ index_batchscan_end(IndexScanDesc scan)
 
 		if (cached->deadItems)
 			pfree(cached->deadItems);
-		pfree(cached);
+		pfree(batch_alloc_base(cached, scan));
 	}
 
 #ifdef BATCH_CACHE_DEBUG
@@ -530,9 +530,9 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 		 * Index-only scan that dropped this batch's pin eagerly.
 		 *
 		 * Table AM must have checked visibility for every item in the batch.
+		 * The actual assertion is in the table AM (e.g. heapam), which owns
+		 * the per-item visibility state.
 		 */
-		for (int i = batch->firstItem; i <= batch->lastItem; i++)
-			Assert(batch->visInfo[i] & BATCH_VIS_CHECKED);
 	}
 #endif
 
@@ -574,7 +574,7 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 
 	if (batch->deadItems)
 		pfree(batch->deadItems);
-	pfree(batch);
+	pfree(batch_alloc_base(batch, scan));
 }
 
 /* ----------------------------------------------------------------
@@ -664,20 +664,39 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
  * comments above indexam_util_batch_release.
  *
  * Housekeeping fields (buf, knownEndBackward/Forward, firstItem, lastItem,
- * numDead, deadItems, visInfo, currTuples) are initialized here.  The index
- * AM caller is responsible for filling in the page-level navigation fields
- * (currPage, prevPage, nextPage, dir, moreLeft, moreRight) and the matching
- * items[] array.  Once populated, the caller either passes the batch to
- * indexam_util_batch_unlock (when it has matches to return from amgetbatch),
- * or to indexam_util_batch_release (when the page had no matches).  Note that
- * lsn is set by indexam_util_batch_unlock, not by the caller.
+ * numDead, deadItems, currTuples) are initialized here.  The table AM's
+ * batch_init callback is invoked here to initialize the table AM opaque area.
+ * The index AM caller is responsible for filling in its per-batch opaque
+ * fields and the matching items[] array.
+ *
+ * Once populated, caller either passes the batch to indexam_util_batch_unlock
+ * (ahead of amgetbatch returning it), or to indexam_util_batch_release (when
+ * the page had no matches).
  */
 IndexScanBatch
 indexam_util_batch_alloc(IndexScanDesc scan)
 {
 	IndexScanBatch batch = NULL;
+	bool		new_alloc = false;
 
-	/* First look for an existing batch from ring buffer */
+	/*
+	 * Lazily compute batch_table_offset on first allocation.  This combines
+	 * the table AM and index AM opaque sizes into a single offset that can be
+	 * used to find the table AM opaque area (and the true allocation base)
+	 * from the batch pointer.
+	 */
+	if (scan->batch_table_offset == 0 &&
+		(scan->batch_index_opaque_size > 0 ||
+		 (scan->xs_heapfetch && scan->xs_heapfetch->batch_opaque_size > 0)))
+	{
+		uint16		table_opaque = scan->xs_heapfetch ?
+			scan->xs_heapfetch->batch_opaque_size : 0;
+
+		scan->batch_table_offset = table_opaque +
+			scan->batch_index_opaque_size;
+	}
+
+	/* First look for an existing batch from the cache */
 	if (scan->usebatchring)
 	{
 		for (int i = 0; i < INDEX_SCAN_CACHE_BATCHES; i++)
@@ -687,10 +706,6 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 				/* Return cached unreferenced batch */
 				batch = scan->batchringbuf.cache[i];
 				scan->batchringbuf.cache[i] = NULL;
-
-				/* Clear stale visibility info from prior use */
-				if (batch->visInfo)
-					memset(batch->visInfo, 0, scan->maxitemsbatch);
 
 #ifdef BATCH_CACHE_DEBUG
 				scan->batchringbuf.cacheHits++;
@@ -702,47 +717,71 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 
 	if (!batch)
 	{
+		Size		prefix_sz;
+		Size		base_sz;
+		Size		trailing_sz;
 		Size		allocsz;
+		char	   *raw;
 
 #ifdef BATCH_CACHE_DEBUG
 		scan->batchringbuf.cacheMisses++;
 #endif
-		allocsz = offsetof(IndexScanBatchData, items) +
+
+		/* AM opaque areas before the batch pointer */
+		prefix_sz = scan->batch_table_offset;
+
+		/* IndexScanBatchData header + items[] */
+		base_sz = offsetof(IndexScanBatchData, items) +
 			sizeof(BatchMatchingItem) * scan->maxitemsbatch;
 
 		/*
-		 * If we are doing an index-only scan, we need per-item visibility
-		 * flags and a tuple storage workspace appended to the main
-		 * allocation.  We add space for visInfo (one byte per item) and
-		 * BLCKSZ for tuple storage.
+		 * Trailing data after items[]: table AM per-item data (e.g. visInfo)
+		 * and currTuples index AM tuple workspace.
 		 */
+		trailing_sz = 0;
 		if (scan->xs_want_itup)
 		{
-			Size		itemsEnd = MAXALIGN(allocsz);
-			Size		visInfoSz = MAXALIGN(scan->maxitemsbatch * sizeof(uint8));
+			if (scan->xs_heapfetch &&
+				scan->xs_heapfetch->batch_per_item_size > 0)
+				trailing_sz += MAXALIGN(scan->xs_heapfetch->batch_per_item_size *
+										scan->maxitemsbatch);
+			trailing_sz += scan->batch_tuples_workspace;
+		}
 
-			allocsz = itemsEnd + visInfoSz + BLCKSZ;
-			batch = palloc(allocsz);
-			batch->visInfo = (uint8 *) ((char *) batch + itemsEnd);
-			memset(batch->visInfo, 0, scan->maxitemsbatch);
-			batch->currTuples = (char *) batch + itemsEnd + visInfoSz;
+		allocsz = prefix_sz + MAXALIGN(base_sz) + trailing_sz;
+		raw = palloc(allocsz);
+		batch = (IndexScanBatch) (raw + prefix_sz);
+
+		/* Set up currTuples pointer for index-only scans */
+		if (scan->xs_want_itup && scan->batch_tuples_workspace > 0)
+		{
+			Size		itemsEnd = MAXALIGN(base_sz);
+			Size		tableTrailing = 0;
+
+			if (scan->xs_heapfetch &&
+				scan->xs_heapfetch->batch_per_item_size > 0)
+				tableTrailing = MAXALIGN(scan->xs_heapfetch->batch_per_item_size *
+										 scan->maxitemsbatch);
+			batch->currTuples = (char *) batch + itemsEnd + tableTrailing;
 		}
 		else
-		{
-			batch = palloc(allocsz);
-			batch->visInfo = NULL;
 			batch->currTuples = NULL;
-		}
 
 		/*
 		 * Batches allocate deadItems lazily (though note that cached batches
 		 * keep their deadItems allocation when recycled)
 		 */
 		batch->deadItems = NULL;
+		new_alloc = true;
 	}
 
 	/* xs_want_itup scans must get a currTuples space */
-	Assert(!(scan->xs_want_itup && (batch->currTuples == NULL)));
+	Assert(!(scan->xs_want_itup && scan->batch_tuples_workspace > 0 &&
+			 batch->currTuples == NULL));
+
+	/* Let the table AM initialize its per-batch opaque area */
+	if (scan->xs_heapfetch)
+		table_index_batch_init(scan, batch, new_alloc);
 
 	/* shared initialization */
 	batch->buf = InvalidBuffer;
@@ -817,7 +856,7 @@ indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)
 	}
 
 	/* no free slot to save this batch (expected with amgetbitmap callers) */
-	pfree(batch);
+	pfree(batch_alloc_base(batch, scan));
 }
 
 /*

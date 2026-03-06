@@ -49,6 +49,7 @@ _hash_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 {
 	Relation	rel = scan->indexRelation;
 	HashScanOpaque so = (HashScanOpaque) scan->opaque;
+	HashBatchData *hpriorbatch = hash_batch_data(priorbatch);
 	BlockNumber blkno;
 	Buffer		buf;
 	IndexScanBatch batch;
@@ -59,14 +60,14 @@ _hash_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	 */
 	if (ScanDirectionIsForward(dir))
 	{
-		blkno = priorbatch->nextPage;
-		if (!BlockNumberIsValid(blkno) || !priorbatch->moreRight)
+		blkno = hpriorbatch->nextPage;
+		if (!BlockNumberIsValid(blkno) || !hpriorbatch->moreRight)
 			return NULL;
 	}
 	else
 	{
-		blkno = priorbatch->prevPage;
-		if (!BlockNumberIsValid(blkno) || !priorbatch->moreLeft)
+		blkno = hpriorbatch->prevPage;
+		if (!BlockNumberIsValid(blkno) || !hpriorbatch->moreLeft)
 			return NULL;
 	}
 
@@ -425,6 +426,7 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 {
 	Relation	rel = scan->indexRelation;
 	HashScanOpaque so = (HashScanOpaque) scan->opaque;
+	HashBatchData *hbatch = hash_batch_data(batch);
 	Page		page;
 	HashPageOpaque opaque;
 	OffsetNumber offnum;
@@ -436,7 +438,7 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 	opaque = HashPageGetOpaque(page);
 
 	batch->buf = buf;
-	batch->currPage = BufferGetBlockNumber(buf);
+	hbatch->currPage = BufferGetBlockNumber(buf);
 	batch->dir = dir;
 
 	if (ScanDirectionIsForward(dir))
@@ -464,7 +466,7 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 			}
 
 			batch->buf = buf;
-			batch->currPage = BufferGetBlockNumber(buf);
+			hbatch->currPage = BufferGetBlockNumber(buf);
 		}
 
 		batch->firstItem = 0;
@@ -495,7 +497,7 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 			}
 
 			batch->buf = buf;
-			batch->currPage = BufferGetBlockNumber(buf);
+			hbatch->currPage = BufferGetBlockNumber(buf);
 		}
 
 		batch->firstItem = itemIndex;
@@ -521,18 +523,18 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 		IncrBufferRefCount(batch->buf);
 
 		/* Can only use opaque->hasho_nextblkno */
-		batch->prevPage = InvalidBlockNumber;
-		batch->nextPage = opaque->hasho_nextblkno;
+		hbatch->prevPage = InvalidBlockNumber;
+		hbatch->nextPage = opaque->hasho_nextblkno;
 	}
 	else
 	{
 		/* Can use opaque->hasho_prevblkno and opaque->hasho_nextblkno */
-		batch->prevPage = opaque->hasho_prevblkno;
-		batch->nextPage = opaque->hasho_nextblkno;
+		hbatch->prevPage = opaque->hasho_prevblkno;
+		hbatch->nextPage = opaque->hasho_nextblkno;
 	}
 
-	batch->moreLeft = BlockNumberIsValid(batch->prevPage);
-	batch->moreRight = BlockNumberIsValid(batch->nextPage);
+	hbatch->moreLeft = BlockNumberIsValid(hbatch->prevPage);
+	hbatch->moreRight = BlockNumberIsValid(hbatch->nextPage);
 
 	/* we saved one or more matches in batch.items[] */
 	indexam_util_batch_unlock(scan, batch);

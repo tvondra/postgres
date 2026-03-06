@@ -124,6 +124,12 @@ typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
 typedef struct IndexFetchTableData
 {
 	Relation	rel;
+
+	/* Table AM per-batch opaque area size (MAXALIGN'd), set by AM */
+	uint16		batch_opaque_size;
+
+	/* Per-item trailing data size in each batch */
+	uint16		batch_per_item_size;
 } IndexFetchTableData;
 
 /*
@@ -164,25 +170,24 @@ typedef struct BatchMatchingItem
 
 /*
  * Data about one batch of items returned by (and passed to) amgetbatch during
- * index scans
+ * index scans.
+ *
+ * Each batch allocation has the following memory layout:
+ *
+ *   [table AM opaque area]    <- at -(batch_table_offset) from batch ptr
+ *   [index AM opaque area]    <- at -(batch_index_opaque_size) from batch ptr
+ *   [IndexScanBatchData]      <- the returned pointer
+ *   [items[maxitemsbatch]]
+ *   [table AM trailing data]  <- e.g. per-item visibility flags
+ *   [currTuples workspace]    <- sized by index AM (batch_tuples_workspace)
+ *
+ * The AM-specific opaque areas are accessed via accessor functions defined by
+ * each table AM and index AM that supports the batch interfaces.
  */
 typedef struct IndexScanBatchData
 {
-	/*
-	 * Information output by amgetbatch index AMs upon returning a batch with
-	 * one or more matching items, describing details of the index page where
-	 * matches were located.
-	 *
-	 * Used in the next amgetbatch call to determine which index page to read
-	 * next (or to determine if there's no further matches in current scan
-	 * direction).
-	 */
-	BlockNumber currPage;		/* Index page with matching items */
-	BlockNumber prevPage;		/* currPage's left link */
-	BlockNumber nextPage;		/* currPage's right link */
-
-	Buffer		buf;			/* currPage buf (invalid means unpinned) */
-	XLogRecPtr	lsn;			/* currPage's LSN */
+	Buffer		buf;			/* index page buf (invalid means unpinned) */
+	XLogRecPtr	lsn;			/* index page's LSN */
 
 	/* scan direction when the index page was read */
 	ScanDirection dir;
@@ -190,22 +195,10 @@ typedef struct IndexScanBatchData
 	/*
 	 * knownEndBackward and knownEndForward are used by table AMs to track
 	 * whether there may be matching index entries to the left and right of
-	 * currPage, respectively
+	 * the current index page, respectively
 	 */
 	bool		knownEndBackward;
 	bool		knownEndForward;
-
-	/*
-	 * moreLeft and moreRight are used by index AMs to track whether there may
-	 * be matching index entries to the left and right currPage, respectively.
-	 *
-	 * Note: the exact interpretation of these fields varies across index AMs.
-	 * Table AMs must not rely on them directly; they must always call index
-	 * AM's amgetbatch routine to determine if there's no more batches in the
-	 * current scan direction.
-	 */
-	bool		moreLeft;
-	bool		moreRight;
 
 	/*
 	 * Matching items state for this batch.  Output by index AM for table AM.
@@ -227,18 +220,13 @@ typedef struct IndexScanBatchData
 	int		   *deadItems;		/* indexes of dead items */
 
 	/*
-	 * If we are doing an index-only scan, this array stores the per-item
-	 * visibility flags BATCH_VIS_CHECKED and BATCH_VIS_ALL_VISIBLE
-	 */
-	uint8	   *visInfo;		/* per-item visibility flags, or NULL */
-
-	/*
 	 * If we are doing an index-only scan, this is the tuple storage workspace
-	 * for the matching tuples (tuples referenced by items[]).  It is of size
-	 * BLCKSZ, so it can hold as much as a full page's worth of tuples.
+	 * for the matching tuples (tuples referenced by items[]).  The workspace
+	 * size is determined by the index AM (batch_tuples_workspace).
 	 *
-	 * currTuples points into the trailing portion of this allocation, just
-	 * past items[].  It is NULL for plain index scans.
+	 * currTuples points into the trailing portion of this allocation, past
+	 * items[] and any table AM trailing data.  It is NULL for plain index
+	 * scans.
 	 */
 	char	   *currTuples;		/* tuple storage for items[] */
 	BatchMatchingItem items[FLEXIBLE_ARRAY_MEMBER]; /* matching items */
@@ -395,6 +383,13 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 	uint16		maxitemsbatch;	/* set by ambeginscan when amgetbatch used */
 
+	/* Per-batch opaque area sizes, set by index AM in ambeginscan */
+	uint16		batch_index_opaque_size;	/* MAXALIGN'd index AM opaque size */
+	uint16		batch_tuples_workspace; /* currTuples workspace size */
+
+	/* Computed offset from batch pointer to table AM opaque (includes both) */
+	uint16		batch_table_offset;
+
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY
 	 * expressions of the last returned tuple, according to the index.  If
@@ -441,6 +436,16 @@ typedef struct SysScanDescData
 	struct SnapshotData *snapshot;	/* snapshot to unregister at end of scan */
 	struct TupleTableSlot *slot;
 } SysScanDescData;
+
+/*
+ * Return the true allocation base of a batch (accounting for AM opaque areas
+ * stored before the IndexScanBatchData pointer).
+ */
+static inline void *
+batch_alloc_base(IndexScanBatch batch, IndexScanDescData *scan)
+{
+	return (char *) batch - scan->batch_table_offset;
+}
 
 /*
  * Count how many batches are currently loaded in the ring buffer.

@@ -434,6 +434,19 @@ typedef struct TableAmRoutine
 	void		(*index_fetch_end) (struct IndexFetchTableData *data);
 
 	/*
+	 * Initialize table AM's per-batch opaque area within a batch allocation.
+	 *
+	 * Called by indexam_util_batch_alloc for each new or recycled batch.
+	 * Table AMs should set up its opaque area (at a negative offset from the
+	 * batch pointer) and any trailing per-item data (e.g. visibility flags).
+	 *
+	 * 'new_alloc' is true for freshly palloc'd batches, false for batches
+	 * recycled from the cache.
+	 */
+	void		(*index_batch_init) (IndexScanDesc scan, IndexScanBatch batch,
+									 bool new_alloc);
+
+	/*
 	 * Fetch the next tuple from an index scan into slot, scanning in the
 	 * specified direction, and return true if a tuple was found, false
 	 * otherwise.
@@ -1223,6 +1236,17 @@ static inline void
 table_index_fetch_end(struct IndexFetchTableData *scan)
 {
 	scan->rel->rd_tableam->index_fetch_end(scan);
+}
+
+/*
+ * Initialize table AM's per-batch opaque area within a batch allocation.
+ *
+ * Called by indexam_util_batch_alloc for each new or recycled batch.
+ */
+static inline void
+table_index_batch_init(IndexScanDesc scan, IndexScanBatch batch, bool new_alloc)
+{
+	scan->heapRelation->rd_tableam->index_batch_init(scan, batch, new_alloc);
 }
 
 /*

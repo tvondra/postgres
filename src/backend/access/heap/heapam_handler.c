@@ -89,6 +89,8 @@ heapam_index_fetch_begin(Relation rel)
 	IndexFetchHeapData *hscan = palloc0_object(IndexFetchHeapData);
 
 	hscan->xs_base.rel = rel;
+	hscan->xs_base.batch_opaque_size = MAXALIGN(sizeof(HeapBatchData));
+	hscan->xs_base.batch_per_item_size = sizeof(uint8); /* visInfo element size */
 	hscan->xs_blk = InvalidBlockNumber;
 	hscan->xs_vm_items = 1;
 
@@ -145,6 +147,42 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 		ReleaseBuffer(hscan->vmbuf);
 
 	pfree(hscan);
+}
+
+/*
+ * Initialize the heap table AM's per-batch opaque area (HeapBatchData).
+ *
+ * Called by indexam_util_batch_alloc for each new or recycled batch.
+ * Sets up the visInfo pointer for index-only scans, or NULL otherwise.
+ */
+static void
+heapam_index_batch_init(IndexScanDesc scan, IndexScanBatch batch,
+						bool new_alloc)
+{
+	HeapBatchData *hbatch = heap_batch_data(batch, scan);
+
+	if (scan->xs_want_itup)
+	{
+		if (new_alloc)
+		{
+			/*
+			 * Point visInfo into the trailing per-item area that follows
+			 * items[] in the batch allocation.
+			 */
+			Size		itemsEnd;
+
+			itemsEnd = MAXALIGN(offsetof(IndexScanBatchData, items) +
+								sizeof(BatchMatchingItem) * scan->maxitemsbatch);
+			hbatch->visInfo = (uint8 *) ((char *) batch + itemsEnd);
+		}
+
+		/* Clear visibility flags (needed for both new and recycled batches) */
+		memset(hbatch->visInfo, 0, scan->maxitemsbatch);
+	}
+	else
+	{
+		hbatch->visInfo = NULL;
+	}
 }
 
 static bool
@@ -324,7 +362,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
  */
 static void
 heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
-								BatchRingItemPos *pos)
+								HeapBatchData *hbatch, BatchRingItemPos *pos)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	int			posItem = pos->item;
@@ -334,6 +372,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	BlockNumber curvmheapblkno = InvalidBlockNumber;
 	uint8		curvmheapblkflags = 0;
 
+	Assert(hbatch == heap_batch_data(batch, scan));
 
 #ifdef VM_RESOLVE_DEBUG
 	scan->batchringbuf.vmResolveCalls++;
@@ -348,7 +387,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		noSetItem = Min(batch->lastItem + 1, posItem + hscan->xs_vm_items);
 		allbatchitemvisible = noSetItem > batch->lastItem &&
 			(posItem == batch->firstItem ||
-			 (batch->visInfo[batch->firstItem] & BATCH_VIS_CHECKED));
+			 (hbatch->visInfo[batch->firstItem] & BATCH_VIS_CHECKED));
 		step = 1;
 	}
 	else
@@ -356,7 +395,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		noSetItem = Max(batch->firstItem - 1, posItem - hscan->xs_vm_items);
 		allbatchitemvisible = noSetItem < batch->firstItem &&
 			(posItem == batch->lastItem ||
-			 (batch->visInfo[batch->lastItem] & BATCH_VIS_CHECKED));
+			 (hbatch->visInfo[batch->lastItem] & BATCH_VIS_CHECKED));
 		step = -1;
 	}
 
@@ -379,7 +418,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		if (heapblkno == curvmheapblkno)
 		{
 			/* contiguous heap block -- just reuse last item's flags */
-			batch->visInfo[setItem] = curvmheapblkflags;
+			hbatch->visInfo[setItem] = curvmheapblkflags;
 			continue;
 		}
 
@@ -387,7 +426,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		if (VM_ALL_VISIBLE(scan->heapRelation, heapblkno, &hscan->vmbuf))
 			flags |= BATCH_VIS_ALL_VISIBLE;
 
-		batch->visInfo[setItem] = curvmheapblkflags = flags;
+		hbatch->visInfo[setItem] = curvmheapblkflags = flags;
 		curvmheapblkno = heapblkno;
 	}
 
@@ -401,7 +440,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 		int			itemsAllVisible = 0;
 
 		for (int j = firstChecked; j <= lastChecked; j++)
-			if (batch->visInfo[j] & BATCH_VIS_ALL_VISIBLE)
+			if (hbatch->visInfo[j] & BATCH_VIS_ALL_VISIBLE)
 				itemsAllVisible++;
 
 		scan->batchringbuf.vmItemsChecked += itemsChecked;
@@ -422,8 +461,8 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	 */
 	if (allbatchitemvisible && scan->MVCCScan)
 	{
-		Assert(batch->visInfo[batch->firstItem] & BATCH_VIS_CHECKED);
-		Assert(batch->visInfo[batch->lastItem] & BATCH_VIS_CHECKED);
+		Assert(hbatch->visInfo[batch->firstItem] & BATCH_VIS_CHECKED);
+		Assert(hbatch->visInfo[batch->lastItem] & BATCH_VIS_CHECKED);
 
 		ReleaseBuffer(batch->buf);
 		batch->buf = InvalidBuffer;
@@ -442,6 +481,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 						ScanDirection direction, IndexScanBatch scanBatch,
 						BatchRingItemPos *scanPos, bool *all_visible)
 {
+	HeapBatchData *hbatch;
+
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* Set xs_heaptid, which heapam_index_getnext_slot will need */
@@ -492,8 +533,9 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	 * Set visibility info for the current scanPos item (plus possibly some
 	 * additional items in the current scan direction) as needed.
 	 */
-	if (!(scanBatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
-		heapam_batch_resolve_visibility(scan, scanBatch, scanPos);
+	hbatch = heap_batch_data(scanBatch, scan);
+	if (!(hbatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
+		heapam_batch_resolve_visibility(scan, scanBatch, hbatch, scanPos);
 
 	/* Also set xs_itup, which heapam_index_getnext_slot needs too */
 	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
@@ -501,7 +543,7 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 
 	/* Finally, set all_visible for heapam_index_getnext_slot */
 	*all_visible =
-		(scanBatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE) != 0;
+		(hbatch->visInfo[scanPos->item] & BATCH_VIS_ALL_VISIBLE) != 0;
 
 	return &scan->xs_heaptid;
 }
@@ -918,8 +960,10 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
 			if (BufferIsValid(prefetchBatch->buf))
 			{
+				HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
+
 				/* Set visibility info not set through scanBatch */
-				heapam_batch_resolve_visibility(scan, prefetchBatch,
+				heapam_batch_resolve_visibility(scan, prefetchBatch, hbatch,
 												prefetchPos);
 			}
 
@@ -1000,8 +1044,10 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 
 			if (scan->xs_want_itup && BufferIsValid(prefetchBatch->buf))
 			{
+				HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
+
 				/* make sure we have visibility info for the entire batch */
-				heapam_batch_resolve_visibility(scan, prefetchBatch,
+				heapam_batch_resolve_visibility(scan, prefetchBatch, hbatch,
 												prefetchPos);
 			}
 
@@ -1016,17 +1062,19 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 		Assert(index_scan_batch(scan, prefetchPos->batch) == prefetchBatch);
 		Assert(prefetchPos->item >= prefetchBatch->firstItem &&
 			   prefetchPos->item <= prefetchBatch->lastItem);
-		Assert(!scan->xs_want_itup ||
-			   (prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_CHECKED));
-
 		/* scanPos is always <= prefetchPos when we return */
 		Assert(index_scan_pos_cmp(scanPos, prefetchPos, xs_read_stream_dir) <= 0);
 
-		if (scan->xs_want_itup &&
-			(prefetchBatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE))
+		if (scan->xs_want_itup)
 		{
-			/* item is known to be all-visible -- don't prefetch */
-			continue;
+			HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
+
+			Assert(hbatch->visInfo[prefetchPos->item] & BATCH_VIS_CHECKED);
+			if (hbatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE)
+			{
+				/* item is known to be all-visible -- don't prefetch */
+				continue;
+			}
 		}
 
 		item = &prefetchBatch->items[prefetchPos->item];
@@ -3715,6 +3763,7 @@ static const TableAmRoutine heapam_methods = {
 	.index_fetch_begin = heapam_index_fetch_begin,
 	.index_fetch_reset = heapam_index_fetch_reset,
 	.index_fetch_end = heapam_index_fetch_end,
+	.index_batch_init = heapam_index_batch_init,
 	.index_getnext_slot = heapam_index_getnext_slot,
 	.index_fetch_tuple = heapam_index_fetch_tuple,
 

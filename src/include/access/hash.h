@@ -101,6 +101,28 @@ typedef HashPageOpaqueData *HashPageOpaque;
 #define HASHO_PAGE_ID		0xFF80
 
 /*
+ * Per-batch data private to the hash index AM.
+ *
+ * Stored at a negative offset from the IndexScanBatch pointer, in the
+ * index AM opaque area of each batch allocation.
+ */
+typedef struct HashBatchData
+{
+	BlockNumber currPage;		/* index page with matching items */
+	BlockNumber prevPage;		/* currPage's left link */
+	BlockNumber nextPage;		/* currPage's right link */
+	bool		moreLeft;		/* more matching pages to the left? */
+	bool		moreRight;		/* more matching pages to the right? */
+} HashBatchData;
+
+/* Access the hash-private per-batch data from an IndexScanBatch pointer */
+static inline HashBatchData *
+hash_batch_data(IndexScanBatch batch)
+{
+	return (HashBatchData *) ((char *) batch - MAXALIGN(sizeof(HashBatchData)));
+}
+
+/*
  *	HashScanOpaqueData is private state for a hash index scan.
  */
 typedef struct HashScanOpaqueData

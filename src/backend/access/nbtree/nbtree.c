@@ -340,6 +340,8 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	scan->opaque = so;
 	scan->xs_itupdesc = RelationGetDescr(rel);
 	scan->maxitemsbatch = MaxTIDsPerBTreePage;
+	scan->batch_index_opaque_size = MAXALIGN(sizeof(BTBatchData));
+	scan->batch_tuples_workspace = BLCKSZ;
 
 	return scan;
 }
@@ -372,6 +374,7 @@ void
 btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 {
 	Relation	rel = scan->indexRelation;
+	BTBatchData *btbatch = bt_batch_data(batch);
 	Page		page;
 	BTPageOpaque opaque;
 	OffsetNumber minoff;
@@ -382,9 +385,9 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 
 	/* Table AM should have already released batch page's pin by now */
 	Assert(batch->numDead > 0);
-	Assert(BlockNumberIsValid(batch->currPage));
+	Assert(BlockNumberIsValid(btbatch->currPage));
 
-	buf = _bt_getbuf(rel, batch->currPage, BT_READ);
+	buf = _bt_getbuf(rel, btbatch->currPage, BT_READ);
 
 	latestlsn = BufferGetLSNAtomic(buf);
 	Assert(batch->lsn <= latestlsn);
@@ -536,6 +539,7 @@ void
 btposreset(IndexScanDesc scan, IndexScanBatch batch)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTBatchData *btbatch = bt_batch_data(batch);
 
 	if (!so->numArrayKeys)
 		return;
@@ -560,9 +564,9 @@ btposreset(IndexScanDesc scan, IndexScanBatch batch)
 	 */
 	_bt_start_array_keys(scan, batch->dir);
 	if (ScanDirectionIsForward(batch->dir))
-		batch->moreRight = true;
+		btbatch->moreRight = true;
 	else
-		batch->moreLeft = true;
+		btbatch->moreLeft = true;
 	so->needPrimScan = false;
 	so->scanBehind = false;
 	so->oppositeDirCheck = false;

@@ -136,6 +136,7 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 {
 	Relation	rel = scan->indexRelation;
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	BTBatchData *btbatch = bt_batch_data(newbatch);
 	Page		page;
 	BTPageOpaque opaque;
 	OffsetNumber minoff;
@@ -150,13 +151,13 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 	/* save the page/buffer block number, along with its sibling links */
 	page = BufferGetPage(newbatch->buf);
 	opaque = BTPageGetOpaque(page);
-	pstate.currpage = newbatch->currPage = BufferGetBlockNumber(newbatch->buf);
-	newbatch->prevPage = opaque->btpo_prev;
-	newbatch->nextPage = opaque->btpo_next;
+	pstate.currpage = btbatch->currPage = BufferGetBlockNumber(newbatch->buf);
+	btbatch->prevPage = opaque->btpo_prev;
+	btbatch->nextPage = opaque->btpo_next;
 	pstate.dir = newbatch->dir = dir;
 
 	/* either moreRight or moreLeft should be set now (may be unset later) */
-	Assert(ScanDirectionIsForward(dir) ? newbatch->moreRight : newbatch->moreLeft);
+	Assert(ScanDirectionIsForward(dir) ? btbatch->moreRight : btbatch->moreLeft);
 	Assert(!P_IGNORE(opaque));
 	Assert(!so->needPrimScan);
 
@@ -185,9 +186,9 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 	{
 		/* allow next/prev page to be read by other worker without delay */
 		if (ScanDirectionIsForward(dir))
-			_bt_parallel_release(scan, newbatch->nextPage, newbatch->currPage);
+			_bt_parallel_release(scan, btbatch->nextPage, btbatch->currPage);
 		else
-			_bt_parallel_release(scan, newbatch->prevPage, newbatch->currPage);
+			_bt_parallel_release(scan, btbatch->prevPage, btbatch->currPage);
 	}
 
 	PredicateLockPage(rel, pstate.currpage, scan->xs_snapshot);
@@ -207,10 +208,10 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 					!_bt_scanbehind_checkkeys(scan, dir, pstate.finaltup))
 				{
 					/* Schedule another primitive index scan after all */
-					newbatch->moreRight = false;
+					btbatch->moreRight = false;
 					so->needPrimScan = true;
 					if (scan->parallel_scan)
-						_bt_parallel_primscan_schedule(scan, newbatch->currPage);
+						_bt_parallel_primscan_schedule(scan, btbatch->currPage);
 					return false;
 				}
 			}
@@ -333,7 +334,7 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 		}
 
 		if (!pstate.continuescan)
-			newbatch->moreRight = false;
+			btbatch->moreRight = false;
 
 		Assert(itemIndex <= MaxTIDsPerBTreePage);
 		newbatch->firstItem = 0;
@@ -354,10 +355,10 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 					!_bt_scanbehind_checkkeys(scan, dir, pstate.finaltup))
 				{
 					/* Schedule another primitive index scan after all */
-					newbatch->moreLeft = false;
+					btbatch->moreLeft = false;
 					so->needPrimScan = true;
 					if (scan->parallel_scan)
-						_bt_parallel_primscan_schedule(scan, newbatch->currPage);
+						_bt_parallel_primscan_schedule(scan, btbatch->currPage);
 					return false;
 				}
 			}
@@ -494,7 +495,7 @@ _bt_readpage(IndexScanDesc scan, IndexScanBatch newbatch, ScanDirection dir,
 		 * be found there
 		 */
 		if (!pstate.continuescan)
-			newbatch->moreLeft = false;
+			btbatch->moreLeft = false;
 
 		Assert(itemIndex >= 0);
 		newbatch->firstItem = itemIndex;

@@ -362,6 +362,8 @@ hashbeginscan(Relation rel, int nkeys, int norderbys)
 
 	scan->opaque = so;
 	scan->maxitemsbatch = MaxIndexTuplesPerPage;
+	scan->batch_index_opaque_size = MAXALIGN(sizeof(HashBatchData));
+	scan->batch_tuples_workspace = 0;
 
 	return scan;
 }
@@ -393,6 +395,7 @@ void
 hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 {
 	Relation	rel = scan->indexRelation;
+	HashBatchData *hbatch = hash_batch_data(batch);
 	Buffer		buf;
 	Page		page;
 	HashPageOpaque opaque;
@@ -402,9 +405,9 @@ hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	XLogRecPtr	latestlsn;
 
 	Assert(batch->numDead > 0);
-	Assert(BlockNumberIsValid(batch->currPage));
+	Assert(BlockNumberIsValid(hbatch->currPage));
 
-	buf = _hash_getbuf(rel, batch->currPage, HASH_READ,
+	buf = _hash_getbuf(rel, hbatch->currPage, HASH_READ,
 					   LH_BUCKET_PAGE | LH_OVERFLOW_PAGE);
 
 	latestlsn = BufferGetLSNAtomic(buf);

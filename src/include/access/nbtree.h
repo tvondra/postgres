@@ -924,6 +924,28 @@ typedef struct BTVacuumPostingData
 
 typedef BTVacuumPostingData *BTVacuumPosting;
 
+/*
+ * Per-batch data private to the btree index AM.
+ *
+ * Stored at a negative offset from the IndexScanBatch pointer, in the
+ * index AM opaque area of each batch allocation.
+ */
+typedef struct BTBatchData
+{
+	BlockNumber currPage;		/* index page with matching items */
+	BlockNumber prevPage;		/* currPage's left sibling */
+	BlockNumber nextPage;		/* currPage's right sibling */
+	bool		moreLeft;		/* more matching pages to the left? */
+	bool		moreRight;		/* more matching pages to the right? */
+} BTBatchData;
+
+/* Access the btree-private per-batch data from an IndexScanBatch pointer */
+static inline BTBatchData *
+bt_batch_data(IndexScanBatch batch)
+{
+	return (BTBatchData *) ((char *) batch - MAXALIGN(sizeof(BTBatchData)));
+}
+
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */
 typedef struct BTArrayKeyInfo
 {

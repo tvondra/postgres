@@ -580,8 +580,8 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 	 * to be the last batch with matching items in this scan direction
 	 */
 	if (priorBatch &&
-		((ScanDirectionIsForward(direction) && priorBatch->knownEndRight) ||
-		 (ScanDirectionIsBackward(direction) && priorBatch->knownEndLeft)))
+		((ScanDirectionIsForward(direction) && priorBatch->knownEndForward) ||
+		 (ScanDirectionIsBackward(direction) && priorBatch->knownEndBackward)))
 		return NULL;
 
 	batch = scan->indexRelation->rd_indam->amgetbatch(scan, priorBatch,
@@ -664,9 +664,9 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 			 * the last batch with matching items.
 			 */
 			if (ScanDirectionIsForward(direction))
-				priorBatch->knownEndRight = true;
+				priorBatch->knownEndForward = true;
 			else
-				priorBatch->knownEndLeft = true;
+				priorBatch->knownEndBackward = true;
 		}
 	}
 

@@ -663,14 +663,14 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch)
  * a batch recycled from the cache managed by indexam_util_batch_release.  See
  * comments above indexam_util_batch_release.
  *
- * Housekeeping fields (buf, knownEndLeft/Right, firstItem, lastItem,
- * numDead, deadItems, visInfo, currTuples) are initialized here.  The
- * caller is responsible for filling in the page-level navigation fields
+ * Housekeeping fields (buf, knownEndBackward/Forward, firstItem, lastItem,
+ * numDead, deadItems, visInfo, currTuples) are initialized here.  The index
+ * AM caller is responsible for filling in the page-level navigation fields
  * (currPage, prevPage, nextPage, dir, moreLeft, moreRight) and the matching
  * items[] array.  Once populated, the caller either passes the batch to
  * indexam_util_batch_unlock (when it has matches to return from amgetbatch),
- * or to indexam_util_batch_release (when the page had no matches).  Note
- * that lsn is set by indexam_util_batch_unlock, not by the caller.
+ * or to indexam_util_batch_release (when the page had no matches).  Note that
+ * lsn is set by indexam_util_batch_unlock, not by the caller.
  */
 IndexScanBatch
 indexam_util_batch_alloc(IndexScanDesc scan)
@@ -746,8 +746,8 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 
 	/* shared initialization */
 	batch->buf = InvalidBuffer;
-	batch->knownEndLeft = false;
-	batch->knownEndRight = false;
+	batch->knownEndBackward = false;
+	batch->knownEndForward = false;
 	batch->firstItem = -1;
 	batch->lastItem = -1;
 	batch->numDead = 0;

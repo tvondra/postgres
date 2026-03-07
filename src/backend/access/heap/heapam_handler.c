@@ -465,11 +465,13 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	}
 
 	/*
-	 * Next time check visibility for twice as many items. But don't overflow
-	 * the number of items in this batch (and thus don't overflow INT_MAX).
+	 * Else check visibility for twice as many items next time, or all items.
+	 * We check all items in one go once we're passed the scan's first batch.
 	 */
-	if (hscan->xs_vm_items < (batch->lastItem - batch->firstItem))
+	else if (hscan->xs_vm_items < (batch->lastItem - batch->firstItem))
 		hscan->xs_vm_items *= 2;
+	else
+		hscan->xs_vm_items = scan->maxitemsbatch;
 }
 
 static inline ItemPointer

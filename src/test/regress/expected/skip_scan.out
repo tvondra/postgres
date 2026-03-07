@@ -8,6 +8,9 @@ set client_min_messages=error;
 -- set skipscan_prefix_cols=0;
 set vacuum_freeze_min_age = 0;
 set cursor_tuple_fraction=1.000;
+-- Set aio stuff explicitly:
+set io_combine_limit = 16;
+set effective_io_concurrency = 100;
 create extension if not exists pageinspect; -- just to have it
 -- set statement_timeout='4s';
 reset client_min_messages;

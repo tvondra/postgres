@@ -12,6 +12,10 @@ create extension if not exists pg_buffercache; -- to evict data when needed
 -- set statement_timeout='4s';
 reset client_min_messages;
 
+-- Set aio stuff explicitly:
+set io_combine_limit = 16;
+set effective_io_concurrency = 100;
+
 -- Set log_btree_verbosity to 1 without depending on having that patch
 -- applied (HACK, just sets commit_siblings instead when we don't have that
 -- patch available):

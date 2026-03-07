@@ -24,6 +24,10 @@ set enable_indexscan=off;
 set enable_sort=on;
 set enable_hashagg=off;
 
+-- Set aio stuff explicitly:
+set io_combine_limit = 16;
+set effective_io_concurrency = 100;
+
 drop table if exists small_sales_mdam_paper;
 reset client_min_messages;
 

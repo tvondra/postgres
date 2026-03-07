@@ -102,20 +102,7 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 
-	/* drop pin if there's a pinned heap page */
-	if (BufferIsValid(hscan->xs_cbuf))
-	{
-		ReleaseBuffer(hscan->xs_cbuf);
-
-		/* reset state associated with xs_cbuf, too */
-		hscan->xs_cbuf = InvalidBuffer;
-		hscan->xs_blk = InvalidBlockNumber;
-	}
-
-	/*
-	 * Deliberately don't drop any vmbuf pin here.  But do reset xs_vm_items,
-	 * so that rescans don't do an excessive number of VM lookups.
-	 */
+	/* Rescans should avoid an excessive number of VM lookups */
 	hscan->xs_vm_items = 1;
 
 	/*
@@ -138,13 +125,22 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 
-	heapam_index_fetch_reset(scan);
+	/* drop pin if there's a pinned heap page */
+	if (BufferIsValid(hscan->xs_cbuf))
+	{
+		ReleaseBuffer(hscan->xs_cbuf);
+
+		/* reset state associated with xs_cbuf, too */
+		hscan->xs_cbuf = InvalidBuffer;
+		hscan->xs_blk = InvalidBlockNumber;
+	}
+
+	/* drop pin if there's a pinned visibility map page */
+	if (BufferIsValid(hscan->vmbuf))
+		ReleaseBuffer(hscan->vmbuf);
 
 	if (hscan->xs_read_stream)
 		read_stream_end(hscan->xs_read_stream);
-
-	if (hscan->vmbuf != InvalidBuffer)
-		ReleaseBuffer(hscan->vmbuf);
 
 	pfree(hscan);
 }

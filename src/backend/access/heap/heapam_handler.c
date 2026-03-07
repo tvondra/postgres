@@ -357,8 +357,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
  * buffer, which could cause significant contention.
  */
 static pg_noinline void
-heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
-								HeapBatchData *hbatch, BatchRingItemPos *pos)
+heapam_batch_resolve_visibility(IndexScanDesc scan, ScanDirection direction,
+								IndexScanBatch batch, HeapBatchData *hbatch,
+								BatchRingItemPos *pos)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 	int			posItem = pos->item;
@@ -378,7 +379,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, IndexScanBatch batch,
 	Assert(BufferIsValid(batch->buf));
 
 	/* Determine the range of items to set visibility for */
-	if (ScanDirectionIsForward(batch->dir))
+	if (ScanDirectionIsForward(direction))
 	{
 		noSetItem = Min(batch->lastItem + 1, posItem + hscan->xs_vm_items);
 		allbatchitemvisible = noSetItem > batch->lastItem &&
@@ -533,7 +534,8 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	 */
 	hbatch = heap_batch_data(scanBatch, scan);
 	if (!(hbatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
-		heapam_batch_resolve_visibility(scan, scanBatch, hbatch, scanPos);
+		heapam_batch_resolve_visibility(scan, direction, scanBatch, hbatch,
+										scanPos);
 
 	/* Also set xs_itup, which heapam_index_getnext_slot needs too */
 	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
@@ -961,7 +963,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
 
 				/* Set visibility info not set through scanBatch */
-				heapam_batch_resolve_visibility(scan, prefetchBatch, hbatch,
+				heapam_batch_resolve_visibility(scan, xs_read_stream_dir,
+												prefetchBatch, hbatch,
 												prefetchPos);
 			}
 
@@ -1045,7 +1048,8 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 				HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
 
 				/* make sure we have visibility info for the entire batch */
-				heapam_batch_resolve_visibility(scan, prefetchBatch, hbatch,
+				heapam_batch_resolve_visibility(scan, xs_read_stream_dir,
+												prefetchBatch, hbatch,
 												prefetchPos);
 			}
 

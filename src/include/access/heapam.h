@@ -120,7 +120,7 @@ typedef struct IndexFetchHeapData
 	BlockNumber xs_blk;			/* xs_cbuf's block number, if any */
 
 	/* For index-only scans that must access the visibility map */
-	Buffer		vmbuf;			/* visibility map buffer */
+	Buffer		xs_vmbuf;		/* visibility map buffer */
 	int			xs_vm_items;	/* # items to resolve visibility info for */
 
 	/* For batch index scans that use read stream for prefetching */

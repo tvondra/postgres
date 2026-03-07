@@ -379,7 +379,7 @@ index_rescan(IndexScanDesc scan,
 	Assert(nkeys == scan->numberOfKeys);
 	Assert(norderbys == scan->numberOfOrderBys);
 
-	/* reset read stream and release buffer pins from table accesses */
+	/* reset table AM state for rescan */
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
@@ -470,7 +470,7 @@ index_restrpos(IndexScanDesc scan)
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgetbatch);
 
-	/* reset read stream and release buffer pins from table accesses */
+	/* reset table AM state for rescan */
 	if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 

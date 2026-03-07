@@ -105,10 +105,7 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 	/* Rescans should avoid an excessive number of VM lookups */
 	hscan->xs_vm_items = 1;
 
-	/*
-	 * Reset read stream direction unconditionally (heapam_batch_getnext_tid
-	 * checks this to detect the first call after rescan)
-	 */
+	/* Reset read stream direction unconditionally */
 	hscan->xs_read_stream_dir = NoMovementScanDirection;
 
 	/* Reset read stream itself, and other associated state */
@@ -118,6 +115,13 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 		hscan->xs_paused = false;
 		read_stream_reset(hscan->xs_read_stream);
 	}
+
+	/*
+	 * Deliberately avoid dropping any pins now held in xs_cbuf and xs_vmbuf.
+	 * This saves cycles during certain tight nested loop joins, and during
+	 * merge joins that frequently restore a saved mark.  It can also avoid
+	 * repeated pinning and unpinning of the same buffer across rescans.
+	 */
 }
 
 static void
@@ -127,17 +131,11 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 
 	/* drop pin if there's a pinned heap page */
 	if (BufferIsValid(hscan->xs_cbuf))
-	{
 		ReleaseBuffer(hscan->xs_cbuf);
 
-		/* reset state associated with xs_cbuf, too */
-		hscan->xs_cbuf = InvalidBuffer;
-		hscan->xs_blk = InvalidBlockNumber;
-	}
-
 	/* drop pin if there's a pinned visibility map page */
-	if (BufferIsValid(hscan->vmbuf))
-		ReleaseBuffer(hscan->vmbuf);
+	if (BufferIsValid(hscan->xs_vmbuf))
+		ReleaseBuffer(hscan->xs_vmbuf);
 
 	if (hscan->xs_read_stream)
 		read_stream_end(hscan->xs_read_stream);
@@ -420,7 +418,7 @@ heapam_batch_resolve_visibility(IndexScanDesc scan, ScanDirection direction,
 		}
 
 		flags = BATCH_VIS_CHECKED;
-		if (VM_ALL_VISIBLE(scan->heapRelation, heapblkno, &hscan->vmbuf))
+		if (VM_ALL_VISIBLE(scan->heapRelation, heapblkno, &hscan->xs_vmbuf))
 			flags |= BATCH_VIS_ALL_VISIBLE;
 
 		hbatch->visInfo[setItem] = curvmheapblkflags = flags;
@@ -1201,7 +1199,7 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 				if (tid != NULL && scan->xs_want_itup)
 					all_visible = VM_ALL_VISIBLE(scan->heapRelation,
 												 ItemPointerGetBlockNumber(tid),
-												 &hscan->vmbuf);
+												 &hscan->xs_vmbuf);
 			}
 
 			/* If we're out of index entries, we're done */
@@ -1254,14 +1252,6 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 				 */
 				Assert(!(scan->xs_heap_continue &&
 						 IsMVCCSnapshot(scan->xs_snapshot)));
-
-				/*
-				 * Note: at this point we are holding a pin on the heap page,
-				 * as recorded in IndexFetchHeapData.xs_cbuf.  We could
-				 * release that pin now, but it's not clear whether it's a win
-				 * to do so.  The next index entry might require a visit to
-				 * the same heap page.
-				 */
 			}
 			else
 			{

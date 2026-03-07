@@ -405,7 +405,6 @@ hashkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 	XLogRecPtr	latestlsn;
 
 	Assert(batch->numDead > 0);
-	Assert(BlockNumberIsValid(hbatch->currPage));
 
 	buf = _hash_getbuf(rel, hbatch->currPage, HASH_READ,
 					   LH_BUCKET_PAGE | LH_OVERFLOW_PAGE);

@@ -1554,8 +1554,6 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	BlockNumber blkno,
 				lastcurrblkno;
 
-	Assert(BlockNumberIsValid(btpriorbatch->currPage));
-
 	/* Walk to the next page with data */
 	if (ScanDirectionIsForward(dir))
 		blkno = btpriorbatch->nextPage;

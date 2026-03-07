@@ -385,7 +385,6 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 
 	/* Table AM should have already released batch page's pin by now */
 	Assert(batch->numDead > 0);
-	Assert(BlockNumberIsValid(btbatch->currPage));
 
 	buf = _bt_getbuf(rel, btbatch->currPage, BT_READ);
 
@@ -472,11 +471,11 @@ btkillitemsbatch(IndexScanDesc scan, IndexScanBatch batch)
 
 			/*
 			 * Mark index item as dead, if it isn't already.  Since this
-			 * happens while holding a buffer lock possibly in shared mode,
-			 * it's possible that multiple processes attempt to do this
-			 * simultaneously, leading to multiple full-page images being sent
-			 * to WAL (if wal_log_hints or data checksums are enabled), which
-			 * is undesirable.
+			 * happens while holding a shared buffer lock, it's possible that
+			 * multiple processes attempt to do this simultaneously, leading
+			 * to multiple full-page images being sent to WAL (if
+			 * wal_log_hints or data checksums are enabled), which is
+			 * undesirable.
 			 */
 			if (killtuple && !ItemIdIsDead(iid))
 			{

@@ -207,7 +207,7 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		hscan->xs_blk = ItemPointerGetBlockNumber(tid);
 
 		/*
-		 * Drop the old slot content's pin on xs_blk (if any) proactively.
+		 * Drop the xs_blk pin independently held on by slot (if any) now.
 		 * See comments around ExecStorePinnedBufferHeapTuple call below.
 		 */
 		ExecClearTuple(slot);
@@ -869,7 +869,7 @@ heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	Assert(!hscan->xs_paused);
 
 	return heapam_batch_return_tid(scan, hscan, direction, scanBatch, scanPos,
-								  all_visible);
+								   all_visible);
 }
 
 /*

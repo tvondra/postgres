@@ -529,17 +529,19 @@ heapam_batch_return_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	/*
 	 * Index-only scan.
 	 *
+	 * Also set xs_itup, which heapam_index_getnext_slot needs too.
+	 */
+	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
+								  scanBatch->items[scanPos->item].tupleOffset);
+
+	/*
 	 * Set visibility info for the current scanPos item (plus possibly some
-	 * additional items in the current scan direction) as needed.
+	 * additional items in the current scan direction) as needed
 	 */
 	hbatch = heap_batch_data(scanBatch, scan);
 	if (!(hbatch->visInfo[scanPos->item] & BATCH_VIS_CHECKED))
 		heapam_batch_resolve_visibility(scan, direction, scanBatch, hbatch,
 										scanPos);
-
-	/* Also set xs_itup, which heapam_index_getnext_slot needs too */
-	scan->xs_itup = (IndexTuple) (scanBatch->currTuples +
-								  scanBatch->items[scanPos->item].tupleOffset);
 
 	/* Finally, set all_visible for heapam_index_getnext_slot */
 	*all_visible =
@@ -751,7 +753,7 @@ heapam_dirchange_readstream_reset(IndexFetchHeapData *hscan,
  * given scan direction.
  * ----------------
  */
-static pg_attribute_hot ItemPointer
+static pg_noinline pg_attribute_hot ItemPointer
 heapam_batch_getnext_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 						 ScanDirection direction, bool *all_visible)
 {

@@ -111,8 +111,6 @@ typedef struct HashBatchData
 	BlockNumber currPage;		/* index page with matching items */
 	BlockNumber prevPage;		/* currPage's left link */
 	BlockNumber nextPage;		/* currPage's right link */
-	bool		moreLeft;		/* more matching pages to the left? */
-	bool		moreRight;		/* more matching pages to the right? */
 } HashBatchData;
 
 /* Access the hash-private per-batch data from an IndexScanBatch pointer */

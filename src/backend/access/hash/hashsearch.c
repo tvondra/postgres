@@ -61,13 +61,13 @@ _hash_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	if (ScanDirectionIsForward(dir))
 	{
 		blkno = hpriorbatch->nextPage;
-		if (!BlockNumberIsValid(blkno) || !hpriorbatch->moreRight)
+		if (!BlockNumberIsValid(blkno))
 			return NULL;
 	}
 	else
 	{
 		blkno = hpriorbatch->prevPage;
-		if (!BlockNumberIsValid(blkno) || !hpriorbatch->moreLeft)
+		if (!BlockNumberIsValid(blkno))
 			return NULL;
 	}
 
@@ -532,9 +532,6 @@ _hash_readpage(IndexScanDesc scan, Buffer buf, ScanDirection dir,
 		hbatch->prevPage = opaque->hasho_prevblkno;
 		hbatch->nextPage = opaque->hasho_nextblkno;
 	}
-
-	hbatch->moreLeft = BlockNumberIsValid(hbatch->prevPage);
-	hbatch->moreRight = BlockNumberIsValid(hbatch->nextPage);
 
 	/* we saved one or more matches in batch.items[] */
 	indexam_util_batch_unlock(scan, batch);

@@ -1231,7 +1231,13 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
        <replaceable>operator</replaceable> <replaceable>constant</replaceable>.  Scan modifiers
        of that form can be passed to <function>amrescan</function> as described
        previously.  Note that <function>amgetbatch</function> scans do not
-       support ordering operators.
+       currently support ordering operators.  The core executor expects
+       <function>amgettuple</function> to set
+       <structfield>xs_orderbyvals</structfield> for each returned tuple, but
+       there is currently no mechanism to associate per-item ordering values
+       with individual items within a batch.  This would require an additional
+       layer of indirection that does not yet exist, but could be added in a
+       future version of <productname>PostgreSQL</productname>.
       </para>
      </listitem>
     </itemizedlist>

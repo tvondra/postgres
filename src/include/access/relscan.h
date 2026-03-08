@@ -193,9 +193,21 @@ typedef struct IndexScanBatchData
 	ScanDirection dir;
 
 	/*
-	 * knownEndBackward and knownEndForward are used by table AMs to track
-	 * whether there may be matching index entries to the left and right of
-	 * the current index page, respectively
+	 * knownEndBackward and knownEndForward are set by the table AM to
+	 * indicate that this batch is the last one with matching items in the
+	 * relevant scan direction.  When amgetbatch returns NULL for a given
+	 * direction, the table AM sets the corresponding flag on the priorbatch
+	 * that was passed to that call.  We cannot know this when a batch is
+	 * first returned by amgetbatch; it only becomes apparent when we try and
+	 * fail to continue the scan past it.
+	 *
+	 * This allows table AMs to avoid redundant amgetbatch calls with the same
+	 * priorbatch -- the index AM might need to read additional index pages to
+	 * determine there are no more matching items beyond caller's priorbatch.
+	 * In particular, during prefetching the read stream callback discovers
+	 * the end-of-scan via prefetchBatch.  The table AM checks these flags so
+	 * that the scan side doesn't repeat the same amgetbatch call when it
+	 * later reaches that batch as scanBatch.
 	 */
 	bool		knownEndBackward;
 	bool		knownEndForward;

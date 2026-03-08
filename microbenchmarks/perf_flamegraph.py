@@ -116,6 +116,11 @@ BENCHMARKS = {
         "query_repetitions": 500_000,
         "max_aid_val": 100_000,
     },
+    "bitmap": {
+        "sql_query": "SELECT count(abalance) FROM pgbench_accounts WHERE aid BETWEEN %s AND %s",
+        "query_repetitions": 500_000,
+        "bitmap_range": 2000,
+    },
 }
 
 def parse_arguments():
@@ -151,7 +156,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--benchmark",
-        choices=["nestloop", "simple_select"],
+        choices=["nestloop", "simple_select", "bitmap"],
         default="nestloop",
         help="Benchmark to run (default: nestloop)"
     )
@@ -170,6 +175,19 @@ def parse_arguments():
         type=int,
         dest="num_queries",
         help="Number of queries to execute (only valid with --benchmark simple_select)"
+    )
+    parser.add_argument(
+        "--bitmap",
+        action="store_const",
+        const="bitmap",
+        dest="benchmark",
+        help="Shorthand for --benchmark bitmap (bitmap index scan profiling)"
+    )
+    parser.add_argument(
+        "--bitmap-range",
+        type=int,
+        default=2000,
+        help="Range size for bitmap benchmark (default: 2000 contiguous items)"
     )
     parser.add_argument(
         "--ios",
@@ -547,7 +565,7 @@ def verify_btree_index_exists(pg_name, conn_details):
         print(f"Error verifying B-tree indexes on {pg_name}: {e}")
         sys.exit(1)
 
-def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False, discard_runs=0, benchmark_cpu=14, perf_cpu=15, disable_prefetch=False, is_master=False, prefetch_setting=None, no_pin=False):
+def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, query_repetitions, run_perf, max_aid_val=None, perf_event=None, highfreq=False, index_only_scan=False, run_perfstat=False, discard_runs=0, benchmark_cpu=14, perf_cpu=15, disable_prefetch=False, is_master=False, prefetch_setting=None, no_pin=False, use_bitmap=False, bitmap_range=2000):
     """Profiles a PostgreSQL instance (assumes server is already running)."""
     print(f"--- Testing {pg_name} ---")
 
@@ -619,12 +637,17 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         with conn.cursor() as cursor:
             # if pg_name == "patch":
             #     cursor.execute("set enable_indexscan_prefetch=off;")
-            cursor.execute("set enable_bitmapscan=off;")
-            cursor.execute("set enable_hashjoin=off;")
-            if index_only_scan:
-                cursor.execute("set enable_indexonlyscan=on;")
-            else:
+            if use_bitmap:
+                cursor.execute("set enable_bitmapscan=on;")
+                cursor.execute("set enable_indexscan=off;")
                 cursor.execute("set enable_indexonlyscan=off;")
+            else:
+                cursor.execute("set enable_bitmapscan=off;")
+                if index_only_scan:
+                    cursor.execute("set enable_indexonlyscan=on;")
+                else:
+                    cursor.execute("set enable_indexonlyscan=off;")
+            cursor.execute("set enable_hashjoin=off;")
             cursor.execute("set enable_material=off;")
             cursor.execute("set enable_memoize=off;")
             cursor.execute("set enable_mergejoin=off;")
@@ -657,7 +680,10 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
         print("\n--- Query Plan (EXPLAIN) ---")
         with conn.cursor() as cursor: # type: ignore
             explain_query = f"EXPLAIN {sql_query}"
-            if max_aid_val is not None:
+            if use_bitmap and max_aid_val is not None:
+                aid = random.randint(1, max_aid_val - bitmap_range)
+                cursor.execute(explain_query, params=[aid, aid + bitmap_range - 1], prepare=False)
+            elif max_aid_val is not None:
                 cursor.execute(explain_query, params=[random.randint(1, max_aid_val)], prepare=False)
             else:
                 cursor.execute(explain_query, prepare=False)
@@ -678,7 +704,12 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
             print(f"Warming up: executing {discard_runs} discard runs...")
             with conn.cursor() as cursor:  # type: ignore
                 for i in range(discard_runs):
-                    if max_aid_val is not None:
+                    if use_bitmap and max_aid_val is not None:
+                        aid = random.randint(1, max_aid_val - bitmap_range)
+                        cursor.execute(query=sql_query,
+                                       params=[aid, aid + bitmap_range - 1],
+                                       prepare=True)
+                    elif max_aid_val is not None:
                         cursor.execute(query=sql_query,
                                        params=[random.randint(1, max_aid_val)],
                                        prepare=True)
@@ -763,7 +794,12 @@ def profile_postgres(pg_bin_dir, pg_name, conn_details, output_file, sql_query, 
 
             for i in range(query_repetitions):
                 query_start = time.time()
-                if max_aid_val is not None:
+                if use_bitmap and max_aid_val is not None:
+                    aid = random.randint(1, max_aid_val - bitmap_range)
+                    cursor.execute(query=sql_query,
+                                   params=[aid, aid + bitmap_range - 1],
+                                   prepare=True)
+                elif max_aid_val is not None:
                     cursor.execute(query=sql_query,
                                    params=[random.randint(1, max_aid_val)],
                                    prepare=True)
@@ -1336,9 +1372,9 @@ def main():
         except (FileNotFoundError, ValueError) as e:
             print(f"Warning: Could not check perf_event_paranoid: {e}")
 
-    # Validate that --queries is only used with --benchmark simple_select
-    if args.num_queries is not None and args.benchmark != "simple_select":
-        print("Error: --queries can only be used with --benchmark simple_select")
+    # Validate that --queries is only used with parameterized benchmarks
+    if args.num_queries is not None and args.benchmark not in ("simple_select", "bitmap"):
+        print("Error: --queries can only be used with --benchmark simple_select or bitmap")
         sys.exit(1)
 
     # Validate that --hash and --ios are not used together
@@ -1414,6 +1450,8 @@ def main():
     sql_query = benchmark["sql_query"]
     query_repetitions = benchmark["query_repetitions"]
     max_aid_val = benchmark.get("max_aid_val")
+    use_bitmap = args.benchmark == "bitmap"
+    bitmap_range = args.bitmap_range if use_bitmap else benchmark.get("bitmap_range", 2000)
 
     # Override query_repetitions if --queries was provided
     if args.num_queries is not None:
@@ -1498,10 +1536,13 @@ def main():
             print(f"Error: Row count mismatch! master={master_row_count}, patch={patch_row_count}")
             sys.exit(1)
 
-        # Use the actual row count for simple_select benchmark
+        # Use the actual row count for parameterized benchmarks
         if args.benchmark == "simple_select":
             max_aid_val = master_row_count
             print(f"Using max_aid_val={max_aid_val} for simple_select benchmark")
+        elif args.benchmark == "bitmap":
+            max_aid_val = master_row_count
+            print(f"Using max_aid_val={max_aid_val}, bitmap_range={bitmap_range} for bitmap benchmark")
 
         # Profile in the order specified by args.patch_first
         if args.patch_first:
@@ -1510,7 +1551,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin, use_bitmap=use_bitmap, bitmap_range=bitmap_range)
             stop_server(patch_bin, PATCH_DATA_DIR)
             time.sleep(2)
 
@@ -1519,7 +1560,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin, use_bitmap=use_bitmap, bitmap_range=bitmap_range)
             stop_server(master_bin, MASTER_DATA_DIR)
         else:
             # Profile master first (default)
@@ -1527,7 +1568,7 @@ def main():
             start_server(master_bin, "master", MASTER_DATA_DIR, MASTER_CONN_DETAILS)
             perf_command_master, total_time_master = profile_postgres(
                 master_bin, "master", MASTER_CONN_DETAILS,
-                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
+                stacks_file_master, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=True, prefetch_setting=prefetch_setting, no_pin=args.no_pin, use_bitmap=use_bitmap, bitmap_range=bitmap_range)
             stop_server(master_bin, MASTER_DATA_DIR)
             time.sleep(2)
 
@@ -1536,7 +1577,7 @@ def main():
             start_server(patch_bin, "patch", PATCH_DATA_DIR, PATCH_CONN_DETAILS)
             perf_command_patch, total_time_patch = profile_postgres(
                 patch_bin, "patch", PATCH_CONN_DETAILS,
-                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin)
+                stacks_file_patch, sql_query, query_repetitions, run_perf, max_aid_val, perf_event, args.highfreq, args.index_only_scan, args.perfstat, args.discard_runs, args.benchmark_cpu, args.perf_cpu, args.disable_prefetch, is_master=False, prefetch_setting=prefetch_setting, no_pin=args.no_pin, use_bitmap=use_bitmap, bitmap_range=bitmap_range)
             stop_server(patch_bin, PATCH_DATA_DIR)
 
     finally:

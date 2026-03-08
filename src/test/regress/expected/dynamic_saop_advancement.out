@@ -17640,14 +17640,14 @@ where
    Merge Cond: (j1.a = j2.a)
    Join Filter: (j2.b = j1.b)
    Rows Removed by Join Filter: 380
-   Buffers: shared hit=23
+   Buffers: shared hit=4
    ->  Index Scan using table1_idx on mark_restore_join_table1 j1  (cost=0.14..4.15 rows=1 width=14) (actual rows=20.00 loops=1)
          Index Searches: 1
          Buffers: shared hit=2
    ->  Index Scan using table2_idx on mark_restore_join_table2 j2  (cost=0.14..4.16 rows=1 width=14) (actual rows=381.00 loops=1)
          Index Cond: (a = ANY ('{1}'::integer[]))
          Index Searches: 1
-         Buffers: shared hit=21
+         Buffers: shared hit=2
 (12 rows)
 
 -- Exercise array keys "find extreme element" B-Tree code
@@ -17693,14 +17693,14 @@ where
    Merge Cond: (j1.a = j2.a)
    Join Filter: (j2.b = j1.b)
    Rows Removed by Join Filter: 380
-   Buffers: shared hit=23
+   Buffers: shared hit=4
    ->  Index Scan using table1_idx on mark_restore_join_table1 j1  (cost=0.14..4.15 rows=1 width=14) (actual rows=20.00 loops=1)
          Index Searches: 1
          Buffers: shared hit=2
    ->  Index Scan using table2_idx on mark_restore_join_table2 j2  (cost=0.14..4.16 rows=1 width=14) (actual rows=381.00 loops=1)
          Index Cond: (a >= ANY ('{1,5}'::integer[]))
          Index Searches: 1
-         Buffers: shared hit=21
+         Buffers: shared hit=2
 (12 rows)
 
 -- (September 22)
@@ -17964,10 +17964,10 @@ group by small_a order by small_a;
 ------------------------------------------------------------------------------------------------------------------------------------
  GroupAggregate  (cost=0.43..3951.09 rows=1 width=12) (actual rows=1.00 loops=1)
    Group Key: small.a
-   Buffers: shared hit=562
+   Buffers: shared hit=558
    ->  Nested Loop  (cost=0.43..3664.36 rows=57344 width=4) (actual rows=57344.00 loops=1)
          Disabled: true
-         Buffers: shared hit=562
+         Buffers: shared hit=558
          ->  Index Scan using amber_small_idx on amber_small small  (cost=0.14..7.96 rows=104 width=8) (actual rows=104.00 loops=1)
                Index Cond: (a = ANY ('{1,3}'::integer[]))
                Index Searches: 1
@@ -17975,7 +17975,7 @@ group by small_a order by small_a;
          ->  Index Scan using amber_big_idx on amber_big big  (cost=0.29..24.92 rows=1024 width=8) (actual rows=551.38 loops=104)
                Index Cond: ((a = small.a) AND (a = ANY ('{1,3}'::integer[])) AND (b = small.b))
                Index Searches: 104
-               Buffers: shared hit=560
+               Buffers: shared hit=556
 (14 rows)
 
 set enable_mergejoin to on;

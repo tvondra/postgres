@@ -817,6 +817,9 @@ indexam_util_batch_alloc(IndexScanDesc scan)
  * index AM's amkillitemsbatch routine (if any).  Index AMs that use batches
  * should call here to release a batch from their amgetbatch or amgetbitmap
  * routines.
+ *
+ * The rules for batch ownership differ slightly for amgetbitmap scans; see
+ * the amgetbitmap documentation in doc/src/sgml/indexam.sgml for details.
  */
 void
 indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)

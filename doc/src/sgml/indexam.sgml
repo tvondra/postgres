@@ -991,6 +991,29 @@ amgetbitmap (IndexScanDesc scan,
   </para>
 
   <para>
+   Index access methods that use the <function>amgetbatch</function> interface
+   will generally also want to use the batch allocation infrastructure
+   (<function>indexam_util_batch_alloc</function> and
+   <function>indexam_util_batch_release</function>) within their
+   <function>amgetbitmap</function> implementation.  The convention is that only
+   one batch is allocated at a time during <function>amgetbitmap</function>,
+   unlike <function>amgetbatch</function> where several batches may be
+   outstanding in the batch ring buffer concurrently.  To maintain this
+   one-batch-at-a-time invariant, the index AM itself releases its prior batch
+   via <function>indexam_util_batch_release</function> just as the scan leaves
+   that batch's index page and is about to generate the next batch &mdash; the
+   same point where it extracts navigation state (such as sibling-page links)
+   from <literal>priorbatch</literal>.  This early release is specific to
+   <function>amgetbitmap</function> scans; during <function>amgetbatch</function>
+   scans the <literal>priorbatch</literal> is strictly owned by the table AM
+   and core code, and the index AM must never release it.  See
+   <function>_bt_next</function> and <function>_hash_next</function> for
+   reference examples.  The released batch is cached internally and reused by
+   the next <function>indexam_util_batch_alloc</function> call, avoiding
+   repeated memory allocation during the bitmap scan.
+  </para>
+
+  <para>
 <programlisting>
 void
 amendscan (IndexScanDesc scan);

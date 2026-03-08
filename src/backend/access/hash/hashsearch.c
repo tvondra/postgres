@@ -59,17 +59,20 @@ _hash_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	 * taken from the prior batch
 	 */
 	if (ScanDirectionIsForward(dir))
-	{
 		blkno = hpriorbatch->nextPage;
-		if (!BlockNumberIsValid(blkno))
-			return NULL;
-	}
 	else
-	{
 		blkno = hpriorbatch->prevPage;
-		if (!BlockNumberIsValid(blkno))
-			return NULL;
-	}
+
+	/*
+	 * For bitmap scan callers, release the prior batch now so that the
+	 * allocation below can reuse its memory.  This way bitmap scans never
+	 * need more than one batch allocation.
+	 */
+	if (!scan->usebatchring)
+		indexam_util_batch_release(scan, priorbatch);
+
+	if (!BlockNumberIsValid(blkno))
+		return NULL;
 
 	/* Allocate space for next batch */
 	batch = indexam_util_batch_alloc(scan);

@@ -289,7 +289,11 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 				/* Advance to next TID within page-sized batch */
 				if (++itemIndex > batch->lastItem)
 				{
-					/* let _bt_next do the heavy lifting */
+					/*
+					 * _bt_next releases the prior batch for bitmap callers
+					 * before allocating the next one, so only one batch is
+					 * ever used at a time
+					 */
 					itemIndex = 0;
 					batch = _bt_next(scan, ForwardScanDirection, batch);
 					if (!batch)

@@ -714,6 +714,15 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 			}
 		}
 	}
+	else if (scan->xs_bitmap_batch != NULL)
+	{
+		/*
+		 * Reuse cached batch from prior amgetbitmap iteration.  This path is
+		 * hit on every amgetbitmap call here after the scan's first.
+		 */
+		batch = scan->xs_bitmap_batch;
+		scan->xs_bitmap_batch = NULL;
+	}
 
 	if (!batch)
 	{
@@ -849,10 +858,19 @@ indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)
 	}
 	else
 	{
-		/* amgetbitmap scan caller */
+		/*
+		 * amgetbitmap scan caller.
+		 *
+		 * amgetbitmap routines are required to allocate no more than one
+		 * batch at a time, so we'll always have a free slot.
+		 */
+		Assert(scan->xs_bitmap_batch == NULL);
 		Assert(scan->heapRelation == NULL);
 		Assert(batch->deadItems == NULL);
 		Assert(batch->currTuples == NULL);
+
+		scan->xs_bitmap_batch = batch;
+		return;
 	}
 
 	/* no free slot to save this batch (expected with amgetbitmap callers) */

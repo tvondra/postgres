@@ -90,6 +90,7 @@ RelationGetIndexScan(Relation indexRelation, int nkeys, int norderbys)
 	scan->numberOfKeys = nkeys;
 	scan->numberOfOrderBys = norderbys;
 	scan->usebatchring = false; /* set later for amgetbatch callers */
+	scan->xs_bitmap_batch = NULL;
 	scan->xs_want_itup = false; /* caller must initialize this */
 
 	/*

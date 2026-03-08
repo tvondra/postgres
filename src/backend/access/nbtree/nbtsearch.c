@@ -1553,6 +1553,7 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	BTBatchData *btpriorbatch = bt_batch_data(priorbatch);
 	BlockNumber blkno,
 				lastcurrblkno;
+	bool		moreInDir;
 
 	/* Walk to the next page with data */
 	if (ScanDirectionIsForward(dir))
@@ -1560,6 +1561,8 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	else
 		blkno = btpriorbatch->prevPage;
 	lastcurrblkno = btpriorbatch->currPage;
+	moreInDir = ScanDirectionIsForward(dir) ?
+		btpriorbatch->moreRight : btpriorbatch->moreLeft;
 
 	/*
 	 * Cancel primitive index scans that were scheduled when priorbatch's call
@@ -1570,9 +1573,15 @@ _bt_next(IndexScanDesc scan, ScanDirection dir, IndexScanBatch priorbatch)
 	if (priorbatch->dir != dir)
 		so->needPrimScan = false;
 
-	if (blkno == P_NONE ||
-		(ScanDirectionIsForward(dir) ?
-		 !btpriorbatch->moreRight : !btpriorbatch->moreLeft))
+	/*
+	 * For bitmap scan callers, release the prior batch now so that
+	 * _bt_readnextpage can reuse its memory.  This way bitmap scans never
+	 * need more than one batch allocation.
+	 */
+	if (!scan->usebatchring)
+		indexam_util_batch_release(scan, priorbatch);
+
+	if (blkno == P_NONE || !moreInDir)
 	{
 		/*
 		 * priorbatch's page is known to be the final leaf page with matches

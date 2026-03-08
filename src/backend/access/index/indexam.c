@@ -413,6 +413,13 @@ index_endscan(IndexScanDesc scan)
 	if (scan->usebatchring)
 		index_batchscan_end(scan);
 
+	/* Free cached bitmap batch if any */
+	if (scan->xs_bitmap_batch != NULL)
+	{
+		pfree(batch_alloc_base(scan->xs_bitmap_batch, scan));
+		scan->xs_bitmap_batch = NULL;
+	}
+
 	/* Release resources (like buffer pins) from table accesses */
 	if (scan->xs_heapfetch)
 	{

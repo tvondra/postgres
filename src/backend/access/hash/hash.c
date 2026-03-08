@@ -332,6 +332,10 @@ hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			ntids++;
 		}
 
+		/*
+		 * _hash_next releases the prior batch for bitmap callers before
+		 * allocating the next one, so only one batch is ever used at a time
+		 */
 		batch = _hash_next(scan, ForwardScanDirection, batch);
 	}
 

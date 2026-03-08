@@ -347,6 +347,9 @@ typedef struct IndexScanDescData
 
 	bool		usebatchring;	/* scan uses amgetbatch/batchringbuf? */
 
+	/* Cached batch for amgetbitmap callers (avoids repeated alloc/free) */
+	IndexScanBatch xs_bitmap_batch;
+
 	bool		xs_want_itup;	/* caller requests index tuples */
 	bool		xs_temp_snap;	/* unregister snapshot at scan end? */
 

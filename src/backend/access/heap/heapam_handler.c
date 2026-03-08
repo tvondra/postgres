@@ -651,8 +651,8 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 
 		/*
 		 * xs_read_extremal_only scans are used by get_actual_variable_range
-		 * to find min/max values.  They only need the extremal (first or
-		 * last) index page, so once we have one batch, we give up completely.
+		 * to find min/max values.  They only need a value from one of the
+		 * extremal leaf pages, so once we have one batch, we give up.
 		 */
 		if (unlikely(scan->xs_read_extremal_only) && priorBatch)
 		{

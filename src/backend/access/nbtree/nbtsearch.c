@@ -1676,7 +1676,8 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 
 	Assert(firstbatch->dir == dir);
 
-	if (blkno == P_NONE || scan->xs_read_extremal_only ||
+	if (blkno == P_NONE ||
+		(scan->xs_read_extremal_only && --scan->xs_read_extremal_only == 0) ||
 		(ScanDirectionIsForward(dir) ?
 		 !btfirstbatch->moreRight : !btfirstbatch->moreLeft))
 	{
@@ -1685,7 +1686,7 @@ _bt_readfirstpage(IndexScanDesc scan, IndexScanBatch firstbatch,
 		 * if so->needPrimScan was set the scan will continue in _bt_first).
 		 *
 		 * Also cut our losses during xs_read_extremal_only scans, which are
-		 * limited to scanning only the extremal leaf page in the index.
+		 * limited to scanning only a few leaf pages in the index.
 		 */
 		Assert(!scan->xs_read_extremal_only || !so->needPrimScan);
 		indexam_util_batch_release(scan, firstbatch);
@@ -1807,7 +1808,9 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		newbatch->buf = InvalidBuffer;
 
 		/* Continue the scan in this direction? */
-		if (blkno == P_NONE || scan->xs_read_extremal_only ||
+		if (blkno == P_NONE ||
+			(scan->xs_read_extremal_only &&
+			 --scan->xs_read_extremal_only == 0) ||
 			(ScanDirectionIsForward(dir) ?
 			 !btnewbatch->moreRight : !btnewbatch->moreLeft))
 		{

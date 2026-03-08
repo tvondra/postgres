@@ -865,14 +865,28 @@ amgetbatch (IndexScanDesc scan,
   </para>
 
   <para>
-   Similarly, the <function>amgetbatch</function> interface does not support
-   index-only scans that return data in the form of a
+   Similarly, the <function>amgetbatch</function> interface does not currently
+   support index-only scans that return data in the form of a
    <structname>HeapTuple</structname> pointer.  Index-only scans work by
    copying <structname>IndexTuple</structname> records from index pages into a
    local buffer associated with each batch.  <literal>xs_itupdesc</literal>
-   works in the same as already described for <function>amgettuple</function>.
+   works in the same way as already described for <function>amgettuple</function>.
    The access method must not set the <literal>scan-&gt;xs_itup</literal> or
    <literal>scan-&gt;xs_hitup</literal> fields itself.
+   With <function>amgettuple</function>, the index AM sets
+   <literal>scan-&gt;xs_hitup</literal> to point to a reconstructed
+   <structname>HeapTuple</structname> whose lifetime extends until the next
+   <function>amgettuple</function> call &mdash; only one tuple is valid at a
+   time.  With <function>amgetbatch</function>, multiple batches are held open
+   simultaneously and items are consumed asynchronously by the table AM, so
+   there is no equivalent single-tuple lifetime for per-item
+   <structname>HeapTuple</structname> pointers.  The batch infrastructure
+   provides per-batch storage for <structname>IndexTuple</structname> copies,
+   but has no analogous mechanism for <structname>HeapTuple</structname> data
+   (used by index AMs such as <acronym>GiST</acronym> and
+   <acronym>SP-GiST</acronym> for reconstructed tuples that might not fit in
+   <structname>IndexTuple</structname> format).  This limitation could be
+   addressed in a future version of <productname>PostgreSQL</productname>.
   </para>
 
   <para>

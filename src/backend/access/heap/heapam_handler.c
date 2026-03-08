@@ -712,7 +712,7 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 		}
 	}
 
-	/* xs_hitup is not supported by amgetbatch scans */
+	/* xs_hitup isn't currently supported by amgetbatch scans */
 	Assert(!scan->xs_hitup);
 
 	return batch;

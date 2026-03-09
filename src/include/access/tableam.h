@@ -975,7 +975,7 @@ static inline TableScanDesc
 table_beginscan_bm(Relation rel, Snapshot snapshot,
 				   int nkeys, ScanKeyData *key)
 {
-	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE;
+	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
 
 	return table_beginscan_common(rel, snapshot, nkeys, key, NULL, flags);
 }

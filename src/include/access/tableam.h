@@ -931,7 +931,7 @@ table_beginscan(Relation rel, Snapshot snapshot,
 				int nkeys, ScanKeyData *key)
 {
 	uint32		flags = SO_TYPE_SEQSCAN |
-		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
 
 	return table_beginscan_common(rel, snapshot, nkeys, key, NULL, flags);
 }
@@ -955,7 +955,7 @@ table_beginscan_strat(Relation rel, Snapshot snapshot,
 					  int nkeys, ScanKeyData *key,
 					  bool allow_strat, bool allow_sync)
 {
-	uint32		flags = SO_TYPE_SEQSCAN | SO_ALLOW_PAGEMODE;
+	uint32		flags = SO_TYPE_SEQSCAN | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
 
 	if (allow_strat)
 		flags |= SO_ALLOW_STRAT;

@@ -142,8 +142,8 @@ static void show_indexscan_prefetch_info(PlanState *planstate,
 										 ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
-static void show_bitmapscan_prefetch_info(BitmapHeapScanState *planstate,
-										  ExplainState *es);
+static void show_scan_prefetch_info(ScanState *planstate,
+									ExplainState *es);
 static void show_prefetch_worker_info(PlanState *planstate,
 												 ExplainState *es,
 												 int worker);
@@ -2015,7 +2015,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_tidbitmap_info((BitmapHeapScanState *) planstate, es);
-			show_bitmapscan_prefetch_info((BitmapHeapScanState *) planstate, es);
+			show_scan_prefetch_info((ScanState *) planstate, es);
 			break;
 		case T_SampleScan:
 			show_tablesample(((SampleScan *) plan)->tablesample,
@@ -2034,6 +2034,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										   planstate, es);
 			if (IsA(plan, CteScan))
 				show_ctescan_info(castNode(CteScanState, planstate), es);
+			show_scan_prefetch_info((ScanState *) planstate, es);
 			break;
 		case T_Gather:
 			{
@@ -4080,34 +4081,57 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
  * Shows summary of stats for leader and workers (if any).
  */
 static void
-show_bitmapscan_prefetch_info(BitmapHeapScanState *planstate, ExplainState *es)
+show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 {
+	Plan	   *plan = planstate->ps.plan;
 	// TableScanDesc scandesc = NULL;
-	HeapScanDesc hscandesc = NULL;
-	SharedBitmapHeapInstrumentation *sinstrument = planstate->sinstrument;
 	ReadStreamInstrumentation	stats;
 
 	if (!es->analyze)
 		return;
 
 	/* Initialize counters with stats from the local process first */
-	/* FIXME we should not reference heap explicitly */
-	hscandesc = (HeapScanDesc) planstate->ss.ss_currentScanDesc;
-
-	/* collect prefetch statistics from the read stream */
-	stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
-
-	/* get the sum of the counters set within each and every process */
-	if (sinstrument)
+	switch (nodeTag(plan))
 	{
-		for (int i = 0; i < sinstrument->num_workers; ++i)
-		{
-			BitmapHeapScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+		case T_SeqScan:
+			{
+				/* FIXME we should not reference heap explicitly */
+				HeapScanDesc hscandesc = (HeapScanDesc) planstate->ss_currentScanDesc;
 
-			stats.prefetch_count += winstrument->stream.prefetch_count;
-			stats.distance_sum += winstrument->stream.distance_sum;
-			stats.stall_count += winstrument->stream.stall_count;
-		}
+				/* collect prefetch statistics from the read stream */
+				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+
+				break;
+			}
+		case T_BitmapHeapScan:
+			{
+				SharedBitmapHeapInstrumentation *sinstrument
+					= ((BitmapHeapScanState *) planstate)->sinstrument;
+
+				/* FIXME we should not reference heap explicitly */
+				HeapScanDesc hscandesc = (HeapScanDesc) planstate->ss_currentScanDesc;
+
+				/* collect prefetch statistics from the read stream */
+				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+
+				/* get the sum of the counters set within each and every process */
+				if (sinstrument)
+				{
+					for (int i = 0; i < sinstrument->num_workers; ++i)
+					{
+						BitmapHeapScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+
+						stats.prefetch_count += winstrument->stream.prefetch_count;
+						stats.distance_sum += winstrument->stream.distance_sum;
+						stats.stall_count += winstrument->stream.stall_count;
+					}
+				}
+
+				break;
+			}
+		default:
+			/* ignore other plans */
+			return;
 	}
 
 	/* don't print anything without prefetching */

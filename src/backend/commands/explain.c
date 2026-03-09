@@ -138,14 +138,13 @@ static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
 static void show_indexscan_info(PlanState *planstate, ExplainState *es);
-static void show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es);
-static void show_indexscan_prefetch_worker_info(PlanState *planstate, ExplainState *es,
-										   int worker);
+static void show_indexscan_prefetch_info(PlanState *planstate,
+										 ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
 static void show_bitmapscan_prefetch_info(BitmapHeapScanState *planstate,
 										  ExplainState *es);
-static void show_bitmapscan_prefetch_worker_info(PlanState *planstate,
+static void show_prefetch_worker_info(PlanState *planstate,
 												 ExplainState *es,
 												 int worker);
 static void show_instrumentation_count(const char *qlabel, int which,
@@ -2325,11 +2324,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_wal_usage(es, &instrument->walusage);
 
 			/* show prefetch info for the given worker */
-			show_indexscan_prefetch_worker_info(planstate, es, n);
-
-			/* XXX it's rather wrong we need to call this for any plan that
-			 * might be doing prefetch separately */
-			show_bitmapscan_prefetch_worker_info(planstate, es, n);
+			show_prefetch_worker_info(planstate, es, n);
 
 			ExplainCloseWorker(n, es);
 		}
@@ -4012,61 +4007,6 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 }
 
 /*
- * show_indexscan_prefetch_worker_info
- *		show info about prefetching for a single worker
- *
- * Shows prefetching stats for a worker with a given index.
- */
-static void
-show_indexscan_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
-{
-	Plan	   *plan = planstate->plan;
-	SharedIndexScanInstrumentation *SharedInfo = NULL;
-	IndexScanInstrumentation *instrument;
-
-	if (!es->analyze)
-		return;
-
-	/* Initialize counters with stats from the local process first */
-	switch (nodeTag(plan))
-	{
-		case T_IndexScan:
-			{
-				IndexScanState *indexstate = ((IndexScanState *) planstate);
-
-				SharedInfo = indexstate->iss_SharedInfo;
-				break;
-			}
-		case T_IndexOnlyScan:
-			{
-				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
-
-				SharedInfo = indexstate->ioss_SharedInfo;
-				break;
-			}
-		default:
-			/* ignore other plans */
-			return;
-	}
-
-	/* get instrumentation for the given worker */
-	instrument = &SharedInfo->winstrument[worker];
-
-	/* don't print stats if there's nothing to report */
-	if (instrument->stream.prefetch_count > 0)
-	{
-		ExplainIndentText(es);
-
-		appendStringInfoString(es->str, "Prefetch:");
-		appendStringInfo(es->str, " distance=%.3f",
-						 (instrument->stream.distance_sum * 1.0 / instrument->stream.prefetch_count));
-		appendStringInfo(es->str, " count=%" PRId64, instrument->stream.prefetch_count);
-		appendStringInfo(es->str, " stalls=%" PRId64, instrument->stream.stall_count);
-		appendStringInfoChar(es->str, '\n');
-	}
-}
-
-/*
  * Show exact/lossy pages for a BitmapHeapScan node
  */
 static void
@@ -4191,22 +4131,45 @@ show_bitmapscan_prefetch_info(BitmapHeapScanState *planstate, ExplainState *es)
  * Shows prefetching stats for a worker with a given bitmap heap scan.
  */
 static void
-show_bitmapscan_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
+show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 {
 	Plan	   *plan = planstate->plan;
-	SharedBitmapHeapInstrumentation *sinstrument = NULL;
-	BitmapHeapScanInstrumentation *instrument;
+	ReadStreamInstrumentation *stats = NULL;
 
 	if (!es->analyze)
 		return;
 
-	/* Initialize counters with stats from the local process first */
+	/* get instrumentation for the given worker */
 	switch (nodeTag(plan))
 	{
+		case T_IndexScan:
+			{
+				IndexScanState *indexstate = ((IndexScanState *) planstate);
+				SharedIndexScanInstrumentation *sinstrument = indexstate->iss_SharedInfo;
+				IndexScanInstrumentation *instrument = &sinstrument->winstrument[worker];
+
+				stats = &instrument->stream;
+
+				break;
+			}
+		case T_IndexOnlyScan:
+			{
+				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
+				SharedIndexScanInstrumentation *sinstrument = indexstate->ioss_SharedInfo;
+				IndexScanInstrumentation *instrument = &sinstrument->winstrument[worker];
+
+				stats = &instrument->stream;
+
+				break;
+			}
 		case T_BitmapHeapScan:
 			{
 				BitmapHeapScanState *state = ((BitmapHeapScanState *) planstate);
-				sinstrument = state->sinstrument;
+				SharedBitmapHeapInstrumentation *sinstrument = state->sinstrument;
+				BitmapHeapScanInstrumentation *instrument = &sinstrument->sinstrument[worker];
+
+				stats = &instrument->stream;
+
 				break;
 			}
 		default:
@@ -4214,19 +4177,16 @@ show_bitmapscan_prefetch_worker_info(PlanState *planstate, ExplainState *es, int
 			return;
 	}
 
-	/* get instrumentation for the given worker */
-	instrument = &sinstrument->sinstrument[worker];
-
 	/* don't print stats if there's nothing to report */
-	if (instrument->stream.prefetch_count > 0)
+	if (stats->prefetch_count > 0)
 	{
 		ExplainIndentText(es);
 
 		appendStringInfoString(es->str, "Prefetch:");
 		appendStringInfo(es->str, " distance=%.3f",
-						 (instrument->stream.distance_sum * 1.0 / instrument->stream.prefetch_count));
-		appendStringInfo(es->str, " count=%" PRId64, instrument->stream.prefetch_count);
-		appendStringInfo(es->str, " stalls=%" PRId64, instrument->stream.stall_count);
+						 (stats->distance_sum * 1.0 / stats->prefetch_count));
+		appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
+		appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
 		appendStringInfoChar(es->str, '\n');
 	}
 }

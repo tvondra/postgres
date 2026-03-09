@@ -470,8 +470,6 @@ ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 
 	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
 
-	elog(WARNING, "ExecBitmapHeapEstimate pcxt->nworkers %d", pcxt->nworkers);
-
 	/* account for instrumentation, if required */
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
 	{

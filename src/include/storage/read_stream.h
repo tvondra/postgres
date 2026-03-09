@@ -63,12 +63,6 @@
  */
 #define READ_STREAM_USE_BATCHING 0x08
 
-/* ---
- * Opt-in to collecting read_stream stats.
- * ---
- */
-#define READ_STREAM_STATS 0x10
-
 struct ReadStream;
 typedef struct ReadStream ReadStream;
 typedef struct ReadStreamInstrumentation ReadStreamInstrumentation;

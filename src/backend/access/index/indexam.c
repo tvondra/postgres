@@ -412,9 +412,11 @@ index_get_prefetch_stats(IndexScanDesc scan)
 {
 	ReadStreamInstrumentation	stats;
 
+	/* If there's a read_stream, fetch the stats from it. */
 	if (scan && ((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream != NULL)
 	{
-		return read_stream_prefetch_stats(((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream);
+		ReadStream *rs = ((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream;
+		return read_stream_prefetch_stats(rs);
 	}
 
 	/* there's no stream, return zeros */

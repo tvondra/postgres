@@ -4006,10 +4006,14 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 						 (stats.distance_sum * 1.0 / stats.prefetch_count));
 		appendStringInfo(es->str, " count=%" PRId64, stats.prefetch_count);
 		appendStringInfo(es->str, " stalls=%" PRId64, stats.stall_count);
-		appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
-		appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
-		appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
-		appendStringInfoChar(es->str, '\n');
+
+		if (stats.io_count > 0)
+		{
+			appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
+			appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
+			appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
+			appendStringInfoChar(es->str, '\n');
+		}
 	}
 }
 
@@ -4081,8 +4085,8 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
 }
 
 /*
- * show_indexscan_prefetch_info
- *		show info about prefetching for a bitmap scan
+ * show_scan_prefetch_info
+ *		show info about prefetching for a seq/bitmap scan
  *
  * Shows summary of stats for leader and workers (if any).
  */
@@ -4180,10 +4184,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 }
 
 /*
- * show_bitmapscan_prefetch_worker_info
+ * show_prefetch_worker_info
  *		show info about prefetching for a single worker
  *
- * Shows prefetching stats for a worker with a given bitmap heap scan.
+ * Shows prefetching stats for a parallel scan worker.
  */
 static void
 show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
@@ -4252,9 +4256,14 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 						 (stats->distance_sum * 1.0 / stats->prefetch_count));
 		appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
 		appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
-		appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
-		appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
-		appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
+
+		if (stats->io_count > 0)
+		{
+			appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+			appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
+			appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
+		}
+
 		appendStringInfoChar(es->str, '\n');
 	}
 }

@@ -3990,6 +3990,9 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 			stats.prefetch_count += winstrument->stream.prefetch_count;
 			stats.distance_sum += winstrument->stream.distance_sum;
 			stats.stall_count += winstrument->stream.stall_count;
+			stats.io_count += winstrument->stream.io_count;
+			stats.io_nblocks += winstrument->stream.io_nblocks;
+			stats.io_in_progress += winstrument->stream.io_in_progress;
 		}
 	}
 
@@ -4098,13 +4101,30 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	{
 		case T_SeqScan:
 			{
+				SharedSeqScanInstrumentation *sinstrument
+					= ((SeqScanState *) planstate)->sinstrument;
+
 				/* FIXME we should not reference heap explicitly */
 				HeapScanDesc hscandesc = (HeapScanDesc) planstate->ss_currentScanDesc;
 
 				/* collect prefetch statistics from the read stream */
 				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
 
-				/* FIXME where should we store the per-worker stream stats? */
+				/* get the sum of the counters set within each and every process */
+				if (sinstrument)
+				{
+					for (int i = 0; i < sinstrument->num_workers; ++i)
+					{
+						SeqScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+
+						stats.prefetch_count += winstrument->stream.prefetch_count;
+						stats.distance_sum += winstrument->stream.distance_sum;
+						stats.stall_count += winstrument->stream.stall_count;
+						stats.io_count += winstrument->stream.io_count;
+						stats.io_nblocks += winstrument->stream.io_nblocks;
+						stats.io_in_progress += winstrument->stream.io_in_progress;
+					}
+				}
 
 				break;
 			}

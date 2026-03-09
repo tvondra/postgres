@@ -311,7 +311,7 @@ ExecEndSeqScan(SeqScanState *node)
 		 * Here we accumulate the stats rather than performing memcpy on
 		 * node->stats into si.  When a Gather/GatherMerge node finishes it
 		 * will perform planner shutdown on the workers.  On rescan it will
-		 * spin up new workers which will have a new BitmapHeapScanState and
+		 * spin up new workers which will have a new SeqScanState and
 		 * zeroed stats.
 		 */
 		{
@@ -474,15 +474,21 @@ void
 ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
+	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
 	char	   *ptr;
+	Size		size;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 
+	/* XXX has to match the earlier pscan_len value */
+	size = table_parallelscan_estimate(node->ss.ss_currentRelation,
+												  estate->es_snapshot);
+
 	ptr = (char *) pscan;
-	ptr += node->pscan_len;
+	ptr += size;
 
 	if (node->ss.ps.instrument)
 		node->sinstrument = (SharedSeqScanInstrumentation *) ptr;

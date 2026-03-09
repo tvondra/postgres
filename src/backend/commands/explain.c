@@ -4129,6 +4129,9 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 						stats.prefetch_count += winstrument->stream.prefetch_count;
 						stats.distance_sum += winstrument->stream.distance_sum;
 						stats.stall_count += winstrument->stream.stall_count;
+						stats.io_count += winstrument->stream.io_count;
+						stats.io_nblocks += winstrument->stream.io_nblocks;
+						stats.io_in_progress += winstrument->stream.io_in_progress;
 					}
 				}
 

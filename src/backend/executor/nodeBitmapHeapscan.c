@@ -35,6 +35,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
@@ -287,6 +288,13 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 		 */
 		si->exact_pages += node->stats.exact_pages;
 		si->lossy_pages += node->stats.lossy_pages;
+
+		/* collect prefetch info for this process from the read_stream */
+		{
+			HeapScanDesc hscandesc = (HeapScanDesc) node->ss.ss_currentScanDesc;
+
+			si->stream = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+		}
 	}
 
 	/*

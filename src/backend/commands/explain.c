@@ -4003,6 +4003,9 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 						 (stats.distance_sum * 1.0 / stats.prefetch_count));
 		appendStringInfo(es->str, " count=%" PRId64, stats.prefetch_count);
 		appendStringInfo(es->str, " stalls=%" PRId64, stats.stall_count);
+		appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
+		appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
+		appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
 		appendStringInfoChar(es->str, '\n');
 	}
 }
@@ -4144,6 +4147,9 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 						 (stats.distance_sum * 1.0 / stats.prefetch_count));
 		appendStringInfo(es->str, " count=%" PRId64, stats.prefetch_count);
 		appendStringInfo(es->str, " stalls=%" PRId64, stats.stall_count);
+		appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
+		appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
+		appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
 		appendStringInfoChar(es->str, '\n');
 	}
 }
@@ -4211,6 +4217,9 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 						 (stats->distance_sum * 1.0 / stats->prefetch_count));
 		appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
 		appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+		appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+		appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
+		appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
 		appendStringInfoChar(es->str, '\n');
 	}
 }

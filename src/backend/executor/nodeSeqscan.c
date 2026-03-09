@@ -27,7 +27,6 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "executor/execScan.h"
@@ -303,6 +302,7 @@ ExecEndSeqScan(SeqScanState *node)
 	if (node->sinstrument != NULL && IsParallelWorker())
 	{
 		SeqScanInstrumentation *si;
+		TableScanStats stats;
 
 		Assert(ParallelWorkerNumber <= node->sinstrument->num_workers);
 		si = &node->sinstrument->sinstrument[ParallelWorkerNumber];
@@ -314,18 +314,15 @@ ExecEndSeqScan(SeqScanState *node)
 		 * spin up new workers which will have a new SeqScanState and
 		 * zeroed stats.
 		 */
-		{
-			HeapScanDesc hscandesc = (HeapScanDesc) node->ss.ss_currentScanDesc;
-			ReadStreamInstrumentation	stats
-				= read_stream_prefetch_stats(hscandesc->rs_read_stream);
+		/* collect prefetch info for this process from the read_stream */
+		stats = table_scan_stats(node->ss.ss_currentScanDesc);
 
-			si->stream.prefetch_count += stats.prefetch_count;
-			si->stream.distance_sum += stats.distance_sum;
-			si->stream.stall_count += stats.stall_count;
-			si->stream.io_count += stats.io_count;
-			si->stream.io_nblocks += stats.io_nblocks;
-			si->stream.io_in_progress += stats.io_in_progress;
-		}
+		si->stream.prefetch_count += stats->prefetch_count;
+		si->stream.distance_sum += stats->distance_sum;
+		si->stream.stall_count += stats->stall_count;
+		si->stream.io_count += stats->io_count;
+		si->stream.io_nblocks += stats->io_nblocks;
+		si->stream.io_in_progress += stats->io_in_progress;
 	}
 
 	/*

@@ -400,31 +400,6 @@ index_rescan(IndexScanDesc scan,
 											orderbys, norderbys);
 }
 
-/*
- * index_get_prefetch_stats
- *		collect prefetch statistics from the read_stream
- *
- * If the index scan does not use a read_stream (yet), the counters are
- * initialized to 0.
- */
-extern ReadStreamInstrumentation
-index_get_prefetch_stats(IndexScanDesc scan)
-{
-	ReadStreamInstrumentation	stats;
-
-	/* If there's a read_stream, fetch the stats from it. */
-	if (scan && ((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream != NULL)
-	{
-		ReadStream *rs = ((IndexFetchHeapData *) scan->xs_heapfetch)->xs_read_stream;
-		return read_stream_prefetch_stats(rs);
-	}
-
-	/* there's no stream, return zeros */
-	memset(&stats, 0, sizeof(ReadStreamInstrumentation));
-
-	return stats;
-}
-
 /* ----------------
  *		index_endscan - end a scan
  * ----------------

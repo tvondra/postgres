@@ -14,7 +14,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/createas.h"
@@ -3948,7 +3948,7 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 	Plan	   *plan = planstate->plan;
 	IndexScanDesc scandesc = NULL;
 	SharedIndexScanInstrumentation *SharedInfo = NULL;
-	ReadStreamInstrumentation	stats;
+	TableScanStats	stats;
 
 	if (!es->analyze)
 		return;
@@ -3978,7 +3978,7 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 	}
 
 	/* collect prefetch statistics from the read stream */
-	stats = index_get_prefetch_stats(scandesc);
+	stats = table_index_stats(scandesc->xs_heapfetch);
 
 	/* get the sum of the counters set within each and every process */
 	if (SharedInfo)
@@ -3987,33 +3987,34 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 		{
 			IndexScanInstrumentation *winstrument = &SharedInfo->winstrument[i];
 
-			stats.prefetch_count += winstrument->stream.prefetch_count;
-			stats.distance_sum += winstrument->stream.distance_sum;
-			stats.stall_count += winstrument->stream.stall_count;
-			stats.io_count += winstrument->stream.io_count;
-			stats.io_nblocks += winstrument->stream.io_nblocks;
-			stats.io_in_progress += winstrument->stream.io_in_progress;
+			stats->prefetch_count += winstrument->stream.prefetch_count;
+			stats->distance_sum += winstrument->stream.distance_sum;
+			stats->stall_count += winstrument->stream.stall_count;
+			stats->io_count += winstrument->stream.io_count;
+			stats->io_nblocks += winstrument->stream.io_nblocks;
+			stats->io_in_progress += winstrument->stream.io_in_progress;
 		}
 	}
 
 	/* don't print anything without prefetching */
-	if (stats.prefetch_count > 0)
+	if (stats->prefetch_count > 0)
 	{
 		ExplainIndentText(es);
 
 		appendStringInfoString(es->str, "Prefetch:");
 		appendStringInfo(es->str, " distance=%.3f",
-						 (stats.distance_sum * 1.0 / stats.prefetch_count));
-		appendStringInfo(es->str, " count=%" PRId64, stats.prefetch_count);
-		appendStringInfo(es->str, " stalls=%" PRId64, stats.stall_count);
+						 (stats->distance_sum * 1.0 / stats->prefetch_count));
+		appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
+		appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
 
-		if (stats.io_count > 0)
+		if (stats->io_count > 0)
 		{
-			appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
-			appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
-			appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
-			appendStringInfoChar(es->str, '\n');
+			appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+			appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
+			appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
 		}
+
+		appendStringInfoChar(es->str, '\n');
 	}
 }
 
@@ -4094,8 +4095,7 @@ static void
 show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 {
 	Plan	   *plan = planstate->ps.plan;
-	// TableScanDesc scandesc = NULL;
-	ReadStreamInstrumentation	stats;
+	TableScanStats	stats;
 
 	if (!es->analyze)
 		return;
@@ -4108,11 +4108,8 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 				SharedSeqScanInstrumentation *sinstrument
 					= ((SeqScanState *) planstate)->sinstrument;
 
-				/* FIXME we should not reference heap explicitly */
-				HeapScanDesc hscandesc = (HeapScanDesc) planstate->ss_currentScanDesc;
-
 				/* collect prefetch statistics from the read stream */
-				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+				stats = table_scan_stats(planstate->ss_currentScanDesc);
 
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)
@@ -4121,12 +4118,12 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 					{
 						SeqScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
 
-						stats.prefetch_count += winstrument->stream.prefetch_count;
-						stats.distance_sum += winstrument->stream.distance_sum;
-						stats.stall_count += winstrument->stream.stall_count;
-						stats.io_count += winstrument->stream.io_count;
-						stats.io_nblocks += winstrument->stream.io_nblocks;
-						stats.io_in_progress += winstrument->stream.io_in_progress;
+						stats->prefetch_count += winstrument->stream.prefetch_count;
+						stats->distance_sum += winstrument->stream.distance_sum;
+						stats->stall_count += winstrument->stream.stall_count;
+						stats->io_count += winstrument->stream.io_count;
+						stats->io_nblocks += winstrument->stream.io_nblocks;
+						stats->io_in_progress += winstrument->stream.io_in_progress;
 					}
 				}
 
@@ -4137,11 +4134,8 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 				SharedBitmapHeapInstrumentation *sinstrument
 					= ((BitmapHeapScanState *) planstate)->sinstrument;
 
-				/* FIXME we should not reference heap explicitly */
-				HeapScanDesc hscandesc = (HeapScanDesc) planstate->ss_currentScanDesc;
-
 				/* collect prefetch statistics from the read stream */
-				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+				stats = table_scan_stats(planstate->ss_currentScanDesc);
 
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)
@@ -4150,12 +4144,12 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 					{
 						BitmapHeapScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
 
-						stats.prefetch_count += winstrument->stream.prefetch_count;
-						stats.distance_sum += winstrument->stream.distance_sum;
-						stats.stall_count += winstrument->stream.stall_count;
-						stats.io_count += winstrument->stream.io_count;
-						stats.io_nblocks += winstrument->stream.io_nblocks;
-						stats.io_in_progress += winstrument->stream.io_in_progress;
+						stats->prefetch_count += winstrument->stream.prefetch_count;
+						stats->distance_sum += winstrument->stream.distance_sum;
+						stats->stall_count += winstrument->stream.stall_count;
+						stats->io_count += winstrument->stream.io_count;
+						stats->io_nblocks += winstrument->stream.io_nblocks;
+						stats->io_in_progress += winstrument->stream.io_in_progress;
 					}
 				}
 
@@ -4167,19 +4161,46 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	}
 
 	/* don't print anything without prefetching */
-	if (stats.prefetch_count > 0)
+	if (stats->prefetch_count > 0)
 	{
-		ExplainIndentText(es);
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainIndentText(es);
 
-		appendStringInfoString(es->str, "Prefetch:");
-		appendStringInfo(es->str, " distance=%.3f",
-						 (stats.distance_sum * 1.0 / stats.prefetch_count));
-		appendStringInfo(es->str, " count=%" PRId64, stats.prefetch_count);
-		appendStringInfo(es->str, " stalls=%" PRId64, stats.stall_count);
-		appendStringInfo(es->str, " ios=%" PRId64, stats.io_count);
-		appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
-		appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
-		appendStringInfoChar(es->str, '\n');
+			appendStringInfoString(es->str, "Prefetch:");
+			appendStringInfo(es->str, " distance=%.3f",
+							 (stats->distance_sum * 1.0 / stats->prefetch_count));
+			appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
+			appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+
+			if (stats->io_count > 0)
+			{
+				appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
+				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
+			}
+
+			appendStringInfoChar(es->str, '\n');
+		}
+		else
+		{
+			ExplainOpenGroup("Prefetch", "Prefetch", true, es);
+
+			ExplainPropertyFloat("Average Distance", NULL,
+								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
+			ExplainPropertyUInteger("Prefetch Count", NULL,
+									stats->prefetch_count, es);
+			ExplainPropertyUInteger("Stalls", NULL,
+									stats->stall_count, es);
+			ExplainPropertyUInteger("IO count", NULL,
+									stats->io_count, es);
+			ExplainPropertyFloat("Average Size", NULL,
+								 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
+			ExplainPropertyFloat("IO in-progress", NULL,
+								 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+
+			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
+		}
 	}
 }
 
@@ -4249,22 +4270,44 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 	/* don't print stats if there's nothing to report */
 	if (stats->prefetch_count > 0)
 	{
-		ExplainIndentText(es);
-
-		appendStringInfoString(es->str, "Prefetch:");
-		appendStringInfo(es->str, " distance=%.3f",
-						 (stats->distance_sum * 1.0 / stats->prefetch_count));
-		appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
-		appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
-
-		if (stats->io_count > 0)
+		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
-			appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
-			appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
-			appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
-		}
+			ExplainIndentText(es);
 
-		appendStringInfoChar(es->str, '\n');
+			appendStringInfoString(es->str, "Prefetch:");
+			appendStringInfo(es->str, " distance=%.3f",
+							 (stats->distance_sum * 1.0 / stats->prefetch_count));
+			appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
+			appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+
+			if (stats->io_count > 0)
+			{
+				appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
+				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
+			}
+
+			appendStringInfoChar(es->str, '\n');
+		}
+		else
+		{
+			ExplainOpenGroup("Prefetch", "Prefetch", true, es);
+
+			ExplainPropertyFloat("Average Distance", NULL,
+								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
+			ExplainPropertyUInteger("Prefetch Count", NULL,
+									stats->prefetch_count, es);
+			ExplainPropertyUInteger("Stalls", NULL,
+									stats->stall_count, es);
+			ExplainPropertyUInteger("IO count", NULL,
+									stats->io_count, es);
+			ExplainPropertyFloat("Average Size", NULL,
+								 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
+			ExplainPropertyFloat("IO in-progress", NULL,
+								 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+
+			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
+		}
 	}
 }
 

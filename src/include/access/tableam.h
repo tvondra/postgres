@@ -63,9 +63,6 @@ typedef enum ScanOptions
 
 	/* unregister snapshot at scan end? */
 	SO_TEMP_SNAPSHOT = 1 << 9,
-
-	/* collect read_stream statistics */
-	SO_STREAM_STATS = 1 << 10,
 }			ScanOptions;
 
 /*
@@ -931,7 +928,7 @@ table_beginscan(Relation rel, Snapshot snapshot,
 				int nkeys, ScanKeyData *key)
 {
 	uint32		flags = SO_TYPE_SEQSCAN |
-		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
 
 	return table_beginscan_common(rel, snapshot, nkeys, key, NULL, flags);
 }
@@ -955,7 +952,7 @@ table_beginscan_strat(Relation rel, Snapshot snapshot,
 					  int nkeys, ScanKeyData *key,
 					  bool allow_strat, bool allow_sync)
 {
-	uint32		flags = SO_TYPE_SEQSCAN | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
+	uint32		flags = SO_TYPE_SEQSCAN | SO_ALLOW_PAGEMODE;
 
 	if (allow_strat)
 		flags |= SO_ALLOW_STRAT;
@@ -975,7 +972,7 @@ static inline TableScanDesc
 table_beginscan_bm(Relation rel, Snapshot snapshot,
 				   int nkeys, ScanKeyData *key)
 {
-	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE | SO_STREAM_STATS;
+	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE;
 
 	return table_beginscan_common(rel, snapshot, nkeys, key, NULL, flags);
 }

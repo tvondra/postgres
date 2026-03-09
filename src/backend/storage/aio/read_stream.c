@@ -110,7 +110,6 @@ struct ReadStream
 	bool		temporary;
 
 	/* stats counters */
-	bool		collect_stats;
 	ReadStreamInstrumentation stats;
 
 	/*
@@ -188,9 +187,6 @@ block_range_read_stream_cb(ReadStream *stream,
 static inline void
 read_stream_update_stats_prefetch(ReadStream *stream)
 {
-	if (!stream->collect_stats)
-		return;
-
 	stream->stats.prefetch_count += 1;
 	stream->stats.distance_sum += stream->distance;
 }
@@ -205,9 +201,6 @@ read_stream_update_stats_prefetch(ReadStream *stream)
 static inline void
 read_stream_update_stats_io(ReadStream *stream, int nblocks, int in_progress)
 {
-	if (!stream->collect_stats)
-		return;
-
 	stream->stats.io_count += 1;
 	stream->stats.io_nblocks += nblocks;
 	stream->stats.io_in_progress += in_progress;
@@ -721,9 +714,6 @@ read_stream_begin_impl(int flags,
 
 	stream->sync_mode = io_method == IOMETHOD_SYNC;
 	stream->batch_mode = flags & READ_STREAM_USE_BATCHING;
-
-	/* should we collect stats */
-	stream->collect_stats = flags & READ_STREAM_STATS;
 
 #ifdef USE_PREFETCH
 

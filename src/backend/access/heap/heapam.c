@@ -1167,7 +1167,6 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 			   uint32 flags)
 {
 	HeapScanDesc scan;
-	int rs_flags = READ_STREAM_USE_BATCHING;
 
 	/*
 	 * increment relation ref count while scanning relation
@@ -1243,12 +1242,6 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 		PredicateLockRelation(relation, snapshot);
 	}
 
-	/* Optionally, enable collecting stats about the read_stream. */
-	if (scan->rs_base.rs_flags & SO_STREAM_STATS)
-	{
-		rs_flags |= READ_STREAM_STATS;
-	}
-
 	/* we only need to set this up once */
 	scan->rs_ctup.t_tableOid = RelationGetRelid(relation);
 
@@ -1296,7 +1289,8 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 		 * - in the parallel case, only spinlocks and atomics are used
 		 * ---
 		 */
-		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL | rs_flags,
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL |
+														  READ_STREAM_USE_BATCHING,
 														  scan->rs_strategy,
 														  scan->rs_base.rs_rd,
 														  MAIN_FORKNUM,
@@ -1306,7 +1300,8 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	}
 	else if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
 	{
-		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT | rs_flags,
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT |
+														  READ_STREAM_USE_BATCHING,
 														  scan->rs_strategy,
 														  scan->rs_base.rs_rd,
 														  MAIN_FORKNUM,

@@ -61,6 +61,25 @@ typedef struct ReadStreamInstrumentation
 	uint64		io_in_progress;	/* sum of in-progress I/Os */
 } ReadStreamInstrumentation;
 
+
+/* ---------------------
+ *	Instrumentation information for sequential scans
+ * ---------------------
+ */
+typedef struct SeqScanInstrumentation
+{
+	ReadStreamInstrumentation	stream;
+} SeqScanInstrumentation;
+
+/*
+ * Shared memory container for per-worker information
+ */
+typedef struct SharedSeqScanInstrumentation
+{
+	int			num_workers;
+	SeqScanInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
+} SharedSeqScanInstrumentation;
+
 typedef struct IndexScanInstrumentation
 {
 	/* Index search count (incremented with pgstat_count_index_scan call) */

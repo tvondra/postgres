@@ -27,6 +27,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "executor/execScan.h"
@@ -295,6 +296,39 @@ ExecEndSeqScan(SeqScanState *node)
 	TableScanDesc scanDesc;
 
 	/*
+	 * When ending a parallel worker, copy the statistics gathered by the
+	 * worker back into shared memory so that it can be picked up by the main
+	 * process to report in EXPLAIN ANALYZE.
+	 */
+	if (node->sinstrument != NULL && IsParallelWorker())
+	{
+		SeqScanInstrumentation *si;
+
+		Assert(ParallelWorkerNumber <= node->sinstrument->num_workers);
+		si = &node->sinstrument->sinstrument[ParallelWorkerNumber];
+
+		/*
+		 * Here we accumulate the stats rather than performing memcpy on
+		 * node->stats into si.  When a Gather/GatherMerge node finishes it
+		 * will perform planner shutdown on the workers.  On rescan it will
+		 * spin up new workers which will have a new BitmapHeapScanState and
+		 * zeroed stats.
+		 */
+		{
+			HeapScanDesc hscandesc = (HeapScanDesc) node->ss.ss_currentScanDesc;
+			ReadStreamInstrumentation	stats
+				= read_stream_prefetch_stats(hscandesc->rs_read_stream);
+
+			si->stream.prefetch_count += stats.prefetch_count;
+			si->stream.distance_sum += stats.distance_sum;
+			si->stream.stall_count += stats.stall_count;
+			si->stream.io_count += stats.io_count;
+			si->stream.io_nblocks += stats.io_nblocks;
+			si->stream.io_in_progress += stats.io_in_progress;
+		}
+	}
+
+	/*
 	 * get information from node
 	 */
 	scanDesc = node->ss.ss_currentScanDesc;
@@ -348,10 +382,20 @@ ExecSeqScanEstimate(SeqScanState *node,
 					ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
+	Size		size;
 
-	node->pscan_len = table_parallelscan_estimate(node->ss.ss_currentRelation,
+	size = table_parallelscan_estimate(node->ss.ss_currentRelation,
 												  estate->es_snapshot);
-	shm_toc_estimate_chunk(&pcxt->estimator, node->pscan_len);
+	node->pscan_len = size;
+
+	/* account for instrumentation, if required */
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	{
+		size = add_size(size, offsetof(SharedSeqScanInstrumentation, sinstrument));
+		size = add_size(size, mul_size(pcxt->nworkers, sizeof(SeqScanInstrumentation)));
+	}
+
+	shm_toc_estimate_chunk(&pcxt->estimator, size);
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 }
 
@@ -367,14 +411,41 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
+	SharedSeqScanInstrumentation *sinstrument = NULL;
+	Size		size;
+	char	   *ptr;
 
-	pscan = shm_toc_allocate(pcxt->toc, node->pscan_len);
+	size = node->pscan_len;
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	{
+		size = add_size(size, offsetof(SharedSeqScanInstrumentation, sinstrument));
+		size = add_size(size, mul_size(pcxt->nworkers, sizeof(SeqScanInstrumentation)));
+	}
+
+	pscan = shm_toc_allocate(pcxt->toc, size);
 	table_parallelscan_initialize(node->ss.ss_currentRelation,
 								  pscan,
 								  estate->es_snapshot);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+
+	/* initialize the shared instrumentation */
+	ptr = (char *) pscan;
+	ptr += node->pscan_len;
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+		sinstrument = (SharedSeqScanInstrumentation *) ptr;
+
+	if (sinstrument)
+	{
+		sinstrument->num_workers = pcxt->nworkers;
+
+		/* ensure any unfilled slots will contain zeroes */
+		memset(sinstrument->sinstrument, 0,
+			   pcxt->nworkers * sizeof(SeqScanInstrumentation));
+	}
+
+	node->sinstrument = sinstrument;
 }
 
 /* ----------------------------------------------------------------
@@ -404,8 +475,37 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
 	ParallelTableScanDesc pscan;
+	char	   *ptr;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+
+	ptr = (char *) pscan;
+	ptr += node->pscan_len;
+
+	if (node->ss.ps.instrument)
+		node->sinstrument = (SharedSeqScanInstrumentation *) ptr;
+}
+
+/* ----------------------------------------------------------------
+ *		ExecSeqScanRetrieveInstrumentation
+ *
+ *		Transfer seq scan statistics from DSM to private memory.
+ * ----------------------------------------------------------------
+ */
+void
+ExecSeqScanRetrieveInstrumentation(SeqScanState *node)
+{
+	SharedSeqScanInstrumentation *sinstrument = node->sinstrument;
+	Size		size;
+
+	if (sinstrument == NULL)
+		return;
+
+	size = offsetof(SharedSeqScanInstrumentation, sinstrument)
+		+ sinstrument->num_workers * sizeof(SeqScanInstrumentation);
+
+	node->sinstrument = palloc(size);
+	memcpy(node->sinstrument, sinstrument, size);
 }

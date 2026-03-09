@@ -145,8 +145,8 @@ static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 static void show_scan_prefetch_info(ScanState *planstate,
 									ExplainState *es);
 static void show_prefetch_worker_info(PlanState *planstate,
-												 ExplainState *es,
-												 int worker);
+									  ExplainState *es,
+									  int worker);
 static void show_instrumentation_count(const char *qlabel, int which,
 									   PlanState *planstate, ExplainState *es);
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
@@ -4202,6 +4202,16 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 				BitmapHeapScanState *state = ((BitmapHeapScanState *) planstate);
 				SharedBitmapHeapInstrumentation *sinstrument = state->sinstrument;
 				BitmapHeapScanInstrumentation *instrument = &sinstrument->sinstrument[worker];
+
+				stats = &instrument->stream;
+
+				break;
+			}
+		case T_SeqScan:
+			{
+				SeqScanState *state = ((SeqScanState *) planstate);
+				SharedSeqScanInstrumentation *sinstrument = state->sinstrument;
+				SeqScanInstrumentation *instrument = &sinstrument->sinstrument[worker];
 
 				stats = &instrument->stream;
 

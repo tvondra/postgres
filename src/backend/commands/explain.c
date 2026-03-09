@@ -4104,6 +4104,8 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 				/* collect prefetch statistics from the read stream */
 				stats = read_stream_prefetch_stats(hscandesc->rs_read_stream);
 
+				/* FIXME where should we store the per-worker stream stats? */
+
 				break;
 			}
 		case T_BitmapHeapScan:

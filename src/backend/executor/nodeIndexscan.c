@@ -807,6 +807,7 @@ ExecEndIndexScan(IndexScanState *node)
 	if (node->iss_SharedInfo != NULL && IsParallelWorker())
 	{
 		IndexScanInstrumentation *winstrument;
+		ReadStreamInstrumentation stats;
 
 		Assert(ParallelWorkerNumber <= node->iss_SharedInfo->num_workers);
 		winstrument = &node->iss_SharedInfo->winstrument[ParallelWorkerNumber];
@@ -821,7 +822,14 @@ ExecEndIndexScan(IndexScanState *node)
 		Assert(node->iss_Instrument->nheapfetches == 0);
 
 		/* collect prefetch info for this process from the read_stream */
-		winstrument->stream = index_get_prefetch_stats(indexScanDesc);
+		stats = index_get_prefetch_stats(indexScanDesc);
+
+		winstrument->stream.prefetch_count += stats.prefetch_count;
+		winstrument->stream.distance_sum += stats.distance_sum;
+		winstrument->stream.stall_count += stats.stall_count;
+		winstrument->stream.io_count += stats.io_count;
+		winstrument->stream.io_nblocks += stats.io_nblocks;
+		winstrument->stream.io_in_progress += stats.io_in_progress;
 	}
 
 	/*

@@ -690,8 +690,8 @@ heapam_batch_getnext(IndexScanDesc scan, ScanDirection direction,
 			Assert(!batchringbuf->prefetchPos.valid);
 
 			hscan->xs_read_stream =
-				read_stream_begin_relation(READ_STREAM_DEFAULT, NULL,
-										   scan->heapRelation, MAIN_FORKNUM,
+				read_stream_begin_relation(READ_STREAM_DEFAULT | READ_STREAM_STATS,
+										   NULL, scan->heapRelation, MAIN_FORKNUM,
 										   heapam_getnext_stream, scan, 0);
 		}
 	}

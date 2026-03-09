@@ -292,8 +292,15 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 		/* collect prefetch info for this process from the read_stream */
 		{
 			HeapScanDesc hscandesc = (HeapScanDesc) node->ss.ss_currentScanDesc;
+			ReadStreamInstrumentation	stats
+				= read_stream_prefetch_stats(hscandesc->rs_read_stream);
 
-			si->stream = read_stream_prefetch_stats(hscandesc->rs_read_stream);
+			si->stream.prefetch_count += stats.prefetch_count;
+			si->stream.distance_sum += stats.distance_sum;
+			si->stream.stall_count += stats.stall_count;
+			si->stream.io_count += stats.io_count;
+			si->stream.io_nblocks += stats.io_nblocks;
+			si->stream.io_in_progress += stats.io_in_progress;
 		}
 	}
 

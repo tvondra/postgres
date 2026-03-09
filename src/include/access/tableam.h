@@ -63,6 +63,9 @@ typedef enum ScanOptions
 
 	/* unregister snapshot at scan end? */
 	SO_TEMP_SNAPSHOT = 1 << 9,
+
+	/* collect read_stream statistics */
+	SO_STREAM_STATS = 1 << 10,
 }			ScanOptions;
 
 /*

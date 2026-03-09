@@ -41,30 +41,24 @@ typedef struct SharedAggInfo
 
 
 /* ---------------------
- *	Instrumentation information for indexscans (amgettuple and amgetbitmap)
+ *	Instrumentation
  * ---------------------
  */
-/* XXX a bit annoying we have a private copy in read_stream.c too */
-#define	DISTANCE_HISTOGRAM_SIZE		16		/* power-of-2 bins */
-#define	IO_SIZE_HISTOGRAM_SIZE		128		/* max io_combine_limit */
-#define	IO_COUNT_HISTOGRAM_SIZE		1000	/* max effective_io_concurrency */
-
 typedef struct ReadStreamInstrumentation
 {
-	/* Prefetch instrumentation */
+	/* number of prefetch requests */
 	uint64		prefetch_count;
-	uint64		prefetch_accum;
-	uint64		prefetch_stalls;
-	uint64		reset_count;
-	uint64		pause_count;
-	uint64		skip_count;
-	uint64		unget_count;
-	uint64		forwarded_count;
 
-	/* histograms */
-	uint64		hist_distance[DISTANCE_HISTOGRAM_SIZE]; /* distance histogram */
-	uint64		hist_io_size[IO_SIZE_HISTOGRAM_SIZE];   /* IO size histogram */
-	uint64		hist_io_count[IO_COUNT_HISTOGRAM_SIZE]; /* concurrent IOs histogram */
+	/* total of prefetch distances */
+	uint64		distance_sum;
+
+	/* number of stalled reads (waiting for I/O) */
+	uint64		stall_count;
+
+	/* I/O stats */
+	uint64		io_count;		/* number of I/Os */
+	uint64		io_nblocks;		/* sum of blocks for all I/Os */
+	uint64		io_in_progress;	/* sum of in-progress I/Os */
 } ReadStreamInstrumentation;
 
 typedef struct IndexScanInstrumentation
@@ -103,6 +97,7 @@ typedef struct BitmapHeapScanInstrumentation
 {
 	uint64		exact_pages;
 	uint64		lossy_pages;
+	ReadStreamInstrumentation	stream;
 } BitmapHeapScanInstrumentation;
 
 /*

@@ -108,6 +108,9 @@ struct ReadStream
 	bool		batch_mode;		/* READ_STREAM_USE_BATCHING */
 	bool		advice_enabled;
 	bool		temporary;
+
+	/* stats counters */
+	bool		collect_stats;
 	ReadStreamInstrumentation stats;
 
 	/*
@@ -176,36 +179,38 @@ block_range_read_stream_cb(ReadStream *stream,
 }
 
 /*
- * read_stream_update_prefetch_stats
+ * read_stream_update_stats_prefetch
  *		update read_stream stats before a prefetch request
  *
- * With (distance == 1) we're not really doing any prefetching, because we'll
- * need the block immediately. We count that as a stall.
- *
- * For (distance > 1) we count the number of prefetch requests and distance
- * sum, so that we can later calculate average distance. We also keep a small
- * histogram of distances, with exponentially-sized buckets.
+ * We count the number of prefetch requests and distance sum, so that we can
+ * later calculate an average distance.
  */
 static inline void
-read_stream_update_prefetch_stats(ReadStream *stream)
+read_stream_update_stats_prefetch(ReadStream *stream)
 {
-	int			hist_idx = -1;
+	if (!stream->collect_stats)
+		return;
 
-	/* determine which bucket of the histogram the distance belongs to */
-	for (int i = 0; i < 16; i++)
-	{
-		if (stream->distance < (1 << i))
-			break;
-		hist_idx++;
-	}
-
-	/* we should not see a distance for other buckets */
-	Assert((hist_idx >= 0) && (hist_idx < 16));
-
-	stream->stats.hist_distance[hist_idx] += 1;
-
-	stream->stats.prefetch_accum += stream->distance;
 	stream->stats.prefetch_count += 1;
+	stream->stats.distance_sum += stream->distance;
+}
+
+/*
+ * read_stream_update_stats_io
+ *		update read_stream stats about size of I/O requests
+ *
+ * We count the number of prefetch requests and distance sum, so that we can
+ * later calculate an average distance.
+ */
+static inline void
+read_stream_update_stats_io(ReadStream *stream, int nblocks, int in_progress)
+{
+	if (!stream->collect_stats)
+		return;
+
+	stream->stats.io_count += 1;
+	stream->stats.io_nblocks += nblocks;
+	stream->stats.io_in_progress += in_progress;
 }
 
 /*
@@ -217,7 +222,8 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
-	read_stream_update_prefetch_stats(stream);
+	/* update stats about prefetch distance and number of prefetches */
+	read_stream_update_stats_prefetch(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -253,9 +259,6 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
 	Assert(stream->buffered_blocknum == InvalidBlockNumber);
 	Assert(blocknum != InvalidBlockNumber);
 	stream->buffered_blocknum = blocknum;
-
-	/* remeber we put a block back */
-	stream->stats.unget_count++;
 }
 
 /*
@@ -422,9 +425,8 @@ read_stream_start_pending_read(ReadStream *stream)
 				stream->distance_decay_holdoff--;
 		}
 
-		/* track info about the I/O */
-		stream->stats.hist_io_size[nblocks] += 1;
-		stream->stats.hist_io_count[stream->ios_in_progress + 1] += 1;
+		/* update I/O stats */
+		read_stream_update_stats_io(stream, nblocks, stream->ios_in_progress + 1);
 	}
 	else
 	{
@@ -439,9 +441,8 @@ read_stream_start_pending_read(ReadStream *stream)
 		stream->ios_in_progress++;
 		stream->seq_blocknum = stream->pending_read_blocknum + nblocks;
 
-		/* track info about the I/O */
-		stream->stats.hist_io_size[nblocks] += 1;
-		stream->stats.hist_io_count[stream->ios_in_progress] += 1;
+		/* update I/O stats */
+		read_stream_update_stats_io(stream, nblocks, stream->ios_in_progress);
 	}
 
 	/*
@@ -484,9 +485,6 @@ read_stream_start_pending_read(ReadStream *stream)
 	/* Adjust the pending read to cover the remaining portion, if any. */
 	stream->pending_read_blocknum += nblocks;
 	stream->pending_read_nblocks -= nblocks;
-
-	/* remember the number of forwarded blocks */
-	stream->stats.forwarded_count += forwarded;
 
 	return true;
 }
@@ -724,6 +722,9 @@ read_stream_begin_impl(int flags,
 	stream->sync_mode = io_method == IOMETHOD_SYNC;
 	stream->batch_mode = flags & READ_STREAM_USE_BATCHING;
 
+	/* should we collect stats */
+	stream->collect_stats = flags & READ_STREAM_STATS;
+
 #ifdef USE_PREFETCH
 
 	/*
@@ -944,7 +945,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 			stream->seq_blocknum = next_blocknum + 1;
 
 			/* since we executed IO synchronously, count it as a stall */
-			stream->stats.prefetch_stalls += 1;
+			stream->stats.stall_count += 1;
 
 			/* FIXME: it would probably worth issuing readahead here */
 		}
@@ -1013,7 +1014,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 
 		/* Count it as a stall if we need to wait for IO */
 		if (needed_wait)
-			stream->stats.prefetch_stalls += 1;
+			stream->stats.stall_count += 1;
 
 		Assert(stream->ios_in_progress > 0);
 		stream->ios_in_progress--;
@@ -1161,8 +1162,6 @@ read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
 BlockNumber
 read_stream_pause(ReadStream *stream)
 {
-	stream->stats.pause_count += 1;
-
 	stream->resume_distance = stream->distance;
 	stream->distance = 0;
 	return InvalidBlockNumber;
@@ -1226,9 +1225,6 @@ read_stream_reset(ReadStream *stream)
 	/* Start off assuming data is cached. */
 	stream->distance = 1;
 	stream->resume_distance = stream->distance;
-
-	/* Remember we reset the stream */
-	stream->stats.reset_count += 1;
 }
 
 /*
@@ -1246,16 +1242,4 @@ ReadStreamInstrumentation
 read_stream_prefetch_stats(ReadStream *stream)
 {
 	return stream->stats;
-}
-
-/*
- * read_stream_skip_block
- *		update the stats counter of skipped blocks
- *
- * Expected to be used from the read_stream next_block callback.
- */
-void
-read_stream_skip_block(ReadStream *stream)
-{
-	stream->stats.skip_count += 1;
 }

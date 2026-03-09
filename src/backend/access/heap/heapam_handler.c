@@ -1075,7 +1075,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			if (hbatch->visInfo[prefetchPos->item] & BATCH_VIS_ALL_VISIBLE)
 			{
 				/* item is known to be all-visible -- don't prefetch */
-				read_stream_skip_block(stream);
 				continue;
 			}
 		}
@@ -1090,7 +1089,6 @@ heapam_getnext_stream(ReadStream *stream, void *callback_private_data,
 			 * block number; we must not return the same prefetch_block twice
 			 * (twice in succession)
 			 */
-			read_stream_skip_block(stream);
 			continue;
 		}
 

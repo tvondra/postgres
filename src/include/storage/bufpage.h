@@ -98,19 +98,36 @@ typedef uint16 LocationIndex;
  */
 typedef uint64 PageXLogRecPtr;
 
-/*
- * Convert a  pd_lsn taken from a page header into its native
- * uint64/PageXLogRecPtr representation
- */
-static inline PageXLogRecPtr
-PageXLogRecPtrGet(PageXLogRecPtr pd_lsn)
-{
 #ifdef WORDS_BIGENDIAN
-	return pd_lsn;
-#else
-	return (pd_lsn << 32) | (pd_lsn >> 32);
-#endif
+
+static inline XLogRecPtr
+PageXLogRecPtrGet(const PageXLogRecPtr *val)
+{
+	return *val;
 }
+
+static inline void
+PageXLogRecPtrSet(PageXLogRecPtr *ptr, XLogRecPtr lsn)
+{
+	*ptr = lsn;
+}
+
+#else
+
+static inline XLogRecPtr
+PageXLogRecPtrGet(const volatile PageXLogRecPtr *val)
+{
+	PageXLogRecPtr tmp = *val;
+	return (tmp << 32) | (tmp >> 32);
+}
+
+static inline void
+PageXLogRecPtrSet(volatile PageXLogRecPtr *ptr, XLogRecPtr lsn)
+{
+	*ptr = (lsn << 32) | (lsn >> 32);
+}
+
+#endif
 
 /*
  * disk page organization
@@ -388,13 +405,13 @@ PageGetMaxOffsetNumber(const PageData *page)
 static inline XLogRecPtr
 PageGetLSN(const PageData *page)
 {
-	return PageXLogRecPtrGet(((const PageHeaderData *) page)->pd_lsn);
+	return PageXLogRecPtrGet(&((const PageHeaderData *) page)->pd_lsn);
 }
 
 static inline void
 PageSetLSN(Page page, XLogRecPtr lsn)
 {
-	((PageHeader) page)->pd_lsn = PageXLogRecPtrGet(lsn);
+	PageXLogRecPtrSet(&((PageHeader) page)->pd_lsn, lsn);
 }
 
 static inline bool

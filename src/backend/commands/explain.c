@@ -4010,12 +4010,12 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 			appendStringInfoString(es->str, "Prefetch:");
 			appendStringInfo(es->str, " distance=%.3f",
 							 (stats->distance_sum * 1.0 / stats->prefetch_count));
-			appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
-			appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+			appendStringInfo(es->str, " count=%" PRIu64, stats->prefetch_count);
+			appendStringInfo(es->str, " stalls=%" PRIu64, stats->stall_count);
 
 			if (stats->io_count > 0)
 			{
-				appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+				appendStringInfo(es->str, " ios=%" PRIu64, stats->io_count);
 				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
 				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
 			}
@@ -4200,12 +4200,12 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 			appendStringInfoString(es->str, "Prefetch:");
 			appendStringInfo(es->str, " distance=%.3f",
 							 (stats->distance_sum * 1.0 / stats->prefetch_count));
-			appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
-			appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+			appendStringInfo(es->str, " count=%" PRIu64, stats->prefetch_count);
+			appendStringInfo(es->str, " stalls=%" PRIu64, stats->stall_count);
 
 			if (stats->io_count > 0)
 			{
-				appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+				appendStringInfo(es->str, " ios=%" PRIu64, stats->io_count);
 				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
 				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
 			}
@@ -4307,12 +4307,12 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 			appendStringInfoString(es->str, "Prefetch:");
 			appendStringInfo(es->str, " distance=%.3f",
 							 (stats->distance_sum * 1.0 / stats->prefetch_count));
-			appendStringInfo(es->str, " count=%" PRId64, stats->prefetch_count);
-			appendStringInfo(es->str, " stalls=%" PRId64, stats->stall_count);
+			appendStringInfo(es->str, " count=%" PRIu64, stats->prefetch_count);
+			appendStringInfo(es->str, " stalls=%" PRIu64, stats->stall_count);
 
 			if (stats->io_count > 0)
 			{
-				appendStringInfo(es->str, " ios=%" PRId64, stats->io_count);
+				appendStringInfo(es->str, " ios=%" PRIu64, stats->io_count);
 				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
 				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
 			}

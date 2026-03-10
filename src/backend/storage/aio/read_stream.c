@@ -215,7 +215,12 @@ read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
 
-	/* update stats about prefetch distance and number of prefetches */
+	/*
+	 * update stats about prefetch distance and number of prefetches
+	 *
+	 * XXX Do we want to do this even with buffered blocknum? That will double
+	 * count blocks what were "unget".
+	 */
 	read_stream_update_stats_prefetch(stream);
 
 	blocknum = stream->buffered_blocknum;

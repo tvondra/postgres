@@ -43,6 +43,8 @@ ALTER TABLE [ IF EXISTS ] <replaceable class="parameter">name</replaceable>
     SPLIT PARTITION <replaceable class="parameter">partition_name</replaceable> INTO
         (PARTITION <replaceable class="parameter">partition_name1</replaceable> { FOR VALUES <replaceable class="parameter">partition_bound_spec</replaceable> | DEFAULT },
          PARTITION <replaceable class="parameter">partition_name2</replaceable> { FOR VALUES <replaceable class="parameter">partition_bound_spec</replaceable> | DEFAULT } [, ...])
+ALTER TABLE [ IF EXISTS ] <replaceable class="parameter">name</replaceable>
+    PARALLEL { UNSAFE | RESTRICTED | SAFE }
 
 <phrase>where <replaceable class="parameter">action</replaceable> is one of:</phrase>
 
@@ -1350,6 +1352,16 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
        small fraction of rows out of a very big partition.
       </para>
      </note>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>PARALLEL</literal></term>
+    <listitem>
+     <para>
+      Change whether the data in the table can be modified in parallel mode.
+      See <link linkend="sql-createtable"><command>CREATE TABLE</command></link> for details.
+     </para>
     </listitem>
    </varlistentry>
 

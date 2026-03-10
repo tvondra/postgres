@@ -387,6 +387,9 @@ ExecSeqScanEstimate(SeqScanState *node,
 												  estate->es_snapshot);
 	node->pscan_len = size;
 
+	/* make sure the instrumentation is properly aligned */
+	size = MAXALIGN(size);
+
 	/* account for instrumentation, if required */
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
 	{
@@ -414,7 +417,8 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 	Size		size;
 	char	   *ptr;
 
-	size = node->pscan_len;
+	/* Recalculate the size. This needs to match ExecSeqScanEstimate. */
+	size = MAXALIGN(node->pscan_len);
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
 	{
 		size = add_size(size, offsetof(SharedSeqScanInstrumentation, sinstrument));
@@ -429,9 +433,9 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 
-	/* initialize the shared instrumentation */
+	/* initialize the shared instrumentation (with correct alignment) */
 	ptr = (char *) pscan;
-	ptr += node->pscan_len;
+	ptr += MAXALIGN(node->pscan_len);
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
 		sinstrument = (SharedSeqScanInstrumentation *) ptr;
 
@@ -482,12 +486,16 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 
-	/* XXX has to match the earlier pscan_len value */
+	/*
+	 * Workers don't get the pscan_len value in scan descriptor, so use the
+	 * TAM callback again. The result has to match the earlier result in
+	 * ExecSeqScanEstimate.
+	 */
 	size = table_parallelscan_estimate(node->ss.ss_currentRelation,
-												  estate->es_snapshot);
+									   estate->es_snapshot);
 
 	ptr = (char *) pscan;
-	ptr += size;
+	ptr += MAXALIGN(size);
 
 	if (node->ss.ps.instrument)
 		node->sinstrument = (SharedSeqScanInstrumentation *) ptr;

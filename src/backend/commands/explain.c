@@ -4036,12 +4036,16 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 									stats->prefetch_count, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats->stall_count, es);
-			ExplainPropertyUInteger("IO count", NULL,
-									stats->io_count, es);
-			ExplainPropertyUInteger("IO blocks", NULL,
-									stats->io_nblocks, es);
-			ExplainPropertyUInteger("IO in-progress", NULL,
-									stats->io_in_progress, es);
+
+			if (stats->io_count > 0)
+			{
+				ExplainPropertyUInteger("IO count", NULL,
+										stats->io_count, es);
+				ExplainPropertyFloat("Average Size", NULL,
+									 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
+				ExplainPropertyFloat("IO in-progress", NULL,
+									 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+			}
 
 			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
 		}
@@ -4230,12 +4234,16 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 									stats->prefetch_count, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats->stall_count, es);
-			ExplainPropertyUInteger("IO count", NULL,
-									stats->io_count, es);
-			ExplainPropertyUInteger("IO blocks", NULL,
-									stats->io_nblocks, es);
-			ExplainPropertyUInteger("IO in-progress", NULL,
-									stats->io_in_progress, es);
+
+			if (stats->io_count > 0)
+			{
+				ExplainPropertyUInteger("IO count", NULL,
+										stats->io_count, es);
+				ExplainPropertyFloat("Average Size", NULL,
+									 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
+				ExplainPropertyFloat("IO in-progress", NULL,
+									 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+			}
 
 			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
 		}
@@ -4339,10 +4347,16 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 									stats->stall_count, es);
 			ExplainPropertyUInteger("IO count", NULL,
 									stats->io_count, es);
-			ExplainPropertyFloat("Average Size", NULL,
-								 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
-			ExplainPropertyFloat("IO in-progress", NULL,
-								 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+
+			if (stats->io_count > 0)
+			{
+				ExplainPropertyUInteger("IO count", NULL,
+										stats->io_count, es);
+				ExplainPropertyFloat("Average Size", NULL,
+									 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
+				ExplainPropertyFloat("IO in-progress", NULL,
+									 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
+			}
 
 			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
 		}

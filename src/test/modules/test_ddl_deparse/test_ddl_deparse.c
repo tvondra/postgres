@@ -284,6 +284,9 @@ get_altertable_subcmdinfo(PG_FUNCTION_ARGS)
 			case AT_NoForceRowSecurity:
 				strtype = "NO FORCE ROW SECURITY";
 				break;
+			case AT_ParallelDMLSafety:
+				strtype = "PARALLEL DML SAFETY";
+				break;
 			case AT_GenericOptions:
 				strtype = "SET OPTIONS";
 				break;

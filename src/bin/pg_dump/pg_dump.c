@@ -7303,6 +7303,7 @@ getTables(Archive *fout, int *numTables)
 	int			i_relpersistence;
 	int			i_relispopulated;
 	int			i_relreplident;
+	int			i_relparalleldml;
 	int			i_relrowsec;
 	int			i_relforcerowsec;
 	int			i_relfrozenxid;
@@ -7388,6 +7389,13 @@ getTables(Archive *fout, int *numTables)
 	else
 		appendPQExpBufferStr(query,
 							 "'d' AS relreplident, ");
+
+	if (fout->remoteVersion >= 190000)
+		appendPQExpBufferStr(query,
+							 "c.relparalleldml, ");
+	else
+		appendPQExpBufferStr(query,
+							 "'u' AS relparalleldml, ");
 
 	if (fout->remoteVersion >= 90500)
 		appendPQExpBufferStr(query,
@@ -7527,6 +7535,7 @@ getTables(Archive *fout, int *numTables)
 	i_relpersistence = PQfnumber(res, "relpersistence");
 	i_relispopulated = PQfnumber(res, "relispopulated");
 	i_relreplident = PQfnumber(res, "relreplident");
+	i_relparalleldml = PQfnumber(res, "relparalleldml");
 	i_relrowsec = PQfnumber(res, "relrowsecurity");
 	i_relforcerowsec = PQfnumber(res, "relforcerowsecurity");
 	i_relfrozenxid = PQfnumber(res, "relfrozenxid");
@@ -7605,6 +7614,7 @@ getTables(Archive *fout, int *numTables)
 		tblinfo[i].relpersistence = *(PQgetvalue(res, i, i_relpersistence));
 		tblinfo[i].relispopulated = (strcmp(PQgetvalue(res, i, i_relispopulated), "t") == 0);
 		tblinfo[i].relreplident = *(PQgetvalue(res, i, i_relreplident));
+		tblinfo[i].relparalleldml = *(PQgetvalue(res, i, i_relparalleldml));
 		tblinfo[i].rowsec = (strcmp(PQgetvalue(res, i, i_relrowsec), "t") == 0);
 		tblinfo[i].forcerowsec = (strcmp(PQgetvalue(res, i, i_relforcerowsec), "t") == 0);
 		tblinfo[i].frozenxid = atooid(PQgetvalue(res, i, i_relfrozenxid));
@@ -18074,6 +18084,32 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 		{
 			appendPQExpBuffer(q, "\nALTER TABLE ONLY %s REPLICA IDENTITY FULL;\n",
 							  qualrelname);
+		}
+	}
+
+	if (tbinfo->relkind == RELKIND_RELATION ||
+		tbinfo->relkind == RELKIND_PARTITIONED_TABLE ||
+		tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+	{
+		appendPQExpBuffer(q, "\nALTER %sTABLE %s PARALLEL DML ",
+						tbinfo->relkind == RELKIND_FOREIGN_TABLE ? "FOREIGN " : "",
+						qualrelname);
+
+		switch (tbinfo->relparalleldml)
+		{
+			case 's':
+				appendPQExpBuffer(q, "SAFE;\n");
+				break;
+			case 'r':
+				appendPQExpBuffer(q, "RESTRICTED;\n");
+				break;
+			case 'u':
+				appendPQExpBuffer(q, "UNSAFE;\n");
+				break;
+			default:
+				/* should not reach here */
+				appendPQExpBuffer(q, "UNSAFE;\n");
+				break;
 		}
 	}
 

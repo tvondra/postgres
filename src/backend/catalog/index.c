@@ -47,6 +47,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -980,6 +981,7 @@ index_create(Relation heapRelation,
 								indexTupDesc,
 								relkind,
 								relpersistence,
+								PROPARALLEL_UNSAFE,
 								shared_relation,
 								mapped_relation,
 								allow_system_table_mods,

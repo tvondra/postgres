@@ -3977,6 +3977,10 @@ show_indexscan_prefetch_info(PlanState *planstate, ExplainState *es)
 			return;
 	}
 
+	/* scan not started, no prefetch stats */
+	if (!scandesc || !scandesc->xs_heapfetch)
+		return;
+
 	/* collect prefetch statistics from the read stream */
 	stats = table_index_stats(scandesc->xs_heapfetch);
 
@@ -4124,6 +4128,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	TableScanStats	stats;
 
 	if (!es->analyze)
+		return;
+
+	/* scan not started, no prefetch stats */
+	if (!planstate->ss_currentScanDesc)
 		return;
 
 	/* collect prefetch statistics from the read stream */

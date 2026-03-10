@@ -293,7 +293,7 @@ heap_index_stats(IndexFetchTableData *scan)
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	TableScanStats res;
 
-	if (!hscan->xs_read_stream)
+	if (!hscan || !hscan->xs_read_stream)
 		return NULL;
 
 	stats = read_stream_prefetch_stats(hscan->xs_read_stream);

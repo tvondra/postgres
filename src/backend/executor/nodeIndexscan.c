@@ -822,7 +822,8 @@ ExecEndIndexScan(IndexScanState *node)
 		Assert(node->iss_Instrument->nheapfetches == 0);
 
 		/* collect prefetch info for this process from the read_stream */
-		if ((stats = table_index_stats(indexScanDesc->xs_heapfetch)) != NULL)
+		if (indexScanDesc &&
+			(stats = table_index_stats(indexScanDesc->xs_heapfetch)) != NULL)
 		{
 			winstrument->stream.prefetch_count += stats->prefetch_count;
 			winstrument->stream.distance_sum += stats->distance_sum;

@@ -314,15 +314,17 @@ ExecEndSeqScan(SeqScanState *node)
 		 * spin up new workers which will have a new SeqScanState and
 		 * zeroed stats.
 		 */
-		/* collect prefetch info for this process from the read_stream */
-		stats = table_scan_stats(node->ss.ss_currentScanDesc);
 
-		si->stream.prefetch_count += stats->prefetch_count;
-		si->stream.distance_sum += stats->distance_sum;
-		si->stream.stall_count += stats->stall_count;
-		si->stream.io_count += stats->io_count;
-		si->stream.io_nblocks += stats->io_nblocks;
-		si->stream.io_in_progress += stats->io_in_progress;
+		/* collect prefetch info for this process from the read_stream */
+		if ((stats = table_scan_stats(node->ss.ss_currentScanDesc)) != NULL)
+		{
+			si->stream.prefetch_count += stats->prefetch_count;
+			si->stream.distance_sum += stats->distance_sum;
+			si->stream.stall_count += stats->stall_count;
+			si->stream.io_count += stats->io_count;
+			si->stream.io_nblocks += stats->io_nblocks;
+			si->stream.io_in_progress += stats->io_in_progress;
+		}
 	}
 
 	/*

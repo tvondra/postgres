@@ -347,14 +347,15 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		winstrument->nheapfetches += node->ioss_Instrument->nheapfetches;
 
 		/* collect prefetch info for this process from the read_stream */
-		stats = table_index_stats(indexScanDesc->xs_heapfetch);
-
-		winstrument->stream.prefetch_count += stats->prefetch_count;
-		winstrument->stream.distance_sum += stats->distance_sum;
-		winstrument->stream.stall_count += stats->stall_count;
-		winstrument->stream.io_count += stats->io_count;
-		winstrument->stream.io_nblocks += stats->io_nblocks;
-		winstrument->stream.io_in_progress += stats->io_in_progress;
+		if ((stats = table_index_stats(indexScanDesc->xs_heapfetch)) != NULL)
+		{
+			winstrument->stream.prefetch_count += stats->prefetch_count;
+			winstrument->stream.distance_sum += stats->distance_sum;
+			winstrument->stream.stall_count += stats->stall_count;
+			winstrument->stream.io_count += stats->io_count;
+			winstrument->stream.io_nblocks += stats->io_nblocks;
+			winstrument->stream.io_in_progress += stats->io_in_progress;
+		}
 	}
 
 	/*

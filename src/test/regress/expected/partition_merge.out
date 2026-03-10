@@ -663,6 +663,7 @@ Indexes:
     "tp_1_2_i_idx" btree (i)
 Not-null constraints:
     "t_i_not_null" NOT NULL "i" (inherited)
+Parallel DML: unsafe
 
 DROP TABLE t;
 --
@@ -943,6 +944,7 @@ Not-null constraints:
 Triggers:
     t_before_insert_row_trigger BEFORE INSERT ON tp_0_1 FOR EACH ROW EXECUTE FUNCTION trigger_function('t'), ON TABLE t
     tp_0_1_before_insert_row_trigger BEFORE INSERT ON tp_0_1 FOR EACH ROW EXECUTE FUNCTION trigger_function('tp_0_1')
+Parallel DML: unsafe
 
 ALTER TABLE t MERGE PARTITIONS (tp_0_1, tp_1_2) INTO tp_0_1;
 \d+ tp_0_1
@@ -964,6 +966,7 @@ Not-null constraints:
     "t_b_nn" NOT NULL "b" (inherited) NOT VALID
 Triggers:
     t_before_insert_row_trigger BEFORE INSERT ON tp_0_1 FOR EACH ROW EXECUTE FUNCTION trigger_function('t'), ON TABLE t
+Parallel DML: unsafe
 
 INSERT INTO t(i, t, b) VALUES(1, DEFAULT, 3);
 NOTICE:  trigger(t) called: action = INSERT, when = BEFORE, level = ROW

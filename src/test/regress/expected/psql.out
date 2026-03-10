@@ -3022,6 +3022,7 @@ CREATE MATERIALIZED VIEW mat_view_heap_psql USING heap_psql AS SELECT f1 from tb
 --------+----------------+-----------+----------+---------+----------+--------------+-------------
  f1     | integer        |           |          |         | plain    |              | 
  f2     | character(100) |           |          |         | extended |              | 
+Parallel DML: unsafe
 
 \d+ tbl_heap
                                  Table "tableam_display.tbl_heap"
@@ -3029,6 +3030,7 @@ CREATE MATERIALIZED VIEW mat_view_heap_psql USING heap_psql AS SELECT f1 from tb
 --------+----------------+-----------+----------+---------+----------+--------------+-------------
  f1     | integer        |           |          |         | plain    |              | 
  f2     | character(100) |           |          |         | extended |              | 
+Parallel DML: unsafe
 
 \set HIDE_TABLEAM off
 \d+ tbl_heap_psql
@@ -3038,6 +3040,7 @@ CREATE MATERIALIZED VIEW mat_view_heap_psql USING heap_psql AS SELECT f1 from tb
  f1     | integer        |           |          |         | plain    |              | 
  f2     | character(100) |           |          |         | extended |              | 
 Access method: heap_psql
+Parallel DML: unsafe
 
 \d+ tbl_heap
                                  Table "tableam_display.tbl_heap"
@@ -3046,50 +3049,51 @@ Access method: heap_psql
  f1     | integer        |           |          |         | plain    |              | 
  f2     | character(100) |           |          |         | extended |              | 
 Access method: heap
+Parallel DML: unsafe
 
 -- AM is displayed for tables, indexes and materialized views.
 \d+
-                                                           List of relations
-     Schema      |        Name        |       Type        |        Owner         | Persistence | Access method |  Size   | Description 
------------------+--------------------+-------------------+----------------------+-------------+---------------+---------+-------------
- tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | heap_psql     | 0 bytes | 
- tableam_display | tbl_heap           | table             | regress_display_role | permanent   | heap          | 0 bytes | 
- tableam_display | tbl_heap_psql      | table             | regress_display_role | permanent   | heap_psql     | 0 bytes | 
- tableam_display | view_heap_psql     | view              | regress_display_role | permanent   |               | 0 bytes | 
+                                                                  List of relations
+     Schema      |        Name        |       Type        |        Owner         | Persistence | Access method | Parallel DML |  Size   | Description 
+-----------------+--------------------+-------------------+----------------------+-------------+---------------+--------------+---------+-------------
+ tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | heap_psql     | unsafe       | 0 bytes | 
+ tableam_display | tbl_heap           | table             | regress_display_role | permanent   | heap          | unsafe       | 0 bytes | 
+ tableam_display | tbl_heap_psql      | table             | regress_display_role | permanent   | heap_psql     | unsafe       | 0 bytes | 
+ tableam_display | view_heap_psql     | view              | regress_display_role | permanent   |               | unsafe       | 0 bytes | 
 (4 rows)
 
 \dt+
-                                                    List of tables
-     Schema      |     Name      | Type  |        Owner         | Persistence | Access method |  Size   | Description 
------------------+---------------+-------+----------------------+-------------+---------------+---------+-------------
- tableam_display | tbl_heap      | table | regress_display_role | permanent   | heap          | 0 bytes | 
- tableam_display | tbl_heap_psql | table | regress_display_role | permanent   | heap_psql     | 0 bytes | 
+                                                           List of tables
+     Schema      |     Name      | Type  |        Owner         | Persistence | Access method | Parallel DML |  Size   | Description 
+-----------------+---------------+-------+----------------------+-------------+---------------+--------------+---------+-------------
+ tableam_display | tbl_heap      | table | regress_display_role | permanent   | heap          | unsafe       | 0 bytes | 
+ tableam_display | tbl_heap_psql | table | regress_display_role | permanent   | heap_psql     | unsafe       | 0 bytes | 
 (2 rows)
 
 \dm+
-                                                      List of materialized views
-     Schema      |        Name        |       Type        |        Owner         | Persistence | Access method |  Size   | Description 
------------------+--------------------+-------------------+----------------------+-------------+---------------+---------+-------------
- tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | heap_psql     | 0 bytes | 
+                                                              List of materialized views
+     Schema      |        Name        |       Type        |        Owner         | Persistence | Access method | Parallel DML |  Size   | Description 
+-----------------+--------------------+-------------------+----------------------+-------------+---------------+--------------+---------+-------------
+ tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | heap_psql     | unsafe       | 0 bytes | 
 (1 row)
 
 -- But not for views and sequences.
 \dv+
-                                            List of views
-     Schema      |      Name      | Type |        Owner         | Persistence |  Size   | Description 
------------------+----------------+------+----------------------+-------------+---------+-------------
- tableam_display | view_heap_psql | view | regress_display_role | permanent   | 0 bytes | 
+                                                    List of views
+     Schema      |      Name      | Type |        Owner         | Persistence | Parallel DML |  Size   | Description 
+-----------------+----------------+------+----------------------+-------------+--------------+---------+-------------
+ tableam_display | view_heap_psql | view | regress_display_role | permanent   | unsafe       | 0 bytes | 
 (1 row)
 
 \set HIDE_TABLEAM on
 \d+
-                                                   List of relations
-     Schema      |        Name        |       Type        |        Owner         | Persistence |  Size   | Description 
------------------+--------------------+-------------------+----------------------+-------------+---------+-------------
- tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | 0 bytes | 
- tableam_display | tbl_heap           | table             | regress_display_role | permanent   | 0 bytes | 
- tableam_display | tbl_heap_psql      | table             | regress_display_role | permanent   | 0 bytes | 
- tableam_display | view_heap_psql     | view              | regress_display_role | permanent   | 0 bytes | 
+                                                          List of relations
+     Schema      |        Name        |       Type        |        Owner         | Persistence | Parallel DML |  Size   | Description 
+-----------------+--------------------+-------------------+----------------------+-------------+--------------+---------+-------------
+ tableam_display | mat_view_heap_psql | materialized view | regress_display_role | permanent   | unsafe       | 0 bytes | 
+ tableam_display | tbl_heap           | table             | regress_display_role | permanent   | unsafe       | 0 bytes | 
+ tableam_display | tbl_heap_psql      | table             | regress_display_role | permanent   | unsafe       | 0 bytes | 
+ tableam_display | view_heap_psql     | view              | regress_display_role | permanent   | unsafe       | 0 bytes | 
 (4 rows)
 
 -- \d with 'x' enables expanded mode, but only without a pattern
@@ -3099,41 +3103,46 @@ Access method: heap
 --------+----------------+-----------+----------+---------+----------+--------------+-------------
  f1     | integer        |           |          |         | plain    |              | 
  f2     | character(100) |           |          |         | extended |              | 
+Parallel DML: unsafe
 
 \d+x
 List of relations
--[ RECORD 1 ]---------------------
-Schema      | tableam_display
-Name        | mat_view_heap_psql
-Type        | materialized view
-Owner       | regress_display_role
-Persistence | permanent
-Size        | 0 bytes
-Description | 
--[ RECORD 2 ]---------------------
-Schema      | tableam_display
-Name        | tbl_heap
-Type        | table
-Owner       | regress_display_role
-Persistence | permanent
-Size        | 0 bytes
-Description | 
--[ RECORD 3 ]---------------------
-Schema      | tableam_display
-Name        | tbl_heap_psql
-Type        | table
-Owner       | regress_display_role
-Persistence | permanent
-Size        | 0 bytes
-Description | 
--[ RECORD 4 ]---------------------
-Schema      | tableam_display
-Name        | view_heap_psql
-Type        | view
-Owner       | regress_display_role
-Persistence | permanent
-Size        | 0 bytes
-Description | 
+-[ RECORD 1 ]+---------------------
+Schema       | tableam_display
+Name         | mat_view_heap_psql
+Type         | materialized view
+Owner        | regress_display_role
+Persistence  | permanent
+Parallel DML | unsafe
+Size         | 0 bytes
+Description  | 
+-[ RECORD 2 ]+---------------------
+Schema       | tableam_display
+Name         | tbl_heap
+Type         | table
+Owner        | regress_display_role
+Persistence  | permanent
+Parallel DML | unsafe
+Size         | 0 bytes
+Description  | 
+-[ RECORD 3 ]+---------------------
+Schema       | tableam_display
+Name         | tbl_heap_psql
+Type         | table
+Owner        | regress_display_role
+Persistence  | permanent
+Parallel DML | unsafe
+Size         | 0 bytes
+Description  | 
+-[ RECORD 4 ]+---------------------
+Schema       | tableam_display
+Name         | view_heap_psql
+Type         | view
+Owner        | regress_display_role
+Persistence  | permanent
+Parallel DML | unsafe
+Size         | 0 bytes
+Description  | 
 
 RESET ROLE;
 RESET search_path;

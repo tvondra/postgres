@@ -1092,6 +1092,7 @@ ALTER TABLE inhts RENAME d TO dd;
  dd     | integer |           |          |         | plain   |              | 
 Inherits: inht1,
           inhs1
+Parallel DML: unsafe
 
 DROP TABLE inhts;
 -- Test for adding a column to a parent table with complex inheritance
@@ -1112,6 +1113,7 @@ NOTICE:  merging definition of column "j" for child "inhtd"
  j      | bigint  |           |          | 1       | plain   |              | 
 Child tables: inhtb,
               inhtd
+Parallel DML: unsafe
 
 \d+ inhtd
                                    Table "public.inhtd"
@@ -1122,6 +1124,7 @@ Child tables: inhtb,
 Inherits: inhta,
           inhtb,
           inhtc
+Parallel DML: unsafe
 
 DROP TABLE inhta, inhtb, inhtc, inhtd;
 -- Test for renaming in diamond inheritance
@@ -1142,6 +1145,7 @@ ALTER TABLE inht1 RENAME aa TO aaa;
  z      | integer |           |          |         | plain   |              | 
 Inherits: inht2,
           inht3
+Parallel DML: unsafe
 
 CREATE TABLE inhts (d int) INHERITS (inht2, inhs1);
 NOTICE:  merging multiple inherited definitions of column "b"
@@ -1159,6 +1163,7 @@ ERROR:  cannot rename inherited column "b"
  d      | integer |           |          |         | plain   |              | 
 Inherits: inht2,
           inhs1
+Parallel DML: unsafe
 
 WITH RECURSIVE r AS (
   SELECT 'inht1'::regclass AS inhrelid
@@ -1205,6 +1210,7 @@ CREATE TABLE test_constraints_inh () INHERITS (test_constraints);
 Indexes:
     "test_constraints_val1_val2_key" UNIQUE CONSTRAINT, btree (val1, val2)
 Child tables: test_constraints_inh
+Parallel DML: unsafe
 
 ALTER TABLE ONLY test_constraints DROP CONSTRAINT test_constraints_val1_val2_key;
 \d+ test_constraints
@@ -1215,6 +1221,7 @@ ALTER TABLE ONLY test_constraints DROP CONSTRAINT test_constraints_val1_val2_key
  val1   | character varying |           |          |         | extended |              | 
  val2   | integer           |           |          |         | plain    |              | 
 Child tables: test_constraints_inh
+Parallel DML: unsafe
 
 \d+ test_constraints_inh
                                  Table "public.test_constraints_inh"
@@ -1224,6 +1231,7 @@ Child tables: test_constraints_inh
  val1   | character varying |           |          |         | extended |              | 
  val2   | integer           |           |          |         | plain    |              | 
 Inherits: test_constraints
+Parallel DML: unsafe
 
 DROP TABLE test_constraints_inh;
 DROP TABLE test_constraints;
@@ -1240,6 +1248,7 @@ CREATE TABLE test_ex_constraints_inh () INHERITS (test_ex_constraints);
 Indexes:
     "test_ex_constraints_c_excl" EXCLUDE USING gist (c WITH &&)
 Child tables: test_ex_constraints_inh
+Parallel DML: unsafe
 
 ALTER TABLE test_ex_constraints DROP CONSTRAINT test_ex_constraints_c_excl;
 \d+ test_ex_constraints
@@ -1248,6 +1257,7 @@ ALTER TABLE test_ex_constraints DROP CONSTRAINT test_ex_constraints_c_excl;
 --------+--------+-----------+----------+---------+---------+--------------+-------------
  c      | circle |           |          |         | plain   |              | 
 Child tables: test_ex_constraints_inh
+Parallel DML: unsafe
 
 \d+ test_ex_constraints_inh
                          Table "public.test_ex_constraints_inh"
@@ -1255,6 +1265,7 @@ Child tables: test_ex_constraints_inh
 --------+--------+-----------+----------+---------+---------+--------------+-------------
  c      | circle |           |          |         | plain   |              | 
 Inherits: test_ex_constraints
+Parallel DML: unsafe
 
 DROP TABLE test_ex_constraints_inh;
 DROP TABLE test_ex_constraints;
@@ -1273,6 +1284,7 @@ Referenced by:
     TABLE "test_foreign_constraints" CONSTRAINT "test_foreign_constraints_id1_fkey" FOREIGN KEY (id1) REFERENCES test_primary_constraints(id)
 Not-null constraints:
     "test_primary_constraints_id_not_null" NOT NULL "id"
+Parallel DML: unsafe
 
 \d+ test_foreign_constraints
                          Table "public.test_foreign_constraints"
@@ -1282,6 +1294,7 @@ Not-null constraints:
 Foreign-key constraints:
     "test_foreign_constraints_id1_fkey" FOREIGN KEY (id1) REFERENCES test_primary_constraints(id)
 Child tables: test_foreign_constraints_inh
+Parallel DML: unsafe
 
 ALTER TABLE test_foreign_constraints DROP CONSTRAINT test_foreign_constraints_id1_fkey;
 \d+ test_foreign_constraints
@@ -1290,6 +1303,7 @@ ALTER TABLE test_foreign_constraints DROP CONSTRAINT test_foreign_constraints_id
 --------+---------+-----------+----------+---------+---------+--------------+-------------
  id1    | integer |           |          |         | plain   |              | 
 Child tables: test_foreign_constraints_inh
+Parallel DML: unsafe
 
 \d+ test_foreign_constraints_inh
                        Table "public.test_foreign_constraints_inh"
@@ -1297,6 +1311,7 @@ Child tables: test_foreign_constraints_inh
 --------+---------+-----------+----------+---------+---------+--------------+-------------
  id1    | integer |           |          |         | plain   |              | 
 Inherits: test_foreign_constraints
+Parallel DML: unsafe
 
 DROP TABLE test_foreign_constraints_inh;
 DROP TABLE test_foreign_constraints;
@@ -2198,6 +2213,7 @@ Not-null constraints:
 Inherits: pp1,
           cc1,
           cc2
+Parallel DML: unsafe
 
 alter table cc3 no inherit pp1;
 alter table cc3 no inherit cc1;
@@ -2212,6 +2228,7 @@ alter table cc3 no inherit cc2;
  f4     | double precision |           |          |         | plain    |              | 
 Not-null constraints:
     "pp1_f1_not_null" NOT NULL "f1"
+Parallel DML: unsafe
 
 drop table cc3;
 -- named NOT NULL constraint
@@ -2229,6 +2246,7 @@ Not-null constraints:
     "nn" NOT NULL "a2"
 Inherits: pp1
 Child tables: cc2
+Parallel DML: unsafe
 
 \d+ cc2
                                          Table "public.cc2"
@@ -2244,6 +2262,7 @@ Not-null constraints:
     "nn" NOT NULL "a2" (inherited)
 Inherits: pp1,
           cc1
+Parallel DML: unsafe
 
 alter table pp1 alter column f1 set not null;
 \d+ pp1
@@ -2255,6 +2274,7 @@ Not-null constraints:
     "pp1_f1_not_null" NOT NULL "f1"
 Child tables: cc1,
               cc2
+Parallel DML: unsafe
 
 \d+ cc1
                                     Table "public.cc1"
@@ -2269,6 +2289,7 @@ Not-null constraints:
     "nn" NOT NULL "a2"
 Inherits: pp1
 Child tables: cc2
+Parallel DML: unsafe
 
 \d+ cc2
                                          Table "public.cc2"
@@ -2284,6 +2305,7 @@ Not-null constraints:
     "nn" NOT NULL "a2" (inherited)
 Inherits: pp1,
           cc1
+Parallel DML: unsafe
 
 -- cannot create table with inconsistent NO INHERIT constraint
 create table cc3 (a2 int not null no inherit) inherits (cc1);
@@ -2312,6 +2334,7 @@ Not-null constraints:
     "pp1_f1_not_null" NOT NULL "f1" (inherited)
 Inherits: pp1
 Child tables: cc2
+Parallel DML: unsafe
 
 -- same for cc2
 alter table cc2 alter column f1 drop not null;
@@ -2329,6 +2352,7 @@ Not-null constraints:
     "pp1_f1_not_null" NOT NULL "f1" (inherited)
 Inherits: pp1,
           cc1
+Parallel DML: unsafe
 
 -- remove from cc1, should fail again
 alter table cc1 alter column f1 drop not null;
@@ -2342,6 +2366,7 @@ alter table pp1 alter column f1 drop not null;
  f1     | integer |           |          |         | plain   |              | 
 Child tables: cc1,
               cc2
+Parallel DML: unsafe
 
 alter table pp1 add primary key (f1);
 -- Leave these tables around, for pg_upgrade testing
@@ -2358,6 +2383,7 @@ alter table inh_child no inherit inh_parent;
  f2     | integer |           |          |         | plain   |              | 
 Not-null constraints:
     "inh_child_f1_not_null" NOT NULL "f1" NO INHERIT
+Parallel DML: unsafe
 
 drop table inh_parent, inh_child;
 -- test that inhcount is updated correctly through multiple inheritance
@@ -2378,6 +2404,7 @@ alter table inh_cc2 no inherit inh_cc1;
  f4     | double precision |           |          |         | plain    |              | 
 Not-null constraints:
     "inh_pp1_f1_not_null" NOT NULL "f1"
+Parallel DML: unsafe
 
 drop table inh_pp1, inh_cc1, inh_cc2;
 create table inh_pp1 (f1 int not null);
@@ -2395,6 +2422,7 @@ alter table inh_pp1 alter column f1 drop not null;
  f4     | double precision |           |          |         | plain    |              | 
 Inherits: inh_pp1,
           inh_cc1
+Parallel DML: unsafe
 
 drop table inh_pp1, inh_cc1, inh_cc2;
 -- Test a not-null addition that must walk down the hierarchy
@@ -2420,6 +2448,7 @@ Not-null constraints:
     "inh_child1_b_not_null" NOT NULL "b" (inherited)
 Inherits: inh_parent1,
           inh_parent2
+Parallel DML: unsafe
 
 create table inh_child2 (constraint foo not null a) inherits (inh_parent1, inh_parent2);
 alter table inh_child2 no inherit inh_parent2;
@@ -2433,6 +2462,7 @@ Not-null constraints:
     "foo" NOT NULL "a" (local, inherited)
     "nn" NOT NULL "b"
 Inherits: inh_parent1
+Parallel DML: unsafe
 
 drop table inh_parent1, inh_parent2, inh_child1, inh_child2;
 -- Test multiple parents with overlapping primary keys
@@ -2473,6 +2503,7 @@ Not-null constraints:
     "inh_parent2_d_not_null" NOT NULL "d" (inherited)
 Inherits: inh_parent1,
           inh_parent2
+Parallel DML: unsafe
 
 drop table inh_parent1, inh_parent2, inh_child;
 -- NOT NULL NO INHERIT
@@ -2497,12 +2528,14 @@ select conrelid::regclass, conname, contype, conkey,
 --------+---------+-----------+----------+---------+---------+--------------+-------------
  a      | integer |           |          |         | plain   |              | 
 Inherits: inh_nn_parent
+Parallel DML: unsafe
 
                                Table "public.inh_nn_child2"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
 --------+---------+-----------+----------+---------+---------+--------------+-------------
  a      | integer |           |          |         | plain   |              | 
 Inherits: inh_nn_parent
+Parallel DML: unsafe
 
                                Table "public.inh_nn_parent"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
@@ -2512,6 +2545,7 @@ Not-null constraints:
     "inh_nn_parent_a_not_null" NOT NULL "a" NO INHERIT
 Child tables: inh_nn_child,
               inh_nn_child2
+Parallel DML: unsafe
 
 drop table inh_nn_parent, inh_nn_child, inh_nn_child2;
 CREATE TABLE inh_nn_parent (a int, NOT NULL a NO INHERIT);
@@ -2571,6 +2605,7 @@ alter table inh_parent alter column f1 set not null;
 Not-null constraints:
     "inh_parent_f1_not_null" NOT NULL "f1"
 Child tables: inh_child1
+Parallel DML: unsafe
 
 \d+ inh_child1
                                 Table "public.inh_child1"
@@ -2581,6 +2616,7 @@ Not-null constraints:
     "inh_child1_f1_not_null" NOT NULL "f1" (local, inherited)
 Inherits: inh_parent
 Child tables: inh_child2
+Parallel DML: unsafe
 
 \d+ inh_child2
                                 Table "public.inh_child2"
@@ -2590,6 +2626,7 @@ Child tables: inh_child2
 Not-null constraints:
     "inh_child2_f1_not_null" NOT NULL "f1" (local, inherited)
 Inherits: inh_child1
+Parallel DML: unsafe
 
 select conrelid::regclass, conname, contype, coninhcount, conislocal
  from pg_constraint where contype = 'n' and
@@ -2615,6 +2652,7 @@ alter table inh_child1 no inherit inh_parent;
  f1     | integer |           | not null |         | plain   |              | 
 Not-null constraints:
     "inh_parent_f1_not_null" NOT NULL "f1"
+Parallel DML: unsafe
 
 \d+ inh_child1
                                 Table "public.inh_child1"
@@ -2625,6 +2663,7 @@ Not-null constraints:
     "inh_child1_f1_not_null" NOT NULL "f1"
 Child tables: inh_child2,
               inh_child3
+Parallel DML: unsafe
 
 \d+ inh_child2
                                 Table "public.inh_child2"
@@ -2634,6 +2673,7 @@ Child tables: inh_child2,
 Not-null constraints:
     "inh_child2_f1_not_null" NOT NULL "f1" (local, inherited)
 Inherits: inh_child1
+Parallel DML: unsafe
 
 select conrelid::regclass, conname, contype, coninhcount, conislocal
  from pg_constraint where contype = 'n' and

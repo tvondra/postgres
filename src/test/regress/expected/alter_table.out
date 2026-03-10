@@ -1221,6 +1221,7 @@ Indexes:
     "atnnpart1_pkey" PRIMARY KEY, btree (id)
 Not-null constraints:
     "another_constr" NOT NULL "id" (inherited)
+Parallel DML: unsafe
 
                  Index "public.atnnpart1_pkey"
  Column |  Type   | Key? | Definition | Storage | Stats target 
@@ -1237,6 +1238,7 @@ Partition key: LIST (id)
 Not-null constraints:
     "dummy_constr" NOT NULL "id" NOT VALID
 Partitions: atnnpart1 FOR VALUES IN (1)
+Parallel DML: unsafe
 
 BEGIN;
 ALTER TABLE atnnparted VALIDATE CONSTRAINT dummy_constr;
@@ -1252,6 +1254,7 @@ Indexes:
     "atnnpart1_pkey" PRIMARY KEY, btree (id)
 Not-null constraints:
     "another_constr" NOT NULL "id" (inherited)
+Parallel DML: unsafe
 
                  Index "public.atnnpart1_pkey"
  Column |  Type   | Key? | Definition | Storage | Stats target 
@@ -1268,6 +1271,7 @@ Partition key: LIST (id)
 Not-null constraints:
     "dummy_constr" NOT NULL "id"
 Partitions: atnnpart1 FOR VALUES IN (1)
+Parallel DML: unsafe
 
 ROLLBACK;
 -- leave a table in this state for the pg_upgrade test
@@ -2376,6 +2380,7 @@ alter table test_storage alter column a set storage external;
  b      | integer |           |          | random()::integer | plain    |              | 
 Indexes:
     "test_storage_idx" btree (b, a)
+Parallel DML: unsafe
 
 \d+ test_storage_idx
                 Index "public.test_storage_idx"
@@ -3980,6 +3985,7 @@ Not-null constraints:
     "atnotnull1_a_not_null" NOT NULL "a"
     "atnotnull1_b_not_null" NOT NULL "b"
     "atnotnull1_c_not_null" NOT NULL "c"
+Parallel DML: unsafe
 
 -- cannot drop column that is part of the partition key
 CREATE TABLE partitioned (
@@ -4483,6 +4489,7 @@ ALTER TABLE range_parted2 DETACH PARTITION part_rp CONCURRENTLY;
  a      | integer |           |          |         | plain   |              | 
 Partition key: RANGE (a)
 Number of partitions: 0
+Parallel DML: unsafe
 
 DROP TABLE range_parted2;
 -- Test that hash partitions continue to work after they're concurrently
@@ -4537,6 +4544,7 @@ Check constraints:
     "check_b" CHECK (b <> 'zz'::bpchar)
 Not-null constraints:
     "list_parted2_b_not_null" NOT NULL "b"
+Parallel DML: unsafe
 
 -- It's alright though, if no partitions are yet created
 CREATE TABLE parted_no_parts (a int) PARTITION BY LIST (a);
@@ -4849,6 +4857,7 @@ alter table alter1.t1 set schema alter2;
  a      | integer |           |          |         | plain   |              | 
 Publications:
     "pub1"
+Parallel DML: unsafe
 
 drop publication pub1;
 drop schema alter1 cascade;

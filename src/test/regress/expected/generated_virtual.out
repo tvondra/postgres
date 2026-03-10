@@ -368,6 +368,7 @@ NOTICE:  merging column "b" with inherited definition
 Not-null constraints:
     "gtest1_a_not_null" NOT NULL "a" (inherited)
 Inherits: gtest1
+Parallel DML: unsafe
 
 INSERT INTO gtestx (a, x) VALUES (11, 22);
 SELECT * FROM gtest1;

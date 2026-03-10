@@ -322,6 +322,7 @@ Number of partitions: 0
  b      | text    |           |          |         | extended |              | 
 Partition key: RANGE (((a + 1)), substr(b, 1, 5))
 Number of partitions: 0
+Parallel DML: unsafe
 
 INSERT INTO partitioned2 VALUES (1, 'hello');
 ERROR:  no partition of relation "partitioned2" found for row
@@ -335,6 +336,7 @@ CREATE TABLE part2_1 PARTITION OF partitioned2 FOR VALUES FROM (-1, 'aaaaa') TO 
  b      | text    |           |          |         | extended |              | 
 Partition of: partitioned2 FOR VALUES FROM ('-1', 'aaaaa') TO (100, 'ccccc')
 Partition constraint: (((a + 1) IS NOT NULL) AND (substr(b, 1, 5) IS NOT NULL) AND (((a + 1) > '-1'::integer) OR (((a + 1) = '-1'::integer) AND (substr(b, 1, 5) >= 'aaaaa'::text))) AND (((a + 1) < 100) OR (((a + 1) = 100) AND (substr(b, 1, 5) < 'ccccc'::text))))
+Parallel DML: unsafe
 
 DROP TABLE partitioned, partitioned2;
 -- check reference to partitioned table's rowtype in partition descriptor
@@ -376,6 +378,7 @@ select * from partitioned where partitioned = '(1,2)'::partitioned;
  b      | integer |           |          |         | plain   |              | 
 Partition of: partitioned FOR VALUES IN ('(1,2)')
 Partition constraint: (((partitioned1.*)::partitioned IS DISTINCT FROM NULL) AND ((partitioned1.*)::partitioned = '(1,2)'::partitioned))
+Parallel DML: unsafe
 
 drop table partitioned;
 -- check that dependencies of partition columns are handled correctly
@@ -435,6 +438,7 @@ Partitions: part_null FOR VALUES IN (NULL),
             part_p1 FOR VALUES IN (1),
             part_p2 FOR VALUES IN (2),
             part_p3 FOR VALUES IN (3)
+Parallel DML: unsafe
 
 -- forbidden expressions for partition bound with list partitioned table
 CREATE TABLE part_bogus_expr_fail PARTITION OF list_parted FOR VALUES IN (somename);
@@ -886,6 +890,7 @@ Partition of: parted FOR VALUES IN ('b')
 Partition constraint: ((a IS NOT NULL) AND (a = 'b'::text))
 Not-null constraints:
     "part_b_b_not_null" NOT NULL "b" (local, inherited)
+Parallel DML: unsafe
 
 -- Both partition bound and partition key in describe output
 \d+ part_c
@@ -900,6 +905,7 @@ Partition key: RANGE (b)
 Not-null constraints:
     "part_c_b_not_null" NOT NULL "b" (local, inherited)
 Partitions: part_c_1_10 FOR VALUES FROM (1) TO (10)
+Parallel DML: unsafe
 
 -- a level-2 partition's constraint will include the parent's expressions
 \d+ part_c_1_10
@@ -912,6 +918,7 @@ Partition of: part_c FOR VALUES FROM (1) TO (10)
 Partition constraint: ((a IS NOT NULL) AND (a = 'c'::text) AND (b IS NOT NULL) AND (b >= 1) AND (b < 10))
 Not-null constraints:
     "part_c_b_not_null" NOT NULL "b" (inherited)
+Parallel DML: unsafe
 
 -- Show partition count in the parent's describe output
 -- Tempted to include \d+ output listing partitions with bound info but
@@ -946,6 +953,7 @@ CREATE TABLE unbounded_range_part PARTITION OF range_parted4 FOR VALUES FROM (MI
  c      | integer |           |          |         | plain   |              | 
 Partition of: range_parted4 FOR VALUES FROM (MINVALUE, MINVALUE, MINVALUE) TO (MAXVALUE, MAXVALUE, MAXVALUE)
 Partition constraint: ((abs(a) IS NOT NULL) AND (abs(b) IS NOT NULL) AND (c IS NOT NULL))
+Parallel DML: unsafe
 
 DROP TABLE unbounded_range_part;
 CREATE TABLE range_parted4_1 PARTITION OF range_parted4 FOR VALUES FROM (MINVALUE, MINVALUE, MINVALUE) TO (1, MAXVALUE, MAXVALUE);
@@ -958,6 +966,7 @@ CREATE TABLE range_parted4_1 PARTITION OF range_parted4 FOR VALUES FROM (MINVALU
  c      | integer |           |          |         | plain   |              | 
 Partition of: range_parted4 FOR VALUES FROM (MINVALUE, MINVALUE, MINVALUE) TO (1, MAXVALUE, MAXVALUE)
 Partition constraint: ((abs(a) IS NOT NULL) AND (abs(b) IS NOT NULL) AND (c IS NOT NULL) AND (abs(a) <= 1))
+Parallel DML: unsafe
 
 CREATE TABLE range_parted4_2 PARTITION OF range_parted4 FOR VALUES FROM (3, 4, 5) TO (6, 7, MAXVALUE);
 \d+ range_parted4_2
@@ -969,6 +978,7 @@ CREATE TABLE range_parted4_2 PARTITION OF range_parted4 FOR VALUES FROM (3, 4, 5
  c      | integer |           |          |         | plain   |              | 
 Partition of: range_parted4 FOR VALUES FROM (3, 4, 5) TO (6, 7, MAXVALUE)
 Partition constraint: ((abs(a) IS NOT NULL) AND (abs(b) IS NOT NULL) AND (c IS NOT NULL) AND ((abs(a) > 3) OR ((abs(a) = 3) AND (abs(b) > 4)) OR ((abs(a) = 3) AND (abs(b) = 4) AND (c >= 5))) AND ((abs(a) < 6) OR ((abs(a) = 6) AND (abs(b) <= 7))))
+Parallel DML: unsafe
 
 CREATE TABLE range_parted4_3 PARTITION OF range_parted4 FOR VALUES FROM (6, 8, MINVALUE) TO (9, MAXVALUE, MAXVALUE);
 \d+ range_parted4_3
@@ -980,6 +990,7 @@ CREATE TABLE range_parted4_3 PARTITION OF range_parted4 FOR VALUES FROM (6, 8, M
  c      | integer |           |          |         | plain   |              | 
 Partition of: range_parted4 FOR VALUES FROM (6, 8, MINVALUE) TO (9, MAXVALUE, MAXVALUE)
 Partition constraint: ((abs(a) IS NOT NULL) AND (abs(b) IS NOT NULL) AND (c IS NOT NULL) AND ((abs(a) > 6) OR ((abs(a) = 6) AND (abs(b) >= 8))) AND (abs(a) <= 9))
+Parallel DML: unsafe
 
 DROP TABLE range_parted4;
 -- user-defined operator class in partition key
@@ -1016,6 +1027,7 @@ SELECT obj_description('parted_col_comment'::regclass);
  b      | text    |           |          |         | extended |              | 
 Partition key: LIST (a)
 Number of partitions: 0
+Parallel DML: unsafe
 
 DROP TABLE parted_col_comment;
 -- specifying storage parameters for partitioned tables is not supported
@@ -1032,6 +1044,7 @@ CREATE TABLE arrlp12 PARTITION OF arrlp FOR VALUES IN ('{1}', '{2}');
  a      | integer[] |           |          |         | extended |              | 
 Partition of: arrlp FOR VALUES IN ('{1}', '{2}')
 Partition constraint: ((a IS NOT NULL) AND ((a = '{1}'::integer[]) OR (a = '{2}'::integer[])))
+Parallel DML: unsafe
 
 DROP TABLE arrlp;
 -- partition on boolean column
@@ -1046,6 +1059,7 @@ create table boolspart_f partition of boolspart for values in (false);
 Partition key: LIST (a)
 Partitions: boolspart_f FOR VALUES IN (false),
             boolspart_t FOR VALUES IN (true)
+Parallel DML: unsafe
 
 drop table boolspart;
 -- partitions mixing temporary and permanent relations

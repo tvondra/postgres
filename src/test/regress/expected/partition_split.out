@@ -142,6 +142,7 @@ Partitions: partition_split_schema2.sales_apr2022 FOR VALUES FROM ('04-01-2022')
             partition_split_schema2.sales_feb2022 FOR VALUES FROM ('02-01-2022') TO ('03-01-2022'),
             partition_split_schema2.sales_mar2022 FOR VALUES FROM ('03-01-2022') TO ('04-01-2022'),
             sales_jan2022 FOR VALUES FROM ('01-01-2022') TO ('02-01-2022')
+Parallel DML: unsafe
 
 DROP TABLE sales_range;
 DROP TABLE sales_others;
@@ -247,6 +248,7 @@ Partitions: partition_split_schema2.sales_mar2022 FOR VALUES FROM ('03-01-2022')
             sales_feb2022 FOR VALUES FROM ('02-01-2022') TO ('03-01-2022'),
             sales_jan2022 FOR VALUES FROM ('01-01-2022') TO ('02-01-2022'),
             sales_others DEFAULT
+Parallel DML: unsafe
 
 SELECT tableoid::regclass, * FROM sales_range ORDER BY tableoid::regclass::text COLLATE "C", salesperson_id;
                tableoid                | salesperson_id | salesperson_name | sales_amount | sales_date 
@@ -1318,6 +1320,7 @@ CREATE TABLE t_bigint_default PARTITION OF t_bigint DEFAULT;
  k      | integer |           |          | generated always as ((b + 10)) stored | plain   |              | 
 Partition key: RANGE (b)
 Partitions: t_bigint_default DEFAULT
+Parallel DML: unsafe
 
 \d+ t_bigint_default
                                     Table "partition_split_schema.t_bigint_default"
@@ -1329,6 +1332,7 @@ Partitions: t_bigint_default DEFAULT
  k      | integer |           |          | generated always as ((b + 10)) stored | plain   |              | 
 Partition of: t_bigint DEFAULT
 No partition constraint
+Parallel DML: unsafe
 
 ALTER TABLE t_bigint SPLIT PARTITION t_bigint_default INTO
   (PARTITION t_bigint_01_10 FOR VALUES FROM (0) TO (10),
@@ -1344,6 +1348,7 @@ ALTER TABLE t_bigint SPLIT PARTITION t_bigint_default INTO
  k      | integer |           |          | generated always as ((b + 10)) stored | plain   |              | 
 Partition of: t_bigint DEFAULT
 Partition constraint: (NOT ((b IS NOT NULL) AND ((b >= '0'::bigint) AND (b < '10'::bigint))))
+Parallel DML: unsafe
 
 \d+ t_bigint_01_10
                                      Table "partition_split_schema.t_bigint_01_10"
@@ -1355,6 +1360,7 @@ Partition constraint: (NOT ((b IS NOT NULL) AND ((b >= '0'::bigint) AND (b < '10
  k      | integer |           |          | generated always as ((b + 10)) stored | plain   |              | 
 Partition of: t_bigint FOR VALUES FROM ('0') TO ('10')
 Partition constraint: ((b IS NOT NULL) AND (b >= '0'::bigint) AND (b < '10'::bigint))
+Parallel DML: unsafe
 
 DROP TABLE t_bigint;
 -- Test permission checks.  The user needs to own the parent table and the
@@ -1523,6 +1529,7 @@ Not-null constraints:
 Triggers:
     t_before_insert_row_trigger BEFORE INSERT ON tp_x FOR EACH ROW EXECUTE FUNCTION trigger_function('t'), ON TABLE t
     tp_x_before_insert_row_trigger BEFORE INSERT ON tp_x FOR EACH ROW EXECUTE FUNCTION trigger_function('tp_x')
+Parallel DML: unsafe
 
 ALTER TABLE t SPLIT PARTITION tp_x INTO
   (PARTITION tp_0_1 FOR VALUES FROM (0) TO (1),
@@ -1546,6 +1553,7 @@ Not-null constraints:
     "t_b_nn" NOT NULL "b" (inherited) NOT VALID
 Triggers:
     t_before_insert_row_trigger BEFORE INSERT ON tp_x FOR EACH ROW EXECUTE FUNCTION trigger_function('t'), ON TABLE t
+Parallel DML: unsafe
 
 INSERT INTO t(i, t, b) VALUES(1, DEFAULT, 3);
 NOTICE:  trigger(t) called: action = INSERT, when = BEFORE, level = ROW

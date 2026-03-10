@@ -179,6 +179,7 @@ Not-null constraints:
     "test_replica_identity_keya_not_null" NOT NULL "keya"
     "test_replica_identity_keyb_not_null" NOT NULL "keyb"
 Replica Identity: FULL
+Parallel DML: unsafe
 
 ALTER TABLE test_replica_identity REPLICA IDENTITY NOTHING;
 SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
@@ -263,6 +264,7 @@ Indexes:
 Not-null constraints:
     "test_replica_identity4_id_not_null" NOT NULL "id"
 Partitions: test_replica_identity4_1 FOR VALUES IN (1)
+Parallel DML: unsafe
 
 ALTER INDEX test_replica_identity4_pkey
   ATTACH PARTITION test_replica_identity4_1_pkey;
@@ -277,6 +279,7 @@ Indexes:
 Not-null constraints:
     "test_replica_identity4_id_not_null" NOT NULL "id"
 Partitions: test_replica_identity4_1 FOR VALUES IN (1)
+Parallel DML: unsafe
 
 -- Dropping the primary key is not allowed if that would leave the replica
 -- identity as nullable

@@ -195,8 +195,8 @@ read_stream_update_stats_prefetch(ReadStream *stream)
  * read_stream_update_stats_io
  *		update read_stream stats about size of I/O requests
  *
- * We count the number of prefetch requests and distance sum, so that we can
- * later calculate an average distance.
+ * We count the number of I/O requests, size of requests (counted in blocks)
+ * and number of in-progress I/Os.
  */
 static inline void
 read_stream_update_stats_io(ReadStream *stream, int nblocks, int in_progress)

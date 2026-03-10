@@ -117,7 +117,7 @@ typedef struct ParallelBlockTableScanWorkerData
 typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
 
 /*
- * Generic prefetch stats fot table scans.
+ * Generic prefetch stats for table scans.
  */
 typedef struct TableScanStatsData
 {

@@ -1052,7 +1052,10 @@ table_endscan(TableScanDesc scan)
 static inline TableScanStats
 table_scan_stats(TableScanDesc scan)
 {
-	return scan->rs_rd->rd_tableam->scan_stats(scan);
+	if (scan->rs_rd->rd_tableam->scan_stats)
+		return scan->rs_rd->rd_tableam->scan_stats(scan);
+
+	return NULL;
 }
 
 /*
@@ -1262,7 +1265,10 @@ table_index_fetch_end(struct IndexFetchTableData *scan)
 static inline TableScanStats
 table_index_stats(struct IndexFetchTableData *scan)
 {
-	return scan->rel->rd_tableam->index_stats(scan);
+	if (scan->rel->rd_tableam->index_stats)
+		return scan->rel->rd_tableam->index_stats(scan);
+
+	return NULL;
 }
 
 /*

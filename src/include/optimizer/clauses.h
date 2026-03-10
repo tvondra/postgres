@@ -23,6 +23,13 @@ typedef struct
 	List	  **windowFuncs;	/* lists of WindowFuncs for each winref */
 } WindowFuncLists;
 
+typedef struct safety_object
+{
+	Oid objid;
+	Oid classid;
+	char proparallel;
+} safety_object;
+
 extern bool contain_agg_clause(Node *clause);
 
 extern bool contain_window_function(Node *clause);
@@ -56,5 +63,8 @@ extern Query *inline_function_in_from(PlannerInfo *root,
 extern Bitmapset *pull_paramids(Expr *expr);
 
 extern bool is_parallel_allowed_for_modify(Query *parse);
+extern List *target_rel_parallel_hazard(Oid relOid, bool findall,
+										char max_interesting,
+										char *max_hazard);
 
 #endif							/* CLAUSES_H */

@@ -1695,7 +1695,10 @@ ExecutePlan(QueryDesc *queryDesc,
 
 	estate->es_use_parallel_mode = use_parallel_mode;
 	if (use_parallel_mode)
+	{
+		PrepareParallelModePlanExec(estate->es_plannedstmt->commandType);
 		EnterParallelMode();
+	}
 
 	/*
 	 * Loop until we've processed the proper number of tuples from the plan.

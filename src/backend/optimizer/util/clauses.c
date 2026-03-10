@@ -20,6 +20,8 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/table.h"
+#include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_operator.h"
@@ -58,6 +60,7 @@
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -167,7 +170,7 @@ static Query *substitute_actual_parameters_in_from(Query *expr,
 static Node *substitute_actual_parameters_in_from_mutator(Node *node,
 														  substitute_actual_parameters_in_from_context *context);
 static bool pull_paramids_walker(Node *node, Bitmapset **context);
-
+static bool max_parallel_hazard_test(char proparallel, max_parallel_hazard_context *context);
 
 /*****************************************************************************
  *		Aggregate-function clause manipulation
@@ -742,12 +745,34 @@ contain_volatile_functions_not_nextval_walker(Node *node, void *context)
 char
 max_parallel_hazard(Query *parse)
 {
+	bool max_hazard_found;
 	max_parallel_hazard_context context;
 
 	context.max_hazard = PROPARALLEL_SAFE;
 	context.max_interesting = PROPARALLEL_UNSAFE;
 	context.safe_param_ids = NIL;
-	(void) max_parallel_hazard_walker((Node *) parse, &context);
+
+	max_hazard_found = max_parallel_hazard_walker((Node *) parse, &context);
+
+	if (!max_hazard_found &&
+		IsModifySupportedInParallelMode(parse->commandType))
+	{
+		RangeTblEntry *rte;
+		Relation target_rel;
+
+		rte = rt_fetch(parse->resultRelation, parse->rtable);
+
+		/*
+		 * The target table is already locked by the caller (this is done in the
+		 * parse/analyze phase), and remains locked until end-of-transaction.
+		 */
+		target_rel = table_open(rte->relid, NoLock);
+
+		(void) max_parallel_hazard_test(target_rel->rd_rel->relparalleldml,
+										&context);
+		table_close(target_rel, NoLock);
+	}
+
 	return context.max_hazard;
 }
 
@@ -981,6 +1006,64 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 								  context);
 }
 
+/*
+ * is_parallel_allowed_for_modify
+ *
+ * Check at a high-level if parallel mode is able to be used for the specified
+ * table-modification statement. Currently, we support only Inserts.
+ *
+ * It's not possible in the following cases:
+ *
+ *  1) INSERT...ON CONFLICT...DO UPDATE
+ *  2) INSERT without SELECT
+ *
+ * (Note: we don't do in-depth parallel-safety checks here, we do only the
+ * cheaper tests that can quickly exclude obvious cases for which
+ * parallelism isn't supported, to avoid having to do further parallel-safety
+ * checks for these)
+ */
+bool
+is_parallel_allowed_for_modify(Query *parse)
+{
+	bool		hasSubQuery;
+	RangeTblEntry *rte;
+	ListCell   *lc;
+
+	if (!IsModifySupportedInParallelMode(parse->commandType))
+		return false;
+
+	/*
+	 * UPDATE is not currently supported in parallel-mode, so prohibit
+	 * INSERT...ON CONFLICT...DO UPDATE...
+	 *
+	 * In order to support update, even if only in the leader, some further
+	 * work would need to be done. A mechanism would be needed for sharing
+	 * combo-cids between leader and workers during parallel-mode, since for
+	 * example, the leader might generate a combo-cid and it needs to be
+	 * propagated to the workers.
+	 */
+	if (parse->commandType == CMD_INSERT &&
+		parse->onConflict != NULL &&
+		parse->onConflict->action == ONCONFLICT_UPDATE)
+		return false;
+
+	/*
+	 * If there is no underlying SELECT, a parallel insert operation is not
+	 * desirable.
+	 */
+	hasSubQuery = false;
+	foreach(lc, parse->rtable)
+	{
+		rte = lfirst_node(RangeTblEntry, lc);
+		if (rte->rtekind == RTE_SUBQUERY)
+		{
+			hasSubQuery = true;
+			break;
+		}
+	}
+
+	return hasSubQuery;
+}
 
 /*****************************************************************************
  *		Check clauses for nonstrict functions

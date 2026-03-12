@@ -72,6 +72,7 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "executor/instrument_node.h"
 #include "storage/aio.h"
 #include "storage/fd.h"
 #include "storage/smgr.h"
@@ -106,6 +107,9 @@ struct ReadStream
 	bool		batch_mode;		/* READ_STREAM_USE_BATCHING */
 	bool		advice_enabled;
 	bool		temporary;
+
+	/* stats counters */
+	ReadStreamInstrumentation stats;
 
 	/*
 	 * One-block buffer to support 'ungetting' a block number, to resolve flow
@@ -173,6 +177,35 @@ block_range_read_stream_cb(ReadStream *stream,
 }
 
 /*
+ * read_stream_update_stats_prefetch
+ *		update read_stream stats before a prefetch request
+ *
+ * We count the number of prefetch requests and distance sum, so that we can
+ * later calculate an average distance.
+ */
+static inline void
+read_stream_update_stats_prefetch(ReadStream *stream)
+{
+	stream->stats.prefetch_count += 1;
+	stream->stats.distance_sum += stream->distance;
+}
+
+/*
+ * read_stream_update_stats_io
+ *		update read_stream stats about size of I/O requests
+ *
+ * We count the number of I/O requests, size of requests (counted in blocks)
+ * and number of in-progress I/Os.
+ */
+static inline void
+read_stream_update_stats_io(ReadStream *stream, int nblocks, int in_progress)
+{
+	stream->stats.io_count += 1;
+	stream->stats.io_nblocks += nblocks;
+	stream->stats.io_in_progress += in_progress;
+}
+
+/*
  * Ask the callback which block it would like us to read next, with a one block
  * buffer in front to allow read_stream_unget_block() to work.
  */
@@ -180,6 +213,14 @@ static inline BlockNumber
 read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
+
+	/*
+	 * update stats about prefetch distance and number of prefetches
+	 *
+	 * XXX Do we want to do this even with buffered blocknum? That will double
+	 * count blocks what were "unget".
+	 */
+	read_stream_update_stats_prefetch(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -367,6 +408,9 @@ read_stream_start_pending_read(ReadStream *stream)
 		/* Look-ahead distance decays, no I/O necessary. */
 		if (stream->distance > 1)
 			stream->distance--;
+
+		/* update I/O stats */
+		read_stream_update_stats_io(stream, nblocks, stream->ios_in_progress + 1);
 	}
 	else
 	{
@@ -380,6 +424,9 @@ read_stream_start_pending_read(ReadStream *stream)
 		Assert(stream->ios_in_progress < stream->max_ios);
 		stream->ios_in_progress++;
 		stream->seq_blocknum = stream->pending_read_blocknum + nblocks;
+
+		/* update I/O stats */
+		read_stream_update_stats_io(stream, nblocks, stream->ios_in_progress);
 	}
 
 	/*
@@ -703,6 +750,9 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
+	/* zero the stats */
+	memset(&stream->stats, 0, sizeof(ReadStreamInstrumentation));
+
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
 	 * reading the whole relation.  This way we start out assuming we'll be
@@ -860,6 +910,9 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 			stream->ios_in_progress = 1;
 			stream->ios[0].buffer_index = oldest_buffer_index;
 			stream->seq_blocknum = next_blocknum + 1;
+
+			/* since we executed IO synchronously, count it as a stall */
+			stream->stats.stall_count += 1;
 		}
 		else
 		{
@@ -916,12 +969,17 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 	{
 		int16		io_index = stream->oldest_io_index;
 		int32		distance;	/* wider temporary value, clamped below */
+		bool		needed_wait;
 
 		/* Sanity check that we still agree on the buffers. */
 		Assert(stream->ios[io_index].op.buffers ==
 			   &stream->buffers[oldest_buffer_index]);
 
-		WaitReadBuffers(&stream->ios[io_index].op);
+		needed_wait = WaitReadBuffers(&stream->ios[io_index].op);
+
+		/* Count it as a stall if we need to wait for IO */
+		if (needed_wait)
+			stream->stats.stall_count += 1;
 
 		Assert(stream->ios_in_progress > 0);
 		stream->ios_in_progress--;
@@ -1117,4 +1175,11 @@ read_stream_end(ReadStream *stream)
 {
 	read_stream_reset(stream);
 	pfree(stream);
+}
+
+/* return the prefetch stats for the read_stream */
+ReadStreamInstrumentation
+read_stream_prefetch_stats(ReadStream *stream)
+{
+	return stream->stats;
 }

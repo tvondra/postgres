@@ -380,6 +380,11 @@ typedef struct TableAmRoutine
 											  ScanDirection direction,
 											  TupleTableSlot *slot);
 
+	/*
+	 * Collect statistics about table scan.
+	 */
+	TableScanStats		(*scan_stats) (TableScanDesc scan);
+
 	/* ------------------------------------------------------------------------
 	 * Parallel table scan related functions.
 	 * ------------------------------------------------------------------------
@@ -458,7 +463,6 @@ typedef struct TableAmRoutine
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
 									  bool *call_again, bool *all_dead);
-
 
 	/* ------------------------------------------------------------------------
 	 * Callbacks for non-modifying operations on individual tuples
@@ -1004,6 +1008,18 @@ static inline void
 table_endscan(TableScanDesc scan)
 {
 	scan->rs_rd->rd_tableam->scan_end(scan);
+}
+
+/*
+ * Fetch statistics about table scan.
+ */
+static inline TableScanStats
+table_scan_stats(TableScanDesc scan)
+{
+	if (scan->rs_rd->rd_tableam->scan_stats)
+		return scan->rs_rd->rd_tableam->scan_stats(scan);
+
+	return NULL;
 }
 
 /*

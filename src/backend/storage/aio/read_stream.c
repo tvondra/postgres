@@ -189,6 +189,8 @@ read_stream_update_stats_prefetch(ReadStream *stream)
 {
 	stream->stats.prefetch_count++;
 	stream->stats.distance_sum += stream->pinned_buffers;
+	if (stream->pinned_buffers > stream->stats.max_pinned)
+		stream->stats.max_pinned = stream->pinned_buffers;
 }
 
 /*
@@ -740,8 +742,9 @@ read_stream_begin_impl(int flags,
 	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
-	/* zero the stats */
+	/* zero the stats, then set capacity */
 	memset(&stream->stats, 0, sizeof(ReadStreamInstrumentation));
+	stream->stats.max_distance = max_pinned_buffers;
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be

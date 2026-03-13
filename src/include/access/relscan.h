@@ -119,11 +119,17 @@ typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
  */
 typedef struct TableScanStatsData
 {
-	/* number of prefetch requests */
+	/* number of buffers returned to consumer (for averaging distance) */
 	uint64		prefetch_count;
 
-	/* total of prefetch distances */
+	/* sum of pinned_buffers sampled at each buffer return */
 	uint64		distance_sum;
+
+	/* maximum possible look-ahead distance (max_pinned_buffers) */
+	int16		max_distance;
+
+	/* maximum actual pinned_buffers observed during the scan */
+	int16		max_pinned;
 
 	/* number of stalled reads (waiting for I/O) */
 	uint64		stall_count;

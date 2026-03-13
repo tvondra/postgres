@@ -4045,6 +4045,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 
 						stats.prefetch_count += winstrument->stream.prefetch_count;
 						stats.distance_sum += winstrument->stream.distance_sum;
+						if (winstrument->stream.max_distance > stats.max_distance)
+							stats.max_distance = winstrument->stream.max_distance;
+						if (winstrument->stream.max_pinned > stats.max_pinned)
+							stats.max_pinned = winstrument->stream.max_pinned;
 						stats.stall_count += winstrument->stream.stall_count;
 						stats.io_count += winstrument->stream.io_count;
 						stats.io_nblocks += winstrument->stream.io_nblocks;
@@ -4068,6 +4072,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 
 						stats.prefetch_count += winstrument->stream.prefetch_count;
 						stats.distance_sum += winstrument->stream.distance_sum;
+						if (winstrument->stream.max_distance > stats.max_distance)
+							stats.max_distance = winstrument->stream.max_distance;
+						if (winstrument->stream.max_pinned > stats.max_pinned)
+							stats.max_pinned = winstrument->stream.max_pinned;
 						stats.stall_count += winstrument->stream.stall_count;
 						stats.io_count += winstrument->stream.io_count;
 						stats.io_nblocks += winstrument->stream.io_nblocks;
@@ -4087,22 +4095,30 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	{
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
+			/* Line 1: Prefetch distance info */
 			ExplainIndentText(es);
-
-			appendStringInfoString(es->str, "Prefetch:");
-			appendStringInfo(es->str, " distance=%.3f",
-							 (stats.distance_sum * 1.0 / stats.prefetch_count));
-			appendStringInfo(es->str, " count=%" PRIu64, stats.prefetch_count);
-			appendStringInfo(es->str, " stalls=%" PRIu64, stats.stall_count);
-
-			if (stats.io_count > 0)
-			{
-				appendStringInfo(es->str, " ios=%" PRIu64, stats.io_count);
-				appendStringInfo(es->str, " size=%.3f", (stats.io_nblocks * 1.0 / stats.io_count));
-				appendStringInfo(es->str, " inprogress=%.3f", (stats.io_in_progress * 1.0 / stats.io_count));
-			}
-
+			appendStringInfo(es->str, "Prefetch: avg=%.3f max=%d capacity=%d",
+							 (stats.distance_sum * 1.0 / stats.prefetch_count),
+							 stats.max_pinned,
+							 stats.max_distance);
 			appendStringInfoChar(es->str, '\n');
+
+			/* Line 2: I/O info (only if there were actual I/Os) */
+			if (stats.stall_count > 0 || stats.io_count > 0)
+			{
+				ExplainIndentText(es);
+				appendStringInfo(es->str, "Read Streams I/O: stalls=%" PRIu64,
+								 stats.stall_count);
+
+				if (stats.io_count > 0)
+				{
+					appendStringInfo(es->str, " size=%.3f inprogress=%.3f",
+									 (stats.io_nblocks * 1.0 / stats.io_count),
+									 (stats.io_in_progress * 1.0 / stats.io_count));
+				}
+
+				appendStringInfoChar(es->str, '\n');
+			}
 		}
 		else
 		{
@@ -4110,18 +4126,18 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats.distance_sum * 1.0 / stats.prefetch_count), 3, es);
-			ExplainPropertyUInteger("Prefetch Count", NULL,
-									stats.prefetch_count, es);
+			ExplainPropertyInteger("Max Distance", NULL,
+								   stats.max_pinned, es);
+			ExplainPropertyInteger("Capacity", NULL,
+								   stats.max_distance, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats.stall_count, es);
 
 			if (stats.io_count > 0)
 			{
-				ExplainPropertyUInteger("IO count", NULL,
-										stats.io_count, es);
-				ExplainPropertyFloat("Average Size", NULL,
+				ExplainPropertyFloat("Average IO Size", NULL,
 									 (stats.io_nblocks * 1.0 / stats.io_count), 3, es);
-				ExplainPropertyFloat("IO in-progress", NULL,
+				ExplainPropertyFloat("Average IOs In Progress", NULL,
 									 (stats.io_in_progress * 1.0 / stats.io_count), 3, es);
 			}
 
@@ -4178,22 +4194,30 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 	{
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
+			/* Line 1: Prefetch distance info */
 			ExplainIndentText(es);
-
-			appendStringInfoString(es->str, "Prefetch:");
-			appendStringInfo(es->str, " distance=%.3f",
-							 (stats->distance_sum * 1.0 / stats->prefetch_count));
-			appendStringInfo(es->str, " count=%" PRIu64, stats->prefetch_count);
-			appendStringInfo(es->str, " stalls=%" PRIu64, stats->stall_count);
-
-			if (stats->io_count > 0)
-			{
-				appendStringInfo(es->str, " ios=%" PRIu64, stats->io_count);
-				appendStringInfo(es->str, " size=%.3f", (stats->io_nblocks * 1.0 / stats->io_count));
-				appendStringInfo(es->str, " inprogress=%.3f", (stats->io_in_progress * 1.0 / stats->io_count));
-			}
-
+			appendStringInfo(es->str, "Prefetch: avg=%.3f max=%d capacity=%d",
+							 (stats->distance_sum * 1.0 / stats->prefetch_count),
+							 stats->max_pinned,
+							 stats->max_distance);
 			appendStringInfoChar(es->str, '\n');
+
+			/* Line 2: I/O info (only if there were actual I/Os) */
+			if (stats->stall_count > 0 || stats->io_count > 0)
+			{
+				ExplainIndentText(es);
+				appendStringInfo(es->str, "Read Streams I/O: stalls=%" PRIu64,
+								 stats->stall_count);
+
+				if (stats->io_count > 0)
+				{
+					appendStringInfo(es->str, " size=%.3f inprogress=%.3f",
+									 (stats->io_nblocks * 1.0 / stats->io_count),
+									 (stats->io_in_progress * 1.0 / stats->io_count));
+				}
+
+				appendStringInfoChar(es->str, '\n');
+			}
 		}
 		else
 		{
@@ -4201,18 +4225,18 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
-			ExplainPropertyUInteger("Prefetch Count", NULL,
-									stats->prefetch_count, es);
+			ExplainPropertyInteger("Max Distance", NULL,
+								   stats->max_pinned, es);
+			ExplainPropertyInteger("Capacity", NULL,
+								   stats->max_distance, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats->stall_count, es);
 
 			if (stats->io_count > 0)
 			{
-				ExplainPropertyUInteger("IO count", NULL,
-										stats->io_count, es);
-				ExplainPropertyFloat("Average Size", NULL,
+				ExplainPropertyFloat("Average IO Size", NULL,
 									 (stats->io_nblocks * 1.0 / stats->io_count), 3, es);
-				ExplainPropertyFloat("IO in-progress", NULL,
+				ExplainPropertyFloat("Average IOs In Progress", NULL,
 									 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
 			}
 

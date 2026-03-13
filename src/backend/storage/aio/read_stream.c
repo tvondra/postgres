@@ -178,16 +178,17 @@ block_range_read_stream_cb(ReadStream *stream,
 
 /*
  * read_stream_update_stats_prefetch
- *		update read_stream stats before a prefetch request
+ *		update read_stream stats with current pinned buffer depth
  *
- * We count the number of prefetch requests and distance sum, so that we can
- * later calculate an average distance.
+ * Called once per buffer returned to the consumer in read_stream_next_buffer().
+ * Records the number of pinned buffers at that moment, so we can compute the
+ * average look-ahead depth.
  */
 static inline void
 read_stream_update_stats_prefetch(ReadStream *stream)
 {
-	stream->stats.prefetch_count += 1;
-	stream->stats.distance_sum += stream->distance;
+	stream->stats.prefetch_count++;
+	stream->stats.distance_sum += stream->pinned_buffers;
 }
 
 /*
@@ -213,14 +214,6 @@ static inline BlockNumber
 read_stream_get_block(ReadStream *stream, void *per_buffer_data)
 {
 	BlockNumber blocknum;
-
-	/*
-	 * update stats about prefetch distance and number of prefetches
-	 *
-	 * XXX Do we want to do this even with buffered blocknum? That will double
-	 * count blocks what were "unget".
-	 */
-	read_stream_update_stats_prefetch(stream);
 
 	blocknum = stream->buffered_blocknum;
 	if (blocknum != InvalidBlockNumber)
@@ -408,9 +401,6 @@ read_stream_start_pending_read(ReadStream *stream)
 		/* Look-ahead distance decays, no I/O necessary. */
 		if (stream->distance > 1)
 			stream->distance--;
-
-		/* update I/O stats */
-		read_stream_update_stats_io(stream, nblocks, stream->ios_in_progress + 1);
 	}
 	else
 	{
@@ -901,6 +891,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 										flags)))
 			{
 				/* Fast return. */
+				read_stream_update_stats_prefetch(stream);
 				return buffer;
 			}
 
@@ -924,6 +915,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		}
 
 		stream->fast_path = false;
+		read_stream_update_stats_prefetch(stream);
 		return buffer;
 	}
 #endif
@@ -1038,6 +1030,8 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 #endif
 	}
 #endif
+
+	read_stream_update_stats_prefetch(stream);
 
 	/* Pin transferred to caller. */
 	Assert(stream->pinned_buffers > 0);

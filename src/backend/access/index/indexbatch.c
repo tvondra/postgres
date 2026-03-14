@@ -622,17 +622,19 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch, Buffer buf)
 		 */
 		batch->lsn = BufferGetLSNAtomic(buf);
 
-		/* Drop the lock */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
 		if (scan->batchImmediateRelease)
 		{
 			/*
-			 * Plain MVCC scan: release the pin now.  No amreleasebatch
-			 * callback will be needed later.  The index AM caller must clear
-			 * its own opaque buf field after we return.
+			 * Plain MVCC scan: release both the lock and the pin now.  No
+			 * amreleasebatch callback will be needed later.  The index AM
+			 * caller must clear its own opaque buf field after we return.
 			 */
-			ReleaseBuffer(buf);
+			UnlockReleaseBuffer(buf);
+		}
+		else
+		{
+			/* Just drop the lock */
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		}
 
 		/* else: table AM will call amreleasebatch when ready */
@@ -643,8 +645,7 @@ indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch, Buffer buf)
 		Assert(scan->heapRelation == NULL);
 
 		/* drop both the lock and the pin */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(buf);
+		UnlockReleaseBuffer(buf);
 	}
 }
 

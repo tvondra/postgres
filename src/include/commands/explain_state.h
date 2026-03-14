@@ -54,6 +54,7 @@ typedef struct ExplainState
 	bool		summary;		/* print total planning and execution timing */
 	bool		memory;			/* print planner's memory usage information */
 	bool		settings;		/* print modified settings */
+	bool		prefetch;		/* print info about prefetch */
 	bool		generic;		/* generate a generic plan */
 	ExplainSerializeOption serialize;	/* serialize the query's output? */
 	ExplainFormat format;		/* output format */

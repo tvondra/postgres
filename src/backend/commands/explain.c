@@ -4009,7 +4009,7 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	TableScanStats	leader_stats;
 	TableScanStatsData	stats;
 
-	if (!es->analyze)
+	if (!es->prefetch)
 		return;
 
 	/* scan not started, no prefetch stats */
@@ -4158,7 +4158,7 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 	Plan	   *plan = planstate->plan;
 	ReadStreamInstrumentation *stats = NULL;
 
-	if (!es->analyze)
+	if (!es->prefetch)
 		return;
 
 	/* get instrumentation for the given worker */

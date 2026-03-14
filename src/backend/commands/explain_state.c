@@ -159,6 +159,10 @@ ParseExplainOptionList(ExplainState *es, List *options, ParseState *pstate)
 								"EXPLAIN", opt->defname, p),
 						 parser_errposition(pstate, opt->location)));
 		}
+		else if (strcmp(opt->defname, "prefetch") == 0)
+		{
+			es->prefetch = defGetBoolean(opt);
+		}
 		else if (!ApplyExtensionExplainOption(es, opt, pstate))
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -184,6 +188,12 @@ ParseExplainOptionList(ExplainState *es, List *options, ParseState *pstate)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("EXPLAIN option %s requires ANALYZE", "TIMING")));
+
+	/* check that prefetch is used with EXPLAIN ANALYZE */
+	if (es->prefetch && !es->analyze)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("EXPLAIN option %s requires ANALYZE", "PREFETCH")));
 
 	/* check that serialize is used with EXPLAIN ANALYZE */
 	if (es->serialize != EXPLAIN_SERIALIZE_NONE && !es->analyze)

@@ -320,10 +320,10 @@ ExecEndSeqScan(SeqScanState *node)
 		{
 			si->stream.prefetch_count += stats->prefetch_count;
 			si->stream.distance_sum += stats->distance_sum;
-			if (stats->max_distance > si->stream.max_distance)
-				si->stream.max_distance = stats->max_distance;
-			if (stats->max_pinned > si->stream.max_pinned)
-				si->stream.max_pinned = stats->max_pinned;
+			if (stats->distance_max > si->stream.distance_max)
+				si->stream.distance_max = stats->distance_max;
+			if (stats->distance_capacity > si->stream.distance_capacity)
+				si->stream.distance_capacity = stats->distance_capacity;
 			si->stream.stall_count += stats->stall_count;
 			si->stream.io_count += stats->io_count;
 			si->stream.io_nblocks += stats->io_nblocks;

@@ -1422,8 +1422,8 @@ heap_scan_stats(TableScanDesc sscan)
 
 	res->prefetch_count = stats.prefetch_count;
 	res->distance_sum = stats.distance_sum;
-	res->max_distance = stats.max_distance;
-	res->max_pinned = stats.max_pinned;
+	res->distance_max = stats.distance_max;
+	res->distance_capacity = stats.distance_capacity;
 	res->stall_count = stats.stall_count;
 	res->io_count = stats.io_count;
 	res->io_nblocks = stats.io_nblocks;

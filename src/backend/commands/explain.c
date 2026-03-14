@@ -4045,10 +4045,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 
 						stats.prefetch_count += winstrument->stream.prefetch_count;
 						stats.distance_sum += winstrument->stream.distance_sum;
-						if (winstrument->stream.max_distance > stats.max_distance)
-							stats.max_distance = winstrument->stream.max_distance;
-						if (winstrument->stream.max_pinned > stats.max_pinned)
-							stats.max_pinned = winstrument->stream.max_pinned;
+						if (winstrument->stream.distance_max > stats.distance_max)
+							stats.distance_max = winstrument->stream.distance_max;
+						if (winstrument->stream.distance_capacity > stats.distance_capacity)
+							stats.distance_capacity = winstrument->stream.distance_capacity;
 						stats.stall_count += winstrument->stream.stall_count;
 						stats.io_count += winstrument->stream.io_count;
 						stats.io_nblocks += winstrument->stream.io_nblocks;
@@ -4072,10 +4072,10 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 
 						stats.prefetch_count += winstrument->stream.prefetch_count;
 						stats.distance_sum += winstrument->stream.distance_sum;
-						if (winstrument->stream.max_distance > stats.max_distance)
-							stats.max_distance = winstrument->stream.max_distance;
-						if (winstrument->stream.max_pinned > stats.max_pinned)
-							stats.max_pinned = winstrument->stream.max_pinned;
+						if (winstrument->stream.distance_max > stats.distance_max)
+							stats.distance_max = winstrument->stream.distance_max;
+						if (winstrument->stream.distance_capacity > stats.distance_capacity)
+							stats.distance_capacity = winstrument->stream.distance_capacity;
 						stats.stall_count += winstrument->stream.stall_count;
 						stats.io_count += winstrument->stream.io_count;
 						stats.io_nblocks += winstrument->stream.io_nblocks;
@@ -4095,19 +4095,19 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 	{
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
-			/* Line 1: Prefetch distance info */
+			/* prefetch distance info */
 			ExplainIndentText(es);
 			appendStringInfo(es->str, "Prefetch: avg=%.3f max=%d capacity=%d",
 							 (stats.distance_sum * 1.0 / stats.prefetch_count),
-							 stats.max_pinned,
-							 stats.max_distance);
+							 stats.distance_max,
+							 stats.distance_capacity);
 			appendStringInfoChar(es->str, '\n');
 
-			/* Line 2: I/O info (only if there were actual I/Os) */
+			/* prefetch I/O info (only if there were actual I/Os) */
 			if (stats.stall_count > 0 || stats.io_count > 0)
 			{
 				ExplainIndentText(es);
-				appendStringInfo(es->str, "Read Streams I/O: stalls=%" PRIu64,
+				appendStringInfo(es->str, "Prefetch I/O: stalls=%" PRIu64,
 								 stats.stall_count);
 
 				if (stats.io_count > 0)
@@ -4127,9 +4127,9 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats.distance_sum * 1.0 / stats.prefetch_count), 3, es);
 			ExplainPropertyInteger("Max Distance", NULL,
-								   stats.max_pinned, es);
+								   stats.distance_max, es);
 			ExplainPropertyInteger("Capacity", NULL,
-								   stats.max_distance, es);
+								   stats.distance_capacity, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats.stall_count, es);
 
@@ -4194,19 +4194,19 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 	{
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
-			/* Line 1: Prefetch distance info */
+			/* prefetch distance info */
 			ExplainIndentText(es);
 			appendStringInfo(es->str, "Prefetch: avg=%.3f max=%d capacity=%d",
 							 (stats->distance_sum * 1.0 / stats->prefetch_count),
-							 stats->max_pinned,
-							 stats->max_distance);
+							 stats->distance_max,
+							 stats->distance_capacity);
 			appendStringInfoChar(es->str, '\n');
 
-			/* Line 2: I/O info (only if there were actual I/Os) */
+			/* prefetch I/O info (only if there were actual I/Os) */
 			if (stats->stall_count > 0 || stats->io_count > 0)
 			{
 				ExplainIndentText(es);
-				appendStringInfo(es->str, "Read Streams I/O: stalls=%" PRIu64,
+				appendStringInfo(es->str, "Prefetch I/O: stalls=%" PRIu64,
 								 stats->stall_count);
 
 				if (stats->io_count > 0)
@@ -4226,9 +4226,9 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
 			ExplainPropertyInteger("Max Distance", NULL,
-								   stats->max_pinned, es);
+								   stats->distance_max, es);
 			ExplainPropertyInteger("Capacity", NULL,
-								   stats->max_distance, es);
+								   stats->distance_capacity, es);
 			ExplainPropertyUInteger("Stalls", NULL,
 									stats->stall_count, es);
 

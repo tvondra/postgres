@@ -41,7 +41,7 @@ typedef struct SharedAggInfo
 
 
 /* ---------------------
- *	Instrumentation
+ *	Instrumentation information about read streams
  * ---------------------
  */
 typedef struct ReadStreamInstrumentation

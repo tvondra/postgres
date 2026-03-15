@@ -1406,6 +1406,12 @@ heap_endscan(TableScanDesc sscan)
 	pfree(scan);
 }
 
+/*
+ * heap_scan_stats
+ *		return stats collected by the read stream
+ *
+ * Returns NULL if the scan is not using a read stream.
+ */
 TableScanStats
 heap_scan_stats(TableScanDesc sscan)
 {

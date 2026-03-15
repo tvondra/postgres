@@ -464,6 +464,7 @@ typedef struct TableAmRoutine
 									  TupleTableSlot *slot,
 									  bool *call_again, bool *all_dead);
 
+
 	/* ------------------------------------------------------------------------
 	 * Callbacks for non-modifying operations on individual tuples
 	 * ------------------------------------------------------------------------

@@ -140,11 +140,11 @@ static void show_hashagg_info(AggState *aggstate, ExplainState *es);
 static void show_indexsearches_info(PlanState *planstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
-static void show_scan_prefetch_info(ScanState *planstate,
-									ExplainState *es);
-static void show_prefetch_worker_info(PlanState *planstate,
-									  ExplainState *es,
-									  int worker);
+static void show_scan_io_info(ScanState *planstate,
+							  ExplainState *es);
+static void show_worker_io_info(PlanState *planstate,
+								ExplainState *es,
+								int worker);
 static void show_instrumentation_count(const char *qlabel, int which,
 									   PlanState *planstate, ExplainState *es);
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
@@ -2014,7 +2014,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_tidbitmap_info((BitmapHeapScanState *) planstate, es);
-			show_scan_prefetch_info((ScanState *) planstate, es);
+			show_scan_io_info((ScanState *) planstate, es);
 			break;
 		case T_SampleScan:
 			show_tablesample(((SampleScan *) plan)->tablesample,
@@ -2033,7 +2033,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										   planstate, es);
 			if (IsA(plan, CteScan))
 				show_ctescan_info(castNode(CteScanState, planstate), es);
-			show_scan_prefetch_info((ScanState *) planstate, es);
+			show_scan_io_info((ScanState *) planstate, es);
 			break;
 		case T_Gather:
 			{
@@ -2324,7 +2324,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_wal_usage(es, &instrument->walusage);
 
 			/* show prefetch info for the given worker */
-			show_prefetch_worker_info(planstate, es, n);
+			show_worker_io_info(planstate, es, n);
 
 			ExplainCloseWorker(n, es);
 		}
@@ -3997,19 +3997,19 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
 }
 
 /*
- * show_scan_prefetch_info
+ * show_scan_io_info
  *		show info about prefetching for a seq/bitmap scan
  *
  * Shows summary of stats for leader and workers (if any).
  */
 static void
-show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
+show_scan_io_info(ScanState *planstate, ExplainState *es)
 {
 	Plan	   *plan = planstate->ps.plan;
 	TableScanStats	leader_stats;
 	TableScanStatsData	stats;
 
-	if (!es->prefetch)
+	if (!es->io)
 		return;
 
 	/* scan not started, no prefetch stats */
@@ -4107,7 +4107,7 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 			if (stats.stall_count > 0 || stats.io_count > 0)
 			{
 				ExplainIndentText(es);
-				appendStringInfo(es->str, "Prefetch I/O: stalls=%" PRIu64,
+				appendStringInfo(es->str, "I/O: stalls=%" PRIu64,
 								 stats.stall_count);
 
 				if (stats.io_count > 0)
@@ -4122,7 +4122,7 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 		}
 		else
 		{
-			ExplainOpenGroup("Prefetch", "Prefetch", true, es);
+			ExplainOpenGroup("Prefetch", "I/O", true, es);
 
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats.distance_sum * 1.0 / stats.prefetch_count), 3, es);
@@ -4141,24 +4141,24 @@ show_scan_prefetch_info(ScanState *planstate, ExplainState *es)
 									 (stats.io_in_progress * 1.0 / stats.io_count), 3, es);
 			}
 
-			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
+			ExplainCloseGroup("Prefetch", "I/O", true, es);
 		}
 	}
 }
 
 /*
- * show_prefetch_worker_info
+ * show_io_worker_info
  *		show info about prefetching for a single worker
  *
  * Shows prefetching stats for a parallel scan worker.
  */
 static void
-show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
+show_worker_io_info(PlanState *planstate, ExplainState *es, int worker)
 {
 	Plan	   *plan = planstate->plan;
 	ReadStreamInstrumentation *stats = NULL;
 
-	if (!es->prefetch)
+	if (!es->io)
 		return;
 
 	/* get instrumentation for the given worker */
@@ -4206,7 +4206,7 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 			if (stats->stall_count > 0 || stats->io_count > 0)
 			{
 				ExplainIndentText(es);
-				appendStringInfo(es->str, "Prefetch I/O: stalls=%" PRIu64,
+				appendStringInfo(es->str, "I/O: stalls=%" PRIu64,
 								 stats->stall_count);
 
 				if (stats->io_count > 0)
@@ -4221,7 +4221,7 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 		}
 		else
 		{
-			ExplainOpenGroup("Prefetch", "Prefetch", true, es);
+			ExplainOpenGroup("Prefetch", "I/O", true, es);
 
 			ExplainPropertyFloat("Average Distance", NULL,
 								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
@@ -4240,7 +4240,7 @@ show_prefetch_worker_info(PlanState *planstate, ExplainState *es, int worker)
 									 (stats->io_in_progress * 1.0 / stats->io_count), 3, es);
 			}
 
-			ExplainCloseGroup("Prefetch", "Prefetch", true, es);
+			ExplainCloseGroup("Prefetch", "I/O", true, es);
 		}
 	}
 }

@@ -203,7 +203,7 @@ read_stream_update_stats_prefetch(ReadStream *stream)
 static inline void
 read_stream_update_stats_io(ReadStream *stream, int nblocks, int in_progress)
 {
-	stream->stats.io_count += 1;
+	stream->stats.io_count++;
 	stream->stats.io_nblocks += nblocks;
 	stream->stats.io_in_progress += in_progress;
 }

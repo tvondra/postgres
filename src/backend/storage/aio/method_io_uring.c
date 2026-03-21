@@ -740,8 +740,12 @@ pgaio_uring_sq_from_io(PgAioHandle *ioh, struct io_uring_sqe *sqe)
 			 * XXX: Need to evaluate the number of blocks when IOSQE_ASYNC
 			 * starts to make sense.
 			 */
-			if (io_size >= (BLCKSZ * 4) &&
-				(ioh->flags & PGAIO_HF_BUFFERED))
+			if ((ioh->flags & PGAIO_HF_BUFFERED) &&
+				(
+				 io_size >= (BLCKSZ * 4)
+				 || dclist_count(&pgaio_my_backend->in_flight_ios) > 4
+				)
+			   )
 				io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
 
 			break;

@@ -430,15 +430,19 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 
 /* in heap/heapam_indexscan.c */
 extern IndexFetchTableData *heapam_index_fetch_begin(Relation rel, uint32 flags);
-extern void heapam_index_fetch_reset(IndexFetchTableData *scan);
-extern void heapam_index_fetch_end(IndexFetchTableData *scan);
+extern void heapam_index_fetch_reset(IndexScanDesc scan);
+extern void heapam_index_fetch_end(IndexScanDesc scan);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
 								   bool *all_dead, bool first_call);
-extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
-									 ItemPointer tid, Snapshot snapshot,
-									 TupleTableSlot *slot, bool *heap_continue,
-									 bool *all_dead);
+extern bool heapam_index_plain_amgettuple_next(IndexScanDesc scan,
+											   ScanDirection direction,
+											   TupleTableSlot *slot);
+extern bool heapam_index_only_amgettuple_next(IndexScanDesc scan,
+											  ScanDirection direction,
+											  TupleTableSlot *slot);
+extern bool heapam_fetch_tid(Relation rel, ItemPointer tid, Snapshot snapshot,
+							 TupleTableSlot *slot, bool *all_dead);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,

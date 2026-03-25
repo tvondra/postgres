@@ -69,6 +69,7 @@ batchscan_init(IndexScanDesc scan)
 	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
 
 	scan->batchringbuf.scanPos.valid = false;
+	scan->batchringbuf.prefetchPos.valid = false;
 	scan->batchringbuf.markPos.valid = false;
 
 	scan->batchringbuf.markBatch = NULL;
@@ -149,7 +150,14 @@ batchscan_mark_pos(IndexScanDesc scan)
  * current scanBatch when needed.
  *
  * We just discard all batches (other than markBatch/restored scanBatch),
- * except when markBatch is already the scan's current scanBatch.
+ * except when markBatch is already the scan's current scanBatch.  We always
+ * invalidate prefetchPos.  The read stream and related prefetching state are
+ * reset by the table AM's index_fetch_restrpos callback (which calls this
+ * function after resetting its own state).  This approach keeps things simple
+ * for table AMs: most code that deals with batches is thereby able to assume
+ * that the common case where scan direction never changes is the only case
+ * (tableam_util_scanbatch_dirchange takes a similar approach to handling a
+ * cross-batch change in scan direction).
  */
 void
 tableam_util_batchscan_restore_pos(IndexScanDesc scan)
@@ -163,6 +171,14 @@ tableam_util_batchscan_restore_pos(IndexScanDesc scan)
 	Assert(scan->MVCCScan);
 	Assert(scan->xs_heapfetch);
 	Assert(markPos->valid);
+
+	/*
+	 * Restoring a mark always requires stopping prefetching.  This is similar
+	 * to the handling table AMs implement to deal with a tuple-level change
+	 * in the scan's direction.  The read stream must have already been reset
+	 * by the caller (via table_index_fetch_reset).
+	 */
+	batchringbuf->prefetchPos.valid = false;
 
 	if (scanBatch == markBatch)
 	{
@@ -226,6 +242,7 @@ tableam_util_batchscan_reset(IndexScanDesc scan, bool endscan)
 	bool		markBatchFreed = false;
 
 	batchringbuf->scanPos.valid = false;
+	batchringbuf->prefetchPos.valid = false;
 	batchringbuf->markPos.valid = false;
 
 	/* Ensure batch_free won't skip the old markBatch in the loop below */
@@ -286,6 +303,13 @@ tableam_util_batchscan_end(IndexScanDesc scan)
  * to determine which batch comes next in the new scan direction.  This
  * approach isn't particularly efficient, but it works well enough for what
  * ought to be a relatively rare occurrence.
+ *
+ * Caller must have reset the scan's read stream before calling here.  That
+ * needs to happen as soon as the scan requests a tuple in whatever scan
+ * direction is opposite-to-current.  We only deal with the case where the
+ * scan backs up by enough items to cross a batch boundary (when the scan
+ * resumes scanning in its original direction/ends before crossing a boundary,
+ * there isn't any need to call here).
  */
 void
 tableam_util_scanbatch_dirchange(IndexScanDesc scan)

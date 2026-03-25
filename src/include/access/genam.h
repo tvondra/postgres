@@ -96,6 +96,7 @@ typedef bool (*IndexBulkDeleteCallback) (ItemPointer itemptr, void *state);
 
 /* struct definitions appear in relscan.h */
 typedef struct IndexScanDescData *IndexScanDesc;
+typedef struct IndexScanBatchData *IndexScanBatch;
 typedef struct SysScanDescData *SysScanDesc;
 
 typedef struct ParallelIndexScanDescData *ParallelIndexScanDesc;
@@ -189,8 +190,6 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  int nkeys, int norderbys,
 											  ParallelIndexScanDesc pscan,
 											  uint32 flags);
-extern ItemPointer index_getnext_tid(IndexScanDesc scan,
-									 ScanDirection direction);
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,

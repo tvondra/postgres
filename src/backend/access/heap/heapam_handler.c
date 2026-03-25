@@ -2557,8 +2557,12 @@ static const TableAmRoutine heapam_methods = {
 	.index_fetch_begin = heapam_index_fetch_begin,
 	.index_fetch_reset = heapam_index_fetch_reset,
 	.index_fetch_end = heapam_index_fetch_end,
+	.index_fetch_batch_init = heapam_index_fetch_batch_init,
+	.index_plain_amgetbatch_next = heapam_index_plain_amgetbatch_next,
+	.index_only_amgetbatch_next = heapam_index_only_amgetbatch_next,
 	.index_plain_amgettuple_next = heapam_index_plain_amgettuple_next,
 	.index_only_amgettuple_next = heapam_index_only_amgettuple_next,
+	.index_fetch_restrpos = heapam_index_fetch_restrpos,
 	.fetch_tid = heapam_fetch_tid,
 
 	.tuple_insert = heapam_tuple_insert,

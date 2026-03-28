@@ -647,11 +647,9 @@ heapam_index_getnext_scanbatch_pos(IndexScanDesc scan,
 
 		/*
 		 * If we're about to release the batch that prefetchPos currently
-		 * points to, just invalidate prefetchPos.  We'll reinitialize it
-		 * using scanPos if and when heapam_index_prefetch_next_block is next
-		 * called. (We must avoid confusing a prefetchPos->batch that's
-		 * actually before headBatch with one that's after nextBatch due to
-		 * uint8 overflow; simplest way is to invalidate prefetchPos here.)
+		 * points to, just invalidate prefetchPos.  See the comments about
+		 * prefetchPos/scanPos within heapam_index_prefetch_next_block for an
+		 * explanation.
 		 *
 		 * This handling is approximately the opposite of resuming a paused
 		 * read stream: this helps the scan deal with prefetchPos falling
@@ -1003,8 +1001,10 @@ heapam_index_consider_prefetching(IndexScanDesc scan,
  * for prefetchPos to consistently stay ahead of the scanPos position that's
  * used to track the next TID heapam_index_getnext_scanbatch_pos will return
  * to the scan (after the first time we get called).  However, that isn't a
- * precondition.  There is a strict postcondition, though: when we return
- * we'll always leave scanPos <= prefetchPos (until prefetching ends).
+ * strict precondition (though as explained below we implement a scheme
+ * essentially equivalent to making it a strict precondition).  There is a
+ * true strict postcondition, though: when we return we'll always leave
+ * scanPos <= prefetchPos.
  */
 static BlockNumber
 heapam_index_prefetch_next_block(ReadStream *stream,
@@ -1032,33 +1032,43 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 	Assert(xs_read_stream_dir != NoMovementScanDirection);
 
 	/*
-	 * prefetchPos might not yet be valid.  It might have also fallen behind
-	 * scanPos.  Deal with both.
+	 * Handle initialization on the first call here, when prefetchPos isn't
+	 * yet valid (also handles the prefetchPos < scanPos edge case).
 	 *
 	 * If prefetchPos has not been initialized yet, that typically indicates
 	 * that this is the first call here for the entire scan.  We initialize
 	 * prefetchPos using the current scanPos, since the current scanBatch
 	 * item's TID should have its block number returned by the read stream
-	 * first.  It's likely that prefetchPos will get ahead of scanPos before
-	 * long, but that hasn't happened yet.
+	 * first.  When this happens, it's likely that prefetchPos will get ahead
+	 * of scanPos very soon, after the _next_ call here returns.
 	 *
-	 * It's also possible for prefetchPos to "fall behind" scanPos, at least
-	 * in a trivial sense: if many adjacent items are returned that contain
-	 * TIDs that point to the same heap block, scanPos can actually overtake
-	 * prefetchPos (prefetchPos can't advance until we're actually called).
-	 * Reinitializing from scanPos is enough to ensure that prefetchPos still
-	 * fetches the next heap block that scanPos will require (prefetchPos can
-	 * never fall behind "by more than one group of items that all point to
-	 * the same heap block", so this is safe).  This is particularly likely
-	 * during index-only scans that require only a few heap fetches: we'll
-	 * only be called when read_stream_next_buffer is called, which happens
-	 * far less often than it would during an equivalent plain index scan.
+	 * There's also an edge case that we handle using exactly the same steps.
+	 * It's possible for prefetchPos to "fall behind" scanPos, at least in a
+	 * trivial sense: if many adjacent matching items contain TIDs that all
+	 * point to the same heap block, scanPos can actually overtake prefetchPos
+	 * (prefetchPos can't advance until we're actually called).  This is
+	 * particularly likely during index-only scans that require only a few
+	 * heap fetches: we'll only be called when read_stream_next_buffer is
+	 * called, which tends to happen far less often than it would during an
+	 * equivalent plain index scan. (There doesn't need to be many matching
+	 * items that all point to the same heap block for prefetchPos to fall
+	 * behind scanPos during an index-only scan.  There just needs to be many
+	 * items that are all-visible, which is far more common in practice.)
+	 *
+	 * This scheme produces exactly the same block prefetch requests as a
+	 * scheme that requires heapam_index_getnext_scanbatch_pos to actively
+	 * ensure that "prefetchPos < scanPos" can never happen.  That isn't a
+	 * strict precondition for this function because making it explicit would
+	 * impose a performance penalty on heapam_index_getnext_scanbatch_pos.
 	 *
 	 * Note: when heapam_index_getnext_scanbatch_pos frees a batch that
-	 * prefetchPos points to, it'll invalidate prefetchPos for us.  This
-	 * removes any danger of prefetchPos.batch falling so far behind
+	 * prefetchPos points to, it'll at least invalidate prefetchPos for us.
+	 * This removes any danger of prefetchPos.batch falling so far behind
 	 * scanPos.batch that it wraps around (and appears to be ahead of scanPos
-	 * instead of behind it).
+	 * instead of behind it).  In other words, in a certain sense we actually
+	 * _can_ trust heapam_index_getnext_scanbatch_pos to not let prefetchPos
+	 * fall behind scanPos: it can't happen at the batch granularity (only at
+	 * the item/tuple granularity, which we can always cope with here).
 	 */
 	if (!prefetchPos->valid ||
 		index_scan_pos_cmp(prefetchPos, scanPos, xs_read_stream_dir) < 0)
@@ -1082,7 +1092,7 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 			 */
 			hscan->xs_vm_items = scan->maxitemsbatch;
 
-			/* Make sure that this new prefetchBatch has no resources held */
+			/* Make sure that this new prefetchBatch is unguarded */
 			prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
 			hbatch = heap_batch_data(prefetchBatch, scan);
 
@@ -1121,7 +1131,9 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 			 * directly on the first call here.  In other words, we'll return
 			 * the heap block from TID passed to heapam_index_fetch_tuple_impl
 			 * at the point where it called read_stream_next_buffer for the
-			 * first time during the scan.
+			 * first time during the scan. (As explained above, we also end up
+			 * here during the first call to read_stream_next_buffer following
+			 * prefetchPos falling behind scanPos/being invalidated for us.)
 			 */
 			fromScanPos = false;
 		}

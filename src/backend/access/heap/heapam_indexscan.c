@@ -958,11 +958,11 @@ heapam_index_dirchange_reset(IndexFetchHeapData *hscan,
  * from the scan's second batch.  This heuristic avoids wasting cycles on
  * starting a read stream for very selective index scans.
  *
- * We avoid prefetching during scans where we're unable to drop each batch's
- * buffer pin right away (non-MVCC snapshot scans).  We are not prepared to
- * sensibly limit the total number of buffer pins held (read stream handles
- * all pin resource management for us, and knows nothing about pins held on
- * index pages/within batches).
+ * We avoid prefetching during scans where we're unable to unguard (unpin)
+ * each batch's buffers right away (non-MVCC snapshot scans).  We are not
+ * prepared to sensibly limit the total number of buffer pins held (read
+ * stream handles all pin resource management for us, and knows nothing
+ * about pins held on index pages/within batches).
  *
  * We also delay creating a read stream during index-only scans that haven't
  * done any heap fetches yet.  We don't want to waste any cycles on

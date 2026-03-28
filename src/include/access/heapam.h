@@ -142,7 +142,7 @@ typedef struct IndexFetchHeapData
 	 * rescan or when the scan direction changes. The scan direction is saved
 	 * each time a new tuple is requested. If the scan direction changes from
 	 * one tuple to the next, the read stream releases all previously pinned
-	 * buffers and resets the prefetch block.
+	 * buffers (core code resets related batchringbuf state for us, too).
 	 */
 	bool		xs_paused;		/* paused until next batch is read? */
 	ScanDirection xs_read_stream_dir;	/* index scan direction */

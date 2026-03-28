@@ -164,7 +164,7 @@ typedef struct BatchMatchingItem
 {
 	ItemPointerData tableTid;	/* TID of referenced table item */
 	OffsetNumber indexOffset;	/* index item's location within page */
-	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */
+	LocationIndex tupleOffset;	/* index tuple's currTuples offset, if any */
 } BatchMatchingItem;
 
 /*
@@ -175,10 +175,11 @@ typedef struct BatchMatchingItem
  *
  *   [table AM opaque area]    <- at -(batch_table_offset) from batch ptr
  *   [index AM opaque area]    <- at -(batch_index_opaque_size) from batch ptr
- *   [IndexScanBatchData]      <- the returned pointer
+ *   [IndexScanBatchData]      <- pointer returned by amgetbatch
  *   [items[maxitemsbatch]]
  *   [table AM trailing data]  <- e.g. per-item visibility flags
- *   [currTuples workspace]    <- sized by index AM (batch_tuples_workspace)
+ *   [currTuples workspace]    <- index AM stores index tuples here for
+ *                                index-only scans (batch_tuples_workspace)
  *
  * The AM-specific opaque areas are accessed via accessor functions defined by
  * each table AM and index AM that supports the batch interfaces.
@@ -231,9 +232,9 @@ typedef struct IndexScanBatchData
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */
 
-	/* info about dead items if any (deadItems is NULL if never used) */
+	/* info about dead items, if any (palloc'd separately, NULL if unused) */
 	int			numDead;		/* number of currently stored items */
-	int		   *deadItems;		/* indexes of dead items */
+	int		   *deadItems;		/* items[]-wise indexes of dead items */
 
 	/*
 	 * If we are doing an index-only scan, this is the tuple storage workspace

@@ -672,8 +672,12 @@ heapam_index_getnext_scanbatch_pos(IndexScanDesc scan,
 			 * there's now space for heapam_index_prefetch_next_block to store
 			 * one more batch).
 			 */
+			Assert(prefetchPos->batch != scanPos->batch);
+			Assert(prefetchPos->valid &&
+				   index_scan_batch_loaded(scan, prefetchPos->batch));
+			Assert(index_scan_pos_cmp(prefetchPos, scanPos, direction) > 0);
 			Assert(!index_scan_batch_full(scan));
-			Assert(prefetchPos->valid);
+
 			read_stream_resume(hscan->xs_read_stream);
 			hscan->xs_paused = false;
 		}

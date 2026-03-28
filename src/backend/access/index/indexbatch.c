@@ -509,7 +509,10 @@ tableam_util_unguard_batch(IndexScanDesc scan, IndexScanBatch batch)
  *
  * Index AMs whose TID recycling interlock is not just a buffer pin, or whose
  * amunguardbatch does not simply release a pin, are not obligated to use this
- * function.  They can implement their own equivalent.
+ * function.  They can implement their own equivalent.  Such index AMs are also
+ * free to use the batch LSN field themselves; their amkillitemsbatch routine
+ * can use that LSN in the usual way, or in whatever way the AM deems necessary
+ * (core code will not use it for any other purpose).
  */
 void
 indexam_util_batch_unlock(IndexScanDesc scan, IndexScanBatch batch, Buffer buf)

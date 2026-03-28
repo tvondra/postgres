@@ -1263,15 +1263,24 @@ table_index_fetch_batch_init(IndexScanDesc scan, IndexScanBatch batch,
 
 /*
  * Fetch the next tuple from an index scan into `slot`, scanning in the
- * specified direction. Returns true if a tuple was found, false otherwise.
+ * specified direction.  Returns true if a tuple satisfying the scan keys and
+ * the snapshot was found, false otherwise.  The tuple is stored in the
+ * specified slot.
  *
  * Dispatches through scan->xs_getnext_slot, which is resolved once by
  * index_beginscan.
+ *
+ * On success, resources (like buffer pins) are likely to be held, and will be
+ * released by a future table_index_getnext_slot or index_endscan call.
  *
  * On success, the following IndexScanDesc fields are set by the callback:
  *
  * xs_recheck    - true if scan keys must be rechecked against the tuple
  * xs_heaptid    - table TID of the returned tuple
+ *
+ * Note: caller must check scan->xs_recheck, and perform rechecking of the
+ * scan keys if required.  We do not do that here because we don't have
+ * enough information to do it efficiently in the general case.
  *
  * For index-only scans, the callback also fills xs_itup/xs_itupdesc or
  * xs_hitup/xs_hitupdesc (or both) so that index data can be returned without

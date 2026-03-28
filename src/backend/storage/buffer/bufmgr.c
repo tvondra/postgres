@@ -5671,10 +5671,6 @@ UnlockBufferGetLSN(Buffer buffer, bool release)
 	BufferDesc *buf_hdr;
 	Page		page;
 	XLogRecPtr	lsn;
-	int			mode;
-	uint64		sub;
-	uint64		lockstate;
-	PrivateRefCountEntry *ref;
 
 	Assert(BufferIsValid(buffer));
 	Assert(BufferIsPinned(buffer));
@@ -5698,48 +5694,9 @@ UnlockBufferGetLSN(Buffer buffer, bool release)
 	lsn = BufferGetLSNAtomic(buffer);
 #endif
 
-	if (!release)
-	{
-		/* Just release the lock */
-		BufferLockUnlock(buffer, buf_hdr);
-		return lsn;
-	}
-
-	/* Release both lock and pin in one atomic op */
-	ResourceOwnerForgetBuffer(CurrentResourceOwner, buffer);
-
-	mode = BufferLockDisownInternal(buffer, buf_hdr);
-
-	/* compute state modification for lock release */
-	sub = BufferLockReleaseSub(mode);
-
-	/* compute state modification for pin release */
-	ref = GetPrivateRefCountEntry(buffer, false);
-	Assert(ref != NULL);
-	Assert(ref->data.refcount > 0);
-	ref->data.refcount--;
-
-	/* no more backend local pins, reduce shared pin count */
-	if (likely(ref->data.refcount == 0))
-	{
-		/* See comment in UnpinBufferNoOwner() */
-		VALGRIND_MAKE_MEM_NOACCESS(BufHdrGetBlock(buf_hdr), BLCKSZ);
-
-		sub |= BUF_REFCOUNT_ONE;
-		ForgetPrivateRefCountEntry(ref);
-	}
-
-	/* perform the lock and pin release in one atomic op */
-	lockstate = pg_atomic_sub_fetch_u64(&buf_hdr->state, sub);
-
-	/* wake up waiters for the lock */
-	BufferLockProcessRelease(buf_hdr, mode, lockstate);
-
-	/* wake up waiter for the pin release */
-	if (lockstate & BM_PIN_COUNT_WAITER)
-		WakePinCountWaiter(buf_hdr);
-
-	RESUME_INTERRUPTS();
+	BufferLockUnlock(buffer, buf_hdr);
+	if (release)
+		UnpinBuffer(buf_hdr);
 
 	return lsn;
 }

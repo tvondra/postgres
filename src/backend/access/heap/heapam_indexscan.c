@@ -187,7 +187,7 @@ heapam_index_fetch_batch_init(IndexScanDesc scan, IndexScanBatch batch,
 	}
 }
 
-/* amgetbatch, plain index scan */
+/* table_index_getnext_slot callback: amgetbatch, plain index scan */
 pg_attribute_hot bool
 heapam_index_plain_amgetbatch_getnext_slot(IndexScanDesc scan,
 										   ScanDirection direction,
@@ -199,7 +199,7 @@ heapam_index_plain_amgetbatch_getnext_slot(IndexScanDesc scan,
 	return heapam_index_getnext_slot(scan, direction, slot, false, true);
 }
 
-/* amgetbatch, index-only scan */
+/* table_index_getnext_slot callback: amgetbatch, index-only scan */
 pg_attribute_hot bool
 heapam_index_only_amgetbatch_getnext_slot(IndexScanDesc scan,
 										  ScanDirection direction,
@@ -211,7 +211,7 @@ heapam_index_only_amgetbatch_getnext_slot(IndexScanDesc scan,
 	return heapam_index_getnext_slot(scan, direction, slot, true, true);
 }
 
-/* amgettuple, plain index scan */
+/* table_index_getnext_slot callback: amgettuple, plain index scan */
 pg_attribute_hot bool
 heapam_index_plain_amgettuple_getnext_slot(IndexScanDesc scan,
 										   ScanDirection direction,
@@ -223,7 +223,7 @@ heapam_index_plain_amgettuple_getnext_slot(IndexScanDesc scan,
 	return heapam_index_getnext_slot(scan, direction, slot, false, false);
 }
 
-/* amgettuple, index-only scan */
+/* table_index_getnext_slot callback: amgettuple, index-only scan */
 pg_attribute_hot bool
 heapam_index_only_amgettuple_getnext_slot(IndexScanDesc scan,
 										  ScanDirection direction,

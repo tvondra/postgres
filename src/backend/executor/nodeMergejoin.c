@@ -54,7 +54,7 @@
  *		the inner "5's". This requires repositioning the inner "cursor"
  *		to point at the first inner "5". This is done by "marking" the
  *		first inner 5 so we can restore the "cursor" to it before joining
- *		with the second outer 5. The indexbatch.c interface provides
+ *		with the second outer 5. The indexbatch.h interface provides
  *		routines to mark and restore to a tuple during index scans.
  *
  *

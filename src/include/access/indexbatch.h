@@ -21,7 +21,7 @@
 #include "utils/rel.h"
 
 /*
- * amgetbatch utilities called by indexam.c
+ * amgetbatch utilities called by indexam.c on behalf of core executor
  */
 extern void index_batchscan_init(IndexScanDesc scan);
 extern void index_batchscan_reset(IndexScanDesc scan);

@@ -928,7 +928,7 @@ typedef BTVacuumPostingData *BTVacuumPosting;
 /* Per-batch data private to the btree index AM */
 typedef struct BTBatchData
 {
-	Buffer		buf;			/* index page buffer pin (TID reuse interlock) */
+	Buffer		buf;			/* index page buffer pin */
 	BlockNumber currPage;		/* index page with matching items */
 	BlockNumber prevPage;		/* currPage's left sibling */
 	BlockNumber nextPage;		/* currPage's right sibling */

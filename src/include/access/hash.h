@@ -104,7 +104,7 @@ typedef HashPageOpaqueData *HashPageOpaque;
 /* Per-batch data private to the hash index AM */
 typedef struct HashBatchData
 {
-	Buffer		buf;			/* index page buffer pin (TID reuse interlock) */
+	Buffer		buf;			/* index page buffer pin */
 	BlockNumber currPage;		/* index page with matching items */
 	BlockNumber prevPage;		/* currPage's left link */
 	BlockNumber nextPage;		/* currPage's right link */

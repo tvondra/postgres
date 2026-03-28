@@ -140,8 +140,7 @@ typedef struct IndexFetchTableData
 } IndexFetchTableData;
 
 /*
- * Location of a BatchMatchingItem that appears in a IndexScanBatch returned
- * by (and subsequently passed to) an amgetbatch routine
+ * Location of a BatchMatchingItem within the scan's ring buffer
  */
 typedef struct BatchRingItemPos
 {
@@ -193,13 +192,12 @@ typedef struct IndexScanBatchData
 	ScanDirection dir;
 
 	/*
-	 * knownEndBackward and knownEndForward are set by the table AM to
-	 * indicate that this batch is the last one with matching items in the
-	 * relevant scan direction.  When amgetbatch returns NULL for a given
-	 * direction, the table AM sets the corresponding flag on the priorbatch
-	 * that was passed to that call.  We cannot know this when a batch is
-	 * first returned by amgetbatch; it only becomes apparent when we try and
-	 * fail to continue the scan past it.
+	 * knownEndBackward and knownEndForward indicate that this batch is the
+	 * last one with matching items in the relevant scan direction.  When
+	 * amgetbatch returns NULL for a given direction, the corresponding flag
+	 * is set on the priorbatch that was passed to that call.  We cannot know
+	 * this when a batch is first returned by amgetbatch; it only becomes
+	 * apparent when we try and fail to continue the scan past it.
 	 *
 	 * This allows table AMs to avoid redundant amgetbatch calls with the same
 	 * priorbatch -- the index AM might need to read additional index pages to
@@ -222,8 +220,8 @@ typedef struct IndexScanBatchData
 	 *
 	 * The items array is always ordered in index order (ie, by increasing
 	 * indexoffset).  When scanning backwards it is convenient for index AMs
-	 * to fill the array back-to-front, so we start at the last item slot and
-	 * fill downwards.  This is why we need both a first-valid-entry and a
+	 * to fill the array back-to-front, starting at the last item slot and
+	 * filling downwards.  This is why we need both a first-valid-entry and a
 	 * last-valid-entry counter.
 	 *
 	 * Note: these are signed because it's sometimes convenient to use -1 to
@@ -256,10 +254,12 @@ typedef struct IndexScanBatchData *IndexScanBatch;
  * interface.  Scans use a ring buffer of batches returned by amgetbatch.
  *
  * Batches are kept in the order that they were returned in by amgetbatch,
- * since that is the same order that table_index_getnext_slot will return
- * matches in.  However, table AMs are free to fetch table tuples in whatever
- * order is most convenient/efficient -- provided that such reordering cannot
- * affect the order that table_index_getnext_slot later returns tuples in.
+ * which is the natural order for the index AM and the order that we require
+ * matches to be returned in.  This is also the order that
+ * table_index_getnext_slot returns matches in.  However, table AMs are free
+ * to fetch table tuples in whatever order is most convenient -- provided that
+ * such reordering cannot affect the order that table_index_getnext_slot later
+ * returns tuples in.
  *
  * This data structure also provides table AMs with a way to read ahead of the
  * current read position by _multiple_ batches/index pages.  The further out
@@ -308,8 +308,9 @@ struct IndexScanInstrumentation;
  * amgettuple-based scans.  Others are only used in amgetbatch-based scans.
  *
  * The ring buffer used by amgetbatch scans is stored here as a fixed array of
- * pointers to batches.  We need a minimum of two, since we'll only consider
- * releasing one batch when another is read.
+ * pointers to batches.  We need a minimum of two (but use
+ * INDEX_SCAN_MAX_BATCHES), since we'll only consider releasing one batch
+ * when another is read.
  */
 #define INDEX_SCAN_CACHE_BATCHES	2
 #define INDEX_SCAN_MAX_BATCHES		64

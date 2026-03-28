@@ -675,6 +675,7 @@ heapam_index_getnext_scanbatch_pos(IndexScanDesc scan,
 			 * one more batch).
 			 */
 			Assert(!index_scan_batch_full(scan));
+			Assert(scan->batchringbuf.prefetchPos.valid);
 			read_stream_resume(hscan->xs_read_stream);
 			hscan->xs_paused = false;
 		}

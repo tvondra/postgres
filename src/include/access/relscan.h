@@ -172,16 +172,28 @@ typedef struct BatchMatchingItem
  *
  * Each batch allocation has the following memory layout:
  *
- *   [table AM opaque area]    <- at -(batch_table_offset) from batch ptr
- *   [index AM opaque area]    <- at -(batch_index_opaque_size) from batch ptr
- *   [IndexScanBatchData]      <- pointer returned by amgetbatch
+ *   [table AM opaque area]    <- fixed-size, -(batch_table_offset) from base
+ *   [index AM opaque area]    <- at -(batch_index_opaque_size) from base
+ *   [IndexScanBatchData]      <- base pointer, returned by amgetbatch
  *   [items[maxitemsbatch]]
- *   [table AM trailing data]  <- e.g. per-item visibility flags
+ *   [table AM trailing data]  <- per-item area (e.g., for visibility info)
  *   [currTuples workspace]    <- index AM stores index tuples here for
  *                                index-only scans (batch_tuples_workspace)
  *
- * The AM-specific opaque areas are accessed via accessor functions defined by
- * each table AM and index AM that supports the batch interfaces.
+ * batch_table_offset combines both AM opaque sizes into a single offset from
+ * the batch pointer to the true allocation base.  We use batch_alloc_base to
+ * pfree a batch.  We rely on the assumption that batches have a fixed layout
+ * for the duration of an index scan (since batches are cached for reuse).
+ *
+ * The table AM can overlay a small fixed-size struct at the start of the
+ * allocated space, which it accesses using a batch_alloc_base shim accessor
+ * function.  Convention for table AMs is to store a pointer to its per-item
+ * area in this fixed-size area (e.g., heapam stores a visInfo pointer here),
+ * in addition to anything else that gets tracked at the batch level.
+ *
+ * The index AM opaque area is accessed via a custom accessor that uses a
+ * fixed compile-time constant offset for efficiency (a constant that is
+ * tracked in the scan descriptor as batch_index_opaque_size).
  */
 typedef struct IndexScanBatchData
 {
@@ -445,7 +457,7 @@ typedef struct SysScanDescData
  * stored before the IndexScanBatchData pointer).
  */
 static inline void *
-batch_alloc_base(IndexScanBatch batch, IndexScanDescData *scan)
+batch_alloc_base(IndexScanDescData *scan, IndexScanBatch batch)
 {
 	return (char *) batch - scan->batch_table_offset;
 }

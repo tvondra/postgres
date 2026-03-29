@@ -153,7 +153,7 @@ index_batchscan_end(IndexScanDesc scan)
 
 		if (cached->deadItems)
 			pfree(cached->deadItems);
-		pfree(batch_alloc_base(cached, scan));
+		pfree(batch_alloc_base(scan, cached));
 	}
 }
 
@@ -454,7 +454,7 @@ tableam_util_free_batch(IndexScanDesc scan, IndexScanBatch batch)
 	/* scan is shutting down or cache is full; free the caller's batch */
 	if (batch->deadItems)
 		pfree(batch->deadItems);
-	pfree(batch_alloc_base(batch, scan));
+	pfree(batch_alloc_base(scan, batch));
 }
 
 /*
@@ -749,7 +749,7 @@ indexam_util_batch_release(IndexScanDesc scan, IndexScanBatch batch)
 	/* Cache full; just free the caller's batch */
 	if (batch->deadItems)
 		pfree(batch->deadItems);
-	pfree(batch_alloc_base(batch, scan));
+	pfree(batch_alloc_base(scan, batch));
 }
 
 /*

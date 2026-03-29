@@ -160,15 +160,18 @@ void
 heapam_index_fetch_batch_init(IndexScanDesc scan, IndexScanBatch batch,
 							  bool new_alloc)
 {
-	HeapBatchData *hbatch = heap_batch_data(batch, scan);
+	HeapBatchData *hbatch = heap_batch_data(scan, batch);
 
 	if (scan->xs_want_itup)
 	{
 		if (new_alloc)
 		{
 			/*
-			 * Point visInfo into the trailing per-item area that follows
-			 * items[] in the batch allocation.
+			 * The visInfo pointer is stored at the very start of the palloc'd
+			 * space, in the fixed-sized table AM opaque area.  visInfo points
+			 * to just past the end of the variable-sized items[maxitemsbatch]
+			 * array (to a space that is also sized according to whatever the
+			 * index AM set maxitemsbatch to).
 			 */
 			Size		itemsEnd;
 
@@ -765,7 +768,7 @@ heapam_index_return_scanpos_tid(IndexScanDesc scan, IndexFetchHeapData *hscan,
 	 * Set visibility info for the current scanPos item (plus possibly some
 	 * additional items in the current scan direction) as needed
 	 */
-	hbatch = heap_batch_data(scanBatch, scan);
+	hbatch = heap_batch_data(scan, scanBatch);
 	if (!(hbatch->visInfo[scanPos->item] & HEAP_BATCH_VIS_CHECKED))
 		heapam_index_batch_pos_visibility(scan, direction, scanBatch, hbatch,
 										  scanPos);
@@ -826,7 +829,7 @@ heapam_index_batch_pos_visibility(IndexScanDesc scan, ScanDirection direction,
 	BlockNumber curvmheapblkno = InvalidBlockNumber;
 	uint8		curvmheapblkflags = 0;
 
-	Assert(hbatch == heap_batch_data(batch, scan));
+	Assert(hbatch == heap_batch_data(scan, batch));
 
 	/*
 	 * The batch must still be guarded (amunguardbatch has not been called
@@ -1097,7 +1100,7 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 
 			/* Make sure that this new prefetchBatch is unguarded */
 			prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
-			hbatch = heap_batch_data(prefetchBatch, scan);
+			hbatch = heap_batch_data(scan, prefetchBatch);
 
 			/* Set visibility info not set through scanBatch */
 			heapam_index_batch_pos_visibility(scan, xs_read_stream_dir,
@@ -1211,7 +1214,7 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 
 			if (scan->xs_want_itup)
 			{
-				HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
+				HeapBatchData *hbatch = heap_batch_data(scan, prefetchBatch);
 
 				/* make sure we have visibility info for the entire batch */
 				Assert(hscan->xs_vm_items == scan->maxitemsbatch);
@@ -1233,7 +1236,7 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 
 		if (scan->xs_want_itup)
 		{
-			HeapBatchData *hbatch = heap_batch_data(prefetchBatch, scan);
+			HeapBatchData *hbatch = heap_batch_data(scan, prefetchBatch);
 
 			Assert(hbatch->visInfo[prefetchPos->item] & HEAP_BATCH_VIS_CHECKED);
 			if (hbatch->visInfo[prefetchPos->item] & HEAP_BATCH_VIS_ALL_VISIBLE)

@@ -420,7 +420,7 @@ index_endscan(IndexScanDesc scan)
 	/* Free cached bitmap batch if any (bitmap scans use batchcache[0]) */
 	if (!scan->usebatchring && scan->batchcache[0] != NULL)
 	{
-		pfree(batch_alloc_base(scan->batchcache[0], scan));
+		pfree(batch_alloc_base(scan, scan->batchcache[0]));
 		scan->batchcache[0] = NULL;
 	}
 

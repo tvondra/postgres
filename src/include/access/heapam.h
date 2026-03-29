@@ -168,11 +168,15 @@ typedef struct HeapBatchData
 #define HEAP_BATCH_VIS_CHECKED		0x01	/* checked item in VM? */
 #define HEAP_BATCH_VIS_ALL_VISIBLE	0x02	/* block is known all-visible? */
 
-/* Access the heap-private per-batch data from an IndexScanBatch pointer */
+/*
+ * Access the heap-private fixed-size data from the beginning of an allocated
+ * IndexScanBatch, using caller's IndexScanBatch pointer
+ */
 static inline HeapBatchData *
-heap_batch_data(IndexScanBatch batch, IndexScanDesc scan)
+heap_batch_data(IndexScanDesc scan, IndexScanBatch batch)
 {
-	return (HeapBatchData *) ((char *) batch - scan->batch_table_offset);
+	/* heapam's fixed-size space is at the start of the palloc'd area */
+	return batch_alloc_base(scan, batch);
 }
 
 /* Result codes for HeapTupleSatisfiesVacuum */

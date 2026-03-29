@@ -114,7 +114,6 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 	 */
 	if (hscan->xs_read_stream)
 	{
-		hscan->xs_prefetch_block = InvalidBlockNumber; 		/* defensive */
 		hscan->xs_paused = false;
 		read_stream_reset(hscan->xs_read_stream);
 	}
@@ -1105,11 +1104,29 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 											  prefetchBatch, hbatch,
 											  prefetchPos);
 		}
-		else
-			Assert(scan->batchImmediateUnguard);
 	}
 
 	prefetchBatch = index_scan_batch(scan, prefetchPos->batch);
+
+	/*
+	 * If prefetchPos wasn't just initialized using scanPos, we're directly
+	 * picking up prefetching where the last call here left off.  Assert that
+	 * xs_prefetch_block matches the last item we returned as expected.
+	 *
+	 * Note: we don't actually need a xs_prefetch_block field at all; we could
+	 * just take the last block we returned from prefetchPos directly instead.
+	 * But maintaining xs_prefetch_block explicitly seems slightly simpler.
+	 */
+#ifdef USE_ASSERT_CHECKING
+	if (!fromScanPos)
+	{
+		BatchMatchingItem *lastitem = &prefetchBatch->items[prefetchPos->item];
+		BlockNumber last_block = ItemPointerGetBlockNumber(&lastitem->tableTid);
+
+		Assert(last_block == hscan->xs_prefetch_block);
+	}
+#endif
+
 	for (;;)
 	{
 		BatchMatchingItem *item;
@@ -1202,8 +1219,6 @@ heapam_index_prefetch_next_block(ReadStream *stream,
 												  prefetchBatch, hbatch,
 												  prefetchPos);
 			}
-			else
-				Assert(scan->batchImmediateUnguard);
 		}
 
 		/*

@@ -462,7 +462,7 @@ index_scan_batch_count(IndexScanDescData *scan)
 }
 
 /*
- * Did we already load batch with the requested index?
+ * Do we already have a batch loaded at 'idx' offset in scan's ring buffer?
  *
  * NOTE: a stale batch idx can alias a currently-loaded range after uint8
  * overflow, producing a false positive.  False negatives are not possible.
@@ -519,12 +519,21 @@ static inline int
 index_scan_pos_cmp(BatchRingItemPos *pos1, BatchRingItemPos *pos2,
 				   ScanDirection direction)
 {
-	int8		batchdiff = (int8) (pos1->batch - pos2->batch);
+	int8		batchdiff;
 
+	Assert(pos1->valid && pos2->valid);
+
+	batchdiff = (int8) (pos1->batch - pos2->batch);
 	if (batchdiff != 0)
+	{
+		/* Resolve comparison using differing batch offsets */
 		return batchdiff;
+	}
 
-	/* Same batch, compare items */
+	/*
+	 * Resolve comparison using items[]-wise indexes from caller's positions,
+	 * since both positions point to the same ring buffer batch
+	 */
 	if (ScanDirectionIsForward(direction))
 		return pos1->item - pos2->item;
 	else

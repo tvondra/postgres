@@ -84,8 +84,8 @@ index_batchscan_init(IndexScanDesc scan)
 	Assert(scan->indexRelation->rd_indam->amgetbatch != NULL);
 
 	scan->batchringbuf.scanPos.valid = false;
-	scan->batchringbuf.markPos.valid = false;
 	scan->batchringbuf.prefetchPos.valid = false;
+	scan->batchringbuf.markPos.valid = false;
 
 	scan->batchringbuf.markBatch = NULL;
 	scan->batchringbuf.headBatch = 0;
@@ -105,8 +105,8 @@ index_batchscan_reset(IndexScanDesc scan)
 	bool		markBatchFreed = false;
 
 	batchringbuf->scanPos.valid = false;
-	batchringbuf->markPos.valid = false;
 	batchringbuf->prefetchPos.valid = false;
+	batchringbuf->markPos.valid = false;
 
 	/*
 	 * Ensure tableam_util_free_batch won't skip the old markBatch in the loop

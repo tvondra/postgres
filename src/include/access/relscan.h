@@ -273,8 +273,8 @@ typedef struct BatchRingBuffer
 {
 	/* current positions in IndexScanDescData.batchbuf[] for scan */
 	BatchRingItemPos scanPos;	/* scan's read position */
-	BatchRingItemPos markPos;	/* mark/restore position */
 	BatchRingItemPos prefetchPos;	/* prefetching position */
+	BatchRingItemPos markPos;	/* mark/restore position */
 
 	/* markPos's batch (not in ring buffer when markBatch != scanBatch) */
 	IndexScanBatch markBatch;

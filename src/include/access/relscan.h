@@ -347,8 +347,7 @@ typedef struct IndexScanDescData
 	IndexScanBatch batchbuf[INDEX_SCAN_MAX_BATCHES];
 
 	bool		usebatchring;	/* scan uses amgetbatch/batchringbuf? */
-	bool		batchImmediateUnguard;	/* drop TID recycling interlock in
-										 * indexam_util_batch_unlock? */
+	bool		batchImmediateUnguard;	/* eagerly drop TID recycling interlock? */
 
 	bool		xs_want_itup;	/* caller requests index tuples */
 	bool		xs_temp_snap;	/* unregister snapshot at scan end? */

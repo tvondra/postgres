@@ -343,7 +343,7 @@ index_beginscan_internal(Relation indexRelation,
 
 	/*
 	 * Initialize heap-side scan state when a heap relation is provided.
-	 * Bitmap scans don't provide one, since they access the heap separately.
+	 * Bitmap index scans don't provide one.
 	 */
 	if (heapRelation != NULL)
 	{

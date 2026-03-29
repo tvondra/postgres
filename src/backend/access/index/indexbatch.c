@@ -37,8 +37,7 @@
  * functions assume that table AMs use scanPos/scanBatch and prefetchPos/
  * prefetchBatch in a standardized way (see heapam_indexscan.c for the
  * reference implementation), while table AMs assume that index AMs free and
- * unlock batches according to the conventions established here.  See
- * indexam.sgml for the full specification of this contract.
+ * unlock batches as described in indexam.sgml.
  *
  * The table AM fully controls the read stream as its own private state.
  * When the scan direction changes, the table AM must immediately reset its
@@ -640,8 +639,8 @@ indexam_util_batch_alloc(IndexScanDesc scan)
 			sizeof(BatchMatchingItem) * scan->maxitemsbatch;
 
 		/*
-		 * Trailing data after items[]: table AM per-item data (e.g. visInfo)
-		 * and currTuples index AM tuple workspace.
+		 * Trailing data after items[]: per-item data (owned by table AM),
+		 * then currTuples workspace (owned by index AM, read by table AM)
 		 */
 		trailing_sz = 0;
 		if (scan->xs_want_itup)

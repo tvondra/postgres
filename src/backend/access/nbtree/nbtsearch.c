@@ -2119,7 +2119,7 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir, IndexScanBatch firstbatch)
 		 */
 		PredicateLockRelation(rel, scan->xs_snapshot);
 		_bt_parallel_done(scan);
-		return false;
+		return NULL;
 	}
 
 	page = BufferGetPage(btfirstbatch->buf);

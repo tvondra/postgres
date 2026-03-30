@@ -444,6 +444,15 @@ typedef struct PgStatShared_BgWriter
 	PgStat_BgWriterStats reset_offset;
 } PgStatShared_BgWriter;
 
+typedef struct PgStatShared_IOWorker
+{
+	/* lock protects ->reset_offset as well as stats->stat_reset_timestamp */
+	LWLock		lock;
+	uint32		changecount;
+	PgStat_IOWorkerStats stats;
+	PgStat_IOWorkerStats reset_offset;
+} PgStatShared_IOWorker;
+
 typedef struct PgStatShared_Checkpointer
 {
 	/* lock protects ->reset_offset as well as stats->stat_reset_timestamp */
@@ -580,6 +589,7 @@ typedef struct PgStat_ShmemControl
 	PgStatShared_BgWriter bgwriter;
 	PgStatShared_Checkpointer checkpointer;
 	PgStatShared_IO io;
+	PgStatShared_IOWorker ioworker;
 	PgStatShared_Lock lock;
 	PgStatShared_SLRU slru;
 	PgStatShared_Wal wal;
@@ -612,6 +622,8 @@ typedef struct PgStat_Snapshot
 	PgStat_CheckpointerStats checkpointer;
 
 	PgStat_IO	io;
+
+	PgStat_IOWorkerStats	ioworker;
 
 	PgStat_Lock lock;
 
@@ -764,6 +776,11 @@ extern bool pgstat_io_flush_cb(bool nowait);
 extern void pgstat_io_init_shmem_cb(void *stats);
 extern void pgstat_io_reset_all_cb(TimestampTz ts);
 extern void pgstat_io_snapshot_cb(void);
+
+extern bool pgstat_ioworker_flush_cb(bool nowait);
+extern void pgstat_ioworker_init_shmem_cb(void *stats);
+extern void pgstat_ioworker_reset_all_cb(TimestampTz ts);
+extern void pgstat_ioworker_snapshot_cb(void);
 
 /*
  * Functions in pgstat_lock.c

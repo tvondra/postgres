@@ -1264,6 +1264,14 @@ SELECT
        b.stats_reset
 FROM pg_stat_get_io() b;
 
+CREATE VIEW pg_stat_io_worker AS
+SELECT
+       pg_stat_get_worker_io_count() AS io_count,
+       pg_stat_get_worker_io_bytes() AS io_bytes,
+       pg_stat_get_worker_num_sync_lock() AS num_sync_lock,
+       pg_stat_get_worker_num_sync_full() AS num_sync_full,
+       pg_stat_get_worker_stat_reset_time() AS stats_reset;
+
 CREATE VIEW pg_stat_wal AS
     SELECT
         w.wal_records,

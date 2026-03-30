@@ -31,6 +31,7 @@
 
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "postmaster/auxprocess.h"
 #include "postmaster/interrupt.h"
@@ -264,6 +265,8 @@ pgaio_worker_submit_internal(int num_staged_ios, PgAioHandle **staged_ios)
 				synchronous_ios = &staged_ios[i];
 				nsync = (num_staged_ios - i);
 
+				PendingIOWorkerStats.num_sync_full += nsync;
+
 				break;
 			}
 
@@ -278,6 +281,9 @@ pgaio_worker_submit_internal(int num_staged_ios, PgAioHandle **staged_ios)
 							   "choosing worker %d",
 							   worker);
 			}
+
+			PendingIOWorkerStats.io_count++;
+			// PendingIOWorkerStats.io_bytes?
 		}
 		LWLockRelease(AioWorkerSubmissionQueueLock);
 	}
@@ -286,6 +292,7 @@ pgaio_worker_submit_internal(int num_staged_ios, PgAioHandle **staged_ios)
 		/* do everything synchronously, no wakeup needed */
 		synchronous_ios = staged_ios;
 		nsync = num_staged_ios;
+		PendingIOWorkerStats.num_sync_lock += num_staged_ios;
 	}
 
 	if (wakeup)

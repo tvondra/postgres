@@ -18,10 +18,13 @@
 
 #include "executor/instrument.h"
 #include "storage/bufmgr.h"
+#include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 
 static PgStat_PendingIO PendingIOStats;
 static bool have_iostats = false;
+
+PgStat_IOWorkerStats PendingIOWorkerStats = {0};
 
 /*
  * Check that stats have not been counted for any combination of IOObject,
@@ -553,4 +556,150 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 
 
 	return true;
+}
+
+
+/*
+ * Report IO worker queue statistics
+ */
+void
+pgstat_report_io_worker(void)
+{
+	PgStatShared_IOWorker *stats_shmem = &pgStatLocal.shmem->ioworker;
+
+	Assert(!pgStatLocal.shmem->is_shutdown);
+	pgstat_assert_is_up();
+
+	/*
+	 * This function can be called even if nothing at all has happened. In
+	 * this case, avoid unnecessarily modifying the stats entry.
+	 */
+	if (pg_memory_is_all_zeros(&PendingIOWorkerStats,
+							   sizeof(struct PgStat_IOWorkerStats)))
+		return;
+
+	pgstat_begin_changecount_write(&stats_shmem->changecount);
+
+#define IOWORKER_ACC(fld) stats_shmem->stats.fld += PendingIOWorkerStats.fld
+	IOWORKER_ACC(io_count);
+	IOWORKER_ACC(io_bytes);
+	IOWORKER_ACC(num_sync_full);
+	IOWORKER_ACC(num_sync_lock);
+#undef IOWORKER_ACC
+
+	pgstat_end_changecount_write(&stats_shmem->changecount);
+
+	/*
+	 * Clear out the statistics buffer, so it can be re-used.
+	 */
+	MemSet(&PendingIOWorkerStats, 0, sizeof(PendingIOWorkerStats));
+}
+
+
+/*
+ * Support function for the SQL-callable pgstat* functions. Returns
+ * a pointer to the ioworker statistics struct.
+ */
+PgStat_IOWorkerStats *
+pgstat_fetch_stat_io_worker(void)
+{
+	pgstat_snapshot_fixed(PGSTAT_KIND_IOWORKER);
+
+	return &pgStatLocal.snapshot.ioworker;
+}
+
+/*
+ * Flush out locally pending ioworker statistics
+ *
+ * If no stats have been recorded, this function returns false.
+ *
+ * If nowait is true, this function returns true if the lock could not be
+ * acquired. Otherwise, return false.
+ */
+bool
+pgstat_ioworker_flush_cb(bool nowait)
+{
+	PgStatShared_IOWorker *stats_shmem = &pgStatLocal.shmem->ioworker;
+	LWLock *lock = &stats_shmem->lock;
+	bool		lock_not_acquired = false;
+
+	// FIXME if iomethod != worker?
+	// if (!have_lockstats)
+	//	return false;
+
+	if (!nowait)
+		LWLockAcquire(lock, LW_EXCLUSIVE);
+	else if (!LWLockConditionalAcquire(lock, LW_EXCLUSIVE))
+	{
+		lock_not_acquired = true;
+		goto cleanup;
+	}
+
+	elog(WARNING, "pgstat_ioworker_flush_cb pending count %ld full %ld lock %ld",
+		PendingIOWorkerStats.io_count,
+		PendingIOWorkerStats.num_sync_full,
+		PendingIOWorkerStats.num_sync_lock);
+
+#define IOWORKER_ACC(fld) stats_shmem->stats.fld += PendingIOWorkerStats.fld
+	IOWORKER_ACC(io_count);
+	IOWORKER_ACC(io_bytes);
+	IOWORKER_ACC(num_sync_full);
+	IOWORKER_ACC(num_sync_lock);
+#undef IOWORKER_ACC
+
+	LWLockRelease(lock);
+
+cleanup:
+
+	memset(&PendingIOWorkerStats, 0, sizeof(PendingIOWorkerStats));
+
+	return lock_not_acquired;
+}
+
+void
+pgstat_ioworker_init_shmem_cb(void *stats)
+{
+	PgStatShared_IOWorker *stats_shmem = (PgStatShared_IOWorker *) stats;
+
+	LWLockInitialize(&stats_shmem->lock, LWTRANCHE_PGSTATS_DATA);
+}
+
+void
+pgstat_ioworker_reset_all_cb(TimestampTz ts)
+{
+	PgStatShared_IOWorker *stats_shmem = &pgStatLocal.shmem->ioworker;
+
+	/* see explanation above PgStatShared_BgWriter for the reset protocol */
+	LWLockAcquire(&stats_shmem->lock, LW_EXCLUSIVE);
+	pgstat_copy_changecounted_stats(&stats_shmem->reset_offset,
+									&stats_shmem->stats,
+									sizeof(stats_shmem->stats),
+									&stats_shmem->changecount);
+	stats_shmem->stats.stat_reset_timestamp = ts;
+	LWLockRelease(&stats_shmem->lock);
+}
+
+void
+pgstat_ioworker_snapshot_cb(void)
+{
+	PgStatShared_IOWorker *stats_shmem = &pgStatLocal.shmem->ioworker;
+	PgStat_IOWorkerStats *reset_offset = &stats_shmem->reset_offset;
+	PgStat_IOWorkerStats reset;
+
+	pgstat_copy_changecounted_stats(&pgStatLocal.snapshot.ioworker,
+									&stats_shmem->stats,
+									sizeof(stats_shmem->stats),
+									&stats_shmem->changecount);
+
+	LWLockAcquire(&stats_shmem->lock, LW_SHARED);
+	memcpy(&reset, reset_offset, sizeof(stats_shmem->stats));
+	LWLockRelease(&stats_shmem->lock);
+
+	/* compensate by reset offsets */
+#define IOWORKER_COMP(fld) pgStatLocal.snapshot.ioworker.fld -= reset.fld;
+	IOWORKER_COMP(io_count);
+	IOWORKER_COMP(io_bytes);
+	IOWORKER_COMP(num_sync_full);
+	IOWORKER_COMP(num_sync_lock);
+#undef IOWORKER_COMP
 }

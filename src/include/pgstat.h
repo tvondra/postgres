@@ -249,6 +249,23 @@ typedef struct PgStat_BgWriterStats
 	TimestampTz stat_reset_timestamp;
 } PgStat_BgWriterStats;
 
+/* ---------
+ * PgStat_IOWorkerStats			IO Worker queue statistics
+ *
+ * This struct should contain only actual event counters, because we make use
+ * of pg_memory_is_all_zeros() to detect whether there are any stats updates
+ * to apply.
+ * ---------
+ */
+typedef struct PgStat_IOWorkerStats
+{
+	PgStat_Counter io_count;
+	PgStat_Counter io_bytes;
+	PgStat_Counter num_sync_lock;
+	PgStat_Counter num_sync_full;
+	TimestampTz stat_reset_timestamp;
+} PgStat_IOWorkerStats;
+
 /* --------
  * PgStat_CheckpointerStats		Checkpoint statistics
  *
@@ -603,7 +620,6 @@ extern void pgstat_create_backend(ProcNumber procnum);
 extern void pgstat_report_bgwriter(void);
 extern PgStat_BgWriterStats *pgstat_fetch_stat_bgwriter(void);
 
-
 /*
  * Functions in pgstat_checkpointer.c
  */
@@ -635,6 +651,8 @@ extern bool pgstat_tracks_io_object(BackendType bktype,
 extern bool pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 								IOContext io_context, IOOp io_op);
 
+extern void pgstat_report_io_worker(void);
+extern PgStat_IOWorkerStats *pgstat_fetch_stat_io_worker(void);
 
 /*
  * Functions in pgstat_lock.c
@@ -880,5 +898,12 @@ extern PGDLLIMPORT PgStat_Counter pgStatTransactionIdleTime;
 
 /* updated by the traffic cop and in errfinish() */
 extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
+
+/*
+ * Variables in pgstat_io.c
+ */
+
+/* updated directly by method_worker */
+extern PGDLLIMPORT PgStat_IOWorkerStats PendingIOWorkerStats;
 
 #endif							/* PGSTAT_H */

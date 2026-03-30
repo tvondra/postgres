@@ -1340,6 +1340,36 @@ pg_stat_get_buf_alloc(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(pgstat_fetch_stat_bgwriter()->buf_alloc);
 }
 
+Datum
+pg_stat_get_worker_io_count(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_io_worker()->io_count);
+}
+
+Datum
+pg_stat_get_worker_io_bytes(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_io_worker()->io_bytes);
+}
+
+Datum
+pg_stat_get_worker_num_sync_full(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_io_worker()->num_sync_full);
+}
+
+Datum
+pg_stat_get_worker_num_sync_lock(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_io_worker()->num_sync_lock);
+}
+
+Datum
+pg_stat_get_worker_stat_reset_time(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_io_worker()->stat_reset_timestamp);
+}
+
 /*
 * When adding a new column to the pg_stat_io view and the
 * pg_stat_get_backend_io() function, add a new enum value here above

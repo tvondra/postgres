@@ -449,6 +449,23 @@ static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE]
 		.snapshot_cb = pgstat_io_snapshot_cb,
 	},
 
+	[PGSTAT_KIND_IOWORKER] = {
+		.name = "ioworker",
+
+		.fixed_amount = true,
+		.write_to_file = true,
+
+		.snapshot_ctl_off = offsetof(PgStat_Snapshot, ioworker),
+		.shared_ctl_off = offsetof(PgStat_ShmemControl, ioworker),
+		.shared_data_off = offsetof(PgStatShared_IOWorker, stats),
+		.shared_data_len = sizeof(((PgStatShared_IOWorker *) 0)->stats),
+
+		.flush_static_cb = pgstat_ioworker_flush_cb,
+		.init_shmem_cb = pgstat_ioworker_init_shmem_cb,
+		.reset_all_cb = pgstat_ioworker_reset_all_cb,
+		.snapshot_cb = pgstat_ioworker_snapshot_cb,
+	},
+
 	[PGSTAT_KIND_LOCK] = {
 		.name = "lock",
 

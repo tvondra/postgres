@@ -4057,27 +4057,32 @@ static void
 show_scan_io_usage(ScanState *planstate, ExplainState *es)
 {
 	Plan	   *plan = planstate->ps.plan;
-	IOStats		stats;
+	IOStats		stats = {0};
 
 	if (!es->io)
 		return;
 
-	/* scan not started or no prefetch stats */
-	if (!(planstate &&
-		  planstate->ss_currentScanDesc &&
-		  planstate->ss_currentScanDesc->rs_instrument))
-		return;
+	/*
+	 * Initialize counters with stats from the local process first, and
+	 * use that as a starting point before adding stats from workers.
+	 *
+	 * XXX The scan descriptor may not exist, e.g. if the leader did not
+	 * start the scan at all, or with debug_parallel_query=regress.
+	 */
+	if (planstate &&
+		planstate->ss_currentScanDesc &&
+		planstate->ss_currentScanDesc->rs_instrument)
+	{
+		stats = planstate->ss_currentScanDesc->rs_instrument->io;
+	}
 
-	/* Initialize counters with stats from the local process first */
+	/* Add stats collected by the workers. */
 	switch (nodeTag(plan))
 	{
 		case T_BitmapHeapScan:
 			{
 				SharedBitmapHeapInstrumentation *sinstrument
 				= ((BitmapHeapScanState *) planstate)->sinstrument;
-
-				/* collect prefetch statistics from the read stream */
-				stats = planstate->ss_currentScanDesc->rs_instrument->io;
 
 				/*
 				 * get the sum of the counters set within each and every
@@ -4125,8 +4130,14 @@ show_io_usage(PlanState *planstate, ExplainState *es, int worker)
 			{
 				BitmapHeapScanState *state = ((BitmapHeapScanState *) planstate);
 				SharedBitmapHeapInstrumentation *sinstrument = state->sinstrument;
-				BitmapHeapScanInstrumentation *instrument = &sinstrument->sinstrument[worker];
+				BitmapHeapScanInstrumentation *instrument;
 
+				/* FIXME bitmap heap scans don't initialize instrumentation for
+				 * workers in non-parallel-aware part of the plan */
+				if (!sinstrument)
+					return;
+
+				instrument = &sinstrument->sinstrument[worker];
 				stats = &instrument->stats.io;
 
 				break;

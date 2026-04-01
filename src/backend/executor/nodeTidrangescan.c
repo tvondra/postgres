@@ -471,6 +471,14 @@ ExecTidRangeScanEstimate(TidRangeScanState *node, ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
 	Size		size;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
 
 	size = table_parallelscan_estimate(node->ss.ss_currentRelation,
 									   estate->es_snapshot);
@@ -480,7 +488,7 @@ ExecTidRangeScanEstimate(TidRangeScanState *node, ParallelContext *pcxt)
 	size = MAXALIGN(size);
 
 	/* account for instrumentation, if required */
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	if (instrument && pcxt->nworkers > 0)
 	{
 		size = add_size(size, offsetof(SharedTidRangeScanInstrumentation, sinstrument));
 		size = add_size(size, mul_size(pcxt->nworkers, sizeof(TidRangeScanInstrumentation)));
@@ -502,15 +510,16 @@ ExecTidRangeScanInitializeDSM(TidRangeScanState *node, ParallelContext *pcxt)
 	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
 	SharedTidRangeScanInstrumentation *sinstrument = NULL;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	Size	size;
-	char   *ptr;
 	uint32	flags = SO_NONE;
 
-	if (ScanRelIsReadOnly(&node->ss))
-		flags |= SO_HINT_REL_READ_ONLY;
-
-	if (estate->es_instrument)
-		flags |= SO_SCAN_INSTRUMENT;
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
 
 	size = MAXALIGN(node->trss_pscanlen);
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
@@ -525,26 +534,41 @@ ExecTidRangeScanInitializeDSM(TidRangeScanState *node, ParallelContext *pcxt)
 								  pscan,
 								  estate->es_snapshot);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
-	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel_tidrange(node->ss.ss_currentRelation,
-										  pscan, flags);
 
 	/* initialize the shared instrumentation (with correct alignment) */
-	ptr = (char *) pscan;
-	ptr += MAXALIGN(node->trss_pscanlen);
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	if (instrument && pcxt->nworkers > 0)
+	{
+		/* initialize the shared instrumentation (with correct alignment) */
+		char *ptr = (char *) pscan;
+
+		ptr += MAXALIGN(node->trss_pscanlen);
+
 		sinstrument = (SharedTidRangeScanInstrumentation *) ptr;
 
-	if (sinstrument)
-	{
 		sinstrument->num_workers = pcxt->nworkers;
 
 		/* ensure any unfilled slots will contain zeroes */
 		memset(sinstrument->sinstrument, 0,
 			   pcxt->nworkers * sizeof(TidRangeScanInstrumentation));
+
+		node->trss_sinstrument = sinstrument;
 	}
 
-	node->trss_sinstrument = sinstrument;
+	if (!parallel_aware)
+	{
+		/* Only here to set up worker node's shared instrumentation */
+		return;
+	}
+
+	if (ScanRelIsReadOnly(&node->ss))
+		flags |= SO_HINT_REL_READ_ONLY;
+
+	if (estate->es_instrument)
+		flags |= SO_SCAN_INSTRUMENT;
+
+	node->ss.ss_currentScanDesc =
+		table_beginscan_parallel_tidrange(node->ss.ss_currentRelation,
+										  pscan, flags);
 }
 
 /* ----------------------------------------------------------------
@@ -573,10 +597,35 @@ void
 ExecTidRangeScanInitializeWorker(TidRangeScanState *node,
 								 ParallelWorkerContext *pwcxt)
 {
-	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
-	char	   *ptr;
+	EState	   *estate = node->ss.ps.state;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	uint32		flags = SO_NONE;
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+
+	/* set pointer to the shared instrumentation */
+	if (instrument)
+	{
+		/* set pointer to the shared instrumentation */
+		char *ptr = (char *) pscan;
+		ptr += MAXALIGN(pscan->phs_len);
+
+		node->trss_sinstrument = (SharedTidRangeScanInstrumentation *) ptr;
+	}
+
+	if (!parallel_aware)
+	{
+		/* Only here to set up worker node's SharedInfo */
+		return;
+	}
 
 	if (ScanRelIsReadOnly(&node->ss))
 		flags |= SO_HINT_REL_READ_ONLY;
@@ -584,17 +633,10 @@ ExecTidRangeScanInitializeWorker(TidRangeScanState *node,
 	if (estate->es_instrument)
 		flags |= SO_SCAN_INSTRUMENT;
 
-	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+	/* XXX only start the scan for parallel-aware ones */
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel_tidrange(node->ss.ss_currentRelation,
 										  pscan, flags);
-
-	/* set pointer to the shared instrumentation */
-	ptr = (char *) pscan;
-	ptr += MAXALIGN(pscan->phs_len);
-
-	if (node->ss.ps.instrument)
-		node->trss_sinstrument = (SharedTidRangeScanInstrumentation *) ptr;
 }
 
 /* ----------------------------------------------------------------

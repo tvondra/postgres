@@ -4124,9 +4124,6 @@ show_scan_io_usage(ScanState *planstate, ExplainState *es)
 				SharedTidRangeScanInstrumentation *sinstrument
 					= ((TidRangeScanState *) planstate)->trss_sinstrument;
 
-				/* collect prefetch statistics from the read stream */
-				stats = planstate->ss_currentScanDesc->rs_instrument->io;
-
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)
 				{

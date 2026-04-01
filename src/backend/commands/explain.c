@@ -4084,9 +4084,6 @@ show_scan_io_usage(ScanState *planstate, ExplainState *es)
 				SharedSeqScanInstrumentation *sinstrument
 					= ((SeqScanState *) planstate)->sinstrument;
 
-				/* collect prefetch statistics from the read stream */
-				stats = planstate->ss_currentScanDesc->rs_instrument->io;
-
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)
 				{

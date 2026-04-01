@@ -387,17 +387,25 @@ ExecSeqScanEstimate(SeqScanState *node,
 					ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	Size		size;
 
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
 	size = table_parallelscan_estimate(node->ss.ss_currentRelation,
-												  estate->es_snapshot);
+									   estate->es_snapshot);
 	node->pscan_len = size;
 
 	/* make sure the instrumentation is properly aligned */
 	size = MAXALIGN(size);
 
 	/* account for instrumentation, if required */
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	if (instrument && pcxt->nworkers > 0)
 	{
 		size = add_size(size, offsetof(SharedSeqScanInstrumentation, sinstrument));
 		size = add_size(size, mul_size(pcxt->nworkers, sizeof(SeqScanInstrumentation)));
@@ -420,13 +428,20 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
 	SharedSeqScanInstrumentation *sinstrument = NULL;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	Size		size;
-	char	   *ptr;
 	uint32		flags = SO_NONE;
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
 
 	/* Recalculate the size. This needs to match ExecSeqScanEstimate. */
 	size = MAXALIGN(node->pscan_len);
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	if (instrument && pcxt->nworkers > 0)
 	{
 		size = add_size(size, offsetof(SharedSeqScanInstrumentation, sinstrument));
 		size = add_size(size, mul_size(pcxt->nworkers, sizeof(SeqScanInstrumentation)));
@@ -438,7 +453,32 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 	table_parallelscan_initialize(node->ss.ss_currentRelation,
 								  pscan,
 								  estate->es_snapshot);
+
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
+
+	/* initialize the shared instrumentation (with correct alignment) */
+	if (instrument && pcxt->nworkers > 0)
+	{
+		char *ptr = (char *) pscan;
+
+		ptr += MAXALIGN(node->pscan_len);
+
+		sinstrument = (SharedSeqScanInstrumentation *) ptr;
+
+		sinstrument->num_workers = pcxt->nworkers;
+
+		/* ensure any unfilled slots will contain zeroes */
+		memset(sinstrument->sinstrument, 0,
+			   pcxt->nworkers * sizeof(SeqScanInstrumentation));
+
+		node->sinstrument = sinstrument;
+	}
+
+	if (!parallel_aware)
+	{
+		/* Only here to set up worker node's shared instrumentation */
+		return;
+	}
 
 	if (ScanRelIsReadOnly(&node->ss))
 		flags |= SO_HINT_REL_READ_ONLY;
@@ -448,23 +488,6 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
-
-	/* initialize the shared instrumentation (with correct alignment) */
-	ptr = (char *) pscan;
-	ptr += MAXALIGN(node->pscan_len);
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
-		sinstrument = (SharedSeqScanInstrumentation *) ptr;
-
-	if (sinstrument)
-	{
-		sinstrument->num_workers = pcxt->nworkers;
-
-		/* ensure any unfilled slots will contain zeroes */
-		memset(sinstrument->sinstrument, 0,
-			   pcxt->nworkers * sizeof(SeqScanInstrumentation));
-	}
-
-	node->sinstrument = sinstrument;
 }
 
 /* ----------------------------------------------------------------
@@ -493,10 +516,34 @@ void
 ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
-	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
-	char	   *ptr;
+	EState	   *estate = node->ss.ps.state;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	uint32		flags = SO_NONE;
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+
+	/* set pointer to the shared instrumentation */
+	if (instrument)
+	{
+		char *ptr = (char *) pscan;
+		ptr += MAXALIGN(pscan->phs_len);
+
+		node->sinstrument = (SharedSeqScanInstrumentation *) ptr;
+	}
+
+	if (!parallel_aware)
+	{
+		/* Only here to set up worker node's SharedInfo */
+		return;
+	}
 
 	if (ScanRelIsReadOnly(&node->ss))
 		flags |= SO_HINT_REL_READ_ONLY;
@@ -504,16 +551,8 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 	if (estate->es_instrument)
 		flags |= SO_SCAN_INSTRUMENT;
 
-	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
-
-	/* set pointer to the shared instrumentation */
-	ptr = (char *) pscan;
-	ptr += MAXALIGN(pscan->phs_len);
-
-	if (node->ss.ps.instrument)
-		node->sinstrument = (SharedSeqScanInstrumentation *) ptr;
 }
 
 /* ----------------------------------------------------------------

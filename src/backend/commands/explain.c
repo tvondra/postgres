@@ -4172,14 +4172,20 @@ show_scan_io_usage(PlanState *planstate, ExplainState *es)
 				IndexScanState *scanstate = (IndexScanState *) planstate;
 				SharedIndexScanInstrumentation *sinstrument = scanstate->iss_SharedInfo;
 
-				/* scan not started, no prefetch stats */
-				if (!(scanstate &&
-					  scanstate->iss_ScanDesc &&
-					  scanstate->iss_ScanDesc->instrument))
-					return;
-
-				/* collect prefetch statistics from the read stream */
-				stats = scanstate->iss_ScanDesc->instrument->io;
+				/*
+				 * If there are stats in the leader, use it as a starting point
+				 * before adding stats from the workers.
+				 *
+				 * We may have stats even without a scan descriptor, which means
+				 * the leader did not start the scan at all. That can happen e.g.
+				 * with debug_parallel_query=regress.
+				 */
+				if (scanstate &&
+					scanstate->iss_ScanDesc &&
+					scanstate->iss_ScanDesc->instrument)
+				{
+					stats = scanstate->iss_ScanDesc->instrument->io;
+				}
 
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)
@@ -4199,14 +4205,20 @@ show_scan_io_usage(PlanState *planstate, ExplainState *es)
 				IndexOnlyScanState *scanstate = (IndexOnlyScanState *) planstate;
 				SharedIndexScanInstrumentation *sinstrument = scanstate->ioss_SharedInfo;
 
-				/* scan not started, no prefetch stats */
-				if (!(scanstate &&
-					  scanstate->ioss_ScanDesc &&
-					  scanstate->ioss_ScanDesc->instrument))
-					return;
-
-				/* collect prefetch statistics from the read stream */
-				stats = scanstate->ioss_ScanDesc->instrument->io;
+				/*
+				 * If there are stats in the leader, use it as a starting point
+				 * before adding stats from the workers.
+				 *
+				 * We may have stats even without a scan descriptor, which means
+				 * the leader did not start the scan at all. That can happen e.g.
+				 * with debug_parallel_query=regress.
+				 */
+				if (scanstate &&
+					scanstate->ioss_ScanDesc &&
+					scanstate->ioss_ScanDesc->instrument)
+				{
+					stats = scanstate->ioss_ScanDesc->instrument->io;
+				}
 
 				/* get the sum of the counters set within each and every process */
 				if (sinstrument)

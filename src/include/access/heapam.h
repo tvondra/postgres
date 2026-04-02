@@ -136,9 +136,12 @@ typedef struct IndexFetchHeapData
 	bool		xs_lastinblock; /* last TID on this block in current batch? */
 
 	/*
-	 * The read stream is allocated early in the scan, and reset on rescan.
-	 * This reset process releases all pending pinned buffers.  The read
-	 * stream is also reset when we detect a scan direction change.
+	 * Read stream state for prefetching (only used during amgetbatch scans).
+	 *
+	 * The read stream moves ahead of the scan's current position using its
+	 * own prefetching position (per conventions described in indexbatch.c).
+	 * The read stream is allocated early in the scan, and reset on rescan
+	 * (and when the scan direction changes).
 	 */
 	bool		xs_paused;		/* paused until next batch is read? */
 	ScanDirection xs_read_stream_dir;	/* index scan direction */

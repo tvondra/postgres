@@ -95,7 +95,7 @@ heapam_index_fetch_begin(Relation rel, uint32 flags)
 	Assert(hscan->xs_read_stream == NULL);
 
 	/*
-	 * Return opaque state, which we'll access through the scan's xs_heapfetch
+	 * Return heapam state, which we'll access through the scan's xs_heapfetch
 	 * field later on.
 	 *
 	 * Note: indexam.c will call batchscan_init for us.

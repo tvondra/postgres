@@ -114,9 +114,6 @@ heapam_index_fetch_reset(IndexScanDesc scan)
 	/* Defensively do an unconditional read stream direction reset */
 	hscan->xs_read_stream_dir = NoMovementScanDirection;
 
-	/*
-	 * Reset read stream itself, and other associated state.
-	 */
 	if (hscan->xs_read_stream)
 	{
 		hscan->xs_paused = false;
@@ -139,9 +136,6 @@ heapam_index_fetch_restrpos(IndexScanDesc scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan->xs_heapfetch;
 
-	/*
-	 * Reset read stream itself, and other associated state.
-	 */
 	if (hscan->xs_read_stream)
 	{
 		hscan->xs_paused = false;

@@ -651,9 +651,8 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
  * The result is the next TID satisfying the scan keys,
  * or NULL if no more matching tuples exist.
  *
- * This should only be called by table AM's index_getnext_slot implementation,
- * and only given an index AM that supports the single-tuple amgettuple
- * interface.
+ * This should only be called by table AM amgettuple-based index scan
+ * callbacks.
  * ----------------
  */
 ItemPointer

@@ -277,9 +277,8 @@ typedef struct IndexScanBatchData *IndexScanBatch;
  * current read position by _multiple_ batches/index pages.  The further out
  * the table AM reads ahead like this, the further it can see into the future.
  * That way the table AM is able to reorder work as aggressively as desired.
- * For example, index scans sometimes need to readahead by as many as a few
- * dozen amgetbatch batches in order to maintain an optimal I/O prefetch
- * distance (distance for reading table blocks/fetching table tuples).
+ * Index scans sometimes need to readahead by several dozen batches in order
+ * to maintain an optimal I/O prefetch distance (for reading table blocks).
  */
 typedef struct BatchRingBuffer
 {

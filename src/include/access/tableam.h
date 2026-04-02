@@ -536,7 +536,6 @@ typedef struct TableAmRoutine
 	 */
 	void		(*index_fetch_restrpos) (IndexScanDesc scan);
 
-
 	/* ------------------------------------------------------------------------
 	 * Callbacks for non-modifying operations on individual tuples
 	 * ------------------------------------------------------------------------

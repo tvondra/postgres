@@ -105,14 +105,14 @@ do { \
 } while(0)
 
 static pg_attribute_always_inline IndexScanDesc index_beginscan_internal(Relation indexRelation,
+																		 Relation heapRelation,
 																		 int nkeys,
 																		 int norderbys,
 																		 Snapshot snapshot,
 																		 ParallelIndexScanDesc pscan,
-																		 bool temp_snap,
-																		 Relation heapRelation,
-																		 bool index_only_scan,
 																		 IndexScanInstrumentation *instrument,
+																		 bool index_only_scan,
+																		 bool temp_snap,
 																		 uint32 flags);
 static inline void validate_relation_as_index(Relation r);
 
@@ -280,9 +280,10 @@ index_beginscan(Relation heapRelation,
 						RelationGetRelationName(heapRelation))));
 	}
 
-	return index_beginscan_internal(indexRelation, nkeys, norderbys, snapshot,
-									NULL, false, heapRelation,
-									index_only_scan, instrument, flags);
+	return index_beginscan_internal(indexRelation, heapRelation,
+									nkeys, norderbys,
+									snapshot, NULL, instrument,
+									index_only_scan, false, flags);
 }
 
 /*
@@ -300,8 +301,8 @@ index_beginscan_bitmap(Relation indexRelation,
 	Assert(snapshot != InvalidSnapshot);
 	Assert(IsMVCCLikeSnapshot(snapshot));
 
-	return index_beginscan_internal(indexRelation, nkeys, 0, snapshot, NULL,
-									false, NULL, false, instrument, SO_NONE);
+	return index_beginscan_internal(indexRelation, NULL, nkeys, 0, snapshot,
+									NULL, instrument, false, false, SO_NONE);
 }
 
 /*
@@ -311,12 +312,11 @@ index_beginscan_bitmap(Relation indexRelation,
  * batch ring setup, getnext_slot resolution, and table fetch initialization.
  */
 static pg_attribute_always_inline IndexScanDesc
-index_beginscan_internal(Relation indexRelation,
+index_beginscan_internal(Relation indexRelation, Relation heapRelation,
 						 int nkeys, int norderbys, Snapshot snapshot,
-						 ParallelIndexScanDesc pscan, bool temp_snap,
-						 Relation heapRelation, bool index_only_scan,
+						 ParallelIndexScanDesc pscan,
 						 IndexScanInstrumentation *instrument,
-						 uint32 flags)
+						 bool index_only_scan, bool temp_snap, uint32 flags)
 {
 	IndexScanDesc scan;
 
@@ -640,9 +640,9 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	snapshot = RestoreSnapshot(pscan->ps_snapshot_data);
 	RegisterSnapshot(snapshot);
 
-	return index_beginscan_internal(indexrel, nkeys, norderbys, snapshot,
-									pscan, true, heaprel, index_only_scan,
-									instrument, flags);
+	return index_beginscan_internal(indexrel, heaprel, nkeys, norderbys,
+									snapshot, pscan, instrument,
+									index_only_scan, true, flags);
 }
 
 /* ----------------

@@ -495,9 +495,21 @@ void
 ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 					   ParallelContext *pcxt)
 {
-	Size		size;
+	Size		size = 0;
+	bool		instrument = (node->ss.ps.instrument != NULL);
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 
-	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	/* parallel state is needed only in parallel-aware scans */
+	if (parallel_aware)
+	{
+		size = MAXALIGN(sizeof(ParallelBitmapHeapState));
+	}
 
 	/* account for instrumentation, if required */
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
@@ -521,48 +533,61 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 							ParallelContext *pcxt)
 {
 	ParallelBitmapHeapState *pstate;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	SharedBitmapHeapInstrumentation *sinstrument = NULL;
-	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
 	char	   *ptr;
-	Size		size;
+	Size		size = 0;
 
-	/* If there's no DSA, there are no workers; initialize nothing. */
-	if (dsa == NULL)
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
 		return;
+	}
 
-	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	/* parallel state is needed only in parallel-aware scans */
+	if (parallel_aware)
+	{
+		size = MAXALIGN(sizeof(ParallelBitmapHeapState));
+	}
+
+	if (instrument && pcxt->nworkers > 0)
 	{
 		size = add_size(size, offsetof(SharedBitmapHeapInstrumentation, sinstrument));
 		size = add_size(size, mul_size(pcxt->nworkers, sizeof(BitmapHeapScanInstrumentation)));
 	}
 
 	ptr = shm_toc_allocate(pcxt->toc, size);
-	pstate = (ParallelBitmapHeapState *) ptr;
-	ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, ptr);
+
+	if (parallel_aware)
+	{
+		pstate = (ParallelBitmapHeapState *) ptr;
+		ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
+
+		pstate->tbmiterator = 0;
+
+		/* Initialize the mutex */
+		SpinLockInit(&pstate->mutex);
+		pstate->state = BM_INITIAL;
+
+		ConditionVariableInit(&pstate->cv);
+
+		node->pstate = pstate;
+	}
+
+	if (instrument && pcxt->nworkers > 0)
+	{
 		sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
 
-	pstate->tbmiterator = 0;
-
-	/* Initialize the mutex */
-	SpinLockInit(&pstate->mutex);
-	pstate->state = BM_INITIAL;
-
-	ConditionVariableInit(&pstate->cv);
-
-	if (sinstrument)
-	{
 		sinstrument->num_workers = pcxt->nworkers;
 
 		/* ensure any unfilled slots will contain zeroes */
 		memset(sinstrument->sinstrument, 0,
 			   pcxt->nworkers * sizeof(BitmapHeapScanInstrumentation));
-	}
 
-	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pstate);
-	node->pstate = pstate;
-	node->sinstrument = sinstrument;
+		node->sinstrument = sinstrument;
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -600,16 +625,27 @@ void
 ExecBitmapHeapInitializeWorker(BitmapHeapScanState *node,
 							   ParallelWorkerContext *pwcxt)
 {
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 	char	   *ptr;
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
 
 	Assert(node->ss.ps.state->es_query_dsa != NULL);
 
 	ptr = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 
-	node->pstate = (ParallelBitmapHeapState *) ptr;
-	ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
+	if (parallel_aware)
+	{
+		node->pstate = (ParallelBitmapHeapState *) ptr;
+		ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
+	}
 
-	if (node->ss.ps.instrument)
+	if (instrument)
 		node->sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
 }
 

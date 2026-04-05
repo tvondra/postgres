@@ -103,9 +103,9 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 {
 	TBMIterator tbmiterator = {0};
 	ParallelBitmapHeapState *pstate = node->pstate;
-	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 
-	if (!pstate)
+	if (!parallel_aware)
 	{
 		node->tbm = (TIDBitmap *) MultiExecProcNode(outerPlanState(node));
 
@@ -133,8 +133,9 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 		BitmapDoneInitializingSharedState(pstate);
 	}
 
-	tbmiterator = tbm_begin_iterate(node->tbm, dsa,
-									pstate ?
+	tbmiterator = tbm_begin_iterate(node->tbm,
+									node->ss.ps.state->es_query_dsa,
+									parallel_aware ?
 									pstate->tbmiterator :
 									InvalidDsaPointer);
 
@@ -497,6 +498,12 @@ ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 {
 	Size		size;
 
+	if (!node->ss.ps.instrument && !node->ss.ps.plan->parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
 	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
 
 	/* account for instrumentation, if required */
@@ -522,13 +529,14 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 {
 	ParallelBitmapHeapState *pstate;
 	SharedBitmapHeapInstrumentation *sinstrument = NULL;
-	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
 	char	   *ptr;
 	Size		size;
 
-	/* If there's no DSA, there are no workers; initialize nothing. */
-	if (dsa == NULL)
+	if (!node->ss.ps.instrument && !node->ss.ps.plan->parallel_aware)
+	{
+		/* No DSM required by the scan */
 		return;
+	}
 
 	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
@@ -543,13 +551,18 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 	if (node->ss.ps.instrument && pcxt->nworkers > 0)
 		sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
 
-	pstate->tbmiterator = 0;
+	pstate->tbmiterator = InvalidDsaPointer;
 
-	/* Initialize the mutex */
-	SpinLockInit(&pstate->mutex);
-	pstate->state = BM_INITIAL;
-
-	ConditionVariableInit(&pstate->cv);
+	/*
+	 * Only initialize these fields when parallel-aware as they are used to
+	 * coordinate TBM iteration amongst parallel workers.
+	 */
+	if (node->ss.ps.plan->parallel_aware)
+	{
+		SpinLockInit(&pstate->mutex);
+		pstate->state = BM_INITIAL;
+		ConditionVariableInit(&pstate->cv);
+	}
 
 	if (sinstrument)
 	{
@@ -578,9 +591,8 @@ ExecBitmapHeapReInitializeDSM(BitmapHeapScanState *node,
 	ParallelBitmapHeapState *pstate = node->pstate;
 	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
 
-	/* If there's no DSA, there are no workers; do nothing. */
-	if (dsa == NULL)
-		return;
+	Assert(node->ss.ps.plan->parallel_aware);
+	Assert(dsa != NULL);
 
 	pstate->state = BM_INITIAL;
 
@@ -602,7 +614,11 @@ ExecBitmapHeapInitializeWorker(BitmapHeapScanState *node,
 {
 	char	   *ptr;
 
-	Assert(node->ss.ps.state->es_query_dsa != NULL);
+	if (!node->ss.ps.instrument && !node->ss.ps.plan->parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
 
 	ptr = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 

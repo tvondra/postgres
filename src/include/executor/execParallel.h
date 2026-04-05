@@ -19,6 +19,14 @@
 #include "nodes/plannodes.h"
 #include "utils/dsa.h"
 
+/*
+ * Offset added to plan_node_id to create a second TOC key for per-worker scan
+ * instrumentation. This allows scan nodes to store instrumentation in a
+ * separate DSM allocation from their parallel scan descriptor, avoiding the
+ * need to pack both into a single allocation with offset arithmetic.
+ */
+#define PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET	UINT64CONST(0xD000000000000000)
+
 typedef struct SharedExecutorInstrumentation SharedExecutorInstrumentation;
 
 typedef struct ParallelExecutorInfo

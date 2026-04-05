@@ -43,6 +43,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
 #include "commands/vacuum.h"
+#include "executor/instrument_node.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
@@ -1199,6 +1200,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_nkeys = nkeys;
 	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
+	scan->rs_base.rs_instrument = NULL;
 	scan->rs_strategy = NULL;	/* set in initscan */
 	scan->rs_cbuf = InvalidBuffer;
 
@@ -1309,6 +1311,14 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 														  bitmapheap_stream_read_next,
 														  scan,
 														  sizeof(TBMIterateResult));
+	}
+
+	/* enable read stream instrumentation */
+	if (flags & SO_SCAN_INSTRUMENT)
+	{
+		scan->rs_base.rs_instrument = palloc0_object(TableScanInstrumentation);
+		read_stream_enable_stats(scan->rs_read_stream,
+								 &scan->rs_base.rs_instrument->io);
 	}
 
 	scan->rs_vmbuffer = InvalidBuffer;

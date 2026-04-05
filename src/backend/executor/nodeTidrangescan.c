@@ -18,6 +18,7 @@
 #include "access/sysattr.h"
 #include "access/tableam.h"
 #include "catalog/pg_operator.h"
+#include "executor/execParallel.h"
 #include "executor/executor.h"
 #include "executor/nodeTidrangescan.h"
 #include "nodes/nodeFuncs.h"
@@ -242,12 +243,19 @@ TidRangeNext(TidRangeScanState *node)
 
 		if (scandesc == NULL)
 		{
+			uint32		flags = SO_NONE;
+
+			if (ScanRelIsReadOnly(&node->ss))
+				flags |= SO_HINT_REL_READ_ONLY;
+
+			if (estate->es_instrument)
+				flags |= SO_SCAN_INSTRUMENT;
+
 			scandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,
 												estate->es_snapshot,
 												&node->trss_mintid,
 												&node->trss_maxtid,
-												ScanRelIsReadOnly(&node->ss) ?
-												SO_HINT_REL_READ_ONLY : SO_NONE);
+												flags);
 			node->ss.ss_currentScanDesc = scandesc;
 		}
 		else
@@ -341,6 +349,19 @@ void
 ExecEndTidRangeScan(TidRangeScanState *node)
 {
 	TableScanDesc scan = node->ss.ss_currentScanDesc;
+
+	/* Collect IO stats for this process into shared instrumentation */
+	if (node->trss_sinstrument != NULL && IsParallelWorker())
+	{
+		TidRangeScanInstrumentation *si;
+
+		Assert(ParallelWorkerNumber <= node->trss_sinstrument->num_workers);
+		si = &node->trss_sinstrument->sinstrument[ParallelWorkerNumber];
+
+		if (scan && scan->rs_instrument)
+			AccumulateIOStats(&si->stats.io,
+							  &scan->rs_instrument->io);
+	}
 
 	if (scan != NULL)
 		table_endscan(scan);
@@ -454,6 +475,13 @@ ExecTidRangeScanInitializeDSM(TidRangeScanState *node, ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
+	uint32		flags = SO_NONE;
+
+	if (ScanRelIsReadOnly(&node->ss))
+		flags |= SO_HINT_REL_READ_ONLY;
+
+	if (estate->es_instrument)
+		flags |= SO_SCAN_INSTRUMENT;
 
 	pscan = shm_toc_allocate(pcxt->toc, node->trss_pscanlen);
 	table_parallelscan_initialize(node->ss.ss_currentRelation,
@@ -462,9 +490,7 @@ ExecTidRangeScanInitializeDSM(TidRangeScanState *node, ParallelContext *pcxt)
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel_tidrange(node->ss.ss_currentRelation,
-										  pscan,
-										  ScanRelIsReadOnly(&node->ss) ?
-										  SO_HINT_REL_READ_ONLY : SO_NONE);
+										  pscan, flags);
 }
 
 /* ----------------------------------------------------------------
@@ -494,11 +520,81 @@ ExecTidRangeScanInitializeWorker(TidRangeScanState *node,
 								 ParallelWorkerContext *pwcxt)
 {
 	ParallelTableScanDesc pscan;
+	uint32		flags = SO_NONE;
+
+	if (ScanRelIsReadOnly(&node->ss))
+		flags |= SO_HINT_REL_READ_ONLY;
+
+	if (node->ss.ps.state->es_instrument)
+		flags |= SO_SCAN_INSTRUMENT;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel_tidrange(node->ss.ss_currentRelation,
-										  pscan,
-										  ScanRelIsReadOnly(&node->ss) ?
-										  SO_HINT_REL_READ_ONLY : SO_NONE);
+										  pscan, flags);
+}
+
+void
+ExecTidRangeScanInstrumentEstimate(TidRangeScanState *node,
+								   ParallelContext *pcxt)
+{
+	EState	   *estate = node->ss.ps.state;
+
+	if (!estate->es_instrument || pcxt->nworkers == 0)
+		return;
+
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   offsetof(SharedTidRangeScanInstrumentation, sinstrument) +
+						   sizeof(TidRangeScanInstrumentation) * pcxt->nworkers);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+}
+
+void
+ExecTidRangeScanInstrumentInitDSM(TidRangeScanState *node,
+								  ParallelContext *pcxt)
+{
+	EState	   *estate = node->ss.ps.state;
+	SharedTidRangeScanInstrumentation *sinstrument;
+	Size		size;
+
+	if (!estate->es_instrument || pcxt->nworkers == 0)
+		return;
+
+	size = offsetof(SharedTidRangeScanInstrumentation, sinstrument) +
+		sizeof(TidRangeScanInstrumentation) * pcxt->nworkers;
+	sinstrument = shm_toc_allocate(pcxt->toc, size);
+	memset(sinstrument, 0, size);
+	sinstrument->num_workers = pcxt->nworkers;
+	shm_toc_insert(pcxt->toc,
+				   node->ss.ps.plan->plan_node_id + PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+				   sinstrument);
+	node->trss_sinstrument = sinstrument;
+}
+
+void
+ExecTidRangeScanInstrumentInitWorker(TidRangeScanState *node,
+									 ParallelWorkerContext *pwcxt)
+{
+	if (!node->ss.ps.state->es_instrument)
+		return;
+
+	node->trss_sinstrument = shm_toc_lookup(pwcxt->toc,
+											node->ss.ps.plan->plan_node_id + PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+											true);
+}
+
+void
+ExecTidRangeScanRetrieveInstrumentation(TidRangeScanState *node)
+{
+	SharedTidRangeScanInstrumentation *sinstrument = node->trss_sinstrument;
+	Size		size;
+
+	if (sinstrument == NULL)
+		return;
+
+	size = offsetof(SharedTidRangeScanInstrumentation, sinstrument)
+		+ sinstrument->num_workers * sizeof(TidRangeScanInstrumentation);
+
+	node->trss_sinstrument = palloc(size);
+	memcpy(node->trss_sinstrument, sinstrument, size);
 }

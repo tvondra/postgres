@@ -38,6 +38,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
+#include "executor/execParallel.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "executor/nodeBitmapHeapscan.h"
@@ -495,18 +496,8 @@ void
 ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 					   ParallelContext *pcxt)
 {
-	Size		size;
-
-	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
-
-	/* account for instrumentation, if required */
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
-	{
-		size = add_size(size, offsetof(SharedBitmapHeapInstrumentation, sinstrument));
-		size = add_size(size, mul_size(pcxt->nworkers, sizeof(BitmapHeapScanInstrumentation)));
-	}
-
-	shm_toc_estimate_chunk(&pcxt->estimator, size);
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   MAXALIGN(sizeof(ParallelBitmapHeapState)));
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 }
 
@@ -521,27 +512,14 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 							ParallelContext *pcxt)
 {
 	ParallelBitmapHeapState *pstate;
-	SharedBitmapHeapInstrumentation *sinstrument = NULL;
 	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
-	char	   *ptr;
-	Size		size;
 
 	/* If there's no DSA, there are no workers; initialize nothing. */
 	if (dsa == NULL)
 		return;
 
-	size = MAXALIGN(sizeof(ParallelBitmapHeapState));
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
-	{
-		size = add_size(size, offsetof(SharedBitmapHeapInstrumentation, sinstrument));
-		size = add_size(size, mul_size(pcxt->nworkers, sizeof(BitmapHeapScanInstrumentation)));
-	}
-
-	ptr = shm_toc_allocate(pcxt->toc, size);
-	pstate = (ParallelBitmapHeapState *) ptr;
-	ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
-	if (node->ss.ps.instrument && pcxt->nworkers > 0)
-		sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
+	pstate = (ParallelBitmapHeapState *)
+		shm_toc_allocate(pcxt->toc, MAXALIGN(sizeof(ParallelBitmapHeapState)));
 
 	pstate->tbmiterator = 0;
 
@@ -551,18 +529,8 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 
 	ConditionVariableInit(&pstate->cv);
 
-	if (sinstrument)
-	{
-		sinstrument->num_workers = pcxt->nworkers;
-
-		/* ensure any unfilled slots will contain zeroes */
-		memset(sinstrument->sinstrument, 0,
-			   pcxt->nworkers * sizeof(BitmapHeapScanInstrumentation));
-	}
-
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pstate);
 	node->pstate = pstate;
-	node->sinstrument = sinstrument;
 }
 
 /* ----------------------------------------------------------------
@@ -600,17 +568,61 @@ void
 ExecBitmapHeapInitializeWorker(BitmapHeapScanState *node,
 							   ParallelWorkerContext *pwcxt)
 {
-	char	   *ptr;
-
 	Assert(node->ss.ps.state->es_query_dsa != NULL);
 
-	ptr = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+	node->pstate = (ParallelBitmapHeapState *)
+		shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+}
 
-	node->pstate = (ParallelBitmapHeapState *) ptr;
-	ptr += MAXALIGN(sizeof(ParallelBitmapHeapState));
+void
+ExecBitmapHeapInstrumentEstimate(BitmapHeapScanState *node,
+								 ParallelContext *pcxt)
+{
+	Size		size;
 
-	if (node->ss.ps.instrument)
-		node->sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
+	/* don't need this if not instrumenting or no workers */
+	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+		return;
+
+	size = offsetof(SharedBitmapHeapInstrumentation, sinstrument) +
+		pcxt->nworkers * sizeof(BitmapHeapScanInstrumentation);
+	shm_toc_estimate_chunk(&pcxt->estimator, size);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+}
+
+void
+ExecBitmapHeapInstrumentInitDSM(BitmapHeapScanState *node,
+								ParallelContext *pcxt)
+{
+	Size		size;
+
+	/* don't need this if not instrumenting or no workers */
+	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+		return;
+
+	size = offsetof(SharedBitmapHeapInstrumentation, sinstrument) +
+		pcxt->nworkers * sizeof(BitmapHeapScanInstrumentation);
+	node->sinstrument =
+		(SharedBitmapHeapInstrumentation *) shm_toc_allocate(pcxt->toc, size);
+
+	/* Each per-worker area must start out as zeroes */
+	memset(node->sinstrument, 0, size);
+	node->sinstrument->num_workers = pcxt->nworkers;
+	shm_toc_insert(pcxt->toc,
+				   node->ss.ps.plan->plan_node_id +
+				   PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+				   node->sinstrument);
+}
+
+void
+ExecBitmapHeapInstrumentInitWorker(BitmapHeapScanState *node,
+								   ParallelWorkerContext *pwcxt)
+{
+	node->sinstrument = (SharedBitmapHeapInstrumentation *)
+		shm_toc_lookup(pwcxt->toc,
+					   node->ss.ps.plan->plan_node_id +
+					   PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+					   true);
 }
 
 /* ----------------------------------------------------------------

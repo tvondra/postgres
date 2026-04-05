@@ -119,7 +119,7 @@ step "merge2a"
 step "explain_merge2a"
 {
   SELECT explain_filter($$
-  EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, IO OFF)
   MERGE INTO target t
   USING (SELECT 1 as key, 'merge2a' as val) s
   ON s.key = t.key

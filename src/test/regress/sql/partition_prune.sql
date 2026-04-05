@@ -480,8 +480,8 @@ set enable_indexonlyscan = off;
 prepare ab_q1 (int, int, int) as
 select * from ab where a between $1 and $2 and b <= $3;
 
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q1 (2, 2, 3);
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q1 (1, 2, 3);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q1 (2, 2, 3);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q1 (1, 2, 3);
 
 deallocate ab_q1;
 
@@ -489,21 +489,21 @@ deallocate ab_q1;
 prepare ab_q1 (int, int) as
 select a from ab where a between $1 and $2 and b < 3;
 
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q1 (2, 2);
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q1 (2, 4);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q1 (2, 2);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q1 (2, 4);
 
 -- Ensure a mix of PARAM_EXTERN and PARAM_EXEC Params work together at
 -- different levels of partitioning.
 prepare ab_q2 (int, int) as
 select a from ab where a between $1 and $2 and b < (select 3);
 
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q2 (2, 2);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q2 (2, 2);
 
 -- As above, but swap the PARAM_EXEC Param to the first partition level
 prepare ab_q3 (int, int) as
 select a from ab where b between $1 and $2 and a < (select 3);
 
-explain (analyze, costs off, summary off, timing off, buffers off) execute ab_q3 (2, 2);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute ab_q3 (2, 2);
 
 --
 -- Test runtime pruning with hash partitioned tables
@@ -673,11 +673,11 @@ explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from ab where a = (select max(a) from lprt_a) and b = (select max(a)-1 from lprt_a);
 
 -- Test run-time partition pruning with UNION ALL parents
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from (select * from ab where a = 1 union all select * from ab) ab where b = (select 1);
 
 -- A case containing a UNION ALL with a non-partitioned child.
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from (select * from ab where a = 1 union all (values(10,5)) union all select * from ab) ab where b = (select 1);
 
 -- Another UNION ALL test, but containing a mix of exec init and exec run-time pruning.
@@ -818,7 +818,7 @@ prepare part_abc_q1 (int, int, int) as
 select * from part_abc where a = $1 and b = $2 and c = $3;
 
 -- Single partition should be scanned.
-explain (analyze, costs off, summary off, timing off, buffers off) execute part_abc_q1 (1, 2, 3);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute part_abc_q1 (1, 2, 3);
 
 deallocate part_abc_q1;
 
@@ -838,12 +838,12 @@ select * from listp where b = 1;
 -- which match the given parameter.
 prepare q1 (int,int) as select * from listp where b in ($1,$2);
 
-explain (analyze, costs off, summary off, timing off, buffers off)  execute q1 (1,1);
+explain (analyze, costs off, summary off, timing off, buffers off, io off)  execute q1 (1,1);
 
-explain (analyze, costs off, summary off, timing off, buffers off)  execute q1 (2,2);
+explain (analyze, costs off, summary off, timing off, buffers off, io off)  execute q1 (2,2);
 
 -- Try with no matching partitions.
-explain (analyze, costs off, summary off, timing off, buffers off)  execute q1 (0,0);
+explain (analyze, costs off, summary off, timing off, buffers off, io off)  execute q1 (0,0);
 
 deallocate q1;
 
@@ -851,13 +851,13 @@ deallocate q1;
 prepare q1 (int,int,int,int) as select * from listp where b in($1,$2) and $3 <> b and $4 <> b;
 
 -- Both partitions allowed by IN clause, but one disallowed by <> clause
-explain (analyze, costs off, summary off, timing off, buffers off)  execute q1 (1,2,2,0);
+explain (analyze, costs off, summary off, timing off, buffers off, io off)  execute q1 (1,2,2,0);
 
 -- Both partitions allowed by IN clause, then both excluded again by <> clauses.
-explain (analyze, costs off, summary off, timing off, buffers off)  execute q1 (1,2,2,1);
+explain (analyze, costs off, summary off, timing off, buffers off, io off)  execute q1 (1,2,2,1);
 
 -- Ensure Params that evaluate to NULL properly prune away all partitions
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from listp where a = (select null::int);
 
 drop table listp;
@@ -874,30 +874,30 @@ create table stable_qual_pruning3 partition of stable_qual_pruning
   for values from ('3000-02-01') to ('3000-03-01');
 
 -- comparison against a stable value requires run-time pruning
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning where a < localtimestamp;
 
 -- timestamp < timestamptz comparison is only stable, not immutable
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning where a < '2000-02-01'::timestamptz;
 
 -- check ScalarArrayOp cases
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(array['2010-02-01', '2020-01-01']::timestamp[]);
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(array['2000-02-01', '2010-01-01']::timestamp[]);
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(array['2000-02-01', localtimestamp]::timestamp[]);
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(array['2010-02-01', '2020-01-01']::timestamptz[]);
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(array['2000-02-01', '2010-01-01']::timestamptz[]);
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from stable_qual_pruning
   where a = any(null::timestamptz[]);
 
@@ -969,12 +969,12 @@ create index on ma_test (b);
 analyze ma_test;
 prepare mt_q1 (int) as select a from ma_test where a >= $1 and a % 10 = 5 order by b;
 
-explain (analyze, costs off, summary off, timing off, buffers off) execute mt_q1(15);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute mt_q1(15);
 execute mt_q1(15);
-explain (analyze, costs off, summary off, timing off, buffers off) execute mt_q1(25);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute mt_q1(25);
 execute mt_q1(25);
 -- Ensure MergeAppend behaves correctly when no subplans match
-explain (analyze, costs off, summary off, timing off, buffers off) execute mt_q1(35);
+explain (analyze, costs off, summary off, timing off, buffers off, io off) execute mt_q1(35);
 execute mt_q1(35);
 
 deallocate mt_q1;
@@ -982,12 +982,12 @@ deallocate mt_q1;
 prepare mt_q2 (int) as select * from ma_test where a >= $1 order by b limit 1;
 
 -- Ensure output list looks sane when the MergeAppend has no subplans.
-explain (analyze, verbose, costs off, summary off, timing off, buffers off) execute mt_q2 (35);
+explain (analyze, verbose, costs off, summary off, timing off, buffers off, io off) execute mt_q2 (35);
 
 deallocate mt_q2;
 
 -- ensure initplan params properly prune partitions
-explain (analyze, costs off, summary off, timing off, buffers off) select * from ma_test where a >= (select min(b) from ma_test_p2) order by b;
+explain (analyze, costs off, summary off, timing off, buffers off, io off) select * from ma_test where a >= (select min(b) from ma_test_p2) order by b;
 
 reset enable_seqscan;
 reset enable_sort;
@@ -1167,7 +1167,7 @@ create table listp1 partition of listp for values in(1);
 create table listp2 partition of listp for values in(2) partition by list(b);
 create table listp2_10 partition of listp2 for values in (10);
 
-explain (analyze, costs off, summary off, timing off, buffers off)
+explain (analyze, costs off, summary off, timing off, buffers off, io off)
 select * from listp where a = (select 2) and b <> 10;
 
 --
@@ -1235,7 +1235,7 @@ create table rangep_100_to_200 partition of rangep for values from (100) to (200
 create index on rangep (a);
 
 -- Ensure run-time pruning works on the nested Merge Append
-explain (analyze on, costs off, timing off, summary off, buffers off)
+explain (analyze on, costs off, timing off, summary off, buffers off, io off)
 select * from rangep where b IN((select 1),(select 2)) order by a;
 reset enable_sort;
 drop table rangep;

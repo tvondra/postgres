@@ -29,6 +29,7 @@
 
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "executor/execParallel.h"
 #include "executor/execScan.h"
 #include "executor/executor.h"
 #include "executor/nodeSeqscan.h"
@@ -65,15 +66,21 @@ SeqNext(SeqScanState *node)
 
 	if (scandesc == NULL)
 	{
+		uint32		flags = SO_NONE;
+
+		if (ScanRelIsReadOnly(&node->ss))
+			flags |= SO_HINT_REL_READ_ONLY;
+
+		if (estate->es_instrument)
+			flags |= SO_SCAN_INSTRUMENT;
+
 		/*
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
 		scandesc = table_beginscan(node->ss.ss_currentRelation,
 								   estate->es_snapshot,
-								   0, NULL,
-								   ScanRelIsReadOnly(&node->ss) ?
-								   SO_HINT_REL_READ_ONLY : SO_NONE);
+								   0, NULL, flags);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
@@ -298,6 +305,24 @@ ExecEndSeqScan(SeqScanState *node)
 	TableScanDesc scanDesc;
 
 	/*
+	 * Collect IO stats for this process into shared instrumentation.
+	 */
+	if (node->sinstrument != NULL && IsParallelWorker())
+	{
+		SeqScanInstrumentation *si;
+
+		Assert(ParallelWorkerNumber <= node->sinstrument->num_workers);
+		si = &node->sinstrument->sinstrument[ParallelWorkerNumber];
+
+		if (node->ss.ss_currentScanDesc &&
+			node->ss.ss_currentScanDesc->rs_instrument)
+		{
+			AccumulateIOStats(&si->stats.io,
+							  &node->ss.ss_currentScanDesc->rs_instrument->io);
+		}
+	}
+
+	/*
 	 * get information from node
 	 */
 	scanDesc = node->ss.ss_currentScanDesc;
@@ -370,6 +395,13 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 	ParallelTableScanDesc pscan;
+	uint32		flags = SO_NONE;
+
+	if (ScanRelIsReadOnly(&node->ss))
+		flags |= SO_HINT_REL_READ_ONLY;
+
+	if (estate->es_instrument)
+		flags |= SO_SCAN_INSTRUMENT;
 
 	pscan = shm_toc_allocate(pcxt->toc, node->pscan_len);
 	table_parallelscan_initialize(node->ss.ss_currentRelation,
@@ -378,9 +410,7 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
 
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan,
-								 ScanRelIsReadOnly(&node->ss) ?
-								 SO_HINT_REL_READ_ONLY : SO_NONE);
+		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
 }
 
 /* ----------------------------------------------------------------
@@ -410,10 +440,78 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
 	ParallelTableScanDesc pscan;
+	uint32		flags = SO_NONE;
+
+	if (ScanRelIsReadOnly(&node->ss))
+		flags |= SO_HINT_REL_READ_ONLY;
+
+	if (node->ss.ps.state->es_instrument)
+		flags |= SO_SCAN_INSTRUMENT;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan,
-								 ScanRelIsReadOnly(&node->ss) ?
-								 SO_HINT_REL_READ_ONLY : SO_NONE);
+		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
+}
+
+void
+ExecSeqScanInstrumentEstimate(SeqScanState *node, ParallelContext *pcxt)
+{
+	EState	   *estate = node->ss.ps.state;
+
+	if (!estate->es_instrument || pcxt->nworkers == 0)
+		return;
+
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   offsetof(SharedSeqScanInstrumentation, sinstrument) +
+						   sizeof(SeqScanInstrumentation) * pcxt->nworkers);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+}
+
+void
+ExecSeqScanInstrumentInitDSM(SeqScanState *node, ParallelContext *pcxt)
+{
+	EState	   *estate = node->ss.ps.state;
+	SharedSeqScanInstrumentation *sinstrument;
+	Size		size;
+
+	if (!estate->es_instrument || pcxt->nworkers == 0)
+		return;
+
+	size = offsetof(SharedSeqScanInstrumentation, sinstrument) +
+		sizeof(SeqScanInstrumentation) * pcxt->nworkers;
+	sinstrument = shm_toc_allocate(pcxt->toc, size);
+	memset(sinstrument, 0, size);
+	sinstrument->num_workers = pcxt->nworkers;
+	shm_toc_insert(pcxt->toc,
+				   node->ss.ps.plan->plan_node_id + PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+				   sinstrument);
+	node->sinstrument = sinstrument;
+}
+
+void
+ExecSeqScanInstrumentInitWorker(SeqScanState *node,
+								ParallelWorkerContext *pwcxt)
+{
+	if (!node->ss.ps.state->es_instrument)
+		return;
+
+	node->sinstrument = shm_toc_lookup(pwcxt->toc,
+									   node->ss.ps.plan->plan_node_id + PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
+									   true);
+}
+
+void
+ExecSeqScanRetrieveInstrumentation(SeqScanState *node)
+{
+	SharedSeqScanInstrumentation *sinstrument = node->sinstrument;
+	Size		size;
+
+	if (sinstrument == NULL)
+		return;
+
+	size = offsetof(SharedSeqScanInstrumentation, sinstrument)
+		+ sinstrument->num_workers * sizeof(SeqScanInstrumentation);
+
+	node->sinstrument = palloc(size);
+	memcpy(node->sinstrument, sinstrument, size);
 }

@@ -18,6 +18,17 @@
 #ifndef INSTRUMENT_NODE_H
 #define INSTRUMENT_NODE_H
 
+/*
+ * Offset added to plan_node_id to create a second TOC key for per-worker scan
+ * instrumentation. This allows scan nodes to store instrumentation in a
+ * separate DSM allocation from their parallel scan descriptor. This is useful
+ * because scans may be non-parallel-aware but still require instrumentation or
+ * parallel-aware and not require instrumentation. Having two allocations
+ * provides flexibility to allocate and initialize what is needed. In the
+ * future, if nodes need more than two DSM allocations, we would need a more
+ * robust system.
+ */
+#define PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET	UINT64CONST(0xD000000000000000)
 
 /* ---------------------
  *	Instrumentation information for aggregate function execution

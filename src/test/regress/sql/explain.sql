@@ -69,8 +69,8 @@ select explain_filter('explain (analyze, buffers, format text) select * from int
 select explain_filter('explain (buffers, format text) select * from int8_tbl i8');
 
 \a
-select explain_filter('explain (analyze, buffers, format xml) select * from int8_tbl i8');
-select explain_filter('explain (analyze, serialize, buffers, format yaml) select * from int8_tbl i8');
+select explain_filter('explain (analyze, buffers, io, format xml) select * from int8_tbl i8');
+select explain_filter('explain (analyze, serialize, buffers, io, format yaml) select * from int8_tbl i8');
 select explain_filter('explain (buffers, format json) select * from int8_tbl i8');
 \a
 
@@ -82,7 +82,7 @@ select explain_filter('explain verbose select sum(unique1) over w1, sum(unique2)
 -- Check output including I/O timings.  These fields are conditional
 -- but always set in JSON format, so check them only in this case.
 set track_io_timing = on;
-select explain_filter('explain (analyze, buffers, io off, format json) select * from int8_tbl i8');
+select explain_filter('explain (analyze, buffers, format json) select * from int8_tbl i8');
 set track_io_timing = off;
 
 -- SETTINGS option
@@ -107,7 +107,7 @@ select explain_filter('explain (analyze, generic_plan) select unique1 from tenk1
 select explain_filter('explain (memory) select * from int8_tbl i8');
 select explain_filter('explain (memory, analyze, buffers off) select * from int8_tbl i8');
 select explain_filter('explain (memory, summary, format yaml) select * from int8_tbl i8');
-select explain_filter('explain (memory, analyze, io off, format json) select * from int8_tbl i8');
+select explain_filter('explain (memory, analyze, format json) select * from int8_tbl i8');
 prepare int8_query as select * from int8_tbl i8;
 select explain_filter('explain (memory) execute int8_query');
 
@@ -147,7 +147,7 @@ set min_parallel_table_scan_size=0;
 set max_parallel_workers_per_gather=4;
 
 select jsonb_pretty(
-  explain_filter_to_json('explain (analyze, verbose, buffers, io off, format json)
+  explain_filter_to_json('explain (analyze, verbose, buffers, format json)
                          select * from tenk1 order by tenthous')
   -- remove "Workers" node of the Seq Scan plan node
   #- '{0,Plan,Plans,0,Plans,0,Workers}'

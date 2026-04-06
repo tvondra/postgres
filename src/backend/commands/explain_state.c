@@ -79,7 +79,6 @@ ParseExplainOptionList(ExplainState *es, List *options, ParseState *pstate)
 	ListCell   *lc;
 	bool		timing_set = false;
 	bool		buffers_set = false;
-	bool		io_set = false;
 	bool		summary_set = false;
 
 	/* Parse options list. */
@@ -161,10 +160,7 @@ ParseExplainOptionList(ExplainState *es, List *options, ParseState *pstate)
 						 parser_errposition(pstate, opt->location)));
 		}
 		else if (strcmp(opt->defname, "io") == 0)
-		{
-			io_set = true;
 			es->io = defGetBoolean(opt);
-		}
 		else if (!ApplyExtensionExplainOption(es, opt, pstate))
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -184,9 +180,6 @@ ParseExplainOptionList(ExplainState *es, List *options, ParseState *pstate)
 
 	/* if the buffers was not set explicitly, set default value */
 	es->buffers = (buffers_set) ? es->buffers : es->analyze;
-
-	/* if the IO was not set explicitly, set default value */
-	es->io = (io_set) ? es->io : es->analyze;
 
 	/* check that timing is used with EXPLAIN ANALYZE */
 	if (es->timing && !es->analyze)

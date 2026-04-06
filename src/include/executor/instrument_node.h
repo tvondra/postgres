@@ -52,7 +52,7 @@ typedef struct SharedAggInfo
 
 
 /* ---------------------
- *	Instrumentation information about read streams
+ *	Instrumentation information about read streams and I/O
  * ---------------------
  */
 typedef struct IOStats

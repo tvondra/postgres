@@ -305,7 +305,7 @@ ROLLBACK;
      <para>
       Include information on I/O performed by each node.
       This parameter may only be used when <literal>ANALYZE</literal> is also
-      enabled.  It defaults to <literal>TRUE</literal>.
+      enabled.  It defaults to <literal>FALSE</literal>.
      </para>
     </listitem>
    </varlistentry>

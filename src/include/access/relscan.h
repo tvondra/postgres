@@ -24,7 +24,6 @@
 
 
 struct ParallelTableScanDescData;
-
 struct TableScanInstrumentation;
 
 /*

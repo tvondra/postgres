@@ -201,6 +201,13 @@ shm_toc_insert(shm_toc *toc, uint64 key, void *address)
 	}
 
 	Assert(offset < total_bytes);
+
+#ifdef USE_ASSERT_CHECKING
+	/* Verify no duplicate keys */
+	for (Size i = 0; i < nentry; i++)
+		Assert(vtoc->toc_entry[i].key != key);
+#endif
+
 	vtoc->toc_entry[nentry].key = key;
 	vtoc->toc_entry[nentry].offset = offset;
 

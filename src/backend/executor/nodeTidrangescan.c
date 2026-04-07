@@ -248,7 +248,7 @@ TidRangeNext(TidRangeScanState *node)
 			if (ScanRelIsReadOnly(&node->ss))
 				flags |= SO_HINT_REL_READ_ONLY;
 
-			if (estate->es_instrument)
+			if (estate->es_instrument & INSTRUMENT_IO)
 				flags |= SO_SCAN_INSTRUMENT;
 
 			scandesc = table_beginscan_tidrange(node->ss.ss_currentRelation,

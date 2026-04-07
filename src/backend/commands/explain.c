@@ -4049,9 +4049,9 @@ show_scan_io_usage(ScanState *planstate, ExplainState *es)
 	/*
 	 * Initialize counters with stats from the local process first.
 	 *
-	 * The scan descriptor may not exist, e.g. if the scan did not start,
-	 * or because of debug_parallel_query=regress. We still want to collect
-	 * data from workers.
+	 * The scan descriptor may not exist, e.g. if the scan did not start, or
+	 * because of debug_parallel_query=regress. We still want to collect data
+	 * from workers.
 	 */
 	if (planstate->ss_currentScanDesc &&
 		planstate->ss_currentScanDesc->rs_instrument)

@@ -522,6 +522,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 		instrument_option |= INSTRUMENT_BUFFERS;
 	if (es->wal)
 		instrument_option |= INSTRUMENT_WAL;
+	else if (es->io)
+		instrument_option |= INSTRUMENT_IO;
 
 	/*
 	 * We always collect timing for the entire statement, even when node-level

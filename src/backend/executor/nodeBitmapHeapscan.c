@@ -150,7 +150,7 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 		if (ScanRelIsReadOnly(&node->ss))
 			flags |= SO_HINT_REL_READ_ONLY;
 
-		if (node->ss.ps.state->es_instrument)
+		if (node->ss.ps.state->es_instrument & INSTRUMENT_IO)
 			flags |= SO_SCAN_INSTRUMENT;
 
 		node->ss.ss_currentScanDesc =

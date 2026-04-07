@@ -21,6 +21,7 @@
 #include "executor/execParallel.h"
 #include "executor/executor.h"
 #include "executor/nodeTidrangescan.h"
+#include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/rel.h"
 

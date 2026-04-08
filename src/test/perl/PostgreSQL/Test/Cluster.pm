@@ -1257,6 +1257,15 @@ sub stop
 	{
 		print "# pg_ctl stop failed: $ret\n";
 
+		print '### pstree -a -c -l -p';
+		print system('pstree', '-a', '-c', '-l', '-p');
+
+		print '### ps ax';
+		print system('ps', 'ax');
+
+		#print '### pg_stat_activity';
+		#print $self->safe_psql('postgres', "SELECT * FROM pg_stat_activity");
+
 		# Check to see if we still have a postmaster or not.
 		$self->_update_pid(-1);
 

@@ -4724,6 +4724,7 @@ DataChecksumsNeedVerify(void)
 void
 SetDataChecksumsOnInProgress(void)
 {
+	elog(LOG, "SetDataChecksumsOnInProgress / start");
 	/*
 	 * The state transition is performed in a critical section with
 	 * checkpoints held off to provide crash safety.
@@ -4745,7 +4746,10 @@ SetDataChecksumsOnInProgress(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
+	elog(LOG, "SetDataChecksumsOnInProgress / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_ON)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_ON);
+
+	elog(LOG, "SetDataChecksumsOnInProgress / end");
 }
 
 /*
@@ -4773,6 +4777,8 @@ SetDataChecksumsOnInProgress(void)
 void
 SetDataChecksumsOn(void)
 {
+	elog(LOG, "SetDataChecksumsOn / start");
+
 	SpinLockAcquire(&XLogCtl->info_lck);
 
 	/*
@@ -4814,8 +4820,13 @@ SetDataChecksumsOn(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
+	elog(LOG, "SetDataChecksumsOn / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+	elog(LOG, "SetDataChecksumsOn / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_VERSION)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_VERSION);
+
+	elog(LOG, "SetDataChecksumsOn / end");
 }
 
 /*
@@ -4834,6 +4845,8 @@ SetDataChecksumsOn(void)
 void
 SetDataChecksumsOff(void)
 {
+	elog(LOG, "SetDataChecksumsOff / start");
+
 	SpinLockAcquire(&XLogCtl->info_lck);
 
 	/* If data checksums are already disabled there is nothing to do */
@@ -4871,7 +4884,10 @@ SetDataChecksumsOff(void)
 		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 
+		elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 		RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+		elog(LOG, "SetDataChecksumsOff / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_OFF)");
 		EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_OFF);
 
 		/*
@@ -4908,8 +4924,13 @@ SetDataChecksumsOff(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
+	elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+	elog(LOG, "SetDataChecksumsOff / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_OFF)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_OFF);
+
+	elog(LOG, "SetDataChecksumsOff / end");
 }
 
 /*
@@ -4923,9 +4944,13 @@ SetDataChecksumsOff(void)
 void
 InitLocalDataChecksumState(void)
 {
+	elog(LOG, "InitLocalDataChecksumState start %d", LocalDataChecksumState);
+
 	SpinLockAcquire(&XLogCtl->info_lck);
 	SetLocalDataChecksumState(XLogCtl->data_checksum_version);
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	elog(LOG, "InitLocalDataChecksumState end %d", LocalDataChecksumState);
 }
 
 void
@@ -5236,7 +5261,9 @@ LocalProcessControlFile(bool reset)
 	LocalControlFile = palloc_object(ControlFileData);
 	ControlFile = LocalControlFile;
 	ReadControlFile();
+	elog(LOG, "LocalProcessControlFile start %d", LocalDataChecksumState);
 	SetLocalDataChecksumState(ControlFile->data_checksum_version);
+	elog(LOG, "LocalProcessControlFile end %d", LocalDataChecksumState);
 }
 
 /*
@@ -5390,8 +5417,12 @@ XLOGShmemInit(void *arg)
 
 	/* Use the checksum info from control file */
 	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
+
 	pg_memory_barrier();
+
+	elog(LOG, "XLOGShmemInit start %d", LocalDataChecksumState);
 	SetLocalDataChecksumState(XLogCtl->data_checksum_version);
+	elog(LOG, "XLOGShmemInit end %d", LocalDataChecksumState);
 
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
@@ -6568,10 +6599,14 @@ StartupXLOG(void)
 	{
 		XLogChecksums(PG_DATA_CHECKSUM_OFF);
 
+		elog(LOG, "StartupXLOG start %d", LocalDataChecksumState);
+
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_OFF;
 		SetLocalDataChecksumState(XLogCtl->data_checksum_version);
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		elog(LOG, "StartupXLOG end %d", LocalDataChecksumState);
 
 		ereport(WARNING,
 				errmsg("enabling data checksums was interrupted"),
@@ -6588,10 +6623,14 @@ StartupXLOG(void)
 	{
 		XLogChecksums(PG_DATA_CHECKSUM_OFF);
 
+		elog(LOG, "StartupXLOG start %d", LocalDataChecksumState);
+
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_OFF;
 		SetLocalDataChecksumState(XLogCtl->data_checksum_version);
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		elog(LOG, "StartupXLOG end %d", LocalDataChecksumState);
 	}
 
 	/*
@@ -8834,10 +8873,14 @@ xlog_redo(XLogReaderState *record)
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
 
+		elog(LOG, "xlog_redo start %d", LocalDataChecksumState);
+
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->data_checksum_version = checkPoint.dataChecksumState;
 		SetLocalDataChecksumState(checkPoint.dataChecksumState);
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		elog(LOG, "xlog_redo end %d", LocalDataChecksumState);
 
 		/*
 		 * No need to set oldestClogXid here as well; it'll be set when we

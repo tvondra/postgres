@@ -235,7 +235,7 @@ typedef struct ChecksumBarrierCondition
 	int			to;
 } ChecksumBarrierCondition;
 
-static const ChecksumBarrierCondition checksum_barriers[6] =
+static const ChecksumBarrierCondition checksum_barriers[7] =
 {
 	/*
 	 * Disabling checksums: If checksums are currently enabled, disabling must
@@ -261,6 +261,12 @@ static const ChecksumBarrierCondition checksum_barriers[6] =
 	 * checksums, we can go straight back to 'on'
 	 */
 	{PG_DATA_CHECKSUM_INPROGRESS_OFF, PG_DATA_CHECKSUM_VERSION},
+
+	/*
+	 * If checksums are being enabled when launcher_exit is executed, state
+	 * is set to off since we cannot reach on at that point.
+	 */
+	{PG_DATA_CHECKSUM_INPROGRESS_ON, PG_DATA_CHECKSUM_INPROGRESS_OFF},
 };
 
 /*
@@ -487,6 +493,8 @@ AbsorbDataChecksumsBarrier(ProcSignalBarrierType barrier)
 Datum
 disable_data_checksums(PG_FUNCTION_ARGS)
 {
+	PreventCommandDuringRecovery("pg_disable_data_checksums()");
+
 	if (!superuser())
 		ereport(ERROR,
 				errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -506,6 +514,8 @@ enable_data_checksums(PG_FUNCTION_ARGS)
 {
 	int			cost_delay = PG_GETARG_INT32(0);
 	int			cost_limit = PG_GETARG_INT32(1);
+
+	PreventCommandDuringRecovery("pg_enable_data_checksums()");
 
 	if (!superuser())
 		ereport(ERROR,

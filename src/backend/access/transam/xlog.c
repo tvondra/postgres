@@ -674,13 +674,13 @@ static bool updateMinRecoveryPoint = true;
  * avoid locking for interrogating the data checksum state.  Possible values
  * are the data checksum versions defined in storage/checksum.h.
  */
-static ChecksumStateType LocalDataChecksumState = 0;
+static ChecksumStateType LocalDataChecksumState = PG_DATA_CHECKSUM_INVALID;
 
 /*
- * Variable backing the GUC, keep it in sync with LocalDataChecksumState.
- * See SetLocalDataChecksumState().
+ * Variable backing the GUC, keep it in sync with LocalDataChecksumState, and
+ * initialize to match GUC boot_val.  See SetLocalDataChecksumState().
  */
-int			data_checksums = 0;
+int			data_checksums = PG_DATA_CHECKSUM_OFF;
 
 /* For WALInsertLockAcquire/Release functions */
 static int	MyLockNo = 0;
@@ -4677,6 +4677,7 @@ GetMockAuthenticationNonce(void)
 bool
 DataChecksumsNeedWrite(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return (LocalDataChecksumState == PG_DATA_CHECKSUM_VERSION ||
 			LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_ON ||
 			LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_OFF);
@@ -4685,6 +4686,7 @@ DataChecksumsNeedWrite(void)
 bool
 DataChecksumsInProgressOn(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_ON;
 }
 
@@ -4705,6 +4707,7 @@ DataChecksumsInProgressOn(void)
 bool
 DataChecksumsNeedVerify(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return (LocalDataChecksumState == PG_DATA_CHECKSUM_VERSION);
 }
 
@@ -4721,10 +4724,6 @@ DataChecksumsNeedVerify(void)
 void
 SetDataChecksumsOnInProgress(void)
 {
-	uint64		barrier;
-
-	Assert(ControlFile != NULL);
-
 	/*
 	 * The state transition is performed in a critical section with
 	 * checkpoints held off to provide crash safety.
@@ -4738,26 +4737,15 @@ SetDataChecksumsOnInProgress(void)
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON);
-
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
-	/*
-	 * Update the controlfile before waiting since if we have an immediate
-	 * shutdown while waiting we want to come back up with checksums enabled.
-	 */
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON;
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
-	/*
-	 * Await state change in all backends to ensure that all backends are in
-	 * "inprogress-on". Once done we know that all backends are writing data
-	 * checksums.
-	 */
-	WaitForProcSignalBarrier(barrier);
+	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_ON);
 }
 
 /*
@@ -4785,10 +4773,6 @@ SetDataChecksumsOnInProgress(void)
 void
 SetDataChecksumsOn(void)
 {
-	uint64		barrier;
-
-	Assert(ControlFile != NULL);
-
 	SpinLockAcquire(&XLogCtl->info_lck);
 
 	/*
@@ -4818,8 +4802,6 @@ SetDataChecksumsOn(void)
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_VERSION;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_ON);
-
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
@@ -4833,12 +4815,7 @@ SetDataChecksumsOn(void)
 	LWLockRelease(ControlFileLock);
 
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
-
-	/*
-	 * Await state transition to "on" in all backends. When done we know that
-	 * data checksums are both written and verified in all backends.
-	 */
-	WaitForProcSignalBarrier(barrier);
+	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_VERSION);
 }
 
 /*
@@ -4857,10 +4834,6 @@ SetDataChecksumsOn(void)
 void
 SetDataChecksumsOff(void)
 {
-	uint64		barrier;
-
-	Assert(ControlFile != NULL);
-
 	SpinLockAcquire(&XLogCtl->info_lck);
 
 	/* If data checksums are already disabled there is nothing to do */
@@ -4890,23 +4863,16 @@ SetDataChecksumsOff(void)
 		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF;
 		SpinLockRelease(&XLogCtl->info_lck);
 
-		barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF);
-
 		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 		END_CRIT_SECTION();
 
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-		ControlFile->data_checksum_version = PG_DATA_CHECKSUM_OFF;
+		ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF;
 		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 
 		RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
-
-		/*
-		 * Update local state in all backends to ensure that any backend in
-		 * "on" state is changed to "inprogress-off".
-		 */
-		WaitForProcSignalBarrier(barrier);
+		EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_OFF);
 
 		/*
 		 * At this point we know that no backends are verifying data checksums
@@ -4934,8 +4900,6 @@ SetDataChecksumsOff(void)
 	XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_OFF;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	barrier = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_CHECKSUM_OFF);
-
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
@@ -4945,8 +4909,7 @@ SetDataChecksumsOff(void)
 	LWLockRelease(ControlFileLock);
 
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
-
-	WaitForProcSignalBarrier(barrier);
+	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_OFF);
 }
 
 /*
@@ -4977,6 +4940,7 @@ SetLocalDataChecksumState(uint32 data_checksum_version)
 const char *
 show_data_checksums(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return get_checksum_state_string(LocalDataChecksumState);
 }
 
@@ -5426,7 +5390,7 @@ XLOGShmemInit(void *arg)
 
 	/* Use the checksum info from control file */
 	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
-
+	pg_memory_barrier();
 	SetLocalDataChecksumState(XLogCtl->data_checksum_version);
 
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
@@ -8935,6 +8899,8 @@ xlog_redo(XLogReaderState *record)
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		ControlFile->data_checksum_version = checkPoint.dataChecksumState;
+
+		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 
 		/*

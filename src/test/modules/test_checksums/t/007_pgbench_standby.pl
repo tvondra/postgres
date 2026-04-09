@@ -49,8 +49,8 @@ my $node_standby_loglocation = 0;
 # of tests performed and the wall time taken is non-deterministic as the test
 # performs a lot of randomized actions, but 5 iterations will be a long test
 # run regardless.
-my $TEST_ITERATIONS = 5;
-$TEST_ITERATIONS = 1 if ($extended);
+my $TEST_ITERATIONS = 1;
+$TEST_ITERATIONS = 5 if ($extended);
 
 # Variables which record the current state of the cluster
 my $data_checksum_state = 'off';
@@ -147,7 +147,7 @@ sub flip_data_checksums
 			  . "WHERE name = 'data_checksums';");
 
 		is(($result eq 'inprogress-on' || $result eq 'on'),
-			1, 'ensure checksums are on, or in progress, on standby_1');
+			1, 'ensure checksums are on, or in progress, on standby_1: ' . $result);
 
 		# Wait for checksums enabled on the primary and standby
 		wait_for_checksum_state($node_primary, 'on');

@@ -9372,6 +9372,11 @@ xlog2_redo(XLogReaderState *record)
 		elog(LOG, "xlog2_redo / XLogCtl->data_checksum_version %u => %u",
 			 data_checksum_version, state.new_checksum_state);
 
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		ControlFile->data_checksum_version = state.new_checksum_state;
+		UpdateControlFile();
+		LWLockRelease(ControlFileLock);
+
 		/*
 		 * Block on a procsignalbarrier to await all processes having seen the
 		 * change to checksum status. Once the barrier has been passed we can

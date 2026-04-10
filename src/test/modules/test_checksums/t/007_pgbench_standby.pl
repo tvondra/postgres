@@ -83,6 +83,7 @@ sub background_pgbench
 	push(@cmd, '-C') if ($extended && cointoss());
 	# If we run on a standby it needs to be a read-only benchmark
 	push(@cmd, '-S') if ($standby);
+	push(@cmd, '-n') if ($standby);
 	# Finally add the database name to use
 	push(@cmd, 'postgres');
 

@@ -7575,7 +7575,9 @@ CreateCheckPoint(int flags)
 	 * Get the current data_checksum_version value from xlogctl, valid at the
 	 * time of the checkpoint.
 	 */
+	SpinLockAcquire(&XLogCtl->info_lck);
 	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
+	SpinLockRelease(&XLogCtl->info_lck);
 
 	if (shutdown)
 	{
@@ -7695,10 +7697,6 @@ CreateCheckPoint(int flags)
 	if (!shutdown)
 		checkPoint.nextOid += TransamVariables->oidCount;
 	LWLockRelease(OidGenLock);
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
-	SpinLockRelease(&XLogCtl->info_lck);
 
 	checkPoint.logicalDecodingEnabled = IsLogicalDecodingEnabled();
 
@@ -7848,12 +7846,6 @@ CreateCheckPoint(int flags)
 	/* crash recovery should always recover to the end of WAL */
 	ControlFile->minRecoveryPoint = InvalidXLogRecPtr;
 	ControlFile->minRecoveryPointTLI = 0;
-
-	/* make sure we start with the checksum version as of the checkpoint */
-	elog(LOG, "CreateCheckPoint ControlFile->data_checksum_version %u => %u",
-		 ControlFile->data_checksum_version, checkPoint.dataChecksumState);
-
-	ControlFile->data_checksum_version = checkPoint.dataChecksumState;
 
 	/*
 	 * Persist unloggedLSN value. It's reset on crash recovery, so this goes

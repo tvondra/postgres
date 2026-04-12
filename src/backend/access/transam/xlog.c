@@ -7571,6 +7571,12 @@ CreateCheckPoint(int flags)
 	checkPoint.fullPageWrites = Insert->fullPageWrites;
 	checkPoint.wal_level = wal_level;
 
+	/*
+	 * Get the current data_checksum_version value from xlogctl, valid at the
+	 * time of the checkpoint.
+	 */
+	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
+
 	if (shutdown)
 	{
 		XLogRecPtr	curInsert = XLogBytePosToRecPtr(Insert->CurrBytePos);
@@ -7690,6 +7696,10 @@ CreateCheckPoint(int flags)
 		checkPoint.nextOid += TransamVariables->oidCount;
 	LWLockRelease(OidGenLock);
 
+	SpinLockAcquire(&XLogCtl->info_lck);
+	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
+	SpinLockRelease(&XLogCtl->info_lck);
+
 	checkPoint.logicalDecodingEnabled = IsLogicalDecodingEnabled();
 
 	MultiXactGetCheckptMulti(shutdown,
@@ -7786,10 +7796,6 @@ CreateCheckPoint(int flags)
 		LogStandbySnapshot(InvalidOid);
 
 	START_CRIT_SECTION();
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
-	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
 	 * Now insert the checkpoint record into XLOG.

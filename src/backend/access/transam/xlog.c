@@ -8924,7 +8924,6 @@ xlog_redo(XLogReaderState *record)
 	{
 		CheckPoint	checkPoint;
 		TimeLineID	replayTLI;
-		uint32		data_checksum_version;
 
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In a SHUTDOWN checkpoint, believe the counters exactly */
@@ -8940,19 +8939,6 @@ xlog_redo(XLogReaderState *record)
 
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
-
-		elog(LOG, "xlog_redo start %d", LocalDataChecksumState);
-
-		SpinLockAcquire(&XLogCtl->info_lck);
-		data_checksum_version = XLogCtl->data_checksum_version;
-		XLogCtl->data_checksum_version = checkPoint.dataChecksumState;
-		SetLocalDataChecksumState(checkPoint.dataChecksumState);
-		SpinLockRelease(&XLogCtl->info_lck);
-
-		elog(LOG, "xlog_redo XLogCtl->data_checksum_version %u => %u",
-			 data_checksum_version, checkPoint.dataChecksumState);
-
-		elog(LOG, "xlog_redo end %d", LocalDataChecksumState);
 
 		/*
 		 * No need to set oldestClogXid here as well; it'll be set when we
@@ -9012,13 +8998,7 @@ xlog_redo(XLogReaderState *record)
 
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-
-		elog(LOG, "xlog_redo / ControlFile->data_checksum_version %u => %u",
-			 ControlFile->data_checksum_version, checkPoint.dataChecksumState);
-
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
-		ControlFile->data_checksum_version = checkPoint.dataChecksumState;
-
 		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 
@@ -9046,9 +9026,6 @@ xlog_redo(XLogReaderState *record)
 	{
 		CheckPoint	checkPoint;
 		TimeLineID	replayTLI;
-		bool		new_state = false;
-		int			old_state;
-		uint32		data_checksum_version;
 
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In an ONLINE checkpoint, treat the XID counter as a minimum */
@@ -9087,12 +9064,6 @@ xlog_redo(XLogReaderState *record)
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
-		old_state = ControlFile->data_checksum_version;
-
-		elog(LOG, "xlog_redo / ControlFile->data_checksum_version %u => %u",
-			 ControlFile->data_checksum_version, checkPoint.dataChecksumState);
-
-		ControlFile->data_checksum_version = checkPoint.dataChecksumState;
 		LWLockRelease(ControlFileLock);
 
 		/* TLI should not change in an on-line checkpoint */
@@ -9103,22 +9074,6 @@ xlog_redo(XLogReaderState *record)
 							checkPoint.ThisTimeLineID, replayTLI)));
 
 		RecoveryRestartPoint(&checkPoint, record);
-
-		/*
-		 * If the data checksum state change we need to emit a barrier.
-		 */
-		SpinLockAcquire(&XLogCtl->info_lck);
-		data_checksum_version = XLogCtl->data_checksum_version;
-		XLogCtl->data_checksum_version = checkPoint.dataChecksumState;
-		if (checkPoint.dataChecksumState != old_state)
-			new_state = true;
-		SpinLockRelease(&XLogCtl->info_lck);
-
-		elog(LOG, "xlog_redo / XLogCtl->data_checksum_version %u => %u",
-			 data_checksum_version, checkPoint.dataChecksumState);
-
-		if (new_state)
-			EmitAndWaitDataChecksumsBarrier(checkPoint.dataChecksumState);
 
 		/*
 		 * After replaying a checkpoint record, free all smgr objects.

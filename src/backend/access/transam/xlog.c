@@ -7574,6 +7574,9 @@ CreateCheckPoint(int flags)
 	 */
 	WALInsertLockRelease();
 
+	elog(LOG, "CreateCheckPoint start redo %X/%X checksums %d",
+		 LSN_FORMAT_ARGS(RedoRecPtr), checkPoint.dataChecksumState);
+
 	/*
 	 * If this is an online checkpoint, we have not yet determined the redo
 	 * point. We do so now by inserting the special XLOG_CHECKPOINT_REDO
@@ -7816,6 +7819,10 @@ CreateCheckPoint(int flags)
 	 * have trouble while fooling with old log segments.
 	 */
 	END_CRIT_SECTION();
+
+	elog(LOG, "CreateCheckPoint end lsn %X/%X redo %X/%X checksums %d",
+		 LSN_FORMAT_ARGS(recptr), LSN_FORMAT_ARGS(RedoRecPtr),
+		 checkPoint.dataChecksumState);
 
 	/*
 	 * WAL summaries end when the next XLOG_CHECKPOINT_REDO or

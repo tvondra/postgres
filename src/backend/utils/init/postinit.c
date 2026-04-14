@@ -756,6 +756,13 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	SharedInvalBackendInit(false);
 
+	/*
+	 * Prevent consuming interrups between setting ProcSignalInit and setting
+	 * the initial local checksum value. That way we might see an invalid state
+	 * transition.
+	 */
+	HOLD_INTERRUPTS();
+
 	ProcSignalInit(MyCancelKey, MyCancelKeyLength);
 
 	/*
@@ -775,6 +782,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * stale, as it might have changed after this process forked.
 	 */
 	InitLocalDataChecksumState();
+
+	RESUME_INTERRUPTS();
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need

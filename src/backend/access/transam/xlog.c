@@ -4949,7 +4949,7 @@ SetDataChecksumsOff(void)
 		XLogCtl->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF;
 		SpinLockRelease(&XLogCtl->info_lck);
 
-		elog(LOG, "SetDataChecksumsOff / XLogCtl->data_checksum_version %u = %u",
+		elog(LOG, "SetDataChecksumsOff / XLogCtl->data_checksum_version %u => %u",
 			 data_checksum_version, PG_DATA_CHECKSUM_INPROGRESS_OFF);
 
 		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
@@ -4959,7 +4959,7 @@ SetDataChecksumsOff(void)
 
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
-		elog(LOG, "SetDataChecksumsOff / ControlFile->data_checksum_version %u = %u",
+		elog(LOG, "SetDataChecksumsOff / ControlFile->data_checksum_version %u => %u",
 			 ControlFile->data_checksum_version, PG_DATA_CHECKSUM_INPROGRESS_OFF);
 
 		ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_OFF;

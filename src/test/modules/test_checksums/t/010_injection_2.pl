@@ -89,6 +89,22 @@ sub background_rw_pgbench
 		IPC::Run::timer($PostgreSQL::Test::Utils::timeout_default));
 }
 
+# Test checksum transition. The function has these arguments:
+#
+# - start checksum state (enabled/disabled)
+# - first - first checksum change
+# - second - second checksum change
+# - point - injection point the first change should wait on
+# - final - expected checksum state at the end
+#
+# The test puts the instance into the initial checksum state, triggers two
+# checksum changes, and verifies the final state is as expected. The first
+# state change is paused on a selected injection point, and unpaused after
+# the second change gets initiated.
+#
+# The injection point is triggered only by the datachecksum launcher, and
+# there can be only one such process. So there's no risk of hitting the
+# injection point by both changes.
 sub test_checksum_transition
 {
 	my ($start, $first, $second, $point, $final) = @_;

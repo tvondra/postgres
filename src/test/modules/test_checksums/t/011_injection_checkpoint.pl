@@ -93,6 +93,9 @@ sub test_checksum_transition
 {
 	my ($start, $change, $point, $final) = @_;
 
+	# Start the test suite with pgbench running.
+	background_rw_pgbench($node->port);
+
 	$node->safe_psql('postgres',
 		"SELECT '========== " . $start . " / " . $change . " / " . $point . " / " . $final . " =========='");
 
@@ -154,9 +157,6 @@ sub test_checksum_transition
 	);
 	$node_loglocation = -s $node->logfile;
 }
-
-# Start the test suite with pgbench running.
-background_rw_pgbench($node->port);
 
 test_checksum_transition('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-delay', 'on');
 test_checksum_transition('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'on');

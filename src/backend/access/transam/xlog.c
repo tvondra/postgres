@@ -4762,6 +4762,9 @@ SetDataChecksumsOnInProgress(void)
 	uint32	data_checksum_version;
 
 	elog(LOG, "SetDataChecksumsOnInProgress / start");
+
+	INJECTION_POINT("datachecksums-enable-inprogress-checksums-delay", NULL);
+
 	/*
 	 * The state transition is performed in a critical section with
 	 * checkpoints held off to provide crash safety.
@@ -4782,6 +4785,8 @@ SetDataChecksumsOnInProgress(void)
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
+	INJECTION_POINT("datachecksums-enable-inprogress-checksums-after-xlogctl", NULL);
+
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 	elog(LOG, "SetDataChecksumsOnInProgress ControlFile->data_checksum_version  %u => %u",
@@ -4790,6 +4795,8 @@ SetDataChecksumsOnInProgress(void)
 	ControlFile->data_checksum_version = PG_DATA_CHECKSUM_INPROGRESS_ON;
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
+
+	INJECTION_POINT("datachecksums-enable-inprogress-checksums-after-controlfile", NULL);
 
 	elog(LOG, "SetDataChecksumsOnInProgress / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_ON)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_ON);
@@ -4862,6 +4869,8 @@ SetDataChecksumsOn(void)
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
+	INJECTION_POINT("datachecksums-enable-checksums-after-xlogctl", NULL);
+
 	/*
 	 * Update the controlfile before waiting since if we have an immediate
 	 * shutdown while waiting we want to come back up with checksums enabled.
@@ -4875,8 +4884,12 @@ SetDataChecksumsOn(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
+	INJECTION_POINT("datachecksums-enable-checksums-after-controlfile", NULL);
+
 	elog(LOG, "SetDataChecksumsOn / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+	INJECTION_POINT("datachecksums-enable-checksums-after-checkpoint", NULL);
 
 	elog(LOG, "SetDataChecksumsOn / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_VERSION)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_VERSION);
@@ -4924,6 +4937,8 @@ SetDataChecksumsOff(void)
 	{
 		SpinLockRelease(&XLogCtl->info_lck);
 
+		INJECTION_POINT("datachecksums-disable-inprogress-checksums-delay", NULL);
+
 		START_CRIT_SECTION();
 		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 
@@ -4940,6 +4955,8 @@ SetDataChecksumsOff(void)
 		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 		END_CRIT_SECTION();
 
+		INJECTION_POINT("datachecksums-disable-inprogress-checksums-after-xlogctl", NULL);
+
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 		elog(LOG, "SetDataChecksumsOff / ControlFile->data_checksum_version %u = %u",
@@ -4949,8 +4966,12 @@ SetDataChecksumsOff(void)
 		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 
+		INJECTION_POINT("datachecksums-disable-inprogress-checksums-after-controlfile", NULL);
+
 		elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 		RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+		INJECTION_POINT("datachecksums-disable-inprogress-checksums-after-checkpoint", NULL);
 
 		elog(LOG, "SetDataChecksumsOff / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_OFF)");
 		EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_INPROGRESS_OFF);
@@ -4971,6 +4992,8 @@ SetDataChecksumsOff(void)
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
 
+	INJECTION_POINT("datachecksums-disable-checksums-delay", NULL);
+
 	START_CRIT_SECTION();
 	/* Ensure that we don't incur a checkpoint during disabling checksums */
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
@@ -4988,6 +5011,8 @@ SetDataChecksumsOff(void)
 	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	END_CRIT_SECTION();
 
+	INJECTION_POINT("datachecksums-disable-checksums-after-xlogctl", NULL);
+
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 	elog(LOG, "SetDataChecksumsOff / ControlFile->data_checksum_version %u => %u",
@@ -4997,8 +5022,12 @@ SetDataChecksumsOff(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
+	INJECTION_POINT("datachecksums-disable-checksums-after-controlfile", NULL);
+
 	elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
 	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+
+	INJECTION_POINT("datachecksums-disable-checksums-after-checkpoint", NULL);
 
 	elog(LOG, "SetDataChecksumsOff / EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_OFF)");
 	EmitAndWaitDataChecksumsBarrier(PG_DATA_CHECKSUM_OFF);

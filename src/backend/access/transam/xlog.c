@@ -674,13 +674,13 @@ static bool updateMinRecoveryPoint = true;
  * avoid locking for interrogating the data checksum state.  Possible values
  * are the data checksum versions defined in storage/checksum.h.
  */
-static ChecksumStateType LocalDataChecksumState = 0;
+static int LocalDataChecksumState = PG_DATA_CHECKSUM_INVALID;
 
 /*
- * Variable backing the GUC, keep it in sync with LocalDataChecksumState.
- * See SetLocalDataChecksumState().
+ * Variable backing the GUC, keep it in sync with LocalDataChecksumState, and
+ * initialize to match GUC boot_val.  See SetLocalDataChecksumState().
  */
-int			data_checksums = 0;
+int			data_checksums = PG_DATA_CHECKSUM_OFF;
 
 /* For WALInsertLockAcquire/Release functions */
 static int	MyLockNo = 0;
@@ -4677,6 +4677,7 @@ GetMockAuthenticationNonce(void)
 bool
 DataChecksumsNeedWrite(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return (LocalDataChecksumState == PG_DATA_CHECKSUM_VERSION ||
 			LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_ON ||
 			LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_OFF);
@@ -4685,6 +4686,7 @@ DataChecksumsNeedWrite(void)
 bool
 DataChecksumsInProgressOn(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_ON;
 }
 
@@ -4705,6 +4707,7 @@ DataChecksumsInProgressOn(void)
 bool
 DataChecksumsNeedVerify(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return (LocalDataChecksumState == PG_DATA_CHECKSUM_VERSION);
 }
 
@@ -4977,6 +4980,7 @@ SetLocalDataChecksumState(uint32 data_checksum_version)
 const char *
 show_data_checksums(void)
 {
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
 	return get_checksum_state_string(LocalDataChecksumState);
 }
 

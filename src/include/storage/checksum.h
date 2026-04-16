@@ -31,6 +31,12 @@ typedef enum ChecksumStateType
 	PG_DATA_CHECKSUM_INPROGRESS_ON = 3,
 } ChecksumStateType;
 
+#ifdef USE_ASSERT_CHECKING
+#define PG_DATA_CHECKSUM_INVALID -1
+#else
+#define PG_DATA_CHECKSUM_INVALID 0
+#endif
+
 /*
  * Compute the checksum for a Postgres page.  The page must be aligned on a
  * 4-byte boundary.

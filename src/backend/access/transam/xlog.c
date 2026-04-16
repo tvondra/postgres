@@ -4683,11 +4683,44 @@ DataChecksumsNeedWrite(void)
 			LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_OFF);
 }
 
+
+bool
+DataChecksumsOff(void)
+{
+	bool		ret;
+
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
+	SpinLockAcquire(&XLogCtl->info_lck);
+	ret = (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_OFF);
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return ret;
+}
+
+bool
+DataChecksumsOn(void)
+{
+	bool		ret;
+
+	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
+	SpinLockAcquire(&XLogCtl->info_lck);
+	ret = (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_VERSION);
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return ret;
+}
+
 bool
 DataChecksumsInProgressOn(void)
 {
+	bool		ret;
+
 	Assert(LocalDataChecksumState != PG_DATA_CHECKSUM_INVALID);
-	return LocalDataChecksumState == PG_DATA_CHECKSUM_INPROGRESS_ON;
+	SpinLockAcquire(&XLogCtl->info_lck);
+	ret = (XLogCtl->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON);
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return ret;
 }
 
 /*

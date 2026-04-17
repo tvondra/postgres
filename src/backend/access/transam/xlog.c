@@ -7617,6 +7617,9 @@ CreateCheckPoint(int flags)
 	/* Run these points outside the critical section. */
 	INJECTION_POINT("create-checkpoint-initial", NULL);
 	INJECTION_POINT_LOAD("create-checkpoint-run");
+	INJECTION_POINT_LOAD("checkpoint-before-xlogctl-checksums");
+	INJECTION_POINT_LOAD("checkpoint-before-redo-position");
+	INJECTION_POINT_LOAD("checkpoint-after-redo-position");
 
 	/*
 	 * Use a critical section to force system panic if we have trouble.
@@ -7690,6 +7693,8 @@ CreateCheckPoint(int flags)
 	checkPoint.fullPageWrites = Insert->fullPageWrites;
 	checkPoint.wal_level = wal_level;
 
+	INJECTION_POINT_CACHED("checkpoint-before-xlogctl-checksums", NULL);
+
 	/*
 	 * Get the current data_checksum_version value from xlogctl, valid at the
 	 * time of the checkpoint.
@@ -7697,6 +7702,8 @@ CreateCheckPoint(int flags)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	INJECTION_POINT_CACHED("checkpoint-before-redo-position", NULL);
 
 	if (shutdown)
 	{
@@ -7732,6 +7739,8 @@ CreateCheckPoint(int flags)
 		 */
 		RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
 	}
+
+	INJECTION_POINT_CACHED("checkpoint-after-redo-position", NULL);
 
 	/*
 	 * Now we can release the WAL insertion locks, allowing other xacts to

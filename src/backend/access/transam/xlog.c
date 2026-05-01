@@ -4762,6 +4762,7 @@ SetDataChecksumsOnInProgress(void)
 	INJECTION_POINT("datachecksums-enable-inprogress-checksums-start", NULL);
 
 	/* load before critical section */
+	INJECTION_POINT_LOAD("datachecksums-enable-inprogress-checksums-before-xlog");
 	INJECTION_POINT_LOAD("datachecksums-enable-inprogress-checksums-after-xlog");
 	INJECTION_POINT_LOAD("datachecksums-enable-inprogress-checksums-after-xlogctl");
 	INJECTION_POINT_LOAD("datachecksums-enable-inprogress-checksums-after-controlfile");
@@ -4772,6 +4773,8 @@ SetDataChecksumsOnInProgress(void)
 	 */
 	START_CRIT_SECTION();
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+
+	INJECTION_POINT_CACHED("datachecksums-enable-inprogress-checksums-before-xlog", NULL);
 
 	XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_ON);
 
@@ -4866,12 +4869,15 @@ SetDataChecksumsOn(void)
 	INJECTION_POINT("datachecksums-enable-checksums-start", NULL);
 
 	/* load before critical section */
+	INJECTION_POINT_LOAD("datachecksums-enable-checksums-before-xlog");
 	INJECTION_POINT_LOAD("datachecksums-enable-checksums-after-xlog");
 	INJECTION_POINT_LOAD("datachecksums-enable-checksums-after-xlogctl");
 	INJECTION_POINT_LOAD("datachecksums-enable-checksums-after-controlfile");
 
 	START_CRIT_SECTION();
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+
+	INJECTION_POINT_CACHED("datachecksums-enable-checksums-before-xlog", NULL);
 
 	XLogChecksums(PG_DATA_CHECKSUM_VERSION);
 
@@ -4968,12 +4974,15 @@ SetDataChecksumsOff(void)
 		INJECTION_POINT("datachecksums-disable-inprogress-checksums-start", NULL);
 
 		/* load before critical section */
+		INJECTION_POINT_LOAD("datachecksums-disable-inprogress-checksums-before-xlog");
 		INJECTION_POINT_LOAD("datachecksums-disable-inprogress-checksums-after-xlog");
 		INJECTION_POINT_LOAD("datachecksums-disable-inprogress-checksums-after-xlogctl");
 		INJECTION_POINT_LOAD("datachecksums-disable-inprogress-checksums-after-controlfile");
 
 		START_CRIT_SECTION();
 		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+
+		INJECTION_POINT_CACHED("datachecksums-disable-inprogress-checksums-before-xlog", NULL);
 
 		XLogChecksums(PG_DATA_CHECKSUM_INPROGRESS_OFF);
 
@@ -5034,6 +5043,7 @@ SetDataChecksumsOff(void)
 	INJECTION_POINT("datachecksums-disable-checksums-start", NULL);
 
 	/* load before critical section */
+	INJECTION_POINT_LOAD("datachecksums-disable-checksums-before-xlog");
 	INJECTION_POINT_LOAD("datachecksums-disable-checksums-after-xlog");
 	INJECTION_POINT_LOAD("datachecksums-disable-checksums-after-xlogctl");
 	INJECTION_POINT_LOAD("datachecksums-disable-checksums-after-controlfile");
@@ -5041,6 +5051,8 @@ SetDataChecksumsOff(void)
 	START_CRIT_SECTION();
 	/* Ensure that we don't incur a checkpoint during disabling checksums */
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+
+	INJECTION_POINT_CACHED("datachecksums-disable-checksums-before-xlog", NULL);
 
 	XLogChecksums(PG_DATA_CHECKSUM_OFF);
 
@@ -7611,6 +7623,12 @@ CreateCheckPoint(int flags)
 	/* Run these points outside the critical section. */
 	INJECTION_POINT("create-checkpoint-initial", NULL);
 	INJECTION_POINT_LOAD("create-checkpoint-run");
+	INJECTION_POINT_LOAD("checkpoint-before-redo");
+	INJECTION_POINT_LOAD("checkpoint-before-xlogctl-checksums");
+	INJECTION_POINT_LOAD("checkpoint-after-xlogctl-checksums");
+	INJECTION_POINT_LOAD("checkpoint-before-redo-checksums");
+	INJECTION_POINT_LOAD("checkpoint-before-redo-wal");
+	INJECTION_POINT_LOAD("checkpoint-after-redo-wal");
 
 	/*
 	 * Use a critical section to force system panic if we have trouble.
@@ -7676,6 +7694,8 @@ CreateCheckPoint(int flags)
 	else
 		checkPoint.PrevTimeLineID = checkPoint.ThisTimeLineID;
 
+	INJECTION_POINT_CACHED("checkpoint-before-redo", NULL);
+
 	/*
 	 * We must block concurrent insertions while examining insert state.
 	 */
@@ -7684,6 +7704,8 @@ CreateCheckPoint(int flags)
 	checkPoint.fullPageWrites = Insert->fullPageWrites;
 	checkPoint.wal_level = wal_level;
 
+	INJECTION_POINT_CACHED("checkpoint-before-xlogctl-checksums", NULL);
+
 	/*
 	 * Get the current data_checksum_version value from xlogctl, valid at the
 	 * time of the checkpoint.
@@ -7691,6 +7713,8 @@ CreateCheckPoint(int flags)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	checkPoint.dataChecksumState = XLogCtl->data_checksum_version;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	INJECTION_POINT_CACHED("checkpoint-after-xlogctl-checksums", NULL);
 
 	if (shutdown)
 	{
@@ -7749,12 +7773,16 @@ CreateCheckPoint(int flags)
 	{
 		xl_checkpoint_redo redo_rec;
 
+		INJECTION_POINT_CACHED("checkpoint-before-redo-checksums", NULL);
+
 		WALInsertLockAcquire();
 		redo_rec.wal_level = wal_level;
 		SpinLockAcquire(&XLogCtl->info_lck);
 		redo_rec.data_checksum_version = XLogCtl->data_checksum_version;
 		SpinLockRelease(&XLogCtl->info_lck);
 		WALInsertLockRelease();
+
+		INJECTION_POINT_CACHED("checkpoint-before-redo-wal", NULL);
 
 		/* Include WAL level in record for WAL summarizer's benefit. */
 		XLogBeginInsert();
@@ -7768,6 +7796,8 @@ CreateCheckPoint(int flags)
 		 * checkpoint is complete.
 		 */
 		checkPoint.redo = RedoRecPtr;
+
+		INJECTION_POINT_CACHED("checkpoint-after-redo-wal", NULL);
 	}
 
 	/* Update the info_lck-protected copy of RedoRecPtr as well */

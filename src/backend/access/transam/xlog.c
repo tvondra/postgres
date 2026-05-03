@@ -4840,10 +4840,11 @@ SetDataChecksumsOnInProgress(void)
  * state transition.
  */
 void
-SetDataChecksumsOn(void)
+SetDataChecksumsOn(bool fast)
 {
 	uint64		barrier;
 	uint32	data_checksum_version;
+	int			flags;
 
 	elog(LOG, "SetDataChecksumsOn / start");
 
@@ -4860,7 +4861,7 @@ SetDataChecksumsOn(void)
 		SpinLockRelease(&XLogCtl->info_lck);
 		elog(WARNING,
 			 "cannot set data checksums to \"on\", current state is not \"inprogress-on\", disabling");
-		SetDataChecksumsOff();
+		SetDataChecksumsOff(fast);
 		return;
 	}
 
@@ -4916,8 +4917,13 @@ SetDataChecksumsOn(void)
 
 	INJECTION_POINT("datachecksums-enable-checksums-before-checkpoint", NULL);
 
-	elog(LOG, "SetDataChecksumsOn / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
-	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+	if (fast)
+		flags |= CHECKPOINT_FAST;
+
+	elog(LOG, "SetDataChecksumsOn / RequestCheckpoint(%d)", flags);
+
+	RequestCheckpoint(flags);
 
 	INJECTION_POINT("datachecksums-enable-checksums-before-barrier-wait", NULL);
 
@@ -4943,10 +4949,16 @@ SetDataChecksumsOn(void)
  * state transition.
  */
 void
-SetDataChecksumsOff(void)
+SetDataChecksumsOff(bool fast)
 {
 	uint64		barrier;
 	uint32	data_checksum_version;
+	int			flags;
+
+	/* determine flags for the checkpoint(s) */
+	flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT;
+	if (fast)
+		flags |= CHECKPOINT_FAST;
 
 	elog(LOG, "SetDataChecksumsOff / start");
 
@@ -5017,8 +5029,8 @@ SetDataChecksumsOff(void)
 
 		INJECTION_POINT("datachecksums-disable-inprogress-checksums-before-checkpoint", NULL);
 
-		elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
-		RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+		elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(%d)", flags);
+		RequestCheckpoint(flags);
 
 		INJECTION_POINT("datachecksums-disable-inprogress-checksums-before-barrier-wait", NULL);
 
@@ -5087,8 +5099,8 @@ SetDataChecksumsOff(void)
 
 	INJECTION_POINT("datachecksums-disable-checksums-before-checkpoint", NULL);
 
-	elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST)");
-	RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT | CHECKPOINT_FAST);
+	elog(LOG, "SetDataChecksumsOff / RequestCheckpoint(%d)", flags);
+	RequestCheckpoint(flags);
 
 	INJECTION_POINT("datachecksums-disable-checksums-before-barrier-wait", NULL);
 

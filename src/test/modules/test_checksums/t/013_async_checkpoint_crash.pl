@@ -40,6 +40,7 @@ if ($ENV{enable_injection_points} ne 'yes')
 # Initiate testcluster
 my $node = PostgreSQL::Test::Cluster->new('injection_node');
 $node->init(no_data_checksums => 1);
+$node->append_conf('postgresql.conf', 'checkpoint_timeout = 60s');
 
 # make sure we don't hit checkpoints unless desired
 $node->append_conf(
@@ -204,8 +205,8 @@ sub test_checksum_sequence
 
 	# put the cluster into the initial checksum state, synchronously
 	note('changing checksums into initial state: ' . $start);
-	enable_data_checksums($node, wait => 'on') if ($start eq 'enabled');
-	disable_data_checksums($node, wait => 'off') if ($start eq 'disabled');
+	enable_data_checksums($node, wait => 'on', fast => 'true') if ($start eq 'enabled');
+	disable_data_checksums($node, wait => 'off', fast => 'true') if ($start eq 'disabled');
 
 	# attach the initial injection point
 	attach_injection_point($node, $init);
@@ -220,8 +221,8 @@ sub test_checksum_sequence
 
 	# Trigger the checksum change, asynchronously
 	note("triggering checksum change: " . $change);
-	enable_data_checksums($node) if ($change eq 'enable');
-	disable_data_checksums($node) if ($change eq 'disable');
+	enable_data_checksums($node, fast => 'false') if ($change eq 'enable');
+	disable_data_checksums($node, fast => 'false') if ($change eq 'disable');
 
 	# wait for the initial injection point
 	wait_injection_point($node, $init);

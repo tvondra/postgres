@@ -40,6 +40,7 @@ if ($ENV{enable_injection_points} ne 'yes')
 # Initiate testcluster
 my $node = PostgreSQL::Test::Cluster->new('injection_node');
 $node->init(no_data_checksums => 1);
+$node->append_conf('postgresql.conf', 'checkpoint_timeout = 60s');
 $node->start;
 
 # Set up test environment
@@ -177,8 +178,8 @@ sub test_checksum_transition
 
 	# put the cluster into the initial checksum state, synchronously
 	note('changing checksums into initial state: ' . $start);
-	enable_data_checksums($node, wait => 'on') if ($start eq 'enabled');
-	disable_data_checksums($node, wait => 'off') if ($start eq 'disabled');
+	enable_data_checksums($node, wait => 'on', fast => 'true') if ($start eq 'enabled');
+	disable_data_checksums($node, wait => 'off', fast => 'true') if ($start eq 'disabled');
 
 	 # Wait on an injection point outside a critical section, to initialize
 	 # the shmem (which can't be done in critical section).
@@ -192,8 +193,8 @@ sub test_checksum_transition
 
 	# Trigger the checksum change, asynchronously
 	note("triggering checksum change: " . $change);
-	enable_data_checksums($node) if ($change eq 'enable');
-	disable_data_checksums($node) if ($change eq 'disable');
+	enable_data_checksums($node, fast => 'false') if ($change eq 'enable');
+	disable_data_checksums($node, fast => 'false') if ($change eq 'disable');
 
 	# Handle the initial injection point - wait, wakeup and detatch. This
 	# initializes the shmem for the 'wait' action.

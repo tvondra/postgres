@@ -157,7 +157,7 @@ sub wakeup_injection_point
 # state is 'on'.
 sub test_checksum_transition
 {
-	my ($start, $change, $init, $point1, $point2, $final) = @_;
+	my ($start, $change, $fast, $init, $point1, $point2, $final) = @_;
 
 	my $initstr = 'undef';
 	my $point2str = 'undef';
@@ -193,8 +193,8 @@ sub test_checksum_transition
 
 	# Trigger the checksum change, asynchronously
 	note("triggering checksum change: " . $change);
-	enable_data_checksums($node, fast => 'false') if ($change eq 'enable');
-	disable_data_checksums($node, fast => 'false') if ($change eq 'disable');
+	enable_data_checksums($node, fast => $fast) if ($change eq 'enable');
+	disable_data_checksums($node, fast => $fast) if ($change eq 'disable');
 
 	# Handle the initial injection point - wait, wakeup and detatch. This
 	# initializes the shmem for the 'wait' action.
@@ -251,33 +251,60 @@ sub test_checksum_transition
 }
 
 # concurrent enable + checkpoint, different injection points in the "enable" process
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'off');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'off');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'off');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'off');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'datachecksums-enable-inprogress-checksums-end', 'off');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-inprogress-checksums-end', 'datachecksums-enable-checksums-start', 'off');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'on');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'datachecksums-enable-checksums-after-xlogctl', 'off');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlogctl', 'datachecksums-enable-checksums-after-controlfile', 'on');
-test_checksum_transition('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-controlfile', 'datachecksums-enable-checksums-before-checkpoint', 'on');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-checksums-before-checkpoint', 'datachecksums-enable-checksums-before-barrier-wait', 'on');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-checksums-before-barrier-wait', 'datachecksums-enable-checksums-end', 'on');
-test_checksum_transition('disabled', 'enable', undef, 'datachecksums-enable-checksums-end', undef, 'on');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'off');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'off');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'off');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'off');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'datachecksums-enable-inprogress-checksums-end', 'off');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-inprogress-checksums-end', 'datachecksums-enable-checksums-start', 'off');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'on');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'datachecksums-enable-checksums-after-xlogctl', 'off');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlogctl', 'datachecksums-enable-checksums-after-controlfile', 'on');
+test_checksum_transition('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-controlfile', 'datachecksums-enable-checksums-before-checkpoint', 'on');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-checksums-before-checkpoint', 'datachecksums-enable-checksums-before-barrier-wait', 'on');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-checksums-before-barrier-wait', 'datachecksums-enable-checksums-end', 'on');
+test_checksum_transition('disabled', 'enable', 'true', undef, 'datachecksums-enable-checksums-end', undef, 'on');
+
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'off');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlog', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'off');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-xlogctl', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'off');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-after-controlfile', 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'off');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-inprogress-checksums-before-barrier-wait', 'datachecksums-enable-inprogress-checksums-end', 'off');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-inprogress-checksums-end', 'datachecksums-enable-checksums-start', 'off');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'on');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlog', 'datachecksums-enable-checksums-after-xlogctl', 'off');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-xlogctl', 'datachecksums-enable-checksums-after-controlfile', 'on');
+test_checksum_transition('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-after-controlfile', 'datachecksums-enable-checksums-before-checkpoint', 'on');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-checksums-before-checkpoint', 'datachecksums-enable-checksums-before-barrier-wait', 'on');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-checksums-before-barrier-wait', 'datachecksums-enable-checksums-end', 'on');
+test_checksum_transition('disabled', 'enable', 'false', undef, 'datachecksums-enable-checksums-end', undef, 'on');
 
 # concurrent disable + checkpoint, different injection points in the "disable" process
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'off');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'on');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'off');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'off');
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'datachecksums-disable-checksums-start', 'off');
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'off');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'datachecksums-disable-checksums-after-xlogctl', 'off');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlogctl', 'datachecksums-disable-checksums-after-controlfile', 'off');
-test_checksum_transition('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-controlfile', 'datachecksums-disable-checksums-before-checkpoint', 'off');
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-checksums-before-checkpoint', 'datachecksums-disable-checksums-before-barrier-wait', 'off');
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-checksums-before-barrier-wait', 'datachecksums-disable-checksums-end', 'off');
-test_checksum_transition('enabled', 'disable', undef, 'datachecksums-disable-checksums-end', undef, 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'off');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'on');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'off');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'datachecksums-disable-checksums-start', 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'off');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'datachecksums-disable-checksums-after-xlogctl', 'off');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlogctl', 'datachecksums-disable-checksums-after-controlfile', 'off');
+test_checksum_transition('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-controlfile', 'datachecksums-disable-checksums-before-checkpoint', 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-checksums-before-checkpoint', 'datachecksums-disable-checksums-before-barrier-wait', 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-checksums-before-barrier-wait', 'datachecksums-disable-checksums-end', 'off');
+test_checksum_transition('enabled', 'disable', 'true', undef, 'datachecksums-disable-checksums-end', undef, 'off');
+
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'off');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlog', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'on');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-xlogctl', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'off');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-inprogress-checksums-after-controlfile', 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'off');
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-inprogress-checksums-before-barrier-wait', 'datachecksums-disable-checksums-start', 'off');
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'off');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlog', 'datachecksums-disable-checksums-after-xlogctl', 'off');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-xlogctl', 'datachecksums-disable-checksums-after-controlfile', 'off');
+test_checksum_transition('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-after-controlfile', 'datachecksums-disable-checksums-before-checkpoint', 'off');
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-checksums-before-checkpoint', 'datachecksums-disable-checksums-before-barrier-wait', 'off');
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-checksums-before-barrier-wait', 'datachecksums-disable-checksums-end', 'off');
+test_checksum_transition('enabled', 'disable', 'false', undef, 'datachecksums-disable-checksums-end', undef, 'off');
 
 $node->stop;
 done_testing();

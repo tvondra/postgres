@@ -190,7 +190,7 @@ sub wakeup_injection_point
 #
 sub test_checksum_sequence
 {
-	my ($start, $change, $init, $stop, $final, @steps) = @_;
+	my ($start, $change, $fast, $init, $stop, $final, @steps) = @_;
 
 	# print the current test instructions, both into TAP output and into
 	# the server log, to make correlation easier
@@ -221,8 +221,8 @@ sub test_checksum_sequence
 
 	# Trigger the checksum change, asynchronously
 	note("triggering checksum change: " . $change);
-	enable_data_checksums($node, fast => 'false') if ($change eq 'enable');
-	disable_data_checksums($node, fast => 'false') if ($change eq 'disable');
+	enable_data_checksums($node, fast => $fast) if ($change eq 'enable');
+	disable_data_checksums($node, fast => $fast) if ($change eq 'disable');
 
 	# wait for the initial injection point
 	wait_injection_point($node, $init);
@@ -276,7 +276,7 @@ my @steps = undef;
 
 ## checksums INPROGRESS ON
 
-note('TEST INPROGRESS-ON/1');
+note('TEST INPROGRESS-ON/1/fast');
 @steps = qw(datachecksums-enable-inprogress-checksums-before-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlogctl
@@ -289,9 +289,24 @@ note('TEST INPROGRESS-ON/1');
 			 checkpoint-before-redo-wal
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
-note('TEST INPROGRESS-ON/2');
+note('TEST INPROGRESS-ON/1/spread');
+@steps = qw(datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile
+			 create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/2/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-enable-inprogress-checksums-before-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlog
@@ -304,9 +319,24 @@ note('TEST INPROGRESS-ON/2');
 			 checkpoint-before-redo-wal
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
-note('TEST INPROGRESS-ON/3');
+note('TEST INPROGRESS-ON/2/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/3/false');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-enable-inprogress-checksums-before-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlog
@@ -319,9 +349,24 @@ note('TEST INPROGRESS-ON/3');
 			 datachecksums-enable-inprogress-checksums-after-controlfile
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
-note('TEST INPROGRESS-ON/4');
+note('TEST INPROGRESS-ON/3/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/4/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-enable-inprogress-checksums-before-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlog
@@ -333,9 +378,23 @@ note('TEST INPROGRESS-ON/4');
 			 datachecksums-enable-inprogress-checksums-after-xlogctl
 			 datachecksums-enable-inprogress-checksums-after-controlfile
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
-note('TEST INPROGRESS-ON/5');
+note('TEST INPROGRESS-ON/4/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/5/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-enable-inprogress-checksums-before-xlog
 			 datachecksums-enable-inprogress-checksums-after-xlog
@@ -348,9 +407,24 @@ note('TEST INPROGRESS-ON/5');
 			 checkpoint-before-old-wal-removal
 			 datachecksums-enable-inprogress-checksums-after-xlogctl
 			 datachecksums-enable-inprogress-checksums-after-controlfile);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
-note('TEST INPROGRESS-ON/6');
+note('TEST INPROGRESS-ON/5/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/6/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -363,11 +437,26 @@ note('TEST INPROGRESS-ON/6');
 			 checkpoint-before-redo-wal
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
+
+note('TEST INPROGRESS-ON/6/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-enable-inprogress-checksums-before-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlog
+			 datachecksums-enable-inprogress-checksums-after-xlogctl
+			 datachecksums-enable-inprogress-checksums-after-controlfile
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-inprogress-checksums-start', 'datachecksums-enable-inprogress-checksums-end', 'off', @steps);
 
 ## checksums ON
 
-note('TEST ON/1');
+note('TEST ON/1/fast');
 @steps = qw(datachecksums-enable-checksums-before-xlog
 			 datachecksums-enable-checksums-after-xlog
 			 datachecksums-enable-checksums-after-xlogctl
@@ -379,9 +468,23 @@ note('TEST ON/1');
 			 checkpoint-before-redo-wal
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
 
-note('TEST ON/2');
+note('TEST ON/1/spread');
+@steps = qw(datachecksums-enable-checksums-before-xlog
+			 datachecksums-enable-checksums-after-xlog
+			 datachecksums-enable-checksums-after-xlogctl
+			 datachecksums-enable-checksums-after-controlfile
+			 create-checkpoint-initial
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+
+note('TEST ON/2/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-enable-checksums-before-xlog
 			 datachecksums-enable-checksums-after-xlog
@@ -394,9 +497,24 @@ note('TEST ON/2');
 			 checkpoint-before-old-wal-removal
 			 datachecksums-enable-checksums-after-xlogctl
 			 datachecksums-enable-checksums-after-controlfile);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
 
-note('TEST ON/3');
+note('TEST ON/2/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-enable-checksums-before-xlog
+			 datachecksums-enable-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-enable-checksums-after-xlogctl
+			 datachecksums-enable-checksums-after-controlfile);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+
+note('TEST ON/3/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -409,9 +527,24 @@ note('TEST ON/3');
 			 checkpoint-before-old-wal-removal
 			 datachecksums-enable-checksums-after-xlogctl
 			 datachecksums-enable-checksums-after-controlfile);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
 
-note('TEST ON/4');
+note('TEST ON/3/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-enable-checksums-before-xlog
+			 datachecksums-enable-checksums-after-xlog
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-enable-checksums-after-xlogctl
+			 datachecksums-enable-checksums-after-controlfile);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+
+note('TEST ON/4/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -424,12 +557,27 @@ note('TEST ON/4');
 			 checkpoint-before-old-wal-removal
 			 datachecksums-enable-checksums-after-xlogctl
 			 datachecksums-enable-checksums-after-controlfile);
-test_checksum_sequence('disabled', 'enable', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+test_checksum_sequence('disabled', 'enable', 'true', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
+
+note('TEST ON/4/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 datachecksums-enable-checksums-before-xlog
+			 datachecksums-enable-checksums-after-xlog
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-enable-checksums-after-xlogctl
+			 datachecksums-enable-checksums-after-controlfile);
+test_checksum_sequence('disabled', 'enable', 'false', 'datachecksums-enable-checksums-start', 'datachecksums-enable-checksums-end', 'on', @steps);
 
 
 ## checksums INPROGRESS OFF
 
-note('TEST INPROGRESS-OFF/1');
+note('TEST INPROGRESS-OFF/1/fast');
 @steps = qw(datachecksums-disable-inprogress-checksums-before-xlog
 			 datachecksums-disable-inprogress-checksums-after-xlog
 			 datachecksums-disable-inprogress-checksums-after-xlogctl
@@ -444,9 +592,26 @@ note('TEST INPROGRESS-OFF/1');
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
 
-note('TEST INPROGRESS-OFF/2');
+note('TEST INPROGRESS-OFF/1/spread');
+@steps = qw(datachecksums-disable-inprogress-checksums-before-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlogctl
+			 datachecksums-disable-inprogress-checksums-after-controlfile
+			 datachecksums-disable-inprogress-checksums-before-checkpoint
+			 create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+
+note('TEST INPROGRESS-OFF/2/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-disable-inprogress-checksums-before-xlog
 			 datachecksums-disable-inprogress-checksums-after-xlog
@@ -461,9 +626,26 @@ note('TEST INPROGRESS-OFF/2');
 			 datachecksums-disable-inprogress-checksums-after-controlfile
 			 datachecksums-disable-inprogress-checksums-before-checkpoint
 			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
 
-note('TEST INPROGRESS-OFF/3');
+note('TEST INPROGRESS-OFF/2/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-disable-inprogress-checksums-before-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-inprogress-checksums-after-xlogctl
+			 datachecksums-disable-inprogress-checksums-after-controlfile
+			 datachecksums-disable-inprogress-checksums-before-checkpoint
+			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+
+note('TEST INPROGRESS-OFF/3/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -478,9 +660,26 @@ note('TEST INPROGRESS-OFF/3');
 			 datachecksums-disable-inprogress-checksums-after-controlfile
 			 datachecksums-disable-inprogress-checksums-before-checkpoint
 			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
 
-note('TEST INPROGRESS-OFF/4');
+note('TEST INPROGRESS-OFF/3/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-disable-inprogress-checksums-before-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlog
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-inprogress-checksums-after-xlogctl
+			 datachecksums-disable-inprogress-checksums-after-controlfile
+			 datachecksums-disable-inprogress-checksums-before-checkpoint
+			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+
+note('TEST INPROGRESS-OFF/4/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -495,11 +694,28 @@ note('TEST INPROGRESS-OFF/4');
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
+
+note('TEST INPROGRESS-OFF/4/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-disable-inprogress-checksums-before-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlog
+			 datachecksums-disable-inprogress-checksums-after-xlogctl
+			 datachecksums-disable-inprogress-checksums-after-controlfile
+			 datachecksums-disable-inprogress-checksums-before-checkpoint
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-inprogress-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-inprogress-checksums-start', 'datachecksums-disable-checksums-start', 'off', @steps);
 
 ## checksums OFF
 
-note('TEST OFF/1');
+note('TEST OFF/1/fast');
 @steps = qw(datachecksums-disable-checksums-before-xlog
 			 datachecksums-disable-checksums-after-xlog
 			 datachecksums-disable-checksums-after-xlogctl
@@ -514,9 +730,26 @@ note('TEST OFF/1');
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
 
-note('TEST OFF/2');
+note('TEST OFF/1/spread');
+@steps = qw(datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/2/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-disable-checksums-before-xlog
 			 datachecksums-disable-checksums-after-xlog
@@ -531,9 +764,26 @@ note('TEST OFF/2');
 			 checkpoint-after-redo-wal
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
 
-note('TEST OFF/3');
+note('TEST OFF/2/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/3/fast');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -548,26 +798,9 @@ note('TEST OFF/3');
 			 datachecksums-disable-checksums-before-checkpoint
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
 
-note('TEST OFF/4');
-@steps = qw(create-checkpoint-initial
-			 checkpoint-before-redo
-			 checkpoint-before-xlogctl-checksums
-			 checkpoint-after-xlogctl-checksums
-			 checkpoint-before-redo-checksums
-			 checkpoint-before-redo-wal
-			 checkpoint-after-redo-wal
-			 datachecksums-disable-checksums-before-xlog
-			 datachecksums-disable-checksums-after-xlog
-			 datachecksums-disable-checksums-after-xlogctl
-			 datachecksums-disable-checksums-after-controlfile
-			 datachecksums-disable-checksums-before-checkpoint
-			 checkpoint-before-old-wal-removal
-			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
-
-note('TEST OFF/5');
+note('TEST OFF/3/spread');
 @steps = qw(create-checkpoint-initial
 			 checkpoint-before-redo
 			 checkpoint-before-xlogctl-checksums
@@ -582,9 +815,77 @@ note('TEST OFF/5');
 			 datachecksums-disable-checksums-before-checkpoint
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
 
-note('TEST OFF/6');
+note('TEST OFF/4/fast');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/4/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/5/fast');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/5/spread');
+@steps = qw(create-checkpoint-initial
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 checkpoint-before-redo-checksums
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-disable-checksums-after-xlogctl
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/6/fast');
 @steps = qw(create-checkpoint-initial
 			 datachecksums-disable-checksums-before-xlog
 			 datachecksums-disable-checksums-after-xlog
@@ -599,7 +900,24 @@ note('TEST OFF/6');
 			 datachecksums-disable-checksums-before-checkpoint
 			 checkpoint-before-old-wal-removal
 			 datachecksums-disable-checksums-before-barrier-wait);
-test_checksum_sequence('enabled', 'disable', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+test_checksum_sequence('enabled', 'disable', 'true', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
+
+note('TEST OFF/6/spread');
+@steps = qw(create-checkpoint-initial
+			 datachecksums-disable-checksums-before-xlog
+			 datachecksums-disable-checksums-after-xlog
+			 checkpoint-before-redo
+			 checkpoint-before-xlogctl-checksums
+			 checkpoint-after-xlogctl-checksums
+			 datachecksums-disable-checksums-after-xlogctl
+			 checkpoint-before-redo-checksums
+			 checkpoint-before-redo-wal
+			 checkpoint-after-redo-wal
+			 datachecksums-disable-checksums-after-controlfile
+			 datachecksums-disable-checksums-before-checkpoint
+			 checkpoint-before-old-wal-removal
+			 datachecksums-disable-checksums-before-barrier-wait);
+test_checksum_sequence('enabled', 'disable', 'false', 'datachecksums-disable-checksums-start', 'datachecksums-disable-checksums-end', 'off', @steps);
 
 $node->stop;
 done_testing();

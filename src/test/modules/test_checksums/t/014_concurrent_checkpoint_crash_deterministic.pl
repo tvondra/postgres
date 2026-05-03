@@ -180,7 +180,7 @@ sub wakeup_injection_point
 # state is 'on'.
 sub test_checksum_sequence
 {
-	my ($name, $start, $change, $final, @steps) = @_;
+	my ($name, $start, $change, $fast, $final, @steps) = @_;
 
 	# Start the test suite with pgbench running.
 	background_rw_pgbench($node->port);
@@ -216,8 +216,8 @@ sub test_checksum_sequence
 
 	# Trigger the checksum change, asynchronously
 	note("triggering checksum change: " . $change);
-	enable_data_checksums($node, fast => 'false') if ($change eq 'enable');
-	disable_data_checksums($node, fast => 'false') if ($change eq 'disable');
+	enable_data_checksums($node, fast => $fast) if ($change eq 'enable');
+	disable_data_checksums($node, fast => $fast) if ($change eq 'disable');
 
 	# now process all the steps - wait, wakeup, sql, etc.
 	$n = @steps;
@@ -303,7 +303,8 @@ my @steps = undef;
     ['wakeup', 'checkpoint-before-old-wal-removal']
 );
 
-test_checksum_sequence('CHECKSUMS-ON-1', 'disabled', 'enable', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-1-fast', 'disabled', 'enable', 'true', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-1-spread', 'disabled', 'enable', 'false', 'off', @steps);
 
 # CHECKSUMS-ON-2
 #
@@ -334,7 +335,8 @@ test_checksum_sequence('CHECKSUMS-ON-1', 'disabled', 'enable', 'off', @steps);
     ['wakeup', 'checkpoint-before-old-wal-removal']
 );
 
-test_checksum_sequence('CHECKSUMS-ON-2', 'disabled', 'enable', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-2-true', 'disabled', 'enable', 'true', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-2-spread', 'disabled', 'enable', 'false', 'off', @steps);
 
 # CHECKSUMS-ON-3
 #
@@ -352,7 +354,8 @@ test_checksum_sequence('CHECKSUMS-ON-2', 'disabled', 'enable', 'off', @steps);
     ['wakeup', 'checkpoint-before-old-wal-removal']
 );
 
-test_checksum_sequence('CHECKSUMS-ON-3', 'disabled', 'enable', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-3-fast', 'disabled', 'enable', 'true', 'off', @steps);
+test_checksum_sequence('CHECKSUMS-ON-3-spread', 'disabled', 'enable', 'false', 'off', @steps);
 
 ## FIXME do similar sequences for the opposite direction (enabled -> disabled)
 

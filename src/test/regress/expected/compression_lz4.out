@@ -46,6 +46,7 @@ SELECT * INTO cmmove1 FROM cmdata_lz4;
  Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
 --------+------+-----------+----------+---------+----------+-------------+--------------+-------------
  f1     | text |           |          |         | extended |             |              | 
+Parallel DML: unsafe
 
 SELECT pg_column_compression(f1) FROM cmmove1;
  pg_column_compression 
@@ -61,6 +62,7 @@ CREATE TABLE cmdata2 (LIKE cmdata_lz4 INCLUDING COMPRESSION);
  Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
 --------+------+-----------+----------+---------+----------+-------------+--------------+-------------
  f1     | text |           |          |         | extended | lz4         |              | 
+Parallel DML: unsafe
 
 DROP TABLE cmdata2;
 -- copy to existing table

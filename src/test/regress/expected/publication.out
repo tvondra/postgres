@@ -214,6 +214,7 @@ Included in publications:
     "testpub_foralltables"
 Not-null constraints:
     "testpub_tbl2_id_not_null" NOT NULL "id"
+Parallel DML: unsafe
 
 \dRp+ testpub_foralltables
                                                        Publication testpub_foralltables
@@ -1166,6 +1167,7 @@ Included in publications:
     "testpub_fortable" (a, b)
 Not-null constraints:
     "testpub_tbl7_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 -- ok: the column list is the same, we should skip this table (or at least not fail)
 ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, b);
@@ -1182,6 +1184,7 @@ Included in publications:
     "testpub_fortable" (a, b)
 Not-null constraints:
     "testpub_tbl7_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 -- ok: the column list changes, make sure the catalog gets updated
 ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, c);
@@ -1198,6 +1201,7 @@ Included in publications:
     "testpub_fortable" (a, c)
 Not-null constraints:
     "testpub_tbl7_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 -- column list for partitioned tables has to cover replica identities for
 -- all child relations
@@ -1337,6 +1341,7 @@ Included in publications:
 Not-null constraints:
     "testpub_tbl_both_filters_a_not_null" NOT NULL "a"
     "testpub_tbl_both_filters_c_not_null" NOT NULL "c"
+Parallel DML: unsafe
 
 DROP TABLE testpub_tbl_both_filters;
 DROP PUBLICATION testpub_both_filters;
@@ -1553,6 +1558,7 @@ Included in publications:
     "testpub_default"
     "testpub_fortbl"
     "testpub_ins_trunct"
+Parallel DML: unsafe
 
 \d+ testpub_tbl1
                                                 Table "public.testpub_tbl1"
@@ -1568,6 +1574,7 @@ Included in publications:
     "testpub_ins_trunct"
 Not-null constraints:
     "testpub_tbl1_id_not_null" NOT NULL "id"
+Parallel DML: unsafe
 
 \dRp+ testpub_default
                                                             Publication testpub_default
@@ -1595,6 +1602,7 @@ Included in publications:
     "testpub_ins_trunct"
 Not-null constraints:
     "testpub_tbl1_id_not_null" NOT NULL "id"
+Parallel DML: unsafe
 
 -- verify relation cache invalidation when a primary key is added using
 -- an existing index

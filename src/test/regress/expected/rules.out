@@ -3339,6 +3339,7 @@ Rules:
             wdel
   RETURNING trgt.f1,
     trgt.f2
+Parallel DML: unsafe
 
 --
 -- Also check multiassignment deparsing.
@@ -3362,6 +3363,7 @@ Rules:
   WHERE trgt.f1 = new.f1
   RETURNING new.f1,
     new.f2
+Parallel DML: unsafe
 
 drop table rule_t1, rule_dest;
 --

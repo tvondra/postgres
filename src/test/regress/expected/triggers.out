@@ -3574,6 +3574,7 @@ Triggers:
     parenttrig AFTER INSERT ON child FOR EACH ROW EXECUTE FUNCTION f()
 Inherits:
     parent
+Parallel DML: unsafe
 
 drop table parent, child;
 drop function f();

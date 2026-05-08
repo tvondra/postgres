@@ -3859,7 +3859,7 @@ describeOneTableDetails(const char *schemaname,
 			 tableinfo.relparalleldml != 0)
 		{
 			printfPQExpBuffer(&buf, _("Parallel DML: %s"),
-							  )tableinfo.relparalleldml == PROPARALLEL_UNSAFE) ? "unsafe" :
+							  (tableinfo.relparalleldml == PROPARALLEL_UNSAFE) ? "unsafe" :
 							  (tableinfo.relparalleldml == PROPARALLEL_RESTRICTED) ? "restricted" :
 							  (tableinfo.relparalleldml == PROPARALLEL_SAFE) ? "safe" :
 							  "???");
@@ -4378,7 +4378,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 							  ",\n  CASE c.relparalleldml "
 							  "WHEN " CppAsString2(PROPARALLEL_UNSAFE) " THEN '%s' "
 							  "WHEN " CppAsString2(PROPARALLEL_RESTRICTED) " THEN '%s' "
-							  "WHEN " CppAsString2(PROPARALLEL_SAFE) " THEN '%s' ",
+							  "WHEN " CppAsString2(PROPARALLEL_SAFE) " THEN '%s' END as \"%s\"",
 							  gettext_noop("unsafe"),
 							  gettext_noop("restricted"),
 							  gettext_noop("safe"),

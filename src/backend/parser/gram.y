@@ -660,6 +660,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>		hash_partbound
 %type <defelt>		hash_partbound_elem
 
+%type <str>			OptParallelDMLSafety
+
 %type <node>	json_format_clause
 				json_format_clause_opt
 				json_value_expr
@@ -761,7 +763,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DEPTH DESC DESTINATION
-	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DML DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH EDGE ELSE EMPTY_P ENABLE_P ENCODING ENCRYPTED END_P ENFORCED ENUM_P
@@ -3162,6 +3164,14 @@ alter_table_cmd:
 					n->subtype = AT_NoForceRowSecurity;
 					$$ = (Node *) n;
 				}
+			/* ALTER TABLE <name> PARALLEL DML SAFE/RESTRICTED/UNSAFE */
+			| PARALLEL DML ColId
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_ParallelDMLSafety;
+					n->def = (Node *)makeString($3);
+					$$ = (Node *)n;
+				}
 			| alter_generic_options
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
@@ -3785,7 +3795,7 @@ copy_generic_opt_arg_list_item:
 
 CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 			OptInherit OptPartitionSpec table_access_method_clause OptWith
-			OnCommitOption OptTableSpace
+			OnCommitOption OptTableSpace OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3800,12 +3810,13 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $11;
 					n->oncommit = $12;
 					n->tablespacename = $13;
+					n->paralleldmlsafety = $14;
 					n->if_not_exists = false;
 					$$ = (Node *) n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name '('
 			OptTableElementList ')' OptInherit OptPartitionSpec table_access_method_clause
-			OptWith OnCommitOption OptTableSpace
+			OptWith OnCommitOption OptTableSpace OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3820,12 +3831,13 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $14;
 					n->oncommit = $15;
 					n->tablespacename = $16;
+					n->paralleldmlsafety = $17;
 					n->if_not_exists = true;
 					$$ = (Node *) n;
 				}
 		| CREATE OptTemp TABLE qualified_name OF any_name
 			OptTypedTableElementList OptPartitionSpec table_access_method_clause
-			OptWith OnCommitOption OptTableSpace
+			OptWith OnCommitOption OptTableSpace OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3841,12 +3853,13 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $10;
 					n->oncommit = $11;
 					n->tablespacename = $12;
+					n->paralleldmlsafety = $13;
 					n->if_not_exists = false;
 					$$ = (Node *) n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name OF any_name
 			OptTypedTableElementList OptPartitionSpec table_access_method_clause
-			OptWith OnCommitOption OptTableSpace
+			OptWith OnCommitOption OptTableSpace OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3862,12 +3875,14 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $13;
 					n->oncommit = $14;
 					n->tablespacename = $15;
+					n->paralleldmlsafety = $16;
 					n->if_not_exists = true;
 					$$ = (Node *) n;
 				}
 		| CREATE OptTemp TABLE qualified_name PARTITION OF qualified_name
 			OptTypedTableElementList PartitionBoundSpec OptPartitionSpec
 			table_access_method_clause OptWith OnCommitOption OptTableSpace
+			OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3883,12 +3898,14 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $12;
 					n->oncommit = $13;
 					n->tablespacename = $14;
+					n->paralleldmlsafety = $15;
 					n->if_not_exists = false;
 					$$ = (Node *) n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name PARTITION OF
 			qualified_name OptTypedTableElementList PartitionBoundSpec OptPartitionSpec
 			table_access_method_clause OptWith OnCommitOption OptTableSpace
+			OptParallelDMLSafety
 				{
 					CreateStmt *n = makeNode(CreateStmt);
 
@@ -3904,6 +3921,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->options = $15;
 					n->oncommit = $16;
 					n->tablespacename = $17;
+					n->paralleldmlsafety = $18;
 					n->if_not_exists = true;
 					$$ = (Node *) n;
 				}
@@ -4855,6 +4873,10 @@ OptTableSpace:   TABLESPACE name					{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+OptParallelDMLSafety:   PARALLEL DML name			{ $$ = $3; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
 OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
@@ -5010,7 +5032,7 @@ CreateAsStmt:
 
 create_as_target:
 			qualified_name opt_column_list table_access_method_clause
-			OptWith OnCommitOption OptTableSpace
+			OptWith OnCommitOption OptTableSpace OptParallelDMLSafety
 				{
 					$$ = makeNode(IntoClause);
 					$$->rel = $1;
@@ -5019,6 +5041,7 @@ create_as_target:
 					$$->options = $4;
 					$$->onCommit = $5;
 					$$->tableSpaceName = $6;
+					$$->paralleldmlsafety = $7;
 					$$->viewQuery = NULL;
 					$$->skipData = false;		/* might get changed later */
 				}
@@ -5845,7 +5868,7 @@ AlterForeignServerStmt: ALTER SERVER name foreign_server_version alter_generic_o
 CreateForeignTableStmt:
 		CREATE FOREIGN TABLE qualified_name
 			'(' OptTableElementList ')'
-			OptInherit SERVER name create_generic_options
+			OptInherit OptParallelDMLSafety SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
 
@@ -5858,15 +5881,16 @@ CreateForeignTableStmt:
 					n->base.options = NIL;
 					n->base.oncommit = ONCOMMIT_NOOP;
 					n->base.tablespacename = NULL;
+					n->base.paralleldmlsafety = $9;
 					n->base.if_not_exists = false;
 					/* FDW-specific data */
-					n->servername = $10;
-					n->options = $11;
+					n->servername = $11;
+					n->options = $12;
 					$$ = (Node *) n;
 				}
 		| CREATE FOREIGN TABLE IF_P NOT EXISTS qualified_name
 			'(' OptTableElementList ')'
-			OptInherit SERVER name create_generic_options
+			OptInherit OptParallelDMLSafety SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
 
@@ -5879,15 +5903,16 @@ CreateForeignTableStmt:
 					n->base.options = NIL;
 					n->base.oncommit = ONCOMMIT_NOOP;
 					n->base.tablespacename = NULL;
+					n->base.paralleldmlsafety = $12;
 					n->base.if_not_exists = true;
 					/* FDW-specific data */
-					n->servername = $13;
-					n->options = $14;
+					n->servername = $14;
+					n->options = $15;
 					$$ = (Node *) n;
 				}
 		| CREATE FOREIGN TABLE qualified_name
 			PARTITION OF qualified_name OptTypedTableElementList PartitionBoundSpec
-			SERVER name create_generic_options
+			OptParallelDMLSafety SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
 
@@ -5901,15 +5926,16 @@ CreateForeignTableStmt:
 					n->base.options = NIL;
 					n->base.oncommit = ONCOMMIT_NOOP;
 					n->base.tablespacename = NULL;
+					n->base.paralleldmlsafety = $10;
 					n->base.if_not_exists = false;
 					/* FDW-specific data */
-					n->servername = $11;
-					n->options = $12;
+					n->servername = $12;
+					n->options = $13;
 					$$ = (Node *) n;
 				}
 		| CREATE FOREIGN TABLE IF_P NOT EXISTS qualified_name
 			PARTITION OF qualified_name OptTypedTableElementList PartitionBoundSpec
-			SERVER name create_generic_options
+			OptParallelDMLSafety SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
 
@@ -5923,10 +5949,11 @@ CreateForeignTableStmt:
 					n->base.options = NIL;
 					n->base.oncommit = ONCOMMIT_NOOP;
 					n->base.tablespacename = NULL;
+					n->base.paralleldmlsafety = $13;
 					n->base.if_not_exists = true;
 					/* FDW-specific data */
-					n->servername = $14;
-					n->options = $15;
+					n->servername = $15;
+					n->options = $16;
 					$$ = (Node *) n;
 				}
 		;
@@ -18896,6 +18923,7 @@ unreserved_keyword:
 			| DICTIONARY
 			| DISABLE_P
 			| DISCARD
+			| DML
 			| DOCUMENT_P
 			| DOMAIN_P
 			| DOUBLE_P
@@ -19490,6 +19518,7 @@ bare_label_keyword:
 			| DISABLE_P
 			| DISCARD
 			| DISTINCT
+			| DML
 			| DO
 			| DOCUMENT_P
 			| DOMAIN_P

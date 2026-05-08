@@ -235,6 +235,7 @@ DefineVirtualRelation(RangeVar *relation, List *tlist, bool replace,
 		createStmt->options = options;
 		createStmt->oncommit = ONCOMMIT_NOOP;
 		createStmt->tablespacename = NULL;
+		createStmt->paralleldmlsafety = NULL;
 		createStmt->if_not_exists = false;
 
 		/*

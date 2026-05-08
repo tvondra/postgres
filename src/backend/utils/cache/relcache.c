@@ -1951,7 +1951,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_rel->relallfrozen = 0;
 	relation->rd_rel->relkind = RELKIND_RELATION;
 	relation->rd_rel->relnatts = (int16) natts;
-
+	relation->rd_rel->relparalleldml = PROPARALLEL_UNSAFE;
 	/*
 	 * initialize attribute tuple form
 	 *
@@ -3522,7 +3522,8 @@ RelationBuildLocalRelation(const char *relname,
 						   bool shared_relation,
 						   bool mapped_relation,
 						   char relpersistence,
-						   char relkind)
+						   char relkind,
+						   char relparalleldml)
 {
 	Relation	rel;
 	MemoryContext oldcxt;
@@ -3680,6 +3681,8 @@ RelationBuildLocalRelation(const char *relname,
 		rel->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
 	else
 		rel->rd_rel->relreplident = REPLICA_IDENTITY_NOTHING;
+
+	rel->rd_rel->relparalleldml = relparalleldml;
 
 	/*
 	 * Insert relation physical and logical identifiers (OIDs) into the right

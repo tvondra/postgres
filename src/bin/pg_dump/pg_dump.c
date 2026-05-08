@@ -18193,6 +18193,9 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 		}
 	}
 
+	/*
+	 * dump information about parallel safety for DML operations
+	 */
 	if (tbinfo->relkind == RELKIND_RELATION ||
 		tbinfo->relkind == RELKIND_PARTITIONED_TABLE ||
 		tbinfo->relkind == RELKIND_FOREIGN_TABLE)

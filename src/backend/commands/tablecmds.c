@@ -1126,6 +1126,11 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  InvalidOid,
 										  typaddress);
 
+	/*
+	 * Set parallel safety for DML operations, if specified by the command.
+	 *
+	 * XXX Don't we have reusable parsing for PROPARALLEL_ somewhere?
+	 */
 	if (stmt->paralleldmlsafety != NULL)
 	{
 		if (strcmp(stmt->paralleldmlsafety, "safe") == 0)
@@ -23936,6 +23941,9 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	SetUserIdAndSecContext(save_userid, save_sec_context);
 }
 
+/*
+ * ALTER TABLE <name> PARALLEL DML safe/restricted/unsafe
+ */
 static void
 ATExecParallelDMLSafety(Relation rel, Node *def)
 {

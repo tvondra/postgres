@@ -1649,7 +1649,7 @@ describeOneTableDetails(const char *schemaname,
 	/* Get general table info */
 	printfPQExpBuffer(&buf, "/* %s */\n",
 					  _("Get general information about one relation"));
-	if (pset.sversion >= 150000)
+	if (pset.sversion >= 190000)
 	{
 		printfPQExpBuffer(&buf,
 						  "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, "
@@ -1787,7 +1787,7 @@ describeOneTableDetails(const char *schemaname,
 			NULL : pg_strdup(PQgetvalue(res, 0, 14));
 	else
 		tableinfo.relam = NULL;
-	tableinfo.relparalleldml = (pset.sversion >= 150000) ?
+	tableinfo.relparalleldml = (pset.sversion >= 190000) ?
 		*(PQgetvalue(res, 0, 15)) : 0;
 	PQclear(res);
 	res = NULL;
@@ -3859,9 +3859,9 @@ describeOneTableDetails(const char *schemaname,
 			 tableinfo.relparalleldml != 0)
 		{
 			printfPQExpBuffer(&buf, _("Parallel DML: %s"),
-							  tableinfo.relparalleldml == 'u' ? "unsafe" :
-							  tableinfo.relparalleldml == 'r' ? "restricted" :
-							  tableinfo.relparalleldml == 's' ? "safe" :
+							  )tableinfo.relparalleldml == PROPARALLEL_UNSAFE) ? "unsafe" :
+							  (tableinfo.relparalleldml == PROPARALLEL_RESTRICTED) ? "restricted" :
+							  (tableinfo.relparalleldml == PROPARALLEL_SAFE) ? "safe" :
 							  "???");
 			printTableAddFooter(&cont, buf.data);
 		}
@@ -4375,7 +4375,10 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 		if (pset.sversion >= 150000)
 		{
 			appendPQExpBuffer(&buf,
-							  ",\n  CASE c.relparalleldml WHEN 'u' THEN '%s' WHEN 'r' THEN '%s' WHEN 's' THEN '%s' END as \"%s\"",
+							  ",\n  CASE c.relparalleldml "
+							  "WHEN " CppAsString2(PROPARALLEL_UNSAFE) " THEN '%s' "
+							  "WHEN " CppAsString2(PROPARALLEL_RESTRICTED) " THEN '%s' "
+							  "WHEN " CppAsString2(PROPARALLEL_SAFE) " THEN '%s' ",
 							  gettext_noop("unsafe"),
 							  gettext_noop("restricted"),
 							  gettext_noop("safe"),

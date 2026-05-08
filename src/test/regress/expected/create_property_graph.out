@@ -790,10 +790,10 @@ ERROR:  "pg_type" is not a property graph
 (1 row)
 
 \dG+ g1
-                                             List of property graphs
-           Schema            | Name |      Type      |        Owner        | Persistence |  Size   | Description 
------------------------------+------+----------------+---------------------+-------------+---------+-------------
- create_property_graph_tests | g1   | property graph | regress_graph_user1 | permanent   | 0 bytes | a graph
+                                                    List of property graphs
+           Schema            | Name |      Type      |        Owner        | Persistence | Parallel DML |  Size   | Description 
+-----------------------------+------+----------------+---------------------+-------------+--------------+---------+-------------
+ create_property_graph_tests | g1   | property graph | regress_graph_user1 | permanent   | unsafe       | 0 bytes | a graph
 (1 row)
 
 \dGx g1

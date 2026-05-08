@@ -278,6 +278,7 @@ CREATE TABLE test_like_6c (LIKE test_like_6 INCLUDING ALL);
  b      | text    |           |          |         | extended |              | 
 Statistics objects:
     "public.test_like_6c_expr_stat" ON (a || b) FROM test_like_6c
+Parallel DML: unsafe
 
 DROP TABLE test_like_4, test_like_4a, test_like_4b, test_like_4c, test_like_4d;
 DROP TABLE test_like_5, test_like_5x, test_like_5c;
@@ -358,6 +359,7 @@ CREATE TABLE ctlt12_storage (LIKE ctlt1 INCLUDING STORAGE, LIKE ctlt2 INCLUDING 
 Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a"
     "ctlt2_c_not_null" NOT NULL "c"
+Parallel DML: unsafe
 
 CREATE TABLE ctlt12_comments (LIKE ctlt1 INCLUDING COMMENTS, LIKE ctlt2 INCLUDING COMMENTS);
 \d+ ctlt12_comments
@@ -370,6 +372,7 @@ CREATE TABLE ctlt12_comments (LIKE ctlt1 INCLUDING COMMENTS, LIKE ctlt2 INCLUDIN
 Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a"
     "ctlt2_c_not_null" NOT NULL "c"
+Parallel DML: unsafe
 
 SELECT conname, description FROM pg_description, pg_constraint c WHERE classoid = 'pg_constraint'::regclass AND objoid = c.oid AND c.conrelid = 'ctlt12_comments'::regclass;
      conname      |  description  
@@ -397,6 +400,7 @@ Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a" (local, inherited)
 Inherits:
     ctlt1
+Parallel DML: unsafe
 
 SELECT description FROM pg_description, pg_constraint c WHERE classoid = 'pg_constraint'::regclass AND objoid = c.oid AND c.conrelid = 'ctlt1_inh'::regclass;
  description 
@@ -424,6 +428,7 @@ Not-null constraints:
 Inherits:
     ctlt1
     ctlt3
+Parallel DML: unsafe
 
 CREATE TABLE ctlt13_like (LIKE ctlt3 INCLUDING CONSTRAINTS INCLUDING INDEXES INCLUDING COMMENTS INCLUDING STORAGE) INHERITS (ctlt1);
 NOTICE:  merging column "a" with inherited definition
@@ -446,6 +451,7 @@ Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a" (inherited)
 Inherits:
     ctlt1
+Parallel DML: unsafe
 
 SELECT description FROM pg_description, pg_constraint c WHERE classoid = 'pg_constraint'::regclass AND objoid = c.oid AND c.conrelid = 'ctlt13_like'::regclass;
  description 
@@ -473,6 +479,7 @@ Statistics objects:
     "public.ctlt_all_expr_stat" ON (a || b) FROM ctlt_all
 Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 SELECT c.relname, objsubid, description FROM pg_description, pg_index i, pg_class c WHERE classoid = 'pg_class'::regclass AND objoid = i.indexrelid AND c.oid = i.indexrelid AND i.indrelid = 'ctlt_all'::regclass ORDER BY c.relname, objsubid;
     relname     | objsubid | description 
@@ -517,6 +524,7 @@ Statistics objects:
     "public.pg_attrdef_expr_stat" ON (a || b) FROM public.pg_attrdef
 Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 DROP TABLE public.pg_attrdef;
 -- Check that LIKE isn't confused when new table masks the old, either
@@ -543,6 +551,7 @@ Statistics objects:
     "ctl_schema.ctlt1_expr_stat" ON (a || b) FROM ctlt1
 Not-null constraints:
     "ctlt1_a_not_null" NOT NULL "a"
+Parallel DML: unsafe
 
 ROLLBACK;
 DROP TABLE ctlt1, ctlt2, ctlt3, ctlt4, ctlt12_storage, ctlt12_comments, ctlt1_inh, ctlt13_inh, ctlt13_like, ctlt_all, ctla, ctlb CASCADE;
@@ -565,6 +574,7 @@ Check constraints:
 Not-null constraints:
     "noinh_con_copy_b_not_null" NOT NULL "b"
     "noinh_con_copy_c_not_null" NOT NULL "c" NO INHERIT
+Parallel DML: unsafe
 
 SELECT conname, description
 FROM  pg_description, pg_constraint c
@@ -634,6 +644,7 @@ Statistics objects:
 Not-null constraints:
     "ctl_table_a_not_null" NOT NULL "a"
     "ctl_table_d_not_null" NOT NULL "d"
+Parallel DML: unsafe
 
 -- Test EXCLUDING ALL
 CREATE FOREIGN TABLE ctl_foreign_table1(LIKE ctl_table EXCLUDING ALL) SERVER ctl_s0;
@@ -650,6 +661,7 @@ Not-null constraints:
     "ctl_table_a_not_null" NOT NULL "a"
     "ctl_table_d_not_null" NOT NULL "d"
 Server: ctl_s0
+Parallel DML: unsafe
 
 -- \d+ does not report the value of attcompression for a foreign table, so
 -- check separately.
@@ -684,6 +696,7 @@ Not-null constraints:
     "ctl_table_a_not_null" NOT NULL "a"
     "ctl_table_d_not_null" NOT NULL "d"
 Server: ctl_s0
+Parallel DML: unsafe
 
 -- \d+ does not report the value of attcompression for a foreign table, so
 -- check separately.

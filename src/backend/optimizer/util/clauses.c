@@ -1139,13 +1139,13 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
  * If context->find_all is false, then find the worst parallel-hazard level.
  */
 List*
-target_rel_parallel_hazard(Oid relOid, bool findall,
+target_rel_parallel_hazard(Oid relOid, bool check_all,
 						   char max_interesting, char *max_hazard)
 {
 	max_parallel_hazard_context context;
 	Relation	targetRel;
 
-	context.check_all = findall;
+	context.check_all = check_all;
 	context.objects = NIL;
 	context.max_hazard = PROPARALLEL_SAFE;
 	context.max_interesting = max_interesting;

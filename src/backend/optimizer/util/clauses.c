@@ -747,16 +747,27 @@ contain_volatile_functions_not_nextval_walker(Node *node, void *context)
 char
 max_parallel_hazard(Query *parse)
 {
-	bool max_hazard_found;
+	bool	found;
 	max_parallel_hazard_context context;
 
 	context.max_hazard = PROPARALLEL_SAFE;
 	context.max_interesting = PROPARALLEL_UNSAFE;
 	context.safe_param_ids = NIL;
 
-	max_hazard_found = max_parallel_hazard_walker((Node *) parse, &context);
+	/* try to determine the worst hazard for the parsed query */
+	found = max_parallel_hazard_walker((Node *) parse, &context);
 
-	if (!max_hazard_found &&
+	/*
+	 * If walking the parse tree did not determine the hazard, check the value
+	 * for the target relation.
+	 *
+	 * FIXME Under what conditions can the walker fail to determine the hazard?
+	 * When there are no expressions, or something else?
+	 *
+	 * FIXME Why should we check the per-relation hazard only when the walker
+	 * fails to determine a value? Shouldn't we be checking both places?
+	 */
+	if (!found &&
 		IsModifySupportedInParallelMode(parse->commandType))
 	{
 		RangeTblEntry *rte;
@@ -1012,17 +1023,21 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
  * is_parallel_allowed_for_modify
  *
  * Check at a high-level if parallel mode is able to be used for the specified
- * table-modification statement. Currently, we support only Inserts.
+ * table-modification statement. Currently, only some INSERT cases are allowed.
  *
  * It's not possible in the following cases:
  *
  *  1) INSERT...ON CONFLICT...DO UPDATE
  *  2) INSERT without SELECT
  *
- * (Note: we don't do in-depth parallel-safety checks here, we do only the
+ * Note: We don't do in-depth parallel-safety checks here, we do only the
  * cheaper tests that can quickly exclude obvious cases for which
  * parallelism isn't supported, to avoid having to do further parallel-safety
- * checks for these)
+ * checks for these.
+ *
+ * XXX Isn't this somewhat backwards? Shouldn't we assume "false" and only
+ * allow parallel DML for "obviously safe" cases? So that we don't allow it
+ * in unsafe cases?
  */
 bool
 is_parallel_allowed_for_modify(Query *parse)

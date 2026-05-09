@@ -1,38 +1,26 @@
-drop extension if exists gjoin;
-create extension gjoin;
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
 
-drop table if exists t1;
-drop table if exists t2;
+INSERT INTO t1 SELECT i, 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, 1000 * random() FROM generate_series(1,10000) s(i);
 
-create table t1 (a int, b int);
-create table t2 (c int, d int);
-
-insert into t1 select i, 1000 * random() from generate_series(1,10000) s(i);
-insert into t2 select i, 1000 * random() from generate_series(1,10000) s(i);
-
-vacuum analyze t1;
-vacuum analyze t2;
-
-explain select * from t1 join t2 on (t1.a = t2.c);
-
-explain analyze select * from t1 join t2 on (t1.a = t2.c);
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
 
 LOAD 'gjoin';
-set gjoin.enabled = true;
+SET gjoin.enabled = true;
 
-select pg_backend_pid();
--- select pg_sleep(10);
+EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.A = t2.C);
 
-explain select * from t1 join t2 on (t1.a = t2.c);
+EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c);
 
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 100;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 200;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 500;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 1000;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 5000;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c) limit 10000;
-explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.c);
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 100;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 200;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 500;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 1000;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 5000;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 10000;
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c);
 
--- explain (verbose, analyze) select * from t1 join t2 on (t1.a = t2.d) join t2 tx on (t2.c = tx.c);
-
--- select * from t1 join t2 on (t1.a = t2.c);
+DROP TABLE t1;
+DROP TABLE t2;

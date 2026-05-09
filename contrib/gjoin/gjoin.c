@@ -306,7 +306,7 @@ typedef struct GJoinJoinState
 	pairingheap *queue_outer;			/* S min(maxval) / newest buffer */
 
 	/*
-	 * joing range (calculated from R), determines which S buffer can be
+	 * join range (calculated from R), determines which S buffer can be
 	 * joined with currently loaded buffers.
 	 */
 	struct {
@@ -602,31 +602,36 @@ gjoin_create_plan(PlannerInfo *root,
 
 	cjoin = makeNode(CustomJoin);
 
-	// FIXME copy_generic_path_info not defined
-	// copy_generic_path_info(&cjoin->join.plan, &best_path->path);
-
+	/* copy_generic_path_info is static */
+	cjoin->join.plan.disabled_nodes = best_path->path.disabled_nodes;
+	cjoin->join.plan.startup_cost = best_path->path.startup_cost;
+	cjoin->join.plan.total_cost = best_path->path.total_cost;
+	cjoin->join.plan.plan_rows = best_path->path.rows;
+	cjoin->join.plan.plan_width = best_path->path.pathtarget->width;
 	cjoin->join.plan.parallel_aware = best_path->path.parallel_aware;
+	cjoin->join.plan.parallel_safe = best_path->path.parallel_safe;
+
+	/* copy the stuff not handled by copy_generic_path_info */
 	cjoin->join.plan.targetlist = tlist;
 	cjoin->join.plan.qual = NIL; /* FIXME what are the quals? */
 	cjoin->join.plan.lefttree = outerplan;
 	cjoin->join.plan.righttree = innerplan;
+
 	/* return the whole base relation tuple */
-	cjoin->custom_join_tlist = NIL;
+	cjoin->custom_join_tlist = tlist;
+
+	/* set the CustomJoin stuff */
 	cjoin->methods = &gjoin_plan_methods;
 	cjoin->custom_private = NIL;
-	// cjoin->custom_private = lappend(cjoin->custom_private, outerplan);
-	// cjoin->custom_private = lappend(cjoin->custom_private, innerplan);
-
 	cjoin->custom_plans = custom_plans;
 
 	/*
 	 * add expression from the target list, so that setrefs processes it
 	 *
-	 * XXX Do we actually need to add the expressions? If yes, can't we add
+	 * XXX Do we actually need to add the expressions? If yes, can we add
 	 * the whole tlist, without iterating the items?
 	 */
 	cjoin->custom_exprs = NIL;
-
 	foreach (lc, tlist)
 	{
 		TargetEntry *te = (TargetEntry *) lfirst(lc);
@@ -658,14 +663,10 @@ gjoin_create_plan(PlannerInfo *root,
 		cjoin->custom_exprs = lappend(cjoin->custom_exprs, rinfo->clause);
 	}
 
+	/* remember the join clauses, so that we can evalute it later */
 	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses);
 
-	cjoin->custom_join_tlist = tlist;
-
-	/*
-	 * XXX Should we add qpqual too? Probably not, that's handled as it's
-	 * referenced by the Scan node.
-	 */
+	/* XXX Should we add qpqual too? Probably not. */
 
 	return (Plan *) cjoin;
 }
@@ -772,8 +773,8 @@ static Node *
 gjoin_create_plan_state(CustomJoin *cjoin)
 {
 	GJoinJoinState *state;
-	List		   *join_clauses = list_nth(cjoin->custom_private, 2);
-	List		   *join_clauses_int = list_nth(cjoin->custom_private, 3);
+	List		   *join_clauses = NIL;
+	List		   *join_clauses_int = NIL;
 	ListCell	   *lc;
 	int				idx;
 
@@ -783,8 +784,13 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 
 	state->cstate.methods = &gjoin_exec_methods;
 
-	/* extract fields from the scan custom_private list */
-	// FIXME set fields of the state here
+	/* extract fields from the custom_private list */
+	join_clauses = list_nth(cjoin->custom_private, 2);
+	join_clauses_int = list_nth(cjoin->custom_private, 3);
+
+	/* must have valid lists */
+	Assert(join_clauses && join_clauses_int);
+	Assert(list_length(join_clauses) * 3 == list_length(join_clauses_int));
 
 	/* initialize the tuple buffers */
 	gjoin_buffer_init(&state->buffer_inner);
@@ -798,24 +804,23 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	state->phase = GJOIN_INIT;
 
 	/*
-	 * FIXME Hardcoded values for join on an integer column with attnum 1
-	 * on both sides of the join. Needs to be derived from the actual join
-	 * information.
-	 */
-
-	/*
 	 * Transform the join clause(s) into info we need for sorting and
 	 * evaluating the join clauses later.
 	 *
 	 * XXX We expect each clause to be encoded as three integers.
+	 *
+	 * FIXME Hardcoded values for join on an integer column. Needs to be
+	 * derived from the actual join clauses.
 	 */
+
+	/* one sort key per join clause */
 	state->sort.numcols = list_length(join_clauses);
 
 	gjoin_sort_init(&state->sort.inner, state->sort.numcols);
 	gjoin_sort_init(&state->sort.outer, state->sort.numcols);
 
+	/* information about the equality join clause */
 	state->eq.numcols = list_length(join_clauses);
-
 	state->eq.inner_cols = palloc_array(AttrNumber, state->eq.numcols);
 	state->eq.outer_cols = palloc_array(AttrNumber, state->eq.numcols);
 	state->eq.operators = palloc_array(Oid, state->eq.numcols);
@@ -849,6 +854,9 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 		idx++;
 	}
 
+	/* only a single join clause is supported for now */
+	Assert(idx == 1);
+
 	state->buffers_inner = NULL;
 	state->buffers_outer = NULL;
 
@@ -863,9 +871,9 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 {
 	GJoinJoinState *state = (GJoinJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	ListCell *lc;
-	TupleDesc	tdesc;
 	List *clauses = (List *) list_nth(cjoin->custom_private, 4);
+	Plan *outerplan,
+		 *innerplan;
 
 	/*
 	 * Miscellaneous initialization
@@ -877,50 +885,29 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 	/*
 	 * Init the inner/outer subplan.
 	 */
-	state->outerstate = ExecInitNode(list_nth(cjoin->custom_plans, 0), estate, eflags);
-	state->innerstate = ExecInitNode(list_nth(cjoin->custom_plans, 1), estate, eflags);
+	outerplan = list_nth(cjoin->custom_plans, 0);
+	innerplan = list_nth(cjoin->custom_plans, 1);
 
-	state->cstate.custom_ps = lappend(state->cstate.custom_ps, state->outerstate);
-	state->cstate.custom_ps = lappend(state->cstate.custom_ps, state->innerstate);
+	state->outerstate = ExecInitNode(outerplan, estate, eflags);
+	state->innerstate = ExecInitNode(innerplan, estate, eflags);
 
+	state->cstate.custom_ps = lappend(state->cstate.custom_ps,
+									  state->outerstate);
+	state->cstate.custom_ps = lappend(state->cstate.custom_ps,
+									  state->innerstate);
+
+	/*
+	 * Initialize the result slot, type and projection.
+	 */
 	ExecInitResultTupleSlotTL(&state->cstate.js.ps, &TTSOpsVirtual);
 	ExecAssignProjectionInfo(&state->cstate.js.ps, NULL);
 
-	/*
-	 * Initialize result type and projection.
-	 */
 	ExecInitResultTypeTL(&state->cstate.js.ps);
 
 	/*
-	 * initialize child expressions
+	 * Initialize all child expressions - e.g. join filter.
 	 */
-	// state->cstate.ss.ps.qual = ExecInitQual(cscan->scan.plan.qual, (PlanState *) state);
 	state->cstate.js.ps.qual = ExecInitQual(clauses, (PlanState *) state);
-
-
-	tdesc = ExecGetResultType(&node->js.ps);
-
-	/*
-	 * FIXME init quals etc.
-	 */
-
-	foreach (lc, cjoin->custom_exprs)
-	{
-		Node *n = (Node *) lfirst(lc);
-		elog(WARNING, "entry expr %s", nodeToString(n));
-	}
-
-	foreach (lc, cjoin->join.plan.targetlist)
-	{
-		Node *n = (Node *) lfirst(lc);
-		elog(WARNING, "entry expr %s", nodeToString(n));
-	}
-
-	for (int i = 0; i < tdesc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(tdesc, i);
-		elog(WARNING, "%d %d %d", i, att->attnum, att->atttypid);
-	}
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
@@ -931,11 +918,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 		return;
 
 	/*
-	 * FIXME rest of init.
-	 */
-
-	/*
-	 * all done.
+	 * FIXME rest of init, if needed.
 	 */
 }
 
@@ -949,15 +932,13 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 	TupleDesc	tdesc = ExecGetResultType(state);
 	int			nextrun = 0;
 
-	elog(DEBUG1, "gjoin_BuildRunsForRelation %p START", state);
-
-	/* priority queues */
+	/* initialize the priority queues, described in the paper */
 
 	/* queues for R */
 	node->queue_inner_grow = pairingheap_allocate(priorityqueue_min_cmp, NULL);
 	node->queue_inner_shrink = pairingheap_allocate(priorityqueue_min_cmp, NULL);
 
-	/* queue for S (simplified variant with a single queue) */
+	/* queue for S (for the simplified variant with a single queue) */
 	node->queue_outer = pairingheap_allocate(priorityqueue_min_cmp, NULL);
 
 	/*
@@ -970,11 +951,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 		if (TupIsNull(slot))
 			break;
 
-		/* XXX we need to materialize here, right? */
+		/* XXX Do we need to materialize here? */
 		tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
 
 		/*
-		 * Would exceed the memory allowance? Dump the current buffer into
+		 * If we'd exceed the memory allowance, dump the current buffer into
 		 * one of the tuplesorts, in a round-robin way.
 		 *
 		 * XXX We allow accumulating up to work_mem of tuples, because while
@@ -1036,7 +1017,10 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 			nextrun = (nextrun + 1) % runs->maxruns;
 		}
 
-		/* we're going to add a tuple to the buffer, make sure it has space */
+		/*
+		 * Make sure there's space for adding a tuple to the buffer. Just double
+		 * the array size if needed, as usual.
+		 */
 		if (buffer->ntuples == buffer->maxtuples)
 		{
 			if (buffer->ntuples == 0)
@@ -1055,6 +1039,8 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 		/*
 		 * ExecFetchSlotHeapTuple may return "physical tuple", in which case
 		 * we need to copy it here, to prevent seeing garbage later
+		 *
+		 * FIXME why commented out?
 		 */
 		// if (!shouldFree)
 			tuple = heap_copytuple(tuple);
@@ -1064,10 +1050,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 	}
 
 	/*
-	 * if we had to dump data into tuplesorts, dump the remaining tuples too
+	 * We're done with reading tuples from the table. If we had to dump any
+	 * data into tuplesorts, dump the remaining tuples too.
 	 *
-	 * XXX but don't do this if we haven't spilled anything to disk, we'll
-	 * do an in-memory join (as if hashjoin, possibly)
+	 * XXX Don't do this if we haven't spilled anything to disk, we should try
+	 * doing an in-memory join (as if hashjoin) if possible.
 	 */
 	if (buffer->ntuples > 0)
 	{
@@ -1125,7 +1112,7 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 	elog(DEBUG1, "gjoin_BuildRunsForRelation %p SORT", state);
 
 	/*
-	 * do the actual sorts
+	 * Sort all the runs, one by one.
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
@@ -1141,6 +1128,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 	elog(DEBUG1, "gjoin_BuildRunsForRelation %p DONE", state);
 }
 
+/*
+ * Initialize a batch of slots for tuples with the provided descriptor.
+ *
+ * XXX We use MinimalTuples, because that what tuplesort_gettupleslot uses
+ */
 static TupleBuffer *
 tuple_buffer_init(TupleDesc tdesc)
 {
@@ -1154,7 +1146,6 @@ tuple_buffer_init(TupleDesc tdesc)
 
 	for (int j = 0; j < buffer->maxslots; j++)
 	{
-		/* tuplesort_gettupleslot works with MinimalTuples */
 		buffer->slots[j] = MakeSingleTupleTableSlot(tdesc, &TTSOpsMinimalTuple);
 	}
 
@@ -1162,7 +1153,9 @@ tuple_buffer_init(TupleDesc tdesc)
 }
 
 /*
- * Load one batch (~8KB) of tuples for each run of the inner relation (S).
+ * Initialize runs for the inner relation (S).
+ *
+ * Loads one batch (~8KB) of tuples for each run generated for the relation.
  */
 static dlist_head *
 gjoin_init_inner_runs(GJoinJoinState *state, TupleDesc tdesc)
@@ -1186,7 +1179,7 @@ gjoin_init_inner_runs(GJoinJoinState *state, TupleDesc tdesc)
 		{
 			buffer->nslots++;
 
-			/* stop after filling the last slot */
+			/* stop after filling the last slot in the buffer */
 			if (buffer->nslots == buffer->maxslots)
 				break;
 		}
@@ -1202,15 +1195,20 @@ gjoin_init_inner_runs(GJoinJoinState *state, TupleDesc tdesc)
 			 */
 			buffer->min_value = 0;
 
+			/*
+			 * Use the value from the last tuple (because the data is sorted
+			 * by this key).
+			 */
 			buffer->max_value = slot_getattr(buffer->slots[buffer->nslots - 1],
 											 (AttrNumber) 1, /* FIXME hardcoded */
 											 &buffer->max_isnull);
 
 			/*
-			 * add the buffer to the priority queues A and B
+			 * Add the run to the grow/shrink priority queues ("A" and "B" in
+			 * the paper).
 			 *
 			 * We start with a single buffer per run, so it's both the oldest
-			 * and newest buffer for the run. So add it to both queues.
+			 * and newest loaded buffer for the run. So add it to both queues.
 			 */
 			priorityqueue_push(state->queue_inner_grow, i, buffer->max_value);
 			priorityqueue_push(state->queue_inner_shrink, i, buffer->max_value);
@@ -1224,7 +1222,10 @@ gjoin_init_inner_runs(GJoinJoinState *state, TupleDesc tdesc)
 }
 
 /*
- * Load one batch (~8KB) of tuples for each run of the outer relation (S).
+ * Load one batch (~8KB) of tuples for each run of the outer relation (R).
+ *
+ * XXX We're not really checking the amount of memory, but the number of
+ * slots in the batch.
  */
 static dlist_head *
 gjoin_init_outer_runs(GJoinJoinState *state, TupleDesc tdesc)
@@ -1269,7 +1270,7 @@ gjoin_init_outer_runs(GJoinJoinState *state, TupleDesc tdesc)
 											 &buffer->max_isnull);
 
 			/*
-			 * add the buffer to the priority queue C
+			 * add the buffer to the priority queue "C"
 			 *
 			 * We use only a single priority queue to schedule both growth and
 			 * eviction for S.
@@ -1373,13 +1374,15 @@ gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 	return true;
 }
 
-/* range covered by the given run */
+/*
+ * Determine the join range covered by the given run (represented by
+ * a list of tuple buffers).
+ */
 static void
 gjoin_run_join_range(GJoinJoinState *state, dlist_head *run,
 					 Datum *minvalue, Datum *maxvalue)
 {
 	TupleBuffer *buffer;
-
 	dlist_iter	iter;
 
 	dlist_foreach(iter, run)
@@ -1399,6 +1402,7 @@ gjoin_run_join_range(GJoinJoinState *state, dlist_head *run,
 	elog(DEBUG1, "tail %p", buffer);
 }
 
+/* Calculate the join range for all runs. */
 static void
 gjoin_calculate_join_range(GJoinJoinState *state)
 {
@@ -1411,11 +1415,14 @@ gjoin_calculate_join_range(GJoinJoinState *state)
 		Datum	tmpmin,
 				tmpmax;
 
+		/* no buffers loaded for the run (processed) */
 		if (dlist_is_empty(&state->buffers_inner[i]))
 			continue;
 
 		gjoin_run_join_range(state, &state->buffers_inner[i], &tmpmin, &tmpmax);
 
+		/* FIXME use proper comparators for the given type, don't rely on
+		 * comparing the Datum values, it's bogus */
 		minval = Max(minval, tmpmin);
 		maxval = Min(maxval, tmpmax);
 	}
@@ -2005,6 +2012,7 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	// CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 
 	/* FIXME show additional run-time information about the plan */
+	elog(WARNING, "gjoin_ExplainCustomJoin: not implemented");
 }
 
 /*

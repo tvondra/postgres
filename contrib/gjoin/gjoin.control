@@ -1,0 +1,3 @@
+comment = 'Provides GJoin access path.'
+default_version = '1.0.0'
+relocatable = true

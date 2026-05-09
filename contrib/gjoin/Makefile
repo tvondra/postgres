@@ -9,9 +9,9 @@ DATA = gjoin--1.0.0.sql
 
 PGFILEDESC = "gjoin - custom join node"
 
-REGRESS = 
+REGRESS =
 
-TAP_TESTS = 1
+TAP_TESTS =
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

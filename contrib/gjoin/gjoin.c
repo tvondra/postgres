@@ -1506,12 +1506,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
-	 * FIXME do the join
-	 *
-	 * FIXME This should go through a similar state machine as hashjoins
-	 * (see nodeHashjoin.c).
+	 * Perform the join - step through the state machine, etc.
 	 */
-
 	for (;;)
 	{
 		switch (state->phase)
@@ -2137,9 +2133,9 @@ priorityqueue_pop(pairingheap *heap)
 	return (QueueEntry *) pairingheap_remove_first(heap);
 }
 
-
 /*
- * Helper function to pop the next tuple from the reorder queue.
+ * Helper function to peek at the next tuple in the reorder queue (without
+ * removing it).
  */
 static QueueEntry *
 priorityqueue_peek(pairingheap *heap)

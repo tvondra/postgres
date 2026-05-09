@@ -596,6 +596,7 @@ gjoin_create_plan(PlannerInfo *root,
 	// List	   *params = (List *) best_path->custom_private;
 	ListCell   *lc;
 	List	   *join_clauses = NIL;
+	List	   *join_clauses_int = NIL;
 
 	outerplan = (Plan *) list_nth(custom_plans, 0);
 	innerplan = (Plan *) list_nth(custom_plans, 1);
@@ -658,13 +659,71 @@ gjoin_create_plan(PlannerInfo *root,
 	foreach (lc, best_path->custom_restrictinfo)
 	{
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		OpExpr *opclause = (OpExpr *) rinfo->clause;
+		Var *var1 = (Var *) linitial(opclause->args);
+		Var *var2 = (Var *) lsecond(opclause->args);
+
+		int	inner_attnum = InvalidAttrNumber;
+		int	outer_attnum = InvalidAttrNumber;
+		TargetEntry *te = NULL;
 
 		join_clauses = lappend(join_clauses, rinfo->clause);
 		cjoin->custom_exprs = lappend(cjoin->custom_exprs, rinfo->clause);
+
+		/*
+		 * FIXME we can't rely on var->attnum being equal to an index into the
+		 * tlist, the final tlist may omit some attributes etc. So we need to
+		 * walk the tlists and calculate the real index.
+		 */
+
+		/* try to find the var1 in inner/outer plans */
+		if ((te = tlist_member((Expr *) var1, innerplan->targetlist)) != NULL)
+		{
+			inner_attnum = var1->varattno;
+		}
+		else if ((te = tlist_member((Expr *) var1, outerplan->targetlist)) != NULL)
+		{
+			outer_attnum = var1->varattno;
+		}
+		else
+			elog(ERROR, "var1 not found in inner/outer tlists");
+
+		/* try to find the var2 in inner/outer plans */
+		if ((te = tlist_member((Expr *) var2, innerplan->targetlist)) != NULL)
+		{
+			inner_attnum = var2->varattno;
+		}
+		else if ((te = tlist_member((Expr *) var2, outerplan->targetlist)) != NULL)
+		{
+			outer_attnum = var2->varattno;
+		}
+		else
+			elog(ERROR, "var2 not found in inner/outer tlists");
+
+		/* ok, we found both, must from from different sides of the join */
+		if ((inner_attnum == InvalidAttrNumber) ||
+			(outer_attnum == InvalidAttrNumber))
+			elog(ERROR, "var1/var2 on the same side of the join");
+
+		/*
+		 * now add the operator, and then inner/outer attnums
+		 *
+		 * XXX This assumes the order of vars does not matter, i.e. that the
+		 * operator is it's own commutator. For most cases that's true, but
+		 * not necessarily. So we probably need to track this too.
+		 *
+		 * XXX We don't actually need the opno, we can look at the OpExpr
+		 * later too. But well ...
+		 */
+		join_clauses_int = lappend_int(join_clauses_int, opclause->opno);
+		join_clauses_int = lappend_int(join_clauses_int, inner_attnum);
+		join_clauses_int = lappend_int(join_clauses_int, outer_attnum);
 	}
 
 	/* remember the join clauses, so that we can evalute it later */
 	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses);
+	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses_int);
+	cjoin->custom_private = lappend(cjoin->custom_private, NIL);
 
 	/* XXX Should we add qpqual too? Probably not. */
 
@@ -785,8 +844,8 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	state->cstate.methods = &gjoin_exec_methods;
 
 	/* extract fields from the custom_private list */
-	join_clauses = list_nth(cjoin->custom_private, 2);
-	join_clauses_int = list_nth(cjoin->custom_private, 3);
+	join_clauses = list_nth(cjoin->custom_private, 0);
+	join_clauses_int = list_nth(cjoin->custom_private, 1);
 
 	/* must have valid lists */
 	Assert(join_clauses && join_clauses_int);
@@ -871,7 +930,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 {
 	GJoinJoinState *state = (GJoinJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	List *clauses = (List *) list_nth(cjoin->custom_private, 4);
+	List *clauses = (List *) list_nth(cjoin->custom_private, 2);
 	Plan *outerplan,
 		 *innerplan;
 

@@ -2072,15 +2072,18 @@ show_expression(Node *node, const char *qlabel,
  */
 static void
 gjoin_ExplainCustomJoin(CustomJoinState *node,
-							 List *ancestors,
-							 ExplainState *es)
+						List *ancestors,
+						ExplainState *es)
 {
 	// List	   *context;
 	// char	   *exprstr;
-	// GJoinJoinState *state = (GJoinJoinState *) node;
-	// CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
+	GJoinJoinState *state = (GJoinJoinState *) node;
+	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
+	List *join_clauses = list_nth(cjoin->custom_private, 0);
 
 	/* FIXME show additional run-time information about the plan */
+	show_expression((Node *) join_clauses, "Join Clause",
+					(PlanState *) state, ancestors, es);
 }
 
 /*

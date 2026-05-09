@@ -2081,7 +2081,6 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	// CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 
 	/* FIXME show additional run-time information about the plan */
-	elog(WARNING, "gjoin_ExplainCustomJoin: not implemented");
 }
 
 /*

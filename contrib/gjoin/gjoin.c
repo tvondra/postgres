@@ -195,14 +195,19 @@ typedef struct GJoinPosition
  * should be derived from the join conditions instead.
  *
  * FIXME The number of elements is stored in state->sort.numcols.
+ *
+ * FIXME the name is a bit misleading, as it's used for the join clause
+ * evaluation too, not just for the sort
  */
-typedef struct GJoinSort
+typedef struct GJoinSortInfo
 {
-	AttrNumber	   *cols;
+	int				nattnums;
+	AttrNumber	   *attnums_inner;
+	AttrNumber	   *attnums_outer;
 	Oid			   *operators;
 	Oid			   *collations;
 	bool		   *nulls_first;
-} GJoinSort;
+} GJoinSortInfo;
 
 /* entry in a priority queue, implemented using the pairing heap */
 typedef struct QueueEntry
@@ -213,11 +218,11 @@ typedef struct QueueEntry
 	Datum	value;
 } QueueEntry;
 
-static int	priorityqueue_min_cmp(const pairingheap_node *a,
+static int	priorityqueues_min_cmp(const pairingheap_node *a,
 								  const pairingheap_node *b, void *arg);
-static void priorityqueue_push(pairingheap *heap, int run, Datum value);
-static QueueEntry *priorityqueue_pop(pairingheap *heap);
-static QueueEntry *priorityqueue_peek(pairingheap *heap);
+static void priorityqueues_push(pairingheap *heap, int run, Datum value);
+static QueueEntry *priorityqueues_pop(pairingheap *heap);
+static QueueEntry *priorityqueues_peek(pairingheap *heap);
 
 /*
  * Phased of the gjoin state machine.
@@ -262,37 +267,50 @@ typedef struct GJoinJoinState
 	 * open, to not end with the same memory "explosion" issue as hashjoin.
 	 *
 	 * XXX The annoying drawback is that this keeps work_mem for each sort,
-	 * and that needs fixing. Actually, is that true?
+	 * and that needs fixing. Actually, is that true? Maybe it's only for
+	 * the sorting (but we do the one by one), not for reading the sorted
+	 * data afterwards?
 	 */
-	GJoinRuns	runs_inner;
-	GJoinRuns	runs_outer;
+	struct {
+		GJoinRuns	inner;
+		GJoinRuns	outer;
+	} runs;
 
 	/*
 	 * Buffer of tuples to be written to tuplesort. We don't write the tuples
 	 * to the tuplesort right away, because maybe if it fits into work_mem
 	 * we could do away without a sort.
 	 *
-	 * We only need one buffer (for each side) when ingesting tuples. We will
-	 * use multiple buffers during the matching later.
+	 * For ingesting tuples (when building the runs) we only need one buffer
+	 * for each relation (In fact, maybe we could use a single buffer for
+	 * both relations?). We will use multiple buffers during the matching
+	 * during join later.
 	 *
 	 * XXX So we can use much larger buffer.
 	 */
-	GJoinBuffer	buffer_inner;
-	GJoinBuffer	buffer_outer;
+	 struct {
+		GJoinBuffer	inner;
+		GJoinBuffer	outer;
+	} buffer;
 
 	/*
-	 * sort information (extracted from join clauses)
+	 * information for sorting the input data (derived from join clauses)
 	 *
 	 * XXX we should allow postponing the sort, in case we can do hash join
 	 *
 	 * XXX another thing is the sort may not be needed at all, if the input
 	 * paths are already sorted
+	 *
+	 * XXX should handle expressions too, not just plain attnums
 	 */
-	struct {
-		int			numcols;
-		GJoinSort	inner;
-		GJoinSort	outer;
-	} sort;
+	GJoinSortInfo	sort;
+
+	/*
+	 * information for evaluating the equality join clauses
+	 *
+	 * XXX gjoin_ExecCustomScan should be using this
+	 */
+	GJoinSortInfo	equality;
 
 	/*
 	 * priority queues from the algorithm, described by the paper
@@ -301,13 +319,17 @@ typedef struct GJoinJoinState
 	 * using the newest buffer for queue C (and not using D at all). That
 	 * way we don't need to look ahead at the next page.
 	 */
-	pairingheap *queue_inner_grow;		/* R min(maxval) / newest buffer */
-	pairingheap *queue_inner_shrink;	/* R min(maxval) / oldest buffer */
-	pairingheap *queue_outer;			/* S min(maxval) / newest buffer */
+	struct {
+		pairingheap *inner_grow;	/* R min(maxval) / newest buffer */
+		pairingheap *inner_shrink;	/* R min(maxval) / oldest buffer */
+		pairingheap *outer;			/* S min(maxval) / newest buffer */
+	} queues;
 
 	/*
 	 * join range (calculated from R), determines which S buffer can be
 	 * joined with currently loaded buffers.
+	 *
+	 * FIXME does not handle NULL values (it's not the same as not set)
 	 */
 	struct {
 		Datum	min_value;
@@ -315,22 +337,6 @@ typedef struct GJoinJoinState
 		bool	min_value_set;
 		bool	max_value_set;
 	} join_range;
-
-	/*
-	 * join equality info
-	 *
-	 * XXX It's populated but not used anywhere, because gjoin_ExecCustomScan
-	 * simply produces all combinations. It needs to use this.
-	 *
-	 * FIXME Combine this into a separate struct.
-	 */
-	struct {
-		int			numcols;
-		AttrNumber *inner_cols;
-		AttrNumber *outer_cols;
-		Oid		   *operators;
-		Oid		   *collations;
-	} eq;
 
 	/*
 	 * Buffers used during the actual join, when combining tuples from inner
@@ -786,9 +792,11 @@ gjoin_runs_close(GJoinRuns *runs)
  * This only allocates the space, does not set any of the values.
  */
 static void
-gjoin_sort_init(GJoinSort *sort, int numcols)
+gjoin_sort_init(GJoinSortInfo *sort, int numcols)
 {
-	sort->cols = palloc_array(AttrNumber, numcols);
+	sort->nattnums = numcols;
+	sort->attnums_inner = palloc_array(AttrNumber, numcols);
+	sort->attnums_outer = palloc_array(AttrNumber, numcols);
 	sort->operators = palloc_array(Oid, numcols);
 	sort->collations = palloc_array(Oid, numcols);
 	sort->nulls_first = palloc_array(bool, numcols);
@@ -852,12 +860,12 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	Assert(list_length(join_clauses) * 3 == list_length(join_clauses_int));
 
 	/* initialize the tuple buffers */
-	gjoin_buffer_init(&state->buffer_inner);
-	gjoin_buffer_init(&state->buffer_outer);
+	gjoin_buffer_init(&state->buffer.inner);
+	gjoin_buffer_init(&state->buffer.outer);
 
 	/* initialize the runs */
-	gjoin_runs_init(&state->runs_inner);
-	gjoin_runs_init(&state->runs_outer);
+	gjoin_runs_init(&state->runs.inner);
+	gjoin_runs_init(&state->runs.outer);
 
 	/* start by initializing the runs etc. */
 	state->phase = GJOIN_INIT;
@@ -873,42 +881,35 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	 */
 
 	/* one sort key per join clause */
-	state->sort.numcols = list_length(join_clauses);
+	gjoin_sort_init(&state->sort, list_length(join_clauses));
 
-	gjoin_sort_init(&state->sort.inner, state->sort.numcols);
-	gjoin_sort_init(&state->sort.outer, state->sort.numcols);
-
-	/* information about the equality join clause */
-	state->eq.numcols = list_length(join_clauses);
-	state->eq.inner_cols = palloc_array(AttrNumber, state->eq.numcols);
-	state->eq.outer_cols = palloc_array(AttrNumber, state->eq.numcols);
-	state->eq.operators = palloc_array(Oid, state->eq.numcols);
-	state->eq.collations = palloc_array(Oid, state->eq.numcols);
+	/* information about the equality join clauses */
+	gjoin_sort_init(&state->equality, list_length(join_clauses));
 
 	idx = 0;
 	foreach (lc, join_clauses)
 	{
 		OpExpr *opclause = (OpExpr *) lfirst(lc);
 
+		/* extract information from the join_clauses_int list */
 		AttrNumber	attnum_inner = list_nth_int(join_clauses_int, idx * 3 + 1);
 		AttrNumber	attnum_outer = list_nth_int(join_clauses_int, idx * 3 + 2);
 
-		/* sort info */
-		state->sort.inner.cols[idx] = attnum_inner;
-		state->sort.inner.operators[idx] = 97;	/* FIXME int < int */
-		state->sort.inner.collations[idx] = opclause->opcollid;
-		state->sort.inner.nulls_first[idx] = true;
+		/* FIXME handle the inverse clause too */
 
-		state->sort.outer.cols[idx] = attnum_outer;
-		state->sort.outer.operators[idx] = 97;	/* FIXME int < int */
-		state->sort.outer.collations[idx] = opclause->opcollid;
-		state->sort.outer.nulls_first[idx] = true;
+		/* sort info */
+		state->sort.attnums_inner[idx] = attnum_inner;
+		state->sort.attnums_outer[idx] = attnum_outer;
+		state->sort.operators[idx] = 97;	/* FIXME int < int */
+		state->sort.collations[idx] = opclause->opcollid;
+		state->sort.nulls_first[idx] = true;
 
 		/* equality evaluation */
-		state->eq.inner_cols[idx] = (AttrNumber) attnum_inner;
-		state->eq.outer_cols[idx] = (AttrNumber) attnum_outer;
-		state->eq.operators[idx] = 96;	/* int = int */
-		state->eq.collations[idx] = opclause->opcollid;
+		state->equality.attnums_inner[idx] = attnum_inner;
+		state->equality.attnums_outer[idx] = attnum_outer;
+		state->equality.operators[idx] = 96;	/* int = int */
+		state->equality.collations[idx] = opclause->opcollid;
+		state->equality.nulls_first[idx] = false;
 
 		idx++;
 	}
@@ -983,7 +984,8 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 
 static void
 gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
-						   GJoinBuffer *buffer, GJoinRuns *runs, GJoinSort *sort)
+						   GJoinBuffer *buffer, GJoinRuns *runs,
+						   GJoinSortInfo *sort, bool inner)
 {
 	TupleTableSlot *slot;
 	bool		shouldFree;
@@ -994,11 +996,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 	/* initialize the priority queues, described in the paper */
 
 	/* queues for R */
-	node->queue_inner_grow = pairingheap_allocate(priorityqueue_min_cmp, NULL);
-	node->queue_inner_shrink = pairingheap_allocate(priorityqueue_min_cmp, NULL);
+	node->queues.inner_grow = pairingheap_allocate(priorityqueues_min_cmp, NULL);
+	node->queues.inner_shrink = pairingheap_allocate(priorityqueues_min_cmp, NULL);
 
 	/* queue for S (for the simplified variant with a single queue) */
-	node->queue_outer = pairingheap_allocate(priorityqueue_min_cmp, NULL);
+	node->queues.outer = pairingheap_allocate(priorityqueues_min_cmp, NULL);
 
 	/*
 	 * Get all tuples from the node below the Hash node and insert into the
@@ -1043,8 +1045,8 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 				Assert(runs->nruns == nextrun);
 
 				tuplesortstate = tuplesort_begin_heap(tdesc,
-													  node->sort.numcols,
-													  sort->cols,
+													  sort->nattnums,
+													  (inner) ? sort->attnums_inner : sort->attnums_outer,
 													  sort->operators,
 													  sort->collations,
 													  sort->nulls_first,
@@ -1138,8 +1140,8 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 			Assert(nextrun == runs->nruns);
 
 			tuplesortstate = tuplesort_begin_heap(tdesc,
-												  node->sort.numcols,
-												  sort->cols,
+												  sort->nattnums,
+												  (inner) ? sort->attnums_inner : sort->attnums_outer,
 												  sort->operators,
 												  sort->collations,
 												  sort->nulls_first,
@@ -1219,7 +1221,7 @@ tuple_buffer_init(TupleDesc tdesc)
 static dlist_head *
 gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 {
-	GJoinRuns *runs = &state->runs_inner;
+	GJoinRuns *runs = &state->runs.inner;
 
 	/* allocate the array of buffer lists (list per run) */
 	dlist_head *buffers = palloc_array(dlist_head, runs->nruns);
@@ -1269,8 +1271,8 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 			 * We start with a single buffer per run, so it's both the oldest
 			 * and newest loaded buffer for the run. So add it to both queues.
 			 */
-			priorityqueue_push(state->queue_inner_grow, i, buffer->max_value);
-			priorityqueue_push(state->queue_inner_shrink, i, buffer->max_value);
+			priorityqueues_push(state->queues.inner_grow, i, buffer->max_value);
+			priorityqueues_push(state->queues.inner_shrink, i, buffer->max_value);
 		}
 
 		dlist_init(&buffers[i]);
@@ -1289,7 +1291,7 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 static dlist_head *
 gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 {
-	GJoinRuns *runs = &state->runs_outer;
+	GJoinRuns *runs = &state->runs.outer;
 
 	/* allocate the array of buffer lists (list per run) */
 	dlist_head *buffers = palloc_array(dlist_head, runs->nruns);
@@ -1336,7 +1338,7 @@ gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 			 *
 			 * XXX Maybe we should have both, to make it more memory-efficient.
 			 */
-			priorityqueue_push(state->queue_outer, i, buffer->max_value);
+			priorityqueues_push(state->queues.outer, i, buffer->max_value);
 		}
 
 		dlist_init(&buffers[i]);
@@ -1356,7 +1358,7 @@ gjoin_load_outer_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
 
-	while (tuplesort_gettupleslot(state->runs_outer.runs[run], true, true,
+	while (tuplesort_gettupleslot(state->runs.outer.runs[run], true, true,
 								  buffer->slots[buffer->nslots],
 								  NULL))
 	{
@@ -1381,7 +1383,7 @@ gjoin_load_outer_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 									 &buffer->max_isnull);
 
 	/* add the buffer to the priority queue for S */
-	priorityqueue_push(state->queue_outer, run, buffer->max_value);
+	priorityqueues_push(state->queues.outer, run, buffer->max_value);
 
 	/* also add the buffer to the run */
 	dlist_push_tail(&state->buffers_outer[run],
@@ -1399,7 +1401,7 @@ gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 
 	elog(DEBUG1, "load buffer for run %d", run);
 
-	while (tuplesort_gettupleslot(state->runs_inner.runs[run], true, true,
+	while (tuplesort_gettupleslot(state->runs.inner.runs[run], true, true,
 								  buffer->slots[buffer->nslots],
 								  NULL))
 	{
@@ -1424,7 +1426,7 @@ gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 									 &buffer->max_isnull);
 
 	/* add the buffer to the priority queue that manages growing */
-	priorityqueue_push(state->queue_inner_grow, run, buffer->max_value);
+	priorityqueues_push(state->queues.inner_grow, run, buffer->max_value);
 
 	/* also add the buffer to the run */
 	dlist_push_tail(&state->buffers_inner[run],
@@ -1469,7 +1471,7 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 	Datum	minval = 0,
 			maxval = 10000000000;
 
-	for (int i = 0; i < state->runs_inner.nruns; i++)
+	for (int i = 0; i < state->runs.inner.nruns; i++)
 	{
 		Datum	tmpmin,
 				tmpmax;
@@ -1536,9 +1538,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				 */
 				gjoin_BuildRunsForRelation(state,
 										   state->innerstate,
-										   &state->buffer_inner,
-										   &state->runs_inner,
-										   &state->sort.inner);
+										   &state->buffer.inner,
+										   &state->runs.inner,
+										   &state->sort, true);
 
 				/* build runs for the outer relation next */
 				state->phase = GJOIN_BUILD_OUTER;
@@ -1551,9 +1553,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				/* Now build runs for the outer relation. */
 				gjoin_BuildRunsForRelation(state,
 										   state->outerstate,
-										   &state->buffer_outer,
-										   &state->runs_outer,
-										   &state->sort.outer);
+										   &state->buffer.outer,
+										   &state->runs.outer,
+										   &state->sort, false);
 
 				/* prepare for reading tuples from the inner runs */
 				state->phase = GJOIN_INIT_INNER;
@@ -1633,15 +1635,15 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						QueueEntry *entry;
 
 						/* empty queue C means no more buffers in S, so terminate */
-						if (pairingheap_is_empty(state->queue_outer))
+						if (pairingheap_is_empty(state->queues.outer))
 							return NULL;
 
 						/* don't remove the entry yet, GJOIN_LOAD_OUTER does that */
-						entry = priorityqueue_peek(state->queue_outer);
+						entry = priorityqueues_peek(state->queues.outer);
 
 						/* if we got an entry from queue, there must be a list */
 						Assert(!dlist_is_empty(&state->buffers_outer[entry->run]));
-						Assert(entry->run < state->runs_outer.nruns);
+						Assert(entry->run < state->runs.outer.nruns);
 
 						/* init the outer position */
 						state->pos_outer.run = entry->run;
@@ -1724,7 +1726,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						TupleBuffer	   *buffer_outer;
 
 						/* Have we ran out of runs? We're done. */
-						if (state->pos_inner.run >= state->runs_inner.nruns)
+						if (state->pos_inner.run >= state->runs.inner.nruns)
 							break;
 
 						/* we've just start, so advance to first run */
@@ -1794,8 +1796,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
 
 							bool	isnull;
-							Datum	a = slot_getattr(outer, state->eq.inner_cols[0], &isnull);
-							Datum	b = slot_getattr(inner, state->eq.outer_cols[0], &isnull);
+							Datum	a = slot_getattr(outer, state->equality.attnums_inner[0], &isnull);
+							Datum	b = slot_getattr(inner, state->equality.attnums_outer[0], &isnull);
 
 							econtext->ecxt_innertuple = inner;
 							econtext->ecxt_outertuple = outer;
@@ -1827,11 +1829,11 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					/* FIXME we shouldn't bail out right away, there still
 					 * may be some data to join (similarly to the beginning,
 					 * we should use infinity for the highkey) */
-					if (pairingheap_is_empty(state->queue_inner_grow))
+					if (pairingheap_is_empty(state->queues.inner_grow))
 						return NULL;
 
 					/* get the next entry, remove it */
-					entry = priorityqueue_pop(state->queue_inner_grow);
+					entry = priorityqueues_pop(state->queues.inner_grow);
 
 					buffer = tuple_buffer_init(ExecGetResultType(state->innerstate));
 
@@ -1867,10 +1869,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					TupleBuffer	   *buffer;
 					bool			loaded;
 
-					Assert(!pairingheap_is_empty(state->queue_outer));
+					Assert(!pairingheap_is_empty(state->queues.outer));
 
 					/* still don't remove the entry, we'll need it t */
-					entry = priorityqueue_peek(state->queue_outer);
+					entry = priorityqueues_peek(state->queues.outer);
 
 					buffer = dlist_head_element(TupleBuffer, node,
 												&state->buffers_outer[entry->run]);
@@ -1920,10 +1922,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					QueueEntry	   *entry;
 					TupleBuffer	   *buffer;
 
-					Assert(!pairingheap_is_empty(state->queue_outer));
+					Assert(!pairingheap_is_empty(state->queues.outer));
 
 					/* time to finally remove the entry, won't need it */
-					entry = priorityqueue_pop(state->queue_outer);
+					entry = priorityqueues_pop(state->queues.outer);
 
 					buffer = dlist_head_element(TupleBuffer, node,
 												&state->buffers_outer[entry->run]);
@@ -1952,7 +1954,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						TupleBuffer *buffer_inner, *tail;
 						QueueEntry *entry_inner;
 
-						entry_inner = priorityqueue_peek(state->queue_inner_shrink);
+						entry_inner = priorityqueues_peek(state->queues.inner_shrink);
 
 						buffer_inner = dlist_head_element(TupleBuffer, node,
 														  &state->buffers_inner[entry->run]);
@@ -1969,7 +1971,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							break;
 
 						/* ok, remove */
-						priorityqueue_pop(state->queue_inner_shrink);
+						priorityqueues_pop(state->queues.inner_shrink);
 
 						/* FIXME if there are more buffers, for this run, have to
 						 * add the next one (the oldest page remaining) to the
@@ -1983,7 +1985,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							next_node = dlist_next_node(&state->buffers_inner[entry_inner->run],
 														&buffer_inner->node);
 							tmp = dlist_container(TupleBuffer, node, next_node);
-							priorityqueue_push(state->queue_inner_shrink, entry_inner->run, tmp->max_value);
+							priorityqueues_push(state->queues.inner_shrink, entry_inner->run, tmp->max_value);
 						}
 
 						/* unlink the buffer from the list */
@@ -2015,8 +2017,8 @@ gjoin_EndCustomJoin(CustomJoinState *node)
 	GJoinJoinState *state = (GJoinJoinState *) node;
 
 	/* FIXME cleanup */
-	gjoin_runs_close(&state->runs_inner);
-	gjoin_runs_close(&state->runs_outer);
+	gjoin_runs_close(&state->runs.inner);
+	gjoin_runs_close(&state->runs.outer);
 
 	/*
 	 * clean up subtrees
@@ -2085,7 +2087,7 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
  * FIXME use proper type-specific comparator, this assumes integers
  */
 static int
-priorityqueue_min_cmp(const pairingheap_node *a, const pairingheap_node *b,
+priorityqueues_min_cmp(const pairingheap_node *a, const pairingheap_node *b,
 				 void *arg)
 {
 	QueueEntry *qea = (QueueEntry *) a;
@@ -2104,11 +2106,11 @@ priorityqueue_min_cmp(const pairingheap_node *a, const pairingheap_node *b,
  * Helper function to push a tuple to the reorder queue.
  */
 static void
-priorityqueue_push(pairingheap *heap, int run, Datum value)
+priorityqueues_push(pairingheap *heap, int run, Datum value)
 {
 	QueueEntry	*qe;
 
-	/* FIXME don't use TopMemoryContext (see reorderqueue_push)  */
+	/* FIXME don't use TopMemoryContext (see reorderqueues_push)  */
 	MemoryContext oldContext = MemoryContextSwitchTo(TopMemoryContext);
 
 	qe = (QueueEntry *) palloc(sizeof(QueueEntry));
@@ -2124,7 +2126,7 @@ priorityqueue_push(pairingheap *heap, int run, Datum value)
  * Helper function to pop the next tuple from the reorder queue.
  */
 static QueueEntry *
-priorityqueue_pop(pairingheap *heap)
+priorityqueues_pop(pairingheap *heap)
 {
 	return (QueueEntry *) pairingheap_remove_first(heap);
 }
@@ -2134,7 +2136,7 @@ priorityqueue_pop(pairingheap *heap)
  * removing it).
  */
 static QueueEntry *
-priorityqueue_peek(pairingheap *heap)
+priorityqueues_peek(pairingheap *heap)
 {
 	return (QueueEntry *) pairingheap_first(heap);
 }

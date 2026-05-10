@@ -1739,6 +1739,42 @@ create_material_path(RelOptInfo *rel, Path *subpath, bool enabled)
 }
 
 /*
+ * create_full_material_path
+ *	  Creates a path corresponding to a FullMaterial plan, returning the
+ *	  pathnode.
+ */
+FullMaterialPath *
+create_full_material_path(RelOptInfo *rel, Path *subpath, bool enabled)
+{
+	FullMaterialPath *pathnode = makeNode(FullMaterialPath);
+
+	Assert(subpath->parent == rel);
+
+	pathnode->path.pathtype = T_FullMaterial;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = rel->reltarget;
+	pathnode->path.param_info = subpath->param_info;
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel &&
+		subpath->parallel_safe;
+	pathnode->path.parallel_workers = subpath->parallel_workers;
+	pathnode->path.pathkeys = subpath->pathkeys;
+
+	pathnode->subpath = subpath;
+
+	cost_material(&pathnode->path,
+				  enabled,
+				  subpath->disabled_nodes,
+				  subpath->startup_cost,
+				  subpath->total_cost,
+				  subpath->rows,
+				  subpath->pathtarget->width);
+
+	return pathnode;
+}
+
+
+/*
  * create_memoize_path
  *	  Creates a path corresponding to a Memoize plan, returning the pathnode.
  */

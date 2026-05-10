@@ -1084,6 +1084,11 @@ typedef struct Material
 	Plan		plan;
 } Material;
 
+typedef struct FullMaterial
+{
+	Plan		plan;
+} FullMaterial;
+
 /* ----------------
  *		memoize node
  * ----------------

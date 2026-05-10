@@ -92,6 +92,9 @@ static Result *create_group_result_plan(PlannerInfo *root,
 static ProjectSet *create_project_set_plan(PlannerInfo *root, ProjectSetPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path,
 									  int flags);
+static FullMaterial *create_full_material_plan(PlannerInfo *root,
+											   FullMaterialPath *best_path,
+											   int flags);
 static Memoize *create_memoize_plan(PlannerInfo *root, MemoizePath *best_path,
 									int flags);
 static Gather *create_gather_plan(PlannerInfo *root, GatherPath *best_path);
@@ -278,6 +281,7 @@ static Sort *make_sort_from_groupcols(List *groupcls,
 									  AttrNumber *grpColIdx,
 									  Plan *lefttree);
 static Material *make_material(Plan *lefttree);
+static FullMaterial *make_full_material(Plan *lefttree);
 static Memoize *make_memoize(Plan *lefttree, Oid *hashoperators,
 							 Oid *collations, List *param_exprs,
 							 bool singlerow, bool binary_mode,
@@ -462,6 +466,11 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 			plan = (Plan *) create_material_plan(root,
 												 (MaterialPath *) best_path,
 												 flags);
+			break;
+		case T_FullMaterial:
+			plan = (Plan *) create_full_material_plan(root,
+													  (FullMaterialPath *) best_path,
+													  flags);
 			break;
 		case T_Memoize:
 			plan = (Plan *) create_memoize_plan(root,
@@ -1694,6 +1703,34 @@ create_material_plan(PlannerInfo *root, MaterialPath *best_path, int flags)
 								  flags | CP_SMALL_TLIST);
 
 	plan = make_material(subplan);
+
+	copy_generic_path_info(&plan->plan, (Path *) best_path);
+
+	return plan;
+}
+
+/*
+ * create_full_material_plan
+ *	  Create a FullMaterial plan for 'best_path' and (recursively) plans
+ *	  for its subpaths.
+ *
+ *	  Returns a Plan node.
+ */
+static FullMaterial *
+create_full_material_plan(PlannerInfo *root, FullMaterialPath *best_path, int flags)
+{
+	FullMaterial   *plan;
+	Plan	   *subplan;
+
+	/*
+	 * We don't want any excess columns in the materialized tuples, so request
+	 * a smaller tlist.  Otherwise, since Material doesn't project, tlist
+	 * requirements pass through.
+	 */
+	subplan = create_plan_recurse(root, best_path->subpath,
+								  flags | CP_SMALL_TLIST);
+
+	plan = make_full_material(subplan);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -6497,6 +6534,20 @@ make_material(Plan *lefttree)
 	return node;
 }
 
+static FullMaterial *
+make_full_material(Plan *lefttree)
+{
+	FullMaterial   *node = makeNode(FullMaterial);
+	Plan	   *plan = &node->plan;
+
+	plan->targetlist = lefttree->targetlist;
+	plan->qual = NIL;
+	plan->lefttree = lefttree;
+	plan->righttree = NULL;
+
+	return node;
+}
+
 /*
  * materialize_finished_plan: stick a Material node atop a completed plan
  *
@@ -7235,6 +7286,7 @@ is_projection_capable_path(Path *path)
 	{
 		case T_Hash:
 		case T_Material:
+		case T_FullMaterial:
 		case T_Memoize:
 		case T_Sort:
 		case T_IncrementalSort:
@@ -7285,6 +7337,7 @@ is_projection_capable_plan(Plan *plan)
 	{
 		case T_Hash:
 		case T_Material:
+		case T_FullMaterial:
 		case T_Memoize:
 		case T_Sort:
 		case T_Unique:

@@ -2338,6 +2338,12 @@ typedef struct MaterialPath
 	Path	   *subpath;
 } MaterialPath;
 
+typedef struct FullMaterialPath
+{
+	Path		path;
+	Path	   *subpath;
+} FullMaterialPath;
+
 /*
  * MemoizePath represents a Memoize plan node, i.e., a cache that caches
  * tuples from parameterized paths to save the underlying node from having to

@@ -26,6 +26,7 @@
 #include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
+#include "executor/nodeFullMaterial.h"
 #include "executor/nodeFunctionscan.h"
 #include "executor/nodeGather.h"
 #include "executor/nodeGatherMerge.h"
@@ -255,6 +256,10 @@ ExecReScan(PlanState *node)
 			ExecReScanMaterial((MaterialState *) node);
 			break;
 
+		case T_FullMaterialState:
+			ExecReScanFullMaterial((FullMaterialState *) node);
+			break;
+
 		case T_MemoizeState:
 			ExecReScanMemoize((MemoizeState *) node);
 			break;
@@ -345,6 +350,10 @@ ExecMarkPos(PlanState *node)
 			ExecMaterialMarkPos((MaterialState *) node);
 			break;
 
+		case T_FullMaterialState:
+			ExecFullMaterialMarkPos((FullMaterialState *) node);
+			break;
+
 		case T_SortState:
 			ExecSortMarkPos((SortState *) node);
 			break;
@@ -392,6 +401,10 @@ ExecRestrPos(PlanState *node)
 
 		case T_MaterialState:
 			ExecMaterialRestrPos((MaterialState *) node);
+			break;
+
+		case T_FullMaterialState:
+			ExecFullMaterialRestrPos((FullMaterialState *) node);
 			break;
 
 		case T_SortState:

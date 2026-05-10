@@ -417,7 +417,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 */
 	if ((cursorOptions & CURSOR_OPT_PARALLEL_OK) != 0 &&
 		IsUnderPostmaster &&
-		parse->commandType == CMD_SELECT &&
+		(parse->commandType == CMD_SELECT || parse->commandType == CMD_INSERT) &&
 		!parse->hasModifyingCTE &&
 		max_parallel_workers_per_gather > 0 &&
 		!IsParallelWorker())
@@ -1744,6 +1744,72 @@ preprocess_phv_expression(PlannerInfo *root, Expr *expr)
 	return (Expr *) preprocess_expression(root, (Node *) expr, EXPRKIND_PHV);
 }
 
+/*
+ * silly walker of the path tree - surely we have something like that, but
+ * I can't find it (and expression tree walker does not work for paths)
+ */
+
+#define WALK_SUBPATH(p, t, c) \
+	if (IsA(p, t)) \
+		gather_count_recurse(((t *) p)->subpath, c);
+
+#define WALK_SUBPATHS(p, t, c) \
+	if (IsA(p, t)) \
+	{ \
+		ListCell *lc; \
+		foreach(lc, ((t *) p)->subpaths) \
+		{ \
+			Path *x = (Path *) lfirst(lc); \
+			gather_count_recurse(x, count); \
+		} \
+	}
+
+#define WALK_JOINPATH(p, t, c) \
+	if (IsA(p, t)) \
+	{ \
+		JoinPath *jp = (JoinPath *)p; \
+		gather_count_recurse(jp->innerjoinpath, count); \
+		gather_count_recurse(jp->outerjoinpath, count); \
+	}
+
+static void
+gather_count_recurse(Path *path, int *count)
+{
+	if (IsA(path, GatherPath) || IsA(path, GatherMergePath))
+		(*count)++;
+
+	WALK_SUBPATH(path, SubqueryScanPath, count);
+	WALK_SUBPATH(path, MaterialPath, count);
+	WALK_SUBPATH(path, MemoizePath, count);
+	WALK_SUBPATH(path, ProjectionPath, count);
+	WALK_SUBPATH(path, ProjectSetPath, count);
+	WALK_SUBPATH(path, SortPath, count);
+	WALK_SUBPATH(path, GroupPath, count);
+	WALK_SUBPATH(path, UniquePath, count);
+	WALK_SUBPATH(path, AggPath, count);
+	WALK_SUBPATH(path, GroupingSetsPath, count);
+	WALK_SUBPATH(path, WindowAggPath, count);
+	WALK_SUBPATH(path, LockRowsPath, count);
+	WALK_SUBPATH(path, LimitPath, count);
+
+	WALK_JOINPATH(path, NestPath, count);
+	WALK_JOINPATH(path, MergePath, count);
+	WALK_JOINPATH(path, HashPath, count);
+
+	WALK_SUBPATHS(path, AppendPath, count);
+	WALK_SUBPATHS(path, MergeAppendPath, count);
+}
+
+static int
+gather_count(Path *path)
+{
+	int		count = 0;
+
+	gather_count_recurse(path, &count);
+
+	return count;
+}
+
 /*--------------------
  * grouping_planner
  *	  Perform planning steps related to grouping, aggregation, etc.
@@ -2447,6 +2513,19 @@ grouping_planner(PlannerInfo *root, double tuple_fraction,
 				rowMarks = NIL;
 			else
 				rowMarks = root->rowMarks;
+
+			/*
+			 * We allow parallel query with INSERT subselects, in which case
+			 * we need to inject a full materialization to make sure the insert
+			 * does not run in parallel mode.
+			 *
+			 * XXX just count the gather nodes in the path - is there a better
+			 * way to consider here?
+			 */
+			if ((parse->commandType == CMD_INSERT) && gather_count(path) > 0)
+			{
+				path = (Path *) create_full_material_path(path->parent, path, true);
+			}
 
 			path = (Path *)
 				create_modifytable_path(root, final_rel,

@@ -83,6 +83,7 @@
 #include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
+#include "executor/nodeFullMaterial.h"
 #include "executor/nodeFunctionscan.h"
 #include "executor/nodeGather.h"
 #include "executor/nodeGatherMerge.h"
@@ -315,6 +316,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_Material:
 			result = (PlanState *) ExecInitMaterial((Material *) node,
 													estate, eflags);
+			break;
+
+		case T_FullMaterial:
+			result = (PlanState *) ExecInitFullMaterial((FullMaterial *) node,
+														estate, eflags);
 			break;
 
 		case T_Sort:
@@ -685,6 +691,10 @@ ExecEndNode(PlanState *node)
 			 */
 		case T_MaterialState:
 			ExecEndMaterial((MaterialState *) node);
+			break;
+
+		case T_FullMaterialState:
+			ExecEndFullMaterial((FullMaterialState *) node);
 			break;
 
 		case T_SortState:

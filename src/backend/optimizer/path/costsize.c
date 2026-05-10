@@ -4845,6 +4845,7 @@ cost_rescan(PlannerInfo *root, Path *path,
 			}
 			break;
 		case T_Material:
+		case T_FullMaterial:
 		case T_Sort:
 			{
 				/*

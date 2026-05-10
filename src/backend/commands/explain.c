@@ -128,6 +128,7 @@ static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
 static void show_material_info(MaterialState *mstate, ExplainState *es);
+static void show_full_material_info(FullMaterialState *mstate, ExplainState *es);
 static void show_windowagg_info(WindowAggState *winstate, ExplainState *es);
 static void show_ctescan_info(CteScanState *ctescanstate, ExplainState *es);
 static void show_table_func_scan_info(TableFuncScanState *tscanstate,
@@ -1528,6 +1529,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Material:
 			pname = sname = "Materialize";
 			break;
+		case T_FullMaterial:
+			pname = sname = "Full Materialize";
+			break;
 		case T_Memoize:
 			pname = sname = "Memoize";
 			break;
@@ -2265,6 +2269,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_Material:
 			show_material_info(castNode(MaterialState, planstate), es);
+			break;
+		case T_FullMaterial:
+			show_full_material_info(castNode(FullMaterialState, planstate), es);
 			break;
 		case T_Memoize:
 			show_memoize_info(castNode(MemoizeState, planstate), ancestors,
@@ -3482,6 +3489,29 @@ show_hash_info(HashState *hashstate, ExplainState *es)
  */
 static void
 show_material_info(MaterialState *mstate, ExplainState *es)
+{
+	char	   *maxStorageType;
+	int64		maxSpaceUsed;
+
+	Tuplestorestate *tupstore = mstate->tuplestorestate;
+
+	/*
+	 * Nothing to show if ANALYZE option wasn't used or if execution didn't
+	 * get as far as creating the tuplestore.
+	 */
+	if (!es->analyze || tupstore == NULL)
+		return;
+
+	tuplestore_get_stats(tupstore, &maxStorageType, &maxSpaceUsed);
+	show_storage_info(maxStorageType, maxSpaceUsed, es);
+}
+
+/*
+ * Show information on material node, storage method and maximum memory/disk
+ * space used.
+ */
+static void
+show_full_material_info(FullMaterialState *mstate, ExplainState *es)
 {
 	char	   *maxStorageType;
 	int64		maxSpaceUsed;

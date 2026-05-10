@@ -2288,6 +2288,13 @@ typedef struct MaterialState
 	Tuplestorestate *tuplestorestate;
 } MaterialState;
 
+typedef struct FullMaterialState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+	int			eflags;			/* capability flags to pass to tuplestore */
+	Tuplestorestate *tuplestorestate;
+} FullMaterialState;
+
 struct MemoizeEntry;
 struct MemoizeTuple;
 struct MemoizeKey;

@@ -419,6 +419,49 @@ gjoin_join_pathlist_hook(PlannerInfo *root, RelOptInfo *joinrel,
 	elog(DEBUG1, "consider GJoin path %p", path);
 }
 
+static bool
+clause_is_compatible(Expr *clause)
+{
+	OpExpr *opclause;
+	Var	   *var1,
+		   *var2;
+	TypeCacheEntry *typentry;
+
+	/* we only care about (Var op Var) clauses */
+	if (!IsA(clause, OpExpr))
+		return false;
+
+	opclause = (OpExpr *) clause;
+
+	var1 = linitial(opclause->args);
+	var2 = lsecond(opclause->args);
+
+	if (!IsA(var1, Var) || !IsA(var2, Var))
+		return false;
+
+	/*
+	 * Also require both sides of the clause to use the same data type.
+	 *
+	 * XXX Probably not strictly necessary, but it makes it easier to
+	 * determine if the operator is equality etc.
+	 */
+	if (var1->vartype != var2->vartype)
+		return false;
+
+	/*
+	 * Is the operator is an equality?
+	 *
+	 * XXX What's the right / generic way to do this? An operator may
+	 * be in multiple opclasses, etc. For now just lookup the default
+	 * btree opclass, and rely on that.
+	 */
+	typentry = lookup_type_cache(var1->vartype, TYPECACHE_EQ_OPR);
+	if (opclause->opno != typentry->eq_opr)
+		return false;
+
+	return true;
+}
+
 
 /*
  * create_gjoin_path
@@ -476,6 +519,8 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 	Relids			required_outer;
 	ParamPathInfo  *param_info;
 	List		   *restrict_clauses = extra->restrictlist;
+	bool			has_usable_join_clause = false;
+	ListCell	   *lc;
 
 	/*
 	 * pick inner/outer paths to join
@@ -501,47 +546,42 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 										   required_outer,
 										   &restrict_clauses);
 
-	/* don't allow cartesian products */
+	/*
+	 * Don't allow cartesian products (the following check would have the
+	 * same effect, but it seems reasonable to do this cheap check now).
+	 */
 	if (restrict_clauses == NIL)
 		return NULL;
 
 	/*
+	 * Make sure there's at least one join clause with (Var op Var), where
+	 * the operator is equality. The remaining join clauses will be treated
+	 * as join filters.
+	 *
 	 * XXX For now we support only joins with a single (var op var) clause.
 	 *
 	 * We should really support multiple join clauses, but we probably should
 	 * stick to (var op var) for clauses, to keep things simple. Such clauses
 	 * would be used by gjoin, and the rest would be turned into a filter.
 	 */
-	if (list_length(restrict_clauses) > 1)
-		return NULL;
-	else
+	foreach (lc, restrict_clauses)
 	{
-		OpExpr *opclause;
-		RestrictInfo *rinfo;
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
-		Var *var1,
-			*var2;
-
-		/* is the join clause (var op var)? */
-		rinfo = (RestrictInfo *) linitial(restrict_clauses);
+		/* paranoia */
 		Assert(IsA(rinfo, RestrictInfo));
 
-		opclause = (OpExpr *) rinfo->clause;
-		Assert(IsA(opclause, OpExpr));
+		if (!clause_is_compatible(rinfo->clause))
+			continue;
 
-		var1 = linitial(opclause->args);
-		var2 = lsecond(opclause->args);
-
-		if (!IsA(var1, Var) || !IsA(var2, Var))
-			return NULL;
-
-		/*
-		 * FIXME For now only equality for (int = int). Should allow any
-		 * btree equality operator.
-		 */
-		if (opclause->opno != 96)
-			return NULL;
+		/* found a join clause usable for gjoin */
+		has_usable_join_clause = true;
+		break;
 	}
+
+	/* no usable join equality clause found, can't build gjoin path */
+	if (!has_usable_join_clause)
+		return NULL;
 
  	/* build the path, fill the info */
 	cpath = makeNode(CustomPath);
@@ -568,7 +608,10 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 	cpath->custom_paths = lappend(cpath->custom_paths, outer_path);
 	cpath->custom_paths = lappend(cpath->custom_paths, inner_path);
 
-	/* also remember the custom restrictinfos */
+	/*
+	 * Remember the custom restrictinfos (all of them, both the clauses
+	 * that work for gjoin, and those that will be treated as filters).
+	 */
 	cpath->custom_restrictinfo = restrict_clauses;
 
 	/* XXX fake costing, to make gjoin look like the best join path */
@@ -602,7 +645,6 @@ gjoin_create_plan(PlannerInfo *root,
 	// List	   *params = (List *) best_path->custom_private;
 	ListCell   *lc;
 	List	   *join_clauses = NIL;
-	List	   *join_clauses_int = NIL;
 
 	outerplan = (Plan *) list_nth(custom_plans, 0);
 	innerplan = (Plan *) list_nth(custom_plans, 1);
@@ -620,7 +662,7 @@ gjoin_create_plan(PlannerInfo *root,
 
 	/* copy the stuff not handled by copy_generic_path_info */
 	cjoin->join.plan.targetlist = tlist;
-	cjoin->join.plan.qual = NIL; /* FIXME what are the quals? */
+	cjoin->join.plan.qual = NIL;
 	cjoin->join.plan.lefttree = outerplan;
 	cjoin->join.plan.righttree = innerplan;
 
@@ -639,11 +681,11 @@ gjoin_create_plan(PlannerInfo *root,
 	 * the whole tlist, without iterating the items?
 	 */
 	cjoin->custom_exprs = NIL;
-	foreach (lc, tlist)
-	{
-		TargetEntry *te = (TargetEntry *) lfirst(lc);
-		cjoin->custom_exprs = lappend(cjoin->custom_exprs, (Node *) te->expr);
-	}
+	// foreach (lc, tlist)
+	// {
+	//	TargetEntry *te = (TargetEntry *) lfirst(lc);
+	//	cjoin->custom_exprs = lappend(cjoin->custom_exprs, (Node *) te->expr);
+	// }
  
 	/*
 	 * Handle the join clauses. We need to add them to custom_private (so that
@@ -665,71 +707,29 @@ gjoin_create_plan(PlannerInfo *root,
 	foreach (lc, best_path->custom_restrictinfo)
 	{
 		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-		OpExpr *opclause = (OpExpr *) rinfo->clause;
-		Var *var1 = (Var *) linitial(opclause->args);
-		Var *var2 = (Var *) lsecond(opclause->args);
 
-		int	inner_attnum = InvalidAttrNumber;
-		int	outer_attnum = InvalidAttrNumber;
-		TargetEntry *te = NULL;
-
-		join_clauses = lappend(join_clauses, rinfo->clause);
-		cjoin->custom_exprs = lappend(cjoin->custom_exprs, rinfo->clause);
+		/* paranoia */
+		Assert(IsA(rinfo, RestrictInfo));
 
 		/*
-		 * FIXME we can't rely on var->attnum being equal to an index into the
-		 * tlist, the final tlist may omit some attributes etc. So we need to
-		 * walk the tlists and calculate the real index.
+		 * If it's a compatible clause (Var op Var), treat it as a join
+		 * clause for the gjoin. Otherwise just use it as a regular filter
+		 * clause for the join.
 		 */
-
-		/* try to find the var1 in inner/outer plans */
-		if ((te = tlist_member((Expr *) var1, innerplan->targetlist)) != NULL)
+		if (clause_is_compatible(rinfo->clause))
 		{
-			inner_attnum = var1->varattno;
+			join_clauses = lappend(join_clauses, rinfo->clause);
+			cjoin->custom_exprs = lappend(cjoin->custom_exprs,
+										  rinfo->clause);
 		}
-		else if ((te = tlist_member((Expr *) var1, outerplan->targetlist)) != NULL)
-		{
-			outer_attnum = var1->varattno;
-		}
-		else
-			elog(ERROR, "var1 not found in inner/outer tlists");
 
-		/* try to find the var2 in inner/outer plans */
-		if ((te = tlist_member((Expr *) var2, innerplan->targetlist)) != NULL)
-		{
-			inner_attnum = var2->varattno;
-		}
-		else if ((te = tlist_member((Expr *) var2, outerplan->targetlist)) != NULL)
-		{
-			outer_attnum = var2->varattno;
-		}
-		else
-			elog(ERROR, "var2 not found in inner/outer tlists");
-
-		/* ok, we found both, must from from different sides of the join */
-		if ((inner_attnum == InvalidAttrNumber) ||
-			(outer_attnum == InvalidAttrNumber))
-			elog(ERROR, "var1/var2 on the same side of the join");
-
-		/*
-		 * now add the operator, and then inner/outer attnums
-		 *
-		 * XXX This assumes the order of vars does not matter, i.e. that the
-		 * operator is it's own commutator. For most cases that's true, but
-		 * not necessarily. So we probably need to track this too.
-		 *
-		 * XXX We don't actually need the opno, we can look at the OpExpr
-		 * later too. But well ...
-		 */
-		join_clauses_int = lappend_int(join_clauses_int, opclause->opno);
-		join_clauses_int = lappend_int(join_clauses_int, inner_attnum);
-		join_clauses_int = lappend_int(join_clauses_int, outer_attnum);
+		/* XXX We don't need to add it to custom_exprs, I think. */
+		cjoin->join.plan.qual = lappend(cjoin->join.plan.qual,
+										rinfo->clause);
 	}
 
 	/* remember the join clauses, so that we can evalute it later */
 	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses);
-	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses_int);
-	cjoin->custom_private = lappend(cjoin->custom_private, NIL);
 
 	/* XXX Should we add qpqual too? Probably not. */
 
@@ -841,7 +841,6 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 {
 	GJoinJoinState *state;
 	List		   *join_clauses = NIL;
-	List		   *join_clauses_int = NIL;
 	ListCell	   *lc;
 	int				idx;
 
@@ -852,12 +851,11 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	state->cstate.methods = &gjoin_exec_methods;
 
 	/* extract fields from the custom_private list */
-	join_clauses = list_nth(cjoin->custom_private, 0);
-	join_clauses_int = list_nth(cjoin->custom_private, 1);
+	// join_clauses = list_nth(cjoin->custom_private, 0);
+	join_clauses = cjoin->custom_exprs;
 
 	/* must have valid lists */
-	Assert(join_clauses && join_clauses_int);
-	Assert(list_length(join_clauses) * 3 == list_length(join_clauses_int));
+	Assert(join_clauses != NIL);
 
 	/* initialize the tuple buffers */
 	gjoin_buffer_init(&state->buffer.inner);
@@ -874,8 +872,6 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	 * Transform the join clause(s) into info we need for sorting and
 	 * evaluating the join clauses later.
 	 *
-	 * XXX We expect each clause to be encoded as three integers.
-	 *
 	 * FIXME Hardcoded values for join on an integer column. Needs to be
 	 * derived from the actual join clauses.
 	 */
@@ -890,32 +886,69 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	foreach (lc, join_clauses)
 	{
 		OpExpr *opclause = (OpExpr *) lfirst(lc);
+		Var	   *var1,
+			   *var2;
+		TypeCacheEntry *typentry;
 
-		/* extract information from the join_clauses_int list */
-		AttrNumber	attnum_inner = list_nth_int(join_clauses_int, idx * 3 + 1);
-		AttrNumber	attnum_outer = list_nth_int(join_clauses_int, idx * 3 + 2);
+		AttrNumber	attnum_inner = InvalidAttrNumber,
+					attnum_outer = InvalidAttrNumber;
 
-		/* FIXME handle the inverse clause too */
+		/* only allowed OpExpr clauses with two Vars earlier */
+		Assert(IsA(opclause, OpExpr));
+
+		var1 = linitial(opclause->args);
+		var2 = lsecond(opclause->args);
+
+		/* safety checks (should have been enforced earlier) */
+		Assert(IsA(var1, Var) && IsA(var2, Var));
+		Assert(var1->varno == INNER_VAR || var1->varno == OUTER_VAR);
+		Assert(var2->varno == INNER_VAR || var2->varno == OUTER_VAR);
+		Assert(var1->vartype == var2->vartype);
+
+		/*
+		 * XXX If the vars happen to be inversed, maybe we should use the GT
+		 * operator instead of LT? But with both vars having the same type
+		 * it does not matter.
+		 */
+
+		if (var1->varno == INNER_VAR)
+			attnum_inner = var1->varattno;
+		else
+			attnum_outer = var1->varattno;
+
+		if (var2->varno == INNER_VAR)
+			attnum_inner = var2->varattno;
+		else
+			attnum_outer = var2->varattno;
+
+		/* determine the operators */
+		typentry = lookup_type_cache(var1->vartype,
+									 TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR);
+
+		Assert(opclause->opno == typentry->eq_opr);
+		Assert(idx < state->sort.nattnums);
+		Assert(idx < state->equality.nattnums);
 
 		/* sort info */
 		state->sort.attnums_inner[idx] = attnum_inner;
 		state->sort.attnums_outer[idx] = attnum_outer;
-		state->sort.operators[idx] = 97;	/* FIXME int < int */
+		state->sort.operators[idx] = typentry->lt_opr;
 		state->sort.collations[idx] = opclause->opcollid;
 		state->sort.nulls_first[idx] = true;
 
 		/* equality evaluation */
 		state->equality.attnums_inner[idx] = attnum_inner;
 		state->equality.attnums_outer[idx] = attnum_outer;
-		state->equality.operators[idx] = 96;	/* int = int */
+		state->equality.operators[idx] = typentry->eq_opr;
 		state->equality.collations[idx] = opclause->opcollid;
 		state->equality.nulls_first[idx] = false;
 
 		idx++;
 	}
 
-	/* only a single join clause is supported for now */
-	Assert(idx == 1);
+	/* did we get the expected number of elements in the two arrays? */
+	Assert(idx == state->sort.nattnums);
+	Assert(idx == state->equality.nattnums);
 
 	state->buffers_inner = NULL;
 	state->buffers_outer = NULL;
@@ -931,7 +964,6 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 {
 	GJoinJoinState *state = (GJoinJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	List *clauses = (List *) list_nth(cjoin->custom_private, 2);
 	Plan *outerplan,
 		 *innerplan;
 
@@ -965,9 +997,10 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 	ExecInitResultTypeTL(&state->cstate.js.ps);
 
 	/*
-	 * Initialize all child expressions - e.g. join filter.
+	 * Initialize all child expressions - e.g. for join clauses and filter.
 	 */
-	state->cstate.js.ps.qual = ExecInitQual(clauses, (PlanState *) state);
+	state->cstate.js.ps.qual
+		= ExecInitQual(cjoin->join.plan.qual, (PlanState *) state);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
@@ -1496,6 +1529,26 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 		 state->join_range.max_value);
 }
 
+static bool
+check_join_clause(GJoinJoinState *state,
+				 TupleTableSlot *outer, TupleTableSlot *inner)
+{
+	for (int i = 0; i < state->equality.nattnums; i++)
+	{
+		Datum	a,
+				b;
+		bool	isnull;
+
+		a = slot_getattr(outer, state->equality.attnums_inner[i], &isnull);
+		b = slot_getattr(inner, state->equality.attnums_outer[i], &isnull);
+
+		if (a != b)
+			return false;
+	}
+
+	return true;
+}
+
 static TupleTableSlot *
 gjoin_ExecCustomJoin(CustomJoinState *node)
 {
@@ -1790,22 +1843,20 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * immediate join range, but the two smaller ranges)
 						 */
 
-						/* time to actually compare the tuples */
+						/* time to actually compare the two inner/outer tuples */
 						{
 							TupleTableSlot *outer = buffer_outer->slots[state->pos_outer.slot];
 							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
 
-							bool	isnull;
-							Datum	a = slot_getattr(outer, state->equality.attnums_inner[0], &isnull);
-							Datum	b = slot_getattr(inner, state->equality.attnums_outer[0], &isnull);
+							/* if the two tuples do not match, continue */
+							if (!check_join_clause(state, outer, inner))
+								continue;
 
 							econtext->ecxt_innertuple = inner;
 							econtext->ecxt_outertuple = outer;
 
-							// seems quite slow, but maybe due to asserts / -O0
-							// Assert((a == b) == ExecQual(state->cstate.ss.ps.qual, econtext));
-							if (a != b)
-								continue;
+							// evaluate the join filter too
+							// ExecQual(state->cstate.ss.ps.qual, econtext));
 
 							return ExecProject(node->js.ps.ps_ProjInfo);
 						}

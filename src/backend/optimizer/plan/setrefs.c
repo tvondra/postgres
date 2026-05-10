@@ -1811,18 +1811,47 @@ set_customjoin_references(PlannerInfo *root,
 {
 	ListCell   *lc;
 
+	Plan	   *outer_plan = cjoin->join.plan.lefttree;
+	Plan	   *inner_plan = cjoin->join.plan.righttree;
+	indexed_tlist *outer_itlist;
+	indexed_tlist *inner_itlist;
+
+	outer_itlist = build_tlist_index(outer_plan->targetlist);
+	inner_itlist = build_tlist_index(inner_plan->targetlist);
+
 	if (cjoin->custom_join_tlist != NIL)
 	{
-		/* custom_scan_tlist itself just needs fix_scan_list() adjustments */
+		/* custom_join_tlist itself just needs fix_scan_list() adjustments */
 		cjoin->custom_join_tlist =
 			fix_scan_list(root, cjoin->custom_join_tlist,
 						  rtoffset, NUM_EXEC_TLIST((Plan *) cjoin));
 	}
 
+	/*
+	 * The custom_exprs expressions need to be handled using fix_join_expr,
+	 * not just by fix_scan_list.
+	 */
+
 	/* Adjust custom_exprs in the standard way */
-	cjoin->custom_exprs =
-		fix_scan_list(root, cjoin->custom_exprs,
-					  rtoffset, NUM_EXEC_QUAL((Plan *) cjoin));
+	// cjoin->custom_exprs =
+	//	fix_scan_list(root, cjoin->custom_exprs,
+	//				  rtoffset, NUM_EXEC_QUAL((Plan *) cjoin));
+
+	/*
+	 * First process the joinquals (including merge or hash clauses).  These
+	 * are logically below the join so they can always use all values
+	 * available from the input tlists.  It's okay to also handle
+	 * NestLoopParams now, because those couldn't refer to nullable
+	 * subexpressions.
+	 */
+	cjoin->custom_exprs = fix_join_expr(root,
+								   cjoin->custom_exprs,
+								   outer_itlist,
+								   inner_itlist,
+								   (Index) 0,
+								   rtoffset,
+								   NRM_EQUAL,
+								   NUM_EXEC_QUAL((Plan *) cjoin));
 
 	/* Adjust child plan-nodes recursively, if needed */
 	foreach(lc, cjoin->custom_plans)

@@ -32,6 +32,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 TRUNCATE t1;
@@ -44,6 +45,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 TRUNCATE t1;
@@ -56,6 +58,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 TRUNCATE t1;
@@ -68,6 +71,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 TRUNCATE t1;
@@ -80,6 +84,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 TRUNCATE t1;
@@ -92,6 +97,7 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
 SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d)');
 
 
 DROP TABLE t1;

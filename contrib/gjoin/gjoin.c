@@ -1790,24 +1790,20 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 						/* time to actually compare the tuples */
 						{
-							bool	isnull;
-							Datum	a = slot_getattr(buffer_outer->slots[state->pos_outer.slot], state->eq.inner_cols[0], &isnull);
-							Datum	b = slot_getattr(buffer_inner->slots[state->pos_inner.slot], state->eq.outer_cols[0], &isnull);
-
 							TupleTableSlot *outer = buffer_outer->slots[state->pos_outer.slot];
 							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
+
+							bool	isnull;
+							Datum	a = slot_getattr(outer, state->eq.inner_cols[0], &isnull);
+							Datum	b = slot_getattr(inner, state->eq.outer_cols[0], &isnull);
 
 							econtext->ecxt_innertuple = inner;
 							econtext->ecxt_outertuple = outer;
 
 							// seems quite slow, but maybe due to asserts / -O0
 							// Assert((a == b) == ExecQual(state->cstate.ss.ps.qual, econtext));
-
 							if (a != b)
 								continue;
-
-							econtext->ecxt_outertuple = outer;
-							econtext->ecxt_innertuple = inner;
 
 							return ExecProject(node->js.ps.ps_ProjInfo);
 						}

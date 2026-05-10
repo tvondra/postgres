@@ -721,9 +721,14 @@ gjoin_create_plan(PlannerInfo *root,
 			join_clauses = lappend(join_clauses, rinfo->clause);
 			cjoin->custom_exprs = lappend(cjoin->custom_exprs,
 										  rinfo->clause);
+			continue;
 		}
 
-		/* XXX We don't need to add it to custom_exprs, I think. */
+		/*
+		 * Treat it as a filter, not used for the gjoin algorithm itself.
+		 *
+		 * XXX We don't need to add it to custom_exprs, I think.
+		 */
 		cjoin->join.plan.qual = lappend(cjoin->join.plan.qual,
 										rinfo->clause);
 	}
@@ -1855,8 +1860,13 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							econtext->ecxt_innertuple = inner;
 							econtext->ecxt_outertuple = outer;
 
-							// evaluate the join filter too
-							// ExecQual(state->cstate.ss.ps.qual, econtext));
+							/*
+							 * The rows seem to match the equality join clause (per
+							 * the gjoin algoirthm itself), so check the additional
+							 * join filters, if any.
+							 */
+							if (!ExecQual(state->cstate.js.ps.qual, econtext))
+								continue;
 
 							return ExecProject(node->js.ps.ps_ProjInfo);
 						}
@@ -2124,10 +2134,10 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	// char	   *exprstr;
 	GJoinJoinState *state = (GJoinJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	List *join_clauses = list_nth(cjoin->custom_private, 0);
+	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
 
 	/* FIXME show additional run-time information about the plan */
-	show_expression((Node *) join_clauses, "Join Clause",
+	show_expression((Node *) join_clauses, "Join Cond",
 					(PlanState *) state, ancestors, es);
 }
 

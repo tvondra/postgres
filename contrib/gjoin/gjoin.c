@@ -2233,21 +2233,21 @@ show_expression(Node *node, const char *qlabel,
 }
 
 /*
- * XXX It's a bit strange this works, because join_clauses are not processed
- * by setrefs (and AFAIK the deparsing expects that?).
+ * Show additional information in EXPLAIN.
  */
 static void
 gjoin_ExplainCustomJoin(CustomJoinState *node,
 						List *ancestors,
 						ExplainState *es)
 {
-	// List	   *context;
-	// char	   *exprstr;
 	GJoinJoinState *state = (GJoinJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
 
-	/* FIXME show additional run-time information about the plan */
+	/*
+	 * FIXME Show additional run-time information about the plan (number of
+	 * runs on each side, peak amount of memory used, ...)
+	 */
 	show_expression((Node *) join_clauses, "Join Cond",
 					(PlanState *) state, ancestors, es);
 }

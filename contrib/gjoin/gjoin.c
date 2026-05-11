@@ -201,20 +201,21 @@ typedef struct GJoinPosition
  * FIXME gjoin_create_plan_state hard-codes a lot of the information. It
  * should be derived from the join conditions instead.
  *
- * FIXME The number of elements is stored in state->sort.numcols.
+ * FIXME The number of elements is stored in state->clauses.numcols.
  *
  * FIXME the name is a bit misleading, as it's used for the join clause
  * evaluation too, not just for the sort
  */
-typedef struct GJoinSortInfo
+typedef struct GJoinClauseInfo
 {
 	int				nattnums;
 	AttrNumber	   *attnums_inner;
 	AttrNumber	   *attnums_outer;
-	Oid			   *operators;
+	Oid			   *equality;		/* = operators */
+	Oid			   *inequality;		/* < operators */
 	Oid			   *collations;
 	bool		   *nulls_first;
-} GJoinSortInfo;
+} GJoinClauseInfo;
 
 /* entry in a priority queue, implemented using the pairing heap */
 typedef struct QueueEntry
@@ -310,14 +311,7 @@ typedef struct GJoinJoinState
 	 *
 	 * XXX should handle expressions too, not just plain attnums
 	 */
-	GJoinSortInfo	sort;
-
-	/*
-	 * information for evaluating the equality join clauses
-	 *
-	 * XXX gjoin_ExecCustomScan should be using this
-	 */
-	GJoinSortInfo	equality;
+	GJoinClauseInfo	clauses;
 
 	/*
 	 * priority queues from the algorithm, described by the paper
@@ -798,18 +792,19 @@ gjoin_runs_close(GJoinRuns *runs)
 }
 
 /*
- * gjoin_sort_init
- *		initialize the sort information
+ * gjoin_clauses_init
+ *		initialize the equality / sort information
  *
  * This only allocates the space, does not set any of the values.
  */
 static void
-gjoin_sort_init(GJoinSortInfo *sort, int numcols)
+gjoin_clauses_init(GJoinClauseInfo *sort, int numcols)
 {
 	sort->nattnums = numcols;
 	sort->attnums_inner = palloc_array(AttrNumber, numcols);
 	sort->attnums_outer = palloc_array(AttrNumber, numcols);
-	sort->operators = palloc_array(Oid, numcols);
+	sort->equality = palloc_array(Oid, numcols);
+	sort->inequality = palloc_array(Oid, numcols);
 	sort->collations = palloc_array(Oid, numcols);
 	sort->nulls_first = palloc_array(bool, numcols);
 }
@@ -880,11 +875,8 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 	/* start by initializing the runs etc. */
 	state->phase = GJOIN_INIT;
 
-	/* one sort key per join clause */
-	gjoin_sort_init(&state->sort, list_length(join_clauses));
-
-	/* information about the equality join clauses */
-	gjoin_sort_init(&state->equality, list_length(join_clauses));
+	/* one sort / equality key per join clause */
+	gjoin_clauses_init(&state->clauses, list_length(join_clauses));
 
 	/*
 	 * Transform the join clause(s) into info we need for sorting and
@@ -938,29 +930,21 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 									 TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR);
 
 		Assert(opclause->opno == typentry->eq_opr);
-		Assert(idx < state->sort.nattnums);
-		Assert(idx < state->equality.nattnums);
+		Assert(idx < state->clauses.nattnums);
 
-		/* sort info */
-		state->sort.attnums_inner[idx] = attnum_inner;
-		state->sort.attnums_outer[idx] = attnum_outer;
-		state->sort.operators[idx] = typentry->lt_opr;
-		state->sort.collations[idx] = opclause->opcollid;
-		state->sort.nulls_first[idx] = true;
-
-		/* equality evaluation */
-		state->equality.attnums_inner[idx] = attnum_inner;
-		state->equality.attnums_outer[idx] = attnum_outer;
-		state->equality.operators[idx] = typentry->eq_opr;
-		state->equality.collations[idx] = opclause->opcollid;
-		state->equality.nulls_first[idx] = false;
+		/* sort/equality info */
+		state->clauses.attnums_inner[idx] = attnum_inner;
+		state->clauses.attnums_outer[idx] = attnum_outer;
+		state->clauses.equality[idx] = typentry->eq_opr;
+		state->clauses.inequality[idx] = typentry->lt_opr;
+		state->clauses.collations[idx] = opclause->opcollid;
+		state->clauses.nulls_first[idx] = true;
 
 		idx++;
 	}
 
 	/* did we get the expected number of elements in the two arrays? */
-	Assert(idx == state->sort.nattnums);
-	Assert(idx == state->equality.nattnums);
+	Assert(idx == state->clauses.nattnums);
 
 	state->buffers_inner = NULL;
 	state->buffers_outer = NULL;
@@ -1030,7 +1014,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 static void
 gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 						   GJoinBuffer *buffer, GJoinRuns *runs,
-						   GJoinSortInfo *sort, bool inner)
+						   GJoinClauseInfo *clauses, bool inner)
 {
 	TupleTableSlot *slot;
 	bool		shouldFree;
@@ -1090,11 +1074,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 				Assert(runs->nruns == nextrun);
 
 				tuplesortstate = tuplesort_begin_heap(tdesc,
-													  sort->nattnums,
-													  (inner) ? sort->attnums_inner : sort->attnums_outer,
-													  sort->operators,
-													  sort->collations,
-													  sort->nulls_first,
+													  clauses->nattnums,
+													  (inner) ? clauses->attnums_inner : clauses->attnums_outer,
+													  clauses->inequality,
+													  clauses->collations,
+													  clauses->nulls_first,
 													  work_mem,
 													  NULL,
 													  tuplesortopts);
@@ -1185,11 +1169,11 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 			Assert(nextrun == runs->nruns);
 
 			tuplesortstate = tuplesort_begin_heap(tdesc,
-												  sort->nattnums,
-												  (inner) ? sort->attnums_inner : sort->attnums_outer,
-												  sort->operators,
-												  sort->collations,
-												  sort->nulls_first,
+												  clauses->nattnums,
+												  (inner) ? clauses->attnums_inner : clauses->attnums_outer,
+												  clauses->inequality,
+												  clauses->collations,
+												  clauses->nulls_first,
 												  work_mem,
 												  NULL,
 												  tuplesortopts);
@@ -1283,7 +1267,7 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
-		TupleBuffer	   *buffer = tuple_buffer_init(tdesc, state->sort.nattnums);
+		TupleBuffer	   *buffer = tuple_buffer_init(tdesc, state->clauses.nattnums);
 
 		while (tuplesort_gettupleslot(runs->runs[i], true, true,
 									  buffer->slots[buffer->nslots],
@@ -1307,7 +1291,7 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 			 */
 			buffer->min_empty = true;
 
-			for (int j = 0; j < state->sort.nattnums; j ++)
+			for (int j = 0; j < state->clauses.nattnums; j ++)
 			{
 				/*
 				 * Use the value from the last tuple (because the data is sorted
@@ -1315,7 +1299,7 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
 				 */
 				buffer->max_values[j]
 					= slot_getattr(buffer->slots[buffer->nslots - 1],
-								   state->sort.attnums_inner[j],
+								   state->clauses.attnums_inner[j],
 								   &buffer->max_isnull[j]);
 
 				// elog(WARNING, "buffer->max_values[%d] = %ld", j, buffer->max_values[j]);
@@ -1360,7 +1344,7 @@ gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
-		TupleBuffer	   *buffer = tuple_buffer_init(tdesc, state->sort.nattnums);
+		TupleBuffer	   *buffer = tuple_buffer_init(tdesc, state->clauses.nattnums);
 
 		while (tuplesort_gettupleslot(runs->runs[i], true, true,
 									  buffer->slots[buffer->nslots],
@@ -1381,7 +1365,7 @@ gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 			 */
 			buffer->min_empty = true;
 
-			for (int j = 0; j < state->sort.nattnums; j ++)
+			for (int j = 0; j < state->clauses.nattnums; j ++)
 			{
 				/*
 				 * Use the value from the last tuple (because the data is sorted
@@ -1389,7 +1373,7 @@ gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 				 */
 				buffer->max_values[j]
 					= slot_getattr(buffer->slots[buffer->nslots - 1],
-								   state->sort.attnums_outer[j],
+								   state->clauses.attnums_outer[j],
 								   &buffer->max_isnull[j]);
 			}
 
@@ -1442,14 +1426,14 @@ gjoin_load_outer_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 	buffer->min_empty = false;
 
 	/* calculate the buffer range (we know it's sorted) */
-	for (int i = 0; i < state->sort.nattnums; i++)
+	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
 		buffer->min_values[i] = slot_getattr(buffer->slots[0],
-											 state->sort.attnums_outer[i],
+											 state->clauses.attnums_outer[i],
 											 &buffer->max_isnull[i]);
 
 		buffer->max_values[i] = slot_getattr(buffer->slots[buffer->nslots - 1],
-											 state->sort.attnums_outer[i],
+											 state->clauses.attnums_outer[i],
 											 &buffer->max_isnull[i]);
 	}
 
@@ -1491,14 +1475,14 @@ gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 	buffer->min_empty = false;
 
 	/* calculate the buffer range (we know it's sorted) */
-	for (int i = 0; i < state->sort.nattnums; i++)
+	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
 		buffer->min_values[i] = slot_getattr(buffer->slots[0],
-											 state->sort.attnums_inner[i],
+											 state->clauses.attnums_inner[i],
 											 &buffer->max_isnull[i]);
 
 		buffer->max_values[i] = slot_getattr(buffer->slots[buffer->nslots - 1],
-											 state->sort.attnums_outer[i],
+											 state->clauses.attnums_outer[i],
 											 &buffer->max_isnull[i]);
 	}
 
@@ -1549,8 +1533,8 @@ gjoin_run_join_range(GJoinJoinState *state, dlist_head *run,
 static int
 compare_values(GJoinJoinState *state, Datum *a, Datum *b)
 {
-	//elog(WARNING, "state->sort.nattnums = %d", state->sort.nattnums);
-	for (int i = 0; i < state->sort.nattnums; i++)
+	//elog(WARNING, "state->clauses.nattnums = %d", state->clauses.nattnums);
+	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
 		//elog(WARNING, "a[%d] = %ld", i, a[i]);
 		//elog(WARNING, "b[%d] = %ld", i, b[i]);
@@ -1575,10 +1559,10 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 	bool	set = false;
 
 	/* allocate once */
-	min_values = palloc_array(Datum, state->sort.nattnums);
-	max_values = palloc_array(Datum, state->sort.nattnums);
-	run_min_values = palloc_array(Datum, state->sort.nattnums);
-	run_max_values = palloc_array(Datum, state->sort.nattnums);
+	min_values = palloc_array(Datum, state->clauses.nattnums);
+	max_values = palloc_array(Datum, state->clauses.nattnums);
+	run_min_values = palloc_array(Datum, state->clauses.nattnums);
+	run_max_values = palloc_array(Datum, state->clauses.nattnums);
 
 	for (int i = 0; i < state->runs.inner.nruns; i++)
 	{
@@ -1597,9 +1581,9 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 		if (!set)
 		{
 			memcpy(min_values, run_min_values,
-				   sizeof(Datum) * state->sort.nattnums);
+				   sizeof(Datum) * state->clauses.nattnums);
 			memcpy(max_values, run_max_values,
-				   sizeof(Datum) * state->sort.nattnums);
+				   sizeof(Datum) * state->clauses.nattnums);
 			continue;
 		}
 
@@ -1608,11 +1592,11 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 		 */
 		if (compare_values(state, min_values, run_min_values) < 0)
 			memcpy(min_values, run_min_values,
-				   sizeof(Datum) * state->sort.nattnums);
+				   sizeof(Datum) * state->clauses.nattnums);
 
 		if (compare_values(state, min_values, run_min_values) > 0)
 			memcpy(max_values, run_max_values,
-				   sizeof(Datum) * state->sort.nattnums);
+				   sizeof(Datum) * state->clauses.nattnums);
 	}
 
 	/* FIXME copy the arrays, free the new allocated ones */
@@ -1629,14 +1613,14 @@ static bool
 check_join_clause(GJoinJoinState *state,
 				 TupleTableSlot *outer, TupleTableSlot *inner)
 {
-	for (int i = 0; i < state->equality.nattnums; i++)
+	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
 		Datum	a,
 				b;
 		bool	isnull;
 
-		a = slot_getattr(outer, state->equality.attnums_inner[i], &isnull);
-		b = slot_getattr(inner, state->equality.attnums_outer[i], &isnull);
+		a = slot_getattr(outer, state->clauses.attnums_inner[i], &isnull);
+		b = slot_getattr(inner, state->clauses.attnums_outer[i], &isnull);
 
 		if (a != b)
 			return false;
@@ -1689,7 +1673,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 										   state->innerstate,
 										   &state->buffer.inner,
 										   &state->runs.inner,
-										   &state->sort, true);
+										   &state->clauses, true);
 
 				/* build runs for the outer relation next */
 				state->phase = GJOIN_BUILD_OUTER;
@@ -1704,7 +1688,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 										   state->outerstate,
 										   &state->buffer.outer,
 										   &state->runs.outer,
-										   &state->sort, false);
+										   &state->clauses, false);
 
 				/* prepare for reading tuples from the inner runs */
 				state->phase = GJOIN_INIT_INNER;
@@ -1998,7 +1982,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					entry = priorityqueues_pop(state->queues.inner_grow);
 
 					buffer = tuple_buffer_init(ExecGetResultType(state->innerstate),
-											   state->sort.nattnums);
+											   state->clauses.nattnums);
 
 					/* load the next buffer from the run */
 					loaded = gjoin_load_inner_buffer(state, entry->run, buffer);
@@ -2044,7 +2028,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					// dlist_delete(&(buffer->node));
 
 					buffer = tuple_buffer_init(ExecGetResultType(state->outerstate),
-											   state->sort.nattnums);
+											   state->clauses.nattnums);
 
 					loaded = gjoin_load_outer_buffer(state, entry->run, buffer);
 

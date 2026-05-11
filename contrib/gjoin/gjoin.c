@@ -14,9 +14,9 @@
  * - gjoin_join_pathlist_hook - create CustomPath paths, mimicking the
  *   plain NestLoop join paths
  *
- * - gjoin_create_plan - crates CustomJoin plan, mimicking NestLoop
+ * - create_gjoin_plan - crates CustomJoin plan, mimicking NestLoop
  *
- * - gjoin_create_plan_state - initializes runtime state of the plan
+ * - gjoin_CreatePlanState - initializes runtime state of the plan
  *   during execution
  *
  * The executor methods are implemented by traditional several methods:
@@ -95,13 +95,13 @@ static Path *create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 							   JoinType jointype, JoinPathExtraData *extra);
 
 /* executor */
-static Plan *gjoin_create_plan(PlannerInfo *root,
+static Plan *create_gjoin_plan(PlannerInfo *root,
 							   RelOptInfo *rel,
 							   CustomPath *best_path,
 							   List *tlist,
 							   List *clauses,
 							   List *custom_plans);
-static Node *gjoin_create_plan_state(CustomJoin *cjoin);
+static Node *gjoin_CreatePlanState(CustomJoin *cjoin);
 
 /* executor */
 static void gjoin_BeginCustomJoin(CustomJoinState *node,
@@ -198,7 +198,7 @@ typedef struct GJoinPosition
 /*
  * Information needed for sorting the inner/outer side.
  *
- * FIXME gjoin_create_plan_state hard-codes a lot of the information. It
+ * FIXME gjoin_CreatePlanState hard-codes a lot of the information. It
  * should be derived from the join conditions instead.
  *
  * FIXME The number of elements is stored in state->clauses.numcols.
@@ -363,11 +363,11 @@ _PG_init(void)
 	/* custom-scan node */
 	memset(&gjoin_path_methods, 0, sizeof(CustomPathMethods));
 	gjoin_path_methods.CustomName   = "GJoin";
-	gjoin_path_methods.PlanCustomPath = gjoin_create_plan;
+	gjoin_path_methods.PlanCustomPath = create_gjoin_plan;
 
 	memset(&gjoin_plan_methods, 0, sizeof(CustomJoinMethods));
 	gjoin_plan_methods.CustomName   = "GJoin";
-	gjoin_plan_methods.CreateCustomJoinState = gjoin_create_plan_state;
+	gjoin_plan_methods.CreateCustomJoinState = gjoin_CreatePlanState;
 
 	memset(&gjoin_exec_methods, 0, sizeof(CustomJoinExecMethods));
 	gjoin_exec_methods.CustomName   = "GJoin";
@@ -626,14 +626,14 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 /*
  * Transform the CustomPath gjoin path into a CustomJoin plan.
  *
- * gjoin_create_plan
+ * create_gjoin_plan
  *		Transform the CustomPath gjoin path into a CustomScan plan.
  *
  * Most of the steps are common in other create_plan methods. We also need
  * to do CustomJoin stuff, to make setrefs do the right thing.
  */
 static Plan *
-gjoin_create_plan(PlannerInfo *root,
+create_gjoin_plan(PlannerInfo *root,
 				  RelOptInfo *rel,
 				  CustomPath *best_path,
 				  List *tlist,
@@ -676,17 +676,11 @@ gjoin_create_plan(PlannerInfo *root,
 	cjoin->custom_plans = custom_plans;
 
 	/*
-	 * add expression from the target list, so that setrefs processes it
-	 *
-	 * XXX Do we actually need to add the expressions? If yes, can we add
-	 * the whole tlist, without iterating the items?
+	 * For now we use custom_exprs only to pass join clauses, so a simple
+	 * list is enough. If we need to add more stuff to custom_exprs, it will
+	 * need to be list of lists.
 	 */
 	cjoin->custom_exprs = NIL;
-	// foreach (lc, tlist)
-	// {
-	//	TargetEntry *te = (TargetEntry *) lfirst(lc);
-	//	cjoin->custom_exprs = lappend(cjoin->custom_exprs, (Node *) te->expr);
-	// }
  
 	/*
 	 * Handle the join clauses. We need to add them to custom_private (so that
@@ -733,9 +727,6 @@ gjoin_create_plan(PlannerInfo *root,
 		cjoin->join.plan.qual = lappend(cjoin->join.plan.qual,
 										rinfo->clause);
 	}
-
-	/* remember the join clauses, so that we can evalute it later */
-	cjoin->custom_private = lappend(cjoin->custom_private, join_clauses);
 
 	/* XXX Should we add qpqual too? Probably not. */
 
@@ -834,7 +825,7 @@ gjoin_PositionIsInvalid(GJoinPosition *pos)
 }
 
 /*
- * gjoin_create_plan_state
+ * gjoin_CreatePlanState
  *		Initialize state for executor of the smoothscan CustomScan.
  *
  * This does not need to be copied by the executor, so we don't need to
@@ -844,7 +835,7 @@ gjoin_PositionIsInvalid(GJoinPosition *pos)
  * singe fixed example. Needs to be derived from the actual join info.
  */
 static Node *
-gjoin_create_plan_state(CustomJoin *cjoin)
+gjoin_CreatePlanState(CustomJoin *cjoin)
 {
 	GJoinState *state;
 	List		   *join_clauses = NIL;
@@ -857,8 +848,11 @@ gjoin_create_plan_state(CustomJoin *cjoin)
 
 	state->cstate.methods = &gjoin_exec_methods;
 
-	/* extract fields from the custom_private list */
-	// join_clauses = list_nth(cjoin->custom_private, 0);
+	/*
+	 * join clauses are passes through the custom_exprs list (if we ever
+	 * need to pass other expressions, we'll need to convert it into a
+	 * list of lists)
+	 */
 	join_clauses = cjoin->custom_exprs;
 
 	/* must have valid lists */
@@ -1137,7 +1131,7 @@ gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
 		 * ExecFetchSlotHeapTuple may return "physical tuple", in which case
 		 * we need to copy it here, to prevent seeing garbage later
 		 *
-		 * FIXME why commented out?
+		 * FIXME why is this commented out?
 		 */
 		// if (!shouldFree)
 			tuple = heap_copytuple(tuple);
@@ -2202,8 +2196,6 @@ gjoin_EndCustomJoin(CustomJoinState *node)
 static void
 gjoin_ReScanCustomJoin(CustomJoinState *node)
 {
-	// GJoinState *state = (GJoinState *) node;
-
 	/* FIXME rescan */
 	elog(ERROR, "gjoin_ReScanCustomScan not implemented");
 }

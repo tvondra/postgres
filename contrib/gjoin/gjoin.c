@@ -734,13 +734,13 @@ create_gjoin_plan(PlannerInfo *root,
 }
 
 /*
- * gjoin_buffer_init
+ * init_buffer
  *		initialize a buffer for tuples
  *
  * We only reset fields to "empty", we don't allocate any buffer yet.
  */
 static void
-gjoin_buffer_init(GJoinBuffer *buffer)
+init_buffer(GJoinBuffer *buffer)
 {
 	buffer->tuples = NULL;
 	buffer->ntuples = 0;
@@ -749,13 +749,13 @@ gjoin_buffer_init(GJoinBuffer *buffer)
 }
 
 /*
- * gjoin_runs_init
+ * init_runs
  *		initialize runs of buffers
  *
  * We only reset fields to "empty", we don't allocate any buffer yet.
  */
 static void
-gjoin_runs_init(TupleRuns *runs)
+init_runs(TupleRuns *runs)
 {
 	runs->maxruns = 0;
 	runs->nruns = 0;
@@ -765,7 +765,7 @@ gjoin_runs_init(TupleRuns *runs)
 
 /* close the runs - release the tuplesorts, etc. */
 static void
-gjoin_runs_close(TupleRuns *runs)
+close_runs(TupleRuns *runs)
 {
 	/*
 	 * now also end the tuplesort, to prevent warnings about resources
@@ -783,13 +783,13 @@ gjoin_runs_close(TupleRuns *runs)
 }
 
 /*
- * gjoin_clauses_init
+ * init_clauses
  *		initialize the equality / sort information
  *
  * This only allocates the space, does not set any of the values.
  */
 static void
-gjoin_clauses_init(GJoinClauseInfo *sort, int numcols)
+init_clauses(GJoinClauseInfo *sort, int numcols)
 {
 	sort->nattnums = numcols;
 	sort->attnums_inner = palloc_array(AttrNumber, numcols);
@@ -801,11 +801,11 @@ gjoin_clauses_init(GJoinClauseInfo *sort, int numcols)
 }
 
 /*
- * gjoin_pos_reset
+ * position_reset
  *		reset gjoin position (as if before starting to process runs)
  */
 static void
-gjoin_ResetPosition(GJoinPosition *pos)
+position_reset(GJoinPosition *pos)
 {
 	pos->run = -1;
 	pos->slot = -1;
@@ -813,11 +813,11 @@ gjoin_ResetPosition(GJoinPosition *pos)
 }
 
 /*
- * gjoin_pos_is_reset
+ * position_is_invalid
  *		returns true if the position is unset
  */
 static bool
-gjoin_PositionIsInvalid(GJoinPosition *pos)
+position_is_invalid(GJoinPosition *pos)
 {
 	return (pos->run == -1) &&
 		   (pos->slot == -1) &&
@@ -859,18 +859,18 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 	Assert(join_clauses != NIL);
 
 	/* initialize the tuple buffers */
-	gjoin_buffer_init(&state->buffer.inner);
-	gjoin_buffer_init(&state->buffer.outer);
+	init_buffer(&state->buffer.inner);
+	init_buffer(&state->buffer.outer);
 
 	/* initialize the runs */
-	gjoin_runs_init(&state->runs.inner);
-	gjoin_runs_init(&state->runs.outer);
+	init_runs(&state->runs.inner);
+	init_runs(&state->runs.outer);
 
 	/* start by initializing the runs etc. */
 	state->phase = GJOIN_INIT;
 
 	/* one sort / equality key per join clause */
-	gjoin_clauses_init(&state->clauses, list_length(join_clauses));
+	init_clauses(&state->clauses, list_length(join_clauses));
 
 	/*
 	 * Transform the join clause(s) into info we need for sorting and
@@ -1006,9 +1006,9 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 }
 
 static void
-gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
-						   GJoinBuffer *buffer, TupleRuns *runs,
-						   GJoinClauseInfo *clauses, bool inner)
+build_runs(GJoinState *node, PlanState *state,
+		   GJoinBuffer *buffer, TupleRuns *runs,
+		   GJoinClauseInfo *clauses, bool inner)
 {
 	TupleTableSlot *slot;
 	bool		shouldFree;
@@ -1200,7 +1200,7 @@ gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
 		buffer->ntuples = 0;
 	}
 
-	elog(DEBUG1, "gjoin_BuildRunsForRelation %p SORT", state);
+	elog(DEBUG1, "build_runs %p SORT", state);
 
 	/*
 	 * Sort all the runs, one by one.
@@ -1216,7 +1216,7 @@ gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
 		tuplesort_performsort(runs->runs[i]);
 	}
 
-	elog(DEBUG1, "gjoin_BuildRunsForRelation %p DONE", state);
+	elog(DEBUG1, "build_runs %p DONE", state);
 }
 
 /*
@@ -1255,7 +1255,7 @@ tuple_buffer_init(TupleDesc tdesc, int nattnums)
  * Loads one batch (~8KB) of tuples for each run generated for the relation.
  */
 static dlist_head *
-gjoin_InitRunsInner(GJoinState *state, TupleDesc tdesc)
+init_inner_runs(GJoinState *state, TupleDesc tdesc)
 {
 	TupleRuns *runs = &state->runs.inner;
 
@@ -1332,7 +1332,7 @@ gjoin_InitRunsInner(GJoinState *state, TupleDesc tdesc)
  * slots in the batch.
  */
 static dlist_head *
-gjoin_InitRunsOuter(GJoinState *state, TupleDesc tdesc)
+init_outer_runs(GJoinState *state, TupleDesc tdesc)
 {
 	TupleRuns *runs = &state->runs.outer;
 
@@ -1403,7 +1403,7 @@ gjoin_InitRunsOuter(GJoinState *state, TupleDesc tdesc)
 
 /* S */
 static bool
-gjoin_load_outer_buffer(GJoinState *state, int run, TupleBuffer *buffer)
+load_outer_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1450,7 +1450,7 @@ gjoin_load_outer_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 
 /* R */
 static bool
-gjoin_load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
+load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1502,8 +1502,8 @@ gjoin_load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
  * a list of tuple buffers).
  */
 static void
-gjoin_run_join_range(GJoinState *state, dlist_head *run,
-					 Datum **minvalues, Datum **maxvalues)
+join_range_for_run(GJoinState *state, dlist_head *run,
+				   Datum **minvalues, Datum **maxvalues)
 {
 	TupleBuffer *buffer;
 	dlist_iter	iter;
@@ -1550,7 +1550,7 @@ compare_values(GJoinState *state, Datum *a, Datum *b)
 
 /* Calculate the join range for all runs. */
 static void
-gjoin_CalculateJoinRange(GJoinState *state)
+update_join_range(GJoinState *state)
 {
 	Datum  *min_values,
 		   *max_values,
@@ -1571,8 +1571,8 @@ gjoin_CalculateJoinRange(GJoinState *state)
 		if (dlist_is_empty(&state->buffers_inner[i]))
 			continue;
 
-		gjoin_run_join_range(state, &state->buffers_inner[i],
-							 &run_min_values, &run_max_values);
+		join_range_for_run(state, &state->buffers_inner[i],
+						   &run_min_values, &run_max_values);
 
 		/*
 		 * If this is the first run with data, use the min/max values,
@@ -1670,11 +1670,11 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				 * which case it'd be better to flip the inner/outer relations for
 				 * the sake of the algorithm. But we keep it simple for now.
 				 */
-				gjoin_BuildRunsForRelation(state,
-										   state->innerstate,
-										   &state->buffer.inner,
-										   &state->runs.inner,
-										   &state->clauses, true);
+				build_runs(state,
+						   state->innerstate,
+						   &state->buffer.inner,
+						   &state->runs.inner,
+						   &state->clauses, true);
 
 				/* build runs for the outer relation next */
 				state->phase = GJOIN_BUILD_OUTER;
@@ -1685,11 +1685,11 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_BUILD_OUTER");
 
 				/* Now build runs for the outer relation. */
-				gjoin_BuildRunsForRelation(state,
-										   state->outerstate,
-										   &state->buffer.outer,
-										   &state->runs.outer,
-										   &state->clauses, false);
+				build_runs(state,
+						   state->outerstate,
+						   &state->buffer.outer,
+						   &state->runs.outer,
+						   &state->clauses, false);
 
 				/* prepare for reading tuples from the inner runs */
 				state->phase = GJOIN_INIT_INNER;
@@ -1701,10 +1701,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 				/* load a bufffer of tuples for each run of the inner relation */
 				state->buffers_inner
-					= gjoin_InitRunsInner(state,
-										  ExecGetResultType(state->innerstate));
+					= init_inner_runs(state,
+									  ExecGetResultType(state->innerstate));
 
-				gjoin_ResetPosition(&state->pos_inner);
+				position_reset(&state->pos_inner);
 
 				/*
 				 * Calculate the current join range, defined as
@@ -1714,7 +1714,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				 * over all buffers loaded from the runs of the inner relation.
 				 * No buffers can be skipped when calculating this range.
 				 */
-				gjoin_CalculateJoinRange(state);
+				update_join_range(state);
 
 				/* next load buffers for the outer relation */
 				state->phase = GJOIN_INIT_OUTER;
@@ -1726,10 +1726,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 				/* load a bufffer of tuples for each run of the outer relation */
 				state->buffers_outer
-					= gjoin_InitRunsOuter(state,
+					= init_outer_runs(state,
 										  ExecGetResultType(state->outerstate));
 
-				gjoin_ResetPosition(&state->pos_outer);
+				position_reset(&state->pos_outer);
 
 				/* start by reading a tuple from the outer relation */
 				state->phase = GJOIN_NEXT_OUTER;
@@ -1764,7 +1764,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * queue "C" (determines in what order to load buffers for runs
 					 * of the outer relation).
 					 */
-					if (gjoin_PositionIsInvalid(&state->pos_outer))
+					if (position_is_invalid(&state->pos_outer))
 					{
 						QueueEntry *entry;
 
@@ -1844,7 +1844,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 */
 					if (state->pos_outer.slot >= buffer->nslots)
 					{
-						gjoin_ResetPosition(&state->pos_outer);
+						position_reset(&state->pos_outer);
 						state->phase = GJOIN_LOAD_OUTER;
 						continue;
 					}
@@ -1853,7 +1853,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * Got a valid outer tuple to join, so find all tuples on the
 					 * inner side.
 					 */
-					gjoin_ResetPosition(&state->pos_inner);
+					position_reset(&state->pos_inner);
 					state->phase = GJOIN_NEXT_INNER;
 
 					continue;
@@ -2003,7 +2003,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 											   state->clauses.nattnums);
 
 					/* load the next buffer from the run */
-					loaded = gjoin_load_inner_buffer(state, entry->run, buffer);
+					loaded = load_inner_buffer(state, entry->run, buffer);
 
 //					if (loaded)
 //						elog(DEBUG1, "loaded inner buffer %p %d [%ld, %ld]",
@@ -2011,8 +2011,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 					/* FIXME handle loaded=false */
 
-					gjoin_ResetPosition(&state->pos_inner);
-					gjoin_CalculateJoinRange(state);
+					position_reset(&state->pos_inner);
+					update_join_range(state);
 
 					/* retry the join */
 					state->phase =  GJOIN_NEXT_OUTER;
@@ -2048,7 +2048,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					buffer = tuple_buffer_init(ExecGetResultType(state->outerstate),
 											   state->clauses.nattnums);
 
-					loaded = gjoin_load_outer_buffer(state, entry->run, buffer);
+					loaded = load_outer_buffer(state, entry->run, buffer);
 
 //					if (loaded)
 //						elog(DEBUG1, "loaded outer buffer %p %d [%ld, %ld]",
@@ -2064,7 +2064,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * due to having multiple runs, so we'll need to remember
 					 * the position per run.
 					 */
-					gjoin_ResetPosition(&state->pos_outer);
+					position_reset(&state->pos_outer);
 
 					/* retry the join */
 					state->phase =  GJOIN_EVICT_INNER;
@@ -2183,8 +2183,8 @@ gjoin_EndCustomJoin(CustomJoinState *node)
 	GJoinState *state = (GJoinState *) node;
 
 	/* FIXME cleanup */
-	gjoin_runs_close(&state->runs.inner);
-	gjoin_runs_close(&state->runs.outer);
+	close_runs(&state->runs.inner);
+	close_runs(&state->runs.outer);
 
 	/*
 	 * clean up subtrees

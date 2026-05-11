@@ -714,8 +714,7 @@ gjoin_create_plan(PlannerInfo *root,
 
 		/*
 		 * If it's a compatible clause (Var op Var), treat it as a join
-		 * clause for the gjoin. Otherwise just use it as a regular filter
-		 * clause for the join.
+		 * clause for the gjoin. Those are stored in custom_exprs.
 		 */
 		if (clause_is_compatible(rinfo->clause))
 		{
@@ -727,6 +726,7 @@ gjoin_create_plan(PlannerInfo *root,
 
 		/*
 		 * Treat it as a filter, not used for the gjoin algorithm itself.
+		 * Those can be added to the existing "qual" field.
 		 *
 		 * XXX We don't need to add it to custom_exprs, I think.
 		 */

@@ -1050,6 +1050,13 @@ gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
 		 *
 		 * XXX We allow accumulating up to work_mem of tuples, because while
 		 * building runs we only keep a single buffer in memory.
+		 *
+		 * XXX Why do we even need to process tuples in buffers while loading
+		 * tuples into the tuplesorts? Well, we should probably load them
+		 * into memory first, up to work_mem (or maybe work_mem/2), and only
+		 * then start spilling to tuplesorts when it's clear it can't do the
+		 * hashjoin-like execution. And we should try loading the other side
+		 * too first, in case we can swap the sides.
 		 */
 		if (buffer->space + tuple->t_len > work_mem * 1024L)
 		{
@@ -1811,6 +1818,23 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						continue;
 					}
 */
+
+					/*
+					 * FIXME this is not sufficient, because the join_range may be
+					 * "incomplete", i.e. there may be more tuples with the same
+					 * join key in the next buffer. So we need to either allow
+					 * processing the outer buffer repeatedly, or make sure all the
+					 * inner buffers are loaded at once (but then that needs more
+					 * memory, and we may exceed work_mem). Or maybe we could peek
+					 * at the next buffer in each run, and consider that when
+					 * calculating the join range?
+					 *
+					 * In fact, we could calculate the join range knowing whether
+					 * the upper boundary is inclusive or exclusive, and then we
+					 * could process just the outer tuples that fall into that
+					 * join range. But we still can't release the inner buffers,
+					 * because the next outer buffer could need those.
+					 */
 					if (compare_values(state, state->join_range.max_values, buffer->max_values) < 0)
 					{
 						state->phase = GJOIN_LOAD_INNER;
